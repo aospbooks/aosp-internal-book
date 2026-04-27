@@ -285,8 +285,9 @@ Let us examine each layer in detail, from the bottom up.
 
 ### 1.3.2 Layer 1: The Linux Kernel
 
-Android runs on the Linux kernel. As of Android 15, the kernel is based on the
-**Linux 6.x Long-Term Support (LTS)** branch with Android-specific patches
+Android runs on the Linux kernel. As of Android 16, the kernel is based on the
+**Linux 6.x Long-Term Support (LTS)** branch (6.12 for the Android 16 GKI) with
+Android-specific patches
 managed through the **Android Common Kernel (ACK)** and the **Generic Kernel
 Image (GKI)** initiative.
 
@@ -1985,7 +1986,7 @@ infrastructure. Google's specific responsibilities include:
 **Mainline Modules:**
 
 - Google develops and maintains Mainline modules that can be updated via the
-  Play Store independently of full OS updates. As of Android 15, over 30
+  Play Store independently of full OS updates. As of Android 16, over 30
   modules are "mainlined," including:
   - Connectivity (WiFi, Bluetooth, Tethering, DNS)
   - Media (codecs, extractors)
@@ -2132,7 +2133,7 @@ the init system, and dm-verity.
 ## 1.6 AOSP Version History
 
 Android has evolved dramatically since its initial release. The following table
-documents every major release, from Android 1.0 to Android 15.
+documents every major release, from Android 1.0 to Android 16.
 
 ### 1.6.1 Complete Version Table
 
@@ -2172,6 +2173,7 @@ documents every major release, from Android 1.0 to Android 15.
 | **13** | 33 | **Android 13** | Aug 2022 | Per-app language preferences, themed app icons, notification permission, photo picker, predictive back gesture, programmable shaders (AGSL). |
 | **14** | 34 | **Android 14** | Oct 2023 | Grammatical inflection API, regional preferences, path interop, credential manager, health connect, ultra HDR, lossless USB audio. **Platform stability** improvements. |
 | **15** | 35 | **Android 15 (Vanilla Ice Cream)** | 2024 | App archiving, partial screen sharing, satellite connectivity APIs, improved PDF rendering, **AV1 software codec**, NFC tap-to-pay improvements, private space (separate profile for sensitive apps), enhanced security for screen recording/projection, Health Connect expansion. |
+| **16** | 36 | **Android 16 (Baklava)** | Jun 2025 | **16 KB page size** support mandatory for new apps targeting API 36. **Live Updates** notification API for ongoing tasks (ride-share, delivery, navigation). **Predictive back gesture** on by default for apps targeting API 36. **Edge-to-edge enforcement** extended (must opt out explicitly). **Adaptive layouts** required for large-screen / foldable apps. Linux **6.12** LTS GKI. Continued Mainline module expansion. Performance class 16. |
 
 ### 1.6.2 Architectural Milestones
 
@@ -2216,6 +2218,9 @@ timeline
                           : Health Connect
         2024 (15)        : ART Mainline updates
                           : Private Space
+        2025 (16)        : 16 KB page size
+                          : Live Updates API
+                          : Adaptive layouts mandate
 ```
 
 ### 1.6.3 API Level Growth
@@ -2232,6 +2237,7 @@ The number of public APIs in the Android SDK has grown enormously:
 | API 29 (10) | ~30,000 | Dark theme, Scoped Storage, BiometricPrompt |
 | API 33 (13) | ~35,000 | Photo picker, Per-app language, Themed icons |
 | API 35 (15) | ~40,000+ | Satellite APIs, Private space, Health Connect |
+| API 36 (16) | ~42,000+ | Live Updates, 16 KB page size, Adaptive layouts |
 
 Each API level is a strict superset of the previous (with rare deprecation
 removals). The API is defined by signature files maintained by Metalava:
@@ -2704,7 +2710,7 @@ graph TB
     style Mainline_Model fill:#e8f5e9,stroke:#2e7d32
 ```
 
-As of Android 15, Mainline modules include:
+As of Android 16, Mainline modules include:
 
 | Module | Type | What It Updates |
 |---|---|---|
