@@ -511,11 +511,14 @@ sequenceDiagram
     participant App
     participant AMS as ActivityManagerService
     participant ATMS as ActivityTaskManagerService
+    participant AS as ActivityStarter
+    participant ATS as ActivityTaskSupervisor
     participant Zygote
 
     App->>AMS: startActivity()
     AMS->>ATMS: startActivityAsUser()
-    ATMS->>ATMS: resolveIntent()
+    ATMS->>AS: obtainStarter().execute()
+    AS->>ATS: resolveIntent()
     ATMS->>Zygote: fork new process
     Zygote-->>ATMS: process started
     ATMS-->>App: result

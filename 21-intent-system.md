@@ -899,20 +899,25 @@ presents the results.
 ```mermaid
 sequenceDiagram
     participant App as Application
-    participant AMS as ActivityManagerService
+    participant ATMS as ActivityTaskManagerService
+    participant AS as ActivityStarter
+    participant ATS as ActivityTaskSupervisor
     participant PMS as PackageManagerService
     participant CR as ComponentResolver
     participant Chooser as ChooserActivity
 
-    App->>AMS: startActivity(implicit intent)
-    AMS->>PMS: resolveIntent()
+    App->>ATMS: startActivity(implicit intent)
+    ATMS->>AS: execute()
+    AS->>ATS: resolveIntent()
+    ATS->>PMS: PackageManagerInternal.resolveIntent()
     PMS->>CR: queryActivities(intent, resolvedType, flags, userId)
     CR-->>PMS: List<ResolveInfo>
-    PMS-->>AMS: ResolveInfo (or multiple)
+    PMS-->>ATS: ResolveInfo (or multiple)
+    ATS-->>AS: ResolveInfo
     alt Single match
-        AMS->>App: Launch matched activity
+        AS->>App: Launch matched activity
     else Multiple matches, no default
-        AMS->>Chooser: Launch with EXTRA_INTENT
+        AS->>Chooser: Launch with EXTRA_INTENT
         Chooser->>PMS: queryIntentActivities()
         PMS-->>Chooser: Full list
         Chooser->>App: User picks, launches selected

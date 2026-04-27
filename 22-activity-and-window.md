@@ -1374,28 +1374,31 @@ Intent intent = new Intent(Intent.ACTION_VIEW, uri);
 sequenceDiagram
     participant AS as ActivityStarter
     participant Req as Request
+    participant ATS as ActivityTaskSupervisor
     participant PMS as PackageManagerService
     participant Resolver as IntentResolver
 
     AS->>Req: resolveActivity(mSupervisor)
-    Req->>PMS: resolveIntent(intent, resolvedType, flags, userId)
+    Req->>ATS: resolveIntent(intent, resolvedType, userId, flags)
+    ATS->>PMS: PackageManagerInternal.resolveIntent()
     PMS->>Resolver: queryIntentActivities()
 
     alt Explicit Intent
         Resolver->>PMS: Look up component directly
-        PMS-->>Req: ResolveInfo (single match)
+        PMS-->>ATS: ResolveInfo (single match)
     else Implicit Intent
         Resolver->>Resolver: Match action, categories, data
         Resolver->>PMS: Return matching list
         alt Single match
-            PMS-->>Req: ResolveInfo (best match)
+            PMS-->>ATS: ResolveInfo (best match)
         else Multiple matches
-            PMS-->>Req: ResolverActivity (chooser)
+            PMS-->>ATS: ResolverActivity (chooser)
         else No matches
-            PMS-->>Req: null (ActivityNotFoundException)
+            PMS-->>ATS: null (ActivityNotFoundException)
         end
     end
 
+    ATS-->>Req: ResolveInfo
     Req->>AS: Set mRequest.activityInfo, mRequest.resolveInfo
 ```
 
