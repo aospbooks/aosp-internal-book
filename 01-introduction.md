@@ -2105,6 +2105,10 @@ Custom ROMs take AOSP and build alternative distributions. Major projects:
 | **/e/OS** | De-Googled Android with cloud services. Targeted at mainstream users who want privacy without complexity. |
 | **Paranoid Android** | UI innovation and design focus. Known for introducing features later adopted by AOSP (immersive mode, heads-up notifications). |
 | **crDroid** | Feature-rich, combining customizations from multiple sources. |
+| **Android-x86** | Foundational community port of AOSP to x86/x86_64 PCs. Adds drivers and input handling for keyboards, mice, trackpads, and Ethernet, and is the base most "Android for PC" distributions derive from. |
+| **BlissOS** | x86/x86_64 desktop distribution derived from Android-x86, typically tracking LineageOS. Adds a desktop-style taskbar, multi-window polish, and theming aimed at laptop/PC use. |
+| **BlissROMs** | ARM phone/tablet sibling of BlissOS. Customization- and theming-focused ROM built on top of LineageOS. |
+| **RemixOS** | Discontinued (2017) commercial Android-for-PC distribution by Jide, based on Android-x86. Notable for early desktop-style window management and a Start-menu-like launcher on Android. |
 
 **Bug Reports and Code Review:**
 The AOSP Gerrit instance (android-review.googlesource.com) accepts external
