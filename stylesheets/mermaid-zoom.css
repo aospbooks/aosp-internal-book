@@ -52,21 +52,35 @@
   font-size: 14px;
 }
 
-/* SVG container */
+/* Scroll container — fills available space; produces scrollbars when the
+   wrapper grows past the viewport (i.e. when zoom * SVG size exceeds box). */
 #mzm-box {
   flex: 1;
   width: 100%;
-  overflow: hidden;
+  overflow: auto;
+}
+
+/* Wrapper — at least viewport-sized so flex centering keeps small SVGs in
+   the middle; grows beyond viewport when SVG style.width/height exceeds it. */
+#mzm-wrap {
+  min-width: 100%;
+  min-height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
 }
 
-#mzm-box svg {
+/* SVG — sized via JS-set style.width/height (vector re-render at every step).
+   flex-shrink:0 prevents the flex container from squashing it back to fit. */
+#mzm-wrap svg {
   background: white;
   border-radius: 8px;
   padding: 24px;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+  cursor: grab;
+  flex-shrink: 0;
 }
 
 /* Fix black node labels: Material theme CSS bleeds into mermaid's

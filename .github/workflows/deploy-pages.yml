@@ -49,7 +49,9 @@ jobs:
           for f in [0-9]*.md A-*.md B-*.md index.md favicon.png; do
             ln -sf "../$f" "docs/$f"
           done
-          echo "Linked $(ls docs/ | wc -l) files"
+          ln -sfn ../javascripts docs/javascripts
+          ln -sfn ../stylesheets docs/stylesheets
+          echo "Linked $(ls docs/ | wc -l) entries"
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
