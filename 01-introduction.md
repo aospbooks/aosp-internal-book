@@ -1,10 +1,5 @@
 # Chapter 1: Introduction
 
-> *"Android is an open platform. It's available for anyone to use. That's the beauty of it."*
-> -- Andy Rubin, co-founder of Android
-
----
-
 ## 1.1 Why This Book Exists
 
 The Android Open Source Project is one of the largest, most complex, and most
