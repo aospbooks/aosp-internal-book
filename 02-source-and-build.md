@@ -1587,7 +1587,7 @@ graph TB
     end
 
     subgraph "Soong (Go)"
-        SGO["Reads config via<br/>soong.variables"]
+        SGO["Reads config via<br/>soong.&lt;TARGET_PRODUCT&gt;.variables"]
     end
 
     subgraph "Kati (Make)"
@@ -1624,7 +1624,9 @@ The variable resolution chain in the Make layer is:
 4. The product makefile uses `inherit-product` to pull in base configurations
 5. `board_config.mk` locates and loads `BoardConfig.mk` for the device
 6. All resolved variables are then available for image assembly and as inputs
-   to Soong via `soong.variables`
+   to Soong via `soong.<TARGET_PRODUCT>.variables` (e.g.
+   `out/soong/soong.aosp_cf_x86_64_phone.variables` for an
+   `aosp_cf_x86_64_phone-trunk_staging-userdebug` lunch combo)
 
 The key variable resolution happens in `envsetup.mk`:
 
@@ -4484,10 +4486,26 @@ compilation jobs.
 
 ## 2.11 Advanced Topics
 
-### 2.11.1 The `soong.variables` Bridge
+### 2.11.1 The `soong.<TARGET_PRODUCT>.variables` Bridge
 
-Soong and Kati need to share configuration information. This is done through
-`out/soong/soong.variables`, a JSON file that Kati writes and Soong reads:
+Soong and Kati need to share configuration information. Kati writes a JSON
+file that Soong reads. The path is keyed by `TARGET_PRODUCT` (the product
+component of your lunch combo — for
+`lunch aosp_cf_x86_64_phone-trunk_staging-userdebug`,
+`TARGET_PRODUCT=aosp_cf_x86_64_phone`):
+
+```
+out/soong/soong.<TARGET_PRODUCT>.variables
+```
+
+The path is constructed in `build/make/core/config.mk:1255`:
+
+```makefile
+SOONG_VARIABLES := $(SOONG_OUT_DIR)/soong.$(TARGET_PRODUCT)$(COVERAGE_SUFFIX).variables
+```
+
+For the `aosp_cf_x86_64_phone` lunch combo above, the file is
+`out/soong/soong.aosp_cf_x86_64_phone.variables`. A typical payload looks like:
 
 ```json
 {
@@ -4508,8 +4526,10 @@ Soong and Kati need to share configuration information. This is done through
 
 This file bridges the Make world (where product configuration lives) with the
 Go world (where module compilation happens). When you change a product
-variable in a `.mk` file, it flows through `soong.variables` to affect Soong's
-behavior.
+variable in a `.mk` file, it flows through this file to affect Soong's
+behavior. (Soong falls back to a plain `out/soong/soong.variables` only when
+`TARGET_PRODUCT` is unset; a lunched build always writes the
+product-suffixed file.)
 
 ### 2.11.2 ABI Stability and VNDK
 
