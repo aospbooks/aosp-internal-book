@@ -720,7 +720,3 @@ source. Understand why the system is designed the way it is, and you will be
 able to predict where to look even in code you have never seen before.
 
 Let us begin.
-
----
-
-*Proceed to Chapter 1: Build System -->*
