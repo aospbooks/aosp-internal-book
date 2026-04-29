@@ -3116,7 +3116,3 @@ configuring the build, and running our first build on an emulator.
 - **CDD**: https://source.android.com/docs/compatibility/cdd
 - **Android API Reference**: https://developer.android.com/reference
 - **Android Platform Architecture**: https://developer.android.com/guide/platform
-
----
-
-*Next: Chapter 2 -- Setting Up the Development Environment*
