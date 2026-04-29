@@ -1,9 +1,5 @@
 # Chapter 2: Source Code and Build System
 
-> *"Android is probably the largest open-source project in history, both in terms
-> of the code itself and the community that contributes to it."*
-> -- Dave Burke, VP of Engineering, Android
-
 The Android Open Source Project ships hundreds of millions of lines of code
 across thousands of Git repositories. Building it demands a bespoke toolchain
 that has evolved over more than a decade, from recursive GNU Make, to the
