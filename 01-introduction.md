@@ -2223,30 +2223,6 @@ timeline
                           : Adaptive layouts mandate
 ```
 
-### 1.6.3 API Level Growth
-
-The number of public APIs in the Android SDK has grown enormously:
-
-| Version | Approx. Public API Count | Notable Additions |
-|---|---|---|
-| API 1 (1.0) | ~2,000 | Foundation: Activity, View, Intent, ContentProvider |
-| API 8 (2.2) | ~5,000 | Backup, Cloud-to-Device Messaging |
-| API 14 (4.0) | ~10,000 | ActionBar, Fragments (phones), Social APIs |
-| API 21 (5.0) | ~18,000 | Material Design, Camera2, JobScheduler, ART |
-| API 26 (8.0) | ~25,000 | Autofill, NNAPI, Notification Channels |
-| API 29 (10) | ~30,000 | Dark theme, Scoped Storage, BiometricPrompt |
-| API 33 (13) | ~35,000 | Photo picker, Per-app language, Themed icons |
-| API 35 (15) | ~40,000+ | Satellite APIs, Private space, Health Connect |
-| API 36 (16) | ~42,000+ | Live Updates, 16 KB page size, Adaptive layouts |
-
-Each API level is a strict superset of the previous (with rare deprecation
-removals). The API is defined by signature files maintained by Metalava:
-
-- `current.txt` -- Public API signature
-- `system-current.txt` -- System API (for privileged apps)
-- `module-lib-current.txt` -- Module library API (for Mainline modules)
-- `test-current.txt` -- Test API
-
 ---
 
 ## 1.7 The Developer's Journey: Roadmap of This Book
