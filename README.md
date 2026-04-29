@@ -17,7 +17,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | Part | Ch. | Topics | Status |
 |------|-----|--------|--------|
 | I | 0 | Frontmatter | REVIEWED |
-| I | 1 | Introduction | UNDER REVIEW |
+| I | 1 | Introduction | REVIEWED |
 | I | 2 | Source Code & Build System (Soong/Bazel/Kleaf) | UNDER REVIEW |
 | I | 3 | Feature Flags (aconfig) | UNDER REVIEW |
 | II | 4 | Boot and Init | UNDER REVIEW |
