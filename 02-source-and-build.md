@@ -1015,7 +1015,7 @@ graph TB
     style SB9 fill:#e8a838,color:#fff
 ```
 
-The key step is **SB9: GenerateAndroidBuildActions**. This is the method that
+The key step is **GenerateAndroidBuildActions**. This is the method that
 every module type must implement. It examines the module's properties, resolves
 its dependencies, and emits Ninja build rules (compile commands, link commands,
 file copies, etc.).
