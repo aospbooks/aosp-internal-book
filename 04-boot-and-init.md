@@ -116,43 +116,6 @@ activity is started, the boot animation is dismissed, and the property
 `sys.boot_completed` is set to `1`, signaling to all components that the device is
 fully operational.
 
-### 4.1.3 Timing and Dependencies
-
-The following diagram shows the approximate timing and overlap between stages:
-
-```mermaid
-gantt
-    title Android Boot Timeline (Approximate)
-    dateFormat X
-    axisFormat %s
-
-    section Firmware
-    ROM Code           :a1, 0, 200
-    Bootloader + AVB   :a2, 200, 1500
-
-    section Kernel
-    Kernel Init        :a3, 1500, 3500
-    Driver Probing     :a4, 2500, 4000
-
-    section Init
-    First Stage Init   :a5, 4000, 5500
-    SELinux Setup      :a6, 5500, 6000
-    Second Stage Init  :a7, 6000, 8000
-
-    section Framework
-    Zygote Preload     :a8, 7500, 10000
-    system_server      :a9, 9500, 14000
-
-    section UI
-    Boot Animation     :a10, 6500, 14000
-    Home Screen        :a11, 14000, 15000
-```
-
-The total boot time from power-on to home screen typically ranges from 5 to 30
-seconds depending on hardware and software configuration. The three most
-time-consuming stages are kernel driver probing, Zygote class preloading, and
-system_server service initialization.
-
 ---
 
 ## 4.2 Bootloader and Verified Boot
