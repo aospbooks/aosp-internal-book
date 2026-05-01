@@ -1,11 +1,5 @@
 # Chapter 3: Feature Flags and aconfig
 
-> *"Shipping new code and enabling new behavior are two fundamentally different
-> acts.  A feature flag is the explicit acknowledgment of that separation."*
-> -- Android Platform Engineering
-
----
-
 Large-scale software projects face an inherent contradiction: developers need to
 commit code to the mainline branch frequently to reduce merge conflicts, yet
 half-finished features must never reach end users.  For over a decade, Android
