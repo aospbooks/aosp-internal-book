@@ -99,6 +99,21 @@
   background-color: transparent !important;
 }
 
+/* Center mermaid diagrams horizontally on the page. The rendered <svg> sits
+   inside <div class="mermaid">; default block-level layout left-aligns it,
+   even when narrower than the content column. text-align:center on the
+   container plus display:block + margin auto on the SVG handles both the
+   inline-SVG and inline-block cases mermaid emits. */
+div.mermaid {
+  text-align: center;
+}
+
+div.mermaid > svg {
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+}
+
 /* Clickable hint on diagrams */
 div.mermaid[data-zoomable] {
   cursor: pointer;
