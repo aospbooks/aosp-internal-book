@@ -22,7 +22,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | I | 3 | Feature Flags (aconfig) | REVIEWED |
 | II | 4 | Boot and Init | REVIEWED |
 | II | 5 | Kernel (GKI) | REVIEWED |
-| II | 6 | System Properties | UNDER REVIEW |
+| II | 6 | System Properties | REVIEWED |
 | III | 7 | Bionic & Linker | UNDER REVIEW |
 | III | 8 | Memory Management | UNDER REVIEW |
 | III | 9 | Binder IPC | UNDER REVIEW |
