@@ -3208,20 +3208,20 @@ developer to flash a fixed image.
 4. **APEX preloading**: Pre-creating loop devices accelerates APEX mounting (see
    `InitExtraDevices()` in init.cpp lines 869-883):
 
-```cpp
-// system/core/init/init.cpp, lines 869-883
-static void InitExtraDevices() {
-    if constexpr (com::android::apex::flags::mount_before_data()) {
-        constexpr int kMaxLoopDevices = 128;
-        std::thread([]() {
-            dm::LoopControl loop_control;
-            for (int i = 0; i < kMaxLoopDevices; i++) {
-                (void)loop_control.Add(i);
-            }
-        }).detach();
+    ```cpp
+    // system/core/init/init.cpp, lines 869-883
+    static void InitExtraDevices() {
+        if constexpr (com::android::apex::flags::mount_before_data()) {
+            constexpr int kMaxLoopDevices = 128;
+            std::thread([]() {
+                dm::LoopControl loop_control;
+                for (int i = 0; i < kMaxLoopDevices; i++) {
+                    (void)loop_control.Add(i);
+                }
+            }).detach();
+        }
     }
-}
-```
+    ```
 
 5. **Bootchart analysis**: Use bootchart to identify the longest-running boot steps
    and optimize them
