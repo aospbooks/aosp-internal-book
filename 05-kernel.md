@@ -270,30 +270,30 @@ consists of:
    modules are allowed to call. For kernel 6.6, this list contains
    approximately 35,710 entries.
 
-   **Source**: `kernel/prebuilts/6.6/arm64/abi_symbollist` (35,710 lines)
+    **Source**: `kernel/prebuilts/6.6/arm64/abi_symbollist` (35,710 lines)
 
-   The symbol list begins with commonly used symbols and is organized into
-   sections:
+    The symbol list begins with commonly used symbols and is organized into
+    sections:
 
-   ```
-   [abi_symbol_list]
-   # commonly used symbols
-     module_layout
-     __put_task_struct
-     utf8_data_table
+    ```
+    [abi_symbol_list]
+    # commonly used symbols
+        module_layout
+        __put_task_struct
+        utf8_data_table
 
-   [abi_symbol_list]
-     add_cpu
-     add_device_randomness
-     add_timer
-     ...
-   ```
+    [abi_symbol_list]
+        add_cpu
+        add_device_randomness
+        add_timer
+        ...
+    ```
 
 2. **An ABI definition** -- a machine-readable description of the types,
    structures, and function signatures exported by the KMI. For kernel 6.6, this
    file is approximately 7.8 MB.
 
-   **Source**: `kernel/prebuilts/6.6/arm64/abi.stg` (7,819,214 bytes)
+    **Source**: `kernel/prebuilts/6.6/arm64/abi.stg` (7,819,214 bytes)
 
 3. **Module versioning** (`CONFIG_MODVERSIONS=y`) -- CRC checksums are computed
    for each exported symbol based on its prototype. A module compiled against
