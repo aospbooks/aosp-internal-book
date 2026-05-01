@@ -1666,15 +1666,15 @@ The preloading sequence:
 
 6. **`preloadSharedLibraries()`**: Loads critical native libraries:
 
-```java
-// frameworks/base/core/java/com/android/internal/os/ZygoteInit.java, lines 195-207
-private static void preloadSharedLibraries() {
-    Log.i(TAG, "Preloading shared libraries...");
-    System.loadLibrary("android");
-    System.loadLibrary("jnigraphics");
-    // ...
-}
-```
+    ```java
+    // frameworks/base/core/java/com/android/internal/os/ZygoteInit.java, lines 195-207
+    private static void preloadSharedLibraries() {
+        Log.i(TAG, "Preloading shared libraries...");
+        System.loadLibrary("android");
+        System.loadLibrary("jnigraphics");
+        // ...
+    }
+    ```
 
 7. **`warmUpJcaProviders()`**: Pre-initializes Java Cryptography Architecture
    providers to avoid cold-start delays for crypto operations.
