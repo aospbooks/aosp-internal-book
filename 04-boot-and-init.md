@@ -2016,7 +2016,7 @@ The bootstrap service start order (extracted from the actual source):
 | 19 | RecoverySystemService | 1316 | OTA and recovery |
 | 20 | LightsService | 1327 | LED and backlight control |
 | 21 | DisplayManagerService | 1340 | Display management |
-| 22 | **PHASE_WAIT_FOR_DEFAULT_DISPLAY** | 1345 | *First boot phase checkpoint* |
+| 22 | PHASE_WAIT_FOR_DEFAULT_DISPLAY | 1345 | *First boot phase checkpoint* |
 | 23 | DomainVerificationService | 1357 | App link verification |
 | 24 | PackageManagerService | 1363 | Package management |
 | 25 | DexUseManagerLocal | 1377 | DEX file usage tracking |
