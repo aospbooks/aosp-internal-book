@@ -167,15 +167,46 @@ This is how Android detects when an app crashes and triggers cleanup in
 ### 9.1.7 The Three Binder Domains
 
 Modern Android has three separate binder device nodes, each with its own
-context manager:
+context manager. Project Treble (Android 8.0) introduced this split to
+enforce the framework/vendor boundary at the IPC layer:
 
-| Device | Context Manager | Purpose |
-|--------|----------------|---------|
-| `/dev/binder` | `servicemanager` | Framework services (system_server <-> apps) |
-| `/dev/hwbinder` | `hwservicemanager` | HAL services (HIDL interfaces) |
-| `/dev/vndbinder` | `vndservicemanager` | Vendor-to-vendor services |
+```mermaid
+graph TB
+    subgraph "Framework Domain"
+        A[Apps] <-->|"/dev/binder"| B[system_server]
+        B <-->|"/dev/binder"| C[servicemanager]
+    end
 
-The default device node depends on the build variant:
+    subgraph "HAL Domain (deprecated)"
+        D["Framework<br/>clients"] <-->|"/dev/hwbinder"| E[HAL services]
+        E <-->|"/dev/hwbinder"| F[hwservicemanager]
+    end
+
+    subgraph "Vendor Domain"
+        G["Vendor<br/>processes"] <-->|"/dev/vndbinder"| H[Vendor services]
+        H <-->|"/dev/vndbinder"| I[vndservicemanager]
+    end
+
+    style A fill:#e1f5fe
+    style B fill:#e1f5fe
+    style C fill:#e1f5fe
+    style D fill:#fff3e0
+    style E fill:#fff3e0
+    style F fill:#fff3e0
+    style G fill:#e8f5e9
+    style H fill:#e8f5e9
+    style I fill:#e8f5e9
+```
+
+| Domain | Device | Context Manager | Interface Language | Status |
+|--------|--------|----------------|-------------------|--------|
+| Framework | `/dev/binder` | `servicemanager` | AIDL | Active |
+| HAL | `/dev/hwbinder` | `hwservicemanager` | HIDL | **Deprecated** (Android 13+) |
+| Vendor | `/dev/vndbinder` | `vndservicemanager` | AIDL | Active |
+
+SELinux policy enforces the boundaries: a vendor process cannot open
+`/dev/binder`, and a framework process should not open `/dev/vndbinder`. The
+default device for a process depends on the build variant:
 
 ```cpp
 // frameworks/native/libs/binder/ProcessState.cpp
@@ -185,6 +216,9 @@ const char* kDefaultDriver = "/dev/vndbinder";
 const char* kDefaultDriver = "/dev/binder";
 #endif
 ```
+
+§9.6 covers the HAL domain (`hwservicemanager` and the HIDL → AIDL migration)
+in depth.
 
 ---
 
@@ -2184,15 +2218,8 @@ service vndservicemanager /vendor/bin/vndservicemanager /dev/vndbinder
 
 It uses `/dev/vndbinder` instead of `/dev/binder`, creating a completely
 separate namespace for vendor services. The VNDK (Vendor NDK) build
-configuration ensures vendor libraries use `/dev/vndbinder` by default:
-
-```cpp
-#ifdef __ANDROID_VNDK__
-const char* kDefaultDriver = "/dev/vndbinder";
-#else
-const char* kDefaultDriver = "/dev/binder";
-#endif
-```
+configuration ensures vendor libraries use `/dev/vndbinder` by default —
+see the `kDefaultDriver` selection in §9.1.7.
 
 ### 9.5.13 LazyServiceRegistrar
 
@@ -2256,64 +2283,12 @@ sp<INTERFACE> waitForVintfService(
 
 Source directory: `system/hwservicemanager/`
 
-### 9.6.1 The Three Binder Domains
+The HAL domain (`/dev/hwbinder`) and its context manager `hwservicemanager`
+are the second of the three binder domains introduced in §9.1.7. This section
+covers the HIDL ABI, the migration to AIDL on `/dev/binder`, and the related
+vendor-domain pieces (`vndservicemanager`, passthrough HALs).
 
-Android uses three separate binder driver instances to enforce isolation between
-the framework, HAL, and vendor components:
-
-```mermaid
-graph TB
-    subgraph "Framework Domain"
-        A[Apps] <-->|"/dev/binder"| B[system_server]
-        B <-->|"/dev/binder"| C[servicemanager]
-    end
-
-    subgraph "HAL Domain (deprecated)"
-        D["Framework<br/>clients"] <-->|"/dev/hwbinder"| E[HAL services]
-        E <-->|"/dev/hwbinder"| F[hwservicemanager]
-    end
-
-    subgraph "Vendor Domain"
-        G["Vendor<br/>processes"] <-->|"/dev/vndbinder"| H[Vendor services]
-        H <-->|"/dev/vndbinder"| I[vndservicemanager]
-    end
-
-    style A fill:#e1f5fe
-    style B fill:#e1f5fe
-    style C fill:#e1f5fe
-    style D fill:#fff3e0
-    style E fill:#fff3e0
-    style F fill:#fff3e0
-    style G fill:#e8f5e9
-    style H fill:#e8f5e9
-    style I fill:#e8f5e9
-```
-
-| Domain | Device | Context Manager | Interface Language | Status |
-|--------|--------|----------------|-------------------|--------|
-| Framework | `/dev/binder` | `servicemanager` | AIDL | Active |
-| HAL | `/dev/hwbinder` | `hwservicemanager` | HIDL | **Deprecated** (Android 13+) |
-| Vendor | `/dev/vndbinder` | `vndservicemanager` | AIDL | Active |
-
-### 9.6.2 Why Three Domains?
-
-The three-domain architecture was introduced with Project Treble (Android 8.0)
-to enforce the vendor/framework boundary:
-
-1. **Framework domain** (`/dev/binder`): Used for all communication between
-   apps and system services. Only framework processes should register here.
-
-2. **HAL domain** (`/dev/hwbinder`): Used for communication between the
-   framework and vendor HAL implementations. Uses HIDL (HAL Interface
-   Definition Language) for stable binary interfaces.
-
-3. **Vendor domain** (`/dev/vndbinder`): Used for vendor-internal communication
-   that does not cross the Treble boundary.
-
-SELinux policy enforces these boundaries -- a vendor process cannot open
-`/dev/binder`, and a framework process should not open `/dev/vndbinder`.
-
-### 9.6.3 hwservicemanager
+### 9.6.1 hwservicemanager
 
 The `hwservicemanager` manages HIDL services on `/dev/hwbinder`:
 
@@ -2359,7 +2334,7 @@ struct ServiceManager : public V1_2::IServiceManager,
 };
 ```
 
-### 9.6.4 HIDL vs AIDL
+### 9.6.2 HIDL vs AIDL
 
 | Feature | HIDL | AIDL |
 |---------|------|------|
@@ -2380,7 +2355,7 @@ AIDL uses dot-separated names:
 android.hardware.camera.provider.ICameraProvider/internal/0
 ```
 
-### 9.6.5 The Migration from HIDL to AIDL
+### 9.6.3 The Migration from HIDL to AIDL
 
 Starting with Android 13, all new HAL interfaces must use AIDL. Existing HIDL
 interfaces are being migrated to AIDL over successive releases. The migration
@@ -2396,7 +2371,7 @@ Services that have migrated from HIDL to AIDL use `/dev/binder` and register
 with the regular `servicemanager`, but their names are validated against the
 VINTF manifest.
 
-### 9.6.6 Passthrough HALs
+### 9.6.4 Passthrough HALs
 
 HIDL supported a "passthrough" mode where the HAL was loaded directly into the
 client process as a shared library (no IPC). This was used for performance-
@@ -2408,37 +2383,6 @@ by a direct dlopen mechanism:
 // frameworks/native/libs/binder/include/binder/IServiceManager.h
 void* openDeclaredPassthroughHal(const String16& interface,
                                  const String16& instance, int flag);
-```
-
-### 9.6.7 RPC Binder
-
-Android 12+ introduced RPC Binder (`/dev/binder` over sockets) for
-cross-device and VM communication. This uses the same `libbinder` interfaces
-but transports data over TCP/Unix sockets instead of the kernel driver:
-
-```cpp
-// frameworks/native/libs/binder/include/binder/RpcServer.h
-class RpcServer : public virtual RefBase {
-public:
-    static sp<RpcServer> make(
-        std::unique_ptr<RpcTransportCtxFactory> rpcTransportCtxFactory = nullptr);
-    // ...
-};
-```
-
-`BpBinder` uses the `std::variant<BinderHandle, RpcHandle>` to transparently
-support both kernel binder and RPC binder:
-
-```cpp
-// frameworks/native/libs/binder/include/binder/BpBinder.h
-struct BinderHandle {
-    int32_t handle;
-};
-struct RpcHandle {
-    sp<RpcSession> session;
-    uint64_t address;
-};
-using Handle = std::variant<BinderHandle, RpcHandle>;
 ```
 
 ---
@@ -3663,12 +3607,7 @@ This is gated to root-only access and must be explicitly enabled at build time
 with `BINDER_ENABLE_RECORDING`. The recorded transactions can be replayed using
 the `RecordedTransaction` class for testing and debugging.
 
-### 9.9.7 RPC Binder Overview
-
-RPC Binder enables Binder-like communication over sockets instead of the
-`/dev/binder` kernel driver. See section 9.10 for full coverage.
-
-### 9.9.8 Binder Interface Stability Levels
+### 9.9.7 Binder Interface Stability Levels
 
 The stability system prevents accidental cross-boundary usage of unstable
 interfaces:
@@ -3691,7 +3630,7 @@ undeclared interface (the default) can only be used within its compilation unit.
 This is enforced at runtime by the `Stability` class, which stamps each binder
 object with its stability level when it is created.
 
-### 9.9.9 Binder Thread Pool Configuration Patterns
+### 9.9.8 Binder Thread Pool Configuration Patterns
 
 Different services use different thread pool configurations:
 
