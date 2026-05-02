@@ -26,7 +26,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | III | 7 | Bionic & Linker | REVIEWED |
 | III | 8 | Memory Management | REVIEWED |
 | III | 9 | Binder IPC | REVIEWED |
-| III | 10 | HAL (HIDL/AIDL) | UNDER REVIEW |
+| III | 10 | HAL (HIDL/AIDL) | REVIEWED |
 | III | 11 | NDK | UNDER REVIEW |
 | IV | 12 | Native Services | UNDER REVIEW |
 | IV | 13 | Graphics & Render Pipeline (OpenGL ES/Vulkan/Skia/HWUI) | UNDER REVIEW |
