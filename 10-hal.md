@@ -1,13 +1,5 @@
 # Chapter 10: HAL -- Hardware Abstraction Layer
 
-> *"The HAL is the legal firewall and the engineering seam between kernel-space GPL
-> code and userspace Apache-licensed code.  It is what makes Android a platform
-> rather than just a Linux distribution."*
-
----
-
----
-
 ## 10.1 HAL Architecture Overview
 
 ### 10.1.1 Why HAL Exists: The License Divide
