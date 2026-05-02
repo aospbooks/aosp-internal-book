@@ -23,7 +23,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | II | 4 | Boot and Init | REVIEWED |
 | II | 5 | Kernel (GKI) | REVIEWED |
 | II | 6 | System Properties | REVIEWED |
-| III | 7 | Bionic & Linker | UNDER REVIEW |
+| III | 7 | Bionic & Linker | REVIEWED |
 | III | 8 | Memory Management | UNDER REVIEW |
 | III | 9 | Binder IPC | UNDER REVIEW |
 | III | 10 | HAL (HIDL/AIDL) | UNDER REVIEW |
