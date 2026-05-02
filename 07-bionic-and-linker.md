@@ -908,11 +908,13 @@ graph TD
     H -->|setresuid in range| F
     H -->|Out of range| E
 
-    D -->|In 32-bit allowlist| F
-    D -->|Not allowed| E
+    D -->|In 32-bit allowlist| F2[SECCOMP_RET_ALLOW]
+    D -->|Not allowed| E2[SECCOMP_RET_TRAP]
 
     style E fill:#ffcdd2
+    style E2 fill:#ffcdd2
     style F fill:#c8e6c9
+    style F2 fill:#c8e6c9
 ```
 
 Three separate filter profiles are generated:
