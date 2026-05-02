@@ -107,16 +107,16 @@ from its own virtual address space -- a single copy.
 ```
 Sender                    Kernel                    Receiver
 ┌─────────┐    copy_from_user     ┌──────────────┐
-│  Parcel  │ ─────────────────────>│  Receiver's  │
-│  data    │                       │  mmap buffer │
+│  Parcel │ ─────────────────────>│  Receiver's  │
+│  data   │                       │  mmap buffer │
 └─────────┘                       └──────────────┘
                                         │
                                         │ (already in receiver's
                                         │  address space)
                                         v
                                   ┌──────────────┐
-                                  │  Receiver     │
-                                  │  reads data   │
+                                  │  Receiver    │
+                                  │  reads data  │
                                   └──────────────┘
 ```
 
@@ -3352,13 +3352,13 @@ tracks embedded binder references and file descriptors:
 
 ```
 ┌──────────────────────────────────────────┐
-│                 Parcel                    │
+│                 Parcel                   │
 │                                          │
 │  data: [int32 | string | binder | int32] │
 │         ↑                ↑               │
 │  objects: [           offset=12        ] │
 │                                          │
-│  The objects array stores offsets into    │
+│  The objects array stores offsets into   │
 │  the data buffer where flat_binder_obj   │
 │  structs are embedded.                   │
 └──────────────────────────────────────────┘
