@@ -739,8 +739,7 @@ futex_time64(int*, int, int, const timespec64*, int*, int) lp32
 
 These were added for the Y2038 problem: 32-bit `time_t` overflows in January
 
-2038. The `*_time64` system calls use 64-bit time structures even on 32-bit
-platforms.
+> The `*_time64` system calls use 64-bit time structures even on 32-bit platforms.
 
 ### 7.2.6 Seccomp-BPF: System Call Filtering
 
