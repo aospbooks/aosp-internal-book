@@ -1299,7 +1299,7 @@ under AI control.
 ### 50.3.9 Integration with VirtualDeviceManager
 
 Computer Control builds on top of the VirtualDeviceManager framework
-(Chapter 21). The relationship is:
+(Chapter 51). The relationship is:
 
 ```mermaid
 graph LR

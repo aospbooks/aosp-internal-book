@@ -5013,22 +5013,22 @@ source files:
 
 This chapter connects to several other topics covered in this book:
 
-- **Chapter 9 (Graphics Render Pipeline)**: HWUI animations run on the
+- **Chapter 13 (Graphics Render Pipeline)**: HWUI animations run on the
   RenderThread described in the graphics chapter.  Understanding display
   lists, RenderNodes, and the GPU pipeline is essential for understanding
   why RenderThread animations are jank-free.
 
-- **Chapter 7 (Binder IPC)**: Shell transitions use Binder to communicate
+- **Chapter 9 (Binder IPC)**: Shell transitions use Binder to communicate
   between the system_server (WindowManager) and the Shell process.  The
   `ITransitionPlayer` interface is a Binder interface, and `TransitionInfo`
   is a Parcelable transferred across the process boundary.
 
-- **Chapter 3 (Boot and Init)**: The animation system is initialized during
+- **Chapter 4 (Boot and Init)**: The animation system is initialized during
   system server startup.  The `WindowManagerService` creates the
   `WindowAnimator`, `SurfaceAnimationRunner`, and animation threads during
   boot.
 
-- **Chapter 4 (Kernel)**: VSYNC signals originate from the display hardware
+- **Chapter 5 (Kernel)**: VSYNC signals originate from the display hardware
   driver and are delivered through the kernel to userspace via the
   `DisplayEventReceiver` -> `Choreographer` pipeline.
 

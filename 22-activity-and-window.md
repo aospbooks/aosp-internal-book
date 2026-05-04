@@ -16,7 +16,7 @@ choreography of visual transitions that the user sees on screen.
 This chapter provides a comprehensive architectural overview. We will trace
 real code paths through the AOSP source, examine class hierarchies with Mermaid
 diagrams, and dissect the data structures that underpin every visible
-interaction on Android. Chapters 16 and 17 will dive deeper into the Window
+interaction on Android. Chapters 23 and 24 will dive deeper into the Window
 System internals and the Display/Compositor pipeline respectively; here we
 establish the foundations.
 

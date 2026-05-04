@@ -3519,30 +3519,30 @@ directory containing the requesting library.
 The topics covered in this chapter connect to several other chapters in
 this book:
 
-- **Chapter 3 (Boot and Init)**: The init process is the first user-space
+- **Chapter 4 (Boot and Init)**: The init process is the first user-space
   process and one of the first consumers of Bionic and the dynamic linker.
   Understanding the linker's first-stage init special cases (no arc4random,
   no /proc) requires understanding the boot sequence.
 
-- **Chapter 4 (Kernel)**: The system call interface described in Section 6.2
+- **Chapter 5 (Kernel)**: The system call interface described in Section 6.2
   is the boundary between user space and kernel space. The seccomp-BPF
   filters are enforced by the kernel's seccomp infrastructure.
 
-- **Chapter 8 (Binder IPC)**: Binder is the most frequent user of the
+- **Chapter 9 (Binder IPC)**: Binder is the most frequent user of the
   `ioctl` system call, which is why `ioctl` is in the seccomp priority list.
   The Binder driver's file descriptor is one of the first things any Android
   process opens after the linker hands off control.
 
-- **Chapter 9 (ART and Dalvik)**: The ART runtime uses `dlopen()` extensively
+- **Chapter 18 (ART Runtime)**: The ART runtime uses `dlopen()` extensively
   to load JNI libraries, and `libnativeloader` creates per-app linker
   namespaces. ART's OAT files are loaded through the same ELF loading
   pipeline described in Section 6.3.
 
-- **Chapter 11 (HAL and HIDL)**: The Same-Process HAL (SP-HAL) mechanism
+- **Chapter 10 (HAL and HIDL)**: The Same-Process HAL (SP-HAL) mechanism
   relies on the `sphal` linker namespace to load vendor HAL implementations
   directly into framework processes while maintaining namespace isolation.
 
-- **Chapter 14 (Security)**: The memory safety features described in this
+- **Chapter 40 (Security)**: The memory safety features described in this
   chapter (MTE, CFI, FORTIFY_SOURCE, seccomp-BPF, W^X, RELRO) form the
   foundation of Android's native code security model. The linker's namespace
   isolation is also a key component of the Treble security boundary.

@@ -16,8 +16,8 @@ front-end refactor and `CompositionEngine`; buffer management through
 `BLASTBufferQueue`; virtual displays and mirroring; colour management; and
 display power control.
 
-Readers who have worked through the graphics rendering pipeline in Chapter 9
-and the system_server architecture in Chapter 14 will find this chapter
+Readers who have worked through the graphics rendering pipeline in Chapter 13
+and the system_server architecture in Chapter 20 will find this chapter
 naturally extends those foundations into the display-specific domain.
 
 **Key source files for this chapter:**
@@ -1299,7 +1299,7 @@ unwound in order.
 
 ### 24.4.8 Rotation and Transitions Integration
 
-Screen rotation is deeply integrated with Shell Transitions (Chapter 16).
+Screen rotation is deeply integrated with Shell Transitions (Chapter 23).
 When rotation changes, the transition system:
 
 1. **Captures a screenshot** of the pre-rotation state (or uses

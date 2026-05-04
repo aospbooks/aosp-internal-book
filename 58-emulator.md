@@ -1524,7 +1524,7 @@ int main(const int argc, const char* argv[]) {
 
 ### 58.3.7 Virtual Sensors
 
-The virtual sensors (covered in detail in section 27.2.3.3) are driven by the
+The virtual sensors (covered in detail in section 58.2.3.3) are driven by the
 emulator's Extended Controls UI. When a user interacts with the sensor controls
 (tilting the virtual device, changing proximity, adjusting light level), the
 emulator host sends text-based sensor events through the QEMU pipe.
@@ -1570,7 +1570,7 @@ CTS (Compatibility Test Suite):
 
 ### 58.3.8 Virtual GPS
 
-GPS simulation flows through the GNSS HAL (section 27.2.3.4). The emulator
+GPS simulation flows through the GNSS HAL (section 58.2.3.4). The emulator
 supports:
 
 - Fixed GPS coordinates (set via Extended Controls)
@@ -1706,7 +1706,7 @@ setprop ro.opengles.version ${ro.boot.opengles.version}
 ```
 
 The gralloc HAL creates host-side GPU resources ("color buffers") through the
-render control encoder, as shown in section 27.2.3.8. This allows efficient
+render control encoder, as shown in section 58.2.3.8. This allows efficient
 zero-copy rendering where the guest composes frames that are directly displayed
 by the emulator's window.
 

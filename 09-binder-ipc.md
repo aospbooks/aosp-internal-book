@@ -4393,5 +4393,5 @@ graph TB
 
 ---
 
-*Next chapter: Chapter 8 will explore the Hardware Abstraction Layer (HAL)
+*Next chapter: Chapter 10 will explore the Hardware Abstraction Layer (HAL)
 architecture, building on the AIDL and binder concepts covered here.*

@@ -2337,43 +2337,37 @@ how the pieces fit together. This is the focus of the early chapters:
 
 - **Chapter 1 (this chapter)**: The big picture -- architecture, source tree,
   stakeholders
-- **Chapter 2**: Build environment, repo, Soong/Blueprint, build targets
-- **Chapter 3**: The build system in depth -- how `Android.bp` files work, module
-  types, build variants
+- **Chapter 2**: Build environment, repo, Soong/Blueprint, `Android.bp` modules,
+  build targets and variants
 - **Chapter 4**: The boot process -- from bootloader to lock screen
-- **Chapter 5**: Binder IPC -- the backbone of all inter-process communication
-- **Chapter 6**: system_server and framework services -- the heart of Android
+- **Chapter 9**: Binder IPC -- the backbone of all inter-process communication
+- **Chapter 20**: system_server and framework services -- the heart of Android
 
 ### 1.7.4 Phase 3: Exploration and Debugging
 
 Once you understand the architecture, you can explore the live system:
 
-- **Chapter 7**: Debugging tools -- logcat, dumpsys, Perfetto, LLDB, Android
+- **Chapter 56**: Debugging tools -- logcat, dumpsys, Perfetto, LLDB, Android
   Studio platform debugging
-- **Chapter 8**: ART internals -- garbage collection, JIT/AOT, class loading
-- **Chapter 9**: Graphics pipeline -- SurfaceFlinger, HWUI, BufferQueue, HWC
-- **Chapter 10**: Input pipeline -- from touchscreen driver to app's
-  `onTouchEvent()`
-- **Chapter 11**: Activity and window management -- AMS, WMS, task stacks
+- **Chapter 18**: ART internals -- garbage collection, JIT/AOT, class loading
+- **Chapter 13**: Graphics pipeline -- SurfaceFlinger, HWUI, BufferQueue, HWC
+- **Chapter 22**: Activity and window management -- AMS, WMS, task stacks
 
 ### 1.7.5 Phase 4: Modification and Development
 
 With understanding comes the ability to modify:
 
-- **Chapter 12**: Modifying framework services -- adding a new system service
-- **Chapter 13**: HAL development -- implementing a hardware abstraction layer
-- **Chapter 14**: System app development -- customizing SystemUI, Launcher,
+- **Chapter 10**: HAL development -- implementing a hardware abstraction layer
+- **Chapters 47-49**: System app development -- customizing SystemUI, Launcher,
   Settings
-- **Chapter 15**: Device bring-up -- adding support for new hardware
-- **Chapter 16**: Mainline modules -- developing updatable components
+- **Chapter 52**: Mainline modules -- developing updatable components
 
 ### 1.7.6 Phase 5: Advanced Topics and Mastery
 
-- **Chapter 17**: Performance optimization -- profiling, tracing, benchmarking
-- **Chapter 18**: Security architecture -- SELinux, Keystore, verified boot,
+- **Chapter 56**: Performance optimization -- profiling, tracing, benchmarking
+- **Chapter 40**: Security architecture -- SELinux, Keystore, verified boot,
   sandboxing
-- **Chapter 19**: Testing -- CTS, VTS, writing platform tests
-- **Chapter 20**: Contributing to AOSP -- Gerrit workflow, code review process
+- **Chapter 55**: Testing -- CTS, VTS, writing platform tests
 
 ### 1.7.7 Tracing an API Call End-to-End
 
@@ -2502,7 +2496,7 @@ graph LR
 - AIDL compiler: `system/tools/aidl/`
 - ServiceManager: `frameworks/native/cmds/servicemanager/`
 
-Binder is covered in depth in **Chapter 5**.
+Binder is covered in depth in **Chapter 9**.
 
 ### 1.8.2 HAL (Hardware Abstraction Layer)
 
@@ -2537,7 +2531,7 @@ graph TB
 
 **Source location:** `hardware/interfaces/` (interface definitions)
 
-HAL development is covered in **Chapter 13**.
+HAL development is covered in **Chapter 10**.
 
 ### 1.8.3 AIDL (Android Interface Definition Language)
 
@@ -2734,7 +2728,7 @@ Android. It replaced Dalvik in Android 5.0.
 
 **Source location:** `art/`
 
-ART internals are covered in **Chapter 8**.
+ART internals are covered in **Chapter 18**.
 
 ### 1.8.8 Zygote
 
@@ -2811,7 +2805,7 @@ graph LR
 
 **Source location:** `frameworks/native/services/surfaceflinger/`
 
-The graphics pipeline is covered in **Chapter 9**.
+The graphics pipeline is covered in **Chapter 13**.
 
 ### 1.8.11 WindowManagerService (WMS)
 
@@ -2856,7 +2850,7 @@ recent apps list.
 - AMS: `frameworks/base/services/core/java/com/android/server/am/`
 - ATMS: `frameworks/base/services/core/java/com/android/server/wm/`
 
-Activity and window management are covered in **Chapter 11**.
+Activity and window management are covered in **Chapter 22**.
 
 ### 1.8.13 PackageManagerService (PMS)
 

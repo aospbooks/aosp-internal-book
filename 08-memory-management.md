@@ -4008,12 +4008,12 @@ For deeper exploration of the topics covered in this chapter:
 - Google's Project Zero blog posts on MTE deployment and effectiveness.
 
 ### Related AOSP Chapters
-- Chapter 4 (Kernel) covers the kernel boot process and basic kernel subsystems.
-- Chapter 6 (Bionic and Linker) covers the C library allocator (Scudo) in more detail.
-- Chapter 9 (Graphics Render Pipeline) covers how GraphicBuffer flows through the display
+- Chapter 5 (Kernel) covers the kernel boot process and basic kernel subsystems.
+- Chapter 7 (Bionic and Linker) covers the C library allocator (Scudo) in more detail.
+- Chapter 13 (Graphics Render Pipeline) covers how GraphicBuffer flows through the display
   pipeline.
-- Chapter 19 (ART Runtime) covers garbage collection algorithms and managed heap internals.
-- Chapter 39 (Power Management) covers the interaction between memory management and power
+- Chapter 18 (ART Runtime) covers garbage collection algorithms and managed heap internals.
+- Chapter 29 (Power Management) covers the interaction between memory management and power
   states (suspend, doze mode).
-- Chapter 46 (Debugging Tools) covers additional debugging techniques including Perfetto and
+- Chapter 56 (Debugging Tools) covers additional debugging techniques including Perfetto and
   systrace integration.

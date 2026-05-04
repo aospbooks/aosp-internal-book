@@ -878,12 +878,11 @@ begins.
 SurfaceFlinger is deeply intertwined with the graphics pipeline covered in
 other chapters:
 
-- **Chapter 9 (Graphics Render Pipeline)**: The BufferQueue producer-consumer
-  model that feeds buffers to SurfaceFlinger.
-- **Chapter 5 (HAL)**: The HWComposer HAL interface and its AIDL definition.
-- **Chapters 16-17 (Graphics Deep Dive)**: Detailed coverage of the
+- **Chapter 13 (Graphics Render Pipeline)**: The BufferQueue producer-consumer
+  model that feeds buffers to SurfaceFlinger, plus detailed coverage of the
   CompositionEngine, RenderEngine (Skia), and the frame-by-frame compositing
   algorithm.
+- **Chapter 10 (HAL)**: The HWComposer HAL interface and its AIDL definition.
 
 ---
 
@@ -1618,8 +1617,8 @@ data flows through shared memory with minimal kernel involvement.
 ### 12.4.5 Cross-Reference
 
 For a deep dive into AudioFlinger's mixing pipeline, effect chains, latency
-optimization, and the Audio HAL interface, see **Chapter 11 (Audio
-Subsystem)**. That chapter covers:
+optimization, and the Audio HAL interface, see **Chapter 15 (Audio
+System)**. That chapter covers:
 
 - The complete audio routing model and `AudioPolicy` interaction.
 - Shared memory ring buffers and the `AudioTrack`/`AudioRecord` protocol.
@@ -1783,7 +1782,7 @@ Virtual cameras can be sourced from:
 ### 12.5.6 Cross-Reference
 
 For complete coverage of the Camera HAL interface, the capture pipeline,
-stream configuration, and the Camera2 API, see **Chapter 12 (Media and
+stream configuration, and the Camera2 API, see **Chapter 16 (Media and
 Camera)**. That chapter covers:
 
 - The `ICameraDevice` / `ICameraDeviceSession` AIDL HAL interface.
@@ -1953,7 +1952,7 @@ The component processes work items from an input queue:
 ### 12.6.6 Cross-Reference
 
 For the full media pipeline architecture, including `MediaCodec`, `MediaPlayer`,
-`MediaRecorder`, and the Codec2 internals, see **Chapter 12 (Media and
+`MediaRecorder`, and the Codec2 internals, see **Chapter 16 (Media and
 Camera)**.
 
 ---
@@ -4260,5 +4259,5 @@ All source paths referenced in this chapter are relative to the AOSP root:
 | dumpsys | `frameworks/native/cmds/dumpsys/` |
 
 In the next chapters, we will dive deeper into specific subsystems: the
-graphics composition pipeline (Chapters 16-17), the audio pipeline
-(Chapter 11), and the media/camera pipeline (Chapter 12).
+graphics composition pipeline (Chapter 13), the audio pipeline
+(Chapter 15), and the media/camera pipeline (Chapter 16).

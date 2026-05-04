@@ -2854,5 +2854,6 @@ key architectural insights from this chapter:
 7. **NDK parity** -- The NDK camera API provides identical functionality to
    the Java API through the same underlying service.
 
-The next chapter explores the Account and Sync framework, which manages
-user credentials and background data synchronization across the platform.
+The next chapter is the Custom ROM Guide -- the capstone that ties
+together everything in the book by walking through how to build,
+customize, and ship your own Android distribution.

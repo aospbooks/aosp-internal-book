@@ -3967,10 +3967,10 @@ documentation, including this book.
 
 To continue exploring the topics covered in this chapter:
 
-- **Chapter 4** will cover Android's process management and how
+- **Chapter 22** will cover Android's process management and how
   ActivityManagerService manages the lifecycle of application processes that Zygote
   creates
-- **Chapter 5** will examine the Binder IPC mechanism that system_server services
+- **Chapter 9** will examine the Binder IPC mechanism that system_server services
   use to communicate with applications
 - The Android source code at `system/core/init/README.md` contains additional
   documentation on the init.rc language

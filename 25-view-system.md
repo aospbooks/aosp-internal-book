@@ -7,7 +7,7 @@
 The Android **View System** is the client-side rendering and event-handling
 framework that transforms declarative XML (or programmatic construction) into
 the interactive pixels on screen.  It occupies the application process -- in
-contrast to the server-side WindowManagerService discussed in Chapter 16 --
+contrast to the server-side WindowManagerService discussed in Chapter 23 --
 and communicates with the server through the bridge object `ViewRootImpl`.
 
 Every button press, scroll gesture, keyboard navigation event, and

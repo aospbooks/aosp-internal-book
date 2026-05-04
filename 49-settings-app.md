@@ -3039,5 +3039,6 @@ Key takeaways:
     components, enabling system surfaces like Quick Settings and the Google
     app to inline setting controls.
 
-The next chapter examines the Launcher application -- the home screen that
-greets users after they leave the Settings app.
+The next chapter examines AI, AppFunctions, and Computer Control -- how
+Android exposes app capabilities to on-device AI and lets agents drive
+the system on the user's behalf.

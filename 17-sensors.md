@@ -1467,7 +1467,7 @@ rotation axis.
 ### 17.8.3 Integration with Spatial Audio
 
 Head tracking feeds into the spatial audio pipeline described in
-**Chapter 11 (Audio System)**.  The data flow is:
+**Chapter 15 (Audio System)**.  The data flow is:
 
 ```mermaid
 sequenceDiagram

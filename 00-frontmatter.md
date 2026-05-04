@@ -318,28 +318,28 @@ The dependency chain looks like this:
 
 ```mermaid
 graph TD
-    A[Ch 1: Build System] --> B[Ch 2: Boot]
-    B --> C[Ch 3: Kernel]
-    C --> D[Ch 4: HAL]
-    C --> E[Ch 5: Bionic]
-    C --> F[Ch 6: Binder]
-    F --> G[Ch 7: NDK]
+    A[Ch 2: Build System] --> B[Ch 4: Boot]
+    B --> C[Ch 5: Kernel]
+    C --> D[Ch 10: HAL]
+    C --> E[Ch 7: Bionic]
+    C --> F[Ch 9: Binder]
+    F --> G[Ch 11: NDK]
     F --> H[Ch 12: Native Services]
-    H --> I[Ch 8: Graphics Pipeline]
-    H --> J[Ch 10: Audio]
-    H --> K[Ch 11: Media]
-    F --> L[Ch 13: system_server]
-    L --> M[Ch 14: Activity/Window Mgmt]
-    L --> N[Ch 15: Window System]
-    L --> O[Ch 17: Package Manager]
+    H --> I[Ch 13: Graphics Pipeline]
+    H --> J[Ch 15: Audio]
+    H --> K[Ch 16: Media]
+    F --> L[Ch 20: system_server]
+    L --> M[Ch 22: Activity/Window Mgmt]
+    L --> N[Ch 23: Window System]
+    L --> O[Ch 26: Package Manager]
     L --> P[Ch 18: ART Runtime]
-    I --> Q[Ch 9: Animation]
-    N --> R[Ch 16: Display System]
+    I --> Q[Ch 14: Animation]
+    N --> R[Ch 24: Display System]
 ```
 
 That said, **each chapter is designed to be self-contained**. If you already
 understand Binder and need to learn about the window system, you can go
-directly to Chapter 15. Cross-references (using `§N.M` notation) point you
+directly to Chapter 23. Cross-references (using `§N.M` notation) point you
 to prerequisite material when it is needed.
 
 ### Suggested Reading Paths
@@ -347,31 +347,31 @@ to prerequisite material when it is needed.
 Different readers will benefit from different paths through the material:
 
 **For the platform engineer new to AOSP:**
-Start with Chapters 1-6 in order. These build the foundational understanding
-of how Android is built, booted, and structured. Then proceed to Chapter 13
-(system_server) and Chapter 14 (Activity/Window Management) for the framework
+Start with Chapters 1-9 in order. These build the foundational understanding
+of how Android is built, booted, and structured. Then proceed to Chapter 20
+(system_server) and Chapter 22 (Activity/Window Management) for the framework
 layer. From there, follow your interests.
 
 **For the graphics/display specialist:**
-Read Chapter 6 (Binder) for IPC context, then Chapters 8 (Graphics Pipeline),
-9 (Animation), 12 (Native Services, focusing on SurfaceFlinger), 15 (Window
-System), and 16 (Display System).
+Read Chapter 9 (Binder) for IPC context, then Chapters 13 (Graphics Pipeline),
+14 (Animation), 12 (Native Services, focusing on SurfaceFlinger), 23 (Window
+System), and 24 (Display System).
 
 **For the security researcher:**
-Read Chapter 3 (Kernel) for the kernel attack surface, Chapter 5 (Bionic) for
-the libc implementation, Chapter 6 (Binder) for the IPC attack surface,
-Chapter 28 (Security/TEE) for the security model, and Chapter 29
+Read Chapter 5 (Kernel) for the kernel attack surface, Chapter 7 (Bionic) for
+the libc implementation, Chapter 9 (Binder) for the IPC attack surface,
+Chapter 40 (Security/TEE) for the security model, and Chapter 54
 (Virtualization) for the isolation architecture.
 
 **For the ROM developer:**
-Start with Chapter 1 (Build System), Chapter 2 (Boot), and Chapter 4 (HAL),
-then skip to Chapter 34 (Custom ROM Guide) for the practical walk-through.
+Start with Chapter 2 (Build System), Chapter 4 (Boot), and Chapter 10 (HAL),
+then skip to Chapter 63 (Custom ROM Guide) for the practical walk-through.
 Return to earlier chapters as needed for deeper understanding.
 
 **For the curious application developer:**
-Read Chapter 6 (Binder) to understand what happens when you make a system
-call, Chapter 14 (Activity/Window Management) to understand lifecycle
-management, Chapter 8 (Graphics Pipeline) to understand rendering performance,
+Read Chapter 9 (Binder) to understand what happens when you make a system
+call, Chapter 22 (Activity/Window Management) to understand lifecycle
+management, Chapter 13 (Graphics Pipeline) to understand rendering performance,
 and Chapter 18 (ART Runtime) to understand how your code executes.
 
 ### Working with the Source Tree
@@ -397,8 +397,8 @@ Appendix B offers strategies for navigating the source tree efficiently.
 ### Cross-References
 
 Chapters and sections are numbered hierarchically. When you see a reference
-like `§6.3`, it means Chapter 6, Section 3. References like `§15.42` point
-to Chapter 15, Section 42. These cross-references are used extensively to
+like `§9.3`, it means Chapter 9, Section 3. References like `§22.42` point
+to Chapter 22, Section 42. These cross-references are used extensively to
 connect related concepts across the book without duplicating material.
 
 When a concept is first introduced, it is explained in full. Subsequent
@@ -550,20 +550,20 @@ Cross-references use the `§` symbol followed by chapter and section numbers:
 
 | Notation | Meaning |
 |----------|---------|
-| `§6` | Chapter 6 (Binder) |
-| `§6.3` | Chapter 6, Section 3 |
-| `§15.42` | Chapter 15, Section 42 |
+| `§9` | Chapter 9 (Binder) |
+| `§9.3` | Chapter 9, Section 3 |
+| `§22.42` | Chapter 22, Section 42 |
 | `§A` | Appendix A |
 
 Cross-references appear in parentheses when used as supplementary pointers:
 
-> The transaction is serialized into a `Parcel` (§6.3) and dispatched
-> through the kernel driver (§6.5).
+> The transaction is serialized into a `Parcel` (§9.3) and dispatched
+> through the kernel driver (§9.5).
 
 Or as direct references when the cross-referenced material is essential:
 
 > Before proceeding, ensure you understand the Binder transaction model
-> described in §6.3.
+> described in §9.3.
 
 ### Terminology
 

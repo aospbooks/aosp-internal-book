@@ -2605,7 +2605,7 @@ management:
 | UNDEFINED | X | |
 
 This classification drives the `ThemeOverlayController` deferred-colour
-logic (section 22.13.6) and various power-dependent behaviours.
+logic (section 47.13.6) and various power-dependent behaviours.
 
 ### 47.14.3  KeyguardTransitionInteractor
 
