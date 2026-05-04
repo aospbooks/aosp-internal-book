@@ -76,7 +76,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | XIV | 57 | Architecture Support (ARM/x86/RISC-V) | REVIEWED |
 | XIV | 58 | Emulator | REVIEWED |
 | XIV | 59 | Device Policy | REVIEWED |
-| XIV | 60 | Automotive/TV/Wear | UNDER REVIEW |
+| XIV | 60 | Automotive/TV/Wear | REVIEWED |
 | XIV | 61 | Print Services | UNDER REVIEW |
 | XIV | 62 | Camera2 Pipeline | UNDER REVIEW |
 | XV | 63 | Custom ROM Guide (step-by-step) | REVIEWED |
