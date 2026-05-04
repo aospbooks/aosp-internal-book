@@ -4375,22 +4375,22 @@ upstream AOSP changes. Here are strategies:
 3. **Use `repo` topic branches.** For framework changes, maintain a topic
    branch per feature:
 
-```bash
-# Create a topic branch for your framework change
-cd frameworks/base
-repo start aospbook-dark-mode .
-# Make changes, commit
-git add -A && git commit -m "AospBook: default dark mode"
-```
+    ```bash
+    # Create a topic branch for your framework change
+    cd frameworks/base
+    repo start aospbook-dark-mode .
+    # Make changes, commit
+    git add -A && git commit -m "AospBook: default dark mode"
+    ```
 
 4. **Rebase regularly.** Sync to the latest AOSP and rebase your topic
    branches:
 
-```bash
-repo sync -j$(nproc)
-repo rebase
-# Resolve any conflicts
-```
+    ```bash
+    repo sync -j$(nproc)
+    repo rebase
+    # Resolve any conflicts
+    ```
 
 5. **Document every framework change.** Keep a changelog that maps each
    framework modification to the business reason, so you know which changes
