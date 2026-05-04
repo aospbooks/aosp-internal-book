@@ -1,8 +1,5 @@
 # Chapter 63: Custom ROM Guide
 
-> *"The real value of open source is not that you can read the code, but that
-> you can change it and ship something entirely your own."*
-
 This chapter is the capstone of the book. We take everything covered in the
 preceding 33 chapters -- build system, init, HALs, system services, SystemUI,
 the emulator, security, signing -- and weave it into a single, end-to-end
