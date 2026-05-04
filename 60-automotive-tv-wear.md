@@ -3120,44 +3120,44 @@ adb shell dumpsys overlay | grep -A 3 "car"
 Study the following files to understand form-factor abstractions:
 
 1. **CarService bootstrap chain**:
-   - `packages/services/Car/service/src/com/android/car/CarServiceImpl.java`
-   - `packages/services/Car/service/src/com/android/car/ICarImpl.java`
-   - `packages/services/Car/service/src/com/android/car/VehicleStub.java`
+      - `packages/services/Car/service/src/com/android/car/CarServiceImpl.java`
+      - `packages/services/Car/service/src/com/android/car/ICarImpl.java`
+      - `packages/services/Car/service/src/com/android/car/VehicleStub.java`
 
 2. **Vehicle HAL interface**:
    - `hardware/interfaces/automotive/vehicle/aidl/android/hardware/automotive/vehicle/IVehicle.aidl`
 
 3. **TV Input Framework**:
-   - `frameworks/base/media/java/android/media/tv/TvInputService.java`
-   - `frameworks/base/services/core/java/com/android/server/tv/TvInputManagerService.java`
-   - `frameworks/base/services/core/java/com/android/server/tv/TvInputHardwareManager.java`
+      - `frameworks/base/media/java/android/media/tv/TvInputService.java`
+      - `frameworks/base/services/core/java/com/android/server/tv/TvInputManagerService.java`
+      - `frameworks/base/services/core/java/com/android/server/tv/TvInputHardwareManager.java`
 
 4. **HDMI-CEC**:
-   - `hardware/interfaces/tv/cec/1.0/IHdmiCec.hal`
-   - `frameworks/base/services/core/java/com/android/server/hdmi/HdmiCecLocalDeviceTv.java`
+      - `hardware/interfaces/tv/cec/1.0/IHdmiCec.hal`
+      - `frameworks/base/services/core/java/com/android/server/hdmi/HdmiCecLocalDeviceTv.java`
 
 5. **WMShell TV variant**:
-   - `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/TvWMShellModule.java`
-   - `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/pip/TvPipModule.java`
-   - `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/pip/tv/TvPipController.java`
+      - `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/TvWMShellModule.java`
+      - `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/pip/TvPipModule.java`
+      - `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/pip/tv/TvPipController.java`
 
 6. **Car SystemUI**:
-   - `packages/apps/Car/SystemUI/src/com/android/systemui/car/CarServiceProvider.java`
-   - `packages/apps/Car/SystemUI/src/com/android/systemui/car/systembar/CarSystemBar.java`
+      - `packages/apps/Car/SystemUI/src/com/android/systemui/car/CarServiceProvider.java`
+      - `packages/apps/Car/SystemUI/src/com/android/systemui/car/systembar/CarSystemBar.java`
 
 7. **Occupant Zones**:
-   - `packages/services/Car/service/src/com/android/car/CarOccupantZoneService.java`
+      - `packages/services/Car/service/src/com/android/car/CarOccupantZoneService.java`
 
 8. **Fixed Activity**:
-   - `packages/services/Car/service/src/com/android/car/am/FixedActivityService.java`
+      - `packages/services/Car/service/src/com/android/car/am/FixedActivityService.java`
 
 9. **Automotive Power**:
-   - `packages/services/Car/service/src/com/android/car/power/CarPowerManagementService.java`
-   - `packages/services/Car/service/src/com/android/car/garagemode/GarageModeService.java`
+      - `packages/services/Car/service/src/com/android/car/power/CarPowerManagementService.java`
+      - `packages/services/Car/service/src/com/android/car/garagemode/GarageModeService.java`
 
 10. **Wearable Sensing**:
-    - `frameworks/base/services/core/java/com/android/server/wearable/WearableSensingManagerService.java`
-    - `frameworks/base/core/java/android/app/wearable/WearableSensingManager.java`
+        - `frameworks/base/services/core/java/com/android/server/wearable/WearableSensingManagerService.java`
+        - `frameworks/base/core/java/android/app/wearable/WearableSensingManager.java`
 
 ---
 
