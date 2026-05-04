@@ -159,3 +159,22 @@ div.mermaid[data-zoomable]:hover {
 [data-md-color-scheme="slate"] .mermaid svg foreignObject > * {
   color-scheme: dark !important;
 }
+
+/* Header / top bar dark-mode adaptation. Material keeps the primary color
+   (green) in the header for both schemes by design; this override switches
+   the header to the page background under slate so the search input area
+   stops looking out of place against the dark content. */
+[data-md-color-scheme="slate"] .md-header,
+[data-md-color-scheme="slate"] .md-tabs {
+  background-color: var(--md-default-bg-color);
+  color: var(--md-default-fg-color);
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+}
+
+[data-md-color-scheme="slate"] .md-search__form {
+  background-color: var(--md-default-fg-color--lightest);
+}
+
+[data-md-color-scheme="slate"] .md-search__form:hover {
+  background-color: var(--md-default-fg-color--lighter);
+}

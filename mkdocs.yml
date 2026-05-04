@@ -81,7 +81,7 @@ extra_javascript:
   - javascripts/mermaid-zoom.js?v=5
 
 extra_css:
-  - stylesheets/mermaid-zoom.css?v=7
+  - stylesheets/mermaid-zoom.css?v=8
 
 nav:
   - Introduction: index.md
