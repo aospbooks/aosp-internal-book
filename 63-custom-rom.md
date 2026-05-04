@@ -1,7 +1,7 @@
 # Chapter 63: Custom ROM Guide
 
 This chapter is the capstone of the book. We take everything covered in the
-preceding 33 chapters -- build system, init, HALs, system services, SystemUI,
+preceding 62 chapters -- build system, init, HALs, system services, SystemUI,
 the emulator, security, signing -- and weave it into a single, end-to-end
 walkthrough: building, customizing, signing, and distributing a fully
 functional custom ROM.
