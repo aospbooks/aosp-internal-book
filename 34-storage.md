@@ -745,7 +745,7 @@ The format operation chooses between vfat and exfat based on device size:
 // system/vold/model/PublicVolume.cpp (lines 400-455)
 status_t PublicVolume::doFormat(const std::string& fsType) {
     // ...
-    // If both vfat & exfat are supported, use exfat for SDXC (>32GiB)
+    // If both vfat & exfat are supported, use exfat for SDXC (>32GB)
     if (size > 32896LL * 1024 * 1024) {
         fsPick = EXFAT;
     } else {

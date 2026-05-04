@@ -2134,7 +2134,7 @@ AB_OTA_UPDATER := true
 **More dynamic partitions:**
 ```makefile
 # Source: device/google/cuttlefish/shared/BoardConfig.mk
-BOARD_SUPER_PARTITION_SIZE := 8589934592  # 8GiB
+BOARD_SUPER_PARTITION_SIZE := 8589934592  # 8GB
 BOARD_SUPER_PARTITION_GROUPS := \
     google_system_dynamic_partitions \
     google_vendor_dynamic_partitions
