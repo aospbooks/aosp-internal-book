@@ -125,3 +125,37 @@ div.mermaid[data-zoomable]:hover {
   outline-offset: 4px;
   border-radius: 4px;
 }
+
+/* Dark-mode overrides for the zoom overlay. Material's slate scheme sets
+   data-md-color-scheme="slate" on <body>; we drive everything off Material's
+   own CSS variables so the toolbar and SVG canvas track the page theme. */
+[data-md-color-scheme="slate"] #mzm-wrap svg {
+  background: var(--md-default-bg-color);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.8);
+}
+
+[data-md-color-scheme="slate"] .mermaid-zoom-toolbar {
+  background: var(--md-default-bg-color);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.6);
+}
+
+[data-md-color-scheme="slate"] .mermaid-zoom-toolbar button {
+  background: var(--md-default-bg-color);
+  border-color: var(--md-default-fg-color--lighter);
+  color: var(--md-default-fg-color);
+}
+
+[data-md-color-scheme="slate"] .mermaid-zoom-toolbar button:hover {
+  background: var(--md-default-fg-color--lightest);
+}
+
+[data-md-color-scheme="slate"] #mzm-level {
+  color: var(--md-default-fg-color);
+}
+
+/* In dark mode the SVG background becomes dark, so don't force the
+   foreignObject content to render as light — let Material's mermaid label
+   colors keep their natural contrast against the dark canvas. */
+[data-md-color-scheme="slate"] .mermaid svg foreignObject > * {
+  color-scheme: dark !important;
+}
