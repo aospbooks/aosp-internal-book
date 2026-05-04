@@ -792,7 +792,7 @@ BOARD_VENDOR_SEPOLICY_DIRS += device/AospBook/bookphone/sepolicy/vendor
 # Kernel
 # ============================================================
 # Use the same prebuilt kernel as Goldfish
-# (See Section 34.11 for building a custom kernel)
+# (See Section 63.11 for building a custom kernel)
 TARGET_KERNEL_USE ?= 6.12
 
 # ============================================================
