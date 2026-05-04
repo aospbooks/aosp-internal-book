@@ -859,12 +859,15 @@ The Native Bridge works by intercepting library loads: when ART's class loader
 encounters a native library compiled for a foreign architecture, it delegates
 to the native bridge implementation, which translates the foreign code.
 
-Two main implementations exist:
+Three implementations exist:
 
 - **Berberis** (open source, in `frameworks/libs/binary_translation/`) --
   Google's reference implementation for translating RISC-V to x86_64
 
 - **Houdini** (proprietary, from Intel) -- translates ARM/ARM64 to x86/x86_64
+
+- **DigitalisX64** (open source, <https://github.com/DigitalisX64>) --
+  community implementation built on Berberis to support ARM64 to x86_64
 
 The Emulator uses a different strategy: it runs the ARM system image under
 QEMU-based full system emulation with hardware-accelerated virtualization, so
