@@ -3114,7 +3114,7 @@ grep 'liblog.*logging.cpp.*\.o' out/combined-*.ninja | head -1
 ```
 
 This exercise demonstrates the practical result of the layered flag system
-described in Section 28.6.
+described in Section 57.6.5.
 
 ---
 

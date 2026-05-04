@@ -105,7 +105,7 @@ Android's CI pipeline distinguishes two phases:
 - **Postsubmit**: Tests run *after* a change merges, typically on the full build.
   Slower, flakier, or more resource-intensive tests live here.
 
-The `TEST_MAPPING` system (Section 31.4) is the primary mechanism for declaring
+The `TEST_MAPPING` system (Section 55.4) is the primary mechanism for declaring
 presubmit and postsubmit coverage for a given directory.
 
 ### 55.1.5  Test Execution Environments

@@ -1044,7 +1044,7 @@ Skia handles glyph rasterization using:
 - **FreeType**: Outline and bitmap glyph rendering
 - **HarfBuzz**: Complex text shaping (handled by minikin on Android)
 - **GPU glyph atlas**: Ganesh maintains a texture atlas for cached glyphs, with
-  the atlas size configured by HWUI's `CacheManager` (see Section 9.7.4)
+  the atlas size configured by HWUI's `CacheManager` (see Section 13.7.7)
 
 ### 13.5.8 SIMD Optimizations
 
@@ -2333,7 +2333,7 @@ platform name.
 
 ### 13.10.4 Vulkan Driver Loading
 
-As detailed in Section 9.3.2, the Vulkan driver is loaded via the `hwvulkan` HAL
+As detailed in Section 13.3.2, the Vulkan driver is loaded via the `hwvulkan` HAL
 module. The driver library is named `vulkan.<name>.so` where `<name>` comes from:
 
 ```cpp

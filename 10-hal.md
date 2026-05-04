@@ -189,7 +189,7 @@ The key enforcement mechanisms are:
 2. **VNDK (Vendor NDK).**  A curated set of system libraries that vendor code
    is permitted to link against.  These libraries have stable ABIs.
 
-3. **VINTF.**  The formal declaration system (described in Section 5.5) that
+3. **VINTF.**  The formal declaration system (described in Section 10.5) that
    records which HALs each side provides and requires.
 
 4. **SELinux.**  Mandatory access control that prevents unauthorized

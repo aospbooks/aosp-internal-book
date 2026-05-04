@@ -8,14 +8,14 @@ This chapter dissects Android's DRM architecture from the Java API surface down 
 native framework, across the HAL boundary, and into the vendor-supplied plugin
 implementations that perform the actual cryptographic operations.
 
-We begin with a high-level architectural overview (Section 47.1), then trace the framework
-code that applications interact with (Section 47.2). We next examine the stable AIDL HAL
-contracts that vendor plugins must implement (Section 47.3), discuss the Widevine DRM
-system that ships on virtually every Android device (Section 47.4), and walk through the
-ClearKey reference plugin line by line (Section 47.5). We then cover the secure codec path
-that protects decrypted frames from being captured in the clear (Section 47.6), the metrics
+We begin with a high-level architectural overview (Section 42.1), then trace the framework
+code that applications interact with (Section 42.2). We next examine the stable AIDL HAL
+contracts that vendor plugins must implement (Section 42.3), discuss the Widevine DRM
+system that ships on virtually every Android device (Section 42.4), and walk through the
+ClearKey reference plugin line by line (Section 42.5). We then cover the secure codec path
+that protects decrypted frames from being captured in the clear (Section 42.6), the metrics
 and logging infrastructure that enables diagnostics without leaking protected material
-(Section 47.7), and finish with hands-on exercises (Section 47.8).
+(Section 42.7), and finish with hands-on exercises (Section 42.8).
 
 ---
 

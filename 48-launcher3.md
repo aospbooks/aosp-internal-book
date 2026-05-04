@@ -2256,55 +2256,55 @@ For the grid customization exercise, these are the essential files:
 
 This chapter has explored the Launcher3 codebase in AOSP, covering:
 
-- **Architecture** (Section 23.1): The model-view separation between `LauncherModel`
+- **Architecture** (Section 48.1): The model-view separation between `LauncherModel`
   (data loading on `MODEL_EXECUTOR`) and the view hierarchy rooted at `Launcher`.
   The `StateManager` drives animated transitions between states like NORMAL,
   ALL_APPS, SPRING_LOADED, and OVERVIEW. Dagger dependency injection manages the
   singleton graph.
 
-- **App Icons and Grid** (Section 23.2): The `ItemInfo` hierarchy represents all
+- **App Icons and Grid** (Section 48.2): The `ItemInfo` hierarchy represents all
   launcher items. `CellLayout` provides the grid container, `BubbleTextView`
   renders icons, and the `DeviceProfile`/`InvariantDeviceProfile` system adapts
   the layout to different screen sizes via XML-defined grid options and responsive
   specifications.
 
-- **Widget System** (Section 23.3): `LauncherWidgetHolder` wraps `AppWidgetHost`
+- **Widget System** (Section 48.3): `LauncherWidgetHolder` wraps `AppWidgetHost`
   for lifecycle-aware widget management. The widget picker (`WidgetsFullSheet` and
   `WidgetsListAdapter`) presents available widgets, while `WidgetCell` renders
   previews. The pinning flow involves binding, configuration, and resize.
 
-- **Drag and Drop** (Section 23.4): `DragController` manages the drag lifecycle
+- **Drag and Drop** (Section 48.4): `DragController` manages the drag lifecycle
   with `DragView` as the visual feedback and `DragLayer` as the intercept layer.
   `SpringLoadedDragController` handles delayed page switching. Drop targets
   include `Workspace`, `Folder`, `Hotseat`, and `DeleteDropTarget`.
 
-- **Recents Integration** (Section 23.5): `QuickstepLauncher` extends `Launcher`
+- **Recents Integration** (Section 48.5): `QuickstepLauncher` extends `Launcher`
   to serve as the recents provider. `OverviewCommandHelper` processes commands,
   `RecentsView` displays task cards, and `TaskView` renders individual tasks.
   Gesture navigation flows through `TouchInteractionService`.
 
-- **Taskbar** (Section 23.6): `TaskbarActivityContext` manages a separate window
+- **Taskbar** (Section 48.6): `TaskbarActivityContext` manages a separate window
   for the taskbar on large screens. Multiple controllers handle stashing,
   drag-and-drop, desktop mode, and appearance. `StashedHandleViewController`
   shows the handle when the taskbar is hidden.
 
-- **Search Integration** (Section 23.7): `AllAppsSearchBarController` dispatches
+- **Search Integration** (Section 48.7): `AllAppsSearchBarController` dispatches
   queries to `SearchAlgorithm` implementations. `DefaultAppSearchAlgorithm`
   performs title matching on the model thread. External providers can replace
   the search implementation.
 
-- **Folder System** (Section 23.8): `FolderIcon` represents folders on the
+- **Folder System** (Section 48.8): `FolderIcon` represents folders on the
   workspace with a 4-item preview. `Folder` is the expanded view containing
   `FolderPagedView` for paged content. `FolderNameProvider` suggests names
   based on app categories. Spring animations provide natural folder open/close
   transitions.
 
-- **Theming** (Section 23.9): `ThemeManager` centralizes icon shape and theme
+- **Theming** (Section 48.9): `ThemeManager` centralizes icon shape and theme
   management. Material You integration extracts wallpaper colors for dynamic
   theming. Themed icons use monochrome layers tinted with the palette.
   `LocalColorExtractor` adapts widget backgrounds to the wallpaper.
 
-- **Grid Customization** (Section 23.10): A hands-on exercise for adding a custom
+- **Grid Customization** (Section 48.10): A hands-on exercise for adding a custom
   6x5 grid by modifying `device_profiles.xml`, creating default layouts, and
   adjusting responsive specs.
 

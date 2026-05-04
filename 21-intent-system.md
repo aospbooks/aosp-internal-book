@@ -842,7 +842,7 @@ The system also considers:
 - **Instant apps**: If `isInstantAppAvailable` is true in a ResolveInfo, the instant
   app version may be preferred
 - **Auto-verified domains**: App Links with verified domains bypass the chooser entirely
-  (see Section 59.5)
+  (see Section 21.5)
 - **Cross-profile matches**: Matches from other profiles are included in the chooser
   with a work/personal badge
 
@@ -2134,7 +2134,7 @@ private static final int STATE_VERIFIED            = 0x00001000;
 
 When an intent filter has `autoVerify="true"` and handles web URIs (http/https with
 ACTION_VIEW and CATEGORY_BROWSABLE), the system initiates domain verification at
-install time. This was covered in detail in Section 59.5.
+install time. This was covered in detail in Section 21.5.6.
 
 ### 21.6.7 UriRelativeFilterGroup (Modern Addition)
 

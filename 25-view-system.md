@@ -4030,38 +4030,38 @@ using `setTranslationY()` for a parallax effect as the keyboard appears.
 This chapter has provided a comprehensive source-level tour of the Android
 View System, covering:
 
-- **View Hierarchy** (Section 53.1): The `View` / `ViewGroup` / `ViewRootImpl`
+- **View Hierarchy** (Section 25.1): The `View` / `ViewGroup` / `ViewRootImpl`
   triad that forms the foundation of every Android UI.
 
-- **Measure-Layout-Draw** (Section 53.2): The three-phase rendering pipeline
+- **Measure-Layout-Draw** (Section 25.2): The three-phase rendering pipeline
   driven by `performTraversals()`, with `MeasureSpec` as the constraint
   protocol and `requestLayout()` / `invalidate()` as the trigger mechanisms.
 
-- **Touch Dispatch** (Section 53.3): The `dispatchTouchEvent()` /
+- **Touch Dispatch** (Section 25.3): The `dispatchTouchEvent()` /
   `onInterceptTouchEvent()` / `onTouchEvent()` chain that routes touch events
   through the hierarchy, with multi-touch splitting and nested scrolling.
 
-- **ViewRootImpl** (Section 53.4): The bridge to `WindowManagerService`,
+- **ViewRootImpl** (Section 25.4): The bridge to `WindowManagerService`,
   managing `Choreographer` integration, sync barriers, window relayout, and
   the entire frame lifecycle.
 
-- **Hardware Acceleration** (Section 53.5): `RenderNode` display lists,
+- **Hardware Acceleration** (Section 25.5): `RenderNode` display lists,
   `ThreadedRenderer`, the UI thread / Render Thread split, and why property
   animations are fast.
 
-- **Window Insets** (Section 53.6): The modern insets API with typed inset
+- **Window Insets** (Section 25.6): The modern insets API with typed inset
   categories, display cutouts, rounded corners, and inset animations.
 
-- **Focus Navigation** (Section 53.7): Touch mode vs. non-touch mode,
+- **Focus Navigation** (Section 25.7): Touch mode vs. non-touch mode,
   `FocusFinder` spatial algorithm, keyboard clusters, and focus strategies.
 
-- **Accessibility** (Section 53.8): `AccessibilityNodeInfo` tree generation,
+- **Accessibility** (Section 25.8): `AccessibilityNodeInfo` tree generation,
   virtual node providers, actions, events, and content descriptions.
 
-- **LayoutInflater** (Section 53.9): XML parsing, `Factory` / `Factory2`
+- **LayoutInflater** (Section 25.9): XML parsing, `Factory` / `Factory2`
   hooks, view construction via reflection caching, and special tags.
 
-- **Custom Views** (Section 53.10): The complete custom view contract,
+- **Custom Views** (Section 25.10): The complete custom view contract,
   `Canvas` / `Paint` primitives, performance best practices, and custom
   `ViewGroup` layout.
 

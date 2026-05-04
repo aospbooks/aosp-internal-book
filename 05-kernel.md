@@ -3187,7 +3187,7 @@ for:
   tree changes
 - Maintaining and updating kernels for devices in the field
 
-The exercises in section 4.8 provide a starting point for hands-on kernel
+The exercises in section 5.8 provide a starting point for hands-on kernel
 exploration using the Android emulator, which includes a fully functional GKI
 kernel with the same architecture as production devices.
 

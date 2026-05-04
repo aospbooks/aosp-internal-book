@@ -209,7 +209,7 @@ public @Nullable Bundle call(@NonNull String authority, @NonNull String method,
 }
 ```
 
-This pattern is used heavily by `SettingsProvider` (see Section 42.6), which
+This pattern is used heavily by `SettingsProvider` (see Section 49.4), which
 routes nearly all reads and writes through `call()` instead of the standard
 CRUD methods, for performance reasons.
 

@@ -292,7 +292,7 @@ ndk_headers {
 #### ACamera
 
 The Camera NDK, introduced at API 24 in `libcamera2ndk`, exposes the Camera2
-API to native code. We will examine its implementation in detail in Section 8.6.
+API to native code. We will examine its implementation in detail in Section 16.5.6.
 
 #### ASensor
 

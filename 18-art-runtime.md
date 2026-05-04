@@ -215,7 +215,7 @@ flowchart LR
 ```
 
 The pipeline supports multiple "compiler filters" that control what work
-`dex2oat` performs (see Section 19.3).
+`dex2oat` performs (see Section 18.3.3).
 
 ### 18.1.7 Execution Modes
 
@@ -1268,7 +1268,7 @@ as follows:
 
 The boot image contains precompiled code for the core platform classes
 (`java.lang.*`, `android.*`, etc.). It is compiled during device build or
-after an OTA update by `odrefresh` (see Section 19.8).
+after an OTA update by `odrefresh` (see Section 18.8).
 
 The boot image consists of three file types per ISA:
 
@@ -4349,7 +4349,7 @@ restriction level:
 - **Blacklist** -- Always blocked, throws an exception
 
 The hidden API data is stored in the DEX file's `HiddenapiClassData` section
-(see Section 19.2.8) and checked during reflection and JNI method resolution.
+(see Section 18.2.8) and checked during reflection and JNI method resolution.
 
 ### 18.10.16 ART Test Infrastructure
 
@@ -4416,7 +4416,7 @@ dexdump -d /system/framework/framework.jar 2>&1 | \
 
 Observe the string pool size, type count, method count, and class definitions.
 Compare the header fields with the `DexFile::Header` structure from
-Section 19.2.
+Section 18.2.
 
 ### Exercise 18.2 -- Examine OAT Header Metadata
 
@@ -4558,7 +4558,7 @@ while (cl != null) {
 ```
 
 Compare this with the `FindClass` delegation model described in
-Section 19.6.3.
+Section 18.6.3.
 
 ### Exercise 18.10 -- Measure GC Pause Times
 

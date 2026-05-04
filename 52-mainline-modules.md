@@ -2860,7 +2860,7 @@ interface IApexService {
 
 The `installAndActivatePackage` method is the entry point for rebootless
 updates.  It validates the caller (must be system or root), verifies the
-package, and performs the activation steps described in Section 32.2.10.
+package, and performs the activation steps described in Section 52.2.11.
 
 ### 52.6.10  Continuous Integration and Module Testing
 

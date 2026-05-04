@@ -4056,7 +4056,7 @@ for the same performance level.
 The `UsageStatsService` is Android's comprehensive app usage tracking system.
 It records every foreground transition, configuration change, notification
 interaction, standby bucket change, and user interaction event. This data
-powers the App Standby Buckets system (covered in section 39.5), the
+powers the App Standby Buckets system (covered in section 29.5), the
 Digital Wellbeing app time limits, and the system's ability to predict which
 app the user will launch next.
 
@@ -4308,7 +4308,7 @@ case MSG_UID_STATE_CHANGED: {
 
 This enables the kernel to account for CPU time differently based on whether
 a process is in the foreground (counter 0) or background (counter 1),
-feeding into the battery stats attribution system covered in section 39.6.
+feeding into the battery stats attribution system covered in section 29.6.
 
 ### 29.12.8 Standby Bucket Change Listener
 

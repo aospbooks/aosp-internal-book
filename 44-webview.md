@@ -532,7 +532,7 @@ delegates to a corresponding method on this interface. It also contains two sub-
 
 The `android.webkit.WebView` class is a thin proxy. Its constructor calls
 `ensureProviderCreated()`, which triggers the entire factory loading sequence described
-in Section 55.2:
+in Section 44.2:
 
 ```java
 private void ensureProviderCreated() {
@@ -856,7 +856,7 @@ Two mechanisms exist for JavaScript interaction:
    ```
 
 2. **addJavascriptInterface()**: Expose a Java object to JavaScript, allowing bidirectional
-   communication (see Section 55.5.5).
+   communication (see Section 44.5.5).
 
 #### Navigation
 

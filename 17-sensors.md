@@ -1021,7 +1021,7 @@ Source: hardware/interfaces/sensors/aidl/android/hardware/sensors/SensorType.aid
 |------|----|---------------|-------------|
 | `HEAD_TRACKER` | 37 | Continuous | Head orientation for spatial audio |
 
-This type is discussed in detail in Section 50.8.
+This type is discussed in detail in Section 15.7.
 
 ### 17.5.8 Reporting Modes
 
@@ -1862,7 +1862,7 @@ relative to the **East-North-Up (ENU)** coordinate frame:
 ### 17.11.3 Head-Centric Frame
 
 The `HEAD_TRACKER` sensor uses a different coordinate system centered on
-the user's head (see Section 50.8.1).  This frame is natural for spatial
+the user's head (see Section 15.7.1).  This frame is natural for spatial
 audio processing where the audio scene is defined relative to the
 listener's head.
 

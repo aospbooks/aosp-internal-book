@@ -1022,7 +1022,7 @@ if (name == "sys.powerctl") {
 
 The `vendor.*` prefix is reserved for vendor-specific properties. These properties
 are subject to the Vendor Interface (VINTF) property namespace isolation rules
-introduced with Project Treble. See Section 58.7 for detailed coverage.
+introduced with Project Treble. See Section 6.7 for detailed coverage.
 
 ### 6.2.6 Debug Properties (debug.*)
 
@@ -1933,7 +1933,7 @@ private static native String native_get(String key, String def);
 
 This means apps targeting API 28 (Pie) or above cannot reflectively call
 `native_get`. The formal replacement for third-party use is the `sysprop_library`
-mechanism (Section 58.6).
+mechanism (Section 6.6).
 
 ---
 

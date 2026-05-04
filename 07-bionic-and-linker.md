@@ -149,7 +149,7 @@ tagging on hardware that supports it.
 ### 7.1.4 Process Initialization
 
 When a dynamically-linked executable starts, the kernel maps the executable and
-the dynamic linker (see Section 6.3). The linker performs relocation, then
+the dynamic linker (see Section 7.3). The linker performs relocation, then
 calls libc's `.preinit_array` entry `__libc_preinit`. This function, defined in
 `bionic/libc/bionic/libc_init_dynamic.cpp`, runs before any other shared
 library initializer:
@@ -690,7 +690,7 @@ These three system calls are typically handled by the VDSO (Virtual Dynamic
 Shared Object), which the kernel maps into every process. The VDSO contains
 user-space implementations of these calls that read from kernel-managed shared
 memory pages, avoiding the overhead of a full kernel transition. Bionic's
-dynamic linker explicitly loads the VDSO (see Section 6.3).
+dynamic linker explicitly loads the VDSO (see Section 7.3).
 
 ### 7.2.5 LP32 vs. LP64 Differences
 
@@ -2046,7 +2046,7 @@ static const char* const kLdGeneratedConfigFilePath =
 ```
 
 The preferred source is the generated configuration at `/linkerconfig/ld.config.txt`,
-produced by the `linkerconfig` tool (see Section 6.4). This file defines
+produced by the `linkerconfig` tool (see Section 7.4). This file defines
 namespaces, their search paths, permitted paths, and inter-namespace links.
 
 The configuration file format uses INI-style sections:
@@ -3524,7 +3524,7 @@ this book:
   Understanding the linker's first-stage init special cases (no arc4random,
   no /proc) requires understanding the boot sequence.
 
-- **Chapter 5 (Kernel)**: The system call interface described in Section 6.2
+- **Chapter 5 (Kernel)**: The system call interface described in Section 7.2
   is the boundary between user space and kernel space. The seccomp-BPF
   filters are enforced by the kernel's seccomp infrastructure.
 
@@ -3536,7 +3536,7 @@ this book:
 - **Chapter 18 (ART Runtime)**: The ART runtime uses `dlopen()` extensively
   to load JNI libraries, and `libnativeloader` creates per-app linker
   namespaces. ART's OAT files are loaded through the same ELF loading
-  pipeline described in Section 6.3.
+  pipeline described in Section 7.3.
 
 - **Chapter 10 (HAL and HIDL)**: The Same-Process HAL (SP-HAL) mechanism
   relies on the `sphal` linker namespace to load vendor HAL implementations
@@ -3865,7 +3865,7 @@ The `resolve_symbol_address` method is particularly noteworthy: for standard
 symbols, it simply adds the load bias to the symbol value. But for GNU IFUNC
 symbols (`STT_GNU_IFUNC`), it calls the IFUNC resolver function to determine
 the actual implementation address at runtime. This is how architecture-specific
-optimizations (like the memcpy variants in Section 6.1.6) are dispatched.
+optimizations (like the memcpy variants in Section 7.1.6) are dispatched.
 
 The lifecycle methods are called in a strict order:
 

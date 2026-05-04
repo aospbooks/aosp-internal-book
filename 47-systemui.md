@@ -2507,7 +2507,7 @@ frameworks/base/packages/SystemUI/src/com/android/systemui/theme/
 
 ## 47.14  Keyguard Deep Dive
 
-Section 22.5 introduced the lock screen architecture.  This section explores
+Section 47.5 introduced the lock screen architecture.  This section explores
 the internal state machine, biometric unlock modes, bouncer flow, AOD
 transitions, and the MVI modernisation in much greater detail, drawing on the
 full keyguard source tree.

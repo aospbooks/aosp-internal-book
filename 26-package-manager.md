@@ -147,7 +147,7 @@ The resource table is structured as:
 4. **Type chunks** -- configuration-specific resource values
 
 This file is central to the Runtime Resource Overlay (RRO) system discussed in
-Section 18.8, which works by overlaying entries in this table.
+Section 26.8, which works by overlaying entries in this table.
 
 ### 26.1.5 lib/ Directory
 
@@ -4191,35 +4191,35 @@ graph TB
 
 This chapter covered its critical subsystems:
 
-- **APK Structure** (Section 18.1): The internal layout of Android packages, including
+- **APK Structure** (Section 26.1): The internal layout of Android packages, including
   the manifest, DEX files, resources, native libraries, and the evolution of APK
   signing from v1 JAR signing to v4 incremental signatures.
 
-- **PMS Architecture** (Section 18.2): The Computer snapshot pattern that enables
+- **PMS Architecture** (Section 26.2): The Computer snapshot pattern that enables
   lock-free reads, the three-lock hierarchy, the helper class decomposition, and the
   core data structures including `PackageSetting` and `Settings`.
 
-- **Package Scanning** (Section 18.3): The boot-time scanning process that discovers
+- **Package Scanning** (Section 26.3): The boot-time scanning process that discovers
   packages across system partitions, APEX modules, and user-installed apps, using
   parallel parsing and caching for performance.
 
-- **Installation Pipeline** (Section 18.4): The five-stage installation process from
+- **Installation Pipeline** (Section 26.4): The five-stage installation process from
   staging through verification, installation, dex optimization, and final commit,
   including incremental installation support.
 
-- **Permission Model** (Section 18.5): The layered permission system encompassing
+- **Permission Model** (Section 26.5): The layered permission system encompassing
   normal, dangerous, signature, privileged, and appop permissions, with runtime
   grant/revoke, one-time permissions, and auto-revoke.
 
-- **Intent Resolution** (Section 18.6): The algorithm for matching implicit intents
+- **Intent Resolution** (Section 26.6): The algorithm for matching implicit intents
   to components, including the role of priority, preferred activities, App Links,
   cross-profile resolution, and package visibility filtering.
 
-- **Split APKs** (Section 18.7): The split APK architecture with base, configuration,
+- **Split APKs** (Section 26.7): The split APK architecture with base, configuration,
   and feature splits, including the `SplitDependencyLoader` tree traversal algorithm
   and dynamic delivery.
 
-- **Overlay System** (Section 18.8): The Runtime Resource Overlay system managed by
+- **Overlay System** (Section 26.8): The Runtime Resource Overlay system managed by
   `OverlayManagerService`, including idmap files, overlay states, fabricated overlays,
   and overlay configuration.
 

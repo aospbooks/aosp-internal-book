@@ -3027,42 +3027,42 @@ stateDiagram-v2
 
 This chapter traced the complete USB, ADB, and MTP stack through AOSP:
 
-**USB Framework (Section 44.1)**: The `UsbService` coordinates USB
+**USB Framework (Section 39.1)**: The `UsbService` coordinates USB
 operations through specialized sub-managers. `UsbManager` provides the public
 API, while the service delegates to `UsbDeviceManager` (gadget mode),
 `UsbHostManager` (host mode), and `UsbPortManager` (Type-C ports).
 
-**UsbDeviceManager (Section 44.2)**: A sophisticated message-based state machine
+**UsbDeviceManager (Section 39.2)**: A sophisticated message-based state machine
 manages USB gadget function switching. It coordinates screen lock state, user
 preferences, kernel UEvents, and the gadget HAL, with careful debouncing to
 handle transient disconnect/reconnect events during function changes.
 
-**USB HAL (Section 44.3)**: Two AIDL interfaces -- `IUsb` (port management) and
+**USB HAL (Section 39.3)**: Two AIDL interfaces -- `IUsb` (port management) and
 `IUsbGadget` (gadget configuration) -- abstract vendor-specific USB hardware.
 The HAL reports comprehensive port status including Type-C role, contaminant
 detection, compliance warnings, and DisplayPort Alt Mode.
 
-**ADB Architecture (Section 44.4)**: The three-component ADB architecture
+**ADB Architecture (Section 39.4)**: The three-component ADB architecture
 (client, server, daemon) communicates through a simple message protocol over
 USB or TCP. RSA-based authentication secures connections, and feature
 negotiation enables protocol evolution.
 
-**ADB Commands (Section 44.5)**: Shell v2 protocol multiplexes stdin/stdout/
+**ADB Commands (Section 39.5)**: Shell v2 protocol multiplexes stdin/stdout/
 stderr. File sync v2 supports compression (Brotli, LZ4, Zstd). ABB provides
 fast Binder-based service access. Port forwarding enables bidirectional
 tunneling.
 
-**MTP Service (Section 44.6)**: The MTP stack spans native code
+**MTP Service (Section 39.6)**: The MTP stack spans native code
 (`frameworks/av/media/mtp/`) and Java services (`packages/services/Mtp/`).
 Android extends standard MTP with direct file I/O operations and uses
 FunctionFS for high-performance USB transport.
 
-**USB Accessory Mode (Section 44.7)**: The AOA protocol enables external USB
+**USB Accessory Mode (Section 39.7)**: The AOA protocol enables external USB
 hosts to communicate with Android applications through a defined handshake
 sequence. AOAv2 adds audio streaming. A new userspace AOA implementation
 provides flexibility beyond the kernel driver.
 
-**USB Host Mode (Section 44.8)**: `UsbHostManager` monitors the USB bus via JNI
+**USB Host Mode (Section 39.8)**: `UsbHostManager` monitors the USB bus via JNI
 native code, parsing device descriptors and maintaining deny lists. The
 permission model requires explicit user consent for application access to USB
 devices.
