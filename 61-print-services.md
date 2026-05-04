@@ -11,12 +11,6 @@ This chapter examines the printing framework from the public API through the
 system service internals, covering the print job lifecycle, document rendering,
 printer discovery, and the spooler architecture.
 
-> **Source roots for this chapter:**
-> `frameworks/base/core/java/android/print/`
-> `frameworks/base/core/java/android/printservice/`
-> `frameworks/base/core/java/android/print/pdf/`
-> `frameworks/base/services/print/java/com/android/server/print/`
-
 ---
 
 ## 61.1 Architecture Overview
