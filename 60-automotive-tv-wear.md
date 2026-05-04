@@ -837,30 +837,30 @@ The `CarActivityService` provides several critical capabilities:
 1. **Display-specific activity launching**: When an app targets a specific occupant zone,
    the service routes the activity to the correct display using `ActivityOptions`:
 
-```java
-// Usage pattern for launching on a specific display:
-ActivityOptions options = ActivityOptions.makeBasic();
-options.setLaunchDisplayId(targetDisplayId);
-context.startActivity(intent, options.toBundle());
-```
+    ```java
+    // Usage pattern for launching on a specific display:
+    ActivityOptions options = ActivityOptions.makeBasic();
+    options.setLaunchDisplayId(targetDisplayId);
+    context.startActivity(intent, options.toBundle());
+    ```
 
 2. **SystemUI proxy registration**: Car SystemUI registers itself as a proxy through
    `ICarSystemUIProxy`, allowing the service to control task presentation:
 
-```java
-// packages/services/Car/service/src/com/android/car/am/CarActivityService.java
-// (field declarations showing the proxy mechanism)
-// Uses ICarSystemUIProxy and ICarSystemUIProxyCallback
-```
+    ```java
+    // packages/services/Car/service/src/com/android/car/am/CarActivityService.java
+    // (field declarations showing the proxy mechanism)
+    // Uses ICarSystemUIProxy and ICarSystemUIProxyCallback
+    ```
 
 3. **Blocking activity management**: When a non-distraction-optimized activity attempts
    to display while driving, the service intercepts and replaces it with a blocking
    activity that shows a safety message. The display ID is passed via:
 
-```java
-// From the import:
-// import static android.car.content.pm.CarPackageManager.BLOCKING_INTENT_EXTRA_DISPLAY_ID;
-```
+    ```java
+    // From the import:
+    // import static android.car.content.pm.CarPackageManager.BLOCKING_INTENT_EXTRA_DISPLAY_ID;
+    ```
 
 4. **Task mirroring and movement**: Tasks can be moved between displays (e.g., moving a
    passenger's navigation session to the driver's display).
