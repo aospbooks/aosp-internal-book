@@ -1,10 +1,5 @@
 # Chapter 62: Camera2 Pipeline Deep Dive
 
-> *"The Camera2 API is one of the most hardware-intimate APIs in Android --
-> a request-result pipeline that pushes configuration, metadata, and pixel
-> buffers through three process boundaries and into vendor silicon within a
-> single frame deadline."*
-
 The camera subsystem is among the most complex and performance-critical
 pipelines in AOSP.  A single photo capture can involve dozens of metadata
 keys, multiple output surfaces, 3A (auto-exposure, auto-focus,
