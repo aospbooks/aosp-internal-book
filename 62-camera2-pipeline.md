@@ -36,23 +36,6 @@ The Camera2 subsystem spans four layers:
 4. **Hardware ISP / Sensor** -- The actual image signal processor and sensor
    silicon.
 
-```
-Source paths (key files):
-  CameraManager ........... frameworks/base/core/java/android/hardware/camera2/CameraManager.java
-  CameraDevice ............ frameworks/base/core/java/android/hardware/camera2/CameraDevice.java
-  CameraCaptureSession .... frameworks/base/core/java/android/hardware/camera2/CameraCaptureSession.java
-  CaptureRequest .......... frameworks/base/core/java/android/hardware/camera2/CaptureRequest.java
-  CaptureResult ........... frameworks/base/core/java/android/hardware/camera2/CaptureResult.java
-  CameraCharacteristics ... frameworks/base/core/java/android/hardware/camera2/CameraCharacteristics.java
-  CameraDeviceImpl ........ frameworks/base/core/java/android/hardware/camera2/impl/CameraDeviceImpl.java
-  CameraService.cpp ....... frameworks/av/services/camera/libcameraservice/CameraService.cpp
-  CameraService.h ......... frameworks/av/services/camera/libcameraservice/CameraService.h
-  CameraDeviceClient ...... frameworks/av/services/camera/libcameraservice/api2/CameraDeviceClient.cpp
-  Camera3Device ........... frameworks/av/services/camera/libcameraservice/device3/Camera3Device.cpp
-  Camera3Device.h ......... frameworks/av/services/camera/libcameraservice/device3/Camera3Device.h
-  Camera3OutputStream ..... frameworks/av/services/camera/libcameraservice/device3/Camera3OutputStream.cpp
-```
-
 ### 62.1.2 End-to-End Architecture Diagram
 
 ```mermaid
