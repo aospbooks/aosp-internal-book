@@ -28,7 +28,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | III | 9 | Binder IPC | REVIEWED |
 | III | 10 | HAL (HIDL/AIDL) | REVIEWED |
 | III | 11 | NDK | REVIEWED |
-| IV | 12 | Native Services | UNDER REVIEW |
+| IV | 12 | Native Services | REVIEWED |
 | IV | 13 | Graphics & Render Pipeline (OpenGL ES/Vulkan/Skia/HWUI) | UNDER REVIEW |
 | IV | 14 | Animation System | UNDER REVIEW |
 | IV | 15 | Audio System (Spatial) | UNDER REVIEW |
