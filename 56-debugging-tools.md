@@ -3452,317 +3452,9 @@ Overdraw color coding:
 
 ---
 
-## 56.12 Try It: Debug a Real Performance Issue
+## 56.12 Memory Debugging Tools
 
-This section walks through a complete debugging workflow for a realistic
-performance problem: an application that exhibits jank (dropped frames)
-during list scrolling.
-
-### 56.12.1 Problem Statement
-
-A user reports that a RecyclerView-based application stutters when scrolling
-quickly.  The app displays a list of items with images and text.  The
-stutter is reproducible on a Pixel device.
-
-### 56.12.2 Step 1: Confirm the Problem with gfxinfo
-
-```bash
-# Reset frame stats
-adb shell dumpsys gfxinfo com.example.myapp reset
-
-# Reproduce the scroll gesture
-
-# Collect frame timing data
-adb shell dumpsys gfxinfo com.example.myapp
-```
-
-**Expected output (excerpt):**
-
-```
-Total frames rendered: 523
-Janky frames: 87 (16.63%)
-50th percentile: 8ms
-90th percentile: 22ms
-95th percentile: 35ms
-99th percentile: 52ms
-
-HISTOGRAM:
-  5ms=234  6ms=89  7ms=45  8ms=32  ...  32ms=15  64ms=5
-```
-
-The 16.63% jank rate confirms the problem.  For smooth 60fps scrolling,
-frame rendering must complete within 16.67ms.
-
-### 56.12.3 Step 2: Capture a Perfetto System Trace
-
-```bash
-# Create trace config
-cat > /tmp/scroll_trace.pbtxt << 'EOF'
-buffers {
-    size_kb: 131072
-    fill_policy: RING_BUFFER
-}
-data_sources {
-    config {
-        name: "linux.ftrace"
-        ftrace_config {
-            ftrace_events: "sched/sched_switch"
-            ftrace_events: "sched/sched_waking"
-            ftrace_events: "sched/sched_blocked_reason"
-            ftrace_events: "power/cpu_frequency"
-            ftrace_events: "power/cpu_idle"
-            atrace_categories: "gfx"
-            atrace_categories: "view"
-            atrace_categories: "wm"
-            atrace_categories: "am"
-            atrace_categories: "input"
-            atrace_categories: "res"
-            atrace_categories: "dalvik"
-            atrace_apps: "com.example.myapp"
-        }
-    }
-}
-data_sources {
-    config {
-        name: "linux.process_stats"
-        process_stats_config {
-            scan_all_processes_on_start: true
-            proc_stats_poll_ms: 100
-        }
-    }
-}
-duration_ms: 15000
-EOF
-
-# Push config and start trace
-adb push /tmp/scroll_trace.pbtxt /data/local/tmp/
-adb shell perfetto -c /data/local/tmp/scroll_trace.pbtxt \
-    -o /data/misc/perfetto-traces/scroll_trace.perfetto-trace &
-
-# Reproduce the scroll gesture during the 15-second window
-# ...
-
-# Pull the trace
-adb pull /data/misc/perfetto-traces/scroll_trace.perfetto-trace .
-```
-
-### 56.12.4 Step 3: Analyze in Perfetto UI
-
-Open the trace in `ui.perfetto.dev` or Perfetto embedded in Android Studio.
-
-**What to look for:**
-
-```mermaid
-flowchart TD
-    A["Open trace in Perfetto UI"] --> B["Find the app's main thread"]
-    B --> C["Locate long frames (>16ms)"]
-    C --> D{"What's the main thread doing?"}
-
-    D -- "Long slice in Choreographer#doFrame" --> E["Check sub-slices"]
-    E --> F{"Which phase is slow?"}
-    F -- "input" --> G["Input handling is slow"]
-    F -- "animation" --> H["Animation callback is slow"]
-    F -- "traversal (measure/layout/draw)" --> I["View hierarchy work"]
-    F -- "RenderThread > draw" --> J["GPU-bound rendering"]
-
-    D -- "Blocked on binder" --> K["Check which service<br/>is blocking"]
-    D -- "Blocked on lock" --> L["Contention with<br/>background thread"]
-    D -- "GC pause" --> M["Memory pressure"]
-
-    I --> N["Check onBindViewHolder duration"]
-    N --> O{"Why is bind slow?"}
-    O -- "Image loading" --> P["Load images asynchronously"]
-    O -- "Layout inflation" --> Q["Use ViewHolder pattern correctly"]
-    O -- "Complex layout" --> R["Simplify layout hierarchy"]
-```
-
-### 56.12.5 Step 4: CPU Profile the Hot Path
-
-The Perfetto trace shows that `onBindViewHolder` is taking 25ms on some
-frames.  Let us use simpleperf to understand why:
-
-```bash
-# Record with call graph while scrolling
-adb shell simpleperf record \
-    --app com.example.myapp \
-    --call-graph dwarf \
-    --duration 10 \
-    -o /data/local/tmp/perf.data
-
-# Pull and report
-adb pull /data/local/tmp/perf.data .
-simpleperf report -i perf.data -g --sort comm,dso,symbol
-```
-
-**Sample output:**
-
-```
-Overhead  Command     Shared Object       Symbol
-35.2%     RenderThread libhwui.so         SkImage::makeTextureImage()
-22.1%     main        libjpeg-turbo.so   jpeg_decompress()
-18.3%     main        libmyapp.so        ImageLoader::decode()
- 8.7%     main        libart.so          art::gc::Heap::ConcurrentCopying
- 5.2%     main        libc.so            memcpy
-```
-
-The CPU profile reveals that JPEG decompression (`jpeg_decompress()`) is
-happening synchronously on the main thread during view binding.
-
-### 56.12.6 Step 5: Check for Memory Issues
-
-The GC activity in the trace suggests memory pressure.  Let us profile
-allocations:
-
-```bash
-# Use heapprofd to track allocations during scrolling
-cat > /tmp/heap_config.pbtxt << 'EOF'
-buffers { size_kb: 65536 }
-data_sources {
-    config {
-        name: "android.heapprofd"
-        heapprofd_config {
-            sampling_interval_bytes: 4096
-            process_cmdline: "com.example.myapp"
-            shmem_size_bytes: 8388608
-        }
-    }
-}
-duration_ms: 10000
-EOF
-
-adb push /tmp/heap_config.pbtxt /data/local/tmp/
-adb shell perfetto -c /data/local/tmp/heap_config.pbtxt \
-    -o /data/misc/perfetto-traces/heap.perfetto-trace
-
-# Reproduce scrolling
-
-adb pull /data/misc/perfetto-traces/heap.perfetto-trace .
-```
-
-Analyze with trace_processor:
-
-```sql
-SELECT
-    SUM(size) as total_bytes,
-    COUNT(*) as alloc_count,
-    frame_name
-FROM heap_profile_allocation
-JOIN stack_profile_frame ON frame_id = stack_profile_frame.id
-WHERE size > 0
-GROUP BY frame_name
-ORDER BY total_bytes DESC
-LIMIT 10;
-```
-
-**Expected finding**: Large allocations from bitmap decoding during each
-scroll event.
-
-### 56.12.7 Step 6: Verify with dumpsys meminfo
-
-```bash
-# Before scrolling
-adb shell dumpsys meminfo com.example.myapp > meminfo_before.txt
-
-# Scroll vigorously for 30 seconds
-
-# After scrolling
-adb shell dumpsys meminfo com.example.myapp > meminfo_after.txt
-
-# Compare
-diff meminfo_before.txt meminfo_after.txt
-```
-
-**Key metrics to compare:**
-
-```
-                   Before    After     Delta
-Java Heap:          12,345    18,567    +6,222 KB
-Native Heap:        8,901     15,432    +6,531 KB
-Graphics:           4,567     4,567         0 KB
-Total PSS:         35,678    48,321   +12,643 KB
-```
-
-The significant growth in both Java and Native heap during scrolling
-confirms that images are being decoded and not properly cached.
-
-### 56.12.8 Step 7: Root Cause and Fix
-
-The debugging workflow reveals:
-
-1. **Root cause**: Images are being decoded from JPEG on the main thread
-   during `onBindViewHolder`, and no image cache is being used.
-
-2. **Contributing factors**:
-   - Each scroll event triggers new decode operations.
-   - Decoded bitmaps are not cached, causing repeated allocation/GC cycles.
-   - The GC pauses compound the rendering latency.
-
-**Fix strategy:**
-
-```mermaid
-flowchart LR
-    A["Current: Sync decode on main thread"]
-    B["Fix 1: Async decode on background thread"]
-    C["Fix 2: Add LRU image cache"]
-    D["Fix 3: Use thumbnail for scroll, full res on stop"]
-    E["Result: <2ms bind time, 0% jank"]
-
-    A --> B
-    B --> C
-    C --> D
-    D --> E
-```
-
-### 56.12.9 Step 8: Verify the Fix
-
-After implementing the fix, re-run the same measurements:
-
-```bash
-# Re-collect gfxinfo
-adb shell dumpsys gfxinfo com.example.myapp reset
-# Scroll...
-adb shell dumpsys gfxinfo com.example.myapp
-
-# Expected:
-# Total frames rendered: 510
-# Janky frames: 3 (0.59%)
-# 90th percentile: 10ms
-```
-
-```bash
-# Re-run Perfetto trace to confirm
-adb shell perfetto -c /data/local/tmp/scroll_trace.pbtxt \
-    -o /data/misc/perfetto-traces/scroll_fixed.perfetto-trace
-```
-
-The Perfetto trace should show:
-
-- `onBindViewHolder` completing in < 2ms
-- No GC pauses during scroll
-- Smooth Choreographer frame cadence
-
-### 56.12.10 Debugging Checklist
-
-Use this checklist when debugging performance issues:
-
-```
-[ ] Identify symptom (jank, ANR, slow startup, memory growth)
-[ ] Quantify with dumpsys gfxinfo / Perfetto metrics
-[ ] Capture system trace (Perfetto) to identify which thread/phase is slow
-[ ] CPU profile (simpleperf) the hot functions
-[ ] Memory profile (heapprofd) if GC or allocation-related
-[ ] Check service state (dumpsys) for relevant subsystems
-[ ] Identify root cause
-[ ] Implement fix
-[ ] Re-measure to verify improvement
-[ ] Document findings
-```
-
----
-
-## 56.13 Memory Debugging Tools
-
-### 56.13.1 Memory Analysis Overview
+### 56.12.1 Memory Analysis Overview
 
 Android provides several layers of memory debugging tools, each targeting
 different types of memory issues:
@@ -3800,7 +3492,7 @@ graph TB
     end
 ```
 
-### 56.13.2 malloc debug
+### 56.12.2 malloc debug
 
 Android's bionic libc includes a debug malloc implementation that can be
 enabled at runtime:
@@ -3823,7 +3515,7 @@ adb shell am restart com.example.myapp
 adb shell am dumpheap -n <pid> /data/local/tmp/native_heap.txt
 ```
 
-### 56.13.3 AddressSanitizer (ASan) and HWASan
+### 56.12.3 AddressSanitizer (ASan) and HWASan
 
 ASan and HWASan detect memory errors at runtime with different trade-offs:
 
@@ -3837,7 +3529,7 @@ ASan and HWASan detect memory errors at runtime with different trade-offs:
 | Available builds | Eng only | Eng/userdebug | Arm v8.5+ |
 | Sampling | No | No | Can be per-allocation |
 
-### 56.13.4 showmap and procrank
+### 56.12.4 showmap and procrank
 
 ```bash
 # Show detailed memory map for a process
@@ -3858,7 +3550,7 @@ adb shell dumpsys meminfo --package <package>
 adb shell dumpsys meminfo <pid>
 ```
 
-### 56.13.5 libmemunreachable
+### 56.12.5 libmemunreachable
 
 Android includes a built-in leak detector that can scan the heap for
 unreachable allocations:
@@ -3873,9 +3565,9 @@ adb logcat -s memunreachable
 
 ---
 
-## 56.14 ANR Analysis
+## 56.13 ANR Analysis
 
-### 56.14.1 What Causes ANRs
+### 56.13.1 What Causes ANRs
 
 An Application Not Responding (ANR) event occurs when the main thread of an
 application does not respond to an input event within 5 seconds or a
@@ -3894,7 +3586,7 @@ flowchart TD
     F --> I["Show 'App not responding' dialog"]
 ```
 
-### 56.14.2 Finding ANR Information
+### 56.13.2 Finding ANR Information
 
 ANR traces are stored in multiple locations:
 
@@ -3913,7 +3605,7 @@ grep -n "Cmd line:" bugreport-*.txt
 grep -A 20 "CPU usage from" bugreport-*.txt
 ```
 
-### 56.14.3 Reading ANR Traces
+### 56.13.3 Reading ANR Traces
 
 A typical ANR trace dump includes:
 
@@ -3951,7 +3643,7 @@ Build fingerprint: 'google/crosshatch/crosshatch:14/...'
 3. **Root cause**: A long-running database operation on a background thread
    holds a lock that the main thread needs during `onResume()`.
 
-### 56.14.4 Common ANR Patterns
+### 56.13.4 Common ANR Patterns
 
 | Pattern | Main Thread State | Root Cause |
 |---------|-------------------|------------|
@@ -3962,7 +3654,7 @@ Build fingerprint: 'google/crosshatch/crosshatch:14/...'
 | GC pause | WaitingForGcToComplete | Heavy allocation pressure |
 | CPU starvation | Runnable (but not running) | Other processes consuming CPU |
 
-### 56.14.5 Preventing ANRs
+### 56.13.5 Preventing ANRs
 
 ```bash
 # Enable strict mode to catch I/O on main thread during development
@@ -3977,9 +3669,9 @@ adb shell dumpsys activity anr-history
 
 ---
 
-## 56.15 Cross-Tool Integration
+## 56.14 Cross-Tool Integration
 
-### 56.15.1 How the Tools Complement Each Other
+### 56.14.1 How the Tools Complement Each Other
 
 No single tool tells the complete story.  The following table shows which
 tool to reach for based on the layer you need to investigate:
@@ -4020,7 +3712,7 @@ graph LR
     BUGREPORT_ID --> DUMPSYS_SI
 ```
 
-### 56.15.2 Combining Perfetto with simpleperf
+### 56.14.2 Combining Perfetto with simpleperf
 
 A common workflow is to use Perfetto to identify _when_ performance issues
 occur, then use simpleperf to identify _why_ at the CPU level:
@@ -4035,7 +3727,7 @@ occur, then use simpleperf to identify _why_ at the CPU level:
 3. **heapprofd**: Confirms that each frame allocates new bitmaps rather than
    reusing cached ones.
 
-### 56.15.3 bugreport as a Starting Point
+### 56.14.3 bugreport as a Starting Point
 
 For issues reported by users (where you cannot interactively collect traces),
 the bugreport serves as the entry point:
@@ -4064,9 +3756,9 @@ flowchart TD
 
 ---
 
-## 56.16 Advanced Topics
+## 56.15 Advanced Topics
 
-### 56.16.1 Custom Perfetto Data Sources
+### 56.15.1 Custom Perfetto Data Sources
 
 You can create custom Perfetto data sources in framework or app code:
 
@@ -4097,7 +3789,7 @@ MyDataSource::Trace([](MyDataSource::TraceContext ctx) {
 });
 ```
 
-### 56.16.2 Custom atrace Categories
+### 56.15.2 Custom atrace Categories
 
 Framework services can register custom atrace categories:
 
@@ -4121,7 +3813,7 @@ void MyService::processRequest() {
 }
 ```
 
-### 56.16.3 Kernel ftrace Direct Access
+### 56.15.3 Kernel ftrace Direct Access
 
 For kernel-level debugging beyond what Perfetto exposes, you can access
 ftrace directly:
@@ -4150,7 +3842,7 @@ adb shell "echo 0 > /sys/kernel/tracing/tracing_on"
 adb shell cat /sys/kernel/tracing/trace > ftrace_output.txt
 ```
 
-### 56.16.4 Remote Debugging with lldb
+### 56.15.4 Remote Debugging with lldb
 
 For interactive native debugging:
 
@@ -4170,7 +3862,7 @@ lldb
 python3 development/scripts/lldbclient.py -p <pid>
 ```
 
-### 56.16.5 strace and seccomp Considerations
+### 56.15.5 strace and seccomp Considerations
 
 `strace` can be useful for system call tracing, but note that Android's
 seccomp filters may interfere:
@@ -4186,7 +3878,7 @@ adb shell strace -f -e trace=open,read,write ls /data/
 # for performance-sensitive measurements
 ```
 
-### 56.16.6 GDB vs LLDB
+### 56.15.6 GDB vs LLDB
 
 Android has migrated from GDB to LLDB for native debugging:
 
@@ -4198,7 +3890,7 @@ Android has migrated from GDB to LLDB for native debugging:
 | Integration | NDK r24 and earlier | NDK r25+ |
 | Platform support | Deprecated | Active development |
 
-### 56.16.7 Debugging SELinux Denials
+### 56.15.7 Debugging SELinux Denials
 
 SELinux audit messages appear in logcat and can block debugging tools:
 
@@ -4218,7 +3910,7 @@ adb logcat -d | grep "avc:" | audit2allow -p policy
 
 ---
 
-## 56.17 Performance Debugging Properties Reference
+## 56.16 Performance Debugging Properties Reference
 
 Android provides numerous system properties that control debugging behavior:
 
@@ -4238,7 +3930,7 @@ Android provides numerous system properties that control debugging behavior:
 
 ---
 
-## 56.18 Quick Reference Card
+## 56.17 Quick Reference Card
 
 ### Starting Data Collection
 
@@ -4318,7 +4010,7 @@ adb pull /data/anr/ .
 
 ---
 
-## 56.19  Profiling Module: Mainline-Delivered Profiling for Apps
+## 56.18  Profiling Module: Mainline-Delivered Profiling for Apps
 
 Android 15 introduced the **Profiling Mainline Module**
 (`com.android.profiling`), which wraps Perfetto, heapprofd, and simpleperf
@@ -4326,7 +4018,7 @@ behind a safe, rate-limited API that any app can call without root access
 or special permissions.  This section examines how the module integrates with
 the debugging tools covered earlier in this chapter.
 
-### 56.19.1  Motivation
+### 56.18.1  Motivation
 
 Before the Profiling module, collecting system traces or heap profiles from
 production devices required either:
@@ -4339,7 +4031,7 @@ None of these work for production crash investigation.  The Profiling module
 solves this by allowing apps to request profiling programmatically, with
 results redacted to contain only the requesting app's own data.
 
-### 56.19.2  Integration Architecture
+### 56.18.2  Integration Architecture
 
 ```mermaid
 graph TB
@@ -4387,7 +4079,7 @@ graph TB
     RESULT --> APP
 ```
 
-### 56.19.3  How ProfilingService Drives Perfetto
+### 56.18.3  How ProfilingService Drives Perfetto
 
 When `ProfilingService` receives a `requestProfiling()` call, the flow is:
 
@@ -4433,7 +4125,7 @@ When `ProfilingService` receives a `requestProfiling()` call, the flow is:
    passed over Binder.  The app receives a `ProfilingResult` with the file
    path.
 
-### 56.19.4  Perfetto Config Construction
+### 56.18.4  Perfetto Config Construction
 
 The `Configs` class translates high-level parameters to Perfetto protobufs.
 Each profiling type has DeviceConfig-controlled bounds:
@@ -4497,7 +4189,7 @@ JavaHprofConfig.Builder hprof = JavaHprofConfig.newBuilder();
 hprof.addProcessCmdline(packageName);
 ```
 
-### 56.19.5  System-Triggered Profiling
+### 56.18.5  System-Triggered Profiling
 
 Beyond on-demand requests, the Profiling module supports **triggers** --
 system events that automatically produce profiling data without any app
@@ -4539,7 +4231,7 @@ Available trigger types:
 | `TRIGGER_TYPE_KILL_FORCE_STOP` | User force-stops the app | System trace snapshot |
 | `TRIGGER_TYPE_KILL_RECENTS` | User swipes app from Recents | System trace snapshot |
 
-### 56.19.6  Rate Limiting Details
+### 56.18.6  Rate Limiting Details
 
 The `RateLimiter` prevents abuse through a multi-tier cost model:
 
@@ -4571,7 +4263,7 @@ adb shell device_config put profiling_testing \
     delete_temporary_results.disabled true
 ```
 
-### 56.19.7  Result Delivery and Queued Results
+### 56.18.7  Result Delivery and Queued Results
 
 Results are delivered through Binder callbacks.  If the app is not running
 when a result is ready (common for system-triggered profiling), the service
@@ -4584,7 +4276,7 @@ when a result is ready (common for system-triggered profiling), the service
 When the app next registers a global listener via
 `registerForAllProfilingResults()`, queued callbacks are delivered.
 
-### 56.19.8  Practical Usage Patterns
+### 56.18.8  Practical Usage Patterns
 
 **Pattern 1: One-shot system trace**
 
@@ -4644,7 +4336,7 @@ pm.requestProfiling(
     });
 ```
 
-### 56.19.9  Integration with Other Debugging Tools
+### 56.18.9  Integration with Other Debugging Tools
 
 The Profiling module complements the tools covered earlier in this chapter:
 
@@ -4668,7 +4360,7 @@ Profiling module handles:
 
 - **Persistence**: System-triggered results are queued and delivered later.
 
-### 56.19.10  Key Source Paths
+### 56.18.10  Key Source Paths
 
 | Component | Path |
 |-----------|------|
@@ -4682,6 +4374,314 @@ Profiling module handles:
 | IProfilingService.aidl | `packages/modules/Profiling/aidl/android/os/IProfilingService.aidl` |
 | APEX config | `packages/modules/Profiling/apex/Android.bp` |
 | AnomalyDetectorService | `packages/modules/Profiling/anomaly-detector/service/java/.../AnomalyDetectorService.java` |
+
+---
+
+## 56.19 Try It: Debug a Real Performance Issue
+
+This section walks through a complete debugging workflow for a realistic
+performance problem: an application that exhibits jank (dropped frames)
+during list scrolling.
+
+### 56.19.1 Problem Statement
+
+A user reports that a RecyclerView-based application stutters when scrolling
+quickly.  The app displays a list of items with images and text.  The
+stutter is reproducible on a Pixel device.
+
+### 56.19.2 Step 1: Confirm the Problem with gfxinfo
+
+```bash
+# Reset frame stats
+adb shell dumpsys gfxinfo com.example.myapp reset
+
+# Reproduce the scroll gesture
+
+# Collect frame timing data
+adb shell dumpsys gfxinfo com.example.myapp
+```
+
+**Expected output (excerpt):**
+
+```
+Total frames rendered: 523
+Janky frames: 87 (16.63%)
+50th percentile: 8ms
+90th percentile: 22ms
+95th percentile: 35ms
+99th percentile: 52ms
+
+HISTOGRAM:
+  5ms=234  6ms=89  7ms=45  8ms=32  ...  32ms=15  64ms=5
+```
+
+The 16.63% jank rate confirms the problem.  For smooth 60fps scrolling,
+frame rendering must complete within 16.67ms.
+
+### 56.19.3 Step 2: Capture a Perfetto System Trace
+
+```bash
+# Create trace config
+cat > /tmp/scroll_trace.pbtxt << 'EOF'
+buffers {
+    size_kb: 131072
+    fill_policy: RING_BUFFER
+}
+data_sources {
+    config {
+        name: "linux.ftrace"
+        ftrace_config {
+            ftrace_events: "sched/sched_switch"
+            ftrace_events: "sched/sched_waking"
+            ftrace_events: "sched/sched_blocked_reason"
+            ftrace_events: "power/cpu_frequency"
+            ftrace_events: "power/cpu_idle"
+            atrace_categories: "gfx"
+            atrace_categories: "view"
+            atrace_categories: "wm"
+            atrace_categories: "am"
+            atrace_categories: "input"
+            atrace_categories: "res"
+            atrace_categories: "dalvik"
+            atrace_apps: "com.example.myapp"
+        }
+    }
+}
+data_sources {
+    config {
+        name: "linux.process_stats"
+        process_stats_config {
+            scan_all_processes_on_start: true
+            proc_stats_poll_ms: 100
+        }
+    }
+}
+duration_ms: 15000
+EOF
+
+# Push config and start trace
+adb push /tmp/scroll_trace.pbtxt /data/local/tmp/
+adb shell perfetto -c /data/local/tmp/scroll_trace.pbtxt \
+    -o /data/misc/perfetto-traces/scroll_trace.perfetto-trace &
+
+# Reproduce the scroll gesture during the 15-second window
+# ...
+
+# Pull the trace
+adb pull /data/misc/perfetto-traces/scroll_trace.perfetto-trace .
+```
+
+### 56.19.4 Step 3: Analyze in Perfetto UI
+
+Open the trace in `ui.perfetto.dev` or Perfetto embedded in Android Studio.
+
+**What to look for:**
+
+```mermaid
+flowchart TD
+    A["Open trace in Perfetto UI"] --> B["Find the app's main thread"]
+    B --> C["Locate long frames (>16ms)"]
+    C --> D{"What's the main thread doing?"}
+
+    D -- "Long slice in Choreographer#doFrame" --> E["Check sub-slices"]
+    E --> F{"Which phase is slow?"}
+    F -- "input" --> G["Input handling is slow"]
+    F -- "animation" --> H["Animation callback is slow"]
+    F -- "traversal (measure/layout/draw)" --> I["View hierarchy work"]
+    F -- "RenderThread > draw" --> J["GPU-bound rendering"]
+
+    D -- "Blocked on binder" --> K["Check which service<br/>is blocking"]
+    D -- "Blocked on lock" --> L["Contention with<br/>background thread"]
+    D -- "GC pause" --> M["Memory pressure"]
+
+    I --> N["Check onBindViewHolder duration"]
+    N --> O{"Why is bind slow?"}
+    O -- "Image loading" --> P["Load images asynchronously"]
+    O -- "Layout inflation" --> Q["Use ViewHolder pattern correctly"]
+    O -- "Complex layout" --> R["Simplify layout hierarchy"]
+```
+
+### 56.19.5 Step 4: CPU Profile the Hot Path
+
+The Perfetto trace shows that `onBindViewHolder` is taking 25ms on some
+frames.  Let us use simpleperf to understand why:
+
+```bash
+# Record with call graph while scrolling
+adb shell simpleperf record \
+    --app com.example.myapp \
+    --call-graph dwarf \
+    --duration 10 \
+    -o /data/local/tmp/perf.data
+
+# Pull and report
+adb pull /data/local/tmp/perf.data .
+simpleperf report -i perf.data -g --sort comm,dso,symbol
+```
+
+**Sample output:**
+
+```
+Overhead  Command     Shared Object       Symbol
+35.2%     RenderThread libhwui.so         SkImage::makeTextureImage()
+22.1%     main        libjpeg-turbo.so   jpeg_decompress()
+18.3%     main        libmyapp.so        ImageLoader::decode()
+ 8.7%     main        libart.so          art::gc::Heap::ConcurrentCopying
+ 5.2%     main        libc.so            memcpy
+```
+
+The CPU profile reveals that JPEG decompression (`jpeg_decompress()`) is
+happening synchronously on the main thread during view binding.
+
+### 56.19.6 Step 5: Check for Memory Issues
+
+The GC activity in the trace suggests memory pressure.  Let us profile
+allocations:
+
+```bash
+# Use heapprofd to track allocations during scrolling
+cat > /tmp/heap_config.pbtxt << 'EOF'
+buffers { size_kb: 65536 }
+data_sources {
+    config {
+        name: "android.heapprofd"
+        heapprofd_config {
+            sampling_interval_bytes: 4096
+            process_cmdline: "com.example.myapp"
+            shmem_size_bytes: 8388608
+        }
+    }
+}
+duration_ms: 10000
+EOF
+
+adb push /tmp/heap_config.pbtxt /data/local/tmp/
+adb shell perfetto -c /data/local/tmp/heap_config.pbtxt \
+    -o /data/misc/perfetto-traces/heap.perfetto-trace
+
+# Reproduce scrolling
+
+adb pull /data/misc/perfetto-traces/heap.perfetto-trace .
+```
+
+Analyze with trace_processor:
+
+```sql
+SELECT
+    SUM(size) as total_bytes,
+    COUNT(*) as alloc_count,
+    frame_name
+FROM heap_profile_allocation
+JOIN stack_profile_frame ON frame_id = stack_profile_frame.id
+WHERE size > 0
+GROUP BY frame_name
+ORDER BY total_bytes DESC
+LIMIT 10;
+```
+
+**Expected finding**: Large allocations from bitmap decoding during each
+scroll event.
+
+### 56.19.7 Step 6: Verify with dumpsys meminfo
+
+```bash
+# Before scrolling
+adb shell dumpsys meminfo com.example.myapp > meminfo_before.txt
+
+# Scroll vigorously for 30 seconds
+
+# After scrolling
+adb shell dumpsys meminfo com.example.myapp > meminfo_after.txt
+
+# Compare
+diff meminfo_before.txt meminfo_after.txt
+```
+
+**Key metrics to compare:**
+
+```
+                   Before    After     Delta
+Java Heap:          12,345    18,567    +6,222 KB
+Native Heap:        8,901     15,432    +6,531 KB
+Graphics:           4,567     4,567         0 KB
+Total PSS:         35,678    48,321   +12,643 KB
+```
+
+The significant growth in both Java and Native heap during scrolling
+confirms that images are being decoded and not properly cached.
+
+### 56.19.8 Step 7: Root Cause and Fix
+
+The debugging workflow reveals:
+
+1. **Root cause**: Images are being decoded from JPEG on the main thread
+   during `onBindViewHolder`, and no image cache is being used.
+
+2. **Contributing factors**:
+   - Each scroll event triggers new decode operations.
+   - Decoded bitmaps are not cached, causing repeated allocation/GC cycles.
+   - The GC pauses compound the rendering latency.
+
+**Fix strategy:**
+
+```mermaid
+flowchart LR
+    A["Current: Sync decode on main thread"]
+    B["Fix 1: Async decode on background thread"]
+    C["Fix 2: Add LRU image cache"]
+    D["Fix 3: Use thumbnail for scroll, full res on stop"]
+    E["Result: <2ms bind time, 0% jank"]
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+```
+
+### 56.19.9 Step 8: Verify the Fix
+
+After implementing the fix, re-run the same measurements:
+
+```bash
+# Re-collect gfxinfo
+adb shell dumpsys gfxinfo com.example.myapp reset
+# Scroll...
+adb shell dumpsys gfxinfo com.example.myapp
+
+# Expected:
+# Total frames rendered: 510
+# Janky frames: 3 (0.59%)
+# 90th percentile: 10ms
+```
+
+```bash
+# Re-run Perfetto trace to confirm
+adb shell perfetto -c /data/local/tmp/scroll_trace.pbtxt \
+    -o /data/misc/perfetto-traces/scroll_fixed.perfetto-trace
+```
+
+The Perfetto trace should show:
+
+- `onBindViewHolder` completing in < 2ms
+- No GC pauses during scroll
+- Smooth Choreographer frame cadence
+
+### 56.19.10 Debugging Checklist
+
+Use this checklist when debugging performance issues:
+
+```
+[ ] Identify symptom (jank, ANR, slow startup, memory growth)
+[ ] Quantify with dumpsys gfxinfo / Perfetto metrics
+[ ] Capture system trace (Perfetto) to identify which thread/phase is slow
+[ ] CPU profile (simpleperf) the hot functions
+[ ] Memory profile (heapprofd) if GC or allocation-related
+[ ] Check service state (dumpsys) for relevant subsystems
+[ ] Identify root cause
+[ ] Implement fix
+[ ] Re-measure to verify improvement
+[ ] Document findings
+```
 
 ---
 
