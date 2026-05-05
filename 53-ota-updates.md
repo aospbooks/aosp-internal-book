@@ -468,9 +468,9 @@ finally a payload signature.
 ```mermaid
 block-beta
     columns 1
+    hdr_label["Payload Header (24 bytes)"]
     block:cells
         columns 4
-        hdr_label["Payload Header (24 bytes)"]:4
         magic["Magic: 'CrAU'<br/>(4 bytes)"]
         version["Major Version<br/>(8 bytes, uint64)"]
         manifest_size["Manifest Size<br/>(8 bytes, uint64)"]
