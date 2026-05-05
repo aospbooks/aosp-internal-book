@@ -4205,7 +4205,266 @@ gain in AudioFlinger.
 
 ---
 
-## 15.10 Try It
+## 15.10 Debugging and Performance Analysis
+
+### 15.10.1 Audio System Properties
+
+Key system properties that control audio behavior:
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `ro.audio.flinger_standbytime_ms` | 3000 | Standby delay |
+| `af.fast_track_multiplier` | 2 | Fast track buffer multiplier |
+| `aaudio.mmap_policy` | 2 | MMAP usage policy |
+| `aaudio.mmap_exclusive_policy` | 2 | Exclusive MMAP policy |
+| `aaudio.hw_burst_min_usec` | varies | Min HAL burst size |
+| `audio.timestamp.corrected_input_device` | NONE | Timestamp correction |
+
+### 15.10.2 Media Metrics
+
+Every audio operation logs metrics through the MediaMetrics system:
+
+```cpp
+// AudioFlinger.cpp, line 327-329
+    mediametrics::LogItem(mMetricsId)
+        .set(AMEDIAMETRICS_PROP_EVENT,
+             AMEDIAMETRICS_PROP_EVENT_VALUE_CTOR)
+        .record();
+```
+
+Query metrics:
+```bash
+adb shell dumpsys media.metrics --since 60
+```
+
+This shows all audio events from the last 60 seconds, including:
+
+- Track creation/destruction
+- Stream opens/closes
+- Device routing changes
+- Effect enable/disable
+- Underrun/overrun events
+
+### 15.10.3 Systrace Integration
+
+AudioFlinger uses `ATRACE_TAG_AUDIO` for systrace integration:
+
+```cpp
+// AudioFlinger.cpp, line 20
+#define ATRACE_TAG ATRACE_TAG_AUDIO
+```
+
+Key trace points:
+
+- `AudioFlinger::createTrack` -- Track creation latency
+- `write` -- HAL write duration
+- `underrun` -- Underrun detection
+- `AudioTrack::write` -- Client-side write timing
+
+### 15.10.4 Mutex Statistics
+
+AudioFlinger uses `audio_utils::mutex` which tracks lock contention:
+
+```cpp
+// AudioFlinger.cpp, line 820-822
+    writeStr(fd, audio_utils::mutex::all_stats_to_string());
+    writeStr(fd, audio_utils::mutex::all_threads_to_string());
+```
+
+The mutex statistics show:
+
+- Total lock acquisitions
+- Contention count (times a thread had to wait)
+- Maximum wait time
+- Current holders
+
+### 15.10.5 Common Audio Issues
+
+| Issue | Symptom | Diagnosis |
+|-------|---------|-----------|
+| Underrun | Audio glitches/clicks | Check `dumpsys` for underrun counts, increase buffer size |
+| High latency | Noticeable delay | Check if MMAP is available, verify fast track usage |
+| No audio | Silence | Check patches in `dumpsys`, verify device routing |
+| Distortion | Clipped audio | Check volume levels, look for float overflow |
+| Echo | Self-hearing | Check AEC effect is attached to input stream |
+| Routing wrong | Wrong speaker | Check AudioPolicy routing rules |
+
+### 15.10.6 TimerQueue
+
+AudioFlinger uses a TimerQueue for deferred operations:
+
+```cpp
+// AudioFlinger.cpp, line 352
+    ALOGD("%s: TimerQueue %s", __func__,
+            mTimerQueue->ready() ? "ready" : "uninitialized");
+```
+
+The TimerQueue dump is available in stats output:
+
+```cpp
+// AudioFlinger.cpp, line 1005-1006
+        dprintf(fd, "\n ## BEGIN TimerQueue dump\n");
+        dprintf(fd, "%s\n", mTimerQueue->toString().c_str());
+```
+
+### 15.10.7 PowerManager Integration
+
+AudioFlinger integrates with the Android power management system through
+`AudioPowerManager`:
+
+```cpp
+// AudioFlinger.cpp, line 974-979
+        dprintf(fd, "\n ## BEGIN power dump\n");
+        char value[PROPERTY_VALUE_MAX];
+        property_get("ro.build.display.id", value,
+                     "Unknown build");
+        std::string build(value);
+        writeStr(fd, build + "\n");
+        writeStr(fd, media::psh_utils::AudioPowerManager::
+                getAudioPowerManager().toString());
+```
+
+The power manager tracks:
+
+- Wake lock acquisitions and releases per thread
+- Audio activity duration for battery attribution
+- CPU frequency requests for real-time threads
+- Device power state transitions
+
+### 15.10.8 TimeCheck Watchdog
+
+AudioFlinger uses TimeCheck as a watchdog for HAL calls:
+
+```cpp
+// AudioFlinger.cpp, line 816-817
+    dprintf(fd, "\nTimeCheck:\n");
+    writeStr(fd, mediautils::TimeCheck::toString());
+```
+
+TimeCheck monitors binder calls to the HAL. If a HAL call takes longer
+than the configured timeout, it logs a warning and may trigger a HAL
+restart to prevent the entire audio system from hanging.
+
+### 15.10.9 Deadlock Detection
+
+AudioFlinger's dump system detects potential deadlocks:
+
+```cpp
+// AudioFlinger.cpp, line 109-112
+constexpr auto kDeadlockedString =
+        "AudioFlinger may be deadlocked\n"sv;
+constexpr auto kHardwareLockedString =
+        "Hardware lock is taken\n"sv;
+constexpr auto kClientLockedString =
+        "Client lock is taken\n"sv;
+```
+
+During dump, it uses `FallibleLockGuard` which attempts to acquire locks
+without blocking:
+
+```cpp
+// AudioFlinger.cpp, line 916-926
+    {
+        FallibleLockGuard l{hardwareMutex()};
+        if (!l) writeStr(fd, kHardwareLockedString);
+    }
+    {
+        FallibleLockGuard l{mutex()};
+        if (!l) writeStr(fd, kDeadlockedString);
+        {
+            FallibleLockGuard ll{clientMutex()};
+            if (!ll) writeStr(fd, kClientLockedString);
+            dumpClients_ll(fd, parsedArgs.shouldDumpMem);
+        }
+```
+
+If any lock cannot be acquired during dump, it reports the condition but
+continues dumping whatever state is available without the lock. This ensures
+that `dumpsys` never hangs even when the audio system is in trouble.
+
+### 15.10.10 Memory Leak Detection
+
+AudioFlinger can dump unreachable memory for leak detection:
+
+```cpp
+// AudioFlinger.cpp, line 1009-1015
+    if (parsedArgs.shouldDumpMem) {
+        dprintf(fd, "\n ## BEGIN memory dump \n");
+        writeStr(fd, dumpMemoryAddresses(100 /* limit */));
+        dprintf(fd, "\nDumping unreachable memory:\n");
+        writeStr(fd, GetUnreachableMemoryString(
+                true /* contents */, 100 /* limit */));
+    }
+```
+
+This uses the `memunreachable` library to find memory that is still
+allocated but no longer referenced -- a sign of memory leaks. Run it with:
+
+```bash
+adb shell dumpsys media.audio_flinger --memory
+```
+
+### 15.10.11 Battery Attribution
+
+AudioFlinger tracks battery usage per client UID:
+
+```cpp
+// AudioFlinger.cpp, line 323
+    BatteryNotifier::getInstance().noteResetAudio();
+```
+
+When a track starts or stops, battery attribution is updated:
+
+```cpp
+// Threads.cpp, line 3546-3553
+#ifdef ADD_BATTERY_DATA
+    for (const auto& track : tracksToRemove) {
+        if (track->isExternalTrack()) {
+            addBatteryData(
+                IMediaPlayerService::kBatteryDataAudioFlingerStop);
+        }
+    }
+#endif
+```
+
+This allows the system to accurately report how much battery each
+application is consuming through audio playback.
+
+### 15.10.12 Performance Benchmarks
+
+Typical latency values for different paths:
+
+```mermaid
+gantt
+    title Audio Latency by Path
+    dateFormat X
+    axisFormat %s ms
+
+    section MMAP Exclusive
+    HAL buffer        :0, 2
+    Total             :0, 2
+
+    section Fast Track
+    Client buffer     :0, 5
+    FastMixer cycle   :5, 10
+    HAL buffer        :10, 15
+    Total             :0, 15
+
+    section Normal Mixer
+    Client buffer     :0, 10
+    Mixer cycle 20ms  :10, 30
+    HAL buffer        :30, 40
+    Total             :0, 40
+
+    section Offload
+    Client buffer     :0, 20
+    HAL decode+buffer :20, 100
+    Total             :0, 100
+```
+
+---
+
+## 15.11 Try It
 
 ### Exercise 1: Dump the Audio System State
 
@@ -4615,265 +4874,6 @@ Devices with spatial audio support may show:
 
 - `AUDIO_LATENCY_MODE_FREE` -- No latency constraint
 - `AUDIO_LATENCY_MODE_LOW` -- Low latency for head tracking
-
----
-
-## 15.11 Debugging and Performance Analysis
-
-### 15.11.1 Audio System Properties
-
-Key system properties that control audio behavior:
-
-| Property | Default | Description |
-|----------|---------|-------------|
-| `ro.audio.flinger_standbytime_ms` | 3000 | Standby delay |
-| `af.fast_track_multiplier` | 2 | Fast track buffer multiplier |
-| `aaudio.mmap_policy` | 2 | MMAP usage policy |
-| `aaudio.mmap_exclusive_policy` | 2 | Exclusive MMAP policy |
-| `aaudio.hw_burst_min_usec` | varies | Min HAL burst size |
-| `audio.timestamp.corrected_input_device` | NONE | Timestamp correction |
-
-### 15.11.2 Media Metrics
-
-Every audio operation logs metrics through the MediaMetrics system:
-
-```cpp
-// AudioFlinger.cpp, line 327-329
-    mediametrics::LogItem(mMetricsId)
-        .set(AMEDIAMETRICS_PROP_EVENT,
-             AMEDIAMETRICS_PROP_EVENT_VALUE_CTOR)
-        .record();
-```
-
-Query metrics:
-```bash
-adb shell dumpsys media.metrics --since 60
-```
-
-This shows all audio events from the last 60 seconds, including:
-
-- Track creation/destruction
-- Stream opens/closes
-- Device routing changes
-- Effect enable/disable
-- Underrun/overrun events
-
-### 15.11.3 Systrace Integration
-
-AudioFlinger uses `ATRACE_TAG_AUDIO` for systrace integration:
-
-```cpp
-// AudioFlinger.cpp, line 20
-#define ATRACE_TAG ATRACE_TAG_AUDIO
-```
-
-Key trace points:
-
-- `AudioFlinger::createTrack` -- Track creation latency
-- `write` -- HAL write duration
-- `underrun` -- Underrun detection
-- `AudioTrack::write` -- Client-side write timing
-
-### 15.11.4 Mutex Statistics
-
-AudioFlinger uses `audio_utils::mutex` which tracks lock contention:
-
-```cpp
-// AudioFlinger.cpp, line 820-822
-    writeStr(fd, audio_utils::mutex::all_stats_to_string());
-    writeStr(fd, audio_utils::mutex::all_threads_to_string());
-```
-
-The mutex statistics show:
-
-- Total lock acquisitions
-- Contention count (times a thread had to wait)
-- Maximum wait time
-- Current holders
-
-### 15.11.5 Common Audio Issues
-
-| Issue | Symptom | Diagnosis |
-|-------|---------|-----------|
-| Underrun | Audio glitches/clicks | Check `dumpsys` for underrun counts, increase buffer size |
-| High latency | Noticeable delay | Check if MMAP is available, verify fast track usage |
-| No audio | Silence | Check patches in `dumpsys`, verify device routing |
-| Distortion | Clipped audio | Check volume levels, look for float overflow |
-| Echo | Self-hearing | Check AEC effect is attached to input stream |
-| Routing wrong | Wrong speaker | Check AudioPolicy routing rules |
-
-### 15.11.6 TimerQueue
-
-AudioFlinger uses a TimerQueue for deferred operations:
-
-```cpp
-// AudioFlinger.cpp, line 352
-    ALOGD("%s: TimerQueue %s", __func__,
-            mTimerQueue->ready() ? "ready" : "uninitialized");
-```
-
-The TimerQueue dump is available in stats output:
-
-```cpp
-// AudioFlinger.cpp, line 1005-1006
-        dprintf(fd, "\n ## BEGIN TimerQueue dump\n");
-        dprintf(fd, "%s\n", mTimerQueue->toString().c_str());
-```
-
-### 15.11.7 PowerManager Integration
-
-AudioFlinger integrates with the Android power management system through
-`AudioPowerManager`:
-
-```cpp
-// AudioFlinger.cpp, line 974-979
-        dprintf(fd, "\n ## BEGIN power dump\n");
-        char value[PROPERTY_VALUE_MAX];
-        property_get("ro.build.display.id", value,
-                     "Unknown build");
-        std::string build(value);
-        writeStr(fd, build + "\n");
-        writeStr(fd, media::psh_utils::AudioPowerManager::
-                getAudioPowerManager().toString());
-```
-
-The power manager tracks:
-
-- Wake lock acquisitions and releases per thread
-- Audio activity duration for battery attribution
-- CPU frequency requests for real-time threads
-- Device power state transitions
-
-### 15.11.8 TimeCheck Watchdog
-
-AudioFlinger uses TimeCheck as a watchdog for HAL calls:
-
-```cpp
-// AudioFlinger.cpp, line 816-817
-    dprintf(fd, "\nTimeCheck:\n");
-    writeStr(fd, mediautils::TimeCheck::toString());
-```
-
-TimeCheck monitors binder calls to the HAL. If a HAL call takes longer
-than the configured timeout, it logs a warning and may trigger a HAL
-restart to prevent the entire audio system from hanging.
-
-### 15.11.9 Deadlock Detection
-
-AudioFlinger's dump system detects potential deadlocks:
-
-```cpp
-// AudioFlinger.cpp, line 109-112
-constexpr auto kDeadlockedString =
-        "AudioFlinger may be deadlocked\n"sv;
-constexpr auto kHardwareLockedString =
-        "Hardware lock is taken\n"sv;
-constexpr auto kClientLockedString =
-        "Client lock is taken\n"sv;
-```
-
-During dump, it uses `FallibleLockGuard` which attempts to acquire locks
-without blocking:
-
-```cpp
-// AudioFlinger.cpp, line 916-926
-    {
-        FallibleLockGuard l{hardwareMutex()};
-        if (!l) writeStr(fd, kHardwareLockedString);
-    }
-    {
-        FallibleLockGuard l{mutex()};
-        if (!l) writeStr(fd, kDeadlockedString);
-        {
-            FallibleLockGuard ll{clientMutex()};
-            if (!ll) writeStr(fd, kClientLockedString);
-            dumpClients_ll(fd, parsedArgs.shouldDumpMem);
-        }
-```
-
-If any lock cannot be acquired during dump, it reports the condition but
-continues dumping whatever state is available without the lock. This ensures
-that `dumpsys` never hangs even when the audio system is in trouble.
-
-### 15.11.10 Memory Leak Detection
-
-AudioFlinger can dump unreachable memory for leak detection:
-
-```cpp
-// AudioFlinger.cpp, line 1009-1015
-    if (parsedArgs.shouldDumpMem) {
-        dprintf(fd, "\n ## BEGIN memory dump \n");
-        writeStr(fd, dumpMemoryAddresses(100 /* limit */));
-        dprintf(fd, "\nDumping unreachable memory:\n");
-        writeStr(fd, GetUnreachableMemoryString(
-                true /* contents */, 100 /* limit */));
-    }
-```
-
-This uses the `memunreachable` library to find memory that is still
-allocated but no longer referenced -- a sign of memory leaks. Run it with:
-
-```bash
-adb shell dumpsys media.audio_flinger --memory
-```
-
-### 15.11.11 Battery Attribution
-
-AudioFlinger tracks battery usage per client UID:
-
-```cpp
-// AudioFlinger.cpp, line 323
-    BatteryNotifier::getInstance().noteResetAudio();
-```
-
-When a track starts or stops, battery attribution is updated:
-
-```cpp
-// Threads.cpp, line 3546-3553
-#ifdef ADD_BATTERY_DATA
-    for (const auto& track : tracksToRemove) {
-        if (track->isExternalTrack()) {
-            addBatteryData(
-                IMediaPlayerService::kBatteryDataAudioFlingerStop);
-        }
-    }
-#endif
-```
-
-This allows the system to accurately report how much battery each
-application is consuming through audio playback.
-
-### 15.11.12 Performance Benchmarks
-
-Typical latency values for different paths:
-
-```mermaid
-gantt
-    title Audio Latency by Path
-    dateFormat X
-    axisFormat %s ms
-
-    section MMAP Exclusive
-    HAL buffer        :0, 2
-    Total             :0, 2
-
-    section Fast Track
-    Client buffer     :0, 5
-    FastMixer cycle   :5, 10
-    HAL buffer        :10, 15
-    Total             :0, 15
-
-    section Normal Mixer
-    Client buffer     :0, 10
-    Mixer cycle 20ms  :10, 30
-    HAL buffer        :30, 40
-    Total             :0, 40
-
-    section Offload
-    Client buffer     :0, 20
-    HAL decode+buffer :20, 100
-    Total             :0, 100
-```
 
 ## Summary
 
