@@ -9,20 +9,6 @@ drives the entire design of `RemoteViews`, `AppWidgetService`, and the new
 `RemoteViews`' action serialization and inflation pipeline, and finally into the
 RemoteCompose engine that may eventually replace the XML-layout approach altogether.
 
-Key source paths we will reference throughout:
-
-| Component | Path |
-|---|---|
-| AppWidget framework | `frameworks/base/core/java/android/appwidget/` |
-| AppWidget service | `frameworks/base/services/appwidget/java/com/android/server/appwidget/` |
-| RemoteViews | `frameworks/base/core/java/android/widget/RemoteViews.java` (10,874 lines) |
-| RemoteViewsService | `frameworks/base/core/java/android/widget/RemoteViewsService.java` (321 lines) |
-| RemoteViewsAdapter | `frameworks/base/core/java/android/widget/RemoteViewsAdapter.java` (1,305 lines) |
-| RemoteCompose core | `frameworks/base/core/java/com/android/internal/widget/remotecompose/core/` |
-| RemoteCompose player | `frameworks/base/core/java/com/android/internal/widget/remotecompose/player/` |
-| Launcher3 widgets | `packages/apps/Launcher3/src/com/android/launcher3/widget/` |
-| SystemUI notifications | `frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/notification/row/` |
-
 ---
 
 ## 43.1 AppWidget Framework
