@@ -1,10 +1,5 @@
 # Chapter 32: Account and Sync Framework
 
-> *"The Account and Sync framework is the invisible plumbing that keeps your
-> email in sync, your contacts current, and your calendar up to date -- all
-> while respecting battery budgets, network constraints, and the user's
-> explicit synchronization preferences."*
-
 Android's Account and Sync framework provides two tightly coupled
 subsystems: **AccountManager** for credential storage and authentication
 token management, and **SyncManager** for scheduling and executing
