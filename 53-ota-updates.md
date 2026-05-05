@@ -461,24 +461,23 @@ Source: system/update_engine/payload_consumer/payload_constants.cc
         system/update_engine/payload_consumer/payload_metadata.cc
 ```
 
-The payload begins with a fixed header, followed by a serialized protobuf
-manifest, an optional metadata signature, the binary data blobs, and finally
-a payload signature.
+The payload begins with a fixed 24-byte header, followed by a serialized
+protobuf manifest, an optional metadata signature, the binary data blobs, and
+finally a payload signature.
 
 ```mermaid
-block-beta
-    columns 1
-    block:header["Payload Header (24 bytes)"]
-        columns 4
-        magic["Magic: 'CrAU'<br/>(4 bytes)"]
-        version["Major Version<br/>(8 bytes, uint64)"]
-        manifest_size["Manifest Size<br/>(8 bytes, uint64)"]
-        sig_size["Metadata Sig Size<br/>(4 bytes, uint32)"]
-    end
+flowchart TB
+    hdr["<b>Payload Header (24 bytes)</b>"]
+    magic["Magic: 'CrAU'<br/>(4 bytes)"]
+    version["Major Version<br/>(8 bytes, uint64)"]
+    manifest_size["Manifest Size<br/>(8 bytes, uint64)"]
+    sig_size["Metadata Sig Size<br/>(4 bytes, uint32)"]
     manifest["DeltaArchiveManifest (protobuf)<br/>Partition list, operations, block size, timestamps"]
     metadata_sig["Metadata Signature<br/>(variable, size from header)"]
     blobs["Binary Data Blobs<br/>Compressed/raw data for operations"]
     payload_sig["Payload Signature<br/>(appended at end)"]
+    hdr --> magic & version & manifest_size & sig_size --> manifest
+    manifest --> metadata_sig --> blobs --> payload_sig
 ```
 
 The header fields are parsed in `PayloadMetadata::ParsePayloadHeader`:
