@@ -66,7 +66,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | XI | 47 | SystemUI (Monet/Keyguard) | UNDER REVIEW |
 | XI | 48 | Launcher3 | UNDER REVIEW |
 | XI | 49 | Settings | UNDER REVIEW |
-| XII | 50 | AI & AppFunctions (Computer Control) | UNDER REVIEW |
+| XII | 50 | AI & AppFunctions (Computer Control) | REVIEWED |
 | XII | 51 | Companion & Virtual Devices | UNDER REVIEW |
 | XIII | 52 | Mainline Modules (APEX) | UNDER REVIEW |
 | XIII | 53 | OTA Updates | REVIEWED |
