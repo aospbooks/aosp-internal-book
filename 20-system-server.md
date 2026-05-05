@@ -1862,290 +1862,9 @@ during normal operation.
 
 ---
 
-## 20.7 Try It
+## 20.7 Deep Dive: Key Service Internals
 
-### 20.7.1 Listing All System Services
-
-Use `service list` to see all registered Binder services:
-
-```bash
-adb shell service list
-```
-
-This produces output like:
-
-```
-Found 290 services:
-0	DockObserver: [android.os.IBinder]
-1	SurfaceFlinger: [android.ui.ISurfaceComposer]
-2	accessibility: [android.view.accessibility.IAccessibilityManager]
-3	account: [android.accounts.IAccountManager]
-4	activity: [android.app.IActivityManager]
-5	activity_task: [android.app.IActivityTaskManager]
-...
-```
-
-Count the total:
-
-```bash
-adb shell service list | head -1
-```
-
-### 20.7.2 Inspecting system_server Process
-
-View basic process information:
-
-```bash
-# Process ID
-adb shell pidof system_server
-
-# Thread count
-adb shell ls /proc/$(adb shell pidof system_server)/task | wc -l
-
-# Process status
-adb shell cat /proc/$(adb shell pidof system_server)/status | head -20
-
-# Memory usage
-adb shell dumpsys meminfo system_server
-```
-
-### 20.7.3 Dumpsys Commands
-
-`dumpsys` is the primary tool for inspecting service state. Each service
-implements a `dump()` method:
-
-```bash
-# Dump all services (very long!)
-adb shell dumpsys
-
-# Dump a specific service
-adb shell dumpsys activity
-adb shell dumpsys window
-adb shell dumpsys package
-adb shell dumpsys power
-adb shell dumpsys notification
-adb shell dumpsys audio
-adb shell dumpsys connectivity
-adb shell dumpsys display
-adb shell dumpsys input
-adb shell dumpsys alarm
-adb shell dumpsys jobscheduler
-adb shell dumpsys battery
-adb shell dumpsys usagestats
-adb shell dumpsys deviceidle
-
-# Dump the SystemServer dumper for internal state
-adb shell dumpsys system_server_dumper
-adb shell dumpsys system_server_dumper --list
-adb shell dumpsys system_server_dumper --name SystemServer
-adb shell dumpsys system_server_dumper --name Watchdog
-```
-
-### 20.7.4 Inspecting Boot Phases
-
-Boot phase transitions are logged and can be traced:
-
-```bash
-# View boot timing events
-adb shell logcat -b events | grep boot_progress
-
-# View SystemServer timing tags
-adb shell logcat -s SystemServerTiming
-
-# Full boot tracing with Perfetto
-adb shell perfetto -o /data/misc/perfetto-traces/boot.pb \
-    -c - <<EOF
-buffers: { size_kb: 65536 }
-data_sources: {
-    config {
-        name: "android.log"
-        android_log_config {
-            log_ids: LID_EVENTS
-        }
-    }
-}
-duration_ms: 60000
-EOF
-```
-
-### 20.7.5 Observing Service Start Order
-
-The SystemServer logs each service start with timing information:
-
-```bash
-# Filter for service start messages
-adb shell logcat -s SystemServer SystemServiceManager
-
-# Look for specific boot phase transitions
-adb shell logcat | grep -E "PHASE_|startBootPhase"
-```
-
-### 20.7.6 Watchdog Diagnostics
-
-```bash
-# Dump Watchdog state
-adb shell dumpsys system_server_dumper --name Watchdog
-
-# View Watchdog-related logs
-adb shell logcat -s Watchdog
-
-# Check for past Watchdog kills
-adb shell logcat -b crash | grep -i watchdog
-
-# View timeout history
-adb shell cat /data/system/watchdog-timeout-history.txt
-```
-
-### 20.7.7 Thread Inspection
-
-```bash
-# List all system_server threads with names
-adb shell ps -T -p $(adb shell pidof system_server)
-
-# View specific named threads
-adb shell ps -T -p $(adb shell pidof system_server) | grep -E \
-    "android\.(display|anim|ui|fg|io|bg|perm)|Binder:|watchdog"
-
-# Get Java thread dump (sends SIGQUIT)
-adb shell kill -3 $(adb shell pidof system_server)
-# Then check /data/anr/ for the trace file
-adb shell ls -la /data/anr/
-```
-
-### 20.7.8 Service Dependencies and Boot Timing
-
-```bash
-# View how long each service took to start
-adb shell logcat -s SystemServerTimingAsync SystemServerTiming | \
-    grep -E "traceBegin|traceEnd"
-
-# Check if a specific service is running
-adb shell service check activity
-adb shell service check window
-adb shell service check package
-
-# Call a service directly
-adb shell service call activity 1  # IBinder.FIRST_CALL_TRANSACTION
-```
-
-### 20.7.9 Examining SystemServiceManager State
-
-```bash
-# Dump all registered system services
-adb shell dumpsys system_server_dumper --name SystemServiceManager
-```
-
-This shows:
-
-- All registered services and their classes
-- Current boot phase
-- Service start times
-- Active user IDs
-
-### 20.7.10 Monitoring Binder Thread Pool
-
-```bash
-# Check Binder thread usage
-adb shell cat /proc/$(adb shell pidof system_server)/status | \
-    grep Threads
-
-# View Binder calls stats
-adb shell dumpsys binder_calls_stats
-
-# View specific Binder transaction information
-adb shell cat /sys/kernel/debug/binder/proc/$(adb shell pidof system_server) \
-    2>/dev/null | head -50
-```
-
-### 20.7.11 Forcing a Watchdog Timeout (Development Only)
-
-On userdebug/eng builds, you can test the Watchdog by inducing a deadlock.
-**WARNING: This will crash system_server and restart the runtime.**
-
-```bash
-# Reduce watchdog timeout (settings must be available)
-adb shell settings put global watchdog_timeout_millis 10000
-
-# Or use the debug property
-adb shell setprop persist.sys.debug.watchdog_timeout 10
-```
-
-### 20.7.12 Tracing Service Startup with Perfetto
-
-```bash
-# Record a boot trace
-adb shell setprop persist.debug.atrace.boottrace 1
-adb shell setprop persist.traced.enable 1
-
-# After reboot, pull the trace
-adb pull /data/misc/perfetto-traces/boottrace.perfetto-trace
-
-# Open in ui.perfetto.dev
-```
-
-The trace will show all the `TimingsTraceAndSlog` spans from SystemServer,
-including every service start and boot phase transition, with precise
-timestamps.
-
-### 20.7.13 Simulating Boot Phases
-
-You can watch boot phases progress in real time during a reboot:
-
-```bash
-# Reboot and immediately start capturing
-adb reboot && sleep 5 && adb wait-for-device && \
-    adb logcat -s SystemServiceManager | grep -i phase
-```
-
-Expected output sequence:
-
-```
-SystemServiceManager: Starting phase 100
-SystemServiceManager: Starting phase 200
-SystemServiceManager: Starting phase 480
-SystemServiceManager: Starting phase 500
-SystemServiceManager: Starting phase 520
-SystemServiceManager: Starting phase 550
-SystemServiceManager: Starting phase 600
-SystemServiceManager: Starting phase 1000
-```
-
-### 20.7.14 Examining Service Registration
-
-To see how a specific service is registered:
-
-```bash
-# Check if a service exists and get its interface descriptor
-adb shell service check activity
-adb shell service check window
-adb shell service check package
-
-# Get service debug info (PID, interface)
-adb shell dumpsys -l
-```
-
-### 20.7.15 Monitoring Looper Statistics
-
-```bash
-# Dump looper statistics to see message processing times
-adb shell dumpsys looper_stats
-
-# This shows for each looper:
-# - Message count
-# - Total time
-# - Max time
-# - Exception count
-```
-
-This data comes from the `LooperStatsService` started in
-`startCoreServices()` and is invaluable for identifying which messages
-are slow on which threads.
-
----
-
-## 20.8 Deep Dive: Key Service Internals
-
-### 20.8.1 ActivityManagerService and ActivityTaskManagerService
+### 20.7.1 ActivityManagerService and ActivityTaskManagerService
 
 The ActivityManagerService (AMS) and ActivityTaskManagerService (ATMS) are
 the most important services in `system_server`. They were originally a
@@ -2216,7 +1935,7 @@ service and sets up the system process's ApplicationInfo. The Watchdog
 initialization requires AMS for registering the reboot broadcast
 receiver.
 
-### 20.8.2 WindowManagerService
+### 20.7.2 WindowManagerService
 
 WindowManagerService (WMS) manages all windows on the device -- app
 windows, status bar, navigation bar, dialogs, toasts, and more. It is
@@ -2269,7 +1988,7 @@ This dance of cross-references is why WMS, AMS, InputManager, and
 DisplayManager are all in the bootstrap/early-other phase -- they cannot
 function independently.
 
-### 20.8.3 PackageManagerService
+### 20.7.3 PackageManagerService
 
 PackageManagerService (PMS) manages all installed packages (APKs), their
 permissions, components, and metadata. It is so large and complex that
@@ -2305,7 +2024,7 @@ package scan can take many seconds (or even minutes on first boot with
 many pre-installed apps). Without the pause, the Watchdog would kill
 `system_server` during a legitimate long operation.
 
-### 20.8.4 PowerManagerService
+### 20.7.4 PowerManagerService
 
 PowerManagerService manages the device's power state -- wake locks,
 display power, doze mode, battery saver, and shutdown.
@@ -2331,7 +2050,7 @@ mActivityManagerService.initPowerManagement();
 t.traceEnd();
 ```
 
-### 20.8.5 NotificationManagerService
+### 20.7.5 NotificationManagerService
 
 NotificationManagerService (NMS) manages all notifications, channels,
 notification policies, and interactions with the status bar.
@@ -2352,7 +2071,7 @@ NMS depends on StorageManagerService (for media/USB notifications),
 which is why StorageManager starts first when the filesystem is
 available.
 
-### 20.8.6 DisplayManagerService
+### 20.7.6 DisplayManagerService
 
 DisplayManagerService manages physical and virtual displays, display
 power state, and display adapters.
@@ -2382,9 +2101,9 @@ correct resources for the device's density.
 
 ---
 
-## 20.9 Service Communication Patterns
+## 20.8 Service Communication Patterns
 
-### 20.9.1 Binder Services vs. Local Services
+### 20.8.1 Binder Services vs. Local Services
 
 Services in `system_server` communicate through two distinct patterns:
 
@@ -2419,7 +2138,7 @@ The dual-interface pattern is extremely common. For example, PowerManager:
 - **Local**: `PowerManagerInternal` -- for system services to force
   display on/off, override wake lock behavior, etc.
 
-### 20.9.2 The Lifecycle Inner Class Pattern
+### 20.8.2 The Lifecycle Inner Class Pattern
 
 Many services use an inner `Lifecycle` class that extends `SystemService`:
 
@@ -2453,7 +2172,7 @@ This pattern separates the Binder stub implementation (the outer class)
 from the lifecycle management (the inner class). The `Lifecycle` class
 is what `SystemServiceManager` instantiates and manages.
 
-### 20.9.3 Service Dependencies
+### 20.8.3 Service Dependencies
 
 Service dependencies in `system_server` are not formally declared (unlike
 dependency injection frameworks). Instead, they are implicit in the
@@ -2472,7 +2191,7 @@ There have been multiple attempts to formalize dependencies:
 However, for the most part, the start order in `SystemServer.java` remains
 the primary dependency mechanism.
 
-### 20.9.4 Cross-Service Communication via Handlers
+### 20.8.4 Cross-Service Communication via Handlers
 
 When one service needs to notify another asynchronously, it posts a
 message to the target service's handler. For example, when
@@ -2486,7 +2205,7 @@ Common patterns:
 3. **Local service callbacks**: Register a listener interface with
    `LocalServices.getService()` and call it directly
 
-### 20.9.5 The SystemServer Dumper
+### 20.8.5 The SystemServer Dumper
 
 SystemServer registers a special `system_server_dumper` Binder service
 (line 974) that acts as a central dump coordinator:
@@ -2514,9 +2233,9 @@ specific Binder service.
 
 ---
 
-## 20.10 Error Handling and Recovery
+## 20.9 Error Handling and Recovery
 
-### 20.10.1 The reportWtf Pattern
+### 20.9.1 The reportWtf Pattern
 
 Throughout `SystemServer.java`, failed service starts are caught with
 a consistent pattern (line 1095-1098):
@@ -2534,7 +2253,7 @@ builds, can trigger additional diagnostic actions. Most service start
 failures are caught and reported with `reportWtf()` rather than crashing
 `system_server`, because a partial system is better than no system at all.
 
-### 20.10.2 Early WTF Handling
+### 20.9.2 Early WTF Handling
 
 Before AMS is fully initialized, WTFs cannot be immediately processed
 (there is no dropbox yet). `SystemServer` buffers them (lines 1015-1016):
@@ -2556,7 +2275,7 @@ synchronized (SystemService.class) {
 }
 ```
 
-### 20.10.3 Pending Shutdown Check
+### 20.9.3 Pending Shutdown Check
 
 Before starting services, `SystemServer` checks if a shutdown was pending
 from a previous session (lines 1100-1150):
@@ -2578,7 +2297,7 @@ This handles the case where the device was in the middle of a reboot
 (e.g., for an OTA update) when it crashed. The pending reboot is
 completed before normal boot continues.
 
-### 20.10.4 Safe Mode
+### 20.9.4 Safe Mode
 
 Safe mode is detected after WindowManagerService starts (line 1851):
 
@@ -2598,7 +2317,7 @@ In safe mode:
 - Third-party services may be restricted
 - The system shows a safe mode overlay
 
-### 20.10.5 FD Leak Detection
+### 20.9.5 FD Leak Detection
 
 On debug builds, `SystemServer` spawns a thread to monitor file descriptor
 usage (line 642-695):
@@ -2620,7 +2339,7 @@ The thread periodically checks the highest file descriptor number:
 This prevents a slow FD leak from eventually causing mysterious failures
 when the process runs out of file descriptors.
 
-### 20.10.6 CriticalEventLog
+### 20.9.6 CriticalEventLog
 
 After all services start, a critical event is logged (line 1038):
 
@@ -2636,9 +2355,9 @@ action (such as entering recovery mode or disabling problematic apps).
 
 ---
 
-## 20.11 Performance Considerations
+## 20.10 Performance Considerations
 
-### 20.11.1 Boot Time Optimization
+### 20.10.1 Boot Time Optimization
 
 `SystemServer` uses several strategies to minimize boot time:
 
@@ -2690,7 +2409,7 @@ if (!mRuntimeRestart && !isFirstBootOrUpgrade()) {
 
 A WTF is logged if boot takes longer than 60 seconds.
 
-### 20.11.2 Memory Optimization
+### 20.10.2 Memory Optimization
 
 Early in `run()`, `system_server` clears its growth limit (line 911):
 
@@ -2703,7 +2422,7 @@ Normal apps have a heap growth limit (typically 256MB or 512MB), but
 `system_server` removes this limit because it needs to manage the entire
 system's state, which can require significant memory.
 
-### 20.11.3 Binder Performance
+### 20.10.3 Binder Performance
 
 Several optimizations ensure Binder IPC performance:
 
@@ -2744,7 +2463,7 @@ Binder.setTransactionCallback(new IBinderCallback() {
 This detects when a frozen (cached) process receives a Binder transaction
 that fails, which is important for managing process lifecycle.
 
-### 20.11.4 Slow Log Thresholds
+### 20.10.4 Slow Log Thresholds
 
 Each thread has configurable slow dispatch and delivery thresholds:
 
@@ -2772,16 +2491,16 @@ The definitions:
 
 ---
 
-## 20.12 APEX Module Service Loading
+## 20.11 APEX Module Service Loading
 
-### 20.12.1 The Modularization Challenge
+### 20.11.1 The Modularization Challenge
 
 As Android modularized via Project Mainline, services that were previously
 compiled into `services.jar` needed to be loaded from module-delivered
 APEXes. This created a challenge: how to load a `SystemService` subclass
 from a JAR that is not on the default classpath.
 
-### 20.12.2 SystemServerClassLoaderFactory
+### 20.11.2 SystemServerClassLoaderFactory
 
 The `SystemServiceManager.startServiceFromJar()` method creates a
 `PathClassLoader` for each standalone JAR:
@@ -2808,7 +2527,7 @@ The class loader hierarchy:
 3. `SystemServerClassLoaderFactory` caches class loaders so the same
    APEX JAR is not loaded multiple times.
 
-### 20.12.3 Service Lifecycle with Modules
+### 20.11.3 Service Lifecycle with Modules
 
 APEX-delivered services participate in the same lifecycle as built-in
 services. They receive boot phase callbacks, user lifecycle events, and
@@ -2833,7 +2552,7 @@ private static final String WIFI_SERVICE_CLASS =
         "com.android.server.wifi.WifiService";
 ```
 
-### 20.12.4 Complete APEX JAR Paths
+### 20.11.4 Complete APEX JAR Paths
 
 Here is the complete mapping of APEX paths used in `SystemServer.java`:
 
@@ -2852,9 +2571,9 @@ Here is the complete mapping of APEX paths used in `SystemServer.java`:
 
 ---
 
-## 20.13 Device-Specific and Form-Factor Services
+## 20.12 Device-Specific and Form-Factor Services
 
-### 20.13.1 Device-Specific Services
+### 20.12.1 Device-Specific Services
 
 After the standard services start, `SystemServer` loads OEM-specific
 services from a resource array (lines 3232-3244):
@@ -2879,7 +2598,7 @@ OEMs populate `config_deviceSpecificSystemServices` in their device
 overlays to add custom system services without modifying
 `SystemServer.java`.
 
-### 20.13.2 Watch-Specific Services
+### 20.12.2 Watch-Specific Services
 
 Wear OS devices start several additional services:
 
@@ -2902,7 +2621,7 @@ Wear OS devices start several additional services:
 These are defined in the `com.android.clockwork` package and loaded from
 the `PRODUCT_SYSTEM_SERVER_JARS` classpath.
 
-### 20.13.3 Automotive-Specific Services
+### 20.12.3 Automotive-Specific Services
 
 Automotive (Android Automotive OS) devices start:
 
@@ -2917,7 +2636,7 @@ The `CarServiceHelperService` bridges the system server to the Car
 Service, which runs in a separate process and manages automotive-specific
 features like vehicle HAL, cabin controls, and driving safety.
 
-### 20.13.4 TV-Specific Services
+### 20.12.4 TV-Specific Services
 
 TV devices get additional media services:
 
@@ -2929,7 +2648,7 @@ TV devices get additional media services:
 | `isTv` | TvRemoteService |
 | `isTv` and `mediaQualityFw()` | MediaQualityService |
 
-### 20.13.5 IoT Services
+### 20.12.5 IoT Services
 
 Embedded/IoT devices running Android Things:
 
@@ -2944,9 +2663,9 @@ if (RoSystemFeatures.hasFeatureEmbedded(context)) {
 
 ---
 
-## 20.14 SystemUI Launch
+## 20.13 SystemUI Launch
 
-### 20.14.1 The Final Step
+### 20.13.1 The Final Step
 
 After all services are running and all boot phases have completed, the
 very last step before entering the main loop is launching SystemUI
@@ -2967,7 +2686,7 @@ but it is started by `system_server` because it provides the status bar,
 navigation bar, notification shade, quick settings, and other critical
 UI elements.
 
-### 20.14.2 The Boot Completed Phase
+### 20.13.2 The Boot Completed Phase
 
 After SystemUI starts, the final boot phase is dispatched:
 
@@ -2983,7 +2702,7 @@ now:
 - Begin collecting statistics
 - Enable features that depend on the complete system
 
-### 20.14.3 The Infinite Loop
+### 20.13.3 The Infinite Loop
 
 Finally, the main thread enters the event loop (line 1081):
 
@@ -3024,9 +2743,9 @@ graph TB
 
 ---
 
-## 20.15 Debugging system_server
+## 20.14 Debugging system_server
 
-### 20.15.1 Common Failure Modes
+### 20.14.1 Common Failure Modes
 
 | Symptom | Likely Cause | Diagnosis |
 |---------|-------------|-----------|
@@ -3037,7 +2756,7 @@ graph TB
 | Memory pressure | Heap too large or leak | Check `dumpsys meminfo system_server` |
 | System UI crash | SystemUI process died | Check logcat for SystemUI crashes |
 
-### 20.15.2 Getting Thread Dumps
+### 20.14.2 Getting Thread Dumps
 
 Java thread dumps are the most useful diagnostic tool for `system_server`
 issues:
@@ -3059,7 +2778,7 @@ The trace file contains:
 - Thread states (RUNNABLE, BLOCKED, WAITING, etc.)
 - Monitor information (which thread holds which lock)
 
-### 20.15.3 Identifying Deadlocks
+### 20.14.3 Identifying Deadlocks
 
 A classic `system_server` deadlock involves two services holding locks
 and waiting for each other. The thread dump will show:
@@ -3079,7 +2798,7 @@ and waiting for each other. The thread dump will show:
 This shows thread 12 waiting for a lock held by thread 15, while
 thread 15 waits for a lock held by thread 12 -- a classic deadlock.
 
-### 20.15.4 Analyzing Boot Timing
+### 20.14.4 Analyzing Boot Timing
 
 To identify which service is slowing down boot:
 
@@ -3088,7 +2807,7 @@ To identify which service is slowing down boot:
 adb logcat -s SystemServerTiming | sort -t= -k2 -n -r | head -20
 ```
 
-### 20.15.5 Reading Watchdog Dumps
+### 20.14.5 Reading Watchdog Dumps
 
 When the Watchdog triggers, it writes detailed information to both
 logcat and DropBox:
@@ -3108,7 +2827,7 @@ The Watchdog dump includes:
 - Stack traces of all interesting processes
 - Kernel stack traces for native processes
 
-### 20.15.6 Profiling system_server
+### 20.14.6 Profiling system_server
 
 For performance analysis:
 
@@ -3127,7 +2846,7 @@ adb shell am profile stop system
 adb pull /data/local/tmp/system_server.trace
 ```
 
-### 20.15.7 Useful System Properties
+### 20.14.7 Useful System Properties
 
 | Property | Purpose | Default |
 |----------|---------|---------|
@@ -3142,9 +2861,9 @@ adb pull /data/local/tmp/system_server.trace
 
 ---
 
-## 20.16 Writing a Custom System Service
+## 20.15 Writing a Custom System Service
 
-### 20.16.1 Service Structure Template
+### 20.15.1 Service Structure Template
 
 A well-structured system service follows this pattern:
 
@@ -3192,7 +2911,7 @@ public class MyManagerService extends IMyService.Stub {
 }
 ```
 
-### 20.16.2 Registration in SystemServer
+### 20.15.2 Registration in SystemServer
 
 Add the service start to the appropriate method in `SystemServer.java`:
 
@@ -3203,7 +2922,7 @@ mSystemServiceManager.startService(MyManagerService.Lifecycle.class);
 t.traceEnd();
 ```
 
-### 20.16.3 Thread Safety Considerations
+### 20.15.3 Thread Safety Considerations
 
 When writing a system service, thread safety is paramount:
 
@@ -3218,7 +2937,7 @@ When writing a system service, thread safety is paramount:
 5. **Avoid holding locks during Binder calls to other services** --
    this is the primary cause of deadlocks.
 
-### 20.16.4 Testing with Ravenwood
+### 20.15.4 Testing with Ravenwood
 
 The Ravenwood framework supports deviceless testing of system services.
 The `dependencies` parameter in the `SystemService` constructor helps
@@ -3236,9 +2955,9 @@ environment.
 
 ---
 
-## 20.17 The startApexServices() Phase
+## 20.16 The startApexServices() Phase
 
-### 20.17.1 APEX Service Discovery
+### 20.16.1 APEX Service Discovery
 
 After `startOtherServices()` completes, `SystemServer` enters the fourth
 and final startup method: `startApexServices()`. This phase handles
@@ -3251,7 +2970,7 @@ declared by the APEX manifest and registered dynamically. This allows
 APEX modules to add system services without modifying `SystemServer.java`
 at all.
 
-### 20.17.2 Updating the Watchdog Timeout
+### 20.16.2 Updating the Watchdog Timeout
 
 After all services are started, the Watchdog timeout is updated from
 system settings (line 1037):
@@ -3286,9 +3005,9 @@ applications.
 
 ---
 
-## 20.18 Lock Ordering and Deadlock Prevention
+## 20.17 Lock Ordering and Deadlock Prevention
 
-### 20.18.1 The Lock Hierarchy
+### 20.17.1 The Lock Hierarchy
 
 Within `system_server`, multiple services hold multiple locks. To prevent
 deadlocks, the framework uses an informal lock ordering convention:
@@ -3303,7 +3022,7 @@ The general rule: always acquire locks in a consistent order. Never hold
 a service-specific lock while calling into another service that might
 try to acquire a higher-level lock.
 
-### 20.18.2 LockGuard
+### 20.17.2 LockGuard
 
 The `LockGuard` class (in `frameworks/base/services/core/java/com/android/server/LockGuard.java`)
 provides runtime lock-order verification:
@@ -3319,7 +3038,7 @@ When a thread acquires locks out of order, LockGuard logs a warning
 that helps developers identify potential deadlock scenarios before they
 become actual deadlocks in the field.
 
-### 20.18.3 ThreadPriorityBooster
+### 20.17.3 ThreadPriorityBooster
 
 The `ThreadPriorityBooster` class (in
 `frameworks/base/services/core/java/com/android/server/ThreadPriorityBooster.java`)
@@ -3349,7 +3068,7 @@ class MyService {
 }
 ```
 
-### 20.18.4 Common Deadlock Patterns
+### 20.17.4 Common Deadlock Patterns
 
 The most common deadlock patterns in `system_server`:
 
@@ -3387,9 +3106,9 @@ asynchronous message passing instead.
 
 ---
 
-## 20.19 Memory Architecture
+## 20.18 Memory Architecture
 
-### 20.19.1 Heap Configuration
+### 20.18.1 Heap Configuration
 
 `system_server` has special heap configuration compared to regular apps:
 
@@ -3409,7 +3128,7 @@ Regular apps typically have:
 - Actual usage: typically 200-500MB depending on number of apps
   installed and device configuration
 
-### 20.19.2 Shared Memory Optimization
+### 20.18.2 Shared Memory Optimization
 
 Early in `run()`, `system_server` initializes a shared memory region
 (lines 1021-1022):
@@ -3424,7 +3143,7 @@ This shared memory region allows efficient data sharing between
 `system_server` and app processes without Binder IPC overhead. It is
 used for high-frequency, small-data communication paths.
 
-### 20.19.3 Zygote Memory Inheritance
+### 20.18.3 Zygote Memory Inheritance
 
 Since `system_server` is forked from Zygote, it inherits:
 
@@ -3437,7 +3156,7 @@ This shared memory (via Linux copy-on-write pages) means the actual
 private memory footprint of `system_server` is much smaller than its
 virtual memory size would suggest.
 
-### 20.19.4 GC Considerations
+### 20.18.4 GC Considerations
 
 `system_server`'s garbage collector behavior has special implications:
 
@@ -3460,9 +3179,9 @@ virtual memory size would suggest.
 
 ---
 
-## 20.20 The SystemServerInitThreadPool
+## 20.19 The SystemServerInitThreadPool
 
-### 20.20.1 Purpose
+### 20.19.1 Purpose
 
 The `SystemServerInitThreadPool` provides a temporary thread pool
 specifically for parallelizing initialization work during boot. It is
@@ -3470,7 +3189,7 @@ started early (line 944) and shut down after initialization completes.
 
 **Source:** `frameworks/base/services/core/java/com/android/server/SystemServerInitThreadPool.java`
 
-### 20.20.2 Usage Pattern
+### 20.19.2 Usage Pattern
 
 Tasks are submitted as lambdas with descriptive names:
 
@@ -3507,7 +3226,7 @@ webviewPrep = SystemServerInitThreadPool.submit(() -> {
 }, "WebViewFactoryPreparation");
 ```
 
-### 20.20.3 Synchronization
+### 20.19.3 Synchronization
 
 Some tasks depend on earlier tasks. The `Future<?>` returned by
 `submit()` allows later code to wait for completion:
@@ -3523,7 +3242,7 @@ if (webviewPrep != null) {
 }
 ```
 
-### 20.20.4 Dumping State
+### 20.19.4 Dumping State
 
 The pool is registered as a dumpable (line 945):
 
@@ -3536,9 +3255,9 @@ have completed during boot.
 
 ---
 
-## 20.21 Binder Transaction Monitoring
+## 20.20 Binder Transaction Monitoring
 
-### 20.21.1 Transaction Callbacks
+### 20.20.1 Transaction Callbacks
 
 After all services start, `system_server` installs a Binder transaction
 callback (lines 1062-1067):
@@ -3560,7 +3279,7 @@ transactions to it fail immediately. This callback notifies AMS, which
 can then handle the situation (e.g., killing the frozen process or
 requeuing the transaction).
 
-### 20.21.2 Post-GC Memory Metrics
+### 20.20.2 Post-GC Memory Metrics
 
 `system_server` also registers a post-GC callback for memory monitoring
 (lines 1071-1078):
@@ -3582,9 +3301,9 @@ into the long-term memory behavior of `system_server`.
 
 ---
 
-## 20.22 Feature Flags in system_server
+## 20.21 Feature Flags in system_server
 
-### 20.22.1 Flag-Gated Service Starts
+### 20.21.1 Flag-Gated Service Starts
 
 Many service starts in modern AOSP are gated by feature flags. This
 allows services to be enabled/disabled without code changes:
@@ -3623,7 +3342,7 @@ if (enableUserRecoveryManager()) {
 }
 ```
 
-### 20.22.2 FeatureFlagsService
+### 20.21.2 FeatureFlagsService
 
 The `FeatureFlagsService` is started in the bootstrap phase (line 1240):
 
@@ -3639,7 +3358,7 @@ values during their initialization. It provides the mechanism for
 distributing runtime flag overrides and keeping processes in sync with
 the latest flag values.
 
-### 20.22.3 Crash Recovery Flags
+### 20.21.3 Crash Recovery Flags
 
 The crash recovery mechanism is itself flag-gated (line 1319):
 
@@ -3669,9 +3388,9 @@ platform to a modular implementation.
 
 ---
 
-## 20.23 Architecture Diagrams
+## 20.22 Architecture Diagrams
 
-### 20.23.1 Complete system_server Architecture
+### 20.22.1 Complete system_server Architecture
 
 ```mermaid
 graph TB
@@ -3704,7 +3423,7 @@ graph TB
     style PMS fill:#9df,stroke:#333
 ```
 
-### 20.23.2 Boot Sequence Timeline
+### 20.22.2 Boot Sequence Timeline
 
 ```mermaid
 gantt
@@ -3747,7 +3466,7 @@ gantt
     PHASE 1000                :milestone, 50, 50
 ```
 
-### 20.23.3 Service Registration Flow
+### 20.22.3 Service Registration Flow
 
 ```mermaid
 sequenceDiagram
@@ -3773,9 +3492,9 @@ sequenceDiagram
 
 ---
 
-## 20.24 Historical Context
+## 20.23 Historical Context
 
-### 20.24.1 Evolution of system_server
+### 20.23.1 Evolution of system_server
 
 The `system_server` architecture has evolved significantly:
 
@@ -3820,7 +3539,7 @@ The `system_server` architecture has evolved significantly:
 - Enhanced crash recovery module
 - Refactored CrashRecovery as a module
 
-### 20.24.2 The Monolith Pattern
+### 20.23.2 The Monolith Pattern
 
 `system_server` follows a "monolithic process, modular services" pattern.
 All services run in a single process for several reasons:
@@ -3837,7 +3556,7 @@ All services run in a single process for several reasons:
 The downside is that one poorly-written service can bring down the
 entire system, which is why the Watchdog is so important.
 
-### 20.24.3 Why Not Microservices?
+### 20.23.3 Why Not Microservices?
 
 Android considered splitting system services into separate processes
 (a microservices-like architecture) but rejected it because:
@@ -3856,9 +3575,9 @@ updatable, but it all runs in the same process.
 
 ---
 
-## 20.25 Quick Reference
+## 20.24 Quick Reference
 
-### 20.25.1 Source File Index
+### 20.24.1 Source File Index
 
 | File Path | Lines | Purpose |
 |-----------|-------|---------|
@@ -3877,7 +3596,7 @@ updatable, but it all runs in the same process.
 | `frameworks/base/services/core/java/com/android/server/PermissionThread.java` | 72 | Permission operations thread |
 | `frameworks/base/services/core/java/com/android/server/SystemServerInitThreadPool.java` | ~100 | Boot-time parallel init pool |
 
-### 20.25.2 Boot Phase Quick Reference
+### 20.24.2 Boot Phase Quick Reference
 
 | Value | Constant | Gate |
 |-------|----------|------|
@@ -3890,7 +3609,7 @@ updatable, but it all runs in the same process.
 | 600 | `PHASE_THIRD_PARTY_APPS_CAN_START` | Apps can make Binder calls |
 | 1000 | `PHASE_BOOT_COMPLETED` | Home app started |
 
-### 20.25.3 Thread Quick Reference
+### 20.24.3 Thread Quick Reference
 
 | Thread Name | Java Class | Priority | I/O | Monitored by Watchdog |
 |-------------|-----------|----------|-----|----------------------|
@@ -3907,7 +3626,7 @@ updatable, but it all runs in the same process.
 | `watchdog.monitor` | `ServiceThread` | DEFAULT (0) | Yes | N/A |
 | `Binder:PID_N` | Binder pool | FOREGROUND (-2) | Yes | Yes (via BinderThreadMonitor) |
 
-### 20.25.4 Key Constants
+### 20.24.4 Key Constants
 
 | Constant | Value | Location |
 |----------|-------|----------|
@@ -3921,7 +3640,7 @@ updatable, but it all runs in the same process.
 | `DEFAULT_MAX_USER_POOL_THREADS` | 3 | `SystemServiceManager.java:92` |
 | `USER_POOL_SHUTDOWN_TIMEOUT_SECONDS` | 30s | `SystemServiceManager.java:97` |
 
-### 20.25.5 Essential dumpsys Commands
+### 20.24.5 Essential dumpsys Commands
 
 | Command | Information Shown |
 |---------|-------------------|
@@ -3947,7 +3666,7 @@ updatable, but it all runs in the same process.
 
 ---
 
-## 20.26 BackupManagerService
+## 20.25 BackupManagerService
 
 The Android backup framework enables applications to back up their data to
 cloud or local storage and restore it after device reset, migration, or app
@@ -3968,7 +3687,7 @@ key-value and full-data backups, and coordinating restore operations.
 | `frameworks/base/services/backup/java/com/android/server/backup/restore/PerformUnifiedRestoreTask.java` | Restore execution |
 | `frameworks/base/services/backup/java/com/android/server/backup/transport/TransportConnection.java` | Transport binding logic |
 
-### 20.26.1 Architecture Overview
+### 20.25.1 Architecture Overview
 
 BMS uses a two-layer architecture: a system-level delegator and per-user
 managers. This design mirrors Android's multi-user model.
@@ -4037,7 +3756,7 @@ Each `UserBackupManagerService` instance maintains its own:
 - **DataChangedJournal** -- list of packages with pending key-value changes
 - **FullBackupQueue** -- round-robin schedule for full backups
 
-### 20.26.2 Activation and Disablement
+### 20.25.2 Activation and Disablement
 
 BMS can be disabled at two levels:
 
@@ -4061,7 +3780,7 @@ The activation check follows a four-level precedence:
 3. **Default activation** -- Whether the user's backup defaults to active
 4. **Explicit activation file** -- Presence of activation file for the user
 
-### 20.26.3 Backup Transports
+### 20.25.3 Backup Transports
 
 A backup transport is a pluggable component that defines where backup data
 goes. Transports are discovered via `PackageManager` by scanning for services
@@ -4102,7 +3821,7 @@ Google's cloud backup transport (`com.google.android.gms/.backup.BackupTransport
 implements the `IBackupTransport` interface, but the architecture is open --
 OEMs can provide their own transport implementations.
 
-### 20.26.4 Key-Value vs. Full Backup
+### 20.25.4 Key-Value vs. Full Backup
 
 Android supports two fundamentally different backup strategies:
 
@@ -4158,7 +3877,7 @@ flowchart TB
     end
 ```
 
-### 20.26.5 The BackupHandler Message Protocol
+### 20.25.5 The BackupHandler Message Protocol
 
 `UserBackupManagerService` uses a handler-based message protocol defined in
 `BackupHandler`:
@@ -4179,7 +3898,7 @@ flowchart TB
 | `MSG_FULL_CONFIRMATION_TIMEOUT` | User confirmation timeout for full backup |
 | `MSG_OP_COMPLETE` | Operation completion notification |
 
-### 20.26.6 Backup Eligibility
+### 20.25.6 Backup Eligibility
 
 Not all packages are eligible for backup. The `BackupEligibilityRules` class
 determines eligibility based on:
@@ -4191,7 +3910,7 @@ determines eligibility based on:
 - For full backup: can use the default agent if no custom agent specified
 - Signature verification: restore data from a different signing key is rejected
 
-### 20.26.7 Restore Operations
+### 20.25.7 Restore Operations
 
 Restore is coordinated by `PerformUnifiedRestoreTask`, which handles both
 key-value and full-data restores through a state machine:
@@ -4220,7 +3939,7 @@ private boolean mIsRestoreInProgress;
 private final Queue<PerformUnifiedRestoreTask> mPendingRestores = new ArrayDeque<>();
 ```
 
-### 20.26.8 Cloud vs. Local Backup
+### 20.25.8 Cloud vs. Local Backup
 
 The transport architecture allows seamless switching between backup destinations:
 
@@ -4245,7 +3964,7 @@ public static final int BACKUP_METADATA_VERSION = 1;
 public static final int BACKUP_WIDGET_METADATA_TOKEN = 0x01FFED01;
 ```
 
-### 20.26.9 Multi-User Considerations
+### 20.25.9 Multi-User Considerations
 
 BMS handles edge cases around multi-user devices:
 
@@ -4259,7 +3978,7 @@ BMS handles edge cases around multi-user devices:
 
 ---
 
-## 20.27 CrashRecoveryModule and RescueParty
+## 20.26 CrashRecoveryModule and RescueParty
 
 When Android detects persistent crashes -- whether from apps, system services,
 or boot loops -- the crash recovery subsystem progressively escalates through
@@ -4276,7 +3995,7 @@ This system is built on three cooperating components: `PackageWatchdog`,
 | `frameworks/base/packages/CrashRecovery/services/platform/java/com/android/server/RescueParty.java` | Escalating mitigation logic |
 | `frameworks/base/services/core/java/com/android/server/crashrecovery/CrashRecoveryHelper.java` | Connectivity module health listener |
 
-### 20.27.1 CrashRecoveryModule Lifecycle
+### 20.26.1 CrashRecoveryModule Lifecycle
 
 `CrashRecoveryModule` is delivered as an APEX module and follows the
 `SystemService` lifecycle:
@@ -4309,7 +4028,7 @@ At `onStart()`, three critical actions happen:
 At boot phase 600 (`PHASE_THIRD_PARTY_APPS_CAN_START`), PackageWatchdog
 initializes its health check controller and begins monitoring.
 
-### 20.27.2 PackageWatchdog
+### 20.26.2 PackageWatchdog
 
 PackageWatchdog is the central failure monitoring engine. It tracks package
 health through multiple failure signals and delegates mitigation to registered
@@ -4402,7 +4121,7 @@ using the `AtomicFile` mechanism. Boot loop mitigation counts are stored
 separately in `/metadata/watchdog/mitigation_count.txt` to survive filesystem
 checkpoint aborts.
 
-### 20.27.3 RescueParty Escalation Levels
+### 20.26.3 RescueParty Escalation Levels
 
 RescueParty registers as a `PackageHealthObserver` and implements a graduated
 escalation strategy. Each successive mitigation attempt escalates to a more
@@ -4454,7 +4173,7 @@ static final int RESCUE_LEVEL_RESET_SETTINGS_TRUSTED_DEFAULTS = 6;
 static final int RESCUE_LEVEL_FACTORY_RESET = 7;
 ```
 
-### 20.27.4 RescueParty Disable Conditions
+### 20.26.4 RescueParty Disable Conditions
 
 RescueParty is deliberately disabled in several scenarios to avoid interfering
 with development and testing:
@@ -4477,7 +4196,7 @@ if (Build.TYPE.equals("userdebug") && isUsbActive()) {
 }
 ```
 
-### 20.27.5 Boot Loop Detection
+### 20.26.5 Boot Loop Detection
 
 Boot loops are detected by `PackageWatchdog.BootThreshold`:
 
@@ -4494,7 +4213,7 @@ When a boot loop is detected without a specific failing package, the
 mitigation count offset shifts by 1 because scoped DeviceConfig reset
 is meaningless without a target package.
 
-### 20.27.6 Factory Reset Throttling
+### 20.26.6 Factory Reset Throttling
 
 To prevent rapid factory reset cycles, RescueParty implements throttling:
 
@@ -4510,7 +4229,7 @@ The `CrashRecoveryProperties` system stores:
 - `lastFactoryResetTimeMs` -- Timestamp of last factory reset
 - `maxRescueLevelAttempted` -- Highest level ever reached
 
-### 20.27.7 CrashRecoveryHelper
+### 20.26.7 CrashRecoveryHelper
 
 The `CrashRecoveryHelper` class bridges PackageWatchdog with the
 connectivity module health monitoring:
@@ -4536,7 +4255,7 @@ This ensures network stack crashes are funneled through the same
 PackageWatchdog pipeline as other failures, enabling consistent
 mitigation (including potential rollback of the Tethering APEX).
 
-### 20.27.8 Integration with RollbackManager
+### 20.26.8 Integration with RollbackManager
 
 PackageWatchdog works alongside `RollbackManager` for mainline module
 crash recovery:
@@ -4567,7 +4286,7 @@ it is less disruptive.
 
 ---
 
-## 20.28 ClipboardService
+## 20.27 ClipboardService
 
 The `ClipboardService` manages the system clipboard -- the mechanism that
 enables copy-and-paste across applications. What seems like a trivial
@@ -4579,7 +4298,7 @@ toasts.
 > **Source:**
 > `frameworks/base/services/core/java/com/android/server/clipboard/ClipboardService.java`
 
-### 20.28.1 Architecture Overview
+### 20.27.1 Architecture Overview
 
 ClipboardService extends `SystemService` and publishes two interfaces on
 startup:
@@ -4609,7 +4328,7 @@ graph TD
     CS --> TC["TextClassifier<br/>(content classification)"]
 ```
 
-### 20.28.2 The Clipboard Data Model
+### 20.27.2 The Clipboard Data Model
 
 Clipboard data is stored in `Clipboard` objects indexed by a composite key
 of `(userId, deviceId)`:
@@ -4645,7 +4364,7 @@ content `Uri`. The MIME types supported include:
 - `MIMETYPE_APPLICATION_ACTIVITY` -- activity references
 - `MIMETYPE_APPLICATION_TASK` -- task references
 
-### 20.28.3 Cross-App Security Restrictions
+### 20.27.3 Cross-App Security Restrictions
 
 The clipboard is a high-value attack vector because any app can read data
 placed by any other app. Android enforces several layers of protection:
@@ -4680,7 +4399,7 @@ if (isDeviceLocked(intendingUserId, deviceId)) {
 }
 ```
 
-### 20.28.4 Clipboard Access Notification
+### 20.27.4 Clipboard Access Notification
 
 Starting with Android 12, the system shows a toast notification whenever an
 app reads the clipboard. This is the "Pasted from <app>" message users see:
@@ -4700,7 +4419,7 @@ to the `TextClassifier` for content-type logging via
 `notifyTextClassifierLocked()`, which classifies up to
 `mMaxClassificationLength` (default 400) characters.
 
-### 20.28.5 Automatic Clipboard Clearing
+### 20.27.5 Automatic Clipboard Clearing
 
 To reduce the window during which sensitive data (passwords, credit cards)
 sits on the clipboard, the service implements auto-clear:
@@ -4725,7 +4444,7 @@ if (DeviceConfig.getBoolean(DeviceConfig.NAMESPACE_CLIPBOARD,
 If the user pastes the content before the timeout, a new timer is
 rescheduled from the paste time, giving the user another full timeout window.
 
-### 20.28.6 Virtual Device Clipboard Silos
+### 20.27.6 Virtual Device Clipboard Silos
 
 With the introduction of virtual devices (CDM -- Companion Device Manager),
 clipboard isolation becomes more complex. Apps running on a virtual device
@@ -4762,7 +4481,7 @@ graph LR
     VC2 -.->|"shares"| DC
 ```
 
-### 20.28.7 Emulator and ARC Integration
+### 20.27.7 Emulator and ARC Integration
 
 ClipboardService detects the execution environment at construction time and
 installs an appropriate clipboard monitor:
@@ -4785,7 +4504,7 @@ sharing between the ChromeOS host and the Android container in ARC
 
 ---
 
-## 20.29 DownloadManager and DownloadProvider
+## 20.28 DownloadManager and DownloadProvider
 
 The download subsystem provides a system-level download service that handles
 background HTTP downloads with notification integration, retry logic, network
@@ -4797,7 +4516,7 @@ services, the download infrastructure is split between a system API
 > **Source root:**
 > `packages/providers/DownloadProvider/src/com/android/providers/downloads/`
 
-### 20.29.1 Architecture
+### 20.28.1 Architecture
 
 ```mermaid
 graph TD
@@ -4827,7 +4546,7 @@ The key components are:
 | `DownloadScanner` | `DownloadScanner.java` | Triggers MediaStore scanning for completed downloads |
 | `Constants` | `Constants.java` | Retry limits, timeout values, other constants |
 
-### 20.29.2 The Download Database
+### 20.28.2 The Download Database
 
 DownloadProvider uses a SQLite database (`downloads.db`, version 114) with a
 single `downloads` table. The database tracks every download's URI, file
@@ -4851,7 +4570,7 @@ URI matching routes requests through a standard `UriMatcher`:
 | `downloads/all_downloads` | `ALL_DOWNLOADS` | All downloads (requires permission) |
 | `downloads/all_downloads/#` | `ALL_DOWNLOADS_ID` | Individual download (any UID) |
 
-### 20.29.3 Download Execution with JobScheduler
+### 20.28.3 Download Execution with JobScheduler
 
 Each download is executed as a job in `DownloadJobService`. When a new
 download is inserted into the provider, a job is scheduled. The service
@@ -4883,7 +4602,7 @@ The job timeout is 10 minutes (standard JobScheduler limit). If a download
 does not finish, the job is rescheduled and the download resumes using HTTP
 Range headers and the stored ETag.
 
-### 20.29.4 Retry Logic
+### 20.28.4 Retry Logic
 
 `DownloadThread` implements a retry mechanism with exponential backoff:
 
@@ -4916,7 +4635,7 @@ The "made progress" check is key: if any data was transferred during the
 current attempt, the failure counter resets to 1. This prevents a large
 file download from failing permanently due to intermittent connectivity.
 
-### 20.29.5 Notification Integration
+### 20.28.5 Notification Integration
 
 `DownloadNotifier` manages three notification channels:
 
@@ -4937,7 +4656,7 @@ the `DownloadManager.Request`:
 The notifier tracks active download speeds in a `LongSparseLongArray` to
 calculate and display estimated time remaining.
 
-### 20.29.6 Network Awareness
+### 20.28.6 Network Awareness
 
 `DownloadThread` uses the caller's default network rather than the system
 default, respecting per-UID network restrictions:
@@ -4959,6 +4678,287 @@ tagged with the requesting UID for proper data accounting:
 TrafficStats.setThreadStatsTagDownload();
 TrafficStats.setThreadStatsUid(mInfo.mUid);
 ```
+
+---
+
+## 20.29 Try It
+
+### 20.29.1 Listing All System Services
+
+Use `service list` to see all registered Binder services:
+
+```bash
+adb shell service list
+```
+
+This produces output like:
+
+```
+Found 290 services:
+0	DockObserver: [android.os.IBinder]
+1	SurfaceFlinger: [android.ui.ISurfaceComposer]
+2	accessibility: [android.view.accessibility.IAccessibilityManager]
+3	account: [android.accounts.IAccountManager]
+4	activity: [android.app.IActivityManager]
+5	activity_task: [android.app.IActivityTaskManager]
+...
+```
+
+Count the total:
+
+```bash
+adb shell service list | head -1
+```
+
+### 20.29.2 Inspecting system_server Process
+
+View basic process information:
+
+```bash
+# Process ID
+adb shell pidof system_server
+
+# Thread count
+adb shell ls /proc/$(adb shell pidof system_server)/task | wc -l
+
+# Process status
+adb shell cat /proc/$(adb shell pidof system_server)/status | head -20
+
+# Memory usage
+adb shell dumpsys meminfo system_server
+```
+
+### 20.29.3 Dumpsys Commands
+
+`dumpsys` is the primary tool for inspecting service state. Each service
+implements a `dump()` method:
+
+```bash
+# Dump all services (very long!)
+adb shell dumpsys
+
+# Dump a specific service
+adb shell dumpsys activity
+adb shell dumpsys window
+adb shell dumpsys package
+adb shell dumpsys power
+adb shell dumpsys notification
+adb shell dumpsys audio
+adb shell dumpsys connectivity
+adb shell dumpsys display
+adb shell dumpsys input
+adb shell dumpsys alarm
+adb shell dumpsys jobscheduler
+adb shell dumpsys battery
+adb shell dumpsys usagestats
+adb shell dumpsys deviceidle
+
+# Dump the SystemServer dumper for internal state
+adb shell dumpsys system_server_dumper
+adb shell dumpsys system_server_dumper --list
+adb shell dumpsys system_server_dumper --name SystemServer
+adb shell dumpsys system_server_dumper --name Watchdog
+```
+
+### 20.29.4 Inspecting Boot Phases
+
+Boot phase transitions are logged and can be traced:
+
+```bash
+# View boot timing events
+adb shell logcat -b events | grep boot_progress
+
+# View SystemServer timing tags
+adb shell logcat -s SystemServerTiming
+
+# Full boot tracing with Perfetto
+adb shell perfetto -o /data/misc/perfetto-traces/boot.pb \
+    -c - <<EOF
+buffers: { size_kb: 65536 }
+data_sources: {
+    config {
+        name: "android.log"
+        android_log_config {
+            log_ids: LID_EVENTS
+        }
+    }
+}
+duration_ms: 60000
+EOF
+```
+
+### 20.29.5 Observing Service Start Order
+
+The SystemServer logs each service start with timing information:
+
+```bash
+# Filter for service start messages
+adb shell logcat -s SystemServer SystemServiceManager
+
+# Look for specific boot phase transitions
+adb shell logcat | grep -E "PHASE_|startBootPhase"
+```
+
+### 20.29.6 Watchdog Diagnostics
+
+```bash
+# Dump Watchdog state
+adb shell dumpsys system_server_dumper --name Watchdog
+
+# View Watchdog-related logs
+adb shell logcat -s Watchdog
+
+# Check for past Watchdog kills
+adb shell logcat -b crash | grep -i watchdog
+
+# View timeout history
+adb shell cat /data/system/watchdog-timeout-history.txt
+```
+
+### 20.29.7 Thread Inspection
+
+```bash
+# List all system_server threads with names
+adb shell ps -T -p $(adb shell pidof system_server)
+
+# View specific named threads
+adb shell ps -T -p $(adb shell pidof system_server) | grep -E \
+    "android\.(display|anim|ui|fg|io|bg|perm)|Binder:|watchdog"
+
+# Get Java thread dump (sends SIGQUIT)
+adb shell kill -3 $(adb shell pidof system_server)
+# Then check /data/anr/ for the trace file
+adb shell ls -la /data/anr/
+```
+
+### 20.29.8 Service Dependencies and Boot Timing
+
+```bash
+# View how long each service took to start
+adb shell logcat -s SystemServerTimingAsync SystemServerTiming | \
+    grep -E "traceBegin|traceEnd"
+
+# Check if a specific service is running
+adb shell service check activity
+adb shell service check window
+adb shell service check package
+
+# Call a service directly
+adb shell service call activity 1  # IBinder.FIRST_CALL_TRANSACTION
+```
+
+### 20.29.9 Examining SystemServiceManager State
+
+```bash
+# Dump all registered system services
+adb shell dumpsys system_server_dumper --name SystemServiceManager
+```
+
+This shows:
+
+- All registered services and their classes
+- Current boot phase
+- Service start times
+- Active user IDs
+
+### 20.29.10 Monitoring Binder Thread Pool
+
+```bash
+# Check Binder thread usage
+adb shell cat /proc/$(adb shell pidof system_server)/status | \
+    grep Threads
+
+# View Binder calls stats
+adb shell dumpsys binder_calls_stats
+
+# View specific Binder transaction information
+adb shell cat /sys/kernel/debug/binder/proc/$(adb shell pidof system_server) \
+    2>/dev/null | head -50
+```
+
+### 20.29.11 Forcing a Watchdog Timeout (Development Only)
+
+On userdebug/eng builds, you can test the Watchdog by inducing a deadlock.
+**WARNING: This will crash system_server and restart the runtime.**
+
+```bash
+# Reduce watchdog timeout (settings must be available)
+adb shell settings put global watchdog_timeout_millis 10000
+
+# Or use the debug property
+adb shell setprop persist.sys.debug.watchdog_timeout 10
+```
+
+### 20.29.12 Tracing Service Startup with Perfetto
+
+```bash
+# Record a boot trace
+adb shell setprop persist.debug.atrace.boottrace 1
+adb shell setprop persist.traced.enable 1
+
+# After reboot, pull the trace
+adb pull /data/misc/perfetto-traces/boottrace.perfetto-trace
+
+# Open in ui.perfetto.dev
+```
+
+The trace will show all the `TimingsTraceAndSlog` spans from SystemServer,
+including every service start and boot phase transition, with precise
+timestamps.
+
+### 20.29.13 Simulating Boot Phases
+
+You can watch boot phases progress in real time during a reboot:
+
+```bash
+# Reboot and immediately start capturing
+adb reboot && sleep 5 && adb wait-for-device && \
+    adb logcat -s SystemServiceManager | grep -i phase
+```
+
+Expected output sequence:
+
+```
+SystemServiceManager: Starting phase 100
+SystemServiceManager: Starting phase 200
+SystemServiceManager: Starting phase 480
+SystemServiceManager: Starting phase 500
+SystemServiceManager: Starting phase 520
+SystemServiceManager: Starting phase 550
+SystemServiceManager: Starting phase 600
+SystemServiceManager: Starting phase 1000
+```
+
+### 20.29.14 Examining Service Registration
+
+To see how a specific service is registered:
+
+```bash
+# Check if a service exists and get its interface descriptor
+adb shell service check activity
+adb shell service check window
+adb shell service check package
+
+# Get service debug info (PID, interface)
+adb shell dumpsys -l
+```
+
+### 20.29.15 Monitoring Looper Statistics
+
+```bash
+# Dump looper statistics to see message processing times
+adb shell dumpsys looper_stats
+
+# This shows for each looper:
+# - Message count
+# - Total time
+# - Max time
+# - Exception count
+```
+
+This data comes from the `LooperStatsService` started in
+`startCoreServices()` and is invaluable for identifying which messages
+are slow on which threads.
 
 ---
 
