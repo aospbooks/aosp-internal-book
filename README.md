@@ -67,7 +67,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | XI | 48 | Launcher3 | UNDER REVIEW |
 | XI | 49 | Settings | UNDER REVIEW |
 | XII | 50 | AI & AppFunctions (Computer Control) | REVIEWED |
-| XII | 51 | Companion & Virtual Devices | UNDER REVIEW |
+| XII | 51 | Companion & Virtual Devices | REVIEWED |
 | XIII | 52 | Mainline Modules (APEX) | UNDER REVIEW |
 | XIII | 53 | OTA Updates | REVIEWED |
 | XIII | 54 | Virtualization (pKVM/crosvm) | REVIEWED |
