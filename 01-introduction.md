@@ -3053,7 +3053,24 @@ GitLab, and most modern documentation tools).
 
 ---
 
-## 1.11 Summary
+## 1.11 Further Reading
+
+- **AOSP Source**: https://source.android.com/
+- **AOSP Code Search**: https://cs.android.com/
+- **AOSP Gerrit (Code Review)**: https://android-review.googlesource.com/
+- **AOSP Issue Tracker**: https://issuetracker.google.com/issues?q=componentid:192735
+- **Android Architecture Overview**: https://source.android.com/docs/core/architecture
+- **Project Treble**: https://source.android.com/docs/core/architecture/treble
+- **Project Mainline**: https://source.android.com/docs/core/ota/modular-system
+- **GKI**: https://source.android.com/docs/core/architecture/kernel/generic-kernel-image
+- **CTS Documentation**: https://source.android.com/docs/compatibility/cts
+- **CDD**: https://source.android.com/docs/compatibility/cdd
+- **Android API Reference**: https://developer.android.com/reference
+- **Android Platform Architecture**: https://developer.android.com/guide/platform
+
+---
+
+## 1.12 Summary
 
 This chapter established the foundational knowledge needed to work with AOSP:
 
@@ -3094,19 +3111,3 @@ In the next chapter, we will roll up our sleeves and set up a complete AOSP
 development environment: installing dependencies, downloading the source,
 configuring the build, and running our first build on an emulator.
 
----
-
-## 1.12 Further Reading
-
-- **AOSP Source**: https://source.android.com/
-- **AOSP Code Search**: https://cs.android.com/
-- **AOSP Gerrit (Code Review)**: https://android-review.googlesource.com/
-- **AOSP Issue Tracker**: https://issuetracker.google.com/issues?q=componentid:192735
-- **Android Architecture Overview**: https://source.android.com/docs/core/architecture
-- **Project Treble**: https://source.android.com/docs/core/architecture/treble
-- **Project Mainline**: https://source.android.com/docs/core/ota/modular-system
-- **GKI**: https://source.android.com/docs/core/architecture/kernel/generic-kernel-image
-- **CTS Documentation**: https://source.android.com/docs/compatibility/cts
-- **CDD**: https://source.android.com/docs/compatibility/cdd
-- **Android API Reference**: https://developer.android.com/reference
-- **Android Platform Architecture**: https://developer.android.com/guide/platform
