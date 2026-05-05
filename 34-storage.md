@@ -2620,294 +2620,527 @@ This makes the data on the physical device permanently inaccessible.
 
 ---
 
-## 34.10 Try It
+## 34.10 SQLite in AOSP
 
-This section provides practical exercises for exploring the Android storage
-subsystem hands-on.
+SQLite is the embedded relational database engine at the heart of Android's
+data storage. Every Android device runs hundreds of SQLite databases -- from
+system services (contacts, telephony, settings, downloads, media) to
+application-created databases. The framework provides a layered Java API
+around the native SQLite C library, adding connection pooling, WAL mode
+management, prepared statement caching, and automatic corruption recovery.
 
-### Exercise 38.1: Examining Partition Layout
+> **Source root:**
+> `frameworks/base/core/java/android/database/sqlite/`
 
-Connect a device via ADB and examine its partition structure:
+### 34.10.1 Architecture
 
-```bash
-# List all block devices
-adb shell ls -la /dev/block/by-name/
-
-# Show the super partition layout
-adb shell ls -la /dev/block/mapper/
-
-# Examine the fstab
-adb shell cat /vendor/etc/fstab.*
-
-# Show mounted filesystems
-adb shell mount | grep -E "^/dev"
-
-# Check for dynamic partitions
-adb shell getprop ro.boot.dynamic_partitions
+```mermaid
+graph TD
+    App["Application Code"] --> SDB["SQLiteDatabase"]
+    SDB --> SS["SQLiteSession<br/>(thread-local)"]
+    SS --> SCP["SQLiteConnectionPool"]
+    SCP --> SC1["SQLiteConnection #0<br/>(primary, read/write)"]
+    SCP --> SC2["SQLiteConnection #1<br/>(read-only)"]
+    SCP --> SC3["SQLiteConnection #N<br/>(read-only)"]
+    SC1 --> JNI["JNI: android_database_SQLiteConnection.cpp"]
+    SC2 --> JNI
+    SC3 --> JNI
+    JNI --> Native["libsqlite (native sqlite3)"]
+    SDB --> SOH["SQLiteOpenHelper<br/>(version management)"]
+    SOH --> SDB
 ```
 
-### Exercise 38.2: Exploring vold State
+The layers serve distinct purposes:
 
-Examine the running vold daemon and its state:
+| Layer | Class | Responsibility |
+|-------|-------|----------------|
+| User-facing API | `SQLiteDatabase` | Public methods: `query()`, `insert()`, `execSQL()` |
+| Session management | `SQLiteSession` | Thread-local; acquires/returns connections |
+| Connection pool | `SQLiteConnectionPool` | Manages pool of native connections |
+| Connection | `SQLiteConnection` | Wraps a single native `sqlite3*` handle |
+| Version helper | `SQLiteOpenHelper` | Database creation, upgrade, downgrade |
+| Statement | `SQLiteStatement` / `SQLiteQuery` | Prepared statement wrappers |
 
-```bash
-# Check vold properties
-adb shell getprop | grep vold
+### 34.10.2 SQLiteDatabase Internals
 
-# Dump vold state
-adb shell dumpsys mount
+`SQLiteDatabase` is the primary entry point. Its most important state is
+protected by a single `mLock` object:
 
-# List all volumes
-adb shell sm list-volumes all
+```java
+// SQLiteDatabase.java, line 137
+private final Object mLock = new Object();
 
-# List all disks
-adb shell sm list-disks all
+// Thread-local sessions
+private final ThreadLocal<SQLiteSession> mThreadSession = ThreadLocal
+        .withInitial(this::createSession);
 
-# Check FBE status
-adb shell getprop ro.crypto.state
-adb shell getprop ro.crypto.type
-
-# Check metadata encryption
-adb shell getprop ro.crypto.metadata.enabled
+// Connection pool (null when closed)
+private SQLiteConnectionPool mConnectionPoolLocked;
 ```
 
-### Exercise 38.3: Storage Permissions Under Scoped Storage
+The thread-local `SQLiteSession` ensures that each thread gets its own
+database session without explicit synchronization at the caller level.
 
-Create a test to observe scoped storage behavior:
+**Open flags** control the behavior of the database:
 
-```bash
-# Check what an app sees in /storage/emulated/0/
-adb shell run-as com.example.app ls /storage/emulated/0/
+| Flag | Value | Effect |
+|------|-------|--------|
+| `OPEN_READWRITE` | `0x00000000` | Read-write access (default) |
+| `OPEN_READONLY` | `0x00000001` | Read-only access |
+| `CREATE_IF_NECESSARY` | `0x10000000` | Create DB file if missing |
+| `ENABLE_WRITE_AHEAD_LOGGING` | `0x20000000` | Enable WAL at open time |
+| `NO_LOCALIZED_COLLATORS` | `0x00000010` | Skip LOCALIZED collator |
+| `ENABLE_LEGACY_COMPATIBILITY_WAL` | `0x80000000` | Legacy compat WAL mode |
 
-# Check the app-specific directory (always accessible)
-adb shell run-as com.example.app ls /storage/emulated/0/Android/data/com.example.app/
+**Conflict resolution** is specified per-operation:
 
-# Check that other apps' data directories are not accessible
-adb shell run-as com.example.app ls /storage/emulated/0/Android/data/com.other.app/
-# Expected: Permission denied
+| Constant | Value | Behavior on constraint violation |
+|----------|-------|----------------------------------|
+| `CONFLICT_ROLLBACK` | 1 | Rollback entire transaction |
+| `CONFLICT_ABORT` | 2 | Abort command, preserve prior changes (default) |
+| `CONFLICT_FAIL` | 3 | Fail command, preserve all changes so far |
+| `CONFLICT_IGNORE` | 4 | Skip violating row, continue |
+| `CONFLICT_REPLACE` | 5 | Delete conflicting rows, then insert/update |
 
-# Query MediaStore from the command line
-adb shell content query --uri content://media/external/images/media/ \
-    --projection _id:_display_name:_size --sort "_id DESC" --limit 5
+### 34.10.3 Write-Ahead Logging (WAL)
+
+WAL is the most important performance feature of SQLite on Android. Without
+WAL, readers and writers are mutually exclusive -- a read blocks writes and
+vice versa. With WAL enabled, multiple readers can execute concurrently
+with a single writer.
+
+```java
+// SQLiteDatabase.java, line 337-353
+/**
+ * The WAL journaling mode uses a write-ahead log instead of a rollback
+ * journal to implement transactions. The WAL journaling mode is persistent;
+ * after being set it stays in effect across multiple database connections
+ * and after closing and reopening the database.
+ */
+public static final String JOURNAL_MODE_WAL = "WAL";
 ```
 
-### Exercise 38.4: Observing FUSE in Action
+Android supports six journal modes:
 
-Monitor FUSE operations:
+| Mode | Description | Use case |
+|------|-------------|----------|
+| `WAL` | Write-ahead log | Default for most apps (best concurrency) |
+| `PERSIST` | Overwrite journal header | Low-level storage optimization |
+| `TRUNCATE` | Truncate journal to zero | Faster than DELETE on some filesystems |
+| `MEMORY` | In-RAM journal | Maximum speed, risk of corruption |
+| `DELETE` | Delete journal after commit | Traditional mode |
+| `OFF` | No journal | Maximum risk, maximum speed |
 
-```bash
-# Check FUSE mounts
-adb shell mount | grep fuse
+**Compatibility WAL** is a special Android mode that enables WAL with a
+restricted configuration: maximum WAL file size of 512KB and auto-
+checkpoint after each transaction. This provides WAL's concurrency benefits
+while limiting the disk space overhead, making it safe as a default.
 
-# Check the FUSE daemon process
-adb shell ps -A | grep -i media | grep fuse
+```mermaid
+graph LR
+    subgraph "Without WAL"
+        W1["Writer"] -->|"blocks"| R1["Reader"]
+        R1 -->|"blocks"| W1
+    end
 
-# Watch FUSE mount/unmount events
-adb logcat -s FuseDaemonThread:* ExternalStorageServiceImpl:*
-
-# Check if FUSE passthrough is in use
-adb logcat | grep -i "passthrough"
-
-# Check FUSE BPF status
-adb shell getprop ro.fuse.bpf.enabled
+    subgraph "With WAL"
+        W2["Writer writes to WAL"] -.->|"no blocking"| R2["Reader reads from DB + WAL snapshot"]
+        W2 -.->|"no blocking"| R3["Reader 2"]
+    end
 ```
 
-### Exercise 38.5: Understanding FBE Key Lifecycle
+### 34.10.4 Connection Pooling
 
-Observe the FBE key management process:
+`SQLiteConnectionPool` manages a pool of native connections. The pool has
+one primary (read-write) connection and multiple secondary (read-only)
+connections:
 
-```bash
-# Check CE/DE directory structure
-adb shell ls -la /data/misc/vold/user_keys/
+```java
+// SQLiteConnectionPool.java, line 84-110
+public final class SQLiteConnectionPool implements Closeable {
+    private static final long CONNECTION_POOL_BUSY_MILLIS = 30 * 1000; // 30 seconds
 
-# Watch key operations during user unlock
-adb logcat -s vold:* FsCrypt:*
-
-# Check which users have CE storage unlocked
-adb shell dumpsys mount | grep -A5 "CE unlocked"
-
-# Observe directory encryption policies (requires root)
-adb root
-adb shell fscrypt-policy-get /data/user/0/
-adb shell fscrypt-policy-get /data/user_de/0/
+    private int mMaxConnectionPoolSize;
+    private SQLiteConnection mAvailablePrimaryConnection;
+    private final ArrayList<SQLiteConnection> mAvailableNonPrimaryConnections;
+    private final WeakHashMap<SQLiteConnection, AcquiredConnectionStatus> mAcquiredConnections;
+}
 ```
 
-### Exercise 38.6: Simulating Adoptable Storage
+Connection lifecycle:
 
-Use the virtual disk feature in the emulator:
+```mermaid
+sequenceDiagram
+    participant T as Thread
+    participant S as SQLiteSession
+    participant P as SQLiteConnectionPool
+    participant C as SQLiteConnection
 
-```bash
-# Enable virtual disk (emulator only)
-adb shell setprop persist.sys.virtual_disk true
-
-# Wait for the virtual disk to appear
-adb shell sm list-disks all
-
-# Partition as private (adoptable)
-adb shell sm partition <disk_id> private
-
-# Check the new volume
-adb shell sm list-volumes all
-
-# Migrate data to the adopted volume
-adb shell sm move-primary-storage <volume_uuid>
-
-# Monitor the migration progress
-adb logcat -s MoveStorage:*
-
-# Forget the partition
-adb shell sm forget <volume_uuid>
+    T->>S: query(sql)
+    S->>P: acquireConnection(READ)
+    alt Primary available & no WAL
+        P->>S: return primary connection
+    else WAL enabled
+        P->>S: return non-primary (read-only) connection
+    end
+    S->>C: execute(sql)
+    C-->>S: result
+    S->>P: releaseConnection(connection)
 ```
 
-### Exercise 38.7: Examining MediaProvider Database
+The pool tracks acquired connections via `WeakReference`s. If a connection
+is leaked (the `SQLiteSession` that acquired it is garbage collected), the
+pool detects this through the weak reference and reclaims the connection
+with a warning log.
 
-Explore the MediaStore database:
+Idle connections are managed by an `IdleConnectionHandler` that can close
+connections after a configurable timeout, reducing memory pressure on
+resource-constrained devices.
 
-```bash
-# Connect to the external database
-adb shell sqlite3 /data/data/com.android.providers.media.module/databases/external.db
+### 34.10.5 SQLiteOpenHelper
 
-# Inside sqlite3:
-.tables
-.schema files
-SELECT _id, _data, _display_name, mime_type, media_type, owner_package_name
-    FROM files ORDER BY _id DESC LIMIT 10;
-SELECT volume_name, COUNT(*) FROM files GROUP BY volume_name;
-.quit
+`SQLiteOpenHelper` provides the standard pattern for database version
+management. It defers database creation/opening until first use:
+
+```java
+// SQLiteOpenHelper.java, line 55-60
+public abstract class SQLiteOpenHelper implements AutoCloseable {
+    private static final ConcurrentHashMap<String, Object> sDbLock =
+            new ConcurrentHashMap<>();
+
+    // Database is NOT opened in constructor -- only on first
+    // getWritableDatabase() or getReadableDatabase()
+}
 ```
 
-### Exercise 38.8: Working with the Storage Access Framework
+**Lock per database file.** The `sDbLock` `ConcurrentHashMap` ensures that
+only one thread can open/create/upgrade a given database file at a time.
+All `SQLiteOpenHelper` instances for the same database file share the same
+lock object:
 
-Test SAF from the command line:
-
-```bash
-# List document roots
-adb shell content query --uri content://com.android.externalstorage.documents/root/
-
-# Query a specific root's documents
-adb shell content query \
-    --uri content://com.android.providers.media.documents/root/images_root/ \
-    --projection root_id:title:available_bytes
-
-# Use am to trigger the document picker
-adb shell am start -a android.intent.action.OPEN_DOCUMENT \
-    -t "*/*" -c android.intent.category.OPENABLE
+```java
+// SQLiteOpenHelper.java, line 180-186
+if (mName == null) {
+    lock = new Object();          // In-memory DB gets unique lock
+} else {
+    lock = sDbLock.computeIfAbsent(mName, (String k) -> new Object());
+}
+mLock = lock;
 ```
 
-### Exercise 38.9: Monitoring Storage Health
+The upgrade lifecycle:
 
-Check storage health metrics:
-
-```bash
-# Get storage lifetime estimate
-adb shell sm get-storage-lifetime
-
-# Run a storage benchmark
-adb shell sm benchmark <volume_id>
-
-# Trigger fstrim manually
-adb shell sm fstrim
-
-# Check idle maintenance logs
-adb logcat -s IdleMaint:*
-
-# Check write amplification (f2fs)
-adb shell cat /sys/fs/f2fs/*/stat/written_kbytes
-adb shell cat /sys/fs/f2fs/*/segment_info
+```mermaid
+flowchart TD
+    GD["getWritableDatabase()"] --> LOCK["Acquire per-file lock"]
+    LOCK --> CHECK{"Database exists?"}
+    CHECK -->|"No"| CREATE["onCreate(db)"]
+    CHECK -->|"Yes"| VER{"version matches?"}
+    VER -->|"Same"| OPEN["onOpen(db)"]
+    VER -->|"Old < New"| UP["onUpgrade(db, old, new)"]
+    VER -->|"Old > New"| DOWN["onDowngrade(db, old, new)"]
+    VER -->|"Old < minimum"| DEL["Delete DB<br/>onBeforeDelete(db)<br/>onCreate(db)"]
+    CREATE --> OPEN
+    UP --> OPEN
+    DOWN --> OPEN
+    DEL --> OPEN
+    OPEN --> UNLOCK["Release lock"]
 ```
 
-### Exercise 38.10: Building and Modifying vold
+### 34.10.6 Prepared Statement Cache
 
-Build vold from source and examine the build configuration:
+Each `SQLiteConnection` maintains an LRU cache of prepared statements. The
+default cache size is 25 statements, configurable up to `MAX_SQL_CACHE_SIZE`
+(100):
 
-```bash
-# Navigate to the vold source
-cd $AOSP_ROOT/system/vold
-
-# Examine the build file
-cat Android.bp | head -50
-
-# Build vold
-cd $AOSP_ROOT
-source build/envsetup.sh
-lunch <target>
-m vold
-
-# Push the modified vold (requires root, for testing only)
-adb root
-adb remount
-adb push $OUT/system/bin/vold /system/bin/vold
-adb reboot
+```java
+// SQLiteDatabase.java, line 319
+public static final int MAX_SQL_CACHE_SIZE = 100;
 ```
+
+Each prepared statement consumes 1KB-6KB depending on SQL complexity. The
+cache avoids the overhead of re-parsing and re-compiling frequently-used
+SQL. When the schema changes (detected via a sequence number), cached
+statements are invalidated.
+
+### 34.10.7 Error Handling and Corruption Recovery
+
+`SQLiteDatabase` provides a `DatabaseErrorHandler` callback for corruption
+events. The default handler (`DefaultDatabaseErrorHandler`) deletes the
+database file and all associated files (journal, WAL, shared-memory):
+
+```
+my-database.db       <-- main database file
+my-database.db-wal   <-- WAL file
+my-database.db-shm   <-- shared memory for WAL
+my-database.db-journal  <-- rollback journal
+```
+
+The corruption event is also logged to `EventLog` with tag `EVENT_DB_CORRUPT`
+(75004) for debugging.
 
 ---
 
-## Summary
+## 34.11 SharedPreferences
 
-Android's storage subsystem is a deeply layered architecture that has evolved
-over more than a decade to balance performance, security, and privacy:
+`SharedPreferences` is Android's simplest persistence mechanism: a key-value
+store backed by an XML file on disk. Despite its apparent simplicity, the
+AOSP implementation (`SharedPreferencesImpl`) involves careful concurrency
+control, atomic file writes, memory-generation tracking, and the
+historically controversial `apply()` vs `commit()` semantics.
 
-1. **Partition management** through dynamic partitions and the `super`
-   partition provides flexible, updateable storage layout.
+> **Source:**
+> `frameworks/base/core/java/android/app/SharedPreferencesImpl.java`
 
-2. **vold** serves as the low-level native daemon that manages the full
-   lifecycle of storage devices -- from hotplug detection through netlink
-   events, to disk partitioning, filesystem formatting, FUSE mounting, and
-   encryption key management.
+### 34.11.1 Architecture
 
-3. **StorageManagerService** bridges the native vold daemon with the Java
-   framework, maintaining the in-memory volume model, coordinating
-   CE/DE key unlocking, and managing OBB mounts.
+```mermaid
+graph TD
+    App["Application"] -->|"getSharedPreferences()"| CTX["ContextImpl"]
+    CTX -->|"creates/caches"| SPI["SharedPreferencesImpl"]
+    SPI -->|"reads XML on init"| XML["shared_prefs/name.xml"]
+    SPI -->|"writes via EditorImpl"| XML
+    SPI -->|"apply() queue"| QW["QueuedWork<br/>(background disk writes)"]
+    SPI -->|"commit() sync"| Disk["Direct file I/O"]
+```
 
-4. **Scoped Storage** fundamentally restructured app access to shared
-   storage, replacing broad filesystem permissions with MediaStore-mediated
-   access enforced through a FUSE daemon.
+### 34.11.2 In-Memory State
 
-5. **FUSE** replaced the kernel-level sdcardfs to enable per-file permission
-   checks, content redaction, and transcoding -- with FUSE passthrough and
-   FUSE BPF recovering the performance overhead.
+All preference data is loaded into an in-memory `HashMap` on first access:
 
-6. **MediaProvider** serves as both the content provider for media metadata
-   and the host process for the FUSE daemon, tightly integrating media
-   scanning, access control, and filesystem presentation.
+```java
+// SharedPreferencesImpl.java, line 64-125
+final class SharedPreferencesImpl implements SharedPreferences {
+    private final File mFile;
+    private final File mBackupFile;
+    private final Object mLock = new Object();
+    private final Object mWritingToDiskLock = new Object();
 
-7. **The Storage Access Framework** provides a document-oriented abstraction
-   that allows apps to access files from any provider with explicit user
-   consent.
+    @GuardedBy("mLock")
+    private Map<String, Object> mMap;
 
-8. **File-Based Encryption** secures user data with per-file keys, enabling
-   the Direct Boot experience where critical services function before user
-   authentication while keeping sensitive data encrypted at rest.
+    @GuardedBy("mLock")
+    private int mDiskWritesInFlight = 0;
 
-9. **Adoptable Storage** extends internal storage onto external devices
-   through transparent encryption and the same volume management infrastructure.
+    @GuardedBy("mLock")
+    private boolean mLoaded = false;
+}
+```
 
-The key source files for this chapter are:
+Loading from disk happens asynchronously on a dedicated `ThreadPoolExecutor`:
 
-| Component | Path |
-|-----------|------|
-| vold entry point | `system/vold/main.cpp` |
-| VolumeManager | `system/vold/VolumeManager.cpp` |
-| Disk detection | `system/vold/model/Disk.cpp` |
-| Volume base class | `system/vold/model/VolumeBase.h` |
-| Public volumes | `system/vold/model/PublicVolume.cpp` |
-| Private volumes | `system/vold/model/PrivateVolume.cpp` |
-| Emulated volumes | `system/vold/model/EmulatedVolume.cpp` |
-| Volume encryption | `system/vold/model/VolumeEncryption.cpp` |
-| FBE implementation | `system/vold/FsCrypt.cpp` |
-| Metadata encryption | `system/vold/MetadataCrypt.cpp` |
-| Key storage | `system/vold/KeyStorage.cpp` |
-| Data migration | `system/vold/MoveStorage.cpp` |
-| Binder API | `system/vold/VoldNativeService.h` |
-| Netlink handler | `system/vold/NetlinkHandler.cpp` |
-| StorageManagerService | `frameworks/base/services/core/java/com/android/server/StorageManagerService.java` |
-| FuseDaemon (Java) | `packages/providers/MediaProvider/src/com/android/providers/media/fuse/FuseDaemon.java` |
-| FuseDaemon (Native) | `packages/providers/MediaProvider/jni/FuseDaemon.h` |
-| ExternalStorageService | `packages/providers/MediaProvider/src/com/android/providers/media/fuse/ExternalStorageServiceImpl.java` |
-| MediaProvider | `packages/providers/MediaProvider/src/com/android/providers/media/MediaProvider.java` |
-| MediaDocumentsProvider | `packages/providers/MediaProvider/src/com/android/providers/media/MediaDocumentsProvider.java` |
-| MediaScanner interface | `packages/providers/MediaProvider/src/com/android/providers/media/scan/MediaScanner.java` |
-| DatabaseHelper | `packages/providers/MediaProvider/src/com/android/providers/media/DatabaseHelper.java` |
+```java
+// SharedPreferencesImpl.java, line 127-129
+private static final ThreadPoolExecutor sLoadExecutor = new ThreadPoolExecutor(
+        0, 1, 10L, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>(),
+        new SharedPreferencesThreadFactory());
+```
+
+All `get*()` methods call `awaitLoadedLocked()` which blocks the calling
+thread until loading completes:
+
+```java
+// SharedPreferencesImpl.java, line 278-294
+private void awaitLoadedLocked() {
+    while (!mLoaded) {
+        try {
+            mLock.wait();    // blocks until loadFromDisk() calls notifyAll()
+        } catch (InterruptedException unused) { }
+    }
+    if (mThrowable != null) {
+        throw new IllegalStateException(mThrowable);
+    }
+}
+```
+
+### 34.11.3 The EditorImpl: commit() vs apply()
+
+The `EditorImpl` accumulates changes in a separate `mModified` HashMap:
+
+```java
+// SharedPreferencesImpl.java, line 413-420
+public final class EditorImpl implements Editor {
+    private final Object mEditorLock = new Object();
+    @GuardedBy("mEditorLock")
+    private final Map<String, Object> mModified = new HashMap<>();
+    @GuardedBy("mEditorLock")
+    private boolean mClear = false;
+}
+```
+
+**Lock ordering** is critical and documented in the source:
+
+> Acquire `SharedPreferencesImpl.mLock` before `EditorImpl.mEditorLock`.
+> Acquire `mWritingToDiskLock` before `EditorImpl.mEditorLock`.
+
+Both `commit()` and `apply()` call `commitToMemory()` first, which merges
+the editor's changes into the in-memory `mMap` while holding both locks:
+
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant Ed as EditorImpl
+    participant SP as SharedPreferencesImpl
+    participant QW as QueuedWork
+    participant Disk as File System
+
+    App->>Ed: putString("key", "val")
+    App->>Ed: apply()
+    Ed->>SP: commitToMemory()
+    Note over SP: Merge mModified into mMap<br/>Increment mCurrentMemoryStateGeneration
+    Ed->>SP: enqueueDiskWrite(mcr, postRunnable)
+    SP->>QW: queue(writeToDiskRunnable)
+    Note over App: apply() returns immediately
+    QW->>Disk: writeToFile(mcr)
+    Disk-->>QW: complete
+```
+
+**`commit()`** writes synchronously on the calling thread (blocking):
+
+```java
+// SharedPreferencesImpl.java, line 602-627
+public boolean commit() {
+    MemoryCommitResult mcr = commitToMemory();
+    SharedPreferencesImpl.this.enqueueDiskWrite(
+        mcr, null /* sync write on this thread okay */);
+    mcr.writtenToDiskLatch.await();  // blocks until disk write completes
+    return mcr.writeToDiskResult;
+}
+```
+
+**`apply()`** writes asynchronously via `QueuedWork`:
+
+```java
+// SharedPreferencesImpl.java, line 483-519
+public void apply() {
+    final MemoryCommitResult mcr = commitToMemory();
+    QueuedWork.addFinisher(awaitCommit);    // register for Activity lifecycle
+    SharedPreferencesImpl.this.enqueueDiskWrite(mcr, postWriteRunnable);
+    notifyListeners(mcr);  // notify before disk write!
+}
+```
+
+The crucial difference: `apply()` notifies listeners immediately (since
+in-memory state is already updated) and queues the disk write. However,
+`QueuedWork` finishers are drained during `Activity.onStop()` and
+`Service.onStartCommand()`, which means pending `apply()` writes can
+**block the main thread during lifecycle transitions** -- a notorious
+source of ANRs.
+
+### 34.11.4 Atomic File Write Protocol
+
+The write-to-disk process implements an atomic rename protocol:
+
+```mermaid
+flowchart TD
+    A["Start writeToFile()"] --> B{"Backup file exists?"}
+    B -->|"No"| C["Rename prefs.xml -> prefs.xml.bak"]
+    B -->|"Yes"| D["Delete prefs.xml (backup already safe)"]
+    C --> E["Write new content to prefs.xml"]
+    D --> E
+    E --> F["fsync(fd)"]
+    F --> G["Delete prefs.xml.bak"]
+    G --> H["Record new mStatTimestamp, mStatSize"]
+
+    style F fill:#ff9,stroke:#333
+```
+
+If the process crashes between steps C/D and G, recovery is simple:
+on the next `loadFromDisk()` call, if `mBackupFile.exists()`, the backup
+is renamed back to the original:
+
+```java
+// SharedPreferencesImpl.java, line 153-161
+private void loadFromDisk() {
+    synchronized (mLock) {
+        if (mBackupFile.exists()) {
+            mFile.delete();
+            mBackupFile.renameTo(mFile);
+        }
+    }
+    // ... proceed to read mFile
+}
+```
+
+### 34.11.5 Generation-Based Write Coalescing
+
+The implementation uses a generation counter to avoid unnecessary disk
+writes:
+
+```java
+// SharedPreferencesImpl.java, line 114-120
+@GuardedBy("this")
+private long mCurrentMemoryStateGeneration;
+
+@GuardedBy("mWritingToDiskLock")
+private long mDiskStateGeneration;
+```
+
+When `apply()` is called multiple times rapidly, each call increments
+`mCurrentMemoryStateGeneration`. In `writeToFile()`, if the memory
+generation being written is not the latest, the write is skipped:
+
+```java
+// SharedPreferencesImpl.java, line 760-771
+if (mDiskStateGeneration < mcr.memoryStateGeneration) {
+    if (isFromSyncCommit) {
+        needsWrite = true;
+    } else {
+        synchronized (mLock) {
+            if (mCurrentMemoryStateGeneration == mcr.memoryStateGeneration) {
+                needsWrite = true; // Only write the latest state
+            }
+        }
+    }
+}
+```
+
+This means three rapid `apply()` calls result in at most one disk write
+containing all three changes -- a significant I/O optimization.
+
+### 34.11.6 Cross-Process Limitations
+
+SharedPreferences was never designed for cross-process access.
+`MODE_MULTI_PROCESS` (deprecated in API 23) attempted to support it by
+checking file timestamps before reads:
+
+```java
+// SharedPreferencesImpl.java, line 237-261
+private boolean hasFileChangedUnexpectedly() {
+    synchronized (mLock) {
+        if (mDiskWritesInFlight > 0) {
+            return false; // We caused it
+        }
+    }
+    final StructStat stat = Os.stat(mFile.getPath());
+    synchronized (mLock) {
+        return !stat.st_mtim.equals(mStatTimestamp) || mStatSize != stat.st_size;
+    }
+}
+```
+
+This approach is inherently racy -- two processes can write simultaneously,
+and only one write survives. For cross-process key-value storage, Android
+recommends `ContentProvider`-backed solutions or Jetpack `DataStore`.
+
+### 34.11.7 Migration to DataStore
+
+Jetpack DataStore is the recommended successor to SharedPreferences. The
+key improvements are:
+
+| Feature | SharedPreferences | DataStore (Preferences) |
+|---------|-------------------|------------------------|
+| Thread safety | Partially safe (reads block on load) | Fully async with coroutines |
+| `apply()` ANR risk | Yes (QueuedWork drain in onStop) | No (fully non-blocking) |
+| Cross-process | Broken (`MODE_MULTI_PROCESS`) | Not supported (use Proto DataStore) |
+| Type safety | Runtime casts | Compile-time (Proto DataStore) |
+| Error handling | Silent corruption | Flow-based error propagation |
+| Migration | N/A | `SharedPreferencesMigration` helper |
+
+Despite DataStore being the recommended path, SharedPreferences remains
+heavily used in AOSP itself -- `Settings.Secure`, `Settings.Global`, and
+hundreds of system services store configuration in SharedPreferences files
+under `/data/data/<package>/shared_prefs/`.
 
 ---
 
@@ -4087,524 +4320,291 @@ f2fs-specific optimizations:
 
 ---
 
-## 34.11 SQLite in AOSP
+## 34.12 Try It
 
-SQLite is the embedded relational database engine at the heart of Android's
-data storage. Every Android device runs hundreds of SQLite databases -- from
-system services (contacts, telephony, settings, downloads, media) to
-application-created databases. The framework provides a layered Java API
-around the native SQLite C library, adding connection pooling, WAL mode
-management, prepared statement caching, and automatic corruption recovery.
+This section provides practical exercises for exploring the Android storage
+subsystem hands-on.
 
-> **Source root:**
-> `frameworks/base/core/java/android/database/sqlite/`
+### Exercise 38.1: Examining Partition Layout
 
-### 34.11.1 Architecture
+Connect a device via ADB and examine its partition structure:
 
-```mermaid
-graph TD
-    App["Application Code"] --> SDB["SQLiteDatabase"]
-    SDB --> SS["SQLiteSession<br/>(thread-local)"]
-    SS --> SCP["SQLiteConnectionPool"]
-    SCP --> SC1["SQLiteConnection #0<br/>(primary, read/write)"]
-    SCP --> SC2["SQLiteConnection #1<br/>(read-only)"]
-    SCP --> SC3["SQLiteConnection #N<br/>(read-only)"]
-    SC1 --> JNI["JNI: android_database_SQLiteConnection.cpp"]
-    SC2 --> JNI
-    SC3 --> JNI
-    JNI --> Native["libsqlite (native sqlite3)"]
-    SDB --> SOH["SQLiteOpenHelper<br/>(version management)"]
-    SOH --> SDB
+```bash
+# List all block devices
+adb shell ls -la /dev/block/by-name/
+
+# Show the super partition layout
+adb shell ls -la /dev/block/mapper/
+
+# Examine the fstab
+adb shell cat /vendor/etc/fstab.*
+
+# Show mounted filesystems
+adb shell mount | grep -E "^/dev"
+
+# Check for dynamic partitions
+adb shell getprop ro.boot.dynamic_partitions
 ```
 
-The layers serve distinct purposes:
+### Exercise 38.2: Exploring vold State
 
-| Layer | Class | Responsibility |
-|-------|-------|----------------|
-| User-facing API | `SQLiteDatabase` | Public methods: `query()`, `insert()`, `execSQL()` |
-| Session management | `SQLiteSession` | Thread-local; acquires/returns connections |
-| Connection pool | `SQLiteConnectionPool` | Manages pool of native connections |
-| Connection | `SQLiteConnection` | Wraps a single native `sqlite3*` handle |
-| Version helper | `SQLiteOpenHelper` | Database creation, upgrade, downgrade |
-| Statement | `SQLiteStatement` / `SQLiteQuery` | Prepared statement wrappers |
+Examine the running vold daemon and its state:
 
-### 34.11.2 SQLiteDatabase Internals
+```bash
+# Check vold properties
+adb shell getprop | grep vold
 
-`SQLiteDatabase` is the primary entry point. Its most important state is
-protected by a single `mLock` object:
+# Dump vold state
+adb shell dumpsys mount
 
-```java
-// SQLiteDatabase.java, line 137
-private final Object mLock = new Object();
+# List all volumes
+adb shell sm list-volumes all
 
-// Thread-local sessions
-private final ThreadLocal<SQLiteSession> mThreadSession = ThreadLocal
-        .withInitial(this::createSession);
+# List all disks
+adb shell sm list-disks all
 
-// Connection pool (null when closed)
-private SQLiteConnectionPool mConnectionPoolLocked;
+# Check FBE status
+adb shell getprop ro.crypto.state
+adb shell getprop ro.crypto.type
+
+# Check metadata encryption
+adb shell getprop ro.crypto.metadata.enabled
 ```
 
-The thread-local `SQLiteSession` ensures that each thread gets its own
-database session without explicit synchronization at the caller level.
+### Exercise 38.3: Storage Permissions Under Scoped Storage
 
-**Open flags** control the behavior of the database:
+Create a test to observe scoped storage behavior:
 
-| Flag | Value | Effect |
-|------|-------|--------|
-| `OPEN_READWRITE` | `0x00000000` | Read-write access (default) |
-| `OPEN_READONLY` | `0x00000001` | Read-only access |
-| `CREATE_IF_NECESSARY` | `0x10000000` | Create DB file if missing |
-| `ENABLE_WRITE_AHEAD_LOGGING` | `0x20000000` | Enable WAL at open time |
-| `NO_LOCALIZED_COLLATORS` | `0x00000010` | Skip LOCALIZED collator |
-| `ENABLE_LEGACY_COMPATIBILITY_WAL` | `0x80000000` | Legacy compat WAL mode |
+```bash
+# Check what an app sees in /storage/emulated/0/
+adb shell run-as com.example.app ls /storage/emulated/0/
 
-**Conflict resolution** is specified per-operation:
+# Check the app-specific directory (always accessible)
+adb shell run-as com.example.app ls /storage/emulated/0/Android/data/com.example.app/
 
-| Constant | Value | Behavior on constraint violation |
-|----------|-------|----------------------------------|
-| `CONFLICT_ROLLBACK` | 1 | Rollback entire transaction |
-| `CONFLICT_ABORT` | 2 | Abort command, preserve prior changes (default) |
-| `CONFLICT_FAIL` | 3 | Fail command, preserve all changes so far |
-| `CONFLICT_IGNORE` | 4 | Skip violating row, continue |
-| `CONFLICT_REPLACE` | 5 | Delete conflicting rows, then insert/update |
+# Check that other apps' data directories are not accessible
+adb shell run-as com.example.app ls /storage/emulated/0/Android/data/com.other.app/
+# Expected: Permission denied
 
-### 34.11.3 Write-Ahead Logging (WAL)
-
-WAL is the most important performance feature of SQLite on Android. Without
-WAL, readers and writers are mutually exclusive -- a read blocks writes and
-vice versa. With WAL enabled, multiple readers can execute concurrently
-with a single writer.
-
-```java
-// SQLiteDatabase.java, line 337-353
-/**
- * The WAL journaling mode uses a write-ahead log instead of a rollback
- * journal to implement transactions. The WAL journaling mode is persistent;
- * after being set it stays in effect across multiple database connections
- * and after closing and reopening the database.
- */
-public static final String JOURNAL_MODE_WAL = "WAL";
+# Query MediaStore from the command line
+adb shell content query --uri content://media/external/images/media/ \
+    --projection _id:_display_name:_size --sort "_id DESC" --limit 5
 ```
 
-Android supports six journal modes:
+### Exercise 38.4: Observing FUSE in Action
 
-| Mode | Description | Use case |
-|------|-------------|----------|
-| `WAL` | Write-ahead log | Default for most apps (best concurrency) |
-| `PERSIST` | Overwrite journal header | Low-level storage optimization |
-| `TRUNCATE` | Truncate journal to zero | Faster than DELETE on some filesystems |
-| `MEMORY` | In-RAM journal | Maximum speed, risk of corruption |
-| `DELETE` | Delete journal after commit | Traditional mode |
-| `OFF` | No journal | Maximum risk, maximum speed |
+Monitor FUSE operations:
 
-**Compatibility WAL** is a special Android mode that enables WAL with a
-restricted configuration: maximum WAL file size of 512KB and auto-
-checkpoint after each transaction. This provides WAL's concurrency benefits
-while limiting the disk space overhead, making it safe as a default.
+```bash
+# Check FUSE mounts
+adb shell mount | grep fuse
 
-```mermaid
-graph LR
-    subgraph "Without WAL"
-        W1["Writer"] -->|"blocks"| R1["Reader"]
-        R1 -->|"blocks"| W1
-    end
+# Check the FUSE daemon process
+adb shell ps -A | grep -i media | grep fuse
 
-    subgraph "With WAL"
-        W2["Writer writes to WAL"] -.->|"no blocking"| R2["Reader reads from DB + WAL snapshot"]
-        W2 -.->|"no blocking"| R3["Reader 2"]
-    end
+# Watch FUSE mount/unmount events
+adb logcat -s FuseDaemonThread:* ExternalStorageServiceImpl:*
+
+# Check if FUSE passthrough is in use
+adb logcat | grep -i "passthrough"
+
+# Check FUSE BPF status
+adb shell getprop ro.fuse.bpf.enabled
 ```
 
-### 34.11.4 Connection Pooling
+### Exercise 38.5: Understanding FBE Key Lifecycle
 
-`SQLiteConnectionPool` manages a pool of native connections. The pool has
-one primary (read-write) connection and multiple secondary (read-only)
-connections:
+Observe the FBE key management process:
 
-```java
-// SQLiteConnectionPool.java, line 84-110
-public final class SQLiteConnectionPool implements Closeable {
-    private static final long CONNECTION_POOL_BUSY_MILLIS = 30 * 1000; // 30 seconds
+```bash
+# Check CE/DE directory structure
+adb shell ls -la /data/misc/vold/user_keys/
 
-    private int mMaxConnectionPoolSize;
-    private SQLiteConnection mAvailablePrimaryConnection;
-    private final ArrayList<SQLiteConnection> mAvailableNonPrimaryConnections;
-    private final WeakHashMap<SQLiteConnection, AcquiredConnectionStatus> mAcquiredConnections;
-}
+# Watch key operations during user unlock
+adb logcat -s vold:* FsCrypt:*
+
+# Check which users have CE storage unlocked
+adb shell dumpsys mount | grep -A5 "CE unlocked"
+
+# Observe directory encryption policies (requires root)
+adb root
+adb shell fscrypt-policy-get /data/user/0/
+adb shell fscrypt-policy-get /data/user_de/0/
 ```
 
-Connection lifecycle:
+### Exercise 38.6: Simulating Adoptable Storage
 
-```mermaid
-sequenceDiagram
-    participant T as Thread
-    participant S as SQLiteSession
-    participant P as SQLiteConnectionPool
-    participant C as SQLiteConnection
+Use the virtual disk feature in the emulator:
 
-    T->>S: query(sql)
-    S->>P: acquireConnection(READ)
-    alt Primary available & no WAL
-        P->>S: return primary connection
-    else WAL enabled
-        P->>S: return non-primary (read-only) connection
-    end
-    S->>C: execute(sql)
-    C-->>S: result
-    S->>P: releaseConnection(connection)
+```bash
+# Enable virtual disk (emulator only)
+adb shell setprop persist.sys.virtual_disk true
+
+# Wait for the virtual disk to appear
+adb shell sm list-disks all
+
+# Partition as private (adoptable)
+adb shell sm partition <disk_id> private
+
+# Check the new volume
+adb shell sm list-volumes all
+
+# Migrate data to the adopted volume
+adb shell sm move-primary-storage <volume_uuid>
+
+# Monitor the migration progress
+adb logcat -s MoveStorage:*
+
+# Forget the partition
+adb shell sm forget <volume_uuid>
 ```
 
-The pool tracks acquired connections via `WeakReference`s. If a connection
-is leaked (the `SQLiteSession` that acquired it is garbage collected), the
-pool detects this through the weak reference and reclaims the connection
-with a warning log.
+### Exercise 38.7: Examining MediaProvider Database
 
-Idle connections are managed by an `IdleConnectionHandler` that can close
-connections after a configurable timeout, reducing memory pressure on
-resource-constrained devices.
+Explore the MediaStore database:
 
-### 34.11.5 SQLiteOpenHelper
+```bash
+# Connect to the external database
+adb shell sqlite3 /data/data/com.android.providers.media.module/databases/external.db
 
-`SQLiteOpenHelper` provides the standard pattern for database version
-management. It defers database creation/opening until first use:
-
-```java
-// SQLiteOpenHelper.java, line 55-60
-public abstract class SQLiteOpenHelper implements AutoCloseable {
-    private static final ConcurrentHashMap<String, Object> sDbLock =
-            new ConcurrentHashMap<>();
-
-    // Database is NOT opened in constructor -- only on first
-    // getWritableDatabase() or getReadableDatabase()
-}
+# Inside sqlite3:
+.tables
+.schema files
+SELECT _id, _data, _display_name, mime_type, media_type, owner_package_name
+    FROM files ORDER BY _id DESC LIMIT 10;
+SELECT volume_name, COUNT(*) FROM files GROUP BY volume_name;
+.quit
 ```
 
-**Lock per database file.** The `sDbLock` `ConcurrentHashMap` ensures that
-only one thread can open/create/upgrade a given database file at a time.
-All `SQLiteOpenHelper` instances for the same database file share the same
-lock object:
+### Exercise 38.8: Working with the Storage Access Framework
 
-```java
-// SQLiteOpenHelper.java, line 180-186
-if (mName == null) {
-    lock = new Object();          // In-memory DB gets unique lock
-} else {
-    lock = sDbLock.computeIfAbsent(mName, (String k) -> new Object());
-}
-mLock = lock;
+Test SAF from the command line:
+
+```bash
+# List document roots
+adb shell content query --uri content://com.android.externalstorage.documents/root/
+
+# Query a specific root's documents
+adb shell content query \
+    --uri content://com.android.providers.media.documents/root/images_root/ \
+    --projection root_id:title:available_bytes
+
+# Use am to trigger the document picker
+adb shell am start -a android.intent.action.OPEN_DOCUMENT \
+    -t "*/*" -c android.intent.category.OPENABLE
 ```
 
-The upgrade lifecycle:
+### Exercise 38.9: Monitoring Storage Health
 
-```mermaid
-flowchart TD
-    GD["getWritableDatabase()"] --> LOCK["Acquire per-file lock"]
-    LOCK --> CHECK{"Database exists?"}
-    CHECK -->|"No"| CREATE["onCreate(db)"]
-    CHECK -->|"Yes"| VER{"version matches?"}
-    VER -->|"Same"| OPEN["onOpen(db)"]
-    VER -->|"Old < New"| UP["onUpgrade(db, old, new)"]
-    VER -->|"Old > New"| DOWN["onDowngrade(db, old, new)"]
-    VER -->|"Old < minimum"| DEL["Delete DB<br/>onBeforeDelete(db)<br/>onCreate(db)"]
-    CREATE --> OPEN
-    UP --> OPEN
-    DOWN --> OPEN
-    DEL --> OPEN
-    OPEN --> UNLOCK["Release lock"]
+Check storage health metrics:
+
+```bash
+# Get storage lifetime estimate
+adb shell sm get-storage-lifetime
+
+# Run a storage benchmark
+adb shell sm benchmark <volume_id>
+
+# Trigger fstrim manually
+adb shell sm fstrim
+
+# Check idle maintenance logs
+adb logcat -s IdleMaint:*
+
+# Check write amplification (f2fs)
+adb shell cat /sys/fs/f2fs/*/stat/written_kbytes
+adb shell cat /sys/fs/f2fs/*/segment_info
 ```
 
-### 34.11.6 Prepared Statement Cache
+### Exercise 38.10: Building and Modifying vold
 
-Each `SQLiteConnection` maintains an LRU cache of prepared statements. The
-default cache size is 25 statements, configurable up to `MAX_SQL_CACHE_SIZE`
-(100):
+Build vold from source and examine the build configuration:
 
-```java
-// SQLiteDatabase.java, line 319
-public static final int MAX_SQL_CACHE_SIZE = 100;
+```bash
+# Navigate to the vold source
+cd $AOSP_ROOT/system/vold
+
+# Examine the build file
+cat Android.bp | head -50
+
+# Build vold
+cd $AOSP_ROOT
+source build/envsetup.sh
+lunch <target>
+m vold
+
+# Push the modified vold (requires root, for testing only)
+adb root
+adb remount
+adb push $OUT/system/bin/vold /system/bin/vold
+adb reboot
 ```
-
-Each prepared statement consumes 1KB-6KB depending on SQL complexity. The
-cache avoids the overhead of re-parsing and re-compiling frequently-used
-SQL. When the schema changes (detected via a sequence number), cached
-statements are invalidated.
-
-### 34.11.7 Error Handling and Corruption Recovery
-
-`SQLiteDatabase` provides a `DatabaseErrorHandler` callback for corruption
-events. The default handler (`DefaultDatabaseErrorHandler`) deletes the
-database file and all associated files (journal, WAL, shared-memory):
-
-```
-my-database.db       <-- main database file
-my-database.db-wal   <-- WAL file
-my-database.db-shm   <-- shared memory for WAL
-my-database.db-journal  <-- rollback journal
-```
-
-The corruption event is also logged to `EventLog` with tag `EVENT_DB_CORRUPT`
-(75004) for debugging.
 
 ---
 
-## 34.12 SharedPreferences
+## Summary
 
-`SharedPreferences` is Android's simplest persistence mechanism: a key-value
-store backed by an XML file on disk. Despite its apparent simplicity, the
-AOSP implementation (`SharedPreferencesImpl`) involves careful concurrency
-control, atomic file writes, memory-generation tracking, and the
-historically controversial `apply()` vs `commit()` semantics.
+Android's storage subsystem is a deeply layered architecture that has evolved
+over more than a decade to balance performance, security, and privacy:
 
-> **Source:**
-> `frameworks/base/core/java/android/app/SharedPreferencesImpl.java`
+1. **Partition management** through dynamic partitions and the `super`
+   partition provides flexible, updateable storage layout.
 
-### 34.12.1 Architecture
+2. **vold** serves as the low-level native daemon that manages the full
+   lifecycle of storage devices -- from hotplug detection through netlink
+   events, to disk partitioning, filesystem formatting, FUSE mounting, and
+   encryption key management.
 
-```mermaid
-graph TD
-    App["Application"] -->|"getSharedPreferences()"| CTX["ContextImpl"]
-    CTX -->|"creates/caches"| SPI["SharedPreferencesImpl"]
-    SPI -->|"reads XML on init"| XML["shared_prefs/name.xml"]
-    SPI -->|"writes via EditorImpl"| XML
-    SPI -->|"apply() queue"| QW["QueuedWork<br/>(background disk writes)"]
-    SPI -->|"commit() sync"| Disk["Direct file I/O"]
-```
+3. **StorageManagerService** bridges the native vold daemon with the Java
+   framework, maintaining the in-memory volume model, coordinating
+   CE/DE key unlocking, and managing OBB mounts.
 
-### 34.12.2 In-Memory State
+4. **Scoped Storage** fundamentally restructured app access to shared
+   storage, replacing broad filesystem permissions with MediaStore-mediated
+   access enforced through a FUSE daemon.
 
-All preference data is loaded into an in-memory `HashMap` on first access:
+5. **FUSE** replaced the kernel-level sdcardfs to enable per-file permission
+   checks, content redaction, and transcoding -- with FUSE passthrough and
+   FUSE BPF recovering the performance overhead.
 
-```java
-// SharedPreferencesImpl.java, line 64-125
-final class SharedPreferencesImpl implements SharedPreferences {
-    private final File mFile;
-    private final File mBackupFile;
-    private final Object mLock = new Object();
-    private final Object mWritingToDiskLock = new Object();
+6. **MediaProvider** serves as both the content provider for media metadata
+   and the host process for the FUSE daemon, tightly integrating media
+   scanning, access control, and filesystem presentation.
 
-    @GuardedBy("mLock")
-    private Map<String, Object> mMap;
+7. **The Storage Access Framework** provides a document-oriented abstraction
+   that allows apps to access files from any provider with explicit user
+   consent.
 
-    @GuardedBy("mLock")
-    private int mDiskWritesInFlight = 0;
+8. **File-Based Encryption** secures user data with per-file keys, enabling
+   the Direct Boot experience where critical services function before user
+   authentication while keeping sensitive data encrypted at rest.
 
-    @GuardedBy("mLock")
-    private boolean mLoaded = false;
-}
-```
+9. **Adoptable Storage** extends internal storage onto external devices
+   through transparent encryption and the same volume management infrastructure.
 
-Loading from disk happens asynchronously on a dedicated `ThreadPoolExecutor`:
+The key source files for this chapter are:
 
-```java
-// SharedPreferencesImpl.java, line 127-129
-private static final ThreadPoolExecutor sLoadExecutor = new ThreadPoolExecutor(
-        0, 1, 10L, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>(),
-        new SharedPreferencesThreadFactory());
-```
-
-All `get*()` methods call `awaitLoadedLocked()` which blocks the calling
-thread until loading completes:
-
-```java
-// SharedPreferencesImpl.java, line 278-294
-private void awaitLoadedLocked() {
-    while (!mLoaded) {
-        try {
-            mLock.wait();    // blocks until loadFromDisk() calls notifyAll()
-        } catch (InterruptedException unused) { }
-    }
-    if (mThrowable != null) {
-        throw new IllegalStateException(mThrowable);
-    }
-}
-```
-
-### 34.12.3 The EditorImpl: commit() vs apply()
-
-The `EditorImpl` accumulates changes in a separate `mModified` HashMap:
-
-```java
-// SharedPreferencesImpl.java, line 413-420
-public final class EditorImpl implements Editor {
-    private final Object mEditorLock = new Object();
-    @GuardedBy("mEditorLock")
-    private final Map<String, Object> mModified = new HashMap<>();
-    @GuardedBy("mEditorLock")
-    private boolean mClear = false;
-}
-```
-
-**Lock ordering** is critical and documented in the source:
-
-> Acquire `SharedPreferencesImpl.mLock` before `EditorImpl.mEditorLock`.
-> Acquire `mWritingToDiskLock` before `EditorImpl.mEditorLock`.
-
-Both `commit()` and `apply()` call `commitToMemory()` first, which merges
-the editor's changes into the in-memory `mMap` while holding both locks:
-
-```mermaid
-sequenceDiagram
-    participant App as Application
-    participant Ed as EditorImpl
-    participant SP as SharedPreferencesImpl
-    participant QW as QueuedWork
-    participant Disk as File System
-
-    App->>Ed: putString("key", "val")
-    App->>Ed: apply()
-    Ed->>SP: commitToMemory()
-    Note over SP: Merge mModified into mMap<br/>Increment mCurrentMemoryStateGeneration
-    Ed->>SP: enqueueDiskWrite(mcr, postRunnable)
-    SP->>QW: queue(writeToDiskRunnable)
-    Note over App: apply() returns immediately
-    QW->>Disk: writeToFile(mcr)
-    Disk-->>QW: complete
-```
-
-**`commit()`** writes synchronously on the calling thread (blocking):
-
-```java
-// SharedPreferencesImpl.java, line 602-627
-public boolean commit() {
-    MemoryCommitResult mcr = commitToMemory();
-    SharedPreferencesImpl.this.enqueueDiskWrite(
-        mcr, null /* sync write on this thread okay */);
-    mcr.writtenToDiskLatch.await();  // blocks until disk write completes
-    return mcr.writeToDiskResult;
-}
-```
-
-**`apply()`** writes asynchronously via `QueuedWork`:
-
-```java
-// SharedPreferencesImpl.java, line 483-519
-public void apply() {
-    final MemoryCommitResult mcr = commitToMemory();
-    QueuedWork.addFinisher(awaitCommit);    // register for Activity lifecycle
-    SharedPreferencesImpl.this.enqueueDiskWrite(mcr, postWriteRunnable);
-    notifyListeners(mcr);  // notify before disk write!
-}
-```
-
-The crucial difference: `apply()` notifies listeners immediately (since
-in-memory state is already updated) and queues the disk write. However,
-`QueuedWork` finishers are drained during `Activity.onStop()` and
-`Service.onStartCommand()`, which means pending `apply()` writes can
-**block the main thread during lifecycle transitions** -- a notorious
-source of ANRs.
-
-### 34.12.4 Atomic File Write Protocol
-
-The write-to-disk process implements an atomic rename protocol:
-
-```mermaid
-flowchart TD
-    A["Start writeToFile()"] --> B{"Backup file exists?"}
-    B -->|"No"| C["Rename prefs.xml -> prefs.xml.bak"]
-    B -->|"Yes"| D["Delete prefs.xml (backup already safe)"]
-    C --> E["Write new content to prefs.xml"]
-    D --> E
-    E --> F["fsync(fd)"]
-    F --> G["Delete prefs.xml.bak"]
-    G --> H["Record new mStatTimestamp, mStatSize"]
-
-    style F fill:#ff9,stroke:#333
-```
-
-If the process crashes between steps C/D and G, recovery is simple:
-on the next `loadFromDisk()` call, if `mBackupFile.exists()`, the backup
-is renamed back to the original:
-
-```java
-// SharedPreferencesImpl.java, line 153-161
-private void loadFromDisk() {
-    synchronized (mLock) {
-        if (mBackupFile.exists()) {
-            mFile.delete();
-            mBackupFile.renameTo(mFile);
-        }
-    }
-    // ... proceed to read mFile
-}
-```
-
-### 34.12.5 Generation-Based Write Coalescing
-
-The implementation uses a generation counter to avoid unnecessary disk
-writes:
-
-```java
-// SharedPreferencesImpl.java, line 114-120
-@GuardedBy("this")
-private long mCurrentMemoryStateGeneration;
-
-@GuardedBy("mWritingToDiskLock")
-private long mDiskStateGeneration;
-```
-
-When `apply()` is called multiple times rapidly, each call increments
-`mCurrentMemoryStateGeneration`. In `writeToFile()`, if the memory
-generation being written is not the latest, the write is skipped:
-
-```java
-// SharedPreferencesImpl.java, line 760-771
-if (mDiskStateGeneration < mcr.memoryStateGeneration) {
-    if (isFromSyncCommit) {
-        needsWrite = true;
-    } else {
-        synchronized (mLock) {
-            if (mCurrentMemoryStateGeneration == mcr.memoryStateGeneration) {
-                needsWrite = true; // Only write the latest state
-            }
-        }
-    }
-}
-```
-
-This means three rapid `apply()` calls result in at most one disk write
-containing all three changes -- a significant I/O optimization.
-
-### 34.12.6 Cross-Process Limitations
-
-SharedPreferences was never designed for cross-process access.
-`MODE_MULTI_PROCESS` (deprecated in API 23) attempted to support it by
-checking file timestamps before reads:
-
-```java
-// SharedPreferencesImpl.java, line 237-261
-private boolean hasFileChangedUnexpectedly() {
-    synchronized (mLock) {
-        if (mDiskWritesInFlight > 0) {
-            return false; // We caused it
-        }
-    }
-    final StructStat stat = Os.stat(mFile.getPath());
-    synchronized (mLock) {
-        return !stat.st_mtim.equals(mStatTimestamp) || mStatSize != stat.st_size;
-    }
-}
-```
-
-This approach is inherently racy -- two processes can write simultaneously,
-and only one write survives. For cross-process key-value storage, Android
-recommends `ContentProvider`-backed solutions or Jetpack `DataStore`.
-
-### 34.12.7 Migration to DataStore
-
-Jetpack DataStore is the recommended successor to SharedPreferences. The
-key improvements are:
-
-| Feature | SharedPreferences | DataStore (Preferences) |
-|---------|-------------------|------------------------|
-| Thread safety | Partially safe (reads block on load) | Fully async with coroutines |
-| `apply()` ANR risk | Yes (QueuedWork drain in onStop) | No (fully non-blocking) |
-| Cross-process | Broken (`MODE_MULTI_PROCESS`) | Not supported (use Proto DataStore) |
-| Type safety | Runtime casts | Compile-time (Proto DataStore) |
-| Error handling | Silent corruption | Flow-based error propagation |
-| Migration | N/A | `SharedPreferencesMigration` helper |
-
-Despite DataStore being the recommended path, SharedPreferences remains
-heavily used in AOSP itself -- `Settings.Secure`, `Settings.Global`, and
-hundreds of system services store configuration in SharedPreferences files
-under `/data/data/<package>/shared_prefs/`.
+| Component | Path |
+|-----------|------|
+| vold entry point | `system/vold/main.cpp` |
+| VolumeManager | `system/vold/VolumeManager.cpp` |
+| Disk detection | `system/vold/model/Disk.cpp` |
+| Volume base class | `system/vold/model/VolumeBase.h` |
+| Public volumes | `system/vold/model/PublicVolume.cpp` |
+| Private volumes | `system/vold/model/PrivateVolume.cpp` |
+| Emulated volumes | `system/vold/model/EmulatedVolume.cpp` |
+| Volume encryption | `system/vold/model/VolumeEncryption.cpp` |
+| FBE implementation | `system/vold/FsCrypt.cpp` |
+| Metadata encryption | `system/vold/MetadataCrypt.cpp` |
+| Key storage | `system/vold/KeyStorage.cpp` |
+| Data migration | `system/vold/MoveStorage.cpp` |
+| Binder API | `system/vold/VoldNativeService.h` |
+| Netlink handler | `system/vold/NetlinkHandler.cpp` |
+| StorageManagerService | `frameworks/base/services/core/java/com/android/server/StorageManagerService.java` |
+| FuseDaemon (Java) | `packages/providers/MediaProvider/src/com/android/providers/media/fuse/FuseDaemon.java` |
+| FuseDaemon (Native) | `packages/providers/MediaProvider/jni/FuseDaemon.h` |
+| ExternalStorageService | `packages/providers/MediaProvider/src/com/android/providers/media/fuse/ExternalStorageServiceImpl.java` |
+| MediaProvider | `packages/providers/MediaProvider/src/com/android/providers/media/MediaProvider.java` |
+| MediaDocumentsProvider | `packages/providers/MediaProvider/src/com/android/providers/media/MediaDocumentsProvider.java` |
+| MediaScanner interface | `packages/providers/MediaProvider/src/com/android/providers/media/scan/MediaScanner.java` |
+| DatabaseHelper | `packages/providers/MediaProvider/src/com/android/providers/media/DatabaseHelper.java` |
