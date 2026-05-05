@@ -2335,9 +2335,747 @@ These features are declared in `media_codecs.xml` and queried through
 
 ---
 
-## 16.8 Try It
+## 16.8 Appendix: Deep-Dive Topics
 
-### 16.8.1 Inspect Available Codecs
+### 16.8.1 The ALooper/AHandler/AMessage Framework
+
+The Stagefright message passing framework is the backbone of all asynchronous
+operations in the media stack. Understanding it is essential for reading any
+media source code.
+
+#### ALooper: The Event Loop
+
+An `ALooper` is a thread that runs an event loop, dequeuing messages and dispatching
+them to registered handlers. Key properties:
+
+- **Thread safety**: Messages can be posted from any thread; they are enqueued
+  atomically and processed sequentially on the looper thread.
+- **Timed delivery**: Messages can be posted with a delay
+  (`msg->post(delayUs)`), enabling timer-based operations.
+- **Priority**: Loopers can run at different thread priorities. Video codec
+  loopers run at `ANDROID_PRIORITY_AUDIO` for low latency.
+
+```mermaid
+graph LR
+    subgraph "Any Thread"
+        POST["msg->post()"]
+    end
+
+    subgraph "ALooper Thread"
+        Q["Message Queue<br/>(priority-ordered)"]
+        DISP["Dispatch Loop"]
+        H1["Handler A<br/>onMessageReceived()"]
+        H2["Handler B<br/>onMessageReceived()"]
+    end
+
+    POST -->|"enqueue"| Q
+    Q -->|"dequeue"| DISP
+    DISP -->|"what() routing"| H1
+    DISP -->|"what() routing"| H2
+```
+
+#### AMessage: The Typed Message
+
+`AMessage` is a key-value container that carries data between components:
+
+```cpp
+sp<AMessage> msg = new AMessage(kWhatConfigure, targetHandler);
+msg->setMessage("format", format);    // nested AMessage
+msg->setInt32("flags", flags);        // integer
+msg->setInt64("timeUs", timestamp);   // 64-bit integer
+msg->setString("name", "avc");        // string
+msg->setObject("surface", surface);   // RefBase object
+msg->setSize("index", bufferIndex);   // size_t
+msg->setFloat("rate", 30.0f);         // float
+msg->setPointer("ptr", rawPtr);       // raw pointer
+msg->setRect("crop", l, t, r, b);    // rectangle
+msg->post();                          // async delivery
+```
+
+#### PostAndAwaitResponse: Synchronous RPC
+
+The `PostAndAwaitResponse` pattern converts asynchronous message passing into
+synchronous function calls:
+
+```mermaid
+sequenceDiagram
+    participant Caller as Calling Thread
+    participant Looper as Looper Thread
+    participant Handler as Handler
+
+    Caller->>Caller: Create reply token
+    Caller->>Looper: post(msg with reply token)
+    Caller->>Caller: Block on reply token
+
+    Looper->>Handler: onMessageReceived(msg)
+    Handler->>Handler: Process request
+    Handler->>Looper: response->postReply(replyToken)
+
+    Looper-->>Caller: Unblock with response
+    Caller->>Caller: Extract result from response
+```
+
+This pattern is used throughout MediaCodec for methods like `configure()`,
+`start()`, `stop()`, `queueInputBuffer()`, and `dequeueOutputBuffer()`.
+
+### 16.8.2 MediaCodec Domain Classification
+
+MediaCodec classifies codecs into three domains, each with different behavior:
+
+| Domain | Looper | CPU Boost | Battery | Resource Type |
+|---|---|---|---|---|
+| `DOMAIN_VIDEO` | Dedicated `CodecLooper` | HDR at 1080p+ | Tracked | HW/SW Video Codec |
+| `DOMAIN_AUDIO` | Shared main looper | Never | Tracked | HW/SW Audio Codec |
+| `DOMAIN_IMAGE` | Shared main looper | Never | Not tracked | HW/SW Image Codec |
+
+Video codecs get a dedicated looper thread because video processing is latency-
+sensitive: a stall in the codec's message processing would directly cause frame
+drops. Audio and image codecs share the main looper because their timing
+requirements are less stringent.
+
+### 16.8.3 Secure Codec Path (DRM)
+
+The secure codec path for DRM-protected content involves additional components:
+
+```mermaid
+graph TD
+    subgraph "Clear World (accessible)"
+        APP["Application"]
+        MC["MediaCodec"]
+        CRYPTO["ICrypto"]
+    end
+
+    subgraph "Secure World (inaccessible)"
+        SEC_DEC["Secure Decoder"]
+        SEC_BUF["Secure Buffers"]
+        TEE["Trusted Execution<br/>Environment"]
+    end
+
+    subgraph "Display Path"
+        HDCP["HDCP Encryption"]
+        DISP["Display"]
+    end
+
+    APP -->|"encrypted data"| MC
+    MC -->|"encrypted buffers"| CRYPTO
+    CRYPTO -->|"decrypt to secure memory"| SEC_BUF
+    SEC_BUF -->|"decode"| SEC_DEC
+    SEC_DEC -->|"decoded frames"| HDCP
+    HDCP -->|"re-encrypted"| DISP
+
+    style SEC_DEC fill:#ffcdd2
+    style SEC_BUF fill:#ffcdd2
+    style TEE fill:#ffcdd2
+```
+
+Key security properties:
+
+1. Decrypted content never exists in CPU-accessible memory
+2. Decoded frames flow directly through a secure buffer path
+3. HDCP (High-bandwidth Digital Content Protection) protects the display link
+4. The crypto plugin runs in the TEE (Trusted Execution Environment)
+
+The `queueSecureInputBuffer` method passes encryption metadata (key, IV, sub-sample
+mapping, pattern) to the crypto subsystem, which decrypts directly into secure
+memory accessible only by the hardware decoder.
+
+### 16.8.4 Tunneled Playback Mode
+
+Tunneled playback bypasses the standard buffer exchange and renders video
+directly through the hardware:
+
+```mermaid
+graph LR
+    subgraph "Standard Path"
+        MC1["MediaCodec"]
+        APP1["App dequeue/release"]
+        SF1["SurfaceFlinger"]
+    end
+
+    subgraph "Tunneled Path"
+        MC2["MediaCodec"]
+        HW["Hardware A/V Sync"]
+        DISP2["Display"]
+    end
+
+    MC1 -->|"output buffer"| APP1
+    APP1 -->|"releaseOutputBuffer"| SF1
+    SF1 --> DISP2
+
+    MC2 -->|"direct render"| HW
+    HW -->|"hardware composited"| DISP2
+```
+
+In tunneled mode:
+
+- The application never sees decoded frames
+- Audio and video synchronization is handled entirely in hardware
+- Frame timing is controlled by the hardware A/V sync unit
+- This typically achieves lower latency and better power efficiency
+- Only available on hardware codecs that support it
+
+### 16.8.5 Low-Latency Mode
+
+For gaming and video conferencing, low-latency mode reduces the codec's
+internal buffering:
+
+```
+kCodecNumLowLatencyModeOn    - Times low-latency was enabled
+kCodecNumLowLatencyModeOff   - Times low-latency was disabled
+kCodecFirstFrameIndexLowLatencyOn - Frame index when first enabled
+```
+
+When low-latency mode is active:
+
+- Output delay is minimized (typically 0-1 frames)
+- Reordering is disabled or minimized
+- The codec may skip B-frame decoding
+- Frame drops are preferred over buffering
+
+### 16.8.6 Multi-Access-Unit (Large Frame) Audio
+
+Modern audio codecs like IAMF and xHE-AAC can benefit from processing
+multiple audio frames in a single buffer:
+
+```mermaid
+graph LR
+    subgraph "Traditional (one AU per buffer)"
+        B1["Buffer 1: AU 0"]
+        B2["Buffer 2: AU 1"]
+        B3["Buffer 3: AU 2"]
+    end
+
+    subgraph "Large Frame (multiple AUs per buffer)"
+        B4["Buffer 1: AU 0 | AU 1 | AU 2"]
+    end
+```
+
+The `queueInputBuffers` (plural) API supports this by accepting a
+`BufferInfosWrapper` that describes the boundaries and timestamps of each
+access unit within the larger buffer. This reduces per-frame overhead and
+enables more efficient processing pipelines.
+
+### 16.8.7 Codec2 vs OMX Feature Comparison
+
+| Feature | OMX (ACodec) | Codec2 (CCodec) |
+|---|---|---|
+| Parameter system | Flat index + void* | Typed C2Param structs |
+| Buffer model | Separate input/output queues | Unified C2Work |
+| Error handling | OMX_EVENTTYPE | c2_status_t + detailed failures |
+| Vendor parameters | Limited OMX extensions | First-class vendor params |
+| Component discovery | Global OMX registry | Per-store component lists |
+| Process model | In-process or HIDL | AIDL HAL (separate process) |
+| Buffer allocation | OMX_AllocateBuffer | C2BlockPool + allocators |
+| Stuck detection | Application must implement | Built-in CCodecWatchdog |
+| Multi-frame input | Not supported | AccessUnitInfo |
+| Per-frame tuning | Not supported | C2Work tunings |
+| HAL specification | OMX IL 1.1.2 | android.hardware.media.c2 |
+| Status | Maintenance mode | Active development |
+
+### 16.8.8 Media Framework Process Boundaries
+
+```mermaid
+graph TD
+    subgraph "App Process"
+        JAVA["Java MediaCodec / MediaPlayer"]
+        NDK["NDK AMediaCodec"]
+        JNI["JNI / libmedia_jni"]
+    end
+
+    subgraph "mediaserver"
+        MPS["MediaPlayerService"]
+        MRS["MediaRecorderService"]
+        RMS["ResourceManagerService"]
+        NP2["NuPlayer"]
+    end
+
+    subgraph "media.codec (vendor)"
+        C2HAL["Codec2 AIDL HAL"]
+        VENDOR["Vendor Codec Plugins"]
+    end
+
+    subgraph "media.extractor"
+        EXTSVC["MediaExtractorService"]
+        PLUGINS["Extractor Plugins"]
+    end
+
+    subgraph "cameraserver"
+        CAMSVC["CameraService"]
+        CAMHAL["Camera HAL"]
+    end
+
+    subgraph "SurfaceFlinger"
+        SFCOMP["Compositor"]
+    end
+
+    JAVA --> JNI
+    NDK --> JNI
+    JNI -->|"Binder"| MPS
+    JNI -->|"Binder"| RMS
+    JNI -->|"AIDL"| C2HAL
+
+    MPS --> NP2
+    NP2 -->|"Binder"| EXTSVC
+    NP2 -->|"AIDL"| C2HAL
+
+    MRS -->|"AIDL"| C2HAL
+
+    JNI -->|"Binder"| CAMSVC
+    CAMSVC -->|"AIDL/HIDL"| CAMHAL
+
+    C2HAL --> VENDOR
+    EXTSVC --> PLUGINS
+
+    JNI -->|"BufferQueue"| SFCOMP
+```
+
+Each process boundary represents a security isolation boundary:
+
+- **App to mediaserver**: Binder IPC with UID/PID verification
+- **mediaserver to media.codec**: AIDL HAL with SELinux policy
+- **mediaserver to media.extractor**: Binder IPC, sandboxed process
+- **App to cameraserver**: Binder IPC with camera permission check
+- **cameraserver to Camera HAL**: AIDL/HIDL with vendor isolation
+
+### 16.8.9 MediaCodec Lifecycle Summary Table
+
+| State | Entry Action | Valid Operations | Exit Conditions |
+|---|---|---|---|
+| UNINITIALIZED | constructor / release() | init() | init() called |
+| INITIALIZING | init() posted | (wait) | Component allocated |
+| INITIALIZED | Component allocated | configure(), release() | configure() called |
+| CONFIGURING | configure() posted | (wait) | Component configured |
+| CONFIGURED | Component configured | start(), release() | start() called |
+| STARTING | start() posted | (wait) | Start completed |
+| STARTED | Start completed | queue/dequeue/flush/stop/release | Any of these |
+| FLUSHING | flush() posted | (wait) | Flush completed |
+| FLUSHED | Flush completed | start(), stop(), release() | start()/stop() called |
+| STOPPING | stop() posted | (wait) | Stop completed |
+| RELEASING | release() posted | (wait) | Release completed |
+
+### 16.8.10 Codec Metrics Key Reference
+
+All metrics keys are prefixed with `android.media.mediacodec.`:
+
+| Category | Key Suffix | Type | Description |
+|---|---|---|---|
+| Identity | `codec` | string | Component name |
+| Identity | `mime` | string | MIME type |
+| Identity | `mode` | string | audio/video/image |
+| Identity | `encoder` | int32 | 0=decoder, 1=encoder |
+| Identity | `hardware` | int32 | 0=software, 1=hardware |
+| Identity | `secure` | int32 | 0=normal, 1=secure |
+| Identity | `tunneled` | int32 | 0=normal, 1=tunneled |
+| Resolution | `width` | int32 | Video width |
+| Resolution | `height` | int32 | Video height |
+| Resolution | `rotation` | int32 | 0/90/180/270 |
+| Performance | `frame-rate` | int32 | Frame rate |
+| Performance | `operating-rate` | int32 | Operating rate |
+| Performance | `bitrate` | int32 | Bitrate |
+| Performance | `bitrate_mode` | string | CQ/VBR/CBR |
+| Latency | `latency.max` | int64 | Max latency (us) |
+| Latency | `latency.min` | int64 | Min latency (us) |
+| Latency | `latency.avg` | int64 | Avg latency (us) |
+| Latency | `latency.n` | int32 | Sample count |
+| Quality | `freeze-count` | int32 | Freeze events |
+| Quality | `freeze-score` | double | Freeze severity |
+| Quality | `judder-count` | int32 | Judder events |
+| Quality | `judder-score` | double | Judder severity |
+| Render | `frames-released` | int64 | Total released |
+| Render | `frames-rendered` | int64 | Actually displayed |
+| Render | `frames-dropped` | int64 | Dropped (late) |
+| Render | `frames-skipped` | int64 | Skipped |
+| Error | `errcode` | int32 | Error code |
+| Error | `errstate` | string | Error state |
+| Lifecycle | `lifetimeMs` | int64 | Total lifetime (ms) |
+---
+
+### 16.2.16 Format Shaping
+
+MediaCodec includes a **format shaping** feature that can modify encoder parameters
+to improve visual quality. The `FormatShaper` plugin adjusts QP (Quantization Parameter)
+values and other settings based on device capabilities:
+
+```
+kCodecOriginalVideoQPIMin  - QP I-frame min before shaping
+kCodecOriginalVideoQPIMax  - QP I-frame max before shaping
+kCodecOriginalVideoQPPMin  - QP P-frame min before shaping
+kCodecOriginalVideoQPPMax  - QP P-frame max before shaping
+kCodecOriginalVideoQPBMin  - QP B-frame min before shaping
+kCodecOriginalVideoQPBMax  - QP B-frame max before shaping
+kCodecRequestedVideoQPIMin - QP I-frame min after shaping
+kCodecRequestedVideoQPIMax - QP I-frame max after shaping
+kCodecRequestedVideoQPPMin - QP P-frame min after shaping
+kCodecRequestedVideoQPPMax - QP P-frame max after shaping
+kCodecRequestedVideoQPBMin - QP B-frame min after shaping
+kCodecRequestedVideoQPBMax - QP B-frame max after shaping
+```
+
+The `kCodecShapingEnhanced` metric tracks how many fields were modified: -1 means
+shaping is disabled, 0 or more indicates the number of adjusted fields.
+
+---
+
+### 16.3.11 SimpleC2Component: The Base Class Pattern
+
+All software Codec2 components extend `SimpleC2Component`, which is defined in
+`frameworks/av/media/codec2/components/base/SimpleC2Component.cpp`. This base class
+provides:
+
+1. **Thread management**: A work processing thread that dequeues `C2Work` items
+2. **Buffer pool management**: Integration with the Codec2 buffer allocator system
+3. **Standard lifecycle**: `start()`, `stop()`, `flush()`, `reset()`, `release()`
+4. **Error propagation**: Mapping from codec-specific errors to `c2_status_t`
+
+The `SimpleInterface` companion class provides the `IntfImpl` pattern for parameter
+declaration:
+
+```mermaid
+classDiagram
+    class SimpleC2Component {
+        #process(C2Work*, FlushedWork*)
+        #drain(drain_mode_t, C2Work*)
+        +start()
+        +stop()
+        +flush()
+        +queue(C2WorkList*)
+    }
+
+    class SimpleInterface {
+        +query(params, mayBlock)
+        +config(params, mayBlock)
+    }
+
+    class C2SoftAvcDec {
+        -IntfImpl mIntf
+        #process(C2Work*, FlushedWork*)
+        #drain(drain_mode_t, C2Work*)
+    }
+
+    class C2SoftHevcDec {
+        -IntfImpl mIntf
+        #process(C2Work*, FlushedWork*)
+    }
+
+    SimpleC2Component <|-- C2SoftAvcDec
+    SimpleC2Component <|-- C2SoftHevcDec
+    SimpleC2Component --> SimpleInterface
+```
+
+Each software codec overrides the `process()` method to implement its specific
+decode or encode logic. The base class handles all the boilerplate of queue management,
+buffer allocation, and error handling.
+
+---
+
+### 16.4.8 MediaPlayerFactory: Player Selection
+
+The MediaPlayerService uses a factory pattern to select the appropriate player
+implementation. The `MediaPlayerFactory` in
+`frameworks/av/media/libmediaplayerservice/MediaPlayerFactory.cpp` can instantiate
+different player types:
+
+| Player Type | Implementation | Use Case |
+|---|---|---|
+| `NU_PLAYER` | NuPlayerDriver | Default for all local/streaming playback |
+| `TEST_PLAYER` | TestPlayerStub | Testing and development |
+
+Historically, Android supported `PV_PLAYER` (PacketVideo) and `SONIVOX_PLAYER` (MIDI),
+but NuPlayer has consolidated all non-test playback into a single implementation.
+
+The factory selection is based on the content type and data source:
+
+```mermaid
+graph TD
+    DS["Data Source Type"]
+    DS -->|"Local file or HTTP(S) URL"| GS["GenericSource"]
+    DS -->|"HLS (.m3u8)"| HLS["HTTPLiveSource"]
+    DS -->|"RTSP URL"| RTSP["RTSPSource"]
+    DS -->|"RTP"| RTP["RTPSource"]
+    DS -->|"MPEG-TS (push)"| SS["StreamingSource"]
+
+    GS --> NP["NuPlayer"]
+    HLS --> NP
+    RTSP --> NP
+    RTP --> NP
+    SS --> NP
+```
+
+### 16.4.9 NuPlayerRenderer: Frame Scheduling Detail
+
+NuPlayerRenderer implements a sophisticated frame scheduling algorithm for smooth
+video playback:
+
+```mermaid
+sequenceDiagram
+    participant Dec as NuPlayerDecoder
+    participant Rend as NuPlayerRenderer
+    participant Clock as MediaClock
+    participant Display as SurfaceFlinger
+
+    Dec->>Rend: queueBuffer(video frame, pts)
+    Rend->>Clock: getRealTimeFor(pts)
+    Clock-->>Rend: targetRenderTimeNs
+
+    alt Frame is early
+        Rend->>Rend: postDrainVideoQueue(delay)
+        Note over Rend: Wait until target time
+    else Frame is on time
+        Rend->>Display: renderOutputBuffer(frame, targetRenderTimeNs)
+    else Frame is late
+        alt Within tolerance
+            Rend->>Display: renderOutputBuffer(frame, now)
+        else Too late
+            Rend->>Rend: dropFrame()
+            Note over Rend: Increment dropped frame counter
+        end
+    end
+```
+
+The renderer uses the audio clock as the master timing reference. Since audio playback
+must be continuous (gaps are audible), the video renderer adjusts its timing to match
+the audio position. This is why audio stalls typically cause video stalls but not vice
+versa.
+
+---
+
+### 16.5.9 Camera Torch (Flashlight) Management
+
+CameraService also manages the device flashlight:
+
+```cpp
+// frameworks/av/services/camera/libcameraservice/CameraService.cpp, line 341
+void CameraService::broadcastTorchModeStatus(
+        const std::string& cameraId,
+        TorchModeStatus status,
+        SystemCameraKind systemCameraKind) {
+    auto [deviceId, mappedCameraId] =
+        mVirtualDeviceCameraIdMapper
+            .getDeviceIdAndMappedCameraIdPair(cameraId);
+
+    Mutex::Autolock lock(mStatusListenerLock);
+    for (auto& i : mListenerList) {
+        if (shouldSkipStatusUpdates(systemCameraKind,
+                i->isVendorListener(),
+                i->getListenerPid(),
+                i->getListenerUid())) {
+            continue;
+        }
+        auto ret = i->getListener()->onTorchStatusChanged(
+            mapToInterface(status), mappedCameraId, deviceId);
+    }
+}
+```
+
+The torch management integrates with the virtual device mapper, ensuring that
+torch status updates are sent with the correct camera ID mapping for virtual devices.
+
+---
+
+### 16.6.5 Extractor Plugin Loading
+
+The extractor plugin loading mechanism uses Linux dynamic linking:
+
+```mermaid
+sequenceDiagram
+    participant Boot as System Boot
+    participant MES as MediaExtractorService
+    participant MEF as MediaExtractorFactory
+    participant DL as dlopen/dlsym
+
+    Boot->>MES: Start extractor service
+    MES->>MEF: RegisterDefaultPlugins()
+    MEF->>DL: Scan /system/lib64/extractors/
+    DL-->>MEF: libmp4extractor.so
+    DL-->>MEF: libmkvextractor.so
+    DL-->>MEF: libmp3extractor.so
+    DL-->>MEF: libaacextractor.so
+    DL-->>MEF: libflacextractor.so
+    DL-->>MEF: libwavextractor.so
+    DL-->>MEF: liboggextractor.so
+    DL-->>MEF: libamrextractor.so
+    DL-->>MEF: libmpeg2extractor.so
+    DL-->>MEF: libmidiextractor.so
+
+    Note over MEF: Each plugin exports<br/>GETEXTRACTORDEF symbol
+
+    MEF->>DL: dlopen(each .so)
+    MEF->>DL: dlsym("GETEXTRACTORDEF")
+    DL-->>MEF: ExtractorDef*
+    MEF->>MEF: Register in plugin list
+```
+
+Each extractor shared library exports a single symbol `GETEXTRACTORDEF` that returns
+an `ExtractorDef` structure containing:
+
+- The extractor name and version
+- A UUID for identification
+- A sniff function for format detection
+- A creator function for instantiation
+
+---
+
+### 16.7.7 PerformancePoint: Macroblock-Based Capability Model
+
+The `VideoCapabilities::PerformancePoint` class implements the macroblock-based
+performance model:
+
+```cpp
+// frameworks/av/media/libmedia/VideoCapabilities.cpp, line 260
+void VideoCapabilities::PerformancePoint::init(
+        int32_t width, int32_t height,
+        int32_t frameRate, int32_t maxFrameRate,
+        VideoSize blockSize) {
+    mBlockSize = VideoSize(
+        divUp(blockSize.getWidth(), (int32_t)16),
+        divUp(blockSize.getHeight(), (int32_t)16));
+
+    mWidth = (int32_t)(divUp(std::max(width, 1),
+                    std::max(blockSize.getWidth(), 16))
+                * mBlockSize.getWidth());
+    mHeight = (int32_t)(divUp(std::max(height, 1),
+                    std::max(blockSize.getHeight(), 16))
+                * mBlockSize.getHeight());
+    mMaxFrameRate = std::max(std::max(frameRate, maxFrameRate), 1);
+    mMaxMacroBlockRate = std::max(frameRate, 1)
+                       * (int64_t)getMaxMacroBlocks();
+}
+```
+
+The model works as follows:
+
+1. Resolution is expressed in macroblocks (16x16 pixels for AVC, configurable for others)
+2. Total macroblock count = `ceil(width/16) * ceil(height/16)`
+3. Maximum macroblock rate = `macroblock_count * max_frame_rate`
+4. A PerformancePoint "covers" another if its macroblock rate is sufficient
+
+This allows the system to answer questions like "can this codec decode 4K@60fps?" by
+checking if `ceil(3840/16) * ceil(2160/16) * 60 = 240 * 135 * 60 = 1,944,000`
+macroblocks per second is within the codec's capability.
+
+The `estimateFrameRatesFor` method uses measured data points to estimate performance
+at untested resolutions:
+
+```cpp
+// frameworks/av/media/libmedia/VideoCapabilities.cpp, line 186
+std::optional<Range<double>> VideoCapabilities::estimateFrameRatesFor(
+        int32_t width, int32_t height) const {
+    std::optional<VideoSize> size = findClosestSize(width, height);
+    if (!size) {
+        return std::nullopt;
+    }
+    auto rangeItr = mMeasuredFrameRates.find(size.value());
+    Range<int64_t> range = rangeItr->second;
+    double ratio = getBlockCount(size.value().getWidth(),
+                                  size.value().getHeight())
+            / (double)std::max(getBlockCount(width, height), 1);
+    return std::make_optional(
+        Range(range.lower() * ratio, range.upper() * ratio));
+}
+```
+
+This linear scaling assumes that codec performance scales linearly with macroblock
+count, which is a reasonable approximation for most codec implementations.
+
+---
+
+### 16.7.8 MPEG4Writer Internals: Box/Atom Structure
+
+The MPEG4Writer creates the complex box hierarchy required by ISO 14496-12:
+
+```mermaid
+graph TD
+    FTYP["ftyp (file type)"]
+    MDAT["mdat (media data)"]
+    MOOV["moov (movie)"]
+    MVHD["mvhd (movie header)"]
+    TRAK1["trak (video track)"]
+    TRAK2["trak (audio track)"]
+    TKHD1["tkhd (track header)"]
+    MDIA1["mdia (media)"]
+    MDHD1["mdhd (media header)"]
+    HDLR1["hdlr (handler)"]
+    MINF1["minf (media info)"]
+    STBL1["stbl (sample table)"]
+    STSD1["stsd (sample desc)"]
+    STSZ1["stsz (sample sizes)"]
+    STSC1["stsc (sample-to-chunk)"]
+    STCO1["stco/co64 (chunk offsets)"]
+    STTS1["stts (time-to-sample)"]
+    CTTS1["ctts (composition time)"]
+    STSS1["stss (sync samples)"]
+
+    FTYP
+    MDAT
+    MOOV --> MVHD
+    MOOV --> TRAK1
+    MOOV --> TRAK2
+    TRAK1 --> TKHD1
+    TRAK1 --> MDIA1
+    MDIA1 --> MDHD1
+    MDIA1 --> HDLR1
+    MDIA1 --> MINF1
+    MINF1 --> STBL1
+    STBL1 --> STSD1
+    STBL1 --> STSZ1
+    STBL1 --> STSC1
+    STBL1 --> STCO1
+    STBL1 --> STTS1
+    STBL1 --> CTTS1
+    STBL1 --> STSS1
+```
+
+The `ListTableEntries` template class (line 197) provides efficient storage for the
+sample tables:
+
+```cpp
+// frameworks/av/media/libstagefright/MPEG4Writer.cpp, line 367
+ListTableEntries<uint32_t, 1> *mStszTableEntries;  // sample sizes
+ListTableEntries<off64_t, 1> *mCo64TableEntries;   // chunk offsets
+ListTableEntries<uint32_t, 3> *mStscTableEntries;   // sample-to-chunk
+ListTableEntries<uint32_t, 1> *mStssTableEntries;   // sync samples
+ListTableEntries<uint32_t, 2> *mSttsTableEntries;   // time-to-sample
+ListTableEntries<uint32_t, 2> *mCttsTableEntries;   // composition time
+ListTableEntries<uint32_t, 3> *mElstTableEntries;   // edit list
+```
+
+The template parameter (1, 2, or 3) indicates the number of values per entry. For
+example, `mStscTableEntries` has 3 values per entry (first_chunk, samples_per_chunk,
+sample_description_index), matching the MP4 specification for the `stsc` box.
+
+The `ListTableEntries` implementation uses a chunked linked list to handle potentially
+millions of entries efficiently:
+
+```cpp
+// frameworks/av/media/libstagefright/MPEG4Writer.cpp, line 278
+void add(const TYPE& value) {
+    CHECK_LT(mNumValuesInCurrEntry, mElementCapacity);
+    uint32_t nEntries = mTotalNumTableEntries % mElementCapacity;
+    uint32_t nValues  = mNumValuesInCurrEntry % ENTRY_SIZE;
+    if (nEntries == 0 && nValues == 0) {
+        mCurrTableEntriesElement = new TYPE[ENTRY_SIZE * mElementCapacity];
+        CHECK(mCurrTableEntriesElement != NULL);
+        mTableEntryList.push_back(mCurrTableEntriesElement);
+    }
+    uint32_t pos = nEntries * ENTRY_SIZE + nValues;
+    mCurrTableEntriesElement[pos] = value;
+    ++mNumValuesInCurrEntry;
+    if ((mNumValuesInCurrEntry % ENTRY_SIZE) == 0) {
+        ++mTotalNumTableEntries;
+        mNumValuesInCurrEntry = 0;
+    }
+}
+```
+
+This design allocates memory in chunks (`mElementCapacity` entries at a time), avoiding
+the overhead of individual per-sample allocations for videos that may contain millions
+of frames.
+
+---
+
+## 16.9 Try It
+
+### 16.9.1 Inspect Available Codecs
 
 Use `dumpsys` to list all registered codecs on a device:
 
@@ -2367,7 +3105,7 @@ The dump output categorizes codecs by media type. For example, under
 The rank value determines codec priority: lower rank means higher priority. Hardware
 codecs typically have rank 0-256, while software codecs have rank 512+.
 
-### 16.8.2 Trace a Video Decode Session
+### 16.9.2 Trace a Video Decode Session
 
 Use systrace/perfetto to capture a video decode trace:
 
@@ -2407,7 +3145,7 @@ In the trace, look for:
 - `CCodec` / `ACodec` spans showing HAL interaction
 - Buffer queue events showing frame flow to SurfaceFlinger
 
-### 16.8.3 Monitor Codec Resource Usage
+### 16.9.3 Monitor Codec Resource Usage
 
 The ResourceManagerService can be queried for current resource usage:
 
@@ -2423,7 +3161,7 @@ This shows:
 - Process priority (OOM adjustment score)
 - Whether any clients are marked for pending removal
 
-### 16.8.4 Inspect Camera Service State
+### 16.9.4 Inspect Camera Service State
 
 ```bash
 # Full camera service dump
@@ -2438,7 +3176,7 @@ adb shell dumpsys media.camera
 # - Sensor privacy state
 ```
 
-### 16.8.5 Examine Media Extractor Plugins
+### 16.9.5 Examine Media Extractor Plugins
 
 ```bash
 # List loaded extractor plugins
@@ -2448,7 +3186,7 @@ adb shell dumpsys media.extractor
 # their supported formats, and version information.
 ```
 
-### 16.8.6 Query VideoCapabilities from Code
+### 16.9.6 Query VideoCapabilities from Code
 
 The following code snippet demonstrates querying video capabilities:
 
@@ -2486,7 +3224,7 @@ for (MediaCodecInfo info : codecList.getCodecInfos()) {
 }
 ```
 
-### 16.8.7 Build and Run a Codec2 Test
+### 16.9.7 Build and Run a Codec2 Test
 
 The Codec2 framework includes a command-line codec tool:
 
@@ -2499,7 +3237,7 @@ mm
 # It can be used to test codec functionality directly from the command line
 ```
 
-### 16.8.8 Examine Codec HAL Services
+### 16.9.8 Examine Codec HAL Services
 
 ```bash
 # List running Codec2 HAL services
@@ -2513,7 +3251,7 @@ adb shell lshal | grep c2
 The "software" store provides Google's software codecs, while "default" is typically the
 vendor's hardware codec store.
 
-### 16.8.9 Trigger Codec Reclamation
+### 16.9.9 Trigger Codec Reclamation
 
 To observe the resource reclamation mechanism, start multiple video decode sessions
 from different apps and observe the logs:
@@ -2527,7 +3265,7 @@ adb logcat -s ResourceManagerService MediaCodec
 # MediaCodec: reclaim(...) <component_name>
 ```
 
-### 16.8.10 Read a MediaCodec Metrics Report
+### 16.9.10 Read a MediaCodec Metrics Report
 
 After playing a video, extract the codec metrics:
 
@@ -3306,420 +4044,7 @@ content labeling.
 
 ---
 
-## Summary
-
-Android's media and video pipeline is a layered architecture spanning roughly 50,000
-lines of core C++ code across five major subsystems:
-
-1. **MediaCodec** (7,917 lines) provides the central state machine and API surface,
-   with sophisticated resource management, metrics collection, and retry logic.
-
-2. **ACodec** (9,459 lines) bridges to legacy OMX codecs, while **CCodec** (3,827
-   lines) bridges to the modern Codec2 framework with its typed parameter system,
-   work-based processing model, and 23+ software codec families.
-
-3. **MediaPlayerService** (3,111 lines) and **NuPlayer** (3,259+ lines) orchestrate
-   the complete playback pipeline from extraction through decoding to synchronized
-   audio/video rendering.
-
-4. **CameraService** (6,975 lines) manages camera hardware access with a
-   comprehensive security model, multi-camera support, and both API1 (legacy) and
-   API2 (modern) client paths.
-
-5. **Media Extractors** provide container parsing with security isolation (running in
-   a separate process), while **VideoCapabilities** (1,875 lines) and
-   **MediaProfiles** (1,512 lines) describe what the hardware can do.
-
-The evolution from OMX to Codec2 represents the most significant architectural shift
-in Android media in the past decade, bringing type safety, better buffer management,
-and improved vendor extensibility. Meanwhile, the media pipeline continues to grow
-with new codec support (AV1, IAMF, APV), HDR formats (HDR10+, Dolby Vision), and
-professional video features.
-
-### 16.2.16 Format Shaping
-
-MediaCodec includes a **format shaping** feature that can modify encoder parameters
-to improve visual quality. The `FormatShaper` plugin adjusts QP (Quantization Parameter)
-values and other settings based on device capabilities:
-
-```
-kCodecOriginalVideoQPIMin  - QP I-frame min before shaping
-kCodecOriginalVideoQPIMax  - QP I-frame max before shaping
-kCodecOriginalVideoQPPMin  - QP P-frame min before shaping
-kCodecOriginalVideoQPPMax  - QP P-frame max before shaping
-kCodecOriginalVideoQPBMin  - QP B-frame min before shaping
-kCodecOriginalVideoQPBMax  - QP B-frame max before shaping
-kCodecRequestedVideoQPIMin - QP I-frame min after shaping
-kCodecRequestedVideoQPIMax - QP I-frame max after shaping
-kCodecRequestedVideoQPPMin - QP P-frame min after shaping
-kCodecRequestedVideoQPPMax - QP P-frame max after shaping
-kCodecRequestedVideoQPBMin - QP B-frame min after shaping
-kCodecRequestedVideoQPBMax - QP B-frame max after shaping
-```
-
-The `kCodecShapingEnhanced` metric tracks how many fields were modified: -1 means
-shaping is disabled, 0 or more indicates the number of adjusted fields.
-
----
-
-### 16.3.11 SimpleC2Component: The Base Class Pattern
-
-All software Codec2 components extend `SimpleC2Component`, which is defined in
-`frameworks/av/media/codec2/components/base/SimpleC2Component.cpp`. This base class
-provides:
-
-1. **Thread management**: A work processing thread that dequeues `C2Work` items
-2. **Buffer pool management**: Integration with the Codec2 buffer allocator system
-3. **Standard lifecycle**: `start()`, `stop()`, `flush()`, `reset()`, `release()`
-4. **Error propagation**: Mapping from codec-specific errors to `c2_status_t`
-
-The `SimpleInterface` companion class provides the `IntfImpl` pattern for parameter
-declaration:
-
-```mermaid
-classDiagram
-    class SimpleC2Component {
-        #process(C2Work*, FlushedWork*)
-        #drain(drain_mode_t, C2Work*)
-        +start()
-        +stop()
-        +flush()
-        +queue(C2WorkList*)
-    }
-
-    class SimpleInterface {
-        +query(params, mayBlock)
-        +config(params, mayBlock)
-    }
-
-    class C2SoftAvcDec {
-        -IntfImpl mIntf
-        #process(C2Work*, FlushedWork*)
-        #drain(drain_mode_t, C2Work*)
-    }
-
-    class C2SoftHevcDec {
-        -IntfImpl mIntf
-        #process(C2Work*, FlushedWork*)
-    }
-
-    SimpleC2Component <|-- C2SoftAvcDec
-    SimpleC2Component <|-- C2SoftHevcDec
-    SimpleC2Component --> SimpleInterface
-```
-
-Each software codec overrides the `process()` method to implement its specific
-decode or encode logic. The base class handles all the boilerplate of queue management,
-buffer allocation, and error handling.
-
----
-
-### 16.4.8 MediaPlayerFactory: Player Selection
-
-The MediaPlayerService uses a factory pattern to select the appropriate player
-implementation. The `MediaPlayerFactory` in
-`frameworks/av/media/libmediaplayerservice/MediaPlayerFactory.cpp` can instantiate
-different player types:
-
-| Player Type | Implementation | Use Case |
-|---|---|---|
-| `NU_PLAYER` | NuPlayerDriver | Default for all local/streaming playback |
-| `TEST_PLAYER` | TestPlayerStub | Testing and development |
-
-Historically, Android supported `PV_PLAYER` (PacketVideo) and `SONIVOX_PLAYER` (MIDI),
-but NuPlayer has consolidated all non-test playback into a single implementation.
-
-The factory selection is based on the content type and data source:
-
-```mermaid
-graph TD
-    DS["Data Source Type"]
-    DS -->|"Local file or HTTP(S) URL"| GS["GenericSource"]
-    DS -->|"HLS (.m3u8)"| HLS["HTTPLiveSource"]
-    DS -->|"RTSP URL"| RTSP["RTSPSource"]
-    DS -->|"RTP"| RTP["RTPSource"]
-    DS -->|"MPEG-TS (push)"| SS["StreamingSource"]
-
-    GS --> NP["NuPlayer"]
-    HLS --> NP
-    RTSP --> NP
-    RTP --> NP
-    SS --> NP
-```
-
-### 16.4.9 NuPlayerRenderer: Frame Scheduling Detail
-
-NuPlayerRenderer implements a sophisticated frame scheduling algorithm for smooth
-video playback:
-
-```mermaid
-sequenceDiagram
-    participant Dec as NuPlayerDecoder
-    participant Rend as NuPlayerRenderer
-    participant Clock as MediaClock
-    participant Display as SurfaceFlinger
-
-    Dec->>Rend: queueBuffer(video frame, pts)
-    Rend->>Clock: getRealTimeFor(pts)
-    Clock-->>Rend: targetRenderTimeNs
-
-    alt Frame is early
-        Rend->>Rend: postDrainVideoQueue(delay)
-        Note over Rend: Wait until target time
-    else Frame is on time
-        Rend->>Display: renderOutputBuffer(frame, targetRenderTimeNs)
-    else Frame is late
-        alt Within tolerance
-            Rend->>Display: renderOutputBuffer(frame, now)
-        else Too late
-            Rend->>Rend: dropFrame()
-            Note over Rend: Increment dropped frame counter
-        end
-    end
-```
-
-The renderer uses the audio clock as the master timing reference. Since audio playback
-must be continuous (gaps are audible), the video renderer adjusts its timing to match
-the audio position. This is why audio stalls typically cause video stalls but not vice
-versa.
-
----
-
-### 16.5.9 Camera Torch (Flashlight) Management
-
-CameraService also manages the device flashlight:
-
-```cpp
-// frameworks/av/services/camera/libcameraservice/CameraService.cpp, line 341
-void CameraService::broadcastTorchModeStatus(
-        const std::string& cameraId,
-        TorchModeStatus status,
-        SystemCameraKind systemCameraKind) {
-    auto [deviceId, mappedCameraId] =
-        mVirtualDeviceCameraIdMapper
-            .getDeviceIdAndMappedCameraIdPair(cameraId);
-
-    Mutex::Autolock lock(mStatusListenerLock);
-    for (auto& i : mListenerList) {
-        if (shouldSkipStatusUpdates(systemCameraKind,
-                i->isVendorListener(),
-                i->getListenerPid(),
-                i->getListenerUid())) {
-            continue;
-        }
-        auto ret = i->getListener()->onTorchStatusChanged(
-            mapToInterface(status), mappedCameraId, deviceId);
-    }
-}
-```
-
-The torch management integrates with the virtual device mapper, ensuring that
-torch status updates are sent with the correct camera ID mapping for virtual devices.
-
----
-
-### 16.6.5 Extractor Plugin Loading
-
-The extractor plugin loading mechanism uses Linux dynamic linking:
-
-```mermaid
-sequenceDiagram
-    participant Boot as System Boot
-    participant MES as MediaExtractorService
-    participant MEF as MediaExtractorFactory
-    participant DL as dlopen/dlsym
-
-    Boot->>MES: Start extractor service
-    MES->>MEF: RegisterDefaultPlugins()
-    MEF->>DL: Scan /system/lib64/extractors/
-    DL-->>MEF: libmp4extractor.so
-    DL-->>MEF: libmkvextractor.so
-    DL-->>MEF: libmp3extractor.so
-    DL-->>MEF: libaacextractor.so
-    DL-->>MEF: libflacextractor.so
-    DL-->>MEF: libwavextractor.so
-    DL-->>MEF: liboggextractor.so
-    DL-->>MEF: libamrextractor.so
-    DL-->>MEF: libmpeg2extractor.so
-    DL-->>MEF: libmidiextractor.so
-
-    Note over MEF: Each plugin exports<br/>GETEXTRACTORDEF symbol
-
-    MEF->>DL: dlopen(each .so)
-    MEF->>DL: dlsym("GETEXTRACTORDEF")
-    DL-->>MEF: ExtractorDef*
-    MEF->>MEF: Register in plugin list
-```
-
-Each extractor shared library exports a single symbol `GETEXTRACTORDEF` that returns
-an `ExtractorDef` structure containing:
-
-- The extractor name and version
-- A UUID for identification
-- A sniff function for format detection
-- A creator function for instantiation
-
----
-
-### 16.7.7 PerformancePoint: Macroblock-Based Capability Model
-
-The `VideoCapabilities::PerformancePoint` class implements the macroblock-based
-performance model:
-
-```cpp
-// frameworks/av/media/libmedia/VideoCapabilities.cpp, line 260
-void VideoCapabilities::PerformancePoint::init(
-        int32_t width, int32_t height,
-        int32_t frameRate, int32_t maxFrameRate,
-        VideoSize blockSize) {
-    mBlockSize = VideoSize(
-        divUp(blockSize.getWidth(), (int32_t)16),
-        divUp(blockSize.getHeight(), (int32_t)16));
-
-    mWidth = (int32_t)(divUp(std::max(width, 1),
-                    std::max(blockSize.getWidth(), 16))
-                * mBlockSize.getWidth());
-    mHeight = (int32_t)(divUp(std::max(height, 1),
-                    std::max(blockSize.getHeight(), 16))
-                * mBlockSize.getHeight());
-    mMaxFrameRate = std::max(std::max(frameRate, maxFrameRate), 1);
-    mMaxMacroBlockRate = std::max(frameRate, 1)
-                       * (int64_t)getMaxMacroBlocks();
-}
-```
-
-The model works as follows:
-
-1. Resolution is expressed in macroblocks (16x16 pixels for AVC, configurable for others)
-2. Total macroblock count = `ceil(width/16) * ceil(height/16)`
-3. Maximum macroblock rate = `macroblock_count * max_frame_rate`
-4. A PerformancePoint "covers" another if its macroblock rate is sufficient
-
-This allows the system to answer questions like "can this codec decode 4K@60fps?" by
-checking if `ceil(3840/16) * ceil(2160/16) * 60 = 240 * 135 * 60 = 1,944,000`
-macroblocks per second is within the codec's capability.
-
-The `estimateFrameRatesFor` method uses measured data points to estimate performance
-at untested resolutions:
-
-```cpp
-// frameworks/av/media/libmedia/VideoCapabilities.cpp, line 186
-std::optional<Range<double>> VideoCapabilities::estimateFrameRatesFor(
-        int32_t width, int32_t height) const {
-    std::optional<VideoSize> size = findClosestSize(width, height);
-    if (!size) {
-        return std::nullopt;
-    }
-    auto rangeItr = mMeasuredFrameRates.find(size.value());
-    Range<int64_t> range = rangeItr->second;
-    double ratio = getBlockCount(size.value().getWidth(),
-                                  size.value().getHeight())
-            / (double)std::max(getBlockCount(width, height), 1);
-    return std::make_optional(
-        Range(range.lower() * ratio, range.upper() * ratio));
-}
-```
-
-This linear scaling assumes that codec performance scales linearly with macroblock
-count, which is a reasonable approximation for most codec implementations.
-
----
-
-### 16.7.8 MPEG4Writer Internals: Box/Atom Structure
-
-The MPEG4Writer creates the complex box hierarchy required by ISO 14496-12:
-
-```mermaid
-graph TD
-    FTYP["ftyp (file type)"]
-    MDAT["mdat (media data)"]
-    MOOV["moov (movie)"]
-    MVHD["mvhd (movie header)"]
-    TRAK1["trak (video track)"]
-    TRAK2["trak (audio track)"]
-    TKHD1["tkhd (track header)"]
-    MDIA1["mdia (media)"]
-    MDHD1["mdhd (media header)"]
-    HDLR1["hdlr (handler)"]
-    MINF1["minf (media info)"]
-    STBL1["stbl (sample table)"]
-    STSD1["stsd (sample desc)"]
-    STSZ1["stsz (sample sizes)"]
-    STSC1["stsc (sample-to-chunk)"]
-    STCO1["stco/co64 (chunk offsets)"]
-    STTS1["stts (time-to-sample)"]
-    CTTS1["ctts (composition time)"]
-    STSS1["stss (sync samples)"]
-
-    FTYP
-    MDAT
-    MOOV --> MVHD
-    MOOV --> TRAK1
-    MOOV --> TRAK2
-    TRAK1 --> TKHD1
-    TRAK1 --> MDIA1
-    MDIA1 --> MDHD1
-    MDIA1 --> HDLR1
-    MDIA1 --> MINF1
-    MINF1 --> STBL1
-    STBL1 --> STSD1
-    STBL1 --> STSZ1
-    STBL1 --> STSC1
-    STBL1 --> STCO1
-    STBL1 --> STTS1
-    STBL1 --> CTTS1
-    STBL1 --> STSS1
-```
-
-The `ListTableEntries` template class (line 197) provides efficient storage for the
-sample tables:
-
-```cpp
-// frameworks/av/media/libstagefright/MPEG4Writer.cpp, line 367
-ListTableEntries<uint32_t, 1> *mStszTableEntries;  // sample sizes
-ListTableEntries<off64_t, 1> *mCo64TableEntries;   // chunk offsets
-ListTableEntries<uint32_t, 3> *mStscTableEntries;   // sample-to-chunk
-ListTableEntries<uint32_t, 1> *mStssTableEntries;   // sync samples
-ListTableEntries<uint32_t, 2> *mSttsTableEntries;   // time-to-sample
-ListTableEntries<uint32_t, 2> *mCttsTableEntries;   // composition time
-ListTableEntries<uint32_t, 3> *mElstTableEntries;   // edit list
-```
-
-The template parameter (1, 2, or 3) indicates the number of values per entry. For
-example, `mStscTableEntries` has 3 values per entry (first_chunk, samples_per_chunk,
-sample_description_index), matching the MP4 specification for the `stsc` box.
-
-The `ListTableEntries` implementation uses a chunked linked list to handle potentially
-millions of entries efficiently:
-
-```cpp
-// frameworks/av/media/libstagefright/MPEG4Writer.cpp, line 278
-void add(const TYPE& value) {
-    CHECK_LT(mNumValuesInCurrEntry, mElementCapacity);
-    uint32_t nEntries = mTotalNumTableEntries % mElementCapacity;
-    uint32_t nValues  = mNumValuesInCurrEntry % ENTRY_SIZE;
-    if (nEntries == 0 && nValues == 0) {
-        mCurrTableEntriesElement = new TYPE[ENTRY_SIZE * mElementCapacity];
-        CHECK(mCurrTableEntriesElement != NULL);
-        mTableEntryList.push_back(mCurrTableEntriesElement);
-    }
-    uint32_t pos = nEntries * ENTRY_SIZE + nValues;
-    mCurrTableEntriesElement[pos] = value;
-    ++mNumValuesInCurrEntry;
-    if ((mNumValuesInCurrEntry % ENTRY_SIZE) == 0) {
-        ++mTotalNumTableEntries;
-        mNumValuesInCurrEntry = 0;
-    }
-}
-```
-
-This design allocates memory in chunks (`mElementCapacity` entries at a time), avoiding
-the overhead of individual per-sample allocations for videos that may contain millions
-of frames.
-
----
-
-### 16.8.11 Debugging Tips: Common Issues and Solutions
+### 16.9.11 Debugging Tips: Common Issues and Solutions
 
 ### Issue: Codec Allocation Fails
 
@@ -3789,7 +4114,7 @@ adb shell dumpsys media.extractor
 corrupted, use an unsupported container format, or have an unsupported codec within
 a supported container.
 
-### 16.8.12 Performance Profiling with Perfetto
+### 16.9.12 Performance Profiling with Perfetto
 
 For detailed media performance analysis, use Perfetto with the following configuration:
 
@@ -3836,7 +4161,7 @@ In the resulting trace, key spans to look for:
 | `queueBuffer` | SurfaceFlinger | Frame submitted to compositor |
 | `onMessageReceived` | NuPlayer | Player message processing |
 
-### 16.8.13 Understanding Freeze and Judder Metrics
+### 16.9.13 Understanding Freeze and Judder Metrics
 
 MediaCodec tracks two types of playback quality issues:
 
@@ -3866,7 +4191,7 @@ Freeze is typically caused by decoder stalls (slow hardware, resource contention
 while judder is typically caused by frame rate mismatches (e.g., 24fps content on
 a 60Hz display causes a 3:2 pulldown pattern that produces uneven frame spacing).
 
-### 16.8.14 Codec ID Generation and Tracking
+### 16.9.14 Codec ID Generation and Tracking
 
 Each MediaCodec instance receives a globally unique 64-bit ID:
 
@@ -3912,356 +4237,33 @@ correlation of logs, metrics, and resource manager entries across the system.
 
 ---
 
-## Appendix: Deep-Dive Topics
+## Summary
 
-### A.1 The ALooper/AHandler/AMessage Framework
+Android's media and video pipeline is a layered architecture spanning roughly 50,000
+lines of core C++ code across five major subsystems:
 
-The Stagefright message passing framework is the backbone of all asynchronous
-operations in the media stack. Understanding it is essential for reading any
-media source code.
+1. **MediaCodec** (7,917 lines) provides the central state machine and API surface,
+   with sophisticated resource management, metrics collection, and retry logic.
 
-#### ALooper: The Event Loop
+2. **ACodec** (9,459 lines) bridges to legacy OMX codecs, while **CCodec** (3,827
+   lines) bridges to the modern Codec2 framework with its typed parameter system,
+   work-based processing model, and 23+ software codec families.
 
-An `ALooper` is a thread that runs an event loop, dequeuing messages and dispatching
-them to registered handlers. Key properties:
+3. **MediaPlayerService** (3,111 lines) and **NuPlayer** (3,259+ lines) orchestrate
+   the complete playback pipeline from extraction through decoding to synchronized
+   audio/video rendering.
 
-- **Thread safety**: Messages can be posted from any thread; they are enqueued
-  atomically and processed sequentially on the looper thread.
-- **Timed delivery**: Messages can be posted with a delay
-  (`msg->post(delayUs)`), enabling timer-based operations.
-- **Priority**: Loopers can run at different thread priorities. Video codec
-  loopers run at `ANDROID_PRIORITY_AUDIO` for low latency.
+4. **CameraService** (6,975 lines) manages camera hardware access with a
+   comprehensive security model, multi-camera support, and both API1 (legacy) and
+   API2 (modern) client paths.
 
-```mermaid
-graph LR
-    subgraph "Any Thread"
-        POST["msg->post()"]
-    end
+5. **Media Extractors** provide container parsing with security isolation (running in
+   a separate process), while **VideoCapabilities** (1,875 lines) and
+   **MediaProfiles** (1,512 lines) describe what the hardware can do.
 
-    subgraph "ALooper Thread"
-        Q["Message Queue<br/>(priority-ordered)"]
-        DISP["Dispatch Loop"]
-        H1["Handler A<br/>onMessageReceived()"]
-        H2["Handler B<br/>onMessageReceived()"]
-    end
+The evolution from OMX to Codec2 represents the most significant architectural shift
+in Android media in the past decade, bringing type safety, better buffer management,
+and improved vendor extensibility. Meanwhile, the media pipeline continues to grow
+with new codec support (AV1, IAMF, APV), HDR formats (HDR10+, Dolby Vision), and
+professional video features.
 
-    POST -->|"enqueue"| Q
-    Q -->|"dequeue"| DISP
-    DISP -->|"what() routing"| H1
-    DISP -->|"what() routing"| H2
-```
-
-#### AMessage: The Typed Message
-
-`AMessage` is a key-value container that carries data between components:
-
-```cpp
-sp<AMessage> msg = new AMessage(kWhatConfigure, targetHandler);
-msg->setMessage("format", format);    // nested AMessage
-msg->setInt32("flags", flags);        // integer
-msg->setInt64("timeUs", timestamp);   // 64-bit integer
-msg->setString("name", "avc");        // string
-msg->setObject("surface", surface);   // RefBase object
-msg->setSize("index", bufferIndex);   // size_t
-msg->setFloat("rate", 30.0f);         // float
-msg->setPointer("ptr", rawPtr);       // raw pointer
-msg->setRect("crop", l, t, r, b);    // rectangle
-msg->post();                          // async delivery
-```
-
-#### PostAndAwaitResponse: Synchronous RPC
-
-The `PostAndAwaitResponse` pattern converts asynchronous message passing into
-synchronous function calls:
-
-```mermaid
-sequenceDiagram
-    participant Caller as Calling Thread
-    participant Looper as Looper Thread
-    participant Handler as Handler
-
-    Caller->>Caller: Create reply token
-    Caller->>Looper: post(msg with reply token)
-    Caller->>Caller: Block on reply token
-
-    Looper->>Handler: onMessageReceived(msg)
-    Handler->>Handler: Process request
-    Handler->>Looper: response->postReply(replyToken)
-
-    Looper-->>Caller: Unblock with response
-    Caller->>Caller: Extract result from response
-```
-
-This pattern is used throughout MediaCodec for methods like `configure()`,
-`start()`, `stop()`, `queueInputBuffer()`, and `dequeueOutputBuffer()`.
-
-### A.2 MediaCodec Domain Classification
-
-MediaCodec classifies codecs into three domains, each with different behavior:
-
-| Domain | Looper | CPU Boost | Battery | Resource Type |
-|---|---|---|---|---|
-| `DOMAIN_VIDEO` | Dedicated `CodecLooper` | HDR at 1080p+ | Tracked | HW/SW Video Codec |
-| `DOMAIN_AUDIO` | Shared main looper | Never | Tracked | HW/SW Audio Codec |
-| `DOMAIN_IMAGE` | Shared main looper | Never | Not tracked | HW/SW Image Codec |
-
-Video codecs get a dedicated looper thread because video processing is latency-
-sensitive: a stall in the codec's message processing would directly cause frame
-drops. Audio and image codecs share the main looper because their timing
-requirements are less stringent.
-
-### A.3 Secure Codec Path (DRM)
-
-The secure codec path for DRM-protected content involves additional components:
-
-```mermaid
-graph TD
-    subgraph "Clear World (accessible)"
-        APP["Application"]
-        MC["MediaCodec"]
-        CRYPTO["ICrypto"]
-    end
-
-    subgraph "Secure World (inaccessible)"
-        SEC_DEC["Secure Decoder"]
-        SEC_BUF["Secure Buffers"]
-        TEE["Trusted Execution<br/>Environment"]
-    end
-
-    subgraph "Display Path"
-        HDCP["HDCP Encryption"]
-        DISP["Display"]
-    end
-
-    APP -->|"encrypted data"| MC
-    MC -->|"encrypted buffers"| CRYPTO
-    CRYPTO -->|"decrypt to secure memory"| SEC_BUF
-    SEC_BUF -->|"decode"| SEC_DEC
-    SEC_DEC -->|"decoded frames"| HDCP
-    HDCP -->|"re-encrypted"| DISP
-
-    style SEC_DEC fill:#ffcdd2
-    style SEC_BUF fill:#ffcdd2
-    style TEE fill:#ffcdd2
-```
-
-Key security properties:
-
-1. Decrypted content never exists in CPU-accessible memory
-2. Decoded frames flow directly through a secure buffer path
-3. HDCP (High-bandwidth Digital Content Protection) protects the display link
-4. The crypto plugin runs in the TEE (Trusted Execution Environment)
-
-The `queueSecureInputBuffer` method passes encryption metadata (key, IV, sub-sample
-mapping, pattern) to the crypto subsystem, which decrypts directly into secure
-memory accessible only by the hardware decoder.
-
-### A.4 Tunneled Playback Mode
-
-Tunneled playback bypasses the standard buffer exchange and renders video
-directly through the hardware:
-
-```mermaid
-graph LR
-    subgraph "Standard Path"
-        MC1["MediaCodec"]
-        APP1["App dequeue/release"]
-        SF1["SurfaceFlinger"]
-    end
-
-    subgraph "Tunneled Path"
-        MC2["MediaCodec"]
-        HW["Hardware A/V Sync"]
-        DISP2["Display"]
-    end
-
-    MC1 -->|"output buffer"| APP1
-    APP1 -->|"releaseOutputBuffer"| SF1
-    SF1 --> DISP2
-
-    MC2 -->|"direct render"| HW
-    HW -->|"hardware composited"| DISP2
-```
-
-In tunneled mode:
-
-- The application never sees decoded frames
-- Audio and video synchronization is handled entirely in hardware
-- Frame timing is controlled by the hardware A/V sync unit
-- This typically achieves lower latency and better power efficiency
-- Only available on hardware codecs that support it
-
-### A.5 Low-Latency Mode
-
-For gaming and video conferencing, low-latency mode reduces the codec's
-internal buffering:
-
-```
-kCodecNumLowLatencyModeOn    - Times low-latency was enabled
-kCodecNumLowLatencyModeOff   - Times low-latency was disabled
-kCodecFirstFrameIndexLowLatencyOn - Frame index when first enabled
-```
-
-When low-latency mode is active:
-
-- Output delay is minimized (typically 0-1 frames)
-- Reordering is disabled or minimized
-- The codec may skip B-frame decoding
-- Frame drops are preferred over buffering
-
-### A.6 Multi-Access-Unit (Large Frame) Audio
-
-Modern audio codecs like IAMF and xHE-AAC can benefit from processing
-multiple audio frames in a single buffer:
-
-```mermaid
-graph LR
-    subgraph "Traditional (one AU per buffer)"
-        B1["Buffer 1: AU 0"]
-        B2["Buffer 2: AU 1"]
-        B3["Buffer 3: AU 2"]
-    end
-
-    subgraph "Large Frame (multiple AUs per buffer)"
-        B4["Buffer 1: AU 0 | AU 1 | AU 2"]
-    end
-```
-
-The `queueInputBuffers` (plural) API supports this by accepting a
-`BufferInfosWrapper` that describes the boundaries and timestamps of each
-access unit within the larger buffer. This reduces per-frame overhead and
-enables more efficient processing pipelines.
-
-### A.7 Codec2 vs OMX Feature Comparison
-
-| Feature | OMX (ACodec) | Codec2 (CCodec) |
-|---|---|---|
-| Parameter system | Flat index + void* | Typed C2Param structs |
-| Buffer model | Separate input/output queues | Unified C2Work |
-| Error handling | OMX_EVENTTYPE | c2_status_t + detailed failures |
-| Vendor parameters | Limited OMX extensions | First-class vendor params |
-| Component discovery | Global OMX registry | Per-store component lists |
-| Process model | In-process or HIDL | AIDL HAL (separate process) |
-| Buffer allocation | OMX_AllocateBuffer | C2BlockPool + allocators |
-| Stuck detection | Application must implement | Built-in CCodecWatchdog |
-| Multi-frame input | Not supported | AccessUnitInfo |
-| Per-frame tuning | Not supported | C2Work tunings |
-| HAL specification | OMX IL 1.1.2 | android.hardware.media.c2 |
-| Status | Maintenance mode | Active development |
-
-### A.8 Media Framework Process Boundaries
-
-```mermaid
-graph TD
-    subgraph "App Process"
-        JAVA["Java MediaCodec / MediaPlayer"]
-        NDK["NDK AMediaCodec"]
-        JNI["JNI / libmedia_jni"]
-    end
-
-    subgraph "mediaserver"
-        MPS["MediaPlayerService"]
-        MRS["MediaRecorderService"]
-        RMS["ResourceManagerService"]
-        NP2["NuPlayer"]
-    end
-
-    subgraph "media.codec (vendor)"
-        C2HAL["Codec2 AIDL HAL"]
-        VENDOR["Vendor Codec Plugins"]
-    end
-
-    subgraph "media.extractor"
-        EXTSVC["MediaExtractorService"]
-        PLUGINS["Extractor Plugins"]
-    end
-
-    subgraph "cameraserver"
-        CAMSVC["CameraService"]
-        CAMHAL["Camera HAL"]
-    end
-
-    subgraph "SurfaceFlinger"
-        SFCOMP["Compositor"]
-    end
-
-    JAVA --> JNI
-    NDK --> JNI
-    JNI -->|"Binder"| MPS
-    JNI -->|"Binder"| RMS
-    JNI -->|"AIDL"| C2HAL
-
-    MPS --> NP2
-    NP2 -->|"Binder"| EXTSVC
-    NP2 -->|"AIDL"| C2HAL
-
-    MRS -->|"AIDL"| C2HAL
-
-    JNI -->|"Binder"| CAMSVC
-    CAMSVC -->|"AIDL/HIDL"| CAMHAL
-
-    C2HAL --> VENDOR
-    EXTSVC --> PLUGINS
-
-    JNI -->|"BufferQueue"| SFCOMP
-```
-
-Each process boundary represents a security isolation boundary:
-
-- **App to mediaserver**: Binder IPC with UID/PID verification
-- **mediaserver to media.codec**: AIDL HAL with SELinux policy
-- **mediaserver to media.extractor**: Binder IPC, sandboxed process
-- **App to cameraserver**: Binder IPC with camera permission check
-- **cameraserver to Camera HAL**: AIDL/HIDL with vendor isolation
-
-### A.9 MediaCodec Lifecycle Summary Table
-
-| State | Entry Action | Valid Operations | Exit Conditions |
-|---|---|---|---|
-| UNINITIALIZED | constructor / release() | init() | init() called |
-| INITIALIZING | init() posted | (wait) | Component allocated |
-| INITIALIZED | Component allocated | configure(), release() | configure() called |
-| CONFIGURING | configure() posted | (wait) | Component configured |
-| CONFIGURED | Component configured | start(), release() | start() called |
-| STARTING | start() posted | (wait) | Start completed |
-| STARTED | Start completed | queue/dequeue/flush/stop/release | Any of these |
-| FLUSHING | flush() posted | (wait) | Flush completed |
-| FLUSHED | Flush completed | start(), stop(), release() | start()/stop() called |
-| STOPPING | stop() posted | (wait) | Stop completed |
-| RELEASING | release() posted | (wait) | Release completed |
-
-### A.10 Codec Metrics Key Reference
-
-All metrics keys are prefixed with `android.media.mediacodec.`:
-
-| Category | Key Suffix | Type | Description |
-|---|---|---|---|
-| Identity | `codec` | string | Component name |
-| Identity | `mime` | string | MIME type |
-| Identity | `mode` | string | audio/video/image |
-| Identity | `encoder` | int32 | 0=decoder, 1=encoder |
-| Identity | `hardware` | int32 | 0=software, 1=hardware |
-| Identity | `secure` | int32 | 0=normal, 1=secure |
-| Identity | `tunneled` | int32 | 0=normal, 1=tunneled |
-| Resolution | `width` | int32 | Video width |
-| Resolution | `height` | int32 | Video height |
-| Resolution | `rotation` | int32 | 0/90/180/270 |
-| Performance | `frame-rate` | int32 | Frame rate |
-| Performance | `operating-rate` | int32 | Operating rate |
-| Performance | `bitrate` | int32 | Bitrate |
-| Performance | `bitrate_mode` | string | CQ/VBR/CBR |
-| Latency | `latency.max` | int64 | Max latency (us) |
-| Latency | `latency.min` | int64 | Min latency (us) |
-| Latency | `latency.avg` | int64 | Avg latency (us) |
-| Latency | `latency.n` | int32 | Sample count |
-| Quality | `freeze-count` | int32 | Freeze events |
-| Quality | `freeze-score` | double | Freeze severity |
-| Quality | `judder-count` | int32 | Judder events |
-| Quality | `judder-score` | double | Judder severity |
-| Render | `frames-released` | int64 | Total released |
-| Render | `frames-rendered` | int64 | Actually displayed |
-| Render | `frames-dropped` | int64 | Dropped (late) |
-| Render | `frames-skipped` | int64 | Skipped |
-| Error | `errcode` | int32 | Error code |
-| Error | `errstate` | string | Error state |
-| Lifecycle | `lifetimeMs` | int64 | Total lifetime (ms) |
