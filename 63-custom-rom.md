@@ -4477,7 +4477,27 @@ device/AospBook/bookphone/
 
 ---
 
-## 63.14 Summary
+## 63.14 Further Reading
+
+| Topic | Source Location | Description |
+|-------|----------------|-------------|
+| Build system | `build/make/core/` | GNU Make build rules |
+| Soong build | `build/soong/` | Blueprint/Soong build system |
+| Product configuration | `build/make/target/product/` | Base product makefiles |
+| Goldfish device | `device/generic/goldfish/` | Emulator device tree |
+| Framework config | `frameworks/base/core/res/res/values/config.xml` | Overridable framework values |
+| SystemUI | `frameworks/base/packages/SystemUI/` | System UI source |
+| Boot animation | `frameworks/base/cmds/bootanimation/` | Boot animation player |
+| HAL interfaces | `hardware/interfaces/` | AIDL HAL definitions |
+| Release tools | `build/make/tools/releasetools/` | Signing and OTA tools |
+| Security keys | `build/make/target/product/security/` | Default signing keys |
+| SELinux policy | `system/sepolicy/` | Base SELinux policies |
+| Init system | `system/core/init/` | Init process source |
+| SystemServer | `frameworks/base/services/java/com/android/server/SystemServer.java` | Service startup |
+
+---
+
+## 63.15 Summary
 
 This chapter walked through the entire process of building a custom Android
 ROM from the ground up:
@@ -4523,22 +4543,3 @@ management solution, or simply learning how Android works from the inside out,
 the ability to build, customize, sign, and distribute a complete Android
 system image is the ultimate expression of AOSP mastery.
 
----
-
-## 63.15 Further Reading
-
-| Topic | Source Location | Description |
-|-------|----------------|-------------|
-| Build system | `build/make/core/` | GNU Make build rules |
-| Soong build | `build/soong/` | Blueprint/Soong build system |
-| Product configuration | `build/make/target/product/` | Base product makefiles |
-| Goldfish device | `device/generic/goldfish/` | Emulator device tree |
-| Framework config | `frameworks/base/core/res/res/values/config.xml` | Overridable framework values |
-| SystemUI | `frameworks/base/packages/SystemUI/` | System UI source |
-| Boot animation | `frameworks/base/cmds/bootanimation/` | Boot animation player |
-| HAL interfaces | `hardware/interfaces/` | AIDL HAL definitions |
-| Release tools | `build/make/tools/releasetools/` | Signing and OTA tools |
-| Security keys | `build/make/target/product/security/` | Default signing keys |
-| SELinux policy | `system/sepolicy/` | Base SELinux policies |
-| Init system | `system/core/init/` | Init process source |
-| SystemServer | `frameworks/base/services/java/com/android/server/SystemServer.java` | Service startup |
