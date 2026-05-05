@@ -2073,12 +2073,1770 @@ graph LR
 
 ---
 
-## 22.8 Try It: Tracing and Debugging
+## 22.8 Deep Dive: The setState() Method and State Transitions
+
+Understanding how `ActivityRecord.setState()` works is critical because
+every lifecycle transition flows through it.
+
+### 22.8.1 setState() Implementation
+
+```java
+// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, line 5704
+void setState(State state, String reason) {
+    ProtoLog.v(WM_DEBUG_STATES, "State movement: %s from:%s to:%s reason:%s",
+            this, mState, state, reason);
+
+    if (state == mState) {
+        ProtoLog.v(WM_DEBUG_STATES, "State unchanged from:%s", state);
+        return;
+    }
+
+    final State prevState = mState;
+    mState = state;
+
+    if (getTaskFragment() != null) {
+        getTaskFragment().onActivityStateChanged(this, state, reason);
+    }
+    // ...
+```
+
+The method performs these key actions after updating the state:
+
+1. **Notifies the TaskFragment** -- The containing task fragment needs to know
+   about state changes to manage its own visibility and lifecycle.
+
+2. **Updates service connection visibility** -- via `updateVisibleForServiceConnection()`.
+
+3. **Triggers process state recalculation** -- via
+   `mTaskSupervisor.onProcessActivityStateChanged(app, false)`.
+
+4. **State-specific side effects** (lines 5736-5783):
+
+```java
+switch (state) {
+    case RESUMED:
+        mAtmService.updateBatteryStats(this, true);
+        mAtmService.updateActivityUsageStats(this, Event.ACTIVITY_RESUMED);
+        // Fall through to STARTED
+    case STARTED:
+        // Update process info to foreground
+        if (app != null) {
+            app.updateProcessInfo(false, true, true, true);
+        }
+        break;
+    case PAUSED:
+        mAtmService.updateBatteryStats(this, false);
+        mAtmService.updateActivityUsageStats(this, Event.ACTIVITY_PAUSED);
+        break;
+    case STOPPED:
+        mAtmService.updateActivityUsageStats(this, Event.ACTIVITY_STOPPED);
+        // Remove from unknown app visibility controller
+        break;
+    case DESTROYED:
+        if (app != null && (mVisible || mVisibleRequested)) {
+            mAtmService.updateBatteryStats(this, false);
+        }
+        mAtmService.updateActivityUsageStats(this, Event.ACTIVITY_DESTROYED);
+        break;
+}
+```
+
+### 22.8.2 State Transition Triggers
+
+Each state transition is triggered by a specific event:
+
+```mermaid
+graph TD
+    subgraph "Transition Triggers"
+        T1["INITIALIZING -> STARTED<br/>Trigger: realStartActivityLocked()"]
+        T2["STARTED -> RESUMED<br/>Trigger: completeResumeLocked()"]
+        T3["RESUMED -> PAUSING<br/>Trigger: startPausingLocked()"]
+        T4["PAUSING -> PAUSED<br/>Trigger: completePauseLocked()"]
+        T5["PAUSED -> STOPPING<br/>Trigger: stopIfPossible()"]
+        T6["STOPPING -> STOPPED<br/>Trigger: activityStopped()"]
+        T7["* -> FINISHING<br/>Trigger: finishActivityLocked()"]
+        T8["FINISHING -> DESTROYING<br/>Trigger: destroyIfPossible()"]
+        T9["DESTROYING -> DESTROYED<br/>Trigger: destroyed()"]
+    end
+```
+
+### 22.8.3 Battery and Usage Stats Integration
+
+Notice how `setState()` updates battery stats on every RESUMED/PAUSED
+transition. This is how Android tracks per-app power consumption for
+activities. The call to `updateBatteryStats(this, true)` on RESUMED marks
+the beginning of foreground usage, and `updateBatteryStats(this, false)` on
+PAUSED marks the end.
+
+Similarly, `updateActivityUsageStats()` feeds data to the UsageStatsManager,
+which apps can query to understand usage patterns.
+
+---
+
+## 22.9 Advanced: The resumeTopActivity Pipeline
+
+### 22.9.1 The Recursive Resume Pattern
+
+Resuming activities is one of the most complex operations in the framework.
+The entry point is `Task.resumeTopActivityUncheckedLocked()`:
+
+```java
+// frameworks/base/services/core/java/com/android/server/wm/Task.java, line 5240
+boolean resumeTopActivityUncheckedLocked(ActivityRecord prev, ActivityOptions options,
+        boolean deferPause) {
+```
+
+This method has re-entrancy protection:
+
+```java
+// line 299: Guard against recursive calls
+boolean mInResumeTopActivity = false;
+```
+
+The flow descends through the task hierarchy:
+
+```mermaid
+sequenceDiagram
+    participant RWC as RootWindowContainer
+    participant DC as DisplayContent
+    participant TDA as TaskDisplayArea
+    participant Task as Task (root)
+    participant LeafTask as Task (leaf)
+    participant TF as TaskFragment
+    participant AR as ActivityRecord
+
+    RWC->>DC: resumeFocusedTasksTopActivities()
+    DC->>TDA: getFocusedRootTask()
+    TDA->>Task: resumeTopActivityUncheckedLocked()
+    Note over Task: Check mInResumeTopActivity guard
+    Task->>Task: resumeTopActivityInnerLocked()
+    Task->>LeafTask: iterate children
+    LeafTask->>TF: resumeTopActivity()
+    TF->>AR: Find topRunningActivity()
+    alt Activity already resumed
+        TF-->>Task: false (nothing to do)
+    else Activity needs resume
+        TF->>AR: Check if process exists
+        alt Process alive
+            TF->>AR: makeActiveIfNeeded()
+            TF->>AR: scheduleResumeTransaction()
+        else Process dead
+            TF->>RWC: startSpecificActivity(r, ...)
+            Note over RWC: Will fork via Zygote
+        end
+    end
+```
+
+### 22.9.2 Pause-Before-Resume Protocol
+
+Before a new activity can resume, the currently resumed activity must be
+paused. This is the "pause-before-resume" protocol:
+
+```mermaid
+sequenceDiagram
+    participant Framework as Framework (system_server)
+    participant OldApp as Old Activity (App Process A)
+    participant NewApp as New Activity (App Process B)
+
+    Framework->>OldApp: schedulePauseActivity(token, finishing, ...)
+    Note over OldApp: Activity.onPause() executes
+    OldApp->>Framework: activityPaused(token)
+    Note over Framework: completePauseLocked()<br/>Old activity now PAUSED
+
+    Framework->>Framework: resumeTopActivityInnerLocked()
+    alt New process exists
+        Framework->>NewApp: scheduleResumeActivity(token, ...)
+        Note over NewApp: Activity.onResume() executes
+        NewApp->>Framework: activityResumed(token)
+    else New process needs start
+        Framework->>Framework: startSpecificActivity()
+        Note over Framework: Fork process via Zygote<br/>Wait for attachApplication()<br/>Then schedule launch
+    end
+```
+
+The pause timeout is critical: if the old activity does not respond to
+`activityPaused()` within `PAUSE_TIMEOUT` (500ms), the framework forcibly
+completes the pause and proceeds. This prevents a hung app from blocking
+all task switches.
+
+### 22.9.3 The Idle Timeout
+
+After an activity launches, the framework waits for it to report idle. The
+`ActivityTaskSupervisor` manages this:
+
+```java
+// frameworks/base/services/core/java/com/android/server/wm/ActivityTaskSupervisor.java, line 194
+private static final int IDLE_TIMEOUT = 10 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
+```
+
+If an activity does not report idle within 10 seconds, the framework proceeds
+without it. This timeout is the backstop that prevents a misbehaving app from
+permanently blocking the activity lifecycle.
+
+---
+
+## 22.10 Advanced: recycleTask() and Intent Flag Processing
+
+### 22.10.1 recycleTask() Logic
+
+When `startActivityInner()` finds an existing task to reuse (via
+`resolveReusableTask()` or `computeTargetTask()`), it calls `recycleTask()`:
+
+```java
+// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 2384
+int recycleTask(Task targetTask, ActivityRecord targetTaskTop, Task reusedTask,
+        NeededUriGrants intentGrants) {
+    // Should not recycle task from a different user
+    if (targetTask.mUserId != mStartActivity.mUserId) {
+        mTargetRootTask = targetTask.getRootTask();
+        mAddingToTask = true;
+        return START_SUCCESS;
+    }
+
+    if (reusedTask != null) {
+        if (targetTask.intent == null) {
+            // Assign base intent from affinity-based movement
+            targetTask.setIntent(mStartActivity);
+        }
+        // Handle FLAG_ACTIVITY_TASK_ON_HOME
+    }
+```
+
+Key operations in `recycleTask()`:
+
+1. **User check** -- Rejects cross-user task recycling (line 2388)
+2. **Intent assignment** -- Sets the task's base intent if it was moved by affinity
+3. **Power mode** -- Starts power mode for the launch (line 2411)
+4. **Target root task** -- Positions the task in the hierarchy
+5. **`START_FLAG_ONLY_IF_NEEDED`** -- Short-circuits if the activity is
+   already at the top
+6. **Flag compliance** -- Processes `CLEAR_TOP`, `SINGLE_TOP`, etc.
+7. **Starting window** -- Shows splash screen if the task moved to front
+8. **Dream dismissal** -- Wakes the screen if launching over a dream
+
+The return value indicates what happened:
+
+```java
+// line 2473
+return mMovedToFront ? START_TASK_TO_FRONT : START_DELIVERED_TO_TOP;
+```
+
+### 22.10.2 Flag Processing: CLEAR_TOP and SINGLE_TOP
+
+The `complyActivityFlags()` method processes the rich set of Intent flags.
+The most commonly encountered combinations:
+
+| Flags | Effect |
+|-------|--------|
+| `NEW_TASK` | Create or find a task with matching affinity |
+| `NEW_TASK + CLEAR_TASK` | Clear the task and start fresh |
+| `NEW_TASK + CLEAR_TOP` | Remove everything above the target activity |
+| `SINGLE_TOP` | Reuse if already at top, call onNewIntent() |
+| `REORDER_TO_FRONT` | Move existing activity to top of task |
+| `NEW_DOCUMENT` | Create a new document task (multi-instance) |
+| `MULTIPLE_TASK` | Always create a new task (with NEW_TASK) |
+| `LAUNCH_ADJACENT` | Launch in adjacent split-screen window |
+| `NO_ANIMATION` | Suppress transition animation |
+
+### 22.10.3 The deliverNewIntent Mechanism
+
+When an existing activity receives a new intent (e.g., singleTop or
+singleTask re-delivery), the framework uses `deliverNewIntent()`:
+
+```mermaid
+sequenceDiagram
+    participant AS as ActivityStarter
+    participant AR as ActivityRecord
+    participant CLM as ClientLifecycleManager
+    participant App as App Process
+
+    AS->>AR: deliverNewIntent(callingUid, intent, intentGrants)
+    AR->>AR: Check mIntentDelivered flag
+    AR->>AR: addNewIntentLocked(intent)
+    AR->>CLM: scheduleTransaction(NewIntentItem)
+    CLM->>App: schedule(ClientTransaction)
+    App->>App: Activity.onNewIntent(intent)
+```
+
+The `mIntentDelivered` flag (line 274) ensures the intent is delivered at
+most once, even if multiple code paths converge on `deliverNewIntent()`.
+
+---
+
+## 22.11 Advanced: Multi-Window and TaskFragment Architecture
+
+### 22.11.1 TaskFragment: The Embedding Container
+
+Modern Android supports activity embedding, where multiple activities can
+be displayed side-by-side within a single task. This is managed through
+`TaskFragment`:
+
+```java
+// frameworks/base/services/core/java/com/android/server/wm/TaskFragment.java, line 124
+class TaskFragment extends WindowContainer<WindowContainer> {
+```
+
+A `TaskFragment` is positioned between `Task` and `ActivityRecord` in the
+hierarchy. A single `Task` can contain multiple `TaskFragment` objects, each
+hosting one or more activities:
+
+```mermaid
+graph TB
+    Task["Task"]
+    TF1["TaskFragment (Left)"]
+    TF2["TaskFragment (Right)"]
+    Task --> TF1
+    Task --> TF2
+    AR1["ActivityRecord A"]
+    AR2["ActivityRecord B"]
+    TF1 --> AR1
+    TF2 --> AR2
+```
+
+### 22.11.2 The TaskFragmentOrganizer
+
+Third-party libraries (like the AndroidX Activity Embedding library) interact
+with the framework through the `TaskFragmentOrganizer` API. This allows apps
+to:
+
+1. Create `TaskFragment` containers within their tasks
+2. Specify how activities should be distributed across fragments
+3. Define split ratios and layout rules
+4. Handle configuration changes in the embedding layout
+
+```mermaid
+sequenceDiagram
+    participant App as App (Jetpack Library)
+    participant TFO as TaskFragmentOrganizer
+    participant WME as WindowOrganizerController
+    participant Task as Task
+
+    App->>TFO: registerOrganizer()
+    TFO->>WME: Register via Binder
+    App->>TFO: createTaskFragment(token, ...)
+    TFO->>WME: applyTransaction(WindowContainerTransaction)
+    WME->>Task: Create TaskFragment as child
+    App->>TFO: startActivityInTaskFragment(tf, intent)
+    TFO->>WME: OP_TYPE_START_ACTIVITY_IN_TASK_FRAGMENT
+    WME->>Task: Start activity in specified TaskFragment
+```
+
+### 22.11.3 Embedding Check Results
+
+When starting an activity in a TaskFragment, the system checks compatibility:
+
+```java
+// TaskFragment.java
+static final int EMBEDDING_ALLOWED = 0;
+static final int EMBEDDING_DISALLOWED_MIN_DIMENSION_VIOLATION = 1;
+static final int EMBEDDING_DISALLOWED_NEW_TASK = 2;
+static final int EMBEDDING_DISALLOWED_UNTRUSTED_HOST = 3;
+```
+
+These checks prevent:
+
+- Activities from being embedded in containers too small for their minimum
+  dimensions
+- Activities that require `NEW_TASK` from being embedded
+- Untrusted apps from embedding activities from other packages
+
+### 22.11.4 Split-Screen and Freeform Windows
+
+Split-screen mode is implemented using the windowing mode system:
+
+```java
+// WindowConfiguration windowing modes
+WINDOWING_MODE_UNDEFINED = 0;
+WINDOWING_MODE_FULLSCREEN = 1;
+WINDOWING_MODE_PINNED = 2;         // Picture-in-Picture
+WINDOWING_MODE_FREEFORM = 5;       // Desktop-like floating
+WINDOWING_MODE_MULTI_WINDOW = 6;   // Generic multi-window
+```
+
+Each task has a windowing mode that determines how it is laid out on screen.
+The system coordinates these modes through the `TaskDisplayArea`:
+
+```mermaid
+graph TB
+    TDA["TaskDisplayArea"]
+
+    subgraph "Fullscreen Tasks"
+        T1["Task 1 (FULLSCREEN)"]
+    end
+
+    subgraph "Split Tasks"
+        T2["Task 2 (MULTI_WINDOW)"]
+        T3["Task 3 (MULTI_WINDOW)"]
+    end
+
+    subgraph "Floating"
+        T4["Task 4 (FREEFORM)"]
+        T5["Task 5 (PINNED/PiP)"]
+    end
+
+    TDA --> T1
+    TDA --> T2
+    TDA --> T3
+    TDA --> T4
+    TDA --> T5
+```
+
+---
+
+## 22.12 Advanced: The Starting Window (Splash Screen)
+
+### 22.12.1 Purpose and Types
+
+When an activity is being launched but has not yet drawn its first frame, the
+system can display a "starting window" (splash screen) to provide immediate
+visual feedback. There are two types:
+
+```java
+// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, lines 407-409
+static final int STARTING_WINDOW_TYPE_NONE = 0;
+static final int STARTING_WINDOW_TYPE_SNAPSHOT = 1;
+static final int STARTING_WINDOW_TYPE_SPLASH_SCREEN = 2;
+```
+
+- **SNAPSHOT** -- Uses a cached screenshot of the activity from a previous
+  run. This provides the most seamless experience for task switches.
+- **SPLASH_SCREEN** -- Shows a themed splash screen based on the activity's
+  theme colors and icon.
+
+### 22.12.2 Starting Window Flow
+
+```mermaid
+sequenceDiagram
+    participant AS as ActivityStarter
+    participant AR as ActivityRecord
+    participant SSC as StartingSurfaceController
+    participant Shell as SystemUI/Shell
+    participant WMS as WMS
+
+    AS->>AR: showStartingWindow(taskSwitch)
+    AR->>AR: Decide: snapshot or splash?
+    AR->>SSC: createStartingSurface(activityRecord)
+
+    alt Snapshot available
+        SSC->>Shell: Request snapshot window
+        Shell->>WMS: addWindow(TYPE_APPLICATION_STARTING)
+        WMS->>WMS: activity.attachStartingWindow(win)
+    else Splash screen
+        SSC->>Shell: Request splash screen
+        Shell->>Shell: Inflate themed splash layout
+        Shell->>WMS: addWindow(TYPE_APPLICATION_STARTING)
+    end
+
+    Note over AR: App process starts, draws first frame
+    AR->>AR: onFirstWindowDrawn()
+    AR->>SSC: removeStartingWindow()
+    SSC->>WMS: Remove starting window
+```
+
+### 22.12.3 Starting Window in addWindowInner()
+
+When the starting window is added to WMS, it gets special handling:
+
+```java
+// WindowManagerService.java, line 1988-1991
+if (type == TYPE_APPLICATION_STARTING && activity != null) {
+    activity.attachStartingWindow(win);
+    ProtoLog.v(WM_DEBUG_STARTING_WINDOW, "addWindow: %s startingWindow=%s",
+            activity, win);
+}
+```
+
+The `attachStartingWindow()` method stores the reference in `mStartingWindow`
+on the `ActivityRecord`, and the window is removed once the real content
+window has drawn.
+
+---
+
+## 22.13 Advanced: The Window Layout Engine
+
+### 22.13.1 WindowSurfacePlacer
+
+The `WindowSurfacePlacer` is the engine that drives window layout:
+
+```java
+// frameworks/base/services/core/java/com/android/server/wm/WindowSurfacePlacer.java, line 112
+final void performSurfacePlacement() {
+    performSurfacePlacement(false /* force */);
+}
+```
+
+The layout loop:
+
+```mermaid
+flowchart TD
+    Request["requestTraversal()"] --> Schedule["Post to Handler"]
+    Schedule --> Check["performSurfacePlacementIfScheduled()"]
+    Check --> Loop["performSurfacePlacementLoop()"]
+    Loop --> BeginTrace["Trace: performSurfacePlacement"]
+
+    BeginTrace --> RootPerform["mService.mRoot.performSurfacePlacement()"]
+    RootPerform --> LayoutAll["Layout all DisplayContent"]
+    LayoutAll --> ApplyChanges["Apply surface transactions"]
+    ApplyChanges --> CheckPending{"Pending changes?"}
+    CheckPending -->|Yes| Loop
+    CheckPending -->|No| Done["Layout complete"]
+
+    Done --> EndTrace["End trace"]
+```
+
+The loop repeats up to `LAYOUT_REPEAT_THRESHOLD` (4) times to handle
+cascading layout changes, where updating one window's layout triggers changes
+in another.
+
+### 22.13.2 Display Policy
+
+Each `DisplayContent` has a `DisplayPolicy` that enforces platform-specific
+layout rules:
+
+- Status bar position and size
+- Navigation bar position and size
+- System gesture regions
+- Cutout/notch avoidance zones
+- IME (Input Method Editor) placement
+
+The `DisplayPolicy` is consulted during `addWindow()`:
+
+```java
+// WMS.addWindow(), line 1850
+displayPolicy.adjustWindowParamsLw(win, win.mAttrs);
+// ...
+res = displayPolicy.validateAddingWindowLw(attrs, callingPid, callingUid);
+```
+
+And during layout:
+
+```java
+// line 1986
+displayPolicy.addWindowLw(win, attrs);
+```
+
+---
+
+## 22.14 Advanced: Configuration Change Propagation
+
+### 22.14.1 Configuration Hierarchy
+
+Configuration changes (screen rotation, font scale, locale, density, etc.)
+propagate through the `WindowContainer` hierarchy using the
+`ConfigurationContainer` base class:
+
+```mermaid
+graph TB
+    Global["Global Configuration<br/>(device-level)"]
+    Display["Display Override Config<br/>(per-display density, etc.)"]
+    Task["Task Config<br/>(windowing bounds)"]
+    Activity["Activity Config<br/>(theme, local overrides)"]
+
+    Global --> Display
+    Display --> Task
+    Task --> Activity
+
+    Note1["Each level can override<br/>specific config fields"]
+```
+
+When the global configuration changes (e.g., screen rotation), the change
+propagates top-down through the hierarchy:
+
+```mermaid
+sequenceDiagram
+    participant WMS
+    participant RWC as RootWindowContainer
+    participant DC as DisplayContent
+    participant Task
+    participant AR as ActivityRecord
+    participant App as App Process
+
+    WMS->>RWC: updateConfiguration(newConfig)
+    RWC->>DC: onConfigurationChanged()
+    DC->>Task: onConfigurationChanged()
+    Task->>AR: onConfigurationChanged()
+    AR->>AR: shouldRelaunchLocked()?
+
+    alt Activity handles config change
+        AR->>App: scheduleTransaction(ActivityConfigurationChangeItem)
+        App->>App: onConfigurationChanged(newConfig)
+    else Activity needs relaunch
+        AR->>App: scheduleTransaction(DestroyActivityItem)
+        Note over App: onDestroy()
+        AR->>App: scheduleTransaction(LaunchActivityItem)
+        Note over App: onCreate() with saved state
+    end
+```
+
+### 22.14.2 Merged Configuration
+
+Each `WindowContainer` computes a "merged configuration" that combines
+its parent's configuration with its own overrides:
+
+```java
+// ConfigurationContainer.java
+Configuration getMergedOverrideConfiguration() {
+    // Returns the combination of all ancestor overrides + this container's overrides
+}
+```
+
+This allows each level to customize specific fields:
+
+- **Display**: May override density for external displays
+- **Task**: Overrides bounds for freeform/split windows
+- **Activity**: May override orientation, smallest screen width
+
+### 22.14.3 Activity Relaunch Decision
+
+The `shouldRelaunchLocked()` check compares the old and new configurations
+to determine if the activity can handle the change:
+
+```java
+// Simplified logic
+int changes = oldConfig.diff(newConfig);
+int handledChanges = activityInfo.getRealConfigChanged();
+boolean needsRelaunch = (changes & ~handledChanges) != 0;
+```
+
+If the activity declared `android:configChanges` in its manifest for the
+changed configuration fields, it receives `onConfigurationChanged()` instead
+of being destroyed and recreated.
+
+---
+
+## 22.15 Advanced: ANR Detection in the Activity System
+
+### 22.15.1 ANR (Application Not Responding) Triggers
+
+ANR detection in the activity system occurs at several points:
+
+1. **Input dispatch timeout** -- Default 5 seconds for focused window
+2. **Broadcast timeout** -- 10s foreground, 60s background
+3. **Service timeout** -- 20s foreground, 200s background
+4. **Content provider timeout** -- Published within 10s of process start
+
+For activities specifically, the key timeouts are:
+
+```java
+// ActivityRecord.java
+private static final int PAUSE_TIMEOUT = 500;      // ms
+private static final int STOP_TIMEOUT = 11 * 1000;  // ms
+private static final int DESTROY_TIMEOUT = 10 * 1000; // ms
+
+// ActivityManagerService.java
+static final int PROC_START_TIMEOUT = 10 * 1000;    // ms
+static final int BIND_APPLICATION_TIMEOUT = 15 * 1000; // ms
+
+// ActivityTaskManagerService.java
+static final long INSTRUMENTATION_KEY_DISPATCHING_TIMEOUT_MILLIS = 60 * 1000;
+
+// ActivityTaskSupervisor.java
+private static final int IDLE_TIMEOUT = 10 * 1000;  // ms
+```
+
+### 22.15.2 Input ANR Flow
+
+```mermaid
+sequenceDiagram
+    participant Input as InputDispatcher (native)
+    participant WMS
+    participant AMS
+    participant App
+
+    Input->>App: Dispatch input event
+    Note over Input: Start 5s timer
+    Input->>Input: Wait for finish signal
+
+    alt App responds in time
+        App->>Input: finishInputEvent()
+        Note over Input: Cancel timer
+    else Timeout (5s)
+        Input->>WMS: notifyANR(windowToken)
+        WMS->>AMS: inputDispatchingTimedOut()
+        AMS->>AMS: Collect stack traces
+        AMS->>AMS: Show ANR dialog
+        Note over AMS: User can: Wait / Close / Report
+    end
+```
+
+### 22.15.3 The AnrController
+
+ATMS uses `AnrController` objects to manage ANR handling:
+
+```java
+// ActivityTaskManagerService.java, line 578
+@GuardedBy("itself")
+private final List<AnrController> mAnrController = new ArrayList<>();
+```
+
+Multiple controllers can be registered, allowing different parts of the
+system to customize ANR behavior (e.g., the instrumentation framework
+extends timeouts during testing).
+
+---
+
+## 22.16 Advanced: Lock Task Mode
+
+### 22.16.1 Overview
+
+Lock Task Mode restricts the device to a set of whitelisted tasks. This is
+used for kiosk-mode applications, enterprise device management, and
+educational deployments.
+
+```java
+// ActivityTaskManagerService.java, line 518
+private LockTaskController mLockTaskController;
+```
+
+### 22.16.2 Lock Task Levels
+
+```java
+// ActivityManager.java
+LOCK_TASK_MODE_NONE = 0;     // Normal operation
+LOCK_TASK_MODE_LOCKED = 1;   // Task is locked (started by app)
+LOCK_TASK_MODE_PINNED = 2;   // Screen pinning (started by user)
+```
+
+### 22.16.3 Lock Task Enforcement
+
+The `LockTaskController` enforces restrictions at multiple points:
+
+1. **Activity start** -- `isAllowedToStart()` checks
+   `isLockTaskModeViolation()`:
+   ```java
+   // ActivityStarter.java, line 2299-2309
+   if (!newTask) {
+       if (mService.getLockTaskController().isLockTaskModeViolation(
+               targetTask, isNewClearTask)) {
+           return START_RETURN_LOCK_TASK_MODE_VIOLATION;
+       }
+   } else {
+       if (mService.getLockTaskController().isNewTaskLockTaskModeViolation(r)) {
+           return START_RETURN_LOCK_TASK_MODE_VIOLATION;
+       }
+   }
+   ```
+
+2. **Task removal** -- Prevents removing locked tasks from recents
+3. **Navigation** -- Disables Home and Recents buttons
+4. **Status bar** -- Disables notification shade and quick settings
+
+---
+
+## 22.17 Advanced: The Recent Tasks System
+
+### 22.17.1 RecentTasks Manager
+
+```java
+// ActivityTaskManagerService.java, line 473
+private RecentTasks mRecentTasks;
+```
+
+The `RecentTasks` class maintains the ordered list of tasks shown in the
+Recents (Overview) screen. It handles:
+
+- Adding tasks when they move to the background
+- Removing tasks when the user dismisses them
+- Persisting tasks across reboots (for cold-start recents)
+- Enforcing per-user task limits
+- Managing task thumbnails (screenshots)
+
+### 22.17.2 Task Persistence
+
+Tasks with `FLAG_ACTIVITY_RETAIN_IN_RECENTS` are persisted to disk as XML
+in `/data/system_ce/<userId>/recent_tasks/`. The persistence format includes:
+
+```xml
+<task
+    task_id="42"
+    real_activity="com.example.app/.MainActivity"
+    affinity="com.example.app"
+    user_id="0"
+    effective_uid="10094"
+    last_time_moved="1679012345678">
+    <intent .../>
+    <activity id="0" ...>
+        <intent .../>
+    </activity>
+</task>
+```
+
+### 22.17.3 Task Snapshots
+
+The system captures screenshots of tasks as they move to the background.
+These snapshots are used for:
+
+1. The Recents carousel thumbnails
+2. Starting window snapshots (for fast task switching)
+3. Splash screen alternatives
+
+---
+
+## 22.18 Advanced: Visibility Computation
+
+### 22.18.1 ensureActivitiesVisible()
+
+One of the most critical operations in the system is determining which
+activities should be visible. This is driven by
+`RootWindowContainer.ensureActivitiesVisible()`:
+
+```mermaid
+flowchart TD
+    Trigger["Activity state changed"] --> EAV["ensureActivitiesVisible()"]
+    EAV --> ForEachDisplay["For each DisplayContent"]
+    ForEachDisplay --> ForEachTask["For each root Task"]
+    ForEachTask --> Walk["Walk task from top to bottom"]
+    Walk --> CheckOcclusion{"Activity occludes<br/>below?"}
+    CheckOcclusion -->|Yes| HideBelow["Make activities below invisible"]
+    CheckOcclusion -->|No| ShowBelow["Activities below remain visible"]
+    HideBelow --> UpdateVis["Update visibility state"]
+    ShowBelow --> UpdateVis
+    UpdateVis --> NotifyApps["Notify affected apps"]
+```
+
+An activity "occludes" those below it if:
+
+- It is fullscreen (not translucent)
+- It is not finishing
+- It fills the entire task bounds
+
+Translucent activities (dialogs, floating windows) allow activities behind
+them to remain visible.
+
+### 22.18.2 The occludesParent() Check
+
+```java
+// ActivityRecord.java, line 665
+private boolean mOccludesParent;
+```
+
+This field is set based on:
+
+- The activity's theme (transparent vs. opaque)
+- Whether it fills the parent bounds
+- Whether it has the `windowIsFloating` style attribute
+
+### 22.18.3 Visibility States for TaskFragment
+
+```java
+// TaskFragment.java
+static final int TASK_FRAGMENT_VISIBILITY_VISIBLE = 0;
+static final int TASK_FRAGMENT_VISIBILITY_VISIBLE_BEHIND_TRANSLUCENT = 1;
+static final int TASK_FRAGMENT_VISIBILITY_INVISIBLE = 2;
+```
+
+---
+
+## 22.19 Performance Considerations
+
+### 22.19.1 Activity Launch Time Budget
+
+A well-optimized cold app launch should complete within these budgets:
+
+| Phase | Budget | Measured By |
+|-------|--------|-------------|
+| Intent resolution | < 5ms | Perfetto: `resolveActivity` |
+| startActivityInner() | < 10ms | Perfetto: `startActivityInner` |
+| Process fork (cold) | < 100ms | Perfetto: `Start proc` |
+| bindApplication | < 200ms | Perfetto: `bindApplication` |
+| Activity.onCreate() | < 200ms | Perfetto: `performCreate` |
+| First frame draw | < 300ms | Perfetto: `Choreographer#doFrame` |
+| **Total cold start** | **< 500ms** | `adb shell am start -W` |
+| **Total warm start** | **< 200ms** | `adb shell am start -W` |
+
+### 22.19.2 Lock Contention
+
+The `WindowManagerGlobalLock` is one of the most contended locks in the
+system. Every Binder call to WMS and ATMS must acquire it. Strategies to
+minimize contention:
+
+1. **Keep critical sections short** -- Perform heavy computation outside the
+   lock
+2. **Batch surface transactions** -- Submit multiple changes in a single
+   `SurfaceControl.Transaction`
+3. **Defer layout** -- The `WindowSurfacePlacer` batches layout requests
+4. **Lock-free reads** -- Some fields (like `mCurrentFocus`) use volatile
+   for lock-free reads in common cases
+
+### 22.19.3 Process Start Optimization
+
+Android uses several techniques to speed up process creation:
+
+1. **Zygote pre-fork** -- The Zygote preloads common classes and resources
+2. **USAP (Unspecialized App Process)** -- Pre-forked processes waiting to
+   be specialized
+3. **App Zygote** -- Per-app zygotes that cache app-specific resources
+4. **WebView Zygote** -- Specialized zygote for WebView processes
+5. **Process pools** -- Cached app processes can be reused
+
+---
+
+## 22.20 Key Interfaces and AIDL Contracts
+
+### 22.20.1 IActivityManager
+
+The AIDL interface that apps use to communicate with AMS:
+
+| Method | Purpose |
+|--------|---------|
+| `startService()` | Start a background service |
+| `bindService()` | Bind to a service |
+| `broadcastIntent()` | Send a broadcast |
+| `getRunningAppProcesses()` | Query running processes |
+| `getMemoryInfo()` | Query system memory |
+| `setProcessImportant()` | Mark process importance |
+| `killBackgroundProcesses()` | Kill cached processes |
+
+### 22.20.2 IActivityTaskManager
+
+The AIDL interface for activity and task operations:
+
+| Method | Purpose |
+|--------|---------|
+| `startActivity()` | Start an activity |
+| `startActivities()` | Start multiple activities |
+| `finishActivity()` | Finish an activity |
+| `moveTaskToFront()` | Bring a task to front |
+| `removeTask()` | Remove a task |
+| `getRecentTasks()` | Get recent tasks list |
+| `setLockTaskMode()` | Enable lock task mode |
+| `enterPictureInPictureMode()` | Enter PiP |
+| `requestStartTransition()` | Start window transition |
+
+### 22.20.3 IWindowManager
+
+The AIDL interface for window management:
+
+| Method | Purpose |
+|--------|---------|
+| `openSession()` | Create a new Session |
+| `addWindow()` | (via Session) Add a window |
+| `removeWindow()` | (via Session) Remove a window |
+| `relayoutWindow()` | (via Session) Update window layout |
+| `setFocusedApp()` | Set the focused app |
+| `screenshotDisplay()` | Capture display screenshot |
+| `freezeRotation()` | Lock screen rotation |
+| `setScreenCaptureDisabled()` | Disable screen capture |
+
+### 22.20.4 IApplicationThread
+
+The callback interface that the system uses to drive the app process:
+
+| Method | Purpose |
+|--------|---------|
+| `scheduleTransaction()` | Execute lifecycle transaction |
+| `scheduleTrimMemory()` | Request memory trim |
+| `scheduleBindService()` | Bind to a service |
+| `scheduleReceiver()` | Deliver a broadcast |
+| `dumpActivity()` | Dump activity state |
+| `scheduleSuicide()` | Force process exit |
+| `scheduleCreateService()` | Create a service |
+
+---
+
+## 22.21 Common Debugging Patterns
+
+### 22.21.1 Diagnosing Slow Activity Launches
+
+1. **Check Perfetto trace** for which phase is slow:
+   ```
+   adb shell am start -W -S <component>
+   ```
+   The `-S` flag force-stops the app first for a consistent cold start.
+
+2. **Check for lock contention** in the trace:
+   Look for long `monitor contention` slices in system_server.
+
+3. **Check process start time**:
+   ```bash
+   adb logcat -s ActivityManager | grep "Start proc"
+   ```
+   If fork time is high, check if USAP pool is configured.
+
+4. **Check Application.onCreate()**:
+   Many apps do heavy initialization here. Look for `bindApplication` duration.
+
+### 22.21.2 Diagnosing Window Addition Failures
+
+The `addWindow()` return codes indicate what went wrong:
+
+| Return Code | Constant | Meaning |
+|-------------|----------|---------|
+| 0 | `ADD_OKAY` | Success |
+| -1 | `ADD_BAD_APP_TOKEN` | Invalid token for window type |
+| -2 | `ADD_BAD_SUBWINDOW_TOKEN` | Bad parent window token |
+| -3 | `ADD_NOT_APP_TOKEN` | Non-activity token for app window |
+| -4 | `ADD_APP_EXITING` | Activity is being removed |
+| -5 | `ADD_DUPLICATE_ADD` | Window already registered |
+| -6 | `ADD_STARTING_NOT_NEEDED` | Starting window not needed |
+| -7 | `ADD_MULTIPLE_SINGLETON` | Multiple singletons |
+| -8 | `ADD_PERMISSION_DENIED` | Insufficient permissions |
+| -9 | `ADD_INVALID_DISPLAY` | Display does not exist |
+| -10 | `ADD_INVALID_TYPE` | Invalid window type |
+| -11 | `ADD_INVALID_USER` | Invalid user ID |
+
+### 22.21.3 Diagnosing Activity State Issues
+
+```bash
+# Check current activity state
+adb shell dumpsys activity activities | grep -E "state=|State="
+
+# Look for stuck transitions
+adb shell dumpsys activity transitions
+
+# Check for pending operations
+adb shell dumpsys activity starter
+```
+
+### 22.21.4 Diagnosing OOM Kills
+
+```bash
+# Check recent kills
+adb logcat -b events | grep "am_kill"
+
+# Check current process priorities
+adb shell dumpsys activity oom
+
+# Check LMKD statistics
+adb shell dumpsys activity lmk
+```
+
+---
+
+## Cross-References
+
+This chapter provides the architectural overview. The following chapters
+build on these foundations:
+
+- **Chapter 23: The Window System Deep Dive** -- Covers window layout
+  computation, surface management, the ViewRootImpl rendering pipeline,
+  insets handling, and the shell transitions system introduced in Android 13+.
+
+- **Chapter 24: Display and Compositor Pipeline** -- Covers SurfaceFlinger
+  internals, hardware composition, multi-display support, virtual displays,
+  and the HWC (Hardware Composer) HAL interface.
+
+The relationship between these three chapters:
+
+```mermaid
+graph TB
+    Ch22["Chapter 22<br/>Activity & Window Overview<br/>(This chapter)"]
+    Ch23["Chapter 23<br/>Window System Deep Dive"]
+    Ch24["Chapter 24<br/>Display & Compositor"]
+
+    Ch22 -->|"Window hierarchy,<br/>addWindow flow"| Ch23
+    Ch22 -->|"DisplayContent,<br/>surface basics"| Ch24
+    Ch23 -->|"Surface transactions"| Ch24
+
+    subgraph "Coverage"
+        Ch15a["AMS/ATMS architecture<br/>Activity lifecycle<br/>Task hierarchy<br/>Process management<br/>startActivity pipeline"]
+        Ch16a["Window layout engine<br/>ViewRootImpl<br/>Insets<br/>Shell transitions<br/>Input dispatch"]
+        Ch17a["SurfaceFlinger<br/>HWC HAL<br/>VSync<br/>Buffer management<br/>Multi-display"]
+    end
+
+    Ch22 --- Ch15a
+    Ch23 --- Ch16a
+    Ch24 --- Ch17a
+
+    style Ch22 fill:#e1f5fe
+    style Ch23 fill:#fff3e0
+    style Ch24 fill:#e8f5e9
+```
+
+---
+
+## 22.22 Advanced: The Transition System
+
+### 22.22.1 Shell Transitions (Android 13+)
+
+Modern Android uses "Shell Transitions" to coordinate visual transitions
+between activities, tasks, and windows. This replaced the legacy
+`AppTransition` system.
+
+```mermaid
+sequenceDiagram
+    participant WMCore as WM Core
+    participant TC as TransitionController
+    participant Shell as SystemUI Shell
+    participant SF as SurfaceFlinger
+
+    WMCore->>TC: requestStartTransition(transition)
+    TC->>TC: Collect participants<br/>(opening, closing, changing)
+    TC->>TC: setReady() when all collected
+    TC->>Shell: onTransitionReady(TransitionInfo)
+    Note over Shell: Shell decides animation type:<br/>- open/close<br/>- task switch<br/>- PiP<br/>- split-screen
+    Shell->>Shell: Create and run animation
+    Shell->>SF: Apply surface changes via Transaction
+    Shell->>TC: finishTransition(token)
+    TC->>WMCore: Clean up transition state
+```
+
+### 22.22.2 TransitionInfo
+
+The `TransitionInfo` object passed to Shell contains:
+
+- **Type**: OPEN, CLOSE, TO_FRONT, TO_BACK, CHANGE, PIP
+- **Flags**: KEYGUARD_GOING_AWAY, IS_RECENTS, etc.
+- **Changes**: List of `TransitionInfo.Change` objects, each describing
+  a container that changed (with before/after state)
+
+Each `Change` includes:
+
+- The `WindowContainerToken`
+- Start and end bounds
+- Start and end rotation
+- Window configuration
+- Leash (SurfaceControl for the animation)
+
+### 22.22.3 Transition Types
+
+```java
+// WindowManager.java transit types
+TRANSIT_OPEN = 1;          // Activity/task opening
+TRANSIT_CLOSE = 2;         // Activity/task closing
+TRANSIT_TO_FRONT = 3;      // Existing task coming to front
+TRANSIT_TO_BACK = 4;       // Task going to back
+TRANSIT_CHANGE = 6;        // Config change (rotation, bounds)
+TRANSIT_PIP = 8;           // PiP transition
+TRANSIT_START_LOCK_TASK_MODE = 14; // Entering lock task mode
+```
+
+### 22.22.4 Animation Controllers
+
+Shell provides different animation controllers for different scenarios:
+
+```mermaid
+graph TB
+    Trans["Transition Ready"]
+    Trans --> Type{"Transition Type?"}
+
+    Type -->|"Open/Close"| Default["DefaultTransitionHandler<br/>Fade + scale animations"]
+    Type -->|"Task Switch"| Recents["RecentsTransitionHandler<br/>Recents animation"]
+    Type -->|"PiP"| PiP["PipTransitionHandler<br/>Shrink/grow to PiP window"]
+    Type -->|"Split"| Split["SplitTransitionHandler<br/>Split-screen animations"]
+    Type -->|"Keyguard"| KG["KeyguardTransitionHandler<br/>Lock/unlock animations"]
+    Type -->|"Unfold"| Unfold["UnfoldTransitionHandler<br/>Foldable unfold animation"]
+```
+
+---
+
+## 22.23 Advanced: Activity Client Controller
+
+### 22.23.1 The IActivityClientController Interface
+
+The `ActivityClientController` is the server-side endpoint for activity-level
+operations initiated by the client process:
+
+```java
+// ActivityTaskManagerService.java, line 422
+ActivityClientController mActivityClientController;
+```
+
+This controller handles operations like:
+
+- `activityPaused()` -- Client reports pause completion
+- `activityStopped()` -- Client reports stop completion
+- `activityDestroyed()` -- Client reports destroy completion
+- `activityResumed()` -- Client reports resume completion
+- `reportSizeConfigurations()` -- Client reports supported size ranges
+- `setRequestedOrientation()` -- Client requests orientation lock
+- `convertToTranslucent()` -- Client becomes translucent
+- `convertFromTranslucent()` -- Client becomes opaque
+- `enterPictureInPictureMode()` -- Client enters PiP
+
+### 22.23.2 The Callback Flow
+
+```mermaid
+sequenceDiagram
+    participant App as App Process
+    participant ACC as ActivityClientController (system_server)
+    participant AR as ActivityRecord
+    participant ATMS
+
+    Note over App: Activity.onPause() completes
+    App->>ACC: activityPaused(token)
+    ACC->>AR: activityPaused(false /* timeout */)
+    AR->>AR: setState(PAUSED, "activityPaused")
+    AR->>ATMS: completePauseLocked(...)
+    ATMS->>ATMS: resumeTopActivity(...)
+```
+
+This shows how the client-driven lifecycle callbacks feed back into the
+server-side state machine to trigger the next state transition.
+
+---
+
+## 22.24 Advanced: The ActivityTaskSupervisor
+
+### 22.24.1 Role and Responsibilities
+
+The `ActivityTaskSupervisor` (line 185) acts as a coordination layer between
+ATMS and the container hierarchy:
+
+```java
+// frameworks/base/services/core/java/com/android/server/wm/ActivityTaskSupervisor.java, line 185
+public class ActivityTaskSupervisor implements RecentTasks.Callbacks {
+```
+
+Key responsibilities:
+
+- Managing the activity idle queue
+- Starting specific activities in processes
+- Handling waiting activities (waiting for process start)
+- Managing sleep/wake state for activities
+- Coordinating with RecentTasks callbacks
+
+### 22.24.2 The Idle Queue
+
+After an activity starts, it must report idle within `IDLE_TIMEOUT` (10s):
+
+```java
+// line 194
+private static final int IDLE_TIMEOUT = 10 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
+```
+
+The idle queue manages activities that have been launched but not yet finished
+their initialization. When all activities report idle, the system can:
+
+- Remove activities that were stopped during the launch
+- Finish pending transitions
+- Trim memory for backgrounded processes
+
+### 22.24.3 The Handler
+
+`ActivityTaskSupervisor` has its own handler for deferred operations:
+
+```java
+// line 2823
+private final class ActivityTaskSupervisorHandler extends Handler {
+    @Override
+    public void handleMessage(Message msg) {
+        synchronized (mService.mGlobalLock) {
+            if (handleMessageInner(msg)) {
+                return;
+            }
+        }
+    }
+}
+```
+
+Message types include:
+
+- `IDLE_TIMEOUT_MSG` -- Activity failed to report idle
+- `IDLE_NOW_MSG` -- Force idle processing
+- `SLEEP_TIMEOUT_MSG` -- Sleep timeout for activities
+- `LAUNCH_TIMEOUT_MSG` -- Activity failed to launch
+
+---
+
+## 22.25 Advanced: The ActivityStartController
+
+### 22.25.1 Factory and Pool Pattern
+
+The `ActivityStartController` manages the creation and recycling of
+`ActivityStarter` instances:
+
+```java
+// ActivityTaskManagerService.java, line 519
+private ActivityStartController mActivityStartController;
+```
+
+It provides the `obtainStarter()` method that apps interact with through
+the builder pattern:
+
+```mermaid
+graph LR
+    ATMS["ATMS.startActivityAsUser()"]
+    ASC["ActivityStartController"]
+    Factory["ActivityStarter.DefaultFactory"]
+    Pool["SynchronizedPool (max 3)"]
+    Starter["ActivityStarter instance"]
+
+    ATMS -->|"getActivityStartController()"| ASC
+    ASC -->|"obtainStarter()"| Factory
+    Factory -->|"acquire()"| Pool
+    Pool -->|"existing or new"| Starter
+    Starter -->|"after execute()"| Pool
+```
+
+### 22.25.2 Builder Pattern Usage
+
+The `ActivityStarter` uses a fluent builder pattern for configuration:
+
+```java
+// Typical usage in ATMS (simplified)
+getActivityStartController().obtainStarter(intent, "startActivityAsUser")
+    .setCaller(caller)
+    .setCallingUid(callingUid)
+    .setCallingPid(callingPid)
+    .setCallingPackage(callingPackage)
+    .setRealCallingUid(realCallingUid)
+    .setRealCallingPid(realCallingPid)
+    .setResultTo(resultTo)
+    .setResultWho(resultWho)
+    .setRequestCode(requestCode)
+    .setStartFlags(startFlags)
+    .setActivityOptions(options)
+    .setUserId(userId)
+    .execute();
+```
+
+Each setter returns the `ActivityStarter` instance, allowing chaining. The
+`execute()` call at the end triggers the full startup pipeline.
+
+---
+
+## 22.26 Advanced: DisplayContent Internals
+
+### 22.26.1 Display Content Structure
+
+Each `DisplayContent` manages a complete display with its own:
+
+- Window hierarchy (organized into DisplayAreas)
+- Input dispatcher configuration
+- Focus tracking
+- Wallpaper controller
+- IME controller
+- Rotation controller
+
+```java
+// frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java, line 288
+class DisplayContent extends RootDisplayArea
+        implements WindowManagerPolicy.DisplayContentInfo {
+```
+
+### 22.26.2 Key DisplayContent Fields
+
+| Field | Purpose |
+|-------|---------|
+| `mDisplayInfo` | Physical display properties (size, density, refresh rate) |
+| `mDefaultTaskDisplayArea` | The primary area for app tasks |
+| `mDisplayPolicy` | Platform-specific layout policy |
+| `mInputMonitor` | Manages input window list for InputDispatcher |
+| `mCurrentFocus` | Currently focused WindowState |
+| `mWallpaperController` | Wallpaper positioning and animation |
+| `mImeWindowsContainer` | IME (keyboard) window management |
+| `mPinnedTaskController` | PiP window management |
+| `mWinAddedSinceNullFocus` | Windows added when no focus existed |
+
+### 22.26.3 Multi-Display Support
+
+Android supports multiple displays through multiple `DisplayContent` objects:
+
+```mermaid
+graph TB
+    RWC["RootWindowContainer"]
+    DC0["DisplayContent 0<br/>(Built-in screen)"]
+    DC1["DisplayContent 1<br/>(HDMI output)"]
+    DC2["DisplayContent 2<br/>(Virtual display)"]
+
+    RWC --> DC0
+    RWC --> DC1
+    RWC --> DC2
+
+    subgraph "Display 0 (Phone)"
+        TDA0["TaskDisplayArea"]
+        TDA0 --> T0["Home Task"]
+        TDA0 --> T1["App Task"]
+    end
+
+    subgraph "Display 1 (External)"
+        TDA1["TaskDisplayArea"]
+        TDA1 --> T2["Presentation Task"]
+    end
+
+    subgraph "Display 2 (Virtual)"
+        TDA2["TaskDisplayArea"]
+        TDA2 --> T3["Cast Task"]
+    end
+
+    DC0 --> TDA0
+    DC1 --> TDA1
+    DC2 --> TDA2
+```
+
+Virtual displays are created for:
+
+- Screen casting (Miracast, Chromecast)
+- Media projection (screen recording)
+- Virtual device testing
+- Presentation mode
+
+---
+
+## 22.27 Advanced: The Input Dispatch Connection
+
+### 22.27.1 Input Channels
+
+When a window is added with `addWindow()`, an `InputChannel` is created if
+the window accepts input:
+
+```java
+// WMS.addWindow(), line 1861-1864
+final boolean openInputChannels = (outInputChannel != null
+        && (attrs.inputFeatures & INPUT_FEATURE_NO_INPUT_CHANNEL) == 0);
+if (openInputChannels) {
+    win.openInputChannel(outInputChannel);
+}
+```
+
+The `InputChannel` is a pair of Unix domain socket endpoints:
+
+- **Server side** -- Held by the InputDispatcher in system_server
+- **Client side** -- Sent back to the app process via the Binder call
+
+```mermaid
+graph LR
+    subgraph "App Process"
+        VRI["ViewRootImpl"]
+        IC_C["InputChannel<br/>(client end)"]
+        IER["InputEventReceiver"]
+        VRI --> IC_C --> IER
+    end
+
+    subgraph "system_server"
+        ID["InputDispatcher"]
+        IC_S["InputChannel<br/>(server end)"]
+        ID --> IC_S
+    end
+
+    IC_S <-.->|"Unix domain socket"| IC_C
+
+    subgraph "InputFlinger (native)"
+        IR["InputReader"]
+        IR --> ID
+    end
+```
+
+### 22.27.2 Input Focus and Window Ordering
+
+The InputDispatcher needs to know which windows are on screen and in what
+order. This is communicated through the `InputMonitor`:
+
+```java
+// Called after window changes
+displayContent.getInputMonitor().setUpdateInputWindowsNeededLw();
+```
+
+The `InputMonitor` collects all visible windows and their bounds, then
+sends this to the native `InputDispatcher` via `InputManagerService`.
+
+### 22.27.3 Spy Windows and Input Features
+
+Windows can have special input features:
+
+```java
+// WindowManager.LayoutParams
+INPUT_FEATURE_NO_INPUT_CHANNEL = 0x0002;      // No input
+INPUT_FEATURE_SPY = 0x0020;                    // Spy on input (see events but don't consume)
+INPUT_FEATURE_SENSITIVE_FOR_PRIVACY = 0x0040;  // Mark as sensitive
+INPUT_FEATURE_DISPLAY_TOPOLOGY_AWARE = 0x0100; // Cross-display topology
+```
+
+Spy windows are used by SystemUI for gesture detection (edge swipes,
+notification pulldown) -- they see all input events without consuming them.
+
+---
+
+## 22.28 Design Patterns in the Activity/Window System
+
+### 22.28.1 The Container Tree Pattern
+
+The entire window hierarchy uses a tree pattern where each node:
+
+- Has exactly one parent (except the root)
+- Can have multiple children
+- Propagates configuration changes top-down
+- Aggregates state bottom-up (e.g., visibility)
+- Owns a SurfaceControl for compositing
+
+### 22.28.2 The Pool/Recycler Pattern
+
+`ActivityStarter` uses object pooling to avoid allocation overhead:
+```java
+private SynchronizedPool<ActivityStarter> mStarterPool =
+        new SynchronizedPool<>(MAX_STARTER_COUNT);
+```
+
+Similarly, `ClientTransaction` objects and various other framework objects
+use recycling.
+
+### 22.28.3 The Two-Phase Commit Pattern
+
+Activity launches use a two-phase approach:
+
+1. **Prepare phase**: Validate, resolve, check permissions (can fail)
+2. **Commit phase**: Create task, add activity, schedule resume (should not fail)
+
+The comment "From now on, no exceptions or errors allowed!" at line 1923 in
+`addWindow()` marks the boundary between these phases.
+
+### 22.28.4 The Deferred Execution Pattern
+
+Many operations in WMS are deferred rather than executed immediately:
+
+- Layout is deferred and batched via `WindowSurfacePlacer.requestTraversal()`
+- Focus updates are deferred during surface placement
+- Surface transactions are batched and submitted atomically
+
+This batching improves performance by avoiding redundant work when multiple
+changes happen in quick succession.
+
+### 22.28.5 The Token Pattern
+
+Android uses tokens extensively for security:
+
+- **Activity tokens** -- IBinder references that prove an activity exists
+- **Window tokens** -- Prove that a process is authorized to create a window
+- **Session tokens** -- Per-process connection identity
+- **Transition tokens** -- Track ongoing window transitions
+
+Tokens are unforgeable Binder objects -- a process cannot create a valid token
+without the system having created it first.
+
+---
+
+## 22.29 Glossary of Key Terms
+
+| Term | Definition |
+|------|-----------|
+| **AMS** | ActivityManagerService -- manages processes, broadcasts, services |
+| **ATMS** | ActivityTaskManagerService -- manages activities, tasks, recents |
+| **WMS** | WindowManagerService -- manages windows, surfaces, layout |
+| **ActivityRecord** | Server-side representation of a running activity |
+| **Task** | A stack of activities (the "back stack") |
+| **TaskFragment** | A sub-container within a task for activity embedding |
+| **WindowState** | Server-side representation of a window |
+| **WindowToken** | A grouping of windows belonging to the same logical entity |
+| **DisplayContent** | Representation of a physical or virtual display |
+| **DisplayArea** | A region within a display for organizing windows |
+| **TaskDisplayArea** | The display area where app tasks live |
+| **RootWindowContainer** | The root of the entire window/display hierarchy |
+| **Session** | Per-process connection to WMS |
+| **OOM adj** | Out-Of-Memory adjustment -- process priority for LMKD |
+| **LMKD** | Low Memory Killer Daemon |
+| **BAL** | Background Activity Launch -- restrictions on bg starts |
+| **ProcessRecord** | AMS's per-process bookkeeping structure |
+| **WindowProcessController** | ATMS's per-process tracking structure |
+| **ClientTransaction** | Bundle of lifecycle callbacks sent to app process |
+| **Shell Transitions** | Modern animation system for window transitions |
+| **PiP** | Picture-in-Picture mode |
+| **Lock Task Mode** | Kiosk mode restricting device to whitelisted tasks |
+| **SurfaceControl** | Handle to a compositing surface in SurfaceFlinger |
+| **InputChannel** | Socket pair for delivering input events |
+| **ViewRootImpl** | Client-side root of the view/window system |
+| **Zygote** | Parent process from which all app processes are forked |
+| **USAP** | Unspecialized App Process -- pre-forked process pool |
+
+---
+
+## 22.30 Source Code Navigation Guide
+
+For readers who want to explore the source code themselves, here is a guided
+map of the key directories and their contents.
+
+### 22.30.1 The `am` Package
+
+```
+frameworks/base/services/core/java/com/android/server/am/
+    ActivityManagerService.java    -- Main AMS class (~19,921 lines)
+    ProcessList.java               -- Process management + OOM adj values
+    ProcessRecord.java             -- Per-process bookkeeping
+    OomAdjuster.java               -- OOM adjustment computation (abstract)
+    CachedAppOptimizer.java        -- Freezer + compaction
+    ActiveServices.java            -- Service lifecycle management
+    BroadcastQueue.java            -- Broadcast dispatch
+    BroadcastController.java       -- Broadcast coordination
+    ContentProviderHelper.java     -- Content provider tracking
+    ActivityManagerDebugConfig.java -- Debug flag configuration
+    ActivityManagerConstants.java  -- Tunable constants
+    UidRecord.java                 -- Per-UID state tracking
+    PendingIntentRecord.java       -- Pending intent storage
+    HostingRecord.java             -- Process hosting information
+```
+
+### 22.30.2 The `wm` Package (Activity/Window)
+
+```
+frameworks/base/services/core/java/com/android/server/wm/
+    ActivityTaskManagerService.java  -- Main ATMS class (~8,130 lines)
+    WindowManagerService.java        -- Main WMS class (~10,983 lines)
+    ActivityStarter.java             -- Activity launch pipeline
+    ActivityRecord.java              -- Per-activity state
+    Task.java                        -- Task (back stack)
+    TaskFragment.java                -- Activity embedding container
+    WindowState.java                 -- Per-window state
+    WindowContainer.java             -- Base hierarchy class
+    WindowToken.java                 -- Window grouping token
+    RootWindowContainer.java         -- Hierarchy root
+    DisplayContent.java              -- Per-display state
+    DisplayArea.java                 -- Display area abstraction
+    TaskDisplayArea.java             -- App task area
+    ActivityTaskSupervisor.java      -- Activity coordination
+    ActivityStartController.java     -- Starter factory
+    ActivityStartInterceptor.java    -- Launch interception
+    BackgroundActivityStartController.java -- BAL enforcement
+    RecentTasks.java                 -- Recent tasks list
+    LockTaskController.java          -- Lock task mode
+    KeyguardController.java          -- Lock screen interaction
+    Session.java                     -- Per-process WMS connection
+    DisplayPolicy.java               -- Display layout policy
+    WindowSurfacePlacer.java         -- Layout engine
+    InputMonitor.java                -- Input dispatch configuration
+    TransitionController.java        -- Shell transitions
+    BackNavigationController.java    -- Predictive back gesture
+    ClientLifecycleManager.java      -- Lifecycle callback dispatch
+    WindowManagerConstants.java      -- Tunable WM constants
+    SensitiveContentPackages.java    -- Privacy-sensitive content tracking
+    StartingSurfaceController.java   -- Splash screen management
+    AppCompatController.java         -- App compatibility
+    LaunchParamsController.java      -- Launch positioning
+    WindowProcessController.java     -- ATMS's per-process state
+```
+
+### 22.30.3 Client-Side Code
+
+```
+frameworks/base/core/java/android/app/
+    Activity.java                    -- The Activity base class
+    ActivityThread.java              -- Main thread of app process
+    Instrumentation.java             -- Activity instrumentation
+    ClientTransactionHandler.java    -- Handles lifecycle transactions
+    servertransaction/
+        ClientTransaction.java       -- Transaction container
+        LaunchActivityItem.java      -- Launch callback
+        ResumeActivityItem.java      -- Resume request
+        PauseActivityItem.java       -- Pause request
+        StopActivityItem.java        -- Stop request
+        DestroyActivityItem.java     -- Destroy request
+        NewIntentItem.java           -- New intent delivery
+        TransactionExecutor.java     -- Executes transactions
+
+frameworks/base/core/java/android/view/
+    WindowManager.java               -- Window management API
+    WindowManagerGlobal.java         -- Global window tracking (client)
+    WindowManagerImpl.java           -- Per-context implementation
+    ViewRootImpl.java                -- Root of client view hierarchy
+    IWindowManager.aidl              -- WMS Binder interface
+    IWindowSession.aidl              -- Session Binder interface
+    IWindow.aidl                     -- Client window callback
+    SurfaceControl.java              -- Surface management API
+```
+
+### 22.30.4 Key AIDL Files
+
+```
+frameworks/base/core/java/android/app/
+    IActivityManager.aidl            -- AMS interface
+    IActivityTaskManager.aidl        -- ATMS interface
+    IApplicationThread.aidl          -- Callback to app process
+
+frameworks/base/core/java/android/view/
+    IWindowManager.aidl              -- WMS interface
+    IWindowSession.aidl              -- Per-process session
+    IWindow.aidl                     -- Per-window callback
+```
+
+### 22.30.5 Reading Order for New Contributors
+
+If you are new to this codebase, we recommend reading files in this order:
+
+1. **Start with the hierarchy**: `WindowContainer.java` (base class) ->
+   `WindowToken.java` -> `ActivityRecord.java` (the key entity)
+
+2. **Understand the container tree**: `RootWindowContainer.java` ->
+   `DisplayContent.java` -> `TaskDisplayArea.java` -> `Task.java`
+
+3. **Follow a startActivity call**: `ActivityTaskManagerService.java`
+   (`startActivityAsUser`) -> `ActivityStarter.java` (`execute()` ->
+   `executeRequest()` -> `startActivityInner()`)
+
+4. **Follow a window addition**: `Session.java` (`addToDisplay()`) ->
+   `WindowManagerService.java` (`addWindow()`)
+
+5. **Understand process management**: `ProcessList.java` (OOM adj values,
+   `startProcessLocked()`) -> `ProcessRecord.java`
+
+---
+
+## 22.31 Frequently Asked Questions
+
+### Q: Why are AMS and ATMS separate services instead of one?
+
+**A**: The split serves both software engineering and runtime goals. The
+monolithic AMS was over 30,000 lines and mixed concerns: process lifetime
+management (CPU, memory, OOM) with UI-centric activity management (tasks,
+stacks, transitions). Separating them:
+
+- Reduces complexity of each individual class
+- Allows ATMS to share the WM lock (eliminating cross-lock deadlocks)
+- Makes the activity/window coupling explicit in the package structure
+- Enables independent testing of process vs. activity management
+
+### Q: Why does ATMS live in the `wm` package instead of `am`?
+
+**A**: ATMS must hold the same lock as WMS because activity and window
+operations are tightly coupled. Placing ATMS in the `wm` package makes this
+coupling explicit and avoids unnecessary cross-package dependencies.
+
+### Q: How does the system decide whether to create a new task or reuse one?
+
+**A**: The decision tree in `ActivityStarter.startActivityInner()` considers:
+
+1. The `FLAG_ACTIVITY_NEW_TASK` flag
+2. The activity's `launchMode` (standard, singleTop, singleTask, singleInstance)
+3. The source activity's launch mode
+4. Whether an explicit `inTask` was specified
+5. Task affinity matching (via `resolveReusableTask()`)
+6. The `FLAG_ACTIVITY_CLEAR_TOP` and `FLAG_ACTIVITY_CLEAR_TASK` flags
+
+### Q: What happens if an activity does not respond to `onPause()`?
+
+**A**: The `PAUSE_TIMEOUT` (500ms) fires. The framework calls
+`completePauseLocked()` with `resumeNext=true`, which forcibly considers
+the pause complete and proceeds to resume the next activity. The slow app
+may later receive an ANR if it is also not responding to input events.
+
+### Q: How does the system decide which process to kill under memory pressure?
+
+**A**: The `OomAdjuster` computes an `oom_score_adj` for each process based on
+what it is doing (running a foreground activity, a visible activity, a service,
+nothing). This value is written to `/proc/<pid>/oom_score_adj`. When memory
+is low, the Linux kernel's OOM killer (or LMKD) kills the process with the
+highest `oom_score_adj` first. The range is -1000 (never kill) to 1000 (kill
+first), with app values typically ranging from 0 (foreground) to 999 (cached).
+
+### Q: Can two activities from different apps be in the same task?
+
+**A**: Yes. If App A starts an activity in App B without `FLAG_ACTIVITY_NEW_TASK`,
+and App B's activity has a matching `taskAffinity`, the new activity joins
+App A's task. This is the default behavior for explicit intents. It is how
+the share sheet, browser, and many other cross-app flows work.
+
+### Q: What is the maximum number of activities in a task?
+
+**A**: There is no strict maximum count, but `ActivityStarter` enforces a
+"tree weight" limit of 300 (`MAX_TASK_WEIGHT_FOR_ADDING_ACTIVITY`). This
+counts all activities and windows in the task. If exceeded, the entire task
+is removed to prevent resource exhaustion.
+
+### Q: How does the ActivityRecord relate to the WindowState?
+
+**A**: `ActivityRecord` extends `WindowToken`, which extends
+`WindowContainer<WindowState>`. This means an ActivityRecord IS a
+WindowToken and directly contains WindowState children. When an activity
+creates windows (its main window, dialogs, popups), those windows become
+children of the ActivityRecord in the container tree. This gives the system
+automatic cleanup: removing an ActivityRecord removes all its windows.
+
+---
+
+## 22.32 Try It: Tracing and Debugging
 
 This section provides hands-on exercises for observing the activity and
 window management system in action.
 
-### 22.8.1 Exercise 1: Trace an Activity Launch with Perfetto
+### 22.32.1 Exercise 1: Trace an Activity Launch with Perfetto
 
 **Objective**: Capture a system trace of an activity launch and identify the
 key framework events.
@@ -2182,7 +3940,7 @@ Key trace slices to identify:
 4. `"traversal"` -- First measure/layout/draw pass
 5. `"Choreographer#doFrame"` -- First frame dispatch
 
-### 22.8.2 Exercise 2: Inspect Window Hierarchy with dumpsys
+### 22.32.2 Exercise 2: Inspect Window Hierarchy with dumpsys
 
 **Objective**: Examine the live window hierarchy to understand the container
 tree.
@@ -2241,7 +3999,7 @@ This shows:
 adb shell dumpsys activity activities | grep -A 20 "com.android.settings"
 ```
 
-### 22.8.3 Exercise 3: Monitor Activity Lifecycle Events
+### 22.32.3 Exercise 3: Monitor Activity Lifecycle Events
 
 **Objective**: Watch lifecycle transitions in real-time.
 
@@ -2260,7 +4018,7 @@ I ActivityTaskManager: START u0 {cmp=com.android.settings/.Settings} from uid 20
 I ActivityTaskManager: Displayed com.android.settings/.Settings: +412ms
 ```
 
-### 22.8.4 Exercise 4: Inspect Process Priorities
+### 22.32.4 Exercise 4: Inspect Process Priorities
 
 **Objective**: Observe OOM adj values for running processes.
 
@@ -2288,7 +4046,7 @@ The `dumpsys activity oom` output groups processes by their OOM adj bucket:
     proc #5: cch+5 B/-/-  trm: 0 12350:com.example.app/u0a94 (cch-activity)
 ```
 
-### 22.8.5 Exercise 5: Force a Configuration Change
+### 22.32.5 Exercise 5: Force a Configuration Change
 
 **Objective**: Observe how the framework handles configuration changes.
 
@@ -2307,7 +4065,7 @@ You will see:
 2. Activities being destroyed and recreated (unless they handle the change)
 3. Window layout recalculation
 
-### 22.8.6 Exercise 6: Examine Task State with am Commands
+### 22.32.6 Exercise 6: Examine Task State with am Commands
 
 ```bash
 # List all tasks
@@ -2326,7 +4084,7 @@ adb shell am task focus <taskId>
 adb shell am task remove <taskId>
 ```
 
-### 22.8.7 Exercise 7: Window Inspector with wm Commands
+### 22.32.7 Exercise 7: Window Inspector with wm Commands
 
 ```bash
 # Get display info
@@ -2345,7 +4103,7 @@ adb shell wm density reset
 adb shell dumpsys SurfaceFlinger --list
 ```
 
-### 22.8.8 Debugging Tips for Framework Developers
+### 22.32.8 Debugging Tips for Framework Developers
 
 1. **Enable verbose WM logging**:
    ```bash
@@ -2378,1764 +4136,6 @@ adb shell dumpsys SurfaceFlinger --list
    adb shell dumpsys SurfaceFlinger
    ```
    This shows all surface layers, their Z-order, and buffer state.
-
----
-
-## 22.9 Deep Dive: The setState() Method and State Transitions
-
-Understanding how `ActivityRecord.setState()` works is critical because
-every lifecycle transition flows through it.
-
-### 22.9.1 setState() Implementation
-
-```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, line 5704
-void setState(State state, String reason) {
-    ProtoLog.v(WM_DEBUG_STATES, "State movement: %s from:%s to:%s reason:%s",
-            this, mState, state, reason);
-
-    if (state == mState) {
-        ProtoLog.v(WM_DEBUG_STATES, "State unchanged from:%s", state);
-        return;
-    }
-
-    final State prevState = mState;
-    mState = state;
-
-    if (getTaskFragment() != null) {
-        getTaskFragment().onActivityStateChanged(this, state, reason);
-    }
-    // ...
-```
-
-The method performs these key actions after updating the state:
-
-1. **Notifies the TaskFragment** -- The containing task fragment needs to know
-   about state changes to manage its own visibility and lifecycle.
-
-2. **Updates service connection visibility** -- via `updateVisibleForServiceConnection()`.
-
-3. **Triggers process state recalculation** -- via
-   `mTaskSupervisor.onProcessActivityStateChanged(app, false)`.
-
-4. **State-specific side effects** (lines 5736-5783):
-
-```java
-switch (state) {
-    case RESUMED:
-        mAtmService.updateBatteryStats(this, true);
-        mAtmService.updateActivityUsageStats(this, Event.ACTIVITY_RESUMED);
-        // Fall through to STARTED
-    case STARTED:
-        // Update process info to foreground
-        if (app != null) {
-            app.updateProcessInfo(false, true, true, true);
-        }
-        break;
-    case PAUSED:
-        mAtmService.updateBatteryStats(this, false);
-        mAtmService.updateActivityUsageStats(this, Event.ACTIVITY_PAUSED);
-        break;
-    case STOPPED:
-        mAtmService.updateActivityUsageStats(this, Event.ACTIVITY_STOPPED);
-        // Remove from unknown app visibility controller
-        break;
-    case DESTROYED:
-        if (app != null && (mVisible || mVisibleRequested)) {
-            mAtmService.updateBatteryStats(this, false);
-        }
-        mAtmService.updateActivityUsageStats(this, Event.ACTIVITY_DESTROYED);
-        break;
-}
-```
-
-### 22.9.2 State Transition Triggers
-
-Each state transition is triggered by a specific event:
-
-```mermaid
-graph TD
-    subgraph "Transition Triggers"
-        T1["INITIALIZING -> STARTED<br/>Trigger: realStartActivityLocked()"]
-        T2["STARTED -> RESUMED<br/>Trigger: completeResumeLocked()"]
-        T3["RESUMED -> PAUSING<br/>Trigger: startPausingLocked()"]
-        T4["PAUSING -> PAUSED<br/>Trigger: completePauseLocked()"]
-        T5["PAUSED -> STOPPING<br/>Trigger: stopIfPossible()"]
-        T6["STOPPING -> STOPPED<br/>Trigger: activityStopped()"]
-        T7["* -> FINISHING<br/>Trigger: finishActivityLocked()"]
-        T8["FINISHING -> DESTROYING<br/>Trigger: destroyIfPossible()"]
-        T9["DESTROYING -> DESTROYED<br/>Trigger: destroyed()"]
-    end
-```
-
-### 22.9.3 Battery and Usage Stats Integration
-
-Notice how `setState()` updates battery stats on every RESUMED/PAUSED
-transition. This is how Android tracks per-app power consumption for
-activities. The call to `updateBatteryStats(this, true)` on RESUMED marks
-the beginning of foreground usage, and `updateBatteryStats(this, false)` on
-PAUSED marks the end.
-
-Similarly, `updateActivityUsageStats()` feeds data to the UsageStatsManager,
-which apps can query to understand usage patterns.
-
----
-
-## 22.10 Advanced: The resumeTopActivity Pipeline
-
-### 22.10.1 The Recursive Resume Pattern
-
-Resuming activities is one of the most complex operations in the framework.
-The entry point is `Task.resumeTopActivityUncheckedLocked()`:
-
-```java
-// frameworks/base/services/core/java/com/android/server/wm/Task.java, line 5240
-boolean resumeTopActivityUncheckedLocked(ActivityRecord prev, ActivityOptions options,
-        boolean deferPause) {
-```
-
-This method has re-entrancy protection:
-
-```java
-// line 299: Guard against recursive calls
-boolean mInResumeTopActivity = false;
-```
-
-The flow descends through the task hierarchy:
-
-```mermaid
-sequenceDiagram
-    participant RWC as RootWindowContainer
-    participant DC as DisplayContent
-    participant TDA as TaskDisplayArea
-    participant Task as Task (root)
-    participant LeafTask as Task (leaf)
-    participant TF as TaskFragment
-    participant AR as ActivityRecord
-
-    RWC->>DC: resumeFocusedTasksTopActivities()
-    DC->>TDA: getFocusedRootTask()
-    TDA->>Task: resumeTopActivityUncheckedLocked()
-    Note over Task: Check mInResumeTopActivity guard
-    Task->>Task: resumeTopActivityInnerLocked()
-    Task->>LeafTask: iterate children
-    LeafTask->>TF: resumeTopActivity()
-    TF->>AR: Find topRunningActivity()
-    alt Activity already resumed
-        TF-->>Task: false (nothing to do)
-    else Activity needs resume
-        TF->>AR: Check if process exists
-        alt Process alive
-            TF->>AR: makeActiveIfNeeded()
-            TF->>AR: scheduleResumeTransaction()
-        else Process dead
-            TF->>RWC: startSpecificActivity(r, ...)
-            Note over RWC: Will fork via Zygote
-        end
-    end
-```
-
-### 22.10.2 Pause-Before-Resume Protocol
-
-Before a new activity can resume, the currently resumed activity must be
-paused. This is the "pause-before-resume" protocol:
-
-```mermaid
-sequenceDiagram
-    participant Framework as Framework (system_server)
-    participant OldApp as Old Activity (App Process A)
-    participant NewApp as New Activity (App Process B)
-
-    Framework->>OldApp: schedulePauseActivity(token, finishing, ...)
-    Note over OldApp: Activity.onPause() executes
-    OldApp->>Framework: activityPaused(token)
-    Note over Framework: completePauseLocked()<br/>Old activity now PAUSED
-
-    Framework->>Framework: resumeTopActivityInnerLocked()
-    alt New process exists
-        Framework->>NewApp: scheduleResumeActivity(token, ...)
-        Note over NewApp: Activity.onResume() executes
-        NewApp->>Framework: activityResumed(token)
-    else New process needs start
-        Framework->>Framework: startSpecificActivity()
-        Note over Framework: Fork process via Zygote<br/>Wait for attachApplication()<br/>Then schedule launch
-    end
-```
-
-The pause timeout is critical: if the old activity does not respond to
-`activityPaused()` within `PAUSE_TIMEOUT` (500ms), the framework forcibly
-completes the pause and proceeds. This prevents a hung app from blocking
-all task switches.
-
-### 22.10.3 The Idle Timeout
-
-After an activity launches, the framework waits for it to report idle. The
-`ActivityTaskSupervisor` manages this:
-
-```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityTaskSupervisor.java, line 194
-private static final int IDLE_TIMEOUT = 10 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
-```
-
-If an activity does not report idle within 10 seconds, the framework proceeds
-without it. This timeout is the backstop that prevents a misbehaving app from
-permanently blocking the activity lifecycle.
-
----
-
-## 22.11 Advanced: recycleTask() and Intent Flag Processing
-
-### 22.11.1 recycleTask() Logic
-
-When `startActivityInner()` finds an existing task to reuse (via
-`resolveReusableTask()` or `computeTargetTask()`), it calls `recycleTask()`:
-
-```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 2384
-int recycleTask(Task targetTask, ActivityRecord targetTaskTop, Task reusedTask,
-        NeededUriGrants intentGrants) {
-    // Should not recycle task from a different user
-    if (targetTask.mUserId != mStartActivity.mUserId) {
-        mTargetRootTask = targetTask.getRootTask();
-        mAddingToTask = true;
-        return START_SUCCESS;
-    }
-
-    if (reusedTask != null) {
-        if (targetTask.intent == null) {
-            // Assign base intent from affinity-based movement
-            targetTask.setIntent(mStartActivity);
-        }
-        // Handle FLAG_ACTIVITY_TASK_ON_HOME
-    }
-```
-
-Key operations in `recycleTask()`:
-
-1. **User check** -- Rejects cross-user task recycling (line 2388)
-2. **Intent assignment** -- Sets the task's base intent if it was moved by affinity
-3. **Power mode** -- Starts power mode for the launch (line 2411)
-4. **Target root task** -- Positions the task in the hierarchy
-5. **`START_FLAG_ONLY_IF_NEEDED`** -- Short-circuits if the activity is
-   already at the top
-6. **Flag compliance** -- Processes `CLEAR_TOP`, `SINGLE_TOP`, etc.
-7. **Starting window** -- Shows splash screen if the task moved to front
-8. **Dream dismissal** -- Wakes the screen if launching over a dream
-
-The return value indicates what happened:
-
-```java
-// line 2473
-return mMovedToFront ? START_TASK_TO_FRONT : START_DELIVERED_TO_TOP;
-```
-
-### 22.11.2 Flag Processing: CLEAR_TOP and SINGLE_TOP
-
-The `complyActivityFlags()` method processes the rich set of Intent flags.
-The most commonly encountered combinations:
-
-| Flags | Effect |
-|-------|--------|
-| `NEW_TASK` | Create or find a task with matching affinity |
-| `NEW_TASK + CLEAR_TASK` | Clear the task and start fresh |
-| `NEW_TASK + CLEAR_TOP` | Remove everything above the target activity |
-| `SINGLE_TOP` | Reuse if already at top, call onNewIntent() |
-| `REORDER_TO_FRONT` | Move existing activity to top of task |
-| `NEW_DOCUMENT` | Create a new document task (multi-instance) |
-| `MULTIPLE_TASK` | Always create a new task (with NEW_TASK) |
-| `LAUNCH_ADJACENT` | Launch in adjacent split-screen window |
-| `NO_ANIMATION` | Suppress transition animation |
-
-### 22.11.3 The deliverNewIntent Mechanism
-
-When an existing activity receives a new intent (e.g., singleTop or
-singleTask re-delivery), the framework uses `deliverNewIntent()`:
-
-```mermaid
-sequenceDiagram
-    participant AS as ActivityStarter
-    participant AR as ActivityRecord
-    participant CLM as ClientLifecycleManager
-    participant App as App Process
-
-    AS->>AR: deliverNewIntent(callingUid, intent, intentGrants)
-    AR->>AR: Check mIntentDelivered flag
-    AR->>AR: addNewIntentLocked(intent)
-    AR->>CLM: scheduleTransaction(NewIntentItem)
-    CLM->>App: schedule(ClientTransaction)
-    App->>App: Activity.onNewIntent(intent)
-```
-
-The `mIntentDelivered` flag (line 274) ensures the intent is delivered at
-most once, even if multiple code paths converge on `deliverNewIntent()`.
-
----
-
-## 22.12 Advanced: Multi-Window and TaskFragment Architecture
-
-### 22.12.1 TaskFragment: The Embedding Container
-
-Modern Android supports activity embedding, where multiple activities can
-be displayed side-by-side within a single task. This is managed through
-`TaskFragment`:
-
-```java
-// frameworks/base/services/core/java/com/android/server/wm/TaskFragment.java, line 124
-class TaskFragment extends WindowContainer<WindowContainer> {
-```
-
-A `TaskFragment` is positioned between `Task` and `ActivityRecord` in the
-hierarchy. A single `Task` can contain multiple `TaskFragment` objects, each
-hosting one or more activities:
-
-```mermaid
-graph TB
-    Task["Task"]
-    TF1["TaskFragment (Left)"]
-    TF2["TaskFragment (Right)"]
-    Task --> TF1
-    Task --> TF2
-    AR1["ActivityRecord A"]
-    AR2["ActivityRecord B"]
-    TF1 --> AR1
-    TF2 --> AR2
-```
-
-### 22.12.2 The TaskFragmentOrganizer
-
-Third-party libraries (like the AndroidX Activity Embedding library) interact
-with the framework through the `TaskFragmentOrganizer` API. This allows apps
-to:
-
-1. Create `TaskFragment` containers within their tasks
-2. Specify how activities should be distributed across fragments
-3. Define split ratios and layout rules
-4. Handle configuration changes in the embedding layout
-
-```mermaid
-sequenceDiagram
-    participant App as App (Jetpack Library)
-    participant TFO as TaskFragmentOrganizer
-    participant WME as WindowOrganizerController
-    participant Task as Task
-
-    App->>TFO: registerOrganizer()
-    TFO->>WME: Register via Binder
-    App->>TFO: createTaskFragment(token, ...)
-    TFO->>WME: applyTransaction(WindowContainerTransaction)
-    WME->>Task: Create TaskFragment as child
-    App->>TFO: startActivityInTaskFragment(tf, intent)
-    TFO->>WME: OP_TYPE_START_ACTIVITY_IN_TASK_FRAGMENT
-    WME->>Task: Start activity in specified TaskFragment
-```
-
-### 22.12.3 Embedding Check Results
-
-When starting an activity in a TaskFragment, the system checks compatibility:
-
-```java
-// TaskFragment.java
-static final int EMBEDDING_ALLOWED = 0;
-static final int EMBEDDING_DISALLOWED_MIN_DIMENSION_VIOLATION = 1;
-static final int EMBEDDING_DISALLOWED_NEW_TASK = 2;
-static final int EMBEDDING_DISALLOWED_UNTRUSTED_HOST = 3;
-```
-
-These checks prevent:
-
-- Activities from being embedded in containers too small for their minimum
-  dimensions
-- Activities that require `NEW_TASK` from being embedded
-- Untrusted apps from embedding activities from other packages
-
-### 22.12.4 Split-Screen and Freeform Windows
-
-Split-screen mode is implemented using the windowing mode system:
-
-```java
-// WindowConfiguration windowing modes
-WINDOWING_MODE_UNDEFINED = 0;
-WINDOWING_MODE_FULLSCREEN = 1;
-WINDOWING_MODE_PINNED = 2;         // Picture-in-Picture
-WINDOWING_MODE_FREEFORM = 5;       // Desktop-like floating
-WINDOWING_MODE_MULTI_WINDOW = 6;   // Generic multi-window
-```
-
-Each task has a windowing mode that determines how it is laid out on screen.
-The system coordinates these modes through the `TaskDisplayArea`:
-
-```mermaid
-graph TB
-    TDA["TaskDisplayArea"]
-
-    subgraph "Fullscreen Tasks"
-        T1["Task 1 (FULLSCREEN)"]
-    end
-
-    subgraph "Split Tasks"
-        T2["Task 2 (MULTI_WINDOW)"]
-        T3["Task 3 (MULTI_WINDOW)"]
-    end
-
-    subgraph "Floating"
-        T4["Task 4 (FREEFORM)"]
-        T5["Task 5 (PINNED/PiP)"]
-    end
-
-    TDA --> T1
-    TDA --> T2
-    TDA --> T3
-    TDA --> T4
-    TDA --> T5
-```
-
----
-
-## 22.13 Advanced: The Starting Window (Splash Screen)
-
-### 22.13.1 Purpose and Types
-
-When an activity is being launched but has not yet drawn its first frame, the
-system can display a "starting window" (splash screen) to provide immediate
-visual feedback. There are two types:
-
-```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, lines 407-409
-static final int STARTING_WINDOW_TYPE_NONE = 0;
-static final int STARTING_WINDOW_TYPE_SNAPSHOT = 1;
-static final int STARTING_WINDOW_TYPE_SPLASH_SCREEN = 2;
-```
-
-- **SNAPSHOT** -- Uses a cached screenshot of the activity from a previous
-  run. This provides the most seamless experience for task switches.
-- **SPLASH_SCREEN** -- Shows a themed splash screen based on the activity's
-  theme colors and icon.
-
-### 22.13.2 Starting Window Flow
-
-```mermaid
-sequenceDiagram
-    participant AS as ActivityStarter
-    participant AR as ActivityRecord
-    participant SSC as StartingSurfaceController
-    participant Shell as SystemUI/Shell
-    participant WMS as WMS
-
-    AS->>AR: showStartingWindow(taskSwitch)
-    AR->>AR: Decide: snapshot or splash?
-    AR->>SSC: createStartingSurface(activityRecord)
-
-    alt Snapshot available
-        SSC->>Shell: Request snapshot window
-        Shell->>WMS: addWindow(TYPE_APPLICATION_STARTING)
-        WMS->>WMS: activity.attachStartingWindow(win)
-    else Splash screen
-        SSC->>Shell: Request splash screen
-        Shell->>Shell: Inflate themed splash layout
-        Shell->>WMS: addWindow(TYPE_APPLICATION_STARTING)
-    end
-
-    Note over AR: App process starts, draws first frame
-    AR->>AR: onFirstWindowDrawn()
-    AR->>SSC: removeStartingWindow()
-    SSC->>WMS: Remove starting window
-```
-
-### 22.13.3 Starting Window in addWindowInner()
-
-When the starting window is added to WMS, it gets special handling:
-
-```java
-// WindowManagerService.java, line 1988-1991
-if (type == TYPE_APPLICATION_STARTING && activity != null) {
-    activity.attachStartingWindow(win);
-    ProtoLog.v(WM_DEBUG_STARTING_WINDOW, "addWindow: %s startingWindow=%s",
-            activity, win);
-}
-```
-
-The `attachStartingWindow()` method stores the reference in `mStartingWindow`
-on the `ActivityRecord`, and the window is removed once the real content
-window has drawn.
-
----
-
-## 22.14 Advanced: The Window Layout Engine
-
-### 22.14.1 WindowSurfacePlacer
-
-The `WindowSurfacePlacer` is the engine that drives window layout:
-
-```java
-// frameworks/base/services/core/java/com/android/server/wm/WindowSurfacePlacer.java, line 112
-final void performSurfacePlacement() {
-    performSurfacePlacement(false /* force */);
-}
-```
-
-The layout loop:
-
-```mermaid
-flowchart TD
-    Request["requestTraversal()"] --> Schedule["Post to Handler"]
-    Schedule --> Check["performSurfacePlacementIfScheduled()"]
-    Check --> Loop["performSurfacePlacementLoop()"]
-    Loop --> BeginTrace["Trace: performSurfacePlacement"]
-
-    BeginTrace --> RootPerform["mService.mRoot.performSurfacePlacement()"]
-    RootPerform --> LayoutAll["Layout all DisplayContent"]
-    LayoutAll --> ApplyChanges["Apply surface transactions"]
-    ApplyChanges --> CheckPending{"Pending changes?"}
-    CheckPending -->|Yes| Loop
-    CheckPending -->|No| Done["Layout complete"]
-
-    Done --> EndTrace["End trace"]
-```
-
-The loop repeats up to `LAYOUT_REPEAT_THRESHOLD` (4) times to handle
-cascading layout changes, where updating one window's layout triggers changes
-in another.
-
-### 22.14.2 Display Policy
-
-Each `DisplayContent` has a `DisplayPolicy` that enforces platform-specific
-layout rules:
-
-- Status bar position and size
-- Navigation bar position and size
-- System gesture regions
-- Cutout/notch avoidance zones
-- IME (Input Method Editor) placement
-
-The `DisplayPolicy` is consulted during `addWindow()`:
-
-```java
-// WMS.addWindow(), line 1850
-displayPolicy.adjustWindowParamsLw(win, win.mAttrs);
-// ...
-res = displayPolicy.validateAddingWindowLw(attrs, callingPid, callingUid);
-```
-
-And during layout:
-
-```java
-// line 1986
-displayPolicy.addWindowLw(win, attrs);
-```
-
----
-
-## 22.15 Advanced: Configuration Change Propagation
-
-### 22.15.1 Configuration Hierarchy
-
-Configuration changes (screen rotation, font scale, locale, density, etc.)
-propagate through the `WindowContainer` hierarchy using the
-`ConfigurationContainer` base class:
-
-```mermaid
-graph TB
-    Global["Global Configuration<br/>(device-level)"]
-    Display["Display Override Config<br/>(per-display density, etc.)"]
-    Task["Task Config<br/>(windowing bounds)"]
-    Activity["Activity Config<br/>(theme, local overrides)"]
-
-    Global --> Display
-    Display --> Task
-    Task --> Activity
-
-    Note1["Each level can override<br/>specific config fields"]
-```
-
-When the global configuration changes (e.g., screen rotation), the change
-propagates top-down through the hierarchy:
-
-```mermaid
-sequenceDiagram
-    participant WMS
-    participant RWC as RootWindowContainer
-    participant DC as DisplayContent
-    participant Task
-    participant AR as ActivityRecord
-    participant App as App Process
-
-    WMS->>RWC: updateConfiguration(newConfig)
-    RWC->>DC: onConfigurationChanged()
-    DC->>Task: onConfigurationChanged()
-    Task->>AR: onConfigurationChanged()
-    AR->>AR: shouldRelaunchLocked()?
-
-    alt Activity handles config change
-        AR->>App: scheduleTransaction(ActivityConfigurationChangeItem)
-        App->>App: onConfigurationChanged(newConfig)
-    else Activity needs relaunch
-        AR->>App: scheduleTransaction(DestroyActivityItem)
-        Note over App: onDestroy()
-        AR->>App: scheduleTransaction(LaunchActivityItem)
-        Note over App: onCreate() with saved state
-    end
-```
-
-### 22.15.2 Merged Configuration
-
-Each `WindowContainer` computes a "merged configuration" that combines
-its parent's configuration with its own overrides:
-
-```java
-// ConfigurationContainer.java
-Configuration getMergedOverrideConfiguration() {
-    // Returns the combination of all ancestor overrides + this container's overrides
-}
-```
-
-This allows each level to customize specific fields:
-
-- **Display**: May override density for external displays
-- **Task**: Overrides bounds for freeform/split windows
-- **Activity**: May override orientation, smallest screen width
-
-### 22.15.3 Activity Relaunch Decision
-
-The `shouldRelaunchLocked()` check compares the old and new configurations
-to determine if the activity can handle the change:
-
-```java
-// Simplified logic
-int changes = oldConfig.diff(newConfig);
-int handledChanges = activityInfo.getRealConfigChanged();
-boolean needsRelaunch = (changes & ~handledChanges) != 0;
-```
-
-If the activity declared `android:configChanges` in its manifest for the
-changed configuration fields, it receives `onConfigurationChanged()` instead
-of being destroyed and recreated.
-
----
-
-## 22.16 Advanced: ANR Detection in the Activity System
-
-### 22.16.1 ANR (Application Not Responding) Triggers
-
-ANR detection in the activity system occurs at several points:
-
-1. **Input dispatch timeout** -- Default 5 seconds for focused window
-2. **Broadcast timeout** -- 10s foreground, 60s background
-3. **Service timeout** -- 20s foreground, 200s background
-4. **Content provider timeout** -- Published within 10s of process start
-
-For activities specifically, the key timeouts are:
-
-```java
-// ActivityRecord.java
-private static final int PAUSE_TIMEOUT = 500;      // ms
-private static final int STOP_TIMEOUT = 11 * 1000;  // ms
-private static final int DESTROY_TIMEOUT = 10 * 1000; // ms
-
-// ActivityManagerService.java
-static final int PROC_START_TIMEOUT = 10 * 1000;    // ms
-static final int BIND_APPLICATION_TIMEOUT = 15 * 1000; // ms
-
-// ActivityTaskManagerService.java
-static final long INSTRUMENTATION_KEY_DISPATCHING_TIMEOUT_MILLIS = 60 * 1000;
-
-// ActivityTaskSupervisor.java
-private static final int IDLE_TIMEOUT = 10 * 1000;  // ms
-```
-
-### 22.16.2 Input ANR Flow
-
-```mermaid
-sequenceDiagram
-    participant Input as InputDispatcher (native)
-    participant WMS
-    participant AMS
-    participant App
-
-    Input->>App: Dispatch input event
-    Note over Input: Start 5s timer
-    Input->>Input: Wait for finish signal
-
-    alt App responds in time
-        App->>Input: finishInputEvent()
-        Note over Input: Cancel timer
-    else Timeout (5s)
-        Input->>WMS: notifyANR(windowToken)
-        WMS->>AMS: inputDispatchingTimedOut()
-        AMS->>AMS: Collect stack traces
-        AMS->>AMS: Show ANR dialog
-        Note over AMS: User can: Wait / Close / Report
-    end
-```
-
-### 22.16.3 The AnrController
-
-ATMS uses `AnrController` objects to manage ANR handling:
-
-```java
-// ActivityTaskManagerService.java, line 578
-@GuardedBy("itself")
-private final List<AnrController> mAnrController = new ArrayList<>();
-```
-
-Multiple controllers can be registered, allowing different parts of the
-system to customize ANR behavior (e.g., the instrumentation framework
-extends timeouts during testing).
-
----
-
-## 22.17 Advanced: Lock Task Mode
-
-### 22.17.1 Overview
-
-Lock Task Mode restricts the device to a set of whitelisted tasks. This is
-used for kiosk-mode applications, enterprise device management, and
-educational deployments.
-
-```java
-// ActivityTaskManagerService.java, line 518
-private LockTaskController mLockTaskController;
-```
-
-### 22.17.2 Lock Task Levels
-
-```java
-// ActivityManager.java
-LOCK_TASK_MODE_NONE = 0;     // Normal operation
-LOCK_TASK_MODE_LOCKED = 1;   // Task is locked (started by app)
-LOCK_TASK_MODE_PINNED = 2;   // Screen pinning (started by user)
-```
-
-### 22.17.3 Lock Task Enforcement
-
-The `LockTaskController` enforces restrictions at multiple points:
-
-1. **Activity start** -- `isAllowedToStart()` checks
-   `isLockTaskModeViolation()`:
-   ```java
-   // ActivityStarter.java, line 2299-2309
-   if (!newTask) {
-       if (mService.getLockTaskController().isLockTaskModeViolation(
-               targetTask, isNewClearTask)) {
-           return START_RETURN_LOCK_TASK_MODE_VIOLATION;
-       }
-   } else {
-       if (mService.getLockTaskController().isNewTaskLockTaskModeViolation(r)) {
-           return START_RETURN_LOCK_TASK_MODE_VIOLATION;
-       }
-   }
-   ```
-
-2. **Task removal** -- Prevents removing locked tasks from recents
-3. **Navigation** -- Disables Home and Recents buttons
-4. **Status bar** -- Disables notification shade and quick settings
-
----
-
-## 22.18 Advanced: The Recent Tasks System
-
-### 22.18.1 RecentTasks Manager
-
-```java
-// ActivityTaskManagerService.java, line 473
-private RecentTasks mRecentTasks;
-```
-
-The `RecentTasks` class maintains the ordered list of tasks shown in the
-Recents (Overview) screen. It handles:
-
-- Adding tasks when they move to the background
-- Removing tasks when the user dismisses them
-- Persisting tasks across reboots (for cold-start recents)
-- Enforcing per-user task limits
-- Managing task thumbnails (screenshots)
-
-### 22.18.2 Task Persistence
-
-Tasks with `FLAG_ACTIVITY_RETAIN_IN_RECENTS` are persisted to disk as XML
-in `/data/system_ce/<userId>/recent_tasks/`. The persistence format includes:
-
-```xml
-<task
-    task_id="42"
-    real_activity="com.example.app/.MainActivity"
-    affinity="com.example.app"
-    user_id="0"
-    effective_uid="10094"
-    last_time_moved="1679012345678">
-    <intent .../>
-    <activity id="0" ...>
-        <intent .../>
-    </activity>
-</task>
-```
-
-### 22.18.3 Task Snapshots
-
-The system captures screenshots of tasks as they move to the background.
-These snapshots are used for:
-
-1. The Recents carousel thumbnails
-2. Starting window snapshots (for fast task switching)
-3. Splash screen alternatives
-
----
-
-## 22.19 Advanced: Visibility Computation
-
-### 22.19.1 ensureActivitiesVisible()
-
-One of the most critical operations in the system is determining which
-activities should be visible. This is driven by
-`RootWindowContainer.ensureActivitiesVisible()`:
-
-```mermaid
-flowchart TD
-    Trigger["Activity state changed"] --> EAV["ensureActivitiesVisible()"]
-    EAV --> ForEachDisplay["For each DisplayContent"]
-    ForEachDisplay --> ForEachTask["For each root Task"]
-    ForEachTask --> Walk["Walk task from top to bottom"]
-    Walk --> CheckOcclusion{"Activity occludes<br/>below?"}
-    CheckOcclusion -->|Yes| HideBelow["Make activities below invisible"]
-    CheckOcclusion -->|No| ShowBelow["Activities below remain visible"]
-    HideBelow --> UpdateVis["Update visibility state"]
-    ShowBelow --> UpdateVis
-    UpdateVis --> NotifyApps["Notify affected apps"]
-```
-
-An activity "occludes" those below it if:
-
-- It is fullscreen (not translucent)
-- It is not finishing
-- It fills the entire task bounds
-
-Translucent activities (dialogs, floating windows) allow activities behind
-them to remain visible.
-
-### 22.19.2 The occludesParent() Check
-
-```java
-// ActivityRecord.java, line 665
-private boolean mOccludesParent;
-```
-
-This field is set based on:
-
-- The activity's theme (transparent vs. opaque)
-- Whether it fills the parent bounds
-- Whether it has the `windowIsFloating` style attribute
-
-### 22.19.3 Visibility States for TaskFragment
-
-```java
-// TaskFragment.java
-static final int TASK_FRAGMENT_VISIBILITY_VISIBLE = 0;
-static final int TASK_FRAGMENT_VISIBILITY_VISIBLE_BEHIND_TRANSLUCENT = 1;
-static final int TASK_FRAGMENT_VISIBILITY_INVISIBLE = 2;
-```
-
----
-
-## 22.20 Performance Considerations
-
-### 22.20.1 Activity Launch Time Budget
-
-A well-optimized cold app launch should complete within these budgets:
-
-| Phase | Budget | Measured By |
-|-------|--------|-------------|
-| Intent resolution | < 5ms | Perfetto: `resolveActivity` |
-| startActivityInner() | < 10ms | Perfetto: `startActivityInner` |
-| Process fork (cold) | < 100ms | Perfetto: `Start proc` |
-| bindApplication | < 200ms | Perfetto: `bindApplication` |
-| Activity.onCreate() | < 200ms | Perfetto: `performCreate` |
-| First frame draw | < 300ms | Perfetto: `Choreographer#doFrame` |
-| **Total cold start** | **< 500ms** | `adb shell am start -W` |
-| **Total warm start** | **< 200ms** | `adb shell am start -W` |
-
-### 22.20.2 Lock Contention
-
-The `WindowManagerGlobalLock` is one of the most contended locks in the
-system. Every Binder call to WMS and ATMS must acquire it. Strategies to
-minimize contention:
-
-1. **Keep critical sections short** -- Perform heavy computation outside the
-   lock
-2. **Batch surface transactions** -- Submit multiple changes in a single
-   `SurfaceControl.Transaction`
-3. **Defer layout** -- The `WindowSurfacePlacer` batches layout requests
-4. **Lock-free reads** -- Some fields (like `mCurrentFocus`) use volatile
-   for lock-free reads in common cases
-
-### 22.20.3 Process Start Optimization
-
-Android uses several techniques to speed up process creation:
-
-1. **Zygote pre-fork** -- The Zygote preloads common classes and resources
-2. **USAP (Unspecialized App Process)** -- Pre-forked processes waiting to
-   be specialized
-3. **App Zygote** -- Per-app zygotes that cache app-specific resources
-4. **WebView Zygote** -- Specialized zygote for WebView processes
-5. **Process pools** -- Cached app processes can be reused
-
----
-
-## 22.21 Key Interfaces and AIDL Contracts
-
-### 22.21.1 IActivityManager
-
-The AIDL interface that apps use to communicate with AMS:
-
-| Method | Purpose |
-|--------|---------|
-| `startService()` | Start a background service |
-| `bindService()` | Bind to a service |
-| `broadcastIntent()` | Send a broadcast |
-| `getRunningAppProcesses()` | Query running processes |
-| `getMemoryInfo()` | Query system memory |
-| `setProcessImportant()` | Mark process importance |
-| `killBackgroundProcesses()` | Kill cached processes |
-
-### 22.21.2 IActivityTaskManager
-
-The AIDL interface for activity and task operations:
-
-| Method | Purpose |
-|--------|---------|
-| `startActivity()` | Start an activity |
-| `startActivities()` | Start multiple activities |
-| `finishActivity()` | Finish an activity |
-| `moveTaskToFront()` | Bring a task to front |
-| `removeTask()` | Remove a task |
-| `getRecentTasks()` | Get recent tasks list |
-| `setLockTaskMode()` | Enable lock task mode |
-| `enterPictureInPictureMode()` | Enter PiP |
-| `requestStartTransition()` | Start window transition |
-
-### 22.21.3 IWindowManager
-
-The AIDL interface for window management:
-
-| Method | Purpose |
-|--------|---------|
-| `openSession()` | Create a new Session |
-| `addWindow()` | (via Session) Add a window |
-| `removeWindow()` | (via Session) Remove a window |
-| `relayoutWindow()` | (via Session) Update window layout |
-| `setFocusedApp()` | Set the focused app |
-| `screenshotDisplay()` | Capture display screenshot |
-| `freezeRotation()` | Lock screen rotation |
-| `setScreenCaptureDisabled()` | Disable screen capture |
-
-### 22.21.4 IApplicationThread
-
-The callback interface that the system uses to drive the app process:
-
-| Method | Purpose |
-|--------|---------|
-| `scheduleTransaction()` | Execute lifecycle transaction |
-| `scheduleTrimMemory()` | Request memory trim |
-| `scheduleBindService()` | Bind to a service |
-| `scheduleReceiver()` | Deliver a broadcast |
-| `dumpActivity()` | Dump activity state |
-| `scheduleSuicide()` | Force process exit |
-| `scheduleCreateService()` | Create a service |
-
----
-
-## 22.22 Common Debugging Patterns
-
-### 22.22.1 Diagnosing Slow Activity Launches
-
-1. **Check Perfetto trace** for which phase is slow:
-   ```
-   adb shell am start -W -S <component>
-   ```
-   The `-S` flag force-stops the app first for a consistent cold start.
-
-2. **Check for lock contention** in the trace:
-   Look for long `monitor contention` slices in system_server.
-
-3. **Check process start time**:
-   ```bash
-   adb logcat -s ActivityManager | grep "Start proc"
-   ```
-   If fork time is high, check if USAP pool is configured.
-
-4. **Check Application.onCreate()**:
-   Many apps do heavy initialization here. Look for `bindApplication` duration.
-
-### 22.22.2 Diagnosing Window Addition Failures
-
-The `addWindow()` return codes indicate what went wrong:
-
-| Return Code | Constant | Meaning |
-|-------------|----------|---------|
-| 0 | `ADD_OKAY` | Success |
-| -1 | `ADD_BAD_APP_TOKEN` | Invalid token for window type |
-| -2 | `ADD_BAD_SUBWINDOW_TOKEN` | Bad parent window token |
-| -3 | `ADD_NOT_APP_TOKEN` | Non-activity token for app window |
-| -4 | `ADD_APP_EXITING` | Activity is being removed |
-| -5 | `ADD_DUPLICATE_ADD` | Window already registered |
-| -6 | `ADD_STARTING_NOT_NEEDED` | Starting window not needed |
-| -7 | `ADD_MULTIPLE_SINGLETON` | Multiple singletons |
-| -8 | `ADD_PERMISSION_DENIED` | Insufficient permissions |
-| -9 | `ADD_INVALID_DISPLAY` | Display does not exist |
-| -10 | `ADD_INVALID_TYPE` | Invalid window type |
-| -11 | `ADD_INVALID_USER` | Invalid user ID |
-
-### 22.22.3 Diagnosing Activity State Issues
-
-```bash
-# Check current activity state
-adb shell dumpsys activity activities | grep -E "state=|State="
-
-# Look for stuck transitions
-adb shell dumpsys activity transitions
-
-# Check for pending operations
-adb shell dumpsys activity starter
-```
-
-### 22.22.4 Diagnosing OOM Kills
-
-```bash
-# Check recent kills
-adb logcat -b events | grep "am_kill"
-
-# Check current process priorities
-adb shell dumpsys activity oom
-
-# Check LMKD statistics
-adb shell dumpsys activity lmk
-```
-
----
-
-## Cross-References
-
-This chapter provides the architectural overview. The following chapters
-build on these foundations:
-
-- **Chapter 23: The Window System Deep Dive** -- Covers window layout
-  computation, surface management, the ViewRootImpl rendering pipeline,
-  insets handling, and the shell transitions system introduced in Android 13+.
-
-- **Chapter 24: Display and Compositor Pipeline** -- Covers SurfaceFlinger
-  internals, hardware composition, multi-display support, virtual displays,
-  and the HWC (Hardware Composer) HAL interface.
-
-The relationship between these three chapters:
-
-```mermaid
-graph TB
-    Ch22["Chapter 22<br/>Activity & Window Overview<br/>(This chapter)"]
-    Ch23["Chapter 23<br/>Window System Deep Dive"]
-    Ch24["Chapter 24<br/>Display & Compositor"]
-
-    Ch22 -->|"Window hierarchy,<br/>addWindow flow"| Ch23
-    Ch22 -->|"DisplayContent,<br/>surface basics"| Ch24
-    Ch23 -->|"Surface transactions"| Ch24
-
-    subgraph "Coverage"
-        Ch15a["AMS/ATMS architecture<br/>Activity lifecycle<br/>Task hierarchy<br/>Process management<br/>startActivity pipeline"]
-        Ch16a["Window layout engine<br/>ViewRootImpl<br/>Insets<br/>Shell transitions<br/>Input dispatch"]
-        Ch17a["SurfaceFlinger<br/>HWC HAL<br/>VSync<br/>Buffer management<br/>Multi-display"]
-    end
-
-    Ch22 --- Ch15a
-    Ch23 --- Ch16a
-    Ch24 --- Ch17a
-
-    style Ch22 fill:#e1f5fe
-    style Ch23 fill:#fff3e0
-    style Ch24 fill:#e8f5e9
-```
-
----
-
-## 22.23 Advanced: The Transition System
-
-### 22.23.1 Shell Transitions (Android 13+)
-
-Modern Android uses "Shell Transitions" to coordinate visual transitions
-between activities, tasks, and windows. This replaced the legacy
-`AppTransition` system.
-
-```mermaid
-sequenceDiagram
-    participant WMCore as WM Core
-    participant TC as TransitionController
-    participant Shell as SystemUI Shell
-    participant SF as SurfaceFlinger
-
-    WMCore->>TC: requestStartTransition(transition)
-    TC->>TC: Collect participants<br/>(opening, closing, changing)
-    TC->>TC: setReady() when all collected
-    TC->>Shell: onTransitionReady(TransitionInfo)
-    Note over Shell: Shell decides animation type:<br/>- open/close<br/>- task switch<br/>- PiP<br/>- split-screen
-    Shell->>Shell: Create and run animation
-    Shell->>SF: Apply surface changes via Transaction
-    Shell->>TC: finishTransition(token)
-    TC->>WMCore: Clean up transition state
-```
-
-### 22.23.2 TransitionInfo
-
-The `TransitionInfo` object passed to Shell contains:
-
-- **Type**: OPEN, CLOSE, TO_FRONT, TO_BACK, CHANGE, PIP
-- **Flags**: KEYGUARD_GOING_AWAY, IS_RECENTS, etc.
-- **Changes**: List of `TransitionInfo.Change` objects, each describing
-  a container that changed (with before/after state)
-
-Each `Change` includes:
-
-- The `WindowContainerToken`
-- Start and end bounds
-- Start and end rotation
-- Window configuration
-- Leash (SurfaceControl for the animation)
-
-### 22.23.3 Transition Types
-
-```java
-// WindowManager.java transit types
-TRANSIT_OPEN = 1;          // Activity/task opening
-TRANSIT_CLOSE = 2;         // Activity/task closing
-TRANSIT_TO_FRONT = 3;      // Existing task coming to front
-TRANSIT_TO_BACK = 4;       // Task going to back
-TRANSIT_CHANGE = 6;        // Config change (rotation, bounds)
-TRANSIT_PIP = 8;           // PiP transition
-TRANSIT_START_LOCK_TASK_MODE = 14; // Entering lock task mode
-```
-
-### 22.23.4 Animation Controllers
-
-Shell provides different animation controllers for different scenarios:
-
-```mermaid
-graph TB
-    Trans["Transition Ready"]
-    Trans --> Type{"Transition Type?"}
-
-    Type -->|"Open/Close"| Default["DefaultTransitionHandler<br/>Fade + scale animations"]
-    Type -->|"Task Switch"| Recents["RecentsTransitionHandler<br/>Recents animation"]
-    Type -->|"PiP"| PiP["PipTransitionHandler<br/>Shrink/grow to PiP window"]
-    Type -->|"Split"| Split["SplitTransitionHandler<br/>Split-screen animations"]
-    Type -->|"Keyguard"| KG["KeyguardTransitionHandler<br/>Lock/unlock animations"]
-    Type -->|"Unfold"| Unfold["UnfoldTransitionHandler<br/>Foldable unfold animation"]
-```
-
----
-
-## 22.24 Advanced: Activity Client Controller
-
-### 22.24.1 The IActivityClientController Interface
-
-The `ActivityClientController` is the server-side endpoint for activity-level
-operations initiated by the client process:
-
-```java
-// ActivityTaskManagerService.java, line 422
-ActivityClientController mActivityClientController;
-```
-
-This controller handles operations like:
-
-- `activityPaused()` -- Client reports pause completion
-- `activityStopped()` -- Client reports stop completion
-- `activityDestroyed()` -- Client reports destroy completion
-- `activityResumed()` -- Client reports resume completion
-- `reportSizeConfigurations()` -- Client reports supported size ranges
-- `setRequestedOrientation()` -- Client requests orientation lock
-- `convertToTranslucent()` -- Client becomes translucent
-- `convertFromTranslucent()` -- Client becomes opaque
-- `enterPictureInPictureMode()` -- Client enters PiP
-
-### 22.24.2 The Callback Flow
-
-```mermaid
-sequenceDiagram
-    participant App as App Process
-    participant ACC as ActivityClientController (system_server)
-    participant AR as ActivityRecord
-    participant ATMS
-
-    Note over App: Activity.onPause() completes
-    App->>ACC: activityPaused(token)
-    ACC->>AR: activityPaused(false /* timeout */)
-    AR->>AR: setState(PAUSED, "activityPaused")
-    AR->>ATMS: completePauseLocked(...)
-    ATMS->>ATMS: resumeTopActivity(...)
-```
-
-This shows how the client-driven lifecycle callbacks feed back into the
-server-side state machine to trigger the next state transition.
-
----
-
-## 22.25 Advanced: The ActivityTaskSupervisor
-
-### 22.25.1 Role and Responsibilities
-
-The `ActivityTaskSupervisor` (line 185) acts as a coordination layer between
-ATMS and the container hierarchy:
-
-```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityTaskSupervisor.java, line 185
-public class ActivityTaskSupervisor implements RecentTasks.Callbacks {
-```
-
-Key responsibilities:
-
-- Managing the activity idle queue
-- Starting specific activities in processes
-- Handling waiting activities (waiting for process start)
-- Managing sleep/wake state for activities
-- Coordinating with RecentTasks callbacks
-
-### 22.25.2 The Idle Queue
-
-After an activity starts, it must report idle within `IDLE_TIMEOUT` (10s):
-
-```java
-// line 194
-private static final int IDLE_TIMEOUT = 10 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
-```
-
-The idle queue manages activities that have been launched but not yet finished
-their initialization. When all activities report idle, the system can:
-
-- Remove activities that were stopped during the launch
-- Finish pending transitions
-- Trim memory for backgrounded processes
-
-### 22.25.3 The Handler
-
-`ActivityTaskSupervisor` has its own handler for deferred operations:
-
-```java
-// line 2823
-private final class ActivityTaskSupervisorHandler extends Handler {
-    @Override
-    public void handleMessage(Message msg) {
-        synchronized (mService.mGlobalLock) {
-            if (handleMessageInner(msg)) {
-                return;
-            }
-        }
-    }
-}
-```
-
-Message types include:
-
-- `IDLE_TIMEOUT_MSG` -- Activity failed to report idle
-- `IDLE_NOW_MSG` -- Force idle processing
-- `SLEEP_TIMEOUT_MSG` -- Sleep timeout for activities
-- `LAUNCH_TIMEOUT_MSG` -- Activity failed to launch
-
----
-
-## 22.26 Advanced: The ActivityStartController
-
-### 22.26.1 Factory and Pool Pattern
-
-The `ActivityStartController` manages the creation and recycling of
-`ActivityStarter` instances:
-
-```java
-// ActivityTaskManagerService.java, line 519
-private ActivityStartController mActivityStartController;
-```
-
-It provides the `obtainStarter()` method that apps interact with through
-the builder pattern:
-
-```mermaid
-graph LR
-    ATMS["ATMS.startActivityAsUser()"]
-    ASC["ActivityStartController"]
-    Factory["ActivityStarter.DefaultFactory"]
-    Pool["SynchronizedPool (max 3)"]
-    Starter["ActivityStarter instance"]
-
-    ATMS -->|"getActivityStartController()"| ASC
-    ASC -->|"obtainStarter()"| Factory
-    Factory -->|"acquire()"| Pool
-    Pool -->|"existing or new"| Starter
-    Starter -->|"after execute()"| Pool
-```
-
-### 22.26.2 Builder Pattern Usage
-
-The `ActivityStarter` uses a fluent builder pattern for configuration:
-
-```java
-// Typical usage in ATMS (simplified)
-getActivityStartController().obtainStarter(intent, "startActivityAsUser")
-    .setCaller(caller)
-    .setCallingUid(callingUid)
-    .setCallingPid(callingPid)
-    .setCallingPackage(callingPackage)
-    .setRealCallingUid(realCallingUid)
-    .setRealCallingPid(realCallingPid)
-    .setResultTo(resultTo)
-    .setResultWho(resultWho)
-    .setRequestCode(requestCode)
-    .setStartFlags(startFlags)
-    .setActivityOptions(options)
-    .setUserId(userId)
-    .execute();
-```
-
-Each setter returns the `ActivityStarter` instance, allowing chaining. The
-`execute()` call at the end triggers the full startup pipeline.
-
----
-
-## 22.27 Advanced: DisplayContent Internals
-
-### 22.27.1 Display Content Structure
-
-Each `DisplayContent` manages a complete display with its own:
-
-- Window hierarchy (organized into DisplayAreas)
-- Input dispatcher configuration
-- Focus tracking
-- Wallpaper controller
-- IME controller
-- Rotation controller
-
-```java
-// frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java, line 288
-class DisplayContent extends RootDisplayArea
-        implements WindowManagerPolicy.DisplayContentInfo {
-```
-
-### 22.27.2 Key DisplayContent Fields
-
-| Field | Purpose |
-|-------|---------|
-| `mDisplayInfo` | Physical display properties (size, density, refresh rate) |
-| `mDefaultTaskDisplayArea` | The primary area for app tasks |
-| `mDisplayPolicy` | Platform-specific layout policy |
-| `mInputMonitor` | Manages input window list for InputDispatcher |
-| `mCurrentFocus` | Currently focused WindowState |
-| `mWallpaperController` | Wallpaper positioning and animation |
-| `mImeWindowsContainer` | IME (keyboard) window management |
-| `mPinnedTaskController` | PiP window management |
-| `mWinAddedSinceNullFocus` | Windows added when no focus existed |
-
-### 22.27.3 Multi-Display Support
-
-Android supports multiple displays through multiple `DisplayContent` objects:
-
-```mermaid
-graph TB
-    RWC["RootWindowContainer"]
-    DC0["DisplayContent 0<br/>(Built-in screen)"]
-    DC1["DisplayContent 1<br/>(HDMI output)"]
-    DC2["DisplayContent 2<br/>(Virtual display)"]
-
-    RWC --> DC0
-    RWC --> DC1
-    RWC --> DC2
-
-    subgraph "Display 0 (Phone)"
-        TDA0["TaskDisplayArea"]
-        TDA0 --> T0["Home Task"]
-        TDA0 --> T1["App Task"]
-    end
-
-    subgraph "Display 1 (External)"
-        TDA1["TaskDisplayArea"]
-        TDA1 --> T2["Presentation Task"]
-    end
-
-    subgraph "Display 2 (Virtual)"
-        TDA2["TaskDisplayArea"]
-        TDA2 --> T3["Cast Task"]
-    end
-
-    DC0 --> TDA0
-    DC1 --> TDA1
-    DC2 --> TDA2
-```
-
-Virtual displays are created for:
-
-- Screen casting (Miracast, Chromecast)
-- Media projection (screen recording)
-- Virtual device testing
-- Presentation mode
-
----
-
-## 22.28 Advanced: The Input Dispatch Connection
-
-### 22.28.1 Input Channels
-
-When a window is added with `addWindow()`, an `InputChannel` is created if
-the window accepts input:
-
-```java
-// WMS.addWindow(), line 1861-1864
-final boolean openInputChannels = (outInputChannel != null
-        && (attrs.inputFeatures & INPUT_FEATURE_NO_INPUT_CHANNEL) == 0);
-if (openInputChannels) {
-    win.openInputChannel(outInputChannel);
-}
-```
-
-The `InputChannel` is a pair of Unix domain socket endpoints:
-
-- **Server side** -- Held by the InputDispatcher in system_server
-- **Client side** -- Sent back to the app process via the Binder call
-
-```mermaid
-graph LR
-    subgraph "App Process"
-        VRI["ViewRootImpl"]
-        IC_C["InputChannel<br/>(client end)"]
-        IER["InputEventReceiver"]
-        VRI --> IC_C --> IER
-    end
-
-    subgraph "system_server"
-        ID["InputDispatcher"]
-        IC_S["InputChannel<br/>(server end)"]
-        ID --> IC_S
-    end
-
-    IC_S <-.->|"Unix domain socket"| IC_C
-
-    subgraph "InputFlinger (native)"
-        IR["InputReader"]
-        IR --> ID
-    end
-```
-
-### 22.28.2 Input Focus and Window Ordering
-
-The InputDispatcher needs to know which windows are on screen and in what
-order. This is communicated through the `InputMonitor`:
-
-```java
-// Called after window changes
-displayContent.getInputMonitor().setUpdateInputWindowsNeededLw();
-```
-
-The `InputMonitor` collects all visible windows and their bounds, then
-sends this to the native `InputDispatcher` via `InputManagerService`.
-
-### 22.28.3 Spy Windows and Input Features
-
-Windows can have special input features:
-
-```java
-// WindowManager.LayoutParams
-INPUT_FEATURE_NO_INPUT_CHANNEL = 0x0002;      // No input
-INPUT_FEATURE_SPY = 0x0020;                    // Spy on input (see events but don't consume)
-INPUT_FEATURE_SENSITIVE_FOR_PRIVACY = 0x0040;  // Mark as sensitive
-INPUT_FEATURE_DISPLAY_TOPOLOGY_AWARE = 0x0100; // Cross-display topology
-```
-
-Spy windows are used by SystemUI for gesture detection (edge swipes,
-notification pulldown) -- they see all input events without consuming them.
-
----
-
-## 22.29 Design Patterns in the Activity/Window System
-
-### 22.29.1 The Container Tree Pattern
-
-The entire window hierarchy uses a tree pattern where each node:
-
-- Has exactly one parent (except the root)
-- Can have multiple children
-- Propagates configuration changes top-down
-- Aggregates state bottom-up (e.g., visibility)
-- Owns a SurfaceControl for compositing
-
-### 22.29.2 The Pool/Recycler Pattern
-
-`ActivityStarter` uses object pooling to avoid allocation overhead:
-```java
-private SynchronizedPool<ActivityStarter> mStarterPool =
-        new SynchronizedPool<>(MAX_STARTER_COUNT);
-```
-
-Similarly, `ClientTransaction` objects and various other framework objects
-use recycling.
-
-### 22.29.3 The Two-Phase Commit Pattern
-
-Activity launches use a two-phase approach:
-
-1. **Prepare phase**: Validate, resolve, check permissions (can fail)
-2. **Commit phase**: Create task, add activity, schedule resume (should not fail)
-
-The comment "From now on, no exceptions or errors allowed!" at line 1923 in
-`addWindow()` marks the boundary between these phases.
-
-### 22.29.4 The Deferred Execution Pattern
-
-Many operations in WMS are deferred rather than executed immediately:
-
-- Layout is deferred and batched via `WindowSurfacePlacer.requestTraversal()`
-- Focus updates are deferred during surface placement
-- Surface transactions are batched and submitted atomically
-
-This batching improves performance by avoiding redundant work when multiple
-changes happen in quick succession.
-
-### 22.29.5 The Token Pattern
-
-Android uses tokens extensively for security:
-
-- **Activity tokens** -- IBinder references that prove an activity exists
-- **Window tokens** -- Prove that a process is authorized to create a window
-- **Session tokens** -- Per-process connection identity
-- **Transition tokens** -- Track ongoing window transitions
-
-Tokens are unforgeable Binder objects -- a process cannot create a valid token
-without the system having created it first.
-
----
-
-## 22.30 Glossary of Key Terms
-
-| Term | Definition |
-|------|-----------|
-| **AMS** | ActivityManagerService -- manages processes, broadcasts, services |
-| **ATMS** | ActivityTaskManagerService -- manages activities, tasks, recents |
-| **WMS** | WindowManagerService -- manages windows, surfaces, layout |
-| **ActivityRecord** | Server-side representation of a running activity |
-| **Task** | A stack of activities (the "back stack") |
-| **TaskFragment** | A sub-container within a task for activity embedding |
-| **WindowState** | Server-side representation of a window |
-| **WindowToken** | A grouping of windows belonging to the same logical entity |
-| **DisplayContent** | Representation of a physical or virtual display |
-| **DisplayArea** | A region within a display for organizing windows |
-| **TaskDisplayArea** | The display area where app tasks live |
-| **RootWindowContainer** | The root of the entire window/display hierarchy |
-| **Session** | Per-process connection to WMS |
-| **OOM adj** | Out-Of-Memory adjustment -- process priority for LMKD |
-| **LMKD** | Low Memory Killer Daemon |
-| **BAL** | Background Activity Launch -- restrictions on bg starts |
-| **ProcessRecord** | AMS's per-process bookkeeping structure |
-| **WindowProcessController** | ATMS's per-process tracking structure |
-| **ClientTransaction** | Bundle of lifecycle callbacks sent to app process |
-| **Shell Transitions** | Modern animation system for window transitions |
-| **PiP** | Picture-in-Picture mode |
-| **Lock Task Mode** | Kiosk mode restricting device to whitelisted tasks |
-| **SurfaceControl** | Handle to a compositing surface in SurfaceFlinger |
-| **InputChannel** | Socket pair for delivering input events |
-| **ViewRootImpl** | Client-side root of the view/window system |
-| **Zygote** | Parent process from which all app processes are forked |
-| **USAP** | Unspecialized App Process -- pre-forked process pool |
-
----
-
-## 22.31 Source Code Navigation Guide
-
-For readers who want to explore the source code themselves, here is a guided
-map of the key directories and their contents.
-
-### 22.31.1 The `am` Package
-
-```
-frameworks/base/services/core/java/com/android/server/am/
-    ActivityManagerService.java    -- Main AMS class (~19,921 lines)
-    ProcessList.java               -- Process management + OOM adj values
-    ProcessRecord.java             -- Per-process bookkeeping
-    OomAdjuster.java               -- OOM adjustment computation (abstract)
-    CachedAppOptimizer.java        -- Freezer + compaction
-    ActiveServices.java            -- Service lifecycle management
-    BroadcastQueue.java            -- Broadcast dispatch
-    BroadcastController.java       -- Broadcast coordination
-    ContentProviderHelper.java     -- Content provider tracking
-    ActivityManagerDebugConfig.java -- Debug flag configuration
-    ActivityManagerConstants.java  -- Tunable constants
-    UidRecord.java                 -- Per-UID state tracking
-    PendingIntentRecord.java       -- Pending intent storage
-    HostingRecord.java             -- Process hosting information
-```
-
-### 22.31.2 The `wm` Package (Activity/Window)
-
-```
-frameworks/base/services/core/java/com/android/server/wm/
-    ActivityTaskManagerService.java  -- Main ATMS class (~8,130 lines)
-    WindowManagerService.java        -- Main WMS class (~10,983 lines)
-    ActivityStarter.java             -- Activity launch pipeline
-    ActivityRecord.java              -- Per-activity state
-    Task.java                        -- Task (back stack)
-    TaskFragment.java                -- Activity embedding container
-    WindowState.java                 -- Per-window state
-    WindowContainer.java             -- Base hierarchy class
-    WindowToken.java                 -- Window grouping token
-    RootWindowContainer.java         -- Hierarchy root
-    DisplayContent.java              -- Per-display state
-    DisplayArea.java                 -- Display area abstraction
-    TaskDisplayArea.java             -- App task area
-    ActivityTaskSupervisor.java      -- Activity coordination
-    ActivityStartController.java     -- Starter factory
-    ActivityStartInterceptor.java    -- Launch interception
-    BackgroundActivityStartController.java -- BAL enforcement
-    RecentTasks.java                 -- Recent tasks list
-    LockTaskController.java          -- Lock task mode
-    KeyguardController.java          -- Lock screen interaction
-    Session.java                     -- Per-process WMS connection
-    DisplayPolicy.java               -- Display layout policy
-    WindowSurfacePlacer.java         -- Layout engine
-    InputMonitor.java                -- Input dispatch configuration
-    TransitionController.java        -- Shell transitions
-    BackNavigationController.java    -- Predictive back gesture
-    ClientLifecycleManager.java      -- Lifecycle callback dispatch
-    WindowManagerConstants.java      -- Tunable WM constants
-    SensitiveContentPackages.java    -- Privacy-sensitive content tracking
-    StartingSurfaceController.java   -- Splash screen management
-    AppCompatController.java         -- App compatibility
-    LaunchParamsController.java      -- Launch positioning
-    WindowProcessController.java     -- ATMS's per-process state
-```
-
-### 22.31.3 Client-Side Code
-
-```
-frameworks/base/core/java/android/app/
-    Activity.java                    -- The Activity base class
-    ActivityThread.java              -- Main thread of app process
-    Instrumentation.java             -- Activity instrumentation
-    ClientTransactionHandler.java    -- Handles lifecycle transactions
-    servertransaction/
-        ClientTransaction.java       -- Transaction container
-        LaunchActivityItem.java      -- Launch callback
-        ResumeActivityItem.java      -- Resume request
-        PauseActivityItem.java       -- Pause request
-        StopActivityItem.java        -- Stop request
-        DestroyActivityItem.java     -- Destroy request
-        NewIntentItem.java           -- New intent delivery
-        TransactionExecutor.java     -- Executes transactions
-
-frameworks/base/core/java/android/view/
-    WindowManager.java               -- Window management API
-    WindowManagerGlobal.java         -- Global window tracking (client)
-    WindowManagerImpl.java           -- Per-context implementation
-    ViewRootImpl.java                -- Root of client view hierarchy
-    IWindowManager.aidl              -- WMS Binder interface
-    IWindowSession.aidl              -- Session Binder interface
-    IWindow.aidl                     -- Client window callback
-    SurfaceControl.java              -- Surface management API
-```
-
-### 22.31.4 Key AIDL Files
-
-```
-frameworks/base/core/java/android/app/
-    IActivityManager.aidl            -- AMS interface
-    IActivityTaskManager.aidl        -- ATMS interface
-    IApplicationThread.aidl          -- Callback to app process
-
-frameworks/base/core/java/android/view/
-    IWindowManager.aidl              -- WMS interface
-    IWindowSession.aidl              -- Per-process session
-    IWindow.aidl                     -- Per-window callback
-```
-
-### 22.31.5 Reading Order for New Contributors
-
-If you are new to this codebase, we recommend reading files in this order:
-
-1. **Start with the hierarchy**: `WindowContainer.java` (base class) ->
-   `WindowToken.java` -> `ActivityRecord.java` (the key entity)
-
-2. **Understand the container tree**: `RootWindowContainer.java` ->
-   `DisplayContent.java` -> `TaskDisplayArea.java` -> `Task.java`
-
-3. **Follow a startActivity call**: `ActivityTaskManagerService.java`
-   (`startActivityAsUser`) -> `ActivityStarter.java` (`execute()` ->
-   `executeRequest()` -> `startActivityInner()`)
-
-4. **Follow a window addition**: `Session.java` (`addToDisplay()`) ->
-   `WindowManagerService.java` (`addWindow()`)
-
-5. **Understand process management**: `ProcessList.java` (OOM adj values,
-   `startProcessLocked()`) -> `ProcessRecord.java`
-
----
-
-## 22.32 Frequently Asked Questions
-
-### Q: Why are AMS and ATMS separate services instead of one?
-
-**A**: The split serves both software engineering and runtime goals. The
-monolithic AMS was over 30,000 lines and mixed concerns: process lifetime
-management (CPU, memory, OOM) with UI-centric activity management (tasks,
-stacks, transitions). Separating them:
-
-- Reduces complexity of each individual class
-- Allows ATMS to share the WM lock (eliminating cross-lock deadlocks)
-- Makes the activity/window coupling explicit in the package structure
-- Enables independent testing of process vs. activity management
-
-### Q: Why does ATMS live in the `wm` package instead of `am`?
-
-**A**: ATMS must hold the same lock as WMS because activity and window
-operations are tightly coupled. Placing ATMS in the `wm` package makes this
-coupling explicit and avoids unnecessary cross-package dependencies.
-
-### Q: How does the system decide whether to create a new task or reuse one?
-
-**A**: The decision tree in `ActivityStarter.startActivityInner()` considers:
-
-1. The `FLAG_ACTIVITY_NEW_TASK` flag
-2. The activity's `launchMode` (standard, singleTop, singleTask, singleInstance)
-3. The source activity's launch mode
-4. Whether an explicit `inTask` was specified
-5. Task affinity matching (via `resolveReusableTask()`)
-6. The `FLAG_ACTIVITY_CLEAR_TOP` and `FLAG_ACTIVITY_CLEAR_TASK` flags
-
-### Q: What happens if an activity does not respond to `onPause()`?
-
-**A**: The `PAUSE_TIMEOUT` (500ms) fires. The framework calls
-`completePauseLocked()` with `resumeNext=true`, which forcibly considers
-the pause complete and proceeds to resume the next activity. The slow app
-may later receive an ANR if it is also not responding to input events.
-
-### Q: How does the system decide which process to kill under memory pressure?
-
-**A**: The `OomAdjuster` computes an `oom_score_adj` for each process based on
-what it is doing (running a foreground activity, a visible activity, a service,
-nothing). This value is written to `/proc/<pid>/oom_score_adj`. When memory
-is low, the Linux kernel's OOM killer (or LMKD) kills the process with the
-highest `oom_score_adj` first. The range is -1000 (never kill) to 1000 (kill
-first), with app values typically ranging from 0 (foreground) to 999 (cached).
-
-### Q: Can two activities from different apps be in the same task?
-
-**A**: Yes. If App A starts an activity in App B without `FLAG_ACTIVITY_NEW_TASK`,
-and App B's activity has a matching `taskAffinity`, the new activity joins
-App A's task. This is the default behavior for explicit intents. It is how
-the share sheet, browser, and many other cross-app flows work.
-
-### Q: What is the maximum number of activities in a task?
-
-**A**: There is no strict maximum count, but `ActivityStarter` enforces a
-"tree weight" limit of 300 (`MAX_TASK_WEIGHT_FOR_ADDING_ACTIVITY`). This
-counts all activities and windows in the task. If exceeded, the entire task
-is removed to prevent resource exhaustion.
-
-### Q: How does the ActivityRecord relate to the WindowState?
-
-**A**: `ActivityRecord` extends `WindowToken`, which extends
-`WindowContainer<WindowState>`. This means an ActivityRecord IS a
-WindowToken and directly contains WindowState children. When an activity
-creates windows (its main window, dialogs, popups), those windows become
-children of the ActivityRecord in the container tree. This gives the system
-automatic cleanup: removing an ActivityRecord removes all its windows.
 
 ---
 
