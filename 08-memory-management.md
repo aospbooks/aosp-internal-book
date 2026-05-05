@@ -3245,7 +3245,77 @@ automatic huge page promotion.
 
 ---
 
-## 8.10 Try It
+## 8.10 Key Source Files Reference
+
+| Component | Path |
+|---|---|
+| lmkd main implementation | `system/memory/lmkd/lmkd.cpp` |
+| lmkd init service | `system/memory/lmkd/lmkd.rc` |
+| lmkd protocol definitions | `system/memory/lmkd/include/lmkd.h` |
+| Process reaper | `system/memory/lmkd/reaper.cpp` |
+| Watchdog | `system/memory/lmkd/watchdog.cpp` |
+| Kill statistics | `system/memory/lmkd/statslog.h` |
+| PSI monitor library | `system/memory/lmkd/libpsi/psi.cpp` |
+| PSI header | `system/memory/lmkd/libpsi/include/psi/psi.h` |
+| ION allocator | `system/memory/libion/ion.c` |
+| DMA-BUF heap allocator | `system/memory/libdmabufheap/BufferAllocator.cpp` |
+| DMA-BUF heap include | `system/memory/libdmabufheap/include/BufferAllocator/BufferAllocator.h` |
+| GraphicBufferAllocator | `frameworks/native/libs/ui/GraphicBufferAllocator.cpp` |
+| GraphicBufferMapper | `frameworks/native/libs/ui/GraphicBufferMapper.cpp` |
+| GraphicBuffer header | `frameworks/native/libs/ui/include/ui/GraphicBuffer.h` |
+| libmemunreachable | `system/memory/libmemunreachable/MemUnreachable.cpp` |
+| showmap tool | `system/memory/libmeminfo/tools/showmap.cpp` |
+| procrank / librank | `system/memory/libmeminfo/tools/procrank.cpp` |
+| smapinfo library | `system/memory/libmeminfo/libsmapinfo/smapinfo.cpp` |
+| ProcessList (Java) | `frameworks/base/services/core/java/com/android/server/am/ProcessList.java` |
+| AppProfiler (Java) | `frameworks/base/services/core/java/com/android/server/am/AppProfiler.java` |
+| ComponentCallbacks2 | `frameworks/base/core/java/android/content/ComponentCallbacks2.java` |
+| ActivityManagerService | `frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java` |
+| libdmabufinfo | `system/memory/libmeminfo/libdmabufinfo/` |
+| libmemevents | `system/memory/libmeminfo/libmemevents/` |
+| procmem tool | `system/memory/libmeminfo/tools/procmem.cpp` |
+| wsstop tool | `system/memory/libmeminfo/tools/wsstop.cpp` |
+
+---
+
+## 8.11 Further Reading
+
+For deeper exploration of the topics covered in this chapter:
+
+### Kernel Documentation
+- `Documentation/admin-guide/mm/` in the Linux kernel source -- comprehensive documentation on
+  the kernel's memory management subsystem including zRAM, KSM, THP, and hugetlbfs.
+- `Documentation/admin-guide/cgroup-v2.txt` -- cgroup v2 memory controller documentation.
+- `Documentation/vm/` -- design documents for the kernel VM subsystem.
+
+### Android-Specific Resources
+- Android source documentation in `system/memory/lmkd/README.md` -- overview of lmkd design.
+- The Perfetto documentation at `https://perfetto.dev/docs/data-sources/memory-counters` for
+  details on memory trace analysis.
+- Android CDD (Compatibility Definition Document) memory requirements for different device
+  categories.
+
+### Academic and Industry References
+- "Understanding the Linux Virtual Memory Manager" by Mel Gorman -- the definitive reference on
+  Linux kernel memory management internals.
+- ARM Architecture Reference Manual, sections on Memory Tagging Extension (MTE).
+- "Scudo Hardened Allocator" design document in LLVM project documentation.
+- Google's Project Zero blog posts on MTE deployment and effectiveness.
+
+### Related AOSP Chapters
+- Chapter 5 (Kernel) covers the kernel boot process and basic kernel subsystems.
+- Chapter 7 (Bionic and Linker) covers the C library allocator (Scudo) in more detail.
+- Chapter 13 (Graphics Render Pipeline) covers how GraphicBuffer flows through the display
+  pipeline.
+- Chapter 18 (ART Runtime) covers garbage collection algorithms and managed heap internals.
+- Chapter 29 (Power Management) covers the interaction between memory management and power
+  states (suspend, doze mode).
+- Chapter 56 (Debugging Tools) covers additional debugging techniques including Perfetto and
+  systrace integration.
+
+---
+
+## 8.12 Try It
 
 This section provides hands-on exercises to explore Android's memory management in practice.
 
@@ -3947,73 +4017,3 @@ level.
 | Large JNI global references | Non-moving space grows | Release global refs when no longer needed |
 | DMA-BUF leak | Graphics memory grows | Ensure GraphicBuffer release on surface destruction |
 | Thread stack accumulation | Stack memory grows with thread count | Use thread pools with bounded size |
-
----
-
-## Key Source Files Reference
-
-| Component | Path |
-|---|---|
-| lmkd main implementation | `system/memory/lmkd/lmkd.cpp` |
-| lmkd init service | `system/memory/lmkd/lmkd.rc` |
-| lmkd protocol definitions | `system/memory/lmkd/include/lmkd.h` |
-| Process reaper | `system/memory/lmkd/reaper.cpp` |
-| Watchdog | `system/memory/lmkd/watchdog.cpp` |
-| Kill statistics | `system/memory/lmkd/statslog.h` |
-| PSI monitor library | `system/memory/lmkd/libpsi/psi.cpp` |
-| PSI header | `system/memory/lmkd/libpsi/include/psi/psi.h` |
-| ION allocator | `system/memory/libion/ion.c` |
-| DMA-BUF heap allocator | `system/memory/libdmabufheap/BufferAllocator.cpp` |
-| DMA-BUF heap include | `system/memory/libdmabufheap/include/BufferAllocator/BufferAllocator.h` |
-| GraphicBufferAllocator | `frameworks/native/libs/ui/GraphicBufferAllocator.cpp` |
-| GraphicBufferMapper | `frameworks/native/libs/ui/GraphicBufferMapper.cpp` |
-| GraphicBuffer header | `frameworks/native/libs/ui/include/ui/GraphicBuffer.h` |
-| libmemunreachable | `system/memory/libmemunreachable/MemUnreachable.cpp` |
-| showmap tool | `system/memory/libmeminfo/tools/showmap.cpp` |
-| procrank / librank | `system/memory/libmeminfo/tools/procrank.cpp` |
-| smapinfo library | `system/memory/libmeminfo/libsmapinfo/smapinfo.cpp` |
-| ProcessList (Java) | `frameworks/base/services/core/java/com/android/server/am/ProcessList.java` |
-| AppProfiler (Java) | `frameworks/base/services/core/java/com/android/server/am/AppProfiler.java` |
-| ComponentCallbacks2 | `frameworks/base/core/java/android/content/ComponentCallbacks2.java` |
-| ActivityManagerService | `frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java` |
-| libdmabufinfo | `system/memory/libmeminfo/libdmabufinfo/` |
-| libmemevents | `system/memory/libmeminfo/libmemevents/` |
-| procmem tool | `system/memory/libmeminfo/tools/procmem.cpp` |
-| wsstop tool | `system/memory/libmeminfo/tools/wsstop.cpp` |
-
----
-
-## Further Reading
-
-For deeper exploration of the topics covered in this chapter:
-
-### Kernel Documentation
-- `Documentation/admin-guide/mm/` in the Linux kernel source -- comprehensive documentation on
-  the kernel's memory management subsystem including zRAM, KSM, THP, and hugetlbfs.
-- `Documentation/admin-guide/cgroup-v2.txt` -- cgroup v2 memory controller documentation.
-- `Documentation/vm/` -- design documents for the kernel VM subsystem.
-
-### Android-Specific Resources
-- Android source documentation in `system/memory/lmkd/README.md` -- overview of lmkd design.
-- The Perfetto documentation at `https://perfetto.dev/docs/data-sources/memory-counters` for
-  details on memory trace analysis.
-- Android CDD (Compatibility Definition Document) memory requirements for different device
-  categories.
-
-### Academic and Industry References
-- "Understanding the Linux Virtual Memory Manager" by Mel Gorman -- the definitive reference on
-  Linux kernel memory management internals.
-- ARM Architecture Reference Manual, sections on Memory Tagging Extension (MTE).
-- "Scudo Hardened Allocator" design document in LLVM project documentation.
-- Google's Project Zero blog posts on MTE deployment and effectiveness.
-
-### Related AOSP Chapters
-- Chapter 5 (Kernel) covers the kernel boot process and basic kernel subsystems.
-- Chapter 7 (Bionic and Linker) covers the C library allocator (Scudo) in more detail.
-- Chapter 13 (Graphics Render Pipeline) covers how GraphicBuffer flows through the display
-  pipeline.
-- Chapter 18 (ART Runtime) covers garbage collection algorithms and managed heap internals.
-- Chapter 29 (Power Management) covers the interaction between memory management and power
-  states (suspend, doze mode).
-- Chapter 56 (Debugging Tools) covers additional debugging techniques including Perfetto and
-  systrace integration.
