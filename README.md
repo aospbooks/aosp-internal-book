@@ -62,7 +62,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | X | 43 | Widgets & RemoteViews (RemoteCompose) | REVIEWED |
 | X | 44 | WebView | REVIEWED |
 | X | 45 | Accessibility | REVIEWED |
-| X | 46 | Internationalization | UNDER REVIEW |
+| X | 46 | Internationalization | REVIEWED |
 | XI | 47 | SystemUI (Monet/Keyguard) | REVIEWED |
 | XI | 48 | Launcher3 | REVIEWED |
 | XI | 49 | Settings | REVIEWED |
