@@ -3244,7 +3244,38 @@ public class UserCard extends LinearLayout {
 
 ---
 
-## 25.11 Try It: Hands-On Experiments
+## 25.11 Key Source File Quick Reference
+
+| Concept | Primary File | Key Method/Class |
+|---------|-------------|-----------------|
+| View measurement | `View.java:28542` | `measure()`, `onMeasure()` |
+| View layout | `View.java:25798` | `layout()`, `onLayout()` |
+| View drawing | `View.java:25251` | `draw()`, `onDraw()` |
+| MeasureSpec | `View.java:31726` | `MeasureSpec` inner class |
+| Touch dispatch (View) | `View.java:16750` | `dispatchTouchEvent()` |
+| Touch dispatch (ViewGroup) | `ViewGroup.java:2646` | `dispatchTouchEvent()` |
+| Touch interception | `ViewGroup.java:3311` | `onInterceptTouchEvent()` |
+| Touch handling | `View.java:18265` | `onTouchEvent()` |
+| Traversal orchestration | `ViewRootImpl.java:3574` | `performTraversals()` |
+| Schedule traversals | `ViewRootImpl.java:3085` | `scheduleTraversals()` |
+| Measure entry | `ViewRootImpl.java:5082` | `performMeasure()` |
+| Layout entry | `ViewRootImpl.java:5148` | `performLayout()` |
+| Draw entry | `ViewRootImpl.java:5767` | `draw()` |
+| Display list recording | `View.java:24064` | `updateDisplayListIfDirty()` |
+| Invalidation | `View.java:21249` | `invalidate()` |
+| Layout request | `View.java:28478` | `requestLayout()` |
+| Choreographer frame | `Choreographer.java:1157` | `doCallbacks()` |
+| Window insets | `WindowInsets.java:80` | `WindowInsets`, `Type` |
+| Insets dispatch | `View.java:12931` | `dispatchApplyWindowInsets()` |
+| Accessibility | `View.java:9513` | `createAccessibilityNodeInfo()` |
+| Layout inflation | `LayoutInflater.java:509` | `inflate()` |
+| ThreadedRenderer | `ThreadedRenderer.java:67` | `ThreadedRenderer` |
+| Focus search | `FocusFinder.java:38` | `FocusFinder` |
+| ViewRootImpl setup | `ViewRootImpl.java:1511` | `setView()` |
+
+---
+
+## 25.12 Try It: Hands-On Experiments
 
 ### Experiment 25.1: Trace the Measure-Layout-Draw Cycle
 
@@ -4074,31 +4105,3 @@ arise in complex UIs.
 
 ---
 
-## Key Source File Quick Reference
-
-| Concept | Primary File | Key Method/Class |
-|---------|-------------|-----------------|
-| View measurement | `View.java:28542` | `measure()`, `onMeasure()` |
-| View layout | `View.java:25798` | `layout()`, `onLayout()` |
-| View drawing | `View.java:25251` | `draw()`, `onDraw()` |
-| MeasureSpec | `View.java:31726` | `MeasureSpec` inner class |
-| Touch dispatch (View) | `View.java:16750` | `dispatchTouchEvent()` |
-| Touch dispatch (ViewGroup) | `ViewGroup.java:2646` | `dispatchTouchEvent()` |
-| Touch interception | `ViewGroup.java:3311` | `onInterceptTouchEvent()` |
-| Touch handling | `View.java:18265` | `onTouchEvent()` |
-| Traversal orchestration | `ViewRootImpl.java:3574` | `performTraversals()` |
-| Schedule traversals | `ViewRootImpl.java:3085` | `scheduleTraversals()` |
-| Measure entry | `ViewRootImpl.java:5082` | `performMeasure()` |
-| Layout entry | `ViewRootImpl.java:5148` | `performLayout()` |
-| Draw entry | `ViewRootImpl.java:5767` | `draw()` |
-| Display list recording | `View.java:24064` | `updateDisplayListIfDirty()` |
-| Invalidation | `View.java:21249` | `invalidate()` |
-| Layout request | `View.java:28478` | `requestLayout()` |
-| Choreographer frame | `Choreographer.java:1157` | `doCallbacks()` |
-| Window insets | `WindowInsets.java:80` | `WindowInsets`, `Type` |
-| Insets dispatch | `View.java:12931` | `dispatchApplyWindowInsets()` |
-| Accessibility | `View.java:9513` | `createAccessibilityNodeInfo()` |
-| Layout inflation | `LayoutInflater.java:509` | `inflate()` |
-| ThreadedRenderer | `ThreadedRenderer.java:67` | `ThreadedRenderer` |
-| Focus search | `FocusFinder.java:38` | `FocusFinder` |
-| ViewRootImpl setup | `ViewRootImpl.java:1511` | `setView()` |
