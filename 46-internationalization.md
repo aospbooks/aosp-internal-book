@@ -1968,29 +1968,11 @@ PRODUCT_COPY_FILES += \
     vendor/my_device/fonts/MyCustomFont-Bold.ttf:system/fonts/MyCustomFont-Bold.ttf
 ```
 
-### 46.7.11 Summary of Key Source Paths
-
-| Component | Source Path |
-|-----------|------------|
-| ICU4C | `external/icu/icu4c/source/` |
-| ICU4J (Android) | `external/icu/android_icu4j/` |
-| ICU NDK library | `external/icu/libandroidicu/` |
-| HarfBuzz | `external/harfbuzz_ng/src/` |
-| FreeType | `external/freetype/` |
-| Minikin | `frameworks/minikin/` |
-| Minikin headers | `frameworks/minikin/include/minikin/` |
-| Minikin source | `frameworks/minikin/libs/minikin/` |
-| LocaleList | `frameworks/base/core/java/android/os/LocaleList.java` |
-| LocaleManagerService | `frameworks/base/services/core/java/com/android/server/locales/LocaleManagerService.java` |
-| TextUtils | `frameworks/base/core/java/android/text/TextUtils.java` |
-| Typeface | `frameworks/base/graphics/java/android/graphics/Typeface.java` |
-| ResourcesImpl | `frameworks/base/core/java/android/content/res/ResourcesImpl.java` |
-| fonts.xml | `frameworks/base/data/fonts/fonts.xml` |
-| Font data directory | `frameworks/base/data/fonts/` |
-
 ---
 
-**Key takeaways from this chapter:**
+## Summary
+
+Key takeaways from this chapter:
 
 1. **ICU is the foundation**: Nearly all i18n functionality -- character
    properties, normalization, collation, break iteration, formatting -- flows
@@ -2016,3 +1998,25 @@ PRODUCT_COPY_FILES += \
 6. **The font system is locale-aware**: CJK Han unification, variable font axes,
    fallback chains, and downloadable fonts all contribute to correct and
    efficient text display across languages.
+
+---
+
+## Key Source Files Reference
+
+| Component | Source Path |
+|-----------|------------|
+| ICU4C | `external/icu/icu4c/source/` |
+| ICU4J (Android) | `external/icu/android_icu4j/` |
+| ICU NDK library | `external/icu/libandroidicu/` |
+| HarfBuzz | `external/harfbuzz_ng/src/` |
+| FreeType | `external/freetype/` |
+| Minikin | `frameworks/minikin/` |
+| Minikin headers | `frameworks/minikin/include/minikin/` |
+| Minikin source | `frameworks/minikin/libs/minikin/` |
+| LocaleList | `frameworks/base/core/java/android/os/LocaleList.java` |
+| LocaleManagerService | `frameworks/base/services/core/java/com/android/server/locales/LocaleManagerService.java` |
+| TextUtils | `frameworks/base/core/java/android/text/TextUtils.java` |
+| Typeface | `frameworks/base/graphics/java/android/graphics/Typeface.java` |
+| ResourcesImpl | `frameworks/base/core/java/android/content/res/ResourcesImpl.java` |
+| fonts.xml | `frameworks/base/data/fonts/fonts.xml` |
+| Font data directory | `frameworks/base/data/fonts/` |
