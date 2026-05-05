@@ -3248,7 +3248,778 @@ slices for QoS guarantees.
 
 ---
 
-## 36.9 Try It
+## 36.9 ImsMedia -- RTP/RTCP for VoLTE and VoWiFi
+
+The ImsMedia module provides the real-time media transport layer for IMS voice
+and video calls. Where the IMS framework (Section 36.5) handles call signalling
+via SIP, ImsMedia handles the actual audio and video data -- encoding,
+packetisation into RTP, quality monitoring via RTCP, and DTMF tone generation.
+It runs as a separate Mainline module, communicating with vendor-provided
+RTP stack hardware through an AIDL HAL interface.
+
+### 36.9.1 Architecture Overview
+
+**Module root:** `packages/modules/ImsMedia/`
+
+ImsMedia is structured as a three-layer stack: a framework API layer, a Java
+service layer, and a native C++ media engine backed by a vendor HAL:
+
+```mermaid
+graph TD
+    subgraph "IMS Call Stack"
+        IMS["ImsService<br/>(IMS framework)"]
+    end
+
+    subgraph "Framework API (android.telephony.imsmedia)"
+        MGR["ImsMediaManager"]
+        ASESS["ImsAudioSession"]
+        VSESS["ImsVideoSession"]
+        TSESS["ImsTextSession"]
+    end
+
+    subgraph "ImsMedia Service Process"
+        CTRL["ImsMediaController<br/>(Android Service)"]
+        ASVC["AudioSession"]
+        VSVC["VideoSession"]
+        TSVC["TextSession"]
+        JNI["JNIImsMediaService"]
+    end
+
+    subgraph "Native Media Engine (libimsmedia)"
+        CORE["Media Core"]
+        AUDIOG["Audio Stream Graphs<br/>(RTP Tx/Rx, RTCP)"]
+        VIDEOG["Video Stream Graphs"]
+        TEXTG["Text Stream Graphs"]
+        JITTER["Jitter Buffer"]
+        CODEC["Codec Nodes<br/>(AMR, EVS, H.264)"]
+    end
+
+    subgraph "Vendor HAL (AIDL)"
+        HAL_M["IImsMedia"]
+        HAL_S["IImsMediaSession"]
+    end
+
+    IMS -->|Binder| MGR
+    MGR -->|bindService| CTRL
+    CTRL --> ASVC
+    CTRL --> VSVC
+    CTRL --> TSVC
+    ASVC --> JNI
+    VSVC --> JNI
+    JNI --> CORE
+    CORE --> AUDIOG
+    CORE --> VIDEOG
+    CORE --> TEXTG
+    AUDIOG --> JITTER
+    AUDIOG --> CODEC
+    CORE -->|AIDL Binder| HAL_M
+    HAL_M --> HAL_S
+```
+
+### 36.9.2 Session Types
+
+ImsMedia supports three distinct media session types, each encapsulating
+audio, video, or real-time text:
+
+```java
+// Source: packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/ImsMediaSession.java
+public interface ImsMediaSession {
+    int SESSION_TYPE_AUDIO = 0;
+    int SESSION_TYPE_VIDEO = 1;
+    int SESSION_TYPE_RTT = 2;   // Real-Time Text (RFC 4103)
+
+    // Packet types
+    int PACKET_TYPE_RTP = 0;    // Real Time Protocol (RFC 3550)
+    int PACKET_TYPE_RTCP = 1;   // Real Time Control Protocol (RFC 3550)
+
+    // Operation results
+    int RESULT_SUCCESS = RtpError.NONE;
+    int RESULT_INVALID_PARAM = RtpError.INVALID_PARAM;
+    int RESULT_NOT_READY = RtpError.NOT_READY;
+    int RESULT_NO_MEMORY = RtpError.NO_MEMORY;
+    int RESULT_NO_RESOURCES = RtpError.NO_RESOURCES;
+    int RESULT_PORT_UNAVAILABLE = RtpError.PORT_UNAVAILABLE;
+    int RESULT_NOT_SUPPORTED = RtpError.NOT_SUPPORTED;
+}
+```
+
+### 36.9.3 ImsMediaManager -- Opening Sessions
+
+`ImsMediaManager` is the framework-level entry point. It binds to the
+`ImsMediaController` service and provides the `openSession()` API:
+
+```java
+// Source: packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/ImsMediaManager.java
+public class ImsMediaManager {
+    protected static final String MEDIA_SERVICE_PACKAGE =
+            "com.android.telephony.imsmedia";
+    protected static final String MEDIA_SERVICE_CLASS =
+            MEDIA_SERVICE_PACKAGE + ".ImsMediaController";
+
+    /**
+     * Opens a RTP session with local UDP sockets for RTP and RTCP.
+     * On success, SessionCallback.onOpenSessionSuccess() returns
+     * an ImsMediaSession. On failure, onOpenSessionFailure() fires.
+     */
+    public void openSession(
+            @NonNull DatagramSocket rtpSocket,
+            @NonNull DatagramSocket rtcpSocket,
+            @NonNull @SessionType int sessionType,
+            @Nullable RtpConfig rtpConfig,
+            @NonNull Executor executor,
+            @NonNull SessionCallback callback) {
+        callback.setExecutor(executor);
+        mImsMedia.openSession(
+                ParcelFileDescriptor.fromDatagramSocket(rtpSocket),
+                ParcelFileDescriptor.fromDatagramSocket(rtcpSocket),
+                sessionType, rtpConfig, callback.getBinder());
+    }
+}
+```
+
+### 36.9.4 ImsMediaController -- The Service
+
+`ImsMediaController` is an Android `Service` that runs in its own process. It
+manages all active media sessions and delegates to type-specific session
+implementations:
+
+```java
+// Source: packages/modules/ImsMedia/service/src/com/android/telephony/imsmedia/ImsMediaController.java
+public class ImsMediaController extends Service {
+    private final SparseArray<IMediaSession> mSessions = new SparseArray();
+
+    // Session creation by type
+    switch (sessionType) {
+        case SESSION_TYPE_AUDIO:
+            session = new AudioSession(sessionId, callback);
+            break;
+        case SESSION_TYPE_VIDEO:
+            JNIImsMediaService.setAssetManager(this.getAssets());
+            session = new VideoSession(sessionId, callback);
+            break;
+        case SESSION_TYPE_RTT:
+            session = new TextSession(sessionId, callback);
+            break;
+    }
+}
+```
+
+The service also provides SPROP (Sequence Parameter Set) generation for H.264
+video via the native layer:
+
+```java
+// ImsMediaController.java
+public void generateVideoSprop(VideoConfig[] videoConfigList,
+        IBinder callback) {
+    String[] spropList = new String[videoConfigList.length];
+    for (VideoConfig config : videoConfigList) {
+        Parcel parcel = Parcel.obtain();
+        config.writeToParcel(parcel, 0);
+        spropList[idx] = JNIImsMediaService.generateSprop(
+                parcel.marshall());
+    }
+    IImsMediaCallback.Stub.asInterface(callback)
+            .onVideoSpropResponse(spropList);
+}
+```
+
+### 36.9.5 RTP Configuration
+
+The `RtpConfig` base class encapsulates all parameters needed for an RTP stream.
+It defines media direction modes and carries codec-specific sub-configurations:
+
+```java
+// Source: packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/RtpConfig.java
+public abstract class RtpConfig implements Parcelable {
+    // Media direction constants
+    public static final int MEDIA_DIRECTION_NO_FLOW = 0;
+    public static final int MEDIA_DIRECTION_SEND_ONLY = 1;
+    public static final int MEDIA_DIRECTION_RECEIVE_ONLY = 2;
+    public static final int MEDIA_DIRECTION_SEND_RECEIVE = 3;
+    public static final int MEDIA_DIRECTION_INACTIVE = 4;  // HOLD
+
+    // Core fields
+    private @MediaDirection int mDirection;
+    private int mAccessNetwork;
+    private InetSocketAddress mRemoteRtpAddress;
+    private RtcpConfig mRtcpConfig;
+    private byte mDscp;              // DiffServ marking
+    private byte mRxPayloadTypeNumber;
+    private byte mTxPayloadTypeNumber;
+    private byte mSamplingRateKHz;
+    private RtpContextParams mRtpContextParams;
+    private AnbrMode mAnbrMode;      // Access Network Bitrate
+}
+```
+
+The media direction state machine:
+
+```mermaid
+stateDiagram-v2
+    [*] --> NO_FLOW : Session opened, no config
+    NO_FLOW --> SEND_RECEIVE : modifySession
+    SEND_RECEIVE --> SEND_ONLY : Remote muted
+    SEND_RECEIVE --> RECEIVE_ONLY : Local muted
+    SEND_RECEIVE --> INACTIVE : Call HOLD
+    INACTIVE --> SEND_RECEIVE : Call RESUME
+    SEND_ONLY --> SEND_RECEIVE : Remote unmuted
+    RECEIVE_ONLY --> SEND_RECEIVE : Local unmuted
+```
+
+### 36.9.6 Audio Configuration and Codecs
+
+`AudioConfig` extends `RtpConfig` with audio-specific codec parameters:
+
+```java
+// Source: packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/AudioConfig.java
+public final class AudioConfig extends RtpConfig {
+    // Supported codecs (mapped to HAL radio.ims.media.CodecType)
+    public static final int CODEC_AMR = CodecType.AMR;       // Narrowband
+    public static final int CODEC_AMR_WB = CodecType.AMR_WB; // Wideband
+    public static final int CODEC_EVS = CodecType.EVS;       // Enhanced Voice
+    public static final int CODEC_PCMA = CodecType.PCMA;     // G.711 A-law
+    public static final int CODEC_PCMU = CodecType.PCMU;     // G.711 mu-law
+
+    private byte pTimeMillis;           // Packetisation time
+    private int maxPtimeMillis;         // Maximum ptime
+    private boolean dtxEnabled;         // Discontinuous Transmission
+    private @CodecType int codecType;
+    private byte mDtmfTxPayloadTypeNumber;
+    private byte mDtmfRxPayloadTypeNumber;
+    private byte dtmfSamplingRateKHz;
+    private AmrParams amrParams;        // AMR-specific parameters
+    private EvsParams evsParams;        // EVS-specific parameters
+}
+```
+
+Codec negotiation typically follows this flow during VoLTE call setup:
+
+```mermaid
+sequenceDiagram
+    participant SIP as IMS SIP Stack
+    participant IMS as ImsService
+    participant MGR as ImsMediaManager
+    participant CTRL as ImsMediaController
+    participant HAL as IImsMedia HAL
+
+    SIP->>IMS: SDP Answer received (AMR-WB)
+    IMS->>MGR: openSession(rtpSocket, rtcpSocket, AUDIO, audioConfig)
+    MGR->>CTRL: openSession(rtpFd, rtcpFd, SESSION_TYPE_AUDIO, config)
+    CTRL->>CTRL: create AudioSession(sessionId)
+    CTRL->>HAL: openSession(sessionId, localEndPoint, rtpConfig)
+    HAL-->>CTRL: onOpenSessionSuccess(IImsMediaSession)
+    CTRL-->>MGR: onOpenSessionSuccess(ImsAudioSession)
+    Note over HAL: RTP/RTCP streams now flowing
+    IMS->>MGR: modifySession(updatedConfig)
+    Note over HAL: Codec or direction changed mid-call
+```
+
+### 36.9.7 RTCP Configuration
+
+RTCP (Real-Time Control Protocol) runs alongside RTP, providing reception
+quality feedback. `RtcpConfig` supports standard RTCP and extended reports
+per RFC 3611:
+
+```java
+// Source: packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/RtcpConfig.java
+public final class RtcpConfig implements Parcelable {
+    // RTCP Extended Report (XR) block types (RFC 3611)
+    public static final int FLAG_RTCPXR_NONE = 0;
+    public static final int FLAG_RTCPXR_LOSS_RLE_REPORT_BLOCK = 1 << 0;
+    public static final int FLAG_RTCPXR_DUPLICATE_RLE_REPORT_BLOCK = 1 << 1;
+    public static final int FLAG_RTCPXR_PACKET_RECEIPT_TIMES_REPORT_BLOCK = 1 << 2;
+    public static final int FLAG_RTCPXR_RECEIVER_REFERENCE_TIME_REPORT_BLOCK = 1 << 3;
+    public static final int FLAG_RTCPXR_DLRR_REPORT_BLOCK = 1 << 4;
+    public static final int FLAG_RTCPXR_STATISTICS_SUMMARY_REPORT_BLOCK = 1 << 5;
+    public static final int FLAG_RTCPXR_VOIP_METRICS_REPORT_BLOCK = 1 << 6;
+
+    private final String canonicalName;  // CNAME for session
+    private final int transmitPort;      // Outgoing RTCP port
+    private final int intervalSec;       // Report interval (0 = disabled)
+}
+```
+
+### 36.9.8 Media Quality Monitoring
+
+ImsMedia provides real-time media quality monitoring through the
+`MediaQualityThreshold` mechanism. Applications set thresholds and receive
+callbacks when quality degrades:
+
+```java
+// Source: packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/MediaQualityThreshold.java
+public final class MediaQualityThreshold implements Parcelable {
+    private final int[] mRtpInactivityTimerMillis;   // No-packet timeout
+    private final int mRtcpInactivityTimerMillis;    // No RTCP timeout
+    private final int mRtpHysteresisTimeInMillis;    // Debounce period
+    private final int mRtpPacketLossDurationMillis;  // Loss measurement window
+    private final int[] mRtpPacketLossRate;          // Loss % thresholds
+    private final int[] mRtpJitterMillis;            // Jitter thresholds
+    private final boolean mNotifyCurrentStatus;      // Immediate report
+    private final int mVideoBitrateBps;              // Video bitrate threshold
+}
+```
+
+Quality events are reported through `AudioSessionCallback`:
+
+| Callback | Trigger |
+|----------|---------|
+| `onMediaQualityStatusChanged()` | Packet loss or jitter crosses threshold |
+| `onMediaInactivityChanged()` | RTP/RTCP inactivity timer expired |
+| `onRtpReceptionStats()` | Periodic reception statistics |
+| `onCallQualityChanged()` | Aggregated quality score changed |
+
+### 36.9.9 Audio Session Capabilities
+
+The `ImsAudioSession` provides rich audio-specific operations:
+
+```java
+// Source: packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/ImsAudioSession.java
+public class ImsAudioSession implements ImsMediaSession {
+    void modifySession(RtpConfig config);        // Change codec/direction
+    void setMediaQualityThreshold(threshold);    // Set quality monitoring
+    void addConfig(AudioConfig config);          // Early media endpoint
+    void deleteConfig(AudioConfig config);       // Remove early media
+    void confirmConfig(AudioConfig config);      // Confirm final endpoint
+    void sendDtmf(char digit, int duration);     // Fixed-duration DTMF
+    void startDtmf(char digit);                  // Start continuous DTMF
+    void stopDtmf();                             // Stop continuous DTMF
+    void sendRtpHeaderExtension(List<RtpHeaderExtension>); // Custom headers
+}
+```
+
+Early media support is notable: during call establishment, the IMS network
+may provide multiple candidate media endpoints. The session accumulates these
+via `addConfig()` and commits to one via `confirmConfig()`.
+
+### 36.9.10 Video Session
+
+`ImsVideoSession` adds video-specific operations:
+
+```java
+// Source: packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/ImsVideoSession.java
+public class ImsVideoSession implements ImsMediaSession {
+    void setPreviewSurface(Surface surface);      // Camera preview
+    void setDisplaySurface(Surface surface);      // Remote video display
+    void requestVideoDataUsage();                 // Bandwidth tracking
+}
+```
+
+### 36.9.11 AIDL HAL Interface
+
+The vendor-side RTP stack implements the `@VintfStability` AIDL HAL:
+
+```
+// Source: hardware/interfaces/radio/aidl/android/hardware/radio/ims/media/IImsMedia.aidl
+@VintfStability
+oneway interface IImsMedia {
+    void setListener(in IImsMediaListener mediaListener);
+    void openSession(int sessionId, in LocalEndPoint localEndPoint,
+            in RtpConfig config);
+    void closeSession(int sessionId);
+}
+
+// Source: hardware/interfaces/radio/aidl/android/hardware/radio/ims/media/IImsMediaSession.aidl
+@VintfStability
+oneway interface IImsMediaSession {
+    void setListener(in IImsMediaSessionListener sessionListener);
+    void modifySession(in RtpConfig config);
+    void sendDtmf(char dtmfDigit, int duration);
+    void startDtmf(char dtmfDigit);
+    void stopDtmf();
+    void sendHeaderExtension(in List<RtpHeaderExtension> extensions);
+    void setMediaQualityThreshold(in MediaQualityThreshold threshold);
+    void requestRtpReceptionStats(in int intervalMs);
+    void adjustDelay(in int delayMs);
+}
+```
+
+The `oneway` modifier means all calls are asynchronous fire-and-forget;
+results come back through the listener callbacks.
+
+### 36.9.12 Native Media Engine
+
+The C++ native layer (`libimsmedia`) implements the actual media processing
+pipeline as a graph of stream nodes:
+
+```
+packages/modules/ImsMedia/service/src/com/android/telephony/imsmedia/lib/libimsmedia/core/
+  audio/
+    AudioJitterBuffer.cpp       - Adaptive jitter buffer for audio
+    AudioStreamGraphRtcp.cpp    - RTCP stream graph for audio
+    nodes/
+      AudioRtpPayloadEncoderNode.cpp  - RTP packetisation
+      AudioRtpPayloadDecoderNode.cpp  - RTP depacketisation
+      DtmfEncoderNode.cpp             - DTMF tone generation
+      ImsMediaAudioUtil.cpp           - Audio utility functions
+  video/
+    VideoStreamGraphRtpTx.cpp   - Video RTP transmit graph
+    VideoStreamGraphRtpRx.cpp   - Video RTP receive graph
+  text/
+    TextManager.cpp             - RTT text management
+    TextJitterBuffer.cpp        - Jitter buffer for text
+```
+
+Each stream type uses a graph of processing nodes connected in a pipeline:
+
+```mermaid
+graph LR
+    subgraph "Audio TX Pipeline"
+        MIC["Microphone<br/>Source"] --> ENC["Codec Encoder<br/>(AMR/EVS)"]
+        ENC --> PAY["RTP Payload<br/>Encoder"]
+        PAY --> SOCK_TX["UDP Socket<br/>(RTP)"]
+    end
+
+    subgraph "Audio RX Pipeline"
+        SOCK_RX["UDP Socket<br/>(RTP)"] --> DEPAY["RTP Payload<br/>Decoder"]
+        DEPAY --> JIT["Jitter<br/>Buffer"]
+        JIT --> DEC["Codec Decoder<br/>(AMR/EVS)"]
+        DEC --> SPK["Speaker<br/>Renderer"]
+    end
+
+    subgraph "RTCP"
+        RTCP_TX["RTCP Sender<br/>(SR/RR)"]
+        RTCP_RX["RTCP Receiver<br/>(SR/RR/XR)"]
+    end
+```
+
+### 36.9.13 Key Source Files
+
+| Component | Path |
+|-----------|------|
+| ImsMediaManager | `packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/ImsMediaManager.java` |
+| ImsMediaSession | `packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/ImsMediaSession.java` |
+| ImsAudioSession | `packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/ImsAudioSession.java` |
+| ImsVideoSession | `packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/ImsVideoSession.java` |
+| RtpConfig | `packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/RtpConfig.java` |
+| AudioConfig | `packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/AudioConfig.java` |
+| RtcpConfig | `packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/RtcpConfig.java` |
+| MediaQualityThreshold | `packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/MediaQualityThreshold.java` |
+| ImsMediaController | `packages/modules/ImsMedia/service/src/com/android/telephony/imsmedia/ImsMediaController.java` |
+| IImsMedia HAL | `hardware/interfaces/radio/aidl/android/hardware/radio/ims/media/IImsMedia.aidl` |
+| IImsMediaSession HAL | `hardware/interfaces/radio/aidl/android/hardware/radio/ims/media/IImsMediaSession.aidl` |
+
+---
+
+## 36.10 WAP Push
+
+WAP Push is a legacy but still actively used mechanism for delivering small
+data payloads over SMS to mobile devices. Despite the name referencing the
+Wireless Application Protocol, WAP Push's most important modern role is
+delivering **MMS notification indicators** -- the SMS-borne messages that tell
+the device an MMS message is waiting for download. Every time you receive a
+picture message, a WAP Push PDU arrives first.
+
+### 36.10.1 What is WAP Push?
+
+WAP Push is defined by the Open Mobile Alliance (OMA) WAP specifications
+(WAP-235, WAP-230-WSP). A WAP Push message is a binary PDU (Protocol Data
+Unit) carried inside one or more SMS messages. The PDU contains:
+
+1. **Transaction ID**: Identifies the push transaction.
+2. **PDU Type**: PUSH (0x06) or CONFIRMED-PUSH (0x07).
+3. **Content-Type**: MIME type of the payload (e.g.,
+   `application/vnd.wap.mms-message` for MMS notifications).
+4. **Headers**: WSP (Wireless Session Protocol) headers, including optional
+   application ID for routing.
+5. **Body**: The actual push data payload.
+
+Common WAP Push content types:
+
+| Content Type | Purpose |
+|-------------|---------|
+| `application/vnd.wap.mms-message` | MMS notification (most common) |
+| `application/vnd.wap.sic` | Service Indication (URL push) |
+| `application/vnd.wap.slc` | Service Loading (auto-fetch URL) |
+| `application/vnd.wap.coc` | Cache Operation |
+| `text/vnd.wap.si` | Service Indication (text form) |
+
+### 36.10.2 Architecture
+
+WAP Push processing in AOSP involves three components: the inbound SMS
+handler that identifies WAP Push PDUs, the `WapPushOverSms` class that
+decodes and dispatches them, and the optional `WapPushManager` service for
+application-ID-based routing:
+
+```mermaid
+graph TD
+    subgraph "Radio Layer"
+        MODEM["Modem"]
+    end
+
+    subgraph "SMS Processing"
+        RIL["RIL<br/>(IRadioMessaging)"]
+        IBSMS["InboundSmsHandler"]
+    end
+
+    subgraph "WAP Push Processing"
+        WPOS["WapPushOverSms"]
+        WSPD["WspTypeDecoder"]
+        WPM["WapPushManager<br/>(optional)"]
+        WPCACHE["WapPushCache"]
+    end
+
+    subgraph "Application Dispatch"
+        MMS_APP["Default MMS App"]
+        WAP_APP["WAP-registered App"]
+        BCAST["WAP_PUSH_DELIVER<br/>Broadcast"]
+    end
+
+    MODEM -->|SMS PDU| RIL
+    RIL --> IBSMS
+    IBSMS -->|"isWapPush?"| WPOS
+    WPOS --> WSPD
+    WPOS --> WPCACHE
+    WPOS -->|"has appId?"| WPM
+    WPM -->|"MESSAGE_HANDLED"| WPOS
+    WPM -.->|"route by appId"| WAP_APP
+    WPOS -->|"MMS notification"| MMS_APP
+    WPOS -->|"other WAP push"| BCAST
+```
+
+### 36.10.3 WapPushOverSms -- The Core Dispatcher
+
+`WapPushOverSms` is the central class for WAP Push processing. It implements
+`ServiceConnection` to bind to the optional `WapPushManager` service:
+
+```java
+// Source: frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushOverSms.java
+public class WapPushOverSms implements ServiceConnection {
+    private static final String TAG = "WAP PUSH";
+    private final Context mContext;
+    private UserManager mUserManager;
+    private PowerWhitelistManager mPowerWhitelistManager;
+
+    // Bound WapPushManager service (optional module)
+    private volatile IWapPushManager mWapPushManager;
+
+    public WapPushOverSms(Context context, FeatureFlags featureFlags) {
+        mContext = context;
+        mPowerWhitelistManager =
+                mContext.getSystemService(PowerWhitelistManager.class);
+        mUserManager = mContext.getSystemService(UserManager.class);
+        bindWapPushManagerService(mContext);
+    }
+}
+```
+
+### 36.10.4 PDU Decoding
+
+The `decodeWapPdu()` method performs the binary PDU parsing. The WSP format
+is compact but complex:
+
+```java
+// Source: WapPushOverSms.java (simplified decode flow)
+private DecodedResult decodeWapPdu(byte[] pdu, InboundSmsHandler handler) {
+    int index = 0;
+
+    // 1. Transaction ID (1 byte)
+    int transactionId = pdu[index++] & 0xFF;
+
+    // 2. PDU Type (1 byte) -- must be PUSH or CONFIRMED_PUSH
+    int pduType = pdu[index++] & 0xFF;
+    if (pduType != WspTypeDecoder.PDU_TYPE_PUSH &&
+            pduType != WspTypeDecoder.PDU_TYPE_CONFIRMED_PUSH) {
+        // Some carriers use non-standard PDU offsets
+        index = mContext.getResources().getInteger(
+                R.integer.config_valid_wappush_index);
+        // Re-read transaction ID and PDU type at new offset
+    }
+
+    WspTypeDecoder pduDecoder = new WspTypeDecoder(pdu);
+
+    // 3. Header Length (uintvar, up to 5 bytes per WAP-230-WSP 8.1.2)
+    pduDecoder.decodeUintvarInteger(index);
+    int headerLength = (int) pduDecoder.getValue32();
+
+    // 4. Content-Type (well-known or extension media)
+    pduDecoder.decodeContentType(index);
+    String mimeType = pduDecoder.getValueString();
+
+    // 5. Extract header and body
+    byte[] header = Arrays.copyOfRange(pdu, headerStart,
+            headerStart + headerLength);
+    byte[] intentData = Arrays.copyOfRange(pdu,
+            headerStart + headerLength, pdu.length);
+
+    // 6. Check for MMS notification -- cache message size
+    GenericPdu parsedPdu = new PduParser(intentData).parse();
+    if (parsedPdu instanceof NotificationInd) {
+        NotificationInd nInd = (NotificationInd) parsedPdu;
+        WapPushCache.putWapMessageSize(
+                nInd.getContentLocation(),
+                nInd.getTransactionId(),
+                nInd.getMessageSize());
+    }
+
+    // 7. Look for application ID in WSP headers
+    if (pduDecoder.seekXWapApplicationId(index, headerEnd)) {
+        result.wapAppId = pduDecoder.getValueString();
+    }
+
+    return result;
+}
+```
+
+The binary format, while compact, reflects the constraints of early 2000s
+mobile networks where every byte of SMS payload was precious.
+
+### 36.10.5 Application-ID Routing
+
+If the WAP Push PDU contains an `X-Wap-Application-Id` header, the system
+attempts to route it through the `WapPushManager` service. This allows
+specific applications to register for specific WAP Push content types:
+
+```java
+// Source: WapPushOverSms.java (dispatch with app ID)
+if (result.wapAppId != null) {
+    IWapPushManager wapPushMan = mWapPushManager;
+    if (wapPushMan != null) {
+        // Whitelist the WapPushManager package for FGS start
+        mPowerWhitelistManager.whitelistAppTemporarilyForEvent(
+                mWapPushManagerPackage,
+                PowerWhitelistManager.EVENT_MMS,
+                REASON_EVENT_MMS, "mms-mgr");
+
+        int procRet = wapPushMan.processMessage(
+                result.wapAppId, result.contentType, intent);
+
+        if ((procRet & WapPushManagerParams.MESSAGE_HANDLED) > 0
+                && (procRet & WapPushManagerParams.FURTHER_PROCESSING)
+                        == 0) {
+            return Intents.RESULT_SMS_HANDLED;  // Fully handled
+        }
+    }
+}
+```
+
+The `WapPushManagerParams` define the processing result flags:
+
+```java
+// Source: frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushManagerParams.java
+public class WapPushManagerParams {
+    public static final int APP_TYPE_ACTIVITY = 0;
+    public static final int APP_TYPE_SERVICE = 1;
+    public static final int MESSAGE_HANDLED = 0x1;
+    public static final int APP_QUERY_FAILED = 0x2;
+    public static final int SIGNATURE_NO_MATCH = 0x4;
+    public static final int INVALID_RECEIVER_NAME = 0x8;
+    public static final int EXCEPTION_CAUGHT = 0x10;
+    public static final int FURTHER_PROCESSING = 0x8000;
+}
+```
+
+### 36.10.6 MMS Notification Dispatch
+
+The most common WAP Push flow is MMS notification delivery. When the MIME type
+is `application/vnd.wap.mms-message`, the system directs the intent to the
+default MMS app:
+
+```java
+// Source: WapPushOverSms.java
+Intent intent = new Intent(Intents.WAP_PUSH_DELIVER_ACTION);
+intent.setType(result.mimeType);
+intent.putExtra("transactionId", result.transactionId);
+intent.putExtra("pduType", result.pduType);
+intent.putExtra("header", result.header);
+intent.putExtra("data", result.intentData);
+
+// Direct to default MMS app only
+ComponentName componentName =
+        SmsApplication.getDefaultMmsApplicationAsUser(mContext,
+                true, userHandle);
+if (componentName != null) {
+    intent.setComponent(componentName);
+    // Whitelist the MMS app for foreground service start
+    long duration = mPowerWhitelistManager.whitelistAppTemporarilyForEvent(
+            componentName.getPackageName(),
+            PowerWhitelistManager.EVENT_MMS,
+            REASON_EVENT_MMS, "mms-app");
+}
+
+handler.dispatchIntent(intent,
+        getPermissionForType(result.mimeType),
+        getAppOpsStringPermissionForIntent(result.mimeType),
+        options, receiver, userHandle, subId);
+```
+
+The permission check depends on content type:
+
+| MIME Type | Required Permission |
+|-----------|-------------------|
+| `application/vnd.wap.mms-message` | `RECEIVE_MMS` |
+| All other WAP Push types | `RECEIVE_WAP_PUSH` |
+
+### 36.10.7 WapPushCache
+
+`WapPushCache` stores metadata about received MMS notification PDUs, primarily
+the message size. This is used for satellite connectivity scenarios where
+large MMS downloads may not be feasible:
+
+```java
+// Source: frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushCache.java
+// Caches: contentLocation + transactionId -> messageSize
+WapPushCache.putWapMessageSize(
+        nInd.getContentLocation(),
+        nInd.getTransactionId(),
+        nInd.getMessageSize());
+```
+
+### 36.10.8 WAP Push in the Messaging App
+
+On the receiving end, the default messaging app (e.g., `packages/apps/Messaging/`)
+registers broadcast receivers for WAP Push:
+
+```
+// packages/apps/Messaging/src/com/android/messaging/receiver/
+MmsWapPushReceiver.java           // Receives WAP_PUSH_RECEIVED_ACTION
+MmsWapPushDeliverReceiver.java    // Receives WAP_PUSH_DELIVER_ACTION
+AbortMmsWapPushReceiver.java      // Aborts WAP push for non-default apps
+```
+
+The `MmsWapPushDeliverReceiver` parses the MMS notification indicator and
+initiates the actual MMS download over HTTP from the carrier's MMSC
+(Multimedia Messaging Service Centre).
+
+### 36.10.9 End-to-End MMS Flow via WAP Push
+
+```mermaid
+sequenceDiagram
+    participant MMSC as Carrier MMSC
+    participant SMSC as Carrier SMSC
+    participant Modem as Device Modem
+    participant RIL as RIL
+    participant IBSMS as InboundSmsHandler
+    participant WP as WapPushOverSms
+    participant APP as MMS App
+
+    MMSC->>SMSC: MMS notification (WAP Push PDU)
+    SMSC->>Modem: SMS bearing WAP Push
+    Modem->>RIL: newSms(pdu)
+    RIL->>IBSMS: processMessagePart()
+    IBSMS->>WP: dispatchWapPdu(pdu)
+    WP->>WP: decodeWapPdu() - parse WSP headers
+    WP->>WP: Parse MMS notification indicator
+    WP->>WP: Cache message size in WapPushCache
+    WP->>APP: WAP_PUSH_DELIVER_ACTION intent
+    APP->>APP: Parse notification - extract content-location URL
+    APP->>MMSC: HTTP GET content-location (download MMS)
+    MMSC-->>APP: MMS content (MIME multipart)
+    APP->>APP: Store and display MMS message
+```
+
+### 36.10.10 Key Source Files
+
+| File | Path | Lines |
+|------|------|-------|
+| WapPushOverSms | `frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushOverSms.java` | 505 |
+| WapPushManagerParams | `frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushManagerParams.java` | 70 |
+| WapPushCache | `frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushCache.java` | 172 |
+| InboundSmsHandler | `frameworks/opt/telephony/src/java/com/android/internal/telephony/InboundSmsHandler.java` | ~2,000 |
+| MmsWapPushDeliverReceiver | `packages/apps/Messaging/src/com/android/messaging/receiver/MmsWapPushDeliverReceiver.java` | ~50 |
+
+---
+
+## 36.11 Try It
 
 ### Exercise 36-1: Inspect the Telephony Service with dumpsys
 
@@ -3762,777 +4533,6 @@ adb shell cmd phone data help
 adb shell cmd phone data enable -s 1   # Enable mobile data
 adb shell cmd phone data disable -s 1  # Disable mobile data
 ```
-
----
-
-## 36.10 ImsMedia -- RTP/RTCP for VoLTE and VoWiFi
-
-The ImsMedia module provides the real-time media transport layer for IMS voice
-and video calls. Where the IMS framework (Section 36.5) handles call signalling
-via SIP, ImsMedia handles the actual audio and video data -- encoding,
-packetisation into RTP, quality monitoring via RTCP, and DTMF tone generation.
-It runs as a separate Mainline module, communicating with vendor-provided
-RTP stack hardware through an AIDL HAL interface.
-
-### 36.10.1 Architecture Overview
-
-**Module root:** `packages/modules/ImsMedia/`
-
-ImsMedia is structured as a three-layer stack: a framework API layer, a Java
-service layer, and a native C++ media engine backed by a vendor HAL:
-
-```mermaid
-graph TD
-    subgraph "IMS Call Stack"
-        IMS["ImsService<br/>(IMS framework)"]
-    end
-
-    subgraph "Framework API (android.telephony.imsmedia)"
-        MGR["ImsMediaManager"]
-        ASESS["ImsAudioSession"]
-        VSESS["ImsVideoSession"]
-        TSESS["ImsTextSession"]
-    end
-
-    subgraph "ImsMedia Service Process"
-        CTRL["ImsMediaController<br/>(Android Service)"]
-        ASVC["AudioSession"]
-        VSVC["VideoSession"]
-        TSVC["TextSession"]
-        JNI["JNIImsMediaService"]
-    end
-
-    subgraph "Native Media Engine (libimsmedia)"
-        CORE["Media Core"]
-        AUDIOG["Audio Stream Graphs<br/>(RTP Tx/Rx, RTCP)"]
-        VIDEOG["Video Stream Graphs"]
-        TEXTG["Text Stream Graphs"]
-        JITTER["Jitter Buffer"]
-        CODEC["Codec Nodes<br/>(AMR, EVS, H.264)"]
-    end
-
-    subgraph "Vendor HAL (AIDL)"
-        HAL_M["IImsMedia"]
-        HAL_S["IImsMediaSession"]
-    end
-
-    IMS -->|Binder| MGR
-    MGR -->|bindService| CTRL
-    CTRL --> ASVC
-    CTRL --> VSVC
-    CTRL --> TSVC
-    ASVC --> JNI
-    VSVC --> JNI
-    JNI --> CORE
-    CORE --> AUDIOG
-    CORE --> VIDEOG
-    CORE --> TEXTG
-    AUDIOG --> JITTER
-    AUDIOG --> CODEC
-    CORE -->|AIDL Binder| HAL_M
-    HAL_M --> HAL_S
-```
-
-### 36.10.2 Session Types
-
-ImsMedia supports three distinct media session types, each encapsulating
-audio, video, or real-time text:
-
-```java
-// Source: packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/ImsMediaSession.java
-public interface ImsMediaSession {
-    int SESSION_TYPE_AUDIO = 0;
-    int SESSION_TYPE_VIDEO = 1;
-    int SESSION_TYPE_RTT = 2;   // Real-Time Text (RFC 4103)
-
-    // Packet types
-    int PACKET_TYPE_RTP = 0;    // Real Time Protocol (RFC 3550)
-    int PACKET_TYPE_RTCP = 1;   // Real Time Control Protocol (RFC 3550)
-
-    // Operation results
-    int RESULT_SUCCESS = RtpError.NONE;
-    int RESULT_INVALID_PARAM = RtpError.INVALID_PARAM;
-    int RESULT_NOT_READY = RtpError.NOT_READY;
-    int RESULT_NO_MEMORY = RtpError.NO_MEMORY;
-    int RESULT_NO_RESOURCES = RtpError.NO_RESOURCES;
-    int RESULT_PORT_UNAVAILABLE = RtpError.PORT_UNAVAILABLE;
-    int RESULT_NOT_SUPPORTED = RtpError.NOT_SUPPORTED;
-}
-```
-
-### 36.10.3 ImsMediaManager -- Opening Sessions
-
-`ImsMediaManager` is the framework-level entry point. It binds to the
-`ImsMediaController` service and provides the `openSession()` API:
-
-```java
-// Source: packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/ImsMediaManager.java
-public class ImsMediaManager {
-    protected static final String MEDIA_SERVICE_PACKAGE =
-            "com.android.telephony.imsmedia";
-    protected static final String MEDIA_SERVICE_CLASS =
-            MEDIA_SERVICE_PACKAGE + ".ImsMediaController";
-
-    /**
-     * Opens a RTP session with local UDP sockets for RTP and RTCP.
-     * On success, SessionCallback.onOpenSessionSuccess() returns
-     * an ImsMediaSession. On failure, onOpenSessionFailure() fires.
-     */
-    public void openSession(
-            @NonNull DatagramSocket rtpSocket,
-            @NonNull DatagramSocket rtcpSocket,
-            @NonNull @SessionType int sessionType,
-            @Nullable RtpConfig rtpConfig,
-            @NonNull Executor executor,
-            @NonNull SessionCallback callback) {
-        callback.setExecutor(executor);
-        mImsMedia.openSession(
-                ParcelFileDescriptor.fromDatagramSocket(rtpSocket),
-                ParcelFileDescriptor.fromDatagramSocket(rtcpSocket),
-                sessionType, rtpConfig, callback.getBinder());
-    }
-}
-```
-
-### 36.10.4 ImsMediaController -- The Service
-
-`ImsMediaController` is an Android `Service` that runs in its own process. It
-manages all active media sessions and delegates to type-specific session
-implementations:
-
-```java
-// Source: packages/modules/ImsMedia/service/src/com/android/telephony/imsmedia/ImsMediaController.java
-public class ImsMediaController extends Service {
-    private final SparseArray<IMediaSession> mSessions = new SparseArray();
-
-    // Session creation by type
-    switch (sessionType) {
-        case SESSION_TYPE_AUDIO:
-            session = new AudioSession(sessionId, callback);
-            break;
-        case SESSION_TYPE_VIDEO:
-            JNIImsMediaService.setAssetManager(this.getAssets());
-            session = new VideoSession(sessionId, callback);
-            break;
-        case SESSION_TYPE_RTT:
-            session = new TextSession(sessionId, callback);
-            break;
-    }
-}
-```
-
-The service also provides SPROP (Sequence Parameter Set) generation for H.264
-video via the native layer:
-
-```java
-// ImsMediaController.java
-public void generateVideoSprop(VideoConfig[] videoConfigList,
-        IBinder callback) {
-    String[] spropList = new String[videoConfigList.length];
-    for (VideoConfig config : videoConfigList) {
-        Parcel parcel = Parcel.obtain();
-        config.writeToParcel(parcel, 0);
-        spropList[idx] = JNIImsMediaService.generateSprop(
-                parcel.marshall());
-    }
-    IImsMediaCallback.Stub.asInterface(callback)
-            .onVideoSpropResponse(spropList);
-}
-```
-
-### 36.10.5 RTP Configuration
-
-The `RtpConfig` base class encapsulates all parameters needed for an RTP stream.
-It defines media direction modes and carries codec-specific sub-configurations:
-
-```java
-// Source: packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/RtpConfig.java
-public abstract class RtpConfig implements Parcelable {
-    // Media direction constants
-    public static final int MEDIA_DIRECTION_NO_FLOW = 0;
-    public static final int MEDIA_DIRECTION_SEND_ONLY = 1;
-    public static final int MEDIA_DIRECTION_RECEIVE_ONLY = 2;
-    public static final int MEDIA_DIRECTION_SEND_RECEIVE = 3;
-    public static final int MEDIA_DIRECTION_INACTIVE = 4;  // HOLD
-
-    // Core fields
-    private @MediaDirection int mDirection;
-    private int mAccessNetwork;
-    private InetSocketAddress mRemoteRtpAddress;
-    private RtcpConfig mRtcpConfig;
-    private byte mDscp;              // DiffServ marking
-    private byte mRxPayloadTypeNumber;
-    private byte mTxPayloadTypeNumber;
-    private byte mSamplingRateKHz;
-    private RtpContextParams mRtpContextParams;
-    private AnbrMode mAnbrMode;      // Access Network Bitrate
-}
-```
-
-The media direction state machine:
-
-```mermaid
-stateDiagram-v2
-    [*] --> NO_FLOW : Session opened, no config
-    NO_FLOW --> SEND_RECEIVE : modifySession
-    SEND_RECEIVE --> SEND_ONLY : Remote muted
-    SEND_RECEIVE --> RECEIVE_ONLY : Local muted
-    SEND_RECEIVE --> INACTIVE : Call HOLD
-    INACTIVE --> SEND_RECEIVE : Call RESUME
-    SEND_ONLY --> SEND_RECEIVE : Remote unmuted
-    RECEIVE_ONLY --> SEND_RECEIVE : Local unmuted
-```
-
-### 36.10.6 Audio Configuration and Codecs
-
-`AudioConfig` extends `RtpConfig` with audio-specific codec parameters:
-
-```java
-// Source: packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/AudioConfig.java
-public final class AudioConfig extends RtpConfig {
-    // Supported codecs (mapped to HAL radio.ims.media.CodecType)
-    public static final int CODEC_AMR = CodecType.AMR;       // Narrowband
-    public static final int CODEC_AMR_WB = CodecType.AMR_WB; // Wideband
-    public static final int CODEC_EVS = CodecType.EVS;       // Enhanced Voice
-    public static final int CODEC_PCMA = CodecType.PCMA;     // G.711 A-law
-    public static final int CODEC_PCMU = CodecType.PCMU;     // G.711 mu-law
-
-    private byte pTimeMillis;           // Packetisation time
-    private int maxPtimeMillis;         // Maximum ptime
-    private boolean dtxEnabled;         // Discontinuous Transmission
-    private @CodecType int codecType;
-    private byte mDtmfTxPayloadTypeNumber;
-    private byte mDtmfRxPayloadTypeNumber;
-    private byte dtmfSamplingRateKHz;
-    private AmrParams amrParams;        // AMR-specific parameters
-    private EvsParams evsParams;        // EVS-specific parameters
-}
-```
-
-Codec negotiation typically follows this flow during VoLTE call setup:
-
-```mermaid
-sequenceDiagram
-    participant SIP as IMS SIP Stack
-    participant IMS as ImsService
-    participant MGR as ImsMediaManager
-    participant CTRL as ImsMediaController
-    participant HAL as IImsMedia HAL
-
-    SIP->>IMS: SDP Answer received (AMR-WB)
-    IMS->>MGR: openSession(rtpSocket, rtcpSocket, AUDIO, audioConfig)
-    MGR->>CTRL: openSession(rtpFd, rtcpFd, SESSION_TYPE_AUDIO, config)
-    CTRL->>CTRL: create AudioSession(sessionId)
-    CTRL->>HAL: openSession(sessionId, localEndPoint, rtpConfig)
-    HAL-->>CTRL: onOpenSessionSuccess(IImsMediaSession)
-    CTRL-->>MGR: onOpenSessionSuccess(ImsAudioSession)
-    Note over HAL: RTP/RTCP streams now flowing
-    IMS->>MGR: modifySession(updatedConfig)
-    Note over HAL: Codec or direction changed mid-call
-```
-
-### 36.10.7 RTCP Configuration
-
-RTCP (Real-Time Control Protocol) runs alongside RTP, providing reception
-quality feedback. `RtcpConfig` supports standard RTCP and extended reports
-per RFC 3611:
-
-```java
-// Source: packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/RtcpConfig.java
-public final class RtcpConfig implements Parcelable {
-    // RTCP Extended Report (XR) block types (RFC 3611)
-    public static final int FLAG_RTCPXR_NONE = 0;
-    public static final int FLAG_RTCPXR_LOSS_RLE_REPORT_BLOCK = 1 << 0;
-    public static final int FLAG_RTCPXR_DUPLICATE_RLE_REPORT_BLOCK = 1 << 1;
-    public static final int FLAG_RTCPXR_PACKET_RECEIPT_TIMES_REPORT_BLOCK = 1 << 2;
-    public static final int FLAG_RTCPXR_RECEIVER_REFERENCE_TIME_REPORT_BLOCK = 1 << 3;
-    public static final int FLAG_RTCPXR_DLRR_REPORT_BLOCK = 1 << 4;
-    public static final int FLAG_RTCPXR_STATISTICS_SUMMARY_REPORT_BLOCK = 1 << 5;
-    public static final int FLAG_RTCPXR_VOIP_METRICS_REPORT_BLOCK = 1 << 6;
-
-    private final String canonicalName;  // CNAME for session
-    private final int transmitPort;      // Outgoing RTCP port
-    private final int intervalSec;       // Report interval (0 = disabled)
-}
-```
-
-### 36.10.8 Media Quality Monitoring
-
-ImsMedia provides real-time media quality monitoring through the
-`MediaQualityThreshold` mechanism. Applications set thresholds and receive
-callbacks when quality degrades:
-
-```java
-// Source: packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/MediaQualityThreshold.java
-public final class MediaQualityThreshold implements Parcelable {
-    private final int[] mRtpInactivityTimerMillis;   // No-packet timeout
-    private final int mRtcpInactivityTimerMillis;    // No RTCP timeout
-    private final int mRtpHysteresisTimeInMillis;    // Debounce period
-    private final int mRtpPacketLossDurationMillis;  // Loss measurement window
-    private final int[] mRtpPacketLossRate;          // Loss % thresholds
-    private final int[] mRtpJitterMillis;            // Jitter thresholds
-    private final boolean mNotifyCurrentStatus;      // Immediate report
-    private final int mVideoBitrateBps;              // Video bitrate threshold
-}
-```
-
-Quality events are reported through `AudioSessionCallback`:
-
-| Callback | Trigger |
-|----------|---------|
-| `onMediaQualityStatusChanged()` | Packet loss or jitter crosses threshold |
-| `onMediaInactivityChanged()` | RTP/RTCP inactivity timer expired |
-| `onRtpReceptionStats()` | Periodic reception statistics |
-| `onCallQualityChanged()` | Aggregated quality score changed |
-
-### 36.10.9 Audio Session Capabilities
-
-The `ImsAudioSession` provides rich audio-specific operations:
-
-```java
-// Source: packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/ImsAudioSession.java
-public class ImsAudioSession implements ImsMediaSession {
-    void modifySession(RtpConfig config);        // Change codec/direction
-    void setMediaQualityThreshold(threshold);    // Set quality monitoring
-    void addConfig(AudioConfig config);          // Early media endpoint
-    void deleteConfig(AudioConfig config);       // Remove early media
-    void confirmConfig(AudioConfig config);      // Confirm final endpoint
-    void sendDtmf(char digit, int duration);     // Fixed-duration DTMF
-    void startDtmf(char digit);                  // Start continuous DTMF
-    void stopDtmf();                             // Stop continuous DTMF
-    void sendRtpHeaderExtension(List<RtpHeaderExtension>); // Custom headers
-}
-```
-
-Early media support is notable: during call establishment, the IMS network
-may provide multiple candidate media endpoints. The session accumulates these
-via `addConfig()` and commits to one via `confirmConfig()`.
-
-### 36.10.10 Video Session
-
-`ImsVideoSession` adds video-specific operations:
-
-```java
-// Source: packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/ImsVideoSession.java
-public class ImsVideoSession implements ImsMediaSession {
-    void setPreviewSurface(Surface surface);      // Camera preview
-    void setDisplaySurface(Surface surface);      // Remote video display
-    void requestVideoDataUsage();                 // Bandwidth tracking
-}
-```
-
-### 36.10.11 AIDL HAL Interface
-
-The vendor-side RTP stack implements the `@VintfStability` AIDL HAL:
-
-```
-// Source: hardware/interfaces/radio/aidl/android/hardware/radio/ims/media/IImsMedia.aidl
-@VintfStability
-oneway interface IImsMedia {
-    void setListener(in IImsMediaListener mediaListener);
-    void openSession(int sessionId, in LocalEndPoint localEndPoint,
-            in RtpConfig config);
-    void closeSession(int sessionId);
-}
-
-// Source: hardware/interfaces/radio/aidl/android/hardware/radio/ims/media/IImsMediaSession.aidl
-@VintfStability
-oneway interface IImsMediaSession {
-    void setListener(in IImsMediaSessionListener sessionListener);
-    void modifySession(in RtpConfig config);
-    void sendDtmf(char dtmfDigit, int duration);
-    void startDtmf(char dtmfDigit);
-    void stopDtmf();
-    void sendHeaderExtension(in List<RtpHeaderExtension> extensions);
-    void setMediaQualityThreshold(in MediaQualityThreshold threshold);
-    void requestRtpReceptionStats(in int intervalMs);
-    void adjustDelay(in int delayMs);
-}
-```
-
-The `oneway` modifier means all calls are asynchronous fire-and-forget;
-results come back through the listener callbacks.
-
-### 36.10.12 Native Media Engine
-
-The C++ native layer (`libimsmedia`) implements the actual media processing
-pipeline as a graph of stream nodes:
-
-```
-packages/modules/ImsMedia/service/src/com/android/telephony/imsmedia/lib/libimsmedia/core/
-  audio/
-    AudioJitterBuffer.cpp       - Adaptive jitter buffer for audio
-    AudioStreamGraphRtcp.cpp    - RTCP stream graph for audio
-    nodes/
-      AudioRtpPayloadEncoderNode.cpp  - RTP packetisation
-      AudioRtpPayloadDecoderNode.cpp  - RTP depacketisation
-      DtmfEncoderNode.cpp             - DTMF tone generation
-      ImsMediaAudioUtil.cpp           - Audio utility functions
-  video/
-    VideoStreamGraphRtpTx.cpp   - Video RTP transmit graph
-    VideoStreamGraphRtpRx.cpp   - Video RTP receive graph
-  text/
-    TextManager.cpp             - RTT text management
-    TextJitterBuffer.cpp        - Jitter buffer for text
-```
-
-Each stream type uses a graph of processing nodes connected in a pipeline:
-
-```mermaid
-graph LR
-    subgraph "Audio TX Pipeline"
-        MIC["Microphone<br/>Source"] --> ENC["Codec Encoder<br/>(AMR/EVS)"]
-        ENC --> PAY["RTP Payload<br/>Encoder"]
-        PAY --> SOCK_TX["UDP Socket<br/>(RTP)"]
-    end
-
-    subgraph "Audio RX Pipeline"
-        SOCK_RX["UDP Socket<br/>(RTP)"] --> DEPAY["RTP Payload<br/>Decoder"]
-        DEPAY --> JIT["Jitter<br/>Buffer"]
-        JIT --> DEC["Codec Decoder<br/>(AMR/EVS)"]
-        DEC --> SPK["Speaker<br/>Renderer"]
-    end
-
-    subgraph "RTCP"
-        RTCP_TX["RTCP Sender<br/>(SR/RR)"]
-        RTCP_RX["RTCP Receiver<br/>(SR/RR/XR)"]
-    end
-```
-
-### 36.10.13 Key Source Files
-
-| Component | Path |
-|-----------|------|
-| ImsMediaManager | `packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/ImsMediaManager.java` |
-| ImsMediaSession | `packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/ImsMediaSession.java` |
-| ImsAudioSession | `packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/ImsAudioSession.java` |
-| ImsVideoSession | `packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/ImsVideoSession.java` |
-| RtpConfig | `packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/RtpConfig.java` |
-| AudioConfig | `packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/AudioConfig.java` |
-| RtcpConfig | `packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/RtcpConfig.java` |
-| MediaQualityThreshold | `packages/modules/ImsMedia/framework/src/android/telephony/imsmedia/MediaQualityThreshold.java` |
-| ImsMediaController | `packages/modules/ImsMedia/service/src/com/android/telephony/imsmedia/ImsMediaController.java` |
-| IImsMedia HAL | `hardware/interfaces/radio/aidl/android/hardware/radio/ims/media/IImsMedia.aidl` |
-| IImsMediaSession HAL | `hardware/interfaces/radio/aidl/android/hardware/radio/ims/media/IImsMediaSession.aidl` |
-
----
-
-## 36.11 WAP Push
-
-WAP Push is a legacy but still actively used mechanism for delivering small
-data payloads over SMS to mobile devices. Despite the name referencing the
-Wireless Application Protocol, WAP Push's most important modern role is
-delivering **MMS notification indicators** -- the SMS-borne messages that tell
-the device an MMS message is waiting for download. Every time you receive a
-picture message, a WAP Push PDU arrives first.
-
-### 36.11.1 What is WAP Push?
-
-WAP Push is defined by the Open Mobile Alliance (OMA) WAP specifications
-(WAP-235, WAP-230-WSP). A WAP Push message is a binary PDU (Protocol Data
-Unit) carried inside one or more SMS messages. The PDU contains:
-
-1. **Transaction ID**: Identifies the push transaction.
-2. **PDU Type**: PUSH (0x06) or CONFIRMED-PUSH (0x07).
-3. **Content-Type**: MIME type of the payload (e.g.,
-   `application/vnd.wap.mms-message` for MMS notifications).
-4. **Headers**: WSP (Wireless Session Protocol) headers, including optional
-   application ID for routing.
-5. **Body**: The actual push data payload.
-
-Common WAP Push content types:
-
-| Content Type | Purpose |
-|-------------|---------|
-| `application/vnd.wap.mms-message` | MMS notification (most common) |
-| `application/vnd.wap.sic` | Service Indication (URL push) |
-| `application/vnd.wap.slc` | Service Loading (auto-fetch URL) |
-| `application/vnd.wap.coc` | Cache Operation |
-| `text/vnd.wap.si` | Service Indication (text form) |
-
-### 36.11.2 Architecture
-
-WAP Push processing in AOSP involves three components: the inbound SMS
-handler that identifies WAP Push PDUs, the `WapPushOverSms` class that
-decodes and dispatches them, and the optional `WapPushManager` service for
-application-ID-based routing:
-
-```mermaid
-graph TD
-    subgraph "Radio Layer"
-        MODEM["Modem"]
-    end
-
-    subgraph "SMS Processing"
-        RIL["RIL<br/>(IRadioMessaging)"]
-        IBSMS["InboundSmsHandler"]
-    end
-
-    subgraph "WAP Push Processing"
-        WPOS["WapPushOverSms"]
-        WSPD["WspTypeDecoder"]
-        WPM["WapPushManager<br/>(optional)"]
-        WPCACHE["WapPushCache"]
-    end
-
-    subgraph "Application Dispatch"
-        MMS_APP["Default MMS App"]
-        WAP_APP["WAP-registered App"]
-        BCAST["WAP_PUSH_DELIVER<br/>Broadcast"]
-    end
-
-    MODEM -->|SMS PDU| RIL
-    RIL --> IBSMS
-    IBSMS -->|"isWapPush?"| WPOS
-    WPOS --> WSPD
-    WPOS --> WPCACHE
-    WPOS -->|"has appId?"| WPM
-    WPM -->|"MESSAGE_HANDLED"| WPOS
-    WPM -.->|"route by appId"| WAP_APP
-    WPOS -->|"MMS notification"| MMS_APP
-    WPOS -->|"other WAP push"| BCAST
-```
-
-### 36.11.3 WapPushOverSms -- The Core Dispatcher
-
-`WapPushOverSms` is the central class for WAP Push processing. It implements
-`ServiceConnection` to bind to the optional `WapPushManager` service:
-
-```java
-// Source: frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushOverSms.java
-public class WapPushOverSms implements ServiceConnection {
-    private static final String TAG = "WAP PUSH";
-    private final Context mContext;
-    private UserManager mUserManager;
-    private PowerWhitelistManager mPowerWhitelistManager;
-
-    // Bound WapPushManager service (optional module)
-    private volatile IWapPushManager mWapPushManager;
-
-    public WapPushOverSms(Context context, FeatureFlags featureFlags) {
-        mContext = context;
-        mPowerWhitelistManager =
-                mContext.getSystemService(PowerWhitelistManager.class);
-        mUserManager = mContext.getSystemService(UserManager.class);
-        bindWapPushManagerService(mContext);
-    }
-}
-```
-
-### 36.11.4 PDU Decoding
-
-The `decodeWapPdu()` method performs the binary PDU parsing. The WSP format
-is compact but complex:
-
-```java
-// Source: WapPushOverSms.java (simplified decode flow)
-private DecodedResult decodeWapPdu(byte[] pdu, InboundSmsHandler handler) {
-    int index = 0;
-
-    // 1. Transaction ID (1 byte)
-    int transactionId = pdu[index++] & 0xFF;
-
-    // 2. PDU Type (1 byte) -- must be PUSH or CONFIRMED_PUSH
-    int pduType = pdu[index++] & 0xFF;
-    if (pduType != WspTypeDecoder.PDU_TYPE_PUSH &&
-            pduType != WspTypeDecoder.PDU_TYPE_CONFIRMED_PUSH) {
-        // Some carriers use non-standard PDU offsets
-        index = mContext.getResources().getInteger(
-                R.integer.config_valid_wappush_index);
-        // Re-read transaction ID and PDU type at new offset
-    }
-
-    WspTypeDecoder pduDecoder = new WspTypeDecoder(pdu);
-
-    // 3. Header Length (uintvar, up to 5 bytes per WAP-230-WSP 8.1.2)
-    pduDecoder.decodeUintvarInteger(index);
-    int headerLength = (int) pduDecoder.getValue32();
-
-    // 4. Content-Type (well-known or extension media)
-    pduDecoder.decodeContentType(index);
-    String mimeType = pduDecoder.getValueString();
-
-    // 5. Extract header and body
-    byte[] header = Arrays.copyOfRange(pdu, headerStart,
-            headerStart + headerLength);
-    byte[] intentData = Arrays.copyOfRange(pdu,
-            headerStart + headerLength, pdu.length);
-
-    // 6. Check for MMS notification -- cache message size
-    GenericPdu parsedPdu = new PduParser(intentData).parse();
-    if (parsedPdu instanceof NotificationInd) {
-        NotificationInd nInd = (NotificationInd) parsedPdu;
-        WapPushCache.putWapMessageSize(
-                nInd.getContentLocation(),
-                nInd.getTransactionId(),
-                nInd.getMessageSize());
-    }
-
-    // 7. Look for application ID in WSP headers
-    if (pduDecoder.seekXWapApplicationId(index, headerEnd)) {
-        result.wapAppId = pduDecoder.getValueString();
-    }
-
-    return result;
-}
-```
-
-The binary format, while compact, reflects the constraints of early 2000s
-mobile networks where every byte of SMS payload was precious.
-
-### 36.11.5 Application-ID Routing
-
-If the WAP Push PDU contains an `X-Wap-Application-Id` header, the system
-attempts to route it through the `WapPushManager` service. This allows
-specific applications to register for specific WAP Push content types:
-
-```java
-// Source: WapPushOverSms.java (dispatch with app ID)
-if (result.wapAppId != null) {
-    IWapPushManager wapPushMan = mWapPushManager;
-    if (wapPushMan != null) {
-        // Whitelist the WapPushManager package for FGS start
-        mPowerWhitelistManager.whitelistAppTemporarilyForEvent(
-                mWapPushManagerPackage,
-                PowerWhitelistManager.EVENT_MMS,
-                REASON_EVENT_MMS, "mms-mgr");
-
-        int procRet = wapPushMan.processMessage(
-                result.wapAppId, result.contentType, intent);
-
-        if ((procRet & WapPushManagerParams.MESSAGE_HANDLED) > 0
-                && (procRet & WapPushManagerParams.FURTHER_PROCESSING)
-                        == 0) {
-            return Intents.RESULT_SMS_HANDLED;  // Fully handled
-        }
-    }
-}
-```
-
-The `WapPushManagerParams` define the processing result flags:
-
-```java
-// Source: frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushManagerParams.java
-public class WapPushManagerParams {
-    public static final int APP_TYPE_ACTIVITY = 0;
-    public static final int APP_TYPE_SERVICE = 1;
-    public static final int MESSAGE_HANDLED = 0x1;
-    public static final int APP_QUERY_FAILED = 0x2;
-    public static final int SIGNATURE_NO_MATCH = 0x4;
-    public static final int INVALID_RECEIVER_NAME = 0x8;
-    public static final int EXCEPTION_CAUGHT = 0x10;
-    public static final int FURTHER_PROCESSING = 0x8000;
-}
-```
-
-### 36.11.6 MMS Notification Dispatch
-
-The most common WAP Push flow is MMS notification delivery. When the MIME type
-is `application/vnd.wap.mms-message`, the system directs the intent to the
-default MMS app:
-
-```java
-// Source: WapPushOverSms.java
-Intent intent = new Intent(Intents.WAP_PUSH_DELIVER_ACTION);
-intent.setType(result.mimeType);
-intent.putExtra("transactionId", result.transactionId);
-intent.putExtra("pduType", result.pduType);
-intent.putExtra("header", result.header);
-intent.putExtra("data", result.intentData);
-
-// Direct to default MMS app only
-ComponentName componentName =
-        SmsApplication.getDefaultMmsApplicationAsUser(mContext,
-                true, userHandle);
-if (componentName != null) {
-    intent.setComponent(componentName);
-    // Whitelist the MMS app for foreground service start
-    long duration = mPowerWhitelistManager.whitelistAppTemporarilyForEvent(
-            componentName.getPackageName(),
-            PowerWhitelistManager.EVENT_MMS,
-            REASON_EVENT_MMS, "mms-app");
-}
-
-handler.dispatchIntent(intent,
-        getPermissionForType(result.mimeType),
-        getAppOpsStringPermissionForIntent(result.mimeType),
-        options, receiver, userHandle, subId);
-```
-
-The permission check depends on content type:
-
-| MIME Type | Required Permission |
-|-----------|-------------------|
-| `application/vnd.wap.mms-message` | `RECEIVE_MMS` |
-| All other WAP Push types | `RECEIVE_WAP_PUSH` |
-
-### 36.11.7 WapPushCache
-
-`WapPushCache` stores metadata about received MMS notification PDUs, primarily
-the message size. This is used for satellite connectivity scenarios where
-large MMS downloads may not be feasible:
-
-```java
-// Source: frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushCache.java
-// Caches: contentLocation + transactionId -> messageSize
-WapPushCache.putWapMessageSize(
-        nInd.getContentLocation(),
-        nInd.getTransactionId(),
-        nInd.getMessageSize());
-```
-
-### 36.11.8 WAP Push in the Messaging App
-
-On the receiving end, the default messaging app (e.g., `packages/apps/Messaging/`)
-registers broadcast receivers for WAP Push:
-
-```
-// packages/apps/Messaging/src/com/android/messaging/receiver/
-MmsWapPushReceiver.java           // Receives WAP_PUSH_RECEIVED_ACTION
-MmsWapPushDeliverReceiver.java    // Receives WAP_PUSH_DELIVER_ACTION
-AbortMmsWapPushReceiver.java      // Aborts WAP push for non-default apps
-```
-
-The `MmsWapPushDeliverReceiver` parses the MMS notification indicator and
-initiates the actual MMS download over HTTP from the carrier's MMSC
-(Multimedia Messaging Service Centre).
-
-### 36.11.9 End-to-End MMS Flow via WAP Push
-
-```mermaid
-sequenceDiagram
-    participant MMSC as Carrier MMSC
-    participant SMSC as Carrier SMSC
-    participant Modem as Device Modem
-    participant RIL as RIL
-    participant IBSMS as InboundSmsHandler
-    participant WP as WapPushOverSms
-    participant APP as MMS App
-
-    MMSC->>SMSC: MMS notification (WAP Push PDU)
-    SMSC->>Modem: SMS bearing WAP Push
-    Modem->>RIL: newSms(pdu)
-    RIL->>IBSMS: processMessagePart()
-    IBSMS->>WP: dispatchWapPdu(pdu)
-    WP->>WP: decodeWapPdu() - parse WSP headers
-    WP->>WP: Parse MMS notification indicator
-    WP->>WP: Cache message size in WapPushCache
-    WP->>APP: WAP_PUSH_DELIVER_ACTION intent
-    APP->>APP: Parse notification - extract content-location URL
-    APP->>MMSC: HTTP GET content-location (download MMS)
-    MMSC-->>APP: MMS content (MIME multipart)
-    APP->>APP: Store and display MMS message
-```
-
-### 36.11.10 Key Source Files
-
-| File | Path | Lines |
-|------|------|-------|
-| WapPushOverSms | `frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushOverSms.java` | 505 |
-| WapPushManagerParams | `frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushManagerParams.java` | 70 |
-| WapPushCache | `frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushCache.java` | 172 |
-| InboundSmsHandler | `frameworks/opt/telephony/src/java/com/android/internal/telephony/InboundSmsHandler.java` | ~2,000 |
-| MmsWapPushDeliverReceiver | `packages/apps/Messaging/src/com/android/messaging/receiver/MmsWapPushDeliverReceiver.java` | ~50 |
 
 ---
 
