@@ -1535,195 +1535,9 @@ wrapper.
 
 ---
 
-## 17.9 Try It -- Hands-On Sensor Exercises
+## 17.9 Automotive and Wearable Sensor Extensions
 
-### 17.9.1 List All Sensors on a Device
-
-```shell
-adb shell dumpsys sensorservice
-```
-
-This dumps:
-
-- The full sensor list (name, handle, type, range, resolution, power, FIFO)
-- Fusion state (9-axis, no-mag, no-gyro)
-- Recent events for each sensor
-- Active sensors and connections
-- Operating mode and privacy state
-- Recent registration history
-
-### 17.9.2 Monitor Sensor Events in Real Time
-
-Using `sensorservice` directly:
-
-```shell
-# List all sensors
-adb shell dumpsys sensorservice
-
-# Watch accelerometer events (requires root or debug build)
-adb shell sensorservice_test -s accelerometer
-```
-
-Or using a simple app:
-
-```java
-// Minimal sensor monitor
-SensorManager sm = (SensorManager) getSystemService(SENSOR_SERVICE);
-for (Sensor s : sm.getSensorList(Sensor.TYPE_ALL)) {
-    Log.i("Sensors", String.format("%-40s type=%2d range=%.1f power=%.2f mA",
-            s.getName(), s.getType(), s.getMaximumRange(), s.getPower()));
-}
-
-Sensor accel = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-sm.registerListener(new SensorEventListener() {
-    @Override
-    public void onSensorChanged(SensorEvent event) {
-        Log.i("Accel", String.format("x=%.3f y=%.3f z=%.3f",
-                event.values[0], event.values[1], event.values[2]));
-    }
-    @Override
-    public void onAccuracyChanged(Sensor sensor, int accuracy) {}
-}, accel, SensorManager.SENSOR_DELAY_GAME);
-```
-
-### 17.9.3 Examine Batching Behaviour
-
-```java
-// Request 100 Hz with 10-second batching
-Sensor accel = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-sm.registerListener(listener, accel,
-        10_000,       // 10 ms = 100 Hz
-        10_000_000);  // 10 second max latency
-
-// Force flush of batched events
-sm.flush(listener);
-// onFlushCompleted() will be called after all batched events are delivered
-```
-
-### 17.9.4 Use a Direct Channel
-
-```java
-// Create shared memory
-MemoryFile memFile = new MemoryFile("sensor_direct", 4096);
-SensorDirectChannel channel = sm.createDirectChannel(memFile);
-
-// Configure accelerometer at RATE_FAST (~200 Hz)
-Sensor accel = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-int reportToken = channel.configure(accel, SensorDirectChannel.RATE_FAST);
-
-// Read events from shared memory (poll atomic counter at offset 0x0C)
-// Each event is 104 bytes
-ByteBuffer buffer = memFile.getInputStream()...;
-// Parse events using the direct report format
-
-// Stop and close
-channel.configure(accel, SensorDirectChannel.RATE_STOP);
-channel.close();
-```
-
-### 17.9.5 Inject Test Data
-
-```shell
-# Enable data injection mode
-adb shell dumpsys sensorservice data_injection com.example.test
-
-# From a test app with matching package name:
-# Use SensorManager.injectSensorData() to inject events
-```
-
-```java
-// In test code (requires DATA_INJECTION permission)
-sm.registerListener(listener, accel, SensorManager.SENSOR_DELAY_FASTEST);
-
-SensorEvent fakeEvent = ... ; // construct with desired values
-sm.injectSensorData(accel, fakeEvent.values, fakeEvent.accuracy,
-        fakeEvent.timestamp);
-```
-
-### 17.9.6 Trace Sensor Performance
-
-```shell
-# Enable sensor atrace category
-adb shell atrace --async_start -c sensors
-
-# ... exercise sensors ...
-
-adb shell atrace --async_stop -o /data/local/tmp/sensors.trace
-adb pull /data/local/tmp/sensors.trace
-# Open in Perfetto UI: ui.perfetto.dev
-```
-
-### 17.9.7 Monitor Power Impact
-
-```shell
-# Battery historian can show wake lock durations
-adb shell dumpsys batterystats --reset
-# Exercise sensors for a period
-adb bugreport > bugreport.zip
-# Upload to Battery Historian: bathist.cs.android.com
-```
-
-Check which sensors are active and their power draw:
-
-```shell
-adb shell dumpsys sensorservice | grep "Active sensors"
-```
-
-### 17.9.8 Inspect Sensor Fusion State
-
-```shell
-adb shell dumpsys sensorservice | grep -A5 "Fusion States"
-```
-
-This displays for each fusion mode:
-
-- Whether it is enabled
-- Number of active clients
-- Estimated gyro rate
-- Current attitude quaternion (x, y, z, w) and its magnitude
-- Estimated gyro bias vector
-
-### 17.9.9 Test Dynamic Sensors
-
-If you have a Bluetooth sensor (e.g., a headset with head tracking):
-
-```java
-sm.registerDynamicSensorCallback(new DynamicSensorCallback() {
-    @Override
-    public void onDynamicSensorConnected(Sensor sensor) {
-        Log.i("Dynamic", "Connected: " + sensor.getName() +
-                " type=" + sensor.getType());
-        if (sensor.getType() == Sensor.TYPE_HEAD_TRACKER) {
-            sm.registerListener(htListener, sensor,
-                    SensorManager.SENSOR_DELAY_FASTEST);
-        }
-    }
-});
-```
-
-### 17.9.10 Explore the Source
-
-Here is a roadmap for further reading in the AOSP source tree:
-
-| Area | Path |
-|------|------|
-| SensorService main | `frameworks/native/services/sensorservice/SensorService.cpp` |
-| Sensor fusion core | `frameworks/native/services/sensorservice/Fusion.cpp` |
-| Virtual sensors | `frameworks/native/services/sensorservice/RotationVectorSensor.cpp`, `GravitySensor.cpp`, etc. |
-| Sensor HAL AIDL | `hardware/interfaces/sensors/aidl/android/hardware/sensors/` |
-| Default HAL impl | `hardware/interfaces/sensors/aidl/default/Sensors.cpp` |
-| Multi-HAL | `hardware/interfaces/sensors/aidl/default/multihal/` |
-| Java SensorManager | `frameworks/base/core/java/android/hardware/SensorManager.java` |
-| SystemSensorManager | `frameworks/base/core/java/android/hardware/SystemSensorManager.java` |
-| Sensor JNI | `frameworks/base/core/jni/android_hardware_SensorManager.cpp` |
-| CTS tests | `cts/tests/sensor/src/android/hardware/cts/` |
-| VTS tests | `hardware/interfaces/sensors/aidl/vts/` |
-
----
-
-## 17.10 Automotive and Wearable Sensor Extensions
-
-### 17.10.1 Limited-Axes IMU Sensors (Automotive)
+### 17.9.1 Limited-Axes IMU Sensors (Automotive)
 
 Automotive devices may have IMU sensors mounted in positions where not all
 three axes can provide meaningful data.  AOSP defines four limited-axes
@@ -1774,7 +1588,7 @@ Source: frameworks/native/services/sensorservice/LimitedAxesImuSensor.h
         frameworks/native/services/sensorservice/LimitedAxesImuSensor.cpp
 ```
 
-### 17.10.2 Heading Sensor (Automotive)
+### 17.9.2 Heading Sensor (Automotive)
 
 The `HEADING` sensor type (ID 42) provides the direction the vehicle is
 pointing relative to true north:
@@ -1790,7 +1604,7 @@ This is particularly useful for navigation applications on automotive
 displays where the form factor makes traditional rotation-vector sensors
 less meaningful.
 
-### 17.10.3 Wearable-Specific Sensors
+### 17.9.3 Wearable-Specific Sensors
 
 Several sensor types were designed primarily for wearables:
 
@@ -1806,7 +1620,7 @@ on-to-off transitions within 1 second and off-to-on within 3 seconds.
 `SENSOR_PERMISSION_BODY_SENSORS` permission.  The framework automatically
 sets the required permission based on platform SDK version.
 
-### 17.10.4 Wearable Fusion Rate Tuning
+### 17.9.4 Wearable Fusion Rate Tuning
 
 Wearable devices can reduce fusion power consumption by lowering the
 sensor fusion rate:
@@ -1822,9 +1636,9 @@ cutting IMU power roughly in half.
 
 ---
 
-## 17.11 Sensor Coordinate Systems
+## 17.10 Sensor Coordinate Systems
 
-### 17.11.1 Standard Android Sensor Coordinate System
+### 17.10.1 Standard Android Sensor Coordinate System
 
 For most sensor types, Android uses a right-handed coordinate system
 relative to the device's default orientation (typically portrait for
@@ -1848,7 +1662,7 @@ graph TB
 This coordinate system is **fixed to the device**, not to the display
 rotation.  When the screen rotates, the sensor axes do not change.
 
-### 17.11.2 East-North-Up Frame
+### 17.10.2 East-North-Up Frame
 
 The rotation vector and geomagnetic rotation vector express orientation
 relative to the **East-North-Up (ENU)** coordinate frame:
@@ -1859,14 +1673,14 @@ relative to the **East-North-Up (ENU)** coordinate frame:
 | Y | North (magnetic or true) |
 | Z | Up (opposite to gravity) |
 
-### 17.11.3 Head-Centric Frame
+### 17.10.3 Head-Centric Frame
 
 The `HEAD_TRACKER` sensor uses a different coordinate system centered on
 the user's head (see Section 15.7.1).  This frame is natural for spatial
 audio processing where the audio scene is defined relative to the
 listener's head.
 
-### 17.11.4 Quaternion Conventions
+### 17.10.4 Quaternion Conventions
 
 AOSP rotation vectors use the **Hamilton quaternion convention** where
 the quaternion `q = [x, y, z, w]` represents a rotation of angle `theta`
@@ -1893,9 +1707,9 @@ outEvent->data[3] = q.w;
 
 ---
 
-## 17.12 Sensor Calibration and Additional Info
+## 17.11 Sensor Calibration and Additional Info
 
-### 17.12.1 Calibrated vs. Uncalibrated Sensors
+### 17.11.1 Calibrated vs. Uncalibrated Sensors
 
 Three sensor types have both calibrated and uncalibrated variants:
 
@@ -1924,7 +1738,7 @@ parcelable Uncal {
 Applications that implement their own sensor fusion (e.g. AR frameworks)
 often prefer uncalibrated data to avoid double-correction artifacts.
 
-### 17.12.2 ADDITIONAL_INFO Events
+### 17.11.2 ADDITIONAL_INFO Events
 
 Sensors can report out-of-band metadata through `ADDITIONAL_INFO` events.
 These frames carry information such as:
@@ -1944,7 +1758,7 @@ Reports are triggered by `activate()` or `flush()` calls, and may also
 update periodically for time-varying parameters (recommended rate: less
 than 1/1000 of the sensor event rate).
 
-### 17.12.3 HMAC-Based Sensor IDs
+### 17.11.3 HMAC-Based Sensor IDs
 
 Dynamic sensors need unique, stable identifiers.  `SensorService` generates
 these using HMAC-SHA256 with a persistent key:
@@ -1960,9 +1774,9 @@ that survives process restarts but is not the raw UUID.
 
 ---
 
-## 17.13 Sensor Testing and Debugging
+## 17.12 Sensor Testing and Debugging
 
-### 17.13.1 CTS Sensor Tests
+### 17.12.1 CTS Sensor Tests
 
 The Compatibility Test Suite includes extensive sensor tests:
 
@@ -1980,7 +1794,7 @@ These tests verify:
 - Rate capping enforcement
 - Data injection mode
 
-### 17.13.2 VTS Sensor Tests
+### 17.12.2 VTS Sensor Tests
 
 Vendor Test Suite tests verify the HAL implementation:
 
@@ -1992,7 +1806,7 @@ These tests exercise the AIDL ISensors interface directly, verifying
 FMQ operation, event format, dynamic sensor callbacks, and direct
 channel support.
 
-### 17.13.3 Dumpsys Output Format
+### 17.12.3 Dumpsys Output Format
 
 The `dumpsys sensorservice` output is structured as follows:
 
@@ -2020,7 +1834,7 @@ Previous Registrations:
   <chronological list of register/unregister operations>
 ```
 
-### 17.13.4 Proto-Based Dump
+### 17.12.4 Proto-Based Dump
 
 For programmatic analysis, `SensorService` supports protobuf-formatted
 output:
@@ -2034,7 +1848,7 @@ The proto schema is defined in:
 Source: frameworks/base/core/proto/android/service/sensor_service.proto
 ```
 
-### 17.13.5 Common Debugging Scenarios
+### 17.12.5 Common Debugging Scenarios
 
 **Problem: Sensor events not delivered.**
 Check:
@@ -2063,9 +1877,9 @@ Check:
 
 ---
 
-## 17.14 Sensor Event Data Structures
+## 17.13 Sensor Event Data Structures
 
-### 17.14.1 Native sensors_event_t
+### 17.13.1 Native sensors_event_t
 
 The core C structure for sensor events is `sensors_event_t`, defined in
 the hardware headers:
@@ -2099,7 +1913,7 @@ typedef struct sensors_event_t {
 } sensors_event_t;
 ```
 
-### 17.14.2 Java SensorEvent
+### 17.13.2 Java SensorEvent
 
 On the Java side, `SensorEvent` is a simple container:
 
@@ -2116,7 +1930,7 @@ The `values` array size and interpretation varies by sensor type.  For
 example, accelerometer events have `values[0..2]` = (x, y, z) in m/s^2,
 while rotation vector events have `values[0..4]` = (x, y, z, w, accuracy).
 
-### 17.14.3 AIDL Event Parcelable
+### 17.13.3 AIDL Event Parcelable
 
 The HAL-side event uses a typed union for type safety:
 
@@ -2136,9 +1950,9 @@ strongly-typed access to sensor data -- `Vec3` for accelerometer,
 
 ---
 
-## 17.15 Sensor HAL Implementation Guide
+## 17.14 Sensor HAL Implementation Guide
 
-### 17.15.1 Default Reference Implementation
+### 17.14.1 Default Reference Implementation
 
 AOSP provides a reference HAL implementation in:
 
@@ -2157,7 +1971,7 @@ This implementation demonstrates the core patterns:
 4. **`batch()`**: Configures sampling rate.
 5. **`flush()`**: Triggers a `FLUSH_COMPLETE` event.
 
-### 17.15.2 Event Writing Pattern
+### 17.14.2 Event Writing Pattern
 
 A typical HAL writes events to the FMQ as follows:
 
@@ -2176,7 +1990,7 @@ if (mEventQueue->write(&event, 1)) {
 }
 ```
 
-### 17.15.3 Multi-HAL Integration
+### 17.14.3 Multi-HAL Integration
 
 For devices with sensors from multiple vendor chipsets, the Multi-HAL
 framework (`HalProxyAidl`) aggregates sub-HALs:
@@ -2191,6 +2005,192 @@ library.  The proxy handles:
 - Handle remapping (ensuring uniqueness across sub-HALs)
 - Event merging from multiple sources
 - Lifecycle management (connect/disconnect of sub-HALs)
+
+---
+
+## 17.15 Try It -- Hands-On Sensor Exercises
+
+### 17.15.1 List All Sensors on a Device
+
+```shell
+adb shell dumpsys sensorservice
+```
+
+This dumps:
+
+- The full sensor list (name, handle, type, range, resolution, power, FIFO)
+- Fusion state (9-axis, no-mag, no-gyro)
+- Recent events for each sensor
+- Active sensors and connections
+- Operating mode and privacy state
+- Recent registration history
+
+### 17.15.2 Monitor Sensor Events in Real Time
+
+Using `sensorservice` directly:
+
+```shell
+# List all sensors
+adb shell dumpsys sensorservice
+
+# Watch accelerometer events (requires root or debug build)
+adb shell sensorservice_test -s accelerometer
+```
+
+Or using a simple app:
+
+```java
+// Minimal sensor monitor
+SensorManager sm = (SensorManager) getSystemService(SENSOR_SERVICE);
+for (Sensor s : sm.getSensorList(Sensor.TYPE_ALL)) {
+    Log.i("Sensors", String.format("%-40s type=%2d range=%.1f power=%.2f mA",
+            s.getName(), s.getType(), s.getMaximumRange(), s.getPower()));
+}
+
+Sensor accel = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+sm.registerListener(new SensorEventListener() {
+    @Override
+    public void onSensorChanged(SensorEvent event) {
+        Log.i("Accel", String.format("x=%.3f y=%.3f z=%.3f",
+                event.values[0], event.values[1], event.values[2]));
+    }
+    @Override
+    public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+}, accel, SensorManager.SENSOR_DELAY_GAME);
+```
+
+### 17.15.3 Examine Batching Behaviour
+
+```java
+// Request 100 Hz with 10-second batching
+Sensor accel = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+sm.registerListener(listener, accel,
+        10_000,       // 10 ms = 100 Hz
+        10_000_000);  // 10 second max latency
+
+// Force flush of batched events
+sm.flush(listener);
+// onFlushCompleted() will be called after all batched events are delivered
+```
+
+### 17.15.4 Use a Direct Channel
+
+```java
+// Create shared memory
+MemoryFile memFile = new MemoryFile("sensor_direct", 4096);
+SensorDirectChannel channel = sm.createDirectChannel(memFile);
+
+// Configure accelerometer at RATE_FAST (~200 Hz)
+Sensor accel = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+int reportToken = channel.configure(accel, SensorDirectChannel.RATE_FAST);
+
+// Read events from shared memory (poll atomic counter at offset 0x0C)
+// Each event is 104 bytes
+ByteBuffer buffer = memFile.getInputStream()...;
+// Parse events using the direct report format
+
+// Stop and close
+channel.configure(accel, SensorDirectChannel.RATE_STOP);
+channel.close();
+```
+
+### 17.15.5 Inject Test Data
+
+```shell
+# Enable data injection mode
+adb shell dumpsys sensorservice data_injection com.example.test
+
+# From a test app with matching package name:
+# Use SensorManager.injectSensorData() to inject events
+```
+
+```java
+// In test code (requires DATA_INJECTION permission)
+sm.registerListener(listener, accel, SensorManager.SENSOR_DELAY_FASTEST);
+
+SensorEvent fakeEvent = ... ; // construct with desired values
+sm.injectSensorData(accel, fakeEvent.values, fakeEvent.accuracy,
+        fakeEvent.timestamp);
+```
+
+### 17.15.6 Trace Sensor Performance
+
+```shell
+# Enable sensor atrace category
+adb shell atrace --async_start -c sensors
+
+# ... exercise sensors ...
+
+adb shell atrace --async_stop -o /data/local/tmp/sensors.trace
+adb pull /data/local/tmp/sensors.trace
+# Open in Perfetto UI: ui.perfetto.dev
+```
+
+### 17.15.7 Monitor Power Impact
+
+```shell
+# Battery historian can show wake lock durations
+adb shell dumpsys batterystats --reset
+# Exercise sensors for a period
+adb bugreport > bugreport.zip
+# Upload to Battery Historian: bathist.cs.android.com
+```
+
+Check which sensors are active and their power draw:
+
+```shell
+adb shell dumpsys sensorservice | grep "Active sensors"
+```
+
+### 17.15.8 Inspect Sensor Fusion State
+
+```shell
+adb shell dumpsys sensorservice | grep -A5 "Fusion States"
+```
+
+This displays for each fusion mode:
+
+- Whether it is enabled
+- Number of active clients
+- Estimated gyro rate
+- Current attitude quaternion (x, y, z, w) and its magnitude
+- Estimated gyro bias vector
+
+### 17.15.9 Test Dynamic Sensors
+
+If you have a Bluetooth sensor (e.g., a headset with head tracking):
+
+```java
+sm.registerDynamicSensorCallback(new DynamicSensorCallback() {
+    @Override
+    public void onDynamicSensorConnected(Sensor sensor) {
+        Log.i("Dynamic", "Connected: " + sensor.getName() +
+                " type=" + sensor.getType());
+        if (sensor.getType() == Sensor.TYPE_HEAD_TRACKER) {
+            sm.registerListener(htListener, sensor,
+                    SensorManager.SENSOR_DELAY_FASTEST);
+        }
+    }
+});
+```
+
+### 17.15.10 Explore the Source
+
+Here is a roadmap for further reading in the AOSP source tree:
+
+| Area | Path |
+|------|------|
+| SensorService main | `frameworks/native/services/sensorservice/SensorService.cpp` |
+| Sensor fusion core | `frameworks/native/services/sensorservice/Fusion.cpp` |
+| Virtual sensors | `frameworks/native/services/sensorservice/RotationVectorSensor.cpp`, `GravitySensor.cpp`, etc. |
+| Sensor HAL AIDL | `hardware/interfaces/sensors/aidl/android/hardware/sensors/` |
+| Default HAL impl | `hardware/interfaces/sensors/aidl/default/Sensors.cpp` |
+| Multi-HAL | `hardware/interfaces/sensors/aidl/default/multihal/` |
+| Java SensorManager | `frameworks/base/core/java/android/hardware/SensorManager.java` |
+| SystemSensorManager | `frameworks/base/core/java/android/hardware/SystemSensorManager.java` |
+| Sensor JNI | `frameworks/base/core/jni/android_hardware_SensorManager.cpp` |
+| CTS tests | `cts/tests/sensor/src/android/hardware/cts/` |
+| VTS tests | `hardware/interfaces/sensors/aidl/vts/` |
 
 ---
 
