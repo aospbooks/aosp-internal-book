@@ -1854,12 +1854,825 @@ available on phone form factors.
 
 ---
 
-## 47.12  Try It: Add a Custom QS Tile
+## 47.12  Monet / Dynamic Color / Material You
+
+Android 12 introduced **Material You**, a design language where the entire
+system UI derives its colour palette from the user's wallpaper.  The engine
+behind this is called **Monet** -- a colour-science pipeline that extracts a
+seed colour from `WallpaperColors`, generates tonal palettes through the
+Material Color Utilities library, and applies the resulting colours as
+fabricated resource overlays across every package.
+
+### 47.12.1  End-to-End Pipeline
+
+```mermaid
+graph TB
+    subgraph "Wallpaper Stack"
+        WP[WallpaperManager]
+        WC["WallpaperColors<br/>Primary / Secondary / Tertiary<br/>+ allColors population map"]
+    end
+
+    subgraph "SystemUI -- ThemeOverlayController"
+        TOC["ThemeOverlayController<br/>CoreStartable"]
+        SEED["getSeedColor()<br/>ColorScheme.getSeedColors()"]
+        CS_DARK["ColorScheme<br/>(dark)"]
+        CS_LIGHT["ColorScheme<br/>(light)"]
+        FAB["FabricatedOverlay x3<br/>accent / neutral / dynamic"]
+    end
+
+    subgraph "Monet Library"
+        HCT["Hct.fromInt(seed)"]
+        SCHEME["DynamicScheme<br/>TonalSpot / Vibrant /<br/>Expressive / Neutral / ..."]
+        TP["TonalPalette<br/>13 shade stops<br/>0..1000"]
+    end
+
+    subgraph "OverlayManager"
+        OM["OverlayManagerService"]
+        RES["android.R.color.system_*"]
+    end
+
+    subgraph "All Apps"
+        APPS["Apps read<br/>system_accent1_500,<br/>system_neutral1_100, ..."]
+    end
+
+    WP -->|"onColorsChanged"| TOC
+    TOC --> SEED
+    SEED --> HCT
+    HCT --> SCHEME
+    SCHEME --> TP
+    TP --> CS_DARK
+    TP --> CS_LIGHT
+    CS_DARK --> FAB
+    CS_LIGHT --> FAB
+    TOC -->|"applyCurrentUserOverlays()"| OM
+    FAB --> OM
+    OM -->|"registerFabricatedOverlay"| RES
+    RES --> APPS
+```
+
+### 47.12.2  Colour Extraction -- Seed Selection
+
+`ColorScheme.getSeedColors()` implements the Monet seed-selection algorithm.
+Given `WallpaperColors` (which contains all quantized colours with population
+data), it:
+
+1. **Builds a hue histogram** -- 360 slots, each accumulating the proportion
+   of colours with that hue.
+2. **Scores each colour** by a weighted combination of hue proportion (70%)
+   and chroma distance from the 48.0 target (30%).
+3. **Filters low-chroma colours** (chroma < 5) which would produce grey
+   themes.
+4. **Selects hue-distinct seeds** -- iteratively reduces the minimum hue
+   distance from 90 degrees down to 15, picking up to 4 seeds.
+5. **Falls back to `GOOGLE_BLUE` (0xFF1b6ef3)** if no suitable colour
+   exists.
+
+```java
+// frameworks/libs/systemui/monet/src/com/android/systemui/monet/ColorScheme.java
+public static List<Integer> getSeedColors(WallpaperColors wallpaperColors, boolean filter) {
+    // ...
+    // Score: 0.7 * hueProportion + 0.3 * (chroma - 48)
+    // Iterative hue-distance selection from 90° down to 15°
+    // Fallback: GOOGLE_BLUE
+}
+```
+
+For Live Wallpapers where quantization population is zero, the method trusts
+the ordering of the three main colours directly, filtering only by minimum
+chroma.
+
+### 47.12.3  The ColorScheme Class
+
+`ColorScheme` wraps the Material Color Utilities `DynamicScheme` and exposes
+six `TonalPalette` instances:
+
+```java
+// frameworks/libs/systemui/monet/src/com/android/systemui/monet/ColorScheme.java
+@Deprecated  // migrating to MaterialDynamicColors
+public class ColorScheme {
+    private final TonalPalette mAccent1;   // primaryPalette
+    private final TonalPalette mAccent2;   // secondaryPalette
+    private final TonalPalette mAccent3;   // tertiaryPalette
+    private final TonalPalette mNeutral1;  // neutralPalette
+    private final TonalPalette mNeutral2;  // neutralVariantPalette
+    private final TonalPalette mError;     // errorPalette
+}
+```
+
+Each palette is constructed from `Hct` (Hue-Chroma-Tone) colour space via
+the Material library's `TonalPalette`.  The class delegates to a style-specific
+`DynamicScheme` based on `ThemeStyle`:
+
+| ThemeStyle | DynamicScheme | Character |
+|---|---|---|
+| `TONAL_SPOT` | `SchemeTonalSpot` | Default -- balanced, moderate chroma |
+| `VIBRANT` | `SchemeVibrant` | Higher chroma for bolder colours |
+| `EXPRESSIVE` | `SchemeExpressive` | Maximum chromatic variety |
+| `SPRITZ` | `SchemeNeutral` | Desaturated, subdued |
+| `RAINBOW` | `SchemeRainbow` | Full hue rotation |
+| `FRUIT_SALAD` | `SchemeFruitSalad` | Playful multi-hue |
+| `CONTENT` | `SchemeContent` | Faithful to source image |
+| `MONOCHROMATIC` | `SchemeMonochrome` | Single-hue grayscale |
+| `CLOCK` | `SchemeClock` | Custom SystemUI scheme for lock screen clocks |
+| `CLOCK_VIBRANT` | `SchemeClockVibrant` | High-chroma clock variant |
+
+### 47.12.4  TonalPalette and Shade Stops
+
+Each `TonalPalette` contains 13 tonal stops:
+
+```java
+// frameworks/libs/systemui/monet/src/com/android/systemui/monet/TonalPalette.java
+public static final List<Integer> SHADE_KEYS =
+    Arrays.asList(0, 10, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000);
+```
+
+Shade 0 is white, shade 1000 is black.  The `getAtTone(shade)` method maps
+the 0-1000 range to the Material library's 0-100 tone scale via
+`(1000 - shade) / 10`.  This produces Android's `system_accent1_0` through
+`system_accent1_1000` resource colours.
+
+### 47.12.5  ThemeOverlayController -- The Orchestrator
+
+`ThemeOverlayController` is a `CoreStartable` that wires together wallpaper
+change detection, colour scheme generation, and overlay application:
+
+```java
+// frameworks/base/packages/SystemUI/src/com/android/systemui/theme/
+//   ThemeOverlayController.java
+@SysUISingleton
+public class ThemeOverlayController implements CoreStartable, Dumpable {
+    // Key fields:
+    protected ColorScheme mColorScheme;
+    protected int mMainWallpaperColor = Color.TRANSPARENT;
+    private int mThemeStyle = ThemeStyle.TONAL_SPOT;
+    private double mContrast = 0.0;
+    private FabricatedOverlay mAccentOverlay;
+    private FabricatedOverlay mNeutralOverlay;
+    private FabricatedOverlay mDynamicOverlay;
+}
+```
+
+**Listeners registered on `start()`:**
+
+| Listener | Purpose |
+|---|---|
+| `WallpaperManager.OnColorsChangedListener` | Detects wallpaper colour changes for all users |
+| `SecureSettings` ContentObserver | Detects `THEME_CUSTOMIZATION_OVERLAY_PACKAGES` changes |
+| `UserTracker.Callback` | Re-evaluates on user switch |
+| `UiModeManager.ContrastChangeListener` | Re-evaluates when contrast level changes |
+| `BroadcastReceiver` for `ACTION_PROFILE_ADDED` | Applies overlays to new managed profiles |
+| `BroadcastReceiver` for `ACTION_WALLPAPER_CHANGED` | Re-enables colour event acceptance |
+| `KeyguardTransitionInteractor` (asleep state) | Defers processing until screen off |
+
+### 47.12.6  Colour Event Deferral
+
+The controller uses a sophisticated deferral mechanism to avoid jarring
+mid-use colour changes.  When the user is looking at the screen, colour
+events are suppressed until the display goes off:
+
+```mermaid
+sequenceDiagram
+    participant WM as WallpaperManager
+    participant TOC as ThemeOverlayController
+    participant KTI as KeyguardTransitionInteractor
+    participant OMS as OverlayManagerService
+
+    WM->>TOC: onColorsChanged(colors, userId)
+    alt Screen is ON and acceptColorEvents=false
+        TOC->>TOC: mDeferredWallpaperColors.put(userId, colors)
+        Note over TOC: "Deferred until screen off"
+    else acceptColorEvents=true
+        TOC->>TOC: mAcceptColorEvents = false
+        TOC->>TOC: handleWallpaperColors()
+        TOC->>TOC: reevaluateSystemTheme()
+    end
+
+    KTI-->>TOC: isFinishedIn(DOZING) = true
+    TOC->>TOC: Process deferred colours
+    TOC->>TOC: createOverlays(seedColor)
+    TOC->>OMS: applyCurrentUserOverlays()
+```
+
+The wallpaper picker sets `EXTRA_FROM_FOREGROUND_APP=true` on the
+`ACTION_WALLPAPER_CHANGED` broadcast, which resets `mAcceptColorEvents` to
+`true` -- so user-initiated changes apply immediately.
+
+### 47.12.7  Overlay Creation and Application
+
+The `createOverlays()` method produces three fabricated overlays:
+
+```java
+private void createOverlays(int color) {
+    mDarkColorScheme = new ColorScheme(color, true, mThemeStyle, mContrast);
+    mLightColorScheme = new ColorScheme(color, false, mThemeStyle, mContrast);
+
+    mAccentOverlay = newFabricatedOverlay("accent");
+    assignColorsToOverlay(mAccentOverlay, DynamicColors.getAllAccentPalette(), false);
+
+    mNeutralOverlay = newFabricatedOverlay("neutral");
+    assignColorsToOverlay(mNeutralOverlay, DynamicColors.getAllNeutralPalette(), false);
+
+    mDynamicOverlay = newFabricatedOverlay("dynamic");
+    assignColorsToOverlay(mDynamicOverlay, DynamicColors.getAllDynamicColorsMapped(), false);
+    assignColorsToOverlay(mDynamicOverlay, DynamicColors.getFixedColorsMapped(), true);
+    assignColorsToOverlay(mDynamicOverlay, DynamicColors.getCustomColorsMapped(), false);
+}
+```
+
+For themed (non-fixed) colours, each resource has `_light` and `_dark`
+variants:
+
+```java
+overlay.setResourceValue(prefix + "_light", TYPE_INT_COLOR_ARGB8,
+    p.second.getArgb(mLightColorScheme.getMaterialScheme()), null);
+overlay.setResourceValue(prefix + "_dark", TYPE_INT_COLOR_ARGB8,
+    p.second.getArgb(mDarkColorScheme.getMaterialScheme()), null);
+```
+
+Fixed colours (e.g. `primaryFixed`) are not dark/light variant and use the
+light scheme only.
+
+### 47.12.8  DynamicColors Token Mapping
+
+The `DynamicColors` class generates the full set of colour tokens:
+
+```java
+// frameworks/libs/systemui/monet/src/com/android/systemui/monet/DynamicColors.java
+public class DynamicColors {
+    // Palette colours: accent1_0..1000, accent2_*, accent3_*, neutral1_*, neutral2_*
+    public static List<Pair<String, DynamicColor>> getAllAccentPalette();
+    public static List<Pair<String, DynamicColor>> getAllNeutralPalette();
+
+    // Material Dynamic Colors: primary, onPrimary, primaryContainer, ...
+    public static List<Pair<String, DynamicColor>> getAllDynamicColorsMapped();
+
+    // Fixed colours: primaryFixed, secondaryFixed, ...
+    public static List<Pair<String, DynamicColor>> getFixedColorsMapped();
+
+    // Custom SystemUI-specific colours
+    public static List<Pair<String, DynamicColor>> getCustomColorsMapped();
+}
+```
+
+The token names are mapped to Android resource names with the prefix
+`android:color/system_`.  For example, `accent1_500` becomes
+`android:color/system_accent1_500`.
+
+### 47.12.9  ThemeOverlayApplier -- The Transaction
+
+`ThemeOverlayApplier` takes the fabricated overlays and applies them via
+`OverlayManager` in a single atomic transaction:
+
+```java
+// frameworks/base/packages/SystemUI/src/com/android/systemui/theme/
+//   ThemeOverlayApplier.java
+@SysUISingleton
+public class ThemeOverlayApplier implements Dumpable {
+    // Overlay categories applied in order:
+    static final List<String> THEME_CATEGORIES = Lists.newArrayList(
+        OVERLAY_CATEGORY_SYSTEM_PALETTE,    // Tonal palette
+        OVERLAY_CATEGORY_ICON_LAUNCHER,     // Launcher icons
+        OVERLAY_CATEGORY_SHAPE,             // Adaptive icon shape
+        OVERLAY_CATEGORY_FONT,              // System font
+        OVERLAY_CATEGORY_ACCENT_COLOR,      // Accent colour
+        OVERLAY_CATEGORY_DYNAMIC_COLOR,     // Dynamic Material colours
+        OVERLAY_CATEGORY_ICON_ANDROID,      // Framework icons
+        OVERLAY_CATEGORY_ICON_SYSUI,        // SystemUI icons
+        OVERLAY_CATEGORY_ICON_SETTINGS,     // Settings icons
+        OVERLAY_CATEGORY_ICON_THEME_PICKER  // Theme picker icons
+    );
+}
+```
+
+The applier first disables all currently enabled overlays in the affected
+categories, then registers new fabricated overlays, and enables them -- all
+in a single `OverlayManagerTransaction` to minimise configuration changes.
+
+Categories in `SYSTEM_USER_CATEGORIES` are applied to both the current user
+and user 0 (system user), ensuring SystemUI and framework processes see the
+correct colours.
+
+### 47.12.10  Settings Integration
+
+Theme customisation is persisted in
+`Settings.Secure.THEME_CUSTOMIZATION_OVERLAY_PACKAGES` as a JSON object:
+
+```json
+{
+  "android.theme.customization.system_palette": "1b6ef3",
+  "android.theme.customization.accent_color": "1b6ef3",
+  "android.theme.customization.color_source": "home_wallpaper",
+  "android.theme.customization.theme_style": "TONAL_SPOT",
+  "android.theme.customization.color_both": "1",
+  "_applied_timestamp": 1234567890
+}
+```
+
+The `ThemeOverlayController` monitors this setting and re-evaluates on every
+change.  When the wallpaper changes and no preset colour is selected, it
+updates this setting automatically, recording the colour source and timestamp.
+
+### 47.12.11  Hardware Default Colours
+
+Starting with Android 15, the `hardwareColorStyles` flag enables OEMs to
+provide device-specific default colour palettes during the Setup Wizard.
+Before the device is provisioned, the controller reads hardware defaults
+(seed colour + style + source) and persists them as the initial theme
+setting.
+
+### 47.12.12  Contrast Support
+
+`ThemeOverlayController` integrates with `UiModeManager.getContrast()` to
+apply Material Design contrast levels.  When the user changes the display
+contrast in Accessibility settings, the controller receives a callback,
+passes the new contrast value to `ColorScheme`, and regenerates overlays:
+
+```java
+// In ColorScheme constructor:
+new ColorScheme(seed, isDark, mThemeStyle, mContrast)
+// mContrast flows through to DynamicScheme's contrastLevel parameter
+```
+
+This adjusts the tonal mapping so that foreground/background colour pairs
+maintain the selected contrast ratio.
+
+### 47.12.13  Key Source Paths (Monet)
+
+```
+frameworks/libs/systemui/monet/
+  src/com/android/systemui/monet/
+    ColorScheme.java             -- Seed selection, palette generation
+    TonalPalette.java            -- 13-stop tonal palette wrapper
+    DynamicColors.java           -- Token-to-DynamicColor mapping
+    CustomDynamicColors.java     -- SystemUI-specific custom tokens
+    Shades.java                  -- Legacy shade generation
+    SchemeClock.java             -- Clock face colour scheme
+    SchemeClockVibrant.java      -- Vibrant clock variant
+
+frameworks/base/packages/SystemUI/src/com/android/systemui/theme/
+  ThemeOverlayController.java    -- Orchestrator (CoreStartable)
+  ThemeOverlayApplier.java       -- OverlayManager transaction
+  ThemeModule.java               -- Dagger module
+```
+
+---
+
+## 47.13  Keyguard Deep Dive
+
+Section 47.5 introduced the lock screen architecture.  This section explores
+the internal state machine, biometric unlock modes, bouncer flow, AOD
+transitions, and the MVI modernisation in much greater detail, drawing on the
+full keyguard source tree.
+
+### 47.13.1  Keyguard State Machine
+
+The keyguard subsystem is fundamentally a state machine.  The
+`KeyguardState` enum defines all possible states:
+
+```kotlin
+// frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/shared/model/
+//   KeyguardState.kt
+enum class KeyguardState {
+    OFF,              // Display completely off, sensors disabled
+    DOZING,           // Low-power mode, some sensors active
+    DREAMING,         // Third-party dream (screensaver) showing
+    AOD,              // Always-On Display showing minimal UI
+    ALTERNATE_BOUNCER,// Biometric credential prompt (e.g. UDFPS)
+    PRIMARY_BOUNCER,  // PIN / Pattern / Password prompt
+    LOCKSCREEN,       // Full lock screen UI, device awake
+    GLANCEABLE_HUB,   // Widget surface accessible from lock screen
+    GONE,             // Keyguard dismissed, user in launcher/app
+    UNDEFINED,        // Scene framework: any non-lockscreen scene
+    OCCLUDED,         // Activity showing over keyguard
+}
+```
+
+The full state transition graph:
+
+```mermaid
+stateDiagram-v2
+    [*] --> OFF
+
+    OFF --> DOZING : Screen off,<br/>sensors enabled
+    OFF --> AOD : Screen off,<br/>AOD enabled
+
+    DOZING --> AOD : AOD trigger
+    DOZING --> LOCKSCREEN : Wake gesture<br/>lift/tap/power
+    DOZING --> GONE : Fingerprint<br/>WAKE_AND_UNLOCK
+
+    AOD --> LOCKSCREEN : Wake gesture
+    AOD --> DOZING : AOD disabled
+    AOD --> GONE : Fingerprint<br/>WAKE_AND_UNLOCK
+
+    LOCKSCREEN --> PRIMARY_BOUNCER : Security challenge
+    LOCKSCREEN --> ALTERNATE_BOUNCER : UDFPS prompt
+    LOCKSCREEN --> AOD : Screen off timeout
+    LOCKSCREEN --> DOZING : Screen off, no AOD
+    LOCKSCREEN --> GONE : Swipe unlock<br/>no security
+    LOCKSCREEN --> GLANCEABLE_HUB : Right edge swipe
+    LOCKSCREEN --> OCCLUDED : showWhenLocked<br/>Activity
+    LOCKSCREEN --> DREAMING : Dream starts
+
+    PRIMARY_BOUNCER --> GONE : Correct credentials
+    PRIMARY_BOUNCER --> LOCKSCREEN : Back / cancel
+
+    ALTERNATE_BOUNCER --> GONE : Biometric match
+    ALTERNATE_BOUNCER --> PRIMARY_BOUNCER : Fallback to PIN
+
+    GLANCEABLE_HUB --> LOCKSCREEN : Left edge swipe
+    GLANCEABLE_HUB --> PRIMARY_BOUNCER : Swipe up
+
+    OCCLUDED --> LOCKSCREEN : Activity finishes
+    OCCLUDED --> GONE : Unlock while occluded
+
+    DREAMING --> LOCKSCREEN : Wake from dream
+    DREAMING --> DOZING : Dream to doze
+
+    GONE --> OFF : Screen off
+    GONE --> DOZING : Screen off,<br/>sensors enabled
+    GONE --> LOCKSCREEN : Lock timeout
+```
+
+States marked `@Deprecated` (`PRIMARY_BOUNCER`, `GLANCEABLE_HUB`, `GONE`,
+`OCCLUDED`) are being replaced by the Scene Container framework, which maps
+them to `UNDEFINED` and manages transitions through `SceneTransitionLayout`.
+
+### 47.13.2  Awake vs Asleep State Classification
+
+The `KeyguardState` companion object classifies each state for power
+management:
+
+| State | Awake | Asleep |
+|---|:---:|:---:|
+| OFF | | X |
+| DOZING | | X |
+| DREAMING | | X |
+| AOD | | X |
+| ALTERNATE_BOUNCER | X | |
+| PRIMARY_BOUNCER | X | |
+| LOCKSCREEN | X | |
+| GLANCEABLE_HUB | X | |
+| GONE | X | |
+| OCCLUDED | X | |
+| UNDEFINED | X | |
+
+This classification drives the `ThemeOverlayController` deferred-colour
+logic (section 47.12.6) and various power-dependent behaviours.
+
+### 47.13.3  KeyguardTransitionInteractor
+
+`KeyguardTransitionInteractor` is the primary API for observing and driving
+transitions between keyguard states:
+
+```kotlin
+// frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/domain/interactor/
+//   KeyguardTransitionInteractor.kt
+@SysUISingleton
+class KeyguardTransitionInteractor @Inject constructor(
+    @Application val scope: CoroutineScope,
+    private val repository: KeyguardTransitionRepository,
+    private val sceneInteractor: SceneInteractor,
+    private val powerInteractor: PowerInteractor,
+) {
+    // Core observable:
+    val transitionState: StateFlow<TransitionStep>
+
+    // Per-state transition value (0.0 to 1.0):
+    // Caches a MutableSharedFlow per KeyguardState for efficiency
+    private val transitionValueCache = mutableMapOf<KeyguardState, MutableSharedFlow<Float>>()
+}
+```
+
+Each `TransitionStep` contains:
+
+- `from: KeyguardState` -- source state
+- `to: KeyguardState` -- destination state
+- `value: Float` -- progress from 0.0 (start) to 1.0 (complete)
+- `transitionState: TransitionState` -- STARTED, RUNNING, CANCELED, FINISHED
+
+Per-edge flows allow specific interactors to observe only the transitions
+they care about:
+
+```kotlin
+// Observe only LOCKSCREEN -> AOD transitions
+keyguardTransitionInteractor.transition(Edge.create(from = LOCKSCREEN, to = AOD))
+    .collect { step -> /* animate based on step.value */ }
+```
+
+### 47.13.4  Transition Interactor Hierarchy
+
+Each state-to-state transition has a dedicated interactor:
+
+```
+FromAodTransitionInteractor
+FromAlternateBouncerTransitionInteractor
+FromDozingTransitionInteractor
+FromDreamingTransitionInteractor
+FromGlanceableHubTransitionInteractor
+FromGoneTransitionInteractor
+FromLockscreenTransitionInteractor
+FromOccludedTransitionInteractor
+FromPrimaryBouncerTransitionInteractor
+```
+
+These interactors listen for signals (power state changes, biometric events,
+user gestures) and call `startTransition()` on the repository to move the
+state machine forward.  The `StartKeyguardTransitionModule` wires them all
+into Dagger.
+
+### 47.13.5  KeyguardViewMediator Internals
+
+`KeyguardViewMediator` (4,573 lines) remains the bridge between
+`system_server` and SystemUI's keyguard.  Key internal mechanisms:
+
+**Lock Timeout Scheduling:**
+
+When the screen turns off, `onStartedGoingToSleep()` schedules a timeout via
+`doKeyguardLocked()`.  The lock delay depends on:
+
+- `Settings.Secure.LOCK_SCREEN_LOCK_AFTER_TIMEOUT` -- user-configured delay
+- Trust agent state (Smart Lock may defer locking)
+- Whether the device was locked manually (power button = immediate lock)
+
+**SIM PIN Management:**
+
+When the SIM requires a PIN, `KeyguardViewMediator` enters a special flow:
+
+1. `onSimStateChanged()` detects `SIM_LOCKED` state
+2. `doKeyguardLocked()` forces keyguard display regardless of other settings
+3. The bouncer presents a SIM PIN input (distinct from the device PIN)
+4. Upon successful verification, keyguard may dismiss or remain if device
+   security is also pending
+
+**Occlusion Handling:**
+
+Activities declaring `showWhenLocked=true` can appear over the keyguard.
+The mediator tracks occlusion via `setOccluded(boolean)` and coordinates
+with `StatusBarKeyguardViewManager` to hide/show the underlying keyguard
+views.
+
+### 47.13.6  Biometric Unlock Modes
+
+The `BiometricUnlockInteractor` translates integer mode constants from
+`BiometricUnlockController` into the typed `BiometricUnlockMode` enum:
+
+```kotlin
+// frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/shared/model/
+//   BiometricUnlockModel.kt
+enum class BiometricUnlockMode {
+    NONE,                      // No biometric action
+    WAKE_AND_UNLOCK,           // Fingerprint while screen off -> wake + dismiss
+    WAKE_AND_UNLOCK_PULSING,   // Fingerprint during AOD pulse -> fade out + dismiss
+    SHOW_BOUNCER,              // Biometric failure -> show PIN/pattern
+    ONLY_WAKE,                 // Wake device, keyguard stays
+    UNLOCK_COLLAPSING,         // Face/fingerprint while keyguard visible
+    DISMISS_BOUNCER,           // Biometric while bouncer visible -> dismiss
+    WAKE_AND_UNLOCK_FROM_DREAM // Fingerprint while dreaming -> wake + dismiss
+}
+```
+
+The mode determines the keyguard state transition:
+
+```mermaid
+graph TD
+    FP["Fingerprint<br/>Acquired"]
+    FACE["Face<br/>Acquired"]
+
+    FP --> |"Screen OFF"| WAU["WAKE_AND_UNLOCK<br/>OFF/DOZING -> GONE"]
+    FP --> |"AOD Pulsing"| WAUP["WAKE_AND_UNLOCK_PULSING<br/>AOD -> GONE"]
+    FP --> |"Screen ON,<br/>Keyguard visible"| UC["UNLOCK_COLLAPSING<br/>LOCKSCREEN -> GONE"]
+    FP --> |"Dreaming"| WAUD["WAKE_AND_UNLOCK_FROM_DREAM<br/>DREAMING -> GONE"]
+    FP --> |"Bouncer visible"| DB["DISMISS_BOUNCER<br/>PRIMARY_BOUNCER -> GONE"]
+
+    FACE --> |"Bypass enabled"| UC
+    FACE --> |"Bypass disabled,<br/>on lockscreen"| OW["ONLY_WAKE<br/>Stay on LOCKSCREEN"]
+    FACE --> |"Bouncer visible"| DB
+    FACE --> |"Failed"| SB["SHOW_BOUNCER<br/>LOCKSCREEN -> PRIMARY_BOUNCER"]
+```
+
+The `BiometricUnlockModel` pairs the mode with a `BiometricUnlockSource`
+(FINGERPRINT_SENSOR, FACE_SENSOR, etc.) for audit and animation purposes.
+
+### 47.13.7  Bouncer Flow Detail
+
+The bouncer subsystem uses the MVI pattern with a clear data/domain/UI
+separation:
+
+```
+frameworks/base/packages/SystemUI/src/com/android/systemui/bouncer/
+  data/repository/
+    BouncerRepositoryModule.kt        -- Dagger bindings
+    KeyguardBouncerRepository.kt      -- State repository
+  domain/interactor/
+    BouncerInteractor.kt              -- Main interactor
+    PrimaryBouncerInteractor.kt       -- PIN/pattern/password
+    AlternateBouncerInteractor.kt     -- UDFPS/biometric
+  domain/startable/
+    BouncerStartable.kt               -- CoreStartable wiring
+  ui/
+    BouncerView.kt                    -- Compose UI
+```
+
+**Primary Bouncer Lifecycle:**
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant KTI as KeyguardTransitionInteractor
+    participant PBI as PrimaryBouncerInteractor
+    participant KBR as KeyguardBouncerRepository
+    participant BV as BouncerView
+    participant LPU as LockPatternUtils
+
+    User->>KTI: Swipe up on lockscreen
+    KTI->>KTI: startTransition(LOCKSCREEN -> PRIMARY_BOUNCER)
+    KTI->>PBI: Transition triggers bouncer show
+    PBI->>KBR: setPrimaryShow(true)
+    KBR-->>BV: primaryBouncerShow flow emits true
+    BV->>BV: Inflate PIN/Pattern/Password input
+
+    User->>BV: Enter PIN "1234"
+    BV->>PBI: onAuthenticate(pin)
+    PBI->>LPU: checkCredential(pin, userId)
+
+    alt Correct
+        LPU-->>PBI: Success
+        PBI->>KBR: setPrimaryShow(false)
+        PBI->>KTI: startTransition(PRIMARY_BOUNCER -> GONE)
+    else Wrong
+        LPU-->>PBI: Failure
+        PBI->>BV: showError("Wrong PIN")
+        Note over BV: Lockout after N failures
+    end
+```
+
+**Alternate Bouncer (UDFPS):**
+
+When the device has an under-display fingerprint sensor, the alternate
+bouncer presents a fingerprint icon overlay:
+
+1. `AlternateBouncerInteractor` detects the device supports UDFPS
+2. On lockscreen wake, it triggers `LOCKSCREEN -> ALTERNATE_BOUNCER`
+3. The UDFPS overlay shows a fingerprint icon at the sensor location
+4. If the user taps the sensor and fingerprint matches -> `GONE`
+5. If the user wants PIN instead -> `ALTERNATE_BOUNCER -> PRIMARY_BOUNCER`
+
+### 47.13.8  AOD Transition Pipeline
+
+The Always-On Display transition involves multiple coordinated subsystems:
+
+```mermaid
+sequenceDiagram
+    participant PM as PowerManager
+    participant KVM as KeyguardViewMediator
+    participant DSH as DozeServiceHost
+    participant DSC as DozeScrimController
+    participant KTI as KeyguardTransitionInteractor
+    participant FADE as FromAodTransitionInteractor
+
+    PM->>KVM: onStartedGoingToSleep()
+    KVM->>KTI: startTransition(LOCKSCREEN -> AOD)
+    KTI-->>DSC: transitionValue(AOD): 0.0 -> 1.0
+    DSC->>DSC: Animate scrim alpha
+
+    Note over DSH: Doze service starts
+    DSH->>DSH: Set pulse parameters
+
+    PM->>KVM: onFinishedGoingToSleep()
+    Note over DSC: AOD UI fully visible
+
+    Note over DSH: Notification arrives
+    DSH->>KTI: startTransition(AOD -> LOCKSCREEN)
+    KTI-->>FADE: FromAodTransitionInteractor triggers
+    FADE->>DSC: Animate scrim to transparent
+    FADE->>DSC: Wake screen
+```
+
+Doze parameters control AOD behaviour:
+
+- **DozeParameters.getAlwaysOn()** -- whether AOD is enabled
+- **DozeParameters.shouldControlScreenOff()** -- animation vs immediate off
+- **DozeParameters.getPulseVisibleDuration()** -- how long notification
+  pulse shows
+
+### 47.13.9  KeyguardRepository -- The Data Layer
+
+The `KeyguardRepository` interface centralises all keyguard state:
+
+```
+frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/data/repository/
+  KeyguardRepository.kt               -- Core keyguard state
+  BiometricSettingsRepository.kt       -- Biometric configuration
+  DevicePostureRepository.kt           -- Fold state
+  KeyguardBypassRepository.kt          -- Face bypass settings
+  KeyguardClockRepository.kt           -- Clock face selection
+  KeyguardOcclusionRepository.kt       -- Activity occlusion
+  KeyguardQuickAffordanceRepository.kt -- Bottom shortcuts
+  KeyguardSmartspaceRepository.kt      -- Smart suggestions
+  KeyguardSurfaceBehindRepository.kt   -- Behind-keyguard surface
+  InWindowLauncherUnlockAnimationRepository.kt -- Unlock animation
+```
+
+Key flows exposed by `KeyguardRepository`:
+
+- `isKeyguardShowing: StateFlow<Boolean>`
+- `isKeyguardOccluded: StateFlow<Boolean>`
+- `biometricUnlockState: StateFlow<BiometricUnlockModel>`
+- `isDozing: StateFlow<Boolean>`
+- `isDreaming: StateFlow<Boolean>`
+- `wakefulness: StateFlow<WakefulnessModel>`
+
+### 47.13.10  Scene Container Migration
+
+The keyguard is undergoing a major migration to the Scene Container
+architecture.  Under this model:
+
+```mermaid
+graph TB
+    subgraph "Legacy (being replaced)"
+        KVM_L["KeyguardViewMediator<br/>manages show/hide"]
+        SBKVM_L["StatusBarKeyguardViewManager<br/>bridges to views"]
+        CS_L["CentralSurfacesImpl<br/>owns the window"]
+    end
+
+    subgraph "Scene Container (new)"
+        STL["SceneTransitionLayout<br/>Compose-based scene manager"]
+        LS["Lockscreen Scene"]
+        BS["Bouncer Overlay"]
+        GS["Gone Scene"]
+        OS["Occluded Scene"]
+        CHS["Communal Scene"]
+    end
+
+    KVM_L -.->|"migrating to"| STL
+    SBKVM_L -.->|"migrating to"| LS
+    CS_L -.->|"migrating to"| STL
+```
+
+`KeyguardState.mapToSceneContainerContent()` maps legacy states to scene
+keys:
+
+- `LOCKSCREEN`, `AOD`, `DOZING`, `DREAMING`, `OFF`, `ALTERNATE_BOUNCER`
+  all map to `Scenes.Lockscreen`
+- `PRIMARY_BOUNCER` maps to `Overlays.Bouncer`
+- `GONE` maps to `Scenes.Gone`
+- `OCCLUDED` maps to `Scenes.Occluded`
+- `GLANCEABLE_HUB` maps to `Scenes.Communal`
+
+The `SceneContainerFlag` controls whether the new path is active, with
+`@Deprecated` annotations on states that will not exist post-migration.
+
+### 47.13.11  Key Source Paths (Keyguard)
+
+```
+frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/
+  KeyguardViewMediator.java                  -- 4,573-line mediator
+  KeyguardService.java                       -- system_server bridge
+  KeyguardLifecyclesDispatcher.java          -- Lifecycle events
+  KeyguardUnlockAnimationController.kt       -- Unlock animation
+
+  shared/model/
+    KeyguardState.kt                         -- State enum (11 states)
+    BiometricUnlockModel.kt                  -- Unlock mode enum (8 modes)
+    TransitionStep.kt                        -- Transition progress
+    TransitionState.kt                       -- STARTED/RUNNING/CANCELED/FINISHED
+    DozeStateModel.kt                        -- Doze states
+    DozeTransitionModel.kt                   -- Doze transitions
+
+  data/repository/
+    KeyguardRepository.kt                    -- Core state repository
+    KeyguardTransitionRepository.kt          -- Transition state
+    BiometricSettingsRepository.kt           -- Biometric config
+    KeyguardOcclusionRepository.kt           -- Occlusion tracking
+
+  domain/interactor/
+    KeyguardInteractor.kt                    -- General keyguard logic
+    KeyguardTransitionInteractor.kt          -- Transition observation
+    BiometricUnlockInteractor.kt             -- Biometric mode mapping
+    KeyguardDismissInteractor.kt             -- Dismiss handling
+    KeyguardEnabledInteractor.kt             -- Enable/disable
+    From*TransitionInteractor.kt             -- Per-state transition drivers
+    TrustInteractor.kt                       -- Smart Lock
+    DozeInteractor.kt                        -- Doze management
+
+  ui/
+    KeyguardViewConfigurator.kt              -- View setup
+
+frameworks/base/packages/SystemUI/src/com/android/systemui/bouncer/
+  data/repository/KeyguardBouncerRepository.kt
+  domain/interactor/PrimaryBouncerInteractor.kt
+  domain/interactor/AlternateBouncerInteractor.kt
+  ui/BouncerView.kt
+```
+
+---
+
+## 47.14  Try It: Add a Custom QS Tile
 
 This hands-on exercise demonstrates how to add a new built-in Quick Settings
 tile to SystemUI.  We will create a "Caffeine" tile that keeps the screen awake.
 
-### 47.12.1  Step 1: Create the Tile Class
+### 47.14.1  Step 1: Create the Tile Class
 
 Create a new file in the tiles directory:
 
@@ -1985,7 +2798,7 @@ public class CaffeineTile extends QSTileImpl<BooleanState> {
 }
 ```
 
-### 47.12.2  Step 2: Register the Tile in the QS Factory
+### 47.14.2  Step 2: Register the Tile in the QS Factory
 
 The tile must be registered so `QSHost` can create it from its tile spec.
 Find the tile creation factory (typically in the QS Dagger module or
@@ -2006,7 +2819,7 @@ You also need to add the Dagger provider.  In the relevant Dagger module:
 abstract QSTile bindCaffeineTile(CaffeineTile tile);
 ```
 
-### 47.12.3  Step 3: Add Drawable Resources
+### 47.14.3  Step 3: Add Drawable Resources
 
 Add icon resources to the SystemUI `res/` directory:
 
@@ -2018,7 +2831,7 @@ frameworks/base/packages/SystemUI/res/drawable/
 
 For vector drawables, use 24x24dp with the appropriate tint.
 
-### 47.12.4  Step 4: Add to Default Tile List (Optional)
+### 47.14.4  Step 4: Add to Default Tile List (Optional)
 
 To include the tile in the default QS panel, modify the string resource:
 
@@ -2029,7 +2842,7 @@ To include the tile in the default QS panel, modify the string resource:
 </string>
 ```
 
-### 47.12.5  Step 5: Build and Test
+### 47.14.5  Step 5: Build and Test
 
 ```bash
 # Build SystemUI
@@ -2050,7 +2863,7 @@ Verify the tile appears in the QS editor.  If not in the default list, open
 the QS edit mode (pencil icon) and drag the "Caffeine" tile into the active
 area.
 
-### 47.12.6  Step 6: Verify Functionality
+### 47.14.6  Step 6: Verify Functionality
 
 ```bash
 # Check wake lock state
@@ -2060,7 +2873,7 @@ adb shell dumpsys power | grep -i "wake lock"
 # Look for: "SystemUI:CaffeineTile" in the output
 ```
 
-### 47.12.7  Architecture Summary of a QS Tile
+### 47.14.7  Architecture Summary of a QS Tile
 
 ```mermaid
 graph TD
@@ -2085,7 +2898,7 @@ graph TD
     QTV -->|"displayed in"| QSP
 ```
 
-### 47.12.8  Testing the Tile
+### 47.14.8  Testing the Tile
 
 For unit testing, follow the existing pattern in the SystemUI test directory:
 
@@ -2138,819 +2951,6 @@ public class CaffeineTileTest extends SysuiTestCase {
         verify(mWakeLock).release();
     }
 }
-```
-
----
-
-## 47.13  Monet / Dynamic Color / Material You
-
-Android 12 introduced **Material You**, a design language where the entire
-system UI derives its colour palette from the user's wallpaper.  The engine
-behind this is called **Monet** -- a colour-science pipeline that extracts a
-seed colour from `WallpaperColors`, generates tonal palettes through the
-Material Color Utilities library, and applies the resulting colours as
-fabricated resource overlays across every package.
-
-### 47.13.1  End-to-End Pipeline
-
-```mermaid
-graph TB
-    subgraph "Wallpaper Stack"
-        WP[WallpaperManager]
-        WC["WallpaperColors<br/>Primary / Secondary / Tertiary<br/>+ allColors population map"]
-    end
-
-    subgraph "SystemUI -- ThemeOverlayController"
-        TOC["ThemeOverlayController<br/>CoreStartable"]
-        SEED["getSeedColor()<br/>ColorScheme.getSeedColors()"]
-        CS_DARK["ColorScheme<br/>(dark)"]
-        CS_LIGHT["ColorScheme<br/>(light)"]
-        FAB["FabricatedOverlay x3<br/>accent / neutral / dynamic"]
-    end
-
-    subgraph "Monet Library"
-        HCT["Hct.fromInt(seed)"]
-        SCHEME["DynamicScheme<br/>TonalSpot / Vibrant /<br/>Expressive / Neutral / ..."]
-        TP["TonalPalette<br/>13 shade stops<br/>0..1000"]
-    end
-
-    subgraph "OverlayManager"
-        OM["OverlayManagerService"]
-        RES["android.R.color.system_*"]
-    end
-
-    subgraph "All Apps"
-        APPS["Apps read<br/>system_accent1_500,<br/>system_neutral1_100, ..."]
-    end
-
-    WP -->|"onColorsChanged"| TOC
-    TOC --> SEED
-    SEED --> HCT
-    HCT --> SCHEME
-    SCHEME --> TP
-    TP --> CS_DARK
-    TP --> CS_LIGHT
-    CS_DARK --> FAB
-    CS_LIGHT --> FAB
-    TOC -->|"applyCurrentUserOverlays()"| OM
-    FAB --> OM
-    OM -->|"registerFabricatedOverlay"| RES
-    RES --> APPS
-```
-
-### 47.13.2  Colour Extraction -- Seed Selection
-
-`ColorScheme.getSeedColors()` implements the Monet seed-selection algorithm.
-Given `WallpaperColors` (which contains all quantized colours with population
-data), it:
-
-1. **Builds a hue histogram** -- 360 slots, each accumulating the proportion
-   of colours with that hue.
-2. **Scores each colour** by a weighted combination of hue proportion (70%)
-   and chroma distance from the 48.0 target (30%).
-3. **Filters low-chroma colours** (chroma < 5) which would produce grey
-   themes.
-4. **Selects hue-distinct seeds** -- iteratively reduces the minimum hue
-   distance from 90 degrees down to 15, picking up to 4 seeds.
-5. **Falls back to `GOOGLE_BLUE` (0xFF1b6ef3)** if no suitable colour
-   exists.
-
-```java
-// frameworks/libs/systemui/monet/src/com/android/systemui/monet/ColorScheme.java
-public static List<Integer> getSeedColors(WallpaperColors wallpaperColors, boolean filter) {
-    // ...
-    // Score: 0.7 * hueProportion + 0.3 * (chroma - 48)
-    // Iterative hue-distance selection from 90° down to 15°
-    // Fallback: GOOGLE_BLUE
-}
-```
-
-For Live Wallpapers where quantization population is zero, the method trusts
-the ordering of the three main colours directly, filtering only by minimum
-chroma.
-
-### 47.13.3  The ColorScheme Class
-
-`ColorScheme` wraps the Material Color Utilities `DynamicScheme` and exposes
-six `TonalPalette` instances:
-
-```java
-// frameworks/libs/systemui/monet/src/com/android/systemui/monet/ColorScheme.java
-@Deprecated  // migrating to MaterialDynamicColors
-public class ColorScheme {
-    private final TonalPalette mAccent1;   // primaryPalette
-    private final TonalPalette mAccent2;   // secondaryPalette
-    private final TonalPalette mAccent3;   // tertiaryPalette
-    private final TonalPalette mNeutral1;  // neutralPalette
-    private final TonalPalette mNeutral2;  // neutralVariantPalette
-    private final TonalPalette mError;     // errorPalette
-}
-```
-
-Each palette is constructed from `Hct` (Hue-Chroma-Tone) colour space via
-the Material library's `TonalPalette`.  The class delegates to a style-specific
-`DynamicScheme` based on `ThemeStyle`:
-
-| ThemeStyle | DynamicScheme | Character |
-|---|---|---|
-| `TONAL_SPOT` | `SchemeTonalSpot` | Default -- balanced, moderate chroma |
-| `VIBRANT` | `SchemeVibrant` | Higher chroma for bolder colours |
-| `EXPRESSIVE` | `SchemeExpressive` | Maximum chromatic variety |
-| `SPRITZ` | `SchemeNeutral` | Desaturated, subdued |
-| `RAINBOW` | `SchemeRainbow` | Full hue rotation |
-| `FRUIT_SALAD` | `SchemeFruitSalad` | Playful multi-hue |
-| `CONTENT` | `SchemeContent` | Faithful to source image |
-| `MONOCHROMATIC` | `SchemeMonochrome` | Single-hue grayscale |
-| `CLOCK` | `SchemeClock` | Custom SystemUI scheme for lock screen clocks |
-| `CLOCK_VIBRANT` | `SchemeClockVibrant` | High-chroma clock variant |
-
-### 47.13.4  TonalPalette and Shade Stops
-
-Each `TonalPalette` contains 13 tonal stops:
-
-```java
-// frameworks/libs/systemui/monet/src/com/android/systemui/monet/TonalPalette.java
-public static final List<Integer> SHADE_KEYS =
-    Arrays.asList(0, 10, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000);
-```
-
-Shade 0 is white, shade 1000 is black.  The `getAtTone(shade)` method maps
-the 0-1000 range to the Material library's 0-100 tone scale via
-`(1000 - shade) / 10`.  This produces Android's `system_accent1_0` through
-`system_accent1_1000` resource colours.
-
-### 47.13.5  ThemeOverlayController -- The Orchestrator
-
-`ThemeOverlayController` is a `CoreStartable` that wires together wallpaper
-change detection, colour scheme generation, and overlay application:
-
-```java
-// frameworks/base/packages/SystemUI/src/com/android/systemui/theme/
-//   ThemeOverlayController.java
-@SysUISingleton
-public class ThemeOverlayController implements CoreStartable, Dumpable {
-    // Key fields:
-    protected ColorScheme mColorScheme;
-    protected int mMainWallpaperColor = Color.TRANSPARENT;
-    private int mThemeStyle = ThemeStyle.TONAL_SPOT;
-    private double mContrast = 0.0;
-    private FabricatedOverlay mAccentOverlay;
-    private FabricatedOverlay mNeutralOverlay;
-    private FabricatedOverlay mDynamicOverlay;
-}
-```
-
-**Listeners registered on `start()`:**
-
-| Listener | Purpose |
-|---|---|
-| `WallpaperManager.OnColorsChangedListener` | Detects wallpaper colour changes for all users |
-| `SecureSettings` ContentObserver | Detects `THEME_CUSTOMIZATION_OVERLAY_PACKAGES` changes |
-| `UserTracker.Callback` | Re-evaluates on user switch |
-| `UiModeManager.ContrastChangeListener` | Re-evaluates when contrast level changes |
-| `BroadcastReceiver` for `ACTION_PROFILE_ADDED` | Applies overlays to new managed profiles |
-| `BroadcastReceiver` for `ACTION_WALLPAPER_CHANGED` | Re-enables colour event acceptance |
-| `KeyguardTransitionInteractor` (asleep state) | Defers processing until screen off |
-
-### 47.13.6  Colour Event Deferral
-
-The controller uses a sophisticated deferral mechanism to avoid jarring
-mid-use colour changes.  When the user is looking at the screen, colour
-events are suppressed until the display goes off:
-
-```mermaid
-sequenceDiagram
-    participant WM as WallpaperManager
-    participant TOC as ThemeOverlayController
-    participant KTI as KeyguardTransitionInteractor
-    participant OMS as OverlayManagerService
-
-    WM->>TOC: onColorsChanged(colors, userId)
-    alt Screen is ON and acceptColorEvents=false
-        TOC->>TOC: mDeferredWallpaperColors.put(userId, colors)
-        Note over TOC: "Deferred until screen off"
-    else acceptColorEvents=true
-        TOC->>TOC: mAcceptColorEvents = false
-        TOC->>TOC: handleWallpaperColors()
-        TOC->>TOC: reevaluateSystemTheme()
-    end
-
-    KTI-->>TOC: isFinishedIn(DOZING) = true
-    TOC->>TOC: Process deferred colours
-    TOC->>TOC: createOverlays(seedColor)
-    TOC->>OMS: applyCurrentUserOverlays()
-```
-
-The wallpaper picker sets `EXTRA_FROM_FOREGROUND_APP=true` on the
-`ACTION_WALLPAPER_CHANGED` broadcast, which resets `mAcceptColorEvents` to
-`true` -- so user-initiated changes apply immediately.
-
-### 47.13.7  Overlay Creation and Application
-
-The `createOverlays()` method produces three fabricated overlays:
-
-```java
-private void createOverlays(int color) {
-    mDarkColorScheme = new ColorScheme(color, true, mThemeStyle, mContrast);
-    mLightColorScheme = new ColorScheme(color, false, mThemeStyle, mContrast);
-
-    mAccentOverlay = newFabricatedOverlay("accent");
-    assignColorsToOverlay(mAccentOverlay, DynamicColors.getAllAccentPalette(), false);
-
-    mNeutralOverlay = newFabricatedOverlay("neutral");
-    assignColorsToOverlay(mNeutralOverlay, DynamicColors.getAllNeutralPalette(), false);
-
-    mDynamicOverlay = newFabricatedOverlay("dynamic");
-    assignColorsToOverlay(mDynamicOverlay, DynamicColors.getAllDynamicColorsMapped(), false);
-    assignColorsToOverlay(mDynamicOverlay, DynamicColors.getFixedColorsMapped(), true);
-    assignColorsToOverlay(mDynamicOverlay, DynamicColors.getCustomColorsMapped(), false);
-}
-```
-
-For themed (non-fixed) colours, each resource has `_light` and `_dark`
-variants:
-
-```java
-overlay.setResourceValue(prefix + "_light", TYPE_INT_COLOR_ARGB8,
-    p.second.getArgb(mLightColorScheme.getMaterialScheme()), null);
-overlay.setResourceValue(prefix + "_dark", TYPE_INT_COLOR_ARGB8,
-    p.second.getArgb(mDarkColorScheme.getMaterialScheme()), null);
-```
-
-Fixed colours (e.g. `primaryFixed`) are not dark/light variant and use the
-light scheme only.
-
-### 47.13.8  DynamicColors Token Mapping
-
-The `DynamicColors` class generates the full set of colour tokens:
-
-```java
-// frameworks/libs/systemui/monet/src/com/android/systemui/monet/DynamicColors.java
-public class DynamicColors {
-    // Palette colours: accent1_0..1000, accent2_*, accent3_*, neutral1_*, neutral2_*
-    public static List<Pair<String, DynamicColor>> getAllAccentPalette();
-    public static List<Pair<String, DynamicColor>> getAllNeutralPalette();
-
-    // Material Dynamic Colors: primary, onPrimary, primaryContainer, ...
-    public static List<Pair<String, DynamicColor>> getAllDynamicColorsMapped();
-
-    // Fixed colours: primaryFixed, secondaryFixed, ...
-    public static List<Pair<String, DynamicColor>> getFixedColorsMapped();
-
-    // Custom SystemUI-specific colours
-    public static List<Pair<String, DynamicColor>> getCustomColorsMapped();
-}
-```
-
-The token names are mapped to Android resource names with the prefix
-`android:color/system_`.  For example, `accent1_500` becomes
-`android:color/system_accent1_500`.
-
-### 47.13.9  ThemeOverlayApplier -- The Transaction
-
-`ThemeOverlayApplier` takes the fabricated overlays and applies them via
-`OverlayManager` in a single atomic transaction:
-
-```java
-// frameworks/base/packages/SystemUI/src/com/android/systemui/theme/
-//   ThemeOverlayApplier.java
-@SysUISingleton
-public class ThemeOverlayApplier implements Dumpable {
-    // Overlay categories applied in order:
-    static final List<String> THEME_CATEGORIES = Lists.newArrayList(
-        OVERLAY_CATEGORY_SYSTEM_PALETTE,    // Tonal palette
-        OVERLAY_CATEGORY_ICON_LAUNCHER,     // Launcher icons
-        OVERLAY_CATEGORY_SHAPE,             // Adaptive icon shape
-        OVERLAY_CATEGORY_FONT,              // System font
-        OVERLAY_CATEGORY_ACCENT_COLOR,      // Accent colour
-        OVERLAY_CATEGORY_DYNAMIC_COLOR,     // Dynamic Material colours
-        OVERLAY_CATEGORY_ICON_ANDROID,      // Framework icons
-        OVERLAY_CATEGORY_ICON_SYSUI,        // SystemUI icons
-        OVERLAY_CATEGORY_ICON_SETTINGS,     // Settings icons
-        OVERLAY_CATEGORY_ICON_THEME_PICKER  // Theme picker icons
-    );
-}
-```
-
-The applier first disables all currently enabled overlays in the affected
-categories, then registers new fabricated overlays, and enables them -- all
-in a single `OverlayManagerTransaction` to minimise configuration changes.
-
-Categories in `SYSTEM_USER_CATEGORIES` are applied to both the current user
-and user 0 (system user), ensuring SystemUI and framework processes see the
-correct colours.
-
-### 47.13.10  Settings Integration
-
-Theme customisation is persisted in
-`Settings.Secure.THEME_CUSTOMIZATION_OVERLAY_PACKAGES` as a JSON object:
-
-```json
-{
-  "android.theme.customization.system_palette": "1b6ef3",
-  "android.theme.customization.accent_color": "1b6ef3",
-  "android.theme.customization.color_source": "home_wallpaper",
-  "android.theme.customization.theme_style": "TONAL_SPOT",
-  "android.theme.customization.color_both": "1",
-  "_applied_timestamp": 1234567890
-}
-```
-
-The `ThemeOverlayController` monitors this setting and re-evaluates on every
-change.  When the wallpaper changes and no preset colour is selected, it
-updates this setting automatically, recording the colour source and timestamp.
-
-### 47.13.11  Hardware Default Colours
-
-Starting with Android 15, the `hardwareColorStyles` flag enables OEMs to
-provide device-specific default colour palettes during the Setup Wizard.
-Before the device is provisioned, the controller reads hardware defaults
-(seed colour + style + source) and persists them as the initial theme
-setting.
-
-### 47.13.12  Contrast Support
-
-`ThemeOverlayController` integrates with `UiModeManager.getContrast()` to
-apply Material Design contrast levels.  When the user changes the display
-contrast in Accessibility settings, the controller receives a callback,
-passes the new contrast value to `ColorScheme`, and regenerates overlays:
-
-```java
-// In ColorScheme constructor:
-new ColorScheme(seed, isDark, mThemeStyle, mContrast)
-// mContrast flows through to DynamicScheme's contrastLevel parameter
-```
-
-This adjusts the tonal mapping so that foreground/background colour pairs
-maintain the selected contrast ratio.
-
-### 47.13.13  Key Source Paths (Monet)
-
-```
-frameworks/libs/systemui/monet/
-  src/com/android/systemui/monet/
-    ColorScheme.java             -- Seed selection, palette generation
-    TonalPalette.java            -- 13-stop tonal palette wrapper
-    DynamicColors.java           -- Token-to-DynamicColor mapping
-    CustomDynamicColors.java     -- SystemUI-specific custom tokens
-    Shades.java                  -- Legacy shade generation
-    SchemeClock.java             -- Clock face colour scheme
-    SchemeClockVibrant.java      -- Vibrant clock variant
-
-frameworks/base/packages/SystemUI/src/com/android/systemui/theme/
-  ThemeOverlayController.java    -- Orchestrator (CoreStartable)
-  ThemeOverlayApplier.java       -- OverlayManager transaction
-  ThemeModule.java               -- Dagger module
-```
-
----
-
-## 47.14  Keyguard Deep Dive
-
-Section 47.5 introduced the lock screen architecture.  This section explores
-the internal state machine, biometric unlock modes, bouncer flow, AOD
-transitions, and the MVI modernisation in much greater detail, drawing on the
-full keyguard source tree.
-
-### 47.14.1  Keyguard State Machine
-
-The keyguard subsystem is fundamentally a state machine.  The
-`KeyguardState` enum defines all possible states:
-
-```kotlin
-// frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/shared/model/
-//   KeyguardState.kt
-enum class KeyguardState {
-    OFF,              // Display completely off, sensors disabled
-    DOZING,           // Low-power mode, some sensors active
-    DREAMING,         // Third-party dream (screensaver) showing
-    AOD,              // Always-On Display showing minimal UI
-    ALTERNATE_BOUNCER,// Biometric credential prompt (e.g. UDFPS)
-    PRIMARY_BOUNCER,  // PIN / Pattern / Password prompt
-    LOCKSCREEN,       // Full lock screen UI, device awake
-    GLANCEABLE_HUB,   // Widget surface accessible from lock screen
-    GONE,             // Keyguard dismissed, user in launcher/app
-    UNDEFINED,        // Scene framework: any non-lockscreen scene
-    OCCLUDED,         // Activity showing over keyguard
-}
-```
-
-The full state transition graph:
-
-```mermaid
-stateDiagram-v2
-    [*] --> OFF
-
-    OFF --> DOZING : Screen off,<br/>sensors enabled
-    OFF --> AOD : Screen off,<br/>AOD enabled
-
-    DOZING --> AOD : AOD trigger
-    DOZING --> LOCKSCREEN : Wake gesture<br/>lift/tap/power
-    DOZING --> GONE : Fingerprint<br/>WAKE_AND_UNLOCK
-
-    AOD --> LOCKSCREEN : Wake gesture
-    AOD --> DOZING : AOD disabled
-    AOD --> GONE : Fingerprint<br/>WAKE_AND_UNLOCK
-
-    LOCKSCREEN --> PRIMARY_BOUNCER : Security challenge
-    LOCKSCREEN --> ALTERNATE_BOUNCER : UDFPS prompt
-    LOCKSCREEN --> AOD : Screen off timeout
-    LOCKSCREEN --> DOZING : Screen off, no AOD
-    LOCKSCREEN --> GONE : Swipe unlock<br/>no security
-    LOCKSCREEN --> GLANCEABLE_HUB : Right edge swipe
-    LOCKSCREEN --> OCCLUDED : showWhenLocked<br/>Activity
-    LOCKSCREEN --> DREAMING : Dream starts
-
-    PRIMARY_BOUNCER --> GONE : Correct credentials
-    PRIMARY_BOUNCER --> LOCKSCREEN : Back / cancel
-
-    ALTERNATE_BOUNCER --> GONE : Biometric match
-    ALTERNATE_BOUNCER --> PRIMARY_BOUNCER : Fallback to PIN
-
-    GLANCEABLE_HUB --> LOCKSCREEN : Left edge swipe
-    GLANCEABLE_HUB --> PRIMARY_BOUNCER : Swipe up
-
-    OCCLUDED --> LOCKSCREEN : Activity finishes
-    OCCLUDED --> GONE : Unlock while occluded
-
-    DREAMING --> LOCKSCREEN : Wake from dream
-    DREAMING --> DOZING : Dream to doze
-
-    GONE --> OFF : Screen off
-    GONE --> DOZING : Screen off,<br/>sensors enabled
-    GONE --> LOCKSCREEN : Lock timeout
-```
-
-States marked `@Deprecated` (`PRIMARY_BOUNCER`, `GLANCEABLE_HUB`, `GONE`,
-`OCCLUDED`) are being replaced by the Scene Container framework, which maps
-them to `UNDEFINED` and manages transitions through `SceneTransitionLayout`.
-
-### 47.14.2  Awake vs Asleep State Classification
-
-The `KeyguardState` companion object classifies each state for power
-management:
-
-| State | Awake | Asleep |
-|---|:---:|:---:|
-| OFF | | X |
-| DOZING | | X |
-| DREAMING | | X |
-| AOD | | X |
-| ALTERNATE_BOUNCER | X | |
-| PRIMARY_BOUNCER | X | |
-| LOCKSCREEN | X | |
-| GLANCEABLE_HUB | X | |
-| GONE | X | |
-| OCCLUDED | X | |
-| UNDEFINED | X | |
-
-This classification drives the `ThemeOverlayController` deferred-colour
-logic (section 47.13.6) and various power-dependent behaviours.
-
-### 47.14.3  KeyguardTransitionInteractor
-
-`KeyguardTransitionInteractor` is the primary API for observing and driving
-transitions between keyguard states:
-
-```kotlin
-// frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/domain/interactor/
-//   KeyguardTransitionInteractor.kt
-@SysUISingleton
-class KeyguardTransitionInteractor @Inject constructor(
-    @Application val scope: CoroutineScope,
-    private val repository: KeyguardTransitionRepository,
-    private val sceneInteractor: SceneInteractor,
-    private val powerInteractor: PowerInteractor,
-) {
-    // Core observable:
-    val transitionState: StateFlow<TransitionStep>
-
-    // Per-state transition value (0.0 to 1.0):
-    // Caches a MutableSharedFlow per KeyguardState for efficiency
-    private val transitionValueCache = mutableMapOf<KeyguardState, MutableSharedFlow<Float>>()
-}
-```
-
-Each `TransitionStep` contains:
-
-- `from: KeyguardState` -- source state
-- `to: KeyguardState` -- destination state
-- `value: Float` -- progress from 0.0 (start) to 1.0 (complete)
-- `transitionState: TransitionState` -- STARTED, RUNNING, CANCELED, FINISHED
-
-Per-edge flows allow specific interactors to observe only the transitions
-they care about:
-
-```kotlin
-// Observe only LOCKSCREEN -> AOD transitions
-keyguardTransitionInteractor.transition(Edge.create(from = LOCKSCREEN, to = AOD))
-    .collect { step -> /* animate based on step.value */ }
-```
-
-### 47.14.4  Transition Interactor Hierarchy
-
-Each state-to-state transition has a dedicated interactor:
-
-```
-FromAodTransitionInteractor
-FromAlternateBouncerTransitionInteractor
-FromDozingTransitionInteractor
-FromDreamingTransitionInteractor
-FromGlanceableHubTransitionInteractor
-FromGoneTransitionInteractor
-FromLockscreenTransitionInteractor
-FromOccludedTransitionInteractor
-FromPrimaryBouncerTransitionInteractor
-```
-
-These interactors listen for signals (power state changes, biometric events,
-user gestures) and call `startTransition()` on the repository to move the
-state machine forward.  The `StartKeyguardTransitionModule` wires them all
-into Dagger.
-
-### 47.14.5  KeyguardViewMediator Internals
-
-`KeyguardViewMediator` (4,573 lines) remains the bridge between
-`system_server` and SystemUI's keyguard.  Key internal mechanisms:
-
-**Lock Timeout Scheduling:**
-
-When the screen turns off, `onStartedGoingToSleep()` schedules a timeout via
-`doKeyguardLocked()`.  The lock delay depends on:
-
-- `Settings.Secure.LOCK_SCREEN_LOCK_AFTER_TIMEOUT` -- user-configured delay
-- Trust agent state (Smart Lock may defer locking)
-- Whether the device was locked manually (power button = immediate lock)
-
-**SIM PIN Management:**
-
-When the SIM requires a PIN, `KeyguardViewMediator` enters a special flow:
-
-1. `onSimStateChanged()` detects `SIM_LOCKED` state
-2. `doKeyguardLocked()` forces keyguard display regardless of other settings
-3. The bouncer presents a SIM PIN input (distinct from the device PIN)
-4. Upon successful verification, keyguard may dismiss or remain if device
-   security is also pending
-
-**Occlusion Handling:**
-
-Activities declaring `showWhenLocked=true` can appear over the keyguard.
-The mediator tracks occlusion via `setOccluded(boolean)` and coordinates
-with `StatusBarKeyguardViewManager` to hide/show the underlying keyguard
-views.
-
-### 47.14.6  Biometric Unlock Modes
-
-The `BiometricUnlockInteractor` translates integer mode constants from
-`BiometricUnlockController` into the typed `BiometricUnlockMode` enum:
-
-```kotlin
-// frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/shared/model/
-//   BiometricUnlockModel.kt
-enum class BiometricUnlockMode {
-    NONE,                      // No biometric action
-    WAKE_AND_UNLOCK,           // Fingerprint while screen off -> wake + dismiss
-    WAKE_AND_UNLOCK_PULSING,   // Fingerprint during AOD pulse -> fade out + dismiss
-    SHOW_BOUNCER,              // Biometric failure -> show PIN/pattern
-    ONLY_WAKE,                 // Wake device, keyguard stays
-    UNLOCK_COLLAPSING,         // Face/fingerprint while keyguard visible
-    DISMISS_BOUNCER,           // Biometric while bouncer visible -> dismiss
-    WAKE_AND_UNLOCK_FROM_DREAM // Fingerprint while dreaming -> wake + dismiss
-}
-```
-
-The mode determines the keyguard state transition:
-
-```mermaid
-graph TD
-    FP["Fingerprint<br/>Acquired"]
-    FACE["Face<br/>Acquired"]
-
-    FP --> |"Screen OFF"| WAU["WAKE_AND_UNLOCK<br/>OFF/DOZING -> GONE"]
-    FP --> |"AOD Pulsing"| WAUP["WAKE_AND_UNLOCK_PULSING<br/>AOD -> GONE"]
-    FP --> |"Screen ON,<br/>Keyguard visible"| UC["UNLOCK_COLLAPSING<br/>LOCKSCREEN -> GONE"]
-    FP --> |"Dreaming"| WAUD["WAKE_AND_UNLOCK_FROM_DREAM<br/>DREAMING -> GONE"]
-    FP --> |"Bouncer visible"| DB["DISMISS_BOUNCER<br/>PRIMARY_BOUNCER -> GONE"]
-
-    FACE --> |"Bypass enabled"| UC
-    FACE --> |"Bypass disabled,<br/>on lockscreen"| OW["ONLY_WAKE<br/>Stay on LOCKSCREEN"]
-    FACE --> |"Bouncer visible"| DB
-    FACE --> |"Failed"| SB["SHOW_BOUNCER<br/>LOCKSCREEN -> PRIMARY_BOUNCER"]
-```
-
-The `BiometricUnlockModel` pairs the mode with a `BiometricUnlockSource`
-(FINGERPRINT_SENSOR, FACE_SENSOR, etc.) for audit and animation purposes.
-
-### 47.14.7  Bouncer Flow Detail
-
-The bouncer subsystem uses the MVI pattern with a clear data/domain/UI
-separation:
-
-```
-frameworks/base/packages/SystemUI/src/com/android/systemui/bouncer/
-  data/repository/
-    BouncerRepositoryModule.kt        -- Dagger bindings
-    KeyguardBouncerRepository.kt      -- State repository
-  domain/interactor/
-    BouncerInteractor.kt              -- Main interactor
-    PrimaryBouncerInteractor.kt       -- PIN/pattern/password
-    AlternateBouncerInteractor.kt     -- UDFPS/biometric
-  domain/startable/
-    BouncerStartable.kt               -- CoreStartable wiring
-  ui/
-    BouncerView.kt                    -- Compose UI
-```
-
-**Primary Bouncer Lifecycle:**
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant KTI as KeyguardTransitionInteractor
-    participant PBI as PrimaryBouncerInteractor
-    participant KBR as KeyguardBouncerRepository
-    participant BV as BouncerView
-    participant LPU as LockPatternUtils
-
-    User->>KTI: Swipe up on lockscreen
-    KTI->>KTI: startTransition(LOCKSCREEN -> PRIMARY_BOUNCER)
-    KTI->>PBI: Transition triggers bouncer show
-    PBI->>KBR: setPrimaryShow(true)
-    KBR-->>BV: primaryBouncerShow flow emits true
-    BV->>BV: Inflate PIN/Pattern/Password input
-
-    User->>BV: Enter PIN "1234"
-    BV->>PBI: onAuthenticate(pin)
-    PBI->>LPU: checkCredential(pin, userId)
-
-    alt Correct
-        LPU-->>PBI: Success
-        PBI->>KBR: setPrimaryShow(false)
-        PBI->>KTI: startTransition(PRIMARY_BOUNCER -> GONE)
-    else Wrong
-        LPU-->>PBI: Failure
-        PBI->>BV: showError("Wrong PIN")
-        Note over BV: Lockout after N failures
-    end
-```
-
-**Alternate Bouncer (UDFPS):**
-
-When the device has an under-display fingerprint sensor, the alternate
-bouncer presents a fingerprint icon overlay:
-
-1. `AlternateBouncerInteractor` detects the device supports UDFPS
-2. On lockscreen wake, it triggers `LOCKSCREEN -> ALTERNATE_BOUNCER`
-3. The UDFPS overlay shows a fingerprint icon at the sensor location
-4. If the user taps the sensor and fingerprint matches -> `GONE`
-5. If the user wants PIN instead -> `ALTERNATE_BOUNCER -> PRIMARY_BOUNCER`
-
-### 47.14.8  AOD Transition Pipeline
-
-The Always-On Display transition involves multiple coordinated subsystems:
-
-```mermaid
-sequenceDiagram
-    participant PM as PowerManager
-    participant KVM as KeyguardViewMediator
-    participant DSH as DozeServiceHost
-    participant DSC as DozeScrimController
-    participant KTI as KeyguardTransitionInteractor
-    participant FADE as FromAodTransitionInteractor
-
-    PM->>KVM: onStartedGoingToSleep()
-    KVM->>KTI: startTransition(LOCKSCREEN -> AOD)
-    KTI-->>DSC: transitionValue(AOD): 0.0 -> 1.0
-    DSC->>DSC: Animate scrim alpha
-
-    Note over DSH: Doze service starts
-    DSH->>DSH: Set pulse parameters
-
-    PM->>KVM: onFinishedGoingToSleep()
-    Note over DSC: AOD UI fully visible
-
-    Note over DSH: Notification arrives
-    DSH->>KTI: startTransition(AOD -> LOCKSCREEN)
-    KTI-->>FADE: FromAodTransitionInteractor triggers
-    FADE->>DSC: Animate scrim to transparent
-    FADE->>DSC: Wake screen
-```
-
-Doze parameters control AOD behaviour:
-
-- **DozeParameters.getAlwaysOn()** -- whether AOD is enabled
-- **DozeParameters.shouldControlScreenOff()** -- animation vs immediate off
-- **DozeParameters.getPulseVisibleDuration()** -- how long notification
-  pulse shows
-
-### 47.14.9  KeyguardRepository -- The Data Layer
-
-The `KeyguardRepository` interface centralises all keyguard state:
-
-```
-frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/data/repository/
-  KeyguardRepository.kt               -- Core keyguard state
-  BiometricSettingsRepository.kt       -- Biometric configuration
-  DevicePostureRepository.kt           -- Fold state
-  KeyguardBypassRepository.kt          -- Face bypass settings
-  KeyguardClockRepository.kt           -- Clock face selection
-  KeyguardOcclusionRepository.kt       -- Activity occlusion
-  KeyguardQuickAffordanceRepository.kt -- Bottom shortcuts
-  KeyguardSmartspaceRepository.kt      -- Smart suggestions
-  KeyguardSurfaceBehindRepository.kt   -- Behind-keyguard surface
-  InWindowLauncherUnlockAnimationRepository.kt -- Unlock animation
-```
-
-Key flows exposed by `KeyguardRepository`:
-
-- `isKeyguardShowing: StateFlow<Boolean>`
-- `isKeyguardOccluded: StateFlow<Boolean>`
-- `biometricUnlockState: StateFlow<BiometricUnlockModel>`
-- `isDozing: StateFlow<Boolean>`
-- `isDreaming: StateFlow<Boolean>`
-- `wakefulness: StateFlow<WakefulnessModel>`
-
-### 47.14.10  Scene Container Migration
-
-The keyguard is undergoing a major migration to the Scene Container
-architecture.  Under this model:
-
-```mermaid
-graph TB
-    subgraph "Legacy (being replaced)"
-        KVM_L["KeyguardViewMediator<br/>manages show/hide"]
-        SBKVM_L["StatusBarKeyguardViewManager<br/>bridges to views"]
-        CS_L["CentralSurfacesImpl<br/>owns the window"]
-    end
-
-    subgraph "Scene Container (new)"
-        STL["SceneTransitionLayout<br/>Compose-based scene manager"]
-        LS["Lockscreen Scene"]
-        BS["Bouncer Overlay"]
-        GS["Gone Scene"]
-        OS["Occluded Scene"]
-        CHS["Communal Scene"]
-    end
-
-    KVM_L -.->|"migrating to"| STL
-    SBKVM_L -.->|"migrating to"| LS
-    CS_L -.->|"migrating to"| STL
-```
-
-`KeyguardState.mapToSceneContainerContent()` maps legacy states to scene
-keys:
-
-- `LOCKSCREEN`, `AOD`, `DOZING`, `DREAMING`, `OFF`, `ALTERNATE_BOUNCER`
-  all map to `Scenes.Lockscreen`
-- `PRIMARY_BOUNCER` maps to `Overlays.Bouncer`
-- `GONE` maps to `Scenes.Gone`
-- `OCCLUDED` maps to `Scenes.Occluded`
-- `GLANCEABLE_HUB` maps to `Scenes.Communal`
-
-The `SceneContainerFlag` controls whether the new path is active, with
-`@Deprecated` annotations on states that will not exist post-migration.
-
-### 47.14.11  Key Source Paths (Keyguard)
-
-```
-frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/
-  KeyguardViewMediator.java                  -- 4,573-line mediator
-  KeyguardService.java                       -- system_server bridge
-  KeyguardLifecyclesDispatcher.java          -- Lifecycle events
-  KeyguardUnlockAnimationController.kt       -- Unlock animation
-
-  shared/model/
-    KeyguardState.kt                         -- State enum (11 states)
-    BiometricUnlockModel.kt                  -- Unlock mode enum (8 modes)
-    TransitionStep.kt                        -- Transition progress
-    TransitionState.kt                       -- STARTED/RUNNING/CANCELED/FINISHED
-    DozeStateModel.kt                        -- Doze states
-    DozeTransitionModel.kt                   -- Doze transitions
-
-  data/repository/
-    KeyguardRepository.kt                    -- Core state repository
-    KeyguardTransitionRepository.kt          -- Transition state
-    BiometricSettingsRepository.kt           -- Biometric config
-    KeyguardOcclusionRepository.kt           -- Occlusion tracking
-
-  domain/interactor/
-    KeyguardInteractor.kt                    -- General keyguard logic
-    KeyguardTransitionInteractor.kt          -- Transition observation
-    BiometricUnlockInteractor.kt             -- Biometric mode mapping
-    KeyguardDismissInteractor.kt             -- Dismiss handling
-    KeyguardEnabledInteractor.kt             -- Enable/disable
-    From*TransitionInteractor.kt             -- Per-state transition drivers
-    TrustInteractor.kt                       -- Smart Lock
-    DozeInteractor.kt                        -- Doze management
-
-  ui/
-    KeyguardViewConfigurator.kt              -- View setup
-
-frameworks/base/packages/SystemUI/src/com/android/systemui/bouncer/
-  data/repository/KeyguardBouncerRepository.kt
-  domain/interactor/PrimaryBouncerInteractor.kt
-  domain/interactor/AlternateBouncerInteractor.kt
-  ui/BouncerView.kt
 ```
 
 ---
