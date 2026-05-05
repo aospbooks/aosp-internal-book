@@ -1,9 +1,5 @@
 # Chapter 17: Sensors
 
-> *"The sensor subsystem is a continuous, real-time bridge between the physical
-> world and Android software -- a pipeline that must balance microsecond-level
-> latency against milliwatt-level power budgets."*
-
 Android ships with one of the most complete sensor frameworks of any
 general-purpose operating system.  From the accelerometer that rotates your
 screen to the head tracker that spatialises audio in earbuds, the same
