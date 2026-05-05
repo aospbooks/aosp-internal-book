@@ -2191,22 +2191,18 @@ maintain the selected contrast ratio.
 
 ### 47.12.13  Key Source Paths (Monet)
 
-```
-frameworks/libs/systemui/monet/
-  src/com/android/systemui/monet/
-    ColorScheme.java             -- Seed selection, palette generation
-    TonalPalette.java            -- 13-stop tonal palette wrapper
-    DynamicColors.java           -- Token-to-DynamicColor mapping
-    CustomDynamicColors.java     -- SystemUI-specific custom tokens
-    Shades.java                  -- Legacy shade generation
-    SchemeClock.java             -- Clock face colour scheme
-    SchemeClockVibrant.java      -- Vibrant clock variant
-
-frameworks/base/packages/SystemUI/src/com/android/systemui/theme/
-  ThemeOverlayController.java    -- Orchestrator (CoreStartable)
-  ThemeOverlayApplier.java       -- OverlayManager transaction
-  ThemeModule.java               -- Dagger module
-```
+| Path | Description |
+|---|---|
+| `frameworks/libs/systemui/monet/src/com/android/systemui/monet/ColorScheme.java` | Seed selection, palette generation |
+| `frameworks/libs/systemui/monet/src/com/android/systemui/monet/TonalPalette.java` | 13-stop tonal palette wrapper |
+| `frameworks/libs/systemui/monet/src/com/android/systemui/monet/DynamicColors.java` | Token-to-DynamicColor mapping |
+| `frameworks/libs/systemui/monet/src/com/android/systemui/monet/CustomDynamicColors.java` | SystemUI-specific custom tokens |
+| `frameworks/libs/systemui/monet/src/com/android/systemui/monet/Shades.java` | Legacy shade generation |
+| `frameworks/libs/systemui/monet/src/com/android/systemui/monet/SchemeClock.java` | Clock face colour scheme |
+| `frameworks/libs/systemui/monet/src/com/android/systemui/monet/SchemeClockVibrant.java` | Vibrant clock variant |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/theme/ThemeOverlayController.java` | Orchestrator (CoreStartable) |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/theme/ThemeOverlayApplier.java` | OverlayManager transaction |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/theme/ThemeModule.java` | Dagger module |
 
 ---
 
@@ -2617,46 +2613,35 @@ The `SceneContainerFlag` controls whether the new path is active, with
 
 ### 47.13.11  Key Source Paths (Keyguard)
 
-```
-frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/
-  KeyguardViewMediator.java                  -- 4,573-line mediator
-  KeyguardService.java                       -- system_server bridge
-  KeyguardLifecyclesDispatcher.java          -- Lifecycle events
-  KeyguardUnlockAnimationController.kt       -- Unlock animation
-
-  shared/model/
-    KeyguardState.kt                         -- State enum (11 states)
-    BiometricUnlockModel.kt                  -- Unlock mode enum (8 modes)
-    TransitionStep.kt                        -- Transition progress
-    TransitionState.kt                       -- STARTED/RUNNING/CANCELED/FINISHED
-    DozeStateModel.kt                        -- Doze states
-    DozeTransitionModel.kt                   -- Doze transitions
-
-  data/repository/
-    KeyguardRepository.kt                    -- Core state repository
-    KeyguardTransitionRepository.kt          -- Transition state
-    BiometricSettingsRepository.kt           -- Biometric config
-    KeyguardOcclusionRepository.kt           -- Occlusion tracking
-
-  domain/interactor/
-    KeyguardInteractor.kt                    -- General keyguard logic
-    KeyguardTransitionInteractor.kt          -- Transition observation
-    BiometricUnlockInteractor.kt             -- Biometric mode mapping
-    KeyguardDismissInteractor.kt             -- Dismiss handling
-    KeyguardEnabledInteractor.kt             -- Enable/disable
-    From*TransitionInteractor.kt             -- Per-state transition drivers
-    TrustInteractor.kt                       -- Smart Lock
-    DozeInteractor.kt                        -- Doze management
-
-  ui/
-    KeyguardViewConfigurator.kt              -- View setup
-
-frameworks/base/packages/SystemUI/src/com/android/systemui/bouncer/
-  data/repository/KeyguardBouncerRepository.kt
-  domain/interactor/PrimaryBouncerInteractor.kt
-  domain/interactor/AlternateBouncerInteractor.kt
-  ui/BouncerView.kt
-```
+| Path | Description |
+|---|---|
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewMediator.java` | 4,573-line mediator |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardService.java` | system_server bridge |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardLifecyclesDispatcher.java` | Lifecycle events |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardUnlockAnimationController.kt` | Unlock animation |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/shared/model/KeyguardState.kt` | State enum (11 states) |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/shared/model/BiometricUnlockModel.kt` | Unlock mode enum (8 modes) |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/shared/model/TransitionStep.kt` | Transition progress |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/shared/model/TransitionState.kt` | Transition state (STARTED/RUNNING/CANCELED/FINISHED) |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/shared/model/DozeStateModel.kt` | Doze states |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/shared/model/DozeTransitionModel.kt` | Doze transitions |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/data/repository/KeyguardRepository.kt` | Core state repository |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/data/repository/KeyguardTransitionRepository.kt` | Transition state repository |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/data/repository/BiometricSettingsRepository.kt` | Biometric config repository |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/data/repository/KeyguardOcclusionRepository.kt` | Occlusion tracking repository |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/domain/interactor/KeyguardInteractor.kt` | General keyguard interactor |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/domain/interactor/KeyguardTransitionInteractor.kt` | Transition observation |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/domain/interactor/BiometricUnlockInteractor.kt` | Biometric mode mapping |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/domain/interactor/KeyguardDismissInteractor.kt` | Dismiss handling |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/domain/interactor/KeyguardEnabledInteractor.kt` | Enable/disable |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/domain/interactor/From*TransitionInteractor.kt` | Per-state transition drivers |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/domain/interactor/TrustInteractor.kt` | Smart Lock interactor |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/domain/interactor/DozeInteractor.kt` | Doze management |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/ui/KeyguardViewConfigurator.kt` | View setup |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/bouncer/data/repository/KeyguardBouncerRepository.kt` | Bouncer repository |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/bouncer/domain/interactor/PrimaryBouncerInteractor.kt` | Primary bouncer interactor |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/bouncer/domain/interactor/AlternateBouncerInteractor.kt` | Alternate bouncer interactor |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/bouncer/ui/BouncerView.kt` | Bouncer view |
 
 ---
 
@@ -2982,62 +2967,46 @@ modernisation efforts include:
 
 ### Key Source Paths
 
-```
-frameworks/base/packages/SystemUI/
-  AndroidManifest.xml                         -- Process declaration
-  src/com/android/systemui/
-    application/impl/SystemUIApplicationImpl.java  -- App startup
-    SystemUIService.java                      -- Entry service
-    SystemUIInitializer.java                  -- Dagger initialisation
-    dagger/
-      GlobalRootComponent.java                -- Root DI component
-      SysUIComponent.java                     -- Main DI subcomponent
-      SystemUICoreStartableModule.kt          -- Startable bindings
-      SystemUIModule.java                     -- Module aggregator
-      PerDisplayRepositoriesModule.kt         -- Multi-display DI
-    statusbar/phone/
-      CentralSurfaces.java                    -- Status bar interface
-      CentralSurfacesImpl.java                -- Status bar implementation
-      StatusBarKeyguardViewManager.java       -- Keyguard bridge
-    statusbar/window/
-      StatusBarWindowControllerImpl.java      -- Status bar window
-    statusbar/phone/fragment/
-      CollapsedStatusBarFragment.java         -- Status bar content
-    shade/
-      NotificationPanelViewController.java    -- Shade panel
-      ShadeController.java                    -- Shade abstraction
-      NotificationShadeWindowControllerImpl.java -- Shade window
-    qs/
-      QSHost.java                             -- Tile management
-      QSPanel.java                            -- Tile grid
-      tileimpl/QSTileImpl.java                -- Base tile
-      tiles/                                  -- Built-in tiles
-      external/CustomTile.java                -- Third-party tiles
-      pipeline/                               -- New tile pipeline
-    keyguard/
-      KeyguardViewMediator.java               -- Lock screen logic
-    bouncer/                                  -- Security challenge (MVI)
-    navigationbar/
-      NavigationBarControllerImpl.java        -- Nav bar controller
-      NavigationModeController.java           -- Mode tracking
-      views/NavigationBarView.java            -- Nav bar view
-      gestural/EdgeBackGestureHandler.java    -- Gesture navigation
-    volume/
-      VolumeDialogControllerImpl.java         -- Volume state
-      VolumeDialogImpl.java                   -- Volume UI
-    globalactions/
-      GlobalActionsComponent.java             -- Power menu entry
-      GlobalActionsImpl.java                  -- Default implementation
-      GlobalActionsDialogLite.java            -- Dialog UI
-    screenshot/
-      ScreenshotController.kt                -- Screenshot flow
-      TakeScreenshotService.java             -- Screenshot service
-    recents/
-      OverviewProxyRecentsImpl.java           -- Recents proxy
-    display/
-      dagger/SystemUIDisplaySubcomponent.java -- Display-scoped DI
-  plugin/src/com/android/systemui/plugins/
-    qs/QSTile.java                            -- Tile plugin interface
-    GlobalActions.java                        -- Power menu plugin
-    VolumeDialogController.java               -- Volume plugin
-```
+| Path | Description |
+|---|---|
+| `frameworks/base/packages/SystemUI/AndroidManifest.xml` | Process declaration |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/application/impl/SystemUIApplicationImpl.java` | App startup |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/SystemUIService.java` | Entry service |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/SystemUIInitializer.java` | Dagger initialisation |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/dagger/GlobalRootComponent.java` | Root DI component |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/dagger/SysUIComponent.java` | Main DI subcomponent |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/dagger/SystemUICoreStartableModule.kt` | Startable bindings |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/dagger/SystemUIModule.java` | Module aggregator |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/dagger/PerDisplayRepositoriesModule.kt` | Multi-display DI |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/CentralSurfaces.java` | Status bar interface |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/CentralSurfacesImpl.java` | Status bar implementation |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/StatusBarKeyguardViewManager.java` | Keyguard bridge |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/window/StatusBarWindowControllerImpl.java` | Status bar window |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/fragment/CollapsedStatusBarFragment.java` | Status bar content |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/shade/NotificationPanelViewController.java` | Shade panel |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/shade/ShadeController.java` | Shade abstraction |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/shade/NotificationShadeWindowControllerImpl.java` | Shade window |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/qs/QSHost.java` | QS tile management |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/qs/QSPanel.java` | QS tile grid |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/qs/tileimpl/QSTileImpl.java` | Base tile |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/qs/tiles/` | Built-in tiles |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/qs/external/CustomTile.java` | Third-party tiles |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/qs/pipeline/` | New tile pipeline |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewMediator.java` | Lock screen logic |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/bouncer/` | Bouncer (security challenge, MVI) |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/navigationbar/NavigationBarControllerImpl.java` | Nav bar controller |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/navigationbar/NavigationModeController.java` | Nav bar mode tracking |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/navigationbar/views/NavigationBarView.java` | Nav bar view |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/navigationbar/gestural/EdgeBackGestureHandler.java` | Gesture navigation |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/volume/VolumeDialogControllerImpl.java` | Volume state |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/volume/VolumeDialogImpl.java` | Volume UI |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/globalactions/GlobalActionsComponent.java` | Power menu entry |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/globalactions/GlobalActionsImpl.java` | Power menu default impl |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/globalactions/GlobalActionsDialogLite.java` | Power menu dialog UI |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/screenshot/ScreenshotController.kt` | Screenshot flow |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/screenshot/TakeScreenshotService.java` | Screenshot service |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/recents/OverviewProxyRecentsImpl.java` | Recents proxy |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/display/dagger/SystemUIDisplaySubcomponent.java` | Display-scoped DI |
+| `frameworks/base/packages/SystemUI/plugin/src/com/android/systemui/plugins/qs/QSTile.java` | Tile plugin interface |
+| `frameworks/base/packages/SystemUI/plugin/src/com/android/systemui/plugins/GlobalActions.java` | Power menu plugin |
+| `frameworks/base/packages/SystemUI/plugin/src/com/android/systemui/plugins/VolumeDialogController.java` | Volume plugin |
