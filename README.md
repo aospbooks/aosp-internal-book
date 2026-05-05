@@ -60,7 +60,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | IX | 41 | Credential Manager | UNDER REVIEW |
 | IX | 42 | DRM | UNDER REVIEW |
 | X | 43 | Widgets & RemoteViews (RemoteCompose) | REVIEWED |
-| X | 44 | WebView | UNDER REVIEW |
+| X | 44 | WebView | REVIEWED |
 | X | 45 | Accessibility | UNDER REVIEW |
 | X | 46 | Internationalization | UNDER REVIEW |
 | XI | 47 | SystemUI (Monet/Keyguard) | REVIEWED |
