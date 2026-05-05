@@ -3369,41 +3369,6 @@ Common performance pitfalls:
 
 ---
 
----
-
-## Key Source Files Reference
-
-| File | Purpose |
-|------|---------|
-| `frameworks/base/services/accessibility/.../AccessibilityManagerService.java` | Central system service (7,173 lines) |
-| `frameworks/base/core/.../accessibility/AccessibilityEvent.java` | Event definitions (1,934 lines) |
-| `frameworks/base/core/.../accessibility/AccessibilityNodeInfo.java` | Node info (8,308 lines) |
-| `frameworks/base/core/.../accessibility/AccessibilityManager.java` | Client-side manager |
-| `frameworks/base/core/.../accessibilityservice/AccessibilityService.java` | Service base class |
-| `frameworks/base/services/accessibility/.../AccessibilitySecurityPolicy.java` | Security enforcement |
-| `frameworks/base/services/accessibility/.../AccessibilityServiceConnection.java` | Service binding |
-| `frameworks/base/services/accessibility/.../AbstractAccessibilityServiceConnection.java` | Service connection base |
-| `frameworks/base/services/accessibility/.../AccessibilityWindowManager.java` | Window tracking |
-| `frameworks/base/services/accessibility/.../AccessibilityUserState.java` | Per-user state |
-| `frameworks/base/services/accessibility/.../AccessibilityInputFilter.java` | Input pipeline integration |
-| `frameworks/base/services/accessibility/.../KeyEventDispatcher.java` | Key event routing |
-| `frameworks/base/services/accessibility/.../gestures/TouchExplorer.java` | Touch exploration |
-| `frameworks/base/services/accessibility/.../gestures/TouchState.java` | Touch state tracking |
-| `frameworks/base/services/accessibility/.../gestures/GestureManifold.java` | Gesture detection |
-| `frameworks/base/services/accessibility/.../magnification/MagnificationController.java` | Magnification orchestration |
-| `frameworks/base/services/accessibility/.../magnification/FullScreenMagnificationController.java` | Full-screen zoom |
-| `frameworks/base/services/accessibility/.../magnification/FullScreenMagnificationGestureHandler.java` | Magnification gestures |
-| `frameworks/base/services/accessibility/.../magnification/WindowMagnificationGestureHandler.java` | Window magnification |
-| `frameworks/base/services/accessibility/.../magnification/MagnificationKeyHandler.java` | Keyboard magnification |
-| `frameworks/base/services/accessibility/.../magnification/MagnificationScaleProvider.java` | Scale constraints |
-| `frameworks/base/services/accessibility/.../autoclick/AutoclickController.java` | Auto-click feature |
-| `frameworks/base/core/.../internal/accessibility/AccessibilityShortcutController.java` | Shortcut management |
-| `frameworks/base/services/accessibility/.../EventStreamTransformation.java` | Input pipeline interface |
-| `frameworks/base/services/accessibility/.../SystemActionPerformer.java` | System action execution |
-| `frameworks/base/services/accessibility/.../BrailleDisplayConnection.java` | Braille display support |
-
----
-
 ## Summary
 
 This chapter explored Android's accessibility framework from the lowest levels
@@ -3445,3 +3410,37 @@ all while maintaining strong security boundaries. Understanding this
 architecture is essential for anyone building custom accessibility services,
 auditing applications for accessibility compliance, or working on AOSP
 platform features that interact with the accessibility subsystem.
+
+## Key Source Files Reference
+
+| File | Purpose |
+|------|---------|
+| `frameworks/base/services/accessibility/.../AccessibilityManagerService.java` | Central system service (7,173 lines) |
+| `frameworks/base/core/.../accessibility/AccessibilityEvent.java` | Event definitions (1,934 lines) |
+| `frameworks/base/core/.../accessibility/AccessibilityNodeInfo.java` | Node info (8,308 lines) |
+| `frameworks/base/core/.../accessibility/AccessibilityManager.java` | Client-side manager |
+| `frameworks/base/core/.../accessibilityservice/AccessibilityService.java` | Service base class |
+| `frameworks/base/services/accessibility/.../AccessibilitySecurityPolicy.java` | Security enforcement |
+| `frameworks/base/services/accessibility/.../AccessibilityServiceConnection.java` | Service binding |
+| `frameworks/base/services/accessibility/.../AbstractAccessibilityServiceConnection.java` | Service connection base |
+| `frameworks/base/services/accessibility/.../AccessibilityWindowManager.java` | Window tracking |
+| `frameworks/base/services/accessibility/.../AccessibilityUserState.java` | Per-user state |
+| `frameworks/base/services/accessibility/.../AccessibilityInputFilter.java` | Input pipeline integration |
+| `frameworks/base/services/accessibility/.../KeyEventDispatcher.java` | Key event routing |
+| `frameworks/base/services/accessibility/.../gestures/TouchExplorer.java` | Touch exploration |
+| `frameworks/base/services/accessibility/.../gestures/TouchState.java` | Touch state tracking |
+| `frameworks/base/services/accessibility/.../gestures/GestureManifold.java` | Gesture detection |
+| `frameworks/base/services/accessibility/.../magnification/MagnificationController.java` | Magnification orchestration |
+| `frameworks/base/services/accessibility/.../magnification/FullScreenMagnificationController.java` | Full-screen zoom |
+| `frameworks/base/services/accessibility/.../magnification/FullScreenMagnificationGestureHandler.java` | Magnification gestures |
+| `frameworks/base/services/accessibility/.../magnification/WindowMagnificationGestureHandler.java` | Window magnification |
+| `frameworks/base/services/accessibility/.../magnification/MagnificationKeyHandler.java` | Keyboard magnification |
+| `frameworks/base/services/accessibility/.../magnification/MagnificationScaleProvider.java` | Scale constraints |
+| `frameworks/base/services/accessibility/.../autoclick/AutoclickController.java` | Auto-click feature |
+| `frameworks/base/core/.../internal/accessibility/AccessibilityShortcutController.java` | Shortcut management |
+| `frameworks/base/services/accessibility/.../EventStreamTransformation.java` | Input pipeline interface |
+| `frameworks/base/services/accessibility/.../SystemActionPerformer.java` | System action execution |
+| `frameworks/base/services/accessibility/.../BrailleDisplayConnection.java` | Braille display support |
+
+---
+
