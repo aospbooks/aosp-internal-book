@@ -1296,42 +1296,42 @@ Key initialization details:
 
 1. **Default display flags** for all virtual displays on this device:
 
-```java
-private static final int DEFAULT_VIRTUAL_DISPLAY_FLAGS =
-        DisplayManager.VIRTUAL_DISPLAY_FLAG_TOUCH_FEEDBACK_DISABLED
-                | DisplayManager.VIRTUAL_DISPLAY_FLAG_DESTROY_CONTENT_ON_REMOVAL
-                | DisplayManager.VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH
-                | DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_FOCUS;
-```
+    ```java
+    private static final int DEFAULT_VIRTUAL_DISPLAY_FLAGS =
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_TOUCH_FEEDBACK_DISABLED
+                    | DisplayManager.VIRTUAL_DISPLAY_FLAG_DESTROY_CONTENT_ON_REMOVAL
+                    | DisplayManager.VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH
+                    | DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_FOCUS;
+    ```
 
-Source:
-`VirtualDeviceImpl.java`, lines 155-159.
+    Source:
+    `VirtualDeviceImpl.java`, lines 155-159.
 
 2. **Persistent device ID** is derived from the CDM association:
 
-```java
-static String createPersistentDeviceId(int associationId) {
-    return PERSISTENT_ID_PREFIX_CDM_ASSOCIATION + associationId;
-}
-```
+    ```java
+    static String createPersistentDeviceId(int associationId) {
+        return PERSISTENT_ID_PREFIX_CDM_ASSOCIATION + associationId;
+    }
+    ```
 
-Source:
-`VirtualDeviceImpl.java`, lines 588-590.
+    Source:
+    `VirtualDeviceImpl.java`, lines 588-590.
 
 3. **Device policies** are copied from `VirtualDeviceParams`:
 
-```java
-mDevicePolicies = params.getDevicePolicies();
-```
+    ```java
+    mDevicePolicies = params.getDevicePolicies();
+    ```
 
-These policies control behavior across multiple dimensions:
+    These policies control behavior across multiple dimensions:
 
-- `POLICY_TYPE_ACTIVITY` -- which activities can launch
-- `POLICY_TYPE_AUDIO` -- audio routing behavior
-- `POLICY_TYPE_CAMERA` -- camera access policy
-- `POLICY_TYPE_CLIPBOARD` -- clipboard isolation
-- `POLICY_TYPE_RECENTS` -- whether tasks appear in recents
-- `POLICY_TYPE_BLOCKED_ACTIVITY` -- explicitly blocked activities
+    - `POLICY_TYPE_ACTIVITY` -- which activities can launch
+    - `POLICY_TYPE_AUDIO` -- audio routing behavior
+    - `POLICY_TYPE_CAMERA` -- camera access policy
+    - `POLICY_TYPE_CLIPBOARD` -- clipboard isolation
+    - `POLICY_TYPE_RECENTS` -- whether tasks appear in recents
+    - `POLICY_TYPE_BLOCKED_ACTIVITY` -- explicitly blocked activities
 
 ### 51.4.4 Device Policy Engine
 
