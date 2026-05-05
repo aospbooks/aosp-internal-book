@@ -1,9 +1,5 @@
 # Chapter 25: View System and Input Dispatch
 
-> *"The view hierarchy is the stage on which every pixel of every Android app
-> performs.  Understanding its measure-layout-draw pipeline is understanding
-> what the user actually sees."*
-
 The Android **View System** is the client-side rendering and event-handling
 framework that transforms declarative XML (or programmatic construction) into
 the interactive pixels on screen.  It occupies the application process -- in
