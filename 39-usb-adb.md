@@ -2412,432 +2412,9 @@ descriptors for detailed analysis.
 
 ---
 
-## 39.9 Try It: Hands-On Experiments
+## 39.9 Internal Details: ConfigFS and the Linux USB Gadget Framework
 
-### 39.9.1 Explore USB State Machine
-
-Monitor USB state changes in real time:
-
-```bash
-# Watch USB state changes via logcat
-adb logcat -s UsbDeviceManager:* UsbService:*
-
-# Check current USB configuration
-adb shell getprop sys.usb.config
-adb shell getprop sys.usb.state
-adb shell getprop sys.usb.controller
-
-# Check persistent USB config
-adb shell getprop persist.sys.usb.config
-```
-
-### 39.9.2 Switch USB Functions
-
-```bash
-# Switch to MTP mode
-adb shell svc usb setFunctions mtp
-
-# Switch to PTP mode
-adb shell svc usb setFunctions ptp
-
-# Switch to RNDIS (tethering)
-adb shell svc usb setFunctions rndis
-
-# Switch to MIDI mode
-adb shell svc usb setFunctions midi
-
-# Check current functions
-adb shell svc usb getFunctions
-
-# Reset USB gadget
-adb shell svc usb resetUsbGadget
-```
-
-### 39.9.3 Inspect USB HAL State
-
-```bash
-# Dump USB service state
-adb shell dumpsys usb
-
-# Check USB port status
-adb shell dumpsys usb | grep -A 20 "USB Port State"
-
-# Check HAL version
-adb shell dumpsys usb | grep "hal version"
-
-# List USB gadget HAL
-adb shell service list | grep usb
-```
-
-### 39.9.4 ADB Protocol Exploration
-
-```bash
-# Check ADB version and protocol
-adb version
-
-# List connected devices with details
-adb devices -l
-
-# Check device features
-adb shell getprop ro.adb.secure
-adb shell getprop service.adb.root
-adb shell getprop ro.debuggable
-
-# View ADB authentication keys
-adb shell ls -la /data/misc/adb/
-
-# Enable wireless ADB
-adb tcpip 5555
-adb connect <device-ip>:5555
-
-# Check ADB transport speed
-adb shell cat /config/usb_gadget/g1/UDC
-```
-
-### 39.9.5 Test File Transfer Performance
-
-```bash
-# Create a test file
-dd if=/dev/urandom of=/tmp/testfile bs=1M count=100
-
-# Push with timing
-time adb push /tmp/testfile /data/local/tmp/
-
-# Pull with timing
-time adb pull /data/local/tmp/testfile /tmp/pulled_file
-
-# Compare transfer speeds
-# USB 2.0 HS: ~35-40 MB/s
-# USB 3.x: ~100+ MB/s (device dependent)
-```
-
-### 39.9.6 Explore MTP from Device Side
-
-```bash
-# Check MTP server status
-adb shell dumpsys usb | grep -i mtp
-
-# Monitor MTP operations
-adb logcat -s MtpServer:* MtpService:*
-
-# List MTP storage IDs
-adb shell dumpsys media.mtp
-
-# Check FunctionFS endpoints for MTP
-adb shell ls -la /dev/usb-ffs/mtp/
-```
-
-### 39.9.7 USB Host Mode Exploration
-
-```bash
-# List connected USB devices (host mode)
-adb shell cat /proc/bus/usb/devices 2>/dev/null || \
-adb shell lsusb 2>/dev/null || \
-adb shell "for f in /sys/bus/usb/devices/*/product; do \
-    echo $(dirname $f): $(cat $f 2>/dev/null); done"
-
-# Check USB host deny list
-adb shell dumpsys usb | grep -A 5 "deny"
-
-# Monitor USB host events
-adb logcat -s UsbHostManager:*
-
-# Examine USB descriptors of connected device
-adb shell "dumpsys usb -dump-raw"
-```
-
-### 39.9.8 Build and Test USB HAL Changes
-
-```bash
-# Build the default USB HAL
-cd $AOSP_ROOT  # Navigate to the AOSP source tree
-source build/envsetup.sh
-lunch <target>
-
-# Build USB HAL
-m android.hardware.usb-service
-
-# Build USB Gadget HAL
-m android.hardware.usb.gadget-service
-
-# Run USB VTS tests
-atest VtsHalUsbV1_0TargetTest
-atest VtsHalUsbGadgetV1_0TargetTest
-```
-
-### 39.9.9 ADB Over WiFi Pairing
-
-```bash
-# On the device: Enable wireless debugging in Developer Options
-
-# On the host: Pair with the device
-adb pair <device-ip>:<pairing-port>
-# Enter the 6-digit pairing code shown on device
-
-# Connect after pairing
-adb connect <device-ip>:<connection-port>
-
-# Verify connection
-adb devices -l
-```
-
-### 39.9.10 Port Forwarding Experiment
-
-```bash
-# Forward local port to device port
-adb forward tcp:8080 tcp:8080
-
-# Reverse: forward device port to host port
-adb reverse tcp:3000 tcp:3000
-
-# List all forwards
-adb forward --list
-adb reverse --list
-
-# Remove forwards
-adb forward --remove tcp:8080
-adb reverse --remove-all
-```
-
-### 39.9.11 Investigate USB Accessory Mode
-
-```bash
-# Check accessory support
-adb shell getprop ro.usb.ffs.ready
-adb shell ls -la /dev/usb_accessory 2>/dev/null
-
-# Monitor accessory events
-adb logcat -s UsbDeviceManager:* | grep -i accessory
-
-# Check AOA userspace implementation status
-adb shell getprop ro.usb.userspace.aoa.enabled
-```
-
-### 39.9.12 Trace USB Stack with ftrace
-
-```bash
-# Enable USB tracing (requires root)
-adb root
-adb shell "echo 1 > /sys/kernel/debug/tracing/events/gadget/enable"
-adb shell "echo 1 > /sys/kernel/debug/tracing/events/usb/enable"
-
-# Plug/unplug USB cable, then read trace
-adb shell cat /sys/kernel/debug/tracing/trace
-
-# Disable tracing
-adb shell "echo 0 > /sys/kernel/debug/tracing/events/gadget/enable"
-adb shell "echo 0 > /sys/kernel/debug/tracing/events/usb/enable"
-```
-
-### 39.9.13 Dump ADB Protocol Traffic
-
-```bash
-# Set ADB trace categories
-export ADB_TRACE=all  # or: usb, transport, adb, packets
-
-# Run adb with tracing enabled
-ADB_TRACE=packets adb shell echo hello
-
-# On device, enable adbd tracing
-adb shell setprop persist.adb.trace_mask 0xffff
-adb shell stop adbd && adb shell start adbd
-```
-
-### 39.9.14 Explore ConfigFS Gadget Configuration
-
-On devices with configfs gadget support, you can inspect the USB gadget
-configuration directly:
-
-```bash
-# View the gadget configuration tree
-adb shell ls -la /config/usb_gadget/
-
-# Examine the primary gadget
-adb shell ls -la /config/usb_gadget/g1/
-
-# View gadget strings (manufacturer, product, serial)
-adb shell cat /config/usb_gadget/g1/strings/0x409/manufacturer
-adb shell cat /config/usb_gadget/g1/strings/0x409/product
-adb shell cat /config/usb_gadget/g1/strings/0x409/serialnumber
-
-# View VID/PID
-adb shell cat /config/usb_gadget/g1/idVendor
-adb shell cat /config/usb_gadget/g1/idProduct
-
-# View active configuration
-adb shell ls /config/usb_gadget/g1/configs/b.1/
-adb shell cat /config/usb_gadget/g1/configs/b.1/strings/0x409/configuration
-
-# View active functions (symlinks)
-adb shell ls -la /config/usb_gadget/g1/configs/b.1/ | grep "^l"
-
-# View available functions
-adb shell ls /config/usb_gadget/g1/functions/
-
-# View the UDC (USB Device Controller)
-adb shell cat /config/usb_gadget/g1/UDC
-```
-
-### 39.9.15 Monitor USB Type-C Port Status
-
-```bash
-# View Type-C port information
-adb shell dumpsys usb | grep -A 30 "USB Port State"
-
-# Monitor Type-C sysfs
-adb shell ls /sys/class/typec/
-adb shell cat /sys/class/typec/port0/data_role 2>/dev/null
-adb shell cat /sys/class/typec/port0/power_role 2>/dev/null
-adb shell cat /sys/class/typec/port0/port_type 2>/dev/null
-
-# Check USB Power Delivery status
-adb shell cat /sys/class/typec/port0/power_operation_mode 2>/dev/null
-
-# Watch for UEvents (requires root)
-adb root
-adb shell udevadm monitor --kernel --subsystem-match=typec 2>/dev/null || \
-    adb shell "cat /dev/uevent_monitor 2>/dev/null" || \
-    echo "Use logcat to monitor UEvents"
-```
-
-### 39.9.16 Benchmark USB Data Throughput
-
-```bash
-# Test raw ADB transfer speed
-dd if=/dev/zero bs=1M count=256 > /tmp/zero_256m
-
-# Push benchmark
-echo "Push benchmark:"
-time adb push /tmp/zero_256m /data/local/tmp/benchmark
-
-# Pull benchmark
-echo "Pull benchmark:"
-time adb pull /data/local/tmp/benchmark /tmp/benchmark_pull
-
-# Clean up
-adb shell rm /data/local/tmp/benchmark
-rm /tmp/zero_256m /tmp/benchmark_pull
-
-# Check USB speed from device perspective
-adb shell dumpsys usb | grep -i speed
-adb shell cat /sys/class/udc/*/current_speed 2>/dev/null
-```
-
-### 39.9.17 Explore ADB Key Management
-
-```bash
-# View authorized keys on device
-adb shell cat /data/misc/adb/adb_keys
-
-# View your ADB public key on host
-cat ~/.android/adbkey.pub
-
-# View the RSA key fingerprint
-openssl rsa -in ~/.android/adbkey -pubout 2>/dev/null | \
-    openssl md5 -c
-
-# Revoke all USB debugging authorizations (on device)
-adb shell settings put global development_settings_enabled 0
-# Or via Settings > Developer Options > Revoke USB debugging authorizations
-```
-
-### 39.9.18 Write a Simple USB Host Application
-
-Create a minimal application that enumerates USB devices:
-
-```java
-// USB enumeration activity
-public class UsbEnumerator extends Activity {
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-
-        UsbManager usbManager = getSystemService(UsbManager.class);
-        HashMap<String, UsbDevice> deviceList = usbManager.getDeviceList();
-
-        for (UsbDevice device : deviceList.values()) {
-            Log.i("USB", String.format("Device: %s", device.getDeviceName()));
-            Log.i("USB", String.format("  VID:PID = %04x:%04x",
-                    device.getVendorId(), device.getProductId()));
-            Log.i("USB", String.format("  Manufacturer: %s",
-                    device.getManufacturerName()));
-            Log.i("USB", String.format("  Product: %s",
-                    device.getProductName()));
-            Log.i("USB", String.format("  Class: 0x%02x Subclass: 0x%02x",
-                    device.getDeviceClass(), device.getDeviceSubclass()));
-
-            for (int i = 0; i < device.getConfigurationCount(); i++) {
-                UsbConfiguration config = device.getConfiguration(i);
-                Log.i("USB", String.format("  Config %d: %d interfaces",
-                        i, config.getInterfaceCount()));
-
-                for (int j = 0; j < config.getInterfaceCount(); j++) {
-                    UsbInterface iface = config.getInterface(j);
-                    Log.i("USB", String.format(
-                            "    Interface %d: class=0x%02x endpoints=%d",
-                            j, iface.getInterfaceClass(),
-                            iface.getEndpointCount()));
-                }
-            }
-        }
-    }
-}
-```
-
-### 39.9.19 Debug USB Connection Issues
-
-Common USB debugging techniques:
-
-```bash
-# Check if USB is properly initialized
-adb shell getprop sys.usb.state
-adb shell getprop sys.usb.config
-adb shell getprop init.svc.adbd
-
-# Verify FunctionFS is available
-adb shell ls -la /dev/usb-ffs/
-
-# Check kernel USB messages
-adb shell dmesg | grep -i usb | tail -30
-
-# View USB controller information
-adb shell cat /sys/class/udc/*/state 2>/dev/null
-adb shell cat /sys/class/udc/*/device/uevent 2>/dev/null
-
-# Reset USB gadget (if functions are stuck)
-adb shell svc usb resetUsbGadget
-
-# Force ADB restart
-adb kill-server
-adb start-server
-adb devices
-```
-
-### 39.9.20 Inspect MTP Object Tree
-
-```bash
-# Use Android's mtp-send/receive tools (if available)
-# Or monitor MTP operations via logcat:
-adb logcat -s MtpServer:V MtpDatabase:V MtpService:V
-
-# In another terminal, connect the device as MTP to a computer
-# and browse files -- watch the MTP operations in logcat
-
-# Common MTP operation codes to watch for:
-# 0x1001 = GET_DEVICE_INFO
-# 0x1002 = OPEN_SESSION
-# 0x1007 = GET_OBJECT_HANDLES
-# 0x1008 = GET_OBJECT_INFO
-# 0x1009 = GET_OBJECT (file download)
-# 0x100D = SEND_OBJECT (file upload)
-# 0x100B = DELETE_OBJECT
-```
-
----
-
-## 39.10 Internal Details: ConfigFS and the Linux USB Gadget Framework
-
-### 39.10.1 ConfigFS Gadget Architecture
+### 39.9.1 ConfigFS Gadget Architecture
 
 Modern Android devices use Linux's ConfigFS-based USB gadget framework to
 manage composite USB device configurations. This replaces the older
@@ -2881,7 +2458,7 @@ graph TD
     COMPOSITE --> UDC_DRIVER
 ```
 
-### 39.10.2 Gadget Configuration Process
+### 39.9.2 Gadget Configuration Process
 
 When the HAL receives a `setCurrentUsbFunctions()` call, the typical ConfigFS
 manipulation sequence is:
@@ -2896,7 +2473,7 @@ manipulation sequence is:
 
 This sequence causes a USB disconnect/reconnect cycle visible to the host.
 
-### 39.10.3 FunctionFS Endpoint Architecture
+### 39.9.3 FunctionFS Endpoint Architecture
 
 Each FunctionFS instance creates a filesystem that user-space daemons use to
 implement USB functions:
@@ -2922,7 +2499,7 @@ The user-space daemon (e.g., `adbd` or MTP server):
 3. Opens `ep1`, `ep2`, etc. for data transfer
 4. Performs read/write operations on data endpoints
 
-### 39.10.4 Composite Device Descriptors
+### 39.9.4 Composite Device Descriptors
 
 When multiple functions are active (e.g., MTP + ADB), the gadget presents
 itself as a USB composite device:
@@ -2967,7 +2544,7 @@ The VID:PID pair changes based on the active function combination:
 | MIDI + ADB | `0x4EE9` | MIDI with debugging |
 | Charging | `0x4EE0` | No data function |
 
-### 39.10.5 USB Speed Negotiation
+### 39.9.5 USB Speed Negotiation
 
 The USB connection speed is determined during physical layer negotiation and
 reported through the `IUsbGadget` HAL:
@@ -2991,7 +2568,7 @@ transfer performance is typically:
 - USB 3.0 SuperSpeed: 100-200 MB/s effective
 - USB 3.1/3.2: Limited by device storage speed
 
-### 39.10.6 Contaminant Detection
+### 39.9.6 Contaminant Detection
 
 Modern USB-C ports include contaminant (moisture/debris) detection. When
 contaminant is detected:
@@ -3019,6 +2596,429 @@ stateDiagram-v2
     }
 
     Disabled --> Clean: User action / dry out
+```
+
+---
+
+## 39.10 Try It: Hands-On Experiments
+
+### 39.10.1 Explore USB State Machine
+
+Monitor USB state changes in real time:
+
+```bash
+# Watch USB state changes via logcat
+adb logcat -s UsbDeviceManager:* UsbService:*
+
+# Check current USB configuration
+adb shell getprop sys.usb.config
+adb shell getprop sys.usb.state
+adb shell getprop sys.usb.controller
+
+# Check persistent USB config
+adb shell getprop persist.sys.usb.config
+```
+
+### 39.10.2 Switch USB Functions
+
+```bash
+# Switch to MTP mode
+adb shell svc usb setFunctions mtp
+
+# Switch to PTP mode
+adb shell svc usb setFunctions ptp
+
+# Switch to RNDIS (tethering)
+adb shell svc usb setFunctions rndis
+
+# Switch to MIDI mode
+adb shell svc usb setFunctions midi
+
+# Check current functions
+adb shell svc usb getFunctions
+
+# Reset USB gadget
+adb shell svc usb resetUsbGadget
+```
+
+### 39.10.3 Inspect USB HAL State
+
+```bash
+# Dump USB service state
+adb shell dumpsys usb
+
+# Check USB port status
+adb shell dumpsys usb | grep -A 20 "USB Port State"
+
+# Check HAL version
+adb shell dumpsys usb | grep "hal version"
+
+# List USB gadget HAL
+adb shell service list | grep usb
+```
+
+### 39.10.4 ADB Protocol Exploration
+
+```bash
+# Check ADB version and protocol
+adb version
+
+# List connected devices with details
+adb devices -l
+
+# Check device features
+adb shell getprop ro.adb.secure
+adb shell getprop service.adb.root
+adb shell getprop ro.debuggable
+
+# View ADB authentication keys
+adb shell ls -la /data/misc/adb/
+
+# Enable wireless ADB
+adb tcpip 5555
+adb connect <device-ip>:5555
+
+# Check ADB transport speed
+adb shell cat /config/usb_gadget/g1/UDC
+```
+
+### 39.10.5 Test File Transfer Performance
+
+```bash
+# Create a test file
+dd if=/dev/urandom of=/tmp/testfile bs=1M count=100
+
+# Push with timing
+time adb push /tmp/testfile /data/local/tmp/
+
+# Pull with timing
+time adb pull /data/local/tmp/testfile /tmp/pulled_file
+
+# Compare transfer speeds
+# USB 2.0 HS: ~35-40 MB/s
+# USB 3.x: ~100+ MB/s (device dependent)
+```
+
+### 39.10.6 Explore MTP from Device Side
+
+```bash
+# Check MTP server status
+adb shell dumpsys usb | grep -i mtp
+
+# Monitor MTP operations
+adb logcat -s MtpServer:* MtpService:*
+
+# List MTP storage IDs
+adb shell dumpsys media.mtp
+
+# Check FunctionFS endpoints for MTP
+adb shell ls -la /dev/usb-ffs/mtp/
+```
+
+### 39.10.7 USB Host Mode Exploration
+
+```bash
+# List connected USB devices (host mode)
+adb shell cat /proc/bus/usb/devices 2>/dev/null || \
+adb shell lsusb 2>/dev/null || \
+adb shell "for f in /sys/bus/usb/devices/*/product; do \
+    echo $(dirname $f): $(cat $f 2>/dev/null); done"
+
+# Check USB host deny list
+adb shell dumpsys usb | grep -A 5 "deny"
+
+# Monitor USB host events
+adb logcat -s UsbHostManager:*
+
+# Examine USB descriptors of connected device
+adb shell "dumpsys usb -dump-raw"
+```
+
+### 39.10.8 Build and Test USB HAL Changes
+
+```bash
+# Build the default USB HAL
+cd $AOSP_ROOT  # Navigate to the AOSP source tree
+source build/envsetup.sh
+lunch <target>
+
+# Build USB HAL
+m android.hardware.usb-service
+
+# Build USB Gadget HAL
+m android.hardware.usb.gadget-service
+
+# Run USB VTS tests
+atest VtsHalUsbV1_0TargetTest
+atest VtsHalUsbGadgetV1_0TargetTest
+```
+
+### 39.10.9 ADB Over WiFi Pairing
+
+```bash
+# On the device: Enable wireless debugging in Developer Options
+
+# On the host: Pair with the device
+adb pair <device-ip>:<pairing-port>
+# Enter the 6-digit pairing code shown on device
+
+# Connect after pairing
+adb connect <device-ip>:<connection-port>
+
+# Verify connection
+adb devices -l
+```
+
+### 39.10.10 Port Forwarding Experiment
+
+```bash
+# Forward local port to device port
+adb forward tcp:8080 tcp:8080
+
+# Reverse: forward device port to host port
+adb reverse tcp:3000 tcp:3000
+
+# List all forwards
+adb forward --list
+adb reverse --list
+
+# Remove forwards
+adb forward --remove tcp:8080
+adb reverse --remove-all
+```
+
+### 39.10.11 Investigate USB Accessory Mode
+
+```bash
+# Check accessory support
+adb shell getprop ro.usb.ffs.ready
+adb shell ls -la /dev/usb_accessory 2>/dev/null
+
+# Monitor accessory events
+adb logcat -s UsbDeviceManager:* | grep -i accessory
+
+# Check AOA userspace implementation status
+adb shell getprop ro.usb.userspace.aoa.enabled
+```
+
+### 39.10.12 Trace USB Stack with ftrace
+
+```bash
+# Enable USB tracing (requires root)
+adb root
+adb shell "echo 1 > /sys/kernel/debug/tracing/events/gadget/enable"
+adb shell "echo 1 > /sys/kernel/debug/tracing/events/usb/enable"
+
+# Plug/unplug USB cable, then read trace
+adb shell cat /sys/kernel/debug/tracing/trace
+
+# Disable tracing
+adb shell "echo 0 > /sys/kernel/debug/tracing/events/gadget/enable"
+adb shell "echo 0 > /sys/kernel/debug/tracing/events/usb/enable"
+```
+
+### 39.10.13 Dump ADB Protocol Traffic
+
+```bash
+# Set ADB trace categories
+export ADB_TRACE=all  # or: usb, transport, adb, packets
+
+# Run adb with tracing enabled
+ADB_TRACE=packets adb shell echo hello
+
+# On device, enable adbd tracing
+adb shell setprop persist.adb.trace_mask 0xffff
+adb shell stop adbd && adb shell start adbd
+```
+
+### 39.10.14 Explore ConfigFS Gadget Configuration
+
+On devices with configfs gadget support, you can inspect the USB gadget
+configuration directly:
+
+```bash
+# View the gadget configuration tree
+adb shell ls -la /config/usb_gadget/
+
+# Examine the primary gadget
+adb shell ls -la /config/usb_gadget/g1/
+
+# View gadget strings (manufacturer, product, serial)
+adb shell cat /config/usb_gadget/g1/strings/0x409/manufacturer
+adb shell cat /config/usb_gadget/g1/strings/0x409/product
+adb shell cat /config/usb_gadget/g1/strings/0x409/serialnumber
+
+# View VID/PID
+adb shell cat /config/usb_gadget/g1/idVendor
+adb shell cat /config/usb_gadget/g1/idProduct
+
+# View active configuration
+adb shell ls /config/usb_gadget/g1/configs/b.1/
+adb shell cat /config/usb_gadget/g1/configs/b.1/strings/0x409/configuration
+
+# View active functions (symlinks)
+adb shell ls -la /config/usb_gadget/g1/configs/b.1/ | grep "^l"
+
+# View available functions
+adb shell ls /config/usb_gadget/g1/functions/
+
+# View the UDC (USB Device Controller)
+adb shell cat /config/usb_gadget/g1/UDC
+```
+
+### 39.10.15 Monitor USB Type-C Port Status
+
+```bash
+# View Type-C port information
+adb shell dumpsys usb | grep -A 30 "USB Port State"
+
+# Monitor Type-C sysfs
+adb shell ls /sys/class/typec/
+adb shell cat /sys/class/typec/port0/data_role 2>/dev/null
+adb shell cat /sys/class/typec/port0/power_role 2>/dev/null
+adb shell cat /sys/class/typec/port0/port_type 2>/dev/null
+
+# Check USB Power Delivery status
+adb shell cat /sys/class/typec/port0/power_operation_mode 2>/dev/null
+
+# Watch for UEvents (requires root)
+adb root
+adb shell udevadm monitor --kernel --subsystem-match=typec 2>/dev/null || \
+    adb shell "cat /dev/uevent_monitor 2>/dev/null" || \
+    echo "Use logcat to monitor UEvents"
+```
+
+### 39.10.16 Benchmark USB Data Throughput
+
+```bash
+# Test raw ADB transfer speed
+dd if=/dev/zero bs=1M count=256 > /tmp/zero_256m
+
+# Push benchmark
+echo "Push benchmark:"
+time adb push /tmp/zero_256m /data/local/tmp/benchmark
+
+# Pull benchmark
+echo "Pull benchmark:"
+time adb pull /data/local/tmp/benchmark /tmp/benchmark_pull
+
+# Clean up
+adb shell rm /data/local/tmp/benchmark
+rm /tmp/zero_256m /tmp/benchmark_pull
+
+# Check USB speed from device perspective
+adb shell dumpsys usb | grep -i speed
+adb shell cat /sys/class/udc/*/current_speed 2>/dev/null
+```
+
+### 39.10.17 Explore ADB Key Management
+
+```bash
+# View authorized keys on device
+adb shell cat /data/misc/adb/adb_keys
+
+# View your ADB public key on host
+cat ~/.android/adbkey.pub
+
+# View the RSA key fingerprint
+openssl rsa -in ~/.android/adbkey -pubout 2>/dev/null | \
+    openssl md5 -c
+
+# Revoke all USB debugging authorizations (on device)
+adb shell settings put global development_settings_enabled 0
+# Or via Settings > Developer Options > Revoke USB debugging authorizations
+```
+
+### 39.10.18 Write a Simple USB Host Application
+
+Create a minimal application that enumerates USB devices:
+
+```java
+// USB enumeration activity
+public class UsbEnumerator extends Activity {
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+
+        UsbManager usbManager = getSystemService(UsbManager.class);
+        HashMap<String, UsbDevice> deviceList = usbManager.getDeviceList();
+
+        for (UsbDevice device : deviceList.values()) {
+            Log.i("USB", String.format("Device: %s", device.getDeviceName()));
+            Log.i("USB", String.format("  VID:PID = %04x:%04x",
+                    device.getVendorId(), device.getProductId()));
+            Log.i("USB", String.format("  Manufacturer: %s",
+                    device.getManufacturerName()));
+            Log.i("USB", String.format("  Product: %s",
+                    device.getProductName()));
+            Log.i("USB", String.format("  Class: 0x%02x Subclass: 0x%02x",
+                    device.getDeviceClass(), device.getDeviceSubclass()));
+
+            for (int i = 0; i < device.getConfigurationCount(); i++) {
+                UsbConfiguration config = device.getConfiguration(i);
+                Log.i("USB", String.format("  Config %d: %d interfaces",
+                        i, config.getInterfaceCount()));
+
+                for (int j = 0; j < config.getInterfaceCount(); j++) {
+                    UsbInterface iface = config.getInterface(j);
+                    Log.i("USB", String.format(
+                            "    Interface %d: class=0x%02x endpoints=%d",
+                            j, iface.getInterfaceClass(),
+                            iface.getEndpointCount()));
+                }
+            }
+        }
+    }
+}
+```
+
+### 39.10.19 Debug USB Connection Issues
+
+Common USB debugging techniques:
+
+```bash
+# Check if USB is properly initialized
+adb shell getprop sys.usb.state
+adb shell getprop sys.usb.config
+adb shell getprop init.svc.adbd
+
+# Verify FunctionFS is available
+adb shell ls -la /dev/usb-ffs/
+
+# Check kernel USB messages
+adb shell dmesg | grep -i usb | tail -30
+
+# View USB controller information
+adb shell cat /sys/class/udc/*/state 2>/dev/null
+adb shell cat /sys/class/udc/*/device/uevent 2>/dev/null
+
+# Reset USB gadget (if functions are stuck)
+adb shell svc usb resetUsbGadget
+
+# Force ADB restart
+adb kill-server
+adb start-server
+adb devices
+```
+
+### 39.10.20 Inspect MTP Object Tree
+
+```bash
+# Use Android's mtp-send/receive tools (if available)
+# Or monitor MTP operations via logcat:
+adb logcat -s MtpServer:V MtpDatabase:V MtpService:V
+
+# In another terminal, connect the device as MTP to a computer
+# and browse files -- watch the MTP operations in logcat
+
+# Common MTP operation codes to watch for:
+# 0x1001 = GET_DEVICE_INFO
+# 0x1002 = OPEN_SESSION
+# 0x1007 = GET_OBJECT_HANDLES
+# 0x1008 = GET_OBJECT_INFO
+# 0x1009 = GET_OBJECT (file download)
+# 0x100D = SEND_OBJECT (file upload)
+# 0x100B = DELETE_OBJECT
 ```
 
 ---
