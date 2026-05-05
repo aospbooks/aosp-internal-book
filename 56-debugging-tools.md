@@ -4318,56 +4318,6 @@ adb pull /data/anr/ .
 
 ---
 
-## Summary
-
-Android's debugging and profiling toolkit is comprehensive and deeply
-integrated with the platform.  The key takeaways from this chapter:
-
-1. **logd** (`system/logging/logd/`) provides the foundational logging
-   infrastructure.  Its `LogBuffer` abstraction, per-UID statistics, and
-   pruning algorithms ensure that log data is both available and bounded.
-   The `LogListener` class uses io_uring for high-throughput ingestion, while
-   `LogReaderThread` provides per-client filtering and tail support.
-
-2. **Perfetto** (`external/perfetto/`) is the system-wide tracing platform.
-   Its producer-consumer architecture with shared memory buffers enables
-   low-overhead collection from dozens of data sources.  The SQL-based
-   `trace_processor` provides powerful analysis capabilities, and the web UI
-   makes traces visually accessible.
-
-3. **simpleperf** (`system/extras/simpleperf/`) leverages the kernel's
-   `perf_events` subsystem for CPU profiling with hardware counter support,
-   call graphs via DWARF unwinding, and JIT-aware symbol resolution.
-
-4. **heapprofd** (`external/perfetto/src/profiling/memory/`) uses Poisson
-   sampling of malloc/free calls with shared-memory transport to Perfetto for
-   low-overhead native heap profiling.
-
-5. **dumpsys** (`frameworks/native/cmds/dumpsys/`) provides uniform access
-   to every registered Binder service's diagnostic state, with priority
-   filtering, timeout protection, and proto output support.
-
-6. **Winscope** (`development/tools/winscope/`) captures time-series
-   snapshots of WindowManager and SurfaceFlinger state for debugging
-   window hierarchy and transition issues.
-
-7. **bugreport/dumpstate** (`frameworks/native/cmds/dumpstate/`) aggregates
-   all the above into a single ZIP file for offline analysis, using parallel
-   dump collection and progress tracking.
-
-8. **debuggerd/tombstoned** (`system/core/debuggerd/`) provides automatic
-   crash dump generation with register capture via ptrace, stack unwinding,
-   memory snapshots via VM process forking, and integration with GWP-ASan
-   and Scudo for memory error diagnosis.
-
-The tools are designed to work together: use logcat and bugreport for triage,
-Perfetto for temporal analysis, simpleperf for CPU profiling, heapprofd for
-memory profiling, dumpsys for service state inspection, and tombstones for
-crash investigation.  Mastering this toolkit is essential for any Android
-platform engineer.
-
----
-
 ## 56.19  Profiling Module: Mainline-Delivered Profiling for Apps
 
 Android 15 introduced the **Profiling Mainline Module**
@@ -4732,3 +4682,54 @@ Profiling module handles:
 | IProfilingService.aidl | `packages/modules/Profiling/aidl/android/os/IProfilingService.aidl` |
 | APEX config | `packages/modules/Profiling/apex/Android.bp` |
 | AnomalyDetectorService | `packages/modules/Profiling/anomaly-detector/service/java/.../AnomalyDetectorService.java` |
+
+---
+
+## Summary
+
+Android's debugging and profiling toolkit is comprehensive and deeply
+integrated with the platform.  The key takeaways from this chapter:
+
+1. **logd** (`system/logging/logd/`) provides the foundational logging
+   infrastructure.  Its `LogBuffer` abstraction, per-UID statistics, and
+   pruning algorithms ensure that log data is both available and bounded.
+   The `LogListener` class uses io_uring for high-throughput ingestion, while
+   `LogReaderThread` provides per-client filtering and tail support.
+
+2. **Perfetto** (`external/perfetto/`) is the system-wide tracing platform.
+   Its producer-consumer architecture with shared memory buffers enables
+   low-overhead collection from dozens of data sources.  The SQL-based
+   `trace_processor` provides powerful analysis capabilities, and the web UI
+   makes traces visually accessible.
+
+3. **simpleperf** (`system/extras/simpleperf/`) leverages the kernel's
+   `perf_events` subsystem for CPU profiling with hardware counter support,
+   call graphs via DWARF unwinding, and JIT-aware symbol resolution.
+
+4. **heapprofd** (`external/perfetto/src/profiling/memory/`) uses Poisson
+   sampling of malloc/free calls with shared-memory transport to Perfetto for
+   low-overhead native heap profiling.
+
+5. **dumpsys** (`frameworks/native/cmds/dumpsys/`) provides uniform access
+   to every registered Binder service's diagnostic state, with priority
+   filtering, timeout protection, and proto output support.
+
+6. **Winscope** (`development/tools/winscope/`) captures time-series
+   snapshots of WindowManager and SurfaceFlinger state for debugging
+   window hierarchy and transition issues.
+
+7. **bugreport/dumpstate** (`frameworks/native/cmds/dumpstate/`) aggregates
+   all the above into a single ZIP file for offline analysis, using parallel
+   dump collection and progress tracking.
+
+8. **debuggerd/tombstoned** (`system/core/debuggerd/`) provides automatic
+   crash dump generation with register capture via ptrace, stack unwinding,
+   memory snapshots via VM process forking, and integration with GWP-ASan
+   and Scudo for memory error diagnosis.
+
+The tools are designed to work together: use logcat and bugreport for triage,
+Perfetto for temporal analysis, simpleperf for CPU profiling, heapprofd for
+memory profiling, dumpsys for service state inspection, and tombstones for
+crash investigation.  Mastering this toolkit is essential for any Android
+platform engineer.
+
