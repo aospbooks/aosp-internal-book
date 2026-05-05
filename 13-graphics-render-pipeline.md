@@ -2458,399 +2458,9 @@ The common graphics types are defined in
 
 ---
 
-## 13.11 Try It: Trace a Frame
+## 13.11 Deep Dive: Layer Rendering
 
-### 13.11.1 Using Perfetto to Trace Frame Rendering
-
-Perfetto (the system-wide tracing tool) is the primary way to observe the graphics
-pipeline in action. The ATRACE calls scattered throughout the code (`ATRACE_CALL()`,
-`ATRACE_NAME()`, `ATRACE_FORMAT()`) produce trace events that Perfetto captures.
-
-**Step 1: Capture a trace with GPU and graphics categories.**
-
-```bash
-# On a rooted device or emulator:
-adb shell perfetto \
-  -c - --txt \
-  -o /data/misc/perfetto-traces/trace.perfetto-trace \
-<<EOF
-buffers: {
-    size_kb: 63488
-    fill_policy: RING_BUFFER
-}
-data_sources: {
-    config {
-        name: "linux.ftrace"
-        ftrace_config {
-            ftrace_events: "ftrace/print"
-            atrace_categories: "gfx"
-            atrace_categories: "view"
-            atrace_categories: "hwui"
-            atrace_categories: "input"
-            atrace_apps: "com.example.myapp"
-        }
-    }
-}
-duration_ms: 10000
-EOF
-```
-
-**Step 2: Interact with the app during the 10-second capture window.**
-
-**Step 3: Pull and analyze the trace.**
-
-```bash
-adb pull /data/misc/perfetto-traces/trace.perfetto-trace .
-# Open at https://ui.perfetto.dev
-```
-
-### 13.11.2 What to Look For in the Trace
-
-In the Perfetto UI, you will see these key tracks:
-
-```mermaid
-graph LR
-    subgraph "Perfetto Trace Tracks"
-        A["UI Thread<br/>- Choreographer#doFrame<br/>- performTraversals<br/>- draw"]
-        B["RenderThread<br/>- DrawFrames<br/>- syncFrameState<br/>- flush commands"]
-        C["GPU Completion<br/>- Actual GPU work time"]
-        D["SurfaceFlinger<br/>- onMessageInvalidate<br/>- composite"]
-        E["HWC<br/>- present"]
-    end
-
-    A --> B
-    B --> C
-    C --> D
-    D --> E
-```
-
-### 13.11.3 Key Trace Events
-
-| Trace Event | Source File | Meaning |
-|-------------|------------|---------|
-| `Choreographer#doFrame` | `Choreographer.java` | VSYNC-triggered frame start |
-| `Record View#draw()` | `ViewRootImpl.java` | Canvas recording phase |
-| `DrawFrames <vsyncId>` | `DrawFrameTask.cpp:91` | RenderThread frame start |
-| `syncFrameState` | `DrawFrameTask.cpp:170` | Property/DL sync |
-| `flush commands` | `SkiaOpenGLPipeline.cpp:181` | GPU command submission |
-| `eglSwapBuffers` | `eglApi.cpp:260` | Buffer presentation |
-| `dequeueBuffer` | `BufferQueueProducer.cpp` | Buffer acquisition |
-| `queueBuffer` | `BufferQueueProducer.cpp` | Buffer completion |
-
-### 13.11.4 Measuring Frame Timing with `dumpsys gfxinfo`
-
-```bash
-# Enable frame stats collection
-adb shell setprop debug.hwui.profile true
-
-# Run your app, then:
-adb shell dumpsys gfxinfo com.example.myapp
-
-# Output includes per-frame timing:
-# Draw    Prepare Process  Execute
-# 1.20    0.82    5.43     3.21
-# 0.98    0.73    4.87     2.95
-```
-
-The four columns correspond to:
-
-- **Draw**: UI thread recording time
-- **Prepare**: Sync time (texture uploads, etc.)
-- **Process**: RenderThread GPU command recording
-- **Execute**: GPU execution and swap time
-
-### 13.11.5 GPU Memory Debugging
-
-```bash
-# Dump HWUI memory usage
-adb shell dumpsys gfxinfo com.example.myapp meminfo
-
-# Output shows:
-# Pipeline=Skia (Vulkan)
-# Memory policy:
-#   Max surface area: 2764800
-#   Max resource usage: 22.12MB (x8)
-#   Background retention: 50%
-# CPU Caches:
-#   Bitmaps: 2.45 MB
-#   Glyph Cache: 1.23 MB
-# GPU Caches:
-#   Textures: 15.67 MB
-#   Buffers: 3.21 MB
-```
-
-### 13.11.6 Vulkan Validation Layers
-
-Enable Vulkan validation for debugging:
-
-```bash
-# Enable validation layers
-adb shell setprop debug.vulkan.layers VK_LAYER_KHRONOS_validation
-
-# Or per-app via developer settings:
-# Settings > Developer options > Graphics driver preferences
-# Select the target app and enable "Vulkan validation"
-```
-
-### 13.11.7 GPU Rendering Profile Bars
-
-The on-device GPU rendering profiler visualizes frame timing as color-coded bars:
-
-```bash
-# Enable via developer options or:
-adb shell setprop debug.hwui.profile visual_bars
-```
-
-The bars show:
-
-- **Blue**: Draw (UI thread)
-- **Purple**: Prepare
-- **Red**: Process (RenderThread)
-- **Orange**: Execute (GPU + swap)
-- **Green line**: 16ms budget threshold
-
-### 13.11.8 ANGLE Debugging
-
-To force a specific app to use ANGLE:
-
-```bash
-# Enable ANGLE for a specific package
-adb shell settings put global angle_gl_driver_selection_pkgs \
-    com.example.myapp
-adb shell settings put global angle_gl_driver_selection_values \
-    angle
-```
-
-### 13.11.9 Inspecting the Render Pipeline
-
-```bash
-# Check which pipeline is active
-adb shell getprop debug.hwui.renderer
-# Returns: "skiavk" or "skiagl"
-
-# Force a specific pipeline (requires reboot)
-adb shell setprop debug.hwui.renderer skiavk
-adb shell stop
-adb shell start
-```
-
-### 13.11.10 Building and Testing Graphics Changes
-
-When modifying HWUI:
-
-```bash
-# Build HWUI
-cd frameworks/base/libs/hwui
-mm -j$(nproc)
-
-# Run HWUI unit tests
-adb sync
-adb shell /data/nativetest64/hwui_unit_tests/hwui_unit_tests
-
-# Run rendering tests
-adb shell am instrument -w \
-    android.uirendering.cts/androidx.test.runner.AndroidJUnitRunner
-```
-
-When modifying the Vulkan loader:
-
-```bash
-# Build the Vulkan loader
-cd frameworks/native/vulkan
-mm -j$(nproc)
-
-# Run loader tests
-adb sync
-adb shell /data/nativetest64/libvulkan_test/libvulkan_test
-```
-
-### 13.11.11 SKP Capture for Debugging
-
-HWUI supports capturing Skia Picture (SKP) files that record all drawing commands
-for offline analysis:
-
-```bash
-# Enable SKP capture
-adb shell setprop debug.hwui.capture_skp_enabled true
-
-# Capture frames from a specific app
-adb shell setprop debug.hwui.capture_skp_filename \
-    /data/local/tmp/frame.skp
-
-# Trigger capture (the next frame will be captured)
-adb shell kill -10 $(pidof com.example.myapp)
-
-# Pull the captured file
-adb pull /data/local/tmp/frame.skp
-
-# Analyze with Skia's viewer tool or https://debugger.skia.org
-```
-
-SKP files contain:
-
-- Every `SkCanvas` draw call with full parameters
-- All referenced `SkImage` data (bitmaps)
-- `SkPaint` state for each operation
-- Transform and clip state changes
-
-This is invaluable for debugging rendering issues because you can replay the
-exact sequence of draw calls in Skia's debugger tool.
-
-### 13.11.12 Overdraw Debugging
-
-HWUI can visualize overdraw (regions drawn multiple times per frame):
-
-```bash
-# Enable overdraw visualization
-adb shell setprop debug.hwui.overdraw show
-
-# Color coding:
-# No color    = drawn once (ideal)
-# Blue        = drawn twice
-# Green       = drawn three times
-# Pink        = drawn four times
-# Red         = drawn five or more times (problematic)
-```
-
-```mermaid
-graph TD
-    A["No Overdraw<br/>(1x draw)"] -->|"Normal"| B["Optimal Performance"]
-    C["2x Overdraw<br/>(Blue)"] -->|"Common"| D["Usually Acceptable"]
-    E["3x Overdraw<br/>(Green)"] -->|"Watch"| F["Consider Optimization"]
-    G["4x+ Overdraw<br/>(Red)"] -->|"Issue"| H["Needs Optimization"]
-
-    style A fill:#FFFFFF,color:#000
-    style C fill:#6495ED,color:#fff
-    style E fill:#4CAF50,color:#fff
-    style G fill:#F44336,color:#fff
-```
-
-### 13.11.13 GPU Completion Timeline
-
-For detailed GPU timing analysis:
-
-```bash
-# Enable GPU completion fence timestamps
-adb shell setprop debug.hwui.profile true
-
-# The timing data includes:
-# - handlePlayback: Time to issue GPU commands
-# - sync: Time for frame state sync
-# - draw: Time for GPU command recording
-# - dequeueBuffer: Time to acquire a buffer
-# - queueBuffer: Time to submit a buffer
-```
-
-### 13.11.14 Inspecting BufferQueue State
-
-```bash
-# Dump BufferQueue state for all surfaces
-adb shell dumpsys SurfaceFlinger --list
-
-# Dump detailed layer info
-adb shell dumpsys SurfaceFlinger
-
-# This shows:
-# - Layer name and bounds
-# - Buffer size and format
-# - Composition type (DEVICE/CLIENT)
-# - Visible region
-# - Damage region
-# - Buffer queue state (slots, pending buffers)
-```
-
-### 13.11.15 Hardware Composer Debugging
-
-```bash
-# Dump HWC state
-adb shell dumpsys SurfaceFlinger --hwc
-
-# Shows for each display:
-# - Active config (resolution, refresh rate)
-# - Layer composition decisions
-# - Hardware overlay usage
-# - GPU fallback reasons
-```
-
-### 13.11.16 Tracing GPU Memory
-
-```bash
-# Trace GPU memory allocations
-adb shell setprop debug.hwui.trace_gpu_resources true
-
-# Or use Perfetto with GPU memory counters:
-adb shell perfetto \
-  -c - --txt \
-  -o /data/misc/perfetto-traces/gpu_mem.perfetto-trace \
-<<EOF
-buffers: {
-    size_kb: 32768
-}
-data_sources: {
-    config {
-        name: "android.gpu.memory"
-    }
-}
-duration_ms: 5000
-EOF
-```
-
-### 13.11.17 Forcing Specific Render Behavior
-
-```bash
-# Force all rendering through GPU composition (no HWC overlays)
-adb shell service call SurfaceFlinger 1008 i32 1
-
-# Disable GPU composition (force HWC overlays only)
-adb shell service call SurfaceFlinger 1008 i32 0
-
-# Show surface update flashes
-adb shell service call SurfaceFlinger 1002
-
-# These are useful for diagnosing composition-related issues
-```
-
-### 13.11.18 Interactive GPU Debugging with RenderDoc
-
-For advanced GPU debugging, RenderDoc can be used on Android:
-
-```bash
-# Install RenderDoc server on device
-adb install renderdoc-server.apk
-
-# Connect from desktop RenderDoc application
-# Capture individual frames
-# Inspect:
-#   - All GPU draw calls
-#   - Shader source code
-#   - Texture/buffer contents
-#   - Pipeline state at each draw
-#   - GPU timing per draw call
-```
-
-### 13.11.19 Monitoring Frame Drops
-
-```bash
-# Watch for jank in real-time
-adb shell dumpsys gfxinfo com.example.myapp framestats
-
-# Output includes per-frame columns:
-# FLAGS|INTENDED_VSYNC|VSYNC|OLDEST_INPUT_EVENT|
-# NEWEST_INPUT_EVENT|HANDLE_INPUT_START|
-# ANIMATION_START|PERFORM_TRAVERSALS_START|
-# DRAW_START|SYNC_QUEUED|SYNC_START|
-# ISSUE_DRAW_COMMANDS_START|SWAP_BUFFERS|
-# FRAME_COMPLETED|DEADLINE|GPU_COMPLETED
-```
-
-Each column is a nanosecond timestamp. The difference between consecutive columns
-reveals exactly where time was spent in each frame phase.
-
----
-
-## 13.12 Deep Dive: Layer Rendering
-
-### 13.12.1 Offscreen Layer Architecture
+### 13.11.1 Offscreen Layer Architecture
 
 HWUI uses offscreen rendering layers for Views that need to be composited separately.
 This includes Views with non-1.0 alpha, image filters (blur, color matrix), or stretch
@@ -2869,7 +2479,7 @@ graph TD
     style E fill:#2196F3,color:#fff
 ```
 
-### 13.12.2 Layer Creation and Sizing
+### 13.11.2 Layer Creation and Sizing
 
 Layers are created with dimensions rounded up to the nearest `LAYER_SIZE` boundary:
 
@@ -2899,7 +2509,7 @@ bool SkiaGpuPipeline::createOrUpdateLayer(RenderNode* node,
 }
 ```
 
-### 13.12.3 Layer Rendering Sequence
+### 13.11.3 Layer Rendering Sequence
 
 The layer rendering pipeline processes all dirty layers before drawing the main frame:
 
@@ -2934,7 +2544,7 @@ void SkiaGpuPipeline::renderLayersImpl(
 }
 ```
 
-### 13.12.4 Image Pinning
+### 13.11.4 Image Pinning
 
 For hardware bitmaps, `SkiaGpuPipeline` pins images as GPU textures to ensure they
 are available during rendering:
@@ -2955,7 +2565,7 @@ bool SkiaGpuPipeline::pinImages(
 }
 ```
 
-### 13.12.5 Hardware Buffer Rendering
+### 13.11.5 Hardware Buffer Rendering
 
 Both pipelines support rendering to `AHardwareBuffer` for off-screen rendering
 targets (used by `SurfaceTexture`, `ImageReader`, etc.):
@@ -2980,9 +2590,9 @@ sk_sp<SkSurface> SkiaGpuPipeline::getBufferSkSurface(
 
 ---
 
-## 13.13 Deep Dive: RenderNode Drawing
+## 13.12 Deep Dive: RenderNode Drawing
 
-### 13.13.1 RenderNodeDrawable
+### 13.12.1 RenderNodeDrawable
 
 The `RenderNodeDrawable` class (`pipeline/skia/RenderNodeDrawable.cpp`) is the bridge
 between the display list tree and Skia's drawing system. It implements `SkDrawable`
@@ -3004,7 +2614,7 @@ RenderNodeDrawable::RenderNodeDrawable(
     , mInReorderingSection(inReorderingSection) {}
 ```
 
-### 13.13.2 Backwards Projection
+### 13.12.2 Backwards Projection
 
 Android's View system supports "projection" -- a child View can project its rendering
 onto an ancestor's surface. This is used for ripple effects that extend beyond the
@@ -3030,7 +2640,7 @@ void RenderNodeDrawable::drawBackwardsProjectedNodes(
 }
 ```
 
-### 13.13.3 Outline Clipping
+### 13.12.3 Outline Clipping
 
 RenderNode outline clipping supports rectangles, rounded rectangles, and arbitrary
 paths:
@@ -3064,7 +2674,7 @@ static void clipOutline(const Outline& outline,
 }
 ```
 
-### 13.13.4 Z-Order and Reordering
+### 13.12.4 Z-Order and Reordering
 
 Nodes with non-zero Z values (elevation) are drawn in a special reordering section.
 The `onDraw` method skips the draw if the node is in a reordering section but has
@@ -3086,9 +2696,9 @@ Design elevation system.
 
 ---
 
-## 13.14 Deep Dive: VulkanSurface
+## 13.13 Deep Dive: VulkanSurface
 
-### 13.14.1 Surface Creation
+### 13.13.1 Surface Creation
 
 `VulkanSurface.cpp` manages the integration between Vulkan and Android's native
 window system. When creating a surface, it connects to the native window and
@@ -3111,7 +2721,7 @@ static bool ConnectAndSetWindowDefaults(ANativeWindow* window) {
 }
 ```
 
-### 13.14.2 Pre-Transform Handling
+### 13.13.2 Pre-Transform Handling
 
 Display rotation requires special handling in Vulkan. The VulkanSurface computes a
 pre-transform matrix that accounts for the display's current orientation:
@@ -3138,7 +2748,7 @@ static SkMatrix GetPreTransformMatrix(
 }
 ```
 
-### 13.14.3 Pixel Snap Matrix
+### 13.13.3 Pixel Snap Matrix
 
 VulkanSurface also includes a "pixel snap" matrix that adds a small offset to prevent
 pixel-aligned geometry from falling on sub-pixel boundaries:
@@ -3163,9 +2773,9 @@ axis-aligned rectangles can produce hairline gaps due to floating-point precisio
 
 ---
 
-## 13.15 Deep Dive: SkiaCanvas Implementation
+## 13.14 Deep Dive: SkiaCanvas Implementation
 
-### 13.15.1 The SkiaCanvas Class
+### 13.14.1 The SkiaCanvas Class
 
 `SkiaCanvas` (`SkiaCanvas.h`) is the concrete implementation of the `Canvas` abstract
 class. It wraps an `SkCanvas` and adds Android-specific features:
@@ -3191,7 +2801,7 @@ public:
 };
 ```
 
-### 13.15.2 The Paint Looper Pattern
+### 13.14.2 The Paint Looper Pattern
 
 SkiaCanvas implements a "looper" pattern for applying shadow/blur effects:
 
@@ -3221,7 +2831,7 @@ void applyLooper(const Paint* paint, Proc proc,
 This pattern draws the shadow layer first (with an offset and blur), then the
 foreground layer. It is used for text shadows and drop shadow effects.
 
-### 13.15.3 Save Stack Management
+### 13.14.3 Save Stack Management
 
 SkiaCanvas maintains a save stack that tracks partial saves (saves that only preserve
 matrix or clip, not both):
@@ -3239,9 +2849,9 @@ std::vector<Clip> mClipStack;
 
 ---
 
-## 13.16 Deep Dive: RenderProxy and Thread Communication
+## 13.15 Deep Dive: RenderProxy and Thread Communication
 
-### 13.16.1 The RenderProxy Pattern
+### 13.15.1 The RenderProxy Pattern
 
 `RenderProxy` (`renderthread/RenderProxy.cpp`) is the UI thread's handle to the
 RenderThread. It provides a type-safe interface for posting work:
@@ -3266,7 +2876,7 @@ RenderProxy::RenderProxy(bool translucent,
 }
 ```
 
-### 13.16.2 Synchronous vs Asynchronous Operations
+### 13.15.2 Synchronous vs Asynchronous Operations
 
 RenderProxy uses two communication patterns:
 
@@ -3293,7 +2903,7 @@ void RenderProxy::setSwapBehavior(SwapBehavior swapBehavior) {
 }
 ```
 
-### 13.16.3 The DrawFrameTask Handoff
+### 13.15.3 The DrawFrameTask Handoff
 
 The most critical communication is `DrawFrameTask.drawFrame()`, which uses a
 mutex+condition variable for precise handoff:
@@ -3334,9 +2944,9 @@ current frame's GPU rendering.
 
 ---
 
-## 13.17 Deep Dive: Color Management
+## 13.16 Deep Dive: Color Management
 
-### 13.17.1 The Color Pipeline
+### 13.16.1 The Color Pipeline
 
 Android's graphics stack supports wide color gamut and HDR rendering throughout the
 pipeline:
@@ -3355,7 +2965,7 @@ graph LR
     style F fill:#9C27B0,color:#fff
 ```
 
-### 13.17.2 Color Modes in HWUI
+### 13.16.2 Color Modes in HWUI
 
 HWUI supports multiple color modes, managed through `EglManager.createSurface()`:
 
@@ -3367,7 +2977,7 @@ HWUI supports multiple color modes, managed through `EglManager.createSurface()`
 | `Hdr10` | P3 passthrough + override | RGBA_1010102 | HDR10 content |
 | `A8` | None | R8 | Alpha masks |
 
-### 13.17.3 Wide Color Gamut in Vulkan
+### 13.16.3 Wide Color Gamut in Vulkan
 
 The VulkanSurface also supports wide color gamut:
 
@@ -3379,7 +2989,7 @@ The VulkanSurface also supports wide color gamut:
 // ANativeWindow_setBuffersDataSpace()
 ```
 
-### 13.17.4 HDR Override Workaround
+### 13.16.4 HDR Override Workaround
 
 The EglManager contains a notable workaround for HDR: since there is no standard EGL
 color space for extended-range P3, it overrides the dataspace after surface creation:
@@ -3396,14 +3006,14 @@ if (overrideWindowDataSpaceForHdr) {
 
 ---
 
-## 13.18 Deep Dive: Damage Tracking and Partial Updates
+## 13.17 Deep Dive: Damage Tracking and Partial Updates
 
-### 13.18.1 The Damage Region Concept
+### 13.17.1 The Damage Region Concept
 
 HWUI tracks which portions of the screen have changed (the "damage region") to
 minimize GPU work. Only the damaged region needs to be re-rendered.
 
-### 13.18.2 Buffer Age
+### 13.17.2 Buffer Age
 
 The EglManager implements buffer age tracking for partial updates:
 
@@ -3432,7 +3042,7 @@ Buffer age tells the renderer how old the buffer's contents are:
 - Age 2: Frame from 2 frames ago, need larger damage union
 - Age N: Frame from N frames ago
 
-### 13.18.3 Damage and Swap
+### 13.17.3 Damage and Swap
 
 The damage region is communicated to the driver via `EGL_KHR_partial_update`:
 
@@ -3465,9 +3075,9 @@ bool EglManager::swapBuffers(const Frame& frame,
 
 ---
 
-## 13.19 Deep Dive: Animation and Frame Callbacks
+## 13.18 Deep Dive: Animation and Frame Callbacks
 
-### 13.19.1 The Animation Framework Integration
+### 13.18.1 The Animation Framework Integration
 
 HWUI integrates with Android's animation framework through the `AnimatorManager`
 class. Each `RenderNode` has an `AnimatorManager` that handles property animations
@@ -3480,7 +3090,7 @@ void removeAnimator(const sp<BaseRenderNodeAnimator>& animator);
 AnimatorManager& animators() { return mAnimatorManager; }
 ```
 
-### 13.19.2 Frame Callbacks
+### 13.18.2 Frame Callbacks
 
 The RenderThread supports frame callbacks for custom rendering (e.g., `TextureView`):
 
@@ -3501,7 +3111,7 @@ void RenderThread::dispatchFrameCallbacks() {
 }
 ```
 
-### 13.19.3 VSYNC-Deadline Scheduling
+### 13.18.3 VSYNC-Deadline Scheduling
 
 The RenderThread uses a sophisticated scheduling algorithm that accounts for the
 frame deadline:
@@ -3535,9 +3145,9 @@ the UI thread to process input events after the VSYNC.
 
 ---
 
-## 13.20 Deep Dive: Shader Cache and Persistent Graphics Cache
+## 13.19 Deep Dive: Shader Cache and Persistent Graphics Cache
 
-### 13.20.1 ShaderCache
+### 13.19.1 ShaderCache
 
 HWUI maintains a persistent shader cache via `pipeline/skia/ShaderCache.h`. This
 cache stores compiled GPU shader binaries so they do not need to be recompiled on
@@ -3556,7 +3166,7 @@ graph TD
     style E fill:#2196F3,color:#fff
 ```
 
-### 13.20.2 PersistentGraphicsCache
+### 13.19.2 PersistentGraphicsCache
 
 The `PersistentGraphicsCache` is an additional caching layer that Skia uses through
 its `GrContextOptions::fPersistentCache` interface:
@@ -3584,7 +3194,7 @@ The `identity` parameter is the GLES version string (for GL) or the Vulkan drive
 version (for Vulkan), ensuring that cached shaders are invalidated when the driver
 changes.
 
-### 13.20.3 Cache Executor
+### 13.19.3 Cache Executor
 
 HWUI uses a `CommonPoolExecutor` for offloading Skia's background work (shader
 compilation, texture uploads) to a thread pool:
@@ -3601,9 +3211,9 @@ public:
 
 ---
 
-## 13.21 Deep Dive: The Hint Session (ADPF)
+## 13.20 Deep Dive: The Hint Session (ADPF)
 
-### 13.21.1 Performance Hints
+### 13.20.1 Performance Hints
 
 HWUI integrates with Android's Dynamic Performance Framework (ADPF) through the
 `HintSessionWrapper`. This allows the framework to communicate rendering workload
@@ -3629,9 +3239,9 @@ This enables the platform to:
 
 ---
 
-## 13.22 Performance Characteristics and Design Principles
+## 13.21 Performance Characteristics and Design Principles
 
-### 13.22.1 Key Design Decisions
+### 13.21.1 Key Design Decisions
 
 1. **Double-buffered properties**: Staging properties on the UI thread, render
    properties on the RenderThread. No locks during the hot path.
@@ -3651,7 +3261,7 @@ This enables the platform to:
 6. **Fence-based synchronization**: Native fences (`EGL_ANDROID_native_fence_sync`)
    enable GPU-to-GPU synchronization without CPU involvement.
 
-### 13.22.2 Common Performance Pitfalls
+### 13.21.2 Common Performance Pitfalls
 
 | Pitfall | Cause | Diagnosis |
 |---------|-------|-----------|
@@ -3662,7 +3272,7 @@ This enables the platform to:
 | Texture upload stalls | Large images decoded on RenderThread | Use `prepareToDraw()` API |
 | VSync misses | Long UI thread work | Move work off the UI thread |
 
-### 13.22.3 Pipeline Comparison
+### 13.21.3 Pipeline Comparison
 
 ```mermaid
 graph LR
@@ -3696,9 +3306,9 @@ graph LR
 
 ---
 
-## 13.23 Deep Dive: The CanvasContext Draw Flow
+## 13.22 Deep Dive: The CanvasContext Draw Flow
 
-### 13.23.1 CanvasContext Lifecycle
+### 13.22.1 CanvasContext Lifecycle
 
 The `CanvasContext` is the central coordinator for a window's rendering. Its lifecycle
 is tied to the window surface:
@@ -3720,7 +3330,7 @@ stateDiagram-v2
     Destroyed --> [*]
 ```
 
-### 13.23.2 Surface Setup
+### 13.22.2 Surface Setup
 
 When a new surface is provided, the CanvasContext configures the pipeline and
 the native window:
@@ -3747,7 +3357,7 @@ void CanvasContext::setSurface(ANativeWindow* window,
 The `ReliableSurface` wrapper adds robustness to the native window by handling
 transient errors in `dequeueBuffer` and `queueBuffer`.
 
-### 13.23.3 Pipeline Surface Configuration
+### 13.22.3 Pipeline Surface Configuration
 
 ```cpp
 // CanvasContext.cpp, line 268
@@ -3777,7 +3387,7 @@ void CanvasContext::setupPipelineSurface() {
 }
 ```
 
-### 13.23.4 Buffer Count Management
+### 13.22.4 Buffer Count Management
 
 The buffer count is calculated based on the window's minimum undequeued buffers:
 
@@ -3799,7 +3409,7 @@ static void setBufferCount(ANativeWindow* window) {
 Typically this results in 3 buffers (triple buffering): one being displayed, one
 being composited by SurfaceFlinger, and one being rendered to by the app.
 
-### 13.23.5 The prepareTree Phase
+### 13.22.5 The prepareTree Phase
 
 `prepareTree` is the critical tree-walk that syncs all RenderNode properties and
 display lists:
@@ -3823,7 +3433,7 @@ graph TD
     style C fill:#4CAF50,color:#fff
 ```
 
-### 13.23.6 Frame Skipping Logic
+### 13.22.6 Frame Skipping Logic
 
 The CanvasContext can decide to skip rendering a frame under several conditions:
 
@@ -3856,9 +3466,9 @@ if (CC_LIKELY(canDrawThisFrame)) {
 
 ---
 
-## 13.24 Deep Dive: WebView Integration
+## 13.23 Deep Dive: WebView Integration
 
-### 13.24.1 WebView Functors
+### 13.23.1 WebView Functors
 
 WebView uses a special rendering path because it has its own GL/Vulkan context.
 HWUI supports this through "functors" -- callbacks that WebView registers to draw
@@ -3871,7 +3481,7 @@ virtual void drawWebViewFunctor(int /*functor*/) {
 }
 ```
 
-### 13.24.2 VkInteropFunctorDrawable
+### 13.23.2 VkInteropFunctorDrawable
 
 When running on the Vulkan pipeline, WebView's GL content must be interoperated with
 Vulkan. The `VkInteropFunctorDrawable` class handles this translation:
@@ -3888,7 +3498,7 @@ graph TD
     style D fill:#4CAF50,color:#fff
 ```
 
-### 13.24.3 Functor Layer Requirements
+### 13.23.3 Functor Layer Requirements
 
 When a WebView functor is present in the tree, HWUI may need to force layer creation
 for correct clipping behavior:
@@ -3915,9 +3525,9 @@ bool prepareForFunctorPresence(
 
 ---
 
-## 13.25 Deep Dive: Shadows and Elevation
+## 13.24 Deep Dive: Shadows and Elevation
 
-### 13.25.1 The Elevation Model
+### 13.24.1 The Elevation Model
 
 Android's Material Design elevation system creates ambient and spot shadows for
 Views with positive Z values:
@@ -3931,7 +3541,7 @@ bool hasShadow() const {
 }
 ```
 
-### 13.25.2 Shadow Colors
+### 13.24.2 Shadow Colors
 
 Each RenderNode has independent shadow colors:
 
@@ -3945,7 +3555,7 @@ SkColor getAmbientShadowColor() const {
 }
 ```
 
-### 13.25.3 Light Source
+### 13.24.3 Light Source
 
 The `LightingInfo` module maintains a global light source position used for
 spot shadow calculations. The light geometry is updated before each frame:
@@ -3960,7 +3570,7 @@ localGeometry.center.y = lightCenter.fY;
 LightingInfo::updateLighting(localGeometry, lightInfo);
 ```
 
-### 13.25.4 Shadow Rendering in Skia
+### 13.24.4 Shadow Rendering in Skia
 
 Skia renders shadows using `SkShadowUtils`. The shadow computation considers:
 
@@ -3983,15 +3593,15 @@ graph TD
 
 ---
 
-## 13.26 Deep Dive: The DamageAccumulator
+## 13.25 Deep Dive: The DamageAccumulator
 
-### 13.26.1 Purpose
+### 13.25.1 Purpose
 
 The `DamageAccumulator` tracks which regions of the screen need to be redrawn during
 a tree traversal. As `prepareTree` walks the RenderNode tree, each modified node
 reports its damage to the accumulator.
 
-### 13.26.2 Transform Tracking
+### 13.25.2 Transform Tracking
 
 The DamageAccumulator also tracks the current transform from each node to the root,
 which is needed for:
@@ -4000,7 +3610,7 @@ which is needed for:
 - Computing the light source position relative to each layer
 - Determining shadow parameters
 
-### 13.26.3 Damage Propagation
+### 13.25.3 Damage Propagation
 
 When a RenderNode property changes, the damage is propagated up through the tree:
 
@@ -4015,9 +3625,9 @@ damaged.
 
 ---
 
-## 13.27 Deep Dive: Memory Policies
+## 13.26 Deep Dive: Memory Policies
 
-### 13.27.1 Memory Policy Configuration
+### 13.26.1 Memory Policy Configuration
 
 The `CacheManager` uses a `MemoryPolicy` structure that defines memory behavior
 based on the device characteristics:
@@ -4036,7 +3646,7 @@ graph TD
     style G fill:#FF9800,color:#fff
 ```
 
-### 13.27.2 Resource Budget Calculation
+### 13.26.2 Resource Budget Calculation
 
 The GPU memory budget is derived from the screen area:
 
@@ -4050,7 +3660,7 @@ For a 1080x2400 display with a multiplier of 8:
 maxResourceBytes = 1080 * 2400 * 8 = 20,736,000 bytes (~20 MB)
 ```
 
-### 13.27.3 Background Retention
+### 13.26.3 Background Retention
 
 When the app goes to the background, GPU resources are reduced to a fraction of the
 foreground budget:
@@ -4062,7 +3672,7 @@ backgroundResourceBytes = maxResourceBytes *
 
 Typically 50%, so the 20MB foreground budget becomes 10MB in the background.
 
-### 13.27.4 Context Destruction Timeout
+### 13.26.4 Context Destruction Timeout
 
 When all CanvasContexts are stopped (all windows hidden), the CacheManager schedules
 the GPU context for destruction after a timeout:
@@ -4086,9 +3696,9 @@ This releases all GPU memory for fully backgrounded apps.
 
 ---
 
-## 13.28 Deep Dive: Fence Synchronization
+## 13.27 Deep Dive: Fence Synchronization
 
-### 13.28.1 The Role of Fences
+### 13.27.1 The Role of Fences
 
 Fences are the primary synchronization mechanism in Android's graphics stack. They
 allow GPU work to be tracked without CPU blocking.
@@ -4117,7 +3727,7 @@ graph TD
     style D fill:#F44336,color:#fff
 ```
 
-### 13.28.2 Native Fence Sync in EGL
+### 13.27.2 Native Fence Sync in EGL
 
 The EglManager creates native fence file descriptors for cross-process synchronization:
 
@@ -4148,7 +3758,7 @@ status_t EglManager::createReleaseFence(
 }
 ```
 
-### 13.28.3 GPU-Side Fence Wait
+### 13.27.3 GPU-Side Fence Wait
 
 The critical `fenceWait` method allows the GPU to wait on a fence without blocking
 the CPU:
@@ -4180,9 +3790,9 @@ preparing the next frame while the GPU waits for the fence to signal.
 
 ---
 
-## 13.29 Deep Dive: Stretch and Overscroll Effects
+## 13.28 Deep Dive: Stretch and Overscroll Effects
 
-### 13.29.1 Stretch Effect
+### 13.28.1 Stretch Effect
 
 Android 12 introduced a stretch/overscroll effect that deforms the content when the
 user scrolls past the edge. This is implemented through the `StretchEffect` class:
@@ -4197,7 +3807,7 @@ StretchEffect& mutableStretchEffect() {
 }
 ```
 
-### 13.29.2 Layer Requirement for Stretch
+### 13.28.2 Layer Requirement for Stretch
 
 The stretch effect requires a layer to apply the deformation as a post-processing
 step:
@@ -4213,7 +3823,7 @@ bool promotedToLayer() const {
 }
 ```
 
-### 13.29.3 StretchMask
+### 13.28.3 StretchMask
 
 The `StretchMask` on each RenderNode defines the region to which the stretch
 effect applies:
@@ -4225,9 +3835,9 @@ StretchMask& getStretchMask() { return mStretchMask; }
 
 ---
 
-## 13.30 Deep Dive: Force Dark (Dark Theme)
+## 13.29 Deep Dive: Force Dark (Dark Theme)
 
-### 13.30.1 Automatic Dark Theme
+### 13.29.1 Automatic Dark Theme
 
 HWUI includes a "force dark" mode that automatically inverts colors for apps that
 do not natively support dark theme:
@@ -4239,7 +3849,7 @@ bool shouldEnableForceDark(TreeInfo* info);
 bool isForceInvertDark(TreeInfo& info);
 ```
 
-### 13.30.2 Per-Node Opt-Out
+### 13.29.2 Per-Node Opt-Out
 
 Individual Views can opt out of force dark transformation:
 
@@ -4253,7 +3863,7 @@ bool getAllowForceDark() const {
 }
 ```
 
-### 13.30.3 Color Transform
+### 13.29.3 Color Transform
 
 When force dark is active, the display list undergoes a color transform that
 inverts luminance while preserving hue:
@@ -4269,9 +3879,9 @@ void applyColorTransform(ColorTransform transform) {
 
 ---
 
-## 13.31 Deep Dive: Hole Punching
+## 13.30 Deep Dive: Hole Punching
 
-### 13.31.1 What is Hole Punching
+### 13.30.1 What is Hole Punching
 
 Hole punching is a technique where HWUI creates a transparent "hole" in its rendered
 content, allowing a hardware overlay (e.g., a video surface or camera preview) to
@@ -4282,7 +3892,7 @@ show through:
 virtual void punchHole(const SkRRect& rect, float alpha) = 0;
 ```
 
-### 13.31.2 Usage in the Pipeline
+### 13.30.2 Usage in the Pipeline
 
 ```mermaid
 graph TD
@@ -4308,9 +3918,9 @@ bool mHasHolePunches;
 
 ---
 
-## 13.32 Build System Integration
+## 13.31 Build System Integration
 
-### 13.32.1 HWUI Build Configuration
+### 13.31.1 HWUI Build Configuration
 
 HWUI is built as part of `frameworks/base` and links against both Skia and the
 native graphics libraries. Key build targets:
@@ -4319,7 +3929,7 @@ native graphics libraries. Key build targets:
 - `hwui_unit_tests` -- Native unit tests
 - `hwui_static_deps` -- Static dependency libraries
 
-### 13.32.2 Skia Build Integration
+### 13.31.2 Skia Build Integration
 
 Skia is built from `external/skia/` with Android-specific build configuration that:
 
@@ -4328,16 +3938,16 @@ Skia is built from `external/skia/` with Android-specific build configuration th
 - Configures SIMD optimizations for the target architecture
 - Excludes unused backends (Metal, Dawn, D3D)
 
-### 13.32.3 Vulkan Loader Build
+### 13.31.3 Vulkan Loader Build
 
 The Vulkan loader (`libvulkan.so`) is built from `frameworks/native/vulkan/libvulkan/`
 with auto-generated dispatch tables from the Vulkan specification XML.
 
 ---
 
-## 13.33 Testing Infrastructure
+## 13.32 Testing Infrastructure
 
-### 13.33.1 HWUI Tests
+### 13.32.1 HWUI Tests
 
 HWUI includes several test suites:
 
@@ -4347,7 +3957,7 @@ HWUI includes several test suites:
 - **Macro benchmarks** (`tests/macrobench/`): Performance benchmarks for the full
   rendering pipeline
 
-### 13.33.2 CTS Graphics Tests
+### 13.32.2 CTS Graphics Tests
 
 The Compatibility Test Suite includes extensive graphics tests:
 
@@ -4356,7 +3966,7 @@ The Compatibility Test Suite includes extensive graphics tests:
 - **CtsVulkanTestCases**: Vulkan CTS (based on dEQP)
 - **CtsEglTestCases**: EGL conformance tests
 
-### 13.33.3 Perfetto Integration for Testing
+### 13.32.3 Perfetto Integration for Testing
 
 HWUI's ATRACE integration enables automated performance testing:
 
@@ -4376,9 +3986,9 @@ performance regressions.
 
 ---
 
-## 13.34 Evolution and Future Directions
+## 13.33 Evolution and Future Directions
 
-### 13.34.1 Historical Pipeline Evolution
+### 13.33.1 Historical Pipeline Evolution
 
 ```mermaid
 timeline
@@ -4405,7 +4015,7 @@ timeline
         ADPF integration : Performance hints
 ```
 
-### 13.34.2 Graphite Adoption Path
+### 13.33.2 Graphite Adoption Path
 
 Skia's Graphite backend is being developed as the successor to Ganesh. Its adoption
 path for Android includes:
@@ -4415,7 +4025,7 @@ path for Android includes:
 3. Gradual rollout behind feature flags
 4. Eventual replacement of Ganesh in HWUI
 
-### 13.34.3 Vulkan-First Strategy
+### 13.33.3 Vulkan-First Strategy
 
 AOSP is moving toward a Vulkan-first strategy where:
 
@@ -4427,7 +4037,7 @@ AOSP is moving toward a Vulkan-first strategy where:
 This simplifies the stack by having a single GPU API path while maintaining backward
 compatibility through ANGLE.
 
-### 13.34.4 GPU Driver Updatability
+### 13.33.4 GPU Driver Updatability
 
 The APEX-based driver loading mechanism (`LoadDriverFromApex` in `driver.cpp`) enables:
 
@@ -4438,9 +4048,9 @@ The APEX-based driver loading mechanism (`LoadDriverFromApex` in `driver.cpp`) e
 
 ---
 
-## 13.35 Deep Dive: The IRenderPipeline Interface
+## 13.34 Deep Dive: The IRenderPipeline Interface
 
-### 13.35.1 Pipeline Abstraction
+### 13.34.1 Pipeline Abstraction
 
 The `IRenderPipeline` interface defines the contract that both `SkiaOpenGLPipeline`
 and `SkiaVulkanPipeline` implement. This interface is the abstraction boundary
@@ -4499,7 +4109,7 @@ classDiagram
     SkiaGpuPipeline <|-- SkiaVulkanPipeline
 ```
 
-### 13.35.2 The DrawResult Structure
+### 13.34.2 The DrawResult Structure
 
 The draw result communicates timing information back to the caller:
 
@@ -4511,7 +4121,7 @@ struct DrawResult {
 };
 ```
 
-### 13.35.3 Pipeline Selection Decision Tree
+### 13.34.3 Pipeline Selection Decision Tree
 
 ```mermaid
 graph TD
@@ -4531,9 +4141,9 @@ graph TD
 
 ---
 
-## 13.36 Deep Dive: The RenderState
+## 13.35 Deep Dive: The RenderState
 
-### 13.36.1 Purpose
+### 13.35.1 Purpose
 
 The `RenderState` tracks global rendering state on the RenderThread, including:
 
@@ -4541,7 +4151,7 @@ The `RenderState` tracks global rendering state on the RenderThread, including:
 - Context destruction callbacks
 - GPU resource cleanup
 
-### 13.36.2 Context Callbacks
+### 13.35.2 Context Callbacks
 
 Both `SkiaOpenGLPipeline` and `SkiaVulkanPipeline` register as context callbacks:
 
@@ -4556,7 +4166,7 @@ SkiaOpenGLPipeline::SkiaOpenGLPipeline(RenderThread& thread)
 When the GPU context is destroyed (e.g., during memory trimming), all registered
 callbacks are notified so they can release their GPU resources.
 
-### 13.36.3 Layer Tracking
+### 13.35.3 Layer Tracking
 
 The RenderState maintains a set of active layers for memory reporting:
 
@@ -4575,9 +4185,9 @@ for (std::set<Layer*>::iterator it =
 
 ---
 
-## 13.37 Deep Dive: Frame Timing and Jank Detection
+## 13.36 Deep Dive: Frame Timing and Jank Detection
 
-### 13.37.1 The JankTracker
+### 13.36.1 The JankTracker
 
 HWUI includes a built-in jank detector (`JankTracker.h`) that monitors frame timing
 and classifies frame drops:
@@ -4600,7 +4210,7 @@ graph TD
     style E fill:#4CAF50,color:#fff
 ```
 
-### 13.37.2 Frame Info Tracking
+### 13.36.2 Frame Info Tracking
 
 Each frame's timing is recorded in a `FrameInfo` array with these timestamps:
 
@@ -4626,7 +4236,7 @@ Each frame's timing is recorded in a `FrameInfo` array with these timestamps:
 | 17 | FrameInterval | - | Expected frame interval |
 | 18 | VsyncId | - | VSYNC identifier |
 
-### 13.37.3 GPU Profiling Visualization
+### 13.36.3 GPU Profiling Visualization
 
 The `FrameInfoVisualizer` draws colored bars on-screen showing per-frame timing:
 
@@ -4647,9 +4257,9 @@ providing real-time performance visualization.
 
 ---
 
-## 13.38 Deep Dive: The CommonPool Thread Pool
+## 13.37 Deep Dive: The CommonPool Thread Pool
 
-### 13.38.1 Background Work Distribution
+### 13.37.1 Background Work Distribution
 
 HWUI uses a `CommonPool` thread pool for non-time-critical work:
 
@@ -4670,7 +4280,7 @@ This pool handles:
 - Deferred GPU resource cleanup
 - Image decoding tasks
 
-### 13.38.2 Integration with Skia
+### 13.37.2 Integration with Skia
 
 Skia uses the executor for parallelizing internal work:
 
@@ -4684,9 +4294,9 @@ reducing the wall-clock time for complex frames.
 
 ---
 
-## 13.39 Deep Dive: Bitmap Handling
+## 13.38 Deep Dive: Bitmap Handling
 
-### 13.39.1 Hardware Bitmaps
+### 13.38.1 Hardware Bitmaps
 
 Android supports "hardware bitmaps" that are stored directly in GPU memory:
 
@@ -4706,7 +4316,7 @@ graph TD
     style E fill:#FF9800,color:#fff
 ```
 
-### 13.39.2 Bitmap Upload Optimization
+### 13.38.2 Bitmap Upload Optimization
 
 `SkiaGpuPipeline::prepareToDraw()` pre-uploads a bitmap to GPU memory before
 the frame rendering phase:
@@ -4732,7 +4342,7 @@ void SkiaGpuPipeline::prepareToDraw(
 The pin/unpin sequence forces the upload to happen immediately and frees the
 reference, but the texture remains in the GPU resource cache for later use.
 
-### 13.39.3 HardwareBitmapUploader
+### 13.38.3 HardwareBitmapUploader
 
 The `HardwareBitmapUploader` class handles converting software bitmaps to
 hardware bitmaps. It can use either the GL or Vulkan context:
@@ -4751,9 +4361,9 @@ graph TD
 
 ---
 
-## 13.40 Appendix: Key File Reference
+## 13.39 Appendix: Key File Reference
 
-### 13.40.1 OpenGL ES Stack
+### 13.39.1 OpenGL ES Stack
 
 | File | Path | Lines | Purpose |
 |------|------|-------|---------|
@@ -4766,7 +4376,7 @@ graph TD
 | `egl_object.cpp` | `frameworks/native/opengl/libs/EGL/` | ~200 | Object reference counting |
 | `gl2.cpp` | `frameworks/native/opengl/libs/GLES2/` | ~50 | GLES2 trampoline |
 
-### 13.40.2 Vulkan Stack
+### 13.39.2 Vulkan Stack
 
 | File | Path | Lines | Purpose |
 |------|------|-------|---------|
@@ -4779,7 +4389,7 @@ graph TD
 | `null_driver.cpp` | `frameworks/native/vulkan/nulldrv/` | ~500 | Null driver for testing |
 | `vkprofiles.cpp` | `frameworks/native/vulkan/vkprofiles/` | ~200 | Android baseline profiles |
 
-### 13.40.3 HWUI Stack
+### 13.39.3 HWUI Stack
 
 | File | Path | Lines | Purpose |
 |------|------|-------|---------|
@@ -4802,7 +4412,7 @@ graph TD
 | `RenderNodeDrawable.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | ~400 | Node drawing logic |
 | `RenderProxy.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~300 | UI thread proxy |
 
-### 13.40.4 System Properties Reference
+### 13.39.4 System Properties Reference
 
 | Property | Default | Description |
 |----------|---------|-------------|
@@ -4823,7 +4433,7 @@ graph TD
 | `debug.hwui.disable_vsync` | `false` | Disable VSYNC synchronization |
 | `debug.hwui.wait_for_gpu_completion` | `false` | Force GPU fence before swap |
 
-### 13.40.5 Mermaid: Complete Data Flow
+### 13.39.5 Mermaid: Complete Data Flow
 
 This diagram summarizes the complete data flow from a View property change to a pixel
 on the display:
@@ -4923,7 +4533,7 @@ graph TD
 
 ---
 
-## 13.41 Glossary
+## 13.40 Glossary
 
 | Term | Definition |
 |------|-----------|
@@ -4957,6 +4567,396 @@ graph TD
 | **TLS** | Thread-Local Storage |
 | **VSYNC** | Vertical Synchronization signal from display |
 | **VulkanSurface** | HWUI's Vulkan window surface wrapper |
+
+---
+
+## 13.41 Try It: Trace a Frame
+
+### 13.41.1 Using Perfetto to Trace Frame Rendering
+
+Perfetto (the system-wide tracing tool) is the primary way to observe the graphics
+pipeline in action. The ATRACE calls scattered throughout the code (`ATRACE_CALL()`,
+`ATRACE_NAME()`, `ATRACE_FORMAT()`) produce trace events that Perfetto captures.
+
+**Step 1: Capture a trace with GPU and graphics categories.**
+
+```bash
+# On a rooted device or emulator:
+adb shell perfetto \
+  -c - --txt \
+  -o /data/misc/perfetto-traces/trace.perfetto-trace \
+<<EOF
+buffers: {
+    size_kb: 63488
+    fill_policy: RING_BUFFER
+}
+data_sources: {
+    config {
+        name: "linux.ftrace"
+        ftrace_config {
+            ftrace_events: "ftrace/print"
+            atrace_categories: "gfx"
+            atrace_categories: "view"
+            atrace_categories: "hwui"
+            atrace_categories: "input"
+            atrace_apps: "com.example.myapp"
+        }
+    }
+}
+duration_ms: 10000
+EOF
+```
+
+**Step 2: Interact with the app during the 10-second capture window.**
+
+**Step 3: Pull and analyze the trace.**
+
+```bash
+adb pull /data/misc/perfetto-traces/trace.perfetto-trace .
+# Open at https://ui.perfetto.dev
+```
+
+### 13.41.2 What to Look For in the Trace
+
+In the Perfetto UI, you will see these key tracks:
+
+```mermaid
+graph LR
+    subgraph "Perfetto Trace Tracks"
+        A["UI Thread<br/>- Choreographer#doFrame<br/>- performTraversals<br/>- draw"]
+        B["RenderThread<br/>- DrawFrames<br/>- syncFrameState<br/>- flush commands"]
+        C["GPU Completion<br/>- Actual GPU work time"]
+        D["SurfaceFlinger<br/>- onMessageInvalidate<br/>- composite"]
+        E["HWC<br/>- present"]
+    end
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+```
+
+### 13.41.3 Key Trace Events
+
+| Trace Event | Source File | Meaning |
+|-------------|------------|---------|
+| `Choreographer#doFrame` | `Choreographer.java` | VSYNC-triggered frame start |
+| `Record View#draw()` | `ViewRootImpl.java` | Canvas recording phase |
+| `DrawFrames <vsyncId>` | `DrawFrameTask.cpp:91` | RenderThread frame start |
+| `syncFrameState` | `DrawFrameTask.cpp:170` | Property/DL sync |
+| `flush commands` | `SkiaOpenGLPipeline.cpp:181` | GPU command submission |
+| `eglSwapBuffers` | `eglApi.cpp:260` | Buffer presentation |
+| `dequeueBuffer` | `BufferQueueProducer.cpp` | Buffer acquisition |
+| `queueBuffer` | `BufferQueueProducer.cpp` | Buffer completion |
+
+### 13.41.4 Measuring Frame Timing with `dumpsys gfxinfo`
+
+```bash
+# Enable frame stats collection
+adb shell setprop debug.hwui.profile true
+
+# Run your app, then:
+adb shell dumpsys gfxinfo com.example.myapp
+
+# Output includes per-frame timing:
+# Draw    Prepare Process  Execute
+# 1.20    0.82    5.43     3.21
+# 0.98    0.73    4.87     2.95
+```
+
+The four columns correspond to:
+
+- **Draw**: UI thread recording time
+- **Prepare**: Sync time (texture uploads, etc.)
+- **Process**: RenderThread GPU command recording
+- **Execute**: GPU execution and swap time
+
+### 13.41.5 GPU Memory Debugging
+
+```bash
+# Dump HWUI memory usage
+adb shell dumpsys gfxinfo com.example.myapp meminfo
+
+# Output shows:
+# Pipeline=Skia (Vulkan)
+# Memory policy:
+#   Max surface area: 2764800
+#   Max resource usage: 22.12MB (x8)
+#   Background retention: 50%
+# CPU Caches:
+#   Bitmaps: 2.45 MB
+#   Glyph Cache: 1.23 MB
+# GPU Caches:
+#   Textures: 15.67 MB
+#   Buffers: 3.21 MB
+```
+
+### 13.41.6 Vulkan Validation Layers
+
+Enable Vulkan validation for debugging:
+
+```bash
+# Enable validation layers
+adb shell setprop debug.vulkan.layers VK_LAYER_KHRONOS_validation
+
+# Or per-app via developer settings:
+# Settings > Developer options > Graphics driver preferences
+# Select the target app and enable "Vulkan validation"
+```
+
+### 13.41.7 GPU Rendering Profile Bars
+
+The on-device GPU rendering profiler visualizes frame timing as color-coded bars:
+
+```bash
+# Enable via developer options or:
+adb shell setprop debug.hwui.profile visual_bars
+```
+
+The bars show:
+
+- **Blue**: Draw (UI thread)
+- **Purple**: Prepare
+- **Red**: Process (RenderThread)
+- **Orange**: Execute (GPU + swap)
+- **Green line**: 16ms budget threshold
+
+### 13.41.8 ANGLE Debugging
+
+To force a specific app to use ANGLE:
+
+```bash
+# Enable ANGLE for a specific package
+adb shell settings put global angle_gl_driver_selection_pkgs \
+    com.example.myapp
+adb shell settings put global angle_gl_driver_selection_values \
+    angle
+```
+
+### 13.41.9 Inspecting the Render Pipeline
+
+```bash
+# Check which pipeline is active
+adb shell getprop debug.hwui.renderer
+# Returns: "skiavk" or "skiagl"
+
+# Force a specific pipeline (requires reboot)
+adb shell setprop debug.hwui.renderer skiavk
+adb shell stop
+adb shell start
+```
+
+### 13.41.10 Building and Testing Graphics Changes
+
+When modifying HWUI:
+
+```bash
+# Build HWUI
+cd frameworks/base/libs/hwui
+mm -j$(nproc)
+
+# Run HWUI unit tests
+adb sync
+adb shell /data/nativetest64/hwui_unit_tests/hwui_unit_tests
+
+# Run rendering tests
+adb shell am instrument -w \
+    android.uirendering.cts/androidx.test.runner.AndroidJUnitRunner
+```
+
+When modifying the Vulkan loader:
+
+```bash
+# Build the Vulkan loader
+cd frameworks/native/vulkan
+mm -j$(nproc)
+
+# Run loader tests
+adb sync
+adb shell /data/nativetest64/libvulkan_test/libvulkan_test
+```
+
+### 13.41.11 SKP Capture for Debugging
+
+HWUI supports capturing Skia Picture (SKP) files that record all drawing commands
+for offline analysis:
+
+```bash
+# Enable SKP capture
+adb shell setprop debug.hwui.capture_skp_enabled true
+
+# Capture frames from a specific app
+adb shell setprop debug.hwui.capture_skp_filename \
+    /data/local/tmp/frame.skp
+
+# Trigger capture (the next frame will be captured)
+adb shell kill -10 $(pidof com.example.myapp)
+
+# Pull the captured file
+adb pull /data/local/tmp/frame.skp
+
+# Analyze with Skia's viewer tool or https://debugger.skia.org
+```
+
+SKP files contain:
+
+- Every `SkCanvas` draw call with full parameters
+- All referenced `SkImage` data (bitmaps)
+- `SkPaint` state for each operation
+- Transform and clip state changes
+
+This is invaluable for debugging rendering issues because you can replay the
+exact sequence of draw calls in Skia's debugger tool.
+
+### 13.41.12 Overdraw Debugging
+
+HWUI can visualize overdraw (regions drawn multiple times per frame):
+
+```bash
+# Enable overdraw visualization
+adb shell setprop debug.hwui.overdraw show
+
+# Color coding:
+# No color    = drawn once (ideal)
+# Blue        = drawn twice
+# Green       = drawn three times
+# Pink        = drawn four times
+# Red         = drawn five or more times (problematic)
+```
+
+```mermaid
+graph TD
+    A["No Overdraw<br/>(1x draw)"] -->|"Normal"| B["Optimal Performance"]
+    C["2x Overdraw<br/>(Blue)"] -->|"Common"| D["Usually Acceptable"]
+    E["3x Overdraw<br/>(Green)"] -->|"Watch"| F["Consider Optimization"]
+    G["4x+ Overdraw<br/>(Red)"] -->|"Issue"| H["Needs Optimization"]
+
+    style A fill:#FFFFFF,color:#000
+    style C fill:#6495ED,color:#fff
+    style E fill:#4CAF50,color:#fff
+    style G fill:#F44336,color:#fff
+```
+
+### 13.41.13 GPU Completion Timeline
+
+For detailed GPU timing analysis:
+
+```bash
+# Enable GPU completion fence timestamps
+adb shell setprop debug.hwui.profile true
+
+# The timing data includes:
+# - handlePlayback: Time to issue GPU commands
+# - sync: Time for frame state sync
+# - draw: Time for GPU command recording
+# - dequeueBuffer: Time to acquire a buffer
+# - queueBuffer: Time to submit a buffer
+```
+
+### 13.41.14 Inspecting BufferQueue State
+
+```bash
+# Dump BufferQueue state for all surfaces
+adb shell dumpsys SurfaceFlinger --list
+
+# Dump detailed layer info
+adb shell dumpsys SurfaceFlinger
+
+# This shows:
+# - Layer name and bounds
+# - Buffer size and format
+# - Composition type (DEVICE/CLIENT)
+# - Visible region
+# - Damage region
+# - Buffer queue state (slots, pending buffers)
+```
+
+### 13.41.15 Hardware Composer Debugging
+
+```bash
+# Dump HWC state
+adb shell dumpsys SurfaceFlinger --hwc
+
+# Shows for each display:
+# - Active config (resolution, refresh rate)
+# - Layer composition decisions
+# - Hardware overlay usage
+# - GPU fallback reasons
+```
+
+### 13.41.16 Tracing GPU Memory
+
+```bash
+# Trace GPU memory allocations
+adb shell setprop debug.hwui.trace_gpu_resources true
+
+# Or use Perfetto with GPU memory counters:
+adb shell perfetto \
+  -c - --txt \
+  -o /data/misc/perfetto-traces/gpu_mem.perfetto-trace \
+<<EOF
+buffers: {
+    size_kb: 32768
+}
+data_sources: {
+    config {
+        name: "android.gpu.memory"
+    }
+}
+duration_ms: 5000
+EOF
+```
+
+### 13.41.17 Forcing Specific Render Behavior
+
+```bash
+# Force all rendering through GPU composition (no HWC overlays)
+adb shell service call SurfaceFlinger 1008 i32 1
+
+# Disable GPU composition (force HWC overlays only)
+adb shell service call SurfaceFlinger 1008 i32 0
+
+# Show surface update flashes
+adb shell service call SurfaceFlinger 1002
+
+# These are useful for diagnosing composition-related issues
+```
+
+### 13.41.18 Interactive GPU Debugging with RenderDoc
+
+For advanced GPU debugging, RenderDoc can be used on Android:
+
+```bash
+# Install RenderDoc server on device
+adb install renderdoc-server.apk
+
+# Connect from desktop RenderDoc application
+# Capture individual frames
+# Inspect:
+#   - All GPU draw calls
+#   - Shader source code
+#   - Texture/buffer contents
+#   - Pipeline state at each draw
+#   - GPU timing per draw call
+```
+
+### 13.41.19 Monitoring Frame Drops
+
+```bash
+# Watch for jank in real-time
+adb shell dumpsys gfxinfo com.example.myapp framestats
+
+# Output includes per-frame columns:
+# FLAGS|INTENDED_VSYNC|VSYNC|OLDEST_INPUT_EVENT|
+# NEWEST_INPUT_EVENT|HANDLE_INPUT_START|
+# ANIMATION_START|PERFORM_TRAVERSALS_START|
+# DRAW_START|SYNC_QUEUED|SYNC_START|
+# ISSUE_DRAW_COMMANDS_START|SWAP_BUFFERS|
+# FRAME_COMPLETED|DEADLINE|GPU_COMPLETED
+```
+
+Each column is a nanosecond timestamp. The difference between consecutive columns
+reveals exactly where time was spent in each frame phase.
 
 ---
 
