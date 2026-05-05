@@ -4387,7 +4387,214 @@ Key flags control:
 
 ---
 
-## 50.10 Try It
+## 50.10 Cross-Subsystem Architecture Patterns
+
+### 50.10.1 The Manager-AIDL-Service Pattern
+
+Every AI subsystem in AOSP follows the same three-layer pattern:
+
+```mermaid
+graph LR
+    subgraph "App Process"
+        MGR["*Manager<br/>(@SystemService)"]
+    end
+    subgraph "system_server"
+        STUB["I*Manager.Stub<br/>(AIDL impl)"]
+    end
+    subgraph "Remote Process"
+        SVC["*Service<br/>(abstract base)"]
+    end
+
+    MGR -- "Binder IPC" --> STUB
+    STUB -- "bindService" --> SVC
+```
+
+| Component | AppFunctions | Computer Control | ODI | NNAPI | Content Capture |
+|-----------|-------------|-----------------|-----|-------|-----------------|
+| Manager | `AppFunctionManager` | `ComputerControlExtensions` | `OnDeviceIntelligenceManager` | C API (no Java manager) | `ContentCaptureManager` |
+| AIDL | `IAppFunctionManager` | `IComputerControlSession` | `IOnDeviceIntelligenceManager` | N/A (native) | `IContentCaptureManager` |
+| system_server | `AppFunctionManagerServiceImpl` | In VDM service | `OnDeviceIntelligenceManagerService` | `NeuralNetworksService` | `ContentCaptureManagerService` |
+| Remote Service | `AppFunctionService` | Activity on VDisplay | `OnDeviceSandboxedInferenceService` | `IDevice` (HAL) | `ContentCaptureService` |
+
+### 50.10.2 Permission Model Comparison
+
+```mermaid
+graph TB
+    subgraph "Runtime Permissions"
+        P1["EXECUTE_APP_FUNCTIONS<br/>(AppFunctions)"]
+        P2["ACCESS_COMPUTER_CONTROL<br/>(Computer Control)"]
+        P3["USE_ON_DEVICE_INTELLIGENCE<br/>(ODI)"]
+        P4["ACCESS_ADSERVICES_TOPICS<br/>(Topics)"]
+    end
+
+    subgraph "Binding Permissions"
+        B1["BIND_APP_FUNCTION_SERVICE"]
+        B2["BIND_TEXTCLASSIFIER_SERVICE"]
+        B3["BIND_ONDEVICE_SANDBOXED_INFERENCE_SERVICE"]
+        B4["BIND_CONTENT_CAPTURE_SERVICE"]
+    end
+
+    subgraph "Management Permissions"
+        M1["MANAGE_APP_FUNCTION_ACCESS"]
+    end
+```
+
+### 50.10.3 Data Wire Formats
+
+| Subsystem | Wire Format | Serialization |
+|-----------|------------|---------------|
+| AppFunctions | `GenericDocument` (AppSearch) | Parcelable |
+| Computer Control | `Image` / `VirtualTouchEvent` | Raw pixels / Parcelable |
+| ODI | `Bundle` / `PersistableBundle` | Parcelable |
+| NNAPI | Shared memory buffers | Native (ashmem/ion) |
+| Content Capture | `ContentCaptureEvent` | Parcelable (batched) |
+| AppSearch | `GenericDocument` | Parcelable / Icing protobuf |
+| Topics | `Topic` | Parcelable |
+
+### 50.10.4 Thread and Executor Patterns
+
+Most AI subsystems dispatch work off the Binder thread pool:
+
+```mermaid
+graph TD
+    A[Binder Thread Pool] --> B{Dispatch}
+    B --> C["THREAD_POOL_EXECUTOR<br/>AppFunctions"]
+    B --> D["Executors.newCachedThreadPool<br/>ODI"]
+    B --> E["Background Thread<br/>Content Capture"]
+    B --> F["Main Executor<br/>AppFunctionService callback"]
+```
+
+AppFunctions uses its own `THREAD_POOL_EXECUTOR`:
+```java
+// frameworks/base/services/appfunctions/.../AppFunctionExecutors.java
+static final Executor THREAD_POOL_EXECUTOR = ...;
+```
+
+ODI uses multiple cached thread pools for different purposes:
+```java
+// OnDeviceIntelligenceManagerService.java
+private final Executor resourceClosingExecutor = Executors.newCachedThreadPool();
+private final Executor callbackExecutor = Executors.newCachedThreadPool();
+private final Executor broadcastExecutor = Executors.newCachedThreadPool();
+private final Executor mLifecycleExecutor = Executors.newSingleThreadExecutor(
+        r -> new Thread(r, "odi-lifecycle-broadcast"));
+```
+
+### 50.10.5 Cancellation Pattern
+
+All asynchronous AI APIs support cancellation through the same mechanism:
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant SystemServer
+    participant RemoteService
+
+    App->>SystemServer: request(... cancelSignal)
+    SystemServer->>RemoteService: execute(... cancelTransport)
+    Note over SystemServer: cancelSignal.setRemote(cancelTransport)
+
+    App->>App: cancellationSignal.cancel()
+    App->>SystemServer: ICancellationSignal.cancel()
+    SystemServer->>RemoteService: CancellationSignal fires
+    RemoteService->>RemoteService: Stop processing
+```
+
+The `ICancellationSignal` transport crosses the Binder boundary so that
+cancellation in the app process propagates to the remote service.
+
+---
+
+## 50.11 Evolution and Future Direction
+
+### 50.11.1 Historical Timeline
+
+```mermaid
+gantt
+    title AOSP AI Feature Timeline
+    dateFormat  YYYY
+    section Core ML
+    NNAPI (8.1)                    :2017, 2025
+    section Intelligence
+    TextClassifier (8.0)           :2017, 2025
+    Content Capture (10)           :2019, 2025
+    AppPrediction (10)             :2019, 2025
+    section Privacy
+    AdServices (13)                :2022, 2025
+    OnDevicePersonalization (14)   :2023, 2025
+    section Agents
+    OnDeviceIntelligence (15)      :2024, 2025
+    AppFunctions (16)              :2024, 2025
+    Computer Control (16)          :2025, 2025
+```
+
+The trend is clear: Android is evolving from passive intelligence (capturing
+and classifying) toward active agent capabilities (executing functions,
+controlling apps).
+
+### 50.11.2 The Agent Architecture Stack
+
+Looking at all the pieces together, a modern AI agent on Android uses
+multiple layers:
+
+```mermaid
+graph TB
+    subgraph "Agent Intelligence"
+        LLM["Large Language Model<br/>(via OnDeviceIntelligence)"]
+    end
+
+    subgraph "Agent Actions"
+        AF["Structured Actions<br/>(AppFunctions)"]
+        CC["UI Actions<br/>(Computer Control)"]
+    end
+
+    subgraph "Agent Perception"
+        AS["Function Discovery<br/>(AppSearch)"]
+        CCap["Context Understanding<br/>(Content Capture)"]
+        TC["Text Understanding<br/>(TextClassifier)"]
+        Screenshot["Visual Understanding<br/>(Computer Control screenshots)"]
+    end
+
+    subgraph "Agent Memory"
+        AH["Action History<br/>(Access History)"]
+        AP["Usage Patterns<br/>(AppPrediction)"]
+    end
+
+    LLM --> AF
+    LLM --> CC
+    AS --> LLM
+    CCap --> LLM
+    TC --> LLM
+    Screenshot --> LLM
+    AH --> LLM
+    AP --> LLM
+```
+
+**AppFunctions** is the "clean path" -- when apps expose structured functions,
+the agent can invoke them directly with typed parameters and receive typed
+responses.
+
+**Computer Control** is the "universal fallback" -- when an app does not
+expose AppFunctions, the agent can fall back to UI automation, launching the
+app on a virtual display and controlling it through tap, swipe, and text
+injection guided by screenshot analysis.
+
+### 50.11.3 AppFunctions vs Computer Control: When to Use Each
+
+| Criterion | AppFunctions | Computer Control |
+|-----------|-------------|-----------------|
+| **App cooperation required** | Yes (must implement service) | No |
+| **Reliability** | High (typed contract) | Medium (UI can change) |
+| **Speed** | Fast (direct RPC) | Slow (screenshot + analysis loop) |
+| **Coverage** | Only participating apps | Any app with launcher activity |
+| **Privacy** | Parameters visible to target app | Screenshots visible to agent |
+| **User visibility** | Invisible to user | Can show mirror display |
+| **Complexity** | Low (implement one method) | High (vision model needed) |
+| **Error handling** | Typed error codes | Heuristic (check if UI changed) |
+
+---
+
+## 50.12 Try It
 
 ### Exercise 25-1: Inspect AppFunction Metadata in AppSearch
 
@@ -5161,213 +5368,6 @@ EOF
 # Then pull and analyze the trace
 adb pull /data/misc/perfetto-traces/appfunctions.perfetto-trace .
 ```
-
----
-
-## 50.11 Cross-Subsystem Architecture Patterns
-
-### 50.11.1 The Manager-AIDL-Service Pattern
-
-Every AI subsystem in AOSP follows the same three-layer pattern:
-
-```mermaid
-graph LR
-    subgraph "App Process"
-        MGR["*Manager<br/>(@SystemService)"]
-    end
-    subgraph "system_server"
-        STUB["I*Manager.Stub<br/>(AIDL impl)"]
-    end
-    subgraph "Remote Process"
-        SVC["*Service<br/>(abstract base)"]
-    end
-
-    MGR -- "Binder IPC" --> STUB
-    STUB -- "bindService" --> SVC
-```
-
-| Component | AppFunctions | Computer Control | ODI | NNAPI | Content Capture |
-|-----------|-------------|-----------------|-----|-------|-----------------|
-| Manager | `AppFunctionManager` | `ComputerControlExtensions` | `OnDeviceIntelligenceManager` | C API (no Java manager) | `ContentCaptureManager` |
-| AIDL | `IAppFunctionManager` | `IComputerControlSession` | `IOnDeviceIntelligenceManager` | N/A (native) | `IContentCaptureManager` |
-| system_server | `AppFunctionManagerServiceImpl` | In VDM service | `OnDeviceIntelligenceManagerService` | `NeuralNetworksService` | `ContentCaptureManagerService` |
-| Remote Service | `AppFunctionService` | Activity on VDisplay | `OnDeviceSandboxedInferenceService` | `IDevice` (HAL) | `ContentCaptureService` |
-
-### 50.11.2 Permission Model Comparison
-
-```mermaid
-graph TB
-    subgraph "Runtime Permissions"
-        P1["EXECUTE_APP_FUNCTIONS<br/>(AppFunctions)"]
-        P2["ACCESS_COMPUTER_CONTROL<br/>(Computer Control)"]
-        P3["USE_ON_DEVICE_INTELLIGENCE<br/>(ODI)"]
-        P4["ACCESS_ADSERVICES_TOPICS<br/>(Topics)"]
-    end
-
-    subgraph "Binding Permissions"
-        B1["BIND_APP_FUNCTION_SERVICE"]
-        B2["BIND_TEXTCLASSIFIER_SERVICE"]
-        B3["BIND_ONDEVICE_SANDBOXED_INFERENCE_SERVICE"]
-        B4["BIND_CONTENT_CAPTURE_SERVICE"]
-    end
-
-    subgraph "Management Permissions"
-        M1["MANAGE_APP_FUNCTION_ACCESS"]
-    end
-```
-
-### 50.11.3 Data Wire Formats
-
-| Subsystem | Wire Format | Serialization |
-|-----------|------------|---------------|
-| AppFunctions | `GenericDocument` (AppSearch) | Parcelable |
-| Computer Control | `Image` / `VirtualTouchEvent` | Raw pixels / Parcelable |
-| ODI | `Bundle` / `PersistableBundle` | Parcelable |
-| NNAPI | Shared memory buffers | Native (ashmem/ion) |
-| Content Capture | `ContentCaptureEvent` | Parcelable (batched) |
-| AppSearch | `GenericDocument` | Parcelable / Icing protobuf |
-| Topics | `Topic` | Parcelable |
-
-### 50.11.4 Thread and Executor Patterns
-
-Most AI subsystems dispatch work off the Binder thread pool:
-
-```mermaid
-graph TD
-    A[Binder Thread Pool] --> B{Dispatch}
-    B --> C["THREAD_POOL_EXECUTOR<br/>AppFunctions"]
-    B --> D["Executors.newCachedThreadPool<br/>ODI"]
-    B --> E["Background Thread<br/>Content Capture"]
-    B --> F["Main Executor<br/>AppFunctionService callback"]
-```
-
-AppFunctions uses its own `THREAD_POOL_EXECUTOR`:
-```java
-// frameworks/base/services/appfunctions/.../AppFunctionExecutors.java
-static final Executor THREAD_POOL_EXECUTOR = ...;
-```
-
-ODI uses multiple cached thread pools for different purposes:
-```java
-// OnDeviceIntelligenceManagerService.java
-private final Executor resourceClosingExecutor = Executors.newCachedThreadPool();
-private final Executor callbackExecutor = Executors.newCachedThreadPool();
-private final Executor broadcastExecutor = Executors.newCachedThreadPool();
-private final Executor mLifecycleExecutor = Executors.newSingleThreadExecutor(
-        r -> new Thread(r, "odi-lifecycle-broadcast"));
-```
-
-### 50.11.5 Cancellation Pattern
-
-All asynchronous AI APIs support cancellation through the same mechanism:
-
-```mermaid
-sequenceDiagram
-    participant App
-    participant SystemServer
-    participant RemoteService
-
-    App->>SystemServer: request(... cancelSignal)
-    SystemServer->>RemoteService: execute(... cancelTransport)
-    Note over SystemServer: cancelSignal.setRemote(cancelTransport)
-
-    App->>App: cancellationSignal.cancel()
-    App->>SystemServer: ICancellationSignal.cancel()
-    SystemServer->>RemoteService: CancellationSignal fires
-    RemoteService->>RemoteService: Stop processing
-```
-
-The `ICancellationSignal` transport crosses the Binder boundary so that
-cancellation in the app process propagates to the remote service.
-
----
-
-## 50.12 Evolution and Future Direction
-
-### 50.12.1 Historical Timeline
-
-```mermaid
-gantt
-    title AOSP AI Feature Timeline
-    dateFormat  YYYY
-    section Core ML
-    NNAPI (8.1)                    :2017, 2025
-    section Intelligence
-    TextClassifier (8.0)           :2017, 2025
-    Content Capture (10)           :2019, 2025
-    AppPrediction (10)             :2019, 2025
-    section Privacy
-    AdServices (13)                :2022, 2025
-    OnDevicePersonalization (14)   :2023, 2025
-    section Agents
-    OnDeviceIntelligence (15)      :2024, 2025
-    AppFunctions (16)              :2024, 2025
-    Computer Control (16)          :2025, 2025
-```
-
-The trend is clear: Android is evolving from passive intelligence (capturing
-and classifying) toward active agent capabilities (executing functions,
-controlling apps).
-
-### 50.12.2 The Agent Architecture Stack
-
-Looking at all the pieces together, a modern AI agent on Android uses
-multiple layers:
-
-```mermaid
-graph TB
-    subgraph "Agent Intelligence"
-        LLM["Large Language Model<br/>(via OnDeviceIntelligence)"]
-    end
-
-    subgraph "Agent Actions"
-        AF["Structured Actions<br/>(AppFunctions)"]
-        CC["UI Actions<br/>(Computer Control)"]
-    end
-
-    subgraph "Agent Perception"
-        AS["Function Discovery<br/>(AppSearch)"]
-        CCap["Context Understanding<br/>(Content Capture)"]
-        TC["Text Understanding<br/>(TextClassifier)"]
-        Screenshot["Visual Understanding<br/>(Computer Control screenshots)"]
-    end
-
-    subgraph "Agent Memory"
-        AH["Action History<br/>(Access History)"]
-        AP["Usage Patterns<br/>(AppPrediction)"]
-    end
-
-    LLM --> AF
-    LLM --> CC
-    AS --> LLM
-    CCap --> LLM
-    TC --> LLM
-    Screenshot --> LLM
-    AH --> LLM
-    AP --> LLM
-```
-
-**AppFunctions** is the "clean path" -- when apps expose structured functions,
-the agent can invoke them directly with typed parameters and receive typed
-responses.
-
-**Computer Control** is the "universal fallback" -- when an app does not
-expose AppFunctions, the agent can fall back to UI automation, launching the
-app on a virtual display and controlling it through tap, swipe, and text
-injection guided by screenshot analysis.
-
-### 50.12.3 AppFunctions vs Computer Control: When to Use Each
-
-| Criterion | AppFunctions | Computer Control |
-|-----------|-------------|-----------------|
-| **App cooperation required** | Yes (must implement service) | No |
-| **Reliability** | High (typed contract) | Medium (UI can change) |
-| **Speed** | Fast (direct RPC) | Slow (screenshot + analysis loop) |
-| **Coverage** | Only participating apps | Any app with launcher activity |
-| **Privacy** | Parameters visible to target app | Screenshots visible to agent |
-| **User visibility** | Invisible to user | Can show mirror display |
-| **Complexity** | Low (implement one method) | High (vision model needed) |
-| **Error handling** | Typed error codes | Heuristic (check if UI changed) |
 
 ---
 
