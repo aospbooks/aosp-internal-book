@@ -1692,271 +1692,9 @@ graph LR
 
 ---
 
-## 31.8 Try It
+## 31.8 Appendix: Deep Dive into Internal Mechanisms
 
-### 31.8.1 Listing Users
-
-```bash
-# List all users with their details
-adb shell pm list users
-
-# More detailed output from UserManagerService
-adb shell dumpsys user
-
-# Just the user summary
-adb shell cmd user list -v
-```
-
-Example output:
-```
-Users:
-  UserInfo{0:Owner:4c13} running
-    Type: android.os.usertype.full.SYSTEM
-    Flags: 0x00004c13 (ADMIN|PRIMARY|FULL|SYSTEM|MAIN)
-    State: RUNNING_UNLOCKED
-  UserInfo{10:Guest:4804} running
-    Type: android.os.usertype.full.GUEST
-    Flags: 0x00004804 (GUEST|FULL|EPHEMERAL)
-    State: -
-  UserInfo{11:Work profile:4030} running
-    Type: android.os.usertype.profile.MANAGED
-    Flags: 0x00004030 (MANAGED_PROFILE|PROFILE)
-    profileGroupId: 0
-    State: RUNNING_UNLOCKED
-```
-
-### 31.8.2 Creating Users
-
-```bash
-# Create a secondary user
-adb shell pm create-user "Test User"
-
-# Create a guest
-adb shell pm create-user --guest "Guest"
-
-# Create a managed profile (work profile) for user 0
-adb shell pm create-user --profileOf 0 --managed "Work"
-
-# Create a private profile
-adb shell cmd user create-profile-for --user-type android.os.usertype.profile.PRIVATE 0
-
-# List available user types
-adb shell cmd user list-user-types
-```
-
-### 31.8.3 Switching Users
-
-```bash
-# Switch to user 10
-adb shell am switch-user 10
-
-# Check current foreground user
-adb shell am get-current-user
-
-# Check user switchability
-adb shell cmd user report-user-switchability
-```
-
-### 31.8.4 Managing Profiles
-
-```bash
-# Enable quiet mode for a managed profile (user 11)
-adb shell cmd user set-quiet-mode --enable 11
-
-# Disable quiet mode (unlock)
-adb shell cmd user set-quiet-mode --disable 11
-
-# Check if a user is a profile
-adb shell cmd user is-profile 11
-
-# Get profile parent
-adb shell cmd user get-profile-parent 11
-```
-
-### 31.8.5 User Restrictions
-
-```bash
-# Set a restriction on user 10
-adb shell pm set-user-restriction --user 10 no_install_apps 1
-
-# Clear a restriction
-adb shell pm set-user-restriction --user 10 no_install_apps 0
-
-# List restrictions for a user
-adb shell dumpsys user | grep -A 20 "UserInfo{10"
-```
-
-Common restrictions:
-
-| Restriction | Effect |
-|---|---|
-| `no_install_apps` | Cannot install apps |
-| `no_uninstall_apps` | Cannot uninstall apps |
-| `no_share_location` | Cannot share location |
-| `no_outgoing_calls` | Cannot make outgoing calls |
-| `no_sms` | Cannot send SMS |
-| `no_config_wifi` | Cannot configure WiFi |
-| `no_remove_user` | Cannot remove this user |
-| `no_user_switch` | Cannot switch away from this user |
-
-### 31.8.6 Inspecting Storage Layout
-
-```bash
-# List per-user data directories
-adb shell ls -la /data/user/
-
-# CE storage for user 10
-adb shell ls /data/user/10/
-
-# DE storage for user 10
-adb shell ls /data/user_de/10/
-
-# User metadata files
-adb shell ls /data/system/users/
-
-# Read a user's XML metadata (requires root)
-adb shell cat /data/system/users/10.xml
-```
-
-### 31.8.7 Removing Users
-
-```bash
-# Remove user 10 (and all its profiles)
-adb shell pm remove-user 10
-
-# Force remove (even if currently running)
-adb shell pm remove-user --set-ephemeral-if-in-use 10
-```
-
-### 31.8.8 Monitoring User Events
-
-```bash
-# Watch for user-related broadcasts
-adb logcat -s ActivityManager | grep -i "user"
-
-# Monitor UserManagerService logs
-adb logcat -s UserManagerService
-
-# Watch user state changes
-adb logcat | grep -E "onUserStart|onUserStop|switchUser|UserState"
-```
-
-### 31.8.9 Checking User Visibility
-
-```bash
-# List visible users
-adb shell cmd user get-visible-users
-
-# Check if a specific user is visible
-adb shell cmd user is-visible 10
-
-# Check what display a user is assigned to
-adb shell cmd user get-main-display-for-user 10
-```
-
-### 31.8.10 Private Space Operations
-
-```bash
-# Create Private Space profile
-adb shell cmd user create-profile-for \
-    --user-type android.os.usertype.profile.PRIVATE 0
-
-# Lock private space (enable quiet mode)
-adb shell cmd user set-quiet-mode --enable <private_user_id>
-
-# Unlock private space
-adb shell cmd user set-quiet-mode --disable <private_user_id>
-
-# Check if Private Space is enabled on this device
-adb shell getprop persist.sys.user.private_profile
-```
-
-### 31.8.11 Headless System User Mode Testing
-
-```bash
-# Check if device is in headless system user mode
-adb shell getprop ro.fw.mu.headless_system_user
-
-# Emulate headless system user mode (requires reboot)
-adb shell setprop persist.debug.fw.headless_system_user 1
-adb reboot
-
-# Check boot strategy
-adb shell getprop persist.user.hsum_boot_strategy
-```
-
-### 31.8.12 User Type Inspection
-
-```bash
-# List all registered user types
-adb shell cmd user list-user-types
-
-# Check a user's type
-adb shell cmd user get-user-type 11
-
-# Inspect user properties
-adb shell dumpsys user | grep -A 30 "User properties"
-```
-
-### 31.8.13 Performance Monitoring
-
-```bash
-# Time user creation
-adb shell cmd user create-user --timed "Performance Test"
-
-# Monitor user start time
-adb logcat -s SystemServerTiming | grep -i user
-
-# Check user start/unlock timing
-adb shell dumpsys user | grep -E "startRealtime|unlockRealtime"
-```
-
-### 31.8.14 Multi-User Debugging Checklist
-
-When investigating multi-user issues, check these in order:
-
-1. **User exists and is correct type:**
-   ```bash
-   adb shell pm list users
-   adb shell cmd user get-user-type <userId>
-   ```
-
-2. **User is running and unlocked:**
-   ```bash
-   adb shell am get-started-user-state <userId>
-   ```
-
-3. **Profile group is correct:**
-   ```bash
-   adb shell dumpsys user | grep profileGroupId
-   ```
-
-4. **Storage is prepared:**
-   ```bash
-   adb shell ls /data/user/<userId>/
-   adb shell ls /data/user_de/<userId>/
-   ```
-
-5. **User restrictions are as expected:**
-   ```bash
-   adb shell dumpsys user | grep -A 5 "Restrictions:"
-   ```
-
-6. **Packages are installed:**
-   ```bash
-   adb shell pm list packages --user <userId>
-   ```
-
-7. **Cross-profile intent filters are configured:**
-   ```bash
-   adb shell dumpsys package intent-filter-verifiers
-   ```
-
----
-
-## Appendix: Deep Dive into Internal Mechanisms
-
-### A.1 UserInfo Flags
+### 31.8.1 UserInfo Flags
 
 The `UserInfo.flags` field is a bitmask encoding the user's properties. These flags
 are defined in `UserInfo.java`:
@@ -2002,7 +1740,7 @@ Common flag combinations:
 | Work profile | PROFILE, MANAGED_PROFILE | `0x00001020` |
 | Private profile | PROFILE | `0x00001000` |
 
-### A.2 User Restrictions Deep Dive
+### 31.8.2 User Restrictions Deep Dive
 
 User restrictions are string-keyed booleans stored in `Bundle` objects. The complete
 set of restrictions is defined in `UserManager`:
@@ -2048,7 +1786,7 @@ The restriction enforcement is distributed -- each system service checks relevan
 restrictions for the calling user. For example, `TelephonyManager` checks
 `DISALLOW_OUTGOING_CALLS` before allowing a call.
 
-### A.3 UserSystemPackageInstaller Details
+### 31.8.3 UserSystemPackageInstaller Details
 
 The system package installer determines which pre-installed packages are available
 for each user type. It uses allowlists and blocklists from device overlays:
@@ -2082,7 +1820,7 @@ This ensures that:
 - System utilities are available everywhere
 - Carrier-specific apps match device configuration
 
-### A.4 The UserFilter System
+### 31.8.4 The UserFilter System
 
 `UserManagerService` uses `UserFilter` for efficiently querying subsets of users:
 
@@ -2099,7 +1837,7 @@ This ensures that:
 The filter system avoids creating intermediate lists by applying predicates directly
 during iteration over the `mUsers` SparseArray.
 
-### A.5 Cross-Profile Intent Filter Mechanics
+### 31.8.5 Cross-Profile Intent Filter Mechanics
 
 Cross-profile intent filters are implemented using `DefaultCrossProfileIntentFilter`:
 
@@ -2131,7 +1869,7 @@ The resolution strategy is controlled by `crossProfileIntentResolutionStrategy`:
 - `NO_FILTERING`: All matching intents can cross profiles
 - Standard: Only explicitly filtered intents cross
 
-### A.6 User Lifecycle Broadcasts in Detail
+### 31.8.6 User Lifecycle Broadcasts in Detail
 
 When a user starts for the first time after boot (or after being created):
 
@@ -2161,7 +1899,7 @@ The `EXTRA_USER_HANDLE` in these broadcasts contains the user ID that the event
 pertains to. System services register receivers for these broadcasts to
 initialize/deinitialize per-user state.
 
-### A.7 Headless System User Mode (HSUM)
+### 31.8.7 Headless System User Mode (HSUM)
 
 In HSUM, user 0 exists but is not a "human" user. It runs system services and
 background tasks, while actual human users start as secondary full users:
@@ -2206,7 +1944,7 @@ This mode is primarily used on automotive platforms where the "device" is the ca
 infotainment system, and the system user manages vehicle-level services while
 individual human users (driver, passengers) have their own profiles.
 
-### A.8 Multi-User on Multiple Displays (MUMD)
+### 31.8.8 Multi-User on Multiple Displays (MUMD)
 
 On automotive devices with multiple screens, different users can be visible
 simultaneously on different displays:
@@ -2245,7 +1983,7 @@ MUMD mode extends the visibility concept:
 - `isUserVisible(userId, displayId)`: True if user is assigned to that specific display
 - `getVisibleUsers()`: Returns all users that are currently visible on any display
 
-### A.9 UserData Persistence Format
+### 31.8.9 UserData Persistence Format
 
 The per-user XML file contains the full user state:
 
@@ -2285,7 +2023,7 @@ Restriction value types:
 - `"B"` = bundle
 - `"BA"` = bundle array
 
-### A.10 User Version Migration
+### 31.8.10 User Version Migration
 
 The user data format has evolved over Android releases. The current version is 11:
 
@@ -2298,7 +2036,7 @@ When the device updates, `UserManagerService` runs migration logic for each
 version step (e.g., adding new fields, converting user types from the old
 `FLAG`-based system to the modern `userType` string system).
 
-### A.11 Profile Association and Resolution
+### 31.8.11 Profile Association and Resolution
 
 When system services need to resolve a user to its "effective" user (e.g., for
 content access), they use profile group resolution:
@@ -2314,7 +2052,7 @@ This is critical for services like `ContentProvider` where a profile might need
 to access the parent user's content (or vice versa) through cross-profile
 content URIs.
 
-### A.12 Guest User Reset
+### 31.8.12 Guest User Reset
 
 Guest users have special reset behavior. When the guest user exits (switches away):
 
@@ -2332,7 +2070,7 @@ The `guestToRemove` attribute marks a guest that should be destroyed after it
 stops running. This ensures a clean slate for each guest session while avoiding
 the delay of creating a new user during the switch.
 
-### A.13 User Journey Logging
+### 31.8.13 User Journey Logging
 
 `UserJourneyLogger` tracks the outcome of user management operations for telemetry:
 
@@ -2358,7 +2096,7 @@ static final int ERROR_CODE_USER_IS_LAST_ADMIN = 5;
 These journeys are logged to `FrameworkStatsLog` for device health monitoring and
 aggregate analytics.
 
-### A.14 Communal Profile
+### 31.8.14 Communal Profile
 
 The communal profile is a relatively new concept designed for shared-device scenarios
 where multiple human users need access to common apps and data:
@@ -2388,7 +2126,7 @@ Key communal profile characteristics:
 - `startWithParent=false`: Lifecycle managed independently
 - Maximum one per device
 
-### A.15 Supervising Profile
+### 31.8.15 Supervising Profile
 
 The supervising profile supports parental supervision scenarios:
 
@@ -2417,7 +2155,7 @@ Notable properties:
 - Always visible to the system (for supervision enforcement)
 - Feature-flagged behind `allowSupervisingProfile()`
 
-### A.16 Multi-User Impact on System Services
+### 31.8.16 Multi-User Impact on System Services
 
 Every system service must be user-aware. The common patterns are:
 
@@ -2455,7 +2193,7 @@ Context userContext = context.createContextAsUser(UserHandle.of(userId), 0);
 System-level code checks `INTERACT_ACROSS_USERS` or `INTERACT_ACROSS_USERS_FULL`
 before accessing another user's data.
 
-### A.17 Maximum User Limits
+### 31.8.17 Maximum User Limits
 
 Maximum user counts are device-configurable:
 
@@ -2477,7 +2215,7 @@ OEMs set this via:
 Per-type limits are also enforced -- for example, only 1 guest, only 1 private
 profile per parent, only 1 work profile per parent (production builds).
 
-### A.18 User Switcher Controller in SystemUI
+### 31.8.18 User Switcher Controller in SystemUI
 
 SystemUI implements the user switcher through `UserSwitcherController`:
 
@@ -2502,7 +2240,7 @@ The controller listens for:
 - `ACTION_USER_SWITCHED`: Update current user indicator
 - `ACTION_USER_INFO_CHANGED`: Update user names/avatars
 
-### A.19 Security Model Summary
+### 31.8.19 Security Model Summary
 
 ```mermaid
 graph TB
@@ -2541,7 +2279,7 @@ Isolation guarantees:
 8. **Notification isolation:** Notifications are per-user
 9. **Clipboard isolation:** Clipboard contents are per-user (with cross-profile exceptions)
 
-### A.20 Multi-User Impact on Content Providers
+### 31.8.20 Multi-User Impact on Content Providers
 
 Content providers must handle multi-user access carefully:
 
@@ -2579,7 +2317,7 @@ For cross-profile access (e.g., work contacts appearing in personal dialer):
 - Special URI schemes (e.g., `content://com.android.contacts/enterprise/...`)
   are used for cross-profile contact resolution
 
-### A.21 Per-User Settings
+### 31.8.21 Per-User Settings
 
 `Settings.Secure` values are stored per-user, while `Settings.Global` values are
 device-wide:
@@ -2598,7 +2336,7 @@ to the calling user's settings database. To access another user's settings:
 Settings.Secure.getStringForUser(contentResolver, key, userId);
 ```
 
-### A.22 Multi-User Notification Handling
+### 31.8.22 Multi-User Notification Handling
 
 Notifications are user-scoped. `NotificationManagerService` maintains separate
 notification lists per user:
@@ -2610,7 +2348,7 @@ notification lists per user:
   badge indicator
 - Private Space notifications are hidden when the space is locked
 
-### A.23 Multi-User and Device Administration
+### 31.8.23 Multi-User and Device Administration
 
 Device Policy Controller (DPC) interaction with multi-user:
 
@@ -2638,7 +2376,7 @@ Device policies can be:
 - **Inherited:** Some profiles inherit policies from parent (controlled by
   `inheritDevicePolicy` property)
 
-### A.24 Multi-User and App Permissions
+### 31.8.24 Multi-User and App Permissions
 
 Each user has an independent set of runtime permissions:
 
@@ -2655,7 +2393,7 @@ The `FLAG_PERMISSION_GRANTED_BY_DEFAULT` and `FLAG_PERMISSION_GRANTED_BY_ROLE`
 flags also operate per-user, ensuring that role-based permissions reflect each
 user's configuration.
 
-### A.25 Multi-User and the Installer
+### 31.8.25 Multi-User and the Installer
 
 When a user creates a new user (or profile), `PackageManagerService` must decide
 which packages to install. The process is:
@@ -2674,7 +2412,7 @@ For profiles, additional filtering occurs:
 - Clone profiles inherit a subset of the parent's installed apps
 - Private profiles get the full system package set
 
-### A.26 Multi-User and Process Management
+### 31.8.26 Multi-User and Process Management
 
 `ActivityManagerService` manages process lifecycle with user awareness:
 
@@ -2710,7 +2448,7 @@ Process priority considerations:
   (configurable via `config_freeformWindowStopsProcessOnSwitch` or
   similar settings)
 
-### A.27 Multi-User Boot Sequence
+### 31.8.27 Multi-User Boot Sequence
 
 ```mermaid
 sequenceDiagram
@@ -2746,7 +2484,7 @@ sequenceDiagram
     end
 ```
 
-### A.28 Multi-User and Keystore
+### 31.8.28 Multi-User and Keystore
 
 Android Keystore maintains separate key namespaces per user:
 
@@ -2763,7 +2501,7 @@ This isolation is critical for:
 - Work profile certificate management by the DPC
 - Private Space key isolation
 
-### A.29 Multi-User Testing Strategies
+### 31.8.29 Multi-User Testing Strategies
 
 Testing multi-user scenarios requires specific approaches:
 
@@ -2808,7 +2546,7 @@ adb shell pm list users | grep -o "UserInfo{[0-9]*" | \
     xargs -I {} adb shell pm remove-user {}
 ```
 
-### A.30 Known Limitations and Edge Cases
+### 31.8.30 Known Limitations and Edge Cases
 
 1. **Maximum user count:** Limited by `PER_USER_RANGE` (100,000) and
    `MAX_USER_ID`. In practice, limited by storage and memory.
@@ -2836,6 +2574,268 @@ adb shell pm list users | grep -o "UserInfo{[0-9]*" | \
 7. **App compatibility:** Not all apps handle multi-user correctly.
    Singleton content providers, global shared preferences, and native
    code with hardcoded paths can cause issues in multi-user environments.
+
+---
+
+## 31.9 Try It
+
+### 31.9.1 Listing Users
+
+```bash
+# List all users with their details
+adb shell pm list users
+
+# More detailed output from UserManagerService
+adb shell dumpsys user
+
+# Just the user summary
+adb shell cmd user list -v
+```
+
+Example output:
+```
+Users:
+  UserInfo{0:Owner:4c13} running
+    Type: android.os.usertype.full.SYSTEM
+    Flags: 0x00004c13 (ADMIN|PRIMARY|FULL|SYSTEM|MAIN)
+    State: RUNNING_UNLOCKED
+  UserInfo{10:Guest:4804} running
+    Type: android.os.usertype.full.GUEST
+    Flags: 0x00004804 (GUEST|FULL|EPHEMERAL)
+    State: -
+  UserInfo{11:Work profile:4030} running
+    Type: android.os.usertype.profile.MANAGED
+    Flags: 0x00004030 (MANAGED_PROFILE|PROFILE)
+    profileGroupId: 0
+    State: RUNNING_UNLOCKED
+```
+
+### 31.9.2 Creating Users
+
+```bash
+# Create a secondary user
+adb shell pm create-user "Test User"
+
+# Create a guest
+adb shell pm create-user --guest "Guest"
+
+# Create a managed profile (work profile) for user 0
+adb shell pm create-user --profileOf 0 --managed "Work"
+
+# Create a private profile
+adb shell cmd user create-profile-for --user-type android.os.usertype.profile.PRIVATE 0
+
+# List available user types
+adb shell cmd user list-user-types
+```
+
+### 31.9.3 Switching Users
+
+```bash
+# Switch to user 10
+adb shell am switch-user 10
+
+# Check current foreground user
+adb shell am get-current-user
+
+# Check user switchability
+adb shell cmd user report-user-switchability
+```
+
+### 31.9.4 Managing Profiles
+
+```bash
+# Enable quiet mode for a managed profile (user 11)
+adb shell cmd user set-quiet-mode --enable 11
+
+# Disable quiet mode (unlock)
+adb shell cmd user set-quiet-mode --disable 11
+
+# Check if a user is a profile
+adb shell cmd user is-profile 11
+
+# Get profile parent
+adb shell cmd user get-profile-parent 11
+```
+
+### 31.9.5 User Restrictions
+
+```bash
+# Set a restriction on user 10
+adb shell pm set-user-restriction --user 10 no_install_apps 1
+
+# Clear a restriction
+adb shell pm set-user-restriction --user 10 no_install_apps 0
+
+# List restrictions for a user
+adb shell dumpsys user | grep -A 20 "UserInfo{10"
+```
+
+Common restrictions:
+
+| Restriction | Effect |
+|---|---|
+| `no_install_apps` | Cannot install apps |
+| `no_uninstall_apps` | Cannot uninstall apps |
+| `no_share_location` | Cannot share location |
+| `no_outgoing_calls` | Cannot make outgoing calls |
+| `no_sms` | Cannot send SMS |
+| `no_config_wifi` | Cannot configure WiFi |
+| `no_remove_user` | Cannot remove this user |
+| `no_user_switch` | Cannot switch away from this user |
+
+### 31.9.6 Inspecting Storage Layout
+
+```bash
+# List per-user data directories
+adb shell ls -la /data/user/
+
+# CE storage for user 10
+adb shell ls /data/user/10/
+
+# DE storage for user 10
+adb shell ls /data/user_de/10/
+
+# User metadata files
+adb shell ls /data/system/users/
+
+# Read a user's XML metadata (requires root)
+adb shell cat /data/system/users/10.xml
+```
+
+### 31.9.7 Removing Users
+
+```bash
+# Remove user 10 (and all its profiles)
+adb shell pm remove-user 10
+
+# Force remove (even if currently running)
+adb shell pm remove-user --set-ephemeral-if-in-use 10
+```
+
+### 31.9.8 Monitoring User Events
+
+```bash
+# Watch for user-related broadcasts
+adb logcat -s ActivityManager | grep -i "user"
+
+# Monitor UserManagerService logs
+adb logcat -s UserManagerService
+
+# Watch user state changes
+adb logcat | grep -E "onUserStart|onUserStop|switchUser|UserState"
+```
+
+### 31.9.9 Checking User Visibility
+
+```bash
+# List visible users
+adb shell cmd user get-visible-users
+
+# Check if a specific user is visible
+adb shell cmd user is-visible 10
+
+# Check what display a user is assigned to
+adb shell cmd user get-main-display-for-user 10
+```
+
+### 31.9.10 Private Space Operations
+
+```bash
+# Create Private Space profile
+adb shell cmd user create-profile-for \
+    --user-type android.os.usertype.profile.PRIVATE 0
+
+# Lock private space (enable quiet mode)
+adb shell cmd user set-quiet-mode --enable <private_user_id>
+
+# Unlock private space
+adb shell cmd user set-quiet-mode --disable <private_user_id>
+
+# Check if Private Space is enabled on this device
+adb shell getprop persist.sys.user.private_profile
+```
+
+### 31.9.11 Headless System User Mode Testing
+
+```bash
+# Check if device is in headless system user mode
+adb shell getprop ro.fw.mu.headless_system_user
+
+# Emulate headless system user mode (requires reboot)
+adb shell setprop persist.debug.fw.headless_system_user 1
+adb reboot
+
+# Check boot strategy
+adb shell getprop persist.user.hsum_boot_strategy
+```
+
+### 31.9.12 User Type Inspection
+
+```bash
+# List all registered user types
+adb shell cmd user list-user-types
+
+# Check a user's type
+adb shell cmd user get-user-type 11
+
+# Inspect user properties
+adb shell dumpsys user | grep -A 30 "User properties"
+```
+
+### 31.9.13 Performance Monitoring
+
+```bash
+# Time user creation
+adb shell cmd user create-user --timed "Performance Test"
+
+# Monitor user start time
+adb logcat -s SystemServerTiming | grep -i user
+
+# Check user start/unlock timing
+adb shell dumpsys user | grep -E "startRealtime|unlockRealtime"
+```
+
+### 31.9.14 Multi-User Debugging Checklist
+
+When investigating multi-user issues, check these in order:
+
+1. **User exists and is correct type:**
+   ```bash
+   adb shell pm list users
+   adb shell cmd user get-user-type <userId>
+   ```
+
+2. **User is running and unlocked:**
+   ```bash
+   adb shell am get-started-user-state <userId>
+   ```
+
+3. **Profile group is correct:**
+   ```bash
+   adb shell dumpsys user | grep profileGroupId
+   ```
+
+4. **Storage is prepared:**
+   ```bash
+   adb shell ls /data/user/<userId>/
+   adb shell ls /data/user_de/<userId>/
+   ```
+
+5. **User restrictions are as expected:**
+   ```bash
+   adb shell dumpsys user | grep -A 5 "Restrictions:"
+   ```
+
+6. **Packages are installed:**
+   ```bash
+   adb shell pm list packages --user <userId>
+   ```
+
+7. **Cross-profile intent filters are configured:**
+   ```bash
+   adb shell dumpsys package intent-filter-verifiers
+   ```
 
 ---
 
