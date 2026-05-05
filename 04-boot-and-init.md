@@ -2187,348 +2187,12 @@ sequenceDiagram
 
 ---
 
-## 4.6 Try It: Add a Custom Init Service
-
-Now that we understand the complete boot sequence, let us walk through a practical
-exercise: adding a custom native daemon that starts during boot.
-
-### 4.6.1 Step 1: Write the Native Daemon
-
-Create a simple daemon that logs a message to the kernel log every few seconds.
-
-Create the file `device/generic/car/mybootdaemon/mybootdaemon.cpp`:
-
-```cpp
-// device/generic/car/mybootdaemon/mybootdaemon.cpp
-#include <android-base/logging.h>
-#include <unistd.h>
-
-int main(int /* argc */, char** argv) {
-    // Initialize logging to the kernel log (kmsg).
-    android::base::InitLogging(argv, &android::base::KernelLogger);
-
-    LOG(INFO) << "mybootdaemon: Starting up!";
-
-    // A real daemon would do useful work here.
-    // This example simply logs heartbeat messages.
-    int counter = 0;
-    while (true) {
-        LOG(INFO) << "mybootdaemon: heartbeat #" << counter++;
-        sleep(10);
-    }
-
-    // Unreachable, but good practice.
-    return 0;
-}
-```
-
-### 4.6.2 Step 2: Create the Build File
-
-Create `device/generic/car/mybootdaemon/Android.bp`:
-
-```json
-cc_binary {
-    name: "mybootdaemon",
-    srcs: ["mybootdaemon.cpp"],
-    shared_libs: [
-        "libbase",
-        "liblog",
-    ],
-    init_rc: ["mybootdaemon.rc"],
-
-    // Install to /system/bin
-    vendor: false,
-}
-```
-
-The `init_rc` field tells the build system to install our init.rc file alongside the
-binary. The build system will place it at `/system/etc/init/mybootdaemon.rc`, which
-is one of the directories that init parses during `LoadBootScripts()`.
-
-### 4.6.3 Step 3: Create the init.rc File
-
-Create `device/generic/car/mybootdaemon/mybootdaemon.rc`:
-
-```
-service mybootdaemon /system/bin/mybootdaemon
-    class late_start
-    user system
-    group system log
-    disabled
-    oneshot
-
-on property:sys.boot_completed=1
-    start mybootdaemon
-```
-
-Let us examine each directive:
-
-- **`service mybootdaemon`**: Declares the service name
-- **`/system/bin/mybootdaemon`**: The executable path
-- **`class late_start`**: Belongs to the `late_start` class, which starts after
-  `zygote-start`
-- **`user system`**: Run as the `system` user (UID 1000), not root
-- **`group system log`**: Supplementary groups for system access and logging
-- **`disabled`**: The service does not start automatically with its class -- it must
-  be explicitly started
-- **`oneshot`**: The service runs once and is not restarted if it exits
-
-The `on property:sys.boot_completed=1` trigger starts our daemon after the system
-has fully booted. This is the safest time to start custom daemons because all
-system services are available.
-
-### 4.6.4 Step 4: Add the SELinux Policy
-
-For a real device, you must create SELinux policy for your daemon. Without it,
-SELinux will deny all operations and your daemon will fail to function.
-
-Create `device/generic/car/sepolicy/private/mybootdaemon.te`:
-
-```
-# Define the mybootdaemon domain
-type mybootdaemon, domain;
-type mybootdaemon_exec, exec_type, file_type, system_file_type;
-
-# Allow init to transition to our domain when starting the service
-init_daemon_domain(mybootdaemon)
-
-# Allow basic logging
-allow mybootdaemon kmsg_device:chr_file { open write };
-
-# Allow reading system properties
-get_prop(mybootdaemon, default_prop)
-```
-
-And add the file context in `device/generic/car/sepolicy/private/file_contexts`:
-
-```
-/system/bin/mybootdaemon      u:object_r:mybootdaemon_exec:s0
-```
-
-### 4.6.5 Step 5: Build and Test
-
-Add the module to your device makefile (e.g., `device/generic/car/device.mk`):
-
-```makefile
-PRODUCT_PACKAGES += mybootdaemon
-```
-
-Build the system image:
-
-```bash
-source build/envsetup.sh
-lunch <your_target>
-m mybootdaemon
-```
-
-For a full system image build:
-
-```bash
-m
-```
-
-### 4.6.6 Step 6: Verify
-
-After flashing the image or booting the emulator:
-
-```bash
-# Check that the service is defined
-adb shell getprop init.svc.mybootdaemon
-# Expected: "running" (after boot completes)
-
-# Check the service status
-adb shell service list | grep mybootdaemon
-
-# View the daemon's log output
-adb shell dmesg | grep mybootdaemon
-# Expected output:
-# mybootdaemon: Starting up!
-# mybootdaemon: heartbeat #0
-# mybootdaemon: heartbeat #1
-
-# Manually stop and start the service
-adb shell setprop ctl.stop mybootdaemon
-adb shell getprop init.svc.mybootdaemon
-# Expected: "stopped"
-
-adb shell setprop ctl.start mybootdaemon
-adb shell getprop init.svc.mybootdaemon
-# Expected: "running"
-```
-
-### 4.6.7 Common Pitfalls
-
-**Problem: Service fails to start with "permission denied"**
-
-This is almost always a SELinux issue. Check the audit log:
-
-```bash
-adb shell dmesg | grep "avc: denied"
-```
-
-Use `audit2allow` to generate the necessary policy rules.
-
-**Problem: Service starts but immediately exits**
-
-Check if init is killing the service. Look for the `SVC_RESTARTING` flag:
-
-```bash
-adb shell getprop init.svc.mybootdaemon
-```
-
-If it shows "restarting", your service is crashing. Check logcat and dmesg for
-crash information. If your service is `oneshot` and exits normally, the status will
-be "stopped" -- this is expected behavior.
-
-**Problem: Service starts before a dependency is ready**
-
-Use property triggers to gate startup. For example, to wait for the network stack:
-
-```
-on property:sys.boot_completed=1 && property:init.svc.netd=running
-    start mybootdaemon
-```
-
-**Problem: Service runs as wrong SELinux context**
-
-Verify the file context:
-
-```bash
-adb shell ls -Z /system/bin/mybootdaemon
-# Expected: u:object_r:mybootdaemon_exec:s0
-```
-
-And verify the process context:
-
-```bash
-adb shell ps -eZ | grep mybootdaemon
-# Expected: u:r:mybootdaemon:s0
-```
-
-### 4.6.8 Understanding Service States
-
-Init tracks each service through a set of state flags. Understanding these states
-is critical for debugging service startup issues:
-
-| State | Property Value | Meaning |
-|---|---|---|
-| `stopped` | `init.svc.<name>=stopped` | Service is not running |
-| `starting` | `init.svc.<name>=starting` | Service is being started |
-| `running` | `init.svc.<name>=running` | Service is running |
-| `stopping` | `init.svc.<name>=stopping` | Service is being stopped |
-| `restarting` | `init.svc.<name>=restarting` | Service will restart after a delay |
-
-The state machine:
-
-```mermaid
-stateDiagram-v2
-    [*] --> stopped
-    stopped --> starting : start command
-    starting --> running : process forked successfully
-    starting --> stopped : fork failed
-    running --> stopping : stop command / SIGTERM
-    running --> restarting : process exited not oneshot
-    running --> stopped : process exited oneshot
-    stopping --> stopped : process exited
-    restarting --> starting : restart delay elapsed
-    stopped --> [*]
-```
-
-The restart delay (default: 5 seconds) prevents a crashing service from consuming
-all CPU by restarting in a tight loop. This delay can be customized per-service
-with the `restart_period` option.
-
-The `HandleProcessActions()` function (init.cpp lines 390-418) drives the restart
-logic:
-
-```cpp
-// system/core/init/init.cpp, lines 390-418
-static std::optional<boot_clock::time_point> HandleProcessActions() {
-    std::optional<boot_clock::time_point> next_process_action_time;
-    for (const auto& s : ServiceList::GetInstance()) {
-        if ((s->flags() & SVC_RUNNING) && s->timeout_period()) {
-            auto timeout_time = s->time_started() + *s->timeout_period();
-            if (boot_clock::now() > timeout_time) {
-                s->Timeout();
-            } else {
-                if (!next_process_action_time ||
-                    timeout_time < *next_process_action_time) {
-                    next_process_action_time = timeout_time;
-                }
-            }
-        }
-
-        if (!(s->flags() & SVC_RESTARTING)) continue;
-
-        auto restart_time = s->time_started() + s->restart_period();
-        if (boot_clock::now() > restart_time) {
-            if (auto result = s->Start(); !result.ok()) {
-                LOG(ERROR) << "Could not restart process '" << s->name()
-                           << "': " << result.error();
-            }
-        } else {
-            if (!next_process_action_time ||
-                restart_time < *next_process_action_time) {
-                next_process_action_time = restart_time;
-            }
-        }
-    }
-    return next_process_action_time;
-}
-```
-
-This function iterates over all services, checking for two conditions:
-
-1. **Timeout**: If a running service has a `timeout_period` and has exceeded it, the
-   service is killed
-2. **Restart**: If a service is in the `SVC_RESTARTING` state and the restart delay
-   has elapsed, the service is restarted
-
-The function returns the next time it needs to run, which is used to set the epoll
-timeout in the main loop.
-
-### 4.6.9 Advanced: Making a Persistent Daemon
-
-To create a daemon that is automatically restarted by init if it crashes, modify
-the rc file:
-
-```
-service mybootdaemon /system/bin/mybootdaemon
-    class late_start
-    user system
-    group system log
-
-on property:sys.boot_completed=1
-    enable mybootdaemon
-    class_start late_start
-```
-
-Without the `oneshot` directive, init will automatically restart the service if it
-exits. The `enable` command is used instead of `start` to allow the service to start
-with its class.
-
-For critical services that should trigger a device reboot if they crash too many
-times:
-
-```
-service mybootdaemon /system/bin/mybootdaemon
-    class late_start
-    user system
-    group system log
-    critical
-```
-
-The `critical` directive tells init to reboot the device if the service crashes more
-than four times in four minutes. This is the same mechanism used for Zygote itself.
-
----
-
-## 4.7 Deep Dive: The init.rc Language
+## 4.6 Deep Dive: The init.rc Language
 
 This section provides a comprehensive reference for the init.rc language, which
 every Android platform developer needs to understand.
 
-### 4.7.1 Sections
+### 4.6.1 Sections
 
 Init.rc files consist of three types of sections:
 
@@ -2560,7 +2224,7 @@ Imports are processed after all sections in the current file are parsed. Propert
 expansion (`${property.name}`) works in import paths, allowing hardware-specific
 configuration: `import /init.${ro.hardware}.rc`.
 
-### 4.7.2 Trigger Types
+### 4.6.2 Trigger Types
 
 Init supports several trigger types:
 
@@ -2603,7 +2267,7 @@ All conditions in a compound trigger must be true for the action to execute. Whe
 a property trigger is part of a compound trigger, the action fires when the property
 changes to the specified value AND all other conditions are met.
 
-### 4.7.3 The init Trigger: System Configuration
+### 4.6.3 The init Trigger: System Configuration
 
 The `init` trigger (at line 106 of `system/core/rootdir/init.rc`) performs foundational
 system configuration. Here is the full action with annotations:
@@ -2640,7 +2304,7 @@ Android's process scheduling. ActivityManagerService later assigns processes to 
 groups based on their importance, ensuring that foreground apps get more CPU time
 than background processes.
 
-### 4.7.4 Service Options Reference
+### 4.6.4 Service Options Reference
 
 The complete set of service options available in init.rc:
 
@@ -2672,7 +2336,7 @@ The complete set of service options available in init.rc:
 | `updatable` | | Service can be overridden by APEX |
 | `sigstop` | | Send SIGSTOP after fork (for debugger attach) |
 
-### 4.7.5 Service Classes
+### 4.6.5 Service Classes
 
 Services are grouped into classes, allowing init to start or stop groups of services
 at once. The standard classes are:
@@ -2689,7 +2353,7 @@ When `class_start main` is executed, all services with `class main` that are not
 `disabled` will be started. Similarly, `class_stop main` stops all services in that
 class.
 
-### 4.7.6 Ueventd: Device Node Management
+### 4.6.6 Ueventd: Device Node Management
 
 As mentioned in section 3.3.1, when init is invoked with the name `ueventd`, it
 becomes the device node manager. Ueventd listens for kernel uevents and creates
@@ -2711,7 +2375,7 @@ permissions for device nodes:
 /dev/vndbinder            0666   root       root
 ```
 
-### 4.7.7 init.rc Processing Order
+### 4.6.7 init.rc Processing Order
 
 Understanding the processing order of init.rc files is critical for debugging boot
 issues. The complete order is:
@@ -2731,12 +2395,12 @@ influence processing order, though relying on this is discouraged.
 
 ---
 
-## 4.8 Deep Dive: Property Service Internals
+## 4.7 Deep Dive: Property Service Internals
 
 The property service is one of the most heavily used IPC mechanisms during boot. This
 section examines its implementation in detail.
 
-### 4.8.1 Property Storage
+### 4.7.1 Property Storage
 
 Android properties are stored in shared memory regions mapped at
 `/dev/__properties__/`. The property area is organized as a trie (prefix tree) for
@@ -2753,7 +2417,7 @@ The property storage is initialized in `PropertyInit()`, which is called from
 [[clang::no_destroy]] static PropertyInfoAreaFile property_info_area;
 ```
 
-### 4.8.2 Property Set Flow
+### 4.7.2 Property Set Flow
 
 When a process calls `SystemProperties.set()` (Java) or `__system_property_set()`
 (native), the request flows through a UNIX domain socket to the property service
@@ -2789,7 +2453,7 @@ sequenceDiagram
     end
 ```
 
-### 4.8.3 SELinux Property Access Control
+### 4.7.3 SELinux Property Access Control
 
 Every property set operation is checked against SELinux policy. The
 `CheckMacPerms()` function (lines 162-176 of `property_service.cpp`) performs this
@@ -2838,7 +2502,7 @@ static int PropertyAuditCallback(void* data, security_class_t /*cls*/,
 }
 ```
 
-### 4.8.4 The Property Service Thread
+### 4.7.4 The Property Service Thread
 
 The property service runs in its own thread, separate from init's main loop. This
 design is important: property set requests can arrive at any time from any process,
@@ -2858,7 +2522,7 @@ Each connection receives the caller's credentials (`ucred`) through the UNIX soc
 which provides the PID, UID, and GID of the calling process. These credentials,
 combined with the SELinux context, determine whether the property set is allowed.
 
-### 4.8.5 Persistent Properties
+### 4.7.5 Persistent Properties
 
 Properties with the `persist.` prefix are stored persistently on disk under
 `/data/property/`. They survive reboots. The write is handled asynchronously to
@@ -2879,7 +2543,7 @@ if (socket && persistent_properties_loaded && need_persist) {
 Properties with the `next_boot.` prefix are also persisted, but they are applied
 on the next boot rather than immediately.
 
-### 4.8.6 Property Change Notification
+### 4.7.6 Property Change Notification
 
 When a property changes, all interested parties are notified. The
 `NotifyPropertyChange()` function (lines 178-185) bridges the property service thread
@@ -2920,12 +2584,12 @@ static void InstallInitNotifier(Epoll* epoll) {
 
 ---
 
-## 4.9 Deep Dive: system_server Service Categories
+## 4.8 Deep Dive: system_server Service Categories
 
 The system_server starts well over 100 services. Understanding the categories and
 key services is essential for platform developers.
 
-### 4.9.1 startOtherServices: The Bulk of the Framework
+### 4.8.1 startOtherServices: The Bulk of the Framework
 
 The `startOtherServices()` method in `SystemServer.java` (starting at line 1539) is
 the longest method in the class. It starts the "grab bag" of services that constitute
@@ -2984,7 +2648,7 @@ t.traceEnd();
 Bluetooth is loaded from an APEX jar (`/apex/com.android.bt/javalib/service-bluetooth.jar`),
 demonstrating how modular system services have become.
 
-### 4.9.2 APEX-Delivered Services
+### 4.8.2 APEX-Delivered Services
 
 Modern Android delivers many system services through APEX packages. The
 `startApexServices()` method starts services that come from updatable APEX modules:
@@ -3011,7 +2675,7 @@ private static final String WIFI_SERVICE_CLASS =
         "com.android.server.wifi.WifiService";
 ```
 
-### 4.9.3 Safe Mode Detection
+### 4.8.3 Safe Mode Detection
 
 Before starting the bulk of other services, WindowManagerService checks for safe
 mode (line 1851):
@@ -3028,7 +2692,7 @@ if (safeMode) {
 Safe mode is triggered when the user holds certain buttons during boot. In safe
 mode, third-party apps are disabled, and airplane mode is automatically enabled.
 
-### 4.9.4 Service Start Timing Constraints
+### 4.8.4 Service Start Timing Constraints
 
 The system_server uses a `SystemServerInitThreadPool` to parallelize initialization
 where possible. For example, the secondary Zygote preload and HIDL service
@@ -3049,7 +2713,7 @@ for too long, the Watchdog will kill system_server. The Watchdog is started as t
 very first bootstrap service (line 1193) to ensure it can detect deadlocks from the
 earliest possible point.
 
-### 4.9.5 The Final Handoff
+### 4.8.5 The Final Handoff
 
 When all services are started and boot phases are complete, system_server enters its
 main Looper (line 1081):
@@ -3070,12 +2734,12 @@ framework reboots.
 
 ---
 
-## 4.10 Boot Time Measurement and Optimization
+## 4.9 Boot Time Measurement and Optimization
 
 Understanding boot performance is essential for platform developers. Android provides
 built-in tools for measuring and optimizing boot time.
 
-### 4.10.1 Boot Time Properties
+### 4.9.1 Boot Time Properties
 
 Init records timing information in system properties:
 
@@ -3112,7 +2776,7 @@ static void RecordStageBoottimes(const boot_clock::time_point& second_stage_star
 }
 ```
 
-### 4.10.2 Bootchart
+### 4.9.2 Bootchart
 
 Android supports bootchart, a tool that records CPU, disk I/O, and process activity
 during boot. Bootchart is started via init.rc:
@@ -3137,7 +2801,7 @@ adb shell tar -czf /data/local/tmp/bootchart.tgz /data/bootchart/
 adb pull /data/local/tmp/bootchart.tgz
 ```
 
-### 4.10.3 systrace/Perfetto Boot Tracing
+### 4.9.3 systrace/Perfetto Boot Tracing
 
 Android's tracing infrastructure (Perfetto) can capture boot traces. system_server
 uses `TimingsTraceAndSlog` throughout its initialization to record precise timing
@@ -3161,7 +2825,7 @@ adb shell atrace --async_dump -o /data/local/tmp/boot_trace
 adb pull /data/local/tmp/boot_trace
 ```
 
-### 4.10.4 Boot Monitor
+### 4.9.4 Boot Monitor
 
 For debuggable builds, init supports a boot timeout monitor that triggers a kernel
 panic if boot does not complete within a specified time. This is configured via the
@@ -3194,7 +2858,7 @@ boot loop, the device will eventually panic and (on devices with
 `REBOOT_BOOTLOADER_ON_PANIC` enabled) reboot into the bootloader, allowing the
 developer to flash a fixed image.
 
-### 4.10.5 Common Boot Optimization Techniques
+### 4.9.5 Common Boot Optimization Techniques
 
 1. **Parallel kernel module loading**: Set `androidboot.load_modules_parallel=true`
    in bootconfig to enable parallel module loading during first-stage init
@@ -3228,9 +2892,9 @@ developer to flash a fixed image.
 
 ---
 
-## 4.11 Debugging Boot Issues
+## 4.10 Debugging Boot Issues
 
-### 4.11.1 Accessing Boot Logs
+### 4.10.1 Accessing Boot Logs
 
 If the device is not booting, use these methods to access boot logs:
 
@@ -3254,7 +2918,7 @@ adb shell logcat -b all -d | grep "init: "
 adb shell getprop | grep "init.svc."
 ```
 
-### 4.11.2 Common Boot Failures
+### 4.10.2 Common Boot Failures
 
 **"Failed to mount required partitions early"**
 
@@ -3283,7 +2947,7 @@ If a service with the `critical` flag crashes repeatedly, init will reboot the
 device. Check logcat for crash traces and use `adb shell getprop init.svc.<name>`
 to monitor service state.
 
-### 4.11.3 First-Stage Console
+### 4.10.3 First-Stage Console
 
 For debugging first-stage init failures, you can enable a console. Add
 `androidboot.first_stage_console=1` to the kernel command line or bootconfig. This
@@ -3298,7 +2962,7 @@ auto want_console = ALLOW_FIRST_STAGE_CONSOLE ?
     FirstStageConsole(cmdline, bootconfig) : 0;
 ```
 
-### 4.11.4 Using adb to Debug init.rc
+### 4.10.4 Using adb to Debug init.rc
 
 Check which triggers have fired and which services are running:
 
@@ -3317,13 +2981,13 @@ adb shell dmesg | tail -100
 
 ---
 
-## 4.12 Deep Dive: Signal Handling in init
+## 4.11 Deep Dive: Signal Handling in init
 
 Since init is PID 1, it has unique responsibilities with respect to signal handling.
 If PID 1 exits, the kernel panics. Therefore, init must be extremely careful about
 how it handles signals.
 
-### 4.12.1 SIGCHLD: Child Process Death
+### 4.11.1 SIGCHLD: Child Process Death
 
 When any child process dies, init receives SIGCHLD. This is how init knows to
 restart services. The signal handling setup is in `InstallSignalFdHandler()`
@@ -3376,7 +3040,7 @@ Key design decisions:
    can be multiplexed with `epoll()`. This allows signal handling to be integrated
    cleanly into init's event loop.
 
-### 4.12.2 SIGTERM: Container Shutdown
+### 4.11.2 SIGTERM: Container Shutdown
 
 In container environments (where init is not running as the root PID namespace),
 SIGTERM is used to request graceful shutdown. From lines 713-721:
@@ -3397,7 +3061,7 @@ static void HandleSigtermSignal(const signalfd_siginfo& siginfo) {
 Note the security check: only SIGTERM from PID 0 (the kernel) is honored. Any
 userspace process sending SIGTERM to init is silently ignored.
 
-### 4.12.3 Signal Handling in Child Processes
+### 4.11.3 Signal Handling in Child Processes
 
 When init forks a child (to start a service), the child must unblock signals that
 init blocked. The `UnblockSignals()` function (lines 745-759) handles this:
@@ -3427,12 +3091,12 @@ blocked signal mask and would not be able to detect when their own children exit
 
 ---
 
-## 4.13 Deep Dive: The Shutdown Sequence
+## 4.12 Deep Dive: The Shutdown Sequence
 
 The shutdown sequence is the reverse of the boot sequence, and it is just as
 carefully orchestrated.
 
-### 4.13.1 Triggering Shutdown
+### 4.12.1 Triggering Shutdown
 
 Shutdown is triggered by setting the `sys.powerctl` property:
 
@@ -3465,7 +3129,7 @@ void PropertyChanged(const std::string& name, const std::string& value) {
 }
 ```
 
-### 4.13.2 The Shutdown State Machine
+### 4.12.2 The Shutdown State Machine
 
 The `ShutdownState` class (init.cpp lines 241-268) manages the shutdown process:
 
@@ -3499,7 +3163,7 @@ The design is thread-safe: `TriggerShutdown()` can be called from the property
 service thread, while `CheckShutdown()` is called from the main init thread. The
 lock ensures that the shutdown command is safely transferred between threads.
 
-### 4.13.3 Shutdown Process Order
+### 4.12.3 Shutdown Process Order
 
 When shutdown is triggered, init executes the following sequence:
 
@@ -3528,9 +3192,9 @@ off.
 
 ---
 
-## 4.14 Advanced Topics
+## 4.13 Advanced Topics
 
-### 4.14.1 Mount Namespaces
+### 4.13.1 Mount Namespaces
 
 Init supports mount namespaces to provide different filesystem views to different
 processes. The `SetupMountNamespaces()` function (called from `SecondStageMain()` at
@@ -3552,7 +3216,7 @@ Mount namespaces are used for:
 - **linkerconfig**: Different processes may have different linker configurations based
   on their namespace
 
-### 4.14.2 Subcontext
+### 4.13.2 Subcontext
 
 Init supports "subcontext" execution, where certain init commands run in a separate
 process with a different SELinux context. This is used for vendor init scripts that
@@ -3574,7 +3238,7 @@ receiving commands to execute and returning results. This design allows vendor
 init scripts to run commands that require vendor SELinux permissions without
 granting those permissions to init itself.
 
-### 4.14.3 APEX Init Scripts
+### 4.13.3 APEX Init Scripts
 
 APEXes can include their own init.rc scripts. When an APEX is activated, init
 parses its scripts and integrates them into the action and service lists. The
@@ -3599,7 +3263,7 @@ Parser CreateApexConfigParser(ActionManager& action_manager,
 APEX init scripts can define new services and actions, but they are restricted to
 operations that their SELinux policy allows.
 
-### 4.14.4 Control Messages: start/stop/restart
+### 4.13.4 Control Messages: start/stop/restart
 
 Control messages are the mechanism by which system services start and stop init-
 managed services at runtime. The control message map is defined in init.cpp
@@ -3640,7 +3304,7 @@ Beyond the standard start/stop/restart, control messages also support:
 APEX control messages (`apex_load`/`apex_unload`) are handled separately and allow
 loading and unloading APEX init scripts at runtime.
 
-### 4.14.5 The Epoll-Based Event Loop Architecture
+### 4.13.5 The Epoll-Based Event Loop Architecture
 
 Init's main loop is built on Linux's `epoll` facility, providing an efficient event
 multiplexing mechanism. The architecture deserves detailed examination because it is
@@ -3699,7 +3363,7 @@ release memory back to the kernel. This is a small but important optimization:
 during steady-state operation (after boot), init is mostly idle, and releasing its
 heap pages reduces memory pressure on the system.
 
-### 4.14.6 The GSI (Generic System Image) Check
+### 4.13.6 The GSI (Generic System Image) Check
 
 Init checks whether the device is running a GSI during second-stage startup
 (init.cpp lines 1186-1195):
@@ -3723,7 +3387,7 @@ running on a GSI, which is commonly used for VTS (Vendor Test Suite) testing.
 
 ---
 
-## 4.15 The Complete Boot Sequence in One Diagram
+## 4.14 The Complete Boot Sequence in One Diagram
 
 The following diagram summarizes the entire boot sequence covered in this chapter,
 showing the flow between all major components:
@@ -3830,6 +3494,342 @@ flowchart TD
     style P1K fill:#d63031,color:#fff
     style UI fill:#00b894,color:#fff
 ```
+
+---
+
+## 4.15 Try It: Add a Custom Init Service
+
+Now that we understand the complete boot sequence, let us walk through a practical
+exercise: adding a custom native daemon that starts during boot.
+
+### 4.15.1 Step 1: Write the Native Daemon
+
+Create a simple daemon that logs a message to the kernel log every few seconds.
+
+Create the file `device/generic/car/mybootdaemon/mybootdaemon.cpp`:
+
+```cpp
+// device/generic/car/mybootdaemon/mybootdaemon.cpp
+#include <android-base/logging.h>
+#include <unistd.h>
+
+int main(int /* argc */, char** argv) {
+    // Initialize logging to the kernel log (kmsg).
+    android::base::InitLogging(argv, &android::base::KernelLogger);
+
+    LOG(INFO) << "mybootdaemon: Starting up!";
+
+    // A real daemon would do useful work here.
+    // This example simply logs heartbeat messages.
+    int counter = 0;
+    while (true) {
+        LOG(INFO) << "mybootdaemon: heartbeat #" << counter++;
+        sleep(10);
+    }
+
+    // Unreachable, but good practice.
+    return 0;
+}
+```
+
+### 4.15.2 Step 2: Create the Build File
+
+Create `device/generic/car/mybootdaemon/Android.bp`:
+
+```json
+cc_binary {
+    name: "mybootdaemon",
+    srcs: ["mybootdaemon.cpp"],
+    shared_libs: [
+        "libbase",
+        "liblog",
+    ],
+    init_rc: ["mybootdaemon.rc"],
+
+    // Install to /system/bin
+    vendor: false,
+}
+```
+
+The `init_rc` field tells the build system to install our init.rc file alongside the
+binary. The build system will place it at `/system/etc/init/mybootdaemon.rc`, which
+is one of the directories that init parses during `LoadBootScripts()`.
+
+### 4.15.3 Step 3: Create the init.rc File
+
+Create `device/generic/car/mybootdaemon/mybootdaemon.rc`:
+
+```
+service mybootdaemon /system/bin/mybootdaemon
+    class late_start
+    user system
+    group system log
+    disabled
+    oneshot
+
+on property:sys.boot_completed=1
+    start mybootdaemon
+```
+
+Let us examine each directive:
+
+- **`service mybootdaemon`**: Declares the service name
+- **`/system/bin/mybootdaemon`**: The executable path
+- **`class late_start`**: Belongs to the `late_start` class, which starts after
+  `zygote-start`
+- **`user system`**: Run as the `system` user (UID 1000), not root
+- **`group system log`**: Supplementary groups for system access and logging
+- **`disabled`**: The service does not start automatically with its class -- it must
+  be explicitly started
+- **`oneshot`**: The service runs once and is not restarted if it exits
+
+The `on property:sys.boot_completed=1` trigger starts our daemon after the system
+has fully booted. This is the safest time to start custom daemons because all
+system services are available.
+
+### 4.15.4 Step 4: Add the SELinux Policy
+
+For a real device, you must create SELinux policy for your daemon. Without it,
+SELinux will deny all operations and your daemon will fail to function.
+
+Create `device/generic/car/sepolicy/private/mybootdaemon.te`:
+
+```
+# Define the mybootdaemon domain
+type mybootdaemon, domain;
+type mybootdaemon_exec, exec_type, file_type, system_file_type;
+
+# Allow init to transition to our domain when starting the service
+init_daemon_domain(mybootdaemon)
+
+# Allow basic logging
+allow mybootdaemon kmsg_device:chr_file { open write };
+
+# Allow reading system properties
+get_prop(mybootdaemon, default_prop)
+```
+
+And add the file context in `device/generic/car/sepolicy/private/file_contexts`:
+
+```
+/system/bin/mybootdaemon      u:object_r:mybootdaemon_exec:s0
+```
+
+### 4.15.5 Step 5: Build and Test
+
+Add the module to your device makefile (e.g., `device/generic/car/device.mk`):
+
+```makefile
+PRODUCT_PACKAGES += mybootdaemon
+```
+
+Build the system image:
+
+```bash
+source build/envsetup.sh
+lunch <your_target>
+m mybootdaemon
+```
+
+For a full system image build:
+
+```bash
+m
+```
+
+### 4.15.6 Step 6: Verify
+
+After flashing the image or booting the emulator:
+
+```bash
+# Check that the service is defined
+adb shell getprop init.svc.mybootdaemon
+# Expected: "running" (after boot completes)
+
+# Check the service status
+adb shell service list | grep mybootdaemon
+
+# View the daemon's log output
+adb shell dmesg | grep mybootdaemon
+# Expected output:
+# mybootdaemon: Starting up!
+# mybootdaemon: heartbeat #0
+# mybootdaemon: heartbeat #1
+
+# Manually stop and start the service
+adb shell setprop ctl.stop mybootdaemon
+adb shell getprop init.svc.mybootdaemon
+# Expected: "stopped"
+
+adb shell setprop ctl.start mybootdaemon
+adb shell getprop init.svc.mybootdaemon
+# Expected: "running"
+```
+
+### 4.15.7 Common Pitfalls
+
+**Problem: Service fails to start with "permission denied"**
+
+This is almost always a SELinux issue. Check the audit log:
+
+```bash
+adb shell dmesg | grep "avc: denied"
+```
+
+Use `audit2allow` to generate the necessary policy rules.
+
+**Problem: Service starts but immediately exits**
+
+Check if init is killing the service. Look for the `SVC_RESTARTING` flag:
+
+```bash
+adb shell getprop init.svc.mybootdaemon
+```
+
+If it shows "restarting", your service is crashing. Check logcat and dmesg for
+crash information. If your service is `oneshot` and exits normally, the status will
+be "stopped" -- this is expected behavior.
+
+**Problem: Service starts before a dependency is ready**
+
+Use property triggers to gate startup. For example, to wait for the network stack:
+
+```
+on property:sys.boot_completed=1 && property:init.svc.netd=running
+    start mybootdaemon
+```
+
+**Problem: Service runs as wrong SELinux context**
+
+Verify the file context:
+
+```bash
+adb shell ls -Z /system/bin/mybootdaemon
+# Expected: u:object_r:mybootdaemon_exec:s0
+```
+
+And verify the process context:
+
+```bash
+adb shell ps -eZ | grep mybootdaemon
+# Expected: u:r:mybootdaemon:s0
+```
+
+### 4.15.8 Understanding Service States
+
+Init tracks each service through a set of state flags. Understanding these states
+is critical for debugging service startup issues:
+
+| State | Property Value | Meaning |
+|---|---|---|
+| `stopped` | `init.svc.<name>=stopped` | Service is not running |
+| `starting` | `init.svc.<name>=starting` | Service is being started |
+| `running` | `init.svc.<name>=running` | Service is running |
+| `stopping` | `init.svc.<name>=stopping` | Service is being stopped |
+| `restarting` | `init.svc.<name>=restarting` | Service will restart after a delay |
+
+The state machine:
+
+```mermaid
+stateDiagram-v2
+    [*] --> stopped
+    stopped --> starting : start command
+    starting --> running : process forked successfully
+    starting --> stopped : fork failed
+    running --> stopping : stop command / SIGTERM
+    running --> restarting : process exited not oneshot
+    running --> stopped : process exited oneshot
+    stopping --> stopped : process exited
+    restarting --> starting : restart delay elapsed
+    stopped --> [*]
+```
+
+The restart delay (default: 5 seconds) prevents a crashing service from consuming
+all CPU by restarting in a tight loop. This delay can be customized per-service
+with the `restart_period` option.
+
+The `HandleProcessActions()` function (init.cpp lines 390-418) drives the restart
+logic:
+
+```cpp
+// system/core/init/init.cpp, lines 390-418
+static std::optional<boot_clock::time_point> HandleProcessActions() {
+    std::optional<boot_clock::time_point> next_process_action_time;
+    for (const auto& s : ServiceList::GetInstance()) {
+        if ((s->flags() & SVC_RUNNING) && s->timeout_period()) {
+            auto timeout_time = s->time_started() + *s->timeout_period();
+            if (boot_clock::now() > timeout_time) {
+                s->Timeout();
+            } else {
+                if (!next_process_action_time ||
+                    timeout_time < *next_process_action_time) {
+                    next_process_action_time = timeout_time;
+                }
+            }
+        }
+
+        if (!(s->flags() & SVC_RESTARTING)) continue;
+
+        auto restart_time = s->time_started() + s->restart_period();
+        if (boot_clock::now() > restart_time) {
+            if (auto result = s->Start(); !result.ok()) {
+                LOG(ERROR) << "Could not restart process '" << s->name()
+                           << "': " << result.error();
+            }
+        } else {
+            if (!next_process_action_time ||
+                restart_time < *next_process_action_time) {
+                next_process_action_time = restart_time;
+            }
+        }
+    }
+    return next_process_action_time;
+}
+```
+
+This function iterates over all services, checking for two conditions:
+
+1. **Timeout**: If a running service has a `timeout_period` and has exceeded it, the
+   service is killed
+2. **Restart**: If a service is in the `SVC_RESTARTING` state and the restart delay
+   has elapsed, the service is restarted
+
+The function returns the next time it needs to run, which is used to set the epoll
+timeout in the main loop.
+
+### 4.15.9 Advanced: Making a Persistent Daemon
+
+To create a daemon that is automatically restarted by init if it crashes, modify
+the rc file:
+
+```
+service mybootdaemon /system/bin/mybootdaemon
+    class late_start
+    user system
+    group system log
+
+on property:sys.boot_completed=1
+    enable mybootdaemon
+    class_start late_start
+```
+
+Without the `oneshot` directive, init will automatically restart the service if it
+exits. The `enable` command is used instead of `start` to allow the service to start
+with its class.
+
+For critical services that should trigger a device reboot if they crash too many
+times:
+
+```
+service mybootdaemon /system/bin/mybootdaemon
+    class late_start
+    user system
+    group system log
+    critical
+```
+
+The `critical` directive tells init to reboot the device if the service crashes more
+than four times in four minutes. This is the same mechanism used for Zygote itself.
 
 ---
 
