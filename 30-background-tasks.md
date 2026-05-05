@@ -1,11 +1,5 @@
 # Chapter 30: Background Task Scheduling
 
-> *"The cheapest, most reliable, and most power-efficient computation is the one
-> you never perform."*
-> -- Android Performance Team
-
----
-
 Background work is the eternal tension in mobile operating systems. Users want
 their email synced, their photos backed up, their news feeds refreshed, and
 their notifications delivered promptly. But every background operation drains
