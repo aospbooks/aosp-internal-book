@@ -2952,7 +2952,682 @@ which is critical for the Play Store update mechanism.
 
 ---
 
-## 52.7  Try It
+## 52.7  Deep Dive: HealthFitness (Health Connect)
+
+The HealthFitness module (`com.android.healthfitness`) provides the **Health
+Connect** platform -- a centralized, on-device repository for health and
+fitness data.  It allows apps from different publishers (fitness trackers,
+sleep monitors, medical apps) to share health records through a unified API
+with fine-grained, per-data-type permissions.
+
+### 52.7.1  Module Structure
+
+```
+packages/modules/HealthFitness/
+    apex/               APEX packaging & bootclasspath fragment
+    apk/                HealthConnectController (Settings UI)
+    backuprestore/      HealthConnectBackupRestore (cloud B&R agent)
+    framework/          Public API (android.health.connect.*)
+    service/            System server implementation
+    flags/              Feature flags (aconfig)
+    lint/               Custom lint checks
+    testapps/           Development toolbox app
+    tests/              CTS, unit, and integration tests
+```
+
+The APEX bundles two APKs plus the framework and system server JARs:
+
+```
+// Source: packages/modules/HealthFitness/apex/Android.bp
+
+apex {
+    name: "com.android.healthfitness",
+    apps: [
+        "HealthConnectBackupRestore",
+        "HealthConnectController",
+    ],
+    bootclasspath_fragments: [
+        "com.android.healthfitness-bootclasspath-fragment"
+    ],
+    systemserverclasspath_fragments: [
+        "com.android.healthfitness-systemserverclasspath-fragment"
+    ],
+    min_sdk_version: "34",
+    updatable: true,
+}
+```
+
+### 52.7.2  Architecture Overview
+
+```mermaid
+graph TB
+    subgraph "Client Apps"
+        APP1["Fitness Tracker"]
+        APP2["Sleep Monitor"]
+        APP3["Medical App"]
+    end
+
+    subgraph "framework-healthfitness (bootclasspath)"
+        HCM["HealthConnectManager<br/>(android.health.connect)"]
+        PERMS["HealthPermissions<br/>(per-data-type grants)"]
+        DT["Data Types<br/>(50+ Record classes)"]
+    end
+
+    subgraph "service-healthfitness (system_server)"
+        HCSI["HealthConnectServiceImpl<br/>(IHealthConnectService.Stub)"]
+        TXM["TransactionManager<br/>(SQLite operations)"]
+        FHIR["MedicalResourceHelper<br/>(FHIR / PHR)"]
+        AGG["FitnessRecordAggregateHelper"]
+        BKP["BackupRestore"]
+        EXP["ExportManager"]
+        PERM_H["PermissionHelper"]
+    end
+
+    subgraph "On-Device Storage"
+        DB[("HealthConnectDatabase<br/>(SQLite, per-user)")]
+        PREFS["PreferencesManager"]
+    end
+
+    APP1 --> HCM
+    APP2 --> HCM
+    APP3 --> HCM
+    HCM -->|Binder IPC| HCSI
+    HCSI --> TXM
+    HCSI --> FHIR
+    HCSI --> AGG
+    HCSI --> BKP
+    HCSI --> EXP
+    HCSI --> PERM_H
+    TXM --> DB
+    BKP --> DB
+    EXP --> DB
+    PERM_H --> PERMS
+```
+
+### 52.7.3  Data Types
+
+Health Connect defines **50+ record types** in the
+`android.health.connect.datatypes` package.  Every record class extends one of
+two base classes:
+
+| Base Class | Semantics | Examples |
+|------------|-----------|---------|
+| `InstantRecord` | Single point-in-time measurement | `HeartRateRecord`, `BloodPressureRecord`, `BloodGlucoseRecord`, `OxygenSaturationRecord`, `BodyTemperatureRecord` |
+| `IntervalRecord` | Measurement over a time range | `StepsRecord`, `ExerciseSessionRecord`, `SleepSessionRecord`, `NutritionRecord`, `HydrationRecord`, `DistanceRecord` |
+
+Data types span six categories defined by `HealthDataCategory`:
+
+1. **Activity** -- Steps, distance, calories, exercise sessions, cycling
+   cadence, floors climbed, elevation gained, exercise routes.
+
+2. **Body measurements** -- Weight, height, body fat, bone mass, lean body
+   mass, basal metabolic rate, body water mass.
+
+3. **Cycle tracking** -- Menstruation flow, cervical mucus, ovulation test,
+   intermenstrual bleeding, sexual activity.
+
+4. **Nutrition** -- Nutrition records (per-nutrient detail), hydration, meal
+   type.
+
+5. **Sleep** -- Sleep sessions with per-stage breakdown (awake, light, deep,
+   REM).
+
+6. **Vitals** -- Heart rate, heart rate variability (RMSSD), blood pressure,
+   blood glucose, oxygen saturation, respiratory rate, body temperature.
+
+Each record carries `Metadata` (data origin, device info, client record ID,
+last-modified time) enabling deduplication and priority ordering.
+
+### 52.7.4  Personal Health Record (FHIR) Support
+
+A major expansion in recent versions is the **Personal Health Record** (PHR)
+API, enabling storage of clinical medical data using the **FHIR R4** standard:
+
+```java
+// Source: framework/java/android/health/connect/datatypes/MedicalResource.java
+// Source: framework/java/android/health/connect/datatypes/MedicalDataSource.java
+// Source: framework/java/android/health/connect/datatypes/FhirResource.java
+
+// Apps create a MedicalDataSource, then upsert FHIR resources:
+CreateMedicalDataSourceRequest request =
+    new CreateMedicalDataSourceRequest.Builder(
+        "Hospital Portal", Uri.parse("https://fhir.hospital.example"))
+        .build();
+
+UpsertMedicalResourceRequest upsert =
+    new UpsertMedicalResourceRequest.Builder(
+        dataSourceId,
+        FhirVersion.parseFhirVersion("4.0.1"),
+        fhirJsonString)
+        .build();
+```
+
+PHR data requires the `WRITE_MEDICAL_DATA` permission and is structurally
+validated against FHIR R4 specifications using a binary protobuf spec bundled
+in the service JAR.
+
+### 52.7.5  Permission Model
+
+Health Connect uses a two-level permission system:
+
+**Per-data-type permissions** -- Each record type has a read and write
+permission defined in `HealthPermissions`:
+
+```
+android.permission.health.READ_HEART_RATE
+android.permission.health.WRITE_HEART_RATE
+android.permission.health.READ_STEPS
+android.permission.health.WRITE_STEPS
+android.permission.health.READ_SLEEP
+...
+```
+
+**System-level permissions** (signature/privileged):
+
+| Permission | Level | Purpose |
+|-----------|-------|---------|
+| `MANAGE_HEALTH_PERMISSIONS` | signature | Grant/revoke health permissions |
+| `MANAGE_HEALTH_DATA` | privileged | Delete records, manage priorities |
+| `START_ONBOARDING` | signature | Launch client onboarding flows |
+| `READ_HEALTH_DATA_IN_BACKGROUND` | privileged | Background reads |
+| `READ_HEALTH_DATA_HISTORY` | privileged | Access historical records |
+| `WRITE_MEDICAL_DATA` | dangerous | Write FHIR medical resources |
+
+Apps must also declare an activity handling
+`ACTION_VIEW_PERMISSION_USAGE` with the `CATEGORY_HEALTH_PERMISSIONS`
+category to be eligible for health permission grants.
+
+### 52.7.6  On-Device Storage
+
+All health data is stored in a per-user SQLite database managed by
+`HealthConnectDatabase` (extends `SQLiteOpenHelper`).  The database lives in
+credential-encrypted storage, ensuring it is inaccessible when the device is
+locked.
+
+Key storage components:
+
+| Class | Responsibility |
+|-------|---------------|
+| `TransactionManager` | Executes all SQLite read/write operations within transactions |
+| `DatabaseHelper` | Schema creation and upgrades |
+| `DatabaseUpgradeHelper` | Version migration logic |
+| `FitnessRecordUpsertHelper` | Insert or update fitness records with deduplication |
+| `FitnessRecordReadHelper` | Query records with time filters, pagination, data-origin filters |
+| `FitnessRecordAggregateHelper` | Compute aggregations (sum, avg, min, max) over time windows |
+| `FitnessRecordDeleteHelper` | Delete by ID, time range, or data origin |
+
+The service enforces per-app **rate limiting** via `RateLimiter` -- each UID
+has a sliding-window quota for read, write, and aggregate operations.
+
+### 52.7.7  Data Priority and Aggregation
+
+When multiple apps write the same data type (e.g., both a watch and a phone
+record steps), Health Connect uses a **data origin priority order** to resolve
+conflicts during aggregation.  Users can reorder the priority in Settings.
+
+```java
+// Source: framework/java/android/health/connect/HealthConnectManager.java
+
+void updateDataOriginPriorityOrder(
+    UpdateDataOriginPriorityOrderRequest request,
+    Executor executor,
+    OutcomeReceiver<Void, HealthConnectException> callback);
+
+void fetchDataOriginsPriorityOrder(
+    int dataCategory,
+    Executor executor,
+    OutcomeReceiver<FetchDataOriginsPriorityOrderResponse,
+                    HealthConnectException> callback);
+```
+
+### 52.7.8  Backup, Restore, and Export
+
+Health Connect supports three data-portability mechanisms:
+
+1. **Cloud backup/restore** -- The `HealthConnectBackupRestore` APK integrates
+   with Android's backup infrastructure.  Changes are tracked via
+   `BackupChangeTokenHelper` and serialized using Protocol Buffers.
+
+2. **Device-to-device restore** -- Migration from an older device uses
+   `MigrationEntity` records staged in a separate process.
+
+3. **Export/import** -- Users can export their data to external storage via
+   `ExportManager`, which compresses the database into a ZIP archive.  The
+   `ImportManager` and `DatabaseMerger` handle re-importing and deduplication.
+
+### 52.7.9  Key Source Paths
+
+| Component | Path |
+|-----------|------|
+| Public API | `packages/modules/HealthFitness/framework/java/android/health/connect/` |
+| Data types | `packages/modules/HealthFitness/framework/java/android/health/connect/datatypes/` |
+| AIDL interfaces | `packages/modules/HealthFitness/framework/java/android/health/connect/aidl/` |
+| System service | `packages/modules/HealthFitness/service/java/com/android/server/healthconnect/` |
+| Storage layer | `packages/modules/HealthFitness/service/java/com/android/server/healthconnect/storage/` |
+| Backup/restore | `packages/modules/HealthFitness/service/java/com/android/server/healthconnect/backuprestore/` |
+| Export/import | `packages/modules/HealthFitness/service/java/com/android/server/healthconnect/exportimport/` |
+| Settings UI (APK) | `packages/modules/HealthFitness/apk/` |
+| APEX config | `packages/modules/HealthFitness/apex/Android.bp` |
+
+---
+
+## 52.8  Deep Dive: Profiling Module
+
+The Profiling module (`com.android.profiling`) is a Mainline module that
+provides **app-accessible system profiling** through the `ProfilingManager`
+API.  It wraps Perfetto, heapprofd, and simpleperf behind a safe,
+rate-limited, privacy-preserving interface that any app can call without root
+access or special permissions.
+
+### 52.8.1  Module Structure
+
+```
+packages/modules/Profiling/
+    aidl/               IProfilingService.aidl
+    apex/               APEX packaging (includes trace_redactor binary)
+    framework/          Public API (android.os.ProfilingManager)
+    service/            ProfilingService (system_server)
+    anomaly-detector/   AnomalyDetectorService (optional, flag-gated)
+    flags/              Feature flags (aconfig)
+    tests/              CTS tests
+```
+
+The APEX is feature-flag gated:
+
+```
+// Source: packages/modules/Profiling/apex/Android.bp
+
+apex {
+    name: "com.android.profiling",
+    enabled: select(
+        release_flag("RELEASE_PACKAGE_PROFILING_MODULE"),
+        { true: true, false: false }),
+    binaries: ["trace_redactor"],
+    bootclasspath_fragments: [
+        "com.android.profiling-bootclasspath-fragment"
+    ],
+    systemserverclasspath_fragments: [
+        "com.android.profiling-systemserverclasspath-fragment"
+    ],
+}
+```
+
+### 52.8.2  Architecture
+
+```mermaid
+graph TB
+    subgraph "Application Process"
+        APP["App Code"]
+        PM["ProfilingManager"]
+        CB["IProfilingResultCallback<br/>(Binder stub)"]
+    end
+
+    subgraph "system_server (com.android.profiling)"
+        PS["ProfilingService<br/>(IProfilingService.Stub)"]
+        RL["RateLimiter<br/>(per-uid + system-wide)"]
+        TS["TracingSession"]
+        CFG["Configs<br/>(Perfetto config generation)"]
+    end
+
+    subgraph "Native Tools"
+        PERFETTO["perfetto CLI<br/>(trace collection)"]
+        REDACTOR["trace_redactor<br/>(privacy filtering)"]
+    end
+
+    subgraph "Output"
+        TEMP["/data/misc/perfetto-traces/profiling/"]
+        APPDIR["/data/data/pkg/files/profiling/"]
+    end
+
+    APP --> PM
+    PM -->|"requestProfiling()"| PS
+    PS --> RL
+    RL -->|allowed| CFG
+    CFG -->|config bytes| PERFETTO
+    PERFETTO --> TEMP
+    TEMP --> REDACTOR
+    REDACTOR --> APPDIR
+    PS -->|"sendResult()"| CB
+    CB --> PM
+    PM --> APP
+```
+
+### 52.8.3  Profiling Types
+
+`ProfilingManager` supports four profiling types, each backed by a different
+Perfetto data source:
+
+| Type | Constant | Backend | Output suffix |
+|------|----------|---------|---------------|
+| Java Heap Dump | `PROFILING_TYPE_JAVA_HEAP_DUMP` | `JavaHprofConfig` | `.perfetto-java-heap-dump` |
+| Heap Profile | `PROFILING_TYPE_HEAP_PROFILE` | `HeapprofdConfig` | `.perfetto-heap-profile` |
+| Stack Sampling | `PROFILING_TYPE_STACK_SAMPLING` | `PerfEventConfig` | `.perfetto-stack-sample` |
+| System Trace | `PROFILING_TYPE_SYSTEM_TRACE` | `FtraceConfig` + `ProcessStatsConfig` | `.perfetto-trace` |
+
+The `Configs` class (`service/java/.../Configs.java`) translates the
+`ProfilingManager` request parameters into Perfetto `TraceConfig` protobufs.
+Each profiling type has DeviceConfig-controlled bounds for duration, buffer
+size, and sampling rate:
+
+```java
+// Source: packages/modules/Profiling/service/java/.../Configs.java
+// Example: heap profile defaults
+
+sHeapProfileDurationMsDefault  // e.g. 60 seconds
+sHeapProfileDurationMsMin      // minimum allowed
+sHeapProfileDurationMsMax      // maximum allowed
+sHeapProfileSizeKbDefault      // buffer size
+sHeapProfileSamplingIntervalBytesDefault  // Poisson interval
+```
+
+### 52.8.4  Rate Limiting
+
+The `RateLimiter` uses a **cost-based sliding-window** model to prevent
+abuse:
+
+| Window | System-wide default | Per-process default |
+|--------|-------------------|-------------------|
+| 1 hour | 20 cost units | 10 cost units |
+| 1 day | 50 cost units | 20 cost units |
+| 1 week | 150 cost units | 30 cost units |
+
+Each profiling session costs 10 units (app-initiated) or 5 units
+(system-triggered).  Rate limiting can be disabled for local testing:
+
+```bash
+adb shell device_config put profiling_testing rate_limiter.disabled true
+```
+
+### 52.8.5  System-Triggered Profiling
+
+Beyond on-demand requests, apps can register **triggers** -- system events
+that automatically produce profiling data:
+
+| Trigger | Constant | When it fires |
+|---------|----------|--------------|
+| App fully drawn | `TRIGGER_TYPE_APP_FULLY_DRAWN` | After `Activity.reportFullyDrawn()` on cold start |
+| ANR | `TRIGGER_TYPE_ANR` | When an ANR is detected for the app |
+| App requests running trace | `TRIGGER_TYPE_APP_REQUEST_RUNNING_TRACE` | On-demand snapshot of background trace |
+| Force stop kill | `TRIGGER_TYPE_KILL_FORCE_STOP` | User force-stops via Settings |
+| Recents kill | `TRIGGER_TYPE_KILL_RECENTS` | User swipes away in Recents |
+
+The system maintains a background trace (configurable via DeviceConfig) and
+clones a snapshot when a trigger fires.  Results are delivered through
+`registerForAllProfilingResults()` callbacks.
+
+### 52.8.6  Trace Redaction and Privacy
+
+All profiling output is **redacted** by the `trace_redactor` binary before
+delivery to the app.  Redaction strips data belonging to other processes,
+leaving only information about the requesting app's own UID.  This enables
+unprivileged apps to safely receive system traces.
+
+The redaction pipeline:
+
+1. Perfetto writes the raw trace to `/data/misc/perfetto-traces/profiling/`.
+2. `ProfilingService` invokes `trace_redactor` to filter the trace.
+3. The redacted output is written to the app's files directory via a
+   `ParcelFileDescriptor` sent over Binder.
+
+4. The temporary unredacted trace is deleted.
+
+### 52.8.7  Anomaly Detector
+
+The Profiling APEX optionally includes the **AnomalyDetectorService**, gated
+behind the `RELEASE_ANOMALY_DETECTOR` flag.  It provides a framework for
+system-level anomaly detection through pluggable `SignalCollector` components:
+
+```java
+// Source: packages/modules/Profiling/anomaly-detector/service/java/.../
+//         AnomalyDetectorService.java
+
+public final class AnomalyDetectorService extends SystemService {
+    final Map<Class<? extends SignalCollectorConfig>,
+              CollectorEntry> mRegisteredCollectors;
+}
+```
+
+Signal collectors (e.g., `BinderSpamConfig` / `BinderSpamData`) detect
+anomalous patterns and can trigger profiling automatically.
+
+### 52.8.8  Key Source Paths
+
+| Component | Path |
+|-----------|------|
+| AIDL interface | `packages/modules/Profiling/aidl/android/os/IProfilingService.aidl` |
+| Public API | `packages/modules/Profiling/framework/java/android/os/ProfilingManager.java` |
+| Result class | `packages/modules/Profiling/framework/java/android/os/ProfilingResult.java` |
+| Trigger class | `packages/modules/Profiling/framework/java/android/os/ProfilingTrigger.java` |
+| Service impl | `packages/modules/Profiling/service/java/com/android/os/profiling/ProfilingService.java` |
+| Config gen | `packages/modules/Profiling/service/java/com/android/os/profiling/Configs.java` |
+| Rate limiter | `packages/modules/Profiling/service/java/com/android/os/profiling/RateLimiter.java` |
+| Session state | `packages/modules/Profiling/service/java/com/android/os/profiling/TracingSession.java` |
+| Anomaly detector | `packages/modules/Profiling/anomaly-detector/service/java/.../AnomalyDetectorService.java` |
+| APEX config | `packages/modules/Profiling/apex/Android.bp` |
+
+---
+
+## 52.9  Deep Dive: UWB (Ultra-Wideband)
+
+The UWB module (`com.android.uwb`) provides Android's Ultra-Wideband radio
+stack -- a short-range, high-bandwidth wireless technology used for precise
+ranging (distance measurement), angle-of-arrival positioning, and secure
+device-to-device communication.
+
+### 52.9.1  Module Structure
+
+```
+packages/modules/Uwb/
+    apex/               APEX packaging
+    framework/          Public API (android.uwb.*)
+    service/            UwbServiceCore, UwbSessionManager
+      fusion_lib/       Sensor fusion for positioning
+      multichip-parser/ Multi-chip UWB configuration
+      proto/            UWB stats logging protos
+      support_lib/      FiRA, CCC, ALIRO param builders
+      uci/              UCI command layer
+    libuwb-uci/         Rust UCI HAL implementation
+      src/rust/
+        uci_hal_android/  Android HAL binding
+        uwb_core/         Core UWB state machine
+    ranging/            Generic Ranging API (multi-technology)
+      framework/        android.ranging.*
+      uwb_backend/      UWB backend for generic ranging
+      rtt_backend/      Wi-Fi RTT backend for generic ranging
+    androidx_backend/   AndroidX UWB library backend
+    indev_uwb_adaptation/  In-development UWB adaptation
+    flags/              Feature flags
+```
+
+### 52.9.2  Protocol Stack Architecture
+
+```mermaid
+graph TB
+    subgraph "Application Layer"
+        APP["Application"]
+        UWB_MGR["UwbManager<br/>(@SystemApi)"]
+        RANGING_API["Generic Ranging API<br/>(android.ranging)"]
+    end
+
+    subgraph "Framework (com.android.uwb bootclasspath)"
+        RS["RangingSession"]
+        RM["RangingManager"]
+        RR["RangingReport<br/>(DistanceMeasurement,<br/>AngleOfArrivalMeasurement)"]
+    end
+
+    subgraph "Service (system_server)"
+        UWBSC["UwbServiceCore"]
+        UWBSM["UwbSessionManager"]
+        UWBCM["UwbConfigurationManager"]
+        UWBCC["UwbCountryCode"]
+        UWBADV["UwbAdvertiseManager"]
+        UWBMET["UwbMetrics"]
+    end
+
+    subgraph "UCI Layer (Rust)"
+        UCI_CORE["uwb_core<br/>(state machine)"]
+        UCI_HAL["uci_hal_android<br/>(JNI bridge)"]
+    end
+
+    subgraph "Hardware"
+        HAL["UWB HAL<br/>(IUwbChip AIDL)"]
+        RADIO["UWB Radio<br/>(IEEE 802.15.4z)"]
+    end
+
+    APP --> UWB_MGR
+    APP --> RANGING_API
+    UWB_MGR --> RS
+    RANGING_API --> RS
+    RS --> RM
+    RM -->|Binder IPC| UWBSC
+    UWBSC --> UWBSM
+    UWBSC --> UWBCM
+    UWBSC --> UWBCC
+    UWBSM --> UWBADV
+    UWBSM --> UWBMET
+    UWBSM -->|JNI| UCI_HAL
+    UCI_HAL --> UCI_CORE
+    UCI_CORE --> HAL
+    HAL --> RADIO
+```
+
+### 52.9.3  UWB Protocols
+
+The module supports three protocol families, each with its own parameter
+builder in the support library:
+
+| Protocol | Class | Use Case |
+|----------|-------|----------|
+| **FiRA** | `FiraOpenSessionParams`, `FiraParams` | Standardized IEEE 802.15.4z ranging (phones, tags, IoT) |
+| **CCC** (Car Connectivity Consortium) | `CccOpenRangingParams`, `CccParams` | Digital car keys |
+| **ALIRO** | `AliroOpenRangingParams`, `AliroParams` | Access control (door locks, gates) |
+
+Additionally, `RadarParams` and `RfTestParams` support UWB radar sensing
+and RF testing modes.
+
+### 52.9.4  UCI (UWB Command Interface)
+
+The UCI layer is implemented in **Rust** (`libuwb-uci/src/rust/`) and
+provides the low-level command interface to UWB hardware:
+
+```
+libuwb-uci/src/rust/
+    uwb_core/src/
+        lib.rs          Core library entry
+        service.rs      UWB service state machine
+        params.rs       Parameter definitions
+        params/
+            fira_app_config_params.rs
+            ccc_app_config_params.rs
+            aliro_app_config_params.rs
+            uci_packets.rs     UCI packet parsing
+    uci_hal_android/
+        uci_hal_android.rs     JNI bridge to Java service
+```
+
+UCI session states follow the standard state machine:
+
+| State | Value | Description |
+|-------|-------|-------------|
+| `INIT` | 0x00 | Session initialized |
+| `DEINIT` | 0x01 | Session deinitialized |
+| `ACTIVE` | 0x02 | Actively ranging |
+| `IDLE` | 0x03 | Configured but not ranging |
+
+### 52.9.5  Ranging Measurements
+
+A `RangingReport` contains one or more `RangingMeasurement` objects, each
+providing:
+
+| Measurement | Class | Data |
+|-------------|-------|------|
+| **Distance** | `DistanceMeasurement` | Distance in meters with confidence |
+| **Angle of Arrival** | `AngleOfArrivalMeasurement` | Azimuth and altitude angles |
+| **Two-Way Measurement** | `UwbTwoWayMeasurement` | Raw ToF data |
+| **OWR AoA** | `UwbOwrAoaMeasurement` | One-way ranging angle |
+| **DL TDoA** | `UwbDlTDoAMeasurement` | Downlink time-difference-of-arrival |
+
+### 52.9.6  Generic Ranging API
+
+The `ranging/` subdirectory introduces a **technology-agnostic Ranging API**
+(`android.ranging.*`) that abstracts over multiple ranging technologies:
+
+```
+ranging/
+    framework/      android.ranging.* API surface
+    uwb_backend/    UWB implementation of generic ranging
+    rtt_backend/    Wi-Fi RTT implementation of generic ranging
+    service/        RangingService
+```
+
+This allows apps to request ranging without binding to a specific technology.
+The bootclasspath fragment conditionally includes `framework-ranging`:
+
+```
+// Source: packages/modules/Uwb/apex/Android.bp
+
+soong_config_variables: {
+    release_ranging_stack: {
+        contents: [
+            "framework-uwb",
+            "framework-ranging",
+        ],
+    },
+},
+```
+
+### 52.9.7  Session Management
+
+`UwbSessionManager` is the central class for UWB session lifecycle:
+
+```mermaid
+stateDiagram-v2
+    [*] --> INIT: openRangingSession
+    INIT --> IDLE: onOpened
+    IDLE --> ACTIVE: start
+    ACTIVE --> IDLE: stop
+    ACTIVE --> ACTIVE: onRangingResult
+    IDLE --> INIT: reconfigure
+    IDLE --> CLOSED: close
+    ACTIVE --> CLOSED: close
+    CLOSED --> [*]
+
+    note right of ACTIVE
+        Ranging reports delivered
+        via IUwbRangingCallbacks
+    end note
+```
+
+The session manager tracks per-session state, handles multicast list updates
+(adding/removing controlees), manages suspend/resume, and routes ranging
+notifications to the correct callback.
+
+### 52.9.8  Country Code and Regulatory
+
+`UwbCountryCode` determines the device's operating country and configures
+channel restrictions accordingly.  It listens for telephony and Wi-Fi country
+code changes, defaulting to the SIM-based country.  Regulatory compliance is
+enforced through channel usage restrictions (`ChannelUsage`).
+
+### 52.9.9  Key Source Paths
+
+| Component | Path |
+|-----------|------|
+| Public API | `packages/modules/Uwb/framework/java/android/uwb/` |
+| UwbManager | `packages/modules/Uwb/framework/java/android/uwb/UwbManager.java` |
+| RangingSession | `packages/modules/Uwb/framework/java/android/uwb/RangingSession.java` |
+| Service core | `packages/modules/Uwb/service/java/com/android/server/uwb/UwbServiceCore.java` |
+| Session manager | `packages/modules/Uwb/service/java/com/android/server/uwb/UwbSessionManager.java` |
+| UCI constants | `packages/modules/Uwb/service/java/com/android/server/uwb/data/UwbUciConstants.java` |
+| Rust UCI core | `packages/modules/Uwb/libuwb-uci/src/rust/uwb_core/src/` |
+| JNI bridge | `packages/modules/Uwb/libuwb-uci/src/rust/uci_hal_android/` |
+| Support library | `packages/modules/Uwb/service/support_lib/` |
+| Generic Ranging API | `packages/modules/Uwb/ranging/framework/` |
+| APEX config | `packages/modules/Uwb/apex/Android.bp` |
+
+---
+
+## 52.10  Try It
 
 The following exercises walk through inspecting Mainline modules on a running
 device and understanding their structure from source.
@@ -3427,676 +4102,3 @@ The source files central to understanding this system:
 | APEX file repository | `system/apex/apexd/apex_file_repository.h` |
 
 ---
-
-## 52.8  Deep Dive: HealthFitness (Health Connect)
-
-The HealthFitness module (`com.android.healthfitness`) provides the **Health
-Connect** platform -- a centralized, on-device repository for health and
-fitness data.  It allows apps from different publishers (fitness trackers,
-sleep monitors, medical apps) to share health records through a unified API
-with fine-grained, per-data-type permissions.
-
-### 52.8.1  Module Structure
-
-```
-packages/modules/HealthFitness/
-    apex/               APEX packaging & bootclasspath fragment
-    apk/                HealthConnectController (Settings UI)
-    backuprestore/      HealthConnectBackupRestore (cloud B&R agent)
-    framework/          Public API (android.health.connect.*)
-    service/            System server implementation
-    flags/              Feature flags (aconfig)
-    lint/               Custom lint checks
-    testapps/           Development toolbox app
-    tests/              CTS, unit, and integration tests
-```
-
-The APEX bundles two APKs plus the framework and system server JARs:
-
-```
-// Source: packages/modules/HealthFitness/apex/Android.bp
-
-apex {
-    name: "com.android.healthfitness",
-    apps: [
-        "HealthConnectBackupRestore",
-        "HealthConnectController",
-    ],
-    bootclasspath_fragments: [
-        "com.android.healthfitness-bootclasspath-fragment"
-    ],
-    systemserverclasspath_fragments: [
-        "com.android.healthfitness-systemserverclasspath-fragment"
-    ],
-    min_sdk_version: "34",
-    updatable: true,
-}
-```
-
-### 52.8.2  Architecture Overview
-
-```mermaid
-graph TB
-    subgraph "Client Apps"
-        APP1["Fitness Tracker"]
-        APP2["Sleep Monitor"]
-        APP3["Medical App"]
-    end
-
-    subgraph "framework-healthfitness (bootclasspath)"
-        HCM["HealthConnectManager<br/>(android.health.connect)"]
-        PERMS["HealthPermissions<br/>(per-data-type grants)"]
-        DT["Data Types<br/>(50+ Record classes)"]
-    end
-
-    subgraph "service-healthfitness (system_server)"
-        HCSI["HealthConnectServiceImpl<br/>(IHealthConnectService.Stub)"]
-        TXM["TransactionManager<br/>(SQLite operations)"]
-        FHIR["MedicalResourceHelper<br/>(FHIR / PHR)"]
-        AGG["FitnessRecordAggregateHelper"]
-        BKP["BackupRestore"]
-        EXP["ExportManager"]
-        PERM_H["PermissionHelper"]
-    end
-
-    subgraph "On-Device Storage"
-        DB[("HealthConnectDatabase<br/>(SQLite, per-user)")]
-        PREFS["PreferencesManager"]
-    end
-
-    APP1 --> HCM
-    APP2 --> HCM
-    APP3 --> HCM
-    HCM -->|Binder IPC| HCSI
-    HCSI --> TXM
-    HCSI --> FHIR
-    HCSI --> AGG
-    HCSI --> BKP
-    HCSI --> EXP
-    HCSI --> PERM_H
-    TXM --> DB
-    BKP --> DB
-    EXP --> DB
-    PERM_H --> PERMS
-```
-
-### 52.8.3  Data Types
-
-Health Connect defines **50+ record types** in the
-`android.health.connect.datatypes` package.  Every record class extends one of
-two base classes:
-
-| Base Class | Semantics | Examples |
-|------------|-----------|---------|
-| `InstantRecord` | Single point-in-time measurement | `HeartRateRecord`, `BloodPressureRecord`, `BloodGlucoseRecord`, `OxygenSaturationRecord`, `BodyTemperatureRecord` |
-| `IntervalRecord` | Measurement over a time range | `StepsRecord`, `ExerciseSessionRecord`, `SleepSessionRecord`, `NutritionRecord`, `HydrationRecord`, `DistanceRecord` |
-
-Data types span six categories defined by `HealthDataCategory`:
-
-1. **Activity** -- Steps, distance, calories, exercise sessions, cycling
-   cadence, floors climbed, elevation gained, exercise routes.
-
-2. **Body measurements** -- Weight, height, body fat, bone mass, lean body
-   mass, basal metabolic rate, body water mass.
-
-3. **Cycle tracking** -- Menstruation flow, cervical mucus, ovulation test,
-   intermenstrual bleeding, sexual activity.
-
-4. **Nutrition** -- Nutrition records (per-nutrient detail), hydration, meal
-   type.
-
-5. **Sleep** -- Sleep sessions with per-stage breakdown (awake, light, deep,
-   REM).
-
-6. **Vitals** -- Heart rate, heart rate variability (RMSSD), blood pressure,
-   blood glucose, oxygen saturation, respiratory rate, body temperature.
-
-Each record carries `Metadata` (data origin, device info, client record ID,
-last-modified time) enabling deduplication and priority ordering.
-
-### 52.8.4  Personal Health Record (FHIR) Support
-
-A major expansion in recent versions is the **Personal Health Record** (PHR)
-API, enabling storage of clinical medical data using the **FHIR R4** standard:
-
-```java
-// Source: framework/java/android/health/connect/datatypes/MedicalResource.java
-// Source: framework/java/android/health/connect/datatypes/MedicalDataSource.java
-// Source: framework/java/android/health/connect/datatypes/FhirResource.java
-
-// Apps create a MedicalDataSource, then upsert FHIR resources:
-CreateMedicalDataSourceRequest request =
-    new CreateMedicalDataSourceRequest.Builder(
-        "Hospital Portal", Uri.parse("https://fhir.hospital.example"))
-        .build();
-
-UpsertMedicalResourceRequest upsert =
-    new UpsertMedicalResourceRequest.Builder(
-        dataSourceId,
-        FhirVersion.parseFhirVersion("4.0.1"),
-        fhirJsonString)
-        .build();
-```
-
-PHR data requires the `WRITE_MEDICAL_DATA` permission and is structurally
-validated against FHIR R4 specifications using a binary protobuf spec bundled
-in the service JAR.
-
-### 52.8.5  Permission Model
-
-Health Connect uses a two-level permission system:
-
-**Per-data-type permissions** -- Each record type has a read and write
-permission defined in `HealthPermissions`:
-
-```
-android.permission.health.READ_HEART_RATE
-android.permission.health.WRITE_HEART_RATE
-android.permission.health.READ_STEPS
-android.permission.health.WRITE_STEPS
-android.permission.health.READ_SLEEP
-...
-```
-
-**System-level permissions** (signature/privileged):
-
-| Permission | Level | Purpose |
-|-----------|-------|---------|
-| `MANAGE_HEALTH_PERMISSIONS` | signature | Grant/revoke health permissions |
-| `MANAGE_HEALTH_DATA` | privileged | Delete records, manage priorities |
-| `START_ONBOARDING` | signature | Launch client onboarding flows |
-| `READ_HEALTH_DATA_IN_BACKGROUND` | privileged | Background reads |
-| `READ_HEALTH_DATA_HISTORY` | privileged | Access historical records |
-| `WRITE_MEDICAL_DATA` | dangerous | Write FHIR medical resources |
-
-Apps must also declare an activity handling
-`ACTION_VIEW_PERMISSION_USAGE` with the `CATEGORY_HEALTH_PERMISSIONS`
-category to be eligible for health permission grants.
-
-### 52.8.6  On-Device Storage
-
-All health data is stored in a per-user SQLite database managed by
-`HealthConnectDatabase` (extends `SQLiteOpenHelper`).  The database lives in
-credential-encrypted storage, ensuring it is inaccessible when the device is
-locked.
-
-Key storage components:
-
-| Class | Responsibility |
-|-------|---------------|
-| `TransactionManager` | Executes all SQLite read/write operations within transactions |
-| `DatabaseHelper` | Schema creation and upgrades |
-| `DatabaseUpgradeHelper` | Version migration logic |
-| `FitnessRecordUpsertHelper` | Insert or update fitness records with deduplication |
-| `FitnessRecordReadHelper` | Query records with time filters, pagination, data-origin filters |
-| `FitnessRecordAggregateHelper` | Compute aggregations (sum, avg, min, max) over time windows |
-| `FitnessRecordDeleteHelper` | Delete by ID, time range, or data origin |
-
-The service enforces per-app **rate limiting** via `RateLimiter` -- each UID
-has a sliding-window quota for read, write, and aggregate operations.
-
-### 52.8.7  Data Priority and Aggregation
-
-When multiple apps write the same data type (e.g., both a watch and a phone
-record steps), Health Connect uses a **data origin priority order** to resolve
-conflicts during aggregation.  Users can reorder the priority in Settings.
-
-```java
-// Source: framework/java/android/health/connect/HealthConnectManager.java
-
-void updateDataOriginPriorityOrder(
-    UpdateDataOriginPriorityOrderRequest request,
-    Executor executor,
-    OutcomeReceiver<Void, HealthConnectException> callback);
-
-void fetchDataOriginsPriorityOrder(
-    int dataCategory,
-    Executor executor,
-    OutcomeReceiver<FetchDataOriginsPriorityOrderResponse,
-                    HealthConnectException> callback);
-```
-
-### 52.8.8  Backup, Restore, and Export
-
-Health Connect supports three data-portability mechanisms:
-
-1. **Cloud backup/restore** -- The `HealthConnectBackupRestore` APK integrates
-   with Android's backup infrastructure.  Changes are tracked via
-   `BackupChangeTokenHelper` and serialized using Protocol Buffers.
-
-2. **Device-to-device restore** -- Migration from an older device uses
-   `MigrationEntity` records staged in a separate process.
-
-3. **Export/import** -- Users can export their data to external storage via
-   `ExportManager`, which compresses the database into a ZIP archive.  The
-   `ImportManager` and `DatabaseMerger` handle re-importing and deduplication.
-
-### 52.8.9  Key Source Paths
-
-| Component | Path |
-|-----------|------|
-| Public API | `packages/modules/HealthFitness/framework/java/android/health/connect/` |
-| Data types | `packages/modules/HealthFitness/framework/java/android/health/connect/datatypes/` |
-| AIDL interfaces | `packages/modules/HealthFitness/framework/java/android/health/connect/aidl/` |
-| System service | `packages/modules/HealthFitness/service/java/com/android/server/healthconnect/` |
-| Storage layer | `packages/modules/HealthFitness/service/java/com/android/server/healthconnect/storage/` |
-| Backup/restore | `packages/modules/HealthFitness/service/java/com/android/server/healthconnect/backuprestore/` |
-| Export/import | `packages/modules/HealthFitness/service/java/com/android/server/healthconnect/exportimport/` |
-| Settings UI (APK) | `packages/modules/HealthFitness/apk/` |
-| APEX config | `packages/modules/HealthFitness/apex/Android.bp` |
-
----
-
-## 52.9  Deep Dive: Profiling Module
-
-The Profiling module (`com.android.profiling`) is a Mainline module that
-provides **app-accessible system profiling** through the `ProfilingManager`
-API.  It wraps Perfetto, heapprofd, and simpleperf behind a safe,
-rate-limited, privacy-preserving interface that any app can call without root
-access or special permissions.
-
-### 52.9.1  Module Structure
-
-```
-packages/modules/Profiling/
-    aidl/               IProfilingService.aidl
-    apex/               APEX packaging (includes trace_redactor binary)
-    framework/          Public API (android.os.ProfilingManager)
-    service/            ProfilingService (system_server)
-    anomaly-detector/   AnomalyDetectorService (optional, flag-gated)
-    flags/              Feature flags (aconfig)
-    tests/              CTS tests
-```
-
-The APEX is feature-flag gated:
-
-```
-// Source: packages/modules/Profiling/apex/Android.bp
-
-apex {
-    name: "com.android.profiling",
-    enabled: select(
-        release_flag("RELEASE_PACKAGE_PROFILING_MODULE"),
-        { true: true, false: false }),
-    binaries: ["trace_redactor"],
-    bootclasspath_fragments: [
-        "com.android.profiling-bootclasspath-fragment"
-    ],
-    systemserverclasspath_fragments: [
-        "com.android.profiling-systemserverclasspath-fragment"
-    ],
-}
-```
-
-### 52.9.2  Architecture
-
-```mermaid
-graph TB
-    subgraph "Application Process"
-        APP["App Code"]
-        PM["ProfilingManager"]
-        CB["IProfilingResultCallback<br/>(Binder stub)"]
-    end
-
-    subgraph "system_server (com.android.profiling)"
-        PS["ProfilingService<br/>(IProfilingService.Stub)"]
-        RL["RateLimiter<br/>(per-uid + system-wide)"]
-        TS["TracingSession"]
-        CFG["Configs<br/>(Perfetto config generation)"]
-    end
-
-    subgraph "Native Tools"
-        PERFETTO["perfetto CLI<br/>(trace collection)"]
-        REDACTOR["trace_redactor<br/>(privacy filtering)"]
-    end
-
-    subgraph "Output"
-        TEMP["/data/misc/perfetto-traces/profiling/"]
-        APPDIR["/data/data/pkg/files/profiling/"]
-    end
-
-    APP --> PM
-    PM -->|"requestProfiling()"| PS
-    PS --> RL
-    RL -->|allowed| CFG
-    CFG -->|config bytes| PERFETTO
-    PERFETTO --> TEMP
-    TEMP --> REDACTOR
-    REDACTOR --> APPDIR
-    PS -->|"sendResult()"| CB
-    CB --> PM
-    PM --> APP
-```
-
-### 52.9.3  Profiling Types
-
-`ProfilingManager` supports four profiling types, each backed by a different
-Perfetto data source:
-
-| Type | Constant | Backend | Output suffix |
-|------|----------|---------|---------------|
-| Java Heap Dump | `PROFILING_TYPE_JAVA_HEAP_DUMP` | `JavaHprofConfig` | `.perfetto-java-heap-dump` |
-| Heap Profile | `PROFILING_TYPE_HEAP_PROFILE` | `HeapprofdConfig` | `.perfetto-heap-profile` |
-| Stack Sampling | `PROFILING_TYPE_STACK_SAMPLING` | `PerfEventConfig` | `.perfetto-stack-sample` |
-| System Trace | `PROFILING_TYPE_SYSTEM_TRACE` | `FtraceConfig` + `ProcessStatsConfig` | `.perfetto-trace` |
-
-The `Configs` class (`service/java/.../Configs.java`) translates the
-`ProfilingManager` request parameters into Perfetto `TraceConfig` protobufs.
-Each profiling type has DeviceConfig-controlled bounds for duration, buffer
-size, and sampling rate:
-
-```java
-// Source: packages/modules/Profiling/service/java/.../Configs.java
-// Example: heap profile defaults
-
-sHeapProfileDurationMsDefault  // e.g. 60 seconds
-sHeapProfileDurationMsMin      // minimum allowed
-sHeapProfileDurationMsMax      // maximum allowed
-sHeapProfileSizeKbDefault      // buffer size
-sHeapProfileSamplingIntervalBytesDefault  // Poisson interval
-```
-
-### 52.9.4  Rate Limiting
-
-The `RateLimiter` uses a **cost-based sliding-window** model to prevent
-abuse:
-
-| Window | System-wide default | Per-process default |
-|--------|-------------------|-------------------|
-| 1 hour | 20 cost units | 10 cost units |
-| 1 day | 50 cost units | 20 cost units |
-| 1 week | 150 cost units | 30 cost units |
-
-Each profiling session costs 10 units (app-initiated) or 5 units
-(system-triggered).  Rate limiting can be disabled for local testing:
-
-```bash
-adb shell device_config put profiling_testing rate_limiter.disabled true
-```
-
-### 52.9.5  System-Triggered Profiling
-
-Beyond on-demand requests, apps can register **triggers** -- system events
-that automatically produce profiling data:
-
-| Trigger | Constant | When it fires |
-|---------|----------|--------------|
-| App fully drawn | `TRIGGER_TYPE_APP_FULLY_DRAWN` | After `Activity.reportFullyDrawn()` on cold start |
-| ANR | `TRIGGER_TYPE_ANR` | When an ANR is detected for the app |
-| App requests running trace | `TRIGGER_TYPE_APP_REQUEST_RUNNING_TRACE` | On-demand snapshot of background trace |
-| Force stop kill | `TRIGGER_TYPE_KILL_FORCE_STOP` | User force-stops via Settings |
-| Recents kill | `TRIGGER_TYPE_KILL_RECENTS` | User swipes away in Recents |
-
-The system maintains a background trace (configurable via DeviceConfig) and
-clones a snapshot when a trigger fires.  Results are delivered through
-`registerForAllProfilingResults()` callbacks.
-
-### 52.9.6  Trace Redaction and Privacy
-
-All profiling output is **redacted** by the `trace_redactor` binary before
-delivery to the app.  Redaction strips data belonging to other processes,
-leaving only information about the requesting app's own UID.  This enables
-unprivileged apps to safely receive system traces.
-
-The redaction pipeline:
-
-1. Perfetto writes the raw trace to `/data/misc/perfetto-traces/profiling/`.
-2. `ProfilingService` invokes `trace_redactor` to filter the trace.
-3. The redacted output is written to the app's files directory via a
-   `ParcelFileDescriptor` sent over Binder.
-
-4. The temporary unredacted trace is deleted.
-
-### 52.9.7  Anomaly Detector
-
-The Profiling APEX optionally includes the **AnomalyDetectorService**, gated
-behind the `RELEASE_ANOMALY_DETECTOR` flag.  It provides a framework for
-system-level anomaly detection through pluggable `SignalCollector` components:
-
-```java
-// Source: packages/modules/Profiling/anomaly-detector/service/java/.../
-//         AnomalyDetectorService.java
-
-public final class AnomalyDetectorService extends SystemService {
-    final Map<Class<? extends SignalCollectorConfig>,
-              CollectorEntry> mRegisteredCollectors;
-}
-```
-
-Signal collectors (e.g., `BinderSpamConfig` / `BinderSpamData`) detect
-anomalous patterns and can trigger profiling automatically.
-
-### 52.9.8  Key Source Paths
-
-| Component | Path |
-|-----------|------|
-| AIDL interface | `packages/modules/Profiling/aidl/android/os/IProfilingService.aidl` |
-| Public API | `packages/modules/Profiling/framework/java/android/os/ProfilingManager.java` |
-| Result class | `packages/modules/Profiling/framework/java/android/os/ProfilingResult.java` |
-| Trigger class | `packages/modules/Profiling/framework/java/android/os/ProfilingTrigger.java` |
-| Service impl | `packages/modules/Profiling/service/java/com/android/os/profiling/ProfilingService.java` |
-| Config gen | `packages/modules/Profiling/service/java/com/android/os/profiling/Configs.java` |
-| Rate limiter | `packages/modules/Profiling/service/java/com/android/os/profiling/RateLimiter.java` |
-| Session state | `packages/modules/Profiling/service/java/com/android/os/profiling/TracingSession.java` |
-| Anomaly detector | `packages/modules/Profiling/anomaly-detector/service/java/.../AnomalyDetectorService.java` |
-| APEX config | `packages/modules/Profiling/apex/Android.bp` |
-
----
-
-## 52.10  Deep Dive: UWB (Ultra-Wideband)
-
-The UWB module (`com.android.uwb`) provides Android's Ultra-Wideband radio
-stack -- a short-range, high-bandwidth wireless technology used for precise
-ranging (distance measurement), angle-of-arrival positioning, and secure
-device-to-device communication.
-
-### 52.10.1  Module Structure
-
-```
-packages/modules/Uwb/
-    apex/               APEX packaging
-    framework/          Public API (android.uwb.*)
-    service/            UwbServiceCore, UwbSessionManager
-      fusion_lib/       Sensor fusion for positioning
-      multichip-parser/ Multi-chip UWB configuration
-      proto/            UWB stats logging protos
-      support_lib/      FiRA, CCC, ALIRO param builders
-      uci/              UCI command layer
-    libuwb-uci/         Rust UCI HAL implementation
-      src/rust/
-        uci_hal_android/  Android HAL binding
-        uwb_core/         Core UWB state machine
-    ranging/            Generic Ranging API (multi-technology)
-      framework/        android.ranging.*
-      uwb_backend/      UWB backend for generic ranging
-      rtt_backend/      Wi-Fi RTT backend for generic ranging
-    androidx_backend/   AndroidX UWB library backend
-    indev_uwb_adaptation/  In-development UWB adaptation
-    flags/              Feature flags
-```
-
-### 52.10.2  Protocol Stack Architecture
-
-```mermaid
-graph TB
-    subgraph "Application Layer"
-        APP["Application"]
-        UWB_MGR["UwbManager<br/>(@SystemApi)"]
-        RANGING_API["Generic Ranging API<br/>(android.ranging)"]
-    end
-
-    subgraph "Framework (com.android.uwb bootclasspath)"
-        RS["RangingSession"]
-        RM["RangingManager"]
-        RR["RangingReport<br/>(DistanceMeasurement,<br/>AngleOfArrivalMeasurement)"]
-    end
-
-    subgraph "Service (system_server)"
-        UWBSC["UwbServiceCore"]
-        UWBSM["UwbSessionManager"]
-        UWBCM["UwbConfigurationManager"]
-        UWBCC["UwbCountryCode"]
-        UWBADV["UwbAdvertiseManager"]
-        UWBMET["UwbMetrics"]
-    end
-
-    subgraph "UCI Layer (Rust)"
-        UCI_CORE["uwb_core<br/>(state machine)"]
-        UCI_HAL["uci_hal_android<br/>(JNI bridge)"]
-    end
-
-    subgraph "Hardware"
-        HAL["UWB HAL<br/>(IUwbChip AIDL)"]
-        RADIO["UWB Radio<br/>(IEEE 802.15.4z)"]
-    end
-
-    APP --> UWB_MGR
-    APP --> RANGING_API
-    UWB_MGR --> RS
-    RANGING_API --> RS
-    RS --> RM
-    RM -->|Binder IPC| UWBSC
-    UWBSC --> UWBSM
-    UWBSC --> UWBCM
-    UWBSC --> UWBCC
-    UWBSM --> UWBADV
-    UWBSM --> UWBMET
-    UWBSM -->|JNI| UCI_HAL
-    UCI_HAL --> UCI_CORE
-    UCI_CORE --> HAL
-    HAL --> RADIO
-```
-
-### 52.10.3  UWB Protocols
-
-The module supports three protocol families, each with its own parameter
-builder in the support library:
-
-| Protocol | Class | Use Case |
-|----------|-------|----------|
-| **FiRA** | `FiraOpenSessionParams`, `FiraParams` | Standardized IEEE 802.15.4z ranging (phones, tags, IoT) |
-| **CCC** (Car Connectivity Consortium) | `CccOpenRangingParams`, `CccParams` | Digital car keys |
-| **ALIRO** | `AliroOpenRangingParams`, `AliroParams` | Access control (door locks, gates) |
-
-Additionally, `RadarParams` and `RfTestParams` support UWB radar sensing
-and RF testing modes.
-
-### 52.10.4  UCI (UWB Command Interface)
-
-The UCI layer is implemented in **Rust** (`libuwb-uci/src/rust/`) and
-provides the low-level command interface to UWB hardware:
-
-```
-libuwb-uci/src/rust/
-    uwb_core/src/
-        lib.rs          Core library entry
-        service.rs      UWB service state machine
-        params.rs       Parameter definitions
-        params/
-            fira_app_config_params.rs
-            ccc_app_config_params.rs
-            aliro_app_config_params.rs
-            uci_packets.rs     UCI packet parsing
-    uci_hal_android/
-        uci_hal_android.rs     JNI bridge to Java service
-```
-
-UCI session states follow the standard state machine:
-
-| State | Value | Description |
-|-------|-------|-------------|
-| `INIT` | 0x00 | Session initialized |
-| `DEINIT` | 0x01 | Session deinitialized |
-| `ACTIVE` | 0x02 | Actively ranging |
-| `IDLE` | 0x03 | Configured but not ranging |
-
-### 52.10.5  Ranging Measurements
-
-A `RangingReport` contains one or more `RangingMeasurement` objects, each
-providing:
-
-| Measurement | Class | Data |
-|-------------|-------|------|
-| **Distance** | `DistanceMeasurement` | Distance in meters with confidence |
-| **Angle of Arrival** | `AngleOfArrivalMeasurement` | Azimuth and altitude angles |
-| **Two-Way Measurement** | `UwbTwoWayMeasurement` | Raw ToF data |
-| **OWR AoA** | `UwbOwrAoaMeasurement` | One-way ranging angle |
-| **DL TDoA** | `UwbDlTDoAMeasurement` | Downlink time-difference-of-arrival |
-
-### 52.10.6  Generic Ranging API
-
-The `ranging/` subdirectory introduces a **technology-agnostic Ranging API**
-(`android.ranging.*`) that abstracts over multiple ranging technologies:
-
-```
-ranging/
-    framework/      android.ranging.* API surface
-    uwb_backend/    UWB implementation of generic ranging
-    rtt_backend/    Wi-Fi RTT implementation of generic ranging
-    service/        RangingService
-```
-
-This allows apps to request ranging without binding to a specific technology.
-The bootclasspath fragment conditionally includes `framework-ranging`:
-
-```
-// Source: packages/modules/Uwb/apex/Android.bp
-
-soong_config_variables: {
-    release_ranging_stack: {
-        contents: [
-            "framework-uwb",
-            "framework-ranging",
-        ],
-    },
-},
-```
-
-### 52.10.7  Session Management
-
-`UwbSessionManager` is the central class for UWB session lifecycle:
-
-```mermaid
-stateDiagram-v2
-    [*] --> INIT: openRangingSession
-    INIT --> IDLE: onOpened
-    IDLE --> ACTIVE: start
-    ACTIVE --> IDLE: stop
-    ACTIVE --> ACTIVE: onRangingResult
-    IDLE --> INIT: reconfigure
-    IDLE --> CLOSED: close
-    ACTIVE --> CLOSED: close
-    CLOSED --> [*]
-
-    note right of ACTIVE
-        Ranging reports delivered
-        via IUwbRangingCallbacks
-    end note
-```
-
-The session manager tracks per-session state, handles multicast list updates
-(adding/removing controlees), manages suspend/resume, and routes ranging
-notifications to the correct callback.
-
-### 52.10.8  Country Code and Regulatory
-
-`UwbCountryCode` determines the device's operating country and configures
-channel restrictions accordingly.  It listens for telephony and Wi-Fi country
-code changes, defaulting to the SIM-based country.  Regulatory compliance is
-enforced through channel usage restrictions (`ChannelUsage`).
-
-### 52.10.9  Key Source Paths
-
-| Component | Path |
-|-----------|------|
-| Public API | `packages/modules/Uwb/framework/java/android/uwb/` |
-| UwbManager | `packages/modules/Uwb/framework/java/android/uwb/UwbManager.java` |
-| RangingSession | `packages/modules/Uwb/framework/java/android/uwb/RangingSession.java` |
-| Service core | `packages/modules/Uwb/service/java/com/android/server/uwb/UwbServiceCore.java` |
-| Session manager | `packages/modules/Uwb/service/java/com/android/server/uwb/UwbSessionManager.java` |
-| UCI constants | `packages/modules/Uwb/service/java/com/android/server/uwb/data/UwbUciConstants.java` |
-| Rust UCI core | `packages/modules/Uwb/libuwb-uci/src/rust/uwb_core/src/` |
-| JNI bridge | `packages/modules/Uwb/libuwb-uci/src/rust/uci_hal_android/` |
-| Support library | `packages/modules/Uwb/service/support_lib/` |
-| Generic Ranging API | `packages/modules/Uwb/ranging/framework/` |
-| APEX config | `packages/modules/Uwb/apex/Android.bp` |
