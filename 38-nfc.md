@@ -1,12 +1,5 @@
 # Chapter 38: NFC -- Near Field Communication
 
-> *"NFC is the invisible handshake that lets you pay with a tap, share a URL by
-> touching phones, and unlock doors without a key.  Android's NFC stack turns a
-> 13.56 MHz radio into a full-featured platform spanning tag reading, host card
-> emulation, secure elements, and FeliCa transit cards."*
-
----
-
 ---
 
 ## 38.1 NFC Architecture
