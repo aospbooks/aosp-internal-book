@@ -2342,25 +2342,27 @@ The key takeaways:
    background-thread host operations, update deferral during animations,
    auto-advance for collection widgets, and a full widget picker UI.
 
-Source file reference for further exploration:
+### Key Source Paths
 
-- `frameworks/base/core/java/android/appwidget/AppWidgetProvider.java` (220 lines)
-- `frameworks/base/core/java/android/appwidget/AppWidgetHost.java` (726 lines)
-- `frameworks/base/core/java/android/appwidget/AppWidgetEvent.java` (401 lines)
-- `frameworks/base/core/java/android/appwidget/AppWidgetHostView.java`
-- `frameworks/base/core/java/android/appwidget/AppWidgetManager.java`
-- `frameworks/base/core/java/android/appwidget/AppWidgetProviderInfo.java` (647 lines)
-- `frameworks/base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java`
-- `frameworks/base/core/java/android/widget/RemoteViews.java` (10,874 lines)
-- `frameworks/base/core/java/android/widget/RemoteViewsService.java` (321 lines)
-- `frameworks/base/core/java/android/widget/RemoteViewsAdapter.java` (1,305 lines)
-- `frameworks/base/core/java/com/android/internal/widget/remotecompose/core/CoreDocument.java`
-- `frameworks/base/core/java/com/android/internal/widget/remotecompose/core/Operations.java`
-- `frameworks/base/core/java/com/android/internal/widget/remotecompose/core/WireBuffer.java`
-- `frameworks/base/core/java/com/android/internal/widget/remotecompose/core/PaintContext.java`
-- `frameworks/base/core/java/com/android/internal/widget/remotecompose/player/RemoteComposePlayer.java`
-- `frameworks/base/core/java/com/android/internal/widget/remotecompose/player/RemoteComposeDocument.java`
-- `frameworks/base/core/java/com/android/internal/widget/remotecompose/player/platform/AndroidPaintContext.java`
-- `frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/notification/row/NotifRemoteViewsFactory.kt`
-- `packages/apps/Launcher3/src/com/android/launcher3/widget/LauncherWidgetHolder.java`
-- `packages/apps/Launcher3/src/com/android/launcher3/widget/LauncherAppWidgetHostView.java`
+| Path | Description |
+|---|---|
+| `frameworks/base/core/java/android/appwidget/AppWidgetProvider.java` | AppWidget provider base class (220 lines) |
+| `frameworks/base/core/java/android/appwidget/AppWidgetHost.java` | AppWidget host abstraction (726 lines) |
+| `frameworks/base/core/java/android/appwidget/AppWidgetEvent.java` | Widget event model (401 lines) |
+| `frameworks/base/core/java/android/appwidget/AppWidgetHostView.java` | Host view that renders widgets |
+| `frameworks/base/core/java/android/appwidget/AppWidgetManager.java` | Public API entry point |
+| `frameworks/base/core/java/android/appwidget/AppWidgetProviderInfo.java` | Widget metadata (647 lines) |
+| `frameworks/base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java` | system_server implementation |
+| `frameworks/base/core/java/android/widget/RemoteViews.java` | RemoteViews action serialization (10,874 lines) |
+| `frameworks/base/core/java/android/widget/RemoteViewsService.java` | Collection widget service (321 lines) |
+| `frameworks/base/core/java/android/widget/RemoteViewsAdapter.java` | Collection widget adapter (1,305 lines) |
+| `frameworks/base/core/java/com/android/internal/widget/remotecompose/core/CoreDocument.java` | RemoteCompose document model |
+| `frameworks/base/core/java/com/android/internal/widget/remotecompose/core/Operations.java` | RemoteCompose operations registry |
+| `frameworks/base/core/java/com/android/internal/widget/remotecompose/core/WireBuffer.java` | RemoteCompose wire format |
+| `frameworks/base/core/java/com/android/internal/widget/remotecompose/core/PaintContext.java` | RemoteCompose paint context |
+| `frameworks/base/core/java/com/android/internal/widget/remotecompose/player/RemoteComposePlayer.java` | RemoteCompose player |
+| `frameworks/base/core/java/com/android/internal/widget/remotecompose/player/RemoteComposeDocument.java` | RemoteCompose document loader |
+| `frameworks/base/core/java/com/android/internal/widget/remotecompose/player/platform/AndroidPaintContext.java` | Android-specific paint context |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/notification/row/NotifRemoteViewsFactory.kt` | Notification RemoteViews factory |
+| `packages/apps/Launcher3/src/com/android/launcher3/widget/LauncherWidgetHolder.java` | Launcher3 widget host holder |
+| `packages/apps/Launcher3/src/com/android/launcher3/widget/LauncherAppWidgetHostView.java` | Launcher3 host view |
