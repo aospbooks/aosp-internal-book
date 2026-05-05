@@ -20,17 +20,6 @@ participants:
    perform actions on behalf of the user. TalkBack, Switch Access, and
    Voice Access are the most widely deployed examples.
 
-The framework is implemented across several AOSP directories:
-
-| Layer | Key Directory |
-|-------|--------------|
-| Public API | `frameworks/base/core/java/android/view/accessibility/` |
-| Service API | `frameworks/base/core/java/android/accessibilityservice/` |
-| System Service | `frameworks/base/services/accessibility/java/com/android/server/accessibility/` |
-| Magnification | `frameworks/base/services/accessibility/.../magnification/` |
-| Gestures | `frameworks/base/services/accessibility/.../gestures/` |
-| Settings | `packages/apps/Settings/src/com/android/settings/accessibility/` |
-
 ### 45.1.1 High-Level Data Flow
 
 The following diagram illustrates the core data flow from a View's state
