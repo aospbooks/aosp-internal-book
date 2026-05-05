@@ -2160,382 +2160,9 @@ Key system properties:
 
 ---
 
-## 54.8 Try It
+## 54.8 Rollback Protection
 
-### 54.8.1 Checking Device Support
-
-First, verify that your device supports virtualization:
-
-```shell
-# Check for KVM support
-adb shell ls -la /dev/kvm
-
-# Check VM support via the vm tool
-adb shell /apex/com.android.virt/bin/vm info
-```
-
-Expected output on a supported device:
-
-```
-Both protected and non-protected VMs are supported.
-Hypervisor version: 1.0
-/dev/kvm exists.
-/dev/vfio/vfio does not exist.
-VFIO-platform is not supported.
-Assignable devices: []
-Available OS list: ["microdroid"]
-Debug policy: none
-```
-
-### 54.8.2 Running a Microdroid VM
-
-The simplest way to run a VM is using the shell helper script:
-
-```shell
-# Run a non-protected Microdroid VM
-packages/modules/Virtualization/android/vm/vm_shell.sh start-microdroid
-
-# Run a protected Microdroid VM with auto-connect
-packages/modules/Virtualization/android/vm/vm_shell.sh \
-    start-microdroid --auto-connect -- --protected
-```
-
-Or directly with the `vm` tool:
-
-```shell
-# Run Microdroid directly
-adb shell /apex/com.android.virt/bin/vm run-microdroid
-
-# Run protected with debug output
-adb shell /apex/com.android.virt/bin/vm run-microdroid \
-    --protected \
-    --debug full \
-    --console /data/local/tmp/virt/console.txt \
-    --log /data/local/tmp/virt/log.txt
-```
-
-### 54.8.3 Building a Payload App
-
-Create a minimal VM payload:
-
-**Native payload (C++):**
-
-```cpp
-// my_payload.cpp
-#include <stdio.h>
-
-extern "C" int AVmPayload_main() {
-    printf("Hello from Microdroid VM!\n");
-    // Payload code runs here
-    return 0;
-}
-```
-
-**Build rules (Android.bp):**
-
-```blueprint
-cc_library_shared {
-    name: "MyMicrodroidPayload",
-    srcs: ["my_payload.cpp"],
-    shared_libs: ["libvm_payload#current"],
-    sdk_version: "current",
-}
-
-android_app {
-    name: "MyPayloadApp",
-    srcs: ["**/*.java"],
-    jni_libs: ["MyMicrodroidPayload"],
-    use_embedded_native_libs: true,
-    sdk_version: "current",
-}
-```
-
-**Run the payload:**
-
-```shell
-# Build and install
-TARGET_BUILD_APPS=MyPayloadApp m apps_only dist
-adb install out/dist/MyPayloadApp.apk
-
-# Get the installed APK path
-APK_PATH=$(adb shell pm path com.example.mypayloadapp | cut -d: -f2)
-
-# Run the VM
-TEST_ROOT=/data/local/tmp/virt
-adb shell /apex/com.android.virt/bin/vm run-app \
-    --log $TEST_ROOT/log.txt \
-    --console $TEST_ROOT/console.txt \
-    $APK_PATH \
-    $TEST_ROOT/MyPayloadApp.apk.idsig \
-    $TEST_ROOT/instance.img \
-    --instance-id-file $TEST_ROOT/instance_id \
-    --payload-binary-name MyMicrodroidPayload.so
-```
-
-### 54.8.4 Java API Usage
-
-For programmatic VM management from an Android app:
-
-```java
-// Create VM configuration
-VirtualMachineConfig config = new VirtualMachineConfig.Builder(context)
-    .setPayloadBinaryName("MyMicrodroidPayload.so")
-    .setDebugLevel(VirtualMachineConfig.DEBUG_LEVEL_FULL)
-    .setProtectedVm(true)
-    .setMemoryBytes(256 * 1024 * 1024)  // 256 MiB
-    .build();
-
-// Create and start the VM
-VirtualMachineManager vmm = context.getSystemService(VirtualMachineManager.class);
-VirtualMachine vm = vmm.getOrCreate("my-vm", config);
-vm.setCallback(executor, new VirtualMachineCallback() {
-    @Override
-    public void onPayloadStarted(VirtualMachine vm) {
-        Log.i(TAG, "Payload started");
-    }
-
-    @Override
-    public void onPayloadReady(VirtualMachine vm) {
-        Log.i(TAG, "Payload ready");
-    }
-
-    @Override
-    public void onPayloadFinished(VirtualMachine vm, int exitCode) {
-        Log.i(TAG, "Payload finished: " + exitCode);
-    }
-
-    @Override
-    public void onError(VirtualMachine vm, int errorCode, String message) {
-        Log.e(TAG, "VM error: " + message);
-    }
-});
-vm.run();
-```
-
-### 54.8.5 Running Tests
-
-AVF includes comprehensive test suites:
-
-```shell
-# Run the main Microdroid host tests
-atest MicrodroidHostTestCases
-
-# Run the Microdroid app tests
-atest MicrodroidTestApp
-
-# Verify DICE chain validity (pVM required)
-atest MicrodroidTests#protectedVmHasValidDiceChain
-```
-
-### 54.8.6 Debugging VMs
-
-**Console output:**
-
-```shell
-# Direct console to a file
-adb shell /apex/com.android.virt/bin/vm run-microdroid \
-    --console /data/local/tmp/console.txt
-
-# Read console output
-adb shell cat /data/local/tmp/console.txt
-```
-
-**GDB debugging:**
-
-```shell
-# Start VM with GDB server
-adb shell /apex/com.android.virt/bin/vm run-microdroid \
-    --debug full --gdb 1234
-
-# Connect GDB (from host)
-adb forward tcp:1234 tcp:1234
-gdb-multiarch -ex "target remote :1234"
-```
-
-**Early console (earlycon):**
-
-```shell
-# Enable earlycon for early boot debugging
-adb shell /apex/com.android.virt/bin/vm run-microdroid \
-    --debug full --enable-earlycon
-```
-
-**Listing running VMs:**
-
-```shell
-adb shell /apex/com.android.virt/bin/vm list
-```
-
-**Device tree dump:**
-
-```shell
-# Dump the VM's device tree for inspection
-adb shell /apex/com.android.virt/bin/vm run-microdroid \
-    --dump-device-tree /data/local/tmp/vm_dt.dtb
-```
-
-### 54.8.7 Custom VM Configuration
-
-For advanced use cases, you can create a custom VM configuration:
-
-```json
-{
-    "name": "my-custom-vm",
-    "kernel": "/data/local/tmp/Image",
-    "initrd": "/data/local/tmp/initramfs.img",
-    "params": "console=hvc0 earlycon=uart8250,mmio,0x3f8",
-    "disks": [
-        {
-            "partitions": [
-                {
-                    "label": "rootfs",
-                    "path": "/data/local/tmp/rootfs.img"
-                }
-            ],
-            "writable": false
-        }
-    ],
-    "protected": false,
-    "memory_mib": 512,
-    "platform_version": "~1.0"
-}
-```
-
-Run with:
-
-```shell
-adb push my_vm_config.json /data/local/tmp/
-adb shell /apex/com.android.virt/bin/vm run /data/local/tmp/my_vm_config.json
-```
-
-### 54.8.8 Inspecting AVF Components
-
-**APEX contents:**
-
-```shell
-# List what's inside the AVF APEX
-adb shell ls -la /apex/com.android.virt/
-
-# Check the pvmfw binary
-adb shell ls -la /apex/com.android.virt/etc/pvmfw.bin
-
-# Check the Microdroid images
-adb shell ls -la /apex/com.android.virt/etc/fs/
-```
-
-**System properties:**
-
-```shell
-# Check hypervisor status
-adb shell getprop ro.boot.hypervisor.vm.supported
-adb shell getprop ro.boot.hypervisor.protected_vm.supported
-adb shell getprop ro.boot.hypervisor.version
-
-# Check AVF features
-adb shell /apex/com.android.virt/bin/vm check-feature-enabled remote_attestation
-adb shell /apex/com.android.virt/bin/vm check-feature-enabled vendor_modules
-adb shell /apex/com.android.virt/bin/vm check-feature-enabled device_assignment
-```
-
-### 54.8.9 Building AVF from Source
-
-To build the complete AVF stack from AOSP source:
-
-```shell
-# Set up build environment
-source build/envsetup.sh
-lunch aosp_cf_x86_64_phone-userdebug  # or aosp_panther-userdebug for Pixel 7
-
-# Build the entire system (including AVF)
-m
-
-# Or build just the AVF APEX for faster iteration
-banchan com.android.virt aosp_arm64  # or aosp_x86_64
-UNBUNDLED_BUILD_SDKS_FROM_SOURCE=true m apps_only dist
-
-# Install the APEX
-adb install out/dist/com.android.virt.apex
-adb reboot
-```
-
-### 54.8.10 Troubleshooting
-
-**VM fails to start:**
-
-- Check `/dev/kvm` exists: `adb shell ls -la /dev/kvm`
-- Verify APEX is installed: `adb shell pm list packages | grep virt`
-- Check logcat: `adb logcat -s VirtualizationService:* virtmgr:* crosvm:*`
-
-**Protected VM fails:**
-
-- Verify pKVM is enabled: `adb shell getprop ro.boot.hypervisor.protected_vm.supported`
-- Check pvmfw path: `adb shell getprop hypervisor.pvmfw.path`
-- Check pvmfw reboot reasons in console output
-
-**Performance issues:**
-
-- Use `--hugepages` for transparent huge pages support
-- Use `--cpu-topology match_host` to match host CPU topology
-- Use `--boost-uclamp` for benchmarking stability
-
-### 54.8.11 Remote Attestation Demo
-
-The `VmAttestationDemoApp` at `packages/modules/Virtualization/android/VmAttestationDemoApp/`
-demonstrates how a pVM payload can request remote attestation:
-
-```cpp
-// Inside VM payload
-extern "C" int AVmPayload_main() {
-    // Generate a challenge (typically from a remote server)
-    uint8_t challenge[32];
-    // ... fill challenge from server ...
-
-    // Request attestation
-    AVmAttestationResult* result = nullptr;
-    int status = AVmPayload_requestAttestation(challenge, sizeof(challenge), &result);
-    if (status != 0) {
-        // Attestation failed
-        return status;
-    }
-
-    // Use the attestation result
-    // - Get the certificate chain
-    // - Get the attested private key
-    // - Send certificate to remote server for verification
-
-    AVmPayload_freeAttestationResult(result);
-    return 0;
-}
-```
-
-The attestation flow within the device:
-
-```mermaid
-sequenceDiagram
-    participant Payload as pVM Payload
-    participant MM as microdroid_manager
-    participant VS as VirtualizationService
-    participant SVM as Service VM (RKP)
-    participant RKP as RKP Server
-
-    Payload->>MM: AVmPayload_requestAttestation(challenge)
-    MM->>VS: Forward attestation request
-    VS->>SVM: Start Service VM (if not running)
-    VS->>SVM: Send CSR + pVM DICE chain
-    SVM->>SVM: Validate pVM DICE chain
-    SVM->>RKP: Submit RKP VM DICE chain + CSR
-    RKP->>RKP: Verify RKP VM identity
-    RKP-->>SVM: Signed certificate chain
-    SVM-->>VS: Attestation result
-    VS-->>MM: Certificate chain + key
-    MM-->>Payload: AVmAttestationResult
-```
-
----
-
-## 54.9 Rollback Protection
-
-### 54.9.1 Overview
+### 54.8.1 Overview
 
 Rollback protection prevents an attacker from running an older, vulnerable version
 of a VM payload and accessing secrets that were provisioned to a newer version.
@@ -2569,7 +2196,7 @@ pub fn perform_rollback_protection(
 }
 ```
 
-### 54.9.2 Rollback Protection Strategies
+### 54.8.2 Rollback Protection Strategies
 
 ```mermaid
 graph TB
@@ -2656,9 +2283,9 @@ fn ensure_dice_measurements_match_entry(
 
 ---
 
-## 54.10 Configuration Data Deep Dive
+## 54.9 Configuration Data Deep Dive
 
-### 54.10.1 Config Parser Implementation
+### 54.9.1 Config Parser Implementation
 
 The pvmfw configuration parser at
 `packages/modules/Virtualization/guest/pvmfw/src/config/mod.rs` implements rigorous
@@ -2682,7 +2309,7 @@ The parser validates:
 4. All entry offsets and sizes are within bounds
 5. Entries are in order (no overlapping)
 
-### 54.10.2 Entry Types
+### 54.9.2 Entry Types
 
 The configuration entries are defined as an enum with a count sentinel:
 
@@ -2715,7 +2342,7 @@ Note the careful ownership: mutable references are used for entries that contain
 secrets (DICE handover, reserved memory) so they can be zeroized after use.
 Read-only references are used for entries that only need inspection.
 
-### 54.10.3 Version Negotiation
+### 54.9.3 Version Negotiation
 
 The parser handles forward compatibility by treating unknown minor versions
 as the latest known version:
@@ -2741,7 +2368,7 @@ pub fn entry_count(&self) -> Result<usize> {
 This means a v1.4 config will be parsed as v1.3, with any new entries beyond
 the known set silently ignored. Major version changes (2.x) would be rejected.
 
-### 54.10.4 Error Handling
+### 54.9.4 Error Handling
 
 The config module defines precise error variants for each failure mode:
 
@@ -2778,9 +2405,9 @@ match config::Config::new(data) {
 
 ---
 
-## 54.11 Device Tree Handling in pvmfw
+## 54.10 Device Tree Handling in pvmfw
 
-### 54.11.1 FDT Sanitization
+### 54.10.1 FDT Sanitization
 
 The device tree provided by the VMM is untrusted and must be sanitized before use.
 pvmfw uses a template-based approach, starting from a known-good FDT template and
@@ -2814,7 +2441,7 @@ pub enum FdtValidationError {
 }
 ```
 
-### 54.11.2 Device Tree Modification for Next Stage
+### 54.10.2 Device Tree Modification for Next Stage
 
 After sanitization, pvmfw modifies the FDT to pass information to the guest kernel:
 
@@ -2843,7 +2470,7 @@ The reserved-memory DICE node format:
 };
 ```
 
-### 54.11.3 Security Boundary at the FDT
+### 54.10.3 Security Boundary at the FDT
 
 The FDT represents a critical security boundary. The VMM constructs the FDT to
 describe the virtual platform, but in the protected VM threat model, the VMM is
@@ -2863,9 +2490,9 @@ known-safe contents.
 
 ---
 
-## 54.12 vmbase: Common VM Base Library
+## 54.11 vmbase: Common VM Base Library
 
-### 54.12.1 Purpose
+### 54.11.1 Purpose
 
 The `vmbase` library at `packages/modules/Virtualization/libs/libvmbase/` provides
 shared low-level infrastructure for bare-metal Rust binaries running in crosvm VMs.
@@ -2877,7 +2504,7 @@ From the vmbase README:
 > `no_std` Rust binaries to run in an aarch64 VM under crosvm (via the
 > VirtualizationService), such as for pVM firmware, a VM bootloader or kernel.
 
-### 54.12.2 Provided Infrastructure
+### 54.11.2 Provided Infrastructure
 
 vmbase provides:
 
@@ -2891,7 +2518,7 @@ vmbase provides:
 - **Page table manipulation** -- Memory management unit setup
 - **PSCI calls** -- Power State Coordination Interface wrappers
 
-### 54.12.3 Source Organization
+### 54.11.3 Source Organization
 
 ```
 packages/modules/Virtualization/libs/libvmbase/
@@ -2919,7 +2546,7 @@ packages/modules/Virtualization/libs/libvmbase/
     virtio.rs          # VirtIO abstractions
 ```
 
-### 54.12.4 Using vmbase for Custom Binaries
+### 54.11.4 Using vmbase for Custom Binaries
 
 A minimal vmbase binary requires:
 
@@ -2957,7 +2584,7 @@ The entry point macro wraps the user function with:
 2. Stack setup
 3. PSCI `SYSTEM_OFF` call on return
 
-### 54.12.5 Memory Management in vmbase
+### 54.11.5 Memory Management in vmbase
 
 The `memory.rs` module in pvmfw uses vmbase's memory tracking:
 
@@ -3008,9 +2635,9 @@ while data regions (FDT, ramdisk) are mapped read-write as needed.
 
 ---
 
-## 54.13 Device Assignment in Detail
+## 54.12 Device Assignment in Detail
 
-### 54.13.1 Architecture
+### 54.12.1 Architecture
 
 Device assignment (also called device passthrough) allows a VM to directly access
 physical hardware devices without host/hypervisor intervention on the data path.
@@ -3050,7 +2677,7 @@ graph TB
     DA -->|"validate DTBO"| S2
 ```
 
-### 54.13.2 VM DTBO Structure
+### 54.12.2 VM DTBO Structure
 
 The VM Device Tree Blob Overlay (DTBO) describes assignable devices. It has two
 sections:
@@ -3085,7 +2712,7 @@ sections:
 };
 ```
 
-### 54.13.3 pvmfw Device Assignment Validation
+### 54.12.3 pvmfw Device Assignment Validation
 
 The pvmfw device assignment module at
 `packages/modules/Virtualization/guest/pvmfw/src/device_assignment.rs` validates
@@ -3121,7 +2748,7 @@ The validation ensures:
 3. Device nodes reference valid overlayable targets
 4. No duplicate IOMMU or device entries exist
 
-### 54.13.4 IOMMU Token Verification
+### 54.12.4 IOMMU Token Verification
 
 Each IOMMU in the VM DTBO carries a token -- a hypervisor-specific 64-bit value
 that uniquely identifies a physical IOMMU. pvmfw validates these tokens against
@@ -3150,9 +2777,9 @@ sequenceDiagram
 
 ---
 
-## 54.14 Async I/O in crosvm
+## 54.13 Async I/O in crosvm
 
-### 54.14.1 cros_async Runtime
+### 54.13.1 cros_async Runtime
 
 crosvm includes its own async runtime (`cros_async`) that provides two executor
 backends:
@@ -3174,7 +2801,7 @@ if let Some(async_executor) = cfg.async_executor {
 }
 ```
 
-### 54.14.2 Virtio Queue Processing
+### 54.13.2 Virtio Queue Processing
 
 Each virtio device's worker thread uses the async runtime for queue processing.
 The general pattern (simplified from the architecture doc):
@@ -3200,7 +2827,7 @@ async fn process_queue(
 }
 ```
 
-### 54.14.3 VirtIO Transport
+### 54.13.3 VirtIO Transport
 
 For protected VMs, the virtio transport operates over shared memory regions.
 The guest must explicitly share the memory used for virtio rings with the host
@@ -3228,9 +2855,9 @@ graph LR
 
 ---
 
-## 54.15 Network and Display Support
+## 54.14 Network and Display Support
 
-### 54.15.1 Network Support
+### 54.14.1 Network Support
 
 AVF provides optional network support for VMs through the `vmnic` and
 `vmtethering` services. Network capability is gated behind a feature flag:
@@ -3251,7 +2878,7 @@ custom_config.networkSupported = config.common.network_supported();
 The network stack uses virtio-net for guest-host communication, with the
 `VmTethering` service handling NAT/tethering on the host side.
 
-### 54.15.2 Display Support
+### 54.14.2 Display Support
 
 The `TerminalApp` at `packages/modules/Virtualization/android/TerminalApp/`
 provides a terminal interface for VM interaction. Display forwarding uses
@@ -3267,14 +2894,14 @@ pub struct VirtualizationServiceInternal {
 
 ---
 
-## 54.16 Running Linux with Graphics Acceleration
+## 54.15 Running Linux with Graphics Acceleration
 
 Android's Virtualization Framework (AVF) supports running full Linux
 distributions (Debian) inside VMs with hardware-accelerated graphics. This
 enables a desktop Linux experience — including GUI applications, browsers,
 and development tools — running alongside Android apps on the same device.
 
-### 54.16.1 Architecture Overview
+### 54.15.1 Architecture Overview
 
 The Linux VM stack combines several components:
 
@@ -3315,7 +2942,7 @@ graph TB
     KERN <--> VBLK
 ```
 
-### 54.16.2 TerminalApp: The Linux VM Frontend
+### 54.15.2 TerminalApp: The Linux VM Frontend
 
 The TerminalApp at `packages/modules/Virtualization/android/TerminalApp/`
 is the Android-side UI for Linux VMs. It manages the full lifecycle:
@@ -3363,7 +2990,7 @@ data class DisplayInfo(
 ) : Parcelable
 ```
 
-### 54.16.3 Graphics Acceleration Modes
+### 54.15.3 Graphics Acceleration Modes
 
 The Linux VM supports two GPU rendering modes:
 
@@ -3427,7 +3054,7 @@ Device manufacturers enable gfxstream by overriding the resource:
 <!-- Device overlay sets to true when host GPU supports gfxstream -->
 ```
 
-### 54.16.4 Display Forwarding Pipeline
+### 54.15.4 Display Forwarding Pipeline
 
 The display pipeline bridges the Linux guest's framebuffer to an Android
 `SurfaceView`:
@@ -3498,7 +3125,7 @@ class AndroidDisplaySurface {
 };
 ```
 
-### 54.16.5 Input Forwarding
+### 54.15.5 Input Forwarding
 
 Android input events (touch, keyboard, mouse, trackpad) are forwarded to the
 Linux guest as evdev events:
@@ -3531,7 +3158,7 @@ The `InputForwarder` automatically adapts to the input device:
 Touch coordinates are scaled from the Android SurfaceView dimensions to the
 VM's configured display resolution.
 
-### 54.16.6 Debian VM Configuration
+### 54.15.6 Debian VM Configuration
 
 Linux VMs are configured via a JSON file that maps to
 `VirtualMachineCustomImageConfig`:
@@ -3583,7 +3210,7 @@ The resulting image includes a Linux kernel, initrd, and a writable root
 partition with Debian userspace. The VM uses `cpu_topology: "match_host"`
 to expose the device's actual CPU topology to the guest.
 
-### 54.16.7 Feature Flags
+### 54.15.7 Feature Flags
 
 Linux VM GUI support is gated behind aconfig feature flags:
 
@@ -3608,7 +3235,7 @@ flag {
 When `terminal_gui_support` is disabled, the TerminalApp falls back to a
 text-only terminal (ttyd over WebView) instead of the full graphical display.
 
-### 54.16.8 Virtio GPU Capabilities
+### 54.15.8 Virtio GPU Capabilities
 
 The crosvm virtio-gpu implementation supports multiple capability sets that
 determine how the guest GPU driver communicates:
@@ -3637,7 +3264,7 @@ The cross-domain capability enables direct sharing of AHardwareBuffers between
 the Android host and the Linux guest, allowing the guest's display output to
 appear in Android's SurfaceFlinger composition without extra copies.
 
-### 54.16.9 Use Cases
+### 54.15.9 Use Cases
 
 #### Desktop Linux on Android Devices
 
@@ -3668,9 +3295,9 @@ vice versa. This provides stronger isolation than containers.
 
 ---
 
-## 54.17 Security Analysis
+## 54.16 Security Analysis
 
-### 54.17.1 Trust Boundaries
+### 54.16.1 Trust Boundaries
 
 AVF defines clear trust boundaries between components:
 
@@ -3705,7 +3332,7 @@ graph TB
     CROSVM_HOST -.->|"cannot access\nguest secrets"| PVMFW
 ```
 
-### 54.17.2 Attack Surface Analysis
+### 54.16.2 Attack Surface Analysis
 
 **Host-to-guest attacks (mitigated by pKVM):**
 
@@ -3725,7 +3352,7 @@ graph TB
 - Virtio attacks: Each device has minimal syscall allowlist
 - Resource exhaustion: Memory limits, CPU quotas
 
-### 54.17.3 Rust Safety Guarantees
+### 54.16.3 Rust Safety Guarantees
 
 Both pvmfw and crosvm are written in Rust, providing:
 
@@ -3742,7 +3369,7 @@ and `unsafe` blocks are limited to:
 - Raw pointer manipulation for FDT parsing
 - Inter-stage memory handoff
 
-### 54.17.4 DICE Chain Integrity
+### 54.16.4 DICE Chain Integrity
 
 The DICE chain provides cryptographic binding between boot stages. Key
 derivation follows the Open DICE specification:
@@ -3765,9 +3392,9 @@ Trusted HAL authentication to fail.
 
 ---
 
-## 54.18 Performance Considerations
+## 54.17 Performance Considerations
 
-### 54.18.1 Memory Overhead
+### 54.17.1 Memory Overhead
 
 Each VM requires:
 
@@ -3776,7 +3403,7 @@ Each VM requires:
 - **crosvm overhead** -- Per-device process memory
 - **Page tables** -- Stage-2 tables for the guest
 
-### 54.18.2 Huge Pages
+### 54.17.2 Huge Pages
 
 AVF supports transparent huge pages (THP) for improved memory performance:
 
@@ -3788,7 +3415,7 @@ AVF supports transparent huge pages (THP) for improved memory performance:
 hugepages: bool,
 ```
 
-### 54.18.3 CPU Topology
+### 54.17.3 CPU Topology
 
 The `--cpu-topology` option controls vCPU allocation:
 
@@ -3810,7 +3437,7 @@ fn parse_cpu_topology(s: &str) -> Result<CpuTopology, String> {
 `match_host` mirrors the host's CPU topology in the guest, which is essential
 for performance-sensitive workloads and correct NUMA behavior.
 
-### 54.18.4 I/O Performance Tuning
+### 54.17.4 I/O Performance Tuning
 
 Microdroid applies several I/O optimizations in init.rc:
 
@@ -3827,15 +3454,15 @@ write /proc/sys/vm/watermark_scale_factor 600
 
 ---
 
-## 54.19 Vsock Communication
+## 54.18 Vsock Communication
 
-### 54.19.1 Overview
+### 54.18.1 Overview
 
 AVF uses vsock (Virtual Machine Sockets) for communication between the host and
 guest VMs. Vsock provides a socket interface similar to TCP/UDP but operates
 over a virtual transport that does not require network configuration.
 
-### 54.19.2 CID Assignment
+### 54.18.2 CID Assignment
 
 Each VM receives a unique CID (Context ID) for vsock addressing. The
 VirtualizationService manages CID allocation:
@@ -3853,7 +3480,7 @@ Special CID values:
 - `VMADDR_CID_HOST` (2) -- The host
 - 2048-65535 -- Guest VMs managed by VirtualizationService
 
-### 54.19.3 Communication Channels
+### 54.18.3 Communication Channels
 
 AVF uses vsock for several internal communication channels:
 
@@ -3877,7 +3504,7 @@ graph LR
     MM <-->|"vsock: tombstones"| VS
 ```
 
-### 54.19.4 Binder Over Vsock
+### 54.18.4 Binder Over Vsock
 
 The VM Payload API allows hosting Binder RPC servers over vsock:
 
@@ -3895,9 +3522,9 @@ without requiring a network stack.
 
 ---
 
-## 54.20 Encrypted Storage
+## 54.19 Encrypted Storage
 
-### 54.20.1 Architecture
+### 54.19.1 Architecture
 
 Microdroid provides encrypted persistent storage for VMs that need to retain
 data across reboots. The storage is backed by a host-side file but encrypted
@@ -3925,7 +3552,7 @@ graph TB
     MM -->|"derive key\nfrom DICE CDI_Seal"| DM_CRYPT
 ```
 
-### 54.20.2 Key Derivation
+### 54.19.2 Key Derivation
 
 The encryption key is derived from the VM's `CDI_Seal` value, which is part of
 the DICE chain. This ensures that:
@@ -3935,7 +3562,7 @@ the DICE chain. This ensures that:
 3. A rolled-back VM version cannot access data from a newer version
 4. The host cannot decrypt the data (it never sees the key)
 
-### 54.20.3 Storage Lifecycle
+### 54.19.3 Storage Lifecycle
 
 ```mermaid
 sequenceDiagram
@@ -3960,7 +3587,7 @@ sequenceDiagram
     Note over MM,FS: Payload can now use /mnt/encryptedstore
 ```
 
-### 54.20.4 Storage Size Management
+### 54.19.4 Storage Size Management
 
 Storage can be pre-allocated or resized:
 
@@ -3986,15 +3613,15 @@ Default size is 10 MiB, configurable via `--storage-size`.
 
 ---
 
-## 54.21 Updatable VMs and Secretkeeper
+## 54.20 Updatable VMs and Secretkeeper
 
-### 54.21.1 The Update Problem
+### 54.20.1 The Update Problem
 
 When a VM's code is updated, the DICE chain changes because the code measurements
 are different. This means the CDI values change, and any data encrypted with the
 old CDI cannot be decrypted by the new version.
 
-### 54.21.2 Secretkeeper Protocol
+### 54.20.2 Secretkeeper Protocol
 
 Secretkeeper solves this by providing a secure key-value store that persists
 across VM updates. The VM stores its secrets in Secretkeeper rather than
@@ -4028,7 +3655,7 @@ if verified_boot_data.has_capability(Capability::SecretkeeperProtection) {
 }
 ```
 
-### 54.21.3 VM Reference DT for Secretkeeper
+### 54.20.3 VM Reference DT for Secretkeeper
 
 The VM reference DT (pvmfw config version 1.2) provides a mechanism to securely
 pass the Secretkeeper public key to VMs:
@@ -4044,9 +3671,9 @@ VM's device tree, its value matches the reference.
 
 ---
 
-## 54.22 Early VM (Boot-Time VMs)
+## 54.21 Early VM (Boot-Time VMs)
 
-### 54.22.1 Concept
+### 54.21.1 Concept
 
 AVF supports early VMs that start during device boot, before the full Android
 userspace is available. These are documented in
@@ -4058,7 +3685,7 @@ Early VMs are used for:
 - TEE services that need to start before Android init completes
 - Hardware initialization that requires a trusted execution environment
 
-### 54.22.2 Boot Sequence Integration
+### 54.21.2 Boot Sequence Integration
 
 ```mermaid
 graph TB
@@ -4072,9 +3699,9 @@ graph TB
 
 ---
 
-## 54.23 Debugging Deep Dive
+## 54.22 Debugging Deep Dive
 
-### 54.23.1 Debug Policy
+### 54.22.1 Debug Policy
 
 The debug policy controls what debugging features are available for protected VMs.
 It is passed as a DTBO in the pvmfw configuration data (entry 1).
@@ -4089,7 +3716,7 @@ if debug_policy.is_some() && !dice_debug_mode {
 }
 ```
 
-### 54.23.2 Debug Levels
+### 54.22.2 Debug Levels
 
 The `vm` CLI supports two debug levels:
 
@@ -4106,7 +3733,7 @@ fn parse_debug_level(s: &str) -> Result<DebugLevel, String> {
 - **`none`** -- Production mode. No console output, no logging, no ADB.
 - **`full`** -- Debug mode. Console output, logging, ADB access in Microdroid.
 
-### 54.23.3 Early Console (earlycon)
+### 54.22.3 Early Console (earlycon)
 
 For debugging early boot issues, earlycon can be enabled to get kernel output
 before the normal console driver initializes:
@@ -4133,7 +3760,7 @@ mapped after pvmfw hands off:
 let keep_uart = cfg!(debuggable_vms_improvements) && debuggable_payload;
 ```
 
-### 54.23.4 GDB Debugging
+### 54.22.4 GDB Debugging
 
 crosvm supports GDB remote debugging of the guest kernel:
 
@@ -4158,7 +3785,7 @@ adb forward tcp:1234 tcp:1234
 gdb-multiarch vmlinux -ex "target remote :1234"
 ```
 
-### 54.23.5 Device Tree Dump
+### 54.22.5 Device Tree Dump
 
 The `--dump-device-tree` option captures the VM's device tree for inspection:
 
@@ -4170,7 +3797,7 @@ dump_device_tree: Option<PathBuf>,
 This is useful for debugging device assignment issues or verifying the
 sanitized FDT that pvmfw produces.
 
-### 54.23.6 VM Callback Debugging
+### 54.22.6 VM Callback Debugging
 
 The `vm` CLI implements callbacks that print VM lifecycle events:
 
@@ -4198,9 +3825,9 @@ impl vmclient::VmCallback for Callback {
 
 ---
 
-## 54.24 Testing Infrastructure
+## 54.23 Testing Infrastructure
 
-### 54.24.1 Test Suites
+### 54.23.1 Test Suites
 
 AVF includes several test suites:
 
@@ -4213,7 +3840,7 @@ AVF includes several test suites:
 | crosvm e2e tests | End-to-end VM tests |
 | VTS tests | Vendor test suite for HAL compliance |
 
-### 54.24.2 DICE Chain Validation Test
+### 54.23.2 DICE Chain Validation Test
 
 The `protectedVmHasValidDiceChain` test verifies:
 
@@ -4226,7 +3853,7 @@ From `packages/modules/Virtualization/docs/pvm_dice_chain.md`:
 > The test retrieves the DICE chain from within a Microdroid VM in protected mode
 > and checks the following properties using the hwtrust library.
 
-### 54.24.3 Running Specific Tests
+### 54.23.3 Running Specific Tests
 
 ```shell
 # Run all Microdroid host tests
@@ -4242,7 +3869,7 @@ atest MicrodroidHostTestCases -v
 atest VtsHalVirtualizationCapabilitiesTargetTest
 ```
 
-### 54.24.4 Test VM Configuration
+### 54.23.4 Test VM Configuration
 
 Tests use the `EmptyPayloadApp` as a baseline VM payload:
 
@@ -4263,9 +3890,9 @@ fn find_empty_payload_apk_path() -> Result<PathBuf, Error> {
 
 ---
 
-## 54.25 Build System Integration
+## 54.24 Build System Integration
 
-### 54.25.1 APEX Build
+### 54.24.1 APEX Build
 
 The `com.android.virt` APEX is built using the `banchan` build target:
 
@@ -4274,7 +3901,7 @@ banchan com.android.virt aosp_arm64
 UNBUNDLED_BUILD_SDKS_FROM_SOURCE=true m apps_only dist
 ```
 
-### 54.25.2 Microdroid Image Build
+### 54.24.2 Microdroid Image Build
 
 The Microdroid system image is built as part of the APEX. The build configuration
 files are at `packages/modules/Virtualization/build/microdroid/`:
@@ -4288,7 +3915,7 @@ files are at `packages/modules/Virtualization/build/microdroid/`:
 - `microdroid_manifest.xml` -- Android manifest
 - `microdroid_group` / `microdroid_passwd` -- User/group definitions
 
-### 54.25.3 pvmfw Build
+### 54.24.3 pvmfw Build
 
 pvmfw is built as a bare-metal binary using the vmbase infrastructure:
 
@@ -4305,7 +3932,7 @@ packages/modules/Virtualization/guest/pvmfw/
 The build produces `pvmfw.bin`, which is included in the APEX and optionally
 written to a dedicated `pvmfw` partition on the device.
 
-### 54.25.4 Product Configuration
+### 54.24.4 Product Configuration
 
 To enable AVF in a product, add to the product makefile:
 
@@ -4322,9 +3949,9 @@ PRODUCT_AVF_REMOTE_ATTESTATION_DISABLED := false
 
 ---
 
-## 54.26 Feature Flags and Conditional Compilation
+## 54.25 Feature Flags and Conditional Compilation
 
-### 54.26.1 Cargo Feature Flags in pvmfw
+### 54.25.1 Cargo Feature Flags in pvmfw
 
 pvmfw uses Rust `cfg` attributes to conditionally compile features based on the
 target platform:
@@ -4352,7 +3979,7 @@ let bytes_for_next = if cfg!(dice_changes) {
 };
 ```
 
-### 54.26.2 Build-Time Feature Flags in the vm CLI
+### 54.25.2 Build-Time Feature Flags in the vm CLI
 
 The `vm` CLI uses `cfg` blocks to gate features that may not be available on
 all platforms:
@@ -4406,7 +4033,7 @@ impl CommonConfig {
 }
 ```
 
-### 54.26.3 VirtualizationService Feature Flags
+### 54.25.3 VirtualizationService Feature Flags
 
 The VirtualizationService uses `cfg` for the LLPVM (Long-Lived Protected VM)
 maintenance service:
@@ -4421,7 +4048,7 @@ if cfg!(llpvm_changes) {
 }
 ```
 
-### 54.26.4 crosvm Feature Flags
+### 54.25.4 crosvm Feature Flags
 
 crosvm uses Cargo features extensively to control optional components:
 
@@ -4458,9 +4085,9 @@ VMs are headless.
 
 ---
 
-## 54.27 Comparison with Other Virtualization Solutions
+## 54.26 Comparison with Other Virtualization Solutions
 
-### 54.27.1 AVF vs Traditional Hypervisors
+### 54.26.1 AVF vs Traditional Hypervisors
 
 | Aspect | AVF/pKVM | Type-1 Hypervisor (e.g., Xen) | Type-2 (e.g., QEMU/KVM) |
 |---|---|---|---|
@@ -4472,7 +4099,7 @@ VMs are headless.
 | Guest OS | Microdroid (minimal Android) | Any | Any |
 | Primary use case | Confidential mobile compute | Server virtualization | Desktop/server VMs |
 
-### 54.27.2 AVF vs ARM CCA
+### 54.26.2 AVF vs ARM CCA
 
 ARM Confidential Compute Architecture (CCA) introduces Realms as a hardware
 feature for confidential computing. pKVM is designed to be compatible with
@@ -4497,6 +4124,379 @@ The pvmfw README acknowledges this forward compatibility:
 
 > The pVM concept is not Google-exclusive. Partner-defined VMs (SoC/OEM) meeting
 > isolation/memory access restrictions are also pVMs.
+
+---
+
+## 54.27 Try It
+
+### 54.27.1 Checking Device Support
+
+First, verify that your device supports virtualization:
+
+```shell
+# Check for KVM support
+adb shell ls -la /dev/kvm
+
+# Check VM support via the vm tool
+adb shell /apex/com.android.virt/bin/vm info
+```
+
+Expected output on a supported device:
+
+```
+Both protected and non-protected VMs are supported.
+Hypervisor version: 1.0
+/dev/kvm exists.
+/dev/vfio/vfio does not exist.
+VFIO-platform is not supported.
+Assignable devices: []
+Available OS list: ["microdroid"]
+Debug policy: none
+```
+
+### 54.27.2 Running a Microdroid VM
+
+The simplest way to run a VM is using the shell helper script:
+
+```shell
+# Run a non-protected Microdroid VM
+packages/modules/Virtualization/android/vm/vm_shell.sh start-microdroid
+
+# Run a protected Microdroid VM with auto-connect
+packages/modules/Virtualization/android/vm/vm_shell.sh \
+    start-microdroid --auto-connect -- --protected
+```
+
+Or directly with the `vm` tool:
+
+```shell
+# Run Microdroid directly
+adb shell /apex/com.android.virt/bin/vm run-microdroid
+
+# Run protected with debug output
+adb shell /apex/com.android.virt/bin/vm run-microdroid \
+    --protected \
+    --debug full \
+    --console /data/local/tmp/virt/console.txt \
+    --log /data/local/tmp/virt/log.txt
+```
+
+### 54.27.3 Building a Payload App
+
+Create a minimal VM payload:
+
+**Native payload (C++):**
+
+```cpp
+// my_payload.cpp
+#include <stdio.h>
+
+extern "C" int AVmPayload_main() {
+    printf("Hello from Microdroid VM!\n");
+    // Payload code runs here
+    return 0;
+}
+```
+
+**Build rules (Android.bp):**
+
+```blueprint
+cc_library_shared {
+    name: "MyMicrodroidPayload",
+    srcs: ["my_payload.cpp"],
+    shared_libs: ["libvm_payload#current"],
+    sdk_version: "current",
+}
+
+android_app {
+    name: "MyPayloadApp",
+    srcs: ["**/*.java"],
+    jni_libs: ["MyMicrodroidPayload"],
+    use_embedded_native_libs: true,
+    sdk_version: "current",
+}
+```
+
+**Run the payload:**
+
+```shell
+# Build and install
+TARGET_BUILD_APPS=MyPayloadApp m apps_only dist
+adb install out/dist/MyPayloadApp.apk
+
+# Get the installed APK path
+APK_PATH=$(adb shell pm path com.example.mypayloadapp | cut -d: -f2)
+
+# Run the VM
+TEST_ROOT=/data/local/tmp/virt
+adb shell /apex/com.android.virt/bin/vm run-app \
+    --log $TEST_ROOT/log.txt \
+    --console $TEST_ROOT/console.txt \
+    $APK_PATH \
+    $TEST_ROOT/MyPayloadApp.apk.idsig \
+    $TEST_ROOT/instance.img \
+    --instance-id-file $TEST_ROOT/instance_id \
+    --payload-binary-name MyMicrodroidPayload.so
+```
+
+### 54.27.4 Java API Usage
+
+For programmatic VM management from an Android app:
+
+```java
+// Create VM configuration
+VirtualMachineConfig config = new VirtualMachineConfig.Builder(context)
+    .setPayloadBinaryName("MyMicrodroidPayload.so")
+    .setDebugLevel(VirtualMachineConfig.DEBUG_LEVEL_FULL)
+    .setProtectedVm(true)
+    .setMemoryBytes(256 * 1024 * 1024)  // 256 MiB
+    .build();
+
+// Create and start the VM
+VirtualMachineManager vmm = context.getSystemService(VirtualMachineManager.class);
+VirtualMachine vm = vmm.getOrCreate("my-vm", config);
+vm.setCallback(executor, new VirtualMachineCallback() {
+    @Override
+    public void onPayloadStarted(VirtualMachine vm) {
+        Log.i(TAG, "Payload started");
+    }
+
+    @Override
+    public void onPayloadReady(VirtualMachine vm) {
+        Log.i(TAG, "Payload ready");
+    }
+
+    @Override
+    public void onPayloadFinished(VirtualMachine vm, int exitCode) {
+        Log.i(TAG, "Payload finished: " + exitCode);
+    }
+
+    @Override
+    public void onError(VirtualMachine vm, int errorCode, String message) {
+        Log.e(TAG, "VM error: " + message);
+    }
+});
+vm.run();
+```
+
+### 54.27.5 Running Tests
+
+AVF includes comprehensive test suites:
+
+```shell
+# Run the main Microdroid host tests
+atest MicrodroidHostTestCases
+
+# Run the Microdroid app tests
+atest MicrodroidTestApp
+
+# Verify DICE chain validity (pVM required)
+atest MicrodroidTests#protectedVmHasValidDiceChain
+```
+
+### 54.27.6 Debugging VMs
+
+**Console output:**
+
+```shell
+# Direct console to a file
+adb shell /apex/com.android.virt/bin/vm run-microdroid \
+    --console /data/local/tmp/console.txt
+
+# Read console output
+adb shell cat /data/local/tmp/console.txt
+```
+
+**GDB debugging:**
+
+```shell
+# Start VM with GDB server
+adb shell /apex/com.android.virt/bin/vm run-microdroid \
+    --debug full --gdb 1234
+
+# Connect GDB (from host)
+adb forward tcp:1234 tcp:1234
+gdb-multiarch -ex "target remote :1234"
+```
+
+**Early console (earlycon):**
+
+```shell
+# Enable earlycon for early boot debugging
+adb shell /apex/com.android.virt/bin/vm run-microdroid \
+    --debug full --enable-earlycon
+```
+
+**Listing running VMs:**
+
+```shell
+adb shell /apex/com.android.virt/bin/vm list
+```
+
+**Device tree dump:**
+
+```shell
+# Dump the VM's device tree for inspection
+adb shell /apex/com.android.virt/bin/vm run-microdroid \
+    --dump-device-tree /data/local/tmp/vm_dt.dtb
+```
+
+### 54.27.7 Custom VM Configuration
+
+For advanced use cases, you can create a custom VM configuration:
+
+```json
+{
+    "name": "my-custom-vm",
+    "kernel": "/data/local/tmp/Image",
+    "initrd": "/data/local/tmp/initramfs.img",
+    "params": "console=hvc0 earlycon=uart8250,mmio,0x3f8",
+    "disks": [
+        {
+            "partitions": [
+                {
+                    "label": "rootfs",
+                    "path": "/data/local/tmp/rootfs.img"
+                }
+            ],
+            "writable": false
+        }
+    ],
+    "protected": false,
+    "memory_mib": 512,
+    "platform_version": "~1.0"
+}
+```
+
+Run with:
+
+```shell
+adb push my_vm_config.json /data/local/tmp/
+adb shell /apex/com.android.virt/bin/vm run /data/local/tmp/my_vm_config.json
+```
+
+### 54.27.8 Inspecting AVF Components
+
+**APEX contents:**
+
+```shell
+# List what's inside the AVF APEX
+adb shell ls -la /apex/com.android.virt/
+
+# Check the pvmfw binary
+adb shell ls -la /apex/com.android.virt/etc/pvmfw.bin
+
+# Check the Microdroid images
+adb shell ls -la /apex/com.android.virt/etc/fs/
+```
+
+**System properties:**
+
+```shell
+# Check hypervisor status
+adb shell getprop ro.boot.hypervisor.vm.supported
+adb shell getprop ro.boot.hypervisor.protected_vm.supported
+adb shell getprop ro.boot.hypervisor.version
+
+# Check AVF features
+adb shell /apex/com.android.virt/bin/vm check-feature-enabled remote_attestation
+adb shell /apex/com.android.virt/bin/vm check-feature-enabled vendor_modules
+adb shell /apex/com.android.virt/bin/vm check-feature-enabled device_assignment
+```
+
+### 54.27.9 Building AVF from Source
+
+To build the complete AVF stack from AOSP source:
+
+```shell
+# Set up build environment
+source build/envsetup.sh
+lunch aosp_cf_x86_64_phone-userdebug  # or aosp_panther-userdebug for Pixel 7
+
+# Build the entire system (including AVF)
+m
+
+# Or build just the AVF APEX for faster iteration
+banchan com.android.virt aosp_arm64  # or aosp_x86_64
+UNBUNDLED_BUILD_SDKS_FROM_SOURCE=true m apps_only dist
+
+# Install the APEX
+adb install out/dist/com.android.virt.apex
+adb reboot
+```
+
+### 54.27.10 Troubleshooting
+
+**VM fails to start:**
+
+- Check `/dev/kvm` exists: `adb shell ls -la /dev/kvm`
+- Verify APEX is installed: `adb shell pm list packages | grep virt`
+- Check logcat: `adb logcat -s VirtualizationService:* virtmgr:* crosvm:*`
+
+**Protected VM fails:**
+
+- Verify pKVM is enabled: `adb shell getprop ro.boot.hypervisor.protected_vm.supported`
+- Check pvmfw path: `adb shell getprop hypervisor.pvmfw.path`
+- Check pvmfw reboot reasons in console output
+
+**Performance issues:**
+
+- Use `--hugepages` for transparent huge pages support
+- Use `--cpu-topology match_host` to match host CPU topology
+- Use `--boost-uclamp` for benchmarking stability
+
+### 54.27.11 Remote Attestation Demo
+
+The `VmAttestationDemoApp` at `packages/modules/Virtualization/android/VmAttestationDemoApp/`
+demonstrates how a pVM payload can request remote attestation:
+
+```cpp
+// Inside VM payload
+extern "C" int AVmPayload_main() {
+    // Generate a challenge (typically from a remote server)
+    uint8_t challenge[32];
+    // ... fill challenge from server ...
+
+    // Request attestation
+    AVmAttestationResult* result = nullptr;
+    int status = AVmPayload_requestAttestation(challenge, sizeof(challenge), &result);
+    if (status != 0) {
+        // Attestation failed
+        return status;
+    }
+
+    // Use the attestation result
+    // - Get the certificate chain
+    // - Get the attested private key
+    // - Send certificate to remote server for verification
+
+    AVmPayload_freeAttestationResult(result);
+    return 0;
+}
+```
+
+The attestation flow within the device:
+
+```mermaid
+sequenceDiagram
+    participant Payload as pVM Payload
+    participant MM as microdroid_manager
+    participant VS as VirtualizationService
+    participant SVM as Service VM (RKP)
+    participant RKP as RKP Server
+
+    Payload->>MM: AVmPayload_requestAttestation(challenge)
+    MM->>VS: Forward attestation request
+    VS->>SVM: Start Service VM (if not running)
+    VS->>SVM: Send CSR + pVM DICE chain
+    SVM->>SVM: Validate pVM DICE chain
+    SVM->>RKP: Submit RKP VM DICE chain + CSR
+    RKP->>RKP: Verify RKP VM identity
+    RKP-->>SVM: Signed certificate chain
+    SVM-->>VS: Attestation result
+    VS-->>MM: Certificate chain + key
+    MM-->>Payload: AVmAttestationResult
+```
 
 ---
 
