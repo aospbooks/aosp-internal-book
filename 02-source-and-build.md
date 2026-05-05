@@ -3894,13 +3894,521 @@ integrations, demonstrating the benefits of Bazel's hermetic build model.
 
 ---
 
-## 2.10 Try It: Build AOSP for the Emulator
+## 2.10 Advanced Topics
+
+### 2.10.1 The `soong.<TARGET_PRODUCT>.variables` Bridge
+
+Soong and Kati need to share configuration information. Kati writes a JSON
+file that Soong reads. The path is keyed by `TARGET_PRODUCT` (the product
+component of your lunch combo — for
+`lunch aosp_cf_x86_64_phone-trunk_staging-userdebug`,
+`TARGET_PRODUCT=aosp_cf_x86_64_phone`):
+
+```
+out/soong/soong.<TARGET_PRODUCT>.variables
+```
+
+The path is constructed in `build/make/core/config.mk:1255`:
+
+```makefile
+SOONG_VARIABLES := $(SOONG_OUT_DIR)/soong.$(TARGET_PRODUCT)$(COVERAGE_SUFFIX).variables
+```
+
+For the `aosp_cf_x86_64_phone` lunch combo above, the file is
+`out/soong/soong.aosp_cf_x86_64_phone.variables`. A typical payload looks like:
+
+```json
+{
+    "Platform_sdk_version": 35,
+    "Platform_sdk_codename": "VanillaIceCream",
+    "Platform_version_active_codenames": ["VanillaIceCream"],
+    "DeviceName": "generic_arm64",
+    "DeviceArch": "arm64",
+    "DeviceArchVariant": "armv8-a",
+    "DeviceCpuVariant": "generic",
+    "DeviceSecondaryArch": "",
+    "Aml_abis": ["arm64-v8a"],
+    "Eng": true,
+    "Debuggable": true,
+    ...
+}
+```
+
+This file bridges the Make world (where product configuration lives) with the
+Go world (where module compilation happens). When you change a product
+variable in a `.mk` file, it flows through this file to affect Soong's
+behavior. (Soong falls back to a plain `out/soong/soong.variables` only when
+`TARGET_PRODUCT` is unset; a lunched build always writes the
+product-suffixed file.)
+
+### 2.10.2 ABI Stability and VNDK
+
+The Android build system enforces **ABI (Application Binary Interface)
+stability** through several mechanisms:
+
+- **VNDK (Vendor Native Development Kit):** A set of system libraries that
+  vendors can depend on with guaranteed ABI stability across Android versions.
+- **AIDL interfaces:** Stable IPC interfaces between system and vendor
+  partitions.
+- **HIDL interfaces:** Hardware Abstraction Layer interfaces (legacy, being
+  replaced by AIDL).
+- **System SDK:** Stable Java APIs for vendor applications.
+
+The build system tracks which modules are part of the VNDK and enforces
+dependency rules:
+
+```
+// Module that is part of the VNDK
+cc_library {
+    name: "libcutils",
+    vndk: {
+        enabled: true,
+    },
+    ...
+}
+```
+
+Vendor modules can only depend on VNDK libraries and their own private
+libraries. The build system rejects dependencies that would cross the
+system/vendor boundary through non-stable interfaces.
+
+### 2.10.3 Build Flags and Feature Gates
+
+AOSP uses **aconfig** (Android Configuration) for feature flags:
+
+```
+// Flag declaration (in .aconfig file)
+package: "com.android.settings.flags"
+
+flag {
+    name: "new_wifi_page"
+    namespace: "settings_ui"
+    description: "Enable the redesigned WiFi settings page"
+    bug: "b/123456789"
+}
+```
+
+Feature flags are resolved at build time based on the release configuration:
+
+```
+// Using a flag in Android.bp
+cc_library {
+    name: "libwifi_settings",
+    srcs: select(release_flag("RELEASE_NEW_WIFI_PAGE"), {
+        true: ["new_wifi_page.cpp"],
+        default: ["old_wifi_page.cpp"],
+    }),
+}
+```
+
+This mechanism allows the same source tree to produce different builds
+depending on the release configuration, without requiring separate branches.
+
+### 2.10.4 Build System Metrics
+
+The AOSP build system collects detailed metrics about build performance:
+
+```bash
+# Build with metrics collection
+m --build-event-log=build_event.log
+
+# View build metrics
+cat out/soong_build_metrics.pb | protoc --decode=...
+```
+
+Key metrics include:
+
+- Total build time
+- Time spent in each phase (Soong, Kati, Ninja)
+- Number of modules processed
+- Cache hit rates
+- Memory usage peaks
+- I/O statistics
+
+These metrics are invaluable for identifying build performance bottlenecks
+and tracking improvements across releases.
+
+### 2.10.5 Reproducible Builds
+
+AOSP strives for reproducible builds -- given the same source code and build
+environment, the output should be identical. This is achieved through:
+
+- **Fixed timestamps:** Build outputs use deterministic timestamps rather than
+  the current time.
+- **Sorted inputs:** File lists and directory traversals are sorted to
+  eliminate ordering-dependent variations.
+- **Hermetic toolchain:** Prebuilt compilers and tools are checked into the
+  repository.
+- **Sandboxed builds:** Soong restricts access to files outside the declared
+  inputs.
+- **BUILD_DATETIME_FILE:** A fixed build timestamp used across all build rules.
+
+Reproducibility is important for:
+
+- Security auditing (verifying that a binary matches its source)
+- CI/CD caching (identical inputs produce identical outputs)
+- Regulatory compliance (some markets require reproducible builds)
+
+### 2.10.6 Build System Internals: Module Variant Architecture
+
+One of the most complex aspects of the build system is module variant
+management. A single `cc_library` declaration can expand into many variants:
+
+```mermaid
+graph TB
+    LIB[cc_library: libfoo]
+
+    subgraph "Architecture Variants"
+        ARM64[android_arm64]
+        X86[android_x86_64]
+        HOST[linux_glibc_x86_64]
+    end
+
+    subgraph "Link Type Variants"
+        SHARED[shared]
+        STATIC[static]
+    end
+
+    subgraph "APEX Variants"
+        PLATFORM[platform]
+        WIFI_APEX[com.android.wifi]
+        MEDIA_APEX[com.android.media]
+    end
+
+    subgraph "Sanitizer Variants"
+        NORMAL[normal]
+        ASAN[asan]
+        HWASAN[hwasan]
+    end
+
+    LIB --> ARM64
+    LIB --> X86
+    LIB --> HOST
+
+    ARM64 --> SHARED
+    ARM64 --> STATIC
+
+    SHARED --> PLATFORM
+    SHARED --> WIFI_APEX
+    SHARED --> MEDIA_APEX
+
+    PLATFORM --> NORMAL
+    PLATFORM --> ASAN
+    PLATFORM --> HWASAN
+
+    style LIB fill:#4a90d9,color:#fff
+    style ARM64 fill:#50b848,color:#fff
+    style SHARED fill:#e8a838,color:#fff
+    style PLATFORM fill:#d94a4a,color:#fff
+```
+
+A single `cc_library` can thus expand into dozens of variants, each producing
+its own binary. The mutator system handles this expansion systematically:
+
+1. **Architecture mutator:** Creates one variant per target architecture
+   (arm64, x86_64, etc.) plus host variants.
+2. **Link type mutator:** Creates shared and static library variants.
+3. **APEX mutator:** Creates one variant per APEX the library appears in,
+   plus a platform variant.
+4. **Sanitizer mutator:** Creates variants for ASan, TSan, HWSan, etc.
+5. **Image mutator:** Creates variants for different partition images.
+
+This is why the `out/soong/.intermediates/` directory is so large -- it
+contains separate build artifacts for every variant of every module.
+
+---
+
+## 2.11 Build System Reference Tables
+
+This section provides consolidated reference tables for quick lookup during
+development.
+
+### 2.11.1 Complete List of Common Build Commands
+
+| Command | Purpose | Example |
+|---------|---------|---------|
+| `source build/envsetup.sh` | Initialize build environment | Run once per terminal session |
+| `lunch <target>` | Select build target | `lunch aosp_arm64` |
+| `m` | Build from tree root | `m` or `m droid` |
+| `m <module>` | Build a specific module | `m Settings` |
+| `m <image>` | Build a specific image | `m systemimage` |
+| `mm` | Build current directory | `cd frameworks/base && mm` |
+| `mmm <dir>` | Build specified directory | `mmm packages/apps/Settings` |
+| `m clean` | Delete output directory | |
+| `m nothing` | Run setup only | Useful for checking config |
+| `m soong_docs` | Generate module docs | Output in out/soong/docs/ |
+| `m json-module-graph` | Generate module graph | |
+| `m module-info` | Generate module index | |
+| `atest <test>` | Run a test | `atest SettingsTests` |
+| `croot` | cd to tree root | |
+| `gomod <module>` | cd to module's source | `gomod Settings` |
+| `pathmod <module>` | Print module's path | `pathmod Settings` |
+| `outmod <module>` | Print module's output path | `outmod Settings` |
+| `allmod` | List all modules | |
+| `refreshmod` | Refresh module index | |
+| `printconfig` | Show build configuration | |
+| `get_build_var <var>` | Print a build variable | `get_build_var TARGET_PRODUCT` |
+| `showcommands <target>` | Show build commands | |
+| `bpfmt -w .` | Format Android.bp files | |
+| `androidmk Android.mk` | Convert mk to bp | |
+| `tapas <app>` | Build unbundled app | `tapas Camera eng` |
+| `banchan <apex>` | Build unbundled APEX | `banchan com.android.wifi arm64` |
+
+### 2.11.2 Key Environment Variables
+
+| Variable | Set By | Purpose |
+|----------|--------|---------|
+| `TOP` | envsetup.sh | Root of the source tree |
+| `TARGET_PRODUCT` | lunch | Product name (e.g., `aosp_arm64`) |
+| `TARGET_BUILD_VARIANT` | lunch | Build variant (`eng`/`userdebug`/`user`) |
+| `TARGET_RELEASE` | lunch | Release configuration |
+| `TARGET_BUILD_TYPE` | lunch | Always `release` |
+| `TARGET_BUILD_APPS` | tapas/banchan | Unbundled app/APEX names |
+| `ANDROID_PRODUCT_OUT` | lunch | Path to device output directory |
+| `ANDROID_HOST_OUT` | lunch | Path to host tools output |
+| `ANDROID_BUILD_TOP` | envsetup.sh | Same as TOP (deprecated) |
+| `ANDROID_JAVA_HOME` | lunch | Path to JDK |
+| `OUT_DIR` | User (optional) | Override output directory (default: `out`) |
+| `USE_CCACHE` | User (optional) | Enable ccache (`1` to enable) |
+| `CCACHE_DIR` | User (optional) | ccache directory location |
+| `SOONG_DELVE` | User (optional) | Debug port for soong_build |
+| `SOONG_UI_DELVE` | User (optional) | Debug port for soong_ui |
+| `NINJA_STATUS` | User (optional) | Custom Ninja status format |
+
+### 2.11.3 Common Android.bp Properties for cc_library
+
+| Property | Type | Purpose |
+|----------|------|---------|
+| `name` | string | Module name (must be unique) |
+| `srcs` | list of strings | Source files (supports globs) |
+| `exclude_srcs` | list of strings | Files to exclude from srcs |
+| `generated_sources` | list of strings | Source-generating modules |
+| `generated_headers` | list of strings | Header-generating modules |
+| `cflags` | list of strings | C/C++ compiler flags |
+| `cppflags` | list of strings | C++ only compiler flags |
+| `conlyflags` | list of strings | C only compiler flags |
+| `asflags` | list of strings | Assembly flags |
+| `ldflags` | list of strings | Linker flags |
+| `shared_libs` | list of strings | Shared library dependencies |
+| `static_libs` | list of strings | Static library dependencies |
+| `whole_static_libs` | list of strings | Static libs included entirely |
+| `header_libs` | list of strings | Header-only dependencies |
+| `runtime_libs` | list of strings | Runtime-only shared libraries |
+| `local_include_dirs` | list of strings | Private include paths |
+| `export_include_dirs` | list of strings | Public include paths |
+| `export_shared_lib_headers` | list of strings | Transitively export headers |
+| `stl` | string | C++ STL selection |
+| `host_supported` | bool | Build for host too |
+| `device_supported` | bool | Build for device (default: true) |
+| `vendor` | bool | Install to vendor partition |
+| `vendor_available` | bool | Available to vendor modules |
+| `recovery_available` | bool | Available in recovery |
+| `apex_available` | list of strings | APEX modules this can be in |
+| `min_sdk_version` | string | Minimum SDK version |
+| `defaults` | list of strings | Defaults modules to inherit from |
+| `visibility` | list of strings | Visibility rules |
+| `enabled` | bool | Whether the module is enabled |
+| `arch` | map | Architecture-specific properties |
+| `target` | map | Target-specific properties (android/host) |
+| `multilib` | map | Multilib properties (lib32/lib64) |
+| `sanitize` | map | Sanitizer configuration |
+| `strip` | map | Strip configuration |
+| `pack_relocations` | bool | Pack relocations (default: true) |
+| `allow_undefined_symbols` | bool | Allow undefined symbols |
+| `nocrt` | bool | Don't link C runtime startup |
+| `no_libcrt` | bool | Don't link compiler runtime |
+| `stubs` | map | Generate stubs for versioning |
+| `vndk` | map | VNDK configuration |
+
+### 2.11.4 Common Android.bp Properties for android_app
+
+| Property | Type | Purpose |
+|----------|------|---------|
+| `name` | string | Module name |
+| `srcs` | list of strings | Java/Kotlin source files |
+| `resource_dirs` | list of strings | Android resource directories |
+| `asset_dirs` | list of strings | Asset directories |
+| `manifest` | string | AndroidManifest.xml path |
+| `static_libs` | list of strings | Static Java library dependencies |
+| `libs` | list of strings | Compile-time-only dependencies |
+| `platform_apis` | bool | Use platform (hidden) APIs |
+| `certificate` | string | Signing certificate |
+| `privileged` | bool | Install as privileged app |
+| `overrides` | list of strings | Apps this replaces |
+| `required` | list of strings | Modules that must be installed too |
+| `dex_preopt` | map | DEX pre-optimization settings |
+| `optimize` | map | ProGuard/R8 optimization |
+| `aaptflags` | list of strings | Extra AAPT flags |
+| `package_name` | string | Override package name |
+| `sdk_version` | string | SDK version to build against |
+| `min_sdk_version` | string | Minimum SDK version |
+| `target_sdk_version` | string | Target SDK version |
+| `uses_libs` | list of strings | Shared library dependencies |
+| `optional_uses_libs` | list of strings | Optional shared library deps |
+| `jni_libs` | list of strings | JNI native libraries |
+| `use_resource_processor` | bool | Enable resource processor |
+| `javac_shard_size` | int | Files per javac shard |
+| `errorprone` | map | Error-prone checker config |
+
+### 2.11.5 Directory Structure Quick Reference
+
+| Path | Contents |
+|------|----------|
+| `art/` | Android Runtime (ART VM, dex2oat, etc.) |
+| `bionic/` | C library (libc, libm, libdl, linker) |
+| `bootable/` | Recovery, bootloader libraries |
+| `build/blueprint/` | Blueprint meta-build framework |
+| `build/make/` | Make-based build system and product config |
+| `build/soong/` | Soong build system (Go) |
+| `build/pesto/` | Bazel integration experiments |
+| `build/release/` | Release configuration |
+| `cts/` | Compatibility Test Suite |
+| `dalvik/` | Dalvik VM (historical) |
+| `development/` | Developer tools and samples |
+| `device/` | Device configurations |
+| `device/generic/goldfish/` | Emulator (Goldfish) device |
+| `device/google/cuttlefish/` | Virtual device (Cuttlefish) |
+| `external/` | Third-party projects (700+ repos) |
+| `frameworks/base/` | Core Android framework |
+| `frameworks/native/` | Native framework (SurfaceFlinger, Binder) |
+| `frameworks/av/` | Audio/Video framework |
+| `hardware/interfaces/` | HIDL/AIDL HAL definitions |
+| `kernel/` | Kernel build config and prebuilts |
+| `libcore/` | Core Java libraries (OpenJDK-based) |
+| `packages/apps/` | System applications |
+| `packages/modules/` | Mainline modules (APEX) |
+| `packages/providers/` | Content providers |
+| `packages/services/` | System services |
+| `prebuilts/` | Prebuilt tools (Clang, JDK, SDK, etc.) |
+| `system/core/` | Core system utilities (init, adb, logcat) |
+| `system/extras/` | Additional system utilities |
+| `system/sepolicy/` | SELinux policy |
+| `tools/` | Development tools |
+| `vendor/` | Vendor-specific code |
+
+---
+
+## 2.12 Glossary of Build System Terms
+
+| Term | Definition |
+|------|-----------|
+| **ABI** | Application Binary Interface. The binary-level interface between two program modules, defining data types, sizes, alignment, calling conventions, and system call numbers. |
+| **AIDL** | Android Interface Definition Language. Used to define stable IPC interfaces between system components. |
+| **Android.bp** | Blueprint file format used by Soong. Declarative, JSON-like syntax for defining build modules. |
+| **Android.mk** | Legacy Make-based module definition format. Still supported but being phased out in favor of Android.bp. |
+| **APEX** | Android Pony EXpress. A container format for independently updatable system components. |
+| **Blueprint** | The meta-build framework underlying Soong. A Go library for parsing module definitions and generating Ninja manifests. |
+| **BoardConfig.mk** | Device-level configuration file that defines architecture, partition sizes, and hardware features. |
+| **bp2build** | Tool that converts Android.bp files to Bazel BUILD files for the Soong-to-Bazel migration. |
+| **bpfmt** | Blueprint file formatter (analogous to gofmt for Go). |
+| **Context** | The central state object in Blueprint that orchestrates the four build phases. |
+| **Cuttlefish** | A cloud-friendly Android virtual device (alternative to the Goldfish emulator). |
+| **Dynamic Partitions** | A logical volume system that allows flexible partition sizing within a single `super.img`. |
+| **GKI** | Generic Kernel Image. A standardized kernel binary shared across devices of the same Android version. |
+| **Goldfish** | The traditional Android emulator device, based on QEMU. |
+| **GSI** | Generic System Image. A system.img that should work on any device compliant with Project Treble. |
+| **HIDL** | Hardware Interface Definition Language. Legacy HAL interface language being replaced by AIDL. |
+| **Kati** | A Make-compatible build tool written in Go, used by AOSP instead of GNU Make. |
+| **Kleaf** | Bazel-based kernel build system. The name is a portmanteau of "kernel" and "leaf" (Bazel). |
+| **KMI** | Kernel Module Interface. The stable ABI between the GKI kernel and vendor kernel modules. |
+| **Mainline** | The Android project for delivering OS component updates via the Play Store using APEX and APK. |
+| **Manifest** | An XML file defining the set of Git repositories that make up the AOSP source tree. |
+| **Module** | The basic unit of building in Soong. Analogous to a "target" in Make or Bazel. |
+| **Mutator** | A Blueprint function that visits modules to modify them (e.g., creating architecture variants). |
+| **Ninja** | A fast, low-level build execution tool. Soong and Kati generate Ninja manifests; Ninja executes them. |
+| **PDK** | Platform Development Kit. A subset of AOSP used by hardware partners for early device bring-up. |
+| **Provider** | Blueprint's mechanism for passing structured data between modules in the dependency graph. |
+| **RBE** | Remote Build Execution. Distributes build actions across a cluster for faster builds. |
+| **repo** | A Python tool that manages multiple Git repositories using a manifest file. |
+| **Soong** | Android's primary build system, built on top of Blueprint. Processes Android.bp files. |
+| **soong_ui** | The build system driver/entry point. Orchestrates Soong, Kati, and Ninja. |
+| **super.img** | The container image for dynamic partitions. Contains system, vendor, product, etc. |
+| **Treble** | The Android architecture that separates the OS framework from vendor-specific code, enabling faster updates. |
+| **Variant** | One of multiple builds of the same module (e.g., arm64 shared, arm64 static, x86_64 shared, etc.). |
+| **VNDK** | Vendor Native Development Kit. A set of system libraries with guaranteed ABI stability for vendors. |
+
+---
+
+## 2.13 Further Reading
+
+### In-Tree Documentation
+
+These files are available in your AOSP checkout and provide authoritative
+reference information:
+
+- **`build/soong/README.md`** -- Comprehensive Soong and Android.bp reference
+  (738 lines). Covers module syntax, variables, conditionals, namespaces,
+  visibility, and debugging.
+- **`build/blueprint/doc.go`** -- Blueprint framework architecture overview.
+  Explains the meta-build concept, four build phases, and mutator system.
+- **`build/make/Changes.md`** -- Chronological log of build system changes,
+  deprecated variables, and migration guides.
+- **`build/make/README.md`** -- Make layer documentation and links.
+- **`build/soong/docs/best_practices.md`** -- Best practices for writing
+  Android.bp files, including how to remove conditionals.
+- **`build/soong/docs/selects.md`** -- Detailed documentation for select
+  statements (the new conditional mechanism).
+- **`build/soong/docs/perf.md`** -- Build performance optimization guide.
+- **`build/soong/docs/compdb.md`** -- Generating compile_commands.json for
+  IDE integration (VSCode, CLion, etc.).
+- **`prebuilts/clang/host/linux-x86/kleaf/README.md`** -- Kleaf toolchain
+  documentation for kernel builds.
+
+### External Resources
+
+- **Android Source website:** https://source.android.com/setup/build
+  -- Official getting started guide for building AOSP.
+- **Android Build Cookbook:** https://source.android.com/setup/build/building
+  -- Step-by-step build instructions.
+- **APEX documentation:** https://source.android.com/devices/tech/ota/apex
+  -- Official APEX architecture and development guide.
+- **GKI documentation:** https://source.android.com/devices/architecture/kernel/generic-kernel-image
+  -- Generic Kernel Image architecture.
+- **Project Treble:** https://source.android.com/devices/architecture
+  -- The vendor/system partition split architecture.
+- **Repo tool repository:** https://gerrit.googlesource.com/git-repo/
+  -- Source code and documentation for the repo tool.
+- **Ninja build system:** https://ninja-build.org/
+  -- Ninja's documentation and design philosophy.
+- **Bazel documentation:** https://bazel.build/
+  -- Comprehensive Bazel build system documentation.
+- **Gerrit Code Review:** https://android-review.googlesource.com/
+  -- The AOSP code review platform.
+- **Android CI:** https://ci.android.com/
+  -- Continuous integration dashboard showing latest build status.
+- **Android Code Search:** https://cs.android.com/
+  -- Web-based code search for the entire AOSP tree.
+
+### Generated Documentation
+
+After building, these additional resources are available:
+
+```bash
+# Module type reference (HTML)
+m soong_docs
+# Output: out/soong/docs/soong_build.html
+
+# Module dependency graph (JSON)
+m json-module-graph
+# Output: out/soong/module_graph.json
+
+# Module info database
+m module-info
+# Output: out/target/product/<device>/module-info.json
+
+# Installed file list
+# Output: out/target/product/<device>/installed-files.txt
+```
+
+---
+
+## 2.14 Try It: Build AOSP for the Emulator
 
 This section provides a step-by-step guide to building AOSP from source and
 running it on the Android Emulator. This is the fastest way to get a
 working AOSP build and start making changes.
 
-### 2.10.1 System Preparation
+### 2.14.1 System Preparation
 
 **Step 1: Ensure you have the prerequisites.**
 
@@ -3935,7 +4443,7 @@ mkdir -p ~/aosp
 cd ~/aosp
 ```
 
-### 2.10.2 Fetching the Source
+### 2.14.2 Fetching the Source
 
 **Step 3: Initialize the repo workspace.**
 
@@ -3961,7 +4469,7 @@ repo sync -c -j$(nproc) --no-tags
 # repo sync -c -j$(nproc) --no-tags --optimized-fetch
 ```
 
-### 2.10.3 Setting Up the Build Environment
+### 2.14.3 Setting Up the Build Environment
 
 **Step 5: Source `envsetup.sh`.**
 
@@ -4012,7 +4520,7 @@ OUT_DIR=out
 ============================================
 ```
 
-### 2.10.4 Building
+### 2.14.4 Building
 
 **Step 7: Start the build.**
 
@@ -4062,7 +4570,7 @@ ls out/target/product/generic_arm64/
 # ...
 ```
 
-### 2.10.5 Running the Emulator
+### 2.14.5 Running the Emulator
 
 **Step 9: Launch the emulator.**
 
@@ -4099,7 +4607,7 @@ emulator -wipe-data
 emulator -no-window
 ```
 
-### 2.10.6 Making Changes and Rebuilding
+### 2.14.6 Making Changes and Rebuilding
 
 **Step 10: Make a change and rebuild incrementally.**
 
@@ -4133,7 +4641,7 @@ adb install -r out/target/product/generic_arm64/system/priv-app/Settings/Setting
 adb reboot
 ```
 
-### 2.10.7 Debugging Build Failures
+### 2.14.7 Debugging Build Failures
 
 Build failures in AOSP can be daunting due to the size of the codebase. Here
 are strategies for diagnosing common issues:
@@ -4205,7 +4713,7 @@ m clean
 rm -rf out/
 ```
 
-### 2.10.8 Debugging Soong Itself
+### 2.14.8 Debugging Soong Itself
 
 Soong provides built-in debugging support for when you need to understand
 or modify the build system itself.
@@ -4252,7 +4760,7 @@ m module-info
 The `module-info.json` file contains machine-readable information about every
 module in the build, including paths, dependencies, and installed locations.
 
-### 2.10.9 Using Cuttlefish Instead of Goldfish
+### 2.14.9 Using Cuttlefish Instead of Goldfish
 
 While this chapter focused on the Goldfish emulator (the traditional AOSP
 emulator), Google also maintains **Cuttlefish** -- a virtual device that runs
@@ -4281,7 +4789,7 @@ Cuttlefish disadvantages:
 - Needs KVM support
 - Not as widely available as the Goldfish emulator
 
-### 2.10.10 Useful Development Commands
+### 2.14.10 Useful Development Commands
 
 After sourcing `envsetup.sh` and running `lunch`, many convenience commands
 are available:
@@ -4311,7 +4819,7 @@ showcommands <target>   # Show Ninja commands for a target
 aninja                  # Run Ninja directly with arguments
 ```
 
-### 2.10.11 Build Performance Tips
+### 2.14.11 Build Performance Tips
 
 1. **Use an SSD.** The build performs millions of small I/O operations. An SSD
    vs. HDD can mean a 2-5x speed difference.
@@ -4346,7 +4854,7 @@ aninja                  # Run Ninja directly with arguments
 7. **Use `mm` for focused development.** When working on a single module,
    `mm` is much faster than `m` because it skips the Kati phase.
 
-### 2.10.12 Incremental Development Workflow
+### 2.14.12 Incremental Development Workflow
 
 For day-to-day development, the typical workflow is:
 
@@ -4425,7 +4933,7 @@ adb reboot
 Note: Pushing files directly only works on `eng` or `userdebug` builds where
 the system partition is writable (or you can use `adb remount`).
 
-### 2.10.13 Understanding Build Output Messages
+### 2.14.13 Understanding Build Output Messages
 
 During a build, Soong prints progress in a compact format. Understanding
 these messages helps diagnose where the build spends its time:
@@ -4452,7 +4960,7 @@ for a long-running action to complete. Common bottlenecks include:
 You can see which actions are currently running by pressing any key during
 the build (Ninja will print the active actions).
 
-### 2.10.14 Parallel Build Configuration
+### 2.14.14 Parallel Build Configuration
 
 The AOSP build respects several parallelism controls:
 
@@ -4481,230 +4989,6 @@ The optimal `-j` value depends on your machine:
 Memory is often the bottleneck, not CPU. Each compiler instance can use
 1-2 GB of memory, so with 32 GB of RAM you can safely run about 16 parallel
 compilation jobs.
-
----
-
-## 2.11 Advanced Topics
-
-### 2.11.1 The `soong.<TARGET_PRODUCT>.variables` Bridge
-
-Soong and Kati need to share configuration information. Kati writes a JSON
-file that Soong reads. The path is keyed by `TARGET_PRODUCT` (the product
-component of your lunch combo — for
-`lunch aosp_cf_x86_64_phone-trunk_staging-userdebug`,
-`TARGET_PRODUCT=aosp_cf_x86_64_phone`):
-
-```
-out/soong/soong.<TARGET_PRODUCT>.variables
-```
-
-The path is constructed in `build/make/core/config.mk:1255`:
-
-```makefile
-SOONG_VARIABLES := $(SOONG_OUT_DIR)/soong.$(TARGET_PRODUCT)$(COVERAGE_SUFFIX).variables
-```
-
-For the `aosp_cf_x86_64_phone` lunch combo above, the file is
-`out/soong/soong.aosp_cf_x86_64_phone.variables`. A typical payload looks like:
-
-```json
-{
-    "Platform_sdk_version": 35,
-    "Platform_sdk_codename": "VanillaIceCream",
-    "Platform_version_active_codenames": ["VanillaIceCream"],
-    "DeviceName": "generic_arm64",
-    "DeviceArch": "arm64",
-    "DeviceArchVariant": "armv8-a",
-    "DeviceCpuVariant": "generic",
-    "DeviceSecondaryArch": "",
-    "Aml_abis": ["arm64-v8a"],
-    "Eng": true,
-    "Debuggable": true,
-    ...
-}
-```
-
-This file bridges the Make world (where product configuration lives) with the
-Go world (where module compilation happens). When you change a product
-variable in a `.mk` file, it flows through this file to affect Soong's
-behavior. (Soong falls back to a plain `out/soong/soong.variables` only when
-`TARGET_PRODUCT` is unset; a lunched build always writes the
-product-suffixed file.)
-
-### 2.11.2 ABI Stability and VNDK
-
-The Android build system enforces **ABI (Application Binary Interface)
-stability** through several mechanisms:
-
-- **VNDK (Vendor Native Development Kit):** A set of system libraries that
-  vendors can depend on with guaranteed ABI stability across Android versions.
-- **AIDL interfaces:** Stable IPC interfaces between system and vendor
-  partitions.
-- **HIDL interfaces:** Hardware Abstraction Layer interfaces (legacy, being
-  replaced by AIDL).
-- **System SDK:** Stable Java APIs for vendor applications.
-
-The build system tracks which modules are part of the VNDK and enforces
-dependency rules:
-
-```
-// Module that is part of the VNDK
-cc_library {
-    name: "libcutils",
-    vndk: {
-        enabled: true,
-    },
-    ...
-}
-```
-
-Vendor modules can only depend on VNDK libraries and their own private
-libraries. The build system rejects dependencies that would cross the
-system/vendor boundary through non-stable interfaces.
-
-### 2.11.3 Build Flags and Feature Gates
-
-AOSP uses **aconfig** (Android Configuration) for feature flags:
-
-```
-// Flag declaration (in .aconfig file)
-package: "com.android.settings.flags"
-
-flag {
-    name: "new_wifi_page"
-    namespace: "settings_ui"
-    description: "Enable the redesigned WiFi settings page"
-    bug: "b/123456789"
-}
-```
-
-Feature flags are resolved at build time based on the release configuration:
-
-```
-// Using a flag in Android.bp
-cc_library {
-    name: "libwifi_settings",
-    srcs: select(release_flag("RELEASE_NEW_WIFI_PAGE"), {
-        true: ["new_wifi_page.cpp"],
-        default: ["old_wifi_page.cpp"],
-    }),
-}
-```
-
-This mechanism allows the same source tree to produce different builds
-depending on the release configuration, without requiring separate branches.
-
-### 2.11.4 Build System Metrics
-
-The AOSP build system collects detailed metrics about build performance:
-
-```bash
-# Build with metrics collection
-m --build-event-log=build_event.log
-
-# View build metrics
-cat out/soong_build_metrics.pb | protoc --decode=...
-```
-
-Key metrics include:
-
-- Total build time
-- Time spent in each phase (Soong, Kati, Ninja)
-- Number of modules processed
-- Cache hit rates
-- Memory usage peaks
-- I/O statistics
-
-These metrics are invaluable for identifying build performance bottlenecks
-and tracking improvements across releases.
-
-### 2.11.5 Reproducible Builds
-
-AOSP strives for reproducible builds -- given the same source code and build
-environment, the output should be identical. This is achieved through:
-
-- **Fixed timestamps:** Build outputs use deterministic timestamps rather than
-  the current time.
-- **Sorted inputs:** File lists and directory traversals are sorted to
-  eliminate ordering-dependent variations.
-- **Hermetic toolchain:** Prebuilt compilers and tools are checked into the
-  repository.
-- **Sandboxed builds:** Soong restricts access to files outside the declared
-  inputs.
-- **BUILD_DATETIME_FILE:** A fixed build timestamp used across all build rules.
-
-Reproducibility is important for:
-
-- Security auditing (verifying that a binary matches its source)
-- CI/CD caching (identical inputs produce identical outputs)
-- Regulatory compliance (some markets require reproducible builds)
-
-### 2.11.6 Build System Internals: Module Variant Architecture
-
-One of the most complex aspects of the build system is module variant
-management. A single `cc_library` declaration can expand into many variants:
-
-```mermaid
-graph TB
-    LIB[cc_library: libfoo]
-
-    subgraph "Architecture Variants"
-        ARM64[android_arm64]
-        X86[android_x86_64]
-        HOST[linux_glibc_x86_64]
-    end
-
-    subgraph "Link Type Variants"
-        SHARED[shared]
-        STATIC[static]
-    end
-
-    subgraph "APEX Variants"
-        PLATFORM[platform]
-        WIFI_APEX[com.android.wifi]
-        MEDIA_APEX[com.android.media]
-    end
-
-    subgraph "Sanitizer Variants"
-        NORMAL[normal]
-        ASAN[asan]
-        HWASAN[hwasan]
-    end
-
-    LIB --> ARM64
-    LIB --> X86
-    LIB --> HOST
-
-    ARM64 --> SHARED
-    ARM64 --> STATIC
-
-    SHARED --> PLATFORM
-    SHARED --> WIFI_APEX
-    SHARED --> MEDIA_APEX
-
-    PLATFORM --> NORMAL
-    PLATFORM --> ASAN
-    PLATFORM --> HWASAN
-
-    style LIB fill:#4a90d9,color:#fff
-    style ARM64 fill:#50b848,color:#fff
-    style SHARED fill:#e8a838,color:#fff
-    style PLATFORM fill:#d94a4a,color:#fff
-```
-
-A single `cc_library` can thus expand into dozens of variants, each producing
-its own binary. The mutator system handles this expansion systematically:
-
-1. **Architecture mutator:** Creates one variant per target architecture
-   (arm64, x86_64, etc.) plus host variants.
-2. **Link type mutator:** Creates shared and static library variants.
-3. **APEX mutator:** Creates one variant per APEX the library appears in,
-   plus a platform variant.
-4. **Sanitizer mutator:** Creates variants for ASan, TSan, HWSan, etc.
-5. **Image mutator:** Creates variants for different partition images.
-
-This is why the `out/soong/.intermediates/` directory is so large -- it
-contains separate build artifacts for every variant of every module.
 
 ---
 
@@ -4787,285 +5071,3 @@ graph LR
 In the next chapter, we will explore the runtime architecture of Android --
 what happens when these images boot on a device, from the bootloader through
 `init` to the fully running Android system.
-
----
-
-## 2.12 Build System Reference Tables
-
-This section provides consolidated reference tables for quick lookup during
-development.
-
-### 2.12.1 Complete List of Common Build Commands
-
-| Command | Purpose | Example |
-|---------|---------|---------|
-| `source build/envsetup.sh` | Initialize build environment | Run once per terminal session |
-| `lunch <target>` | Select build target | `lunch aosp_arm64` |
-| `m` | Build from tree root | `m` or `m droid` |
-| `m <module>` | Build a specific module | `m Settings` |
-| `m <image>` | Build a specific image | `m systemimage` |
-| `mm` | Build current directory | `cd frameworks/base && mm` |
-| `mmm <dir>` | Build specified directory | `mmm packages/apps/Settings` |
-| `m clean` | Delete output directory | |
-| `m nothing` | Run setup only | Useful for checking config |
-| `m soong_docs` | Generate module docs | Output in out/soong/docs/ |
-| `m json-module-graph` | Generate module graph | |
-| `m module-info` | Generate module index | |
-| `atest <test>` | Run a test | `atest SettingsTests` |
-| `croot` | cd to tree root | |
-| `gomod <module>` | cd to module's source | `gomod Settings` |
-| `pathmod <module>` | Print module's path | `pathmod Settings` |
-| `outmod <module>` | Print module's output path | `outmod Settings` |
-| `allmod` | List all modules | |
-| `refreshmod` | Refresh module index | |
-| `printconfig` | Show build configuration | |
-| `get_build_var <var>` | Print a build variable | `get_build_var TARGET_PRODUCT` |
-| `showcommands <target>` | Show build commands | |
-| `bpfmt -w .` | Format Android.bp files | |
-| `androidmk Android.mk` | Convert mk to bp | |
-| `tapas <app>` | Build unbundled app | `tapas Camera eng` |
-| `banchan <apex>` | Build unbundled APEX | `banchan com.android.wifi arm64` |
-
-### 2.12.2 Key Environment Variables
-
-| Variable | Set By | Purpose |
-|----------|--------|---------|
-| `TOP` | envsetup.sh | Root of the source tree |
-| `TARGET_PRODUCT` | lunch | Product name (e.g., `aosp_arm64`) |
-| `TARGET_BUILD_VARIANT` | lunch | Build variant (`eng`/`userdebug`/`user`) |
-| `TARGET_RELEASE` | lunch | Release configuration |
-| `TARGET_BUILD_TYPE` | lunch | Always `release` |
-| `TARGET_BUILD_APPS` | tapas/banchan | Unbundled app/APEX names |
-| `ANDROID_PRODUCT_OUT` | lunch | Path to device output directory |
-| `ANDROID_HOST_OUT` | lunch | Path to host tools output |
-| `ANDROID_BUILD_TOP` | envsetup.sh | Same as TOP (deprecated) |
-| `ANDROID_JAVA_HOME` | lunch | Path to JDK |
-| `OUT_DIR` | User (optional) | Override output directory (default: `out`) |
-| `USE_CCACHE` | User (optional) | Enable ccache (`1` to enable) |
-| `CCACHE_DIR` | User (optional) | ccache directory location |
-| `SOONG_DELVE` | User (optional) | Debug port for soong_build |
-| `SOONG_UI_DELVE` | User (optional) | Debug port for soong_ui |
-| `NINJA_STATUS` | User (optional) | Custom Ninja status format |
-
-### 2.12.3 Common Android.bp Properties for cc_library
-
-| Property | Type | Purpose |
-|----------|------|---------|
-| `name` | string | Module name (must be unique) |
-| `srcs` | list of strings | Source files (supports globs) |
-| `exclude_srcs` | list of strings | Files to exclude from srcs |
-| `generated_sources` | list of strings | Source-generating modules |
-| `generated_headers` | list of strings | Header-generating modules |
-| `cflags` | list of strings | C/C++ compiler flags |
-| `cppflags` | list of strings | C++ only compiler flags |
-| `conlyflags` | list of strings | C only compiler flags |
-| `asflags` | list of strings | Assembly flags |
-| `ldflags` | list of strings | Linker flags |
-| `shared_libs` | list of strings | Shared library dependencies |
-| `static_libs` | list of strings | Static library dependencies |
-| `whole_static_libs` | list of strings | Static libs included entirely |
-| `header_libs` | list of strings | Header-only dependencies |
-| `runtime_libs` | list of strings | Runtime-only shared libraries |
-| `local_include_dirs` | list of strings | Private include paths |
-| `export_include_dirs` | list of strings | Public include paths |
-| `export_shared_lib_headers` | list of strings | Transitively export headers |
-| `stl` | string | C++ STL selection |
-| `host_supported` | bool | Build for host too |
-| `device_supported` | bool | Build for device (default: true) |
-| `vendor` | bool | Install to vendor partition |
-| `vendor_available` | bool | Available to vendor modules |
-| `recovery_available` | bool | Available in recovery |
-| `apex_available` | list of strings | APEX modules this can be in |
-| `min_sdk_version` | string | Minimum SDK version |
-| `defaults` | list of strings | Defaults modules to inherit from |
-| `visibility` | list of strings | Visibility rules |
-| `enabled` | bool | Whether the module is enabled |
-| `arch` | map | Architecture-specific properties |
-| `target` | map | Target-specific properties (android/host) |
-| `multilib` | map | Multilib properties (lib32/lib64) |
-| `sanitize` | map | Sanitizer configuration |
-| `strip` | map | Strip configuration |
-| `pack_relocations` | bool | Pack relocations (default: true) |
-| `allow_undefined_symbols` | bool | Allow undefined symbols |
-| `nocrt` | bool | Don't link C runtime startup |
-| `no_libcrt` | bool | Don't link compiler runtime |
-| `stubs` | map | Generate stubs for versioning |
-| `vndk` | map | VNDK configuration |
-
-### 2.12.4 Common Android.bp Properties for android_app
-
-| Property | Type | Purpose |
-|----------|------|---------|
-| `name` | string | Module name |
-| `srcs` | list of strings | Java/Kotlin source files |
-| `resource_dirs` | list of strings | Android resource directories |
-| `asset_dirs` | list of strings | Asset directories |
-| `manifest` | string | AndroidManifest.xml path |
-| `static_libs` | list of strings | Static Java library dependencies |
-| `libs` | list of strings | Compile-time-only dependencies |
-| `platform_apis` | bool | Use platform (hidden) APIs |
-| `certificate` | string | Signing certificate |
-| `privileged` | bool | Install as privileged app |
-| `overrides` | list of strings | Apps this replaces |
-| `required` | list of strings | Modules that must be installed too |
-| `dex_preopt` | map | DEX pre-optimization settings |
-| `optimize` | map | ProGuard/R8 optimization |
-| `aaptflags` | list of strings | Extra AAPT flags |
-| `package_name` | string | Override package name |
-| `sdk_version` | string | SDK version to build against |
-| `min_sdk_version` | string | Minimum SDK version |
-| `target_sdk_version` | string | Target SDK version |
-| `uses_libs` | list of strings | Shared library dependencies |
-| `optional_uses_libs` | list of strings | Optional shared library deps |
-| `jni_libs` | list of strings | JNI native libraries |
-| `use_resource_processor` | bool | Enable resource processor |
-| `javac_shard_size` | int | Files per javac shard |
-| `errorprone` | map | Error-prone checker config |
-
-### 2.12.5 Directory Structure Quick Reference
-
-| Path | Contents |
-|------|----------|
-| `art/` | Android Runtime (ART VM, dex2oat, etc.) |
-| `bionic/` | C library (libc, libm, libdl, linker) |
-| `bootable/` | Recovery, bootloader libraries |
-| `build/blueprint/` | Blueprint meta-build framework |
-| `build/make/` | Make-based build system and product config |
-| `build/soong/` | Soong build system (Go) |
-| `build/pesto/` | Bazel integration experiments |
-| `build/release/` | Release configuration |
-| `cts/` | Compatibility Test Suite |
-| `dalvik/` | Dalvik VM (historical) |
-| `development/` | Developer tools and samples |
-| `device/` | Device configurations |
-| `device/generic/goldfish/` | Emulator (Goldfish) device |
-| `device/google/cuttlefish/` | Virtual device (Cuttlefish) |
-| `external/` | Third-party projects (700+ repos) |
-| `frameworks/base/` | Core Android framework |
-| `frameworks/native/` | Native framework (SurfaceFlinger, Binder) |
-| `frameworks/av/` | Audio/Video framework |
-| `hardware/interfaces/` | HIDL/AIDL HAL definitions |
-| `kernel/` | Kernel build config and prebuilts |
-| `libcore/` | Core Java libraries (OpenJDK-based) |
-| `packages/apps/` | System applications |
-| `packages/modules/` | Mainline modules (APEX) |
-| `packages/providers/` | Content providers |
-| `packages/services/` | System services |
-| `prebuilts/` | Prebuilt tools (Clang, JDK, SDK, etc.) |
-| `system/core/` | Core system utilities (init, adb, logcat) |
-| `system/extras/` | Additional system utilities |
-| `system/sepolicy/` | SELinux policy |
-| `tools/` | Development tools |
-| `vendor/` | Vendor-specific code |
-
----
-
-## Glossary of Build System Terms
-
-| Term | Definition |
-|------|-----------|
-| **ABI** | Application Binary Interface. The binary-level interface between two program modules, defining data types, sizes, alignment, calling conventions, and system call numbers. |
-| **AIDL** | Android Interface Definition Language. Used to define stable IPC interfaces between system components. |
-| **Android.bp** | Blueprint file format used by Soong. Declarative, JSON-like syntax for defining build modules. |
-| **Android.mk** | Legacy Make-based module definition format. Still supported but being phased out in favor of Android.bp. |
-| **APEX** | Android Pony EXpress. A container format for independently updatable system components. |
-| **Blueprint** | The meta-build framework underlying Soong. A Go library for parsing module definitions and generating Ninja manifests. |
-| **BoardConfig.mk** | Device-level configuration file that defines architecture, partition sizes, and hardware features. |
-| **bp2build** | Tool that converts Android.bp files to Bazel BUILD files for the Soong-to-Bazel migration. |
-| **bpfmt** | Blueprint file formatter (analogous to gofmt for Go). |
-| **Context** | The central state object in Blueprint that orchestrates the four build phases. |
-| **Cuttlefish** | A cloud-friendly Android virtual device (alternative to the Goldfish emulator). |
-| **Dynamic Partitions** | A logical volume system that allows flexible partition sizing within a single `super.img`. |
-| **GKI** | Generic Kernel Image. A standardized kernel binary shared across devices of the same Android version. |
-| **Goldfish** | The traditional Android emulator device, based on QEMU. |
-| **GSI** | Generic System Image. A system.img that should work on any device compliant with Project Treble. |
-| **HIDL** | Hardware Interface Definition Language. Legacy HAL interface language being replaced by AIDL. |
-| **Kati** | A Make-compatible build tool written in Go, used by AOSP instead of GNU Make. |
-| **Kleaf** | Bazel-based kernel build system. The name is a portmanteau of "kernel" and "leaf" (Bazel). |
-| **KMI** | Kernel Module Interface. The stable ABI between the GKI kernel and vendor kernel modules. |
-| **Mainline** | The Android project for delivering OS component updates via the Play Store using APEX and APK. |
-| **Manifest** | An XML file defining the set of Git repositories that make up the AOSP source tree. |
-| **Module** | The basic unit of building in Soong. Analogous to a "target" in Make or Bazel. |
-| **Mutator** | A Blueprint function that visits modules to modify them (e.g., creating architecture variants). |
-| **Ninja** | A fast, low-level build execution tool. Soong and Kati generate Ninja manifests; Ninja executes them. |
-| **PDK** | Platform Development Kit. A subset of AOSP used by hardware partners for early device bring-up. |
-| **Provider** | Blueprint's mechanism for passing structured data between modules in the dependency graph. |
-| **RBE** | Remote Build Execution. Distributes build actions across a cluster for faster builds. |
-| **repo** | A Python tool that manages multiple Git repositories using a manifest file. |
-| **Soong** | Android's primary build system, built on top of Blueprint. Processes Android.bp files. |
-| **soong_ui** | The build system driver/entry point. Orchestrates Soong, Kati, and Ninja. |
-| **super.img** | The container image for dynamic partitions. Contains system, vendor, product, etc. |
-| **Treble** | The Android architecture that separates the OS framework from vendor-specific code, enabling faster updates. |
-| **Variant** | One of multiple builds of the same module (e.g., arm64 shared, arm64 static, x86_64 shared, etc.). |
-| **VNDK** | Vendor Native Development Kit. A set of system libraries with guaranteed ABI stability for vendors. |
-
-## Further Reading
-
-### In-Tree Documentation
-
-These files are available in your AOSP checkout and provide authoritative
-reference information:
-
-- **`build/soong/README.md`** -- Comprehensive Soong and Android.bp reference
-  (738 lines). Covers module syntax, variables, conditionals, namespaces,
-  visibility, and debugging.
-- **`build/blueprint/doc.go`** -- Blueprint framework architecture overview.
-  Explains the meta-build concept, four build phases, and mutator system.
-- **`build/make/Changes.md`** -- Chronological log of build system changes,
-  deprecated variables, and migration guides.
-- **`build/make/README.md`** -- Make layer documentation and links.
-- **`build/soong/docs/best_practices.md`** -- Best practices for writing
-  Android.bp files, including how to remove conditionals.
-- **`build/soong/docs/selects.md`** -- Detailed documentation for select
-  statements (the new conditional mechanism).
-- **`build/soong/docs/perf.md`** -- Build performance optimization guide.
-- **`build/soong/docs/compdb.md`** -- Generating compile_commands.json for
-  IDE integration (VSCode, CLion, etc.).
-- **`prebuilts/clang/host/linux-x86/kleaf/README.md`** -- Kleaf toolchain
-  documentation for kernel builds.
-
-### External Resources
-
-- **Android Source website:** https://source.android.com/setup/build
-  -- Official getting started guide for building AOSP.
-- **Android Build Cookbook:** https://source.android.com/setup/build/building
-  -- Step-by-step build instructions.
-- **APEX documentation:** https://source.android.com/devices/tech/ota/apex
-  -- Official APEX architecture and development guide.
-- **GKI documentation:** https://source.android.com/devices/architecture/kernel/generic-kernel-image
-  -- Generic Kernel Image architecture.
-- **Project Treble:** https://source.android.com/devices/architecture
-  -- The vendor/system partition split architecture.
-- **Repo tool repository:** https://gerrit.googlesource.com/git-repo/
-  -- Source code and documentation for the repo tool.
-- **Ninja build system:** https://ninja-build.org/
-  -- Ninja's documentation and design philosophy.
-- **Bazel documentation:** https://bazel.build/
-  -- Comprehensive Bazel build system documentation.
-- **Gerrit Code Review:** https://android-review.googlesource.com/
-  -- The AOSP code review platform.
-- **Android CI:** https://ci.android.com/
-  -- Continuous integration dashboard showing latest build status.
-- **Android Code Search:** https://cs.android.com/
-  -- Web-based code search for the entire AOSP tree.
-
-### Generated Documentation
-
-After building, these additional resources are available:
-
-```bash
-# Module type reference (HTML)
-m soong_docs
-# Output: out/soong/docs/soong_build.html
-
-# Module dependency graph (JSON)
-m json-module-graph
-# Output: out/soong/module_graph.json
-
-# Module info database
-m module-info
-# Output: out/target/product/<device>/module-info.json
-
-# Installed file list
-# Output: out/target/product/<device>/installed-files.txt
-```
