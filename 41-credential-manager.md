@@ -1180,288 +1180,6 @@ between verifier and provider.
 
 ---
 
-## 41.7 Try It
-
-### 41.7.1 Inspecting Credential Manager State
-
-**List enabled credential providers:**
-
-```bash
-# Check the Settings.Secure value for the current user
-adb shell settings get --user 0 secure credential_service
-
-# Check primary providers
-adb shell settings get --user 0 secure credential_service_primary
-```
-
-**Dump CredentialManagerService state:**
-
-```bash
-adb shell dumpsys credential
-```
-
-This shows:
-
-- Active provider services (user-configurable and system)
-- Ongoing request sessions
-- Provider capability information
-- Service binding states
-
-### 41.7.2 Enabling a Provider
-
-```bash
-# Set a provider as enabled (requires WRITE_SECURE_SETTINGS)
-adb shell settings put --user 0 secure credential_service \
-    "com.example.myprovider/.MyCredentialProviderService"
-
-# Set a provider as primary
-adb shell settings put --user 0 secure credential_service_primary \
-    "com.example.myprovider/.MyCredentialProviderService"
-```
-
-### 41.7.3 Implementing a Minimal Provider
-
-A basic password provider demonstrates the two-phase protocol.
-
-**1. Service declaration (AndroidManifest.xml):**
-
-```xml
-<service
-    android:name=".DemoCredentialProvider"
-    android:permission="android.permission.BIND_CREDENTIAL_PROVIDER_SERVICE"
-    android:exported="true">
-    <intent-filter>
-        <action android:name="android.service.credentials.CredentialProviderService" />
-    </intent-filter>
-    <meta-data
-        android:name="android.credentials.provider"
-        android:resource="@xml/provider_config" />
-</service>
-```
-
-**2. Provider configuration (res/xml/provider_config.xml):**
-
-```xml
-<credential-provider xmlns:android="http://schemas.android.com/apk/res/android">
-    <capabilities>
-        <capability name="android.credentials.TYPE_PASSWORD_CREDENTIAL" />
-    </capabilities>
-</credential-provider>
-```
-
-**3. Service implementation:**
-
-```kotlin
-class DemoCredentialProvider : CredentialProviderService() {
-
-    override fun onBeginGetCredential(
-        request: BeginGetCredentialRequest,
-        cancellationSignal: CancellationSignal,
-        callback: OutcomeReceiver<BeginGetCredentialResponse,
-                GetCredentialException>
-    ) {
-        val entries = mutableListOf<CredentialEntry>()
-
-        for (option in request.beginGetCredentialOptions) {
-            if (option.type == Credential.TYPE_PASSWORD_CREDENTIAL) {
-                // Look up stored credentials for the calling app
-                val stored = lookupPasswords(request.callingAppInfo.packageName)
-                for (cred in stored) {
-                    entries.add(
-                        CredentialEntry.Builder(
-                            option.id,
-                            createPendingIntent(cred.id)
-                        )
-                        .build()
-                    )
-                }
-            }
-        }
-
-        callback.onResult(
-            BeginGetCredentialResponse.Builder()
-                .setCredentialEntries(entries)
-                .build()
-        )
-    }
-
-    override fun onBeginCreateCredential(
-        request: BeginCreateCredentialRequest,
-        cancellationSignal: CancellationSignal,
-        callback: OutcomeReceiver<BeginCreateCredentialResponse,
-                CreateCredentialException>
-    ) {
-        callback.onResult(
-            BeginCreateCredentialResponse.Builder()
-                .addCreateEntry(
-                    CreateEntry.Builder("Save to Demo Provider",
-                        createSavePendingIntent()
-                    ).build()
-                ).build()
-        )
-    }
-
-    override fun onClearCredentialState(
-        request: ClearCredentialStateRequest,
-        cancellationSignal: CancellationSignal,
-        callback: OutcomeReceiver<Void, ClearCredentialStateException>
-    ) {
-        // Clear any cached credential state
-        callback.onResult(null)
-    }
-}
-```
-
-**4. Client usage:**
-
-```kotlin
-val credentialManager = getSystemService(CredentialManager::class.java)
-
-// Get a credential
-val getRequest = GetCredentialRequest.Builder()
-    .addCredentialOption(
-        GetPasswordOption()
-    )
-    .build()
-
-credentialManager.getCredential(
-    context = this,
-    request = getRequest,
-    cancellationSignal = null,
-    executor = mainExecutor,
-    callback = object : OutcomeReceiver<GetCredentialResponse,
-            GetCredentialException> {
-        override fun onResult(result: GetCredentialResponse) {
-            // Handle credential: result.credential.data
-        }
-        override fun onError(error: GetCredentialException) {
-            // Handle error
-        }
-    }
-)
-```
-
-### 41.7.4 Debugging Provider Communication
-
-**Enable verbose logging:**
-
-```bash
-adb shell setprop log.tag.CredentialManager VERBOSE
-adb logcat -s CredentialManager
-```
-
-**Monitor provider binding:**
-
-```bash
-adb logcat | grep -E "CredentialManagerServiceImpl|RemoteCredentialService"
-```
-
-**Check for timeout issues:**
-
-```bash
-# The 3-second timeout is logged when providers are slow
-adb logcat | grep "Remote provider response timed"
-```
-
-### 41.7.5 Credential Description API
-
-**Check if the description API is enabled:**
-
-```bash
-adb shell device_config get credential enable_credential_description_api
-```
-
-**Enable it for testing:**
-
-```bash
-adb shell device_config put credential enable_credential_description_api true
-```
-
-### 41.7.6 Testing Passkey Flows
-
-To test passkey creation and authentication:
-
-1. Set up a WebAuthn relying party (or use webauthn.io for testing)
-2. Enable a passkey-capable provider (e.g., Google Password Manager)
-3. In a test app or browser:
-
-```kotlin
-// Create a passkey
-val createRequest = CreateCredentialRequest(
-    "androidx.credentials.TYPE_PUBLIC_KEY_CREDENTIAL",
-    Bundle().apply {
-        putString(
-            "androidx.credentials.BUNDLE_KEY_REQUEST_JSON",
-            """{"rp":{"id":"example.com","name":"Example"},
-               "user":{"id":"dXNlcg","name":"user@example.com"},
-               "challenge":"Y2hhbGxlbmdl",
-               "pubKeyCredParams":[{"type":"public-key","alg":-7}],
-               "authenticatorSelection":{"residentKey":"required"}}"""
-        )
-    }
-)
-credentialManager.createCredential(context, createRequest, ...)
-```
-
-### 41.7.7 DeviceConfig Flags
-
-The Credential Manager respects several `DeviceConfig` flags:
-
-| Flag | Namespace | Purpose |
-|---|---|---|
-| `enable_credential_manager` | `credential` | Master enable/disable |
-| `enable_credential_description_api` | `credential` | Enable registry-based matching |
-
-```bash
-# Check if Credential Manager is enabled
-adb shell device_config get credential enable_credential_manager
-
-# Disable for testing
-adb shell device_config put credential enable_credential_manager false
-```
-
-### 41.7.8 Sequence of Key Log Messages
-
-When tracing a complete get-credential flow, look for these log messages in order:
-
-```
-CredentialManager: starting executeGetCredential with callingPackage: com.example.app
-CredentialManager: CredentialManagerServiceImpl constructed for: com.provider/.Service
-CredentialManager: Provider session created and being added for: com.provider/.Service
-CredentialManager: Status changed for: com.provider/.Service, with status: CREDENTIALS_RECEIVED
-CredentialManager: Provider status changed - ui invocation is needed
-CredentialManager: For ui, provider data size: 1
-CredentialManager: onFinalResponseReceived from: com.provider/.Service
-CredentialManager: finishing session with propagateCancellation false
-```
-
----
-
-## Summary
-
-The Credential Manager framework transforms Android's credential handling from a
-fragmented collection of APIs into a unified, secure, and extensible system. Its
-architecture rests on several key pillars:
-
-- **`CredentialManagerService`** orchestrates the entire flow, managing per-user
-  provider instances and request sessions
-- **The two-phase protocol** (begin/finalize) ensures credential material is never
-  unnecessarily loaded or exposed to the system
-- **`ProviderSession` state machines** track each provider's progress through
-  a well-defined lifecycle
-- **`RemoteCredentialService`** handles the asynchronous binding and communication
-  with provider processes, with strict timeouts
-- **The `CredentialDescriptionRegistry`** enables efficient routing for digital
-  credential use cases
-- **System-mediated UI** via `CredentialManagerUi` ensures users always see a
-  trustworthy credential picker
-
-The framework supports passwords, passkeys (FIDO2/WebAuthn), and digital identity
-credentials through the same unified path, with extensibility for future credential
-types through the provider capability system.
-
----
-
 ## Appendix: Deep Dive into Internal Classes
 
 ### A.1 CredentialManagerUi Internals
@@ -2064,3 +1782,285 @@ Optimization strategies:
 - `PrepareGetRequestSession` for pre-fetching
 - `CredentialDescriptionRegistry` for skipping non-matching providers
 - Parallel provider queries (all providers queried simultaneously)
+
+---
+
+## 41.7 Try It
+
+### 41.7.1 Inspecting Credential Manager State
+
+**List enabled credential providers:**
+
+```bash
+# Check the Settings.Secure value for the current user
+adb shell settings get --user 0 secure credential_service
+
+# Check primary providers
+adb shell settings get --user 0 secure credential_service_primary
+```
+
+**Dump CredentialManagerService state:**
+
+```bash
+adb shell dumpsys credential
+```
+
+This shows:
+
+- Active provider services (user-configurable and system)
+- Ongoing request sessions
+- Provider capability information
+- Service binding states
+
+### 41.7.2 Enabling a Provider
+
+```bash
+# Set a provider as enabled (requires WRITE_SECURE_SETTINGS)
+adb shell settings put --user 0 secure credential_service \
+    "com.example.myprovider/.MyCredentialProviderService"
+
+# Set a provider as primary
+adb shell settings put --user 0 secure credential_service_primary \
+    "com.example.myprovider/.MyCredentialProviderService"
+```
+
+### 41.7.3 Implementing a Minimal Provider
+
+A basic password provider demonstrates the two-phase protocol.
+
+**1. Service declaration (AndroidManifest.xml):**
+
+```xml
+<service
+    android:name=".DemoCredentialProvider"
+    android:permission="android.permission.BIND_CREDENTIAL_PROVIDER_SERVICE"
+    android:exported="true">
+    <intent-filter>
+        <action android:name="android.service.credentials.CredentialProviderService" />
+    </intent-filter>
+    <meta-data
+        android:name="android.credentials.provider"
+        android:resource="@xml/provider_config" />
+</service>
+```
+
+**2. Provider configuration (res/xml/provider_config.xml):**
+
+```xml
+<credential-provider xmlns:android="http://schemas.android.com/apk/res/android">
+    <capabilities>
+        <capability name="android.credentials.TYPE_PASSWORD_CREDENTIAL" />
+    </capabilities>
+</credential-provider>
+```
+
+**3. Service implementation:**
+
+```kotlin
+class DemoCredentialProvider : CredentialProviderService() {
+
+    override fun onBeginGetCredential(
+        request: BeginGetCredentialRequest,
+        cancellationSignal: CancellationSignal,
+        callback: OutcomeReceiver<BeginGetCredentialResponse,
+                GetCredentialException>
+    ) {
+        val entries = mutableListOf<CredentialEntry>()
+
+        for (option in request.beginGetCredentialOptions) {
+            if (option.type == Credential.TYPE_PASSWORD_CREDENTIAL) {
+                // Look up stored credentials for the calling app
+                val stored = lookupPasswords(request.callingAppInfo.packageName)
+                for (cred in stored) {
+                    entries.add(
+                        CredentialEntry.Builder(
+                            option.id,
+                            createPendingIntent(cred.id)
+                        )
+                        .build()
+                    )
+                }
+            }
+        }
+
+        callback.onResult(
+            BeginGetCredentialResponse.Builder()
+                .setCredentialEntries(entries)
+                .build()
+        )
+    }
+
+    override fun onBeginCreateCredential(
+        request: BeginCreateCredentialRequest,
+        cancellationSignal: CancellationSignal,
+        callback: OutcomeReceiver<BeginCreateCredentialResponse,
+                CreateCredentialException>
+    ) {
+        callback.onResult(
+            BeginCreateCredentialResponse.Builder()
+                .addCreateEntry(
+                    CreateEntry.Builder("Save to Demo Provider",
+                        createSavePendingIntent()
+                    ).build()
+                ).build()
+        )
+    }
+
+    override fun onClearCredentialState(
+        request: ClearCredentialStateRequest,
+        cancellationSignal: CancellationSignal,
+        callback: OutcomeReceiver<Void, ClearCredentialStateException>
+    ) {
+        // Clear any cached credential state
+        callback.onResult(null)
+    }
+}
+```
+
+**4. Client usage:**
+
+```kotlin
+val credentialManager = getSystemService(CredentialManager::class.java)
+
+// Get a credential
+val getRequest = GetCredentialRequest.Builder()
+    .addCredentialOption(
+        GetPasswordOption()
+    )
+    .build()
+
+credentialManager.getCredential(
+    context = this,
+    request = getRequest,
+    cancellationSignal = null,
+    executor = mainExecutor,
+    callback = object : OutcomeReceiver<GetCredentialResponse,
+            GetCredentialException> {
+        override fun onResult(result: GetCredentialResponse) {
+            // Handle credential: result.credential.data
+        }
+        override fun onError(error: GetCredentialException) {
+            // Handle error
+        }
+    }
+)
+```
+
+### 41.7.4 Debugging Provider Communication
+
+**Enable verbose logging:**
+
+```bash
+adb shell setprop log.tag.CredentialManager VERBOSE
+adb logcat -s CredentialManager
+```
+
+**Monitor provider binding:**
+
+```bash
+adb logcat | grep -E "CredentialManagerServiceImpl|RemoteCredentialService"
+```
+
+**Check for timeout issues:**
+
+```bash
+# The 3-second timeout is logged when providers are slow
+adb logcat | grep "Remote provider response timed"
+```
+
+### 41.7.5 Credential Description API
+
+**Check if the description API is enabled:**
+
+```bash
+adb shell device_config get credential enable_credential_description_api
+```
+
+**Enable it for testing:**
+
+```bash
+adb shell device_config put credential enable_credential_description_api true
+```
+
+### 41.7.6 Testing Passkey Flows
+
+To test passkey creation and authentication:
+
+1. Set up a WebAuthn relying party (or use webauthn.io for testing)
+2. Enable a passkey-capable provider (e.g., Google Password Manager)
+3. In a test app or browser:
+
+```kotlin
+// Create a passkey
+val createRequest = CreateCredentialRequest(
+    "androidx.credentials.TYPE_PUBLIC_KEY_CREDENTIAL",
+    Bundle().apply {
+        putString(
+            "androidx.credentials.BUNDLE_KEY_REQUEST_JSON",
+            """{"rp":{"id":"example.com","name":"Example"},
+               "user":{"id":"dXNlcg","name":"user@example.com"},
+               "challenge":"Y2hhbGxlbmdl",
+               "pubKeyCredParams":[{"type":"public-key","alg":-7}],
+               "authenticatorSelection":{"residentKey":"required"}}"""
+        )
+    }
+)
+credentialManager.createCredential(context, createRequest, ...)
+```
+
+### 41.7.7 DeviceConfig Flags
+
+The Credential Manager respects several `DeviceConfig` flags:
+
+| Flag | Namespace | Purpose |
+|---|---|---|
+| `enable_credential_manager` | `credential` | Master enable/disable |
+| `enable_credential_description_api` | `credential` | Enable registry-based matching |
+
+```bash
+# Check if Credential Manager is enabled
+adb shell device_config get credential enable_credential_manager
+
+# Disable for testing
+adb shell device_config put credential enable_credential_manager false
+```
+
+### 41.7.8 Sequence of Key Log Messages
+
+When tracing a complete get-credential flow, look for these log messages in order:
+
+```
+CredentialManager: starting executeGetCredential with callingPackage: com.example.app
+CredentialManager: CredentialManagerServiceImpl constructed for: com.provider/.Service
+CredentialManager: Provider session created and being added for: com.provider/.Service
+CredentialManager: Status changed for: com.provider/.Service, with status: CREDENTIALS_RECEIVED
+CredentialManager: Provider status changed - ui invocation is needed
+CredentialManager: For ui, provider data size: 1
+CredentialManager: onFinalResponseReceived from: com.provider/.Service
+CredentialManager: finishing session with propagateCancellation false
+```
+
+---
+
+## Summary
+
+The Credential Manager framework transforms Android's credential handling from a
+fragmented collection of APIs into a unified, secure, and extensible system. Its
+architecture rests on several key pillars:
+
+- **`CredentialManagerService`** orchestrates the entire flow, managing per-user
+  provider instances and request sessions
+- **The two-phase protocol** (begin/finalize) ensures credential material is never
+  unnecessarily loaded or exposed to the system
+- **`ProviderSession` state machines** track each provider's progress through
+  a well-defined lifecycle
+- **`RemoteCredentialService`** handles the asynchronous binding and communication
+  with provider processes, with strict timeouts
+- **The `CredentialDescriptionRegistry`** enables efficient routing for digital
+  credential use cases
+- **System-mediated UI** via `CredentialManagerUi` ensures users always see a
+  trustworthy credential picker
+
+The framework supports passwords, passkeys (FIDO2/WebAuthn), and digital identity
+credentials through the same unified path, with extensibility for future credential
+types through the provider capability system.
