@@ -3388,172 +3388,6 @@ with appropriate library allowlists.
 
 ---
 
-## Summary
-
-This chapter has traced the path from the lowest levels of Android's native
-execution environment -- the system call stubs generated from `SYSCALLS.TXT`,
-the seccomp-BPF filters that constrain which calls are permitted -- through
-the C library that provides the POSIX foundation, and up to the dynamic linker
-that orchestrates library loading, symbol resolution, and namespace isolation.
-
-The key takeaways:
-
-1. **Bionic is purpose-built for Android.** Its BSD license, small size, fast
-   startup, and deep Android integration make it fundamentally different from
-   glibc. The architecture-specific IFUNC dispatch (with paths for MOPS, Oryon,
-   NEON, MTE) demonstrates the performance engineering invested in core
-   operations.
-
-2. **The system call interface is generated, not hand-written.** The
-   `SYSCALLS.TXT` + `gensyscalls.py` approach provides a single source of
-   truth for all five architectures, with architecture-specific concerns
-   (32-bit UID calls, socketcall multiplexing, time64 variants) handled
-   declaratively.
-
-3. **Seccomp-BPF creates a security boundary at the system call level.** The
-   allowlist/blocklist composition (with priority optimization for `futex` and
-   `ioctl`) restricts the kernel attack surface for app processes, while the
-   architecture-aware BPF programs handle dual-ABI systems.
-
-4. **The dynamic linker is the gatekeeper for all native code.** Its
-   ElfReader validates and loads ELF files with ASLR enhancement, 16KiB page
-   compatibility, and BTI support. The relocation engine uses template-based
-   fast paths and symbol caching for performance.
-
-5. **Linker namespaces enforce the Treble architecture boundary.** The
-   `android_namespace_t` structure, configured by `linkerconfig`, creates
-   isolated worlds for platform, vendor, and product code. LL-NDK and VNDK
-   libraries provide controlled interfaces between these worlds, while the
-   exempt list maintains backward compatibility for legacy apps.
-
-Together, these components form the native runtime foundation upon which every
-Android process executes. Understanding them is essential for anyone working on
-system-level Android development, debugging library loading issues, or
-implementing platform security features.
-
-### Architecture-Specific System Call Conventions
-
-To aid readers working on specific architectures, here is a reference table
-of system call conventions across all five architectures supported by Bionic:
-
-| Architecture | Syscall Number | Arg 1 | Arg 2 | Arg 3 | Arg 4 | Arg 5 | Arg 6 | Instruction | Return |
-|-------------|---------------|-------|-------|-------|-------|-------|-------|-------------|--------|
-| arm | r7 | r0 | r1 | r2 | r3 | r4 | r5 | `swi #0` | r0 |
-| arm64 | x8 | x0 | x1 | x2 | x3 | x4 | x5 | `svc #0` | x0 |
-| x86 | eax | ebx | ecx | edx | esi | edi | ebp | `int $0x80` | eax |
-| x86_64 | rax | rdi | rsi | rdx | r10 | r8 | r9 | `syscall` | rax |
-| riscv64 | a7 | a0 | a1 | a2 | a3 | a4 | a5 | `ecall` | a0 |
-
-On error, the return value is in the range [-4095, -1] (or [-MAX_ERRNO, -1]
-in Bionic terms). Bionic stubs negate this value and store it in `errno` via
-`__set_errno_internal`.
-
-Note the x86 peculiarity: 32-bit x86 has only six registers available for
-system call arguments, and socket operations are multiplexed through the
-`socketcall` system call with a sub-command number. This multiplexing is
-absent on all other architectures.
-
-### Linker Configuration File Format
-
-For completeness, here is the grammar of the `ld.config.txt` file format
-that the linker parses at startup:
-
-```
-config     := section*
-section    := "[" name "]" newline property*
-property   := name "=" value newline
-            | name "+=" value newline
-
-# Namespace properties
-namespace.<ns>.search.paths = <colon-separated-paths>
-namespace.<ns>.permitted.paths = <colon-separated-paths>
-namespace.<ns>.asan.search.paths = <colon-separated-paths>
-namespace.<ns>.asan.permitted.paths = <colon-separated-paths>
-namespace.<ns>.hwasan.search.paths = <colon-separated-paths>
-namespace.<ns>.hwasan.permitted.paths = <colon-separated-paths>
-namespace.<ns>.isolated = true|false
-namespace.<ns>.visible = true|false
-namespace.<ns>.links = <comma-separated-ns-names>
-namespace.<ns>.link.<target>.shared_libs = <colon-separated-libs>
-namespace.<ns>.link.<target>.allow_all_shared_libs = true|false
-namespace.<ns>.allowed_libs = <colon-separated-libs>
-
-# Section selectors
-dir.<section> = <path-prefix>
-additional.namespaces = <comma-separated-ns-names>
-```
-
-The `${LIB}` placeholder in paths is expanded to `lib` on 32-bit systems and
-`lib64` on 64-bit systems. The `$ORIGIN` placeholder is expanded to the
-directory containing the requesting library.
-
-### Glossary of Key Terms
-
-| Term | Definition |
-|------|-----------|
-| **ASLR** | Address Space Layout Randomization; randomizes memory layout |
-| **BTI** | Branch Target Identification; ARM security feature |
-| **CFI** | Control Flow Integrity; prevents indirect call hijacking |
-| **DT_NEEDED** | Dynamic table entry listing a required dependency |
-| **DT_RUNPATH** | Dynamic table entry with additional library search paths |
-| **ELF** | Executable and Linkable Format; binary format for executables |
-| **GOT** | Global Offset Table; stores resolved symbol addresses |
-| **IFUNC** | Indirect Function; runtime-resolved function selection |
-| **LL-NDK** | Low-Level NDK; always-available libraries for vendor |
-| **Load Bias** | Offset between ELF virtual address and actual memory address |
-| **MTE** | Memory Tagging Extension; ARM memory safety feature |
-| **PLT** | Procedure Linkage Table; enables lazy symbol resolution |
-| **PMD** | Page Middle Directory; 2MB page table entry |
-| **RELRO** | Relocation Read-Only; security hardening for GOT |
-| **Seccomp-BPF** | Secure Computing with Berkeley Packet Filter |
-| **soinfo** | Shared Object Info; linker metadata for loaded libraries |
-| **soname** | Shared Object Name; canonical library identifier |
-| **TLS** | Thread-Local Storage; per-thread variables |
-| **VNDK** | Vendor NDK; versioned library interface for Treble |
-| **VNDK-SP** | VNDK Same-Process; libraries loaded in framework processes |
-| **VDSO** | Virtual Dynamic Shared Object; kernel-mapped user-space syscalls |
-| **W^X** | Write XOR Execute; security policy preventing W+E pages |
-
-### Further Reading and Cross-References
-
-The topics covered in this chapter connect to several other chapters in
-this book:
-
-- **Chapter 4 (Boot and Init)**: The init process is the first user-space
-  process and one of the first consumers of Bionic and the dynamic linker.
-  Understanding the linker's first-stage init special cases (no arc4random,
-  no /proc) requires understanding the boot sequence.
-
-- **Chapter 5 (Kernel)**: The system call interface described in Section 7.2
-  is the boundary between user space and kernel space. The seccomp-BPF
-  filters are enforced by the kernel's seccomp infrastructure.
-
-- **Chapter 9 (Binder IPC)**: Binder is the most frequent user of the
-  `ioctl` system call, which is why `ioctl` is in the seccomp priority list.
-  The Binder driver's file descriptor is one of the first things any Android
-  process opens after the linker hands off control.
-
-- **Chapter 18 (ART Runtime)**: The ART runtime uses `dlopen()` extensively
-  to load JNI libraries, and `libnativeloader` creates per-app linker
-  namespaces. ART's OAT files are loaded through the same ELF loading
-  pipeline described in Section 7.3.
-
-- **Chapter 10 (HAL and HIDL)**: The Same-Process HAL (SP-HAL) mechanism
-  relies on the `sphal` linker namespace to load vendor HAL implementations
-  directly into framework processes while maintaining namespace isolation.
-
-- **Chapter 40 (Security)**: The memory safety features described in this
-  chapter (MTE, CFI, FORTIFY_SOURCE, seccomp-BPF, W^X, RELRO) form the
-  foundation of Android's native code security model. The linker's namespace
-  isolation is also a key component of the Treble security boundary.
-
-Understanding Bionic and the dynamic linker is foundational to understanding
-Android at the system level. Every native component -- from the init daemon
-to the most complex graphics pipeline -- passes through the code paths
-documented here.
-
----
-
 ## 7.5 Musl: The Host-Side Alternative to Bionic
 
 While Bionic is Android's C library for device targets, AOSP also integrates
@@ -4268,3 +4102,169 @@ path, as it directly affects the user-perceived app launch latency.
 | vendordefault.cc | `system/linkerconfig/contents/namespace/vendordefault.cc` | Vendor namespace |
 | vndk.cc | `system/linkerconfig/contents/namespace/vndk.cc` | VNDK namespace |
 | system_links.cc | `system/linkerconfig/contents/common/system_links.cc` | Bionic lib links |
+
+---
+
+## Summary
+
+This chapter has traced the path from the lowest levels of Android's native
+execution environment -- the system call stubs generated from `SYSCALLS.TXT`,
+the seccomp-BPF filters that constrain which calls are permitted -- through
+the C library that provides the POSIX foundation, and up to the dynamic linker
+that orchestrates library loading, symbol resolution, and namespace isolation.
+
+The key takeaways:
+
+1. **Bionic is purpose-built for Android.** Its BSD license, small size, fast
+   startup, and deep Android integration make it fundamentally different from
+   glibc. The architecture-specific IFUNC dispatch (with paths for MOPS, Oryon,
+   NEON, MTE) demonstrates the performance engineering invested in core
+   operations.
+
+2. **The system call interface is generated, not hand-written.** The
+   `SYSCALLS.TXT` + `gensyscalls.py` approach provides a single source of
+   truth for all five architectures, with architecture-specific concerns
+   (32-bit UID calls, socketcall multiplexing, time64 variants) handled
+   declaratively.
+
+3. **Seccomp-BPF creates a security boundary at the system call level.** The
+   allowlist/blocklist composition (with priority optimization for `futex` and
+   `ioctl`) restricts the kernel attack surface for app processes, while the
+   architecture-aware BPF programs handle dual-ABI systems.
+
+4. **The dynamic linker is the gatekeeper for all native code.** Its
+   ElfReader validates and loads ELF files with ASLR enhancement, 16KiB page
+   compatibility, and BTI support. The relocation engine uses template-based
+   fast paths and symbol caching for performance.
+
+5. **Linker namespaces enforce the Treble architecture boundary.** The
+   `android_namespace_t` structure, configured by `linkerconfig`, creates
+   isolated worlds for platform, vendor, and product code. LL-NDK and VNDK
+   libraries provide controlled interfaces between these worlds, while the
+   exempt list maintains backward compatibility for legacy apps.
+
+Together, these components form the native runtime foundation upon which every
+Android process executes. Understanding them is essential for anyone working on
+system-level Android development, debugging library loading issues, or
+implementing platform security features.
+
+### Architecture-Specific System Call Conventions
+
+To aid readers working on specific architectures, here is a reference table
+of system call conventions across all five architectures supported by Bionic:
+
+| Architecture | Syscall Number | Arg 1 | Arg 2 | Arg 3 | Arg 4 | Arg 5 | Arg 6 | Instruction | Return |
+|-------------|---------------|-------|-------|-------|-------|-------|-------|-------------|--------|
+| arm | r7 | r0 | r1 | r2 | r3 | r4 | r5 | `swi #0` | r0 |
+| arm64 | x8 | x0 | x1 | x2 | x3 | x4 | x5 | `svc #0` | x0 |
+| x86 | eax | ebx | ecx | edx | esi | edi | ebp | `int $0x80` | eax |
+| x86_64 | rax | rdi | rsi | rdx | r10 | r8 | r9 | `syscall` | rax |
+| riscv64 | a7 | a0 | a1 | a2 | a3 | a4 | a5 | `ecall` | a0 |
+
+On error, the return value is in the range [-4095, -1] (or [-MAX_ERRNO, -1]
+in Bionic terms). Bionic stubs negate this value and store it in `errno` via
+`__set_errno_internal`.
+
+Note the x86 peculiarity: 32-bit x86 has only six registers available for
+system call arguments, and socket operations are multiplexed through the
+`socketcall` system call with a sub-command number. This multiplexing is
+absent on all other architectures.
+
+### Linker Configuration File Format
+
+For completeness, here is the grammar of the `ld.config.txt` file format
+that the linker parses at startup:
+
+```
+config     := section*
+section    := "[" name "]" newline property*
+property   := name "=" value newline
+            | name "+=" value newline
+
+# Namespace properties
+namespace.<ns>.search.paths = <colon-separated-paths>
+namespace.<ns>.permitted.paths = <colon-separated-paths>
+namespace.<ns>.asan.search.paths = <colon-separated-paths>
+namespace.<ns>.asan.permitted.paths = <colon-separated-paths>
+namespace.<ns>.hwasan.search.paths = <colon-separated-paths>
+namespace.<ns>.hwasan.permitted.paths = <colon-separated-paths>
+namespace.<ns>.isolated = true|false
+namespace.<ns>.visible = true|false
+namespace.<ns>.links = <comma-separated-ns-names>
+namespace.<ns>.link.<target>.shared_libs = <colon-separated-libs>
+namespace.<ns>.link.<target>.allow_all_shared_libs = true|false
+namespace.<ns>.allowed_libs = <colon-separated-libs>
+
+# Section selectors
+dir.<section> = <path-prefix>
+additional.namespaces = <comma-separated-ns-names>
+```
+
+The `${LIB}` placeholder in paths is expanded to `lib` on 32-bit systems and
+`lib64` on 64-bit systems. The `$ORIGIN` placeholder is expanded to the
+directory containing the requesting library.
+
+### Glossary of Key Terms
+
+| Term | Definition |
+|------|-----------|
+| **ASLR** | Address Space Layout Randomization; randomizes memory layout |
+| **BTI** | Branch Target Identification; ARM security feature |
+| **CFI** | Control Flow Integrity; prevents indirect call hijacking |
+| **DT_NEEDED** | Dynamic table entry listing a required dependency |
+| **DT_RUNPATH** | Dynamic table entry with additional library search paths |
+| **ELF** | Executable and Linkable Format; binary format for executables |
+| **GOT** | Global Offset Table; stores resolved symbol addresses |
+| **IFUNC** | Indirect Function; runtime-resolved function selection |
+| **LL-NDK** | Low-Level NDK; always-available libraries for vendor |
+| **Load Bias** | Offset between ELF virtual address and actual memory address |
+| **MTE** | Memory Tagging Extension; ARM memory safety feature |
+| **PLT** | Procedure Linkage Table; enables lazy symbol resolution |
+| **PMD** | Page Middle Directory; 2MB page table entry |
+| **RELRO** | Relocation Read-Only; security hardening for GOT |
+| **Seccomp-BPF** | Secure Computing with Berkeley Packet Filter |
+| **soinfo** | Shared Object Info; linker metadata for loaded libraries |
+| **soname** | Shared Object Name; canonical library identifier |
+| **TLS** | Thread-Local Storage; per-thread variables |
+| **VNDK** | Vendor NDK; versioned library interface for Treble |
+| **VNDK-SP** | VNDK Same-Process; libraries loaded in framework processes |
+| **VDSO** | Virtual Dynamic Shared Object; kernel-mapped user-space syscalls |
+| **W^X** | Write XOR Execute; security policy preventing W+E pages |
+
+### Further Reading and Cross-References
+
+The topics covered in this chapter connect to several other chapters in
+this book:
+
+- **Chapter 4 (Boot and Init)**: The init process is the first user-space
+  process and one of the first consumers of Bionic and the dynamic linker.
+  Understanding the linker's first-stage init special cases (no arc4random,
+  no /proc) requires understanding the boot sequence.
+
+- **Chapter 5 (Kernel)**: The system call interface described in Section 7.2
+  is the boundary between user space and kernel space. The seccomp-BPF
+  filters are enforced by the kernel's seccomp infrastructure.
+
+- **Chapter 9 (Binder IPC)**: Binder is the most frequent user of the
+  `ioctl` system call, which is why `ioctl` is in the seccomp priority list.
+  The Binder driver's file descriptor is one of the first things any Android
+  process opens after the linker hands off control.
+
+- **Chapter 18 (ART Runtime)**: The ART runtime uses `dlopen()` extensively
+  to load JNI libraries, and `libnativeloader` creates per-app linker
+  namespaces. ART's OAT files are loaded through the same ELF loading
+  pipeline described in Section 7.3.
+
+- **Chapter 10 (HAL and HIDL)**: The Same-Process HAL (SP-HAL) mechanism
+  relies on the `sphal` linker namespace to load vendor HAL implementations
+  directly into framework processes while maintaining namespace isolation.
+
+- **Chapter 40 (Security)**: The memory safety features described in this
+  chapter (MTE, CFI, FORTIFY_SOURCE, seccomp-BPF, W^X, RELRO) form the
+  foundation of Android's native code security model. The linker's namespace
+  isolation is also a key component of the Treble security boundary.
+
+Understanding Bionic and the dynamic linker is foundational to understanding
+Android at the system level. Every native component -- from the init daemon
+to the most complex graphics pipeline -- passes through the code paths
+documented here.
