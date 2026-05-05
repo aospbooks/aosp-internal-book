@@ -2512,384 +2512,7 @@ This process isolation provides:
 
 ---
 
-## 35.10 Try It: Network Debugging
-
-### 35.10.1 dumpsys connectivity
-
-The most powerful tool for debugging Android networking is `dumpsys connectivity`.
-It provides a comprehensive snapshot of the entire connectivity state.
-
-```bash
-# Full connectivity dump
-adb shell dumpsys connectivity
-
-# Short format (summary)
-adb shell dumpsys connectivity --short
-
-# Diagnostic mode
-adb shell dumpsys connectivity --diag
-
-# Just network information
-adb shell dumpsys connectivity networks
-
-# Just request information
-adb shell dumpsys connectivity requests
-
-# Traffic controller state
-adb shell dumpsys connectivity trafficcontroller
-```
-
-**Reading the output:**
-
-The dump includes several sections:
-
-1. **NetworkAgentInfo**: Lists all active networks with their capabilities,
-   score, and validation status:
-
-```
-NetworkAgentInfo [WIFI () - 100] {
-  mNetworkCapabilities: [ Transports: WIFI Capabilities: INTERNET&NOT_METERED&NOT_RESTRICTED
-    &TRUSTED&NOT_VPN&VALIDATED&NOT_ROAMING&FOREGROUND&NOT_CONGESTED&NOT_SUSPENDED
-    &NOT_VCN_MANAGED LinkUpBandwidthKbps: 1048576 LinkDnBandwidthKbps: 1048576
-    SignalStrength: -55 ]
-  mLinkProperties: {InterfaceName: wlan0 LinkAddresses: [192.168.1.100/24,
-    fe80::1234:5678:abcd:ef01/64] DnsAddresses: [192.168.1.1] Domains: null
-    MTU: 1500 Routes: [0.0.0.0/0 -> 192.168.1.1 wlan0,
-    192.168.1.0/24 -> 0.0.0.0 wlan0]}
-  mScore: Score(70 ; Policies : TRANSPORT_PRIMARY)
-  Validated: true
-}
-```
-
-2. **Network requests**: Shows what applications have requested:
-
-```
-NetworkRequest [ REQUEST id=1, [ Capabilities: INTERNET&NOT_RESTRICTED
-  &TRUSTED&NOT_VPN ] ]
-```
-
-3. **Default network**: The currently selected default network
-
-### 35.10.2 dumpsys wifi
-
-```bash
-# Full Wi-Fi dump
-adb shell dumpsys wifi
-
-# Specific sections
-adb shell dumpsys wifi scan    # Scan results
-adb shell dumpsys wifi config  # Saved networks
-```
-
-Key information in the Wi-Fi dump:
-
-- Current connection state and RSSI
-- Scan results with channel information
-- Saved network configurations
-- SoftAP state
-- Connection history and failure reasons
-
-### 35.10.3 dumpsys netd
-
-```bash
-# netd status
-adb shell dumpsys netd
-
-# Network routing tables
-adb shell ip rule show
-adb shell ip route show table all
-
-# iptables rules
-adb shell iptables -L -v -n
-adb shell ip6tables -L -v -n
-```
-
-### 35.10.4 DNS Debugging
-
-```bash
-# DNS resolver state
-adb shell dumpsys dnsresolver
-
-# Test DNS resolution
-adb shell nslookup example.com
-
-# Check private DNS status
-adb shell settings get global private_dns_mode
-adb shell settings get global private_dns_specifier
-```
-
-### 35.10.5 Network Diagnostics Commands
-
-```bash
-# Check connectivity
-adb shell ping -c 4 8.8.8.8
-adb shell ping6 -c 4 2001:4860:4860::8888
-
-# Trace route
-adb shell traceroute 8.8.8.8
-
-# Check interface status
-adb shell ifconfig
-adb shell ip addr show
-adb shell ip link show
-
-# Monitor network events
-adb shell logcat -s ConnectivityService:V NetworkMonitor:V Vpn:V
-
-# Check active connections
-adb shell cat /proc/net/tcp
-adb shell cat /proc/net/tcp6
-
-# Network statistics
-adb shell cat /proc/net/dev
-```
-
-### 35.10.6 ConnectivityDiagnosticsManager
-
-For programmatic network diagnostics, Android provides the
-`ConnectivityDiagnosticsManager` API:
-
-```java
-// Register for connectivity diagnostics
-ConnectivityDiagnosticsManager cdm = context.getSystemService(
-        ConnectivityDiagnosticsManager.class);
-
-NetworkRequest request = new NetworkRequest.Builder()
-        .addCapability(NET_CAPABILITY_INTERNET)
-        .build();
-
-cdm.registerConnectivityDiagnosticsCallback(
-        request, executor,
-        new ConnectivityDiagnosticsCallback() {
-            @Override
-            public void onConnectivityReportAvailable(
-                    ConnectivityReport report) {
-                // Analyze report
-                Bundle additional = report.getAdditionalInfo();
-                int probesAttempted = additional.getInt(
-                    KEY_NETWORK_PROBES_ATTEMPTED_BITMASK);
-                int probesSucceeded = additional.getInt(
-                    KEY_NETWORK_PROBES_SUCCEEDED_BITMASK);
-            }
-
-            @Override
-            public void onDataStallSuspected(DataStallReport report) {
-                int method = report.getDetectionMethod();
-                if (method == DETECTION_METHOD_DNS_EVENTS) {
-                    // DNS-based data stall
-                } else if (method == DETECTION_METHOD_TCP_METRICS) {
-                    // TCP-based data stall
-                }
-            }
-        });
-```
-
-### 35.10.7 Simulating Network Conditions
-
-For testing, Android provides several tools to simulate network conditions:
-
-```bash
-# Enable/disable Wi-Fi
-adb shell svc wifi enable
-adb shell svc wifi disable
-
-# Enable/disable mobile data
-adb shell svc data enable
-adb shell svc data disable
-
-# Set network speed limit (emulator only)
-adb shell cmd connectivity set-bandwidth-limit <interface> <kbps>
-
-# Simulate captive portal
-adb shell settings put global captive_portal_mode 0  # Disable detection
-adb shell settings put global captive_portal_mode 1  # Enable (prompt)
-
-# Test VPN
-adb shell dumpsys connectivity --diag
-```
-
-### 35.10.8 Reading BPF Maps
-
-For advanced debugging of BPF-based traffic control:
-
-```bash
-# Dump tethering BPF stats
-adb shell dumpsys tethering
-
-# View BPF program status
-adb shell cat /sys/fs/bpf/
-
-# Check traffic controller maps
-adb shell dumpsys connectivity trafficcontroller
-```
-
-### 35.10.9 Common Debugging Scenarios
-
-**Scenario 1: Network connected but no Internet**
-
-```bash
-# 1. Check network validation state
-adb shell dumpsys connectivity | grep -A5 "Validated"
-
-# 2. Check DNS resolution
-adb shell nslookup www.google.com
-
-# 3. Check routing
-adb shell ip route get 8.8.8.8
-
-# 4. Check captive portal
-adb shell dumpsys connectivity | grep "CAPTIVE_PORTAL"
-
-# 5. Check iptables for blocked traffic
-adb shell iptables -L fw_OUTPUT -v -n
-```
-
-**Scenario 2: VPN not working**
-
-```bash
-# 1. Check VPN state
-adb shell dumpsys connectivity | grep -A10 "VPN"
-
-# 2. Check TUN interface
-adb shell ip addr show tun0
-
-# 3. Check routing rules
-adb shell ip rule show
-
-# 4. Check VPN-specific routing table
-adb shell ip route show table <vpn-netid>
-
-# 5. Check UID routing
-adb shell dumpsys connectivity | grep "UidRange"
-```
-
-**Scenario 3: Slow Wi-Fi**
-
-```bash
-# 1. Check signal strength
-adb shell dumpsys wifi | grep "RSSI"
-
-# 2. Check link speed
-adb shell dumpsys wifi | grep "Link speed"
-
-# 3. Check for data stalls
-adb shell dumpsys connectivity --diag | grep "DataStall"
-
-# 4. Check for channel congestion
-adb shell dumpsys wifi scan | grep "freq"
-
-# 5. Check bandwidth estimates
-adb shell dumpsys connectivity | grep "Bandwidth"
-```
-
-**Scenario 4: Tethering issues**
-
-```bash
-# 1. Check tethering state
-adb shell dumpsys tethering
-
-# 2. Check upstream network
-adb shell dumpsys tethering | grep "upstream"
-
-# 3. Check NAT rules
-adb shell iptables -t nat -L -v -n
-
-# 4. Check DHCP server
-adb shell dumpsys tethering | grep "DHCP"
-
-# 5. Check IP forwarding
-adb shell cat /proc/sys/net/ipv4/ip_forward
-```
-
-### 35.10.10 Network Logging and Tracing
-
-For deeper analysis, enable verbose logging:
-
-```bash
-# Enable verbose connectivity logging
-adb shell setprop log.tag.ConnectivityService VERBOSE
-adb shell setprop log.tag.NetworkMonitor VERBOSE
-adb shell setprop log.tag.DnsResolver VERBOSE
-adb shell setprop log.tag.Vpn VERBOSE
-
-# Monitor specific tags
-adb logcat -s ConnectivityService:V NetworkAgent:V \
-    NetworkMonitor:V WifiService:V ClientModeImpl:V
-
-# Enable netd debug logging
-adb shell setprop log.tag.Netd VERBOSE
-```
-
-### 35.10.11 Developer Options: Network Settings
-
-The Settings app provides several network-related developer options:
-
-| Setting | Effect |
-|---------|--------|
-| Wi-Fi verbose logging | Enables detailed Wi-Fi logs |
-| Mobile data always active | Keeps cellular active alongside Wi-Fi |
-| USB configuration | Select USB tethering mode |
-| Networking diagnostics | Run connectivity tests |
-
-### 35.10.12 Programmatic Network Testing
-
-```java
-// Test if a specific network has connectivity
-ConnectivityManager cm = context.getSystemService(ConnectivityManager.class);
-Network activeNetwork = cm.getActiveNetwork();
-NetworkCapabilities caps = cm.getNetworkCapabilities(activeNetwork);
-
-if (caps != null) {
-    boolean hasInternet = caps.hasCapability(
-            NetworkCapabilities.NET_CAPABILITY_INTERNET);
-    boolean isValidated = caps.hasCapability(
-            NetworkCapabilities.NET_CAPABILITY_VALIDATED);
-    boolean isMetered = !caps.hasCapability(
-            NetworkCapabilities.NET_CAPABILITY_NOT_METERED);
-
-    Log.d(TAG, "Internet: " + hasInternet
-            + ", Validated: " + isValidated
-            + ", Metered: " + isMetered);
-}
-
-// Request a specific network type
-NetworkRequest wifiRequest = new NetworkRequest.Builder()
-        .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-        .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-        .build();
-
-cm.requestNetwork(wifiRequest, new ConnectivityManager.NetworkCallback() {
-    @Override
-    public void onAvailable(@NonNull Network network) {
-        // Wi-Fi network is available
-        // Bind socket to this network:
-        network.bindSocket(socket);
-    }
-
-    @Override
-    public void onLost(@NonNull Network network) {
-        // Wi-Fi network lost
-    }
-
-    @Override
-    public void onCapabilitiesChanged(@NonNull Network network,
-            @NonNull NetworkCapabilities caps) {
-        // Capabilities changed (e.g., validated, signal strength)
-        int signalStrength = caps.getSignalStrength();
-    }
-
-    @Override
-    public void onLinkPropertiesChanged(@NonNull Network network,
-            @NonNull LinkProperties lp) {
-        // IP config changed
-        List<InetAddress> dnsServers = lp.getDnsServers();
-    }
-});
-```
-
----
-
-## 35.11 VCN (Virtual Carrier Network)
+## 35.10 VCN (Virtual Carrier Network)
 
 The Virtual Carrier Network (VCN) subsystem provides carrier-grade IPsec
 tunneling over any available transport -- cellular or Wi-Fi -- presenting the
@@ -2899,7 +2522,7 @@ can configure the device to wrap all traffic in an IKEv2/IPsec tunnel back to
 the carrier's gateway, effectively creating a "virtual" carrier network that
 follows the subscriber across physical transports.
 
-### 35.11.1 Motivation and Design Goals
+### 35.10.1 Motivation and Design Goals
 
 Carriers that deploy Wi-Fi Offload (ePDG) or private networks need a mechanism
 to tunnel subscriber traffic securely from the device to the carrier gateway,
@@ -2919,7 +2542,7 @@ them. VCN provides:
    multiple gateway connections, each serving different `NetworkCapabilities`
    (e.g., one for INTERNET, another for DUN/tethering).
 
-### 35.11.2 Architecture
+### 35.10.2 Architecture
 
 **Module root:** `packages/modules/Connectivity/Vcn/`
 
@@ -3006,7 +2629,7 @@ VcnManagementService --1:1--> TelephonySubscriptionTracker
         networks, filing requests to bring them up
 ```
 
-### 35.11.3 VcnManagementService
+### 35.10.3 VcnManagementService
 
 `VcnManagementService` is the top-level system service, registered with
 `ServiceManager` and accessible via `VcnManager`. It is responsible for:
@@ -3040,7 +2663,7 @@ public class VcnManagementService extends IVcnManagementService.Stub {
 }
 ```
 
-### 35.11.4 TelephonySubscriptionTracker
+### 35.10.4 TelephonySubscriptionTracker
 
 The `TelephonySubscriptionTracker` de-noises subscription change events and
 provides a stable snapshot of active subscription groups to
@@ -3060,7 +2683,7 @@ public class TelephonySubscriptionTracker extends BroadcastReceiver {
 }
 ```
 
-### 35.11.5 The Vcn Class
+### 35.10.5 The Vcn Class
 
 Each `Vcn` instance manages all `VcnGatewayConnection`s for a single
 subscription group. It acts as a `Handler`, processing messages for
@@ -3097,7 +2720,7 @@ Key message types handled by `Vcn`:
 | `MSG_EVENT_SAFE_MODE_STATE_CHANGED` | Safe-mode timer fired or cleared |
 | `MSG_EVENT_MOBILE_DATA_TOGGLED` | User toggled mobile data |
 
-### 35.11.6 VcnGatewayConnection State Machine
+### 35.10.6 VcnGatewayConnection State Machine
 
 `VcnGatewayConnection` is the heart of the VCN subsystem -- a `StateMachine`
 managing a single IKEv2/IPsec tunnel and its corresponding `NetworkAgent`. The
@@ -3139,7 +2762,7 @@ Critical timeouts govern the behaviour:
 | `TEARDOWN_TIMEOUT` | 5 s | Maximum time to wait for IKE session closure |
 | `SAFEMODE_TIMEOUT` | 30 s | Time before entering safe mode if tunnel cannot establish |
 
-### 35.11.7 Underlying Network Selection
+### 35.10.7 Underlying Network Selection
 
 The `UnderlyingNetworkController` evaluates available physical networks
 (cellular, Wi-Fi) and selects the best one for the tunnel. Selection is based
@@ -3168,7 +2791,7 @@ with match criteria including:
 - **Cellular**: roaming state, opportunistic flag, home/roaming PLMN
 - **Wi-Fi**: SSID, RSSI thresholds (with entry/exit hysteresis)
 
-### 35.11.8 Safe Mode
+### 35.10.8 Safe Mode
 
 Safe mode is VCN's critical reliability mechanism. If a `VcnGatewayConnection`
 cannot establish a tunnel within `SAFEMODE_TIMEOUT_SECONDS` (30 seconds), the
@@ -3183,7 +2806,7 @@ entire `Vcn` instance enters safe mode:
 This ensures that a misconfigured or unreachable carrier gateway never leaves
 the device without network connectivity.
 
-### 35.11.9 VcnNetworkProvider
+### 35.10.9 VcnNetworkProvider
 
 `VcnNetworkProvider` registers with `ConnectivityService` as a `NetworkProvider`
 and routes incoming `NetworkRequest`s to the appropriate `Vcn` instance. It
@@ -3206,7 +2829,7 @@ private NetworkCapabilities buildCapabilityFilter() {
 }
 ```
 
-### 35.11.10 Integration with ConnectivityService
+### 35.10.10 Integration with ConnectivityService
 
 From `ConnectivityService`'s perspective, a VCN tunnel appears as a regular
 cellular `NetworkAgent`. The key distinction is the `NOT_VCN_MANAGED` capability:
@@ -3242,7 +2865,7 @@ sequenceDiagram
     CS-->>App: onAvailable(VCN network)
 ```
 
-### 35.11.11 Key Source Files
+### 35.10.11 Key Source Files
 
 | Class | Path | Lines |
 |-------|------|-------|
@@ -3256,7 +2879,7 @@ sequenceDiagram
 
 ---
 
-## 35.12 Thread Network
+## 35.11 Thread Network
 
 Thread is an IPv6-based mesh networking protocol designed for low-power IoT
 (Internet of Things) devices, built on the IEEE 802.15.4 radio standard.
@@ -3264,7 +2887,7 @@ Android's Thread implementation, added as part of the Connectivity Mainline
 module, allows Android devices to serve as Thread Border Routers -- bridging
 Thread mesh networks to the wider IP infrastructure (Wi-Fi/Ethernet).
 
-### 35.12.1 What is Thread?
+### 35.11.1 What is Thread?
 
 Thread is a low-power, low-latency mesh networking protocol standardised by
 the Thread Group. Key properties:
@@ -3290,7 +2913,7 @@ Device roles in a Thread network:
 | Border Router | Router with connectivity to external IP networks (Wi-Fi/Ethernet) |
 | Detached | Device not currently part of a Thread partition |
 
-### 35.12.2 Architecture
+### 35.11.2 Architecture
 
 **Module root:** `packages/modules/Connectivity/thread/`
 
@@ -3337,7 +2960,7 @@ graph TD
     TNF --> CS
 ```
 
-### 35.12.3 ThreadNetworkManager and ThreadNetworkController
+### 35.11.3 ThreadNetworkManager and ThreadNetworkController
 
 `ThreadNetworkManager` is the public `@SystemApi` entry point, registered as
 the `thread_network` system service. It provides access to
@@ -3393,7 +3016,7 @@ Key APIs on the controller:
 | `registerOperationalDatasetCallback()` | -- | Observe dataset changes |
 | `setChannelMaxPowers()` | `THREAD_NETWORK_PRIVILEGED` | Set per-channel transmit power limits |
 
-### 35.12.4 Active Operational Dataset
+### 35.11.4 Active Operational Dataset
 
 An `ActiveOperationalDataset` contains all parameters needed to join a Thread
 network. It is serialised as a TLV (Type-Length-Value) byte array, following
@@ -3424,7 +3047,7 @@ The dataset contains:
 | PAN ID | 2 bytes | Short PAN identifier |
 | Security Policy | variable | Key rotation time and security flags |
 
-### 35.12.5 ThreadNetworkControllerService
+### 35.11.5 ThreadNetworkControllerService
 
 The service implementation lives in
 `ThreadNetworkControllerService`, which communicates with the native
@@ -3467,7 +3090,7 @@ private IOtDaemon getOtDaemon() throws RemoteException {
 }
 ```
 
-### 35.12.6 OpenThread and ot-daemon
+### 35.11.6 OpenThread and ot-daemon
 
 The native Thread protocol implementation is based on
 [OpenThread](https://openthread.io/), Google's open-source Thread stack. The
@@ -3486,7 +3109,7 @@ service ot-daemon /apex/com.android.tethering/bin/ot-daemon
   Thread mesh and the Android networking stack
 - Service Registration Protocol (SRP) for mDNS service discovery
 
-### 35.12.7 Connectivity Integration
+### 35.11.7 Connectivity Integration
 
 Thread networks integrate with `ConnectivityService` through a `NetworkAgent`
 with `TRANSPORT_THREAD`. The service creates a `LocalNetworkConfig` for the
@@ -3523,7 +3146,7 @@ private NetworkRequest newUpstreamNetworkRequest() {
 }
 ```
 
-### 35.12.8 Ephemeral Key Commissioning
+### 35.11.8 Ephemeral Key Commissioning
 
 Thread 1.3 introduced the Ephemeral Key (ePSKc) mechanism for secure device
 commissioning. A new device can use a short-lived key to join the network:
@@ -3544,7 +3167,7 @@ When enabled, an external commissioner (e.g., a smartphone app) can use the
 ephemeral key to establish a DTLS session with the Border Router, obtain the
 network credentials, and join the Thread mesh.
 
-### 35.12.9 Country Code and Channel Management
+### 35.11.9 Country Code and Channel Management
 
 `ThreadNetworkCountryCode` coordinates with Wi-Fi and Telephony country code
 modules to determine the operating region, which affects allowed channels
@@ -3567,7 +3190,7 @@ public void onBootPhase(int phase) {
 }
 ```
 
-### 35.12.10 Key Source Files
+### 35.11.10 Key Source Files
 
 | Class | Path |
 |-------|------|
@@ -3579,72 +3202,6 @@ public void onBootPhase(int phase) {
 | ThreadNetworkCountryCode | `packages/modules/Connectivity/thread/service/java/com/android/server/thread/ThreadNetworkCountryCode.java` |
 | ThreadNetworkFactory | `packages/modules/Connectivity/thread/service/java/com/android/server/thread/ThreadNetworkFactory.java` |
 | NsdPublisher | `packages/modules/Connectivity/thread/service/java/com/android/server/thread/NsdPublisher.java` |
-
----
-
-## Summary
-
-Android's networking and connectivity stack is a deeply layered system that
-combines Java framework services, native daemons, eBPF programs, and Linux
-kernel subsystems into a cohesive whole. The key architectural insights are:
-
-1. **ConnectivityService is the orchestrator**: All network management flows
-   through this single service, which maintains a global view of all networks,
-   requests, and their matching.
-
-2. **NetworkAgent is the network abstraction**: Each transport (Wi-Fi, cellular,
-   VPN) communicates with ConnectivityService through this uniform interface,
-   enabling transport-agnostic network management.
-
-3. **Mainline modularization enables agility**: Critical networking components
-   (Connectivity, NetworkStack, Wi-Fi, DnsResolver) ship as independently
-   updatable APEX modules, decoupling security fixes from platform OTAs.
-
-4. **eBPF is replacing iptables**: Modern Android increasingly uses BPF programs
-   for traffic control, offering better performance and more flexible policy
-   enforcement than traditional iptables chains.
-
-5. **Per-network isolation is fundamental**: The netId/fwmark mechanism ensures
-   that routing, DNS, and firewall rules are correctly scoped to individual
-   networks, enabling features like per-app VPN and multi-network connectivity.
-
-6. **Security is layered**: From Network Security Config (application-level)
-   through encrypted DNS (transport-level) to firewall rules (network-level),
-   Android applies defense in depth to protect network communications.
-
-The networking stack continues to evolve rapidly. Recent additions include
-Wi-Fi 7 MLO support, satellite connectivity, Thread mesh networking, and
-DoH for encrypted DNS. The modular architecture ensures these features can be
-delivered to users without waiting for full platform upgrades.
-
-### Key Source Files Reference
-
-| File | Path |
-|------|------|
-| ConnectivityService | `packages/modules/Connectivity/service/src/com/android/server/ConnectivityService.java` |
-| NetworkAgent | `packages/modules/Connectivity/framework/src/android/net/NetworkAgent.java` |
-| NetworkFactory | `packages/modules/Connectivity/staticlibs/device/android/net/NetworkFactory.java` |
-| NetworkCapabilities | `packages/modules/Connectivity/framework/src/android/net/NetworkCapabilities.java` |
-| NetworkRequest | `packages/modules/Connectivity/framework/src/android/net/NetworkRequest.java` |
-| ClientModeImpl | `packages/modules/Wifi/service/java/com/android/server/wifi/ClientModeImpl.java` |
-| WifiServiceImpl | `packages/modules/Wifi/service/java/com/android/server/wifi/WifiServiceImpl.java` |
-| WifiNative | `packages/modules/Wifi/service/java/com/android/server/wifi/WifiNative.java` |
-| SoftApManager | `packages/modules/Wifi/service/java/com/android/server/wifi/SoftApManager.java` |
-| NetdNativeService | `system/netd/server/NetdNativeService.h` |
-| Controllers | `system/netd/server/Controllers.cpp` |
-| BandwidthController | `system/netd/server/BandwidthController.cpp` |
-| FirewallController | `system/netd/server/FirewallController.cpp` |
-| NetworkController | `system/netd/server/NetworkController.cpp` |
-| DnsResolver | `packages/modules/DnsResolver/DnsResolver.cpp` |
-| DnsTlsTransport | `packages/modules/DnsResolver/DnsTlsTransport.cpp` |
-| PrivateDnsConfiguration | `packages/modules/DnsResolver/PrivateDnsConfiguration.cpp` |
-| Vpn | `frameworks/base/services/core/java/com/android/server/connectivity/Vpn.java` |
-| Tethering | `packages/modules/Connectivity/Tethering/src/com/android/networkstack/tethering/Tethering.java` |
-| BpfCoordinator | `packages/modules/Connectivity/Tethering/src/com/android/networkstack/tethering/BpfCoordinator.java` |
-| IpServer | `packages/modules/Connectivity/Tethering/src/android/net/ip/IpServer.java` |
-| NetworkMonitor | `packages/modules/NetworkStack/src/com/android/server/connectivity/NetworkMonitor.java` |
-| NetworkSecurityConfig | `frameworks/base/packages/NetworkSecurityConfig/platform/src/android/security/net/config/NetworkSecurityConfig.java` |
-| XmlConfigSource | `frameworks/base/packages/NetworkSecurityConfig/platform/src/android/security/net/config/XmlConfigSource.java` |
 
 ---
 
@@ -4785,3 +4342,446 @@ This comprehensive flow shows how a network moves through every stage from
 factory registration through active use, lingering, and eventual teardown,
 highlighting the interactions between the application, ConnectivityService,
 NetworkAgent, NetworkMonitor, and the kernel.
+
+---
+
+## 35.12 Try It: Network Debugging
+
+### 35.12.1 dumpsys connectivity
+
+The most powerful tool for debugging Android networking is `dumpsys connectivity`.
+It provides a comprehensive snapshot of the entire connectivity state.
+
+```bash
+# Full connectivity dump
+adb shell dumpsys connectivity
+
+# Short format (summary)
+adb shell dumpsys connectivity --short
+
+# Diagnostic mode
+adb shell dumpsys connectivity --diag
+
+# Just network information
+adb shell dumpsys connectivity networks
+
+# Just request information
+adb shell dumpsys connectivity requests
+
+# Traffic controller state
+adb shell dumpsys connectivity trafficcontroller
+```
+
+**Reading the output:**
+
+The dump includes several sections:
+
+1. **NetworkAgentInfo**: Lists all active networks with their capabilities,
+   score, and validation status:
+
+```
+NetworkAgentInfo [WIFI () - 100] {
+  mNetworkCapabilities: [ Transports: WIFI Capabilities: INTERNET&NOT_METERED&NOT_RESTRICTED
+    &TRUSTED&NOT_VPN&VALIDATED&NOT_ROAMING&FOREGROUND&NOT_CONGESTED&NOT_SUSPENDED
+    &NOT_VCN_MANAGED LinkUpBandwidthKbps: 1048576 LinkDnBandwidthKbps: 1048576
+    SignalStrength: -55 ]
+  mLinkProperties: {InterfaceName: wlan0 LinkAddresses: [192.168.1.100/24,
+    fe80::1234:5678:abcd:ef01/64] DnsAddresses: [192.168.1.1] Domains: null
+    MTU: 1500 Routes: [0.0.0.0/0 -> 192.168.1.1 wlan0,
+    192.168.1.0/24 -> 0.0.0.0 wlan0]}
+  mScore: Score(70 ; Policies : TRANSPORT_PRIMARY)
+  Validated: true
+}
+```
+
+2. **Network requests**: Shows what applications have requested:
+
+```
+NetworkRequest [ REQUEST id=1, [ Capabilities: INTERNET&NOT_RESTRICTED
+  &TRUSTED&NOT_VPN ] ]
+```
+
+3. **Default network**: The currently selected default network
+
+### 35.12.2 dumpsys wifi
+
+```bash
+# Full Wi-Fi dump
+adb shell dumpsys wifi
+
+# Specific sections
+adb shell dumpsys wifi scan    # Scan results
+adb shell dumpsys wifi config  # Saved networks
+```
+
+Key information in the Wi-Fi dump:
+
+- Current connection state and RSSI
+- Scan results with channel information
+- Saved network configurations
+- SoftAP state
+- Connection history and failure reasons
+
+### 35.12.3 dumpsys netd
+
+```bash
+# netd status
+adb shell dumpsys netd
+
+# Network routing tables
+adb shell ip rule show
+adb shell ip route show table all
+
+# iptables rules
+adb shell iptables -L -v -n
+adb shell ip6tables -L -v -n
+```
+
+### 35.12.4 DNS Debugging
+
+```bash
+# DNS resolver state
+adb shell dumpsys dnsresolver
+
+# Test DNS resolution
+adb shell nslookup example.com
+
+# Check private DNS status
+adb shell settings get global private_dns_mode
+adb shell settings get global private_dns_specifier
+```
+
+### 35.12.5 Network Diagnostics Commands
+
+```bash
+# Check connectivity
+adb shell ping -c 4 8.8.8.8
+adb shell ping6 -c 4 2001:4860:4860::8888
+
+# Trace route
+adb shell traceroute 8.8.8.8
+
+# Check interface status
+adb shell ifconfig
+adb shell ip addr show
+adb shell ip link show
+
+# Monitor network events
+adb shell logcat -s ConnectivityService:V NetworkMonitor:V Vpn:V
+
+# Check active connections
+adb shell cat /proc/net/tcp
+adb shell cat /proc/net/tcp6
+
+# Network statistics
+adb shell cat /proc/net/dev
+```
+
+### 35.12.6 ConnectivityDiagnosticsManager
+
+For programmatic network diagnostics, Android provides the
+`ConnectivityDiagnosticsManager` API:
+
+```java
+// Register for connectivity diagnostics
+ConnectivityDiagnosticsManager cdm = context.getSystemService(
+        ConnectivityDiagnosticsManager.class);
+
+NetworkRequest request = new NetworkRequest.Builder()
+        .addCapability(NET_CAPABILITY_INTERNET)
+        .build();
+
+cdm.registerConnectivityDiagnosticsCallback(
+        request, executor,
+        new ConnectivityDiagnosticsCallback() {
+            @Override
+            public void onConnectivityReportAvailable(
+                    ConnectivityReport report) {
+                // Analyze report
+                Bundle additional = report.getAdditionalInfo();
+                int probesAttempted = additional.getInt(
+                    KEY_NETWORK_PROBES_ATTEMPTED_BITMASK);
+                int probesSucceeded = additional.getInt(
+                    KEY_NETWORK_PROBES_SUCCEEDED_BITMASK);
+            }
+
+            @Override
+            public void onDataStallSuspected(DataStallReport report) {
+                int method = report.getDetectionMethod();
+                if (method == DETECTION_METHOD_DNS_EVENTS) {
+                    // DNS-based data stall
+                } else if (method == DETECTION_METHOD_TCP_METRICS) {
+                    // TCP-based data stall
+                }
+            }
+        });
+```
+
+### 35.12.7 Simulating Network Conditions
+
+For testing, Android provides several tools to simulate network conditions:
+
+```bash
+# Enable/disable Wi-Fi
+adb shell svc wifi enable
+adb shell svc wifi disable
+
+# Enable/disable mobile data
+adb shell svc data enable
+adb shell svc data disable
+
+# Set network speed limit (emulator only)
+adb shell cmd connectivity set-bandwidth-limit <interface> <kbps>
+
+# Simulate captive portal
+adb shell settings put global captive_portal_mode 0  # Disable detection
+adb shell settings put global captive_portal_mode 1  # Enable (prompt)
+
+# Test VPN
+adb shell dumpsys connectivity --diag
+```
+
+### 35.12.8 Reading BPF Maps
+
+For advanced debugging of BPF-based traffic control:
+
+```bash
+# Dump tethering BPF stats
+adb shell dumpsys tethering
+
+# View BPF program status
+adb shell cat /sys/fs/bpf/
+
+# Check traffic controller maps
+adb shell dumpsys connectivity trafficcontroller
+```
+
+### 35.12.9 Common Debugging Scenarios
+
+**Scenario 1: Network connected but no Internet**
+
+```bash
+# 1. Check network validation state
+adb shell dumpsys connectivity | grep -A5 "Validated"
+
+# 2. Check DNS resolution
+adb shell nslookup www.google.com
+
+# 3. Check routing
+adb shell ip route get 8.8.8.8
+
+# 4. Check captive portal
+adb shell dumpsys connectivity | grep "CAPTIVE_PORTAL"
+
+# 5. Check iptables for blocked traffic
+adb shell iptables -L fw_OUTPUT -v -n
+```
+
+**Scenario 2: VPN not working**
+
+```bash
+# 1. Check VPN state
+adb shell dumpsys connectivity | grep -A10 "VPN"
+
+# 2. Check TUN interface
+adb shell ip addr show tun0
+
+# 3. Check routing rules
+adb shell ip rule show
+
+# 4. Check VPN-specific routing table
+adb shell ip route show table <vpn-netid>
+
+# 5. Check UID routing
+adb shell dumpsys connectivity | grep "UidRange"
+```
+
+**Scenario 3: Slow Wi-Fi**
+
+```bash
+# 1. Check signal strength
+adb shell dumpsys wifi | grep "RSSI"
+
+# 2. Check link speed
+adb shell dumpsys wifi | grep "Link speed"
+
+# 3. Check for data stalls
+adb shell dumpsys connectivity --diag | grep "DataStall"
+
+# 4. Check for channel congestion
+adb shell dumpsys wifi scan | grep "freq"
+
+# 5. Check bandwidth estimates
+adb shell dumpsys connectivity | grep "Bandwidth"
+```
+
+**Scenario 4: Tethering issues**
+
+```bash
+# 1. Check tethering state
+adb shell dumpsys tethering
+
+# 2. Check upstream network
+adb shell dumpsys tethering | grep "upstream"
+
+# 3. Check NAT rules
+adb shell iptables -t nat -L -v -n
+
+# 4. Check DHCP server
+adb shell dumpsys tethering | grep "DHCP"
+
+# 5. Check IP forwarding
+adb shell cat /proc/sys/net/ipv4/ip_forward
+```
+
+### 35.12.10 Network Logging and Tracing
+
+For deeper analysis, enable verbose logging:
+
+```bash
+# Enable verbose connectivity logging
+adb shell setprop log.tag.ConnectivityService VERBOSE
+adb shell setprop log.tag.NetworkMonitor VERBOSE
+adb shell setprop log.tag.DnsResolver VERBOSE
+adb shell setprop log.tag.Vpn VERBOSE
+
+# Monitor specific tags
+adb logcat -s ConnectivityService:V NetworkAgent:V \
+    NetworkMonitor:V WifiService:V ClientModeImpl:V
+
+# Enable netd debug logging
+adb shell setprop log.tag.Netd VERBOSE
+```
+
+### 35.12.11 Developer Options: Network Settings
+
+The Settings app provides several network-related developer options:
+
+| Setting | Effect |
+|---------|--------|
+| Wi-Fi verbose logging | Enables detailed Wi-Fi logs |
+| Mobile data always active | Keeps cellular active alongside Wi-Fi |
+| USB configuration | Select USB tethering mode |
+| Networking diagnostics | Run connectivity tests |
+
+### 35.12.12 Programmatic Network Testing
+
+```java
+// Test if a specific network has connectivity
+ConnectivityManager cm = context.getSystemService(ConnectivityManager.class);
+Network activeNetwork = cm.getActiveNetwork();
+NetworkCapabilities caps = cm.getNetworkCapabilities(activeNetwork);
+
+if (caps != null) {
+    boolean hasInternet = caps.hasCapability(
+            NetworkCapabilities.NET_CAPABILITY_INTERNET);
+    boolean isValidated = caps.hasCapability(
+            NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+    boolean isMetered = !caps.hasCapability(
+            NetworkCapabilities.NET_CAPABILITY_NOT_METERED);
+
+    Log.d(TAG, "Internet: " + hasInternet
+            + ", Validated: " + isValidated
+            + ", Metered: " + isMetered);
+}
+
+// Request a specific network type
+NetworkRequest wifiRequest = new NetworkRequest.Builder()
+        .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+        .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        .build();
+
+cm.requestNetwork(wifiRequest, new ConnectivityManager.NetworkCallback() {
+    @Override
+    public void onAvailable(@NonNull Network network) {
+        // Wi-Fi network is available
+        // Bind socket to this network:
+        network.bindSocket(socket);
+    }
+
+    @Override
+    public void onLost(@NonNull Network network) {
+        // Wi-Fi network lost
+    }
+
+    @Override
+    public void onCapabilitiesChanged(@NonNull Network network,
+            @NonNull NetworkCapabilities caps) {
+        // Capabilities changed (e.g., validated, signal strength)
+        int signalStrength = caps.getSignalStrength();
+    }
+
+    @Override
+    public void onLinkPropertiesChanged(@NonNull Network network,
+            @NonNull LinkProperties lp) {
+        // IP config changed
+        List<InetAddress> dnsServers = lp.getDnsServers();
+    }
+});
+```
+
+---
+
+## Summary
+
+Android's networking and connectivity stack is a deeply layered system that
+combines Java framework services, native daemons, eBPF programs, and Linux
+kernel subsystems into a cohesive whole. The key architectural insights are:
+
+1. **ConnectivityService is the orchestrator**: All network management flows
+   through this single service, which maintains a global view of all networks,
+   requests, and their matching.
+
+2. **NetworkAgent is the network abstraction**: Each transport (Wi-Fi, cellular,
+   VPN) communicates with ConnectivityService through this uniform interface,
+   enabling transport-agnostic network management.
+
+3. **Mainline modularization enables agility**: Critical networking components
+   (Connectivity, NetworkStack, Wi-Fi, DnsResolver) ship as independently
+   updatable APEX modules, decoupling security fixes from platform OTAs.
+
+4. **eBPF is replacing iptables**: Modern Android increasingly uses BPF programs
+   for traffic control, offering better performance and more flexible policy
+   enforcement than traditional iptables chains.
+
+5. **Per-network isolation is fundamental**: The netId/fwmark mechanism ensures
+   that routing, DNS, and firewall rules are correctly scoped to individual
+   networks, enabling features like per-app VPN and multi-network connectivity.
+
+6. **Security is layered**: From Network Security Config (application-level)
+   through encrypted DNS (transport-level) to firewall rules (network-level),
+   Android applies defense in depth to protect network communications.
+
+The networking stack continues to evolve rapidly. Recent additions include
+Wi-Fi 7 MLO support, satellite connectivity, Thread mesh networking, and
+DoH for encrypted DNS. The modular architecture ensures these features can be
+delivered to users without waiting for full platform upgrades.
+
+### Key Source Files Reference
+
+| File | Path |
+|------|------|
+| ConnectivityService | `packages/modules/Connectivity/service/src/com/android/server/ConnectivityService.java` |
+| NetworkAgent | `packages/modules/Connectivity/framework/src/android/net/NetworkAgent.java` |
+| NetworkFactory | `packages/modules/Connectivity/staticlibs/device/android/net/NetworkFactory.java` |
+| NetworkCapabilities | `packages/modules/Connectivity/framework/src/android/net/NetworkCapabilities.java` |
+| NetworkRequest | `packages/modules/Connectivity/framework/src/android/net/NetworkRequest.java` |
+| ClientModeImpl | `packages/modules/Wifi/service/java/com/android/server/wifi/ClientModeImpl.java` |
+| WifiServiceImpl | `packages/modules/Wifi/service/java/com/android/server/wifi/WifiServiceImpl.java` |
+| WifiNative | `packages/modules/Wifi/service/java/com/android/server/wifi/WifiNative.java` |
+| SoftApManager | `packages/modules/Wifi/service/java/com/android/server/wifi/SoftApManager.java` |
+| NetdNativeService | `system/netd/server/NetdNativeService.h` |
+| Controllers | `system/netd/server/Controllers.cpp` |
+| BandwidthController | `system/netd/server/BandwidthController.cpp` |
+| FirewallController | `system/netd/server/FirewallController.cpp` |
+| NetworkController | `system/netd/server/NetworkController.cpp` |
+| DnsResolver | `packages/modules/DnsResolver/DnsResolver.cpp` |
+| DnsTlsTransport | `packages/modules/DnsResolver/DnsTlsTransport.cpp` |
+| PrivateDnsConfiguration | `packages/modules/DnsResolver/PrivateDnsConfiguration.cpp` |
+| Vpn | `frameworks/base/services/core/java/com/android/server/connectivity/Vpn.java` |
+| Tethering | `packages/modules/Connectivity/Tethering/src/com/android/networkstack/tethering/Tethering.java` |
+| BpfCoordinator | `packages/modules/Connectivity/Tethering/src/com/android/networkstack/tethering/BpfCoordinator.java` |
+| IpServer | `packages/modules/Connectivity/Tethering/src/android/net/ip/IpServer.java` |
+| NetworkMonitor | `packages/modules/NetworkStack/src/com/android/server/connectivity/NetworkMonitor.java` |
+| NetworkSecurityConfig | `frameworks/base/packages/NetworkSecurityConfig/platform/src/android/security/net/config/NetworkSecurityConfig.java` |
+| XmlConfigSource | `frameworks/base/packages/NetworkSecurityConfig/platform/src/android/security/net/config/XmlConfigSource.java` |
