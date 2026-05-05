@@ -468,9 +468,9 @@ finally a payload signature.
 ```mermaid
 block-beta
     columns 1
-    block:header
+    hdr_label["Payload Header (24 bytes)"]
+    block:cells
         columns 4
-        hdr_label["Payload Header (24 bytes)"]:4
         magic["Magic: 'CrAU'<br/>(4 bytes)"]
         version["Major Version<br/>(8 bytes, uint64)"]
         manifest_size["Manifest Size<br/>(8 bytes, uint64)"]
@@ -480,6 +480,8 @@ block-beta
     metadata_sig["Metadata Signature<br/>(variable, size from header)"]
     blobs["Binary Data Blobs<br/>Compressed/raw data for operations"]
     payload_sig["Payload Signature<br/>(appended at end)"]
+    classDef titleOnly fill:transparent,stroke:transparent
+    class hdr_label titleOnly
 ```
 
 The header fields are parsed in `PayloadMetadata::ParsePayloadHeader`:
