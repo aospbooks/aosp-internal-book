@@ -1954,43 +1954,6 @@ When investigating multi-user issues, check these in order:
 
 ---
 
-## Summary
-
-Android's multi-user system is a deeply integrated framework spanning from Linux kernel
-UID isolation through system services to user-facing UI:
-
-- **`UserManagerService`** is the central authority, managing user metadata in
-  `/data/system/users/`, enforcing limits, and coordinating user lifecycle events
-
-- **User types** defined in `UserTypeFactory` create a type-safe, extensible system
-  where each category (full user, profile, system) carries its own properties,
-  restrictions, badges, and cross-profile rules
-
-- **Profiles** (work, private, clone) run within a parent user's context, sharing
-  the same foreground session but with isolated storage and process identity
-
-- **Private Space** adds a hidden, self-managed profile with auto-locking, entry
-  point hiding, and mandatory authentication -- filling the gap between work
-  profiles and full user separation
-
-- **Per-user CE/DE storage** with file-based encryption ensures data isolation both
-  at rest and before unlock, with `UserDataPreparer` handling the creation and
-  destruction of these storage areas
-
-- **User switching** involves coordinated action across `ActivityManagerService`,
-  `WindowManagerService`, and every user-aware system service, managed through the
-  `UserVisibilityMediator` which supports multiple display modes (SUSD, MUMD, MUPAND)
-
-- **Lifecycle management** follows strict ordering: creation with storage
-  preparation, starting through locked/unlocked states, stopping with process
-  cleanup, and removal with storage destruction -- all tracked through broadcasts
-  and lifecycle listeners
-
-The multi-user architecture is one of Android's most pervasive features, touching
-virtually every system service and defining the security boundaries for all user data.
-
----
-
 ## Appendix: Deep Dive into Internal Mechanisms
 
 ### A.1 UserInfo Flags
@@ -2873,3 +2836,43 @@ adb shell pm list users | grep -o "UserInfo{[0-9]*" | \
 7. **App compatibility:** Not all apps handle multi-user correctly.
    Singleton content providers, global shared preferences, and native
    code with hardcoded paths can cause issues in multi-user environments.
+
+---
+
+## Summary
+
+Android's multi-user system is a deeply integrated framework spanning from Linux kernel
+UID isolation through system services to user-facing UI:
+
+- **`UserManagerService`** is the central authority, managing user metadata in
+  `/data/system/users/`, enforcing limits, and coordinating user lifecycle events
+
+- **User types** defined in `UserTypeFactory` create a type-safe, extensible system
+  where each category (full user, profile, system) carries its own properties,
+  restrictions, badges, and cross-profile rules
+
+- **Profiles** (work, private, clone) run within a parent user's context, sharing
+  the same foreground session but with isolated storage and process identity
+
+- **Private Space** adds a hidden, self-managed profile with auto-locking, entry
+  point hiding, and mandatory authentication -- filling the gap between work
+  profiles and full user separation
+
+- **Per-user CE/DE storage** with file-based encryption ensures data isolation both
+  at rest and before unlock, with `UserDataPreparer` handling the creation and
+  destruction of these storage areas
+
+- **User switching** involves coordinated action across `ActivityManagerService`,
+  `WindowManagerService`, and every user-aware system service, managed through the
+  `UserVisibilityMediator` which supports multiple display modes (SUSD, MUMD, MUPAND)
+
+- **Lifecycle management** follows strict ordering: creation with storage
+  preparation, starting through locked/unlocked states, stopping with process
+  cleanup, and removal with storage destruction -- all tracked through broadcasts
+  and lifecycle listeners
+
+The multi-user architecture is one of Android's most pervasive features, touching
+virtually every system service and defining the security boundaries for all user data.
+
+---
+
