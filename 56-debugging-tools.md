@@ -2628,7 +2628,7 @@ graph TB
         Q3["Section: Logcat (main)"]
         Q4["Section: Logcat (system)"]
         Q5["Section: Dumpsys"]
-        QN["Section: ..."]
+        QN["Section: Kernel log"]
     end
 
     subgraph "Output"
