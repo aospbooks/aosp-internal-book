@@ -142,12 +142,12 @@ performs several critical setup tasks during `onCreate()`:
 2. **Toolbar inflation**: Selects either the expressive Material 3 collapsing
    toolbar or the traditional collapsing toolbar based on the current theme:
 
-```java
-// SettingsBaseActivity.java
-int resId = SettingsThemeHelper.isExpressiveTheme(getApplicationContext())
-        ? EXPRESSIVE_LAYOUT_ID : COLLAPSING_LAYOUT_ID;
-super.setContentView(resId);
-```
+    ```java
+    // SettingsBaseActivity.java
+    int resId = SettingsThemeHelper.isExpressiveTheme(getApplicationContext())
+            ? EXPRESSIVE_LAYOUT_ID : COLLAPSING_LAYOUT_ID;
+    super.setContentView(resId);
+    ```
 
 3. **CategoryMixin**: Initialises `CategoryMixin`, which manages dashboard
    category change notifications across the activity lifecycle.
