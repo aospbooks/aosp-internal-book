@@ -70,7 +70,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | XII | 51 | Companion & Virtual Devices | UNDER REVIEW |
 | XIII | 52 | Mainline Modules (APEX) | UNDER REVIEW |
 | XIII | 53 | OTA Updates | REVIEWED |
-| XIII | 54 | Virtualization (pKVM/crosvm) | UNDER REVIEW |
+| XIII | 54 | Virtualization (pKVM/crosvm) | REVIEWED |
 | XIII | 55 | Testing (CTS/VTS/Ravenwood) | REVIEWED |
 | XIII | 56 | Debugging Tools (Perfetto) | UNDER REVIEW |
 | XIV | 57 | Architecture Support (ARM/x86/RISC-V) | REVIEWED |
