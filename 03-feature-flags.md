@@ -3322,9 +3322,7 @@ code generation, efficient runtime resolution, and comprehensive testing --
 addresses the fundamental challenge of shipping hundreds of features on a
 continuous development cadence while maintaining platform stability.
 
----
-
-## Key Source Files
+### Key Source Files
 
 | Path | Description |
 |------|-------------|
