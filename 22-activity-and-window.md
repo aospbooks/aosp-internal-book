@@ -1,8 +1,5 @@
 # Chapter 22: Activity and Window Management Overview
 
-> *"The activity manager is to Android what the process scheduler is to Linux --
-> it decides what runs, when it runs, and what resources it gets."*
-
 The Activity and Window Management subsystem is the beating heart of
 the Android user experience. Every tap that launches an app, every swipe that
 switches tasks, every split-screen arrangement, and every floating
