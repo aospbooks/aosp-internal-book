@@ -2843,60 +2843,6 @@ own group of one).
 
 ---
 
-## Summary
-
-The Android notification system is a deeply layered pipeline that transforms a
-simple `notify()` call into a carefully ranked, policy-filtered, attention-managed
-user experience. The key architectural insights from this chapter:
-
-1. **NotificationManagerService** is the central hub. At over 15,500 lines, it
-   coordinates permission checks, channel lookups, signal extraction, ranking,
-   DND filtering, attention effects, and listener dispatch.
-
-2. **The signal extractor pipeline** provides a modular, extensible architecture.
-   Each extractor writes a specific signal onto the `NotificationRecord`, and the
-   system can be extended by adding new extractors to the XML configuration.
-
-3. **Notification channels** shift control to users. Once created, channel settings
-   are user-owned, and apps cannot programmatically override them.
-
-4. **Do Not Disturb** is not a single switch but a rule engine. Multiple
-   `AutomaticZenRule` objects can be active simultaneously, each with its own
-   `ZenPolicy`. The `ZenModeHelper` consolidates them into a single effective policy.
-
-5. **Conversation notifications** receive first-class treatment through
-   `MessagingStyle` + sharing shortcuts + `Person` data, enabling features like
-   priority sections and bubbles.
-
-6. **Bubbles** bridge the notification system and the window manager. Eligibility
-   is determined in NMS, but the UI lifecycle is managed by WM Shell's
-   `BubbleController`.
-
-7. **SystemUI's notification pipeline** transforms raw `StatusBarNotification`
-   objects into a rendered shade through a series of coordinators, filters,
-   sorters, and the `NotificationStackScrollLayout`.
-
-8. **The threading model** is carefully designed: Binder calls arrive on the
-   Binder pool, processing happens on the handler thread under `mNotificationLock`,
-   and ranking reconsideration runs on a separate thread. This prevents the
-   notification system from blocking the main thread or causing deadlocks.
-
-9. **Auto-grouping** and **force grouping** ensure a clean notification shade
-   even when apps do not properly group their notifications. The `GroupHelper`
-   handles both traditional auto-grouping (2+ ungrouped notifications) and
-   aggressive force-grouping (6+ sparse groups).
-
-10. **Attention effects** (sound, vibration, LED, heads-up) are determined by
-    a complex decision tree in `NotificationAttentionHelper` that considers
-    importance, DND state, listener hints, group alert behavior, and the
-    `FLAG_ONLY_ALERT_ONCE` flag.
-
-11. **Notification history** is maintained at two levels: an in-memory ring
-    buffer archive for `getHistoricalNotifications()` and a persistent SQLite
-    database for the Settings notification history UI.
-
----
-
 ## Appendix A: Complete Extractor Pipeline Reference
 
 The following table documents every signal extractor, its dependencies, and
@@ -3111,3 +3057,60 @@ frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/bubbles/
 frameworks/base/core/res/res/values/config.xml
     config_notificationSignalExtractors     -- Extractor pipeline order
 ```
+
+---
+
+## Summary
+
+The Android notification system is a deeply layered pipeline that transforms a
+simple `notify()` call into a carefully ranked, policy-filtered, attention-managed
+user experience. The key architectural insights from this chapter:
+
+1. **NotificationManagerService** is the central hub. At over 15,500 lines, it
+   coordinates permission checks, channel lookups, signal extraction, ranking,
+   DND filtering, attention effects, and listener dispatch.
+
+2. **The signal extractor pipeline** provides a modular, extensible architecture.
+   Each extractor writes a specific signal onto the `NotificationRecord`, and the
+   system can be extended by adding new extractors to the XML configuration.
+
+3. **Notification channels** shift control to users. Once created, channel settings
+   are user-owned, and apps cannot programmatically override them.
+
+4. **Do Not Disturb** is not a single switch but a rule engine. Multiple
+   `AutomaticZenRule` objects can be active simultaneously, each with its own
+   `ZenPolicy`. The `ZenModeHelper` consolidates them into a single effective policy.
+
+5. **Conversation notifications** receive first-class treatment through
+   `MessagingStyle` + sharing shortcuts + `Person` data, enabling features like
+   priority sections and bubbles.
+
+6. **Bubbles** bridge the notification system and the window manager. Eligibility
+   is determined in NMS, but the UI lifecycle is managed by WM Shell's
+   `BubbleController`.
+
+7. **SystemUI's notification pipeline** transforms raw `StatusBarNotification`
+   objects into a rendered shade through a series of coordinators, filters,
+   sorters, and the `NotificationStackScrollLayout`.
+
+8. **The threading model** is carefully designed: Binder calls arrive on the
+   Binder pool, processing happens on the handler thread under `mNotificationLock`,
+   and ranking reconsideration runs on a separate thread. This prevents the
+   notification system from blocking the main thread or causing deadlocks.
+
+9. **Auto-grouping** and **force grouping** ensure a clean notification shade
+   even when apps do not properly group their notifications. The `GroupHelper`
+   handles both traditional auto-grouping (2+ ungrouped notifications) and
+   aggressive force-grouping (6+ sparse groups).
+
+10. **Attention effects** (sound, vibration, LED, heads-up) are determined by
+    a complex decision tree in `NotificationAttentionHelper` that considers
+    importance, DND state, listener hints, group alert behavior, and the
+    `FLAG_ONLY_ALERT_ONCE` flag.
+
+11. **Notification history** is maintained at two levels: an in-memory ring
+    buffer archive for `getHistoricalNotifications()` and a persistent SQLite
+    database for the Settings notification history UI.
+
+---
+
