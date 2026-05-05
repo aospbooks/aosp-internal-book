@@ -10,20 +10,6 @@ tool layer by layer -- from the source code that implements them in the tree
 to the command-line invocations and analysis workflows that platform engineers
 use every day.
 
-> **Source paths** in this chapter are relative to the AOSP root unless marked
-> otherwise.  The primary directories we reference are:
->
-> | Tool | AOSP path |
-> |------|-----------|
-> | logd / logcat | `system/logging/logd/` |
-> | Perfetto | `external/perfetto/` |
-> | simpleperf | `system/extras/simpleperf/` |
-> | dumpsys | `frameworks/native/cmds/dumpsys/` |
-> | debuggerd / tombstones | `system/core/debuggerd/` |
-> | dumpstate / bugreport | `frameworks/native/cmds/dumpstate/` |
-> | bugreportz | `frameworks/native/cmds/bugreportz/` |
-> | Winscope | `development/tools/winscope/` |
-
 ---
 
 ## 56.1 Debugging Architecture Overview
