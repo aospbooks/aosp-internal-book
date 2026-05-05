@@ -466,18 +466,20 @@ protobuf manifest, an optional metadata signature, the binary data blobs, and
 finally a payload signature.
 
 ```mermaid
-flowchart TB
-    hdr["<b>Payload Header (24 bytes)</b>"]
-    magic["Magic: 'CrAU'<br/>(4 bytes)"]
-    version["Major Version<br/>(8 bytes, uint64)"]
-    manifest_size["Manifest Size<br/>(8 bytes, uint64)"]
-    sig_size["Metadata Sig Size<br/>(4 bytes, uint32)"]
+block-beta
+    columns 1
+    hdr_label["Payload Header (24 bytes)"]
+    block
+        columns 4
+        magic["Magic: 'CrAU'<br/>(4 bytes)"]
+        version["Major Version<br/>(8 bytes, uint64)"]
+        manifest_size["Manifest Size<br/>(8 bytes, uint64)"]
+        sig_size["Metadata Sig Size<br/>(4 bytes, uint32)"]
+    end
     manifest["DeltaArchiveManifest (protobuf)<br/>Partition list, operations, block size, timestamps"]
     metadata_sig["Metadata Signature<br/>(variable, size from header)"]
     blobs["Binary Data Blobs<br/>Compressed/raw data for operations"]
     payload_sig["Payload Signature<br/>(appended at end)"]
-    hdr --> magic & version & manifest_size & sig_size --> manifest
-    manifest --> metadata_sig --> blobs --> payload_sig
 ```
 
 The header fields are parsed in `PayloadMetadata::ParsePayloadHeader`:
