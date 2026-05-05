@@ -3431,7 +3431,384 @@ adb shell dmesg -w | grep "PM: suspend\|PM: resume"
 
 ---
 
-## 29.11 Try It
+## 29.11 UsageStats and Screen Time
+
+The `UsageStatsService` is Android's comprehensive app usage tracking system.
+It records every foreground transition, configuration change, notification
+interaction, standby bucket change, and user interaction event. This data
+powers the App Standby Buckets system (covered in section 29.5), the
+Digital Wellbeing app time limits, and the system's ability to predict which
+app the user will launch next.
+
+> **Source root:**
+> `frameworks/base/services/usage/java/com/android/server/usage/`
+
+### 29.11.1 Architecture Overview
+
+```mermaid
+graph TD
+    AMS["ActivityManagerService"] -->|"reportUsageEvent()"| USS["UsageStatsService"]
+    NMS["NotificationManagerService"] -->|"NOTIFICATION_INTERRUPTION"| USS
+    WMS["WindowManagerService"] -->|"CONFIGURATION_CHANGE"| USS
+
+    USS --> UUSS["UserUsageStatsService<br/>(per-user)"]
+    USS --> ASI["AppStandbyInternal<br/>(standby buckets)"]
+    USS --> ATLC["AppTimeLimitController<br/>(screen time limits)"]
+    USS --> BRST["BroadcastResponseStatsTracker"]
+
+    UUSS --> USDB["UsageStatsDatabase<br/>(protobuf persistence)"]
+    USDB --> Disk["usagestats/<br/>daily/ weekly/ monthly/ yearly/"]
+
+    Apps["Digital Wellbeing /<br/>Settings App"] -->|"IUsageStatsManager"| USS
+
+    style USS fill:#f9f,stroke:#333
+    style ATLC fill:#bbf,stroke:#333
+```
+
+### 29.11.2 Service Initialization
+
+`UsageStatsService` extends `SystemService` and initializes a rich set of
+subcomponents on start:
+
+```java
+// UsageStatsService.java, line 357-423
+@Override
+public void onStart() {
+    mAppOps = getContext().getSystemService(Context.APP_OPS_SERVICE);
+    mUserManager = getContext().getSystemService(Context.USER_SERVICE);
+    mHandler = getUsageEventProcessingHandler();
+    mIoHandler = new Handler(IoThread.get().getLooper(), mIoHandlerCallback);
+
+    mAppStandby = mInjector.getAppStandbyController(getContext());
+    mResponseStatsTracker = new BroadcastResponseStatsTracker(mAppStandby, getContext());
+
+    mAppTimeLimit = new AppTimeLimitController(getContext(),
+            new AppTimeLimitController.TimeLimitCallbackListener() {
+                @Override
+                public void onLimitReached(int observerId, int userId,
+                        long timeLimit, long timeElapsed, PendingIntent callbackIntent) {
+                    // Deliver callback to Digital Wellbeing app
+                    Intent intent = new Intent();
+                    intent.putExtra(UsageStatsManager.EXTRA_OBSERVER_ID, observerId);
+                    intent.putExtra(UsageStatsManager.EXTRA_TIME_LIMIT, timeLimit);
+                    intent.putExtra(UsageStatsManager.EXTRA_TIME_USED, timeElapsed);
+                    callbackIntent.send(getContext(), 0, intent);
+                }
+                // ...
+            }, mHandler.getLooper());
+
+    mAppStandby.addListener(mStandbyChangeListener);
+    publishLocalService(UsageStatsManagerInternal.class, new LocalService());
+    publishLocalService(AppStandbyInternal.class, mAppStandby);
+    publishBinderService(Context.USAGE_STATS_SERVICE, new BinderService());
+}
+```
+
+The service publishes three interfaces:
+
+- `IUsageStatsManager` (Binder) -- for external apps to query usage data
+- `UsageStatsManagerInternal` (local) -- for system services to report events
+- `AppStandbyInternal` (local) -- for App Standby Bucket management
+
+### 29.11.3 Usage Event Types
+
+Every interaction with the system generates a `UsageEvents.Event` with a
+specific event type:
+
+| Event Type | Constant | Trigger |
+|-----------|----------|---------|
+| Activity moved to foreground | `ACTIVITY_RESUMED` | AMS reports activity lifecycle |
+| Activity moved to background | `ACTIVITY_PAUSED` | AMS reports activity lifecycle |
+| Activity stopped | `ACTIVITY_STOPPED` | AMS reports activity lifecycle |
+| Configuration change | `CONFIGURATION_CHANGE` | Screen rotation, locale change |
+| User interaction | `USER_INTERACTION` | Direct user interaction with app |
+| Standby bucket changed | `STANDBY_BUCKET_CHANGED` | App moved between standby buckets |
+| Notification interruption | `NOTIFICATION_INTERRUPTION` | Notification posted |
+| Shortcut invocation | `SHORTCUT_INVOCATION` | Launcher shortcut used |
+| Chooser action | `CHOOSER_ACTION` | Share/intent chooser selection |
+| Locus ID set | `LOCUS_ID_SET` | Deep link / content ID association |
+| Device shutdown | `DEVICE_SHUTDOWN` | Clean shutdown |
+| Flush to disk | `FLUSH_TO_DISK` | Periodic persistence |
+
+Events are processed on a dedicated handler thread:
+
+```java
+// Handler message types
+static final int MSG_REPORT_EVENT = 0;
+static final int MSG_FLUSH_TO_DISK = 1;
+static final int MSG_REMOVE_USER = 2;
+static final int MSG_UID_STATE_CHANGED = 3;
+static final int MSG_REPORT_EVENT_TO_ALL_USERID = 4;
+static final int MSG_UNLOCKED_USER = 5;
+static final int MSG_PACKAGE_REMOVED = 6;
+```
+
+### 29.11.4 Usage Source Configuration
+
+The service supports two strategies for attributing foreground usage:
+
+```java
+// UsageStatsService.java, line 30-31
+import static android.app.usage.UsageStatsManager.USAGE_SOURCE_CURRENT_ACTIVITY;
+import static android.app.usage.UsageStatsManager.USAGE_SOURCE_TASK_ROOT_ACTIVITY;
+```
+
+- `USAGE_SOURCE_CURRENT_ACTIVITY`: Usage is attributed to the currently
+  visible activity's package. If app A launches an activity in app B, usage
+  is attributed to B while B's activity is in the foreground.
+
+- `USAGE_SOURCE_TASK_ROOT_ACTIVITY`: Usage is attributed to the package
+  that started the task. If app A launches app B's activity, usage is still
+  attributed to A because A is the task root.
+
+The default is `USAGE_SOURCE_CURRENT_ACTIVITY`. The choice affects which
+apps accumulate screen time in Digital Wellbeing.
+
+### 29.11.5 Per-User Usage Data Storage
+
+Each user gets a `UserUsageStatsService` that manages the actual stats:
+
+```java
+// UsageStatsService.java, line 232-233
+private final SparseArray<UserUsageStatsService> mUserState = new SparseArray<>();
+private final CopyOnWriteArraySet<Integer> mUserUnlockedStates = new CopyOnWriteArraySet<>();
+```
+
+Data is stored in protobuf format under
+`/data/system_ce/<userId>/usagestats/` in four interval buckets:
+
+| Interval | Directory | Max Files | Retention |
+|----------|-----------|-----------|-----------|
+| Daily | `daily/` | 100 | ~100 days |
+| Weekly | `weekly/` | 50 | ~350 days |
+| Monthly | `monthly/` | 12 | ~12 months |
+| Yearly | `yearly/` | 10 | ~10 years |
+
+The `UsageStatsDatabase` manages persistence with a protobuf format
+(version 5, upgraded from XML in version 4):
+
+```java
+// UsageStatsDatabase.java, line 92-102
+public class UsageStatsDatabase {
+    private static final int DEFAULT_CURRENT_VERSION = 5;
+    public static final int BACKUP_VERSION = 4;
+
+    static final int[] MAX_FILES_PER_INTERVAL_TYPE = new int[]{100, 50, 12, 10};
+}
+```
+
+Data is flushed to disk every 20 minutes:
+
+```java
+// UsageStatsService.java, line 164
+private static final long FLUSH_INTERVAL = COMPRESS_TIME ? TEN_SECONDS : TWENTY_MINUTES;
+```
+
+### 29.11.6 AppTimeLimitController
+
+The `AppTimeLimitController` is the core component that powers Digital
+Wellbeing's "app timer" feature. It monitors foreground app usage and
+fires callbacks when configured time limits are exceeded.
+
+```java
+// AppTimeLimitController.java, line 49-85
+public class AppTimeLimitController {
+    private static final long MAX_OBSERVER_PER_UID = 1000;
+    private static final long ONE_MINUTE = 60_000L;
+
+    @GuardedBy("mLock")
+    private final SparseArray<UserData> mUsers = new SparseArray<>();
+    @GuardedBy("mLock")
+    private final SparseArray<ObserverAppData> mObserverApps = new SparseArray<>();
+}
+```
+
+The controller manages two types of data structures:
+
+- **`UserData`** -- Per-user tracking of currently active entities (apps in
+  the foreground) and their associated observer groups
+- **`ObserverAppData`** -- Per-observing-app data (the Digital Wellbeing app
+  registers as an observer)
+
+The flow when a time limit is reached:
+
+```mermaid
+sequenceDiagram
+    participant DW as Digital Wellbeing
+    participant USS as UsageStatsService
+    participant ATLC as AppTimeLimitController
+    participant AM as AlarmManager
+
+    DW->>USS: registerAppUsageObserver(observerId, packages, timeLimit, callback)
+    USS->>ATLC: addAppUsageObserver(uid, observerId, packages, timeLimit, callback)
+    ATLC->>AM: setExact(triggerTime = now + remainingTime)
+
+    Note over ATLC: User opens observed app
+    USS->>ATLC: noteUsageStart(packageName)
+    ATLC->>ATLC: Track elapsed time
+
+    AM-->>ATLC: Alarm fires (time limit reached)
+    ATLC->>USS: onLimitReached(observerId, timeLimit, timeElapsed)
+    USS->>DW: PendingIntent callback
+    DW->>DW: Show "Time's up" dialog
+```
+
+The controller uses `AlarmManager` for precise timing. When an observed app
+enters the foreground, the controller calculates the remaining time budget
+and sets an alarm. When the app goes to the background, the elapsed time is
+accumulated and the alarm is canceled.
+
+### 29.11.7 Kernel Integration
+
+For process state tracking, the service updates a kernel counter file:
+
+```java
+// UsageStatsService.java, line 173-174
+private static final boolean ENABLE_KERNEL_UPDATES = true;
+private static final File KERNEL_COUNTER_FILE = new File("/proc/uid_procstat/set");
+```
+
+When a UID's process state changes, the I/O handler writes to this file:
+
+```java
+// UsageStatsService.java, line 300-316
+case MSG_UID_STATE_CHANGED: {
+    final int uid = msg.arg1;
+    final int procState = msg.arg2;
+    final int newCounter = (procState <= ActivityManager.PROCESS_STATE_TOP) ? 0 : 1;
+    synchronized (mUidToKernelCounter) {
+        final int oldCounter = mUidToKernelCounter.get(uid, 0);
+        if (newCounter != oldCounter) {
+            mUidToKernelCounter.put(uid, newCounter);
+            FileUtils.stringToFile(KERNEL_COUNTER_FILE, uid + " " + newCounter);
+        }
+    }
+}
+```
+
+This enables the kernel to account for CPU time differently based on whether
+a process is in the foreground (counter 0) or background (counter 1),
+feeding into the battery stats attribution system covered in section 29.6.
+
+### 29.11.8 Standby Bucket Change Listener
+
+The service listens for standby bucket changes and records them as usage
+events:
+
+```java
+// UsageStatsService.java, line 279-290
+private AppIdleStateChangeListener mStandbyChangeListener =
+        new AppIdleStateChangeListener() {
+            @Override
+            public void onAppIdleStateChanged(String packageName, int userId,
+                    boolean idle, int bucket, int reason) {
+                Event event = new Event(Event.STANDBY_BUCKET_CHANGED,
+                        SystemClock.elapsedRealtime());
+                event.mBucketAndReason = (bucket << 16) | (reason & 0xFFFF);
+                event.mPackage = packageName;
+                reportEventOrAddToQueue(userId, event);
+            }
+        };
+```
+
+The bucket and reason are packed into a single 32-bit integer: the upper 16
+bits hold the bucket (ACTIVE, WORKING_SET, FREQUENT, RARE, RESTRICTED) and
+the lower 16 bits hold the reason code.
+
+### 29.11.9 App Launch Prediction
+
+`UsageStatsService` maintains a component usage map for predicting when apps
+will be launched next:
+
+```java
+// UsageStatsService.java, line 240
+private final Map<String, Long> mLastTimeComponentUsedGlobal = new ArrayMap<>();
+```
+
+The `LaunchTimeAlarmQueue` schedules alarms based on predicted launch times.
+When a user unlocks, the service calculates estimated launch times for all
+recently used packages and notifies interested listeners
+(`EstimatedLaunchTimeChangedListener`). Apps that have not been used
+recently get a default prediction of 365 days in the future:
+
+```java
+// UsageStatsService.java, line 170
+private static final long UNKNOWN_LAUNCH_TIME_DELAY_MS = 365 * ONE_DAY;
+```
+
+This prediction data is used by the `AppStandbyController` to optimize
+standby bucket assignments and by the system to pre-warm likely-to-be-used
+apps.
+
+### 29.11.10 Querying Usage Data
+
+The `BinderService` exposes the `IUsageStatsManager` AIDL interface.
+Callers need one of:
+
+- `android.permission.PACKAGE_USAGE_STATS` (signature-level, granted via
+  AppOps in Settings)
+- The app must be a device or profile owner (DevicePolicyManager)
+- The calling UID must match the queried user's UID
+
+Available query methods:
+
+| Method | Returns | Use case |
+|--------|---------|----------|
+| `queryUsageStats()` | `List<UsageStats>` | Per-app usage summaries over a time range |
+| `queryEvents()` | `UsageEvents` | Raw event stream within a time range |
+| `queryEventsForSelf()` | `UsageEvents` | Events for the calling package only (no permission) |
+| `queryConfigurationStats()` | `List<ConfigurationStats>` | Configuration change history |
+| `queryEventStats()` | `List<EventStats>` | Event type aggregations |
+| `getAppStandbyBucket()` | `int` | Current standby bucket for calling app |
+| `getAppStandbyBuckets()` | `List<AppStandbyInfo>` | Buckets for all apps |
+| `isAppStandbyEnabled()` | `boolean` | Whether App Standby is active |
+
+### 29.11.11 Digital Wellbeing Integration
+
+Google's Digital Wellbeing app (package `com.google.android.apps.wellbeing`)
+is the primary consumer of the UsageStats APIs. It:
+
+1. **Registers usage observers** via `registerAppUsageObserver()` for app
+   timers set by the user
+2. **Queries daily stats** via `queryUsageStats()` to display the dashboard
+   with per-app screen time
+3. **Tracks notification counts** using notification usage events
+4. **Displays unlock counts** by tracking `USER_INTERACTION` events
+
+The separation between the framework service (UsageStatsService) and the
+app (Digital Wellbeing) means that the framework provides data collection
+and enforcement, while the app provides the user-facing UI and policy
+configuration.
+
+```mermaid
+graph LR
+    USS["UsageStatsService<br/>(data collection)"] -->|"queryUsageStats()"| DW["Digital Wellbeing<br/>(UI + policy)"]
+    DW -->|"registerAppUsageObserver()"| USS
+    USS -->|"onLimitReached()"| DW
+    DW -->|"shows"| UI["Screen time dashboard<br/>App timers<br/>Focus mode"]
+```
+
+### 29.11.12 Time Change Correction
+
+The service handles system time changes that could corrupt usage data:
+
+```java
+// UsageStatsService.java, line 153-154
+public static final boolean ENABLE_TIME_CHANGE_CORRECTION
+        = SystemProperties.getBoolean("persist.debug.time_correction", true);
+
+static final long TIME_CHANGE_THRESHOLD_MILLIS = 2 * 1000; // Two seconds
+```
+
+When the system clock changes by more than 2 seconds, the service records
+the delta between `SystemClock.elapsedRealtime()` (which is monotonic and
+not affected by time changes) and `System.currentTimeMillis()`. Usage event
+timestamps are adjusted to maintain consistency across the time change
+boundary.
+
+---
+
+## 29.12 Try It
 
 ### Experiment 1: Observe Wake Locks
 
@@ -4051,377 +4428,3 @@ for the same performance level.
 
 ---
 
-## 29.12 UsageStats and Screen Time
-
-The `UsageStatsService` is Android's comprehensive app usage tracking system.
-It records every foreground transition, configuration change, notification
-interaction, standby bucket change, and user interaction event. This data
-powers the App Standby Buckets system (covered in section 29.5), the
-Digital Wellbeing app time limits, and the system's ability to predict which
-app the user will launch next.
-
-> **Source root:**
-> `frameworks/base/services/usage/java/com/android/server/usage/`
-
-### 29.12.1 Architecture Overview
-
-```mermaid
-graph TD
-    AMS["ActivityManagerService"] -->|"reportUsageEvent()"| USS["UsageStatsService"]
-    NMS["NotificationManagerService"] -->|"NOTIFICATION_INTERRUPTION"| USS
-    WMS["WindowManagerService"] -->|"CONFIGURATION_CHANGE"| USS
-
-    USS --> UUSS["UserUsageStatsService<br/>(per-user)"]
-    USS --> ASI["AppStandbyInternal<br/>(standby buckets)"]
-    USS --> ATLC["AppTimeLimitController<br/>(screen time limits)"]
-    USS --> BRST["BroadcastResponseStatsTracker"]
-
-    UUSS --> USDB["UsageStatsDatabase<br/>(protobuf persistence)"]
-    USDB --> Disk["usagestats/<br/>daily/ weekly/ monthly/ yearly/"]
-
-    Apps["Digital Wellbeing /<br/>Settings App"] -->|"IUsageStatsManager"| USS
-
-    style USS fill:#f9f,stroke:#333
-    style ATLC fill:#bbf,stroke:#333
-```
-
-### 29.12.2 Service Initialization
-
-`UsageStatsService` extends `SystemService` and initializes a rich set of
-subcomponents on start:
-
-```java
-// UsageStatsService.java, line 357-423
-@Override
-public void onStart() {
-    mAppOps = getContext().getSystemService(Context.APP_OPS_SERVICE);
-    mUserManager = getContext().getSystemService(Context.USER_SERVICE);
-    mHandler = getUsageEventProcessingHandler();
-    mIoHandler = new Handler(IoThread.get().getLooper(), mIoHandlerCallback);
-
-    mAppStandby = mInjector.getAppStandbyController(getContext());
-    mResponseStatsTracker = new BroadcastResponseStatsTracker(mAppStandby, getContext());
-
-    mAppTimeLimit = new AppTimeLimitController(getContext(),
-            new AppTimeLimitController.TimeLimitCallbackListener() {
-                @Override
-                public void onLimitReached(int observerId, int userId,
-                        long timeLimit, long timeElapsed, PendingIntent callbackIntent) {
-                    // Deliver callback to Digital Wellbeing app
-                    Intent intent = new Intent();
-                    intent.putExtra(UsageStatsManager.EXTRA_OBSERVER_ID, observerId);
-                    intent.putExtra(UsageStatsManager.EXTRA_TIME_LIMIT, timeLimit);
-                    intent.putExtra(UsageStatsManager.EXTRA_TIME_USED, timeElapsed);
-                    callbackIntent.send(getContext(), 0, intent);
-                }
-                // ...
-            }, mHandler.getLooper());
-
-    mAppStandby.addListener(mStandbyChangeListener);
-    publishLocalService(UsageStatsManagerInternal.class, new LocalService());
-    publishLocalService(AppStandbyInternal.class, mAppStandby);
-    publishBinderService(Context.USAGE_STATS_SERVICE, new BinderService());
-}
-```
-
-The service publishes three interfaces:
-
-- `IUsageStatsManager` (Binder) -- for external apps to query usage data
-- `UsageStatsManagerInternal` (local) -- for system services to report events
-- `AppStandbyInternal` (local) -- for App Standby Bucket management
-
-### 29.12.3 Usage Event Types
-
-Every interaction with the system generates a `UsageEvents.Event` with a
-specific event type:
-
-| Event Type | Constant | Trigger |
-|-----------|----------|---------|
-| Activity moved to foreground | `ACTIVITY_RESUMED` | AMS reports activity lifecycle |
-| Activity moved to background | `ACTIVITY_PAUSED` | AMS reports activity lifecycle |
-| Activity stopped | `ACTIVITY_STOPPED` | AMS reports activity lifecycle |
-| Configuration change | `CONFIGURATION_CHANGE` | Screen rotation, locale change |
-| User interaction | `USER_INTERACTION` | Direct user interaction with app |
-| Standby bucket changed | `STANDBY_BUCKET_CHANGED` | App moved between standby buckets |
-| Notification interruption | `NOTIFICATION_INTERRUPTION` | Notification posted |
-| Shortcut invocation | `SHORTCUT_INVOCATION` | Launcher shortcut used |
-| Chooser action | `CHOOSER_ACTION` | Share/intent chooser selection |
-| Locus ID set | `LOCUS_ID_SET` | Deep link / content ID association |
-| Device shutdown | `DEVICE_SHUTDOWN` | Clean shutdown |
-| Flush to disk | `FLUSH_TO_DISK` | Periodic persistence |
-
-Events are processed on a dedicated handler thread:
-
-```java
-// Handler message types
-static final int MSG_REPORT_EVENT = 0;
-static final int MSG_FLUSH_TO_DISK = 1;
-static final int MSG_REMOVE_USER = 2;
-static final int MSG_UID_STATE_CHANGED = 3;
-static final int MSG_REPORT_EVENT_TO_ALL_USERID = 4;
-static final int MSG_UNLOCKED_USER = 5;
-static final int MSG_PACKAGE_REMOVED = 6;
-```
-
-### 29.12.4 Usage Source Configuration
-
-The service supports two strategies for attributing foreground usage:
-
-```java
-// UsageStatsService.java, line 30-31
-import static android.app.usage.UsageStatsManager.USAGE_SOURCE_CURRENT_ACTIVITY;
-import static android.app.usage.UsageStatsManager.USAGE_SOURCE_TASK_ROOT_ACTIVITY;
-```
-
-- `USAGE_SOURCE_CURRENT_ACTIVITY`: Usage is attributed to the currently
-  visible activity's package. If app A launches an activity in app B, usage
-  is attributed to B while B's activity is in the foreground.
-
-- `USAGE_SOURCE_TASK_ROOT_ACTIVITY`: Usage is attributed to the package
-  that started the task. If app A launches app B's activity, usage is still
-  attributed to A because A is the task root.
-
-The default is `USAGE_SOURCE_CURRENT_ACTIVITY`. The choice affects which
-apps accumulate screen time in Digital Wellbeing.
-
-### 29.12.5 Per-User Usage Data Storage
-
-Each user gets a `UserUsageStatsService` that manages the actual stats:
-
-```java
-// UsageStatsService.java, line 232-233
-private final SparseArray<UserUsageStatsService> mUserState = new SparseArray<>();
-private final CopyOnWriteArraySet<Integer> mUserUnlockedStates = new CopyOnWriteArraySet<>();
-```
-
-Data is stored in protobuf format under
-`/data/system_ce/<userId>/usagestats/` in four interval buckets:
-
-| Interval | Directory | Max Files | Retention |
-|----------|-----------|-----------|-----------|
-| Daily | `daily/` | 100 | ~100 days |
-| Weekly | `weekly/` | 50 | ~350 days |
-| Monthly | `monthly/` | 12 | ~12 months |
-| Yearly | `yearly/` | 10 | ~10 years |
-
-The `UsageStatsDatabase` manages persistence with a protobuf format
-(version 5, upgraded from XML in version 4):
-
-```java
-// UsageStatsDatabase.java, line 92-102
-public class UsageStatsDatabase {
-    private static final int DEFAULT_CURRENT_VERSION = 5;
-    public static final int BACKUP_VERSION = 4;
-
-    static final int[] MAX_FILES_PER_INTERVAL_TYPE = new int[]{100, 50, 12, 10};
-}
-```
-
-Data is flushed to disk every 20 minutes:
-
-```java
-// UsageStatsService.java, line 164
-private static final long FLUSH_INTERVAL = COMPRESS_TIME ? TEN_SECONDS : TWENTY_MINUTES;
-```
-
-### 29.12.6 AppTimeLimitController
-
-The `AppTimeLimitController` is the core component that powers Digital
-Wellbeing's "app timer" feature. It monitors foreground app usage and
-fires callbacks when configured time limits are exceeded.
-
-```java
-// AppTimeLimitController.java, line 49-85
-public class AppTimeLimitController {
-    private static final long MAX_OBSERVER_PER_UID = 1000;
-    private static final long ONE_MINUTE = 60_000L;
-
-    @GuardedBy("mLock")
-    private final SparseArray<UserData> mUsers = new SparseArray<>();
-    @GuardedBy("mLock")
-    private final SparseArray<ObserverAppData> mObserverApps = new SparseArray<>();
-}
-```
-
-The controller manages two types of data structures:
-
-- **`UserData`** -- Per-user tracking of currently active entities (apps in
-  the foreground) and their associated observer groups
-- **`ObserverAppData`** -- Per-observing-app data (the Digital Wellbeing app
-  registers as an observer)
-
-The flow when a time limit is reached:
-
-```mermaid
-sequenceDiagram
-    participant DW as Digital Wellbeing
-    participant USS as UsageStatsService
-    participant ATLC as AppTimeLimitController
-    participant AM as AlarmManager
-
-    DW->>USS: registerAppUsageObserver(observerId, packages, timeLimit, callback)
-    USS->>ATLC: addAppUsageObserver(uid, observerId, packages, timeLimit, callback)
-    ATLC->>AM: setExact(triggerTime = now + remainingTime)
-
-    Note over ATLC: User opens observed app
-    USS->>ATLC: noteUsageStart(packageName)
-    ATLC->>ATLC: Track elapsed time
-
-    AM-->>ATLC: Alarm fires (time limit reached)
-    ATLC->>USS: onLimitReached(observerId, timeLimit, timeElapsed)
-    USS->>DW: PendingIntent callback
-    DW->>DW: Show "Time's up" dialog
-```
-
-The controller uses `AlarmManager` for precise timing. When an observed app
-enters the foreground, the controller calculates the remaining time budget
-and sets an alarm. When the app goes to the background, the elapsed time is
-accumulated and the alarm is canceled.
-
-### 29.12.7 Kernel Integration
-
-For process state tracking, the service updates a kernel counter file:
-
-```java
-// UsageStatsService.java, line 173-174
-private static final boolean ENABLE_KERNEL_UPDATES = true;
-private static final File KERNEL_COUNTER_FILE = new File("/proc/uid_procstat/set");
-```
-
-When a UID's process state changes, the I/O handler writes to this file:
-
-```java
-// UsageStatsService.java, line 300-316
-case MSG_UID_STATE_CHANGED: {
-    final int uid = msg.arg1;
-    final int procState = msg.arg2;
-    final int newCounter = (procState <= ActivityManager.PROCESS_STATE_TOP) ? 0 : 1;
-    synchronized (mUidToKernelCounter) {
-        final int oldCounter = mUidToKernelCounter.get(uid, 0);
-        if (newCounter != oldCounter) {
-            mUidToKernelCounter.put(uid, newCounter);
-            FileUtils.stringToFile(KERNEL_COUNTER_FILE, uid + " " + newCounter);
-        }
-    }
-}
-```
-
-This enables the kernel to account for CPU time differently based on whether
-a process is in the foreground (counter 0) or background (counter 1),
-feeding into the battery stats attribution system covered in section 29.6.
-
-### 29.12.8 Standby Bucket Change Listener
-
-The service listens for standby bucket changes and records them as usage
-events:
-
-```java
-// UsageStatsService.java, line 279-290
-private AppIdleStateChangeListener mStandbyChangeListener =
-        new AppIdleStateChangeListener() {
-            @Override
-            public void onAppIdleStateChanged(String packageName, int userId,
-                    boolean idle, int bucket, int reason) {
-                Event event = new Event(Event.STANDBY_BUCKET_CHANGED,
-                        SystemClock.elapsedRealtime());
-                event.mBucketAndReason = (bucket << 16) | (reason & 0xFFFF);
-                event.mPackage = packageName;
-                reportEventOrAddToQueue(userId, event);
-            }
-        };
-```
-
-The bucket and reason are packed into a single 32-bit integer: the upper 16
-bits hold the bucket (ACTIVE, WORKING_SET, FREQUENT, RARE, RESTRICTED) and
-the lower 16 bits hold the reason code.
-
-### 29.12.9 App Launch Prediction
-
-`UsageStatsService` maintains a component usage map for predicting when apps
-will be launched next:
-
-```java
-// UsageStatsService.java, line 240
-private final Map<String, Long> mLastTimeComponentUsedGlobal = new ArrayMap<>();
-```
-
-The `LaunchTimeAlarmQueue` schedules alarms based on predicted launch times.
-When a user unlocks, the service calculates estimated launch times for all
-recently used packages and notifies interested listeners
-(`EstimatedLaunchTimeChangedListener`). Apps that have not been used
-recently get a default prediction of 365 days in the future:
-
-```java
-// UsageStatsService.java, line 170
-private static final long UNKNOWN_LAUNCH_TIME_DELAY_MS = 365 * ONE_DAY;
-```
-
-This prediction data is used by the `AppStandbyController` to optimize
-standby bucket assignments and by the system to pre-warm likely-to-be-used
-apps.
-
-### 29.12.10 Querying Usage Data
-
-The `BinderService` exposes the `IUsageStatsManager` AIDL interface.
-Callers need one of:
-
-- `android.permission.PACKAGE_USAGE_STATS` (signature-level, granted via
-  AppOps in Settings)
-- The app must be a device or profile owner (DevicePolicyManager)
-- The calling UID must match the queried user's UID
-
-Available query methods:
-
-| Method | Returns | Use case |
-|--------|---------|----------|
-| `queryUsageStats()` | `List<UsageStats>` | Per-app usage summaries over a time range |
-| `queryEvents()` | `UsageEvents` | Raw event stream within a time range |
-| `queryEventsForSelf()` | `UsageEvents` | Events for the calling package only (no permission) |
-| `queryConfigurationStats()` | `List<ConfigurationStats>` | Configuration change history |
-| `queryEventStats()` | `List<EventStats>` | Event type aggregations |
-| `getAppStandbyBucket()` | `int` | Current standby bucket for calling app |
-| `getAppStandbyBuckets()` | `List<AppStandbyInfo>` | Buckets for all apps |
-| `isAppStandbyEnabled()` | `boolean` | Whether App Standby is active |
-
-### 29.12.11 Digital Wellbeing Integration
-
-Google's Digital Wellbeing app (package `com.google.android.apps.wellbeing`)
-is the primary consumer of the UsageStats APIs. It:
-
-1. **Registers usage observers** via `registerAppUsageObserver()` for app
-   timers set by the user
-2. **Queries daily stats** via `queryUsageStats()` to display the dashboard
-   with per-app screen time
-3. **Tracks notification counts** using notification usage events
-4. **Displays unlock counts** by tracking `USER_INTERACTION` events
-
-The separation between the framework service (UsageStatsService) and the
-app (Digital Wellbeing) means that the framework provides data collection
-and enforcement, while the app provides the user-facing UI and policy
-configuration.
-
-```mermaid
-graph LR
-    USS["UsageStatsService<br/>(data collection)"] -->|"queryUsageStats()"| DW["Digital Wellbeing<br/>(UI + policy)"]
-    DW -->|"registerAppUsageObserver()"| USS
-    USS -->|"onLimitReached()"| DW
-    DW -->|"shows"| UI["Screen time dashboard<br/>App timers<br/>Focus mode"]
-```
-
-### 29.12.12 Time Change Correction
-
-The service handles system time changes that could corrupt usage data:
-
-```java
-// UsageStatsService.java, line 153-154
-public static final boolean ENABLE_TIME_CHANGE_CORRECTION
-        = SystemProperties.getBoolean("persist.debug.time_correction", true);
-
-static final long TIME_CHANGE_THRESHOLD_MILLIS = 2 * 1000; // Two seconds
-```
-
-When the system clock changes by more than 2 seconds, the service records
-the delta between `SystemClock.elapsedRealtime()` (which is monotonic and
-not affected by time changes) and `System.currentTimeMillis()`. Usage event
-timestamps are adjusted to maintain consistency across the time change
-boundary.
