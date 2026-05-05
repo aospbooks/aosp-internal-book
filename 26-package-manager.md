@@ -3553,12 +3553,238 @@ $ adb shell dumpsys overlay
 
 ---
 
-## 26.9 Try It -- Practical Exercises
+## 26.9 App Hibernation
+
+App hibernation is Android's mechanism for handling unused applications.
+When users install apps and then stop using them, those apps continue
+consuming storage (cached data, OAT/dex artifacts) and may retain runtime
+permissions that pose privacy risks. The `AppHibernationService` coordinates
+with `PermissionController`, `PackageManagerService`, and
+`ActivityManagerService` to put idle apps into a low-resource state and
+reclaim the resources they hold.
+
+> **Source root:**
+> `frameworks/base/services/core/java/com/android/server/apphibernation/`
+
+### 26.9.1 Architecture Overview
+
+```mermaid
+graph TD
+    PC["PermissionController<br/>(policy engine)"] -->|"setHibernatingForUser()"| AHS["AppHibernationService"]
+    AHS -->|"forceStopPackage()"| AMS["ActivityManagerService"]
+    AHS -->|"deleteApplicationCacheFiles()"| PMS["PackageManagerService"]
+    AHS -->|"StorageStats queries"| SSM["StorageStatsManager"]
+    AHS -->|"persist state"| Disk["HibernationStateDiskStore"]
+    AHS -->|"StatsLog"| Stats["FrameworkStatsLog"]
+    AHS -->|"internal API"| AHMI["AppHibernationManagerInternal"]
+    AHMI --> PMS
+
+    style AHS fill:#f9f,stroke:#333
+    style PC fill:#bbf,stroke:#333
+```
+
+The key architectural decision is that `AppHibernationService` manages the
+*state* of hibernation, but the *policy* (which apps should hibernate) lives
+in `PermissionController`, which runs in a separate process. This separation
+allows Google to update hibernation policy through Play Services without
+modifying the framework.
+
+### 26.9.2 Two-Level Hibernation State
+
+Hibernation operates at two levels, tracked by separate data classes:
+
+| Level | Class | Scope | Optimizations |
+|-------|-------|-------|---------------|
+| **User-level** | `UserLevelState` | Per (package, user) | Force-stop, cache deletion |
+| **Global-level** | `GlobalLevelState` | Per package (all users) | OAT artifact deletion, APK-level optimization |
+
+```java
+// AppHibernationService.java, line 119-125
+@GuardedBy("mLock")
+private final SparseArray<Map<String, UserLevelState>> mUserStates = new SparseArray<>();
+@GuardedBy("mLock")
+private final Map<String, GlobalLevelState> mGlobalHibernationStates = new ArrayMap<>();
+```
+
+A package is globally hibernated only when it is hibernated for *all* users.
+Global hibernation enables more aggressive optimizations like deleting
+ahead-of-time compilation artifacts.
+
+Each state object tracks:
+
+```java
+// UserLevelState.java / GlobalLevelState.java
+public String packageName;
+public boolean hibernated;
+public long savedByte;         // bytes reclaimed
+public long lastUnhibernatedMs; // timestamp of last wake-up
+```
+
+### 26.9.3 Hibernation Process
+
+When `PermissionController` determines an app should hibernate, it calls
+`setHibernatingForUser()`. The service then:
+
+1. **Force-stops the package** via `ActivityManagerService.forceStopPackage()`,
+   killing all processes and canceling alarms/jobs
+2. **Deletes cached files** via `PackageManagerService.deleteApplicationCacheFilesAsUser()`
+3. **Records bytes saved** from `StorageStatsManager.queryStatsForPackage()`
+4. **Persists state** to disk via `HibernationStateDiskStore`
+5. **Logs metrics** via `FrameworkStatsLog.USER_LEVEL_HIBERNATION_STATE_CHANGED`
+
+```java
+// AppHibernationService.java, line 455-484
+private void hibernatePackageForUser(String packageName, int userId, UserLevelState state) {
+    Trace.traceBegin(Trace.TRACE_TAG_SYSTEM_SERVER, "hibernatePackage");
+    try {
+        ApplicationInfo info = mIPackageManager.getApplicationInfo(
+                packageName, PACKAGE_MATCH_FLAGS, userId);
+        StorageStats stats = mStorageStatsManager.queryStatsForPackage(
+                info.storageUuid, packageName, new UserHandle(userId));
+        mIActivityManager.forceStopPackage(packageName, userId);
+        mIPackageManager.deleteApplicationCacheFilesAsUser(packageName, userId,
+                null /* observer */);
+        synchronized (mLock) {
+            state.savedByte = stats.getCacheBytes();
+        }
+    } catch (RemoteException e) { /* ... */ }
+}
+```
+
+### 26.9.4 Unhibernation and Wake-Up
+
+When a hibernated app is used again (detected via `UsageEventsListener`),
+the service restores it:
+
+```java
+// AppHibernationService.java, line 490-546
+private void unhibernatePackageForUser(String packageName, int userId) {
+    // Deliver LOCKED_BOOT_COMPLETED and BOOT_COMPLETE broadcasts
+    // so the app can re-register alarms, jobs, etc.
+    Intent lockedBcIntent = new Intent(Intent.ACTION_LOCKED_BOOT_COMPLETED)
+            .setPackage(packageName);
+    mIActivityManager.broadcastIntentWithFeature(/* ... */);
+
+    Intent bcIntent = new Intent(Intent.ACTION_BOOT_COMPLETED)
+            .setPackage(packageName);
+    mIActivityManager.broadcastIntentWithFeature(/* ... */);
+}
+```
+
+The boot-completed broadcasts are critical: they allow the app to re-register
+its `AlarmManager` alarms, `JobScheduler` jobs, `WorkManager` tasks, and
+Firebase Cloud Messaging tokens that were lost when the app was force-stopped.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant USS as UsageStatsService
+    participant AHS as AppHibernationService
+    participant AMS as ActivityManagerService
+    participant PMS as PackageManagerService
+
+    Note over User: User opens hibernated app
+    USS->>AHS: UsageEventListener.onUsageEvent()
+    AHS->>AHS: setHibernatingForUser(pkg, false)
+    AHS->>AMS: broadcastIntent(LOCKED_BOOT_COMPLETED)
+    AHS->>AMS: broadcastIntent(BOOT_COMPLETED)
+    Note over AHS: App re-registers alarms/jobs
+    AHS->>AHS: Persist updated state to disk
+```
+
+### 26.9.5 Integration with Permission Auto-Revoke
+
+The connection between hibernation and permission revocation is subtle but
+important. `PermissionController` handles both:
+
+1. **Permission auto-revoke**: Revokes runtime permissions for unused apps
+   (introduced Android 11)
+2. **App hibernation**: Puts unused apps in hibernation state, reclaiming
+   storage (introduced Android 12)
+
+These are separate features that share the same policy signal: "this app
+has not been used recently." The `PermissionController` uses
+`UsageStatsManager` to determine app usage and then invokes both permission
+revocation and hibernation APIs.
+
+### 26.9.6 Device Config and Feature Gating
+
+The service is gated by a `DeviceConfig` flag:
+
+```java
+// AppHibernationConstants.java
+static final String KEY_APP_HIBERNATION_ENABLED = "app_hibernation_enabled";
+
+// AppHibernationService.java, line 188
+sIsServiceEnabled = isDeviceConfigAppHibernationEnabled();
+```
+
+Every public API method checks `sIsServiceEnabled` before proceeding,
+returning empty or false values when disabled. This allows the feature to be
+remotely toggled without a system update.
+
+### 26.9.7 Persistence and Boot Sequence
+
+Hibernation state is persisted to disk via `HibernationStateDiskStore`,
+which uses protocol buffer serialization (`GlobalLevelHibernationProto`,
+`UserLevelHibernationProto`). State is loaded during
+`PHASE_BOOT_COMPLETED` on a background executor:
+
+```java
+// AppHibernationService.java, line 177-186
+@Override
+public void onBootPhase(int phase) {
+    if (phase == PHASE_BOOT_COMPLETED) {
+        mBackgroundExecutor.execute(() -> {
+            List<GlobalLevelState> states =
+                    mGlobalLevelHibernationDiskStore.readHibernationStates();
+            synchronized (mLock) {
+                initializeGlobalHibernationStates(states);
+            }
+        });
+    }
+}
+```
+
+User-level states are loaded lazily when a user is unlocked, using
+per-user `HibernationStateDiskStore` instances stored in the `mUserDiskStores`
+`SparseArray`.
+
+### 26.9.8 Package Lifecycle Events
+
+The service registers a broadcast receiver for `ACTION_PACKAGE_ADDED` and
+`ACTION_PACKAGE_REMOVED` to keep its state maps in sync:
+
+- **Package added**: Creates a new `UserLevelState` and `GlobalLevelState`
+  entry with `hibernated = false`
+- **Package removed**: Cleans up state from both user and global maps
+- **Package replaced**: The `EXTRA_REPLACING` flag distinguishes updates
+  from fresh installs; updates preserve the existing hibernation state
+
+### 26.9.9 Debugging App Hibernation
+
+```bash
+# Check if a package is hibernated
+adb shell cmd app_hibernation is-hibernating <package> --user 0
+
+# Manually hibernate a package
+adb shell cmd app_hibernation set-hibernating <package> --user 0 true
+
+# Get hibernation stats (saved bytes)
+adb shell cmd app_hibernation get-hibernation-stats --user 0
+
+# Check DeviceConfig flag
+adb shell device_config get app_hibernation app_hibernation_enabled
+```
+
+---
+
+## 26.10 Try It -- Practical Exercises
 
 This section provides hands-on exercises to explore PMS functionality using
 common Android development tools.
 
-### 26.9.1 Inspecting an APK
+### 26.10.1 Inspecting an APK
 
 **Exercise 1: Examine APK structure**
 
@@ -3594,7 +3820,7 @@ $ apksigner verify -v2-scheme-only /path/to/app.apk
 $ apksigner verify -v3-scheme-only /path/to/app.apk
 ```
 
-### 26.9.2 Querying Package Information
+### 26.10.2 Querying Package Information
 
 **Exercise 3: Use pm shell commands**
 
@@ -3631,7 +3857,7 @@ $ adb shell cat /data/system/users/0/package-restrictions.xml
 $ adb shell cat /data/misc_de/0/apexdata/com.android.permission/runtime-permissions.xml
 ```
 
-### 26.9.3 Installing and Managing Packages
+### 26.10.3 Installing and Managing Packages
 
 **Exercise 5: Install workflows**
 
@@ -3677,7 +3903,7 @@ $ adb shell pm uninstall --user all com.example.app
 $ adb shell pm clear com.example.app
 ```
 
-### 26.9.4 Working with Permissions
+### 26.10.4 Working with Permissions
 
 **Exercise 7: Permission operations**
 
@@ -3701,7 +3927,7 @@ $ adb shell pm list permissions -d -g
 $ adb shell pm reset-permissions com.example.app
 ```
 
-### 26.9.5 Intent Resolution Inspection
+### 26.10.5 Intent Resolution Inspection
 
 **Exercise 8: Query intent resolution**
 
@@ -3724,7 +3950,7 @@ $ adb shell pm set-home-activity com.example.launcher/.LauncherActivity
 $ adb shell pm clear-default-browser-status
 ```
 
-### 26.9.6 Working with Overlays
+### 26.10.6 Working with Overlays
 
 **Exercise 9: Overlay management**
 
@@ -3785,7 +4011,7 @@ $ adb install overlay.apk
 $ adb shell cmd overlay enable com.example.theme.overlay
 ```
 
-### 26.9.7 Dumpsys Exploration
+### 26.10.7 Dumpsys Exploration
 
 **Exercise 11: Comprehensive PMS dump**
 
@@ -3812,7 +4038,7 @@ $ adb shell dumpsys package preferred
 $ adb shell dumpsys overlay
 ```
 
-### 26.9.8 Split APK Exercises
+### 26.10.8 Split APK Exercises
 
 **Exercise 13: Create and install split APKs**
 
@@ -3860,7 +4086,7 @@ $ adb shell pm install-commit 1234
 $ adb shell pm path com.example.app
 ```
 
-### 26.9.9 Package Database Exploration
+### 26.10.9 Package Database Exploration
 
 **Exercise 15: Deep dive into packages.xml**
 
@@ -3909,7 +4135,7 @@ $ adb logcat -s PermissionManagerService:D
 $ adb logcat -s PackageManager:V -e "resolve|intent"
 ```
 
-### 26.9.10 Performance Analysis
+### 26.10.10 Performance Analysis
 
 **Exercise 17: Measure boot scanning time**
 
@@ -3945,7 +4171,7 @@ $ adb logcat -s PackageManager:V | grep -i "intent\|resolve\|match"
 $ adb shell setprop log.tag.PackageManager INFO
 ```
 
-### 26.9.11 Advanced: Tracing PMS Behavior
+### 26.10.11 Advanced: Tracing PMS Behavior
 
 **Exercise 12: System trace analysis**
 
@@ -3973,7 +4199,7 @@ Key trace sections to look for:
 - `queryIntentActivities` -- Activity query time
 - `installPackage` -- Full installation time
 
-### 26.9.12 Advanced: Building and Testing PMS Changes
+### 26.10.12 Advanced: Building and Testing PMS Changes
 
 **Exercise 19: Build the PMS module**
 
@@ -4016,7 +4242,7 @@ $ adb forward tcp:8700 jdwp:$(adb shell pidof system_server)
 # Trigger the breakpoint by installing an app or launching an activity
 ```
 
-### 26.9.13 Advanced: Overlay Development Workflow
+### 26.10.13 Advanced: Overlay Development Workflow
 
 **Exercise 21: Full overlay development cycle**
 
@@ -4059,7 +4285,7 @@ $ adb shell cmd overlay disable --user current com.example.my.overlay
 $ adb uninstall com.example.my.overlay
 ```
 
-### 26.9.14 Troubleshooting Common PMS Issues
+### 26.10.14 Troubleshooting Common PMS Issues
 
 **Exercise 22: Diagnose installation failures**
 
@@ -4358,226 +4584,3 @@ For deeper exploration of PMS internals, the following areas deserve additional 
 
 ---
 
-## 26.10 App Hibernation
-
-App hibernation is Android's mechanism for handling unused applications.
-When users install apps and then stop using them, those apps continue
-consuming storage (cached data, OAT/dex artifacts) and may retain runtime
-permissions that pose privacy risks. The `AppHibernationService` coordinates
-with `PermissionController`, `PackageManagerService`, and
-`ActivityManagerService` to put idle apps into a low-resource state and
-reclaim the resources they hold.
-
-> **Source root:**
-> `frameworks/base/services/core/java/com/android/server/apphibernation/`
-
-### 26.10.1 Architecture Overview
-
-```mermaid
-graph TD
-    PC["PermissionController<br/>(policy engine)"] -->|"setHibernatingForUser()"| AHS["AppHibernationService"]
-    AHS -->|"forceStopPackage()"| AMS["ActivityManagerService"]
-    AHS -->|"deleteApplicationCacheFiles()"| PMS["PackageManagerService"]
-    AHS -->|"StorageStats queries"| SSM["StorageStatsManager"]
-    AHS -->|"persist state"| Disk["HibernationStateDiskStore"]
-    AHS -->|"StatsLog"| Stats["FrameworkStatsLog"]
-    AHS -->|"internal API"| AHMI["AppHibernationManagerInternal"]
-    AHMI --> PMS
-
-    style AHS fill:#f9f,stroke:#333
-    style PC fill:#bbf,stroke:#333
-```
-
-The key architectural decision is that `AppHibernationService` manages the
-*state* of hibernation, but the *policy* (which apps should hibernate) lives
-in `PermissionController`, which runs in a separate process. This separation
-allows Google to update hibernation policy through Play Services without
-modifying the framework.
-
-### 26.10.2 Two-Level Hibernation State
-
-Hibernation operates at two levels, tracked by separate data classes:
-
-| Level | Class | Scope | Optimizations |
-|-------|-------|-------|---------------|
-| **User-level** | `UserLevelState` | Per (package, user) | Force-stop, cache deletion |
-| **Global-level** | `GlobalLevelState` | Per package (all users) | OAT artifact deletion, APK-level optimization |
-
-```java
-// AppHibernationService.java, line 119-125
-@GuardedBy("mLock")
-private final SparseArray<Map<String, UserLevelState>> mUserStates = new SparseArray<>();
-@GuardedBy("mLock")
-private final Map<String, GlobalLevelState> mGlobalHibernationStates = new ArrayMap<>();
-```
-
-A package is globally hibernated only when it is hibernated for *all* users.
-Global hibernation enables more aggressive optimizations like deleting
-ahead-of-time compilation artifacts.
-
-Each state object tracks:
-
-```java
-// UserLevelState.java / GlobalLevelState.java
-public String packageName;
-public boolean hibernated;
-public long savedByte;         // bytes reclaimed
-public long lastUnhibernatedMs; // timestamp of last wake-up
-```
-
-### 26.10.3 Hibernation Process
-
-When `PermissionController` determines an app should hibernate, it calls
-`setHibernatingForUser()`. The service then:
-
-1. **Force-stops the package** via `ActivityManagerService.forceStopPackage()`,
-   killing all processes and canceling alarms/jobs
-2. **Deletes cached files** via `PackageManagerService.deleteApplicationCacheFilesAsUser()`
-3. **Records bytes saved** from `StorageStatsManager.queryStatsForPackage()`
-4. **Persists state** to disk via `HibernationStateDiskStore`
-5. **Logs metrics** via `FrameworkStatsLog.USER_LEVEL_HIBERNATION_STATE_CHANGED`
-
-```java
-// AppHibernationService.java, line 455-484
-private void hibernatePackageForUser(String packageName, int userId, UserLevelState state) {
-    Trace.traceBegin(Trace.TRACE_TAG_SYSTEM_SERVER, "hibernatePackage");
-    try {
-        ApplicationInfo info = mIPackageManager.getApplicationInfo(
-                packageName, PACKAGE_MATCH_FLAGS, userId);
-        StorageStats stats = mStorageStatsManager.queryStatsForPackage(
-                info.storageUuid, packageName, new UserHandle(userId));
-        mIActivityManager.forceStopPackage(packageName, userId);
-        mIPackageManager.deleteApplicationCacheFilesAsUser(packageName, userId,
-                null /* observer */);
-        synchronized (mLock) {
-            state.savedByte = stats.getCacheBytes();
-        }
-    } catch (RemoteException e) { /* ... */ }
-}
-```
-
-### 26.10.4 Unhibernation and Wake-Up
-
-When a hibernated app is used again (detected via `UsageEventsListener`),
-the service restores it:
-
-```java
-// AppHibernationService.java, line 490-546
-private void unhibernatePackageForUser(String packageName, int userId) {
-    // Deliver LOCKED_BOOT_COMPLETED and BOOT_COMPLETE broadcasts
-    // so the app can re-register alarms, jobs, etc.
-    Intent lockedBcIntent = new Intent(Intent.ACTION_LOCKED_BOOT_COMPLETED)
-            .setPackage(packageName);
-    mIActivityManager.broadcastIntentWithFeature(/* ... */);
-
-    Intent bcIntent = new Intent(Intent.ACTION_BOOT_COMPLETED)
-            .setPackage(packageName);
-    mIActivityManager.broadcastIntentWithFeature(/* ... */);
-}
-```
-
-The boot-completed broadcasts are critical: they allow the app to re-register
-its `AlarmManager` alarms, `JobScheduler` jobs, `WorkManager` tasks, and
-Firebase Cloud Messaging tokens that were lost when the app was force-stopped.
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant USS as UsageStatsService
-    participant AHS as AppHibernationService
-    participant AMS as ActivityManagerService
-    participant PMS as PackageManagerService
-
-    Note over User: User opens hibernated app
-    USS->>AHS: UsageEventListener.onUsageEvent()
-    AHS->>AHS: setHibernatingForUser(pkg, false)
-    AHS->>AMS: broadcastIntent(LOCKED_BOOT_COMPLETED)
-    AHS->>AMS: broadcastIntent(BOOT_COMPLETED)
-    Note over AHS: App re-registers alarms/jobs
-    AHS->>AHS: Persist updated state to disk
-```
-
-### 26.10.5 Integration with Permission Auto-Revoke
-
-The connection between hibernation and permission revocation is subtle but
-important. `PermissionController` handles both:
-
-1. **Permission auto-revoke**: Revokes runtime permissions for unused apps
-   (introduced Android 11)
-2. **App hibernation**: Puts unused apps in hibernation state, reclaiming
-   storage (introduced Android 12)
-
-These are separate features that share the same policy signal: "this app
-has not been used recently." The `PermissionController` uses
-`UsageStatsManager` to determine app usage and then invokes both permission
-revocation and hibernation APIs.
-
-### 26.10.6 Device Config and Feature Gating
-
-The service is gated by a `DeviceConfig` flag:
-
-```java
-// AppHibernationConstants.java
-static final String KEY_APP_HIBERNATION_ENABLED = "app_hibernation_enabled";
-
-// AppHibernationService.java, line 188
-sIsServiceEnabled = isDeviceConfigAppHibernationEnabled();
-```
-
-Every public API method checks `sIsServiceEnabled` before proceeding,
-returning empty or false values when disabled. This allows the feature to be
-remotely toggled without a system update.
-
-### 26.10.7 Persistence and Boot Sequence
-
-Hibernation state is persisted to disk via `HibernationStateDiskStore`,
-which uses protocol buffer serialization (`GlobalLevelHibernationProto`,
-`UserLevelHibernationProto`). State is loaded during
-`PHASE_BOOT_COMPLETED` on a background executor:
-
-```java
-// AppHibernationService.java, line 177-186
-@Override
-public void onBootPhase(int phase) {
-    if (phase == PHASE_BOOT_COMPLETED) {
-        mBackgroundExecutor.execute(() -> {
-            List<GlobalLevelState> states =
-                    mGlobalLevelHibernationDiskStore.readHibernationStates();
-            synchronized (mLock) {
-                initializeGlobalHibernationStates(states);
-            }
-        });
-    }
-}
-```
-
-User-level states are loaded lazily when a user is unlocked, using
-per-user `HibernationStateDiskStore` instances stored in the `mUserDiskStores`
-`SparseArray`.
-
-### 26.10.8 Package Lifecycle Events
-
-The service registers a broadcast receiver for `ACTION_PACKAGE_ADDED` and
-`ACTION_PACKAGE_REMOVED` to keep its state maps in sync:
-
-- **Package added**: Creates a new `UserLevelState` and `GlobalLevelState`
-  entry with `hibernated = false`
-- **Package removed**: Cleans up state from both user and global maps
-- **Package replaced**: The `EXTRA_REPLACING` flag distinguishes updates
-  from fresh installs; updates preserve the existing hibernation state
-
-### 26.10.9 Debugging App Hibernation
-
-```bash
-# Check if a package is hibernated
-adb shell cmd app_hibernation is-hibernating <package> --user 0
-
-# Manually hibernate a package
-adb shell cmd app_hibernation set-hibernating <package> --user 0 true
-
-# Get hibernation stats (saved bytes)
-adb shell cmd app_hibernation get-hibernation-stats --user 0
-
-# Check DeviceConfig flag
-adb shell device_config get app_hibernation app_hibernation_enabled
-```
