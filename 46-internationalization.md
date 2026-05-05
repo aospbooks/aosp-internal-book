@@ -1,10 +1,5 @@
 # Chapter 46: Internationalization
 
-> *"The limits of my language mean the limits of my world."*
-> -- Ludwig Wittgenstein
-
----
-
 Android runs on more than three billion devices across nearly every country on
 Earth. Users read text in Arabic, Chinese, Devanagari, Thai, Korean, and
 hundreds of other scripts. They expect dates, numbers, currencies, and sort
