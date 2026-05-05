@@ -1573,308 +1573,9 @@ protected RecyclerView.Adapter onCreateAdapter(PreferenceScreen preferenceScreen
 
 ---
 
-## 49.7 Try It: Add a Custom Settings Page
+## 49.7 Deep Dive: CategoryManager and Tile Loading
 
-This section walks through adding a complete custom settings page to the
-Settings app, from XML definition through preference controller to search
-integration.
-
-### 49.7.1 Step 1: Define the Preference XML
-
-Create a new XML preference screen.  For this example, we will build a
-"Custom Lab" page with a toggle and a list preference:
-
-```xml
-<!-- res/xml/custom_lab_settings.xml -->
-<?xml version="1.0" encoding="utf-8"?>
-<PreferenceScreen
-    xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:settings="http://schemas.android.com/apk/res-auto"
-    android:title="@string/custom_lab_title">
-
-    <SwitchPreferenceCompat
-        android:key="custom_lab_feature_toggle"
-        android:title="Enable Lab Feature"
-        android:summary="Toggles the experimental lab feature"
-        settings:controller="com.android.settings.development.CustomLabToggleController"/>
-
-    <ListPreference
-        android:key="custom_lab_mode"
-        android:title="Lab Mode"
-        android:summary="%s"
-        android:entries="@array/custom_lab_mode_entries"
-        android:entryValues="@array/custom_lab_mode_values"
-        settings:controller="com.android.settings.development.CustomLabModeController"/>
-
-    <Preference
-        android:key="custom_lab_info"
-        android:title="Lab Information"
-        android:summary="Displays information about the custom lab"
-        android:selectable="false"/>
-
-</PreferenceScreen>
-```
-
-### 49.7.2 Step 2: Create the DashboardFragment
-
-Create a new fragment that extends `DashboardFragment`:
-
-```java
-// src/com/android/settings/development/CustomLabFragment.java
-package com.android.settings.development;
-
-import android.app.settings.SettingsEnums;
-import android.content.Context;
-import com.android.settings.R;
-import com.android.settings.dashboard.DashboardFragment;
-import com.android.settings.search.BaseSearchIndexProvider;
-import com.android.settingslib.search.SearchIndexable;
-
-@SearchIndexable
-public class CustomLabFragment extends DashboardFragment {
-
-    private static final String TAG = "CustomLabFragment";
-
-    @Override
-    protected int getPreferenceScreenResId() {
-        return R.xml.custom_lab_settings;
-    }
-
-    @Override
-    protected String getLogTag() {
-        return TAG;
-    }
-
-    @Override
-    public int getMetricsCategory() {
-        return SettingsEnums.PAGE_UNKNOWN;  // Use a proper enum in production
-    }
-
-    public static final BaseSearchIndexProvider SEARCH_INDEX_DATA_PROVIDER =
-            new BaseSearchIndexProvider(R.xml.custom_lab_settings);
-}
-```
-
-### 49.7.3 Step 3: Create Preference Controllers
-
-Create a toggle controller that reads/writes a setting:
-
-```java
-// src/com/android/settings/development/CustomLabToggleController.java
-package com.android.settings.development;
-
-import android.content.Context;
-import android.provider.Settings;
-import com.android.settings.core.TogglePreferenceController;
-
-public class CustomLabToggleController extends TogglePreferenceController {
-
-    private static final String SETTING_KEY = "custom_lab_feature_enabled";
-
-    public CustomLabToggleController(Context context, String preferenceKey) {
-        super(context, preferenceKey);
-    }
-
-    @Override
-    public int getAvailabilityStatus() {
-        return AVAILABLE;
-    }
-
-    @Override
-    public boolean isChecked() {
-        return Settings.System.getInt(mContext.getContentResolver(),
-                SETTING_KEY, 0) == 1;
-    }
-
-    @Override
-    public boolean setChecked(boolean isChecked) {
-        return Settings.System.putInt(mContext.getContentResolver(),
-                SETTING_KEY, isChecked ? 1 : 0);
-    }
-
-    @Override
-    public int getSliceHighlightMenuRes() {
-        return 0;  // Not used in Slices
-    }
-}
-```
-
-### 49.7.4 Step 4: Register in SettingsGateway
-
-Add the fragment to the `ENTRY_FRAGMENTS` array in `SettingsGateway.java` so
-that `SettingsActivity` will accept it:
-
-```java
-// SettingsGateway.java
-public static final String[] ENTRY_FRAGMENTS = {
-    // ... existing entries ...
-    CustomLabFragment.class.getName(),
-};
-```
-
-### 49.7.5 Step 5: Create the Activity Stub
-
-Add an inner class in `Settings.java`:
-
-```java
-// Settings.java
-public static class CustomLabActivity extends SettingsActivity { /* empty */ }
-```
-
-### 49.7.6 Step 6: Declare in AndroidManifest.xml
-
-Add the activity declaration with metadata pointing to the fragment:
-
-```xml
-<activity
-    android:name="Settings$CustomLabActivity"
-    android:label="@string/custom_lab_title"
-    android:exported="true">
-    <intent-filter android:priority="1">
-        <action android:name="android.settings.CUSTOM_LAB_SETTINGS"/>
-        <category android:name="android.intent.category.DEFAULT"/>
-    </intent-filter>
-    <meta-data
-        android:name="com.android.settings.FRAGMENT_CLASS"
-        android:value="com.android.settings.development.CustomLabFragment"/>
-    <meta-data
-        android:name="com.android.settings.HIGHLIGHT_MENU_KEY"
-        android:value="@string/menu_key_system"/>
-</activity>
-```
-
-### 49.7.7 Step 7: Add a Link from System Settings
-
-To make the new page accessible, add a preference to an existing XML screen
-(e.g., `res/xml/system_dashboard_fragment.xml`):
-
-```xml
-<Preference
-    android:key="custom_lab"
-    android:title="@string/custom_lab_title"
-    android:summary="@string/custom_lab_summary"
-    android:fragment="com.android.settings.development.CustomLabFragment"/>
-```
-
-### 49.7.8 Step 8: Make It Searchable
-
-The `@SearchIndexable` annotation and the `SEARCH_INDEX_DATA_PROVIDER` field
-we added in Step 2 are sufficient.  The compile-time annotation processor
-will include the fragment in the search index.
-
-To verify, you can query the index:
-
-```bash
-adb shell content query \
-  --uri content://com.android.settings.intelligence.search.indexables/resource \
-  | grep custom_lab
-```
-
-### 49.7.9 Complete Lifecycle Diagram
-
-```mermaid
-flowchart TD
-    A[User navigates to System > Custom Lab] --> B[SettingsActivity.onCreate]
-    B --> C[getMetaData: FRAGMENT_CLASS = CustomLabFragment]
-    C --> D[isValidFragment: check SettingsGateway]
-    D --> E[switchToFragment: CustomLabFragment]
-    E --> F[CustomLabFragment.onAttach]
-    F --> G[Parse custom_lab_settings.xml]
-    G --> H[Instantiate CustomLabToggleController via reflection]
-    H --> I[Instantiate CustomLabModeController via reflection]
-    I --> J[onCreatePreferences: inflate XML]
-    J --> K[displayPreference: bind controllers to screen]
-    K --> L[updatePreferenceStates: read current values]
-    L --> M[User sees Custom Lab page]
-    M --> N{User toggles switch}
-    N --> O[CustomLabToggleController.setChecked]
-    O --> P[Settings.System.putInt]
-    P --> Q[ContentResolver.notifyChange]
-    Q --> R[Other observers notified]
-```
-
-### 49.7.10 Testing Your Custom Page
-
-Run the Settings app on an emulator:
-
-```bash
-# Build and flash
-m Settings -j$(nproc)
-adb install -r $OUT/system/priv-app/Settings/Settings.apk
-
-# Launch the custom page directly
-adb shell am start -n com.android.settings/.Settings\$CustomLabActivity
-
-# Or via the action
-adb shell am start -a android.settings.CUSTOM_LAB_SETTINGS
-
-# Verify the setting is written
-adb shell settings get system custom_lab_feature_enabled
-```
-
-You can also test the search integration by opening Settings, tapping the
-search bar, and typing "Lab".  The custom preferences should appear in the
-results if the search index has been refreshed.
-
-### 49.7.11 Advanced: Adding a Tile to the Homepage
-
-To inject your page as a tile on the homepage, you would modify
-`res/xml/top_level_settings.xml` to add a `HomepagePreference`:
-
-```xml
-<com.android.settings.widget.HomepagePreference
-    android:fragment="com.android.settings.development.CustomLabFragment"
-    android:icon="@drawable/ic_custom_lab"
-    android:key="top_level_custom_lab"
-    android:order="50"
-    android:title="@string/custom_lab_title"
-    android:summary="@string/custom_lab_summary"
-    settings:highlightableMenuKey="@string/menu_key_custom_lab"
-    settings:controller="com.android.settings.development.CustomLabHomepageController"/>
-```
-
-And register the category mapping in `DashboardFragmentRegistry`:
-
-```java
-PARENT_TO_CATEGORY_KEY_MAP.put(
-    CustomLabFragment.class.getName(), "com.android.settings.category.custom_lab");
-```
-
-### 49.7.12 Advanced: OEM Customisation via FeatureFactory
-
-OEMs can customise the Settings app without forking by implementing
-a custom `FeatureFactory` via the overlay system.  The factory provides
-feature-specific providers:
-
-```
-packages/apps/Settings/src/com/android/settings/overlay/FeatureFactory.java
-```
-
-Key extension points include:
-
-| Provider | Purpose |
-|----------|---------|
-| `DashboardFeatureProvider` | Custom tile binding logic |
-| `SearchFeatureProvider` | Custom search indexing |
-| `MetricsFeatureProvider` | Custom analytics |
-| `SecurityFeatureProvider` | Custom security settings |
-| `SupportFeatureProvider` | Custom support/help integration |
-| `EnterprisePrivacyFeatureProvider` | MDM integration |
-
-OEMs declare their custom factory in a resource overlay:
-
-```xml
-<!-- overlay/res/values/config.xml -->
-<string name="config_featureFactory">
-    com.myoem.settings.MyFeatureFactoryImpl
-</string>
-```
-
----
-
-## 49.8 Deep Dive: CategoryManager and Tile Loading
-
-### 49.8.1 CategoryManager as Singleton
+### 49.7.1 CategoryManager as Singleton
 
 The `CategoryManager` is a singleton that caches all dashboard tiles.  It is
 the authoritative source for tile data in the Settings app.
@@ -1900,7 +1601,7 @@ Its core data structures:
 | `mCategories` | `List<DashboardCategory>` | All categories in order |
 | `mInterestingConfigChanges` | `InterestingConfigChanges` | Detects locale/density/theme changes |
 
-### 49.8.2 Category Initialisation Flow
+### 49.7.2 Category Initialisation Flow
 
 Categories are lazily initialised on first access via `tryInitCategories()`:
 
@@ -1931,7 +1632,7 @@ private synchronized void tryInitCategories(Context context, boolean forceClearC
 with the `com.android.settings.action.EXTRA_SETTINGS` action and groups them
 by their declared category.
 
-### 49.8.3 Post-Processing Steps
+### 49.7.3 Post-Processing Steps
 
 After raw tiles are loaded, the `CategoryManager` applies several
 post-processing steps:
@@ -1967,7 +1668,7 @@ mapped to current keys using `CategoryKey.KEY_COMPAT_MAP`.
 **Deduplication**: Tiles pointing to the same component are removed.  For
 `ProviderTile` instances, deduplication is based on the tile description.
 
-### 49.8.4 Tile Deny List
+### 49.7.4 Tile Deny List
 
 The `CategoryMixin` (managed by `SettingsBaseActivity`) maintains a deny list
 of components that should be hidden:
@@ -1992,9 +1693,9 @@ are absent (e.g., no Wi-Fi chip, no battery).
 
 ---
 
-## 49.9 Deep Dive: SettingsPreferenceFragment
+## 49.8 Deep Dive: SettingsPreferenceFragment
 
-### 49.9.1 Fragment Base Class
+### 49.8.1 Fragment Base Class
 
 `SettingsPreferenceFragment` is the base class for all settings pages that
 display a preference list.
@@ -2013,7 +1714,7 @@ integration, and implements:
 - `HelpResourceProvider` -- Provides help link URIs for the overflow menu
 - `Indexable` -- Enables search indexing
 
-### 49.9.2 Preference Highlighting
+### 49.8.2 Preference Highlighting
 
 When a deep link targets a specific preference (e.g., from search results),
 `SettingsPreferenceFragment` highlights it using
@@ -2029,19 +1730,19 @@ public static final String EXTRA_FRAGMENT_ARG_KEY = ":settings:fragment_args_key
 The fragment reads this key and scrolls to/highlights the matching preference
 when the view is created.
 
-### 49.9.3 Dialog Management
+### 49.8.3 Dialog Management
 
 `SettingsPreferenceFragment` provides a stable dialog hosting mechanism.  Each
 dialog is identified by an integer ID, and the fragment manages the dialog
 lifecycle across configuration changes using `SettingsDialogFragment`.
 
-### 49.9.4 Loading State
+### 49.8.4 Loading State
 
 For pages that load data asynchronously, `LoadingViewController` shows a
 progress indicator until the data is ready.  This prevents the jarring
 appearance of an empty screen followed by a sudden list.
 
-### 49.9.5 RestrictedDashboardFragment
+### 49.8.5 RestrictedDashboardFragment
 
 `RestrictedDashboardFragment` adds enterprise restriction support:
 
@@ -2057,9 +1758,9 @@ or an empty state message instead of the preference list.
 
 ---
 
-## 49.10 Deep Dive: The Complete Developer Options Controller List
+## 49.9 Deep Dive: The Complete Developer Options Controller List
 
-### 49.10.1 Controller Registration
+### 49.9.1 Controller Registration
 
 The `buildPreferenceControllers()` method in
 `DevelopmentSettingsDashboardFragment` creates over 100 controller instances.
@@ -2216,7 +1917,7 @@ Here is the complete categorised list as found in the source:
 - `AutofillLoggingLevelPreferenceController` -- Autofill debug logging
 - `AutofillResetOptionsPreferenceController` -- Reset autofill state
 
-### 49.10.2 Enable/Disable Callbacks
+### 49.9.2 Enable/Disable Callbacks
 
 When the master switch is toggled, every controller receives a callback:
 
@@ -2251,9 +1952,9 @@ exactly once.
 
 ---
 
-## 49.11 Deep Dive: SettingsProvider Internals
+## 49.10 Deep Dive: SettingsProvider Internals
 
-### 49.11.1 SettingsState and XML Persistence
+### 49.10.1 SettingsState and XML Persistence
 
 Each namespace (system, secure, global) is backed by a `SettingsState` object
 that handles in-memory caching and XML persistence.
@@ -2267,7 +1968,7 @@ Key characteristics:
 - The XML file uses a versioned format with support for default values
 - A fallback copy mechanism creates `.bak` files for crash recovery
 
-### 49.11.2 Setting Keys and Types
+### 49.10.2 Setting Keys and Types
 
 Each setting entry internally contains:
 
@@ -2281,7 +1982,7 @@ Each setting entry internally contains:
 | `defaultSystemSet` | Whether this was set by the system (not user-modified) |
 | `id` | Auto-incrementing generation ID for change tracking |
 
-### 49.11.3 Generation Tracking
+### 49.10.3 Generation Tracking
 
 The SettingsProvider uses a generation-tracking mechanism for efficient
 change detection.  Each `SettingsState` maintains a `currentGeneration` counter
@@ -2298,13 +1999,13 @@ The `Settings` framework class uses this on the client side to maintain a
 local cache.  If the generation has not changed, the cached value is used
 without IPC -- making settings reads extremely fast.
 
-### 49.11.4 Broadcast Notifications
+### 49.10.4 Broadcast Notifications
 
 Beyond `ContentObserver`, certain settings changes trigger system-wide
 broadcasts.  For example, changing `AIRPLANE_MODE_ON` triggers an
 `ACTION_AIRPLANE_MODE_CHANGED` broadcast that all interested apps receive.
 
-### 49.11.5 Permission Model
+### 49.10.5 Permission Model
 
 | Namespace | Read | Write |
 |-----------|------|-------|
@@ -2318,7 +2019,7 @@ The provider maintains `sReadableSecureSettings`, `sReadableSystemSettings`,
 and `sReadableGlobalSettings` sets that define which keys are publicly
 readable.
 
-### 49.11.6 Setting Limits for Third-Party Apps
+### 49.10.6 Setting Limits for Third-Party Apps
 
 To prevent abuse, the provider limits how many custom settings third-party
 apps can add to `Settings.System`:
@@ -2332,9 +2033,9 @@ When a package is uninstalled, all settings it added are automatically deleted.
 
 ---
 
-## 49.12 Deep Dive: The FeatureFactory Extension Point
+## 49.11 Deep Dive: The FeatureFactory Extension Point
 
-### 49.12.1 Architecture
+### 49.11.1 Architecture
 
 The `FeatureFactory` is the primary OEM extension mechanism for the Settings
 app.  It is an abstract class with factory methods for each subsystem provider:
@@ -2351,7 +2052,7 @@ overlay:
 </string>
 ```
 
-### 49.12.2 Available Providers
+### 49.11.2 Available Providers
 
 | Provider Interface | Default Implementation | OEM Can Customise |
 |-------------------|----------------------|-------------------|
@@ -2363,7 +2064,7 @@ overlay:
 | `EnterprisePrivacyFeatureProvider` | `EnterprisePrivacyFeatureProviderImpl` | MDM controls |
 | `AccountFeatureProvider` | `AccountFeatureProviderImpl` | Account management |
 
-### 49.12.3 How the Factory is Loaded
+### 49.11.3 How the Factory is Loaded
 
 ```java
 // FeatureFactory.java
@@ -2381,9 +2082,9 @@ public static FeatureFactory getFeatureFactory() {
 
 ---
 
-## 49.13 Deep Dive: Slices Integration
+## 49.12 Deep Dive: Slices Integration
 
-### 49.13.1 Settings Slices
+### 49.12.1 Settings Slices
 
 Settings exposes individual preferences as Android **Slices** -- remote
 UI snippets that can be embedded in other apps (like the Google app or
@@ -2411,7 +2112,7 @@ public Uri getSliceUri() {
 }
 ```
 
-### 49.13.2 Slice Types
+### 49.12.2 Slice Types
 
 | Type | Behaviour |
 |------|-----------|
@@ -2421,9 +2122,9 @@ public Uri getSliceUri() {
 
 ---
 
-## 49.14 Deep Dive: The AndroidManifest
+## 49.13 Deep Dive: The AndroidManifest
 
-### 49.14.1 Scale and Permissions
+### 49.13.1 Scale and Permissions
 
 The Settings app `AndroidManifest.xml` is one of the largest manifest files in
 AOSP at over 6,000 lines.  It declares:
@@ -2458,7 +2159,7 @@ It declares an extensive set of permissions including:
 <uses-permission android:name="android.permission.MANAGE_USERS" />
 ```
 
-### 49.14.2 Activity Declaration Pattern
+### 49.13.2 Activity Declaration Pattern
 
 Each settings page activity is declared with metadata that maps it to a
 fragment and a highlight menu key:
@@ -2490,7 +2191,7 @@ This pattern means that:
 - The `HIGHLIGHT_MENU_KEY` tells the two-pane layout which homepage tile
   to highlight
 
-### 49.14.3 Tile Injection in Manifest
+### 49.13.3 Tile Injection in Manifest
 
 The Settings app also injects its own tiles into dashboard categories:
 
@@ -2511,9 +2212,9 @@ The `order` metadata controls the position within the category.
 
 ---
 
-## 49.15 Deep Dive: Catalyst / Settings Page Architecture (SPA)
+## 49.14 Deep Dive: Catalyst / Settings Page Architecture (SPA)
 
-### 49.15.1 The Catalyst Migration
+### 49.14.1 The Catalyst Migration
 
 AOSP is gradually migrating Settings pages from the traditional
 `DashboardFragment` + XML approach to a new architecture called **Catalyst**
@@ -2529,7 +2230,7 @@ the `settingslib/metadata` APIs) rather than XML resources.  This enables:
 - Better testing support
 - Gradual migration (hybrid mode)
 
-### 49.15.2 CatalystSettingsActivity
+### 49.14.2 CatalystSettingsActivity
 
 The `CatalystSettingsActivity` is a Kotlin class that extends
 `SettingsActivity` with support for binding to a preference screen by key:
@@ -2579,7 +2280,7 @@ public static class VibrationSettingsActivity extends CatalystSettingsActivity {
 }
 ```
 
-### 49.15.3 CatalystFragment
+### 49.14.3 CatalystFragment
 
 The `CatalystFragment` is a `DashboardFragment` that creates its preference
 screen programmatically from a `PreferenceScreenCreator`:
@@ -2596,7 +2297,7 @@ open class CatalystFragment : DashboardFragment() {
 }
 ```
 
-### 49.15.4 Hybrid Mode
+### 49.14.4 Hybrid Mode
 
 During the migration, fragments can operate in **hybrid mode** where the
 preference hierarchy comes from Catalyst but XML-defined controllers are
@@ -2622,9 +2323,9 @@ private void removeControllersForHybridMode() {
 
 ---
 
-## 49.16 Deep Dive: Testing the Settings App
+## 49.15 Deep Dive: Testing the Settings App
 
-### 49.16.1 Test Infrastructure
+### 49.15.1 Test Infrastructure
 
 The Settings app has a comprehensive test suite under
 `packages/apps/Settings/tests/`:
@@ -2633,7 +2334,7 @@ The Settings app has a comprehensive test suite under
 - **Instrumentation tests**: On-device tests using AndroidX Test
 - **Screenshot tests**: Visual regression tests for preference layouts
 
-### 49.16.2 Testing Preference Controllers
+### 49.15.2 Testing Preference Controllers
 
 Each `BasePreferenceController` is designed to be independently testable:
 
@@ -2659,7 +2360,7 @@ public class WifiCallingPreferenceControllerTest {
 }
 ```
 
-### 49.16.3 Testing DashboardFragment
+### 49.15.3 Testing DashboardFragment
 
 The `DashboardFragment` provides the `use()` method that makes it easy to
 retrieve and test controllers:
@@ -2671,7 +2372,7 @@ AdbPreferenceController controller = fragment.use(AdbPreferenceController.class)
 assertThat(controller).isNotNull();
 ```
 
-### 49.16.4 Testing Search Indexing
+### 49.15.4 Testing Search Indexing
 
 The search system can be validated by checking that:
 
@@ -2688,9 +2389,9 @@ adb shell content query \
 
 ---
 
-## 49.17 Performance Considerations
+## 49.16 Performance Considerations
 
-### 49.17.1 Lazy Controller Initialisation
+### 49.16.1 Lazy Controller Initialisation
 
 Preference controllers are instantiated via reflection during `onAttach()`,
 which can be expensive for pages with many controllers (Developer Options
@@ -2713,7 +2414,7 @@ private void awaitObserverLatch(CountDownLatch latch) {
 }
 ```
 
-### 49.17.2 UI Blocker Pattern
+### 49.16.2 UI Blocker Pattern
 
 Some preferences need to wait for asynchronous data before they can determine
 their visibility.  The `UiBlocker` interface marks these controllers:
@@ -2728,13 +2429,13 @@ The `UiBlockerController` in `DashboardFragment` hides all preferences until
 every `UiBlocker` controller has reported completion.  This prevents jarky
 layout changes as preferences appear one by one.
 
-### 49.17.3 Settings Provider Caching
+### 49.16.3 Settings Provider Caching
 
 The `Settings` framework class maintains a per-process LRU cache of settings
 values.  Combined with generation tracking, most `Settings.System.getInt()`
 calls complete without any IPC.
 
-### 49.17.4 Preference Comparison Callback
+### 49.16.4 Preference Comparison Callback
 
 `DashboardFragment` sets a `SimplePreferenceComparisonCallback` on the
 `PreferenceManager` to enable efficient RecyclerView animations when the
@@ -2752,9 +2453,9 @@ public void onCreate(Bundle icicle) {
 
 ---
 
-## 49.18 Deep Dive: Activity Embedding for Two-Pane Layout
+## 49.17 Deep Dive: Activity Embedding for Two-Pane Layout
 
-### 49.18.1 Architecture Overview
+### 49.17.1 Architecture Overview
 
 On large-screen devices (tablets, foldables, ChromeOS), Settings displays a
 split layout: the homepage list on the left and the selected sub-page on the
@@ -2766,7 +2467,7 @@ WindowManager library.
 - `packages/apps/Settings/src/com/android/settings/activityembedding/ActivityEmbeddingUtils.java`
 - `packages/apps/Settings/src/com/android/settings/activityembedding/ActivityEmbeddingRulesController.java`
 
-### 49.18.2 Embedding Detection
+### 49.17.2 Embedding Detection
 
 `ActivityEmbeddingUtils.isEmbeddingActivityEnabled()` checks whether the
 device and configuration support two-pane embedding:
@@ -2778,7 +2479,7 @@ device and configuration support two-pane embedding:
 This is checked at multiple points: homepage creation, fragment transitions,
 and deep link handling.
 
-### 49.18.3 Split Pair Rules
+### 49.17.3 Split Pair Rules
 
 `ActivityEmbeddingRulesController` registers `SplitPairRule` objects that
 define how activities are paired in the split layout:
@@ -2799,7 +2500,7 @@ Key rules:
 - `clearTop` is set so navigating to a new sub-page replaces the right pane
 - `finishSecondaryWithPrimary=true` so closing the homepage closes everything
 
-### 49.18.4 Deep Link Handling in Two-Pane Mode
+### 49.17.4 Deep Link Handling in Two-Pane Mode
 
 When Settings receives a deep link intent (e.g., from a notification or
 another app), `SettingsActivity.shouldShowMultiPaneDeepLink()` determines
@@ -2827,7 +2528,7 @@ private boolean shouldShowMultiPaneDeepLink(Intent intent) {
 If two-pane deep link is needed, `EmbeddedDeepLinkUtils.tryStartMultiPaneDeepLink()`
 trampolines through the homepage activity to ensure both panes are visible.
 
-### 49.18.5 Highlight Mixin
+### 49.17.5 Highlight Mixin
 
 The `TopLevelHighlightMixin` manages visual highlighting of the selected
 tile in the left pane.  When a sub-page is shown in the right pane, the
@@ -2850,7 +2551,7 @@ public boolean onPreferenceTreeClick(Preference preference) {
 The highlight adapts to configuration changes (e.g., rotation) and
 transitions between one-pane and two-pane modes.
 
-### 49.18.6 SplitInfo Callback
+### 49.17.6 SplitInfo Callback
 
 The homepage activity listens for split layout changes via
 `SplitControllerCallbackAdapter`:
@@ -2866,9 +2567,9 @@ updates the homepage layout, icon visibility, and highlight state.
 
 ---
 
-## 49.19 Common Debugging Techniques
+## 49.18 Common Debugging Techniques
 
-### 49.19.1 Inspecting Settings Values
+### 49.18.1 Inspecting Settings Values
 
 ```bash
 # Read a specific setting
@@ -2888,7 +2589,7 @@ adb shell settings list global
 adb shell settings delete system custom_setting_key
 ```
 
-### 49.19.2 Launching Specific Settings Pages
+### 49.18.2 Launching Specific Settings Pages
 
 ```bash
 # Launch by action
@@ -2908,7 +2609,7 @@ adb shell am start -n com.android.settings/.SubSettings \
     "com.android.settings.development.DevelopmentSettingsDashboardFragment"
 ```
 
-### 49.19.3 Debugging Tile Injection
+### 49.18.3 Debugging Tile Injection
 
 To see which tiles are loaded and their categories:
 
@@ -2920,7 +2621,7 @@ adb shell dumpsys activity providers com.android.settings
 adb shell pm query-activities -a com.android.settings.action.EXTRA_SETTINGS
 ```
 
-### 49.19.4 Debugging Search Indexing
+### 49.18.4 Debugging Search Indexing
 
 ```bash
 # Force re-index
@@ -2931,7 +2632,7 @@ adb shell content query \
     --uri content://com.android.settings.intelligence.search.indexables/resource
 ```
 
-### 49.19.5 Monitoring Settings Changes
+### 49.18.5 Monitoring Settings Changes
 
 ```bash
 # Watch for settings changes in real-time
@@ -2941,7 +2642,7 @@ adb shell settings monitor
 This command prints all settings changes as they happen, showing the
 namespace, key, value, and calling package.
 
-### 49.19.6 SettingsProvider Dump
+### 49.18.6 SettingsProvider Dump
 
 ```bash
 # Dump complete SettingsProvider state
@@ -2956,7 +2657,7 @@ adb shell dumpsys settings
 
 ---
 
-## 49.20 Key Source Files Reference
+## 49.19 Key Source Files Reference
 
 For easy reference, here is a consolidated list of all key source files
 discussed in this chapter:
@@ -2985,6 +2686,305 @@ discussed in this chapter:
 | `packages/apps/Settings/res/xml/top_level_settings.xml` | Homepage XML layout |
 | `frameworks/base/packages/SettingsProvider/src/com/android/providers/settings/SettingsProvider.java` | Settings content provider |
 | `frameworks/base/packages/SettingsProvider/src/com/android/providers/settings/SettingsState.java` | Per-namespace settings storage |
+
+---
+
+## 49.20 Try It: Add a Custom Settings Page
+
+This section walks through adding a complete custom settings page to the
+Settings app, from XML definition through preference controller to search
+integration.
+
+### 49.20.1 Step 1: Define the Preference XML
+
+Create a new XML preference screen.  For this example, we will build a
+"Custom Lab" page with a toggle and a list preference:
+
+```xml
+<!-- res/xml/custom_lab_settings.xml -->
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:settings="http://schemas.android.com/apk/res-auto"
+    android:title="@string/custom_lab_title">
+
+    <SwitchPreferenceCompat
+        android:key="custom_lab_feature_toggle"
+        android:title="Enable Lab Feature"
+        android:summary="Toggles the experimental lab feature"
+        settings:controller="com.android.settings.development.CustomLabToggleController"/>
+
+    <ListPreference
+        android:key="custom_lab_mode"
+        android:title="Lab Mode"
+        android:summary="%s"
+        android:entries="@array/custom_lab_mode_entries"
+        android:entryValues="@array/custom_lab_mode_values"
+        settings:controller="com.android.settings.development.CustomLabModeController"/>
+
+    <Preference
+        android:key="custom_lab_info"
+        android:title="Lab Information"
+        android:summary="Displays information about the custom lab"
+        android:selectable="false"/>
+
+</PreferenceScreen>
+```
+
+### 49.20.2 Step 2: Create the DashboardFragment
+
+Create a new fragment that extends `DashboardFragment`:
+
+```java
+// src/com/android/settings/development/CustomLabFragment.java
+package com.android.settings.development;
+
+import android.app.settings.SettingsEnums;
+import android.content.Context;
+import com.android.settings.R;
+import com.android.settings.dashboard.DashboardFragment;
+import com.android.settings.search.BaseSearchIndexProvider;
+import com.android.settingslib.search.SearchIndexable;
+
+@SearchIndexable
+public class CustomLabFragment extends DashboardFragment {
+
+    private static final String TAG = "CustomLabFragment";
+
+    @Override
+    protected int getPreferenceScreenResId() {
+        return R.xml.custom_lab_settings;
+    }
+
+    @Override
+    protected String getLogTag() {
+        return TAG;
+    }
+
+    @Override
+    public int getMetricsCategory() {
+        return SettingsEnums.PAGE_UNKNOWN;  // Use a proper enum in production
+    }
+
+    public static final BaseSearchIndexProvider SEARCH_INDEX_DATA_PROVIDER =
+            new BaseSearchIndexProvider(R.xml.custom_lab_settings);
+}
+```
+
+### 49.20.3 Step 3: Create Preference Controllers
+
+Create a toggle controller that reads/writes a setting:
+
+```java
+// src/com/android/settings/development/CustomLabToggleController.java
+package com.android.settings.development;
+
+import android.content.Context;
+import android.provider.Settings;
+import com.android.settings.core.TogglePreferenceController;
+
+public class CustomLabToggleController extends TogglePreferenceController {
+
+    private static final String SETTING_KEY = "custom_lab_feature_enabled";
+
+    public CustomLabToggleController(Context context, String preferenceKey) {
+        super(context, preferenceKey);
+    }
+
+    @Override
+    public int getAvailabilityStatus() {
+        return AVAILABLE;
+    }
+
+    @Override
+    public boolean isChecked() {
+        return Settings.System.getInt(mContext.getContentResolver(),
+                SETTING_KEY, 0) == 1;
+    }
+
+    @Override
+    public boolean setChecked(boolean isChecked) {
+        return Settings.System.putInt(mContext.getContentResolver(),
+                SETTING_KEY, isChecked ? 1 : 0);
+    }
+
+    @Override
+    public int getSliceHighlightMenuRes() {
+        return 0;  // Not used in Slices
+    }
+}
+```
+
+### 49.20.4 Step 4: Register in SettingsGateway
+
+Add the fragment to the `ENTRY_FRAGMENTS` array in `SettingsGateway.java` so
+that `SettingsActivity` will accept it:
+
+```java
+// SettingsGateway.java
+public static final String[] ENTRY_FRAGMENTS = {
+    // ... existing entries ...
+    CustomLabFragment.class.getName(),
+};
+```
+
+### 49.20.5 Step 5: Create the Activity Stub
+
+Add an inner class in `Settings.java`:
+
+```java
+// Settings.java
+public static class CustomLabActivity extends SettingsActivity { /* empty */ }
+```
+
+### 49.20.6 Step 6: Declare in AndroidManifest.xml
+
+Add the activity declaration with metadata pointing to the fragment:
+
+```xml
+<activity
+    android:name="Settings$CustomLabActivity"
+    android:label="@string/custom_lab_title"
+    android:exported="true">
+    <intent-filter android:priority="1">
+        <action android:name="android.settings.CUSTOM_LAB_SETTINGS"/>
+        <category android:name="android.intent.category.DEFAULT"/>
+    </intent-filter>
+    <meta-data
+        android:name="com.android.settings.FRAGMENT_CLASS"
+        android:value="com.android.settings.development.CustomLabFragment"/>
+    <meta-data
+        android:name="com.android.settings.HIGHLIGHT_MENU_KEY"
+        android:value="@string/menu_key_system"/>
+</activity>
+```
+
+### 49.20.7 Step 7: Add a Link from System Settings
+
+To make the new page accessible, add a preference to an existing XML screen
+(e.g., `res/xml/system_dashboard_fragment.xml`):
+
+```xml
+<Preference
+    android:key="custom_lab"
+    android:title="@string/custom_lab_title"
+    android:summary="@string/custom_lab_summary"
+    android:fragment="com.android.settings.development.CustomLabFragment"/>
+```
+
+### 49.20.8 Step 8: Make It Searchable
+
+The `@SearchIndexable` annotation and the `SEARCH_INDEX_DATA_PROVIDER` field
+we added in Step 2 are sufficient.  The compile-time annotation processor
+will include the fragment in the search index.
+
+To verify, you can query the index:
+
+```bash
+adb shell content query \
+  --uri content://com.android.settings.intelligence.search.indexables/resource \
+  | grep custom_lab
+```
+
+### 49.20.9 Complete Lifecycle Diagram
+
+```mermaid
+flowchart TD
+    A[User navigates to System > Custom Lab] --> B[SettingsActivity.onCreate]
+    B --> C[getMetaData: FRAGMENT_CLASS = CustomLabFragment]
+    C --> D[isValidFragment: check SettingsGateway]
+    D --> E[switchToFragment: CustomLabFragment]
+    E --> F[CustomLabFragment.onAttach]
+    F --> G[Parse custom_lab_settings.xml]
+    G --> H[Instantiate CustomLabToggleController via reflection]
+    H --> I[Instantiate CustomLabModeController via reflection]
+    I --> J[onCreatePreferences: inflate XML]
+    J --> K[displayPreference: bind controllers to screen]
+    K --> L[updatePreferenceStates: read current values]
+    L --> M[User sees Custom Lab page]
+    M --> N{User toggles switch}
+    N --> O[CustomLabToggleController.setChecked]
+    O --> P[Settings.System.putInt]
+    P --> Q[ContentResolver.notifyChange]
+    Q --> R[Other observers notified]
+```
+
+### 49.20.10 Testing Your Custom Page
+
+Run the Settings app on an emulator:
+
+```bash
+# Build and flash
+m Settings -j$(nproc)
+adb install -r $OUT/system/priv-app/Settings/Settings.apk
+
+# Launch the custom page directly
+adb shell am start -n com.android.settings/.Settings\$CustomLabActivity
+
+# Or via the action
+adb shell am start -a android.settings.CUSTOM_LAB_SETTINGS
+
+# Verify the setting is written
+adb shell settings get system custom_lab_feature_enabled
+```
+
+You can also test the search integration by opening Settings, tapping the
+search bar, and typing "Lab".  The custom preferences should appear in the
+results if the search index has been refreshed.
+
+### 49.20.11 Advanced: Adding a Tile to the Homepage
+
+To inject your page as a tile on the homepage, you would modify
+`res/xml/top_level_settings.xml` to add a `HomepagePreference`:
+
+```xml
+<com.android.settings.widget.HomepagePreference
+    android:fragment="com.android.settings.development.CustomLabFragment"
+    android:icon="@drawable/ic_custom_lab"
+    android:key="top_level_custom_lab"
+    android:order="50"
+    android:title="@string/custom_lab_title"
+    android:summary="@string/custom_lab_summary"
+    settings:highlightableMenuKey="@string/menu_key_custom_lab"
+    settings:controller="com.android.settings.development.CustomLabHomepageController"/>
+```
+
+And register the category mapping in `DashboardFragmentRegistry`:
+
+```java
+PARENT_TO_CATEGORY_KEY_MAP.put(
+    CustomLabFragment.class.getName(), "com.android.settings.category.custom_lab");
+```
+
+### 49.20.12 Advanced: OEM Customisation via FeatureFactory
+
+OEMs can customise the Settings app without forking by implementing
+a custom `FeatureFactory` via the overlay system.  The factory provides
+feature-specific providers:
+
+```
+packages/apps/Settings/src/com/android/settings/overlay/FeatureFactory.java
+```
+
+Key extension points include:
+
+| Provider | Purpose |
+|----------|---------|
+| `DashboardFeatureProvider` | Custom tile binding logic |
+| `SearchFeatureProvider` | Custom search indexing |
+| `MetricsFeatureProvider` | Custom analytics |
+| `SecurityFeatureProvider` | Custom security settings |
+| `SupportFeatureProvider` | Custom support/help integration |
+| `EnterprisePrivacyFeatureProvider` | MDM integration |
+
+OEMs declare their custom factory in a resource overlay:
+
+```xml
+<!-- overlay/res/values/config.xml -->
+<string name="config_featureFactory">
+    com.myoem.settings.MyFeatureFactoryImpl
+</string>
+```
 
 ---
 
