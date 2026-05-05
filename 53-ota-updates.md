@@ -2175,182 +2175,9 @@ Merge stats include:
 
 ---
 
-## 53.14 Try It: Hands-On OTA Experiments
+## 53.14 Troubleshooting OTA Failures
 
-### 53.14.1 Inspecting a Payload
-
-```bash
-# Build the OTA tools
-source build/envsetup.sh
-lunch aosp_cf_x86_64_phone-userdebug
-m otatools
-
-# Inspect a payload
-python3 system/update_engine/scripts/payload_info.py payload.bin
-
-# Output shows:
-#   Payload version: 2
-#   Manifest length: ...
-#   Number of partitions: N
-#   For each partition:
-#     - Name, old/new size
-#     - Number of operations by type
-#     - Data blob size
-```
-
-### 53.14.2 Generating a Full OTA
-
-```bash
-# After building an image
-m dist
-
-# Generate full OTA from target-files
-python3 build/make/tools/releasetools/ota_from_target_files.py \
-    out/dist/aosp_cf_x86_64_phone-target_files-*.zip \
-    full_ota.zip
-
-# Examine the output
-unzip -l full_ota.zip
-# payload.bin
-# payload_properties.txt
-# META-INF/com/android/metadata
-# META-INF/com/android/metadata.pb
-# care_map.pb
-```
-
-### 53.14.3 Generating an Incremental OTA
-
-```bash
-# Build source version
-m dist
-cp out/dist/aosp_cf_x86_64_phone-target_files-*.zip source_tf.zip
-
-# Make changes, rebuild
-m dist
-
-# Generate incremental OTA
-python3 build/make/tools/releasetools/ota_from_target_files.py \
-    -i source_tf.zip \
-    out/dist/aosp_cf_x86_64_phone-target_files-*.zip \
-    incremental_ota.zip
-```
-
-### 53.14.4 Applying an OTA via ADB
-
-```bash
-# On the host, push the OTA package
-adb push full_ota.zip /data/ota_package/
-
-# Using update_engine_client (on device)
-adb shell update_engine_client \
-    --payload=file:///data/ota_package/payload.bin \
-    --offset=<offset_from_properties> \
-    --size=<size_from_properties> \
-    --headers="<key=value pairs from properties file>"
-
-# Or via ADB sideload (requires recovery mode for non-A/B)
-adb reboot sideload
-adb sideload full_ota.zip
-```
-
-### 53.14.5 Monitoring Update Progress
-
-```bash
-# Watch update_engine logs
-adb logcat -s update_engine
-
-# Check update status
-adb shell update_engine_client --follow
-
-# Check boot slots
-adb shell bootctl get-current-slot
-adb shell bootctl get-suffix 0  # _a
-adb shell bootctl get-suffix 1  # _b
-adb shell bootctl is-slot-bootable 0
-adb shell bootctl is-slot-bootable 1
-adb shell bootctl is-slot-marked-successful 0
-adb shell bootctl is-slot-marked-successful 1
-```
-
-### 53.14.6 Observing Virtual A/B Merge
-
-```bash
-# After rebooting into new slot, watch the merge
-adb logcat -s snapuserd
-
-# Check snapshot status
-adb shell snapshotctl dump
-
-# Monitor merge progress
-adb shell snapshotctl map-snapshots
-```
-
-### 53.14.7 Simulating an Update on Cuttlefish
-
-```bash
-# Launch Cuttlefish
-launch_cvd
-
-# Generate two builds (source and target)
-# Apply incremental OTA via the updater sample app
-# or use update_engine_client
-
-# Cuttlefish fully supports A/B and Virtual A/B,
-# making it ideal for OTA testing.
-```
-
-### 53.14.8 Examining Recovery Mode
-
-```bash
-# Boot into recovery
-adb reboot recovery
-
-# In recovery, navigate with volume keys:
-# - View recovery logs
-# - Apply update from ADB
-# - Wipe data/factory reset
-
-# Read recovery logs after returning to Android
-adb pull /cache/recovery/last_log
-adb pull /cache/recovery/last_kmsg
-```
-
-### 53.14.9 Building a Custom OTA with VABC Options
-
-```bash
-# Generate OTA with specific VABC options
-python3 build/make/tools/releasetools/ota_from_target_files.py \
-    --vabc_compression_param=zstd,9 \
-    --enable_vabc_xor \
-    --enable_zucchini \
-    --enable_lz4diff \
-    --compression_factor=64k \
-    --max_threads=8 \
-    -i source_tf.zip \
-    target_tf.zip \
-    optimized_ota.zip
-```
-
-### 53.14.10 Payload Verification
-
-```bash
-# Verify a payload's integrity
-brillo_update_payload check \
-    --payload payload.bin \
-    --target_image target.img \
-    --source_image source.img
-
-# Extract payload properties
-brillo_update_payload properties \
-    --payload payload.bin \
-    --properties_file -
-```
-
----
-
-## 53.15 Troubleshooting OTA Failures
-
-### 53.15.1 Common Failure Modes
+### 53.14.1 Common Failure Modes
 
 | Symptom | Likely Cause | Diagnostic |
 |---------|-------------|------------|
@@ -2363,7 +2190,7 @@ brillo_update_payload properties \
 | Boot loop after OTA | New build has fatal bug | Bootloader will rollback after retry exhaustion |
 | Insufficient space (VABC) | Not enough room for COW | Free space on /data, check super free space |
 
-### 53.15.2 Debugging update_engine
+### 53.14.2 Debugging update_engine
 
 ```bash
 # Enable verbose logging
@@ -2376,7 +2203,7 @@ adb shell kill -SIGUSR1 $(adb shell pidof update_engine)
 adb shell ls /data/misc/update_engine/prefs/
 ```
 
-### 53.15.3 Debugging snapuserd
+### 53.14.3 Debugging snapuserd
 
 ```bash
 # Check if snapuserd is running
@@ -2390,7 +2217,7 @@ adb shell cat /sys/block/dm-*/dm/name
 adb shell snapshotctl dump
 ```
 
-### 53.15.4 Recovering from a Failed Virtual A/B Update
+### 53.14.4 Recovering from a Failed Virtual A/B Update
 
 If an update fails before reboot:
 ```bash
@@ -2408,12 +2235,12 @@ If the device is in a boot loop after an update:
 
 ---
 
-## 53.16 Internals Deep Dive: The Complete Data Path
+## 53.15 Internals Deep Dive: The Complete Data Path
 
 To solidify understanding, let us trace a single REPLACE operation through the
 entire stack, from network byte to disk block.
 
-### 53.16.1 A Single REPLACE Operation
+### 53.15.1 A Single REPLACE Operation
 
 Consider a delta OTA where one 4 KB block of the `system` partition is
 completely replaced with new content.
@@ -2457,7 +2284,7 @@ flowchart TD
     end
 ```
 
-### 53.16.2 Data Flow for a SOURCE_COPY Operation
+### 53.15.2 Data Flow for a SOURCE_COPY Operation
 
 A `SOURCE_COPY` is even simpler -- no data blob is needed:
 
@@ -2477,7 +2304,7 @@ For Virtual A/B, `SOURCE_COPY` becomes `COW_COPY` -- the most efficient
 operation, as it stores no data at all. During reads, `snapuserd` fetches the
 block from the source partition.
 
-### 53.16.3 Data Flow for XOR Operations
+### 53.15.3 Data Flow for XOR Operations
 
 When XOR is enabled, small changes generate even smaller COW entries:
 
@@ -2493,9 +2320,9 @@ flowchart LR
 
 ---
 
-## 53.17 Advanced Topics
+## 53.16 Advanced Topics
 
-### 53.17.1 Partial Updates
+### 53.16.1 Partial Updates
 
 Since minor version 7, the payload format supports partial updates -- updating
 only a subset of partitions. This is controlled by the `--partial` flag:
@@ -2514,7 +2341,7 @@ Partial updates are useful for:
 The `untouched_dynamic_partitions` field in `InstallPlan` tracks which
 partitions are left unchanged.
 
-### 53.17.2 Multi-Payload Updates
+### 53.16.2 Multi-Payload Updates
 
 `update_engine` supports applying multiple payloads in sequence via the
 `payloads` vector in `InstallPlan`:
@@ -2530,7 +2357,7 @@ struct InstallPlan {
 This is used with `--include_secondary` for updating both primary and secondary
 slot images in a staged process.
 
-### 53.17.3 APEX Updates via OTA
+### 53.16.3 APEX Updates via OTA
 
 Modern Android distributes some system components as APEX packages. The OTA
 system integrates with APEX handling:
@@ -2542,7 +2369,7 @@ Source: system/update_engine/aosp/apex_handler_android.h
 During postinstall, APEX packages in the new build may need to be activated or
 decompressed. The `ApexHandlerInterface` manages this integration.
 
-### 53.17.4 Dynamic Partition Resizing
+### 53.16.4 Dynamic Partition Resizing
 
 Virtual A/B supports resizing dynamic partitions during an update. If the target
 build has a larger `system` partition, the OTA process:
@@ -2563,7 +2390,7 @@ bool PreparePartitionsForUpdate(uint32_t source_slot,
                                 ErrorCode* error);
 ```
 
-### 53.17.5 Non-A/B OTA Internals
+### 53.16.5 Non-A/B OTA Internals
 
 For completeness, the non-A/B path uses an entirely different code path:
 
@@ -2586,7 +2413,7 @@ block_image_update("/dev/block/.../system",
 The `update-binary` (typically `update_engine_sideload` on newer builds)
 interprets these scripts to apply block-level patches.
 
-### 53.17.6 Two-Step Updates
+### 53.16.6 Two-Step Updates
 
 The `--two_step` flag generates OTAs that update recovery first, then use the
 new recovery to update the rest of the system. This ensures that any new
@@ -2599,7 +2426,7 @@ flowchart TD
     C --> D[Reboot into updated system]
 ```
 
-### 53.17.7 Brick OTAs
+### 53.16.7 Brick OTAs
 
 A specialized OTA type for deliberately making a device unbootable (e.g., for
 carrier returns or fleet management):
@@ -2612,9 +2439,9 @@ These are tightly controlled and require specific signing keys.
 
 ---
 
-## 53.18 Security Considerations
+## 53.17 Security Considerations
 
-### 53.18.1 Payload Signing
+### 53.17.1 Payload Signing
 
 All production OTA payloads must be signed with the device's OTA key. The
 signing chain:
@@ -2625,20 +2452,20 @@ signing chain:
 
 For development, test keys in `build/make/target/product/security/` are used.
 
-### 53.18.2 Metadata Signature
+### 53.17.2 Metadata Signature
 
 The metadata (header + manifest) is signed separately from the full payload.
 This allows `update_engine` to verify the manifest before processing any
 operations, preventing attacks that exploit parsing vulnerabilities in the
 manifest handler.
 
-### 53.18.3 Transport Security
+### 53.17.3 Transport Security
 
 `update_engine` uses HTTPS (via libcurl) for downloading payloads, providing
 transport-layer encryption and server authentication. The payload signature
 provides end-to-end integrity independent of transport security.
 
-### 53.18.4 SELinux Context
+### 53.17.4 SELinux Context
 
 `update_engine` runs with the `update_engine` SELinux domain, which has:
 
@@ -2648,7 +2475,7 @@ provides end-to-end integrity independent of transport security.
 - Access to its persistent data in `/data/misc/update_engine/`.
 - No access to user data, app data, or most system services.
 
-### 53.18.5 Verity and COW Interaction
+### 53.17.5 Verity and COW Interaction
 
 For Virtual A/B, dm-verity must work with the snapshot layer:
 
@@ -2663,9 +2490,9 @@ merged view transparently.
 
 ---
 
-## 53.19 update_engine Service Configuration
+## 53.18 update_engine Service Configuration
 
-### 53.19.1 Init Service Definition
+### 53.18.1 Init Service Definition
 
 On Android, `update_engine` is started by init as a persistent service. The
 Chrome OS heritage is visible in the Upstart-style configuration file:
@@ -2702,7 +2529,7 @@ Key service characteristics:
 - Placed in the **system-background** CPU set to minimize UI impact.
 - Uses **idle I/O priority** (`ionice -c3`) so updates don't cause jank.
 
-### 53.19.2 Persistent Preferences
+### 53.18.2 Persistent Preferences
 
 `update_engine` stores its state in a persistent preferences directory:
 
@@ -2728,7 +2555,7 @@ Key preference files:
 | `total-bytes-downloaded` | Cumulative download progress |
 | `dynamic-partition-metadata-updated` | Whether metadata was updated |
 
-### 53.19.3 CPU Throttling
+### 53.18.3 CPU Throttling
 
 To prevent the update from heating up the device or draining the battery too
 quickly, `update_engine` employs CPU throttling:
@@ -2745,9 +2572,9 @@ zucchini).
 
 ---
 
-## 53.20 Error Code Reference
+## 53.19 Error Code Reference
 
-### 53.20.1 Complete Native Error Codes
+### 53.19.1 Complete Native Error Codes
 
 The full error code enumeration lives in:
 
@@ -2805,7 +2632,7 @@ enum class ErrorCode : int {
 };
 ```
 
-### 53.20.2 Error Code Categories
+### 53.19.2 Error Code Categories
 
 These error codes can be grouped by failure phase:
 
@@ -2821,9 +2648,9 @@ These error codes can be grouped by failure phase:
 
 ---
 
-## 53.21 The DownloadAction in Detail
+## 53.20 The DownloadAction in Detail
 
-### 53.21.1 DownloadAction Initialization
+### 53.20.1 DownloadAction Initialization
 
 The `DownloadAction` is the most complex action in the pipeline. It coordinates
 the `HttpFetcher`, `DeltaPerformer`, and resume logic.
@@ -2870,7 +2697,7 @@ Key design decisions:
 - The `MultiRangeHttpFetcher` wraps the raw `HttpFetcher` to support Range
   requests for resuming.
 
-### 53.21.2 Progress Reporting
+### 53.20.2 Progress Reporting
 
 Progress updates are throttled to avoid flooding the Binder callbacks:
 
@@ -2890,7 +2717,7 @@ static const unsigned kProgressOperationsWeight;   // Apply contribution
 // These add up to 100
 ```
 
-### 53.21.3 The MultiRangeHttpFetcher
+### 53.20.3 The MultiRangeHttpFetcher
 
 For multi-payload updates, the `MultiRangeHttpFetcher` handles:
 
@@ -2900,9 +2727,9 @@ For multi-payload updates, the `MultiRangeHttpFetcher` handles:
 
 ---
 
-## 53.22 Filesystem Verification
+## 53.21 Filesystem Verification
 
-### 53.22.1 FilesystemVerifierAction
+### 53.21.1 FilesystemVerifierAction
 
 After all operations are applied, the `FilesystemVerifierAction` reads back the
 target partitions and computes their hashes:
@@ -2926,7 +2753,7 @@ This step is critical because it catches:
 - Bugs in the DeltaPerformer.
 - Incomplete writes due to power loss (before checkpoint).
 
-### 53.22.2 Verity Hash Tree Generation
+### 53.21.2 Verity Hash Tree Generation
 
 For partitions with dm-verity, the performer also generates the verity hash
 tree and FEC (Forward Error Correction) data as part of the update:
@@ -2954,7 +2781,7 @@ including them in the payload. This saves payload size significantly.
 
 ---
 
-## 53.23 The Install Plan Data Structure
+## 53.22 The Install Plan Data Structure
 
 The `InstallPlan` is the central data structure that flows through the action
 pipeline, carrying all information needed to apply an update.
@@ -2963,7 +2790,7 @@ pipeline, carrying all information needed to apply an update.
 Source: system/update_engine/payload_consumer/install_plan.h
 ```
 
-### 53.23.1 Top-Level Fields
+### 53.22.1 Top-Level Fields
 
 ```cpp
 struct InstallPlan {
@@ -2990,7 +2817,7 @@ struct InstallPlan {
 };
 ```
 
-### 53.23.2 Per-Partition Information
+### 53.22.2 Per-Partition Information
 
 Each partition entry contains source and target metadata:
 
@@ -3030,7 +2857,7 @@ struct Partition {
 };
 ```
 
-### 53.23.3 Payload Metadata
+### 53.22.3 Payload Metadata
 
 Each payload in the plan carries URL, size, and hash information:
 
@@ -3050,7 +2877,7 @@ struct Payload {
 
 ---
 
-## 53.24 Partition Writer Factory
+## 53.23 Partition Writer Factory
 
 The factory function selects the appropriate writer implementation based on
 device capabilities:
@@ -3086,7 +2913,7 @@ The `VABCPartitionWriter` uses `ICowWriter` (from libsnapshot) to write COW
 operations. The regular `PartitionWriter` opens the target block device directly
 with `pwrite()`.
 
-### 53.24.1 PartitionWriter I/O Path
+### 53.23.1 PartitionWriter I/O Path
 
 For standard A/B (non-VABC):
 
@@ -3095,7 +2922,7 @@ DeltaPerformer -> PartitionWriter -> ExtentWriter -> FileDescriptor -> pwrite()
                                                                     -> /dev/block/by-name/system_b
 ```
 
-### 53.24.2 VABCPartitionWriter I/O Path
+### 53.23.2 VABCPartitionWriter I/O Path
 
 For Virtual A/B with Compression:
 
@@ -3107,7 +2934,7 @@ DeltaPerformer -> VABCPartitionWriter -> ICowWriter -> CowWriterV3
 The `ICowWriter` serializes operations into the COW binary format. The COW file
 is later read by `snapuserd` during boot.
 
-### 53.24.3 XOR Map Handling
+### 53.23.3 XOR Map Handling
 
 When XOR compression is enabled, the `VABCPartitionWriter` maintains an
 `ExtentMap` that tracks which target blocks have XOR merge operations:
@@ -3122,9 +2949,9 @@ better compression.
 
 ---
 
-## 53.25 The Update Verifier
+## 53.24 The Update Verifier
 
-### 53.25.1 Purpose and Timing
+### 53.24.1 Purpose and Timing
 
 The `update_verifier` runs as a one-shot service during the first boot after an
 OTA update. It is triggered by init before the system is fully operational:
@@ -3139,7 +2966,7 @@ Source: bootable/recovery/update_verifier/update_verifier.cpp
 // verification if it's the first boot post an A/B OTA update.
 ```
 
-### 53.25.2 Verification Process
+### 53.24.2 Verification Process
 
 ```mermaid
 flowchart TD
@@ -3157,7 +2984,7 @@ flowchart TD
 The care_map contains only the blocks that have actual filesystem data (not
 free space), so verification is faster than reading the entire partition.
 
-### 53.25.3 dm-verity Integration
+### 53.24.3 dm-verity Integration
 
 `update_verifier` does not compute hashes itself. Instead, it relies on
 dm-verity in the kernel to verify each block as it is read:
@@ -3171,9 +2998,9 @@ chain, requiring no additional trust in the verifier binary itself.
 
 ---
 
-## 53.26 Sideload Mode: update_engine_sideload
+## 53.25 Sideload Mode: update_engine_sideload
 
-### 53.26.1 Recovery-Based OTA Application
+### 53.25.1 Recovery-Based OTA Application
 
 For recovery-mode OTA application (ADB sideload on A/B devices), a special
 build of `update_engine` called `update_engine_sideload` is used:
@@ -3189,7 +3016,7 @@ This stripped-down version:
 - Reads the payload directly from an ADB connection or file.
 - Applies operations directly, without network fetching.
 
-### 53.26.2 Sideload Flow
+### 53.25.2 Sideload Flow
 
 ```mermaid
 sequenceDiagram
@@ -3206,6 +3033,179 @@ sequenceDiagram
     UES->>UES: Apply operations to target slot
     UES->>REC: Report success/failure
     REC->>User: Display result
+```
+
+---
+
+## 53.26 Try It: Hands-On OTA Experiments
+
+### 53.26.1 Inspecting a Payload
+
+```bash
+# Build the OTA tools
+source build/envsetup.sh
+lunch aosp_cf_x86_64_phone-userdebug
+m otatools
+
+# Inspect a payload
+python3 system/update_engine/scripts/payload_info.py payload.bin
+
+# Output shows:
+#   Payload version: 2
+#   Manifest length: ...
+#   Number of partitions: N
+#   For each partition:
+#     - Name, old/new size
+#     - Number of operations by type
+#     - Data blob size
+```
+
+### 53.26.2 Generating a Full OTA
+
+```bash
+# After building an image
+m dist
+
+# Generate full OTA from target-files
+python3 build/make/tools/releasetools/ota_from_target_files.py \
+    out/dist/aosp_cf_x86_64_phone-target_files-*.zip \
+    full_ota.zip
+
+# Examine the output
+unzip -l full_ota.zip
+# payload.bin
+# payload_properties.txt
+# META-INF/com/android/metadata
+# META-INF/com/android/metadata.pb
+# care_map.pb
+```
+
+### 53.26.3 Generating an Incremental OTA
+
+```bash
+# Build source version
+m dist
+cp out/dist/aosp_cf_x86_64_phone-target_files-*.zip source_tf.zip
+
+# Make changes, rebuild
+m dist
+
+# Generate incremental OTA
+python3 build/make/tools/releasetools/ota_from_target_files.py \
+    -i source_tf.zip \
+    out/dist/aosp_cf_x86_64_phone-target_files-*.zip \
+    incremental_ota.zip
+```
+
+### 53.26.4 Applying an OTA via ADB
+
+```bash
+# On the host, push the OTA package
+adb push full_ota.zip /data/ota_package/
+
+# Using update_engine_client (on device)
+adb shell update_engine_client \
+    --payload=file:///data/ota_package/payload.bin \
+    --offset=<offset_from_properties> \
+    --size=<size_from_properties> \
+    --headers="<key=value pairs from properties file>"
+
+# Or via ADB sideload (requires recovery mode for non-A/B)
+adb reboot sideload
+adb sideload full_ota.zip
+```
+
+### 53.26.5 Monitoring Update Progress
+
+```bash
+# Watch update_engine logs
+adb logcat -s update_engine
+
+# Check update status
+adb shell update_engine_client --follow
+
+# Check boot slots
+adb shell bootctl get-current-slot
+adb shell bootctl get-suffix 0  # _a
+adb shell bootctl get-suffix 1  # _b
+adb shell bootctl is-slot-bootable 0
+adb shell bootctl is-slot-bootable 1
+adb shell bootctl is-slot-marked-successful 0
+adb shell bootctl is-slot-marked-successful 1
+```
+
+### 53.26.6 Observing Virtual A/B Merge
+
+```bash
+# After rebooting into new slot, watch the merge
+adb logcat -s snapuserd
+
+# Check snapshot status
+adb shell snapshotctl dump
+
+# Monitor merge progress
+adb shell snapshotctl map-snapshots
+```
+
+### 53.26.7 Simulating an Update on Cuttlefish
+
+```bash
+# Launch Cuttlefish
+launch_cvd
+
+# Generate two builds (source and target)
+# Apply incremental OTA via the updater sample app
+# or use update_engine_client
+
+# Cuttlefish fully supports A/B and Virtual A/B,
+# making it ideal for OTA testing.
+```
+
+### 53.26.8 Examining Recovery Mode
+
+```bash
+# Boot into recovery
+adb reboot recovery
+
+# In recovery, navigate with volume keys:
+# - View recovery logs
+# - Apply update from ADB
+# - Wipe data/factory reset
+
+# Read recovery logs after returning to Android
+adb pull /cache/recovery/last_log
+adb pull /cache/recovery/last_kmsg
+```
+
+### 53.26.9 Building a Custom OTA with VABC Options
+
+```bash
+# Generate OTA with specific VABC options
+python3 build/make/tools/releasetools/ota_from_target_files.py \
+    --vabc_compression_param=zstd,9 \
+    --enable_vabc_xor \
+    --enable_zucchini \
+    --enable_lz4diff \
+    --compression_factor=64k \
+    --max_threads=8 \
+    -i source_tf.zip \
+    target_tf.zip \
+    optimized_ota.zip
+```
+
+### 53.26.10 Payload Verification
+
+```bash
+# Verify a payload's integrity
+brillo_update_payload check \
+    --payload payload.bin \
+    --target_image target.img \
+    --source_image source.img
+
+# Extract payload properties
+brillo_update_payload properties \
+    --payload payload.bin \
+    --properties_file -
 ```
 
 ---
