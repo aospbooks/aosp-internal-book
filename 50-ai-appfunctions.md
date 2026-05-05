@@ -5,9 +5,9 @@ _understands_ them. A constellation of on-device intelligence services now
 connects user intent to app behavior: the **AppFunctions** framework lets
 assistants invoke arbitrary app functionality through a typed RPC contract;
 **Computer Control** gives AI agents a virtual display they can tap, swipe,
-and screenshot; **OnDeviceIntelligence** runs large language models in an
-isolated sandbox; and **NNAPI** exposes hardware accelerators to any native
-workload. Together with AppSearch, Content Capture, AdServices, and Federated
+and screenshot; **OnDeviceIntelligence** runs large ML models -- LLMs and other
+generative or large inference workloads -- in an isolated sandbox; and
+**NNAPI** exposes hardware accelerators to any native workload. Together with AppSearch, Content Capture, AdServices, and Federated
 Learning, these subsystems form Android's AI nervous system.
 
 This chapter traces every layer -- from the public SDK class down through AIDL
@@ -1849,7 +1849,7 @@ service can be temporarily overridden for testing via shell commands.
 
 ### 50.4.14 Streaming Inference Protocol Detail
 
-The streaming API provides token-by-token delivery for LLM inference:
+The streaming API delivers partial inference results incrementally, which suits LLM token-by-token output well but is not LLM-specific:
 
 ```mermaid
 sequenceDiagram
@@ -4540,7 +4540,7 @@ multiple layers:
 ```mermaid
 graph TB
     subgraph "Agent Intelligence"
-        LLM["Large Language Model<br/>(via OnDeviceIntelligence)"]
+        LLM["LLM / Generative Model<br/>(running on OnDeviceIntelligence)"]
     end
 
     subgraph "Agent Actions"
