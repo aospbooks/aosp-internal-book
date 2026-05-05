@@ -72,7 +72,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | XIII | 53 | OTA Updates | REVIEWED |
 | XIII | 54 | Virtualization (pKVM/crosvm) | REVIEWED |
 | XIII | 55 | Testing (CTS/VTS/Ravenwood) | REVIEWED |
-| XIII | 56 | Debugging Tools (Perfetto) | UNDER REVIEW |
+| XIII | 56 | Debugging Tools (Perfetto) | REVIEWED |
 | XIV | 57 | Architecture Support (ARM/x86/RISC-V) | REVIEWED |
 | XIV | 58 | Emulator | REVIEWED |
 | XIV | 59 | Device Policy | REVIEWED |
