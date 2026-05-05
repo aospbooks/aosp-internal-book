@@ -2387,495 +2387,13 @@ void* openDeclaredPassthroughHal(const String16& interface,
 
 ---
 
-## 9.7 Try It: Write a Binder Service
-
-This section walks through creating a complete Binder service and client. We
-will create a simple "echo" service that demonstrates the full lifecycle.
-
-### 9.7.1 Step 1: Define the AIDL Interface
-
-Create the AIDL file:
-
-```aidl
-// hardware/interfaces/example/echo/aidl/android/hardware/echo/IEchoService.aidl
-package android.hardware.echo;
-
-interface IEchoService {
-    /** Echo back the input string */
-    String echo(in String input);
-
-    /** Return the number of echo calls made */
-    int getCallCount();
-
-    /** Fire-and-forget notification */
-    oneway void ping();
-}
-```
-
-### 9.7.2 Step 2: Build Configuration
-
-Create the `Android.bp` for the AIDL interface:
-
-```
-// hardware/interfaces/example/echo/aidl/Android.bp
-aidl_interface {
-    name: "android.hardware.echo",
-    vendor_available: true,
-    srcs: ["android/hardware/echo/*.aidl"],
-    stability: "vintf",
-    backend: {
-        cpp: {
-            enabled: true,
-        },
-        java: {
-            enabled: true,
-        },
-        rust: {
-            enabled: true,
-        },
-    },
-}
-```
-
-### 9.7.3 Step 3: Implement the Service (C++)
-
-```cpp
-// hardware/interfaces/example/echo/aidl/default/EchoService.h
-#pragma once
-
-#include <aidl/android/hardware/echo/BnEchoService.h>
-#include <atomic>
-
-namespace aidl::android::hardware::echo {
-
-class EchoService : public BnEchoService {
-public:
-    // Synchronous: echo back the input
-    ndk::ScopedAStatus echo(const std::string& input,
-                            std::string* _aidl_return) override {
-        mCallCount++;
-        *_aidl_return = "Echo: " + input;
-        return ndk::ScopedAStatus::ok();
-    }
-
-    // Synchronous: return call count
-    ndk::ScopedAStatus getCallCount(int32_t* _aidl_return) override {
-        *_aidl_return = mCallCount.load();
-        return ndk::ScopedAStatus::ok();
-    }
-
-    // Oneway: no reply needed
-    ndk::ScopedAStatus ping() override {
-        ALOGI("Ping received! Call count: %d", mCallCount.load());
-        return ndk::ScopedAStatus::ok();
-    }
-
-private:
-    std::atomic<int32_t> mCallCount{0};
-};
-
-}  // namespace aidl::android::hardware::echo
-```
-
-### 9.7.4 Step 4: Service Main Entry Point
-
-```cpp
-// hardware/interfaces/example/echo/aidl/default/main.cpp
-#include "EchoService.h"
-
-#include <android-base/logging.h>
-#include <android/binder_manager.h>
-#include <android/binder_process.h>
-
-using aidl::android::hardware::echo::EchoService;
-
-int main() {
-    // Initialize the binder thread pool
-    ABinderProcess_setThreadPoolMaxThreadCount(0);
-
-    // Create the service
-    std::shared_ptr<EchoService> echo =
-        ndk::SharedRefBase::make<EchoService>();
-
-    // Register with servicemanager
-    const std::string instance =
-        std::string() + EchoService::descriptor + "/default";
-    binder_status_t status = AServiceManager_addService(
-        echo->asBinder().get(), instance.c_str());
-    CHECK_EQ(status, STATUS_OK)
-        << "Failed to register " << instance;
-
-    LOG(INFO) << "EchoService registered as " << instance;
-
-    // Join the thread pool (blocks forever)
-    ABinderProcess_startThreadPool();
-    ABinderProcess_joinThreadPool();
-
-    // Should not reach here
-    LOG(FATAL) << "EchoService exited unexpectedly";
-    return EXIT_FAILURE;
-}
-```
-
-### 9.7.5 Step 5: Build Configuration for the Service
-
-```
-// hardware/interfaces/example/echo/aidl/default/Android.bp
-cc_binary {
-    name: "android.hardware.echo-service",
-    relative_install_path: "hw",
-    vendor: true,
-    srcs: ["main.cpp"],
-    shared_libs: [
-        "libbase",
-        "libbinder_ndk",
-        "android.hardware.echo-V1-ndk",
-    ],
-}
-```
-
-### 9.7.6 Step 6: Init Configuration
-
-```rc
-// hardware/interfaces/example/echo/aidl/default/echo-service.rc
-service vendor.echo /vendor/bin/hw/android.hardware.echo-service
-    class hal
-    user system
-    group system
-```
-
-### 9.7.7 Step 7: VINTF Manifest Entry
-
-Add to the device manifest:
-
-```xml
-<hal format="aidl">
-    <name>android.hardware.echo</name>
-    <version>1</version>
-    <fqname>IEchoService/default</fqname>
-</hal>
-```
-
-### 9.7.8 Step 8: Write the Client
-
-```cpp
-// A simple client that calls the echo service
-#include <aidl/android/hardware/echo/IEchoService.h>
-#include <android/binder_manager.h>
-#include <android-base/logging.h>
-
-using aidl::android::hardware::echo::IEchoService;
-
-int main() {
-    // Get the service
-    const std::string instance =
-        std::string() + IEchoService::descriptor + "/default";
-    std::shared_ptr<IEchoService> service =
-        IEchoService::fromBinder(
-            ndk::SpAIBinder(AServiceManager_waitForService(
-                instance.c_str())));
-    CHECK(service != nullptr) << "Failed to get " << instance;
-
-    // Make an echo call
-    std::string result;
-    auto status = service->echo("Hello, Binder!", &result);
-    CHECK(status.isOk()) << "echo failed: "
-                         << status.getDescription();
-    LOG(INFO) << "Echo result: " << result;
-
-    // Get call count
-    int32_t count;
-    status = service->getCallCount(&count);
-    CHECK(status.isOk());
-    LOG(INFO) << "Call count: " << count;
-
-    // Send a oneway ping (returns immediately)
-    status = service->ping();
-    CHECK(status.isOk());
-    LOG(INFO) << "Ping sent (oneway)";
-
-    return 0;
-}
-```
-
-### 9.7.9 Step 9: Implement in Rust
-
-The same service in Rust:
-
-```rust
-// Rust service implementation
-use binder::BinderFeatures;
-use android_hardware_echo::aidl::android::hardware::echo::IEchoService::{
-    BnEchoService, IEchoService,
-};
-use std::sync::atomic::{AtomicI32, Ordering};
-
-struct EchoService {
-    call_count: AtomicI32,
-}
-
-impl binder::Interface for EchoService {}
-
-impl IEchoService for EchoService {
-    fn echo(&self, input: &str) -> binder::Result<String> {
-        self.call_count.fetch_add(1, Ordering::Relaxed);
-        Ok(format!("Echo: {}", input))
-    }
-
-    fn getCallCount(&self) -> binder::Result<i32> {
-        Ok(self.call_count.load(Ordering::Relaxed))
-    }
-
-    fn ping(&self) -> binder::Result<()> {
-        log::info!("Ping received! Count: {}",
-                   self.call_count.load(Ordering::Relaxed));
-        Ok(())
-    }
-}
-
-fn main() {
-    binder::ProcessState::start_thread_pool();
-
-    let service = EchoService {
-        call_count: AtomicI32::new(0),
-    };
-    let service_binder = BnEchoService::new_binder(
-        service,
-        BinderFeatures::default(),
-    );
-
-    binder::add_service(
-        &format!("{}/default", <BnEchoService as IEchoService>::get_descriptor()),
-        service_binder.as_binder(),
-    ).expect("Failed to register service");
-
-    binder::ProcessState::join_thread_pool();
-}
-```
-
-### 9.7.10 Step 10: Implement the Client in Java
-
-```java
-// Java client for the echo service
-import android.hardware.echo.IEchoService;
-import android.os.IBinder;
-import android.os.ServiceManager;
-import android.util.Log;
-
-public class EchoClient {
-    private static final String TAG = "EchoClient";
-    private static final String SERVICE_NAME =
-        "android.hardware.echo.IEchoService/default";
-
-    public static void main(String[] args) {
-        // Get the service from service manager
-        IBinder binder = ServiceManager.waitForService(SERVICE_NAME);
-        if (binder == null) {
-            Log.e(TAG, "Failed to get echo service");
-            return;
-        }
-
-        // Convert to typed interface
-        IEchoService service = IEchoService.Stub.asInterface(binder);
-        if (service == null) {
-            Log.e(TAG, "Failed to cast to IEchoService");
-            return;
-        }
-
-        try {
-            // Make a synchronous echo call
-            String result = service.echo("Hello from Java!");
-            Log.i(TAG, "Echo result: " + result);
-
-            // Get the call count
-            int count = service.getCallCount();
-            Log.i(TAG, "Call count: " + count);
-
-            // Send a oneway ping
-            service.ping();
-            Log.i(TAG, "Ping sent");
-
-        } catch (android.os.RemoteException e) {
-            Log.e(TAG, "Remote exception: " + e.getMessage());
-        }
-    }
-}
-```
-
-Under the hood, `IEchoService.Stub.asInterface(binder)` checks if the binder
-is a local object (same process) or a remote proxy:
-
-- If local, it returns the actual `IEchoService` implementation directly
-  (zero-copy, no IPC)
-- If remote, it wraps it in `IEchoService.Stub.Proxy` that marshalls calls
-  through binder
-
-This is the `queryLocalInterface()` optimization that avoids unnecessary
-serialization for in-process calls.
-
-### 9.7.11 Step 11: Handle Death Notifications
-
-```cpp
-// C++ example: Register for death notifications
-class MyDeathRecipient : public android::IBinder::DeathRecipient {
-public:
-    void binderDied(const android::wp<android::IBinder>& who) override {
-        ALOGE("Echo service died! Attempting to reconnect...");
-        // Reconnect logic here
-    }
-};
-
-// In client code:
-sp<MyDeathRecipient> deathRecipient = sp<MyDeathRecipient>::make();
-status_t status = binder->linkToDeath(deathRecipient);
-if (status != OK) {
-    ALOGE("Failed to link to death: %d", status);
-}
-```
-
-Death notifications are essential for robust client implementations. When the
-server process crashes, the client receives the notification and can attempt to
-reconnect or clean up resources.
-
-### 9.7.12 Step 12: Debugging Your Service
-
-**List all registered services:**
-
-```bash
-adb shell service list
-# or
-adb shell dumpsys -l
-```
-
-**Check if your service is registered:**
-
-```bash
-adb shell service check android.hardware.echo.IEchoService/default
-```
-
-**Call a service method from the command line:**
-
-```bash
-adb shell service call android.hardware.echo.IEchoService/default \
-    1 s16 "Hello"
-# 1 = FIRST_CALL_TRANSACTION (echo method)
-# s16 = String16 argument
-```
-
-**Dump service state:**
-
-```bash
-adb shell dumpsys android.hardware.echo.IEchoService/default
-```
-
-**View binder debug info:**
-
-```bash
-adb shell cat /sys/kernel/debug/binder/stats
-adb shell cat /sys/kernel/debug/binder/transactions
-adb shell cat /sys/kernel/debug/binder/state
-```
-
-**View binder calls with systrace/perfetto:**
-
-```bash
-adb shell perfetto -o /data/misc/perfetto-traces/trace \
-    -c - <<EOF
-buffers: {
-    size_kb: 63488
-}
-data_sources: {
-    config {
-        name: "linux.ftrace"
-        ftrace_config {
-            ftrace_events: "binder/*"
-        }
-    }
-}
-duration_ms: 5000
-EOF
-```
-
-### 9.7.13 Common Pitfalls
-
-1. **Binder thread pool not started.** If you forget
-   `ABinderProcess_startThreadPool()`, your service will register but never
-   respond to transactions.
-
-2. **Blocking in oneway methods.** Oneway methods should return quickly.
-   Long-running work should be posted to a separate worker thread.
-
-3. **Binder buffer overflow.** The 1 MB mmap buffer is shared among all
-   pending incoming transactions. Sending large data (e.g., big bitmaps)
-   through Binder is an anti-pattern -- use `ashmem` or `ParcelFileDescriptor`
-   instead.
-
-4. **Binder proxy leak.** Accumulating too many `BpBinder` references without
-   releasing them triggers the proxy throttle (watermark at 2500). This
-   typically manifests as `JavaBinder: !!! FAILED BINDER TRANSACTION !!!`.
-
-5. **Missing VINTF declaration.** HAL services that do not have a VINTF
-   manifest entry will fail to register with an `EX_ILLEGAL_ARGUMENT`.
-
-6. **Wrong binder domain.** Vendor processes default to `/dev/vndbinder`. If
-   you accidentally register on the wrong domain, clients in other domains
-   cannot find your service.
-
-7. **Fork after binder use.** `ProcessState` installs fork handlers that
-   invalidate the binder FD in the child. Using Binder after `fork()` will
-   crash:
-   ```cpp
-   static void verifyNotForked(bool forked) {
-       LOG_ALWAYS_FATAL_IF(forked,
-           "libbinder ProcessState can not be used after fork");
-   }
-   ```
-
-### 9.7.14 Architecture of a Complete Binder Service
-
-```mermaid
-graph TD
-    subgraph "Service Process"
-        direction TB
-        M["main()"] --> PS["ProcessState::initWithDriver()"]
-        PS --> TB["Open /dev/binder<br/>mmap 1MB buffer"]
-        M --> SVC["Create EchoService<br/>(extends BnEchoService)"]
-        SVC --> REG["addService('echo', binder)"]
-        REG --> SM_CALL["Transact to handle 0<br/>(servicemanager)"]
-        M --> TP["startThreadPool()"]
-        TP --> JT["joinThreadPool()"]
-        JT --> LOOP["Loop: getAndExecuteCommand()"]
-        LOOP --> TW["talkWithDriver()<br/>ioctl(BINDER_WRITE_READ)"]
-        TW --> EX["executeCommand(BR_TRANSACTION)"]
-        EX --> OT["BnEchoService::onTransact()"]
-        OT --> EC["EchoService::echo()"]
-        EC --> REP["sendReply()"]
-        REP --> LOOP
-    end
-
-    subgraph "Client Process"
-        direction TB
-        CM["main()"] --> DSM["defaultServiceManager()"]
-        DSM --> WS["waitForService('echo')"]
-        WS --> IC["interface_cast<IEchoService>()"]
-        IC --> BP["BpEchoService::echo()"]
-        BP --> TR["remote()->transact()"]
-        TR --> IPT["IPCThreadState::transact()"]
-        IPT --> WTD["writeTransactionData()<br/>BC_TRANSACTION"]
-        WTD --> WFR["waitForResponse()"]
-        WFR --> RES["Read BR_REPLY<br/>Return result"]
-    end
-```
-
----
-
-## 9.8 Binder Internals: Deep Dive
+## 9.7 Binder Internals: Deep Dive
 
 This section provides a detailed walkthrough of the internal data flows and
 state machines within `libbinder`, aimed at kernel and framework developers who
 need to understand the exact code paths involved in a Binder transaction.
 
-### 9.8.1 The writeTransactionData Function
+### 9.7.1 The writeTransactionData Function
 
 This is where outgoing transaction data is formatted:
 
@@ -2922,7 +2440,7 @@ status_t IPCThreadState::writeTransactionData(int32_t cmd,
 Note that `sender_pid` and `sender_euid` are set to 0 -- the kernel driver
 fills these in with the actual values.
 
-### 9.8.2 The executeCommand Function (BR_TRANSACTION)
+### 9.7.2 The executeCommand Function (BR_TRANSACTION)
 
 When a transaction arrives at the server, `executeCommand()` processes the
 `BR_TRANSACTION` command. This is the most complex case:
@@ -3044,7 +2562,7 @@ reference counts. Instead, they are queued in `mPendingStrongDerefs` and
 avoids potential deadlocks and ensures that destructors do not run while
 the thread is in the middle of processing driver commands.
 
-### 9.8.3 BBinder::transact and the Template Method Pattern
+### 9.7.3 BBinder::transact and the Template Method Pattern
 
 When a transaction reaches a BBinder, the `transact()` method (which is `final`)
 handles meta-transactions and delegates to `onTransact()`:
@@ -3103,7 +2621,7 @@ status_t BBinder::transact(uint32_t code, const Parcel& data,
 The AIDL-generated `BnFoo::onTransact()` is what dispatches to your specific
 interface methods.
 
-### 9.8.4 BBinder::Extras and the Lazy Initialization Pattern
+### 9.7.4 BBinder::Extras and the Lazy Initialization Pattern
 
 BBinder uses lazy initialization for its "extras" -- optional metadata that
 most binder objects never need:
@@ -3132,7 +2650,7 @@ first access via `getOrCreateExtras()`. This keeps the `BBinder` base class
 small (40 bytes on LP64) since most binder objects never use extensions,
 custom scheduling, or recording.
 
-### 9.8.5 The waitForResponse Loop (Continued)
+### 9.7.5 The waitForResponse Loop (Continued)
 
 After sending a transaction, the thread enters a loop waiting for the reply:
 
@@ -3204,7 +2722,7 @@ receive other commands from the driver (like `BR_DEAD_BINDER` death
 notifications or nested `BR_TRANSACTION` calls). These are handled by
 `executeCommand()`.
 
-### 9.8.6 Nested Transactions
+### 9.7.6 Nested Transactions
 
 Binder supports re-entrant calls. If process A calls process B, and B calls
 back into A during the handling of A's request, the driver delivers the
@@ -3233,7 +2751,7 @@ sequenceDiagram
     Note over A_T1: Original call returns
 ```
 
-### 9.8.7 Binder Context Object (Handle 0)
+### 9.7.7 Binder Context Object (Handle 0)
 
 Handle 0 is special -- it always refers to the context manager
 (`servicemanager`). When a process first needs to talk to servicemanager, it
@@ -3268,7 +2786,7 @@ if (handle == 0) {
 }
 ```
 
-### 9.8.8 Stability Enforcement
+### 9.7.8 Stability Enforcement
 
 The `Stability` class ensures that binder objects are not used across
 incompatible domains:
@@ -3289,7 +2807,7 @@ A `VINTF`-stable binder can be used across the framework/vendor boundary. A
 `SYSTEM`-stable binder can only be used within the system partition. This
 prevents accidental use of unstable interfaces across partitions.
 
-### 9.8.9 Parcel Internals
+### 9.7.9 Parcel Internals
 
 The `Parcel` class manages a flat byte buffer with an "objects" array that
 tracks embedded binder references and file descriptors:
@@ -3314,7 +2832,7 @@ When the kernel driver copies a Parcel, it processes the objects array to:
 - Duplicate file descriptors into the target process
 - Maintain reference counts on binder nodes
 
-### 9.8.10 The ProcessState Constructor
+### 9.7.10 The ProcessState Constructor
 
 The full initialization of `ProcessState` opens the driver and mmaps:
 
@@ -3349,7 +2867,7 @@ ProcessState::ProcessState(const char* driver)
 
 The buffer is mapped `PROT_READ` only -- only the kernel can write to it.
 
-### 9.8.11 Binder Caching
+### 9.7.11 Binder Caching
 
 Recent versions of AOSP include a `BinderCacheWithInvalidation` that caches
 service lookups to avoid repeated roundtrips to servicemanager:
@@ -3390,7 +2908,7 @@ The cache automatically invalidates entries when the target service dies
 (using `linkToDeath`). This is a significant performance optimization since
 `getService()` calls are extremely frequent.
 
-### 9.8.12 The defaultServiceManager() Singleton
+### 9.7.12 The defaultServiceManager() Singleton
 
 The `defaultServiceManager()` function returns a cached reference to the
 service manager:
@@ -3423,7 +2941,7 @@ This blocks until the service manager is available, with a 1-second retry loop.
 This is why it is safe to call `defaultServiceManager()` very early in boot --
 it will wait for servicemanager to start.
 
-### 9.8.13 Flat Binder Objects
+### 9.7.13 Flat Binder Objects
 
 When a binder reference is serialized into a Parcel, it is written as a
 `flat_binder_object`:
@@ -3450,7 +2968,7 @@ This translation is transparent to userspace -- Parcel's `writeStrongBinder()`
 and `readStrongBinder()` methods handle the serialization, and the kernel
 handles the handle-to-pointer translation.
 
-### 9.8.14 The Parcel Objects Array
+### 9.7.14 The Parcel Objects Array
 
 A Parcel's "objects array" tracks the byte offsets of all embedded
 `flat_binder_object` structures within the data buffer. When the kernel driver
@@ -3469,7 +2987,7 @@ tr.offsets_size = data.ipcObjectsCount() * sizeof(binder_size_t);
 tr.data.ptr.offsets = data.ipcObjects();
 ```
 
-### 9.8.15 Transaction Flags
+### 9.7.15 Transaction Flags
 
 Several flags control transaction behavior:
 
@@ -3493,9 +3011,9 @@ buffer after the transaction completes.
 
 ---
 
-## 9.9 Advanced Topics
+## 9.8 Advanced Topics
 
-### 9.9.1 Binder Observers
+### 9.8.1 Binder Observers
 
 The `BinderObserver` infrastructure (enabled via `BINDER_WITH_OBSERVERS`)
 provides telemetry for binder transactions:
@@ -3516,7 +3034,7 @@ When enabled, each `IPCThreadState` has a stats queue:
 #endif
 ```
 
-### 9.9.2 Call Restrictions
+### 9.8.2 Call Restrictions
 
 `ProcessState` supports call restrictions to catch incorrect usage:
 
@@ -3533,7 +3051,7 @@ enum class CallRestriction {
 blocking binder calls (to avoid deadlocks -- since all processes need
 servicemanager, a blocking call from servicemanager could deadlock the system).
 
-### 9.9.3 Background Scheduling
+### 9.8.3 Background Scheduling
 
 When a binder call arrives, the kernel may move the receiving thread to the
 background scheduling group to prevent priority inversion. This can be disabled:
@@ -3549,7 +3067,7 @@ void IPCThreadState::disableBackgroundScheduling(bool disable)
 `servicemanager` disables background scheduling because it should always run
 at high priority.
 
-### 9.9.4 Scheduler Policy Inheritance
+### 9.8.4 Scheduler Policy Inheritance
 
 BBinder supports inheriting the caller's scheduler policy:
 
@@ -3564,7 +3082,7 @@ When `inheritRt` is true and the caller is a real-time thread, the receiving
 thread temporarily inherits the real-time scheduling policy for the duration
 of the transaction. This is critical for audio and display pipelines.
 
-### 9.9.5 Extensions
+### 9.8.5 Extensions
 
 The extension mechanism allows attaching additional interfaces to a binder
 object without modifying its original interface:
@@ -3592,7 +3110,7 @@ sp<IBar> bar = interface_cast<IBar>(barBinder);
 This is the recommended way for downstream vendors to extend AOSP interfaces
 without modifying them.
 
-### 9.9.6 Binder Recording
+### 9.8.6 Binder Recording
 
 BBinder supports recording all transactions to a file descriptor for debugging
 and replay:
@@ -3607,7 +3125,7 @@ This is gated to root-only access and must be explicitly enabled at build time
 with `BINDER_ENABLE_RECORDING`. The recorded transactions can be replayed using
 the `RecordedTransaction` class for testing and debugging.
 
-### 9.9.7 Binder Interface Stability Levels
+### 9.8.7 Binder Interface Stability Levels
 
 The stability system prevents accidental cross-boundary usage of unstable
 interfaces:
@@ -3630,7 +3148,7 @@ undeclared interface (the default) can only be used within its compilation unit.
 This is enforced at runtime by the `Stability` class, which stamps each binder
 object with its stability level when it is created.
 
-### 9.9.8 Binder Thread Pool Configuration Patterns
+### 9.8.8 Binder Thread Pool Configuration Patterns
 
 Different services use different thread pool configurations:
 
@@ -3656,7 +3174,7 @@ Where:
 
 ---
 
-## 9.10 RPC Binder
+## 9.9 RPC Binder
 
 Traditional Binder relies on the `/dev/binder` kernel driver, which requires
 both communicating processes to share the same Linux kernel. RPC Binder
@@ -3665,7 +3183,7 @@ transport**, enabling Binder communication across kernel boundaries — between
 virtual machines, over network connections, or into trusted execution
 environments.
 
-### 9.10.1 Why RPC Binder?
+### 9.9.1 Why RPC Binder?
 
 The kernel binder driver has a fundamental constraint: both client and server
 must run on the same kernel with access to the same `/dev/binder` device. This
@@ -3679,7 +3197,7 @@ breaks down in several scenarios:
 | Remote debugging | Developer machine ≠ device kernel | TCP/inet transport |
 | CompOS | Compilation in isolated VM | vsock to host services |
 
-### 9.10.2 Architecture
+### 9.9.2 Architecture
 
 RPC Binder mirrors the kernel binder's BBinder/BpBinder model but replaces the
 driver with a userspace wire protocol over sockets:
@@ -3720,7 +3238,7 @@ A service implemented with `BnFoo` (extending `BBinder`) can be exposed via
 `BpBinder` proxy through `RpcSession` and call it exactly as they would a
 kernel binder proxy.
 
-### 9.10.3 Core Classes
+### 9.9.3 Core Classes
 
 #### RpcServer
 
@@ -3773,7 +3291,7 @@ service->doSomething();  // RPC call over socket
 transactions into `RpcWireTransaction` structs, managing binder reference
 counts across the socket, and handling async (oneway) transaction ordering.
 
-### 9.10.4 Wire Protocol
+### 9.9.4 Wire Protocol
 
 The RPC wire protocol is defined in `RpcWireFormat.h` and consists of
 length-prefixed messages:
@@ -3848,7 +3366,7 @@ Version negotiation happens during the connection handshake — client sends its
 maximum supported version, server responds with the highest version it supports
 that is ≤ the client's maximum.
 
-### 9.10.5 Transport Layers
+### 9.9.5 Transport Layers
 
 #### Unix Domain Sockets
 
@@ -3917,7 +3435,7 @@ The Trusty transport enables Android services to call into secure-world
 services (like Keymaster or Gatekeeper) using the same AIDL interface
 definitions they use for regular binder calls.
 
-### 9.10.6 Security: TLS and Authentication
+### 9.9.6 Security: TLS and Authentication
 
 RPC Binder supports TLS encryption for transports that cross trust boundaries:
 
@@ -3948,7 +3466,7 @@ sp<RpcServer> RpcServer::make(
 }
 ```
 
-### 9.10.7 File Descriptor Transport
+### 9.9.7 File Descriptor Transport
 
 RPC Binder can pass file descriptors across process boundaries using socket
 ancillary data (SCM_RIGHTS), similar to kernel binder's flat_binder_object:
@@ -3965,7 +3483,7 @@ enum class FileDescriptorTransportMode : uint8_t {
 This is essential for sharing memory-mapped buffers, hardware device handles,
 or other kernel resources across RPC boundaries.
 
-### 9.10.8 Threading Model
+### 9.9.8 Threading Model
 
 RPC Binder manages two pools of connections per session:
 
@@ -3991,7 +3509,7 @@ For embedded environments (Trusty), a **single-threaded mode** is available
 via the `BINDER_RPC_SINGLE_THREADED` compile flag, which replaces mutexes
 and threads with no-op implementations.
 
-### 9.10.9 Rust and NDK Bindings
+### 9.9.9 Rust and NDK Bindings
 
 #### Rust API
 
@@ -4029,7 +3547,7 @@ void ARpcSession_setFileDescriptorTransportMode(
         ARpcSession* session, ARpcSession_FileDescriptorTransportMode mode);
 ```
 
-### 9.10.10 Use Cases in AOSP
+### 9.9.10 Use Cases in AOSP
 
 #### Microdroid and Protected VMs
 
@@ -4115,7 +3633,7 @@ transparently sets up an RPC Binder connection to the host:
 // RPC connections to host services transparently
 ```
 
-### 9.10.11 Kernel Binder vs. RPC Binder
+### 9.9.11 Kernel Binder vs. RPC Binder
 
 | Aspect | Kernel Binder | RPC Binder |
 |---|---|---|
@@ -4132,9 +3650,9 @@ transparently sets up an RPC Binder connection to the host:
 
 ---
 
-## 9.11 Debugging and Diagnostics
+## 9.10 Debugging and Diagnostics
 
-### 9.11.1 debugfs Interface
+### 9.10.1 debugfs Interface
 
 The binder driver exposes debug information via debugfs:
 
@@ -4161,7 +3679,7 @@ adb shell cat /sys/kernel/debug/binder/state
 adb shell cat /sys/kernel/debug/binder/proc/<pid>/state
 ```
 
-### 9.11.2 Perfetto Tracing
+### 9.10.2 Perfetto Tracing
 
 `servicemanager` integrates with Perfetto for tracing:
 
@@ -4174,7 +3692,7 @@ adb shell cat /sys/kernel/debug/binder/proc/<pid>/state
 
 Every `addService`, `getService`, and `checkService` call is traced.
 
-### 9.11.3 service command
+### 9.10.3 service command
 
 The `service` shell command directly interacts with services:
 
@@ -4190,7 +3708,7 @@ adb shell service call SurfaceFlinger 1
 # 1 = FIRST_CALL_TRANSACTION (first method in ISurfaceComposer)
 ```
 
-### 9.11.4 Common Error Codes
+### 9.10.4 Common Error Codes
 
 | Error | Meaning |
 |-------|---------|
@@ -4201,7 +3719,7 @@ adb shell service call SurfaceFlinger 1
 | `UNKNOWN_TRANSACTION` | The server does not recognize the transaction code |
 | `FDS_NOT_ALLOWED` | File descriptors not allowed in this transaction |
 
-### 9.11.5 Diagnosing Binder Buffer Exhaustion
+### 9.10.5 Diagnosing Binder Buffer Exhaustion
 
 When a process's binder buffer fills up, you see errors like:
 
@@ -4227,7 +3745,7 @@ Common causes:
 3. **Large transactions:** Sending bitmaps or large data through Binder instead
    of using shared memory
 
-### 9.11.6 Tracing Binder Transactions with atrace
+### 9.10.6 Tracing Binder Transactions with atrace
 
 ```bash
 # Enable binder tracing
@@ -4239,7 +3757,7 @@ adb shell atrace --async_stop > trace.txt
 # View in Perfetto UI
 ```
 
-### 9.11.7 Monitoring Binder Proxy Counts
+### 9.10.7 Monitoring Binder Proxy Counts
 
 ```bash
 # Check per-UID proxy counts
@@ -4252,7 +3770,7 @@ adb shell cat /proc/<pid>/fd | wc -l  # rough approximation
 The proxy throttle watermarks (2000 low / 2250 warning / 2500 high) are
 configurable via system properties on debug builds.
 
-### 9.11.8 Using binder_exception_to_string
+### 9.10.8 Using binder_exception_to_string
 
 When debugging AIDL binder exceptions, the status code can be decoded:
 
@@ -4271,6 +3789,488 @@ When debugging AIDL binder exceptions, the status code can be decoded:
 
 These are the AIDL `binder::Status` exception codes, distinct from the kernel-
 level `status_t` return codes.
+
+---
+
+## 9.11 Try It: Write a Binder Service
+
+This section walks through creating a complete Binder service and client. We
+will create a simple "echo" service that demonstrates the full lifecycle.
+
+### 9.11.1 Step 1: Define the AIDL Interface
+
+Create the AIDL file:
+
+```aidl
+// hardware/interfaces/example/echo/aidl/android/hardware/echo/IEchoService.aidl
+package android.hardware.echo;
+
+interface IEchoService {
+    /** Echo back the input string */
+    String echo(in String input);
+
+    /** Return the number of echo calls made */
+    int getCallCount();
+
+    /** Fire-and-forget notification */
+    oneway void ping();
+}
+```
+
+### 9.11.2 Step 2: Build Configuration
+
+Create the `Android.bp` for the AIDL interface:
+
+```
+// hardware/interfaces/example/echo/aidl/Android.bp
+aidl_interface {
+    name: "android.hardware.echo",
+    vendor_available: true,
+    srcs: ["android/hardware/echo/*.aidl"],
+    stability: "vintf",
+    backend: {
+        cpp: {
+            enabled: true,
+        },
+        java: {
+            enabled: true,
+        },
+        rust: {
+            enabled: true,
+        },
+    },
+}
+```
+
+### 9.11.3 Step 3: Implement the Service (C++)
+
+```cpp
+// hardware/interfaces/example/echo/aidl/default/EchoService.h
+#pragma once
+
+#include <aidl/android/hardware/echo/BnEchoService.h>
+#include <atomic>
+
+namespace aidl::android::hardware::echo {
+
+class EchoService : public BnEchoService {
+public:
+    // Synchronous: echo back the input
+    ndk::ScopedAStatus echo(const std::string& input,
+                            std::string* _aidl_return) override {
+        mCallCount++;
+        *_aidl_return = "Echo: " + input;
+        return ndk::ScopedAStatus::ok();
+    }
+
+    // Synchronous: return call count
+    ndk::ScopedAStatus getCallCount(int32_t* _aidl_return) override {
+        *_aidl_return = mCallCount.load();
+        return ndk::ScopedAStatus::ok();
+    }
+
+    // Oneway: no reply needed
+    ndk::ScopedAStatus ping() override {
+        ALOGI("Ping received! Call count: %d", mCallCount.load());
+        return ndk::ScopedAStatus::ok();
+    }
+
+private:
+    std::atomic<int32_t> mCallCount{0};
+};
+
+}  // namespace aidl::android::hardware::echo
+```
+
+### 9.11.4 Step 4: Service Main Entry Point
+
+```cpp
+// hardware/interfaces/example/echo/aidl/default/main.cpp
+#include "EchoService.h"
+
+#include <android-base/logging.h>
+#include <android/binder_manager.h>
+#include <android/binder_process.h>
+
+using aidl::android::hardware::echo::EchoService;
+
+int main() {
+    // Initialize the binder thread pool
+    ABinderProcess_setThreadPoolMaxThreadCount(0);
+
+    // Create the service
+    std::shared_ptr<EchoService> echo =
+        ndk::SharedRefBase::make<EchoService>();
+
+    // Register with servicemanager
+    const std::string instance =
+        std::string() + EchoService::descriptor + "/default";
+    binder_status_t status = AServiceManager_addService(
+        echo->asBinder().get(), instance.c_str());
+    CHECK_EQ(status, STATUS_OK)
+        << "Failed to register " << instance;
+
+    LOG(INFO) << "EchoService registered as " << instance;
+
+    // Join the thread pool (blocks forever)
+    ABinderProcess_startThreadPool();
+    ABinderProcess_joinThreadPool();
+
+    // Should not reach here
+    LOG(FATAL) << "EchoService exited unexpectedly";
+    return EXIT_FAILURE;
+}
+```
+
+### 9.11.5 Step 5: Build Configuration for the Service
+
+```
+// hardware/interfaces/example/echo/aidl/default/Android.bp
+cc_binary {
+    name: "android.hardware.echo-service",
+    relative_install_path: "hw",
+    vendor: true,
+    srcs: ["main.cpp"],
+    shared_libs: [
+        "libbase",
+        "libbinder_ndk",
+        "android.hardware.echo-V1-ndk",
+    ],
+}
+```
+
+### 9.11.6 Step 6: Init Configuration
+
+```rc
+// hardware/interfaces/example/echo/aidl/default/echo-service.rc
+service vendor.echo /vendor/bin/hw/android.hardware.echo-service
+    class hal
+    user system
+    group system
+```
+
+### 9.11.7 Step 7: VINTF Manifest Entry
+
+Add to the device manifest:
+
+```xml
+<hal format="aidl">
+    <name>android.hardware.echo</name>
+    <version>1</version>
+    <fqname>IEchoService/default</fqname>
+</hal>
+```
+
+### 9.11.8 Step 8: Write the Client
+
+```cpp
+// A simple client that calls the echo service
+#include <aidl/android/hardware/echo/IEchoService.h>
+#include <android/binder_manager.h>
+#include <android-base/logging.h>
+
+using aidl::android::hardware::echo::IEchoService;
+
+int main() {
+    // Get the service
+    const std::string instance =
+        std::string() + IEchoService::descriptor + "/default";
+    std::shared_ptr<IEchoService> service =
+        IEchoService::fromBinder(
+            ndk::SpAIBinder(AServiceManager_waitForService(
+                instance.c_str())));
+    CHECK(service != nullptr) << "Failed to get " << instance;
+
+    // Make an echo call
+    std::string result;
+    auto status = service->echo("Hello, Binder!", &result);
+    CHECK(status.isOk()) << "echo failed: "
+                         << status.getDescription();
+    LOG(INFO) << "Echo result: " << result;
+
+    // Get call count
+    int32_t count;
+    status = service->getCallCount(&count);
+    CHECK(status.isOk());
+    LOG(INFO) << "Call count: " << count;
+
+    // Send a oneway ping (returns immediately)
+    status = service->ping();
+    CHECK(status.isOk());
+    LOG(INFO) << "Ping sent (oneway)";
+
+    return 0;
+}
+```
+
+### 9.11.9 Step 9: Implement in Rust
+
+The same service in Rust:
+
+```rust
+// Rust service implementation
+use binder::BinderFeatures;
+use android_hardware_echo::aidl::android::hardware::echo::IEchoService::{
+    BnEchoService, IEchoService,
+};
+use std::sync::atomic::{AtomicI32, Ordering};
+
+struct EchoService {
+    call_count: AtomicI32,
+}
+
+impl binder::Interface for EchoService {}
+
+impl IEchoService for EchoService {
+    fn echo(&self, input: &str) -> binder::Result<String> {
+        self.call_count.fetch_add(1, Ordering::Relaxed);
+        Ok(format!("Echo: {}", input))
+    }
+
+    fn getCallCount(&self) -> binder::Result<i32> {
+        Ok(self.call_count.load(Ordering::Relaxed))
+    }
+
+    fn ping(&self) -> binder::Result<()> {
+        log::info!("Ping received! Count: {}",
+                   self.call_count.load(Ordering::Relaxed));
+        Ok(())
+    }
+}
+
+fn main() {
+    binder::ProcessState::start_thread_pool();
+
+    let service = EchoService {
+        call_count: AtomicI32::new(0),
+    };
+    let service_binder = BnEchoService::new_binder(
+        service,
+        BinderFeatures::default(),
+    );
+
+    binder::add_service(
+        &format!("{}/default", <BnEchoService as IEchoService>::get_descriptor()),
+        service_binder.as_binder(),
+    ).expect("Failed to register service");
+
+    binder::ProcessState::join_thread_pool();
+}
+```
+
+### 9.11.10 Step 10: Implement the Client in Java
+
+```java
+// Java client for the echo service
+import android.hardware.echo.IEchoService;
+import android.os.IBinder;
+import android.os.ServiceManager;
+import android.util.Log;
+
+public class EchoClient {
+    private static final String TAG = "EchoClient";
+    private static final String SERVICE_NAME =
+        "android.hardware.echo.IEchoService/default";
+
+    public static void main(String[] args) {
+        // Get the service from service manager
+        IBinder binder = ServiceManager.waitForService(SERVICE_NAME);
+        if (binder == null) {
+            Log.e(TAG, "Failed to get echo service");
+            return;
+        }
+
+        // Convert to typed interface
+        IEchoService service = IEchoService.Stub.asInterface(binder);
+        if (service == null) {
+            Log.e(TAG, "Failed to cast to IEchoService");
+            return;
+        }
+
+        try {
+            // Make a synchronous echo call
+            String result = service.echo("Hello from Java!");
+            Log.i(TAG, "Echo result: " + result);
+
+            // Get the call count
+            int count = service.getCallCount();
+            Log.i(TAG, "Call count: " + count);
+
+            // Send a oneway ping
+            service.ping();
+            Log.i(TAG, "Ping sent");
+
+        } catch (android.os.RemoteException e) {
+            Log.e(TAG, "Remote exception: " + e.getMessage());
+        }
+    }
+}
+```
+
+Under the hood, `IEchoService.Stub.asInterface(binder)` checks if the binder
+is a local object (same process) or a remote proxy:
+
+- If local, it returns the actual `IEchoService` implementation directly
+  (zero-copy, no IPC)
+- If remote, it wraps it in `IEchoService.Stub.Proxy` that marshalls calls
+  through binder
+
+This is the `queryLocalInterface()` optimization that avoids unnecessary
+serialization for in-process calls.
+
+### 9.11.11 Step 11: Handle Death Notifications
+
+```cpp
+// C++ example: Register for death notifications
+class MyDeathRecipient : public android::IBinder::DeathRecipient {
+public:
+    void binderDied(const android::wp<android::IBinder>& who) override {
+        ALOGE("Echo service died! Attempting to reconnect...");
+        // Reconnect logic here
+    }
+};
+
+// In client code:
+sp<MyDeathRecipient> deathRecipient = sp<MyDeathRecipient>::make();
+status_t status = binder->linkToDeath(deathRecipient);
+if (status != OK) {
+    ALOGE("Failed to link to death: %d", status);
+}
+```
+
+Death notifications are essential for robust client implementations. When the
+server process crashes, the client receives the notification and can attempt to
+reconnect or clean up resources.
+
+### 9.11.12 Step 12: Debugging Your Service
+
+**List all registered services:**
+
+```bash
+adb shell service list
+# or
+adb shell dumpsys -l
+```
+
+**Check if your service is registered:**
+
+```bash
+adb shell service check android.hardware.echo.IEchoService/default
+```
+
+**Call a service method from the command line:**
+
+```bash
+adb shell service call android.hardware.echo.IEchoService/default \
+    1 s16 "Hello"
+# 1 = FIRST_CALL_TRANSACTION (echo method)
+# s16 = String16 argument
+```
+
+**Dump service state:**
+
+```bash
+adb shell dumpsys android.hardware.echo.IEchoService/default
+```
+
+**View binder debug info:**
+
+```bash
+adb shell cat /sys/kernel/debug/binder/stats
+adb shell cat /sys/kernel/debug/binder/transactions
+adb shell cat /sys/kernel/debug/binder/state
+```
+
+**View binder calls with systrace/perfetto:**
+
+```bash
+adb shell perfetto -o /data/misc/perfetto-traces/trace \
+    -c - <<EOF
+buffers: {
+    size_kb: 63488
+}
+data_sources: {
+    config {
+        name: "linux.ftrace"
+        ftrace_config {
+            ftrace_events: "binder/*"
+        }
+    }
+}
+duration_ms: 5000
+EOF
+```
+
+### 9.11.13 Common Pitfalls
+
+1. **Binder thread pool not started.** If you forget
+   `ABinderProcess_startThreadPool()`, your service will register but never
+   respond to transactions.
+
+2. **Blocking in oneway methods.** Oneway methods should return quickly.
+   Long-running work should be posted to a separate worker thread.
+
+3. **Binder buffer overflow.** The 1 MB mmap buffer is shared among all
+   pending incoming transactions. Sending large data (e.g., big bitmaps)
+   through Binder is an anti-pattern -- use `ashmem` or `ParcelFileDescriptor`
+   instead.
+
+4. **Binder proxy leak.** Accumulating too many `BpBinder` references without
+   releasing them triggers the proxy throttle (watermark at 2500). This
+   typically manifests as `JavaBinder: !!! FAILED BINDER TRANSACTION !!!`.
+
+5. **Missing VINTF declaration.** HAL services that do not have a VINTF
+   manifest entry will fail to register with an `EX_ILLEGAL_ARGUMENT`.
+
+6. **Wrong binder domain.** Vendor processes default to `/dev/vndbinder`. If
+   you accidentally register on the wrong domain, clients in other domains
+   cannot find your service.
+
+7. **Fork after binder use.** `ProcessState` installs fork handlers that
+   invalidate the binder FD in the child. Using Binder after `fork()` will
+   crash:
+   ```cpp
+   static void verifyNotForked(bool forked) {
+       LOG_ALWAYS_FATAL_IF(forked,
+           "libbinder ProcessState can not be used after fork");
+   }
+   ```
+
+### 9.11.14 Architecture of a Complete Binder Service
+
+```mermaid
+graph TD
+    subgraph "Service Process"
+        direction TB
+        M["main()"] --> PS["ProcessState::initWithDriver()"]
+        PS --> TB["Open /dev/binder<br/>mmap 1MB buffer"]
+        M --> SVC["Create EchoService<br/>(extends BnEchoService)"]
+        SVC --> REG["addService('echo', binder)"]
+        REG --> SM_CALL["Transact to handle 0<br/>(servicemanager)"]
+        M --> TP["startThreadPool()"]
+        TP --> JT["joinThreadPool()"]
+        JT --> LOOP["Loop: getAndExecuteCommand()"]
+        LOOP --> TW["talkWithDriver()<br/>ioctl(BINDER_WRITE_READ)"]
+        TW --> EX["executeCommand(BR_TRANSACTION)"]
+        EX --> OT["BnEchoService::onTransact()"]
+        OT --> EC["EchoService::echo()"]
+        EC --> REP["sendReply()"]
+        REP --> LOOP
+    end
+
+    subgraph "Client Process"
+        direction TB
+        CM["main()"] --> DSM["defaultServiceManager()"]
+        DSM --> WS["waitForService('echo')"]
+        WS --> IC["interface_cast<IEchoService>()"]
+        IC --> BP["BpEchoService::echo()"]
+        BP --> TR["remote()->transact()"]
+        TR --> IPT["IPCThreadState::transact()"]
+        IPT --> WTD["writeTransactionData()<br/>BC_TRANSACTION"]
+        WTD --> WFR["waitForResponse()"]
+        WFR --> RES["Read BR_REPLY<br/>Return result"]
+    end
+```
 
 ---
 
