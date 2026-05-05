@@ -1,11 +1,5 @@
 # Chapter 45: Accessibility
 
-> *"The power of the Web is in its universality. Access by everyone regardless
-> of disability is an essential aspect."*
-> -- Tim Berners-Lee
-
----
-
 ## 45.1 Accessibility Architecture
 
 Android's accessibility framework is one of the platform's most sophisticated
