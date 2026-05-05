@@ -1,7 +1,5 @@
 # Chapter 47: SystemUI
 
-## Overview
-
 SystemUI is the Android process responsible for nearly everything visible on screen
 outside of the currently focused application.  It draws the status bar, the
 notification shade, Quick Settings, the lock screen, the navigation bar, the
@@ -9,11 +7,6 @@ volume dialog, the power menu, the screenshot experience, and the recent-apps
 overlay.  It lives in a single APK that runs as a persistent system service
 under the UID `android.uid.systemui` and cannot be killed without the framework
 automatically restarting it through `RescueParty`.
-
-```
-Source root:
-  frameworks/base/packages/SystemUI/
-```
 
 SystemUI is one of the largest single packages in AOSP.  Its source directory
 contains over 187 sub-packages under
