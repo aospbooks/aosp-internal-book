@@ -94,7 +94,7 @@ run()
 
 Several critical early steps deserve attention.
 
-**Binder thread pool configuration** (line 932):
+**Binder thread pool configuration:**
 
 ```java
 // frameworks/base/services/java/com/android/server/SystemServer.java, line 493
@@ -108,7 +108,7 @@ The system_server raises its Binder thread pool to 31 threads, well above the
 default of 15 for regular apps. This is necessary because `system_server`
 simultaneously serves hundreds of client processes.
 
-**Main looper preparation** (line 934-939):
+**Main looper preparation:**
 
 ```java
 // frameworks/base/services/java/com/android/server/SystemServer.java, line 934
@@ -123,7 +123,7 @@ The main thread gets foreground priority, and its looper is configured to log
 warnings for messages taking longer than 100ms to dispatch or 200ms to
 deliver. These thresholds help identify performance problems.
 
-**System context creation** (line 1160-1168):
+**System context creation:**
 
 ```java
 // frameworks/base/services/java/com/android/server/SystemServer.java, line 1160
@@ -142,7 +142,7 @@ Even though `system_server` is not a typical Android app, it needs an
 `ActivityThread` and a `Context` for accessing resources, databases,
 content providers, and the rest of the framework APIs.
 
-**SystemServiceManager creation** (line 978-983):
+**SystemServiceManager creation:**
 
 ```java
 // frameworks/base/services/java/com/android/server/SystemServer.java, line 978
@@ -327,7 +327,7 @@ public abstract void onStart();
 All other callbacks have empty default implementations, allowing services to
 override only what they need.
 
-**Important note from the source** (line 65-66):
+**Important note from the source:**
 
 > NOTE: All lifecycle methods are called from the system server's main
 > looper thread.
@@ -2408,7 +2408,7 @@ system's state, which can require significant memory.
 
 Several optimizations ensure Binder IPC performance:
 
-**Background scheduling disabled** (line 929):
+**Background scheduling disabled:**
 
 ```java
 // line 929
@@ -2418,7 +2418,7 @@ BinderInternal.disableBackgroundScheduling(true);
 This ensures all incoming Binder calls to `system_server` run at
 foreground priority, preventing starvation.
 
-**Blocking call warnings** (line 880):
+**Blocking call warnings:**
 
 ```java
 // line 880
@@ -2429,7 +2429,7 @@ Within `system_server`, blocking (synchronous) Binder calls to other
 processes are discouraged because they can cause deadlocks. This setting
 logs warnings when they occur.
 
-**Transaction callback** (line 1062-1067):
+**Transaction callback:**
 
 ```java
 // line 1062
