@@ -30,7 +30,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | III | 11 | NDK | REVIEWED |
 | IV | 12 | Native Services | REVIEWED |
 | IV | 13 | Graphics & Render Pipeline (OpenGL ES/Vulkan/Skia/HWUI) | REVIEWED |
-| IV | 14 | Animation System | UNDER REVIEW |
+| IV | 14 | Animation System | REVIEWED |
 | IV | 15 | Audio System (Spatial) | UNDER REVIEW |
 | IV | 16 | Media & Camera | UNDER REVIEW |
 | IV | 17 | Sensors | UNDER REVIEW |
