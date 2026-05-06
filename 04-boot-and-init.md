@@ -529,7 +529,7 @@ First-stage init's implementation is in `system/core/init/first_stage_init.cpp`.
 `FirstStageMain()` function (starting at line 333) is one of the most critical
 pieces of code in all of Android -- if it fails, the device will not boot.
 
-#### Phase 1: Emergency Infrastructure (lines 333-422)
+#### Phase 1: Emergency Infrastructure
 
 The very first thing init does is set up crash handlers, then build the minimal
 filesystem infrastructure needed to communicate with the outside world:
@@ -613,7 +613,7 @@ if (!errors.empty()) {
 LOG(INFO) << "init first stage started!";
 ```
 
-#### Phase 2: Kernel Module Loading (lines 441-458)
+#### Phase 2: Kernel Module Loading
 
 Modern Android devices have modular kernels where many drivers are loaded as kernel
 modules rather than being compiled into the kernel. First-stage init must load these
@@ -675,7 +675,7 @@ std::string GetModuleLoadList(BootMode boot_mode, const std::string& dir_path) {
 }
 ```
 
-#### Phase 3: Mounting Partitions (lines 462-540)
+#### Phase 3: Mounting Partitions
 
 With kernel modules loaded (including storage drivers), first-stage init can now
 mount the essential partitions:
@@ -703,7 +703,7 @@ This is where dm-verity is configured. The `FirstStageMount` class (in
 nodes for verity-protected partitions, and mounts `/system`, `/vendor`, and other
 required partitions.
 
-#### Phase 4: Handoff to SELinux Setup (lines 557-582)
+#### Phase 4: Handoff to SELinux Setup
 
 After partitions are mounted, first-stage init prepares for the SELinux transition
 and `exec()`s itself as the "selinux_setup" phase:
@@ -843,7 +843,7 @@ Second-stage init is where the real orchestration begins. The `SecondStageMain()
 function in `system/core/init/init.cpp` (starting at line 1048) is the heart of
 Android's userspace startup.
 
-#### Initial Setup (lines 1048-1166)
+#### Initial Setup
 
 ```cpp
 // system/core/init/init.cpp, lines 1048-1063
@@ -909,7 +909,7 @@ ServiceList& sm = ServiceList::GetInstance();
 LoadBootScripts(am, sm);
 ```
 
-#### Loading Boot Scripts (lines 339-363)
+#### Loading Boot Scripts
 
 The `LoadBootScripts()` function is where init.rc files are parsed:
 
@@ -966,7 +966,7 @@ Parser CreateParser(ActionManager& action_manager, ServiceList& service_list) {
 }
 ```
 
-#### Action Queue and Trigger Sequence (lines 1205-1243)
+#### Action Queue and Trigger Sequence
 
 After all scripts are loaded, init queues the trigger sequence that drives the
 entire boot:
@@ -1004,7 +1004,7 @@ am.QueueBuiltinAction(queue_property_triggers_action, "queue_property_triggers")
 This establishes the trigger ordering: `early-init` -> `init` -> `late-init`, which
 is the backbone of the init.rc trigger chain.
 
-#### The Main Event Loop (lines 1246-1296)
+#### The Main Event Loop
 
 Init then enters its infinite event loop:
 
