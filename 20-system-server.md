@@ -1,7 +1,5 @@
 # Chapter 20: system_server
 
-## Overview
-
 The `system_server` process is the beating heart of the Android framework. Born
 from Zygote during early boot, it hosts over one hundred Java system services
 that collectively manage every aspect of the device: activities, windows,
@@ -14,22 +12,6 @@ This chapter traces `system_server` from its creation by Zygote through its
 multi-phase boot sequence, catalogs the services it hosts, explains its
 threading model, examines the Watchdog that guards against deadlocks, and
 provides hands-on exercises for inspecting a live system.
-
-**Key source files for this chapter:**
-
-| File | Description |
-|------|-------------|
-| `frameworks/base/services/java/com/android/server/SystemServer.java` | Entry point and service startup orchestration |
-| `frameworks/base/services/core/java/com/android/server/SystemService.java` | Base class for all system services |
-| `frameworks/base/services/core/java/com/android/server/SystemServiceManager.java` | Manages service lifecycle and boot phases |
-| `frameworks/base/services/core/java/com/android/server/Watchdog.java` | Deadlock detection and recovery |
-| `frameworks/base/core/java/com/android/server/ServiceThread.java` | Base class for named handler threads |
-| `frameworks/base/services/core/java/com/android/server/DisplayThread.java` | Display-priority shared thread |
-| `frameworks/base/services/core/java/com/android/server/AnimationThread.java` | Animation-priority shared thread |
-| `frameworks/base/core/java/com/android/server/FgThread.java` | Foreground shared thread |
-| `frameworks/base/services/core/java/com/android/server/IoThread.java` | I/O shared thread |
-| `frameworks/base/services/core/java/com/android/server/UiThread.java` | UI shared thread |
-| `frameworks/base/core/java/com/android/internal/os/BackgroundThread.java` | Background shared thread |
 
 ---
 
