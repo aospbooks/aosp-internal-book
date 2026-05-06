@@ -4869,19 +4869,6 @@ with their locations and sizes:
 | SpatializerHelper.java | `frameworks/base/services/core/java/com/android/server/audio/SpatializerHelper.java` | 1,802 |
 | IModule.aidl | `hardware/interfaces/audio/aidl/android/hardware/audio/core/IModule.aidl` | ~600 |
 
-### Component Counts
-
-| Component | Files | Total Lines (approx.) |
-|-----------|-------|-----------------------|
-| AudioFlinger (services/audioflinger) | ~40 | 26,369 |
-| Audio Policy (services/audiopolicy) | ~60 | 15,000+ |
-| AAudio library (media/libaaudio) | 171 | 12,000+ |
-| Oboe service (services/oboeservice) | 39 | 5,000+ |
-| Audio effects (media/libeffects) | 245 | 40,305 |
-| Head tracking (media/libheadtracking) | 35 | 3,000+ |
-| Audio client (media/libaudioclient) | ~30 | 9,000+ |
-| Audio HAL AIDL (hardware/interfaces/audio/aidl) | 272 | 15,000+ |
-
 ### Key Concepts Glossary
 
 | Term | Definition |
