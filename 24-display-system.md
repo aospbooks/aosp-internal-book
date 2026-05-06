@@ -65,7 +65,7 @@ graph TB
     end
 
     subgraph "system_server"
-        DMS["DisplayManagerService<br/>(6601 lines)"]
+        DMS["DisplayManagerService"]
         WMS["WindowManagerService"]
         DPC["DisplayPowerController"]
         CDS["ColorDisplayService"]
