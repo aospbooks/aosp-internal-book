@@ -59,11 +59,6 @@ art/libnativebridge/
     nb-diagram.png                 # Integration diagram
 ```
 
-**Source file**: `art/libnativebridge/include/nativebridge/native_bridge.h`
-(472 lines)
-
-**Source file**: `art/libnativebridge/native_bridge.cc` (649 lines)
-
 ### 19.1.3  The NativeBridgeCallbacks Structure
 
 The central contract between ART and a bridge implementation is the
