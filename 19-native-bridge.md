@@ -1933,17 +1933,22 @@ graph TB
 
 ### 19.6.7  The Translation Ecosystem
 
-All three bridge implementations — Berberis, Houdini/IBT, and the emulator's
-NDK translation — share the same NativeBridge interface and the same runtime
-integration points. This unified architecture means:
+All four bridge implementations — Berberis, Houdini/IBT, the emulator's NDK
+translation, and the DigitalisX64 community build — share the same
+NativeBridge interface and the same runtime integration points. This unified
+architecture means:
 
 1. **App developers don't need to care** which bridge is in use — their ARM
-   APK runs identically on all three platforms
+   APK runs identically across all of them
 2. **The framework handles fallback transparently** — PackageManager selects
    the best ABI from the device's list, using the bridge only when necessary
 3. **Testing on the emulator validates real-device behavior** — the same
-   translation path is exercised whether running on an x86 emulator or an
-   Intel Chromebook with Houdini
+   translation path is exercised whether running on an x86 emulator, an
+   Intel Chromebook with Houdini, or a DigitalisX64-built emulator image
+4. **A single engine powers multiple distributions** — Berberis is the
+   upstream translator inside AOSP, and DigitalisX64 reuses it as a
+   community-maintained ARM64 → x86_64 emulator distribution (see section
+   19.5)
 
 ---
 
