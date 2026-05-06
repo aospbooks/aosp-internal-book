@@ -4388,38 +4388,6 @@ When a track starts or stops, battery attribution is updated:
 This allows the system to accurately report how much battery each
 application is consuming through audio playback.
 
-### 15.10.12 Performance Benchmarks
-
-Typical latency values for different paths:
-
-```mermaid
-gantt
-    title Audio Latency by Path
-    dateFormat X
-    axisFormat %s ms
-
-    section MMAP Exclusive
-    HAL buffer        :0, 2
-    Total             :0, 2
-
-    section Fast Track
-    Client buffer     :0, 5
-    FastMixer cycle   :5, 10
-    HAL buffer        :10, 15
-    Total             :0, 15
-
-    section Normal Mixer
-    Client buffer     :0, 10
-    Mixer cycle 20ms  :10, 30
-    HAL buffer        :30, 40
-    Total             :0, 40
-
-    section Offload
-    Client buffer     :0, 20
-    HAL decode+buffer :20, 100
-    Total             :0, 100
-```
-
 ---
 
 ## 15.11 Try It
