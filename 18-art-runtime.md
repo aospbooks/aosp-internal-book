@@ -12,9 +12,6 @@ This chapter traces the entire lifecycle of managed code on Android -- from the
 DEX file format, through ahead-of-time and just-in-time compilation, into
 memory management and native interop -- all grounded in the AOSP source.
 
-Source tree root: `art/` (37 subdirectories, approximately 1.5 million lines of
-C++ and assembly).
-
 ---
 
 ## 18.1 ART Architecture
