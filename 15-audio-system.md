@@ -256,49 +256,7 @@ AudioFlinger creates different thread types depending on the output:
 Each thread is associated with a HAL output or input stream and runs as a
 high-priority real-time thread.
 
-### 15.1.8 Latency Budget
-
-Understanding the audio latency budget is critical for performance optimization.
-Each stage in the pipeline contributes latency:
-
-```mermaid
-graph LR
-    subgraph "Application Latency"
-        A1["App processing<br/>variable"]
-        A2["Client buffer write<br/>~0-20ms"]
-    end
-
-    subgraph "Framework Latency"
-        F1["Shared memory transfer<br/>~0ms (zero-copy)"]
-        F2["Mixer thread cycle<br/>~20ms (normal)<br/>~5ms (fast track)"]
-        F3["Effects processing<br/>0-5ms"]
-    end
-
-    subgraph "HAL Latency"
-        H1["HAL buffer<br/>~5-20ms"]
-        H2["Hardware pipeline<br/>~1-5ms"]
-    end
-
-    A1 --> A2
-    A2 --> F1
-    F1 --> F2
-    F2 --> F3
-    F3 --> H1
-    H1 --> H2
-```
-
-Total round-trip latency for different scenarios:
-
-| Scenario | Typical Latency | Key Bottleneck |
-|----------|----------------|----------------|
-| MMAP exclusive (AAudio) | 1-5ms | HAL buffer size |
-| Fast track (AudioTrack) | 10-20ms | FastMixer cycle |
-| Normal mixer (AudioTrack) | 30-50ms | Mixer thread 20ms cycle |
-| Offload (compressed) | 50-200ms | Hardware decode buffer |
-| Bluetooth A2DP | 100-300ms | BT codec + transport |
-| Bluetooth LE Audio | 30-80ms | LC3 codec |
-
-### 15.1.9 Audio Format Support
+### 15.1.8 Audio Format Support
 
 Android supports a wide range of audio formats:
 
