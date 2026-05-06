@@ -34,16 +34,16 @@ graph TD
     end
 
     subgraph "Native Services Layer"
-        B1["MediaPlayerService<br/>(3111 lines)"]
-        B2["MediaCodec<br/>(7917 lines)"]
-        B3["StagefrightRecorder<br/>(2733 lines)"]
-        B4["CameraService<br/>(6975 lines)"]
+        B1["MediaPlayerService"]
+        B2["MediaCodec"]
+        B3["StagefrightRecorder"]
+        B4["CameraService"]
     end
 
     subgraph "Codec Abstraction Layer"
-        C1["ACodec / OMX<br/>(9459 lines)"]
-        C2["CCodec / Codec2<br/>(3827 lines)"]
-        C3["NuPlayer<br/>(3259 lines)"]
+        C1["ACodec / OMX"]
+        C2["CCodec / Codec2"]
+        C3["NuPlayer"]
     end
 
     subgraph "HAL Layer"
