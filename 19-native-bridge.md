@@ -12,19 +12,6 @@ Houdini translator, and looks ahead to RISC-V.
 
 ---
 
-## Chapter map
-
-| Section | Topic |
-|---------|-------|
-| 19.1 | NativeBridge Interface -- the ART-side contract |
-| 19.2 | Berberis -- Google's open-source binary translator |
-| 19.3 | native_bridge_support Libraries |
-| 19.4 | Houdini -- Intel's closed-source translator |
-| 19.5 | RISC-V and the Future |
-| 19.6 | Try It -- hands-on exercises |
-
----
-
 ## 19.1  NativeBridge Interface
 
 ### 19.1.1  Why a Native Bridge Exists
