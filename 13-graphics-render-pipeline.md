@@ -2083,34 +2083,6 @@ bool SkiaVulkanPipeline::swapBuffers(...) {
 BufferQueue, composites all visible layers (using RenderEngine for GPU composition
 or HWC for hardware overlay composition), and presents the result to the display.
 
-### 13.8.6 Timing Budget
-
-For a 60 FPS display (16.67ms frame budget):
-
-```mermaid
-gantt
-    title Frame Timing Budget (16.67ms @ 60 FPS)
-    dateFormat X
-    axisFormat %L
-
-    section UI Thread
-    VSYNC arrival           :v1, 0, 0
-    Input handling          :a1, 0, 2
-    Animation callbacks     :a2, 2, 4
-    Measure + Layout        :a3, 4, 6
-    Draw (Record)           :a4, 6, 9
-    Sync wait               :a5, 9, 10
-
-    section RenderThread
-    Sync frame state        :b1, 9, 10
-    GPU draw commands       :b2, 10, 14
-    Swap buffers            :b3, 14, 15
-
-    section SurfaceFlinger
-    Composite               :c1, 15, 16
-    Present to HWC          :c2, 16, 17
-```
-
 ---
 
 ## 13.9 SurfaceFlinger RenderEngine
