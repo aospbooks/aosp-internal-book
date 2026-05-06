@@ -2678,7 +2678,6 @@ All metrics keys are prefixed with `android.media.mediacodec.`:
 | Error | `errcode` | int32 | Error code |
 | Error | `errstate` | string | Error state |
 | Lifecycle | `lifetimeMs` | int64 | Total lifetime (ms) |
----
 
 ### 16.2.16 Format Shaping
 
