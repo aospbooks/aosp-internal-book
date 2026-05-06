@@ -590,7 +590,7 @@ different technology:
 graph TB
     subgraph "Layer 1: Blueprint"
         BP[build/blueprint/]
-        BPC["context.go<br/>5,781 lines"]
+        BPC["context.go"]
         BPP[parser/]
         BPG[proptools/]
         BP --> BPC
