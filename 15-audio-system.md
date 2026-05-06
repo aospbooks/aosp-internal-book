@@ -81,26 +81,26 @@ graph TB
 
     subgraph "audioserver Process"
         subgraph "AudioFlinger"
-            AF["AudioFlinger.cpp<br/>5126 lines"]
-            MT["MixerThread<br/>Threads.cpp 11818 lines"]
-            FM["FastMixer<br/>FastMixer.cpp 541 lines"]
+            AF["AudioFlinger.cpp"]
+            MT["MixerThread<br/>Threads.cpp"]
+            FM["FastMixer<br/>FastMixer.cpp"]
             DT[DirectThread]
             OT[OffloadThread]
             RT[RecordThread]
             MMAP[MmapThread]
-            EFX["Effects.cpp<br/>3896 lines"]
-            PP["PatchPanel.cpp<br/>1012 lines"]
+            EFX["Effects.cpp"]
+            PP["PatchPanel.cpp"]
         end
 
         subgraph "AudioPolicyService"
-            APS["AudioPolicyService.cpp<br/>2790 lines"]
+            APS["AudioPolicyService.cpp"]
             APM[AudioPolicyManager]
             ENG["Engine<br/>default / configurable"]
-            SPAT["Spatializer.cpp<br/>1314 lines"]
+            SPAT["Spatializer.cpp"]
         end
 
         subgraph "AAudioService"
-            AAS["AAudioService.cpp<br/>472 lines"]
+            AAS["AAudioService.cpp"]
             EPM[AAudioEndpointManager]
             EPMMAP[AAudioServiceEndpointMMAP]
             EPSHARED[AAudioServiceEndpointShared]
@@ -3068,18 +3068,18 @@ multiple components:
 ```mermaid
 graph TB
     subgraph "Java Framework"
-        SJ["Spatializer.java<br/>1121 lines"]
-        SH["SpatializerHelper.java<br/>1802 lines"]
+        SJ["Spatializer.java"]
+        SH["SpatializerHelper.java"]
         AS[AudioService]
     end
 
     subgraph "Native - AudioPolicyService"
-        SP["Spatializer.cpp<br/>1314 lines"]
+        SP["Spatializer.cpp"]
     end
 
     subgraph "Native - libheadtracking"
-        HTP["HeadTrackingProcessor<br/>262 lines"]
-        SPP["SensorPoseProvider<br/>446 lines"]
+        HTP["HeadTrackingProcessor"]
+        SPP["SensorPoseProvider"]
         PB[PoseBias]
         SD[StillnessDetector]
         SHF[ScreenHeadFusion]
