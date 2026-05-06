@@ -32,16 +32,6 @@ AOSP.  From top to bottom the layers are:
    that talks to actual sensor hardware.  Modern devices use the AIDL
    interface; older devices used HIDL 1.0 / 2.0 / 2.1.
 
-```
-Source paths:
-  Framework Java .... frameworks/base/core/java/android/hardware/SensorManager.java
-                      frameworks/base/core/java/android/hardware/SystemSensorManager.java
-  System Service .... frameworks/native/services/sensorservice/SensorService.cpp
-                      frameworks/native/services/sensorservice/SensorService.h
-  Sensor HAL AIDL ... hardware/interfaces/sensors/aidl/android/hardware/sensors/ISensors.aidl
-  Default HAL ....... hardware/interfaces/sensors/aidl/default/Sensors.cpp
-```
-
 ### 17.1.2 End-to-End Data Path
 
 ```mermaid
