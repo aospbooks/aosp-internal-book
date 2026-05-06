@@ -3461,7 +3461,7 @@ The build system plumbing flows through several layers:
 
 ```mermaid
 flowchart LR
-    ENV["USE_HOST_MUSL=true"] --> MK["soong_config.mk<br/>line 92"]
+    ENV["USE_HOST_MUSL=true"] --> MK["soong_config.mk"]
     MK --> SOONG["Soong HostMusl<br/>variable.go:263"]
     SOONG --> TC["Toolchain selection<br/>linuxMuslX8664"]
     TC --> FLAGS["Compiler flags<br/>-DANDROID_HOST_MUSL<br/>-nostdlibinc"]
