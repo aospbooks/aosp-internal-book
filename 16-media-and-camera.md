@@ -542,7 +542,7 @@ void BufferCallback::onOutputBufferAvailable(
 }
 ```
 
-### 16.2.7 ACodec: The OMX Bridge (9459 lines)
+### 16.2.7 ACodec: The OMX Bridge
 
 `ACodec` in `frameworks/av/media/libstagefright/ACodec.cpp` is the legacy bridge between
 MediaCodec and OpenMAX IL (OMX) components. At 9459 lines, it is one of the largest
@@ -666,7 +666,7 @@ static OMX_VIDEO_CONTROLRATETYPE getVideoBitrateMode(const sp<AMessage> &msg) {
 }
 ```
 
-### 16.2.8 MPEG4Writer: The Container Muxer (6039 lines)
+### 16.2.8 MPEG4Writer: The Container Muxer
 
 `MPEG4Writer` in `frameworks/av/media/libstagefright/MPEG4Writer.cpp` implements the
 ISO 14496 (MP4/3GP) container format writer. It handles the complex task of interleaving
@@ -820,7 +820,7 @@ The key design improvements over OMX include:
    rather than the global OMX node registry, enabling better isolation and
    vendor extensibility.
 
-### 16.3.2 CCodec: The Codec2-to-Stagefright Bridge (3827 lines)
+### 16.3.2 CCodec: The Codec2-to-Stagefright Bridge
 
 `CCodec` in `frameworks/av/media/codec2/sfplugin/CCodec.cpp` implements the
 `CodecBase` interface, making Codec2 components usable by `MediaCodec`. It
@@ -873,7 +873,7 @@ CCodec instances and calls `initiateReleaseIfStuck()` on any that appear hung. T
 is essential for robustness: if a vendor codec HAL freezes, the watchdog ensures the
 system eventually recovers rather than leaving the MediaCodec in a permanently stuck state.
 
-### 16.3.3 CCodecBufferChannel (3075 lines)
+### 16.3.3 CCodecBufferChannel
 
 `CCodecBufferChannel` in `frameworks/av/media/codec2/sfplugin/CCodecBufferChannel.cpp`
 manages the buffer pipeline between MediaCodec and Codec2 components. It handles:
@@ -1190,7 +1190,7 @@ buffer-matching logic required by OMX.
 
 ## 16.4 MediaPlayer and MediaRecorder
 
-### 16.4.1 MediaPlayerService (3111 lines)
+### 16.4.1 MediaPlayerService
 
 `MediaPlayerService` in `frameworks/av/media/libmediaplayerservice/MediaPlayerService.cpp`
 is the system service that manages all media playback sessions. It runs in the
@@ -1400,7 +1400,7 @@ audio and video playback. It implements:
   adjusting video frame timing.
 - **Pause/resume**: Handles pause and resume with correct timestamp handling.
 
-### 16.4.5 StagefrightRecorder (2733 lines)
+### 16.4.5 StagefrightRecorder
 
 `StagefrightRecorder` in `frameworks/av/media/libmediaplayerservice/StagefrightRecorder.cpp`
 implements the `MediaRecorderBase` interface for recording audio and video. It orchestrates
@@ -1571,7 +1571,7 @@ sequenceDiagram
 
 ## 16.5 Camera Service
 
-### 16.5.1 CameraService Architecture (6975 lines)
+### 16.5.1 CameraService Architecture
 
 `CameraService` in `frameworks/av/services/camera/libcameraservice/CameraService.cpp`
 is the central authority for all camera operations in Android. At 6975 lines, it
@@ -1846,7 +1846,7 @@ The NDK camera APIs include:
 
 ## 16.6 Media Extractors
 
-### 16.6.1 NuMediaExtractor (896 lines)
+### 16.6.1 NuMediaExtractor
 
 `NuMediaExtractor` in `frameworks/av/media/libstagefright/NuMediaExtractor.cpp` provides
 the native interface for media container demuxing. It wraps the `MediaExtractor`
@@ -1935,7 +1935,7 @@ status_t NuMediaExtractor::setMediaCas(const HInterfaceToken &casToken) {
     }
 ```
 
-### 16.6.2 MediaExtractorFactory (395 lines)
+### 16.6.2 MediaExtractorFactory
 
 `MediaExtractorFactory` in `frameworks/av/media/libstagefright/MediaExtractorFactory.cpp`
 implements the extractor plugin system. Extractors are loaded as shared libraries from
@@ -2070,7 +2070,7 @@ graph LR
 
 ## 16.7 Video Capabilities
 
-### 16.7.1 VideoCapabilities (1875 lines)
+### 16.7.1 VideoCapabilities
 
 `VideoCapabilities` in `frameworks/av/media/libmedia/VideoCapabilities.cpp` provides
 the infrastructure for querying what a codec can do: supported resolutions, frame rates,
@@ -2161,7 +2161,7 @@ std::optional<Range<double>> VideoCapabilities::getSupportedFrameRatesFor(
     }
 ```
 
-### 16.7.2 MediaProfiles (1512 lines)
+### 16.7.2 MediaProfiles
 
 `MediaProfiles` in `frameworks/av/media/libmedia/MediaProfiles.cpp` parses device-specific
 media capability profiles from XML configuration files. These profiles define:
