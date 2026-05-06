@@ -187,7 +187,7 @@ static final int APP_SWITCH_ALLOW = 2;
 graph TB
     subgraph "system_server Process"
         subgraph "ActivityManagerService (am package)"
-            AMS["AMS<br/>IActivityManager.Stub<br/>~19,921 lines"]
+            AMS["AMS<br/>IActivityManager.Stub"]
             ProcList["ProcessList"]
             ProcRecord["ProcessRecord"]
             OomAdj["OomAdjuster"]
@@ -201,7 +201,7 @@ graph TB
         end
 
         subgraph "ActivityTaskManagerService (wm package)"
-            ATMS["ATMS<br/>IActivityTaskManager.Stub<br/>~8,130 lines"]
+            ATMS["ATMS<br/>IActivityTaskManager.Stub"]
             Supervisor["ActivityTaskSupervisor"]
             StartController["ActivityStartController"]
             Starter["ActivityStarter"]
@@ -215,7 +215,7 @@ graph TB
         end
 
         subgraph "WindowManagerService (wm package)"
-            WMS["WMS<br/>IWindowManager.Stub<br/>~10,983 lines"]
+            WMS["WMS<br/>IWindowManager.Stub"]
             SurfacePlacer["WindowSurfacePlacer"]
             TransCtrl["TransitionController"]
             WMS --> SurfacePlacer
@@ -408,16 +408,16 @@ sequenceDiagram
 
     App->>Inst: startActivity(intent)
     Inst->>ATMS: startActivity() [Binder IPC]
-    Note over ATMS: line 1235-1241:<br/>startActivity() delegates to<br/>startActivityAsUser()
+    Note over ATMS: startActivity() delegates to<br/>startActivityAsUser()
     ATMS->>ATMS: startActivityAsUser()<br/>validate caller, resolve user
     ATMS->>ASC: getActivityStartController()<br/>.obtainStarter()
     ASC->>AS: obtain() from pool
     Note over AS: Configure via builder:<br/>setCaller, setIntent,<br/>setResultTo, etc.
-    AS->>AS: execute() [line 785]
+    AS->>AS: execute()
     Note over AS: Acquire mGlobalLock
-    AS->>AS: executeRequest() [line 1028]
+    AS->>AS: executeRequest()
     Note over AS: Validate caller<br/>Check permissions<br/>Resolve activity info<br/>Check interceptors
-    AS->>AS: startActivityInner() [line 1934]
+    AS->>AS: startActivityInner()
     Note over AS: computeLaunchingTaskFlags()<br/>computeTargetTask()<br/>computeLaunchParams()
     AS->>AS: isAllowedToStart()
     alt New Task
@@ -981,7 +981,7 @@ public int addWindow(Session session, IWindow client, LayoutParams attrs,
 
 ```mermaid
 flowchart TD
-    Entry["addWindow() called<br/>line 1626"] --> PermCheck["mPolicy.checkAddPermission()<br/>Check window type permission"]
+    Entry["addWindow() called"] --> PermCheck["mPolicy.checkAddPermission()<br/>Check window type permission"]
     PermCheck --> AcquireLock["synchronized(mGlobalLock)"]
     AcquireLock --> DisplayReady{"Display ready?"}
     DisplayReady -->|No| ErrDisplay["Throw IllegalStateException"]
@@ -995,20 +995,20 @@ flowchart TD
     ParentExists -->|No| ErrBadToken["Return ADD_BAD_SUBWINDOW_TOKEN"]
     ParentExists -->|Yes| Continue1
 
-    Continue1 --> GetDisplay["Get DisplayContent<br/>line 1675"]
+    Continue1 --> GetDisplay["Get DisplayContent"]
     GetDisplay --> DupCheck{"Window already<br/>in mWindowMap?"}
     DupCheck -->|Yes| ErrDup["Return ADD_DUPLICATE_ADD"]
-    DupCheck -->|No| GetToken["Get/Create WindowToken<br/>line 1733"]
+    DupCheck -->|No| GetToken["Get/Create WindowToken"]
 
     GetToken --> ValidateToken{"Valid token for<br/>window type?"}
     ValidateToken -->|No| ErrBadApp["Return ADD_BAD_APP_TOKEN<br/>or ADD_NOT_APP_TOKEN"]
-    ValidateToken -->|Yes| CreateWS["Create WindowState<br/>line 1846"]
+    ValidateToken -->|Yes| CreateWS["Create WindowState"]
 
     CreateWS --> AdjustParams["displayPolicy.adjustWindowParamsLw()"]
     AdjustParams --> Validate["displayPolicy.validateAddingWindowLw()"]
-    Validate --> InputChannel["Open InputChannel<br/>if needed, line 1864"]
-    InputChannel --> RegisterWin["Register in mWindowMap<br/>line 1929"]
-    RegisterWin --> AddToToken["token.addWindow(win)<br/>line 1985"]
+    Validate --> InputChannel["Open InputChannel<br/>if needed"]
+    InputChannel --> RegisterWin["Register in mWindowMap"]
+    RegisterWin --> AddToToken["token.addWindow(win)"]
     AddToToken --> PolicyAdd["displayPolicy.addWindowLw()"]
     PolicyAdd --> UpdateInput["Update input windows"]
     UpdateInput --> FocusUpdate["Update focus if needed"]
@@ -1872,12 +1872,12 @@ sequenceDiagram
 
     ATMS->>AMS: startProcessAsync(processName, info, ...)
     AMS->>PL: startProcessLocked(app, hostingRecord, ...)
-    Note over PL: line 1873:<br/>Prepare process parameters<br/>GIDs, runtime flags,<br/>SE Linux info
+    Note over PL: Prepare process parameters<br/>GIDs, runtime flags,<br/>SE Linux info
 
-    PL->>PL: startProcessLocked()<br/>(second overload, line 2165)
+    PL->>PL: startProcessLocked()<br/>(second overload)
     Note over PL: Choose Zygote type:<br/>- Regular Zygote<br/>- WebView Zygote<br/>- App Zygote
 
-    PL->>PL: startProcess() [line 2453]
+    PL->>PL: startProcess()
     Note over PL: Trace.traceBegin("Start proc")
 
     alt Regular Zygote
