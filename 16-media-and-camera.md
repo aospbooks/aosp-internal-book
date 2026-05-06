@@ -8,16 +8,6 @@ vendor-supplied codec and camera hardware. Across the roughly 50,000 lines of C+
 make up the core pipeline, every frame of video you watch, every audio sample you hear,
 and every photo you capture passes through the machinery described in this chapter.
 
-The source files we will study live primarily in:
-
-| Directory | Purpose |
-|---|---|
-| `frameworks/av/media/libstagefright/` | MediaCodec, ACodec, MPEG4Writer, extractors |
-| `frameworks/av/media/codec2/` | Codec2 framework (components, HAL, sfplugin) |
-| `frameworks/av/media/libmediaplayerservice/` | MediaPlayerService, StagefrightRecorder, NuPlayer |
-| `frameworks/av/services/camera/libcameraservice/` | CameraService, device3/ HAL3 device |
-| `frameworks/av/media/libmedia/` | VideoCapabilities, MediaProfiles |
-
 ---
 
 ## 16.1 Media Architecture Overview
