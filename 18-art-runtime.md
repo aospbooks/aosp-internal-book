@@ -388,12 +388,12 @@ ART uses a two-tier locking scheme:
    directly in the object's lock word (the first word of every object).
    Thin lock acquisition is a single CAS (compare-and-swap) operation:
 
-   ```
-   Lock Word layout (32 bits):
-   [31:30] State (00=unlocked, 01=thin, 10=fat, 11=hash)
-   [29:16] Lock count (recursion depth for thin locks)
-   [15:0]  Thread ID (for thin locks)
-   ```
+      ```
+      Lock Word layout (32 bits):
+      [31:30] State (00=unlocked, 01=thin, 10=fat, 11=hash)
+      [29:16] Lock count (recursion depth for thin locks)
+      [15:0]  Thread ID (for thin locks)
+      ```
 
 2. **Fat lock** -- When contention is detected (another thread tries to
    acquire a thin lock held by a different thread), the thin lock is
