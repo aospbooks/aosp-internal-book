@@ -1922,14 +1922,14 @@ graph TB
     R_BRIDGE --> R_ENGINE
 ```
 
-| Aspect | Emulator Bridge | Houdini / IBT | Berberis |
-|---|---|---|---|
-| **Host** | x86_64 (QEMU) | x86 / x86_64 (bare metal) | x86_64 (bare metal) |
-| **Guest** | ARM / ARM64 | ARM / ARM64 | RISC-V 64 |
-| **Source** | AOSP build system | Intel proprietary | AOSP open source |
-| **Config file** | `BoardConfig.mk` | System property | `berberis_config.mk` |
-| **Library path** | `system/lib/arm/` | `system/lib/arm/` | `system/lib/riscv64/` |
-| **Primary use** | Developer testing | Production devices | Future RISC-V devices |
+| Aspect | Emulator Bridge | Houdini / IBT | Berberis | DigitalisX64 |
+|---|---|---|---|---|
+| **Host** | x86_64 (QEMU) | x86 / x86_64 (bare metal) | x86_64 (bare metal) | x86_64 (QEMU) |
+| **Guest** | ARM / ARM64 | ARM / ARM64 | RISC-V 64 | ARM64 |
+| **Source** | AOSP build system | Intel proprietary | AOSP open source | Berberis-based fork (open) |
+| **Config file** | `BoardConfig.mk` | System property | `berberis_config.mk` | `BoardConfig.mk` (forked) + manifest |
+| **Library path** | `system/lib/arm/` | `system/lib/arm/` | `system/lib/riscv64/` | `system/lib64/arm64/` |
+| **Primary use** | Developer testing | Production devices | Future RISC-V devices | Open ARM64 to x86_64 emulator builds |
 
 ### 19.6.7  The Translation Ecosystem
 
