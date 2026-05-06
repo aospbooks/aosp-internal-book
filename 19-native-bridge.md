@@ -1693,7 +1693,80 @@ device's ABI list as fallback targets.
 
 ---
 
-## 19.5  Android Emulator Native Bridge
+## 19.5  DigitalisX64: Berberis-based ARM64 to x86_64 Translator
+
+DigitalisX64 is an open-source ARM64-to-x86_64 binary translator that builds
+on the Berberis engine described in section 19.2. Where Berberis is the
+upstream reference implementation inside AOSP, DigitalisX64 packages it as a
+buildable distribution targeted at the x86_64 emulator (Goldfish) so that
+ARM64-only Android applications can run on x86_64 host environments. Its
+stated description is:
+
+> The arm64-to-x86_64 binary translation based on Berberis framework.
+
+### 19.5.1  Source Layout
+
+DigitalisX64 is split across a small set of repositories that are assembled
+by a top-level `repo` manifest:
+
+| Repository | Purpose |
+|---|---|
+| `manifest` | `repo` manifest mapping AOSP and DigitalisX64 forks |
+| `digitalis` | Entry point with build/usage documentation |
+| `platform_frameworks_libs_binary_translation` | Berberis fork at `frameworks/libs/binary_translation/` |
+| `device_generic_goldfish` | Emulator device target wired to use DigitalisX64 as the native bridge |
+| `sample_hello_digitalis` | Minimal sample exercising guest ARM64 code on the x86_64 host |
+| `digitalisx64.github.io` | Project website |
+
+### 19.5.2  Building and Running
+
+The project pins to the `android-latest-release` AOSP branch. A typical
+build flow is:
+
+```bash
+repo init -b android-latest-release \
+    -u git@github.com:DigitalisX64/manifest.git
+repo sync
+
+source build/envsetup.sh
+lunch sdk_phone64_x86_64_digitalis-trunk_staging-userdebug
+m
+
+emulator
+```
+
+The lunch target produces a Goldfish x86_64 system image with the Berberis
+runtime preinstalled and `ro.dalvik.vm.native.bridge` configured so that
+ARM64-only APKs installed inside the emulator route through the translator
+via the standard NativeBridge dispatch path described in section 19.1.
+
+### 19.5.3  Relationship to Berberis and Houdini
+
+DigitalisX64 occupies a different point in the design space from Houdini
+(section 19.4):
+
+| Aspect | Houdini / IBT | DigitalisX64 |
+|---|---|---|
+| Source | Closed (Intel) | Open (Berberis-based) |
+| Distribution | Preinstalled on licensed devices | Reproducible from public manifest |
+| Maintainer | Intel | Community |
+| Primary target | Hardware devices and ChromeOS | x86_64 emulator |
+| Translation engine | Proprietary | Berberis (see section 19.2) |
+
+Because the underlying engine is Berberis, the architecture review in
+section 19.2 -- the decoder, interpreter, guest state, trampolines, and
+dual-namespace loader -- applies unchanged. DigitalisX64 contributes the
+manifest, the device tree, and the build wiring rather than a new translator
+core.
+
+Project links:
+
+- Source: <https://github.com/DigitalisX64>
+- Website: <https://digitalisx64.github.io>
+
+---
+
+## 19.6  Android Emulator Native Bridge
 
 The Android Emulator (Goldfish/Ranchu) uses a distinct native bridge
 configuration to support ARM apps on x86_64 emulator images. This is
@@ -1701,7 +1774,7 @@ separate from both Houdini (device-side) and Berberis (RISC-V) — it enables
 developers to test ARM-only apps in the x86_64 emulator without requiring
 a full ARM system image.
 
-### 19.5.1  Board Configuration
+### 19.6.1  Board Configuration
 
 The emulator defines ARM as a native bridge architecture in its BoardConfig:
 
@@ -1729,7 +1802,7 @@ TARGET_NATIVE_BRIDGE_2ND_ABI := armeabi-v7a armeabi
 This produces a device that natively runs x86/x86_64 code and can translate
 ARM/ARM64 code through the native bridge.
 
-### 19.5.2  ABI List Construction
+### 19.6.2  ABI List Construction
 
 The build system constructs the device's ABI list by placing native ABIs
 first, then appending native bridge ABIs as fallbacks:
@@ -1746,7 +1819,7 @@ when available and only falls back to ARM through the bridge when an APK
 contains no x86 code. This is why most apps run at full native speed on the
 emulator — only apps with ARM-only native libraries go through translation.
 
-### 19.5.3  NDK Translation Package
+### 19.6.3  NDK Translation Package
 
 The `ndk_translation_package` Soong module bundles ARM libraries for x86
 devices:
@@ -1779,7 +1852,7 @@ into the system image at paths like:
 These directories mirror the standard library layout but contain
 ARM-architecture binaries that the native bridge translates at runtime.
 
-### 19.5.4  Soong Architecture Variants
+### 19.6.4  Soong Architecture Variants
 
 Soong's build system creates special "native bridge" variants for each
 module when building for an x86 target with ARM bridge support:
@@ -1804,7 +1877,7 @@ compiled twice:
 | `native_bridge_arm64` | ARM64 | `/system/lib64/arm64/` | Bridge translation |
 | `native_bridge_arm` | ARM | `/system/lib/arm/` | Bridge translation |
 
-### 19.5.5  Graphics and Vulkan Bridge Support
+### 19.6.5  Graphics and Vulkan Bridge Support
 
 The native bridge integrates with the graphics stack to support ARM apps
 that use OpenGL ES or Vulkan:
@@ -1822,7 +1895,7 @@ must translate the calling convention and redirect to the host GPU driver.
 This is handled through the same trampoline mechanism used for JNI calls
 (see section 19.2.10).
 
-### 19.5.6  Emulator vs. Device Bridge Comparison
+### 19.6.6  Emulator vs. Device Bridge Comparison
 
 ```mermaid
 graph TB
@@ -1858,7 +1931,7 @@ graph TB
 | **Library path** | `system/lib/arm/` | `system/lib/arm/` | `system/lib/riscv64/` |
 | **Primary use** | Developer testing | Production devices | Future RISC-V devices |
 
-### 19.5.7  The Translation Ecosystem
+### 19.6.7  The Translation Ecosystem
 
 All three bridge implementations — Berberis, Houdini/IBT, and the emulator's
 NDK translation — share the same NativeBridge interface and the same runtime
@@ -1874,9 +1947,9 @@ integration points. This unified architecture means:
 
 ---
 
-## 19.6  RISC-V and the Future
+## 19.7  RISC-V and the Future
 
-### 19.6.1  RISC-V in AOSP
+### 19.7.1  RISC-V in AOSP
 
 RISC-V is a strategic focus for AOSP's binary translation story.  While
 ARM-to-x86 translation (Houdini) was the historical use case, Google's current
@@ -1924,7 +1997,7 @@ as a successor to QEMU for running RISC-V Android**.  Once Berberis's vector
 translation is mature enough, the `-mno-implicit-float` workaround for QEMU's
 limitations can be removed.
 
-### 19.6.2  The Toolchain
+### 19.7.2  The Toolchain
 
 The RISC-V toolchain is registered in the Soong build system:
 
@@ -1943,7 +2016,7 @@ func init() {
 page size is set to 4096 bytes (`-Wl,-z,max-page-size=4096`), matching the
 typical configuration for mobile devices.
 
-### 19.6.3  Product Configuration
+### 19.7.3  Product Configuration
 
 The RISC-V bridge is activated through product configuration.  From
 `enable_riscv64_to_x86_64.mk`:
@@ -1970,7 +2043,7 @@ controls which translation modules are built.  The `BUILD_BERBERIS` and
 `BUILD_BERBERIS_RISCV64_TO_X86_64` flags are used by the legacy Make build
 system.
 
-### 19.6.4  Distribution Artifacts
+### 19.7.4  Distribution Artifacts
 
 The complete set of files installed on device for RISC-V bridge support
 (`berberis_config.mk`, lines 57-130):
@@ -2008,7 +2081,7 @@ system/lib64/riscv64/libvulkan.so
 ... (30+ guest libraries)
 ```
 
-### 19.6.5  binfmt_misc Integration
+### 19.7.5  binfmt_misc Integration
 
 The binfmt_misc registration files allow the Linux kernel to automatically
 invoke Berberis when a RISC-V ELF binary is executed:
@@ -2022,7 +2095,7 @@ The init script `berberis.rc` registers these with the kernel's binfmt_misc
 filesystem during boot, enabling transparent execution of RISC-V binaries
 from the shell.
 
-### 19.6.6  Why RISC-V Translation Matters
+### 19.7.6  Why RISC-V Translation Matters
 
 The RISC-V focus represents a strategic investment:
 
@@ -2040,7 +2113,7 @@ The RISC-V focus represents a strategic investment:
    ecosystem by providing a development platform before hardware is widely
    available.
 
-### 19.6.7  Multi-Target Architecture
+### 19.7.7  Multi-Target Architecture
 
 Berberis's architecture supports multiple guest-to-host translation pairs.
 The code already contains references to ARM64 support:
@@ -2078,7 +2151,7 @@ graph TD
     style ARM64H fill:#fff3e0
 ```
 
-### 19.6.8  Extension Support Roadmap
+### 19.7.8  Extension Support Roadmap
 
 The RISC-V ISA is modular -- new extensions can be added without changing the
 base instruction set.  The current Berberis decoder already handles:
@@ -2097,7 +2170,7 @@ in the decoder template.
 
 ---
 
-## 19.7  Try It
+## 19.8  Try It
 
 ### Exercise 19.1: Inspect the NativeBridge State
 
