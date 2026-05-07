@@ -19,28 +19,6 @@ establish the foundations.
 
 ---
 
-## Source Files Referenced in This Chapter
-
-Throughout this chapter we reference the following key source files (all paths
-relative to the AOSP root):
-
-| File | Lines | Role |
-|------|------:|------|
-| `frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java` | ~19,921 | Process management, broadcast, service lifecycle |
-| `frameworks/base/services/core/java/com/android/server/wm/ActivityTaskManagerService.java` | ~8,130 | Activity/task lifecycle, startActivity entry point |
-| `frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java` | ~10,983 | Window addition, layout, surface management |
-| `frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java` | ~3,788 | Intent resolution, task targeting, launch pipeline |
-| `frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java` | ~9,788 | Per-activity state: lifecycle, visibility, config |
-| `frameworks/base/services/core/java/com/android/server/wm/Task.java` | ~7,190 | Task (back stack) management |
-| `frameworks/base/services/core/java/com/android/server/wm/WindowState.java` | ~6,191 | Per-window state: frames, surfaces, input |
-| `frameworks/base/services/core/java/com/android/server/wm/WindowContainer.java` | ~3,803 | Base of the window hierarchy tree |
-| `frameworks/base/services/core/java/com/android/server/wm/RootWindowContainer.java` | ~3,972 | Root of the entire window hierarchy |
-| `frameworks/base/services/core/java/com/android/server/am/ProcessList.java` | ~6,027 | OOM adj values, process start via Zygote |
-| `frameworks/base/services/core/java/com/android/server/am/ProcessRecord.java` | ~1,783 | Per-process bookkeeping |
-| `frameworks/base/services/core/java/com/android/server/am/OomAdjuster.java` | varies | OOM adjustment computation |
-
----
-
 ## 22.1 AMS and ATMS Architecture
 
 ### 22.1.1 Historical Context: The Great Split
