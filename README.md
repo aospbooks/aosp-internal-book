@@ -37,7 +37,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | V | 18 | ART Runtime | REVIEWED |
 | V | 19 | Native Bridge (Berberis) | REVIEWED |
 | VI | 20 | system_server | REVIEWED |
-| VI | 21 | Intent System | UNDER REVIEW |
+| VI | 21 | Intent System | REVIEWED |
 | VI | 22 | Activity & Window Management | UNDER REVIEW |
 | VI | 23 | Window System | UNDER REVIEW |
 | VI | 24 | Display System | UNDER REVIEW |
