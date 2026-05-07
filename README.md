@@ -68,7 +68,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | XI | 49 | Settings | REVIEWED |
 | XII | 50 | AI & AppFunctions (Computer Control) | REVIEWED |
 | XII | 51 | Companion & Virtual Devices | REVIEWED |
-| XIII | 52 | Mainline Modules (APEX) | UNDER REVIEW |
+| XIII | 52 | Mainline Modules (APEX) | REVIEWED |
 | XIII | 53 | OTA Updates | REVIEWED |
 | XIII | 54 | Virtualization (pKVM/crosvm) | REVIEWED |
 | XIII | 55 | Testing (CTS/VTS/Ravenwood) | REVIEWED |
