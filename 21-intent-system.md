@@ -7,11 +7,6 @@ mechanism. This chapter dissects the full lifecycle of an Intent -- from constru
 through resolution to delivery -- by examining the real AOSP source code that implements
 it.
 
-We will trace through the core classes in `frameworks/base/core/java/android/content/`,
-the resolution machinery in `frameworks/base/services/core/java/com/android/server/pm/resolution/`,
-the broadcast infrastructure in `frameworks/base/services/core/java/com/android/server/am/`,
-and the domain verification system that governs App Links.
-
 ---
 
 ## 21.1 Intent Architecture
