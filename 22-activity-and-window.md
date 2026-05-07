@@ -3796,111 +3796,7 @@ automatic cleanup: removing an ActivityRecord removes all its windows.
 This section provides hands-on exercises for observing the activity and
 window management system in action.
 
-### 22.32.1 Exercise 1: Trace an Activity Launch with Perfetto
-
-**Objective**: Capture a system trace of an activity launch and identify the
-key framework events.
-
-**Step 1: Set up Perfetto tracing**
-
-```bash
-# On the device, start a trace capturing the relevant categories
-adb shell perfetto \
-  -c - --txt \
-  -o /data/misc/perfetto-traces/activity_launch.perfetto-trace \
-<<EOF
-buffers: {
-    size_kb: 63488
-    fill_policy: RING_BUFFER
-}
-data_sources: {
-    config {
-        name: "linux.ftrace"
-        ftrace_config {
-            ftrace_events: "sched/sched_switch"
-            ftrace_events: "sched/sched_wakeup"
-            ftrace_events: "power/suspend_resume"
-            atrace_categories: "am"
-            atrace_categories: "wm"
-            atrace_categories: "view"
-            atrace_categories: "gfx"
-            atrace_categories: "dalvik"
-            atrace_apps: "*"
-        }
-    }
-}
-duration_ms: 10000
-EOF
-```
-
-**Step 2: Launch an activity during the trace**
-
-```bash
-# In another terminal, launch an activity
-adb shell am start -W -n com.android.settings/.Settings
-```
-
-The `-W` flag makes the command wait until the launch completes, printing
-timing information:
-
-```
-Starting: Intent { cmp=com.android.settings/.Settings }
-Status: ok
-LaunchState: COLD
-Activity: com.android.settings/.Settings
-TotalTime: 412
-WaitTime: 415
-```
-
-**Step 3: Pull and analyze the trace**
-
-```bash
-adb pull /data/misc/perfetto-traces/activity_launch.perfetto-trace .
-# Open in https://ui.perfetto.dev/
-```
-
-**What to look for in the trace**:
-
-```mermaid
-gantt
-    title Activity Launch Timeline (approximate, milliseconds)
-    dateFormat X
-    axisFormat %s
-
-    section system_server
-    startActivity IPC         :s1, 0, 5
-    executeRequest            :s2, 5, 20
-    startActivityInner        :s3, 20, 35
-    resumeTopActivity         :s4, 35, 45
-    Pause previous activity   :s5, 45, 80
-
-    section Previous App
-    onPause                   :p1, 50, 75
-
-    section Zygote
-    Fork process              :z1, 80, 100
-
-    section New App
-    bindApplication           :a1, 100, 150
-    handleLaunchActivity      :a2, 150, 200
-    onCreate                  :a3, 155, 175
-    onStart + onResume        :a4, 175, 195
-    First draw                :a5, 200, 300
-    reportFullyDrawn          :a6, 300, 350
-
-    section SurfaceFlinger
-    First frame committed     :sf1, 310, 320
-```
-
-Key trace slices to identify:
-
-1. `"Start proc: <processName>"` -- Zygote fork
-2. `"bindApplication"` -- Application initialization
-3. `"activityStart"` -- Activity creation in the framework
-4. `"traversal"` -- First measure/layout/draw pass
-5. `"Choreographer#doFrame"` -- First frame dispatch
-
-### 22.32.2 Exercise 2: Inspect Window Hierarchy with dumpsys
+### 22.32.1 Exercise 1: Inspect Window Hierarchy with dumpsys
 
 **Objective**: Examine the live window hierarchy to understand the container
 tree.
@@ -3959,7 +3855,7 @@ This shows:
 adb shell dumpsys activity activities | grep -A 20 "com.android.settings"
 ```
 
-### 22.32.3 Exercise 3: Monitor Activity Lifecycle Events
+### 22.32.2 Exercise 2: Monitor Activity Lifecycle Events
 
 **Objective**: Watch lifecycle transitions in real-time.
 
@@ -3978,7 +3874,7 @@ I ActivityTaskManager: START u0 {cmp=com.android.settings/.Settings} from uid 20
 I ActivityTaskManager: Displayed com.android.settings/.Settings: +412ms
 ```
 
-### 22.32.4 Exercise 4: Inspect Process Priorities
+### 22.32.3 Exercise 3: Inspect Process Priorities
 
 **Objective**: Observe OOM adj values for running processes.
 
@@ -4006,7 +3902,7 @@ The `dumpsys activity oom` output groups processes by their OOM adj bucket:
     proc #5: cch+5 B/-/-  trm: 0 12350:com.example.app/u0a94 (cch-activity)
 ```
 
-### 22.32.5 Exercise 5: Force a Configuration Change
+### 22.32.4 Exercise 4: Force a Configuration Change
 
 **Objective**: Observe how the framework handles configuration changes.
 
@@ -4025,7 +3921,7 @@ You will see:
 2. Activities being destroyed and recreated (unless they handle the change)
 3. Window layout recalculation
 
-### 22.32.6 Exercise 6: Examine Task State with am Commands
+### 22.32.5 Exercise 5: Examine Task State with am Commands
 
 ```bash
 # List all tasks
@@ -4044,7 +3940,7 @@ adb shell am task focus <taskId>
 adb shell am task remove <taskId>
 ```
 
-### 22.32.7 Exercise 7: Window Inspector with wm Commands
+### 22.32.6 Exercise 6: Window Inspector with wm Commands
 
 ```bash
 # Get display info
@@ -4063,7 +3959,7 @@ adb shell wm density reset
 adb shell dumpsys SurfaceFlinger --list
 ```
 
-### 22.32.8 Debugging Tips for Framework Developers
+### 22.32.7 Debugging Tips for Framework Developers
 
 1. **Enable verbose WM logging**:
    ```bash
