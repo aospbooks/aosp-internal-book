@@ -3405,50 +3405,7 @@ graph TB
     style PMS fill:#9df,stroke:#333
 ```
 
-### 20.22.2 Boot Sequence Timeline
-
-```mermaid
-gantt
-    title system_server Boot Sequence
-    dateFormat X
-    axisFormat %s
-
-    section Init
-    Load native libs          :a1, 0, 2
-    Create system context     :a2, 2, 4
-    Create SSM                :a3, 4, 5
-
-    section Bootstrap
-    Watchdog                  :b1, 5, 6
-    AMS + ATMS                :b2, 6, 10
-    PowerManager              :b3, 10, 12
-    DisplayManager            :b4, 12, 14
-    PHASE 100                 :milestone, 14, 14
-    PackageManager            :b5, 14, 25
-    UserManager               :b6, 25, 27
-
-    section Core
-    BatteryService            :c1, 27, 28
-    UsageStats                :c2, 28, 29
-    WebView                   :c3, 29, 30
-
-    section Other
-    WMS + InputManager        :d1, 30, 35
-    Bluetooth                 :d2, 35, 37
-    Audio                     :d3, 37, 39
-    Notification              :d4, 39, 41
-    PHASE 480                 :milestone, 41, 41
-    PHASE 500                 :milestone, 42, 42
-    Device-specific           :d5, 42, 45
-    PHASE 520                 :milestone, 45, 45
-    PHASE 550                 :milestone, 46, 46
-    Network stack             :d6, 46, 48
-    PHASE 600                 :milestone, 48, 48
-    SystemUI                  :d7, 48, 50
-    PHASE 1000                :milestone, 50, 50
-```
-
-### 20.22.3 Service Registration Flow
+### 20.22.2 Service Registration Flow
 
 ```mermaid
 sequenceDiagram
