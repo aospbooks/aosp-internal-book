@@ -2904,22 +2904,7 @@ static final int TASK_FRAGMENT_VISIBILITY_INVISIBLE = 2;
 
 ## 22.19 Performance Considerations
 
-### 22.19.1 Activity Launch Time Budget
-
-A well-optimized cold app launch should complete within these budgets:
-
-| Phase | Budget | Measured By |
-|-------|--------|-------------|
-| Intent resolution | < 5ms | Perfetto: `resolveActivity` |
-| startActivityInner() | < 10ms | Perfetto: `startActivityInner` |
-| Process fork (cold) | < 100ms | Perfetto: `Start proc` |
-| bindApplication | < 200ms | Perfetto: `bindApplication` |
-| Activity.onCreate() | < 200ms | Perfetto: `performCreate` |
-| First frame draw | < 300ms | Perfetto: `Choreographer#doFrame` |
-| **Total cold start** | **< 500ms** | `adb shell am start -W` |
-| **Total warm start** | **< 200ms** | `adb shell am start -W` |
-
-### 22.19.2 Lock Contention
+### 22.19.1 Lock Contention
 
 The `WindowManagerGlobalLock` is one of the most contended locks in the
 system. Every Binder call to WMS and ATMS must acquire it. Strategies to
@@ -2933,7 +2918,7 @@ minimize contention:
 4. **Lock-free reads** -- Some fields (like `mCurrentFocus`) use volatile
    for lock-free reads in common cases
 
-### 22.19.3 Process Start Optimization
+### 22.19.2 Process Start Optimization
 
 Android uses several techniques to speed up process creation:
 
