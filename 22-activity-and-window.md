@@ -4000,7 +4000,7 @@ adb shell dumpsys SurfaceFlinger --list
 In this chapter we explored the three pillars of Android's activity and
 window management:
 
-1. **AMS and ATMS Architecture (Section 22.1)**: The historical split between
+1. **AMS and ATMS Architecture**: The historical split between
    process management (AMS, ~19,921 lines in `com.android.server.am`) and
    activity/task management (ATMS, ~8,130 lines in `com.android.server.wm`).
    AMS uses its own `ActivityManagerGlobalLock` plus `mProcLock`, while ATMS
@@ -4008,14 +4008,14 @@ window management:
    deadlocks between activity and window operations while ensuring atomicity
    of coupled state changes.
 
-2. **Activity Lifecycle (Section 22.2)**: The `ActivityRecord.State` enum
+2. **Activity Lifecycle**: The `ActivityRecord.State` enum
    with 11 states from `INITIALIZING` through `DESTROYED` plus
    `RESTARTING_PROCESS`. The `ClientLifecycleManager` drives state transitions
    in client processes via `ClientTransaction` objects. Framework-side
    timeouts protect against hung applications: 500ms pause, 11s stop,
    10s destroy, 10s idle.
 
-3. **The Container Hierarchy (Section 22.3)**: Built on `WindowContainer`
+3. **The Container Hierarchy**: Built on `WindowContainer`
    (line 115), the unified tree extends from `RootWindowContainer` through
    `DisplayContent` (inherits from `RootDisplayArea`), `DisplayArea`,
    `TaskDisplayArea`, `Task` (extends `TaskFragment`), `TaskFragment`
@@ -4023,7 +4023,7 @@ window management:
    down to `WindowState`. This elegant design means activities ARE window
    tokens, and removing a container automatically removes all descendants.
 
-4. **Window Addition Flow (Section 22.4)**: The path from
+4. **Window Addition Flow**: The path from
    `WindowManager.addView()` through `ViewRootImpl.setView()`,
    `Session.addToDisplay()` (Binder IPC), to `WMS.addWindow()` (line 1626)
    with its extensive 350-line validation (token checks for each window type,
@@ -4031,13 +4031,13 @@ window management:
    setup (`WindowState` creation, `InputChannel` pair, surface allocation,
    policy configuration).
 
-5. **WMS Architecture (Section 22.5)**: The ~10,983-line service with its
+5. **WMS Architecture**: The ~10,983-line service with its
    `mWindowMap` (global window registry), `mSessions` (per-process
    connections), display-thread model, five focus update modes, the
    `WindowSurfacePlacer` layout engine, and the `PriorityDumper` for
    diagnostic data collection at critical/high/normal priorities.
 
-6. **Intent Resolution and Launch Pipeline (Section 22.6)**: From
+6. **Intent Resolution and Launch Pipeline**: From
    `ATMS.startActivityAsUser()` (line 1280) through the `ActivityStarter`
    pipeline: `execute()` (line 785, metrics + HeavyWeight check) ->
    `executeRequest()` (line 1028, validation + permissions + interceptors +
@@ -4046,7 +4046,7 @@ window management:
    + resume). Five launch modes, the 300-weight task limit, the interceptor
    chain, and the move-to-front decision logic.
 
-7. **Process Management (Section 22.7)**: The OOM adj ladder from
+7. **Process Management**: The OOM adj ladder from
    `SYSTEM_ADJ` (-900) through `FOREGROUND_APP_ADJ` (0) to
    `CACHED_APP_MAX_ADJ` (999), with 16 named levels. Six scheduling groups
    mapping to Linux cgroups. Process start via `ProcessList.startProcess()`
@@ -4054,7 +4054,7 @@ window management:
    Communication with LMKD via 12 binary protocol commands over a local
    socket. The `CachedAppOptimizer` freezer for cached process power savings.
 
-8. **Advanced Topics (Sections 15.9-15.30)**: The `setState()` side effects
+8. **Advanced Topics**: The `setState()` side effects
    and battery/usage stats integration. The recursive `resumeTopActivity`
    pipeline and pause-before-resume protocol. The `recycleTask()` mechanism
    and intent flag processing. Multi-window/TaskFragment architecture. The
