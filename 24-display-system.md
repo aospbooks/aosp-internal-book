@@ -20,33 +20,6 @@ Readers who have worked through the graphics rendering pipeline in Chapter 13
 and the system_server architecture in Chapter 20 will find this chapter
 naturally extends those foundations into the display-specific domain.
 
-**Key source files for this chapter:**
-
-| File | Description |
-|------|-------------|
-| `frameworks/base/services/core/java/com/android/server/display/DisplayManagerService.java` | Display lifecycle, adapter management (6601 lines) |
-| `frameworks/base/services/core/java/com/android/server/display/LogicalDisplay.java` | Logical-to-physical mapping (1314 lines) |
-| `frameworks/base/services/core/java/com/android/server/display/DisplayDevice.java` | Physical display abstraction |
-| `frameworks/base/services/core/java/com/android/server/display/LogicalDisplayMapper.java` | Foldable display swapping |
-| `frameworks/base/services/core/java/com/android/server/display/DisplayPowerController.java` | Display power state machine (3507 lines) |
-| `frameworks/base/services/core/java/com/android/server/wm/DisplayArea.java` | DisplayArea container (882 lines) |
-| `frameworks/base/services/core/java/com/android/server/wm/DisplayAreaPolicyBuilder.java` | Hierarchy construction (1052 lines) |
-| `frameworks/base/services/core/java/com/android/server/wm/DisplayRotation.java` | Rotation policy (2255 lines) |
-| `frameworks/base/services/core/java/com/android/server/wm/SeamlessRotator.java` | Zero-flicker rotation transform |
-| `frameworks/base/services/core/java/com/android/server/wm/AsyncRotationController.java` | Async non-activity window rotation |
-| `frameworks/native/services/surfaceflinger/Scheduler/Scheduler.h` | SurfaceFlinger frame scheduler |
-| `frameworks/native/services/surfaceflinger/Scheduler/RefreshRateSelector.h` | Refresh rate selection policy |
-| `frameworks/native/services/surfaceflinger/Scheduler/VSyncPredictor.h` | VSYNC timing model |
-| `frameworks/native/services/surfaceflinger/Scheduler/EventThread.h` | VSYNC event distribution |
-| `frameworks/native/services/surfaceflinger/FrontEnd/LayerLifecycleManager.h` | Front-end layer lifecycle |
-| `frameworks/native/services/surfaceflinger/FrontEnd/LayerSnapshotBuilder.h` | Snapshot construction for composition |
-| `frameworks/native/services/surfaceflinger/CompositionEngine/include/compositionengine/CompositionEngine.h` | Composition orchestration |
-| `frameworks/native/libs/gui/include/gui/BLASTBufferQueue.h` | BLAST buffer delivery |
-| `frameworks/base/core/java/android/view/DisplayCutout.java` | Cutout geometry |
-| `frameworks/base/services/core/java/com/android/server/display/color/ColorDisplayService.java` | Colour transform pipeline |
-| `frameworks/base/services/core/java/com/android/server/display/color/DisplayTransformManager.java` | SurfaceFlinger colour matrix dispatch |
-| `frameworks/base/services/core/java/com/android/server/devicestate/DeviceStateManagerService.java` | Foldable device state machine |
-
 ---
 
 ## 24.1 Display System Architecture
