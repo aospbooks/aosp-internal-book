@@ -39,7 +39,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | VI | 20 | system_server | REVIEWED |
 | VI | 21 | Intent System | REVIEWED |
 | VI | 22 | Activity & Window Management | REVIEWED |
-| VI | 23 | Window System | UNDER REVIEW |
+| VI | 23 | Window System | REVIEWED |
 | VI | 24 | Display System | UNDER REVIEW |
 | VI | 25 | View System | UNDER REVIEW |
 | VII | 26 | Package Manager | UNDER REVIEW |
