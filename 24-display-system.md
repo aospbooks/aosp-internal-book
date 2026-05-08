@@ -1,7 +1,5 @@
 # Chapter 24: Display System
 
-## Overview
-
 The Android display system spans three major processes -- `system_server`,
 `surfaceflinger`, and client applications -- and bridges two languages
 (Java in the framework, C++ in the native compositor). Its responsibilities
