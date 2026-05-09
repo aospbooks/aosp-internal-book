@@ -2424,7 +2424,7 @@ own group of one).
 
 ---
 
-## Appendix A: Complete Extractor Pipeline Reference
+## 28.15 Complete Extractor Pipeline Reference
 
 The following table documents every signal extractor, its dependencies, and
 the fields it modifies on `NotificationRecord`:
@@ -2444,7 +2444,7 @@ the fields it modifies on `NotificationRecord`:
 
 ---
 
-## Appendix B: Notification Flags Reference
+## 28.16 Notification Flags Reference
 
 | Flag | Value | Description |
 |------|-------|-------------|
@@ -2469,7 +2469,7 @@ the fields it modifies on `NotificationRecord`:
 
 ---
 
-## Appendix C: Cancel Reason Constants
+## 28.17 Cancel Reason Constants
 
 | Constant | Value | Description |
 |----------|-------|-------------|
@@ -2500,7 +2500,7 @@ the fields it modifies on `NotificationRecord`:
 
 ---
 
-## Appendix D: Importance Level Behavioral Matrix
+## 28.18 Importance Level Behavioral Matrix
 
 | Importance | Sound | Vibration | Heads-Up | Status Bar Icon | Shade | Badge | Full-Screen Intent |
 |-----------|-------|-----------|----------|----------------|-------|-------|-------------------|
@@ -2521,7 +2521,7 @@ Notes:
 
 ---
 
-## Appendix E: Evolution of the Notification System
+## 28.19 Evolution of the Notification System
 
 | Android Version | Key Changes |
 |----------------|-------------|
@@ -2543,7 +2543,7 @@ Notes:
 
 ---
 
-## Appendix F: Source File Index
+## 28.20 Source File Index
 
 For quick reference, the complete set of source files discussed in this chapter:
 
@@ -2641,9 +2641,9 @@ frameworks/base/core/res/res/values/config.xml
 
 ---
 
-## 28.15 Try It
+## 28.21 Try It
 
-### 28.15.1 Inspecting Active Notifications via ADB
+### 28.21.1 Inspecting Active Notifications via ADB
 
 Dump the current notification state:
 
@@ -2665,7 +2665,7 @@ To see just the notification list:
 adb shell dumpsys notification --noredact | grep -A 5 "NotificationRecord"
 ```
 
-### 28.15.2 Dumping Notification Channels
+### 28.21.2 Dumping Notification Channels
 
 ```bash
 adb shell dumpsys notification channels
@@ -2677,7 +2677,7 @@ Or for a specific package:
 adb shell dumpsys notification channels com.example.myapp
 ```
 
-### 28.15.3 Inspecting Do Not Disturb State
+### 28.21.3 Inspecting Do Not Disturb State
 
 ```bash
 adb shell dumpsys notification zen
@@ -2690,7 +2690,7 @@ adb shell settings get global zen_mode
 # 0 = off, 1 = priority, 2 = total silence, 3 = alarms
 ```
 
-### 28.15.4 Using the Notification Shell Command
+### 28.21.4 Using the Notification Shell Command
 
 NMS includes a shell command interface:
 
@@ -2710,7 +2710,7 @@ adb shell cmd notification unsnooze <key>
 
 Source: `frameworks/base/services/core/java/com/android/server/notification/NotificationShellCmd.java`
 
-### 28.15.5 Posting a Notification from Code
+### 28.21.5 Posting a Notification from Code
 
 ```java
 // Minimal notification with a channel
@@ -2730,7 +2730,7 @@ Notification notification = new Notification.Builder(this, "demo_channel")
 nm.notify(1, notification);
 ```
 
-### 28.15.6 Posting a Conversation Notification
+### 28.21.6 Posting a Conversation Notification
 
 ```java
 // 1. Create a sharing shortcut
@@ -2770,7 +2770,7 @@ Notification notification = new Notification.Builder(this, "messages")
 nm.notify(100, notification);
 ```
 
-### 28.15.7 Creating a Bubble Notification
+### 28.21.7 Creating a Bubble Notification
 
 ```java
 // Build upon the conversation notification above
@@ -2797,7 +2797,7 @@ Notification notification = new Notification.Builder(this, "messages")
 nm.notify(100, notification);
 ```
 
-### 28.15.8 Implementing a NotificationListenerService
+### 28.21.8 Implementing a NotificationListenerService
 
 ```java
 public class MyNotificationListener extends NotificationListenerService {
@@ -2839,7 +2839,7 @@ AndroidManifest.xml:
 The user must manually enable the listener in **Settings > Notifications >
 Notification access**.
 
-### 28.15.9 Programmatically Managing DND
+### 28.21.9 Programmatically Managing DND
 
 ```java
 NotificationManager nm = getSystemService(NotificationManager.class);
@@ -2860,7 +2860,7 @@ if (nm.isNotificationPolicyAccessGranted()) {
 }
 ```
 
-### 28.15.10 Tracing the Notification Pipeline
+### 28.21.10 Tracing the Notification Pipeline
 
 Enable verbose logging for the notification service:
 
@@ -2879,7 +2879,7 @@ adb logcat -s NotificationService NotificationRecord ZenModeHelper \
     NotifAttentionHelper RankingHelper
 ```
 
-### 28.15.11 Inspecting Notification History
+### 28.21.11 Inspecting Notification History
 
 Android 11+ stores notification history:
 
@@ -2889,7 +2889,7 @@ adb shell dumpsys notification history
 
 Or via the Settings UI: **Settings > Notifications > Notification history**.
 
-### 28.15.12 Testing Snooze Behavior
+### 28.21.12 Testing Snooze Behavior
 
 ```bash
 # Snooze a notification for 60 seconds
@@ -2899,7 +2899,7 @@ adb shell cmd notification snooze --for 60000 "0|com.example.app|1|null|10088"
 adb shell dumpsys notification snoozed
 ```
 
-### 28.15.13 Debugging Bubble Issues
+### 28.21.13 Debugging Bubble Issues
 
 ```bash
 # Check if bubbles are enabled globally
@@ -2913,7 +2913,7 @@ adb shell setprop log.tag.BubbleExtractor DEBUG
 adb shell setprop log.tag.Bubbles DEBUG
 ```
 
-### 28.15.14 Observing Attention Effects
+### 28.21.14 Observing Attention Effects
 
 To debug why a notification does or does not make sound/vibrate:
 
@@ -2925,7 +2925,7 @@ adb logcat -s NotifAttentionHelper
 The attention helper logs detailed reasons for its buzz-beep-blink decisions,
 including DND suppression, listener hints, and "alert once" flags.
 
-### 28.15.15 Notification Architecture Exploration Script
+### 28.21.15 Notification Architecture Exploration Script
 
 ```bash
 #!/bin/bash
@@ -2949,7 +2949,7 @@ ls $NOTIF_DIR/*.java | wc -l
 echo "files in the notification server package"
 ```
 
-### 28.15.16 Summary of Key Source Files
+### 28.21.16 Summary of Key Source Files
 
 | File | Lines | Role |
 |------|-------|------|
@@ -2974,7 +2974,7 @@ echo "files in the notification server package"
 
 ---
 
-### 28.15.17 Monitoring Auto-Grouping
+### 28.21.17 Monitoring Auto-Grouping
 
 Auto-grouping bundles notifications from the same package when there are too
 many individual groups. To observe this:
@@ -2990,7 +2990,7 @@ children. The auto-group summary uses the key `"ranker_group"` (or an
 aggregate group key with the prefix `"Aggregate_"` when force grouping is
 active).
 
-### 28.15.18 Verifying Channel Configuration
+### 28.21.18 Verifying Channel Configuration
 
 To verify that your app's notification channels are correctly configured, use
 the Settings shell command:
@@ -3009,7 +3009,7 @@ You can also check channel importance directly:
 adb shell dumpsys notification | grep -A 10 "com.your.package"
 ```
 
-### 28.15.19 Testing the Full Pipeline with a Custom Extractor
+### 28.21.19 Testing the Full Pipeline with a Custom Extractor
 
 While the signal extractor pipeline is not extensible by third-party apps, you
 can modify the configuration for testing purposes on an eng build:
@@ -3027,7 +3027,7 @@ can modify the configuration for testing purposes on an eng build:
 Your custom extractor must implement `NotificationSignalExtractor` and live in
 the `system_server` classpath.
 
-### 28.15.20 Foreground Service Notification Constraints
+### 28.21.20 Foreground Service Notification Constraints
 
 Foreground service (FGS) notifications have special constraints:
 
@@ -3044,7 +3044,7 @@ Key behaviors:
 - Starting from Android 14, the system enforces that FGS notifications must
   be visible (importance > NONE) or the FGS start is rejected.
 
-### 28.15.21 Notification Permission (Android 13+)
+### 28.21.21 Notification Permission (Android 13+)
 
 Since Android 13 (API 33), posting notifications requires the
 `POST_NOTIFICATIONS` runtime permission. The `PermissionHelper` tracks this:
