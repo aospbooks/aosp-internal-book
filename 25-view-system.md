@@ -19,26 +19,6 @@ the machinery behind focus, accessibility, window insets, and custom views.
 
 ---
 
-## Source Files Referenced in This Chapter
-
-All paths are relative to the AOSP source tree root.
-
-| File | Lines | Role |
-|------|------:|------|
-| `frameworks/base/core/java/android/view/View.java` | ~34,918 | Base class for all UI components |
-| `frameworks/base/core/java/android/view/ViewGroup.java` | ~9,594 | Container that holds child views |
-| `frameworks/base/core/java/android/view/ViewRootImpl.java` | ~13,827 | Bridge between view hierarchy and WMS |
-| `frameworks/base/core/java/android/view/Choreographer.java` | ~1,714 | Frame timing and VSYNC coordination |
-| `frameworks/base/core/java/android/view/LayoutInflater.java` | ~1,247 | XML-to-View instantiation |
-| `frameworks/base/core/java/android/view/ThreadedRenderer.java` | ~928 | HWUI proxy for hardware-accelerated drawing |
-| `frameworks/base/core/java/android/view/WindowInsets.java` | varies | System bar insets, cutouts, rounded corners |
-| `frameworks/base/core/java/android/view/DisplayCutout.java` | varies | Display cutout geometry |
-| `frameworks/base/core/java/android/view/FocusFinder.java` | varies | Directional focus search algorithm |
-| `frameworks/base/core/java/android/view/MotionEvent.java` | varies | Touch/pointer event representation |
-| `frameworks/base/core/java/android/graphics/RenderNode.java` | varies | Display list node for HWUI |
-
----
-
 ## 25.1 View Hierarchy: View, ViewGroup, ViewRootImpl
 
 ### 25.1.1 The Fundamental Classes
