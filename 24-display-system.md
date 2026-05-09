@@ -3056,47 +3056,6 @@ and is presented one period late (a "jank" frame). The `FrameTimeline`
 records these misses, and tools like `perfetto` and `dumpsys SurfaceFlinger
 --frametimeline` expose them for performance analysis.
 
-### Companion Report Series
-
-The display-related sections of this chapter draw on the AOSP Window System
-Architecture Report -- the same three-part companion document introduced in
-section 23.11. The display-relevant sections within that report are:
-
-**Part 1: Foundations (Sections 1-45)**
-
-- Section 22: DisplayArea hierarchy
-- Sections 32-35: Multi-display
-- Section 37: HWUI and rendering pipeline
-
-**Part 2: Features (Sections 46-75)**
-
-- Section 51: BufferQueue and BLASTBufferQueue Architecture -- Slot state
-  machine, triple buffering, BLAST transaction-based delivery
-- Section 52: Buffer Sharing Architecture and Lifecycle -- Gralloc HAL, fence
-  synchronization, cross-process sharing
-- Section 53: Virtual Display Composition Pipeline -- VirtualDisplaySurface,
-  three-BQ routing, SinkSurfaceHelper
-- Section 55: Display Refresh Architecture -- VSYNC pipeline, Choreographer,
-  RefreshRateSelector, frame timeline, Linux DRM/KMS comparison
-- Section 56: Screen Rotation and Orientation -- DisplayRotation,
-  SeamlessRotator, AsyncRotationController, FixedRotationTransformState
-- Section 57: Foldable Display Support -- DeviceStateManagerService,
-  FoldableDeviceStateProvider, LogicalDisplayMapper display swapping
-- Section 62: Display Color Management -- ColorDisplayService, night display,
-  white balance, saturation, daltonizer, SurfaceFlinger color pipeline
-
-**Part 3: Platform (Sections 76-100)**
-
-- Section 77: Power Management and Window System -- AWAKE through ASLEEP
-  states, DreamManagerService, AOD, DisplayPowerController, sleep tokens
-- Section 88: Display Cutout and Rounded Corners -- DisplayCutout,
-  CutoutSpecification, WmDisplayCutout, cutout modes, RoundedCorners,
-  DisplayShape
-- Section 89: SurfaceFlinger Front-End Refactor and Composition --
-  LayerLifecycleManager, LayerSnapshotBuilder, CompositionEngine
-- Section 93: Display Mirroring and Screen Casting -- Mirror layers,
-  MediaProjection, ContentRecorder, MediaRouter, WifiDisplayAdapter
-
 ### Quick Reference: Key Source Paths
 
 | Component | Path |
