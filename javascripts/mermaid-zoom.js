@@ -28,6 +28,7 @@
   var lvl = document.getElementById('mzm-level')
 
   var s = 1
+  var fitScale = 1
   var baseW = 0, baseH = 0
   var svgEl = null
   var MIN = 0.2, MAX = 8
@@ -41,6 +42,19 @@
     svgEl.style.width = (baseW * s) + 'px'
     svgEl.style.height = (baseH * s) + 'px'
     lvl.textContent = Math.round(s * 100) + '%'
+  }
+
+  // Largest scale that fits the SVG inside the box with a small margin, clamped
+  // to [MIN, MAX]. Used for fit-on-open and the reset button so wide LR
+  // diagrams (column-clamped to ~700px on the page) fill the viewport instead
+  // of opening at column width inside a full-width overlay.
+  function computeFit () {
+    if (!baseW || !baseH) return 1
+    var availW = box.clientWidth - 48
+    var availH = box.clientHeight - 48
+    if (availW <= 0 || availH <= 0) return 1
+    var fit = Math.min(availW / baseW, availH / baseH)
+    return Math.max(MIN, Math.min(MAX, fit))
   }
 
   // Scroll the box so the wrapper's content is centered. No-op when content
@@ -145,10 +159,16 @@
     document.documentElement.style.overflow = 'hidden'
     document.body.style.overflow = 'hidden'
 
-    // At scale 1 the SVG fits the viewport and flex already centers it.
-    // Recenter scroll defensively in case any chrome (toolbar height, etc.)
-    // makes the wrap slightly larger than the box.
-    requestAnimationFrame(recenter)
+    // After the box has been laid out (so clientWidth/Height are accurate),
+    // scale the SVG to fit the available area. computeFit clamps to [MIN, MAX]
+    // and works in either direction — enlarging column-clamped wide diagrams
+    // and shrinking diagrams that would otherwise overflow the viewport.
+    requestAnimationFrame(function () {
+      fitScale = computeFit()
+      s = fitScale
+      applyZoom()
+      recenter()
+    })
   }
 
   function hide () {
@@ -163,7 +183,8 @@
   document.getElementById('mzm-in').onclick = function () { zoomTo(s + 0.25) }
   document.getElementById('mzm-out').onclick = function () { zoomTo(s - 0.25) }
   document.getElementById('mzm-reset').onclick = function () {
-    s = 1
+    s = computeFit()
+    fitScale = s
     applyZoom()
     requestAnimationFrame(recenter)
   }
@@ -209,7 +230,8 @@
     if (e.key === '+' || e.key === '=') zoomTo(s + 0.25)
     if (e.key === '-') zoomTo(s - 0.25)
     if (e.key === '0') {
-      s = 1
+      s = computeFit()
+      fitScale = s
       applyZoom()
       requestAnimationFrame(recenter)
     }

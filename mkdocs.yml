@@ -78,7 +78,7 @@ plugins:
         - docs/stylesheets/epub.css
 
 extra_javascript:
-  - javascripts/mermaid-zoom.js?v=5
+  - javascripts/mermaid-zoom.js?v=6
 
 extra_css:
   - stylesheets/mermaid-zoom.css?v=8
