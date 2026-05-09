@@ -693,6 +693,17 @@ Source: frameworks/base/core/java/android/view/View.java (line 28478)
     }
 ```
 
+The propagation up the parent chain into a full measure-layout-draw cycle:
+
+```mermaid
+graph TB
+    RL1["View.requestLayout()"] --> RL2["parent.requestLayout()"]
+    RL2 --> RL3["...ancestors..."]
+    RL3 --> RL4["ViewRootImpl.requestLayout()"]
+    RL4 --> RL5["scheduleTraversals()"]
+    RL5 --> RL6["MEASURE + LAYOUT + DRAW"]
+```
+
 **`invalidate()`** -- signals that the view's appearance has changed but its
 size and position have not.  It propagates a dirty rectangle up to
 `ViewRootImpl`, triggering only a draw pass (no measure or layout).
@@ -722,23 +733,15 @@ Source: frameworks/base/core/java/android/view/View.java (line 21249)
     }
 ```
 
+The damage-rectangle propagation up to `ViewRootImpl`, triggering a draw-only pass:
+
 ```mermaid
 graph TB
-    subgraph "requestLayout() path"
-        RL1["View.requestLayout()"] --> RL2["parent.requestLayout()"]
-        RL2 --> RL3["...ancestors..."]
-        RL3 --> RL4["ViewRootImpl.requestLayout()"]
-        RL4 --> RL5["scheduleTraversals()"]
-        RL5 --> RL6["MEASURE + LAYOUT + DRAW"]
-    end
-
-    subgraph "invalidate() path"
-        INV1["View.invalidate()"] --> INV2["parent.invalidateChild(this, dirty)"]
-        INV2 --> INV3["...ancestors..."]
-        INV3 --> INV4["ViewRootImpl.invalidateChildInParent()"]
-        INV4 --> INV5["scheduleTraversals()"]
-        INV5 --> INV6["DRAW only"]
-    end
+    INV1["View.invalidate()"] --> INV2["parent.invalidateChild(this, dirty)"]
+    INV2 --> INV3["...ancestors..."]
+    INV3 --> INV4["ViewRootImpl.invalidateChildInParent()"]
+    INV4 --> INV5["scheduleTraversals()"]
+    INV5 --> INV6["DRAW only"]
 ```
 
 ### 25.2.10 performTraversals() -- The Orchestrator
