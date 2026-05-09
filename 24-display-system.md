@@ -2945,106 +2945,6 @@ trace marker.
 
 ---
 
-## 24.12 Detailed Reference
-
-This chapter has covered the major subsystems of Android's display pipeline,
-from the framework-level `DisplayManagerService` down to the native-level
-SurfaceFlinger compositor and buffer management. For readers seeking
-additional depth, the AOSP Window System Architecture Report -- the same
-three-part companion document introduced in section 23.11 -- provides
-exhaustive analysis of every topic introduced here:
-
-### Companion Report Series
-
-The display-related sections of this chapter draw on the AOSP Window System
-Architecture Report -- the same three-part companion document introduced in
-section 23.11. The display-relevant sections within that report are:
-
-**Part 1: Foundations (Sections 1-45)**
-
-- Section 22: DisplayArea hierarchy
-- Sections 32-35: Multi-display
-- Section 37: HWUI and rendering pipeline
-
-**Part 2: Features (Sections 46-75)**
-
-- Section 51: BufferQueue and BLASTBufferQueue Architecture -- Slot state
-  machine, triple buffering, BLAST transaction-based delivery
-- Section 52: Buffer Sharing Architecture and Lifecycle -- Gralloc HAL, fence
-  synchronization, cross-process sharing
-- Section 53: Virtual Display Composition Pipeline -- VirtualDisplaySurface,
-  three-BQ routing, SinkSurfaceHelper
-- Section 55: Display Refresh Architecture -- VSYNC pipeline, Choreographer,
-  RefreshRateSelector, frame timeline, Linux DRM/KMS comparison
-- Section 56: Screen Rotation and Orientation -- DisplayRotation,
-  SeamlessRotator, AsyncRotationController, FixedRotationTransformState
-- Section 57: Foldable Display Support -- DeviceStateManagerService,
-  FoldableDeviceStateProvider, LogicalDisplayMapper display swapping
-- Section 62: Display Color Management -- ColorDisplayService, night display,
-  white balance, saturation, daltonizer, SurfaceFlinger color pipeline
-
-**Part 3: Platform (Sections 76-100)**
-
-- Section 77: Power Management and Window System -- AWAKE through ASLEEP
-  states, DreamManagerService, AOD, DisplayPowerController, sleep tokens
-- Section 88: Display Cutout and Rounded Corners -- DisplayCutout,
-  CutoutSpecification, WmDisplayCutout, cutout modes, RoundedCorners,
-  DisplayShape
-- Section 89: SurfaceFlinger Front-End Refactor and Composition --
-  LayerLifecycleManager, LayerSnapshotBuilder, CompositionEngine
-- Section 93: Display Mirroring and Screen Casting -- Mirror layers,
-  MediaProjection, ContentRecorder, MediaRouter, WifiDisplayAdapter
-
-### Quick Reference: Key Source Paths
-
-| Component | Path |
-|-----------|------|
-| DisplayManagerService | `frameworks/base/services/core/java/com/android/server/display/DisplayManagerService.java` |
-| LogicalDisplay | `frameworks/base/services/core/java/com/android/server/display/LogicalDisplay.java` |
-| LogicalDisplayMapper | `frameworks/base/services/core/java/com/android/server/display/LogicalDisplayMapper.java` |
-| DisplayPowerController | `frameworks/base/services/core/java/com/android/server/display/DisplayPowerController.java` |
-| ColorDisplayService | `frameworks/base/services/core/java/com/android/server/display/color/ColorDisplayService.java` |
-| DisplayTransformManager | `frameworks/base/services/core/java/com/android/server/display/color/DisplayTransformManager.java` |
-| VirtualDisplayAdapter | `frameworks/base/services/core/java/com/android/server/display/VirtualDisplayAdapter.java` |
-| DeviceStateManagerService | `frameworks/base/services/core/java/com/android/server/devicestate/DeviceStateManagerService.java` |
-| DisplayArea | `frameworks/base/services/core/java/com/android/server/wm/DisplayArea.java` |
-| DisplayAreaPolicyBuilder | `frameworks/base/services/core/java/com/android/server/wm/DisplayAreaPolicyBuilder.java` |
-| DisplayAreaPolicy | `frameworks/base/services/core/java/com/android/server/wm/DisplayAreaPolicy.java` |
-| DisplayRotation | `frameworks/base/services/core/java/com/android/server/wm/DisplayRotation.java` |
-| SeamlessRotator | `frameworks/base/services/core/java/com/android/server/wm/SeamlessRotator.java` |
-| AsyncRotationController | `frameworks/base/services/core/java/com/android/server/wm/AsyncRotationController.java` |
-| DisplayCutout | `frameworks/base/core/java/android/view/DisplayCutout.java` |
-| CutoutSpecification | `frameworks/base/core/java/android/view/CutoutSpecification.java` |
-| Scheduler | `frameworks/native/services/surfaceflinger/Scheduler/Scheduler.h` |
-| RefreshRateSelector | `frameworks/native/services/surfaceflinger/Scheduler/RefreshRateSelector.h` |
-| VSyncPredictor | `frameworks/native/services/surfaceflinger/Scheduler/VSyncPredictor.h` |
-| VSyncDispatchTimerQueue | `frameworks/native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.h` |
-| EventThread | `frameworks/native/services/surfaceflinger/Scheduler/EventThread.h` |
-| LayerLifecycleManager | `frameworks/native/services/surfaceflinger/FrontEnd/LayerLifecycleManager.h` |
-| LayerSnapshotBuilder | `frameworks/native/services/surfaceflinger/FrontEnd/LayerSnapshotBuilder.h` |
-| CompositionEngine | `frameworks/native/services/surfaceflinger/CompositionEngine/include/compositionengine/CompositionEngine.h` |
-| BLASTBufferQueue | `frameworks/native/libs/gui/include/gui/BLASTBufferQueue.h` |
-
-### Debugging Commands
-
-| Command | Purpose |
-|---------|---------|
-| `dumpsys display` | DisplayManagerService state |
-| `dumpsys SurfaceFlinger` | SurfaceFlinger layer tree, composition stats |
-| `dumpsys SurfaceFlinger --frametimeline` | Frame timing data |
-| `dumpsys SurfaceFlinger --list` | List all layers |
-| `dumpsys window displays` | WindowManagerService display info |
-| `dumpsys window display-areas` | DisplayArea hierarchy |
-| `dumpsys color_display` | ColorDisplayService state |
-| `dumpsys device_state` | DeviceStateManagerService state |
-| `cmd display set-brightness <0.0-1.0>` | Set display brightness |
-| `cmd display reset-brightness-configuration` | Reset auto-brightness |
-| `wm size` | Display logical size |
-| `wm density` | Display density |
-| `settings put system accelerometer_rotation 0/1` | Lock/unlock rotation |
-
----
-
 ## Summary
 
 The Android display system is a deep vertical stack that begins with
@@ -3181,3 +3081,93 @@ The display system codebase is substantial:
 This does not include SurfaceFlinger's main loop, CompositionEngine
 implementation, HWComposer HAL interface, RenderEngine, or the client-side
 Surface/Canvas/OpenGL stack, which collectively add another 50,000+ lines.
+
+### Companion Report Series
+
+The display-related sections of this chapter draw on the AOSP Window System
+Architecture Report -- the same three-part companion document introduced in
+section 23.11. The display-relevant sections within that report are:
+
+**Part 1: Foundations (Sections 1-45)**
+
+- Section 22: DisplayArea hierarchy
+- Sections 32-35: Multi-display
+- Section 37: HWUI and rendering pipeline
+
+**Part 2: Features (Sections 46-75)**
+
+- Section 51: BufferQueue and BLASTBufferQueue Architecture -- Slot state
+  machine, triple buffering, BLAST transaction-based delivery
+- Section 52: Buffer Sharing Architecture and Lifecycle -- Gralloc HAL, fence
+  synchronization, cross-process sharing
+- Section 53: Virtual Display Composition Pipeline -- VirtualDisplaySurface,
+  three-BQ routing, SinkSurfaceHelper
+- Section 55: Display Refresh Architecture -- VSYNC pipeline, Choreographer,
+  RefreshRateSelector, frame timeline, Linux DRM/KMS comparison
+- Section 56: Screen Rotation and Orientation -- DisplayRotation,
+  SeamlessRotator, AsyncRotationController, FixedRotationTransformState
+- Section 57: Foldable Display Support -- DeviceStateManagerService,
+  FoldableDeviceStateProvider, LogicalDisplayMapper display swapping
+- Section 62: Display Color Management -- ColorDisplayService, night display,
+  white balance, saturation, daltonizer, SurfaceFlinger color pipeline
+
+**Part 3: Platform (Sections 76-100)**
+
+- Section 77: Power Management and Window System -- AWAKE through ASLEEP
+  states, DreamManagerService, AOD, DisplayPowerController, sleep tokens
+- Section 88: Display Cutout and Rounded Corners -- DisplayCutout,
+  CutoutSpecification, WmDisplayCutout, cutout modes, RoundedCorners,
+  DisplayShape
+- Section 89: SurfaceFlinger Front-End Refactor and Composition --
+  LayerLifecycleManager, LayerSnapshotBuilder, CompositionEngine
+- Section 93: Display Mirroring and Screen Casting -- Mirror layers,
+  MediaProjection, ContentRecorder, MediaRouter, WifiDisplayAdapter
+
+### Quick Reference: Key Source Paths
+
+| Component | Path |
+|-----------|------|
+| DisplayManagerService | `frameworks/base/services/core/java/com/android/server/display/DisplayManagerService.java` |
+| LogicalDisplay | `frameworks/base/services/core/java/com/android/server/display/LogicalDisplay.java` |
+| LogicalDisplayMapper | `frameworks/base/services/core/java/com/android/server/display/LogicalDisplayMapper.java` |
+| DisplayPowerController | `frameworks/base/services/core/java/com/android/server/display/DisplayPowerController.java` |
+| ColorDisplayService | `frameworks/base/services/core/java/com/android/server/display/color/ColorDisplayService.java` |
+| DisplayTransformManager | `frameworks/base/services/core/java/com/android/server/display/color/DisplayTransformManager.java` |
+| VirtualDisplayAdapter | `frameworks/base/services/core/java/com/android/server/display/VirtualDisplayAdapter.java` |
+| DeviceStateManagerService | `frameworks/base/services/core/java/com/android/server/devicestate/DeviceStateManagerService.java` |
+| DisplayArea | `frameworks/base/services/core/java/com/android/server/wm/DisplayArea.java` |
+| DisplayAreaPolicyBuilder | `frameworks/base/services/core/java/com/android/server/wm/DisplayAreaPolicyBuilder.java` |
+| DisplayAreaPolicy | `frameworks/base/services/core/java/com/android/server/wm/DisplayAreaPolicy.java` |
+| DisplayRotation | `frameworks/base/services/core/java/com/android/server/wm/DisplayRotation.java` |
+| SeamlessRotator | `frameworks/base/services/core/java/com/android/server/wm/SeamlessRotator.java` |
+| AsyncRotationController | `frameworks/base/services/core/java/com/android/server/wm/AsyncRotationController.java` |
+| DisplayCutout | `frameworks/base/core/java/android/view/DisplayCutout.java` |
+| CutoutSpecification | `frameworks/base/core/java/android/view/CutoutSpecification.java` |
+| Scheduler | `frameworks/native/services/surfaceflinger/Scheduler/Scheduler.h` |
+| RefreshRateSelector | `frameworks/native/services/surfaceflinger/Scheduler/RefreshRateSelector.h` |
+| VSyncPredictor | `frameworks/native/services/surfaceflinger/Scheduler/VSyncPredictor.h` |
+| VSyncDispatchTimerQueue | `frameworks/native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.h` |
+| EventThread | `frameworks/native/services/surfaceflinger/Scheduler/EventThread.h` |
+| LayerLifecycleManager | `frameworks/native/services/surfaceflinger/FrontEnd/LayerLifecycleManager.h` |
+| LayerSnapshotBuilder | `frameworks/native/services/surfaceflinger/FrontEnd/LayerSnapshotBuilder.h` |
+| CompositionEngine | `frameworks/native/services/surfaceflinger/CompositionEngine/include/compositionengine/CompositionEngine.h` |
+| BLASTBufferQueue | `frameworks/native/libs/gui/include/gui/BLASTBufferQueue.h` |
+
+### Debugging Commands
+
+| Command | Purpose |
+|---------|---------|
+| `dumpsys display` | DisplayManagerService state |
+| `dumpsys SurfaceFlinger` | SurfaceFlinger layer tree, composition stats |
+| `dumpsys SurfaceFlinger --frametimeline` | Frame timing data |
+| `dumpsys SurfaceFlinger --list` | List all layers |
+| `dumpsys window displays` | WindowManagerService display info |
+| `dumpsys window display-areas` | DisplayArea hierarchy |
+| `dumpsys color_display` | ColorDisplayService state |
+| `dumpsys device_state` | DeviceStateManagerService state |
+| `cmd display set-brightness <0.0-1.0>` | Set display brightness |
+| `cmd display reset-brightness-configuration` | Reset auto-brightness |
+| `wm size` | Display logical size |
+| `wm density` | Display density |
+| `settings put system accelerometer_rotation 0/1` | Lock/unlock rotation |
+
