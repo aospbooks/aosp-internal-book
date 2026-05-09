@@ -2166,12 +2166,12 @@ Merge stats include:
 
 | Log | Location | When |
 |-----|----------|------|
-| update_engine daemon | `logcat -b all \| grep update_engine` | During update |
+| update_engine daemon | `logcat -b all | grep update_engine` | During update |
 | update_engine log file | `/data/misc/update_engine_log/` | Persisted |
 | Recovery log | `/cache/recovery/last_log` | After recovery mode |
 | Kernel messages in recovery | `/cache/recovery/last_kmsg` | After recovery mode |
-| Update verifier | `logcat -b all \| grep update_verifier` | First boot after OTA |
-| snapuserd | `logcat -b all \| grep snapuserd` | During merge |
+| Update verifier | `logcat -b all | grep update_verifier` | First boot after OTA |
+| snapuserd | `logcat -b all | grep snapuserd` | During merge |
 
 ---
 

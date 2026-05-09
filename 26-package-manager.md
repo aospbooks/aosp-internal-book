@@ -909,11 +909,11 @@ treated:
 | Partition | Scan Flag | Privilege Level |
 |-----------|-----------|----------------|
 | `/system/app` | `SCAN_AS_SYSTEM` | System |
-| `/system/priv-app` | `SCAN_AS_SYSTEM \| SCAN_AS_PRIVILEGED` | Privileged |
-| `/vendor/app` | `SCAN_AS_SYSTEM \| SCAN_AS_VENDOR` | Vendor |
-| `/product/app` | `SCAN_AS_SYSTEM \| SCAN_AS_PRODUCT` | Product |
-| `/system_ext/app` | `SCAN_AS_SYSTEM \| SCAN_AS_SYSTEM_EXT` | System Ext |
-| `/odm/app` | `SCAN_AS_SYSTEM \| SCAN_AS_ODM` | ODM |
+| `/system/priv-app` | `SCAN_AS_SYSTEM | SCAN_AS_PRIVILEGED` | Privileged |
+| `/vendor/app` | `SCAN_AS_SYSTEM | SCAN_AS_VENDOR` | Vendor |
+| `/product/app` | `SCAN_AS_SYSTEM | SCAN_AS_PRODUCT` | Product |
+| `/system_ext/app` | `SCAN_AS_SYSTEM | SCAN_AS_SYSTEM_EXT` | System Ext |
+| `/odm/app` | `SCAN_AS_SYSTEM | SCAN_AS_ODM` | ODM |
 
 ---
 

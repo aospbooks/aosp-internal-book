@@ -339,7 +339,7 @@ graph TB
 
 | Type Constant | Base Type | Max | Parent Required | Key Properties |
 |---|---|---|---|---|
-| `USER_TYPE_FULL_SYSTEM` | `FLAG_SYSTEM \| FLAG_FULL` | 1 | No | Primary, Admin, Main user |
+| `USER_TYPE_FULL_SYSTEM` | `FLAG_SYSTEM | FLAG_FULL` | 1 | No | Primary, Admin, Main user |
 | `USER_TYPE_FULL_SECONDARY` | `FLAG_FULL` | Config | No | Standard secondary user |
 | `USER_TYPE_FULL_GUEST` | `FLAG_FULL` | 1 | No | May be ephemeral |
 | `USER_TYPE_FULL_DEMO` | `FLAG_FULL` | 3 | No | Demo/kiosk mode |
