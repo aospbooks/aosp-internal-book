@@ -2543,7 +2543,478 @@ Notes:
 
 ---
 
-## 28.20 Source File Index
+## 28.20 Try It
+
+### 28.20.1 Inspecting Active Notifications via ADB
+
+Dump the current notification state:
+
+```bash
+adb shell dumpsys notification
+```
+
+This produces extensive output including:
+
+- All active notifications with their keys, channels, and importance.
+- Ranking information.
+- Listener state.
+- DND configuration.
+- Snooze state.
+
+To see just the notification list:
+
+```bash
+adb shell dumpsys notification --noredact | grep -A 5 "NotificationRecord"
+```
+
+### 28.20.2 Dumping Notification Channels
+
+```bash
+adb shell dumpsys notification channels
+```
+
+Or for a specific package:
+
+```bash
+adb shell dumpsys notification channels com.example.myapp
+```
+
+### 28.20.3 Inspecting Do Not Disturb State
+
+```bash
+adb shell dumpsys notification zen
+```
+
+Or through the settings command:
+
+```bash
+adb shell settings get global zen_mode
+# 0 = off, 1 = priority, 2 = total silence, 3 = alarms
+```
+
+### 28.20.4 Using the Notification Shell Command
+
+NMS includes a shell command interface:
+
+```bash
+# List all notification channels for a package
+adb shell cmd notification list_channels com.example.myapp 0
+
+# Post a test notification
+adb shell cmd notification post -t "Test" "tag" "Hello from shell"
+
+# Snooze a notification
+adb shell cmd notification snooze --for 60000 <key>
+
+# Unsnooze a notification
+adb shell cmd notification unsnooze <key>
+```
+
+Source: `frameworks/base/services/core/java/com/android/server/notification/NotificationShellCmd.java`
+
+### 28.20.5 Posting a Notification from Code
+
+```java
+// Minimal notification with a channel
+NotificationChannel channel = new NotificationChannel(
+        "demo_channel",
+        "Demo Channel",
+        NotificationManager.IMPORTANCE_DEFAULT);
+NotificationManager nm = getSystemService(NotificationManager.class);
+nm.createNotificationChannel(channel);
+
+Notification notification = new Notification.Builder(this, "demo_channel")
+        .setSmallIcon(R.drawable.ic_notification)
+        .setContentTitle("Hello")
+        .setContentText("This is a test notification")
+        .setAutoCancel(true)
+        .build();
+nm.notify(1, notification);
+```
+
+### 28.20.6 Posting a Conversation Notification
+
+```java
+// 1. Create a sharing shortcut
+ShortcutInfo shortcut = new ShortcutInfo.Builder(context, "contact_jane")
+        .setLongLived(true)
+        .setShortLabel("Jane")
+        .setPerson(new Person.Builder()
+                .setName("Jane")
+                .setKey("jane_key")
+                .build())
+        .setIntent(new Intent(Intent.ACTION_DEFAULT))
+        .build();
+ShortcutManager sm = getSystemService(ShortcutManager.class);
+sm.addDynamicShortcuts(List.of(shortcut));
+
+// 2. Create channel
+NotificationChannel channel = new NotificationChannel(
+        "messages", "Messages", NotificationManager.IMPORTANCE_HIGH);
+nm.createNotificationChannel(channel);
+
+// 3. Build conversation notification
+Person sender = new Person.Builder()
+        .setName("Jane")
+        .setKey("jane_key")
+        .setIcon(Icon.createWithResource(context, R.drawable.avatar_jane))
+        .build();
+
+Notification.MessagingStyle style = new Notification.MessagingStyle(me)
+        .addMessage("Hey, are you free tonight?", System.currentTimeMillis(), sender);
+
+Notification notification = new Notification.Builder(this, "messages")
+        .setSmallIcon(R.drawable.ic_message)
+        .setShortcutId("contact_jane")
+        .setStyle(style)
+        .setCategory(Notification.CATEGORY_MESSAGE)
+        .build();
+nm.notify(100, notification);
+```
+
+### 28.20.7 Creating a Bubble Notification
+
+```java
+// Build upon the conversation notification above
+Intent bubbleIntent = new Intent(context, ChatActivity.class)
+        .putExtra("contact", "jane");
+PendingIntent bubblePendingIntent = PendingIntent.getActivity(
+        context, 0, bubbleIntent,
+        PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+
+Notification.BubbleMetadata bubble = new Notification.BubbleMetadata.Builder(
+        bubblePendingIntent,
+        Icon.createWithResource(context, R.drawable.avatar_jane))
+    .setDesiredHeight(600)
+    .setAutoExpandBubble(false)
+    .setSuppressNotification(false)
+    .build();
+
+Notification notification = new Notification.Builder(this, "messages")
+        .setSmallIcon(R.drawable.ic_message)
+        .setShortcutId("contact_jane")
+        .setStyle(style)
+        .setBubbleMetadata(bubble)
+        .build();
+nm.notify(100, notification);
+```
+
+### 28.20.8 Implementing a NotificationListenerService
+
+```java
+public class MyNotificationListener extends NotificationListenerService {
+
+    @Override
+    public void onNotificationPosted(StatusBarNotification sbn) {
+        Log.d("NLS", "Posted: " + sbn.getKey()
+                + " pkg=" + sbn.getPackageName()
+                + " title=" + sbn.getNotification().extras
+                        .getString(Notification.EXTRA_TITLE));
+    }
+
+    @Override
+    public void onNotificationRemoved(StatusBarNotification sbn,
+            RankingMap rankingMap, int reason) {
+        Log.d("NLS", "Removed: " + sbn.getKey() + " reason=" + reason);
+    }
+
+    @Override
+    public void onNotificationRankingUpdate(RankingMap rankingMap) {
+        Log.d("NLS", "Ranking update received");
+    }
+}
+```
+
+AndroidManifest.xml:
+```xml
+<service
+    android:name=".MyNotificationListener"
+    android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+    android:exported="true">
+    <intent-filter>
+        <action android:name=
+            "android.service.notification.NotificationListenerService" />
+    </intent-filter>
+</service>
+```
+
+The user must manually enable the listener in **Settings > Notifications >
+Notification access**.
+
+### 28.20.9 Programmatically Managing DND
+
+```java
+NotificationManager nm = getSystemService(NotificationManager.class);
+
+// Check if the app has DND access
+if (nm.isNotificationPolicyAccessGranted()) {
+    // Set DND to priority-only
+    nm.setInterruptionFilter(
+            NotificationManager.INTERRUPTION_FILTER_PRIORITY);
+
+    // Configure DND policy
+    NotificationManager.Policy policy = new NotificationManager.Policy(
+            NotificationManager.Policy.PRIORITY_CATEGORY_CALLS
+                | NotificationManager.Policy.PRIORITY_CATEGORY_MESSAGES,
+            NotificationManager.Policy.PRIORITY_SENDERS_CONTACTS,
+            NotificationManager.Policy.PRIORITY_SENDERS_CONTACTS);
+    nm.setNotificationPolicy(policy);
+}
+```
+
+### 28.20.10 Tracing the Notification Pipeline
+
+Enable verbose logging for the notification service:
+
+```bash
+adb shell setprop log.tag.NotificationService VERBOSE
+adb shell setprop log.tag.NotificationRecord DEBUG
+adb shell setprop log.tag.ZenModeHelper DEBUG
+adb shell setprop log.tag.NotifAttentionHelper DEBUG
+adb shell setprop log.tag.RankingHelper DEBUG
+```
+
+Then monitor with:
+
+```bash
+adb logcat -s NotificationService NotificationRecord ZenModeHelper \
+    NotifAttentionHelper RankingHelper
+```
+
+### 28.20.11 Inspecting Notification History
+
+Android 11+ stores notification history:
+
+```bash
+adb shell dumpsys notification history
+```
+
+Or via the Settings UI: **Settings > Notifications > Notification history**.
+
+### 28.20.12 Testing Snooze Behavior
+
+```bash
+# Snooze a notification for 60 seconds
+adb shell cmd notification snooze --for 60000 "0|com.example.app|1|null|10088"
+
+# List snoozed notifications
+adb shell dumpsys notification snoozed
+```
+
+### 28.20.13 Debugging Bubble Issues
+
+```bash
+# Check if bubbles are enabled globally
+adb shell settings get global notification_bubbles
+
+# Check per-app bubble preference
+adb shell dumpsys notification | grep -A 3 "bubble"
+
+# Enable bubble logging
+adb shell setprop log.tag.BubbleExtractor DEBUG
+adb shell setprop log.tag.Bubbles DEBUG
+```
+
+### 28.20.14 Observing Attention Effects
+
+To debug why a notification does or does not make sound/vibrate:
+
+```bash
+adb shell setprop log.tag.NotifAttentionHelper VERBOSE
+adb logcat -s NotifAttentionHelper
+```
+
+The attention helper logs detailed reasons for its buzz-beep-blink decisions,
+including DND suppression, listener hints, and "alert once" flags.
+
+### 28.20.15 Notification Architecture Exploration Script
+
+```bash
+#!/bin/bash
+# Explore the notification subsystem source structure
+NOTIF_DIR="frameworks/base/services/core/java/com/android/server/notification"
+
+echo "=== Core Service Files ==="
+wc -l $NOTIF_DIR/NotificationManagerService.java
+wc -l $NOTIF_DIR/NotificationRecord.java
+wc -l $NOTIF_DIR/PreferencesHelper.java
+wc -l $NOTIF_DIR/ZenModeHelper.java
+wc -l $NOTIF_DIR/RankingHelper.java
+
+echo ""
+echo "=== Signal Extractors ==="
+grep -l "implements NotificationSignalExtractor" $NOTIF_DIR/*.java
+
+echo ""
+echo "=== All Files ==="
+ls $NOTIF_DIR/*.java | wc -l
+echo "files in the notification server package"
+```
+
+### 28.20.16 Summary of Key Source Files
+
+| File | Lines | Role |
+|------|-------|------|
+| `NotificationManagerService.java` | ~15,500 | Central service |
+| `NotificationRecord.java` | ~1,200 | Server-side notification wrapper |
+| `PreferencesHelper.java` | ~2,800 | Channel and group storage |
+| `ZenModeHelper.java` | ~2,500 | DND state machine |
+| `ZenModeFiltering.java` | ~600 | DND intercept decisions |
+| `RankingHelper.java` | ~250 | Signal extraction orchestrator |
+| `NotificationAttentionHelper.java` | ~1,500 | Sound, vibration, LED |
+| `GroupHelper.java` | ~1,400 | Auto-grouping logic |
+| `SnoozeHelper.java` | ~600 | Snooze state management |
+| `ShortcutHelper.java` | ~350 | Conversation shortcut queries |
+| `ManagedServices.java` | ~2,200 | Listener/assistant lifecycle |
+| `ValidateNotificationPeople.java` | ~700 | Contact resolution |
+| `BubbleExtractor.java` | ~250 | Bubble eligibility |
+| `ImportanceExtractor.java` | ~58 | Importance calculation |
+| `ZenModeExtractor.java` | ~50 | DND intercept signal |
+| `NotificationShellCmd.java` | ~400 | ADB shell interface |
+| `NotificationStackScrollLayout.java` | ~5,000+ | SystemUI shade container |
+| `BubbleController.java` | ~2,000+ | WM Shell bubble management |
+
+---
+
+### 28.20.17 Monitoring Auto-Grouping
+
+Auto-grouping bundles notifications from the same package when there are too
+many individual groups. To observe this:
+
+```bash
+adb shell setprop log.tag.GroupHelper DEBUG
+adb logcat -s GroupHelper
+```
+
+Auto-grouping triggers when a package has more than
+`AUTOGROUP_SPARSE_GROUPS_AT_COUNT` (6) sparse groups each with fewer than 3
+children. The auto-group summary uses the key `"ranker_group"` (or an
+aggregate group key with the prefix `"Aggregate_"` when force grouping is
+active).
+
+### 28.20.18 Verifying Channel Configuration
+
+To verify that your app's notification channels are correctly configured, use
+the Settings shell command:
+
+```bash
+# List all channels for a package and user
+adb shell cmd notification list_channels <package_name> <user_id>
+
+# Example
+adb shell cmd notification list_channels com.google.android.gm 0
+```
+
+You can also check channel importance directly:
+
+```bash
+adb shell dumpsys notification | grep -A 10 "com.your.package"
+```
+
+### 28.20.19 Testing the Full Pipeline with a Custom Extractor
+
+While the signal extractor pipeline is not extensible by third-party apps, you
+can modify the configuration for testing purposes on an eng build:
+
+```xml
+<!-- Modify frameworks/base/core/res/res/values/config.xml -->
+<string-array name="config_notificationSignalExtractors">
+    <!-- Add your custom extractor here -->
+    <item>com.android.server.notification.NotificationChannelExtractor</item>
+    <!-- ... existing extractors ... -->
+    <item>com.example.MyCustomExtractor</item>
+</string-array>
+```
+
+Your custom extractor must implement `NotificationSignalExtractor` and live in
+the `system_server` classpath.
+
+### 28.20.20 Foreground Service Notification Constraints
+
+Foreground service (FGS) notifications have special constraints:
+
+```bash
+# Check FGS notification flags
+adb shell dumpsys notification | grep "FLAG_FOREGROUND_SERVICE"
+```
+
+Key behaviors:
+
+- FGS notifications cannot be dismissed by the user (they get `FLAG_NO_CLEAR`).
+- If the channel importance is MIN or NONE, it is elevated to LOW.
+- FGS notifications cannot be cancelled by the app while the service runs.
+- Starting from Android 14, the system enforces that FGS notifications must
+  be visible (importance > NONE) or the FGS start is rejected.
+
+### 28.20.21 Notification Permission (Android 13+)
+
+Since Android 13 (API 33), posting notifications requires the
+`POST_NOTIFICATIONS` runtime permission. The `PermissionHelper` tracks this:
+
+```bash
+# Check if a package has notification permission
+adb shell dumpsys notification permissions | grep "com.your.package"
+```
+
+Apps targeting API 33+ must request this permission at runtime. Pre-existing
+apps (upgraded from older API levels) get the permission granted automatically
+if they had existing notification channels.
+
+---
+
+## Summary
+
+The Android notification system is a deeply layered pipeline that transforms a
+simple `notify()` call into a carefully ranked, policy-filtered, attention-managed
+user experience. The key architectural insights from this chapter:
+
+1. **NotificationManagerService** is the central hub. At over 15,500 lines, it
+   coordinates permission checks, channel lookups, signal extraction, ranking,
+   DND filtering, attention effects, and listener dispatch.
+
+2. **The signal extractor pipeline** provides a modular, extensible architecture.
+   Each extractor writes a specific signal onto the `NotificationRecord`, and the
+   system can be extended by adding new extractors to the XML configuration.
+
+3. **Notification channels** shift control to users. Once created, channel settings
+   are user-owned, and apps cannot programmatically override them.
+
+4. **Do Not Disturb** is not a single switch but a rule engine. Multiple
+   `AutomaticZenRule` objects can be active simultaneously, each with its own
+   `ZenPolicy`. The `ZenModeHelper` consolidates them into a single effective policy.
+
+5. **Conversation notifications** receive first-class treatment through
+   `MessagingStyle` + sharing shortcuts + `Person` data, enabling features like
+   priority sections and bubbles.
+
+6. **Bubbles** bridge the notification system and the window manager. Eligibility
+   is determined in NMS, but the UI lifecycle is managed by WM Shell's
+   `BubbleController`.
+
+7. **SystemUI's notification pipeline** transforms raw `StatusBarNotification`
+   objects into a rendered shade through a series of coordinators, filters,
+   sorters, and the `NotificationStackScrollLayout`.
+
+8. **The threading model** is carefully designed: Binder calls arrive on the
+   Binder pool, processing happens on the handler thread under `mNotificationLock`,
+   and ranking reconsideration runs on a separate thread. This prevents the
+   notification system from blocking the main thread or causing deadlocks.
+
+9. **Auto-grouping** and **force grouping** ensure a clean notification shade
+   even when apps do not properly group their notifications. The `GroupHelper`
+   handles both traditional auto-grouping (2+ ungrouped notifications) and
+   aggressive force-grouping (6+ sparse groups).
+
+10. **Attention effects** (sound, vibration, LED, heads-up) are determined by
+    a complex decision tree in `NotificationAttentionHelper` that considers
+    importance, DND state, listener hints, group alert behavior, and the
+    `FLAG_ONLY_ALERT_ONCE` flag.
+
+11. **Notification history** is maintained at two levels: an in-memory ring
+    buffer archive for `getHistoricalNotifications()` and a persistent SQLite
+    database for the Settings notification history UI.
+
+## Source File Index
 
 For quick reference, the complete set of source files discussed in this chapter:
 
@@ -2638,479 +3109,3 @@ frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/bubbles/
 frameworks/base/core/res/res/values/config.xml
     config_notificationSignalExtractors     -- Extractor pipeline order
 ```
-
----
-
-## 28.21 Try It
-
-### 28.21.1 Inspecting Active Notifications via ADB
-
-Dump the current notification state:
-
-```bash
-adb shell dumpsys notification
-```
-
-This produces extensive output including:
-
-- All active notifications with their keys, channels, and importance.
-- Ranking information.
-- Listener state.
-- DND configuration.
-- Snooze state.
-
-To see just the notification list:
-
-```bash
-adb shell dumpsys notification --noredact | grep -A 5 "NotificationRecord"
-```
-
-### 28.21.2 Dumping Notification Channels
-
-```bash
-adb shell dumpsys notification channels
-```
-
-Or for a specific package:
-
-```bash
-adb shell dumpsys notification channels com.example.myapp
-```
-
-### 28.21.3 Inspecting Do Not Disturb State
-
-```bash
-adb shell dumpsys notification zen
-```
-
-Or through the settings command:
-
-```bash
-adb shell settings get global zen_mode
-# 0 = off, 1 = priority, 2 = total silence, 3 = alarms
-```
-
-### 28.21.4 Using the Notification Shell Command
-
-NMS includes a shell command interface:
-
-```bash
-# List all notification channels for a package
-adb shell cmd notification list_channels com.example.myapp 0
-
-# Post a test notification
-adb shell cmd notification post -t "Test" "tag" "Hello from shell"
-
-# Snooze a notification
-adb shell cmd notification snooze --for 60000 <key>
-
-# Unsnooze a notification
-adb shell cmd notification unsnooze <key>
-```
-
-Source: `frameworks/base/services/core/java/com/android/server/notification/NotificationShellCmd.java`
-
-### 28.21.5 Posting a Notification from Code
-
-```java
-// Minimal notification with a channel
-NotificationChannel channel = new NotificationChannel(
-        "demo_channel",
-        "Demo Channel",
-        NotificationManager.IMPORTANCE_DEFAULT);
-NotificationManager nm = getSystemService(NotificationManager.class);
-nm.createNotificationChannel(channel);
-
-Notification notification = new Notification.Builder(this, "demo_channel")
-        .setSmallIcon(R.drawable.ic_notification)
-        .setContentTitle("Hello")
-        .setContentText("This is a test notification")
-        .setAutoCancel(true)
-        .build();
-nm.notify(1, notification);
-```
-
-### 28.21.6 Posting a Conversation Notification
-
-```java
-// 1. Create a sharing shortcut
-ShortcutInfo shortcut = new ShortcutInfo.Builder(context, "contact_jane")
-        .setLongLived(true)
-        .setShortLabel("Jane")
-        .setPerson(new Person.Builder()
-                .setName("Jane")
-                .setKey("jane_key")
-                .build())
-        .setIntent(new Intent(Intent.ACTION_DEFAULT))
-        .build();
-ShortcutManager sm = getSystemService(ShortcutManager.class);
-sm.addDynamicShortcuts(List.of(shortcut));
-
-// 2. Create channel
-NotificationChannel channel = new NotificationChannel(
-        "messages", "Messages", NotificationManager.IMPORTANCE_HIGH);
-nm.createNotificationChannel(channel);
-
-// 3. Build conversation notification
-Person sender = new Person.Builder()
-        .setName("Jane")
-        .setKey("jane_key")
-        .setIcon(Icon.createWithResource(context, R.drawable.avatar_jane))
-        .build();
-
-Notification.MessagingStyle style = new Notification.MessagingStyle(me)
-        .addMessage("Hey, are you free tonight?", System.currentTimeMillis(), sender);
-
-Notification notification = new Notification.Builder(this, "messages")
-        .setSmallIcon(R.drawable.ic_message)
-        .setShortcutId("contact_jane")
-        .setStyle(style)
-        .setCategory(Notification.CATEGORY_MESSAGE)
-        .build();
-nm.notify(100, notification);
-```
-
-### 28.21.7 Creating a Bubble Notification
-
-```java
-// Build upon the conversation notification above
-Intent bubbleIntent = new Intent(context, ChatActivity.class)
-        .putExtra("contact", "jane");
-PendingIntent bubblePendingIntent = PendingIntent.getActivity(
-        context, 0, bubbleIntent,
-        PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-
-Notification.BubbleMetadata bubble = new Notification.BubbleMetadata.Builder(
-        bubblePendingIntent,
-        Icon.createWithResource(context, R.drawable.avatar_jane))
-    .setDesiredHeight(600)
-    .setAutoExpandBubble(false)
-    .setSuppressNotification(false)
-    .build();
-
-Notification notification = new Notification.Builder(this, "messages")
-        .setSmallIcon(R.drawable.ic_message)
-        .setShortcutId("contact_jane")
-        .setStyle(style)
-        .setBubbleMetadata(bubble)
-        .build();
-nm.notify(100, notification);
-```
-
-### 28.21.8 Implementing a NotificationListenerService
-
-```java
-public class MyNotificationListener extends NotificationListenerService {
-
-    @Override
-    public void onNotificationPosted(StatusBarNotification sbn) {
-        Log.d("NLS", "Posted: " + sbn.getKey()
-                + " pkg=" + sbn.getPackageName()
-                + " title=" + sbn.getNotification().extras
-                        .getString(Notification.EXTRA_TITLE));
-    }
-
-    @Override
-    public void onNotificationRemoved(StatusBarNotification sbn,
-            RankingMap rankingMap, int reason) {
-        Log.d("NLS", "Removed: " + sbn.getKey() + " reason=" + reason);
-    }
-
-    @Override
-    public void onNotificationRankingUpdate(RankingMap rankingMap) {
-        Log.d("NLS", "Ranking update received");
-    }
-}
-```
-
-AndroidManifest.xml:
-```xml
-<service
-    android:name=".MyNotificationListener"
-    android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
-    android:exported="true">
-    <intent-filter>
-        <action android:name=
-            "android.service.notification.NotificationListenerService" />
-    </intent-filter>
-</service>
-```
-
-The user must manually enable the listener in **Settings > Notifications >
-Notification access**.
-
-### 28.21.9 Programmatically Managing DND
-
-```java
-NotificationManager nm = getSystemService(NotificationManager.class);
-
-// Check if the app has DND access
-if (nm.isNotificationPolicyAccessGranted()) {
-    // Set DND to priority-only
-    nm.setInterruptionFilter(
-            NotificationManager.INTERRUPTION_FILTER_PRIORITY);
-
-    // Configure DND policy
-    NotificationManager.Policy policy = new NotificationManager.Policy(
-            NotificationManager.Policy.PRIORITY_CATEGORY_CALLS
-                | NotificationManager.Policy.PRIORITY_CATEGORY_MESSAGES,
-            NotificationManager.Policy.PRIORITY_SENDERS_CONTACTS,
-            NotificationManager.Policy.PRIORITY_SENDERS_CONTACTS);
-    nm.setNotificationPolicy(policy);
-}
-```
-
-### 28.21.10 Tracing the Notification Pipeline
-
-Enable verbose logging for the notification service:
-
-```bash
-adb shell setprop log.tag.NotificationService VERBOSE
-adb shell setprop log.tag.NotificationRecord DEBUG
-adb shell setprop log.tag.ZenModeHelper DEBUG
-adb shell setprop log.tag.NotifAttentionHelper DEBUG
-adb shell setprop log.tag.RankingHelper DEBUG
-```
-
-Then monitor with:
-
-```bash
-adb logcat -s NotificationService NotificationRecord ZenModeHelper \
-    NotifAttentionHelper RankingHelper
-```
-
-### 28.21.11 Inspecting Notification History
-
-Android 11+ stores notification history:
-
-```bash
-adb shell dumpsys notification history
-```
-
-Or via the Settings UI: **Settings > Notifications > Notification history**.
-
-### 28.21.12 Testing Snooze Behavior
-
-```bash
-# Snooze a notification for 60 seconds
-adb shell cmd notification snooze --for 60000 "0|com.example.app|1|null|10088"
-
-# List snoozed notifications
-adb shell dumpsys notification snoozed
-```
-
-### 28.21.13 Debugging Bubble Issues
-
-```bash
-# Check if bubbles are enabled globally
-adb shell settings get global notification_bubbles
-
-# Check per-app bubble preference
-adb shell dumpsys notification | grep -A 3 "bubble"
-
-# Enable bubble logging
-adb shell setprop log.tag.BubbleExtractor DEBUG
-adb shell setprop log.tag.Bubbles DEBUG
-```
-
-### 28.21.14 Observing Attention Effects
-
-To debug why a notification does or does not make sound/vibrate:
-
-```bash
-adb shell setprop log.tag.NotifAttentionHelper VERBOSE
-adb logcat -s NotifAttentionHelper
-```
-
-The attention helper logs detailed reasons for its buzz-beep-blink decisions,
-including DND suppression, listener hints, and "alert once" flags.
-
-### 28.21.15 Notification Architecture Exploration Script
-
-```bash
-#!/bin/bash
-# Explore the notification subsystem source structure
-NOTIF_DIR="frameworks/base/services/core/java/com/android/server/notification"
-
-echo "=== Core Service Files ==="
-wc -l $NOTIF_DIR/NotificationManagerService.java
-wc -l $NOTIF_DIR/NotificationRecord.java
-wc -l $NOTIF_DIR/PreferencesHelper.java
-wc -l $NOTIF_DIR/ZenModeHelper.java
-wc -l $NOTIF_DIR/RankingHelper.java
-
-echo ""
-echo "=== Signal Extractors ==="
-grep -l "implements NotificationSignalExtractor" $NOTIF_DIR/*.java
-
-echo ""
-echo "=== All Files ==="
-ls $NOTIF_DIR/*.java | wc -l
-echo "files in the notification server package"
-```
-
-### 28.21.16 Summary of Key Source Files
-
-| File | Lines | Role |
-|------|-------|------|
-| `NotificationManagerService.java` | ~15,500 | Central service |
-| `NotificationRecord.java` | ~1,200 | Server-side notification wrapper |
-| `PreferencesHelper.java` | ~2,800 | Channel and group storage |
-| `ZenModeHelper.java` | ~2,500 | DND state machine |
-| `ZenModeFiltering.java` | ~600 | DND intercept decisions |
-| `RankingHelper.java` | ~250 | Signal extraction orchestrator |
-| `NotificationAttentionHelper.java` | ~1,500 | Sound, vibration, LED |
-| `GroupHelper.java` | ~1,400 | Auto-grouping logic |
-| `SnoozeHelper.java` | ~600 | Snooze state management |
-| `ShortcutHelper.java` | ~350 | Conversation shortcut queries |
-| `ManagedServices.java` | ~2,200 | Listener/assistant lifecycle |
-| `ValidateNotificationPeople.java` | ~700 | Contact resolution |
-| `BubbleExtractor.java` | ~250 | Bubble eligibility |
-| `ImportanceExtractor.java` | ~58 | Importance calculation |
-| `ZenModeExtractor.java` | ~50 | DND intercept signal |
-| `NotificationShellCmd.java` | ~400 | ADB shell interface |
-| `NotificationStackScrollLayout.java` | ~5,000+ | SystemUI shade container |
-| `BubbleController.java` | ~2,000+ | WM Shell bubble management |
-
----
-
-### 28.21.17 Monitoring Auto-Grouping
-
-Auto-grouping bundles notifications from the same package when there are too
-many individual groups. To observe this:
-
-```bash
-adb shell setprop log.tag.GroupHelper DEBUG
-adb logcat -s GroupHelper
-```
-
-Auto-grouping triggers when a package has more than
-`AUTOGROUP_SPARSE_GROUPS_AT_COUNT` (6) sparse groups each with fewer than 3
-children. The auto-group summary uses the key `"ranker_group"` (or an
-aggregate group key with the prefix `"Aggregate_"` when force grouping is
-active).
-
-### 28.21.18 Verifying Channel Configuration
-
-To verify that your app's notification channels are correctly configured, use
-the Settings shell command:
-
-```bash
-# List all channels for a package and user
-adb shell cmd notification list_channels <package_name> <user_id>
-
-# Example
-adb shell cmd notification list_channels com.google.android.gm 0
-```
-
-You can also check channel importance directly:
-
-```bash
-adb shell dumpsys notification | grep -A 10 "com.your.package"
-```
-
-### 28.21.19 Testing the Full Pipeline with a Custom Extractor
-
-While the signal extractor pipeline is not extensible by third-party apps, you
-can modify the configuration for testing purposes on an eng build:
-
-```xml
-<!-- Modify frameworks/base/core/res/res/values/config.xml -->
-<string-array name="config_notificationSignalExtractors">
-    <!-- Add your custom extractor here -->
-    <item>com.android.server.notification.NotificationChannelExtractor</item>
-    <!-- ... existing extractors ... -->
-    <item>com.example.MyCustomExtractor</item>
-</string-array>
-```
-
-Your custom extractor must implement `NotificationSignalExtractor` and live in
-the `system_server` classpath.
-
-### 28.21.20 Foreground Service Notification Constraints
-
-Foreground service (FGS) notifications have special constraints:
-
-```bash
-# Check FGS notification flags
-adb shell dumpsys notification | grep "FLAG_FOREGROUND_SERVICE"
-```
-
-Key behaviors:
-
-- FGS notifications cannot be dismissed by the user (they get `FLAG_NO_CLEAR`).
-- If the channel importance is MIN or NONE, it is elevated to LOW.
-- FGS notifications cannot be cancelled by the app while the service runs.
-- Starting from Android 14, the system enforces that FGS notifications must
-  be visible (importance > NONE) or the FGS start is rejected.
-
-### 28.21.21 Notification Permission (Android 13+)
-
-Since Android 13 (API 33), posting notifications requires the
-`POST_NOTIFICATIONS` runtime permission. The `PermissionHelper` tracks this:
-
-```bash
-# Check if a package has notification permission
-adb shell dumpsys notification permissions | grep "com.your.package"
-```
-
-Apps targeting API 33+ must request this permission at runtime. Pre-existing
-apps (upgraded from older API levels) get the permission granted automatically
-if they had existing notification channels.
-
----
-
-## Summary
-
-The Android notification system is a deeply layered pipeline that transforms a
-simple `notify()` call into a carefully ranked, policy-filtered, attention-managed
-user experience. The key architectural insights from this chapter:
-
-1. **NotificationManagerService** is the central hub. At over 15,500 lines, it
-   coordinates permission checks, channel lookups, signal extraction, ranking,
-   DND filtering, attention effects, and listener dispatch.
-
-2. **The signal extractor pipeline** provides a modular, extensible architecture.
-   Each extractor writes a specific signal onto the `NotificationRecord`, and the
-   system can be extended by adding new extractors to the XML configuration.
-
-3. **Notification channels** shift control to users. Once created, channel settings
-   are user-owned, and apps cannot programmatically override them.
-
-4. **Do Not Disturb** is not a single switch but a rule engine. Multiple
-   `AutomaticZenRule` objects can be active simultaneously, each with its own
-   `ZenPolicy`. The `ZenModeHelper` consolidates them into a single effective policy.
-
-5. **Conversation notifications** receive first-class treatment through
-   `MessagingStyle` + sharing shortcuts + `Person` data, enabling features like
-   priority sections and bubbles.
-
-6. **Bubbles** bridge the notification system and the window manager. Eligibility
-   is determined in NMS, but the UI lifecycle is managed by WM Shell's
-   `BubbleController`.
-
-7. **SystemUI's notification pipeline** transforms raw `StatusBarNotification`
-   objects into a rendered shade through a series of coordinators, filters,
-   sorters, and the `NotificationStackScrollLayout`.
-
-8. **The threading model** is carefully designed: Binder calls arrive on the
-   Binder pool, processing happens on the handler thread under `mNotificationLock`,
-   and ranking reconsideration runs on a separate thread. This prevents the
-   notification system from blocking the main thread or causing deadlocks.
-
-9. **Auto-grouping** and **force grouping** ensure a clean notification shade
-   even when apps do not properly group their notifications. The `GroupHelper`
-   handles both traditional auto-grouping (2+ ungrouped notifications) and
-   aggressive force-grouping (6+ sparse groups).
-
-10. **Attention effects** (sound, vibration, LED, heads-up) are determined by
-    a complex decision tree in `NotificationAttentionHelper` that considers
-    importance, DND state, listener hints, group alert behavior, and the
-    `FLAG_ONLY_ALERT_ONCE` flag.
-
-11. **Notification history** is maintained at two levels: an in-memory ring
-    buffer archive for `getHistoricalNotifications()` and a persistent SQLite
-    database for the Settings notification history UI.
-
----
-
