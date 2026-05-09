@@ -42,7 +42,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | VI | 23 | Window System | REVIEWED |
 | VI | 24 | Display System | REVIEWED |
 | VI | 25 | View System | REVIEWED |
-| VII | 26 | Package Manager | UNDER REVIEW |
+| VII | 26 | Package Manager | REVIEWED |
 | VII | 27 | Content Providers | UNDER REVIEW |
 | VII | 28 | Notifications | UNDER REVIEW |
 | VII | 29 | Power Management | UNDER REVIEW |
