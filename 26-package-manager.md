@@ -13,11 +13,6 @@ itself, then moving through the service architecture, boot-time scanning, the in
 pipeline, the permission model, intent resolution, split APKs, and the runtime resource
 overlay system.
 
-> **Source root for this chapter:**
-> `frameworks/base/services/core/java/com/android/server/pm/`
-> `frameworks/base/core/java/android/content/pm/`
-> `frameworks/base/services/core/java/com/android/server/om/`
-
 ---
 
 ## 26.1 APK Structure
