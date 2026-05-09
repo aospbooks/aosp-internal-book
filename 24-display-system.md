@@ -3056,32 +3056,6 @@ and is presented one period late (a "jank" frame). The `FrameTimeline`
 records these misses, and tools like `perfetto` and `dumpsys SurfaceFlinger
 --frametimeline` expose them for performance analysis.
 
-### Source Code Statistics
-
-The display system codebase is substantial:
-
-| Component | Lines of Code |
-|-----------|--------------|
-| DisplayManagerService.java | 6,601 |
-| DisplayPowerController.java | 3,507 |
-| DisplayRotation.java | 2,255 |
-| LogicalDisplay.java | 1,314 |
-| LogicalDisplayMapper.java | ~1,200 |
-| DisplayAreaPolicyBuilder.java | 1,052 |
-| DisplayArea.java | 882 |
-| ColorDisplayService.java | ~1,800 |
-| DeviceStateManagerService.java | ~1,500 |
-| RefreshRateSelector.cpp/.h | ~2,000 |
-| Scheduler.cpp/.h | ~1,500 |
-| LayerLifecycleManager.cpp/.h | ~800 |
-| LayerSnapshotBuilder.cpp/.h | ~1,200 |
-| BLASTBufferQueue.cpp/.h | ~1,500 |
-| **Estimated total** | **~25,000+** |
-
-This does not include SurfaceFlinger's main loop, CompositionEngine
-implementation, HWComposer HAL interface, RenderEngine, or the client-side
-Surface/Canvas/OpenGL stack, which collectively add another 50,000+ lines.
-
 ### Companion Report Series
 
 The display-related sections of this chapter draw on the AOSP Window System
