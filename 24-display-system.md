@@ -974,26 +974,7 @@ The offset strategy:
 
 The legacy `PhaseOffsets` implementation used fixed nanosecond offsets.
 The modern `WorkDuration` implementation uses duration-based scheduling
-that adapts better to different refresh rates:
-
-```mermaid
-gantt
-    title VSYNC Phase Offsets (16.67ms period)
-    dateFormat X
-    axisFormat %sms
-
-    section Late Config
-    App work         :app, 0, 10
-    SF work          :sf, 10, 14
-    HWC present      :hwc, 14, 16
-    VSYNC            :milestone, 16, 16
-
-    section Early Config
-    App work (early) :app2, 0, 8
-    SF work (early)  :sf2, 6, 12
-    HWC present      :hwc2, 12, 16
-    VSYNC            :milestone, 16, 16
-```
+that adapts better to different refresh rates.
 
 ### 24.3.9 VsyncModulator: Dynamic Offset Switching
 
