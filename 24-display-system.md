@@ -461,13 +461,15 @@ classDiagram
 The Javadoc for `DisplayArea` explains the three flavours that enforce
 Z-order correctness:
 
-> DisplayAreas come in three flavors:
-> - BELOW_TASKS: Can only contain BELOW_TASK DisplayAreas and WindowTokens
->   that go below tasks.
-> - ABOVE_TASKS: Can only contain ABOVE_TASK DisplayAreas and WindowTokens
->   that go above tasks.
-> - ANY: Can contain any kind of DisplayArea, and any kind of WindowToken
->   or the Task container.
+```
+DisplayAreas come in three flavors:
+- BELOW_TASKS: Can only contain BELOW_TASK DisplayAreas and WindowTokens
+   that go below tasks.
+- ABOVE_TASKS: Can only contain ABOVE_TASK DisplayAreas and WindowTokens
+   that go above tasks.
+- ANY: Can contain any kind of DisplayArea, and any kind of WindowToken
+   or the Task container.
+```
 
 ### 24.2.2 Feature IDs
 
