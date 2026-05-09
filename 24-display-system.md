@@ -2950,23 +2950,23 @@ trace marker.
 This chapter has covered the major subsystems of Android's display pipeline,
 from the framework-level `DisplayManagerService` down to the native-level
 SurfaceFlinger compositor and buffer management. For readers seeking
-additional depth, the companion reports provide exhaustive analysis of
-every topic introduced here:
+additional depth, the AOSP Window System Architecture Report -- the same
+three-part companion document introduced in section 23.11 -- provides
+exhaustive analysis of every topic introduced here:
 
 ### Companion Report Series
 
-The AOSP Window and Display System Architecture Report is a three-part
-document totalling over 100 sections:
+The display-related sections of this chapter draw on the AOSP Window System
+Architecture Report -- the same three-part companion document introduced in
+section 23.11. The display-relevant sections within that report are:
 
-**Part 1: Foundations, Architecture, and Rendering Pipeline (Sections 1-45)**
+**Part 1: Foundations (Sections 1-45)**
 
-- WindowManagerService architecture and threading model
-- WindowContainer hierarchy and Z-ordering
-- Shell Transitions and animation system
-- SurfaceFlinger rendering pipeline
-- Window insets and system bars
+- Section 22: DisplayArea hierarchy
+- Sections 32-35: Multi-display
+- Section 37: HWUI and rendering pipeline
 
-**Part 2: Window Features and Subsystems (Sections 46-75)**
+**Part 2: Features (Sections 46-75)**
 
 - Section 51: BufferQueue and BLASTBufferQueue Architecture -- Slot state
   machine, triple buffering, BLAST transaction-based delivery
@@ -2983,7 +2983,7 @@ document totalling over 100 sections:
 - Section 62: Display Color Management -- ColorDisplayService, night display,
   white balance, saturation, daltonizer, SurfaceFlinger color pipeline
 
-**Part 3: System Integration and Platform Variants (Sections 76-100)**
+**Part 3: Platform (Sections 76-100)**
 
 - Section 77: Power Management and Window System -- AWAKE through ASLEEP
   states, DreamManagerService, AOD, DisplayPowerController, sleep tokens
