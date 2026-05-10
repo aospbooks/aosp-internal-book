@@ -14,74 +14,74 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 
 64 chapters organized bottom-to-top through the Android architecture:
 
-| Part | Ch. | Topics | Status |
-|------|-----|--------|--------|
-| I | 0 | Frontmatter | REVIEWED |
-| I | 1 | Introduction | REVIEWED |
-| I | 2 | Source Code & Build System (Soong/Bazel/Kleaf) | REVIEWED |
-| I | 3 | Feature Flags (aconfig) | REVIEWED |
-| II | 4 | Boot and Init | REVIEWED |
-| II | 5 | Kernel (GKI) | REVIEWED |
-| II | 6 | System Properties | REVIEWED |
-| III | 7 | Bionic & Linker | REVIEWED |
-| III | 8 | Memory Management | REVIEWED |
-| III | 9 | Binder IPC | REVIEWED |
-| III | 10 | HAL (HIDL/AIDL) | REVIEWED |
-| III | 11 | NDK | REVIEWED |
-| IV | 12 | Native Services | REVIEWED |
-| IV | 13 | Graphics & Render Pipeline (OpenGL ES/Vulkan/Skia/HWUI) | REVIEWED |
-| IV | 14 | Animation System | REVIEWED |
-| IV | 15 | Audio System (Spatial) | REVIEWED |
-| IV | 16 | Media & Camera | REVIEWED |
-| IV | 17 | Sensors | REVIEWED |
-| V | 18 | ART Runtime | REVIEWED |
-| V | 19 | Native Bridge (Berberis) | REVIEWED |
-| VI | 20 | system_server | REVIEWED |
-| VI | 21 | Intent System | REVIEWED |
-| VI | 22 | Activity & Window Management | REVIEWED |
-| VI | 23 | Window System | REVIEWED |
-| VI | 24 | Display System | REVIEWED |
-| VI | 25 | View System | REVIEWED |
-| VII | 26 | Package Manager | REVIEWED |
-| VII | 27 | Content Providers | REVIEWED |
-| VII | 28 | Notifications | REVIEWED |
-| VII | 29 | Power Management | REVIEWED |
-| VII | 30 | Background Tasks | REVIEWED |
-| VII | 31 | Multi-User | REVIEWED |
-| VII | 32 | Account & Sync | REVIEWED |
-| VII | 33 | Location | REVIEWED |
-| VII | 34 | Storage | REVIEWED |
-| VIII | 35 | Networking (VCN/Thread) | REVIEWED |
-| VIII | 36 | Telephony (IMS) | REVIEWED |
-| VIII | 37 | Bluetooth | REVIEWED |
-| VIII | 38 | NFC | REVIEWED |
-| VIII | 39 | USB & ADB | REVIEWED |
-| IX | 40 | Security (TEE/Trusty) | REVIEWED |
-| IX | 41 | Credential Manager | REVIEWED |
-| IX | 42 | DRM | REVIEWED |
-| X | 43 | Widgets & RemoteViews (RemoteCompose) | REVIEWED |
-| X | 44 | WebView | REVIEWED |
-| X | 45 | Accessibility | REVIEWED |
-| X | 46 | Internationalization | REVIEWED |
-| XI | 47 | SystemUI (Monet/Keyguard) | REVIEWED |
-| XI | 48 | Launcher3 | REVIEWED |
-| XI | 49 | Settings | REVIEWED |
-| XII | 50 | AI & AppFunctions (Computer Control) | REVIEWED |
-| XII | 51 | Companion & Virtual Devices | REVIEWED |
-| XIII | 52 | Mainline Modules (APEX) | REVIEWED |
-| XIII | 53 | OTA Updates | REVIEWED |
-| XIII | 54 | Virtualization (pKVM/crosvm) | REVIEWED |
-| XIII | 55 | Testing (CTS/VTS/Ravenwood) | REVIEWED |
-| XIII | 56 | Debugging Tools (Perfetto) | REVIEWED |
-| XIV | 57 | Architecture Support (ARM/x86/RISC-V) | REVIEWED |
-| XIV | 58 | Emulator | REVIEWED |
-| XIV | 59 | Device Policy | REVIEWED |
-| XIV | 60 | Automotive/TV/Wear | REVIEWED |
-| XIV | 61 | Print Services | REVIEWED |
-| XIV | 62 | Camera2 Pipeline | REVIEWED |
-| XV | 63 | Custom ROM Guide (step-by-step) | REVIEWED |
-| App. | A | Key Files Reference | REVIEWED |
-| App. | B | Glossary | REVIEWED |
+| Part | Ch. | Topics |
+|------|-----|--------|
+| I | 0 | Frontmatter |
+| I | 1 | Introduction |
+| I | 2 | Source Code & Build System (Soong/Bazel/Kleaf) |
+| I | 3 | Feature Flags (aconfig) |
+| II | 4 | Boot and Init |
+| II | 5 | Kernel (GKI) |
+| II | 6 | System Properties |
+| III | 7 | Bionic & Linker |
+| III | 8 | Memory Management |
+| III | 9 | Binder IPC |
+| III | 10 | HAL (HIDL/AIDL) |
+| III | 11 | NDK |
+| IV | 12 | Native Services |
+| IV | 13 | Graphics & Render Pipeline (OpenGL ES/Vulkan/Skia/HWUI) |
+| IV | 14 | Animation System |
+| IV | 15 | Audio System (Spatial) |
+| IV | 16 | Media & Camera |
+| IV | 17 | Sensors |
+| V | 18 | ART Runtime |
+| V | 19 | Native Bridge (Berberis) |
+| VI | 20 | system_server |
+| VI | 21 | Intent System |
+| VI | 22 | Activity & Window Management |
+| VI | 23 | Window System |
+| VI | 24 | Display System |
+| VI | 25 | View System |
+| VII | 26 | Package Manager |
+| VII | 27 | Content Providers |
+| VII | 28 | Notifications |
+| VII | 29 | Power Management |
+| VII | 30 | Background Tasks |
+| VII | 31 | Multi-User |
+| VII | 32 | Account & Sync |
+| VII | 33 | Location |
+| VII | 34 | Storage |
+| VIII | 35 | Networking (VCN/Thread) |
+| VIII | 36 | Telephony (IMS) |
+| VIII | 37 | Bluetooth |
+| VIII | 38 | NFC |
+| VIII | 39 | USB & ADB |
+| IX | 40 | Security (TEE/Trusty) |
+| IX | 41 | Credential Manager |
+| IX | 42 | DRM |
+| X | 43 | Widgets & RemoteViews (RemoteCompose) |
+| X | 44 | WebView |
+| X | 45 | Accessibility |
+| X | 46 | Internationalization |
+| XI | 47 | SystemUI (Monet/Keyguard) |
+| XI | 48 | Launcher3 |
+| XI | 49 | Settings |
+| XII | 50 | AI & AppFunctions (Computer Control) |
+| XII | 51 | Companion & Virtual Devices |
+| XIII | 52 | Mainline Modules (APEX) |
+| XIII | 53 | OTA Updates |
+| XIII | 54 | Virtualization (pKVM/crosvm) |
+| XIII | 55 | Testing (CTS/VTS/Ravenwood) |
+| XIII | 56 | Debugging Tools (Perfetto) |
+| XIV | 57 | Architecture Support (ARM/x86/RISC-V) |
+| XIV | 58 | Emulator |
+| XIV | 59 | Device Policy |
+| XIV | 60 | Automotive/TV/Wear |
+| XIV | 61 | Print Services |
+| XIV | 62 | Camera2 Pipeline |
+| XV | 63 | Custom ROM Guide (step-by-step) |
+| App. | A | Key Files Reference |
+| App. | B | Glossary |
 <!-- --8<-- [end:coverage] -->
 
 ## How to Give Feedback
