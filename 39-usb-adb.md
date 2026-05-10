@@ -558,15 +558,15 @@ When RNDIS (USB tethering) is activated:
 1. The handler configures the `RNDIS` gadget function.
 2. A locally-administered MAC address is generated from `ro.serialno`:
 
-```java
-// First byte is 0x02 to signify a locally administered address
-address[0] = 0x02;
-String serial = SystemProperties.get("ro.serialno", "1234567890ABCDEF");
-// XOR the USB serial across the remaining 5 bytes
-for (int i = 0; i < serialLength; i++) {
-    address[i % (ETH_ALEN - 1) + 1] ^= (int) serial.charAt(i);
-}
-```
+    ```java
+    // First byte is 0x02 to signify a locally administered address
+    address[0] = 0x02;
+    String serial = SystemProperties.get("ro.serialno", "1234567890ABCDEF");
+    // XOR the USB serial across the remaining 5 bytes
+    for (int i = 0; i < serialLength; i++) {
+        address[i % (ETH_ALEN - 1) + 1] ^= (int) serial.charAt(i);
+    }
+    ```
 
 3. The address is written to `/sys/class/android_usb/android0/f_rndis/ethaddr`.
 4. The tethering service takes over IP configuration of the resulting
