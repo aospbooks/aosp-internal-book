@@ -1077,28 +1077,31 @@ Widevine defines three security levels that map to the HAL's SecurityLevel enum:
 | **L2** | `HW_SECURE_CRYPTO` | Crypto operations in TEE, but decoding in software. Keys protected in hardware but decrypted content accessible to CPU. Rarely used in practice. |
 | **L3** | `SW_SECURE_CRYPTO` | All operations in software with whitebox crypto obfuscation. No hardware security. Limited to SD resolution by most license policies. |
 
+**Widevine L1 -- HW_SECURE_ALL data path:**
+
 ```mermaid
 graph TB
-    subgraph "Widevine L1 - HW_SECURE_ALL"
-        L1_APP[Application] --> L1_FW[DRM Framework]
-        L1_FW --> L1_WV[Widevine HAL]
-        L1_WV --> L1_OEM[OEMCrypto in TEE]
-        L1_OEM --> L1_DEC[Secure Video Decoder]
-        L1_DEC --> L1_DISP[Secure Display Path]
-        style L1_OEM fill:#4a9,stroke:#333,color:#fff
-        style L1_DEC fill:#4a9,stroke:#333,color:#fff
-        style L1_DISP fill:#4a9,stroke:#333,color:#fff
-    end
+    L1_APP[Application] --> L1_FW[DRM Framework]
+    L1_FW --> L1_WV[Widevine HAL]
+    L1_WV --> L1_OEM[OEMCrypto in TEE]
+    L1_OEM --> L1_DEC[Secure Video Decoder]
+    L1_DEC --> L1_DISP[Secure Display Path]
+    style L1_OEM fill:#4a9,stroke:#333,color:#fff
+    style L1_DEC fill:#4a9,stroke:#333,color:#fff
+    style L1_DISP fill:#4a9,stroke:#333,color:#fff
+```
 
-    subgraph "Widevine L3 - SW_SECURE_CRYPTO"
-        L3_APP[Application] --> L3_FW[DRM Framework]
-        L3_FW --> L3_WV[Widevine HAL]
-        L3_WV --> L3_SW["Software Crypto<br/>Whitebox AES"]
-        L3_SW --> L3_DEC[Software Decoder]
-        L3_DEC --> L3_DISP[Normal Display]
-        style L3_SW fill:#d84,stroke:#333,color:#fff
-        style L3_DEC fill:#d84,stroke:#333,color:#fff
-    end
+**Widevine L3 -- SW_SECURE_CRYPTO data path:**
+
+```mermaid
+graph TB
+    L3_APP[Application] --> L3_FW[DRM Framework]
+    L3_FW --> L3_WV[Widevine HAL]
+    L3_WV --> L3_SW["Software Crypto<br/>Whitebox AES"]
+    L3_SW --> L3_DEC[Software Decoder]
+    L3_DEC --> L3_DISP[Normal Display]
+    style L3_SW fill:#d84,stroke:#333,color:#fff
+    style L3_DEC fill:#d84,stroke:#333,color:#fff
 ```
 
 ### 42.4.3 TEE Integration
