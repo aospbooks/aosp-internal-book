@@ -138,11 +138,13 @@ public class UserManagerService extends IUserManager.Stub {
 
 The lock ordering convention is documented in the class:
 
-> Method naming convention:
-> - Methods suffixed with "LAr" should be called within the `mAppRestrictionsLock` lock.
-> - Methods suffixed with "LP" should be called within the `mPackagesLock` lock.
-> - Methods suffixed with "LR" should be called within the `mRestrictionsLock` lock.
-> - Methods suffixed with "LU" should be called within the `mUsersLock` lock.
+```
+Method naming convention:
+- Methods suffixed with "LAr" should be called within the `mAppRestrictionsLock` lock.
+- Methods suffixed with "LP" should be called within the `mPackagesLock` lock.
+- Methods suffixed with "LR" should be called within the `mRestrictionsLock` lock.
+- Methods suffixed with "LU" should be called within the `mUsersLock` lock.
+```
 
 ### 31.1.4 Persistent Storage
 
