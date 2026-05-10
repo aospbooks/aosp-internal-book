@@ -3144,7 +3144,7 @@ under `/data/data/<package>/shared_prefs/`.
 
 ---
 
-## Appendix A: vold Utility Functions
+## 34.12 vold Utility Functions
 
 The `system/vold/Utils.h` header provides a rich set of utility functions
 used throughout the vold codebase.  Understanding these functions is essential
@@ -3205,7 +3205,7 @@ proper error handling, SELinux context management, and logging.
 
 ---
 
-## Appendix B: Checkpoint Support
+## 34.13 Checkpoint Support
 
 Android's storage subsystem supports filesystem checkpoints for safe OTA
 updates.  The checkpoint system, defined in `system/vold/Checkpoint.h`,
@@ -3277,9 +3277,9 @@ sequenceDiagram
 
 ---
 
-## Appendix C: Key Generation and Storage
+## 34.14 Key Generation and Storage
 
-### C.1 KeyGeneration Structure
+### 34.14.1 KeyGeneration Structure
 
 The `KeyGeneration` structure in `system/vold/KeyUtil.h` controls how
 encryption keys are generated:
@@ -3316,7 +3316,7 @@ bool retrieveOrGenerateKey(const std::string& key_path,
     KeyBuffer* key);
 ```
 
-### C.2 Key Authentication
+### 34.14.2 Key Authentication
 
 The `KeyAuthentication` class determines whether a key requires Keystore
 interaction for decryption:
@@ -3344,7 +3344,7 @@ CE keys use the user's credential (derived through a KDF) as their
 authentication secret, ensuring they can only be decrypted after the user
 enters their PIN, password, or pattern.
 
-### C.3 Key Lifecycle
+### 34.14.3 Key Lifecycle
 
 The complete lifecycle of an encryption key follows this pattern:
 
@@ -3375,7 +3375,7 @@ For CE keys specifically:
    is enabled), the key is evicted from the kernel
 7. **Destruction**: When a user is removed, the key is securely destroyed
 
-### C.4 Secdiscardable Files
+### 34.14.4 Secdiscardable Files
 
 To protect against offline attacks, each key directory contains a
 "secdiscardable" file -- a large file filled with random data that is
@@ -3391,12 +3391,12 @@ bool readSecdiscardable(const std::string& path, std::string* hash);
 
 ---
 
-## Appendix D: The Complete Storage Boot Sequence
+## 34.15 The Complete Storage Boot Sequence
 
-This appendix traces the complete storage initialization during device boot,
+This section traces the complete storage initialization during device boot,
 showing how all the components described in this chapter work together.
 
-### D.1 Early Boot (init first stage)
+### 34.15.1 Early Boot (init first stage)
 
 ```
 1. Kernel starts, mounts initramfs
@@ -3406,7 +3406,7 @@ showing how all the components described in this chapter work together.
 5. init starts vold daemon
 ```
 
-### D.2 vold Initialization
+### 34.15.2 vold Initialization
 
 ```
 6. vold::main() begins
@@ -3426,7 +3426,7 @@ showing how all the components described in this chapter work together.
 14. coldboot("/sys/block") -- replay uevent for existing devices
 ```
 
-### D.3 Metadata Encryption and /data Mount
+### 34.15.3 Metadata Encryption and /data Mount
 
 ```
 15. init calls vold.mountFstab() for /data
@@ -3437,7 +3437,7 @@ showing how all the components described in this chapter work together.
 20. Property ro.crypto.metadata.enabled set to "true"
 ```
 
-### D.4 FBE Initialization (User 0)
+### 34.15.4 FBE Initialization (User 0)
 
 ```
 21. init calls vold.initUser0()
@@ -3452,7 +3452,7 @@ showing how all the components described in this chapter work together.
     d. If device is LSKF-free, also unlock CE storage
 ```
 
-### D.5 Framework Boot
+### 34.15.5 Framework Boot
 
 ```
 24. System server starts
@@ -3465,7 +3465,7 @@ showing how all the components described in this chapter work together.
 27. StorageManagerService.systemReady()
 ```
 
-### D.6 User Unlock
+### 34.15.6 User Unlock
 
 ```
 28. User enters PIN/password/pattern
@@ -3479,7 +3479,7 @@ showing how all the components described in this chapter work together.
 33. CE directories become accessible
 ```
 
-### D.7 FUSE Session Startup
+### 34.15.7 FUSE Session Startup
 
 ```
 34. StorageManagerService detects CE unlock
@@ -3546,7 +3546,7 @@ graph TD
 
 ---
 
-## Appendix E: Storage-Related System Properties
+## 34.16 Storage-Related System Properties
 
 The following system properties control storage behavior on Android devices:
 
@@ -3573,7 +3573,7 @@ The following system properties control storage behavior on Android devices:
 
 ---
 
-## Appendix F: Android ID Constants for Storage
+## 34.17 Android ID Constants for Storage
 
 Storage operations use numerous Android UID/GID constants for permission
 management:
@@ -3599,9 +3599,9 @@ file access.
 
 ---
 
-## Appendix G: Storage Debugging Techniques
+## 34.18 Storage Debugging Techniques
 
-### G.1 Tracing FUSE Operations
+### 34.18.1 Tracing FUSE Operations
 
 Enable FUSE tracing to see every filesystem operation:
 
@@ -3616,7 +3616,7 @@ adb logcat -s FuseDaemonThread:V
 adb shell setprop persist.sys.fuse.log 1
 ```
 
-### G.2 Debugging vold
+### 34.18.2 Debugging vold
 
 vold provides rich debugging through system properties and logcat:
 
@@ -3634,7 +3634,7 @@ adb shell dumpsys mount
 adb logcat -s FsCrypt:* MetadataCrypt:* KeyStorage:*
 ```
 
-### G.3 Analyzing Storage Performance
+### 34.18.3 Analyzing Storage Performance
 
 ```bash
 # Run vold's built-in benchmark
@@ -3653,7 +3653,7 @@ adb shell cat /sys/fs/f2fs/*/stat/written_kbytes
 adb logcat -s fstrim:*
 ```
 
-### G.4 Inspecting Mount Namespaces
+### 34.18.4 Inspecting Mount Namespaces
 
 Android uses mount namespaces to provide per-app views of storage:
 
@@ -3670,7 +3670,7 @@ adb shell cat /proc/<app_pid>/mountinfo > /tmp/app_mounts.txt
 diff /tmp/init_mounts.txt /tmp/app_mounts.txt
 ```
 
-### G.5 Recovering from Storage Issues
+### 34.18.5 Recovering from Storage Issues
 
 ```bash
 # Force unmount all volumes (emergency)
@@ -3691,12 +3691,12 @@ adb reboot
 
 ---
 
-## Appendix H: The Interplay Between Storage Components
+## 34.19 The Interplay Between Storage Components
 
 Understanding how the storage components interact during common operations
 helps developers and system engineers debug issues and optimize performance.
 
-### H.1 File Write Flow (App Writes a Photo)
+### 34.19.1 File Write Flow (App Writes a Photo)
 
 ```mermaid
 sequenceDiagram
@@ -3729,7 +3729,7 @@ sequenceDiagram
     MP->>MP: Generate thumbnail
 ```
 
-### H.2 SD Card Insert Flow
+### 34.19.2 SD Card Insert Flow
 
 ```mermaid
 sequenceDiagram
@@ -3775,7 +3775,7 @@ sequenceDiagram
     Note over MP: Media scanner indexes SD card content
 ```
 
-### H.3 User Profile Creation
+### 34.19.3 User Profile Creation
 
 When a new user (e.g., work profile) is created, the storage system must
 create encryption keys and prepare storage directories:
@@ -3809,7 +3809,7 @@ physical storage medium.
 
 ---
 
-## Appendix I: Storage Evolution Timeline
+## 34.20 Storage Evolution Timeline
 
 | Android Version | Key Storage Change |
 |----------------|-------------------|
@@ -3836,13 +3836,13 @@ applications.
 
 ---
 
-## Appendix J: Deep Dive -- VolumeManager Block Event Processing
+## 34.21 Deep Dive -- VolumeManager Block Event Processing
 
 The `VolumeManager::handleBlockEvent()` method is the heart of hot-plug
 device detection.  Let us trace through exactly what happens when a USB
 drive is plugged in.
 
-### J.1 Netlink Event Reception
+### 34.21.1 Netlink Event Reception
 
 The kernel sends a uevent through the netlink socket.  The event contains
 key-value pairs including:
@@ -3870,7 +3870,7 @@ void NetlinkHandler::onEvent(NetlinkEvent* evt) {
 }
 ```
 
-### J.2 Device Matching
+### 34.21.2 Device Matching
 
 `handleBlockEvent()` first filters out partition events (only interested
 in whole disks with `DEVTYPE=disk`), then matches the device path against
@@ -3901,7 +3901,7 @@ The `DiskSource` patterns come from the fstab entries marked with
 `voldmanaged`.  The pattern uses `fnmatch()` for glob-style matching,
 so a pattern like `/devices/platform/*/usb*` would match any USB device.
 
-### J.3 Security Gate
+### 34.21.3 Security Gate
 
 Before a newly detected disk can be scanned, VolumeManager checks two
 security conditions:
@@ -3934,7 +3934,7 @@ This prevents malicious USB devices from being processed while the device
 is locked.  Once the user unlocks the device, `createPendingDisksIfNeeded()`
 processes any queued disks.
 
-### J.4 Disk Metadata Reading
+### 34.21.4 Disk Metadata Reading
 
 The `Disk::readMetadata()` method reads device information from sysfs to
 determine the manufacturer and label:
@@ -3977,7 +3977,7 @@ status_t Disk::readMetadata() {
 This manufacturer detection provides a user-friendly label in the Settings
 UI, helping users identify which physical card they are managing.
 
-### J.5 Partition Table Parsing
+### 34.21.5 Partition Table Parsing
 
 After metadata is read, `readPartitions()` uses `sgdisk` with the
 `--android-dump` flag, which produces a machine-readable format:
@@ -3997,7 +3997,7 @@ PART 1 EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 A1B2C3D4-E5F6-...
 The Android-specific GUID types `kGptAndroidMeta` and `kGptAndroidExpand`
 are used to identify partitions created by the adoptable storage feature.
 
-### J.6 Volume Creation
+### 34.21.6 Volume Creation
 
 Based on the partition type, either `createPublicVolume()` or
 `createPrivateVolume()` is called:
@@ -4011,9 +4011,9 @@ Based on the partition type, either `createPublicVolume()` or
 
 ---
 
-## Appendix K: Deep Dive -- MediaProvider Permission Resolution
+## 34.22 Deep Dive -- MediaProvider Permission Resolution
 
-### K.1 The FUSE Request Path
+### 34.22.1 The FUSE Request Path
 
 When an application performs a filesystem operation on `/storage/emulated/0/`,
 the request follows this detailed path:
@@ -4040,7 +4040,7 @@ the request follows this detailed path:
 7. **Response**: The result flows back down through the same path:
    Java -> JNI -> native FUSE handler -> `/dev/fuse` -> kernel -> app.
 
-### K.2 Permission Categories
+### 34.22.2 Permission Categories
 
 The `AccessChecker` class in MediaProvider categorizes callers into several
 tiers of access:
@@ -4071,7 +4071,7 @@ Tier 7 - NO PERMISSIONS: Apps with no storage permissions
    -> Can access files they created via MediaStore
 ```
 
-### K.3 Redaction
+### 34.22.3 Redaction
 
 When an app reads an image file but lacks `ACCESS_MEDIA_LOCATION` permission,
 the FUSE daemon performs on-the-fly redaction of EXIF GPS data.  The native
@@ -4088,7 +4088,7 @@ maintains byte ranges that should be zeroed out:
 This is transparent to the application -- it reads the file normally, but
 the location data has been stripped from the EXIF headers in transit.
 
-### K.4 Transcoding
+### 34.22.4 Transcoding
 
 For video files, the FUSE daemon can perform transparent transcoding from
 HEVC (H.265) to AVC (H.264) for applications that do not support HEVC.
@@ -4103,13 +4103,13 @@ constructor controls which directories are eligible for transcoding.
 
 ---
 
-## Appendix L: Mount Namespace Architecture
+## 34.23 Mount Namespace Architecture
 
 Android uses Linux mount namespaces to provide different views of the
 filesystem to different processes.  This is critical for storage isolation
 between apps.
 
-### L.1 Namespace Types
+### 34.23.1 Namespace Types
 
 ```mermaid
 graph TD
@@ -4143,7 +4143,7 @@ graph TD
     style G fill:#f44336,stroke:#333
 ```
 
-### L.2 Zygote Fork and Namespace Setup
+### 34.23.2 Zygote Fork and Namespace Setup
 
 When Zygote forks a new app process, the following mount namespace
 operations occur:
@@ -4162,7 +4162,7 @@ This ensures that:
 - App-specific directories bypass FUSE for performance
 - Cross-app directory access is blocked at the mount namespace level
 
-### L.3 The REMOUNT_MODE System
+### 34.23.3 The REMOUNT_MODE System
 
 `StorageManagerService` controls how each app sees storage through remount
 modes:
@@ -4183,9 +4183,9 @@ own filesystem access had to go through its own FUSE daemon.
 
 ---
 
-## Appendix M: Error Handling and Recovery
+## 34.24 Error Handling and Recovery
 
-### M.1 Filesystem Check Failures
+### 34.24.1 Filesystem Check Failures
 
 When a filesystem check fails during volume mount, vold reports the volume
 as `kUnmountable`:
@@ -4203,7 +4203,7 @@ if (mFsType == "vfat" && vfat::IsSupported()) {
 The framework then presents the user with options to format or eject the
 volume.
 
-### M.2 FUSE Daemon Crashes
+### 34.24.2 FUSE Daemon Crashes
 
 If the FUSE daemon crashes, all pending filesystem operations return
 `ENOTCONN` to applications.  The recovery flow:
@@ -4214,7 +4214,7 @@ If the FUSE daemon crashes, all pending filesystem operations return
 4. A new FUSE session is started
 5. MediaProvider rescans the volume
 
-### M.3 Encryption Key Loss
+### 34.24.3 Encryption Key Loss
 
 If a CE encryption key cannot be decrypted (e.g., after too many failed
 password attempts on devices with hardware-enforced limits), the user's
@@ -4224,7 +4224,7 @@ CE storage becomes permanently inaccessible.  The system handles this by:
 2. DE storage remains accessible (Direct Boot apps continue to work)
 3. A new CE key can be generated, but all existing CE data is lost
 
-### M.4 Adopted Storage Removal
+### 34.24.4 Adopted Storage Removal
 
 When adopted storage is unexpectedly removed:
 
@@ -4235,7 +4235,7 @@ When adopted storage is unexpectedly removed:
 4. If the device is permanently lost, the user can "forget" it,
    which deletes the encryption key
 
-### M.5 OTA Checkpoint Failure
+### 34.24.5 OTA Checkpoint Failure
 
 If an OTA update fails and the checkpoint system detects corruption:
 
@@ -4249,9 +4249,9 @@ its pre-update state, and the device reboots into the previous slot.
 
 ---
 
-## Appendix N: Performance Considerations
+## 34.25 Performance Considerations
 
-### N.1 FUSE Overhead
+### 34.25.1 FUSE Overhead
 
 The FUSE architecture adds latency to every filesystem operation because
 each operation requires:
@@ -4276,7 +4276,7 @@ This overhead is mitigated through several optimizations:
 - **Dirty ratio tuning**: `ConfigureMaxDirtyRatioForFuse()` sets the
   max_ratio to 40% (vs. the default 1% for untrusted FUSE filesystems)
 
-### N.2 Encryption Overhead
+### 34.25.2 Encryption Overhead
 
 Modern devices with Inline Encryption Engines (ICE) built into the storage
 controller can perform AES-256-XTS encryption at line speed with zero CPU
@@ -4294,7 +4294,7 @@ AES-256-XTS with hardware acceleration is the preferred option.  Adiantum
 is designed for devices with ARM processors that lack AES instructions,
 providing comparable security with better software performance.
 
-### N.3 Media Scanning Performance
+### 34.25.3 Media Scanning Performance
 
 The `ModernMediaScanner` implementation is designed for performance:
 
@@ -4306,7 +4306,7 @@ The `ModernMediaScanner` implementation is designed for performance:
 - Dirty directory tracking: The FUSE daemon notifies MediaProvider
   when directories are modified, enabling targeted rescans
 
-### N.4 f2fs Optimizations
+### 34.25.4 f2fs Optimizations
 
 For devices using f2fs on the userdata partition, vold manages several
 f2fs-specific optimizations:
@@ -4320,7 +4320,7 @@ f2fs-specific optimizations:
 
 ---
 
-## 34.12 Try It
+## 34.26 Try It
 
 This section provides practical exercises for exploring the Android storage
 subsystem hands-on.
