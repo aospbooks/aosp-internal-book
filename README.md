@@ -58,7 +58,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | VIII | 39 | USB & ADB | REVIEWED |
 | IX | 40 | Security (TEE/Trusty) | REVIEWED |
 | IX | 41 | Credential Manager | REVIEWED |
-| IX | 42 | DRM | UNDER REVIEW |
+| IX | 42 | DRM | REVIEWED |
 | X | 43 | Widgets & RemoteViews (RemoteCompose) | REVIEWED |
 | X | 44 | WebView | REVIEWED |
 | X | 45 | Accessibility | REVIEWED |
