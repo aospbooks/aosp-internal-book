@@ -1694,7 +1694,7 @@ graph LR
 
 ---
 
-## 31.8 Appendix: Deep Dive into Internal Mechanisms
+## 31.8 Deep Dive into Internal Mechanisms
 
 ### 31.8.1 UserInfo Flags
 
