@@ -53,7 +53,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | VII | 34 | Storage | REVIEWED |
 | VIII | 35 | Networking (VCN/Thread) | REVIEWED |
 | VIII | 36 | Telephony (IMS) | UNDER REVIEW |
-| VIII | 37 | Bluetooth | UNDER REVIEW |
+| VIII | 37 | Bluetooth | REVIEWED |
 | VIII | 38 | NFC | UNDER REVIEW |
 | VIII | 39 | USB & ADB | UNDER REVIEW |
 | IX | 40 | Security (TEE/Trusty) | UNDER REVIEW |
