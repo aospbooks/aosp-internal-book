@@ -3051,6 +3051,32 @@ GitLab, and most modern documentation tools).
 | **GKI** | Generic Kernel Image |
 | **GSI** | Generic System Image |
 
+### 1.10.6 Using This Book with AI Assistants
+
+Every chapter is plain Markdown with explicit source-file references, which makes
+the book unusually easy for an AI assistant to consume as background when you
+ask it to reason about AOSP code.
+
+To skip having the assistant crawl the whole site, point it at
+<https://aospbooks.github.io/aosp-internal-book/llms.txt>. This is an
+[llmstxt.org](https://llmstxt.org/)-style index that lists every chapter and
+appendix with a one-line description and its published URL, grouped by Part.
+The assistant can read `llms.txt` first, decide which chapter is relevant to
+the subsystem you're asking about, then fetch only that chapter -- saving
+tokens and giving you sharper answers.
+
+Practical workflows:
+
+- **Drop the URL into a system prompt or project context.** Most coding
+  assistants (Claude Code, Cursor, Copilot Workspace, Aider) accept arbitrary
+  URLs as background. `llms.txt` is small (~15 KB), so it fits comfortably.
+- **Cite chapters by section number.** Section numbers like `9.4.2` are stable
+  across edits, so when you (or the assistant) want to reference a specific
+  topic, the section number is a durable handle.
+- **Pair with `cs.android.com`.** The book's source paths and line numbers
+  resolve directly on Android Code Search, so an assistant can verify or extend
+  any claim in the book by following the path.
+
 ---
 
 ## 1.11 Further Reading
