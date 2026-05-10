@@ -4049,53 +4049,9 @@ The Thread integration enables:
 
 ---
 
-## 35.21 Performance Considerations
+## 35.21 Deep Dive: Network Permissions Model
 
-### 35.21.1 Network Latency Optimization
-
-ConnectivityService includes several mechanisms to minimize network switching
-latency:
-
-1. **Nascent delay** (5 seconds): New networks have a brief grace period before
-   they are torn down if not needed, reducing churn.
-
-2. **Linger delay** (30 seconds): When a better network appears, the old network
-   lingers for 30 seconds, allowing in-flight connections to complete.
-
-3. **Make-Before-Break**: Wi-Fi uses dual STA to connect to a new AP before
-   disconnecting from the old one.
-
-4. **Socket migration**: Applications can explicitly bind to a new network
-   and migrate connections.
-
-### 35.21.2 Memory and CPU Impact
-
-The networking stack's resource usage:
-
-- **ConnectivityService**: ~10-20 MB heap (depending on network count)
-- **netd**: ~5-10 MB RSS
-- **DnsResolver**: ~3-5 MB RSS
-- **wpa_supplicant**: ~2-5 MB RSS
-- **BPF programs**: ~10-50 KB kernel memory for maps
-
-### 35.21.3 Battery Impact
-
-Networking is one of the largest battery consumers. Android mitigates this
-through:
-
-- **Doze mode**: Restricts network access when device is idle
-- **App Standby**: Limits background network access for infrequently used apps
-- **Data Saver**: User-controlled restriction of background metered data
-- **PNO offload**: Hardware-based Wi-Fi scanning
-- **Keepalive offload**: Hardware-based NAT keepalive
-- **Background firewall**: Blocks network for background apps
-- **Idle timers**: Track interface activity for power management
-
----
-
-## 35.22 Deep Dive: Network Permissions Model
-
-### 35.22.1 Permission Hierarchy
+### 35.21.1 Permission Hierarchy
 
 Android's network access is governed by a multi-layered permission model:
 
@@ -4124,7 +4080,7 @@ graph TD
     NET_STACK --> |"Required for"| STACK["NetworkStack operations"]
 ```
 
-### 35.22.2 INTERNET Permission Enforcement
+### 35.21.2 INTERNET Permission Enforcement
 
 The `INTERNET` permission is unique in Android: it is enforced at the kernel
 level through the `inet` supplementary group (GID 3003). When an app has the
@@ -4142,7 +4098,7 @@ binder::Status trafficSetNetPermForUids(
 Apps without `INTERNET` permission literally cannot create AF_INET or AF_INET6
 sockets -- the `socket()` system call returns `EACCES`.
 
-### 35.22.3 Location Permission for Wi-Fi Scans
+### 35.21.3 Location Permission for Wi-Fi Scans
 
 Starting with Android 8.0, accessing Wi-Fi scan results requires location
 permission because BSSID/SSID data can be used for location tracking.
@@ -4159,7 +4115,7 @@ import static android.net.NetworkCapabilities.REDACT_FOR_THREAD_NETWORK_PRIVILEG
 import static android.net.NetworkCapabilities.REDACT_NONE;
 ```
 
-### 35.22.4 UID-Based Network Isolation
+### 35.21.4 UID-Based Network Isolation
 
 Each socket in Android is tagged with its owner's UID. This enables:
 
@@ -4177,9 +4133,9 @@ The UID information flows from:
 
 ---
 
-## 35.23 Deep Dive: Multicast and mDNS
+## 35.22 Deep Dive: Multicast and mDNS
 
-### 35.23.1 mDNS Service Discovery
+### 35.22.1 mDNS Service Discovery
 
 netd includes an mDNS (multicast DNS) service for local network service
 discovery:
@@ -4192,7 +4148,7 @@ mDNS enables:
 - Service advertisement (NSD - Network Service Discovery API)
 - Zero-configuration networking
 
-### 35.23.2 Multicast Routing for Local Networks
+### 35.22.2 Multicast Routing for Local Networks
 
 ConnectivityService manages multicast routing for local networks (Thread, etc.):
 
@@ -4207,9 +4163,9 @@ communication across network boundaries.
 
 ---
 
-## 35.24 Deep Dive: DSCP Policy
+## 35.23 Deep Dive: DSCP Policy
 
-### 35.24.1 Differentiated Services Code Point (DSCP) Marking
+### 35.23.1 Differentiated Services Code Point (DSCP) Marking
 
 ConnectivityService supports DSCP policy management for QoS (Quality of
 Service) marking:
@@ -4230,9 +4186,9 @@ public static final int EVENT_REMOVE_ALL_DSCP_POLICIES = BASE + /* ... */;
 
 ---
 
-## 35.25 Deep Dive: QoS and Keepalive
+## 35.24 Deep Dive: QoS and Keepalive
 
-### 35.25.1 Socket Keepalive
+### 35.24.1 Socket Keepalive
 
 Android provides hardware-offloaded socket keepalive for maintaining NAT
 bindings and detecting connection failures:
@@ -4274,7 +4230,7 @@ sequenceDiagram
     KT->>App: Callback with result
 ```
 
-### 35.25.2 QoS Callbacks
+### 35.24.2 QoS Callbacks
 
 ConnectivityService supports per-flow QoS callbacks for applications that need
 to monitor quality metrics:
@@ -4292,9 +4248,9 @@ QoS callbacks provide:
 
 ---
 
-## 35.26 Network Types and Their Android Representation
+## 35.25 Network Types and Their Android Representation
 
-### 35.26.1 Complete Transport-to-Implementation Mapping
+### 35.25.1 Complete Transport-to-Implementation Mapping
 
 | Transport | Interface Pattern | NetworkAgent Location | HAL |
 |-----------|------------------|----------------------|-----|
@@ -4309,7 +4265,7 @@ QoS callbacks provide:
 | Satellite | sat0 | `SatelliteNetworkAgent` | Satellite HAL |
 | Test | test0 | `TestNetworkAgent` | None |
 
-### 35.26.2 Network Lifecycle Complete Flow
+### 35.25.2 Network Lifecycle Complete Flow
 
 The complete lifecycle of a network from creation to destruction:
 
@@ -4345,9 +4301,9 @@ NetworkAgent, NetworkMonitor, and the kernel.
 
 ---
 
-## 35.27 Try It: Network Debugging
+## 35.26 Try It: Network Debugging
 
-### 35.27.1 dumpsys connectivity
+### 35.26.1 dumpsys connectivity
 
 The most powerful tool for debugging Android networking is `dumpsys connectivity`.
 It provides a comprehensive snapshot of the entire connectivity state.
@@ -4403,7 +4359,7 @@ NetworkRequest [ REQUEST id=1, [ Capabilities: INTERNET&NOT_RESTRICTED
 
 3. **Default network**: The currently selected default network
 
-### 35.27.2 dumpsys wifi
+### 35.26.2 dumpsys wifi
 
 ```bash
 # Full Wi-Fi dump
@@ -4422,7 +4378,7 @@ Key information in the Wi-Fi dump:
 - SoftAP state
 - Connection history and failure reasons
 
-### 35.27.3 dumpsys netd
+### 35.26.3 dumpsys netd
 
 ```bash
 # netd status
@@ -4437,7 +4393,7 @@ adb shell iptables -L -v -n
 adb shell ip6tables -L -v -n
 ```
 
-### 35.27.4 DNS Debugging
+### 35.26.4 DNS Debugging
 
 ```bash
 # DNS resolver state
@@ -4451,7 +4407,7 @@ adb shell settings get global private_dns_mode
 adb shell settings get global private_dns_specifier
 ```
 
-### 35.27.5 Network Diagnostics Commands
+### 35.26.5 Network Diagnostics Commands
 
 ```bash
 # Check connectivity
@@ -4477,7 +4433,7 @@ adb shell cat /proc/net/tcp6
 adb shell cat /proc/net/dev
 ```
 
-### 35.27.6 ConnectivityDiagnosticsManager
+### 35.26.6 ConnectivityDiagnosticsManager
 
 For programmatic network diagnostics, Android provides the
 `ConnectivityDiagnosticsManager` API:
@@ -4517,7 +4473,7 @@ cdm.registerConnectivityDiagnosticsCallback(
         });
 ```
 
-### 35.27.7 Simulating Network Conditions
+### 35.26.7 Simulating Network Conditions
 
 For testing, Android provides several tools to simulate network conditions:
 
@@ -4541,7 +4497,7 @@ adb shell settings put global captive_portal_mode 1  # Enable (prompt)
 adb shell dumpsys connectivity --diag
 ```
 
-### 35.27.8 Reading BPF Maps
+### 35.26.8 Reading BPF Maps
 
 For advanced debugging of BPF-based traffic control:
 
@@ -4556,7 +4512,7 @@ adb shell cat /sys/fs/bpf/
 adb shell dumpsys connectivity trafficcontroller
 ```
 
-### 35.27.9 Common Debugging Scenarios
+### 35.26.9 Common Debugging Scenarios
 
 **Scenario 1: Network connected but no Internet**
 
@@ -4634,7 +4590,7 @@ adb shell dumpsys tethering | grep "DHCP"
 adb shell cat /proc/sys/net/ipv4/ip_forward
 ```
 
-### 35.27.10 Network Logging and Tracing
+### 35.26.10 Network Logging and Tracing
 
 For deeper analysis, enable verbose logging:
 
@@ -4653,7 +4609,7 @@ adb logcat -s ConnectivityService:V NetworkAgent:V \
 adb shell setprop log.tag.Netd VERBOSE
 ```
 
-### 35.27.11 Developer Options: Network Settings
+### 35.26.11 Developer Options: Network Settings
 
 The Settings app provides several network-related developer options:
 
@@ -4664,7 +4620,7 @@ The Settings app provides several network-related developer options:
 | USB configuration | Select USB tethering mode |
 | Networking diagnostics | Run connectivity tests |
 
-### 35.27.12 Programmatic Network Testing
+### 35.26.12 Programmatic Network Testing
 
 ```java
 // Test if a specific network has connectivity
