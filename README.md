@@ -47,7 +47,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | VII | 28 | Notifications | REVIEWED |
 | VII | 29 | Power Management | REVIEWED |
 | VII | 30 | Background Tasks | REVIEWED |
-| VII | 31 | Multi-User | UNDER REVIEW |
+| VII | 31 | Multi-User | REVIEWED |
 | VII | 32 | Account & Sync | UNDER REVIEW |
 | VII | 33 | Location | UNDER REVIEW |
 | VII | 34 | Storage | UNDER REVIEW |
