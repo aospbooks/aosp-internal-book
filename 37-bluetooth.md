@@ -880,9 +880,9 @@ graph TB
 
 The native A2DP and AVDTP implementations:
 
-Source: `packages/modules/Bluetooth/system/stack/a2dp/` (codec handling)
-Source: `packages/modules/Bluetooth/system/stack/avdt/` (AVDTP protocol)
-Source: `packages/modules/Bluetooth/system/bta/av/` (A2DP application layer)
+* Source: `packages/modules/Bluetooth/system/stack/a2dp/` (codec handling)
+* Source: `packages/modules/Bluetooth/system/stack/avdt/` (AVDTP protocol)
+* Source: `packages/modules/Bluetooth/system/bta/av/` (A2DP application layer)
 
 ### 37.3.3 HFP -- Hands-Free Profile
 
