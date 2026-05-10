@@ -3205,12 +3205,12 @@ public void onBootPhase(int phase) {
 
 ---
 
-## Deep Dive: ConnectivityService Internals
+## 35.12 Deep Dive: ConnectivityService Internals
 
 This appendix section provides additional depth on the most critical internal
 mechanisms of ConnectivityService.
 
-### Network Agent Registration
+### 35.12.1 Network Agent Registration
 
 When a transport (Wi-Fi, cellular, etc.) creates a NetworkAgent and calls
 `register()`, ConnectivityService processes the registration through
@@ -3264,7 +3264,7 @@ The registration process:
 6. **Update network info**: Trigger rematch if the network is connected
 7. **Process enqueued messages**: Deliver any messages queued during registration
 
-### The Rematch Algorithm
+### 35.12.2 The Rematch Algorithm
 
 The `rematchAllNetworksAndRequests()` method is the heart of network selection.
 It runs every time something changes that could affect which network best
@@ -3316,7 +3316,7 @@ The rematch is a three-phase process:
 - Notify network factories about unsatisfied requests
 - Allow factories to bring up new networks if needed
 
-### NetworkReassignment Data Structure
+### 35.12.3 NetworkReassignment Data Structure
 
 The `NetworkReassignment` class accumulates all changes that result from a
 rematch into a single atomic operation:
@@ -3351,7 +3351,7 @@ private static class NetworkReassignment {
 }
 ```
 
-### Default Network Selection
+### 35.12.4 Default Network Selection
 
 When the default network changes, ConnectivityService must update the kernel's
 default routing and notify all interested applications:
@@ -3396,7 +3396,7 @@ sequenceDiagram
     CS->>CS: teardownUnneededNetwork(oldNai)
 ```
 
-### ConnectivityFlags: Feature Flags
+### 35.12.5 ConnectivityFlags: Feature Flags
 
 ConnectivityService uses runtime feature flags to enable or disable specific
 behaviors, allowing gradual rollouts and quick rollbacks:
@@ -3445,7 +3445,7 @@ Notable feature flags:
 | `INGRESS_TO_VPN_ADDRESS_FILTERING` | Filter ingress to VPN addresses |
 | `REQUEST_RESTRICTED_WIFI` | Allow restricted Wi-Fi requests |
 
-### DNS Resolver Unsolicited Events
+### 35.12.6 DNS Resolver Unsolicited Events
 
 ConnectivityService registers for unsolicited events from the DNS resolver
 to monitor DNS health and handle NAT64 prefix changes:
@@ -3476,7 +3476,7 @@ public void onNat64PrefixEvent(final Nat64PrefixEventParcel event) {
 }
 ```
 
-### Blocked Reasons
+### 35.12.7 Blocked Reasons
 
 ConnectivityService tracks why network access might be blocked for a specific
 UID, using a bitmask of reasons:
@@ -3505,9 +3505,9 @@ callback.
 
 ---
 
-## Deep Dive: Wi-Fi Internals
+## 35.13 Deep Dive: Wi-Fi Internals
 
-### ActiveModeWarden: Wi-Fi Mode Management
+### 35.13.1 ActiveModeWarden: Wi-Fi Mode Management
 
 The `ActiveModeWarden` manages the Wi-Fi chip's operating modes. Modern Wi-Fi
 chips support concurrent operation in multiple modes (STA + STA, STA + AP,
@@ -3529,7 +3529,7 @@ graph TD
     CMM2 --> CMI2
 ```
 
-### Client Roles
+### 35.13.2 Client Roles
 
 Each ClientModeManager operates in a specific role:
 
@@ -3550,7 +3550,7 @@ The dual-STA architecture enables:
   (e.g., Internet + IoT network)
 - **Wi-Fi Direct while connected**: Maintain STA connection during P2P
 
-### Wi-Fi Scanning Architecture
+### 35.13.3 Wi-Fi Scanning Architecture
 
 Wi-Fi scanning is a multi-layered process:
 
@@ -3588,7 +3588,7 @@ graph TD
 when the CPU is asleep. The Wi-Fi firmware scans for preferred networks and
 wakes the CPU only when a match is found.
 
-### Wi-Fi Security Protocols
+### 35.13.4 Wi-Fi Security Protocols
 
 ClientModeImpl supports a comprehensive set of security protocols:
 
@@ -3605,7 +3605,7 @@ ClientModeImpl supports a comprehensive set of security protocols:
 | WAPI | SMS4 | Certificate/PSK | Android 11 |
 | DPP | AES | Device Provisioning | Android 10 |
 
-### Wi-Fi Network Scoring Details
+### 35.13.5 Wi-Fi Network Scoring Details
 
 The WifiNetworkSelector uses a sophisticated scoring algorithm:
 
@@ -3625,9 +3625,9 @@ graph TD
 
 ---
 
-## Deep Dive: netd Internals
+## 35.14 Deep Dive: netd Internals
 
-### netd Process Architecture
+### 35.14.1 netd Process Architecture
 
 The `netd` process runs as `root` (or with `CAP_NET_ADMIN`) and consists of
 several threads:
@@ -3655,7 +3655,7 @@ graph TD
     NNS --> NHW
 ```
 
-### IptablesRestoreController
+### 35.14.2 IptablesRestoreController
 
 Rather than executing individual iptables commands (which would require forking
 a process for each rule change), netd uses `iptables-restore` to batch rule
@@ -3673,7 +3673,7 @@ This approach provides:
 - **Performance**: No process fork overhead per rule
 - **Error handling**: Failures in a batch are reported as a group
 
-### SockDiag: Socket Diagnostics
+### 35.14.3 SockDiag: Socket Diagnostics
 
 The `SockDiag` class uses Linux's SOCK_DIAG netlink interface to enumerate and
 manipulate kernel sockets:
@@ -3687,7 +3687,7 @@ This is used for:
 - **Connection tracking**: Enumerate TCP connections for diagnostics
 - **UID-based socket operations**: Target sockets by application UID
 
-### WakeupController
+### 35.14.4 WakeupController
 
 The `WakeupController` tracks which network packets wake the device from sleep:
 
@@ -3696,7 +3696,7 @@ The `WakeupController` tracks which network packets wake the device from sleep:
 It uses NFLOG (netfilter logging) to capture packet metadata when the device
 wakes up, helping identify applications that cause excessive wakeups.
 
-### TcpSocketMonitor
+### 35.14.5 TcpSocketMonitor
 
 The `TcpSocketMonitor` polls TCP socket statistics at regular intervals to
 detect network quality issues:
@@ -3712,9 +3712,9 @@ Monitored metrics include:
 
 ---
 
-## Deep Dive: NetworkMonitor Validation
+## 35.15 Deep Dive: NetworkMonitor Validation
 
-### Probe Configuration
+### 35.15.1 Probe Configuration
 
 NetworkMonitor's probe behavior is highly configurable through DeviceConfig
 and resource overlays:
@@ -3740,7 +3740,7 @@ and resource overlays:
 | Data stall DNS threshold | 5 consecutive | DNS timeout threshold |
 | Data stall TCP interval | 2 seconds | TCP metrics polling interval |
 
-### Multi-URL Probing
+### 35.15.2 Multi-URL Probing
 
 To reduce false positives, NetworkMonitor supports probing multiple URLs
 simultaneously:
@@ -3775,7 +3775,7 @@ graph TD
     COMBINE --> RESULT
 ```
 
-### Private DNS Validation
+### 35.15.3 Private DNS Validation
 
 When Private DNS (DoT/DoH) is configured, NetworkMonitor performs additional
 validation:
@@ -3798,7 +3798,7 @@ The validation process:
 5. If successful, mark private DNS as validated
 6. If failed, mark as broken and optionally fall back to plaintext
 
-### Captive Portal User Flow
+### 35.15.4 Captive Portal User Flow
 
 When a captive portal is detected, the system guides the user through
 sign-in:
@@ -3827,9 +3827,9 @@ sequenceDiagram
 
 ---
 
-## Deep Dive: IPv6-Only Networks and CLAT
+## 35.16 Deep Dive: IPv6-Only Networks and CLAT
 
-### NAT64 / CLAT Architecture
+### 35.16.1 NAT64 / CLAT Architecture
 
 Android supports IPv6-only networks through a combination of DNS64 (synthetic
 AAAA records) and CLAT (Client-side Local Address Translation). CLAT runs in
@@ -3869,7 +3869,7 @@ CLAT provides:
 - BPF-accelerated translation for performance
 - Automatic configuration via DNS64 prefix discovery
 
-### DNS64 Prefix Discovery
+### 35.16.2 DNS64 Prefix Discovery
 
 The DnsResolver discovers the NAT64 prefix by querying for the synthetic
 AAAA record of `ipv4only.arpa`:
@@ -3889,9 +3889,9 @@ sequenceDiagram
 
 ---
 
-## Deep Dive: Tethering Offload
+## 35.17 Deep Dive: Tethering Offload
 
-### Hardware Offload HAL
+### 35.17.1 Hardware Offload HAL
 
 In addition to BPF-based offload, Android supports hardware tethering offload
 through a HAL interface:
@@ -3932,7 +3932,7 @@ Performance comparison:
 - **BPF path**: ~2 Gbps (kernel bypass)
 - **Hardware path**: Line rate (zero CPU)
 
-### Connection Tracking Integration
+### 35.17.2 Connection Tracking Integration
 
 The `BpfCoordinator` integrates with the Linux connection tracking subsystem
 (conntrack) to monitor active NAT sessions:
@@ -3950,9 +3950,9 @@ Conntrack events trigger BPF map updates:
 
 ---
 
-## Deep Dive: QUIC and Modern Protocols
+## 35.18 Deep Dive: QUIC and Modern Protocols
 
-### QUIC Connection Management
+### 35.18.1 QUIC Connection Management
 
 ConnectivityService includes handling for QUIC (HTTP/3) connections during
 network transitions:
@@ -3967,7 +3967,7 @@ Unlike TCP, QUIC connections use UDP and may not be properly reset during
 network changes. The `CLOSE_QUIC_CONNECTION` flag enables explicit QUIC
 connection termination to prevent stale connections.
 
-### Socket Destruction on Network Change
+### 35.18.2 Socket Destruction on Network Change
 
 When the default network changes, ConnectivityService can destroy sockets on
 the old network to force applications to reconnect:
@@ -3987,9 +3987,9 @@ The socket destruction process:
 
 ---
 
-## Deep Dive: Satellite Connectivity
+## 35.19 Deep Dive: Satellite Connectivity
 
-### Satellite Network Support
+### 35.19.1 Satellite Network Support
 
 Android includes support for satellite-based connectivity, a feature added for
 emergency and remote scenarios:
@@ -4018,9 +4018,9 @@ roaming differently from terrestrial networks, using carrier-reported status.
 
 ---
 
-## Deep Dive: Thread Mesh Networking
+## 35.20 Deep Dive: Thread Mesh Networking
 
-### Thread Network Support
+### 35.20.1 Thread Network Support
 
 Android includes support for Thread, a low-power mesh networking protocol
 designed for IoT devices:
@@ -4049,9 +4049,9 @@ The Thread integration enables:
 
 ---
 
-## Performance Considerations
+## 35.21 Performance Considerations
 
-### Network Latency Optimization
+### 35.21.1 Network Latency Optimization
 
 ConnectivityService includes several mechanisms to minimize network switching
 latency:
@@ -4068,7 +4068,7 @@ latency:
 4. **Socket migration**: Applications can explicitly bind to a new network
    and migrate connections.
 
-### Memory and CPU Impact
+### 35.21.2 Memory and CPU Impact
 
 The networking stack's resource usage:
 
@@ -4078,7 +4078,7 @@ The networking stack's resource usage:
 - **wpa_supplicant**: ~2-5 MB RSS
 - **BPF programs**: ~10-50 KB kernel memory for maps
 
-### Battery Impact
+### 35.21.3 Battery Impact
 
 Networking is one of the largest battery consumers. Android mitigates this
 through:
@@ -4093,9 +4093,9 @@ through:
 
 ---
 
-## Deep Dive: Network Permissions Model
+## 35.22 Deep Dive: Network Permissions Model
 
-### Permission Hierarchy
+### 35.22.1 Permission Hierarchy
 
 Android's network access is governed by a multi-layered permission model:
 
@@ -4124,7 +4124,7 @@ graph TD
     NET_STACK --> |"Required for"| STACK["NetworkStack operations"]
 ```
 
-### INTERNET Permission Enforcement
+### 35.22.2 INTERNET Permission Enforcement
 
 The `INTERNET` permission is unique in Android: it is enforced at the kernel
 level through the `inet` supplementary group (GID 3003). When an app has the
@@ -4142,7 +4142,7 @@ binder::Status trafficSetNetPermForUids(
 Apps without `INTERNET` permission literally cannot create AF_INET or AF_INET6
 sockets -- the `socket()` system call returns `EACCES`.
 
-### Location Permission for Wi-Fi Scans
+### 35.22.3 Location Permission for Wi-Fi Scans
 
 Starting with Android 8.0, accessing Wi-Fi scan results requires location
 permission because BSSID/SSID data can be used for location tracking.
@@ -4159,7 +4159,7 @@ import static android.net.NetworkCapabilities.REDACT_FOR_THREAD_NETWORK_PRIVILEG
 import static android.net.NetworkCapabilities.REDACT_NONE;
 ```
 
-### UID-Based Network Isolation
+### 35.22.4 UID-Based Network Isolation
 
 Each socket in Android is tagged with its owner's UID. This enables:
 
@@ -4177,9 +4177,9 @@ The UID information flows from:
 
 ---
 
-## Deep Dive: Multicast and mDNS
+## 35.23 Deep Dive: Multicast and mDNS
 
-### mDNS Service Discovery
+### 35.23.1 mDNS Service Discovery
 
 netd includes an mDNS (multicast DNS) service for local network service
 discovery:
@@ -4192,7 +4192,7 @@ mDNS enables:
 - Service advertisement (NSD - Network Service Discovery API)
 - Zero-configuration networking
 
-### Multicast Routing for Local Networks
+### 35.23.2 Multicast Routing for Local Networks
 
 ConnectivityService manages multicast routing for local networks (Thread, etc.):
 
@@ -4207,9 +4207,9 @@ communication across network boundaries.
 
 ---
 
-## Deep Dive: DSCP Policy
+## 35.24 Deep Dive: DSCP Policy
 
-### Differentiated Services Code Point (DSCP) Marking
+### 35.24.1 Differentiated Services Code Point (DSCP) Marking
 
 ConnectivityService supports DSCP policy management for QoS (Quality of
 Service) marking:
@@ -4230,9 +4230,9 @@ public static final int EVENT_REMOVE_ALL_DSCP_POLICIES = BASE + /* ... */;
 
 ---
 
-## Deep Dive: QoS and Keepalive
+## 35.25 Deep Dive: QoS and Keepalive
 
-### Socket Keepalive
+### 35.25.1 Socket Keepalive
 
 Android provides hardware-offloaded socket keepalive for maintaining NAT
 bindings and detecting connection failures:
@@ -4274,7 +4274,7 @@ sequenceDiagram
     KT->>App: Callback with result
 ```
 
-### QoS Callbacks
+### 35.25.2 QoS Callbacks
 
 ConnectivityService supports per-flow QoS callbacks for applications that need
 to monitor quality metrics:
@@ -4292,9 +4292,9 @@ QoS callbacks provide:
 
 ---
 
-## Network Types and Their Android Representation
+## 35.26 Network Types and Their Android Representation
 
-### Complete Transport-to-Implementation Mapping
+### 35.26.1 Complete Transport-to-Implementation Mapping
 
 | Transport | Interface Pattern | NetworkAgent Location | HAL |
 |-----------|------------------|----------------------|-----|
@@ -4309,7 +4309,7 @@ QoS callbacks provide:
 | Satellite | sat0 | `SatelliteNetworkAgent` | Satellite HAL |
 | Test | test0 | `TestNetworkAgent` | None |
 
-### Network Lifecycle Complete Flow
+### 35.26.2 Network Lifecycle Complete Flow
 
 The complete lifecycle of a network from creation to destruction:
 
@@ -4345,9 +4345,9 @@ NetworkAgent, NetworkMonitor, and the kernel.
 
 ---
 
-## 35.12 Try It: Network Debugging
+## 35.27 Try It: Network Debugging
 
-### 35.12.1 dumpsys connectivity
+### 35.27.1 dumpsys connectivity
 
 The most powerful tool for debugging Android networking is `dumpsys connectivity`.
 It provides a comprehensive snapshot of the entire connectivity state.
@@ -4403,7 +4403,7 @@ NetworkRequest [ REQUEST id=1, [ Capabilities: INTERNET&NOT_RESTRICTED
 
 3. **Default network**: The currently selected default network
 
-### 35.12.2 dumpsys wifi
+### 35.27.2 dumpsys wifi
 
 ```bash
 # Full Wi-Fi dump
@@ -4422,7 +4422,7 @@ Key information in the Wi-Fi dump:
 - SoftAP state
 - Connection history and failure reasons
 
-### 35.12.3 dumpsys netd
+### 35.27.3 dumpsys netd
 
 ```bash
 # netd status
@@ -4437,7 +4437,7 @@ adb shell iptables -L -v -n
 adb shell ip6tables -L -v -n
 ```
 
-### 35.12.4 DNS Debugging
+### 35.27.4 DNS Debugging
 
 ```bash
 # DNS resolver state
@@ -4451,7 +4451,7 @@ adb shell settings get global private_dns_mode
 adb shell settings get global private_dns_specifier
 ```
 
-### 35.12.5 Network Diagnostics Commands
+### 35.27.5 Network Diagnostics Commands
 
 ```bash
 # Check connectivity
@@ -4477,7 +4477,7 @@ adb shell cat /proc/net/tcp6
 adb shell cat /proc/net/dev
 ```
 
-### 35.12.6 ConnectivityDiagnosticsManager
+### 35.27.6 ConnectivityDiagnosticsManager
 
 For programmatic network diagnostics, Android provides the
 `ConnectivityDiagnosticsManager` API:
@@ -4517,7 +4517,7 @@ cdm.registerConnectivityDiagnosticsCallback(
         });
 ```
 
-### 35.12.7 Simulating Network Conditions
+### 35.27.7 Simulating Network Conditions
 
 For testing, Android provides several tools to simulate network conditions:
 
@@ -4541,7 +4541,7 @@ adb shell settings put global captive_portal_mode 1  # Enable (prompt)
 adb shell dumpsys connectivity --diag
 ```
 
-### 35.12.8 Reading BPF Maps
+### 35.27.8 Reading BPF Maps
 
 For advanced debugging of BPF-based traffic control:
 
@@ -4556,7 +4556,7 @@ adb shell cat /sys/fs/bpf/
 adb shell dumpsys connectivity trafficcontroller
 ```
 
-### 35.12.9 Common Debugging Scenarios
+### 35.27.9 Common Debugging Scenarios
 
 **Scenario 1: Network connected but no Internet**
 
@@ -4634,7 +4634,7 @@ adb shell dumpsys tethering | grep "DHCP"
 adb shell cat /proc/sys/net/ipv4/ip_forward
 ```
 
-### 35.12.10 Network Logging and Tracing
+### 35.27.10 Network Logging and Tracing
 
 For deeper analysis, enable verbose logging:
 
@@ -4653,7 +4653,7 @@ adb logcat -s ConnectivityService:V NetworkAgent:V \
 adb shell setprop log.tag.Netd VERBOSE
 ```
 
-### 35.12.11 Developer Options: Network Settings
+### 35.27.11 Developer Options: Network Settings
 
 The Settings app provides several network-related developer options:
 
@@ -4664,7 +4664,7 @@ The Settings app provides several network-related developer options:
 | USB configuration | Select USB tethering mode |
 | Networking diagnostics | Run connectivity tests |
 
-### 35.12.12 Programmatic Network Testing
+### 35.27.12 Programmatic Network Testing
 
 ```java
 // Test if a specific network has connectivity
