@@ -55,7 +55,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | VIII | 36 | Telephony (IMS) | UNDER REVIEW |
 | VIII | 37 | Bluetooth | REVIEWED |
 | VIII | 38 | NFC | REVIEWED |
-| VIII | 39 | USB & ADB | UNDER REVIEW |
+| VIII | 39 | USB & ADB | REVIEWED |
 | IX | 40 | Security (TEE/Trusty) | UNDER REVIEW |
 | IX | 41 | Credential Manager | UNDER REVIEW |
 | IX | 42 | DRM | UNDER REVIEW |
