@@ -1,0 +1,106 @@
+# Source of truth for the AOSP Internals plugin packaging.
+# Edited by hand. agents/build.py reads this to know which chapters
+# belong to which Part-skill and to find the canonical chapter Markdown
+# at the repo root.
+
+name = "aosp-internals"
+version = "2026.05.11"
+repo_url = "https://github.com/aospbooks/aosp-internal-book"
+site_url = "https://aospbooks.github.io/aosp-internal-book/"
+description = "AOSP Internals book content (64 chapters + 2 appendices) packaged as 16 Part-skills."
+
+[[parts]]
+id = "01-getting-started"
+roman = "I"
+title = "Getting Started"
+chapters = ["00-frontmatter", "01-introduction", "02-source-and-build", "03-feature-flags"]
+
+[[parts]]
+id = "02-kernel-and-boot"
+roman = "II"
+title = "Kernel & Boot"
+chapters = ["04-boot-and-init", "05-kernel", "06-system-properties"]
+
+[[parts]]
+id = "03-native-foundation"
+roman = "III"
+title = "Native Foundation"
+chapters = ["07-bionic-and-linker", "08-memory-management", "09-binder-ipc", "10-hal", "11-ndk"]
+
+[[parts]]
+id = "04-native-services-and-media"
+roman = "IV"
+title = "Native Services & Media"
+chapters = ["12-native-services", "13-graphics-render-pipeline", "14-animation-system", "15-audio-system", "16-media-and-camera", "17-sensors"]
+
+[[parts]]
+id = "05-runtime"
+roman = "V"
+title = "Runtime"
+chapters = ["18-art-runtime", "19-native-bridge"]
+
+[[parts]]
+id = "06-framework-core"
+roman = "VI"
+title = "Framework Core"
+chapters = ["20-system-server", "21-intent-system", "22-activity-and-window", "23-window-system", "24-display-system", "25-view-system"]
+
+[[parts]]
+id = "07-framework-services"
+roman = "VII"
+title = "Framework Services"
+chapters = ["26-package-manager", "27-content-providers", "28-notifications", "29-power-management", "30-background-tasks", "31-multi-user", "32-account-sync", "33-location", "34-storage"]
+
+[[parts]]
+id = "08-connectivity"
+roman = "VIII"
+title = "Connectivity"
+chapters = ["35-networking", "36-telephony", "37-bluetooth", "38-nfc", "39-usb-adb"]
+
+[[parts]]
+id = "09-security"
+roman = "IX"
+title = "Security"
+chapters = ["40-security", "41-credential-manager", "42-drm"]
+
+[[parts]]
+id = "10-ui-framework"
+roman = "X"
+title = "UI Framework"
+chapters = ["43-widgets-remoteviews", "44-webview", "45-accessibility", "46-internationalization"]
+
+[[parts]]
+id = "11-system-apps"
+roman = "XI"
+title = "System Apps"
+chapters = ["47-systemui", "48-launcher3", "49-settings-app"]
+
+[[parts]]
+id = "12-ai-and-devices"
+roman = "XII"
+title = "AI & Devices"
+chapters = ["50-ai-appfunctions", "51-companion-virtual-device"]
+
+[[parts]]
+id = "13-infrastructure"
+roman = "XIII"
+title = "Infrastructure"
+chapters = ["52-mainline-modules", "53-ota-updates", "54-virtualization", "55-testing", "56-debugging-tools"]
+
+[[parts]]
+id = "14-device-support"
+roman = "XIV"
+title = "Device Support"
+chapters = ["57-architecture-support", "58-emulator", "59-device-policy", "60-automotive-tv-wear", "61-print-services", "62-camera2-pipeline"]
+
+[[parts]]
+id = "15-practical"
+roman = "XV"
+title = "Practical"
+chapters = ["63-custom-rom"]
+
+[[parts]]
+id = "16-appendices"
+roman = "App."
+title = "Appendices"
+chapters = ["A-appendix-key-files", "B-appendix-glossary"]

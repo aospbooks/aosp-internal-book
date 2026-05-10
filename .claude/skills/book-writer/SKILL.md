@@ -27,6 +27,7 @@ The book is served via MkDocs Material. When chapter content changes, the site c
    - [Chapter N: Title](https://aospbooks.github.io/aosp-internal-book/NN-slug/): one-line description of what the chapter covers
    ```
 5. If the chapter number changes existing chapters, renumber the affected `mkdocs.yml` entries and `llms.txt` URLs too
+6. Add the new chapter slug to `agents/_content/manifest.toml` under the right Part (and create a new Part entry there + `agents/_content/parts/<NN>-<slug>/SKILL.md` if the chapter belongs to a brand-new Part), then run `python3 agents/build.py` and commit the regenerated `agents/<platform>/` trees.
 
 ### When you remove a chapter
 
@@ -35,6 +36,7 @@ The book is served via MkDocs Material. When chapter content changes, the site c
 3. Remove the symlink from `docs/`
 4. Remove the matching `llms.txt` entry
 5. Renumber subsequent chapters if needed (in filenames, `mkdocs.yml`, `llms.txt`, and section headings inside the files)
+6. Remove the chapter slug from `agents/_content/manifest.toml`, then run `python3 agents/build.py` and commit the regenerated `agents/<platform>/` trees.
 
 ### When you rename or reorder chapters
 
@@ -43,6 +45,7 @@ The book is served via MkDocs Material. When chapter content changes, the site c
 3. Update the `docs/` symlink
 4. Update the `llms.txt` entry (label, URL slug, and the one-line description if scope changed)
 5. Update all `## N.x` section headings inside the file to match the new chapter number
+6. Update the chapter slug in `agents/_content/manifest.toml` (and the relevant Part's `SKILL.md` description if scope shifted), then run `python3 agents/build.py` and commit the regenerated `agents/<platform>/` trees.
 
 ### mkdocs.yml nav structure
 
