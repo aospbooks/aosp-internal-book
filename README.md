@@ -51,7 +51,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | VII | 32 | Account & Sync | REVIEWED |
 | VII | 33 | Location | REVIEWED |
 | VII | 34 | Storage | REVIEWED |
-| VIII | 35 | Networking (VCN/Thread) | UNDER REVIEW |
+| VIII | 35 | Networking (VCN/Thread) | REVIEWED |
 | VIII | 36 | Telephony (IMS) | UNDER REVIEW |
 | VIII | 37 | Bluetooth | UNDER REVIEW |
 | VIII | 38 | NFC | UNDER REVIEW |
