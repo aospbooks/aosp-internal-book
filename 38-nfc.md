@@ -1,11 +1,5 @@
 # Chapter 38: NFC -- Near Field Communication
 
----
-
-## 38.1 NFC Architecture
-
-### 38.1.1 What NFC Is
-
 Near Field Communication (NFC) is a short-range wireless technology operating at
 13.56 MHz with typical range of a few centimeters.  It builds on the same ISO/IEC
 14443 and FeliCa standards used by contactless smart cards but adds a peer-to-peer
@@ -18,7 +12,11 @@ deliberately tap to pay, share, or authenticate.  The radio link itself is
 passive in the sense that one device (the reader/initiator) generates the RF
 field while the other (the tag/card/target) modulates the field to communicate.
 
-### 38.1.2 NFC Standards and Operating Modes
+---
+
+## 38.1 NFC Architecture
+
+### 38.1.1 NFC Standards and Operating Modes
 
 NFC encompasses several ISO and industry standards, each mapped to a "technology"
 in the AOSP source:
@@ -45,7 +43,7 @@ Android operates NFC in three fundamental modes:
 3. **Peer-to-Peer Mode** -- two NFC devices exchange data bidirectionally.  This
    mode was used by Android Beam, which was deprecated in Android 10.
 
-### 38.1.3 The AOSP NFC Stack: Layer Cake
+### 38.1.2 The AOSP NFC Stack: Layer Cake
 
 The Android NFC implementation forms a layered stack that spans from application
 Java code down to vendor-specific hardware:
@@ -109,7 +107,7 @@ graph TB
     HW1 --> HW2
 ```
 
-### 38.1.4 Key Source Directories
+### 38.1.3 Key Source Directories
 
 The NFC implementation spans multiple directories in the AOSP tree:
 
@@ -125,7 +123,7 @@ The NFC implementation spans multiple directories in the AOSP tree:
 | `hardware/interfaces/nfc/1.0/` through `1.2/` | Legacy HIDL HAL interfaces |
 | `packages/modules/Nfc/apex/` | Mainline APEX packaging |
 
-### 38.1.5 NfcAdapter: The Application Entry Point
+### 38.1.4 NfcAdapter: The Application Entry Point
 
 `NfcAdapter` is the application-facing singleton that gates all NFC operations.
 An application obtains it through a single static call:
@@ -162,7 +160,7 @@ The adapter communicates with `NfcService` through a Binder interface
 - `isEnabled()` -- check NFC hardware state
 - `ignore()` -- debounce a specific tag
 
-### 38.1.6 NfcService: The System Server Component
+### 38.1.5 NfcService: The System Server Component
 
 `NfcService` is the central daemon.  At 6,666+ lines it is one of the larger
 system services.  It runs in the `com.android.nfc` process with the shared UID
@@ -187,7 +185,7 @@ NfcService responsibilities:
 - Maintain the NFCC routing table
 - Expose Binder APIs consumed by NfcAdapter
 
-### 38.1.7 NFC HAL: Hardware Abstraction
+### 38.1.6 NFC HAL: Hardware Abstraction
 
 The HAL mediates between the NCI stack and the vendor's NFC controller driver.
 The current interface is AIDL-based (`android.hardware.nfc.INfc`) with
@@ -213,7 +211,7 @@ interface INfc {
 }
 ```
 
-### 38.1.8 NCI: NFC Controller Interface
+### 38.1.7 NCI: NFC Controller Interface
 
 The NFC Controller Interface (NCI) is the standardized protocol between the host
 (application processor) and the NFC Controller (NFCC).  The AOSP implementation
@@ -241,7 +239,7 @@ NCI messages are classified by Group ID (GID) and Opcode ID (OID):
 | 0x02 | NFCEE Management (Secure Element) |
 | 0x0F | Proprietary (vendor-specific) |
 
-### 38.1.9 NFC as a Mainline Module (APEX)
+### 38.1.8 NFC as a Mainline Module (APEX)
 
 Starting in recent Android releases, the NFC stack is packaged as a Mainline
 module (`com.android.nfcservices`), allowing Google to update NFC independently
@@ -258,7 +256,7 @@ The APEX manifest lives at:
 packages/modules/Nfc/apex/manifest.json
 ```
 
-### 38.1.10 End-to-End: From RF Field to Intent
+### 38.1.9 End-to-End: From RF Field to Intent
 
 When a user taps their phone against an NFC tag, this is the complete data path:
 
