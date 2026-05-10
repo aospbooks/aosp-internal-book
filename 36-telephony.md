@@ -2537,41 +2537,41 @@ Emergency calls receive special treatment throughout the stack:
 1. **EmergencyNumberTracker** maintains the emergency number database
    (compiled from multiple sources: modem, SIM, carrier config, database):
 
-```java
-// frameworks/opt/telephony/src/java/com/android/internal/telephony/emergency/EmergencyNumberTracker.java
-```
+    ```java
+    // frameworks/opt/telephony/src/java/com/android/internal/telephony/emergency/EmergencyNumberTracker.java
+    ```
 
 2. **EmergencyStateTracker** coordinates the emergency call state machine:
 
-```java
-// frameworks/opt/telephony/src/java/com/android/internal/telephony/emergency/EmergencyStateTracker.java
-```
+    ```java
+    // frameworks/opt/telephony/src/java/com/android/internal/telephony/emergency/EmergencyStateTracker.java
+    ```
 
 3. **Domain Selection** determines whether to route emergency calls over
    CS (circuit-switched) or IMS:
 
-```java
-// frameworks/opt/telephony/src/java/com/android/internal/telephony/domainselection/DomainSelectionResolver.java
-```
+    ```java
+    // frameworks/opt/telephony/src/java/com/android/internal/telephony/domainselection/DomainSelectionResolver.java
+    ```
 
 4. The `IRadioVoice.emergencyDial()` HAL method provides enhanced information
    to the modem:
 
-```
-// hardware/interfaces/radio/aidl/android/hardware/radio/voice/IRadioVoice.aidl
-void emergencyDial(in int serial, in Dial dialInfo,
-        in int categories, in String[] urns,
-        in EmergencyCallRouting routing, ...);
-```
+    ```
+    // hardware/interfaces/radio/aidl/android/hardware/radio/voice/IRadioVoice.aidl
+    void emergencyDial(in int serial, in Dial dialInfo,
+            in int categories, in String[] urns,
+            in EmergencyCallRouting routing, ...);
+    ```
 
-Emergency call routing options:
+    Emergency call routing options:
 
-```
-// hardware/interfaces/radio/aidl/android/hardware/radio/voice/EmergencyCallRouting.aidl
-// UNKNOWN -- Let the modem decide
-// EMERGENCY -- Use emergency routing
-// NORMAL -- Try normal routing first, then emergency
-```
+    ```
+    // hardware/interfaces/radio/aidl/android/hardware/radio/voice/EmergencyCallRouting.aidl
+    // UNKNOWN -- Let the modem decide
+    // EMERGENCY -- Use emergency routing
+    // NORMAL -- Try normal routing first, then emergency
+    ```
 
 ### 36.7.7 InCallService -- the UI Connection
 
