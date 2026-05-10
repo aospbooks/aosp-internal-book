@@ -71,29 +71,6 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `kernel/build/build.sh` | Kernel build wrapper script |
 | `kernel/build/kleaf/` | Kleaf (Bazel-based) kernel build system |
 
-## HAL -- Hardware Abstraction Layer (Chapter 10)
-
-| File Path | Purpose |
-|-----------|---------|
-| `hardware/interfaces/` | Top-level HIDL/AIDL HAL interface directory |
-| `hardware/interfaces/audio/aidl/` | Audio HAL AIDL interface definitions |
-| `hardware/interfaces/camera/provider/aidl/` | Camera provider HAL interface |
-| `hardware/interfaces/graphics/composer/aidl/` | HWC (Hardware Composer) HAL interface |
-| `hardware/interfaces/graphics/allocator/aidl/` | Gralloc allocator HAL interface |
-| `hardware/interfaces/graphics/mapper/stable-c/` | Gralloc mapper stable-C HAL interface |
-| `hardware/interfaces/health/aidl/` | Battery/health HAL interface |
-| `hardware/interfaces/sensors/aidl/` | Sensors HAL interface |
-| `hardware/interfaces/neuralnetworks/aidl/` | NNAPI HAL interface |
-| `hardware/interfaces/power/aidl/` | Power HAL interface |
-| `hardware/interfaces/thermal/aidl/` | Thermal HAL interface |
-| `hardware/interfaces/bluetooth/aidl/` | Bluetooth HAL interface |
-| `hardware/interfaces/wifi/aidl/` | Wi-Fi HAL interface |
-| `hardware/interfaces/vibrator/aidl/` | Vibrator HAL interface |
-| `hardware/libhardware/include/hardware/hardware.h` | Legacy HAL module interface (hw_module_t) |
-| `system/libhidl/transport/HidlTransportSupport.cpp` | HIDL transport initialization |
-| `system/tools/hidl/` | HIDL compiler (hidl-gen) |
-| `system/tools/aidl/` | AIDL compiler for HAL interfaces |
-
 ## Bionic and the Dynamic Linker (Chapter 7)
 
 | File Path | Purpose |
@@ -132,6 +109,29 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/base/core/java/android/os/ServiceManager.java` | Java service manager client |
 | `frameworks/base/core/jni/android_util_Binder.cpp` | Binder JNI bridge |
 
+## HAL -- Hardware Abstraction Layer (Chapter 10)
+
+| File Path | Purpose |
+|-----------|---------|
+| `hardware/interfaces/` | Top-level HIDL/AIDL HAL interface directory |
+| `hardware/interfaces/audio/aidl/` | Audio HAL AIDL interface definitions |
+| `hardware/interfaces/camera/provider/aidl/` | Camera provider HAL interface |
+| `hardware/interfaces/graphics/composer/aidl/` | HWC (Hardware Composer) HAL interface |
+| `hardware/interfaces/graphics/allocator/aidl/` | Gralloc allocator HAL interface |
+| `hardware/interfaces/graphics/mapper/stable-c/` | Gralloc mapper stable-C HAL interface |
+| `hardware/interfaces/health/aidl/` | Battery/health HAL interface |
+| `hardware/interfaces/sensors/aidl/` | Sensors HAL interface |
+| `hardware/interfaces/neuralnetworks/aidl/` | NNAPI HAL interface |
+| `hardware/interfaces/power/aidl/` | Power HAL interface |
+| `hardware/interfaces/thermal/aidl/` | Thermal HAL interface |
+| `hardware/interfaces/bluetooth/aidl/` | Bluetooth HAL interface |
+| `hardware/interfaces/wifi/aidl/` | Wi-Fi HAL interface |
+| `hardware/interfaces/vibrator/aidl/` | Vibrator HAL interface |
+| `hardware/libhardware/include/hardware/hardware.h` | Legacy HAL module interface (hw_module_t) |
+| `system/libhidl/transport/HidlTransportSupport.cpp` | HIDL transport initialization |
+| `system/tools/hidl/` | HIDL compiler (hidl-gen) |
+| `system/tools/aidl/` | AIDL compiler for HAL interfaces |
+
 ## NDK -- Native Development Kit (Chapter 11)
 
 | File Path | Purpose |
@@ -144,6 +144,21 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/av/media/ndk/` | Media NDK implementation (AMediaCodec, etc.) |
 | `packages/modules/NeuralNetworks/runtime/` | NNAPI runtime implementation |
 | `frameworks/native/libs/nativewindow/` | ANativeWindow implementation |
+
+## Native Services (Chapter 12)
+
+| File Path | Purpose |
+|-----------|---------|
+| `frameworks/native/services/inputflinger/InputDispatcher.cpp` | Input event dispatch to windows |
+| `frameworks/native/services/inputflinger/InputReader.cpp` | Input device event reading |
+| `frameworks/native/services/inputflinger/InputManager.cpp` | Input subsystem coordinator |
+| `frameworks/native/services/sensorservice/SensorService.cpp` | Sensor event multiplexing |
+| `frameworks/native/services/surfaceflinger/main_surfaceflinger.cpp` | SurfaceFlinger process entry point |
+| `system/logging/logd/SerializedLogBuffer.cpp` | System log ring buffer |
+| `system/memory/lmkd/lmkd.cpp` | Low memory killer daemon |
+| `system/memory/lmkd/` | Modern LMKD implementation |
+| `system/core/healthd/` | Battery/health daemon |
+| `system/netd/server/NetdNativeService.cpp` | Network daemon native service |
 
 ## Graphics and Render Pipeline (Chapter 13)
 
@@ -234,20 +249,46 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/base/media/java/android/media/MediaCodec.java` | Java MediaCodec API |
 | `frameworks/base/media/java/android/media/MediaPlayer.java` | Java MediaPlayer API |
 
-## Native Services (Chapter 12)
+## ART Runtime (Chapter 18)
 
 | File Path | Purpose |
 |-----------|---------|
-| `frameworks/native/services/inputflinger/InputDispatcher.cpp` | Input event dispatch to windows |
-| `frameworks/native/services/inputflinger/InputReader.cpp` | Input device event reading |
-| `frameworks/native/services/inputflinger/InputManager.cpp` | Input subsystem coordinator |
-| `frameworks/native/services/sensorservice/SensorService.cpp` | Sensor event multiplexing |
-| `frameworks/native/services/surfaceflinger/main_surfaceflinger.cpp` | SurfaceFlinger process entry point |
-| `system/logging/logd/SerializedLogBuffer.cpp` | System log ring buffer |
-| `system/memory/lmkd/lmkd.cpp` | Low memory killer daemon |
-| `system/memory/lmkd/` | Modern LMKD implementation |
-| `system/core/healthd/` | Battery/health daemon |
-| `system/netd/server/NetdNativeService.cpp` | Network daemon native service |
+| `art/runtime/runtime.cc` | ART runtime initialization |
+| `art/runtime/class_linker.cc` | Class loading and linking |
+| `art/runtime/interpreter/interpreter.cc` | Bytecode interpreter entry point |
+| `art/runtime/jit/jit.cc` | JIT compiler coordinator |
+| `art/runtime/jit/jit_code_cache.cc` | JIT compiled code cache |
+| `art/runtime/gc/heap.cc` | Garbage collector heap management |
+| `art/runtime/gc/collector/concurrent_copying.cc` | Concurrent copying GC |
+| `art/runtime/thread.cc` | Thread management |
+| `art/runtime/oat/oat_file.cc` | OAT file format handling |
+| `art/runtime/mirror/object.h` | Root object type for managed heap |
+| `art/runtime/mirror/class.h` | Class metadata representation |
+| `art/compiler/optimizing/optimizing_compiler.cc` | AOT/JIT optimizing compiler |
+| `art/compiler/optimizing/code_generator_arm64.cc` | ARM64 code generation backend |
+| `art/compiler/optimizing/register_allocator_linear_scan.cc` | Register allocation |
+| `art/dex2oat/dex2oat.cc` | Ahead-of-time compilation tool |
+| `art/dex2oat/dex2oat_options.cc` | DEX-to-OAT compilation options |
+| `art/libdexfile/dex/dex_file.h` | DEX file format definitions |
+| `art/runtime/native_bridge_art_interface.cc` | ART-side native bridge integration |
+
+## Native Bridge and Binary Translation (Chapter 19)
+
+| File Path | Purpose |
+|-----------|---------|
+| `frameworks/libs/binary_translation/native_bridge/native_bridge.h` | NativeBridgeCallbacks interface (v3-v8) |
+| `frameworks/libs/binary_translation/native_bridge/native_bridge.cc` | Native bridge framework implementation |
+| `frameworks/libs/binary_translation/guest_loader/` | Guest library loading and linking |
+| `frameworks/libs/binary_translation/guest_abi/` | ABI conversion between host and guest |
+| `frameworks/libs/binary_translation/guest_state/` | Guest CPU state abstraction |
+| `frameworks/libs/binary_translation/jni/` | JNI trampoline generation |
+| `frameworks/libs/binary_translation/interpreter/` | Guest instruction interpreter |
+| `frameworks/libs/binary_translation/decoder/` | Guest instruction decoder |
+| `frameworks/libs/binary_translation/backend/` | Host code generation backend |
+| `frameworks/libs/binary_translation/assembler/` | Host instruction assembler |
+| `frameworks/libs/binary_translation/android_api/` | Android framework proxy stubs |
+| `frameworks/libs/native_bridge_support/native_bridge_support.mk` | Build synchronization for bridge support |
+| `art/libnativebridge/native_bridge.cc` | System-side native bridge loading |
 
 ## system_server (Chapter 20)
 
@@ -323,53 +364,20 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/base/services/core/java/com/android/server/pm/dex/DexManager.java` | DEX file optimization tracking |
 | `frameworks/base/core/java/android/content/pm/PackageManager.java` | Public PackageManager API |
 
-## ART Runtime (Chapter 18)
+## Security (Chapter 40)
 
 | File Path | Purpose |
 |-----------|---------|
-| `art/runtime/runtime.cc` | ART runtime initialization |
-| `art/runtime/class_linker.cc` | Class loading and linking |
-| `art/runtime/interpreter/interpreter.cc` | Bytecode interpreter entry point |
-| `art/runtime/jit/jit.cc` | JIT compiler coordinator |
-| `art/runtime/jit/jit_code_cache.cc` | JIT compiled code cache |
-| `art/runtime/gc/heap.cc` | Garbage collector heap management |
-| `art/runtime/gc/collector/concurrent_copying.cc` | Concurrent copying GC |
-| `art/runtime/thread.cc` | Thread management |
-| `art/runtime/oat/oat_file.cc` | OAT file format handling |
-| `art/runtime/mirror/object.h` | Root object type for managed heap |
-| `art/runtime/mirror/class.h` | Class metadata representation |
-| `art/compiler/optimizing/optimizing_compiler.cc` | AOT/JIT optimizing compiler |
-| `art/compiler/optimizing/code_generator_arm64.cc` | ARM64 code generation backend |
-| `art/compiler/optimizing/register_allocator_linear_scan.cc` | Register allocation |
-| `art/dex2oat/dex2oat.cc` | Ahead-of-time compilation tool |
-| `art/dex2oat/dex2oat_options.cc` | DEX-to-OAT compilation options |
-| `art/libdexfile/dex/dex_file.h` | DEX file format definitions |
-| `art/runtime/native_bridge_art_interface.cc` | ART-side native bridge integration |
-
-## Native Bridge and Binary Translation (Chapter 19)
-
-| File Path | Purpose |
-|-----------|---------|
-| `frameworks/libs/binary_translation/native_bridge/native_bridge.h` | NativeBridgeCallbacks interface (v3-v8) |
-| `frameworks/libs/binary_translation/native_bridge/native_bridge.cc` | Native bridge framework implementation |
-| `frameworks/libs/binary_translation/guest_loader/` | Guest library loading and linking |
-| `frameworks/libs/binary_translation/guest_abi/` | ABI conversion between host and guest |
-| `frameworks/libs/binary_translation/guest_state/` | Guest CPU state abstraction |
-| `frameworks/libs/binary_translation/jni/` | JNI trampoline generation |
-| `frameworks/libs/binary_translation/interpreter/` | Guest instruction interpreter |
-| `frameworks/libs/binary_translation/decoder/` | Guest instruction decoder |
-| `frameworks/libs/binary_translation/backend/` | Host code generation backend |
-| `frameworks/libs/binary_translation/assembler/` | Host instruction assembler |
-| `frameworks/libs/binary_translation/android_api/` | Android framework proxy stubs |
-| `frameworks/libs/native_bridge_support/native_bridge_support.mk` | Build synchronization for bridge support |
-| `art/libnativebridge/native_bridge.cc` | System-side native bridge loading |
-
-## CompanionDeviceManager and Virtual Devices (Chapter 51)
-
-| File Path | Purpose |
-|-----------|---------|
-| `frameworks/base/services/companion/java/com/android/server/companion/CompanionDeviceManagerService.java` | CDM service |
-| `frameworks/base/services/companion/java/com/android/server/companion/virtual/VirtualDeviceManagerService.java` | VDM service |
+| `system/sepolicy/public/` | Public SELinux policy definitions |
+| `system/sepolicy/private/` | Private (platform) SELinux policy |
+| `system/sepolicy/vendor/` | Vendor SELinux policy |
+| `system/security/keystore2/` | Keystore2 service (Rust) |
+| `system/security/identity/` | Identity credential service |
+| `external/selinux/` | SELinux userspace tools |
+| `system/extras/verity/` | dm-verity tools |
+| `system/core/fs_mgr/libfs_avb/` | AVB (Android Verified Boot) integration |
+| `frameworks/base/services/core/java/com/android/server/biometrics/` | Biometric authentication |
+| `frameworks/base/keystore/java/android/security/keystore2/` | Keystore Java API |
 
 ## SystemUI (Chapter 47)
 
@@ -405,50 +413,27 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `packages/apps/Settings/src/com/android/settings/search/SearchFeatureProvider.java` | Settings search |
 | `packages/apps/Settings/src/com/android/settings/biometrics/` | Biometrics enrollment |
 
-## Emulator (Chapter 58)
+## CompanionDeviceManager and Virtual Devices (Chapter 51)
 
 | File Path | Purpose |
 |-----------|---------|
-| `external/qemu/android/emulation/` | Emulator core emulation logic |
-| `external/qemu/android/android-emu/android/emulation/` | Emulator hardware emulation |
-| `device/generic/goldfish/` | Goldfish virtual device definitions |
-| `device/google/cuttlefish/` | Cuttlefish virtual device definitions |
-| `device/google/cuttlefish/host/commands/run_cvd/` | Cuttlefish launcher |
-| `external/crosvm/` | CrosVM virtual machine monitor |
-| `external/qemu/android/android-grpc/` | Emulator gRPC control interface |
+| `frameworks/base/services/companion/java/com/android/server/companion/CompanionDeviceManagerService.java` | CDM service |
+| `frameworks/base/services/companion/java/com/android/server/companion/virtual/VirtualDeviceManagerService.java` | VDM service |
 
-## Architecture Support (Chapter 57)
+## Mainline Modules (Chapter 52)
 
 | File Path | Purpose |
 |-----------|---------|
-| `build/soong/cc/config/arm64_device.go` | ARM64 toolchain: arch variants, CPU tuning, PAC/BTI |
-| `build/soong/cc/config/arm_device.go` | ARM 32-bit toolchain: Thumb/ARM, errata workarounds |
-| `build/soong/cc/config/x86_device.go` | x86 32-bit toolchain: SSE, stack realignment |
-| `build/soong/cc/config/x86_64_device.go` | x86_64 toolchain: microarchitecture variants |
-| `build/soong/cc/config/riscv64_device.go` | RISC-V 64-bit toolchain: ISA extensions |
-| `build/soong/cc/config/toolchain.go` | Toolchain interface and factory registry |
-| `build/soong/cc/config/global.go` | Global compiler/linker flags for all architectures |
-| `build/soong/cc/config/bionic.go` | Bionic CRT objects and default shared libraries |
-| `build/soong/cc/config/clang.go` | Clang unknown-flags filter |
-| `build/soong/android/arch.go` | Arch struct, ArchType, multilib decode logic |
-| `bionic/libc/arch-arm64/ifuncs.cpp` | ARM64 ifunc dispatchers (MTE, SVE selection) |
-| `art/runtime/arch/riscv64/instruction_set_features_riscv64.h` | ART RISC-V feature detection |
-| `art/runtime/arch/arm64/instruction_set_features_arm64.h` | ART ARM64 feature bitmap and errata |
-
-## Security (Chapter 40)
-
-| File Path | Purpose |
-|-----------|---------|
-| `system/sepolicy/public/` | Public SELinux policy definitions |
-| `system/sepolicy/private/` | Private (platform) SELinux policy |
-| `system/sepolicy/vendor/` | Vendor SELinux policy |
-| `system/security/keystore2/` | Keystore2 service (Rust) |
-| `system/security/identity/` | Identity credential service |
-| `external/selinux/` | SELinux userspace tools |
-| `system/extras/verity/` | dm-verity tools |
-| `system/core/fs_mgr/libfs_avb/` | AVB (Android Verified Boot) integration |
-| `frameworks/base/services/core/java/com/android/server/biometrics/` | Biometric authentication |
-| `frameworks/base/keystore/java/android/security/keystore2/` | Keystore Java API |
+| `packages/modules/Wifi/` | Wi-Fi Mainline module |
+| `packages/modules/Bluetooth/` | Bluetooth Mainline module |
+| `packages/modules/NetworkStack/` | Network stack Mainline module |
+| `packages/modules/Permission/` | Permission controller module |
+| `packages/modules/MediaProvider/` | Media storage provider module |
+| `packages/modules/adb/` | ADB Mainline module |
+| `packages/modules/common/` | Shared Mainline module infrastructure |
+| `system/apex/apexd/` | APEX daemon (module installer) |
+| `system/apex/apexd/apexd.cpp` | APEX installation and activation |
+| `system/apex/libs/libapexutil/` | APEX utility library |
 
 ## Virtualization Framework (Chapter 54)
 
@@ -472,20 +457,35 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/base/core/tests/` | Framework core unit tests |
 | `frameworks/base/test-runner/` | Android test runner framework |
 
-## Mainline Modules (Chapter 52)
+## Architecture Support (Chapter 57)
 
 | File Path | Purpose |
 |-----------|---------|
-| `packages/modules/Wifi/` | Wi-Fi Mainline module |
-| `packages/modules/Bluetooth/` | Bluetooth Mainline module |
-| `packages/modules/NetworkStack/` | Network stack Mainline module |
-| `packages/modules/Permission/` | Permission controller module |
-| `packages/modules/MediaProvider/` | Media storage provider module |
-| `packages/modules/adb/` | ADB Mainline module |
-| `packages/modules/common/` | Shared Mainline module infrastructure |
-| `system/apex/apexd/` | APEX daemon (module installer) |
-| `system/apex/apexd/apexd.cpp` | APEX installation and activation |
-| `system/apex/libs/libapexutil/` | APEX utility library |
+| `build/soong/cc/config/arm64_device.go` | ARM64 toolchain: arch variants, CPU tuning, PAC/BTI |
+| `build/soong/cc/config/arm_device.go` | ARM 32-bit toolchain: Thumb/ARM, errata workarounds |
+| `build/soong/cc/config/x86_device.go` | x86 32-bit toolchain: SSE, stack realignment |
+| `build/soong/cc/config/x86_64_device.go` | x86_64 toolchain: microarchitecture variants |
+| `build/soong/cc/config/riscv64_device.go` | RISC-V 64-bit toolchain: ISA extensions |
+| `build/soong/cc/config/toolchain.go` | Toolchain interface and factory registry |
+| `build/soong/cc/config/global.go` | Global compiler/linker flags for all architectures |
+| `build/soong/cc/config/bionic.go` | Bionic CRT objects and default shared libraries |
+| `build/soong/cc/config/clang.go` | Clang unknown-flags filter |
+| `build/soong/android/arch.go` | Arch struct, ArchType, multilib decode logic |
+| `bionic/libc/arch-arm64/ifuncs.cpp` | ARM64 ifunc dispatchers (MTE, SVE selection) |
+| `art/runtime/arch/riscv64/instruction_set_features_riscv64.h` | ART RISC-V feature detection |
+| `art/runtime/arch/arm64/instruction_set_features_arm64.h` | ART ARM64 feature bitmap and errata |
+
+## Emulator (Chapter 58)
+
+| File Path | Purpose |
+|-----------|---------|
+| `external/qemu/android/emulation/` | Emulator core emulation logic |
+| `external/qemu/android/android-emu/android/emulation/` | Emulator hardware emulation |
+| `device/generic/goldfish/` | Goldfish virtual device definitions |
+| `device/google/cuttlefish/` | Cuttlefish virtual device definitions |
+| `device/google/cuttlefish/host/commands/run_cvd/` | Cuttlefish launcher |
+| `external/crosvm/` | CrosVM virtual machine monitor |
+| `external/qemu/android/android-grpc/` | Emulator gRPC control interface |
 
 ## Automotive, TV, and Wear (Chapter 60)
 
