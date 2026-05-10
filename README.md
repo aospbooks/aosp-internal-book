@@ -80,7 +80,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | XIV | 61 | Print Services | REVIEWED |
 | XIV | 62 | Camera2 Pipeline | REVIEWED |
 | XV | 63 | Custom ROM Guide (step-by-step) | REVIEWED |
-| App. | A | Key Files Reference | UNDER REVIEW |
+| App. | A | Key Files Reference | REVIEWED |
 | App. | B | Glossary | UNDER REVIEW |
 <!-- --8<-- [end:coverage] -->
 
