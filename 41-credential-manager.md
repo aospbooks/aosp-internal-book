@@ -1180,9 +1180,9 @@ between verifier and provider.
 
 ---
 
-## Appendix: Deep Dive into Internal Classes
+## 41.7 Deep Dive into Internal Classes
 
-### A.1 CredentialManagerUi Internals
+### 41.7.1 CredentialManagerUi Internals
 
 The `CredentialManagerUi` class manages the bridge between system_server and the
 credential selector UI (typically implemented in SystemUI or a dedicated selector app).
@@ -1232,7 +1232,7 @@ It packages:
 - `ResultReceiver` for receiving the selection result
 - Session tracking IDs for metrics
 
-### A.2 ProviderGetSession Details
+### 41.7.2 ProviderGetSession Details
 
 `ProviderGetSession` is the concrete implementation that handles the get-credential
 provider communication. It creates the `BeginGetCredentialRequest` from the client's
@@ -1265,7 +1265,7 @@ Each `CredentialOption` in the client request is transformed into a
 sensitive retrieval data and sends only the candidate query data -- information
 the provider needs to search its store.
 
-### A.3 ProviderCreateSession Details
+### 41.7.3 ProviderCreateSession Details
 
 For credential creation, `ProviderCreateSession` transforms the
 `CreateCredentialRequest` into a `BeginCreateCredentialRequest`:
@@ -1296,7 +1296,7 @@ Each `CreateEntry` has:
 - A `PendingIntent` for the actual save flow
 - Optional metadata about the provider
 
-### A.4 ClearRequestSession
+### 41.7.4 ClearRequestSession
 
 The clear credential state flow is simpler -- it asks all providers to clear
 any cached state for the calling app:
@@ -1312,7 +1312,7 @@ This operation is critical for security hygiene -- when a user logs out of
 an app, the app should call `clearCredentialState()` to ensure that credential
 providers do not have stale authentication state.
 
-### A.5 Settings Integration
+### 41.7.5 Settings Integration
 
 The enabled provider list is stored in Secure Settings, one per user:
 
@@ -1341,7 +1341,7 @@ static Set<ComponentName> getPrimaryProvidersForUserId(Context context, int user
 }
 ```
 
-### A.6 Error Taxonomy
+### 41.7.6 Error Taxonomy
 
 The Credential Manager defines a structured error taxonomy:
 
@@ -1390,7 +1390,7 @@ protected void respondToClientWithErrorAndFinish(String errorType, String errorM
 }
 ```
 
-### A.7 Cancellation Architecture
+### 41.7.7 Cancellation Architecture
 
 Cancellation flows bidirectionally through the stack:
 
@@ -1432,7 +1432,7 @@ When cancelled:
 3. All pending `ProviderSession` instances receive cancellation signals
 4. The session terminates with `ApiStatus.CLIENT_CANCELED`
 
-### A.8 Thread Model
+### 41.7.8 Thread Model
 
 The Credential Manager operates on multiple threads:
 
@@ -1459,7 +1459,7 @@ connectThenExecute.whenComplete((result, error) ->
         Handler.getMain().post(() -> handleExecutionResponse(result, error, cancellationSink)));
 ```
 
-### A.9 Feature Flags
+### 41.7.9 Feature Flags
 
 The Credential Manager uses `android.credentials.flags.Flags` for feature gating:
 
@@ -1479,7 +1479,7 @@ if (Flags.metricBugfixesContinued()) {
 These flags allow gradual rollout of behavior changes without code branches, following
 the AOSP trunk-stable development model.
 
-### A.10 Security Considerations
+### 41.7.10 Security Considerations
 
 The Credential Manager enforces several security boundaries:
 
@@ -1518,7 +1518,7 @@ The Credential Manager enforces several security boundaries:
 7. **Per-user isolation:** Provider lists and request sessions are strictly per-user,
    preventing cross-user credential leakage.
 
-### A.11 Testing Support
+### 41.7.11 Testing Support
 
 The framework includes several testing affordances:
 
@@ -1536,7 +1536,7 @@ testImplementation("androidx.credentials:credentials-testing:1.x.y")
 The test library provides fake implementations of the Credential Manager API that
 can be configured to return specific responses without needing real providers.
 
-### A.12 Jetpack Credential Manager vs. Framework API
+### 41.7.12 Jetpack Credential Manager vs. Framework API
 
 The `androidx.credentials` Jetpack library wraps the framework API with several
 additions:
@@ -1554,7 +1554,7 @@ On Android 14+, the Jetpack library delegates directly to the framework. On olde
 versions, it uses Google Play Services as the backend. This dual-path approach gives
 developers a single API that works across all Android versions.
 
-### A.13 Session Management and Cleanup
+### 41.7.13 Session Management and Cleanup
 
 The `SessionManager` tracks all active request sessions and ensures cleanup:
 
@@ -1592,7 +1592,7 @@ private class RequestSessionDeathRecipient implements IBinder.DeathRecipient {
 If the client app crashes or is killed, the binder death triggers session cleanup,
 preventing resource leaks and dangling UI states.
 
-### A.14 Provider Response Aggregation Strategy
+### 41.7.14 Provider Response Aggregation Strategy
 
 When multiple providers respond to a get request, the system must aggregate and
 present their results coherently. The aggregation follows these rules:
@@ -1630,7 +1630,7 @@ graph TB
     AGG --> UI["Credential Selector UI<br/>4 credential entries<br/>1 auth action"]
 ```
 
-### A.15 The PrepareGetRequestSession
+### 41.7.15 The PrepareGetRequestSession
 
 The `PrepareGetRequestSession` supports a two-step retrieval pattern used by the
 autofill integration:
@@ -1646,7 +1646,7 @@ The prepare phase returns a `PrepareGetCredentialResponseInternal` indicating:
 - Whether remote results are available
 - A `PendingIntent` to invoke when results are needed
 
-### A.16 Provider Information Factory
+### 41.7.16 Provider Information Factory
 
 `CredentialProviderInfoFactory` is responsible for discovering and constructing
 provider metadata:
@@ -1666,7 +1666,7 @@ Factory methods:
 - `getCredentialProviderServices()` -- Gets providers filtered by user preferences
 - `create()` -- Creates a `CredentialProviderInfo` for a specific component
 
-### A.17 Request Types and RequestInfo
+### 41.7.17 Request Types and RequestInfo
 
 The `RequestInfo` class encapsulates the type and parameters of a credential request.
 It serves as a key input to the selector UI:
@@ -1691,7 +1691,7 @@ The request type determines:
 - Whether primary provider highlighting is applied
 - How entries are sorted and presented
 
-### A.18 Disabled Provider Data
+### 41.7.18 Disabled Provider Data
 
 When the selector UI is shown, it may include information about disabled providers:
 
@@ -1711,7 +1711,7 @@ The `DisabledProviderData` class carries:
 This helps users discover and enable credential providers they have installed but
 not yet activated.
 
-### A.19 Integration with WebView and Browsers
+### 41.7.19 Integration with WebView and Browsers
 
 For web-based authentication, the passkey flow has special considerations:
 
@@ -1743,7 +1743,7 @@ The browser (or WebView) is responsible for:
 The `CallingAppInfo.getOrigin()` method provides the web origin that providers
 use for relying party verification.
 
-### A.20 Credential Manager and Lock Screen
+### 41.7.20 Credential Manager and Lock Screen
 
 The Credential Manager interacts with the lock screen in several ways:
 
@@ -1761,7 +1761,7 @@ The Credential Manager interacts with the lock screen in several ways:
    authentication directly into the lock screen flow, allowing passkey-based
    device unlock (though this is not part of AOSP)
 
-### A.21 Performance Characteristics
+### 41.7.21 Performance Characteristics
 
 Typical timing for credential operations (measured on mid-range device):
 
@@ -1785,7 +1785,7 @@ Optimization strategies:
 
 ---
 
-## 41.7 Try It
+## 41.8 Try It
 
 ### 41.7.1 Inspecting Credential Manager State
 
