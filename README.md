@@ -49,7 +49,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | VII | 30 | Background Tasks | REVIEWED |
 | VII | 31 | Multi-User | REVIEWED |
 | VII | 32 | Account & Sync | REVIEWED |
-| VII | 33 | Location | UNDER REVIEW |
+| VII | 33 | Location | REVIEWED |
 | VII | 34 | Storage | UNDER REVIEW |
 | VIII | 35 | Networking (VCN/Thread) | UNDER REVIEW |
 | VIII | 36 | Telephony (IMS) | UNDER REVIEW |
