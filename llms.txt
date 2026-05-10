@@ -1,0 +1,125 @@
+# AOSP Internals: A Developer's Guide to the Android Open Source Project
+
+> A source-referenced technical book covering the full Android Open Source Project stack, from kernel to apps. Every architectural claim points to a specific file path and line number in AOSP `main`, so the book doubles as an annotated index of the codebase. 64 chapters and 2 appendices, ~227,000 lines of prose with ~1,500 architectural diagrams.
+
+The book is organized bottom-up: build system → kernel/boot → native foundation → HAL → native services → runtime → framework core → framework services → connectivity → security → UI → system apps → infrastructure → device support → practical custom-ROM guide. Each chapter ends with hands-on "Try It" exercises that exercise the subsystem on a real device or emulator.
+
+When using this site as background for AOSP work, prefer fetching the chapter that matches the subsystem in question. The chapter URL pattern is `https://aospbooks.github.io/aosp-internal-book/<NN-slug>/` (one page per chapter). Chapters are self-contained — section numbers like `9.4.2` are stable and safe to cite.
+
+## Part I: Getting Started
+
+- [Frontmatter](https://aospbooks.github.io/aosp-internal-book/00-frontmatter/): preface, target audience, conventions, how to read the book, AOSP version targeted (`main` as of early 2026)
+- [Chapter 1: Introduction](https://aospbooks.github.io/aosp-internal-book/01-introduction/): what AOSP is, the Android stack at a glance, scope of the book, layer-by-layer tour of the source tree
+- [Chapter 2: Source Code & Build System](https://aospbooks.github.io/aosp-internal-book/02-source-and-build/): repo/manifest, Soong (`Android.bp`), Bazel/Bazel-from-Soong, Kleaf for the kernel, lunch targets, the `m` workflow
+- [Chapter 3: Feature Flags (aconfig)](https://aospbooks.github.io/aosp-internal-book/03-feature-flags/): aconfig declarations, generated Java/C++ accessors, build-time vs. runtime flags, release configs, ramp-and-cleanup workflow
+
+## Part II: Kernel & Boot
+
+- [Chapter 4: Boot and Init](https://aospbooks.github.io/aosp-internal-book/04-boot-and-init/): bootloader handoff, first/second-stage init, init.rc parsing, services and triggers, early-mount, Zygote startup
+- [Chapter 5: Kernel (GKI)](https://aospbooks.github.io/aosp-internal-book/05-kernel/): Generic Kernel Image, vendor modules, KMI stability, dm-verity / AVB, Android-specific subsystems (binder, ashmem→memfd, low-memory killer)
+- [Chapter 6: System Properties](https://aospbooks.github.io/aosp-internal-book/06-system-properties/): property_service, property contexts/SELinux, persistent properties, ro/persist/sys/build prefixes, the `getprop`/`setprop` plumbing
+
+## Part III: Native Foundation
+
+- [Chapter 7: Bionic & Linker](https://aospbooks.github.io/aosp-internal-book/07-bionic-and-linker/): Android's libc/libm/libdl, dynamic linker (`linker64`), namespaces, GWP-ASan / MTE, the `app_process` entry point
+- [Chapter 8: Memory Management](https://aospbooks.github.io/aosp-internal-book/08-memory-management/): jemalloc/scudo, ashmem/memfd, ION/dma-buf, low-memory killer (`lmkd`), PSI, kswapd interaction, OOM adjustments
+- [Chapter 9: Binder IPC](https://aospbooks.github.io/aosp-internal-book/09-binder-ipc/): `/dev/binder`, parcels, transactions, one-copy semantics, AIDL/HIDL/NDK Binder, servicemanager, threadpool model, death recipients
+- [Chapter 10: HAL (HIDL/AIDL)](https://aospbooks.github.io/aosp-internal-book/10-hal/): Treble architecture, HIDL→AIDL HAL migration, vendor/system partition split, hwservicemanager vs. servicemanager, VINTF
+- [Chapter 11: NDK](https://aospbooks.github.io/aosp-internal-book/11-ndk/): native APIs exposed to apps, `libandroid`, JNI bindings, ABI compatibility, sysroot layout, `ndk-build` vs. CMake
+
+## Part IV: Native Services & Media
+
+- [Chapter 12: Native Services](https://aospbooks.github.io/aosp-internal-book/12-native-services/): surfaceflinger, audioserver, mediaserver, cameraserver — process layout, init triggers, AIDL boundaries, HAL clients
+- [Chapter 13: Graphics & Render Pipeline](https://aospbooks.github.io/aosp-internal-book/13-graphics-render-pipeline/): SurfaceFlinger, BufferQueue, GraphicBuffer, OpenGL ES / Vulkan / Skia / HWUI, RenderThread, layer composition
+- [Chapter 14: Animation System](https://aospbooks.github.io/aosp-internal-book/14-animation-system/): Choreographer, ValueAnimator/ObjectAnimator, RenderNode animations, dynamic animation (spring/fling), shared-element transitions
+- [Chapter 15: Audio System](https://aospbooks.github.io/aosp-internal-book/15-audio-system/): AudioFlinger, AudioPolicyManager, audio HAL, AAudio/OpenSL ES, spatial audio (Spatializer), routing rules
+- [Chapter 16: Media & Camera](https://aospbooks.github.io/aosp-internal-book/16-media-and-camera/): MediaCodec, MediaExtractor, NuPlayer, codec2 HAL, camera service, image/video pipeline overview
+- [Chapter 17: Sensors](https://aospbooks.github.io/aosp-internal-book/17-sensors/): SensorService, sensor HAL, batching, wake-up sensors, FIFO and event delivery, sensor fusion
+
+## Part V: Runtime
+
+- [Chapter 18: ART Runtime](https://aospbooks.github.io/aosp-internal-book/18-art-runtime/): dex2oat, AOT/JIT, baseline profiles, GC (concurrent copying), oat/vdex/odex files, class loaders, JNI bridge
+- [Chapter 19: Native Bridge (Berberis)](https://aospbooks.github.io/aosp-internal-book/19-native-bridge/): cross-architecture native code execution, Houdini → Berberis, intercepting libc/JNI calls, performance trade-offs
+
+## Part VI: Framework Core
+
+- [Chapter 20: system_server](https://aospbooks.github.io/aosp-internal-book/20-system-server/): SystemServer.java, the four boot phases, service registration, Watchdog, lifecycle management, shutdown sequence
+- [Chapter 21: Intent System](https://aospbooks.github.io/aosp-internal-book/21-intent-system/): Intent matching, IntentFilter, IntentResolver, PackageManager queries, package visibility, intent verification
+- [Chapter 22: Activity & Window Management](https://aospbooks.github.io/aosp-internal-book/22-activity-and-window/): ActivityTaskManagerService, WindowManagerService, the activity lifecycle state machine, task/stack model, splash screens
+- [Chapter 23: Window System](https://aospbooks.github.io/aosp-internal-book/23-window-system/): WindowState, SurfaceControl, input dispatching, focus tracking, IME insets, transitions
+- [Chapter 24: Display System](https://aospbooks.github.io/aosp-internal-book/24-display-system/): DisplayManagerService, logical vs. physical displays, color modes, HDR, brightness curves, refresh-rate switching
+- [Chapter 25: View System](https://aospbooks.github.io/aosp-internal-book/25-view-system/): View hierarchy, measure/layout/draw, Canvas/RenderNode, hardware acceleration, accessibility hooks
+
+## Part VII: Framework Services
+
+- [Chapter 26: Package Manager](https://aospbooks.github.io/aosp-internal-book/26-package-manager/): PackageManagerService, install/uninstall flow, APK parsing, permissions, app components, package visibility
+- [Chapter 27: Content Providers](https://aospbooks.github.io/aosp-internal-book/27-content-providers/): ContentProvider, ContentResolver, URI permissions, observers, FileProvider, MediaStore as a worked example
+- [Chapter 28: Notifications](https://aospbooks.github.io/aosp-internal-book/28-notifications/): NotificationManagerService, channels, ranker, posting/delivery flow, listener services, conversations, bubbles
+- [Chapter 29: Power Management](https://aospbooks.github.io/aosp-internal-book/29-power-management/): PowerManagerService, wake locks, Doze, App Standby, battery saver, screen-on/off, BatteryStats
+- [Chapter 30: Background Tasks](https://aospbooks.github.io/aosp-internal-book/30-background-tasks/): JobScheduler, WorkManager, AlarmManager, foreground services, exact alarm policy, restrictions and quotas
+- [Chapter 31: Multi-User](https://aospbooks.github.io/aosp-internal-book/31-multi-user/): UserManagerService, user types (full/profile/system), creation/start/stop, restrictions, cross-user calls
+- [Chapter 32: Account & Sync](https://aospbooks.github.io/aosp-internal-book/32-account-sync/): AccountManagerService, authenticator/syncadapter, token caching, SyncManager, periodic sync scheduling
+- [Chapter 33: Location](https://aospbooks.github.io/aosp-internal-book/33-location/): LocationManagerService, providers (GPS/network/fused), GNSS HAL, mock providers, geofencing, foreground-service rules
+- [Chapter 34: Storage](https://aospbooks.github.io/aosp-internal-book/34-storage/): vold, StorageManagerService, scoped storage, FUSE/sdcardfs, MediaProvider, SAF, FBE, adoptable storage, SQLite/SharedPreferences
+
+## Part VIII: Connectivity
+
+- [Chapter 35: Networking](https://aospbooks.github.io/aosp-internal-book/35-networking/): ConnectivityService, Wi-Fi framework, netd, DNS resolver, VPN, tethering, NetworkSecurityConfig, VCN, Thread mesh
+- [Chapter 36: Telephony](https://aospbooks.github.io/aosp-internal-book/36-telephony/): TelephonyManager, PhoneInterfaceManager, RIL/RILD, modem AIDL, IMS framework, emergency calling, call routing
+- [Chapter 37: Bluetooth](https://aospbooks.github.io/aosp-internal-book/37-bluetooth/): Bluetooth Mainline module, BTA layer, GATT, A2DP/HFP/AVDTP, LE Audio, pairing, scanning, advertising
+- [Chapter 38: NFC](https://aospbooks.github.io/aosp-internal-book/38-nfc/): NfcAdapter/NfcService, NCI, tag dispatch, HCE, secure element, reader mode, NFC-F (FeliCa) and NFC-V
+- [Chapter 39: USB & ADB](https://aospbooks.github.io/aosp-internal-book/39-usb-adb/): USB gadget framework, host-mode USB, MTP/PTP, RNDIS tethering, adb daemon, adb over Wi-Fi, transports
+
+## Part IX: Security
+
+- [Chapter 40: Security (TEE/Trusty)](https://aospbooks.github.io/aosp-internal-book/40-security/): SELinux on Android, Keystore/Keymint, Trusty TEE, gatekeeper/weaver, AVB, dm-verity, hardware-backed attestation
+- [Chapter 41: Credential Manager](https://aospbooks.github.io/aosp-internal-book/41-credential-manager/): CredentialManagerService, credential providers, passkeys/FIDO2, password and autofill integration, digital credentials
+- [Chapter 42: DRM](https://aospbooks.github.io/aosp-internal-book/42-drm/): MediaDrm framework, Widevine L1/L2/L3, OEMCrypto, license acquisition, secure decoder/display path
+
+## Part X: UI Framework
+
+- [Chapter 43: Widgets & RemoteViews](https://aospbooks.github.io/aosp-internal-book/43-widgets-remoteviews/): AppWidget framework, RemoteViews, RemoteCompose, host/provider model, update flow
+- [Chapter 44: WebView](https://aospbooks.github.io/aosp-internal-book/44-webview/): WebView Mainline module, Chromium content layer, renderer process, JS bridges, sandboxing
+- [Chapter 45: Accessibility](https://aospbooks.github.io/aosp-internal-book/45-accessibility/): AccessibilityService, AccessibilityNodeInfo, TalkBack, magnification, accessibility events, Switch Access
+- [Chapter 46: Internationalization](https://aospbooks.github.io/aosp-internal-book/46-internationalization/): ICU, locale resolution, resource qualifier matching, RTL support, formatters, Unicode in AOSP
+
+## Part XI: System Apps
+
+- [Chapter 47: SystemUI](https://aospbooks.github.io/aosp-internal-book/47-systemui/): SystemUI process, status bar, notification shade, keyguard, Quick Settings, Monet/dynamic color
+- [Chapter 48: Launcher3](https://aospbooks.github.io/aosp-internal-book/48-launcher3/): Launcher3, model loader, Recents/Overview, gesture nav, all-apps, predictions, work profile
+- [Chapter 49: Settings](https://aospbooks.github.io/aosp-internal-book/49-settings-app/): Settings app structure, SettingsProvider, SettingsLib, search index, slice surface
+
+## Part XII: AI & Devices
+
+- [Chapter 50: AI & AppFunctions](https://aospbooks.github.io/aosp-internal-book/50-ai-appfunctions/): on-device ML in AOSP, NNAPI, AppFunctions framework for assistant integration, Computer Control
+- [Chapter 51: Companion & Virtual Devices](https://aospbooks.github.io/aosp-internal-book/51-companion-virtual-device/): CompanionDeviceManager, virtual displays/inputs/cameras, cross-device experiences
+
+## Part XIII: Infrastructure
+
+- [Chapter 52: Mainline Modules (APEX)](https://aospbooks.github.io/aosp-internal-book/52-mainline-modules/): Project Mainline, APEX format/manifest/signing, apexd, module catalog, SDK Extensions, module boundaries
+- [Chapter 53: OTA Updates](https://aospbooks.github.io/aosp-internal-book/53-ota-updates/): A/B updates, update_engine, payload format, virtual A/B with snapshots, rollback protection
+- [Chapter 54: Virtualization (pKVM/crosvm)](https://aospbooks.github.io/aosp-internal-book/54-virtualization/): Android Virtualization Framework, pKVM hypervisor, crosvm, microdroid, isolated workloads
+- [Chapter 55: Testing (CTS/VTS/Ravenwood)](https://aospbooks.github.io/aosp-internal-book/55-testing/): CTS/VTS/MTS, Tradefed, Ravenwood (host-side framework testing), atest, presubmit infrastructure
+- [Chapter 56: Debugging Tools (Perfetto)](https://aospbooks.github.io/aosp-internal-book/56-debugging-tools/): Perfetto trace pipeline, atrace, simpleperf, heapprofd, logcat, dumpsys conventions
+
+## Part XIV: Device Support
+
+- [Chapter 57: Architecture Support](https://aospbooks.github.io/aosp-internal-book/57-architecture-support/): ARM (32/64), x86_64, RISC-V port, ABI matrix, per-arch toolchain and runtime considerations
+- [Chapter 58: Emulator](https://aospbooks.github.io/aosp-internal-book/58-emulator/): QEMU-based Android emulator, AVD format, hardware acceleration (KVM/HAXM/HVF), guest kernel, Studio integration
+- [Chapter 59: Device Policy](https://aospbooks.github.io/aosp-internal-book/59-device-policy/): DevicePolicyManager, work profiles, fully-managed devices, COPE, restrictions, enrollment flows
+- [Chapter 60: Automotive/TV/Wear](https://aospbooks.github.io/aosp-internal-book/60-automotive-tv-wear/): Android Automotive (CarService, vehicle HAL), Android TV (Leanback, TIF), Wear OS specifics
+- [Chapter 61: Print Services](https://aospbooks.github.io/aosp-internal-book/61-print-services/): PrintManager, print services, IPP, default printer service, PDF generation
+- [Chapter 62: Camera2 Pipeline](https://aospbooks.github.io/aosp-internal-book/62-camera2-pipeline/): Camera2 API, CameraDeviceImpl, CaptureRequest/Result, capture pipeline, camera HAL3
+
+## Part XV: Practical
+
+- [Chapter 63: Custom ROM Guide](https://aospbooks.github.io/aosp-internal-book/63-custom-rom/): step-by-step capstone — picking a device, syncing source, applying vendor blobs, branding, building, flashing, OTA channel
+
+## Appendices
+
+- [Appendix A: Key Files Reference](https://aospbooks.github.io/aosp-internal-book/A-appendix-key-files/): per-chapter table of the most important AOSP source files (build, init, kernel, HAL, framework services, system apps, infrastructure)
+- [Appendix B: Glossary](https://aospbooks.github.io/aosp-internal-book/B-appendix-glossary/): definitions of AOSP-specific acronyms and terms (Treble, VINTF, GKI, APEX, AIDL, HIDL, …)
+
+## Source
+
+- [Repository on GitHub](https://github.com/nicewook/aosp-knowledge): Markdown sources, MkDocs config, mermaid renderer, build/serve scripts. Issues and PRs welcome.

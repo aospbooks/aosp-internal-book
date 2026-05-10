@@ -7,6 +7,7 @@ on:
       - '**.md'
       - '**.png'
       - 'mkdocs.yml'
+      - 'llms.txt'
       - '.github/workflows/build-test.yml'
   pull_request:
     branches: [main]
@@ -32,7 +33,7 @@ jobs:
       - name: Create docs symlinks
         run: |
           mkdir -p docs
-          for f in [0-9]*.md A-*.md B-*.md index.md favicon.png; do
+          for f in [0-9]*.md A-*.md B-*.md index.md favicon.png llms.txt; do
             ln -sf "../$f" "docs/$f"
           done
           ln -sfn ../javascripts docs/javascripts
