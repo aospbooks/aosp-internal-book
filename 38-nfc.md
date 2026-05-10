@@ -3475,7 +3475,7 @@ public class DemoFeliCaService extends HostNfcFService {
 
 ---
 
-## 38.11 Summary
+## Summary
 
 This chapter explored Android's NFC stack from the 13.56 MHz radio up through
 the application-facing APIs:
