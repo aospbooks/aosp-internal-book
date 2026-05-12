@@ -83,6 +83,11 @@ extra_javascript:
 extra_css:
   - stylesheets/mermaid-zoom.css?v=8
 
+extra:
+  analytics:
+    provider: google
+    property: G-4MLVT8GS80
+
 nav:
   - Introduction: index.md
   - "Part I: Getting Started":
