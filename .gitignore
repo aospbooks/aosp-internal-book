@@ -18,6 +18,12 @@ dist/
 # Claude Code runtime state
 .claude/scheduled_tasks.lock
 
+# Superpowers session artifacts (specs + plans; not part of book content)
+.superpowers/
+
+# Manifest snapshot comparison reports (generated on demand; data, not source)
+/manifest-snapshots/_compare/
+
 # OS
 .DS_Store
 Thumbs.db

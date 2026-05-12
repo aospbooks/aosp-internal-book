@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-05-12T17:05:29.113552+00:00",
+  "captured_at_unix": 1778605529,
+  "default_revision": "android16-qpr2-release",
+  "default_remote": "aosp",
+  "manifest_branch": "android16-qpr2-release",
+  "repo_version": "v2.52",
+  "label": "initial-snapshot",
+  "notes": "First real snapshot taken from the AOSP tree at ../.."
+}

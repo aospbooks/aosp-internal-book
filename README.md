@@ -128,6 +128,23 @@ mkdocs build                       # output in site/
 
 Open **http://localhost:8000** — chapters in the sidebar, Mermaid renders live, hot-reload on edits.
 
+## AOSP Manifest Snapshots
+
+A companion tool captures point-in-time, fully-pinned `repo manifest` snapshots of the AOSP source tree and diffs two of them into a per-project commit-list Markdown report grouped by module group. Useful for "what changed between two AOSP releases."
+
+```bash
+# Take a snapshot (resolves every <project> to a HEAD SHA, prompts for label/notes)
+python3 tools/manifest_snapshot.py snap --aosp-root /path/to/aosp
+
+# Compare two snapshots → manifest-snapshots/_compare/<A>__vs__<B>.md
+python3 tools/manifest_snapshot.py compare \
+    manifest-snapshots/<branch>/<date-A> \
+    manifest-snapshots/<branch>/<date-B> \
+    --aosp-root /path/to/aosp
+```
+
+The tool is read-only against `.repo/` — it never writes inside the AOSP checkout. See [`manifest-snapshots/README.md`](manifest-snapshots/README.md) for the full guide, flag reference, and the read-only guarantee.
+
 ## GitHub Actions
 
 Tests `mkdocs build` on push to `main` and PRs (~2 min).
@@ -146,6 +163,8 @@ mkdocs-pdf-generate/       MkDocs plugin: PDF export
 mkdocs-epub-generate/      MkDocs plugin: EPUB export
 Dockerfile                 python:3.12-slim + Playwright + MkDocs plugins
 docker-compose.yml         serve / build-site / build-pdf / build-epub
+tools/                     Helper scripts (manifest_snapshot.py + tests)
+manifest-snapshots/        Pinned AOSP manifests by branch/date + comparison reports
 CLAUDE.md                  Project rules for AI agents
 .claude/skills/            book-writer
 .github/workflows/         CI: mkdocs build test
