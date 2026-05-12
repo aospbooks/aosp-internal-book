@@ -8,8 +8,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 
 **Using AI?** Point your assistant at <https://aospbooks.github.io/aosp-internal-book/llms.txt> — an [llmstxt.org](https://llmstxt.org/)-style index that lets the model find the right chapter for any AOSP subsystem without crawling the whole site.
 
-> **Status: Under Review**
-> All chapters are currently being reviewed for technical accuracy, completeness, and clarity. Content may change. If you spot errors, missing details, or have suggestions, please [open an issue](https://github.com/aospbooks/aosp-internal-book/issues) or submit a pull request — feedback from AOSP developers and enthusiasts is very welcome.
+> If you spot errors, missing details, or have suggestions, please [open an issue](https://github.com/aospbooks/aosp-internal-book/issues) or submit a pull request — feedback from AOSP developers and enthusiasts is very welcome.
 
 <!-- --8<-- [start:coverage] -->
 ## What This Book Covers
