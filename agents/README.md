@@ -2,7 +2,7 @@
 
 Bundled context for coding agents (Claude Code, Gemini CLI, Codex / AGENTS.md
 tools, GitHub Copilot) that gives them offline access to the entire AOSP
-Internals book — 64 chapters + 2 appendices, packaged as 16 Part-skills.
+Internals book — 64 chapters + 3 appendices, packaged as 16 Part-skills.
 
 The chapter content lives at the repo root (`./00-frontmatter.md` …
 `./63-custom-rom.md`); the four `agents/<platform>/` directories are
@@ -60,7 +60,7 @@ Copy the `.github/` tree into your project root:
 | `aosp-part-13-infrastructure` | XIII | Infrastructure | 52–56 |
 | `aosp-part-14-device-support` | XIV | Device Support | 57–62 |
 | `aosp-part-15-practical` | XV | Practical | 63 |
-| `aosp-part-16-appendices` | App. | Appendices | A, B |
+| `aosp-part-16-appendices` | App. | Appendices | A, B, C |
 
 ## Maintenance (for contributors to this repo)
 

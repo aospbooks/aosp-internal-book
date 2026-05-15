@@ -83,6 +83,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | XV | 63 | Custom ROM Guide (step-by-step) |
 | App. | A | Key Files Reference |
 | App. | B | Glossary |
+| App. | C | Why Kotlin Isn't on the Public API |
 <!-- --8<-- [end:coverage] -->
 
 ## How to Give Feedback
@@ -117,7 +118,7 @@ pip install mkdocs-material pymdown-extensions
 
 # Create symlinks (one-time)
 mkdir -p docs
-for f in [0-9]*.md A-*.md B-*.md index.md; do ln -sf "../$f" "docs/$f"; done
+for f in [0-9]*.md [A-Z]-*.md index.md; do ln -sf "../$f" "docs/$f"; done
 
 # Start
 mkdocs serve                       # http://127.0.0.1:8000

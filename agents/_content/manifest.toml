@@ -103,4 +103,4 @@ chapters = ["63-custom-rom"]
 id = "16-appendices"
 roman = "App."
 title = "Appendices"
-chapters = ["A-appendix-key-files", "B-appendix-glossary"]
+chapters = ["A-appendix-key-files", "B-appendix-glossary", "C-appendix-kotlin-public-api"]

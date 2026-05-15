@@ -172,3 +172,4 @@ nav:
   - Appendices:
     - "A. Key Files Reference": A-appendix-key-files.md
     - "B. Glossary": B-appendix-glossary.md
+    - "C. Why Kotlin Isn't on the Public API": C-appendix-kotlin-public-api.md
