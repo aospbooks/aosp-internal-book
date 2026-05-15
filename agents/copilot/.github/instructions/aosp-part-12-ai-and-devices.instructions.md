@@ -4612,7 +4612,7 @@ injection guided by screenshot analysis.
 
 ## 50.12 Try It
 
-### Exercise 25-1: Inspect AppFunction Metadata in AppSearch
+### Exercise 50-1: Inspect AppFunction Metadata in AppSearch
 
 Use the AppSearch shell command to dump indexed app function metadata:
 
@@ -4627,7 +4627,7 @@ adb shell cmd appsearch query \
     --schema "AppFunctionStaticMetadata"
 ```
 
-### Exercise 25-2: AppFunctionManagerService Shell Commands
+### Exercise 50-2: AppFunctionManagerService Shell Commands
 
 The `AppFunctionManagerServiceImpl` supports shell commands for testing:
 
@@ -4647,7 +4647,7 @@ adb shell cmd app_function get-access-state \
     --target com.example.target
 ```
 
-### Exercise 25-3: Implement a Minimal AppFunctionService
+### Exercise 50-3: Implement a Minimal AppFunctionService
 
 Create a service that exposes a "createNote" function:
 
@@ -4700,7 +4700,7 @@ Register in `AndroidManifest.xml`:
 </service>
 ```
 
-### Exercise 25-4: Call an AppFunction
+### Exercise 50-4: Call an AppFunction
 
 ```java
 AppFunctionManager afm = context.getSystemService(AppFunctionManager.class);
@@ -4735,7 +4735,7 @@ afm.executeAppFunction(request, executor, cancellation,
         });
 ```
 
-### Exercise 25-5: Computer Control Session
+### Exercise 50-5: Computer Control Session
 
 Request a computer control session and take a screenshot:
 
@@ -4793,7 +4793,7 @@ extensions.requestSession(params, executor,
         });
 ```
 
-### Exercise 25-6: Inspect NNAPI Devices
+### Exercise 50-6: Inspect NNAPI Devices
 
 ```bash
 # List available NNAPI accelerators
@@ -4804,7 +4804,7 @@ adb shell /data/local/tmp/NeuralNetworksTest_static \
     --gtest_filter=*TrivialModel*
 ```
 
-### Exercise 25-7: OnDeviceIntelligence Shell Commands
+### Exercise 50-7: OnDeviceIntelligence Shell Commands
 
 ```bash
 # Check OnDeviceIntelligence service status
@@ -4819,7 +4819,7 @@ adb shell cmd on_device_intelligence set-temporary-service \
     --duration 60000
 ```
 
-### Exercise 25-8: Explore Content Capture
+### Exercise 50-8: Explore Content Capture
 
 ```bash
 # Check Content Capture status
@@ -4832,7 +4832,7 @@ adb shell settings put secure content_capture_enabled 1
 adb shell dumpsys content_capture --verbose --package com.example.app
 ```
 
-### Exercise 25-9: Topics API Debugging
+### Exercise 50-9: Topics API Debugging
 
 ```bash
 # Check AdServices status
@@ -4845,7 +4845,7 @@ adb shell device_config put adservices topics_epoch_job_period_ms 60000
 adb shell cmd adservices topics list
 ```
 
-### Exercise 25-10: Build and Test AppFunctions
+### Exercise 50-10: Build and Test AppFunctions
 
 ```bash
 # Build the AppFunctions framework module
@@ -4859,7 +4859,7 @@ atest AppFunctionManagerServiceImplTest
 atest CtsAppFunctionTestCases
 ```
 
-### Exercise 25-11: Implement a ComputerControlSession Callback
+### Exercise 50-11: Implement a ComputerControlSession Callback
 
 ```java
 public class AutomationCallback implements ComputerControlSession.Callback {
@@ -4936,7 +4936,7 @@ public class AutomationCallback implements ComputerControlSession.Callback {
 }
 ```
 
-### Exercise 25-12: Query OnDeviceIntelligence Features
+### Exercise 50-12: Query OnDeviceIntelligence Features
 
 ```java
 OnDeviceIntelligenceManager odim =
@@ -4980,7 +4980,7 @@ odim.listFeatures(executor, new OutcomeReceiver<>() {
 });
 ```
 
-### Exercise 25-13: Use AppSearch for Function Discovery
+### Exercise 50-13: Use AppSearch for Function Discovery
 
 ```java
 AppSearchManager appSearchManager =
@@ -5014,7 +5014,7 @@ appSearchManager.createSearchSession(searchContext, executor, result -> {
 });
 ```
 
-### Exercise 25-14: AppFunction Access Management
+### Exercise 50-14: AppFunction Access Management
 
 ```java
 AppFunctionManager afm = context.getSystemService(AppFunctionManager.class);
@@ -5053,7 +5053,7 @@ afm.isAppFunctionEnabled("createNote", targetPackage, executor,
         });
 ```
 
-### Exercise 25-15: NNAPI Model Building (C API)
+### Exercise 50-15: NNAPI Model Building (C API)
 
 ```c
 #include <NeuralNetworks.h>
@@ -5141,7 +5141,7 @@ ANeuralNetworksCompilation_free(compilation);
 ANeuralNetworksModel_free(model);
 ```
 
-### Exercise 25-16: AppFunction Access Flag Management via ADB
+### Exercise 50-16: AppFunction Access Flag Management via ADB
 
 ```bash
 # Add an agent to the secure setting allowlist
@@ -5178,7 +5178,7 @@ adb shell content query \
     --uri content://com.android.appfunction.accesshistory/user/0
 ```
 
-### Exercise 25-17: Implement AppFunction with Attribution
+### Exercise 50-17: Implement AppFunction with Attribution
 
 ```java
 // Caller side: include attribution in request
@@ -5238,7 +5238,7 @@ public void onExecuteFunction(
 }
 ```
 
-### Exercise 25-18: AppFunction with URI Grants
+### Exercise 50-18: AppFunction with URI Grants
 
 ```java
 // Target side: return a URI grant in the response
@@ -5270,7 +5270,7 @@ public void onExecuteFunction(
 }
 ```
 
-### Exercise 25-19: Computer Control with Mirror Display
+### Exercise 50-19: Computer Control with Mirror Display
 
 ```java
 // Create a session with a mirror for human observation
@@ -5296,7 +5296,7 @@ mirror.close();
 session.close();
 ```
 
-### Exercise 25-20: Debugging Common AppFunction Issues
+### Exercise 50-20: Debugging Common AppFunction Issues
 
 **Problem: Function not found**
 ```bash
@@ -5352,7 +5352,7 @@ adb shell setprop log.tag.AppFunctionsServiceCall VERBOSE
 adb logcat -s AppFunctionsServiceCall
 ```
 
-### Exercise 25-21: Trace an AppFunction Execution End-to-End
+### Exercise 50-21: Trace an AppFunction Execution End-to-End
 
 Use systrace/perfetto to observe the complete flow:
 
