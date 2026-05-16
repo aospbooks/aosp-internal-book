@@ -14220,6 +14220,265 @@ The `INPUT_FEATURE_SPY` flag allows a window to receive copies of input events w
 
 Spy windows do not affect event dispatch to normal windows -- they only observe.
 
+### 23.6.10 Cursor and Touch Sprites (libinputservice)
+
+Sections 23.6.1–23.6.9 trace input events from kernel evdev all the way
+into `ViewRootImpl`'s `InputStage` chain. None of those subsystems draw
+anything — they route events. The visible artefacts that follow the
+pointer around (the mouse cursor arrow, the white circles that appear
+under fingertips when "Show touches" is enabled in developer options,
+the stylus tip indicator) are drawn by a separate library at
+`frameworks/base/libs/input/`, packaged as `libinputservice`. This
+subsection covers what that library does, where it lives in the
+process tree, and how it interacts with InputFlinger and SurfaceFlinger.
+
+#### Why a Separate Library
+
+InputFlinger lives in its own native daemon and is performance-critical;
+it must not pull in `libhwui`, `libgui`, or any other heavy graphics
+dependency. But the pointer policy (which cursor to show, whether to
+fade, how to animate touch spots) has to *render*. The split is
+intentional:
+
+- InputFlinger defines an abstract
+  `PointerControllerInterface` (in
+  `frameworks/native/services/inputflinger/include/`).
+- A separate library, `libinputservice`, provides the concrete
+  implementation. The header that wires the two together explicitly
+  documents the dependency story:
+
+```cpp
+// Source: frameworks/native/services/inputflinger/include/
+//   PointerChoreographerPolicyInterface.h
+// "library, libinputservice, that has the additional dependencies. The PointerController
+//  will be mocked when testing PointerChoreographer."
+virtual std::shared_ptr<PointerControllerInterface> createPointerController(
+        PointerControllerInterface::ControllerType type) = 0;
+```
+
+- The factory call is made by `PointerChoreographerPolicyInterface`, an
+  interface that *system_server* implements via its JNI native side.
+  `frameworks/base/services/core/jni/Android.bp` (line 142) links
+  `libinputservice` into the JNI bundle, so the concrete
+  `PointerController` is constructed inside the `system_server`
+  process, not inside InputFlinger.
+
+Net effect: the heavy graphics dependencies stay out of the InputFlinger
+binary; InputFlinger holds an opaque `PointerControllerInterface*` and
+calls `move(...)`, `setPosition(...)`, `setSpots(...)`,
+`updatePointerIcon(...)` on it without knowing those calls eventually
+schedule SurfaceFlinger transactions.
+
+#### What's in the Library
+
+The shared library is ~10 files in `frameworks/base/libs/input/`:
+
+| File | Purpose |
+|------|---------|
+| `PointerController.{h,cpp}` | Concrete `PointerControllerInterface` implementation; per-display sprite owner |
+| `PointerControllerContext.{h,cpp}` | Per-pointer-controller shared state (policy, looper, sprite controller, message handler) |
+| `MouseCursorController.{h,cpp}` | Manages the single mouse-cursor sprite per display: position, icon style, fade animation |
+| `TouchSpotController.{h,cpp}` | Manages up to 12 "spot" sprites per display (one per active finger) |
+| `SpriteController.{h,cpp}` | Generic Sprite/SpriteController abstraction over `SurfaceComposerClient` |
+| `SpriteIcon.{h,cpp}` | Bitmap + hotspot pair drawn into a sprite surface |
+
+The library compiles as `cc_library_shared` with the
+`inputflinger_defaults` build flags, so InputFlinger code shape stays
+consistent across the two binaries. Its dependency list is the give-away:
+
+```blueprint
+// Source: frameworks/base/libs/input/Android.bp:34
+shared_libs: [
+    "libandroid_runtime",
+    "libbinder",
+    "libcutils",
+    "libhwui",       // graphics
+    "liblog",
+    "libutils",
+    "libgui",        // SurfaceComposerClient
+    "libinput",
+],
+header_libs: [
+    "libinputflinger_headers",
+],
+```
+
+`libhwui` and `libgui` are the dependencies InputFlinger cannot afford
+to take.
+
+#### The Three Sprite Roles
+
+`PointerController` has three concrete subclasses, each of which
+*disables* the operations that do not apply to its role by fatal-asserting:
+
+```cpp
+// Source: frameworks/base/libs/input/PointerController.h:143
+class MousePointerController : public PointerController {
+    // disables setPresentation(), setSpots(), clearSpots()
+    // — mouse pointers never use spot rendering
+};
+
+class TouchPointerController : public PointerController {
+    // disables move(), setPosition(), getPosition(), fade(), unfade(), ...
+    // — touch spots are coordinate-driven, not delta-driven; no fade
+};
+
+class StylusPointerController : public PointerController {
+    // disables setPresentation(), setSpots(), clearSpots()
+    // — stylus is a single tip indicator
+};
+```
+
+The fatal-assert pattern (`LOG_ALWAYS_FATAL("Should not be called")`) is
+deliberate: misuse from upstream code crashes
+loudly in CI rather than silently rendering the wrong thing on the
+screen. Each role has exactly one valid call path, and the type system
+ensures InputFlinger can't accidentally ask a touch controller to
+`move(...)` a cursor.
+
+The shared base class holds:
+
+- A `MouseCursorController` (single cursor per pointer controller)
+- A per-display map `unordered_map<LogicalDisplayId, TouchSpotController>`
+  (lazy-created spot controllers, one per display that has active
+  touches)
+- A `DisplayInfoListener` registered with `WindowInfosListener` to
+  receive cross-display topology changes
+
+#### Sprite Lifecycle
+
+`SpriteController` is the heart of the rendering. Each `Sprite` is
+backed by a `SurfaceControl` parented under a "system sprite overlay
+layer" provided by SurfaceFlinger. The overlay layer sits at a
+z-order chosen by SurfaceFlinger to be on top of every window — that
+is what makes the cursor always visible, even over `TYPE_SYSTEM_ALERT`
+windows.
+
+```mermaid
+sequenceDiagram
+    participant IF as InputFlinger<br/>(PointerChoreographer)
+    participant SS as system_server<br/>(JNI policy)
+    participant PC as PointerController<br/>(libinputservice)
+    participant SC as SpriteController
+    participant SF as SurfaceFlinger
+
+    IF->>SS: createPointerController(MOUSE)
+    SS->>PC: PointerController::create(policy, looper, spriteController, MOUSE)
+    PC->>PC: build MouseCursorController, register WindowInfosListener
+    Note over PC: cursor sprite created lazily on first setIcon()
+    IF->>PC: move(dx, dy) on each mouse event
+    PC->>PC: clamp to displayViewport, apply Transform
+    PC->>SC: setPosition(sprite, x, y) — under controller's lock
+    SC->>SC: invalidateSpriteLocked(sprite) + post MSG_UPDATE_SPRITES
+    SC->>SC: doUpdateSprites() on looper thread
+    SC->>SF: SurfaceComposerClient transaction (setPosition, setLayer)
+    SF-->>SC: next vsync renders sprite at new position
+```
+
+Two layered design choices stand out:
+
+- **All public setters acquire the controller's lock, but the surface
+  work is asynchronous.** `Sprite::setPosition(...)` updates a local
+  `SpriteState` field, marks a `DIRTY_POSITION` bit, and posts a
+  message to the controller's `Handler`. The actual
+  `SurfaceComposerClient` transaction runs on a separate looper
+  thread, so the input hot path is never blocked on SurfaceFlinger
+  Binder round-trips.
+- **`SpriteState` is copy-able.** The looper-thread update path
+  *copies* the locked state out, releases the lock, and then runs the
+  transaction. Resizing or redrawing a sprite surface cannot stall an
+  input thread, even briefly. The comment in `SpriteController.h:170`
+  spells this out: "the surfaces can be resized and redrawn without
+  blocking the client by holding a lock on the sprites for a long
+  time".
+
+#### Touch Spot Specifics
+
+`TouchSpotController` owns up to `MAX_SPOTS = 12` `Spot` records, each
+tied to a finger pointer ID. When "Show touches" is on (Developer
+Options → `SHOW_TOUCHES`), `PointerController::setSpots(...)` receives
+the current `PointerCoords` array plus a `BitSet32` of active IDs:
+
+```cpp
+// Source: frameworks/base/libs/input/PointerController.h:64
+void setSpots(const PointerCoords* spotCoords, const uint32_t* spotIdToIndex,
+              BitSet32 spotIdBits, ui::LogicalDisplayId displayId) override;
+```
+
+The implementation:
+
+1. Looks up the per-display `TouchSpotController` (creating one on
+   first use).
+2. For each bit in `spotIdBits`, either updates an existing `Spot` or
+   adopts one from a recycled pool (the controller caches up to 12
+   sprite SurfaceControls to avoid Binder round-trips when the same
+   finger ID reappears).
+3. Calls `Spot::updateSprite(...)` which sets icon / position / alpha
+   on the underlying `Sprite`.
+4. Spots not present in the new bitmask fade out and are recycled.
+
+The `skipScreenshot` flag passed alongside spots adds
+`ISurfaceComposerClient::eSkipScreenshot` to the sprite's
+SurfaceControl flags, so screenshots and screen mirroring don't
+capture the touch indicators (privacy + cleanliness for screencasts).
+
+#### Display Topology Awareness
+
+`PointerController` registers a `DisplayInfoListener` (subclass of
+`WindowInfosListener`). When the window infos snapshot changes (a
+display rotates, a virtual display appears, an external monitor's
+viewport shifts), the listener fires `onDisplayInfosChangedLocked(...)`,
+which:
+
+- Updates the per-display `Transform` used to convert pointer
+  coordinates from physical to logical display space.
+- Rebuilds the spot-controller map to drop entries for displays that
+  no longer exist.
+- Updates `displaysToSkipScreenshot` so spot sprites stay
+  screenshot-skipped on the right displays after topology changes.
+
+The lock used by the listener is the same lock the controller uses
+internally — the constructor comment in `PointerController.h:102`
+explains the choice: the listener can outlive the controller (because
+the `WindowInfosListener` registration takes a strong reference), so
+sharing the listener's lock with the controller avoids needing a
+separate lock with the same ordering rules.
+
+#### Skip-Screenshot Per Display
+
+`setSkipScreenshotFlagForDisplay(LogicalDisplayId)` /
+`clearSkipScreenshotFlags()` let the system request that the *cursor*
+also be excluded from screenshots / mirror feeds on specific displays.
+This is used for screenrecord and projection scenarios where the
+cursor would otherwise appear as a stale artefact in the captured
+output. The flag flows through `MouseCursorController` down to
+`Sprite::setSkipScreenshot(bool)` and then into the sprite's
+`SurfaceControl` flags via the same async transaction path.
+
+#### Summary: Why This Library Exists at This Boundary
+
+The sprite layer is one of the cleanest examples in AOSP of *splitting
+a subsystem along its dependency profile*:
+
+- InputFlinger gets to remain a tight, dependency-light daemon focused
+  on event delivery.
+- The pointer/spot rendering policy gets to live in
+  `system_server`, where it can talk to SurfaceFlinger, load icon
+  bitmaps via the framework's resource system, and respect window
+  topology changes.
+- The seam between them (`PointerControllerInterface` +
+  `PointerChoreographerPolicyInterface`) is small enough that
+  InputFlinger unit tests mock it trivially, while still giving
+  `system_server` complete control over what actually appears on
+  screen.
+
+For most callers, `libinputservice` is invisible — its surface is
+"the cursor follows my mouse and the touch dots appear when developer
+options are on". For framework developers tracing why the cursor
+flickers, fades, or appears on the wrong display, `PointerController`
+and its `MouseCursorController` / `TouchSpotController` collaborators
+are where the answer lives.
+
 ---
 
 ## 23.7 Surface and Leash
