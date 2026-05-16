@@ -4492,7 +4492,527 @@ device/AospBook/bookphone/
 
 ---
 
-## 63.14 Further Reading
+## 63.14 Case Study: MaruOS as a Convergence Custom ROM
+
+The thirteen sections above built up a generic "custom ROM" — a fork of AOSP
+with tailored apps, framework tweaks, branded SystemUI, custom kernel, and a
+release/distribution flow. To see how far this template can stretch in
+practice, consider **MaruOS** (<https://github.com/maruos>), an open-source
+custom ROM whose explicit goal is *"Your phone is your PC"* —
+*"when you're on the go, Maru is your phone; when you're at your desk, Maru
+is your desktop."* Plugging a supported Pixel or HTC 10 into a monitor over
+USB-C/HDMI brings up a full Debian GNU/Linux desktop session on the external
+display while the phone screen keeps running stock Android. Same kernel,
+same device, two simultaneous user-facing operating systems.
+
+MaruOS is not a typical custom ROM and is interesting precisely because of
+how it departs from the template the rest of this chapter laid out. It is a
+useful end-of-chapter exhibit: an unusual but production-realised demonstration
+of how much *room* the AOSP overlay model actually leaves a custom-ROM author.
+
+### 63.14.1 Why MaruOS Is an Unusual Custom ROM
+
+A canonical custom ROM (LineageOS, GrapheneOS, /e/OS, ParanoidAndroid) keeps
+the AOSP shape unchanged and varies *content*: different APKs, different
+framework defaults, different SystemUI, different security posture, different
+kernel hardening. The runtime model the user experiences is still
+zygote → activities → SystemUI → home launcher.
+
+MaruOS keeps that model intact for the phone surface but layers a *second*
+runtime model on top: a Debian system running inside an LXC container that
+the Android side starts on demand, with its own X11 desktop environment, its
+own package manager, and its own boot/login flow. The README states this
+explicitly:
+
+> *"It uses lightweight OS virtualization (containers) to spin up virtual
+> systems on demand"* — `maruos/maruos` README.
+
+So in addition to the customizations a normal ROM ships (device repo,
+vendor blobs, branded apps), MaruOS ships:
+
+- An LXC container management daemon and supporting Android-side services.
+- A "Perspective" layer that bridges Android's display, input, and audio
+  pipelines to the container so the container can present a coherent
+  desktop on the external screen.
+- A build pipeline for the Debian container image, separate from the AOSP
+  build.
+- A device-attach hook that decides when to start the container and which
+  display to put the desktop on.
+- New SELinux policy to keep the container's Linux processes from
+  trampling Android's domain model.
+
+The device list is intentionally narrow — recent forks track a few Pixel
+generations and the HTC 10, with device repos forked from LineageOS so the
+hardware-enablement layer is borrowed rather than maintained from scratch.
+See the manifest at `maruos/manifest` for the current set; supported devices
+have changed across maru-0.x releases.
+
+The license is Apache-2.0 across the org, matching AOSP itself.
+
+### 63.14.2 The Two-Environment Model
+
+The conceptual architecture is the single most important picture in this
+case study. Both environments share the Linux kernel; everything above is
+duplicated.
+
+MaruOS two-environment runtime architecture.
+
+```mermaid
+flowchart TB
+    subgraph Kernel["Single Linux kernel (Android-flavoured)"]
+        K["Linux + Android kernel patches<br/>cgroups, namespaces, binder, ashmem"]
+    end
+    subgraph Android["Android user space (zygote + system_server)"]
+        ZY["zygote"]
+        SS["system_server"]
+        UI["Phone SystemUI<br/>(internal display)"]
+        BR["Maru bridge daemon<br/>(perspective/)"]
+    end
+    subgraph Container["LXC container (Debian rootfs)"]
+        INIT["systemd / sysvinit"]
+        X["X.org / Xfce desktop"]
+        APPS["Debian apps<br/>apt-installed"]
+    end
+    subgraph IO["External I/O"]
+        DISP["External display<br/>USB-C / HDMI"]
+        KBD["BT / USB keyboard + mouse"]
+    end
+
+    K --> ZY
+    K --> SS
+    K --> INIT
+    SS --> UI
+    SS --> BR
+    BR -.->|"start / stop"| INIT
+    INIT --> X
+    X --> APPS
+    BR -.->|"display attach event"| DISP
+    X --> DISP
+    KBD -.->|"input"| BR
+    BR -.->|"forward"| X
+```
+
+Three architectural points worth pulling out:
+
+1. **One kernel.** Both Android and Debian share `/proc/version`. The
+   container runs by namespacing PIDs, mounts, network, IPC, and user IDs;
+   it does not boot its own kernel image. This is the LXC bargain — much
+   lower overhead than a VM, but no defence against a kernel exploit
+   crossing the container boundary.
+2. **The Maru bridge daemon is Android-resident.** It runs as a normal
+   Android process (Java/JNI on top of native C/C++) inside the AOSP user
+   space, listens for display-attach events, and uses ordinary Linux APIs
+   to start the LXC container. It is *not* an in-container piece of code;
+   the container only knows it's been booted.
+3. **Two SystemUIs.** The phone screen continues to render Android's
+   SystemUI on the internal display; the external display gets X11 with
+   Xfce (or whatever desktop the Debian image is configured with). The
+   user's phone is fully usable while the desktop is up.
+
+This is qualitatively different from "desktop mode" features built into
+stock Android (Samsung DeX, Android 12+'s windowing-on-external-display).
+Those keep one Android runtime; MaruOS runs two operating systems on the
+same kernel.
+
+### 63.14.3 Repository Topology
+
+MaruOS code is spread across several repositories under the `maruos/` org.
+Understanding the topology helps a reader navigate the source without
+guessing.
+
+MaruOS repository dependency graph at the `maru-0.7` line.
+
+```mermaid
+graph LR
+    subgraph Org["github.com/maruos"]
+        MANIFEST["manifest<br/>repo manifest (XML)"]
+        MAIN["maruos<br/>root project + docs"]
+        VENDOR["vendor_maruos<br/>hardware-agnostic overlay"]
+        BLUE["blueprints<br/>Debian container builder"]
+        DEV1["device_*<br/>per-device repos<br/>(LineageOS forks)"]
+    end
+    subgraph Upstream["Upstream sources"]
+        AOSP["AOSP source<br/>(LineageOS-mirrored)"]
+        LIN["LineageOS HAL<br/>+ device trees"]
+        DEB["Debian apt<br/>(rootfs packages)"]
+    end
+
+    MANIFEST -->|"declares projects"| AOSP
+    MANIFEST -->|"declares projects"| LIN
+    MANIFEST -->|"includes"| VENDOR
+    MANIFEST -->|"includes"| DEV1
+    BLUE -->|"pulls packages"| DEB
+    BLUE -->|"produces rootfs"| VENDOR
+    VENDOR -->|"installs"| MAIN
+```
+
+Repos at a glance (each at the `maru-0.7` branch unless noted):
+
+- **`maruos/manifest`** — the `repo` manifest. Branch `maru-0.7` declares
+  every `<project>` a Maru tree contains. Bootstrap:
+  `repo init -u https://github.com/maruos/manifest.git -b maru-0.7`.
+- **`maruos/maruos`** — the project's root: README, docs, top-level scripts
+  pointing users at the rest of the system. Apache-2.0.
+- **`maruos/vendor_maruos`** — the hardware-agnostic overlay. This is
+  where the Maru-specific Java/C++/Makefile work lives. ~50% C++, 25%
+  Makefile, 15% shell, 10% C.
+- **`maruos/blueprints`** — a separate, Shell-based build pipeline that
+  produces the Debian rootfs the container will run. Plugin-driven with
+  `blueprint/debian` as the canonical implementation.
+- **`maruos/device_<vendor>_<device>`** — per-device repos forked from
+  LineageOS. These supply the HAL implementations, sensor configs,
+  vendor blobs, boot image configuration, and so on. Maru does not
+  re-author these; it tracks Lineage's work.
+
+The repo topology is itself a lesson. The "Maru-ness" lives in
+`vendor_maruos` and `blueprints`. The "Android-ness" lives in upstream
+AOSP/Lineage. The "device-ness" is delegated to forked LineageOS device
+repos. Each layer can evolve at its own cadence.
+
+### 63.14.4 The vendor_maruos Overlay Anatomy
+
+The `vendor_maruos` tree is where MaruOS's design choices are most legible.
+The top-level layout (visible on the `maru-0.7` branch of the GitHub repo):
+
+```
+vendor_maruos/
+├── Android.bp
+├── Android.mk
+├── BoardConfigVendor.mk
+├── LICENSE
+├── README.md
+├── container/                       -- Android-side LXC management
+├── device-maru.mk                   -- Device-agnostic product definition
+├── include/perspective/             -- Headers for the perspective layer
+├── init.maru.rc                     -- Maru init service definitions
+├── maru_build.mk                    -- Maru-specific build glue
+├── mlogwrapper/                     -- Maru log wrapper utility
+├── overlay/                         -- AOSP resource overlays
+├── overrides/                       -- Build-time file overrides
+├── perspective/                     -- The Android↔container bridge
+├── prebuilts/                       -- Pre-built binaries
+├── privapp-permissions-maru.xml     -- Privileged permission grants
+├── scripts/                         -- Build/setup helper scripts
+└── sepolicy/                        -- Maru SELinux policy
+```
+
+Each directory has a specific role in the convergence story. Walking them
+in dependency order makes the overall design clearer than alphabetical:
+
+**`perspective/`** is the conceptual centre. The name signals the
+abstraction: the device has multiple "perspectives" (phone screen, desktop
+screen, perhaps headphones-only) and Maru's job is to switch between them.
+The C++ + Java mix in this directory is the daemon that watches for
+display events, decides when the user's "desktop perspective" is active,
+and orchestrates everything below.
+
+**`container/`** holds the LXC integration: the lifecycle wrapper around
+`lxc-start`, the rootfs mount logic, the cgroup setup, the bind mounts
+that expose host resources to the container, and the tear-down path. It is
+the layer that talks directly to LXC.
+
+**`overlay/`** uses AOSP's standard overlay mechanism (see section 63.5)
+to replace specific resources in the framework or apps. Typical targets
+include the device's `config.xml` settings, locale defaults, branding
+strings, and any pre-installed-app launch defaults.
+
+**`overrides/`** sits next to `overlay/` and handles file-level overrides
+that the overlay system cannot express. Where overlays patch resource
+values inside an APK, `overrides/` replaces entire files or scripts.
+
+**`sepolicy/`** is the SELinux policy delta needed to let the container
+daemon talk to LXC, mount the rootfs, manipulate cgroups, forward input,
+and grab a framebuffer — none of which stock AOSP policy permits, because
+no stock AOSP component does any of those things.
+
+**`prebuilts/`** carries pre-compiled artifacts that the AOSP build does
+not produce on its own — typically the LXC toolchain binaries, helper
+shell scripts that aren't built per device, and any third-party Debian
+support pieces.
+
+**`mlogwrapper/`** is a small utility for redirecting Maru daemon logs
+into Android's logging infrastructure (`logd`/`logcat`) so a developer
+debugging Maru can use the same tools they'd use for any Android service.
+
+**`scripts/`** contains repo-level setup helpers — things invoked outside
+the normal `m`/`make` flow, like fetching the Debian rootfs from the
+blueprints build output and dropping it into a per-product path before
+the system image is packaged.
+
+### 63.14.5 The blueprints Container Builder
+
+The Debian rootfs the container runs is not built by Soong. It is built by
+a separate repository, `maruos/blueprints`, which is a self-contained
+shell pipeline:
+
+- `build.sh` — main build entry point. Reads a blueprint, invokes its
+  per-blueprint hooks, produces an output tarball.
+- `build-with-docker.sh` — wrapper that runs `build.sh` inside a Docker
+  image, useful when the build host doesn't have `debootstrap` or other
+  Debian tooling.
+- `plugin.sh` — boilerplate any blueprint sources. It enforces that each
+  blueprint provides two shell functions: `blueprint_build` and
+  `blueprint_cleanup`.
+- `blueprint/debian/` — the canonical blueprint. The README confirms:
+  *"Image building logic is separated into standalone plugins called
+  blueprints. The canonical implementation is `blueprint/debian`."*
+
+The split is deliberate. AOSP's build system is excellent at producing
+Android system images and signed boot images, but it has no idea what a
+Debian rootfs is. Rather than teach Soong about `debootstrap`, Maru runs
+two builds — one Soong/Make for the Android side, one Shell/`debootstrap`
+for the Debian side — and a final assembly step folds the rootfs output
+into the appropriate product directory.
+
+What this means for the custom-ROM author: when your customization adds an
+entirely foreign environment (a container, a VM, a different libc), the
+right answer is often a *sibling* build system that exports a tarball,
+not a Soong module that tries to model the foreign world.
+
+### 63.14.6 The "Perspective" Bridge Layer
+
+The `perspective/` and `include/perspective/` directories carry the
+hardest-to-classify part of the design: the Android-resident daemon that
+animates the entire convergence flow. From its structural position
+(Android user space, C++/Java mix, `include/` next to source) and the role
+the rest of the tree assumes it plays, it is responsible for at least the
+following:
+
+1. **Display-attach detection.** Listening for `DisplayManager`
+   `onDisplayAdded` callbacks (or the equivalent at a lower level) and
+   deciding when an attached display is "desktop class" — large enough
+   and external enough — to warrant launching the desktop perspective.
+2. **Container lifecycle.** Calling into `container/` to start the LXC
+   container on first desktop attach and to stop it on the last desktop
+   detach, plus quiescing it on screen-off if Maru policy says so.
+3. **Input routing.** Forwarding keyboard, mouse, and possibly touch
+   events from Android's input system into the container so the user
+   driving an external keyboard sees the keystrokes land in Debian.
+4. **Audio routing.** Negotiating audio output between the phone's
+   speakers and any audio device the desktop monitor provides over HDMI.
+5. **Permission and authentication.** Some way for the user to confirm
+   that an attached display is allowed to host a desktop session — Maru
+   is not going to expose a Debian session to anyone who plugs into the
+   port.
+
+The repository organisation suggests the perspective layer is the
+"director" while `container/` is the "stagehand": one decides what
+should happen, the other actually moves the LXC machinery. The split is
+a useful pattern for any custom ROM author writing a long-running
+Android service that drives non-Android user-space resources.
+
+### 63.14.7 Init and Boot Integration
+
+`init.maru.rc` is where the boot integration is declared. Android's init
+processes `*.rc` files from `/system/etc/init/` and `/vendor/etc/init/`
+at boot, defining services and triggers. For MaruOS the file
+conceptually contains:
+
+- A `service` entry for the perspective daemon, with the right `user`,
+  `group`, and `seclabel` so that SELinux can place it in the Maru
+  domain and so that init can supervise restarts.
+- One or more `on` triggers — `on boot`, `on property:sys.boot_completed=1`,
+  perhaps `on property:maru.container.requested=1` — that decide when the
+  daemon starts and what auxiliary setup runs first.
+- A `socket` or `oneshot` definition for any helper command the perspective
+  daemon may invoke from outside its own process.
+
+The boot/launch flow looks like this:
+
+MaruOS desktop launch from cold boot to first X11 window.
+
+```mermaid
+sequenceDiagram
+    participant Init as Android init (PID 1)
+    participant Persp as Maru perspective daemon
+    participant Disp as DisplayManagerService
+    participant Cont as Maru container module
+    participant LXC as lxc-start
+    participant Deb as Debian systemd
+
+    Init->>Persp: start service (on boot)
+    Persp->>Disp: register DisplayListener
+    Note over Persp,Disp: phone runs Android normally
+    Disp->>Persp: onDisplayAdded (external)
+    Persp->>Persp: classify as "desktop"
+    Persp->>Cont: requestContainerStart
+    Cont->>LXC: lxc-start -n maru
+    LXC->>Deb: PID 1 inside container
+    Deb->>Deb: bring up X.org + Xfce
+    Persp->>Disp: route external display to container surface
+    Persp->>Persp: route input events into container
+    Note over Deb: user sees desktop on external display
+```
+
+What this diagram makes explicit is that the *user-visible event* —
+plugging in a monitor — drives the whole chain. There is no scheduled
+container; LXC starts on demand and shuts down when the perspective layer
+decides it should. This is what the README means by *"spin up virtual
+systems on demand."*
+
+### 63.14.8 SELinux Implications
+
+Stock AOSP SELinux policy is designed around the assumption that no
+Android process needs to launch an LXC container, mount a rootfs, or
+manipulate cgroups outside the ones Android's lmkd/freezer already own.
+Maru's `sepolicy/` directory carries the delta:
+
+- A new domain — call it `maru_perspective` and `maru_container` — for
+  the daemon and any helper processes.
+- Rules permitting that domain to `execute` the LXC toolchain, `mount`
+  the container rootfs at a Maru-specific path, and write to the
+  cgroups the container uses.
+- Rules permitting the daemon to bind to the framebuffer (or surfaceflinger
+  equivalent) on the external display, since X11 inside the container
+  needs to draw somewhere visible.
+- Rules permitting input pipes to cross from Android's input domain into
+  the perspective domain so input forwarding works.
+
+What an aspiring ROM author should take from this: any custom ROM that
+adds new system services with elevated capabilities has to author new
+SELinux policy, full stop. The cost is not in writing the `*.te` files
+themselves (Maru's `sepolicy/` is small) but in *bisecting denials*
+during development. Each new denial gets logged once on first hit,
+silently after that, which is why fresh installs of a Maru build
+on a different device often need an audit pass.
+
+### 63.14.9 Privileged Permissions for Maru-System Apps
+
+`privapp-permissions-maru.xml` lives at vendor-overlay scope and is
+processed by Android's privileged-permission allowlist mechanism (see
+section 63.4 on adding custom apps). Maru needs this file because its
+perspective-daemon companion APK — the user-facing UI that confirms
+desktop access, manages container settings, and surfaces the
+"desktop is active" notification — sits at `/system/priv-app/` and
+declares permissions that the allowlist must explicitly grant.
+
+The shape is a familiar one for ROM authors:
+
+```xml
+<permissions>
+    <privapp-permissions package="com.maruos.perspective">
+        <permission name="android.permission.SYSTEM_ALERT_WINDOW"/>
+        <permission name="android.permission.MANAGE_DEVICE_ADMINS"/>
+        <permission name="android.permission.WRITE_SECURE_SETTINGS"/>
+        <!-- ...etc... -->
+    </privapp-permissions>
+</permissions>
+```
+
+The exact entries are Maru's own decision; the file structure is mandated
+by AOSP. Any custom ROM with a privileged system app must ship one of
+these files, and a `dexopt`-time denial from `PackageManagerService`
+during boot is almost always traceable to a missing entry here.
+
+### 63.14.10 The Build Flow
+
+Putting the pieces together, building MaruOS from source for a supported
+device looks like this:
+
+```bash
+# 1. Set up the AOSP-style tree using Maru's manifest
+mkdir maru && cd maru
+repo init -u https://github.com/maruos/manifest.git -b maru-0.7
+repo sync -j$(nproc)
+
+# 2. Build the Debian rootfs separately (sibling build system)
+cd vendor/maruos/blueprints   # (path depends on manifest layout)
+./build.sh blueprint/debian
+# Produces a rootfs tarball — Maru's scripts move it into the right
+# product directory so it gets packaged into the system image.
+
+# 3. Standard AOSP build flow for the chosen device
+cd $TOP
+source build/envsetup.sh
+lunch maru_<device>-userdebug
+m
+```
+
+Three things stand out compared to the build flow in section 63.8:
+
+- **Two build systems.** The Soong/Make pipeline does not run the
+  blueprints pipeline. The custom-ROM author orchestrates them by hand
+  or via a wrapper script.
+- **The container image is a build artefact, not source.** The Debian
+  rootfs is produced once per release, signed, and shipped inside the
+  Maru system image. Devices do not run `debootstrap` at install time.
+- **The `lunch` combo embeds Maru.** A `maru_<device>` combo means the
+  product makefile inherits `device-maru.mk` (and via it `maru_build.mk`),
+  which is what pulls in `vendor_maruos` and turns on the Maru-specific
+  build flags. A standard `lineage_<device>` lunch would build the same
+  device without the Maru layer.
+
+### 63.14.11 What MaruOS Teaches the Custom ROM Author
+
+Reading MaruOS as an exemplar rather than a one-off, three lessons
+generalise beyond this specific project:
+
+1. **The overlay model is very flexible.** Sections 63.3–63.5 talked
+   about overlays as a way to change resource values and ship a few
+   APKs. MaruOS shows the *upper bound*: you can add an entire second
+   operating system through vendor overlay + sepolicy + init.rc + a
+   sibling build system, without forking the AOSP source tree itself.
+   If your customization can be expressed as files that land in
+   `/system/`, `/vendor/`, `/product/`, or `/system_ext/` plus init
+   rules plus SELinux policy, you do not need to patch AOSP.
+2. **Delegate hardware enablement.** Maru forks LineageOS device trees
+   rather than maintaining its own per-device HAL forks. The result is
+   that a Maru maintainer can focus on the convergence layer, and
+   benefit from LineageOS's quarterly device cadence. Any custom ROM
+   that picks a fight with hardware enablement is signing up for a
+   never-ending workload; let upstream do it.
+3. **Separate the foreign world from Soong.** The Debian container's
+   build pipeline is shell-based and lives in a separate repo. Soong
+   never has to know what `debootstrap` is. The two systems meet at a
+   single tarball artefact. Any time your custom ROM needs to ship
+   something that is *not* an Android system image — a container
+   rootfs, a separately-licensed firmware blob, a Buildroot image for a
+   companion microcontroller — model that artefact as a sibling build
+   that hands off a file.
+
+### 63.14.12 Limitations and Trade-Offs
+
+MaruOS is also a useful case study in what this approach *costs*. An
+honest read of the trade-offs:
+
+- **Device support is narrow.** Maintaining the convergence layer across
+  many devices means tracking each LineageOS device branch, validating
+  the LXC kernel feature set on each, and re-testing display routing.
+  Real Maru releases ship for a handful of devices at a time, which is
+  about right for a small team but well short of any "works on every
+  Android phone" promise.
+- **Shared kernel, shared exposure.** LXC is much cheaper than a VM but
+  shares the kernel. A kernel exploit reachable from inside the Debian
+  container reaches the Android user space and the bootloader. Maru
+  cannot easily compete with virtualized desktop offerings on isolation.
+- **No isolation from Android's filesystem.** By default, an LXC
+  container can be configured to expose much of the host's filesystem.
+  Maru's container/perspective bridge has to decide carefully which
+  host paths it bind-mounts and which it withholds; getting that wrong
+  exposes Android user data to Debian apps.
+- **Maintenance debt.** Two build systems, two userspace stacks, and a
+  custom bridge layer is a lot to keep running across an AOSP version
+  bump. Each yearly Android letter release ships behavioural changes in
+  `DisplayManager`, input dispatching, and SELinux that the perspective
+  daemon has to adapt to.
+- **Upstream uncertainty.** Maru's design predates the Android Computer
+  Control framework (section 50.3) and the formalisation of desktop-
+  mode in stock Android. Convergent UIs are now closer to a first-class
+  upstream concern, which could either obsolete Maru's approach or
+  raise the floor under it. The case study above is best read as a
+  *snapshot* of where one production custom ROM landed under the AOSP
+  primitives available to it through Android 12-era releases.
+
+The lesson here is symmetrical to the one in 63.14.11: the same overlay-
+mechanism flexibility that lets a single small team ship a phone-to-desktop
+convergence ROM also distributes the cost. Every layer of additional
+ambition adds a layer of maintenance. Custom ROM authors weighing how far
+to push the model should plan a realistic device list and a realistic
+release cadence first.
+
+---
+
+## 63.15 Further Reading
 
 | Topic | Source Location | Description |
 |-------|----------------|-------------|
@@ -4512,7 +5032,7 @@ device/AospBook/bookphone/
 
 ---
 
-## 63.15 Summary
+## 63.16 Summary
 
 This chapter walked through the entire process of building a custom Android
 ROM from the ground up:
