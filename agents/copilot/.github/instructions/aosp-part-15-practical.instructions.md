@@ -4562,7 +4562,7 @@ MaruOS two-environment runtime architecture.
 ```mermaid
 flowchart TB
     subgraph Kernel["Single Linux kernel (Android-flavoured)"]
-        K["Linux + Android kernel patches<br/>cgroups, namespaces, binder, ashmem"]
+        K["Linux + Android kernel patches<br/>cgroups, namespaces, binder, ashmem, evdev"]
     end
     subgraph Android["Android user space (zygote + system_server)"]
         ZY["zygote"]
@@ -4590,8 +4590,10 @@ flowchart TB
     X --> APPS
     BR -.->|"display attach event"| DISP
     X --> DISP
-    KBD -.->|"input"| BR
-    BR -.->|"forward"| X
+    KBD --> K
+    K -.->|"/dev/input/event* (evdev)"| SS
+    K -.->|"/dev/input/event* (evdev)"| X
+    BR -.->|"routes ownership via EVIOCGRAB"| K
 ```
 
 Three architectural points worth pulling out:
