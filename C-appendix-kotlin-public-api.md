@@ -173,54 +173,16 @@ snapshots, which matters because almost every framework change runs through the
 `m update-api` workflow and produces a textual delta that the API council
 reviews member by member.
 
-Several signature surfaces exist in parallel. They share the same format but
-differ in scope:
-
-- `frameworks/base/core/api/current.txt` — the public Android SDK that every app
-  sees. The largest surface.
-- `frameworks/base/core/api/system-current.txt` — the `@SystemApi` surface,
-  available to platform-signed callers and to GMS/vendor packages with the
-  appropriate signature. Larger than the public surface; mostly internal.
-- `frameworks/base/core/api/module-lib-current.txt` — the module-library
-  surface, used by Mainline modules to call into the base framework. Designed
-  for the inter-module ABI rather than for apps.
-- `frameworks/base/core/api/test-current.txt` — `@TestApi` members exposed only
-  when an instrumentation test runs against the platform.
-- `frameworks/base/core/api/removed.txt`, `system-removed.txt` — track removed
-  members, retained so that deletion is audited rather than silent.
-
-Each surface gets a corresponding frozen snapshot per SDK release. Subsystems
-outside `frameworks/base/core/` carry their own surfaces too:
-`frameworks/base/services/api/current.txt` for the system-services API, plus the
-smaller surfaces under `frameworks/base/location/`,
-`frameworks/base/nfc-extras/`, `frameworks/base/obex/`,
-`frameworks/base/test-runner/`, `frameworks/base/test-mock/`,
-`frameworks/base/test-base/`, `frameworks/base/libs/usb/`,
-`frameworks/base/libs/hwui/`, `frameworks/base/libs/appfunctions/`,
-`frameworks/base/cmds/uiautomator/`, `frameworks/base/location/lib/`, and
-`frameworks/base/packages/CrashRecovery/framework/`. Every one of those
-`api/current.txt` files is a contract that the corresponding implementation must
-keep stable.
-
-The signature file is produced by **metalava**, a Kotlin-based tool that lives
-at `tools/metalava/`. Metalava reads framework source (Java and Kotlin), walks
-the parse tree using JetBrains PSI for Kotlin and a Turbine-based parser for
-Java, and emits the language-neutral signature text. The format itself is
-specified in `tools/metalava/FORMAT.md`, with the compatibility policy
-documented in `tools/metalava/COMPATIBILITY.md` and the lint rules in
-`tools/metalava/API-LINT.md`.
-
-Metalava performs three jobs at build time:
-
-1. **Generate** the current signature snapshot from source.
-2. **Compare** that snapshot against the checked-in `current.txt`. Any drift
-   fails the build. To intentionally add a new API, the developer regenerates
-   `current.txt` (via `m update-api`) and commits both the source change and the
-   signature delta.
-3. **Lint** the proposed API against the rules in `API-LINT.md`. The lint rules
-   cover naming, deprecation, nullability annotation hygiene, and consistency of
-   singular vs. plural method names. Lint failures must be either fixed or
-   whitelisted in a baseline file before the change can land.
+Several signature surfaces exist in parallel — public (`current.txt`),
+`@SystemApi` (`system-current.txt`), the module-library surface used by Mainline
+(`module-lib-current.txt`), and `@TestApi` (`test-current.txt`) — plus per-
+subsystem files such as `frameworks/base/services/api/current.txt`. They all
+share the same format. Each surface is produced by **metalava**, a Kotlin tool
+at `tools/metalava/` that reads framework source through PSI (for Kotlin) and
+Turbine (for Java) and emits the language-neutral signature text. The build
+re-runs metalava, compares the generated snapshot against the checked-in
+`current.txt`, and fails the build on any drift; intentional additions go
+through `m update-api` plus API council review of the textual delta.
 
 How a framework class becomes part of the public API contract.
 
@@ -241,63 +203,24 @@ flowchart LR
 ```
 
 Once an API ships in a numbered SDK release, its signature is frozen forever.
-The freeze is enforced by two artifacts:
+Each SDK release snapshots the surface into `prebuilts/sdk/<N>/public/api/
+android.txt` and pins the stub jar that apps compile against at
+`prebuilts/sdk/<N>/public/android.jar`. Removing an entry, changing a parameter
+or return type, or changing the JVM signature behind an unchanged textual entry
+all count as breaking changes.
 
-- `prebuilts/sdk/<N>/public/api/android.txt` — a copy of the `current.txt` from
-  the day SDK level N was finalized. Subsequent releases must remain compatible
-  with every prior `android.txt`. Removing an entry is a breaking change.
-  Changing a parameter type, return type, or exception list is a breaking
-  change. Changing the JVM signature without changing the textual entry is also
-  a breaking change because the textual entry describes the JVM signature.
-- `prebuilts/sdk/<N>/public/android.jar` — the stub `.jar` apps compile against.
-  Build files express targeting via `LOCAL_SDK_VERSION` (or its Soong
-  equivalent, `sdk_version:`). A module declaring `LOCAL_SDK_VERSION :=
-  system_current` compiles against the system-API stubs; `LOCAL_SDK_VERSION :=
-  current` compiles against the public stubs; numbered values pick a frozen
-  historical SDK.
+Devices bake an SDK level in at manufacture, and that determines the "stable
+forever" promise. A phone that launched with SDK 30 will still be running
+SDK 30 four or five years later (longer for OEM long-life devices). Apps
+targeting `compileSdk = 30` must continue to install and run on that device.
+The OEM cannot fix a regression in the platform's binary contract by issuing a
+kotlinc upgrade or a metadata format update, because the original device's
+runtime classloader is what defines compatibility.
 
-Devices ship with an SDK level baked in at manufacture, and that determines the
-"stable forever" promise. A phone that launched with SDK 30 will still be
-running SDK 30 four or five years later (longer for OEM long-life devices and
-embedded products). Apps written today targeting `compileSdk = 30` must continue
-to install and run on that device. The OEM cannot fix a regression in the
-platform's binary contract by issuing a kotlinc upgrade or a metadata format
-update, because the original device's runtime classloader is what defines
-compatibility.
-
-That window — roughly ten years from a device's first ship to its last realistic
-in-service use — is the time horizon every member of `current.txt` must survive.
-The API council, the human review body documented in the Android Developers
-contributor guides, applies that horizon every time it approves a new method.
-Once it ships, that signature cannot be retracted. (For the current public
-process and review policies, see [Android Developers
-documentation](https://source.android.com/) — paths cited in this appendix
-reference the source tree, not external docs, to keep claims verifiable inside
-this checkout.)
-
-The build orchestration sits in `frameworks/base/api/`. The directory itself
-does not contain a `current.txt` — it contains the build files that generate and
-validate them:
-
-- `frameworks/base/api/api.go` — Soong logic that wires every `api/current.txt`
-  surface into the build graph.
-- `frameworks/base/api/Android.bp` — module definitions for the public, system,
-  module-library, and test stub jars.
-- `frameworks/base/api/StubLibraries.bp` — declarations for the per-surface stub
-  libraries that downstream modules depend on.
-- `frameworks/base/api/ApiDocs.bp` — declarations for the documentation
-  generation that runs alongside signature generation.
-
-A change that adds a new public method has to walk through all of these. The
-author edits the source, runs `m update-api` to regenerate `current.txt`,
-commits both source and signature, gets API council review on the signature
-delta, and lands. Once the change is in a numbered SDK, the corresponding
-`prebuilts/sdk/<N>/public/api/android.txt` is captured by the SDK release
-process and frozen.
-
-The next section is the engineering core of the appendix: it explains why a
-feature-by-feature reading of Kotlin's bytecode emission makes "frozen forever"
-hard to deliver from Kotlin source.
+That window — roughly ten years from first ship to last realistic in-service
+use — is the time horizon every member of `current.txt` must survive. The API
+council applies that horizon every time it approves a new method, and once it
+ships the signature cannot be retracted.
 
 ## The Java/Kotlin ABI Gap
 
@@ -649,6 +572,103 @@ synthetic classes, again breaking callers. Java has no equivalent: every static
 method in Java sits on a developer-named class, so the class identity is part of
 the source-level decision.
 
+### Boot classpath sharing forces one stdlib version on every app
+
+Everything above describes how a single Kotlin source declaration produces a
+*set* of JVM artifacts — signatures, helpers, mangled names, metadata blobs —
+that the framework would have to freeze. There is a second binary-stability
+concern operating one layer beneath signature shape: the Android runtime model
+loads the public framework API into a classloader that every app on the device
+shares, and a public Kotlin API would force `kotlin-stdlib.jar` into that
+shared classloader too.
+
+The framework's public API ships as `framework.jar` (plus adjacent jars like
+`services.jar`, `framework-graphics.jar`, `framework-location.jar`, `ext.jar`,
+`telephony-common.jar`) on the device's **boot classpath**. The composition is
+configured by Soong via `PRODUCT_BOOT_JARS`, with the default set defined at
+`build/make/target/product/default_art_config.mk:38` — `framework-minus-apex`,
+`ext`, `telephony-common`, `framework-graphics`, `framework-location`, and the
+per-APEX jars (ART, conscrypt, i18n, and the rest). At device boot, ART
+ahead-of-time compiles these jars into a boot image and the zygote process
+loads it into its address space.
+
+`com.android.internal.os.ZygoteInit.preloadClasses()` at
+`frameworks/base/core/java/com/android/internal/os/ZygoteInit.java:284` reads
+the `/system/etc/preloaded-classes` text file and eagerly initializes every
+named class so that the boot image's class objects, static fields, and
+JIT-compiled code are resident in the zygote's heap before any app forks.
+Every app process started afterward is forked from that zygote and inherits
+the resolved class objects directly — `android.app.Activity` is literally the
+same class object in the zygote and in every app, with no per-app load step.
+
+App-specific code sits one classloader below. An installed APK is loaded by
+`dalvik.system.PathClassLoader`
+(`libcore/dalvik/src/main/java/dalvik/system/PathClassLoader.java:44`) whose
+parent is the boot classloader. `ClassLoader.loadClass()`
+(`libcore/ojluni/src/main/java/java/lang/ClassLoader.java:622`) follows the
+standard parent-first delegation: it calls `parent.loadClass(name)` at line
+630 *before* it ever calls `findClass()` on its own dex at line 642. Any
+class name that resolves in BOOTCLASSPATH wins over the same name in the
+app's APK.
+
+For Java this is unproblematic. The framework's transitive dependencies on
+`java.*` and `javax.*` are themselves part of the JDK's strictly-versioned
+core, evolving under OpenJDK with explicit JLS compatibility guarantees, and
+apps cannot ship their own `java.util.HashMap` even if they wanted to — the
+classloader delegation hands every resolution back up to the platform copy by
+design. For Kotlin it is the central sticking point. A `suspend` function on
+the public surface drags in `kotlin.coroutines.Continuation`. A
+`Result<T>`-returning method drags in `kotlin.Result`. Even a plain class
+written in Kotlin emits a `@kotlin.Metadata` annotation that the Kotlin
+reflection layer reads when an app calls `Foo::class` on the class. All of
+those types live in `kotlin-stdlib.jar`.
+
+The verified state today: no boot classpath jar in AOSP links `kotlin-stdlib`.
+`external/kotlinc/Android.bp:59` declares `kotlin-stdlib` as a `java_import`
+of the prebuilt jar, but the modules that depend on it are non-boot — SystemUI's
+plugin and shared subprojects explicitly set `static_kotlin_stdlib: false` to
+keep their own stdlib internal to their APK rather than promoted to shared
+state. The Kotlin code that does run inside boot-classpath jars (parts of
+`system_server` and other framework services, see "Where Kotlin Already Lives
+in AOSP" below) compiles to JVM signatures that hold no Kotlin type at the
+public boundary, so no `kotlin-stdlib` reference reaches the shared
+classloader.
+
+Adding the first public Kotlin signature inverts that. The framework jar that
+exposes a `Result<T>` return type, a `suspend` parameter, or even just a public
+top-level function's synthetic `Kt` class with Kotlin metadata must link
+against `kotlin-stdlib`, and that `kotlin-stdlib` would have to ship inside
+the boot classpath. Every app process forked from the zygote would resolve
+`kotlin.Result`, `kotlin.coroutines.Continuation`, and the metadata-format
+types from the boot classpath — not from the version bundled in the app's own
+APK.
+
+This is more disruptive than the Java analogue because of where Kotlin sits on
+the version-stability spectrum. Apps today commonly ship with different
+`kotlin-stdlib` versions — a library compiled against Kotlin 1.6 in the same
+APK as application code on Kotlin 2.0, with R8/D8 at `prebuilts/r8/r8.jar`
+minifying the union into the APK's `classes.dex`. Parent-first delegation
+means the on-device boot classpath's `kotlin-stdlib` wins regardless of which
+version the app's Gradle build selected. If the device's `kotlin-stdlib` is
+older than the app's, methods the app linked against may be absent and
+`NoSuchMethodError` surfaces at runtime; if it is newer with a tightened
+nullability or generic signature, the app's compiled call sites may fail
+bytecode verification. The app developer has no recourse from inside the APK
+because the resolution happens above their classloader.
+
+The only existing AOSP precedent for working around this kind of conflict is
+classloader namespace isolation. WebView runs in a separate zygote —
+`WebViewZygote` at
+`frameworks/base/core/java/android/webkit/WebViewZygote.java:32` — so the
+WebView APK's transitive dependencies do not have to coexist with the main
+zygote's preloaded class set. The cost is a second zygote process, a second
+copy of every shared library both processes touch, and an explicit inter-
+zygote contract for which classes are sharable. Replicating that pattern for
+"Kotlin-using" apps would mean either a per-stdlib-version zygote (which the
+system cannot predict at fork time) or a runtime classloader rewrite that
+lets each app see its own `kotlin-stdlib` while still resolving `android.*`
+from the boot — neither of which exists today.
+
 Java method-signature stability vs. Kotlin metadata pinning.
 
 ```mermaid
@@ -677,7 +697,10 @@ reconstruct source-level semantics. The shape of that set depends on the kotlinc
 version, the metadata format version, and the interop annotations the source
 uses. To freeze a Kotlin public API the way Java APIs are frozen, every piece of
 that machinery would need to be declared a binary contract — kotlinc cannot
-evolve any of them without breaking compiled callers.
+evolve any of them without breaking compiled callers. And, as the boot
+classpath section above showed, that contract would extend past the
+framework's own signatures into the `kotlin-stdlib` version that the device's
+shared classloader would force on every Kotlin-using app.
 
 ## Toolchain Lock-In
 
@@ -1511,7 +1534,7 @@ exercise.
 ## Summary
 
 The asymmetry between Kotlin's role inside AOSP and its absence from the public
-API surface is not a stylistic preference. It is a consequence of three
+API surface is not a stylistic preference. It is a consequence of four
 constraints that all bear on the same artifact, the per-SDK frozen signature
 snapshot in `prebuilts/sdk/<N>/public/api/android.txt` and its live source
 `frameworks/base/core/api/current.txt`.
@@ -1539,6 +1562,16 @@ contract — `current.txt` text, descriptor CSVs, Javadoc HTML. A Kotlin-shape
 public API would require parallel tooling that admits Kotlin constructs as
 first-class. The toolchain itself is not in opposition to Kotlin; it simply does
 not yet model the Kotlin source layer.
+
+The fourth constraint is runtime sharing. Framework jars load into a single
+boot classpath shared with every app process forked from the zygote, and
+parent-first classloader delegation means any type in BOOTCLASSPATH wins over
+the same name in the app's APK. Putting Kotlin signatures on the public API
+forces `kotlin-stdlib` into the boot classpath, which then overrides whatever
+`kotlin-stdlib` version each app's Gradle build bundled. The OEM cannot fix
+this from inside the device's image and the app developer cannot fix it from
+inside the APK; the only escape is WebView-style per-process zygote
+isolation, which AOSP only pays the cost of in one well-justified case today.
 
 The result is what the inventory shows. Kotlin lives in the app and UI layer,
 in test code, in metalava itself, in the permission subsystem, and in a few
@@ -1572,7 +1605,13 @@ the cost of putting it there has not yet been paid in full.
 | `external/kotlinc/` | Pinned prebuilt kotlinc. |
 | `external/kotlinc/build.txt` | Pinned kotlinc version stamp (`2.2.0-release-294`). |
 | `external/kotlinc/bin/kotlinc` | The kotlinc binary. |
-| `external/kotlinc/lib/kotlin-stdlib.jar` | Kotlin standard library on the boot classpath. |
+| `external/kotlinc/lib/kotlin-stdlib.jar` | Kotlin standard library prebuilt; non-boot dependency today (no boot classpath jar links it). |
+| `external/kotlinc/Android.bp` | `kotlin-stdlib` `java_import` declaration (line 59). |
+| `build/make/target/product/default_art_config.mk` | `PRODUCT_BOOT_JARS` default composition (line 38). |
+| `frameworks/base/core/java/com/android/internal/os/ZygoteInit.java` | `preloadClasses()` reads `/system/etc/preloaded-classes` (line 284). |
+| `libcore/dalvik/src/main/java/dalvik/system/PathClassLoader.java` | App classloader; parent is the boot classloader (line 44). |
+| `libcore/ojluni/src/main/java/java/lang/ClassLoader.java` | `loadClass()` parent-first delegation (line 622). |
+| `frameworks/base/core/java/android/webkit/WebViewZygote.java` | Separate zygote that isolates WebView's classloader from the main one (line 32). |
 | `external/kotlinc/lib/kotlin-compiler.jar` | Kotlin compiler jar. |
 | `external/kotlinc/lib/compose-compiler-plugin.jar` | Compose compiler plugin. |
 | `external/kotlinc/lib/kotlin-annotation-processing.jar` | kapt (Kotlin annotation processing). |
