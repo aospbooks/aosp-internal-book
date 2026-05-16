@@ -1561,24 +1561,36 @@ virtual input dispatch — that Computer Control composes on top of.
 ### 50.3.19 ComputerControlSessionProcessor: Session Creation and Limits
 
 `ComputerControlSessionProcessor` owns the entry-point logic for creating
-sessions. It enforces three policies in order:
+sessions. The policy flow runs in this order — note that AppOps short-
+circuits the rest when it returns `MODE_ALLOWED`:
 
-1. **Concurrent-session cap.** The constant `MAXIMUM_CONCURRENT_SESSIONS = 5`
-   (`frameworks/base/services/companion/java/com/android/server/companion/virtual/computercontrol/ComputerControlSessionProcessor.java:71`)
-   bounds how many Computer Control sessions can be live system-wide at once.
+1. **AppOps consent check.** The processor calls
+   `noteOpNoThrow(OP_COMPUTER_CONTROL, attributionSource, "create session")`
+   (`frameworks/base/services/companion/java/com/android/server/companion/virtual/computercontrol/ComputerControlSessionProcessor.java:121–122`).
+   If the result is `MODE_ALLOWED` — meaning the user previously chose
+   "Always Allow" for this agent package — the processor proceeds directly
+   to session creation, bypassing the precondition checks and the consent
+   dialog. Any other mode means consent is required, and the flow
+   continues.
+2. **Device-locked gate.** Inside
+   `checkSessionCreationPreconditionsLocked` (`ComputerControlSessionProcessor.java:276`),
+   the keyguard is checked first. If the device is locked, the processor
+   rejects with `ERROR_DEVICE_LOCKED` and the flow ends.
+3. **Concurrent-session cap.** Next in the same precondition method, the
+   constant `MAXIMUM_CONCURRENT_SESSIONS = 5`
+   (`ComputerControlSessionProcessor.java:71, checked at 284`) bounds how
+   many Computer Control sessions can be live system-wide at once.
    Exceeding it returns `ERROR_SESSION_LIMIT_REACHED`.
-2. **Device-locked gate.** If the device is locked (keyguard up), session
-   creation rejects with `ERROR_DEVICE_LOCKED`. This is checked at creation
-   time, not maintained for the session lifetime.
-3. **Consent flow.** If the agent does not already hold per-session consent in
-   AppOps, the processor launches `RequestComputerControlAccessActivity` via
-   an `IntentSender` returned to the agent.
+4. **Consent dialog.** If preconditions pass and consent is required, the
+   processor launches `RequestComputerControlAccessActivity` via an
+   `IntentSender` returned to the agent.
 
 The class header documents the role explicitly: *"This class enforces session
 creation policies, such as limiting the number of concurrent..."*
 (`ComputerControlSessionProcessor.java:62`).
 
-Once policies pass, the processor allocates the underlying `VirtualDevice`,
+Once the policy flow completes successfully, the processor allocates the
+underlying `VirtualDevice`,
 the trusted `VirtualDisplay`, and the three virtual input devices, then
 constructs a `ComputerControlSessionImpl` and hands its binder back to the
 caller through the original `ComputerControlSession.Callback`.
@@ -1679,10 +1691,10 @@ sequenceDiagram
     Agent->>Ext: requestSession(params, callback)
     Ext->>VDMS: requestComputerControlSession
     VDMS->>SP: process(params, attributionSource)
-    SP->>SP: check MAXIMUM_CONCURRENT_SESSIONS
-    SP->>SP: check keyguard state
-    SP->>SP: noteOp OP_COMPUTER_CONTROL
-    alt consent missing
+    SP->>SP: noteOpNoThrow OP_COMPUTER_CONTROL
+    alt mode != MODE_ALLOWED
+        SP->>SP: checkPreconditions: keyguard
+        SP->>SP: checkPreconditions: MAXIMUM_CONCURRENT_SESSIONS
         SP->>Consent: launch via IntentSender
         Consent-->>SP: Allow / Don't Allow / Always
     end
@@ -1778,12 +1790,17 @@ public static final int OP_COMPUTER_CONTROL = AppOpEnums.APP_OP_COMPUTER_CONTROL
 ```
 
 AppOps records grants with a mode (`MODE_ALLOWED`, `MODE_IGNORED`,
-`MODE_ERRORED`, `MODE_DEFAULT`) and an attribution tag, scoped by package.
-Each session creation calls
-`noteOp(OP_COMPUTER_CONTROL, agentUid, agentPackage, attributionTag, message)`
-and the result determines whether to skip the consent dialog
-(`MODE_ALLOWED`), prompt (`MODE_DEFAULT`), or reject up front
-(`MODE_IGNORED` / `MODE_ERRORED`).
+`MODE_ERRORED`, `MODE_DEFAULT`) scoped by package + attribution. Each
+session creation calls
+`noteOpNoThrow(OP_COMPUTER_CONTROL, attributionSource, "create session")`
+(`ComputerControlSessionProcessor.java:121–122`). The result determines the
+next step: `MODE_ALLOWED` short-circuits straight to session creation
+(skipping both preconditions and the consent dialog); any other mode means
+the processor advances to the keyguard and concurrent-cap precondition
+checks, and on success launches the consent activity. The no-throw variant
+returns the mode as an int instead of throwing `SecurityException`, which
+is the right shape for a router that branches on the result rather than
+bailing out.
 
 This is the same machinery used for sensitive ops like `OP_CAMERA`,
 `OP_RECORD_AUDIO`, and `OP_FINE_LOCATION`. Treating Computer Control as an
