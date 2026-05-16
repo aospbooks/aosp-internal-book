@@ -2124,6 +2124,258 @@ The pattern is always:
 4. **Symbol map** (`libfoo.map.txt`) -- controls which symbols are exported
 5. **Visibility control** -- `-fvisibility=hidden` + `EXPORT` macro
 
+### 11.6.5 Native Activity Thread (Rust) -- Pure-Native Service Processes
+
+Sections 11.6.1 through 11.6.3 covered NDK *bindings* — C APIs that let
+native code reach into framework subsystems whose implementations are
+written in Java or C++. API level 37 (2026) adds a complementary capability:
+a native-only application process that hosts `ANativeService` instances
+without ever loading a JVM. The implementation lives in
+`frameworks/base/libs/native_activity_thread/`, a Rust crate
+(`libnative_activity_thread`) loaded by zygote-forked processes whose
+manifest declares a native service entry point. This subsection walks
+through what the crate does and why it represents a structural change in
+how Android can host application code.
+
+#### The ANativeService Contract
+
+The public C surface is in `frameworks/native/include/private/native_service.h`:
+
+```c
+// Source: frameworks/native/include/private/native_service.h:44
+typedef struct ANativeService ANativeService;
+
+// Entry point — the loader resolves this symbol and calls it once per service.
+typedef void ANativeService_createFunc(ANativeService* _Nonnull service);
+extern ANativeService_createFunc ANativeService_onCreate;
+
+// Per-binding callbacks. The app fills these into the service in onCreate.
+typedef AIBinder* _Nullable (*ANativeService_onBindCallback)(
+    ANativeService* _Nonnull service, int32_t intentHash,
+    const char* _Nullable action, const char* _Nullable data);
+typedef bool (*ANativeService_onUnbindCallback)(
+    ANativeService* _Nonnull service, int32_t intentHash);
+typedef void (*ANativeService_onRebindCallback)(
+    ANativeService* _Nonnull service, int32_t intentHash);
+typedef void (*ANativeService_onDestroyCallback)(ANativeService* _Nonnull service);
+typedef void (*ANativeService_onTrimMemoryCallback)(
+    ANativeService* _Nonnull service, int32_t level);
+```
+
+The app's `.so` exports a single symbol (`ANativeService_onCreate` by
+default, overridable through an `android.app.func_name` `<meta-data>` in
+the manifest). The framework calls that function once per service
+instance; the app fills in the five callback pointers and any per-service
+state. From there, the framework dispatches lifecycle events
+(`onBind`/`onUnbind`/`onRebind`/`onDestroy`/`onTrimMemory`) by invoking
+the function pointers on the service's main thread.
+
+This is intentionally narrower than Java `Service`: there is no
+`onStartCommand`, no `Application.onCreate`, no `Activity`. The Rust
+implementation makes this explicit by rejecting the
+`bindApplication` request with a comment that says so:
+
+```rust
+// Source: frameworks/base/libs/native_activity_thread/src/
+//   native_activity_thread.rs:226
+fn handle_bind_application_request(&mut self) -> Result<()> {
+    atrace::trace_method!(AtraceTag::ActivityManager);
+    // We don't support calling Application.onCreate in native processes.
+    self.activity_manager
+        .finishAttachApplication(self.start_seq, 0)
+        .context("Failed to call finishAttachApplication")
+}
+```
+
+The motivation is the same as `NativeActivity` from API 9: latency-,
+memory-, or licence-sensitive code (game runtimes, media engines,
+ML inference) that has no reason to pay for a JVM. The difference is
+scope: `NativeActivity` carved out *one* component type; the native
+activity thread carves out *the whole process*.
+
+#### Crate Layout
+
+The crate is small (~700 lines of Rust + three bindgen wrappers):
+
+| File | Role |
+|------|------|
+| `src/lib.rs` | Entry point `run_native_activity_thread(start_seq)`. Initializes binder, looks up `IActivityManagerStructured`, attaches as `INativeApplicationThread`, runs the looper. |
+| `src/native_activity_thread.rs` | Per-process state — service map, namespace factory, process-state cache. Implements `HandlerCallback<NativeApplicationThreadRequest>`. |
+| `src/native_application_thread.rs` | Binder server-side that implements `INativeApplicationThread`. Marshals each scheduled method into a typed `NativeApplicationThreadRequest` and sends it to the main thread. |
+| `src/task.rs` | Rust-friendly `Handler` over the C `ALooper` API. Uses an `eventfd` + `mpsc::channel` to wake the main thread when work arrives from a binder thread. |
+| `src/library_loader.rs` | `NamespaceFactory` and `LoadedLibrary` — per-service isolated linker namespaces using `android_create_namespace` + `android_dlopen_ext`. |
+| `src/bindings/{dlext,looper,native_service}.h` | `rust_bindgen` wrappers that translate the three C headers into Rust types and `extern "C"` function declarations. |
+
+The build wires the bindgen translations as three separate
+`rust_bindgen` modules, then composes them into `libnative_activity_thread`:
+
+```blueprint
+// Source: frameworks/base/libs/native_activity_thread/Android.bp:32
+rust_bindgen { name: "libdlext_bindgen",          /* dlext.h */ }
+rust_bindgen { name: "liblooper_bindgen",         /* looper.h */ }
+rust_bindgen { name: "libnative_service_bindgen", /* native_service.h */ }
+
+rust_library {
+    name: "libnative_activity_thread",
+    rustlibs: [
+        "activitymanager_structured_aidl-rust",
+        "libbinder_rs",
+        "libdlext_bindgen", "liblooper_bindgen", "libnative_service_bindgen",
+        "native_application_thread_aidl-rust",
+        "libactivity_manager_procstate_aidl-rust",
+        // ... anyhow, log, libc, atrace_rust, logger
+    ],
+}
+```
+
+The crate's `default_visibility` is `["//system/zygote:__subpackages__"]` —
+only the zygote can link it, because only the zygote should be deciding
+to start a native-only process.
+
+#### Process Bring-Up Sequence
+
+When zygote forks a native-only app process, it calls
+`run_native_activity_thread(start_seq)`. The function never returns; it
+hands the thread over to `ALooper`:
+
+```mermaid
+sequenceDiagram
+    participant Zygote as zygote
+    participant Proc as new native process
+    participant AM as IActivityManagerStructured
+    participant Main as Main thread (ALooper)
+    participant Binder as Binder thread pool
+
+    Zygote->>Proc: fork + execve(libnative_activity_thread entry)
+    Proc->>Proc: logger::init, ProcessState::start_thread_pool
+    Proc->>AM: lookup "activity_structured"
+    Proc->>Main: Handler::new_on_current_thread(NativeActivityThread)
+    Note over Main: eventfd registered with ALooper<br/>plus mpsc receiver
+    Proc->>Binder: BnNativeApplicationThread::new_binder(...)
+    Proc->>AM: attachNativeApplication(binder, start_seq)
+    Proc->>Main: run_thread_loop() — ALooper_pollOnce loop
+    AM->>Binder: scheduleCreateService(token, libs, ...)
+    Binder->>Binder: marshal to NativeApplicationThreadRequest::CreateService
+    Binder->>Main: mpsc send + eventfd_write
+    Main->>Main: ALooper wakes, drains mpsc, dispatches to NativeActivityThread
+    Main->>Main: create namespace, dlopen lib, call create_func
+    Main->>AM: serviceDoneExecuting(token, ANON, 0, 0)
+```
+
+Two design choices deserve attention:
+
+- **Single main thread, single state.** `NativeActivityThread` owns the
+  service map and the namespace factory; binder threads never touch
+  application state directly. Every request is serialized through the
+  mpsc channel, woken via the eventfd registered with the looper. This
+  mirrors the Java `ActivityThread`'s `H` handler exactly, but using
+  Rust's `mpsc` and an explicit eventfd instead of `Looper` /
+  `Message`.
+- **One IPC interface, two AIDLs.** `INativeApplicationThread` is the
+  *server* (the framework calls into the process to schedule work);
+  `IActivityManagerStructured` is the *client* (the process calls back
+  to ActivityManager to report progress). The pair replaces Java's
+  `IApplicationThread` / `IActivityManager` with smaller, native-only
+  surfaces.
+
+#### Per-Service Linker Namespaces
+
+A native application process can host multiple services from
+different libraries, and those libraries must not see each other's
+symbols. `library_loader.rs` enforces this by giving every service its
+own isolated linker namespace:
+
+```rust
+// Source: frameworks/base/libs/native_activity_thread/src/library_loader.rs:84
+let namespace = unsafe {
+    android_create_namespace(
+        name.as_ptr(),
+        ld_path.as_ptr(),
+        /* default_library_path= */ std::ptr::null_mut(),
+        ANDROID_NAMESPACE_TYPE_SHARED_ISOLATED as u64,
+        permitted_libs_dir.as_ptr(),
+        /* parent= */ std::ptr::null_mut(),
+    )
+};
+// ...
+let library = unsafe { LoadedLibrary::new(&req.library_name, &namespace)? };
+let create_func_addr = library.find_symbol(&req.base_symbol_name)?;
+```
+
+`ANDROID_NAMESPACE_TYPE_SHARED_ISOLATED` is the same flag the framework
+already uses to isolate the WebView and Java app classloaders. The
+`permitted_libs_dir` restricts which paths the namespace can search,
+preventing one service from loading another service's
+private dependencies. Each `LoadedLibrary` owns its `dlopen` handle and
+calls `dlclose` on drop, so destroying a service tears down its
+namespace too.
+
+This is also why the AIDL `scheduleCreateService` carries `library_paths`,
+`permitted_libs_dir`, `library_name`, and `base_symbol_name` rather than
+just a class name. The framework cannot pre-link anything — every
+service load is a fresh namespace + `dlopen` + `dlsym` round.
+
+#### Memory Trimming and Process State
+
+`scheduleTrimMemory` and `setProcessState` keep the native process
+participating in the same lifecycle the rest of the system uses:
+
+```rust
+// Source: frameworks/base/libs/native_activity_thread/src/
+//   native_activity_thread.rs:204
+fn handle_trim_memory_request(&mut self, level: i32) -> Result<()> {
+    // ... reject unknown levels
+    if self.process_state <= ProcessStateEnum::IMPORTANT_FOREGROUND.0
+        && level == ANATIVE_SERVICE_TRIM_MEMORY_BACKGROUND
+    {
+        return Ok(());  // foreground processes ignore the "background" hint
+    }
+    for service in self.services.values_mut() {
+        if let Some(on_trim_memory) = service.service.callbacks.onTrimMemory {
+            unsafe { on_trim_memory(service.service.as_mut(), level) };
+        }
+    }
+    Ok(())
+}
+```
+
+Only two trim levels are accepted on the native side
+(`UI_HIDDEN = 20`, `BACKGROUND = 40`) — a deliberately smaller set than
+Java's `ComponentCallbacks2` constants. The Rust gate also short-circuits
+the foreground case so that a service running in
+`IMPORTANT_FOREGROUND` does not receive spurious "trim to background"
+calls during transient state changes.
+
+#### Place in the NDK Story
+
+This crate fits the broader NDK arc: every API in Section 11.6 trades
+JVM-mediated convenience for direct C control. Camera2, Media, and
+Binder NDK let an app *use* framework services without crossing into
+Java. The native activity thread takes the next step — letting an app
+*be* a framework client without a JVM at all. That has knock-on
+consequences worth noting in any native-only design discussion:
+
+- No Java security manager, no `Application` class, no
+  `ContextWrapper` — `Context` simply does not exist in this process.
+  Anything that needs a `Context` (most of the platform's high-level
+  APIs) is unavailable.
+- Services only. No `Activity`, no `BroadcastReceiver`, no
+  `ContentProvider`. Components that need to surface UI or accept
+  arbitrary broadcasts still require a Java process.
+- Linker-namespace isolation is *intra-process*, not cross-process —
+  two services in the same native app can't access each other's
+  private libraries, but they share the same address space.
+- The Binder thread pool is started by `ProcessState::start_thread_pool()`
+  during bring-up, so the process is a normal Binder participant from
+  the moment it attaches.
+
+For most apps, a JVM-hosted Service is still the right choice — the
+ecosystem of libraries, the tooling, the ABI churn protection. The
+native activity thread is for the cases where avoiding the JVM is
+worth the loss: long-running on-device inference, audio/video pipelines
+where each megabyte of heap matters, and ports of native codebases
+(emulators, runtimes) that already have their own service abstraction.
+
 ---
 
 ## 11.7 NDK Translation Packages
