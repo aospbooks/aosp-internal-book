@@ -4614,7 +4614,64 @@ stock Android (Samsung DeX, Android 12+'s windowing-on-external-display).
 Those keep one Android runtime; MaruOS runs two operating systems on the
 same kernel.
 
-### 63.14.3 Repository Topology
+### 63.14.3 Kernel Configuration for LXC
+
+LXC is the mechanism that lets MaruOS run a Debian rootfs alongside Android
+without a second kernel, but it depends on Linux kernel features that stock
+Android kernels routinely disable. A custom ROM building on LXC has to start
+by making sure those features are present in the kernel image it ships.
+
+Required kernel features for an unprivileged LXC container of the kind Maru
+runs:
+
+| Feature | Kernel config | Why MaruOS needs it |
+|---------|--------------|---------------------|
+| User namespaces | `CONFIG_USER_NS=y` | Maps the container's "root" UID to a high unprivileged UID on the host; the foundation of unprivileged LXC |
+| PID namespaces | `CONFIG_PID_NS=y` | Lets the container's init see PID 1 inside, instead of the host's init |
+| Mount namespaces | `CONFIG_NAMESPACES=y` (mount NS implied) | Per-container `/proc`, `/sys`, and root filesystem view |
+| Network namespaces | `CONFIG_NET_NS=y` | Per-container network stack |
+| UTS namespaces | `CONFIG_UTS_NS=y` | Per-container hostname |
+| IPC namespaces | `CONFIG_IPC_NS=y` | Per-container System V IPC and POSIX message queues |
+| Cgroups | `CONFIG_CGROUPS=y` with memory, cpu, devices, freezer subsystems | Resource accounting and limits inside the container |
+| Seccomp | `CONFIG_SECCOMP_FILTER=y` | Lets LXC restrict the syscalls the container can make |
+| uinput | `CONFIG_INPUT_UINPUT=y` | Required by the input bridge (63.14.9) |
+| Optional overlay FS | `CONFIG_OVERLAY_FS=y` | Layered container rootfs without full copies |
+
+The catch is `CONFIG_USER_NS`. Android's kernel teams historically disable
+this option on production kernels because user namespaces have been a
+recurring source of CVEs across Linux releases — the privilege boundary
+inside a user namespace has been harder to keep tight than the standard
+root-vs-non-root split, and Android's security posture is to remove
+attack surface where the platform itself does not need it. LineageOS device
+kernels typically inherit that default. MaruOS, in order to run LXC at all,
+must flip `CONFIG_USER_NS` back to `y` in its kernel build, knowingly
+accepting the additional attack surface.
+
+The other features in the table are usually already on in an Android kernel:
+the Android Activity Manager uses cgroups (memory, freezer), the
+low-memory killer uses cgroup v2 memory controllers, seccomp filters are
+required by the Android sandbox, and namespaces are part of every modern
+Linux kernel's default configuration. So the kernel customization Maru
+needs is narrower than it first looks: enable `CONFIG_USER_NS`, confirm the
+remaining namespace and cgroup controllers are on, enable `CONFIG_INPUT_UINPUT`,
+and rebuild.
+
+This is why a Maru device build pulls a Maru-modified kernel from its
+`device_*` repos rather than reusing LineageOS's kernel as-is. Section 63.11
+covers the general kernel-customization workflow that MaruOS follows: a
+defconfig fragment that toggles the required options, layered on top of the
+device's base defconfig, and a rebuild of the boot image to flash alongside
+the system image.
+
+The trade-off is starkly stated. Enabling `CONFIG_USER_NS` opens an attack
+surface that stock AOSP intentionally closes. For Maru this is an accepted
+cost of the convergence model. For any custom ROM considering an LXC-based
+or namespaces-based extension, the choice should be made deliberately, with
+the threat model written down — there is no way to get unprivileged LXC
+without this flag, and there is no way to flip this flag without expanding
+the kernel attack surface.
+
+### 63.14.4 Repository Topology
 
 MaruOS code is spread across several repositories under the `maruos/` org.
 Understanding the topology helps a reader navigate the source without
@@ -4669,7 +4726,7 @@ The repo topology is itself a lesson. The "Maru-ness" lives in
 AOSP/Lineage. The "device-ness" is delegated to forked LineageOS device
 repos. Each layer can evolve at its own cadence.
 
-### 63.14.4 The vendor_maruos Overlay Anatomy
+### 63.14.5 The vendor_maruos Overlay Anatomy
 
 The `vendor_maruos` tree is where MaruOS's design choices are most legible.
 The top-level layout (visible on the `maru-0.7` branch of the GitHub repo):
@@ -4739,7 +4796,7 @@ the normal `m`/`make` flow, like fetching the Debian rootfs from the
 blueprints build output and dropping it into a per-product path before
 the system image is packaged.
 
-### 63.14.5 The blueprints Container Builder
+### 63.14.6 The blueprints Container Builder
 
 The Debian rootfs the container runs is not built by Soong. It is built by
 a separate repository, `maruos/blueprints`, which is a self-contained
@@ -4769,7 +4826,7 @@ entirely foreign environment (a container, a VM, a different libc), the
 right answer is often a *sibling* build system that exports a tarball,
 not a Soong module that tries to model the foreign world.
 
-### 63.14.6 The "Perspective" Bridge Layer
+### 63.14.7 The "Perspective" Bridge Layer
 
 The `perspective/` and `include/perspective/` directories carry the
 hardest-to-classify part of the design: the Android-resident daemon that
@@ -4801,7 +4858,149 @@ should happen, the other actually moves the LXC machinery. The split is
 a useful pattern for any custom ROM author writing a long-running
 Android service that drives non-Android user-space resources.
 
-### 63.14.7 Init and Boot Integration
+### 63.14.8 mflinger and mclient: The Graphics Bridge
+
+When the X11 server inside the Debian container draws to its framebuffer,
+those pixels exist in the container's address space. Android's
+`SurfaceFlinger`, which composes the external display, knows nothing about
+that buffer. Some piece of software has to carry the bits from the
+container's world into Android's. That piece is **mflinger**.
+
+mflinger lives in its own repository at <https://github.com/maruos/mflinger>,
+separate from `vendor_maruos`. The README is one line: *"Graphics buffer
+bridge for Maru OS."* The codebase is C-dominant (~64% C, 21% C++) with
+`src/`, `include/`, `lib/`, `tests/`, and `scripts/` directories — the
+layout of a small Linux system service.
+
+The name signals the analogy. Android's `SurfaceFlinger` is the daemon that
+takes per-app graphics buffers and composes them onto the display; mflinger
+plays the equivalent role for the container, taking the X server's
+root-window buffer and getting it composed alongside whatever Android is
+putting on the external display.
+
+The mflinger architecture is split into two halves:
+
+- **mflinger** (the daemon, Android-side) runs as an Android user-space
+  service started by `init.maru.rc`. It exposes a socket or shared-memory
+  endpoint that the container side can connect to. On the Android side it
+  talks to the AOSP graphics stack — most naturally through gralloc/ASHMEM/
+  dma-buf — to materialize the container's pixels as a buffer that
+  SurfaceFlinger can composite.
+- **mclient** (the container-side client) is the corresponding piece that
+  ships inside the Debian rootfs. It captures the X11 root window's
+  contents and ships them across the bridge to mflinger on every frame. It
+  is the only Maru-aware code that needs to run *inside* the container; the
+  rest of Debian is unmodified.
+
+The split mirrors the standard client/server pattern of Android's own
+display stack. An app's `Surface`/`SurfaceTexture` is the client;
+`SurfaceFlinger` is the server. mflinger/mclient generalizes that pattern
+across the LXC boundary — the "app" in this case is the entire X server
+inside the container, and the "server" is mflinger, which then becomes one
+more client of Android's real `SurfaceFlinger` one level up.
+
+The graphics bridge end-to-end.
+
+```mermaid
+flowchart LR
+    subgraph Container["LXC container (Debian rootfs)"]
+        XAPP["Xfce app<br/>(e.g. terminal)"]
+        XSRV["X.org server"]
+        MCLI["mclient<br/>(captures root window)"]
+    end
+    subgraph Android["Android user space"]
+        MFLN["mflinger daemon"]
+        GRAL["gralloc / ASHMEM / dma-buf"]
+        SF["SurfaceFlinger"]
+    end
+    DISP["External display<br/>USB-C / HDMI"]
+
+    XAPP --> XSRV
+    XSRV --> MCLI
+    MCLI -->|"framebuffer over shared mem"| MFLN
+    MFLN --> GRAL
+    GRAL --> SF
+    SF --> DISP
+```
+
+The cost of this design is two compositions per frame: X.org composes the
+desktop into the container's framebuffer, then mflinger forwards it through
+gralloc to SurfaceFlinger, which composes again onto the physical display.
+On modern Pixel SoCs this is acceptable; on lower-power hardware the second
+composition pass becomes the limiting factor.
+
+The Android-side SELinux policy in `vendor_maruos/sepolicy/` (63.14.11) is
+what permits the mflinger daemon to acquire gralloc buffers and bind to
+SurfaceFlinger's IPC; without those rules the daemon would be denied at
+process start. The bind-mount that exposes the mclient↔mflinger socket
+across the container boundary is set up by the container module in
+`vendor_maruos/container/` (63.14.5) when LXC starts.
+
+### 63.14.9 Input Mapping Between Linux and Android
+
+The complement of the graphics bridge is the input bridge. Keyboard, mouse,
+and touch events that should drive the desktop arrive at Android's input
+layer (`InputDispatcher` in `system_server`; see chapter 22 for the AOSP
+input flow). They have to reach the X server inside the container, which
+expects them on `/dev/input/event*` nodes via the Linux evdev interface.
+
+Maru's input bridge connects the two using the kernel's **uinput** driver.
+`uinput` is a Linux kernel module that lets user-space create *virtual*
+input devices that look to the rest of the kernel exactly like real evdev
+devices — keyboards, mice, touchscreens. Inside the container, the X server
+enumerates `/dev/input/event*` and finds these uinput-backed devices; from
+X's point of view they are indistinguishable from a real USB keyboard. The
+kernel-side dependency on `CONFIG_INPUT_UINPUT` (63.14.3) is exactly what
+makes this possible.
+
+The flow, from a single keystroke on an externally-attached keyboard to a
+character appearing in an Xfce terminal:
+
+1. **Android-side capture.** The Bluetooth/USB keyboard is enumerated by
+   Android's input subsystem. The perspective daemon (or a dedicated input
+   forwarder inside the daemon) listens for input events using the same
+   APIs as any other Android service — `InputDispatcher` registration for
+   the relevant device classes, or direct `evdev` reads on devices Android
+   has not claimed for itself.
+2. **Filtering.** Events targeted at the phone surface (touch on the
+   internal display, hardware buttons) stay with Android and reach the
+   foreground activity normally. Events that should drive the desktop
+   (external keyboard, external mouse, external touchscreen) are forwarded.
+3. **Container injection.** The forwarder opens `/dev/uinput` (bind-mounted
+   into the container's `/dev` by LXC) and writes the event as the standard
+   Linux `input_event` struct, with the appropriate `type`/`code`/`value`
+   fields.
+4. **Kernel echo.** The kernel's uinput driver re-emits the event on the
+   virtual device's `/dev/input/eventN` node *inside the container's mount
+   namespace*. The container sees a fresh event arrive on what looks like
+   any other input device.
+5. **X server pick-up.** X.org's evdev input driver, watching
+   `/dev/input/event*` inside the container, dispatches the event to the
+   focused X client (the Xfce window manager, then on to the focused app).
+
+Coordinate mapping is the subtle part. Touch events use absolute coordinates
+scaled to the originating display's resolution. A touch on Android's
+internal 1080×1920 panel is meaningless to an X server drawing on a
+1920×1080 external monitor. The forwarder rescales touch coordinates into
+the desktop's coordinate space before injecting them, using the active
+"perspective" (63.14.7) to decide which display is the active input target.
+A swipe on the phone screen never lands in the X server because the phone
+screen is, by design, *not* the desktop's input target.
+
+Keystrokes and mouse buttons are simpler: keycode mapping between Android's
+`KeyEvent` constants (`KEYCODE_A`, `KEYCODE_ENTER`, etc.) and Linux's
+evdev codes (`KEY_A`, `KEY_ENTER`) is one-to-one for the standard set, with
+a few Android-specific keys (search, menu, recents) silently dropped
+because they have no meaningful X11 equivalent.
+
+The whole pipeline is invisible to both ends. Android sees a normal input
+device and dispatches normally; the container's X server sees a normal
+`/dev/input/event*` device and dispatches normally; only the perspective
+layer in the middle knows that the bridge exists. This is the value of
+the uinput design: it lets Maru reuse the entire X.org input plumbing
+unchanged, instead of writing an X11-protocol-level forwarder.
+
+### 63.14.10 Init and Boot Integration
 
 `init.maru.rc` is where the boot integration is declared. Android's init
 processes `*.rc` files from `/system/etc/init/` and `/vendor/etc/init/`
@@ -4850,7 +5049,7 @@ container; LXC starts on demand and shuts down when the perspective layer
 decides it should. This is what the README means by *"spin up virtual
 systems on demand."*
 
-### 63.14.8 SELinux Implications
+### 63.14.11 SELinux Implications
 
 Stock AOSP SELinux policy is designed around the assumption that no
 Android process needs to launch an LXC container, mount a rootfs, or
@@ -4876,7 +5075,7 @@ during development. Each new denial gets logged once on first hit,
 silently after that, which is why fresh installs of a Maru build
 on a different device often need an audit pass.
 
-### 63.14.9 Privileged Permissions for Maru-System Apps
+### 63.14.12 Privileged Permissions for Maru-System Apps
 
 `privapp-permissions-maru.xml` lives at vendor-overlay scope and is
 processed by Android's privileged-permission allowlist mechanism (see
@@ -4904,7 +5103,7 @@ by AOSP. Any custom ROM with a privileged system app must ship one of
 these files, and a `dexopt`-time denial from `PackageManagerService`
 during boot is almost always traceable to a missing entry here.
 
-### 63.14.10 The Build Flow
+### 63.14.13 The Build Flow
 
 Putting the pieces together, building MaruOS from source for a supported
 device looks like this:
@@ -4942,7 +5141,7 @@ Three things stand out compared to the build flow in section 63.8:
   build flags. A standard `lineage_<device>` lunch would build the same
   device without the Maru layer.
 
-### 63.14.11 What MaruOS Teaches the Custom ROM Author
+### 63.14.14 What MaruOS Teaches the Custom ROM Author
 
 Reading MaruOS as an exemplar rather than a one-off, three lessons
 generalise beyond this specific project:
@@ -4970,7 +5169,7 @@ generalise beyond this specific project:
    companion microcontroller — model that artefact as a sibling build
    that hands off a file.
 
-### 63.14.12 Limitations and Trade-Offs
+### 63.14.15 Limitations and Trade-Offs
 
 MaruOS is also a useful case study in what this approach *costs*. An
 honest read of the trade-offs:
@@ -5003,7 +5202,7 @@ honest read of the trade-offs:
   *snapshot* of where one production custom ROM landed under the AOSP
   primitives available to it through Android 12-era releases.
 
-The lesson here is symmetrical to the one in 63.14.11: the same overlay-
+The lesson here is symmetrical to the one in 63.14.14: the same overlay-
 mechanism flexibility that lets a single small team ship a phone-to-desktop
 convergence ROM also distributes the cost. Every layer of additional
 ambition adds a layer of maintenance. Custom ROM authors weighing how far
