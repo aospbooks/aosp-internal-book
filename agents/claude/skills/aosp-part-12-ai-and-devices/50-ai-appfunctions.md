@@ -1492,6 +1492,551 @@ graph TD
 4. The virtual display is trusted, enabling input injection
 5. The permission controller package is always excluded from automation
 
+### 50.3.18 System-Server Implementation Overview
+
+The extension library described in subsections 50.3.1–50.3.16 is the
+**agent-side** API: the client an agent app links and calls. The
+**system-server side** of Computer Control lives in a sibling package inside
+the VirtualDeviceManager (VDM) service tree and contains the actual session
+state, the policy gates, the binder objects the extension stubs talk to, and
+the integration with the input, display, and accessibility stacks.
+
+**Source tree:**
+
+```
+frameworks/base/services/companion/java/com/android/server/companion/virtual/computercontrol/
+    ComputerControlSessionProcessor.java          -- Session creation and policy gate
+    ComputerControlSessionImpl.java   (776 lines) -- Core session binder
+    StabilityCalculator.java                      -- Server-side stability detector
+    InteractiveMirrorDisplayImpl.java             -- Mirror display + virtual touchscreen
+    AutomatedPackagesRepository.java              -- Tracks automated packages for launchers
+```
+
+How extension-side classes relate to their system-server counterparts.
+
+```mermaid
+graph LR
+    subgraph Agent["Agent app process"]
+        EXT["ComputerControlSession (extension)"]
+    end
+    subgraph SS["system_server: VirtualDeviceManagerService"]
+        SP["ComputerControlSessionProcessor"]
+        IMPL["ComputerControlSessionImpl"]
+        SC["StabilityCalculator"]
+        MIRROR["InteractiveMirrorDisplayImpl"]
+        APR["AutomatedPackagesRepository"]
+    end
+    subgraph VDM["VirtualDeviceManager primitives"]
+        VD["VirtualDevice + trusted display<br/>+ virtual inputs"]
+    end
+    EXT -- "requestSession" --> SP
+    SP -- "creates" --> IMPL
+    IMPL -- "owns" --> VD
+    IMPL -- "owns" --> SC
+    IMPL -- "owns" --> MIRROR
+    IMPL -- "registers" --> APR
+```
+
+The package sits inside `services/companion/`, not inside `services/core/`,
+because Computer Control is part of the VDM subsystem. Chapter 51 walks the
+general VDM machinery — VirtualDevice creation, virtual display surfaces,
+virtual input dispatch — that Computer Control composes on top of.
+
+### 50.3.19 ComputerControlSessionProcessor: Session Creation and Limits
+
+`ComputerControlSessionProcessor` owns the entry-point logic for creating
+sessions. It enforces three policies in order:
+
+1. **Concurrent-session cap.** The constant `MAXIMUM_CONCURRENT_SESSIONS = 5`
+   (`frameworks/base/services/companion/java/com/android/server/companion/virtual/computercontrol/ComputerControlSessionProcessor.java:71`)
+   bounds how many Computer Control sessions can be live system-wide at once.
+   Exceeding it returns `ERROR_SESSION_LIMIT_REACHED`.
+2. **Device-locked gate.** If the device is locked (keyguard up), session
+   creation rejects with `ERROR_DEVICE_LOCKED`. This is checked at creation
+   time, not maintained for the session lifetime.
+3. **Consent flow.** If the agent does not already hold per-session consent in
+   AppOps, the processor launches `RequestComputerControlAccessActivity` via
+   an `IntentSender` returned to the agent.
+
+The class header documents the role explicitly: *"This class enforces session
+creation policies, such as limiting the number of concurrent..."*
+(`ComputerControlSessionProcessor.java:62`).
+
+Once policies pass, the processor allocates the underlying `VirtualDevice`,
+the trusted `VirtualDisplay`, and the three virtual input devices, then
+constructs a `ComputerControlSessionImpl` and hands its binder back to the
+caller through the original `ComputerControlSession.Callback`.
+
+The session limit is global, not per-agent: five competing agents could
+exhaust the pool. The limit is a defensive bound, not a tuning knob — hitting
+it indicates either an agent-side leak (failure to close sessions) or a
+multi-agent attack surface that the system declines to expand without a
+deliberate policy change.
+
+### 50.3.20 ComputerControlSessionImpl: The Session Binder
+
+`ComputerControlSessionImpl` is the actual binder object that backs
+`IComputerControlSession.aidl`. At 776 lines
+(`frameworks/base/services/companion/java/com/android/server/companion/virtual/computercontrol/ComputerControlSessionImpl.java`)
+it is the largest single file in the Computer Control system-server package,
+but its size is dominated by input routing, parameter validation, and
+lifecycle teardown — not by business logic.
+
+Its responsibilities, ordered by lifecycle:
+
+- **Construction.** Receives the trusted `VirtualDevice`, the `VirtualDisplay`,
+  the three virtual input devices, the calling agent's `AttributionSource`,
+  and the requested `targetPackageNames` allowlist from the processor.
+- **Input dispatch.** Implements `tap`, `swipe`, `longPress`, `insertText`, and
+  `performAction` by routing to the appropriate virtual input device or to
+  the IME-integration path (50.3.29).
+- **Screenshot.** Implements `getScreenshot()` via the trusted display's
+  surface-capture path; the trusted flag is what makes capture permissible
+  without holding `READ_FRAME_BUFFER`.
+- **Application launch.** Implements `launchApplication(packageName)` after
+  checking the package against the session's allowlist; rejected launches
+  surface as `NotifyComputerControlBlockedActivity` (50.3.24).
+- **Stability.** Owns a `StabilityCalculator` (50.3.27) and forwards relevant
+  lifecycle events — every input dispatch, every app launch — to it.
+- **Mirror display.** Optionally owns an `InteractiveMirrorDisplayImpl` when
+  the session requested a live view (50.3.5).
+- **Lifecycle teardown.** Calls `Binder.linkToDeath()` on the agent's callback
+  so an agent process crash auto-closes the session, releases the
+  VirtualDevice, and clears the session's row in the
+  `AutomatedPackagesRepository`.
+
+The binder-on-binder structure — agent holds an `IComputerControlSession`
+stub, system server holds an `IComputerControlSessionCallback` stub — is the
+standard AOSP pattern; the death-link runs both ways so neither side can
+hold the other's resources after a process exit.
+
+### 50.3.21 Virtual Input Devices: Product IDs and Trusted Display
+
+A Computer Control session owns three virtual input devices, each
+constructed with a fixed product ID in a Computer-Control-reserved
+product-ID range so the input system can distinguish them from physical
+inputs and from other virtual-display sessions:
+
+| Device | Product ID | Constant | Purpose |
+|--------|-----------|----------|---------|
+| Virtual D-pad | `0xCC01` | `PRODUCT_ID_DPAD` | Directional navigation keys |
+| Virtual keyboard | `0xCC02` | `PRODUCT_ID_KEYBOARD` | Character key input |
+| Virtual touchscreen | `0xCC03` | `PRODUCT_ID_TOUCHSCREEN` | Touch gestures |
+
+The constants are declared at `ComputerControlSessionImpl.java:127–131`. The
+`0xCC` prefix carves out a Computer-Control-reserved block inside the
+broader VDM virtual-input product-ID space; see chapter 51 for the generic
+`VirtualInputDevice` scheme that hosts Computer Control's three.
+
+The session's display is a **trusted** `VirtualDisplay`. The trust flag has
+three observable consequences that distinguish it from a stock virtual
+display:
+
+1. **Animations disabled.** System and app animations are suppressed on this
+   display so the agent's per-action stability detection does not have to wait
+   for animation completion before reading the next state.
+2. **IME hidden.** Soft keyboards do not auto-show on the display; text input
+   either uses `VirtualKeyboard` key events or routes through the IME
+   integration path in 50.3.29.
+3. **Focus-stealing disabled.** Child windows on the display cannot steal
+   focus from the agent's target activity, so a pop-up cannot redirect the
+   agent's subsequent inputs to an unrelated surface.
+
+Together these turn the display into a deterministic surface the agent can
+drive without the user's UX-pleasantness layer adding noise.
+
+### 50.3.22 Session Creation Flow End-to-End
+
+This is what happens from the agent's `requestSession()` call to a
+ready-to-drive session.
+
+```mermaid
+sequenceDiagram
+    participant Agent as Agent app
+    participant Ext as ComputerControlExtensions
+    participant VDMS as VirtualDeviceManagerService
+    participant SP as ComputerControlSessionProcessor
+    participant Consent as RequestComputerControlAccessActivity
+    participant Impl as ComputerControlSessionImpl
+    participant VD as VirtualDevice + display + inputs
+
+    Agent->>Ext: requestSession(params, callback)
+    Ext->>VDMS: requestComputerControlSession
+    VDMS->>SP: process(params, attributionSource)
+    SP->>SP: check MAXIMUM_CONCURRENT_SESSIONS
+    SP->>SP: check keyguard state
+    SP->>SP: noteOp OP_COMPUTER_CONTROL
+    alt consent missing
+        SP->>Consent: launch via IntentSender
+        Consent-->>SP: Allow / Don't Allow / Always
+    end
+    SP->>VD: create trusted display + virtual inputs
+    SP->>Impl: new ComputerControlSessionImpl
+    Impl-->>Ext: onSessionCreated(binder)
+    Ext-->>Agent: callback.onSessionCreated(session)
+```
+
+The consent step is conditional: an agent that has been granted **Always
+Allow** in a prior session skips the dialog because the AppOps record carries
+that decision forward. The AppOps record is per-package and per-user, so
+revoking via Settings sends the next request back through the dialog path
+without the agent noticing on the request itself — the agent simply observes
+the dialog appear or not.
+
+Once `onSessionCreated` fires, the agent owns a binder it can call repeatedly
+without round-tripping through the processor. Each input call goes
+agent → `ComputerControlSessionImpl` directly; the processor is only
+consulted at session creation.
+
+### 50.3.23 Error Codes and Session Constraints
+
+Session creation returns one of three error codes when it fails. The
+constants live in the public extension API at
+`frameworks/base/core/java/android/companion/virtual/computercontrol/ComputerControlSession.java`:
+
+| Code | Value | Condition | Source line |
+|------|-------|-----------|-------------|
+| `ERROR_SESSION_LIMIT_REACHED` | 1 | More than 5 active Computer Control sessions system-wide | `ComputerControlSession.java:77` |
+| `ERROR_DEVICE_LOCKED` | 2 | Keyguard is up at session-creation time | `ComputerControlSession.java:87` |
+| `ERROR_PERMISSION_DENIED` | 3 | Per-session consent denied by the user | `ComputerControlSession.java:92` |
+
+The three errors map cleanly to the three policy checks in
+`ComputerControlSessionProcessor` (50.3.19): one error per policy. An agent
+implementing robust retry logic distinguishes them by behavior:
+
+- `ERROR_SESSION_LIMIT_REACHED` is transient — wait and retry.
+- `ERROR_DEVICE_LOCKED` is user-blocked — prompt the user to unlock; retry
+  on screen-on.
+- `ERROR_PERMISSION_DENIED` is durable for the request — escalate to the user
+  through the agent's own UX before requesting again, and consider that
+  re-requesting too aggressively will surface to the user as harassment.
+
+The device-locked gate is checked at creation, not maintained for the session
+lifetime. An agent with a session open before the screen locks keeps the
+session; the agent simply cannot perform actions on the locked screen until
+unlock. Tearing the session down on lock would race with foreground-app
+behavior and break agents that legitimately span a brief screen-off.
+
+### 50.3.24 The Consent Activity Flow
+
+The per-session consent dialog is `RequestComputerControlAccessActivity`
+(`frameworks/base/packages/VirtualDeviceManager/src/com/android/virtualdevicemanager/RequestComputerControlAccessActivity.java`).
+It is a platform-signed activity inside the VDM platform package that the
+agent cannot launch directly; it is launched only via the `IntentSender`
+returned by the processor when consent is missing.
+
+The dialog presents three choices:
+
+- **Allow** — grant consent for the duration of this session only. AppOps
+  records the grant scoped to the session.
+- **Don't Allow** — deny. Processor returns `ERROR_PERMISSION_DENIED` to the
+  caller.
+- **Always Allow** — record a persistent AppOps grant for the agent package.
+  Future `requestSession()` calls from the same package skip the dialog
+  entirely.
+
+The activity carries `android:filterTouchesWhenObscured="true"` — the same
+anti-tapjacking flag used by `RequestPermissionActivity` — so that an overlay
+window cannot pass touches through to the consent buttons. This matters
+because a Computer Control consent grant is particularly attractive to a
+tapjacking adversary: a successful grant gives the adversary's agent the
+ability to drive the user's other apps from inside a sanctioned session.
+
+When Computer Control blocks an action mid-session — for example, a `launchApplication()`
+call for a package not in the session's `targetPackageNames` — the system
+surfaces `NotifyComputerControlBlockedActivity`
+(`frameworks/base/packages/VirtualDeviceManager/src/com/android/virtualdevicemanager/NotifyComputerControlBlockedActivity.java`)
+to make the block visible to the user rather than silently dropping the
+action. Silent drops would leave the user wondering why the agent stopped
+responding; the visible block tells both user and agent which boundary was
+hit.
+
+### 50.3.25 AppOps and Per-Session Tracking
+
+Computer Control uses the AppOps system to track per-package consent state.
+The relevant op is `OP_COMPUTER_CONTROL` at
+`frameworks/base/core/java/android/app/AppOpsManager.java:1741`:
+
+```java
+public static final int OP_COMPUTER_CONTROL = AppOpEnums.APP_OP_COMPUTER_CONTROL;
+```
+
+AppOps records grants with a mode (`MODE_ALLOWED`, `MODE_IGNORED`,
+`MODE_ERRORED`, `MODE_DEFAULT`) and an attribution tag, scoped by package.
+Each session creation calls
+`noteOp(OP_COMPUTER_CONTROL, agentUid, agentPackage, attributionTag, message)`
+and the result determines whether to skip the consent dialog
+(`MODE_ALLOWED`), prompt (`MODE_DEFAULT`), or reject up front
+(`MODE_IGNORED` / `MODE_ERRORED`).
+
+This is the same machinery used for sensitive ops like `OP_CAMERA`,
+`OP_RECORD_AUDIO`, and `OP_FINE_LOCATION`. Treating Computer Control as an
+AppOp rather than a one-shot permission has two implications worth pulling
+out:
+
+- **Revocability.** A user can revoke Computer Control for a specific agent
+  in Settings without uninstalling the agent. Subsequent `requestSession()`
+  calls from that agent route back through the dialog.
+- **Auditability.** AppOps records every `noteOp` invocation, so a privacy
+  dashboard can show which agents have requested Computer Control and when,
+  even after the sessions have ended.
+
+The matching permission `android.permission.ACCESS_COMPUTER_CONTROL`
+(`frameworks/base/core/res/AndroidManifest.xml:8792`) has protection level
+`internal|knownSigner`, meaning only agents in the system's knownSigner
+allowlist can *request* a Computer Control session in the first place. The
+AppOps layer
+adds the per-grant user-facing control on top of that platform-level gate;
+the two together implement defense in depth: an unsigned third-party app
+cannot even ask, and a signed agent cannot grant itself.
+
+### 50.3.26 Anti-Tampering Mechanisms
+
+The threat model around Computer Control assumes a malicious app could
+attempt to (a) trick a user into granting Computer Control consent, (b)
+hijack an already-granted session, or (c) ride a granted session into apps
+the user did not intend to expose. The framework defends each with a
+distinct mechanism:
+
+1. **FilterTouches on consent activities.** Both
+   `RequestComputerControlAccessActivity` and
+   `NotifyComputerControlBlockedActivity` apply
+   `android:filterTouchesWhenObscured="true"` so an overlay window cannot
+   pass touches through to the consent buttons. This blocks the classic
+   tapjacking attack against permission dialogs — the same pattern that
+   surfaced through `SYSTEM_ALERT_WINDOW` abuse in earlier Android releases.
+2. **Activity allowlist in strict mode.** When the
+   `computer_control_activity_policy_strict` flag (50.3.30) is on, an agent's
+   `launchApplication(packageName)` is rejected unless `packageName` was
+   declared in `targetPackageNames` at session creation. A Computer Control
+   session that opened a messaging app cannot subsequently launch a banking
+   app inside the same session.
+3. **Launch interception warnings.** The `automated_app_launch_interception`
+   flag gates a warning UI surfaced when a Computer Control session launches
+   an app the user did not explicitly initiate. The warning makes the
+   agent's intent visible at the moment it would otherwise be invisible to
+   the user.
+4. **Binder death monitoring.** `ComputerControlSessionImpl` calls
+   `Binder.linkToDeath()` on the agent's callback binder. If the agent
+   process is killed — by oom-killer, by the user swiping it from Recents,
+   by a crash — the system auto-closes the session and releases the
+   `VirtualDevice`. This prevents a long-lived orphan session from
+   continuing to drive the device after its operator has gone away.
+
+The mechanisms compose. An attacker who somehow bypassed tapjacking
+protection on the consent activity (mechanism 1) and obtained a session
+would still be blocked by the activity allowlist (mechanism 2) from
+expanding the session's reach; an attacker who got past both (mechanism 3)
+would still surface a launch warning to the user; an attacker whose
+implant process died would release the session immediately (mechanism 4).
+
+### 50.3.27 Server-Side StabilityCalculator
+
+The extension layer's `StabilityHintCallbackTracker` (50.3.15) is a legacy
+client-side mechanism. The current path is server-side: `StabilityCalculator`
+(`frameworks/base/services/companion/java/com/android/server/companion/virtual/computercontrol/StabilityCalculator.java`)
+decides when the UI has *settled* after an injected event and notifies the
+agent via `IComputerControlStabilityListener`.
+
+The decision is timeout-based, not event-based. After each input the
+calculator starts a timer; if no further events arrive before the timer
+fires, the session is reported stable. Timeouts vary by event class
+(`StabilityCalculator.java:35–37`):
+
+| Event class | Timeout | Constant |
+|-------------|---------|----------|
+| Tap, text insert | 2000 ms | `NON_CONTINUOUS_INPUT_EVENT_STABILITY_TIMEOUT_MS` |
+| Swipe, long-press | 2500 ms | `CONTINUOUS_INPUT_EVENT_STABILITY_TIMEOUT_MS` |
+| App launch | 3000 ms | `APPLICATION_LAUNCH_STABILITY_TIMEOUT_MS` |
+
+The differential is empirical. A swipe expands at the extension layer into
+11 sine-eased MOVE events spanning ~550 ms (see 50.3.10), so the calculator
+gives it 500 ms more headroom than a tap. An app launch involves cold-start
+work — activity creation, layout pass, first-frame render — and gets the
+longest budget.
+
+Timeout-based stability is intentionally pessimistic. An agent that needs
+lower latency on simple actions can ignore the stability signal and proceed
+immediately; an agent that needs reliable post-action state (for example,
+to capture a screenshot of the result after a tap navigates to a new screen)
+waits for the signal before reading. The server side does not enforce
+either choice; it merely emits the signal so the agent can choose.
+
+The server-side timer trumps the deprecated client-side accessibility-event
+idle tracker (50.3.15) because the server knows about state the client
+cannot directly observe — for example, system-server-internal display
+transactions and input dispatcher acknowledgments. As `EventIdleTracker`
+ages out of agent code, the timeout constants in `StabilityCalculator` are
+the single source of truth for "the UI is now settled."
+
+### 50.3.28 AutomatedPackagesRepository and Launcher Indicators
+
+`AutomatedPackagesRepository`
+(`frameworks/base/services/companion/java/com/android/server/companion/virtual/computercontrol/AutomatedPackagesRepository.java`)
+maintains the system-wide set of packages currently being driven by a
+Computer Control session. It serves two consumers:
+
+1. **Launchers** register an `IAutomatedPackageListener` to learn which
+   app icons should display an "agent is driving this app" indicator.
+   The indicator is a UI affordance, not a security boundary; it tells the
+   user *which* app the agent is currently controlling at a glance.
+2. **System UI** uses the same data to render the global "agent active"
+   status icon and to route notifications about automated activity.
+
+The repository fires `onAutomatedPackagesChanged(Set<String>)` whenever the
+set transitions. Each `ComputerControlSessionImpl` registers its
+allowlisted packages on session start and unregisters them on session close.
+If two sessions independently automate the same package (rare but
+permitted under the concurrent-session cap), the repository reference-counts
+the package; it only exits the "automated" state when the last referring
+session closes.
+
+This is the user-transparency contract the framework commits to. An
+automated app is always visually distinguishable from a user-driven one,
+even when the agent and user are interleaving control through the
+interactive mirror (50.3.13). The user is never left guessing whether
+something happening on screen was their tap or the agent's.
+
+### 50.3.29 IME Integration: IRemoteComputerControlInputConnection
+
+When the typing path is enabled, `insertText()` must route text into the
+focused input field through the standard IME pipeline so that input
+validation, autocorrect, password masking, and accessibility events all
+fire the same way they would for a soft-keyboard tap. The mechanism is
+`IRemoteComputerControlInputConnection.aidl`
+(`frameworks/base/core/java/com/android/internal/inputmethod/IRemoteComputerControlInputConnection.aidl`).
+
+The flow:
+
+- The agent calls `ComputerControlSession.insertText(text, replaceExisting, commit)`.
+- The call arrives at `ComputerControlSessionImpl` on the system-server side.
+- The impl looks up the `IRemoteComputerControlInputConnection` for the
+  session's display in
+  `InputMethodManagerService.UserData.mComputerControlInputConnectionMap`
+  (`frameworks/base/services/core/java/com/android/server/inputmethod/InputMethodManagerService.java:1758, 3575, 3578, 5857`).
+- The remote connection wraps the focused window's `InputConnection` and
+  forwards the text through `commitText()`, `setComposingText()`, and
+  `deleteSurroundingText()` — the same methods a soft keyboard would use.
+- The target app sees text arrive through its normal `InputConnection`
+  callback, indistinguishable in shape from a soft-keyboard caller.
+
+Keying the map by display ID matters because each Computer Control session
+owns its own trusted display, and multiple sessions can be live
+simultaneously (up to `MAXIMUM_CONCURRENT_SESSIONS = 5`). The display ID is
+what disambiguates which session's text routes where.
+
+This path is gated by the `computer_control_typing` flag (50.3.30); when
+off, `insertText()` falls back to injecting key events via the
+`VirtualKeyboard` device. The fallback is functional but loses the IME's
+text-shaping behavior — autocorrect does not run, password fields are not
+masked at input time, and a target app that filters input in
+`onTextChanged` sees character-at-a-time events rather than a batched
+commit.
+
+### 50.3.30 Feature Flag Set
+
+Computer Control ships gated behind five aconfig flags
+(`frameworks/base/core/java/android/companion/virtual/flags/flags.aconfig`).
+They cleanly separate the rollout of independent features:
+
+| Flag | Line | Gates |
+|------|------|-------|
+| `computer_control_access` | 181 | Core feature: the `ACCESS_COMPUTER_CONTROL` permission and the session API |
+| `computer_control_consent` | 251 | The per-session consent dialog flow (50.3.24) |
+| `computer_control_typing` | 281 | The `InputConnection`-based `insertText()` path (50.3.29) |
+| `computer_control_activity_policy_strict` | 271 | Strict `targetPackageNames` allowlist enforcement (50.3.26) |
+| `automated_app_launch_interception` | 261 | The launch-warning dialog when a Computer Control session launches a non-target app (50.3.26) |
+
+A device can ship Computer Control's core surface
+(`computer_control_access` on) without committing to every policy layer —
+useful for staged rollout, where consent and typing land first and stricter
+policy follows. Conversely, a device can ship with all flags on for a full
+security posture from day one.
+
+The flag set is also useful as a roadmap reading: a chapter reader who
+finds Computer Control at an unfamiliar stage of evolution can look at
+which flags are on (`adb shell device_config get virtualdevicemanager <flag_name>`)
+to determine which features the running device actually supports,
+independent of what the API surface advertises.
+
+### 50.3.31 Companion-Device-Subsystem Anchoring
+
+Computer Control is implemented as a subsystem **of** VirtualDeviceManager,
+not alongside it. Three architectural consequences follow:
+
+1. **Code location.** The server-side classes live under
+   `frameworks/base/services/companion/` (the VDM service tree), not under
+   `frameworks/base/services/core/`. The package path embeds
+   `virtual/computercontrol/` to make the subordination explicit at the
+   filesystem level.
+2. **Lifecycle owner.** `VirtualDeviceManagerService` owns the
+   `ComputerControlSessionProcessor` instance and the
+   `AutomatedPackagesRepository`. When VDM tears down — for example, when
+   the last virtual device is released and VDM enters its idle path —
+   Computer Control state tears down with it. Computer Control cannot
+   outlive its parent.
+3. **Reuse of VDM primitives.** Computer Control does not invent its own
+   display, input, or surface-capture stack. It composes the existing VDM
+   primitives (`VirtualDevice`, `VirtualDisplay`, `VirtualDpad`,
+   `VirtualKeyboard`, `VirtualTouchscreen`) under a Computer-Control-
+   specific session policy. The Computer Control additions are narrow:
+   the trust-flag combination on the display, the fixed product IDs on the
+   inputs (50.3.21), the session-scoped consent and AppOps tracking
+   (50.3.24–50.3.25), and the timeout-based stability detector (50.3.27).
+
+Chapter 51 walks the general VDM machinery: how a `VirtualDevice` is
+constructed and registered, how virtual displays surface into
+WindowManager, how virtual input events dispatch through `InputDispatcher`,
+and how the broader companion-device ecosystem (BLE associations, remote
+device authentication) sits alongside VDM. A reader interested in *how*
+the trusted `VirtualDisplay` is wired into WindowManager and *what*
+WindowManager does differently on it should follow that cross-reference.
+A reader interested in *why* Computer Control composes those primitives the
+way it does, and what user-transparency contracts the composition enforces,
+stays in this chapter.
+
+### 50.3.32 Known Consumers
+
+The first widely-shipped consumer of Computer Control is the **Gemini in
+Android** assistant. The internal codename for the agent loop is **Bonobo**
+(the log prefix `#bnb#` appears in app traces); the agent runs in the AGSA
+process (`com.google.android.googlequicksearchbox`) and consumes the
+AOSP-public Computer Control API documented in this chapter. AOSP itself
+does not ship a Computer Control agent —
+`frameworks/base/libs/computercontrol/` and the system-server package
+described above are framework code, not application code. The agent is
+GMS-side and is not part of this checkout, but its existence as the first
+production Computer Control consumer is what shaped the API's current
+surface.
+
+Two patterns observable in the Gemini consumer are worth surfacing for any
+new Computer Control agent:
+
+- **Dual-path fallback with AppFunctions.** The agent declares two
+  `<uses-library>` entries in its manifest:
+  `com.android.extensions.appfunctions` and
+  `com.android.extensions.computercontrol`. It prefers AppFunctions
+  (the structured-API path of section 50.2) for apps that publish
+  `AppFunctionService`-backed functions, and falls back to Computer Control
+  for apps that don't. The same agent can drive both because the two
+  frameworks compose at the SDK extension level: an agent links both,
+  queries `AppFunctionManager` first, and uses Computer Control for the
+  apps where the function discovery returns empty.
+- **Live mirror as the user-trust surface.** The agent renders the
+  `InteractiveMirrorDisplay` (50.3.5) inside its chat UI so the user
+  watches the actions in real time and can hand control back at any
+  moment via the touch-forwarding path. This matches the framework's
+  intent: Computer Control does not make the live view *optional*, it
+  makes the absence of one the unusual case. An agent that runs Computer
+  Control without a visible mirror is one the user is right to be
+  suspicious of.
+
+Beyond Gemini, Computer Control is shipping first on the highest-end Pixel
+and Galaxy devices and broadening as the feature flags above ramp. New
+consumers adopting Computer Control should expect the API surface to
+remain stable along the lines described in this chapter while the policy
+layer (which flags are on by default) continues to tighten.
+
 ---
 
 ## 50.4 OnDeviceIntelligence
