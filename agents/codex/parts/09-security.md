@@ -3119,6 +3119,236 @@ graph TB
     CE_Locked -->|User enters credential| CE_Unlocked
 ```
 
+### 40.8.13  SecureBox and the Recoverable Key Store
+
+The encryption subsystems covered above (FBE, metadata encryption, dm-default-key)
+protect data *at rest on the device*. Android also needs to protect keys
+that leave the device — most importantly, the user's lock-screen-protected
+keys when they are backed up to a remote vault for later recovery on a new
+device. The "SecureBox" library at `frameworks/base/libs/securebox/`
+provides the cryptographic primitive that the recoverable key store uses
+to wrap those keys end-to-end.
+
+This subsection walks through the SecureBox v2 wire format, why it is
+shaped the way it is, and how `RecoverableKeyStoreManager` consumes it.
+
+#### What SecureBox Is
+
+`com.android.security.SecureBox` is a 461-line, dependency-free Java
+class that implements an authenticated public-key + shared-secret hybrid
+encryption scheme over the NIST P-256 elliptic curve, AES-128-GCM, and
+HKDF-SHA-256. It exposes exactly four public methods:
+
+```java
+// Source: frameworks/base/libs/securebox/src/com/android/security/SecureBox.java:142
+public static KeyPair genKeyPair() throws NoSuchAlgorithmException;
+public static byte[]  encrypt(@Nullable PublicKey theirPublicKey,
+                              @Nullable byte[] sharedSecret,
+                              @Nullable byte[] header,
+                              @Nullable byte[] payload);
+public static byte[]  decrypt(@Nullable PrivateKey ourPrivateKey,
+                              @Nullable byte[] sharedSecret,
+                              @Nullable byte[] header,
+                              byte[] encryptedPayload);
+public static byte[]  encodePublicKey(PublicKey publicKey);
+public static PublicKey decodePublicKey(byte[] keyBytes);
+```
+
+The signatures encode the design contract:
+
+- A caller can encrypt with the recipient's **public key**, with a
+  **shared secret**, or with **both** (in which case both are required
+  to decrypt). At least one of the two must be non-null.
+- `header` is authenticated but not encrypted — it travels in cleartext
+  but the GCM tag binds it to the payload, so any modification fails
+  decryption with `AEADBadTagException`.
+- `payload` is the encrypted body. Either input may be null/empty.
+
+The library is built as a plain `java_library` with no `static_libs` and
+no Android dependencies beyond `@hide` annotations and an
+`ArrayUtils.concat` helper — a deliberate choice so that the same code
+can be vetted as a self-contained cryptographic unit.
+
+#### The SecureBox v2 Wire Format
+
+The output of `encrypt(...)` is a single byte array with the layout:
+
+```
++--------+----------------+--------+----------------------------+
+|        |                |        |                            |
+| VERSION| sender pubKey  | nonce  |  AES-GCM(ciphertext || tag)|
+| 2 B    | 65 B (DH only) | 12 B   |  variable                  |
+|        |                |        |                            |
++--------+----------------+--------+----------------------------+
+```
+
+- **VERSION** is the constant `0x02 0x00` — little-endian 2 (the "v2"
+  in SecureBox v2).
+- **sender pubKey** is present *only* in the public-key paths
+  (`theirPublicKey != null`). The sender generates a fresh ephemeral
+  P-256 key pair per `encrypt(...)` call, performs ECDH against the
+  recipient's public key, and emits its own public key in
+  uncompressed-point form (`0x04 || X (32 B) || Y (32 B)`,
+  `EC_PUBLIC_KEY_LEN_BYTES = 65`).
+- **nonce** is 12 freshly-random bytes per call (`SecureRandom`).
+- **AES-GCM body** is the AES-128-GCM ciphertext with the 16-byte
+  authentication tag appended (standard JCE GCM layout).
+
+The HKDF info string differs by mode:
+
+```java
+// Source: frameworks/base/libs/securebox/src/com/android/security/SecureBox.java:77
+private static final byte[] HKDF_INFO_WITH_PUBLIC_KEY =
+        "P256 HKDF-SHA-256 AES-128-GCM".getBytes(StandardCharsets.UTF_8);
+private static final byte[] HKDF_INFO_WITHOUT_PUBLIC_KEY =
+        "SHARED HKDF-SHA-256 AES-128-GCM".getBytes(StandardCharsets.UTF_8);
+```
+
+Mixing the two info strings is what makes the same library
+unambiguously cover both the ECDH and pure-shared-secret cases — the
+derived AES key is bound to its derivation mode, so a payload encrypted
+in one mode cannot decrypt in the other even if the keying material
+collides.
+
+The full key-derivation chain is:
+
+1. `dhSecret = ECDH(senderPrivate, recipientPublic)`  (empty in the
+   pure-shared-secret mode)
+2. `keyingMaterial = dhSecret || sharedSecret`
+3. `prk = HMAC-SHA-256(salt = "SECUREBOX" || 0x02 0x00, ikm = keyingMaterial)`
+4. `K = first 16 bytes of HMAC-SHA-256(prk, info || 0x01)`  (one HKDF block)
+5. AES-128-GCM with `K`, `nonce`, AAD = `header`
+
+This is a textbook HKDF construction; the only Android-specific bits
+are the `"SECUREBOX" || 0x02 0x00` salt and the API-37-stable info
+strings.
+
+```mermaid
+flowchart LR
+    subgraph Encrypt["encrypt(theirPub, sharedSecret, header, payload)"]
+        EphGen["genKeyPair → senderPriv, senderPub"]
+        ECDH["dhSecret = ECDH(senderPriv, theirPub)"]
+        Concat["keyingMaterial = dhSecret || sharedSecret"]
+        HKDF["HKDF-SHA-256(salt='SECUREBOX'||0x02 0x00,<br/>info='P256 HKDF-SHA-256 AES-128-GCM',<br/>ikm=keyingMaterial) → K (16 B)"]
+        Nonce["genRandomNonce → 12 B"]
+        GCM["AES-128-GCM-Encrypt(K, nonce, aad=header, pt=payload)"]
+        Out["VERSION (2) || senderPub (65) || nonce (12) || ciphertext"]
+        EphGen --> ECDH --> Concat --> HKDF --> GCM --> Out
+        Nonce --> GCM
+    end
+```
+
+#### Curve Validation on Decode
+
+`SecureBox` ships its own P-256 parameters (the canonical NIST p, a, b,
+G, n constants in the static initializer) instead of trusting the JCE
+to resolve them. The reason is `decodePublicKey(...)` validates that
+the received point actually lies on the curve:
+
+```java
+// Source: frameworks/base/libs/securebox/src/com/android/security/SecureBox.java:430
+private static void validateEcPoint(BigInteger x, BigInteger y) throws InvalidKeyException {
+    if (x.compareTo(EC_PARAM_P) >= 0
+            || y.compareTo(EC_PARAM_P) >= 0
+            || x.signum() == -1
+            || y.signum() == -1) {
+        throw new InvalidKeyException("Point lies outside of the expected curve");
+    }
+    // Points on the curve satisfy y^2 = x^3 + ax + b (mod p)
+    BigInteger lhs = y.modPow(BIG_INT_02, EC_PARAM_P);
+    BigInteger rhs = x.modPow(BIG_INT_02, EC_PARAM_P)
+            .add(EC_PARAM_A).mod(EC_PARAM_P)
+            .multiply(x).add(EC_PARAM_B).mod(EC_PARAM_P);
+    if (!lhs.equals(rhs)) {
+        throw new InvalidKeyException("Point lies outside of the expected curve");
+    }
+}
+```
+
+This blocks invalid-curve attacks: an attacker who controls the
+`encryptedPayload` cannot smuggle a malicious "public key" that lives
+on a weaker curve and use the resulting ECDH leakage to recover the
+recipient's private key. The check matches IETF / NIST SP 800-56A
+public-key-validation guidance and is performed before the key is
+handed to `KeyAgreement`.
+
+The encoded form is also chosen deliberately: uncompressed
+`0x04 || X || Y`, fixed 65 bytes, with `arraycopy` careful about
+two's-complement sign-bit leading zeros (lines 386-398). The fixed-width
+encoding is what `RecoverableKeyStoreManager` later persists into the
+"vault params" blob handed to the recovery service.
+
+#### How the Recoverable Key Store Uses It
+
+The principal consumer is the LockSettings recoverable key store
+implementation in `frameworks/base/services/core/java/com/android/server/locksettings/recoverablekeystore/`:
+
+| File | Use of SecureBox |
+|------|-------------------|
+| `RecoverableKeyStoreManager.java` | Top-level service handling `RecoveryController` AIDLs; uses SecureBox to wrap session keys end-to-end against a recovery agent's public key. |
+| `KeySyncUtils.java` | Computes the locally-stored encrypted snapshot of "application keys + per-user recovery key" using SecureBox with the user's LSKF-derived shared secret. |
+| `storage/RemoteLockscreenValidationSessionStorage.java` | Maintains the ephemeral SecureBox key pair that protects a remote-unlock session (used during Find My Device flows). |
+
+The high-level recovery flow:
+
+1. On a *source* device, the user opts into Cloud Key Vault backups
+   via Settings. The system derives a recovery key from the
+   lock-screen credential (Gatekeeper-anchored), then uses
+   `SecureBox.encrypt(theirPublicKey = recoveryServicePublicKey,
+   sharedSecret = recoverySalt, ...)` to wrap the user's application
+   keys for the chosen recovery agent.
+2. The wrapped blob travels via the recovery agent (e.g. Google's
+   account-tied cloud service). The cloud service stores it but cannot
+   read it — only the recipient device with the corresponding
+   `recoveryServicePrivateKey` plus the user-derived `sharedSecret`
+   can `SecureBox.decrypt(...)` it.
+3. On a *target* device, after successful lock-screen credential
+   re-entry against the cloud-issued challenge, the system retrieves
+   the wrapped blob and `decrypt(...)`s it, repopulating the keystore
+   with the user's recoverable keys.
+
+The `header` argument is used to bind each blob to its context
+(recovery agent ID, vault version, intended slot). Any tampering with
+that context invalidates the GCM tag and fails recovery — exactly the
+property the recovery protocol needs.
+
+#### The Remote Lock-Screen Validation Variant
+
+`com.android.settings.password.RemoteLockscreenValidationFragment`
+(in `packages/apps/Settings/`) uses the same SecureBox primitive for a
+different flow: a *remote* unlock confirmation during Find My Device
+flows. Settings generates an ephemeral P-256 key pair via
+`SecureBox.genKeyPair()`, sends the public key to the cloud service,
+and decrypts the cloud's challenge response with the private key. The
+public-key path (no shared secret) of `SecureBox.encrypt` is what the
+cloud uses on its end.
+
+This second consumer is why `SecureBox` exposes the ECDH-only mode as
+a first-class API path rather than insisting on a shared secret.
+
+#### Why a Separate Library Instead of a JCE Provider
+
+SecureBox could have been shipped as a JCE `Cipher` provider, but it
+is deliberately not:
+
+- The wire format is a single fixed shape with an explicit version
+  byte — easier to audit as a sealed primitive than as a configurable
+  algorithm.
+- The library is consumed by `system_server` (LockSettings) and by an
+  app (Settings). Packaging it as a `java_library` with no Android
+  framework dependencies means the same compiled class file is used
+  in both contexts, with no provider-installation differences.
+- The implementation must run on every Android device that supports
+  recoverable key stores. Avoiding a provider lets the code work even
+  when the active JCE provider has been replaced or restricted (e.g.
+  by FIPS-mode builds that disallow generic GCM modes).
+
+`SecureBox` is therefore a small, self-contained, intentionally
+boring building block — the boringness is the security argument. The
+v2 format has not changed since the file was added (2017 copyright
+header), and the consumer code can rely on a stable wire shape across
+the entire fleet that supports recoverable key stores.
+
 ---
 
 ## 40.9  Network Security
