@@ -4491,6 +4491,8 @@ USB-C/HDMI brings up a full Debian GNU/Linux desktop session on the external
 display while the phone screen keeps running stock Android. Same kernel,
 same device, two simultaneous user-facing operating systems.
 
+![MaruOS: a single phone driving both a mobile Android UI and a Debian desktop on an attached monitor](https://maruos.com/assets/img/hero.598c5250.jpg)
+
 MaruOS is not a typical custom ROM and is interesting precisely because of
 how it departs from the template the rest of this chapter laid out. It is a
 useful end-of-chapter exhibit: an unusual but production-realised demonstration
