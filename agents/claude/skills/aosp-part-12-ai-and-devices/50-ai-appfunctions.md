@@ -2048,6 +2048,45 @@ new Computer Control agent:
   Control without a visible mirror is one the user is right to be
   suspicious of.
 
+How the Bonobo agent loop composes with the Computer Control API
+documented in this chapter. The agent itself is GMS-side; the framework
+on the right is AOSP.
+
+```mermaid
+sequenceDiagram
+    participant Bonobo as Bonobo agent in AGSA
+    participant Server as Gemini server
+    participant Session as ComputerControlSession (50.3.3)
+    participant Mirror as MirrorView in chat UI (50.3.5)
+
+    loop until task complete or HAND_OVER
+        Bonobo->>Session: getScreenshot
+        Session-->>Bonobo: PNG bytes
+        Bonobo->>Server: upload screenshot over ProcessQuery stream
+        Server-->>Bonobo: action TAP / SCROLL / GO_BACK / INSERT_TEXT / WAIT / HAND_OVER
+        alt action is HAND_OVER
+            Bonobo->>Session: handOverApplications
+        else other action
+            Bonobo->>Session: tap / swipe / insertText / performAction
+        end
+        Session->>Mirror: render updated frame
+        Mirror-->>Bonobo: optional user touch forwarded back
+    end
+```
+
+The loop terminates when the server responds with `HAND_OVER` or when the
+user takes manual control via the mirror. The action vocabulary
+(`TAP`, `SCROLL`, `GO_BACK`, `INSERT_TEXT`, `WAIT`, `HAND_OVER`) maps
+one-to-one onto the `ComputerControlSession` methods documented in 50.3.3
+and the navigation `performAction` codes — the agent does not synthesize
+inputs the framework does not expose, and every action the framework
+accepts can be issued by the agent. The bidirectional `ProcessQuery`
+stream is the gRPC channel the agent uses to upload screenshots and
+receive actions; that stream is GMS-side and not part of this checkout,
+but its shape matters because it explains the **server-driven** nature of
+the loop: the agent is a thin executor that asks the server what to do
+next after every observation.
+
 Beyond Gemini, Computer Control is shipping first on the highest-end Pixel
 and Galaxy devices and broadening as the feature flags above ramp. New
 consumers adopting Computer Control should expect the API surface to
