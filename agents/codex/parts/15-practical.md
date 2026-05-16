@@ -4592,10 +4592,14 @@ Three architectural points worth pulling out:
    space, listens for display-attach events, and uses ordinary Linux APIs
    to start the LXC container. It is *not* an in-container piece of code;
    the container only knows it's been booted.
-3. **Two SystemUIs.** The phone screen continues to render Android's
-   SystemUI on the internal display; the external display gets X11 with
-   Xfce (or whatever desktop the Debian image is configured with). The
-   user's phone is fully usable while the desktop is up.
+3. **Two displays, two owners.** The phone screen continues to render
+   Android's SystemUI on the internal display. The external display is
+   *not* running another Android UI — it is a presentation surface that
+   `SurfaceFlinger` hands off to the Linux side via mflinger (63.14.8),
+   so what the user sees on the monitor is rendered entirely by X.org and
+   the container's desktop environment (Xfce or whatever the Debian image
+   is configured with). The user's phone keeps running stock Android the
+   whole time the desktop is up.
 
 This is qualitatively different from "desktop mode" features built into
 stock Android (Samsung DeX, Android 12+'s windowing-on-external-display).
@@ -4622,7 +4626,7 @@ runs:
 | IPC namespaces | `CONFIG_IPC_NS=y` | Per-container System V IPC and POSIX message queues |
 | Cgroups | `CONFIG_CGROUPS=y` with memory, cpu, devices, freezer subsystems | Resource accounting and limits inside the container |
 | Seccomp | `CONFIG_SECCOMP_FILTER=y` | Lets LXC restrict the syscalls the container can make |
-| uinput | `CONFIG_INPUT_UINPUT=y` | Required by the input bridge (63.14.9) |
+| uinput (optional) | `CONFIG_INPUT_UINPUT=y` | Synthetic-injection path used by the input bridge when an event has to be rescaled across displays (63.14.9); not needed for the common case where each device is routed directly to one side |
 | Optional overlay FS | `CONFIG_OVERLAY_FS=y` | Layered container rootfs without full copies |
 
 The catch is `CONFIG_USER_NS`. Android's kernel teams historically disable
@@ -4641,8 +4645,9 @@ low-memory killer uses cgroup v2 memory controllers, seccomp filters are
 required by the Android sandbox, and namespaces are part of every modern
 Linux kernel's default configuration. So the kernel customization Maru
 needs is narrower than it first looks: enable `CONFIG_USER_NS`, confirm the
-remaining namespace and cgroup controllers are on, enable `CONFIG_INPUT_UINPUT`,
-and rebuild.
+remaining namespace and cgroup controllers are on, optionally enable
+`CONFIG_INPUT_UINPUT` if the synthetic-injection input path of 63.14.9 is
+wanted, and rebuild.
 
 This is why a Maru device build pulls a Maru-modified kernel from its
 `device_*` repos rather than reusing LineageOS's kernel as-is. Section 63.11
@@ -4849,10 +4854,12 @@ Android service that drives non-Android user-space resources.
 ### 63.14.8 mflinger and mclient: The Graphics Bridge
 
 When the X11 server inside the Debian container draws to its framebuffer,
-those pixels exist in the container's address space. Android's
-`SurfaceFlinger`, which composes the external display, knows nothing about
-that buffer. Some piece of software has to carry the bits from the
-container's world into Android's. That piece is **mflinger**.
+those pixels live in the container's address space — a different mount
+namespace, a different `/dev`, a different view of GPU memory. Android's
+`SurfaceFlinger`, which owns presentation on the external display, knows
+nothing about that buffer. Some piece of software has to bridge the two,
+and the design Maru uses for this bridge is unusually elegant: it makes
+the LXC namespace boundary effectively invisible to the GPU.
 
 mflinger lives in its own repository at <https://github.com/maruos/mflinger>,
 separate from `vendor_maruos`. The README is one line: *"Graphics buffer
@@ -4860,133 +4867,166 @@ bridge for Maru OS."* The codebase is C-dominant (~64% C, 21% C++) with
 `src/`, `include/`, `lib/`, `tests/`, and `scripts/` directories — the
 layout of a small Linux system service.
 
-The name signals the analogy. Android's `SurfaceFlinger` is the daemon that
-takes per-app graphics buffers and composes them onto the display; mflinger
-plays the equivalent role for the container, taking the X server's
-root-window buffer and getting it composed alongside whatever Android is
-putting on the external display.
+The name signals the analogy. Android's `SurfaceFlinger` is the consumer
+that takes per-producer graphics buffers — from apps, the camera HAL, video
+decoders, and so on — via the standard `ANativeWindow`/`BufferQueue`
+producer protocol and composes them onto the display. mflinger plays the
+*producer* role for the container's frames: it asks SurfaceFlinger for an
+`ANativeWindow`-backed Surface, hands the underlying buffer to Linux for
+direct rendering, and tells SurfaceFlinger when the buffer is ready to
+present.
 
 The mflinger architecture is split into two halves:
 
 - **mflinger** (the daemon, Android-side) runs as an Android user-space
-  service started by `init.maru.rc`. It exposes a socket or shared-memory
-  endpoint that the container side can connect to. On the Android side it
-  talks to the AOSP graphics stack — most naturally through gralloc/ASHMEM/
-  dma-buf — to materialize the container's pixels as a buffer that
-  SurfaceFlinger can composite.
-- **mclient** (the container-side client) is the corresponding piece that
-  ships inside the Debian rootfs. It captures the X11 root window's
-  contents and ships them across the bridge to mflinger on every frame. It
-  is the only Maru-aware code that needs to run *inside* the container; the
-  rest of Debian is unmodified.
+  service started by `init.maru.rc`. It creates an Android `Surface`
+  attached to the external display and uses the standard `ANativeWindow`
+  C API to dequeue `GraphicBuffer` slots. Each buffer is backed by a
+  gralloc allocation — typically a **dma-buf** on modern AOSP devices —
+  whose file descriptor mflinger can hand to a process in another
+  namespace.
+- **mclient** (the container-side client) ships inside the Debian rootfs.
+  It receives the dma-buf file descriptor from mflinger over a Unix
+  domain socket using `SCM_RIGHTS` ancillary data — the standard Linux
+  mechanism for passing a kernel-managed fd between processes. This
+  works across the LXC namespace boundary because the kernel
+  reference-counts the underlying object, not the path. mclient then
+  `mmap`s the dma-buf (or imports it via DRI3 as a pixmap) and exposes
+  the resulting memory region to X.org as the root window's backing
+  store.
 
-The split mirrors the standard client/server pattern of Android's own
-display stack. An app's `Surface`/`SurfaceTexture` is the client;
-`SurfaceFlinger` is the server. mflinger/mclient generalizes that pattern
-across the LXC boundary — the "app" in this case is the entire X server
-inside the container, and the "server" is mflinger, which then becomes one
-more client of Android's real `SurfaceFlinger` one level up.
+The pivotal fact: **X.org renders directly into the same physical GPU
+memory that SurfaceFlinger will present.** When the X server commits a
+frame, mclient tells mflinger the buffer is ready; mflinger calls
+`queueBuffer` on the `ANativeWindow`; SurfaceFlinger picks the buffer up,
+includes it in its next composition pass on the external display, and the
+user sees the desktop. There is no intermediate "container framebuffer"
+that gets copied across the boundary — the fd *is* the boundary, and the
+GPU memory is shared.
 
-The graphics bridge end-to-end.
+This is the same producer/consumer pattern Android uses internally for
+every camera, codec, and OpenGL surface; mflinger generalises it by
+handing the producer end to a process living in a different mount
+namespace.
+
+The graphics bridge per frame.
 
 ```mermaid
-flowchart LR
-    subgraph Container["LXC container (Debian rootfs)"]
-        XAPP["Xfce app<br/>(e.g. terminal)"]
-        XSRV["X.org server"]
-        MCLI["mclient<br/>(captures root window)"]
-    end
-    subgraph Android["Android user space"]
-        MFLN["mflinger daemon"]
-        GRAL["gralloc / ASHMEM / dma-buf"]
-        SF["SurfaceFlinger"]
-    end
-    DISP["External display<br/>USB-C / HDMI"]
+sequenceDiagram
+    participant SF as SurfaceFlinger
+    participant MF as mflinger (Android)
+    participant MC as mclient (container)
+    participant X as X.org server
+    participant XA as Xfce app
 
-    XAPP --> XSRV
-    XSRV --> MCLI
-    MCLI -->|"framebuffer over shared mem"| MFLN
-    MFLN --> GRAL
-    GRAL --> SF
-    SF --> DISP
+    Note over MF,SF: setup: mflinger creates a Surface for the external display
+    Note over MF,MC: setup: mclient connects over UDS for fd transfer
+
+    loop per frame
+        MF->>SF: dequeueBuffer via ANativeWindow
+        SF-->>MF: GraphicBuffer slot + dma-buf fd
+        MF->>MC: send fd over UDS (SCM_RIGHTS)
+        MC->>MC: mmap fd / import as DRI3 pixmap
+        MC->>X: expose as root-window backing store
+        XA->>X: draw request
+        X->>MC: render directly into shared buffer
+        MC-->>MF: frame complete
+        MF->>SF: queueBuffer
+        SF->>SF: composite onto external display
+    end
 ```
 
-The cost of this design is two compositions per frame: X.org composes the
-desktop into the container's framebuffer, then mflinger forwards it through
-gralloc to SurfaceFlinger, which composes again onto the physical display.
-On modern Pixel SoCs this is acceptable; on lower-power hardware the second
-composition pass becomes the limiting factor.
+Two consequences of this design worth pulling out:
+
+- **Zero-copy across the LXC boundary.** No pixel is ever transferred
+  between Android and container address spaces. Only file descriptors and
+  small protocol messages cross the bridge. The end-to-end cost is
+  bounded by GPU rendering, not by RAM bandwidth or namespace-crossing
+  overhead.
+- **One composition per frame.** Because X.org draws directly into the
+  buffer SurfaceFlinger will present, there is no separate "container
+  framebuffer → host framebuffer" composition step. The same number of
+  compositions happen as for any normal Android surface, which is why the
+  design scales to a 1920×1080 external monitor without becoming the
+  bottleneck on modest hardware.
 
 The Android-side SELinux policy in `vendor_maruos/sepolicy/` (63.14.11) is
-what permits the mflinger daemon to acquire gralloc buffers and bind to
-SurfaceFlinger's IPC; without those rules the daemon would be denied at
-process start. The bind-mount that exposes the mclient↔mflinger socket
-across the container boundary is set up by the container module in
-`vendor_maruos/container/` (63.14.5) when LXC starts.
+what permits mflinger to acquire `ANativeWindow` surfaces, talk to
+SurfaceFlinger over binder, and pass file descriptors out over its UDS;
+without those rules the daemon would be denied at process start. The
+bind-mount that exposes the mclient↔mflinger socket across the container
+boundary is set up by the container module in `vendor_maruos/container/`
+(63.14.5) when LXC starts.
 
 ### 63.14.9 Input Mapping Between Linux and Android
 
-The complement of the graphics bridge is the input bridge. Keyboard, mouse,
-and touch events that should drive the desktop arrive at Android's input
-layer (`InputDispatcher` in `system_server`; see chapter 22 for the AOSP
-input flow). They have to reach the X server inside the container, which
-expects them on `/dev/input/event*` nodes via the Linux evdev interface.
+The complement of the graphics bridge is the input bridge — but it is
+much smaller than the graphics bridge, and for the same architectural
+reason that the graphics bridge is small: Android and the LXC container
+share the same kernel.
 
-Maru's input bridge connects the two using the kernel's **uinput** driver.
-`uinput` is a Linux kernel module that lets user-space create *virtual*
-input devices that look to the rest of the kernel exactly like real evdev
-devices — keyboards, mice, touchscreens. Inside the container, the X server
-enumerates `/dev/input/event*` and finds these uinput-backed devices; from
-X's point of view they are indistinguishable from a real USB keyboard. The
-kernel-side dependency on `CONFIG_INPUT_UINPUT` (63.14.3) is exactly what
-makes this possible.
+Keyboard, mouse, and touch hardware lives in the kernel's input subsystem
+and is exposed through `/dev/input/event*` nodes. Because there is only
+one kernel, there is only one set of these nodes — there is not a separate
+"Linux input device" and "Android input device" pair per piece of
+hardware. Android's `InputReader` (inside `system_server`, see chapter 22)
+opens them through Android's `/dev/input/`. The container sees the same
+nodes through its own `/dev/input/` namespace, which Maru bind-mounts from
+the host at LXC startup. X.org inside the container reads them through
+the evdev input driver — the same evdev path X.org would use on a stock
+Debian desktop. There is no pixel copy because the GPU memory is shared,
+and there is no event copy because the kernel device nodes are shared.
 
-The flow, from a single keystroke on an externally-attached keyboard to a
-character appearing in an Xfce terminal:
+What the bridge actually does, then, is *route* — decide which side
+"owns" each device. The mechanisms are all standard Linux:
 
-1. **Android-side capture.** The Bluetooth/USB keyboard is enumerated by
-   Android's input subsystem. The perspective daemon (or a dedicated input
-   forwarder inside the daemon) listens for input events using the same
-   APIs as any other Android service — `InputDispatcher` registration for
-   the relevant device classes, or direct `evdev` reads on devices Android
-   has not claimed for itself.
-2. **Filtering.** Events targeted at the phone surface (touch on the
-   internal display, hardware buttons) stay with Android and reach the
-   foreground activity normally. Events that should drive the desktop
-   (external keyboard, external mouse, external touchscreen) are forwarded.
-3. **Container injection.** The forwarder opens `/dev/uinput` (bind-mounted
-   into the container's `/dev` by LXC) and writes the event as the standard
-   Linux `input_event` struct, with the appropriate `type`/`code`/`value`
-   fields.
-4. **Kernel echo.** The kernel's uinput driver re-emits the event on the
-   virtual device's `/dev/input/eventN` node *inside the container's mount
-   namespace*. The container sees a fresh event arrive on what looks like
-   any other input device.
-5. **X server pick-up.** X.org's evdev input driver, watching
-   `/dev/input/event*` inside the container, dispatches the event to the
-   focused X client (the Xfce window manager, then on to the focused app).
+1. **Device enumeration.** When a USB or Bluetooth keyboard, mouse, or
+   touchscreen is attached, the kernel creates `/dev/input/eventN`. The
+   `udev`-style hotplug events propagate to both Android's input layer
+   and (via the bind-mount) to the container.
+2. **Per-device ownership.** Maru's perspective daemon (63.14.7) decides
+   which side owns each device based on the active "perspective":
+   - The phone's internal touch panel always belongs to Android — those
+     touches need to drive SystemUI and apps on the internal display,
+     never the desktop.
+   - Hardware buttons (power, volume) always belong to Android.
+   - External USB/BT keyboards and mice typically belong to the desktop
+     when one is up, and to Android otherwise.
+   - An external touch monitor's input device belongs to the desktop
+     while the desktop is up.
+3. **Exclusivity via `EVIOCGRAB`.** When the owning side needs to be
+   the *only* reader of a device, the relevant process issues
+   `ioctl(fd, EVIOCGRAB, 1)` on the event node. Without that, evdev's
+   read path is multicast — every open file descriptor on the same
+   `/dev/input/eventN` receives every event — and Android and X.org
+   would both dispatch the same keystroke. With `EVIOCGRAB`, the kernel
+   delivers events only to the grabbing fd until the grab is released.
+4. **Coordinate translation for cross-display touch.** Touch events use
+   absolute coordinates scaled to the originating panel's resolution. A
+   touch on Android's internal 1080×1920 panel is meaningless to an X
+   server drawing on a 1920×1080 external monitor. The common case
+   doesn't hit this — the internal panel is owned by Android, the
+   external touch monitor is owned by the desktop. The uncommon case is
+   "use the phone screen as a touchpad for the desktop," where the
+   perspective daemon reads internal-panel events, rescales coordinates
+   into the desktop's space, and synthesises new events on a virtual
+   device. `CONFIG_INPUT_UINPUT` (63.14.3) is what enables this
+   synthetic-injection path. The common path does not need it.
 
-Coordinate mapping is the subtle part. Touch events use absolute coordinates
-scaled to the originating display's resolution. A touch on Android's
-internal 1080×1920 panel is meaningless to an X server drawing on a
-1920×1080 external monitor. The forwarder rescales touch coordinates into
-the desktop's coordinate space before injecting them, using the active
-"perspective" (63.14.7) to decide which display is the active input target.
-A swipe on the phone screen never lands in the X server because the phone
-screen is, by design, *not* the desktop's input target.
+The whole pipeline is invisible to both ends. Android's `InputReader`
+enumerates the devices it owns and dispatches normally; the container's
+X server enumerates the devices it owns and dispatches normally; only the
+perspective daemon in the middle knows which side currently owns what.
 
-Keystrokes and mouse buttons are simpler: keycode mapping between Android's
-`KeyEvent` constants (`KEYCODE_A`, `KEYCODE_ENTER`, etc.) and Linux's
-evdev codes (`KEY_A`, `KEY_ENTER`) is one-to-one for the standard set, with
-a few Android-specific keys (search, menu, recents) silently dropped
-because they have no meaningful X11 equivalent.
-
-The whole pipeline is invisible to both ends. Android sees a normal input
-device and dispatches normally; the container's X server sees a normal
-`/dev/input/event*` device and dispatches normally; only the perspective
-layer in the middle knows that the bridge exists. This is the value of
-the uinput design: it lets Maru reuse the entire X.org input plumbing
-unchanged, instead of writing an X11-protocol-level forwarder.
+The contrast with the graphics bridge is the architectural lesson here:
+when two user-space stacks share a kernel, anything the kernel already
+abstracts (input events, network sockets, fds, character devices) can be
+shared by routing instead of forwarding. Anything the kernel does *not*
+abstract (the GPU memory backing a Surface) has to be bridged with
+explicit fd-passing as in 63.14.8. Maru's input bridge stays small
+because the kernel does the work; the graphics bridge stays small
+because the bridge piggy-backs on the kernel's existing dma-buf
+fd-passing instead of inventing its own pixel transport.
 
 ### 63.14.10 Init and Boot Integration
 
