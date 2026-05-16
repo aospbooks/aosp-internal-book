@@ -2363,7 +2363,143 @@ if resourceApk != nil {
 }
 ```
 
-### 55.8.12  When to Use Ravenwood
+### 55.8.12  Host Graphics Stubs (libhostgraphics)
+
+Ravenwood (and other host-side framework tests) can compile and link against
+classes that internally call into `libhwui`, but `libhwui` was written to talk
+to a real `SurfaceFlinger`, a real `BufferQueue`, and a real `ANativeWindow`.
+On a host JVM running on a Linux/Mac/Windows workstation, none of those exist.
+`libhostgraphics` is the static C++ shim that lets `libhwui` build and link on
+the host by providing minimal, in-process replacements for the parts of the
+graphics stack it depends on.
+
+Source: `frameworks/base/libs/hostgraphics/` (~435 lines of C++ across five
+files, plus 12 header shims in `include/gui/` and `include/ui/`).
+
+The library is wired in as a static dependency under the `host:` target of
+`libhwui`'s `Android.bp`:
+
+```blueprint
+// Source: frameworks/base/libs/hwui/Android.bp:162
+host: {
+    static_libs: [
+        "libandroidfw",
+        "libhostgraphics",
+        "libutils",
+    ],
+},
+```
+
+This `static_libs` line is what makes "host hwui" possible. On a device,
+`libhwui` pulls in `libgui`, `libui`, `libnativewindow`, `libnativedisplay`,
+and `libsurfaceflinger`; on the host, those `shared_libs` entries are absent
+and `libhostgraphics` provides the symbols the host build needs.
+
+#### The five stub translation units
+
+| File | Lines | What it stubs |
+|------|-------|---------------|
+| `ANativeWindow.cpp` | 106 | The `ANativeWindow_*` C-API. Each function forwards directly to the underlying window's vtable (`window->perform`, `window->query`, `window->dequeueBuffer`, `incStrong`/`decStrong`) instead of going through `libnativewindow`. |
+| `HostBufferQueue.cpp` | 110 | A `HostBufferQueue` class that implements both `IGraphicBufferProducer` and `IGraphicBufferConsumer` over a single `GraphicBuffer`. `BufferQueue::createBufferQueue` returns the same object as both producer and consumer. |
+| `ADisplay.cpp` | 163 | A hardcoded 1080x1920@60 display config exposed through the `apex/display.h` `ADisplay_*` C-API. No HWC, no VSYNC offsets, no multi-display logic. |
+| `Fence.cpp` | 23 | Defines the `Fence::NO_FENCE` singleton, since `libui`'s `Fence.cpp` is not linked in. |
+| `PublicFormat.cpp` | 33 | No-op mapping functions between `PublicFormat`, HAL formats, and dataspaces (always returns the input value cast). |
+
+The interesting case is `HostBufferQueue`. On device, producer (the app/hwui
+side) and consumer (SurfaceFlinger or a `BufferItemConsumer`) live in different
+processes, communicate via Binder, and exchange a ring of slot-indexed buffers
+guarded by fences. On host, there is no producer/consumer separation and no
+double-buffering — `createBufferQueue` hands back the same object as both
+endpoints, and every "buffer" is the same `GraphicBuffer`:
+
+```cpp
+// Source: frameworks/base/libs/hostgraphics/HostBufferQueue.cpp:101
+void BufferQueue::createBufferQueue(sp<IGraphicBufferProducer>* outProducer,
+                                    sp<IGraphicBufferConsumer>* outConsumer,
+                                    bool consumerIsSurfaceFlinger) {
+    sp<HostBufferQueue> obj(new HostBufferQueue());
+    *outProducer = obj;
+    *outConsumer = obj;
+}
+```
+
+That collapse is intentional: host tests only need to verify that hwui *issued
+the right draw calls* against *some* buffer, not that the buffer survived a
+round trip through SurfaceFlinger. Skipping the producer/consumer protocol
+also avoids dragging in Binder, `libgui`, and the `libnativedisplay` HWC
+shims, all of which would need their own host stubs.
+
+#### The header shims
+
+The 12 headers under `include/gui/` and `include/ui/` are the other half of
+the trick. They are *not* the device headers — they are independent
+declarations with matching signatures (`Surface.h`, `BufferQueue.h`,
+`BufferItem.h`, `IGraphicBufferProducer.h`, `IGraphicBufferConsumer.h`,
+`ConsumerBase.h`, `BufferItemConsumer.h`, `Fence.h`, `GraphicBuffer.h`). The
+`libhostgraphics_headers` `cc_library_headers` exports them, and `libhwui`'s
+host target picks them up *instead of* the real `libgui_headers` /
+`libui_headers`. So hwui code like `Surface surf(producer);` compiles
+unchanged but resolves to the stub `Surface` class at link time.
+
+#### Device vs host hwui composition
+
+```mermaid
+flowchart LR
+    subgraph Device["Device build (libhwui)"]
+        DeviceHwui["libhwui"]
+        DeviceHwui --> Libgui["libgui<br/>(real BufferQueue,<br/>Binder, ashmem)"]
+        DeviceHwui --> Libui["libui<br/>(GraphicBuffer, Fence)"]
+        DeviceHwui --> Libnw["libnativewindow<br/>(ANativeWindow C-API)"]
+        DeviceHwui --> Libnd["libnativedisplay<br/>(ADisplay, HWC)"]
+        Libgui -.Binder.-> SF["surfaceflinger<br/>(separate process)"]
+    end
+    subgraph Host["Host build (libhwui on host JVM)"]
+        HostHwui["libhwui<br/>(same sources, recompiled)"]
+        HostHwui --> Stub["libhostgraphics<br/>(static, in-process)"]
+        Stub --> Single["one GraphicBuffer<br/>used by both ends"]
+        Stub --> Display["hardcoded<br/>1080x1920@60 display"]
+    end
+```
+
+The bottom row is the entire host graphics stack — no IPC, no separate
+process, no fence synchronization, one buffer that lives for the test's
+lifetime.
+
+#### Windows support
+
+`libhostgraphics` is one of the few framework host libraries explicitly
+enabled on Windows builds:
+
+```blueprint
+target: {
+    windows: {
+        enabled: true,
+    },
+},
+```
+
+That matters for SDK tools (`layoutlib`-style renderers, host APK build
+helpers) that need to link `libhwui` on a developer's Windows workstation.
+
+#### What you can't test with libhostgraphics
+
+Because the buffer is single-slot and the display is a fixed mock, host
+builds of hwui cannot exercise:
+
+- Real frame pacing or VSYNC-driven invalidation
+- Producer/consumer back-pressure (the host queue never blocks)
+- HDR / wide-color-gamut path selection (`PublicFormat` always returns the
+  raw cast)
+- HWC composition or display rotation
+- Fence-based GPU/CPU synchronization (`NO_FENCE` is the only fence that
+  ever exists)
+
+For those, you still need a device or an emulator. `libhostgraphics`'s job
+is only to keep the linker happy and let *unit* tests of hwui's algorithmic
+core (paint, canvas, font, hierarchy traversal) run on a developer laptop
+in milliseconds.
+
+### 55.8.13  When to Use Ravenwood
 
 Ravenwood is ideal for:
 
