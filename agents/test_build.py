@@ -21,7 +21,8 @@ class TestManifestParsing(unittest.TestCase):
     def test_load_manifest_total_chapter_count(self):
         m = load_manifest()
         total = sum(len(p.chapters) for p in m.parts)
-        self.assertEqual(total, 66, f"expected 66 chapter slugs, got {total}")
+        # 64 numbered chapters (00..63) + 3 lettered appendices (A, B, C).
+        self.assertEqual(total, 67, f"expected 67 chapter slugs, got {total}")
 
     def test_part_ids_are_zero_padded_two_digit_prefixed(self):
         m = load_manifest()
