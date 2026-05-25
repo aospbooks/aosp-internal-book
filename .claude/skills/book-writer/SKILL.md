@@ -1,6 +1,9 @@
 ---
 name: book-writer
 description: Patterns for writing technical book chapters in Markdown with Mermaid diagrams, served via MkDocs. Use this skill whenever writing, editing, reviewing, adding, removing, or renaming book chapters, organizing multi-chapter content, fixing Mermaid rendering issues, or changing the book's structure. Also triggers when updating mkdocs.yml, docs/ symlinks, or navigation — even if the user just says "add a chapter" or "reorganize sections" without mentioning MkDocs.
+metadata:
+  author: 'utzcoz'
+  last-updated: '2026-05-25'
 ---
 
 # Book Writer
