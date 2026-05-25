@@ -1,6 +1,6 @@
 {
   "name": "aosp-internals",
-  "version": "2026.05.11",
+  "version": "2026.05.25",
   "description": "AOSP Internals book content (64 chapters + 2 appendices) packaged as 16 Part-skills.",
   "homepage": "https://aospbooks.github.io/aosp-internal-book/",
   "repository": "https://github.com/aospbooks/aosp-internal-book"

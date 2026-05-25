@@ -45,22 +45,22 @@ Copy the `.github/` tree into your project root:
 
 | Skill | Part | Title | Chapters |
 |-------|------|-------|----------|
-| `aosp-part-01-getting-started` | I | Getting Started | 0–3 |
-| `aosp-part-02-kernel-and-boot` | II | Kernel & Boot | 4–6 |
-| `aosp-part-03-native-foundation` | III | Native Foundation | 7–11 |
-| `aosp-part-04-native-services-and-media` | IV | Native Services & Media | 12–17 |
-| `aosp-part-05-runtime` | V | Runtime | 18–19 |
-| `aosp-part-06-framework-core` | VI | Framework Core | 20–25 |
-| `aosp-part-07-framework-services` | VII | Framework Services | 26–34 |
-| `aosp-part-08-connectivity` | VIII | Connectivity | 35–39 |
-| `aosp-part-09-security` | IX | Security | 40–42 |
-| `aosp-part-10-ui-framework` | X | UI Framework | 43–46 |
-| `aosp-part-11-system-apps` | XI | System Apps | 47–49 |
-| `aosp-part-12-ai-and-devices` | XII | AI & Devices | 50–51 |
-| `aosp-part-13-infrastructure` | XIII | Infrastructure | 52–56 |
-| `aosp-part-14-device-support` | XIV | Device Support | 57–62 |
-| `aosp-part-15-practical` | XV | Practical | 63 |
-| `aosp-part-16-appendices` | App. | Appendices | A, B, C |
+| `aosp-part-getting-started` | I | Getting Started | 0–3 |
+| `aosp-part-kernel-and-boot` | II | Kernel & Boot | 4–6 |
+| `aosp-part-native-foundation` | III | Native Foundation | 7–11 |
+| `aosp-part-native-services-and-media` | IV | Native Services & Media | 12–17 |
+| `aosp-part-runtime` | V | Runtime | 18–19 |
+| `aosp-part-framework-core` | VI | Framework Core | 20–25 |
+| `aosp-part-framework-services` | VII | Framework Services | 26–34 |
+| `aosp-part-connectivity` | VIII | Connectivity | 35–39 |
+| `aosp-part-security` | IX | Security | 40–42 |
+| `aosp-part-ui-framework` | X | UI Framework | 43–46 |
+| `aosp-part-system-apps` | XI | System Apps | 47–49 |
+| `aosp-part-ai-and-devices` | XII | AI & Devices | 50–51 |
+| `aosp-part-infrastructure` | XIII | Infrastructure | 52–56 |
+| `aosp-part-device-support` | XIV | Device Support | 57–62 |
+| `aosp-part-practical` | XV | Practical | 63 |
+| `aosp-part-appendices` | App. | Appendices | A, B, C |
 
 ## Maintenance (for contributors to this repo)
 
@@ -79,8 +79,11 @@ If you change which Part owns which chapter (or rename a chapter), edit
 `agents/_content/manifest.toml` first, then regenerate.
 
 If you add a new Part or significantly retitle one, edit the corresponding
-`agents/_content/parts/<NN>-<slug>/SKILL.md` (or create a new one), update
-`manifest.toml`, then regenerate.
+`agents/_content/parts/<slug>/SKILL.md` (or create a new one), update
+`manifest.toml`, then regenerate. `agents/build.py` enforces that the
+`name:` field of every source SKILL.md stays in sync with its Part id
+(`aosp-part-<slug>`); if you rename a Part it will be rewritten on the
+next build.
 
 See `agents/SPEC.md` for the full design and `agents/PLAN.md` for the
 step-by-step implementation history.

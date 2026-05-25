@@ -24,12 +24,17 @@ class TestManifestParsing(unittest.TestCase):
         # 64 numbered chapters (00..63) + 3 lettered appendices (A, B, C).
         self.assertEqual(total, 67, f"expected 67 chapter slugs, got {total}")
 
-    def test_part_ids_are_zero_padded_two_digit_prefixed(self):
+    def test_part_ids_are_kebab_case_slugs_without_numeric_prefix(self):
         m = load_manifest()
         for p in m.parts:
-            prefix = p.id.split("-", 1)[0]
-            self.assertEqual(len(prefix), 2, f"Part {p.id!r}: id prefix should be 2 chars")
-            self.assertTrue(prefix.isdigit(), f"Part {p.id!r}: id prefix should be digits")
+            self.assertRegex(
+                p.id, r"^[a-z][a-z0-9-]*$",
+                f"Part {p.id!r}: id should be a lowercase kebab-case slug with no numeric prefix",
+            )
+            self.assertFalse(
+                p.id[:1].isdigit(),
+                f"Part {p.id!r}: id should not start with a digit",
+            )
 
 
 class TestChapterValidation(unittest.TestCase):
@@ -43,7 +48,7 @@ class TestChapterValidation(unittest.TestCase):
         from build import validate_chapters, Manifest, Part
         bogus = Manifest(
             name="x", version="0", repo_url="", site_url="", description="",
-            parts=[Part(id="01-x", roman="I", title="X",
+            parts=[Part(id="x", roman="I", title="X",
                         chapters=["99-does-not-exist"])],
         )
         with self.assertRaises(FileNotFoundError):
@@ -52,7 +57,7 @@ class TestChapterValidation(unittest.TestCase):
 
 class TestSkillParsing(unittest.TestCase):
     SAMPLE = """---
-name: aosp-part-02-kernel-and-boot
+name: aosp-part-kernel-and-boot
 description: |
   AOSP Part II — Kernel & Boot. Use when reasoning about Android's bootloader
   handoff, init.rc / first-stage init / second-stage init.
@@ -66,7 +71,7 @@ Body content here.
     def test_parse_skill_extracts_name_and_description(self):
         from build import parse_skill
         meta, body = parse_skill(self.SAMPLE)
-        self.assertEqual(meta["name"], "aosp-part-02-kernel-and-boot")
+        self.assertEqual(meta["name"], "aosp-part-kernel-and-boot")
         self.assertIn("init.rc", meta["description"])
         self.assertTrue(meta["description"].startswith("AOSP Part II"))
         self.assertTrue(body.startswith("# AOSP Part II"))
@@ -79,7 +84,7 @@ Body content here.
     def test_load_part_skills_returns_one_per_part(self):
         from build import load_part_skills, load_manifest
         m = load_manifest()
-        skills = load_part_skills(m)
+        skills = load_part_skills(m, normalize=False)
         self.assertEqual(set(skills.keys()), {p.id for p in m.parts})
         for part_id, (meta, body) in skills.items():
             self.assertIn("name", meta, f"Part {part_id} SKILL.md missing 'name'")
@@ -96,7 +101,7 @@ class TestClaudeGenerator(unittest.TestCase):
     def test_generate_claude_writes_plugin_json_and_16_skills(self):
         from build import generate_claude, load_manifest, load_part_skills
         m = load_manifest()
-        skills = load_part_skills(m)
+        skills = load_part_skills(m, normalize=False)
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
             generate_claude(m, skills, out)
@@ -127,7 +132,7 @@ class TestGeminiGenerator(unittest.TestCase):
     def test_generate_gemini_writes_extension_manifest_routing_and_part_files(self):
         from build import generate_gemini, load_manifest, load_part_skills
         m = load_manifest()
-        skills = load_part_skills(m)
+        skills = load_part_skills(m, normalize=False)
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
             generate_gemini(m, skills, out)
@@ -158,7 +163,7 @@ class TestCodexGenerator(unittest.TestCase):
     def test_generate_codex_writes_agents_md_and_part_files(self):
         from build import generate_codex, load_manifest, load_part_skills
         m = load_manifest()
-        skills = load_part_skills(m)
+        skills = load_part_skills(m, normalize=False)
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
             generate_codex(m, skills, out)
@@ -182,7 +187,7 @@ class TestCopilotGenerator(unittest.TestCase):
     def test_generate_copilot_writes_top_level_pointer_and_per_part_instructions(self):
         from build import generate_copilot, load_manifest, load_part_skills
         m = load_manifest()
-        skills = load_part_skills(m)
+        skills = load_part_skills(m, normalize=False)
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
             generate_copilot(m, skills, out)

@@ -31,7 +31,7 @@ MANIFEST_PATH = CONTENT_DIR / "manifest.toml"
 @dataclass(frozen=True)
 class Part:
     """One Part-skill entry from the manifest."""
-    id: str          # e.g. "02-kernel-and-boot"
+    id: str          # e.g. "kernel-and-boot"
     roman: str       # e.g. "II"
     title: str       # e.g. "Kernel & Boot"
     chapters: list[str]  # chapter slugs, e.g. ["04-boot-and-init", ...]
@@ -138,19 +138,71 @@ def parse_skill(text: str) -> tuple[dict[str, str], str]:
     return meta, body
 
 
+def serialize_skill(meta: dict[str, str], body: str) -> str:
+    """Serialize parsed SKILL.md frontmatter + body back to text.
+
+    Mirrors the format produced by generate_claude so that source files
+    rewritten by normalization stay byte-identical to a freshly generated
+    SKILL.md (avoids spurious diffs when --check runs).
+    """
+    return (
+        "---\n"
+        f"name: {meta['name']}\n"
+        "description: |\n"
+        + "".join(f"  {line}\n" for line in meta["description"].split("\n"))
+        + "---\n\n"
+        + body
+    )
+
+
 def part_skill_path(part_id: str) -> Path:
     """Path to a Part's hand-written SKILL.md."""
     return CONTENT_DIR / "parts" / part_id / "SKILL.md"
 
 
-def load_part_skills(manifest: Manifest) -> dict[str, tuple[dict[str, str], str]]:
-    """Load every Part's SKILL.md, returning {part_id: (frontmatter, body)}."""
+def normalize_skill_name(
+    meta: dict[str, str],
+    part_id: str,
+) -> tuple[dict[str, str], bool]:
+    """Force `meta['name']` to match `aosp-part-<part_id>`.
+
+    Returns (new_meta, changed). The Part id (after dropping the legacy
+    NN- prefix in manifest.toml) is the canonical identifier; the source
+    SKILL.md frontmatter must agree with it so the skill name shown to
+    end-users matches the source directory and the generated skill
+    directory in agents/claude/skills/.
+    """
+    expected = claude_skill_slug(part_id)
+    if meta.get("name") == expected:
+        return meta, False
+    new_meta = dict(meta)
+    new_meta["name"] = expected
+    return new_meta, True
+
+
+def load_part_skills(
+    manifest: Manifest,
+    normalize: bool = True,
+) -> dict[str, tuple[dict[str, str], str]]:
+    """Load every Part's SKILL.md, returning {part_id: (frontmatter, body)}.
+
+    When normalize is True (normal build), the source SKILL.md is
+    rewritten with the canonical `name:` field whenever it drifts from
+    `aosp-part-<part_id>`. When normalize is False (--check), source
+    files are read but never modified.
+    """
     out: dict[str, tuple[dict[str, str], str]] = {}
     for part in manifest.parts:
         path = part_skill_path(part.id)
         if not path.is_file():
             raise FileNotFoundError(f"Missing SKILL.md for part {part.id}: {path}")
-        out[part.id] = parse_skill(path.read_text(encoding="utf-8"))
+        original = path.read_text(encoding="utf-8")
+        meta, body = parse_skill(original)
+        if normalize:
+            meta, changed = normalize_skill_name(meta, part.id)
+            if changed:
+                path.write_text(serialize_skill(meta, body), encoding="utf-8")
+        out[part.id] = (meta, body)
     return out
 
 
@@ -308,7 +360,7 @@ def generate_copilot(
         f"# {manifest.description}\n\n",
         f"> AOSP Internals Copilot bundle, packaged version {manifest.version}.\n",
         f"> Source: {manifest.repo_url}\n\n",
-        "Per-Part background lives in `.github/instructions/aosp-part-<NN>-<slug>.instructions.md`. ",
+        "Per-Part background lives in `.github/instructions/aosp-part-<slug>.instructions.md`. ",
         "Copilot loads each one based on its `applyTo` glob; the descriptions "
         "in those files mark which AOSP subsystem they cover.\n\n",
         "When asked about an AOSP subsystem, consult the Part whose description "
@@ -389,7 +441,10 @@ def main(argv: list[str] | None = None) -> int:
 
     manifest = load_manifest()
     validate_chapters(manifest)
-    skills = load_part_skills(manifest)
+    # In --check mode the script is read-only against source SKILL.md files;
+    # in a normal build, source `name:` fields are forced into sync with the
+    # manifest Part id (`aosp-part-<id>`).
+    skills = load_part_skills(manifest, normalize=not args.check)
 
     if args.check:
         with tempfile.TemporaryDirectory() as td:
