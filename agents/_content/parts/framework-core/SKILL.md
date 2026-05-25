@@ -12,6 +12,9 @@ description: |
   HDR, brightness, refresh-rate switching), or the View system (View
   hierarchy, measure/layout/draw, Canvas/RenderNode, hardware acceleration).
   Chapters 20–25.
+metadata:
+  author: 'utzcoz'
+  last-updated: '2026-05-25'
 ---
 
 # AOSP Part VI — Framework Core

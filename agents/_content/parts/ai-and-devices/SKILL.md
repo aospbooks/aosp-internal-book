@@ -6,6 +6,9 @@ description: |
   Computer Control flow, CompanionDeviceManager, or virtual devices
   (virtual displays/inputs/cameras for cross-device experiences).
   Chapters 50–51.
+metadata:
+  author: 'utzcoz'
+  last-updated: '2026-05-25'
 ---
 
 # AOSP Part XII — AI & Devices

@@ -8,6 +8,9 @@ description: |
   AccessibilityNodeInfo, TalkBack, magnification, Switch Access), or
   Internationalization (ICU, locale resolution, resource qualifier matching,
   RTL support, Unicode in AOSP). Chapters 43–46.
+metadata:
+  author: 'utzcoz'
+  last-updated: '2026-05-25'
 ---
 
 # AOSP Part X — UI Framework

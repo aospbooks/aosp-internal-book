@@ -7,6 +7,9 @@ description: |
   Android-specific subsystems (binder driver, ashmem→memfd, low-memory killer,
   PSI), vendor modules, or system properties (property_service, property
   contexts, ro/persist/sys/build prefixes). Chapters 4–6.
+metadata:
+  author: 'utzcoz'
+  last-updated: '2026-05-25'
 ---
 
 # AOSP Part II — Kernel & Boot

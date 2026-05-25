@@ -9,6 +9,9 @@ description: |
   Leanback, TIF, Wear OS specifics), Print Services (PrintManager, IPP,
   PDF generation), or the Camera2 pipeline (Camera2 API, CaptureRequest/Result,
   camera HAL3). Chapters 57–62.
+metadata:
+  author: 'utzcoz'
+  last-updated: '2026-05-25'
 ---
 
 # AOSP Part XIV — Device Support

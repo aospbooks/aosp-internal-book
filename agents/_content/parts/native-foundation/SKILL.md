@@ -8,6 +8,9 @@ description: |
   servicemanager, threadpool, death recipients), the HAL (Treble, HIDL→AIDL HAL
   migration, vendor/system split, hwservicemanager, VINTF), or the NDK (libandroid,
   JNI bindings, ABI compatibility). Chapters 7–11.
+metadata:
+  author: 'utzcoz'
+  last-updated: '2026-05-25'
 ---
 
 # AOSP Part III — Native Foundation

@@ -9,6 +9,9 @@ description: |
   pKVM, crosvm, microdroid), Testing (CTS/VTS/MTS, Tradefed, Ravenwood,
   atest, presubmit), or Debugging (Perfetto, atrace, simpleperf, heapprofd,
   logcat, dumpsys). Chapters 52–56.
+metadata:
+  author: 'utzcoz'
+  last-updated: '2026-05-25'
 ---
 
 # AOSP Part XIII — Infrastructure

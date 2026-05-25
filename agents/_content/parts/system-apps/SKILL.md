@@ -6,6 +6,9 @@ description: |
   Launcher3 (model loader, Recents/Overview, gesture nav, all-apps,
   predictions, work profile), or the Settings app (SettingsProvider,
   SettingsLib, search index, slice surface). Chapters 47–49.
+metadata:
+  author: 'utzcoz'
+  last-updated: '2026-05-25'
 ---
 
 # AOSP Part XI — System Apps

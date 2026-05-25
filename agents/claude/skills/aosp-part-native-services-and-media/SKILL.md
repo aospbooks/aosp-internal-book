@@ -10,6 +10,9 @@ description: |
   the media pipeline (MediaCodec, MediaExtractor, NuPlayer, codec2 HAL),
   or the sensor stack (SensorService, sensor HAL, batching, wake-up sensors).
   Chapters 12–17.
+metadata:
+  author: 'utzcoz'
+  last-updated: '2026-05-25'
 ---
 
 # AOSP Part IV — Native Services & Media

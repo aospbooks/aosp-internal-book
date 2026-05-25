@@ -81,6 +81,36 @@ Body content here.
         meta, _ = parse_skill(self.SAMPLE)
         self.assertFalse(meta["description"].endswith("\n\n"))
 
+    SAMPLE_WITH_METADATA = """---
+name: aosp-part-kernel-and-boot
+description: |
+  AOSP Part II — Kernel & Boot.
+metadata:
+  author: 'utzcoz'
+  last-updated: '2026-05-25'
+---
+
+Body.
+"""
+
+    def test_parse_skill_extracts_metadata_block(self):
+        from build import parse_skill
+        meta, _ = parse_skill(self.SAMPLE_WITH_METADATA)
+        self.assertEqual(meta["metadata"]["author"], "utzcoz")
+        self.assertEqual(meta["metadata"]["last-updated"], "2026-05-25")
+
+    def test_parse_skill_defaults_metadata_to_empty_dict_when_absent(self):
+        from build import parse_skill
+        meta, _ = parse_skill(self.SAMPLE)  # no metadata block
+        self.assertEqual(meta["metadata"], {})
+
+    def test_serialize_skill_round_trips_metadata(self):
+        from build import parse_skill, serialize_skill
+        meta, body = parse_skill(self.SAMPLE_WITH_METADATA)
+        # serialize -> parse should yield identical metadata
+        reparsed, _ = parse_skill(serialize_skill(meta, body))
+        self.assertEqual(reparsed["metadata"], meta["metadata"])
+
     def test_load_part_skills_returns_one_per_part(self):
         from build import load_part_skills, load_manifest
         m = load_manifest()
@@ -89,6 +119,15 @@ Body content here.
         for part_id, (meta, body) in skills.items():
             self.assertIn("name", meta, f"Part {part_id} SKILL.md missing 'name'")
             self.assertIn("description", meta, f"Part {part_id} SKILL.md missing 'description'")
+            self.assertIn("metadata", meta, f"Part {part_id} SKILL.md missing 'metadata'")
+            self.assertEqual(
+                meta["metadata"].get("author"), "utzcoz",
+                f"Part {part_id} SKILL.md metadata.author should be 'utzcoz'",
+            )
+            self.assertTrue(
+                meta["metadata"].get("last-updated"),
+                f"Part {part_id} SKILL.md missing metadata.last-updated",
+            )
             self.assertTrue(body.strip(), f"Part {part_id} SKILL.md has empty body")
 
 

@@ -7,6 +7,9 @@ description: |
   credential providers, passkeys/FIDO2, password and autofill integration,
   digital credentials), or DRM (MediaDrm framework, Widevine L1/L2/L3,
   OEMCrypto, license acquisition, secure decoder/display path). Chapters 40–42.
+metadata:
+  author: 'utzcoz'
+  last-updated: '2026-05-25'
 ---
 
 # AOSP Part IX — Security

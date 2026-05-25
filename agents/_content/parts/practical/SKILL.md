@@ -5,6 +5,9 @@ description: |
   ROM end-to-end: picking a target device, syncing source, applying vendor
   blobs, branding, building, flashing the resulting images, and shipping
   OTA updates on your own channel. Chapter 63 (Custom ROM Guide).
+metadata:
+  author: 'utzcoz'
+  last-updated: '2026-05-25'
 ---
 
 # AOSP Part XV — Practical

@@ -7,6 +7,9 @@ description: |
   meaning of an AOSP-specific acronym/term (Treble, VINTF, GKI, APEX, AIDL,
   HIDL, etc.). Reference material — load when you need a concrete path or
   a definition rather than narrative explanation.
+metadata:
+  author: 'utzcoz'
+  last-updated: '2026-05-25'
 ---
 
 # AOSP Internals — Appendices

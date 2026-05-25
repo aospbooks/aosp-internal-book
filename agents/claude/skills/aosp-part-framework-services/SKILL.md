@@ -15,6 +15,9 @@ description: |
   geofencing), or Storage (vold, StorageManagerService, scoped storage,
   FUSE/sdcardfs, MediaProvider, SAF, FBE, adoptable storage, SQLite,
   SharedPreferences). Chapters 26–34.
+metadata:
+  author: 'utzcoz'
+  last-updated: '2026-05-25'
 ---
 
 # AOSP Part VII — Framework Services

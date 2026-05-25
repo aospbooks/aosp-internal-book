@@ -5,6 +5,9 @@ description: |
   baseline profiles, GC, oat/vdex/odex files, class loaders, JNI bridge) or
   the Native Bridge (Berberis, Houdini, cross-architecture native code
   execution, intercepting libc/JNI calls). Chapters 18–19.
+metadata:
+  author: 'utzcoz'
+  last-updated: '2026-05-25'
 ---
 
 # AOSP Part V — Runtime

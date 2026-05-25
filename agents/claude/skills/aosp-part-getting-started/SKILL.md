@@ -7,6 +7,9 @@ description: |
   aconfig feature flags (build-time vs. runtime, release configs, ramp/cleanup
   workflows). Chapters 0–3 (Frontmatter, Introduction, Source Code & Build
   System, Feature Flags).
+metadata:
+  author: 'utzcoz'
+  last-updated: '2026-05-25'
 ---
 
 # AOSP Part I — Getting Started

@@ -80,10 +80,16 @@ If you change which Part owns which chapter (or rename a chapter), edit
 
 If you add a new Part or significantly retitle one, edit the corresponding
 `agents/_content/parts/<slug>/SKILL.md` (or create a new one), update
-`manifest.toml`, then regenerate. `agents/build.py` enforces that the
-`name:` field of every source SKILL.md stays in sync with its Part id
-(`aosp-part-<slug>`); if you rename a Part it will be rewritten on the
-next build.
+`manifest.toml`, then regenerate. `agents/build.py` enforces a few
+invariants on the source SKILL.md and rewrites the file in place if any
+drift:
+
+  * the `name:` field is forced to `aosp-part-<slug>`;
+  * `metadata.author` defaults to `utzcoz` when missing;
+  * `metadata.last-updated` is bumped to today's date.
+
+The `--check` mode used by CI is read-only and passes metadata through
+verbatim, so verification stays deterministic across days.
 
 See `agents/SPEC.md` for the full design and `agents/PLAN.md` for the
 step-by-step implementation history.

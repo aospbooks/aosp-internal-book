@@ -10,6 +10,9 @@ description: |
   NCI, tag dispatch, HCE, secure element, reader mode, NFC-F/V), or USB &
   ADB (USB gadget framework, host-mode USB, MTP/PTP, RNDIS tethering, adb
   daemon, adb over Wi-Fi). Chapters 35–39.
+metadata:
+  author: 'utzcoz'
+  last-updated: '2026-05-25'
 ---
 
 # AOSP Part VIII — Connectivity
