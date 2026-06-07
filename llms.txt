@@ -114,6 +114,7 @@ When using this site as background for AOSP work, prefer fetching the chapter th
 ## Part XV: Practical
 
 - [Chapter 63: Custom ROM Guide](https://aospbooks.github.io/aosp-internal-book/63-custom-rom/): step-by-step capstone — picking a device, syncing source, applying vendor blobs, branding, building, flashing, OTA channel
+- [Chapter 64: Running Windows Games on Android](https://aospbooks.github.io/aosp-internal-book/64-windows-games/): the GameNative/Winlator stack for Windows PC games on unrooted ARM Android — glibc rootfs and PRoot, bionic redirections, FEX and Box64 x86-64 translation with ARM64EC, Wine, DXVK/VKD3D to Vulkan via Turnip/Vortek, and PulseAudio to AAudio
 
 ## Appendices
 

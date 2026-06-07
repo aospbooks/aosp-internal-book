@@ -7,7 +7,7 @@ description: |
   OTA updates on your own channel. Chapter 63 (Custom ROM Guide).
 metadata:
   author: 'utzcoz'
-  last-updated: '2026-05-25'
+  last-updated: '2026-06-07'
 ---
 
 # AOSP Part XV — Practical

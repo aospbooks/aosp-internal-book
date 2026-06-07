@@ -13,7 +13,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 <!-- --8<-- [start:coverage] -->
 ## What This Book Covers
 
-64 chapters organized bottom-to-top through the Android architecture:
+65 chapters organized bottom-to-top through the Android architecture:
 
 | Part | Ch. | Topics |
 |------|-----|--------|
@@ -81,6 +81,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | XIV | 61 | Print Services |
 | XIV | 62 | Camera2 Pipeline |
 | XV | 63 | Custom ROM Guide (step-by-step) |
+| XV | 64 | Running Windows Games on Android |
 | App. | A | Key Files Reference |
 | App. | B | Glossary |
 | App. | C | Why Kotlin Isn't on the Public API |
@@ -104,7 +105,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 ./serve.sh epub      # build EPUB → site/aosp-internals.epub
 ```
 
-The `pdf` command stops any running server, then builds all 64 chapters into a
+The `pdf` command stops any running server, then builds all 65 chapters into a
 single PDF with rendered Mermaid diagrams (takes a while — uses Playwright/Chromium).
 
 The `epub` command works the same way, producing an EPUB3 file with rendered
@@ -153,7 +154,7 @@ Tests `mkdocs build` on push to `main` and PRs (~2 min).
 ## Project Structure
 
 ```
-[0-9]*.md                  64 chapter files
+[0-9]*.md                  65 chapter files
 A-appendix-key-files.md    Appendix A
 B-appendix-glossary.md     Appendix B
 index.md                   Website homepage

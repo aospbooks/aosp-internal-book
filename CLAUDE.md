@@ -1,6 +1,6 @@
 # AOSP Internals Book
 
-64 chapters + 2 appendices, ~227,000 lines, ~1,500 Mermaid diagrams.
+65 chapters + 3 appendices, ~227,000 lines, ~1,500 Mermaid diagrams.
 
 ## Quick Start
 

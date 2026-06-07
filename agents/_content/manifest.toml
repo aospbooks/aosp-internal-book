@@ -7,7 +7,7 @@ name = "aosp-internals"
 version = "2026.05.25"
 repo_url = "https://github.com/aospbooks/aosp-internal-book"
 site_url = "https://aospbooks.github.io/aosp-internal-book/"
-description = "AOSP Internals book content (64 chapters + 2 appendices) packaged as 16 Part-skills."
+description = "AOSP Internals book content (65 chapters + 3 appendices) packaged as 16 Part-skills."
 
 [[parts]]
 id = "getting-started"
@@ -97,7 +97,7 @@ chapters = ["57-architecture-support", "58-emulator", "59-device-policy", "60-au
 id = "practical"
 roman = "XV"
 title = "Practical"
-chapters = ["63-custom-rom"]
+chapters = ["63-custom-rom", "64-windows-games"]
 
 [[parts]]
 id = "appendices"

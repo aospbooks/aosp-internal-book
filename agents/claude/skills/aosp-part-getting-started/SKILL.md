@@ -9,7 +9,7 @@ description: |
   System, Feature Flags).
 metadata:
   author: 'utzcoz'
-  last-updated: '2026-05-25'
+  last-updated: '2026-06-07'
 ---
 
 # AOSP Part I — Getting Started
