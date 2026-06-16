@@ -45,22 +45,22 @@ Copy the `.github/` tree into your project root:
 
 | Skill | Part | Title | Chapters |
 |-------|------|-------|----------|
-| `aosp-part-getting-started` | I | Getting Started | 0–3 |
-| `aosp-part-kernel-and-boot` | II | Kernel & Boot | 4–6 |
-| `aosp-part-native-foundation` | III | Native Foundation | 7–11 |
-| `aosp-part-native-services-and-media` | IV | Native Services & Media | 12–17 |
-| `aosp-part-runtime` | V | Runtime | 18–19 |
-| `aosp-part-framework-core` | VI | Framework Core | 20–25 |
-| `aosp-part-framework-services` | VII | Framework Services | 26–34 |
-| `aosp-part-connectivity` | VIII | Connectivity | 35–39 |
-| `aosp-part-security` | IX | Security | 40–42 |
-| `aosp-part-ui-framework` | X | UI Framework | 43–46 |
-| `aosp-part-system-apps` | XI | System Apps | 47–49 |
-| `aosp-part-ai-and-devices` | XII | AI & Devices | 50–51 |
-| `aosp-part-infrastructure` | XIII | Infrastructure | 52–56 |
-| `aosp-part-device-support` | XIV | Device Support | 57–62 |
-| `aosp-part-practical` | XV | Practical | 63–64 |
-| `aosp-part-appendices` | App. | Appendices | A, B, C |
+| `aosp-getting-started` | I | Getting Started | 0–3 |
+| `aosp-kernel-and-boot` | II | Kernel & Boot | 4–6 |
+| `aosp-native-foundation` | III | Native Foundation | 7–11 |
+| `aosp-native-services-and-media` | IV | Native Services & Media | 12–17 |
+| `aosp-runtime` | V | Runtime | 18–19 |
+| `aosp-framework-core` | VI | Framework Core | 20–25 |
+| `aosp-framework-services` | VII | Framework Services | 26–34 |
+| `aosp-connectivity` | VIII | Connectivity | 35–39 |
+| `aosp-security` | IX | Security | 40–42 |
+| `aosp-ui-framework` | X | UI Framework | 43–46 |
+| `aosp-system-apps` | XI | System Apps | 47–49 |
+| `aosp-ai-and-devices` | XII | AI & Devices | 50–51 |
+| `aosp-infrastructure` | XIII | Infrastructure | 52–56 |
+| `aosp-device-support` | XIV | Device Support | 57–62 |
+| `aosp-practical` | XV | Practical | 63–64 |
+| `aosp-appendices` | App. | Appendices | A, B, C |
 
 ## Maintenance (for contributors to this repo)
 
@@ -84,7 +84,7 @@ If you add a new Part or significantly retitle one, edit the corresponding
 invariants on the source SKILL.md and rewrites the file in place if any
 drift:
 
-  * the `name:` field is forced to `aosp-part-<slug>`;
+  * the `name:` field is forced to `aosp-<slug>`;
   * `metadata.author` defaults to `utzcoz` when missing;
   * `metadata.last-updated` is bumped to today's date.
 

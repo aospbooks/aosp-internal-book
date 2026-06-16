@@ -223,7 +223,7 @@ def normalize_skill_metadata(
 ) -> tuple[dict, bool]:
     """Normalize SKILL.md frontmatter against canonical conventions.
 
-    Always enforces `meta['name'] = aosp-part-<part_id>` regardless of
+    Always enforces `meta['name'] = aosp-<part_id>` regardless of
     `normalize`, so the source slug, generated skill directory, and
     frontmatter never drift apart.
 
@@ -293,7 +293,7 @@ def _reset_dir(path: Path) -> None:
 
 def claude_skill_slug(part_id: str) -> str:
     """Skill directory name for a Part inside the Claude plugin."""
-    return f"aosp-part-{part_id}"
+    return f"aosp-{part_id}"
 
 
 def generate_claude(
@@ -430,7 +430,7 @@ def generate_copilot(
         f"# {manifest.description}\n\n",
         f"> AOSP Internals Copilot bundle, packaged version {manifest.version}.\n",
         f"> Source: {manifest.repo_url}\n\n",
-        "Per-Part background lives in `.github/instructions/aosp-part-<slug>.instructions.md`. ",
+        "Per-Part background lives in `.github/instructions/aosp-<slug>.instructions.md`. ",
         "Copilot loads each one based on its `applyTo` glob; the descriptions "
         "in those files mark which AOSP subsystem they cover.\n\n",
         "When asked about an AOSP subsystem, consult the Part whose description "
@@ -455,7 +455,7 @@ def generate_copilot(
             f"## Chapter content\n\n"
             f"{_concat_part(part)}"
         )
-        (inst_dir / f"aosp-part-{part.id}.instructions.md").write_text(
+        (inst_dir / f"aosp-{part.id}.instructions.md").write_text(
             front + body, encoding="utf-8"
         )
 
@@ -514,7 +514,7 @@ def main(argv: list[str] | None = None) -> int:
     # In --check mode the script is read-only against source SKILL.md files
     # and metadata is passed through verbatim (so the check stays
     # deterministic across days). In a normal build, source `name:` fields
-    # are forced into sync with the manifest Part id (`aosp-part-<id>`),
+    # are forced into sync with the manifest Part id (`aosp-<id>`),
     # `metadata.author` defaults to utzcoz if missing, and
     # `metadata.last-updated` is bumped to today.
     skills = load_part_skills(manifest, normalize=not args.check)

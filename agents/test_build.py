@@ -57,7 +57,7 @@ class TestChapterValidation(unittest.TestCase):
 
 class TestSkillParsing(unittest.TestCase):
     SAMPLE = """---
-name: aosp-part-kernel-and-boot
+name: aosp-kernel-and-boot
 description: |
   AOSP Part II — Kernel & Boot. Use when reasoning about Android's bootloader
   handoff, init.rc / first-stage init / second-stage init.
@@ -71,7 +71,7 @@ Body content here.
     def test_parse_skill_extracts_name_and_description(self):
         from build import parse_skill
         meta, body = parse_skill(self.SAMPLE)
-        self.assertEqual(meta["name"], "aosp-part-kernel-and-boot")
+        self.assertEqual(meta["name"], "aosp-kernel-and-boot")
         self.assertIn("init.rc", meta["description"])
         self.assertTrue(meta["description"].startswith("AOSP Part II"))
         self.assertTrue(body.startswith("# AOSP Part II"))
@@ -82,7 +82,7 @@ Body content here.
         self.assertFalse(meta["description"].endswith("\n\n"))
 
     SAMPLE_WITH_METADATA = """---
-name: aosp-part-kernel-and-boot
+name: aosp-kernel-and-boot
 description: |
   AOSP Part II — Kernel & Boot.
 metadata:
@@ -158,7 +158,7 @@ class TestClaudeGenerator(unittest.TestCase):
 
             # each skill dir contains SKILL.md plus the chapter copies
             for part in m.parts:
-                slug = f"aosp-part-{part.id}"
+                slug = f"aosp-{part.id}"
                 d = out / "skills" / slug
                 self.assertTrue((d / "SKILL.md").is_file(),
                                 f"missing SKILL.md in {slug}")
@@ -243,7 +243,7 @@ class TestCopilotGenerator(unittest.TestCase):
             self.assertEqual(len(inst_files), 16)
 
             for part in m.parts:
-                f = inst_dir / f"aosp-part-{part.id}.instructions.md"
+                f = inst_dir / f"aosp-{part.id}.instructions.md"
                 self.assertTrue(f.is_file(), f"missing {f.name}")
                 txt = f.read_text()
                 # Front matter must include applyTo (Copilot's targeting key).
