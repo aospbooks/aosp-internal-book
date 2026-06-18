@@ -21,10 +21,6 @@ dist/
 # Superpowers session artifacts (specs + plans; not part of book content)
 .superpowers/
 
-# Manifest snapshot comparison reports (generated on demand; data, not source)
-/manifest-snapshots/_compare/
-/manifest-snapshots/_history/
-
 # OS
 .DS_Store
 Thumbs.db
