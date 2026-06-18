@@ -132,13 +132,13 @@ Open **http://localhost:8000** — chapters in the sidebar, Mermaid renders live
 
 ## AOSP Manifest Snapshots
 
-A companion tool captures point-in-time, fully-pinned `repo manifest` snapshots of the AOSP source tree and diffs two of them into a per-project commit-list Markdown report grouped by module group. Useful for "what changed between two AOSP releases."
+A companion tool captures point-in-time, fully-pinned `repo manifest` snapshots of the AOSP source tree and diffs two of them into four branch-named files: a Markdown navigator, a kernel-changelog of per-repository commits, an added/removed-projects file with full history, and an LLM analysis prompt. Shallow (`clone-depth`) and ignore-globbed projects are skipped. Useful for "what changed between two AOSP releases."
 
 ```bash
 # Take a snapshot (resolves every <project> to a HEAD SHA, prompts for label/notes)
 python3 tools/manifest_snapshot.py snap --aosp-root /path/to/aosp
 
-# Compare two snapshots → manifest-snapshots/_compare/<A>__vs__<B>.md
+# Compare two snapshots → four files in manifest-snapshots/_compare/<A>__vs__<B>.{report.md,changes.txt,added-removed.txt,analysis-prompt.txt}
 python3 tools/manifest_snapshot.py compare \
     manifest-snapshots/<branch>/<date-A> \
     manifest-snapshots/<branch>/<date-B> \

@@ -23,6 +23,7 @@ dist/
 
 # Manifest snapshot comparison reports (generated on demand; data, not source)
 /manifest-snapshots/_compare/
+/manifest-snapshots/_history/
 
 # OS
 .DS_Store

@@ -11,7 +11,11 @@ manifest-snapshots/
       manifest.xml                     # pinned manifest from `repo manifest -r`
       metadata.json                    # timestamp, branch, repo version, optional label/notes
   _compare/                            # comparison reports (cross-branch capable)
-    <A-branch>_<A-date>__vs__<B-branch>_<B-date>.md
+    <A>__vs__<B>.report.md             # navigator: summary, groups, skipped
+    <A>__vs__<B>.changes.txt           # kernel-changelog of moved-project commits
+    <A>__vs__<B>.added-removed.txt     # added/removed projects, full history
+    <A>__vs__<B>.analysis-prompt.txt   # LLM prompt framing the changelog
+  ignore-globs.txt                     # paths to skip in compare (supplements shallow detection)
   README.md                            # this file
 ```
 
@@ -43,13 +47,18 @@ python3 tools/manifest_snapshot.py compare \
     manifest-snapshots/android17-release/2026-09-01
 ```
 
-The report is written to `manifest-snapshots/_compare/<A>__vs__<B>.md`. Use `--out FILE` to send it elsewhere. The report contains:
+Writes four files to `manifest-snapshots/_compare/`, each prefixed with `<branchA>_<dateA>__vs__<branchB>_<dateB>`:
 
-- A summary table (added / removed / moved / unchanged project counts; total commits across moved projects)
-- A per-module-group section: every moved project appears under **every group** its manifest entry lists, with the `git log --oneline --no-merges old..new` output inline plus a Googlesource compare link
-- Added/Removed tables at the bottom
+- `<KEY>.report.md` — navigator: summary counts, moved projects grouped by module group (commit counts + links, no inline commits), the skipped-project list, and added/removed summary tables.
+- `<KEY>.changes.txt` — kernel-changelog-style aggregate of every moved project's commits as `<full-sha> <subject>` (`git log --no-merges --pretty=oneline old..new`).
+- `<KEY>.added-removed.txt` — projects added or removed between the versions, each with full inline history (fallback Googlesource link if objects are gone).
+- `<KEY>.analysis-prompt.txt` — a prompt that frames the changelog for an LLM.
 
-Commit lists come from the local `.repo/projects/<path>.git/` object stores via read-only `git log` — no network access. If either SHA is unreachable locally (e.g., comparing very old snapshots after a `repo gc`), the project's commit list is replaced with a link to the Googlesource compare page.
+Use `--out-dir DIR` to change where the files land.
+
+**Skipped projects.** Shallow projects (manifest `clone-depth`, or a live `.repo/projects/<path>.git/shallow` marker) can't be diffed across a branch switch, so they're listed under "Skipped" rather than run through `git log`. Add path globs to `manifest-snapshots/ignore-globs.txt` (or pass `--ignore-glob GLOB`, repeatable) to skip more. `--no-skip-shallow` disables the automatic shallow detection; `--ignore-file PATH` points at a different glob file.
+
+Commit lists come from the local `.repo/projects/<path>.git/` object stores via read-only `git log` — no network access. If a SHA is unreachable locally (e.g., comparing very old snapshots after a `repo gc`), that project's entry degrades to a Googlesource compare link.
 
 ## The read-only guarantee
 

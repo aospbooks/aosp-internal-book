@@ -1,0 +1,8 @@
+# Ignore globs for `manifest_snapshot.py compare` (path patterns, fnmatch).
+# One glob per line; blank lines and lines starting with '#' are ignored.
+# These supplement automatic shallow detection (clone-depth + .git/shallow);
+# list full-depth projects here that you still never want to diff.
+prebuilts/*
+*/prebuilts/*
+toolchain/*
+*/toolchain/*

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import fnmatch
 import json
 import os
 import re
@@ -101,6 +102,7 @@ class Project:
     revision: str
     groups: tuple[str, ...]
     remote: str
+    clone_depth: str | None = None
 
 
 @dataclass(frozen=True)
@@ -111,6 +113,59 @@ class Snapshot:
     default_revision: str
     default_remote: str
     projects: dict[str, Project]
+
+
+@dataclass(frozen=True)
+class CompareCtx:
+    a_branch: str
+    a_date: str
+    b_branch: str
+    b_date: str
+    generated: str
+    changes_file: str = ""
+    added_removed_file: str = ""
+
+
+@dataclass(frozen=True)
+class MovedEntry:
+    name: str
+    path: str
+    groups: tuple[str, ...]
+    old_sha: str
+    new_sha: str
+    commits: list[str] | None   # None => SHAs unreachable locally
+    url: str                    # googlesource +log/old..new
+
+
+@dataclass(frozen=True)
+class SkippedEntry:
+    name: str
+    path: str
+    old_sha: str | None
+    new_sha: str | None
+    reason: str
+
+
+@dataclass(frozen=True)
+class SideEntry:                # an added or removed project
+    name: str
+    path: str
+    groups: tuple[str, ...]
+    sha: str
+    side: str                   # "added" or "removed"
+    history: list[str] | None   # None => unreachable; ignored if reason set
+    url: str
+    reason: str | None          # skip reason, or None
+
+
+@dataclass(frozen=True)
+class HistoryEntry:              # one repo's full history for a single version
+    name: str
+    path: str
+    groups: tuple[str, ...]
+    sha: str
+    commits: list[str] | None    # None => SHA unreachable locally
+    url: str
 
 
 def parse_manifest(xml_text: str) -> tuple[str, str, dict[str, Project]]:
@@ -130,9 +185,10 @@ def parse_manifest(xml_text: str) -> tuple[str, str, dict[str, Project]]:
         remote = el.get("remote") or default_remote
         groups_raw = el.get("groups") or ""
         groups = tuple(g for g in (s.strip() for s in groups_raw.split(",")) if g)
+        clone_depth = el.get("clone-depth")
         projects[name] = Project(
             name=name, path=path, revision=revision,
-            groups=groups, remote=remote,
+            groups=groups, remote=remote, clone_depth=clone_depth,
         )
     return default_rev, default_remote, projects
 
@@ -170,8 +226,9 @@ def group_projects(names: list[str], projects: dict[str, Project]) -> dict[str, 
 
 
 def commits_between(git_dir: Path, old: str, new: str) -> list[str] | None:
-    """Return `git log --oneline --no-merges <old>..<new>` as a list of lines,
-    or None if the git dir is missing or either SHA is unreachable.
+    """Return `git log --no-merges --pretty=oneline <old>..<new>` as a list of
+    lines (full SHA + subject), or None if the git dir is missing or either SHA
+    is unreachable.
 
     Strictly read-only: only invokes `git log`.
     """
@@ -179,8 +236,25 @@ def commits_between(git_dir: Path, old: str, new: str) -> list[str] | None:
     if not git_dir.exists():
         return None
     proc = subprocess.run(
-        ["git", f"--git-dir={git_dir}", "log", "--oneline", "--no-merges",
-         f"{old}..{new}"],
+        ["git", f"--git-dir={git_dir}", "log", "--no-merges",
+         "--pretty=oneline", f"{old}..{new}"],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    return [line for line in proc.stdout.split("\n") if line.strip()]
+
+
+def full_history(git_dir: Path, sha: str) -> list[str] | None:
+    """Return `git log --no-merges --pretty=oneline <sha>` lines (full history
+    reachable from `sha`), or None if the git dir is missing or `sha` is
+    unreachable. Strictly read-only: only invokes `git log`."""
+    git_dir = Path(git_dir)
+    if not git_dir.exists():
+        return None
+    proc = subprocess.run(
+        ["git", f"--git-dir={git_dir}", "log", "--no-merges",
+         "--pretty=oneline", sha],
         capture_output=True, text=True,
     )
     if proc.returncode != 0:
@@ -204,6 +278,60 @@ def googlesource_url(project_name: str, old: str | None, new: str | None) -> str
     if old:
         return f"{GOOGLESOURCE}/{project_name}/+/{old}"
     raise ValueError("googlesource_url needs at least one of old/new")
+
+
+def googlesource_log_url(project_name: str, sha: str) -> str:
+    """Googlesource +log link for browsing a project's history up to one SHA."""
+    return f"{GOOGLESOURCE}/{project_name}/+log/{sha}"
+
+
+def load_ignore_globs(ignore_file: Path | None, cli_globs: list[str]) -> list[str]:
+    """Merge ignore globs from a file (one per line, '#' comments and blank
+    lines skipped, surrounding whitespace stripped) with CLI-supplied globs.
+    Order is preserved (file first, then CLI); duplicates removed."""
+    globs: list[str] = []
+    if ignore_file and Path(ignore_file).is_file():
+        for raw in Path(ignore_file).read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if line and not line.startswith("#"):
+                globs.append(line)
+    globs.extend(cli_globs or [])
+    seen: set[str] = set()
+    out: list[str] = []
+    for g in globs:
+        if g not in seen:
+            seen.add(g)
+            out.append(g)
+    return out
+
+
+def skip_reason(
+    proj_a: "Project | None",
+    proj_b: "Project | None",
+    aosp_root: Path,
+    ignore_globs: list[str],
+    skip_shallow: bool = True,
+) -> str | None:
+    """Return a reason string if this project should be skipped, else None.
+
+    Order (first match wins): ignore-glob on the project path; then, when
+    `skip_shallow`, a `clone-depth` attribute on either snapshot's entry; then
+    a live `.repo/projects/<path>.git/shallow` marker."""
+    proj = proj_b or proj_a
+    if proj is None:
+        return None
+    path = proj.path
+    for pat in ignore_globs:
+        if fnmatch.fnmatch(path, pat):
+            return f"glob:{pat}"
+    if skip_shallow:
+        for p in (proj_a, proj_b):
+            if p is not None and p.clone_depth:
+                return f"clone-depth={p.clone_depth}"
+        marker = Path(aosp_root) / ".repo" / "projects" / f"{path}.git" / "shallow"
+        if marker.is_file():
+            return "shallow-marker"
+    return None
 
 
 REPO_VERSION_RE = re.compile(r"(?:repo launcher version|repo version)\s+(\S+)")
@@ -332,102 +460,193 @@ def _short(sha: str) -> str:
     return sha[:12] if sha else "<missing>"
 
 
-def render_compare(a: Snapshot, b: Snapshot, cls: dict, commit_data: dict,
-                   a_key: str, b_key: str) -> str:
-    """Render the Markdown comparison report.
+_SEP = "=" * 64
+_SUB = "-" * 64
 
-    commit_data[name] is a tuple `(commits, fallback_url)`:
-      - commits: list[str] | None  (None means no local data; use fallback_url)
-      - fallback_url: str | None
-    Present only for `moved` projects.
-    """
-    lines: list[str] = []
-    now = _dt.datetime.now(_dt.timezone.utc).isoformat()
-    lines.append(f"# Manifest comparison: {a.default_revision} @ {a.snap_dir.name}  →  "
-                 f"{b.default_revision} @ {b.snap_dir.name}")
-    lines.append("")
-    lines.append(f"Generated: {now}")
-    lines.append("")
-    lines.append("| Side | Snapshot | Label | Notes |")
-    lines.append("|---|---|---|---|")
-    for side, snap in (("A", a), ("B", b)):
-        label = snap.metadata.get("label") or "—"
-        notes = (snap.metadata.get("notes") or "").splitlines()
-        notes_first = notes[0] if notes else "—"
-        lines.append(f"| {side} | `{snap.snap_dir}` | {label} | {notes_first} |")
-    lines.append("")
 
-    # Summary.
-    total_commits = sum(
-        len(commit_data.get(n, (None, None))[0] or [])
-        for n in cls["moved"]
-    )
-    lines.append("## Summary")
-    lines.append("| Category | Count |")
-    lines.append("|---|---|")
-    lines.append(f"| Added projects | {len(cls['added'])} |")
-    lines.append(f"| Removed projects | {len(cls['removed'])} |")
-    lines.append(f"| Moved projects (SHA changed) | {len(cls['moved'])} |")
-    lines.append(f"| Unchanged projects | {len(cls['unchanged'])} |")
-    lines.append(f"| Total commits across all moved projects (deduplicated) | {total_commits} |")
-    lines.append("")
-
-    # By module group: every moved project appears under every group it lists.
-    lines.append("## By module group")
-    lines.append("")
-    grouped = group_projects(cls["moved"], b.projects)  # use B-side groups
-    for group_name, names in grouped.items():
-        lines.append(f"### Group: {group_name}")
-        lines.append(f"*{len(names)} project(s) changed in this group.*")
+def render_changes_txt(ctx: CompareCtx, moved: list[MovedEntry], counts: dict) -> str:
+    """Kernel-changelog-style aggregate of every moved project's commits."""
+    lines: list[str] = [
+        f"AOSP changes: {ctx.a_branch} @ {ctx.a_date}  ->  {ctx.b_branch} @ {ctx.b_date}",
+        f"Generated: {ctx.generated}",
+        (f"Moved: {counts['moved']}   Skipped (shallow/ignored): {counts['skipped']}"
+         f"   Added: {counts['added']}   Removed: {counts['removed']}"),
+        "",
+    ]
+    for m in moved:
+        lines.append(_SEP)
+        lines.append(f"{m.path}   ({m.name})")
+        if m.commits is None:
+            lines.append(f"old {m.old_sha}  ->  new {m.new_sha}")
+            lines.append(_SUB)
+            lines.append(f"# unreachable locally; see {m.url}")
+        else:
+            n = len(m.commits)
+            lines.append(f"old {m.old_sha}  ->  new {m.new_sha}"
+                         f"   ({n} commit{'s' if n != 1 else ''})")
+            lines.append(_SUB)
+            lines.extend(m.commits)
         lines.append("")
-        for name in names:
-            proj_b = b.projects[name]
-            proj_a = a.projects.get(name)
-            other_groups = tuple(g for g in proj_b.groups if g != group_name)
-            also = (", ".join(other_groups) or "<none>")
-            lines.append(f"#### {name}  (also in: {also})")
-            old_rev = proj_a.revision if proj_a else None
-            new_rev = proj_b.revision
-            commits, fallback_url = commit_data.get(name, (None, None))
-            lines.append(f"- path: `{proj_b.path}`")
-            n_commits = len(commits) if commits is not None else 0
-            lines.append(f"- old: `{_short(old_rev or '')}`  →  new: `{_short(new_rev)}`"
-                         f"  ({n_commits} commit{'s' if n_commits != 1 else ''})")
-            compare = googlesource_url(name, old_rev, new_rev)
-            lines.append(f"- Compare: <{compare}>")
-            if commits is None:
-                lines.append(f"- [local git missing one or both SHAs; see compare link]")
-                if fallback_url:
-                    lines.append(f"- Fallback: <{fallback_url}>")
+    return "\n".join(lines) + "\n"
+
+
+def render_added_removed_txt(ctx: CompareCtx, added: list[SideEntry],
+                             removed: list[SideEntry]) -> str:
+    """Added/removed projects, each with full inline history (or a reason /
+    fallback line). One file covering both sides."""
+    lines: list[str] = [
+        f"AOSP added/removed projects: {ctx.a_branch} @ {ctx.a_date}"
+        f"  ->  {ctx.b_branch} @ {ctx.b_date}",
+        f"Generated: {ctx.generated}",
+        "",
+    ]
+    for title, entries in (("ADDED", added), ("REMOVED", removed)):
+        lines.append("#" * 64)
+        lines.append(f"## {title} ({len(entries)})")
+        lines.append("#" * 64)
+        lines.append("")
+        for e in entries:
+            groups = ", ".join(e.groups) if e.groups else "<none>"
+            lines.append(_SEP)
+            lines.append(f"{e.path}   ({e.name})")
+            lines.append(f"side: {e.side}   sha: {e.sha}   groups: {groups}")
+            lines.append(f"link: {e.url}")
+            if e.reason:
+                lines.append(f"skipped ({e.reason}); history omitted")
+            elif e.history is None:
+                lines.append(f"# unreachable locally; see {e.url}")
             else:
-                lines.append("")
-                lines.append("  ```")
-                for c in commits:
-                    lines.append(f"  {c}")
-                lines.append("  ```")
+                lines.append(_SUB)
+                lines.extend(e.history)
             lines.append("")
+    return "\n".join(lines) + "\n"
 
-    # Added / Removed tables.
-    def _row(p: Project, sha: str) -> str:
-        groups = ", ".join(p.groups) if p.groups else "—"
-        return f"| {p.name} | `{p.path}` | `{_short(sha)}` | {groups} |"
 
-    lines.append("## Added projects")
-    lines.append("| Name | Path | At SHA | Groups |")
+def _group_moved(moved: list[MovedEntry]) -> dict[str, list[MovedEntry]]:
+    """Bucket moved entries under every group they declare (UNGROUPED if none).
+    Groups sorted alphabetically; entries within a group sorted by path."""
+    buckets: dict[str, list[MovedEntry]] = {}
+    for m in moved:
+        for g in (list(m.groups) if m.groups else [UNGROUPED]):
+            buckets.setdefault(g, []).append(m)
+    return {g: sorted(buckets[g], key=lambda e: e.path) for g in sorted(buckets)}
+
+
+def render_report_md(ctx: CompareCtx, moved: list[MovedEntry],
+                     skipped: list[SkippedEntry], added: list[SideEntry],
+                     removed: list[SideEntry], counts: dict) -> str:
+    """Human navigator: summary, moved-by-group (counts + links, no inline
+    commits), skipped list, and added/removed summary tables."""
+    lines: list[str] = [
+        f"# Manifest comparison: {ctx.a_branch} @ {ctx.a_date}"
+        f"  ->  {ctx.b_branch} @ {ctx.b_date}",
+        "",
+        f"Generated: {ctx.generated}",
+        "",
+        "## Summary",
+        "| Category | Count |",
+        "|---|---|",
+        f"| Moved (SHA changed) | {counts['moved']} |",
+        f"| Added | {counts['added']} |",
+        f"| Removed | {counts['removed']} |",
+        f"| Unchanged | {counts['unchanged']} |",
+        f"| Skipped (shallow/ignored) | {counts['skipped']} |",
+        f"| Total commits across moved projects | {counts['total_commits']} |",
+        "",
+        f"Per-project commit lists: `{ctx.changes_file}`. "
+        f"Added/removed histories: `{ctx.added_removed_file}`.",
+        "",
+        "## Moved projects by module group",
+        "",
+    ]
+    for group_name, entries in _group_moved(moved).items():
+        lines.append(f"### Group: {group_name}")
+        lines.append(f"*{len(entries)} project(s) changed in this group.*")
+        lines.append("")
+        lines.append("| Project | Path | old to new | Commits | Compare |")
+        lines.append("|---|---|---|---|---|")
+        for m in entries:
+            ncol = str(len(m.commits)) if m.commits is not None else "unreachable"
+            lines.append(
+                f"| {m.name} | `{m.path}` | `{_short(m.old_sha)}` to "
+                f"`{_short(m.new_sha)}` | {ncol} | <{m.url}> |")
+        lines.append("")
+
+    lines.append("## Skipped projects (shallow / ignored)")
+    lines.append("| Project | Path | old to new | Reason |")
     lines.append("|---|---|---|---|")
-    for n in cls["added"]:
-        p = b.projects[n]
-        lines.append(_row(p, p.revision))
-    lines.append("")
-    lines.append("## Removed projects")
-    lines.append("| Name | Path | Was at SHA | Groups |")
-    lines.append("|---|---|---|---|")
-    for n in cls["removed"]:
-        p = a.projects[n]
-        lines.append(_row(p, p.revision))
+    for s in skipped:
+        lines.append(
+            f"| {s.name} | `{s.path}` | `{_short(s.old_sha or '')}` to "
+            f"`{_short(s.new_sha or '')}` | {s.reason} |")
     lines.append("")
 
-    return "\n".join(lines)
+    for title, entries in (("Added", added), ("Removed", removed)):
+        lines.append(f"## {title} projects")
+        lines.append("| Project | Path | SHA | Groups |")
+        lines.append("|---|---|---|---|")
+        for e in entries:
+            groups = ", ".join(e.groups) if e.groups else "-"
+            lines.append(f"| {e.name} | `{e.path}` | `{_short(e.sha)}` | {groups} |")
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def render_analysis_prompt(ctx: CompareCtx, counts: dict) -> str:
+    """A ready-to-paste prompt that frames the changelog files for an LLM."""
+    return (
+        "You are analyzing what changed in AOSP between two release snapshots.\n"
+        f"  A: {ctx.a_branch} @ {ctx.a_date}\n"
+        f"  B: {ctx.b_branch} @ {ctx.b_date}\n\n"
+        f"Scope: {counts['moved']} projects changed "
+        f"({counts['total_commits']} commits total), {counts['added']} added, "
+        f"{counts['removed']} removed, {counts['skipped']} skipped "
+        "(shallow/vendored, not analyzable).\n\n"
+        "Inputs (read these sibling files):\n"
+        f"  - {ctx.changes_file}: per-repository commit lists (full SHA + subject),\n"
+        "    one section per project, ordered by path.\n"
+        f"  - {ctx.added_removed_file}: full history of added and removed projects.\n\n"
+        "Task:\n"
+        "  1. Summarize the notable changes per subsystem / module group.\n"
+        "  2. Call out new capabilities, removed or deprecated components, and any\n"
+        "     large refactors (projects with unusually high commit counts).\n"
+        "  3. List the added and removed projects and infer why they appeared or\n"
+        "     disappeared between the two versions.\n"
+        "Cite the project paths and commit subjects you rely on.\n"
+    )
+
+
+def render_history_txt(branch: str, date: str, generated: str,
+                       entries: list[HistoryEntry], skipped: list[SkippedEntry],
+                       counts: dict) -> str:
+    """Kernel-changelog-style full per-repo history for a single version."""
+    lines: list[str] = [
+        f"AOSP history: {branch} @ {date}",
+        f"Generated: {generated}",
+        (f"Repositories: {counts['repos']}   "
+         f"Skipped (shallow/ignored): {counts['skipped']}   "
+         f"Total commits: {counts['total_commits']}"),
+        "",
+    ]
+    if skipped:
+        lines.append("## Skipped (shallow/ignored)")
+        for s in skipped:
+            lines.append(f"{s.path}   {s.reason}")
+        lines.append("")
+    for e in entries:
+        lines.append(_SEP)
+        lines.append(f"{e.path}   ({e.name})")
+        if e.commits is None:
+            lines.append(f"sha {e.sha}")
+            lines.append(_SUB)
+            lines.append(f"# unreachable locally; see {e.url}")
+        else:
+            n = len(e.commits)
+            lines.append(f"sha {e.sha}   ({n} commit{'s' if n != 1 else ''})")
+            lines.append(_SUB)
+            lines.extend(e.commits)
+        lines.append("")
+    return "\n".join(lines) + "\n"
 
 
 def load_snapshot(snap_dir: Path) -> Snapshot:
@@ -452,6 +671,34 @@ def _snap_key(snap: Snapshot) -> str:
     return f"{snap.default_revision}_{snap.snap_dir.name}"
 
 
+def compare_key(a: Snapshot, b: Snapshot) -> str:
+    """Filename-safe key identifying a comparison: <A>__vs__<B> where each side
+    is `<branch>_<snapshot-date>`."""
+    return f"{_snap_key(a)}__vs__{_snap_key(b)}"
+
+
+def _side_entries(names: list[str], snap: Snapshot, aosp_root: Path,
+                  ignore_globs: list[str], skip_shallow: bool,
+                  side: str) -> list[SideEntry]:
+    """Build SideEntry records (full history unless skipped/unreachable) for the
+    added (side='added', uses B snapshot) or removed (side='removed', uses A)
+    projects."""
+    out: list[SideEntry] = []
+    for name in names:
+        p = snap.projects[name]
+        url = googlesource_log_url(name, p.revision)
+        reason = skip_reason(p, p, aosp_root, ignore_globs, skip_shallow)
+        history = None
+        if reason is None:
+            git_dir = aosp_root / ".repo" / "projects" / f"{p.path}.git"
+            history = full_history(git_dir, p.revision)
+        out.append(SideEntry(name=name, path=p.path, groups=p.groups,
+                             sha=p.revision, side=side, history=history,
+                             url=url, reason=reason))
+    out.sort(key=lambda e: e.path)
+    return out
+
+
 def cmd_compare(args) -> int:
     a = load_snapshot(Path(args.a))
     b = load_snapshot(Path(args.b))
@@ -459,27 +706,126 @@ def cmd_compare(args) -> int:
         flag=args.aosp_root, env=os.environ.get("AOSP_ROOT"), start=Path.cwd(),
     )
     cls = classify(a.projects, b.projects)
+    ignore_globs = load_ignore_globs(
+        Path(args.ignore_file) if args.ignore_file else None,
+        args.ignore_glob or [],
+    )
+    skip_shallow = not args.no_skip_shallow
 
-    commit_data: dict[str, tuple[list[str] | None, str | None]] = {}
+    moved: list[MovedEntry] = []
+    skipped: list[SkippedEntry] = []
+    total_commits = 0
     for name in cls["moved"]:
-        proj_b = b.projects[name]
-        proj_a = a.projects[name]
-        git_dir = aosp_root / ".repo" / "projects" / f"{proj_b.path}.git"
-        commits = commits_between(git_dir, proj_a.revision, proj_b.revision)
-        fallback = googlesource_url(name, proj_a.revision, proj_b.revision)
-        commit_data[name] = (commits, fallback if commits is None else None)
+        pa, pb = a.projects[name], b.projects[name]
+        reason = skip_reason(pa, pb, aosp_root, ignore_globs, skip_shallow)
+        if reason:
+            skipped.append(SkippedEntry(name, pb.path, pa.revision,
+                                        pb.revision, reason))
+            continue
+        git_dir = aosp_root / ".repo" / "projects" / f"{pb.path}.git"
+        commits = commits_between(git_dir, pa.revision, pb.revision)
+        if commits is not None:
+            total_commits += len(commits)
+        moved.append(MovedEntry(
+            name=name, path=pb.path, groups=pb.groups,
+            old_sha=pa.revision, new_sha=pb.revision, commits=commits,
+            url=googlesource_url(name, pa.revision, pb.revision),
+        ))
+    moved.sort(key=lambda m: m.path)
+    skipped.sort(key=lambda s: s.path)
 
-    a_key = _snap_key(a)
-    b_key = _snap_key(b)
-    report = render_compare(a, b, cls, commit_data, a_key=a_key, b_key=b_key)
+    added = _side_entries(cls["added"], b, aosp_root, ignore_globs,
+                          skip_shallow, "added")
+    removed = _side_entries(cls["removed"], a, aosp_root, ignore_globs,
+                            skip_shallow, "removed")
 
-    if args.out:
-        out_path = Path(args.out)
-    else:
-        out_path = Path("manifest-snapshots") / "_compare" / f"{a_key}__vs__{b_key}.md"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(report)
-    print(f"Wrote {out_path!s}")
+    counts = {
+        "moved": len(moved), "skipped": len(skipped),
+        "added": len(added), "removed": len(removed),
+        "unchanged": len(cls["unchanged"]), "total_commits": total_commits,
+    }
+
+    key = compare_key(a, b)
+    out_dir = (Path(args.out_dir) if args.out_dir
+               else Path("manifest-snapshots") / "_compare")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ctx = CompareCtx(
+        a_branch=a.default_revision, a_date=a.snap_dir.name,
+        b_branch=b.default_revision, b_date=b.snap_dir.name,
+        generated=_dt.datetime.now(_dt.timezone.utc).isoformat(),
+        changes_file=f"{key}.changes.txt",
+        added_removed_file=f"{key}.added-removed.txt",
+    )
+    (out_dir / f"{key}.report.md").write_text(
+        render_report_md(ctx, moved, skipped, added, removed, counts))
+    (out_dir / f"{key}.changes.txt").write_text(
+        render_changes_txt(ctx, moved, counts))
+    (out_dir / f"{key}.added-removed.txt").write_text(
+        render_added_removed_txt(ctx, added, removed))
+    (out_dir / f"{key}.analysis-prompt.txt").write_text(
+        render_analysis_prompt(ctx, counts))
+    print(f"Wrote 4 files to {out_dir!s} (prefix {key})")
+    return 0
+
+
+def cmd_history(args, *, now=None) -> int:
+    now = now if now is not None else _dt.datetime.now(_dt.timezone.utc)
+    aosp_root = resolve_aosp_root(
+        flag=args.aosp_root, env=os.environ.get("AOSP_ROOT"), start=Path.cwd(),
+    )
+    if shutil.which("repo") is None:
+        print("`repo` command not found. Install the AOSP repo launcher and re-run.",
+              file=sys.stderr)
+        return 3
+    try:
+        proc = subprocess.run(
+            ["repo", "manifest", "-r", "--pretty"],
+            cwd=str(aosp_root), capture_output=True, text=True,
+        )
+    except FileNotFoundError as e:
+        print(f"failed to run repo: {e}", file=sys.stderr)
+        return 3
+    if proc.returncode != 0:
+        print(proc.stderr, file=sys.stderr)
+        print("`repo manifest -r` failed.", file=sys.stderr)
+        return 4
+    default_rev, _remote, projects = parse_manifest(proc.stdout)
+
+    ignore_globs = load_ignore_globs(
+        Path(args.ignore_file) if args.ignore_file else None,
+        args.ignore_glob or [],
+    )
+    skip_shallow = not args.no_skip_shallow
+
+    entries: list[HistoryEntry] = []
+    skipped: list[SkippedEntry] = []
+    total_commits = 0
+    for name in sorted(projects, key=lambda n: projects[n].path):
+        p = projects[name]
+        reason = skip_reason(p, p, aosp_root, ignore_globs, skip_shallow)
+        if reason:
+            skipped.append(SkippedEntry(name, p.path, p.revision, None, reason))
+            continue
+        git_dir = aosp_root / ".repo" / "projects" / f"{p.path}.git"
+        commits = full_history(git_dir, p.revision)
+        if commits is not None:
+            total_commits += len(commits)
+        entries.append(HistoryEntry(
+            name=name, path=p.path, groups=p.groups, sha=p.revision,
+            commits=commits, url=googlesource_log_url(name, p.revision),
+        ))
+    skipped.sort(key=lambda s: s.path)
+
+    counts = {"repos": len(projects), "skipped": len(skipped),
+              "total_commits": total_commits}
+    date = now.date().isoformat()
+    out_dir = (Path(args.out_dir) if args.out_dir
+               else Path("manifest-snapshots") / "_history")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{default_rev}_{date}.history.txt"
+    out_path.write_text(render_history_txt(
+        default_rev, date, now.isoformat(), entries, skipped, counts))
+    print(f"Wrote {out_path!s} ({len(entries)} repos logged, {len(skipped)} skipped)")
     return 0
 
 
@@ -510,10 +856,38 @@ def build_parser() -> argparse.ArgumentParser:
     cmp.add_argument("--aosp-root", default=None,
                      help="path to AOSP checkout (containing .repo/projects/)")
     cmp.add_argument(
-        "--out", default=None,
-        help="path to write the Markdown report "
-             "(default: manifest-snapshots/_compare/<A>__vs__<B>.md)",
+        "--out-dir", default=None,
+        help="directory for the four <KEY>.* output files "
+             "(default: manifest-snapshots/_compare/)",
     )
+    cmp.add_argument(
+        "--ignore-glob", action="append", default=[], metavar="GLOB",
+        help="path glob for projects to skip; repeatable",
+    )
+    cmp.add_argument(
+        "--ignore-file", default="manifest-snapshots/ignore-globs.txt",
+        help="file of ignore globs (one per line, '#' comments); "
+             "missing file is fine",
+    )
+    cmp.add_argument(
+        "--no-skip-shallow", action="store_true",
+        help="don't auto-skip clone-depth / shallow-marker projects",
+    )
+
+    hist = sub.add_parser(
+        "history", help="dump full per-repo commit history of one version")
+    hist.add_argument("--aosp-root", default=None,
+                      help="path to AOSP checkout (containing .repo/)")
+    hist.add_argument("--out-dir", default=None,
+                      help="directory for the <branch>_<date>.history.txt file "
+                           "(default: manifest-snapshots/_history/)")
+    hist.add_argument("--ignore-glob", action="append", default=[], metavar="GLOB",
+                      help="path glob for projects to skip; repeatable")
+    hist.add_argument("--ignore-file", default="manifest-snapshots/ignore-globs.txt",
+                      help="file of ignore globs (one per line, '#' comments); "
+                           "missing file is fine")
+    hist.add_argument("--no-skip-shallow", action="store_true",
+                      help="don't auto-skip clone-depth / shallow-marker projects")
 
     return p
 
@@ -525,6 +899,8 @@ def main(argv=None) -> int:
         return cmd_snap(args)
     if args.cmd == "compare":
         return cmd_compare(args)
+    if args.cmd == "history":
+        return cmd_history(args)
     parser.error(f"unknown command: {args.cmd}")
 
 

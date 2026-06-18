@@ -19,6 +19,32 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
+def make_git_dir(git_dir: Path, subjects: list[str]) -> list[str]:
+    """Create a real git repo whose git-dir is exactly `git_dir` and add one
+    empty commit per subject (oldest first). Returns full SHAs in that order.
+    Used to exercise the read-only `git log` helpers offline."""
+    git_dir = Path(git_dir)
+    work = git_dir.parent / (git_dir.name + ".work")
+    git_dir.mkdir(parents=True, exist_ok=True)
+    work.mkdir(parents=True, exist_ok=True)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@t",
+    }
+    def git(*a):
+        return subprocess.run(
+            ["git", f"--git-dir={git_dir}", f"--work-tree={work}", *a],
+            check=True, env=env, capture_output=True, text=True,
+        )
+    git("init", "-q", "-b", "main")
+    shas: list[str] = []
+    for subj in subjects:
+        git("commit", "--allow-empty", "-q", "-m", subj)
+        shas.append(git("rev-parse", "HEAD").stdout.strip())
+    return shas
+
+
 class TestCLIScaffolding(unittest.TestCase):
     def test_module_imports(self):
         import manifest_snapshot  # noqa: F401
@@ -160,6 +186,21 @@ class TestParseManifest(unittest.TestCase):
         _, _, projects = parse_manifest(self.SAMPLE)
         self.assertEqual(projects["platform/build"].revision,
                          "abc1234abc1234abc1234abc1234abc1234abc12")
+
+    def test_clone_depth_parsed(self):
+        from manifest_snapshot import parse_manifest
+        xml = (
+            '<manifest>'
+            '  <remote name="aosp" fetch=".."/>'
+            '  <default revision="r" remote="aosp"/>'
+            '  <project name="full" path="full" revision="1111111111111111111111111111111111111111"/>'
+            '  <project name="shallow" path="shallow" clone-depth="1"'
+            '           revision="2222222222222222222222222222222222222222"/>'
+            '</manifest>'
+        )
+        _, _, projects = parse_manifest(xml)
+        self.assertIsNone(projects["full"].clone_depth)
+        self.assertEqual(projects["shallow"].clone_depth, "1")
 
 
 class TestValidateMetadata(unittest.TestCase):
@@ -488,7 +529,7 @@ class TestCommitsBetween(unittest.TestCase):
         def fake_run(argv, **kwargs):
             argv = list(argv)
             self.assertIn("log", argv)
-            self.assertIn("--oneline", argv)
+            self.assertIn("--pretty=oneline", argv)
             self.assertIn("--no-merges", argv)
             return mock.Mock(returncode=0,
                              stdout="ccc333 Third\nbbb222 Second\naaa111 First\n",
@@ -567,6 +608,23 @@ class TestCommitsBetween(unittest.TestCase):
                          f"forbidden git subcommand in {seen[0]!r}")
 
 
+class TestCommitsBetweenFullSha(unittest.TestCase):
+    def test_lines_start_with_40_char_sha(self):
+        from manifest_snapshot import commits_between
+        if shutil.which("git") is None:
+            self.skipTest("git not available")
+        with tempfile.TemporaryDirectory() as td:
+            gd = Path(td) / "r.git"
+            shas = make_git_dir(gd, ["c1", "c2", "c3"])
+            out = commits_between(gd, shas[0], shas[2])
+            self.assertEqual(len(out), 2)  # c2, c3 (old excluded)
+            for line in out:
+                sha, _, subj = line.partition(" ")
+                self.assertEqual(len(sha), 40, f"not a full sha: {line!r}")
+                self.assertTrue(subj)
+            self.assertTrue(any(l.endswith("c3") for l in out))
+
+
 class TestGooglesourceUrl(unittest.TestCase):
     def test_moved(self):
         from manifest_snapshot import googlesource_url
@@ -590,76 +648,354 @@ class TestGooglesourceUrl(unittest.TestCase):
         )
 
 
-class TestRenderCompare(unittest.TestCase):
-    def _make_snap(self, branch: str, date: str, projects: dict) -> "Snapshot":
+class TestFullHistory(unittest.TestCase):
+    def test_lists_all_reachable_commits(self):
+        from manifest_snapshot import full_history
+        if shutil.which("git") is None:
+            self.skipTest("git not available")
+        with tempfile.TemporaryDirectory() as td:
+            gd = Path(td) / "r.git"
+            shas = make_git_dir(gd, ["a", "b", "c"])
+            out = full_history(gd, shas[2])
+            self.assertEqual(len(out), 3)
+            for line in out:
+                self.assertEqual(len(line.partition(" ")[0]), 40)
+
+    def test_none_for_missing_dir(self):
+        from manifest_snapshot import full_history
+        self.assertIsNone(full_history(Path("/no/such.git"), "deadbeef"))
+
+    def test_none_for_bad_sha(self):
+        from manifest_snapshot import full_history
+        if shutil.which("git") is None:
+            self.skipTest("git not available")
+        with tempfile.TemporaryDirectory() as td:
+            gd = Path(td) / "r.git"
+            make_git_dir(gd, ["a"])
+            self.assertIsNone(full_history(gd, "f" * 40))
+
+
+class TestGooglesourceLogUrl(unittest.TestCase):
+    def test_builds_log_url(self):
+        from manifest_snapshot import googlesource_log_url
+        self.assertEqual(
+            googlesource_log_url("platform/new", "abc123"),
+            "https://android.googlesource.com/platform/new/+log/abc123",
+        )
+
+
+class TestLoadIgnoreGlobs(unittest.TestCase):
+    def test_merges_file_and_cli_dedup_order_preserved(self):
+        from manifest_snapshot import load_ignore_globs
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "ig.txt"
+            f.write_text("# comment line\nprebuilts/*\n\n  */toolchain/*  \n")
+            out = load_ignore_globs(f, ["extra/*", "prebuilts/*"])
+            self.assertEqual(out, ["prebuilts/*", "*/toolchain/*", "extra/*"])
+
+    def test_missing_file_returns_cli_only(self):
+        from manifest_snapshot import load_ignore_globs
+        self.assertEqual(load_ignore_globs(Path("/no/such.txt"), ["a/*"]), ["a/*"])
+
+    def test_none_file_and_no_cli_returns_empty(self):
+        from manifest_snapshot import load_ignore_globs
+        self.assertEqual(load_ignore_globs(None, []), [])
+
+
+class TestSkipReason(unittest.TestCase):
+    def _p(self, path, clone_depth=None):
+        from manifest_snapshot import Project
+        return Project(name=path, path=path, revision="r", groups=(),
+                       remote="aosp", clone_depth=clone_depth)
+
+    def test_glob_match_wins(self):
+        from manifest_snapshot import skip_reason
+        p = self._p("prebuilts/clang")
+        self.assertEqual(
+            skip_reason(p, p, Path("/tmp"), ["prebuilts/*"]), "glob:prebuilts/*")
+
+    def test_clone_depth_either_side(self):
+        from manifest_snapshot import skip_reason
+        a = self._p("x", clone_depth="1")
+        b = self._p("x")
+        self.assertEqual(skip_reason(a, b, Path("/tmp"), []), "clone-depth=1")
+        self.assertEqual(skip_reason(b, a, Path("/tmp"), []), "clone-depth=1")
+
+    def test_shallow_marker(self):
+        from manifest_snapshot import skip_reason
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            marker = root / ".repo" / "projects" / "x.git" / "shallow"
+            marker.parent.mkdir(parents=True)
+            marker.write_text("")
+            p = self._p("x")
+            self.assertEqual(skip_reason(None, p, root, []), "shallow-marker")
+
+    def test_none_when_full_depth_and_no_glob(self):
+        from manifest_snapshot import skip_reason
+        p = self._p("x")
+        self.assertIsNone(skip_reason(p, p, Path("/tmp"), []))
+
+    def test_no_skip_shallow_disables_depth_and_marker(self):
+        from manifest_snapshot import skip_reason
+        p = self._p("x", clone_depth="1")
+        self.assertIsNone(skip_reason(p, p, Path("/tmp"), [], skip_shallow=False))
+
+
+class TestCompareKey(unittest.TestCase):
+    def _snap(self, branch, date):
         from manifest_snapshot import Snapshot
         return Snapshot(
             snap_dir=Path(f"manifest-snapshots/{branch}/{date}"),
-            manifest_xml=Path(f"manifest-snapshots/{branch}/{date}/manifest.xml"),
-            metadata={"label": "", "notes": ""},
-            default_revision=branch, default_remote="aosp",
-            projects=projects,
+            manifest_xml=Path("m.xml"), metadata={},
+            default_revision=branch, default_remote="aosp", projects={},
         )
 
-    def _p(self, name, rev, groups):
-        from manifest_snapshot import Project
-        return Project(name=name, path=name, revision=rev,
-                       groups=tuple(groups), remote="aosp")
+    def test_encodes_both_branches_and_dates(self):
+        from manifest_snapshot import compare_key
+        a = self._snap("android16-qpr2-release", "2026-05-12")
+        b = self._snap("android17-release", "2026-09-01")
+        self.assertEqual(
+            compare_key(a, b),
+            "android16-qpr2-release_2026-05-12__vs__android17-release_2026-09-01",
+        )
 
-    def test_summary_counts_and_dedup(self):
-        from manifest_snapshot import classify, group_projects, render_compare
-        a = {
-            "moved-multi": self._p("moved-multi", "a1", ["pdk", "tradefed"]),
-            "moved-solo":  self._p("moved-solo",  "a2", ["pdk"]),
-            "unchanged":   self._p("unchanged",   "a3", ["pdk"]),
-            "removed":     self._p("removed",     "a4", ["pdk"]),
-            "no-groups":   self._p("no-groups",   "a5", []),
-        }
-        b = {
-            "moved-multi": self._p("moved-multi", "b1", ["pdk", "tradefed"]),
-            "moved-solo":  self._p("moved-solo",  "b2", ["pdk"]),
-            "unchanged":   self._p("unchanged",   "a3", ["pdk"]),  # same revision
-            "added":       self._p("added",       "b6", ["pdk"]),
-            "no-groups":   self._p("no-groups",   "b5", []),
-        }
-        cls = classify(a, b)
-        commit_data = {
-            "moved-multi": (["b1 commit X", "x9 commit Y"], None),
-            "moved-solo":  (["b2 lone"], None),
-            "no-groups":   (None, "https://android.googlesource.com/no-groups/+log/a5..b5"),
-        }
-        a_snap = self._make_snap("br1", "2026-01-01", a)
-        b_snap = self._make_snap("br1", "2026-02-01", b)
-        out = render_compare(a_snap, b_snap, cls, commit_data,
-                             a_key="br1_2026-01-01", b_key="br1_2026-02-01")
 
-        # Summary block
-        self.assertIn("| Added projects | 1 |", out)
-        self.assertIn("| Removed projects | 1 |", out)
-        self.assertIn("| Moved projects (SHA changed) | 3 |", out)
-        self.assertIn("| Unchanged projects | 1 |", out)
-        # Dedup: 2 (multi) + 1 (solo) + 0 (no-groups, fallback)  → 3 commits.
-        # (no-groups has None commit list, so it contributes 0)
-        self.assertIn("Total commits across all moved projects (deduplicated) | 3", out)
+class TestRenderChangesTxt(unittest.TestCase):
+    def _ctx(self):
+        from manifest_snapshot import CompareCtx
+        return CompareCtx(
+            a_branch="android16", a_date="2026-05-12",
+            b_branch="android17", b_date="2026-09-01",
+            generated="2026-06-17T00:00:00+00:00",
+        )
 
-        # Per-group section
+    def test_renders_sections_counts_and_commits(self):
+        from manifest_snapshot import render_changes_txt, MovedEntry
+        m = MovedEntry(
+            name="platform/frameworks/base", path="frameworks/base",
+            groups=("pdk",), old_sha="a" * 40, new_sha="b" * 40,
+            commits=["1" * 40 + " Fix a thing", "2" * 40 + " Do another"],
+            url="https://gs/x",
+        )
+        out = render_changes_txt(self._ctx(), [m],
+                                 {"moved": 1, "skipped": 0, "added": 0, "removed": 0})
+        self.assertIn("android16 @ 2026-05-12", out)
+        self.assertIn("frameworks/base   (platform/frameworks/base)", out)
+        self.assertIn("(2 commits)", out)
+        self.assertIn("Fix a thing", out)
+
+    def test_unreachable_emits_comment_line(self):
+        from manifest_snapshot import render_changes_txt, MovedEntry
+        m = MovedEntry(name="n", path="p", groups=(), old_sha="a" * 40,
+                       new_sha="b" * 40, commits=None, url="https://gs/log")
+        out = render_changes_txt(self._ctx(), [m],
+                                 {"moved": 1, "skipped": 0, "added": 0, "removed": 0})
+        self.assertIn("# unreachable locally; see https://gs/log", out)
+
+
+class TestRenderAddedRemovedTxt(unittest.TestCase):
+    def _ctx(self):
+        from manifest_snapshot import CompareCtx
+        return CompareCtx("android16", "2026-05-12", "android17", "2026-09-01",
+                          "2026-06-17T00:00:00+00:00")
+
+    def test_added_full_history_and_removed_and_skipped(self):
+        from manifest_snapshot import render_added_removed_txt, SideEntry
+        added = [
+            SideEntry("platform/new", "new", ("pdk",), "n" * 40, "added",
+                      ["1" * 40 + " initial commit", "2" * 40 + " more"],
+                      "https://gs/new/+log/nnn", None),
+            SideEntry("prebuilts/x", "prebuilts/x", (), "p" * 40, "added",
+                      None, "https://gs/x/+log/ppp", "clone-depth=1"),
+        ]
+        removed = [
+            SideEntry("platform/gone", "gone", ("pdk",), "g" * 40, "removed",
+                      None, "https://gs/gone/+log/ggg", None),  # unreachable
+        ]
+        out = render_added_removed_txt(self._ctx(), added, removed)
+        self.assertIn("## ADDED (2)", out)
+        self.assertIn("## REMOVED (1)", out)
+        self.assertIn("initial commit", out)                      # full history
+        self.assertIn("skipped (clone-depth=1); history omitted", out)
+        self.assertIn("# unreachable locally; see https://gs/gone/+log/ggg", out)
+
+
+class TestRenderReportMd(unittest.TestCase):
+    def _ctx(self):
+        from manifest_snapshot import CompareCtx
+        return CompareCtx("android16", "2026-05-12", "android17", "2026-09-01",
+                          "2026-06-17T00:00:00+00:00",
+                          changes_file="K.changes.txt",
+                          added_removed_file="K.added-removed.txt")
+
+    def test_summary_groups_skipped_and_addremoved(self):
+        from manifest_snapshot import (render_report_md, MovedEntry,
+                                       SkippedEntry, SideEntry)
+        moved = [
+            MovedEntry("platform/build", "build/make", ("pdk", "sysui-studio"),
+                       "a" * 40, "d" * 40, ["x" * 40 + " c1"], "https://gs/b"),
+        ]
+        skipped = [SkippedEntry("prebuilts/x", "prebuilts/x", "a" * 40, "b" * 40,
+                                "clone-depth=1")]
+        added = [SideEntry("platform/new", "new", ("pdk",), "n" * 40, "added",
+                           ["1" * 40 + " init"], "https://gs/new", None)]
+        removed = [SideEntry("platform/gone", "gone", ("pdk",), "g" * 40,
+                             "removed", None, "https://gs/gone", None)]
+        counts = {"moved": 1, "added": 1, "removed": 1, "unchanged": 4,
+                  "skipped": 1, "total_commits": 1}
+        out = render_report_md(self._ctx(), moved, skipped, added, removed, counts)
+        self.assertIn("# Manifest comparison: android16 @ 2026-05-12", out)
+        self.assertIn("| Moved (SHA changed) | 1 |", out)
+        self.assertIn("| Skipped (shallow/ignored) | 1 |", out)
         self.assertIn("### Group: pdk", out)
-        self.assertIn("### Group: tradefed", out)
-        self.assertIn("### Group: _ungrouped", out)
-        # moved-multi appears under both pdk and tradefed (the project header line).
-        self.assertEqual(out.count("#### moved-multi"), 2)
-        # also-in annotation present
-        self.assertIn("also in: tradefed", out)
-
-        # Graceful degradation for no-groups
-        self.assertIn("[local git missing", out)
-        self.assertIn("https://android.googlesource.com/no-groups/+log/a5..b5", out)
-
-        # Added / removed tables
+        self.assertIn("### Group: sysui-studio", out)
+        self.assertIn("K.changes.txt", out)                 # pointer to commit lists
+        self.assertIn("## Skipped projects", out)
+        self.assertIn("clone-depth=1", out)
         self.assertIn("## Added projects", out)
-        self.assertIn("| added |", out)
         self.assertIn("## Removed projects", out)
-        self.assertIn("| removed |", out)
+        # moved project commit COUNT shown, not the commit text
+        self.assertNotIn(" c1", out)
+
+
+class TestRenderAnalysisPrompt(unittest.TestCase):
+    def test_frames_inputs_and_counts(self):
+        from manifest_snapshot import render_analysis_prompt, CompareCtx
+        ctx = CompareCtx("android16", "2026-05-12", "android17", "2026-09-01",
+                         "2026-06-17T00:00:00+00:00",
+                         changes_file="K.changes.txt",
+                         added_removed_file="K.added-removed.txt")
+        counts = {"moved": 12, "added": 3, "removed": 1, "skipped": 90,
+                  "unchanged": 800, "total_commits": 4567}
+        out = render_analysis_prompt(ctx, counts)
+        self.assertIn("android16 @ 2026-05-12", out)
+        self.assertIn("android17 @ 2026-09-01", out)
+        self.assertIn("K.changes.txt", out)
+        self.assertIn("K.added-removed.txt", out)
+        self.assertIn("12 projects changed", out)
+
+
+class TestRenderHistoryTxt(unittest.TestCase):
+    def test_renders_header_skipped_and_full_history(self):
+        from manifest_snapshot import render_history_txt, HistoryEntry, SkippedEntry
+        entries = [
+            HistoryEntry("platform/build", "build/make", ("pdk",), "b" * 40,
+                         ["1" * 40 + " first", "2" * 40 + " second"], "https://gs/b"),
+            HistoryEntry("platform/art", "art", ("pdk",), "c" * 40, None,
+                         "https://gs/art/+log/ccc"),
+        ]
+        skipped = [SkippedEntry("prebuilts/clang", "prebuilts/clang",
+                                "p" * 40, None, "clone-depth=1")]
+        counts = {"repos": 3, "skipped": 1, "total_commits": 2}
+        out = render_history_txt("android16-qpr2-release", "2026-06-17",
+                                 "2026-06-17T00:00:00+00:00", entries, skipped, counts)
+        self.assertIn("AOSP history: android16-qpr2-release @ 2026-06-17", out)
+        self.assertIn("Repositories: 3", out)
+        self.assertIn("Total commits: 2", out)
+        self.assertIn("## Skipped (shallow/ignored)", out)
+        self.assertIn("prebuilts/clang   clone-depth=1", out)
+        self.assertIn("build/make   (platform/build)", out)
+        self.assertIn("(2 commits)", out)
+        self.assertIn("first", out)
+        self.assertIn("# unreachable locally; see https://gs/art/+log/ccc", out)
+
+
+class TestCmdHistory(unittest.TestCase):
+    PINNED = """<?xml version="1.0"?>
+<manifest>
+  <remote name="aosp" fetch=".."/>
+  <default revision="android16-qpr2-release" remote="aosp"/>
+  <project path="build/make" name="platform/build" groups="pdk"
+           revision="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"/>
+  <project path="art" name="platform/art" groups="pdk"
+           revision="cccccccccccccccccccccccccccccccccccccccc"/>
+  <project path="prebuilts/clang" name="prebuilts/clang" groups="pdk"
+           clone-depth="1"
+           revision="dddddddddddddddddddddddddddddddddddddddd"/>
+</manifest>
+"""
+
+    def _scaffold(self, tdp):
+        aosp = tdp / "aosp"
+        (aosp / ".repo" / "manifests").mkdir(parents=True)
+        (aosp / ".repo" / "manifests" / "default.xml").write_text(
+            '<manifest><default revision="android16-qpr2-release" remote="aosp"/></manifest>')
+        # git dirs must exist so full_history() does not bail early.
+        for path in ("build/make", "art"):
+            (aosp / ".repo" / "projects" / f"{path}.git").mkdir(parents=True)
+        return aosp
+
+    def _fake_run(self, argv, **kwargs):
+        argv = list(argv)
+        if "manifest" in argv and "-r" in argv:
+            return mock.Mock(returncode=0, stdout=self.PINNED, stderr="")
+        if "log" in argv:
+            return mock.Mock(returncode=0,
+                             stdout="aaaaaaaa one subject\n", stderr="")
+        return mock.Mock(returncode=0, stdout="", stderr="")
+
+    def _args(self, aosp, out_dir):
+        return argparse.Namespace(
+            cmd="history", aosp_root=str(aosp), out_dir=str(out_dir),
+            ignore_glob=[], ignore_file=None, no_skip_shallow=False,
+        )
+
+    def test_writes_history_file(self):
+        from manifest_snapshot import cmd_history
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            aosp = self._scaffold(tdp)
+            out_dir = tdp / "out"
+            with mock.patch("subprocess.run", side_effect=self._fake_run), \
+                 mock.patch("manifest_snapshot.shutil.which",
+                            return_value="/usr/bin/repo"):
+                rc = cmd_history(self._args(aosp, out_dir),
+                                 now=_dt.datetime(2026, 6, 17, tzinfo=_dt.timezone.utc))
+            self.assertEqual(rc, 0)
+            out_path = out_dir / "android16-qpr2-release_2026-06-17.history.txt"
+            self.assertTrue(out_path.is_file())
+            text = out_path.read_text()
+            self.assertIn("build/make   (platform/build)", text)
+            self.assertIn("art   (platform/art)", text)
+            self.assertIn("one subject", text)
+            # shallow repo skipped, not logged
+            self.assertIn("prebuilts/clang   clone-depth=1", text)
+            self.assertNotIn("prebuilts/clang   (prebuilts/clang)", text)
+
+    def test_history_is_read_only(self):
+        from manifest_snapshot import cmd_history
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            aosp = self._scaffold(tdp)
+            calls: list[list[str]] = []
+            def record(argv, **kwargs):
+                calls.append(list(argv))
+                return self._fake_run(argv, **kwargs)
+            with mock.patch("subprocess.run", side_effect=record), \
+                 mock.patch("manifest_snapshot.shutil.which",
+                            return_value="/usr/bin/repo"):
+                cmd_history(self._args(aosp, tdp / "out"),
+                            now=_dt.datetime(2026, 6, 17, tzinfo=_dt.timezone.utc))
+            forbidden = {"fetch", "gc", "pack-refs", "update-ref", "commit",
+                         "push", "checkout", "reset", "clone"}
+            for argv in calls:
+                self.assertFalse(forbidden.intersection(argv),
+                                 f"history invoked forbidden op: {argv!r}")
+                if argv and argv[0] == "git":
+                    self.assertIn("log", argv)
+                if argv and argv[0] == "repo":
+                    self.assertIn("manifest", argv)
+
+    def test_missing_repo_returns_3(self):
+        from manifest_snapshot import cmd_history
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            aosp = self._scaffold(tdp)
+            with mock.patch("manifest_snapshot.shutil.which", return_value=None):
+                rc = cmd_history(self._args(aosp, tdp / "out"),
+                                 now=_dt.datetime(2026, 6, 17, tzinfo=_dt.timezone.utc))
+            self.assertEqual(rc, 3)
 
 
 class TestCompareEndToEnd(unittest.TestCase):
@@ -673,6 +1009,9 @@ class TestCompareEndToEnd(unittest.TestCase):
            revision="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"/>
   <project name="platform/gone" groups="pdk"
            revision="cccccccccccccccccccccccccccccccccccccccc"/>
+  <project name="prebuilts/clang" path="prebuilts/clang" groups="pdk"
+           clone-depth="1"
+           revision="9999999999999999999999999999999999999999"/>
 </manifest>
 """
     XML_B = """<?xml version="1.0"?>
@@ -685,95 +1024,110 @@ class TestCompareEndToEnd(unittest.TestCase):
            revision="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"/>
   <project name="platform/new" groups="pdk"
            revision="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"/>
+  <project name="prebuilts/clang" path="prebuilts/clang" groups="pdk"
+           clone-depth="1"
+           revision="8888888888888888888888888888888888888888"/>
 </manifest>
 """
 
-    def test_compare_full_run(self):
+    def _scaffold(self, tdp):
+        sa = tdp / "manifest-snapshots" / "r1" / "2026-01-01"
+        sb = tdp / "manifest-snapshots" / "r2" / "2026-02-01"
+        for sdir, xml in ((sa, self.XML_A), (sb, self.XML_B)):
+            sdir.mkdir(parents=True)
+            (sdir / "manifest.xml").write_text(xml)
+            (sdir / "metadata.json").write_text(json.dumps({
+                "schema_version": 1,
+                "captured_at": "2026-01-01T00:00:00+00:00", "captured_at_unix": 0,
+                "default_revision": sdir.parent.name, "default_remote": "aosp",
+                "manifest_branch": sdir.parent.name,
+                "repo_version": "v2.55", "label": "", "notes": "",
+            }))
+        aosp = tdp / "aosp"
+        (aosp / ".repo" / "manifests").mkdir(parents=True)
+        (aosp / ".repo" / "manifests" / "default.xml").write_text(
+            '<manifest><default revision="r2" remote="aosp"/></manifest>')
+        return sa, sb, aosp
+
+    def _args(self, sa, sb, aosp, out_dir):
+        return argparse.Namespace(
+            cmd="compare", a=str(sa), b=str(sb), aosp_root=str(aosp),
+            out_dir=str(out_dir), ignore_glob=[], ignore_file=None,
+            no_skip_shallow=False,
+        )
+
+    def test_writes_four_keyed_files(self):
         from manifest_snapshot import cmd_compare
+        if shutil.which("git") is None:
+            self.skipTest("git not available")
         with tempfile.TemporaryDirectory() as td:
             tdp = Path(td)
-            # Build two snapshot dirs.
-            sa = tdp / "manifest-snapshots" / "r1" / "2026-01-01"
-            sb = tdp / "manifest-snapshots" / "r2" / "2026-02-01"
-            for sdir, xml in ((sa, self.XML_A), (sb, self.XML_B)):
-                sdir.mkdir(parents=True)
-                (sdir / "manifest.xml").write_text(xml)
-                (sdir / "metadata.json").write_text(json.dumps({
-                    "schema_version": 1,
-                    "captured_at": "2026-01-01T00:00:00+00:00",
-                    "captured_at_unix": 0,
-                    "default_revision": sdir.parent.name,
-                    "default_remote": "aosp",
-                    "manifest_branch": sdir.parent.name,
-                    "repo_version": "v2.55", "label": "", "notes": "",
-                }))
-            # Fake AOSP root with read-only bare git dirs (we'll mock git log).
-            aosp = tdp / "aosp"
-            (aosp / ".repo" / "manifests").mkdir(parents=True)
-            (aosp / ".repo" / "manifests" / "default.xml").write_text(
-                '<manifest><default revision="r2" remote="aosp"/></manifest>')
-            for path in ("build/make", "platform/art"):
-                (aosp / ".repo" / "projects" / f"{path}.git").mkdir(parents=True)
-            out = tdp / "report.md"
-            args = argparse.Namespace(
-                cmd="compare", a=str(sa), b=str(sb),
-                aosp_root=str(aosp), out=str(out),
-            )
+            sa, sb, aosp = self._scaffold(tdp)
+            # Real git dirs for the moved project so commits_between succeeds.
+            gd = aosp / ".repo" / "projects" / "build/make.git"
+            shas = make_git_dir(gd, ["base", "feature one", "feature two"])
+            # Rewrite revisions so old..new is reachable in this repo.
+            xml_a = (sa / "manifest.xml").read_text().replace("a" * 40, shas[0])
+            (sa / "manifest.xml").write_text(xml_a)
+            xml_b = (sb / "manifest.xml").read_text().replace("d" * 40, shas[2])
+            (sb / "manifest.xml").write_text(xml_b)
+            # New project's git dir for its full history.
+            gd_new = aosp / ".repo" / "projects" / "platform/new.git"
+            new_shas = make_git_dir(gd_new, ["new init", "new more"])
+            xml_b = (sb / "manifest.xml").read_text().replace("e" * 40, new_shas[1])
+            (sb / "manifest.xml").write_text(xml_b)
 
-            def fake_git(argv, **kwargs):
-                argv = list(argv)
-                if "log" in argv:
-                    return mock.Mock(returncode=0,
-                                     stdout="dddddd subject one\n", stderr="")
-                return mock.Mock(returncode=0, stdout="", stderr="")
-
-            with mock.patch("subprocess.run", side_effect=fake_git):
-                rc = cmd_compare(args)
+            out_dir = tdp / "out"
+            rc = cmd_compare(self._args(sa, sb, aosp, out_dir))
             self.assertEqual(rc, 0)
-            report = out.read_text()
-            self.assertIn("platform/build", report)
-            self.assertIn("platform/new", report)
-            self.assertIn("platform/gone", report)
-            self.assertIn("### Group: pdk", report)
+
+            key = "r1_2026-01-01__vs__r2_2026-02-01"
+            report = (out_dir / f"{key}.report.md").read_text()
+            changes = (out_dir / f"{key}.changes.txt").read_text()
+            addrem = (out_dir / f"{key}.added-removed.txt").read_text()
+            prompt = (out_dir / f"{key}.analysis-prompt.txt").read_text()
+
+            # Moved project present with its commits in changes.txt.
+            self.assertIn("build/make", changes)
+            self.assertIn("feature two", changes)
+            # report.md shows counts + groups, not the commit text.
             self.assertIn("### Group: sysui-studio", report)
+            self.assertNotIn("feature two", report)
+            # Shallow prebuilts/clang skipped (clone-depth), surfaced in report.
+            self.assertIn("clone-depth=1", report)
+            self.assertNotIn("prebuilts/clang", changes)
+            # Added/removed file: new project history + removed project listed.
+            self.assertIn("## ADDED", addrem)
+            self.assertIn("new init", addrem)
+            self.assertIn("## REMOVED", addrem)
+            self.assertIn("platform/gone", addrem)
+            # Prompt references the sibling files.
+            self.assertIn(f"{key}.changes.txt", prompt)
 
 
 class TestCompareGracefulDegradation(unittest.TestCase):
     XML_A = TestCompareEndToEnd.XML_A
     XML_B = TestCompareEndToEnd.XML_B
 
-    def test_missing_git_dir_emits_fallback_url(self):
+    def test_unreachable_moved_project_falls_back_to_link(self):
         from manifest_snapshot import cmd_compare
         with tempfile.TemporaryDirectory() as td:
             tdp = Path(td)
-            sa = tdp / "manifest-snapshots" / "r1" / "2026-01-01"
-            sb = tdp / "manifest-snapshots" / "r2" / "2026-02-01"
-            for sdir, xml in ((sa, self.XML_A), (sb, self.XML_B)):
-                sdir.mkdir(parents=True)
-                (sdir / "manifest.xml").write_text(xml)
-                (sdir / "metadata.json").write_text(json.dumps({
-                    "schema_version": 1,
-                    "captured_at": "2026-01-01T00:00:00+00:00",
-                    "captured_at_unix": 0,
-                    "default_revision": sdir.parent.name, "default_remote": "aosp",
-                    "manifest_branch": sdir.parent.name,
-                    "repo_version": "v2.55", "label": "", "notes": "",
-                }))
-            # AOSP root WITHOUT any .repo/projects/<path>.git/ dirs.
-            aosp = tdp / "aosp"
-            (aosp / ".repo" / "manifests").mkdir(parents=True)
-            (aosp / ".repo" / "manifests" / "default.xml").write_text(
-                '<manifest><default revision="r2" remote="aosp"/></manifest>')
-            out = tdp / "report.md"
+            sa, sb, aosp = TestCompareEndToEnd._scaffold(self, tdp)
+            # No .repo/projects/*.git dirs at all -> commits_between returns None.
+            out_dir = tdp / "out"
             args = argparse.Namespace(
-                cmd="compare", a=str(sa), b=str(sb),
-                aosp_root=str(aosp), out=str(out),
+                cmd="compare", a=str(sa), b=str(sb), aosp_root=str(aosp),
+                out_dir=str(out_dir), ignore_glob=[], ignore_file=None,
+                no_skip_shallow=False,
             )
-            rc = cmd_compare(args)  # no mock — commits_between returns None
+            rc = cmd_compare(args)
             self.assertEqual(rc, 0)
-            report = out.read_text()
-            self.assertIn("[local git missing", report)
-            self.assertIn("https://android.googlesource.com/platform/build/+log/", report)
+            key = "r1_2026-01-01__vs__r2_2026-02-01"
+            changes = (out_dir / f"{key}.changes.txt").read_text()
+            self.assertIn("# unreachable locally; see "
+                          "https://android.googlesource.com/platform/build/+log/",
+                          changes)
 
 
 class TestReadOnlyInvariant(unittest.TestCase):
@@ -784,45 +1138,26 @@ class TestReadOnlyInvariant(unittest.TestCase):
         from manifest_snapshot import cmd_compare
         with tempfile.TemporaryDirectory() as td:
             tdp = Path(td)
-            sa = tdp / "manifest-snapshots" / "r1" / "2026-01-01"
-            sb = tdp / "manifest-snapshots" / "r2" / "2026-02-01"
-            for sdir, xml in ((sa, self.XML_A), (sb, self.XML_B)):
-                sdir.mkdir(parents=True)
-                (sdir / "manifest.xml").write_text(xml)
-                (sdir / "metadata.json").write_text(json.dumps({
-                    "schema_version": 1,
-                    "captured_at": "2026-01-01T00:00:00+00:00", "captured_at_unix": 0,
-                    "default_revision": sdir.parent.name, "default_remote": "aosp",
-                    "manifest_branch": sdir.parent.name,
-                    "repo_version": "v2.55", "label": "", "notes": "",
-                }))
-            aosp = tdp / "aosp"
-            (aosp / ".repo" / "manifests").mkdir(parents=True)
-            (aosp / ".repo" / "manifests" / "default.xml").write_text(
-                '<manifest><default revision="r2" remote="aosp"/></manifest>')
+            sa, sb, aosp = TestCompareEndToEnd._scaffold(self, tdp)
             for path in ("build/make", "platform/art"):
                 (aosp / ".repo" / "projects" / f"{path}.git").mkdir(parents=True)
-
             calls: list[list[str]] = []
             def record(argv, **kwargs):
                 calls.append(list(argv))
                 return mock.Mock(returncode=0, stdout="dd subject\n", stderr="")
-
             args = argparse.Namespace(
-                cmd="compare", a=str(sa), b=str(sb),
-                aosp_root=str(aosp), out=str(tdp / "r.md"),
+                cmd="compare", a=str(sa), b=str(sb), aosp_root=str(aosp),
+                out_dir=str(tdp / "out"), ignore_glob=[], ignore_file=None,
+                no_skip_shallow=False,
             )
             with mock.patch("subprocess.run", side_effect=record):
                 cmd_compare(args)
-
             forbidden = {"fetch", "gc", "pack-refs", "update-ref", "commit",
                          "push", "checkout", "reset", "clone"}
             for argv in calls:
                 if argv and argv[0] == "git":
-                    self.assertFalse(
-                        forbidden.intersection(argv),
-                        f"compare invoked forbidden git op: {argv!r}",
-                    )
+                    self.assertFalse(forbidden.intersection(argv),
+                                     f"compare invoked forbidden git op: {argv!r}")
 
     def test_snap_writes_only_under_out_base(self):
         from manifest_snapshot import cmd_snap
