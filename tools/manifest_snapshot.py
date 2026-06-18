@@ -238,7 +238,7 @@ def commits_between(git_dir: Path, old: str, new: str) -> list[str] | None:
     proc = subprocess.run(
         ["git", f"--git-dir={git_dir}", "log", "--no-merges",
          "--pretty=oneline", f"{old}..{new}"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, errors="replace",
     )
     if proc.returncode != 0:
         return None
@@ -255,7 +255,7 @@ def full_history(git_dir: Path, sha: str) -> list[str] | None:
     proc = subprocess.run(
         ["git", f"--git-dir={git_dir}", "log", "--no-merges",
          "--pretty=oneline", sha],
-        capture_output=True, text=True,
+        capture_output=True, text=True, errors="replace",
     )
     if proc.returncode != 0:
         return None

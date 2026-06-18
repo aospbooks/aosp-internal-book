@@ -675,6 +675,58 @@ class TestFullHistory(unittest.TestCase):
             self.assertIsNone(full_history(gd, "f" * 40))
 
 
+class TestNonUtf8GitOutput(unittest.TestCase):
+    """git log output is arbitrary bytes (commit subjects may be Latin-1, etc.),
+    so the helpers must not crash on non-UTF-8."""
+
+    def _repo_with_raw_byte_commit(self, gd):
+        """Build a bare repo whose HEAD commit subject contains a raw, non-UTF-8
+        byte (0xf6). Porcelain `git commit` re-encodes such messages, so we write
+        the commit objects verbatim with `hash-object --literally` (mirrors old /
+        imported AOSP commits that carry raw Latin-1 bytes). Returns (base, head)."""
+        subprocess.run(["git", "init", "-q", "--bare", str(gd)],
+                       check=True, capture_output=True)
+        def git(args, inp=None):
+            return subprocess.run(["git", f"--git-dir={gd}", *args],
+                                  input=inp, capture_output=True, check=True)
+        empty_tree = git(["hash-object", "-w", "-t", "tree", "--stdin"],
+                         inp=b"").stdout.decode().strip()
+        base_obj = (f"tree {empty_tree}\n"
+                    "author T <t@t> 0 +0000\ncommitter T <t@t> 0 +0000\n\n"
+                    "base\n").encode()
+        base = git(["hash-object", "-w", "-t", "commit", "--literally", "--stdin"],
+                   inp=base_obj).stdout.decode().strip()
+        head_obj = (f"tree {empty_tree}\nparent {base}\n"
+                    "author T <t@t> 0 +0000\ncommitter T <t@t> 0 +0000\n\n"
+                    ).encode() + b"caf\xf6 latin-1 subject\n"
+        head = git(["hash-object", "-w", "-t", "commit", "--literally", "--stdin"],
+                   inp=head_obj).stdout.decode().strip()
+        git(["update-ref", "refs/heads/main", head])
+        return base, head
+
+    def test_full_history_tolerates_non_utf8(self):
+        from manifest_snapshot import full_history
+        if shutil.which("git") is None:
+            self.skipTest("git not available")
+        with tempfile.TemporaryDirectory() as td:
+            gd = Path(td) / "r.git"
+            _base, head = self._repo_with_raw_byte_commit(gd)
+            out = full_history(gd, head)  # must NOT raise UnicodeDecodeError
+            self.assertEqual(len(out), 2)
+            self.assertTrue(any("latin-1 subject" in l for l in out))
+
+    def test_commits_between_tolerates_non_utf8(self):
+        from manifest_snapshot import commits_between
+        if shutil.which("git") is None:
+            self.skipTest("git not available")
+        with tempfile.TemporaryDirectory() as td:
+            gd = Path(td) / "r.git"
+            base, head = self._repo_with_raw_byte_commit(gd)
+            out = commits_between(gd, base, head)  # must NOT raise
+            self.assertEqual(len(out), 1)
+            self.assertTrue(any("latin-1 subject" in l for l in out))
+
+
 class TestGooglesourceLogUrl(unittest.TestCase):
     def test_builds_log_url(self):
         from manifest_snapshot import googlesource_log_url
