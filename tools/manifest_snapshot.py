@@ -822,7 +822,12 @@ def cmd_history(args, *, now=None) -> int:
     out_dir = (Path(args.out_dir) if args.out_dir
                else Path("manifest-snapshots") / "_history")
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{default_rev}_{date}.history.txt"
+    # The manifest default revision can be a full ref (e.g.
+    # refs/tags/android-16.0.0_r4); strip ref prefixes and flatten any
+    # remaining slashes so it forms a single safe filename, not nested dirs.
+    slug = (default_rev.removeprefix("refs/heads/").removeprefix("refs/tags/")
+            .replace("/", "-"))
+    out_path = out_dir / f"{slug}_{date}.history.txt"
     out_path.write_text(render_history_txt(
         default_rev, date, now.isoformat(), entries, skipped, counts))
     print(f"Wrote {out_path!s} ({len(entries)} repos logged, {len(skipped)} skipped)")

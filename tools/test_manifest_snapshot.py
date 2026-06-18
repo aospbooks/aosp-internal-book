@@ -1049,6 +1049,34 @@ class TestCmdHistory(unittest.TestCase):
                                  now=_dt.datetime(2026, 6, 17, tzinfo=_dt.timezone.utc))
             self.assertEqual(rc, 3)
 
+    def test_slashy_default_revision_sanitized(self):
+        # repo manifest can pin to a tag, e.g. revision="refs/tags/android-16.0.0_r4";
+        # slashes must not become directories in the output filename.
+        from manifest_snapshot import cmd_history
+        pinned_tag = self.PINNED.replace(
+            'revision="android16-qpr2-release"',
+            'revision="refs/tags/android-16.0.0_r4"')
+        def fake(argv, **kwargs):
+            argv = list(argv)
+            if "manifest" in argv and "-r" in argv:
+                return mock.Mock(returncode=0, stdout=pinned_tag, stderr="")
+            if "log" in argv:
+                return mock.Mock(returncode=0, stdout="aaaaaaaa s\n", stderr="")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            aosp = self._scaffold(tdp)
+            out_dir = tdp / "out"
+            with mock.patch("subprocess.run", side_effect=fake), \
+                 mock.patch("manifest_snapshot.shutil.which",
+                            return_value="/usr/bin/repo"):
+                rc = cmd_history(self._args(aosp, out_dir),
+                                 now=_dt.datetime(2026, 6, 18, tzinfo=_dt.timezone.utc))
+            self.assertEqual(rc, 0)
+            self.assertTrue(
+                (out_dir / "android-16.0.0_r4_2026-06-18.history.txt").is_file())
+            self.assertFalse((out_dir / "refs").exists())  # no nested dirs
+
 
 class TestCompareEndToEnd(unittest.TestCase):
     XML_A = """<?xml version="1.0"?>
