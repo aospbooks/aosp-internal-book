@@ -1291,6 +1291,28 @@ class TestRenderHCReport(unittest.TestCase):
         self.assertNotIn(" c1", out)   # counts, not commit text
 
 
+class TestRenderHCAddedRemoved(unittest.TestCase):
+    def _ctx(self):
+        from manifest_snapshot import HCCtx
+        return HCCtx("a16", "2026-06-18", "a17", "2026-06-19",
+                     "2026-06-19T00:00:00+00:00")
+
+    def test_added_with_history_and_removed_note(self):
+        from manifest_snapshot import render_history_compare_added_removed_txt
+        # rows: (name, path, groups, sha, history) where history is
+        # list[(sha,subject)] | None
+        added = [("platform/new", "new", ("pdk",), "n" * 40,
+                  [("1" * 40, "init new")])]
+        removed = [("platform/gone", "gone", ("pdk",), "g" * 40, None)]
+        out = render_history_compare_added_removed_txt(self._ctx(), added, removed)
+        self.assertIn("## ADDED (1)", out)
+        self.assertIn("new   (platform/new)", out)
+        self.assertIn("init new", out)
+        self.assertIn("## REMOVED (1)", out)
+        self.assertIn("gone   (platform/gone)", out)
+        self.assertIn("# history unavailable", out)
+
+
 class TestCompareEndToEnd(unittest.TestCase):
     XML_A = """<?xml version="1.0"?>
 <manifest>

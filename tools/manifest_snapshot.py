@@ -779,6 +779,35 @@ def render_history_compare_report_md(ctx: HCCtx, moved: list[HCMoved],
     return "\n".join(lines) + "\n"
 
 
+def render_history_compare_added_removed_txt(ctx: HCCtx, added: list,
+                                             removed: list) -> str:
+    """Added/removed projects with full inline history when available. Rows are
+    (name, path, groups, sha, history) where history is list[(sha,subject)] | None."""
+    lines: list[str] = [
+        f"AOSP added/removed projects: {ctx.a_branch} @ {ctx.a_date}  ->  "
+        f"{ctx.b_branch} @ {ctx.b_date}",
+        f"Generated: {ctx.generated}",
+        "",
+    ]
+    for title, rows in (("ADDED", added), ("REMOVED", removed)):
+        lines.append("#" * 64)
+        lines.append(f"## {title} ({len(rows)})")
+        lines.append("#" * 64)
+        lines.append("")
+        for name, path, groups, sha, history in rows:
+            g = ", ".join(groups) if groups else "<none>"
+            lines.append(_SEP)
+            lines.append(f"{path}   ({name})")
+            lines.append(f"sha {sha}   groups: {g}")
+            lines.append(_SUB)
+            if history is None:
+                lines.append("# history unavailable (skipped/unreachable in its history file)")
+            else:
+                lines.extend(f"{s} {sub}" for s, sub in history)
+            lines.append("")
+    return "\n".join(lines) + "\n"
+
+
 def load_snapshot(snap_dir: Path) -> Snapshot:
     snap_dir = Path(snap_dir)
     manifest_xml = snap_dir / "manifest.xml"
