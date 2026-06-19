@@ -11,10 +11,11 @@ manifest-snapshots/
       manifest.xml                     # pinned manifest from `repo manifest -r`
       metadata.json                    # timestamp, branch, repo version, optional label/notes
   _compare/                            # comparison reports (cross-branch capable)
-    <A>__vs__<B>.report.md             # navigator: summary, groups, skipped
-    <A>__vs__<B>.changes.txt           # kernel-changelog of moved-project commits
-    <A>__vs__<B>.added-removed.txt     # added/removed projects, full history
-    <A>__vs__<B>.analysis-prompt.txt   # LLM prompt framing the changelog
+    <oldrev>-to-<newrev>/              # one dir per comparison
+      report.md                        # navigator: summary, groups, skipped
+      changes.txt                      # kernel-changelog of moved-project commits
+      added-removed.txt                # added/removed projects, full history
+      analysis-prompt.txt              # LLM prompt framing the changelog (compare only)
   ignore-globs.txt                     # paths to skip in compare (supplements shallow detection)
   README.md                            # this file
 ```
@@ -47,14 +48,14 @@ python3 tools/manifest_snapshot.py compare \
     manifest-snapshots/android17-release/2026-09-01
 ```
 
-Writes four files to `manifest-snapshots/_compare/`, each prefixed with `<branchA>_<dateA>__vs__<branchB>_<dateB>`:
+Writes a per-comparison directory `manifest-snapshots/_compare/<oldrev>-to-<newrev>/` (revision names with ref prefixes stripped, e.g. `android16-qpr2-release-to-android17-release`) containing:
 
-- `<KEY>.report.md` — navigator: summary counts, moved projects grouped by module group (commit counts + links, no inline commits), the skipped-project list, and added/removed summary tables.
-- `<KEY>.changes.txt` — kernel-changelog-style aggregate of every moved project's commits as `<full-sha> <subject>` (`git log --no-merges --pretty=oneline old..new`).
-- `<KEY>.added-removed.txt` — projects added or removed between the versions, each with full inline history (fallback Googlesource link if objects are gone).
-- `<KEY>.analysis-prompt.txt` — a prompt that frames the changelog for an LLM.
+- `report.md` — navigator: summary counts, moved projects grouped by module group (commit counts + links, no inline commits), the skipped-project list, and added/removed summary tables.
+- `changes.txt` — kernel-changelog-style aggregate of every moved project's commits as `<full-sha> <subject>` (`git log --no-merges --pretty=oneline old..new`).
+- `added-removed.txt` — projects added or removed between the versions, each with full inline history (fallback Googlesource link if objects are gone).
+- `analysis-prompt.txt` — a prompt that frames the changelog for an LLM.
 
-Use `--out-dir DIR` to change where the files land.
+Use `--out-dir DIR` to change the base directory the comparison dir is created under. Re-running the same revision pair overwrites its directory.
 
 **Skipped projects.** Shallow projects (manifest `clone-depth`, or a live `.repo/projects/<path>.git/shallow` marker) can't be diffed across a branch switch, so they're listed under "Skipped" rather than run through `git log`. Add path globs to `manifest-snapshots/ignore-globs.txt` (or pass `--ignore-glob GLOB`, repeatable) to skip more. `--no-skip-shallow` disables the automatic shallow detection; `--ignore-file PATH` points at a different glob file.
 

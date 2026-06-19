@@ -138,7 +138,7 @@ A companion tool captures point-in-time, fully-pinned `repo manifest` snapshots 
 # Take a snapshot (resolves every <project> to a HEAD SHA, prompts for label/notes)
 python3 tools/manifest_snapshot.py snap --aosp-root /path/to/aosp
 
-# Compare two snapshots → four files in manifest-snapshots/_compare/<A>__vs__<B>.{report.md,changes.txt,added-removed.txt,analysis-prompt.txt}
+# Compare two snapshots → manifest-snapshots/_compare/<oldrev>-to-<newrev>/{report.md,changes.txt,added-removed.txt,analysis-prompt.txt}
 python3 tools/manifest_snapshot.py compare \
     manifest-snapshots/<branch>/<date-A> \
     manifest-snapshots/<branch>/<date-B> \

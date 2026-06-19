@@ -844,6 +844,12 @@ def compare_key(a: Snapshot, b: Snapshot) -> str:
     return f"{_snap_key(a)}__vs__{_snap_key(b)}"
 
 
+def _compare_dirname(a_rev: str, b_rev: str) -> str:
+    """Per-comparison directory name `<oldrev>-to-<newrev>` (ref prefixes
+    stripped, slashes flattened) for the subdir written under _compare/."""
+    return f"{_revision_slug(a_rev)}-to-{_revision_slug(b_rev)}"
+
+
 def read_history_header(path: Path) -> tuple[str, str]:
     """Return (branch, date) from a history file's first line:
     'AOSP history: <branch> @ <date>'."""
@@ -1029,26 +1035,26 @@ def cmd_compare(args) -> int:
         "unchanged": len(cls["unchanged"]), "total_commits": total_commits,
     }
 
-    key = compare_key(a, b)
-    out_dir = (Path(args.out_dir) if args.out_dir
-               else Path("manifest-snapshots") / "_compare")
+    base = (Path(args.out_dir) if args.out_dir
+            else Path("manifest-snapshots") / "_compare")
+    out_dir = base / _compare_dirname(a.default_revision, b.default_revision)
     out_dir.mkdir(parents=True, exist_ok=True)
     ctx = CompareCtx(
         a_branch=a.default_revision, a_date=a.snap_dir.name,
         b_branch=b.default_revision, b_date=b.snap_dir.name,
         generated=_dt.datetime.now(_dt.timezone.utc).isoformat(),
-        changes_file=f"{key}.changes.txt",
-        added_removed_file=f"{key}.added-removed.txt",
+        changes_file="changes.txt",
+        added_removed_file="added-removed.txt",
     )
-    (out_dir / f"{key}.report.md").write_text(
+    (out_dir / "report.md").write_text(
         render_report_md(ctx, moved, skipped, added, removed, counts))
-    (out_dir / f"{key}.changes.txt").write_text(
+    (out_dir / "changes.txt").write_text(
         render_changes_txt(ctx, moved, counts))
-    (out_dir / f"{key}.added-removed.txt").write_text(
+    (out_dir / "added-removed.txt").write_text(
         render_added_removed_txt(ctx, added, removed))
-    (out_dir / f"{key}.analysis-prompt.txt").write_text(
+    (out_dir / "analysis-prompt.txt").write_text(
         render_analysis_prompt(ctx, counts))
-    print(f"Wrote 4 files to {out_dir!s} (prefix {key})")
+    print(f"Wrote 4 files to {out_dir!s}")
     return 0
 
 
@@ -1210,24 +1216,23 @@ def cmd_compare_history(args) -> int:
         "unavailable": unavailable,
     }
 
-    key = (f"{_revision_slug(a_branch)}_{a_date}__vs__"
-           f"{_revision_slug(snap_b.default_revision)}_{snap_b.snap_dir.name}")
-    out_dir = (Path(args.out_dir) if args.out_dir
-               else Path("manifest-snapshots") / "_compare")
+    base = (Path(args.out_dir) if args.out_dir
+            else Path("manifest-snapshots") / "_compare")
+    out_dir = base / _compare_dirname(a_branch, snap_b.default_revision)
     out_dir.mkdir(parents=True, exist_ok=True)
     ctx = HCCtx(a_branch=a_branch, a_date=a_date,
                 b_branch=snap_b.default_revision, b_date=snap_b.snap_dir.name,
                 generated=_dt.datetime.now(_dt.timezone.utc).isoformat(),
-                changes_file=f"{key}.changes.txt",
-                added_removed_file=f"{key}.added-removed.txt")
-    (out_dir / f"{key}.report.md").write_text(
+                changes_file="changes.txt",
+                added_removed_file="added-removed.txt")
+    (out_dir / "report.md").write_text(
         render_history_compare_report_md(ctx, moved, added_rows, removed_rows,
                                          unclassifiable, counts))
-    (out_dir / f"{key}.changes.txt").write_text(
+    (out_dir / "changes.txt").write_text(
         render_history_compare_changes_txt(ctx, moved, counts))
-    (out_dir / f"{key}.added-removed.txt").write_text(
+    (out_dir / "added-removed.txt").write_text(
         render_history_compare_added_removed_txt(ctx, added_hist_rows, removed_hist_rows))
-    print(f"Wrote 3 files to {out_dir!s} (prefix {key})")
+    print(f"Wrote 3 files to {out_dir!s}")
     return 0
 
 

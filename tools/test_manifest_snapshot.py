@@ -814,6 +814,17 @@ class TestCompareKey(unittest.TestCase):
         )
 
 
+class TestCompareDirname(unittest.TestCase):
+    def test_versions_only_with_ref_prefix_stripped(self):
+        from manifest_snapshot import _compare_dirname
+        self.assertEqual(
+            _compare_dirname("refs/tags/android-16.0.0_r4", "android17-release"),
+            "android-16.0.0_r4-to-android17-release")
+        self.assertEqual(
+            _compare_dirname("android16-qpr2-release", "android17-release"),
+            "android16-qpr2-release-to-android17-release")
+
+
 class TestRenderChangesTxt(unittest.TestCase):
     def _ctx(self):
         from manifest_snapshot import CompareCtx
@@ -1375,10 +1386,10 @@ class TestCmdCompareHistory(unittest.TestCase):
                 history_b=str(hb), out_dir=str(out_dir), no_progress=True)
             rc = cmd_compare_history(args)
             self.assertEqual(rc, 0)
-            key = "android-16.0.0_r4_2026-06-18__vs__android17-release_2026-06-19"
-            changes = (out_dir / f"{key}.changes.txt").read_text()
-            report = (out_dir / f"{key}.report.md").read_text()
-            addrem = (out_dir / f"{key}.added-removed.txt").read_text()
+            d = out_dir / "android-16.0.0_r4-to-android17-release"
+            changes = (d / "changes.txt").read_text()
+            report = (d / "report.md").read_text()
+            addrem = (d / "added-removed.txt").read_text()
             # frameworks/base moved: new=shiny new, dropped=drop me
             self.assertIn("shiny new", changes)   # new in 17
             self.assertIn("drop me", changes)     # dropped from 16
@@ -1416,9 +1427,10 @@ class TestCmdCompareHistory(unittest.TestCase):
                 history_b=str(hb), out_dir=str(out_dir), no_progress=True)
             rc = cmd_compare_history(args)
             self.assertEqual(rc, 0)
-            key = "android-16.0.0_r4_2026-06-18__vs__android17-release_2026-06-19"
-            self.assertTrue((out_dir / f"{key}.report.md").is_file())
-            self.assertFalse((out_dir / "refs").exists())  # no nested dirs
+            self.assertTrue(
+                (out_dir / "android-16.0.0_r4-to-android17-release"
+                 / "report.md").is_file())
+            self.assertFalse((out_dir / "refs").exists())  # no nested ref dirs
 
 
 class TestCompareEndToEnd(unittest.TestCase):
@@ -1504,11 +1516,11 @@ class TestCompareEndToEnd(unittest.TestCase):
             rc = cmd_compare(self._args(sa, sb, aosp, out_dir))
             self.assertEqual(rc, 0)
 
-            key = "r1_2026-01-01__vs__r2_2026-02-01"
-            report = (out_dir / f"{key}.report.md").read_text()
-            changes = (out_dir / f"{key}.changes.txt").read_text()
-            addrem = (out_dir / f"{key}.added-removed.txt").read_text()
-            prompt = (out_dir / f"{key}.analysis-prompt.txt").read_text()
+            d = out_dir / "r1-to-r2"
+            report = (d / "report.md").read_text()
+            changes = (d / "changes.txt").read_text()
+            addrem = (d / "added-removed.txt").read_text()
+            prompt = (d / "analysis-prompt.txt").read_text()
 
             # Moved project present with its commits in changes.txt.
             self.assertIn("build/make", changes)
@@ -1525,7 +1537,7 @@ class TestCompareEndToEnd(unittest.TestCase):
             self.assertIn("## REMOVED", addrem)
             self.assertIn("platform/gone", addrem)
             # Prompt references the sibling files.
-            self.assertIn(f"{key}.changes.txt", prompt)
+            self.assertIn("changes.txt", prompt)
 
     def test_progress_lines_on_stderr(self):
         from manifest_snapshot import cmd_compare
@@ -1574,8 +1586,7 @@ class TestCompareGracefulDegradation(unittest.TestCase):
             )
             rc = cmd_compare(args)
             self.assertEqual(rc, 0)
-            key = "r1_2026-01-01__vs__r2_2026-02-01"
-            changes = (out_dir / f"{key}.changes.txt").read_text()
+            changes = (out_dir / "r1-to-r2" / "changes.txt").read_text()
             self.assertIn("# unreachable locally; see "
                           "https://android.googlesource.com/platform/build/+log/",
                           changes)
