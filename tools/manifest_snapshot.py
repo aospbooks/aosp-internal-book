@@ -178,6 +178,29 @@ class HistRepo:                 # one repo as indexed from a history .txt
     commits_end: int | None     # byte offset just past the body, or None
 
 
+@dataclass(frozen=True)
+class HCCtx:
+    a_branch: str
+    a_date: str
+    b_branch: str
+    b_date: str
+    generated: str
+    changes_file: str = ""
+    added_removed_file: str = ""
+
+
+@dataclass(frozen=True)
+class HCMoved:
+    path: str
+    name: str | None
+    groups: tuple[str, ...]
+    a_sha: str
+    b_sha: str
+    new: list[tuple[str, str]] | None       # None => commits unavailable
+    dropped: list[tuple[str, str]] | None
+    url: str
+
+
 def parse_manifest(xml_text: str) -> tuple[str, str, dict[str, Project]]:
     """Parse a (pinned) repo manifest XML.
 
@@ -655,6 +678,37 @@ def render_history_txt(branch: str, date: str, generated: str,
             lines.append(f"sha {e.sha}   ({n} commit{'s' if n != 1 else ''})")
             lines.append(_SUB)
             lines.extend(e.commits)
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def render_history_compare_changes_txt(ctx: HCCtx, moved: list[HCMoved],
+                                        counts: dict) -> str:
+    """Kernel-changelog of per-repo NEW (in B not A) and DROPPED (in A not B)
+    commits."""
+    lines: list[str] = [
+        f"AOSP version diff: {ctx.a_branch} @ {ctx.a_date}  ->  "
+        f"{ctx.b_branch} @ {ctx.b_date}",
+        f"Generated: {ctx.generated}",
+        (f"Moved: {counts['moved']}   Added: {counts['added']}   "
+         f"Removed: {counts['removed']}   Commits unavailable: {counts['unavailable']}"),
+        (f"New commits: {counts['new_total']}   "
+         f"Dropped commits: {counts['dropped_total']}"),
+        "",
+    ]
+    for m in moved:
+        lines.append(_SEP)
+        lines.append(f"{m.path}   ({m.name})")
+        lines.append(f"old {m.a_sha}  ->  new {m.b_sha}")
+        lines.append(_SUB)
+        if m.new is None or m.dropped is None:
+            lines.append(f"# commits unavailable (shallow/unreachable in 16 and/or 17); "
+                         f"see {m.url}")
+        else:
+            lines.append(f"NEW ({len(m.new)}):")
+            lines.extend(f"  {s} {sub}" for s, sub in m.new)
+            lines.append(f"DROPPED ({len(m.dropped)}):")
+            lines.extend(f"  {s} {sub}" for s, sub in m.dropped)
         lines.append("")
     return "\n".join(lines) + "\n"
 

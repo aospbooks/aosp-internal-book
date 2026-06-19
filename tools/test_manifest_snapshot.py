@@ -1222,6 +1222,42 @@ class TestCmdHistory(unittest.TestCase):
             self.assertFalse((out_dir / "refs").exists())  # no nested dirs
 
 
+class TestRenderHCChanges(unittest.TestCase):
+    def _ctx(self):
+        from manifest_snapshot import HCCtx
+        return HCCtx("android-16.0.0_r4", "2026-06-18", "android17-release",
+                     "2026-06-19", "2026-06-19T00:00:00+00:00")
+
+    def test_new_and_dropped_blocks(self):
+        from manifest_snapshot import render_history_compare_changes_txt, HCMoved
+        m = HCMoved(path="frameworks/base", name="platform/frameworks/base",
+                    groups=("pdk",), a_sha="a" * 40, b_sha="b" * 40,
+                    new=[("1" * 40, "add feature")],
+                    dropped=[("2" * 40, "revert old")],
+                    url="https://gs/fb/+log/aaa..bbb")
+        out = render_history_compare_changes_txt(
+            self._ctx(), [m],
+            {"moved": 1, "added": 0, "removed": 0, "new_total": 1,
+             "dropped_total": 1, "unavailable": 0})
+        self.assertIn("android-16.0.0_r4 @ 2026-06-18", out)
+        self.assertIn("frameworks/base   (platform/frameworks/base)", out)
+        self.assertIn("NEW (1):", out)
+        self.assertIn("add feature", out)
+        self.assertIn("DROPPED (1):", out)
+        self.assertIn("revert old", out)
+
+    def test_unavailable_repo_notes_link(self):
+        from manifest_snapshot import render_history_compare_changes_txt, HCMoved
+        m = HCMoved(path="p", name="n", groups=(), a_sha="a" * 40, b_sha="b" * 40,
+                    new=None, dropped=None, url="https://gs/p/+log/aaa..bbb")
+        out = render_history_compare_changes_txt(
+            self._ctx(), [m],
+            {"moved": 1, "added": 0, "removed": 0, "new_total": 0,
+             "dropped_total": 0, "unavailable": 1})
+        self.assertIn("commits unavailable", out)
+        self.assertIn("https://gs/p/+log/aaa..bbb", out)
+
+
 class TestCompareEndToEnd(unittest.TestCase):
     XML_A = """<?xml version="1.0"?>
 <manifest>
