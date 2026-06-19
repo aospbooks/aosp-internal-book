@@ -753,6 +753,36 @@ def index_history(path: Path) -> dict[str, HistRepo]:
     return repos
 
 
+def read_repo_commit_pairs(path: Path, repo: HistRepo) -> list[tuple[str, str]] | None:
+    """Read one repo's commit block as (sha, subject) pairs. Returns None when the
+    repo has no body or its body is an unreachable marker (commits unavailable)."""
+    if repo.commits_start is None:
+        return None
+    with open(path, "rb") as f:
+        f.seek(repo.commits_start)
+        data = f.read(repo.commits_end - repo.commits_start)
+    lines = data.decode("utf-8", "replace").splitlines()
+    if lines and lines[0].startswith("# unreachable"):
+        return None
+    out: list[tuple[str, str]] = []
+    for ln in lines:
+        if len(ln) >= 41 and ln[40] == " " and all(
+                c in "0123456789abcdef" for c in ln[:40]):
+            out.append((ln[:40], ln[41:]))
+    return out
+
+
+def diff_commit_lists(a_pairs: list[tuple[str, str]],
+                      b_pairs: list[tuple[str, str]]
+                      ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Return (new, dropped): commits in B not in A, and in A not in B, by SHA."""
+    a_shas = {s for s, _ in a_pairs}
+    b_shas = {s for s, _ in b_pairs}
+    new = [(s, sub) for s, sub in b_pairs if s not in a_shas]
+    dropped = [(s, sub) for s, sub in a_pairs if s not in b_shas]
+    return new, dropped
+
+
 def emit_progress(enabled: bool, i: int, total: int, label: str) -> None:
     """Print a one-line `[ i/total ] label` progress message to stderr (flushed),
     or nothing when disabled. Progress never touches stdout or output files."""

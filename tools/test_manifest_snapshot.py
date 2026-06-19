@@ -997,6 +997,50 @@ class TestIndexHistory(unittest.TestCase):
             self.assertIsNotNone(idx["frameworks/base"].commits_start)
 
 
+class TestHistoryCommitDiff(unittest.TestCase):
+    def test_read_pairs_and_diff(self):
+        from manifest_snapshot import (index_history, read_repo_commit_pairs,
+                                       diff_commit_lists)
+        a_text = (
+            "AOSP history: a @ 2026-01-01\nGenerated: x\nRepositories: 1   "
+            "Skipped (shallow/ignored): 0   Total commits: 2\n\n"
+            + ("=" * 64) + "\nart   (platform/art)\nsha " + "a" * 40
+            + "   (2 commits)\n" + ("-" * 64) + "\n"
+            + "11" * 20 + " keep one\n" + "22" * 20 + " dropped two\n\n"
+        )
+        b_text = (
+            "AOSP history: b @ 2026-02-01\nGenerated: x\nRepositories: 1   "
+            "Skipped (shallow/ignored): 0   Total commits: 2\n\n"
+            + ("=" * 64) + "\nart   (platform/art)\nsha " + "b" * 40
+            + "   (2 commits)\n" + ("-" * 64) + "\n"
+            + "33" * 20 + " new three\n" + "11" * 20 + " keep one\n\n"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            ap = Path(td) / "a.txt"; ap.write_text(a_text, encoding="utf-8")
+            bp = Path(td) / "b.txt"; bp.write_text(b_text, encoding="utf-8")
+            ai = index_history(ap); bi = index_history(bp)
+            a_pairs = read_repo_commit_pairs(ap, ai["art"])
+            b_pairs = read_repo_commit_pairs(bp, bi["art"])
+            self.assertEqual(len(a_pairs), 2)
+            self.assertEqual(len(b_pairs), 2)
+            new, dropped = diff_commit_lists(a_pairs, b_pairs)
+            self.assertEqual([s for s, _ in new], ["33" * 20])      # new in B
+            self.assertEqual([s for s, _ in dropped], ["22" * 20])  # gone from A
+
+    def test_unreachable_body_returns_none(self):
+        from manifest_snapshot import index_history, read_repo_commit_pairs
+        text = (
+            "AOSP history: a @ 2026-01-01\nGenerated: x\nRepositories: 1   "
+            "Skipped (shallow/ignored): 0   Total commits: 0\n\n"
+            + ("=" * 64) + "\nart   (platform/art)\nsha " + "a" * 40 + "\n"
+            + ("-" * 64) + "\n# unreachable locally; see https://gs/art\n\n"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "a.txt"; p.write_text(text, encoding="utf-8")
+            idx = index_history(p)
+            self.assertIsNone(read_repo_commit_pairs(p, idx["art"]))
+
+
 class TestEmitProgress(unittest.TestCase):
     def test_enabled_writes_line_to_stderr(self):
         import contextlib, io
