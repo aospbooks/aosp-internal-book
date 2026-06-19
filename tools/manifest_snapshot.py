@@ -686,12 +686,13 @@ def emit_progress(enabled: bool, i: int, total: int, label: str) -> None:
 
 def _side_entries(names: list[str], snap: Snapshot, aosp_root: Path,
                   ignore_globs: list[str], skip_shallow: bool,
-                  side: str) -> list[SideEntry]:
+                  side: str, *, progress: bool = False) -> list[SideEntry]:
     """Build SideEntry records (full history unless skipped/unreachable) for the
     added (side='added', uses B snapshot) or removed (side='removed', uses A)
     projects."""
     out: list[SideEntry] = []
-    for name in names:
+    total = len(names)
+    for i, name in enumerate(names, start=1):
         p = snap.projects[name]
         url = googlesource_log_url(name, p.revision)
         reason = skip_reason(p, p, aosp_root, ignore_globs, skip_shallow)
@@ -699,6 +700,13 @@ def _side_entries(names: list[str], snap: Snapshot, aosp_root: Path,
         if reason is None:
             git_dir = aosp_root / ".repo" / "projects" / f"{p.path}.git"
             history = full_history(git_dir, p.revision)
+        if reason:
+            detail = f"skipped: {reason}"
+        elif history is None:
+            detail = "unreachable"
+        else:
+            detail = f"{len(history)} commits"
+        emit_progress(progress, i, total, f"{p.path}  ({detail}) ({side})")
         out.append(SideEntry(name=name, path=p.path, groups=p.groups,
                              sha=p.revision, side=side, history=history,
                              url=url, reason=reason))
@@ -722,17 +730,23 @@ def cmd_compare(args) -> int:
     moved: list[MovedEntry] = []
     skipped: list[SkippedEntry] = []
     total_commits = 0
-    for name in cls["moved"]:
+    progress = not args.no_progress
+    moved_total = len(cls["moved"])
+    for i, name in enumerate(cls["moved"], start=1):
         pa, pb = a.projects[name], b.projects[name]
         reason = skip_reason(pa, pb, aosp_root, ignore_globs, skip_shallow)
         if reason:
             skipped.append(SkippedEntry(name, pb.path, pa.revision,
                                         pb.revision, reason))
+            emit_progress(progress, i, moved_total, f"{pb.path}  (skipped: {reason})")
             continue
         git_dir = aosp_root / ".repo" / "projects" / f"{pb.path}.git"
         commits = commits_between(git_dir, pa.revision, pb.revision)
-        if commits is not None:
+        if commits is None:
+            emit_progress(progress, i, moved_total, f"{pb.path}  (unreachable)")
+        else:
             total_commits += len(commits)
+            emit_progress(progress, i, moved_total, f"{pb.path}  ({len(commits)} commits)")
         moved.append(MovedEntry(
             name=name, path=pb.path, groups=pb.groups,
             old_sha=pa.revision, new_sha=pb.revision, commits=commits,
@@ -742,9 +756,9 @@ def cmd_compare(args) -> int:
     skipped.sort(key=lambda s: s.path)
 
     added = _side_entries(cls["added"], b, aosp_root, ignore_globs,
-                          skip_shallow, "added")
+                          skip_shallow, "added", progress=progress)
     removed = _side_entries(cls["removed"], a, aosp_root, ignore_globs,
-                            skip_shallow, "removed")
+                            skip_shallow, "removed", progress=progress)
 
     counts = {
         "moved": len(moved), "skipped": len(skipped),
@@ -891,6 +905,10 @@ def build_parser() -> argparse.ArgumentParser:
     cmp.add_argument(
         "--no-skip-shallow", action="store_true",
         help="don't auto-skip clone-depth / shallow-marker projects",
+    )
+    cmp.add_argument(
+        "--no-progress", action="store_true",
+        help="suppress per-repo progress on stderr",
     )
 
     hist = sub.add_parser(

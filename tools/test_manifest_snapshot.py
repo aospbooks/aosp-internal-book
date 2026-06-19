@@ -1190,7 +1190,7 @@ class TestCompareEndToEnd(unittest.TestCase):
         return argparse.Namespace(
             cmd="compare", a=str(sa), b=str(sb), aosp_root=str(aosp),
             out_dir=str(out_dir), ignore_glob=[], ignore_file=None,
-            no_skip_shallow=False,
+            no_skip_shallow=False, no_progress=True,
         )
 
     def test_writes_four_keyed_files(self):
@@ -1241,6 +1241,34 @@ class TestCompareEndToEnd(unittest.TestCase):
             # Prompt references the sibling files.
             self.assertIn(f"{key}.changes.txt", prompt)
 
+    def test_progress_lines_on_stderr(self):
+        from manifest_snapshot import cmd_compare
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            sa, sb, aosp = self._scaffold(tdp)
+            # git dirs so commits_between/full_history return (not None)
+            for path in ("build/make", "platform/new", "platform/gone"):
+                (aosp / ".repo" / "projects" / f"{path}.git").mkdir(parents=True)
+            args = argparse.Namespace(
+                cmd="compare", a=str(sa), b=str(sb), aosp_root=str(aosp),
+                out_dir=str(tdp / "out"), ignore_glob=[], ignore_file=None,
+                no_skip_shallow=False, no_progress=False,
+            )
+            def fake_git(argv, **kwargs):
+                argv = list(argv)
+                if "log" in argv:
+                    return mock.Mock(returncode=0, stdout="dd subject\n", stderr="")
+                return mock.Mock(returncode=0, stdout="", stderr="")
+            buf = io.StringIO()
+            with mock.patch("subprocess.run", side_effect=fake_git), \
+                 contextlib.redirect_stderr(buf):
+                rc = cmd_compare(args)
+            self.assertEqual(rc, 0)
+            err = buf.getvalue()
+            self.assertIn("[ 1/", err)            # at least one counter line
+            self.assertIn("(added)", err)         # added phase labelled
+            self.assertIn("(removed)", err)       # removed phase labelled
+
 
 class TestCompareGracefulDegradation(unittest.TestCase):
     XML_A = TestCompareEndToEnd.XML_A
@@ -1256,7 +1284,7 @@ class TestCompareGracefulDegradation(unittest.TestCase):
             args = argparse.Namespace(
                 cmd="compare", a=str(sa), b=str(sb), aosp_root=str(aosp),
                 out_dir=str(out_dir), ignore_glob=[], ignore_file=None,
-                no_skip_shallow=False,
+                no_skip_shallow=False, no_progress=True,
             )
             rc = cmd_compare(args)
             self.assertEqual(rc, 0)
@@ -1285,7 +1313,7 @@ class TestReadOnlyInvariant(unittest.TestCase):
             args = argparse.Namespace(
                 cmd="compare", a=str(sa), b=str(sb), aosp_root=str(aosp),
                 out_dir=str(tdp / "out"), ignore_glob=[], ignore_file=None,
-                no_skip_shallow=False,
+                no_skip_shallow=False, no_progress=True,
             )
             with mock.patch("subprocess.run", side_effect=record):
                 cmd_compare(args)
