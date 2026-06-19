@@ -1313,6 +1313,86 @@ class TestRenderHCAddedRemoved(unittest.TestCase):
         self.assertIn("# history unavailable", out)
 
 
+class TestCmdCompareHistory(unittest.TestCase):
+    def _hist(self, branch, date, repos):
+        # repos: list of (path, name, sha, [(commit_sha, subject), ...])
+        parts = [f"AOSP history: {branch} @ {date}",
+                 "Generated: x",
+                 f"Repositories: {len(repos)}   Skipped (shallow/ignored): 0   "
+                 "Total commits: 0", ""]
+        for path, name, sha, commits in repos:
+            parts.append("=" * 64)
+            parts.append(f"{path}   ({name})")
+            parts.append(f"sha {sha}   ({len(commits)} commits)")
+            parts.append("-" * 64)
+            parts.extend(f"{c} {sub}" for c, sub in commits)
+            parts.append("")
+        return "\n".join(parts) + "\n"
+
+    def _snapshot(self, d, revision, projects):
+        # projects: list of (name, path, groups, revision)
+        d.mkdir(parents=True)
+        proj_xml = "\n".join(
+            f'  <project path="{p}" name="{n}" groups="{",".join(g)}" '
+            f'revision="{r}"/>' for n, p, g, r in projects)
+        (d / "manifest.xml").write_text(
+            '<?xml version="1.0"?>\n<manifest>\n'
+            '  <remote name="aosp" fetch=".."/>\n'
+            f'  <default revision="{revision}" remote="aosp"/>\n'
+            f'{proj_xml}\n</manifest>\n')
+        (d / "metadata.json").write_text(json.dumps({
+            "schema_version": 1, "captured_at": "2026-06-19T00:00:00+00:00",
+            "captured_at_unix": 0, "default_revision": revision,
+            "default_remote": "aosp", "manifest_branch": revision,
+            "repo_version": "v2.55", "label": "", "notes": ""}))
+
+    def test_end_to_end(self):
+        from manifest_snapshot import cmd_compare_history
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            SHA16, SHA17 = "a" * 40, "b" * 40
+            keep, dropped, new = "1" * 40, "2" * 40, "3" * 40
+            ha = tdp / "a16.txt"
+            ha.write_text(self._hist("android-16.0.0_r4", "2026-06-18", [
+                ("frameworks/base", "platform/frameworks/base", SHA16,
+                 [(keep, "keep"), (dropped, "drop me")]),
+                ("platform/gone", "platform/gone", "c" * 40, [("9" * 40, "old")]),
+            ]))
+            hb = tdp / "a17.txt"
+            hb.write_text(self._hist("android17-release", "2026-06-19", [
+                ("frameworks/base", "platform/frameworks/base", SHA17,
+                 [(new, "shiny new"), (keep, "keep")]),
+                ("platform/added", "platform/added", "d" * 40, [("8" * 40, "born")]),
+            ]))
+            snap_b = tdp / "android17-release" / "2026-06-19"
+            self._snapshot(snap_b, "android17-release", [
+                ("platform/frameworks/base", "frameworks/base", ("pdk",), SHA17),
+                ("platform/added", "platform/added", ("pdk",), "d" * 40),
+            ])
+            out_dir = tdp / "out"
+            args = argparse.Namespace(
+                cmd="compare-history", history_a=str(ha), snapshot_b=str(snap_b),
+                history_b=str(hb), out_dir=str(out_dir), no_progress=True)
+            rc = cmd_compare_history(args)
+            self.assertEqual(rc, 0)
+            key = "android-16.0.0_r4_2026-06-18__vs__android17-release_2026-06-19"
+            changes = (out_dir / f"{key}.changes.txt").read_text()
+            report = (out_dir / f"{key}.report.md").read_text()
+            addrem = (out_dir / f"{key}.added-removed.txt").read_text()
+            # frameworks/base moved: new=shiny new, dropped=drop me
+            self.assertIn("shiny new", changes)   # new in 17
+            self.assertIn("drop me", changes)     # dropped from 16
+            # 'keep' is common to both sides -> neither new nor dropped -> absent
+            self.assertNotIn("keep", changes)
+            # platform/added is added (in 17 snapshot, not in 16); platform/gone removed
+            self.assertIn("platform/added", addrem)
+            self.assertIn("born", addrem)            # added repo full history
+            self.assertIn("platform/gone", addrem)
+            self.assertIn("| Moved | 1 |", report)
+            self.assertIn("| Added | 1 |", report)
+            self.assertIn("| Removed | 1 |", report)
+
+
 class TestCompareEndToEnd(unittest.TestCase):
     XML_A = """<?xml version="1.0"?>
 <manifest>

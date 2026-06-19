@@ -1117,6 +1117,115 @@ def cmd_history(args, *, now=None) -> int:
     return 0
 
 
+def cmd_compare_history(args) -> int:
+    history_a = Path(args.history_a)
+    history_b = Path(args.history_b)
+    snap_b = load_snapshot(Path(args.snapshot_b))
+    progress = not args.no_progress
+
+    a_branch, a_date = read_history_header(history_a)
+    a_index = index_history(history_a)
+    b_index = index_history(history_b)
+    b_by_path = {p.path: p for p in snap_b.projects.values()}
+
+    # Consistency: snapshot SHA vs history-b SHA per repo.
+    for path, proj in b_by_path.items():
+        hb = b_index.get(path)
+        if hb is not None and hb.sha is not None and hb.sha != proj.revision:
+            print(f"warning: {path}: snapshot-b SHA {_short(proj.revision)} != "
+                  f"history-b SHA {_short(hb.sha)}", file=sys.stderr)
+
+    a_paths, b_paths = set(a_index), set(b_by_path)
+    added_paths = sorted(b_paths - a_paths)
+    removed_paths = sorted(a_paths - b_paths)
+    both = sorted(a_paths & b_paths)
+
+    moved: list[HCMoved] = []
+    unclassifiable: list[tuple[str, str]] = []
+    unchanged = 0
+    new_total = dropped_total = unavailable = 0
+
+    moved_paths = []
+    for path in both:
+        a_repo = a_index[path]
+        b_proj = b_by_path[path]
+        if a_repo.sha is None:
+            unclassifiable.append((path, a_repo.reason or "skipped in android-16 history"))
+        elif a_repo.sha == b_proj.revision:
+            unchanged += 1
+        else:
+            moved_paths.append(path)
+
+    for i, path in enumerate(moved_paths, start=1):
+        a_repo = a_index[path]
+        b_proj = b_by_path[path]
+        a_pairs = read_repo_commit_pairs(history_a, a_repo)
+        hb = b_index.get(path)
+        b_pairs = read_repo_commit_pairs(history_b, hb) if hb else None
+        url = googlesource_url(b_proj.name, a_repo.sha, b_proj.revision)
+        if a_pairs is None or b_pairs is None:
+            unavailable += 1
+            moved.append(HCMoved(path, b_proj.name, b_proj.groups, a_repo.sha,
+                                 b_proj.revision, None, None, url))
+            emit_progress(progress, i, len(moved_paths), f"{path}  (commits unavailable)")
+        else:
+            new, dropped = diff_commit_lists(a_pairs, b_pairs)
+            new_total += len(new)
+            dropped_total += len(dropped)
+            moved.append(HCMoved(path, b_proj.name, b_proj.groups, a_repo.sha,
+                                 b_proj.revision, new, dropped, url))
+            emit_progress(progress, i, len(moved_paths),
+                          f"{path}  (+{len(new)} / -{len(dropped)})")
+    moved.sort(key=lambda m: m.path)
+
+    # Added: from snapshot-b; full history from history-b when logged there.
+    added_rows = []
+    added_hist_rows = []
+    for path in added_paths:
+        proj = b_by_path[path]
+        added_rows.append((proj.name, proj.path, proj.groups, proj.revision))
+        hb = b_index.get(path)
+        hist = read_repo_commit_pairs(history_b, hb) if hb else None
+        added_hist_rows.append((proj.name, proj.path, proj.groups, proj.revision, hist))
+    # Removed: from android-16 history; full history from history-a when logged.
+    removed_rows = []
+    removed_hist_rows = []
+    for path in removed_paths:
+        a_repo = a_index[path]
+        name = a_repo.name or path
+        sha = a_repo.sha or ""
+        removed_rows.append((name, path, (), sha))
+        hist = read_repo_commit_pairs(history_a, a_repo)
+        removed_hist_rows.append((name, path, (), sha, hist))
+
+    counts = {
+        "moved": len(moved), "added": len(added_rows), "removed": len(removed_rows),
+        "unchanged": unchanged, "unclassifiable": len(unclassifiable),
+        "new_total": new_total, "dropped_total": dropped_total,
+        "unavailable": unavailable,
+    }
+
+    key = (f"{a_branch}_{a_date}__vs__"
+           f"{snap_b.default_revision}_{snap_b.snap_dir.name}")
+    out_dir = (Path(args.out_dir) if args.out_dir
+               else Path("manifest-snapshots") / "_compare")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ctx = HCCtx(a_branch=a_branch, a_date=a_date,
+                b_branch=snap_b.default_revision, b_date=snap_b.snap_dir.name,
+                generated=_dt.datetime.now(_dt.timezone.utc).isoformat(),
+                changes_file=f"{key}.changes.txt",
+                added_removed_file=f"{key}.added-removed.txt")
+    (out_dir / f"{key}.report.md").write_text(
+        render_history_compare_report_md(ctx, moved, added_rows, removed_rows,
+                                         unclassifiable, counts))
+    (out_dir / f"{key}.changes.txt").write_text(
+        render_history_compare_changes_txt(ctx, moved, counts))
+    (out_dir / f"{key}.added-removed.txt").write_text(
+        render_history_compare_added_removed_txt(ctx, added_hist_rows, removed_hist_rows))
+    print(f"Wrote 3 files to {out_dir!s} (prefix {key})")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="manifest_snapshot",
@@ -1183,6 +1292,21 @@ def build_parser() -> argparse.ArgumentParser:
     hist.add_argument("--no-progress", action="store_true",
                       help="suppress per-repo progress on stderr")
 
+    ch = sub.add_parser(
+        "compare-history",
+        help="diff two versions from history files + an android-17 snapshot")
+    ch.add_argument("--history-a", required=True,
+                    help="android-16 history .txt (older side)")
+    ch.add_argument("--snapshot-b", required=True,
+                    help="android-17 snapshot dir (newer side, project list)")
+    ch.add_argument("--history-b", required=True,
+                    help="android-17 history .txt (newer side, commits)")
+    ch.add_argument("--out-dir", default=None,
+                    help="directory for the <KEY>.* files "
+                         "(default: manifest-snapshots/_compare/)")
+    ch.add_argument("--no-progress", action="store_true",
+                    help="suppress per-repo progress on stderr")
+
     return p
 
 
@@ -1195,6 +1319,8 @@ def main(argv=None) -> int:
         return cmd_compare(args)
     if args.cmd == "history":
         return cmd_history(args)
+    if args.cmd == "compare-history":
+        return cmd_compare_history(args)
     parser.error(f"unknown command: {args.cmd}")
 
 
