@@ -168,6 +168,16 @@ class HistoryEntry:              # one repo's full history for a single version
     url: str
 
 
+@dataclass(frozen=True)
+class HistRepo:                 # one repo as indexed from a history .txt
+    path: str
+    name: str | None            # None for skipped repos
+    sha: str | None             # None for skipped repos
+    reason: str | None          # skip reason, or None for logged repos
+    commits_start: int | None   # byte offset of first body line, or None
+    commits_end: int | None     # byte offset just past the body, or None
+
+
 def parse_manifest(xml_text: str) -> tuple[str, str, dict[str, Project]]:
     """Parse a (pinned) repo manifest XML.
 
@@ -675,6 +685,72 @@ def compare_key(a: Snapshot, b: Snapshot) -> str:
     """Filename-safe key identifying a comparison: <A>__vs__<B> where each side
     is `<branch>_<snapshot-date>`."""
     return f"{_snap_key(a)}__vs__{_snap_key(b)}"
+
+
+def read_history_header(path: Path) -> tuple[str, str]:
+    """Return (branch, date) from a history file's first line:
+    'AOSP history: <branch> @ <date>'."""
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        first = f.readline().rstrip("\n")
+    m = re.match(r"AOSP history: (.+) @ (\S+)$", first)
+    if not m:
+        raise ValueError(f"{path}: not a history file (bad header: {first!r})")
+    return m.group(1), m.group(2)
+
+
+def index_history(path: Path) -> dict[str, HistRepo]:
+    """Index a history .txt by project path WITHOUT loading commit bodies.
+    Logged repos carry name/sha and a commit-body byte range [commits_start,
+    commits_end); skipped repos carry only a reason."""
+    repos: dict[str, HistRepo] = {}
+    in_skipped = False
+    state = "pre"          # pre | await_header | await_sha | await_sub | body
+    cur_path = cur_name = cur_sha = None
+    body_start = None
+    offset = 0
+
+    def flush(end_offset):
+        nonlocal cur_path, cur_name, cur_sha, body_start
+        if cur_path is not None:
+            repos[cur_path] = HistRepo(
+                path=cur_path, name=cur_name, sha=cur_sha, reason=None,
+                commits_start=body_start,
+                commits_end=end_offset if body_start is not None else None,
+            )
+        cur_path = cur_name = cur_sha = body_start = None
+
+    with open(path, "rb") as f:
+        for raw in f:
+            line = raw.decode("utf-8", "replace").rstrip("\n")
+            nxt = offset + len(raw)
+            if line == _SEP:
+                flush(offset)
+                state, in_skipped = "await_header", False
+            elif state == "await_header":
+                m = re.match(r"(.+?)   \((.+)\)$", line)
+                cur_path, cur_name = (m.group(1), m.group(2)) if m else (line, None)
+                state = "await_sha"
+            elif state == "await_sha":
+                m = re.match(r"sha ([0-9a-f]{40})", line)
+                cur_sha = m.group(1) if m else None
+                state = "await_sub"
+            elif state == "await_sub":
+                if line == _SUB:
+                    body_start = nxt
+                    state = "body"
+            elif state == "body":
+                pass
+            elif line == "## Skipped (shallow/ignored)":
+                in_skipped = True
+            elif in_skipped and line.strip():
+                m = re.match(r"(.+?)   (.+)$", line)
+                if m:
+                    repos[m.group(1)] = HistRepo(
+                        path=m.group(1), name=None, sha=None, reason=m.group(2),
+                        commits_start=None, commits_end=None)
+            offset = nxt
+        flush(offset)
+    return repos
 
 
 def emit_progress(enabled: bool, i: int, total: int, label: str) -> None:

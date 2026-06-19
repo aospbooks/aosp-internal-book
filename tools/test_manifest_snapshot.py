@@ -954,6 +954,49 @@ class TestRenderHistoryTxt(unittest.TestCase):
         self.assertIn("# unreachable locally; see https://gs/art/+log/ccc", out)
 
 
+class TestIndexHistory(unittest.TestCase):
+    SAMPLE = (
+        "AOSP history: android16-test @ 2026-06-18\n"
+        "Generated: 2026-06-18T00:00:00+00:00\n"
+        "Repositories: 3   Skipped (shallow/ignored): 1   Total commits: 3\n"
+        "\n"
+        "## Skipped (shallow/ignored)\n"
+        "prebuilts/clang   clone-depth=1\n"
+        "\n"
+        + ("=" * 64) + "\n"
+        "art   (platform/art)\n"
+        "sha " + "a" * 40 + "   (2 commits)\n"
+        + ("-" * 64) + "\n"
+        + "1" * 40 + " first art\n"
+        + "2" * 40 + " second art\n"
+        "\n"
+        + ("=" * 64) + "\n"
+        "frameworks/base   (platform/frameworks/base)\n"
+        "sha " + "b" * 40 + "\n"
+        + ("-" * 64) + "\n"
+        "# unreachable locally; see https://gs/fb\n"
+        "\n"
+    )
+
+    def test_indexes_logged_and_skipped(self):
+        from manifest_snapshot import index_history, read_history_header
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "h.txt"
+            p.write_text(self.SAMPLE, encoding="utf-8")
+            self.assertEqual(read_history_header(p), ("android16-test", "2026-06-18"))
+            idx = index_history(p)
+            self.assertEqual(set(idx), {"art", "frameworks/base", "prebuilts/clang"})
+            self.assertEqual(idx["art"].name, "platform/art")
+            self.assertEqual(idx["art"].sha, "a" * 40)
+            self.assertIsNotNone(idx["art"].commits_start)
+            self.assertEqual(idx["prebuilts/clang"].reason, "clone-depth=1")
+            self.assertIsNone(idx["prebuilts/clang"].sha)
+            # unreachable logged repo: has sha + a body range (the body is the
+            # '# unreachable' line, which yields no commits when read)
+            self.assertEqual(idx["frameworks/base"].sha, "b" * 40)
+            self.assertIsNotNone(idx["frameworks/base"].commits_start)
+
+
 class TestEmitProgress(unittest.TestCase):
     def test_enabled_writes_line_to_stderr(self):
         import contextlib, io
