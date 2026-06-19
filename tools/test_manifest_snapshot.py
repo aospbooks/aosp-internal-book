@@ -953,6 +953,24 @@ class TestRenderHistoryTxt(unittest.TestCase):
         self.assertIn("# unreachable locally; see https://gs/art/+log/ccc", out)
 
 
+class TestEmitProgress(unittest.TestCase):
+    def test_enabled_writes_line_to_stderr(self):
+        import contextlib, io
+        from manifest_snapshot import emit_progress
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            emit_progress(True, 3, 10, "frameworks/base  (5 commits)")
+        self.assertEqual(buf.getvalue(), "[ 3/10 ] frameworks/base  (5 commits)\n")
+
+    def test_disabled_writes_nothing(self):
+        import contextlib, io
+        from manifest_snapshot import emit_progress
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            emit_progress(False, 3, 10, "x")
+        self.assertEqual(buf.getvalue(), "")
+
+
 class TestCmdHistory(unittest.TestCase):
     PINNED = """<?xml version="1.0"?>
 <manifest>

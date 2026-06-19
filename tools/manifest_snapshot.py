@@ -677,6 +677,13 @@ def compare_key(a: Snapshot, b: Snapshot) -> str:
     return f"{_snap_key(a)}__vs__{_snap_key(b)}"
 
 
+def emit_progress(enabled: bool, i: int, total: int, label: str) -> None:
+    """Print a one-line `[ i/total ] label` progress message to stderr (flushed),
+    or nothing when disabled. Progress never touches stdout or output files."""
+    if enabled:
+        print(f"[ {i}/{total} ] {label}", file=sys.stderr, flush=True)
+
+
 def _side_entries(names: list[str], snap: Snapshot, aosp_root: Path,
                   ignore_globs: list[str], skip_shallow: bool,
                   side: str) -> list[SideEntry]:
