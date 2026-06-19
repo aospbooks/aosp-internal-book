@@ -85,6 +85,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | App. | A | Key Files Reference |
 | App. | B | Glossary |
 | App. | C | Why Kotlin Isn't on the Public API |
+| App. | D | Android 17 Updates |
 <!-- --8<-- [end:coverage] -->
 
 ## How to Give Feedback
@@ -155,8 +156,7 @@ Tests `mkdocs build` on push to `main` and PRs (~2 min).
 
 ```
 [0-9]*.md                  65 chapter files
-A-appendix-key-files.md    Appendix A
-B-appendix-glossary.md     Appendix B
+[A-D]-appendix-*.md        4 appendix files
 index.md                   Website homepage
 mkdocs.yml                 MkDocs config (Material theme + Mermaid)
 docs/                      Symlinks for MkDocs (gitignored)
