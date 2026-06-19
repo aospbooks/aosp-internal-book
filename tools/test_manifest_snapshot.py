@@ -4,6 +4,7 @@ Run from the repo root:
     python3 tools/test_manifest_snapshot.py -v
 """
 import argparse
+import contextlib
 import datetime as _dt
 import io
 import json
@@ -1009,6 +1010,7 @@ class TestCmdHistory(unittest.TestCase):
         return argparse.Namespace(
             cmd="history", aosp_root=str(aosp), out_dir=str(out_dir),
             ignore_glob=[], ignore_file=None, no_skip_shallow=False,
+            no_progress=True,
         )
 
     def test_writes_history_file(self):
@@ -1066,6 +1068,43 @@ class TestCmdHistory(unittest.TestCase):
                 rc = cmd_history(self._args(aosp, tdp / "out"),
                                  now=_dt.datetime(2026, 6, 17, tzinfo=_dt.timezone.utc))
             self.assertEqual(rc, 3)
+
+    def test_progress_lines_on_stderr(self):
+        from manifest_snapshot import cmd_history
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            aosp = self._scaffold(tdp)
+            args = argparse.Namespace(
+                cmd="history", aosp_root=str(aosp), out_dir=str(tdp / "out"),
+                ignore_glob=[], ignore_file=None, no_skip_shallow=False,
+                no_progress=False,
+            )
+            buf = io.StringIO()
+            with mock.patch("subprocess.run", side_effect=self._fake_run), \
+                 mock.patch("manifest_snapshot.shutil.which",
+                            return_value="/usr/bin/repo"), \
+                 contextlib.redirect_stderr(buf):
+                rc = cmd_history(args,
+                                 now=_dt.datetime(2026, 6, 18, tzinfo=_dt.timezone.utc))
+            self.assertEqual(rc, 0)
+            err = buf.getvalue()
+            self.assertIn("[ 1/3 ]", err)
+            self.assertIn("art", err)
+            self.assertIn("(skipped: clone-depth=1)", err)  # shallow repo line
+
+    def test_no_progress_keeps_stderr_empty(self):
+        from manifest_snapshot import cmd_history
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            aosp = self._scaffold(tdp)
+            buf = io.StringIO()
+            with mock.patch("subprocess.run", side_effect=self._fake_run), \
+                 mock.patch("manifest_snapshot.shutil.which",
+                            return_value="/usr/bin/repo"), \
+                 contextlib.redirect_stderr(buf):
+                cmd_history(self._args(aosp, tdp / "out"),
+                            now=_dt.datetime(2026, 6, 18, tzinfo=_dt.timezone.utc))
+            self.assertEqual(buf.getvalue(), "")
 
     def test_slashy_default_revision_sanitized(self):
         # repo manifest can pin to a tag, e.g. revision="refs/tags/android-16.0.0_r4";

@@ -807,16 +807,23 @@ def cmd_history(args, *, now=None) -> int:
     entries: list[HistoryEntry] = []
     skipped: list[SkippedEntry] = []
     total_commits = 0
-    for name in sorted(projects, key=lambda n: projects[n].path):
+    progress = not args.no_progress
+    names = sorted(projects, key=lambda n: projects[n].path)
+    total = len(names)
+    for i, name in enumerate(names, start=1):
         p = projects[name]
         reason = skip_reason(p, p, aosp_root, ignore_globs, skip_shallow)
         if reason:
             skipped.append(SkippedEntry(name, p.path, p.revision, None, reason))
+            emit_progress(progress, i, total, f"{p.path}  (skipped: {reason})")
             continue
         git_dir = aosp_root / ".repo" / "projects" / f"{p.path}.git"
         commits = full_history(git_dir, p.revision)
-        if commits is not None:
+        if commits is None:
+            emit_progress(progress, i, total, f"{p.path}  (unreachable)")
+        else:
             total_commits += len(commits)
+            emit_progress(progress, i, total, f"{p.path}  ({len(commits)} commits)")
         entries.append(HistoryEntry(
             name=name, path=p.path, groups=p.groups, sha=p.revision,
             commits=commits, url=googlesource_log_url(name, p.revision),
@@ -900,6 +907,8 @@ def build_parser() -> argparse.ArgumentParser:
                            "missing file is fine")
     hist.add_argument("--no-skip-shallow", action="store_true",
                       help="don't auto-skip clone-depth / shallow-marker projects")
+    hist.add_argument("--no-progress", action="store_true",
+                      help="suppress per-repo progress on stderr")
 
     return p
 
