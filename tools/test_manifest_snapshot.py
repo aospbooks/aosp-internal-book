@@ -1258,6 +1258,39 @@ class TestRenderHCChanges(unittest.TestCase):
         self.assertIn("https://gs/p/+log/aaa..bbb", out)
 
 
+class TestRenderHCReport(unittest.TestCase):
+    def _ctx(self):
+        from manifest_snapshot import HCCtx
+        return HCCtx("android-16.0.0_r4", "2026-06-18", "android17-release",
+                     "2026-06-19", "2026-06-19T00:00:00+00:00",
+                     changes_file="K.changes.txt",
+                     added_removed_file="K.added-removed.txt")
+
+    def test_summary_groups_and_tables(self):
+        from manifest_snapshot import (render_history_compare_report_md, HCMoved)
+        moved = [HCMoved("frameworks/base", "platform/frameworks/base", ("pdk",),
+                         "a" * 40, "b" * 40, [("1" * 40, "c1")], [], "https://gs/fb")]
+        added = [("platform/new", "new", ("pdk",), "n" * 40)]
+        removed = [("platform/gone", "gone", ("pdk",), "g" * 40)]
+        unclassifiable = [("prebuilts/x", "skipped in 16 history")]
+        counts = {"moved": 1, "added": 1, "removed": 1, "unchanged": 5,
+                  "unclassifiable": 1, "new_total": 1, "dropped_total": 0,
+                  "unavailable": 0}
+        out = render_history_compare_report_md(
+            self._ctx(), moved, added, removed, unclassifiable, counts)
+        self.assertIn("# AOSP version diff: android-16.0.0_r4 @ 2026-06-18", out)
+        self.assertIn("| Moved | 1 |", out)
+        self.assertIn("| Added | 1 |", out)
+        self.assertIn("### Group: pdk", out)
+        self.assertIn("K.changes.txt", out)
+        self.assertIn("## Added projects", out)
+        self.assertIn("platform/new", out)
+        self.assertIn("## Removed projects", out)
+        self.assertIn("## Unclassifiable", out)
+        self.assertIn("prebuilts/x", out)
+        self.assertNotIn(" c1", out)   # counts, not commit text
+
+
 class TestCompareEndToEnd(unittest.TestCase):
     XML_A = """<?xml version="1.0"?>
 <manifest>

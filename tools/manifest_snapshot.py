@@ -713,6 +713,72 @@ def render_history_compare_changes_txt(ctx: HCCtx, moved: list[HCMoved],
     return "\n".join(lines) + "\n"
 
 
+def _group_hc_moved(moved: list[HCMoved]) -> dict[str, list[HCMoved]]:
+    buckets: dict[str, list[HCMoved]] = {}
+    for m in moved:
+        for g in (list(m.groups) if m.groups else [UNGROUPED]):
+            buckets.setdefault(g, []).append(m)
+    return {g: sorted(buckets[g], key=lambda e: e.path) for g in sorted(buckets)}
+
+
+def render_history_compare_report_md(ctx: HCCtx, moved: list[HCMoved],
+                                     added: list, removed: list,
+                                     unclassifiable: list, counts: dict) -> str:
+    """Navigator: summary, moved-by-group (counts + link, no inline commits),
+    added/removed tables, unclassifiable list. `added`/`removed` are tuples
+    (name, path, groups, sha); `unclassifiable` is (path, reason)."""
+    lines: list[str] = [
+        f"# AOSP version diff: {ctx.a_branch} @ {ctx.a_date}  ->  "
+        f"{ctx.b_branch} @ {ctx.b_date}",
+        "",
+        f"Generated: {ctx.generated}",
+        "",
+        "## Summary",
+        "| Category | Count |",
+        "|---|---|",
+        f"| Moved | {counts['moved']} |",
+        f"| Added | {counts['added']} |",
+        f"| Removed | {counts['removed']} |",
+        f"| Unchanged | {counts['unchanged']} |",
+        f"| Unclassifiable (skipped in 16) | {counts['unclassifiable']} |",
+        f"| Commits unavailable (moved) | {counts['unavailable']} |",
+        f"| New commits (total) | {counts['new_total']} |",
+        f"| Dropped commits (total) | {counts['dropped_total']} |",
+        "",
+        f"Per-repo commit diffs: `{ctx.changes_file}`. "
+        f"Added/removed histories: `{ctx.added_removed_file}`.",
+        "",
+        "## Moved projects by module group",
+        "",
+    ]
+    for group_name, entries in _group_hc_moved(moved).items():
+        lines.append(f"### Group: {group_name}")
+        lines.append(f"*{len(entries)} project(s) changed in this group.*")
+        lines.append("")
+        lines.append("| Project | Path | new | dropped | Compare |")
+        lines.append("|---|---|---|---|---|")
+        for m in entries:
+            ncol = "n/a" if m.new is None else str(len(m.new))
+            dcol = "n/a" if m.dropped is None else str(len(m.dropped))
+            lines.append(f"| {m.name} | `{m.path}` | {ncol} | {dcol} | <{m.url}> |")
+        lines.append("")
+    for title, rows in (("Added", added), ("Removed", removed)):
+        lines.append(f"## {title} projects")
+        lines.append("| Name | Path | SHA | Groups |")
+        lines.append("|---|---|---|---|")
+        for name, path, groups, sha in rows:
+            g = ", ".join(groups) if groups else "-"
+            lines.append(f"| {name} | `{path}` | `{_short(sha)}` | {g} |")
+        lines.append("")
+    lines.append("## Unclassifiable (skipped in android-16 history)")
+    lines.append("| Path | Reason |")
+    lines.append("|---|---|")
+    for path, reason in unclassifiable:
+        lines.append(f"| `{path}` | {reason} |")
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
 def load_snapshot(snap_dir: Path) -> Snapshot:
     snap_dir = Path(snap_dir)
     manifest_xml = snap_dir / "manifest.xml"
