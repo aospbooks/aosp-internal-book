@@ -174,3 +174,4 @@ nav:
     - "A. Key Files Reference": A-appendix-key-files.md
     - "B. Glossary": B-appendix-glossary.md
     - "C. Why Kotlin Isn't on the Public API": C-appendix-kotlin-public-api.md
+    - "D. Android 17 Updates": D-appendix-android-17-updates.md

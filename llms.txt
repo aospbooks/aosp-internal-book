@@ -121,6 +121,7 @@ When using this site as background for AOSP work, prefer fetching the chapter th
 - [Appendix A: Key Files Reference](https://aospbooks.github.io/aosp-internal-book/A-appendix-key-files/): per-chapter table of the most important AOSP source files (build, init, kernel, HAL, framework services, system apps, infrastructure)
 - [Appendix B: Glossary](https://aospbooks.github.io/aosp-internal-book/B-appendix-glossary/): definitions of AOSP-specific acronyms and terms (Treble, VINTF, GKI, APEX, AIDL, HIDL, …)
 - [Appendix C: Why Kotlin Isn't on the Public API](https://aospbooks.github.io/aosp-internal-book/C-appendix-kotlin-public-api/): the asymmetry between Kotlin's heavy use in AOSP services and its absence from `android.*` public APIs — ABI stability, metalava, hidden API enforcement, OEM/Mainline freeze constraints
+- [Appendix D: Android 17 Updates](https://aospbooks.github.io/aosp-internal-book/D-appendix-android-17-updates/): important platform changes from Android 16 to Android 17 — new projects, new modules, and architecture changes by subsystem (SDV, NpuManager, LFI sandbox, native Rust Zygote, mmd, generic ranging), grounded in the 16→17 changeset and verified against AOSP 17 source
 
 ## Source
 
