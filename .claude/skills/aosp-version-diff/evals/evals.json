@@ -1,0 +1,47 @@
+{
+  "skill_name": "aosp-version-diff",
+  "evals": [
+    {
+      "id": 0,
+      "name": "gap-find",
+      "prompt": "I'm maintaining an Android 17 updates report at D-appendix-android-17-updates.md in this repo. I already ran the 16->17 comparison; its output is under manifest-snapshots/_compare/android-16.0.0_r4-to-android17-release/ (report.md is the navigator; changes.txt and added-removed.txt are large). I'm worried the report is missing some genuinely new Android 17 modules. Find newly-added projects that the report doesn't already cover, figure out what each one actually is from the Android 17 source at $ANDROID_BUILD_TOP, and give me a short list of the add-worthy ones classified by subsystem (drop noise like prebuilts/vendor/empty repos). Don't edit the report \u2014 just tell me what's missing.",
+      "expected_output": "A short, classified list of genuinely-missing add-worthy added projects (e.g. packages/modules/WebApp, system/memory/guardian), each with what it is and a real source path, plus explicitly-excluded noise. Should deterministically diff added-projects-vs-report and verify against real source rather than guess.",
+      "files": [],
+      "assertions": [
+        "Deterministic candidate set (added-projects diffed vs the report, not guessed)",
+        "Add-worthy gaps classified by subsystem/Part",
+        "Cites real source paths for findings",
+        "Excludes noise with reasons (prebuilt/vendor/empty/relocation)",
+        "States the report was not edited (read-only)"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "compare-history",
+      "prompt": "I've got two AOSP history dumps in manifest-snapshots/_history/ in this repo: android-16.0.0_r4_2026-06-18.history.txt and android17-release_2026-06-19.history.txt. I want a per-repository diff that shows what commits are NEW in android 17 vs 16. How should I produce that with the tooling in this repo, and concretely, what are the new-in-17 commits for frameworks/base? My AOSP checkout is at $ANDROID_BUILD_TOP.",
+      "expected_output": "Should reuse tools/manifest_snapshot.py compare-history (not hand-roll git), give the correct invocation (history-a, snapshot-b, history-b), and produce/locate frameworks/base's NEW commit list (e.g. by grepping the existing compare changes.txt section rather than reading the 300+MB file whole). Bonus: notes the snapshot-vs-history coherence reason for compare-history.",
+      "files": [],
+      "assertions": [
+        "Identifies tools/manifest_snapshot.py compare-history",
+        "Gives the correct invocation flags",
+        "Avoids reading the large files whole (grep/seek/index)",
+        "Produces frameworks/base new-in-17 result (~15,196)",
+        "Notes snapshot-vs-history coherence rationale"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "fullflow-plan",
+      "prompt": "I have a local AOSP checkout at $ANDROID_BUILD_TOP and I want to compare two Android releases (say android 16 vs android 17) end to end and turn it into a written report of the important platform changes. Walk me through the exact steps and commands, and explain how you'd decide what's important enough to include vs leave out. I care about accuracy.",
+      "expected_output": "Should reuse tools/manifest_snapshot.py (snap/history/compare or compare-history) rather than inventing a git-log script; lay out capture-each-side -> diff -> curate-by-subsystem-and-category; state a scope/selection policy; treat external/* as integration signals; and include a source-verification / accuracy pass. Baseline likely hand-rolls git log and omits the scope policy and verification loop.",
+      "files": [],
+      "assertions": [
+        "Reuses tools/manifest_snapshot.py (not a hand-rolled git-log script)",
+        "Lays out capture -> diff -> curate by subsystem & category",
+        "States a scope / selection policy",
+        "Treats external/* as integration signals",
+        "Includes a source-verification / accuracy pass"
+      ]
+    }
+  ]
+}
