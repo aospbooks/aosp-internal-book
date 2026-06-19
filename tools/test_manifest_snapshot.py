@@ -1392,6 +1392,34 @@ class TestCmdCompareHistory(unittest.TestCase):
             self.assertIn("| Added | 1 |", report)
             self.assertIn("| Removed | 1 |", report)
 
+    def test_slashy_history_a_branch_sanitized(self):
+        # android-16 history header is often a tag: refs/tags/android-16.0.0_r4.
+        # Those slashes must not become directories in the output filenames.
+        from manifest_snapshot import cmd_compare_history
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            ha = tdp / "a16.txt"
+            ha.write_text(self._hist("refs/tags/android-16.0.0_r4", "2026-06-18", [
+                ("art", "platform/art", "a" * 40, [("1" * 40, "old")]),
+            ]))
+            hb = tdp / "a17.txt"
+            hb.write_text(self._hist("android17-release", "2026-06-19", [
+                ("art", "platform/art", "b" * 40, [("2" * 40, "new")]),
+            ]))
+            snap_b = tdp / "android17-release" / "2026-06-19"
+            self._snapshot(snap_b, "android17-release", [
+                ("platform/art", "art", ("pdk",), "b" * 40),
+            ])
+            out_dir = tdp / "out"
+            args = argparse.Namespace(
+                cmd="compare-history", history_a=str(ha), snapshot_b=str(snap_b),
+                history_b=str(hb), out_dir=str(out_dir), no_progress=True)
+            rc = cmd_compare_history(args)
+            self.assertEqual(rc, 0)
+            key = "android-16.0.0_r4_2026-06-18__vs__android17-release_2026-06-19"
+            self.assertTrue((out_dir / f"{key}.report.md").is_file())
+            self.assertFalse((out_dir / "refs").exists())  # no nested dirs
+
 
 class TestCompareEndToEnd(unittest.TestCase):
     XML_A = """<?xml version="1.0"?>

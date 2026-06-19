@@ -826,6 +826,14 @@ def load_snapshot(snap_dir: Path) -> Snapshot:
     )
 
 
+def _revision_slug(rev: str) -> str:
+    """Make a manifest revision filename-safe: strip ref prefixes and flatten
+    slashes, so e.g. 'refs/tags/android-16.0.0_r4' -> 'android-16.0.0_r4'
+    (a single path component, not nested dirs)."""
+    return (rev.removeprefix("refs/heads/").removeprefix("refs/tags/")
+            .replace("/", "-"))
+
+
 def _snap_key(snap: Snapshot) -> str:
     return f"{snap.default_revision}_{snap.snap_dir.name}"
 
@@ -1106,11 +1114,8 @@ def cmd_history(args, *, now=None) -> int:
                else Path("manifest-snapshots") / "_history")
     out_dir.mkdir(parents=True, exist_ok=True)
     # The manifest default revision can be a full ref (e.g.
-    # refs/tags/android-16.0.0_r4); strip ref prefixes and flatten any
-    # remaining slashes so it forms a single safe filename, not nested dirs.
-    slug = (default_rev.removeprefix("refs/heads/").removeprefix("refs/tags/")
-            .replace("/", "-"))
-    out_path = out_dir / f"{slug}_{date}.history.txt"
+    # refs/tags/android-16.0.0_r4); slugify so it forms a single safe filename.
+    out_path = out_dir / f"{_revision_slug(default_rev)}_{date}.history.txt"
     out_path.write_text(render_history_txt(
         default_rev, date, now.isoformat(), entries, skipped, counts))
     print(f"Wrote {out_path!s} ({len(entries)} repos logged, {len(skipped)} skipped)")
@@ -1205,8 +1210,8 @@ def cmd_compare_history(args) -> int:
         "unavailable": unavailable,
     }
 
-    key = (f"{a_branch}_{a_date}__vs__"
-           f"{snap_b.default_revision}_{snap_b.snap_dir.name}")
+    key = (f"{_revision_slug(a_branch)}_{a_date}__vs__"
+           f"{_revision_slug(snap_b.default_revision)}_{snap_b.snap_dir.name}")
     out_dir = (Path(args.out_dir) if args.out_dir
                else Path("manifest-snapshots") / "_compare")
     out_dir.mkdir(parents=True, exist_ok=True)
