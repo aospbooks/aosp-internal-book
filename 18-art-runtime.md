@@ -4457,10 +4457,25 @@ collects them with their source citations.
 
 ### 18.11.1 Pantherlake x86 ISA Variant (AVX2)
 
-ART's x86 back-end selects CPU features from a named *variant* rather than
-probing at compile time. The list of known variants and the feature each one
-implies lives in `art/runtime/arch/x86/instruction_set_features_x86.cc`. Android
-17 adds `pantherlake` (Intel's Panther Lake client architecture) to that list:
+ART's x86 back-end does not probe the CPU with `CPUID` at compile time; instead
+it is handed a *named variant* -- much like a compiler's `-march=`/`-mtune=`
+target -- and maps that name to a fixed set of instruction-set features. The list
+of recognized variants, and the features each one implies, lives in
+`art/runtime/arch/x86/instruction_set_features_x86.cc`. Teaching ART about a new
+CPU generation is therefore just a matter of adding its name to
+`x86_known_variants` and listing it in the per-feature arrays it qualifies for.
+
+**What `pantherlake` is.** Panther Lake is Intel's client (consumer/mobile) CPU
+generation -- newer than the Kaby Lake and Alder Lake parts already in ART's
+list. For ART's purposes the one salient fact is its vector ISA: like other Intel
+*client* silicon it exposes AVX and AVX2 but not the server-only AVX-512, which is
+exactly why its entry tops out at AVX2 rather than declaring an AVX-512 feature.
+The reason ART cares about the name at all is code generation: when a build
+targets x86-64 -- the Android emulator, x86 Chromebooks, and other x86 form
+factors -- naming `pantherlake` tells `dex2oat` and the optimizing compiler the
+exact feature set the CPU has, so they emit wider vectorized code instead of
+conservatively assuming a baseline x86 chip. Android 17 adds it as a known
+variant:
 
 ```
 // art/runtime/arch/x86/instruction_set_features_x86.cc, lines 43-115
@@ -4477,7 +4492,14 @@ static constexpr const char* x86_variants_with_avx2[] = {
 
 Because `pantherlake` is listed in `x86_variants_with_avx2`,
 `X86InstructionSetFeatures::FromVariant("pantherlake", ...)` returns a feature
-set with `HasAVX2()` true (alongside SSSE3, SSE4.1, SSE4.2, AVX, and POPCNT).
+set with `HasAVX2()` true (alongside SSSE3, SSE4.1, SSE4.2, AVX, and POPCNT) --
+the feature string `ssse3,sse4.1,sse4.2,avx,avx2,popcnt` (bitmap `63`). The unit
+test `X86FeaturesFromPantherlakeVariant`
+(`art/runtime/arch/x86/instruction_set_features_x86_test.cc`) asserts that exact
+result for both the 32-bit `kX86` and 64-bit `kX86_64` instruction sets. This
+puts `pantherlake` alongside `kabylake` and `alderlake` as the only three
+variants ART recognizes at the AVX2 tier; the older Atom, Silvermont, Goldmont,
+and Tremont families it knows about stop at SSE4.2 with no AVX or AVX2.
 The AVX2 bit lives at position 4 of the feature bitmap
 (`kAvx2Bitfield = 1 << 4`, `art/runtime/arch/x86/instruction_set_features_x86.h`,
 line 141); an Android 17 fix corrected that bit position so the bitmap encoding
