@@ -397,7 +397,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/base/services/core/java/com/android/server/biometrics/` | Biometric authentication |
 | `frameworks/base/keystore/java/android/security/keystore2/` | Keystore Java API |
 
-## SystemUI (Chapter 47)
+## SystemUI (Chapter 48)
 
 | File Path | Purpose |
 |-----------|---------|
@@ -410,7 +410,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/volume/VolumeDialogControllerImpl.java` | Volume dialog logic |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/shade/NotificationPanelViewController.java` | Notification panel controller |
 
-## Launcher3 (Chapter 48)
+## Launcher3 (Chapter 49)
 
 | File Path | Purpose |
 |-----------|---------|
@@ -422,7 +422,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `packages/apps/Launcher3/quickstep/src/com/android/quickstep/RecentsActivity.java` | Recents (overview) activity |
 | `packages/apps/Launcher3/quickstep/src/com/android/quickstep/TouchInteractionService.java` | Gesture navigation service |
 
-## Settings App (Chapter 49)
+## Settings App (Chapter 50)
 
 | File Path | Purpose |
 |-----------|---------|
@@ -431,14 +431,14 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `packages/apps/Settings/src/com/android/settings/search/SearchFeatureProvider.java` | Settings search |
 | `packages/apps/Settings/src/com/android/settings/biometrics/` | Biometrics enrollment |
 
-## CompanionDeviceManager and Virtual Devices (Chapter 51)
+## CompanionDeviceManager and Virtual Devices (Chapter 52)
 
 | File Path | Purpose |
 |-----------|---------|
 | `frameworks/base/services/companion/java/com/android/server/companion/CompanionDeviceManagerService.java` | CDM service |
 | `frameworks/base/services/companion/java/com/android/server/companion/virtual/VirtualDeviceManagerService.java` | VDM service |
 
-## Mainline Modules (Chapter 52)
+## Mainline Modules (Chapter 54)
 
 | File Path | Purpose |
 |-----------|---------|
@@ -453,7 +453,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `system/apex/apexd/apexd.cpp` | APEX installation and activation |
 | `system/apex/libs/libapexutil/` | APEX utility library |
 
-## Virtualization Framework (Chapter 54)
+## Virtualization Framework (Chapter 56)
 
 | File Path | Purpose |
 |-----------|---------|
@@ -463,7 +463,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `packages/modules/Virtualization/guest/pvmfw/` | Protected VM firmware |
 | `packages/modules/Virtualization/libs/libvm_payload/` | Guest payload interface |
 
-## Testing (Chapter 55)
+## Testing (Chapter 57)
 
 | File Path | Purpose |
 |-----------|---------|
@@ -475,7 +475,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/base/core/tests/` | Framework core unit tests |
 | `frameworks/base/test-runner/` | Android test runner framework |
 
-## Architecture Support (Chapter 57)
+## Architecture Support (Chapter 59)
 
 | File Path | Purpose |
 |-----------|---------|
@@ -493,7 +493,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `art/runtime/arch/riscv64/instruction_set_features_riscv64.h` | ART RISC-V feature detection |
 | `art/runtime/arch/arm64/instruction_set_features_arm64.h` | ART ARM64 feature bitmap and errata |
 
-## Emulator (Chapter 58)
+## Emulator (Chapter 60)
 
 | File Path | Purpose |
 |-----------|---------|
@@ -505,7 +505,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `external/crosvm/` | CrosVM virtual machine monitor |
 | `external/qemu/android/android-grpc/` | Emulator gRPC control interface |
 
-## Automotive, TV, and Wear (Chapter 60)
+## Automotive, TV, and Wear (Chapter 62)
 
 | File Path | Purpose |
 |-----------|---------|
@@ -1918,8 +1918,8 @@ axis was added with explicit signature management, explicit toolchain support,
 and explicit test infrastructure. Adding "Kotlin emission shape" as a fourth
 freeze axis would require equivalent work — which has not happened.
 
-For deeper context on the APEX format and update flow, see [Chapter 52 —
-Mainline Modules](52-mainline-modules.md) at the repo root.
+For deeper context on the APEX format and update flow, see [Chapter 54 —
+Mainline Modules](54-mainline-modules.md) at the repo root.
 
 ## Where Kotlin Already Lives in AOSP
 

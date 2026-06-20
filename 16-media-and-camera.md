@@ -3432,7 +3432,7 @@ for (MediaCodecInfo info : codecList.getCodecInfos()) {
 
                 // Check if 4K@60fps is supported
                 boolean supports4K60 =
-                    vcaps.areSizeAndRateSupported(3840, 2160, 60.0);
+                    vcaps.areSizeAndRateSupported(3840, 2160, 62.0);
 
                 Log.d("Codec", info.getName() + ": " + type
                     + " widths=" + widths + " heights=" + heights

@@ -7,7 +7,7 @@ name = "aosp-internals"
 version = "2026.05.25"
 repo_url = "https://github.com/aospbooks/aosp-internal-book"
 site_url = "https://aospbooks.github.io/aosp-internal-book/"
-description = "AOSP Internals book content (69 chapters + 4 appendices) packaged as 17 Part-skills."
+description = "AOSP Internals book content (67 chapters + 4 appendices) packaged as 16 Part-skills."
 
 [[parts]]
 id = "getting-started"
@@ -61,49 +61,43 @@ chapters = ["35-networking", "36-telephony", "37-bluetooth", "38-nfc", "39-usb-a
 id = "security"
 roman = "IX"
 title = "Security"
-chapters = ["40-security", "41-credential-manager", "42-drm", "68-lfi-sandbox"]
+chapters = ["40-security", "41-credential-manager", "42-drm", "43-lfi-sandbox"]
 
 [[parts]]
 id = "ui-framework"
 roman = "X"
 title = "UI Framework"
-chapters = ["43-widgets-remoteviews", "44-webview", "45-accessibility", "46-internationalization"]
+chapters = ["44-widgets-remoteviews", "45-webview", "46-accessibility", "47-internationalization"]
 
 [[parts]]
 id = "system-apps"
 roman = "XI"
 title = "System Apps"
-chapters = ["47-systemui", "48-launcher3", "49-settings-app"]
+chapters = ["48-systemui", "49-launcher3", "50-settings-app"]
 
 [[parts]]
 id = "ai-and-devices"
 roman = "XII"
 title = "AI & Devices"
-chapters = ["50-ai-appfunctions", "51-companion-virtual-device", "67-npu-manager"]
+chapters = ["51-ai-appfunctions", "52-companion-virtual-device", "53-npu-manager"]
 
 [[parts]]
 id = "infrastructure"
 roman = "XIII"
 title = "Infrastructure"
-chapters = ["52-mainline-modules", "53-ota-updates", "54-virtualization", "55-testing", "56-debugging-tools"]
+chapters = ["54-mainline-modules", "55-ota-updates", "56-virtualization", "57-testing", "58-debugging-tools"]
 
 [[parts]]
 id = "device-support"
 roman = "XIV"
 title = "Device Support"
-chapters = ["57-architecture-support", "58-emulator", "59-device-policy", "60-automotive-tv-wear", "61-print-services", "62-camera2-pipeline"]
+chapters = ["59-architecture-support", "60-emulator", "61-device-policy", "62-form-factors", "63-print-services", "64-camera2-pipeline"]
 
 [[parts]]
 id = "practical"
 roman = "XV"
 title = "Practical"
-chapters = ["63-custom-rom", "64-windows-games"]
-
-[[parts]]
-id = "sdv"
-roman = "XVI"
-title = "Software Defined Vehicle"
-chapters = ["65-software-defined-vehicle", "66-sdv-middleware-and-communication"]
+chapters = ["65-custom-rom", "66-windows-games"]
 
 [[parts]]
 id = "appendices"

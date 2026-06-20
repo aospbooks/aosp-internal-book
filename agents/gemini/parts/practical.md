@@ -1,5 +1,5 @@
-<!-- chapter:63-custom-rom -->
-# Chapter 63: Custom ROM Guide
+<!-- chapter:65-custom-rom -->
+# Chapter 65: Custom ROM Guide
 
 This chapter is the capstone of the book. We take everything covered in the
 preceding 62 chapters -- build system, init, HALs, system services, SystemUI,
@@ -21,9 +21,9 @@ follow along on your own checkout.
 
 ---
 
-## 63.1 Planning Your Custom ROM
+## 65.1 Planning Your Custom ROM
 
-### 63.1.1 What Is a "Custom ROM"?
+### 65.1.1 What Is a "Custom ROM"?
 
 A custom ROM is a modified build of Android that changes one or more of the
 following layers:
@@ -44,7 +44,7 @@ The popular community ROMs (LineageOS, /e/OS, GrapheneOS, CalyxOS, PixelExperien
 each combine customizations across all of these layers. In this chapter we will
 touch every layer.
 
-### 63.1.2 Defining Your ROM's Goals
+### 65.1.2 Defining Your ROM's Goals
 
 Before writing any code, answer these questions:
 
@@ -66,7 +66,7 @@ Before writing any code, answer these questions:
 
 6. **What framework changes?** New services, modified behavior, config changes.
 
-### 63.1.3 The ROM We Will Build
+### 65.1.3 The ROM We Will Build
 
 Throughout this chapter we build **"AospBook ROM"** -- a custom ROM that
 includes:
@@ -84,7 +84,7 @@ includes:
 - A custom kernel module
 - A custom HAL implementation
 
-### 63.1.4 Architecture Overview
+### 65.1.4 Architecture Overview
 
 ```mermaid
 graph TD
@@ -115,7 +115,7 @@ graph TD
     end
 ```
 
-### 63.1.5 Directory Layout
+### 65.1.5 Directory Layout
 
 Here is the directory tree we will create over the course of this chapter:
 
@@ -175,9 +175,9 @@ device/AospBook/bookphone/
 
 ---
 
-## 63.2 Setting Up the Build Environment
+## 65.2 Setting Up the Build Environment
 
-### 63.2.1 Hardware Requirements
+### 65.2.1 Hardware Requirements
 
 Building AOSP is resource-intensive. Here are the requirements:
 
@@ -202,7 +202,7 @@ present in-tree for opt-in toolchains; see
 clang. The host packages below are only the supporting libraries and tools the
 build scripts shell out to.
 
-### 63.2.2 Required Packages (Ubuntu/Debian)
+### 65.2.2 Required Packages (Ubuntu/Debian)
 
 The AOSP build system depends on a specific set of host packages. Install
 them all with:
@@ -238,7 +238,7 @@ sudo apt-get install -y \
     python3-protobuf python3-setuptools
 ```
 
-### 63.2.3 Installing the `repo` Tool
+### 65.2.3 Installing the `repo` Tool
 
 The `repo` tool orchestrates Git across the hundreds of AOSP repositories:
 
@@ -262,7 +262,7 @@ repo version
 The `repo` launcher is a Python script that bootstraps the full `repo` tool
 from Google's repository. It requires Python 3.6+.
 
-### 63.2.4 Initializing the AOSP Tree
+### 65.2.4 Initializing the AOSP Tree
 
 ```bash
 # Create your working directory
@@ -290,7 +290,7 @@ Key flags explained:
 | `--no-tags` | Skip Git tags (saves time/space) |
 | `--no-clone-bundle` | Skip bundle files (sometimes faster) |
 
-### 63.2.5 Complete Setup Script
+### 65.2.5 Complete Setup Script
 
 Here is a complete, idempotent setup script you can run on a fresh Ubuntu 22.04
 machine:
@@ -367,7 +367,7 @@ echo "  5. lunch <target>"
 echo "  6. m"
 ```
 
-### 63.2.6 Setting Up ccache
+### 65.2.6 Setting Up ccache
 
 The compiler cache `ccache` dramatically reduces rebuild times. After the
 initial full build (~2-4 hours), incremental builds that only change a few files
@@ -399,7 +399,7 @@ ccache -s
 # cache hit rate                     84.56 %
 ```
 
-### 63.2.7 Initializing the Build Environment
+### 65.2.7 Initializing the Build Environment
 
 Every time you open a new shell, initialize the build environment:
 
@@ -424,7 +424,7 @@ shell with functions and environment variables needed for the build. It scans
 all `device/*/` and `vendor/*/` directories for `vendorsetup.sh` files and
 sources them, which registers additional lunch targets.
 
-### 63.2.8 Understanding Lunch Targets
+### 65.2.8 Understanding Lunch Targets
 
 ```bash
 # Run lunch with no arguments for an interactive menu, or list the pieces
@@ -460,7 +460,7 @@ The three build variants control debuggability:
 For our custom ROM, we will create our own lunch target that replaces
 `sdk_phone64_x86_64`.
 
-### 63.2.9 Build Process Overview
+### 65.2.9 Build Process Overview
 
 ```mermaid
 flowchart TD
@@ -503,13 +503,13 @@ identically under either executor.
 
 ---
 
-## 63.3 Creating a Device Configuration
+## 65.3 Creating a Device Configuration
 
 This is the heart of a custom ROM: the device configuration directory. It tells
 the build system what to build, how to build it, and what goes into each
 partition.
 
-### 63.3.1 Understanding the Goldfish Device Tree
+### 65.3.1 Understanding the Goldfish Device Tree
 
 Before creating our own, let us understand the existing emulator device tree.
 The Goldfish emulator configuration lives at:
@@ -652,7 +652,7 @@ BOARD_EMULATOR_DYNAMIC_PARTITIONS_PARTITION_LIST := \
   vendor
 ```
 
-### 63.3.2 Creating Our Device Directory
+### 65.3.2 Creating Our Device Directory
 
 Now we create our own device configuration. The convention is
 `device/<vendor>/<device>`:
@@ -662,7 +662,7 @@ Now we create our own device configuration. The convention is
 mkdir -p device/AospBook/bookphone
 ```
 
-### 63.3.3 AndroidProducts.mk
+### 65.3.3 AndroidProducts.mk
 
 This file registers our product with the build system:
 
@@ -680,7 +680,7 @@ When the build system scans `device/` directories, it looks for
 `AndroidProducts.mk` files. Each path listed in `PRODUCT_MAKEFILES` defines a
 lunch target whose name is the `PRODUCT_NAME` set inside that makefile.
 
-### 63.3.4 The Product Makefile: bookphone.mk
+### 65.3.4 The Product Makefile: bookphone.mk
 
 This is the top-level product definition. It inherits from Goldfish to get all
 the emulator infrastructure, then overlays our customizations:
@@ -738,7 +738,7 @@ PRODUCT_PROPERTY_OVERRIDES += \
     persist.sys.timezone=America/Los_Angeles
 ```
 
-### 63.3.5 The Device Makefile: device.mk
+### 65.3.5 The Device Makefile: device.mk
 
 This file contains device-specific packages, copy files, and properties:
 
@@ -786,7 +786,7 @@ BOARD_VENDOR_SEPOLICY_DIRS += device/AospBook/bookphone/sepolicy/vendor
 PRODUCT_SOONG_NAMESPACES += device/AospBook/bookphone
 ```
 
-### 63.3.6 BoardConfig.mk
+### 65.3.6 BoardConfig.mk
 
 The board configuration defines hardware-level parameters. Since we are
 targeting the emulator, we inherit from Goldfish's board config:
@@ -822,7 +822,7 @@ BOARD_VENDOR_SEPOLICY_DIRS += device/AospBook/bookphone/sepolicy/vendor
 # Kernel
 # ============================================================
 # Use the same prebuilt kernel as Goldfish
-# (See Section 63.11 for building a custom kernel)
+# (See Section 65.11 for building a custom kernel)
 TARGET_KERNEL_USE ?= 6.12
 
 # ============================================================
@@ -836,7 +836,7 @@ TARGET_NO_RECOVERY := true
 BOARD_AVB_ENABLE := true
 ```
 
-### 63.3.7 How the Build System Discovers Our Product
+### 65.3.7 How the Build System Discovers Our Product
 
 When you run `lunch bookphone-trunk_staging-userdebug`, the build system:
 
@@ -863,7 +863,7 @@ sequenceDiagram
     Build System->>User: Build environment configured
 ```
 
-### 63.3.8 Verifying the Product Registration
+### 65.3.8 Verifying the Product Registration
 
 After creating these files, verify that the build system recognizes your
 product:
@@ -888,7 +888,7 @@ echo "TARGET_ARCH=$TARGET_ARCH"               # x86_64
 printconfig
 ```
 
-### 63.3.9 The Product Variable Namespace
+### 65.3.9 The Product Variable Namespace
 
 The build system defines a rich set of `PRODUCT_*` variables. Here are the most
 important ones for ROM building:
@@ -909,7 +909,7 @@ important ones for ROM building:
 | `PRODUCT_ENFORCE_RRO_TARGETS` | Force RRO on targets | `framework-res` |
 | `PRODUCT_ENFORCE_RRO_EXCLUDED_OVERLAYS` | Exclude from RRO enforcement | overlay paths |
 
-### 63.3.10 The Inheritance Mechanism
+### 65.3.10 The Inheritance Mechanism
 
 The `$(call inherit-product, ...)` function is the cornerstone of product
 configuration. It works by appending the included makefile's variable values to
@@ -933,7 +933,7 @@ multiple makefiles define the same variable.
 There is also `$(call inherit-product-if-exists, ...)` which silently succeeds
 if the file does not exist -- useful for optional vendor overlays.
 
-### 63.3.11 Generic System Images and Device Bring-Up
+### 65.3.11 Generic System Images and Device Bring-Up
 
 Our `bookphone` product builds a complete device image, but Android also ships a
 **Generic System Image (GSI)**: a single `system.img` built to the Treble
@@ -987,9 +987,9 @@ essential when bringing a custom ROM to a new piece of hardware.
 
 ---
 
-## 63.4 Adding Custom Apps
+## 65.4 Adding Custom Apps
 
-### 63.4.1 Understanding PRODUCT_PACKAGES
+### 65.4.1 Understanding PRODUCT_PACKAGES
 
 Every module that appears in `PRODUCT_PACKAGES` is built and included in the
 appropriate partition image. The module name maps to a build rule defined in
@@ -1014,7 +1014,7 @@ PRODUCT_PACKAGES += \
 These are the minimum packages for a functional Android system. Our product
 inherits them through the Goldfish phone configuration chain.
 
-### 63.4.2 Adding a Prebuilt APK
+### 65.4.2 Adding a Prebuilt APK
 
 Suppose you have a third-party APK (e.g., a PDF reader) that you want to
 include in your ROM. Create a prebuilt module:
@@ -1094,7 +1094,7 @@ The signing key names map to files in `build/make/target/product/security/`:
 | `media` | `media.pk8`, `media.x509.pem` | Media/download system apps |
 | `testkey` | `testkey.pk8`, `testkey.x509.pem` | Default development signing key |
 
-### 63.4.3 Building a Custom App into the Image
+### 65.4.3 Building a Custom App into the Image
 
 Now let us create a custom app from source. This app will be built as part of
 the AOSP build, compiled, signed, and placed into the system image.
@@ -1274,7 +1274,7 @@ public class MainActivity extends Activity {
 </LinearLayout>
 ```
 
-### 63.4.4 Removing Default Apps
+### 65.4.4 Removing Default Apps
 
 To remove default AOSP apps you do not want, use `PRODUCT_PACKAGES_REMOVE`:
 
@@ -1300,7 +1300,7 @@ certain makefiles. For example, if you do not want telephony apps:
 $(call inherit-product, $(SRC_TARGET_DIR)/product/full_base.mk)
 ```
 
-### 63.4.5 Privileged Apps and Permissions
+### 65.4.5 Privileged Apps and Permissions
 
 Apps installed to `/system/priv-app/` or `/product/priv-app/` can request
 privileged permissions not available to regular apps. To make an app
@@ -1338,7 +1338,7 @@ PRODUCT_COPY_FILES += \
     device/AospBook/bookphone/permissions/privapp-permissions-bookphone.xml:$(TARGET_COPY_OUT_PRODUCT)/etc/permissions/privapp-permissions-bookphone.xml
 ```
 
-### 63.4.6 App Installation Locations
+### 65.4.6 App Installation Locations
 
 ```mermaid
 graph TD
@@ -1368,9 +1368,9 @@ The build system maps module properties to installation paths:
 
 ---
 
-## 63.5 Modifying Framework Behavior
+## 65.5 Modifying Framework Behavior
 
-### 63.5.1 Runtime Resource Overlay (RRO)
+### 65.5.1 Runtime Resource Overlay (RRO)
 
 Runtime Resource Overlays are the recommended way to customize framework
 behavior without modifying framework source code. An RRO is a small APK
@@ -1519,7 +1519,7 @@ Some commonly overridden values for custom ROMs:
 | `config_defaultBatteryPercentageSetting` | bool | false | Battery % in status bar |
 | `config_enableHapticTextHandle` | bool | false | Text selection haptics |
 
-### 63.5.2 Verifying RRO Installation
+### 65.5.2 Verifying RRO Installation
 
 After building, you can verify that your overlay is active:
 
@@ -1537,7 +1537,7 @@ adb shell cmd overlay dump com.aospbook.overlay.framework
 adb shell settings get system screen_brightness
 ```
 
-### 63.5.3 Modifying Framework Source Code
+### 65.5.3 Modifying Framework Source Code
 
 For changes that cannot be achieved through RROs, you must modify framework
 source code directly. This is the most invasive form of customization and
@@ -1575,7 +1575,7 @@ This property is set by our product configuration:
 PRODUCT_PROPERTY_OVERRIDES += ro.aospbook.version=1.0.0
 ```
 
-### 63.5.4 Adding a New System Service
+### 65.5.4 Adding a New System Service
 
 A system service runs in the `system_server` process and provides an API
 that apps can call via Binder IPC. This is the most powerful form of framework
@@ -1958,7 +1958,7 @@ public class BookServiceManager {
 }
 ```
 
-### 63.5.5 SELinux Policy for Custom Services
+### 65.5.5 SELinux Policy for Custom Services
 
 Any new system service requires SELinux policy. Without it, SELinux (which
 is enforcing on all modern Android builds) will deny the service from
@@ -2006,7 +2006,7 @@ Add file contexts:
 /product/lib/BookService\.jar                u:object_r:system_file:s0
 ```
 
-### 63.5.6 System Service Lifecycle
+### 65.5.6 System Service Lifecycle
 
 Understanding when your service starts relative to other services is
 important:
@@ -2029,9 +2029,9 @@ graph TD
 
 ---
 
-## 63.6 Custom Boot Animation
+## 65.6 Custom Boot Animation
 
-### 63.6.1 Boot Animation Format
+### 65.6.1 Boot Animation Format
 
 The boot animation is stored as a ZIP file at one of these locations
 (checked in order):
@@ -2058,7 +2058,7 @@ bootanimation.zip (store compression, no deflate)
     audio.wav         # Optional audio (per-part)
 ```
 
-### 63.6.2 The desc.txt File
+### 65.6.2 The desc.txt File
 
 The first line defines global parameters:
 
@@ -2094,7 +2094,7 @@ This defines:
 - `part0`: Play once to completion (`c 1`) with no pause
 - `part1`: Loop forever (`p 0`) until boot finishes
 
-### 63.6.3 Creating a Custom Boot Animation
+### 65.6.3 Creating a Custom Boot Animation
 
 Let us create a simple but professional boot animation for AospBook ROM.
 
@@ -2173,7 +2173,7 @@ PRODUCT_COPY_FILES += \
     device/AospBook/bookphone/bootanimation/bootanimation.zip:$(TARGET_COPY_OUT_PRODUCT)/media/bootanimation.zip
 ```
 
-### 63.6.4 Testing the Boot Animation
+### 65.6.4 Testing the Boot Animation
 
 You can test the boot animation without a full rebuild:
 
@@ -2191,7 +2191,7 @@ adb shell start bootanim
 adb shell setprop service.bootanim.exit 1
 ```
 
-### 63.6.5 Boot Animation with Sound
+### 65.6.5 Boot Animation with Sound
 
 Each part directory can contain an `audio.wav` file that plays when that part
 starts:
@@ -2215,7 +2215,7 @@ The WAV file must be:
 - Any sample rate (44100 Hz recommended)
 - Mono or stereo
 
-### 63.6.6 Dynamic Coloring
+### 65.6.6 Dynamic Coloring
 
 Android 12+ supports dynamic coloring in boot animations. Add a special line
 after the resolution line in `desc.txt`:
@@ -2236,7 +2236,7 @@ system properties:
 - `persist.bootanim.color3`
 - `persist.bootanim.color4`
 
-### 63.6.7 Boot Animation Source Code
+### 65.6.7 Boot Animation Source Code
 
 The boot animation player is implemented at:
 
@@ -2264,7 +2264,7 @@ service bootanim /system/bin/bootanimation
 
 ---
 
-## 63.7 Customizing SystemUI
+## 65.7 Customizing SystemUI
 
 SystemUI is the user-facing layer that draws the status bar, notification shade,
 quick settings, lock screen, and navigation bar. Customizing it is one of the
@@ -2276,7 +2276,7 @@ The source lives at:
 frameworks/base/packages/SystemUI/
 ```
 
-### 63.7.1 SystemUI Architecture Overview
+### 65.7.1 SystemUI Architecture Overview
 
 ```mermaid
 graph TD
@@ -2300,7 +2300,7 @@ graph TD
     end
 ```
 
-### 63.7.2 Customizing via RRO (Non-Invasive)
+### 65.7.2 Customizing via RRO (Non-Invasive)
 
 The simplest way to customize SystemUI is through an RRO. SystemUI exposes
 many configuration values in its own `config.xml`:
@@ -2418,7 +2418,7 @@ runtime_resource_overlay {
 </resources>
 ```
 
-### 63.7.3 Customizing the Status Bar Layout
+### 65.7.3 Customizing the Status Bar Layout
 
 The status bar layout is defined in:
 
@@ -2453,7 +2453,7 @@ To customize the status bar layout without modifying source:
 For deeper modifications (e.g., adding a new status bar indicator), you need
 to modify the SystemUI source directly.
 
-### 63.7.4 Modifying Quick Settings Tiles
+### 65.7.4 Modifying Quick Settings Tiles
 
 Quick Settings tiles are registered in SystemUI's Dagger dependency injection
 graph. To add a custom tile:
@@ -2541,7 +2541,7 @@ The tile must be added to the `QSModule` or `QSTileHost` so that it can be
 instantiated. The exact mechanism depends on the AOSP version -- current AOSP
 uses Dagger `@IntoMap` annotations.
 
-### 63.7.5 Theme Overlays for SystemUI
+### 65.7.5 Theme Overlays for SystemUI
 
 Material You (Android 12+) uses dynamic color extraction. To set a default
 color scheme for your ROM, use a theme overlay:
@@ -2557,7 +2557,7 @@ color scheme for your ROM, use a theme overlay:
 </resources>
 ```
 
-### 63.7.6 Customizing the Navigation Bar
+### 65.7.6 Customizing the Navigation Bar
 
 The navigation bar configuration is controlled by system properties and
 framework configs:
@@ -2578,7 +2578,7 @@ navigation bar overlay packages:
 frameworks/base/packages/overlays/NavigationBarMode*/
 ```
 
-### 63.7.7 SystemUI Build Integration
+### 65.7.7 SystemUI Build Integration
 
 SystemUI is built as a system app via:
 
@@ -2592,9 +2592,9 @@ included via a glob pattern.
 
 ---
 
-## 63.8 Building and Flashing
+## 65.8 Building and Flashing
 
-### 63.8.1 The Build Command
+### 65.8.1 The Build Command
 
 With our device configuration in place, build the ROM:
 
@@ -2621,7 +2621,7 @@ The `m` command:
 4. Invokes the build executor (Siso by default in Android 17, classic Ninja if
    `SOONG_NINJA=ninja`) to run the build plan
 
-### 63.8.2 Build Output Structure
+### 65.8.2 Build Output Structure
 
 After a successful build, the output lives in `out/target/product/bookdevice/`:
 
@@ -2646,7 +2646,7 @@ out/target/product/bookdevice/
     symbols/                    # Unstripped binaries (for debugging)
 ```
 
-### 63.8.3 Understanding Partition Images
+### 65.8.3 Understanding Partition Images
 
 ```mermaid
 graph TD
@@ -2665,7 +2665,7 @@ graph TD
     style D fill:#fff3e0
 ```
 
-### 63.8.4 Launching the Emulator
+### 65.8.4 Launching the Emulator
 
 The AOSP build system includes an `emulator` command that launches the
 Android Emulator with the just-built images:
@@ -2701,7 +2701,7 @@ Key emulator flags:
 | `-logcat '*:V'` | Show logcat in terminal |
 | `-selinux permissive` | Set SELinux to permissive (debugging) |
 
-### 63.8.5 Flashing to a Physical Device
+### 65.8.5 Flashing to a Physical Device
 
 For physical devices, use `fastboot`:
 
@@ -2739,7 +2739,7 @@ fastboot flash product product.img
 fastboot reboot
 ```
 
-### 63.8.6 Incremental Builds
+### 65.8.6 Incremental Builds
 
 After the initial full build, incremental builds only rebuild changed modules.
 This is dramatically faster:
@@ -2776,7 +2776,7 @@ Incremental build tips:
 | Rebuild after resource change | 1-3 min | `m ModuleName` |
 | Rebuild after makefile change | 10-30 min | `m` (Soong re-analysis) |
 
-### 63.8.7 Build Variants and Their Impact
+### 65.8.7 Build Variants and Their Impact
 
 | Variant | `ro.debuggable` | `adb` Default | Optimizations | Use |
 |---------|-----------------|---------------|---------------|-----|
@@ -2802,7 +2802,7 @@ lunch bookphone-trunk_staging-eng
 m
 ```
 
-### 63.8.8 Build System Troubleshooting
+### 65.8.8 Build System Troubleshooting
 
 Common build errors and solutions:
 
@@ -2815,7 +2815,7 @@ Common build errors and solutions:
 | `Insufficient disk space` | Build output exceeds disk | Free space or move `out/` to larger disk |
 | `Killed (out of memory)` | OOM during linking | Reduce `-j` parallelism or add swap |
 
-### 63.8.9 16 KB Page Size
+### 65.8.9 16 KB Page Size
 
 A change that affects every native binary in an Android 17 ROM is the move to
 **16 KB memory page sizes**. Modern arm64 SoCs can run their MMU with a 16 KB
@@ -2874,9 +2874,9 @@ when bringing a ROM forward to Android 17.
 
 ---
 
-## 63.9 Debugging Your ROM
+## 65.9 Debugging Your ROM
 
-### 63.9.1 logcat -- The Primary Debugging Tool
+### 65.9.1 logcat -- The Primary Debugging Tool
 
 `logcat` is the universal debugging tool for Android. It reads the kernel
 ring buffer and the Android logging daemon.
@@ -2910,7 +2910,7 @@ adb logcat -c
 adb logcat -b kernel
 ```
 
-### 63.9.2 dumpsys -- Querying System Services
+### 65.9.2 dumpsys -- Querying System Services
 
 `dumpsys` prints the internal state of system services. Essential for debugging
 service issues:
@@ -2942,7 +2942,7 @@ adb shell dumpsys jobscheduler         # Scheduled jobs
 adb shell dumpsys notification         # Notification state
 ```
 
-### 63.9.3 bugreport -- Comprehensive System Snapshot
+### 65.9.3 bugreport -- Comprehensive System Snapshot
 
 A bugreport captures the entire system state at a point in time:
 
@@ -2961,7 +2961,7 @@ The bugreport includes logcat, dumpsys output for all services, kernel logs,
 process lists, file system information, and more. It is the primary artifact
 for bug investigation.
 
-### 63.9.4 Perfetto -- Performance Tracing
+### 65.9.4 Perfetto -- Performance Tracing
 
 Perfetto is AOSP's modern tracing system. It replaces the older `systrace`
 tool.
@@ -3012,7 +3012,7 @@ adb pull /data/misc/perfetto-traces/trace.perfetto-trace .
 # https://ui.perfetto.dev/
 ```
 
-### 63.9.5 Winscope -- Window and Layer Tracing
+### 65.9.5 Winscope -- Window and Layer Tracing
 
 Winscope captures window manager and surface flinger state transitions,
 essential for debugging UI layout issues:
@@ -3040,7 +3040,7 @@ adb pull /data/misc/wmtrace/layers_trace.winscope .
 # development/tools/winscope/
 ```
 
-### 63.9.6 Debugging Boot Issues
+### 65.9.6 Debugging Boot Issues
 
 When your custom ROM fails to boot:
 
@@ -3115,7 +3115,7 @@ adb shell ls /system/framework/BookService.jar
 ls out/target/product/bookdevice/product/app/BookSampleApp/
 ```
 
-### 63.9.7 SELinux Debugging
+### 65.9.7 SELinux Debugging
 
 SELinux denials are the most common cause of issues in custom ROMs:
 
@@ -3139,7 +3139,7 @@ adb logcat -d | grep "avc: denied" | audit2allow -p out/target/product/bookdevic
 # This outputs allow rules you can add to your .te files
 ```
 
-### 63.9.8 The Debug Toolchain
+### 65.9.8 The Debug Toolchain
 
 ```mermaid
 graph LR
@@ -3162,7 +3162,7 @@ graph LR
     style M fill:#e8f5e9
 ```
 
-### 63.9.9 Useful adb Commands for ROM Development
+### 65.9.9 Useful adb Commands for ROM Development
 
 ```bash
 # ============================================================
@@ -3217,9 +3217,9 @@ adb shell uptime
 
 ---
 
-## 63.10 Distribution
+## 65.10 Distribution
 
-### 63.10.1 Signing Overview
+### 65.10.1 Signing Overview
 
 Android uses code signing to ensure the integrity and authenticity of every
 APK and system image. There are four key types used in AOSP:
@@ -3246,7 +3246,7 @@ The `README` at `build/make/target/product/security/README` explicitly warns:
 > "The test keys in this directory are used in development only and should
 > NEVER be used to sign packages in publicly released images."
 
-### 63.10.2 Generating Release Keys
+### 65.10.2 Generating Release Keys
 
 Generate your own unique keys:
 
@@ -3290,7 +3290,7 @@ both accept EC keys, so `make_key platform "$SUBJECT" ec` is a valid choice if
 you prefer elliptic-curve keys. Whatever you pick, the `.pk8` / `.x509.pem`
 pair is consumed the same way by the signing tools below.
 
-### 63.10.3 Configuring the Build to Use Release Keys
+### 65.10.3 Configuring the Build to Use Release Keys
 
 Tell the build system to use your keys instead of the test keys:
 
@@ -3308,7 +3308,7 @@ PRODUCT_CERTIFICATE_OVERRIDES := \
     media:device/AospBook/bookphone/keys/media
 ```
 
-### 63.10.4 Signing the Build
+### 65.10.4 Signing the Build
 
 There are two approaches to signing:
 
@@ -3346,7 +3346,7 @@ python3 build/make/tools/releasetools/img_from_target_files.py \
     out/dist/bookphone-img-signed.zip
 ```
 
-### 63.10.5 OTA Package Generation
+### 65.10.5 OTA Package Generation
 
 OTA (Over The Air) packages allow you to distribute updates to existing users.
 
@@ -3407,7 +3407,7 @@ graph TD
     style K fill:#e8f5e9
 ```
 
-### 63.10.6 OTA Package Structure
+### 65.10.6 OTA Package Structure
 
 An OTA package is a signed ZIP file containing:
 
@@ -3427,7 +3427,7 @@ ota_package.zip
     care_map.pb                    # Block mapping for dm-verity
 ```
 
-### 63.10.7 Verified Boot and AVB
+### 65.10.7 Verified Boot and AVB
 
 Android Verified Boot (AVB) ensures that boot images and partitions have not
 been tampered with. For custom ROMs targeting real devices:
@@ -3448,7 +3448,7 @@ BOARD_AVB_KEY_PATH := device/AospBook/bookphone/keys/avb_custom_key.pem
 BOARD_AVB_ALGORITHM := SHA256_RSA4096
 ```
 
-### 63.10.8 Build Fingerprint and Properties
+### 65.10.8 Build Fingerprint and Properties
 
 The build fingerprint is the unique identifier for your ROM build. It follows
 the format:
@@ -3478,7 +3478,7 @@ PRODUCT_BUILD_PROP_OVERRIDES += \
     BUILD_VERSION_TAGS=release-keys
 ```
 
-### 63.10.9 Distribution Checklist
+### 65.10.9 Distribution Checklist
 
 Before releasing your custom ROM publicly:
 
@@ -3497,7 +3497,7 @@ Before releasing your custom ROM publicly:
 [ ] Set up a distribution server for OTA updates
 ```
 
-### 63.10.10 Publishing Checksums
+### 65.10.10 Publishing Checksums
 
 ```bash
 # Generate checksums for distribution files
@@ -3510,9 +3510,9 @@ gpg --sign --armor checksums.txt
 
 ---
 
-## 63.11 Advanced: Kernel Customization
+## 65.11 Advanced: Kernel Customization
 
-### 63.11.1 Kernel in AOSP
+### 65.11.1 Kernel in AOSP
 
 The AOSP emulator uses prebuilt Generic Kernel Image (GKI) kernels. The
 kernel configuration for the x86_64 emulator is defined at:
@@ -3539,7 +3539,7 @@ prebuilts/qemu-kernel/x86_64/6.12/
     goldfish_modules/        # Emulator-specific modules
 ```
 
-### 63.11.2 GKI Architecture
+### 65.11.2 GKI Architecture
 
 Android's Generic Kernel Image (GKI) separates the kernel into:
 
@@ -3568,7 +3568,7 @@ graph TD
 The KMI (Kernel Module Interface) is a stable ABI between the GKI kernel and
 vendor modules, allowing them to be updated independently.
 
-### 63.11.3 Building a Custom Kernel
+### 65.11.3 Building a Custom Kernel
 
 To build a custom kernel for the emulator:
 
@@ -3605,7 +3605,7 @@ out/x86_64/dist/
     *.ko                     # Kernel modules
 ```
 
-### 63.11.4 Using a Custom Kernel with the Emulator
+### 65.11.4 Using a Custom Kernel with the Emulator
 
 ```bash
 # Option 1: Copy into the goldfish kernel prebuilts the build consumes
@@ -3620,7 +3620,7 @@ emulator -kernel /path/to/custom/bzImage
 # EMULATOR_KERNEL_FILE := /path/to/custom/kernel
 ```
 
-### 63.11.5 Adding Custom Kernel Modules
+### 65.11.5 Adding Custom Kernel Modules
 
 Kernel modules extend kernel functionality without rebuilding the entire
 kernel. For the emulator, vendor-specific modules are loaded from the vendor
@@ -3690,7 +3690,7 @@ adb shell dmesg | grep BookModule
 adb shell rmmod bookmodule
 ```
 
-### 63.11.6 Including Kernel Modules in the Build
+### 65.11.6 Including Kernel Modules in the Build
 
 To include your module in the build automatically:
 
@@ -3712,7 +3712,7 @@ on boot
     insmod /vendor/lib/modules/bookmodule.ko
 ```
 
-### 63.11.7 Kernel Configuration Tuning
+### 65.11.7 Kernel Configuration Tuning
 
 The kernel configuration (`defconfig`) controls which features are compiled
 into the kernel. For the emulator:
@@ -3736,7 +3736,7 @@ Common kernel configuration tweaks for custom ROMs:
 | `CONFIG_KSM` | n | y | Kernel same-page merging |
 | `CONFIG_TRANSPARENT_HUGEPAGE` | n | y | Transparent huge pages |
 
-### 63.11.8 Kernel Module Lifecycle
+### 65.11.8 Kernel Module Lifecycle
 
 ```mermaid
 graph TD
@@ -3777,9 +3777,9 @@ access the disk.
 
 ---
 
-## 63.12 Advanced: HAL Customization
+## 65.12 Advanced: HAL Customization
 
-### 63.12.1 HAL Architecture in Android
+### 65.12.1 HAL Architecture in Android
 
 The Hardware Abstraction Layer (HAL) sits between the Android framework and the
 Linux kernel, providing a stable interface for hardware access:
@@ -3830,7 +3830,7 @@ device/generic/goldfish/hals/
     sensors/      # Sensors HAL
 ```
 
-### 63.12.2 Creating a Custom AIDL HAL
+### 65.12.2 Creating a Custom AIDL HAL
 
 Let us create a custom HAL for a hypothetical "book light" hardware feature.
 This demonstrates the full HAL lifecycle: interface definition, default
@@ -3853,7 +3853,7 @@ device/AospBook/bookphone/hal/booklight/
         booklight-default.xml
 ```
 
-### 63.12.3 Defining the AIDL Interface
+### 65.12.3 Defining the AIDL Interface
 
 **IBookLight.aidl**:
 
@@ -3942,7 +3942,7 @@ aidl_interface {
 }
 ```
 
-### 63.12.4 Implementing the Default HAL
+### 65.12.4 Implementing the Default HAL
 
 **BookLight.h**:
 
@@ -4136,7 +4136,7 @@ cc_binary {
 }
 ```
 
-### 63.12.5 Init Service Configuration
+### 65.12.5 Init Service Configuration
 
 **booklight-default.rc**:
 
@@ -4149,7 +4149,7 @@ service vendor.booklight-default /vendor/bin/hw/com.aospbook.hardware.light-serv
     capabilities SYS_NICE
 ```
 
-### 63.12.6 VINTF Manifest Fragment
+### 65.12.6 VINTF Manifest Fragment
 
 The VINTF (Vendor Interface) manifest declares which HAL interfaces are
 provided by this device:
@@ -4170,7 +4170,7 @@ provided by this device:
 </manifest>
 ```
 
-### 63.12.7 SELinux Policy for the HAL
+### 65.12.7 SELinux Policy for the HAL
 
 ```
 # device/AospBook/bookphone/sepolicy/vendor/booklight.te
@@ -4203,7 +4203,7 @@ Add file contexts:
 /vendor/bin/hw/com\.aospbook\.hardware\.light-service    u:object_r:hal_booklight_default_exec:s0
 ```
 
-### 63.12.8 Including the HAL in the Build
+### 65.12.8 Including the HAL in the Build
 
 ```makefile
 # In device.mk
@@ -4211,7 +4211,7 @@ PRODUCT_PACKAGES += \
     com.aospbook.hardware.light-service
 ```
 
-### 63.12.9 Testing the HAL
+### 65.12.9 Testing the HAL
 
 ```bash
 # After booting, verify the HAL service is running:
@@ -4228,7 +4228,7 @@ adb shell cat /vendor/etc/vintf/manifest.xml | grep booklight
 adb shell service list | grep booklight
 ```
 
-### 63.12.10 Modifying Existing HALs
+### 65.12.10 Modifying Existing HALs
 
 Instead of creating a new HAL from scratch, you may want to modify an existing
 one. For example, to customize the sensors HAL for the emulator:
@@ -4277,7 +4277,7 @@ constexpr SensorInfo kCustomSensors[] = {
 }  // namespace
 ```
 
-### 63.12.11 HAL Testing with VTS
+### 65.12.11 HAL Testing with VTS
 
 The Vendor Test Suite (VTS) validates that HAL implementations conform to
 their interface contracts:
@@ -4292,7 +4292,7 @@ adb push out/target/product/bookdevice/data/nativetest64/VtsHalBookLightTargetTe
 adb shell /data/local/tmp/VtsHalBookLightTargetTest
 ```
 
-### 63.12.12 Complete HAL Architecture
+### 65.12.12 Complete HAL Architecture
 
 ```mermaid
 graph TD
@@ -4338,9 +4338,9 @@ graph TD
 
 ---
 
-## 63.13 Putting It All Together
+## 65.13 Putting It All Together
 
-### 63.13.1 Complete Build Walkthrough
+### 65.13.1 Complete Build Walkthrough
 
 Here is the complete sequence to build, test, and package AospBook ROM:
 
@@ -4424,7 +4424,7 @@ echo "To generate OTA package:"
 echo "  m dist"
 ```
 
-### 63.13.2 Testing Checklist
+### 65.13.2 Testing Checklist
 
 After building, systematically verify each customization:
 
@@ -4492,7 +4492,7 @@ echo ""
 echo "=== Verification Complete ==="
 ```
 
-### 63.13.3 Release Build Pipeline
+### 65.13.3 Release Build Pipeline
 
 ```mermaid
 graph TD
@@ -4516,7 +4516,7 @@ graph TD
     style L fill:#fff3e0
 ```
 
-### 63.13.4 Common Pitfalls and Solutions
+### 65.13.4 Common Pitfalls and Solutions
 
 | Pitfall | Symptom | Solution |
 |---------|---------|----------|
@@ -4531,7 +4531,7 @@ graph TD
 | ccache miss after branch switch | Slow rebuild | Normal, ccache will repopulate |
 | Test keys in release build | Security vulnerability | Generate and use release keys |
 
-### 63.13.5 Maintaining Your ROM Across AOSP Updates
+### 65.13.5 Maintaining Your ROM Across AOSP Updates
 
 One of the biggest challenges of maintaining a custom ROM is keeping up with
 upstream AOSP changes. Here are strategies:
@@ -4568,7 +4568,7 @@ upstream AOSP changes. Here are strategies:
    framework modification to the business reason, so you know which changes
    to port when rebasing.
 
-### 63.13.6 Final Directory Listing
+### 65.13.6 Final Directory Listing
 
 Here is the complete directory tree for the AospBook ROM device configuration:
 
@@ -4649,7 +4649,7 @@ device/AospBook/bookphone/
 
 ---
 
-## 63.14 Case Study: MaruOS as a Convergence Custom ROM
+## 65.14 Case Study: MaruOS as a Convergence Custom ROM
 
 The thirteen sections above built up a generic "custom ROM" — a fork of AOSP
 with tailored apps, framework tweaks, branded SystemUI, custom kernel, and a
@@ -4669,7 +4669,7 @@ how it departs from the template the rest of this chapter laid out. It is a
 useful end-of-chapter exhibit: an unusual but production-realised demonstration
 of how much *room* the AOSP overlay model actually leaves a custom-ROM author.
 
-### 63.14.1 Why MaruOS Is an Unusual Custom ROM
+### 65.14.1 Why MaruOS Is an Unusual Custom ROM
 
 A canonical custom ROM (LineageOS, GrapheneOS, /e/OS, ParanoidAndroid) keeps
 the AOSP shape unchanged and varies *content*: different APKs, different
@@ -4708,7 +4708,7 @@ have changed across maru-0.x releases.
 
 The license is Apache-2.0 across the org, matching AOSP itself.
 
-### 63.14.2 The Two-Environment Model
+### 65.14.2 The Two-Environment Model
 
 The conceptual architecture is the single most important picture in this
 case study. Both environments share the Linux kernel; everything above is
@@ -4768,7 +4768,7 @@ Three architectural points worth pulling out:
 3. **Two displays, two owners.** The phone screen continues to render
    Android's SystemUI on the internal display. The external display is
    *not* running another Android UI — it is a presentation surface that
-   `SurfaceFlinger` hands off to the Linux side via mflinger (63.14.8),
+   `SurfaceFlinger` hands off to the Linux side via mflinger (65.14.8),
    so what the user sees on the monitor is rendered entirely by X.org and
    the container's desktop environment (Xfce or whatever the Debian image
    is configured with). The user's phone keeps running stock Android the
@@ -4779,7 +4779,7 @@ stock Android (Samsung DeX, Android 12+'s windowing-on-external-display).
 Those keep one Android runtime; MaruOS runs two operating systems on the
 same kernel.
 
-### 63.14.3 Kernel Configuration for LXC
+### 65.14.3 Kernel Configuration for LXC
 
 LXC is the mechanism that lets MaruOS run a Debian rootfs alongside Android
 without a second kernel, but it depends on Linux kernel features that stock
@@ -4799,7 +4799,7 @@ runs:
 | IPC namespaces | `CONFIG_IPC_NS=y` | Per-container System V IPC and POSIX message queues |
 | Cgroups | `CONFIG_CGROUPS=y` with memory, cpu, devices, freezer subsystems | Resource accounting and limits inside the container |
 | Seccomp | `CONFIG_SECCOMP_FILTER=y` | Lets LXC restrict the syscalls the container can make |
-| uinput (optional) | `CONFIG_INPUT_UINPUT=y` | Synthetic-injection path used by the input bridge when an event has to be rescaled across displays (63.14.9); not needed for the common case where each device is routed directly to one side |
+| uinput (optional) | `CONFIG_INPUT_UINPUT=y` | Synthetic-injection path used by the input bridge when an event has to be rescaled across displays (65.14.9); not needed for the common case where each device is routed directly to one side |
 | Optional overlay FS | `CONFIG_OVERLAY_FS=y` | Layered container rootfs without full copies |
 
 The catch is `CONFIG_USER_NS`. Android's kernel teams historically disable
@@ -4819,11 +4819,11 @@ required by the Android sandbox, and namespaces are part of every modern
 Linux kernel's default configuration. So the kernel customization Maru
 needs is narrower than it first looks: enable `CONFIG_USER_NS`, confirm the
 remaining namespace and cgroup controllers are on, optionally enable
-`CONFIG_INPUT_UINPUT` if the synthetic-injection input path of 63.14.9 is
+`CONFIG_INPUT_UINPUT` if the synthetic-injection input path of 65.14.9 is
 wanted, and rebuild.
 
 This is why a Maru device build pulls a Maru-modified kernel from its
-`device_*` repos rather than reusing LineageOS's kernel as-is. Section 63.11
+`device_*` repos rather than reusing LineageOS's kernel as-is. Section 65.11
 covers the general kernel-customization workflow that MaruOS follows: a
 defconfig fragment that toggles the required options, layered on top of the
 device's base defconfig, and a rebuild of the boot image to flash alongside
@@ -4837,7 +4837,7 @@ the threat model written down — there is no way to get unprivileged LXC
 without this flag, and there is no way to flip this flag without expanding
 the kernel attack surface.
 
-### 63.14.4 Repository Topology
+### 65.14.4 Repository Topology
 
 MaruOS code is spread across several repositories under the `maruos/` org.
 Understanding the topology helps a reader navigate the source without
@@ -4892,7 +4892,7 @@ The repo topology is itself a lesson. The "Maru-ness" lives in
 AOSP/Lineage. The "device-ness" is delegated to forked LineageOS device
 repos. Each layer can evolve at its own cadence.
 
-### 63.14.5 The vendor_maruos Overlay Anatomy
+### 65.14.5 The vendor_maruos Overlay Anatomy
 
 The `vendor_maruos` tree is where MaruOS's design choices are most legible.
 The top-level layout (visible on the `maru-0.7` branch of the GitHub repo):
@@ -4934,7 +4934,7 @@ and orchestrates everything below.
 that expose host resources to the container, and the tear-down path. It is
 the layer that talks directly to LXC.
 
-**`overlay/`** uses AOSP's standard overlay mechanism (see section 63.5)
+**`overlay/`** uses AOSP's standard overlay mechanism (see section 65.5)
 to replace specific resources in the framework or apps. Typical targets
 include the device's `config.xml` settings, locale defaults, branding
 strings, and any pre-installed-app launch defaults.
@@ -4962,7 +4962,7 @@ the normal `m`/`make` flow, like fetching the Debian rootfs from the
 blueprints build output and dropping it into a per-product path before
 the system image is packaged.
 
-### 63.14.6 The blueprints Container Builder
+### 65.14.6 The blueprints Container Builder
 
 The Debian rootfs the container runs is not built by Soong. It is built by
 a separate repository, `maruos/blueprints`, which is a self-contained
@@ -4992,7 +4992,7 @@ entirely foreign environment (a container, a VM, a different libc), the
 right answer is often a *sibling* build system that exports a tarball,
 not a Soong module that tries to model the foreign world.
 
-### 63.14.7 The "Perspective" Bridge Layer
+### 65.14.7 The "Perspective" Bridge Layer
 
 The `perspective/` and `include/perspective/` directories carry the
 hardest-to-classify part of the design: the Android-resident daemon that
@@ -5024,7 +5024,7 @@ should happen, the other actually moves the LXC machinery. The split is
 a useful pattern for any custom ROM author writing a long-running
 Android service that drives non-Android user-space resources.
 
-### 63.14.8 mflinger and mclient: The Graphics Bridge
+### 65.14.8 mflinger and mclient: The Graphics Bridge
 
 When the X11 server inside the Debian container draws to its framebuffer,
 those pixels live in the container's address space — a different mount
@@ -5123,15 +5123,15 @@ Two consequences of this design worth pulling out:
   design scales to a 1920×1080 external monitor without becoming the
   bottleneck on modest hardware.
 
-The Android-side SELinux policy in `vendor_maruos/sepolicy/` (63.14.11) is
+The Android-side SELinux policy in `vendor_maruos/sepolicy/` (65.14.11) is
 what permits mflinger to acquire `ANativeWindow` surfaces, talk to
 SurfaceFlinger over binder, and pass file descriptors out over its UDS;
 without those rules the daemon would be denied at process start. The
 bind-mount that exposes the mclient↔mflinger socket across the container
 boundary is set up by the container module in `vendor_maruos/container/`
-(63.14.5) when LXC starts.
+(65.14.5) when LXC starts.
 
-### 63.14.9 Input Mapping Between Linux and Android
+### 65.14.9 Input Mapping Between Linux and Android
 
 The complement of the graphics bridge is the input bridge — but it is
 much smaller than the graphics bridge, and for the same architectural
@@ -5157,7 +5157,7 @@ What the bridge actually does, then, is *route* — decide which side
    touchscreen is attached, the kernel creates `/dev/input/eventN`. The
    `udev`-style hotplug events propagate to both Android's input layer
    and (via the bind-mount) to the container.
-2. **Per-device ownership.** Maru's perspective daemon (63.14.7) decides
+2. **Per-device ownership.** Maru's perspective daemon (65.14.7) decides
    which side owns each device based on the active "perspective":
    - The phone's internal touch panel always belongs to Android — those
      touches need to drive SystemUI and apps on the internal display,
@@ -5183,7 +5183,7 @@ What the bridge actually does, then, is *route* — decide which side
    "use the phone screen as a touchpad for the desktop," where the
    perspective daemon reads internal-panel events, rescales coordinates
    into the desktop's space, and synthesises new events on a virtual
-   device. `CONFIG_INPUT_UINPUT` (63.14.3) is what enables this
+   device. `CONFIG_INPUT_UINPUT` (65.14.3) is what enables this
    synthetic-injection path. The common path does not need it.
 
 The whole pipeline is invisible to both ends. Android's `InputReader`
@@ -5196,12 +5196,12 @@ when two user-space stacks share a kernel, anything the kernel already
 abstracts (input events, network sockets, fds, character devices) can be
 shared by routing instead of forwarding. Anything the kernel does *not*
 abstract (the GPU memory backing a Surface) has to be bridged with
-explicit fd-passing as in 63.14.8. Maru's input bridge stays small
+explicit fd-passing as in 65.14.8. Maru's input bridge stays small
 because the kernel does the work; the graphics bridge stays small
 because the bridge piggy-backs on the kernel's existing dma-buf
 fd-passing instead of inventing its own pixel transport.
 
-### 63.14.10 Init and Boot Integration
+### 65.14.10 Init and Boot Integration
 
 `init.maru.rc` is where the boot integration is declared. Android's init
 processes `*.rc` files from `/system/etc/init/` and `/vendor/etc/init/`
@@ -5250,7 +5250,7 @@ container; LXC starts on demand and shuts down when the perspective layer
 decides it should. This is what the README means by *"spin up virtual
 systems on demand."*
 
-### 63.14.11 SELinux Implications
+### 65.14.11 SELinux Implications
 
 Stock AOSP SELinux policy is designed around the assumption that no
 Android process needs to launch an LXC container, mount a rootfs, or
@@ -5276,11 +5276,11 @@ during development. Each new denial gets logged once on first hit,
 silently after that, which is why fresh installs of a Maru build
 on a different device often need an audit pass.
 
-### 63.14.12 Privileged Permissions for Maru-System Apps
+### 65.14.12 Privileged Permissions for Maru-System Apps
 
 `privapp-permissions-maru.xml` lives at vendor-overlay scope and is
 processed by Android's privileged-permission allowlist mechanism (see
-section 63.4 on adding custom apps). Maru needs this file because its
+section 65.4 on adding custom apps). Maru needs this file because its
 perspective-daemon companion APK — the user-facing UI that confirms
 desktop access, manages container settings, and surfaces the
 "desktop is active" notification — sits at `/system/priv-app/` and
@@ -5304,7 +5304,7 @@ by AOSP. Any custom ROM with a privileged system app must ship one of
 these files, and a `dexopt`-time denial from `PackageManagerService`
 during boot is almost always traceable to a missing entry here.
 
-### 63.14.13 The Build Flow
+### 65.14.13 The Build Flow
 
 Putting the pieces together, building MaruOS from source for a supported
 device looks like this:
@@ -5328,7 +5328,7 @@ lunch maru_<device>-userdebug
 m
 ```
 
-Three things stand out compared to the build flow in section 63.8:
+Three things stand out compared to the build flow in section 65.8:
 
 - **Two build systems.** The Soong/Make pipeline does not run the
   blueprints pipeline. The custom-ROM author orchestrates them by hand
@@ -5342,12 +5342,12 @@ Three things stand out compared to the build flow in section 63.8:
   build flags. A standard `lineage_<device>` lunch would build the same
   device without the Maru layer.
 
-### 63.14.14 What MaruOS Teaches the Custom ROM Author
+### 65.14.14 What MaruOS Teaches the Custom ROM Author
 
 Reading MaruOS as an exemplar rather than a one-off, three lessons
 generalise beyond this specific project:
 
-1. **The overlay model is very flexible.** Sections 63.3–63.5 talked
+1. **The overlay model is very flexible.** Sections 65.3–65.5 talked
    about overlays as a way to change resource values and ship a few
    APKs. MaruOS shows the *upper bound*: you can add an entire second
    operating system through vendor overlay + sepolicy + init.rc + a
@@ -5370,7 +5370,7 @@ generalise beyond this specific project:
    companion microcontroller — model that artefact as a sibling build
    that hands off a file.
 
-### 63.14.15 Limitations and Trade-Offs
+### 65.14.15 Limitations and Trade-Offs
 
 MaruOS is also a useful case study in what this approach *costs*. An
 honest read of the trade-offs:
@@ -5396,14 +5396,14 @@ honest read of the trade-offs:
   `DisplayManager`, input dispatching, and SELinux that the perspective
   daemon has to adapt to.
 - **Upstream uncertainty.** Maru's design predates the Android Computer
-  Control framework (section 50.3) and the formalisation of desktop-
+  Control framework (section 51.3) and the formalisation of desktop-
   mode in stock Android. Convergent UIs are now closer to a first-class
   upstream concern, which could either obsolete Maru's approach or
   raise the floor under it. The case study above is best read as a
   *snapshot* of where one production custom ROM landed under the AOSP
   primitives available to it through Android 12-era releases.
 
-The lesson here is symmetrical to the one in 63.14.14: the same overlay-
+The lesson here is symmetrical to the one in 65.14.14: the same overlay-
 mechanism flexibility that lets a single small team ship a phone-to-desktop
 convergence ROM also distributes the cost. Every layer of additional
 ambition adds a layer of maintenance. Custom ROM authors weighing how far
@@ -5412,14 +5412,14 @@ release cadence first.
 
 ---
 
-## 63.15 Try It
+## 65.15 Try It
 
 Work these on an Android 17 (`android17-release`) checkout. They walk the full
 arc of the chapter from a registered product to a signed, page-size-correct
 image, so the early ones are prerequisites for the later ones.
 
 1. **Register and lunch your own product.** Create
-   `device/AospBook/bookphone/` with the four files from Section 63.3
+   `device/AospBook/bookphone/` with the four files from Section 65.3
    (`AndroidProducts.mk`, `bookphone.mk`, `device.mk`, `BoardConfig.mk`),
    `source build/envsetup.sh`, then run `list_products | grep bookphone` and
    `lunch bookphone-trunk_staging-userdebug`. Confirm `printconfig` reports
@@ -5458,7 +5458,7 @@ image, so the early ones are prerequisites for the later ones.
    `adb logcat -b kernel`.
 
 7. **Add and discover a custom AIDL HAL.** Implement the `IBookLight` HAL from
-   Section 63.12 with its VINTF fragment and SELinux policy, then verify the
+   Section 65.12 with its VINTF fragment and SELinux policy, then verify the
    framework can see it with `adb shell lshal | grep booklight` and that there
    are no `avc: denied` lines for it in logcat.
 
@@ -5485,27 +5485,27 @@ backs each step.
 
 ---
 
-## 63.16 Summary
+## 65.16 Summary
 
 This chapter walked through the entire process of building a custom Android
 ROM from the ground up:
 
 | Section | Topic | Key Outcome |
 |---------|-------|-------------|
-| 63.1 | Planning | Defined AospBook ROM scope and architecture |
-| 63.2 | Environment Setup | Complete build host configuration; in-tree JDK; Siso default |
-| 63.3 | Device Configuration | `AndroidProducts.mk`, `device.mk`, `BoardConfig.mk` |
-| 63.4 | Custom Apps | Prebuilt APKs and source-built apps in the image |
-| 63.5 | Framework Behavior | RROs, source mods, custom system service |
-| 63.6 | Boot Animation | `bootanimation.zip` creation and installation |
-| 63.7 | SystemUI | Status bar, quick settings, theme overlays |
-| 63.8 | Building & Flashing | `m`, emulator launch, `fastboot flash`, 16 KB page size |
-| 63.9 | Debugging | logcat, dumpsys, Perfetto, Winscope, SELinux |
-| 63.10 | Distribution | Key generation, signing, OTA packages |
-| 63.11 | Kernel | Custom kernel builds (Kleaf), kernel modules |
-| 63.12 | HAL | Custom AIDL HAL definition and implementation |
-| 63.13 | Putting It All Together | End-to-end build, test, and release pipeline |
-| 63.14 | Case Study | MaruOS as a convergence custom ROM |
+| 65.1 | Planning | Defined AospBook ROM scope and architecture |
+| 65.2 | Environment Setup | Complete build host configuration; in-tree JDK; Siso default |
+| 65.3 | Device Configuration | `AndroidProducts.mk`, `device.mk`, `BoardConfig.mk` |
+| 65.4 | Custom Apps | Prebuilt APKs and source-built apps in the image |
+| 65.5 | Framework Behavior | RROs, source mods, custom system service |
+| 65.6 | Boot Animation | `bootanimation.zip` creation and installation |
+| 65.7 | SystemUI | Status bar, quick settings, theme overlays |
+| 65.8 | Building & Flashing | `m`, emulator launch, `fastboot flash`, 16 KB page size |
+| 65.9 | Debugging | logcat, dumpsys, Perfetto, Winscope, SELinux |
+| 65.10 | Distribution | Key generation, signing, OTA packages |
+| 65.11 | Kernel | Custom kernel builds (Kleaf), kernel modules |
+| 65.12 | HAL | Custom AIDL HAL definition and implementation |
+| 65.13 | Putting It All Together | End-to-end build, test, and release pipeline |
+| 65.14 | Case Study | MaruOS as a convergence custom ROM |
 
 **Key takeaways:**
 
@@ -5534,8 +5534,8 @@ the ability to build, customize, sign, and distribute a complete Android
 system image is the ultimate expression of AOSP mastery.
 
 
-<!-- chapter:64-windows-games -->
-# Chapter 64: Running Windows Games on Android
+<!-- chapter:66-windows-games -->
+# Chapter 66: Running Windows Games on Android
 
 A modern Android phone carries an ARM64 GPU powerful enough to run desktop
 PC games, yet the games themselves are x86-64 Windows binaries that expect the
@@ -5564,9 +5564,9 @@ path only, without line numbers, which would be stale before the ink dried.
 
 ---
 
-## 64.1 The Problem and the Layer Cake
+## 66.1 The Problem and the Layer Cake
 
-### 64.1.1 Two Orthogonal Translations
+### 66.1.1 Two Orthogonal Translations
 
 Running a Windows game on an ARM phone is not one problem; it is two unrelated
 problems that are easy to confuse:
@@ -5588,10 +5588,10 @@ Keeping these two jobs separate is the single most important architectural idea
 in the whole stack. The performance of the entire system depends on emulating as
 little as possible, ideally only the game's own code, while letting Wine, the
 graphics driver, and the audio server run as native ARM64. We will return to
-this theme repeatedly, because the newest designs (ARM64EC, covered in 64.5.8)
+this theme repeatedly, because the newest designs (ARM64EC, covered in 66.5.8)
 exist precisely to shrink the "emulated" box down to just the game.
 
-### 64.1.2 The Full Stack at a Glance
+### 66.1.2 The Full Stack at a Glance
 
 The layers, from the Windows game at the top to the Android kernel at the
 bottom, look like this.
@@ -5645,7 +5645,7 @@ itself emulated. The same is true of audio. Only the solid arrow from the game
 into Wine, and from Wine into the emulator, represents x86-64 code that the JIT
 must actually translate.
 
-### 64.1.3 No Root, No Kernel Changes
+### 66.1.3 No Root, No Kernel Changes
 
 Everything in the guest band runs with the privileges of an ordinary
 installed app. There is no `su`, no `insmod`, no SELinux policy change, no
@@ -5664,7 +5664,7 @@ replaced by a userspace stand-in:
 | `dlopen` the glibc GPU driver | driver is a `bionic` library | IPC to a native renderer, or thunks |
 | Run a system PulseAudio | no system daemon access | bundle a PulseAudio server in the app |
 
-### 64.1.4 The Unrooted-App Constraints in AOSP Terms
+### 66.1.4 The Unrooted-App Constraints in AOSP Terms
 
 Three AOSP mechanisms shape what the stack can and cannot do, and all three were
 introduced in earlier chapters.
@@ -5678,7 +5678,7 @@ library loads into, and `ANDROID_DLEXT_USE_LIBRARY_FD`
 (`bionic/libc/include/android/dlext.h:80`) lets it load a library straight from
 a file descriptor, for example a `.so` stored uncompressed inside the APK. The
 Vulkan loader itself uses the namespace flag when it opens the device driver, as
-we will see in 64.7.4.
+we will see in 66.7.4.
 
 **W^X enforcement (Chapter 7).** A JIT must write machine code and then execute
 it. Since API 26 the dynamic linker refuses to load any ELF segment that is
@@ -5695,18 +5695,18 @@ app's writable data directory is increasingly restricted. The translation stack
 must run the guest's executables through a loader it controls (PRoot, or a
 redirection library) rather than handing the kernel a path under the app's data
 dir and calling `execve` directly. This is one of the jobs of GameNative's
-proprietary `libredirect.so`, discussed in 64.4.4.
+proprietary `libredirect.so`, discussed in 66.4.4.
 
 ---
 
-## 64.2 GameNative: the Integrated Application
+## 66.2 GameNative: the Integrated Application
 
 GameNative is an Android app that runs Windows PC games locally, with built-in
 storefront integration for Steam, Epic Games Store, GOG, and Amazon Games. It is
 the most complete public example of the full stack, so it anchors this chapter.
 It is licensed GPL-3.0, with the package id `app.gamenative`.
 
-### 64.2.1 Lineage: a Pluvia and Winlator Graft
+### 66.2.1 Lineage: a Pluvia and Winlator Graft
 
 GameNative is best understood as a graft of two upstream codebases rather than a
 single fork:
@@ -5732,7 +5732,7 @@ collapsing this two-source structure; the accurate statement is the one above,
 and the rest of the chapter relies on the Winlator half, which is the part that
 actually runs the game.
 
-### 64.2.2 The App Architecture
+### 66.2.2 The App Architecture
 
 The Android-facing half is Kotlin with Jetpack Compose UI and Dagger Hilt
 dependency injection. Three pieces matter for our purposes:
@@ -5745,7 +5745,7 @@ dependency injection. Three pieces matter for our purposes:
 - **The vendored Winlator runtime** does the actual container, rootfs, Wine,
   and emulator work, orchestrated from the `com.winlator.xenvironment` package.
 
-### 64.2.3 The Container Model
+### 66.2.3 The Container Model
 
 A **container** is one game's isolated Windows environment: a Wine prefix plus
 its configuration (graphics driver, emulator, audio driver, DLL overrides,
@@ -5769,25 +5769,25 @@ the rest. The default Wine is recorded in `WineInfo.java`. Reading these two
 files tells you the entire default pipeline at a glance, which is why a "Try It"
 exercise at the end of the chapter is simply to read them.
 
-### 64.2.4 The Default Stack
+### 66.2.4 The Default Stack
 
 Putting the container defaults together, a freshly created GameNative container
 runs:
 
 - **Wine / Proton** in an **ARM64EC** configuration as the Windows API layer
-  (64.6), with **FEXCore** translating the game's x86-64 code and a WoW64
-  helper translating any 32-bit code (64.5.8).
+  (66.6), with **FEXCore** translating the game's x86-64 code and a WoW64
+  helper translating any 32-bit code (66.5.8).
 - **DXVK** translating Direct3D 9/10/11 to Vulkan, with **VKD3D-Proton** for
-  Direct3D 12 (64.7.2).
-- **Vortek** as the Vulkan path that reaches the device's Adreno driver (64.7.3),
+  Direct3D 12 (66.7.2).
+- **Vortek** as the Vulkan path that reaches the device's Adreno driver (66.7.3),
   with **Turnip** (Mesa) available as an alternative.
-- **PulseAudio** as the audio server (64.8).
+- **PulseAudio** as the audio server (66.8).
 
 Box64 with a classic glibc launch path is also bundled as the alternative
 route for Wine builds that are not ARM64EC; that path is selected by a different
-launcher component (64.5.6).
+launcher component (66.5.6).
 
-### 64.2.5 Packaging: How the Pieces Reach the Device
+### 66.2.5 Packaging: How the Pieces Reach the Device
 
 GameNative ships a remarkable amount of prebuilt native software inside one app,
 through three distinct delivery mechanisms.
@@ -5814,7 +5814,7 @@ through three distinct delivery mechanisms.
    `assets/*_download.json` manifests. This keeps the base APK installable while
    the multi-gigabyte Linux userland arrives only when a game is first run.
 
-### 64.2.6 End-to-End Launch Sequence
+### 66.2.6 End-to-End Launch Sequence
 
 #### Diagram: launching a game in GameNative
 
@@ -5851,7 +5851,7 @@ program-launcher component that spawns Wine under the emulator. The launcher is
 either `BionicProgramLauncherComponent` (the default ARM64EC/FEX path) or
 `GuestProgramLauncherComponent` (the classic glibc/Box64 path).
 
-### 64.2.7 Licensing and the GPL Aggregation Question
+### 66.2.7 Licensing and the GPL Aggregation Question
 
 GameNative is GPL-3.0, as is the vendored Winlator code. Most of the bundled
 runtime carries its own upstream, mostly permissive or LGPL licences: Wine and
@@ -5881,9 +5881,9 @@ argument.
 
 ---
 
-## 64.3 The rootfs: a glibc Linux Userland Inside an App
+## 66.3 The rootfs: a glibc Linux Userland Inside an App
 
-### 64.3.1 What Is in the rootfs
+### 66.3.1 What Is in the rootfs
 
 Wine, the emulator's guest libraries, and the game all expect a Linux
 filesystem laid out the normal way, with `/usr/lib`, `/bin`, an `ld-linux`
@@ -5897,7 +5897,7 @@ The rootfs is based on **Ubuntu** (the original Winlator uses Focal Fossa,
 the per-container **Wine prefix** at `/home/xuser/.wine`. The path constants are
 defined in `com.winlator.xenvironment.ImageFs`.
 
-### 64.3.2 Shipping and Extraction
+### 66.3.2 Shipping and Extraction
 
 The userland is shipped compressed and unpacked on first use, never mounted (an
 app cannot mount). The relevant code is `ImageFsInstaller`, which extracts the
@@ -5908,10 +5908,10 @@ library search paths point inside the rootfs rather than at a system that does
 not exist.
 
 The size is the reason the rootfs is delivered as an on-demand dynamic-feature
-module (64.2.5): a full Ubuntu-plus-Wine userland is hundreds of megabytes
+module (66.2.5): a full Ubuntu-plus-Wine userland is hundreds of megabytes
 to gigabytes, far too large to sit in a base APK.
 
-### 64.3.3 Entering the rootfs: PRoot
+### 66.3.3 Entering the rootfs: PRoot
 
 A desktop setup would `chroot` into the rootfs. An unrooted app cannot. The
 classic Winlator answer is **PRoot**, a userspace re-implementation of `chroot`
@@ -5943,10 +5943,10 @@ sequenceDiagram
 
 The cost is the price of admission for going rootless: every path-bearing
 syscall takes a `ptrace` stop-and-continue round trip into the PRoot process.
-That overhead is the main reason the newer **bionic** designs (64.3.6) try to
+That overhead is the main reason the newer **bionic** designs (66.3.6) try to
 eliminate PRoot entirely.
 
-### 64.3.4 glibc Versus bionic: the Central Mismatch
+### 66.3.4 glibc Versus bionic: the Central Mismatch
 
 The rootfs gives Wine a glibc world, which is exactly what Wine wants. But it
 creates the defining problem of the whole stack: **the process now contains
@@ -5958,13 +5958,13 @@ about stack canaries. Loading one libc's shared object into the other's process
 corrupts state and crashes.
 
 This is the problem that "bionic redirections" exist to solve, and it is
-important enough to get its own section (64.4). For now, note the shape of the
+important enough to get its own section (66.4). For now, note the shape of the
 two answers: either keep the glibc world and reach Android services through
 **inter-process communication** rather than linking (the PulseAudio server, the
 Vortek renderer, and the SysV-SHM server are all separate endpoints reached over
 sockets), or abandon glibc and run Wine directly on `bionic` (the newer forks).
 
-### 64.3.5 System V Shared Memory over ashmem
+### 66.3.5 System V Shared Memory over ashmem
 
 The cleanest concrete example of a bionic redirection is System V shared memory.
 X11, DXVK, and other components use `shmget`/`shmat` to share large buffers
@@ -5983,26 +5983,26 @@ an `ASharedMemory`-style fd on the host, passed back across the socket. The gues
 keeps using the System V API it was written for; the host satisfies it with an
 Android primitive the kernel actually allows.
 
-### 64.3.6 The bionic-Wine Alternative
+### 66.3.6 The bionic-Wine Alternative
 
 The newest Winlator forks, and GameNative's default path, take the other route:
 build Wine for **`bionic`** and drop PRoot. If Wine itself runs on `bionic`,
 there is no libc mismatch with the Android GPU driver, and there is no per-syscall
 `ptrace` tax. The price is that everything Wine relied on glibc for must now be
 provided on `bionic`, which is why this path leans on ARM64EC Wine builds
-(64.5.8) and a set of redirection libraries that fix up path and behaviour
+(66.5.8) and a set of redirection libraries that fix up path and behaviour
 differences in place of PRoot. We turn to those next.
 
 ---
 
-## 64.4 Bionic Redirections and the libc Boundary
+## 66.4 Bionic Redirections and the libc Boundary
 
 "Bionic redirections" is the umbrella term for the techniques that let a stack
 built around glibc-flavoured Linux software cooperate with an Android system
 built around `bionic`. There are several distinct problems hiding under that
 phrase, and they have different solutions.
 
-### 64.4.1 Why Two libcs Cannot Share a Process
+### 66.4.1 Why Two libcs Cannot Share a Process
 
 Restating the core constraint precisely, because everything else follows from
 it: a single Linux process has exactly one dynamic loader and one C library
@@ -6016,7 +6016,7 @@ require linking, and there are exactly three such mechanisms in this stack:
 inter-process communication, ABI thunking, or choosing one libc for the whole
 process.
 
-### 64.4.2 Linker Namespaces and dlext
+### 66.4.2 Linker Namespaces and dlext
 
 Even when the stack does run native `bionic` code, it is subject to the linker
 namespace isolation from Chapter 7. App native libraries load into a restricted
@@ -6030,10 +6030,10 @@ build than the device ships) rely on exactly this machinery to get a chosen
 (`bionic/libc/include/android/dlext.h:80`) is the companion that loads a driver
 straight from a file descriptor.
 
-### 64.4.3 W^X and the JIT
+### 66.4.3 W^X and the JIT
 
 The translators are JITs, and a JIT must respect the write-xor-execute rule the
-platform enforces (64.1.4). The pattern every translator on Android follows is:
+platform enforces (66.1.4). The pattern every translator on Android follows is:
 map a code buffer `PROT_READ | PROT_WRITE`, emit AArch64 instructions into it,
 clear the instruction cache for that range, then `mprotect` it to
 `PROT_READ | PROT_EXEC` before jumping in. A page is never both writable and
@@ -6043,9 +6043,9 @@ further restrict executing memory from app data, the translator must allocate
 its code pages as anonymous memory it owns rather than mapping a file from the
 data directory.
 
-### 64.4.4 Path Redirection: PRoot Versus libredirect
+### 66.4.4 Path Redirection: PRoot Versus libredirect
 
-PRoot (64.3.3) is one form of path redirection: rewrite paths in the kernel ABI
+PRoot (66.3.3) is one form of path redirection: rewrite paths in the kernel ABI
 using `ptrace`. It is general but slow. The bionic path replaces it with a
 preloaded library, GameNative's `libredirect.so`, injected into Wine
 subprocesses with `LD_PRELOAD`. Instead of trapping every syscall through
@@ -6058,17 +6058,17 @@ catches calls that go through the functions it interposes, whereas PRoot catches
 everything at the kernel boundary, but the preload approach avoids the
 per-syscall `ptrace` cost that dominates PRoot's overhead.
 
-### 64.4.5 The IPC Escape Hatch
+### 66.4.5 The IPC Escape Hatch
 
 The most robust redirection is to not cross the libc boundary in-process at all.
 Three of the stack's services live on the Android (`bionic`) side as separate
 endpoints and are reached from the guest over Unix-domain sockets:
 
 - the **PulseAudio server**, which the guest's Wine audio backend connects to as
-  an ordinary PulseAudio client (64.8);
+  an ordinary PulseAudio client (66.8);
 - the **Vortek Vulkan renderer**, where the guest holds only a thin Vulkan ICD
-  that serialises commands over a socket to the native renderer (64.7.3);
-- the **System V SHM server** (64.3.5).
+  that serialises commands over a socket to the native renderer (66.7.3);
+- the **System V SHM server** (66.3.5).
 
 Because the boundary is a socket, the two sides can use different C libraries,
 different instruction sets, and different memory models without any of it
@@ -6081,9 +6081,9 @@ not.
 
 ---
 
-## 64.5 FEX and Box64: Translating x86-64 to AArch64
+## 66.5 FEX and Box64: Translating x86-64 to AArch64
 
-This is the layer that does the actual instruction-set emulation from 64.1.1.
+This is the layer that does the actual instruction-set emulation from 66.1.1.
 Two projects dominate, and GameNative ships both: **FEX** (the default, via its
 FEXCore engine) and **Box64**. They solve the same problem with opposite
 philosophies, and understanding the difference explains most of the
@@ -6100,7 +6100,7 @@ they run inside an ordinary app process, not as Native Bridge plugins, and they
 translate x86-64 to AArch64, which is a direction no AOSP-shipped translator
 covers.
 
-### 64.5.1 What a Dynamic Recompiler Does
+### 66.5.1 What a Dynamic Recompiler Does
 
 A dynamic recompiler, or dynarec, is a JIT for foreign machine code. It reads a
 block of x86-64 instructions, translates them once into AArch64 instructions,
@@ -6123,9 +6123,9 @@ FEX and Box64 spend their engineering effort:
    careful attention to NaN handling and rounding.
 3. **The memory model.** x86 has a strong memory model (Total Store Ordering);
    ARM has a weaker one. Preserving correctness here is subtle and costly enough
-   to warrant its own subsection (64.5.3).
+   to warrant its own subsection (66.5.3).
 
-### 64.5.2 The FEXCore Pipeline
+### 66.5.2 The FEXCore Pipeline
 
 FEX is a userspace x86 and x86-64 emulator for AArch64 hosts. Its emulation
 engine is a library called **FEXCore**, and its translation pipeline is a clean
@@ -6169,7 +6169,7 @@ translations through a lookup cache. Self-modifying code is handled by detecting
 guest writes to pages that contain translated code and invalidating the affected
 cached blocks.
 
-### 64.5.3 The TSO Memory-Model Problem
+### 66.5.3 The TSO Memory-Model Problem
 
 This is the most important performance subtlety in the entire emulation layer.
 x86 guarantees Total Store Ordering: stores from one core become visible to
@@ -6194,7 +6194,7 @@ safe), trading a little stability for speed. The practical upshot for a phone is
 that a Snapdragon's specific memory-ordering capabilities materially affect how
 fast emulation runs, independent of raw clock speed.
 
-### 64.5.4 FEX Thunks: Calling Native ARM64 Graphics
+### 66.5.4 FEX Thunks: Calling Native ARM64 Graphics
 
 If FEX translated *every* instruction the game's process executed, including the
 entire Vulkan driver, performance would be hopeless. The lever that avoids this
@@ -6234,7 +6234,7 @@ Thunking is the single biggest reason FEX-based graphics can approach native
 speed: only the game's draw-call *setup* is emulated, while the driver work runs
 native.
 
-### 64.5.5 The FEX RootFS Requirement
+### 66.5.5 The FEX RootFS Requirement
 
 When FEX runs as a standalone Linux emulator, emulating a complete x86-64
 *process*, it needs an x86-64 root filesystem to supply the guest glibc and base
@@ -6244,13 +6244,13 @@ main axis on which Box64 differs, since Box64 wraps host libraries instead of
 emulating a full guest userland.
 
 In GameNative's default ARM64EC configuration, however, FEX does not run as a
-Linux emulator at all. It plugs into Wine as a CPU-only module (64.5.8): the
+Linux emulator at all. It plugs into Wine as a CPU-only module (66.5.8): the
 Windows system calls are serviced by Wine rather than by a guest glibc, so the
 separate x86 rootfs is no longer needed. The FEX rootfs requirement is therefore
 a property of the everything-emulated path, not of the ARM64EC default, and
 shedding it is one of ARM64EC's concrete wins.
 
-### 64.5.6 Box64: Wrapped Native Libraries
+### 66.5.6 Box64: Wrapped Native Libraries
 
 Box64, by ptitSeb, is a dynarec with the same core job but a different
 philosophy about system libraries. Instead of emulating the x86-64 glibc, GL,
@@ -6277,7 +6277,7 @@ one. Box64's own `docs/WINE.md` lays out the matrix of Wine variants (x86, x86-6
 x86-64 WoW64, ARM64 WoW64) and which Box combination each requires; it is the
 single best primary reference for how the emulator and Wine fit together.
 
-### 64.5.7 FEX Versus Box64
+### 66.5.7 FEX Versus Box64
 
 #### Diagram: the two emulation philosophies
 
@@ -6307,7 +6307,7 @@ heavily-modded or unusual titles; Box64's lighter footprint and mature wrappers
 made it the long-time Winlator default. GameNative ships both and lets a
 container pick.
 
-### 64.5.8 ARM64EC and WoW64: Emulating Only the Game
+### 66.5.8 ARM64EC and WoW64: Emulating Only the Game
 
 The most important recent shift is architectural, not incremental: stop running
 Wine itself through the emulator. In the "everything emulated" model, the JIT
@@ -6352,14 +6352,14 @@ fast enough to be usable on a phone at all.
 
 ---
 
-## 64.6 Wine: Implementing the Windows API
+## 66.6 Wine: Implementing the Windows API
 
 Wine is the layer that makes the game think it is running on Windows. Where the
 emulator handles instructions, Wine handles meaning: every call the game makes to
 the Windows API is serviced by Wine's reimplementation of that API on top of the
 Linux kernel.
 
-### 64.6.1 Not an Emulator
+### 66.6.1 Not an Emulator
 
 The name is a recursive acronym, "Wine Is Not an Emulator," and on ARM Android
 the distinction is not pedantry, it is the architecture. Wine contains no
@@ -6369,9 +6369,9 @@ that talks to Linux. On x86-64 Linux that native code runs directly. On ARM
 Android, Wine is *itself* either emulated (the everything-emulated model) or
 compiled native as ARM64EC (the hybrid model) but in neither case does Wine do
 the x86-to-ARM translation; that is always FEX or Box64. The two layers are
-orthogonal, exactly as 64.1.1 set out.
+orthogonal, exactly as 66.1.1 set out.
 
-### 64.6.2 The PE/Unix Split
+### 66.6.2 The PE/Unix Split
 
 Modern Wine is organised around a hard boundary between Windows PE code and a
 Unix backend. Wine's builtin DLLs (`ntdll`, `kernel32`, `kernelbase`, `user32`,
@@ -6417,10 +6417,10 @@ Two mechanisms cross the boundary. NT system calls (`NtCreateFile`,
 stack, indexes a syscall table, and calls the Unix implementation. DLLs with a
 Unix backend that bypass the NT table instead use `WINE_UNIX_CALL`. The fact that
 Wine routes Windows API calls through an explicit, NT-like syscall boundary is
-exactly what makes the ARM64EC and WoW64 transitions of 64.5.8 possible: the
+exactly what makes the ARM64EC and WoW64 transitions of 66.5.8 possible: the
 boundary is already there to hook.
 
-### 64.6.3 wineserver
+### 66.6.3 wineserver
 
 wineserver is a separate daemon that provides Wine roughly the services the
 Windows kernel provides on Windows. Every Wine process sharing a prefix shares,
@@ -6446,7 +6446,7 @@ depends on the host kernel: an Android kernel may not expose `/dev/ntsync` at
 all, in which case the stack falls back to fsync on futexes, which Android does
 have.
 
-### 64.6.4 The Prefix, the C: Drive, and the Registry
+### 66.6.4 The Prefix, the C: Drive, and the Registry
 
 A **Wine prefix** (the `WINEPREFIX`, here `/home/xuser/.wine` inside the rootfs)
 is one self-contained virtual Windows installation: its own C: drive, its own
@@ -6461,7 +6461,7 @@ This layout is why a container is portable and disposable: it is just a director
 tree. GameNative's per-game containers are exactly per-game prefixes, which is
 how two games with conflicting DLL or registry needs stay isolated.
 
-### 64.6.5 DLL Overrides: How DXVK Replaces Wine's Direct3D
+### 66.6.5 DLL Overrides: How DXVK Replaces Wine's Direct3D
 
 Wine decides, per DLL, whether to use its own builtin implementation or a
 **native** DLL placed in the prefix. The choice is driven by the
@@ -6473,11 +6473,11 @@ exactly like Wine's builtin Direct3D DLLs (`d3d9.dll`, `d3d11.dll`, `dxgi.dll`,
 and sets those names to `native`. The next time the game calls
 `D3D11CreateDevice`, Wine's loader resolves `d3d11.dll` to the DXVK file instead
 of its own `wined3d`-backed builtin, and Direct3D is now translated to Vulkan
-(64.7) rather than to OpenGL.
+(66.7) rather than to OpenGL.
 
-### 64.6.6 Where Wine Meets the Emulator
+### 66.6.6 Where Wine Meets the Emulator
 
-Tying 64.5 and 64.6 together: in the ARM64EC configuration, Wine is native
+Tying 66.5 and 66.6 together: in the ARM64EC configuration, Wine is native
 ARM64EC, its DLLs transition to native code at the syscall boundary, and the
 emulator (`libarm64ecfex.dll` or the WoW64 helper) is invoked only to run the
 game's x86-64 instruction stream. In the everything-emulated configuration, all
@@ -6488,14 +6488,14 @@ biggest determinant of frame rate.
 
 ---
 
-## 64.7 Graphics: Direct3D to the Adreno GPU
+## 66.7 Graphics: Direct3D to the Adreno GPU
 
 Graphics is where the stack either succeeds or visibly fails, and it is the
 longest translation chain in the book: a Direct3D call made by an x86-64 game
 ends up as a Vulkan command executed by the phone's Adreno driver and composited
 by SurfaceFlinger. Every link in that chain is a separate technology.
 
-### 64.7.1 The Translation Chain
+### 66.7.1 The Translation Chain
 
 #### Diagram: the full Direct3D-to-display chain
 
@@ -6513,15 +6513,15 @@ graph TD
     DRIVER --> SURFACE
 ```
 
-The chain has two halves separated by the libc boundary from 64.4. Above the
+The chain has two halves separated by the libc boundary from 66.4. Above the
 boundary, in the Windows/guest world, Direct3D becomes Vulkan. Below it, on the
 Android side, Vulkan reaches the real driver and the frame reaches the display.
 The interesting engineering is entirely in how the boundary is crossed.
 
-### 64.7.2 D3D to Vulkan: DXVK, VKD3D, and the Fallbacks
+### 66.7.2 D3D to Vulkan: DXVK, VKD3D, and the Fallbacks
 
 Several translators cover the Direct3D version space, all installed as Wine DLL
-overrides (64.6.5):
+overrides (66.6.5):
 
 - **DXVK** translates Direct3D 9/10/11 to Vulkan. It ships `d3d9.dll`,
   `d3d11.dll`, `dxgi.dll` and related DLLs. It is the default `DEFAULT_DXWRAPPER`
@@ -6535,27 +6535,27 @@ overrides (64.6.5):
 - **cnc-ddraw** handles legacy DirectDraw titles.
 
 The key architectural point is that on ARM64EC these translators are native
-ARM64 code (64.5.8). Only the game's D3D *calls* originate from emulated code;
+ARM64 code (66.5.8). Only the game's D3D *calls* originate from emulated code;
 the heavy work of turning a frame's worth of draw calls into Vulkan command
 buffers runs native. This is why DXVK on a phone is far faster than the alternative
 of translating Direct3D inside a fully-emulated x86 Wine.
 
-### 64.7.3 Reaching the Real GPU: Turnip and Vortek
+### 66.7.3 Reaching the Real GPU: Turnip and Vortek
 
 Vulkan commands now have to reach the actual Adreno GPU, and there are two
 strategies, which is the most important fork in the graphics design.
 
 **Turnip** is Mesa's open-source Vulkan driver for Adreno GPUs. The stack ships a
-Turnip build (and can side-load a newer one via adrenotools, 64.4.2) so the guest
+Turnip build (and can side-load a newer one via adrenotools, 66.4.2) so the guest
 has a real, complete Vulkan implementation that talks to the Adreno kernel
 interface directly. Turnip exists because the Vulkan driver a phone ships is often
 incomplete or buggy for the unusual workloads Wine and DXVK generate; a known-good
 Mesa driver sidesteps that. In the FEX world, the guest reaches Turnip through the
-**thunk** mechanism (64.5.4): a guest `libvulkan` stub forwards to the native
+**thunk** mechanism (66.5.4): a guest `libvulkan` stub forwards to the native
 Turnip.
 
 **Vortek** is Winlator's own Vulkan compatibility layer, and it takes the IPC
-route from 64.4.5 instead of thunking. It is a client/server design: the guest
+route from 66.4.5 instead of thunking. It is a client/server design: the guest
 links a thin Vortek Vulkan **ICD** (shipped into the rootfs from an
 `assets/.../vortek-*` archive) that serialises every Vulkan call into a command
 stream and ships it over a Unix socket to a **native Android server**, the
@@ -6596,7 +6596,7 @@ because the guest runs its own GL-to-Vulkan translation (Zink, or `wined3d`'s GL
 output) inside the rootfs and reaches the device through the Vulkan loader; the
 parallel is conceptual, not a shared code path.
 
-### 64.7.4 The Android Vulkan Loader
+### 66.7.4 The Android Vulkan Loader
 
 Whichever guest path is used, the bottom of the chain is the same AOSP Vulkan
 loader from Chapter 13. The loader discovers and loads the device's Vulkan driver
@@ -6604,13 +6604,13 @@ in `frameworks/native/vulkan/libvulkan/driver.cpp`; the `LoadDriver` routine
 (`frameworks/native/vulkan/libvulkan/driver.cpp:153`) opens the HAL driver
 (`vulkan.<board>.so`) with `android_dlopen_ext`
 (`frameworks/native/vulkan/libvulkan/driver.cpp:171`) using
-the namespace flag from 64.4.2, because the driver lives in a restricted linker
+the namespace flag from 66.4.2, because the driver lives in a restricted linker
 namespace. A native renderer such as Vortek's server, or a thunked Turnip, is in
 the end just another client of this loader and this driver, which is why the
 whole edifice works without any platform modification: the GPU is reached through
 the same public Vulkan interface any Android game uses.
 
-### 64.7.5 Presentation: the In-App Surface
+### 66.7.5 Presentation: the In-App Surface
 
 Rendered frames must become pixels on screen. The game does not get a real X
 display or a real window system; it gets GameNative's **in-app X server**, a
@@ -6631,7 +6631,7 @@ the zero-copy GPU path binds an `AHardwareBuffer`
 straight into a buffer SurfaceFlinger can scan out. From SurfaceFlinger onward
 (Chapter 24) the game's frame is just another layer composited to the display.
 
-### 64.7.6 Frame Generation
+### 66.7.6 Frame Generation
 
 As an optional final touch, GameNative can insert a Vulkan implicit layer that
 performs frame generation, interpolating synthetic frames between rendered ones by
@@ -6641,13 +6641,13 @@ built out of standard Vulkan extension points rather than bespoke hooks.
 
 ---
 
-## 64.8 Audio: from WASAPI to AAudio
+## 66.8 Audio: from WASAPI to AAudio
 
 Audio is a shorter chain than graphics but crosses the same libc boundary, and it
-is solved with the IPC pattern from 64.4.5: a real audio server runs on the
+is solved with the IPC pattern from 66.4.5: a real audio server runs on the
 Android side and the guest connects to it as a client.
 
-### 64.8.1 Wine's Audio Backends
+### 66.8.1 Wine's Audio Backends
 
 A Windows game emits audio through one of several front-end APIs (the modern
 WASAPI via `mmdevapi`, legacy DirectSound, or the old `winmm`/`waveOut`). Wine
@@ -6659,7 +6659,7 @@ In the ARM64EC configuration the backend and its client library are native ARM64
 so audio mixing and transport are not emulated; only the game's calls into the
 front-end API cross the emulator.
 
-### 64.8.2 A PulseAudio Server Inside the App
+### 66.8.2 A PulseAudio Server Inside the App
 
 There is no system PulseAudio daemon available to an unrooted app, so the stack
 ships one. GameNative's `PulseAudioComponent` starts a PulseAudio server from the
@@ -6680,7 +6680,7 @@ graph LR
     AA --> HAL["Audio HAL to speaker"]
 ```
 
-### 64.8.3 The ALSA Bridge
+### 66.8.3 The ALSA Bridge
 
 Winlator also provides a lower-level ALSA route. The rootfs carries a custom ALSA
 PCM plugin (Winlator's `android_alsa`, `module_pcm_android_aserver.c`) that
@@ -6690,7 +6690,7 @@ exposes an "android aserver" PCM device; on the Android side
 audio takes the PulseAudio route or the ALSA route, the structure is identical: a
 guest audio API, a socket, and a native Android endpoint.
 
-### 64.8.4 Reaching the Speaker via AAudio
+### 66.8.4 Reaching the Speaker via AAudio
 
 The Android endpoint ultimately writes the decoded PCM into an Android audio
 stream. The natural API is **AAudio** from Chapter 15: a stream is created with
@@ -6702,7 +6702,7 @@ audio HAL to the speaker. (Older or `targetSdk`-constrained builds may use
 audio chain therefore ends in exactly the same AOSP subsystem any native Android
 game's audio ends in.
 
-### 64.8.5 Latency
+### 66.8.5 Latency
 
 The cost of routing audio through a guest API, a socket, and a server is latency.
 The stack tunes for it: PulseAudio is configured with a deliberately large buffer
@@ -6714,7 +6714,7 @@ playback matters more than a few tens of milliseconds of lag.
 
 ---
 
-## 64.9 Putting It Together: Tracing Three Paths
+## 66.9 Putting It Together: Tracing Three Paths
 
 The clearest way to consolidate the whole chapter is to follow three different
 operations from the game down to the Android platform and notice how each one
@@ -6759,14 +6759,14 @@ entire art of the stack is keeping that box small.
 
 ---
 
-## 64.10 What Android 17 Changes for the Stack
+## 66.10 What Android 17 Changes for the Stack
 
 None of the translation projects in this chapter ship inside AOSP, so Android 17
 does not "add" a Windows-game runtime. What 17 does is move the *platform floor*
 the stack stands on, and three shifts are worth pinning down because each either
 helps or constrains a layer above.
 
-### 64.10.1 The Platform Interfaces the Stack Rides On Are Stable
+### 66.10.1 The Platform Interfaces the Stack Rides On Are Stable
 
 The whole design works because it only ever touches public, stable AOSP surfaces:
 the Vulkan loader (`frameworks/native/vulkan/libvulkan/driver.cpp`), the native
@@ -6781,7 +6781,7 @@ Winlator-class app keeps working across releases without a platform patch: the
 stack invents nothing at the bottom, so it inherits whatever the release's public
 Vulkan, audio, and linker surfaces provide.
 
-### 64.10.2 Berberis Is Not This Stack, and 17 Reorganized It
+### 66.10.2 Berberis Is Not This Stack, and 17 Reorganized It
 
 It is easy to assume Android's own binary translator must be involved here. It is
 not. Android 17 reorganized **Berberis** (Chapter 19): every module of its
@@ -6799,7 +6799,7 @@ is real and relevant to Chapter 19, but it changes nothing in this chapter: the
 x86-64-to-AArch64 translation here is still done entirely by FEX and Box64, which
 no AOSP-shipped translator competes with.
 
-### 64.10.3 Where ANGLE Fits, and Where It Does Not
+### 66.10.3 Where ANGLE Fits, and Where It Does Not
 
 Android's GLES-on-Vulkan translator **ANGLE** (`external/angle/`, Chapter 13) is
 the platform's own answer to "express OpenGL ES on a Vulkan-only driver," and it
@@ -6815,7 +6815,7 @@ sides of the libc boundary, not a shared path.
 
 ---
 
-## 64.11 Try It
+## 66.11 Try It
 
 These exercises use a checkout of the GameNative source and a device or emulator
 with a Winlator-class app installed. The source reading requires nothing but a
@@ -6848,7 +6848,7 @@ game you own.
 
 5. **See the sockets.** Run `adb shell ls -l /proc/<pid>/fd` on the Wine process
    and find the Unix-domain sockets connecting it to wineserver, the Vulkan
-   renderer, and PulseAudio. These are the boundary crossings of 64.4.5 made
+   renderer, and PulseAudio. These are the boundary crossings of 66.4.5 made
    visible.
 
 6. **Explore the prefix.** Locate the container's Wine prefix under the app's
@@ -6864,7 +6864,7 @@ game you own.
 
 ---
 
-## 64.12 Summary
+## 66.12 Summary
 
 Running a Windows game on an unrooted ARM Android phone is a stack of
 single-purpose translation layers, each bridging one gap between a Windows x86-64

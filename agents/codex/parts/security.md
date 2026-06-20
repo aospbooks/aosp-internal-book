@@ -9700,8 +9700,8 @@ demands of content protection, device diversity, and application simplicity.
 | ClearKey UUID | `frameworks/av/drm/mediadrm/plugins/clearkey/common/ClearKeyUUID.cpp` |
 | VTS Tests | `hardware/interfaces/drm/aidl/vts/drm_hal_test.cpp` |
 
-<!-- chapter:68-lfi-sandbox -->
-# Chapter 68: LFI In-Process Sandbox
+<!-- chapter:43-lfi-sandbox -->
+# Chapter 43: LFI In-Process Sandbox
 
 Android has always isolated untrusted native code with the heaviest tool it
 owns: a separate process. The software media codecs are the canonical example.
@@ -9734,9 +9734,9 @@ back into the process it used to be isolated from.
 
 ---
 
-## 68.1 What LFI Is and the Threat Model
+## 43.1 What LFI Is and the Threat Model
 
-### 68.1.1 Software fault isolation, modernized
+### 43.1.1 Software fault isolation, modernized
 
 LFI is a software-fault-isolation (SFI) scheme: the idea that you can run
 untrusted machine code safely in your own address space if every memory access
@@ -9762,7 +9762,7 @@ Because the guarantee is re-established by the verifier at load time, the threat
 model does not require trusting the toolchain that produced the binary. The
 verifier is small, auditable, and the actual root of trust.
 
-### 68.1.2 The threat model: memory safety without a second process
+### 43.1.2 The threat model: memory safety without a second process
 
 The asset LFI protects is the **host process** — for the first consumer, the
 media swcodec process and, by extension, the buffers and credentials it holds.
@@ -9803,7 +9803,7 @@ flowchart TD
   end
 ```
 
-## 68.2 The Verifier, Runtime, and Binding Split
+## 43.2 The Verifier, Runtime, and Binding Split
 
 LFI in Android is split across two trees that play very different roles. The
 in-tree `system/lfi` repo holds the *shared glue* that every sandboxed library
@@ -9811,7 +9811,7 @@ needs. The `external/lfi` tree vendors the *upstream toolchain* — the verifier
 the runtime, the binding generator, and the instruction decoders. Understanding
 which piece does what is the key to reading the codec integration later.
 
-### 68.2.1 The external toolchain (`external/lfi`)
+### 43.2.1 The external toolchain (`external/lfi`)
 
 `external/lfi` is a vendored upstream dependency. The platform integrates it; it
 does not modify its internals. There are six components, each a separate upstream
@@ -9889,7 +9889,7 @@ on: `disarm` is a fast, zero-dependency AArch64 decoder/encoder, and `fadec` is
 the equivalent for x86-32/64. The verifier uses them to classify each instruction
 it inspects; they carry no LFI policy of their own.
 
-### 68.2.2 The in-tree glue (`system/lfi`)
+### 43.2.2 The in-tree glue (`system/lfi`)
 
 `system/lfi` is the small amount of Android-specific code that every sandboxed
 library links against. Per `system/lfi/README.md`, it is "code needed to compile
@@ -9941,13 +9941,13 @@ flowchart LR
   RUN -->|"maps + runs"| LIB
 ```
 
-## 68.3 Building a Sandboxed Codec with the Soong LFI Toolchain
+## 43.3 Building a Sandboxed Codec with the Soong LFI Toolchain
 
 Compiling a library to safe machine code is the verifier's precondition, and that
 is a build-system job. Android 17 teaches Soong about an LFI cross-toolchain and a
 per-module opt-in.
 
-### 68.3.1 The LFI toolchain in Soong
+### 43.3.1 The LFI toolchain in Soong
 
 Soong models LFI as a distinct toolchain selected alongside the OS and
 architecture. `build/soong/cc/config/toolchain.go` keys its toolchain-factory map
@@ -9978,7 +9978,7 @@ not from Soong flags. The factory also forces `armv8-a`/`cortex-a53` with
 for now" (`arm64_lfi_device.go:69-77`). Only arm64 device is registered
 (`arm64_lfi_device.go:85-87`); there is no host or x86 LFI toolchain in 17.
 
-### 68.3.2 How a module opts in
+### 43.3.2 How a module opts in
 
 A `cc` module enables LFI through two cooperating properties parsed in
 `build/soong/cc/lfi.go`:
@@ -10016,7 +10016,7 @@ own: `libc_lfi` (`bionic/libc/Android.bp`) and `libm_lfi`
 `lfi_supported: true` static libraries restricted to the swcodec APEX. A sandboxed
 library has no normal libc — it links these LFI-built variants instead.
 
-### 68.3.3 `system_lfi_defaults`
+### 43.3.3 `system_lfi_defaults`
 
 `system/lfi/Android.bp` collects the common settings every sandboxed library
 needs into one `cc_defaults`:
@@ -10069,14 +10069,14 @@ flowchart TD
   VER -->|"unsafe instruction"| FAIL["build/load rejected"]
 ```
 
-## 68.4 Loading and Running a Sandboxed Codec
+## 43.4 Loading and Running a Sandboxed Codec
 
 The runtime consumer is the media codec stack. The boundary across which a
 sandboxed codec is exposed is `libapexcodecs`; the switch that selects the
 in-process LFI path is the `in_process_sw_codec_lfi` aconfig flag; and the actual
 sandboxed decoder is `C2ApexOpusDec`.
 
-### 68.4.1 `libapexcodecs`: the C ABI boundary
+### 43.4.1 `libapexcodecs`: the C ABI boundary
 
 `libapexcodecs` is a stable C ABI that lets the updatable media (swcodec) APEX
 expose Codec2 software components to the framework. Its header
@@ -10101,7 +10101,7 @@ A sandboxed decoder can only touch addresses inside its box, so the framework
 cannot hand it a buffer mapped at an arbitrary host address. These hooks let the
 sandbox supply the mapping so the buffer lands inside the box.
 
-### 68.4.2 The `in_process_sw_codec_lfi` flag
+### 43.4.2 The `in_process_sw_codec_lfi` flag
 
 The whole path is gated by a single aconfig flag
 (`frameworks/av/media/aconfig/codec_fwk.aconfig:152-157`):
@@ -10152,7 +10152,7 @@ if (__builtin_available(android 37, *)) {
 }
 ```
 
-### 68.4.3 `C2ApexOpusDec`: a codec inside the box
+### 43.4.3 `C2ApexOpusDec`: a codec inside the box
 
 `C2ApexOpusDec` (`frameworks/av/media/module/libapexcodecs/C2ApexOpusDec.cpp`) is
 the first decoder wired to run inside an LFI sandbox. The `libopus` functions it
@@ -10182,7 +10182,7 @@ bool ensure() {
 **Memory comes from inside the box.** Allocations that the decoder will touch use
 the sandbox heap, not the host heap. `LfiAlloc` is a RAII wrapper around the
 generated `libopus_lfi_bin_box_malloc`/`_free` (`C2ApexOpusDec.cpp:71-85`), and the
-mapping hooks the framework asked for in §68.4.2 forward to the box's own
+mapping hooks the framework asked for in §43.4.2 forward to the box's own
 `mmap`/`munmap` (`C2ApexOpusDec.cpp:207-215`):
 
 ```cpp
@@ -10240,7 +10240,7 @@ sequenceDiagram
     OD-->>FW: output buffer
 ```
 
-## 68.5 Security Tradeoffs
+## 43.5 Security Tradeoffs
 
 LFI changes the shape of the isolation problem rather than strictly improving it,
 and the tradeoffs are worth being precise about.
@@ -10282,7 +10282,7 @@ second, lighter tool that gives memory safety for untrusted native code where a
 whole extra process would be too expensive, with a small verified TCB carrying the
 guarantee.
 
-## 68.6 Try It
+## 43.6 Try It
 
 These commands inspect the LFI integration on an Android 17 source tree and a
 running device. Run the tree commands from the root of an `android17-release`

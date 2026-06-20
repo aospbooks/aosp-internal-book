@@ -23,11 +23,11 @@ Trust roots, key storage, credential management, and content protection.
 - `40-security.md` — SELinux on Android, Keystore/Keymint, Trusty TEE, gatekeeper/weaver, AVB, dm-verity, hardware-backed attestation
 - `41-credential-manager.md` — CredentialManagerService, credential providers, passkeys/FIDO2, password and autofill integration, digital credentials
 - `42-drm.md` — MediaDrm framework, Widevine L1/L2/L3, OEMCrypto, license acquisition, secure decoder/display path
-- `68-lfi-sandbox.md` — Lightweight Fault Isolation: memory-safe in-process sandboxing for untrusted code (software codecs) without a separate process; the external/lfi verifier and runtime, the Soong LFI toolchain, and the libapexcodecs/codec2 integration
+- `43-lfi-sandbox.md` — Lightweight Fault Isolation: memory-safe in-process sandboxing for untrusted code (software codecs) without a separate process; the external/lfi verifier and runtime, the Soong LFI toolchain, and the libapexcodecs/codec2 integration
 
 ## When to load which chapter
 
 - Question mentions SELinux, Keystore, Keymint, Trusty, gatekeeper, weaver, AVB, attestation → `40-security.md`
 - Question mentions Credential Manager, passkeys, FIDO2, autofill, digital credentials → `41-credential-manager.md`
 - Question mentions MediaDrm, Widevine, OEMCrypto, secure decoder, license server → `42-drm.md`
-- Question mentions LFI, lightweight fault isolation, in-process sandboxing, sandboxed software codec → `68-lfi-sandbox.md`
+- Question mentions LFI, lightweight fault isolation, in-process sandboxing, sandboxed software codec → `43-lfi-sandbox.md`

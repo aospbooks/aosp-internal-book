@@ -1,4 +1,4 @@
-# AOSP Internals book content (69 chapters + 4 appendices) packaged as 17 Part-skills.
+# AOSP Internals book content (67 chapters + 4 appendices) packaged as 16 Part-skills.
 
 Source: https://github.com/aospbooks/aosp-internal-book
 Version: 2026.05.25
@@ -138,7 +138,7 @@ model), WebView (WebView Mainline module, Chromium content layer, renderer
 process, JS bridges, sandboxing), Accessibility (AccessibilityService,
 AccessibilityNodeInfo, TalkBack, magnification, Switch Access), or
 Internationalization (ICU, locale resolution, resource qualifier matching,
-RTL support, Unicode in AOSP). Chapters 43–46.
+RTL support, Unicode in AOSP). Chapters 44–46.
 
 ### system-apps — Part XI: System Apps
 
@@ -148,7 +148,7 @@ AOSP Part XI — System Apps. Use when reasoning about SystemUI (status bar,
 notification shade, keyguard, Quick Settings, Monet/dynamic color),
 Launcher3 (model loader, Recents/Overview, gesture nav, all-apps,
 predictions, work profile), or the Settings app (SettingsProvider,
-SettingsLib, search index, slice surface). Chapters 47–49.
+SettingsLib, search index, slice surface). Chapters 48–49.
 
 ### ai-and-devices — Part XII: AI & Devices
 
@@ -160,7 +160,7 @@ Computer Control flow, CompanionDeviceManager, or virtual devices
 (virtual displays/inputs/cameras for cross-device experiences), or the
 NpuManager module for on-device neural accelerators (model-load admission
 control, the NDK ANpuBuffer surface, the android.hardware.npu HAL).
-Chapters 50–51, 67.
+Chapters 51–51, 67.
 
 ### infrastructure — Part XIII: Infrastructure
 
@@ -173,7 +173,7 @@ updates, update_engine, payload format, Virtual A/B with snapshots,
 rollback protection), Virtualization (Android Virtualization Framework,
 pKVM, crosvm, microdroid), Testing (CTS/VTS/MTS, Tradefed, Ravenwood,
 atest, presubmit), or Debugging (Perfetto, atrace, simpleperf, heapprofd,
-logcat, dumpsys). Chapters 52–56.
+logcat, dumpsys). Chapters 54–56.
 
 ### device-support — Part XIV: Device Support
 
@@ -186,7 +186,7 @@ DevicePolicyManager (work profiles, fully-managed devices, COPE,
 enrollment), Android Automotive / TV / Wear (CarService, vehicle HAL,
 Leanback, TIF, Wear OS specifics), Print Services (PrintManager, IPP,
 PDF generation), or the Camera2 pipeline (Camera2 API, CaptureRequest/Result,
-camera HAL3). Chapters 57–62.
+camera HAL3). Chapters 59–62.
 
 ### practical — Part XV: Practical
 
@@ -195,18 +195,7 @@ camera HAL3). Chapters 57–62.
 AOSP Part XV — Practical. Use when reasoning about building a custom AOSP
 ROM end-to-end: picking a target device, syncing source, applying vendor
 blobs, branding, building, flashing the resulting images, and shipping
-OTA updates on your own channel. Chapter 63 (Custom ROM Guide).
-
-### sdv — Part XVI: Software Defined Vehicle
-
-**File:** `parts/sdv.md`
-
-AOSP Part XVI — Software Defined Vehicle. Use when reasoning about the
-Android 17 SDV platform: the headless Core VM, VSIDL-generated-Rust
-service bundles, orchestration / lifecycle / health monitoring, the
-service-bundles registry, update manager, vehicle power-state manager,
-display safety, and the SDV gateway that bridges Android Automotive (AAOS)
-and cross-ECU traffic over SOME/IP. Chapters 65–66.
+OTA updates on your own channel. Chapter 65 (Custom ROM Guide).
 
 ### appendices — Part App.: Appendices
 

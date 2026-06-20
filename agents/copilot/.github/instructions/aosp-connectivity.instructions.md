@@ -10100,7 +10100,7 @@ alert into the full-screen warning, siren, and vibration a user actually sees.
 That is `packages/apps/CellBroadcastReceiver` (package
 `com.android.cellbroadcastreceiver`), an updatable Mainline module — it ships in
 the `com.android.cellbroadcast` APEX (`packages/apps/CellBroadcastReceiver/apex/Android.bp`),
-the same APEX that carries the `CellBroadcastService` module and which Chapter 52's
+the same APEX that carries the `CellBroadcastService` module and which Chapter 54's
 Mainline catalog lists as module 6 (R-launched, "Emergency alert message handling
 (CMAS/ETWS)").
 
@@ -19334,7 +19334,7 @@ what `UsbPortManager` reports against the raw sysfs the HAL reads.
 `dumpsys_to_lsusb` (`system/usb_info_tools/dumpsys_to_lsusb/`) parses
 `dumpsys usb` output and renders it in `lsusb`-style verbose and tree views.
 For the broader on-device debugging workflow these tools slot into, see
-Chapter 56.
+Chapter 58.
 
 ---
 
@@ -21540,7 +21540,7 @@ pumps camera frames to the host; it pulls those frames from the platform Camera2
 pipeline rather than reimplementing capture. So the chapter's gadget machinery
 (ConfigFS, FunctionFS, the `IUsbGadget` function bitmask) supplies the USB
 transport, and DeviceAsWebcam supplies the video. For how the frames are
-captured upstream of this service, see Chapter 62.
+captured upstream of this service, see Chapter 64.
 
 ---
 

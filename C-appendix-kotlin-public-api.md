@@ -980,8 +980,8 @@ axis was added with explicit signature management, explicit toolchain support,
 and explicit test infrastructure. Adding "Kotlin emission shape" as a fourth
 freeze axis would require equivalent work — which has not happened.
 
-For deeper context on the APEX format and update flow, see [Chapter 52 —
-Mainline Modules](52-mainline-modules.md) at the repo root.
+For deeper context on the APEX format and update flow, see [Chapter 54 —
+Mainline Modules](54-mainline-modules.md) at the repo root.
 
 ## Where Kotlin Already Lives in AOSP
 

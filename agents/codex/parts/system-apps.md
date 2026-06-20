@@ -1,5 +1,5 @@
-<!-- chapter:47-systemui -->
-# Chapter 47: SystemUI
+<!-- chapter:48-systemui -->
+# Chapter 48: SystemUI
 
 SystemUI is the Android process responsible for nearly everything visible on screen
 outside of the currently focused application.  It draws the status bar, the
@@ -39,9 +39,9 @@ into each section as it goes.
 
 ---
 
-## 47.1  SystemUI Architecture
+## 48.1  SystemUI Architecture
 
-### 47.1.1  Process Startup
+### 48.1.1  Process Startup
 
 SystemUI is declared in its manifest with `android:sharedUserId="android.uid.systemui"`
 and `coreApp="true"`:
@@ -107,7 +107,7 @@ public class SystemUIApplicationImpl extends SystemUIApplication
 }
 ```
 
-### 47.1.2  Dagger Dependency Injection
+### 48.1.2  Dagger Dependency Injection
 
 SystemUI uses a three-level Dagger component hierarchy:
 
@@ -202,7 +202,7 @@ public abstract class SystemUIInitializer {
 }
 ```
 
-### 47.1.3  CoreStartable -- The Service Lifecycle
+### 48.1.3  CoreStartable -- The Service Lifecycle
 
 Every major SystemUI feature is implemented as a `CoreStartable`.  This
 interface defines the lifecycle that the application drives:
@@ -268,7 +268,7 @@ do {
 If any startable's dependencies cannot be resolved, the process throws a
 `RuntimeException` with details about which dependencies are missing.
 
-### 47.1.4  Plugin System
+### 48.1.4  Plugin System
 
 SystemUI supports runtime extensibility through a plugin architecture.
 Plugins are APKs that implement interfaces from the `plugin` source set:
@@ -303,7 +303,7 @@ public void start() {
 This pattern allows OEMs to replace the default power menu, volume dialog, or
 QS tiles by shipping a plugin APK signed with the platform key.
 
-### 47.1.5  Feature Flags
+### 48.1.5  Feature Flags
 
 SystemUI uses Android's aconfig flag system for feature gating.  Flags are
 defined in:
@@ -334,7 +334,7 @@ class QSPipelineFlagsRepository @Inject constructor() {
 }
 ```
 
-### 47.1.6  Directory Structure
+### 48.1.6  Directory Structure
 
 The following is an abbreviated listing of the 180+ sub-packages under
 `frameworks/base/packages/SystemUI/src/com/android/systemui/`:
@@ -416,13 +416,13 @@ graph LR
 
 ---
 
-## 47.2  Status Bar
+## 48.2  Status Bar
 
 The status bar is the narrow strip at the top of the screen that displays the
 clock, notification icons, battery level, signal strength, and system status
 icons.  It is one of the first visual elements created during SystemUI startup.
 
-### 47.2.1  CentralSurfaces -- The Orchestrator
+### 48.2.1  CentralSurfaces -- The Orchestrator
 
 `CentralSurfaces` is an interface extending `Dumpable`, `LifecycleOwner`, and
 `CoreStartable`.  Its implementation, `CentralSurfacesImpl`, is a ~2,800-line
@@ -456,7 +456,7 @@ The class is progressively being decomposed.  New code should depend on
 narrower interfaces (e.g., `ShadeController`, `ShadeViewController`,
 `KeyguardStateController`) rather than `CentralSurfaces` directly.
 
-### 47.2.2  StatusBarWindowController
+### 48.2.2  StatusBarWindowController
 
 The status bar occupies a system window of type
 `WindowManager.LayoutParams.TYPE_STATUS_BAR`.  Its window management is
@@ -485,7 +485,7 @@ The controller handles display cutouts (notches, punch-holes) and configures
 Applications receive `statusBars()` insets corresponding to the height of this
 window.
 
-### 47.2.3  Home Status Bar Pipeline
+### 48.2.3  Home Status Bar Pipeline
 
 In earlier releases the visible content of the collapsed status bar was driven
 by a single `CollapsedStatusBarFragment` -- a `Fragment` that inflated
@@ -530,12 +530,12 @@ now as flows rather than callbacks:
   calls, screen recording, and media projection (the `statusbar/chips/` package)
 - **shade expansion** -- fading out icons as the shade expands
 
-When the Scene framework is enabled (`SceneContainerFlag`, section 47.16), the
+When the Scene framework is enabled (`SceneContainerFlag`, section 48.16), the
 status bar can also be hosted by a Compose root
 (`statusbar/pipeline/shared/ui/composable/StatusBarRoot.kt`) instead of the
 inflated View hierarchy.
 
-### 47.2.4  PhoneStatusBarView
+### 48.2.4  PhoneStatusBarView
 
 `PhoneStatusBarView` is the root `View` of the collapsed status bar:
 
@@ -548,12 +548,12 @@ public class PhoneStatusBarView extends FrameLayout {
 ```
 
 The view controller (`PhoneStatusBarViewController`, now Kotlin) coordinates
-touch handling and drives the `HomeStatusBarViewBinder` (section 47.2.3).
+touch handling and drives the `HomeStatusBarViewBinder` (section 48.2.3).
 Dark/light icon tinting is computed by `LightBarController` using region
 sampling to determine whether the wallpaper or app content below the status bar
 is light or dark.
 
-### 47.2.5  Status Bar Icon Pipeline
+### 48.2.5  Status Bar Icon Pipeline
 
 Icons in the status bar flow through a multi-stage pipeline:
 
@@ -572,7 +572,7 @@ icons over light backgrounds.  The tinting boundary is computed by
 `LightBarController` using the `Drawable` content of the window behind the
 status bar.
 
-### 47.2.6  Status Bar States
+### 48.2.6  Status Bar States
 
 The status bar operates in several logical states managed by
 `StatusBarStateControllerImpl`:
@@ -602,13 +602,13 @@ stateDiagram-v2
 
 ---
 
-## 47.3  Notification Shade
+## 48.3  Notification Shade
 
 The notification shade is the panel that slides down from the top of the
 screen, revealing notifications and Quick Settings.  It is one of the most
 complex UI components in Android.
 
-### 47.3.1  Window Configuration
+### 48.3.1  Window Configuration
 
 The notification shade occupies a separate window from the status bar.  Its
 window type is `TYPE_NOTIFICATION_SHADE` (a special type that allows it to
@@ -636,7 +636,7 @@ current state:
 | Keyguard | Full screen, bouncer may be focusable |
 | Dozing/AOD | Minimal, low power |
 
-### 47.3.2  NotificationPanelViewController
+### 48.3.2  NotificationPanelViewController
 
 At roughly 4,300 lines, `NotificationPanelViewController` is the primary
 controller for the *legacy* (pre-scene) shade panel.  It manages:
@@ -658,7 +658,7 @@ public class NotificationPanelViewController
 
 This controller is one of the largest pieces of legacy machinery the Scene
 framework is built to retire.  When `SceneContainerFlag` is enabled (section
-47.16), the swipe-to-expand and QS-expansion logic in this class is replaced by
+48.16), the swipe-to-expand and QS-expansion logic in this class is replaced by
 `SceneTransitionLayout`, and `NotificationPanelViewController` is bypassed.
 
 Key touch handling flow:
@@ -688,7 +688,7 @@ sequenceDiagram
     end
 ```
 
-### 47.3.3  ShadeController
+### 48.3.3  ShadeController
 
 `ShadeController` is the interface that abstracts shade operations.  It extends
 `CoreStartable`:
@@ -721,7 +721,7 @@ scene container architecture.  `QuickSettingsController` follows the same split:
 `QuickSettingsControllerSceneImpl.kt` for the scene path.  Dagger binds one or
 the other based on `SceneContainerFlag`.
 
-### 47.3.4  NotificationStackScrollLayout
+### 48.3.4  NotificationStackScrollLayout
 
 The notification list is rendered by `NotificationStackScrollLayout`, a custom
 `ViewGroup` that implements:
@@ -736,7 +736,7 @@ The notification list is rendered by `NotificationStackScrollLayout`, a custom
 Each notification row is an `ExpandableNotificationRow`, which itself contains
 inflated notification views (contracted, expanded, heads-up variants).
 
-### 47.3.5  Scrim Management
+### 48.3.5  Scrim Management
 
 The scrim (dimming overlay) behind the shade is managed by `ScrimController`,
 which handles multiple scrim layers:
@@ -758,7 +758,7 @@ graph TD
 Each `ScrimState` defines alpha values and tint colours for the scrims.
 Transitions between states animate these properties smoothly.
 
-### 47.3.6  Lockscreen-to-Shade Transition
+### 48.3.6  Lockscreen-to-Shade Transition
 
 The `LockscreenShadeTransitionController` manages the drag-down gesture from
 the lock screen into the shade.  It coordinates:
@@ -770,13 +770,13 @@ the lock screen into the shade.  It coordinates:
 
 ---
 
-## 47.4  Quick Settings
+## 48.4  Quick Settings
 
 Quick Settings (QS) is the tile grid accessible by pulling down the
 notification shade.  The first pull shows a "Quick QS" strip of a few tiles;
 a second pull expands to the full QS panel.
 
-### 47.4.1  Architecture Overview
+### 48.4.1  Architecture Overview
 
 ```mermaid
 graph TD
@@ -793,7 +793,7 @@ graph TD
     QSTileImpl --> QuickQS
 ```
 
-### 47.4.2  QSHost -- Tile Management
+### 48.4.2  QSHost -- Tile Management
 
 `QSHost` is the interface that manages the set of active QS tiles:
 
@@ -826,7 +826,7 @@ The tile configuration is stored in `Settings.Secure.QS_TILES` as a
 comma-separated list of tile specs (e.g., `"wifi,bt,flashlight,rotation"`).
 The default set is defined in a string resource, which OEMs commonly overlay.
 
-### 47.4.3  QSTile Interface
+### 48.4.3  QSTile Interface
 
 Every QS tile implements the `QSTile` plugin interface:
 
@@ -861,7 +861,7 @@ The `State` inner class carries all visual state:
 | `contentDescription` | Accessibility |
 | `dualTarget` | Whether long press has a separate action |
 
-### 47.4.4  QSTileImpl -- Base Implementation
+### 48.4.4  QSTileImpl -- Base Implementation
 
 `QSTileImpl` is the abstract base class for built-in tiles:
 
@@ -901,7 +901,7 @@ sequenceDiagram
     View->>View: Update icon, label, colours
 ```
 
-### 47.4.5  Built-in Tiles
+### 48.4.5  Built-in Tiles
 
 AOSP ships roughly 30 built-in QS tiles.  The set has shifted in Android 17:
 `ModesTile.kt` and `ModesDndTile.kt` (the "Modes" / Do-Not-Disturb rework),
@@ -981,7 +981,7 @@ class WifiTile @Inject constructor(
 }
 ```
 
-### 47.4.6  Custom Tiles (Third-Party)
+### 48.4.6  Custom Tiles (Third-Party)
 
 Third-party apps can add QS tiles by implementing
 `android.service.quicksettings.TileService`.  SystemUI manages these through
@@ -1020,7 +1020,7 @@ graph LR
     TService -.->|IQSTileService| TLM
 ```
 
-### 47.4.7  Auto-Add Tiles
+### 48.4.7  Auto-Add Tiles
 
 Some tiles are automatically added when certain conditions are met (e.g., the
 Work Profile tile appears when a managed profile is created).  This logic is
@@ -1033,7 +1033,7 @@ frameworks/base/packages/SystemUI/src/com/android/systemui/qs/pipeline/
   shared/  -- Shared flags and models
 ```
 
-### 47.4.8  QSPanel Layout
+### 48.4.8  QSPanel Layout
 
 The legacy full QS panel uses `QSPanel` with `TileLayout` (or `PagedTileLayout`
 for pagination).  The Quick QS strip uses `QuickQSPanel` with `QuickTileLayout`.
@@ -1076,13 +1076,13 @@ graph TD
 
 ---
 
-## 47.5  Lock Screen
+## 48.5  Lock Screen
 
 The lock screen (keyguard) is a critical security surface.  It must display
 before any user content is visible and must correctly manage authentication
 (PIN, pattern, password, biometrics).
 
-### 47.5.1  KeyguardViewMediator
+### 48.5.1  KeyguardViewMediator
 
 `KeyguardViewMediator` is the largest CoreStartable in SystemUI at roughly 4,700
 lines.  It mediates between the `KeyguardService` (which receives lock/unlock
@@ -1126,7 +1126,7 @@ sequenceDiagram
     SBKVM->>UI: Inflate/show bouncer or lockscreen
 ```
 
-### 47.5.2  StatusBarKeyguardViewManager
+### 48.5.2  StatusBarKeyguardViewManager
 
 `StatusBarKeyguardViewManager` bridges the mediator and the actual keyguard
 views.  It manages the primary bouncer (PIN/pattern/password input), the
@@ -1149,7 +1149,7 @@ It interacts with several domain interactors from the new MVI architecture:
 - `KeyguardDismissActionInteractor` -- handles dismiss actions after unlock
 - `KeyguardTransitionInteractor` -- tracks keyguard state transitions
 
-### 47.5.3  Bouncer
+### 48.5.3  Bouncer
 
 The bouncer is the security challenge (PIN, pattern, or password).  Its
 implementation lives in:
@@ -1174,7 +1174,7 @@ graph LR
     D -->|"User input"| B
 ```
 
-### 47.5.4  AOD (Always-On Display) Integration
+### 48.5.4  AOD (Always-On Display) Integration
 
 When the device is dozing, the lock screen transitions to Always-On Display
 mode.  This is coordinated by:
@@ -1198,7 +1198,7 @@ stateDiagram-v2
     GONE --> OFF : Screen off
 ```
 
-### 47.5.5  Lock Screen Customization
+### 48.5.5  Lock Screen Customization
 
 The lock screen supports:
 
@@ -1210,13 +1210,13 @@ The lock screen supports:
 
 ---
 
-## 47.6  Recent Apps
+## 48.6  Recent Apps
 
 SystemUI does not implement the Recents UI directly.  Instead, it delegates
 to Launcher3 (or a Launcher-based quickstep implementation) through the
 `OverviewProxy` pattern.
 
-### 47.6.1  Recents Architecture
+### 48.6.1  Recents Architecture
 
 ```mermaid
 graph LR
@@ -1237,7 +1237,7 @@ graph LR
     LP --> OA
 ```
 
-### 47.6.2  OverviewProxyRecentsImpl
+### 48.6.2  OverviewProxyRecentsImpl
 
 The default `RecentsImplementation` proxies all calls to Launcher:
 
@@ -1282,14 +1282,14 @@ public class OverviewProxyRecentsImpl implements RecentsImplementation {
 }
 ```
 
-### 47.6.3  LauncherProxyService
+### 48.6.3  LauncherProxyService
 
 The `LauncherProxyService` maintains the binder connection to Launcher's
 overview implementation.  When the user swipes up from the navigation bar,
 SystemUI routes the gesture to Launcher, which renders the task thumbnails and
 handles task switching.
 
-### 47.6.4  RecentsModule
+### 48.6.4  RecentsModule
 
 The Dagger module binds the implementation:
 
@@ -1306,12 +1306,12 @@ public abstract class RecentsModule {
 
 ---
 
-## 47.7  Volume Dialog
+## 48.7  Volume Dialog
 
 The volume dialog appears when the user presses hardware volume keys or when
 system volume changes programmatically.
 
-### 47.7.1  VolumeDialogControllerImpl
+### 48.7.1  VolumeDialogControllerImpl
 
 The controller is the source of truth for volume state.  It runs on a dedicated
 background thread:
@@ -1334,7 +1334,7 @@ The controller:
 - Tracks DND (Do Not Disturb) state
 - Manages media sessions for per-app volume
 
-### 47.7.2  VolumeDialog (MVI rewrite)
+### 48.7.2  VolumeDialog (MVI rewrite)
 
 Earlier releases implemented the dialog as a single 2,800-line
 `VolumeDialogImpl` class.  Android 17 has replaced it with a fully layered
@@ -1384,7 +1384,7 @@ Key features:
 | Captions toggle | `CaptionsToggleImageButton` |
 | Posture-aware | Dismiss on foldable posture change |
 
-### 47.7.3  VolumeDialogComponent
+### 48.7.3  VolumeDialogComponent
 
 `VolumeDialogComponent` wires the controller and dialog together as a
 `CoreStartable`:
@@ -1399,12 +1399,12 @@ public class VolumeDialogComponent
 }
 ```
 
-The `Events.java` telemetry class (section 47.7.4) is unchanged and is shared by
+The `Events.java` telemetry class (section 48.7.4) is unchanged and is shared by
 both the dialog and the newer **volume panel** (`volume/panel/`), the
 large-screen settings-style panel that hosts media output, spatial audio, and
 per-app volume controls.
 
-### 47.7.4  Volume Events
+### 48.7.4  Volume Events
 
 The `Events` class defines all volume-related telemetry events:
 
@@ -1424,13 +1424,13 @@ public class Events {
 
 ---
 
-## 47.8  Power Menu
+## 48.8  Power Menu
 
 The power menu (Global Actions) appears when the user long-presses the power
 button.  It provides options to power off, restart, emergency call, and
 optionally lockdown.
 
-### 47.8.1  GlobalActionsComponent
+### 48.8.1  GlobalActionsComponent
 
 `GlobalActionsComponent` is the CoreStartable entry point.  It uses the plugin
 extension pattern to allow OEM replacement:
@@ -1473,7 +1473,7 @@ public class GlobalActionsComponent
 }
 ```
 
-### 47.8.2  GlobalActionsImpl
+### 48.8.2  GlobalActionsImpl
 
 The default plugin implementation:
 
@@ -1510,7 +1510,7 @@ public class GlobalActionsImpl implements GlobalActions, CommandQueue.Callbacks 
 }
 ```
 
-### 47.8.3  GlobalActionsDialogLite
+### 48.8.3  GlobalActionsDialogLite
 
 At roughly 3,150 lines, `GlobalActionsDialogLite` implements the actual power
 menu dialog:
@@ -1547,13 +1547,13 @@ Action availability depends on:
 | Telephony available | Controls emergency action |
 | Debug build | Enables bug report action |
 
-### 47.8.4  ShutdownUi
+### 48.8.4  ShutdownUi
 
 When a shutdown or reboot is initiated, `ShutdownUi` displays a full-screen
 progress animation while the system shuts down.  The shade is instantly
 collapsed to prevent interaction during the shutdown sequence.
 
-### 47.8.5  Power Menu Layouts
+### 48.8.5  Power Menu Layouts
 
 Multiple layout classes support different screen configurations:
 
@@ -1567,12 +1567,12 @@ GlobalActionsPowerDialog.java    -- Power-specific dialog variant
 
 ---
 
-## 47.9  Screenshots
+## 48.9  Screenshots
 
 The screenshot system captures the screen content, displays a preview, and
 provides editing/sharing actions.
 
-### 47.9.1  TakeScreenshotService
+### 48.9.1  TakeScreenshotService
 
 Screenshot requests arrive from `system_server` via `TakeScreenshotService`,
 a bound service:
@@ -1586,7 +1586,7 @@ public class TakeScreenshotService extends Service {
 }
 ```
 
-### 47.9.2  ScreenshotController
+### 48.9.2  ScreenshotController
 
 `ScreenshotController` (Kotlin, using `@AssistedInject`) manages the entire
 screenshot flow:
@@ -1613,7 +1613,7 @@ class ScreenshotController @AssistedInject internal constructor(
 ) : InteractiveScreenshotHandler {
 ```
 
-### 47.9.3  Screenshot Flow
+### 48.9.3  Screenshot Flow
 
 ```mermaid
 sequenceDiagram
@@ -1649,7 +1649,7 @@ sequenceDiagram
     end
 ```
 
-### 47.9.4  Screenshot Components
+### 48.9.4  Screenshot Components
 
 | Component | Role |
 |---|---|
@@ -1666,14 +1666,14 @@ sequenceDiagram
 | `ScreenshotActionsController` | Manages action buttons (share, edit) |
 | `ActionIntentCreator` | Creates intents for share/edit |
 
-### 47.9.5  Long Screenshots
+### 48.9.5  Long Screenshots
 
 The scroll capture system enables capturing content beyond the visible
 viewport.  `ScrollCaptureExecutor` communicates with the app's
 `ScrollCaptureCallback` to progressively capture tiles of content, which are
 then stitched together into a single image.
 
-### 47.9.6  Cross-Profile Screenshots
+### 48.9.6  Cross-Profile Screenshots
 
 `ScreenshotCrossProfileService` handles screenshots that involve managed
 profile content, using `ICrossProfileService` to proxy operations across
@@ -1681,13 +1681,13 @@ user boundaries.
 
 ---
 
-## 47.10  Multi-Display SystemUI
+## 48.10  Multi-Display SystemUI
 
 Modern Android supports multiple displays (external monitors, foldables with
 two screens, automotive secondary displays).  SystemUI must render appropriate
 UI on each display.
 
-### 47.10.1  PerDisplayRepository Pattern
+### 48.10.1  PerDisplayRepository Pattern
 
 The `PerDisplayRepository<T>` pattern (from `com.android.app.displaylib`)
 maintains per-display instances of components:
@@ -1721,7 +1721,7 @@ Components like `SysUiState` are tracked per-display through a
 instance.  The earlier `ShadeWindowGoesAround` gating flag has been retired in
 Android 17 -- the per-display repository is now created unconditionally.
 
-### 47.10.2  Per-Display Status Bar
+### 48.10.2  Per-Display Status Bar
 
 The status bar window controller uses `StatusBarWindowControllerStore` to
 manage per-display instances:
@@ -1736,7 +1736,7 @@ frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/window/
 Each display gets its own status bar window with appropriate insets and
 cutout handling.
 
-### 47.10.3  Per-Display Navigation Bar
+### 48.10.3  Per-Display Navigation Bar
 
 `NavigationBarControllerImpl` manages navigation bars on all displays:
 
@@ -1757,7 +1757,7 @@ public class NavigationBarControllerImpl implements
 When a new display is added, `createNavigationBar()` is called.  When removed,
 `removeNavigationBar()` cleans up.
 
-### 47.10.4  Display Subcomponent
+### 48.10.4  Display Subcomponent
 
 The `SystemUIDisplaySubcomponent` (Kotlin) provides display-scoped dependencies
 through a custom `@PerDisplaySingleton` scope; the reference build supplies it
@@ -1796,23 +1796,23 @@ graph TD
     DCS --> SS1
 ```
 
-### 47.10.5  Connected Displays
+### 48.10.5  Connected Displays
 
 The `StatusBarConnectedDisplays` flag gates the expansion of status bar
 functionality to connected displays.  When enabled, a `HomeStatusBarComponent`
 (and its bound `PhoneStatusBarView` plus `HomeStatusBarViewModel`, section
-47.2.3) is created per-display, each with its own icon pipeline and visibility
+48.2.3) is created per-display, each with its own icon pipeline and visibility
 management.  The flag is read in `PhoneStatusBarViewController`.
 
 ---
 
-## 47.11  Navigation Bar
+## 48.11  Navigation Bar
 
 The navigation bar provides the system navigation controls at the bottom (or
 side) of the screen.  It supports three modes: 3-button, 2-button, and fully
 gestural.
 
-### 47.11.1  Navigation Mode Controller
+### 48.11.1  Navigation Mode Controller
 
 `NavigationModeController` tracks the current navigation mode, which is
 determined by an overlay package:
@@ -1838,7 +1838,7 @@ The three modes are defined in `WindowManagerPolicyConstants`:
 | 2-button | `NAV_BAR_MODE_2BUTTON` | Back gesture + Home pill |
 | Gestural | `NAV_BAR_MODE_GESTURAL` | Full gesture navigation |
 
-### 47.11.2  NavigationBarView
+### 48.11.2  NavigationBarView
 
 `NavigationBarView` is the root view for the navigation bar:
 
@@ -1866,7 +1866,7 @@ graph TD
     NBIV --> BD_A11y["ContextualButton<br/>(Accessibility)"]
 ```
 
-### 47.11.3  NavigationBarInflaterView
+### 48.11.3  NavigationBarInflaterView
 
 The button layout is defined by a string spec that
 `NavigationBarInflaterView` parses:
@@ -1884,7 +1884,7 @@ The button layout is defined by a string spec that
 
 This allows OEMs to customise button order and sizes through overlays.
 
-### 47.11.4  Gesture Navigation
+### 48.11.4  Gesture Navigation
 
 In gestural mode, the navigation bar is replaced by a thin home indicator
 handle.  Navigation gestures are handled by `EdgeBackGestureHandler`:
@@ -1923,7 +1923,7 @@ Edge back gesture detection:
 5. The gesture is dispatched as a `BackEvent` to the focused window
 6. If predictive back is enabled, the app can animate in response
 
-### 47.11.5  DisplayBackGestureHandler
+### 48.11.5  DisplayBackGestureHandler
 
 For multi-display support, `DisplayBackGestureHandler` wraps the per-display
 gesture handling:
@@ -1934,7 +1934,7 @@ gesture handling:
 // Per-display back gesture handling
 ```
 
-### 47.11.6  NavigationBarTransitions
+### 48.11.6  NavigationBarTransitions
 
 `NavigationBarTransitions` manages the visual transitions of the navigation
 bar between modes:
@@ -1948,7 +1948,7 @@ MODE_LIGHTS_OUT     -- Dimmed (immersive mode)
 MODE_TRANSPARENT    -- Fully transparent
 ```
 
-### 47.11.7  Taskbar Integration
+### 48.11.7  Taskbar Integration
 
 On large screens (tablets, foldables), the traditional navigation bar may be
 replaced by a taskbar provided by Launcher.  `TaskbarDelegate` in SystemUI
@@ -1967,7 +1967,7 @@ available on phone form factors.
 
 ---
 
-## 47.12  Monet / Dynamic Color / Material You
+## 48.12  Monet / Dynamic Color / Material You
 
 Android 12 introduced **Material You**, a design language where the entire
 system UI derives its colour palette from the user's wallpaper.  The engine
@@ -1976,7 +1976,7 @@ seed colour from `WallpaperColors`, generates tonal palettes through the
 Material Color Utilities library, and applies the resulting colours as
 fabricated resource overlays across every package.
 
-### 47.12.1  End-to-End Pipeline
+### 48.12.1  End-to-End Pipeline
 
 ```mermaid
 graph TB
@@ -2023,7 +2023,7 @@ graph TB
     RES --> APPS
 ```
 
-### 47.12.2  Colour Extraction -- Seed Selection
+### 48.12.2  Colour Extraction -- Seed Selection
 
 `ColorScheme.getSeedColors()` implements the Monet seed-selection algorithm.
 Given `WallpaperColors` (which contains all quantized colours with population
@@ -2032,7 +2032,7 @@ data), it:
 1. **Builds a hue histogram** -- 360 slots, each accumulating the proportion
    of colours with that hue.
 2. **Scores each colour** by a weighted combination of hue proportion (70%)
-   and chroma distance from the 48.0 target (30%).
+   and chroma distance from the 49.0 target (30%).
 3. **Filters low-chroma colours** (chroma < 5) which would produce grey
    themes.
 4. **Selects hue-distinct seeds** -- iteratively reduces the minimum hue
@@ -2054,7 +2054,7 @@ For Live Wallpapers where quantization population is zero, the method trusts
 the ordering of the three main colours directly, filtering only by minimum
 chroma.
 
-### 47.12.3  The ColorScheme Class
+### 48.12.3  The ColorScheme Class
 
 `ColorScheme` wraps the Material Color Utilities `DynamicScheme` and exposes
 six `TonalPalette` instances:
@@ -2095,7 +2095,7 @@ each `DynamicScheme` from a *list* of seed `Hct` values (multi-seed support) and
 a `SpecVersion` (`SPEC_2026` is the current default), rather than a single seed
 under the older spec.
 
-### 47.12.4  TonalPalette and Shade Stops
+### 48.12.4  TonalPalette and Shade Stops
 
 Each `TonalPalette` contains 13 tonal stops:
 
@@ -2110,7 +2110,7 @@ the 0-1000 range to the Material library's 0-100 tone scale via
 `(1000 - shade) / 10`.  This produces Android's `system_accent1_0` through
 `system_accent1_1000` resource colours.
 
-### 47.12.5  ThemeOverlayController -- The Orchestrator
+### 48.12.5  ThemeOverlayController -- The Orchestrator
 
 `ThemeOverlayController` is a `CoreStartable` that wires together wallpaper
 change detection, colour scheme generation, and overlay application:
@@ -2143,7 +2143,7 @@ public class ThemeOverlayController implements CoreStartable, Dumpable {
 | `BroadcastReceiver` for `ACTION_WALLPAPER_CHANGED` | Re-enables colour event acceptance |
 | `KeyguardTransitionInteractor` (asleep state) | Defers processing until screen off |
 
-### 47.12.6  Colour Event Deferral
+### 48.12.6  Colour Event Deferral
 
 The controller uses a sophisticated deferral mechanism to avoid jarring
 mid-use colour changes.  When the user is looking at the screen, colour
@@ -2176,7 +2176,7 @@ The wallpaper picker sets `EXTRA_FROM_FOREGROUND_APP=true` on the
 `ACTION_WALLPAPER_CHANGED` broadcast, which resets `mAcceptColorEvents` to
 `true` -- so user-initiated changes apply immediately.
 
-### 47.12.7  Overlay Creation and Application
+### 48.12.7  Overlay Creation and Application
 
 The `createOverlays()` method produces three fabricated overlays:
 
@@ -2211,7 +2211,7 @@ overlay.setResourceValue(prefix + "_dark", TYPE_INT_COLOR_ARGB8,
 Fixed colours (e.g. `primaryFixed`) are not dark/light variant and use the
 light scheme only.
 
-### 47.12.8  DynamicColors Token Mapping
+### 48.12.8  DynamicColors Token Mapping
 
 The `DynamicColors` class generates the full set of colour tokens:
 
@@ -2237,7 +2237,7 @@ The token names are mapped to Android resource names with the prefix
 `android:color/system_`.  For example, `accent1_500` becomes
 `android:color/system_accent1_500`.
 
-### 47.12.9  ThemeOverlayApplier -- The Transaction
+### 48.12.9  ThemeOverlayApplier -- The Transaction
 
 `ThemeOverlayApplier` takes the fabricated overlays and applies them via
 `OverlayManager` in a single atomic transaction:
@@ -2271,7 +2271,7 @@ Categories in `SYSTEM_USER_CATEGORIES` are applied to both the current user
 and user 0 (system user), ensuring SystemUI and framework processes see the
 correct colours.
 
-### 47.12.10  Settings Integration
+### 48.12.10  Settings Integration
 
 Theme customisation is persisted in
 `Settings.Secure.THEME_CUSTOMIZATION_OVERLAY_PACKAGES` as a JSON object:
@@ -2291,7 +2291,7 @@ The `ThemeOverlayController` monitors this setting and re-evaluates on every
 change.  When the wallpaper changes and no preset colour is selected, it
 updates this setting automatically, recording the colour source and timestamp.
 
-### 47.12.11  Hardware Default Colours
+### 48.12.11  Hardware Default Colours
 
 Starting with Android 15, the `hardwareColorStyles` flag enables OEMs to
 provide device-specific default colour palettes during the Setup Wizard.
@@ -2299,7 +2299,7 @@ Before the device is provisioned, the controller reads hardware defaults
 (seed colour + style + source) and persists them as the initial theme
 setting.
 
-### 47.12.12  Contrast Support
+### 48.12.12  Contrast Support
 
 `ThemeOverlayController` integrates with `UiModeManager.getContrast()` to
 apply Material Design contrast levels.  When the user changes the display
@@ -2315,7 +2315,7 @@ new ColorScheme(seed, isDark, mThemeStyle, mContrast)
 This adjusts the tonal mapping so that foreground/background colour pairs
 maintain the selected contrast ratio.
 
-### 47.12.13  Key Source Paths (Monet)
+### 48.12.13  Key Source Paths (Monet)
 
 | Path | Description |
 |---|---|
@@ -2332,9 +2332,9 @@ maintain the selected contrast ratio.
 
 ---
 
-## 47.13  Window Manager Shell Deep Dive
+## 48.13  Window Manager Shell Deep Dive
 
-Section 47.1.2 mentioned that SystemUI receives "shell interfaces" — `Pip`,
+Section 48.1.2 mentioned that SystemUI receives "shell interfaces" — `Pip`,
 `SplitScreen`, `Bubbles`, `ShellTransitions` — from a separate Dagger
 subcomponent called `WMComponent`. That subcomponent and the code behind
 those interfaces live in their own AOSP library at `frameworks/base/libs/WindowManager/Shell`,
@@ -2343,7 +2343,7 @@ called *WM Shell* throughout the codebase (Java package
 integrates with SystemUI, and how its per-feature subpackages map to the
 multi-window experiences a user sees on screen.
 
-### 47.13.1  Shell Is a Library, Not a Process
+### 48.13.1  Shell Is a Library, Not a Process
 
 The name "shell" can mislead. WM Shell does **not** run as a separate
 process — there is no `wm_shell` entry in `ps`. It is a Java library
@@ -2360,7 +2360,7 @@ naturally belongs in a foreground UI process rather than the system server.
 SystemUI is already a long-lived foreground process with rendering, input,
 and IPC plumbing in place, so the Shell library piggy-backs on it. On Wear,
 TV, or Auto, a different SystemUI variant links a different form-factor
-Shell module (see 47.13.7), but the loading mechanism is the same.
+Shell module (see 48.13.7), but the loading mechanism is the same.
 
 ```mermaid
 flowchart LR
@@ -2391,7 +2391,7 @@ process owns the source of truth for what windows exist. They communicate
 through one Binder interface (`ITaskOrganizerController`) plus a handful of
 event listeners.
 
-### 47.13.2  WMComponent: Shell's Dagger Boundary
+### 48.13.2  WMComponent: Shell's Dagger Boundary
 
 WM Shell exposes a strict surface to SystemUI through the `WMComponent`
 Dagger subcomponent:
@@ -2446,7 +2446,7 @@ per Shell. `WMSingleton` is a custom Dagger scope defined in
 its own `@SysUISingleton`, and the two scopes need to coexist in the same
 process without colliding.
 
-### 47.13.3  ShellInterface: The Lifecycle Facade
+### 48.13.3  ShellInterface: The Lifecycle Facade
 
 Most features live behind their own type, but the Shell as a whole is
 exposed through a single facade called `ShellInterface`:
@@ -2481,7 +2481,7 @@ SystemUI signal SystemUI emits — `KeyguardStateController`,
 `WakefulnessLifecycle`, `ConfigurationController`, `UserTracker`,
 `CommandQueue` — to the corresponding `ShellInterface` method.
 
-### 47.13.4  ShellInit: Ordered Initialization
+### 48.13.4  ShellInit: Ordered Initialization
 
 A library injected by Dagger has a known *construction* order (driven by
 the dependency graph), but Dagger does not guarantee a known
@@ -2526,7 +2526,7 @@ graph leaves-first, the callbacks land in dependency order
 automatically. When `WMComponent.init()` later fires `getShell().onInit()`,
 `ShellController` calls `ShellInit.init()`, which drains the queue in
 registration order. The per-component init time is logged through
-ProtoLog (see 47.13.10) so regressions in Shell start-up cost show up in
+ProtoLog (see 48.13.10) so regressions in Shell start-up cost show up in
 traces.
 
 In debug builds, adding a callback after `init()` throws. This is a
@@ -2534,7 +2534,7 @@ deliberate guard: late init usually means a feature got constructed
 through lazy injection on the main thread instead of at component
 build-time, which would defeat the dependency-ordered startup.
 
-### 47.13.5  ShellTaskOrganizer: The Bridge to WindowManager
+### 48.13.5  ShellTaskOrganizer: The Bridge to WindowManager
 
 Shell features need to *observe* and *manipulate* the system's task tree:
 PIP needs to know when a task enters picture-in-picture mode,
@@ -2575,7 +2575,7 @@ features like PIP and split-screen don't each register their own
 listener interfaces. That keeps the IPC channel narrow and avoids
 duplicate notifications for the same window event.
 
-### 47.13.6  Per-Feature Subpackages
+### 48.13.6  Per-Feature Subpackages
 
 The Shell groups each multi-window experience under its own package. The
 following table maps the visible features to their source locations:
@@ -2611,7 +2611,7 @@ contracts (`Transitions`, `ShellTaskOrganizer` listeners,
 isolation discipline that keeps `WMComponent`'s surface minimal applies
 inside the library too.
 
-### 47.13.7  Form-Factor Variants: WMShellModule vs TvWMShellModule
+### 48.13.7  Form-Factor Variants: WMShellModule vs TvWMShellModule
 
 The same `WMComponent` interface is satisfied by different Dagger
 modules depending on the build target. The largest module is
@@ -2642,7 +2642,7 @@ to ~1200 lines: it binds the transports (`ShellExecutor`,
 factor needs (back animation, drag-and-drop, splash screens, IME
 position tracking).
 
-### 47.13.8  Transitions: Driving Animations from Shell
+### 48.13.8  Transitions: Driving Animations from Shell
 
 Pre-Android-12, cross-activity animations were driven by
 `system_server` with hardcoded animations baked into
@@ -2672,7 +2672,7 @@ the fallback when nothing else handles the transition.
 SystemUI needs (e.g. registering its own handlers for shade and keyguard
 animations) and hides the internals.
 
-### 47.13.9  TaskView: Embedding a Task in a View
+### 48.13.9  TaskView: Embedding a Task in a View
 
 `taskview/` provides one of the Shell's most reused primitives: a
 `TaskView` that hosts a real task inside a regular `View`. Bubbles use
@@ -2689,7 +2689,7 @@ the task appears. Resize and bounds updates flow through
 result is that a single child View shows another app's UI while the
 host process still owns input dispatch above the surface.
 
-### 47.13.10  ProtoLog: Build-Time Log Transformation
+### 48.13.10  ProtoLog: Build-Time Log Transformation
 
 Shell logging is unusual: it does not call `Log.d(TAG, ...)` directly.
 Instead, every log call goes through `ProtoLog`, and a build-time tool
@@ -2728,12 +2728,12 @@ The build emits two artefacts:
 
 This split keeps Shell log statements cheap (one ID + args, no string
 work in the hot path) while still letting `dumpsys` and trace tools
-reconstruct human-readable lines on demand. Chapter 56's tracing section
+reconstruct human-readable lines on demand. Chapter 58's tracing section
 covers ProtoLog in detail; for Shell purposes, the key point is that
 `grep`ing the Shell source for human log text returns the
 *pre-transform* code, which is what developers read and review.
 
-### 47.13.11  The Jetpack Half (libs/WindowManager/Jetpack)
+### 48.13.11  The Jetpack Half (libs/WindowManager/Jetpack)
 
 The sibling `frameworks/base/libs/WindowManager/Jetpack/` directory is
 *not* part of the Shell library. It implements
@@ -2753,7 +2753,7 @@ but they are otherwise independent: the Shell runs inside SystemUI; the
 Jetpack extensions library is loaded into each app's process via the
 extensions discovery API.
 
-### 47.13.12  How SystemUI Talks Back to Shell: The WMShell CoreStartable
+### 48.13.12  How SystemUI Talks Back to Shell: The WMShell CoreStartable
 
 The SystemUI side has a single adapter that wires SystemUI's state into
 Shell's listeners:
@@ -2787,7 +2787,7 @@ change into the corresponding `ShellInterface` / per-feature method
 (e.g. `KeyguardStateController` → `mShellInterface.onKeyguardVisibilityChanged(...)`,
 `UserTracker` → `mShellInterface.onUserChanged(...)`).
 
-### 47.13.13  Key Source Files Reference (WM Shell)
+### 48.13.13  Key Source Files Reference (WM Shell)
 
 | File | Purpose |
 |------|---------|
@@ -2807,9 +2807,9 @@ change into the corresponding `ShellInterface` / per-feature method
 
 ---
 
-## 47.14  Low-Light Dream Library
+## 48.14  Low-Light Dream Library
 
-Sections 47.5 and (later) 47.15 mention the `DREAMING` keyguard state — the
+Sections 48.5 and (later) 48.15 mention the `DREAMING` keyguard state — the
 period where a `DreamService` (Android's screensaver mechanism, often called
 a *daydream*) is showing on top of the lock screen. The system dream is
 chosen by `DreamManagerService`, but on form factors that want to switch to
@@ -2821,7 +2821,7 @@ a small library at `frameworks/base/libs/dream/lowlight/`, packaged as
 This section walks through the library's surface, the state machine it
 implements, and how SystemUI's `LowLightMonitor` consumes it.
 
-### 47.14.1  What the Library Owns and What It Does Not
+### 48.14.1  What the Library Owns and What It Does Not
 
 `LowLightDreamLib` is intentionally narrow. It owns:
 
@@ -2856,7 +2856,7 @@ frameworks/base/libs/dream/lowlight/
   res/values/config.xml               -- config_lowLightTransitionTimeoutMs (default 2000ms)
 ```
 
-### 47.14.2  LowLightDreamManager: The 3-Mode State Machine
+### 48.14.2  LowLightDreamManager: The 3-Mode State Machine
 
 `LowLightDreamManager` is the only public class with side effects. Its
 state is a single `@AmbientLightMode` int plus an in-flight transition
@@ -2933,7 +2933,7 @@ The `WRITE_DREAM_STATE` annotation reflects the underlying
 permission) can call this method, which matches the SystemUI process
 profile.
 
-### 47.14.3  LowLightTransitionCoordinator: Letting the Host Animate First
+### 48.14.3  LowLightTransitionCoordinator: Letting the Host Animate First
 
 A naked dream swap looks abrupt — the screen would cut from the regular
 dream (or the lock screen wallpaper) to the low-light dream with no
@@ -2979,7 +2979,7 @@ The 2000ms default timeout (`config_lowLightTransitionTimeoutMs`) is a
 floor: a stuck animation cannot block the dream forever, and
 `setAmbientLightMode` logs the timeout and proceeds with the swap.
 
-### 47.14.4  Dagger Wiring on the Host Side
+### 48.14.4  Dagger Wiring on the Host Side
 
 A SystemUI variant that wants the library injects a
 `LowLightDreamComponent.Factory` from its top-level component and
@@ -3028,7 +3028,7 @@ defines a low-light dream points the binding at e.g.
 binds `null`, and `LowLightDreamManager.setAmbientLightMode` becomes a
 no-op. The library compiles into every SystemUI flavour either way.
 
-### 47.14.5  Consumption Path: SystemUI's LowLightMonitor
+### 48.14.5  Consumption Path: SystemUI's LowLightMonitor
 
 The consumer of the library in upstream AOSP is
 `com.android.systemui.lowlightclock.LowLightMonitor`. The monitor
@@ -3062,7 +3062,7 @@ the host, not the other way around. That keeps the SystemUI listener
 purely reactive (it never asks "is it dark?") and concentrates the
 state in the manager.
 
-### 47.14.6  Where This Fits in the Wider Dream Story
+### 48.14.6  Where This Fits in the Wider Dream Story
 
 The library is intentionally agnostic about *what* the low-light dream
 shows. In practice these are minimal, dim, mostly-static surfaces —
@@ -3076,11 +3076,11 @@ variant flip between them without forcing every dream to implement
 its own dim mode.
 
 For the broader screensaver / `DreamService` architecture (DreamManagerService,
-`DreamOverlayService`, doze + AOD interaction), see Chapter 47 §47.5
-(Lock Screen) and §47.15 (Keyguard Deep Dive), which trace the
+`DreamOverlayService`, doze + AOD interaction), see Chapter 48 §48.5
+(Lock Screen) and §48.15 (Keyguard Deep Dive), which trace the
 `DREAMING` state through the keyguard state machine.
 
-### 47.14.7  Key Source Files Reference (LowLightDreamLib)
+### 48.14.7  Key Source Files Reference (LowLightDreamLib)
 
 | File | Purpose |
 |------|---------|
@@ -3094,14 +3094,14 @@ For the broader screensaver / `DreamService` architecture (DreamManagerService,
 
 ---
 
-## 47.15  Keyguard Deep Dive
+## 48.15  Keyguard Deep Dive
 
-Section 47.5 introduced the lock screen architecture.  This section explores
+Section 48.5 introduced the lock screen architecture.  This section explores
 the internal state machine, biometric unlock modes, bouncer flow, AOD
 transitions, and the MVI modernisation in much greater detail, drawing on the
 full keyguard source tree.
 
-### 47.15.1  Keyguard State Machine
+### 48.15.1  Keyguard State Machine
 
 The keyguard subsystem is fundamentally a state machine.  The
 `KeyguardState` enum defines all possible states:
@@ -3173,9 +3173,9 @@ stateDiagram-v2
 States marked `@Deprecated` (`DREAMING`, `PRIMARY_BOUNCER`, `GLANCEABLE_HUB`,
 `GONE`, `OCCLUDED`) are being replaced by the Scene Container framework, which
 maps them to scenes and overlays and manages transitions through
-`SceneTransitionLayout` (section 47.16).
+`SceneTransitionLayout` (section 48.16).
 
-### 47.15.2  Awake vs Asleep State Classification
+### 48.15.2  Awake vs Asleep State Classification
 
 The `KeyguardState` companion object classifies each state for power
 management:
@@ -3195,9 +3195,9 @@ management:
 | UNDEFINED | X | |
 
 This classification drives the `ThemeOverlayController` deferred-colour
-logic (section 47.12.6) and various power-dependent behaviours.
+logic (section 48.12.6) and various power-dependent behaviours.
 
-### 47.15.3  KeyguardTransitionInteractor
+### 48.15.3  KeyguardTransitionInteractor
 
 `KeyguardTransitionInteractor` is the primary API for observing and driving
 transitions between keyguard states:
@@ -3237,7 +3237,7 @@ keyguardTransitionInteractor.transition(Edge.create(from = LOCKSCREEN, to = AOD)
     .collect { step -> /* animate based on step.value */ }
 ```
 
-### 47.15.4  Transition Interactor Hierarchy
+### 48.15.4  Transition Interactor Hierarchy
 
 Each state-to-state transition has a dedicated interactor:
 
@@ -3258,7 +3258,7 @@ user gestures) and call `startTransition()` on the repository to move the
 state machine forward.  The `StartKeyguardTransitionModule` wires them all
 into Dagger.
 
-### 47.15.5  KeyguardViewMediator Internals
+### 48.15.5  KeyguardViewMediator Internals
 
 `KeyguardViewMediator` (~4,700 lines) remains the bridge between
 `system_server` and SystemUI's keyguard.  Key internal mechanisms:
@@ -3289,7 +3289,7 @@ The mediator tracks occlusion via `setOccluded(boolean)` and coordinates
 with `StatusBarKeyguardViewManager` to hide/show the underlying keyguard
 views.
 
-### 47.15.6  Biometric Unlock Modes
+### 48.15.6  Biometric Unlock Modes
 
 The `BiometricUnlockInteractor` translates integer mode constants from
 `BiometricUnlockController` into the typed `BiometricUnlockMode` enum:
@@ -3336,7 +3336,7 @@ graph TD
 The `BiometricUnlockModel` pairs the mode with a `BiometricUnlockSource`
 (FINGERPRINT_SENSOR, FACE_SENSOR, etc.) for audit and animation purposes.
 
-### 47.15.7  Bouncer Flow Detail
+### 48.15.7  Bouncer Flow Detail
 
 The bouncer subsystem uses the MVI pattern with a clear data/domain/UI
 separation:
@@ -3400,7 +3400,7 @@ bouncer presents a fingerprint icon overlay:
 4. If the user taps the sensor and fingerprint matches -> `GONE`
 5. If the user wants PIN instead -> `ALTERNATE_BOUNCER -> PRIMARY_BOUNCER`
 
-### 47.15.8  AOD Transition Pipeline
+### 48.15.8  AOD Transition Pipeline
 
 The Always-On Display transition involves multiple coordinated subsystems:
 
@@ -3438,7 +3438,7 @@ Doze parameters control AOD behaviour:
 - **DozeParameters.getPulseVisibleDuration()** -- how long notification
   pulse shows
 
-### 47.15.9  KeyguardRepository -- The Data Layer
+### 48.15.9  KeyguardRepository -- The Data Layer
 
 The `KeyguardRepository` interface centralises all keyguard state:
 
@@ -3465,7 +3465,7 @@ Key flows exposed by `KeyguardRepository`:
 - `isDreaming: StateFlow<Boolean>`
 - `wakefulness: StateFlow<WakefulnessModel>`
 
-### 47.15.10  Scene Container Migration
+### 48.15.10  Scene Container Migration
 
 The keyguard is undergoing a major migration to the Scene Container
 architecture.  Under this model:
@@ -3506,9 +3506,9 @@ keys (returning a `ContentKey?`):
 
 The `SceneContainerFlag` controls whether the new path is active, with
 `@Deprecated` annotations on states that will not exist post-migration.  Section
-47.16 covers the Scene framework end to end.
+48.16 covers the Scene framework end to end.
 
-### 47.15.11  Key Source Paths (Keyguard)
+### 48.15.11  Key Source Paths (Keyguard)
 
 | Path | Description |
 |---|---|
@@ -3542,7 +3542,7 @@ The `SceneContainerFlag` controls whether the new path is active, with
 
 ---
 
-## 47.16  The Scene Framework (Flexiglass)
+## 48.16  The Scene Framework (Flexiglass)
 
 Several earlier sections referred to a "Scene Container" or "scene" path that
 replaces a legacy controller.  This section pulls those threads together.  The
@@ -3554,7 +3554,7 @@ hand-written swipe, expansion, and state-machine code in
 screen, shade, quick settings, and bouncer become *scenes* and *overlays* laid
 out by a `SceneTransitionLayout`.
 
-### 47.16.1  Scenes, Overlays, and Scene Families
+### 48.16.1  Scenes, Overlays, and Scene Families
 
 The framework distinguishes two kinds of content.  A **scene** fills the
 container and is mutually exclusive with other scenes; an **overlay** is shown
@@ -3600,7 +3600,7 @@ absence of any scene-framework content (the device is unlocked and an app owns
 the screen).  Scene *families* (e.g. `SceneFamilies.Home`) are aliases that a
 resolver maps to a concrete scene depending on device state.
 
-### 47.16.2  The Scene Container Configuration
+### 48.16.2  The Scene Container Configuration
 
 A `SceneContainerConfig` declares which scenes and overlays a container
 supports, its initial scene, and the navigation distances used for swipe
@@ -3623,7 +3623,7 @@ dual-shade mode) `QuickSettings` and `Shade`; the overlay set is
 `NotificationsShade`, `QuickSettingsShade`, `Bouncer`, and -- when the
 `StatusBarPopupChips` flag is on -- `QuickActions`.
 
-### 47.16.3  SceneTransitionLayout: The Compose Engine
+### 48.16.3  SceneTransitionLayout: The Compose Engine
 
 The rendering engine lives in a standalone Compose library at
 `frameworks/base/packages/SystemUI/compose/scene/` (Java package
@@ -3679,7 +3679,7 @@ graph TD
     SCS --> SI
 ```
 
-### 47.16.4  SceneInteractor: The State Owner
+### 48.16.4  SceneInteractor: The State Owner
 
 `SceneInteractor` is the `@SysUISingleton` source of truth for the current scene
 and the live transition state:
@@ -3706,7 +3706,7 @@ The `transitionState` flow exposes an `ObservableTransitionState` that is either
 scene as a Compose `State` (`currentSceneAsState`) let composables recompose as
 the scene changes.
 
-### 47.16.5  SceneContainerStartable: Bridging Legacy State
+### 48.16.5  SceneContainerStartable: Bridging Legacy State
 
 The scene framework cannot replace everything at once.  `SceneContainerStartable`
 is the `CoreStartable` that keeps the legacy world and the scene world in sync
@@ -3744,12 +3744,12 @@ Each `hydrate*` method wires one slice of state:
 - **`hydrateBackStack`** feeds the scene back-stack into the predictive-back
   handler so the system back gesture moves between scenes correctly.
 
-This is what lets `KeyguardState.mapToSceneContainerContent()` (section 47.15.10)
+This is what lets `KeyguardState.mapToSceneContainerContent()` (section 48.15.10)
 translate the legacy keyguard state machine into scene/overlay keys: the
 keyguard transition interactors still run, and `SceneContainerStartable` projects
 their output onto the scene container.
 
-### 47.16.6  The SceneContainerFlag Gate
+### 48.16.6  The SceneContainerFlag Gate
 
 The whole framework is gated by `SceneContainerFlag`, backed by the
 `scene_container` aconfig flag (`aconfig/systemui.aconfig`):
@@ -3775,7 +3775,7 @@ yet enabled by default on phones, the legacy controllers documented earlier in
 this chapter remain the shipping code path in Android 17, with the scene
 framework running ahead of them behind the flag.
 
-### 47.16.7  Key Source Paths (Scene Framework)
+### 48.16.7  Key Source Paths (Scene Framework)
 
 | Path | Description |
 |---|---|
@@ -3792,12 +3792,12 @@ framework running ahead of them behind the flag.
 
 ---
 
-## 47.17  Try It: Add a Custom QS Tile
+## 48.17  Try It: Add a Custom QS Tile
 
 This hands-on exercise demonstrates how to add a new built-in Quick Settings
 tile to SystemUI.  We will create a "Caffeine" tile that keeps the screen awake.
 
-### 47.17.1  Step 1: Create the Tile Class
+### 48.17.1  Step 1: Create the Tile Class
 
 Create a new file in the tiles directory:
 
@@ -3924,7 +3924,7 @@ public class CaffeineTile extends QSTileImpl<BooleanState> {
 }
 ```
 
-### 47.17.2  Step 2: Register the Tile in the QS Factory
+### 48.17.2  Step 2: Register the Tile in the QS Factory
 
 `QSFactoryImpl` no longer uses a `switch` over tile specs.  Instead it holds a
 `Map<String, Provider<QSTileImpl<?>>> mTileMap` and looks up the spec:
@@ -3954,7 +3954,7 @@ abstract QSTileImpl<?> bindCaffeineTile(CaffeineTile tile);
 No factory edit is required; the map is assembled from every `@IntoMap`
 binding.
 
-### 47.17.3  Step 3: Add Drawable Resources
+### 48.17.3  Step 3: Add Drawable Resources
 
 Add icon resources to the SystemUI `res/` directory:
 
@@ -3966,7 +3966,7 @@ frameworks/base/packages/SystemUI/res/drawable/
 
 For vector drawables, use 24x24dp with the appropriate tint.
 
-### 47.17.4  Step 4: Add to Default Tile List (Optional)
+### 48.17.4  Step 4: Add to Default Tile List (Optional)
 
 To include the tile in the default QS panel, modify the string resource:
 
@@ -3977,7 +3977,7 @@ To include the tile in the default QS panel, modify the string resource:
 </string>
 ```
 
-### 47.17.5  Step 5: Build and Test
+### 48.17.5  Step 5: Build and Test
 
 ```bash
 # Build SystemUI
@@ -3998,7 +3998,7 @@ Verify the tile appears in the QS editor.  If not in the default list, open
 the QS edit mode (pencil icon) and drag the "Caffeine" tile into the active
 area.
 
-### 47.17.6  Step 6: Verify Functionality
+### 48.17.6  Step 6: Verify Functionality
 
 ```bash
 # Check wake lock state
@@ -4008,7 +4008,7 @@ adb shell dumpsys power | grep -i "wake lock"
 # Look for: "SystemUI:CaffeineTile" in the output
 ```
 
-### 47.17.7  Architecture Summary of a QS Tile
+### 48.17.7  Architecture Summary of a QS Tile
 
 ```mermaid
 graph TD
@@ -4033,7 +4033,7 @@ graph TD
     QTV -->|"displayed in"| QSP
 ```
 
-### 47.17.8  Testing the Tile
+### 48.17.8  Testing the Tile
 
 For unit testing, follow the existing pattern in the SystemUI test directory:
 
@@ -4117,7 +4117,7 @@ Compose.  Key modernisation efforts in Android 17 include:
 
 - **Scene framework ("flexiglass")** -- replacing `CentralSurfacesImpl` and
   `NotificationPanelViewController` with a Compose `SceneTransitionLayout` of
-  scenes and overlays (`SceneContainerFlag`, section 47.16)
+  scenes and overlays (`SceneContainerFlag`, section 48.16)
 - **`pods/` modularisation** -- extracting feature modules (scene, shade, qs,
   statusbar, notifications, ...) into independently buildable Soong modules
 - **Home status bar pipeline** -- replacing `CollapsedStatusBarFragment` with an
@@ -4176,8 +4176,8 @@ Compose.  Key modernisation efforts in Android 17 include:
 | `frameworks/base/packages/SystemUI/plugin/src/com/android/systemui/plugins/GlobalActions.java` | Power menu plugin |
 | `frameworks/base/packages/SystemUI/plugin/src/com/android/systemui/plugins/VolumeDialogController.java` | Volume plugin |
 
-<!-- chapter:48-launcher3 -->
-# Chapter 48: Launcher3 - The Android Home Screen
+<!-- chapter:49-launcher3 -->
+# Chapter 49: Launcher3 - The Android Home Screen
 
 Launcher3 is the default home screen application in AOSP, responsible for the experience
 users see first after unlocking their device. It manages app icons on the workspace,
@@ -4193,9 +4193,9 @@ references real AOSP source files and quotes key code constructs.
 
 ---
 
-## 48.1 Launcher3 Architecture
+## 49.1 Launcher3 Architecture
 
-### 48.1.1 Project Layout
+### 49.1.1 Project Layout
 
 The top-level directory of Launcher3 is organized as follows:
 
@@ -4242,7 +4242,7 @@ key subdirectories:
 | `shortcuts/` | Deep shortcuts |
 | `logging/` | Stats and event logging |
 
-### 48.1.2 The Main Activity: Launcher
+### 49.1.2 The Main Activity: Launcher
 
 The entry point is `Launcher.java`, a 3065-line class that extends `StatefulActivity<LauncherState>`:
 
@@ -4271,7 +4271,7 @@ ScrimView mScrimView;
 LauncherDragController mDragController;
 ```
 
-### 48.1.3 Launcher Lifecycle: onCreate
+### 49.1.3 Launcher Lifecycle: onCreate
 
 The `onCreate` method is the central initialization path. Here is the sequence:
 
@@ -4339,7 +4339,7 @@ sequenceDiagram
     LauncherModel-->>Launcher: bindWidgets()
 ```
 
-### 48.1.4 LauncherAppState: The Singleton Hub
+### 49.1.4 LauncherAppState: The Singleton Hub
 
 `LauncherAppState` (now a Kotlin `data class`) aggregates the core singletons:
 
@@ -4362,7 +4362,7 @@ Note the `@Deprecated` annotation -- the codebase is migrating toward Dagger inj
 of individual components rather than going through this singleton. The `companion object`
 still exposes the legacy `INSTANCE` and `getInstance()` accessor for compatibility.
 
-### 48.1.5 LauncherModel: The Data Backbone
+### 49.1.5 LauncherModel: The Data Backbone
 
 `LauncherModel` is annotated `@LauncherAppSingleton` and manages all in-memory
 launcher data. It is constructed via Dagger injection:
@@ -4405,7 +4405,7 @@ fun isModelLoaded() =
     synchronized(mLock) { mModelLoaded && mLoaderTask == null && !mModelDestroyed }
 ```
 
-### 48.1.6 Model-View Separation
+### 49.1.6 Model-View Separation
 
 The architecture follows a strict model-view separation:
 
@@ -4447,7 +4447,7 @@ The `Callbacks` interface (implemented by `Launcher`) defines the binding contra
 Model writes go through `ModelWriter`, obtained via `LauncherModel.getWriter()`.
 All database mutations happen on the model thread, ensuring consistency.
 
-### 48.1.7 State Machine
+### 49.1.7 State Machine
 
 `StateManager` is a generic state machine that drives animated transitions between
 launcher states. Each state is a subclass of `LauncherState`:
@@ -4497,7 +4497,7 @@ State handlers (`StateHandler<S>[]`) are responsible for applying state-specific
 property changes. For example, `AllAppsTransitionController` adjusts the vertical
 position and alpha of the all-apps panel during transitions.
 
-### 48.1.8 Dependency Injection with Dagger
+### 49.1.8 Dependency Injection with Dagger
 
 The Launcher3 codebase uses Dagger for dependency injection, with key annotations:
 
@@ -4524,9 +4524,9 @@ graph TD
 
 ---
 
-## 48.2 App Icons and Grid
+## 49.2 App Icons and Grid
 
-### 48.2.1 ItemInfo Hierarchy
+### 49.2.1 ItemInfo Hierarchy
 
 Every element on the launcher home screen -- app icons, shortcuts, widgets, folders --
 is represented by a subclass of `ItemInfo`:
@@ -4626,7 +4626,7 @@ public static final int CONTAINER_HOTSEAT = -101;
 public static final int CONTAINER_ALL_APPS = -104;
 ```
 
-### 48.2.2 CellLayout: The Grid Container
+### 49.2.2 CellLayout: The Grid Container
 
 `CellLayout` is the fundamental grid container. Every workspace page and the hotseat
 are `CellLayout` instances. It manages a grid of cells where items can be placed:
@@ -4668,7 +4668,7 @@ The `CellLayout` uses a child container called `ShortcutAndWidgetContainer` that
 performs the actual layout of children. This separation allows `CellLayout` to
 manage the grid logic while the container handles `ViewGroup` layout mechanics.
 
-### 48.2.3 Workspace: The Paging Container
+### 49.2.3 Workspace: The Paging Container
 
 `Workspace` extends `PagedView` and holds multiple `CellLayout` pages:
 
@@ -4687,7 +4687,7 @@ The workspace supports:
 - **Wallpaper scrolling** via `WallpaperOffsetInterpolator`
 - **Spring-loaded mode** where pages shrink during drag operations
 
-### 48.2.4 BubbleTextView: The Icon View
+### 49.2.4 BubbleTextView: The Icon View
 
 `BubbleTextView` is the custom `TextView` subclass that renders app icons:
 
@@ -4716,7 +4716,7 @@ public static final int DISPLAY_SEARCH_RESULT = 6;
 public static final int DISPLAY_TASKBAR = 7;
 ```
 
-### 48.2.5 Hotseat: The Bottom Row
+### 49.2.5 Hotseat: The Bottom Row
 
 The `Hotseat` is a specialized `CellLayout` that represents the persistent bottom row:
 
@@ -4731,7 +4731,7 @@ It differs from workspace `CellLayout` instances in that:
 - Items are not associated with a specific screen ID
 - It participates in predictions (suggested apps appear here)
 
-### 48.2.6 DeviceProfile and Grid Configuration
+### 49.2.6 DeviceProfile and Grid Configuration
 
 Launcher3 adapts its grid to different screen sizes through a two-tier system:
 
@@ -4795,7 +4795,7 @@ public static final int TYPE_TABLET = 2;
 public static final int TYPE_DESKTOP = 3;
 ```
 
-### 48.2.7 Icon Loading and Caching
+### 49.2.7 Icon Loading and Caching
 
 The `IconCache` is responsible for loading and caching app icons. Icons are loaded
 asynchronously on a background thread and cached in a SQLite database
@@ -4828,7 +4828,7 @@ The `LauncherIconProvider` handles icon loading with theme support. When themed
 icons are enabled, it attempts to load a monochrome icon variant and applies
 the user's wallpaper-based color palette.
 
-### 48.2.8 Responsive Grid System
+### 49.2.8 Responsive Grid System
 
 The responsive grid system in `src/com/android/launcher3/responsive/` dynamically
 adjusts cell sizes and spacing based on available screen space:
@@ -4850,9 +4850,9 @@ based on available dimensions at runtime.
 
 ---
 
-## 48.3 Widget System
+## 49.3 Widget System
 
-### 48.3.1 Widget Architecture Overview
+### 49.3.1 Widget Architecture Overview
 
 Launcher3's widget system bridges the Android `AppWidgetManager` framework with the
 launcher's own view hierarchy. The key classes form a layered architecture:
@@ -4890,7 +4890,7 @@ graph TD
     LAWI -->|data| LAWHV
 ```
 
-### 48.3.2 LauncherWidgetHolder
+### 49.3.2 LauncherWidgetHolder
 
 `LauncherWidgetHolder` wraps `AppWidgetHost` to allow widget operations from
 background threads:
@@ -4914,7 +4914,7 @@ The holder tracks activity lifecycle flags to determine when to listen for updat
 Widget views only receive remote view updates when all `FLAGS_SHOULD_LISTEN` are set
 (the activity is in NORMAL state, started, and resumed).
 
-### 48.3.3 LauncherAppWidgetHost
+### 49.3.3 LauncherAppWidgetHost
 
 `LauncherAppWidgetHost` extends `ListenableAppWidgetHost` and creates
 `LauncherAppWidgetHostView` instances:
@@ -4936,7 +4936,7 @@ class LauncherAppWidgetHost extends ListenableAppWidgetHost {
 Note the view recycling mechanism: when a widget is reconfigured, the existing view
 is passed to `recycleViewForNextCreation()` to avoid recreating the host view.
 
-### 48.3.4 Widget Data: LauncherAppWidgetInfo
+### 49.3.4 Widget Data: LauncherAppWidgetInfo
 
 Widgets are represented in the model by `LauncherAppWidgetInfo`:
 
@@ -4956,7 +4956,7 @@ The `restoreStatus` field tracks the restore lifecycle:
 - `FLAG_UI_NOT_READY` -- view not yet inflated
 - `RESTORE_COMPLETED` -- fully restored
 
-### 48.3.5 Widget Pinning Flow
+### 49.3.5 Widget Pinning Flow
 
 When a user adds a widget from the widget picker, this flow executes:
 
@@ -4991,7 +4991,7 @@ sequenceDiagram
     L->>WS: Add LauncherAppWidgetHostView
 ```
 
-### 48.3.6 Widget Picker: WidgetsFullSheet
+### 49.3.6 Widget Picker: WidgetsFullSheet
 
 The widget picker is a bottom sheet (`WidgetsFullSheet`) that displays available widgets:
 
@@ -5014,7 +5014,7 @@ public class WidgetsListAdapter extends Adapter<ViewHolder>
 The adapter uses `DiffUtil` for efficient list updates and supports searching
 via `WidgetsSearchBar`.
 
-### 48.3.7 Widget Preview Rendering
+### 49.3.7 Widget Preview Rendering
 
 `WidgetCell` displays a preview of the widget in the picker:
 
@@ -5032,7 +5032,7 @@ Widget previews are loaded by `DatabaseWidgetPreviewLoader`, which generates
 preview bitmaps either from the widget's own preview image or by inflating a
 dummy `RemoteViews` and rendering it to a bitmap.
 
-### 48.3.8 Widget Resize
+### 49.3.8 Widget Resize
 
 Placed widgets can be resized via `AppWidgetResizeFrame` (now a Kotlin file):
 
@@ -5044,7 +5044,7 @@ The resize frame draws handles on the widget edges and updates the cell span
 as the user drags. Minimum span constraints (`minSpanX`, `minSpanY`) and maximum
 span constraints (from `AppWidgetProviderInfo.minResizeWidth/Height`) are enforced.
 
-### 48.3.9 Widget Visibility Tracking
+### 49.3.9 Widget Visibility Tracking
 
 `WidgetVisibilityTracker` monitors which widgets are currently visible on screen
 and notifies the `AppWidgetHost` accordingly, allowing the system to optimize
@@ -5059,9 +5059,9 @@ mWidgetVisibilityTracker = new WidgetVisibilityTracker(
 
 ---
 
-## 48.4 Drag and Drop
+## 49.4 Drag and Drop
 
-### 48.4.1 Drag-and-Drop Architecture
+### 49.4.1 Drag-and-Drop Architecture
 
 The drag-and-drop system is one of the most complex subsystems in Launcher3, involving
 multiple coordinating classes:
@@ -5111,7 +5111,7 @@ graph TD
     SLDC -->|timer| WS
 ```
 
-### 48.4.2 DragController
+### 49.4.2 DragController
 
 `DragController` is the abstract base that manages the drag lifecycle:
 
@@ -5142,7 +5142,7 @@ The drag lifecycle:
 3. **Drag move** -- Touch events update `DragView` position and find drop targets
 4. **Drop** -- The item is released; the appropriate `DropTarget` receives it
 
-### 48.4.3 DragLayer
+### 49.4.3 DragLayer
 
 `DragLayer` is a custom `ViewGroup` that sits at the root of the launcher's
 view hierarchy and intercepts all touch events during a drag:
@@ -5163,7 +5163,7 @@ It coordinates:
 - Playing drop animations
 - Managing folder open/close overlay animations
 
-### 48.4.4 DragView
+### 49.4.4 DragView
 
 `DragView` is the floating view that follows the user's finger during a drag:
 
@@ -5195,7 +5195,7 @@ private SpringAnimation mSpring;
 The `mRegistrationX/Y` values represent the offset from the touch point to the
 drag view's origin, ensuring the view follows the finger naturally.
 
-### 48.4.5 Drop Targets
+### 49.4.5 Drop Targets
 
 The `DropTarget` interface defines how views accept drops:
 
@@ -5217,7 +5217,7 @@ The main drop targets are:
 - **`DeleteDropTarget`** -- removes items from the home screen
 - **`SecondaryDropTarget`** -- provides "Uninstall" or "App info" actions
 
-### 48.4.6 SpringLoadedDragController
+### 49.4.6 SpringLoadedDragController
 
 When the user drags an item and hovers over a workspace page, the
 `SpringLoadedDragController` manages page switching with a delay:
@@ -5263,7 +5263,7 @@ class SpringLoadedDragController(private val launcher: Launcher) : OnAlarmListen
 The 500ms hover delay before page switching is a deliberate UX choice to prevent
 accidental page navigation during drag operations.
 
-### 48.4.7 System Drag Support
+### 49.4.7 System Drag Support
 
 Launcher3 also supports Android's system drag-and-drop API for cross-app drag:
 
@@ -5276,7 +5276,7 @@ Launcher3 also supports Android's system drag-and-drop API for cross-app drag:
 `SystemDragItemInfo` to represent the dragged content and routes it through
 the standard drop target mechanism.
 
-### 48.4.8 The Complete Drag Flow
+### 49.4.8 The Complete Drag Flow
 
 ```mermaid
 sequenceDiagram
@@ -5312,7 +5312,7 @@ sequenceDiagram
     LDC->>DV: animateDrop()
 ```
 
-### 48.4.9 Reorder Preview Animation
+### 49.4.9 Reorder Preview Animation
 
 During drag, when items need to shift to make room, `CellLayout` shows reorder
 preview animations:
@@ -5328,9 +5328,9 @@ translates items to their new positions.
 
 ---
 
-## 48.5 Recents Integration
+## 49.5 Recents Integration
 
-### 48.5.1 Launcher as Recents Provider
+### 49.5.1 Launcher as Recents Provider
 
 In modern Android (since Android 10), Launcher3 serves as both the home screen
 and the recent-apps provider when the Quickstep module is included. The class
@@ -5346,7 +5346,7 @@ This integration is controlled by the system property and Quickstep's
 routes them to either the launcher (for going home or showing recents) or
 the foreground app.
 
-### 48.5.2 Architecture Overview
+### 49.5.2 Architecture Overview
 
 ```mermaid
 graph TD
@@ -5381,7 +5381,7 @@ graph TD
     RV --> OAV
 ```
 
-### 48.5.3 OverviewCommandHelper
+### 49.5.3 OverviewCommandHelper
 
 `OverviewCommandHelper` manages atomic commands for showing/hiding the recents view:
 
@@ -5433,7 +5433,7 @@ enum class CommandType {
 The standalone `SHOW_WITH_FOCUS` command was removed in 17; keyboard-focused
 overview is now reached through `TOGGLE_WITH_FOCUS`.
 
-### 48.5.4 RecentsView
+### 49.5.4 RecentsView
 
 `RecentsView` is a horizontally-scrolling container for recent task thumbnails:
 
@@ -5460,7 +5460,7 @@ display is an external connected display it calls `moveToExternalDisplay`; both
 run a `RemoteTransition` named `"RecentsToDesktop"` so the task animates from the
 overview grid into a freeform desktop window.
 
-### 48.5.5 TaskView
+### 49.5.5 TaskView
 
 `TaskView` represents a single recent task:
 
@@ -5485,7 +5485,7 @@ Each `TaskView` contains:
 `GroupedTaskView` extends `TaskView` for split-screen task pairs, showing
 two thumbnails side by side.
 
-### 48.5.6 Launcher State Transitions for Recents
+### 49.5.6 Launcher State Transitions for Recents
 
 The `OVERVIEW` state is added by the Quickstep module:
 
@@ -5507,7 +5507,7 @@ Transitions between `NORMAL` and `OVERVIEW` involve:
 3. Showing/hiding overview action buttons
 4. Adjusting the taskbar state
 
-### 48.5.7 Gesture Navigation Flow
+### 49.5.7 Gesture Navigation Flow
 
 ```mermaid
 sequenceDiagram
@@ -5536,7 +5536,7 @@ sequenceDiagram
     end
 ```
 
-### 48.5.8 Windowed Recents: RecentsWindowManager
+### 49.5.8 Windowed Recents: RecentsWindowManager
 
 Historically overview was hosted by an `Activity` (`RecentsActivity` in the
 fallback case, or the `QuickstepLauncher` itself in the launcher case). With
@@ -5575,7 +5575,7 @@ Instead of an `Activity`, `RecentsWindowManager` builds its own view tree with a
 `StateManager<RecentsState, RecentsWindowManager>` (its own `HIDDEN`/visible
 state machine independent of `LauncherState`), and implements
 `RecentsViewContainer` so the very same `RecentsView`/`TaskView` machinery from
-section 48.5.4 renders inside it. Because it is a `ComponentCallbacks`, it reacts
+section 49.5.4 renders inside it. Because it is a `ComponentCallbacks`, it reacts
 to its own configuration changes (orientation, screen size) per display.
 
 ```mermaid
@@ -5607,13 +5607,13 @@ Which host is used is gated by `RecentsWindowFlags`
 `RecentsWindowManager` is created and torn down by `RecentsWindowTracker`
 (`quickstep/src/com/android/quickstep/window/RecentsWindowTracker.kt`, a
 `ContextTracker`) in concert with the `DisplayModel`/`PerDisplayComponent`
-machinery described in section 48.6, so each display with system decorations can
+machinery described in section 49.6, so each display with system decorations can
 get its own overview window. The matching gesture handler is
 `RecentsWindowSwipeHandler`
 (`quickstep/src/com/android/quickstep/window/RecentsWindowSwipeHandler.java`),
 the window-hosted counterpart to `AbsSwipeUpHandler`.
 
-### 48.5.9 Desktop App-Launch Transitions
+### 49.5.9 Desktop App-Launch Transitions
 
 When desktop windowing is active, launching an app from the home screen or
 taskbar should animate the new window into a freeform desktop position rather
@@ -5651,9 +5651,9 @@ full-screen launch animation is unchanged.
 
 ---
 
-## 48.6 Taskbar
+## 49.6 Taskbar
 
-### 48.6.1 Taskbar Architecture
+### 49.6.1 Taskbar Architecture
 
 The taskbar is a persistent navigation element on large screens (tablets,
 foldables, desktop mode). It exists as a separate window managed by
@@ -5671,9 +5671,9 @@ stealing input focus from foreground apps.
 There is one `TaskbarActivityContext` per display. In Android 17 the higher-level
 lifecycle (creating and destroying taskbars as displays come and go) is owned by
 the `TaskbarManager` interface and its `DisplayModel`-backed implementation;
-section 48.6.7 covers that per-display architecture.
+section 49.6.7 covers that per-display architecture.
 
-### 48.6.2 Taskbar Controller Architecture
+### 49.6.2 Taskbar Controller Architecture
 
 The taskbar uses a complex controller architecture where each aspect is managed
 by a dedicated controller:
@@ -5701,7 +5701,7 @@ Key controllers:
 - **`TaskbarDragController`** -- handles drag from taskbar to workspace
 - **`TaskbarInsetsController`** -- reports insets to the system
 
-### 48.6.3 StashedHandleViewController
+### 49.6.3 StashedHandleViewController
 
 When the taskbar is stashed (hidden), a small handle is displayed that can be
 swiped to reveal it:
@@ -5724,7 +5724,7 @@ The stashed handle has multiple alpha channels that control its visibility
 in different scenarios. The handle uses region sampling to adapt its color
 to the underlying content.
 
-### 48.6.4 Taskbar on Different Form Factors
+### 49.6.4 Taskbar on Different Form Factors
 
 The taskbar adapts to different device types:
 
@@ -5756,7 +5756,7 @@ queries that the rest of the taskbar reads:
 Note that the controller is constructed per `TaskbarActivityContext`, so each
 display's taskbar gets its own desktop-mode controller scoped to that display.
 
-### 48.6.5 Taskbar-Launcher Communication
+### 49.6.5 Taskbar-Launcher Communication
 
 The taskbar communicates with the launcher through `LauncherTaskbarUIController`:
 
@@ -5771,7 +5771,7 @@ This controller synchronizes:
 - Drag operations between taskbar and workspace
 - All-apps page progress for smooth transitions
 
-### 48.6.6 Taskbar Icon Population
+### 49.6.6 Taskbar Icon Population
 
 Taskbar icons are loaded from the same model as the hotseat. The
 `TaskbarInteractor` manages the data flow:
@@ -5792,7 +5792,7 @@ public enum RunningAppState {
 }
 ```
 
-### 48.6.7 Per-Display Taskbar
+### 49.6.7 Per-Display Taskbar
 
 On phones there is one taskbar (or none), but desktop windowing and connected
 displays mean a device can show several displays with system decorations at once,
@@ -5847,7 +5847,7 @@ constructor(/* ... */) : DisplayDecorationListener, SafeCloseable {
 ```
 
 This per-display model is shared infrastructure. The taskbar uses it for its
-`PerDisplayTaskbarResource`s, and as shown in section 48.5.8 the same kind of
+`PerDisplayTaskbarResource`s, and as shown in section 49.5.8 the same kind of
 display tracking governs the per-display `RecentsWindowManager`. Dagger backs it
 with a `PerDisplayComponent`/`PerDisplaySingleton` scope
 (`quickstep/src/com/android/launcher3/dagger/PerDisplayComponent.kt`) so each
@@ -5869,9 +5869,9 @@ graph TD
 
 ---
 
-## 48.7 Search Integration
+## 49.7 Search Integration
 
-### 48.7.1 Search Architecture
+### 49.7.1 Search Architecture
 
 The All Apps drawer includes an integrated search system with a pluggable architecture:
 
@@ -5906,7 +5906,7 @@ graph TD
     SAP --> DSAP
 ```
 
-### 48.7.2 AllAppsSearchBarController
+### 49.7.2 AllAppsSearchBarController
 
 The search bar controller manages text input and search dispatching:
 
@@ -5940,7 +5940,7 @@ public final void initialize(
 }
 ```
 
-### 48.7.3 SearchAlgorithm Interface
+### 49.7.3 SearchAlgorithm Interface
 
 The `SearchAlgorithm` interface allows different search implementations:
 
@@ -5952,7 +5952,7 @@ public interface SearchAlgorithm<T> {
 }
 ```
 
-### 48.7.4 DefaultAppSearchAlgorithm
+### 49.7.4 DefaultAppSearchAlgorithm
 
 The built-in search performs case-insensitive title matching:
 
@@ -5979,7 +5979,7 @@ The search runs on the model thread to safely access `AllAppsList.data`, then
 delivers results back on the main thread. `StringMatcherUtility` provides the
 matching logic, supporting substring matching with word boundary awareness.
 
-### 48.7.5 Search Transition
+### 49.7.5 Search Transition
 
 When the user types a search query, `SearchTransitionController` animates
 the All Apps view from the alphabetical list to search results:
@@ -5995,7 +5995,7 @@ The transition involves:
 3. Animating the tab indicator off-screen
 4. Adjusting the header height
 
-### 48.7.6 External Search Providers
+### 49.7.6 External Search Providers
 
 Launcher3 supports external search via `SearchUiManager`:
 
@@ -6015,9 +6015,9 @@ which is a separate search entry point that typically launches Google Search.
 
 ---
 
-## 48.8 Folder System
+## 49.8 Folder System
 
-### 48.8.1 Folder Architecture
+### 49.8.1 Folder Architecture
 
 Folders allow grouping multiple app icons. The system involves three key components:
 
@@ -6051,7 +6051,7 @@ graph TD
     FNP -->|suggests names| FNE
 ```
 
-### 48.8.2 FolderIcon
+### 49.8.2 FolderIcon
 
 `FolderIcon` is the view displayed on the workspace representing a folder:
 
@@ -6081,7 +6081,7 @@ public static final float ICON_OVERLAP_FACTOR = 0.23f;
 When an item is dragged over a `FolderIcon`, spring loading causes the folder
 to open after an 800ms delay (`ON_OPEN_DELAY`).
 
-### 48.8.3 FolderInfo: The Data Model
+### 49.8.3 FolderInfo: The Data Model
 
 `FolderInfo` holds the folder's contents:
 
@@ -6103,7 +6103,7 @@ public static boolean willAcceptItemType(int itemType) {
 }
 ```
 
-### 48.8.4 Folder: The Open View
+### 49.8.4 Folder: The Open View
 
 `Folder` is an `AbstractFloatingView` that appears when a folder icon is tapped:
 
@@ -6127,7 +6127,7 @@ The folder view includes:
 - Page indicators for multi-page folders
 - Drag-and-drop support for reordering items within the folder
 
-### 48.8.5 FolderPagedView
+### 49.8.5 FolderPagedView
 
 `FolderPagedView` extends `PagedView` to display folder contents in a grid:
 
@@ -6148,7 +6148,7 @@ public class FolderPagedView extends PagedView<PageIndicatorDots>
 Each page in the folder is a `CellLayout` with the folder's grid dimensions
 (typically 3x4 or 4x4 depending on the device profile).
 
-### 48.8.6 FolderGridOrganizer
+### 49.8.6 FolderGridOrganizer
 
 `FolderGridOrganizer` manages item positions based on rank:
 
@@ -6176,7 +6176,7 @@ The organizer dynamically adjusts the grid size based on content count:
 - 2-3 items: 2x2 grid
 - 4+ items: full grid dimensions
 
-### 48.8.7 Auto-Organize and Folder Naming
+### 49.8.7 Auto-Organize and Folder Naming
 
 When items are dragged together to create a folder, the system automatically
 suggests a folder name using `FolderNameProvider`:
@@ -6201,7 +6201,7 @@ asynchronously:
 // src/com/android/launcher3/folder/FolderNameSuggestionLoader.kt
 ```
 
-### 48.8.8 Folder Open/Close Animation
+### 49.8.8 Folder Open/Close Animation
 
 The folder open animation is managed by `FolderAnimationManager`:
 
@@ -6225,7 +6225,7 @@ Spring animations (`FolderSpringAnimatorSet`) provide a bouncy, natural feel:
 The close animation reverses these steps. `FolderOpenCloseAnimationListener`
 handles callbacks for animation lifecycle events.
 
-### 48.8.9 Folder Creation via Drag
+### 49.8.9 Folder Creation via Drag
 
 When the user drags one icon over another on the workspace, a folder is created:
 
@@ -6251,9 +6251,9 @@ sequenceDiagram
 
 ---
 
-## 48.9 Theming
+## 49.9 Theming
 
-### 48.9.1 ThemeManager
+### 49.9.1 ThemeManager
 
 The `ThemeManager` is a Dagger singleton that centralizes icon theming:
 
@@ -6284,7 +6284,7 @@ The `ThemeManager` manages:
 - **Folder shape** -- the shape used for folder backgrounds
 - **Theme controller** -- coordinates icon recoloring
 
-### 48.9.2 Dynamic Color (Material You)
+### 49.9.2 Dynamic Color (Material You)
 
 Launcher3 integrates with Android's Material You dynamic color system. The color
 pipeline extracts colors from the wallpaper and applies them throughout the UI.
@@ -6310,7 +6310,7 @@ graph LR
     IC -->|mono icons| BTV[BubbleTextView]
 ```
 
-### 48.9.3 Themed Icons
+### 49.9.3 Themed Icons
 
 When themed icons are enabled, the `ThemeManager` applies monochrome icon
 rendering:
@@ -6333,7 +6333,7 @@ The themed icon pipeline:
 Apps that do not provide a monochrome layer receive a fallback treatment
 (the full-color icon may be desaturated or overlaid).
 
-### 48.9.4 Icon Shapes
+### 49.9.4 Icon Shapes
 
 Icon shapes are defined via `ShapeDelegate` and loaded from the system overlay:
 
@@ -6355,7 +6355,7 @@ custom SVG-based paths. The icon shape affects:
 - Widget corner radius
 - Notification dot positioning
 
-### 48.9.5 Scrim and Background Treatment
+### 49.9.5 Scrim and Background Treatment
 
 Scrim views provide the visual background treatment:
 
@@ -6373,7 +6373,7 @@ The `PillColorProvider` generates colors for rounded-pill UI elements:
 // src/com/android/launcher3/PillColorProvider.kt
 ```
 
-### 48.9.6 Wallpaper-Based Colors
+### 49.9.6 Wallpaper-Based Colors
 
 The `LocalColorExtractor` extracts colors from the wallpaper behind each widget:
 
@@ -6384,7 +6384,7 @@ The `LocalColorExtractor` extracts colors from the wallpaper behind each widget:
 This allows widgets to adapt their appearance to the wallpaper region they
 cover, providing a cohesive visual experience across the home screen.
 
-### 48.9.7 Dark Mode Support
+### 49.9.7 Dark Mode Support
 
 Launcher3 responds to system dark mode changes via `CONFIG_UI_MODE`:
 
@@ -6410,13 +6410,13 @@ The `Themes` utility class provides helpers for reading themed attributes:
 
 ---
 
-## 48.10 Try It: Customize the Launcher Grid
+## 49.10 Try It: Customize the Launcher Grid
 
 This section walks through modifying the Launcher3 grid configuration to create
 a custom layout. We will change the default phone grid from 4x5 to 6x5 and adjust
 icon sizes accordingly.
 
-### 48.10.1 Understanding the Grid System
+### 49.10.1 Understanding the Grid System
 
 The grid is defined in two files:
 
@@ -6449,7 +6449,7 @@ The XML defines grid options like this:
         launcher:canBeDefault="true" />
 ```
 
-### 48.10.2 Step 1: Add a New Grid Option
+### 49.10.2 Step 1: Add a New Grid Option
 
 Add a new `grid-option` entry in `res/xml/device_profiles.xml`:
 
@@ -6485,7 +6485,7 @@ Key parameters:
 - `numHotseatIcons="6"` -- matches the column count
 - `allAppsCellHeight="88"` -- compact cells for the all-apps drawer
 
-### 48.10.3 Step 2: Create a Default Layout
+### 49.10.3 Step 2: Create a Default Layout
 
 Create `res/xml/default_workspace_6x5.xml` with the initial home screen content:
 
@@ -6523,7 +6523,7 @@ Create `res/xml/default_workspace_6x5.xml` with the initial home screen content:
 </favorites>
 ```
 
-### 48.10.4 Step 3: Update Grid Selection Logic
+### 49.10.4 Step 3: Update Grid Selection Logic
 
 In `InvariantDeviceProfile.java`, the grid selection uses the `GRID_NAME` preference.
 To force your custom grid during development, temporarily modify the initialization:
@@ -6552,7 +6552,7 @@ LauncherPrefs.getPrefs(context)
     .apply();
 ```
 
-### 48.10.5 Step 4: Adjust Responsive Specs
+### 49.10.5 Step 4: Adjust Responsive Specs
 
 For the denser grid, create or modify responsive spec XML files. The workspace
 cell spec controls how much space each cell gets:
@@ -6577,7 +6577,7 @@ Create `res/xml/spec_workspace_6_by_5_custom.xml`:
 </responsive-specs>
 ```
 
-### 48.10.6 Step 5: Build and Test
+### 49.10.6 Step 5: Build and Test
 
 Build the modified launcher:
 
@@ -6595,7 +6595,7 @@ adb install -r out/target/product/<device>/system/priv-app/Launcher3/Launcher3.a
 adb shell am force-stop com.android.launcher3
 ```
 
-### 48.10.7 Step 6: Verify Grid Metrics
+### 49.10.7 Step 6: Verify Grid Metrics
 
 Launch the Settings app on the device, navigate to the Launcher settings, and
 select the custom grid. Alternatively, use the customization surface:
@@ -6606,7 +6606,7 @@ select the custom grid. Alternatively, use the customization surface:
 4. Check that the hotseat shows 6 slots
 5. Open a folder and verify the 4x3 folder grid
 
-### 48.10.8 Understanding the Grid Calculation
+### 49.10.8 Understanding the Grid Calculation
 
 When a grid option is selected, `InvariantDeviceProfile` computes the device
 profile through interpolation between defined display options:
@@ -6626,7 +6626,7 @@ The algorithm:
 
 This ensures smooth scaling across different screen sizes within a grid option.
 
-### 48.10.9 Advanced: Adding a Two-Panel Grid
+### 49.10.9 Advanced: Adding a Two-Panel Grid
 
 For foldable devices, you can define a two-panel grid option with separate
 portrait and landscape configurations. The IDP supports four size indices:
@@ -6643,7 +6643,7 @@ Border spaces, cell heights, and other dimensions can be specified independently
 for each index, allowing fine-grained control over the layout in each
 configuration.
 
-### 48.10.10 Key Files Reference
+### 49.10.10 Key Files Reference
 
 For the grid customization exercise, these are the essential files:
 
@@ -6664,55 +6664,55 @@ For the grid customization exercise, these are the essential files:
 
 This chapter has explored the Launcher3 codebase in AOSP, covering:
 
-- **Architecture** (Section 48.1): The model-view separation between `LauncherModel`
+- **Architecture** (Section 49.1): The model-view separation between `LauncherModel`
   (data loading on `MODEL_EXECUTOR`) and the view hierarchy rooted at `Launcher`.
   The `StateManager` drives animated transitions between states like NORMAL,
   ALL_APPS, SPRING_LOADED, and OVERVIEW. Dagger dependency injection manages the
   singleton graph.
 
-- **App Icons and Grid** (Section 48.2): The `ItemInfo` hierarchy represents all
+- **App Icons and Grid** (Section 49.2): The `ItemInfo` hierarchy represents all
   launcher items. `CellLayout` provides the grid container, `BubbleTextView`
   renders icons, and the `DeviceProfile`/`InvariantDeviceProfile` system adapts
   the layout to different screen sizes via XML-defined grid options and responsive
   specifications.
 
-- **Widget System** (Section 48.3): `LauncherWidgetHolder` wraps `AppWidgetHost`
+- **Widget System** (Section 49.3): `LauncherWidgetHolder` wraps `AppWidgetHost`
   for lifecycle-aware widget management. The widget picker (`WidgetsFullSheet` and
   `WidgetsListAdapter`) presents available widgets, while `WidgetCell` renders
   previews. The pinning flow involves binding, configuration, and resize.
 
-- **Drag and Drop** (Section 48.4): `DragController` manages the drag lifecycle
+- **Drag and Drop** (Section 49.4): `DragController` manages the drag lifecycle
   with `DragView` as the visual feedback and `DragLayer` as the intercept layer.
   `SpringLoadedDragController` handles delayed page switching. Drop targets
   include `Workspace`, `Folder`, `Hotseat`, and `DeleteDropTarget`.
 
-- **Recents Integration** (Section 48.5): `QuickstepLauncher` extends `Launcher`
+- **Recents Integration** (Section 49.5): `QuickstepLauncher` extends `Launcher`
   to serve as the recents provider. `OverviewCommandHelper` processes commands,
   `RecentsView` displays task cards, and `TaskView` renders individual tasks.
   Gesture navigation flows through `TouchInteractionService`.
 
-- **Taskbar** (Section 48.6): `TaskbarActivityContext` manages a separate window
+- **Taskbar** (Section 49.6): `TaskbarActivityContext` manages a separate window
   for the taskbar on large screens. Multiple controllers handle stashing,
   drag-and-drop, desktop mode, and appearance. `StashedHandleViewController`
   shows the handle when the taskbar is hidden.
 
-- **Search Integration** (Section 48.7): `AllAppsSearchBarController` dispatches
+- **Search Integration** (Section 49.7): `AllAppsSearchBarController` dispatches
   queries to `SearchAlgorithm` implementations. `DefaultAppSearchAlgorithm`
   performs title matching on the model thread. External providers can replace
   the search implementation.
 
-- **Folder System** (Section 48.8): `FolderIcon` represents folders on the
+- **Folder System** (Section 49.8): `FolderIcon` represents folders on the
   workspace with a 4-item preview. `Folder` is the expanded view containing
   `FolderPagedView` for paged content. `FolderNameProvider` suggests names
   based on app categories. Spring animations provide natural folder open/close
   transitions.
 
-- **Theming** (Section 48.9): `ThemeManager` centralizes icon shape and theme
+- **Theming** (Section 49.9): `ThemeManager` centralizes icon shape and theme
   management. Material You integration extracts wallpaper colors for dynamic
   theming. Themed icons use monochrome layers tinted with the palette.
   `LocalColorExtractor` adapts widget backgrounds to the wallpaper.
 
-- **Grid Customization** (Section 48.10): A hands-on exercise for adding a custom
+- **Grid Customization** (Section 49.10): A hands-on exercise for adding a custom
   6x5 grid by modifying `device_profiles.xml`, creating default layouts, and
   adjusting responsive specs.
 
@@ -6771,8 +6771,8 @@ All paths relative to `packages/apps/Launcher3/`:
 | DesktopAppLaunchTransitionManager | `quickstep/src/com/android/launcher3/desktop/DesktopAppLaunchTransitionManager.kt` |
 | DesktopRecentsTransitionController | `quickstep/src/com/android/launcher3/desktop/DesktopRecentsTransitionController.kt` |
 
-<!-- chapter:49-settings-app -->
-# Chapter 49: Settings App
+<!-- chapter:50-settings-app -->
+# Chapter 50: Settings App
 
 The Settings app is the primary user-facing interface for configuring an Android
 device.  What appears to be a single monolithic application is in reality a
@@ -6786,9 +6786,9 @@ backs `Settings.System`, `Settings.Secure`, and `Settings.Global`.
 
 ---
 
-## 49.1 Settings Architecture
+## 50.1 Settings Architecture
 
-### 49.1.1 Directory Layout
+### 50.1.1 Directory Layout
 
 The Settings app source tree lives under `packages/apps/Settings/`.  Its top
 level contains the usual Android project files:
@@ -6841,12 +6841,12 @@ In Android 17 a fourth presentation layer joins the activity/fragment, dashboard
 tile, and SPA Compose stacks: **Catalyst**, a declarative `*Screen.kt`
 preference model annotated with `@ProvidePreferenceScreen`.  Roughly 230 screens
 have been migrated to it, and the same metadata also feeds the new AppFunctions
-"device state" surface that lets on-device agents read and drive Settings (§49.14).
+"device state" surface that lets on-device agents read and drive Settings (§50.14).
 
 The total source tree contains well over 1,000 Java/Kotlin files -- making the
 Settings app one of the largest applications in AOSP.
 
-### 49.1.2 Class Hierarchy Overview
+### 50.1.2 Class Hierarchy Overview
 
 The following diagram shows the inheritance chain from the Android framework's
 `FragmentActivity` all the way down to a concrete settings page such as
@@ -6912,7 +6912,7 @@ classDiagram
 
 **Source file**: `packages/apps/Settings/src/com/android/settings/SettingsActivity.java`
 
-### 49.1.3 SettingsBaseActivity -- The Foundation
+### 50.1.3 SettingsBaseActivity -- The Foundation
 
 Every page in the Settings app (except the homepage) is hosted by a subclass of
 `SettingsBaseActivity`.  This class, defined in
@@ -6941,7 +6941,7 @@ performs several critical setup tasks during `onCreate()`:
 5. **Tile enable/disable**: Exposes `setTileEnabled(ComponentName, boolean)` for
    dynamically showing/hiding feature tiles based on hardware capabilities.
 
-### 49.1.4 SettingsActivity -- The Fragment Host
+### 50.1.4 SettingsActivity -- The Fragment Host
 
 `SettingsActivity` extends `SettingsBaseActivity` and serves as the container
 activity for all settings fragments.  Its key responsibilities include:
@@ -6995,7 +6995,7 @@ malicious apps from injecting arbitrary fragments via intent extras.
 The `SettingsGateway.ENTRY_FRAGMENTS` array contains over 150 fragment class
 names -- every fragment that is permitted to be hosted inside `SettingsActivity`.
 
-### 49.1.5 The Settings.java Stub Classes
+### 50.1.5 The Settings.java Stub Classes
 
 The file `packages/apps/Settings/src/com/android/settings/Settings.java`
 contains an extraordinary pattern: it defines over 150 public static inner
@@ -7033,7 +7033,7 @@ instance, `SecurityDashboardActivity` redirects to SafetyCenter when it is
 enabled, and `MobileNetworkActivity` handles intent conversion for SIM
 subscriptions.
 
-### 49.1.6 SettingsPreferenceFragment and PreferenceControllers
+### 50.1.6 SettingsPreferenceFragment and PreferenceControllers
 
 `SettingsPreferenceFragment` is the base class for all fragments that display
 a `PreferenceScreen`.  It provides:
@@ -7074,7 +7074,7 @@ Controllers can be declared in XML with the `settings:controller` attribute:
 At fragment creation time, `PreferenceControllerListHelper.getPreferenceControllersFromXml()`
 parses the XML and instantiates each controller via reflection.
 
-### 49.1.7 The SubSettingLauncher
+### 50.1.7 The SubSettingLauncher
 
 Rather than creating raw intents, Settings pages use `SubSettingLauncher` to
 navigate to sub-pages.  This builder class sets the fragment name, arguments,
@@ -7087,7 +7087,7 @@ new SubSettingLauncher(getContext())
     .launch();
 ```
 
-### 49.1.8 Lifecycle Flow
+### 50.1.8 Lifecycle Flow
 
 The complete lifecycle of loading a settings page is:
 
@@ -7119,9 +7119,9 @@ sequenceDiagram
 
 ---
 
-## 49.2 Dashboard and Categories
+## 50.2 Dashboard and Categories
 
-### 49.2.1 What is a Dashboard?
+### 50.2.1 What is a Dashboard?
 
 In Settings terminology, a "dashboard" is a `PreferenceScreen` that combines
 two sources of preference items:
@@ -7136,7 +7136,7 @@ two sources of preference items:
 
 **Source file**: `packages/apps/Settings/src/com/android/settings/dashboard/DashboardFragment.java`
 
-### 49.2.2 DashboardFragment Internals
+### 50.2.2 DashboardFragment Internals
 
 The `DashboardFragment` class extends `SettingsPreferenceFragment` and
 implements several interfaces:
@@ -7201,7 +7201,7 @@ public void onCreatePreferences(Bundle savedInstanceState, String rootKey) {
 tiles matching the fragment's category key and adds, updates, or removes
 them from the `PreferenceScreen`.
 
-### 49.2.3 Category Keys and the Registry
+### 50.2.3 Category Keys and the Registry
 
 Each dashboard fragment is associated with a **category key** via the
 `DashboardFragmentRegistry.PARENT_TO_CATEGORY_KEY_MAP`:
@@ -7248,7 +7248,7 @@ The complete set of category keys for the Settings homepage includes:
 A reverse mapping (`CATEGORY_KEY_TO_PARENT_MAP`) allows the search system to
 determine which fragment hosts a given category.
 
-### 49.2.4 Tile Injection Mechanism
+### 50.2.4 Tile Injection Mechanism
 
 Third-party apps and system components can inject tiles into any dashboard by
 declaring an `<activity>` with the appropriate `<intent-filter>` in their
@@ -7290,7 +7290,7 @@ flowchart TD
     K --> L[Tile visible to user]
 ```
 
-### 49.2.5 DashboardFeatureProviderImpl
+### 50.2.5 DashboardFeatureProviderImpl
 
 The `DashboardFeatureProviderImpl` class (source:
 `packages/apps/Settings/src/com/android/settings/dashboard/DashboardFeatureProviderImpl.java`)
@@ -7322,7 +7322,7 @@ private void refreshSummary(Uri uri, Preference preference, DynamicDataObserver 
 }
 ```
 
-### 49.2.6 The Homepage: TopLevelSettings
+### 50.2.6 The Homepage: TopLevelSettings
 
 The top-level Settings screen is displayed by `TopLevelSettings`, which extends
 `DashboardFragment`.  Its XML layout is defined in
@@ -7353,7 +7353,7 @@ Each tile is a `HomepagePreference` widget with a `settings:controller` and a
     settings:controller="com.android.settings.network.TopLevelNetworkEntryPreferenceController"/>
 ```
 
-### 49.2.7 Conditional Tile Visibility
+### 50.2.7 Conditional Tile Visibility
 
 `SettingsActivity.doUpdateTilesList()` dynamically enables or disables tiles
 based on hardware capabilities and user state:
@@ -7389,9 +7389,9 @@ For restricted (non-admin) users, only the fragments listed in
 
 ---
 
-## 49.3 Developer Options
+## 50.3 Developer Options
 
-### 49.3.1 The 7-Tap Easter Egg
+### 50.3.1 The 7-Tap Easter Egg
 
 Developer Options is hidden by default.  To reveal them, the user must tap the
 "Build number" preference 7 times in the "About phone" screen.  This is
@@ -7476,7 +7476,7 @@ private void enableDevelopmentSettings() {
 }
 ```
 
-### 49.3.2 DevelopmentSettingsDashboardFragment
+### 50.3.2 DevelopmentSettingsDashboardFragment
 
 The main developer options fragment lives at
 `packages/apps/Settings/src/com/android/settings/development/DevelopmentSettingsDashboardFragment.java`.
@@ -7499,7 +7499,7 @@ top of the screen.  Toggling it on shows the enable-warning dialog;  toggling it
 off either disables immediately or shows a reboot-required dialog if Bluetooth
 hardware offload settings have been changed.
 
-### 49.3.3 Developer Option Categories
+### 50.3.3 Developer Option Categories
 
 The developer options page contains over 100 individual preferences, managed by
 dedicated `PreferenceController` classes in
@@ -7572,13 +7572,13 @@ These three settings write to `Settings.Global.WINDOW_ANIMATION_SCALE`,
 | Controller | Setting | Effect |
 |-----------|---------|--------|
 | `BluetoothCodecListPreferenceController` | Bluetooth audio codec | SBC, AAC, aptX, LDAC |
-| `BluetoothSampleRateDialogPreferenceController` | Sample rate | 44.1 / 48 / 88.2 / 96 kHz |
+| `BluetoothSampleRateDialogPreferenceController` | Sample rate | 45.1 / 48 / 88.2 / 96 kHz |
 | `BluetoothBitPerSampleDialogPreferenceController` | Bits per sample | 16 / 24 / 32 |
 | `BluetoothA2dpHwOffloadPreferenceController` | Disable BT A2DP HW offload | Force software encoding |
 | `BluetoothLeAudioHwOffloadPreferenceController` | Disable BT LE audio HW offload | Force software for LE audio |
 | `BluetoothSnoopLogPreferenceController` | Enable Bluetooth HCI snoop log | Full / filtered / disabled |
 
-### 49.3.4 How Developer Options are Gated
+### 50.3.4 How Developer Options are Gated
 
 Developer options are globally gated by `Settings.Global.DEVELOPMENT_SETTINGS_ENABLED`.
 The fragment checks this at startup:
@@ -7622,7 +7622,7 @@ private final ContentObserver mDeveloperSettingsObserver = new ContentObserver(.
 };
 ```
 
-### 49.3.5 SystemProperties Integration
+### 50.3.5 SystemProperties Integration
 
 Many developer options write to both `Settings.Global` / `Settings.Secure` and
 to `SystemProperties`.  The fragment registers a system-property change
@@ -7639,7 +7639,7 @@ After toggling developer options on or off, the fragment calls
 `SystemPropPoker.getInstance().poke()` to notify all system services that
 properties have changed.
 
-### 49.3.6 Desktop Experience Developer Toggles
+### 50.3.6 Desktop Experience Developer Toggles
 
 Android 17 promotes the connected-display / desktop-windowing work that began as
 flag-only experiments into first-class developer toggles.  The controllers live
@@ -7677,9 +7677,9 @@ for a reboot after the value changes.
 
 ---
 
-## 49.4 Settings Provider
+## 50.4 Settings Provider
 
-### 49.4.1 Overview
+### 50.4.1 Overview
 
 The `SettingsProvider` is a `ContentProvider` that serves as the persistent
 storage backend for all system settings.  It is one of the first providers
@@ -7694,7 +7694,7 @@ As the source documentation states:
 > commands.  The latter is a bit faster and is the preferred way to access
 > the platform settings.
 
-### 49.4.2 The Three Namespaces
+### 50.4.2 The Three Namespaces
 
 Settings are divided into three namespaces, each with different access
 controls and scoping:
@@ -7723,7 +7723,7 @@ public static final String TABLE_SSAID = "ssaid";
 public static final String TABLE_CONFIG = "config";
 ```
 
-### 49.4.3 Storage Mechanism
+### 50.4.3 Storage Mechanism
 
 Settings are **not** stored in SQLite despite the legacy table names.  Modern
 Android uses `SettingsState`, which stores each namespace as an XML file:
@@ -7759,7 +7759,7 @@ static {
 }
 ```
 
-### 49.4.4 The Call Method API
+### 50.4.4 The Call Method API
 
 While `SettingsProvider` implements the standard `ContentProvider` query/insert
 interface, the preferred access path is the `call()` method, which avoids
@@ -7796,7 +7796,7 @@ public Bundle call(String method, String name, Bundle args) {
 }
 ```
 
-### 49.4.5 Settings Migration
+### 50.4.5 Settings Migration
 
 Settings move between namespaces across Android versions.  The provider
 maintains static sets that track these migrations:
@@ -7822,7 +7822,7 @@ static {
 When a client queries `Settings.System` for a key that has been moved to
 `Settings.Global`, the provider transparently redirects the query.
 
-### 49.4.6 Content Observer Pattern
+### 50.4.6 Content Observer Pattern
 
 The `Settings` API provides a change-notification mechanism through
 `ContentObserver`.  Any component can register to watch a specific setting:
@@ -7860,7 +7860,7 @@ sequenceDiagram
     SP-->>Obs: Bundle("value" = "200")
 ```
 
-### 49.4.7 Validation
+### 50.4.7 Validation
 
 `Settings.System` values are validated using a framework of `Validator`
 classes to prevent apps from writing invalid data:
@@ -7875,7 +7875,7 @@ For example, `SCREEN_BRIGHTNESS` is validated to ensure it falls within the
 hardware-supported range.  `Settings.Global` and `Settings.Secure` do not
 undergo validation because they are only writable by privileged callers.
 
-### 49.4.8 Per-User and Per-Device Settings
+### 50.4.8 Per-User and Per-Device Settings
 
 `Settings.System` and `Settings.Secure` are per-user: each Android user profile
 has its own set of values.  `Settings.Global` is device-wide and stored under
@@ -7897,7 +7897,7 @@ case Settings.CALL_METHOD_GET_SECURE -> {
 }
 ```
 
-### 49.4.9 Common Settings Reference
+### 50.4.9 Common Settings Reference
 
 A quick reference for the most commonly used settings:
 
@@ -7921,9 +7921,9 @@ A quick reference for the most commonly used settings:
 
 ---
 
-## 49.5 Search and Indexing
+## 50.5 Search and Indexing
 
-### 49.5.1 Why Settings Search is Complex
+### 50.5.1 Why Settings Search is Complex
 
 The Settings app contains hundreds of individual preferences spread across
 dozens of fragments.  Making all of these searchable requires an indexing
@@ -7935,7 +7935,7 @@ system that can:
 4. Track which preferences are currently unavailable (non-indexable keys)
 5. Provide this data to the Settings Intelligence app for ranking and display
 
-### 49.5.2 The @SearchIndexable Annotation
+### 50.5.2 The @SearchIndexable Annotation
 
 Every fragment that participates in search is annotated with
 `@SearchIndexable`:
@@ -7951,7 +7951,7 @@ public class DevelopmentSettingsDashboardFragment extends RestrictedDashboardFra
 This annotation is processed at compile time by the Settings search annotation
 processor, which generates a registry of all indexable classes.
 
-### 49.5.3 BaseSearchIndexProvider
+### 50.5.3 BaseSearchIndexProvider
 
 Each indexable fragment declares a `public static final BaseSearchIndexProvider
 SEARCH_INDEX_DATA_PROVIDER` field.  This provider implements the
@@ -8023,7 +8023,7 @@ public void updateNonIndexableKeys(List<String> keys) {
 }
 ```
 
-### 49.5.4 SettingsSearchIndexablesProvider
+### 50.5.4 SettingsSearchIndexablesProvider
 
 The `SettingsSearchIndexablesProvider` is a `ContentProvider` that the
 Settings Intelligence app queries to build its search index.
@@ -8074,7 +8074,7 @@ public Cursor querySiteMapPairs() {
 }
 ```
 
-### 49.5.5 Injection Indexing
+### 50.5.5 Injection Indexing
 
 Third-party tiles injected via the dashboard system are also searchable.  The
 `getInjectionIndexableRawData()` method iterates all categories and creates
@@ -8103,7 +8103,7 @@ List<SearchIndexableRaw> getInjectionIndexableRawData(Context context) {
 The `isEligibleForIndexing()` method skips Settings' own activity tiles (which
 are indexed through their own fragments) and respects the `isSearchable()` flag.
 
-### 49.5.6 Dynamic Raw Data
+### 50.5.6 Dynamic Raw Data
 
 Some search results need to be generated at query time rather than index time.
 The `queryDynamicRawData()` method calls each provider's
@@ -8131,7 +8131,7 @@ public List<SearchIndexableRaw> getDynamicRawDataToIndex(Context context, boolea
 This is used for preferences whose titles or summaries change dynamically
 (e.g., the current Wi-Fi network name).
 
-### 49.5.7 SearchFeatureProvider
+### 50.5.7 SearchFeatureProvider
 
 The `SearchFeatureProvider` interface connects the Settings app to Settings
 Intelligence:
@@ -8162,7 +8162,7 @@ default void initSearchToolbar(@NonNull FragmentActivity activity, @Nullable Vie
 }
 ```
 
-### 49.5.8 End-to-End Search Flow
+### 50.5.8 End-to-End Search Flow
 
 ```mermaid
 sequenceDiagram
@@ -8195,9 +8195,9 @@ sequenceDiagram
 
 ---
 
-## 49.6 Theming and UI
+## 50.6 Theming and UI
 
-### 49.6.1 Material Design in Settings
+### 50.6.1 Material Design in Settings
 
 The Settings app has evolved through multiple design languages:
 
@@ -8229,7 +8229,7 @@ if (isSubSettings(intent) && !WizardManagerHelper.isAnySetupWizard(getIntent()))
 }
 ```
 
-### 49.6.2 Preference Widgets
+### 50.6.2 Preference Widgets
 
 The Settings app uses several custom preference widgets beyond the standard
 AndroidX `Preference` library:
@@ -8245,7 +8245,7 @@ AndroidX `Preference` library:
 | `SelectorWithWidgetPreference` | `settingslib/` | Radio button preference |
 | `CustomListPreference` | `CustomListPreference.java` | List preference with custom dialog |
 
-### 49.6.3 Collapsing Toolbar
+### 50.6.3 Collapsing Toolbar
 
 Both the homepage and sub-pages use a collapsing toolbar that shows a large
 title when scrolled to the top and collapses into the action bar on scroll.
@@ -8269,7 +8269,7 @@ mAppBarLayout = findViewById(R.id.app_bar);
 getToolbarDelegate().initCollapsingToolbar(mCollapsingToolbarLayout, mAppBarLayout);
 ```
 
-### 49.6.4 Two-Pane Layout for Large Screens
+### 50.6.4 Two-Pane Layout for Large Screens
 
 On tablets and foldables, Settings uses **Activity Embedding** to show a
 two-pane layout: the homepage list on the left and the selected settings
@@ -8314,7 +8314,7 @@ When the activity is in two-pane mode, `SettingsActivity.shouldShowMultiPaneDeep
 detects deep link intents and redirects them through the homepage trampoline to
 ensure both panes are visible.
 
-### 49.6.5 Homepage Icon Colour Scheme
+### 50.6.5 Homepage Icon Colour Scheme
 
 In the expressive theme, homepage icons use a colour scheme system.  Each tile
 can declare an icon colour scheme in its metadata:
@@ -8339,7 +8339,7 @@ enum ColorScheme {
 The icon is rendered as an `AdaptiveIcon` with the foreground tinted and
 the background filled with the scheme's background colour.
 
-### 49.6.6 Setup Wizard Integration
+### 50.6.6 Setup Wizard Integration
 
 When Settings is launched during the setup wizard, it applies special themes
 and transitions:
@@ -8364,7 +8364,7 @@ if (isAnySetupWizard) {
 The setup wizard theme removes the toolbar, adds slide transitions, and
 uses Google's SetupDesign library for consistent look-and-feel.
 
-### 49.6.7 Edge-to-Edge Display
+### 50.6.7 Edge-to-Edge Display
 
 Modern Android Settings uses edge-to-edge display where the content extends
 behind the system bars.  The `Utils.setupEdgeToEdge()` call in
@@ -8374,7 +8374,7 @@ behind the system bars.  The `Utils.setupEdgeToEdge()` call in
 - Navigation bar is transparent
 - Content uses `WindowInsetsCompat` for padding
 
-### 49.6.8 Round-Corner Preference Adapter
+### 50.6.8 Round-Corner Preference Adapter
 
 On the homepage, preferences are rendered with rounded corners using
 `RoundCornerPreferenceAdapter`:
@@ -8392,9 +8392,9 @@ protected RecyclerView.Adapter onCreateAdapter(PreferenceScreen preferenceScreen
 
 ---
 
-## 49.7 Deep Dive: CategoryManager and Tile Loading
+## 50.7 Deep Dive: CategoryManager and Tile Loading
 
-### 49.7.1 CategoryManager as Singleton
+### 50.7.1 CategoryManager as Singleton
 
 The `CategoryManager` is a singleton that caches all dashboard tiles.  It is
 the authoritative source for tile data in the Settings app.
@@ -8420,7 +8420,7 @@ Its core data structures:
 | `mCategories` | `List<DashboardCategory>` | All categories in order |
 | `mInterestingConfigChanges` | `InterestingConfigChanges` | Detects locale/density/theme changes |
 
-### 49.7.2 Category Initialisation Flow
+### 50.7.2 Category Initialisation Flow
 
 Categories are lazily initialised on first access via `tryInitCategories()`:
 
@@ -8451,7 +8451,7 @@ private synchronized void tryInitCategories(Context context, boolean forceClearC
 with the `com.android.settings.action.EXTRA_SETTINGS` action and groups them
 by their declared category.
 
-### 49.7.3 Post-Processing Steps
+### 50.7.3 Post-Processing Steps
 
 After raw tiles are loaded, the `CategoryManager` applies several
 post-processing steps:
@@ -8487,7 +8487,7 @@ mapped to current keys using `CategoryKey.KEY_COMPAT_MAP`.
 **Deduplication**: Tiles pointing to the same component are removed.  For
 `ProviderTile` instances, deduplication is based on the tile description.
 
-### 49.7.4 Tile Deny List
+### 50.7.4 Tile Deny List
 
 The `CategoryMixin` (managed by `SettingsBaseActivity`) maintains a deny list
 of components that should be hidden:
@@ -8512,9 +8512,9 @@ are absent (e.g., no Wi-Fi chip, no battery).
 
 ---
 
-## 49.8 Deep Dive: SettingsPreferenceFragment
+## 50.8 Deep Dive: SettingsPreferenceFragment
 
-### 49.8.1 Fragment Base Class
+### 50.8.1 Fragment Base Class
 
 `SettingsPreferenceFragment` is the base class for all settings pages that
 display a preference list.
@@ -8533,7 +8533,7 @@ integration, and implements:
 - `HelpResourceProvider` -- Provides help link URIs for the overflow menu
 - `Indexable` -- Enables search indexing
 
-### 49.8.2 Preference Highlighting
+### 50.8.2 Preference Highlighting
 
 When a deep link targets a specific preference (e.g., from search results),
 `SettingsPreferenceFragment` highlights it using
@@ -8549,19 +8549,19 @@ public static final String EXTRA_FRAGMENT_ARG_KEY = ":settings:fragment_args_key
 The fragment reads this key and scrolls to/highlights the matching preference
 when the view is created.
 
-### 49.8.3 Dialog Management
+### 50.8.3 Dialog Management
 
 `SettingsPreferenceFragment` provides a stable dialog hosting mechanism.  Each
 dialog is identified by an integer ID, and the fragment manages the dialog
 lifecycle across configuration changes using `SettingsDialogFragment`.
 
-### 49.8.4 Loading State
+### 50.8.4 Loading State
 
 For pages that load data asynchronously, `LoadingViewController` shows a
 progress indicator until the data is ready.  This prevents the jarring
 appearance of an empty screen followed by a sudden list.
 
-### 49.8.5 RestrictedDashboardFragment
+### 50.8.5 RestrictedDashboardFragment
 
 `RestrictedDashboardFragment` adds enterprise restriction support:
 
@@ -8577,9 +8577,9 @@ or an empty state message instead of the preference list.
 
 ---
 
-## 49.9 Deep Dive: The Complete Developer Options Controller List
+## 50.9 Deep Dive: The Complete Developer Options Controller List
 
-### 49.9.1 Controller Registration
+### 50.9.1 Controller Registration
 
 The `buildPreferenceControllers()` method in
 `DevelopmentSettingsDashboardFragment` creates over 100 controller instances.
@@ -8736,7 +8736,7 @@ Here is the complete categorised list as found in the source:
 - `AutofillLoggingLevelPreferenceController` -- Autofill debug logging
 - `AutofillResetOptionsPreferenceController` -- Reset autofill state
 
-### 49.9.2 Enable/Disable Callbacks
+### 50.9.2 Enable/Disable Callbacks
 
 When the master switch is toggled, every controller receives a callback:
 
@@ -8771,9 +8771,9 @@ exactly once.
 
 ---
 
-## 49.10 Deep Dive: SettingsProvider Internals
+## 50.10 Deep Dive: SettingsProvider Internals
 
-### 49.10.1 SettingsState and XML Persistence
+### 50.10.1 SettingsState and XML Persistence
 
 Each namespace (system, secure, global) is backed by a `SettingsState` object
 that handles in-memory caching and XML persistence.
@@ -8787,7 +8787,7 @@ Key characteristics:
 - The XML file uses a versioned format with support for default values
 - A fallback copy mechanism creates `.bak` files for crash recovery
 
-### 49.10.2 Setting Keys and Types
+### 50.10.2 Setting Keys and Types
 
 Each setting entry internally contains:
 
@@ -8801,7 +8801,7 @@ Each setting entry internally contains:
 | `defaultSystemSet` | Whether this was set by the system (not user-modified) |
 | `id` | Auto-incrementing generation ID for change tracking |
 
-### 49.10.3 Generation Tracking
+### 50.10.3 Generation Tracking
 
 The SettingsProvider uses a generation-tracking mechanism for efficient
 change detection.  Each `SettingsState` maintains a `currentGeneration` counter
@@ -8818,13 +8818,13 @@ The `Settings` framework class uses this on the client side to maintain a
 local cache.  If the generation has not changed, the cached value is used
 without IPC -- making settings reads extremely fast.
 
-### 49.10.4 Broadcast Notifications
+### 50.10.4 Broadcast Notifications
 
 Beyond `ContentObserver`, certain settings changes trigger system-wide
 broadcasts.  For example, changing `AIRPLANE_MODE_ON` triggers an
 `ACTION_AIRPLANE_MODE_CHANGED` broadcast that all interested apps receive.
 
-### 49.10.5 Permission Model
+### 50.10.5 Permission Model
 
 | Namespace | Read | Write |
 |-----------|------|-------|
@@ -8838,7 +8838,7 @@ The provider maintains `sReadableSecureSettings`, `sReadableSystemSettings`,
 and `sReadableGlobalSettings` sets that define which keys are publicly
 readable.
 
-### 49.10.6 Setting Limits for Third-Party Apps
+### 50.10.6 Setting Limits for Third-Party Apps
 
 To prevent abuse, the provider limits how many custom settings third-party
 apps can add to `Settings.System`:
@@ -8852,9 +8852,9 @@ When a package is uninstalled, all settings it added are automatically deleted.
 
 ---
 
-## 49.11 Deep Dive: The FeatureFactory Extension Point
+## 50.11 Deep Dive: The FeatureFactory Extension Point
 
-### 49.11.1 Architecture
+### 50.11.1 Architecture
 
 The `FeatureFactory` is the primary OEM extension mechanism for the Settings
 app.  It is an abstract class with factory methods for each subsystem provider:
@@ -8871,7 +8871,7 @@ overlay:
 </string>
 ```
 
-### 49.11.2 Available Providers
+### 50.11.2 Available Providers
 
 | Provider Interface | Default Implementation | OEM Can Customise |
 |-------------------|----------------------|-------------------|
@@ -8883,7 +8883,7 @@ overlay:
 | `EnterprisePrivacyFeatureProvider` | `EnterprisePrivacyFeatureProviderImpl` | MDM controls |
 | `AccountFeatureProvider` | `AccountFeatureProviderImpl` | Account management |
 
-### 49.11.3 How the Factory is Loaded
+### 50.11.3 How the Factory is Loaded
 
 ```java
 // FeatureFactory.java
@@ -8901,9 +8901,9 @@ public static FeatureFactory getFeatureFactory() {
 
 ---
 
-## 49.12 Deep Dive: Slices Integration
+## 50.12 Deep Dive: Slices Integration
 
-### 49.12.1 Settings Slices
+### 50.12.1 Settings Slices
 
 Settings exposes individual preferences as Android **Slices** -- remote
 UI snippets that can be embedded in other apps (like the Google app or
@@ -8931,7 +8931,7 @@ public Uri getSliceUri() {
 }
 ```
 
-### 49.12.2 Slice Types
+### 50.12.2 Slice Types
 
 | Type | Behaviour |
 |------|-----------|
@@ -8941,9 +8941,9 @@ public Uri getSliceUri() {
 
 ---
 
-## 49.13 Deep Dive: The AndroidManifest
+## 50.13 Deep Dive: The AndroidManifest
 
-### 49.13.1 Scale and Permissions
+### 50.13.1 Scale and Permissions
 
 The Settings app `AndroidManifest.xml` is one of the largest manifest files in
 AOSP at over 6,000 lines.  It declares:
@@ -8978,7 +8978,7 @@ It declares an extensive set of permissions including:
 <uses-permission android:name="android.permission.MANAGE_USERS" />
 ```
 
-### 49.13.2 Activity Declaration Pattern
+### 50.13.2 Activity Declaration Pattern
 
 Each settings page activity is declared with metadata that maps it to a
 fragment and a highlight menu key:
@@ -9010,7 +9010,7 @@ This pattern means that:
 - The `HIGHLIGHT_MENU_KEY` tells the two-pane layout which homepage tile
   to highlight
 
-### 49.13.3 Tile Injection in Manifest
+### 50.13.3 Tile Injection in Manifest
 
 The Settings app also injects its own tiles into dashboard categories:
 
@@ -9031,9 +9031,9 @@ The `order` metadata controls the position within the category.
 
 ---
 
-## 49.14 Deep Dive: Catalyst / Settings Page Architecture (SPA)
+## 50.14 Deep Dive: Catalyst / Settings Page Architecture (SPA)
 
-### 49.14.1 The Catalyst Migration
+### 50.14.1 The Catalyst Migration
 
 AOSP is migrating Settings pages off the traditional `DashboardFragment` + XML
 approach onto a declarative architecture called **Catalyst**.  Catalyst is the
@@ -9053,7 +9053,7 @@ roughly 230 of these `*Screen.kt` classes exist across the tree.  The model buys
 
 - Type-safe preference definitions instead of string-keyed XML
 - A single declarative source of truth for UI, search index, and the
-  AppFunctions "device state" surface (§49.14.8)
+  AppFunctions "device state" surface (§50.14.8)
 - Programmatic preference composition via a Kotlin DSL
 - Per-screen feature-flag gating and incremental, hybrid-mode migration
 
@@ -9066,7 +9066,7 @@ roughly 230 of these `*Screen.kt` classes exist across the tree.  The model buys
 | `frameworks/base/packages/SettingsLib/Metadata/src/com/android/settingslib/metadata/PreferenceScreenRegistry.kt` | Runtime registry of screen factories |
 | `frameworks/base/packages/SettingsLib/Metadata/processor/` | Annotation processor that generates the collector |
 
-### 49.14.2 CatalystSettingsActivity
+### 50.14.2 CatalystSettingsActivity
 
 The `CatalystSettingsActivity` is a Kotlin class that extends
 `SettingsActivity` with support for binding to a preference screen by key:
@@ -9116,7 +9116,7 @@ public static class VibrationSettingsActivity extends CatalystSettingsActivity {
 }
 ```
 
-### 49.14.3 CatalystFragment
+### 50.14.3 CatalystFragment
 
 `CatalystFragment` deliberately extends `DashboardFragment` rather than the
 plainer `PreferenceFragment` so that injected tiles and preference highlighting
@@ -9142,7 +9142,7 @@ open class CatalystFragment : DashboardFragment() {
 }
 ```
 
-### 49.14.4 Hybrid Mode
+### 50.14.4 Hybrid Mode
 
 A screen rarely flips to Catalyst all at once.  In **hybrid mode** the preference
 hierarchy is still inflated from XML, but the preference *metadata* (titles,
@@ -9167,7 +9167,7 @@ private void removeControllersForHybridMode() {
 }
 ```
 
-### 49.14.5 The Declarative Screen Model
+### 50.14.5 The Declarative Screen Model
 
 The defining 17 change is that a screen is now a *data declaration* rather than
 an XML file plus a bag of controllers.  A Catalyst screen is a Kotlin class
@@ -9222,7 +9222,7 @@ Several things are worth calling out:
 - **`isFlagEnabled()`** is the per-screen migration gate.  Until the flag flips,
   the legacy XML + controller path renders the page; afterwards Catalyst owns it.
 
-### 49.14.6 From Annotation to Runtime: Processor, Collector, Registry
+### 50.14.6 From Annotation to Runtime: Processor, Collector, Registry
 
 `@ProvidePreferenceScreen` has `SOURCE` retention, so it never reaches the APK as
 metadata.  Instead an annotation processor under
@@ -9279,7 +9279,7 @@ flowchart TD
     H --> I["Live Preference widgets<br/>+ search index + AppFunctions metadata"]
 ```
 
-### 49.14.7 Worked Example: The Supervision Dashboard
+### 50.14.7 Worked Example: The Supervision Dashboard
 
 Android 17 ships a new top-level **Supervision** dashboard
 (`Settings > Supervision`), built natively on Catalyst, that consolidates
@@ -9313,7 +9313,7 @@ is a good template for how a brand-new dashboard is built in the Catalyst era:
 no preference XML, no `DashboardFragment` subclass, just a declarative `Screen`
 class plus a manifest activity that extends `CatalystSettingsActivity`.
 
-### 49.14.8 API-First: Exposing Settings to On-Device Agents
+### 50.14.8 API-First: Exposing Settings to On-Device Agents
 
 The declarative metadata is not only used to draw pixels -- it is the source of
 truth for a new **API-First / AppFunctions** surface that lets on-device agents
@@ -9334,14 +9334,14 @@ default -- which the per-preference declarations then refine.
 
 This is why the Catalyst migration matters beyond UI cleanliness: each migrated
 `*Screen.kt` simultaneously yields a rendered page, a search-index entry, and an
-agent-addressable capability from one declaration.  Chapter 50 picks up the
+agent-addressable capability from one declaration.  Chapter 51 picks up the
 AppFunctions and on-device-agent story in depth.
 
 ---
 
-## 49.15 Deep Dive: Testing the Settings App
+## 50.15 Deep Dive: Testing the Settings App
 
-### 49.15.1 Test Infrastructure
+### 50.15.1 Test Infrastructure
 
 The Settings app has a comprehensive test suite under
 `packages/apps/Settings/tests/`:
@@ -9350,7 +9350,7 @@ The Settings app has a comprehensive test suite under
 - **Instrumentation tests**: On-device tests using AndroidX Test
 - **Screenshot tests**: Visual regression tests for preference layouts
 
-### 49.15.2 Testing Preference Controllers
+### 50.15.2 Testing Preference Controllers
 
 Each `BasePreferenceController` is designed to be independently testable:
 
@@ -9376,7 +9376,7 @@ public class WifiCallingPreferenceControllerTest {
 }
 ```
 
-### 49.15.3 Testing DashboardFragment
+### 50.15.3 Testing DashboardFragment
 
 The `DashboardFragment` provides the `use()` method that makes it easy to
 retrieve and test controllers:
@@ -9388,7 +9388,7 @@ AdbPreferenceController controller = fragment.use(AdbPreferenceController.class)
 assertThat(controller).isNotNull();
 ```
 
-### 49.15.4 Testing Search Indexing
+### 50.15.4 Testing Search Indexing
 
 The search system can be validated by checking that:
 
@@ -9405,9 +9405,9 @@ adb shell content query \
 
 ---
 
-## 49.16 Performance Considerations
+## 50.16 Performance Considerations
 
-### 49.16.1 Lazy Controller Initialisation
+### 50.16.1 Lazy Controller Initialisation
 
 Preference controllers are instantiated via reflection during `onAttach()`,
 which can be expensive for pages with many controllers (Developer Options
@@ -9430,7 +9430,7 @@ private void awaitObserverLatch(CountDownLatch latch) {
 }
 ```
 
-### 49.16.2 UI Blocker Pattern
+### 50.16.2 UI Blocker Pattern
 
 Some preferences need to wait for asynchronous data before they can determine
 their visibility.  The `UiBlocker` interface marks these controllers:
@@ -9445,13 +9445,13 @@ The `UiBlockerController` in `DashboardFragment` hides all preferences until
 every `UiBlocker` controller has reported completion.  This prevents jarky
 layout changes as preferences appear one by one.
 
-### 49.16.3 Settings Provider Caching
+### 50.16.3 Settings Provider Caching
 
 The `Settings` framework class maintains a per-process LRU cache of settings
 values.  Combined with generation tracking, most `Settings.System.getInt()`
 calls complete without any IPC.
 
-### 49.16.4 Preference Comparison Callback
+### 50.16.4 Preference Comparison Callback
 
 `DashboardFragment` sets a `SimplePreferenceComparisonCallback` on the
 `PreferenceManager` to enable efficient RecyclerView animations when the
@@ -9469,9 +9469,9 @@ public void onCreate(Bundle icicle) {
 
 ---
 
-## 49.17 Deep Dive: Activity Embedding for Two-Pane Layout
+## 50.17 Deep Dive: Activity Embedding for Two-Pane Layout
 
-### 49.17.1 Architecture Overview
+### 50.17.1 Architecture Overview
 
 On large-screen devices (tablets, foldables, ChromeOS), Settings displays a
 split layout: the homepage list on the left and the selected sub-page on the
@@ -9483,7 +9483,7 @@ WindowManager library.
 - `packages/apps/Settings/src/com/android/settings/activityembedding/ActivityEmbeddingUtils.java`
 - `packages/apps/Settings/src/com/android/settings/activityembedding/ActivityEmbeddingRulesController.java`
 
-### 49.17.2 Embedding Detection
+### 50.17.2 Embedding Detection
 
 `ActivityEmbeddingUtils.isEmbeddingActivityEnabled()` checks whether the
 device and configuration support two-pane embedding:
@@ -9495,7 +9495,7 @@ device and configuration support two-pane embedding:
 This is checked at multiple points: homepage creation, fragment transitions,
 and deep link handling.
 
-### 49.17.3 Split Pair Rules
+### 50.17.3 Split Pair Rules
 
 `ActivityEmbeddingRulesController` registers `SplitPairRule` objects that
 define how activities are paired in the split layout:
@@ -9516,7 +9516,7 @@ Key rules:
 - `clearTop` is set so navigating to a new sub-page replaces the right pane
 - `finishSecondaryWithPrimary=true` so closing the homepage closes everything
 
-### 49.17.4 Deep Link Handling in Two-Pane Mode
+### 50.17.4 Deep Link Handling in Two-Pane Mode
 
 When Settings receives a deep link intent (e.g., from a notification or
 another app), `SettingsActivity.shouldShowMultiPaneDeepLink()` determines
@@ -9544,7 +9544,7 @@ private boolean shouldShowMultiPaneDeepLink(Intent intent) {
 If two-pane deep link is needed, `EmbeddedDeepLinkUtils.tryStartMultiPaneDeepLink()`
 trampolines through the homepage activity to ensure both panes are visible.
 
-### 49.17.5 Highlight Mixin
+### 50.17.5 Highlight Mixin
 
 The `TopLevelHighlightMixin` manages visual highlighting of the selected
 tile in the left pane.  When a sub-page is shown in the right pane, the
@@ -9567,7 +9567,7 @@ public boolean onPreferenceTreeClick(Preference preference) {
 The highlight adapts to configuration changes (e.g., rotation) and
 transitions between one-pane and two-pane modes.
 
-### 49.17.6 SplitInfo Callback
+### 50.17.6 SplitInfo Callback
 
 The homepage activity listens for split layout changes via
 `SplitControllerCallbackAdapter`:
@@ -9583,9 +9583,9 @@ updates the homepage layout, icon visibility, and highlight state.
 
 ---
 
-## 49.18 Common Debugging Techniques
+## 50.18 Common Debugging Techniques
 
-### 49.18.1 Inspecting Settings Values
+### 50.18.1 Inspecting Settings Values
 
 ```bash
 # Read a specific setting
@@ -9605,7 +9605,7 @@ adb shell settings list global
 adb shell settings delete system custom_setting_key
 ```
 
-### 49.18.2 Launching Specific Settings Pages
+### 50.18.2 Launching Specific Settings Pages
 
 ```bash
 # Launch by action
@@ -9625,7 +9625,7 @@ adb shell am start -n com.android.settings/.SubSettings \
     "com.android.settings.development.DevelopmentSettingsDashboardFragment"
 ```
 
-### 49.18.3 Debugging Tile Injection
+### 50.18.3 Debugging Tile Injection
 
 To see which tiles are loaded and their categories:
 
@@ -9637,7 +9637,7 @@ adb shell dumpsys activity providers com.android.settings
 adb shell pm query-activities -a com.android.settings.action.EXTRA_SETTINGS
 ```
 
-### 49.18.4 Debugging Search Indexing
+### 50.18.4 Debugging Search Indexing
 
 ```bash
 # Force re-index
@@ -9648,7 +9648,7 @@ adb shell content query \
     --uri content://com.android.settings.intelligence.search.indexables/resource
 ```
 
-### 49.18.5 Monitoring Settings Changes
+### 50.18.5 Monitoring Settings Changes
 
 ```bash
 # Watch for settings changes in real-time
@@ -9658,7 +9658,7 @@ adb shell settings monitor
 This command prints all settings changes as they happen, showing the
 namespace, key, value, and calling package.
 
-### 49.18.6 SettingsProvider Dump
+### 50.18.6 SettingsProvider Dump
 
 ```bash
 # Dump complete SettingsProvider state
@@ -9673,7 +9673,7 @@ adb shell dumpsys settings
 
 ---
 
-## 49.19 Key Source Files Reference
+## 50.19 Key Source Files Reference
 
 For easy reference, here is a consolidated list of all key source files
 discussed in this chapter:
@@ -9711,13 +9711,13 @@ discussed in this chapter:
 
 ---
 
-## 49.20 Try It: Add a Custom Settings Page
+## 50.20 Try It: Add a Custom Settings Page
 
 This section walks through adding a complete custom settings page to the
 Settings app, from XML definition through preference controller to search
 integration.
 
-### 49.20.1 Step 1: Define the Preference XML
+### 50.20.1 Step 1: Define the Preference XML
 
 Create a new XML preference screen.  For this example, we will build a
 "Custom Lab" page with a toggle and a list preference:
@@ -9753,7 +9753,7 @@ Create a new XML preference screen.  For this example, we will build a
 </PreferenceScreen>
 ```
 
-### 49.20.2 Step 2: Create the DashboardFragment
+### 50.20.2 Step 2: Create the DashboardFragment
 
 Create a new fragment that extends `DashboardFragment`:
 
@@ -9793,7 +9793,7 @@ public class CustomLabFragment extends DashboardFragment {
 }
 ```
 
-### 49.20.3 Step 3: Create Preference Controllers
+### 50.20.3 Step 3: Create Preference Controllers
 
 Create a toggle controller that reads/writes a setting:
 
@@ -9837,7 +9837,7 @@ public class CustomLabToggleController extends TogglePreferenceController {
 }
 ```
 
-### 49.20.4 Step 4: Register in SettingsGateway
+### 50.20.4 Step 4: Register in SettingsGateway
 
 Add the fragment to the `ENTRY_FRAGMENTS` array in `SettingsGateway.java` so
 that `SettingsActivity` will accept it:
@@ -9850,7 +9850,7 @@ public static final String[] ENTRY_FRAGMENTS = {
 };
 ```
 
-### 49.20.5 Step 5: Create the Activity Stub
+### 50.20.5 Step 5: Create the Activity Stub
 
 Add an inner class in `Settings.java`:
 
@@ -9859,7 +9859,7 @@ Add an inner class in `Settings.java`:
 public static class CustomLabActivity extends SettingsActivity { /* empty */ }
 ```
 
-### 49.20.6 Step 6: Declare in AndroidManifest.xml
+### 50.20.6 Step 6: Declare in AndroidManifest.xml
 
 Add the activity declaration with metadata pointing to the fragment:
 
@@ -9881,7 +9881,7 @@ Add the activity declaration with metadata pointing to the fragment:
 </activity>
 ```
 
-### 49.20.7 Step 7: Add a Link from System Settings
+### 50.20.7 Step 7: Add a Link from System Settings
 
 To make the new page accessible, add a preference to an existing XML screen
 (e.g., `res/xml/system_dashboard_fragment.xml`):
@@ -9894,7 +9894,7 @@ To make the new page accessible, add a preference to an existing XML screen
     android:fragment="com.android.settings.development.CustomLabFragment"/>
 ```
 
-### 49.20.8 Step 8: Make It Searchable
+### 50.20.8 Step 8: Make It Searchable
 
 The `@SearchIndexable` annotation and the `SEARCH_INDEX_DATA_PROVIDER` field
 we added in Step 2 are sufficient.  The compile-time annotation processor
@@ -9908,7 +9908,7 @@ adb shell content query \
   | grep custom_lab
 ```
 
-### 49.20.9 Complete Lifecycle Diagram
+### 50.20.9 Complete Lifecycle Diagram
 
 ```mermaid
 flowchart TD
@@ -9931,7 +9931,7 @@ flowchart TD
     Q --> R[Other observers notified]
 ```
 
-### 49.20.10 Testing Your Custom Page
+### 50.20.10 Testing Your Custom Page
 
 Run the Settings app on an emulator:
 
@@ -9954,7 +9954,7 @@ You can also test the search integration by opening Settings, tapping the
 search bar, and typing "Lab".  The custom preferences should appear in the
 results if the search index has been refreshed.
 
-### 49.20.11 Advanced: Adding a Tile to the Homepage
+### 50.20.11 Advanced: Adding a Tile to the Homepage
 
 To inject your page as a tile on the homepage, you would modify
 `res/xml/top_level_settings.xml` to add a `HomepagePreference`:
@@ -9978,7 +9978,7 @@ PARENT_TO_CATEGORY_KEY_MAP.put(
     CustomLabFragment.class.getName(), "com.android.settings.category.custom_lab");
 ```
 
-### 49.20.12 Advanced: OEM Customisation via FeatureFactory
+### 50.20.12 Advanced: OEM Customisation via FeatureFactory
 
 OEMs can customise the Settings app without forking by implementing
 a custom `FeatureFactory` via the overlay system.  The factory provides

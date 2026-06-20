@@ -1374,7 +1374,7 @@ packages/
         Media/            --   Media framework components
         Permission/       --   Permission controller
         NeuralNetworks/   --   NNAPI runtime
-        NpuManager/       --   NPU Manager (added in 17, Chapter 67)
+        NpuManager/       --   NPU Manager (added in 17, Chapter 53)
         DnsResolver/      --   DNS resolution
         IPsec/            --   IPsec VPN
         Nfc/              --   NFC stack
@@ -1546,11 +1546,11 @@ system/
     fs/                   -- Filesystem stack (split out of system/core in 17):
         fs_mgr/           --   Filesystem manager (mount, verity, overlayfs)
         casefolding_remover/ -- Case-folding migration tool
-    lfi/                  -- Lightweight Fault Isolation runtime (Chapter 68):
+    lfi/                  -- Lightweight Fault Isolation runtime (Chapter 43):
         boxrt/            --   Runtime stubs linked into the sandboxed library
         allocator/        --   Minimal thread-safe allocator
         relocator/        --   Static-PIE loader for lfi-bind libraries
-    software_defined_vehicle/ -- SDV platform (Part XVI, Chapters 65-66)
+    software_defined_vehicle/ -- SDV platform (covered in Chapter 62)
     netd/                 -- Network daemon
     vold/                 -- Volume daemon (disk encryption, mounting)
     update_engine/        -- OTA update engine
@@ -1571,9 +1571,9 @@ expanded with **`mmd`** (the Memory Management Daemon, which centralizes
 compaction and reclaim policy) and **`guardian`** (the `pmgd` Process Memory
 Guardian that triggers heap dumps on memory anomalies), both alongside the
 existing `lmkd`. Android 17 also added **`system/lfi/`**, the runtime support for
-Lightweight Fault Isolation (an in-process software sandbox; see Chapter 68), and
-**`system/software_defined_vehicle/`**, the new SDV platform that anchors Part XVI
-(Chapters 65-66).
+Lightweight Fault Isolation (an in-process software sandbox; see Chapter 43), and
+**`system/software_defined_vehicle/`**, the new SDV platform, covered in
+Chapter 62 (Device Form Factors).
 
 **Who cares about this directory:** System engineers, security researchers
 (sepolicy, lfi), boot engineers (init, fs_mgr), storage engineers (vold), network
@@ -1617,7 +1617,7 @@ hardware/
 Android 17 added **`hardware/sdv/`** (currently `hardware/sdv/interfaces/`), the
 HAL-interface side of the Software Defined Vehicle platform that pairs with
 `system/software_defined_vehicle/` and `device/google/sdv/`. SDV is covered in
-Part XVI (Chapters 65-66).
+Chapter 62 (Device Form Factors).
 
 **Who cares about this directory:** HAL implementors, SoC vendors, device
 bring-up engineers, driver developers.
@@ -1644,8 +1644,8 @@ device/
 
 Android 17 introduced **`device/google/sdv/`**, the set of product
 configurations (Cuttlefish-based `sdv_cf`, `arm64` variants, and the lighter
-`sdv_core_*` tiers) for the Software Defined Vehicle platform. See Part XVI
-(Chapters 65-66).
+`sdv_core_*` tiers) for the Software Defined Vehicle platform. See Chapter 62
+(Device Form Factors).
 
 A device configuration directory typically contains:
 
@@ -1888,7 +1888,7 @@ Isolation: the `lfi-verifier` (verifies that sandboxed machine code stays within
 its region), `lfi-bind` and `lfi-runtime` glue, the `disarm`/`fadec` ARM/x86
 decoders, and the `rlbox`/`rlbox-lfi` sandboxing wrappers. It pairs with the
 in-tree runtime support in `system/lfi/`; the full design is covered in
-Chapter 68.
+Chapter 43.
 
 **Who cares about this directory:** Anyone debugging a third-party library
 behavior, updating an external dependency, or auditing licenses.
@@ -2405,7 +2405,7 @@ how the pieces fit together. This is the focus of the early chapters:
 
 Once you understand the architecture, you can explore the live system:
 
-- **Chapter 56**: Debugging tools -- logcat, dumpsys, Perfetto, LLDB, Android
+- **Chapter 58**: Debugging tools -- logcat, dumpsys, Perfetto, LLDB, Android
   Studio platform debugging
 - **Chapter 18**: ART internals -- garbage collection, JIT/AOT, class loading
 - **Chapter 13**: Graphics pipeline -- SurfaceFlinger, HWUI, BufferQueue, HWC
@@ -2416,16 +2416,16 @@ Once you understand the architecture, you can explore the live system:
 With understanding comes the ability to modify:
 
 - **Chapter 10**: HAL development -- implementing a hardware abstraction layer
-- **Chapters 47-49**: System app development -- customizing SystemUI, Launcher,
+- **Chapters 48-49**: System app development -- customizing SystemUI, Launcher,
   Settings
-- **Chapter 52**: Mainline modules -- developing updatable components
+- **Chapter 54**: Mainline modules -- developing updatable components
 
 ### 1.7.6 Phase 5: Advanced Topics and Mastery
 
-- **Chapter 56**: Performance optimization -- profiling, tracing, benchmarking
+- **Chapter 58**: Performance optimization -- profiling, tracing, benchmarking
 - **Chapter 40**: Security architecture -- SELinux, Keystore, verified boot,
   sandboxing
-- **Chapter 55**: Testing -- CTS, VTS, writing platform tests
+- **Chapter 57**: Testing -- CTS, VTS, writing platform tests
 
 ### 1.7.7 Tracing an API Call End-to-End
 
@@ -2753,7 +2753,7 @@ As of Android 17, Mainline modules include:
 | **Telephony** | APEX | Telephony framework |
 | **Permission Controller** | APK | Permission UI |
 | **Neural Networks** | APEX | NNAPI runtime |
-| **NPU Manager** | APEX | NPU/AI-accelerator management (new in 17, Chapter 67) |
+| **NPU Manager** | APEX | NPU/AI-accelerator management (new in 17, Chapter 53) |
 | **StatsD** | APEX | Metrics collection |
 | **IPsec** | APEX | VPN |
 | **SDK Extensions** | APEX | API extension mechanism |
