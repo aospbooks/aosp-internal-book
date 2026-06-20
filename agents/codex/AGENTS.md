@@ -13,8 +13,8 @@ AOSP Part I — Getting Started. Use when reasoning about the AOSP source
 tree at a high level, the repo/manifest workflow, the Soong (Android.bp)
 and Bazel/Kleaf build systems, lunch targets, the m build entry point, or
 aconfig feature flags (build-time vs. runtime, release configs, ramp/cleanup
-workflows). Chapters 0–3 (Frontmatter, Introduction, Source Code & Build
-System, Feature Flags).
+workflows). Chapters 1–3 (Introduction, Source Code & Build System,
+Feature Flags).
 
 ### Part II — Kernel & Boot (`parts/kernel-and-boot.md`)
 

@@ -6,9 +6,10 @@ The book is organized bottom-up: build system → kernel/boot → native foundat
 
 When using this site as background for AOSP work, prefer fetching the chapter that matches the subsystem in question. The chapter URL pattern is `https://aospbooks.github.io/aosp-internal-book/<NN-slug>/` (one page per chapter). Chapters are self-contained — section numbers like `9.4.2` are stable and safe to cite.
 
+- [Frontmatter](https://aospbooks.github.io/aosp-internal-book/00-frontmatter/): preface, target audience, conventions, how to read the book, AOSP version targeted (`main` as of early 2026)
+
 ## Part I: Getting Started
 
-- [Frontmatter](https://aospbooks.github.io/aosp-internal-book/00-frontmatter/): preface, target audience, conventions, how to read the book, AOSP version targeted (`main` as of early 2026)
 - [Chapter 1: Introduction](https://aospbooks.github.io/aosp-internal-book/01-introduction/): what AOSP is, the Android stack at a glance, scope of the book, layer-by-layer tour of the source tree
 - [Chapter 2: Source Code & Build System](https://aospbooks.github.io/aosp-internal-book/02-source-and-build/): repo/manifest, Soong (`Android.bp`), Bazel/Bazel-from-Soong, Kleaf for the kernel, lunch targets, the `m` workflow
 - [Chapter 3: Feature Flags (aconfig)](https://aospbooks.github.io/aosp-internal-book/03-feature-flags/): aconfig declarations, generated Java/C++ accessors, build-time vs. runtime flags, release configs, ramp-and-cleanup workflow

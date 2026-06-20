@@ -45,7 +45,7 @@ Copy the `.github/` tree into your project root:
 
 | Skill | Part | Title | Chapters |
 |-------|------|-------|----------|
-| `aosp-getting-started` | I | Getting Started | 0–3 |
+| `aosp-getting-started` | I | Getting Started | 1–3 |
 | `aosp-kernel-and-boot` | II | Kernel & Boot | 4–6 |
 | `aosp-native-foundation` | III | Native Foundation | 7–11 |
 | `aosp-native-services-and-media` | IV | Native Services & Media | 12–17 |
