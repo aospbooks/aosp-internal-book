@@ -12747,6 +12747,8 @@ graph TB
     Infra --> DockGroup
 ```
 
+Many of the apps the launcher lists are "templated" car apps written against the Android-for-Cars App Library, which run inside a separate host process rather than drawing their own UI. Android 17 bundles that host as a prebuilt: `packages/apps/Car/TemplatesPrebuilt/Android.bp` declares an `android_app_import` named `CarAppHost` for `CarAppHost.apk`, installed platform-signed (`certificate: "platform"`) and `privileged`. There is no source for the host in AOSP; the project ships only the build glue that imports the binary APK, so an AAOS build pulls in the host without building it.
+
 ### 62.1.14 External View System (EVS)
 
 The Exterior View System provides camera-based features like rearview, surround view, and

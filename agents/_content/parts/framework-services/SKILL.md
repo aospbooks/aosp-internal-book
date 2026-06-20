@@ -17,7 +17,7 @@ description: |
   SharedPreferences). Chapters 26–34.
 metadata:
   author: 'utzcoz'
-  last-updated: '2026-06-20'
+  last-updated: '2026-06-21'
 ---
 
 # AOSP Part VII — Framework Services

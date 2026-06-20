@@ -10,7 +10,7 @@ description: |
   RTL support, Unicode in AOSP). Chapters 44–46.
 metadata:
   author: 'utzcoz'
-  last-updated: '2026-06-20'
+  last-updated: '2026-06-21'
 ---
 
 # AOSP Part X — UI Framework

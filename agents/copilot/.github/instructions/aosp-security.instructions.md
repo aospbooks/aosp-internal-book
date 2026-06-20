@@ -4460,7 +4460,91 @@ is purely advisory: reads and writes must still work without a preceding
 power after an idle timeout, recommended at five seconds), and the method may
 be a no-op where it does not apply.
 
-## 40.15  Try It
+## 40.15  Keystore Certificate Post-Processor
+
+Section 40.4.7 describes the attestation certificate chain Keystore returns for
+a hardware-backed key, and section 40.13 covers `external/keyattestation`, the
+library a relying party uses to verify that chain.  Android 17 adds a hook on
+the *issuing* side: after Keystore has assembled the chain, it can hand the
+chain to a registered service that returns a replacement chain.  The platform
+piece is an AIDL contract plus a service lookup; the actual post-processing is
+left to whatever service is registered under a fixed name.
+
+The contract is `IKeystoreCertificatePostProcessor`, in package
+`android.security.postprocessor`
+(`system/security/keystore2/aidl/android/security/postprocessor/IKeystoreCertificatePostProcessor.aidl`).
+It has one method, `processKeystoreCertificates(in CertificateChain)`, which
+takes a `CertificateChain` (a `leafCertificate` plus a `remainingChain` of the
+concatenated DER-encoded intermediates and root) and returns a replacement
+`CertificateChain`.  An implementing service derives from the generated
+`BnKeystoreCertificatePostProcessor`.
+
+Keystore actually invokes this hook, but only on a narrow path and only when a
+runtime flag is set.  The call lives in
+`system/security/keystore2/src/security_level.rs`, in the branch that handles a
+key attested with an RKP-provisioned attestation key
+(`AttestationKeyInfo::RkpdProvisioned`).  That branch checks the system property
+`remote_provisioning.use_cert_processor` (default `false`); when it is set, it
+calls `process_certificate_chain` from the `postprocessor_client` helper crate
+(`system/security/keystore2/postprocessor_client/src/lib.rs`) instead of just
+appending the RKP chain to the result.  Keystore does not bind a post-processor
+at startup or for the common attestation paths; it looks one up by name only at
+this point and only behind the flag.
+
+The helper crate is where the lookup happens.  `process_certificate_chain`
+packs the leaf and remaining certificates into a `CertificateChain`, then calls
+`binder::wait_for_interface("rkp_cert_processor.service")` to find the
+registered post-processor and invokes `processKeystoreCertificates` on it.  The
+service name is hard-coded, the lookup runs on a worker thread with a 5-second
+timeout, and the result is fail-open: on success the returned chain replaces the
+original, and on any error (timeout, missing service, or a service-specific
+error) the helper logs a warning and falls back to the original Keystore chain.
+A timeout latches a process-wide flag so Keystore stops retrying the lookup
+until the next reboot.  So the hook is a registered-service contract that
+Keystore consults by name, not a chain of post-processors or a callback the
+caller supplies.
+
+```mermaid
+flowchart TD
+    GEN["generate_key<br/>(RkpdProvisioned branch,<br/>security_level.rs)"] -->|"remote_provisioning.use_cert_processor set?"| CHECK{"flag on?"}
+    CHECK -->|"no"| APPEND["append RKP chain to result<br/>(original behavior)"]
+    CHECK -->|"yes"| HELPER["process_certificate_chain<br/>(postprocessor_client)"]
+    HELPER -->|"wait_for_interface<br/>(rkp_cert_processor.service)"| SVC["registered post-processor<br/>(BnKeystoreCertificatePostProcessor)"]
+    SVC -->|"processKeystoreCertificates<br/>(CertificateChain)"| HELPER
+    HELPER -->|"success: replacement chain"| RESULT["result.certificateChain"]
+    HELPER -->|"timeout / error: fall back"| RESULT
+```
+
+### 40.15.1  DroidfoodAttestationFixer: A Flag-Gated Reference Consumer
+
+AOSP ships one consumer of this hook, `packages/services/DroidfoodAttestationFixer`,
+a Rust service that builds the binary `rkp_cert_processor`.  It is meant for
+dogfood and test devices whose factory-provisioned attestation chain needs to be
+fixed up, not for production.  `main.rs` registers the implementation under the
+expected name with `binder::register_lazy_service("rkp_cert_processor.service", ...)`,
+so it starts on demand when Keystore looks the service up.  `lib.rs` implements
+`processKeystoreCertificates` by base64-encoding the existing leaf and chain,
+POSTing them to a server over a small libcurl-backed C++ client (`src/curl`),
+and returning the server's replacement chain; on a decode or server error it
+returns a service-specific error, which leaves Keystore on the original chain.
+
+The build wires it as a `system_ext` component (`Android.bp`): the
+`rust_binary` is `system_ext_specific`, and its init script
+`droidfoodattestation.rc` installs a service that runs `/system_ext/bin/rkp_cert_processor`,
+declares `interface aidl rkp_cert_processor.service`, and is `oneshot` and
+`disabled` (started lazily by the service manager rather than at boot).  The
+whole package is gated by an aconfig flag,
+`android.security.postprocessor.droidfood_attestation_bringup`
+(`droidfood_attestation_flags.aconfig`, namespace `hardware_backed_security`,
+bug 361877215), declared `is_fixed_read_only` so it is fixed at build time and
+container `system_ext`.  The flag controls the package rollout; the
+`remote_provisioning.use_cert_processor` property controls whether Keystore
+attempts the lookup at all.  DroidfoodAttestationFixer is one reference
+implementation of the post-processor contract; the reusable platform addition is
+the `IKeystoreCertificatePostProcessor` AIDL and the named service lookup in
+Keystore, which any vendor service could implement instead.
+
+## 40.16  Try It
 
 This section provides hands-on exercises for exploring Android's security
 subsystems.
