@@ -7809,9 +7809,170 @@ data carried as zstd, with no change to how an update is requested or monitored.
 
 ---
 
-## 53.27 Try It: Hands-On OTA Experiments
+## 53.27 Dynamic System Updates (DSU) and gsid
 
-### 53.27.1 Inspecting a Payload
+Every mechanism described so far rewrites the *installed* system: an A/B OTA
+flips slots, a Virtual A/B OTA writes COW snapshots over the real partitions.
+**Dynamic System Updates (DSU)** is the opposite trade. It boots a downloaded
+Generic System Image (GSI) *without touching the installed system at all*. The
+real `system`/`product` partitions stay exactly as they were; the GSI and a
+fresh empty `userdata` live in image files on `/data`, are exposed as
+device-mapper block devices, and the device boots into them for one or more
+boots. Disable or wipe the DSU and the next reboot returns to the original,
+untouched OS. This makes DSU the tool of choice for trying a new platform build,
+running CTS against a GSI, or letting an app developer validate against a clean
+image, all without flashing and all reversible.
+
+DSU reuses the same dynamic-partition and image-mapping machinery this chapter
+already covered for Virtual A/B (`libfiemap`'s `ImageManager`, `liblp` metadata,
+device-mapper). The piece unique to DSU is a small system daemon, **`gsid`**
+(roughly 3.8K lines of C++ in `system/gsid/`), that stages the image into those
+dynamic image files and arms the one-shot boot.
+
+### 53.27.1 The gsid daemon and IGsiService
+
+`gsid` runs as the `gsiservice` AIDL service. Its `.rc` file declares it
+`oneshot` and `disabled`, so it is started on demand (by binder) rather than at
+every boot, running as root with the `system`/`media_rw` groups:
+
+```
+Source: system/gsid/gsid.rc
+        system/gsid/daemon.cpp (main: Register / run-startup-tasks / verify-image-maps)
+```
+
+The daemon exposes `IGsiService`, the binder interface every DSU client talks
+to. Its methods map directly onto the install lifecycle:
+
+| `IGsiService` method | Purpose |
+|----------------------|---------|
+| `openInstall(installDir)` | Begin a DSU installation under `/data/gsi` (or an SD card under `/mnt/media_rw`) |
+| `createPartition(name, size, readOnly)` | Allocate a dynamic image (e.g. `system`, `userdata`) |
+| `commitGsiChunkFromStream` / `commitGsiChunkFromAshmem` | Stream the image bytes into the partition |
+| `closePartition` / `closeInstall` | Finalize one partition / the whole installation |
+| `enableGsi(oneShot, dsuSlot)` | Mark the staged DSU bootable (optionally one-shot) |
+| `getInstallProgress` | Poll a `GsiProgress` (`STATUS_WORKING` until `STATUS_COMPLETE`) |
+| `isGsiInstalled` / `isGsiRunning` / `isGsiEnabled` | Query state |
+| `disableGsi` / `removeGsi` | Disable (keep images) or wipe (reclaim space) |
+| `getActiveDsuSlot` / `getInstalledDsuSlots` | Slot discovery (e.g. `dsu`, or a `.lock` locked DSU) |
+
+```
+Source: system/gsid/aidl/android/gsi/IGsiService.aidl
+        system/gsid/gsi_service.h (GsiService : public BnGsiService)
+        system/gsid/gsi_service.cpp (EnableGsi, SetBootMode, RunStartupTasks)
+```
+
+The framework-facing entry point is `android.os.image.DynamicSystemManager`, and
+the command-line entry point is `gsi_tool` (`system/gsid/gsi_tool.cpp`), whose
+subcommands (`install`, `enable`, `disable`, `wipe`, `wipe-data`, `status`,
+`cancel`) are thin wrappers over the same binder calls.
+
+### 53.27.2 Staging into dynamic partitions
+
+`gsi_tool install` (or `DynamicSystemInstallationService` on a real download)
+drives a fixed sequence of `IGsiService` calls. For the default `system`
+partition it first creates a writable `userdata` image, then a read-only
+`system` image, then streams the GSI bytes into it:
+
+```
+Source: system/gsid/gsi_tool.cpp (Install: openInstall -> createPartition("userdata")
+        -> createPartition("system") -> commitGsiChunkFromStream -> closeInstall -> enableGsi)
+```
+
+Behind `createPartition`, `gsid` uses a `PartitionInstaller`
+(`system/gsid/partition_installer.h`) backed by `libfiemap`'s `ImageManager`.
+The image data lives under `/data/gsi/dsu/` (default folder
+`kDefaultDsuImageFolder = "/data/gsi/dsu/"`) while the `liblp` partition metadata
+and DSU bookkeeping live under `/metadata/gsi/dsu/` (`DSU_METADATA_PREFIX`). When
+the DSU later boots, these images are mapped as device-mapper block devices,
+which is exactly the dynamic-partition path Virtual A/B uses, so the kernel sees
+ordinary block devices for `system` and `userdata`.
+
+```
+Source: system/gsid/file_paths.h (kDefaultDsuImageFolder, kDsuInstallStatusFile, kDsuOneShotBootFile)
+        system/gsid/partition_installer.h (PartitionInstaller, libfiemap ImageManager)
+        system/gsid/include/libgsi/libgsi.h (DSU_METADATA_PREFIX "/metadata/gsi/dsu/")
+```
+
+### 53.27.3 Arming the one-shot boot
+
+`enableGsi(oneShot, dsuSlot)` is what actually makes the staged image bootable.
+`GsiService::EnableGsi` writes three pieces of state under `/metadata/gsi/dsu/`:
+
+- the active slot name into `kDsuActiveFile` (`active`),
+- the boot-attempt counter via `ResetBootAttemptCounter` into the install-status
+  file (`kDsuInstallStatusFile`, holding an int counter, or `ok` / `disabled` /
+  `wipe`),
+- and, when `oneShot` is true, a marker file `kDsuOneShotBootFile`
+  (`one_shot_boot`) via `SetBootMode`.
+
+```
+Source: system/gsid/gsi_service.cpp (EnableGsi line 1017, SetBootMode line 558,
+        ResetBootAttemptCounter line 549)
+        system/gsid/libgsi.cpp (CanBootIntoGsi, MarkSystemAsGsi, DisableGsi, UninstallGsi)
+```
+
+The one-shot semantics live in `libgsi.cpp::CanBootIntoGsi`, called early in
+boot. It allows at most `kMaxBootAttempts` (1) tries; if the one-shot marker is
+present it pre-writes `disabled` into the status file so that *this* boot enters
+the GSI but the *next* reboot falls back to the installed system automatically.
+`gsid run-startup-tasks` (the `exec_background` line in `gsid.rc`, running
+`RunStartupTasks`) then marks a successful GSI boot as `ok`, or honors a pending
+`wipe` request by reclaiming the images. The fallback is deliberately
+fail-safe: a GSI that fails to boot once is abandoned, so a bad image can never
+brick the device.
+
+This install-then-arm-then-boot flow ties the gsid pieces together:
+
+```mermaid
+flowchart TD
+    subgraph Stage["Stage (gsid + IGsiService)"]
+        OPEN["openInstall(/data/gsi)"]
+        CREATE["createPartition(system, userdata)<br/>via PartitionInstaller + ImageManager"]
+        COMMIT["commitGsiChunk*: stream GSI bytes<br/>into /data/gsi/dsu image files"]
+        CLOSE["closeInstall: finalize liblp metadata<br/>in /metadata/gsi/dsu"]
+        ENABLE["enableGsi(oneShot, dsuSlot)<br/>EnableGsi: write active + status + one_shot_boot"]
+    end
+    REBOOT["Reboot"]
+    subgraph Boot["First-stage boot"]
+        CHECK["libgsi CanBootIntoGsi():<br/>one_shot present and attempts under max?"]
+        MAP["Map DSU images as dm block devices<br/>(FirstStageMountAndroid, ch4)"]
+        GSIRUN["Booted into GSI<br/>(installed system untouched)"]
+        ORIG["Boot installed system"]
+    end
+    OPEN --> CREATE --> COMMIT --> CLOSE --> ENABLE --> REBOOT --> CHECK
+    CHECK -->|yes| MAP --> GSIRUN
+    CHECK -->|no| ORIG
+    GSIRUN -.->|"one-shot: next reboot"| ORIG
+```
+
+### 53.27.4 Where DSU surfaces elsewhere in the book
+
+DSU is wired into two subsystems covered in other chapters:
+
+- **Developer options (Chapter 49).** The Settings developer-options screen
+  exposes a `SelectDSUPreferenceController` (`49-settings-app.md`, section on
+  developer-option preference controllers) that lets a developer pick and load a
+  DSU image. This is the GUI front end to the same `IGsiService` calls
+  `gsi_tool` makes.
+- **First-stage mount (Chapter 4).** During early boot,
+  `FirstStageMountAndroid` (`system/core/init/first_stage_mount_android.cpp`) is
+  the code that consults `libgsi` (`CanBootIntoGsi`, `GetActiveDsu`, `MarkSystemAsGsi`) and maps the
+  DSU image files as the `system`/`userdata` device-mapper devices, then exports
+  the `ro.gsid.image_running` / DSU-slot properties (`04-boot-and-init.md`). DSU
+  reuses the same first-stage logical-partition mount path that ordinary dynamic
+  partitions and Virtual A/B rely on.
+
+In short, `gsid` is a focused staging-and-arming daemon: it borrows OTA's
+dynamic-partition and image-mapping infrastructure to place a downloaded system
+image into `/data`, writes a few small marker files under `/metadata/gsi/dsu`,
+and lets first-stage init boot it for a controlled, reversible trial of a whole
+new system image.
+
+---
+
+## 53.28 Try It: Hands-On OTA Experiments
+
+### 53.28.1 Inspecting a Payload
 
 ```bash
 # Build the OTA tools
@@ -7832,7 +7993,7 @@ python3 system/update_engine/scripts/payload_info.py payload.bin
 #     - Data blob size
 ```
 
-### 53.27.2 Generating a Full OTA
+### 53.28.2 Generating a Full OTA
 
 ```bash
 # After building an image
@@ -7852,7 +8013,7 @@ unzip -l full_ota.zip
 # care_map.pb
 ```
 
-### 53.27.3 Generating an Incremental OTA
+### 53.28.3 Generating an Incremental OTA
 
 ```bash
 # Build source version
@@ -7869,7 +8030,7 @@ python3 build/make/tools/releasetools/ota_from_target_files.py \
     incremental_ota.zip
 ```
 
-### 53.27.4 Applying an OTA via ADB
+### 53.28.4 Applying an OTA via ADB
 
 ```bash
 # On the host, push the OTA package
@@ -7887,7 +8048,7 @@ adb reboot sideload
 adb sideload full_ota.zip
 ```
 
-### 53.27.5 Monitoring Update Progress
+### 53.28.5 Monitoring Update Progress
 
 ```bash
 # Watch update_engine logs
@@ -7906,7 +8067,7 @@ adb shell bootctl is-slot-marked-successful 0
 adb shell bootctl is-slot-marked-successful 1
 ```
 
-### 53.27.6 Observing Virtual A/B Merge
+### 53.28.6 Observing Virtual A/B Merge
 
 ```bash
 # After rebooting into new slot, watch the merge
@@ -7919,7 +8080,7 @@ adb shell snapshotctl dump
 adb shell snapshotctl map-snapshots
 ```
 
-### 53.27.7 Simulating an Update on Cuttlefish
+### 53.28.7 Simulating an Update on Cuttlefish
 
 ```bash
 # Launch Cuttlefish
@@ -7933,7 +8094,7 @@ launch_cvd
 # making it ideal for OTA testing.
 ```
 
-### 53.27.8 Examining Recovery Mode
+### 53.28.8 Examining Recovery Mode
 
 ```bash
 # Boot into recovery
@@ -7949,7 +8110,7 @@ adb pull /cache/recovery/last_log
 adb pull /cache/recovery/last_kmsg
 ```
 
-### 53.27.9 Building a Custom OTA with VABC Options
+### 53.28.9 Building a Custom OTA with VABC Options
 
 ```bash
 # Generate OTA with specific VABC options
@@ -7965,7 +8126,7 @@ python3 build/make/tools/releasetools/ota_from_target_files.py \
     optimized_ota.zip
 ```
 
-### 53.27.10 Payload Verification
+### 53.28.10 Payload Verification
 
 ```bash
 # Verify a payload's integrity
@@ -7980,7 +8141,7 @@ brillo_update_payload properties \
     --properties_file -
 ```
 
-### 53.27.11 Checking the Snapshot Backend (Android 17)
+### 53.28.11 Checking the Snapshot Backend (Android 17)
 
 ```bash
 # Is the device configured for UBLK snapshots?
@@ -8001,7 +8162,7 @@ adb shell cat /metadata/ota/snapuserd_mode    # "ublk" or "dm-user"
 
 ---
 
-## 53.28 Summary
+## 53.29 Summary
 
 ```mermaid
 mindmap
@@ -14407,7 +14568,34 @@ cc_test {
 }
 ```
 
-### 55.5.4  cc_test_host
+### 55.5.4  Process-Isolated GoogleTest (gtest_extras)
+
+The `isolated: true` property seen in 55.5.3 swaps the default
+`libgtest_main` for `libgtest_isolated_main`, which is the static-library
+entry point of the process-isolated gtest runner in
+`system/testing/gtest_extras/` (~2.3K LOC of runner code, about 4.8K
+including its own tests). Instead of running every test
+method in one address space, the isolated runner (`gtest_isolated/`) forks a
+fresh child process per test (`fork()` in
+`system/testing/gtest_extras/gtest_isolated/Isolate.cpp`) and waits on it,
+running several at a time according to a configurable job count
+(`gtest_isolated/Options.h`).
+
+Process isolation buys two things the stock single-process runner cannot. A
+test that crashes or corrupts global state can no longer take down the rest of
+the binary: the failure is confined to its own child, the parent records the
+terminating signal (`Isolate.cpp` reports `terminated by signal:` via
+`WIFSIGNALED`), and the remaining tests still run. And each child is held to a
+per-test wall-clock deadline (`deadline_threshold_ms` in `Options.h`); a hung
+test is killed and reported as a timeout rather than wedging the whole run.
+This is why low-level suites that deliberately exercise faulting and
+signal-handling paths -- bionic, ART's native-bridge tests, and the
+jemalloc/scudo allocator tests -- opt into `isolated: true` and link
+`libgtest_isolated`. The runner is otherwise a drop-in: the same
+GoogleTest-authored `cc_test` source from 55.5.3 builds against either entry
+point.
+
+### 55.5.5  cc_test_host
 
 A convenience variant of `cc_test` that targets only the host:
 
@@ -14418,7 +14606,7 @@ func TestHostFactory() android.Module {
 }
 ```
 
-### 55.5.5  rust_test
+### 55.5.6  rust_test
 
 Defined in `build/soong/rust/test.go`.  Properties mirror `cc_test`:
 
@@ -14455,7 +14643,7 @@ rust_test {
 }
 ```
 
-### 55.5.6  python_test_host
+### 55.5.7  python_test_host
 
 Defined in `build/soong/python/test.go`:
 
@@ -14483,7 +14671,7 @@ type TestOptions struct {
 }
 ```
 
-### 55.5.7  java_test_host
+### 55.5.8  java_test_host
 
 A Java test that runs on the host JVM.  Commonly used for host-side CTS tests
 that use `adb` to interact with the device programmatically.
@@ -14501,7 +14689,7 @@ java_test_host {
 }
 ```
 
-### 55.5.8  Auto-Generated Test Configuration
+### 55.5.9  Auto-Generated Test Configuration
 
 The build system's `tradefed` package (`build/soong/tradefed/autogen.go`)
 auto-generates TradeFed XML configs for test modules.  The key function is
@@ -14559,7 +14747,7 @@ var autogenTestConfig = pctx.StaticRule("autogenTestConfig", blueprint.RuleParam
 })
 ```
 
-### 55.5.9  Module Type Summary
+### 55.5.10  Module Type Summary
 
 ```mermaid
 graph TB
@@ -14598,7 +14786,7 @@ graph TB
     PT --> TF
 ```
 
-### 55.5.10  Standalone Tests
+### 55.5.11  Standalone Tests
 
 The `standalone_test` property for `cc_test` enables self-contained test
 packages that bundle their shared library dependencies:
@@ -14649,7 +14837,7 @@ if Bool(options.StandaloneTest) {
 }
 ```
 
-### 55.5.11  Benchmark Modules
+### 55.5.12  Benchmark Modules
 
 The `cc_benchmark` module type builds performance benchmark binaries using
 Google Benchmark:
@@ -14692,7 +14880,7 @@ cc_benchmark {
 }
 ```
 
-### 55.5.12  Test Config Templates
+### 55.5.13  Test Config Templates
 
 The build system uses template XML files for auto-generating TradeFed configs.
 Key templates referenced in the code:
@@ -14714,7 +14902,7 @@ Templates contain placeholders that get substituted:
 - `{OUTPUT_FILENAME}` -- Output file name
 - `{TEST_INSTALL_BASE}` -- Installation base directory
 
-### 55.5.13  TestSuiteInfo Provider
+### 55.5.14  TestSuiteInfo Provider
 
 All test modules set the `TestSuiteInfoProvider` so that the build system and
 CI can discover test attributes:
@@ -23421,19 +23609,49 @@ this chapter's tools at a different altitude:
 
 ---
 
-## 56.21 Try It: Debug a Real Performance Issue
+## 56.21 dmesgd: Kernel-Log to DropBox Bridge
+
+`dmesgd` (`system/dmesgd/`) is a small native daemon (a few hundred lines of
+C++) that bridges the kernel ring buffer into the same crash-report pipeline as
+tombstones and ANRs.  On startup it runs `popen("dmesg", "r")` and feeds each
+line into a `DmesgParser` (`system/dmesgd/dmesg_parser.h`), which recognizes
+kernel `WARNING`/`ERROR` stanzas, strips sensitive data such as 64-bit
+addresses, and assembles a per-fault report with a title and a report type.
+When a report is ready, `dmesgd` posts it to `DropBoxManager`
+(`system/dmesgd/dmesgd.cpp` includes `<android/os/DropBoxManager.h>` and calls
+`addText()`) under a tag such as `SYSTEM_<type>_ERROR_REPORT`, which is exactly
+the tag space `dumpstate` scrapes when building a bugreport
+(section 56.8).  To avoid spamming duplicates across boots it remembers report
+titles in `/data/misc/dmesgd/sent_reports.txt` and caps the number of reports
+per run.  The kernel side of this path -- how messages reach the `dmesg` ring
+buffer and persist across reboots via `pstore` -- is covered in Chapter 5.
+
+## 56.22 liburingutils: io_uring Socket Helper
+
+`liburingutils` (`system/liburingutils/`) is a thin wrapper around the external
+`liburing` library that exposes a single helper class, `IOUringSocketHandler`
+(`system/liburingutils/include/IOUringSocketHandler/IOUringSocketHandler.h`),
+for receiving datagrams from a socket through io_uring's multishot `recvmsg`.
+This is the class `logd`'s `LogListener` holds in its `uring_listener_` member
+(section 56.2.5) to ingest log records at high throughput; the library is also
+packaged into the statsd APEX (`system/liburingutils/Android.bp`) for the same
+asynchronous, batched socket-receive pattern.
+
+---
+
+## 56.23 Try It: Debug a Real Performance Issue
 
 This section walks through a complete debugging workflow for a realistic
 performance problem: an application that exhibits jank (dropped frames)
 during list scrolling.
 
-### 56.21.1 Problem Statement
+### 56.23.1 Problem Statement
 
 A user reports that a RecyclerView-based application stutters when scrolling
 quickly.  The app displays a list of items with images and text.  The
 stutter is reproducible on a Pixel device.
 
-### 56.21.2 Step 1: Confirm the Problem with gfxinfo
+### 56.23.2 Step 1: Confirm the Problem with gfxinfo
 
 ```bash
 # Reset frame stats
@@ -23462,7 +23680,7 @@ HISTOGRAM:
 The 16.63% jank rate confirms the problem.  For smooth 60fps scrolling,
 frame rendering must complete within 16.67ms.
 
-### 56.21.3 Step 2: Capture a Perfetto System Trace
+### 56.23.3 Step 2: Capture a Perfetto System Trace
 
 ```bash
 # Create trace config
@@ -23515,7 +23733,7 @@ adb shell perfetto -c /data/local/tmp/scroll_trace.pbtxt \
 adb pull /data/misc/perfetto-traces/scroll_trace.perfetto-trace .
 ```
 
-### 56.21.4 Step 3: Analyze in Perfetto UI
+### 56.23.4 Step 3: Analyze in Perfetto UI
 
 Open the trace in `ui.perfetto.dev` or Perfetto embedded in Android Studio.
 
@@ -23545,7 +23763,7 @@ flowchart TD
     O -- "Complex layout" --> R["Simplify layout hierarchy"]
 ```
 
-### 56.21.5 Step 4: CPU Profile the Hot Path
+### 56.23.5 Step 4: CPU Profile the Hot Path
 
 The Perfetto trace shows that `onBindViewHolder` is taking 25ms on some
 frames.  Let us use simpleperf to understand why:
@@ -23577,7 +23795,7 @@ Overhead  Command     Shared Object       Symbol
 The CPU profile reveals that JPEG decompression (`jpeg_decompress()`) is
 happening synchronously on the main thread during view binding.
 
-### 56.21.6 Step 5: Check for Memory Issues
+### 56.23.6 Step 5: Check for Memory Issues
 
 The GC activity in the trace suggests memory pressure.  Let us profile
 allocations:
@@ -23626,7 +23844,7 @@ LIMIT 10;
 **Expected finding**: Large allocations from bitmap decoding during each
 scroll event.
 
-### 56.21.7 Step 6: Verify with dumpsys meminfo
+### 56.23.7 Step 6: Verify with dumpsys meminfo
 
 ```bash
 # Before scrolling
@@ -23654,7 +23872,7 @@ Total PSS:         35,678    48,321   +12,643 KB
 The significant growth in both Java and Native heap during scrolling
 confirms that images are being decoded and not properly cached.
 
-### 56.21.8 Step 7: Root Cause and Fix
+### 56.23.8 Step 7: Root Cause and Fix
 
 The debugging workflow reveals:
 
@@ -23682,7 +23900,7 @@ flowchart LR
     D --> E
 ```
 
-### 56.21.9 Step 8: Verify the Fix
+### 56.23.9 Step 8: Verify the Fix
 
 After implementing the fix, re-run the same measurements:
 
@@ -23710,7 +23928,7 @@ The Perfetto trace should show:
 - No GC pauses during scroll
 - Smooth Choreographer frame cadence
 
-### 56.21.10 Debugging Checklist
+### 56.23.10 Debugging Checklist
 
 Use this checklist when debugging performance issues:
 

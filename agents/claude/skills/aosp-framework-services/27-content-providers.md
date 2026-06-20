@@ -3027,12 +3027,70 @@ themselves are ephemeral, and the mechanism is restricted to the `Secure` and
 
 ---
 
-## 27.11 Try It Yourself
+## 27.11 CallLogProvider: A Concrete Provider Example
+
+The system call-log database lives behind a content provider in
+`packages/providers/CallLogProvider/`. It is a useful concrete example because
+it pairs a real-world `ContentProvider` (the call-log store, exposed through the
+`android.provider.CallLog` URIs) with a `BackupAgent` that ships in the same
+package. The backup half is implemented by
+`packages/providers/CallLogProvider/src/com/android/calllogbackup/CallLogBackupAgent.java`,
+which extends `android.app.backup.BackupAgent` and reads and writes call rows
+through the same provider during backup and restore.
+
+Three details are worth calling out:
+
+- **Deduplication on restore.** `CallLogBackupAgent` does not blindly re-insert
+  every backed-up row. `removeDuplicateCalls()` matches incoming rows against
+  the existing log (keyed on date and number) so a restore onto a device that
+  already has overlapping history does not produce duplicates. The newer batch
+  path is gated by the `batch_deduplication_enabled` flag declared in
+  `packages/providers/CallLogProvider/calllogbackup_flags.aconfig`.
+- **Phone-account handling.** Call rows carry the originating
+  `PhoneAccountHandle` (`PHONE_ACCOUNT_COMPONENT_NAME`, `PHONE_ACCOUNT_ID`,
+  `PHONE_ACCOUNT_ADDRESS`). On backup the agent can mark a telephony account's
+  ID as migration-pending (`IS_PHONE_ACCOUNT_MIGRATION_PENDING`) so a restore
+  onto a device with a different SIM can re-map the account by ICCID rather than
+  by a stale component name.
+- **Change-driven backup.** `CallLogChangeReceiver` listens for the internal
+  `CALL_LOG_CHANGE` broadcast and calls `BackupManager.dataChanged()`, so edits
+  to the log schedule a fresh backup pass rather than relying solely on periodic
+  backups.
+
+This chapter covers the provider mechanics; for *who* writes call-log entries in
+the first place (the in-call service and the telephony stack), see Chapter 36,
+Telephony and RIL.
+
+## 27.12 ContactsKeysProvider: End-to-End-Encryption Contact Keys
+
+A newer provider, `packages/providers/ContactsKeysProvider/`, backs the
+`android.provider.E2eeContactKeysManager` API and stores per-contact
+end-to-end-encryption keys that messaging apps use to verify the identity of the
+contacts they talk to. The provider class is
+`packages/providers/ContactsKeysProvider/src/com/android/providers/contactkeys/E2eeContactKeysProvider.java`;
+it declares the authority `com.android.contactkeys.contactkeysprovider` and is
+annotated `@FlaggedApi`, so it is part of a flag-gated API surface
+(`E2eeContactKeysManager` lives at
+`frameworks/base/core/java/android/provider/E2eeContactKeysManager.java`).
+
+It is a good counterpoint to the CRUD-style providers earlier in this chapter
+because it deliberately does *not* use the table model. The `query()`,
+`insert()`, `update()`, `delete()`, and `getType()` overrides are no-ops;
+everything goes through `call()`, which dispatches by method name to operations
+like update-or-insert a contact key, fetch a contact's keys, and manage the
+device's own self-keys. Access is gated by the standard `READ_CONTACTS` and
+`WRITE_CONTACTS` permissions declared on the `<provider>` in its manifest, plus
+finer-grained checks in
+`packages/providers/ContactsKeysProvider/src/com/android/providers/contactkeys/util/E2eeContactKeysPermissions.java`.
+For the threat model behind end-to-end-encryption key verification, see
+Chapter 40, Security.
+
+## 27.13 Try It Yourself
 
 This section provides hands-on exercises for exploring content providers
 on an AOSP build or emulator.
 
-### 27.11.1 Querying MediaStore from the Shell
+### 27.13.1 Querying MediaStore from the Shell
 
 Use `content` shell command to query MediaProvider:
 
@@ -3052,7 +3110,7 @@ adb shell content query --uri content://media/external/audio/media \
 adb shell content query --uri content://media/external/fs_id
 ```
 
-### 27.11.2 Reading and Writing Settings
+### 27.13.2 Reading and Writing Settings
 
 ```bash
 # Read a system setting
@@ -3073,7 +3131,7 @@ adb shell settings list secure
 adb shell settings list global
 ```
 
-### 27.11.3 Querying Contacts
+### 27.13.3 Querying Contacts
 
 ```bash
 # List all contacts
@@ -3089,7 +3147,7 @@ adb shell content query --uri content://com.android.contacts/data \
     --where "mimetype='vnd.android.cursor.item/phone_v2'"
 ```
 
-### 27.11.4 Querying Calendar Events
+### 27.13.4 Querying Calendar Events
 
 ```bash
 # List all calendars
@@ -3101,7 +3159,7 @@ adb shell content query --uri content://com.android.calendar/events \
     --projection _id:title:dtstart:dtend:calendar_id
 ```
 
-### 27.11.5 Inserting and Deleting Content
+### 27.13.5 Inserting and Deleting Content
 
 ```bash
 # Insert a new contact (raw contact + data)
@@ -3119,7 +3177,7 @@ adb shell content insert --uri content://com.android.contacts/data \
 adb shell content delete --uri content://com.android.contacts/raw_contacts/1
 ```
 
-### 27.11.6 Observing Content Changes
+### 27.13.6 Observing Content Changes
 
 ```bash
 # Watch for changes to the media database
@@ -3134,7 +3192,7 @@ adb shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE \
 # The first terminal should show a notification
 ```
 
-### 27.11.7 Dumping Provider State
+### 27.13.7 Dumping Provider State
 
 ```bash
 # Dump MediaProvider state
@@ -3147,7 +3205,7 @@ adb shell dumpsys activity provider com.android.providers.settings/.SettingsProv
 adb shell dumpsys activity provider com.android.providers.contacts/.ContactsProvider2
 ```
 
-### 27.11.8 Examining the SAF
+### 27.13.8 Examining the SAF
 
 ```bash
 # List DocumentsProvider roots
@@ -3159,7 +3217,7 @@ adb shell content query \
     --uri content://com.android.externalstorage.documents/document/primary%3A/children
 ```
 
-### 27.11.9 Writing a Minimal ContentProvider
+### 27.13.9 Writing a Minimal ContentProvider
 
 Create a simple provider to understand the lifecycle:
 
@@ -3267,7 +3325,7 @@ Register in AndroidManifest.xml:
     android:grantUriPermissions="true" />
 ```
 
-### 27.11.10 Tracing Provider IPC
+### 27.13.10 Tracing Provider IPC
 
 Use system tracing to observe content provider Binder calls:
 
@@ -3291,7 +3349,7 @@ In the trace, you will see:
 3. The actual SQLite query (if the provider uses SQLite)
 4. The cursor serialization back across Binder
 
-### 27.11.11 Inspecting Provider Databases
+### 27.13.11 Inspecting Provider Databases
 
 On a userdebug/eng build, you can directly examine provider databases:
 
@@ -3309,7 +3367,7 @@ adb shell sqlite3 /data/data/com.android.providers.calendar/databases/calendar.d
     "SELECT name FROM sqlite_master WHERE type='table'"
 ```
 
-### 27.11.12 Performance Testing
+### 27.13.12 Performance Testing
 
 Measure content provider query latency:
 

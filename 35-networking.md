@@ -2460,7 +2460,7 @@ a network interface. It manages:
 - IPv6 SLAAC (Stateless Address Autoconfiguration)
 - Router discovery
 - Neighbor discovery
-- APF (Android Packet Filter) program installation
+- APF (Android Packet Filter) program installation (see §35.30)
 
 The IP provisioning flow:
 
@@ -4785,9 +4785,223 @@ service-discovery story.
 
 ---
 
-## 35.30 Try It: Network Debugging
+## 35.30 APF: The Android Packet Filter
 
-### 35.30.1 dumpsys connectivity
+Everything in this chapter so far assumes the application processor (AP) is
+awake to look at packets. That assumption is exactly what kills battery on an
+idle device. A phone sitting in a pocket on Wi-Fi still receives a steady drizzle
+of multicast and broadcast traffic that is not addressed to it: mDNS service
+announcements, SSDP/UPnP discovery, ARP probes from other hosts, IPv6 router
+advertisements, and assorted chatter from every other device on the network.
+Each frame the NIC receives normally wakes the AP out of its low-power sleep
+state just so the network stack can look at it, decide it is uninteresting, and
+drop it. On a busy home or office network that can be hundreds of needless
+wakeups per minute, and wakeups are one of the most expensive things a mobile
+SoC does for power.
+
+The Android Packet Filter (APF) exists to win back that power. APF pushes a
+small packet-filtering program *down into the Wi-Fi (or Ethernet) NIC firmware*,
+so the firmware itself can decide whether an incoming frame is worth waking the
+AP for. Uninteresting multicast and broadcast is dropped while the AP stays
+asleep; only frames the program decides to PASS bubble up and wake the host. The
+firmware-resident interpreter and bytecode definition live in the Google APF
+hardware project at `hardware/google/apf/`, and the framework-side compiler that
+generates the programs lives in the NetworkStack mainline module at
+`packages/modules/NetworkStack/src/android/net/apf/`.
+
+### 35.30.1 The Two Halves: Interpreter and Generator
+
+APF is split across two codebases that must agree on a bytecode contract:
+
+- **The interpreter** is a tiny, freestanding C virtual machine compiled into the
+  NIC firmware (or a vendor HAL shim). Its reference implementation is
+  `hardware/google/apf/next/apf_interpreter.c`, with the bytecode and machine
+  model defined in `hardware/google/apf/next/apf.h`. Versioned snapshots
+  (`v2/`, `v4/`, `v6/`, `v6.1/`) are kept so firmware can pin a known revision.
+- **The generator** is Java code in the NetworkStack module that *compiles* an
+  APF program at runtime from the current network state (the device's own
+  addresses, multicast filter setting, RA filters, mDNS offload rules, and so
+  on) and installs the resulting byte array into the firmware.
+
+The device never ships a fixed filter. The framework regenerates and reinstalls
+the program whenever the relevant state changes, because the program embeds the
+device's current IP addresses and other live values as literal bytes.
+
+```mermaid
+graph LR
+    subgraph AP["Application Processor (can sleep)"]
+        STATE["Network state<br/>(IPv4/IPv6 addrs,<br/>multicast filter,<br/>RA + mDNS rules)"]
+        GEN["ApfFilter +<br/>ApfV4/V6/V61Generator<br/>(NetworkStack)"]
+        STATE --> GEN
+        GEN -->|"installPacketFilter(byte[], ...)"| CTRL["IApfController"]
+    end
+
+    subgraph NIC["NIC firmware (AP asleep)"]
+        VM["apf_run() interpreter<br/>(apf_interpreter.c)"]
+    end
+
+    CTRL -->|"APF program bytes<br/>via Wi-Fi HAL"| VM
+    PKT["Incoming Wi-Fi/Ethernet frame"] --> VM
+    VM -->|"DROP: discard,<br/>AP stays asleep"| DROP["(dropped)"]
+    VM -->|"PASS: deliver,<br/>wake AP"| HOST["Host network stack"]
+    VM -.->|"transmit: build + send reply<br/>(ARP/ND/mDNS offload)"| PKT2["Reply frame"]
+```
+
+### 35.30.2 The Bytecode Machine Model
+
+The header comment in `hardware/google/apf/next/apf.h` defines the abstract
+machine precisely. An APF machine has:
+
+1. A read-only program of bytecode instructions.
+2. Two 32-bit registers, `R0` and `R1`.
+3. Sixteen 32-bit temporary memory slots, cleared between packets.
+4. A read-only copy of the packet.
+5. An optional read-write transmit buffer (APFv6+), used to build a reply.
+
+Each instruction begins with one byte whose top 5 bits are the opcode, next 2
+bits encode the length of an immediate (0, 1, 2, or 4 bytes), and bottom bit
+selects a register. The instruction set is deliberately small: packet loads
+(`ldb`/`ldh`/`ldw` and their indexed `*x` variants) pull 1/2/4 bytes from a
+packet offset into a register; arithmetic and bitwise ops (`add`, `and`, `or`,
+`sh`, ...) combine a register with an immediate or the other register; and
+conditional jumps (`jeq`, `jne`, `jgt`, `jlt`, `jset`, and the byte-sequence
+match `jbsmatch`) compare `R0` against a value and branch. These opcodes are
+enumerated as the `*_OPCODE` defines in `apf.h` (for example `LDB_OPCODE`,
+`JEQ_OPCODE`, `JBSMATCH_OPCODE`) and mirrored on the Java side by the
+`Opcodes` enum in
+`packages/modules/NetworkStack/src/android/net/apf/BaseApfGenerator.java`.
+
+The interpreter pre-fills several of the sixteen memory slots before each run so
+programs do not have to recompute common values. Per the slot table in `apf.h`
+(and the `memory_type` union near the top of `apf_interpreter.c`), slot 13 holds
+the computed IPv4 header length, slot 14 holds the total packet size, and slot 15
+holds the *filter age in seconds* since the program was installed, which lets a
+filter rate-limit a packet to one every N seconds or expire a stale rule.
+
+PASS and DROP are encoded as jumps off the end of the program, which keeps the
+core loop branchless and trivial. The header comment spells out the convention:
+jumping to one byte past the end of the program means "pass this packet to the
+AP", and jumping to two bytes past the end means "drop it". The interpreter
+turns that into return codes at the top of its dispatch loop in
+`apf_interpreter.c`: the `PASS`/`DROP`/`EXCEPTION` macros resolve to `1`/`0`/`2`,
+and `apf_run()` returns one of them. Any internal error or assertion failure is
+deliberately converted to `PASS` (`ASSERT_RETURN` returns `EXCEPTION`, and the
+runner rewrites `EXCEPTION` to `PASS` before returning) so a buggy or
+adversarial program can never cause a packet to be silently lost: when in doubt,
+wake the AP. APFv6 adds a transmit path: the program can `allocate` a tx buffer,
+copy bytes into it, and `transmit` it, which is how the firmware answers ARP
+requests, IPv6 neighbor solicitations, and offloaded mDNS queries on the AP's
+behalf without ever waking it. The host-side allocate/transmit callbacks are the
+`apf_allocate_tx_buffer()` / `apf_transmit_tx_buffer()` functions declared in
+`hardware/google/apf/next/apf_interpreter.h`.
+
+A matching disassembler (`hardware/google/apf/disassembler.c`) and the assembler
+library (`hardware/google/apf/apflib.c`) let developers read installed programs
+back as human-readable assembly, which is invaluable when debugging why a packet
+was or was not dropped.
+
+### 35.30.3 Capabilities Negotiation
+
+Before any program can be installed, the framework must learn what the firmware
+can actually run. That contract is the `ApfCapabilities` class at
+`packages/modules/Connectivity/framework/src/android/net/apf/ApfCapabilities.java`,
+which carries three fields:
+
+- `apfVersionSupported`: the APF instruction-set version the firmware
+  implements, where `0` means no APF support at all.
+- `maximumApfProgramSize`: how many bytes of NIC RAM are available for the
+  program plus its data region.
+- `apfPacketFormat`: the link-layer frame format the firmware hands to the
+  filter (one of the `ARPHRD_*` constants; the generator currently only emits
+  code for `ARPHRD_ETHER` Ethernet framing).
+
+`IpClient.maybeCreateApfFilter()` (around line 2936 of
+`packages/modules/NetworkStack/src/android/net/ip/IpClient.java`) reads these
+capabilities and decides whether and how to build a filter. The logic there is
+worth noting: if a device advertises APFv3+ but exposes fewer than 1024 bytes of
+RAM, IpClient downgrades the configured version to `2`, because the counter
+region APF reserves at the end of RAM would leave too little room for an actual
+program. It also refuses to build a filter for any `apfPacketFormat` other than
+`ARPHRD_ETHER`, since the generator's hard-coded packet offsets assume Ethernet
+framing. The fully populated `ApfConfiguration` (multicast filter state, RA
+minimum lifetime, ARP/ND/mDNS/IGMP/MLD offload flags, and RAM size) is then
+handed to `ApfFilter.maybeCreate()`.
+
+### 35.30.4 The Interpreter <-> Generator Version-Sync Contract
+
+Because the interpreter lives in firmware and the generator lives in an
+updatable mainline module, the two must never disagree about what a given opcode
+means. The contract is the version number returned by `apf_version()` in
+`apf_interpreter.c` (currently the date-stamped value `20250228`) on the firmware
+side, matched against version constants on the framework side in
+`BaseApfGenerator.java`:
+
+```java
+// This version number syncs up with APF_VERSION in hardware/google/apf/apf_interpreter.h
+public static final int APF_VERSION_2 = 2;
+public static final int APF_VERSION_3 = 3;
+public static final int APF_VERSION_4 = 4;
+public static final int APF_VERSION_6 = 6000;
+public static final int APF_VERSION_61 = 6100;
+```
+
+The generator picks the most capable program format the firmware can run.
+`ApfFilter.createApfGenerator()` (around line 4187 of `ApfFilter.java`)
+instantiates an `ApfV61Generator`, `ApfV6Generator`, or `ApfV4Generator`
+depending on the negotiated version, gated through `useApfV61Generator()` /
+`useApfV6Generator()`, which call each generator's `supportsVersion()` check (for
+example `ApfV6Generator.supportsVersion()` returns true only for
+`version >= APF_VERSION_6`). All three derive from `ApfV4GeneratorBase`, and
+`BaseApfGenerator.requireApfVersion()` throws `IllegalInstructionException` if
+generator code ever tries to emit an instruction the negotiated firmware version
+cannot execute. That compile-time guard is what keeps a newer NetworkStack from
+shipping an APFv6 opcode to firmware that only understands APFv4.
+
+### 35.30.5 Compiling and Installing a Program
+
+`ApfFilter.installNewProgram()` (around line 4302 of `ApfFilter.java`) is the
+heart of the compile-and-install loop. It runs whenever relevant state changes
+(a new IP address, a toggled multicast filter, a fresh router advertisement,
+updated mDNS offload rules). The flow is:
+
+1. Create a generator for the negotiated version (`createApfGenerator()`).
+2. Emit a prologue, then progressively fit in as much filtering as the program
+   budget allows. The code is explicit about prioritization: it first reserves
+   room for mDNS offload rules (so the device can answer service queries from
+   firmware rather than waking for them), then RA filters, sizing everything
+   against `mMaximumApfProgramSize`. If a piece does not fit, it is dropped from
+   this program rather than overflowing NIC RAM.
+3. Call `gen.generate()` to assemble the instruction list into the final
+   `byte[]` program.
+4. Hand the bytes to `installPacketFilter()`, which calls through the
+   `IApfController` interface to the Wi-Fi HAL, which writes the program into NIC
+   RAM. IpClient wires up two controller implementations (`mIpClientApfController`
+   and `mNonHalApfController` around line 1144 of `IpClient.java`) depending on
+   whether the program is installed via the IpClient callback path or directly
+   through a non-HAL API. On any install failure the filter records a
+   `QE_APF_INSTALL_FAILURE` network-quirk metric.
+
+A subtle but important detail is *liveness*: the program is not generic. It bakes
+the device's current unicast IPv4/IPv6 addresses into `jeq` comparisons so that
+broadcast/multicast destined for *those* addresses is passed while everything
+else is dropped. The moment an address changes, the old program is stale and
+`installNewProgram()` must run again. The "filter age" slot (slot 15) the
+interpreter pre-fills lets time-sensitive rules (such as RA lifetime checks and
+rate limits) reason about how long the current program has been live without the
+framework having to reinstall on a timer.
+
+The net effect is a clean division of labor: the framework, with full visibility
+into network state and an updatable code path, does the thinking and compiles a
+tailored program; the firmware, with the AP asleep, does nothing but run a few
+hundred bytes of branchless bytecode per frame and decides PASS or DROP. That is
+how an idle Android device stays on the network without paying the wakeup tax for
+traffic it never wanted.
+
+---
+
+## 35.31 Try It: Network Debugging
+
+### 35.31.1 dumpsys connectivity
 
 The most powerful tool for debugging Android networking is `dumpsys connectivity`.
 It provides a comprehensive snapshot of the entire connectivity state.
@@ -4843,7 +5057,7 @@ NetworkRequest [ REQUEST id=1, [ Capabilities: INTERNET&NOT_RESTRICTED
 
 3. **Default network**: The currently selected default network
 
-### 35.30.2 dumpsys wifi
+### 35.31.2 dumpsys wifi
 
 ```bash
 # Full Wi-Fi dump
@@ -4862,7 +5076,7 @@ Key information in the Wi-Fi dump:
 - SoftAP state
 - Connection history and failure reasons
 
-### 35.30.3 dumpsys netd
+### 35.31.3 dumpsys netd
 
 ```bash
 # netd status
@@ -4877,7 +5091,7 @@ adb shell iptables -L -v -n
 adb shell ip6tables -L -v -n
 ```
 
-### 35.30.4 DNS Debugging
+### 35.31.4 DNS Debugging
 
 ```bash
 # DNS resolver state
@@ -4891,7 +5105,7 @@ adb shell settings get global private_dns_mode
 adb shell settings get global private_dns_specifier
 ```
 
-### 35.30.5 Network Diagnostics Commands
+### 35.31.5 Network Diagnostics Commands
 
 ```bash
 # Check connectivity
@@ -4917,7 +5131,7 @@ adb shell cat /proc/net/tcp6
 adb shell cat /proc/net/dev
 ```
 
-### 35.30.6 ConnectivityDiagnosticsManager
+### 35.31.6 ConnectivityDiagnosticsManager
 
 For programmatic network diagnostics, Android provides the
 `ConnectivityDiagnosticsManager` API:
@@ -4957,7 +5171,7 @@ cdm.registerConnectivityDiagnosticsCallback(
         });
 ```
 
-### 35.30.7 Simulating Network Conditions
+### 35.31.7 Simulating Network Conditions
 
 For testing, Android provides several tools to simulate network conditions:
 
@@ -4981,7 +5195,7 @@ adb shell settings put global captive_portal_mode 1  # Enable (prompt)
 adb shell dumpsys connectivity --diag
 ```
 
-### 35.30.8 Reading BPF Maps
+### 35.31.8 Reading BPF Maps
 
 For advanced debugging of BPF-based traffic control:
 
@@ -4996,7 +5210,7 @@ adb shell cat /sys/fs/bpf/
 adb shell dumpsys connectivity trafficcontroller
 ```
 
-### 35.30.9 Common Debugging Scenarios
+### 35.31.9 Common Debugging Scenarios
 
 **Scenario 1: Network connected but no Internet**
 
@@ -5074,7 +5288,7 @@ adb shell dumpsys tethering | grep "DHCP"
 adb shell cat /proc/sys/net/ipv4/ip_forward
 ```
 
-### 35.30.10 Network Logging and Tracing
+### 35.31.10 Network Logging and Tracing
 
 For deeper analysis, enable verbose logging:
 
@@ -5093,7 +5307,7 @@ adb logcat -s ConnectivityService:V NetworkAgent:V \
 adb shell setprop log.tag.Netd VERBOSE
 ```
 
-### 35.30.11 Developer Options: Network Settings
+### 35.31.11 Developer Options: Network Settings
 
 The Settings app provides several network-related developer options:
 
@@ -5104,7 +5318,7 @@ The Settings app provides several network-related developer options:
 | USB configuration | Select USB tethering mode |
 | Networking diagnostics | Run connectivity tests |
 
-### 35.30.12 Programmatic Network Testing
+### 35.31.12 Programmatic Network Testing
 
 ```java
 // Test if a specific network has connectivity

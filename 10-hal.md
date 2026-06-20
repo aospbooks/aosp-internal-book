@@ -2189,6 +2189,181 @@ This distinction allows the framework to handle each case appropriately:
 unsupported features are not retried, while unknown errors may trigger a
 retry or HAL restart.
 
+### 10.4.7.3 libfmq: How Fast Message Queues Work
+
+The Sensors HAL above hands a `MQDescriptor` across Binder and then never
+touches Binder again for the actual sample stream.  The machinery that makes
+that possible lives in `system/libfmq/` (roughly 9.5K lines of C++ and Rust
+plus the EventFlag futex helper).  This section opens that box: how the ring
+buffer is laid out in shared memory, how the read and write pointers advance
+lock-free, how `EventFlag` wakes a blocked reader, and what the `MQDescriptor`
+actually carries when it crosses an AIDL boundary.
+
+#### Shared-memory layout and the grantor descriptors
+
+An FMQ is one ashmem region containing three (optionally four) areas: a write
+counter, a read counter, the ring buffer itself, and -- if blocking operations
+are needed -- a 32-bit EventFlag word.  Each area is described by a
+`GrantorDescriptor`, and the descriptor positions are fixed by an enum in
+`system/libfmq/base/fmq/MQDescriptorBase.h`:
+
+```c++
+// system/libfmq/base/fmq/MQDescriptorBase.h (GrantorType enum)
+enum GrantorType : int {
+    READPTRPOS = 0,
+    WRITEREGIONENDPTRPOS = READPTRPOS,
+    WRITEPTRPOS,
+    DATAPTRPOS,
+    EVFLAGWORDPOS
+};
+// kMinGrantorCount = DATAPTRPOS + 1                 (no blocking support)
+// kMinGrantorCountForEvFlagSupport = EVFLAGWORDPOS + 1   (blocking support)
+```
+
+A queue created without EventFlag support needs three grantors (read counter,
+write counter, data buffer); a blocking queue needs a fourth for the EventFlag
+word.  When `MessageQueueBase::initMemory()` runs, it `mmap`s each grantor in
+turn -- `mReadPtr` from `READPTRPOS`, `mWritePtr` from `WRITEPTRPOS`, the ring
+buffer `mRing` from `DATAPTRPOS`, and (if present) `mEvFlagWord` from
+`EVFLAGWORDPOS` -- then calls `EventFlag::createEventFlag()` on the futex word.
+The read and write counters are each a `RingBufferPosition`, which is just a
+`uint64_t` (`system/libfmq/include/fmq/MessageQueueBase.h`, `mReadPtr` and
+`mWritePtr` are `std::atomic<uint64_t>*`).
+
+#### The two counters and the wrap-around
+
+The single most important design choice in FMQ is that the read and write
+counters are *monotonically increasing absolute byte positions* -- they are
+never reduced modulo the buffer size.  The amount of data available to read is
+simply `writePtr - readPtr`, computed in `availableToReadBytes()`:
+
+```c++
+// system/libfmq/include/fmq/MessageQueueBase.h (availableToReadBytes, condensed)
+uint64_t writePtr = mWritePtr->load(std::memory_order_acquire);
+uint64_t readPtr  = mReadPtr->load(std::memory_order_acquire);
+if (writePtr < readPtr) { /* corruption: counters crossed */ return 0; }
+return writePtr - readPtr;
+```
+
+The actual byte offset into the ring buffer is recovered only when a slot is
+addressed, via `writePtr % mDesc->getSize()` (and likewise for the read
+offset).  Because the counters are 64-bit, the difference stays correct even
+after the offsets have wrapped many times; only a genuine pointer corruption
+(write counter behind the read counter) is treated as an error.  A write or
+read that runs off the end of the buffer is split into two contiguous regions
+-- this is what the `MemTransaction` returned by `beginWrite()`/`beginRead()`
+represents.  `beginWrite()` computes `contiguousMessages = (size - writeOffset)
+/ quantum`; if that is fewer than requested, it returns a `MemTransaction` with
+a `first` region at `mRing + writeOffset` and a `second` region wrapping back
+to `mRing`.  The caller fills both regions, then calls `commitWrite(nMessages)`,
+which advances `mWritePtr` with a `memory_order_release` store so the reader's
+acquire-load sees the new data.
+
+The diagram below shows the relationship between the absolute counters and the
+physical ring buffer.
+
+```mermaid
+flowchart TB
+    subgraph SHM["Ashmem region (one MQDescriptor)"]
+        RC["Read counter<br/>(atomic uint64, READPTRPOS)"]
+        WC["Write counter<br/>(atomic uint64, WRITEPTRPOS)"]
+        EF["EventFlag word<br/>(atomic uint32, EVFLAGWORDPOS, optional)"]
+        subgraph RING["Ring buffer (DATAPTRPOS)"]
+            direction LR
+            S0["slot 0"] --> S1["slot 1"] --> S2["..."] --> SN["slot N-1"]
+        end
+    end
+
+    WC -. "writePtr % size = write offset" .-> RING
+    RC -. "readPtr % size = read offset" .-> RING
+    Note["availableToRead = writePtr - readPtr<br/>(counters never reduced mod size)"]
+```
+
+#### SYNC vs UNSYNC
+
+`MQFlavor` (in `MQDescriptorBase.h`) has exactly two values, and they encode
+very different contracts:
+
+- **`kSynchronizedReadWrite`** -- one writer, one reader, wait-free.  A write
+  that would overflow the buffer *fails* and returns `false`; a read that would
+  underflow fails likewise.  No data is ever silently dropped.  The Sensors HAL
+  uses this flavor for both the event queue and the wake-lock queue.
+
+- **`kUnsynchronizedWrite`** -- one writer, *many* readers.  Writes always
+  succeed, overwriting the oldest unread data if the buffer is full.  Each
+  reader keeps its own read counter, and a reader that has been lapped detects
+  the overwrite and resets its counter (the queue logs and the read returns the
+  loss).  This flavor needs the extra `WRITEREGIONENDPTRPOS` grantor (which
+  aliases `READPTRPOS`) so that an in-progress write region can be published.
+  libfmq even warns at runtime if an unsynchronized writer tries to overwrite
+  the entire buffer in a single call, because that defeats the overflow
+  detection.
+
+The flavor is carried in the AIDL type system as the second template parameter
+of `MQDescriptor<T, Flavor>` -- `SynchronizedReadWrite` or `UnsynchronizedWrite`
+-- so a mismatch between the two ends is a compile-time error, not a runtime
+surprise.
+
+#### EventFlag: futex-based wakeup
+
+A spinning reader would waste CPU, so a blocking FMQ uses an `EventFlag`: a
+shared 32-bit word manipulated with the Linux `futex` syscall
+(`system/libfmq/EventFlag.cpp`).  Each bit is an independent wakeup channel.
+`EventFlag::wake(bitmask)` atomically ORs the bits into the word and, only if it
+actually flipped a bit that was clear, issues `FUTEX_WAKE_BITSET`:
+
+```c++
+// system/libfmq/EventFlag.cpp (wake, condensed)
+uint32_t old = std::atomic_fetch_or(mEfWordPtr, bitmask);
+if ((~old & bitmask) != 0) {   // a previously-clear bit was set
+    syscall(__NR_futex, mEfWordPtr, FUTEX_WAKE_BITSET, kIntMax, NULL, NULL, bitmask);
+}
+```
+
+`EventFlag::wait(bitmask, ...)` does the mirror image: it atomically clears the
+requested bits with `atomic_fetch_and`, and if none were already set it parks
+the thread with `FUTEX_WAIT_BITSET`.  This "deferred wake" handling means a
+`wake` that arrives before the matching `wait` is not lost -- the bit is already
+set, so `wait` returns immediately without a syscall.  The blocking API on the
+queue (`writeBlocking()` / `readBlocking()`) wires this up automatically using
+the standard `FMQ_NOT_FULL` / `FMQ_NOT_EMPTY` notification bits: a writer sets
+`FMQ_NOT_EMPTY` after committing, a reader sets `FMQ_NOT_FULL` after draining,
+and each blocks on the other's bit.  Both blocking methods are restricted to the
+`kSynchronizedReadWrite` flavor and require an EventFlag word to have been
+configured.
+
+#### The MQDescriptor across AIDL
+
+When a HAL method takes an `MQDescriptor<T, Flavor>` parameter (as
+`ISensors.initialize()` does), what actually travels over Binder is the stable
+parcelable in
+`hardware/interfaces/common/fmq/aidl/android/hardware/common/fmq/MQDescriptor.aidl`:
+
+```java
+@VintfStability
+parcelable MQDescriptor<@FixedSize T, Flavor> {
+    GrantorDescriptor[] grantors;
+    NativeHandle handle;
+    int quantum;
+    int flags;
+}
+```
+
+The `handle` is a `NativeHandle` carrying the ashmem file descriptor(s); the
+`grantors` array gives the offset and extent of each area within that shared
+memory; `quantum` is the element size and `flags` encodes the flavor.  The
+element type `T` must be `@FixedSize` -- FMQ copies raw bytes, so the layout has
+to be identical on both sides.  On the receiving end, `AidlMessageQueue<T,
+Flavor>` (`system/libfmq/include/fmq/AidlMessageQueue.h`) reconstructs a live
+queue from the descriptor via the `AidlMQDescriptorShim`, mapping the same
+ashmem region the sender created.  Because both processes now `mmap` the same
+pages, every subsequent `write()`/`read()` touches shared memory directly with
+zero Binder transactions -- exactly the "Binder for setup, FMQ for data"
+pattern §10.4.7.1 described, now grounded in the descriptor that carries it.
+A Rust wrapper (`system/libfmq/libfmq.rs`, built on the type-erased
+`ErasedMessageQueue`) exposes the same queue to Rust HAL implementations and
+clients.
+
 ### 10.4.8 Build System Integration: aidl_interface
 
 The `aidl_interface` Soong module type is the build system entry point for
@@ -3031,6 +3206,96 @@ sequenceDiagram
         Note over OTA: "New framework requires HAL X v3,<br/>vendor only provides v1"
     end
 ```
+
+### 10.5.9 xsdc: Generating Parsers for the Config Files
+
+The manifests and compatibility matrices in this section are XML documents, and
+so are dozens of other configuration files that cross the system/vendor
+boundary -- media codec lists, the apex info list, audio policy configuration,
+and more.  Treble treats the *schema* of each of these files as a stable
+interface, which raises a practical problem: every consumer needs a parser that
+stays in lock-step with the schema, and hand-writing those parsers is both
+tedious and a place for system/vendor drift to creep in.  `xsdc`
+(`system/tools/xsdc/`, roughly 5K lines of Java code generation plus a small
+`XsdcSupport.h` runtime header) solves this by compiling an XSD schema into a
+parser, so the schema file is the single source of truth.
+
+#### The xsd_config Soong rule
+
+`xsdc` is wired into the build by the `xsd_config` module type, registered in
+`system/tools/xsdc/build/xsdc.go`.  A consumer points the rule at one `.xsd`
+file and names the package the generated code should live in:
+
+```
+// system/libvintf/xsd/halManifest/Android.bp (excerpt)
+xsd_config {
+    name: "hal_manifest",
+    srcs: ["hal_manifest.xsd"],
+    package_name: "hal.manifest",
+    api_dir: "schema",
+}
+```
+
+At build time the rule invokes the `xsdc` host tool, which parses the schema
+and emits a parser. The `xsdConfigProperties` struct in `xsdc.go` exposes the
+knobs that matter in practice:
+
+- `package_name` -- the Java package (and the C++ namespace / file stem) for
+  the generated code.
+- `gen_writer` -- also generate a *writer* that serializes the data model back
+  to XML, not just a reader. apexd uses this to emit `/apex/apex-info-list.xml`.
+- `enums_only` / `parser_only` (C++ only) -- split the output so a consumer can
+  depend on just the enum converters without pulling in libxml2, cutting memory
+  footprint.
+- `tinyxml` -- generate code that links libtinyxml2 instead of libxml2, again
+  for footprint.
+- `root_elements` -- restrict generation to specific root elements instead of
+  every element that could be a root, trimming dead code.
+- `nullability` / `boolean_getter` -- emit `@NonNull`/`@Nullable` annotations
+  and choose `isX()` vs `getX()` accessor naming on the Java side.
+
+Because the schema is an API, `xsd_config` also feeds a `current.txt`
+under `api_dir` (a Treble "ConfigFile as API" signature, described in
+`system/tools/xsdc/README.md`).  Adding an attribute to the XSD adds a
+`getNumber()`/`setNumber()` pair to the generated class, and `make update-api`
+records that delta in the API file -- the same freeze-and-review discipline
+AIDL interfaces get in §10.4.9, applied to XML schemas.
+
+#### What the generated code looks like
+
+`xsdc` has two back ends, selected by the host tool's `--java` and `--cpp`
+flags (see `system/tools/xsdc/src/main/java/com/android/xsdc/Main.java`): a Java
+generator under `.../xsdc/java/` and a C++ generator under `.../xsdc/cpp/`.  For
+each `complexType` it produces a class with typed getters (and setters, when
+`gen_writer` is on); for each `simpleType` enumeration it produces an enum plus
+string-conversion helpers.  The C++ enums cooperate with the tiny runtime header
+`system/tools/xsdc/utils/include/xsdc/XsdcSupport.h`, which defines
+`xsdc_enum_range<Enum>` so callers can iterate every enumerator:
+
+```c++
+// system/tools/xsdc/utils/include/xsdc/XsdcSupport.h (usage)
+for (const auto v : android::xsdc_enum_range<Enum>()) { /* ... */ }
+```
+
+The generator emits the specialization that `xsdc_enum_range` reads, so this
+loop works without the consumer maintaining its own list of values.
+
+#### Who uses it
+
+`xsd_config` appears in dozens of `Android.bp` files across the tree -- a
+`grep -c 'xsd_config {'` over the platform finds it declared more than fifty
+times outside `xsdc` itself.  The consumers most relevant to this chapter are
+the VINTF schemas: `system/libvintf/xsd/halManifest/` and
+`system/libvintf/xsd/compatibilityMatrix/` define `hal_manifest.xsd` and
+`compatibility_matrix.xsd`, the formal schemas for the manifest and matrix XML
+shown in §10.5.2 and §10.5.3, and the generated parsers back the VTS tests that
+validate every device's manifest against the schema.  Other heavy users include
+`system/apex/apexd/` (the `apex-info-list` parser *and* writer for
+`/apex/apex-info-list.xml`) and `frameworks/av/media/libstagefright/xmlparser/`
+(the `media_codecs` schema behind `MediaCodecsXmlParser`) and
+`frameworks/av/media/libmedia/xsd/` (the `media_profiles` schema).  In every case the pattern is the same: the `.xsd` is
+checked in as the contract, `xsdc` turns it into the parser, and no one
+hand-maintains XML-walking code that could quietly disagree with the schema.
 
 ---
 

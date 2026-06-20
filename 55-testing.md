@@ -1392,7 +1392,34 @@ cc_test {
 }
 ```
 
-### 55.5.4  cc_test_host
+### 55.5.4  Process-Isolated GoogleTest (gtest_extras)
+
+The `isolated: true` property seen in 55.5.3 swaps the default
+`libgtest_main` for `libgtest_isolated_main`, which is the static-library
+entry point of the process-isolated gtest runner in
+`system/testing/gtest_extras/` (~2.3K LOC of runner code, about 4.8K
+including its own tests). Instead of running every test
+method in one address space, the isolated runner (`gtest_isolated/`) forks a
+fresh child process per test (`fork()` in
+`system/testing/gtest_extras/gtest_isolated/Isolate.cpp`) and waits on it,
+running several at a time according to a configurable job count
+(`gtest_isolated/Options.h`).
+
+Process isolation buys two things the stock single-process runner cannot. A
+test that crashes or corrupts global state can no longer take down the rest of
+the binary: the failure is confined to its own child, the parent records the
+terminating signal (`Isolate.cpp` reports `terminated by signal:` via
+`WIFSIGNALED`), and the remaining tests still run. And each child is held to a
+per-test wall-clock deadline (`deadline_threshold_ms` in `Options.h`); a hung
+test is killed and reported as a timeout rather than wedging the whole run.
+This is why low-level suites that deliberately exercise faulting and
+signal-handling paths -- bionic, ART's native-bridge tests, and the
+jemalloc/scudo allocator tests -- opt into `isolated: true` and link
+`libgtest_isolated`. The runner is otherwise a drop-in: the same
+GoogleTest-authored `cc_test` source from 55.5.3 builds against either entry
+point.
+
+### 55.5.5  cc_test_host
 
 A convenience variant of `cc_test` that targets only the host:
 
@@ -1403,7 +1430,7 @@ func TestHostFactory() android.Module {
 }
 ```
 
-### 55.5.5  rust_test
+### 55.5.6  rust_test
 
 Defined in `build/soong/rust/test.go`.  Properties mirror `cc_test`:
 
@@ -1440,7 +1467,7 @@ rust_test {
 }
 ```
 
-### 55.5.6  python_test_host
+### 55.5.7  python_test_host
 
 Defined in `build/soong/python/test.go`:
 
@@ -1468,7 +1495,7 @@ type TestOptions struct {
 }
 ```
 
-### 55.5.7  java_test_host
+### 55.5.8  java_test_host
 
 A Java test that runs on the host JVM.  Commonly used for host-side CTS tests
 that use `adb` to interact with the device programmatically.
@@ -1486,7 +1513,7 @@ java_test_host {
 }
 ```
 
-### 55.5.8  Auto-Generated Test Configuration
+### 55.5.9  Auto-Generated Test Configuration
 
 The build system's `tradefed` package (`build/soong/tradefed/autogen.go`)
 auto-generates TradeFed XML configs for test modules.  The key function is
@@ -1544,7 +1571,7 @@ var autogenTestConfig = pctx.StaticRule("autogenTestConfig", blueprint.RuleParam
 })
 ```
 
-### 55.5.9  Module Type Summary
+### 55.5.10  Module Type Summary
 
 ```mermaid
 graph TB
@@ -1583,7 +1610,7 @@ graph TB
     PT --> TF
 ```
 
-### 55.5.10  Standalone Tests
+### 55.5.11  Standalone Tests
 
 The `standalone_test` property for `cc_test` enables self-contained test
 packages that bundle their shared library dependencies:
@@ -1634,7 +1661,7 @@ if Bool(options.StandaloneTest) {
 }
 ```
 
-### 55.5.11  Benchmark Modules
+### 55.5.12  Benchmark Modules
 
 The `cc_benchmark` module type builds performance benchmark binaries using
 Google Benchmark:
@@ -1677,7 +1704,7 @@ cc_benchmark {
 }
 ```
 
-### 55.5.12  Test Config Templates
+### 55.5.13  Test Config Templates
 
 The build system uses template XML files for auto-generating TradeFed configs.
 Key templates referenced in the code:
@@ -1699,7 +1726,7 @@ Templates contain placeholders that get substituted:
 - `{OUTPUT_FILENAME}` -- Output file name
 - `{TEST_INSTALL_BASE}` -- Installation base directory
 
-### 55.5.13  TestSuiteInfo Provider
+### 55.5.14  TestSuiteInfo Provider
 
 All test modules set the `TestSuiteInfoProvider` so that the build system and
 CI can discover test attributes:

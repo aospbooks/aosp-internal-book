@@ -2167,6 +2167,19 @@ This BPF map is maintained by a GPU memory tracking BPF program that hooks into 
 allocation and deallocation paths, providing the total GPU memory usage without requiring
 vendor-specific code in lmkd.
 
+The BPF map gives lmkd a *system-wide* total, but it cannot attribute graphics memory to a
+particular process. Much of a process's GPU and graphics-buffer memory lives in driver-private
+allocations that never appear in that process's `/proc/<pid>/smaps`, so a naive PSS sum
+under-counts graphics-heavy apps. The gap is filled by `libmemtrack`
+(`system/memory/libmemtrack/`), a thin client of the memtrack HAL: a caller fills a
+`memtrack_proc` handle with `memtrack_proc_get(pid)` and reads back per-process graphics, GL, and
+"other" totals. Internally the library does not talk to the vendor HAL directly; it binds to the
+`memtrack.proxy` service (`MemtrackProxyService`, `frameworks/native/services/memtrackproxy/`),
+which fronts the per-device memtrack HAL. This is the path -- process to `libmemtrack` to the
+memtrack proxy to the HAL -- that produces the `GL mtrack` line in the `dumpsys meminfo` output
+shown in Section 8.7.1; the JNI layer (`frameworks/base/core/jni/android_os_Debug.cpp`) calls
+`memtrack_proc_get()` to add the missing graphics memory to each process's report.
+
 ---
 
 ## 8.6 Ashmem and Memfd
@@ -2745,6 +2758,58 @@ The `/proc` filesystem exposes per-process and system-wide memory information:
 | `/proc/pressure/memory` | PSI memory pressure |
 | `/proc/pressure/io` | PSI I/O pressure |
 | `/proc/pressure/cpu` | PSI CPU pressure |
+
+### 8.7.11 libprocinfo: The Canonical /proc Parser
+
+Almost every tool in the preceding sections -- `showmap`, `procrank`, the `dumpsys meminfo` JNI
+path, heapprofd's unwinder -- has to read the same handful of `/proc/<pid>` files and turn their
+text into structured records. Rather than each one re-implementing a brittle line parser, Android
+centralizes that work in a small, header-heavy library, `libprocinfo`
+(`system/libprocinfo/`). It is the canonical parser behind the `/proc/<pid>/{status,task,maps}`
+files this chapter keeps referring to, and is depended on by dozens of modules across the tree --
+including `libmeminfo`, `libunwindstack`, `simpleperf`, `debuggerd`, and `init`.
+
+The library exposes two headers in the `android::procinfo` namespace:
+
+| Header | What it parses | Key API |
+|---|---|---|
+| `system/libprocinfo/include/procinfo/process.h` | `/proc/<tid>/status` and the `task/` directory | `GetProcessInfo()`, `GetProcessInfoFromProcPidFd()`, `GetProcessTids()` |
+| `system/libprocinfo/include/procinfo/process_map.h` | `/proc/<pid>/maps` | `ReadProcessMaps()`, `ReadMapFile()`, `ReadMapFileAsyncSafe()`, `MappedFileSize()` |
+
+`GetProcessInfo()` fills a `struct ProcessInfo` (name, state, pid/tid/ppid, uid/gid, and the
+boot-relative `starttime`) from a single read of `status`; the `...FromProcPidFd` variant takes an
+already-open `/proc/<pid>` directory fd so a caller that has pinned a process (via a pidfd or an
+`openat`) avoids a TOCTOU window on the pid. `GetProcessTids()` enumerates a process's threads by
+listing its `task/` subdirectory.
+
+The maps reader is the more interesting half. `ParseMapsFileLine()` decodes a single `maps` line
+into start/end addresses, protection flags, page offset, inode, and the backing object's name,
+and `ReadProcessMaps()` drives it over an entire file, invoking a callback per mapping. Two
+details matter for the rest of this chapter:
+
+- **`ReadMapFileAsyncSafe()`** parses `maps` into a caller-supplied fixed buffer with no heap
+  allocation, so it is safe to call from a signal handler or another context where the heap may be
+  held or corrupt. It is built for in-process self-`maps` iteration while the allocator is locked --
+  the `malloc_disable()` / `ReadMapFileAsyncSafe()` / `malloc_enable()` pattern, where reading `maps`
+  through the *allocating* path would deadlock or skew the snapshot. In practice it has no production
+  callers; its only in-tree call sites are bionic's malloc-iterate tests
+  (`bionic/tests/malloc_iterate_test.cpp`, which brackets the call exactly that way) and libprocinfo's
+  own `process_map_test.cpp`. Crash tooling has a different shape: `debuggerd`
+  and its `crash_dump` helper (Chapter 56) are a *separate* process that `PTRACE_SEIZE`s the target
+  and reads its `maps` from the outside, and `libunwindstack`
+  (`system/unwinding/libunwindstack/Maps.cpp`) reads through the *allocating* `ReadMapFile()` /
+  `ReadMapFileContent()` path. Both still build on `libprocinfo`, just not on the async-safe variant.
+- **`MappedFileSize()`** returns how much of a mapping is actually backed by its file. As the
+  header notes, on builds with a page size larger than 4 KB the old assumption that a file mapping
+  is fully file-backed is more often false, so accounting tools must clamp to the real file size
+  to avoid charging (or faulting on) bytes past the end of the file. Section 8.11 covers the page
+  size transition that makes this matter.
+
+`MapInfo` also canonicalizes the `[anon:mt:...]` names the kernel produces for MTE-globals
+mappings (Section 8.9.2), re-extracting the original page offset and basename so downstream tools
+report the real segment rather than the anonymized blob. Because `libmeminfo`'s smaps reader sits
+on top of these primitives, every PSS/RSS figure in `dumpsys meminfo` and `showmap` ultimately
+flows through `libprocinfo`.
 
 ---
 

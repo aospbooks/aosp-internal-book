@@ -2956,13 +2956,155 @@ interchangeable.
 
 ---
 
-## 6.10 Try It: Exploring System Properties
+## 6.10 The Rust System-Properties API: librustutils
+
+The Java `SystemProperties` class (Section 6.5) and the bionic C entry points
+(Section 6.1) are not the only first-class clients of the property store.
+Android now ships a growing tier of platform components written in Rust --
+keystore2, the Rust zygote, parts of init, the KeyMint HAL, the eBPF loader --
+and those components do not link against bionic's C API directly. They read,
+write, and watch properties through a small Rust crate, `librustutils`, living
+at `system/librustutils/`. It is the Rust-side complement to the C and Java
+APIs this chapter has covered, and it is worth understanding because it is *the*
+way Rust platform code touches the property store.
+
+### 6.10.1 What the Crate Is
+
+`librustutils` is a roughly 1.75K-line Rust crate of safe wrappers over a
+handful of bionic facilities that Rust components would otherwise have to call
+through raw FFI. Its module map is declared in
+`system/librustutils/rustutils/src/lib.rs` and
+`system/librustutils/rustutils/src/android.rs`:
+
+- `system_properties` -- safe get/set/wait over bionic system properties, plus a
+  `PropertyWatcher` type. This is the part that concerns this chapter.
+- `sockets` -- `android_get_control_socket()`, returning an `OwnedFd` for a Unix
+  domain socket that init created and named (Chapter 4's socket-passing
+  mechanism).
+- `inherited_fd` -- safe `OwnedFd` ownership for file descriptors inherited
+  across `exec`.
+- smaller helpers: `process`, `rootdev`, `users`, and a `log` module.
+
+The crate is built as `librustutils` in
+`system/librustutils/rustutils/Android.bp`. The system-properties module reaches
+bionic through an auto-generated bindgen wrapper, `libsystem_properties_bindgen`,
+whose allowlist (in the same `Android.bp`) pins exactly the five bionic symbols
+the crate needs: `__system_property_find`, `__system_property_foreach`,
+`__system_property_read_callback`, `__system_property_set`, and
+`__system_property_wait`. Every call below is, underneath the safe Rust surface,
+one of those bionic calls -- the same shared-memory read path and
+property-service write path described earlier in this chapter, with no new IPC
+mechanism of its own.
+
+### 6.10.2 Reading, Writing, and Iterating
+
+The free functions in
+`system/librustutils/rustutils/src/android/system_properties.rs` cover the common
+cases without the caller ever touching a pointer:
+
+```rust
+// Source: system/librustutils/rustutils/src/android/system_properties.rs
+
+/// Reads a system property. Returns Ok(None) if the property doesn't exist.
+pub fn read(name: &str) -> Result<Option<String>>;
+
+/// Returns the property's value as a bool ("1"/"y"/"yes"/"on"/"true" ->
+/// true, "0"/"n"/"no"/"off"/"false" -> false), or default_value otherwise.
+pub fn read_bool(name: &str, default_value: bool) -> Result<bool>;
+
+/// Writes a system property (wraps __system_property_set).
+pub fn write(name: &str, value: &str) -> Result<()>;
+
+/// Iterates the properties the current process is allowed to access.
+pub fn foreach<F>(mut f: F) -> Result<()> where F: FnMut(&str, &str);
+```
+
+`read()` and `read_bool()` reflect the same boolean-parsing vocabulary that the
+Java `getBoolean()` accepts (Section 6.5.2). `write()` returns
+`PropertyWatcherError::SetPropertyFailed` when `__system_property_set` returns
+`-1`, which is how a Rust caller observes an SELinux denial or a write-once
+violation surfaced by the property service (Section 6.3.3). `foreach()` returns
+`PropertyWatcherError::Uninitialized` if the property area has not been set up.
+
+Errors are a typed `enum`, `PropertyWatcherError`, defined in
+`system/librustutils/rustutils/src/android/system_properties/error.rs`, with
+variants for an absent property, an uninitialized area, a wait timeout, a NUL
+byte in a name or value, and a non-UTF-8 value -- so failures that the C API
+reports as a bare `-1` become matchable Rust values.
+
+### 6.10.3 PropertyWatcher: Observing Changes
+
+The most distinctive type is `PropertyWatcher`. The C API exposes
+`__system_property_wait`, which blocks on a futex until a property's serial
+number changes (the wait-free protocol of Section 6.1.6 is what bumps that
+serial). `PropertyWatcher` wraps that loop in a safe, serial-tracking object so
+Rust code can wait for a property to appear, change, or reach a specific value
+without races:
+
+```rust
+// Source: system/librustutils/rustutils/src/android/system_properties.rs
+pub struct PropertyWatcher {
+    prop_name: CString,
+    prop_info: Option<&'static PropInfo>,
+    serial: c_uint,
+}
+
+impl PropertyWatcher {
+    pub fn new(name: &str) -> Result<Self>;
+    // Read current name/value via __system_property_read_callback.
+    pub fn read<T, F>(&mut self, f: F) -> Result<T> where F: FnMut(&str, &str) -> T;
+    pub fn read_string(&mut self) -> Result<Option<String>>;
+    // Block until the property changes, or the timeout elapses.
+    pub fn wait(&mut self, timeout: Option<Duration>) -> Result<()>;
+    // Block until the property exists and equals expected_value.
+    pub fn wait_for_value(&mut self, expected_value: &str,
+                          timeout: Option<Duration>) -> Result<()>;
+}
+```
+
+Internally, `wait()` records the serial number of the last change it saw and
+passes it back into `__system_property_wait`, so a change that happens between
+two waits is not missed. If the watched property does not yet exist, the watcher
+first waits on the *global* serial (a null `prop_info`) until the property is
+created, then switches to watching that property's own serial. This is exactly
+how keystore2 blocks on boot milestones -- for instance
+`PropertyWatcher::new("sys.boot_completed")` and a watcher on
+`keystore.boot_level` in `system/security/keystore2/src/globals.rs` and
+`system/security/keystore2/src/super_key.rs`.
+
+### 6.10.4 Where It Fits and Who Uses It
+
+Two things make `librustutils` the natural Rust counterpart to the APIs earlier
+in this chapter. First, it is broadly depended on: about 87 build modules across
+the tree list `librustutils` in their `Android.bp`, including
+`system/security/keystore2/Android.bp`, the Rust zygote in
+`system/zygote/zygote/Android.bp`, the KeyMint HAL in
+`system/keymint/hal/Android.bp`, and the eBPF loader in
+`system/bpf/loader/Android.bp`. Second, it is the runtime that the Soong
+`sysprop_library` generator targets for Rust. The `parsers_formatters` module in
+`system/librustutils/rustutils/src/android/system_properties/parsers_formatters.rs`
+is documented as "should only be used in the system properties generated code,"
+and the `SysPropError` enum in the crate's `error.rs` is what the generated Rust
+accessors return -- the same `.sysprop`-driven `RustGen.cpp` path described in
+Section 6.6. So a typed `sysprop_library` accessor used from Rust ultimately
+reads and writes through this crate, just as the Java accessor goes through
+`android.os.SystemProperties`.
+
+The takeaway: when a Rust component on the platform needs a property, it does
+not reinvent the socket protocol or the shared-memory read. It calls
+`rustutils::system_properties::{read, write, read_bool, foreach}` or constructs
+a `PropertyWatcher`, and the crate funnels that down to the very same bionic
+primitives and property-service path that the C and Java APIs use.
+
+---
+
+## 6.11 Try It: Exploring System Properties
 
 This section provides hands-on exercises for understanding the system properties
 mechanism. All exercises assume you have an `adb`-connected device or emulator
 running a `userdebug` or `eng` build.
 
-### 6.10.1 Exercise: Listing and Inspecting Properties
+### 6.11.1 Exercise: Listing and Inspecting Properties
 
 **List all properties:**
 
@@ -3009,7 +3151,7 @@ adb shell ls -la /dev/__properties__/property_info
 adb shell ls /dev/__properties__/ | wc -l
 ```
 
-### 6.10.2 Exercise: Setting and Observing Properties
+### 6.11.2 Exercise: Setting and Observing Properties
 
 **Set a debug property:**
 
@@ -3043,7 +3185,7 @@ adb shell setprop ro.build.type "eng"
 adb shell getprop ro.build.type
 ```
 
-### 6.10.3 Exercise: Watching Property Changes
+### 6.11.3 Exercise: Watching Property Changes
 
 **Use waitforprop to wait for a property:**
 
@@ -3069,7 +3211,7 @@ adb shell watchprops
 # Now set any property in another terminal to see it reported
 ```
 
-### 6.10.4 Exercise: Examining Property Contexts
+### 6.11.4 Exercise: Examining Property Contexts
 
 **View the property_contexts files:**
 
@@ -3098,7 +3240,7 @@ adb shell setprop ro.boot.serialno "fake"
 adb shell dmesg | grep "avc.*property_service"
 ```
 
-### 6.10.5 Exercise: Persistent Property Storage
+### 6.11.5 Exercise: Persistent Property Storage
 
 **Examine the persistent property file:**
 
@@ -3123,7 +3265,7 @@ adb shell "
 # The file size and modification time should change
 ```
 
-### 6.10.6 Exercise: Property Derivation Chain
+### 6.11.6 Exercise: Property Derivation Chain
 
 **Trace product property derivation:**
 
@@ -3155,7 +3297,7 @@ echo ""
 echo "Fingerprint: $(adb shell getprop ro.build.fingerprint)"
 ```
 
-### 6.10.7 Exercise: Service Control via Properties
+### 6.11.7 Exercise: Service Control via Properties
 
 **Use ctl.* properties to control services:**
 
@@ -3179,7 +3321,7 @@ adb shell "
 "
 ```
 
-### 6.10.8 Exercise: Building a sysprop_library
+### 6.11.8 Exercise: Building a sysprop_library
 
 **Create a minimal sysprop_library:**
 
@@ -3238,7 +3380,7 @@ MyAppProperties.debug_enabled(true);
 MyAppProperties.max_connections(20);
 ```
 
-### 6.10.9 Exercise: Measuring Property Read Performance
+### 6.11.9 Exercise: Measuring Property Read Performance
 
 **Benchmark property reads:**
 
@@ -3261,7 +3403,7 @@ lookup is much faster (typically under 1 microsecond). A more accurate benchmark
 use a native program that calls `__system_property_find()` and
 `__system_property_read_callback()` directly.
 
-### 6.10.10 Exercise: Exploring the Property Trie in Memory
+### 6.11.10 Exercise: Exploring the Property Trie in Memory
 
 **Use debuggerd to examine the property memory map:**
 

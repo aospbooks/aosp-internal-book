@@ -2461,7 +2461,7 @@ a network interface. It manages:
 - IPv6 SLAAC (Stateless Address Autoconfiguration)
 - Router discovery
 - Neighbor discovery
-- APF (Android Packet Filter) program installation
+- APF (Android Packet Filter) program installation (see §35.30)
 
 The IP provisioning flow:
 
@@ -4786,9 +4786,223 @@ service-discovery story.
 
 ---
 
-## 35.30 Try It: Network Debugging
+## 35.30 APF: The Android Packet Filter
 
-### 35.30.1 dumpsys connectivity
+Everything in this chapter so far assumes the application processor (AP) is
+awake to look at packets. That assumption is exactly what kills battery on an
+idle device. A phone sitting in a pocket on Wi-Fi still receives a steady drizzle
+of multicast and broadcast traffic that is not addressed to it: mDNS service
+announcements, SSDP/UPnP discovery, ARP probes from other hosts, IPv6 router
+advertisements, and assorted chatter from every other device on the network.
+Each frame the NIC receives normally wakes the AP out of its low-power sleep
+state just so the network stack can look at it, decide it is uninteresting, and
+drop it. On a busy home or office network that can be hundreds of needless
+wakeups per minute, and wakeups are one of the most expensive things a mobile
+SoC does for power.
+
+The Android Packet Filter (APF) exists to win back that power. APF pushes a
+small packet-filtering program *down into the Wi-Fi (or Ethernet) NIC firmware*,
+so the firmware itself can decide whether an incoming frame is worth waking the
+AP for. Uninteresting multicast and broadcast is dropped while the AP stays
+asleep; only frames the program decides to PASS bubble up and wake the host. The
+firmware-resident interpreter and bytecode definition live in the Google APF
+hardware project at `hardware/google/apf/`, and the framework-side compiler that
+generates the programs lives in the NetworkStack mainline module at
+`packages/modules/NetworkStack/src/android/net/apf/`.
+
+### 35.30.1 The Two Halves: Interpreter and Generator
+
+APF is split across two codebases that must agree on a bytecode contract:
+
+- **The interpreter** is a tiny, freestanding C virtual machine compiled into the
+  NIC firmware (or a vendor HAL shim). Its reference implementation is
+  `hardware/google/apf/next/apf_interpreter.c`, with the bytecode and machine
+  model defined in `hardware/google/apf/next/apf.h`. Versioned snapshots
+  (`v2/`, `v4/`, `v6/`, `v6.1/`) are kept so firmware can pin a known revision.
+- **The generator** is Java code in the NetworkStack module that *compiles* an
+  APF program at runtime from the current network state (the device's own
+  addresses, multicast filter setting, RA filters, mDNS offload rules, and so
+  on) and installs the resulting byte array into the firmware.
+
+The device never ships a fixed filter. The framework regenerates and reinstalls
+the program whenever the relevant state changes, because the program embeds the
+device's current IP addresses and other live values as literal bytes.
+
+```mermaid
+graph LR
+    subgraph AP["Application Processor (can sleep)"]
+        STATE["Network state<br/>(IPv4/IPv6 addrs,<br/>multicast filter,<br/>RA + mDNS rules)"]
+        GEN["ApfFilter +<br/>ApfV4/V6/V61Generator<br/>(NetworkStack)"]
+        STATE --> GEN
+        GEN -->|"installPacketFilter(byte[], ...)"| CTRL["IApfController"]
+    end
+
+    subgraph NIC["NIC firmware (AP asleep)"]
+        VM["apf_run() interpreter<br/>(apf_interpreter.c)"]
+    end
+
+    CTRL -->|"APF program bytes<br/>via Wi-Fi HAL"| VM
+    PKT["Incoming Wi-Fi/Ethernet frame"] --> VM
+    VM -->|"DROP: discard,<br/>AP stays asleep"| DROP["(dropped)"]
+    VM -->|"PASS: deliver,<br/>wake AP"| HOST["Host network stack"]
+    VM -.->|"transmit: build + send reply<br/>(ARP/ND/mDNS offload)"| PKT2["Reply frame"]
+```
+
+### 35.30.2 The Bytecode Machine Model
+
+The header comment in `hardware/google/apf/next/apf.h` defines the abstract
+machine precisely. An APF machine has:
+
+1. A read-only program of bytecode instructions.
+2. Two 32-bit registers, `R0` and `R1`.
+3. Sixteen 32-bit temporary memory slots, cleared between packets.
+4. A read-only copy of the packet.
+5. An optional read-write transmit buffer (APFv6+), used to build a reply.
+
+Each instruction begins with one byte whose top 5 bits are the opcode, next 2
+bits encode the length of an immediate (0, 1, 2, or 4 bytes), and bottom bit
+selects a register. The instruction set is deliberately small: packet loads
+(`ldb`/`ldh`/`ldw` and their indexed `*x` variants) pull 1/2/4 bytes from a
+packet offset into a register; arithmetic and bitwise ops (`add`, `and`, `or`,
+`sh`, ...) combine a register with an immediate or the other register; and
+conditional jumps (`jeq`, `jne`, `jgt`, `jlt`, `jset`, and the byte-sequence
+match `jbsmatch`) compare `R0` against a value and branch. These opcodes are
+enumerated as the `*_OPCODE` defines in `apf.h` (for example `LDB_OPCODE`,
+`JEQ_OPCODE`, `JBSMATCH_OPCODE`) and mirrored on the Java side by the
+`Opcodes` enum in
+`packages/modules/NetworkStack/src/android/net/apf/BaseApfGenerator.java`.
+
+The interpreter pre-fills several of the sixteen memory slots before each run so
+programs do not have to recompute common values. Per the slot table in `apf.h`
+(and the `memory_type` union near the top of `apf_interpreter.c`), slot 13 holds
+the computed IPv4 header length, slot 14 holds the total packet size, and slot 15
+holds the *filter age in seconds* since the program was installed, which lets a
+filter rate-limit a packet to one every N seconds or expire a stale rule.
+
+PASS and DROP are encoded as jumps off the end of the program, which keeps the
+core loop branchless and trivial. The header comment spells out the convention:
+jumping to one byte past the end of the program means "pass this packet to the
+AP", and jumping to two bytes past the end means "drop it". The interpreter
+turns that into return codes at the top of its dispatch loop in
+`apf_interpreter.c`: the `PASS`/`DROP`/`EXCEPTION` macros resolve to `1`/`0`/`2`,
+and `apf_run()` returns one of them. Any internal error or assertion failure is
+deliberately converted to `PASS` (`ASSERT_RETURN` returns `EXCEPTION`, and the
+runner rewrites `EXCEPTION` to `PASS` before returning) so a buggy or
+adversarial program can never cause a packet to be silently lost: when in doubt,
+wake the AP. APFv6 adds a transmit path: the program can `allocate` a tx buffer,
+copy bytes into it, and `transmit` it, which is how the firmware answers ARP
+requests, IPv6 neighbor solicitations, and offloaded mDNS queries on the AP's
+behalf without ever waking it. The host-side allocate/transmit callbacks are the
+`apf_allocate_tx_buffer()` / `apf_transmit_tx_buffer()` functions declared in
+`hardware/google/apf/next/apf_interpreter.h`.
+
+A matching disassembler (`hardware/google/apf/disassembler.c`) and the assembler
+library (`hardware/google/apf/apflib.c`) let developers read installed programs
+back as human-readable assembly, which is invaluable when debugging why a packet
+was or was not dropped.
+
+### 35.30.3 Capabilities Negotiation
+
+Before any program can be installed, the framework must learn what the firmware
+can actually run. That contract is the `ApfCapabilities` class at
+`packages/modules/Connectivity/framework/src/android/net/apf/ApfCapabilities.java`,
+which carries three fields:
+
+- `apfVersionSupported`: the APF instruction-set version the firmware
+  implements, where `0` means no APF support at all.
+- `maximumApfProgramSize`: how many bytes of NIC RAM are available for the
+  program plus its data region.
+- `apfPacketFormat`: the link-layer frame format the firmware hands to the
+  filter (one of the `ARPHRD_*` constants; the generator currently only emits
+  code for `ARPHRD_ETHER` Ethernet framing).
+
+`IpClient.maybeCreateApfFilter()` (around line 2936 of
+`packages/modules/NetworkStack/src/android/net/ip/IpClient.java`) reads these
+capabilities and decides whether and how to build a filter. The logic there is
+worth noting: if a device advertises APFv3+ but exposes fewer than 1024 bytes of
+RAM, IpClient downgrades the configured version to `2`, because the counter
+region APF reserves at the end of RAM would leave too little room for an actual
+program. It also refuses to build a filter for any `apfPacketFormat` other than
+`ARPHRD_ETHER`, since the generator's hard-coded packet offsets assume Ethernet
+framing. The fully populated `ApfConfiguration` (multicast filter state, RA
+minimum lifetime, ARP/ND/mDNS/IGMP/MLD offload flags, and RAM size) is then
+handed to `ApfFilter.maybeCreate()`.
+
+### 35.30.4 The Interpreter <-> Generator Version-Sync Contract
+
+Because the interpreter lives in firmware and the generator lives in an
+updatable mainline module, the two must never disagree about what a given opcode
+means. The contract is the version number returned by `apf_version()` in
+`apf_interpreter.c` (currently the date-stamped value `20250228`) on the firmware
+side, matched against version constants on the framework side in
+`BaseApfGenerator.java`:
+
+```java
+// This version number syncs up with APF_VERSION in hardware/google/apf/apf_interpreter.h
+public static final int APF_VERSION_2 = 2;
+public static final int APF_VERSION_3 = 3;
+public static final int APF_VERSION_4 = 4;
+public static final int APF_VERSION_6 = 6000;
+public static final int APF_VERSION_61 = 6100;
+```
+
+The generator picks the most capable program format the firmware can run.
+`ApfFilter.createApfGenerator()` (around line 4187 of `ApfFilter.java`)
+instantiates an `ApfV61Generator`, `ApfV6Generator`, or `ApfV4Generator`
+depending on the negotiated version, gated through `useApfV61Generator()` /
+`useApfV6Generator()`, which call each generator's `supportsVersion()` check (for
+example `ApfV6Generator.supportsVersion()` returns true only for
+`version >= APF_VERSION_6`). All three derive from `ApfV4GeneratorBase`, and
+`BaseApfGenerator.requireApfVersion()` throws `IllegalInstructionException` if
+generator code ever tries to emit an instruction the negotiated firmware version
+cannot execute. That compile-time guard is what keeps a newer NetworkStack from
+shipping an APFv6 opcode to firmware that only understands APFv4.
+
+### 35.30.5 Compiling and Installing a Program
+
+`ApfFilter.installNewProgram()` (around line 4302 of `ApfFilter.java`) is the
+heart of the compile-and-install loop. It runs whenever relevant state changes
+(a new IP address, a toggled multicast filter, a fresh router advertisement,
+updated mDNS offload rules). The flow is:
+
+1. Create a generator for the negotiated version (`createApfGenerator()`).
+2. Emit a prologue, then progressively fit in as much filtering as the program
+   budget allows. The code is explicit about prioritization: it first reserves
+   room for mDNS offload rules (so the device can answer service queries from
+   firmware rather than waking for them), then RA filters, sizing everything
+   against `mMaximumApfProgramSize`. If a piece does not fit, it is dropped from
+   this program rather than overflowing NIC RAM.
+3. Call `gen.generate()` to assemble the instruction list into the final
+   `byte[]` program.
+4. Hand the bytes to `installPacketFilter()`, which calls through the
+   `IApfController` interface to the Wi-Fi HAL, which writes the program into NIC
+   RAM. IpClient wires up two controller implementations (`mIpClientApfController`
+   and `mNonHalApfController` around line 1144 of `IpClient.java`) depending on
+   whether the program is installed via the IpClient callback path or directly
+   through a non-HAL API. On any install failure the filter records a
+   `QE_APF_INSTALL_FAILURE` network-quirk metric.
+
+A subtle but important detail is *liveness*: the program is not generic. It bakes
+the device's current unicast IPv4/IPv6 addresses into `jeq` comparisons so that
+broadcast/multicast destined for *those* addresses is passed while everything
+else is dropped. The moment an address changes, the old program is stale and
+`installNewProgram()` must run again. The "filter age" slot (slot 15) the
+interpreter pre-fills lets time-sensitive rules (such as RA lifetime checks and
+rate limits) reason about how long the current program has been live without the
+framework having to reinstall on a timer.
+
+The net effect is a clean division of labor: the framework, with full visibility
+into network state and an updatable code path, does the thinking and compiles a
+tailored program; the firmware, with the AP asleep, does nothing but run a few
+hundred bytes of branchless bytecode per frame and decides PASS or DROP. That is
+how an idle Android device stays on the network without paying the wakeup tax for
+traffic it never wanted.
+
+---
+
+## 35.31 Try It: Network Debugging
+
+### 35.31.1 dumpsys connectivity
 
 The most powerful tool for debugging Android networking is `dumpsys connectivity`.
 It provides a comprehensive snapshot of the entire connectivity state.
@@ -4844,7 +5058,7 @@ NetworkRequest [ REQUEST id=1, [ Capabilities: INTERNET&NOT_RESTRICTED
 
 3. **Default network**: The currently selected default network
 
-### 35.30.2 dumpsys wifi
+### 35.31.2 dumpsys wifi
 
 ```bash
 # Full Wi-Fi dump
@@ -4863,7 +5077,7 @@ Key information in the Wi-Fi dump:
 - SoftAP state
 - Connection history and failure reasons
 
-### 35.30.3 dumpsys netd
+### 35.31.3 dumpsys netd
 
 ```bash
 # netd status
@@ -4878,7 +5092,7 @@ adb shell iptables -L -v -n
 adb shell ip6tables -L -v -n
 ```
 
-### 35.30.4 DNS Debugging
+### 35.31.4 DNS Debugging
 
 ```bash
 # DNS resolver state
@@ -4892,7 +5106,7 @@ adb shell settings get global private_dns_mode
 adb shell settings get global private_dns_specifier
 ```
 
-### 35.30.5 Network Diagnostics Commands
+### 35.31.5 Network Diagnostics Commands
 
 ```bash
 # Check connectivity
@@ -4918,7 +5132,7 @@ adb shell cat /proc/net/tcp6
 adb shell cat /proc/net/dev
 ```
 
-### 35.30.6 ConnectivityDiagnosticsManager
+### 35.31.6 ConnectivityDiagnosticsManager
 
 For programmatic network diagnostics, Android provides the
 `ConnectivityDiagnosticsManager` API:
@@ -4958,7 +5172,7 @@ cdm.registerConnectivityDiagnosticsCallback(
         });
 ```
 
-### 35.30.7 Simulating Network Conditions
+### 35.31.7 Simulating Network Conditions
 
 For testing, Android provides several tools to simulate network conditions:
 
@@ -4982,7 +5196,7 @@ adb shell settings put global captive_portal_mode 1  # Enable (prompt)
 adb shell dumpsys connectivity --diag
 ```
 
-### 35.30.8 Reading BPF Maps
+### 35.31.8 Reading BPF Maps
 
 For advanced debugging of BPF-based traffic control:
 
@@ -4997,7 +5211,7 @@ adb shell cat /sys/fs/bpf/
 adb shell dumpsys connectivity trafficcontroller
 ```
 
-### 35.30.9 Common Debugging Scenarios
+### 35.31.9 Common Debugging Scenarios
 
 **Scenario 1: Network connected but no Internet**
 
@@ -5075,7 +5289,7 @@ adb shell dumpsys tethering | grep "DHCP"
 adb shell cat /proc/sys/net/ipv4/ip_forward
 ```
 
-### 35.30.10 Network Logging and Tracing
+### 35.31.10 Network Logging and Tracing
 
 For deeper analysis, enable verbose logging:
 
@@ -5094,7 +5308,7 @@ adb logcat -s ConnectivityService:V NetworkAgent:V \
 adb shell setprop log.tag.Netd VERBOSE
 ```
 
-### 35.30.11 Developer Options: Network Settings
+### 35.31.11 Developer Options: Network Settings
 
 The Settings app provides several network-related developer options:
 
@@ -5105,7 +5319,7 @@ The Settings app provides several network-related developer options:
 | USB configuration | Select USB tethering mode |
 | Networking diagnostics | Run connectivity tests |
 
-### 35.30.12 Programmatic Network Testing
+### 35.31.12 Programmatic Network Testing
 
 ```java
 // Test if a specific network has connectivity
@@ -9711,7 +9925,217 @@ contract, exactly as the IMS service can be overridden in §36.5.2.
 
 ---
 
-## 36.14 Try It
+## 36.14 Additional Telephony Services and Libraries
+
+The sections above traced the core stack and several of its larger appendages
+(`ImsStack`, the satellite controller, GBA). Around that core sit a ring of
+smaller libraries and standalone apps/services that the chapter has referenced
+in passing but not opened up: the in-process IMS client library that everything
+IMS links against, the transport-selection service behind
+`AccessNetworksManager`, the opportunistic-network service, the cell-broadcast
+emergency-alert app, and the TS.43 entitlement pieces. This section fills those
+gaps so the binding story is complete.
+
+### 36.14.1 ims-common -- the In-Process IMS Client Library
+
+Sections 36.5 and 36.12 talked about the IMS *framework* (`ImsResolver`) and an
+*IMS service* (`ImsStack`, or a vendor APK) that the framework binds. The glue
+between them is a separate library, `ims-common`, built from
+`frameworks/opt/net/ims` (a `java_library` declared in
+`frameworks/opt/net/ims/Android.bp`). It carries the `com.android.ims` package
+and is the in-process client that runs inside whatever process needs to talk to
+the bound `ImsService` — most importantly the phone process for `ImsPhone` /
+`ImsPhoneCallTracker`, but also Settings and `QualifiedNetworksService`.
+
+The two classes that matter most are `ImsManager` and the feature connections.
+`ImsManager` is the MMTel entry point that the telephony stack programs against;
+its own javadoc flags it as "for internal use ONLY"
+(`frameworks/opt/net/ims/src/java/com/android/ims/ImsManager.java`), with the
+public `android.telephony.ims.ImsMmTelManager` layered on top of it.
+`ImsCall` represents an active IMS session with its SIP/`ImsCallProfile` state
+(`frameworks/opt/net/ims/src/java/com/android/ims/ImsCall.java`). The actual
+cross-process plumbing lives in a small connection hierarchy: `FeatureConnection`
+is the base that holds the feature binder (`IImsMmTelFeature` / `IImsRcsFeature`,
+set via `setBinder()`) plus the `IImsRegistration` and `IImsConfig` binders, and
+`MmTelFeatureConnection` / `RcsFeatureConnection` are the MMTel and RCS
+specialisations that expose the typed `IImsMmTelFeature` / `IImsRcsFeature`
+interfaces and keep callback registration in sync across the binder
+boundary (`frameworks/opt/net/ims/src/java/com/android/ims/FeatureConnection.java`,
+`MmTelFeatureConnection.java`, `RcsFeatureConnection.java`).
+
+```mermaid
+graph TD
+    subgraph "Telephony (frameworks/opt/telephony)"
+        IPCT["ImsPhone / ImsPhoneCallTracker"]
+    end
+    subgraph "ims-common (com.android.ims, in-process)"
+        IM["ImsManager"]
+        IC["ImsCall"]
+        FC["FeatureConnection"]
+        MFC["MmTelFeatureConnection"]
+        RFC["RcsFeatureConnection"]
+        UCE["rcs.uce.UceController<br/>(presence, EAB, OPTIONS)"]
+        FC --> MFC
+        FC --> RFC
+    end
+    subgraph "Bound ImsService (ImsStack or vendor APK)"
+        SVC["MmTelFeature / RcsFeature"]
+    end
+
+    IPCT --> IM
+    IM --> IC
+    IM --> MFC
+    IM --> RFC
+    MFC -->|"Binder (IImsMmTelFeature)"| SVC
+    RFC -->|"Binder (IImsRcsFeature)"| SVC
+```
+
+The RCS side carries a substantial subtree of its own: `com.android.ims.rcs.uce`
+implements RCS User Capability Exchange — the presence publish/subscribe, the SIP
+OPTIONS exchange, and the Enhanced Address Book cache, coordinated by
+`UceController` (`frameworks/opt/net/ims/src/java/com/android/ims/rcs/uce/UceController.java`
+and the `presence/`, `options/`, `eab/`, and `request/` subpackages beneath it).
+Because `ims-common` is an ordinary `java_library`, both the AOSP `ImsStack`
+module and a vendor's IMS service link it (the dependency appears in
+`packages/modules/ImsStack/java/Android.bp` and
+`frameworks/opt/telephony/Android.bp`, among others), which is what makes the
+client API uniform regardless of which `ImsService` implementation a device
+binds.
+
+### 36.14.2 QualifiedNetworksService -- Per-APN Transport Selection
+
+Section 36.8.12 noted that `AccessNetworksManager` decides whether a given APN's
+traffic flows over cellular (WWAN) or IWLAN (Wi-Fi). It does not make that
+decision itself: `AccessNetworksManager` is a *client* that binds a
+`QualifiedNetworksService` and asks it for a prioritised list of access networks
+per APN type. The framework base class and binding action are
+`android.telephony.data.QualifiedNetworksService`
+(`frameworks/base/telephony/java/android/telephony/data/QualifiedNetworksService.java`,
+constant `QUALIFIED_NETWORKS_SERVICE_INTERFACE`), and the bind happens through a
+`QualifiedNetworksServiceConnection` inside
+`frameworks/opt/telephony/src/java/com/android/internal/telephony/data/AccessNetworksManager.java`.
+
+AOSP ships a default, vendor-extensible implementation as a standalone service,
+`packages/services/QualifiedNetworksService` (package `com.android.telephony.qns`,
+declared in `packages/services/QualifiedNetworksService/AndroidManifest.xml` on
+the `android.telephony.data.QualifiedNetworksService` action behind
+`BIND_TELEPHONY_DATA_SERVICE`). Its core, `QualifiedNetworksServiceImpl` extends
+the framework base class, and `AccessNetworkEvaluator` produces the ordered
+cellular-vs-IWLAN-vs-NR-SA list per APN by combining cellular service state, the
+IWLAN reachability tracked by `IwlanNetworkStatusTracker`, and carrier policy
+(`packages/services/QualifiedNetworksService/src/com/android/telephony/qns/QualifiedNetworksServiceImpl.java`,
+`AccessNetworkEvaluator.java`, `IwlanNetworkStatusTracker.java`).
+
+```mermaid
+sequenceDiagram
+    participant DNC as "DataNetworkController"
+    participant ANM as "AccessNetworksManager"
+    participant QNS as "QualifiedNetworksServiceImpl"
+    participant Eval as "AccessNetworkEvaluator"
+    participant RM as "RestrictManager"
+
+    ANM->>QNS: bind (android.telephony.data.QualifiedNetworksService)
+    QNS->>Eval: createNetworkAvailabilityProvider (per APN)
+    Eval->>RM: check throttling / handover guard
+    Eval->>Eval: rank WWAN vs IWLAN vs NR-SA
+    Eval-->>ANM: updateQualifiedNetworkTypes (ordered list)
+    ANM-->>DNC: preferred transport changed
+```
+
+Two extra responsibilities live in this service. `RestrictManager` applies
+throttling and handover-guard restrictions so the device does not thrash between
+transports (`packages/services/QualifiedNetworksService/src/com/android/telephony/qns/RestrictManager.java`),
+and a Wi-Fi-calling activation path under
+`packages/services/QualifiedNetworksService/src/com/android/telephony/qns/wfc/`
+(`WfcActivationActivity`, `WfcActivationHelper`) drives the ePDG/WFC connectivity
+check that has to succeed before IWLAN can be offered as a voice transport.
+
+### 36.14.3 AlternativeNetworkAccess -- the Opportunistic Network Service (ONS)
+
+`packages/services/AlternativeNetworkAccess` is the Opportunistic Network Service
+(ONS), package `com.android.ons`. Its job is the eSIM/multi-SIM "opportunistic
+data" feature: scanning for, selecting, and activating a secondary
+(opportunistic) subscription that carries data in areas served by a partner
+network — for example a CBRS profile — without disturbing the user's primary SIM
+for voice. `OpportunisticNetworkService` is the bound service whose javadoc
+states it "scans network and matches the results with opportunistic
+subscriptions … to provide user opportunistic data in areas with corresponding
+networks" (`packages/services/AlternativeNetworkAccess/src/com/android/ons/OpportunisticNetworkService.java`).
+
+The work splits across three helpers:
+`ONSNetworkScanCtlr` runs the network scans and reports availability,
+`ONSProfileSelector` matches scan results to candidate opportunistic profiles and
+picks one, and `ONSProfileActivator` ensures the chosen CBRS/eSIM profile is
+downloaded, activated, and grouped when an opportunistic-data pSIM is inserted
+(`packages/services/AlternativeNetworkAccess/src/com/android/ons/ONSNetworkScanCtlr.java`,
+`ONSProfileSelector.java`, `ONSProfileActivator.java`). Selecting an
+opportunistic subscription ties back into the data switching covered in §36.8.15:
+once ONS activates a profile, `PhoneSwitcher` / `AutoDataSwitchController` can
+route data over it.
+
+### 36.14.4 CellBroadcastReceiver -- the Emergency-Alert App
+
+Section 36.4.10 covered the framework `CellBroadcastService` that parses 3GPP and
+3GPP2 cell-broadcast PDUs. What it does *not* cover is the app that turns a parsed
+alert into the full-screen warning, siren, and vibration a user actually sees.
+That is `packages/apps/CellBroadcastReceiver` (package
+`com.android.cellbroadcastreceiver`), an updatable Mainline module — it ships in
+the `com.android.cellbroadcast` APEX (`packages/apps/CellBroadcastReceiver/apex/Android.bp`),
+the same APEX that carries the `CellBroadcastService` module and which Chapter 52's
+Mainline catalog lists as module 6 (R-launched, "Emergency alert message handling
+(CMAS/ETWS)").
+
+The division is clean: the service decodes the bytes, the app presents the alert.
+On the app side, `CellBroadcastReceiver` is the broadcast receiver for incoming
+alert intents, `CellBroadcastAlertService` decides whether and how to alert,
+`CellBroadcastAlertDialog` is the full-screen warning activity,
+`CellBroadcastAlertAudio` plays the standardised alert tone and drives vibration,
+and `CellBroadcastContentProvider` persists received alerts for the history view
+(all under
+`packages/apps/CellBroadcastReceiver/src/com/android/cellbroadcastreceiver/`). The
+alert categories it renders are the regulated emergency standards — CMAS
+(Commercial Mobile Alert System: presidential, imminent-threat, and AMBER alerts)
+and ETWS (Earthquake and Tsunami Warning System) — with the type constants and
+strings resolved in `CellBroadcastResources.java`.
+
+### 36.14.5 ImsServiceEntitlement -- TS.43 Entitlement and WFC Activation
+
+Before a carrier will let a device use Wi-Fi calling, VoLTE, or VoNR, the device
+usually has to *check in* with the carrier's entitlement server using the GSMA
+**TS.43** protocol and obtain a service entitlement. `packages/apps/ImsServiceEntitlement`
+(package `com.android.imsserviceentitlement`) is the AOSP app that does this. It
+polls the entitlement server, parses the TS.43 status documents
+(`ts43/Ts43VowifiStatus`, `Ts43VolteStatus`, `Ts43VonrStatus`,
+`Ts43SmsOverIpStatus`), and where the carrier requires interactive provisioning it
+drives a WebView-based activation flow in `WfcActivationActivity` /
+`WfcWebPortalFragment`, whose javadoc cites "TS.43 v5.0 section 3.4"
+(`packages/apps/ImsServiceEntitlement/src/com/android/imsserviceentitlement/`).
+
+Polling is carrier-config driven: an `ImsEntitlementReceiver` listens for
+`android.telephony.action.CARRIER_CONFIG_CHANGED`
+(`packages/apps/ImsServiceEntitlement/AndroidManifest.xml`) and, when the active
+carrier config enables TS.43 entitlement, schedules `ImsEntitlementPollingService`
+to (re)query the server. The HTTP exchange and result handling go through
+`ImsEntitlementApi` and `EntitlementConfiguration`. The outcome ultimately gates
+whether the IMS features described in §36.5 are offered to the user.
+
+### 36.14.6 gsma_services -- SatelliteClient and the TS.43 Auth Library
+
+Two reusable libraries that the entitlement and satellite paths build on live
+under `frameworks/libs/gsma_services`. `SatelliteClient` (module `SatelliteClient`,
+`frameworks/libs/gsma_services/satellite_client/Android.bp`) is a *versioned
+wrapper* around the satellite framework API in `SatelliteManagerWrapper`,
+exposing numbered callback variants so a client can compile against a stable
+surface across platform versions for the satellite stack of §36.11.
+`Ts43AuthenticationLibrary` (module `Ts43AuthenticationLibrary`,
+`frameworks/libs/gsma_services/ts43authentication/src/com/android/libraries/ts43authentication/Ts43AuthenticationLibrary.java`)
+provides the TS.43 carrier-entitlement authentication (EAP-AKA and OIDC) that the
+entitlement flow in §36.14.5 relies on to obtain an authenticated token from the
+carrier's entitlement server.
+
+---
+
+## 36.15 Try It
 
 ### Exercise 36-1: Inspect the Telephony Service with dumpsys
 
@@ -16979,9 +17403,355 @@ trains enable them independently of the platform dessert.
 
 ---
 
-## 38.13 Try It: NFC Development Exercises
+## 38.13 The SecureElement Service and OMAPI Implementation
 
-### 38.13.1 Exercise 1: Read an NDEF Tag
+Section 38.7.4 introduced OMAPI (the Open Mobile API) as the concept that lets a
+regular app talk to an applet running on a Secure Element.  This section walks
+the implementation behind that concept: the `SecureElement` system app at
+`packages/apps/SecureElement/`, which provides the `ISecureElementService`
+binder that backs the `android.se.omapi` client classes.  It is a standalone app
+(roughly 9.5K lines of Java) running in its own `android.uid.se` process, not
+part of NfcService -- though, as 38.13.7 shows, it shares the same off-host SEs
+that NFC card emulation routes contactless transactions to.
+
+### 38.13.1 Who Implements OMAPI
+
+OMAPI is split across three layers, each in a different part of the tree:
+
+| Layer | Location | Role |
+|-------|----------|------|
+| Client API | `frameworks/base/omapi/java/android/se/omapi/` | `SEService`, `Reader`, `Session`, `Channel` -- what apps call |
+| Service | `packages/apps/SecureElement/` | `SecureElementService` + `Terminal` -- the binder implementation |
+| HAL | `hardware/interfaces/secure_element/aidl/` | `ISecureElement` -- the vendor driver for each physical SE |
+
+The client `SEService` is a thin wrapper.  When an app constructs one, it binds
+to the `SecureElement` app's exported service and caches the binder:
+
+```java
+// Source: frameworks/base/omapi/java/android/se/omapi/SEService.java
+private static final String SERVICE_NAME = "android.se.omapi.ISecureElementService/default";
+...
+Intent intent = new Intent(ISecureElementService.class.getName());
+mContext.bindService(intent, mConnection, Context.BIND_AUTO_CREATE);
+...
+mSecureElementService = ISecureElementService.Stub.asInterface(service);
+```
+
+The bind target is the `<service>` declared by the SecureElement app, which
+filters on the `android.se.omapi.ISecureElementService` action:
+
+```xml
+<!-- Source: packages/apps/SecureElement/AndroidManifest.xml -->
+<service android:name=".SecureElementService"
+     android:visibleToInstantApps="true"
+     android:exported="true">
+    <intent-filter>
+        <action android:name="android.se.omapi.ISecureElementService"/>
+    </intent-filter>
+</service>
+```
+
+So `Reader`, `Session`, and `Channel` on the client side are just proxies for
+`ISecureElementReader`, `ISecureElementSession`, and `ISecureElementChannel`
+binders handed back by the service.
+
+### 38.13.2 SecureElementService and Terminals
+
+`SecureElementService` is a `persistent`, `directBootAware` `Service`.  In
+`onCreate()` it enumerates the available SEs by trying to construct one
+`Terminal` per HAL instance, then publishes itself under two names:
+
+```java
+// Source: packages/apps/SecureElement/src/com/android/se/SecureElementService.java
+public static final String UICC_TERMINAL = "SIM";
+public static final String ESE_TERMINAL = "eSE";
+...
+private void createTerminals() {
+    // Check for all SE HAL implementations
+    addTerminals(ESE_TERMINAL);
+    addTerminals(UICC_TERMINAL);
+}
+```
+
+`addTerminals()` loops, constructing `eSE1`, `eSE2`, ... and `SIM1`, `SIM2`, ...
+until the HAL `getService()` lookup throws `NoSuchElementException` (no more
+instances of that type).  Each surviving `Terminal` goes into an ordered
+`LinkedHashMap<String, Terminal>`; the map keys are exactly the reader names the
+client sees from `SEService.getReaders()`.  UICC terminals are also refreshed
+dynamically: a `BroadcastReceiver` for `ACTION_MULTI_SIM_CONFIG_CHANGED` calls
+`refreshUiccTerminals()` to add or close `SIM<n>` terminals when the active SIM
+count changes.
+
+The service registers under two service names, reflecting AIDL VINTF stability:
+
+```java
+// Source: packages/apps/SecureElement/src/com/android/se/SecureElementService.java
+public static final String VSTABLE_SECURE_ELEMENT_SERVICE =
+        "android.se.omapi.ISecureElementService/default";
+...
+if (getResources().getBoolean(R.bool.secure_element_vintf_enabled)) {
+    ServiceManager.addService(VSTABLE_SECURE_ELEMENT_SERVICE,
+            mSecureElementServiceBinderVntf);
+}
+...
+mSecureElementServiceBinder.forceDowngradeToSystemStability();
+ServiceManager.addService(Context.SECURE_ELEMENT_SERVICE, mSecureElementServiceBinder);
+```
+
+The VINTF-stable name (`/default`) is what vendor processes look up; the
+downgraded-to-system-stability binder under `Context.SECURE_ELEMENT_SERVICE` is
+what the in-system client `SEService` reaches via the bind above.
+
+### 38.13.3 Terminal: One Object per Secure Element
+
+A `Terminal` wraps the connection to one physical SE through the SE HAL.  It
+holds references for whichever HAL version is present and an
+`AccessControlEnforcer`:
+
+```java
+// Source: packages/apps/SecureElement/src/com/android/se/Terminal.java
+private ISecureElement mSEHal;                                          // HIDL 1.0/1.1
+private android.hardware.secure_element.V1_2.ISecureElement mSEHal12;   // HIDL 1.2
+private android.hardware.secure_element.ISecureElement mAidlHal;        // AIDL
+
+/** For each Terminal there will be one AccessController object. */
+private AccessControlEnforcer mAccessControlEnforcer;
+```
+
+The AIDL interface a `Terminal` drives is small and APDU-centric:
+
+```java
+// Source: hardware/interfaces/secure_element/aidl/android/hardware/secure_element/ISecureElement.aidl
+byte[] getAtr();
+boolean isCardPresent();
+byte[] openBasicChannel(in byte[] aid, in byte p2);
+LogicalChannelResponse openLogicalChannel(in byte[] aid, in byte p2);
+void reset();
+byte[] transmit(in byte[] data);
+```
+
+The HAL also calls back into the `Terminal` via `ISecureElementHalCallback`'s
+`onStateChange(boolean)`; on a connect transition the terminal re-runs access
+control initialization, and on disconnect it resets the enforcer.
+
+### 38.13.4 Sessions and Channels
+
+An app opens a `Session` on a `Reader`, then opens one or more channels on the
+session.  A channel is the unit of communication with a single applet, selected
+by its AID:
+
+- **Basic channel** (channel 0): there is exactly one per SE, and it may already
+  have a default applet selected.  `openBasicChannel()` rejects a second open
+  while channel 0 is in use.
+- **Logical channel** (channels 1-19): opened with `MANAGE CHANNEL`, each
+  carries an independent applet selection.  This is the normal path for apps.
+
+`SecureElementSession` (an inner class of `SecureElementService`) implements
+both entry points.  Both validate the session is open, the listener is non-null,
+and `p2` is one of the allowed `SELECT` values, then resolve the caller's
+identity and delegate to the `Terminal`:
+
+```java
+// Source: packages/apps/SecureElement/src/com/android/se/SecureElementService.java
+channel = mReader.getTerminal().openLogicalChannel(this, aid, p2, listener,
+        packageName, uuid, Binder.getCallingPid());
+```
+
+Caller identity comes from `getPackageNameFromCallingUid(Binder.getCallingUid())`.
+If the UID has no package (a native vendor process), the code falls back to a
+vendor-supplied UUID mapping, but **only for eSE terminals** -- UUID-based access
+is rejected on UICC.  Inside `Terminal.openLogicalChannel()`, the terminal first
+computes a `ChannelAccess` verdict (38.13.5), then issues the HAL call for the
+detected HAL version:
+
+```java
+// Source: packages/apps/SecureElement/src/com/android/se/Terminal.java
+channelAccess = setUpChannelAccess(aid, packageName, uuid, pid, false);
+...
+responseList.add(mAidlHal.openLogicalChannel(aid == null ? new byte[0] : aid, p2));
+```
+
+On success a `Channel` object is created, the computed `ChannelAccess` is
+attached to it, and a `SecureElementChannel` binder is returned to the client.
+The session tracks all its open channels and force-closes them on
+`closeChannels()` / `close()`.
+
+### 38.13.5 Access Control Enforcement
+
+This is the security-critical part of OMAPI: an arbitrary app must not be able
+to talk to a payment or telecom applet just because it knows the AID.  The
+SecureElement service enforces a Global Platform access-control model, checked
+in two places -- once when the channel is opened, and again on every APDU.
+
+`Terminal.setUpChannelAccess()` decides the verdict for a channel open, in this
+order:
+
+1. If the caller holds `android.permission.SECURE_ELEMENT_PRIVILEGED_OPERATION`,
+   it gets `ChannelAccess.getPrivilegeAccess()` -- full access, no rule lookup.
+2. On a UICC terminal, if the caller has **carrier privileges** (signed by a key
+   the SIM authorizes) and the AID is not ISD-R, it gets carrier-privilege
+   access.  An ordinary app's `openBasicChannel` on UICC is otherwise refused.
+3. Otherwise the `AccessControlEnforcer` is consulted for a per-AID rule:
+
+```java
+// Source: packages/apps/SecureElement/src/com/android/se/Terminal.java
+if (packageName != null && isPrivilegedApplication(packageName)) {
+    return ChannelAccess.getPrivilegeAccess(packageName, pid);
+}
+...
+ChannelAccess channelAccess =
+        mAccessControlEnforcer.setUpChannelAccess(aid, packageName, uuid, checkRefreshTag);
+```
+
+The `AccessControlEnforcer` obtains its rules from the SE itself, preferring ARA
+and falling back to ARF:
+
+- **ARA (Access Rule Application)** -- a dedicated applet (the ARA-M, AID
+  `A00000015141434C00`) that stores Global Platform `REF-AR-DO` rules mapping a
+  caller's certificate hash (and optional package name) to the AIDs it may use.
+  The `AraController` opens a logical channel to the ARA-M and reads the rules
+  with `GET DATA`.
+- **ARF (Access Rule File)** -- a PKCS#15 file structure on the (typically UICC)
+  SE, parsed by `ArfController` / `PKCS15Handler`, used when no ARA applet
+  exists.
+
+```java
+// Source: packages/apps/SecureElement/src/com/android/se/security/AccessControlEnforcer.java
+// 1 - Let's try to use ARA
+if (mUseAra && mAraController != null) {
+    ...
+    mAraController.initialize();
+    // disable other access methods
+    mUseArf = false;
+    mFullAccess = false;
+}
+// 2 - Let's try to use ARF since ARA cannot be used
+if (mUseArf && mArfController != null) {
+    mArfController.initialize();
+    ...
+}
+/* 4 - Let's block everything since neither ARA, ARF or fullaccess can be used */
+if (!mUseArf && !mUseAra && !mFullAccess) {
+    mInitialChannelAccess.setApduAccess(ChannelAccess.ACCESS.DENIED);
+    ...
+}
+```
+
+The default posture is fail-closed: if the SE has neither an ARA applet nor an
+ARF file and full access has not been explicitly granted, every channel open is
+denied.  The matched rules are cached in an `AccessRuleCache` and re-validated
+against the SE's refresh tag so that newly provisioned rules take effect.
+
+The second enforcement point is per-APDU.  `Channel.transmit()` re-checks the
+caller PID, blocks `MANAGE CHANNEL` and (for non-privileged callers) `SELECT by
+DF name`, then calls back into the enforcer before the APDU reaches the HAL:
+
+```java
+// Source: packages/apps/SecureElement/src/com/android/se/Channel.java
+checkCommand(command);
+synchronized (mLock) {
+    command[0] = setChannelToClassByte(command[0], mChannelNumber);
+    return mTerminal.transmit(command);
+}
+```
+
+`checkCommand()` consults `AccessControlEnforcer.checkCommand()`, which honors
+any APDU filter (`APDU-AR-DO`) the rule attached to the channel, so a rule can
+permit an applet but restrict which command APDUs are allowed.
+
+### 38.13.6 Channel Open Path End to End
+
+The diagram below traces a non-privileged app opening a logical channel to an
+applet, showing where access control is enforced before any APDU reaches the SE.
+
+```mermaid
+sequenceDiagram
+    participant App as "App (android.se.omapi.Session)"
+    participant SES as "SecureElementService (android.uid.se)"
+    participant Term as "Terminal (per SE)"
+    participant ACE as "AccessControlEnforcer"
+    participant HAL as "SE HAL (ISecureElement)"
+    participant SE as "Secure Element / Applet"
+
+    App->>SES: "openLogicalChannel(aid, p2)"
+    SES->>SES: "resolve package from calling UID"
+    SES->>Term: "openLogicalChannel(session, aid, p2, pkg, pid)"
+    Term->>ACE: "setUpChannelAccess(aid, pkg)"
+    ACE->>HAL: "open channel to ARA-M, GET DATA (rules)"
+    HAL->>SE: "read ARA / ARF access rules"
+    SE-->>ACE: "REF-AR-DO rules"
+    ACE-->>Term: "ChannelAccess (ALLOWED or DENIED)"
+    alt access allowed
+        Term->>HAL: "openLogicalChannel(aid, p2)"
+        HAL->>SE: "MANAGE CHANNEL + SELECT aid"
+        SE-->>HAL: "channel number + SELECT response"
+        HAL-->>Term: "LogicalChannelResponse"
+        Term-->>SES: "Channel (access attached)"
+        SES-->>App: "ISecureElementChannel"
+    else access denied
+        Term-->>SES: "SecurityException / null"
+        SES-->>App: "open fails"
+    end
+```
+
+### 38.13.7 How OMAPI Relates to NFC Card Emulation
+
+OMAPI (application-processor access to applets, over SPI/I2C/SWP) and NFC
+off-host card emulation (38.6, 38.7) both reach the same physical eSE / UICC,
+but through different paths: OMAPI goes app to `SecureElementService` to SE HAL,
+while contactless transactions go external reader to NFCC to SE over the
+RF/HCI link, with no application processor in the loop.
+
+The two meet at the `NFC_AR_DO` access rule.  When NfcService is about to
+broadcast an off-host transaction event (38.7.6), it asks the SecureElement
+service whether a given package is allowed to receive events for that AID:
+
+```java
+// Source: packages/apps/SecureElement/src/com/android/se/SecureElementService.java
+public synchronized boolean[] isNfcEventAllowed(String reader, byte[] aid,
+        String[] packageNames, int userId) throws RemoteException {
+    ...
+    Terminal terminal = getTerminal(reader);
+    ...
+    return terminal.isNfcEventAllowed(context.getPackageManager(), aid, packageNames);
+}
+```
+
+`Terminal.isNfcEventAllowed()` runs the same ARA/ARF rule set through the
+enforcer, but evaluates the `NFC-AR-DO` (NFC event access) field rather than the
+APDU-access field.  So the access rules provisioned on the SE govern both who
+may open a channel to an applet over OMAPI and who may be notified when that
+applet handles a contactless transaction -- one rule store, two enforcement
+surfaces.
+
+### 38.13.8 eUICC and the ISD-R AID
+
+The same SecureElement service also fronts the eUICC (embedded SIM) for eSIM
+profile management.  The `Terminal` recognizes the ISD-R (Issuer Security Domain
+Root) applet by a fixed AID and treats it specially in access control:
+
+```java
+// Source: packages/apps/SecureElement/src/com/android/se/Terminal.java
+public static final byte[] ISD_R_AID =
+        new byte[]{ (byte) 0xA0, 0x00, 0x00, 0x05, 0x59, 0x10, 0x10, ... };
+...
+// Check carrier privilege when AID is not ISD-R
+if (packageName != null && getName().startsWith(SecureElementService.UICC_TERMINAL)
+        && !Arrays.equals(aid, ISD_R_AID)) {
+    ... checkCarrierPrivilege ...
+}
+```
+
+The LPA (Local Profile Assistant) component that downloads and installs eSIM
+profiles uses OMAPI logical channels to the ISD-R; the carrier-privilege check
+is skipped for ISD-R precisely because eSIM management is gated by the
+privileged permission instead.
+
+---
+
+## 38.14 Try It: NFC Development Exercises
+
+### 38.14.1 Exercise 1: Read an NDEF Tag
 
 **Goal**: Build an activity that reads NDEF messages from tags.
 
@@ -17083,7 +17853,7 @@ public class ReadNdefActivity extends Activity {
 **Verification**: write an NDEF URI tag with a tool like NFC TagWriter, then
 tap your phone.  The activity should launch and display the tag content.
 
-### 38.13.2 Exercise 2: Write an NDEF Tag
+### 38.14.2 Exercise 2: Write an NDEF Tag
 
 **Goal**: Write NDEF content to a blank or rewritable tag.
 
@@ -17181,7 +17951,7 @@ public class WriteNdefActivity extends Activity {
 **Verification**: tap a blank NTAG213/215/216 tag, then read it back with
 Exercise 1 or any NFC reader app.
 
-### 38.13.3 Exercise 3: Implement a Payment HCE Service
+### 38.14.3 Exercise 3: Implement a Payment HCE Service
 
 **Goal**: Build a minimal HCE service that responds to payment SELECT commands.
 
@@ -17309,7 +18079,7 @@ public class DemoPaymentService extends HostApduService {
 **Verification**: use an NFC reader app on another phone to send a SELECT APDU
 for the Visa AID.
 
-### 38.13.4 Exercise 4: Use Reader Mode
+### 38.14.4 Exercise 4: Use Reader Mode
 
 **Goal**: Use reader mode for reliable tag reading without card emulation
 interference.
@@ -17416,7 +18186,7 @@ public class ReaderModeActivity extends Activity
 **Verification**: tap various NFC tags and cards.  The activity should display
 their technology details and content.
 
-### 38.13.5 Exercise 5: Foreground Dispatch
+### 38.14.5 Exercise 5: Foreground Dispatch
 
 **Goal**: Use foreground dispatch to intercept tags destined for other apps.
 
@@ -17489,7 +18259,7 @@ public class ForegroundDispatchActivity extends Activity {
 }
 ```
 
-### 38.13.6 Exercise 6: Dump the NFC Routing Table
+### 38.14.6 Exercise 6: Dump the NFC Routing Table
 
 **Goal**: Use `dumpsys` to inspect the NFC service state and routing table.
 
@@ -17538,7 +18308,7 @@ adb logcat -s NfcService:V NfcDispatcher:V NfcCardEmulationManager:V
 adb shell setprop persist.nfc.snoop_log_mode full
 ```
 
-### 38.13.7 Exercise 7: Inspect NFC HAL via AIDL
+### 38.14.7 Exercise 7: Inspect NFC HAL via AIDL
 
 **Goal**: Understand the HAL interface by examining the AIDL definitions.
 
@@ -17568,7 +18338,7 @@ atest VtsHalNfcTargetTest
 3. What events does `INfcClientCallback` deliver?
 4. How does the HAL handle power management (`NfcCloseType`)?
 
-### 38.13.8 Exercise 8: NFC-F FeliCa Emulation
+### 38.14.8 Exercise 8: NFC-F FeliCa Emulation
 
 **Goal**: Build a minimal NFC-F (FeliCa) card emulation service.
 
@@ -18534,6 +19304,18 @@ private static final int COMBO_SINK_HOST =
 private static final int COMBO_SINK_DEVICE =
         UsbPort.combineRolesAsBit(POWER_ROLE_SINK, DATA_ROLE_DEVICE);
 ```
+
+### 39.3.9 Command-Line USB Diagnostics: usb_info_tools
+
+The `system/usb_info_tools/` project ships two small Rust diagnostic binaries.
+`typec_connector_class` (`system/usb_info_tools/typec_connector_class_helper/`)
+walks the kernel's USB Type-C Connector Class under `/sys/class/typec` and
+prints per-port data/power roles and PD state, which is handy when correlating
+what `UsbPortManager` reports against the raw sysfs the HAL reads.
+`dumpsys_to_lsusb` (`system/usb_info_tools/dumpsys_to_lsusb/`) parses
+`dumpsys usb` output and renders it in `lsusb`-style verbose and tree views.
+For the broader on-device debugging workflow these tools slot into, see
+Chapter 56.
 
 ---
 
@@ -20721,9 +21503,31 @@ split.
 
 ---
 
-## 39.12 Try It: Hands-On Experiments
+## 39.12 DeviceAsWebcam: The UVC Webcam Gadget
 
-### 39.12.1 Explore USB State Machine
+The `UVC` gadget function in the function table (Section 39.3.5) is what lets an
+Android device present itself to a host as a standard USB webcam. The user-space
+piece that drives it lives in `packages/services/DeviceAsWebcam/` -- a service
+that streams the device's own camera out over USB. When the user picks the
+webcam role, `UsbDeviceManager` brings up the `UVC` gadget function through the
+`IUsbGadget` HAL exactly like any other function, and the kernel's `g_uvc`
+driver exposes a V4L2 output node (`/dev/video*`) that the service writes frames
+into.
+
+The native side
+(`packages/services/DeviceAsWebcam/interface/jni/UVCProvider.cpp`) opens that
+node, negotiates UVC formats and frame intervals over its control endpoint, and
+pumps camera frames to the host; it pulls those frames from the platform Camera2
+pipeline rather than reimplementing capture. So the chapter's gadget machinery
+(ConfigFS, FunctionFS, the `IUsbGadget` function bitmask) supplies the USB
+transport, and DeviceAsWebcam supplies the video. For how the frames are
+captured upstream of this service, see Chapter 62.
+
+---
+
+## 39.13 Try It: Hands-On Experiments
+
+### 39.13.1 Explore USB State Machine
 
 Monitor USB state changes in real time:
 
@@ -20740,7 +21544,7 @@ adb shell getprop sys.usb.controller
 adb shell getprop persist.sys.usb.config
 ```
 
-### 39.12.2 Switch USB Functions
+### 39.13.2 Switch USB Functions
 
 ```bash
 # Switch to MTP mode
@@ -20762,7 +21566,7 @@ adb shell svc usb getFunctions
 adb shell svc usb resetUsbGadget
 ```
 
-### 39.12.3 Inspect USB HAL State
+### 39.13.3 Inspect USB HAL State
 
 ```bash
 # Dump USB service state
@@ -20778,7 +21582,7 @@ adb shell dumpsys usb | grep "hal version"
 adb shell service list | grep usb
 ```
 
-### 39.12.4 ADB Protocol Exploration
+### 39.13.4 ADB Protocol Exploration
 
 ```bash
 # Check ADB version and protocol
@@ -20803,7 +21607,7 @@ adb connect <device-ip>:5555
 adb shell cat /config/usb_gadget/g1/UDC
 ```
 
-### 39.12.5 Test File Transfer Performance
+### 39.13.5 Test File Transfer Performance
 
 ```bash
 # Create a test file
@@ -20820,7 +21624,7 @@ time adb pull /data/local/tmp/testfile /tmp/pulled_file
 # USB 3.x: ~100+ MB/s (device dependent)
 ```
 
-### 39.12.6 Explore MTP from Device Side
+### 39.13.6 Explore MTP from Device Side
 
 ```bash
 # Check MTP server status
@@ -20836,7 +21640,7 @@ adb shell dumpsys media.mtp
 adb shell ls -la /dev/usb-ffs/mtp/
 ```
 
-### 39.12.7 USB Host Mode Exploration
+### 39.13.7 USB Host Mode Exploration
 
 ```bash
 # List connected USB devices (host mode)
@@ -20855,7 +21659,7 @@ adb logcat -s UsbHostManager:*
 adb shell "dumpsys usb -dump-raw"
 ```
 
-### 39.12.8 Build and Test USB HAL Changes
+### 39.13.8 Build and Test USB HAL Changes
 
 ```bash
 # Build the default USB HAL
@@ -20874,7 +21678,7 @@ atest VtsHalUsbV1_0TargetTest
 atest VtsHalUsbGadgetV1_0TargetTest
 ```
 
-### 39.12.9 ADB Over WiFi Pairing
+### 39.13.9 ADB Over WiFi Pairing
 
 ```bash
 # On the device: Enable wireless debugging in Developer Options
@@ -20890,7 +21694,7 @@ adb connect <device-ip>:<connection-port>
 adb devices -l
 ```
 
-### 39.12.10 Port Forwarding Experiment
+### 39.13.10 Port Forwarding Experiment
 
 ```bash
 # Forward local port to device port
@@ -20908,7 +21712,7 @@ adb forward --remove tcp:8080
 adb reverse --remove-all
 ```
 
-### 39.12.11 Investigate USB Accessory Mode
+### 39.13.11 Investigate USB Accessory Mode
 
 ```bash
 # Check accessory support
@@ -20922,7 +21726,7 @@ adb logcat -s UsbDeviceManager:* | grep -i accessory
 adb shell getprop ro.usb.userspace.aoa.enabled
 ```
 
-### 39.12.12 Trace USB Stack with ftrace
+### 39.13.12 Trace USB Stack with ftrace
 
 ```bash
 # Enable USB tracing (requires root)
@@ -20938,7 +21742,7 @@ adb shell "echo 0 > /sys/kernel/debug/tracing/events/gadget/enable"
 adb shell "echo 0 > /sys/kernel/debug/tracing/events/usb/enable"
 ```
 
-### 39.12.13 Dump ADB Protocol Traffic
+### 39.13.13 Dump ADB Protocol Traffic
 
 ```bash
 # Set ADB trace categories
@@ -20952,7 +21756,7 @@ adb shell setprop persist.adb.trace_mask 0xffff
 adb shell stop adbd && adb shell start adbd
 ```
 
-### 39.12.14 Explore ConfigFS Gadget Configuration
+### 39.13.14 Explore ConfigFS Gadget Configuration
 
 On devices with configfs gadget support, you can inspect the USB gadget
 configuration directly:
@@ -20987,7 +21791,7 @@ adb shell ls /config/usb_gadget/g1/functions/
 adb shell cat /config/usb_gadget/g1/UDC
 ```
 
-### 39.12.15 Monitor USB Type-C Port Status
+### 39.13.15 Monitor USB Type-C Port Status
 
 ```bash
 # View Type-C port information
@@ -21009,7 +21813,7 @@ adb shell udevadm monitor --kernel --subsystem-match=typec 2>/dev/null || \
     echo "Use logcat to monitor UEvents"
 ```
 
-### 39.12.16 Benchmark USB Data Throughput
+### 39.13.16 Benchmark USB Data Throughput
 
 ```bash
 # Test raw ADB transfer speed
@@ -21032,7 +21836,7 @@ adb shell dumpsys usb | grep -i speed
 adb shell cat /sys/class/udc/*/current_speed 2>/dev/null
 ```
 
-### 39.12.17 Explore ADB Key Management
+### 39.13.17 Explore ADB Key Management
 
 ```bash
 # View authorized keys on device
@@ -21050,7 +21854,7 @@ adb shell settings put global development_settings_enabled 0
 # Or via Settings > Developer Options > Revoke USB debugging authorizations
 ```
 
-### 39.12.18 Write a Simple USB Host Application
+### 39.13.18 Write a Simple USB Host Application
 
 Create a minimal application that enumerates USB devices:
 
@@ -21093,7 +21897,7 @@ public class UsbEnumerator extends Activity {
 }
 ```
 
-### 39.12.19 Debug USB Connection Issues
+### 39.13.19 Debug USB Connection Issues
 
 Common USB debugging techniques:
 
@@ -21122,7 +21926,7 @@ adb start-server
 adb devices
 ```
 
-### 39.12.20 Inspect MTP Object Tree
+### 39.13.20 Inspect MTP Object Tree
 
 ```bash
 # Use Android's mtp-send/receive tools (if available)
@@ -21142,7 +21946,7 @@ adb logcat -s MtpServer:V MtpDatabase:V MtpService:V
 # 0x100B = DELETE_OBJECT
 ```
 
-### 39.12.21 Inspect USB Host Device Authorization
+### 39.13.21 Inspect USB Host Device Authorization
 
 On a build with `enable_usb_host_authorization` enabled (desktop/large-screen
 form factors), inspect the new daemon and policy:
@@ -21163,7 +21967,7 @@ adb logcat -s UsbAuthManager:* usbauthservice:*
 adb shell cat /sys/bus/usb/devices/1-1/authorized 2>/dev/null
 ```
 
-### 39.12.22 Inspect the Userspace AOA Daemon
+### 39.13.22 Inspect the Userspace AOA Daemon
 
 ```bash
 # Is userspace AOA selected on this device?

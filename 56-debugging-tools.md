@@ -4697,19 +4697,49 @@ this chapter's tools at a different altitude:
 
 ---
 
-## 56.21 Try It: Debug a Real Performance Issue
+## 56.21 dmesgd: Kernel-Log to DropBox Bridge
+
+`dmesgd` (`system/dmesgd/`) is a small native daemon (a few hundred lines of
+C++) that bridges the kernel ring buffer into the same crash-report pipeline as
+tombstones and ANRs.  On startup it runs `popen("dmesg", "r")` and feeds each
+line into a `DmesgParser` (`system/dmesgd/dmesg_parser.h`), which recognizes
+kernel `WARNING`/`ERROR` stanzas, strips sensitive data such as 64-bit
+addresses, and assembles a per-fault report with a title and a report type.
+When a report is ready, `dmesgd` posts it to `DropBoxManager`
+(`system/dmesgd/dmesgd.cpp` includes `<android/os/DropBoxManager.h>` and calls
+`addText()`) under a tag such as `SYSTEM_<type>_ERROR_REPORT`, which is exactly
+the tag space `dumpstate` scrapes when building a bugreport
+(section 56.8).  To avoid spamming duplicates across boots it remembers report
+titles in `/data/misc/dmesgd/sent_reports.txt` and caps the number of reports
+per run.  The kernel side of this path -- how messages reach the `dmesg` ring
+buffer and persist across reboots via `pstore` -- is covered in Chapter 5.
+
+## 56.22 liburingutils: io_uring Socket Helper
+
+`liburingutils` (`system/liburingutils/`) is a thin wrapper around the external
+`liburing` library that exposes a single helper class, `IOUringSocketHandler`
+(`system/liburingutils/include/IOUringSocketHandler/IOUringSocketHandler.h`),
+for receiving datagrams from a socket through io_uring's multishot `recvmsg`.
+This is the class `logd`'s `LogListener` holds in its `uring_listener_` member
+(section 56.2.5) to ingest log records at high throughput; the library is also
+packaged into the statsd APEX (`system/liburingutils/Android.bp`) for the same
+asynchronous, batched socket-receive pattern.
+
+---
+
+## 56.23 Try It: Debug a Real Performance Issue
 
 This section walks through a complete debugging workflow for a realistic
 performance problem: an application that exhibits jank (dropped frames)
 during list scrolling.
 
-### 56.21.1 Problem Statement
+### 56.23.1 Problem Statement
 
 A user reports that a RecyclerView-based application stutters when scrolling
 quickly.  The app displays a list of items with images and text.  The
 stutter is reproducible on a Pixel device.
 
-### 56.21.2 Step 1: Confirm the Problem with gfxinfo
+### 56.23.2 Step 1: Confirm the Problem with gfxinfo
 
 ```bash
 # Reset frame stats
@@ -4738,7 +4768,7 @@ HISTOGRAM:
 The 16.63% jank rate confirms the problem.  For smooth 60fps scrolling,
 frame rendering must complete within 16.67ms.
 
-### 56.21.3 Step 2: Capture a Perfetto System Trace
+### 56.23.3 Step 2: Capture a Perfetto System Trace
 
 ```bash
 # Create trace config
@@ -4791,7 +4821,7 @@ adb shell perfetto -c /data/local/tmp/scroll_trace.pbtxt \
 adb pull /data/misc/perfetto-traces/scroll_trace.perfetto-trace .
 ```
 
-### 56.21.4 Step 3: Analyze in Perfetto UI
+### 56.23.4 Step 3: Analyze in Perfetto UI
 
 Open the trace in `ui.perfetto.dev` or Perfetto embedded in Android Studio.
 
@@ -4821,7 +4851,7 @@ flowchart TD
     O -- "Complex layout" --> R["Simplify layout hierarchy"]
 ```
 
-### 56.21.5 Step 4: CPU Profile the Hot Path
+### 56.23.5 Step 4: CPU Profile the Hot Path
 
 The Perfetto trace shows that `onBindViewHolder` is taking 25ms on some
 frames.  Let us use simpleperf to understand why:
@@ -4853,7 +4883,7 @@ Overhead  Command     Shared Object       Symbol
 The CPU profile reveals that JPEG decompression (`jpeg_decompress()`) is
 happening synchronously on the main thread during view binding.
 
-### 56.21.6 Step 5: Check for Memory Issues
+### 56.23.6 Step 5: Check for Memory Issues
 
 The GC activity in the trace suggests memory pressure.  Let us profile
 allocations:
@@ -4902,7 +4932,7 @@ LIMIT 10;
 **Expected finding**: Large allocations from bitmap decoding during each
 scroll event.
 
-### 56.21.7 Step 6: Verify with dumpsys meminfo
+### 56.23.7 Step 6: Verify with dumpsys meminfo
 
 ```bash
 # Before scrolling
@@ -4930,7 +4960,7 @@ Total PSS:         35,678    48,321   +12,643 KB
 The significant growth in both Java and Native heap during scrolling
 confirms that images are being decoded and not properly cached.
 
-### 56.21.8 Step 7: Root Cause and Fix
+### 56.23.8 Step 7: Root Cause and Fix
 
 The debugging workflow reveals:
 
@@ -4958,7 +4988,7 @@ flowchart LR
     D --> E
 ```
 
-### 56.21.9 Step 8: Verify the Fix
+### 56.23.9 Step 8: Verify the Fix
 
 After implementing the fix, re-run the same measurements:
 
@@ -4986,7 +5016,7 @@ The Perfetto trace should show:
 - No GC pauses during scroll
 - Smooth Choreographer frame cadence
 
-### 56.21.10 Debugging Checklist
+### 56.23.10 Debugging Checklist
 
 Use this checklist when debugging performance issues:
 
