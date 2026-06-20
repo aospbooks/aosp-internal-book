@@ -3107,9 +3107,355 @@ trains enable them independently of the platform dessert.
 
 ---
 
-## 38.13 Try It: NFC Development Exercises
+## 38.13 The SecureElement Service and OMAPI Implementation
 
-### 38.13.1 Exercise 1: Read an NDEF Tag
+Section 38.7.4 introduced OMAPI (the Open Mobile API) as the concept that lets a
+regular app talk to an applet running on a Secure Element.  This section walks
+the implementation behind that concept: the `SecureElement` system app at
+`packages/apps/SecureElement/`, which provides the `ISecureElementService`
+binder that backs the `android.se.omapi` client classes.  It is a standalone app
+(roughly 9.5K lines of Java) running in its own `android.uid.se` process, not
+part of NfcService -- though, as 38.13.7 shows, it shares the same off-host SEs
+that NFC card emulation routes contactless transactions to.
+
+### 38.13.1 Who Implements OMAPI
+
+OMAPI is split across three layers, each in a different part of the tree:
+
+| Layer | Location | Role |
+|-------|----------|------|
+| Client API | `frameworks/base/omapi/java/android/se/omapi/` | `SEService`, `Reader`, `Session`, `Channel` -- what apps call |
+| Service | `packages/apps/SecureElement/` | `SecureElementService` + `Terminal` -- the binder implementation |
+| HAL | `hardware/interfaces/secure_element/aidl/` | `ISecureElement` -- the vendor driver for each physical SE |
+
+The client `SEService` is a thin wrapper.  When an app constructs one, it binds
+to the `SecureElement` app's exported service and caches the binder:
+
+```java
+// Source: frameworks/base/omapi/java/android/se/omapi/SEService.java
+private static final String SERVICE_NAME = "android.se.omapi.ISecureElementService/default";
+...
+Intent intent = new Intent(ISecureElementService.class.getName());
+mContext.bindService(intent, mConnection, Context.BIND_AUTO_CREATE);
+...
+mSecureElementService = ISecureElementService.Stub.asInterface(service);
+```
+
+The bind target is the `<service>` declared by the SecureElement app, which
+filters on the `android.se.omapi.ISecureElementService` action:
+
+```xml
+<!-- Source: packages/apps/SecureElement/AndroidManifest.xml -->
+<service android:name=".SecureElementService"
+     android:visibleToInstantApps="true"
+     android:exported="true">
+    <intent-filter>
+        <action android:name="android.se.omapi.ISecureElementService"/>
+    </intent-filter>
+</service>
+```
+
+So `Reader`, `Session`, and `Channel` on the client side are just proxies for
+`ISecureElementReader`, `ISecureElementSession`, and `ISecureElementChannel`
+binders handed back by the service.
+
+### 38.13.2 SecureElementService and Terminals
+
+`SecureElementService` is a `persistent`, `directBootAware` `Service`.  In
+`onCreate()` it enumerates the available SEs by trying to construct one
+`Terminal` per HAL instance, then publishes itself under two names:
+
+```java
+// Source: packages/apps/SecureElement/src/com/android/se/SecureElementService.java
+public static final String UICC_TERMINAL = "SIM";
+public static final String ESE_TERMINAL = "eSE";
+...
+private void createTerminals() {
+    // Check for all SE HAL implementations
+    addTerminals(ESE_TERMINAL);
+    addTerminals(UICC_TERMINAL);
+}
+```
+
+`addTerminals()` loops, constructing `eSE1`, `eSE2`, ... and `SIM1`, `SIM2`, ...
+until the HAL `getService()` lookup throws `NoSuchElementException` (no more
+instances of that type).  Each surviving `Terminal` goes into an ordered
+`LinkedHashMap<String, Terminal>`; the map keys are exactly the reader names the
+client sees from `SEService.getReaders()`.  UICC terminals are also refreshed
+dynamically: a `BroadcastReceiver` for `ACTION_MULTI_SIM_CONFIG_CHANGED` calls
+`refreshUiccTerminals()` to add or close `SIM<n>` terminals when the active SIM
+count changes.
+
+The service registers under two service names, reflecting AIDL VINTF stability:
+
+```java
+// Source: packages/apps/SecureElement/src/com/android/se/SecureElementService.java
+public static final String VSTABLE_SECURE_ELEMENT_SERVICE =
+        "android.se.omapi.ISecureElementService/default";
+...
+if (getResources().getBoolean(R.bool.secure_element_vintf_enabled)) {
+    ServiceManager.addService(VSTABLE_SECURE_ELEMENT_SERVICE,
+            mSecureElementServiceBinderVntf);
+}
+...
+mSecureElementServiceBinder.forceDowngradeToSystemStability();
+ServiceManager.addService(Context.SECURE_ELEMENT_SERVICE, mSecureElementServiceBinder);
+```
+
+The VINTF-stable name (`/default`) is what vendor processes look up; the
+downgraded-to-system-stability binder under `Context.SECURE_ELEMENT_SERVICE` is
+what the in-system client `SEService` reaches via the bind above.
+
+### 38.13.3 Terminal: One Object per Secure Element
+
+A `Terminal` wraps the connection to one physical SE through the SE HAL.  It
+holds references for whichever HAL version is present and an
+`AccessControlEnforcer`:
+
+```java
+// Source: packages/apps/SecureElement/src/com/android/se/Terminal.java
+private ISecureElement mSEHal;                                          // HIDL 1.0/1.1
+private android.hardware.secure_element.V1_2.ISecureElement mSEHal12;   // HIDL 1.2
+private android.hardware.secure_element.ISecureElement mAidlHal;        // AIDL
+
+/** For each Terminal there will be one AccessController object. */
+private AccessControlEnforcer mAccessControlEnforcer;
+```
+
+The AIDL interface a `Terminal` drives is small and APDU-centric:
+
+```java
+// Source: hardware/interfaces/secure_element/aidl/android/hardware/secure_element/ISecureElement.aidl
+byte[] getAtr();
+boolean isCardPresent();
+byte[] openBasicChannel(in byte[] aid, in byte p2);
+LogicalChannelResponse openLogicalChannel(in byte[] aid, in byte p2);
+void reset();
+byte[] transmit(in byte[] data);
+```
+
+The HAL also calls back into the `Terminal` via `ISecureElementHalCallback`'s
+`onStateChange(boolean)`; on a connect transition the terminal re-runs access
+control initialization, and on disconnect it resets the enforcer.
+
+### 38.13.4 Sessions and Channels
+
+An app opens a `Session` on a `Reader`, then opens one or more channels on the
+session.  A channel is the unit of communication with a single applet, selected
+by its AID:
+
+- **Basic channel** (channel 0): there is exactly one per SE, and it may already
+  have a default applet selected.  `openBasicChannel()` rejects a second open
+  while channel 0 is in use.
+- **Logical channel** (channels 1-19): opened with `MANAGE CHANNEL`, each
+  carries an independent applet selection.  This is the normal path for apps.
+
+`SecureElementSession` (an inner class of `SecureElementService`) implements
+both entry points.  Both validate the session is open, the listener is non-null,
+and `p2` is one of the allowed `SELECT` values, then resolve the caller's
+identity and delegate to the `Terminal`:
+
+```java
+// Source: packages/apps/SecureElement/src/com/android/se/SecureElementService.java
+channel = mReader.getTerminal().openLogicalChannel(this, aid, p2, listener,
+        packageName, uuid, Binder.getCallingPid());
+```
+
+Caller identity comes from `getPackageNameFromCallingUid(Binder.getCallingUid())`.
+If the UID has no package (a native vendor process), the code falls back to a
+vendor-supplied UUID mapping, but **only for eSE terminals** -- UUID-based access
+is rejected on UICC.  Inside `Terminal.openLogicalChannel()`, the terminal first
+computes a `ChannelAccess` verdict (38.13.5), then issues the HAL call for the
+detected HAL version:
+
+```java
+// Source: packages/apps/SecureElement/src/com/android/se/Terminal.java
+channelAccess = setUpChannelAccess(aid, packageName, uuid, pid, false);
+...
+responseList.add(mAidlHal.openLogicalChannel(aid == null ? new byte[0] : aid, p2));
+```
+
+On success a `Channel` object is created, the computed `ChannelAccess` is
+attached to it, and a `SecureElementChannel` binder is returned to the client.
+The session tracks all its open channels and force-closes them on
+`closeChannels()` / `close()`.
+
+### 38.13.5 Access Control Enforcement
+
+This is the security-critical part of OMAPI: an arbitrary app must not be able
+to talk to a payment or telecom applet just because it knows the AID.  The
+SecureElement service enforces a Global Platform access-control model, checked
+in two places -- once when the channel is opened, and again on every APDU.
+
+`Terminal.setUpChannelAccess()` decides the verdict for a channel open, in this
+order:
+
+1. If the caller holds `android.permission.SECURE_ELEMENT_PRIVILEGED_OPERATION`,
+   it gets `ChannelAccess.getPrivilegeAccess()` -- full access, no rule lookup.
+2. On a UICC terminal, if the caller has **carrier privileges** (signed by a key
+   the SIM authorizes) and the AID is not ISD-R, it gets carrier-privilege
+   access.  An ordinary app's `openBasicChannel` on UICC is otherwise refused.
+3. Otherwise the `AccessControlEnforcer` is consulted for a per-AID rule:
+
+```java
+// Source: packages/apps/SecureElement/src/com/android/se/Terminal.java
+if (packageName != null && isPrivilegedApplication(packageName)) {
+    return ChannelAccess.getPrivilegeAccess(packageName, pid);
+}
+...
+ChannelAccess channelAccess =
+        mAccessControlEnforcer.setUpChannelAccess(aid, packageName, uuid, checkRefreshTag);
+```
+
+The `AccessControlEnforcer` obtains its rules from the SE itself, preferring ARA
+and falling back to ARF:
+
+- **ARA (Access Rule Application)** -- a dedicated applet (the ARA-M, AID
+  `A00000015141434C00`) that stores Global Platform `REF-AR-DO` rules mapping a
+  caller's certificate hash (and optional package name) to the AIDs it may use.
+  The `AraController` opens a logical channel to the ARA-M and reads the rules
+  with `GET DATA`.
+- **ARF (Access Rule File)** -- a PKCS#15 file structure on the (typically UICC)
+  SE, parsed by `ArfController` / `PKCS15Handler`, used when no ARA applet
+  exists.
+
+```java
+// Source: packages/apps/SecureElement/src/com/android/se/security/AccessControlEnforcer.java
+// 1 - Let's try to use ARA
+if (mUseAra && mAraController != null) {
+    ...
+    mAraController.initialize();
+    // disable other access methods
+    mUseArf = false;
+    mFullAccess = false;
+}
+// 2 - Let's try to use ARF since ARA cannot be used
+if (mUseArf && mArfController != null) {
+    mArfController.initialize();
+    ...
+}
+/* 4 - Let's block everything since neither ARA, ARF or fullaccess can be used */
+if (!mUseArf && !mUseAra && !mFullAccess) {
+    mInitialChannelAccess.setApduAccess(ChannelAccess.ACCESS.DENIED);
+    ...
+}
+```
+
+The default posture is fail-closed: if the SE has neither an ARA applet nor an
+ARF file and full access has not been explicitly granted, every channel open is
+denied.  The matched rules are cached in an `AccessRuleCache` and re-validated
+against the SE's refresh tag so that newly provisioned rules take effect.
+
+The second enforcement point is per-APDU.  `Channel.transmit()` re-checks the
+caller PID, blocks `MANAGE CHANNEL` and (for non-privileged callers) `SELECT by
+DF name`, then calls back into the enforcer before the APDU reaches the HAL:
+
+```java
+// Source: packages/apps/SecureElement/src/com/android/se/Channel.java
+checkCommand(command);
+synchronized (mLock) {
+    command[0] = setChannelToClassByte(command[0], mChannelNumber);
+    return mTerminal.transmit(command);
+}
+```
+
+`checkCommand()` consults `AccessControlEnforcer.checkCommand()`, which honors
+any APDU filter (`APDU-AR-DO`) the rule attached to the channel, so a rule can
+permit an applet but restrict which command APDUs are allowed.
+
+### 38.13.6 Channel Open Path End to End
+
+The diagram below traces a non-privileged app opening a logical channel to an
+applet, showing where access control is enforced before any APDU reaches the SE.
+
+```mermaid
+sequenceDiagram
+    participant App as "App (android.se.omapi.Session)"
+    participant SES as "SecureElementService (android.uid.se)"
+    participant Term as "Terminal (per SE)"
+    participant ACE as "AccessControlEnforcer"
+    participant HAL as "SE HAL (ISecureElement)"
+    participant SE as "Secure Element / Applet"
+
+    App->>SES: "openLogicalChannel(aid, p2)"
+    SES->>SES: "resolve package from calling UID"
+    SES->>Term: "openLogicalChannel(session, aid, p2, pkg, pid)"
+    Term->>ACE: "setUpChannelAccess(aid, pkg)"
+    ACE->>HAL: "open channel to ARA-M, GET DATA (rules)"
+    HAL->>SE: "read ARA / ARF access rules"
+    SE-->>ACE: "REF-AR-DO rules"
+    ACE-->>Term: "ChannelAccess (ALLOWED or DENIED)"
+    alt access allowed
+        Term->>HAL: "openLogicalChannel(aid, p2)"
+        HAL->>SE: "MANAGE CHANNEL + SELECT aid"
+        SE-->>HAL: "channel number + SELECT response"
+        HAL-->>Term: "LogicalChannelResponse"
+        Term-->>SES: "Channel (access attached)"
+        SES-->>App: "ISecureElementChannel"
+    else access denied
+        Term-->>SES: "SecurityException / null"
+        SES-->>App: "open fails"
+    end
+```
+
+### 38.13.7 How OMAPI Relates to NFC Card Emulation
+
+OMAPI (application-processor access to applets, over SPI/I2C/SWP) and NFC
+off-host card emulation (38.6, 38.7) both reach the same physical eSE / UICC,
+but through different paths: OMAPI goes app to `SecureElementService` to SE HAL,
+while contactless transactions go external reader to NFCC to SE over the
+RF/HCI link, with no application processor in the loop.
+
+The two meet at the `NFC_AR_DO` access rule.  When NfcService is about to
+broadcast an off-host transaction event (38.7.6), it asks the SecureElement
+service whether a given package is allowed to receive events for that AID:
+
+```java
+// Source: packages/apps/SecureElement/src/com/android/se/SecureElementService.java
+public synchronized boolean[] isNfcEventAllowed(String reader, byte[] aid,
+        String[] packageNames, int userId) throws RemoteException {
+    ...
+    Terminal terminal = getTerminal(reader);
+    ...
+    return terminal.isNfcEventAllowed(context.getPackageManager(), aid, packageNames);
+}
+```
+
+`Terminal.isNfcEventAllowed()` runs the same ARA/ARF rule set through the
+enforcer, but evaluates the `NFC-AR-DO` (NFC event access) field rather than the
+APDU-access field.  So the access rules provisioned on the SE govern both who
+may open a channel to an applet over OMAPI and who may be notified when that
+applet handles a contactless transaction -- one rule store, two enforcement
+surfaces.
+
+### 38.13.8 eUICC and the ISD-R AID
+
+The same SecureElement service also fronts the eUICC (embedded SIM) for eSIM
+profile management.  The `Terminal` recognizes the ISD-R (Issuer Security Domain
+Root) applet by a fixed AID and treats it specially in access control:
+
+```java
+// Source: packages/apps/SecureElement/src/com/android/se/Terminal.java
+public static final byte[] ISD_R_AID =
+        new byte[]{ (byte) 0xA0, 0x00, 0x00, 0x05, 0x59, 0x10, 0x10, ... };
+...
+// Check carrier privilege when AID is not ISD-R
+if (packageName != null && getName().startsWith(SecureElementService.UICC_TERMINAL)
+        && !Arrays.equals(aid, ISD_R_AID)) {
+    ... checkCarrierPrivilege ...
+}
+```
+
+The LPA (Local Profile Assistant) component that downloads and installs eSIM
+profiles uses OMAPI logical channels to the ISD-R; the carrier-privilege check
+is skipped for ISD-R precisely because eSIM management is gated by the
+privileged permission instead.
+
+---
+
+## 38.14 Try It: NFC Development Exercises
+
+### 38.14.1 Exercise 1: Read an NDEF Tag
 
 **Goal**: Build an activity that reads NDEF messages from tags.
 
@@ -3211,7 +3557,7 @@ public class ReadNdefActivity extends Activity {
 **Verification**: write an NDEF URI tag with a tool like NFC TagWriter, then
 tap your phone.  The activity should launch and display the tag content.
 
-### 38.13.2 Exercise 2: Write an NDEF Tag
+### 38.14.2 Exercise 2: Write an NDEF Tag
 
 **Goal**: Write NDEF content to a blank or rewritable tag.
 
@@ -3309,7 +3655,7 @@ public class WriteNdefActivity extends Activity {
 **Verification**: tap a blank NTAG213/215/216 tag, then read it back with
 Exercise 1 or any NFC reader app.
 
-### 38.13.3 Exercise 3: Implement a Payment HCE Service
+### 38.14.3 Exercise 3: Implement a Payment HCE Service
 
 **Goal**: Build a minimal HCE service that responds to payment SELECT commands.
 
@@ -3437,7 +3783,7 @@ public class DemoPaymentService extends HostApduService {
 **Verification**: use an NFC reader app on another phone to send a SELECT APDU
 for the Visa AID.
 
-### 38.13.4 Exercise 4: Use Reader Mode
+### 38.14.4 Exercise 4: Use Reader Mode
 
 **Goal**: Use reader mode for reliable tag reading without card emulation
 interference.
@@ -3544,7 +3890,7 @@ public class ReaderModeActivity extends Activity
 **Verification**: tap various NFC tags and cards.  The activity should display
 their technology details and content.
 
-### 38.13.5 Exercise 5: Foreground Dispatch
+### 38.14.5 Exercise 5: Foreground Dispatch
 
 **Goal**: Use foreground dispatch to intercept tags destined for other apps.
 
@@ -3617,7 +3963,7 @@ public class ForegroundDispatchActivity extends Activity {
 }
 ```
 
-### 38.13.6 Exercise 6: Dump the NFC Routing Table
+### 38.14.6 Exercise 6: Dump the NFC Routing Table
 
 **Goal**: Use `dumpsys` to inspect the NFC service state and routing table.
 
@@ -3666,7 +4012,7 @@ adb logcat -s NfcService:V NfcDispatcher:V NfcCardEmulationManager:V
 adb shell setprop persist.nfc.snoop_log_mode full
 ```
 
-### 38.13.7 Exercise 7: Inspect NFC HAL via AIDL
+### 38.14.7 Exercise 7: Inspect NFC HAL via AIDL
 
 **Goal**: Understand the HAL interface by examining the AIDL definitions.
 
@@ -3696,7 +4042,7 @@ atest VtsHalNfcTargetTest
 3. What events does `INfcClientCallback` deliver?
 4. How does the HAL handle power management (`NfcCloseType`)?
 
-### 38.13.8 Exercise 8: NFC-F FeliCa Emulation
+### 38.14.8 Exercise 8: NFC-F FeliCa Emulation
 
 **Goal**: Build a minimal NFC-F (FeliCa) card emulation service.
 

@@ -2410,6 +2410,16 @@ permissions for device nodes:
 /dev/vndbinder            0666   root       root
 ```
 
+A separate Rust library, `system/libueventd-rs/` (~1.9K-LOC), provides safe
+abstractions for enumerating and watching devices via kernel uevents (netlink),
+sysfs, and `/dev` -- with an inotify- and netlink-backed event stream (inotify
+watches `/dev` device nodes, while the kernel-uevent and net-interface paths use
+netlink/rtnetlink). It is a general-purpose device library used by auxiliary
+services such as `frameworks/native/services/serialservice/` and
+`frameworks/native/services/usbauthservice/`; it is not (yet) wired into init and
+does not create `/dev` nodes. The C++ `ueventd` (`system/core/init/ueventd.cpp`,
+`devices.cpp`) remains the live device-node manager.
+
 ### 4.6.7 init.rc Processing Order
 
 Understanding the processing order of init.rc files is critical for debugging boot

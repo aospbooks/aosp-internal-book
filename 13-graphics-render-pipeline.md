@@ -4968,9 +4968,28 @@ graph TD
 
 ---
 
-## 13.45 Try It: Trace a Frame
+## 13.45 RenderScript (Deprecated)
 
-### 13.45.1 Using Perfetto to Trace Frame Rendering
+RenderScript was AOSP's data-parallel compute and image-processing framework: a C99-derived
+kernel language that the platform JIT-compiled and dispatched across CPU cores (and, on some
+devices, the GPU) for tasks like image filters and blur. Its runtime and HAL live in
+`frameworks/rs/` (the `libRS_internal` engine, the `libRSDriver` reference driver, the
+multicore CPU backend in `cpu_ref/`, and the GPU/driver glue in `driver/`), and its
+LLVM-based offline compiler chain lives in `frameworks/compile/{slang,libbcc,mclinker}`.
+RenderScript is deprecated and has no in-tree successor runtime. Every public entry point in
+`frameworks/rs/rsApiStubs.h` carries an `__DEPRECATED_IN(31, "RenderScript is deprecated. See
+...")` annotation, and the corresponding SDK `android.renderscript` classes have been
+`@Deprecated` since API 31 (Android 12). Developers are directed to platform alternatives
+instead: Vulkan compute for general-purpose GPU work, `RenderEffect` for blur and visual
+effects, and GPU shaders (AGSL/RuntimeShader, backed by SkSL) for custom image effects. The
+runtime and compiler chain remain in the tree only for legacy app compatibility; nothing in
+the modern pipeline described above depends on them.
+
+---
+
+## 13.46 Try It: Trace a Frame
+
+### 13.46.1 Using Perfetto to Trace Frame Rendering
 
 Perfetto (the system-wide tracing tool) is the primary way to observe the graphics
 pipeline in action. The ATRACE calls scattered throughout the code (`ATRACE_CALL()`,
@@ -5014,7 +5033,7 @@ adb pull /data/misc/perfetto-traces/trace.perfetto-trace .
 # Open at https://ui.perfetto.dev
 ```
 
-### 13.45.2 What to Look For in the Trace
+### 13.46.2 What to Look For in the Trace
 
 In the Perfetto UI, you will see these key tracks:
 
@@ -5034,7 +5053,7 @@ graph LR
     D --> E
 ```
 
-### 13.45.3 Key Trace Events
+### 13.46.3 Key Trace Events
 
 | Trace Event | Source File | Meaning |
 |-------------|------------|---------|
@@ -5047,7 +5066,7 @@ graph LR
 | `dequeueBuffer` | `BufferQueueProducer.cpp` | Buffer acquisition |
 | `queueBuffer` | `BufferQueueProducer.cpp` | Buffer completion |
 
-### 13.45.4 Measuring Frame Timing with `dumpsys gfxinfo`
+### 13.46.4 Measuring Frame Timing with `dumpsys gfxinfo`
 
 ```bash
 # Enable frame stats collection
@@ -5069,7 +5088,7 @@ The four columns correspond to:
 - **Process**: RenderThread GPU command recording
 - **Execute**: GPU execution and swap time
 
-### 13.45.5 GPU Memory Debugging
+### 13.46.5 GPU Memory Debugging
 
 ```bash
 # Dump HWUI memory usage
@@ -5089,7 +5108,7 @@ adb shell dumpsys gfxinfo com.example.myapp meminfo
 #   Buffers: 3.21 MB
 ```
 
-### 13.45.6 Vulkan Validation Layers
+### 13.46.6 Vulkan Validation Layers
 
 Enable Vulkan validation for debugging:
 
@@ -5102,7 +5121,7 @@ adb shell setprop debug.vulkan.layers VK_LAYER_KHRONOS_validation
 # Select the target app and enable "Vulkan validation"
 ```
 
-### 13.45.7 GPU Rendering Profile Bars
+### 13.46.7 GPU Rendering Profile Bars
 
 The on-device GPU rendering profiler visualizes frame timing as color-coded bars:
 
@@ -5119,7 +5138,7 @@ The bars show:
 - **Orange**: Execute (GPU + swap)
 - **Green line**: 16ms budget threshold
 
-### 13.45.8 ANGLE Debugging
+### 13.46.8 ANGLE Debugging
 
 To force a specific app to use ANGLE:
 
@@ -5131,7 +5150,7 @@ adb shell settings put global angle_gl_driver_selection_values \
     angle
 ```
 
-### 13.45.9 Inspecting the Render Pipeline
+### 13.46.9 Inspecting the Render Pipeline
 
 ```bash
 # Check which pipeline is active
@@ -5144,7 +5163,7 @@ adb shell stop
 adb shell start
 ```
 
-### 13.45.10 Building and Testing Graphics Changes
+### 13.46.10 Building and Testing Graphics Changes
 
 When modifying HWUI:
 
@@ -5174,7 +5193,7 @@ adb sync
 adb shell /data/nativetest64/libvulkan_test/libvulkan_test
 ```
 
-### 13.45.11 SKP Capture for Debugging
+### 13.46.11 SKP Capture for Debugging
 
 HWUI supports capturing Skia Picture (SKP) files that record all drawing commands
 for offline analysis:
@@ -5206,7 +5225,7 @@ SKP files contain:
 This is invaluable for debugging rendering issues because you can replay the
 exact sequence of draw calls in Skia's debugger tool.
 
-### 13.45.12 Overdraw Debugging
+### 13.46.12 Overdraw Debugging
 
 HWUI can visualize overdraw (regions drawn multiple times per frame):
 
@@ -5235,7 +5254,7 @@ graph TD
     style G fill:#F44336,color:#fff
 ```
 
-### 13.45.13 GPU Completion Timeline
+### 13.46.13 GPU Completion Timeline
 
 For detailed GPU timing analysis:
 
@@ -5251,7 +5270,7 @@ adb shell setprop debug.hwui.profile true
 # - queueBuffer: Time to submit a buffer
 ```
 
-### 13.45.14 Inspecting BufferQueue State
+### 13.46.14 Inspecting BufferQueue State
 
 ```bash
 # Dump BufferQueue state for all surfaces
@@ -5269,7 +5288,7 @@ adb shell dumpsys SurfaceFlinger
 # - Buffer queue state (slots, pending buffers)
 ```
 
-### 13.45.15 Hardware Composer Debugging
+### 13.46.15 Hardware Composer Debugging
 
 ```bash
 # Dump HWC state
@@ -5282,7 +5301,7 @@ adb shell dumpsys SurfaceFlinger --hwc
 # - GPU fallback reasons
 ```
 
-### 13.45.16 Tracing GPU Memory
+### 13.46.16 Tracing GPU Memory
 
 ```bash
 # Trace GPU memory allocations
@@ -5305,7 +5324,7 @@ duration_ms: 5000
 EOF
 ```
 
-### 13.45.17 Forcing Specific Render Behavior
+### 13.46.17 Forcing Specific Render Behavior
 
 ```bash
 # Force all rendering through GPU composition (no HWC overlays)
@@ -5320,7 +5339,7 @@ adb shell service call SurfaceFlinger 1002
 # These are useful for diagnosing composition-related issues
 ```
 
-### 13.45.18 Interactive GPU Debugging with RenderDoc
+### 13.46.18 Interactive GPU Debugging with RenderDoc
 
 For advanced GPU debugging, RenderDoc can be used on Android:
 
@@ -5338,7 +5357,7 @@ adb install renderdoc-server.apk
 #   - GPU timing per draw call
 ```
 
-### 13.45.19 Monitoring Frame Drops
+### 13.46.19 Monitoring Frame Drops
 
 ```bash
 # Watch for jank in real-time

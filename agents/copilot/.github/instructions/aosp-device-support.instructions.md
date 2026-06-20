@@ -13449,6 +13449,12 @@ TV-specific settings include:
 - **Screen saver (Daydream)**: Ambient mode displays (photos, clock, etc.)
 - **Accessibility**: Large text, high contrast, TalkBack navigation
 
+To let OEM TV apps such as TvSettings and tuner apps reach platform capabilities without
+holding full platform-signature access, the TV form factor ships a thin system-API bridge
+library, the `java_sdk_library com.android.libraries.tv.tvsystem`
+(`frameworks/opt/tv/tvsystem/`), which exposes TV-flavored shims over hidden system APIs
+such as `TvUserManager`, `TvAudioManager`, `TvWifiManager`, and `TvPackageInstaller`.
+
 ### 60.2.11 TV Interactive App Framework
 
 The TV Interactive App framework extends TIF to support hybrid broadcast/broadband (HBB-TV),

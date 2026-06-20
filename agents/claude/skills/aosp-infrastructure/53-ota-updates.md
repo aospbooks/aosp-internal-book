@@ -3318,9 +3318,170 @@ data carried as zstd, with no change to how an update is requested or monitored.
 
 ---
 
-## 53.27 Try It: Hands-On OTA Experiments
+## 53.27 Dynamic System Updates (DSU) and gsid
 
-### 53.27.1 Inspecting a Payload
+Every mechanism described so far rewrites the *installed* system: an A/B OTA
+flips slots, a Virtual A/B OTA writes COW snapshots over the real partitions.
+**Dynamic System Updates (DSU)** is the opposite trade. It boots a downloaded
+Generic System Image (GSI) *without touching the installed system at all*. The
+real `system`/`product` partitions stay exactly as they were; the GSI and a
+fresh empty `userdata` live in image files on `/data`, are exposed as
+device-mapper block devices, and the device boots into them for one or more
+boots. Disable or wipe the DSU and the next reboot returns to the original,
+untouched OS. This makes DSU the tool of choice for trying a new platform build,
+running CTS against a GSI, or letting an app developer validate against a clean
+image, all without flashing and all reversible.
+
+DSU reuses the same dynamic-partition and image-mapping machinery this chapter
+already covered for Virtual A/B (`libfiemap`'s `ImageManager`, `liblp` metadata,
+device-mapper). The piece unique to DSU is a small system daemon, **`gsid`**
+(roughly 3.8K lines of C++ in `system/gsid/`), that stages the image into those
+dynamic image files and arms the one-shot boot.
+
+### 53.27.1 The gsid daemon and IGsiService
+
+`gsid` runs as the `gsiservice` AIDL service. Its `.rc` file declares it
+`oneshot` and `disabled`, so it is started on demand (by binder) rather than at
+every boot, running as root with the `system`/`media_rw` groups:
+
+```
+Source: system/gsid/gsid.rc
+        system/gsid/daemon.cpp (main: Register / run-startup-tasks / verify-image-maps)
+```
+
+The daemon exposes `IGsiService`, the binder interface every DSU client talks
+to. Its methods map directly onto the install lifecycle:
+
+| `IGsiService` method | Purpose |
+|----------------------|---------|
+| `openInstall(installDir)` | Begin a DSU installation under `/data/gsi` (or an SD card under `/mnt/media_rw`) |
+| `createPartition(name, size, readOnly)` | Allocate a dynamic image (e.g. `system`, `userdata`) |
+| `commitGsiChunkFromStream` / `commitGsiChunkFromAshmem` | Stream the image bytes into the partition |
+| `closePartition` / `closeInstall` | Finalize one partition / the whole installation |
+| `enableGsi(oneShot, dsuSlot)` | Mark the staged DSU bootable (optionally one-shot) |
+| `getInstallProgress` | Poll a `GsiProgress` (`STATUS_WORKING` until `STATUS_COMPLETE`) |
+| `isGsiInstalled` / `isGsiRunning` / `isGsiEnabled` | Query state |
+| `disableGsi` / `removeGsi` | Disable (keep images) or wipe (reclaim space) |
+| `getActiveDsuSlot` / `getInstalledDsuSlots` | Slot discovery (e.g. `dsu`, or a `.lock` locked DSU) |
+
+```
+Source: system/gsid/aidl/android/gsi/IGsiService.aidl
+        system/gsid/gsi_service.h (GsiService : public BnGsiService)
+        system/gsid/gsi_service.cpp (EnableGsi, SetBootMode, RunStartupTasks)
+```
+
+The framework-facing entry point is `android.os.image.DynamicSystemManager`, and
+the command-line entry point is `gsi_tool` (`system/gsid/gsi_tool.cpp`), whose
+subcommands (`install`, `enable`, `disable`, `wipe`, `wipe-data`, `status`,
+`cancel`) are thin wrappers over the same binder calls.
+
+### 53.27.2 Staging into dynamic partitions
+
+`gsi_tool install` (or `DynamicSystemInstallationService` on a real download)
+drives a fixed sequence of `IGsiService` calls. For the default `system`
+partition it first creates a writable `userdata` image, then a read-only
+`system` image, then streams the GSI bytes into it:
+
+```
+Source: system/gsid/gsi_tool.cpp (Install: openInstall -> createPartition("userdata")
+        -> createPartition("system") -> commitGsiChunkFromStream -> closeInstall -> enableGsi)
+```
+
+Behind `createPartition`, `gsid` uses a `PartitionInstaller`
+(`system/gsid/partition_installer.h`) backed by `libfiemap`'s `ImageManager`.
+The image data lives under `/data/gsi/dsu/` (default folder
+`kDefaultDsuImageFolder = "/data/gsi/dsu/"`) while the `liblp` partition metadata
+and DSU bookkeeping live under `/metadata/gsi/dsu/` (`DSU_METADATA_PREFIX`). When
+the DSU later boots, these images are mapped as device-mapper block devices,
+which is exactly the dynamic-partition path Virtual A/B uses, so the kernel sees
+ordinary block devices for `system` and `userdata`.
+
+```
+Source: system/gsid/file_paths.h (kDefaultDsuImageFolder, kDsuInstallStatusFile, kDsuOneShotBootFile)
+        system/gsid/partition_installer.h (PartitionInstaller, libfiemap ImageManager)
+        system/gsid/include/libgsi/libgsi.h (DSU_METADATA_PREFIX "/metadata/gsi/dsu/")
+```
+
+### 53.27.3 Arming the one-shot boot
+
+`enableGsi(oneShot, dsuSlot)` is what actually makes the staged image bootable.
+`GsiService::EnableGsi` writes three pieces of state under `/metadata/gsi/dsu/`:
+
+- the active slot name into `kDsuActiveFile` (`active`),
+- the boot-attempt counter via `ResetBootAttemptCounter` into the install-status
+  file (`kDsuInstallStatusFile`, holding an int counter, or `ok` / `disabled` /
+  `wipe`),
+- and, when `oneShot` is true, a marker file `kDsuOneShotBootFile`
+  (`one_shot_boot`) via `SetBootMode`.
+
+```
+Source: system/gsid/gsi_service.cpp (EnableGsi line 1017, SetBootMode line 558,
+        ResetBootAttemptCounter line 549)
+        system/gsid/libgsi.cpp (CanBootIntoGsi, MarkSystemAsGsi, DisableGsi, UninstallGsi)
+```
+
+The one-shot semantics live in `libgsi.cpp::CanBootIntoGsi`, called early in
+boot. It allows at most `kMaxBootAttempts` (1) tries; if the one-shot marker is
+present it pre-writes `disabled` into the status file so that *this* boot enters
+the GSI but the *next* reboot falls back to the installed system automatically.
+`gsid run-startup-tasks` (the `exec_background` line in `gsid.rc`, running
+`RunStartupTasks`) then marks a successful GSI boot as `ok`, or honors a pending
+`wipe` request by reclaiming the images. The fallback is deliberately
+fail-safe: a GSI that fails to boot once is abandoned, so a bad image can never
+brick the device.
+
+This install-then-arm-then-boot flow ties the gsid pieces together:
+
+```mermaid
+flowchart TD
+    subgraph Stage["Stage (gsid + IGsiService)"]
+        OPEN["openInstall(/data/gsi)"]
+        CREATE["createPartition(system, userdata)<br/>via PartitionInstaller + ImageManager"]
+        COMMIT["commitGsiChunk*: stream GSI bytes<br/>into /data/gsi/dsu image files"]
+        CLOSE["closeInstall: finalize liblp metadata<br/>in /metadata/gsi/dsu"]
+        ENABLE["enableGsi(oneShot, dsuSlot)<br/>EnableGsi: write active + status + one_shot_boot"]
+    end
+    REBOOT["Reboot"]
+    subgraph Boot["First-stage boot"]
+        CHECK["libgsi CanBootIntoGsi():<br/>one_shot present and attempts under max?"]
+        MAP["Map DSU images as dm block devices<br/>(FirstStageMountAndroid, ch4)"]
+        GSIRUN["Booted into GSI<br/>(installed system untouched)"]
+        ORIG["Boot installed system"]
+    end
+    OPEN --> CREATE --> COMMIT --> CLOSE --> ENABLE --> REBOOT --> CHECK
+    CHECK -->|yes| MAP --> GSIRUN
+    CHECK -->|no| ORIG
+    GSIRUN -.->|"one-shot: next reboot"| ORIG
+```
+
+### 53.27.4 Where DSU surfaces elsewhere in the book
+
+DSU is wired into two subsystems covered in other chapters:
+
+- **Developer options (Chapter 49).** The Settings developer-options screen
+  exposes a `SelectDSUPreferenceController` (`49-settings-app.md`, section on
+  developer-option preference controllers) that lets a developer pick and load a
+  DSU image. This is the GUI front end to the same `IGsiService` calls
+  `gsi_tool` makes.
+- **First-stage mount (Chapter 4).** During early boot,
+  `FirstStageMountAndroid` (`system/core/init/first_stage_mount_android.cpp`) is
+  the code that consults `libgsi` (`CanBootIntoGsi`, `GetActiveDsu`, `MarkSystemAsGsi`) and maps the
+  DSU image files as the `system`/`userdata` device-mapper devices, then exports
+  the `ro.gsid.image_running` / DSU-slot properties (`04-boot-and-init.md`). DSU
+  reuses the same first-stage logical-partition mount path that ordinary dynamic
+  partitions and Virtual A/B rely on.
+
+In short, `gsid` is a focused staging-and-arming daemon: it borrows OTA's
+dynamic-partition and image-mapping infrastructure to place a downloaded system
+image into `/data`, writes a few small marker files under `/metadata/gsi/dsu`,
+and lets first-stage init boot it for a controlled, reversible trial of a whole
+new system image.
+
+---
+
+## 53.28 Try It: Hands-On OTA Experiments
+
+### 53.28.1 Inspecting a Payload
 
 ```bash
 # Build the OTA tools
@@ -3341,7 +3502,7 @@ python3 system/update_engine/scripts/payload_info.py payload.bin
 #     - Data blob size
 ```
 
-### 53.27.2 Generating a Full OTA
+### 53.28.2 Generating a Full OTA
 
 ```bash
 # After building an image
@@ -3361,7 +3522,7 @@ unzip -l full_ota.zip
 # care_map.pb
 ```
 
-### 53.27.3 Generating an Incremental OTA
+### 53.28.3 Generating an Incremental OTA
 
 ```bash
 # Build source version
@@ -3378,7 +3539,7 @@ python3 build/make/tools/releasetools/ota_from_target_files.py \
     incremental_ota.zip
 ```
 
-### 53.27.4 Applying an OTA via ADB
+### 53.28.4 Applying an OTA via ADB
 
 ```bash
 # On the host, push the OTA package
@@ -3396,7 +3557,7 @@ adb reboot sideload
 adb sideload full_ota.zip
 ```
 
-### 53.27.5 Monitoring Update Progress
+### 53.28.5 Monitoring Update Progress
 
 ```bash
 # Watch update_engine logs
@@ -3415,7 +3576,7 @@ adb shell bootctl is-slot-marked-successful 0
 adb shell bootctl is-slot-marked-successful 1
 ```
 
-### 53.27.6 Observing Virtual A/B Merge
+### 53.28.6 Observing Virtual A/B Merge
 
 ```bash
 # After rebooting into new slot, watch the merge
@@ -3428,7 +3589,7 @@ adb shell snapshotctl dump
 adb shell snapshotctl map-snapshots
 ```
 
-### 53.27.7 Simulating an Update on Cuttlefish
+### 53.28.7 Simulating an Update on Cuttlefish
 
 ```bash
 # Launch Cuttlefish
@@ -3442,7 +3603,7 @@ launch_cvd
 # making it ideal for OTA testing.
 ```
 
-### 53.27.8 Examining Recovery Mode
+### 53.28.8 Examining Recovery Mode
 
 ```bash
 # Boot into recovery
@@ -3458,7 +3619,7 @@ adb pull /cache/recovery/last_log
 adb pull /cache/recovery/last_kmsg
 ```
 
-### 53.27.9 Building a Custom OTA with VABC Options
+### 53.28.9 Building a Custom OTA with VABC Options
 
 ```bash
 # Generate OTA with specific VABC options
@@ -3474,7 +3635,7 @@ python3 build/make/tools/releasetools/ota_from_target_files.py \
     optimized_ota.zip
 ```
 
-### 53.27.10 Payload Verification
+### 53.28.10 Payload Verification
 
 ```bash
 # Verify a payload's integrity
@@ -3489,7 +3650,7 @@ brillo_update_payload properties \
     --properties_file -
 ```
 
-### 53.27.11 Checking the Snapshot Backend (Android 17)
+### 53.28.11 Checking the Snapshot Backend (Android 17)
 
 ```bash
 # Is the device configured for UBLK snapshots?
@@ -3510,7 +3671,7 @@ adb shell cat /metadata/ota/snapuserd_mode    # "ublk" or "dm-user"
 
 ---
 
-## 53.28 Summary
+## 53.29 Summary
 
 ```mermaid
 mindmap

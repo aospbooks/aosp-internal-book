@@ -4468,7 +4468,217 @@ contract, exactly as the IMS service can be overridden in §36.5.2.
 
 ---
 
-## 36.14 Try It
+## 36.14 Additional Telephony Services and Libraries
+
+The sections above traced the core stack and several of its larger appendages
+(`ImsStack`, the satellite controller, GBA). Around that core sit a ring of
+smaller libraries and standalone apps/services that the chapter has referenced
+in passing but not opened up: the in-process IMS client library that everything
+IMS links against, the transport-selection service behind
+`AccessNetworksManager`, the opportunistic-network service, the cell-broadcast
+emergency-alert app, and the TS.43 entitlement pieces. This section fills those
+gaps so the binding story is complete.
+
+### 36.14.1 ims-common -- the In-Process IMS Client Library
+
+Sections 36.5 and 36.12 talked about the IMS *framework* (`ImsResolver`) and an
+*IMS service* (`ImsStack`, or a vendor APK) that the framework binds. The glue
+between them is a separate library, `ims-common`, built from
+`frameworks/opt/net/ims` (a `java_library` declared in
+`frameworks/opt/net/ims/Android.bp`). It carries the `com.android.ims` package
+and is the in-process client that runs inside whatever process needs to talk to
+the bound `ImsService` — most importantly the phone process for `ImsPhone` /
+`ImsPhoneCallTracker`, but also Settings and `QualifiedNetworksService`.
+
+The two classes that matter most are `ImsManager` and the feature connections.
+`ImsManager` is the MMTel entry point that the telephony stack programs against;
+its own javadoc flags it as "for internal use ONLY"
+(`frameworks/opt/net/ims/src/java/com/android/ims/ImsManager.java`), with the
+public `android.telephony.ims.ImsMmTelManager` layered on top of it.
+`ImsCall` represents an active IMS session with its SIP/`ImsCallProfile` state
+(`frameworks/opt/net/ims/src/java/com/android/ims/ImsCall.java`). The actual
+cross-process plumbing lives in a small connection hierarchy: `FeatureConnection`
+is the base that holds the feature binder (`IImsMmTelFeature` / `IImsRcsFeature`,
+set via `setBinder()`) plus the `IImsRegistration` and `IImsConfig` binders, and
+`MmTelFeatureConnection` / `RcsFeatureConnection` are the MMTel and RCS
+specialisations that expose the typed `IImsMmTelFeature` / `IImsRcsFeature`
+interfaces and keep callback registration in sync across the binder
+boundary (`frameworks/opt/net/ims/src/java/com/android/ims/FeatureConnection.java`,
+`MmTelFeatureConnection.java`, `RcsFeatureConnection.java`).
+
+```mermaid
+graph TD
+    subgraph "Telephony (frameworks/opt/telephony)"
+        IPCT["ImsPhone / ImsPhoneCallTracker"]
+    end
+    subgraph "ims-common (com.android.ims, in-process)"
+        IM["ImsManager"]
+        IC["ImsCall"]
+        FC["FeatureConnection"]
+        MFC["MmTelFeatureConnection"]
+        RFC["RcsFeatureConnection"]
+        UCE["rcs.uce.UceController<br/>(presence, EAB, OPTIONS)"]
+        FC --> MFC
+        FC --> RFC
+    end
+    subgraph "Bound ImsService (ImsStack or vendor APK)"
+        SVC["MmTelFeature / RcsFeature"]
+    end
+
+    IPCT --> IM
+    IM --> IC
+    IM --> MFC
+    IM --> RFC
+    MFC -->|"Binder (IImsMmTelFeature)"| SVC
+    RFC -->|"Binder (IImsRcsFeature)"| SVC
+```
+
+The RCS side carries a substantial subtree of its own: `com.android.ims.rcs.uce`
+implements RCS User Capability Exchange — the presence publish/subscribe, the SIP
+OPTIONS exchange, and the Enhanced Address Book cache, coordinated by
+`UceController` (`frameworks/opt/net/ims/src/java/com/android/ims/rcs/uce/UceController.java`
+and the `presence/`, `options/`, `eab/`, and `request/` subpackages beneath it).
+Because `ims-common` is an ordinary `java_library`, both the AOSP `ImsStack`
+module and a vendor's IMS service link it (the dependency appears in
+`packages/modules/ImsStack/java/Android.bp` and
+`frameworks/opt/telephony/Android.bp`, among others), which is what makes the
+client API uniform regardless of which `ImsService` implementation a device
+binds.
+
+### 36.14.2 QualifiedNetworksService -- Per-APN Transport Selection
+
+Section 36.8.12 noted that `AccessNetworksManager` decides whether a given APN's
+traffic flows over cellular (WWAN) or IWLAN (Wi-Fi). It does not make that
+decision itself: `AccessNetworksManager` is a *client* that binds a
+`QualifiedNetworksService` and asks it for a prioritised list of access networks
+per APN type. The framework base class and binding action are
+`android.telephony.data.QualifiedNetworksService`
+(`frameworks/base/telephony/java/android/telephony/data/QualifiedNetworksService.java`,
+constant `QUALIFIED_NETWORKS_SERVICE_INTERFACE`), and the bind happens through a
+`QualifiedNetworksServiceConnection` inside
+`frameworks/opt/telephony/src/java/com/android/internal/telephony/data/AccessNetworksManager.java`.
+
+AOSP ships a default, vendor-extensible implementation as a standalone service,
+`packages/services/QualifiedNetworksService` (package `com.android.telephony.qns`,
+declared in `packages/services/QualifiedNetworksService/AndroidManifest.xml` on
+the `android.telephony.data.QualifiedNetworksService` action behind
+`BIND_TELEPHONY_DATA_SERVICE`). Its core, `QualifiedNetworksServiceImpl` extends
+the framework base class, and `AccessNetworkEvaluator` produces the ordered
+cellular-vs-IWLAN-vs-NR-SA list per APN by combining cellular service state, the
+IWLAN reachability tracked by `IwlanNetworkStatusTracker`, and carrier policy
+(`packages/services/QualifiedNetworksService/src/com/android/telephony/qns/QualifiedNetworksServiceImpl.java`,
+`AccessNetworkEvaluator.java`, `IwlanNetworkStatusTracker.java`).
+
+```mermaid
+sequenceDiagram
+    participant DNC as "DataNetworkController"
+    participant ANM as "AccessNetworksManager"
+    participant QNS as "QualifiedNetworksServiceImpl"
+    participant Eval as "AccessNetworkEvaluator"
+    participant RM as "RestrictManager"
+
+    ANM->>QNS: bind (android.telephony.data.QualifiedNetworksService)
+    QNS->>Eval: createNetworkAvailabilityProvider (per APN)
+    Eval->>RM: check throttling / handover guard
+    Eval->>Eval: rank WWAN vs IWLAN vs NR-SA
+    Eval-->>ANM: updateQualifiedNetworkTypes (ordered list)
+    ANM-->>DNC: preferred transport changed
+```
+
+Two extra responsibilities live in this service. `RestrictManager` applies
+throttling and handover-guard restrictions so the device does not thrash between
+transports (`packages/services/QualifiedNetworksService/src/com/android/telephony/qns/RestrictManager.java`),
+and a Wi-Fi-calling activation path under
+`packages/services/QualifiedNetworksService/src/com/android/telephony/qns/wfc/`
+(`WfcActivationActivity`, `WfcActivationHelper`) drives the ePDG/WFC connectivity
+check that has to succeed before IWLAN can be offered as a voice transport.
+
+### 36.14.3 AlternativeNetworkAccess -- the Opportunistic Network Service (ONS)
+
+`packages/services/AlternativeNetworkAccess` is the Opportunistic Network Service
+(ONS), package `com.android.ons`. Its job is the eSIM/multi-SIM "opportunistic
+data" feature: scanning for, selecting, and activating a secondary
+(opportunistic) subscription that carries data in areas served by a partner
+network — for example a CBRS profile — without disturbing the user's primary SIM
+for voice. `OpportunisticNetworkService` is the bound service whose javadoc
+states it "scans network and matches the results with opportunistic
+subscriptions … to provide user opportunistic data in areas with corresponding
+networks" (`packages/services/AlternativeNetworkAccess/src/com/android/ons/OpportunisticNetworkService.java`).
+
+The work splits across three helpers:
+`ONSNetworkScanCtlr` runs the network scans and reports availability,
+`ONSProfileSelector` matches scan results to candidate opportunistic profiles and
+picks one, and `ONSProfileActivator` ensures the chosen CBRS/eSIM profile is
+downloaded, activated, and grouped when an opportunistic-data pSIM is inserted
+(`packages/services/AlternativeNetworkAccess/src/com/android/ons/ONSNetworkScanCtlr.java`,
+`ONSProfileSelector.java`, `ONSProfileActivator.java`). Selecting an
+opportunistic subscription ties back into the data switching covered in §36.8.15:
+once ONS activates a profile, `PhoneSwitcher` / `AutoDataSwitchController` can
+route data over it.
+
+### 36.14.4 CellBroadcastReceiver -- the Emergency-Alert App
+
+Section 36.4.10 covered the framework `CellBroadcastService` that parses 3GPP and
+3GPP2 cell-broadcast PDUs. What it does *not* cover is the app that turns a parsed
+alert into the full-screen warning, siren, and vibration a user actually sees.
+That is `packages/apps/CellBroadcastReceiver` (package
+`com.android.cellbroadcastreceiver`), an updatable Mainline module — it ships in
+the `com.android.cellbroadcast` APEX (`packages/apps/CellBroadcastReceiver/apex/Android.bp`),
+the same APEX that carries the `CellBroadcastService` module and which Chapter 52's
+Mainline catalog lists as module 6 (R-launched, "Emergency alert message handling
+(CMAS/ETWS)").
+
+The division is clean: the service decodes the bytes, the app presents the alert.
+On the app side, `CellBroadcastReceiver` is the broadcast receiver for incoming
+alert intents, `CellBroadcastAlertService` decides whether and how to alert,
+`CellBroadcastAlertDialog` is the full-screen warning activity,
+`CellBroadcastAlertAudio` plays the standardised alert tone and drives vibration,
+and `CellBroadcastContentProvider` persists received alerts for the history view
+(all under
+`packages/apps/CellBroadcastReceiver/src/com/android/cellbroadcastreceiver/`). The
+alert categories it renders are the regulated emergency standards — CMAS
+(Commercial Mobile Alert System: presidential, imminent-threat, and AMBER alerts)
+and ETWS (Earthquake and Tsunami Warning System) — with the type constants and
+strings resolved in `CellBroadcastResources.java`.
+
+### 36.14.5 ImsServiceEntitlement -- TS.43 Entitlement and WFC Activation
+
+Before a carrier will let a device use Wi-Fi calling, VoLTE, or VoNR, the device
+usually has to *check in* with the carrier's entitlement server using the GSMA
+**TS.43** protocol and obtain a service entitlement. `packages/apps/ImsServiceEntitlement`
+(package `com.android.imsserviceentitlement`) is the AOSP app that does this. It
+polls the entitlement server, parses the TS.43 status documents
+(`ts43/Ts43VowifiStatus`, `Ts43VolteStatus`, `Ts43VonrStatus`,
+`Ts43SmsOverIpStatus`), and where the carrier requires interactive provisioning it
+drives a WebView-based activation flow in `WfcActivationActivity` /
+`WfcWebPortalFragment`, whose javadoc cites "TS.43 v5.0 section 3.4"
+(`packages/apps/ImsServiceEntitlement/src/com/android/imsserviceentitlement/`).
+
+Polling is carrier-config driven: an `ImsEntitlementReceiver` listens for
+`android.telephony.action.CARRIER_CONFIG_CHANGED`
+(`packages/apps/ImsServiceEntitlement/AndroidManifest.xml`) and, when the active
+carrier config enables TS.43 entitlement, schedules `ImsEntitlementPollingService`
+to (re)query the server. The HTTP exchange and result handling go through
+`ImsEntitlementApi` and `EntitlementConfiguration`. The outcome ultimately gates
+whether the IMS features described in §36.5 are offered to the user.
+
+### 36.14.6 gsma_services -- SatelliteClient and the TS.43 Auth Library
+
+Two reusable libraries that the entitlement and satellite paths build on live
+under `frameworks/libs/gsma_services`. `SatelliteClient` (module `SatelliteClient`,
+`frameworks/libs/gsma_services/satellite_client/Android.bp`) is a *versioned
+wrapper* around the satellite framework API in `SatelliteManagerWrapper`,
+exposing numbered callback variants so a client can compile against a stable
+surface across platform versions for the satellite stack of §36.11.
+`Ts43AuthenticationLibrary` (module `Ts43AuthenticationLibrary`,
+`frameworks/libs/gsma_services/ts43authentication/src/com/android/libraries/ts43authentication/Ts43AuthenticationLibrary.java`)
+provides the TS.43 carrier-entitlement authentication (EAP-AKA and OIDC) that the
+entitlement flow in §36.14.5 relies on to obtain an authenticated token from the
+carrier's entitlement server.
+
+---
+
+## 36.15 Try It
 
 ### Exercise 36-1: Inspect the Telephony Service with dumpsys
 

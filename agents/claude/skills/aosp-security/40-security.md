@@ -1965,6 +1965,14 @@ fn inner_main() -> Result<(), HalServiceError> {
 }
 ```
 
+The tamper-evident storage that backs counters such as the Keymaster rollback
+state is modeled by the access-controlled NVRAM HAL.  AOSP ships a *reference*
+implementation under `system/nvram/` (`core/` is the portable reference logic; a
+userspace "fake" HAL implements the full API surface for illustration but, as
+its README states, does not meet the persistence and tamper-evidence
+requirements of a real deployment) -- a production device backs these NVRAM
+spaces with hardware such as RPMB or a TEE.
+
 ### 40.5.6  Confirmation UI
 
 Protected Confirmation (Confirmation UI) displays a trusted prompt to the
@@ -1995,6 +2003,15 @@ display path), ensuring the normal world OS cannot modify what the user sees.
 The user's confirmation is signed by the TA, producing a
 `HardwareAuthToken` that cryptographically proves the user approved the
 displayed content.
+
+The actual on-screen prompt is drawn by a small, dependency-light C++ rendering
+engine, libteeui (`system/teeui/libteeui/`).  It rasterizes the confirmation
+layout -- text labels, buttons, and fonts -- using a bundled FreeType build
+(`libft2.nodep`) so the renderer can run inside the resource-constrained secure
+world with no reliance on the normal-world UI toolkit.  The Trusty
+ConfirmationUI HAL links the `libteeui_hal_support` variant of this library
+(see its `static_libs` in `system/core/trusty/confirmationui/Android.bp`), which
+supplies the message-formatting and secure-input glue around the core renderer.
 
 ### 40.5.7  SecretKeeper
 
@@ -4105,7 +4122,152 @@ subsystem.
 
 ---
 
-## 40.12  Try It
+## 40.12  AuthGraph: Authenticated Key Exchange Between Secure Components
+
+Several of the subsystems above establish an encrypted, mutually authenticated
+channel between two security domains that do not share a binder transport --
+for example, a client running in a protected VM and the SecretKeeper service in
+a TEE.  The protocol that bootstraps that channel is AuthGraph, an authenticated
+key-exchange (AKE) protocol with an AIDL contract,
+`IAuthGraphKeyExchange` (`hardware/interfaces/security/authgraph/aidl/android/hardware/security/authgraph/IAuthGraphKeyExchange.aidl`),
+and a roughly 7.5K-line Rust reference implementation under `system/authgraph/`.
+
+### 40.12.1  What AuthGraph Provides
+
+AuthGraph negotiates a pair of symmetric session keys -- one per direction --
+between two parties named P1 (the *source*, typically the client) and P2 (the
+*sink*, typically the service).  Each party must already hold two things,
+described in the AIDL header: a **persistent identity** (a signing key whose
+public half is carried in a self-signed or DICE certificate chain) and a
+**per-boot key** (an in-memory symmetric key with the lifetime of one boot).
+The output is two 256-bit AES keys plus a shared `session_id`, after which both
+sides can exchange encrypted, replay-resistant messages.
+
+Two design choices recur throughout the protocol.  First, derived keys are never
+returned in the clear: they are wrapped in *arcs* -- CBOR/COSE blobs encrypted
+under the holder's per-boot key, with protected headers that record the peer
+identity, the session id, and whether authentication has completed.  An arc both
+hides the key from the normal world and lets a party stay nearly stateless
+between calls.  Second, mutual authentication is bound to the key material: each
+party signs the `session_id` (an HMAC over both nonces) with its persistent
+signing key, and the peer verifies that signature against the certificate chain
+in the peer's identity, so a man-in-the-middle that cannot produce a valid
+signature is rejected.
+
+### 40.12.2  The Four-Method Handshake
+
+The interface defines four methods.  Three run during the handshake -- `create`
+and `finish` on P1, `init` on P2 -- and `authenticationComplete` lets P2 finish
+out-of-band once it has seen P1's signature.  The shared secret itself is an
+ephemeral ECDH agreement on NIST curve P-256: each side generates a fresh P-256
+key pair and a 16-byte nonce, and the Diffie-Hellman result `Z` is run through
+HKDF to derive the session keys.
+
+```mermaid
+sequenceDiagram
+    participant P1 as "P1 source (client)"
+    participant P2 as "P2 sink (service)"
+    P1->>P1: "create(): ephemeral P-256 key + nonce"
+    P1->>P2: "init(peerPubKey, peerId, peerNonce, peerVersion)"
+    Note over P2: "ECDH -> Z, HKDF -> 2 session keys + MAC key,<br/>compute session_id, sign it"
+    P2-->>P1: "KeInitResult (P2 pubkey, nonce, shared-key arcs, session_id, signature)"
+    P1->>P1: "finish(): ECDH -> Z, derive keys, verify P2 signature, sign session_id"
+    P1-->>P2: "authenticationComplete(P1 signature, sharedKeys)"
+    Note over P2: "verify P1 signature, mark arcs authentication_complete = true"
+```
+
+The flow follows the AIDL documentation step by step:
+
+1. **`create()`** runs on P1.  It produces a `SessionInitiationInfo`: an
+   ephemeral P-256 public key (with the matching private key sealed in an arc
+   under P1's per-boot key), a 16-byte nonce, P1's persistent identity, and the
+   highest protocol (AIDL) version P1 supports.
+2. **`init(peerPubKey, peerId, peerNonce, peerVersion)`** runs on P2.  P2
+   generates its own ephemeral P-256 key pair and nonce, computes the ECDH
+   secret `Z`, and derives a cryptographic secret using the SHA-256 digest of a
+   CBOR `salt_input` (which binds both versions, both public keys, both nonces,
+   and both certificate chains) as the HKDF salt.  From that it derives two
+   AES-256 keys -- contexts `b"KE_ENCRYPTION_KEY_SOURCE_TO_SINK"` and
+   `b"KE_ENCRYPTION_KEY_SINK_TO_SOURCE"` -- and an HMAC key
+   (`b"KE_HMAC_KEY"`).  It HMACs the two nonces to form the `session_id`, signs
+   it with its identity key, and returns everything as a `KeInitResult`, with
+   the two session keys handed back as arcs marked `authentication_complete =
+   false`.
+3. **`finish(peerPubKey, peerId, peerSignature, peerNonce, peerVersion, ownKey)`**
+   runs back on P1.  P1 repeats the same ECDH/HKDF derivation, recomputes the
+   `session_id`, and verifies P2's signature over it (returning
+   `INVALID_SIGNATURE` on failure).  On success P1 re-wraps its own copies of
+   the two session keys as arcs marked `authentication_complete = true` and
+   signs the `session_id` with its identity.
+4. **`authenticationComplete(peerSignature, sharedKeys)`** runs on P2.  P2 takes
+   P1's signature from `finish`, verifies it against the `session_id` recorded in
+   the shared-key arcs, and flips its own arcs to
+   `authentication_complete = true`, completing the mutual authentication.
+
+Version negotiation is built in: P2 returns a negotiated version no higher than
+P1's advertised version, and `finish` rejects a `peerVersion` greater than the
+one P1 offered in `create` with `INCOMPATIBLE_PROTOCOL_VERSION`.
+
+### 40.12.3  The Reference Implementation
+
+The Rust crates under `system/authgraph/` factor the protocol so a TEE vendor
+can reuse the protocol logic while swapping in its own primitives:
+
+- `system/authgraph/core/` holds the cryptography-agnostic protocol engine.
+  `system/authgraph/core/src/keyexchange.rs` implements the `create`/`init`/
+  `finish`/`authenticationComplete` state machine and defines the HKDF context
+  strings shown above; `arc.rs` handles arc sealing, `key.rs` the key and
+  identity types, and `traits.rs` the `Device`, `EcDh`, `Hkdf`, and `Sha256`
+  abstractions a backend must supply.  The crate is `#![no_std]` so it can run
+  inside a secure-world TA.
+- `system/authgraph/boringssl/` provides a default BoringSSL-backed
+  implementation of those crypto traits; a partner can substitute its own
+  AES-GCM, ECDH, and RNG instead.
+- `system/authgraph/hal/` is the glue that exposes the engine as the
+  `IAuthGraphKeyExchange` binder service, converting between the AIDL types and
+  the internal `authgraph_core` types.
+- `system/authgraph/wire/` defines the CBOR wire types and error codes shared
+  across the crates.
+
+### 40.12.4  Who Uses AuthGraph
+
+AuthGraph is not invoked directly by apps; it underpins higher-level secure
+services that need a channel into a different security domain:
+
+- **SecretKeeper.**  The SecretKeeper HAL covered in section 40.5.7 stores pVM
+  secrets in a higher-privilege domain, so its request/response CBOR protocol
+  must be encrypted.  `ISecretkeeper.aidl`
+  (`hardware/interfaces/security/secretkeeper/aidl/android/hardware/security/secretkeeper/ISecretkeeper.aidl`)
+  imports `IAuthGraphKeyExchange` and exposes `getAuthGraphKe()`; the pVM client
+  acts as P1, SecretKeeper as P2, and the resulting session keys protect every
+  subsequent SecretManagement message.  Its reference implementation under
+  `system/secretkeeper/` reuses the `system/authgraph/` crates for exactly this
+  step.
+- **The SEE AuthMgr.**  The Secure Execution Environment authorization manager,
+  `IAuthMgrAuthorization`
+  (`hardware/interfaces/security/see/authmgr/aidl/android/hardware/security/see/authmgr/IAuthMgrAuthorization.aidl`),
+  authenticates and authorizes a pVM client before it may reach trusted HALs
+  hosted in a TEE -- the in-VM root-of-trust model from section 40.10.4.  It
+  does *not* run the AuthGraph AKE handshake.  Instead it authenticates the
+  AuthMgr frontend (in the pVM) to the AuthMgr backend (in the TEE) via a
+  DICE-based challenge-response: `initAuthentication` returns a 32-byte
+  challenge, and `completeAuthentication` verifies the frontend's signature over
+  a `SignedConnectionRequest` (which binds in that challenge) against a stored
+  DICE policy, validating the frontend's DICE certificate chain and enforcing
+  rollback protection.  What it reuses from AuthGraph is the DICE
+  certificate-chain and key *types* -- `authgraph_core::key` items such as
+  `CertChain`, `DiceChainEntry`, `EcSignKey`, `EcVerifyKey`,
+  `InstanceIdentifier`, and `Policy`, plus the `EcDsa`/`Rng` traits -- not the
+  AuthGraph create/init/finish key-exchange, shared-key derivation, or session
+  contexts.
+
+These two consumers use AuthGraph differently.  SecretKeeper runs the full,
+vendor-pluggable, DICE-aware AKE to let two mutually distrustful Android
+security domains agree on session keys without a shared transport or a
+pre-shared secret.  The SEE AuthMgr borrows only AuthGraph's DICE
+certificate-chain and key types for its own DICE-based authentication protocol.
+
+## 40.13  Try It
 
 This section provides hands-on exercises for exploring Android's security
 subsystems.
@@ -4547,6 +4709,14 @@ shrinks the host attack surface that can reach them.
 | `system/core/trusty/gatekeeper/` | Gatekeeper HAL for Trusty | C++ |
 | `system/core/trusty/confirmationui/` | Confirmation UI for Trusty | C++ |
 | `system/core/trusty/secretkeeper/` | SecretKeeper HAL | Rust |
+| `system/core/trusty/confirmationui/` | Trusty ConfirmationUI HAL (links libteeui) | C++ |
+| `system/teeui/libteeui/` | Protected Confirmation rendering engine | C++ |
+| `system/nvram/` | Access-controlled NVRAM reference HAL | C++ |
+| `hardware/interfaces/security/authgraph/aidl/` | AuthGraph AKE HAL interface | AIDL |
+| `system/authgraph/` | AuthGraph AKE reference implementation | Rust |
+| `system/authgraph/core/src/keyexchange.rs` | AuthGraph handshake state machine | Rust |
+| `system/secretkeeper/` | SecretKeeper reference implementation | Rust |
+| `hardware/interfaces/security/see/authmgr/aidl/` | SEE AuthMgr authorization HAL | AIDL |
 | `system/core/trusty/libtrusty/` | IPC library for Trusty | C |
 | `trusty/` | Trusty TEE OS | C |
 | `trusty/kernel/` | Trusty kernel (Little Kernel) | C |

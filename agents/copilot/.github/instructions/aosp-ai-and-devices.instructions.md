@@ -7039,7 +7039,7 @@ Source:
 The last two setters are new in Android 17: `setExtraPermissions()` carries an
 optional set of permissions tied to the association, and
 `setRemoteAiAgentSupported()` records whether the companion can host a remote AI
-agent (used by the Computer Control flow in section 51.9). The value flows in
+agent (used by the Computer Control flow in section 51.8). The value flows in
 from `AssociationRequest.isRemoteAiAgentSupported()`.
 
 Key fields:
@@ -7988,7 +7988,7 @@ frameworks/base/services/companion/java/com/android/server/companion/virtual/
     ViewConfigurationController.java
     audio/
     camera/
-    computercontrol/   -- Computer Control sessions (covered in section 51.9)
+    computercontrol/   -- Computer Control sessions (covered in section 51.8)
 ```
 
 The service architecture:
@@ -9462,9 +9462,311 @@ Source:
 
 ---
 
-## 51.9 Try It
+## 51.9 The CrossDeviceSync Service
 
-### 51.9.1 Inspect Companion Device Associations
+Everything covered so far lives inside `system_server`: the
+`CrossDeviceSyncController` in section 51.3.7 is a framework component that
+brokers *call* metadata over the CDM transport. Android 17 also ships a
+*separate*, much larger app-layer service that is the primary production
+consumer of the CDM association/transport machinery for general data sync. It
+lives outside the framework, as its own platform app:
+
+```
+packages/services/CrossDeviceSync/
+```
+
+Despite the similar name, this is not the framework-side controller. It is a
+privileged, platform-signed application (`com.android.crossdevicesync`) whose
+job is to keep arbitrary feature state -- airplane mode, contextual "modes", and
+similar device settings -- in sync between a phone and its wearable, riding
+entirely on the CDM secure transport that sections 51.2 and 51.3 build. None of
+its code runs in `system_server`; it talks to CDM through the public
+`CompanionDeviceManager` SDK like any other companion app, just with elevated
+permissions.
+
+### 51.9.1 What It Is and How It Is Packaged
+
+`CrossDeviceSync` is declared as a privileged, platform-certificate
+`android_app`, not a `system_server` jar:
+
+```
+android_app {
+    name: "CrossDeviceSync",
+    defaults: ["platform_app_defaults"],
+    certificate: "platform",
+    privileged: true,
+    // ...
+}
+```
+
+Source:
+`packages/services/CrossDeviceSync/Android.bp` (the `android_app` block; the
+whole project carries a 2025 copyright and `default_team:
+trendy_team_wear_wear_frameworks`, marking it a new-in-Android-17 wearable
+component).
+
+Its manifest declares the app `persistent`, `directBootAware`, and gated behind
+a feature flag, and -- crucially -- it requests the same companion permissions
+this chapter has been describing from the framework side:
+
+```xml
+<uses-permission android:name="android.permission.MANAGE_COMPANION_DEVICES" />
+<uses-permission android:name="android.permission.USE_COMPANION_TRANSPORTS" />
+<uses-permission android:name="android.permission.INTERACT_ACROSS_USERS" />
+<uses-permission android:name="android.permission.NETWORK_AIRPLANE_MODE" />
+```
+
+Source:
+`packages/services/CrossDeviceSync/AndroidManifest.xml`. `USE_COMPANION_TRANSPORTS`
+is exactly the permission section 51.1.2 lists as the gate for attaching a
+system data transport, and `MANAGE_COMPANION_DEVICES` is the administrative
+permission for querying associations across users. The manifest also registers
+two components: the `SyncService` and a `BootReceiver`.
+
+`BootReceiver` listens for `LOCKED_BOOT_COMPLETED` (so it can start before the
+user unlocks, since association data lives in Device Encrypted storage as
+section 51.1.3 explains) and starts the service only for the system user,
+disabling itself on every other user:
+
+```java
+if (context.getUser().equals(UserHandle.SYSTEM)) {
+    context.startService(new Intent(context, SyncService.class));
+} else {
+    // disable the boot receiver for non-system users
+}
+```
+
+Source:
+`packages/services/CrossDeviceSync/src/com/android/crossdevicesync/BootReceiver.java`,
+lines 42-61.
+
+### 51.9.2 SyncService and the Component Graph
+
+`SyncService` is a plain `android.app.Service` -- it is not bindable in
+production (`onBind()` returns `null` outside instrumentation tests). All of its
+work happens in `onCreate()`, which constructs a fixed set of collaborators
+through a `SyncServiceInjector` and initializes each in turn:
+
+```java
+mNetworkManager.init();
+mMetadataPublisher.init();
+mNotificationHelper.init();
+for (var entry : mFeatureManagerSuppliers.entrySet()) {
+    FeatureManager featureManager = entry.getValue().get();
+    featureManager.init();
+    mFeatureManagers.add(featureManager);
+}
+```
+
+Source:
+`packages/services/CrossDeviceSync/src/com/android/crossdevicesync/services/SyncService.java`,
+lines 79-97 (teardown is the mirror image in `onDestroy()`, lines 100-114).
+
+The `SyncServiceInjectorImpl` wires the whole graph. The pieces, and how each
+maps onto material already covered in this chapter:
+
+| Component | Role | CDM hook (covered in) |
+|-----------|------|------------------------|
+| `NetworkManager` | Tracks associations/transports/presence, owns per-feature "networks" | associations + transport + presence (51.2, 51.3) |
+| `Messenger` | Reliable batched message delivery over the transport | `CompanionDeviceManager.sendMessage` (51.3.2) |
+| `CompanionActionController` | Asks the companion app to scan/advertise/attach transport | action requests (51.7.1) |
+| `Advertiser` / `Scanner` | Drive `REQUEST_NEARBY_ADVERTISING` / `REQUEST_NEARBY_SCANNING` | action requests (51.7.1) |
+| `MetadataPublisher` | Writes per-user CDM metadata for discovery | DataSync metadata (51.3.6) |
+| `FeatureManager` (x2) | Per-feature sync logic on top of the network | n/a (app-layer) |
+| `SharedDataStore` | Eventually-consistent, Submerge-backed per-feature store | n/a (app-layer) |
+
+Source:
+`packages/services/CrossDeviceSync/src/com/android/crossdevicesync/services/SyncServiceInjectorImpl.java`,
+lines 110-204.
+
+### 51.9.3 Riding on the CDM Transport
+
+The service never opens its own socket. Every collaborator that touches a remote
+device goes through a single `CompanionDeviceManagerProxy`, a thin testable
+wrapper around the public `android.companion.CompanionDeviceManager`. Its method
+list reads like an index of the CDM surface this chapter has walked through:
+`getAllAssociations`, `addOnAssociationsChangedListener`,
+`addOnTransportsChangedListener`, `setOnDevicePresenceEventListener`,
+`sendMessage` / `addOnMessageReceivedListener`, `requestAction` /
+`setOnActionResultListener`, and `setLocalMetadata` / `getLocalMetadata`.
+
+Source:
+`packages/services/CrossDeviceSync/src/com/android/crossdevicesync/common/CompanionDeviceManagerProxy.java`,
+lines 33-110.
+
+`NetworkManager.init()` is where it latches onto the framework: it seeds itself
+with the current associations, then subscribes to association changes, transport
+changes, and registers the messenger's message listener:
+
+```java
+processAssociationsAndMessagesLocked(
+        mCompanionDeviceManager.getAllAssociations(UserHandle.USER_ALL));
+mCompanionDeviceManager.addOnAssociationsChangedListener(
+        mMainExecutor, mOnAssociationsChanged, UserHandle.USER_ALL);
+mCompanionDeviceManager.addOnTransportsChangedListener(
+        mMainExecutor, mOnTransportChanged);
+mMessenger.init();
+mMessenger.registerMessageListener(mMainExecutor, mOnMessage);
+mCompanionActionController.init();
+```
+
+Source:
+`packages/services/CrossDeviceSync/src/com/android/crossdevicesync/network/NetworkManagerImpl.java`,
+lines 137-152.
+
+The actual bytes travel on a single CDM message type. `MessengerImpl` registers
+for, and sends with, `CompanionDeviceManager.MESSAGE_ONEWAY_CROSS_DEVICE_SYNC`:
+
+```java
+mCompanionDeviceManager.addOnMessageReceivedListener(
+        mMainExecutor,
+        CompanionDeviceManager.MESSAGE_ONEWAY_CROSS_DEVICE_SYNC,
+        mMessageListener);
+// ... and on the send path:
+mCompanionDeviceManager.sendMessage(
+        CompanionDeviceManager.MESSAGE_ONEWAY_CROSS_DEVICE_SYNC,
+        encodedMessage,
+        new int[] {associationId});
+```
+
+Source:
+`packages/services/CrossDeviceSync/src/com/android/crossdevicesync/network/messenger/MessengerImpl.java`,
+lines 109-112 and 658-661. That constant is defined in the framework as
+`MESSAGE_ONEWAY_CROSS_DEVICE_SYNC = 0x43676883` (the `+CDS` tag) in
+`frameworks/base/core/java/android/companion/CompanionDeviceManager.java`,
+line 405. Its top byte `0x43` makes it a *oneway* message under the
+classification in section 51.3.2, so CDM fires it across the
+secure transport without expecting a response.
+
+Because the underlying CDM message is fire-and-forget, the messenger layers its
+own reliability on top: it batches outbound messages and ACKs into a single
+`BatchedMessage`, retries on a timer, and uses a remote instance id to drop
+duplicates after a reconnect. The relevant timeouts (`RETRY_DELAY_MS`,
+`WAITING_FOR_TRANSPORT_TIMEOUT`, `WAITING_FOR_ACK_TIMEOUT`) are declared at
+`MessengerImpl.java`, lines 59-61.
+
+Before any transport exists, the service must coax the companion side into
+existence. `CompanionActionController` uses the Android 17 action-request
+mechanism from section 51.7.1 -- it issues `REQUEST_TRANSPORT`,
+`REQUEST_NEARBY_SCANNING`, and `REQUEST_NEARBY_ADVERTISING` action requests to
+its associations and watches the results:
+
+```java
+mCompanionDeviceManager.requestAction(
+        new ActionRequest.Builder(
+                        ActionRequest.REQUEST_TRANSPORT, ActionRequest.OP_DEACTIVATE)
+                .build(),
+        mPackageName,
+        associationIds);
+```
+
+Source:
+`packages/services/CrossDeviceSync/src/com/android/crossdevicesync/network/companion/CompanionActionControllerImpl.java`,
+lines 112-130. So the service is also the canonical client of the new
+`actionrequest/` processor: section 51.7.1 describes the framework half
+(`ActionRequestProcessor` validating `STATEFUL_ACTIONS`), and this is the app
+half that drives it.
+
+The end-to-end data flow, from a local feature change down to the CDM transport
+and back:
+
+```mermaid
+flowchart TD
+    subgraph App["CrossDeviceSync app (com.android.crossdevicesync)"]
+        FM["FeatureManager<br/>(airplane mode / contextual mode)"]
+        SDS["SharedDataStore<br/>(Submerge, SQLite)"]
+        NM[NetworkManager]
+        MSG[Messenger]
+        CAC[CompanionActionController]
+        PROXY[CompanionDeviceManagerProxy]
+    end
+
+    subgraph FW["system_server (CDM, sections 51.1-51.3)"]
+        CDMS[CompanionDeviceManagerService]
+        TM[CompanionTransportManager]
+        ST["SecureTransport<br/>(UKEY2)"]
+    end
+
+    Remote["Paired device<br/>(e.g. wearable)"]
+
+    FM -->|"local state change"| SDS
+    SDS -->|"sendMessage(networkId, assoc, bytes)"| MSG
+    CAC -->|"requestAction(REQUEST_TRANSPORT)"| PROXY
+    MSG -->|"MESSAGE_ONEWAY_CROSS_DEVICE_SYNC"| PROXY
+    NM -->|"association / transport / presence listeners"| PROXY
+    PROXY -->|"public CompanionDeviceManager SDK"| CDMS
+    CDMS --> TM
+    TM --> ST
+    ST <-->|"encrypted bytes"| Remote
+    PROXY -.->|"onMessageReceived (inbound)"| MSG
+    MSG -.->|"deliver to network"| SDS
+```
+
+### 51.9.4 Feature Managers and the Shared Data Store
+
+The sync logic is split into independent `FeatureManager` plugins. Android 17
+ships two, registered by name in the injector:
+
+- `AirplaneModeSyncManager` ("ApmSyncManager") -- mirrors airplane mode between
+  phone and watch.
+
+- `ContextualModeSyncManager` ("CtxModeSyncManager") -- syncs contextual
+  "modes" (a per-user setting state).
+
+Source:
+`SyncServiceInjectorImpl.java`, lines 183-204. Each feature creates a named
+`Network` on the `NetworkManager` (for example the airplane-mode feature uses
+`NETWORK_ID = "apm_sync_network"`) and stores its state in a `SharedDataStore`,
+described as "a data store that is in sync with remote devices ... eventually
+synced across other authorized devices" (`SharedDataStore.java`, lines 30-37).
+The concrete implementation, `SubmergeSharedDataStore`, layers Google's
+*Submerge* eventually-consistent sync library over a per-feature SQLite database;
+the global database is `cross_device_sync_global_db`
+(`SyncServiceInjectorImpl.java`, line 77).
+
+The airplane-mode feature also ties back to the per-association
+`systemDataSyncFlags` from section 51.2.1: it keys off
+`CompanionDeviceManager.FEATURE_CROSS_DEVICE_SYNC` and
+`CompanionDeviceManager.FLAG_AIRPLANE_MODE` to decide whether sync is enabled for
+a given association (`AirplaneModeSyncManager.java`, imports at lines 19-23).
+That is the same flag bitmask that the framework-side `DataSyncProcessor`
+(section 51.3.6) and `CHANGE_TYPE_UPDATED_DATA_SYNC_TYPES` (section 51.2.5)
+manage -- the app and the framework agree on which features are active through it.
+
+Finally, `MetadataPublisher` writes per-user CDM metadata
+(`putBooleanMetaData` / `putIntMetaData` / `putStringMetaData`) so the remote
+device can discover what this device supports. That metadata travels on the
+DataSync path from section 51.3.6, via the proxy's `setLocalMetadata` /
+`getLocalMetadata` (`MetadataPublisher.java`, lines 20-37).
+
+### 51.9.5 Debug Surface
+
+`SyncService.dump()` doubles as a shell-command entry point on debuggable
+builds. `SyncServiceShellCommand` supports a single maintenance command,
+`reset notifications`, which clears the rate-limited sync notifications:
+
+```bash
+adb shell dumpsys activity service com.android.crossdevicesync/.services.SyncService \
+    reset notifications
+```
+
+On non-debuggable builds the same `dump()` falls through to printing the
+`NetworkManager`, `MetadataPublisher`, and per-feature state. Source:
+`SyncService.java`, lines 125-140;
+`packages/services/CrossDeviceSync/src/com/android/crossdevicesync/services/SyncServiceShellCommand.java`,
+lines 33-67.
+
+In short, `CrossDeviceSync` is the productized, app-layer counterpart to the
+in-process controllers of sections 51.3.6 and 51.3.7: a privileged wearable
+companion app that turns the raw CDM association, transport, presence, action,
+and metadata primitives into an eventually-consistent, multi-feature sync fabric,
+without adding anything to `system_server` itself.
+
+---
+
+## 51.10 Try It
+
+### 51.10.1 Inspect Companion Device Associations
 
 List all associations for user 0:
 
@@ -9489,7 +9791,7 @@ Association{id=1,
   lastTimeConnected=1710100000000}
 ```
 
-### 51.9.2 Create a Test Association via Shell
+### 51.10.2 Create a Test Association via Shell
 
 Create a self-managed association for testing:
 
@@ -9501,7 +9803,7 @@ adb shell cmd companiondevice associate \
     --display-name "Test Device"
 ```
 
-### 51.9.3 Inspect Virtual Devices
+### 51.10.3 Inspect Virtual Devices
 
 Dump the state of all virtual devices:
 
@@ -9523,7 +9825,7 @@ For virtual device-specific information:
 adb shell dumpsys companion_device_manager virtual_devices
 ```
 
-### 51.9.4 Using the VirtualDeviceManager API
+### 51.10.4 Using the VirtualDeviceManager API
 
 To create a virtual device programmatically, an app needs:
 
@@ -9569,7 +9871,7 @@ VirtualTouchscreenConfig touchConfig = new VirtualTouchscreenConfig.Builder(1920
 device.createVirtualTouchscreen(touchConfig);
 ```
 
-### 51.9.5 Debugging Transport Issues
+### 51.10.5 Debugging Transport Issues
 
 To inspect active transports:
 
@@ -9590,7 +9892,7 @@ adb shell cmd companiondevice override-transport-type 2
 adb shell cmd companiondevice override-transport-type 0
 ```
 
-### 51.9.6 Inspecting Window Policy
+### 51.10.6 Inspecting Window Policy
 
 To see which activities are blocked on virtual displays:
 
@@ -9605,7 +9907,7 @@ D GenericWindowPolicyController: Virtual device activity launch disallowed
     on display 2, reason: Activity launch disallowed by policy: com.example/.SecretActivity
 ```
 
-### 51.9.7 Testing Sensor Injection
+### 51.10.7 Testing Sensor Injection
 
 Virtual sensors appear in the standard sensor list. To verify:
 
@@ -9616,7 +9918,7 @@ adb shell dumpsys sensorservice
 Virtual sensors created through VDM will show up with the device ID and
 name specified in the `VirtualSensorConfig`.
 
-### 51.9.8 Monitoring Audio Routing
+### 51.10.8 Monitoring Audio Routing
 
 To monitor audio routing changes for virtual devices:
 
@@ -9631,7 +9933,7 @@ I VirtualAudioController: Audio is playing, do not change rerouted apps
 I VirtualAudioController: The last playing app removed, delay change rerouted apps
 ```
 
-### 51.9.9 Camera Access Blocking
+### 51.10.9 Camera Access Blocking
 
 To monitor camera blocking on virtual devices:
 
@@ -9645,7 +9947,7 @@ Look for:
 D CameraAccessController: startBlocking() cameraId: 0 packageName: com.example.camera
 ```
 
-### 51.9.10 Key Source Files Reference
+### 51.10.10 Key Source Files Reference
 
 For quick reference, here are all the key source files discussed in this
 chapter, organized by subsystem:

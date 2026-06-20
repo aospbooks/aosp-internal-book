@@ -804,6 +804,18 @@ private static final int COMBO_SINK_DEVICE =
         UsbPort.combineRolesAsBit(POWER_ROLE_SINK, DATA_ROLE_DEVICE);
 ```
 
+### 39.3.9 Command-Line USB Diagnostics: usb_info_tools
+
+The `system/usb_info_tools/` project ships two small Rust diagnostic binaries.
+`typec_connector_class` (`system/usb_info_tools/typec_connector_class_helper/`)
+walks the kernel's USB Type-C Connector Class under `/sys/class/typec` and
+prints per-port data/power roles and PD state, which is handy when correlating
+what `UsbPortManager` reports against the raw sysfs the HAL reads.
+`dumpsys_to_lsusb` (`system/usb_info_tools/dumpsys_to_lsusb/`) parses
+`dumpsys usb` output and renders it in `lsusb`-style verbose and tree views.
+For the broader on-device debugging workflow these tools slot into, see
+Chapter 56.
+
 ---
 
 ## 39.4 ADB Architecture
@@ -2990,9 +3002,31 @@ split.
 
 ---
 
-## 39.12 Try It: Hands-On Experiments
+## 39.12 DeviceAsWebcam: The UVC Webcam Gadget
 
-### 39.12.1 Explore USB State Machine
+The `UVC` gadget function in the function table (Section 39.3.5) is what lets an
+Android device present itself to a host as a standard USB webcam. The user-space
+piece that drives it lives in `packages/services/DeviceAsWebcam/` -- a service
+that streams the device's own camera out over USB. When the user picks the
+webcam role, `UsbDeviceManager` brings up the `UVC` gadget function through the
+`IUsbGadget` HAL exactly like any other function, and the kernel's `g_uvc`
+driver exposes a V4L2 output node (`/dev/video*`) that the service writes frames
+into.
+
+The native side
+(`packages/services/DeviceAsWebcam/interface/jni/UVCProvider.cpp`) opens that
+node, negotiates UVC formats and frame intervals over its control endpoint, and
+pumps camera frames to the host; it pulls those frames from the platform Camera2
+pipeline rather than reimplementing capture. So the chapter's gadget machinery
+(ConfigFS, FunctionFS, the `IUsbGadget` function bitmask) supplies the USB
+transport, and DeviceAsWebcam supplies the video. For how the frames are
+captured upstream of this service, see Chapter 62.
+
+---
+
+## 39.13 Try It: Hands-On Experiments
+
+### 39.13.1 Explore USB State Machine
 
 Monitor USB state changes in real time:
 
@@ -3009,7 +3043,7 @@ adb shell getprop sys.usb.controller
 adb shell getprop persist.sys.usb.config
 ```
 
-### 39.12.2 Switch USB Functions
+### 39.13.2 Switch USB Functions
 
 ```bash
 # Switch to MTP mode
@@ -3031,7 +3065,7 @@ adb shell svc usb getFunctions
 adb shell svc usb resetUsbGadget
 ```
 
-### 39.12.3 Inspect USB HAL State
+### 39.13.3 Inspect USB HAL State
 
 ```bash
 # Dump USB service state
@@ -3047,7 +3081,7 @@ adb shell dumpsys usb | grep "hal version"
 adb shell service list | grep usb
 ```
 
-### 39.12.4 ADB Protocol Exploration
+### 39.13.4 ADB Protocol Exploration
 
 ```bash
 # Check ADB version and protocol
@@ -3072,7 +3106,7 @@ adb connect <device-ip>:5555
 adb shell cat /config/usb_gadget/g1/UDC
 ```
 
-### 39.12.5 Test File Transfer Performance
+### 39.13.5 Test File Transfer Performance
 
 ```bash
 # Create a test file
@@ -3089,7 +3123,7 @@ time adb pull /data/local/tmp/testfile /tmp/pulled_file
 # USB 3.x: ~100+ MB/s (device dependent)
 ```
 
-### 39.12.6 Explore MTP from Device Side
+### 39.13.6 Explore MTP from Device Side
 
 ```bash
 # Check MTP server status
@@ -3105,7 +3139,7 @@ adb shell dumpsys media.mtp
 adb shell ls -la /dev/usb-ffs/mtp/
 ```
 
-### 39.12.7 USB Host Mode Exploration
+### 39.13.7 USB Host Mode Exploration
 
 ```bash
 # List connected USB devices (host mode)
@@ -3124,7 +3158,7 @@ adb logcat -s UsbHostManager:*
 adb shell "dumpsys usb -dump-raw"
 ```
 
-### 39.12.8 Build and Test USB HAL Changes
+### 39.13.8 Build and Test USB HAL Changes
 
 ```bash
 # Build the default USB HAL
@@ -3143,7 +3177,7 @@ atest VtsHalUsbV1_0TargetTest
 atest VtsHalUsbGadgetV1_0TargetTest
 ```
 
-### 39.12.9 ADB Over WiFi Pairing
+### 39.13.9 ADB Over WiFi Pairing
 
 ```bash
 # On the device: Enable wireless debugging in Developer Options
@@ -3159,7 +3193,7 @@ adb connect <device-ip>:<connection-port>
 adb devices -l
 ```
 
-### 39.12.10 Port Forwarding Experiment
+### 39.13.10 Port Forwarding Experiment
 
 ```bash
 # Forward local port to device port
@@ -3177,7 +3211,7 @@ adb forward --remove tcp:8080
 adb reverse --remove-all
 ```
 
-### 39.12.11 Investigate USB Accessory Mode
+### 39.13.11 Investigate USB Accessory Mode
 
 ```bash
 # Check accessory support
@@ -3191,7 +3225,7 @@ adb logcat -s UsbDeviceManager:* | grep -i accessory
 adb shell getprop ro.usb.userspace.aoa.enabled
 ```
 
-### 39.12.12 Trace USB Stack with ftrace
+### 39.13.12 Trace USB Stack with ftrace
 
 ```bash
 # Enable USB tracing (requires root)
@@ -3207,7 +3241,7 @@ adb shell "echo 0 > /sys/kernel/debug/tracing/events/gadget/enable"
 adb shell "echo 0 > /sys/kernel/debug/tracing/events/usb/enable"
 ```
 
-### 39.12.13 Dump ADB Protocol Traffic
+### 39.13.13 Dump ADB Protocol Traffic
 
 ```bash
 # Set ADB trace categories
@@ -3221,7 +3255,7 @@ adb shell setprop persist.adb.trace_mask 0xffff
 adb shell stop adbd && adb shell start adbd
 ```
 
-### 39.12.14 Explore ConfigFS Gadget Configuration
+### 39.13.14 Explore ConfigFS Gadget Configuration
 
 On devices with configfs gadget support, you can inspect the USB gadget
 configuration directly:
@@ -3256,7 +3290,7 @@ adb shell ls /config/usb_gadget/g1/functions/
 adb shell cat /config/usb_gadget/g1/UDC
 ```
 
-### 39.12.15 Monitor USB Type-C Port Status
+### 39.13.15 Monitor USB Type-C Port Status
 
 ```bash
 # View Type-C port information
@@ -3278,7 +3312,7 @@ adb shell udevadm monitor --kernel --subsystem-match=typec 2>/dev/null || \
     echo "Use logcat to monitor UEvents"
 ```
 
-### 39.12.16 Benchmark USB Data Throughput
+### 39.13.16 Benchmark USB Data Throughput
 
 ```bash
 # Test raw ADB transfer speed
@@ -3301,7 +3335,7 @@ adb shell dumpsys usb | grep -i speed
 adb shell cat /sys/class/udc/*/current_speed 2>/dev/null
 ```
 
-### 39.12.17 Explore ADB Key Management
+### 39.13.17 Explore ADB Key Management
 
 ```bash
 # View authorized keys on device
@@ -3319,7 +3353,7 @@ adb shell settings put global development_settings_enabled 0
 # Or via Settings > Developer Options > Revoke USB debugging authorizations
 ```
 
-### 39.12.18 Write a Simple USB Host Application
+### 39.13.18 Write a Simple USB Host Application
 
 Create a minimal application that enumerates USB devices:
 
@@ -3362,7 +3396,7 @@ public class UsbEnumerator extends Activity {
 }
 ```
 
-### 39.12.19 Debug USB Connection Issues
+### 39.13.19 Debug USB Connection Issues
 
 Common USB debugging techniques:
 
@@ -3391,7 +3425,7 @@ adb start-server
 adb devices
 ```
 
-### 39.12.20 Inspect MTP Object Tree
+### 39.13.20 Inspect MTP Object Tree
 
 ```bash
 # Use Android's mtp-send/receive tools (if available)
@@ -3411,7 +3445,7 @@ adb logcat -s MtpServer:V MtpDatabase:V MtpService:V
 # 0x100B = DELETE_OBJECT
 ```
 
-### 39.12.21 Inspect USB Host Device Authorization
+### 39.13.21 Inspect USB Host Device Authorization
 
 On a build with `enable_usb_host_authorization` enabled (desktop/large-screen
 form factors), inspect the new daemon and policy:
@@ -3432,7 +3466,7 @@ adb logcat -s UsbAuthManager:* usbauthservice:*
 adb shell cat /sys/bus/usb/devices/1-1/authorized 2>/dev/null
 ```
 
-### 39.12.22 Inspect the Userspace AOA Daemon
+### 39.13.22 Inspect the Userspace AOA Daemon
 
 ```bash
 # Is userspace AOA selected on this device?
