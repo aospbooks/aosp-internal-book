@@ -1,0 +1,55 @@
+{
+  "skill_name": "aosp-book-polish",
+  "notes": "Scoped prompts: the full book-polish job is a multi-million-token agent-team run, so these evals elicit the methodology + one scoped analysis where the skill's structure shows, rather than a full rewrite of all chapters. with_skill should beat a no-skill baseline because the skill encodes this book's conventions, the new-module gap-analysis method + placement threshold, the hard invariants, the convergent review loop, and the regeneration/build gates. Run outputs live in .superpowers/aosp-book-polish-workspace/ (gitignored).",
+  "evals": [
+    {
+      "id": 0,
+      "name": "new-module-gap-and-placement",
+      "prompt": "I just re-synced my AOSP checkout to a newer release and I already generated the 16->17 style changeset under manifest-snapshots/_compare/. I'm worried my reference book (the NN-slug.md chapters at the repo root) is missing some of the brand-new modules/projects that got added. How do I find the newly-added modules that aren't covered yet, and for each one, where should it go -- into an existing chapter or a brand-new chapter? Give me the concrete procedure and a representative sample of findings, not an exhaustive dump.",
+      "expected_output": "A deterministic gap-analysis procedure: derive the added-projects set from added-removed.txt + the new-version appendix's enumerated new modules, then grep each candidate's source path AND name across the [0-9][0-9]-*.md chapters to decide covered vs uncovered, verifying each against the AOSP source. A placement policy that folds extensions into the existing chapter FIRST and only creates a new chapter/Part by an explicit threshold (substantial new top-level subsystem that fits nowhere), with external/* and thin/relocation/prebuilt modules as integration notes (never their own chapter). Run the analysis in a subagent. A representative sample of real findings with source paths.",
+      "files": [],
+      "assertions": [
+        "Derives added-projects set deterministically from added-removed.txt (not guessed)",
+        "Coverage check greps the NN-*.md chapters for path AND name",
+        "Placement: fold into existing chapter FIRST, new chapter only by threshold",
+        "external/* + thin/stub/relocation/prebuilt -> note, never own chapter",
+        "Runs the gap analysis in a subagent",
+        "Cites real repo-relative source paths for findings",
+        "Verifies candidates against the AOSP source, not appendix-only"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "per-chapter-polish-plan",
+      "prompt": "I want to deep-rewrite Chapter 37 (Bluetooth) of my AOSP Internals book so it's accurate for the newly-synced AOSP source. The chapter is large and has lots of Mermaid diagrams and source-path citations. Walk me through exactly how to do this safely without breaking the book's structure, and how I'd know the rewrite is actually correct and not just plausible.",
+      "expected_output": "Back up the chapter first (.bak). Keep the filename and the '# Chapter 37: Title' line (number AND title) unchanged; preserve manual section numbering with no duplicates; keep the terminal Try It -> Summary; no epigraph. Verify every existing citation against the new source and correct stale class/line refs; append new-feature sections before Try It. Run ./serve.sh png and require errors=0 (CI does NOT validate Mermaid) plus a visual check. Then an INDEPENDENT adversarial review (accuracy + Mermaid + structure) classifying MAJOR/MINOR, fix, and repeat to convergence (two clean rounds). Regenerate agents/build.py afterward. No local paths/usernames in the text.",
+      "files": [],
+      "assertions": [
+        "Back up the chapter first (.bak)",
+        "Immutable chapter identity (title/number/filename unchanged)",
+        "Preserve numbering + terminal Try It->Summary + no epigraph",
+        "Verify every cited path against the new source; fix stale refs",
+        "Mermaid gate: serve.sh png errors=0 (CI does not validate mermaid)",
+        "Independent adversarial review (accuracy+mermaid+structure), converge",
+        "Regenerate agents/build.py afterward",
+        "No local paths/usernames in chapter text"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "whole-book-update-orchestration",
+      "prompt": "Android shipped a new release and I've synced my AOSP checkout to it. I want to update my entire AOSP Internals reference book (65+ chapters) to match -- accurate, current, and covering anything new. This is obviously huge. How should I drive it end to end so it's manageable, doesn't lose work if it gets interrupted, and I can trust the result? I have an agent team available.",
+      "expected_output": "A resumable, changeset-prioritized plan: prioritize chapters by the 16->17 changeset signal into a queue; durable state under .superpowers so a fresh run resumes; a per-chapter convergent loop (rewrite -> independent agent-team accuracy+Mermaid+structure review -> fix -> two clean rounds) with an agent cap (~10) and one author per file; a MANDATORY separate phase to find and place newly-added modules/projects (fold first, new chapter by threshold); bookkeeping/gates (build.py --check, mkdocs build in Docker, serve.sh png errors=0, leak sweep); and no auto-commit -- keep local, user reviews and commits.",
+      "files": [],
+      "assertions": [
+        "Changeset-prioritized queue",
+        "Resumable durable state so interruption doesn't lose work",
+        "Per-chapter convergent loop (rewrite->review->two clean rounds)",
+        "MANDATORY new-module phase (fold first, threshold)",
+        "Agent cap (~10) and one author per file",
+        "Gates: build.py --check, mkdocs build (Docker), serve.sh png",
+        "No auto-commit; keep local; user commits"
+      ]
+    }
+  ]
+}
