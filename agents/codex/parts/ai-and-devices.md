@@ -5503,7 +5503,323 @@ keeping the same interaction-type vocabulary (`USER_QUERY`, `USER_SCHEDULED`,
 
 ---
 
-## 50.13 Try It
+## 50.13 AiSeal: Sealed On-Device AI Compute
+
+The intelligence subsystems covered so far run on the host OS: the system server
+mediates them, but the model weights, the inference code, and the personal data
+they touch all live in ordinary Android processes that a sufficiently privileged
+host component could observe. Android 17 introduces **AiSeal**, a system service
+that closes that gap by hosting on-device AI payloads inside a *protected*
+virtual machine whose memory the host kernel cannot read. AiSeal is the platform
+plumbing that lets an app reach an AI agent, an inference engine, or a personal
+AppSearch database that the rest of the device is sealed out of.
+
+The protected-VM machinery itself -- the Android Virtualization Framework (AVF),
+microdroid, `VirtualizationService`, instance images, and protected-VM firmware
+verification -- is the subject of Chapter 54 (Virtualization); this section
+covers only the AiSeal host service that sits on top of it and the connect flow
+an app uses to talk into the VM.
+
+**Source tree (Android 17):**
+
+```
+frameworks/base/core/java/android/aiseal/
+    AiSealManager.java           -- @SystemApi host-side client
+    AiSealException.java         -- Checked failure type
+    IAiSealHostService.aidl      -- Host service: connectService(name)
+    aiseal.aconfig               -- Flag android.aiseal.aiseal_host_apis
+frameworks/base/services/aiseal/java/com/android/server/aiseal/
+    AiSealSystemService.java     -- SystemService, bridges per-user lifecycle into the VM
+frameworks/native/services/aisealhostservice/
+    src/main.rs                  -- Native Rust host service (runs inside the AVF VM)
+    src/config.rs                -- AiSeal config + protected_vm flag parsing
+    src/payload.rs               -- Payload (tenant APK) loading
+    src/package_manager.rs       -- Calling-package resolution for ownership checks
+    src/instance_data.rs         -- VM storage directory and image files
+    src/vsock_selinux.rs         -- vsock connect with per-tenant SELinux MLS level
+    aidl/com/android/internal/aiseal/IAiSealInternalService.aidl
+                                 -- Per-user lifecycle (onUserUnlocking/Stopped/Removed)
+    aisealhostservice.rc         -- init service definition
+```
+
+### 50.13.1 What AiSeal Is
+
+AiSeal hosts a single protected virtual machine that runs several AI-related
+payloads behind a sealed boundary. `AiSealManager`'s own documentation describes
+the VM's tenants as an AppSearch database for personal data that should *not* be
+accessible from the host OS, an on-device AI inference service for processing
+that data with large models, and AI agents that resolve user requests using it
+(`frameworks/base/core/java/android/aiseal/AiSealManager.java`). In other words,
+AiSeal is confidential on-device compute: it is where Android 17 can run an
+assistant's reasoning over a user's private data with a hardware-enforced
+guarantee that the host platform cannot inspect the computation.
+
+Two terms recur. A **tenant** is a package whose code and configuration are
+loaded into the VM as a payload. An **exported service** is a vsock endpoint a
+tenant publishes inside the VM (via `AVmPayload_runVsockRpcServer`) and names in
+the AiSeal configuration file; the matching *host* application -- the package
+that owns the tenant -- reaches that service from outside the VM through
+`AiSealManager.connectService(name)`.
+
+AiSeal is gated three ways. It is a `@SystemApi` guarded by the flag
+`android.aiseal.aiseal_host_apis` (`aiseal.aconfig`); it requires the system
+feature `PackageManager.FEATURE_AISEAL` (`"android.software.aiseal"`); and the
+device property `service.aiseal.enable` must be set. `AiSealManager.isEnabled()`
+checks the feature and the property together before any connection is attempted.
+Because the VM does not model Android's profile separation, `AiSealManager` is
+documented as accessible only by the primary user; secondary-user requests must
+be routed through the primary user.
+
+### 50.13.2 The Connect Flow
+
+A host application connects to a sealed service through one method,
+`AiSealManager.connectService(String name)`, which is annotated `@WorkerThread`
+(it may block) and requires `android.permission.MANAGE_AISEAL_VIRTUAL_MACHINE`.
+The request crosses three boundaries: from the app into the system-published
+`aiseal_host` binder, then over a vsock connection into the native host service
+running *inside* the VM, and finally to the tenant's own vsock service.
+
+The following diagram shows the connect path and the two services the in-VM
+native host service registers.
+
+```mermaid
+graph TB
+    subgraph host["Host OS"]
+        APP["Host App<br/>(tenant owner)"]
+        ASM["AiSealManager<br/>(@SystemApi, connectService name)"]
+        SS["AiSealSystemService<br/>(system_server)"]
+        SM["ServiceManager<br/>(aiseal_host / aiseal_internal)"]
+    end
+
+    subgraph avf["AVF (see Chapter 54)"]
+        VS["VirtualizationService"]
+    end
+
+    subgraph vm["Protected VM (microdroid)"]
+        HOST["aisealhostservice<br/>(Rust, IAiSealHostService)"]
+        INT["aiseal_internal<br/>(IAiSealInternalService)"]
+        GA["Guest agent<br/>(unlocks CE storage)"]
+        TEN["Tenant vsock service<br/>(exported by name)"]
+    end
+
+    APP --> ASM
+    ASM -->|"connectService(name) via aiseal_host binder"| HOST
+    HOST -->|"vsock connect to tenant port"| TEN
+    HOST -. "ParcelFileDescriptor (vsock fd)" .-> ASM
+    SS -->|"per-user lifecycle over aiseal_internal"| INT
+    INT --> GA
+    VS -->|"hosts / verifies"| vm
+    HOST -. "add_service" .-> SM
+    INT -. "add_service" .-> SM
+```
+
+Inside `connectService`, `AiSealManager` resolves the `aiseal_host` binder
+(`Context.AISEAL_HOST_SERVICE == "aiseal_host"`, via
+`ServiceManager.waitForService`) and calls its single AIDL method,
+`IAiSealHostService.connectService(name)`, which returns a
+`ParcelFileDescriptor` wrapping the vsock connection. The manager wraps the call
+in `VirtualMachine.binderFromPreconnectedClient(...)` so the returned descriptor
+is adopted as an RPC-binder client to the in-VM service. On the VM side, the
+native host service (`frameworks/native/services/aisealhostservice/src/main.rs`)
+implements `connectService` by: enforcing `MANAGE_AISEAL_VIRTUAL_MACHINE`;
+looking the requested name up in the service-to-owner map built from the AiSeal
+config; checking that the calling package *owns* that tenant (system\_server and
+root may call any service); and finally opening a vsock connection to the
+tenant's declared port with a derived SELinux context. The ownership check is
+the key isolation property: a host app can connect only to services exported by
+the tenant it owns, never to another tenant's.
+
+The native service is launched by init only when sealing is on -- the
+`aisealhostservice.rc` file declares the service `disabled` and enables it on
+`property:sys.boot_completed=1 && property:service.aiseal.enable=1`, stopping it
+again if `service.aiseal.enable` goes to `0`. At startup `main.rs` reads
+`service.aiseal.enable`, waits for boot completion, connects to
+`VirtualizationService`, loads the tenant payload, starts the VM, and only then
+registers the `aiseal_host` and `aiseal_internal` binders with `add_service`.
+
+### 50.13.3 Per-User CE-Key (kekFile) Handling
+
+AiSeal stores per-user personal data in an encrypted database inside the VM, and
+that storage must be locked and unlocked in lockstep with Android's
+credential-encrypted (CE) storage on the host. The bridge is
+`AiSealSystemService`
+(`frameworks/base/services/aiseal/java/com/android/server/aiseal/AiSealSystemService.java`),
+a `SystemService` registered in `SystemServer.java` (guarded by both the system
+feature `PackageManager.FEATURE_AISEAL` and the flag
+`android.aiseal.Flags.aisealHostApis()`). It connects to the `aiseal_internal`
+binder and forwards three user-lifecycle events over
+`IAiSealInternalService`:
+
+| Host callback | Forwarded call | In-VM effect |
+|---------------|----------------|--------------|
+| `onUserUnlocking(user)` | `onUserUnlocking(userId, kekFile)` | Guest agent unlocks that user's CE storage in the VM |
+| `onUserStopped(user)` | `onUserStopped(userId)` | Guest agent locks that user's CE storage |
+| `onUserRemoved (broadcast)` | `onUserRemoved(userId)` | Guest agent destroys that user's CE storage |
+
+The unlocking path is where the key-encryption key (KEK) crosses the boundary.
+On `onUserUnlocking`, `AiSealSystemService` computes a per-user file path under
+the host's CE system directory -- `Environment.buildPath(getDataSystemCeDirectory(userId), "AiSeal", "kek")` -- creates the directory, runs `SELinux.restorecon`
+on it, and passes the *path* (not the key bytes) to the VM via
+`IAiSealInternalService.onUserUnlocking(userId, kekFilePath)`. Inside the VM the
+internal service wraps that path in an `ICEStoreKEK` binder and hands it to the
+guest agent's `userUnlocked(userId, kek)`. The guest agent calls back through
+`ICEStoreKEK.getKEK()` to read the key from the (host-side, CE-protected) file,
+or `onKEKCreated(key)` to write a freshly generated key back. Because the KEK
+file lives under the user's CE directory, it is only readable while that user is
+unlocked on the host -- so the VM's per-user encrypted storage is cryptographically
+tied to the same lock state as the rest of the user's data. If the connection to
+`aiseal_internal` is not yet established when a user unlocks, the service records
+the user in an `mUnlockedUsers` set and replays the unlock once the VM service
+connects.
+
+### 50.13.4 Protected VM vs Nonprotected Fallback
+
+Whether the AiSeal VM is a *protected* VM is governed by the device property
+`service.aiseal.protected_vm`, read in `config.rs`
+(`AISEAL_PROTECTED_VM_FLAG`). The default is `true`: a protected VM whose guest
+memory is inaccessible to the host kernel and hypervisor, which is the entire
+point of "sealing." Setting the property to `false` requests a *nonprotected*
+VM -- the same payload and the same connect flow, but without the
+memory-confidentiality guarantee. The flag is plumbed straight through to AVF as
+the `protectedVm` field of `VirtualMachineAppConfig` when `main.rs` starts the
+VM. The nonprotected mode exists chiefly for development and for devices whose
+hardware lacks protected-VM support; production sealing relies on the protected
+default. The deeper question of how a protected VM actually keeps its memory
+private from the host -- pKVM, stage-2 page protection, and protected-VM firmware
+attestation -- is covered in Chapter 54.
+
+## 50.14 PersonalContext: On-Device Personal Context in the PCC
+
+Where AiSeal seals AI compute inside a VM, **PersonalContext** seals a different
+asset -- a structured, on-device store of the user's personal context -- inside
+Android's *Private Compute Core* (PCC) sandbox. PersonalContext
+(`packages/apps/PersonalContext/`, package `com.android.personalcontext`) is a
+privileged, platform-signed app introduced in Android 17 that builds an
+on-device personal-context surface: it observes signals the user already sees
+(conversations, notifications, contacts), distills them into searchable
+"memories," and serves context back to assistant and intelligence features --
+all while keeping the raw data inside the PCC boundary.
+
+### 50.14.1 What PersonalContext Is
+
+PersonalContext is the reference implementation of the personal-context
+framework whose SystemApi surface lives under
+`frameworks/base/core/java/android/service/personalcontext/`. It registers three
+`ContextUnderstanderService` subclasses
+(`packages/apps/PersonalContext/src/com/android/personalcontext/understander/`):
+
+| Service | Hint it consumes |
+|---------|------------------|
+| `ChatUnderstanderService` | Conversation hints (chat content captured from messaging UIs) |
+| `NotificationUnderstanderService` | Posted-notification hints |
+| `ContextMenuUnderstanderService` | Context-menu / selection hints |
+
+Each extends the platform base
+`android.service.personalcontext.understander.ContextUnderstanderService`,
+declares the action `android.service.personalcontext.UnderstanderService`, and is
+protected by `BIND_CONTEXT_COMPONENT_SERVICE` so only the platform may bind it.
+An understander overrides `onInitializeFilter()` to declare which hint types it
+needs (for example, `ChatUnderstanderService` requires
+`ContentCaptureConversationHint`) and `onUnderstand(hints)` to turn those hints
+into `ContextInsight` objects -- displayable recalls or actionable suggestions.
+
+The whole feature is gated by the product-container flag `enable_osi`
+("on-device system intelligence"), the master flag in
+`packages/apps/PersonalContext/aconfig/personal_context.aconfig`, alongside the
+platform feature flag `enable_personal_context_service` that guards the
+framework permissions.
+
+### 50.14.2 Where It Sits in the PCC / On-Device-Intelligence Model
+
+PersonalContext is a Private Compute Core app. Every one of its components --
+the understander services, the WorkManager plumbing, the initialization
+receiver -- carries `android:privateComputeCore="@bool/enable_personal_context_pcc"`
+in its manifest, and the platform default product overlay sets that boolean to
+`true`. The `privateComputeCore` manifest attribute
+(`frameworks/base/core/res/res/values/attrs_manifest.xml`) marks a component as
+running inside the PCC sandbox, where it is denied general network egress; data
+leaves only through the narrow, audited PCC egress APIs.
+
+The permissions PersonalContext holds are all signature-level
+(`signature|privileged`, with `PERSONAL_CONTEXT_READ_SETTINGS` additionally
+`recents`) and carry the `allowedInPrivateComputeCore` permission flag
+(`frameworks/base/core/res/AndroidManifest.xml`):
+
+| Permission | Role |
+|-----------|------|
+| `PERSONAL_CONTEXT_RECEIVE_HINTS` | Receive hints delivered to understander/refiner services |
+| `PERSONAL_CONTEXT_PUBLISH_INSIGHTS` | Publish the insights an understander produces |
+| `PERSONAL_CONTEXT_READ_SETTINGS` | Read personal-context settings |
+| `USE_ON_DEVICE_INTELLIGENCE` | Drive the on-device inference path (see 50.4) |
+
+That last permission is the link back to the rest of this chapter:
+PersonalContext is a *consumer* of OnDeviceIntelligence (50.4). It uses the
+sandboxed inference path to run the language models that summarize a
+conversation or rank a recall, and it indexes the results -- not the raw source
+data -- for retrieval. The hint inputs themselves originate from the same
+passive-intelligence layer described in 50.7: a `ContentCaptureConversationHint`,
+for instance, is built from Content Capture of a messaging surface. PersonalContext
+thus stitches together three subsystems this chapter already covered -- Content
+Capture as the source, OnDeviceIntelligence as the reasoning engine, and
+AppSearch as the store -- into one personal-context pipeline.
+
+The store is AppSearch-backed. PersonalContext converts understood data into
+AppSearch `GenericDocument`s and indexes them through its `MemoryIndexManager`
+(`packages/apps/PersonalContext/src/com/android/personalcontext/storage/appsearch/MemoryIndexManager.kt`),
+then retrieves them at query time through a `MemorySearchAgent`
+(`.../search/MemorySearchAgentImpl.kt`) that combines keyword and embedding-based
+semantic search. The following diagram shows data flowing into and out of the
+context store.
+
+```mermaid
+graph LR
+    subgraph sources["Passive sources (50.7)"]
+        CC["Content Capture<br/>(conversations)"]
+        NOTIF["Notifications"]
+    end
+
+    subgraph pcc["PersonalContext (PCC sandbox)"]
+        US["ContextUnderstanderService<br/>(Chat / Notification / ContextMenu)"]
+        ODI["OnDeviceIntelligence<br/>(USE_ON_DEVICE_INTELLIGENCE, 50.4)"]
+        MIM["MemoryIndexManager"]
+        MSA["MemorySearchAgent<br/>(keyword + semantic)"]
+        STORE["AppSearch memory store"]
+    end
+
+    CONS["Assistant / intelligence<br/>feature (ContextInsight)"]
+
+    CC -->|"hints"| US
+    NOTIF -->|"hints"| US
+    US -->|"summarize / rank"| ODI
+    ODI --> MIM
+    MIM -->|"GenericDocument"| STORE
+    STORE --> MSA
+    MSA -->|"recalls / actions"| US
+    US -->|"publish insights"| CONS
+```
+
+### 50.14.3 Privacy Posture
+
+PersonalContext's privacy model is the PCC model, applied to a deliberately
+sensitive data set. Three properties hold it together. First, **sandbox
+confinement**: because its components are `privateComputeCore`, the app cannot
+reach the network with the raw context it has gathered; the only sanctioned way
+out is the PCC egress path, and the only thing it publishes are
+derived `ContextInsight`s, not source content. Second, **on-device reasoning**:
+all summarization and ranking run through OnDeviceIntelligence's sandboxed
+inference (50.4), so the personal data is processed locally rather than shipped
+to a server. Third, **access gating**: every hint, insight, and settings
+permission is `signature|privileged` and additionally flagged
+`allowedInPrivateComputeCore`, so only platform-signed components participate,
+and the whole surface can be disabled by clearing `enable_osi`. The data store
+is the user's own AppSearch database, subject to the same per-user visibility
+and access controls described in 50.8. The net effect mirrors AiSeal's goal from
+the other direction: AiSeal seals *compute* in a VM, while PersonalContext seals
+*data and its processing* in the PCC sandbox, and the two represent Android 17's
+two complementary answers to running intelligence over private data without
+leaking it.
+
+## 50.15 Try It
 
 ### Exercise 50-1: Inspect AppFunction Metadata in AppSearch
 
@@ -6326,6 +6642,19 @@ discovery, content search, and metadata management.
 classifiers, sandboxed SDK runtimes, and auction logic that keeps user data
 local while still enabling advertising functionality.
 
+**AiSeal** (new in Android 17) hosts on-device AI payloads -- an inference
+service, AI agents, and a personal AppSearch database -- inside a protected
+virtual machine the host cannot inspect, exposing a host-side
+`AiSealManager.connectService()` over vsock and tying the VM's per-user
+encrypted storage to host CE-key lock state (the protected-VM machinery lives in
+Chapter 54).
+
+**PersonalContext** (new in Android 17) is a Private Compute Core app that turns
+captured conversations, notifications, and selections into searchable on-device
+"memories" via `ContextUnderstanderService`s, reasoning with OnDeviceIntelligence
+and storing results in AppSearch while the PCC sandbox keeps the raw data from
+leaving the device.
+
 The common thread across all these subsystems is Android's commitment to
 **on-device intelligence with process isolation**. Every subsystem that touches
 user data does so within carefully bounded processes, with explicit permission
@@ -6381,6 +6710,21 @@ gates, and with the system server mediating all cross-boundary communication.
 | Manager.h (NNAPI) | `packages/modules/NeuralNetworks/runtime/Manager.h` |
 | IDevice.h (NNAPI HAL) | `packages/modules/NeuralNetworks/common/types/include/nnapi/IDevice.h` |
 | FederatedComputeJobManager | `packages/modules/OnDevicePersonalization/federatedcompute/src/com/android/federatedcompute/services/scheduling/` |
+| AiSealManager | `frameworks/base/core/java/android/aiseal/AiSealManager.java` |
+| IAiSealHostService.aidl | `frameworks/base/core/java/android/aiseal/IAiSealHostService.aidl` |
+| AiSealException | `frameworks/base/core/java/android/aiseal/AiSealException.java` |
+| aiseal.aconfig | `frameworks/base/core/java/android/aiseal/aiseal.aconfig` |
+| AiSealSystemService | `frameworks/base/services/aiseal/java/com/android/server/aiseal/AiSealSystemService.java` |
+| AiSeal host service (Rust) | `frameworks/native/services/aisealhostservice/src/main.rs` |
+| AiSeal config (protected_vm) | `frameworks/native/services/aisealhostservice/src/config.rs` |
+| IAiSealInternalService.aidl | `frameworks/native/services/aisealhostservice/aidl/com/android/internal/aiseal/IAiSealInternalService.aidl` |
+| aisealhostservice.rc | `frameworks/native/services/aisealhostservice/aisealhostservice.rc` |
+| PersonalContext AndroidManifest | `packages/apps/PersonalContext/AndroidManifest.xml` |
+| ChatUnderstanderService | `packages/apps/PersonalContext/src/com/android/personalcontext/understander/ChatUnderstanderService.kt` |
+| ContextUnderstanderService (framework) | `frameworks/base/core/java/android/service/personalcontext/understander/ContextUnderstanderService.java` |
+| MemoryIndexManager | `packages/apps/PersonalContext/src/com/android/personalcontext/storage/appsearch/MemoryIndexManager.kt` |
+| MemorySearchAgentImpl | `packages/apps/PersonalContext/src/com/android/personalcontext/search/MemorySearchAgentImpl.kt` |
+| personal_context.aconfig | `packages/apps/PersonalContext/aconfig/personal_context.aconfig` |
 
 ### Glossary of Key Terms
 
@@ -8052,6 +8396,22 @@ void setMouseScalingEnabled(boolean enabled, int displayId);
 void setDisplayEligibilityForPointerCapture(boolean isEligible, int displayId);
 void setDisplayImePolicy(int displayId, @WindowManager.DisplayImePolicy int policy);
 ```
+
+Android 17 ships a concrete consumer of this virtual-input machinery as a
+platform app. `packages/apps/VirtualGamepad/` is a platform-signed Jetpack
+Compose app that draws an on-screen gamepad and synthesizes gamepad input for a
+game running on the same display. Rather than going through a `VirtualDevice`,
+it talks to the input stack directly via the public
+`InputManager.createVirtualGamepad(VirtualGamepadConfig)` entry point (declared
+in `frameworks/base/core/java/android/hardware/input/InputManager.java`), which
+backs onto the same `createVirtual*` device family this section describes. Its
+`LocalGamepadBackend` builds the `VirtualGamepadConfig` with the activity's
+`displayId` as `associatedDisplayId`, then pushes `VirtualGamepadMotionEvent`
+and `VirtualKeyEvent` objects through the returned `VirtualGamepad` handle (see
+`packages/apps/VirtualGamepad/java/com/android/virtualgamepad/backend/LocalGamepadBackend.kt`).
+The app holds `INJECT_EVENTS` and `ASSOCIATE_INPUT_DEVICE_TO_DISPLAY`, and
+finishes itself when a physical gamepad is connected. It is a thin client of the
+virtual-input APIs covered here, not a separate subsystem.
 
 ### 51.5.2 SensorController
 

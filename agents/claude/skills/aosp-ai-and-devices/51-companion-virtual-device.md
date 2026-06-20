@@ -1647,6 +1647,22 @@ void setDisplayEligibilityForPointerCapture(boolean isEligible, int displayId);
 void setDisplayImePolicy(int displayId, @WindowManager.DisplayImePolicy int policy);
 ```
 
+Android 17 ships a concrete consumer of this virtual-input machinery as a
+platform app. `packages/apps/VirtualGamepad/` is a platform-signed Jetpack
+Compose app that draws an on-screen gamepad and synthesizes gamepad input for a
+game running on the same display. Rather than going through a `VirtualDevice`,
+it talks to the input stack directly via the public
+`InputManager.createVirtualGamepad(VirtualGamepadConfig)` entry point (declared
+in `frameworks/base/core/java/android/hardware/input/InputManager.java`), which
+backs onto the same `createVirtual*` device family this section describes. Its
+`LocalGamepadBackend` builds the `VirtualGamepadConfig` with the activity's
+`displayId` as `associatedDisplayId`, then pushes `VirtualGamepadMotionEvent`
+and `VirtualKeyEvent` objects through the returned `VirtualGamepad` handle (see
+`packages/apps/VirtualGamepad/java/com/android/virtualgamepad/backend/LocalGamepadBackend.kt`).
+The app holds `INJECT_EVENTS` and `ASSOCIATE_INPUT_DEVICE_TO_DISPLAY`, and
+finishes itself when a physical gamepad is connected. It is a thin client of the
+virtual-input APIs covered here, not a separate subsystem.
+
 ### 51.5.2 SensorController
 
 The `SensorController` manages virtual sensors that can feed sensor data from

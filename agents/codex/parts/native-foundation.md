@@ -8220,6 +8220,18 @@ For app developers the practical rule is simple: never assume 4096. Query the pa
 runtime, align `mmap`/`mprotect` arguments to it, and build native code with the toolchain's
 16 KB alignment defaults so the resulting `.so` files load on either kernel.
 
+To quantify the trade-off rather than reason about it abstractly, Android 17 adds `amemdiff`
+(`system/memory/amemdiff/`), a host-side Python tool that measures the memory impact of a 4 KB
+versus 16 KB page-size configuration. It connects to two devices over ADB (one booted 4 KB, one
+16 KB), applies a fixed set of device configs to suppress variance, drives a workload such as the
+default `SteadyStateWorkload`, and probes each device repeatedly with `/proc/meminfo` and
+`showmap`. It then emits per-device CSVs along with mean and mean-diff files, so a developer can
+read directly how much extra RAM the larger page size costs for the same workload and where the
+fragmentation lands. Building it with `m amemdiff` produces a host binary
+(`out/host/linux-x86/bin/amemdiff`); its design is documented in `system/memory/amemdiff/README.md`.
+Because it is a measurement harness rather than an on-device daemon, it complements the page-count
+reasoning above with concrete numbers when validating a device's move to 16 KB pages.
+
 ---
 
 ## 8.12 Key Source Files Reference

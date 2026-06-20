@@ -14627,7 +14627,41 @@ platform; the SDV chapters pick up where the vehicle abstraction leaves off.
 
 ---
 
-## 60.6 Try It
+## 60.6 Android 17: Android XR as an Emerging Form Factor
+
+Automotive, TV, and Wear are the form factors that AOSP ships and supports today. Android 17 adds
+the first platform-level *signal* of a fourth one -- **Android XR**, the headset and glasses form
+factor built on the Khronos **OpenXR** standard. It is worth understanding precisely how thin this
+signal is in 17, because it is easy to overstate.
+
+There is no in-tree XR runtime, loader, or system consumer in AOSP 17. What landed is two things:
+
+- **Vendored OpenXR headers.** `external/openxr-sdk/` is the newly vendored Khronos OpenXR SDK
+  (`release-1.1.50` per its `METADATA`). Its in-tree `Android.bp` exposes a single module,
+  `cc_library_headers { name: "openxr_headers" }`, over `include/` -- the OpenXR *headers*, not a
+  loader or runtime. As of 17 no in-tree platform module consumes `openxr_headers`; the SDK simply
+  makes the standard XR ABI available to native code that opts in.
+- **Two flag-gated feature strings.** `frameworks/base/core/api/current.txt` declares
+  `FEATURE_XR_API_OPENXR = "android.software.xr.api.openxr"` and
+  `FEATURE_XR_API_SPATIAL = "android.software.xr.api.spatial"`, both annotated
+  `@FlaggedApi("android.xr.xr_manifest_entries")`. These are the `<uses-feature>` strings an XR app
+  declares to require an OpenXR-capable (or spatial-capable) device.
+
+The intended division of labor mirrors how the other form factors handle hardware-specific stacks:
+the platform defines the contract (the OpenXR headers/ABI and the feature strings), a *vendor*
+runtime implements the OpenXR ABI on the device, and apps declare the feature so they only install
+where that runtime exists. None of the runtime side lives in AOSP 17 -- there is no XR equivalent
+of CarService, TvInputManagerService, or the Wear windowing path in this release. Treat Android XR
+in 17 as a contract and a placeholder for a form factor that is being prepared, not a shipping
+subsystem on par with the three covered above.
+
+For the full Android 17 view of this change -- the SDK vendoring details, the wider set of
+flag-gated XR permissions and window properties in `current.txt`, and where it sits among the
+release's other AI-and-devices additions -- see **Appendix D: Android 17 Platform Updates**.
+
+---
+
+## 60.7 Try It
 
 ### Exercise 60.1: Explore CarService Services
 

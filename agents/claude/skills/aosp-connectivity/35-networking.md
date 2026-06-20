@@ -4727,9 +4727,67 @@ the user.
 
 ---
 
-## 35.29 Try It: Network Debugging
+## 35.29 Wi-Fi USD: Unsynchronized Service Discovery
 
-### 35.29.1 dumpsys connectivity
+NSD/mDNS (§35.28) discovers services over an existing IP network. Android 17
+adds a complementary discovery mechanism that runs lower in the stack, before any
+IP connectivity exists: Wi-Fi Unsynchronized Service Discovery (USD). USD is a
+member of the Wi-Fi Aware (NAN) family already introduced in this chapter
+(§35.25.1 maps `aware0` to `WifiAwareNetworkAgent`), and it lets two devices
+advertise and find services over the air without first establishing a network,
+an IP address, or — as the name says — any prior time and channel
+synchronization. That makes it well suited to quickly finding a service on a new
+device that has just come into range.
+
+The model is publish/subscribe. A *publisher* device advertises a named service
+and a *subscriber* device searches for it; when a subscriber receives a matching
+advertisement it exchanges follow-up messages with the publisher to carry
+service-specific configuration information. The implementation follows the Wi-Fi
+Aware Specification version 4.0.
+
+The feature surfaces as a new system service in the Wifi mainline module rather
+than in `frameworks/base`. The manager class is
+`packages/modules/Wifi/framework/java/android/net/wifi/usd/UsdManager.java`,
+registered under the `Context.WIFI_USD_SERVICE` constant (string value
+`"wifi_usd"`, declared at
+`frameworks/base/core/java/android/content/Context.java:5484`). Because the API
+ships in a mainline module, the manager is gated three ways:
+
+- A `@FlaggedApi(Flags.FLAG_USD)` annotation and `@SystemApi` visibility on
+  `UsdManager` (`UsdManager.java:65-66`), so it is a system-app-only, flag-guarded
+  API.
+- A minimum SDK gate: `@RequiresApi(Build.VERSION_CODES.BAKLAVA)` on the class,
+  and the registration in
+  `packages/modules/Wifi/framework/java/android/net/wifi/WifiFrameworkInitializer.java`
+  only registers the service when `Flags.usd() && Environment.isSdkAtLeastB()`.
+- A device-capability gate: registration returns `null` unless the device
+  resource `config_deviceSupportsWifiUsd` is true, so `getSystemService()`
+  yields no `UsdManager` on hardware that cannot do USD.
+
+The companion classes in `android.net.wifi.usd` describe the discovery shape:
+`PublishConfig`/`SubscribeConfig` (what to advertise or look for),
+`PublishSession`/`SubscribeSession` with their callbacks, `DiscoveryResult`, and
+`Characteristics` (device USD limits, read via `UsdManager.getCharacteristics()`).
+`UsdManager` also exposes `publish(...)`, `subscribe(...)`, and
+publisher/subscriber availability listeners
+(`registerPublisherStatusListener`/`registerSubscriberStatusListener`), since
+USD availability depends on concurrent radio use.
+
+The server side lives in the same module under
+`packages/modules/Wifi/service/java/com/android/server/wifi/usd/`:
+`UsdService` (the `SystemService` that publishes the binder under
+`Context.WIFI_USD_SERVICE`), `UsdServiceImpl`, `UsdRequestManager`, and
+`UsdNativeManager`, which drives the discovery down to the Wi-Fi HAL. So where
+NSD answers "what services are reachable on the network I am already on", USD
+answers the earlier question "what devices and services are nearby over the air,
+before any network exists" — the two sit at adjacent layers of the
+service-discovery story.
+
+---
+
+## 35.30 Try It: Network Debugging
+
+### 35.30.1 dumpsys connectivity
 
 The most powerful tool for debugging Android networking is `dumpsys connectivity`.
 It provides a comprehensive snapshot of the entire connectivity state.
@@ -4785,7 +4843,7 @@ NetworkRequest [ REQUEST id=1, [ Capabilities: INTERNET&NOT_RESTRICTED
 
 3. **Default network**: The currently selected default network
 
-### 35.29.2 dumpsys wifi
+### 35.30.2 dumpsys wifi
 
 ```bash
 # Full Wi-Fi dump
@@ -4804,7 +4862,7 @@ Key information in the Wi-Fi dump:
 - SoftAP state
 - Connection history and failure reasons
 
-### 35.29.3 dumpsys netd
+### 35.30.3 dumpsys netd
 
 ```bash
 # netd status
@@ -4819,7 +4877,7 @@ adb shell iptables -L -v -n
 adb shell ip6tables -L -v -n
 ```
 
-### 35.29.4 DNS Debugging
+### 35.30.4 DNS Debugging
 
 ```bash
 # DNS resolver state
@@ -4833,7 +4891,7 @@ adb shell settings get global private_dns_mode
 adb shell settings get global private_dns_specifier
 ```
 
-### 35.29.5 Network Diagnostics Commands
+### 35.30.5 Network Diagnostics Commands
 
 ```bash
 # Check connectivity
@@ -4859,7 +4917,7 @@ adb shell cat /proc/net/tcp6
 adb shell cat /proc/net/dev
 ```
 
-### 35.29.6 ConnectivityDiagnosticsManager
+### 35.30.6 ConnectivityDiagnosticsManager
 
 For programmatic network diagnostics, Android provides the
 `ConnectivityDiagnosticsManager` API:
@@ -4899,7 +4957,7 @@ cdm.registerConnectivityDiagnosticsCallback(
         });
 ```
 
-### 35.29.7 Simulating Network Conditions
+### 35.30.7 Simulating Network Conditions
 
 For testing, Android provides several tools to simulate network conditions:
 
@@ -4923,7 +4981,7 @@ adb shell settings put global captive_portal_mode 1  # Enable (prompt)
 adb shell dumpsys connectivity --diag
 ```
 
-### 35.29.8 Reading BPF Maps
+### 35.30.8 Reading BPF Maps
 
 For advanced debugging of BPF-based traffic control:
 
@@ -4938,7 +4996,7 @@ adb shell cat /sys/fs/bpf/
 adb shell dumpsys connectivity trafficcontroller
 ```
 
-### 35.29.9 Common Debugging Scenarios
+### 35.30.9 Common Debugging Scenarios
 
 **Scenario 1: Network connected but no Internet**
 
@@ -5016,7 +5074,7 @@ adb shell dumpsys tethering | grep "DHCP"
 adb shell cat /proc/sys/net/ipv4/ip_forward
 ```
 
-### 35.29.10 Network Logging and Tracing
+### 35.30.10 Network Logging and Tracing
 
 For deeper analysis, enable verbose logging:
 
@@ -5035,7 +5093,7 @@ adb logcat -s ConnectivityService:V NetworkAgent:V \
 adb shell setprop log.tag.Netd VERBOSE
 ```
 
-### 35.29.11 Developer Options: Network Settings
+### 35.30.11 Developer Options: Network Settings
 
 The Settings app provides several network-related developer options:
 
@@ -5046,7 +5104,7 @@ The Settings app provides several network-related developer options:
 | USB configuration | Select USB tethering mode |
 | Networking diagnostics | Run connectivity tests |
 
-### 35.29.12 Programmatic Network Testing
+### 35.30.12 Programmatic Network Testing
 
 ```java
 // Test if a specific network has connectivity
