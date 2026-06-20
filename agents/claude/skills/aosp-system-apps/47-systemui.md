@@ -9,14 +9,32 @@ under the UID `android.uid.systemui` and cannot be killed without the framework
 automatically restarting it through `RescueParty`.
 
 SystemUI is one of the largest single packages in AOSP.  Its source directory
-contains over 187 sub-packages under
-`src/com/android/systemui/`, covering domains from `accessibility` to `wmshell`.
+contains over 180 sub-packages under
+`frameworks/base/packages/SystemUI/src/com/android/systemui/`, covering domains
+from `accessibility` to `wmshell`.
 The codebase is undergoing a multi-year migration: legacy single-class
-god-objects are being replaced by an MVI architecture (Model-View-Intent) with
-Dagger dependency injection, Kotlin coroutines, and Jetpack Compose.
+god-objects are being replaced by a layered architecture (data repository ->
+domain interactor -> UI view-model, broadly an MVVM/MVI shape) with Dagger
+dependency injection, Kotlin coroutines, and Jetpack Compose.
+
+Android 17 carries this migration further than any prior release.  Two
+structural shifts dominate this chapter:
+
+- **The Scene framework ("flexiglass")** -- a Compose `SceneTransitionLayout`
+  that replaces the hand-rolled `NotificationPanelViewController` /
+  `CentralSurfacesImpl` swipe and state machinery with declarative *scenes*
+  (Lockscreen, Shade, QuickSettings, Gone) and *overlays* (Bouncer,
+  NotificationsShade, QuickSettingsShade). It is gated by `SceneContainerFlag`.
+- **The `pods/` modularisation** -- a new top-level `pods/` directory inside the
+  SystemUI package into which self-contained feature modules (scene, shade, qs,
+  statusbar, notifications, brightness, user, ...) are being extracted as
+  independently buildable Soong modules. Code moved into `pods/` keeps its
+  `com.android.systemui.*` package name, so a class like `Scenes` can move from
+  `src/` to `pods/scene/src/api/` without changing its fully-qualified name.
 
 This chapter examines every major subsystem in detail, tracing the code from
-process startup through each visible surface.
+process startup through each visible surface, and folds the Android 17 changes
+into each section as it goes.
 
 ---
 
@@ -317,8 +335,8 @@ class QSPipelineFlagsRepository @Inject constructor() {
 
 ### 47.1.6  Directory Structure
 
-The following is an abbreviated listing of the 187+ sub-packages under
-`src/com/android/systemui/`:
+The following is an abbreviated listing of the 180+ sub-packages under
+`frameworks/base/packages/SystemUI/src/com/android/systemui/`:
 
 ```
 accessibility/    -- Magnification, floating menu
@@ -363,6 +381,21 @@ wallpapers/       -- Wallpaper management
 wmshell/          -- WM Shell integration
 ```
 
+Alongside this `src/` tree, Android 17 adds a sibling `pods/` directory at the
+top of the SystemUI package
+(`frameworks/base/packages/SystemUI/pods/`).  Each *pod* is a self-contained
+feature module with its own Soong build target and its own `src/`, `ui/`, and
+test sources -- `pods/scene/`, `pods/shade/`, `pods/qs/`, `pods/statusbar/`,
+`pods/notifications/`, `pods/brightness/`, `pods/user/`, and more.  Code that
+moves into a pod keeps its `com.android.systemui.*` package name, so the move is
+invisible to callers.  For example, the canonical `Scenes` and scene-key
+definitions now live at
+`frameworks/base/packages/SystemUI/pods/scene/src/api/shared/model/Scenes.kt`
+under package `com.android.systemui.scene.shared.model`, while the rest of the
+scene framework (interactors, startables, view-models) still lives under
+`src/com/android/systemui/scene/`.  When a path in this chapter does not resolve
+under `src/`, check the matching `pods/` module.
+
 ```mermaid
 graph LR
     subgraph "SystemUI Process"
@@ -390,10 +423,11 @@ icons.  It is one of the first visual elements created during SystemUI startup.
 
 ### 47.2.1  CentralSurfaces -- The Orchestrator
 
-`CentralSurfaces` is an interface extending both `CoreStartable` and
-`LifecycleOwner`.  Its implementation, `CentralSurfacesImpl`, is a 3,291-line
-class that historically served as the central coordinator for the status bar,
-notification shade, keyguard, and more:
+`CentralSurfaces` is an interface extending `Dumpable`, `LifecycleOwner`, and
+`CoreStartable`.  Its implementation, `CentralSurfacesImpl`, is a ~2,800-line
+class (down from over 3,200 lines in earlier releases as logic continues to be
+extracted) that historically served as the central coordinator for the status
+bar, notification shade, keyguard, and more:
 
 ```java
 // frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/
@@ -450,29 +484,55 @@ The controller handles display cutouts (notches, punch-holes) and configures
 Applications receive `statusBars()` insets corresponding to the height of this
 window.
 
-### 47.2.3  CollapsedStatusBarFragment
+### 47.2.3  Home Status Bar Pipeline
 
-The visible content of the status bar is managed by
-`CollapsedStatusBarFragment`, a `Fragment` that inflates the
-`R.layout.status_bar` layout:
+In earlier releases the visible content of the collapsed status bar was driven
+by a single `CollapsedStatusBarFragment` -- a `Fragment` that inflated
+`R.layout.status_bar` and implemented `CommandQueue.Callbacks`,
+`StatusBarStateController.StateListener`, and `SystemStatusAnimationCallback`
+directly.  Android 17 has finished decomposing that god-fragment into a *home
+status bar* MVVM pipeline.  There is no longer any `Fragment` subclass driving
+the status bar; the `R.layout.status_bar` root (`PhoneStatusBarView`) is bound
+to a view-model by a binder:
+
+```
+frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/shared/ui/
+  viewmodel/HomeStatusBarViewModel.kt   -- observable status bar state
+  binder/HomeStatusBarViewBinder.kt     -- binds the view to the view-model
+  domain/interactor/HomeStatusBarInteractor.kt
+```
+
+The per-display window scope is provided by `HomeStatusBarComponent`, a Dagger
+`@Subcomponent` re-created each time a new `PhoneStatusBarView` is created (the
+component that used to be called `StatusBarFragmentComponent`):
 
 ```java
 // frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/
-//   fragment/CollapsedStatusBarFragment.java
-public class CollapsedStatusBarFragment extends Fragment
-        implements CommandQueue.Callbacks,
-                   StatusBarStateController.StateListener,
-                   SystemStatusAnimationCallback {
-    // Manages icon visibility, system event animations, ongoing call chip
+//   fragment/dagger/HomeStatusBarComponent.java
+@Subcomponent(modules = {HomeStatusBarModule.class})
+public interface HomeStatusBarComponent {
+    @Subcomponent.Factory
+    interface Factory {
+        HomeStatusBarComponent create(
+                @BindsInstance @RootView PhoneStatusBarView phoneStatusBarView,
+                @BindsInstance StatusBarWindowController statusBarWindowController);
+    }
 }
 ```
 
-The fragment listens to several signals:
+The view-model fans together the same signals the old fragment subscribed to,
+now as flows rather than callbacks:
 
-- **CommandQueue.Callbacks** -- disable flags from `system_server` that hide icons
-- **StatusBarStateController** -- state transitions (SHADE, KEYGUARD, SHADE_LOCKED)
-- **SystemStatusAnimationCallback** -- animated chips for privacy indicators
-- **ShadeExpansionStateManager** -- fading out icons during shade expansion
+- **disable flags** from `system_server` (via `CommandQueue`) that hide icons
+- **status bar state** transitions (SHADE, KEYGUARD, SHADE_LOCKED)
+- **system event animations** -- animated chips for privacy indicators, ongoing
+  calls, screen recording, and media projection (the `statusbar/chips/` package)
+- **shade expansion** -- fading out icons as the shade expands
+
+When the Scene framework is enabled (`SceneContainerFlag`, section 47.16), the
+status bar can also be hosted by a Compose root
+(`statusbar/pipeline/shared/ui/composable/StatusBarRoot.kt`) instead of the
+inflated View hierarchy.
 
 ### 47.2.4  PhoneStatusBarView
 
@@ -481,16 +541,16 @@ The fragment listens to several signals:
 ```java
 // frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/
 //   PhoneStatusBarView.java
-public class PhoneStatusBarView extends BaseStatusBarFrameLayout
-        implements DarkReceiverImpl.DarkReceiver {
-    // Touch handling, dark mode tinting
+public class PhoneStatusBarView extends FrameLayout {
+    // Touch handling, cutout/insets, system-event animation hooks
 }
 ```
 
-The view controller (`PhoneStatusBarViewController`) coordinates dark/light
-icon tinting based on the underlying content, using region sampling to
-determine whether the wallpaper or app content below the status bar is light or
-dark.
+The view controller (`PhoneStatusBarViewController`, now Kotlin) coordinates
+touch handling and drives the `HomeStatusBarViewBinder` (section 47.2.3).
+Dark/light icon tinting is computed by `LightBarController` using region
+sampling to determine whether the wallpaper or app content below the status bar
+is light or dark.
 
 ### 47.2.5  Status Bar Icon Pipeline
 
@@ -577,8 +637,8 @@ current state:
 
 ### 47.3.2  NotificationPanelViewController
 
-At 4,329 lines, `NotificationPanelViewController` is the primary controller for
-the shade panel.  It manages:
+At roughly 4,300 lines, `NotificationPanelViewController` is the primary
+controller for the *legacy* (pre-scene) shade panel.  It manages:
 
 - Touch tracking and velocity-based expansion/collapse
 - QS expansion within the shade
@@ -590,10 +650,15 @@ the shade panel.  It manages:
 // frameworks/base/packages/SystemUI/src/com/android/systemui/shade/
 //   NotificationPanelViewController.java
 public class NotificationPanelViewController
-        implements Dumpable, ShadeViewController, ShadeSurface {
+        implements Dumpable, ShadeSurface {
     // Handles all shade panel touch events and state transitions
 }
 ```
+
+This controller is one of the largest pieces of legacy machinery the Scene
+framework is built to retire.  When `SceneContainerFlag` is enabled (section
+47.16), the swipe-to-expand and QS-expansion logic in this class is replaced by
+`SceneTransitionLayout`, and `NotificationPanelViewController` is bypassed.
 
 Key touch handling flow:
 
@@ -647,9 +712,13 @@ public interface ShadeController extends CoreStartable {
 }
 ```
 
-The default implementation is `ShadeControllerImpl`, while
-`ShadeControllerSceneImpl` is the next-generation implementation for the scene
-container architecture.
+The default implementation is `ShadeControllerImpl`
+(`ShadeControllerImpl.java`, ~410 lines), while `ShadeControllerSceneImpl`
+(`ShadeControllerSceneImpl.kt`) is the next-generation implementation for the
+scene container architecture.  `QuickSettingsController` follows the same split:
+`QuickSettingsControllerImpl.java` for the legacy path and
+`QuickSettingsControllerSceneImpl.kt` for the scene path.  Dagger binds one or
+the other based on `SceneContainerFlag`.
 
 ### 47.3.4  NotificationStackScrollLayout
 
@@ -731,11 +800,12 @@ graph TD
 // frameworks/base/packages/SystemUI/src/com/android/systemui/qs/QSHost.java
 public interface QSHost {
     String TILES_SETTING = Settings.Secure.QS_TILES;
+    int POSITION_AT_END = -1;
 
     static List<String> getDefaultSpecs(Resources res) {
         final ArrayList<String> tiles = new ArrayList();
-        int resource = QsInCompose.isEnabled()
-                ? R.string.quick_settings_tiles_new_default
+        int resource = QsSplitInternetTile.isEnabled()
+                ? R.string.quick_settings_tiles_default_split
                 : R.string.quick_settings_tiles_default;
         final String defaultTileList = res.getString(resource);
         tiles.addAll(Arrays.asList(defaultTileList.split(",")));
@@ -743,12 +813,11 @@ public interface QSHost {
     }
 
     Collection<QSTile> getTiles();
-    void addTile(String spec);
-    void addTile(String spec, int requestPosition);
-    void addTile(ComponentName tile);
     void removeTile(String tileSpec);
+    void removeTiles(Collection<String> specs);
     QSTile createTile(String tileSpec);
-    void changeTilesByUser(List<String> previousTiles, List<String> newTiles);
+    void addCallback(Callback callback);
+    List<String> getSpecs();
 }
 ```
 
@@ -833,26 +902,32 @@ sequenceDiagram
 
 ### 47.4.5  Built-in Tiles
 
-AOSP ships approximately 35 built-in QS tiles:
+AOSP ships roughly 30 built-in QS tiles.  The set has shifted in Android 17:
+`ModesTile.kt` and `ModesDndTile.kt` (the "Modes" / Do-Not-Disturb rework),
+`RecordIssueTile.kt` (developer issue recording), `FlashlightTileWithLevel.kt`
+(brightness-adjustable torch), and `SensorPrivacyToggleTile.java` are present,
+while the old `DreamTile.java` has been dropped:
 
 ```
 frameworks/base/packages/SystemUI/src/com/android/systemui/qs/tiles/
-  AirplaneModeTile.java        LocationTile.java
-  AlarmTile.kt                 MicrophoneToggleTile.java
-  BatterySaverTile.java        MobileDataTile.kt
-  BluetoothTile.java           ModesDndTile.kt
-  CameraToggleTile.java        NfcTile.java
-  CastTile.java                NightDisplayTile.java
-  ColorCorrectionTile.java     NotesTile.kt
-  ColorInversionTile.java      OneHandedModeTile.java
-  DataSaverTile.java           QRCodeScannerTile.java
-  DeviceControlsTile.kt        QuickAccessWalletTile.java
-  DreamTile.java               ReduceBrightColorsTile.java
+  AirplaneModeTile.java        ModesDndTile.kt
+  AlarmTile.kt                 ModesTile.kt
+  BatterySaverTile.java        NfcTile.java
+  BluetoothTile.java           NightDisplayTile.java
+  CameraToggleTile.java        NotesTile.kt
+  CastTile.java                OneHandedModeTile.java
+  ColorCorrectionTile.java     QRCodeScannerTile.java
+  ColorInversionTile.java      QuickAccessWalletTile.java
+  DataSaverTile.java           RecordIssueTile.kt
+  DeviceControlsTile.kt        ReduceBrightColorsTile.java
   FlashlightTile.java          RotationLockTile.java
-  FontScalingTile.kt           ScreenRecordTile.java
+  FlashlightTileWithLevel.kt   ScreenRecordTile.java
+  FontScalingTile.kt           SensorPrivacyToggleTile.java
   HearingDevicesTile.java      UiModeNightTile.java
   HotspotTile.java             WifiTile.kt
   InternetTileNewImpl.kt       WorkModeTile.java
+  LocationTile.java            MicrophoneToggleTile.java
+  MobileDataTile.kt
 ```
 
 Each tile follows the same pattern.  Here is `FlashlightTile` as a
@@ -959,16 +1034,36 @@ frameworks/base/packages/SystemUI/src/com/android/systemui/qs/pipeline/
 
 ### 47.4.8  QSPanel Layout
 
-The full QS panel uses `QSPanel` with `TileLayout` (or `PagedTileLayout` for
-pagination).  The Quick QS strip uses `QuickQSPanel` with `QuickTileLayout`.
+The legacy full QS panel uses `QSPanel` with `TileLayout` (or `PagedTileLayout`
+for pagination).  The Quick QS strip uses `QuickQSPanel` with `QuickTileLayout`.
 Both are managed by their respective controllers (`QSPanelController`,
 `QuickQSPanelController`).
 
+Android 17 has replaced the old `QSFragment` (and its `QSImpl` host) with a
+single Compose-backed entry point, `QSFragmentCompose`
+(`qs/composefragment/QSFragmentCompose.kt`), driven by
+`QSFragmentComposeViewModel`.  The Compose tile grid lives under
+`qs/panels/ui/compose/` and `compose/features/.../qs/ui/composable/`, with the
+panel composables further extracted into the `pods/qs/` module.  The legacy View
+hierarchy remains as the fallback when the Compose QS flag is off.
+
 ```mermaid
 graph TD
-    QSFragment["QSFragmentLegacy / QSFragmentCompose"]
-    QSFragment --> QSImpl["QSImpl"]
-    QSImpl --> QSContainerImpl["QSContainerImpl"]
+    QSFragment["QSFragmentCompose<br/>(Compose entry)"]
+    QSFragment --> QSVM["QSFragmentComposeViewModel"]
+    QSVM --> QSContent["QuickSettingsContent<br/>(Compose)"]
+    QSContent --> QQS["Quick QS strip"]
+    QSContent --> QSGrid["QS tile grid"]
+    QSGrid --> Tile1["TileUiState (tile view-model)"]
+    QSGrid --> Tile2["TileUiState (tile view-model)"]
+    QSGrid --> TileN["..."]
+```
+
+Legacy fallback path (Compose QS flag off):
+
+```mermaid
+graph TD
+    QSContainerImpl["QSContainerImpl"]
     QSContainerImpl --> QuickStatusBarHeader["QuickStatusBarHeader"]
     QSContainerImpl --> QSPanel["QSPanel"]
     QuickStatusBarHeader --> QuickQSPanel["QuickQSPanel"]
@@ -988,14 +1083,15 @@ before any user content is visible and must correctly manage authentication
 
 ### 47.5.1  KeyguardViewMediator
 
-`KeyguardViewMediator` is the largest CoreStartable in SystemUI at 4,573 lines.
-It mediates between the `KeyguardService` (which receives lock/unlock commands
-from the framework) and the keyguard UI:
+`KeyguardViewMediator` is the largest CoreStartable in SystemUI at roughly 4,700
+lines.  It mediates between the `KeyguardService` (which receives lock/unlock
+commands from the framework) and the keyguard UI:
 
 ```java
 // frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/
 //   KeyguardViewMediator.java
-public class KeyguardViewMediator implements CoreStartable, Dumpable {
+public class KeyguardViewMediator
+        implements CoreStartable, StatusBarStateController.StateListener {
     // Manages keyguard lifecycle: show, hide, dismiss, lock
 }
 ```
@@ -1237,21 +1333,32 @@ The controller:
 - Tracks DND (Do Not Disturb) state
 - Manages media sessions for per-app volume
 
-### 47.7.2  VolumeDialogImpl
+### 47.7.2  VolumeDialog (MVI rewrite)
 
-The dialog UI is implemented as a `Dialog` with a custom layout:
+Earlier releases implemented the dialog as a single 2,800-line
+`VolumeDialogImpl` class.  Android 17 has replaced it with a fully layered
+package under `frameworks/base/packages/SystemUI/src/com/android/systemui/volume/dialog/`,
+following the same data/domain/ui split as the rest of modern SystemUI:
 
-```java
-// frameworks/base/packages/SystemUI/src/com/android/systemui/volume/
-//   VolumeDialogImpl.java  (2,859 lines)
-public class VolumeDialogImpl implements VolumeDialog {
-    // Window type: TYPE_VOLUME_OVERLAY
-    // Displays seekbars for active audio streams
-    // Handles ringer mode toggle (ring -> vibrate -> silent)
-}
+```
+volume/dialog/
+  VolumeDialog.kt              -- the dialog shell (replaces VolumeDialogImpl)
+  VolumeDialogPlugin.kt        -- plugin entry that shows/hides the dialog
+  data/repository/             -- VolumeDialogVisibilityRepository, stream state
+  domain/interactor/           -- visibility, stream, ringer interactors
+  ringer/                      -- ringer-mode toggle (ring/vibrate/silent)
+  sliders/                     -- one slider component per active stream
+  captions/                    -- captions toggle
+  settings/                    -- settings gear affordance
+  ui/binder, ui/viewmodel      -- view-model + binder layer
+  dagger/                      -- per-dialog Dagger scope and modules
 ```
 
-The dialog uses a vertical layout with one `SeekBar` per active stream:
+`VolumeDialog.kt` is the dialog shell; `VolumeDialogPlugin.kt` is the entry
+point that observes `VolumeDialogVisibilityRepository` and shows or hides the
+dialog.  Each audio stream gets its own `VolumeDialogSliderComponent`
+(Dagger-scoped) rather than the rows being managed inline.  The dialog still
+uses a vertical layout with one slider per active stream:
 
 ```mermaid
 graph TD
@@ -1284,10 +1391,17 @@ Key features:
 ```java
 // frameworks/base/packages/SystemUI/src/com/android/systemui/volume/
 //   VolumeDialogComponent.java
-public class VolumeDialogComponent implements VolumeComponent {
-    // Integates VolumeDialogControllerImpl with VolumeDialogImpl
+public class VolumeDialogComponent
+        implements VolumeComponent, TunerService.Tunable, /* ... */ {
+    // Integrates VolumeDialogControllerImpl with the VolumeDialog
+    // (volume/dialog/) and the volume panel (volume/panel/)
 }
 ```
+
+The `Events.java` telemetry class (section 47.7.4) is unchanged and is shared by
+both the dialog and the newer **volume panel** (`volume/panel/`), the
+large-screen settings-style panel that hosts media output, spatial audio, and
+per-app volume controls.
 
 ### 47.7.4  Volume Events
 
@@ -1397,8 +1511,8 @@ public class GlobalActionsImpl implements GlobalActions, CommandQueue.Callbacks 
 
 ### 47.8.3  GlobalActionsDialogLite
 
-At 3,043 lines, `GlobalActionsDialogLite` implements the actual power menu
-dialog:
+At roughly 3,150 lines, `GlobalActionsDialogLite` implements the actual power
+menu dialog:
 
 ```java
 // frameworks/base/packages/SystemUI/src/com/android/systemui/globalactions/
@@ -1580,7 +1694,10 @@ maintains per-display instances of components:
 ```kotlin
 // frameworks/base/packages/SystemUI/src/com/android/systemui/dagger/
 //   PerDisplayRepositoriesModule.kt
-@Module
+@Module(
+    includes = [PerDisplayCoroutineScopeRepositoryModule::class,
+        DisplayComponentRepository::class]
+)
 interface PerDisplayRepositoriesModule {
     companion object {
         @SysUISingleton
@@ -1590,19 +1707,18 @@ interface PerDisplayRepositoriesModule {
             instanceProvider: SysUIStateInstanceProvider,
         ): PerDisplayRepository<SysUiState> {
             val debugName = "SysUiStatePerDisplayRepo"
-            return if (ShadeWindowGoesAround.isEnabled) {
-                repositoryFactory.create(debugName, instanceProvider)
-            } else {
-                DefaultDisplayOnlyInstanceRepositoryImpl(debugName, instanceProvider)
-            }
+            return repositoryFactory.create(debugName, instanceProvider)
         }
     }
 }
 ```
 
-When the `ShadeWindowGoesAround` flag is enabled, components like `SysUiState`
-are instantiated per-display.  Otherwise, they fall back to default-display-only
-behaviour.
+The `PerDisplayRepository<T>` machinery comes from the shared
+`com.android.app.displaylib` library (`frameworks/libs/systemui/displaylib`).
+Components like `SysUiState` are tracked per-display through a
+`PerDisplayInstanceRepositoryImpl`, so each connected display gets its own
+instance.  The earlier `ShadeWindowGoesAround` gating flag has been retired in
+Android 17 -- the per-display repository is now created unconditionally.
 
 ### 47.10.2  Per-Display Status Bar
 
@@ -1642,11 +1758,14 @@ When a new display is added, `createNavigationBar()` is called.  When removed,
 
 ### 47.10.4  Display Subcomponent
 
-The `SystemUIDisplaySubcomponent` provides display-scoped dependencies:
+The `SystemUIDisplaySubcomponent` (Kotlin) provides display-scoped dependencies
+through a custom `@PerDisplaySingleton` scope; the reference build supplies it
+via `ReferenceSysUIDisplaySubcomponent`:
 
 ```
 frameworks/base/packages/SystemUI/src/com/android/systemui/display/
-  dagger/SystemUIDisplaySubcomponent.java
+  dagger/SystemUIDisplaySubcomponent.kt
+  dagger/ReferenceSysUIDisplaySubcomponent.kt
   data/repository/DisplayComponentRepository.kt
 ```
 
@@ -1679,9 +1798,10 @@ graph TD
 ### 47.10.5  Connected Displays
 
 The `StatusBarConnectedDisplays` flag gates the expansion of status bar
-functionality to connected displays.  When enabled, `CollapsedStatusBarFragment`
-instances are created per-display, each with its own icon pipeline and
-visibility management.
+functionality to connected displays.  When enabled, a `HomeStatusBarComponent`
+(and its bound `PhoneStatusBarView` plus `HomeStatusBarViewModel`, section
+47.2.3) is created per-display, each with its own icon pipeline and visibility
+management.  The flag is read in `PhoneStatusBarViewController`.
 
 ---
 
@@ -1724,8 +1844,7 @@ The three modes are defined in `WindowManagerPolicyConstants`:
 ```java
 // frameworks/base/packages/SystemUI/src/com/android/systemui/navigationbar/views/
 //   NavigationBarView.java
-public class NavigationBarView extends FrameLayout
-        implements Gefingerpoken {
+public class NavigationBarView extends FrameLayout {
     // Contains ButtonDispatchers for Home, Back, Recents
     // Manages rotation, layout direction, and button visibility
 }
@@ -1966,8 +2085,14 @@ the Material library's `TonalPalette`.  The class delegates to a style-specific
 | `FRUIT_SALAD` | `SchemeFruitSalad` | Playful multi-hue |
 | `CONTENT` | `SchemeContent` | Faithful to source image |
 | `MONOCHROMATIC` | `SchemeMonochrome` | Single-hue grayscale |
+| `CMF` | `SchemeCmf` | New in Android 17 -- Colour-Material-Finish scheme |
 | `CLOCK` | `SchemeClock` | Custom SystemUI scheme for lock screen clocks |
 | `CLOCK_VIBRANT` | `SchemeClockVibrant` | High-chroma clock variant |
+
+Android 17 also moves the Material library forward: `ColorScheme` constructs
+each `DynamicScheme` from a *list* of seed `Hct` values (multi-seed support) and
+a `SpecVersion` (`SPEC_2026` is the current default), rather than a single seed
+under the older spec.
 
 ### 47.12.4  TonalPalette and Shade Stops
 
@@ -3044,9 +3169,10 @@ stateDiagram-v2
     GONE --> LOCKSCREEN : Lock timeout
 ```
 
-States marked `@Deprecated` (`PRIMARY_BOUNCER`, `GLANCEABLE_HUB`, `GONE`,
-`OCCLUDED`) are being replaced by the Scene Container framework, which maps
-them to `UNDEFINED` and manages transitions through `SceneTransitionLayout`.
+States marked `@Deprecated` (`DREAMING`, `PRIMARY_BOUNCER`, `GLANCEABLE_HUB`,
+`GONE`, `OCCLUDED`) are being replaced by the Scene Container framework, which
+maps them to scenes and overlays and manages transitions through
+`SceneTransitionLayout` (section 47.16).
 
 ### 47.15.2  Awake vs Asleep State Classification
 
@@ -3133,7 +3259,7 @@ into Dagger.
 
 ### 47.15.5  KeyguardViewMediator Internals
 
-`KeyguardViewMediator` (4,573 lines) remains the bridge between
+`KeyguardViewMediator` (~4,700 lines) remains the bridge between
 `system_server` and SystemUI's keyguard.  Key internal mechanisms:
 
 **Lock Timeout Scheduling:**
@@ -3171,28 +3297,33 @@ The `BiometricUnlockInteractor` translates integer mode constants from
 // frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/shared/model/
 //   BiometricUnlockModel.kt
 enum class BiometricUnlockMode {
-    NONE,                      // No biometric action
-    WAKE_AND_UNLOCK,           // Fingerprint while screen off -> wake + dismiss
-    WAKE_AND_UNLOCK_PULSING,   // Fingerprint during AOD pulse -> fade out + dismiss
-    SHOW_BOUNCER,              // Biometric failure -> show PIN/pattern
-    ONLY_WAKE,                 // Wake device, keyguard stays
-    UNLOCK_COLLAPSING,         // Face/fingerprint while keyguard visible
-    DISMISS_BOUNCER,           // Biometric while bouncer visible -> dismiss
-    WAKE_AND_UNLOCK_FROM_DREAM // Fingerprint while dreaming -> wake + dismiss
+    NONE,                       // No auth occurred, no wake needed
+    NONE_UNLOCKED,              // Auth succeeded, no wake needed
+    WAKE_AND_DISMISS,           // Fingerprint while screen off -> wake + dismiss
+    WAKE_AND_DISMISS_PULSING,   // Fingerprint during AOD pulse -> fade out + dismiss
+    SHOW_BOUNCER,               // Wake but play normal dismiss / show bouncer
+    ONLY_WAKE,                  // Wake device, keyguard was not showing, no auth
+    ONLY_WAKE_UNLOCKED,         // Wake device, auth succeeded
+    DISMISS,                    // Unlock while keyguard occluded or showing
+    DISMISS_BOUNCER,            // Biometric while bouncer visible -> dismiss
+    WAKE_AND_DISMISS_FROM_DREAM // Fingerprint while dreaming -> wake + dismiss
 }
 ```
 
-The mode determines the keyguard state transition:
+Android 17 renamed the older `WAKE_AND_UNLOCK*` / `UNLOCK_COLLAPSING` constants
+to the `WAKE_AND_DISMISS*` / `DISMISS` family and split the no-auth-needed cases
+into `*_UNLOCKED` variants, so the enum now has ten values rather than the
+earlier eight.  The mode determines the keyguard state transition:
 
 ```mermaid
 graph TD
     FP["Fingerprint<br/>Acquired"]
     FACE["Face<br/>Acquired"]
 
-    FP --> |"Screen OFF"| WAU["WAKE_AND_UNLOCK<br/>OFF/DOZING -> GONE"]
-    FP --> |"AOD Pulsing"| WAUP["WAKE_AND_UNLOCK_PULSING<br/>AOD -> GONE"]
-    FP --> |"Screen ON,<br/>Keyguard visible"| UC["UNLOCK_COLLAPSING<br/>LOCKSCREEN -> GONE"]
-    FP --> |"Dreaming"| WAUD["WAKE_AND_UNLOCK_FROM_DREAM<br/>DREAMING -> GONE"]
+    FP --> |"Screen OFF"| WAU["WAKE_AND_DISMISS<br/>OFF/DOZING -> GONE"]
+    FP --> |"AOD Pulsing"| WAUP["WAKE_AND_DISMISS_PULSING<br/>AOD -> GONE"]
+    FP --> |"Screen ON,<br/>Keyguard visible"| UC["DISMISS<br/>LOCKSCREEN -> GONE"]
+    FP --> |"Dreaming"| WAUD["WAKE_AND_DISMISS_FROM_DREAM<br/>DREAMING -> GONE"]
     FP --> |"Bouncer visible"| DB["DISMISS_BOUNCER<br/>PRIMARY_BOUNCER -> GONE"]
 
     FACE --> |"Bypass enabled"| UC
@@ -3360,29 +3491,32 @@ graph TB
     CS_L -.->|"migrating to"| STL
 ```
 
-`KeyguardState.mapToSceneContainerContent()` maps legacy states to scene
-keys:
+`KeyguardState.mapToSceneContainerContent()` maps legacy states to scene/overlay
+keys (returning a `ContentKey?`):
 
-- `LOCKSCREEN`, `AOD`, `DOZING`, `DREAMING`, `OFF`, `ALTERNATE_BOUNCER`
-  all map to `Scenes.Lockscreen`
+- `LOCKSCREEN`, `AOD`, `DOZING`, `OFF`, `ALTERNATE_BOUNCER` all map to
+  `Scenes.Lockscreen`
 - `PRIMARY_BOUNCER` maps to `Overlays.Bouncer`
 - `GONE` maps to `Scenes.Gone`
 - `OCCLUDED` maps to `Scenes.Occluded`
 - `GLANCEABLE_HUB` maps to `Scenes.Communal`
+- `DREAMING` maps to `Scenes.Dream`
+- `UNDEFINED` maps to `null` (no scene-framework content)
 
 The `SceneContainerFlag` controls whether the new path is active, with
-`@Deprecated` annotations on states that will not exist post-migration.
+`@Deprecated` annotations on states that will not exist post-migration.  Section
+47.16 covers the Scene framework end to end.
 
 ### 47.15.11  Key Source Paths (Keyguard)
 
 | Path | Description |
 |---|---|
-| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewMediator.java` | 4,573-line mediator |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewMediator.java` | ~4,700-line mediator |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardService.java` | system_server bridge |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardLifecyclesDispatcher.java` | Lifecycle events |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardUnlockAnimationController.kt` | Unlock animation |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/shared/model/KeyguardState.kt` | State enum (11 states) |
-| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/shared/model/BiometricUnlockModel.kt` | Unlock mode enum (8 modes) |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/shared/model/BiometricUnlockModel.kt` | Unlock mode enum (10 modes) |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/shared/model/TransitionStep.kt` | Transition progress |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/shared/model/TransitionState.kt` | Transition state (STARTED/RUNNING/CANCELED/FINISHED) |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/shared/model/DozeStateModel.kt` | Doze states |
@@ -3407,12 +3541,262 @@ The `SceneContainerFlag` controls whether the new path is active, with
 
 ---
 
-## 47.16  Try It: Add a Custom QS Tile
+## 47.16  The Scene Framework (Flexiglass)
+
+Several earlier sections referred to a "Scene Container" or "scene" path that
+replaces a legacy controller.  This section pulls those threads together.  The
+Scene framework -- known internally by its codename **flexiglass** -- is the
+single largest architectural change in Android 17 SystemUI.  It replaces the
+hand-written swipe, expansion, and state-machine code in
+`NotificationPanelViewController`, `CentralSurfacesImpl`, and
+`StatusBarKeyguardViewManager` with a declarative Compose model: the lock
+screen, shade, quick settings, and bouncer become *scenes* and *overlays* laid
+out by a `SceneTransitionLayout`.
+
+### 47.16.1  Scenes, Overlays, and Scene Families
+
+The framework distinguishes two kinds of content.  A **scene** fills the
+container and is mutually exclusive with other scenes; an **overlay** is shown
+*on top of* the current scene.  Both are identified by string keys defined in
+the scene pod:
+
+```kotlin
+// frameworks/base/packages/SystemUI/pods/scene/src/api/shared/model/Scenes.kt
+object Scenes {
+    val Communal: SceneKey       // Glanceable hub (locked + docked)
+    val Dream: SceneKey          // A dream (screensaver) is showing
+    val Gone: SceneKey           // No scene content (unlocked, in an app)
+    val Lockscreen: SceneKey     // The lock screen
+    val Occluded: SceneKey       // showWhenLocked activity over keyguard
+    val QuickSettings: SceneKey  // Full QS (accordion second pull)
+    val Shade: SceneKey          // Notifications + QQS (single/split shade)
+}
+```
+
+```kotlin
+// frameworks/base/packages/SystemUI/src/com/android/systemui/scene/shared/model/
+//   Overlays.kt
+object Overlays {
+    val Bouncer: OverlayKey             // PIN / pattern / password challenge
+    val NotificationsShade: OverlayKey  // Dual-shade notifications panel
+    val QuickActions: OverlayKey        // Anchored QuickActionPanels (large screen)
+    val QuickSettingsShade: OverlayKey  // Dual-shade quick settings panel
+}
+```
+
+The split between `Shade`/`QuickSettings` *scenes* and
+`NotificationsShade`/`QuickSettingsShade` *overlays* encodes the three shade
+layouts:
+
+| Shade layout | Where used | Scene / overlay model |
+|---|---|---|
+| Single (accordion) | Phones | `Shade` scene (QQS), then `QuickSettings` scene (full QS) |
+| Split | Large screens / unfolded foldables | `Shade` scene with notifications + QS side by side |
+| Dual | Large screens (dual-shade flag) | `NotificationsShade` and `QuickSettingsShade` overlays, shown independently |
+
+`Scenes.Gone` is, despite its name, not a visible scene: it represents the
+absence of any scene-framework content (the device is unlocked and an app owns
+the screen).  Scene *families* (e.g. `SceneFamilies.Home`) are aliases that a
+resolver maps to a concrete scene depending on device state.
+
+### 47.16.2  The Scene Container Configuration
+
+A `SceneContainerConfig` declares which scenes and overlays a container
+supports, its initial scene, and the navigation distances used for swipe
+gestures:
+
+```kotlin
+// frameworks/base/packages/SystemUI/src/com/android/systemui/scene/shared/model/
+//   SceneContainerConfig.kt
+data class SceneContainerConfig(
+    val sceneKeys: List<SceneKey>,
+    val initialSceneKey: SceneKey,
+    val overlayKeys: List<OverlayKey> = emptyList(),
+    val navigationDistances: Map<SceneKey, Int>,
+)
+```
+
+`SceneContainerFrameworkModule` provides the concrete config.  The scene set is
+`Gone`, `Communal`, `Dream`, `Occluded`, `Lockscreen`, and (when not in
+dual-shade mode) `QuickSettings` and `Shade`; the overlay set is
+`NotificationsShade`, `QuickSettingsShade`, `Bouncer`, and -- when the
+`StatusBarPopupChips` flag is on -- `QuickActions`.
+
+### 47.16.3  SceneTransitionLayout: The Compose Engine
+
+The rendering engine lives in a standalone Compose library at
+`frameworks/base/packages/SystemUI/compose/scene/` (Java package
+`com.android.compose.animation.scene`).  Its public entry point is the
+`SceneTransitionLayout` composable:
+
+```kotlin
+// frameworks/base/packages/SystemUI/compose/scene/src/com/android/compose/
+//   animation/scene/SceneTransitionLayout.kt
+@Composable
+fun SceneTransitionLayout(
+    state: SceneTransitionLayoutState,
+    modifier: Modifier = Modifier,
+    // ...
+    builder: SceneTransitionLayoutScope.() -> Unit,
+)
+```
+
+The library is independent of SystemUI; it owns the swipe gesture detection
+(`SwipeToScene`, `DraggableHandler`, `SwipeAnimation`), the predictive-back
+handler (`PredictiveBackHandler`), shared-element animation across scenes
+(`SharedElement`, `MovableElement`), and the transition DSL (`TransitionDsl`)
+that describes how to animate from one scene to another.  SystemUI's own scene
+composables (`SceneContainer`, `GoneScene`, `Overlay`, `SceneContainerTransitions`)
+live in `compose/features/src/com/android/systemui/scene/ui/composable/`.
+
+```mermaid
+graph TD
+    subgraph "compose/scene library (com.android.compose.animation.scene)"
+        STL["SceneTransitionLayout"]
+        STLS["SceneTransitionLayoutState"]
+        SWIPE["SwipeToScene / DraggableHandler"]
+        BACK["PredictiveBackHandler"]
+        SHARED["SharedElement / MovableElement"]
+    end
+    subgraph "SystemUI scene domain"
+        SI["SceneInteractor"]
+        SCS["SceneContainerStartable"]
+        CFG["SceneContainerConfig"]
+    end
+    subgraph "SystemUI scene composables (compose/features)"
+        SC["SceneContainer"]
+        SCVM["SceneContainerViewModel"]
+    end
+    SI --> STLS
+    STLS --> STL
+    STL --> SWIPE
+    STL --> BACK
+    STL --> SHARED
+    CFG --> SI
+    SCVM --> SC
+    SC --> STL
+    SCS --> SI
+```
+
+### 47.16.4  SceneInteractor: The State Owner
+
+`SceneInteractor` is the `@SysUISingleton` source of truth for the current scene
+and the live transition state:
+
+```kotlin
+// frameworks/base/packages/SystemUI/src/com/android/systemui/scene/domain/interactor/
+//   SceneInteractor.kt
+@SysUISingleton
+class SceneInteractor @Inject constructor(/* ... */) {
+    val currentScene: StateFlow<SceneKey>
+    val transitionState: StateFlow<ObservableTransitionState>
+
+    fun changeScene(toScene: SceneKey, loggingReason: String, /* ... */)
+    fun snapToScene(toScene: SceneKey, loggingReason: String)
+    fun showOverlay(overlay: OverlayKey, loggingReason: String, /* ... */)
+    fun hideOverlay(overlay: OverlayKey, loggingReason: String, /* ... */)
+}
+```
+
+`changeScene` requests an *animated* transition; `snapToScene` jumps instantly.
+The `transitionState` flow exposes an `ObservableTransitionState` that is either
+`Idle(scene)` or `Transition(fromScene, toScene, progress)` -- the same shape the
+`compose/scene` library consumes to drive its animations.  Reads of the current
+scene as a Compose `State` (`currentSceneAsState`) let composables recompose as
+the scene changes.
+
+### 47.16.5  SceneContainerStartable: Bridging Legacy State
+
+The scene framework cannot replace everything at once.  `SceneContainerStartable`
+is the `CoreStartable` that keeps the legacy world and the scene world in sync
+while the migration proceeds:
+
+```kotlin
+// frameworks/base/packages/SystemUI/src/com/android/systemui/scene/domain/startable/
+//   SceneContainerStartable.kt
+@SysUISingleton
+class SceneContainerStartable @Inject constructor(/* ... */) : CoreStartable {
+    override fun start() {
+        if (SceneContainerFlag.isEnabled) {
+            hydrateVisibility()
+            automaticallySwitchScenes()
+            hydrateSystemUiState()
+            hydrateWindowController()
+            hydrateInteractionState()
+            hydrateBackStack()
+            // ...
+        }
+    }
+}
+```
+
+Each `hydrate*` method wires one slice of state:
+
+- **`automaticallySwitchScenes`** drives scene changes from device signals --
+  e.g. a successful unlock switches to `Scenes.Gone`, locking returns to
+  `Scenes.Lockscreen`, a dream starts `Scenes.Dream`.
+- **`hydrateVisibility`** controls whether the scene window root is visible.
+- **`hydrateSystemUiState`** mirrors the active scene into the legacy
+  `SysUiState` flags that Launcher and other consumers still read.
+- **`hydrateWindowController`** keeps `NotificationShadeWindowController` window
+  parameters (focusability, touchability) consistent with the active scene.
+- **`hydrateBackStack`** feeds the scene back-stack into the predictive-back
+  handler so the system back gesture moves between scenes correctly.
+
+This is what lets `KeyguardState.mapToSceneContainerContent()` (section 47.15.10)
+translate the legacy keyguard state machine into scene/overlay keys: the
+keyguard transition interactors still run, and `SceneContainerStartable` projects
+their output onto the scene container.
+
+### 47.16.6  The SceneContainerFlag Gate
+
+The whole framework is gated by `SceneContainerFlag`, backed by the
+`scene_container` aconfig flag (`aconfig/systemui.aconfig`):
+
+```kotlin
+// frameworks/base/packages/SystemUI/src/com/android/systemui/scene/shared/flag/
+//   SceneContainerFlag.kt
+object SceneContainerFlag {
+    @JvmField var isEnabledOnVariant: Boolean = true
+
+    @JvmStatic
+    inline val isEnabled
+        get() = sceneContainer() && isEnabledOnVariant
+}
+```
+
+`isEnabledOnVariant` lets a SystemUI variant (for example Automotive) force the
+framework off regardless of the aconfig flag, set early in the `Application`
+constructor.  Throughout the codebase, refactored call sites use
+`SceneContainerFlag.isUnexpectedlyInLegacyMode()` / `assertInLegacyMode()` guards
+so that legacy and new paths cannot silently both run.  Because the flag is not
+yet enabled by default on phones, the legacy controllers documented earlier in
+this chapter remain the shipping code path in Android 17, with the scene
+framework running ahead of them behind the flag.
+
+### 47.16.7  Key Source Paths (Scene Framework)
+
+| Path | Description |
+|---|---|
+| `frameworks/base/packages/SystemUI/pods/scene/src/api/shared/model/Scenes.kt` | Scene key definitions (moved into the scene pod) |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/scene/shared/model/Overlays.kt` | Overlay key definitions |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/scene/shared/model/SceneContainerConfig.kt` | Container configuration |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/scene/shared/flag/SceneContainerFlag.kt` | Feature gate |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/scene/domain/interactor/SceneInteractor.kt` | Scene/transition state owner |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/scene/domain/startable/SceneContainerStartable.kt` | Legacy/scene state bridge |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/scene/SceneContainerFrameworkModule.kt` | Dagger module providing `SceneContainerConfig` |
+| `frameworks/base/packages/SystemUI/compose/scene/src/com/android/compose/animation/scene/SceneTransitionLayout.kt` | Compose scene engine |
+| `frameworks/base/packages/SystemUI/compose/features/src/com/android/systemui/scene/ui/composable/SceneContainer.kt` | SystemUI scene container composable |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/shade/shared/flag/DualShadeFlag.kt` | Dual-shade feature gate |
+
+---
+
+## 47.17  Try It: Add a Custom QS Tile
 
 This hands-on exercise demonstrates how to add a new built-in Quick Settings
 tile to SystemUI.  We will create a "Caffeine" tile that keeps the screen awake.
 
-### 47.16.1  Step 1: Create the Tile Class
+### 47.17.1  Step 1: Create the Tile Class
 
 Create a new file in the tiles directory:
 
@@ -3507,8 +3891,9 @@ public class CaffeineTile extends QSTileImpl<BooleanState> {
         state.state = mIsActive ? Tile.STATE_ACTIVE : Tile.STATE_INACTIVE;
         state.label = "Caffeine";
         state.contentDescription = "Keep screen awake";
-        // Use an appropriate icon resource:
-        state.icon = ResourceIcon.get(mIsActive
+        // Use an appropriate icon resource. Modern tiles call the
+        // QSTileImpl.maybeLoadResourceIcon(int) helper:
+        state.icon = maybeLoadResourceIcon(mIsActive
                 ? R.drawable.ic_caffeine_on   // You must add these drawables
                 : R.drawable.ic_caffeine_off);
     }
@@ -3538,28 +3923,37 @@ public class CaffeineTile extends QSTileImpl<BooleanState> {
 }
 ```
 
-### 47.16.2  Step 2: Register the Tile in the QS Factory
+### 47.17.2  Step 2: Register the Tile in the QS Factory
 
-The tile must be registered so `QSHost` can create it from its tile spec.
-Find the tile creation factory (typically in the QS Dagger module or
-`QSFactoryImpl`) and add a case for `"caffeine"`:
+`QSFactoryImpl` no longer uses a `switch` over tile specs.  Instead it holds a
+`Map<String, Provider<QSTileImpl<?>>> mTileMap` and looks up the spec:
 
 ```java
-// In the factory that maps tile specs to tile instances:
-case CaffeineTile.TILE_SPEC:
-    return mCaffeineTileProvider.get();
+// frameworks/base/packages/SystemUI/src/com/android/systemui/qs/tileimpl/
+//   QSFactoryImpl.java
+protected QSTileImpl createTileInternal(String tileSpec) {
+    if (mTileMap.containsKey(tileSpec)) {
+        return mTileMap.get(tileSpec).get();
+    }
+    // ... custom-tile handling
+}
 ```
 
-You also need to add the Dagger provider.  In the relevant Dagger module:
+To register your tile you just contribute it to that map via Dagger
+multibinding.  In the relevant tile Dagger module (e.g. `QSModule` /
+`QSHostModule`):
 
 ```java
 @Binds
 @IntoMap
 @StringKey(CaffeineTile.TILE_SPEC)
-abstract QSTile bindCaffeineTile(CaffeineTile tile);
+abstract QSTileImpl<?> bindCaffeineTile(CaffeineTile tile);
 ```
 
-### 47.16.3  Step 3: Add Drawable Resources
+No factory edit is required; the map is assembled from every `@IntoMap`
+binding.
+
+### 47.17.3  Step 3: Add Drawable Resources
 
 Add icon resources to the SystemUI `res/` directory:
 
@@ -3571,7 +3965,7 @@ frameworks/base/packages/SystemUI/res/drawable/
 
 For vector drawables, use 24x24dp with the appropriate tint.
 
-### 47.16.4  Step 4: Add to Default Tile List (Optional)
+### 47.17.4  Step 4: Add to Default Tile List (Optional)
 
 To include the tile in the default QS panel, modify the string resource:
 
@@ -3582,7 +3976,7 @@ To include the tile in the default QS panel, modify the string resource:
 </string>
 ```
 
-### 47.16.5  Step 5: Build and Test
+### 47.17.5  Step 5: Build and Test
 
 ```bash
 # Build SystemUI
@@ -3603,7 +3997,7 @@ Verify the tile appears in the QS editor.  If not in the default list, open
 the QS edit mode (pencil icon) and drag the "Caffeine" tile into the active
 area.
 
-### 47.16.6  Step 6: Verify Functionality
+### 47.17.6  Step 6: Verify Functionality
 
 ```bash
 # Check wake lock state
@@ -3613,7 +4007,7 @@ adb shell dumpsys power | grep -i "wake lock"
 # Look for: "SystemUI:CaffeineTile" in the output
 ```
 
-### 47.16.7  Architecture Summary of a QS Tile
+### 47.17.7  Architecture Summary of a QS Tile
 
 ```mermaid
 graph TD
@@ -3638,7 +4032,7 @@ graph TD
     QTV -->|"displayed in"| QSP
 ```
 
-### 47.16.8  Testing the Tile
+### 47.17.8  Testing the Tile
 
 For unit testing, follow the existing pattern in the SystemUI test directory:
 
@@ -3703,12 +4097,12 @@ every system-level UI surface on Android.  This chapter covered:
 | Section | Key Classes | Lines of Code (approx.) |
 |---|---|---|
 | Architecture | `SystemUIApplicationImpl`, `GlobalRootComponent`, `SysUIComponent`, `CoreStartable` | ~500 |
-| Status Bar | `CentralSurfacesImpl`, `StatusBarWindowControllerImpl`, `CollapsedStatusBarFragment` | ~3,300 |
+| Status Bar | `CentralSurfacesImpl`, `StatusBarWindowControllerImpl`, `HomeStatusBarViewModel` | ~2,800 |
 | Notification Shade | `NotificationPanelViewController`, `ShadeController`, `NotificationStackScrollLayout` | ~4,300 |
 | Quick Settings | `QSHost`, `QSTileImpl`, `QSPanel`, `CustomTile` | ~2,000 |
 | Lock Screen | `KeyguardViewMediator`, `StatusBarKeyguardViewManager`, Bouncer | ~4,600 |
 | Recent Apps | `OverviewProxyRecentsImpl`, `LauncherProxyService` | ~110 |
-| Volume Dialog | `VolumeDialogControllerImpl`, `VolumeDialogImpl` | ~2,900 |
+| Volume Dialog | `VolumeDialogControllerImpl`, `VolumeDialog` (`volume/dialog/`) | ~2,900 |
 | Power Menu | `GlobalActionsComponent`, `GlobalActionsDialogLite` | ~3,100 |
 | Screenshots | `ScreenshotController`, `ImageCapture`, `ImageExporter` | ~1,200 |
 | Multi-Display | `PerDisplayRepository`, `StatusBarWindowControllerStore` | ~300 |
@@ -3716,14 +4110,21 @@ every system-level UI surface on Android.  This chapter covered:
 | Monet / Dynamic Color | `ThemeOverlayController`, `ColorScheme`, `TonalPalette`, `DynamicColors` | ~1,600 |
 | Keyguard Deep Dive | `KeyguardState`, `KeyguardTransitionInteractor`, `BiometricUnlockInteractor` | ~4,600 |
 
-The codebase is transitioning from monolithic controllers to an MVI
-architecture with Dagger DI, Kotlin coroutines, and Jetpack Compose.  Key
-modernisation efforts include:
+The codebase is transitioning from monolithic controllers to a layered
+data/domain/UI architecture with Dagger DI, Kotlin coroutines, and Jetpack
+Compose.  Key modernisation efforts in Android 17 include:
 
-- **Scene Container** -- replacing `CentralSurfaces` with a scene-based
-  architecture
-- **QS Compose** -- rewriting Quick Settings in Jetpack Compose
-- **ShadeWindowGoesAround** -- per-display shade windows
+- **Scene framework ("flexiglass")** -- replacing `CentralSurfacesImpl` and
+  `NotificationPanelViewController` with a Compose `SceneTransitionLayout` of
+  scenes and overlays (`SceneContainerFlag`, section 47.16)
+- **`pods/` modularisation** -- extracting feature modules (scene, shade, qs,
+  statusbar, notifications, ...) into independently buildable Soong modules
+- **Home status bar pipeline** -- replacing `CollapsedStatusBarFragment` with an
+  MVVM `HomeStatusBarViewModel` / `HomeStatusBarViewBinder`
+- **QS Compose** -- `QSFragmentCompose` replacing the old `QSFragment` / `QSImpl`
+- **Volume MVI rewrite** -- `volume/dialog/` replacing `VolumeDialogImpl`
+- **Dual shade** -- separate notifications and quick-settings shades
+  (`NotificationsShade` / `QuickSettingsShade` overlays, `DualShadeFlag`)
 - **Predictive Back** -- back gesture with animation preview
 - **StatusBarConnectedDisplays** -- status bar on external displays
 
@@ -3744,7 +4145,8 @@ modernisation efforts include:
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/CentralSurfacesImpl.java` | Status bar implementation |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/StatusBarKeyguardViewManager.java` | Keyguard bridge |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/window/StatusBarWindowControllerImpl.java` | Status bar window |
-| `frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/fragment/CollapsedStatusBarFragment.java` | Status bar content |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/shared/ui/viewmodel/HomeStatusBarViewModel.kt` | Status bar content (view-model) |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/fragment/dagger/HomeStatusBarComponent.java` | Per-display status bar subcomponent |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/shade/NotificationPanelViewController.java` | Shade panel |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/shade/ShadeController.java` | Shade abstraction |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/shade/NotificationShadeWindowControllerImpl.java` | Shade window |
@@ -3761,14 +4163,14 @@ modernisation efforts include:
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/navigationbar/views/NavigationBarView.java` | Nav bar view |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/navigationbar/gestural/EdgeBackGestureHandler.java` | Gesture navigation |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/volume/VolumeDialogControllerImpl.java` | Volume state |
-| `frameworks/base/packages/SystemUI/src/com/android/systemui/volume/VolumeDialogImpl.java` | Volume UI |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/volume/dialog/VolumeDialog.kt` | Volume dialog UI (MVI) |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/globalactions/GlobalActionsComponent.java` | Power menu entry |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/globalactions/GlobalActionsImpl.java` | Power menu default impl |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/globalactions/GlobalActionsDialogLite.java` | Power menu dialog UI |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/screenshot/ScreenshotController.kt` | Screenshot flow |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/screenshot/TakeScreenshotService.java` | Screenshot service |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/recents/OverviewProxyRecentsImpl.java` | Recents proxy |
-| `frameworks/base/packages/SystemUI/src/com/android/systemui/display/dagger/SystemUIDisplaySubcomponent.java` | Display-scoped DI |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/display/dagger/SystemUIDisplaySubcomponent.kt` | Display-scoped DI |
 | `frameworks/base/packages/SystemUI/plugin/src/com/android/systemui/plugins/qs/QSTile.java` | Tile plugin interface |
 | `frameworks/base/packages/SystemUI/plugin/src/com/android/systemui/plugins/GlobalActions.java` | Power menu plugin |
 | `frameworks/base/packages/SystemUI/plugin/src/com/android/systemui/plugins/VolumeDialogController.java` | Volume plugin |

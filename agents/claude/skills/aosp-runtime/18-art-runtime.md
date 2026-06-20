@@ -583,6 +583,12 @@ Key components of a `mirror::Class`:
 - **class_size** -- size of an instance of this class
 - **status** -- current class status (loaded, verified, initialized, etc.)
 - **class_loader** -- reference to the ClassLoader that loaded this class
+- **class_flags** -- a `uint32_t` bitset (`art/runtime/mirror/class_flags.h`)
+  that the GC and runtime use to take fast paths without inspecting the whole
+  class. The common case is `kClassFlagNormal`; other bits mark strings, arrays,
+  reference classes, class loaders, the dex cache, and (Android 17) record and
+  value classes. The exact layout, and how Android 17 reworked record classes,
+  is covered in section 18.11.
 
 #### DexCache
 
@@ -634,7 +640,7 @@ Source: `art/libdexfile/` (library that parses and validates DEX files).
 The DEX header is defined in `art/libdexfile/dex/dex_file.h`:
 
 ```
-// art/libdexfile/dex/dex_file.h, lines 137-161
+// art/libdexfile/dex/dex_file.h, lines 134-179
 struct Header {
   Magic magic_ = {};              // "dex\n035\0" or similar
   uint32_t checksum_ = 0;        // adler32 of everything except magic and this field
@@ -662,15 +668,36 @@ struct Header {
 };
 ```
 
-DEX version 41 adds container support (multiple DEX files in a single container):
+DEX version 41 (magic `dex\n041\0`) adds *container* support: several logical
+DEX files are concatenated into one contiguous blob, and each one carries two
+extra header words pointing back at the enclosing container. The DEX-container
+version constant is `DexFile::kDexContainerVersion = 41`
+(`art/libdexfile/dex/dex_file.h`, line 112), and the extended header is
+`HeaderV41`:
 
 ```
-// art/libdexfile/dex/dex_file.h, lines 184-187
+// art/libdexfile/dex/dex_file.h, lines 181-184
 struct HeaderV41 : public Header {
   uint32_t container_size_ = 0;  // total size of all dex files in the container
   uint32_t header_offset_ = 0;   // offset of this dex's header in the container
 };
 ```
+
+`DexFile::HasDexContainer()` returns true for V41-or-newer files (even a
+container holding a single DEX), and `GetDexContainerRange()` reconstructs the
+whole container span by walking back `header_offset_` bytes from `Begin()` and
+spanning `container_size_` bytes (`art/libdexfile/dex/dex_file.h`, lines
+291-303). The loader keys multi-entry handling off this: in
+`art/libdexfile/dex/dex_file_loader.h` (line 113) every non-primary DEX whose
+version is `>= kDexContainerVersion` is opened as a container entry, and the
+loader asserts `IsDexContainerLastEntry()` once the final entry has been
+consumed (line 213). Two Android 17 hardening fixes tightened this path: the
+verifier now rejects a header whose claimed `container_size_` exceeds the actual
+mapped size ("[V41] Check that the claimed size is LE than the actual size"),
+and the loader ignores any superfluous bytes trailing a container so a plain
+`.dex` file is required to hold exactly one container ("Ensure we ignore
+superfluous data after dex container"). See section 18.11 (Android 17 changes)
+for how the V41 rollout interacts with profiles and dex2oat.
 
 ### 18.2.2 File Layout
 
@@ -1105,16 +1132,20 @@ This would produce a DEX file with approximately:
 - **Class def**: 1 entry for `com.example.Hello`.
 - **Code items**: 3 items for the three methods of Hello.
 
-### 18.2.16 Standard vs Compact DEX
+### 18.2.16 Standard vs Container DEX
 
-ART historically supported two DEX variants:
-
-- **Standard DEX** (`StandardDexFile`) -- the traditional DEX format as
-  described above.
-- **Compact DEX** (now deprecated) -- an internal optimization that used
-  more compact encodings for code items and debug info. Compact DEX was
-  used in VDEX files to reduce storage overhead but has been phased out
-  in favor of improved standard DEX handling.
+ART once supported two on-disk DEX variants -- the traditional standard DEX and
+an internal *compact DEX* (`CompactDexFile`) that re-encoded code items and
+debug info to shrink VDEX files. Compact DEX has been removed; the only
+`DexFile` subclass left in the tree is `StandardDexFile`
+(`art/libdexfile/dex/standard_dex_file.h`). The space-saving role compact DEX
+used to play is now filled by the DEX *container* format (V41, section 18.2.1):
+multiple logical DEX files share one mapped blob, and unchanged shared data
+(strings, type lists, debug info) is laid out once rather than per-DEX. Because
+the container is a property of the standard format itself, ART no longer needs a
+separate compact subclass -- a single `StandardDexFile` instance can be a
+container entry, and the loader distinguishes entries with `HasDexContainer()`
+and `IsDexContainerLastEntry()`.
 
 ### 18.2.17 DEX File Validation
 
@@ -1389,7 +1420,12 @@ The `CompilerOptions` (`art/dex2oat/driver/compiler_options.h`) configure
 the compilation behavior:
 
 - **Instruction set** -- Target ISA (ARM, ARM64, x86, x86-64, RISC-V 64)
-- **Instruction set features** -- CPU features (NEON, SSE, etc.)
+- **Instruction set features** -- CPU features (NEON on ARM; SSSE3 / SSE4.1 /
+  SSE4.2 / AVX / AVX2 / POPCNT on x86). For x86 these are derived from a named
+  CPU variant by `X86InstructionSetFeatures::FromVariant()`
+  (`art/runtime/arch/x86/instruction_set_features_x86.cc`); Android 17 adds the
+  `pantherlake` variant (see section 18.11), which like `kabylake` and
+  `alderlake` enables AVX2.
 - **Compiler filter** -- What to compile
 - **Profile** -- Path to the profile file for PGO
 - **Debuggable** -- Whether to generate debuggable code
@@ -1980,9 +2016,13 @@ the stack when registers are exhausted.
 
 Each code generator applies architecture-specific optimizations:
 
-- **ARM64**: NEON vectorization, paired loads/stores, conditional
+- **ARM64**: NEON vectorization (128-bit), paired loads/stores, conditional
   selection
-- **x86-64**: SSE/AVX vectorization, addressing mode optimization
+- **x86-64**: SIMD vectorization and addressing-mode optimization. The vector
+  width follows the detected features -- 128-bit XMM under SSE4.1, and 256-bit
+  YMM when AVX2 is available (`HLoopOptimization` reads
+  `CodeGeneratorX86_64::GetSIMDRegisterWidth()`, which returns `4 * kX86_64WordSize`
+  with AVX2). Android 17 extends AVX2 codegen to x86-64 (see section 18.11).
 - **RISC-V 64**: Extension-aware code generation
 
 ### 18.4.14 Entrypoints
@@ -2350,11 +2390,12 @@ primary garbage collector. It uses a region-based copying algorithm that can
 run mostly concurrently with application (mutator) threads.
 
 ```
-// art/runtime/gc/collector/concurrent_copying.h, lines 57-73
+// art/runtime/gc/collector/concurrent_copying.h, lines 59-76
 class ConcurrentCopying : public GarbageCollector {
  public:
   static constexpr bool kEnableNoFromSpaceRefsVerification = kIsDebugBuild;
   static constexpr bool kEnableFromSpaceAccountingCheck = kIsDebugBuild;
+  static constexpr bool kVerboseMode = false;
   static constexpr bool kGrayDirtyImmuneObjects = true;
 
   ConcurrentCopying(Heap* heap,
@@ -2552,7 +2593,8 @@ class RegionSpace final : public ContinuousMemMapAllocSpace {
 };
 ```
 
-Regions can be in one of several states:
+Regions are 256 KB (`kRegionSize`, `art/runtime/gc/space/region_space.h`, line
+236) and can be in one of several states:
 
 - **Free** -- available for allocation
 - **Open** -- currently being allocated into (one per thread for TLABs)
@@ -2561,6 +2603,19 @@ Regions can be in one of several states:
 - **To-space** -- destination for copied objects
 - **Large** -- spans multiple regions for large objects
 
+When the CC collector reclaims an evacuated region it zeroes and releases the
+backing pages through `ZeroAndProtectRegion()`, which calls the shared
+`ZeroMemory()` helper in `art/libartbase/base/mem_map.cc`. In Android 17 that
+helper once again hands resident pages to the kernel with `MADV_FREE` rather
+than `MADV_DONTNEED` (`ClearMemory()`, lines 1300-1315). `MADV_FREE` lets the
+kernel reclaim the pages lazily under memory pressure while leaving them mapped
+and zero-cost to re-touch, so a region that is freed and quickly re-allocated
+avoids a hard page fault. This path had been temporarily forced to
+`MADV_DONTNEED`; the Android 17 commit "Revert 'Temporarily disable MADV_FREE
+use with CC GC'" restores `MADV_FREE` as the default for resident reclaim, while
+non-resident pages still use `MADV_DONTNEED`. See section 18.11 for the wider
+Android 17 memory-management story.
+
 #### Thread-Local Allocation Buffers (TLABs)
 
 Each thread gets a TLAB from the region space for lock-free allocation.
@@ -2568,7 +2623,7 @@ The default TLAB size is 32 KB, with partial TLABs of 16 KB when the
 region is partially full:
 
 ```
-// art/runtime/gc/heap.h, lines 137-139
+// art/runtime/gc/heap.h, lines 138-139
 static constexpr size_t kPartialTlabSize = 16 * KB;
 static constexpr bool kUsePartialTlabs = true;
 ```
@@ -4393,7 +4448,218 @@ invoke `dex2oat`.
 
 ---
 
-## 18.11 Try It
+## 18.11 Android 17 Changes
+
+Android 17 ships the ART module with a focused set of runtime, compiler, and GC
+changes. None of them alter the architecture described above, but several touch
+data structures and code paths that earlier sections reference, so this section
+collects them with their source citations.
+
+### 18.11.1 Pantherlake x86 ISA Variant (AVX2)
+
+ART's x86 back-end selects CPU features from a named *variant* rather than
+probing at compile time. The list of known variants and the feature each one
+implies lives in `art/runtime/arch/x86/instruction_set_features_x86.cc`. Android
+17 adds `pantherlake` (Intel's Panther Lake client architecture) to that list:
+
+```
+// art/runtime/arch/x86/instruction_set_features_x86.cc, lines 43-115
+static constexpr const char* x86_known_variants[] = {
+    "atom", "sandybridge", "silvermont", "goldmont", "goldmont-plus",
+    "goldmont-without-sha-xsaves", "tremont", "kabylake", "alderlake",
+    "pantherlake", "default",
+};
+// ... pantherlake also appears in the ssse3 / sse4_1 / sse4_2 / popcnt / avx / avx2 arrays
+static constexpr const char* x86_variants_with_avx2[] = {
+    "kabylake", "alderlake", "pantherlake",
+};
+```
+
+Because `pantherlake` is listed in `x86_variants_with_avx2`,
+`X86InstructionSetFeatures::FromVariant("pantherlake", ...)` returns a feature
+set with `HasAVX2()` true (alongside SSSE3, SSE4.1, SSE4.2, AVX, and POPCNT).
+The AVX2 bit lives at position 4 of the feature bitmap
+(`kAvx2Bitfield = 1 << 4`, `art/runtime/arch/x86/instruction_set_features_x86.h`,
+line 141); an Android 17 fix corrected that bit position so the bitmap encoding
+of x86 features round-trips correctly.
+
+### 18.11.2 AVX2 Vectorization on x86-64
+
+With AVX2 detected, the optimizing compiler widens its SIMD code generation from
+128-bit XMM registers to 256-bit YMM registers. The decision is made in
+`CodeGeneratorX86_64::GetSIMDRegisterWidth()`:
+
+```
+// art/compiler/optimizing/code_generator_x86_64.h, lines 460-462
+size_t GetSIMDRegisterWidth() const override {
+  return GetInstructionSetFeatures().HasAVX2() ? 4 * kX86_64WordSize : 2 * kX86_64WordSize;
+}
+```
+
+`4 * kX86_64WordSize` is 32 bytes (256-bit YMM); without AVX2 the width is
+`2 * kX86_64WordSize` (16 bytes, 128-bit XMM). The loop vectorizer reads this
+width when it decides how many lanes a vector operation packs:
+`HLoopOptimization::TrySetVectorLength()` uses
+`simd_register_size_ / DataType::Size(type)` for the x86 and x86-64 cases
+(`art/compiler/optimizing/loop_optimization.cc`, lines 2161-2219), so a
+`float`/`int` loop on an AVX2 target processes eight elements per iteration
+instead of four. Android 17 added the AVX2-based vectorization path for x86-64;
+the matching vector emitters in
+`art/compiler/optimizing/code_generator_vector_x86_64.cc` branch on
+`GetInstructionSetFeatures().HasAVX2()` to emit YMM forms.
+
+```mermaid
+flowchart TD
+    A["x86-64 CPU variant\n(e.g. pantherlake)"] --> B["X86InstructionSetFeatures::\nFromVariant"]
+    B --> C{"HasAVX2()?"}
+    C -->|"yes"| D["GetSIMDRegisterWidth()\n= 32 bytes (256-bit YMM)"]
+    C -->|"no"| E["GetSIMDRegisterWidth()\n= 16 bytes (128-bit XMM)"]
+    D --> F["HLoopOptimization:\n8 floats / iteration"]
+    E --> G["HLoopOptimization:\n4 floats / iteration"]
+```
+
+### 18.11.3 DEX Container Format (V41)
+
+Section 18.2.1 introduced the `HeaderV41` extension and the container concept.
+Android 17 is where the V41 container format matures across the toolchain:
+
+- **Loader and verifier**: `DexFile::kDexContainerVersion = 41` gates container
+  handling (`art/libdexfile/dex/dex_file.h`, line 112). The loader opens any
+  non-primary DEX of version `>= 41` as a container entry and validates that the
+  last entry's end matches the container end
+  (`art/libdexfile/dex/dex_file_loader.h`, lines 113 and 213). Two hardening
+  fixes landed: the verifier rejects a header whose claimed `container_size_`
+  exceeds the actually-mapped size, and the loader now ignores any superfluous
+  bytes after a container so a plain `.dex` must contain exactly one container.
+- **Profiles**: a container can pack what used to be `classes.dex`,
+  `classes2.dex`, ... into a single zip entry, so the zip-entry name is no
+  longer a unique profile key. `ProfileCompilationInfo::GetProfileDexFileBaseKey()`
+  switches V41 container DEX files to a flattened-index syntax (`base.apk!1`,
+  `base.apk!2`, ...) instead of the legacy `base.apk!classes2.dex`, while plain
+  multi-dex APKs keep the old zip-entry-name form
+  (`art/libprofile/profile/profile_compilation_info.cc`, lines 645-663).
+
+The V41 rollout is staged behind a release flag (`RELEASE_USE_DEX_V41`) that
+toggled on and off through development before settling; the format and the
+runtime code that parses it are present in the Android 17 ART module regardless,
+so a device that receives V41-encoded DEX from `dex2oat` or the build system
+parses it correctly.
+
+### 18.11.4 Value Classes and Record Classes
+
+`mirror::Class` carries a `class_flags` bitset
+(`art/runtime/mirror/class_flags.h`) that the GC and runtime consult to take
+fast paths. Android 17 makes two related changes here.
+
+**Value classes (new flag).** A new bit marks value-based classes:
+
+```
+// art/runtime/mirror/class_flags.h, line 78
+static constexpr uint32_t kClassFlagValue             = 0x00008000;
+```
+
+A class is flagged when the verifier finds the `Ljdk/internal/ValueBased;`
+runtime annotation on it. This is gated behind the `value_classes` aconfig flag
+(`art/build/flags/art-flags.aconfig`), so it is inert unless the flag is on:
+
+```
+// art/runtime/class_linker.cc, lines 10319-10331 (condensed)
+bool ClassLinker::VerifyValueClass(Handle<mirror::Class> klass) {
+  if (!com::android::art::flags::value_classes()) {
+    return true;
+  }
+  ValueClassAnnotationVisitor visitor;
+  annotations::VisitClassAnnotations(klass, &visitor);
+  if (visitor.IsValueClass()) {
+    klass->SetValueClass();   // sets kClassFlagValue
+  }
+  return true;
+}
+```
+
+Value classes remain a preview-stage Java feature; for now the flag only records
+the property (`IsValueClass()` becomes queryable), and the full set of identity
+and immutability checks is still to come.
+
+**Record classes (now "normal").** Record classes are detected the same way --
+the `@dalvik.annotation.Record` annotation drives `SetRecordClass()`, which sets
+`kClassFlagRecord = 0x00000800` (`art/runtime/mirror/class_flags.h`, line 66).
+The Android 17 change is that setting the record flag no longer *clears*
+`kClassFlagNormal`:
+
+```
+// art/runtime/mirror/class.h, lines 346-348
+ALWAYS_INLINE void SetRecordClass() REQUIRES_SHARED(Locks::mutator_lock_) {
+  AddRemoveClassFlags(kClassFlagRecord);   // was: AddRemoveClassFlags(kClassFlagRecord, kClassFlagNormal)
+}
+```
+
+Records are a language feature whose only runtime obligation is real
+immutability; for object scanning they behave exactly like ordinary classes. By
+keeping `kClassFlagNormal` set, the GC fast paths
+(`MarkSweep::ScanObjectVisit`, `Object::FastVisitReferences`) no longer need to
+special-case `kClassFlagRecord` and simply test `kClassFlagNormal`. Both
+`kClassFlagRecord` and `kClassFlagValue` are added to
+`kClassFlagPerfettoIgnoredFlags` so heap-dump tooling masks them out when
+classifying object kinds (`art/runtime/mirror/class_flags.h`, lines 96-97).
+
+### 18.11.5 MADV_FREE Re-enabled for the CC GC
+
+When the Concurrent Copying collector reclaims an evacuated region it releases
+the backing pages through `ZeroMemory()` in
+`art/libartbase/base/mem_map.cc`. For *resident* pages that helper hands the
+range to the kernel with `MADV_FREE`; only non-resident pages use
+`MADV_DONTNEED`:
+
+```
+// art/libartbase/base/mem_map.cc, lines 1300-1315
+static inline void ClearMemory(uint8_t* page_begin, size_t size, bool resident, size_t page_size) {
+  if (resident) {
+    RawClearMemory(page_begin, page_begin + size);
+#ifdef MADV_FREE
+    bool res = madvise(page_begin, size, MADV_FREE);
+    CHECK_NE(res, -1) << "madvise failed";
+#endif  // MADV_FREE
+  } else {
+    bool res = madvise(page_begin, size, MADV_DONTNEED);
+    CHECK_NE(res, -1) << "madvise failed";
+  }
+}
+```
+
+`MADV_FREE` is cheaper than `MADV_DONTNEED`: the kernel keeps the pages mapped
+and reclaims them lazily only under memory pressure, so a region that is freed
+and quickly reused avoids a hard page fault and a fresh zero-fill. This behavior
+had been temporarily disabled for the CC GC; the Android 17 commit "Revert
+'Temporarily disable MADV_FREE use with CC GC'" restores `MADV_FREE` as the
+default for resident reclaim. ART's region-space reclaim reaches this helper via
+`RegionSpace::ZeroAndProtectRegion()` -> `ZeroMemory()`
+(`art/runtime/gc/space/region_space.cc`, lines 396-397).
+
+### 18.11.6 dex2oat and the 17 Toolchain
+
+The Android 17 ART changes above flow through `dex2oat` (section 18.3) without
+changing its overall structure:
+
+- `dex2oat` records the target instruction set and its features in the OAT/VDEX
+  it produces; on an x86-64 build configured for `pantherlake` it therefore
+  emits AVX2-aware (256-bit YMM) vectorized code where the optimizer can apply
+  it.
+- When the build or runtime supplies V41 container DEX, `dex2oat` consumes it
+  through the same `DexFileLoader` container path described in section 18.11.3,
+  and the profiles it reads use the flattened-index profile keys for container
+  entries.
+- Record and value class flags are set during class linking
+  (`ClassLinker::VerifyClass` -> `VerifyRecordClass` / `VerifyValueClass`), so
+  AOT-compiled images built by `dex2oat` carry the same `class_flags` the
+  runtime would compute.
+
+None of these changes the OAT/VDEX file format version or the odrefresh
+recompilation triggers covered in section 18.8.
+
+---
+
+## 18.12 Try It
 
 ### Exercise 18.1 -- Inspect a DEX File
 
@@ -5047,6 +5313,8 @@ ART has evolved significantly over Android releases:
 | 13 | Improved profile-guided optimization |
 | 14 | Mark-Compact (CMC) collector, RISC-V support |
 | 15 | Continued CMC rollout, improved JIT |
+| 16 | Generational CMC, DEX container (V41) groundwork |
+| 17 | Pantherlake x86 variant (AVX2), AVX2 vectorization for x86-64, V41 container maturation, value-class flag, record classes treated as normal, MADV_FREE re-enabled for CC GC |
 
 Key source files for further exploration:
 
@@ -5063,6 +5331,10 @@ Key source files for further exploration:
 | GC heap | `art/runtime/gc/heap.h` |
 | CC collector | `art/runtime/gc/collector/concurrent_copying.h` |
 | Region space | `art/runtime/gc/space/region_space.h` |
+| Page reclaim (MADV_FREE) | `art/libartbase/base/mem_map.cc` |
+| Class flags | `art/runtime/mirror/class_flags.h` |
+| x86 ISA features | `art/runtime/arch/x86/instruction_set_features_x86.cc` |
+| x86-64 SIMD width | `art/compiler/optimizing/code_generator_x86_64.h` |
 | Class linker | `art/runtime/class_linker.cc` (11,710 lines) |
 | JNI VM | `art/runtime/jni/java_vm_ext.h` |
 | JNI env | `art/runtime/jni/jni_env_ext.h` |

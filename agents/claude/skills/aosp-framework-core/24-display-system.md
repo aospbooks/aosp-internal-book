@@ -88,8 +88,8 @@ ioctls that trigger scanout of composed framebuffers.
 ### 24.1.2 DisplayManagerService
 
 `DisplayManagerService` (DMS) is a `SystemService` registered during
-`system_server` boot. At 6601 lines, it is one of the largest services in
-the framework. Its Javadoc explains the architecture:
+`system_server` boot. At over 7,300 lines in Android 17, it is one of the
+largest services in the framework. Its Javadoc explains the architecture:
 
 > The DisplayManagerService manages the global lifecycle of displays,
 > decides how to configure logical displays based on the physical display
@@ -346,40 +346,57 @@ before notifying PowerManager; for ON transitions, PowerManager is notified
 first. This prevents race conditions where the system thinks the display
 is on while it is still powering down.
 
-### 24.1.9 Display Mode Director
+### 24.1.9 Display Mode Director and the Vote System
 
-`DisplayModeDirector` sits between `DisplayManagerService` and
-`RefreshRateSelector`, translating high-level mode requests from various
-sources (app, settings, performance hints) into `DesiredDisplayModeSpecs`:
+`DisplayModeDirector` (in the `display/mode/` package) is the framework-side
+policy engine that translates high-level mode requests from many sources (app
+`setFrameRate` calls, the user's peak-refresh-rate setting, performance hints,
+proximity, skin temperature) into the `DesiredDisplayModeSpecs` that DMS hands
+to SurfaceFlinger. It is built on a *vote* abstraction: every input registers a
+`Vote` at a fixed priority in `VotesStorage`, and `VoteSummary` collapses the
+votes for a display into a single resolved set of size and refresh-rate
+constraints.
 
 ```mermaid
 graph TD
     subgraph "Vote Sources"
-        APP["App Request<br/>(setFrameRate)"]
-        SET["Settings<br/>(peak refresh rate)"]
-        PERF["Performance Hint<br/>(game mode)"]
-        LOW["Low Power Mode"]
-        PROX["Proximity"]
-        SKIN["Skin Temperature"]
+        APP["App Request<br/>(RequestedRefreshRateVote)"]
+        SET["Settings<br/>(SupportedRefreshRatesVote)"]
+        PERF["Performance Hint<br/>(SystemRequestObserver)"]
+        LOW["Low Power Mode<br/>(RefreshRateVote)"]
+        PROX["Proximity<br/>(ProximitySensorObserver)"]
+        SKIN["Skin Temperature<br/>(SkinThermalStatusObserver)"]
+        HDR["HDR Preference<br/>(HdrPreferenceVote)"]
     end
 
     subgraph "DisplayModeDirector"
-        DIR["Vote Aggregation"]
+        VS["VotesStorage<br/>(priority-keyed Votes)"]
+        SUM["VoteSummary<br/>(resolve conflicts)"]
         SPEC["DesiredDisplayModeSpecs"]
     end
 
-    APP --> DIR
-    SET --> DIR
-    PERF --> DIR
-    LOW --> DIR
-    PROX --> DIR
-    SKIN --> DIR
-    DIR --> SPEC
+    APP --> VS
+    SET --> VS
+    PERF --> VS
+    LOW --> VS
+    PROX --> VS
+    SKIN --> VS
+    HDR --> VS
+    VS --> SUM
+    SUM --> SPEC
     SPEC --> DMS_OUT["DisplayManagerService<br/>(applies to LogicalDisplay)"]
 ```
 
-Each vote source has a priority, and the director resolves conflicts by
-prioritising system constraints (thermal, low power) over app requests.
+Each `Vote` is keyed by a numeric priority, and `VoteSummary` resolves
+conflicts by letting higher-priority system constraints (thermal, low power)
+narrow or veto the ranges requested by lower-priority sources such as apps.
+The concrete vote classes (`SizeVote`, `RefreshRateVote`,
+`SupportedRefreshRatesVote`, `RequestedRefreshRateVote`, `WorkDurationsVote`,
+`HdrPreferenceVote`, and others) all live alongside `DisplayModeDirector` in
+`frameworks/base/services/core/java/com/android/server/display/mode/`. Note that
+the SurfaceFlinger-side selector that picks the final hardware mode from this
+spec is a separate C++ class, `RefreshRateSelector` (Section 24.3.6); the
+framework never references it directly.
 
 ### 24.1.10 Handler Message Protocol
 
@@ -397,6 +414,11 @@ DMS uses a handler-based message protocol for asynchronous operations:
 | Display group event | `MSG_DELIVER_DISPLAY_GROUP_EVENT` (8) | Notify of group additions/removals |
 | Device state received | `MSG_RECEIVED_DEVICE_STATE` (9) | Process foldable state change |
 | Dispatch pending events | `MSG_DISPATCH_PENDING_PROCESS_EVENTS` (10) | Batch event delivery |
+| Deliver display snapshot | `MSG_DELIVER_DISPLAY_SNAPSHOT` (11) | Send a snapshot of all displays to a newly registered callback |
+
+The `MSG_DELIVER_DISPLAY_SNAPSHOT` message (added so a freshly registered
+listener receives the complete current display set in one batch) is defined at
+`frameworks/base/services/core/java/com/android/server/display/DisplayManagerService.java:314`.
 
 The `MSG_REQUEST_TRAVERSAL` message is particularly important: when
 display configuration changes, DMS must schedule a traversal in
@@ -1078,7 +1100,7 @@ a high refresh rate. The `SmallAreaDetectionController` in
 
 ### 24.4.1 DisplayRotation: The Policy Engine
 
-`DisplayRotation` (2255 lines) owns the mapping between the requested
+`DisplayRotation` (around 2,275 lines) owns the mapping between the requested
 orientation (from the topmost Activity) and the actual physical rotation
 of the display. It resides in `WindowManagerService` and is instantiated
 per-`DisplayContent`:
@@ -1291,7 +1313,11 @@ public final class DeviceStateManagerService extends SystemService {
 }
 ```
 
-The service defines device states using properties:
+Each device state is described by a `DeviceState` whose behaviour is encoded as
+a set of integer *property* constants. These constants are defined in the public
+API class `android.hardware.devicestate.DeviceState`
+(`frameworks/base/core/java/android/hardware/devicestate/DeviceState.java`), not
+in the service itself:
 
 | Property | Description |
 |----------|-------------|
@@ -1312,7 +1338,11 @@ The `DeviceStateProvider` interface supplies the physical device state.
 from the hinge angle sensor and hall effect sensor to determine the fold
 posture. The provider reports state changes to `DeviceStateManagerService`,
 which then consults the `DeviceStatePolicy` to determine the appropriate
-system response.
+system response. The foldable provider and policy ship in the dedicated
+`frameworks/base/services/foldables/devicestateprovider/` module
+(`FoldableDeviceStateProvider.java`, `BookStyleDeviceStatePolicy.java`), while
+the `DeviceStatePolicy` interface lives in
+`frameworks/base/services/core/java/com/android/server/devicestate/`.
 
 ```mermaid
 graph TD
@@ -1380,12 +1410,26 @@ sequenceDiagram
     DMS3->>DMS3: Notify WindowManager of display change
 ```
 
-The mapper emits specific events for different scenarios:
+The mapper emits specific events for different scenarios. The full set of
+event bits is defined in
+`frameworks/base/services/core/java/com/android/server/display/LogicalDisplayMapper.java`;
+the ones relevant to display swapping are:
 
 ```java
 public static final int LOGICAL_DISPLAY_EVENT_SWAPPED = 1 << 3;
 public static final int LOGICAL_DISPLAY_EVENT_DEVICE_STATE_TRANSITION = 1 << 5;
 ```
+
+Alongside these, Android 17 carries dedicated bits for connected (external)
+displays and for the device-state lifecycle:
+`LOGICAL_DISPLAY_EVENT_CONNECTED` (`1 << 7`),
+`LOGICAL_DISPLAY_EVENT_DISCONNECTED` (`1 << 8`),
+`LOGICAL_DISPLAY_EVENT_REFRESH_RATE_CHANGED` (`1 << 9`),
+`LOGICAL_DISPLAY_EVENT_STATE_CHANGED` (`1 << 10`), and
+`LOGICAL_DISPLAY_EVENT_COMMITTED_STATE_CHANGED` (`1 << 11`). The connect and
+disconnect events are distinct from add and remove: a display can be physically
+connected (and reported to apps that opted in) before the system decides to
+enable a `LogicalDisplay` for it.
 
 ### 24.5.4 BookStyleDeviceStatePolicy
 
@@ -1408,7 +1452,12 @@ For book-style foldables (where the fold axis is vertical, like a book),
 
 Modern foldables can run both displays simultaneously. The
 `DisplayTopologyCoordinator` manages the spatial relationship between
-displays, and `DisplayTopologyStore` persists the topology configuration.
+displays, and the `DisplayTopologyStore` interface persists the topology
+configuration. In Android 17 its concrete implementation is
+`DisplayTopologyXmlStore`
+(`frameworks/base/services/core/java/com/android/server/display/DisplayTopologyXmlStore.java`),
+which writes a per-user `display_topology.xml` under the credential-encrypted
+system directory (Section 24.12 covers the multi-display topology API in full).
 When concurrent displays are active, the system:
 
 - Assigns separate `DisplayGroup` instances if the displays serve
@@ -1568,10 +1617,11 @@ for `NEVER`, the window is inset by the cutout safe insets.
 
 ### 24.6.4 WmDisplayCutout
 
-`WmDisplayCutout` is the window-manager-internal wrapper that adds rotation
-awareness to `DisplayCutout`. When the display rotates, the cutout bounds
-must be rotated accordingly. `WmDisplayCutout` caches rotated variants to
-avoid recomputation:
+`WmDisplayCutout`
+(`frameworks/base/services/core/java/com/android/server/wm/utils/WmDisplayCutout.java`)
+is the window-manager-internal wrapper that adds rotation awareness to
+`DisplayCutout`. When the display rotates, the cutout bounds must be rotated
+accordingly. `WmDisplayCutout` caches rotated variants to avoid recomputation:
 
 ```mermaid
 graph LR
@@ -1888,7 +1938,13 @@ classDiagram
 The `Changes` flags are critical for the snapshot builder's incremental
 update path. When only `Buffer` has changed (no geometry, hierarchy, or
 visibility changes), the fast path can update just the buffer reference
-in existing snapshots without re-walking the hierarchy tree.
+in existing snapshots without re-walking the hierarchy tree. The flags shown
+above are illustrative, not exhaustive: the full `enum class Changes` in
+`frameworks/native/services/surfaceflinger/FrontEnd/RequestedLayerState.h`
+also covers `Input`, `Z`, `Mirror`, `Parent`, `RelativeParent`, `Metadata`,
+`SidebandStream`, `Animation`, `BufferSize`, `GameMode`, and, new in the
+Android 17 cycle, `PostProcess` (used by the per-layer LUT and picture-profile
+work described in Section 24.13).
 
 ### 24.7.7 LayerHierarchy: Parent-Child Tree
 
@@ -1913,8 +1969,10 @@ The hierarchy handles:
   (used for PopupWindows, tooltips)
 - **Mirror layers**: Layers that reference another layer's subtree for
   display mirroring
-- **Cycle detection**: The hierarchy builder detects and breaks relative-Z
-  loops via `fixRelativeZLoop()`
+- **Cycle detection**: while building the hierarchy, a detected relative-Z
+  loop is broken by calling `LayerLifecycleManager::fixRelativeZLoop()` (the
+  method lives on `LayerLifecycleManager` and is invoked from
+  `LayerHierarchy.cpp`)
 
 ### 24.7.8 LayerSnapshot Properties
 
@@ -2078,7 +2136,8 @@ The `BLASTBufferQueue` class manages several maps:
 // frameworks/native/libs/gui/include/gui/BLASTBufferQueue.h
 class BLASTBufferQueue : public ConsumerBase::FrameAvailableListener {
     sp<IGraphicBufferProducer> mProducer;
-    sp<BLASTBufferItemConsumer> mConsumer;
+    sp<IGraphicBufferConsumer> mConsumer;
+    sp<BLASTBufferItemConsumer> mBufferItemConsumer;
     // Submitted buffers awaiting release
     // Size hint: kSubmittedBuffersMapSizeHint = 8
     ftl::SmallMap<...> mSubmitted;
@@ -2087,6 +2146,10 @@ class BLASTBufferQueue : public ConsumerBase::FrameAvailableListener {
     ftl::SmallMap<...> mDequeueTimestamps;
 };
 ```
+
+The actual `BLASTBufferItemConsumer` instance is held in `mBufferItemConsumer`;
+`mConsumer` is the plain `IGraphicBufferConsumer` side of the underlying
+BufferQueue.
 
 The `syncNextTransaction()` method allows callers to intercept the next
 transaction before it is applied, enabling operations like
@@ -2317,8 +2380,10 @@ graph TD
     ML2 --> LS2
 ```
 
-The `LayerLifecycleManager.updateDisplayMirrorLayers()` method manages
-mirror layer references when layer hierarchy changes occur.
+`LayerLifecycleManager` manages mirror layer references when layer hierarchy
+changes occur. Its public entry point is `updateDisplayMirrors()`, which
+delegates to the private `updateDisplayMirrorLayers()` helper
+(`frameworks/native/services/surfaceflinger/FrontEnd/LayerLifecycleManager.h`).
 
 ### 24.9.5 MediaProjection Integration
 
@@ -2438,13 +2503,20 @@ priority-ordered pipeline of `TintController` instances:
 // frameworks/base/services/core/java/com/android/server/display/color/
 //     ColorDisplayService.java
 public final class ColorDisplayService extends SystemService {
-    // Color modes
-    static final int COLOR_MODE_NATURAL = 0;
-    static final int COLOR_MODE_BOOSTED = 1;
-    static final int COLOR_MODE_SATURATED = 2;
-    static final int COLOR_MODE_AUTOMATIC = 3;
     // ...
 }
+```
+
+The colour-mode constants themselves are declared on the public-facing
+`android.hardware.display.ColorDisplayManager`
+(`frameworks/base/core/java/android/hardware/display/ColorDisplayManager.java`)
+and imported by the service:
+
+```java
+public static final int COLOR_MODE_NATURAL = 0;
+public static final int COLOR_MODE_BOOSTED = 1;
+public static final int COLOR_MODE_SATURATED = 2;
+public static final int COLOR_MODE_AUTOMATIC = 3;
 ```
 
 ### 24.10.2 TintController Hierarchy
@@ -2631,19 +2703,24 @@ is applied in SurfaceFlinger's shader as a separate transform.
 
 "Even Dimmer" is an accessibility feature (formerly "Extra Dim") that
 reduces display brightness below the minimum hardware brightness by
-applying a dimming colour matrix. The
-`ReduceBrightColorsTintController` generates a matrix that scales all
-colour channels:
+applying a dimming colour matrix. `ReduceBrightColorsTintController`
+generates a matrix that scales all colour channels, while
+`ColorDisplayService` caps the reduction:
 
 ```java
-// Maximum reduction allowed
+// frameworks/base/services/core/java/com/android/server/display/color/
+//     ColorDisplayService.java
 private static final int EVEN_DIMMER_MAX_PERCENT_ALLOWED = 100;
 ```
 
 The percentage is set through `Settings.Secure.REDUCE_BRIGHT_COLORS_LEVEL`
 and converted to a matrix with diagonal values less than 1.0. This works
 in conjunction with (not instead of) the hardware brightness control,
-allowing the display to appear dimmer than the backlight minimum.
+allowing the display to appear dimmer than the backlight minimum. In Android
+17 the feature has graduated: the `even_dimmer` aconfig flag was removed and
+the implementation (driven by `DisplayDeviceConfig.isEvenDimmerAvailable()`
+and the even-dimmer nit-to-strength mapping in `LocalDisplayAdapter`) is no
+longer flag-gated.
 
 ### 24.10.11 Color Mode Selection
 
@@ -2666,10 +2743,10 @@ is communicated to SurfaceFlinger via the `SURFACE_FLINGER_TRANSACTION_DISPLAY_C
 
 ### 24.11.1 DisplayPowerController: The State Machine
 
-`DisplayPowerController` (3507 lines) manages the power state of a single
-display. It runs on its own handler and communicates asynchronously with
-both `PowerManagerService` (via `DisplayPowerCallbacks`) and the display
-hardware.
+`DisplayPowerController` (roughly 3,280 lines in Android 17) manages the power
+state of a single display. It runs on its own handler and communicates
+asynchronously with both `PowerManagerService` (via `DisplayPowerCallbacks`)
+and the display hardware.
 
 ```java
 // frameworks/base/services/core/java/com/android/server/display/
@@ -2764,12 +2841,27 @@ to determine the target brightness. It supports multiple modes:
 | Doze | `AUTO_BRIGHTNESS_MODE_DOZE` | AOD brightness curve |
 | Bedtime Wear | `AUTO_BRIGHTNESS_MODE_BEDTIME_WEAR` | Wear OS bedtime mode |
 
-**BrightnessClamperController** enforces brightness limits from:
+**BrightnessClamperController**
+(`frameworks/base/services/core/java/com/android/server/display/brightness/clamper/BrightnessClamperController.java`)
+enforces brightness limits through a set of `BrightnessModifier` implementations
+in the same package, each contributing a cap or floor:
 
-- Thermal throttling (reduce brightness when device is hot)
-- High Brightness Mode (HBM) restrictions
-- Power saving mode constraints
-- Even Dimmer accessibility feature
+- Thermal throttling (`BrightnessThermalModifier`) reduces brightness when the
+  device is hot
+- Power constraints (`BrightnessPowerModifier`) and low-power mode
+  (`BrightnessLowPowerModeModifier`)
+- HDR brightness boost (`HdrBrightnessModifier`)
+- Low/high ambient-lux limits (`BrightnessLowLuxModifier`,
+  `BrightnessMaxLuxModifier`) and Wear bedtime mode
+  (`BrightnessWearBedtimeModeModifier`)
+
+Android 17 adds a dedicated `MODIFIER_SUNLIGHT` brightness reason
+(`BrightnessReason.MODIFIER_SUNLIGHT = 0x40` in
+`frameworks/base/services/core/java/com/android/server/display/brightness/BrightnessReason.java`)
+so that brightness applied to fight direct sunlight is tracked distinctly from
+ordinary auto-brightness. The 17 cycle also folds the former
+`NormalBrightnessModeController` into this clamper framework (gated by the
+`refactor_normal_brightness_mode_controller` flag).
 
 ### 24.11.4 Always-On Display (AOD)
 
@@ -2898,10 +2990,14 @@ enforce time-in-state limits that protect the display hardware.
 
 ### 24.11.10 Brightness Nit Ranges
 
-`DisplayPowerController` supports a detailed nit-based brightness range
-for telemetry, with 37 buckets from 0-1 nits through 2750-3000 nits:
+The display pipeline records a detailed nit-based brightness range for
+telemetry, with 37 buckets from 0-1 nits through 2750-3000 nits. In Android 17
+this lives in the extracted `DisplayBrightnessReporter`, not directly in
+`DisplayPowerController`:
 
 ```java
+// frameworks/base/services/core/java/com/android/server/display/brightness/
+//     DisplayBrightnessReporter.java
 private static final float[] BRIGHTNESS_RANGE_BOUNDARIES = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 30, 40, 50, 60, 70, 80,
     90, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1200,
@@ -2945,58 +3041,310 @@ trace marker.
 
 ---
 
-## Summary
+## 24.12 Connected Displays and the Display Topology API
 
-The Android display system is a deep vertical stack that begins with
-hardware VSYNC interrupts and extends through native C++ composition,
-Java framework services, and application-level APIs. The key architectural
-decisions that define this system are:
+Android's external-display story matured substantially in Android 17. Where
+earlier releases mostly mirrored the built-in panel to an HDMI or USB-C sink,
+17 introduces a first-class *display topology* the system persists and exposes
+to apps, plus content-mode management that lets a connected display extend the
+workspace rather than only mirror it.
 
-1. **Logical/Physical separation**: `LogicalDisplay` decouples the
-   system-visible display from the underlying hardware, enabling foldable
-   display swapping, virtual displays, and future multi-panel configurations.
+### 24.12.1 The Topology Data Model
 
-2. **DisplayArea tree**: The `DisplayAreaPolicyBuilder` creates a flexible
-   container hierarchy that enforces Z-ordering while allowing features
-   (magnification, one-handed mode, cutout hiding) to target specific
-   window-type ranges.
+A topology describes the spatial arrangement of every active display as a tree.
+`DisplayTopology`
+(`frameworks/base/core/java/android/hardware/display/DisplayTopology.java`)
+stores each display as a `TreeNode` attached to its parent on one of four sides:
 
-3. **VSYNC-driven pipeline**: Every frame starts with a predicted VSYNC
-   from `VSyncPredictor`, flows through `VSyncDispatchTimerQueue` to
-   `EventThread`, crosses into Java-land via `Choreographer`, and
-   culminates in `CompositionEngine::present()`.
+```java
+// frameworks/base/core/java/android/hardware/display/DisplayTopology.java
+public static final int POSITION_LEFT = 0;
+public static final int POSITION_TOP = 1;
+public static final int POSITION_RIGHT = 2;
+public static final int POSITION_BOTTOM = 3;
+```
 
-4. **Transaction-based buffer delivery**: `BLASTBufferQueue` bundles buffer
-   submission with geometry changes in atomic `SurfaceControl.Transaction`
-   operations, eliminating the class of bugs that arose from
-   buffer-geometry desynchronisation.
+Each node carries a logical size, density, the attachment side relative to its
+parent, and a floating-point offset (in density-independent pixels) along the
+shared edge. `DisplayTopology` provides `addDisplay()`, `removeDisplay()`,
+`rearrange()`, and a `normalize()` step that clamps offsets and removes
+overlaps so adjacent displays stay edge-connected. A flattened
+`DisplayTopologyGraph`
+(`frameworks/base/core/java/android/hardware/display/DisplayTopologyGraph.java`)
+adjacency view is what the input system consumes to move the pointer across the
+seam between displays.
 
-5. **Front-end/back-end split**: SurfaceFlinger's refactored architecture
-   separates layer state management (`LayerLifecycleManager`,
-   `LayerSnapshotBuilder`) from composition (`CompositionEngine`,
-   `HWComposer`), enabling better testing, incremental updates, and
-   reduced lock contention.
+### 24.12.2 The Public DisplayManager API
 
-6. **Priority-ordered colour transforms**: `DisplayTransformManager`
-   composes multiple 4x4 colour matrices (night display, white balance,
-   saturation, accessibility) in a defined priority order, producing a
-   single combined transform for SurfaceFlinger.
+Apps and system UI read and adjust the arrangement through new
+`DisplayManager` methods, all guarded by the `display_topology_api` flag:
 
-7. **State-driven foldable support**: `DeviceStateManagerService` provides
-   a clean state-machine abstraction for foldable postures, with
-   `LogicalDisplayMapper` handling the complex display swapping that makes
-   fold/unfold transitions appear seamless to applications.
+```java
+// frameworks/base/core/java/android/hardware/display/DisplayManager.java
+@FlaggedApi(Flags.FLAG_DISPLAY_TOPOLOGY_API)
+public DisplayTopology getDisplayTopology();
+public void setDisplayTopology(DisplayTopology topology);
+public void registerTopologyListener(Executor executor,
+        Consumer<DisplayTopology> listener);
+public void unregisterTopologyListener(Consumer<DisplayTopology> listener);
+```
 
-These subsystems interact constantly during normal device operation.
-A single frame touches the VSYNC predictor, Choreographer, ViewRootImpl,
-BLASTBufferQueue, the SurfaceFlinger front-end, CompositionEngine,
-HWComposer, and the kernel DRM driver -- a pipeline that completes in
-under 16 milliseconds at 60 Hz, or under 8 milliseconds at 120 Hz.
+The `display_topology_api` flag is declared `is_fixed_read_only` in
+`frameworks/base/services/core/java/com/android/server/display/feature/display_flags.aconfig`,
+so on a given build the API is either compiled in or compiled out.
 
-### End-to-End Frame Lifecycle
+### 24.12.3 Coordinator and Per-User Persistence
 
-To illustrate how these subsystems interact, consider the lifecycle of a
-single frame from touch to photon:
+```mermaid
+graph TD
+    APP["App / System UI"] -->|"get/set/listen"| DM["DisplayManager"]
+    DM --> DMS12["DisplayManagerService"]
+    DMS12 --> COORD["DisplayTopologyCoordinator"]
+    COORD -->|"onDisplayAdded/Changed/Removed"| TOPO["DisplayTopology<br/>(in-memory tree)"]
+    COORD -->|"save/restore"| STORE["DisplayTopologyStore<br/>(interface)"]
+    STORE --> XML["DisplayTopologyXmlStore<br/>(per-user XML)"]
+    XML --> FILE["data/system_ce/&lt;userId&gt;/<br/>display_topology.xml"]
+    COORD -->|"DisplayTopologyGraph"| INPUT["Input (cross-display pointer)"]
+```
+
+`DisplayTopologyCoordinator`
+(`frameworks/base/services/core/java/com/android/server/display/DisplayTopologyCoordinator.java`)
+maintains the live topology and reacts to display add, change, and remove
+events. Persistence is abstracted behind the `DisplayTopologyStore` interface,
+whose Android 17 implementation is `DisplayTopologyXmlStore`. The XML store
+writes a per-user `display_topology.xml` under the credential-encrypted system
+directory (`Environment.getDataSystemCeDirectory(userId)`), keeps an ordered
+most-recently-used list of remembered topologies, and batches writes using a
+reorder threshold (`MIN_REORDER_WHICH_TRIGGERS_PERSISTENCE = 10`) so that minor
+re-orderings do not thrash the disk. It also reads immutable vendor and product
+topology files shipped under the device's etc display-config directory.
+
+### 24.12.4 Content Mode: Mirror versus Extend
+
+The other half of the connected-display work is *content-mode management*,
+gated by the `enable_display_content_mode_management` flag (namespace
+`lse_desktop_experience`). When enabled, a connected display may run in either
+mirror or extended mode, and the default for a capable external display becomes
+extended. A display advertises its ability to switch via
+`DisplayDeviceInfo.FLAG_ALLOWS_CONTENT_MODE_SWITCH`
+(`1 << 20`), and `LogicalDisplay.canHostTasksLocked()` uses that flag to decide
+whether the display can host its own task stack rather than just reflecting the
+default display. The user preference is stored in
+`Settings.Secure.MIRROR_BUILT_IN_DISPLAY` (1 = mirror, 0 = extend), and
+`DisplayGroupAllocator` chooses each display's content mode and group.
+
+Two policy classes split the work. `SecondaryDisplayPolicy`
+(`frameworks/base/services/core/java/com/android/server/display/SecondaryDisplayPolicy.java`)
+governs how a newly connected display is treated, including downgrading a
+desktop-mode preference to "ask" when desktop mode is unavailable.
+`ExternalDisplayPolicy`
+(`frameworks/base/services/core/java/com/android/server/display/ExternalDisplayPolicy.java`)
+gates external displays on thermal headroom: it registers a
+`SkinThermalStatusObserver` and calls `disableExternalDisplays()` when the skin
+temperature reaches a critical level, then emits `EVENT_DISPLAY_CONNECTED` to
+notify the rest of the system. Usage telemetry (mirroring, extended,
+presentation) flows through `ExternalDisplayStatsService`.
+
+## 24.13 Adaptive Refresh Rate, HDR, and Display LUTs
+
+Android 17 advances three rendering-quality areas that all terminate in
+SurfaceFlinger and the Hardware Composer: adaptive refresh rate, HDR on
+connected displays, and per-layer colour lookup tables.
+
+### 24.13.1 Adaptive Refresh Rate and Frame-Rate Categories
+
+A variable-refresh-rate (VRR) panel can run a continuum of refresh rates rather
+than a small set of fixed modes. SurfaceFlinger detects this through
+`DisplayMode.getVrrConfig()` and caches it as `mIsVrrDisplay` in
+`RefreshRateSelector`
+(`frameworks/native/services/surfaceflinger/Scheduler/RefreshRateSelector.h`).
+Because exact-Hz requests are a poor fit for a continuum, apps increasingly
+express intent as a *frame-rate category* instead:
+
+```java
+// frameworks/base/core/java/android/view/Surface.java
+public static final int FRAME_RATE_CATEGORY_DEFAULT = 0;
+public static final int FRAME_RATE_CATEGORY_NO_PREFERENCE = 1;
+public static final int FRAME_RATE_CATEGORY_LOW = 2;
+public static final int FRAME_RATE_CATEGORY_NORMAL = 3;
+public static final int FRAME_RATE_CATEGORY_HIGH_HINT = 4;
+public static final int FRAME_RATE_CATEGORY_HIGH = 5;
+```
+
+`RefreshRateSelector` maps these categories onto Hz ranges anchored at
+`kFrameRateCategoryRateNormal = 60_Hz` and `kFrameRateCategoryRateHigh = 90_Hz`
+(with `kMinSupportedFrameRate = 20_Hz`). A category vote arrives as
+`LayerVoteType::ExplicitCategory` (Section 24.3.6).
+
+```mermaid
+graph TD
+    VRI13["ViewRootImpl<br/>setPreferredFrameRateCategory()"] -->|"Transaction.setFrameRateCategory()"| LFE["Layer (SurfaceFlinger)"]
+    LFE --> LI["LayerInfo<br/>(isVoteValidForMrr)"]
+    LI -->|"ExplicitCategory vote"| RRS13["RefreshRateSelector<br/>(VRR vs MRR)"]
+    RRS13 --> RANGE["Hz range<br/>(Normal 60-120, High 90-120)"]
+```
+
+The Android 17 churn around this is mostly refinement of an API that first
+landed in 16. `Display.hasArrSupport()`
+(`frameworks/base/core/java/android/view/Display.java`) lets callers skip
+`setFrameRateCategory` on multiple-refresh-rate (MRR) panels, while
+`LayerInfo::isVoteValidForMrr()` restricts category votes to ARR/VRR devices
+unless the `frame_rate_category_mrr` flag is set. Android 17 also adds
+`Display.getFrameRateVelocityMapping()` (returning `FrameRateVelocityPoint`
+entries) so scrolling content can map fling velocity to a target rate. The
+MRR-specific flags `frame_rate_category_mrr` and `mrr_full_frame_rate_list`
+live in
+`frameworks/native/services/surfaceflinger/surfaceflinger_flags_new.aconfig`.
+
+### 24.13.2 HDR on Connected Displays
+
+HDR output is no longer limited to the built-in panel. Android 17 adds the
+`connected_display_hdr_v3` flag (namespace `core_graphics`, in
+`surfaceflinger_flags_new.aconfig`) on top of the earlier
+`connected_display_hdr_v2`, enabling HDR selection on external displays.
+System-wide HDR conversion is still expressed through `HdrConversionMode`:
+
+```java
+// frameworks/base/core/java/android/hardware/display/HdrConversionMode.java
+public static final int HDR_CONVERSION_UNSUPPORTED = 0;
+public static final int HDR_CONVERSION_PASSTHROUGH = 1;
+public static final int HDR_CONVERSION_SYSTEM = 2;
+public static final int HDR_CONVERSION_FORCE = 3;
+```
+
+For refresh-rate policy, HDR preference now participates in the framework vote
+system through `HdrPreferenceVote`
+(`frameworks/base/services/core/java/com/android/server/display/mode/HdrPreferenceVote.java`),
+whose `updateSummary()` ANDs an `allowHdr` flag so a system or battery-driven
+vote can veto HDR even when the user requested it. DMS continues to honour
+per-device disabled HDR types via `mUserDisabledHdrTypes`. SurfaceFlinger also
+gains higher-fidelity capture through the `true_hdr_screenshots` and
+`local_tonemap_screenshots` flags.
+
+### 24.13.3 Display Colour LUTs
+
+Android 17 exposes a public API for attaching colour lookup tables (LUTs) to a
+surface, giving apps and the system fine-grained control over the display
+colour transform beyond the global matrix pipeline of Section 24.10. The native
+representation is `DisplayLuts`
+(`frameworks/native/libs/gui/include/gui/DisplayLuts.h`), which carries one or
+more `Entry` records (each with a dimension, size, and sampling key) plus a
+shared-memory file descriptor holding the LUT data; the HAL capability is
+described by `LutProperties`
+(`frameworks/native/libs/gui/aidl/android/gui/LutProperties.aidl`).
+
+The framework surface is
+`frameworks/base/core/java/android/hardware/DisplayLuts.java` and
+`frameworks/base/core/java/android/hardware/LutProperties.java`:
+
+```java
+// frameworks/base/core/java/android/hardware/LutProperties.java
+public static final int ONE_DIMENSION = 1;
+public static final int THREE_DIMENSION = 3;
+public static final int SAMPLING_KEY_RGB = 0;
+public static final int SAMPLING_KEY_MAX_RGB = 1;
+public static final int SAMPLING_KEY_CIE_Y = 2;
+```
+
+A LUT is attached per layer via `SurfaceControl.Transaction.setLuts()` (passing
+`null` clears it), and an app can discover device support through
+`OverlayProperties.getLutProperties()`, which returns `null` for virtual
+displays. The entire surface is guarded by the `luts_api` flag.
+
+### 24.13.4 Picture Profiles
+
+A related, system-level facility lets a connected TV-style display apply
+hardware picture processing (gamma, colour temperature, hue, saturation) per
+layer. A `PictureProfile`
+(`frameworks/base/media/java/android/media/quality/PictureProfile.java`) is
+identified at the surface layer by an opaque `PictureProfileHandle` and applied
+through `SurfaceControl.Transaction.setPictureProfileHandle()`. Because the
+hardware can process only a limited number of layers at once, the active set is
+bounded by `SurfaceControl.getMaxPictureProfiles()` and arbitrated by content
+priority. Profiles carry per-HDR-stream-status variants (SDR, HDR10, Dolby
+Vision, HLG, HDR10+, HDR Vivid) and are managed through `MediaQualityManager`.
+The feature is gated by the `apply_picture_profiles` flag.
+
+## 24.14 RenderEngine and Multi-Display Modeset in Android 17
+
+Two lower-level reworks underpin the features above.
+
+### 24.14.1 Skia Graphite RenderEngine Rollout
+
+SurfaceFlinger's GPU client-composition path (RenderEngine, Section 24.7.10)
+is migrating from Skia Ganesh to Skia Graphite on Vulkan. Android 17 carries a
+staged-rollout set of flags in
+`frameworks/native/services/surfaceflinger/surfaceflinger_flags_new.aconfig`:
+`force_compile_graphite_renderengine` (compiles but does not enable Graphite;
+also toggleable via the `debug.renderengine.graphite` system property), plus the
+per-device opt-in rollout flags `graphite_renderengine_preview_rollout`,
+`graphite_renderengine_preview2_rollout`, and
+`graphite_renderengine_desktop_rollout`. None are default-on; the final state is
+chosen by each device's release configuration.
+
+### 24.14.2 Atomic Multi-Display Modeset
+
+The connected-display and topology features rest on a reworked modeset path in
+SurfaceFlinger that can change several displays' modes atomically rather than
+one at a time. The Android 17 work adds a `SurfaceControl` atomic-modeset API,
+a display-command modeset implementation, and a modeset state machine (the
+`modeset_multi_display`, `display_command_modeset`, `modeset_state_machine`, and
+`synced_resolution_switch` flags in the SurfaceFlinger aconfig files). Pacesetter
+selection (Section 24.3.7) was also updated to prefer the display capable of the
+highest peak frame rate, and the legacy HIDL power path was removed from
+SurfaceFlinger. Follower (secondary) displays gain their own refresh-rate
+selection and back-pressure handling so that a slow external panel cannot stall
+the pacesetter.
+
+## Try It
+
+The display stack exposes most of its internal state through `dumpsys` and
+`cmd` interfaces, which is the fastest way to connect the classes in this
+chapter to a running device. The following commands are all available on a
+standard Android 17 build over `adb shell`:
+
+| Command | Purpose |
+|---------|---------|
+| `dumpsys display` | DisplayManagerService state: logical displays, devices, groups, mode votes |
+| `dumpsys SurfaceFlinger` | SurfaceFlinger layer tree and composition stats |
+| `dumpsys SurfaceFlinger --frametimeline` | Per-frame timing (expected vs actual present) |
+| `dumpsys SurfaceFlinger --list` | List all layers |
+| `dumpsys window displays` | WindowManagerService display info |
+| `dumpsys window display-areas` | DisplayArea hierarchy (Section 24.2) |
+| `dumpsys color_display` | ColorDisplayService state (Section 24.10) |
+| `dumpsys device_state` | DeviceStateManagerService posture (Section 24.5) |
+| `cmd display set-brightness <0.0-1.0>` | Set display brightness |
+| `cmd display reset-brightness-configuration` | Reset auto-brightness |
+| `wm size` / `wm density` | Display logical size and density |
+| `settings put system accelerometer_rotation 0/1` | Lock/unlock rotation (Section 24.4) |
+
+Suggested explorations:
+
+1. **Watch a fold/unfold swap.** On a foldable (or the foldable emulator), run
+   `dumpsys device_state` and `dumpsys display` before and after folding, and
+   confirm that logical display 0's backing physical device changes while its
+   display ID stays the same (Section 24.5.3). Look for the
+   `LOGICAL_DISPLAY_EVENT_SWAPPED` transition in the DMS dump.
+
+2. **Force an overlay display.** Run
+   `adb shell setprop persist.sys.overlay_display "1920x1080/320"` and observe a
+   new logical display appear in `dumpsys display` via the
+   `OverlayDisplayAdapter` (Section 24.9.8). This needs no external hardware.
+
+3. **Inspect the refresh-rate vote.** While scrolling a list, capture
+   `dumpsys display` and find the `DisplayModeDirector` vote summary
+   (Section 24.1.9); compare the resolved `DesiredDisplayModeSpecs` against the
+   modes the panel actually supports.
+
+4. **Read the topology.** On a build with the connected-display flags enabled,
+   attach an external display and inspect the persisted
+   `display_topology.xml` under the per-user system directory, then change the
+   arrangement and confirm the file updates (Section 24.12.3).
+
+5. **Trace a frame.** Capture a `perfetto` trace and correlate the
+   `FrameTimeline` events (Section 24.3.11) with the end-to-end latency
+   breakdown below. A single frame from touch to photon traverses the entire
+   stack:
 
 ```mermaid
 sequenceDiagram
@@ -3039,7 +3387,7 @@ sequenceDiagram
     HW2->>HW2: Photons reach user's eye
 ```
 
-**Typical latency breakdown (at 120 Hz, 8.33ms period):**
+   Typical latency breakdown at 120 Hz (8.33ms period):
 
 | Phase | Duration | Notes |
 |-------|----------|-------|
@@ -3051,10 +3399,63 @@ sequenceDiagram
 | HWC commit | 0.2-0.5ms | DRM atomic commit |
 | **Total** | **3.7-12.5ms** | Must fit in 8.33ms for 120Hz |
 
-When the total exceeds the VSYNC period, the frame misses its deadline
-and is presented one period late (a "jank" frame). The `FrameTimeline`
-records these misses, and tools like `perfetto` and `dumpsys SurfaceFlinger
---frametimeline` expose them for performance analysis.
+   When the total exceeds the VSYNC period, the frame misses its deadline and is
+   presented one period late (a "jank" frame), which `FrameTimeline` and
+   `dumpsys SurfaceFlinger --frametimeline` expose for analysis.
+
+## Summary
+
+The Android display system is a deep vertical stack that begins with
+hardware VSYNC interrupts and extends through native C++ composition,
+Java framework services, and application-level APIs. The key architectural
+decisions that define this system are:
+
+1. **Logical/Physical separation**: `LogicalDisplay` decouples the
+   system-visible display from the underlying hardware, enabling foldable
+   display swapping, virtual displays, and future multi-panel configurations.
+
+2. **DisplayArea tree**: The `DisplayAreaPolicyBuilder` creates a flexible
+   container hierarchy that enforces Z-ordering while allowing features
+   (magnification, one-handed mode, cutout hiding) to target specific
+   window-type ranges.
+
+3. **VSYNC-driven pipeline**: Every frame starts with a predicted VSYNC
+   from `VSyncPredictor`, flows through `VSyncDispatchTimerQueue` to
+   `EventThread`, crosses into Java-land via `Choreographer`, and
+   culminates in `CompositionEngine::present()`.
+
+4. **Transaction-based buffer delivery**: `BLASTBufferQueue` bundles buffer
+   submission with geometry changes in atomic `SurfaceControl.Transaction`
+   operations, eliminating the class of bugs that arose from
+   buffer-geometry desynchronisation.
+
+5. **Front-end/back-end split**: SurfaceFlinger's refactored architecture
+   separates layer state management (`LayerLifecycleManager`,
+   `LayerSnapshotBuilder`) from composition (`CompositionEngine`,
+   `HWComposer`), enabling better testing, incremental updates, and
+   reduced lock contention.
+
+6. **Priority-ordered colour transforms**: `DisplayTransformManager`
+   composes multiple 4x4 colour matrices (night display, white balance,
+   saturation, accessibility) in a defined priority order, producing a
+   single combined transform for SurfaceFlinger.
+
+7. **State-driven foldable support**: `DeviceStateManagerService` provides
+   a clean state-machine abstraction for foldable postures, with
+   `LogicalDisplayMapper` handling the complex display swapping that makes
+   fold/unfold transitions appear seamless to applications.
+
+8. **Connected-display maturity (Android 17)**: a persisted, app-visible
+   `DisplayTopology`, content-mode management (mirror versus extend), adaptive
+   refresh rate driven by frame-rate categories, HDR on external displays, and
+   per-layer colour LUTs and picture profiles all build on a reworked atomic
+   multi-display modeset path in SurfaceFlinger.
+
+These subsystems interact constantly during normal device operation.
+A single frame touches the VSYNC predictor, Choreographer, ViewRootImpl,
+BLASTBufferQueue, the SurfaceFlinger front-end, CompositionEngine,
+HWComposer, and the kernel DRM driver -- a pipeline that completes in
+under 16 milliseconds at 60 Hz, or under 8 milliseconds at 120 Hz.
 
 ### Quick Reference: Key Source Paths
 
@@ -3085,22 +3486,9 @@ records these misses, and tools like `perfetto` and `dumpsys SurfaceFlinger
 | LayerSnapshotBuilder | `frameworks/native/services/surfaceflinger/FrontEnd/LayerSnapshotBuilder.h` |
 | CompositionEngine | `frameworks/native/services/surfaceflinger/CompositionEngine/include/compositionengine/CompositionEngine.h` |
 | BLASTBufferQueue | `frameworks/native/libs/gui/include/gui/BLASTBufferQueue.h` |
-
-### Debugging Commands
-
-| Command | Purpose |
-|---------|---------|
-| `dumpsys display` | DisplayManagerService state |
-| `dumpsys SurfaceFlinger` | SurfaceFlinger layer tree, composition stats |
-| `dumpsys SurfaceFlinger --frametimeline` | Frame timing data |
-| `dumpsys SurfaceFlinger --list` | List all layers |
-| `dumpsys window displays` | WindowManagerService display info |
-| `dumpsys window display-areas` | DisplayArea hierarchy |
-| `dumpsys color_display` | ColorDisplayService state |
-| `dumpsys device_state` | DeviceStateManagerService state |
-| `cmd display set-brightness <0.0-1.0>` | Set display brightness |
-| `cmd display reset-brightness-configuration` | Reset auto-brightness |
-| `wm size` | Display logical size |
-| `wm density` | Display density |
-| `settings put system accelerometer_rotation 0/1` | Lock/unlock rotation |
+| DisplayTopologyCoordinator | `frameworks/base/services/core/java/com/android/server/display/DisplayTopologyCoordinator.java` |
+| DisplayTopology (API) | `frameworks/base/core/java/android/hardware/display/DisplayTopology.java` |
+| HdrConversionMode | `frameworks/base/core/java/android/hardware/display/HdrConversionMode.java` |
+| DisplayLuts | `frameworks/native/libs/gui/include/gui/DisplayLuts.h` |
+| BrightnessClamperController | `frameworks/base/services/core/java/com/android/server/display/brightness/clamper/BrightnessClamperController.java` |
 

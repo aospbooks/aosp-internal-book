@@ -2363,21 +2363,40 @@ Applications can monitor thermal status through:
 ### 29.7.8 Thermal Headroom API
 
 The `getThermalHeadroom(forecastSeconds)` API allows apps to proactively reduce
-workload before throttling occurs. The returned value represents the available
-thermal margin:
+workload before throttling occurs. The returned value is a non-negative float
+that expresses how much of the thermal envelope is in use, anchored on the
+`SEVERE` severity:
 
-- **< 1.0**: Headroom available (no throttling expected)
-- **>= 1.0**: Device is at or beyond throttling threshold
+- **< 1.0**: Headroom available below the `SEVERE` throttling point
+- **= 1.0**: Device is (or is forecast to be) throttled at `THERMAL_STATUS_SEVERE`
+- **> 1.0**: Heavier throttling, with no implied mapping to a specific status
+  beyond `SEVERE`
 
-The HAL supports forecasting through `forecastSkinTemperature()`:
+The Android 17 `PowerManager` Javadoc is explicit that 1.0 corresponds to
+`THERMAL_STATUS_SEVERE` rather than to a generic, unspecified threshold, and that
+negative values are clamped to 0.0 before returning:
 
 ```java
-// IThermal.aidl
-float forecastSkinTemperature(in int forecastSeconds);
+// frameworks/base/core/java/android/os/PowerManager.java
+public @FloatRange(from = 0f) float getThermalHeadroom(
+        @IntRange(from = 0, to = 60) int forecastSeconds) {
+    if (hasCustomDeviceThermalPolicy()) {
+        return Float.NaN;
+    }
+    ...
+}
 ```
 
-The forecast range must support at least 0 to 60 seconds, with a default of
-10 seconds.
+The `@IntRange(from = 0, to = 60)` annotation pins the supported forecast window
+to 0 to 60 seconds. The system needs several temperature samples before it can
+extrapolate, so until enough data has accumulated it returns the current headroom
+regardless of `forecastSeconds`, and calling more often than about once per second
+may return `NaN`. The HAL backs forecasting with `forecastSkinTemperature()`:
+
+```
+// hardware/interfaces/thermal/aidl/android/hardware/thermal/IThermal.aidl
+float forecastSkinTemperature(in int forecastSeconds);
+```
 
 ### 29.7.9 Thermal Headroom Listener
 
@@ -3808,7 +3827,469 @@ boundary.
 
 ---
 
-## 29.12 Try It
+## 29.12 Android 17 Wakelock and Wakefulness Changes
+
+Android 17 reworked several pieces of the wakelock and wakefulness machinery
+that the earlier sections describe. The policy engine (`PowerManagerService`)
+keeps the same shape, but the surrounding bookkeeping classes were split out and
+a Perfetto-native wakelock trace path was added. These changes live entirely in
+`frameworks/base/services/core/java/com/android/server/power/`.
+
+### 29.12.1 Perfetto App-Wakelock Tracing
+
+Historically, the only on-device record of wakelock activity was the compressed
+`WakeLockLog` ring buffer (covered in section 29.3.7) and `dumpsys batterystats`.
+Android 17 adds a first-class Perfetto data source, `WakelockTracer`, that emits
+acquire and release events directly into a trace using the Perfetto SDK:
+
+```java
+// frameworks/base/services/core/java/com/android/server/power/WakelockTracer.java
+/** Records wakelock events using the Perfetto SDK. */
+final class WakelockTracer
+        extends DataSource<WakelockTracer.Instance, Void, WakelockTracer.IncrementalState> {
+    WakelockTracer(Looper looper, DataSourceParams params) {
+        super("android.app_wakelocks");
+        ...
+    }
+}
+```
+
+The data source name `android.app_wakelocks` is the trace-config key that tracing
+tools target. The tracer reads its behavior from the `AppWakelocksConfig` proto,
+which carries knobs such as `FILTER_DURATION_BELOW_MS` (drop very short locks),
+`WRITE_DELAY_MS` (batch writes), and `DROP_OWNER_PID` (privacy-preserving
+attribution). Events are interned: each distinct wakelock identity (owner UID,
+work UID, tag, flags) is assigned an `INTERN_ID` once and then referenced by id
+in subsequent `AppWakelockBundle` packets, which keeps the trace compact for
+high-churn workloads. Because the events flow through the Perfetto SDK rather
+than a bespoke buffer, app wakelock timelines now line up on the same timebase as
+scheduler, frame, and `android.kernel_wakelocks` tracks.
+
+### 29.12.2 UID-to-Wakelock Mapping
+
+The per-UID accounting that section 29.3.13 describes was extracted into a
+dedicated `WakelockMapper`. It owns the relationship between UIDs and the
+wakelocks attributed to them, behind its own lock:
+
+```java
+// frameworks/base/services/core/java/com/android/server/power/WakelockMapper.java
+/**
+ * A mapper class to track the relationship between UIDs and the wakelocks they are associated
+ * with.
+ */
+public class WakelockMapper {
+    private final Object mLock = new Object();
+    ...
+}
+```
+
+Pulling this out of `PowerManagerService` lets the service consult the mapper when
+a UID changes process state. Two Android 17 flags from
+`frameworks/base/services/core/java/com/android/server/power/feature/power_flags.aconfig`
+tune what the mapper does with cached and frozen apps:
+
+| Flag | Effect |
+|------|--------|
+| `remove_cached_uids_from_wakelock` | Drops cached UIDs from a wakelock's attribution set, so a wakelock held on behalf of an app that has gone cached stops being charged to it |
+| `disable_frozen_process_wakelocks` | Disables wakelocks whose owning process has been frozen by the cached-app freezer |
+
+These build on the older `NO_CACHED_WAKE_LOCKS` behavior: rather than only
+disabling a UID's own wakelocks when it caches, Android 17 also corrects the
+*attribution* of shared and `WorkSource`-attributed wakelocks when one of the
+attributed UIDs caches.
+
+### 29.12.3 Batched UID-Change Delivery
+
+`PowerManagerService` receives a stream of UID lifecycle callbacks (active, idle,
+gone, process-state change) from `ActivityManagerService`. Android 17 routes these
+through `PowerManagerBatchProxy`, which implements
+`PowerManagerInternal.UidChangesBatch` and stages operations before flushing them
+on a handler thread:
+
+```java
+// frameworks/base/services/core/java/com/android/server/power/PowerManagerBatchProxy.java
+final class PowerManagerBatchProxy implements PowerManagerInternal.UidChangesBatch {
+    private static final int OP_START_UID_CHANGES = -1;
+    private static final int OP_FINISH_UID_CHANGES = -2;
+    private static final int OP_UID_ACTIVE = -3;
+    private static final int OP_UID_IDLE = -4;
+    private static final int OP_UID_GONE = -5;
+    private static final int OP_UPDATE_UID_PROC_STATE = -6;
+    ...
+}
+```
+
+The operations are packed into an `IntArray` staging queue (negative op codes
+avoid colliding with the UID and process-state integers that follow each op).
+Batching the changes and replaying them on the power handler reduces lock
+contention between the activity manager and the power service when many UIDs
+transition at once, for example during a large app-switch or a doze entry.
+
+### 29.12.4 Wakefulness Session Observation and Screen-Timeout Policy
+
+Two additional classes round out the wakefulness rework:
+
+- `WakefulnessSessionObserver` tracks complete screen-on sessions (from wake to
+  the next sleep) so the platform can attribute *why* the screen stayed on and
+  how it eventually turned off. It distinguishes release reasons such as
+  `RELEASE_REASON_NON_INTERACTIVE`, `RELEASE_REASON_SCREEN_LOCK`, and several
+  user-activity reasons defined in `ScreenTimeoutOverridePolicy`.
+- `ScreenTimeoutConstants` and `ScreenTimeoutOverridePolicy` centralize the
+  screen-off timeout defaults and the rules for temporarily overriding them (for
+  example, an accessibility service or attention check extending the timeout).
+
+```mermaid
+flowchart TD
+    PMS["PowerManagerService<br/>(policy engine)"]
+    BATCH["PowerManagerBatchProxy<br/>(batched UID changes)"]
+    MAP["WakelockMapper<br/>(UID to wakelock)"]
+    TRACE["WakelockTracer<br/>(Perfetto 'android.app_wakelocks')"]
+    OBS["WakefulnessSessionObserver<br/>(screen-on sessions)"]
+    POL["ScreenTimeoutOverridePolicy<br/>+ ScreenTimeoutConstants"]
+    AMS["ActivityManagerService"]
+
+    AMS -->|"UID active/idle/gone/proc-state"| BATCH
+    BATCH -->|"flush on handler"| PMS
+    PMS --> MAP
+    PMS --> TRACE
+    PMS --> OBS
+    OBS --> POL
+```
+
+These classes are wiring around the same wakefulness state machine from
+section 29.1; none of them change the `WAKEFULNESS_AWAKE` / `DOZING` / `ASLEEP`
+states themselves.
+
+## 29.13 Android 17 Doze and Thermal Refinements
+
+### 29.13.1 Interactive Doze and Non-Wakeup Deep Alarms
+
+Two Android 17 flags adjust how Doze (section 29.4) behaves, both aimed at
+wearables and always-on form factors:
+
+```
+// frameworks/base/services/core/java/com/android/server/power/feature/power_flags.aconfig
+flag {
+    namespace: "wear_frameworks"
+    name: "interactive_doze_experience"
+    description: "Enable active user interaction in doze power state."
+    ...
+}
+```
+
+```
+// frameworks/base/apex/jobscheduler/service/aconfig/device_idle.aconfig
+flag {
+    name: "allow_non_wake_up_deep_alarms"
+    namespace: "wear_frameworks"
+    description: "Allows using non-wakeup alarms to transition between deep alarm states."
+    ...
+}
+```
+
+`interactive_doze_experience` lets a device accept user interaction while still in
+a doze power state, instead of forcing a full wake transition first.
+`allow_non_wake_up_deep_alarms` lets `DeviceIdleController` advance its deep-doze
+step machine (section 29.4.2 and 29.4.5) using non-wakeup alarms, so that
+stepping deeper into idle no longer requires pulling the SoC out of suspend with
+a wakeup alarm. A third deviceidle flag,
+`remove_notification_seen_elevation`, stops `AppStandbyController` from promoting
+an app to a more active standby bucket merely because a notification was seen,
+tightening the bucket-promotion logic from section 29.5.
+
+### 29.13.2 Device-Aware Thermal Status
+
+Section 29.7 describes a single, device-global thermal status. Android 17 adds a
+*device-aware* variant so that a virtual device (for example, a streamed or
+companion display surface) can report its own thermal status distinct from the
+physical host. `PowerManager.getCurrentThermalStatus()` now branches on whether a
+custom per-device policy applies:
+
+```java
+// frameworks/base/core/java/android/os/PowerManager.java
+public @ThermalStatus int getCurrentThermalStatus() {
+    try {
+        if (hasCustomDeviceThermalPolicy()) {
+            return mThermalService.getCurrentThermalStatusForDevice(mContext.getDeviceId());
+        } else {
+            return mThermalService.getCurrentThermalStatus();
+        }
+    } catch (RemoteException e) {
+        throw e.rethrowFromSystemServer();
+    }
+}
+```
+
+The branch is gated by the `device_aware_thermal_status` flag
+(`frameworks/base/core/java/android/companion/virtual/flags/flags.aconfig`):
+`hasCustomDeviceThermalPolicy()` returns false for the default device and when the
+flag is off, so existing callers keep the global behavior. On the service side,
+`ThermalManagerService` keeps a per-device status map and rejects the default and
+invalid device ids:
+
+```java
+// frameworks/base/services/core/java/com/android/server/power/thermal/ThermalManagerService.java
+public int getCurrentThermalStatusForDevice(int deviceId) {
+    if (!android.companion.virtualdevice.flags.Flags.deviceAwareThermalStatus()) {
+        throw new UnsupportedOperationException("Required flag not enabled");
+    }
+    if (deviceId == Context.DEVICE_ID_DEFAULT || deviceId == Context.DEVICE_ID_INVALID) {
+        throw new IllegalArgumentException(
+                "Not a valid virtual device with custom thermal status: " + deviceId);
+    }
+    synchronized (mLock) {
+        return mThermalStatusPerDevice.get(deviceId, PowerManager.THERMAL_STATUS_NONE);
+    }
+}
+```
+
+A companion flag in the thermal service,
+`thermal_listener_lock_removal` (`frameworks/base/services/core/java/com/android/server/power/thermal/flags.aconfig`),
+removes the global lock around listener dispatch to reduce contention when many
+clients register thermal-status callbacks.
+
+## 29.14 Process Memory Guardian (pmgd)
+
+Android 17 introduces a brand-new native daemon, the **Process Memory Guardian
+Daemon (pmgd)**, living in its own repository at `system/memory/guardian/`. It is
+written in Rust and addresses a gap left by the system's other memory managers:
+where `lmkd` and `mmd` (the modern memory manager covered in the memory-management
+chapter) make *system-wide* decisions under global memory pressure, pmgd enforces
+*per-process* memory ceilings using cgroup v2 `memory.high` and reacts to
+per-process pressure events. It complements `mmd` rather than replacing it: `mmd`
+manages the device's overall memory budget, while pmgd watches specific named
+processes (typically `system_server`) and intervenes when an individual process
+blows through its configured limit.
+
+### 29.14.1 Why a Per-Process Guardian
+
+A single misbehaving process, especially a long-lived one like `system_server`,
+can slowly leak or balloon its memory without ever pushing the *whole device* into
+the kind of global pressure that would trigger `lmkd`. By the time global pressure
+arrives, the leak may have already destabilized the system. pmgd assigns a
+specific `memory.high` ceiling to such a process and watches its cgroup so that
+the offending process is dealt with in isolation, before it can drag down
+everything else. The `system/memory/guardian/README.md` frames this as preventing
+"misbehaving processes from destabilizing the system."
+
+### 29.14.2 Process Model and Startup
+
+pmgd ships as the `pmgd` binary (the Soong module is named `pmg_daemon` with
+`stem: "pmgd"`) and is started by init. Its `pmgd.rc` declares the service in
+the `core` class running as the unprivileged `nobody` user, and enables it only
+after boot completes:
+
+```
+# system/memory/guardian/pmgd.rc
+service pmgd /system/bin/pmgd
+    class core
+    user nobody
+    group system readproc misc
+    disabled
+
+on property:sys.boot_completed=1
+    # The pmgd service always starts but it will suspend forever if the feature
+    # flag is disabled.
+    enable pmgd
+
+on post-fs-data
+    mkdir /data/misc/pmgd 0770 system system
+    write /data/misc/pmgd/history.json "{}"
+```
+
+The daemon is feature-flagged. On startup it checks
+`pmgd_flags::memory_guardian_enabled()` and, if the flag is off, parks itself
+forever with `nix::unistd::pause()` rather than exiting (init would just restart
+a process that exits):
+
+```rust
+// system/memory/guardian/src/main.rs
+if !pmgd_flags::memory_guardian_enabled() {
+    warn!("pmgd is disabled");
+    nix::unistd::pause();
+}
+```
+
+The flags are declared in `system/memory/guardian/flags.aconfig` under the
+`android.memory.guardian.flags` package: `memory_guardian_enabled` (master
+switch), `memory_guardian_uses_vendor_config` (whether to read the vendor JSON),
+`process_kill_enabled` (allow killing on a `memory.high` event), and
+`heap_dump_enabled` (capture a Perfetto heap dump before killing).
+
+### 29.14.3 Configuration
+
+pmgd is vendor-driven. It reads `/vendor/etc/pmgd/config.json`, which lists the
+processes to monitor and their limits. Each target is parsed into a
+`Specification`:
+
+```rust
+// system/memory/guardian/src/config.rs
+pub struct Specification {
+    pub target_cmd: String,
+    pub uid: Option<u32>,
+    #[serde(default = "default_reclaim_wait_time")]
+    pub reclaim_wait_time_secs: u32,
+    #[serde(flatten)]
+    pub profile_info: ProfileConfig,
+}
+```
+
+The fields map directly to the documented config:
+
+| Field | Meaning |
+|-------|---------|
+| `target_cmd` | Command name of the process to monitor (e.g. `system_server`) |
+| `uid` | Optional UID; if omitted the rule applies to any process matching `target_cmd` |
+| `reclaim_wait_time_secs` | Grace period to wait for reclaim before re-checking (default 5) |
+| `mem_limit_profile` | cgroup task profile that sets the process's `memory.high` (e.g. `SystemServerMemoryHighLimit`) |
+| `anon_limit_in_mb` | Hard anonymous-memory ceiling; exceeding it kills immediately |
+| `additional_task_profiles` | Extra task profiles to apply when monitoring starts |
+
+The actual `memory.high` value is not set by pmgd directly; it is expressed as a
+cgroup *task profile* (in `vendor/etc/task_profiles.json`) that writes
+`memory.high` via a `SetAttribute` action, and pmgd applies that profile to the
+process when it begins monitoring. If the vendor config is missing and
+`memory_guardian_uses_vendor_config` is off, pmgd falls back to a built-in
+default that monitors `system_server` (UID 1000) with the
+`SystemServerMemoryHighLimitP99` profile.
+
+### 29.14.4 The Monitoring Loop
+
+Once configured, pmgd watches the cgroup v2 hierarchy for its targets. It uses
+`inotify` plus `epoll`: it watches `/sys/fs/cgroup/system` for process
+appearance, and for each found target it watches that process's `memory.events`
+file for `MODIFY` events, which fire when the kernel records a new `high` event
+(the process touched its `memory.high` ceiling):
+
+```rust
+// system/memory/guardian/src/watcher.rs
+// Watch the cgroup hierarchies for processes starting.  /proc is not suitable
+// because that file system does not play nice with inotify.
+let flags = WatchMask::CREATE;
+let _cs_wd = inotify.watches().add("/sys/fs/cgroup/system", flags);
+```
+
+Per-process memory is read from the cgroup v2 files under
+`/sys/fs/cgroup/system/uid_<uid>/pid_<pid>/`: `memory.current`, `memory.high`,
+`memory.swap.current`, and `memory.stat` (for the `anon` and `file` line items):
+
+```rust
+// system/memory/guardian/src/memcg_proc_memory_util.rs
+fn read_cgroup_base_path(uid: u32, pid: u32) -> PathBuf {
+    let cgroup_base = format!("/sys/fs/cgroup/system/uid_{}/pid_{}/", uid, pid);
+    PathBuf::from(&cgroup_base)
+}
+```
+
+### 29.14.5 The High-Memory Event Decision
+
+When a `memory.high` event fires and the high-event counter has actually
+increased, `handle_memory_high_event()` runs a two-stage decision (defined in
+`system/memory/guardian/src/main.rs`):
+
+1. **Log a statsd atom unconditionally.** `log_threshold_exceeded()` emits a
+   `MemcgMemoryExceedThresholdEvent` atom with the process's anon, file, and swap
+   kilobytes. This happens on *every* breach, even when killing is disabled.
+2. **Anonymous-memory check.** If anonymous memory exceeds `anon_limit_in_mb`, the
+   process is killed immediately (kill reason `AnonMemoryBreach`).
+3. **Reclaim wait.** Otherwise pmgd sleeps for `reclaim_wait_time_secs` to give
+   the kernel a chance to reclaim, then re-reads `memory.current` and
+   `memory.high`. If `memory.current >= memory.high` after the grace period (and
+   again after a second wait), the process is killed with reason
+   `TotalMemcgMemoryBreach`. If reclaim brought it back under the ceiling, pmgd
+   returns `ReclaimSuccessful` and throttles itself for five minutes
+   (`HOLD_BACK_AFTER_SUCCESSFUL_RECLAIM_IN_SECONDS = 300`) before re-arming.
+
+```mermaid
+flowchart TD
+    EV["memory.high event<br/>(memory.events MODIFY)"] --> LOG["Log MemcgMemoryExceedThresholdEvent atom"]
+    LOG --> KILLEN{"process_kill_enabled?"}
+    KILLEN -->|no| NOOP["No-op (logged only)"]
+    KILLEN -->|yes| ANON{"anon &gt; anon_limit_in_mb?"}
+    ANON -->|yes| KILLA["Kill: AnonMemoryBreach"]
+    ANON -->|no| WAIT["Sleep reclaim_wait_time_secs"]
+    WAIT --> CMP{"memory.current &gt;= memory.high?"}
+    CMP -->|no| OK["ReclaimSuccessful<br/>(throttle 300s)"]
+    CMP -->|yes| KILLT["Kill: TotalMemcgMemoryBreach"]
+```
+
+Killing is gated by the `process_kill_enabled` flag; when it is off,
+`handle_memory_high_event()` returns `NoOpDueToDisabledKill` after logging, so the
+daemon can run in observe-only mode and surface breaches via statsd without
+terminating anything.
+
+### 29.14.6 Telemetry and Heap Dumps
+
+pmgd's logging emits two kinds of statsd atoms (defined in
+`system/memory/guardian/src/logging.rs`):
+
+- `MemcgMemoryExceedThresholdEvent` on every breach, and
+- `MemcgMemoryProcessKillEvent` when a process is killed, carrying the
+  `KillReason` (`AnonMemoryBreach` or `TotalMemcgMemoryBreach`) alongside the anon,
+  file, and swap kilobytes.
+
+When `heap_dump_enabled` is set, pmgd shells out to `/system/bin/perfetto` with a
+heap-dump trace config (`system/memory/guardian/heap_dump.cfg`) before killing,
+so the offending process's heap is captured for offline analysis. It then waits
+ten seconds (`WAIT_FOR_PERFETTO_INVOCATION_IN_SECONDS`) for the trace to flush
+before issuing the kill.
+
+### 29.14.7 Reboot Rate Limiting
+
+To avoid turning a leaking critical process into a boot loop, pmgd records every
+kill it performs in `/data/misc/pmgd/history.json` and refuses to kill the same
+process more than once per device reboot:
+
+```rust
+// system/memory/guardian/src/on_disk_utils.rs
+pub fn was_killed_since_reboot(&mut self, process_name: &str) -> bool {
+    self.last_process_kill_time.contains_key(process_name)
+}
+```
+
+At startup, `filter_valid_config_targets()` drops any target already present in
+the history, so a process that pmgd killed during the previous uptime is simply no
+longer monitored until the next reboot (when `pmgd.rc` re-initializes
+`history.json` to `{}` in its `on post-fs-data` block). This makes a single
+guardian-initiated kill per boot the hard ceiling, trading aggressive enforcement
+for system stability.
+
+## 29.15 Battery Stats Refactoring in Android 17
+
+The energy-accounting pipeline from section 29.6 kept its public behavior in
+Android 17 but was broken into smaller, more testable pieces. The monolithic
+`BatteryStatsImpl` shed several responsibilities into dedicated files under
+`frameworks/base/services/core/java/com/android/server/power/stats/`:
+
+| Extracted piece | New home |
+|-----------------|----------|
+| Stats configuration | `BatteryStatsConfig.java` (was an inner class) |
+| Per-collection session state | `BatteryStatsSession.java` |
+| `TimeBase` / `TimeBaseObs` clock bookkeeping | `counters/` subdirectory |
+| Dump helper | `BatteryStatsDumpHelperImpl.java` |
+
+These are mechanical extractions: the accounting algorithm, the `PowerAttributor`
+(section 29.6.11), and the per-collector design (section 29.6.4) are unchanged.
+The split makes the historically enormous `BatteryStatsImpl` easier to unit-test
+in isolation.
+
+Two attribution refinements are worth noting:
+
+- **PCC (per-component) UID attribution.** Both `BatteryStatsImpl` and
+  `WakelockPowerStatsCollector` now attribute "per-client component" usage to the
+  *defining* app's UID rather than to the proxy UID, so battery cost lands on the
+  app that owns the work.
+- **Charging policy.** `BatteryManager` exposes a `BatteryChargingPolicyEnum`
+  (for adaptive and longevity charging modes), and Android 17 fixed
+  `getChargingPolicy()` so callers read the correct current policy.
+
+None of these changes alter the `dumpsys batterystats` checkin format used by
+Battery Historian (section 29.6.7 and 29.6.13); they are internal structure and
+attribution-correctness improvements.
+
+---
+
+## 29.16 Try It
 
 ### Experiment 1: Observe Wake Locks
 
@@ -4323,6 +4804,16 @@ chapter:
   -- Compressed wake lock event log
 - `frameworks/base/services/core/java/com/android/server/power/ShutdownThread.java`
   -- Device shutdown/reboot implementation
+- `frameworks/base/services/core/java/com/android/server/power/WakelockTracer.java`
+  -- Android 17 Perfetto app-wakelock data source (`android.app_wakelocks`)
+- `frameworks/base/services/core/java/com/android/server/power/WakelockMapper.java`
+  -- Android 17 UID-to-wakelock attribution mapper
+- `frameworks/base/services/core/java/com/android/server/power/PowerManagerBatchProxy.java`
+  -- Android 17 batched UID-change delivery to the power service
+- `frameworks/base/services/core/java/com/android/server/power/WakefulnessSessionObserver.java`
+  -- Screen-on session and timeout-override attribution
+- `frameworks/base/services/core/java/com/android/server/power/feature/power_flags.aconfig`
+  -- Power-service feature flags (wakelock, doze, timeout)
 
 **Doze and Standby:**
 
@@ -4386,6 +4877,25 @@ chapter:
 
 - `frameworks/base/core/java/android/os/PowerManager.java`
   -- Application-facing power management API
+
+**Process Memory Guardian (pmgd, Android 17):**
+
+- `system/memory/guardian/src/main.rs`
+  -- Daemon entry point and high-memory-event decision logic
+- `system/memory/guardian/src/config.rs`
+  -- Vendor JSON config parsing (`/vendor/etc/pmgd/config.json`)
+- `system/memory/guardian/src/memcg_proc_memory_util.rs`
+  -- cgroup v2 `memory.current`/`memory.high`/`memory.stat` readers
+- `system/memory/guardian/src/watcher.rs`
+  -- inotify + epoll watcher over `/sys/fs/cgroup/system`
+- `system/memory/guardian/src/logging.rs`
+  -- statsd atoms (`MemcgMemoryExceedThresholdEvent`, `MemcgMemoryProcessKillEvent`)
+- `system/memory/guardian/src/on_disk_utils.rs`
+  -- Per-reboot kill history (`/data/misc/pmgd/history.json`)
+- `system/memory/guardian/flags.aconfig`
+  -- pmgd feature flags (`memory_guardian_enabled`, `process_kill_enabled`, ...)
+- `system/memory/guardian/pmgd.rc`
+  -- init service definition
 
 ### Architecture Decision Records
 

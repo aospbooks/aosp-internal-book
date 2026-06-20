@@ -178,7 +178,9 @@ further restrictions:
 | 12L | 32 | Further foreground service restrictions |
 | 13 (T) | 33 | Per-app language, refined runtime permissions |
 | 14 (U) | 34 | Foreground service types enforced, SCHEDULE_EXACT_ALARM restricted |
-| 15 (V) | 35 | Further tightening of background task policies |
+| 15 (V) | 35 | `dataSync` foreground service 6 hour timeout |
+| 16 | 36 | User-initiated job (UIJ) notifications centralized, UIJ notification dismissal restricted |
+| 17 | 37 | New `getPendingJobReasons*()` diagnostics, abandoned-job detection, per-network connectivity batching, Perfetto job tracing, start-user-before-alarm |
 
 ---
 
@@ -243,8 +245,8 @@ public class JobSchedulerService extends com.android.server.SystemService
 
     public static final String TAG = "JobScheduler";
 
-    /** The maximum number of jobs that we allow an app to schedule */
-    private static final int MAX_JOBS_PER_APP = 150;
+    /** The default maximum number of jobs that we allow an app to schedule */
+    private static final int DEFAULT_MAX_JOBS_PER_APP = 150;
 
     /** Master list of jobs. */
     final JobStore mJobs;
@@ -264,9 +266,20 @@ public class JobSchedulerService extends com.android.server.SystemService
 
 Key constants and limits:
 
-- **MAX_JOBS_PER_APP = 150**: Each app can have at most 150 scheduled jobs
+- **DEFAULT_MAX_JOBS_PER_APP = 150**: Each app can have at most 150 scheduled
+  jobs by default. The actual ceiling is passed into the constructor, so it is
+  configurable rather than a hard `MAX_JOBS_PER_APP` constant.
 - **NUM_COMPLETED_JOB_HISTORY = 20**: The system keeps track of the 20 most
   recently completed jobs for debugging
+
+The constructor also wires in a `JobPerfettoTracer` (see §30.7) so that each
+job's lifecycle can be emitted to a Perfetto trace:
+
+```java
+// frameworks/base/apex/jobscheduler/service/java/com/android/server/job/
+//     JobSchedulerService.java
+this(context, DEFAULT_MAX_JOBS_PER_APP, null, JobPerfettoTracer.create());
+```
 
 ### 30.2.3 JobInfo: Declaring Work and Constraints
 
@@ -339,6 +352,18 @@ All controller source files are at:
 
 **Source path**: `frameworks/base/apex/jobscheduler/service/java/com/android/server/job/controllers/`
 
+Some controllers (`BatteryController`, `ConnectivityController`,
+`IdleController`) extend `RestrictingController` rather than `StateController`
+directly. `RestrictingController` adds two hooks --
+`startTrackingRestrictedJobLocked()` and `stopTrackingRestrictedJobLocked()` --
+so that those controllers can also track jobs whose owning app is in the
+`RESTRICTED` standby bucket, where the constraint must hold even more strictly.
+The idle-detection plumbing for `IdleController` lives in the
+`controllers/idle/` subpackage (`DeviceIdlenessTracker`, `CarIdlenessTracker`,
+and the `IdlenessTracker`/`IdlenessListener` interfaces), which lets the same
+controller use a different definition of "idle" on a handheld versus an
+automotive device.
+
 ### 30.2.5 StateController Architecture
 
 All controllers extend the abstract `StateController` base class:
@@ -395,23 +420,43 @@ the original `JobInfo` with runtime state tracked by the controllers:
  * function to evaluate whether it's ready to run.
  */
 public final class JobStatus {
-    // Constraint satisfaction bits
-    static final int CONSTRAINT_CHARGING = 1 << 0;
-    static final int CONSTRAINT_BATTERY_NOT_LOW = 1 << 1;
-    static final int CONSTRAINT_STORAGE_NOT_LOW = 1 << 2;
-    static final int CONSTRAINT_TIMING_DELAY = 1 << 3;
-    static final int CONSTRAINT_DEADLINE = 1 << 4;
-    static final int CONSTRAINT_IDLE = 1 << 5;
-    static final int CONSTRAINT_CONNECTIVITY = 1 << 6;
-    static final int CONSTRAINT_CONTENT_TRIGGER = 1 << 7;
-    // ... more constraints
+    // Explicit constraints share the JobInfo.CONSTRAINT_FLAG_* low bits
+    public static final int CONSTRAINT_CHARGING = JobInfo.CONSTRAINT_FLAG_CHARGING;      // 1 << 0
+    public static final int CONSTRAINT_BATTERY_NOT_LOW =
+            JobInfo.CONSTRAINT_FLAG_BATTERY_NOT_LOW;                                     // 1 << 1
+    public static final int CONSTRAINT_IDLE = JobInfo.CONSTRAINT_FLAG_DEVICE_IDLE;       // 1 << 2
+    public static final int CONSTRAINT_STORAGE_NOT_LOW =
+            JobInfo.CONSTRAINT_FLAG_STORAGE_NOT_LOW;                                     // 1 << 3
+
+    // The remaining explicit constraints occupy the high bits
+    public static final int CONSTRAINT_TIMING_DELAY = 1 << 31;
+    public static final int CONSTRAINT_DEADLINE = 1 << 30;
+    public static final int CONSTRAINT_CONNECTIVITY = 1 << 28;
+    public static final int CONSTRAINT_CONTENT_TRIGGER = 1 << 26;
+
+    // Implicit constraints the system adds on top of what the app requested
+    public static final int CONSTRAINT_DEVICE_NOT_DOZING = 1 << 25;        // Implicit
+    public static final int CONSTRAINT_WITHIN_QUOTA = 1 << 24;             // Implicit
+    public static final int CONSTRAINT_PREFETCH = 1 << 23;
+    public static final int CONSTRAINT_BACKGROUND_NOT_RESTRICTED = 1 << 22; // Implicit
+    public static final int CONSTRAINT_FLEXIBLE = 1 << 21;                  // Implicit
 
     // The job is ready when all required constraints are satisfied
     public boolean isReady() {
-        return isConstraintsSatisfied() && !isPending() && !isActive();
+        return isReady(mSatisfiedConstraintsOfInterest);
     }
 }
 ```
+
+The low four bits (`CONSTRAINT_CHARGING`, `CONSTRAINT_BATTERY_NOT_LOW`,
+`CONSTRAINT_IDLE`, `CONSTRAINT_STORAGE_NOT_LOW`) are shared with the
+`JobInfo.CONSTRAINT_FLAG_*` values an app sets directly; the high bits hold the
+timing, connectivity, and content-trigger constraints plus the *implicit*
+constraints (`CONSTRAINT_DEVICE_NOT_DOZING`, `CONSTRAINT_WITHIN_QUOTA`,
+`CONSTRAINT_BACKGROUND_NOT_RESTRICTED`, `CONSTRAINT_FLEXIBLE`) that the system
+layers on regardless of what the app asked for. This is why a job that only set
+a network constraint can still sit pending: doze, quota, and background
+restrictions are constraints too, evaluated by their own controllers.
 
 ### 30.2.7 Job Scheduling Flow
 
@@ -496,28 +541,50 @@ bucket assignments:
 // frameworks/base/apex/jobscheduler/service/java/com/android/server/job/
 //     controllers/QuotaController.java
 
-// Quota windows and limits per standby bucket:
+// Legacy quota windows and limits per standby bucket:
 // Active:     10 min / 10 min window  (effectively unlimited)
 // Working:    10 min / 2 hour window
 // Frequent:   10 min / 8 hour window
 // Rare:       10 min / 24 hour window
-// Restricted: 10 min / 24 hour window, max 1 job
+// Restricted: 10 min / 24 hour window, max 10 jobs
 ```
 
 The quota system tracks cumulative job execution time within rolling windows.
 When an app exceeds its quota, its jobs are deferred until the window rolls
 forward enough to make quota available again.
 
+These numbers are *defaults*, not constants. `QuotaController.QcConstants` reads
+every quota value from a `DeviceConfig` namespace, so Google can tune them per
+release without a framework change. The source carries three generations of
+defaults side by side -- `DEFAULT_LEGACY_*`, `DEFAULT_CURRENT_*`, and
+`DEFAULT_LATEST_*` -- and the active set is chosen at runtime. In the Android 17
+tree the "current"/"latest" defaults relax the windows noticeably compared to
+the legacy values:
+
+| Bucket | Legacy allowed / window | Current/latest allowed / window |
+|--------|------------------------|---------------------------------|
+| Active | 10 min / 10 min | 20 min / 60 min |
+| Working | 10 min / 2 h | 10 min / 4 h |
+| Frequent | 10 min / 8 h | 10 min / 12 h |
+| Rare | 10 min / 24 h | 10 min / 24 h |
+| Restricted | 10 min / 24 h, 10 jobs | 10 min / 24 h, 10 jobs |
+
+Expedited jobs (EJs) get a separate budget tracked in the same controller, with
+its own per-bucket limits inside a rolling 24 hour window (for example, 30 min
+for `ACTIVE`, 15 min for `WORKING`, 10 min for `FREQUENT`/`RARE`, 5 min for
+`RESTRICTED`), so a burst of expedited work does not consume the regular job
+quota.
+
 ```mermaid
 graph TD
     subgraph "Quota Enforcement"
         A["Job requests execution"] --> B{"Check standby<br/>bucket"}
-        B --> C["Active: 10min/10min"]
-        B --> D["Working: 10min/2h"]
-        B --> E["Frequent: 10min/8h"]
-        B --> F["Rare: 10min/24h"]
+        B --> C["Active<br/>(largest window)"]
+        B --> D["Working"]
+        B --> E["Frequent"]
+        B --> F["Rare / Restricted<br/>(smallest budget)"]
 
-        C --> G{Within quota?}
+        C --> G{"Within bucket's<br/>allowed-time and<br/>job-count quota?"}
         D --> G
         E --> G
         F --> G
@@ -529,11 +596,18 @@ graph TD
 
 ### 30.2.11 FlexibilityController
 
-The `FlexibilityController` is a newer addition that manages the trade-off
-between job freshness and system efficiency. It tracks which "flexible"
-constraints (like connectivity type, charging state, idle state) a job could
-optionally satisfy and adjusts satisfaction requirements based on how close the
-job is to its deadline.
+The `FlexibilityController` manages the trade-off between job freshness and
+system efficiency. It defines a set of `FLEXIBLE_CONSTRAINTS` -- the system-wide
+ones are charging, battery-not-low, and device-idle, plus the job-specific
+connectivity constraint -- and treats them as *soft* preferences early in a
+job's life. A freshly scheduled job is initially asked to satisfy all of them
+(so it runs at the most efficient moment, e.g. charging on Wi-Fi while idle),
+but as the job approaches its deadline the controller progressively drops these
+flexible constraints until, by the fallback deadline, none of them are required
+and the job can run regardless of device state. Jobs with no explicit deadline
+fall back to `FcConfig.DEFAULT_FALLBACK_FLEXIBILITY_DEADLINE_MS`. This is what
+lets JobScheduler hold low-urgency work for an opportune moment without ever
+letting it starve.
 
 ### 30.2.12 JobConcurrencyManager
 
@@ -547,23 +621,27 @@ The `JobConcurrencyManager` controls how many jobs can run simultaneously:
 package com.android.server.job;
 
 // Manages a pool of JobServiceContext objects (execution slots)
-// Balances between:
-// - User-initiated jobs (highest priority)
-// - Expedited jobs
-// - Regular foreground jobs
-// - Regular background jobs
+// Balances reserved slots across the WORK_TYPE_* categories
 // Total concurrent slots depend on device memory and CPU
 ```
 
-The manager categorizes running jobs into work types:
+The manager categorizes running jobs into the `WORK_TYPE_*` bitset and reserves
+a number of concurrent execution slots for each, so that lower-priority work
+cannot starve higher-priority work:
 
-| Work Type | Description | Priority |
-|-----------|-------------|----------|
-| User-Initiated (UIJ) | Jobs triggered by direct user action | Highest |
-| Expedited (EJ) | Time-sensitive jobs with quota limits | High |
-| Foreground (FG) | Jobs from foreground apps | Medium |
-| Background (BG) | Jobs from background apps | Lower |
-| Background Restricted | Jobs from restricted-bucket apps | Lowest |
+| Work Type Constant | Meaning |
+|-------------------|---------|
+| `WORK_TYPE_TOP` | Job for an app in the `TOP` process state (active user) |
+| `WORK_TYPE_FGS` | Job for an app at foreground-service state or higher |
+| `WORK_TYPE_UI` | Job allowed to run as a user-initiated job (UIJ) |
+| `WORK_TYPE_EJ` | Job allowed to run as an expedited job |
+| `WORK_TYPE_BG` | Plain background job for the active user |
+| `WORK_TYPE_BGUSER_IMPORTANT` | FGS/EJ/UIJ job for a fully backgrounded user |
+| `WORK_TYPE_BGUSER` | Plain background job for a fully backgrounded user |
+
+The two `BGUSER` types are how concurrency is split between the currently active
+user and other (background) users on a multi-user device, so jobs for a
+background user cannot crowd out the foreground user's jobs.
 
 ### 30.2.13 JobService: Application-Side Implementation
 
@@ -623,6 +701,14 @@ status:
 //     restrictions/ThermalStatusRestriction.java
 // Blocks jobs when device is in thermal throttling state
 ```
+
+`ThermalStatusRestriction` extends the abstract `JobRestriction`. When the
+device crosses thermal thresholds it stops affected jobs with
+`INTERNAL_STOP_REASON_DEVICE_THERMAL`. In the Android 17 tree it reports a
+*specific* pending reason -- `PENDING_JOB_REASON_DEVICE_STATE_THERMAL` -- instead
+of the older generic `PENDING_JOB_REASON_DEVICE_STATE`, so apps querying why a
+job is stuck can now tell thermal throttling apart from other device-state
+blocks (see §30.7 on the new pending-reason APIs).
 
 **Source path**: `frameworks/base/apex/jobscheduler/service/java/com/android/server/job/restrictions/`
 
@@ -856,8 +942,13 @@ FLAG_PRIORITIZE                // Gets priority delivery
 ```
 
 Apps that need to fire alarms during Doze can use `setAndAllowWhileIdle()` or
-`setExactAndAllowWhileIdle()`, but these are rate-limited. The system limits
-while-idle alarms to approximately once per 9 minutes per app to prevent abuse.
+`setExactAndAllowWhileIdle()`, but these are rate-limited by a per-app quota
+rather than a fixed minimum interval. In the Android 17 tree the defaults in
+`AlarmManagerService.Constants` allow `DEFAULT_ALLOW_WHILE_IDLE_QUOTA = 72`
+while-idle alarm deliveries inside a `DEFAULT_ALLOW_WHILE_IDLE_WINDOW` of one
+hour for apps targeting modern API levels; apps still on the older "compat"
+behavior get only `DEFAULT_ALLOW_WHILE_IDLE_COMPAT_QUOTA = 7` per window. All of
+these are `DeviceConfig`-tunable, so the exact ceiling can change per release.
 
 ### 30.3.7 Alarm Delivery Policies
 
@@ -1245,6 +1336,7 @@ made the `foregroundServiceType` attribute required in the manifest.
 | Health | `health` | Fitness tracking, heart rate | `FOREGROUND_SERVICE_HEALTH` |
 | Location | `location` | Navigation, location tracking | `FOREGROUND_SERVICE_LOCATION` + `ACCESS_*_LOCATION` |
 | Media Playback | `mediaPlayback` | Music, podcast, audio book | `FOREGROUND_SERVICE_MEDIA_PLAYBACK` |
+| Media Processing | `mediaProcessing` | Video/photo editing and processing (6 hour limit) | `FOREGROUND_SERVICE_MEDIA_PROCESSING` |
 | Media Projection | `mediaProjection` | Screen capture, casting | `FOREGROUND_SERVICE_MEDIA_PROJECTION` |
 | Microphone | `microphone` | Voice recording, VoIP | `FOREGROUND_SERVICE_MICROPHONE` |
 | Phone Call | `phoneCall` | VoIP, calling apps | `FOREGROUND_SERVICE_PHONE_CALL` |
@@ -1340,6 +1432,26 @@ Starting with Android 15, `dataSync` foreground services have a timeout of
 approximately 6 hours. After the timeout, the system calls `onTimeout()` and
 the service must stop or convert to a different type. This prevents indefinite
 data sync services that may have been abandoned by buggy code.
+
+The same release added the `mediaProcessing` type (`ServiceInfo.java` value
+`1 << 13`) for video and photo editing, which also carries a 6 hour limit and
+the same `onTimeout()` contract. In `ActiveServices`, the active timeout is
+driven by `mDataSyncFgsTimeoutDuration` and the matching media-processing
+constant, so both long-running types share the same enforcement path:
+
+```java
+// frameworks/base/services/core/java/com/android/server/am/ActiveServices.java
+if ((foregroundServiceType & ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING)
+        == ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING) {
+    fgsType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING;
+    // ... timeout = mAm.mConstants.mMediaProcessingFgsTimeoutDuration
+}
+```
+
+The `shortService` timeout is enforced through a separate
+`SERVICE_SHORT_FGS_TIMEOUT_MSG` handler message with its own
+`OOM_ADJ_REASON_SHORT_FGS_TIMEOUT` adjustment, reflecting that short services
+are meant to be measured in minutes rather than hours.
 
 ### 30.5.7 Foreground Service ANR
 
@@ -1534,12 +1646,249 @@ warning and may reject it.
 
 ---
 
-## 30.7 Try It
+## 30.7 Android 17 Background Execution Changes
+
+The Android 17 source tree refines background scheduling rather than rebuilding
+it: the JobScheduler controller architecture, the AlarmManager service, and the
+foreground-service rules are all the same shapes described above. What changed is
+mostly *diagnostics*, *multi-user correctness*, and a set of feature flags that
+fine-tune batching and quotas. Every behavior in this section is gated by an
+`aconfig` flag, the AOSP mechanism for shipping a change behind a runtime toggle.
+
+### 30.7.1 The aconfig Flags Behind the Scheduler
+
+Background scheduling exposes its flags in four `aconfig` files inside the
+jobscheduler APEX. The framework-side flags (in the `backstage_power` namespace)
+gate new public APIs; the service-side flags gate internal behavior.
+
+| aconfig file | Scope |
+|--------------|-------|
+| `framework/aconfig/job.aconfig` | New `JobScheduler`/`JobInfo` APIs |
+| `framework/aconfig/alarm.aconfig` | `AlarmManager` listener/quota behavior |
+| `service/aconfig/job.aconfig` | Internal job batching and limits |
+| `service/aconfig/device_idle.aconfig` | Doze (`DeviceIdleController`) tuning |
+
+**Source path**: `frameworks/base/apex/jobscheduler/framework/aconfig/` and
+`frameworks/base/apex/jobscheduler/service/aconfig/`
+
+### 30.7.2 New Pending-Reason Diagnostics APIs
+
+Historically the only way to ask why a job had not run was
+`JobScheduler.getPendingJobReason(int jobId)`, which returns a single reason even
+when several constraints are unmet. Android 17 deprecates it and adds three
+richer APIs, declared in
+`frameworks/base/apex/jobscheduler/framework/java/android/app/job/JobScheduler.java`:
+
+```java
+// Returns ALL the reasons a job is currently pending, not just one.
+@NonNull @PendingJobReason
+public int[] getPendingJobReasons(int jobId);
+
+// A truncated time-stamped history of why the job was pending.
+// Not persisted across reboots.
+@NonNull
+public List<PendingJobReasonsInfo> getPendingJobReasonsHistory(int jobId);
+
+// An aggregated view: each PENDING_JOB_REASON_* mapped to the total
+// time the job spent pending for that reason over its lifetime.
+@NonNull
+public Map<Integer, Duration> getPendingJobReasonStats(int jobId);
+```
+
+These map to the `get_pending_job_reasons_api`,
+`get_pending_job_reasons_history_api`, and `get_pending_job_reason_stats_api`
+flags. The companion `enhanced_pending_and_stop_reasons_api` flag adds more
+specific reason codes: for example, the thermal `JobRestriction` now reports
+`PENDING_JOB_REASON_DEVICE_STATE_THERMAL` instead of the generic
+`PENDING_JOB_REASON_DEVICE_STATE` (see §30.2.14), so an app can distinguish
+thermal throttling from doze or other device-state blocks. Because none of this
+history is persisted across reboots, it is meant for live debugging, not
+long-term telemetry.
+
+```mermaid
+flowchart TD
+    A["App: my job won't run"] --> B["getPendingJobReasons(jobId)"]
+    B --> C["int array of every<br/>unmet constraint right now"]
+    A --> D["getPendingJobReasonsHistory(jobId)"]
+    D --> E["timestamped snapshots<br/>(truncated, not persisted)"]
+    A --> F["getPendingJobReasonStats(jobId)"]
+    F --> G["reason to total-time-pending map<br/>(which constraint hurt most)"]
+
+    style C fill:#e8f5e9
+    style E fill:#e8f5e9
+    style G fill:#e8f5e9
+```
+
+### 30.7.3 Debug Tags and Trace Tags on Jobs
+
+The `job_debug_info_apis` flag adds developer-attached metadata to jobs.
+`JobInfo.Builder.addDebugTag(String)` attaches free-form debug tags (up to 32
+per job, 127 characters each, no PII), and `setTraceTag(String)` attaches a
+single tag that appears in system traces. These tags surface in
+`dumpsys jobscheduler` and in the Perfetto job-tracing events (§30.7.4), making
+it far easier to tell which of an app's many scheduled jobs is which when
+diagnosing scheduling problems:
+
+```java
+// frameworks/base/apex/jobscheduler/framework/java/android/app/job/JobInfo.java
+new JobInfo.Builder(JOB_ID, component)
+    .addDebugTag("nightly-photo-sync")
+    .setTraceTag("photo-sync")
+    .build();
+```
+
+### 30.7.4 Perfetto Job Tracing
+
+Android 17 routes JobScheduler's tracing through the external Perfetto SDK. The
+new `JobPerfettoTracer` (`JobPerfettoTracer.java`, Copyright 2025) is created in
+the `JobSchedulerService` constructor and emits an instant trace event for each
+job's lifecycle, tagged with the job's component and any trace tag. This replaces
+the older ad hoc `Trace` calls and lets job execution show up as first-class
+track events in a Perfetto capture, alongside the rest of the system trace.
+
+**Source path**: `frameworks/base/apex/jobscheduler/service/java/com/android/server/job/JobPerfettoTracer.java`
+
+### 30.7.5 Abandoned-Job Detection
+
+A long-standing failure mode is an app that returns `true` from `onStartJob()`
+(promising async work) but never calls `jobFinished()` -- the job's execution
+context is held until it times out, wasting a concurrency slot. The
+`handle_abandoned_jobs` flag adds detection for this. When the
+`JobServiceContext` times out a job, it checks whether the job was abandoned and,
+if so, reports a distinct stop reason instead of a plain timeout:
+
+```java
+// frameworks/base/apex/jobscheduler/service/java/com/android/server/job/
+//     JobServiceContext.java
+if (android.app.job.Flags.handleAbandonedJobs()
+        && executing != null
+        && executing.isAbandoned()) {
+    stopReason = JobParameters.STOP_REASON_TIMEOUT_ABANDONED;
+    internalStopReason = JobParameters.INTERNAL_STOP_REASON_TIMEOUT_ABANDONED;
+    // " and maybe abandoned" appended to the stop message
+}
+```
+
+The new `STOP_REASON_TIMEOUT_ABANDONED` lets the system count repeated abandoned
+failures (`JobStatus.getNumAbandonedFailures()`) and treat a chronically
+misbehaving job differently from one that merely ran long. A `CompatChanges`
+gate (`OVERRIDE_HANDLE_ABANDONED_JOBS`) lets the stricter behavior be opted out
+per UID during the transition.
+
+### 30.7.6 Smarter Job Batching
+
+Three service-side flags tune *when* ready jobs actually start, trading a little
+latency for fewer wakeups and radio activations:
+
+- `batch_active_bucket_jobs`: jobs in the `ACTIVE` bucket are now included in the
+  batching effort instead of being allowed to run as soon as they are ready.
+- `batch_connectivity_jobs_per_network`: connectivity-constrained jobs are held
+  until several are ready (or the network is already active), so a radio wakeup
+  serves many jobs at once.
+- `do_not_force_rush_execution_at_boot`: the scheduler no longer force-rushes job
+  execution immediately after boot, smoothing the post-boot CPU and I/O spike.
+
+Two more flags cap how much an app can demand of the scheduler:
+`enforce_proxied_jobs_limit` bounds jobs scheduled indirectly (for example via
+`SyncManager`), and `limit_per_uid_cumulative_workitem_size` bounds the total
+memory an app's `JobWorkItem`s can pin in the system. `include_job_name_in_anr_message`
+is a small but practical debugging win: the offending job's component name now
+appears in the slow-response ANR message.
+
+### 30.7.7 User-Initiated Job Notifications
+
+User-initiated jobs (UIJs) must show a notification while they run, similar to a
+foreground service. Android 16 introduced a centralized `JobNotificationCoordinator`
+(`JobNotificationCoordinator.java`) that maps each running UIJ to the app
+notification it is attached to, and Android 17 carries the follow-on hardening:
+the coordinator marks the notification with a user-initiated-job flag through
+`NotificationManagerInternal` and restricts the app from silently dismissing a
+UIJ's notification while the job runs, so the user always retains a visible,
+actionable indicator (and a way to stop the work). Notifications are also cleaned
+up when the owning user is stopped.
+
+**Source path**: `frameworks/base/apex/jobscheduler/service/java/com/android/server/job/JobNotificationCoordinator.java`
+
+### 30.7.8 Starting a User Before Its Alarm Fires
+
+On multi-user and private-space devices, an alarm scheduled by an app belonging
+to a *stopped* user could be missed because the user (and thus the app) was not
+running when the alarm time arrived. Android 17 closes this gap with the
+`UserWakeupStore` (`UserWakeupStore.java`, Copyright 2024). When
+`mStartUserBeforeScheduledAlarms` is enabled (it requires multi-user support),
+`AlarmManagerService` records, per user, the earliest time that user has an alarm
+due, persisting the set of user IDs with pending alarms to an XML file under the
+system data directory:
+
+```java
+// frameworks/base/apex/jobscheduler/service/java/com/android/server/alarm/
+//     AlarmManagerService.java
+mUserWakeupStore.addUserWakeup(userId, convertToElapsed(...));
+// ... at delivery time, the affected users are started first:
+final int[] userIds = mUserWakeupStore.getUserIdsToWakeup(nowELAPSED);
+```
+
+Because the list is persisted, a user with a scheduled alarm can be started even
+after a device reboot, and the store deliberately staggers consecutive user
+starts (a fixed delay between them) so the system does not try to start several
+stopped users at the same instant. This is primarily what makes scheduled alarms
+reliable for private-space and secondary-profile apps.
+
+```mermaid
+sequenceDiagram
+    participant App as App (stopped user)
+    participant AMS as AlarmManagerService
+    participant Store as UserWakeupStore
+    participant UM as User lifecycle
+
+    App->>AMS: setExact(...) before user stops
+    AMS->>Store: addUserWakeup(userId, triggerElapsed)
+    Store->>Store: persist user IDs to XML
+    Note over AMS,Store: device reboots or user stops
+    AMS->>Store: getUserIdsToWakeup(now)
+    Store-->>AMS: userIds due now
+    AMS->>UM: start those users (staggered)
+    UM-->>AMS: user running
+    AMS->>App: deliver alarm
+```
+
+### 30.7.9 AlarmManager Listener and Quota Flags
+
+The `alarm.aconfig` flags refine while-idle behavior:
+
+- `allow_listeners_while_idle`: `OnAlarmListener`-based alarms (the in-process
+  variant from §30.3.8) can now be allowed to fire during doze under the
+  while-idle quota, with their own `DEFAULT_ALLOW_WHILE_IDLE_LISTENER_QUOTA`
+  (72 per window), matching what `PendingIntent` while-idle alarms already had.
+- `allow_alarms_with_relaxed_quota`: certain allow-while-idle listener alarms are
+  granted a relaxed quota path, checked in `AlarmManagerService` at delivery time
+  via `Flags.allowAlarmsWithRelaxedQuota()`.
+
+### 30.7.10 Doze Tuning Flags
+
+The `device_idle.aconfig` flags adjust how Doze behaves without changing its
+state machine (§30.1.5):
+
+- `disable_wakelocks_in_light_idle`: ignore wakelocks during *light* idle, not
+  just deep idle, closing a battery-drain path.
+- `quick_doze_on_lid_close`: enter Doze quickly when a foldable or laptop-style
+  device's lid is closed, rather than waiting for the normal stationary timer.
+- `allow_non_wake_up_deep_alarms` (Wear): allow non-wakeup alarms to be evaluated
+  during deep idle on Wear devices.
+- `support_allow_while_idle_quota_zero`: support configuring the while-idle quota
+  all the way down to zero, fully blocking while-idle alarms when desired.
+
+None of these change the public alarm or job APIs; they are knobs the platform
+(and OEMs, for Wear and foldables) use to tune the doze/standby battery trade-off.
+
+---
+
+## 30.8 Try It
 
 This section provides hands-on exercises to explore Android's background task
 scheduling infrastructure.
 
-### 30.7.1 Exercise: Inspect JobScheduler State
+### 30.8.1 Exercise: Inspect JobScheduler State
 
 ```bash
 # Dump all scheduled jobs
@@ -1563,7 +1912,7 @@ adb shell dumpsys usagestats | grep -A 2 "bucket"
 adb shell dumpsys jobscheduler | grep "Job history"
 ```
 
-### 30.7.2 Exercise: Schedule and Monitor a Job
+### 30.8.2 Exercise: Schedule and Monitor a Job
 
 Create a simple job:
 
@@ -1629,7 +1978,7 @@ adb logcat -s DemoJob:D
 adb shell dumpsys jobscheduler | grep -A 15 "com.example.myapp"
 ```
 
-### 30.7.3 Exercise: Test Alarm Scheduling
+### 30.8.3 Exercise: Test Alarm Scheduling
 
 ```java
 public class AlarmDemoActivity extends Activity {
@@ -1689,7 +2038,7 @@ adb shell dumpsys alarm | grep -A 30 "Alarm Stats"
 adb shell dumpsys alarm | grep "AlarmClock"
 ```
 
-### 30.7.4 Exercise: WorkManager Chain
+### 30.8.4 Exercise: WorkManager Chain
 
 ```java
 // Step 1: Create workers
@@ -1760,7 +2109,7 @@ WorkManager.getInstance(context)
     });
 ```
 
-### 30.7.5 Exercise: Test Doze Mode
+### 30.8.5 Exercise: Test Doze Mode
 
 ```bash
 # Put device into Doze mode (screen must be off)
@@ -1790,7 +2139,7 @@ adb shell dumpsys deviceidle disable
 adb shell dumpsys deviceidle whitelist
 ```
 
-### 30.7.6 Exercise: Test App Standby Buckets
+### 30.8.6 Exercise: Test App Standby Buckets
 
 ```bash
 # Check current bucket for an app
@@ -1810,7 +2159,7 @@ adb shell dumpsys jobscheduler | grep -A 10 "com.example.myapp"
 adb shell am reset-standby-bucket com.example.myapp
 ```
 
-### 30.7.7 Exercise: Test Background Restrictions
+### 30.8.7 Exercise: Test Background Restrictions
 
 ```bash
 # Restrict background for an app (simulates Battery Saver per-app restriction)
@@ -1833,7 +2182,7 @@ adb shell dumpsys jobscheduler | grep "Ready"
 adb shell settings put global low_power 0
 ```
 
-### 30.7.8 Exercise: Foreground Service with Type
+### 30.8.8 Exercise: Foreground Service with Type
 
 ```java
 public class LocationTrackingService extends Service {
@@ -1911,7 +2260,7 @@ adb shell dumpsys activity services com.example.myapp
 adb shell dumpsys activity services | grep "foregroundServiceType"
 ```
 
-### 30.7.9 Exercise: Observe Broadcast Restrictions
+### 30.8.9 Exercise: Observe Broadcast Restrictions
 
 ```java
 // This manifest receiver will NOT work on API 26+ for most implicit broadcasts
@@ -1963,7 +2312,7 @@ cm.registerDefaultNetworkCallback(new ConnectivityManager.NetworkCallback() {
 });
 ```
 
-### 30.7.10 Exercise: Build a Complete Background Task Solution
+### 30.8.10 Exercise: Build a Complete Background Task Solution
 
 Combine all the concepts into a robust background sync solution:
 
@@ -2086,7 +2435,7 @@ public class SyncStatusFragment extends Fragment {
 }
 ```
 
-### 30.7.11 Summary: Choosing the Right API
+### 30.8.11 Summary: Choosing the Right API
 
 ```mermaid
 flowchart TD
@@ -2113,7 +2462,7 @@ flowchart TD
     style K fill:#bbdefb
 ```
 
-### 30.7.12 Summary of Key Source Paths
+### 30.8.12 Summary of Key Source Paths
 
 | Component | Source Path |
 |-----------|------------|
@@ -2133,7 +2482,14 @@ flowchart TD
 | DeviceIdleJobsController | `frameworks/base/apex/jobscheduler/service/java/com/android/server/job/controllers/DeviceIdleJobsController.java` |
 | ContentObserverController | `frameworks/base/apex/jobscheduler/service/java/com/android/server/job/controllers/ContentObserverController.java` |
 | ThermalStatusRestriction | `frameworks/base/apex/jobscheduler/service/java/com/android/server/job/restrictions/ThermalStatusRestriction.java` |
+| PrefetchController | `frameworks/base/apex/jobscheduler/service/java/com/android/server/job/controllers/PrefetchController.java` |
+| RestrictingController | `frameworks/base/apex/jobscheduler/service/java/com/android/server/job/controllers/RestrictingController.java` |
+| JobNotificationCoordinator | `frameworks/base/apex/jobscheduler/service/java/com/android/server/job/JobNotificationCoordinator.java` |
+| JobPerfettoTracer | `frameworks/base/apex/jobscheduler/service/java/com/android/server/job/JobPerfettoTracer.java` |
 | AlarmManagerService | `frameworks/base/apex/jobscheduler/service/java/com/android/server/alarm/AlarmManagerService.java` |
+| UserWakeupStore | `frameworks/base/apex/jobscheduler/service/java/com/android/server/alarm/UserWakeupStore.java` |
+| JobScheduler (public API) | `frameworks/base/apex/jobscheduler/framework/java/android/app/job/JobScheduler.java` |
+| Scheduler aconfig flags | `frameworks/base/apex/jobscheduler/framework/aconfig/`, `frameworks/base/apex/jobscheduler/service/aconfig/` |
 | JobSchedulerInternal | `frameworks/base/apex/jobscheduler/framework/java/com/android/server/job/JobSchedulerInternal.java` |
 
 ---

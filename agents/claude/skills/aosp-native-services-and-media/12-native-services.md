@@ -902,7 +902,7 @@ The InputFlinger source lives at
 |-----------|---------|
 | `reader/` | EventHub + InputReader: reads raw kernel events |
 | `dispatcher/` | InputDispatcher: routes events to windows |
-| `reporter/` | Reports input events (for accessibility) |
+| `reporter/` | InteractionReporter: surfaces interaction signals (e.g. attention-service wake-up) |
 | `trace/` | Perfetto tracing integration |
 | `rust/` | Rust FFI components via `IInputFlingerRust` |
 | `aidl/` | AIDL interface definitions |
@@ -923,9 +923,14 @@ The comment in `InputManager.cpp` describes the complete pipeline:
  *     -> PointerChoreographer
  *     -> InputProcessor
  *     -> InputDeviceMetricsCollector
+ *     -> InteractionReporter
  *     -> InputDispatcher
  */
 ```
+
+The `InteractionReporter` stage (in `reporter/InputReporter.cpp`) is the second-to-last
+listener before the dispatcher. It surfaces interaction signals -- for example, waking
+the attention service on a user interaction -- without disturbing the event stream.
 
 Let us trace this pipeline from hardware to application:
 
@@ -943,6 +948,7 @@ graph LR
         PC[PointerChoreographer]
         IP[InputProcessor]
         MC[MetricsCollector]
+        REP[InteractionReporter]
         ID[InputDispatcher]
     end
 
@@ -958,7 +964,8 @@ graph LR
     IF --> PC
     PC --> IP
     IP --> MC
-    MC --> ID
+    MC --> REP
+    REP --> ID
     ID --> W1
     ID --> W2
 ```
@@ -1421,6 +1428,7 @@ private:
     std::unique_ptr<PointerChoreographerInterface> mChoreographer;
     std::unique_ptr<InputProcessorInterface> mProcessor;
     std::unique_ptr<InputDeviceMetricsCollectorInterface> mCollector;
+    std::unique_ptr<InteractionReporterInterface> mInteractionReporter;
     std::unique_ptr<InputDispatcherInterface> mDispatcher;
     std::shared_ptr<IInputFlingerRust> mInputFlingerRust;
     std::vector<std::unique_ptr<TracedInputListener>> mTracingStages;
@@ -1846,7 +1854,7 @@ process.
 The modern codec framework is Codec2 (C2), located at:
 
 ```
-frameworks/av/codec2/
+frameworks/av/media/codec2/
 ```
 
 Codec2 replaces the older OMX (OpenMAX IL) interface with a more flexible
@@ -3635,12 +3643,270 @@ use simple names (e.g., `SurfaceFlinger`, `installd`, `gpu`).
 
 ---
 
-## 12.11 Try It
+## 12.11 Native Services in Android 17
+
+The native-service architecture is mature, so most of Android 17's changes are
+incremental refinements rather than new top-level services. This section
+collects the changes that land in the services covered above. Each is grounded
+in a diff against the `android-16.0.0_r4` baseline, so everything here is new in
+17 relative to 16.
+
+### 12.11.1 installd: Private Compute Core Data Directories
+
+The largest single change in this chapter's repositories is `installd` gaining
+native support for **Private Compute Core (PCC)** data directories. PCC is the
+isolated, on-device compute environment that hosts privacy-sensitive inference
+(the same family as the Android Private Compute Core / AICore stack). In 17,
+`PackageManagerService` can ask `installd` to provision a second, isolated set
+of data directories for a package, distinct from the package's normal app data.
+
+These directories reuse the package name with a fixed suffix:
+
+> `frameworks/native/cmds/installd/installd_constants.h`
+
+```cpp
+constexpr const char* kPccDataSuffix = "-pcc";
+```
+
+So a package `com.example.app` gets PCC directories such as
+`/data/user/{userId}/com.example.app-pcc/` (CE) and
+`/data/user_de/{userId}/com.example.app-pcc/` (DE), owned by a separate PCC UID
+that `PackageManagerService` supplies. The PCC directories follow the same
+CE/DE split as ordinary app data (12.7.5), so privacy-sensitive state can be
+device-encrypted (available at Direct Boot) or credential-encrypted as needed.
+
+The `IInstalld` AIDL surface was extended to carry the PCC identity. The
+create/clear/destroy operations now thread a PCC UID and inode through their
+arguments:
+
+> `frameworks/native/cmds/installd/binder/android/os/CreateAppDataArgs.aidl`
+
+```aidl
+int pccId;
+int previousPccId;
+```
+
+> `frameworks/native/cmds/installd/InstalldNativeService.h`
+
+```cpp
+binder::Status clearAppData(const std::optional<std::string>& uuid,
+                            const std::string& packageName, int32_t userId, int32_t flags,
+                            int64_t ceDataInode, int64_t pccCeDataInode);
+binder::Status destroyAppData(const std::optional<std::string>& uuid,
+                              const std::string& packageName, int32_t userId, int32_t flags,
+                              int64_t ceDataInode, int64_t pccCeDataInode);
+binder::Status destroyPccData(const std::optional<std::string>& uuid,
+                              const std::string& packageName, int32_t userId, int32_t flags,
+                              int64_t ceDataInode);
+```
+
+The behavior, from the implementation in `InstalldNativeService.cpp`:
+
+- **`createAppData`** creates the `{pkg}-pcc` CE and DE directories when a valid
+  PCC UID is supplied in `CreateAppDataArgs`; if the PCC UID is invalid (the
+  package no longer needs PCC), any existing `{pkg}-pcc` directories are removed.
+- **`clearAppData`** clears the contents of the `{pkg}-pcc` directories.
+- **`destroyAppData`** (and the dedicated `destroyPccData`) deletes them.
+
+The whole feature is gated behind the
+`android.app.privatecompute.flags.enable_pcc_framework_support` aconfig flag.
+
+A related pair of operations, `moveAppDataPath()` and `copyAppDataPath()`, was
+added to move or copy data between application directories (used when migrating
+data into or out of the PCC directories):
+
+> `frameworks/native/cmds/installd/InstalldNativeService.h`
+
+```cpp
+binder::Status copyAppDataPath(const std::optional<std::string>& uuid,
+                               const std::string& fromPath, const std::string& toPath,
+                               int32_t userId, int32_t appId, const std::string& seInfo,
+                               int32_t flags, int32_t callerUid,
+                               const android::sp<IAppDataOperationCallback>& callback);
+binder::Status moveAppDataPath(const std::optional<std::string>& uuid,
+                               const std::string& fromPath, const std::string& toPath,
+                               int32_t userId, int32_t appId, const std::string& seInfo,
+                               int32_t flags, int32_t callerUid,
+                               const android::sp<IAppDataOperationCallback>& callback);
+```
+
+The implementation is deliberately written with the `*at()` family of syscalls
+operating on open file descriptors rather than `std::filesystem`, specifically
+to avoid TOCTOU attacks: a path checked to not be a symlink could be swapped for
+one mid-operation, so working through fds keeps the operation pinned to the
+inode that was verified. The only structural restriction these methods enforce
+themselves is that both source and destination paths must live under the CE or
+DE app-data roots; the caller is responsible for the higher-level policy.
+
+`installd` also tightened storage hygiene in 17: it now verifies source
+ownership in app-data operations, restricts inode quota setup to application
+UIDs, and disables hard inode quotas by default. These are defense-in-depth
+fixes to the quota and ownership handling described in 12.7.9, not new APIs.
+
+### 12.11.2 InputFlinger: the InteractionReporter Stage
+
+The input pipeline (12.3.2) gained a new listener stage between the metrics
+collector and the dispatcher. As of 17 the `InputListener` flow in
+`frameworks/native/services/inputflinger/InputManager.cpp` reads:
+
+```
+InputReader
+  -> UnwantedInteractionBlocker
+  -> InputFilter
+  -> PointerChoreographer
+  -> InputProcessor
+  -> InputDeviceMetricsCollector
+  -> InteractionReporter
+  -> InputDispatcher
+```
+
+`InteractionReporter` (in `frameworks/native/services/inputflinger/reporter/InputReporter.cpp`)
+observes the event stream and reports user-interaction signals to interested
+system components -- for example, linking the interaction provider with the
+attention service's wake-up API so that user activity can keep attention-aware
+features awake. It is a pure observer: it sits in the pipeline as a
+`TracedInputListener` and forwards every event unchanged to the dispatcher, so
+it adds no behavioral change to event routing.
+
+Correspondingly, `InputManager` owns it as a dedicated member:
+
+> `frameworks/native/services/inputflinger/InputManager.h`
+
+```cpp
+std::unique_ptr<InteractionReporterInterface> mInteractionReporter;
+```
+
+### 12.11.3 SensorService: Suspending Frozen Clients
+
+SensorService in 17 stops delivering sensor events to clients whose processes
+are **frozen** (cached apps that the framework has frozen via the freezer
+cgroup). Previously, a frozen client's `SensorEventConnection` would keep its
+sensors active, wasting power producing events that the app could not consume.
+
+The mechanism hooks Binder's frozen-state notifications. SensorService records
+the client PID per connection and registers a `ClientStateRecipient` that
+implements both the death recipient and the frozen-state callback for that
+client:
+
+> `frameworks/native/services/sensorservice/SensorService.h`
+
+```cpp
+class ClientStateRecipient : public IBinder::DeathRecipient,
+                             public IBinder::FrozenStateChangeCallback {
+    // ...
+    bool isFrozen() const { /* ... */ return mIsFrozen; }
+};
+```
+
+When a client process is frozen, `onStateChanged()` fires and the corresponding
+sensor connection is disabled with a dedicated reason
+(`DISABLED_REASON_PID_FROZEN`, defined in `SensorDevice.h`), pausing event
+delivery; when the process is unfrozen, the connection is re-enabled. The
+feature is gated by
+`android.hardware.flags.suspend_sensor_event_delivery_on_frozen_pid`.
+
+SensorService also added **per-sensor active-time tracking** in 17: the old
+per-connection `FlushInfo` was refactored into a `SensorConnectionRecord`, and a
+`UsageStats` struct now tracks each sensor's activation time and total active
+duration, accounting for UID idle suspensions. This surfaces in
+`dumpsys sensorservice` and feeds the platform's power-attribution story.
+
+### 12.11.4 SurfaceFlinger: Mirror with Crop, Display LUTs, and Content Filtering
+
+SurfaceFlinger's internal `mirrorLayer()` gained a crop handle so a mirrored
+surface can be clipped to a sub-region of the source instead of mirroring the
+whole layer subtree:
+
+> `frameworks/native/services/surfaceflinger/SurfaceFlinger.h`
+
+```cpp
+status_t mirrorLayer(const LayerCreationArgs& args, const sp<IBinder>& mirrorFromHandle,
+                     const sp<IBinder>& stopAtHandle, const sp<IBinder>& cropByHandle,
+                     gui::CreateSurfaceResult& outResult);
+```
+
+In 16 this method took only `mirrorFromHandle` and `stopAtHandle`; the
+`cropByHandle` parameter is the 17 addition.
+
+On the color-management side (12.2.15), 17 carries forward per-layer **display
+LUTs** (look-up tables): a layer can opt into a LUT, tracked by the
+`useLuts` flag in its drawing state, and SurfaceFlinger can generate a LUT from
+**SMPTE ST 2094-50** dynamic tone-mapping metadata. The composition path and
+`dumpsys SurfaceFlinger` now log both the app-provided and generated LUTs and
+the 2094-50 metadata, which helps diagnose HDR tone-mapping decisions.
+
+Two further flags are worth noting because they shape behavior covered earlier:
+
+- **`virtual_display_content_filtering`** (namespace `window_surfaces`) lets
+  SurfaceFlinger filter what a virtual display is allowed to capture, hardening
+  secure apps against unauthorized content capture through virtual displays.
+- **`synced_resolution_switch`** (namespace `core_graphics`) synchronizes a
+  display resolution modeset with framebuffer resizing. SurfaceFlinger only
+  applies it once boot has finished:
+
+> `frameworks/native/services/surfaceflinger/SurfaceFlinger.h`
+
+```cpp
+bool shouldSyncResolutionSwitch() const {
+    return FlagManager::getInstance().synced_resolution_switch() &&
+            mBootStage == BootStage::FINISHED;
+}
+```
+
+These flags live in `surfaceflinger_flags_new.aconfig`, the staging file for
+flags that have not yet been folded into the long-lived
+`surfaceflinger_flags.aconfig`.
+
+### 12.11.5 servicemanager, dumpsys, and GpuService Refinements
+
+**servicemanager: isolated apps can wait for lazy services.** Earlier releases
+rejected `registerForNotifications()` from isolated app processes outright with
+`EX_SECURITY`, which broke `AServiceManager_waitForService()` for isolated
+clients (such as AICore) trying to reach a lazy service. In 17,
+`servicemanager` allows isolated apps to register for notifications and instead
+defers the security decision to registration time. A new `RegistrationCallback`
+struct records the waiting client's UID, and both `tryStartService()` and
+`addService()` consult the service's `allowIsolated` flag before firing any
+callback. If a service registered with `allowIsolated=false`, notifications are
+silently dropped for isolated clients, so no restricted service is exposed. The
+net effect: an isolated client can now successfully wait for and connect to a
+lazy service that opts into isolated access, without leaking services that do
+not.
+
+> `frameworks/native/cmds/servicemanager/ServiceManager.cpp`
+
+**dumpsys: `-w` waits for a lazy service.** `dumpsys` gained a `-w` flag,
+mirroring `cmd -w`. With it, `dumpsys` waits indefinitely for a lazy (on-demand)
+service to become ready before dumping, instead of failing fast when the service
+is not yet registered:
+
+> `frameworks/native/cmds/dumpsys/dumpsys.cpp`
+
+```
+-w: wait for service indefinitely to be ready before dumping
+```
+
+This pairs naturally with the lazy-service lifecycle described in 12.10.9: a
+service that only starts on demand can now be dumped with
+`dumpsys -w <service>` without a race against its first client.
+
+**GpuService: GPU work tracking on laptops.** The eBPF GPU-work tracker (12.8.4)
+no longer hard-requires the `power/gpu_work_period` kernel tracepoint on the
+laptop form factor, where that tracepoint may be absent. GpuService also moved
+its BPF maps to `BpfMap::init` (rather than constructing them) so that a load
+failure is handled gracefully instead of aborting, and dropped a stale ANGLE
+`angle_feature_overrides` flag reference. These are robustness changes to the
+monitoring subsystem; the GpuStats, GpuMem, GpuWork, and ANGLE-as-system-driver
+features described in 12.8 are otherwise unchanged.
+
+---
+
+## 12.12 Try It
 
 This section provides hands-on exercises for exploring the native services
 covered in this chapter.
 
-### 12.11.1 Overview
+### 12.12.1 Overview
 
 The exercises below are designed to be run on a development device or
 emulator with `adb` access. Some exercises require `root` access (available
@@ -4252,7 +4518,7 @@ All source paths referenced in this chapter are relative to the AOSP root:
 | AudioFlinger | `frameworks/av/services/audioflinger/` |
 | CameraService | `frameworks/av/services/camera/` |
 | MediaCodecService | `frameworks/av/services/mediacodec/` |
-| Codec2 | `frameworks/av/codec2/` |
+| Codec2 | `frameworks/av/media/codec2/` |
 | installd | `frameworks/native/cmds/installd/` |
 | GpuService | `frameworks/native/services/gpuservice/` |
 | SensorService | `frameworks/native/services/sensorservice/` |

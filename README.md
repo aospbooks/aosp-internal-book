@@ -13,7 +13,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 <!-- --8<-- [start:coverage] -->
 ## What This Book Covers
 
-65 chapters organized bottom-to-top through the Android architecture:
+69 chapters organized bottom-to-top through the Android architecture:
 
 | Part | Ch. | Topics |
 |------|-----|--------|
@@ -60,6 +60,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | IX | 40 | Security (TEE/Trusty) |
 | IX | 41 | Credential Manager |
 | IX | 42 | DRM |
+| IX | 68 | LFI In-Process Sandbox |
 | X | 43 | Widgets & RemoteViews (RemoteCompose) |
 | X | 44 | WebView |
 | X | 45 | Accessibility |
@@ -69,6 +70,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | XI | 49 | Settings |
 | XII | 50 | AI & AppFunctions (Computer Control) |
 | XII | 51 | Companion & Virtual Devices |
+| XII | 67 | NPU Manager |
 | XIII | 52 | Mainline Modules (APEX) |
 | XIII | 53 | OTA Updates |
 | XIII | 54 | Virtualization (pKVM/crosvm) |
@@ -82,6 +84,8 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | XIV | 62 | Camera2 Pipeline |
 | XV | 63 | Custom ROM Guide (step-by-step) |
 | XV | 64 | Running Windows Games on Android |
+| XVI | 65 | Software Defined Vehicle |
+| XVI | 66 | SDV Middleware & Vehicle Communication |
 | App. | A | Key Files Reference |
 | App. | B | Glossary |
 | App. | C | Why Kotlin Isn't on the Public API |
@@ -106,7 +110,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 ./serve.sh epub      # build EPUB → site/aosp-internals.epub
 ```
 
-The `pdf` command stops any running server, then builds all 65 chapters into a
+The `pdf` command stops any running server, then builds all 69 chapters into a
 single PDF with rendered Mermaid diagrams (takes a while — uses Playwright/Chromium).
 
 The `epub` command works the same way, producing an EPUB3 file with rendered
@@ -155,7 +159,7 @@ Tests `mkdocs build` on push to `main` and PRs (~2 min).
 ## Project Structure
 
 ```
-[0-9]*.md                  65 chapter files
+[0-9]*.md                  69 chapter files
 [A-D]-appendix-*.md        4 appendix files
 index.md                   Website homepage
 mkdocs.yml                 MkDocs config (Material theme + Mermaid)

@@ -43,9 +43,9 @@ The framework revolves around five central classes:
 | Class | Role | Lines |
 |---|---|---|
 | `AppWidgetProvider` | BroadcastReceiver convenience wrapper for providers | 220 |
-| `AppWidgetHost` | Host-side connection to AppWidgetService | 726 |
-| `AppWidgetHostView` | The actual View container that renders RemoteViews | ~800 |
-| `AppWidgetManager` | System-service client proxy (singleton) | ~1,500 |
+| `AppWidgetHost` | Host-side connection to AppWidgetService | 751 |
+| `AppWidgetHostView` | The actual View container that renders RemoteViews | 1,241 |
+| `AppWidgetManager` | System-service client proxy (singleton) | 1,876 |
 | `AppWidgetProviderInfo` | Parcelable metadata describing a widget provider | 647 |
 
 Plus newer additions:
@@ -114,7 +114,7 @@ The hook methods that subclasses override:
 
 ### 43.1.3 AppWidgetHost -- The Host Entry Point
 
-`AppWidgetHost` (726 lines) is the host application's handle to the widget system.
+`AppWidgetHost` (751 lines) is the host application's handle to the widget system.
 Launcher3, for example, creates an `AppWidgetHost` with a fixed host ID of 1024.
 
 The class has three critical architectural elements:
@@ -212,8 +212,9 @@ Key fields:
 
 ### 43.1.5 AppWidgetEvent -- Engagement Metrics
 
-`AppWidgetEvent` (401 lines) is a newer addition (Android 16, flagged under
-`FLAG_ENGAGEMENT_METRICS`) that tracks user interactions with widgets:
+`AppWidgetEvent` (401 lines) is a newer addition (still flagged under
+`engagement_metrics` in `frameworks/base/core/java/android/appwidget/flags.aconfig`)
+that tracks user interactions with widgets:
 
 ```java
 // frameworks/base/core/java/android/appwidget/AppWidgetEvent.java
@@ -249,7 +250,10 @@ public Builder endVisibility() {
 ```
 
 Events are serialized to `PersistableBundle` and reported to `UsageStatsManager` via
-`AppWidgetHost.reportAllWidgetEvents()`.
+`AppWidgetHost.reportAllWidgetEvents()`
+(`frameworks/base/core/java/android/appwidget/AppWidgetHost.java:693`). A provider
+queries its own widgets' events through `AppWidgetManager.queryAppWidgetEvents()`
+(see Section 43.10.3).
 
 ### 43.1.6 Widget Lifecycle
 
@@ -504,7 +508,7 @@ Hard limits prevent abuse:
 ## 43.3 RemoteViews
 
 `RemoteViews` is the central mechanism for cross-process UI in Android. Defined in
-`frameworks/base/core/java/android/widget/RemoteViews.java` (10,874 lines), it
+`frameworks/base/core/java/android/widget/RemoteViews.java` (11,236 lines), it
 serializes a description of view modifications as `Parcelable` actions that can be
 sent over Binder, then applied (inflated) in the receiving process.
 
@@ -962,7 +966,7 @@ Several security measures apply:
 RemoteCompose is a new rendering system within AOSP that provides a
 programmatic alternative to XML layouts for cross-process rendering. Located in
 `frameworks/base/core/java/com/android/internal/widget/remotecompose/`, it
-comprises 265 Java files totaling over 60,000 lines of code.
+comprises 299 Java files totaling roughly 77,000 lines of code.
 
 ### 43.5.1 Design Goals
 
@@ -1018,9 +1022,9 @@ contains:
 // frameworks/base/.../remotecompose/core/CoreDocument.java
 public class CoreDocument implements Serializable {
     public static final int MAJOR_VERSION = 1;
-    public static final int MINOR_VERSION = 2;
+    public static final int MINOR_VERSION = 3;
     public static final int PATCH_VERSION = 0;
-    public static final int DOCUMENT_API_LEVEL = 8;
+    public static final int DOCUMENT_API_LEVEL = 9;
 
     ArrayList<Operation> mOperations = new ArrayList<>();
     RootLayoutComponent mRootLayoutComponent = null;
@@ -1972,12 +1976,212 @@ Widget resizing involves:
 
 ---
 
-## 43.10 Try It: Build a Custom Widget
+## 43.10 Android 17 Widget Changes
+
+The widget stack received several incremental but consequential changes in
+Android 17. They are gated behind flags in
+`frameworks/base/core/java/android/appwidget/flags.aconfig`, which is the
+authoritative list of what is in flight for the platform. This section covers the
+ones that change the developer-visible contract or the rendering pipeline.
+
+### 43.10.1 Connected-Display Awareness
+
+With more devices driving external and connected displays, a widget now needs to
+know *which* display it is rendering on so it can size itself and read the correct
+`DisplayMetrics`. Android 17 adds this under the `widget_display_changes` flag
+(`FLAG_WIDGET_DISPLAY_CHANGES`).
+
+The framework exposes a new option key on the widget's option bundle,
+`AppWidgetManager.OPTION_APPWIDGET_DISPLAY_ID`
+(`frameworks/base/core/java/android/appwidget/AppWidgetManager.java:270`):
+
+```java
+// frameworks/base/core/java/android/appwidget/AppWidgetManager.java
+@FlaggedApi(Flags.FLAG_WIDGET_DISPLAY_CHANGES)
+public static final String OPTION_APPWIDGET_DISPLAY_ID = "appWidgetDisplayId";
+```
+
+`AppWidgetHostView` populates this key whenever it pushes new size options to the
+service, reading its own attached display
+(`frameworks/base/core/java/android/appwidget/AppWidgetHostView.java:450`):
+
+```java
+// frameworks/base/core/java/android/appwidget/AppWidgetHostView.java
+if (widgetDisplayChanges() && getDisplay() != null) {
+    options.putInt(AppWidgetManager.OPTION_APPWIDGET_DISPLAY_ID,
+            getDisplay().getDisplayId());
+}
+```
+
+A provider reading `OPTION_APPWIDGET_DISPLAY_ID` from the options bundle can hand
+the id to `DisplayManager.getDisplay(int)` to recover the `Display` and its
+density, then build appropriately scaled `RemoteViews`. Before this change a widget
+moved to a secondary display could only infer sizing from the min/max width and
+height extras.
+
+The same flag also gates the public complex-unit padding overload,
+`setViewPadding(int, float, float, float, float, int)`
+(`frameworks/base/core/java/android/widget/RemoteViews.java:7624`), which lets a
+provider express padding in any `TypedValue.COMPLEX_UNIT_*` (such as `COMPLEX_UNIT_DIP`)
+instead of being limited to a pixel `ViewPaddingAction`. This matters precisely
+because pixel values do not survive a move between displays of different densities.
+
+### 43.10.2 Persisting RemoteViews Previews to Protobuf
+
+Generated previews (Section 43.2.8) are `RemoteViews` snapshots of widget content
+shown in the picker. Persisting a live `RemoteViews` parcel across reboots is
+fragile because a `Parcel` is not a stable on-disk format. Android 17 adds a stable
+protobuf representation under the `remote_views_proto` flag
+(`FLAG_REMOTE_VIEWS_PROTO`).
+
+The wire format is defined in
+`frameworks/base/core/proto/android/widget/remoteviews.proto` as the
+`RemoteViewsProto` message, and the encode/decode logic lives in a dedicated
+1,597-line companion,
+`frameworks/base/core/java/android/widget/RemoteViewsSerializers.java`. `RemoteViews`
+itself gains two flagged methods
+(`frameworks/base/core/java/android/widget/RemoteViews.java:10681` and `:10752`):
+
+```java
+// frameworks/base/core/java/android/widget/RemoteViews.java
+@FlaggedApi(FLAG_REMOTE_VIEWS_PROTO)
+public void writePreviewToProto(@NonNull Context context, ProtoOutputStream out) { ... }
+
+@FlaggedApi(FLAG_REMOTE_VIEWS_PROTO)
+public static RemoteViews createPreviewFromProto(Context context, ProtoInputStream in)
+        throws Exception { ... }
+```
+
+Unlike a `Parcel`, the proto encodes resource *names* rather than raw integer
+resource IDs (for example `out.write(RemoteViewsProto.LAYOUT_ID, ...)` writes the
+resource name), so a preview survives an APK update that reshuffles resource ID
+allocation. The `.proto` carries an explicit `Next tag` marker and documents that
+deleted fields must be `reserved`, signalling that this is intended as a durable,
+forward-compatible format. `RemoteViewsSerializers` knows how to round-trip
+`CharSequence` spans, `ColorStateList`, `Icon`, and `BlendMode` through the same
+proto schema.
+
+### 43.10.3 Querying Engagement Events
+
+Section 43.1.5 introduced `AppWidgetEvent`. Android 17 closes the loop with a
+provider-facing read API, `AppWidgetManager.queryAppWidgetEvents()`
+(`frameworks/base/core/java/android/appwidget/AppWidgetManager.java:1688`), still
+flagged under `engagement_metrics`:
+
+```java
+// frameworks/base/core/java/android/appwidget/AppWidgetManager.java
+@FlaggedApi(Flags.FLAG_ENGAGEMENT_METRICS)
+@NonNull
+public List<AppWidgetEvent> queryAppWidgetEvents(long beginTime, long endTime) {
+    ParceledListSlice<AppWidgetEvent> events = mService.queryAppWidgetEvents(
+            mPackageName, beginTime, endTime);
+    return events != null ? events.getList() : Collections.emptyList();
+}
+```
+
+The method returns only events for widgets provided by the calling package and
+requires no additional permission. Events are retained by the system for only a few
+days. The host side feeds the pipeline: `AppWidgetHost.reportAllWidgetEvents()`
+(`frameworks/base/core/java/android/appwidget/AppWidgetHost.java:693`) flushes
+collected `AppWidgetEvent`s to the service, which forwards them to
+`UsageStatsManager` and triggers periodic collection through
+`ReportWidgetEventsJob`
+(`frameworks/base/services/appwidget/java/com/android/server/appwidget/ReportWidgetEventsJob.java`).
+
+### 43.10.4 List Setters and Smaller System Corner Radius
+
+Two smaller refinements round out the release:
+
+- **`setCharSequenceList()`** — a new generic setter
+  (`frameworks/base/core/java/android/widget/RemoteViews.java:8262`) that invokes a
+  view method taking a single `List<CharSequence>` argument. The action serializes
+  the list with `Parcel.writeCharSequenceList()` and, under `remote_views_proto`,
+  round-trips through `writeCharSequenceListToProto()`. This fills a long-standing
+  gap where only scalar `CharSequence` setters were reachable through reflection.
+
+- **Smaller default widget corner radius** — the `use_smaller_app_widget_system_radius`
+  flag (fixed read-only) changes the system-provided background radius from 28dp to
+  24dp. The two values coexist in
+  `frameworks/base/core/res/res/values/dimens.xml:1115`, each tagged with the
+  feature flag so the resource resolves to the right value at runtime:
+
+```xml
+<!-- frameworks/base/core/res/res/values/dimens.xml -->
+<dimen name="system_app_widget_background_radius"
+    android:featureFlag="!android.appwidget.flags.use_smaller_app_widget_system_radius">28dp</dimen>
+<dimen name="system_app_widget_background_radius"
+    android:featureFlag="android.appwidget.flags.use_smaller_app_widget_system_radius">24dp</dimen>
+```
+
+### 43.10.5 New Widget Categories and App-Lock Removal
+
+`AppWidgetProviderInfo` gains `WIDGET_CATEGORY_NOT_KEYGUARD` (value 8,
+`frameworks/base/core/java/android/appwidget/AppWidgetProviderInfo.java:108`),
+gated by the `not_keyguard_category` flag. A provider tags a widget with this
+category to declare that it should be offered everywhere *except* the keyguard,
+which is a cleaner contract than the previous all-or-nothing
+`WIDGET_CATEGORY_KEYGUARD`.
+
+On the service side, the `app_lock_widget_removal` flag wires
+`AppWidgetServiceImpl`
+(`frameworks/base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java`)
+to remove widgets that belong to packages placed under an app lock, so a locked
+app's content is not left exposed on the home screen.
+
+## 43.11 Android 17 RemoteCompose Changes
+
+RemoteCompose continues to be the fastest-moving part of this subsystem. Between
+Android 16 and 17 the in-tree package grew to 299 Java files (roughly 77,000
+lines), and the document format version advanced.
+
+### 43.11.1 Document Version Bump
+
+`CoreDocument`
+(`frameworks/base/core/java/com/android/internal/widget/remotecompose/core/CoreDocument.java`)
+now declares `MINOR_VERSION = 3` and `DOCUMENT_API_LEVEL = 9` (Android 16 shipped
+`MINOR_VERSION = 2` / `DOCUMENT_API_LEVEL = 8`):
+
+```java
+// frameworks/base/.../remotecompose/core/CoreDocument.java
+public static final int MAJOR_VERSION = 1;
+public static final int MINOR_VERSION = 3;
+public static final int PATCH_VERSION = 0;
+public static final int DOCUMENT_API_LEVEL = 9;
+```
+
+The API level is the contract a player advertises and a document requires. A player
+exposes its supported level through the `ID_API_LEVEL` time variable
+(`TimeVariables.updateTime()` loads `DOCUMENT_API_LEVEL + BUILD`), and a document
+gates operations on it via `WireBuffer.mValidOperations[]` (Section 43.5.4). When a
+host's player advertises level 9, a document built against level 8 still loads,
+because the `canBeDisplayed()` check
+(`frameworks/base/core/java/com/android/internal/widget/remotecompose/player/RemoteComposeDocument.java`)
+compares both the major/minor version and the required-capability bitmask before
+the player attempts to paint. This forward/backward-compatibility handshake is what
+lets a widget host and a provider compiled against different platform levels still
+interoperate.
+
+### 43.11.2 Continued Growth of the Operation Set
+
+The operation registry in
+`frameworks/base/core/java/com/android/internal/widget/remotecompose/core/Operations.java`
+keeps the opcode assignments stable across versions (the draw, data, matrix,
+modifier, and layout opcodes documented in Sections 43.6 and 43.7 are unchanged),
+which is exactly what the version-gating mechanism requires: an opcode's numeric
+value must never be reused so that an older player can reliably reject an operation
+it does not understand rather than misinterpret it. New capabilities are added by
+appending new opcodes and bumping `MINOR_VERSION`, not by repurposing existing ones.
+The `remote_document_features_2025q4` flag in `flags.aconfig` tracks the latest
+round of additions feeding into this growth.
+
+---
+
+## 43.12 Try It: Build a Custom Widget
 
 This section provides a practical exercise demonstrating the concepts covered
 in this chapter.
 
-### 43.10.1 XML-Based Widget (Traditional)
+### 43.12.1 XML-Based Widget (Traditional)
 
 **Step 1: Create the AppWidgetProvider**
 
@@ -2079,7 +2283,7 @@ public class MyWidgetProvider extends AppWidgetProvider {
 </receiver>
 ```
 
-### 43.10.2 Collection Widget with RemoteViewsService
+### 43.12.2 Collection Widget with RemoteViewsService
 
 **Step 1: Implement the factory**
 
@@ -2167,7 +2371,7 @@ public void onUpdate(Context context, AppWidgetManager manager,
 }
 ```
 
-### 43.10.3 Sized RemoteViews for Responsive Layout
+### 43.12.3 Sized RemoteViews for Responsive Layout
 
 ```java
 @Override
@@ -2202,7 +2406,7 @@ public void onUpdate(Context context, AppWidgetManager manager,
 }
 ```
 
-### 43.10.4 RemoteCompose Widget (DrawInstructions)
+### 43.12.4 RemoteCompose Widget (DrawInstructions)
 
 ```java
 @Override
@@ -2232,7 +2436,7 @@ When the host's `AppWidgetHostView` receives these RemoteViews, it detects
 `mHasDrawInstructions == true` and uses a `RemoteComposePlayer` instead of
 inflating an XML layout.
 
-### 43.10.5 Engagement Metrics
+### 43.12.5 Engagement Metrics
 
 ```java
 // In your widget's AppWidgetHostView setup
@@ -2254,7 +2458,7 @@ for (AppWidgetEvent event : events) {
 }
 ```
 
-### 43.10.6 Build and Test
+### 43.12.6 Build and Test
 
 To build a widget within the AOSP tree:
 
@@ -2277,7 +2481,7 @@ adb shell dumpsys appwidget
 adb shell dumpsys meminfo com.example.widget
 ```
 
-### 43.10.7 Debugging Tips
+### 43.12.7 Debugging Tips
 
 1. **Widget not appearing in picker**: Verify the `<receiver>` has the correct
    intent-filter and `<meta-data>` in the manifest. Check `adb shell dumpsys
@@ -2347,7 +2551,7 @@ The key takeaways:
    enforcing security policy, managing state persistence, and handling periodic
    updates via `AlarmManager`.
 
-3. **RemoteCompose** is a significant new addition (265 files, 60,000+ lines)
+3. **RemoteCompose** is a significant new addition (299 files, ~77,000 lines)
    that provides a binary bytecode format for rendering. It supports draw
    operations, layout containers, modifiers, variables, expressions, animations,
    haptics, and accessibility -- far exceeding what `RemoteViews` can express.
@@ -2371,7 +2575,9 @@ The key takeaways:
 | `frameworks/base/core/java/android/appwidget/AppWidgetManager.java` | Public API entry point |
 | `frameworks/base/core/java/android/appwidget/AppWidgetProviderInfo.java` | Widget metadata (647 lines) |
 | `frameworks/base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java` | system_server implementation |
-| `frameworks/base/core/java/android/widget/RemoteViews.java` | RemoteViews action serialization (10,874 lines) |
+| `frameworks/base/core/java/android/widget/RemoteViews.java` | RemoteViews action serialization (11,236 lines) |
+| `frameworks/base/core/java/android/widget/RemoteViewsSerializers.java` | RemoteViews protobuf preview serialization (1,597 lines) |
+| `frameworks/base/core/proto/android/widget/remoteviews.proto` | `RemoteViewsProto` preview wire format |
 | `frameworks/base/core/java/android/widget/RemoteViewsService.java` | Collection widget service (321 lines) |
 | `frameworks/base/core/java/android/widget/RemoteViewsAdapter.java` | Collection widget adapter (1,305 lines) |
 | `frameworks/base/core/java/com/android/internal/widget/remotecompose/core/CoreDocument.java` | RemoteCompose document model |
@@ -2417,6 +2623,13 @@ Android's WebView has undergone three major architectural eras:
    updatable APK delivered through the Play Store or system updaters. The framework contains
    only thin proxy classes; the actual implementation lives in the WebView provider package
    (typically `com.google.android.webview` or `com.android.webview`).
+
+4. **APEX-shelled provider selection (Android 17)**: Android 17 introduces a launched APEX
+   shell, `com.android.webview.bootstrap`, that packages the WebView provider-selection logic
+   so it can ship and update as a Mainline module instead of as part of the platform image.
+   The provider APK itself remains a separate updatable package; what becomes modular is the
+   `WebViewUpdateService` machinery plus its client wrappers. Section 44.10 walks through this
+   change and the other 17-specific WebView updates in detail.
 
 ### 44.1.2 High-Level Component Map
 
@@ -2582,6 +2795,7 @@ complete set of major classes and their roles:
 | `WebViewFactoryProvider` | Interface for the top-level provider factory |
 | `WebViewProvider` | Interface for per-WebView backend |
 | `WebViewDelegate` | Bridge granting provider access to framework internals |
+| `SelectionActionMenuClient` | OEM hook to customize WebView's text-selection menu (new in Android 17) |
 | `WebViewLibraryLoader` | Native library loading with RELRO optimization |
 | `WebViewZygote` | Manages the child zygote for renderer processes |
 | `WebViewUpdateService` | Legacy client for the system update service |
@@ -2623,11 +2837,22 @@ system service:
 WebView behavior is influenced by several flag mechanisms:
 
 1. **`flags.aconfig`**: The `android.webkit` package defines aconfig flags for gradual
-   feature rollouts. Key flags include:
-   - `FLAG_UPDATE_SERVICE_IPC_WRAPPER`: Gates the `WebViewUpdateManager` class
-   - `FLAG_FILE_SYSTEM_ACCESS`: Enables File System Access API in WebView
-   - `FLAG_USER_AGENT_REDUCTION`: Enables User-Agent string reduction
-   - `FLAG_DEPRECATE_START_SAFE_BROWSING`: Deprecates explicit Safe Browsing init
+   feature rollouts. The Android 17 flag set (`frameworks/base/core/java/android/webkit/flags.aconfig`)
+   is:
+   - `update_service_ipc_wrapper` (`FLAG_UPDATE_SERVICE_IPC_WRAPPER`): Gates the
+     `WebViewUpdateManager` wrapper class
+   - `mainline_apis`: New APIs required by the `WebViewBootstrap` Mainline module (see 44.10)
+   - `selection_action_menu_client`: New API for OEM customization of WebView's text-selection
+     menu (`SelectionActionMenuClient`, new in 17)
+   - `file_system_access` (`FLAG_FILE_SYSTEM_ACCESS`): Enables File System Access API in WebView
+   - `user_agent_reduction` (`FLAG_USER_AGENT_REDUCTION`): Enables User-Agent string reduction
+   - `deprecate_start_safe_browsing` (`FLAG_DEPRECATE_START_SAFE_BROWSING`): Deprecates the
+     explicit `startSafeBrowsing()` call now that it is a no-op
+
+   The service side declares one flag in
+   `frameworks/base/services/core/java/com/android/server/webkit/flags.aconfig`,
+   `update_service_v2`, which selected `WebViewUpdateServiceImpl2`; in Android 17 it is fully
+   rolled out and the legacy implementation is gone (see 44.4.1).
 
 2. **`@ChangeId` annotations**: Compatibility changes gated by `targetSdkVersion`:
    - `ENABLE_SIMPLIFIED_DARK_MODE` (API 33+): Algorithmic dark mode
@@ -2683,8 +2908,15 @@ private static final String CHROMIUM_WEBVIEW_FACTORY_METHOD = "create";
 ```
 
 This class name is resolved at runtime from the WebView provider APK's classloader. The
-trailing "ForT" indicates the API compatibility level (Tiramisu/API 33+). Different
-Android versions may use different suffixed class names.
+trailing "ForT" indicates the API compatibility tier (Tiramisu/API 33+) that the provider
+must implement, not the OS release. Android 17 still loads
+`WebViewChromiumFactoryProviderForT`: the suffix only advances when the framework adds a new
+mandatory provider entry point, which has not happened since Tiramisu. A new provider APK
+running on Android 17 implements this same `create(WebViewDelegate)` contract.
+
+```
+Source: frameworks/base/core/java/android/webkit/WebViewFactory.java (lines 57-60)
+```
 
 ### 44.2.3 Provider Initialization Sequence
 
@@ -2732,7 +2964,11 @@ sequenceDiagram
 ### 44.2.4 Security Guard: Privileged Process Rejection
 
 WebView explicitly refuses to load in privileged system processes. The `getProvider()`
-method checks the caller's UID:
+method checks the caller's UID (Android 17 keeps the same five-UID denylist):
+
+```
+Source: frameworks/base/core/java/android/webkit/WebViewFactory.java (lines 342-346)
+```
 
 ```java
 final int appId = UserHandle.getAppId(android.os.Process.myUid());
@@ -2947,8 +3183,16 @@ public void evaluateJavascript(@NonNull String script,
 ```
 
 The `checkThread()` call enforces that WebView is only accessed from the thread on
-which it was created (typically the main/UI thread). Starting from API 18 (Jelly Bean MR2),
-violations throw an exception rather than silently failing.
+which it was created (typically the main/UI thread). In Android 17 this enforcement is
+**unconditional**: a method called on the wrong thread always throws a `RuntimeException`,
+regardless of the app's `targetSdkVersion`. Earlier releases gated the throw behind a
+`sEnforceThreadChecking` field (only apps targeting API 18+ got the exception; older apps
+merely logged a warning). Android 17 removed that field and the `always_enforce_thread_checking`
+flag that backed it, so there is no longer a compatibility escape hatch:
+
+```
+Source: frameworks/base/core/java/android/webkit/WebView.java (checkThread(), lines 2643-2657)
+```
 
 ### 44.3.3 WebViewChromium: The Concrete Implementation
 
@@ -3032,6 +3276,24 @@ The service implementation (`WebViewUpdateServiceImpl2`) tracks:
 - Which provider is currently active
 - The RELRO preparation state
 - Package installation/removal events that affect provider selection
+
+`WebViewUpdateServiceImpl2` is the only implementation in Android 17. It used to be selected
+behind the `android.webkit.update_service_v2` aconfig flag, which has since been cleaned up;
+`WebViewUpdateService` now constructs `new WebViewUpdateServiceImpl2(new SystemImpl(context))`
+unconditionally, so there is no longer an older `WebViewUpdateServiceImpl` fallback.
+
+```
+Source: frameworks/base/services/core/java/com/android/server/webkit/WebViewUpdateService.java (lines 64, 73)
+```
+
+The service delegates all platform queries through a `SystemInterface` (implemented by
+`SystemImpl`), which is what makes the update logic testable and lets it be packaged into the
+Mainline shell described in Section 44.10:
+
+```
+Source: frameworks/base/services/core/java/com/android/server/webkit/SystemInterface.java
+Source: frameworks/base/services/core/java/com/android/server/webkit/SystemImpl.java
+```
 
 ### 44.4.2 Provider Selection Algorithm
 
@@ -3145,14 +3407,20 @@ Not Responding) dialogs.
 
 ### 44.4.5 Mainline Module Integration
 
-Starting with Android 10, WebView can be updated as a **Mainline module** via Google Play
-system updates. This uses the same package update mechanism but with Mainline-specific
-delivery:
+Starting with Android 10, the WebView provider can be updated as a **Mainline module** via
+Google Play system updates. Historically this used the same package-update mechanism but with
+Mainline-specific delivery:
 
-- WebView updates are delivered as APK modules (not APEX)
+- The WebView provider is delivered as an APK module (not APEX)
 - Updates can be rolled back if they cause issues
 - The update applies to all users on the device
 - No reboot is required; apps pick up the new version on next WebView creation
+
+Android 17 layers a second piece of modularity on top of this. The *provider* APK stays an
+APK as before, but the *provider-selection machinery* (`WebViewUpdateService`, its
+`WebViewUpdateServiceImpl2` logic, and the `WebViewUpdateManager` client wrapper) is packaged
+into a new launched APEX, `com.android.webview.bootstrap`. Section 44.10 covers this shell and
+why the framework code was restructured around a `SystemInterface` boundary to support it.
 
 ### 44.4.6 Fallback and Recovery
 
@@ -4575,12 +4843,186 @@ renderer crash.
 
 ---
 
-## 44.9 Try It
+## 44.9 WebView in Android 17
+
+Android 17 does not rewrite the WebView architecture described in the preceding sections, but
+it makes four focused changes worth understanding: a launched APEX shell for the update
+service, the full rollout of the second-generation update-service implementation, the removal
+of the thread-checking compatibility escape hatch, and a new OEM hook for the text-selection
+menu. This section covers each, anchored to the 17 source.
+
+### 44.9.1 The WebViewBootstrap APEX Shell
+
+The headline structural change is `com.android.webview.bootstrap`, a new launched APEX defined
+under `packages/modules/WebViewBootstrap/`. It is a Mainline-style shell whose purpose is to
+let the WebView **provider-selection** logic ship and update independently of the platform
+image, the same way Tethering, ART, and other Mainline modules do.
+
+```
+Source: packages/modules/WebViewBootstrap/apex/Android.bp
+Source: packages/modules/WebViewBootstrap/apex/manifest.json
+```
+
+It is important to keep two things separate:
+
+- The **WebView provider** (the Chromium-backed implementation APK, e.g.
+  `com.google.android.webview`) was already independently updatable. That does not change.
+- The **provider-selection machinery** — `WebViewUpdateService`, its
+  `WebViewUpdateServiceImpl2` selection logic, the `WebViewUpdateManager` client wrapper, and
+  the `IWebViewUpdateService` Binder interface — is what the bootstrap APEX is being prepared
+  to carry. Moving this code into a module lets the selection policy and its client APIs evolve
+  without a full OS update.
+
+The APEX is built with the shared `v-launched-apex-module` default, marking it as a module
+that launched (became loadable) in the V (Android 16) cycle and is carried forward:
+
+```
+Source: packages/modules/WebViewBootstrap/apex/Android.bp (apex "com.android.webview.bootstrap", defaults: ["v-launched-apex-module"])
+Source: packages/modules/common/sdk/Android.bp (v-launched-apex-module default)
+```
+
+The module is gated by a release flag and is **off by default** in AOSP. The
+`base_system.mk` build logic only adds the APEX to the image when
+`RELEASE_USE_WEBVIEW_BOOTSTRAP_MODULE` is `true`, and the flag's declared value is `false`:
+
+```
+Source: build/make/target/product/base_system.mk (RELEASE_USE_WEBVIEW_BOOTSTRAP_MODULE guard)
+Source: build/release/flag_declarations/RELEASE_USE_WEBVIEW_BOOTSTRAP_MODULE.textproto
+```
+
+So on a default Android 17 build the update service still runs from the platform, but the
+APEX, the signing keys, and the build plumbing are all present and ready to be switched on.
+
+The following diagram shows what is in the bootstrap APEX versus what stays as a separately
+updatable provider APK:
+
+```mermaid
+graph TB
+    subgraph PLATFORM["System Image / Platform"]
+        WVF["WebViewFactory<br/>(framework proxy loader)"]
+    end
+
+    subgraph APEX["WebViewBootstrap APEX (com.android.webview.bootstrap)"]
+        WVUS["WebViewUpdateService<br/>+ WebViewUpdateServiceImpl2"]
+        WVUM["WebViewUpdateManager<br/>(client wrapper)"]
+        SI["SystemInterface / SystemImpl"]
+        WVUS --> SI
+    end
+
+    subgraph PROVIDER["Provider APK (separately updatable)"]
+        PROV["com.google.android.webview<br/>(Chromium impl)"]
+    end
+
+    WVF -->|"select + load"| PROV
+    WVF -.->|"Binder: IWebViewUpdateService"| WVUS
+    WVUM -.->|"Binder"| WVUS
+
+    style WVUS fill:#51cf66,color:#fff
+    style PROV fill:#4a9eff,color:#fff
+```
+
+The framework code was deliberately restructured to support this packaging. The update service
+talks to the rest of the platform only through a `SystemInterface` abstraction implemented by
+`SystemImpl`, so the selection logic has a clean, mockable boundary that can live inside a
+module:
+
+```
+Source: frameworks/base/services/core/java/com/android/server/webkit/SystemInterface.java
+Source: frameworks/base/services/core/java/com/android/server/webkit/SystemImpl.java
+```
+
+The client-facing APIs the module needs are declared behind the `mainline_apis` aconfig flag in
+`android.webkit`, and `WebViewBootstrapFrameworkInitializer` registers the
+`WebViewUpdateManager` system service so apps reach it via `Context.getSystemService()`:
+
+```
+Source: frameworks/base/core/java/android/webkit/WebViewBootstrapFrameworkInitializer.java
+Source: frameworks/base/core/java/android/webkit/flags.aconfig (flag "mainline_apis")
+```
+
+### 44.9.2 Update Service v2 Fully Rolled Out
+
+The second-generation update service, `WebViewUpdateServiceImpl2`, used to be selected behind
+the `android.webkit.update_service_v2` aconfig flag. In Android 17 that flag is fully rolled
+out and the old implementation has been removed, so `WebViewUpdateService` constructs the new
+implementation unconditionally:
+
+```
+Source: frameworks/base/services/core/java/com/android/server/webkit/WebViewUpdateService.java (lines 64, 73)
+Source: frameworks/base/services/core/java/com/android/server/webkit/flags.aconfig (flag "update_service_v2")
+```
+
+The provider-selection algorithm and the validity checks (`VALIDITY_INCORRECT_SDK_VERSION`,
+`VALIDITY_INCORRECT_VERSION_CODE`, `VALIDITY_INCORRECT_SIGNATURE`, `VALIDITY_NO_LIBRARY_FLAG`)
+described in Section 44.4 all live in this implementation:
+
+```
+Source: frameworks/base/services/core/java/com/android/server/webkit/WebViewUpdateServiceImpl2.java (validityResult(), lines 589-606; findPreferredWebViewPackage(), lines 476-512)
+```
+
+Note one subtlety in the signature check: on debuggable builds signatures are skipped (for
+development), and system apps are accepted as providers regardless of signature, before the
+configured-signature comparison runs:
+
+```
+Source: frameworks/base/services/core/java/com/android/server/webkit/WebViewUpdateServiceImpl2.java (providerHasValidSignature(), lines 669-681)
+```
+
+### 44.9.3 Thread Checking Is Now Unconditional
+
+As noted in Section 44.3.2, Android 17 removed the `sEnforceThreadChecking` field and the
+`always_enforce_thread_checking` flag. `WebView.checkThread()` now always throws a
+`RuntimeException` when a WebView method is called on the wrong thread, regardless of the app's
+`targetSdkVersion`. Previously, apps targeting below API 18 only got a logged warning. This
+closes a long-standing compatibility gap where stale apps could quietly call WebView from the
+wrong thread and trigger hard-to-diagnose corruption:
+
+```
+Source: frameworks/base/core/java/android/webkit/WebView.java (checkThread(), lines 2643-2657)
+```
+
+### 44.9.4 SelectionActionMenuClient: OEM Selection-Menu Customization
+
+Android 17 adds `SelectionActionMenuClient`, a `@SystemApi` class an OEM implements to
+customize the text-selection menu (the floating/dropdown menu shown when the user selects text
+in a WebView). It is gated by the `selection_action_menu_client` aconfig flag:
+
+```
+Source: frameworks/base/core/java/android/webkit/SelectionActionMenuClient.java
+Source: frameworks/base/core/java/android/webkit/flags.aconfig (flag "selection_action_menu_client")
+```
+
+The client is a process-global object: WebView requests it once through the
+`WebViewDelegate.getSelectionActionMenuClient()` bridge, which instantiates the class named by
+the `config_webViewSelectionActionMenuClientPackage` framework resource, and the same instance
+is reused across all WebView instances in the process:
+
+```
+Source: frameworks/base/core/java/android/webkit/WebViewDelegate.java (getSelectionActionMenuClient(), lines 187-207)
+```
+
+Its surface lets an OEM:
+
+| Method | Purpose |
+|---|---|
+| `getDefaultMenuItemOrder(int menuType)` | Order the built-in items (cut, copy, paste, share, select-all, web-search) for floating vs. dropdown menus |
+| `getAdditionalMenuItems(...)` | Add custom `MenuItem` entries (with unique IDs) to the menu |
+| `filterTextProcessingActivities(List<ResolveInfo>)` | Filter which `PROCESS_TEXT` activities appear |
+| `handleMenuItemClick(Context, MenuItem)` | Handle clicks on the custom items it added |
+
+The two menu types are `MENU_TYPE_FLOATING` (the floating toolbar) and `MENU_TYPE_DROPDOWN`,
+and the default items are enumerated by the `DEFAULT_ITEM_*` constants
+(`DEFAULT_ITEM_CUT`, `DEFAULT_ITEM_COPY`, `DEFAULT_ITEM_PASTE`,
+`DEFAULT_ITEM_PASTE_AS_PLAIN_TEXT`, `DEFAULT_ITEM_SHARE`, `DEFAULT_ITEM_SELECT_ALL`,
+`DEFAULT_ITEM_WEB_SEARCH`). Because this is a `@SystemApi` keyed off a framework config
+resource, it is an OEM/device-integrator hook, not something a normal application sets.
+
+## 44.10 Try It
 
 This section provides hands-on exercises to explore WebView internals on a real device
 or emulator.
 
-### Exercise 55.1: Inspect the Active WebView Provider
+### Exercise 44.1: Inspect the Active WebView Provider
 
 Query the system to see which WebView provider is currently active:
 
@@ -4598,7 +5040,7 @@ adb shell dumpsys webviewupdate
 Expected output includes the provider package name, version code, and whether it was
 chosen by default or user preference.
 
-### Exercise 55.2: Switch WebView Provider
+### Exercise 44.2: Switch WebView Provider
 
 On devices with multiple providers (e.g., standalone WebView and Chrome):
 
@@ -4615,7 +5057,7 @@ adb shell cmd webviewupdate set-webview-implementation com.google.android.webvie
 
 You can also switch providers from Settings > Developer Options > WebView Implementation.
 
-### Exercise 55.3: Observe the WebView Zygote
+### Exercise 44.3: Observe the WebView Zygote
 
 ```bash
 # Find the WebView Zygote process
@@ -4628,7 +5070,7 @@ adb shell ps -A | grep isolated
 adb shell ps -AZ | grep webview_zygote
 ```
 
-### Exercise 55.4: Monitor RELRO File Creation
+### Exercise 44.4: Monitor RELRO File Creation
 
 ```bash
 # Watch for RELRO file changes
@@ -4641,7 +5083,7 @@ adb shell cmd webviewupdate set-webview-implementation com.google.android.webvie
 adb shell ls -la /data/misc/shared_relro/
 ```
 
-### Exercise 55.5: Build a Minimal WebView App
+### Exercise 44.5: Build a Minimal WebView App
 
 Create a minimal application that exercises the key WebView APIs:
 
@@ -4744,9 +5186,9 @@ public class WebViewExplorerActivity extends Activity {
 }
 ```
 
-### Exercise 55.6: Remote Debugging with DevTools
+### Exercise 44.6: Remote Debugging with DevTools
 
-1. Build and install the app from Exercise 55.5.
+1. Build and install the app from Exercise 44.5.
 
 2. Open Chrome on your development machine and navigate to `chrome://inspect`.
 
@@ -4766,9 +5208,9 @@ public class WebViewExplorerActivity extends Activity {
    // (Switch to Network tab and reload the page)
    ```
 
-### Exercise 55.7: Test Renderer Crash Handling
+### Exercise 44.7: Test Renderer Crash Handling
 
-With the app from Exercise 55.5 running:
+With the app from Exercise 44.5 running:
 
 ```bash
 # Trigger a renderer crash
@@ -4786,7 +5228,7 @@ Observe the `onRenderProcessGone` callback firing in logcat:
 adb logcat -s WebViewExplorer
 ```
 
-### Exercise 55.8: Trace WebView Performance
+### Exercise 44.8: Trace WebView Performance
 
 ```java
 // In your app, add tracing:
@@ -4812,7 +5254,7 @@ Then pull the trace file and load it in `chrome://tracing`:
 adb pull /sdcard/Android/data/<your.package>/files/webview_trace.json
 ```
 
-### Exercise 55.9: Examine WebView Memory Usage
+### Exercise 44.9: Examine WebView Memory Usage
 
 ```bash
 # Find the WebView-using app's PID
@@ -4832,7 +5274,7 @@ Look for the `libwebviewchromium.so` mapping and verify that the RELRO section i
 from the shared file (it should appear as a file-backed mapping to
 `/data/misc/shared_relro/libwebviewchromium64.relro`).
 
-### Exercise 55.10: Inspect WebView Provider Package
+### Exercise 44.10: Inspect WebView Provider Package
 
 ```bash
 # Get the current provider package name
@@ -4851,7 +5293,7 @@ adb shell pm path $PROVIDER
 adb shell "unzip -l $(pm path $PROVIDER | sed 's/package://') | grep .so"
 ```
 
-### Exercise 55.11: Monitor WebView IPC
+### Exercise 44.11: Monitor WebView IPC
 
 Use `strace` to observe the system calls made during WebView initialization:
 
@@ -4864,9 +5306,9 @@ adb shell strace -f -e trace=openat,mmap,connect -p <PID> 2>&1 | \
 
 This reveals the RELRO file mapping, native library loading, and zygote communication.
 
-### Exercise 55.12: Intercept and Modify Web Requests
+### Exercise 44.12: Intercept and Modify Web Requests
 
-Build on Exercise 55.5 to intercept and modify resource requests:
+Build on Exercise 44.5 to intercept and modify resource requests:
 
 ```java
 webView.setWebViewClient(new WebViewClient() {
@@ -4906,7 +5348,7 @@ webView.setWebViewClient(new WebViewClient() {
 
 Then load a page and observe the intercepted requests in logcat.
 
-### Exercise 55.13: Web Messaging Channel
+### Exercise 44.13: Web Messaging Channel
 
 Demonstrate the HTML5 MessageChannel API:
 
@@ -4951,7 +5393,7 @@ webView.postMessageToMainFrame(
     Uri.parse("https://example.com"));
 ```
 
-### Exercise 55.14: Investigate WebView Provider Internals
+### Exercise 44.14: Investigate WebView Provider Internals
 
 Explore the internal structure of the WebView provider APK:
 
@@ -4977,7 +5419,7 @@ adb shell dumpsys package $PROVIDER_PKG | grep "permission"
 adb shell dumpsys package $PROVIDER_PKG | grep -E "(versionCode|versionName)"
 ```
 
-### Exercise 55.15: Monitor Multi-Process WebView
+### Exercise 44.15: Monitor Multi-Process WebView
 
 Observe the multi-process nature of WebView during page loads:
 
@@ -5002,7 +5444,7 @@ To see the process relationships:
 adb shell ps -A --format pid,ppid,name | grep -E "(webview|isolated|zygote)"
 ```
 
-### Exercise 55.16: Cookie Inspection
+### Exercise 44.16: Cookie Inspection
 
 Examine how cookies are managed across WebView instances:
 
@@ -5027,7 +5469,7 @@ Log.d("Cookies", "Third-party cookies accepted: " + thirdParty);
 The httpbin.org `/cookies` endpoint will show which cookies the browser sent, allowing
 you to verify that cookies set via `CookieManager` are properly sent with requests.
 
-### Exercise 55.17: Safe Browsing Testing
+### Exercise 44.17: Safe Browsing Testing
 
 Test Safe Browsing integration with known test URLs:
 
@@ -5064,6 +5506,30 @@ webView.setWebViewClient(new WebViewClient() {
 webView.loadUrl("https://testsafebrowsing.appspot.com/");
 ```
 
+### Exercise 44.18: Inspect the WebViewBootstrap APEX and Provider Selection
+
+On an Android 17 build, check whether the bootstrap APEX is present and observe the update
+service that it is being prepared to carry:
+
+```bash
+# Is the WebViewBootstrap APEX installed? (only on builds with the release flag on)
+adb shell pm list packages --apex-only | grep webview.bootstrap
+
+# Inspect the APEX module info if present
+adb shell cmd apexservice getActivePackages | grep webview
+
+# The update service still answers regardless of where it is hosted
+adb shell dumpsys webviewupdate
+
+# Confirm the default provider selection (drives findPreferredWebViewPackage)
+adb shell cmd webviewupdate get-current-provider
+```
+
+On a default AOSP 17 image the APEX is absent because `RELEASE_USE_WEBVIEW_BOOTSTRAP_MODULE`
+defaults to `false`; the `dumpsys webviewupdate` and `get-current-provider` output is identical
+whether the selection logic runs from the platform or from the module, which is the point of
+the `SystemInterface` boundary.
+
 ---
 
 ## Summary
@@ -5098,10 +5564,19 @@ processes. The key components are:
   exclusion, signature verification, same-origin policy, Safe Browsing, and SSL/TLS
   enforcement protect both the device and the user.
 
+- **Android 17 changes**: A launched APEX shell, `com.android.webview.bootstrap`, packages the
+  provider-selection machinery so it can ship as a Mainline module (off by default behind
+  `RELEASE_USE_WEBVIEW_BOOTSTRAP_MODULE`); the second-generation `WebViewUpdateServiceImpl2` is
+  fully rolled out and the older implementation removed; `WebView.checkThread()` now throws
+  unconditionally regardless of target SDK; and `SelectionActionMenuClient` gives OEMs a hook to
+  customize the text-selection menu (`packages/modules/WebViewBootstrap/apex/`,
+  `frameworks/base/core/java/android/webkit/SelectionActionMenuClient.java`).
+
 The updatable nature of WebView -- independent of the platform OS version -- is one of
 Android's most significant architectural decisions for security and web compatibility,
 ensuring that web rendering stays current even on devices that no longer receive full
-OS updates.
+OS updates. Android 17 extends that philosophy by moving the provider-selection logic itself
+toward a Mainline module.
 
 <!-- chapter:45-accessibility -->
 # Chapter 45: Accessibility
@@ -5172,18 +5647,17 @@ It runs inside `system_server` and implements the `IAccessibilityManager`
 AIDL interface. The class declaration reveals its many roles:
 
 ```java
-// AccessibilityManagerService.java, line 246
+// AccessibilityManagerService.java, line 256
 public class AccessibilityManagerService extends IAccessibilityManager.Stub
         implements AbstractAccessibilityServiceConnection.SystemSupport,
         AccessibilityUserState.ServiceInfoChangeListener,
         AccessibilityWindowManager.AccessibilityEventSender,
         AccessibilitySecurityPolicy.AccessibilityUserManager,
         SystemActionPerformer.SystemActionsChangedListener,
-        SystemActionPerformer.DisplayUpdateCallBack,
-        ProxyManager.SystemSupport {
+        SystemActionPerformer.DisplayUpdateCallBack, ProxyManager.SystemSupport {
 ```
 
-At 7,173 lines (at time of writing), it is one of the larger system services.
+At roughly 7,600 lines in Android 17, it is one of the larger system services.
 
 **AccessibilityService** is the abstract base class that all accessibility
 services extend. Defined in:
@@ -5201,9 +5675,9 @@ Defined in:
 frameworks/base/core/java/android/view/accessibility/AccessibilityNodeInfo.java
 ```
 
-At 8,308 lines, it is the richest data structure in the accessibility
-framework, carrying text content, bounds, actions, collection info,
-range info, and tree relationships.
+At roughly 9,200 lines in Android 17, it is the richest data structure in the
+accessibility framework, carrying text content, bounds, actions, collection
+info, range info, and tree relationships.
 
 ### 45.1.3 Component Architecture Diagram
 
@@ -5385,7 +5859,8 @@ graph LR
     style AMS fill:#e1f5fe
 ```
 
-**AccessibilitySecurityPolicy** (790 lines) is the gatekeeper. It determines:
+**AccessibilitySecurityPolicy** (about 800 lines) is the gatekeeper. It
+determines:
 
 - Whether an event can be dispatched to a given service
 - Whether a service can retrieve window content
@@ -5396,7 +5871,7 @@ The security policy maintains a bitmask of event types for which the source
 `AccessibilityNodeInfo` should be retained:
 
 ```java
-// AccessibilitySecurityPolicy.java, line 68
+// AccessibilitySecurityPolicy.java, line 70
 private static final int KEEP_SOURCE_EVENT_TYPES =
     AccessibilityEvent.TYPE_VIEW_CLICKED
     | AccessibilityEvent.TYPE_VIEW_FOCUSED
@@ -5450,7 +5925,7 @@ calls through the client-side `AccessibilityManager` to the server-side AMS
 over Binder:
 
 ```java
-// AccessibilityManagerService.java, line 1366
+// AccessibilityManagerService.java, line 1617
 public void sendAccessibilityEvent(AccessibilityEvent event, int userId) {
 ```
 
@@ -5458,7 +5933,7 @@ public void sendAccessibilityEvent(AccessibilityEvent event, int userId) {
 reported package name, and checks dispatch permission:
 
 ```java
-// AccessibilityManagerService.java, line 1388
+// AccessibilityManagerService.java, lines 1647-1653
 resolvedUserId = mSecurityPolicy
     .resolveCallingUserIdEnforcingPermissionsLocked(userId);
 event.setPackageName(mSecurityPolicy.resolveValidReportedPackageLocked(
@@ -5471,7 +5946,7 @@ event.setPackageName(mSecurityPolicy.resolveValidReportedPackageLocked(
 windows for accessibility:
 
 ```java
-// AccessibilityManagerService.java, line 1439
+// AccessibilityManagerService.java, line 1698
 wm.computeWindowsForAccessibility(displayId);
 ```
 
@@ -5481,7 +5956,7 @@ requested the event types synchronously (interactive), once for those that
 requested them asynchronously (observational):
 
 ```java
-// AccessibilityManagerService.java, line 1457
+// AccessibilityManagerService.java, line 1716
 private void dispatchAccessibilityEventLocked(AccessibilityEvent event) {
     if (mProxyManager.isProxyedDisplay(event.getDisplayId())) {
         mProxyManager.sendAccessibilityEventLocked(event);
@@ -5497,7 +5972,7 @@ private void dispatchAccessibilityEventLocked(AccessibilityEvent event) {
 touch exploration or magnification), the event is also forwarded to it:
 
 ```java
-// AccessibilityManagerService.java, line 1404
+// AccessibilityManagerService.java, line 1663
 if (mHasInputFilter && mInputFilter != null) {
     mMainHandler.sendMessage(obtainMessage(
         AccessibilityManagerService::sendAccessibilityEventToInputFilter,
@@ -5543,29 +6018,27 @@ The constructor of `AccessibilityManagerService` reveals the complete set of
 collaborators it creates:
 
 ```java
-// AccessibilityManagerService.java, line 614
+// AccessibilityManagerService.java, line 642
 public AccessibilityManagerService(Context context) {
     super(PermissionEnforcer.fromContext(context));
     mContext = context;
     mPowerManager = context.getSystemService(PowerManager.class);
-    mUserManager = context.getSystemService(UserManager.class);
     mWindowManagerService =
         LocalServices.getService(WindowManagerInternal.class);
     mTraceManager = AccessibilityTraceManager.getInstance(
-        mWindowManagerService.getAccessibilityController(),
-        this, mLock);
+        mWindowManagerService.getAccessibilityController(), this, mLock);
     mMainHandler = new MainHandler(mContext.getMainLooper());
     mActivityTaskManagerService =
         LocalServices.getService(ActivityTaskManagerInternal.class);
     mPackageManager = mContext.getPackageManager();
-    // Security policy
+    // Security policy + window tracking
     mSecurityPolicy = new AccessibilitySecurityPolicy(
         policyWarningUIController, mContext, this,
         LocalServices.getService(PackageManagerInternal.class));
-    // Window manager
     mA11yWindowManager = new AccessibilityWindowManager(
         mLock, mMainHandler, mWindowManagerService,
         this, mSecurityPolicy, this, mTraceManager);
+    mA11yDisplayListener = new AccessibilityDisplayListener(...);
     // Magnification
     mMagnificationController = new MagnificationController(
         this, mLock, mContext,
@@ -5574,53 +6047,91 @@ public AccessibilityManagerService(Context context) {
         mContext.getMainLooper());
     mMagnificationProcessor =
         new MagnificationProcessor(mMagnificationController);
-    // Additional controllers
+    // Additional collaborators
     mCaptioningManagerImpl = new CaptioningManagerImpl(mContext);
-    mFlashNotificationsController =
-        new FlashNotificationsController(mContext);
+    mProxyManager = new ProxyManager(mLock, mA11yWindowManager,
+        mContext, mMainHandler, mUiAutomationManager, this);
+    mFlashNotificationsController = new FlashNotificationsController(mContext);
+    mUmi = LocalServices.getService(UserManagerInternal.class);
     mInputManager = context.getSystemService(InputManager.class);
+
+    if (UserManager.isVisibleBackgroundUsersEnabled()) {
+        mVisibleBgUserIds = new SparseBooleanArray();
+        mUmi.addUserVisibilityListener((u, v) -> onUserVisibilityChanged(u, v));
+    } else {
+        mVisibleBgUserIds = null;
+    }
+    // Hearing-device call routing notification controller (flag-gated)
+    if (com.android.settingslib.flags.Flags
+            .hearingDevicesInputRoutingControl()) {
+        mHearingDeviceNotificationController =
+            new HearingDevicePhoneCallNotificationController(context);
+    } else {
+        mHearingDeviceNotificationController = null;
+    }
+    init();
 }
 ```
 
+In Android 17 the constructor wires up two collaborators that older releases
+did not have at this point: `ProxyManager` (for accessibility on proxy-owned
+virtual displays, section 45.2.16) and a `UserManagerInternal`
+(`mUmi`) handle used both for the visible-background-user listener and, later,
+for checking the Advanced Protection Mode user restriction (section 45.12).
+Note that the `FullScreenMagnificationController` is no longer created here --
+it is owned and lazily constructed by `MagnificationController`.
+
 During `init()`, AMS registers broadcast receivers, sets up content observers
-for accessibility-related settings changes, and registers key gesture
-handlers for keyboard-based accessibility shortcuts:
+for accessibility-related settings changes, and registers the set of keyboard
+key gestures it can handle:
 
 ```java
-// AccessibilityManagerService.java, line 666
+// AccessibilityManagerService.java, line 693
 private void init() {
     mSecurityPolicy.setAccessibilityWindowManager(mA11yWindowManager);
     registerBroadcastReceivers();
     mAccessibilityContentObserver =
         new AccessibilityContentObserver(mMainHandler);
-    mAccessibilityContentObserver.register(
-        mContext.getContentResolver());
+    mAccessibilityContentObserver.register(mContext.getContentResolver());
 
-    // Register keyboard gesture handlers
     List<Integer> supportedGestures = new ArrayList<>();
+    if (enableColorInversionKeyGestures()) {
+        supportedGestures.add(
+            KeyGestureEvent.KEY_GESTURE_TYPE_TOGGLE_DISPLAY_COLOR_INVERSION);
+    }
     if (enableSelectToSpeakKeyGestures()) {
         supportedGestures.add(
             KeyGestureEvent.KEY_GESTURE_TYPE_ACTIVATE_SELECT_TO_SPEAK);
     }
+    supportedGestures.add(KeyGestureEvent.KEY_GESTURE_TYPE_TOGGLE_MAGNIFICATION);
     if (enableTalkbackKeyGestures()) {
         supportedGestures.add(
             KeyGestureEvent.KEY_GESTURE_TYPE_TOGGLE_SCREEN_READER);
     }
-    if (enableTalkbackAndMagnifierKeyGestures()) {
+    supportedGestures.add(KeyGestureEvent.KEY_GESTURE_TYPE_TOGGLE_VOICE_ACCESS);
+    if (enableA11yTopRowShortcut()) {
         supportedGestures.add(
-            KeyGestureEvent.KEY_GESTURE_TYPE_TOGGLE_MAGNIFICATION);
+            KeyGestureEvent.KEY_GESTURE_TYPE_TOGGLE_TOP_ROW_ACCESSIBILITY_KEY);
     }
     if (!supportedGestures.isEmpty()) {
         mInputManager.registerKeyGestureEventHandler(
             supportedGestures, mKeyGestureEventHandler);
     }
+    disableAccessibilityMenuToMigrateIfNeeded();
 }
 ```
 
 This initialization sequence demonstrates how AMS connects to the input
-system, settings database, and window manager at startup. The key gesture
-registration is gated by feature flags, allowing incremental rollout of
-keyboard-based accessibility activation.
+system, settings database, and window manager at startup. Compared with
+Android 16, two of the key gestures -- toggling magnification and toggling
+Voice Access -- are now registered unconditionally rather than behind feature
+flags, reflecting that the keyboard-shortcut work for those features has
+shipped. The flags `enableTalkbackAndMagnifierKeyGestures` and
+`enableVoiceAccessKeyGestures` that gated them in earlier drafts have been
+removed. The remaining flags (`enableColorInversionKeyGestures`,
+`enableSelectToSpeakKeyGestures`, `enableTalkbackKeyGestures`, and
+`enableA11yTopRowShortcut`) continue to gate newer additions, including the
+top-row accessibility key described in section 45.10.
 
 ### 45.2.5 The LocalService Interface
 
@@ -5628,7 +6139,7 @@ AMS exposes an internal interface for use by other system services within
 `system_server` through `AccessibilityManagerInternal`:
 
 ```java
-// AccessibilityManagerService.java, line 462
+// AccessibilityManagerService.java, line 479
 private static final class LocalServiceImpl
     extends AccessibilityManagerInternal {
 
@@ -5670,7 +6181,7 @@ list (a race condition between the app process and WindowManagerService), AMS
 postpones the event for up to 500ms:
 
 ```java
-// AccessibilityManagerService.java, line 272
+// AccessibilityManagerService.java, line 281
 private static final int
     POSTPONE_WINDOW_STATE_CHANGED_EVENT_TIMEOUT_MILLIS = 500;
 ```
@@ -5679,15 +6190,19 @@ When a `WINDOWS_CHANGE_ADDED` event arrives, AMS checks for pending postponed
 events that match the new window and dispatches them:
 
 ```java
-// AccessibilityManagerService.java, line 4953
+// AccessibilityManagerService.java, line 5249
 public void sendAccessibilityEventForCurrentUserLocked(AccessibilityEvent event) {
     if (event.getWindowChanges() == AccessibilityEvent.WINDOWS_CHANGE_ADDED) {
         sendPendingWindowStateChangedEventsForAvailableWindowLocked(
-            event.getWindowId());
+            event.getRealWindowId());
     }
     sendAccessibilityEventLocked(event, mCurrentUserId);
 }
 ```
+
+Note that in Android 17 this lookup keys off `event.getRealWindowId()` rather
+than the logical window ID, which matters for Picture-in-Picture windows whose
+visible window ID is remapped.
 
 ### 45.2.7 Service Binding
 
@@ -5751,7 +6266,7 @@ The connection holds a weak reference to `AccessibilityUserState` to avoid
 reference cycles, since user state maintains lists of bound services:
 
 ```java
-// AccessibilityServiceConnection.java, line 97
+// AccessibilityServiceConnection.java, line 98
 final WeakReference<AccessibilityUserState> mUserStateWeakReference;
 ```
 
@@ -5794,11 +6309,17 @@ content, observe user input, and inject actions. The security controls are:
 
 7. **Enhanced Confirmation Mode (ECM)**: The `EnhancedConfirmationManager`
    provides an additional layer of verification for accessibility service
-   activation, particularly for side-loaded apps.
+   activation, particularly for side-loaded apps. AMS consults it before
+   enabling a service (`AccessibilityManagerService.java`, line 5634).
 
 8. **Per-user isolation**: Each user has independent accessibility state,
    managed through `AccessibilityUserState`. Profile parents share
    accessibility state with their managed profiles.
+
+9. **Advanced Protection Mode (AAPM)**: New in Android 17, when the device
+   owner enables Advanced Protection Mode, AMS can be told to disallow
+   non-tool accessibility services entirely. This integration is described in
+   detail in section 45.12.
 
 ### 45.2.9 The Lock and Threading Model
 
@@ -5810,8 +6331,9 @@ release it, and then make the outbound call.
 AMS processes events on the main handler to ensure serialization:
 
 ```java
-// AccessibilityManagerService.java, line 4965
+// AccessibilityManagerService.java, line 5258
 private void sendAccessibilityEventLocked(AccessibilityEvent event, int userId) {
+    // Resync to avoid calling out with the lock held
     event.setEventTime(SystemClock.uptimeMillis());
     mMainHandler.sendMessage(obtainMessage(
         AccessibilityManagerService::sendAccessibilityEvent,
@@ -6323,7 +6845,7 @@ The dispatcher sends each key event to all services that requested filtering.
 Services have 500ms to respond:
 
 ```java
-// KeyEventDispatcher.java, line 51
+// KeyEventDispatcher.java, line 52
 private static final long ON_KEY_EVENT_TIMEOUT_MILLIS = 500;
 ```
 
@@ -6414,11 +6936,54 @@ frameworks/base/services/accessibility/java/com/android/server/accessibility/
     MouseKeysInterceptor.java
 ```
 
-When enabled, designated keys (typically the numeric keypad) move the mouse
-cursor and simulate clicks. This is registered as a shortcut target through:
+It is a `BaseEventStreamTransformation` that also listens for input-device
+changes:
 
 ```java
-// AccessibilityShortcutController.java
+// MouseKeysInterceptor.java, line 73
+public class MouseKeysInterceptor extends BaseEventStreamTransformation
+        implements Handler.Callback, InputManager.InputDeviceListener {
+```
+
+In Android 17 the interceptor does not synthesize pointer motion directly into
+the input pipeline. Instead it owns a `VirtualMouse` -- the same virtual-input
+abstraction used by virtual displays -- and drives the cursor through it:
+
+```java
+// MouseKeysInterceptor.java
+import android.hardware.input.VirtualMouse;
+import android.hardware.input.VirtualMouseButtonEvent;
+import android.hardware.input.VirtualMouseRelativeEvent;
+import android.hardware.input.VirtualMouseScrollEvent;
+// A new VirtualMouse is created whenever mouse keys is turned on in Settings.
+private VirtualMouse mVirtualMouse = null;
+```
+
+Routing through `VirtualMouse` (rather than the older bespoke
+`MouseEventHandler`, which was deleted in 17) means mouse-keys motion goes
+through the standard virtual-device path and gets a unique device name, so it
+coexists cleanly with real pointing devices.
+
+When enabled, designated keys move the cursor and simulate clicks. The
+interceptor supports both a primary key layout and the numeric keypad, but the
+numpad mapping only takes effect when Num Lock is on:
+
+```java
+// MouseKeysInterceptor.java, lines 716-718
+// If we are using numpad keys, they only work if Num Lock is on.
+boolean isNumLockOn = (event.getMetaState() & KeyEvent.META_NUM_LOCK_ON) != 0;
+if (keyCode == mouseKeyEvent.getNumpadKeyCode(inputDevice) && !isNumLockOn) {
+    // ignore numpad mouse key when Num Lock is off
+}
+```
+
+A per-device capability cache (`mDeviceNumpadCapabilityCache`) records whether
+each connected keyboard actually has the required numpad keys, so the feature
+degrades gracefully on keyboards without a numeric keypad. Mouse keys is
+registered as a shortcut target through:
+
+```java
+// AccessibilityShortcutController.java, line 98
 public static final ComponentName MOUSE_KEYS_COMPONENT_NAME =
     new ComponentName("com.android.server.accessibility", "MouseKeys");
 ```
@@ -6495,7 +7060,7 @@ point. It operates by modifying the `MagnificationSpec` that
 WindowManagerService applies to the display:
 
 ```java
-// FullScreenMagnificationController.java, line 86
+// FullScreenMagnificationController.java, line 90
 public class FullScreenMagnificationController implements
     WindowManagerInternal.AccessibilityControllerInternal
         .UiChangesForAccessibilityCallbacks {
@@ -6518,8 +7083,7 @@ this spec, effectively zooming in on a region of the screen.
 The controller maintains per-display state:
 
 ```java
-// FullScreenMagnificationController.java, line 111
-@GuardedBy("mLock")
+// FullScreenMagnificationController.java, line 116
 private final SparseArray<DisplayMagnification> mDisplays = new SparseArray<>(0);
 ```
 
@@ -6560,7 +7124,7 @@ The gesture handler is installed as part of the `EventStreamTransformation`
 pipeline in `AccessibilityInputFilter`:
 
 ```java
-// AccessibilityInputFilter.java, line 98
+// AccessibilityInputFilter.java, line 96
 static final int FLAG_FEATURE_MAGNIFICATION_SINGLE_FINGER_TRIPLE_TAP
     = 0x00000001;
 ```
@@ -6585,7 +7149,7 @@ The `WindowMagnificationGestureHandler` handles gestures specific to window
 magnification:
 
 ```java
-// WindowMagnificationGestureHandler.java, line 73
+// WindowMagnificationGestureHandler.java, line 68
 public class WindowMagnificationGestureHandler
     extends MagnificationGestureHandler {
 ```
@@ -6602,7 +7166,7 @@ The top-level `MagnificationController` coordinates between full-screen and
 window magnification modes and manages the magnification switch UI:
 
 ```java
-// MagnificationController.java, line 93
+// MagnificationController.java, line 93 (Android 17)
 public class MagnificationController implements
     MagnificationConnectionManager.Callback,
     MagnificationGestureHandler.Callback,
@@ -6625,15 +7189,27 @@ user to toggle between full-screen and window magnification.
 
 ### 45.5.6 Scale Constraints
 
-The `MagnificationScaleProvider` enforces scale bounds:
+The `MagnificationScaleProvider` enforces scale bounds. In Android 17 the
+bounds are no longer hardcoded literals; they are pulled from
+`MagnificationConstants`, and the maximum is a system property so OEMs can
+raise the ceiling:
 
 ```java
 // MagnificationScaleProvider.java
-public static final float MIN_SCALE = 1.0f;
-public static final float MAX_SCALE = 8.0f;
+public static final float MIN_SCALE = SCALE_MIN_VALUE; // 1.0f
+public static final float MAX_SCALE = SCALE_MAX_VALUE; // ro.config.max_magnification_scale, default 8.0
+
+// MagnificationConstants.java
+public static final float SCALE_MIN_VALUE = 1.0f;
+public static final float SCALE_MAX_VALUE = Float.parseFloat(
+    SystemProperties.get("ro.config.max_magnification_scale", "8.0"));
+public static final float PERSISTED_SCALE_MIN_VALUE = 1.3f;
 ```
 
-The provider also handles per-user scale persistence through `Settings.Secure`:
+`PERSISTED_SCALE_MIN_VALUE` (1.3x) is the smallest scale that gets remembered
+across sessions, so that re-enabling magnification does not snap to a barely
+useful 1.0x. The provider also handles per-user scale persistence through
+`Settings.Secure`:
 
 ```java
 Settings.Secure.ACCESSIBILITY_DISPLAY_MAGNIFICATION_SCALE
@@ -6654,7 +7230,7 @@ to pan while magnified. The handler implements repeat key behavior with a
 configurable initial delay and a repeat interval of 60ms:
 
 ```java
-// MagnificationController.java, line 139
+// MagnificationController.java, line 140
 public static final int KEYBOARD_REPEAT_INTERVAL_MS = 60;
 ```
 
@@ -6722,22 +7298,41 @@ The magnification system can follow text cursor movement and keyboard focus
 changes. Two feature settings control this:
 
 ```java
-// FullScreenMagnificationController.java, line 115
+// FullScreenMagnificationController.java, lines 120-122
 private boolean mMagnificationFollowTypingEnabled = true;
 private boolean mMagnificationFollowKeyboardEnabled = false;
 ```
 
 When `mMagnificationFollowTypingEnabled` is true and the user is typing in a
 text field, the magnification viewport automatically pans to keep the cursor
-visible. The cursor following mode is configured through:
+visible. The companion `mMagnificationFollowKeyboardEnabled` flag controls
+whether the viewport also follows keyboard focus changes; in Android 17 the
+default value persisted in settings for this mode was flipped on, so on a fresh
+device magnification now follows keyboard focus by default. The cursor
+following mode is configured through:
 
 ```java
-Settings.Secure.AccessibilityMagnificationCursorFollowingMode
+Settings.Secure.ACCESSIBILITY_MAGNIFICATION_CURSOR_FOLLOWING_MODE
 ```
 
 This is essential for low-vision users who use magnification while typing --
 without cursor following, the text insertion point would quickly leave the
-magnified viewport.
+magnified viewport. Android 17 expands this from a simple on/off into a
+three-way mode that governs how the magnified viewport tracks a moving mouse
+pointer:
+
+```java
+// android.provider.Settings.Secure
+ACCESSIBILITY_MAGNIFICATION_CURSOR_FOLLOWING_MODE_CONTINUOUS = 0;
+ACCESSIBILITY_MAGNIFICATION_CURSOR_FOLLOWING_MODE_CENTER     = 1;
+ACCESSIBILITY_MAGNIFICATION_CURSOR_FOLLOWING_MODE_EDGE       = 2;
+```
+
+`AccessibilityInputFilter` reads this mode
+(`getMagnificationCursorFollowingMode()`) and applies it through the
+`FullScreenMagnificationPointerMotionEventFilter`, which decides whether the
+viewport pans continuously with the pointer, recenters on it, or only nudges
+when the pointer reaches the viewport edge.
 
 ### 45.5.11 Magnification Thumbnail
 
@@ -7466,18 +8061,23 @@ installed in `AccessibilityInputFilter`:
 ```mermaid
 flowchart LR
     Input["Input Events"] --> AIF["AccessibilityInputFilter"]
-    AIF --> MagGH["MagnificationGestureHandler"]
-    MagGH --> TE["TouchExplorer"]
-    TE --> KBI["KeyboardInterceptor"]
-    KBI --> MEI["MotionEventInjector"]
-    MEI --> AC["AutoclickController"]
+    AIF --> MK["MouseKeysInterceptor<br/>(new in 17)"]
+    MK --> MagGH["MagnificationGestureHandler"]
+    MagGH --> MEI["MotionEventInjector"]
+    MEI --> TE["TouchExplorer"]
+    TE --> AC["AutoclickController"]
     AC --> Output["Input Pipeline"]
 ```
 
 Each transformation in the chain can consume, modify, or pass through events.
-The order matters: magnification gestures are detected before touch
+`AccessibilityInputFilter` builds the chain per display with
+`addFirstEventHandler`, prepending each enabled feature, so the head-to-tail
+order with everything on is roughly mouse keys, then magnification gesture
+detection, then motion-event injection, then touch exploration, then
+autoclick. The order matters: magnification gestures are detected before touch
 exploration, so a triple-tap for magnification is not misinterpreted as a
-touch exploration gesture.
+touch exploration gesture. The `KeyboardInterceptor` is a special case --
+it handles only key events and does not forward them to the rest of the chain.
 
 The chain is configured based on feature flags:
 
@@ -7492,7 +8092,13 @@ static final int FLAG_FEATURE_INJECT_MOTION_EVENTS = 0x00000010;
 static final int FLAG_FEATURE_CONTROL_SCREEN_MAGNIFIER = 0x00000020;
 static final int FLAG_FEATURE_TRIGGERED_SCREEN_MAGNIFIER = 0x00000040;
 static final int FLAG_SERVICE_HANDLES_DOUBLE_TAP   = 0x00000080;
+// ...
+static final int FLAG_FEATURE_MOUSE_KEYS           = 0x00002000;
 ```
+
+The `FLAG_FEATURE_MOUSE_KEYS` bit drives the `MouseKeysInterceptor`
+(section 45.4.6). When set, `AccessibilityInputFilter` installs that
+transformation in the same chain as touch exploration and autoclick.
 
 ### 45.8.6 Gesture Detection
 
@@ -7541,7 +8147,7 @@ for detecting its specific gesture pattern.
 `TouchExplorer` defines an edge region at the top and bottom of the screen:
 
 ```java
-// TouchExplorer.java, line 102
+// TouchExplorer.java, line 101
 private static final float EDGE_SWIPE_HEIGHT_CM = 0.25f;
 ```
 
@@ -7556,7 +8162,7 @@ of lists and other scrollable content. The direction similarity is determined
 by a cosine threshold:
 
 ```java
-// TouchExplorer.java, line 95
+// TouchExplorer.java, line 94
 private static final float MAX_DRAGGING_ANGLE_COS = 0.525321989f; // cos(pi/4)
 ```
 
@@ -7571,7 +8177,7 @@ exploration and gestures. When a finger touches down, it does not immediately
 send a hover event. Instead, it starts a delayed message:
 
 ```java
-// TouchExplorer.java (fields, lines 125-131)
+// TouchExplorer.java (fields, line 124 onward)
 private final SendHoverEnterAndMoveDelayed mSendHoverEnterAndMoveDelayed;
 private final SendHoverExitDelayed mSendHoverExitDelayed;
 private final SendAccessibilityEventDelayed mSendTouchExplorationEndDelayed;
@@ -7621,7 +8227,7 @@ If no gesture is detected within 2 seconds, the gesture detection state exits
 automatically:
 
 ```java
-// TouchExplorer.java, line 98
+// TouchExplorer.java, line 97
 private static final int EXIT_GESTURE_DETECTION_TIMEOUT = 2000;
 ```
 
@@ -7667,30 +8273,43 @@ frameworks/base/core/java/com/android/internal/accessibility/
 
 ### 45.9.1 Shortcut Types
 
-The following shortcut types are supported:
+The shortcut types are defined as a bitmask `@IntDef` named `UserShortcutType`.
+In Android 17 the set grew to eight active types, and the numeric values are
+not contiguous (some bit positions were retired as the design evolved):
 
 ```java
-// ShortcutConstants.java
-public static final int SOFTWARE = 1;       // Floating button / nav bar
-public static final int HARDWARE = 1 << 1;  // Volume keys shortcut
-public static final int TRIPLETAP = 1 << 2; // Triple-tap on screen
-public static final int GESTURE = 1 << 3;   // Two-finger triple-tap
-public static final int QUICK_SETTINGS = 1 << 4;    // Quick Settings tile
-public static final int KEY_GESTURE = 1 << 5;       // Keyboard shortcut
-public static final int TWOFINGER_DOUBLETAP = 1 << 6; // Two-finger double-tap
+// ShortcutConstants.java -- UserShortcutType
+int DEFAULT        = 0;
+int SOFTWARE       = 1 << 0; // Floating button / nav bar
+int HARDWARE       = 1 << 1; // Volume keys shortcut
+int TRIPLETAP      = 1 << 2; // Triple-tap on screen
+int QUICK_SETTINGS = 1 << 4; // Quick Settings tile
+int GESTURE        = 1 << 5; // Two-finger swipe / triple-tap
+int KEY_GESTURE    = 1 << 6; // Keyboard key gesture
+int TOP_ROW_KEY    = 1 << 7; // Dedicated top-row accessibility key (new in 17)
+int QUICK_ACCESS   = 1 << 8; // Quick-access target (new in 17)
+int ALL = SOFTWARE | HARDWARE | TRIPLETAP | QUICK_SETTINGS | GESTURE
+        | KEY_GESTURE | TOP_ROW_KEY | QUICK_ACCESS;
 ```
+
+Two of these, `TOP_ROW_KEY` and `QUICK_ACCESS`, are new in Android 17. The
+older `TWOFINGER_DOUBLETAP` bit that appeared in earlier drafts is gone; the
+two-finger gesture activation now folds into `GESTURE`. The top-row key
+corresponds to a dedicated accessibility key on the keyboard's function row
+(see section 45.10).
 
 ```mermaid
 graph TB
-    Shortcuts["Accessibility Shortcuts"]
+    Shortcuts["Accessibility Shortcuts (UserShortcutType)"]
 
     Shortcuts --> HW["Hardware Shortcut<br/>(Volume Up + Down)"]
     Shortcuts --> SW["Software Shortcut<br/>(Navigation Bar / FAB)"]
     Shortcuts --> TT["Triple-Tap Shortcut"]
-    Shortcuts --> G["Gesture Shortcut<br/>(Two-finger triple-tap)"]
+    Shortcuts --> G["Gesture Shortcut<br/>(Two-finger swipe)"]
     Shortcuts --> QS["Quick Settings Tile"]
-    Shortcuts --> KG["Keyboard Shortcut"]
-    Shortcuts --> TFD["Two-finger Double-tap"]
+    Shortcuts --> KG["Keyboard Key Gesture"]
+    Shortcuts --> TRK["Top-Row Accessibility Key"]
+    Shortcuts --> QA["Quick Access Target"]
 
     HW --> Target1["TalkBack"]
     SW --> Target2["Magnification"]
@@ -7780,29 +8399,42 @@ public static final ComponentName HEARING_AIDS_TILE_COMPONENT_NAME =
 ### 45.9.6 Keyboard Gesture Shortcuts
 
 Modern Android supports keyboard-based accessibility activation through
-key gesture events. These are controlled by feature flags:
+key gesture events, registered with `InputManager` in AMS `init()`
+(section 45.2.4). By Android 17 several of these have shipped and are no
+longer flag-gated. The remaining flags gate newer additions:
 
 ```java
 // AccessibilityManagerService.java imports
 import static com.android.hardware.input.Flags.enableSelectToSpeakKeyGestures;
-import static com.android.hardware.input.Flags.enableTalkbackAndMagnifierKeyGestures;
 import static com.android.hardware.input.Flags.enableTalkbackKeyGestures;
-import static com.android.hardware.input.Flags.enableVoiceAccessKeyGestures;
+// enableColorInversionKeyGestures() and enableA11yTopRowShortcut()
+// gate the color-inversion key gesture and the top-row accessibility key.
 ```
 
-These allow users with physical keyboards (including external keyboards
-connected to tablets) to activate accessibility services through keyboard
-shortcuts.
+The `enableTalkbackAndMagnifierKeyGestures` and `enableVoiceAccessKeyGestures`
+flags used in earlier releases were removed once toggling magnification and
+Voice Access by keyboard became unconditional. These gestures let users with
+physical keyboards (including external keyboards connected to tablets) toggle
+TalkBack, magnification, Select to Speak, Voice Access, and color inversion
+without touching the screen.
 
 ### 45.9.7 Shortcut Configuration and Persistence
 
-Each shortcut type maintains its target assignments in `Settings.Secure`:
+Each shortcut type maintains its target assignments in `Settings.Secure`.
+The `GENERAL_SHORTCUT_SETTINGS` list in `ShortcutConstants` enumerates them,
+and Android 17 added three keys (`ACCESSIBILITY_TOP_ROW_KEY_TARGETS`,
+`ACCESSIBILITY_QUICK_ACCESS_TARGETS`, and `ACCESSIBILITY_KEY_GESTURE_TARGETS`)
+to match the new shortcut types:
 
 ```
-Settings.Secure.ACCESSIBILITY_BUTTON_TARGETS        // Software shortcut
+Settings.Secure.ACCESSIBILITY_BUTTON_TARGETS          // Software shortcut
 Settings.Secure.ACCESSIBILITY_SHORTCUT_TARGET_SERVICE // Hardware shortcut
 Settings.Secure.ACCESSIBILITY_DISPLAY_MAGNIFICATION_ENABLED // Triple-tap
-Settings.Secure.ACCESSIBILITY_QS_TARGETS             // Quick Settings
+Settings.Secure.ACCESSIBILITY_QS_TARGETS              // Quick Settings
+Settings.Secure.ACCESSIBILITY_GESTURE_TARGETS         // Gesture
+Settings.Secure.ACCESSIBILITY_TOP_ROW_KEY_TARGETS     // Top-row key (new in 17)
+Settings.Secure.ACCESSIBILITY_QUICK_ACCESS_TARGETS    // Quick access (new in 17)
+Settings.Secure.ACCESSIBILITY_KEY_GESTURE_TARGETS     // Key gesture (new in 17)
 ```
 
 The `AccessibilityUserState` class tracks the complete mapping of shortcut
@@ -7893,12 +8525,305 @@ This allows users with hearing aids to quickly access their device settings,
 volume adjustments, and routing preferences without navigating through the
 full settings hierarchy.
 
-## 45.10 Try It
+In Android 17 the hearing-device story gained a small but useful piece of
+glue: a `HearingDevicePhoneCallNotificationController` that AMS constructs when
+the `hearingDevicesInputRoutingControl` settings-lib flag is set, and starts
+listening for call state in `init()`:
+
+```
+frameworks/base/services/accessibility/java/com/android/server/accessibility/
+    HearingDevicePhoneCallNotificationController.java
+```
+
+It surfaces a notification during phone calls so a hearing-aid user can route
+the call audio to (or away from) their hearing devices without digging through
+settings mid-call.
+
+## 45.10 Keyboard Key Gestures and the Top-Row Accessibility Key
+
+Android 17 substantially matures the keyboard-driven accessibility story that
+began in earlier releases. Two things changed: a number of key gestures that
+used to be feature-flagged became always-on, and a new dedicated
+**top-row accessibility key** shortcut type was introduced for keyboards that
+ship a physical accessibility key on the function row.
+
+### 45.10.1 Key Gestures Registered by AMS
+
+As shown in section 45.2.4, AMS builds a list of `KeyGestureEvent` types in
+`init()` and registers them with `InputManager`. In Android 17 the registered
+set is:
+
+| Key gesture | Gated by |
+|-------------|----------|
+| `KEY_GESTURE_TYPE_TOGGLE_DISPLAY_COLOR_INVERSION` | `enableColorInversionKeyGestures()` |
+| `KEY_GESTURE_TYPE_ACTIVATE_SELECT_TO_SPEAK` | `enableSelectToSpeakKeyGestures()` |
+| `KEY_GESTURE_TYPE_TOGGLE_MAGNIFICATION` | always registered |
+| `KEY_GESTURE_TYPE_TOGGLE_SCREEN_READER` | `enableTalkbackKeyGestures()` |
+| `KEY_GESTURE_TYPE_TOGGLE_VOICE_ACCESS` | always registered |
+| `KEY_GESTURE_TYPE_TOGGLE_TOP_ROW_ACCESSIBILITY_KEY` | `enableA11yTopRowShortcut()` |
+
+The constants live in:
+
+```
+frameworks/base/core/java/android/hardware/input/KeyGestureEvent.java
+```
+
+where `KEY_GESTURE_TYPE_TOGGLE_TOP_ROW_ACCESSIBILITY_KEY` is value 88. When the
+input subsystem detects one of these gestures, it calls back into AMS's
+`mKeyGestureEventHandler`, which dispatches to the matching feature.
+
+### 45.10.2 The Top-Row Accessibility Key
+
+Some keyboards expose a dedicated accessibility key in the function (top) row.
+Android 17 models this as its own shortcut type, `UserShortcutType.TOP_ROW_KEY`
+(value `1 << 7`, section 45.9.1), with its own persisted target list in
+`Settings.Secure.ACCESSIBILITY_TOP_ROW_KEY_TARGETS`. When the key is pressed,
+the input pipeline raises `KEY_GESTURE_TYPE_TOGGLE_TOP_ROW_ACCESSIBILITY_KEY`,
+and AMS routes it to the generic shortcut activation path:
+
+```java
+// AccessibilityManagerService.java, line 822
+if (gestureType
+        == KeyGestureEvent.KEY_GESTURE_TYPE_TOGGLE_TOP_ROW_ACCESSIBILITY_KEY) {
+    performAccessibilityShortcutInternal(displayId, TOP_ROW_KEY,
+            /* targetName= */ null);
+    ...
+}
+```
+
+The whole feature is gated by `android.view.accessibility.Flags`
+`enableA11yTopRowShortcut()`. When that flag is off, AMS skips both the gesture
+registration and the per-user reads/writes of the top-row target list
+(`AccessibilityManagerService.java`, lines 711, 3786, and 4065), so a device
+that does not ship the key sees no behavioral change.
+
+```mermaid
+flowchart TD
+    A["Top-row accessibility key pressed"] --> B["InputManager raises<br/>KEY_GESTURE_TYPE_TOGGLE_TOP_ROW_ACCESSIBILITY_KEY"]
+    B --> C["AMS mKeyGestureEventHandler"]
+    C --> D["performAccessibilityShortcutInternal(TOP_ROW_KEY)"]
+    D --> E{"Targets for<br/>TOP_ROW_KEY?"}
+    E -->|"One"| F["Toggle that feature/service"]
+    E -->|"Multiple"| G["Show shortcut chooser"]
+    E -->|"None"| H["No-op"]
+```
+
+### 45.10.3 The Quick-Access Shortcut Type
+
+Alongside the top-row key, Android 17 adds `UserShortcutType.QUICK_ACCESS`
+(value `1 << 8`), persisted in
+`Settings.Secure.ACCESSIBILITY_QUICK_ACCESS_TARGETS`. AMS reads and writes its
+targets through the same `readAccessibilityShortcutTargetsLocked` /
+`updateAccessibilityShortcutTargetsLocked` machinery used by every other
+shortcut type (`AccessibilityManagerService.java`, lines 3790 and 3923),
+keeping the shortcut model uniform as new entry points are added.
+
+## 45.11 Mouse Keys and Virtual Pointer Control
+
+Section 45.4.6 introduced `MouseKeysInterceptor`. Android 17 reworks it in two
+important ways, both worth calling out because they change how the feature
+integrates with the rest of the platform.
+
+### 45.11.1 Driving the Cursor Through VirtualMouse
+
+In earlier releases, mouse-keys motion was produced by a bespoke handler. In
+Android 17 that handler (`MouseEventHandler`) was deleted, and the interceptor
+instead owns an `android.hardware.input.VirtualMouse` -- the same virtual-input
+device abstraction used for virtual displays:
+
+```java
+// MouseKeysInterceptor.java
+import android.hardware.input.VirtualMouse;
+import android.hardware.input.VirtualMouseButtonEvent;
+import android.hardware.input.VirtualMouseRelativeEvent;
+import android.hardware.input.VirtualMouseScrollEvent;
+```
+
+A fresh `VirtualMouse` is created whenever the mouse-keys feature is turned on
+in Settings and is given a unique device name. Sending relative-motion, button,
+and scroll events through it means the synthesized pointer flows through the
+standard input path and is indistinguishable, downstream, from a real mouse --
+which fixes a class of bugs where the bespoke path diverged from real-mouse
+behavior.
+
+### 45.11.2 Numpad Keys Require Num Lock
+
+The interceptor accepts both a primary key layout and the numeric keypad. The
+numpad mapping is conditional on Num Lock being engaged, so that numpad keys
+keep their normal digit-entry behavior when Num Lock is off:
+
+```java
+// MouseKeysInterceptor.java, lines 716-718
+// If we are using numpad keys, they only work if Num Lock is on.
+boolean isNumLockOn = (event.getMetaState() & KeyEvent.META_NUM_LOCK_ON) != 0;
+if (keyCode == mouseKeyEvent.getNumpadKeyCode(inputDevice) && !isNumLockOn) {
+    // skip: treat as a normal numpad key
+}
+```
+
+A per-device capability cache (`mDeviceNumpadCapabilityCache`) records whether
+each connected keyboard has the full set of numpad keys, so the numpad mapping
+is only offered on keyboards that actually have a numeric keypad.
+
+## 45.12 Advanced Protection Mode for Accessibility Services
+
+The most security-significant accessibility change in Android 17 is the
+integration of the accessibility framework with **Advanced Protection Mode**
+(APM, also written AAPM in the source). Advanced Protection Mode is a
+device-wide high-security posture; when the user turns it on, a set of
+registered "features" tighten various subsystems. One of those features,
+`FEATURE_ID_RESTRICT_NON_TOOL_A11Y_SERVICES`, restricts which accessibility
+services may run.
+
+### 45.12.1 Why Restrict Accessibility Services
+
+Accessibility services are among the most powerful things a user can grant on
+Android: they can read screen content, observe input, and inject actions. That
+power is exactly what malware abuses. Advanced Protection Mode addresses this
+by allowing only services that genuinely declare themselves as accessibility
+tools (`isAccessibilityTool="true"` in their metadata) to run, shutting down
+everything else.
+
+### 45.12.2 The Feature Registration
+
+A small provider exposes the accessibility feature to the Advanced Protection
+service:
+
+```
+frameworks/base/services/core/java/com/android/server/accessibility/
+    AccessibilityServiceAdvancedProtectionProvider.java
+```
+
+```java
+public class AccessibilityServiceAdvancedProtectionProvider
+        extends AdvancedProtectionProvider {
+    @Override
+    public @NonNull List<Integer> getFeatureIds(@NonNull Context context) {
+        return List.of(FEATURE_ID_RESTRICT_NON_TOOL_A11Y_SERVICES);
+    }
+}
+```
+
+`FEATURE_ID_RESTRICT_NON_TOOL_A11Y_SERVICES` is defined as id `6` in
+`frameworks/base/core/java/android/security/advancedprotection/AdvancedProtectionManager.java`.
+
+### 45.12.3 How AMS Wires Itself In
+
+AMS registers for APM state changes at boot, but only after
+`PHASE_BOOT_COMPLETED` (so that the Device Policy and Advanced Protection
+services are available) and only when the `extendAapmToA11yServices()` flag is
+set:
+
+```java
+// AccessibilityManagerService.java, line 1021
+if (phase == SystemService.PHASE_BOOT_COMPLETED) {
+    mDevicePolicyManager = mContext.getSystemService(DevicePolicyManager.class);
+    if (android.security.Flags.extendAapmToA11yServices()) {
+        mAdvancedProtectionManager =
+            mContext.getSystemService(AdvancedProtectionManager.class);
+        if (mAdvancedProtectionManager != null) {
+            mAdvancedProtectionManager.registerAdvancedProtectionFeatureCallback(
+                new int[]{FEATURE_ID_RESTRICT_NON_TOOL_A11Y_SERVICES},
+                new HandlerExecutor(BackgroundThread.getHandler()),
+                this::handleAdvancedProtectionModeStateChanged);
+        }
+    }
+}
+```
+
+### 45.12.4 Enforcement via a Global User Restriction
+
+When APM toggles, `handleAdvancedProtectionModeStateChanged()` translates the
+feature state into a global Device Policy user restriction,
+`UserManager.DISALLOW_NON_TOOL_ACCESSIBILITY_SERVICE` (string value
+`"no_non_tool_accessibility_service"`):
+
+```java
+// AccessibilityManagerService.java, line 1415
+void handleAdvancedProtectionModeStateChanged(
+        List<AdvancedProtectionFeature> features) {
+    ...
+    if (apmOn) {
+        mDevicePolicyManager.addUserRestrictionGlobally(
+            ADVANCED_PROTECTION_SYSTEM_ENTITY,
+            UserManager.DISALLOW_NON_TOOL_ACCESSIBILITY_SERVICE);
+    } else {
+        mDevicePolicyManager.clearUserRestrictionGlobally(
+            ADVANCED_PROTECTION_SYSTEM_ENTITY,
+            UserManager.DISALLOW_NON_TOOL_ACCESSIBILITY_SERVICE);
+    }
+    ...
+}
+```
+
+Routing through a Device Policy restriction (rather than a bespoke check) lets
+the rest of the framework treat APM-driven blocking the same way it already
+treats enterprise-managed accessibility allowlists.
+
+### 45.12.5 Computing the Permitted Set
+
+The actual decision about which services may run lives in
+`getPermittedAccessibilityServicePackages()`. Its precedence rules are precise:
+
+```java
+// AccessibilityManagerService.java, line 7486
+Set<String> getPermittedAccessibilityServicePackages(
+        @Nullable List<String> adminPermittedServices, int userId) {
+    if (!android.security.Flags.extendAapmToA11yServices()) {
+        return getPermittedServicesLegacy(adminPermittedServices, userId);
+    }
+    // If an Enterprise Admin explicitly set an allowlist, Admin intent overrides AAPM.
+    if (adminPermittedServices != null) {
+        return getPermittedServicesLegacy(adminPermittedServices, userId);
+    }
+    final boolean apmOn = mUmi.hasUserRestriction(
+            UserManager.DISALLOW_NON_TOOL_ACCESSIBILITY_SERVICE, userId);
+    if (!apmOn) {
+        return getPermittedServicesLegacy(adminPermittedServices, userId);
+    }
+    return getPermittedServicesStrictApm(userId);
+}
+```
+
+```mermaid
+flowchart TD
+    A["getPermittedAccessibilityServicePackages"] --> B{"extendAapmToA11yServices flag on?"}
+    B -->|No| L["Legacy: admin allowlist + system services"]
+    B -->|Yes| C{"Enterprise admin allowlist set?"}
+    C -->|Yes| L
+    C -->|No| D{"APM user restriction active?"}
+    D -->|No| L
+    D -->|Yes| S["Strict APM: only packages with a tool service"]
+```
+
+The key precedence: an explicit **enterprise admin allowlist wins over APM**.
+Only when there is no admin allowlist and APM is active does AMS switch to
+`getPermittedServicesStrictApm()`, which scans installed services and permits
+only packages that contain at least one service marked as an accessibility
+tool, filtering out everything that declares itself a non-tool service.
+
+### 45.12.6 Logging Before Enforcement
+
+`AdvancedProtectionService` logs how many services and shortcuts *would* be
+disabled before APM actually flips on, so the platform can understand the
+impact. AMS exposes the counts through:
+
+```java
+// AccessibilityManagerService.java, line 1365
+AccessibilityManagerInternal.AccessibilityFeatureRestrictedCounts
+        getA11yFeatureRestrictedCounts(int userId) { ... }
+```
+
+This returns the number of currently enabled services and assigned shortcuts
+whose packages are not in the final permitted set, computed with the same
+legacy-versus-strict logic as the enforcement path.
+
+## 45.13 Try It
 
 This section provides hands-on exercises for exploring the accessibility
 framework.
 
-### 45.10.1 Exercise: Inspect the Accessibility Tree
+### 45.13.1 Exercise: Inspect the Accessibility Tree
 
 Use `uiautomator` to dump the accessibility tree and compare it with the
 View hierarchy:
@@ -7918,7 +8843,7 @@ Open `a11y-tree.xml` and identify:
 2. Which views are marked `clickable="true"` but have no `content-desc`?
 3. Do any `ImageView` elements lack content descriptions?
 
-### 45.10.2 Exercise: Write a Minimal AccessibilityService
+### 45.13.2 Exercise: Write a Minimal AccessibilityService
 
 Create a minimal accessibility service that logs all events to logcat:
 
@@ -7996,7 +8921,7 @@ adb logcat -s A11yDemo
 Navigate through any app and observe the event stream. Note the frequency
 of events and the information each carries.
 
-### 45.10.3 Exercise: Explore Touch Exploration State Transitions
+### 45.13.3 Exercise: Explore Touch Exploration State Transitions
 
 Enable TalkBack, then observe the touch exploration states by enabling debug
 logging:
@@ -8022,7 +8947,7 @@ Perform these interactions and observe the state transitions in logcat:
 
 5. **Two-finger triple-tap**: Observe the shortcut activation.
 
-### 45.10.4 Exercise: Test Magnification Gestures
+### 45.13.4 Exercise: Test Magnification Gestures
 
 Enable magnification through Settings > Accessibility > Magnification.
 
@@ -8042,7 +8967,7 @@ Enable magnification through Settings > Accessibility > Magnification.
    adb shell dumpsys accessibility | grep -A 20 "Magnification"
    ```
 
-### 45.10.5 Exercise: Audit Content Descriptions
+### 45.13.5 Exercise: Audit Content Descriptions
 
 Use the Accessibility Scanner app (available from Google Play) or write a
 script to audit missing content descriptions:
@@ -8072,7 +8997,7 @@ for node in root.iter('node'):
         print(f"MISSING: {class_name} at {bounds}")
 ```
 
-### 45.10.6 Exercise: Monitor AccessibilityManagerService Event Dispatch
+### 45.13.6 Exercise: Monitor AccessibilityManagerService Event Dispatch
 
 Use the accessibility tracing facility to observe event dispatch in detail:
 
@@ -8094,7 +9019,7 @@ The dump output includes:
 - Magnification state
 - Input filter configuration
 
-### 45.10.7 Exercise: Implement a Switch Access-like Scanner
+### 45.13.7 Exercise: Implement a Switch Access-like Scanner
 
 Build a simplified version of Switch Access that highlights elements one at
 a time:
@@ -8190,7 +9115,7 @@ This exercise demonstrates the core principles of Switch Access:
 tree traversal, node filtering, accessibility focus management, and action
 execution.
 
-### 45.10.8 Exercise: Trace an AccessibilityEvent End-to-End
+### 45.13.8 Exercise: Trace an AccessibilityEvent End-to-End
 
 Set a breakpoint or add logging at each stage of the event pipeline and
 click a button in any app. Trace the event through:
@@ -8207,7 +9132,7 @@ click a button in any app. Trace the event through:
 Document the timing at each stage. On a typical device, the end-to-end
 latency from View event to service callback is 5-15ms.
 
-### 45.10.9 Exercise: Examine Magnification Internals
+### 45.13.9 Exercise: Examine Magnification Internals
 
 Explore the magnification implementation by examining the display
 magnification state through WindowManager:
@@ -8235,7 +9160,7 @@ adb shell dumpsys accessibility | grep -i magnif
 
 Note how the `MagnificationSpec` values change as you pan and zoom.
 
-### 45.10.10 Exercise: Build an Accessibility Audit Tool
+### 45.13.10 Exercise: Build an Accessibility Audit Tool
 
 Combine the knowledge from this chapter to build a comprehensive accessibility
 auditing tool:
@@ -8336,7 +9261,7 @@ include:
 - Lists that do not provide `CollectionInfo` / `CollectionItemInfo`
 - Decorative images that should be marked as not important for accessibility
 
-### 45.10.11 Exercise: Explore the Accessibility Settings Database
+### 45.13.11 Exercise: Explore the Accessibility Settings Database
 
 The accessibility framework stores its configuration in `Settings.Secure`.
 Explore these settings to understand how the system persists state:
@@ -8380,7 +9305,7 @@ adb shell settings get secure accessibility_captioning_enabled
 Modify these settings directly to toggle accessibility features without
 using the Settings UI. This is particularly useful for automated testing.
 
-### 45.10.12 Exercise: UiAutomation for Testing
+### 45.13.12 Exercise: UiAutomation for Testing
 
 The `UiAutomation` framework provides programmatic accessibility service
 access for testing. It uses the same infrastructure as regular accessibility
@@ -8417,7 +9342,7 @@ AccessibilityEvent event = uiAutomation.executeAndWaitForEvent(
 `UiAutomationManager.sendAccessibilityEventLocked()` pathway that ensures
 test events are always dispatched regardless of normal filtering rules.
 
-### 45.10.13 Exercise: Observe the EventStreamTransformation Pipeline
+### 45.13.13 Exercise: Observe the EventStreamTransformation Pipeline
 
 Construct a mental model of the input transformation pipeline by observing
 its behavior with different features enabled:
@@ -8445,7 +9370,7 @@ The order of transformations matters. Magnification gesture detection runs
 before touch exploration, so a triple-tap for magnification is intercepted
 before TouchExplorer can interpret it as double-tap-plus-single-tap.
 
-### 45.10.14 Exercise: Performance Profiling
+### 45.13.14 Exercise: Performance Profiling
 
 Measure the performance impact of accessibility services on your application:
 
@@ -8484,9 +9409,11 @@ platform usable for people with disabilities.
 The key architectural insights are:
 
 1. **Centralized coordination**: `AccessibilityManagerService` is the single
-   point of coordination for all accessibility functionality. At 7,173 lines,
-   it manages event dispatch, service binding, security enforcement, window
-   tracking, input filtering, and magnification.
+   point of coordination for all accessibility functionality. At roughly 7,600
+   lines in Android 17, it manages event dispatch, service binding, security
+   enforcement, window tracking, input filtering, and magnification, and it now
+   also enforces Advanced Protection Mode restrictions on accessibility
+   services.
 
 2. **Event-driven observation**: The accessibility event system allows services
    to passively observe UI changes without modifying app behavior. The event
@@ -8521,9 +9448,9 @@ platform features that interact with the accessibility subsystem.
 
 | File | Purpose |
 |------|---------|
-| `frameworks/base/services/accessibility/.../AccessibilityManagerService.java` | Central system service (7,173 lines) |
-| `frameworks/base/core/.../accessibility/AccessibilityEvent.java` | Event definitions (1,934 lines) |
-| `frameworks/base/core/.../accessibility/AccessibilityNodeInfo.java` | Node info (8,308 lines) |
+| `frameworks/base/services/accessibility/.../AccessibilityManagerService.java` | Central system service (~7,600 lines) |
+| `frameworks/base/core/.../accessibility/AccessibilityEvent.java` | Event definitions (~2,000 lines) |
+| `frameworks/base/core/.../accessibility/AccessibilityNodeInfo.java` | Node info (~9,200 lines) |
 | `frameworks/base/core/.../accessibility/AccessibilityManager.java` | Client-side manager |
 | `frameworks/base/core/.../accessibilityservice/AccessibilityService.java` | Service base class |
 | `frameworks/base/services/accessibility/.../AccessibilitySecurityPolicy.java` | Security enforcement |
@@ -8547,6 +9474,12 @@ platform features that interact with the accessibility subsystem.
 | `frameworks/base/services/accessibility/.../EventStreamTransformation.java` | Input pipeline interface |
 | `frameworks/base/services/accessibility/.../SystemActionPerformer.java` | System action execution |
 | `frameworks/base/services/accessibility/.../BrailleDisplayConnection.java` | Braille display support |
+| `frameworks/base/services/accessibility/.../MouseKeysInterceptor.java` | Keyboard-driven mouse pointer (VirtualMouse, Num Lock) |
+| `frameworks/base/services/accessibility/.../HearingDevicePhoneCallNotificationController.java` | Hearing-device call routing notification |
+| `frameworks/base/services/accessibility/.../magnification/FullScreenMagnificationPointerMotionEventFilter.java` | Cursor-following pointer transform |
+| `frameworks/base/services/core/.../accessibility/AccessibilityServiceAdvancedProtectionProvider.java` | Advanced Protection Mode feature provider |
+| `frameworks/base/core/.../security/advancedprotection/AdvancedProtectionManager.java` | APM feature IDs and entity |
+| `frameworks/base/core/.../internal/accessibility/common/ShortcutConstants.java` | Shortcut type bitmask (UserShortcutType) |
 
 ---
 
@@ -8581,6 +9514,33 @@ transliteration, break iteration, and regular expression support. Without ICU,
 Android could not correctly sort a list of German names, break a Thai sentence
 into words, or format a Japanese date.
 
+Android 17 ships **ICU 78.3**, which implements **Unicode 17.0** and the
+**CLDR 48.2** locale dataset. The version constants are defined in
+`external/icu/icu4c/source/common/unicode/uvernum.h`:
+
+```c
+// external/icu/icu4c/source/common/unicode/uvernum.h
+#define U_ICU_VERSION_MAJOR_NUM 78
+#define U_ICU_VERSION_MINOR_NUM 3
+#define U_ICU_VERSION_PATCHLEVEL_NUM 0
+#define U_ICU_VERSION "78.3"
+#define U_ICU_VERSION_SHORT "78"
+```
+
+and the Unicode version is pinned in
+`external/icu/icu4c/source/common/unicode/uchar.h`:
+
+```c
+// external/icu/icu4c/source/common/unicode/uchar.h
+#define U_UNICODE_VERSION "17.0"
+```
+
+This is a significant uprev over the prior release (which carried ICU 77).
+Section 46.8 details what the bump brings: new Unicode 17.0 code points and
+emoji, refreshed CLDR collation and formatting data, and updated time-zone
+rules. Because ICU rides in the i18n APEX (see 46.1.3), the new data can reach
+devices through a Mainline update rather than a full platform OTA.
+
 ### 46.1.1 Source Layout
 
 ICU exists in AOSP at `external/icu/`. The directory is substantial:
@@ -8601,9 +9561,12 @@ external/icu/
         util/        # ULocale, Calendar, TimeZone, ...
         lang/        # UCharacter (character properties)
         number/      # Modern number formatting (NumberFormatter)
+        message2/    # MessageFormat 2.0 (technology preview)
+        segmenter/   # Modern segmentation API (internal/@hide on Android)
         impl/        # Internal implementation classes
     android_icu4c/   # Android-specific ICU4C wrappers
     libandroidicu/   # Shared library exposing stable ICU4C APIs to the NDK
+    libandroidicuinit/ # Initialization shim for libandroidicu
     libicu/          # Thin shim for platform-internal ICU usage
     build/           # Build rules for ICU data subsetting
     tools/           # Scripts for ICU version upgrades
@@ -8638,9 +9601,13 @@ external/icu/icu4c/source/data/
 ```
 
 At build time, the data is compiled into a `.dat` file and installed on device
-at `/apex/com.android.i18n/etc/icu/`. Since Android 10, ICU is delivered as
-part of the **i18n APEX module**, which allows ICU data and code to be updated
-independently of full platform OTA updates.
+at `/apex/com.android.i18n/etc/icu/icudt<major>l.dat` — on Android 17 that is
+`icudt78l.dat`, matching ICU major version 78. The exact path is asserted by
+`external/icu/android_icu4j/testing/src/android/icu/extratest/platform/AndroidDataFilesTest.java`,
+which builds it as `"/apex/com.android.i18n/etc/icu/icudt" +
+VersionInfo.ICU_VERSION.getMajor() + "l.dat"`. Since Android 10, ICU is
+delivered as part of the **i18n APEX module** (`com.android.i18n`), which allows
+ICU data and code to be updated independently of full platform OTA updates.
 
 ```mermaid
 graph TD
@@ -8940,6 +9907,13 @@ localeManager.setApplicationLocales(LocaleList.forLanguageTags("ja-JP,en-US"));
 LocaleList appLocales = localeManager.getApplicationLocales();
 ```
 
+`LocaleManager` also exposes the system-locale list (`getSystemLocales()` /
+`setSystemLocales()`) and lets an app supply a runtime override for its declared
+supported locales via `setOverrideLocaleConfig(LocaleConfig)`. The override
+LocaleConfig is what lets an app expand or shrink the language list that Settings
+offers for that app without shipping a new build; it is declared statically in
+`frameworks/base/core/java/android/app/LocaleConfig.java`.
+
 The server-side implementation lives at:
 
 **Source path**: `frameworks/base/services/core/java/com/android/server/locales/LocaleManagerService.java`
@@ -8969,12 +9943,16 @@ The service manages several responsibilities:
 | Package monitoring | Tracks app install/uninstall via `LocaleManagerServicePackageMonitor` |
 | LocaleConfig override | Allows system to override an app's declared supported locales |
 
-Supporting files in the same package:
+Supporting files in the same package
+(`frameworks/base/services/core/java/com/android/server/locales/`):
 
 - `LocaleManagerBackupHelper.java` -- Backup agent integration
 - `LocaleManagerServicePackageMonitor.java` -- Tracks package changes
 - `LocaleManagerShellCommand.java` -- `cmd locale_manager` shell interface
 - `LocaleManagerInternal.java` -- Internal API for system services
+- `SystemAppUpdateTracker.java` -- Re-applies stored locales after a system-app update
+- `AppLocaleChangedAtomRecord.java` / `AppSupportedLocalesChangedAtomRecord.java` --
+  Statsd atom records logged when an app's locales or supported-locale config change
 
 ### 46.2.4 Locale Resolution Algorithm
 
@@ -9340,24 +10318,28 @@ flowchart TD
 
 **Source path**: `frameworks/base/core/java/android/text/TextUtils.java`
 
-The `TextUtils.getLayoutDirectionFromLocale()` method checks whether the
-locale's script is inherently RTL:
+The `TextUtils.getLayoutDirectionFromLocale()` method asks ICU whether the
+locale is inherently RTL. In Android 17 it delegates to
+`ULocale.forLocale(locale).isRightToLeft()` rather than poking at the script's
+first code point directly, and it also honours the developer "force RTL" toggle:
 
 ```java
 // frameworks/base/core/java/android/text/TextUtils.java
 public static int getLayoutDirectionFromLocale(Locale locale) {
-    if (locale != null && !locale.equals(Locale.ROOT)) {
-        final int directionality = Character.getDirectionality(
-            Character.codePointAt(locale.getScript().isEmpty()
-                ? locale.getLanguage() : locale.getScript(), 0));
-        if (directionality == Character.DIRECTIONALITY_RIGHT_TO_LEFT
-                || directionality == Character.DIRECTIONALITY_RIGHT_TO_LEFT_ARABIC) {
-            return View.LAYOUT_DIRECTION_RTL;
-        }
-    }
-    return View.LAYOUT_DIRECTION_LTR;
+    return ((locale != null && !locale.equals(Locale.ROOT)
+                    && ULocale.forLocale(locale).isRightToLeft())
+            // If forcing into RTL layout mode, return RTL as default
+            || DisplayProperties.debug_force_rtl().orElse(false))
+        ? View.LAYOUT_DIRECTION_RTL
+        : View.LAYOUT_DIRECTION_LTR;
 }
 ```
+
+`ULocale.isRightToLeft()` consults ICU's locale data, so a locale like
+`ar` (Arabic) or `he` (Hebrew) resolves to RTL even when no script subtag is
+present, and `sr-Latn` correctly resolves to LTR while `sr-Cyrl` resolves to
+LTR as well (Cyrillic is left-to-right). The `DisplayProperties.debug_force_rtl()`
+branch is what the "Force RTL layout direction" developer option flips.
 
 ### 46.4.4 Bidirectional (Bidi) Text
 
@@ -9752,6 +10734,27 @@ width. The **optimal** strategy (based on the Knuth-Plass algorithm from TeX)
 considers all possible break points globally to minimize visual inconsistency
 across the entire paragraph. The **balanced** strategy tries to make all lines
 approximately the same width.
+
+Orthogonal to the break *strategy*, Minikin also carries CLDR-derived line-break
+*style* and *word-style* settings, exposed to apps through
+`android.graphics.text.LineBreakConfig` and defined natively in
+`frameworks/minikin/include/minikin/LineBreakStyle.h`:
+
+```cpp
+// frameworks/minikin/include/minikin/LineBreakStyle.h
+enum class LineBreakStyle : uint8_t {
+    None = 0, Loose = 1, Normal = 2, Strict = 3, NoBreak = 4, Auto = 5,
+};
+enum class LineBreakWordStyle : uint8_t {
+    None = 0, Phrase = 1, Auto = 2,
+};
+```
+
+These map to the Unicode `lb` and `lw` locale keywords (UTS #35). `Strict`,
+`Normal`, and `Loose` control how aggressively CJK text may break around small
+kana and certain punctuation, while `LineBreakWordStyle::Phrase` enables
+phrase-based breaking that keeps short Japanese and Korean phrases intact rather
+than breaking mid-phrase. `Auto` lets Minikin choose per locale and line count.
 
 ```mermaid
 flowchart TD
@@ -10192,12 +11195,133 @@ points a font covers:
 
 ---
 
-## 46.7 Try It
+## 46.7 Internationalization Changes in Android 17
+
+Android 17 does not redesign the i18n stack; the architecture in the preceding
+sections is intact. What changes is the *data and version layer* underneath it,
+plus a handful of locale-aware APIs that graduated or expanded. This section
+collects the differences that matter when porting prose or code from an earlier
+release.
+
+### 46.7.1 ICU 78 / Unicode 17.0 / CLDR 48.2
+
+The headline change is the ICU uprev. Android 17 carries **ICU 78.3**
+(`external/icu/icu4c/source/common/unicode/uvernum.h`), which implements
+**Unicode 17.0** (`external/icu/icu4c/source/common/unicode/uchar.h`) and
+integrates the **CLDR 48.2** locale dataset. The integration is visible in the
+16-to-17 changeset as a run of cherry-picks against ICU `maint-78`:
+
+```text
+ICU-23316 ICU 78.3 BRS Update version number to 78.3
+ICU-23316 Integrate CLDR 48.2 (final) to ICU maint-78
+ICU-23290 Integrate CLDR 48.1 ... to ICU maint-78
+```
+
+The practical effects ripple through every section above:
+
+| Layer | What the uprev brings |
+|-------|-----------------------|
+| Character properties (46.1.4) | New Unicode 17.0 code points gain general category, script, and bidi class data |
+| Collation (46.1.6) | Refreshed CLDR collation tailorings; some locales sort slightly differently |
+| Break iteration (46.1.7) | Updated dictionary/segmentation data for Thai, Khmer, Lao, CJK |
+| Formatting (46.1.8) | New/changed date, number, and currency patterns from CLDR 48.2 |
+| Plurals (46.3.4) | Plural-rule refinements for locales whose CLDR data changed |
+
+Because ICU rides in the `com.android.i18n` APEX, this entire data set can be
+shipped to devices through Mainline rather than a full OS image.
+
+### 46.7.2 Time Zone Data
+
+The time-zone database that ICU and `libcore` consult is updated independently
+of the ICU code, in the `system/timezone` module. Android 17's tree carries the
+IANA **2025c** release at distro format version `010`
+(`system/timezone/output_data/version/tz_version`). The 16-to-17 changeset shows
+the data rolling forward (`Update Android ICU data from 2025a to 2025b`, then the
+distro format being incremented). Like ICU, tzdata is APEX-delivered, so DST and
+zone-offset corrections reach devices without an OS update.
+
+### 46.7.3 Modern ICU APIs: MessageFormat 2.0 and Segmentation
+
+ICU 78 brings two newer API surfaces into `android_icu4j`:
+
+- **MessageFormat 2.0** lives in `external/icu/android_icu4j/src/main/java/android/icu/message2/`
+  (`MessageFormatter`, `MFParser`, `MFDataModel`, function factories for numbers,
+  dates, and text). It is a redesign of the classic `MessageFormat` that handles
+  grammatical agreement, gendered selection, and nested formatters in a single
+  declarative message string. On Android it is still marked a *technology
+  preview* (every public entry point in `MessageFormatter.java` is annotated
+  `@Deprecated` with "This API is for technology preview only"), so it is exposed
+  for experimentation rather than as a stable app API.
+- A **modern segmentation API** lives in
+  `external/icu/android_icu4j/src/main/java/android/icu/segmenter/` (`Segmenter`,
+  `Segments`, `LocalizedSegmenter`, `RuleBasedSegmenter`). It is a Streams-style
+  alternative to `BreakIterator`, but on Android it is `@hide` ("draft /
+  provisional / internal are hidden on Android"), so apps continue to use
+  `BreakIterator` (46.1.7) for word, line, and sentence boundaries.
+
+The takeaway: prefer the established `BreakIterator`, `NumberFormatter`, and
+`DateFormat` APIs for production code; treat `message2` and `segmenter` as
+upstream-tracking previews.
+
+### 46.7.4 Grammatical Inflection and System Terms of Address
+
+Android introduced the `grammatical-gender` configuration dimension and the
+`GrammaticalInflectionManager` API in an earlier release so that apps could
+select masculine, feminine, or neutral phrasing. The grammatical-gender values
+are defined on `Configuration`:
+
+```java
+// frameworks/base/core/java/android/content/res/Configuration.java
+public static final int GRAMMATICAL_GENDER_NOT_SPECIFIED = 0;
+public static final int GRAMMATICAL_GENDER_NEUTRAL       = 1;
+public static final int GRAMMATICAL_GENDER_FEMININE      = 2;
+public static final int GRAMMATICAL_GENDER_MASCULINE     = 3;
+```
+
+What is newer is the **system-wide "terms of address"** path. Behind the
+`android.app.system_terms_of_address_enabled` flag
+(`frameworks/base/core/java/android/app/grammatical_inflection_manager.aconfig`),
+`GrammaticalInflectionManager` adds a system-level grammatical gender that the
+user sets once and that apps read rather than each prompting individually:
+
+```java
+// frameworks/base/core/java/android/app/GrammaticalInflectionManager.java
+@FlaggedApi(Flags.FLAG_SYSTEM_TERMS_OF_ADDRESS_ENABLED)
+public int getSystemGrammaticalGender() { /* ... */ }
+
+// @hide system API used by Settings to set the system-wide value
+public void setSystemWideGrammaticalGender(int grammaticalGender) { /* ... */ }
+```
+
+`getSystemGrammaticalGender()` is the public, flag-gated read path; the
+matching `setSystemWideGrammaticalGender()` is a hidden system API that Settings
+uses to record the user's choice. The server side lives in its own package,
+`frameworks/base/services/core/java/com/android/server/grammaticalinflection/`
+(`GrammaticalInflectionService`, plus backup, package-monitor, and shell-command
+helpers that mirror the `LocaleManagerService` layout in 46.2.3). A per-app
+gender still flows through `setRequestedApplicationGrammaticalGender()`; the
+system value is the fallback when an app has not set its own.
+
+### 46.7.5 CJK Line-Break Word Style
+
+The phrase-based line-break controls described in 46.5.8
+(`LineBreakStyle` / `LineBreakWordStyle` in
+`frameworks/minikin/include/minikin/LineBreakStyle.h`, surfaced to apps through
+`android.graphics.text.LineBreakConfig`) remain the recommended way to get
+natural Japanese and Korean wrapping. `LINE_BREAK_WORD_STYLE_PHRASE` keeps short
+phrases together; `LINE_BREAK_STYLE_STRICT`/`NORMAL`/`LOOSE` tune CJK break
+permissiveness. With the CLDR 48.2 refresh these styles draw on updated
+segmentation data, so existing code does not change but the resulting line
+breaks track current CLDR conventions.
+
+---
+
+## 46.8 Try It
 
 This section provides hands-on exercises to explore Android's
 internationalization infrastructure.
 
-### 46.7.1 Exercise: Inspect ICU Data on a Device
+### 46.8.1 Exercise: Inspect ICU Data on a Device
 
 Connect to a device or emulator and inspect the ICU installation:
 
@@ -10206,31 +11330,31 @@ Connect to a device or emulator and inspect the ICU installation:
 adb shell pm list packages | grep i18n
 # Should show: package:com.android.i18n
 
-# Inspect ICU data location
+# Inspect ICU data location and read the major version off the filename
 adb shell ls -la /apex/com.android.i18n/etc/icu/
-# Should show icudt*.dat files
-
-# Check ICU version
-adb shell getprop persist.sys.icu.version
+# On Android 17: icudt78l.dat  (the "78" is the ICU major version)
 ```
 
-### 46.7.2 Exercise: Explore Locale Settings
+### 46.8.2 Exercise: Explore Locale Settings
 
 ```bash
-# List all available locales
-adb shell cmd locale_manager get-locales
+# List the device's supported locales
+adb shell cmd locale_manager list-device-locales
 
-# Get the system locale list
-adb shell settings get system system_locales
+# Get / set the system (device) locale
+adb shell cmd locale_manager get-device-locale
 
-# Set per-app locale (requires adb root or shell permissions)
+# Set a per-app locale (requires adb root or appropriate shell permissions)
 adb shell cmd locale_manager set-app-locales com.example.myapp --locales ja-JP
 
-# Verify per-app locale
+# Verify the per-app locale
 adb shell cmd locale_manager get-app-locales com.example.myapp
+
+# Inspect an app's resolved LocaleConfig (declared + any override)
+adb shell cmd locale_manager get-app-localeconfig com.example.myapp
 ```
 
-### 46.7.3 Exercise: Enable Pseudo-Locales
+### 46.8.3 Exercise: Enable Pseudo-Locales
 
 1. Enable Developer Options on the device
 2. Navigate to **Developer Options > Force RTL layout direction**
@@ -10241,7 +11365,7 @@ adb shell cmd locale_manager get-app-locales com.example.myapp
    - `en-XA`: Text becomes "[Heeelllloo Wooorrrlllddd]" style
    - `ar-XB`: Text is reversed and wrapped in RTL markers
 
-### 46.7.4 Exercise: Build a Multi-Locale App
+### 46.8.4 Exercise: Build a Multi-Locale App
 
 Create a minimal app that demonstrates locale-aware behavior:
 
@@ -10324,7 +11448,7 @@ Create locale-specific strings:
 </resources>
 ```
 
-### 46.7.5 Exercise: Inspect the Text Rendering Pipeline with Layout Inspector
+### 46.8.5 Exercise: Inspect the Text Rendering Pipeline with Layout Inspector
 
 1. Launch your app on a device or emulator
 2. Open Android Studio's Layout Inspector (Tools > Layout Inspector)
@@ -10333,7 +11457,7 @@ Create locale-specific strings:
 5. Use `adb shell dumpsys activity` to see the current `Configuration`
    including locale and layout direction
 
-### 46.7.6 Exercise: Explore System Fonts
+### 46.8.6 Exercise: Explore System Fonts
 
 ```bash
 # List all system fonts
@@ -10342,18 +11466,17 @@ adb shell ls /system/fonts/
 # Check font configuration
 adb shell cat /system/etc/fonts.xml | head -50
 
-# Inspect a specific font's metadata
-# (requires a font inspection tool or the following approach)
-adb shell cmd font list-families
+# Dump the resolved font configuration, families, and fallback chain
+adb shell cmd font dump
 
-# Check Noto CJK font
+# Show updatable-font module status (fonts shipped via the Fonts APEX)
+adb shell cmd font status
+
+# Check the Noto CJK font file
 adb shell ls -la /system/fonts/NotoSansCJK*
-
-# Examine fallback chain (device must be rooted or userdebug)
-adb shell dumpsys SurfaceFlinger --latency | head
 ```
 
-### 46.7.7 Exercise: Test RTL Layout
+### 46.8.7 Exercise: Test RTL Layout
 
 Create a layout that works correctly in both LTR and RTL:
 
@@ -10414,7 +11537,7 @@ Test by:
 3. Enabling "Force RTL layout direction" in Developer Options
 4. Using the `ar-XB` pseudo-locale
 
-### 46.7.8 Exercise: Use ICU4J Directly
+### 46.8.8 Exercise: Use ICU4J Directly
 
 ```java
 import android.icu.text.BreakIterator;
@@ -10451,7 +11574,7 @@ boolean isNormalized = nfc.isNormalized("Cafe\u0301");  // false (not NFC)
 String normalized = nfc.normalize("Cafe\u0301");         // "Cafe" (NFC)
 ```
 
-### 46.7.9 Exercise: Trace the Text Rendering Pipeline
+### 46.8.9 Exercise: Trace the Text Rendering Pipeline
 
 Enable systrace/perfetto tracing to observe the text rendering pipeline:
 
@@ -10491,7 +11614,7 @@ In the trace, look for:
 - `StaticLayout.generate` for text layout computation
 - Canvas `drawTextBlob` for the actual rendering
 
-### 46.7.10 Exercise: Build a Custom Font Configuration
+### 46.8.10 Exercise: Build a Custom Font Configuration
 
 For device vendors, create a custom font overlay:
 
@@ -10553,6 +11676,13 @@ Key takeaways from this chapter:
    fallback chains, and downloadable fonts all contribute to correct and
    efficient text display across languages.
 
+7. **Android 17 advances the data layer, not the architecture**: the stack moves
+   to ICU 78.3 (Unicode 17.0, CLDR 48.2) and IANA 2025c time-zone data, both
+   APEX-delivered; MessageFormat 2.0 and the modern segmentation API arrive as
+   previews; and grammatical inflection gains a system-wide "terms of address"
+   path. Existing i18n code keeps working while formatting, collation, and
+   segmentation track current CLDR conventions.
+
 ---
 
 ## Key Source Files Reference
@@ -10574,4 +11704,16 @@ Key takeaways from this chapter:
 | ResourcesImpl | `frameworks/base/core/java/android/content/res/ResourcesImpl.java` |
 | fonts.xml | `frameworks/base/data/fonts/fonts.xml` |
 | Font data directory | `frameworks/base/data/fonts/` |
+| ICU version constants | `external/icu/icu4c/source/common/unicode/uvernum.h` |
+| Unicode version | `external/icu/icu4c/source/common/unicode/uchar.h` |
+| MessageFormat 2.0 | `external/icu/android_icu4j/src/main/java/android/icu/message2/` |
+| ICU segmentation API | `external/icu/android_icu4j/src/main/java/android/icu/segmenter/` |
+| Time-zone data module | `system/timezone/` |
+| Configuration (grammatical gender) | `frameworks/base/core/java/android/content/res/Configuration.java` |
+| GrammaticalInflectionManager | `frameworks/base/core/java/android/app/GrammaticalInflectionManager.java` |
+| GrammaticalInflectionService | `frameworks/base/services/core/java/com/android/server/grammaticalinflection/` |
+| LineBreakConfig | `frameworks/base/graphics/java/android/graphics/text/LineBreakConfig.java` |
+| LineBreakStyle (Minikin) | `frameworks/minikin/include/minikin/LineBreakStyle.h` |
+| LocaleManager | `frameworks/base/core/java/android/app/LocaleManager.java` |
+| LocaleConfig | `frameworks/base/core/java/android/app/LocaleConfig.java` |
 

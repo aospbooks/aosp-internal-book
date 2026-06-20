@@ -1209,35 +1209,50 @@ graph TD
 ```kotlin
 // quickstep/src/com/android/quickstep/OverviewCommandHelper.kt
 class OverviewCommandHelper
-@AssistedInject
+@Inject
 constructor(
-    @Assisted private val touchInteractionService: TouchInteractionService,
+    private val touchInteractionHandler: Provider<TouchInteractionHandler>,
     private val overviewComponentObserver: OverviewComponentObserver,
     private val dispatcherProvider: DispatcherProvider,
     private val displayRepository: DisplayRepository,
-    @Assisted private val taskbarManager: TaskbarManager,
+    private val taskbarManager: TaskbarManager,
     private val taskAnimationManagerRepository: PerDisplayRepository<TaskAnimationManager>,
     @ElapsedRealtimeLong private val elapsedRealtime: () -> Long,
-    @Assisted private val systemUiProxy: SystemUiProxy,
+    private val systemUiProxy: SystemUiProxy,
+    private val latencyTracker: LatencyTracker,
 ) {
     private val coroutineScope =
         CoroutineScope(SupervisorJob() + dispatcherProvider.lightweightBackground)
     private val commandQueue = ConcurrentLinkedDeque<CommandInfo>()
 ```
 
-The command types include:
+In Android 17 the helper is a plain `@Inject` Dagger type rather than the
+assisted-injected one of earlier releases: instead of receiving a
+`TouchInteractionService` and `SystemUiProxy` directly it pulls a
+`Provider<TouchInteractionHandler>`, a `PerDisplayRepository<TaskAnimationManager>`,
+and a `DisplayRepository`, all of which are display-aware so a single helper
+can drive overview on whichever display the gesture happened. The command
+types are:
 
 ```kotlin
 enum class CommandType {
-    HOME,
-    TOGGLE,
-    TOGGLE_WITH_FOCUS,
-    TOGGLE_OVERVIEW_PREVIOUS,
-    SHOW_WITH_FOCUS,
     SHOW_ALT_TAB,
     HIDE_ALT_TAB,
+    /** Toggle between overview and the next task */
+    TOGGLE, // Navigate to Overview
+    HOME, // Navigate to Home
+    /**
+     * Toggle between Overview and the previous screen before launching Overview, which can
+     * either be a task or the home screen.
+     */
+    TOGGLE_OVERVIEW_PREVIOUS,
+    /** Toggle between Overview and the keyboard-focused Overview task. */
+    TOGGLE_WITH_FOCUS,
 }
 ```
+
+The standalone `SHOW_WITH_FOCUS` command was removed in 17; keyboard-focused
+overview is now reached through `TOGGLE_WITH_FOCUS`.
 
 ### 48.5.4 RecentsView
 
@@ -1257,6 +1272,14 @@ Key features of `RecentsView`:
 - **Split screen** initiation by dragging a task to the split placeholder
 - **Desktop task views** for windowed/desktop mode tasks
 - **Grid-only overview** mode where tasks are shown in a grid layout
+
+In Android 17 `RecentsView` also holds a `DesktopRecentsTransitionController`
+(`quickstep/src/com/android/launcher3/desktop/DesktopRecentsTransitionController.kt`),
+injected through its `init` path. When a task card is moved into desktop windowing,
+`RecentsView` delegates to that controller's `moveToDesktop`, and when the
+display is an external connected display it calls `moveToExternalDisplay`; both
+run a `RemoteTransition` named `"RecentsToDesktop"` so the task animates from the
+overview grid into a freeform desktop window.
 
 ### 48.5.5 TaskView
 
@@ -1334,6 +1357,119 @@ sequenceDiagram
     end
 ```
 
+### 48.5.8 Windowed Recents: RecentsWindowManager
+
+Historically overview was hosted by an `Activity` (`RecentsActivity` in the
+fallback case, or the `QuickstepLauncher` itself in the launcher case). With
+desktop windowing and connected displays, Android 17 introduces a way to host
+overview in a standalone *window* rather than an activity, so recents can live
+on a secondary display or float over a desktop without owning a task. The host
+is `RecentsWindowManager`:
+
+```kotlin
+// quickstep/src/com/android/quickstep/window/RecentsWindowManager.kt
+class RecentsWindowManager
+@Inject
+constructor(
+    @WindowContext private val windowContext: Context,
+    private val fallbackWindowInterface: FallbackWindowInterface,
+    private val recentsWindowTracker: RecentsWindowTracker,
+    wallpaperColorHints: WallpaperColorHints,
+    private val systemUiProxy: SystemUiProxy,
+    recentsModel: RecentsModel,
+    private val screenOnTracker: ScreenOnTracker,
+    desktopState: DesktopState,
+    displayController: DisplayController,
+    @Ui private val uiExecutor: LooperExecutor,
+    invariantDeviceProfile: InvariantDeviceProfile,
+    lifeCycle: PerDisplayCleanupTask,
+    @Named(WINDOW_BLUR_STATE) private val blurState: ListenableRef<Boolean>,
+) :
+    RecentsWindowContext(windowContext, wallpaperColorHints.hints, invariantDeviceProfile),
+    RecentsViewContainer,
+    StatefulContainer<RecentsState>,
+    ComponentCallbacks {
+```
+
+Instead of an `Activity`, `RecentsWindowManager` builds its own view tree with a
+`SurfaceControlViewHost` driven by a `WindowlessWindowManager`, owns a
+`StateManager<RecentsState, RecentsWindowManager>` (its own `HIDDEN`/visible
+state machine independent of `LauncherState`), and implements
+`RecentsViewContainer` so the very same `RecentsView`/`TaskView` machinery from
+section 48.5.4 renders inside it. Because it is a `ComponentCallbacks`, it reacts
+to its own configuration changes (orientation, screen size) per display.
+
+```mermaid
+graph TD
+    subgraph "Activity-hosted overview"
+        QL2[QuickstepLauncher / RecentsActivity]
+    end
+    subgraph "Window-hosted overview (17)"
+        RWM[RecentsWindowManager]
+        SCVH["SurfaceControlViewHost (WindowlessWindowManager)"]
+        RWRV[FallbackWindowRecentsView]
+    end
+    RVC[RecentsViewContainer interface]
+    RV3[RecentsView / TaskView]
+
+    QL2 -.implements.-> RVC
+    RWM -.implements.-> RVC
+    RWM --> SCVH
+    SCVH --> RWRV
+    RWRV --> RV3
+    RVC --> RV3
+```
+
+Which host is used is gated by `RecentsWindowFlags`
+(`quickstep/src/com/android/quickstep/window/RecentsWindowFlags.kt`), whose
+`enableLauncherOverviewInWindow` and `enableFallbackOverviewInWindow`
+`DesktopExperienceFlag`s wrap the `enable_launcher_overview_in_window` and
+`enable_fallback_overview_in_window` aconfig flags. A per-display
+`RecentsWindowManager` is created and torn down by `RecentsWindowTracker`
+(`quickstep/src/com/android/quickstep/window/RecentsWindowTracker.kt`, a
+`ContextTracker`) in concert with the `DisplayModel`/`PerDisplayComponent`
+machinery described in section 48.6, so each display with system decorations can
+get its own overview window. The matching gesture handler is
+`RecentsWindowSwipeHandler`
+(`quickstep/src/com/android/quickstep/window/RecentsWindowSwipeHandler.java`),
+the window-hosted counterpart to `AbsSwipeUpHandler`.
+
+### 48.5.9 Desktop App-Launch Transitions
+
+When desktop windowing is active, launching an app from the home screen or
+taskbar should animate the new window into a freeform desktop position rather
+than full screen. Android 17 adds a dedicated transition package,
+`com.android.launcher3.desktop`. `DesktopAppLaunchTransitionManager`
+(`quickstep/src/com/android/launcher3/desktop/DesktopAppLaunchTransitionManager.kt`)
+registers a `RemoteTransition` with SystemUI for freeform task opens and for the
+window-limit "unminimize" case:
+
+```kotlin
+// quickstep/src/com/android/launcher3/desktop/DesktopAppLaunchTransitionManager.kt
+fun registerTransitions() {
+    if (!shouldRegisterTransitions()) return
+    remoteWindowLimitUnminimizeTransition =
+        RemoteTransition(/* ... unminimize runner ... */)
+    systemUiProxy.registerRemoteTransition(remoteWindowLimitUnminimizeTransition)
+}
+
+private fun shouldRegisterTransitions(): Boolean =
+    DesktopModeStatus.canEnterDesktopMode(context)
+```
+
+The actual animation is described by `DesktopAppLaunchTransition`
+(`quickstep/src/com/android/launcher3/desktop/DesktopAppLaunchTransition.kt`),
+whose `AppLaunchType` enum distinguishes a fresh `LAUNCH` from an `UNMINIMIZE`,
+and `DesktopAppLaunchAnimatorHelper`
+(`quickstep/src/com/android/launcher3/desktop/DesktopAppLaunchAnimatorHelper.kt`)
+builds the per-window animators. `QuickstepTransitionManager` wires this in: in
+its remote-transition path it checks `isDesktopAppLaunch(...)` and, when true,
+returns `createDesktopAppLaunchRemoteTransition(...)` so a home-screen icon tap
+in desktop mode plays the desktop launch animation. The whole path is gated by
+`DesktopModeStatus.canEnterDesktopMode()` and the
+`desktop_homescreen_icons_applaunch_transitions` flag, so on phones the classic
+full-screen launch animation is unchanged.
+
 ---
 
 ## 48.6 Taskbar
@@ -1352,6 +1488,11 @@ public class TaskbarActivityContext extends BaseTaskbarContext {
 The taskbar window is of type `TYPE_NAVIGATION_BAR`, placing it at the same
 system UI level as the navigation bar. It uses `FLAG_NOT_FOCUSABLE` to avoid
 stealing input focus from foreground apps.
+
+There is one `TaskbarActivityContext` per display. In Android 17 the higher-level
+lifecycle (creating and destroying taskbars as displays come and go) is owned by
+the `TaskbarManager` interface and its `DisplayModel`-backed implementation;
+section 48.6.7 covers that per-display architecture.
 
 ### 48.6.2 Taskbar Controller Architecture
 
@@ -1416,13 +1557,25 @@ The taskbar adapts to different device types:
 | **Desktop mode** | Full-featured taskbar with overflow |
 | **Connected display** | Separate taskbar per display |
 
-The `TaskbarDesktopModeController` handles desktop-specific behavior,
-including:
+`TaskbarDesktopModeController`
+(`quickstep/src/com/android/launcher3/taskbar/TaskbarDesktopModeController.kt`)
+handles desktop-specific behavior. It registers itself as a
+`DesktopVisibilityController.DesktopVisibilityListener` and exposes per-display
+queries that the rest of the taskbar reads:
 
-- Pinned taskbar mode
-- Auto-hide on immersive apps
-- Overflow apps container for too many pinned apps
-- Desktop experience flags integration
+- `isInDesktopMode(displayId)` and `isInDesktopModeAndNotInOverview(displayId)`,
+  delegating to the app-singleton `DesktopVisibilityController`
+  (`quickstep/src/com/android/launcher3/statehandlers/DesktopVisibilityController.kt`)
+- `shouldShowDesktopTasksInTaskbar(displayId)`, which decides whether running
+  desktop tasks appear in the taskbar (true in desktop mode or on a freeform
+  display)
+- `onTaskbarCornerRoundingUpdate(...)`, which animates the taskbar's corner
+  radius when an adjacent desktop window needs rounding
+- a `DisplayController` listener so it re-evaluates state when the display
+  configuration changes
+
+Note that the controller is constructed per `TaskbarActivityContext`, so each
+display's taskbar gets its own desktop-mode controller scoped to that display.
 
 ### 48.6.5 Taskbar-Launcher Communication
 
@@ -1454,9 +1607,85 @@ app icons, using `BubbleTextView.RunningAppState`:
 ```java
 // src/com/android/launcher3/BubbleTextView.java
 public enum RunningAppState {
+    NOT_RUNNING,
     RUNNING,
     MINIMIZED,
 }
+```
+
+### 48.6.7 Per-Display Taskbar
+
+On phones there is one taskbar (or none), but desktop windowing and connected
+displays mean a device can show several displays with system decorations at once,
+each needing its own taskbar. Android 17 makes the taskbar per-display by
+splitting the manager into an interface plus an implementation and giving the
+implementation a `DisplayModel`. `TaskbarManager`
+(`quickstep/src/com/android/launcher3/taskbar/TaskbarManager.kt`) is now an
+interface whose methods take a `displayId`, for example:
+
+```kotlin
+// quickstep/src/com/android/launcher3/taskbar/TaskbarManager.kt
+interface TaskbarManager {
+    fun getTaskbarForDisplay(displayId: Int): TaskbarActivityContext?
+    fun setWallpaperVisible(displayId: Int, isVisible: Boolean)
+    fun onSystemUiFlagsChanged(@SystemUiStateFlags systemUiStateFlags: Long, displayId: Int)
+    fun getTaskbarInteractor(displayId: Int): TaskbarInteractor?
+    // ...
+}
+```
+
+The concrete logic lives in `TaskbarManagerImpl`
+(`quickstep/src/com/android/launcher3/taskbar/TaskbarManagerImpl.java`, reached
+through the `TaskbarManagerImplWrapper`), which owns a
+`DisplayModel<PerDisplayTaskbarResource>`:
+
+```java
+// quickstep/src/com/android/launcher3/taskbar/TaskbarManagerImpl.java
+private final DisplayModel<PerDisplayTaskbarResource> mResources;
+```
+
+Each `PerDisplayTaskbarResource`
+(`quickstep/src/com/android/launcher3/taskbar/PerDisplayTaskbarResource.kt`)
+implements `DisplayModel.DisplayResource` and owns one display's
+`TaskbarActivityContext`, its root layout, window-manager view, and an
+`isExternalDisplay` flag. The `DisplayModel`
+(`quickstep/src/com/android/quickstep/DisplayModel.kt`) is the generic registry
+that creates a resource when a display gains system decorations
+(`onDisplayAddSystemDecorations`) and tears it down on
+`onDisplayRemoved`/`onDisplayRemoveSystemDecorations`:
+
+```kotlin
+// quickstep/src/com/android/quickstep/DisplayModel.kt
+class DisplayModel<RESOURCE_TYPE : DisplayResource>
+@AssistedInject
+constructor(/* ... */) : DisplayDecorationListener, SafeCloseable {
+    override fun onDisplayAddSystemDecorations(displayId: Int) { storeDisplayResource(displayId) }
+    override fun onDisplayRemoved(displayId: Int) { deleteDisplayResource(displayId) }
+    fun getDisplayResource(displayId: Int): RESOURCE_TYPE? { /* ... */ }
+    fun forEach(callback: Consumer<RESOURCE_TYPE>) { /* ... */ }
+    interface DisplayResource { fun cleanup(); fun dump(prefix: String, writer: PrintWriter) }
+}
+```
+
+This per-display model is shared infrastructure. The taskbar uses it for its
+`PerDisplayTaskbarResource`s, and as shown in section 48.5.8 the same kind of
+display tracking governs the per-display `RecentsWindowManager`. Dagger backs it
+with a `PerDisplayComponent`/`PerDisplaySingleton` scope
+(`quickstep/src/com/android/launcher3/dagger/PerDisplayComponent.kt`) so each
+display's controllers are injected into a subgraph scoped to that display and
+cleaned up via `PerDisplayCleanupTask` when the display goes away.
+
+```mermaid
+graph TD
+    TM[TaskbarManager interface] --> TMW[TaskbarManagerImplWrapper]
+    TMW --> TMI[TaskbarManagerImpl]
+    TMI --> DM["DisplayModel&lt;PerDisplayTaskbarResource&gt;"]
+    DM --> R0["PerDisplayTaskbarResource (display 0)"]
+    DM --> R1["PerDisplayTaskbarResource (external display)"]
+    R0 --> TAC0[TaskbarActivityContext]
+    R1 --> TAC1[TaskbarActivityContext]
+    TAC0 --> C0[TaskbarControllers]
+    TAC1 --> C1[TaskbarControllers]
 ```
 
 ---
@@ -2353,3 +2582,12 @@ All paths relative to `packages/apps/Launcher3/`:
 | OverviewCommandHelper | `quickstep/src/com/android/quickstep/OverviewCommandHelper.kt` |
 | TaskbarActivityContext | `quickstep/src/com/android/launcher3/taskbar/TaskbarActivityContext.java` |
 | StashedHandleVC | `quickstep/src/com/android/launcher3/taskbar/StashedHandleViewController.java` |
+| TaskbarManager (interface) | `quickstep/src/com/android/launcher3/taskbar/TaskbarManager.kt` |
+| TaskbarManagerImpl | `quickstep/src/com/android/launcher3/taskbar/TaskbarManagerImpl.java` |
+| PerDisplayTaskbarResource | `quickstep/src/com/android/launcher3/taskbar/PerDisplayTaskbarResource.kt` |
+| TaskbarDesktopModeController | `quickstep/src/com/android/launcher3/taskbar/TaskbarDesktopModeController.kt` |
+| DisplayModel | `quickstep/src/com/android/quickstep/DisplayModel.kt` |
+| RecentsWindowManager | `quickstep/src/com/android/quickstep/window/RecentsWindowManager.kt` |
+| RecentsWindowFlags | `quickstep/src/com/android/quickstep/window/RecentsWindowFlags.kt` |
+| DesktopAppLaunchTransitionManager | `quickstep/src/com/android/launcher3/desktop/DesktopAppLaunchTransitionManager.kt` |
+| DesktopRecentsTransitionController | `quickstep/src/com/android/launcher3/desktop/DesktopRecentsTransitionController.kt` |

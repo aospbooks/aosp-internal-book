@@ -145,9 +145,9 @@ we will see in 64.7.4.
 
 **W^X enforcement (Chapter 7).** A JIT must write machine code and then execute
 it. Since API 26 the dynamic linker refuses to load any ELF segment that is
-simultaneously writable and executable; `bionic/linker/linker_phdr.cpp:1058`
+simultaneously writable and executable; `bionic/linker/linker_phdr.cpp:1057`
 emits the `"has load segments that are both writable and executable"` diagnostic
-and `bionic/linker/linker_phdr.cpp:1062` records the `W+E` warning. A translator
+and `bionic/linker/linker_phdr.cpp:1061` records the `W+E load segments` warning. A translator
 like FEX or Box64 therefore cannot keep a page mapped `PROT_WRITE | PROT_EXEC`;
 it must map JIT pages writable, fill them, then flip them to executable with
 `mprotect`, respecting the write-xor-execute rule the platform enforces on app
@@ -501,7 +501,7 @@ map a code buffer `PROT_READ | PROT_WRITE`, emit AArch64 instructions into it,
 clear the instruction cache for that range, then `mprotect` it to
 `PROT_READ | PROT_EXEC` before jumping in. A page is never both writable and
 executable at once, satisfying the linker's W+E rejection
-(`bionic/linker/linker_phdr.cpp:1058`). On devices and Android versions that
+(`bionic/linker/linker_phdr.cpp:1057`). On devices and Android versions that
 further restrict executing memory from app data, the translator must allocate
 its code pages as anonymous memory it owns rather than mapping a file from the
 data directory.
@@ -551,10 +551,17 @@ Two projects dominate, and GameNative ships both: **FEX** (the default, via its
 FEXCore engine) and **Box64**. They solve the same problem with opposite
 philosophies, and understanding the difference explains most of the
 compatibility-versus-speed trade-offs users encounter. This chapter complements
-Chapter 19, which covered Android's *own* in-process binary translators
-(Berberis and Houdini) for running x86 Android apps on ARM. FEX and Box64 are
-the same idea applied to whole Linux/Windows x86-64 programs rather than Android
-APKs.
+Chapter 19, which covered Android's *own* in-process binary translators that plug
+into the Native Bridge: **Berberis**, the AOSP translator that runs riscv64 app
+code on x86_64 devices (its CPU-emulation core was consolidated under
+`frameworks/libs/binary_translation/cpu_emulation/` in Android 17), and the
+historical, closed-source **Houdini**, which ran ARM app code on Intel x86. Both
+run *guest Android APK* native code under ART, in the opposite direction to the
+x86-64-on-AArch64 problem here, and neither is involved in this stack. FEX and
+Box64 are the same dynarec idea applied to whole Linux/Windows x86-64 *programs*:
+they run inside an ordinary app process, not as Native Bridge plugins, and they
+translate x86-64 to AArch64, which is a direction no AOSP-shipped translator
+covers.
 
 ### 64.5.1 What a Dynamic Recompiler Does
 
@@ -1041,14 +1048,25 @@ graph TB
 A handful of other paths exist for non-Vulkan or low-end cases: **Zink** (Mesa's
 OpenGL-on-Vulkan), **VirGL** (a virtio-gpu virtual 3D renderer with its own
 client/server), and **llvmpipe** (a pure-CPU software rasteriser of last resort).
+Zink is worth a moment because it is the guest-side mirror of an AOSP component:
+where a guest needs OpenGL and the host only has a good Vulkan driver, Zink
+re-expresses GL as Vulkan, which is exactly what Android's own **ANGLE**
+(`external/angle/`) does for native apps that call OpenGL ES (Chapter 13). ANGLE
+is not the platform's default GLES driver on most devices, as the EGL loader
+itself notes (`frameworks/native/opengl/libs/EGL/Loader.cpp:555`); it is selected
+per-app or system-wide. The Windows-game stack does not route through ANGLE,
+because the guest runs its own GL-to-Vulkan translation (Zink, or `wined3d`'s GL
+output) inside the rootfs and reaches the device through the Vulkan loader; the
+parallel is conceptual, not a shared code path.
 
 ### 64.7.4 The Android Vulkan Loader
 
 Whichever guest path is used, the bottom of the chain is the same AOSP Vulkan
 loader from Chapter 13. The loader discovers and loads the device's Vulkan driver
 in `frameworks/native/vulkan/libvulkan/driver.cpp`; the `LoadDriver` routine
-(`frameworks/native/vulkan/libvulkan/driver.cpp:157`) opens the HAL driver
-(`vulkan.<board>.so`) and, importantly, does so with `android_dlopen_ext` using
+(`frameworks/native/vulkan/libvulkan/driver.cpp:153`) opens the HAL driver
+(`vulkan.<board>.so`) with `android_dlopen_ext`
+(`frameworks/native/vulkan/libvulkan/driver.cpp:171`) using
 the namespace flag from 64.4.2, because the driver lives in a restricted linker
 namespace. A native renderer such as Vortek's server, or a thunked Turnip, is in
 the end just another client of this loader and this driver, which is why the
@@ -1140,7 +1158,7 @@ guest audio API, a socket, and a native Android endpoint.
 The Android endpoint ultimately writes the decoded PCM into an Android audio
 stream. The natural API is **AAudio** from Chapter 15: a stream is created with
 `AAudio_createStreamBuilder`
-(`frameworks/av/media/libaaudio/include/aaudio/AAudio.h:1161`), configured and
+(`frameworks/av/media/libaaudio/include/aaudio/AAudio.h:1216`), configured and
 opened, and fed with `AAudioStream_write`, after which the frames flow through the
 audio HAL to the speaker. (Older or `targetSdk`-constrained builds may use
 `AudioTrack` or OpenSL ES instead, but AAudio is the modern low-latency path.) The
@@ -1204,7 +1222,63 @@ entire art of the stack is keeping that box small.
 
 ---
 
-## 64.10 Try It
+## 64.10 What Android 17 Changes for the Stack
+
+None of the translation projects in this chapter ship inside AOSP, so Android 17
+does not "add" a Windows-game runtime. What 17 does is move the *platform floor*
+the stack stands on, and three shifts are worth pinning down because each either
+helps or constrains a layer above.
+
+### 64.10.1 The Platform Interfaces the Stack Rides On Are Stable
+
+The whole design works because it only ever touches public, stable AOSP surfaces:
+the Vulkan loader (`frameworks/native/vulkan/libvulkan/driver.cpp`), the native
+window APIs (`frameworks/native/libs/nativewindow/include/android/native_window.h`),
+`AHardwareBuffer`, AAudio
+(`frameworks/av/media/libaaudio/include/aaudio/AAudio.h`), `ASharedMemory`
+(`frameworks/native/include/android/sharedmem.h`), the `android_dlopen_ext`
+namespace flags (`bionic/libc/include/android/dlext.h`), and the linker's W^X
+rule (`bionic/linker/linker_phdr.cpp`). In Android 17 all of these are present
+with the same contracts the earlier sections rely on, which is exactly why a
+Winlator-class app keeps working across releases without a platform patch: the
+stack invents nothing at the bottom, so it inherits whatever the release's public
+Vulkan, audio, and linker surfaces provide.
+
+### 64.10.2 Berberis Is Not This Stack, and 17 Reorganized It
+
+It is easy to assume Android's own binary translator must be involved here. It is
+not. Android 17 reorganized **Berberis** (Chapter 19): every module of its
+CPU-emulation core was consolidated under a new
+`frameworks/libs/binary_translation/cpu_emulation/` directory, with the
+three-tier engine (`cpu_emulation/interpreter/`, `cpu_emulation/lite_translator/`,
+`cpu_emulation/heavy_optimizer/`) and the tier dispatcher
+(`cpu_emulation/translator/`) now siblings under it. But Berberis translates
+**riscv64 guest code to x86_64 hosts** (`frameworks/libs/binary_translation/README.md`)
+and plugs into ART through the Native Bridge
+(`frameworks/libs/binary_translation/native_bridge/`). That is the wrong direction
+(riscv64 to x86_64, not x86-64 to AArch64) and the wrong integration point
+(in-ART APK code, not a whole Windows process) for running PC games. The 17 reorg
+is real and relevant to Chapter 19, but it changes nothing in this chapter: the
+x86-64-to-AArch64 translation here is still done entirely by FEX and Box64, which
+no AOSP-shipped translator competes with.
+
+### 64.10.3 Where ANGLE Fits, and Where It Does Not
+
+Android's GLES-on-Vulkan translator **ANGLE** (`external/angle/`, Chapter 13) is
+the platform's own answer to "express OpenGL ES on a Vulkan-only driver," and it
+overlaps conceptually with the Zink and `wined3d`-to-GL paths inside the guest. It
+is tempting to call ANGLE "the default" on Android 17, but the EGL loader's own
+comment is explicit that it is not the default GLES driver on most devices
+(`frameworks/native/opengl/libs/EGL/Loader.cpp:555`); it is opt-in per app or via
+system configuration. For this stack the practical point is unchanged: the guest
+performs its own GL or D3D translation to Vulkan and reaches the GPU through the
+Vulkan loader, so the device's ANGLE setting neither helps nor hinders a Windows
+game. The two are parallel solutions to the same shape of problem on opposite
+sides of the libc boundary, not a shared path.
+
+---
+
+## 64.11 Try It
 
 These exercises use a checkout of the GameNative source and a device or emulator
 with a Winlator-class app installed. The source reading requires nothing but a
@@ -1247,13 +1321,13 @@ game you own.
 
 7. **Confirm the AOSP touchpoints.** In an AOSP checkout, open
    `frameworks/native/vulkan/libvulkan/driver.cpp` at the `LoadDriver` function
-   (line 157) and confirm the driver is opened through `android_dlopen_ext` with
+   (line 153) and confirm the driver is opened through `android_dlopen_ext` with
    a namespace; this is the public interface the whole graphics stack ultimately
    funnels into.
 
 ---
 
-## 64.11 Summary
+## 64.12 Summary
 
 Running a Windows game on an unrooted ARM Android phone is a stack of
 single-purpose translation layers, each bridging one gap between a Windows x86-64
@@ -1298,11 +1372,11 @@ The recurring lessons:
 |------|---------|
 | `bionic/libc/include/android/dlext.h:115` | `ANDROID_DLEXT_USE_NAMESPACE`, loads a driver into a chosen linker namespace |
 | `bionic/libc/include/android/dlext.h:80` | `ANDROID_DLEXT_USE_LIBRARY_FD`, loads a library from an fd |
-| `bionic/linker/linker_phdr.cpp:1058` | rejects ELF segments that are both writable and executable (W^X) |
+| `bionic/linker/linker_phdr.cpp:1057` | rejects ELF segments that are both writable and executable (W^X) |
 | `bionic/libc/include/sys/mman.h:183` | `memfd_create`, backing for anonymous shared memory |
 | `frameworks/native/include/android/sharedmem.h:78` | `ASharedMemory_create`, host side of the SysV-SHM redirection |
-| `frameworks/native/vulkan/libvulkan/driver.cpp:157` | `LoadDriver`, discovers and opens the device Vulkan driver |
+| `frameworks/native/vulkan/libvulkan/driver.cpp:153` | `LoadDriver`, discovers and opens the device Vulkan driver |
 | `frameworks/native/libs/nativewindow/include/android/native_window.h:179` | `ANativeWindow_lock`, CPU presentation path |
 | `frameworks/native/libs/nativewindow/include/android/native_window.h:188` | `ANativeWindow_unlockAndPost`, posts a frame to the compositor |
 | `frameworks/native/libs/nativewindow/include/android/hardware_buffer.h:479` | `AHardwareBuffer_allocate`, zero-copy GPU presentation buffer |
-| `frameworks/av/media/libaaudio/include/aaudio/AAudio.h:1161` | `AAudio_createStreamBuilder`, the audio path's Android sink |
+| `frameworks/av/media/libaaudio/include/aaudio/AAudio.h:1216` | `AAudio_createStreamBuilder`, the audio path's Android sink |

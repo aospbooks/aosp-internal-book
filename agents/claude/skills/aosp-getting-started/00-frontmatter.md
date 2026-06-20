@@ -35,9 +35,10 @@ shared by Google and used according to terms described in the Creative Commons
 Android is a trademark of Google LLC. This book is not affiliated with,
 endorsed by, or sponsored by Google LLC or the Android Open Source Project.
 
-All source code references in this book correspond to the AOSP main branch
-as of early 2026. File paths, line numbers, and code excerpts may differ in
-past or future revisions of the source tree. The reader is encouraged to verify
+All source code references in this book correspond to Android 17 (API level
+37, codename Cinnamon Bun) on the AOSP `main` / `android17-release` tree as of
+mid-2026. File paths, line numbers, and code excerpts may differ in past or
+future revisions of the source tree. The reader is encouraged to verify
 references against their own checked-out source.
 
 **Disclaimer**: The information in this book is provided on an "as is" basis,
@@ -47,7 +48,8 @@ any liability to any person or entity with respect to any loss or damage caused
 or alleged to be caused directly or indirectly by the information contained in
 this book.
 
-**Source tree baseline**: `aosp/main` branch, synced February 2026.
+**Source tree baseline**: AOSP `main` / `android17-release` (Android 17, API
+level 37, codename Cinnamon Bun), synced mid-2026.
 
 **Build identifiers referenced**: AOSP builds targeting `aosp_cf_x86_64_phone`,
 `aosp_cf_arm64_phone`, and `aosp_riscv64` lunch targets.
@@ -156,18 +158,19 @@ helpful but not strictly required.
 
 ### A Note on Scope
 
-Android is vast. Even at over thirty-five chapters, this book cannot cover
+Android is vast. Even across sixty-nine chapters, this book cannot cover
 every subsystem exhaustively. I have focused on the areas that matter most
 to platform-level work, and within each area, I have prioritized the
 architectural patterns and critical code paths over encyclopedic API
 coverage. Where a subsystem is too large to cover completely -- the window
-management system's one hundred sections being a notable example -- I have
-focused on the foundational mechanisms and the most important code paths,
-providing enough context for the reader to explore further independently.
+management system being a notable example -- I have focused on the
+foundational mechanisms and the most important code paths, providing enough
+context for the reader to explore further independently.
 
-The AOSP source changes constantly. I have worked from the `main` branch
-as of early 2026, and I have noted version-specific behaviors where they
-matter. The architectural patterns described in this book, however, tend to
+The AOSP source changes constantly. I have worked from the `main` /
+`android17-release` tree (Android 17, API level 37, codename Cinnamon Bun) as
+of mid-2026, and I have noted version-specific behaviors where they matter.
+The architectural patterns described in this book, however, tend to
 be far more stable than individual implementation details. A reader working
 with a slightly different version of the source should find the conceptual
 framework fully applicable, even where specific line numbers have shifted.
@@ -191,84 +194,167 @@ stands on the foundation they built.
 
 ### Structure
 
-This book is organized into thirty-five chapters spanning the complete AOSP
+This book is organized into sixty-nine chapters spanning the complete AOSP
 stack, from the build system to specialized device form factors. The chapters
-are grouped into thematic parts, though each chapter is designed to be
-readable on its own.
+are grouped into sixteen thematic parts (I through XVI), followed by four
+appendices, though each chapter is designed to be readable on its own.
 
-**Part I: Foundations**
-
-| Chapter | Title | Focus |
-|---------|-------|-------|
-| 1 | Build System | Soong, Blueprint, Kati, Ninja, Make -- how AOSP transforms source into images |
-| 2 | Boot | From power-on through bootloader, kernel, init, Zygote, to SystemServer |
-| 3 | Kernel | Android's Linux kernel fork: binder driver, ashmem, ION/DMA-BUF, GKI |
-| 4 | HAL | Hardware Abstraction Layer: HIDL, AIDL HALs, passthrough vs. binderized |
-| 5 | Bionic | Android's C library: syscall wrappers, dynamic linker, malloc, pthreads |
-| 6 | Binder | IPC framework: driver, libbinder, AIDL code generation, transactions |
-
-**Part II: Native Layer**
+**Part I: Getting Started**
 
 | Chapter | Title | Focus |
 |---------|-------|-------|
-| 7 | NDK | Native Development Kit: stable APIs, the CDD contract, JNI bridge |
-| 8 | Graphics and Render Pipeline | From Canvas/RenderNode through HWUI to GPU |
-| 9 | Animation | Property animation, RenderThread animation, transition framework |
-| 10 | Audio | AudioFlinger, AudioPolicyService, AAudio, effects pipeline |
-| 11 | Media | MediaCodec, MediaExtractor, codec2, DRM framework |
+| 1 | Introduction | What AOSP is, how it is structured, and how to read this book |
+| 2 | Source Code and Build System | Repo, Soong, Blueprint, Kati, Ninja, Make -- turning source into images |
+| 3 | Feature Flags and aconfig | Build- and runtime-gated features, the aconfig flag system, trunk-stable development |
+
+**Part II: Kernel & Boot**
+
+| Chapter | Title | Focus |
+|---------|-------|-------|
+| 4 | Boot and Init | From power-on through bootloader, kernel, init, Zygote, to system_server |
+| 5 | Kernel | Android's Linux kernel fork: binder driver, ashmem, ION/DMA-BUF, GKI |
+| 6 | System Properties | The property service, property contexts, persistent and read-only properties |
+
+**Part III: Native Foundation**
+
+| Chapter | Title | Focus |
+|---------|-------|-------|
+| 7 | Bionic and the Dynamic Linker | Android's C library: syscall wrappers, dynamic linker, malloc, pthreads |
+| 8 | Memory Management | Low-memory killer, ZRAM and `mmd`, kswapd, memory tagging, OOM handling |
+| 9 | Binder IPC | IPC framework: driver, libbinder, AIDL code generation, transactions |
+| 10 | HAL | Hardware Abstraction Layer: HIDL, AIDL HALs, passthrough vs. binderized |
+| 11 | NDK | Native Development Kit: stable APIs, the CDD contract, JNI bridge |
+
+**Part IV: Native Services & Media**
+
+| Chapter | Title | Focus |
+|---------|-------|-------|
 | 12 | Native Services | SurfaceFlinger, InputDispatcher, SensorService, and beyond |
+| 13 | Graphics and Render Pipeline | From Canvas/RenderNode through HWUI to GPU and SurfaceFlinger |
+| 14 | Animation System | Property animation, RenderThread animation, transition framework |
+| 15 | Audio System | AudioFlinger, AudioPolicyService, AAudio, effects pipeline |
+| 16 | Media and Video Pipeline | MediaCodec, MediaExtractor, codec2, DRM framework, video decode/encode |
+| 17 | Sensors | SensorService, sensor HAL, sensor fusion, batching and wake-up sensors |
 
-**Part III: System Services**
+**Part V: Runtime**
 
 | Chapter | Title | Focus |
 |---------|-------|-------|
-| 13 | system_server | Process architecture, service lifecycle, Watchdog, SystemServiceManager |
-| 14 | Activity and Window Management | AMS, ATMS, task management, lifecycle state machines |
-| 15 | Window System | WindowManagerService: 100 sections covering layout, focus, transitions, input |
-| 16 | Display System | DisplayManagerService, logical displays, refresh rate management |
-| 17 | Package Manager | APK parsing, installation flows, permissions, split APKs, package verification |
 | 18 | ART Runtime | Dex compilation, JIT, AOT, garbage collection, class loading, profiling |
+| 19 | Native Bridge and Binary Translation | NativeBridge interface, Berberis, instruction translation, guest ABI |
 
-**Part IV: Specialized Subsystems**
-
-| Chapter | Title | Focus |
-|---------|-------|-------|
-| 19 | Native Bridge and Berberis | NativeBridge interface, instruction translation, guest ABI, trampolines |
-| 20 | CompanionDevice and VirtualDevice | VDM architecture, virtual displays, virtual input, CDM policies |
-| 21 | SystemUI | Status bar, notification shade, quick settings, keyguard, plugin system |
-| 22 | Launcher3 | Home screen architecture, workspace, all-apps, drag-and-drop, widgets |
-| 23 | Widgets, RemoteViews, and RemoteCompose | Cross-process UI: RemoteViews, AppWidgetService, RemoteCompose renderer |
-| 24 | AI, AppFunctions, and ComputerControl | On-device AI integration, AppFunctions framework, accessibility automation |
-| 25 | Settings | Settings app architecture, preference framework, search indexing |
-
-**Part V: Infrastructure**
+**Part VI: Framework Core**
 
 | Chapter | Title | Focus |
 |---------|-------|-------|
-| 26 | Emulator | Cuttlefish, Goldfish, QEMU integration, virtio devices, snapshots |
-| 27 | Architecture Support | ARM64, x86_64, RISC-V: build targets, kernel configs, ABI specifics |
-| 28 | Security and TEE | SELinux policies, Keymaster/Keymint, Gatekeeper, verified boot, TEE |
-| 29 | Virtualization | pKVM, crosvm, protected VMs, Microdroid, virtualization HAL |
-| 30 | Testing | CTS, VTS, Ravenwood, Atest, TradeFed, host-side vs. device-side |
-| 31 | Mainline Modules | APEX packaging, module boundaries, train updates, module policy |
+| 20 | system_server | Process architecture, service lifecycle, Watchdog, SystemServiceManager |
+| 21 | Intent System Deep Dive | Intent resolution, IntentFilter matching, PendingIntent, broadcast dispatch |
+| 22 | Activity and Window Management Overview | AMS, ATMS, task management, lifecycle state machines |
+| 23 | Window System | WindowManagerService: layout, focus, transitions, and input integration |
+| 24 | Display System | DisplayManagerService, logical displays, refresh rate management |
+| 25 | View System and Input Dispatch | The View hierarchy, measure/layout/draw, input event delivery |
 
-**Part VI: Device Types and Practice**
+**Part VII: Framework Services**
 
 | Chapter | Title | Focus |
 |---------|-------|-------|
-| 32 | Automotive | Car service, vehicle HAL, cluster, EVS, multi-display, driver distraction |
-| 33 | TV and Wear | Leanback, TIF, Wear Ongoing Activities, watch face framework |
-| 34 | Custom ROM Guide | Practical guide: forking, device trees, vendor blobs, OTA, signing |
+| 26 | PackageManagerService | APK parsing, installation flows, permissions, split APKs, verification |
+| 27 | Content Providers | ContentResolver, provider lifecycle, URI permissions, cursors |
+| 28 | Notification System | NotificationManagerService, channels, ranking, the shade pipeline |
+| 29 | Power Management | PowerManagerService, wakelocks, Doze, suspend/resume, thermal |
+| 30 | Background Task Scheduling | JobScheduler, WorkManager, AlarmManager, app standby buckets |
+| 31 | Multi-User and Profiles | UserManagerService, user lifecycle, work profiles, headless system user |
+| 32 | Account and Sync Framework | AccountManager, authenticators, SyncManager, sync adapters |
+| 33 | Location Services | LocationManagerService, fused location, geofencing, GNSS HAL |
+| 34 | Storage and Filesystem | Scoped storage, StorageManager, vold, FUSE, sdcardfs successors |
+
+**Part VIII: Connectivity**
+
+| Chapter | Title | Focus |
+|---------|-------|-------|
+| 35 | Networking and Connectivity | ConnectivityService, NetworkStack, IpClient, generic ranging |
+| 36 | Telephony and RIL | TelephonyRegistry, the RIL, IMS, satellite/NTN support |
+| 37 | Bluetooth | The Bluetooth stack (Gabeldorsche), profiles, channel sounding |
+| 38 | NFC | NfcService, the NFC HAL, secure element, tap-to-X gesture exchange |
+| 39 | USB, ADB, and MTP | UsbService, USB roles and accessories, ADB, MTP transport |
+
+**Part IX: Security**
+
+| Chapter | Title | Focus |
+|---------|-------|-------|
+| 40 | Security | SELinux policies, Keymint, Gatekeeper, verified boot, TEE, permissions |
+| 41 | Credential Manager and Passkeys | CredentialManager, FIDO2/passkeys, credential providers |
+| 42 | DRM and Content Protection | MediaDrm, Widevine, the DRM HAL, secure decode paths |
+| 68 | LFI In-Process Sandbox | Lightweight Fault Isolation: in-process sandboxing of untrusted code |
+
+**Part X: UI Framework**
+
+| Chapter | Title | Focus |
+|---------|-------|-------|
+| 43 | Widgets, RemoteViews, and RemoteCompose | Cross-process UI: RemoteViews, AppWidgetService, RemoteCompose renderer |
+| 44 | WebView | The WebView module, Chromium integration, the renderer process model |
+| 45 | Accessibility | AccessibilityManagerService, accessibility services, the event pipeline |
+| 46 | Internationalization | ICU, locales, resource qualifiers, bidirectional text, fonts |
+
+**Part XI: System Apps**
+
+| Chapter | Title | Focus |
+|---------|-------|-------|
+| 47 | SystemUI | Status bar, notification shade, quick settings, keyguard, plugin system |
+| 48 | Launcher3 | Home screen architecture, workspace, all-apps, drag-and-drop, widgets |
+| 49 | Settings App | Settings app architecture, preference framework, search indexing |
+
+**Part XII: AI & Devices**
+
+| Chapter | Title | Focus |
+|---------|-------|-------|
+| 50 | AI, AppFunctions, and Computer Control | On-device AI integration, AppFunctions framework, accessibility automation |
+| 51 | CompanionDeviceManager and Virtual Devices | VDM architecture, virtual displays, virtual input, CDM policies |
+| 67 | NPU Manager | The neural-processing-unit manager, accelerator scheduling, ML offload |
+
+**Part XIII: Infrastructure**
+
+| Chapter | Title | Focus |
+|---------|-------|-------|
+| 52 | Mainline Modules | APEX packaging, module boundaries, train updates, module policy |
+| 53 | OTA Updates | update_engine, A/B and virtual A/B, snapshot/COW, payload generation |
+| 54 | Virtualization Framework | pKVM, crosvm, protected VMs, Microdroid, the virtualization HAL |
+| 55 | Testing Frameworks and Infrastructure | CTS, VTS, Ravenwood, Atest, TradeFed, host-side vs. device-side |
+| 56 | Debugging and Profiling Tools | gdb, lldb, Perfetto, systrace, logcat, bugreport, tombstones |
+
+**Part XIV: Device Support**
+
+| Chapter | Title | Focus |
+|---------|-------|-------|
+| 57 | Architecture Support | ARM64, x86_64, RISC-V: build targets, kernel configs, ABI specifics |
+| 58 | Emulator Architecture | Cuttlefish, Goldfish, QEMU/crosvm integration, virtio devices, snapshots |
+| 59 | Device Policy and Android Enterprise | DevicePolicyManager, managed profiles, provisioning, enterprise APIs |
+| 60 | Automotive, TV, and Wear | Car service, vehicle HAL, Leanback/TIF, Wear ongoing activities |
+| 61 | Print Services | PrintManagerService, print spooler, print service plugins |
+| 62 | Camera2 Pipeline Deep Dive | Camera2/CameraX, the camera HAL3 pipeline, capture sessions, requests |
+
+**Part XV: Practical**
+
+| Chapter | Title | Focus |
+|---------|-------|-------|
+| 63 | Custom ROM Guide | Practical guide: forking, device trees, vendor blobs, OTA, signing |
+| 64 | Running Windows Games on Android | Translation layers, Wine/Proton, graphics translation, input mapping |
+
+**Part XVI: Software Defined Vehicle**
+
+| Chapter | Title | Focus |
+|---------|-------|-------|
+| 65 | Software Defined Vehicle | The headless SDV platform, Core VM, service bundles, lifecycle and orchestration |
+| 66 | SDV Middleware and Vehicle Communication | The service fabric, vehicle ECU communication, AAOS IVI VM integration |
 
 **Appendices**
 
 | Appendix | Title | Focus |
 |----------|-------|-------|
-| A | Setting Up an AOSP Development Environment | Repo, sync, lunch, build, flash |
-| B | Navigating the Source Tree | Repository map, key directories, search strategies |
-| C | Debugging Tools Reference | gdb, lldb, systrace, perfetto, logcat, bugreport |
-| D | AIDL and HIDL Quick Reference | Interface definition syntax, code generation, versioning |
-| E | Glossary | Key terms and acronyms used throughout the book |
+| A | Key Files Reference | A consolidated map of the most important source paths across the book |
+| B | Glossary | Key terms and acronyms used throughout the book |
+| C | Why AOSP Doesn't Adopt Kotlin for Public Framework APIs | The reasoning behind keeping the public API surface in Java |
+| D | Android 17 Updates | A summary of the important platform changes from Android 16 to Android 17 |
 
 ### Chapter Anatomy
 
@@ -316,25 +402,27 @@ fork differs from upstream.
 
 The dependency chain looks like this:
 
+Layer dependencies across the book's foundational chapters:
+
 ```mermaid
 graph TD
-    A[Ch 2: Build System] --> B[Ch 4: Boot]
-    B --> C[Ch 5: Kernel]
-    C --> D[Ch 10: HAL]
-    C --> E[Ch 7: Bionic]
-    C --> F[Ch 9: Binder]
-    F --> G[Ch 11: NDK]
-    F --> H[Ch 12: Native Services]
-    H --> I[Ch 13: Graphics Pipeline]
-    H --> J[Ch 15: Audio]
-    H --> K[Ch 16: Media]
-    F --> L[Ch 20: system_server]
-    L --> M[Ch 22: Activity/Window Mgmt]
-    L --> N[Ch 23: Window System]
-    L --> O[Ch 26: Package Manager]
-    L --> P[Ch 18: ART Runtime]
-    I --> Q[Ch 14: Animation]
-    N --> R[Ch 24: Display System]
+    A["Ch 2: Source and Build System"] --> B["Ch 4: Boot and Init"]
+    B --> C["Ch 5: Kernel"]
+    C --> D["Ch 10: HAL"]
+    C --> E["Ch 7: Bionic and Linker"]
+    C --> F["Ch 9: Binder IPC"]
+    F --> G["Ch 11: NDK"]
+    F --> H["Ch 12: Native Services"]
+    H --> I["Ch 13: Graphics Pipeline"]
+    H --> J["Ch 15: Audio System"]
+    H --> K["Ch 16: Media Pipeline"]
+    F --> L["Ch 20: system_server"]
+    L --> M["Ch 22: Activity/Window Mgmt"]
+    L --> N["Ch 23: Window System"]
+    L --> O["Ch 26: Package Manager"]
+    L --> P["Ch 18: ART Runtime"]
+    I --> Q["Ch 14: Animation System"]
+    N --> R["Ch 24: Display System"]
 ```
 
 That said, **each chapter is designed to be self-contained**. If you already
@@ -390,9 +478,10 @@ This refers to that file under whichever directory you ran `repo init` and
 
 To get the most out of this book, you should have the source tree available
 for browsing. Many sections will make more sense if you can read the
-surrounding code, not just the excerpts shown in the book. Appendix A
-provides instructions for setting up an AOSP development environment, and
-Appendix B offers strategies for navigating the source tree efficiently.
+surrounding code, not just the excerpts shown in the book. Chapter 2 (Source
+Code and Build System) provides instructions for checking out and building an
+AOSP source tree, and Appendix A (Key Files Reference) maps the most important
+source paths to help you navigate the tree efficiently.
 
 ### Cross-References
 
@@ -425,7 +514,8 @@ source code and running system. They fall into several categories:
 The exercises assume access to either a physical device running an AOSP build
 or a Cuttlefish virtual device. Cuttlefish is recommended for most exercises,
 as it provides full AOSP functionality without requiring physical hardware.
-See Appendix A for setup instructions.
+See Chapter 2 (Source Code and Build System) for checkout and build
+instructions, and Chapter 58 (Emulator Architecture) for Cuttlefish setup.
 
 ---
 
@@ -659,7 +749,7 @@ $ lunch aosp_cf_x86_64_phone-trunk_staging-userdebug
 ```
 
 When architecture-specific behavior is discussed (particularly in Chapters
-19, 27, and 29), the relevant target is stated explicitly. The three primary
+19, 54, and 57), the relevant target is stated explicitly. The three primary
 architecture targets referenced are:
 
 - `aosp_cf_x86_64_phone-trunk_staging-userdebug` -- x86_64, primary development target

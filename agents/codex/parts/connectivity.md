@@ -113,6 +113,15 @@ The key networking Mainline modules are:
 Each module ships as an APEX package, providing a self-contained update unit
 with its own versioning, signing, and rollback capability.
 
+Android 17 pushes this trend further by carrying native networking binaries
+inside the modules themselves rather than only on the read-only system and
+vendor partitions. Two examples documented later in this chapter are the
+*mainline supplicant* (`/apex/com.android.wifi/bin/wpa_supplicant_mainline`, a
+wpa_supplicant build shipped inside the Wi-Fi APEX, Section 35.27) and the
+multi-proxy PAC handler services that the Connectivity APEX binds to as
+APEX-resident apps (Section 35.26). Both let Google update security-sensitive
+networking code through Play System Updates without an OEM build.
+
 ### 35.1.4 Network IDs and Routing
 
 Every active network in Android is assigned a unique **network ID** (netId), an
@@ -824,6 +833,17 @@ AIDL interface, handling:
 - OWE (Opportunistic Wireless Encryption) for open networks
 - SAE (Simultaneous Authentication of Equals) for WPA3
 - DPP (Device Provisioning Protocol) for easy onboarding
+
+`SupplicantStaIfaceHal` does not bind to one fixed transport. Its factory
+`createStaIfaceHalMockable()` in
+`packages/modules/Wifi/service/java/com/android/server/wifi/SupplicantStaIfaceHal.java`
+picks the first available backend in a strict preference order: the AIDL
+*mainline* implementation (a supplicant binary shipped inside the Wi-Fi APEX,
+covered in Section 35.27), then the AIDL *vendor* implementation (the supplicant
+on the vendor partition), then the legacy HIDL implementation. Each candidate
+exposes an `isServiceAvailable()` / `serviceDeclared()` probe; the first that
+answers yes wins. The same three-tier selection exists for Wi-Fi Direct in
+`SupplicantP2pIfaceHal`.
 
 ### 35.3.6 Network Selection
 
@@ -4138,16 +4158,25 @@ The UID information flows from:
 
 ### 35.22.1 mDNS Service Discovery
 
-netd includes an mDNS (multicast DNS) service for local network service
-discovery:
-
-**Source file:** `system/netd/server/MDnsService.cpp`
+mDNS (multicast DNS) powers Android's Network Service Discovery (NSD) API. The
+implementation has moved into the Connectivity module: `NsdService`
+(`packages/modules/Connectivity/service-t/src/com/android/server/NsdService.java`)
+drives a pure-Java mDNS stack under
+`packages/modules/Connectivity/service-t/src/com/android/server/connectivity/mdns/`
+(`MdnsDiscoveryManager`, `MdnsAdvertiser`, `MdnsSocketProvider`, and the packet
+reader/writer classes), so discovery and advertisement no longer depend on a
+native daemon. A legacy `MDnsService` still ships in `system/netd/server/MDnsService.cpp`
+as the compatibility backend, but new devices use the in-module Java backend.
 
 mDNS enables:
 
 - Device discovery on local networks (e.g., Chromecast, printers)
 - Service advertisement (NSD - Network Service Discovery API)
 - Zero-configuration networking
+
+In Android 17, NSD discovery is also gated by a per-app, per-service-type
+access model backed by the `ACCESS_LOCAL_NETWORK` permission and a system
+"picker" UI. That access-control flow is covered in Section 35.28.
 
 ### 35.22.2 Multicast Routing for Local Networks
 
@@ -4302,9 +4331,406 @@ NetworkAgent, NetworkMonitor, and the kernel.
 
 ---
 
-## 35.26 Try It: Network Debugging
+## 35.26 Multi-Proxy and Multi-PAC Framework
 
-### 35.26.1 dumpsys connectivity
+### 35.26.1 Why a New Proxy Stack
+
+Historically Android supported a single, system-wide HTTP proxy. The proxy was
+either a static host/port or a **PAC** (Proxy Auto-Config) URL: a JavaScript
+file whose `FindProxyForURL(url, host)` function returns which proxy (if any) to
+use for a given request. The legacy implementation lives in
+`packages/modules/Connectivity/service/src/com/android/server/connectivity/ProxyTracker.java`,
+which holds one global `ProxyInfo` and, for PAC, hands the script to a single
+out-of-process PAC processor. Every network and every app shares that one proxy
+decision.
+
+That model breaks down on a multi-network device. A managed work network may
+ship its own PAC script while the personal Wi-Fi uses none; a VPN may want a
+different proxy than the underlying transport. Android 17 introduces a redesigned
+proxy stack that can run **multiple independent PAC scripts simultaneously**,
+selected by context (network, user, or application UID). The AIDL header for the
+new PAC processor states the goal directly: it supports "running multiple
+PacProcessors to allow using different PAC scripts to be used based on context,
+such as network, user, or application UID"
+(`packages/modules/Connectivity/commercial/pac/multipacprocessor/src/com/android/multipacprocessor/IMultiPacService.aidl`).
+
+This is a scaffolded feature in the 17 tree: the wiring, service contracts, and
+coordinator are in place behind a flag, while several leaf operations are still
+stubbed (`UnsupportedOperationException`). It is documented here because the
+architecture is the durable part and is what an integrator needs to understand.
+
+### 35.26.2 Two Cooperating Services: PacProcessor and ProxyServer
+
+The new stack splits the job that the legacy single PAC service did into two
+cooperating, APEX-resident services, each running its own pool of paired
+`{ProxyServer; PacProcessor}` instances:
+
+- **MultiPacService** — runs the `PacProcessor` instances that actually evaluate
+  PAC JavaScript. Package `com.android.multiproxyhandler` ships the proxy side;
+  package `com.android.multipacprocessor` ships the PAC side
+  (`packages/modules/Connectivity/commercial/pac/multipacprocessor/src/com/android/multipacprocessor/MultiPacService.java`).
+- **MultiProxyService** — runs local HTTP proxy servers. Its purpose, per its
+  AIDL doc, is "running local HTTP servers \[...] to provide PAC support for apps
+  that can't directly access PacProcessors"
+  (`packages/modules/Connectivity/commercial/pac/multiproxyhandler/src/com/android/multiproxyhandler/MultiProxyService.java`).
+
+Both are exposed via AIDL stubs —
+`packages/modules/Connectivity/commercial/pac/multipacprocessor/src/com/android/multipacprocessor/IMultiPacService.aidl`
+and
+`packages/modules/Connectivity/commercial/pac/multiproxyhandler/src/com/android/multiproxyhandler/IMultiProxyService.aidl`.
+In the 17 tree both interface bodies are intentionally empty placeholders; the
+binding, lifecycle, and intent contracts are settled, and the RPC methods are
+filled in as the implementation lands. Both apps live inside the Connectivity
+(`com.android.tethering`) APEX, which is why the coordinator restricts its
+service lookup to packages under `/apex/com.android.tethering/`.
+
+### 35.26.3 PacCoordinator
+
+The orchestrator is `PacCoordinator`
+(`packages/modules/Connectivity/service/src/com/android/server/connectivity/proxy/PacCoordinator.java`).
+Its own class comment describes the role: it coordinates "the PAC script download
+and \[manages] the MultiPacService and MultiProxyService services \[...] keeps
+track of the PAC scripts that are currently in use and ensures that the
+corresponding PAC components serving these scripts are running."
+
+It runs entirely on the ConnectivityService handler thread. Every public method
+opens with `ensureRunningOnHandlerThread()`, and the service-binding callbacks
+are posted back onto that handler via `mConnectivityServiceHandler::post`, so all
+state mutation is single-threaded. The two key entry points are:
+
+```java
+// PacCoordinator.java
+public void startServingPacScript(ProxyInfo proxy, Optional<Integer> netId) {
+    ensureRunningOnHandlerThread();
+    bindToPacComponentsIfNeeded();
+    mPacDownloader.downloadPacScript(
+            new PacKey(proxy.getPacFileUrl(), netId), this::onPacScriptDownloaded);
+}
+
+public void stopServingPacScript(ProxyInfo proxy, Optional<Integer> netId) { ... }
+```
+
+`startServingPacScript()` binds to both services if needed, then schedules a
+download of the PAC script and, on completion, asks the two services to stand up
+a `{ProxyServer; PacProcessor}` pair for that script. If a pair is already
+running for the key, the call is a no-op. The key is a `PacKey`
+(`packages/modules/Connectivity/commercial/pac/common/src/com/android/commercial/PacKey.java`),
+a parcelable pair of the PAC `Uri` and an `Optional<Integer>` network id —
+`Optional.empty()` (serialized as `-1`) means the default network. The download
+itself is delegated to `PacDownloader`
+(`packages/modules/Connectivity/service/src/com/android/server/connectivity/proxy/PacDownloader.java`),
+which fetches the script over the requested network so a per-network PAC is
+retrieved through that network.
+
+Binding uses `BIND_AUTO_CREATE | BIND_NOT_FOREGROUND`. The `NOT_FOREGROUND` flag
+is deliberate: a long-running or blocking PAC evaluation (the proxy server makes
+blocking calls into the PAC processor while resolving a URL) must not be allowed
+to drag the system process into a foreground-priority state.
+
+Description of how a PAC request flows through the coordinator:
+
+```mermaid
+graph TD
+    PT["MultiProxyTracker<br/>(IProxyTracker)"] -->|"network proxy changed"| PC["PacCoordinator<br/>(CS handler thread)"]
+    PC -->|"bindToPacComponentsIfNeeded()"| BIND["bindService<br/>(BIND_AUTO_CREATE | BIND_NOT_FOREGROUND)"]
+    BIND --> MPS["MultiPacService<br/>(com.android.multipacprocessor)"]
+    BIND --> MXS["MultiProxyService<br/>(com.android.multiproxyhandler)"]
+    PC -->|"new PacKey(url, netId)"| DL["PacDownloader.downloadPacScript()"]
+    DL -->|"onPacScriptDownloaded()"| PC
+    PC -->|"start pair"| MPS
+    PC -->|"start pair"| MXS
+    MXS -->|"local HTTP proxy for apps"| APP["App HTTP traffic"]
+    MXS -->|"blocking FindProxyForURL()"| MPS
+    PC -->|"setup complete"| PT
+```
+
+### 35.26.4 MultiProxyTracker and ConnectivityService Wiring
+
+`ConnectivityService` reaches the new stack through the `IProxyTracker`
+interface. The legacy `ProxyTracker` and the new `MultiProxyTracker`
+(`packages/modules/Connectivity/service/src/com/android/server/connectivity/proxy/MultiProxyTracker.java`)
+both implement that interface, so the rest of ConnectivityService is agnostic to
+which one is in use. The selection happens at construction, gated by a flag:
+
+```java
+// ConnectivityService.java
+final boolean multiProxyEnabled =
+        mDeps.isMultiProxyEnabled()
+                && mResources.get().getBoolean(R.bool.config_enable_multi_proxy_system);
+mProxyTracker = multiProxyEnabled
+        ? mDeps.makeMultiProxyTracker(mContext, mHandler)
+        : /* legacy ProxyTracker */ ...;
+```
+
+`isMultiProxyEnabled()` returns `com.android.tethering.flags.Flags.enableMultiProxySystem()`,
+so both an aconfig flag and a resource overlay (`config_enable_multi_proxy_system`)
+must be set before the multi-proxy path is used; otherwise ConnectivityService
+falls back to the classic single `ProxyTracker`. `MultiProxyTracker` is the
+`IProxyTracker` whose `updateNetworkProxy(network, newProxy, oldProxy)` and
+`updateDefaultNetworkState(...)` callbacks are what ultimately drive
+`PacCoordinator.startServingPacScript()` per network. It also serves as the
+`MultiPacProxyInstalledListener` that `PacCoordinator` notifies once a proxy
+server is running and its PAC script is loaded.
+
+---
+
+## 35.27 The Mainline Supplicant
+
+### 35.27.1 Motivation
+
+The traditional `wpa_supplicant` is a vendor component: it lives on the vendor
+partition and is reached through the Wi-Fi supplicant HAL. Fixing a supplicant
+bug or shipping a new Wi-Fi feature therefore required an OEM build. Android 17
+adds a second, *updatable* supplicant — the **mainline supplicant** — shipped
+inside the Wi-Fi APEX (`com.android.wifi`) so Google can update it through Play
+System Updates.
+
+The mainline supplicant does **not** replace the vendor supplicant. It runs
+alongside it and acts as a thin front door: its root AIDL interface hands back
+the vendor supplicant for the bulk of STA/P2P work, while the mainline binary
+itself owns a small, evolving set of capabilities (today: Wi-Fi Aware / NAN
+interface management and per-user identity). This lets new supplicant-side code
+ship in the module while existing vendor behavior is untouched.
+
+### 35.27.2 The wifi_mainline_supplicant Service
+
+The binary is launched by an init service declared in
+`external/wpa_supplicant_8/wpa_supplicant/aidl/config/mainline_supplicant.rc`:
+
+```
+service wpa_supplicant_mainline /apex/com.android.wifi/bin/wpa_supplicant_mainline \
+    -O/data/misc/wifi/mainline_supplicant/sockets -dd \
+    -g@android:wpa_wlan0
+    interface aidl wifi_mainline_supplicant
+    class main
+    user wifi
+    group wifi net_raw net_admin
+    capabilities NET_RAW NET_ADMIN
+    socket wpa_wlan0 dgram 660 wifi wifi
+    disabled
+    oneshot
+```
+
+Key points: the executable lives under `/apex/com.android.wifi/bin/` (inside the
+module, hence updatable); it registers in servicemanager under the AIDL instance
+name `wifi_mainline_supplicant`; it runs as user `wifi` with `NET_RAW`/`NET_ADMIN`
+capabilities; and it is `disabled oneshot`, so init does not start it at boot —
+the framework starts it on demand. A matching SELinux domain is defined in
+`system/sepolicy/private/wifi_mainline_supplicant.te`. The C++ side of the
+interface is implemented in
+`external/wpa_supplicant_8/wpa_supplicant/aidl/mainline_supplicant.cpp`.
+
+### 35.27.3 IMainlineSupplicant
+
+The AIDL contract is
+`packages/modules/Wifi/aidl/mainline_supplicant/android/system/wifi/mainline_supplicant/IMainlineSupplicant.aidl`,
+in package `android.system.wifi.mainline_supplicant`. It is explicitly an
+*unstable* interface (it ships with the module, not the platform), and it is
+small:
+
+```java
+interface IMainlineSupplicant {
+    @PropagateAllowBlocking ISupplicant getVendorSupplicant();
+    @PropagateAllowBlocking ISupplicantNanIface addNanInterface(in String ifaceName);
+    void removeNanInterface(in String ifaceName);
+    void setCurrentUserIdentity(in int userId);
+}
+```
+
+- `getVendorSupplicant()` returns the standard vendor `ISupplicant` root —
+  this is how STA and P2P operations get routed back to the vendor supplicant.
+- `addNanInterface()` / `removeNanInterface()` register and tear down a Wi-Fi
+  Aware (NAN) interface (e.g. `aware0`), returning the vendor NAN iface object.
+- `setCurrentUserIdentity()` tells the supplicant which user is in the
+  foreground so it can load that user's credential-encrypted (CE) configuration.
+
+### 35.27.4 MainlineSupplicantAidlManager
+
+The framework side is `MainlineSupplicantAidlManager`
+(`packages/modules/Wifi/service/java/com/android/server/wifi/MainlineSupplicantAidlManager.java`).
+It resolves the binder by name through a small JNI shim,
+`packages/modules/Wifi/service/java/com/android/server/wifi/mainline_supplicant/ServiceManagerWrapper.java`:
+
+```java
+// MainlineSupplicantAidlManager.java
+private static final String MAINLINE_SUPPLICANT_SERVICE_NAME = "wifi_mainline_supplicant";
+
+protected IMainlineSupplicant getNewServiceBinderMockable() {
+    return IMainlineSupplicant.Stub.asInterface(
+            ServiceManagerWrapper.waitForService(MAINLINE_SUPPLICANT_SERVICE_NAME));
+}
+```
+
+`startDaemon()` fetches the binder, caches the vendor `ISupplicant` returned by
+`getVendorSupplicant()`, and links a death recipient; `terminate()` asks the
+supplicant to exit and waits on a latch for the binder-death confirmation. NAN
+interface acquisition (`getWifiNanIface()`) wraps `addNanInterface()` and hands
+the result to the Aware stack as an `AwareIfaceAidlSupplicantImpl`. Death
+callbacks are posted onto the `WifiThreadRunner`, keeping the manager's state
+single-threaded.
+
+Whether the mainline supplicant is used at all is decided by
+`isServiceAvailable()`, which requires several conditions to all hold:
+
+```java
+// MainlineSupplicantAidlManager.java
+public static boolean isServiceAvailable(WifiContext context) {
+    boolean isEnabledInOverlay = context.getResourceCache().getBoolean(
+            com.android.wifi.resources.R.bool.config_wifiMainlineSupplicantEnabled);
+    return isEnabledInOverlay && (Environment.isSdkAtLeastC() || hasPcFeature(context))
+            && Flags.mainlineSupplicant()
+            && Environment.isMainlineSupplicantBinaryInWifiApex()
+            && !isUnsupportedDevice(context);
+}
+```
+
+That is: a resource overlay (`config_wifiMainlineSupplicantEnabled`) enables it,
+the platform is Android 17+ (or a PC form factor), the `mainlineSupplicant`
+aconfig flag is on, the binary actually exists inside the Wi-Fi APEX, and the
+device is not one of the resource-constrained form factors (watch, embedded,
+leanback/TV, automotive) that `isUnsupportedDevice()` excludes.
+
+### 35.27.5 HAL Selection: Mainline, Vendor, or HIDL
+
+Section 35.3.5 noted that `SupplicantStaIfaceHal.createStaIfaceHalMockable()`
+picks a backend in a preference order. The mainline supplicant slots in at the
+top of that order:
+
+```java
+// SupplicantStaIfaceHal.java
+if (SupplicantStaIfaceHalAidlMainlineImpl.isServiceAvailable(mContext)) {
+    // AIDL Mainline implementation (supplicant shipped in the Wi-Fi APEX)
+    return new SupplicantStaIfaceHalAidlMainlineImpl(...);
+} else if (SupplicantStaIfaceHalAidlVendorImpl.serviceDeclared()) {
+    // AIDL Vendor implementation (supplicant on the vendor partition)
+    return new SupplicantStaIfaceHalAidlVendorImpl(...);
+} else if (SupplicantStaIfaceHalHidlImpl.serviceDeclared()) {
+    // Legacy HIDL implementation
+    return new SupplicantStaIfaceHalHidlImpl(...);
+}
+```
+
+The mainline STA implementation
+(`packages/modules/Wifi/service/java/com/android/server/wifi/SupplicantStaIfaceHalAidlMainlineImpl.java`)
+and its P2P counterpart
+(`packages/modules/Wifi/service/java/com/android/server/wifi/p2p/SupplicantP2pIfaceHalAidlMainlineImpl.java`)
+both start the mainline daemon, call `getVendorSupplicant()` to obtain the vendor
+`ISupplicant`, and then drive ordinary STA/P2P operations through that vendor
+interface. The mainline-only surface (NAN interface management, current-user
+identity) is reached directly through `IMainlineSupplicant`. So on a device where
+the mainline supplicant is enabled, the framework gets an updatable supplicant
+process whose Aware/identity logic ships in the module while its STA/P2P
+mechanics still run through the vendor supplicant.
+
+---
+
+## 35.28 NSD Service-Access Picker and the Local-Network Permission
+
+### 35.28.1 The Problem: Local Network Visibility
+
+Until recently, any app with the `INTERNET` permission could use the NSD API to
+enumerate every mDNS service on the local network — printers, smart-home hubs,
+TVs, other phones. That is a meaningful privacy leak: the set of services on
+someone's home network is identifying. Android 17 closes it with a new
+runtime permission, `ACCESS_LOCAL_NETWORK`, plus a **service-access picker**: a
+user-driven allowlist that lets an app reach specific services it does not have
+blanket permission to discover.
+
+### 35.28.2 DiscoveryRequest Flags
+
+`DiscoveryRequest`
+(`packages/modules/Connectivity/framework-t/src/android/net/nsd/DiscoveryRequest.java`)
+gains three flags that tell `NsdService` how to behave when an app discovers
+services without holding `ACCESS_LOCAL_NETWORK`:
+
+- `FLAG_NO_PICKER` — never show the picker; fail if the app lacks the
+  permission.
+- `FLAG_SHOW_PICKER` — force the picker UI; on selection the app is granted
+  access to the chosen service even without the permission.
+- `FLAG_USER_APPROVED_ONLY` — show nothing; return only services the user has
+  already approved for this app.
+
+If neither `FLAG_NO_PICKER` nor `FLAG_SHOW_PICKER` is set, the default behavior
+depends on the app's permission and the `USE_NSD_PICKER_WHEN_NO_LOCAL_NET_PERMISSION`
+compatibility change.
+
+### 35.28.3 Enforcement in NsdService
+
+`NsdService`
+(`packages/modules/Connectivity/service-t/src/com/android/server/NsdService.java`)
+gates the feature on the aconfig flag `FLAG_NSD_SERVICE_PICKER`
+(`mEnablePicker = mDeps.isAconfigFlagEnabled(FLAG_NSD_SERVICE_PICKER)`). Two
+enforcement points matter:
+
+- **Discovery**: `checkDiscoveryPermissionsAndPicker()` decides, from the request
+  flags and the caller's permission, whether to discover directly, refuse, or
+  launch the picker. When the picker path is chosen, `NsdService` does not deliver
+  raw results to the app — it routes them through a `PickerListener` whose
+  `startPicker()` shows the system UI.
+- **Resolve / register-callback**: `checkQueryServicePermissions()` allows an
+  operation either when the caller holds `ACCESS_LOCAL_NETWORK` or when the
+  service is in the per-app allowlist
+  (`mAccessRepository.isServiceAllowed(uid, packageName, serviceName, serviceType)`).
+
+When the user picks a service, `handleServiceSelected()` records it:
+`mAccessRepository.addAllowedService(uid, packageName, serviceName, serviceType)`.
+On client connect/disconnect, `NsdService` calls `loadPackage()` and
+`unloadPackage()` so the allowlist is paged in only while a client is active.
+
+### 35.28.4 ServiceAccessRepository and ServiceAccessDb
+
+The allowlist itself is split into an in-memory repository and a SQLite-backed
+store, both under
+`packages/modules/Connectivity/service-t/src/com/android/server/connectivity/mdns/internal/`:
+
+- `ServiceAccessRepository.java` is the in-memory cache and orchestrator. It maps
+  each `(uid, packageName)` to the set of `(serviceName, serviceType)` tuples the
+  user approved, keeps "last seen" timestamps for LRU eviction, caps entries per
+  client, and runs entirely on the `NsdService` handler thread (it is explicitly
+  not thread-safe). Its main methods are `addAllowedService()`, `isServiceAllowed()`,
+  `loadPackage()`, `unloadPackage()`, and a `maybeScheduleDatabaseMaintenance()`
+  that prunes entries for uninstalled packages.
+- `ServiceAccessDb.java` is the persistence layer: a small SQLite database
+  (`NsdServiceAccess.db`) with a `package` table tracking known packages and a
+  `service_access` table holding the approved `(uid, package, serviceName,
+  serviceType, last_seen_time)` rows, with a cascading delete so uninstalling a
+  package removes its grants.
+
+Description of the access-control decision path:
+
+```mermaid
+graph TD
+    APP["App: discoverServices(request)"] --> NSD["NsdService"]
+    NSD --> CHK["checkDiscoveryPermissionsAndPicker()"]
+    CHK -->|"has ACCESS_LOCAL_NETWORK"| DIRECT["Discover and deliver to app"]
+    CHK -->|"FLAG_NO_PICKER, no permission"| FAIL["Reject"]
+    CHK -->|"picker path"| PICK["PickerListener.startPicker()"]
+    PICK --> UI["System picker UI"]
+    UI -->|"user selects a service"| SEL["handleServiceSelected()"]
+    SEL --> ADD["ServiceAccessRepository.addAllowedService()"]
+    ADD --> DB["ServiceAccessDb (NsdServiceAccess.db)"]
+    SEL -->|"return chosen service"| APP
+    APP -->|"later: resolveService()"| QCHK["checkQueryServicePermissions()"]
+    QCHK -->|"isServiceAllowed()? or has permission"| ALLOW["Allow resolve"]
+```
+
+### 35.28.5 NsdManager API
+
+For apps, `NsdManager`
+(`packages/modules/Connectivity/framework-t/src/android/net/nsd/NsdManager.java`)
+adds `checkPermissionForService(serviceName, serviceType, executor, resultReceiver)`
+so an app can ask whether a previously approved service is still accessible before
+resolving it. The result is one of `SERVICE_PERMISSION_GRANTED` or
+`SERVICE_PERMISSION_DENIED`. This pairs with the `DiscoveryRequest` flags so an
+app can drive the whole flow: discover with `FLAG_USER_APPROVED_ONLY`, and if a
+service it cares about is missing, re-discover with `FLAG_SHOW_PICKER` to prompt
+the user.
+
+---
+
+## 35.29 Try It: Network Debugging
+
+### 35.29.1 dumpsys connectivity
 
 The most powerful tool for debugging Android networking is `dumpsys connectivity`.
 It provides a comprehensive snapshot of the entire connectivity state.
@@ -4360,7 +4786,7 @@ NetworkRequest [ REQUEST id=1, [ Capabilities: INTERNET&NOT_RESTRICTED
 
 3. **Default network**: The currently selected default network
 
-### 35.26.2 dumpsys wifi
+### 35.29.2 dumpsys wifi
 
 ```bash
 # Full Wi-Fi dump
@@ -4379,7 +4805,7 @@ Key information in the Wi-Fi dump:
 - SoftAP state
 - Connection history and failure reasons
 
-### 35.26.3 dumpsys netd
+### 35.29.3 dumpsys netd
 
 ```bash
 # netd status
@@ -4394,7 +4820,7 @@ adb shell iptables -L -v -n
 adb shell ip6tables -L -v -n
 ```
 
-### 35.26.4 DNS Debugging
+### 35.29.4 DNS Debugging
 
 ```bash
 # DNS resolver state
@@ -4408,7 +4834,7 @@ adb shell settings get global private_dns_mode
 adb shell settings get global private_dns_specifier
 ```
 
-### 35.26.5 Network Diagnostics Commands
+### 35.29.5 Network Diagnostics Commands
 
 ```bash
 # Check connectivity
@@ -4434,7 +4860,7 @@ adb shell cat /proc/net/tcp6
 adb shell cat /proc/net/dev
 ```
 
-### 35.26.6 ConnectivityDiagnosticsManager
+### 35.29.6 ConnectivityDiagnosticsManager
 
 For programmatic network diagnostics, Android provides the
 `ConnectivityDiagnosticsManager` API:
@@ -4474,7 +4900,7 @@ cdm.registerConnectivityDiagnosticsCallback(
         });
 ```
 
-### 35.26.7 Simulating Network Conditions
+### 35.29.7 Simulating Network Conditions
 
 For testing, Android provides several tools to simulate network conditions:
 
@@ -4498,7 +4924,7 @@ adb shell settings put global captive_portal_mode 1  # Enable (prompt)
 adb shell dumpsys connectivity --diag
 ```
 
-### 35.26.8 Reading BPF Maps
+### 35.29.8 Reading BPF Maps
 
 For advanced debugging of BPF-based traffic control:
 
@@ -4513,7 +4939,7 @@ adb shell cat /sys/fs/bpf/
 adb shell dumpsys connectivity trafficcontroller
 ```
 
-### 35.26.9 Common Debugging Scenarios
+### 35.29.9 Common Debugging Scenarios
 
 **Scenario 1: Network connected but no Internet**
 
@@ -4591,7 +5017,7 @@ adb shell dumpsys tethering | grep "DHCP"
 adb shell cat /proc/sys/net/ipv4/ip_forward
 ```
 
-### 35.26.10 Network Logging and Tracing
+### 35.29.10 Network Logging and Tracing
 
 For deeper analysis, enable verbose logging:
 
@@ -4610,7 +5036,7 @@ adb logcat -s ConnectivityService:V NetworkAgent:V \
 adb shell setprop log.tag.Netd VERBOSE
 ```
 
-### 35.26.11 Developer Options: Network Settings
+### 35.29.11 Developer Options: Network Settings
 
 The Settings app provides several network-related developer options:
 
@@ -4621,7 +5047,7 @@ The Settings app provides several network-related developer options:
 | USB configuration | Select USB tethering mode |
 | Networking diagnostics | Run connectivity tests |
 
-### 35.26.12 Programmatic Network Testing
+### 35.29.12 Programmatic Network Testing
 
 ```java
 // Test if a specific network has connectivity
@@ -4711,8 +5137,14 @@ kernel subsystems into a cohesive whole. The key architectural insights are:
 
 The networking stack continues to evolve rapidly. Recent additions include
 Wi-Fi 7 MLO support, satellite connectivity, Thread mesh networking, and
-DoH for encrypted DNS. The modular architecture ensures these features can be
-delivered to users without waiting for full platform upgrades.
+DoH for encrypted DNS. Android 17 pushes modularization into native code with
+the *mainline supplicant* (an updatable `wpa_supplicant` shipped inside the
+Wi-Fi APEX), redesigns the proxy stack to support multiple concurrent PAC
+scripts per network/user/UID via `PacCoordinator` and the APEX-resident
+MultiPacService/MultiProxyService, and adds a per-app, user-driven NSD
+service-access picker behind the new `ACCESS_LOCAL_NETWORK` permission. The
+modular architecture ensures these features can be delivered to users without
+waiting for full platform upgrades.
 
 ### Key Source Files Reference
 
@@ -4742,6 +5174,13 @@ delivered to users without waiting for full platform upgrades.
 | NetworkMonitor | `packages/modules/NetworkStack/src/com/android/server/connectivity/NetworkMonitor.java` |
 | NetworkSecurityConfig | `frameworks/base/packages/NetworkSecurityConfig/platform/src/android/security/net/config/NetworkSecurityConfig.java` |
 | XmlConfigSource | `frameworks/base/packages/NetworkSecurityConfig/platform/src/android/security/net/config/XmlConfigSource.java` |
+| PacCoordinator | `packages/modules/Connectivity/service/src/com/android/server/connectivity/proxy/PacCoordinator.java` |
+| MultiProxyTracker | `packages/modules/Connectivity/service/src/com/android/server/connectivity/proxy/MultiProxyTracker.java` |
+| IMultiProxyService | `packages/modules/Connectivity/commercial/pac/multiproxyhandler/src/com/android/multiproxyhandler/IMultiProxyService.aidl` |
+| IMainlineSupplicant | `packages/modules/Wifi/aidl/mainline_supplicant/android/system/wifi/mainline_supplicant/IMainlineSupplicant.aidl` |
+| MainlineSupplicantAidlManager | `packages/modules/Wifi/service/java/com/android/server/wifi/MainlineSupplicantAidlManager.java` |
+| NsdService | `packages/modules/Connectivity/service-t/src/com/android/server/NsdService.java` |
+| ServiceAccessRepository | `packages/modules/Connectivity/service-t/src/com/android/server/connectivity/mdns/internal/ServiceAccessRepository.java` |
 
 <!-- chapter:36-telephony -->
 # Chapter 36: Telephony and RIL
@@ -8765,7 +9204,456 @@ sequenceDiagram
 
 ---
 
-## 36.11 Try It
+## 36.11 Satellite and Non-Terrestrial Networks (NTN)
+
+Android 17 carries a full satellite messaging and connectivity stack. The work
+started as an emergency SOS feature on a single OEM device and has grown into a
+general framework: a public `SatelliteManager` API, a large internal controller
+graph in `frameworks/opt/telephony`, a vendor-facing `SatelliteService` HAL, and
+carrier-roaming "non-terrestrial network" (NTN) modes where a normal SIM camps
+on a satellite the carrier has provisioned. This section walks the architecture
+top to bottom and calls out what 17 added on top of 16.
+
+### 36.11.1 Two Flavours of Satellite: OEM-Provisioned vs Carrier-Roaming
+
+There are two distinct connection models, and almost every class in the stack
+branches on which one is active:
+
+- **OEM-provisioned (P2P/SOS).** The device — not the carrier — owns the
+  relationship with the satellite operator. The modem switches into a dedicated
+  satellite mode and exchanges *datagrams* (SOS, SMS-shaped, or keep-alive)
+  rather than IP. This is the original emergency-messaging path.
+- **Carrier-roaming NTN.** A regular carrier SIM lists satellite PLMNs in its
+  carrier config; when terrestrial coverage drops, the device "roams" onto the
+  carrier's satellite network and can carry SMS, MMS, and in some
+  configurations data and voice. The connect behaviour is governed by
+  `CarrierConfigManager.KEY_CARRIER_ROAMING_NTN_CONNECT_TYPE_INT`, whose values
+  are `CARRIER_ROAMING_NTN_CONNECT_AUTOMATIC`, `CARRIER_ROAMING_NTN_CONNECT_MANUAL`,
+  and (new) `CARRIER_ROAMING_NTN_CONNECT_HYBRID`
+  (`frameworks/base/telephony/java/android/telephony/CarrierConfigManager.java`).
+
+The non-terrestrial radio technology in use is one of
+`NT_RADIO_TECHNOLOGY_NB_IOT_NTN`, `NT_RADIO_TECHNOLOGY_NR_NTN`, or
+`NT_RADIO_TECHNOLOGY_EMTC_NTN`
+(`frameworks/base/telephony/java/android/telephony/satellite/SatelliteManager.java`).
+Android 17 fills in the **NR-NTN** path (the 3GPP Release-17 5G-NR satellite
+profile) behind the `nr_ntn` flag, alongside the older NB-IoT-NTN path.
+
+```mermaid
+graph TD
+    subgraph "Apps"
+        Msg["Messaging app / Emergency UI"]
+        Pointing["Pointing UI app"]
+    end
+    subgraph "Public API"
+        SM["SatelliteManager"]
+    end
+    subgraph "Telephony service (packages/services/Telephony)"
+        PIM["PhoneInterfaceManager"]
+    end
+    subgraph "Controller graph (frameworks/opt/telephony)"
+        SC["SatelliteController"]
+        SSC["SatelliteSessionController"]
+        DC["DatagramController"]
+        DD["DatagramDispatcher"]
+        DR["DatagramReceiver"]
+        PAC["PointingAppController"]
+        SMI["SatelliteModemInterface"]
+    end
+    subgraph "Vendor"
+        HAL["SatelliteService HAL"]
+        Modem["Satellite modem"]
+    end
+
+    Msg --> SM
+    SM --> PIM
+    PIM --> SC
+    SC --> SSC
+    SC --> DC
+    DC --> DD
+    DC --> DR
+    SC --> PAC
+    PAC --> Pointing
+    SC --> SMI
+    SMI --> HAL
+    HAL --> Modem
+```
+
+### 36.11.2 SatelliteController -- the Central Coordinator
+
+`SatelliteController` is the brain of the stack and, at roughly twelve thousand
+lines, the largest single class in the telephony module
+(`frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteController.java`).
+It is a singleton `Handler` that owns the other satellite objects and arbitrates
+every enable/disable request:
+
+```java
+// frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteController.java
+public class SatelliteController extends Handler {
+    @NonNull private final SatelliteModemInterface mSatelliteModemInterface;
+    @NonNull protected SatelliteSessionController mSatelliteSessionController;
+    @NonNull private final PointingAppController mPointingAppController;
+    @NonNull private final DatagramController mDatagramController;
+    @NonNull private final ControllerMetricsStats mControllerMetricsStats;
+    ...
+}
+```
+
+Its responsibilities include: tracking provisioning state per subscription;
+loading and validating the satellite carrier config (`SatelliteConfig` /
+`SatelliteConfigParser`, refreshable through the config updater in 17); resolving
+which PLMNs are allowed and which connect type applies; driving NTN signal-strength
+reporting; and serialising enable requests. Android 17 reworked enablement into a
+**strategy pattern** with bitmask-based arbitration — `SatelliteEnablementController`,
+`SatelliteEnablementStrategy`, plus `AutoEnablementController` and
+`ManualEnablementController` — so that an automatic carrier-roaming trigger and an
+explicit user toggle no longer fight over the modem
+(`frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteEnablementController.java`).
+
+### 36.11.3 The Session State Machine
+
+`SatelliteSessionController` is a `StateMachine` that mirrors the modem's
+satellite mode and gates datagram transfer. Its states map onto
+`SatelliteManager.SATELLITE_MODEM_STATE_*`:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unavailable
+    Unavailable --> PowerOff : satellite supported
+    PowerOff --> Enabling : enable request
+    Enabling --> NotConnected : modem on
+    NotConnected --> Connected : acquired satellite
+    Connected --> Transferring : send or receive datagram
+    Transferring --> Listening : transfer done
+    Listening --> Connected : listen timer expires
+    Connected --> Suspended : flag gated suspend
+    Suspended --> Connected : resume
+    Connected --> Disabling : disable request
+    Disabling --> PowerOff : modem off
+```
+
+The `Suspended` state is new in Android 17, gated by the `satellite_suspend`
+flag: it lets the framework park a carrier-roaming NTN session (for example, to
+let a higher-priority terrestrial network take over) without tearing the modem
+down (`frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteSessionController.java`).
+The `Listening` state exists because satellite links are half-duplex and
+expensive; after a send or receive the modem stays in a short listening window
+(`DEFAULT_SATELLITE_STAY_AT_LISTENING_FROM_SENDING_MILLIS`) before dropping back
+to idle.
+
+### 36.11.4 Datagrams: Dispatch and Receive
+
+Satellite messaging does not use the normal SMS/data paths. Payloads are
+`SatelliteDatagram` blobs routed through three classes:
+
+- `DatagramController` — the front door; tracks send/receive transfer state and
+  the active datagram type (`DATAGRAM_TYPE_SOS_MESSAGE`, `DATAGRAM_TYPE_SMS`,
+  `DATAGRAM_TYPE_KEEP_ALIVE`, `DATAGRAM_TYPE_CHECK_PENDING_INCOMING_SMS`).
+- `DatagramDispatcher` — queues and sends outbound datagrams, retrying as the
+  link allows.
+- `DatagramReceiver` — polls the modem for pending inbound datagrams and fans
+  them out to registered `SatelliteDatagramCallback`s.
+
+```java
+// frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/DatagramController.java
+import static android.telephony.satellite.SatelliteManager.DATAGRAM_TYPE_CHECK_PENDING_INCOMING_SMS;
+import static android.telephony.satellite.SatelliteManager.DATAGRAM_TYPE_KEEP_ALIVE;
+
+public class DatagramController {
+    private final AtomicInteger mDatagramType =
+            new AtomicInteger(DATAGRAM_TYPE_UNKNOWN);
+    ...
+}
+```
+
+The flow for sending an SOS message:
+
+```mermaid
+sequenceDiagram
+    participant App as "Emergency UI"
+    participant SM as "SatelliteManager"
+    participant SC as "SatelliteController"
+    participant DC as "DatagramController"
+    participant DD as "DatagramDispatcher"
+    participant Modem as "SatelliteService HAL"
+
+    App->>SM: sendDatagram(SOS)
+    SM->>SC: sendSatelliteDatagram()
+    SC->>DC: sendDatagram(type=SOS)
+    DC->>DD: enqueue + send
+    DD->>Modem: sendDatagram (AIDL)
+    Modem-->>DD: ack
+    DD-->>DC: SEND_SUCCESS
+    DC-->>App: onSendDatagramStateChanged
+```
+
+### 36.11.5 Pointing the Antenna
+
+Satellites in the NB-IoT-NTN profile are not geostationary from the handset's
+point of view; the user often has to aim the phone. `PointingAppController`
+launches the OEM pointing UI and streams `PointingInfo` (antenna azimuth/
+elevation derived from `AntennaPosition` and `AntennaDirection`) so the UI can
+show an arrow guiding the user toward the satellite
+(`frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/PointingAppController.java`).
+The launch intent attributes are described by
+`PointingUiAppLaunchIntentAttributes`
+(`frameworks/base/telephony/java/android/telephony/satellite/PointingUiAppLaunchIntentAttributes.java`).
+
+### 36.11.6 NTN Signal Strength
+
+Satellite links report their own signal metric, distinct from cellular bars.
+`NtnSignalStrength` exposes five levels — `NTN_SIGNAL_STRENGTH_NONE`, `POOR`,
+`MODERATE`, `GOOD`, `GREAT`
+(`frameworks/base/telephony/java/android/telephony/satellite/NtnSignalStrength.java`).
+`SatelliteController` registers with the modem for NTN signal changes and
+notifies app callbacks via `INtnSignalStrengthCallback`. For carrier-roaming
+NTN, the per-RAT thresholds that decide how many "bars" to draw come from
+carrier config: `KEY_NTN_LTE_RSRP_THRESHOLDS_INT_ARRAY`,
+`KEY_NTN_LTE_RSRQ_THRESHOLDS_INT_ARRAY`, and `KEY_NTN_LTE_RSSNR_THRESHOLDS_INT_ARRAY`,
+selected by `KEY_PARAMETERS_USED_FOR_NTN_LTE_SIGNAL_BAR_INT`
+(`frameworks/base/telephony/java/android/telephony/CarrierConfigManager.java`).
+`NtnCapabilityResolver` decides, for a given network registration, whether the
+serving cell is terrestrial or non-terrestrial and which NT radio technology it
+is using when the modem does not report it directly
+(`frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/NtnCapabilityResolver.java`).
+
+### 36.11.7 The SatelliteService HAL and the Public API
+
+The framework talks to the modem through a vendor `SatelliteService`, bound on
+the `android.telephony.satellite.SatelliteService` action, with
+`SatelliteImplBase` as the convenience base class
+(`frameworks/base/telephony/java/android/telephony/satellite/stub/SatelliteService.java`,
+`SatelliteImplBase.java`). On the framework side, `SatelliteModemInterface`
+wraps that binding and, for older HAL versions, routes newer requests such as
+`SatelliteNetworkInfo` and prioritized network scans through compatibility paths
+(`frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteModemInterface.java`).
+
+Apps reach all of this through `SatelliteManager`, whose entry points are
+enforced and dispatched by `PhoneInterfaceManager`
+(`packages/services/Telephony/src/com/android/phone/PhoneInterfaceManager.java`)
+behind the `SATELLITE_COMMUNICATION` permission — for example
+`requestSatelliteEnabled`, `provisionSatelliteService`, `sendSatelliteDatagram`,
+`pollPendingSatelliteDatagrams`, and the registration calls. Android 17 adds the
+carrier-enablement entry points (`requestEnableSatelliteForCarrier`, automatic
+carrier mode, and `getManualConnectSatellitePlmnsForCarrier`) plus a richer
+metrics surface (`ControllerMetricsStats`, `CarrierRoamingSatelliteSessionStats`,
+separate Rx/Tx data-usage metrics) under
+`frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/metrics/`.
+
+---
+
+## 36.12 The ImsStack Module -- AOSP's Reference IMS Implementation
+
+Section 36.5 described the IMS *framework* — `ImsResolver`, `ImsServiceController`,
+and the `android.telephony.ims.ImsService` contract that a carrier or OEM IMS
+implementation must satisfy. Historically that implementation was a closed
+vendor APK, and AOSP shipped no real one. Android 17 fills the gap with a
+complete in-tree IMS stack at `packages/modules/ImsStack`: a privileged system
+app, `com.android.imsstack`, backed by a native SIP engine, `libimsstack`. This
+is the first time the platform carries an end-to-end VoLTE/VoWiFi/RCS stack in
+open source.
+
+### 36.12.1 Packaging: a Privileged system_ext App with a Native SIP Engine
+
+The module builds the `ImsStack` APK as a privileged, platform-signed,
+`system_ext` app that bundles the native engine as a JNI library
+(`packages/modules/ImsStack/java/Android.bp`):
+
+```
+android_app {
+    name: "ImsStack",
+    privileged: true,
+    certificate: "platform",
+    system_ext_specific: true,
+    jni_libs: [ "libimsstack", ... ],
+    required: [ "privapp_permissions_com.android.imsstack", ... ],
+}
+```
+
+Its manifest declares the package `com.android.imsstack`, runs `persistent` in
+its own process, and is `directBootAware` so IMS can come up before the user
+unlocks (important for emergency calling). It requests a broad set of
+privileged permissions — `MODIFY_PHONE_STATE`, `READ_PRIVILEGED_PHONE_STATE`,
+`CONNECTIVITY_USE_RESTRICTED_NETWORKS`, `USE_ICC_AUTH_WITH_DEVICE_IDENTIFIER`,
+`com.android.telephony.permission.USE_IMSMEDIA`, and more — that an ordinary app
+could never hold (`packages/modules/ImsStack/java/AndroidManifest.xml`).
+
+### 36.12.2 Plugging into the IMS Framework
+
+The app's service is declared on the standard IMS action so `ImsResolver` can
+discover and bind it exactly like any vendor IMS service:
+
+```xml
+<!-- packages/modules/ImsStack/java/AndroidManifest.xml -->
+<service android:name=".imsservice.ImsService" ... >
+    <intent-filter>
+        <action android:name="android.telephony.ims.ImsService"/>
+    </intent-filter>
+</service>
+```
+
+`com.android.imsstack.imsservice.ImsService` extends
+`android.telephony.ims.ImsService` and creates `MmTelFeature` and `RcsFeature`
+instances on demand — the same features the framework expects from any IMS
+provider (`packages/modules/ImsStack/java/src/com/android/imsstack/imsservice/ImsService.java`):
+
+```java
+// packages/modules/ImsStack/java/src/com/android/imsstack/imsservice/ImsService.java
+public class ImsService extends android.telephony.ims.ImsService {
+    @Override public void onCreate() {
+        super.onCreate();
+        ImsServiceController.create(getApplicationContext());
+    }
+}
+```
+
+`ImsServiceController` is a singleton that manages the MMTel and RCS features
+(`packages/modules/ImsStack/java/src/com/android/imsstack/imsservice/ImsServiceController.java`),
+and `ImsMmTelService` implements the call/SMS/registration surface
+(`packages/modules/ImsStack/java/src/com/android/imsstack/imsservice/mmtel/ImsMmTelService.java`).
+
+### 36.12.3 Layered Internals
+
+```mermaid
+graph TD
+    Framework["ImsResolver / ImsServiceController<br/>(frameworks/opt/telephony)"]
+    subgraph "ImsStack app (com.android.imsstack)"
+        IS["imsservice<br/>(ImsService, MmTel, RCS/UCE)"]
+        EN["enabler<br/>(AOS, MTC/MTS, SSC, media)"]
+        CORE["core<br/>(agents, carrier, config)"]
+        JNI["jni<br/>(JniIms, NativeCommands)"]
+    end
+    subgraph "libimsstack (native)"
+        ENG["engine<br/>(SIP transactions, dialogs)"]
+        PROTO["protocol<br/>(SIP/SDP parsers, DOM/XML)"]
+        PLAT["platform<br/>(sockets, timers, TLS)"]
+    end
+
+    Framework --> IS
+    IS --> EN
+    EN --> CORE
+    CORE --> JNI
+    JNI --> ENG
+    ENG --> PROTO
+    ENG --> PLAT
+```
+
+The Java side splits into `imsservice` (the framework-facing features),
+`enabler` (feature enablers: always-on session, MT call setup, SMS-over-IP, UCE
+presence, media), and `core` (config and the data-connection agents). The
+`jni` package (`JniIms`, `NativeCommands`,
+`packages/modules/ImsStack/java/src/com/android/imsstack/jni/`) marshals calls
+across to the native library.
+
+### 36.12.4 libimsstack -- the Native SIP Engine
+
+The heavy lifting lives in C++ under
+`packages/modules/ImsStack/native/libimsstack`, built as a single
+`cc_library_shared` named `libimsstack` that statically links the engine,
+protocol, config, enabler, platform, and JNI sublibraries
+(`packages/modules/ImsStack/native/libimsstack/Android.bp`). `JNI_OnLoad` in
+`libimsstack.cpp` wires the native commands to the Java `jni` package
+(`packages/modules/ImsStack/native/libimsstack/libimsstack.cpp`). The two most
+important subtrees are:
+
+- **protocol** — a from-scratch SIP and SDP implementation: header parsers
+  (`SipCSeqHeader`, `SipContentTypeHeader`, `SipGeolocationRoutingHeader`, …),
+  an SDP model (`SdpDescription`, `SdpMediaDescription`, `SdpAvCodec`), and a DOM
+  XML parser used for IMS XML bodies
+  (`packages/modules/ImsStack/native/libimsstack/protocol/sip/`,
+  `.../protocol/SipStackManager.cpp`).
+- **engine** — the SIP transaction and dialog state machines that turn those
+  messages into call/registration logic: `SipStack`, `SipStackTransaction`,
+  `SipForkedTransactionManager`, plus the `CoreService`/`Connection` call model
+  (`packages/modules/ImsStack/native/libimsstack/engine/sipcore/SipStack.cpp`).
+
+A `platform` layer abstracts sockets, timers, and TLS so the engine can run on
+the Android networking stack
+(`packages/modules/ImsStack/native/libimsstack/platform/`).
+
+### 36.12.5 Where It Fits
+
+Because `ImsStack` is just another `ImsService` discovered by `ImsResolver`
+(§36.5.2), a device that ships it gets working VoLTE, VoWiFi, and RCS without a
+proprietary blob, while a carrier override can still point `ImsResolver` at a
+vendor implementation. The IMS *media* plane (RTP/RTCP) is still handled by the
+separate `ImsMedia` service covered in §36.9; `ImsStack` requests it through the
+`USE_IMSMEDIA` permission and the enabler's media package.
+
+---
+
+## 36.13 Generic Bootstrapping Architecture (GBA / BSF)
+
+A handful of IMS and carrier services (XCAP/Ut for supplementary-service
+provisioning, some MBMS and entitlement servers) authenticate the device against
+the operator network using 3GPP **Generic Bootstrapping Architecture**: the
+SIM's AKA credentials are bootstrapped with the operator's Bootstrapping Server
+Function (BSF) to derive a shared key (Ks) and a bootstrapping transaction
+identifier (B-TID), from which per-application keys (Ks_NAF) are computed for
+each Network Application Function (NAF). Android 17 ships an AOSP default
+implementation of this as a standalone module,
+`packages/modules/GenericBootstrappingArchitecture`.
+
+### 36.13.1 The GbaService Contract
+
+The framework defines an extensible service contract: a `GbaService` bound on
+`android.telephony.gba.GbaService`, guarded by the `BIND_GBA_SERVICE`
+permission, that receives `onAuthenticationRequest` and replies with
+`reportKeysAvailable(token, gbaKey, btId, …)` or `reportAuthenticationFailure`
+(`frameworks/base/telephony/java/android/telephony/gba/GbaService.java`). On the
+telephony side, `GbaManager` is the client: it binds the configured GBA service,
+forwards `GbaAuthRequest`s, and tracks the binding across deaths and config
+changes (`frameworks/opt/telephony/src/java/com/android/internal/telephony/GbaManager.java`).
+
+```mermaid
+sequenceDiagram
+    participant Caller as "IMS / XCAP client"
+    participant GM as "GbaManager"
+    participant GS as "DefaultGbaService"
+    participant Auth as "GbaAuthManagerImpl"
+    participant BSF as "Carrier BSF (network)"
+
+    Caller->>GM: bootstrapAuthenticationRequest(NAF, protocol)
+    GM->>GS: authenticationRequest (AIDL)
+    GS->>Auth: performGbaAuthentication()
+    Auth->>BSF: HTTP Digest AKA bootstrap
+    BSF-->>Auth: B-TID, key lifetime
+    Auth->>Auth: derive Ks_NAF from SIM AKA
+    Auth-->>GS: GbaResult(Ks_NAF, B-TID, lifetime)
+    GS-->>GM: reportKeysAvailable
+    GM-->>Caller: GbaAuthResult
+```
+
+### 36.13.2 The DefaultGbaService Module
+
+The module builds a privileged, platform-signed app, `com.android.gbaservice`,
+that runs as `android.uid.system`, is `directBootAware`, and declares its
+service on the GBA action behind `BIND_GBA_SERVICE`
+(`packages/modules/GenericBootstrappingArchitecture/Android.bp`,
+`AndroidManifest.xml`). `DefaultGbaService` extends
+`android.telephony.gba.GbaService` and serialises requests through a
+single-threaded executor, since each bootstrap touches the SIM
+(`packages/modules/GenericBootstrappingArchitecture/src/com/android/gbaservice/DefaultGbaService.java`).
+
+The real protocol work is in `GbaAuthManagerImpl`, which builds a
+`GbaNetworkTask` parameterised for either `3GPP-bootstrapping` (GBA_ME) or the
+UICC-based variant (GBA_U), runs the HTTP Digest-AKA exchange against the BSF,
+and returns a `GbaResult` carrying Ks_NAF, the B-TID, and the key lifetime
+(`packages/modules/GenericBootstrappingArchitecture/src/com/android/gbaservice/GbaAuthManagerImpl.java`,
+`GbaNetworkTask.java`). The AKA challenge itself is answered by the SIM through
+`TelephonyManager` ICC authentication (`TelephonyManagerGbaMe` /
+`TelephonyManagerGbaU`), which is why the app holds the
+`USE_ICC_AUTH_WITH_DEVICE_IDENTIFIER`-class privileges. Derived bootstrap keys
+are cached in a small SQLite database (`GbaDbHelper`) keyed by NAF id so repeat
+requests can skip the round trip until the key lifetime expires.
+
+The default service can be overridden: a vendor GBA service named in the
+relevant config replaces `DefaultGbaService` while keeping the same framework
+contract, exactly as the IMS service can be overridden in §36.5.2.
+
+---
+
+## 36.14 Try It
 
 ### Exercise 36-1: Inspect the Telephony Service with dumpsys
 
@@ -9403,6 +10291,13 @@ The telephony stack embodies several design principles worth noting:
 | `ImsPhoneCallTracker.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/imsphone/ImsPhoneCallTracker.java` | |
 | `PhoneGlobals.java` | `packages/services/Telephony/src/com/android/phone/PhoneGlobals.java` | |
 | `CallsManager.java` | `packages/services/Telecomm/src/com/android/server/telecom/CallsManager.java` | |
+| `SatelliteController.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteController.java` | ~11 885 |
+| `SatelliteSessionController.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteSessionController.java` | |
+| `SatelliteManager.java` | `frameworks/base/telephony/java/android/telephony/satellite/SatelliteManager.java` | |
+| `ImsService.java` (ImsStack) | `packages/modules/ImsStack/java/src/com/android/imsstack/imsservice/ImsService.java` | |
+| `libimsstack.cpp` | `packages/modules/ImsStack/native/libimsstack/libimsstack.cpp` | |
+| `DefaultGbaService.java` | `packages/modules/GenericBootstrappingArchitecture/src/com/android/gbaservice/DefaultGbaService.java` | |
+| `GbaManager.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/GbaManager.java` | |
 
 ### Directory Structure Reference
 
@@ -9726,29 +10621,32 @@ Source: `packages/modules/Bluetooth/service/src/BluetoothService.kt`
 ```kotlin
 class BluetoothService(context: Context) : SystemService(context) {
     private val looper = HandlerThread("BluetoothSystemServer").apply { start() }.looper
-    private val serviceDispatcher = Handler(looper).asCoroutineDispatcher()
-    private val scope = CoroutineScope(serviceDispatcher + SupervisorJob())
 
     private var supervisor: BluetoothSupervisor
 
     init {
-        Log.d("Booting now")
-        val bluetoothComponent =
-            if (Flags.userRestrictionRefactor()) {
-                BluetoothComponent(context)
-            } else { null }
-        supervisor = runBlocking(serviceDispatcher) {
-            BluetoothSupervisor(context, looper, bluetoothComponent)
-        }
+        val bluetoothComponent = BluetoothComponent(context)
+        supervisor =
+            if (Flags.systemServerMigrateBmsToKotlin()) {
+                BluetoothSupervisorNew(context, looper, bluetoothComponent)
+            } else {
+                BluetoothSupervisorLegacy(context, looper, bluetoothComponent)
+            }
         // ...
     }
 
     override fun onStart() {
-        publishBinderService(SERVICE_NAME,
-            BluetoothServiceBinder(looper, supervisor.api(), context))
+        publishBinderService(SERVICE_NAME, ServerBinder(looper, supervisor.api, context))
     }
 }
 ```
+
+A feature flag (`Flags.systemServerMigrateBmsToKotlin()`, aconfig
+`system_server_migrate_bms_to_kotlin`) selects between the new and legacy
+supervisor implementations while the Kotlin migration lands. `BluetoothComponent`
+holds the resolved Bluetooth app package/component name and validates the device
+configuration; user-restriction handling lives in the separate
+`BluetoothRestriction` class, initialized alongside it.
 
 `BluetoothManagerService` is the Java class that handles the heavy lifting:
 binding to the `AdapterService`, managing enable/disable state transitions,
@@ -9760,7 +10658,8 @@ Key design features of `BluetoothManagerService`:
 
 - **Crash recovery**: Tracks crash timestamps in `mCrashTimestamps`, restarts
   the service up to `MAX_ERROR_RESTART_RETRIES` (6) times with a
-  `SERVICE_RESTART_TIME_MS` (400 ms) delay.
+  `SERVICE_RESTART_DELAY` (`Duration.ofMillis(400)`) backoff, multiplied by the
+  retry counter.
 - **State management**: Uses `BluetoothAdapterState` (Kotlin flow-based) to
   track and wait on adapter state transitions with timeout support.
 - **Handler messages**: All state transitions are serialized through
@@ -9951,7 +10850,10 @@ system/
     srvc/        # GATT-based services (DIS, etc.)
   audio_hal_interface/  # Audio HAL integration
     aidl/        # AIDL audio HAL client
-  rust/          # Rust components (new GATT server)
+  rust/          # Rust components
+    src/         # bluetooth_rs crate: le_audio (ISO + periodic-advertising sync), pdl, types modules
+    private_gatt/ # Rust GATT server (shares ATT channel with C++ via arbiter)
+    macros/      # Procedural-macro support
   main/          # Stack initialization and shim layer
     shim/        # GD-to-Fluoride shim
   include/       # Public headers
@@ -10106,10 +11008,24 @@ Source: `packages/modules/Bluetooth/system/gd/storage/config_keys.h`
 ### 37.2.4 Rust Components
 
 Android is progressively introducing Rust into the Bluetooth stack for memory
-safety. The Rust GATT server shares the ATT channel with the existing C++ GATT
-client.
+safety, and Android 17 reorganized those components. The Rust tree under
+`packages/modules/Bluetooth/system/rust/` now holds three pieces:
 
-Source: `packages/modules/Bluetooth/system/rust/src/gatt.rs`
+```
+rust/
+  src/          # bluetooth_rs crate: le_audio (ISO manager + periodic-advertising sync), pdl, types modules
+  private_gatt/ # the Rust GATT server (moved out of src/ in 17)
+  macros/       # procedural-macro support
+```
+
+#### The Rust GATT server (private_gatt)
+
+The Rust GATT server shares the ATT bearer with the existing C++ GATT client.
+In Android 17 it moved from `system/rust/src/` into its own crate at
+`system/rust/private_gatt/`, and its global state was removed so it no longer
+relies on static singletons.
+
+Source: `packages/modules/Bluetooth/system/rust/private_gatt/src/gatt.rs`
 
 ```rust
 //! This module is a simple GATT server that shares the ATT channel with the
@@ -10127,10 +11043,44 @@ mod opcode_types;
 mod server;
 ```
 
-The `arbiter` manages which side (C++ or Rust) handles each incoming ATT
-packet. The `ffi` module provides the Foreign Function Interface bindings
-between Rust and C++. This dual-language approach exemplifies Android's
-incremental memory-safety strategy.
+The `arbiter` decides which side (C++ or Rust) handles each incoming ATT PDU
+by inspecting its handle range, the `mtu` module implements ATT MTU exchange,
+and `ffi` provides the C++ interop bindings (`stack/arbiter/acl_arbiter.h` on
+the C++ side).
+
+#### The Rust LE Audio module
+
+The bigger Android 17 addition is the `le_audio` module of the `bluetooth_rs`
+crate (`system/rust/`, alongside the `pdl` and `types` modules), declared from
+`lib.rs`:
+
+Source: `packages/modules/Bluetooth/system/rust/src/lib.rs`
+
+```rust
+pub mod le_audio;
+pub mod pdl;
+pub mod types;
+```
+
+`le_audio` contains two isochronous-transport managers that the LE Audio
+profiles build on, each split into a `traits.rs` (interface), a `manager.rs`
+(implementation), and an `ffi.rs` (`#[cxx::bridge]` to a C++ shim):
+
+| Module | Source | Purpose |
+|--------|--------|---------|
+| ISO Manager | `system/rust/src/le_audio/iso_manager/` | Manage CIG/CIS (connected) and BIG/BIS (broadcast) isochronous groups and streams |
+| Periodic Advertising Sync | `system/rust/src/le_audio/periodic_advertising_sync/` | Synchronize to periodic advertising trains (PAST/PA sync) and deliver BIGInfo reports |
+
+Both managers are built on Tokio async primitives: `oneshot`/`mpsc`/`broadcast`
+channels coordinate command completions and event streams, and `Drop`
+implementations on the Arc-wrapped resources trigger asynchronous teardown
+(RAII). Handle types (`CigId`, `CisId`, `BigHandle`, `SyncHandle`,
+`IsoConnectionHandle`) are newtype wrappers that mask the controller's reserved
+bits, and time values such as the periodic-advertising interval are modeled as
+`std::time::Duration` rather than raw HCI 1.25 ms units. This dual-language
+approach exemplifies Android's incremental memory-safety strategy: new
+transport managers are written in Rust and bridged to the C++ stack through
+`cxx` shims rather than rewriting the whole stack at once.
 
 ### 37.2.5 BTIF: The JNI Bridge
 
@@ -10299,7 +11249,7 @@ hearingaid/    -- HearingAidService
 hfp/           -- HeadsetService (HFP Audio Gateway)
 hfpclient/     -- HeadsetClientService
 hid/           -- HidHostService, HidDeviceService
-le_audio/      -- LeAudioService
+le_audio/      -- LeAudioService (Unicast Client), LeAudioPeripheralService (acceptor)
 le_scan/       -- Scanning
 map/           -- BluetoothMapService
 mapclient/     -- MapClientService
@@ -10568,8 +11518,9 @@ public interface BluetoothProfile {
     @SystemApi int PAN = 5;             // PAN
     // ... PBAP, GATT, GATT_SERVER, MAP, SAP, A2DP_SINK,
     // AVRCP_CONTROLLER, AVRCP, HID_DEVICE, OPP, HEADSET_CLIENT,
-    // HEARING_AID, LE_AUDIO, LE_AUDIO_BROADCAST, VOLUME_CONTROL,
+    // HEARING_AID, LE_AUDIO (22), LE_AUDIO_BROADCAST (26), VOLUME_CONTROL,
     // CSIP_SET_COORDINATOR, LE_CALL_CONTROL, HAP_CLIENT, BATTERY, etc.
+    int LE_AUDIO_PERIPHERAL = 33;       // LE Audio acceptor (Android 17)
 }
 ```
 
@@ -10756,7 +11707,11 @@ Source: `packages/modules/Bluetooth/android/app/src/com/android/bluetooth/opp/`
 
 ### 37.3.13 LE Audio Profiles
 
-LE Audio is a major new profile family introduced in Bluetooth 5.2:
+LE Audio is a profile family introduced in Bluetooth 5.2. Historically AOSP
+implemented only the *Unicast Client* (central/initiator) side, where the phone
+drives earbuds and hearing aids. Android 17 added the *Peripheral* (acceptor)
+side as well, letting the phone itself act as an LE Audio sink and source for a
+peer host; that role is covered in Section 37.3.14.
 
 Source: `packages/modules/Bluetooth/android/app/src/com/android/bluetooth/le_audio/LeAudioService.java`
 
@@ -10800,6 +11755,151 @@ graph TB
     BASS --> BIS
 ```
 
+### 37.3.14 LE Audio Peripheral (BAP Acceptor) Role
+
+Through Android 16, AOSP's LE Audio implementation was a *Unicast Client*: the
+phone acts as the BAP *Initiator* and *Audio Source/Sink Client*, driving
+earbuds and hearing aids. Android 17 adds the complementary *Peripheral* role,
+where the phone is the BAP *Acceptor* (server). A peer host (for example a PC,
+a car head unit, or a smart display) connects to the phone, discovers its
+Published Audio Capabilities, and streams audio to or from it. The phone
+becomes an LE Audio speaker, microphone, or both.
+
+The peripheral stack is a separate, self-contained implementation under
+`packages/modules/Bluetooth/system/bta/le_audio/server/`, with its own
+framework profile (`BluetoothProfile.LE_AUDIO_PERIPHERAL = 33`).
+
+#### Native server: LeAudioServer
+
+The native entry point is the `LeAudioServer` interface, whose static methods
+the JNI layer calls. The implementation, `LeAudioServerImpl`, composes the
+GATT-level audio services and the ASE machinery.
+
+Source: `packages/modules/Bluetooth/system/bta/include/bta_le_audio_server_api.h`
+
+```cpp
+class LeAudioServer {
+public:
+  static void Initialize(le_audio::LeAudioServerCallbacks* callbacks,
+                         std::unique_ptr<LeAudioServerDependencies> dependencies);
+  static void Cleanup(void);
+  static LeAudioServer* Get(void);
+  static void DebugDump(int fd);
+  static void ConfirmStreamStartRequest(const RawAddress& peer_address, bool allowed);
+  static void StopStream(const RawAddress& peer_address, uint8_t stream_id);
+};
+```
+
+The server is assembled from injectable factories (`LeAudioServerDependencies`),
+which keeps the components testable in isolation:
+
+```cpp
+struct LeAudioServerDependencies {
+  std::function<std::shared_ptr<LeAudioServerConfigManager>()> config_manager_factory;
+  std::function<std::shared_ptr<Pacs>()> pacs_factory;
+  std::function<std::shared_ptr<Ascs>()> ascs_factory;
+  std::function<std::shared_ptr<AseManager>(std::shared_ptr<Ascs>)> ase_manager_factory;
+  std::function<audio::le_audio::IPeripheralAudioSessionFactory*()>
+          peripheral_audio_session_factory;
+  std::function<audio::le_audio::IPeripheralAudioProviderFactory*()>
+          peripheral_audio_provider_factory;
+};
+```
+
+`LeAudioServerImpl` implements both `Pacs::Callbacks` and `AseManager::Callbacks`:
+
+Source: `packages/modules/Bluetooth/system/bta/le_audio/server/server.cc`
+
+```cpp
+class LeAudioServerImpl : public LeAudioServer,
+                          public Pacs::Callbacks,
+                          public AseManager::Callbacks {
+  // Initialize() registers the PACS and ASCS GATT services, builds the
+  // ASE manager, starts the peripheral audio sessions, and begins
+  // advertising the LE Audio services via the GD advertising-manager shim.
+};
+```
+
+#### The GATT services and ASE machinery
+
+The acceptor role is built from the BAP server-side GATT services and a set of
+per-endpoint state machines:
+
+| Component | Source | Role |
+|-----------|--------|------|
+| PACS | `system/bta/le_audio/pacs/pacs.h` | Published Audio Capabilities Service: exposes sink/source codec capabilities, audio locations, and supported/available audio contexts to the client |
+| ASCS | `system/bta/le_audio/ascs/ascs.h` | Audio Stream Control Service: receives the client's ASE Control Point writes (Config Codec, Config QoS, Enable, Release, Update Metadata) |
+| ASE Manager | `system/bta/le_audio/ascs/ase_manager.h` | Owns one ASE state machine per Audio Stream Endpoint and drives codec/QoS negotiation |
+| ASE state machine | `system/bta/le_audio/ascs/ase_state_machine.h` | Per-ASE BAP state machine (IDLE, CODEC_CONFIGURED, QOS_CONFIGURED, ENABLING, STREAMING, DISABLING, RELEASING) |
+| Config manager | `system/bta/le_audio/server/le_audio_server_config_manager.h` | Translates Audio HAL capabilities into PAC records and decides the ISO data path (software vs. offload) |
+| Peripheral Audio HAL client | `system/bta/le_audio/audio_hal_client/peripheral_audio_hal_client.h` | `PeripheralAudioHalDecoder` (ISO to speaker) and `PeripheralAudioHalEncoder` (mic to ISO) |
+
+The per-ASE state machine follows the BAP/ASCS Audio Stream Endpoint lifecycle:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> CodecConfigured : CONFIG_CODEC
+    CodecConfigured --> QosConfigured : CONFIG_QOS
+    QosConfigured --> Enabling : ENABLE
+    Enabling --> Streaming : RECEIVER_START_READY
+    Streaming --> Disabling : DISABLE
+    Disabling --> QosConfigured : RECEIVER_STOP_READY
+    QosConfigured --> Releasing : RELEASE
+    Streaming --> Releasing : RELEASE
+    Releasing --> Idle : released
+    CodecConfigured --> Idle : RELEASE
+```
+
+#### Framework profile
+
+On the Java/Kotlin side the role is exposed as a profile service. Unlike the
+heavyweight Unicast `LeAudioService`, the peripheral service is a thin
+orchestrator that delegates policy to a dedicated manager.
+
+| Class | Source | Role |
+|-------|--------|------|
+| `BluetoothLeAudioPeripheral` | `framework/java/android/bluetooth/BluetoothLeAudioPeripheral.java` | `@SystemApi` profile proxy (guarded by `Flags.FLAG_LEAUDIO_PERIPHERAL_FEATURE`) |
+| `LeAudioPeripheralService` | `android/app/src/com/android/bluetooth/le_audio/LeAudioPeripheralService.kt` | `ProfileService` for `LE_AUDIO_PERIPHERAL`; owns the policy manager and native interface |
+| `PeripheralPolicyManager` | `android/app/src/com/android/bluetooth/le_audio/PeripheralPolicyManager.kt` | Arbitrates stream requests, tracks the active sink/source device and per-peer stream state |
+| `LeAudioPeripheralNativeInterface` | `android/app/src/com/android/bluetooth/le_audio/LeAudioPeripheralNativeInterface.kt` | JNI bridge to the native `LeAudioServer` |
+| `LeAudioPeripheralServiceBinder` | `android/app/src/com/android/bluetooth/le_audio/LeAudioPeripheralServiceBinder.kt` | Permission-checked binder (`BLUETOOTH_CONNECT`, `BLUETOOTH_PRIVILEGED`) |
+
+`AdapterService` reports peripheral devices through the standard active-device
+plumbing: Android 17 extended `getActiveDevices()` to handle the
+`LE_AUDIO_PERIPHERAL` profile.
+
+#### Stream-start request flow
+
+A stream is initiated by the *remote* host (the client), not the phone, so the
+acceptor's job is to admit or reject the request. The decision crosses from the
+native ASCS up to the policy manager and back:
+
+```mermaid
+sequenceDiagram
+    participant Peer as Remote Host (Client)
+    participant Ascs as ASCS / ASE Manager
+    participant Server as LeAudioServerImpl
+    participant Policy as PeripheralPolicyManager
+    participant Native as LeAudioServer (native)
+
+    Peer->>Ascs: ASE Control Point: Enable
+    Ascs->>Server: OnAseEnableRequest()
+    Server->>Policy: OnStreamStartRequest(address, requests)
+    Policy->>Policy: Arbitrate vs. active device
+    Policy->>Native: confirmStreamStartRequest(device, allowed)
+    Native->>Ascs: ConfirmAseEnableRequest()
+    Ascs->>Ascs: ASE: Enabling to Streaming
+    Ascs-->>Server: OnStreamStarted()
+    Server-->>Policy: OnStreamStarted (JNI callback)
+```
+
+The isochronous transport for these streams runs through the native ISO
+manager (and, where the Rust path is used, the Rust ISO/periodic-sync managers
+described in Section 37.2.4). Call control and media control for the peripheral
+are handled by dedicated CCP and MCP clients under `system/bta/ccp/` and
+`system/bta/mcp/`.
+
 ---
 
 ## 37.4 BLE (Bluetooth Low Energy)
@@ -10838,7 +11938,7 @@ graph TB
         GD_SCAN["LeScanningManagerImpl"]
         GD_ACL["AclManagerLeImpl"]
         STACK_GATT["stack/gatt/"]
-        RUST_GATT["rust/src/gatt.rs"]
+        RUST_GATT["rust/private_gatt/<br/>(Rust GATT server)"]
     end
 
     APP_ADV --> BLE_ADV --> GATT_SVC
@@ -11062,9 +12162,10 @@ GATT server operations:
 - Send notifications/indications to subscribed clients
 - Manage multiple simultaneous client connections
 
-The new Rust GATT server (`system/rust/src/gatt.rs`) uses an arbiter to share
-the ATT bearer with the C++ implementation, enabling both to coexist on the
-same connection.
+The Rust GATT server (`system/rust/private_gatt/src/gatt.rs`) uses an arbiter to
+share the ATT bearer with the C++ implementation, enabling both to coexist on
+the same connection. Android 17 moved this server into its own `private_gatt`
+crate and removed its static global state.
 
 ### 37.4.6 BLE Connection Management
 
@@ -11185,6 +12286,114 @@ EATT uses L2CAP Credit-Based Flow Control (CoC) channels, with each channel
 acting as an independent ATT bearer. The `eattSupport` parameter in
 `BluetoothManager.openGattServer()` controls whether the server uses EATT
 for notifications.
+
+### 37.4.10 Channel Sounding and Distance Measurement
+
+Bluetooth 6.0 introduced *Channel Sounding* (CS), a ranging technique that
+measures the distance between two LE devices using phase-based and round-trip
+timing measurements across many radio channels. AOSP exposes it through a
+*distance measurement* API that can fall back to RSSI-based estimation when the
+controller does not support CS. Android 17 built this feature out
+substantially: it tightened the security model, added power/RSSI reporting in
+results, and migrated the service-side glue to Kotlin.
+
+The host capability is gated on a controller feature bit:
+
+Source: `packages/modules/Bluetooth/system/gd/hci/controller.h`
+
+```cpp
+virtual bool SupportsBleChannelSounding() const = 0;
+```
+
+#### Native distance measurement manager
+
+The native engine is `DistanceMeasurementManager` in the GD HCI layer. It
+supports three methods and drives the CS HCI command sequence.
+
+Source: `packages/modules/Bluetooth/system/gd/hci/distance_measurement_manager.h`
+
+```cpp
+enum DistanceMeasurementMethod {
+  METHOD_AUTO,   // pick the best available method
+  METHOD_RSSI,   // RSSI + TX power estimation
+  METHOD_CS,     // Channel Sounding
+};
+
+void StartDistanceMeasurement(int32_t app_uid, const Address& address,
+                              uint16_t connection_handle, hci::Role local_hci_role,
+                              uint16_t interval, DistanceMeasurementMethod method,
+                              DistanceMeasurementSightType sight_type,
+                              DistanceMeasurementLocationType location_type);
+void StopDistanceMeasurement(const Address& address, uint16_t connection_handle,
+                             DistanceMeasurementMethod method);
+```
+
+For a CS session the implementation
+(`distance_measurement_manager_impl.cc`) walks a per-connection state machine
+that issues the LE Channel Sounding HCI commands in order:
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant DMM as DistanceMeasurementManager
+    participant HCI as HCI / Controller
+
+    App->>DMM: StartDistanceMeasurement(METHOD_CS)
+    DMM->>HCI: LE CS Read Remote Supported Capabilities
+    DMM->>HCI: LE CS Set Default Settings
+    DMM->>HCI: LE CS Create Config
+    Note over DMM,HCI: WAIT_FOR_SECURITY_ENABLED
+    DMM->>HCI: LE CS Security Enable
+    HCI-->>DMM: LE CS Security Enable Complete
+    DMM->>HCI: LE CS Set Procedure Parameters
+    DMM->>HCI: LE CS Procedure Enable
+    HCI-->>DMM: CS subevent results
+    DMM-->>App: OnDistanceMeasurementResult(...)
+```
+
+A result carries far more than a raw distance. The callback reports distance
+and error in centimetres, azimuth/altitude angles, delay spread, a confidence
+level, a Normalized Attack Detector Metric (NADM) attack level, relative
+velocity, and (new in Android 17) the remote TX power and reflector RSSI.
+
+#### Security enforcement for ranging
+
+Channel Sounding can leak proximity information, so Android 17 added the
+`enforce_security_for_ranging` flag that requires an *encrypted, LE Secure
+Connections* link before a session can start. The flag is defined alongside the
+power/RSSI result flag in the ranging aconfig:
+
+Source: `packages/modules/Bluetooth/flags/ranging.aconfig`
+
+When the flag is set, the service-side manager's `checkLinkRequirements()`
+rejects the session unless the device is bonded with the Secure Connections
+pairing algorithm and the LE link is currently encrypted with AES and a 16-byte
+key:
+
+Source: `packages/modules/Bluetooth/android/app/src/com/android/bluetooth/gatt/DistanceMeasurementManager.java`
+
+In the native stack the same guarantee is enforced over the air: the state
+machine sends `LE CS Security Enable` and waits for its completion before
+issuing `LE CS Procedure Enable`, so ranging never runs on an unencrypted link.
+
+#### Framework and service surface
+
+The public API lives in `android.bluetooth.le`:
+
+| Class | Source | Purpose |
+|-------|--------|---------|
+| `DistanceMeasurementManager` | `framework/java/android/bluetooth/le/DistanceMeasurementManager.java` | Start a session, query supported methods |
+| `DistanceMeasurementParams` | `.../le/DistanceMeasurementParams.java` | Device, duration, frequency, method id, CS params |
+| `ChannelSoundingParams` | `.../le/ChannelSoundingParams.java` | Sight type, location type, CS security level (1-4) |
+| `DistanceMeasurementResult` | `.../le/DistanceMeasurementResult.java` | Distance, angles, NADM, velocity, TX power, RSSI |
+| `DistanceMeasurementSession` | `.../le/DistanceMeasurementSession.java` | Session handle with `Callback` (onStarted/onResult/onStopped) |
+| `DistanceMeasurementMethod` | `.../le/DistanceMeasurementMethod.java` | Describes a method (AUTO/RSSI/CHANNEL_SOUNDING) |
+
+The service side sits inside `GattService`. Android 17 converted its native
+glue to Kotlin: `DistanceMeasurementNativeInterface.kt` (JNI calls),
+`DistanceMeasurementNativeCallback.kt` (native to framework callbacks), and
+`DistanceMeasurementBinder.kt` (the IPC entry point), all under
+`packages/modules/Bluetooth/android/app/src/com/android/bluetooth/gatt/`.
 
 ---
 
@@ -12423,6 +13632,12 @@ adb logcat -s VolumeControlService
 
 # Monitor coordinated sets
 adb logcat -s CsipSetCoordinatorService
+
+# Monitor the LE Audio Peripheral (acceptor) role (Android 17)
+adb logcat -s LeAudioPeripheralService PeripheralPolicyManager
+
+# Monitor Channel Sounding / distance measurement (Android 17)
+adb logcat -s DistanceMeasurementManager DistanceMeasurementNativeCallback
 ```
 
 ### 37.8.17 Bluetooth System Properties
@@ -12511,14 +13726,21 @@ Key architectural highlights:
   the legacy Fluoride (Broadcom-derived) architecture to the modular
   Gabeldorsche design, starting with the lowest layers (HCI, ACL) and working
   up.
-- **Rust integration**: New components like the GATT server are written in Rust
-  for memory safety, coexisting with C++ through FFI bindings and an arbiter
-  pattern.
+- **Rust integration**: Memory-safe components coexist with C++ through `cxx`
+  FFI bridges. The Rust GATT server (now in its own `private_gatt` crate) uses
+  an arbiter to share the ATT bearer with the C++ client, and Android 17 added a
+  Rust LE Audio crate housing the isochronous (CIG/CIS, BIG/BIS) and
+  periodic-advertising-sync managers.
 - **AIDL HAL**: The Bluetooth HAL operates at the HCI level, providing a clean
   vendor abstraction with just six methods (`initialize`, `close`, plus four
   send methods for HCI command, ACL, SCO, and ISO packets).
 - **Rich profile support**: Over 25 Bluetooth profiles are implemented, from
-  classic A2DP/HFP to modern LE Audio with BAP, CSIP, VCP, MCP, and TBS.
+  classic A2DP/HFP to modern LE Audio with BAP, CSIP, VCP, MCP, and TBS. Android
+  17 added the LE Audio Peripheral (BAP acceptor) role, letting the phone itself
+  act as an LE Audio speaker/microphone for a peer host.
+- **Ranging**: Channel Sounding distance measurement is built out in Android 17
+  with an enforced LE Secure Connections security model and richer results
+  (NADM attack level, remote TX power, RSSI).
 - **Hardware offload**: Audio encoding can be offloaded to the SoC's DSP for
   power efficiency, with the Audio HAL providing a separate data path via
   Fast Message Queues.
@@ -12554,7 +13776,10 @@ framework.
 | SMP | `packages/modules/Bluetooth/system/stack/smp/` |
 | GATT | `packages/modules/Bluetooth/system/stack/gatt/` |
 | A2DP Codecs | `packages/modules/Bluetooth/system/stack/a2dp/` |
-| Rust Components | `packages/modules/Bluetooth/system/rust/` |
+| Rust GATT server | `packages/modules/Bluetooth/system/rust/private_gatt/` |
+| Rust LE Audio (ISO, PA sync) | `packages/modules/Bluetooth/system/rust/src/le_audio/` |
+| LE Audio Peripheral (native) | `packages/modules/Bluetooth/system/bta/le_audio/server/` |
+| Distance Measurement (CS) | `packages/modules/Bluetooth/system/gd/hci/distance_measurement_manager.h` |
 | Audio HAL Interface | `packages/modules/Bluetooth/system/audio_hal_interface/` |
 | Bluetooth AIDL HAL | `hardware/interfaces/bluetooth/aidl/` |
 | Bluetooth Audio HAL | `hardware/interfaces/bluetooth/audio/aidl/` |
@@ -12568,8 +13793,9 @@ The Bluetooth specification itself is freely available from the Bluetooth SIG
 at https://www.bluetooth.com/specifications/specs/. Key specification documents
 relevant to AOSP:
 
-- **Core Specification 5.4**: The foundational Bluetooth specification
-  defining the radio, baseband, L2CAP, SDP, GAP, and GATT protocols.
+- **Core Specification 6.0**: The foundational Bluetooth specification
+  defining the radio, baseband, L2CAP, SDP, GAP, and GATT protocols, and the
+  Channel Sounding feature that AOSP's distance-measurement API builds on.
 - **A2DP 1.4**: Advanced Audio Distribution Profile specification, defining
   audio streaming procedures and SBC codec requirements.
 - **HFP 1.9**: Hands-Free Profile specification with LC3 super wideband
@@ -14504,8 +15730,8 @@ must prioritize or compress entries.
 ### 38.6.10 Preferred Payment Services and Wallet Role
 
 Android designates one "preferred payment service" that handles payment AIDs
-by default.  This is tied to the **Wallet Role** introduced in recent Android
-versions:
+by default.  This is tied to the **Wallet Role** (`RoleManager.ROLE_WALLET`),
+which replaced the older "default payment app" setting:
 
 ```java
 // Source: packages/modules/Nfc/NfcNci/src/com/android/nfc/cardemulation/
@@ -14514,11 +15740,35 @@ final WalletRoleObserver mWalletRoleObserver;
 final PreferredServices mPreferredServices;
 ```
 
+`WalletRoleObserver` watches role changes through `RoleManager` and resolves the
+active holder per user:
+
+```java
+// Source: packages/modules/Nfc/NfcNci/src/com/android/nfc/cardemulation/
+//         WalletRoleObserver.java
+public PackageAndUser getDefaultWalletRoleHolder(int userId) {
+    // ...
+    List<String> roleHolders = mRoleManager.getRoleHoldersAsUser(
+            RoleManager.ROLE_WALLET, roleUserHandle);
+    // ...
+}
+```
+
+When the holder changes, `CardEmulationManager.onWalletRoleHolderChanged()` fans
+the new package out to `PreferredServices` and `RegisteredAidCache`
+(`packages/modules/Nfc/NfcNci/src/com/android/nfc/cardemulation/CardEmulationManager.java`),
+so the routing table follows the wallet role.
+
 The Wallet Role holder gets priority for:
 
 - Payment category AIDs
 - Tap-to-pay UI
 - Default contactless payment selection
+
+The Wallet Role coverage is widened in Android 17.  Section 38.10 describes the
+new **associated-package** plumbing that lets the role holder grant role-holder
+routing priority to a sibling package without that package owning the role
+itself.
 
 ### 38.6.11 Observe Mode and Polling Loop Filters
 
@@ -14555,6 +15805,37 @@ public void onObserveModeEnabledInFirmware() {
     onObserveModeStateChanged(true);
 }
 ```
+
+Apps toggle observe mode with `NfcAdapter.setObserveModeEnabled(boolean)`, gated
+by `isObserveModeSupported()`.  The service rejects the toggle if a transaction
+or tag operation is already in progress, so the state machine never flips
+mid-APDU:
+
+```java
+// Source: packages/modules/Nfc/NfcNci/src/com/android/nfc/NfcService.java
+private boolean setObserveModeInternal(boolean enable, int callingUid,
+        String packageName, int triggerSource) {
+    synchronized (NfcService.this) {
+        if (mCardEmulationManager.isHostCardEmulationActivated()) {
+            return false;   // cannot toggle during a transaction
+        }
+        if (mTagConnected) {
+            return false;   // cannot toggle during tag operations
+        }
+        boolean result = mDeviceHost.setObserveMode(enable);
+        // ... statsd + event log ...
+    }
+}
+```
+
+Android 17 adds `NfcAdapter.allowOneTransaction()` (guarded by the
+`nfcstack_26q2_updates` flag in `packages/modules/Nfc/flags/flags.aconfig`),
+which temporarily disables observe mode for a *single* HCE transaction and then
+re-enables it automatically once the transaction completes or the RF field is
+lost.  This is the building block a wallet uses to let one tap-to-pay through
+without permanently leaving observe mode off.  It reaches the service through
+`INfcAdapter.allowOneTransaction()`
+(`packages/modules/Nfc/framework/java/android/nfc/INfcAdapter.aidl`).
 
 ### 38.6.12 Off-Host Card Emulation
 
@@ -15382,9 +16663,267 @@ classDiagram
 
 ---
 
-## 38.10 Try It: NFC Development Exercises
+## 38.10 Tap to X and the Gesture Exchange API
 
-### 38.10.1 Exercise 1: Read an NDEF Tag
+Android 17 introduces a new system-API surface called **Tap to X** that turns a
+contactless tap into an app-defined "exchange" gesture rather than just an NDEF
+read or a payment.  The canonical use is **Tap to Share**: two phones, or a
+phone and an accessory, briefly hold their NFC antennas together and the
+platform hands the foreground app a `Tag` it can transceive with, without the
+usual NDEF dispatch, sounds, or vibration.  The whole surface is guarded by the
+`tap_to_x` aconfig flag.
+
+#### Mermaid: Tap to X gesture-exchange flow
+
+```mermaid
+flowchart TD
+    APP["Privileged app<br/>(holds PERFORM_GESTURE_EXCHANGE)"]
+    LISTENER["NfcGestureExchangeCallbackListener<br/>(IReaderCallback.Stub)"]
+    ADAPTER["NfcAdapter.registerGestureExchangeReaderCallback()"]
+    SVC["NfcService.registerGestureExchangeCallback()"]
+    POLL["Polling loop<br/>onRemoteEndpointDiscovered()"]
+    SELECT["SELECT GESTURE_EXCHAGE_AID<br/>(A00000047609)"]
+    CB["callback.onTagDiscovered(gestureTag)"]
+
+    APP --> ADAPTER
+    ADAPTER --> LISTENER
+    LISTENER -->|"registerGestureExchangeCallback (binder)"| SVC
+    POLL -->|"ISO-DEP endpoint"| SELECT
+    SELECT -->|"90 00 success"| CB
+    CB --> LISTENER
+    LISTENER -->|"executor.execute"| APP
+```
+
+### 38.10.1 The PERFORM_GESTURE_EXCHANGE permission
+
+Tap to X is not an ordinary app capability.  Registering for gesture exchange
+requires the new signature-level permission `PERFORM_GESTURE_EXCHANGE`, enforced
+inside the service:
+
+```java
+// Source: packages/modules/Nfc/NfcNci/src/com/android/nfc/NfcPermissions.java
+static final String GESTURE_EXCHANGE_PERMISSION =
+        android.Manifest.permission.PERFORM_GESTURE_EXCHANGE;
+
+public static void enforceGestureExchangePermissions(Context context) {
+    context.enforceCallingOrSelfPermission(GESTURE_EXCHANGE_PERMISSION,
+            GESTURE_EXCHANGE_PERM_ERROR);
+}
+```
+
+Every gesture-exchange entry point in `NfcService` calls
+`enforceGestureExchangePermissions()` before touching state, so only the trusted
+holder (for example a system Tap-to-Share component) can intercept the gesture.
+
+### 38.10.2 NfcGestureExchangeCallbackListener
+
+Apps do not talk to the service directly.  `NfcAdapter` keeps a single
+`NfcGestureExchangeCallbackListener`, which is itself an `IReaderCallback.Stub`
+binder object that multiplexes one or more app `ReaderCallback`s:
+
+```java
+// Source: packages/modules/Nfc/framework/java/android/nfc/
+//         NfcGestureExchangeCallbackListener.java
+public final class NfcGestureExchangeCallbackListener extends IReaderCallback.Stub {
+    private final Map<ReaderCallback, Executor> mCallbackMap = new HashMap<>();
+
+    public void register(@NonNull Executor executor, @NonNull ReaderCallback callback) {
+        // first registration links to NFC service death and calls
+        // NfcAdapter.getService().registerGestureExchangeCallback(this);
+    }
+
+    @Override
+    public void onTagDiscovered(Tag tag) {
+        // fan the tag out to each registered ReaderCallback on its executor
+    }
+}
+```
+
+The application-facing methods are `registerGestureExchangeReaderCallback()` and
+`unregisterGestureExchangeReaderCallback()` on `NfcAdapter`, both
+`@FlaggedApi(FLAG_TAP_TO_X)` and both requiring `PERFORM_GESTURE_EXCHANGE`
+(`packages/modules/Nfc/framework/java/android/nfc/NfcAdapter.java`).  The
+listener also installs a `DeathRecipient`: if the NFC service process dies, it
+re-registers the callback once the service comes back, so a long-lived
+Tap-to-Share component does not silently stop receiving gestures.
+
+Registering a gesture callback implicitly suppresses platform feedback.  The
+documentation notes it behaves like passing `FLAG_READER_NO_PLATFORM_SOUNDS`,
+so a gesture tap does not play the usual tag chirp or vibration.
+
+### 38.10.3 The gesture-exchange AID and polling-loop interception
+
+A gesture tap is detected by selecting a fixed application identifier rather
+than reading NDEF.  The primary AID is a constant in `NfcService`, returned to
+callers via `NfcAdapter.getGestureExchangeAid()`:
+
+```java
+// Source: packages/modules/Nfc/NfcNci/src/com/android/nfc/NfcService.java
+public static final String GESTURE_EXCHAGE_AID = "A00000047609";
+public static final String GESTURE_EXCHAGE_SECONDARY_AID_SETTINGS_KEY =
+        "nfc.gesture_exchange_secondary_aid";
+public static final String GESTURE_EXCHANGE_COMPONENT_SETTINGS_KEY =
+        "nfc.gesture_exchange_component";
+```
+
+When a gesture poll frame has been configured, `mGestureExchangeEnabled` is set
+and the discovery handler checks the endpoint for the gesture AID *before*
+falling through to ordinary NDEF reading.  On an ISO-DEP endpoint with no reader
+mode active, `NfcService` transceives a `SELECT` for the (optional) secondary
+AID and then the primary `GESTURE_EXCHAGE_AID`; a `90 00` status word means the
+remote end is a gesture target:
+
+```java
+// Source: packages/modules/Nfc/NfcNci/src/com/android/nfc/NfcService.java
+byte[] gestureAidCheckCmd = buildSelectAidCommand(GESTURE_EXCHAGE_AID);
+respData = tag.transceive(gestureAidCheckCmd, false, retCode);
+if (respData != null && respData.length >= 2
+        && respData[respData.length - 2] == (byte) 0x90
+        && respData[respData.length - 1] == 0x00) {
+    // Gesture Exchange AID exists, skip NDEF read
+    if (SdkLevel.isAtLeastC() && mNfcGestureExchangeCallback != null) {
+        Tag gestureTag = buildGestureTag(tag, gestureComponent, GESTURE_EXCHAGE_AID);
+        mNfcGestureExchangeCallback.onTagDiscovered(gestureTag);
+    } else {
+        // fall back to dispatching a synthetic gesture intent
+    }
+}
+```
+
+`buildGestureTag()` wraps the live ISO-DEP endpoint as a `Tag` that also carries
+a synthetic Android Application Record (the configured gesture component) and an
+`EXTRA_AID`, so the gesture target is dispatched to exactly the right component
+even on the legacy intent path.  The `mGestureExchangeEnabled` flag itself is
+driven by a `Settings.Secure` poll-frame value watched by a `ContentObserver`
+in `NfcService` (`updateGesturePollFrame()`), which also pushes the default poll
+frame down to the controller via `mDeviceHost.setDefaultFrame()`.
+
+### 38.10.4 Tap-to-X routing: gesture vs NDEF vs payment
+
+The gesture path is deliberately layered *on top of* the existing dispatch
+chain (Section 38.5) rather than replacing it.  Within
+`onRemoteEndpointDiscovered()`, the precedence for an ISO-DEP endpoint is:
+
+1. An explicit **reader-mode** request from a foreground app wins outright.
+2. Otherwise, if **gesture exchange** is enabled, the service selects the
+   secondary then primary gesture AID; a match short-circuits to the gesture
+   callback (or a synthetic gesture dispatch) and starts presence checking.
+3. Otherwise the endpoint falls through to ordinary **NDEF read** and the
+   three-tier tag-dispatch intents.
+
+```mermaid
+flowchart TD
+    EP["ISO-DEP endpoint discovered"]
+    RM{"Reader mode<br/>requested?"}
+    GE{"Gesture exchange<br/>enabled?"}
+    SECOND{"Secondary AID<br/>selects 90 00?"}
+    PRIMARY{"Primary gesture<br/>AID selects 90 00?"}
+    READER["Deliver to reader-mode callback"]
+    GCB["Deliver gestureTag to callback"]
+    NDEF["NDEF read then tag dispatch"]
+
+    EP --> RM
+    RM -->|"yes"| READER
+    RM -->|"no"| GE
+    GE -->|"no"| NDEF
+    GE -->|"yes"| SECOND
+    SECOND -->|"yes"| GCB
+    SECOND -->|"no"| PRIMARY
+    PRIMARY -->|"yes"| GCB
+    PRIMARY -->|"no"| NDEF
+```
+
+This keeps Tap to X invisible to ordinary tags and ordinary payment taps: a
+plain NDEF poster or a contactless card never answers the gesture `SELECT`, so
+it flows straight through to the NDEF/HCE paths described earlier in the
+chapter.
+
+## 38.11 Wallet Role Associated Packages
+
+Android 17 loosens the one-package assumption baked into the Wallet Role
+(Section 38.6.10).  Previously only the single `ROLE_WALLET` holder package got
+role-holder routing priority.  In 17 the holder can **declare an associated
+package** that shares its priority, which matters when a wallet ships its
+NFC/observe-mode logic in a sibling app or an app signed with a different
+certificate.
+
+The opt-in is a manifest application property,
+`PROPERTY_ALLOW_SHARED_ROLE_PRIORITY`:
+
+```java
+// Source: packages/modules/Nfc/framework/java/android/nfc/cardemulation/
+//         CardEmulation.java
+public static final String PROPERTY_ALLOW_SHARED_ROLE_PRIORITY =
+        "android.nfc.cardemulation.PROPERTY_ALLOW_SHARED_ROLE_PRIORITY";
+```
+
+Per its documentation, the role holder can set the property's `android:value` to
+`true` (share priority with any package signed by the same certificate) or to a
+specific package name (share with exactly that package, even if signed
+differently).  `RegisteredAidCache` reads this property off the wallet holder
+(and, failing that, the preferred payment service) and records the associated
+package, even when that package owns no card-emulation service at all:
+
+```java
+// Source: packages/modules/Nfc/NfcNci/src/com/android/nfc/cardemulation/
+//         RegisteredAidCache.java
+PackageManager.Property prop = pm.getProperty(
+        CardEmulation.PROPERTY_ALLOW_SHARED_ROLE_PRIORITY,
+        mDefaultWalletHolderPackageName);
+// Associated wallet role package may not have any CE service (only for ability
+// to toggle observe mode), so add these packages directly here.
+if (prop.getString() != null) {
+    mAssociatedRolePackageNames.add(prop.getString());
+}
+```
+
+Resolution then treats the holder and its associated packages uniformly.
+`isDefaultOrAssociatedWalletService()` and `isDefaultOrAssociatedWalletPackage()`
+return `true` for the holder *or* any associated service/package (gated by the
+`nfc_associated_role_services` flag), so the associated app can register AIDs at
+role-holder priority and toggle observe mode (Section 38.6.11) as if it were the
+wallet itself.  As noted in the source comment above, a frequent reason for the
+association is precisely to let a helper package call
+`setObserveModeEnabled()` / `allowOneTransaction()` on the wallet's behalf
+without it owning any HCE service.
+
+## 38.12 NFC Mainline Flags in Android 17
+
+Because NFC ships as the `com.android.nfcservices` Mainline APEX (Section
+38.1.8), almost every 17 behavior change is gated by an aconfig flag, so the
+platform can ship the code and turn it on per release train.  Most live in the
+module flag set `packages/modules/Nfc/flags/flags.aconfig` (container
+`com.android.nfcservices`, accessor `com.android.nfc.module.flags.Flags`):
+
+| Module flag | Gates |
+|------|-------|
+| `tap_to_x` | The Tap to X / gesture-exchange API (Section 38.10) and the observe-mode-always-on feature it depends on |
+| `nfcstack_26q2_updates` | NCI-stack updates, including `NfcAdapter.allowOneTransaction()` (Section 38.6.11) and the V2 tag-app preference store |
+| `screen_state_attribute_toggle` | Runtime toggling of `requireDeviceUnlock` / `requireDeviceScreenOn` on an HCE service |
+| `get_polling_loop_filters` | API to fetch the polling-loop filters a service registered |
+| `nfc_power_saving_mode` | Get/set the controller's power-saving mode |
+| `oem_extension_25q4` | OEM extension hooks for the 25Q4 train (`NfcOemExtension`) |
+
+A handful of framework-side flags live in the `android.nfc` namespace instead
+and gate public-API surface in the `framework/` tree.  The most relevant here is
+`android.nfc.nfc_associated_role_services`, which gates the wallet-role
+associated-package feature (Section 38.11): it guards both the
+`PROPERTY_ALLOW_SHARED_ROLE_PRIORITY` field (see
+`packages/modules/Nfc/framework/api/current.txt`) and the
+`Flags.nfcAssociatedRoleServices()` branches in
+`packages/modules/Nfc/NfcNci/src/com/android/nfc/cardemulation/RegisteredAidCache.java`.
+
+Module flags are read through the generated `com.android.nfc.module.flags.Flags`
+accessor (for example `@FlaggedApi(FLAG_TAP_TO_X)` on `NfcAdapter` methods).
+Reading the relevant flag is the most reliable way to tell, at runtime, whether
+a given Android 17 NFC behavior is actually active on a device, since Mainline
+trains enable them independently of the platform dessert.
+
+---
+
+## 38.13 Try It: NFC Development Exercises
+
+### 38.13.1 Exercise 1: Read an NDEF Tag
 
 **Goal**: Build an activity that reads NDEF messages from tags.
 
@@ -15486,7 +17025,7 @@ public class ReadNdefActivity extends Activity {
 **Verification**: write an NDEF URI tag with a tool like NFC TagWriter, then
 tap your phone.  The activity should launch and display the tag content.
 
-### 38.10.2 Exercise 2: Write an NDEF Tag
+### 38.13.2 Exercise 2: Write an NDEF Tag
 
 **Goal**: Write NDEF content to a blank or rewritable tag.
 
@@ -15584,7 +17123,7 @@ public class WriteNdefActivity extends Activity {
 **Verification**: tap a blank NTAG213/215/216 tag, then read it back with
 Exercise 1 or any NFC reader app.
 
-### 38.10.3 Exercise 3: Implement a Payment HCE Service
+### 38.13.3 Exercise 3: Implement a Payment HCE Service
 
 **Goal**: Build a minimal HCE service that responds to payment SELECT commands.
 
@@ -15712,7 +17251,7 @@ public class DemoPaymentService extends HostApduService {
 **Verification**: use an NFC reader app on another phone to send a SELECT APDU
 for the Visa AID.
 
-### 38.10.4 Exercise 4: Use Reader Mode
+### 38.13.4 Exercise 4: Use Reader Mode
 
 **Goal**: Use reader mode for reliable tag reading without card emulation
 interference.
@@ -15819,7 +17358,7 @@ public class ReaderModeActivity extends Activity
 **Verification**: tap various NFC tags and cards.  The activity should display
 their technology details and content.
 
-### 38.10.5 Exercise 5: Foreground Dispatch
+### 38.13.5 Exercise 5: Foreground Dispatch
 
 **Goal**: Use foreground dispatch to intercept tags destined for other apps.
 
@@ -15892,7 +17431,7 @@ public class ForegroundDispatchActivity extends Activity {
 }
 ```
 
-### 38.10.6 Exercise 6: Dump the NFC Routing Table
+### 38.13.6 Exercise 6: Dump the NFC Routing Table
 
 **Goal**: Use `dumpsys` to inspect the NFC service state and routing table.
 
@@ -15941,7 +17480,7 @@ adb logcat -s NfcService:V NfcDispatcher:V NfcCardEmulationManager:V
 adb shell setprop persist.nfc.snoop_log_mode full
 ```
 
-### 38.10.7 Exercise 7: Inspect NFC HAL via AIDL
+### 38.13.7 Exercise 7: Inspect NFC HAL via AIDL
 
 **Goal**: Understand the HAL interface by examining the AIDL definitions.
 
@@ -15971,7 +17510,7 @@ atest VtsHalNfcTargetTest
 3. What events does `INfcClientCallback` deliver?
 4. How does the HAL handle power management (`NfcCloseType`)?
 
-### 38.10.8 Exercise 8: NFC-F FeliCa Emulation
+### 38.13.8 Exercise 8: NFC-F FeliCa Emulation
 
 **Goal**: Build a minimal NFC-F (FeliCa) card emulation service.
 
@@ -16105,6 +17644,15 @@ Off-host card emulation routes transactions directly to the SE.
 **NFC-F and NFC-V** -- FeliCa (NFC-F) support includes reader mode via `NfcF`
 and host emulation via `HostNfcFService`.  NFC-V (ISO 15693) provides
 longer-range communication for inventory and industrial tags.
+
+**Android 17** -- the NFC Mainline module adds **Tap to X** (the
+`PERFORM_GESTURE_EXCHANGE`-gated `NfcGestureExchangeCallbackListener` /
+gesture-exchange API behind the `tap_to_x` flag), the
+`allowOneTransaction()` single-tap observe-mode escape hatch, and
+**wallet-role associated packages** (`PROPERTY_ALLOW_SHARED_ROLE_PRIORITY`) that
+let the `ROLE_WALLET` holder share routing priority with a sibling package.
+Almost every change is gated by an aconfig flag in
+`packages/modules/Nfc/flags/flags.aconfig`.
 
 The key source files to study:
 
@@ -16273,6 +17821,7 @@ graph LR
         UPERM["UsbPermissionManager<br/>per-user permissions"]
         U4M["Usb4Manager<br/>USB4/Thunderbolt"]
         UALSA["UsbAlsaManager<br/>audio devices"]
+        UAUTH["UsbAuthManager<br/>host device authorization"]
     end
 
     US --> UDM
@@ -16281,7 +17830,13 @@ graph LR
     US --> UPERM
     US --> U4M
     US --> UALSA
+    US --> UAUTH
 ```
+
+`UsbAuthManager` is constructed only when the `enableUsbHostAuthorization` flag
+is set (see `frameworks/base/services/usb/java/com/android/server/usb/UsbService.java`
+around the `mAuthManager = new UsbAuthManager(...)` call); it bridges to a new
+out-of-process Rust daemon and is covered in Section 39.10.
 
 The service's lifecycle follows the standard `SystemService` pattern:
 
@@ -16761,6 +18316,7 @@ oneway interface IUsb {
     void switchRole(in String portName, in PortRole role, long transactionId);
     void limitPowerTransfer(in String portName, boolean limit, long transactionId);
     void resetUsbPort(in String portName, long transactionId);
+    void queryStaticPortInformation(long transactionId);
 }
 ```
 
@@ -16769,6 +18325,7 @@ Key operations:
 | Method | Purpose |
 |--------|---------|
 | `queryPortStatus()` | Retrieve current status of all Type-C ports |
+| `queryStaticPortInformation()` | Retrieve fixed per-port capabilities that never change at runtime |
 | `switchRole()` | Trigger DR_SWAP or PR_SWAP for role switching |
 | `enableUsbData()` | Enable/disable USB data signaling |
 | `enableContaminantPresenceDetection()` | Moisture/debris detection |
@@ -18121,26 +19678,36 @@ private void startAccessoryMode() {
 
 ### 39.7.5 Userspace AOA Implementation
 
-Modern AOSP includes a userspace AOA implementation as an alternative to the
-kernel-based accessory driver:
+Android 17 includes a userspace AOA implementation as an alternative to the
+kernel `f_accessory` gadget driver. Gating is the product of a build flag and a
+device property, evaluated in the `UsbDeviceManager` constructor
+(`frameworks/base/services/usb/java/com/android/server/usb/UsbDeviceManager.java`):
 
 ```java
-// From UsbDeviceManager constructor
+boolean deviceEnabledUserspaceAoa =
+        SystemProperties.getBoolean(DEVICE_UAOA_ENABLED_PROPERTY, false);
+boolean featureEnabledUserspaceAoa =
+        android.hardware.usb.flags.Flags.enableAoaUserspaceImplementation();
+
 mEnableAoaUserspaceImplementation =
-        android.hardware.usb.flags.Flags.enableAoaUserspaceImplementation()
-                && deviceEnabledUserspaceAoa
-                && nativeCheckAccessoryFfsDirectories();
+        featureEnabledUserspaceAoa && deviceEnabledUserspaceAoa;
 ```
 
-When userspace AOA is enabled, accessory string descriptors are read from
-FunctionFS rather than the kernel driver:
-```java
-if (mEnableAoaUserspaceImplementation) {
-    mAccessoryStrings = nativeGetAccessoryStringsFromFfs();
-} else {
-    mAccessoryStrings = nativeGetAccessoryStrings();
-}
-```
+`DEVICE_UAOA_ENABLED_PROPERTY` is `ro.usb.userspace.aoa.enabled` -- the same
+property that starts the `aoad` daemon (Section 39.11). When the flag and
+property are both set, `UsbDeviceManager` connects to `aoad` and queries its
+`AoaInitializationStatus`; if the daemon failed to open the accessory control
+endpoint, userspace AOA is disabled and the kernel driver is used instead. On a
+successful handover, `UsbDeviceManager` also disables the in-kernel AOA driver
+on older kernels (below 6.6) by writing `0` to the kernel's
+`android_kernel_aoa_enabled` toggle.
+
+Earlier development drops of this code read accessory string descriptors from
+FunctionFS directly in `system_server` via a native helper; that helper was
+removed and the protocol work now lives entirely in the `aoad` daemon, so
+`UsbDeviceManager` retains only the legacy kernel-driver path
+(`nativeGetAccessoryStrings()`) and otherwise routes through `aoad`. The full
+daemon architecture is covered in Section 39.11.
 
 ### 39.7.6 AOA Version 2 (Audio)
 
@@ -18307,8 +19874,12 @@ private boolean isDenyListed(int clazz, int subClass) {
 
 Source: `frameworks/base/services/usb/java/com/android/server/usb/UsbPermissionManager.java`
 
-Access to USB devices requires explicit permission. The permission model works
-as follows:
+Access to USB devices requires explicit permission. (On builds with USB host
+device authorization enabled, a device must first be *authorized* at the kernel
+level before it is even enumerated into a `UsbDevice` the framework can grant
+permission for -- see Section 39.10. Permission, described here, is the
+older per-app/per-device gate that still applies once a device is authorized.)
+The permission model works as follows:
 
 ```mermaid
 graph TD
@@ -18725,9 +20296,376 @@ stateDiagram-v2
 
 ---
 
-## 39.10 Try It: Hands-On Experiments
+## 39.10 USB Host Device Authorization (Android 17)
 
-### 39.10.1 Explore USB State Machine
+### 39.10.1 Why a New Authorization Layer
+
+The host-mode permission model in Section 39.8 answers the question "may *this
+app* talk to *this device*." It does not answer a more basic question that
+becomes urgent on desktop and large-screen form factors: "should this machine
+let *any* USB device attach at all, right now, given who is logged in and
+whether the screen is locked?" A laptop-style Android device sitting at a login
+screen should not silently enumerate an attacker's USB keyboard that injects
+keystrokes ("juice jacking" / BadUSB), and a docked desktop should be able to
+trust its dock's internal hub while still challenging a freshly plugged-in
+storage stick.
+
+Android 17 introduces **USB host device authorization** to enforce exactly this
+policy, at the point where the kernel would otherwise authorize a freshly
+attached device. The decision -- allow, deny, defer, or ask the user -- is made
+by a new out-of-process Rust daemon driven by a declarative policy, with the
+framework supplying the current "system state" (booted, logged in, screen
+locked, set-up) and relaying any interactive prompts to the user.
+
+The whole feature is gated by the `enable_usb_host_authorization` flag in the
+`usb_desktop` aconfig namespace
+(`frameworks/base/services/usb/java/com/android/server/usb/flags/usb_flags.aconfig`),
+reflecting that this is primarily desktop/large-screen hardening. On a phone
+build with the flag off, none of this runs and host devices behave as in
+earlier releases.
+
+### 39.10.2 Components
+
+```mermaid
+graph TD
+    subgraph "Kernel"
+        UDEV["USB device attach<br/>(sysfs authorized node)"]
+        UEVENTD["ueventd USB add/remove"]
+    end
+
+    subgraph "usbauthservice (Rust daemon, service usb_auth)"
+        MGR["AuthorizationManager<br/>(state + device lists)"]
+        RULES["Policy rules<br/>(rules.rs)"]
+        AUTHZ["authorize_device()<br/>(authorization.rs)"]
+    end
+
+    subgraph "system_server"
+        UAUTH["UsbAuthManager.java"]
+        UHM3["UsbHostManager"]
+    end
+
+    subgraph "SystemUI"
+        UI["UsbAuthorizationActivity<br/>(ask dialog)"]
+    end
+
+    UEVENTD -->|"device add/remove"| MGR
+    MGR --> AUTHZ
+    AUTHZ --> RULES
+    AUTHZ -->|"allow/deny: write authorized"| UDEV
+    UAUTH -->|"setSystemState() / setAuthorizationStatus()"| MGR
+    MGR -->|"events: ask / check-persisted"| UAUTH
+    UAUTH --> UI
+    UI -->|"user choice"| UAUTH
+    UHM3 -->|"usbDeviceAdded()"| UAUTH
+```
+
+The pieces:
+
+| Component | Type | Source Path | Role |
+|-----------|------|-------------|------|
+| `usbauthservice` | Rust daemon | `frameworks/native/services/usbauthservice/usbauthservice.rs` | Registers Binder service `usb_auth`; owns policy + decisions |
+| Policy engine | Rust | `frameworks/native/services/usbauthservice/rules.rs`, `authorization.rs`, `manager.rs` | Parses the rule language, evaluates a device against the active state |
+| `IUsbAuthManager` | Internal AIDL | `frameworks/base/core/java/android/hardware/usb/IUsbAuthManager.aidl` | Framework-to-daemon control surface |
+| `IUsbAuthEventsListener` | Internal AIDL | `frameworks/base/core/java/android/hardware/usb/IUsbAuthEventsListener.aidl` | Daemon-to-framework callbacks (oneway) |
+| `UsbAuthManager` | Java | `frameworks/base/services/usb/java/com/android/server/usb/UsbAuthManager.java` | Connects to `usb_auth`, maps Android events to system states, drives UI |
+| `UsbAuthorizationActivity` | SystemUI | `frameworks/base/packages/SystemUI/src/com/android/systemui/usb/UsbAuthorizationActivity.kt` | The user-facing "allow this USB device?" dialog |
+
+The daemon's `usbauthservice.rc`
+(`frameworks/native/services/usbauthservice/usbauthservice.rc`) declares the
+`usb_auth` service running as `user system` / `group system` in `class
+late_start`. It is a Tokio-based Rust binary that listens to ueventd USB
+add/remove events rather than polling.
+
+### 39.10.3 The AIDL Surface
+
+The interface is a framework-internal AIDL package (named
+`android.hardware.usb.auth` in Soong, declared `unstable` with the Rust backend
+in `frameworks/base/core/java/Android.bp`), not a stable VINTF HAL -- every file
+is `@hide`. `IUsbAuthManager` exposes:
+
+```
+interface IUsbAuthManager {
+    List<UsbAuthDeviceInfo> getAuthorizedUsbDevices();
+    List<UsbAuthDeviceInfo> getDeferredUsbDevices();
+    List<UsbAuthDeviceInfo> getDevicesAwaitingAuthorization();
+    List<UsbAuthDeviceInfo> getDevicesAwaitingPersistedAuthorization();
+    UsbAuthorizationStatus getAuthorizationStatus(in UsbAuthDeviceInfo device);
+    void setAuthorizationStatus(in UsbAuthDeviceInfo device,
+            in UsbAuthorizationStatus status);
+    void setSystemState(in UsbAuthorizationSystemState state);
+    boolean registerForUsbAuthorizationEvents(in IUsbAuthEventsListener listener);
+    void unregisterForUsbAuthorizationEvents(in IUsbAuthEventsListener listener);
+}
+```
+
+The oneway callback interface delivers the daemon's asynchronous decisions:
+
+```
+oneway interface IUsbAuthEventsListener {
+    void onDeviceAskForAuthorization(in UsbAuthDeviceInfo device);
+    void onDeviceCheckPersistedAuthorization(in UsbAuthDeviceInfo device);
+    void onDeviceAuthorizationStatusChanged(in UsbAuthDeviceInfo device,
+            in UsbAuthorizationStatus status,
+            in UsbAuthorizationSystemState systemState);
+}
+```
+
+A `UsbAuthDeviceInfo`
+(`frameworks/base/core/java/android/hardware/usb/UsbAuthDeviceInfo.aidl`)
+carries the identifying attributes the policy matches against: sysfs path, bus
+and device numbers, vendor/product IDs, the device-level
+`bDeviceClass`/`bDeviceSubClass`/`bDeviceProtocol`, the first interface's
+`bInterfaceClass`/`SubClass`/`Protocol`, `bcdDevice`, serial number,
+manufacturer, and product strings.
+
+Two small enums complete the contract. `UsbAuthorizationStatus`
+(`UsbAuthorizationStatus.aidl`) is `DENIED = 0`, `AUTHORIZED = 1`, and
+`DENIED_AND_DEFERRED = 2`. `UsbAuthorizationSystemState`
+(`UsbAuthorizationSystemState.aidl`) is `BOOTED = 0`, `LOGGED_IN = 1`,
+`SCREEN_LOCKED = 2`, and `SET_UP = 3`. These four states must stay in sync with
+the daemon's `ALL_SYSTEM_STATES` constant in `rules.rs` -- the daemon's
+`README.md` calls this out explicitly.
+
+### 39.10.4 The Policy Language and Decision Flow
+
+The daemon loads a text policy whose rules are evaluated in order; the first
+match wins, falling back to a default rule. Each rule is an **action**
+optionally constrained by **device attributes** and a **system condition**:
+
+```
+<action> [<device matchers>] [when <state condition>]
+```
+
+The six actions (`Action` in `rules.rs`) are `allow`, `allow-persisted`, `ask`,
+`deny`, `defer`, and `remove`. Device matchers (parsed in `rules.rs`,
+applied in `authorization.rs`) include `with-id <vid:pid>`, `with-interface
+<class:subclass:protocol>` (where `*` is a wildcard, combined with `any-of` /
+`one-of` / `none-of` / `equals`), `with-bcd-device-range`, `via-port`, `name`,
+`serial`, and `internal-device`. Conditions match the system state, e.g. `when
+LoggedIn` or `when one-of { Booted, ScreenLocked }`.
+
+What each action does once a device matches:
+
+| Action | Effect |
+|--------|--------|
+| `allow` | Writes `1` to the device's sysfs `authorized` node; device enumerates |
+| `deny` / `remove` | Writes `0` to sysfs; device is not enumerated |
+| `defer` | Writes `0` now, but re-evaluates the device on every system-state change (status `DENIED_AND_DEFERRED`) |
+| `ask` | No sysfs write; fires `onDeviceAskForAuthorization` so the framework can prompt the user |
+| `allow-persisted` | No sysfs write; fires `onDeviceCheckPersistedAuthorization` so the framework can consult a remembered decision (no UI) |
+
+```mermaid
+graph TD
+    ADD["ueventd: USB device added"] --> EVAL["Match against active-state rules"]
+    EVAL -->|"allow"| WAUTH["Write authorized=1<br/>status AUTHORIZED"]
+    EVAL -->|"deny / remove"| WDENY["Write authorized=0<br/>status DENIED"]
+    EVAL -->|"defer"| WDEFER["Write authorized=0<br/>re-check on state change"]
+    EVAL -->|"ask"| ASKUI["Callback onDeviceAskForAuthorization"]
+    EVAL -->|"allow-persisted"| ASKP["Callback onDeviceCheckPersistedAuthorization"]
+    ASKUI -->|"user allows"| WAUTH
+    ASKUI -->|"user denies"| WDENY
+    ASKP -->|"trusted before"| WAUTH
+    ASKP -->|"not trusted"| WDEFER
+```
+
+The "interactive" part is deliberately split: the daemon never shows UI or
+handles a PIN itself. For an `ask` device it simply notifies the framework,
+which (in `UsbAuthManager`) launches the SystemUI `UsbAuthorizationActivity`
+dialog; the user's choice flows back through `UsbService.setAuthorizationResponse(...)`
+to `UsbAuthManager.setAuthorizationResponse(...)` and finally
+`IUsbAuthManager.setAuthorizationStatus(...)`, at which point the daemon writes
+the sysfs `authorized` node. So the daemon is a pure policy/decision engine and
+the framework owns the human-facing "interactive PIN/prompt" experience.
+
+One safety detail worth calling out: if the device's boot disk happens to sit on
+USB, the daemon force-marks it as `internal-device` so a restrictive policy can
+never de-authorize the storage the system is running from (`manager.rs`).
+
+### 39.10.5 Static vs. Interactive Policy
+
+Two policies ship as `prebuilt_etc` files installed under `/etc/usb_auth/`:
+
+- `frameworks/native/services/usbauthservice/config/desktop_auth_policy.conf`
+  -> `usb_auth/policy.conf`: the **static** policy. Representative rules allow
+  HID and hub interfaces and internal devices outright, allow specific
+  ethernet dongles by VID:PID during setup/boot, allow everything once
+  `LoggedIn`, and `defer` while `ScreenLocked`.
+
+- `frameworks/native/services/usbauthservice/config/desktop_interactive_auth_policy.conf`
+  -> `usb_auth/interactive_policy.conf`: the **interactive** policy. It is
+  stricter -- e.g. only a plain hub is allowed unconditionally, HID at the
+  login screen becomes `ask`, previously-trusted devices use `allow-persisted`,
+  and the default for anything else is `defer`. It can also `import-allowlist`
+  vendor rules, optionally only `when debuggable`.
+
+The daemon chooses the interactive policy only when host authorization is
+enabled; otherwise it loads the static policy, and an interactive-policy load
+failure falls back to the static one (`manager.rs`). The files are named
+`desktop_*` because, as noted, this is a desktop-connectivity feature.
+
+### 39.10.6 Framework Integration
+
+`UsbService` constructs a `UsbAuthManager` (and hands it to `UsbHostManager` via
+`setAuthManager`) only when `enableUsbHostAuthorization()` is true. From there:
+
+1. `UsbHostManager.usbDeviceAdded()` calls `mAuthManager.usbDeviceAdded(deviceAddress)`
+   for each attaching device; with authorization on, host enumeration is gated
+   on the device first being authorized.
+2. `UsbAuthManager` registers an `IUsbAuthEventsListener` and translates Android
+   lifecycle events into `setSystemState(...)` calls -- screen lock/unlock,
+   user login state, and special repair/factory modes map to `SCREEN_LOCKED`,
+   `LOGGED_IN`, `BOOTED`, and `SET_UP` respectively (`onUpdateScreenLockedState`,
+   `onUpdateLoggedInState`, `pinAuthorizationMode` in `UsbAuthManager.java`).
+3. When the daemon asks, `UsbAuthManager` drives the SystemUI dialog and posts a
+   screen-locked reminder notification when devices are waiting on an unlock.
+
+The result is a single policy-driven gate that adapts to context: the same
+keyboard that is challenged at the lock screen is trusted once the owner has
+logged in.
+
+---
+
+## 39.11 The aoad Daemon and the system/usb Split (Android 17)
+
+### 39.11.1 A New Top-Level USB Repo
+
+Android 17 carves a dedicated `system/usb` git project out of the platform. Its
+first inhabitant is **`aoad`**, the userspace Android Open Accessory daemon that
+moves AOA protocol handling out of the kernel's `f_accessory` driver (and out of
+the framework's native `system_server` code) into a standalone process speaking
+to FunctionFS. The repo layout is:
+
+```
+system/usb/
+    aoa/
+        aidl/   # android.hardware.usb.aoa interface
+        daemon/ # aoad (C++)
+    tests/      # host-side stability tests moved here from CTS
+```
+
+`aoad` (`system/usb/aoa/daemon/main.cpp`) is a C++ binary that registers itself
+as the `aoad` Binder service. Its `aoad.rc`
+(`system/usb/aoa/daemon/aoad.rc`) ships the service as `disabled`, running as
+`user system` / `group system usb uhid` with seclabel `u:r:aoad:s0`, started by
+a property trigger on `ro.usb.userspace.aoa.enabled=true` -- the same property
+`UsbDeviceManager` checks when deciding whether to use userspace AOA
+(Section 39.7.5).
+
+### 39.11.2 The IUsbAoa Interface
+
+The daemon implements `android.hardware.usb.aoa.IUsbAoa`
+(`system/usb/aoa/aidl/android/hardware/usb/aoa/IUsbAoa.aidl`):
+
+```
+interface IUsbAoa {
+    void setCallback(in IUsbAoaCallback callback);
+    AoaInitializationStatus getInitializationStatus();
+    ParcelFileDescriptor openAccessory();
+    ParcelFileDescriptor openAccessoryForInputStream();
+    ParcelFileDescriptor openAccessoryForOutputStream();
+    int getMaxPacketSize();
+    AccessoryMetadata getAccessoryStrings();
+    boolean isStartRequested();
+}
+```
+
+The oneway `IUsbAoaCallback` reports handshake progress with a single
+`onAccessoryStateChanged(in AccessoryHandshakeState state)`. The
+`AccessoryHandshakeState` enum mirrors the AOA control requests: `UNKNOWN = 0`,
+`GET_PROTOCOL = 1`, `SEND_STRING = 2`, `START = 3`. `AccessoryMetadata` carries
+the six AOA strings (manufacturer, model, description, version, URI, serial),
+and `AoaInitializationStatus` reports whether the FunctionFS directories are
+present plus an `openControlResult` code that the framework uses to decide
+whether the handover succeeded.
+
+### 39.11.3 What the Daemon Does
+
+`aoad` owns the AOA gadget's FunctionFS endpoints. On startup
+`UsbAoaService::initialize()` (`system/usb/aoa/daemon/UsbAoaService.cpp`) checks
+the FunctionFS directories, opens the accessory control endpoint, and -- on
+success -- starts a monitor thread. The endpoint paths and the USB descriptors
+(vendor-specific class/subclass, full/high/super-speed variants) live in
+`system/usb/aoa/daemon/AoaDescriptors.h`.
+
+```mermaid
+graph TD
+    subgraph "USB Host (Accessory)"
+        ACC["Car dock / controller<br/>(USB host)"]
+    end
+
+    subgraph "aoad (system/usb)"
+        VCRM["VendorControlRequestMonitor<br/>(epoll on ctrl ep0)"]
+        SVC["UsbAoaService<br/>(IUsbAoa)"]
+        BRIDGE["AccessoryLegacyBridgeThread<br/>(Linux AIO data pump)"]
+    end
+
+    subgraph "FunctionFS"
+        EP0C["ctrl ep0<br/>(vendor control requests)"]
+        EP12["aoa ep1/ep2<br/>(bulk IN/OUT)"]
+    end
+
+    subgraph "system_server"
+        UDM3["UsbDeviceManager"]
+        APP3["App socket FD"]
+    end
+
+    ACC -->|"GET_PROTOCOL / SEND_STRING / START"| EP0C
+    EP0C --> VCRM
+    VCRM -->|"notifyStateChange()"| SVC
+    SVC -->|"IUsbAoaCallback"| UDM3
+    UDM3 -->|"openAccessory()"| SVC
+    SVC --> BRIDGE
+    BRIDGE <--> EP12
+    BRIDGE <-->|"socketpair FD"| APP3
+```
+
+Two worker components do the real work:
+
+- **`VendorControlRequestMonitor`** (`system/usb/aoa/daemon/VendorControlRequestMonitor.cpp`)
+  watches the FunctionFS control endpoint (`ep0`) via epoll and decodes the AOA
+  vendor `bRequest` codes -- `ACCESSORY_GET_PROTOCOL` (51),
+  `ACCESSORY_SEND_STRING` (52), `ACCESSORY_START` (53), plus the HID-over-AOA
+  set (54-57) and `ACCESSORY_SET_AUDIO_MODE` (58). As the handshake advances it
+  calls back into the service, which fires `onAccessoryStateChanged`. It also
+  registers AOA HID accessories through `/dev/uhid` (hence the `uhid` group in
+  the `.rc`).
+
+- **`AccessoryLegacyBridgeThread`** (`system/usb/aoa/daemon/AccessoryLegacyBridgeThread.cpp`)
+  is the data pump. `openAccessory()` creates a `socketpair` and spawns this
+  thread to shuttle bytes between the FunctionFS bulk endpoints (using Linux
+  AIO) and the app-facing socket. The app side of the socketpair is returned to
+  the framework as a `ParcelFileDescriptor`, preserving the same single-FD
+  accessory-stream contract that the old kernel `/dev/usb_accessory` node
+  exposed -- which is why it is called the "legacy bridge."
+
+### 39.11.4 How the Framework Drives aoad
+
+`UsbDeviceManager` is the consumer. When userspace AOA is enabled (the flag and
+`ro.usb.userspace.aoa.enabled` are both set), `UsbDeviceManager.getUsbAoaService()`
+looks up the `aoad` Binder service, calls `setCallback(...)` with an
+`IUsbAoaCallback.Stub`, and links to the daemon's death so it can fall back if
+`aoad` crashes (see the `IUsbAoa`/`IUsbAoaCallback` imports and
+`getUsbAoaService()` in
+`frameworks/base/services/usb/java/com/android/server/usb/UsbDeviceManager.java`).
+It then uses `getInitializationStatus()` to confirm the control endpoint opened,
+`openAccessory()` to obtain the data FD it hands to the accessory app, and
+`getAccessoryStrings()` / `getMaxPacketSize()` for the metadata it used to read
+from the kernel.
+
+Crucially, when the handover succeeds `UsbDeviceManager` disables the in-kernel
+AOA driver on kernels older than 6.6 (newer kernels coordinate cleanly), so the
+two implementations never both drive the gadget. If `aoad` reports a failed
+`openControlResult`, the framework reverts `mEnableAoaUserspaceImplementation` to
+`false` and the classic kernel path takes over -- the userspace path is a strict
+upgrade that degrades safely. The host-side stability tests for this path now
+live under `system/usb/tests/hostside/`, having moved out of CTS as part of the
+split.
+
+---
+
+## 39.12 Try It: Hands-On Experiments
+
+### 39.12.1 Explore USB State Machine
 
 Monitor USB state changes in real time:
 
@@ -18744,7 +20682,7 @@ adb shell getprop sys.usb.controller
 adb shell getprop persist.sys.usb.config
 ```
 
-### 39.10.2 Switch USB Functions
+### 39.12.2 Switch USB Functions
 
 ```bash
 # Switch to MTP mode
@@ -18766,7 +20704,7 @@ adb shell svc usb getFunctions
 adb shell svc usb resetUsbGadget
 ```
 
-### 39.10.3 Inspect USB HAL State
+### 39.12.3 Inspect USB HAL State
 
 ```bash
 # Dump USB service state
@@ -18782,7 +20720,7 @@ adb shell dumpsys usb | grep "hal version"
 adb shell service list | grep usb
 ```
 
-### 39.10.4 ADB Protocol Exploration
+### 39.12.4 ADB Protocol Exploration
 
 ```bash
 # Check ADB version and protocol
@@ -18807,7 +20745,7 @@ adb connect <device-ip>:5555
 adb shell cat /config/usb_gadget/g1/UDC
 ```
 
-### 39.10.5 Test File Transfer Performance
+### 39.12.5 Test File Transfer Performance
 
 ```bash
 # Create a test file
@@ -18824,7 +20762,7 @@ time adb pull /data/local/tmp/testfile /tmp/pulled_file
 # USB 3.x: ~100+ MB/s (device dependent)
 ```
 
-### 39.10.6 Explore MTP from Device Side
+### 39.12.6 Explore MTP from Device Side
 
 ```bash
 # Check MTP server status
@@ -18840,7 +20778,7 @@ adb shell dumpsys media.mtp
 adb shell ls -la /dev/usb-ffs/mtp/
 ```
 
-### 39.10.7 USB Host Mode Exploration
+### 39.12.7 USB Host Mode Exploration
 
 ```bash
 # List connected USB devices (host mode)
@@ -18859,7 +20797,7 @@ adb logcat -s UsbHostManager:*
 adb shell "dumpsys usb -dump-raw"
 ```
 
-### 39.10.8 Build and Test USB HAL Changes
+### 39.12.8 Build and Test USB HAL Changes
 
 ```bash
 # Build the default USB HAL
@@ -18878,7 +20816,7 @@ atest VtsHalUsbV1_0TargetTest
 atest VtsHalUsbGadgetV1_0TargetTest
 ```
 
-### 39.10.9 ADB Over WiFi Pairing
+### 39.12.9 ADB Over WiFi Pairing
 
 ```bash
 # On the device: Enable wireless debugging in Developer Options
@@ -18894,7 +20832,7 @@ adb connect <device-ip>:<connection-port>
 adb devices -l
 ```
 
-### 39.10.10 Port Forwarding Experiment
+### 39.12.10 Port Forwarding Experiment
 
 ```bash
 # Forward local port to device port
@@ -18912,7 +20850,7 @@ adb forward --remove tcp:8080
 adb reverse --remove-all
 ```
 
-### 39.10.11 Investigate USB Accessory Mode
+### 39.12.11 Investigate USB Accessory Mode
 
 ```bash
 # Check accessory support
@@ -18926,7 +20864,7 @@ adb logcat -s UsbDeviceManager:* | grep -i accessory
 adb shell getprop ro.usb.userspace.aoa.enabled
 ```
 
-### 39.10.12 Trace USB Stack with ftrace
+### 39.12.12 Trace USB Stack with ftrace
 
 ```bash
 # Enable USB tracing (requires root)
@@ -18942,7 +20880,7 @@ adb shell "echo 0 > /sys/kernel/debug/tracing/events/gadget/enable"
 adb shell "echo 0 > /sys/kernel/debug/tracing/events/usb/enable"
 ```
 
-### 39.10.13 Dump ADB Protocol Traffic
+### 39.12.13 Dump ADB Protocol Traffic
 
 ```bash
 # Set ADB trace categories
@@ -18956,7 +20894,7 @@ adb shell setprop persist.adb.trace_mask 0xffff
 adb shell stop adbd && adb shell start adbd
 ```
 
-### 39.10.14 Explore ConfigFS Gadget Configuration
+### 39.12.14 Explore ConfigFS Gadget Configuration
 
 On devices with configfs gadget support, you can inspect the USB gadget
 configuration directly:
@@ -18991,7 +20929,7 @@ adb shell ls /config/usb_gadget/g1/functions/
 adb shell cat /config/usb_gadget/g1/UDC
 ```
 
-### 39.10.15 Monitor USB Type-C Port Status
+### 39.12.15 Monitor USB Type-C Port Status
 
 ```bash
 # View Type-C port information
@@ -19013,7 +20951,7 @@ adb shell udevadm monitor --kernel --subsystem-match=typec 2>/dev/null || \
     echo "Use logcat to monitor UEvents"
 ```
 
-### 39.10.16 Benchmark USB Data Throughput
+### 39.12.16 Benchmark USB Data Throughput
 
 ```bash
 # Test raw ADB transfer speed
@@ -19036,7 +20974,7 @@ adb shell dumpsys usb | grep -i speed
 adb shell cat /sys/class/udc/*/current_speed 2>/dev/null
 ```
 
-### 39.10.17 Explore ADB Key Management
+### 39.12.17 Explore ADB Key Management
 
 ```bash
 # View authorized keys on device
@@ -19054,7 +20992,7 @@ adb shell settings put global development_settings_enabled 0
 # Or via Settings > Developer Options > Revoke USB debugging authorizations
 ```
 
-### 39.10.18 Write a Simple USB Host Application
+### 39.12.18 Write a Simple USB Host Application
 
 Create a minimal application that enumerates USB devices:
 
@@ -19097,7 +21035,7 @@ public class UsbEnumerator extends Activity {
 }
 ```
 
-### 39.10.19 Debug USB Connection Issues
+### 39.12.19 Debug USB Connection Issues
 
 Common USB debugging techniques:
 
@@ -19126,7 +21064,7 @@ adb start-server
 adb devices
 ```
 
-### 39.10.20 Inspect MTP Object Tree
+### 39.12.20 Inspect MTP Object Tree
 
 ```bash
 # Use Android's mtp-send/receive tools (if available)
@@ -19144,6 +21082,44 @@ adb logcat -s MtpServer:V MtpDatabase:V MtpService:V
 # 0x1009 = GET_OBJECT (file download)
 # 0x100D = SEND_OBJECT (file upload)
 # 0x100B = DELETE_OBJECT
+```
+
+### 39.12.21 Inspect USB Host Device Authorization
+
+On a build with `enable_usb_host_authorization` enabled (desktop/large-screen
+form factors), inspect the new daemon and policy:
+
+```bash
+# Is the usb_auth daemon running?
+adb shell service list | grep usb_auth
+adb shell ps -A | grep usbauthservice
+
+# View the deployed authorization policies
+adb shell cat /etc/usb_auth/policy.conf
+adb shell cat /etc/usb_auth/interactive_policy.conf
+
+# Watch authorization decisions as the system state changes
+adb logcat -s UsbAuthManager:* usbauthservice:*
+
+# A device's kernel authorization gate (1 = authorized, 0 = blocked/deferred)
+adb shell cat /sys/bus/usb/devices/1-1/authorized 2>/dev/null
+```
+
+### 39.12.22 Inspect the Userspace AOA Daemon
+
+```bash
+# Is userspace AOA selected on this device?
+adb shell getprop ro.usb.userspace.aoa.enabled
+
+# Is the aoad daemon registered?
+adb shell service list | grep aoad
+
+# Watch the AOA handshake driven by aoad
+adb logcat -s UsbDeviceManager:* aoad:*
+
+# FunctionFS endpoints aoad uses for the accessory control + bulk paths
+adb shell ls -la /dev/usb-ffs/ctrl/ 2>/dev/null
+adb shell ls -la /dev/usb-ffs/aoa/ 2>/dev/null
 ```
 
 ---
@@ -19192,6 +21168,20 @@ native code, parsing device descriptors and maintaining deny lists. The
 permission model requires explicit user consent for application access to USB
 devices.
 
+**USB Host Device Authorization (Section 39.10)**: Android 17 adds a
+desktop/large-screen hardening layer. A new Rust daemon (`usbauthservice`,
+service `usb_auth`) evaluates each attaching host device against a declarative
+policy keyed on the system state (booted, logged in, screen locked, set-up) and
+writes the kernel's sysfs `authorized` node to allow, deny, or defer the device,
+or asks the framework (`UsbAuthManager` + a SystemUI dialog) to prompt the user.
+
+**The aoad Daemon (Section 39.11)**: AOA protocol handling moves out of the
+kernel and `system_server` into a standalone `aoad` C++ daemon in the new
+`system/usb` repo, exposing `android.hardware.usb.aoa.IUsbAoa`. It monitors the
+FunctionFS control endpoint for the AOA handshake and bridges the bulk endpoints
+to an app-facing file descriptor, with `UsbDeviceManager` gating the handover on
+a flag plus `ro.usb.userspace.aoa.enabled`.
+
 ### Key Source Paths Reference
 
 | Component | Path |
@@ -19205,4 +21195,9 @@ devices.
 | ADB client | `packages/modules/adb/client/` |
 | MTP native library | `frameworks/av/media/mtp/` |
 | MTP service | `packages/services/Mtp/` |
+| USB host auth daemon | `frameworks/native/services/usbauthservice/` |
+| USB auth AIDL | `frameworks/base/core/java/android/hardware/usb/IUsbAuthManager.aidl` |
+| USB auth framework bridge | `frameworks/base/services/usb/java/com/android/server/usb/UsbAuthManager.java` |
+| Userspace AOA daemon (aoad) | `system/usb/aoa/daemon/` |
+| AOA AIDL | `system/usb/aoa/aidl/android/hardware/usb/aoa/` |
 

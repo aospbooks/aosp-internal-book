@@ -1,4 +1,4 @@
-# AOSP Internals book content (65 chapters + 3 appendices) packaged as 16 Part-skills.
+# AOSP Internals book content (69 chapters + 4 appendices) packaged as 17 Part-skills.
 
 > AOSP Internals Copilot bundle, packaged version 2026.05.25.
 > Source: https://github.com/aospbooks/aosp-internal-book

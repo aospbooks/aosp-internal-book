@@ -9,7 +9,7 @@ layers of the build system, configuring a product, defining modules, producing
 images, and running the result on an emulator.
 
 Every path and code snippet in this chapter was verified against the AOSP
-`android16-qpr2-release` branch. Where we quote source files, we give their
+`android17-release` branch. Where we quote source files, we give their
 location relative to the tree root so you can read along on your own checkout.
 
 ---
@@ -27,7 +27,7 @@ requirements:
 | Disk space (with build) | 400 GB | 600 GB+ (SSD strongly preferred) |
 | RAM | 32 GB | 64 GB+ |
 | CPU | 4 cores | 16+ cores (build is highly parallel) |
-| OS | Ubuntu 20.04+ / macOS (Intel or Apple Silicon) | Ubuntu 22.04 LTS |
+| OS | Ubuntu 22.04+ / macOS (Intel or Apple Silicon) | Ubuntu 24.04 LTS |
 | File system | Case-sensitive (ext4 on Linux) | ext4 or APFS (macOS) |
 
 The build system requires a case-sensitive file system. On macOS, APFS is
@@ -122,7 +122,7 @@ mkdir aosp && cd aosp
 
 # Initialize with a specific branch
 repo init -u https://android.googlesource.com/platform/manifest \
-  -b android16-qpr2-release
+  -b android17-release
 ```
 
 Key flags for `repo init`:
@@ -162,7 +162,7 @@ defines the *shape* of your entire source tree -- which projects exist, which
 branches they track, and how they are organized into directories.
 
 The current AOSP default manifest at
-`.repo/manifests/default.xml` (1,045 lines) begins:
+`.repo/manifests/default.xml` (1,122 lines) begins:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -171,12 +171,11 @@ The current AOSP default manifest at
   <remote  name="aosp"
            fetch=".."
            review="https://android-review.googlesource.com/" />
-  <default revision="android16-qpr2-release"
+  <default revision="android17-release"
            remote="aosp"
            sync-j="4" />
 
-  <superproject name="platform/superproject" remote="aosp"
-                revision="android-latest-release"/>
+  <superproject name="platform/superproject" remote="aosp" revision="android-latest-release"/>
   <contactinfo bugurl="go/repo-bug" />
 
   <!-- BEGIN open-source projects -->
@@ -249,7 +248,7 @@ A manifest file is hierarchical. Understanding each element in detail:
 
 **The `<default>` element:**
 ```xml
-<default revision="android16-qpr2-release"
+<default revision="android17-release"
          remote="aosp"
          sync-j="4" />
 ```
@@ -328,7 +327,7 @@ can substantially reduce this with partial clones:
 ```bash
 # Partial clone: blobs are fetched on demand
 repo init -u https://android.googlesource.com/platform/manifest \
-  -b android16-qpr2-release \
+  -b android17-release \
   --partial-clone \
   --clone-filter=blob:limit=10M
 
@@ -354,7 +353,7 @@ You do not always need the entire tree. The manifest assigns projects to
 ```bash
 # Sync only PDK (Platform Development Kit) projects
 repo init -u https://android.googlesource.com/platform/manifest \
-  -b android16-qpr2-release \
+  -b android17-release \
   -g pdk
 
 repo sync -j16
@@ -664,7 +663,7 @@ The `doc.go` file in `build/blueprint/` describes the framework:
 
 **Source:** `build/blueprint/doc.go`
 
-The core of Blueprint is `context.go` (5,781 lines, ~89 KB), which defines the
+The core of Blueprint is `context.go` (6,486 lines, ~195 KB), which defines the
 `Context` struct -- the central state object that orchestrates the entire build
 process through four phases:
 
@@ -685,7 +684,7 @@ process through four phases:
 //    4. Write                           WriteBuildFile
 ```
 
-**Source:** `build/blueprint/context.go`, lines 70-84
+**Source:** `build/blueprint/context.go`, lines 117-131
 
 The four phases in detail:
 
@@ -726,7 +725,7 @@ Key directories under `build/blueprint/`:
 
 | Directory/File | Purpose |
 |---------------|---------|
-| `context.go` | Core orchestration (5,781 lines) |
+| `context.go` | Core orchestration (6,486 lines) |
 | `parser/` | Blueprint file parser |
 | `proptools/` | Property reflection and manipulation utilities |
 | `pathtools/` | File path utilities and glob matching |
@@ -790,7 +789,7 @@ func RegisterPostDepsMutators(ctx android.RegisterMutatorsContext) {
 }
 ```
 
-**Source:** `build/soong/apex/apex.go`, lines 64-70
+**Source:** `build/soong/apex/apex.go`, lines 66-71
 
 #### Blueprint Providers
 
@@ -819,7 +818,7 @@ if info, ok := ctx.OtherModuleProvider(dep, CcObjectInfoProvider); ok {
 
 Soong is Android's build system proper. It is built *on top of* Blueprint,
 registering Android-specific module types, mutators, and singletons. The
-`build/soong/` directory contains 74 subdirectories, organized by the type of
+`build/soong/` directory contains 59 subdirectories, organized by the type of
 module or build functionality they handle.
 
 From `build/soong/README.md`:
@@ -853,7 +852,7 @@ Key subdirectories of `build/soong/`:
 |-----------|---------|-----------|
 | `cc/` | C/C++ module types (`cc_binary`, `cc_library`, etc.) | `cc.go`, `library.go`, `binary.go` |
 | `java/` | Java/Kotlin module types (`java_library`, `android_app`, etc.) | `java.go`, `app.go`, `sdk_library.go` |
-| `apex/` | APEX module type (3,001 lines in `apex.go`) | `apex.go`, `builder.go`, `key.go` |
+| `apex/` | APEX module type (3,096 lines in `apex.go`) | `apex.go`, `builder.go`, `key.go` |
 | `rust/` | Rust module types | `rust.go`, `library.go` |
 | `python/` | Python module types | `python.go` |
 | `sh/` | Shell script module types | `sh_binary.go` |
@@ -875,7 +874,7 @@ Key subdirectories of `build/soong/`:
 Each module type is registered with Soong by a Go `init()` function. Let us
 look at how the three major module families register themselves:
 
-**C/C++ modules** (`build/soong/cc/cc.go`, 4,778 lines):
+**C/C++ modules** (`build/soong/cc/cc.go`, 4,885 lines):
 
 ```go
 // This file contains the module types for compiling C/C++ for Android,
@@ -909,7 +908,7 @@ aspect of C/C++ compilation:
 
 | File | Purpose | Lines |
 |------|---------|-------|
-| `cc.go` | Core module types and properties | 4,778 |
+| `cc.go` | Core module types and properties | 4,885 |
 | `builder.go` | Ninja rule generation | ~2,000 |
 | `binary.go` | `cc_binary` implementation | ~500 |
 | `library.go` | `cc_library` implementation | ~2,000 |
@@ -919,7 +918,7 @@ aspect of C/C++ compilation:
 | `cmake_snapshot.go` | CMake project generation | ~400 |
 | `check.go` | Build consistency checks | ~200 |
 
-**Java modules** (`build/soong/java/java.go`, 4,070 lines):
+**Java modules** (`build/soong/java/java.go`, 4,176 lines):
 
 ```go
 // This file contains the module types for compiling Java for Android,
@@ -952,7 +951,7 @@ func registerJavaBuildComponents(ctx android.RegistrationContext) {
 
 **Source:** `build/soong/java/java.go`, lines 50-70
 
-**Genrule modules** (`build/soong/genrule/genrule.go`, 1,042 lines):
+**Genrule modules** (`build/soong/genrule/genrule.go`, 1,103 lines):
 
 ```go
 // A genrule module takes a list of source files ("srcs" property), an
@@ -968,7 +967,7 @@ func RegisterGenruleBuildComponents(ctx android.RegistrationContext) {
 }
 ```
 
-**Source:** `build/soong/genrule/genrule.go`, lines 15-67
+**Source:** `build/soong/genrule/genrule.go`, lines 15-68
 
 The `genrule` module type is particularly useful for code generation, protocol
 buffer compilation, AIDL interface generation, and any other case where you
@@ -1072,14 +1071,14 @@ optimized for Android) still plays an important role:
 - **Legacy modules:** Some modules still use `Android.mk` (though this is
   decreasing with every release).
 
-The `build/make/` directory contains 25 top-level entries:
+The `build/make/` directory contains 26 top-level entries:
 
 | Directory/File | Purpose |
 |---------------|---------|
 | `core/` | Core build logic (includes, rules, module definitions) |
 | `target/` | Product and board configuration files |
 | `tools/` | Build utilities (releasetools, signapk, etc.) |
-| `envsetup.sh` | Shell environment setup script (1,187 lines) |
+| `envsetup.sh` | Shell environment setup script (1,210 lines) |
 | `common/` | Shared build logic |
 | `packaging/` | Package assembly rules |
 | `Changes.md` | Build system change log |
@@ -1201,7 +1200,7 @@ Every AOSP build session begins by sourcing the environment setup script:
 source build/envsetup.sh
 ```
 
-This script lives at `build/make/envsetup.sh` (1,187 lines) and is symlinked
+This script lives at `build/make/envsetup.sh` (1,210 lines) and is symlinked
 to the top-level `build/envsetup.sh` via the manifest's `<linkfile>` directive.
 
 The script does the following on load:
@@ -1234,7 +1233,7 @@ function _gettop_once
 }
 ```
 
-**Source:** `build/make/envsetup.sh`, lines 18-43
+**Source:** `build/make/envsetup.sh`, lines 22-47
 
 The function walks up the directory tree looking for `build/make/core/envsetup.mk`
 as a sentinel file. This is the canonical way the build system identifies the
@@ -1263,7 +1262,7 @@ function set_global_paths()
 }
 ```
 
-**Source:** `build/make/envsetup.sh`, lines 259-317
+**Source:** `build/make/envsetup.sh`, lines 265-321
 
 This adds build tools, Bazel binaries, emulator prebuilts, and device tree
 compiler (dtc) to `PATH`.
@@ -1272,27 +1271,43 @@ compiler (dtc) to `PATH`.
 
 ```bash
 function source_vendorsetup() {
+    unset VENDOR_PYTHONPATH
+    local T="$(gettop)"
+    local allowed=
+    local vendorsetups=()
+
+    # Find all relevant files in a single traversal to improve performance.
+    while IFS= read -r f; do
+        if [[ -z "$f" ]]; then continue; fi
+        if [[ "$f" == *allowed-vendorsetup_sh-files ]]; then
+            ...
+            allowed="$T/$f"
+        elif [[ "$f" == *vendorsetup.sh ]]; then
+            vendorsetups+=("$f")
+        fi
+    done < <(cd "$T" && find -L device vendor product -maxdepth 4 \
+        \( -name 'allowed-vendorsetup_sh-files' -o -name 'vendorsetup.sh' \) \
+        2>/dev/null | sort)
     ...
-    for dir in device vendor product; do
-        for f in $(cd "$T" && test -d $dir && \
-            find -L $dir -maxdepth 4 -name 'vendorsetup.sh' 2>/dev/null \
-            | sort); do
-            if [[ -z "$allowed" || "$allowed_files" =~ $f ]]; then
-                echo "including $f"; . "$T/$f"
-            else
-                echo "ignoring $f, not in $allowed"
-            fi
-        done
+    for f in "${vendorsetups[@]}"; do
+        if [ -z "$allowed" ]; then
+            echo "including $f"; . "$T/$f"
+        ...
+        fi
     done
-    ...
+
+    setup_cog_env_if_needed
 }
 ```
 
-**Source:** `build/make/envsetup.sh`, lines 1061-1090
+**Source:** `build/make/envsetup.sh`, lines 1067-1113
 
 This discovers and executes `vendorsetup.sh` files under `device/`, `vendor/`,
-and `product/` directories. These scripts typically add device-specific lunch
-combos or set up vendor-specific environment variables.
+and `product/` directories. The current implementation does a single
+`find` traversal for performance, and honors an optional
+`allowed-vendorsetup_sh-files` allowlist that, when present, restricts which
+`vendorsetup.sh` files are sourced. These scripts typically add device-specific
+lunch combos or set up vendor-specific environment variables.
 
 5. **Adds shell completions** via `addcompletions()` for commands like `lunch`,
    `m`, `adb`, and `fastboot`.
@@ -1347,7 +1362,7 @@ function make()
 }
 ```
 
-**Source:** `build/make/envsetup.sh`, lines 1010-1030
+**Source:** `build/make/envsetup.sh`, lines 1016-1036
 
 This means that typing `make` in an AOSP tree actually invokes `soong_ui.bash
 --make-mode`, not GNU Make directly.
@@ -1399,7 +1414,7 @@ function lunch()
 }
 ```
 
-**Source:** `build/make/envsetup.sh`, lines 550-596
+**Source:** `build/make/envsetup.sh`, lines 535-581
 
 The `_lunch_meat` function does the heavy lifting:
 
@@ -1434,7 +1449,7 @@ function _lunch_meat()
 }
 ```
 
-**Source:** `build/make/envsetup.sh`, lines 447-491
+**Source:** `build/make/envsetup.sh`, lines 449-493
 
 This function:
 
@@ -1667,7 +1682,7 @@ tapas Camera arm64 eng
 tapas Camera Gallery arm64 userdebug
 ```
 
-The `tapas` function (`build/make/envsetup.sh`, lines 676-747) configures an
+The `tapas` function (`build/make/envsetup.sh`, lines 674-743) configures an
 unbundled app build. It sets `TARGET_BUILD_APPS` to the specified app names,
 which tells the build system to only build those apps (and their dependencies)
 rather than the entire platform.
@@ -1682,7 +1697,7 @@ banchan com.android.wifi arm64 eng
 banchan com.android.wifi com.android.bt arm64 userdebug
 ```
 
-The `banchan` function (`build/make/envsetup.sh`, lines 749-811) is similar
+The `banchan` function (`build/make/envsetup.sh`, lines 747-807) is similar
 to `tapas` but specialized for APEX modules. It uses `module_arm64` (or the
 appropriate architecture variant) as the product, since APEXes are largely
 device-independent.
@@ -1711,7 +1726,7 @@ function leftovers()
 }
 ```
 
-**Source:** `build/make/envsetup.sh`, lines 598-642
+**Source:** `build/make/envsetup.sh`, lines 583-638
 
 When you run `lunch`, it saves your selection to `out/.leftovers`. The next
 time you source `envsetup.sh`, you can either:
@@ -1786,6 +1801,32 @@ AOSP defines dozens of module types. The most commonly used are:
 | `filegroup` | `build/soong/android/` | Group of source files |
 | `prebuilt_etc` | `build/soong/etc/` | File installed to /etc |
 | `bpf` | `build/soong/bpf/` | BPF program |
+| `cipd_package` | `build/soong/android/cipd/` | Fetch and install a CIPD package version (Android 17) |
+| `android_filesystem_prebuilt` | `build/soong/filesystem/` | Wrap a prebuilt partition image as a filesystem module (Android 17) |
+
+Two of these module types are new in Android 17. `cipd_package` installs a
+specific version of a CIPD (Chrome Infrastructure Package Deployment) package
+into the build, fetching it through a sandbox-aware export rule:
+
+```go
+func RegisterCipdPackageComponents(ctx android.RegistrationContext) {
+    ctx.RegisterModuleType("cipd_package", cipdPackageFactory)
+}
+```
+
+**Source:** `build/soong/android/cipd/cipd_package.go`, lines 37-39
+
+`android_filesystem_prebuilt` lets the build consume an already-built
+partition image (erofs or ext4) as a first-class filesystem module, unpacking
+it instead of assembling it from staged files:
+
+```go
+func RegisterPrebuiltFilesystemComponents(ctx android.RegistrationContext) {
+    ctx.RegisterModuleType("android_filesystem_prebuilt", PrebuiltFilesystemFactory)
+}
+```
+
+**Source:** `build/soong/filesystem/prebuilt.go`, lines 27-28
 
 You can generate a complete, current list of module types and their properties
 by running:
@@ -2369,8 +2410,12 @@ graph TB
 ### 2.5.3 Ninja: The Low-Level Build Executor
 
 Neither Soong nor Kati actually compiles anything. They are *build graph
-generators* -- they produce Ninja manifest files. **Ninja** is the low-level
-build executor that does the actual work.
+generators* -- they produce Ninja-format manifest files. A low-level **build
+executor** then reads that manifest and does the actual work. Historically that
+executor was **Ninja**; as of Android 17 the default executor is **Siso**
+(covered in Section 2.5.7), which reads the same `.ninja` manifest but adds
+native remote-execution and caching support. The discussion in this section
+applies to the manifest format and graph-execution model that both share.
 
 Ninja was created by Evan Martin at Google specifically for the Chrome/Chromium
 build. It is designed for one thing: executing a build graph as fast as
@@ -2570,6 +2615,107 @@ BOARD_EMULATOR_DYNAMIC_PARTITIONS_SIZE ?= 8589934592
 ```
 
 **Source:** `device/generic/goldfish/board/BoardConfigCommon.mk`, lines 44-72
+
+### 2.5.7 Siso: The Default Build Executor in Android 17
+
+Android 17 changes the default low-level build executor from Ninja to **Siso**.
+Siso is a drop-in replacement for Ninja, developed by the Chromium build team,
+that consumes the same `.ninja` manifests Soong and Kati produce but adds
+native support for remote execution, content-addressable caching, and a
+Starlark-based configuration layer. The selection lives in `soong_ui`:
+
+Default executor selection in `build/soong/ui/build/config.go`:
+
+```go
+// Which builder are we using?
+type ninjaCommandType int
+
+const (
+    _ = iota
+    NINJA_NINJA
+    NINJA_N2
+    NINJA_SISO
+    NINJA_NINJAGO
+)
+
+var NINJA_DEFAULT ninjaCommandType = NINJA_SISO
+```
+
+**Source:** `build/soong/ui/build/config.go`, lines 61-72
+
+`soong_ui` picks the executor from the `SOONG_NINJA` environment variable,
+falling back to `NINJA_DEFAULT` (Siso) when it is unset:
+
+```go
+switch os.Getenv("SOONG_NINJA") {
+case "ninja":
+    ret.ninjaCommand = NINJA_NINJA
+case "n2":
+    ret.ninjaCommand = NINJA_N2
+case "siso":
+    ret.ninjaCommand = NINJA_SISO
+case "ninjago":
+    ret.ninjaCommand = NINJA_NINJAGO
+default:
+    ret.ninjaCommand = NINJA_DEFAULT
+}
+```
+
+**Source:** `build/soong/ui/build/config.go`, lines 328-339
+
+So `SOONG_NINJA=ninja m` opts back into classic Ninja, and an unset
+`SOONG_NINJA` now means Siso. (On the older macOS versions used by some CI
+builders, `soong_ui` still falls back to Ninja.)
+
+The Siso binary itself is checked in as a prebuilt under `prebuilts/siso/`
+(one binary per host: `prebuilts/siso/linux-x86/siso`,
+`prebuilts/siso/linux-arm64/siso`, `prebuilts/siso/darwin-x86/siso`), pinned by
+CIPD version in `prebuilts/siso/siso.versions`. `soong_ui` resolves the binary
+through `configImpl.SisoBin()`:
+
+```go
+func (c *configImpl) SisoBin() string {
+    // TODO(b/374176257): remove this once Siso is built from source.
+    return filepath.Join("prebuilts/siso", c.HostPrebuiltTag(), "siso")
+}
+```
+
+**Source:** `build/soong/ui/build/config.go`, lines 2061-2064
+
+When it runs Siso, `soong_ui` points it at a Starlark configuration tree that
+describes how each Ninja rule should be handled for remote execution. The
+canonical config lives in `build/soong/siso_config/` (`main.star`, plus
+language-specific `clang.star`, `java.star`, and `rust.star`):
+
+> "This directory tells Siso how to handle RBE for the various Ninja rules.
+> It provides the configuration needed for supported projects in AOSP to use
+> RBE, either via `rewrapper` or using Siso's native RBE support."
+
+**Source:** `build/soong/siso_config/README.md`, lines 1-5
+
+The practical upshot for everyday builds is that `m` behaves the same as
+before -- the executor is an implementation detail -- but a local Siso build
+can transparently reuse cached actions and fan work out to a remote backend
+when one is configured, without the separate `rbesetup.sh` ceremony the old
+Ninja path required.
+
+Build-executor selection flow in `soong_ui`:
+
+```mermaid
+graph TB
+    M["m / soong_ui.bash"] --> CFG["soong_ui reads SOONG_NINJA"]
+    CFG -->|"unset (default)"| SISO["NINJA_SISO<br/>prebuilts/siso/&lt;host&gt;/siso"]
+    CFG -->|"SOONG_NINJA=ninja"| NINJA["NINJA_NINJA<br/>prebuilts/build-tools ninja"]
+    SISO --> CONF["build/soong/siso_config/*.star<br/>RBE + cache config"]
+    SISO --> MAN["combined .ninja manifest"]
+    NINJA --> MAN
+    MAN --> OUT["compiled artifacts + images"]
+
+    style M fill:#4a90d9,color:#fff
+    style SISO fill:#50b848,color:#fff
+    style NINJA fill:#e8a838,color:#fff
+    style OUT fill:#d94a4a,color:#fff
+```
 
 ---
 
@@ -2880,10 +3026,12 @@ These end up in various `build.prop` or `default.prop` files on the device.
 
 ### 2.6.8 Release Configuration
 
-The AOSP build system has a relatively new release configuration mechanism
-managed through `build/release/`. This system allows different "releases"
-(e.g., `trunk_staging`, `next`, `ap3a`) to control feature flags and
-configuration variants without changing product makefiles.
+The AOSP build system has a release configuration mechanism managed through
+`build/release/`. This system, which has matured into the primary
+configuration layer by Android 17, allows different "releases" (e.g.,
+`trunk_staging`, `eng`, `userdebug`, `user`, and the dated
+`mainline_2026_NN` configs) to control feature flags and configuration
+variants without changing product makefiles.
 
 The release is specified as the second argument to `lunch`:
 
@@ -2893,8 +3041,63 @@ lunch aosp_arm64 trunk_staging eng
 #                release config
 ```
 
-Release configuration files define which features are enabled for a particular
-release, using aconfig flags and release-specific build flags.
+The available release configs are the `*.textproto` files under
+`build/release/release_configs/`. On `android17-release` these include
+`trunk_staging`, `eng`, `userdebug`, `user`, the dated
+`mainline_2026_01`...`mainline_2026_04` mainline configs, and the per-quarter
+device configs (`ap2a`, `ap3a`, `ap4a`, `bp1a`...`bp4a`, `cp1a`, `cp2a`). Each
+config is small -- it names the aconfig value sets it pulls in and its config
+type:
+
+```
+name: "trunk_staging"
+aconfig_value_sets: "aconfig_value_set-platform_build_release-trunk_staging"
+release_config_type: RELEASE_CONFIG
+```
+
+**Source:** `build/release/release_configs/trunk_staging.textproto`
+
+Release-scoped build flags are declared and given values under
+`build/release/`. For example, the platform version itself is now a release
+flag rather than a hard-coded Make variable -- on `trunk_staging` it resolves
+to API level 37, codename `Baklava`:
+
+```
+name:  "RELEASE_PLATFORM_SDK_VERSION"
+value:  {
+  string_value:  "37"
+}
+```
+
+**Source:** `build/release/flag_values/trunk_staging/RELEASE_PLATFORM_SDK_VERSION.textproto`
+
+The directory layout under `build/release/` separates declarations from
+values:
+
+| Path | Purpose |
+|------|---------|
+| `release_configs/*.textproto` | One file per release config (which value sets + type) |
+| `flag_declarations/` | `RELEASE_*` build-flag declarations (name, type, default) |
+| `flag_values/<release>/` | Per-release overrides of those flags |
+| `aconfig/` | aconfig value sets wired into release configs |
+| `build_config/*.scl` | Starlark build-config snapshots (e.g. finalized API levels) |
+| `release_config_map.textproto` | Maps release names to their config sources |
+
+The release configuration is parsed by a dedicated Go tool,
+`release_config`, which `soong_ui.bash` bootstraps alongside `soong_ui`:
+
+```bash
+soong_build_go release-config android/soong/cmd/release_config/release_config
+```
+
+**Source:** `build/soong/soong_ui.bash`
+
+Its source lives in `build/soong/cmd/release_config/`, which also ships the
+`build_flag` command for querying and editing flag values and
+`finalize-platform`/`finalize-release-configs` helpers used when a release is
+finalized (the codename flips to `REL` and the SDK number is locked).
+
+**Source:** `build/soong/cmd/release_config/release_config/main.go`
 
 ### 2.6.9 Device Configuration: Goldfish (Emulator)
 
@@ -3158,7 +3361,7 @@ activated on the next boot. The old version is retained for rollback.
 ### 2.7.4 APEX in the Build System
 
 The APEX build logic lives in `build/soong/apex/`. The main file, `apex.go`
-(3,001 lines), defines the module types and build logic:
+(3,096 lines), defines the module types and build logic:
 
 ```go
 // package apex implements build rules for creating the APEX files which
@@ -3184,7 +3387,7 @@ func registerApexBuildComponents(ctx android.RegistrationContext) {
 }
 ```
 
-**Source:** `build/soong/apex/apex.go`, lines 17-58
+**Source:** `build/soong/apex/apex.go`, lines 45-60
 
 The `apexBundleProperties` struct defines all the properties an APEX module can
 declare:
@@ -3908,7 +4111,7 @@ component of your lunch combo — for
 out/soong/soong.<TARGET_PRODUCT>.variables
 ```
 
-The path is constructed in `build/make/core/config.mk:1255`:
+The path is constructed in `build/make/core/config.mk:1317`:
 
 ```makefile
 SOONG_VARIABLES := $(SOONG_OUT_DIR)/soong.$(TARGET_PRODUCT)$(COVERAGE_SUFFIX).variables
@@ -3919,9 +4122,9 @@ For the `aosp_cf_x86_64_phone` lunch combo above, the file is
 
 ```json
 {
-    "Platform_sdk_version": 35,
-    "Platform_sdk_codename": "VanillaIceCream",
-    "Platform_version_active_codenames": ["VanillaIceCream"],
+    "Platform_sdk_version": 37,
+    "Platform_sdk_codename": "Baklava",
+    "Platform_version_active_codenames": ["Baklava"],
     "DeviceName": "generic_arm64",
     "DeviceArch": "arm64",
     "DeviceArchVariant": "armv8-a",
@@ -4116,6 +4319,130 @@ its own binary. The mutator system handles this expansion systematically:
 This is why the `out/soong/.intermediates/` directory is so large -- it
 contains separate build artifacts for every variant of every module.
 
+### 2.10.7 The Soong API Compliance Database
+
+Android 17 adds a build-wide **Soong API database** that captures a structured
+snapshot of every module the build analyzed -- its type, location, install and
+built files, license metadata, team ownership, and language-specific
+dependency lists. This is used by compliance and software-bill-of-materials
+(SBOM) tooling rather than by compilation itself. The logic lives in
+`build/soong/soong_api/`, registered as a parallel Soong singleton:
+
+```go
+func init() {
+    android.RegisterParallelSingletonType("soong_api_db", soongApiSingletonFactory)
+}
+```
+
+**Source:** `build/soong/soong_api/soong_api.go`, lines 35-37
+
+The singleton walks every module proxy in the graph and emits one
+`SoongApiModuleRecord` per module. The record carries identity, location,
+target/variant info, status, and per-language artifacts:
+
+```go
+func (c *soongApiSingleton) GenerateBuildActions(ctx android.SingletonContext) {
+    var records []SoongApiModuleRecord
+
+    ctx.VisitAllModuleProxies(func(m android.ModuleProxy) {
+        commonInfo, ok := android.OtherModuleProvider(ctx, m,
+            android.CommonModuleInfoProvider)
+        if !ok {
+            return
+        }
+
+        record := SoongApiModuleRecord{
+            Name:          ctx.ModuleName(m),
+            Type:          ctx.ModuleType(m),
+            Path:          ctx.ModuleDir(m),
+            Variant:       ctx.ModuleSubDir(m),
+            IsPrimaryArch: ctx.IsPrimaryModule(m),
+        }
+        // ... fill license, team, test, and language metadata ...
+        records = append(records, record)
+    })
+
+    // Export collected data to JSON, ZIP and DB
+    c.exportRecords(ctx, records)
+}
+```
+
+**Source:** `build/soong/soong_api/soong_api.go`, lines 104-141
+
+The records are written out as `soong_api.json`, packed into a
+`soong_api.zip`, and loaded into a queryable `soong_api.db`. Each record also
+records CIPD provenance (`CipdVersion`, `CipdPackageName`), which is how a
+prebuilt sourced from a `cipd_package` module (Section 2.4.2) carries its
+upstream package version into SBOM generation. Client libraries (Java and
+Python) and a `soong_api_query` tool let downstream tools read the database
+without re-running analysis.
+
+### 2.10.8 Partial Analysis and On-Demand Variants
+
+Soong's analysis phase normally instantiates *every* variant of *every* module
+in the tree before generating any build rules, which is part of why a clean
+`m nothing` still takes meaningful time. Android 17 introduces two related
+mechanisms to shrink that work.
+
+**Partial analysis** lets you restrict the analysis graph to a named set of
+targets and their transitive closure. `soong_ui` reads the
+`SOONG_PARTIAL_ANALYSIS` environment variable and forwards it to `soong_build`
+as `--partial-analysis-targets`:
+
+```go
+if value, ok := ret.environ.Get("SOONG_PARTIAL_ANALYSIS"); ok {
+    ret.partialAnalysisTargets = value
+}
+```
+
+**Source:** `build/soong/ui/build/config.go`, lines 367-369
+
+Blueprint then orders mutators so that a "pre-partial" group runs before the
+partial-analysis cutover, after which only the requested targets are pulled
+into the graph (`build/blueprint/context.go` tracks this via
+`mutatorIndexPartialAnalysis` and `partialAnalysisTargets`).
+
+**On-demand variants** change *how* variants are materialized. Instead of every
+mutator eagerly splitting every module into all of its possible variants, a
+module group can register the variants it *supports* and then create them
+lazily, only when a dependency edge actually requests one. Blueprint records
+the supported-but-not-yet-created variants per module group:
+
+```go
+// Additional variations supported by this module group that were not
+// created by Split.
+supportedVariantsOnDemand map[string]TransitionInfos
+
+// Map of requested variation map to on-demand variants.
+// Set to empty at the end of mutator.
+cachedVariantsOnDemand map[string]*moduleInfo
+```
+
+**Source:** `build/blueprint/context.go`, lines 407-413
+
+When a dependency requests a variant that was not eagerly split, Blueprint
+attempts to create it on demand, re-running the relevant transitions and
+caching the result so duplicate requests are cheap. Eager full splitting is
+still forced in cases where Soong cannot know in advance which variant a
+consumer needs -- notably combined Soong+Make (Kati) builds and builds run with
+`AllowMissingDependencies` -- via `SetSplitAllVariants(true)`:
+
+```go
+if configuration.Getenv("SOONG_SPLIT_ALL_VARIANTS") == "true" ||
+    configuration.Getenv("RUN_BUILD_TESTS") == "true" ||
+    cmdlineArgs.KatiEnabled ||
+    configuration.AllowMissingDependencies() {
+    ctx.SetSplitAllVariants(true)
+}
+```
+
+**Source:** `build/soong/cmd/soong_build/main.go`, lines 363-372
+
+Together, partial analysis (fewer modules in the graph) and on-demand variants
+(fewer variants per module) reduce the analysis cost of focused builds, which
+matters most for the incremental, single-module workflows that developers run
+all day.
+
 ---
 
 ## 2.11 Build System Reference Tables
@@ -4261,8 +4588,11 @@ development.
 | `build/make/` | Make-based build system and product config |
 | `build/soong/` | Soong build system (Go) |
 | `build/pesto/` | Bazel integration experiments |
-| `build/release/` | Release configuration |
+| `build/release/` | Release configuration (release configs, flag declarations/values) |
+| `build/soong/soong_api/` | Soong API compliance database singleton (Android 17) |
+| `build/soong/siso_config/` | Siso Starlark config for RBE/caching (Android 17) |
 | `cts/` | Compatibility Test Suite |
+| `prebuilts/siso/` | Prebuilt Siso build executor binaries (Android 17 default) |
 | `dalvik/` | Dalvik VM (historical) |
 | `development/` | Developer tools and samples |
 | `device/` | Device configurations |
@@ -4320,8 +4650,9 @@ development.
 | **Provider** | Blueprint's mechanism for passing structured data between modules in the dependency graph. |
 | **RBE** | Remote Build Execution. Distributes build actions across a cluster for faster builds. |
 | **repo** | A Python tool that manages multiple Git repositories using a manifest file. |
+| **Siso** | A Ninja-compatible build executor with native remote-execution and caching support. Default executor in Android 17 (selectable via `SOONG_NINJA`). |
 | **Soong** | Android's primary build system, built on top of Blueprint. Processes Android.bp files. |
-| **soong_ui** | The build system driver/entry point. Orchestrates Soong, Kati, and Ninja. |
+| **soong_ui** | The build system driver/entry point. Orchestrates Soong, Kati, and the build executor (Siso or Ninja). |
 | **super.img** | The container image for dynamic partitions. Contains system, vendor, product, etc. |
 | **Treble** | The Android architecture that separates the OS framework from vendor-specific code, enabling faster updates. |
 | **Variant** | One of multiple builds of the same module (e.g., arm64 shared, arm64 static, x86_64 shared, etc.). |
@@ -4337,7 +4668,7 @@ These files are available in your AOSP checkout and provide authoritative
 reference information:
 
 - **`build/soong/README.md`** -- Comprehensive Soong and Android.bp reference
-  (738 lines). Covers module syntax, variables, conditionals, namespaces,
+  (737 lines). Covers module syntax, variables, conditionals, namespaces,
   visibility, and debugging.
 - **`build/blueprint/doc.go`** -- Blueprint framework architecture overview.
   Explains the meta-build concept, four build phases, and mutator system.
@@ -4450,11 +4781,11 @@ cd ~/aosp
 ```bash
 # Initialize with the latest release branch
 repo init -u https://android.googlesource.com/platform/manifest \
-  -b android16-qpr2-release
+  -b android17-release
 
 # For a faster initial sync, use partial clones:
 # repo init -u https://android.googlesource.com/platform/manifest \
-#   -b android16-qpr2-release \
+#   -b android17-release \
 #   --partial-clone \
 #   --clone-filter=blob:limit=10M
 ```
@@ -4505,8 +4836,8 @@ The output will show the build configuration:
 
 ```
 ============================================
-PLATFORM_VERSION_CODENAME=VanillaIceCream
-PLATFORM_VERSION=16
+PLATFORM_VERSION_CODENAME=Baklava
+PLATFORM_VERSION=17
 PRODUCT_SOONG_NAMESPACES=...
 TARGET_PRODUCT=aosp_arm64
 TARGET_BUILD_VARIANT=eng
@@ -5048,14 +5379,14 @@ graph LR
 | File | Purpose |
 |------|---------|
 | `.repo/manifests/default.xml` | Manifest defining all repositories |
-| `build/make/envsetup.sh` | Shell environment setup (1,187 lines) |
+| `build/make/envsetup.sh` | Shell environment setup (1,210 lines) |
 | `build/soong/soong_ui.bash` | Build system entry point |
 | `build/soong/README.md` | Soong/Android.bp reference documentation |
-| `build/blueprint/context.go` | Blueprint core (5,781 lines) |
+| `build/blueprint/context.go` | Blueprint core (6,486 lines) |
 | `build/make/core/envsetup.mk` | Core build variable setup |
 | `build/make/core/config.mk` | Build configuration entry point |
 | `build/make/target/product/*.mk` | Generic product definitions |
-| `build/soong/apex/apex.go` | APEX build logic (3,001 lines) |
+| `build/soong/apex/apex.go` | APEX build logic (3,096 lines) |
 | `prebuilts/clang/host/linux-x86/kleaf/` | Kernel build toolchain rules |
 
 **Three things the build system does:**

@@ -1966,25 +1966,56 @@ to boot. Additional modules loaded later include:
 
 ### 58.5.4 Kernel Version Selection
 
-The Cuttlefish configuration shows how kernel versions are selected:
+In Android 17 the Cuttlefish kernel version is no longer a single hard-coded
+value. `device/google/cuttlefish/shared/BoardConfig.mk` defines a default and
+then selects per-product, with several targets reading their version from
+release-config variables:
 
 ```makefile
 # Source: device/google/cuttlefish/shared/BoardConfig.mk
-TARGET_KERNEL_USE ?= 6.12
+DEFAULT_TARGET_KERNEL_USE := 6.12
 
-SYSTEM_DLKM_SRC ?= \
-    kernel/prebuilts/$(TARGET_KERNEL_USE)/$(TARGET_KERNEL_ARCH)
-KERNEL_MODULES_PATH ?= \
-    kernel/prebuilts/common-modules/virtual-device/\
-$(TARGET_KERNEL_USE)/$(subst _,-,$(TARGET_KERNEL_ARCH))
-
-TARGET_KERNEL_PATH ?= \
-    $(SYSTEM_DLKM_SRC)/kernel-$(TARGET_KERNEL_USE)
+ifneq (,$(findstring cf_gwear_arm,$(PRODUCT_NAME)))
+TARGET_KERNEL_USE ?= 6.6
+else ifeq (true,$(CLOCKWORK_EMULATOR_PRODUCT))
+TARGET_KERNEL_USE ?= 6.1
+else ifneq (,$(findstring x86_tv,$(PRODUCT_NAME)))
+TARGET_KERNEL_USE ?= 6.1
+else ifneq (,$(filter cf_x86_64_desktop,$(PRODUCT_NAME)))
+TARGET_KERNEL_USE ?= $(RELEASE_KERNEL_CUTTLEFISH_X86_64_VERSION)
+TARGET_KERNEL_DIR ?= $(RELEASE_KERNEL_CUTTLEFISH_X86_64_DIR)
+else ifneq (,$(filter cf_arm64_desktop,$(PRODUCT_NAME)))
+TARGET_KERNEL_USE ?= $(RELEASE_KERNEL_CUTTLEFISH_ARM64_VERSION)
+TARGET_KERNEL_DIR ?= $(RELEASE_KERNEL_CUTTLEFISH_ARM64_DIR)
+else
+TARGET_KERNEL_USE ?= $(DEFAULT_TARGET_KERNEL_USE)
+endif
 ```
 
-The default kernel version is 6.12, with prebuilt kernels stored under
-`kernel/prebuilts/`. The `common-modules/virtual-device/` directory contains
-kernel modules specifically built for virtual device use.
+The default for a generic phone target is 6.12. Older form factors are pinned
+to long-term kernels (Wear OS on 6.6, the clockwork emulator and x86 TV on 6.1).
+The most interesting case is the **desktop** target: it reads its version and
+directory from `RELEASE_KERNEL_CUTTLEFISH_*` release-config variables and then
+sources its kernel and modules from a separate desktop-specific tree rather
+than the shared prebuilts:
+
+```makefile
+# Source: device/google/cuttlefish/shared/BoardConfig.mk
+ifneq (,$(filter cf_x86_64_desktop cf_arm64_desktop,$(PRODUCT_NAME)))
+SYSTEM_DLKM_SRC ?= device/google/desktop/cuttlefish-$(TARGET_KERNEL_ARCH)-kernels/$(TARGET_KERNEL_USE)/$(TARGET_KERNEL_DIR)/system_dlkm
+KERNEL_MODULES_PATH ?= device/google/desktop/cuttlefish-$(TARGET_KERNEL_ARCH)-kernels/$(TARGET_KERNEL_USE)/$(TARGET_KERNEL_DIR)/vendor_dlkm
+else
+SYSTEM_DLKM_SRC ?= kernel/prebuilts/$(TARGET_KERNEL_USE)/$(TARGET_KERNEL_ARCH)
+KERNEL_MODULES_PATH ?= \
+    kernel/prebuilts/common-modules/virtual-device/$(TARGET_KERNEL_USE)/$(subst _,-,$(TARGET_KERNEL_ARCH))
+endif
+
+TARGET_KERNEL_PATH ?= $(SYSTEM_DLKM_SRC)/kernel-$(TARGET_KERNEL_USE)
+```
+
+For everything other than desktop, prebuilt kernels are stored under
+`kernel/prebuilts/`, and the `common-modules/virtual-device/` directory holds
+kernel modules built specifically for virtual device use.
 
 ### 58.5.5 ZRAM and Memory Configuration
 
@@ -2065,40 +2096,89 @@ graph TB
 | Multi-instance | Multiple processes | `launch_cvd --num_instances=N` |
 | OTA updates | Not supported | A/B updates supported |
 | Snapshotting | QEMU snapshots | Not a primary feature |
-| Form factors | Phone, Tablet | Phone, TV, Auto, Wear |
+| Form factors | Phone, Tablet, Foldable, Wear, TV | Phone, Foldable, Tablet (pc), TV, Auto, Wear, Desktop |
 | Architecture | x86_64, ARM64, RISC-V | x86_64, ARM64, RISC-V |
 
 ### 58.6.3 Cuttlefish Device Targets
 
-From `device/google/cuttlefish/AndroidProducts.mk` and the directory
-structure, Cuttlefish supports a wider array of architectures and form factors:
+`device/google/cuttlefish/AndroidProducts.mk` enumerates the build targets.
+Each product name follows the `aosp_cf_<arch>_<formfactor>` convention and
+points at a thin `aosp_cf.mk` under a `vsoc_*` device directory. The "vsoc"
+prefix stands for "Virtual System on Chip." The device directories present in
+the Android 17 tree are:
 
-| Directory | Architecture |
-|-----------|-------------|
-| `vsoc_x86_64/` | x86_64 |
-| `vsoc_arm64/` | ARM64 |
-| `vsoc_riscv64/` | RISC-V 64-bit |
-| `vsoc_x86_64_only/` | x86_64 (64-bit only) |
-| `vsoc_arm64_only/` | ARM64 (64-bit only) |
+| Directory | Architecture / variant |
+|-----------|------------------------|
+| `vsoc_x86_64/` | x86_64 (with 32-bit support) |
+| `vsoc_x86_64_only/` | x86_64, 64-bit only |
+| `vsoc_x86_64_pgagnostic/` | x86_64, page-size agnostic (4KB/16KB) |
 | `vsoc_x86_64_minidroid/` | Minimal x86_64 |
+| `vsoc_x86_64_host/` | x86_64 host-side build |
+| `vsoc_arm64/` | ARM64 (with 32-bit support) |
+| `vsoc_arm64_only/` | ARM64, 64-bit only |
+| `vsoc_arm64_pgagnostic/` | ARM64, page-size agnostic |
 | `vsoc_arm64_minidroid/` | Minimal ARM64 |
+| `vsoc_arm/` and `vsoc_arm_minidroid/` | 32-bit ARM |
+| `vsoc_riscv64/` | RISC-V 64-bit |
 | `vsoc_riscv64_minidroid/` | Minimal RISC-V |
-| `vsoc_arm64_pgagnostic/` | ARM64 page-size agnostic |
 
-The "vsoc" prefix stands for "Virtual System on Chip."
+The form factors fan out from those directories. In Android 17 the catalog has
+grown well past the phone/tablet pair, and the `aosp_cf_*` product list now
+spans phone, foldable, tablet (`pc`), TV, Wear, Automotive (several `auto_*`
+layouts), and the new **desktop** target:
+
+| Product | Device dir | Notes |
+|---------|-----------|-------|
+| `aosp_cf_x86_64_phone` | `vsoc_x86_64/phone/` | The canonical CI reference target |
+| `aosp_cf_x86_64_foldable` | `vsoc_x86_64_only/phone/` | `aosp_cf_foldable.mk` overlay |
+| `aosp_cf_x86_64_pc` | `vsoc_x86_64_only/pc/` | Large-screen / tablet layout |
+| `aosp_cf_x86_64_tv` | `vsoc_x86_64_only/tv/` | Android TV |
+| `aosp_cf_x86_64_wear` | `vsoc_x86_64_only/wear/` | Wear OS |
+| `aosp_cf_x86_64_auto` (+ `auto_md`, `auto_mdnd`, `auto_dd`, `auto_portrait`, ...) | `vsoc_x86_64_only/auto*/` | Automotive, multi-display variants |
+| `aosp_cf_x86_64_desktop` | `vsoc_x86_64_only/desktop/` | New in Android 17 |
+| `aosp_cf_arm64_phone` / `aosp_cf_arm64_auto` | `vsoc_arm64*/` | ARM equivalents |
+| `aosp_cf_riscv64_phone` / `_wear` / `_slim` | `vsoc_riscv64*/` | RISC-V |
+
+#### The desktop target (Android 17)
+
+`aosp_cf_x86_64_desktop` is a notable Android 17 addition. Its product makefile
+`device/google/cuttlefish/vsoc_x86_64_only/desktop/aosp_cf.mk` inherits a
+desktop-specific vendor stack
+(`device/google/cuttlefish/shared/desktop/common_x86.mk` and
+`aosp_device_vendor.mk`) and sets `PRODUCT_MODEL := Cuttlefish AOSP x86_64
+Desktop`. Two things set it apart from the handheld targets:
+
+```makefile
+# Source: device/google/cuttlefish/vsoc_x86_64_only/desktop/aosp_cf.mk
+PRODUCT_NAME := aosp_cf_x86_64_desktop
+PRODUCT_DEVICE := vsoc_x86_64_only
+
+# Ika uses ndk-translation only.
+AL_BINARY_TRANSLATION_MODE := ndk_translation_only
+
+# ARC/Auto/Desktop - don't use compressed apks.
+UNCOMPRESS_CHROME_WEBVIEW = true
+```
+
+The desktop target also pulls its kernel from a separate location rather than
+the shared `kernel/prebuilts/` tree (see section 58.5.4), reflecting that the
+desktop Android effort ships its own kernel branch.
 
 ### 58.6.4 Host Tooling
 
 Cuttlefish includes an extensive suite of host-side tools under
-`device/google/cuttlefish/host/commands/`:
+`device/google/cuttlefish/host/commands/`. These build into the
+`cvd-host_package.tar.gz` artifact that runs alongside the guest images:
 
 | Tool | Purpose |
 |------|---------|
-| `start/` | Launch the virtual device |
+| `start/` | Launch the virtual device (builds `cvd_internal_start`, symlinked as `launch_cvd`) |
 | `stop/` | Stop the virtual device |
-| `run_cvd/` | Core virtual device runtime |
-| `assemble_cvd/` | Assemble disk images and configuration |
-| `cvd_env/` | Environment management |
+| `run_cvd/` | Core virtual device runtime that owns crosvm and the helper daemons |
+| `assemble_cvd/` | Assemble disk images and generate the VMM configuration |
+| `status/` and `restart_cvd/` | Query and restart a running instance |
+| `cvd_env/` | gRPC environment management |
+| `process_sandboxer/` | Wrap host daemons in seccomp sandboxes (new in Android 17) |
 | `console_forwarder/` | Serial console forwarding |
 | `kernel_log_monitor/` | Kernel log monitoring |
 | `log_tee/` | Log tee-ing and forwarding |
@@ -2108,8 +2188,11 @@ Cuttlefish includes an extensive suite of host-side tools under
 | `display/` | Display management |
 | `screen_recording_server/` | Screen recording service |
 | `record_cvd/` | Recording utility |
-| `secure_env/` | Security environment (KeyMint, etc.) |
+| `secure_env/` | Security environment (KeyMint, Gatekeeper, TPM) |
 | `sensors_simulator/` | Sensor simulation |
+| `vhost_user_input/` | vhost-user input device backend |
+| `casimir_control_server/` | NFC (Casimir) control |
+| `jcardsim/` | Java Card simulator for secure element / eSIM |
 | `health/` | Device health monitoring |
 | `host_bugreport/` | Bug report collection |
 | `metrics/` | Metrics collection |
@@ -2117,7 +2200,23 @@ Cuttlefish includes an extensive suite of host-side tools under
 | `powerbtn_cvd/` | Power button simulation |
 | `powerwash_cvd/` | Factory reset simulation |
 | `cvd_send_sms/` | SMS injection |
-| `cvd_update_location/` | Location update injection |
+| `cvd_update_location/` / `cvd_import_locations/` | Location update injection |
+
+Note the host-tooling story shifted significantly. The orchestrating `cvd`
+front-end and the Debian packaging no longer live in the AOSP `device/google/cuttlefish`
+tree; they were moved to the separate `github.com/google/android-cuttlefish`
+repository. The first lines of `device/google/cuttlefish/README.md` now point
+developers there:
+
+```
+# Source: device/google/cuttlefish/README.md
+For all host tools development please refer to
+https://github.com/google/android-cuttlefish/blob/main/docs/HostToolsMigration.md
+```
+
+The older `acloud` launcher that earlier guides referenced is not part of this
+tree at all in Android 17 — local launches go directly through `launch_cvd`
+(from the host package) or through `cvd` from the external repository.
 
 ### 58.6.5 Board Configuration Differences
 
@@ -2376,11 +2475,11 @@ graph TB
 #### PCI Slot Assignments
 
 ```cpp
-// Source: device/google/cuttlefish/host/libs/vm_manager/vm_manager.h:86-89
-static const int kNetPciDeviceNum = 1;     // Network on PCI slot 1
-static const int kGpuPciSlotNum = 2;        // GPU on PCI slot 2
+// Source: device/google/cuttlefish/host/libs/vm_manager/vm_manager.h:79-91
+static constexpr int kMaxDisks = 3;
 static const int kDefaultNumBootDevices = 2;
-static const int kMaxDisks = 3;
+static constexpr const int kNetPciDeviceNum = 1;   // Network on PCI slot 1
+static constexpr const int kGpuPciSlotNum = 2;     // GPU on PCI slot 2
 ```
 
 Network interfaces are assigned sub-addresses on PCI slot 1:
@@ -2412,7 +2511,7 @@ graph LR
 ```
 
 ```cpp
-// Source: device/google/cuttlefish/host/libs/vm_manager/crosvm_builder.h:64
+// Source: device/google/cuttlefish/host/libs/vm_manager/crosvm_builder.h:71-72
 void AddVhostUser(const std::string& type, const std::string& socket_path,
                   int max_queue_size = 256);
 ```
@@ -2431,12 +2530,15 @@ The default virtqueue size is 256 entries (must be a power of 2).
 
 ### 58.6.12 HVC Port Map
 
-Cuttlefish uses 18 **Hypervisor Virtual Console** (HVC) ports to tunnel
-communication between guest HALs and host-side daemons. Each HVC port
-appears as `/dev/hvcN` in the guest:
+Cuttlefish uses **Hypervisor Virtual Console** (HVC) ports to tunnel
+communication between guest HALs and host-side daemons. Each HVC port appears
+as `/dev/hvcN` in the guest. In Android 17 the map grew to 20 ports
+(`/dev/hvc0` through `/dev/hvc19`). The ports are allocated in a fixed order in
+`crosvm_manager.cpp`; even ports whose feature is disabled get a sink port so
+the PCI device IDs stay stable:
 
 ```cpp
-// Source: device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp:768-946
+// Source: device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp:769-945
 ```
 
 | Port | Guest Device | Host Endpoint | Purpose |
@@ -2454,34 +2556,53 @@ appears as `/dev/hvcN` in the guest:
 | `/dev/hvc10` | OEMLock | OEMLock daemon | OEM bootloader unlock |
 | `/dev/hvc11` | KeyMint | `secure_env` daemon | Rust KeyMint HAL |
 | `/dev/hvc12` | NFC | NFC daemon | NFC emulation |
-| `/dev/hvc13` | Sensors | `sensors_simulator` | Accelerometer/gyro/etc. |
+| `/dev/hvc13` | (vacant) | sink | Reserved for future use |
 | `/dev/hvc14` | MCU control | MCU daemon | Microcontroller control |
 | `/dev/hvc15` | MCU UART | MCU daemon | Microcontroller serial |
 | `/dev/hvc16` | Ti50 TPM | TPM daemon | TPM FIFO commands |
 | `/dev/hvc17` | JCardSim | Java Card simulator | eSIM/secure element |
+| `/dev/hvc18` | Sensors control | `sensors_simulator` | Sensor enable/config commands |
+| `/dev/hvc19` | Sensors data | `sensors_simulator` | Sensor sample stream |
 
-Each HVC port is backed by either a Unix socket or a pipe on the host side:
+Two changes stand out versus earlier releases: the single sensors port that
+used to sit at `/dev/hvc13` has been split into a **control** channel
+(`/dev/hvc18`) and a **data** channel (`/dev/hvc19`), and `/dev/hvc13` is now
+explicitly left vacant (a comment in the source marks it "feel free to use").
+
+Each HVC port is backed by either a pipe or a Unix socket on the host side. The
+builder exposes four helpers, all of which take string FIFO/socket paths:
 
 ```cpp
 // Source: device/google/cuttlefish/host/libs/vm_manager/crosvm_builder.h:42-45
-void AddHvcSink();                         // null device (unused port)
-void AddHvcReadOnly(Fd output, bool console); // one-way (kernel logs)
-void AddHvcReadWrite(Fd output, Fd input);    // bidirectional
-void AddHvcSocket(const std::string& socket); // Unix socket
+void AddHvcSink();                                            // null device (unused port)
+void AddHvcReadOnly(const std::string& output, bool console = false); // one-way (kernel logs)
+void AddHvcReadWrite(const std::string& output, const std::string& input); // bidirectional
+void AddHvcSocket(const std::string& socket);                 // Unix socket
 ```
 
 ### 58.6.13 GPU Pipeline and Display Modes
 
-Cuttlefish supports multiple GPU rendering modes, configured via the
-`--gpu_mode` flag:
+Cuttlefish supports several GPU rendering modes, configured via the
+`--gpu_mode` flag. The full set accepted by `assemble_cvd` in Android 17 is
+`{auto, custom, drm_virgl, gfxstream, gfxstream_guest_angle,
+gfxstream_guest_angle_host_swiftshader, gfxstream_guest_angle_host_lavapipe,
+guest_swiftshader}` (from
+`device/google/cuttlefish/host/commands/assemble_cvd/flags.cc`):
 
 | Mode | Description |
 |---|---|
-| `gfxstream` | Host GPU passthrough via gfxstream protocol (default) |
+| `auto` | Pick the best available mode for the detected host GPU |
+| `gfxstream` | Host GPU passthrough via gfxstream protocol |
 | `gfxstream_guest_angle` | ANGLE in guest, gfxstream transport to host GPU |
+| `gfxstream_guest_angle_host_swiftshader` | ANGLE guest, SwiftShader on the host |
+| `gfxstream_guest_angle_host_lavapipe` | ANGLE guest, Mesa lavapipe on the host |
 | `drm_virgl` | Virgl3D — OpenGL commands forwarded via virtio-gpu DRM |
 | `guest_swiftshader` | Pure software rendering in guest (SwiftShader Vulkan) |
-| `none` | No GPU — headless mode |
+| `custom` | Caller supplies an explicit GPU device configuration |
+
+Whether the Virtio GPU worker runs in-process or as a separate
+`vhost-user-gpu` backend is a second, orthogonal choice controlled by
+`--gpu_vhost_user_mode={auto, on, off}`.
 
 #### Display Architecture
 
@@ -2571,7 +2692,7 @@ When enabled, `vhost-net` moves network packet processing from crosvm
 userspace into the host kernel, significantly improving network throughput:
 
 ```cpp
-// Source: device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp:591
+// Source: device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp:596-598
 if (instance.vhost_net()) {
     crosvm_cmd.Cmd().AddParameter("--vhost-net");
 }
@@ -2579,33 +2700,65 @@ if (instance.vhost_net()) {
 
 ### 58.6.15 Guest HALs
 
-Cuttlefish implements 21 HALs that bridge Android's HAL interfaces to
-host-side daemons via virtio devices, vsock, or HVC serial ports:
+The guest-side HALs that bridge Android's HAL interfaces to host-side daemons
+(via virtio devices, vsock, or HVC serial ports) live under
+`device/google/cuttlefish/guest/hals/`. The set shifted in Android 17. The
+directories present in the 17 tree are:
 
 ```
 device/google/cuttlefish/guest/hals/
 ├── audio/           # virtio-snd / audio server
-├── bluetooth/       # HVC → root_canal simulator
-├── camera/          # vsock → host camera streaming
-├── confirmationui/  # HVC → Trusty integration
-├── gatekeeper/      # HVC → secure_env daemon
+├── bluetooth/       # HVC -> root_canal simulator
+├── camera/          # vsock -> host camera streaming
+├── confirmationui/  # HVC -> Trusty integration
+├── gatekeeper/      # HVC -> secure_env daemon
+├── gralloc/         # Graphics buffer allocation
 ├── health/          # Battery/charge monitoring
+├── hostapd/         # WiFi access-point daemon
 ├── identity/        # Identity credential HAL
-├── keymint/         # HVC → secure_env (KeyMint)
-├── light/           # vsock → light control (Rust)
-├── nfc/             # HVC → NFC daemon
-├── oemlock/         # HVC → OEM unlock
-├── ril/             # HVC → modem_simulator (telephony)
+├── ir/              # Consumer IR
+├── keymint/         # HVC -> secure_env (KeyMint)
+├── light/           # vsock -> light control (Rust)
+├── nfc/             # HVC -> NFC daemon
+├── npu/             # NPU scheduling HAL (Rust, new in 17)
+├── oemlock/         # HVC -> OEM unlock
 ├── secure_element/  # eSIM / secure chip access
-├── sensors/         # HVC → sensors_simulator
-├── vehicle/         # vsock → automotive VHAL
+├── vehicle/         # vsock -> automotive VHAL
+├── virtio_media/    # virtio-media V4L2 camera/codec provider
 └── vulkan/          # Graphics support
 ```
+
+Two earlier entries are gone: there is no longer a dedicated `ril/` HAL
+directory (telephony goes through the host `modem_simulator` over an HVC port)
+nor a `sensors/` directory here (the sensors bridge is driven from the host
+`sensors_simulator` over the `/dev/hvc18` and `/dev/hvc19` ports described
+above). The Android 17 additions of note are the **`npu/`** scheduling HAL
+and the **`virtio_media/`** provider.
 
 Each guest HAL typically reads/writes a virtio-console device (`/dev/hvcN`)
 or establishes a vsock connection to its host-side counterpart. The HAL
 interface exposed to Android frameworks is identical to what a real hardware
 HAL would provide — the virtualization is transparent to higher layers.
+
+#### Example: NPU scheduling HAL (Android 17, Rust)
+
+The NPU HAL is one of the genuinely new guest HALs. It is written in Rust and
+implements the `android.hardware.npu` scheduling interface, registering an
+`IScheduling/default` service so that Cuttlefish exposes an NPU-capable surface
+for testing the NPU framework path:
+
+```rust
+// Source: device/google/cuttlefish/guest/hals/npu/main.rs
+//! This implements the NPU Scheduling Service for Cuttlefish.
+use android_hardware_npu::aidl::android::hardware::npu::IScheduling::{
+    BnScheduling, IScheduling};
+const LOG_TAG: &str = "android.hardware.npu";
+```
+
+```xml
+<!-- Source: device/google/cuttlefish/guest/hals/npu/android.hardware.npu-service.xml -->
+<fqname>IScheduling/default</fqname>
+```
 
 #### Example: Camera HAL via Vsock
 
@@ -2618,18 +2771,28 @@ webcam to appear as the guest's camera:
 // Exposes standard Camera2 HAL interface to CameraService
 ```
 
-#### Example: Light HAL via Vsock (Rust)
+#### Example: Light HAL (Rust)
+
+The light HAL is implemented in Rust. Its entry point registers an `ILights`
+binder service, and the `lights` module implements the interface that controls
+the notification LED, backlight, and similar indicators:
 
 ```rust
-// Source: device/google/cuttlefish/guest/hals/light/lights_vsock_server.rs
-// Receives light state changes over vsock
-// Controls notification LED, backlight, etc.
+// Source: device/google/cuttlefish/guest/hals/light/main.rs
+//! This implements the Lights Service for Cuttlefish.
+use android_hardware_light::aidl::android::hardware::light::ILights::{
+    BnLights, ILights};
+mod lights;
+use lights::LightsService;
 ```
 
 ### 58.6.16 Host Microservice Orchestration
 
-Cuttlefish runs as a collection of ~48 host processes orchestrated by
-`launch_cvd` and `run_cvd`:
+Cuttlefish runs as a collection of host processes orchestrated by `launch_cvd`
+and `run_cvd`. `device/google/cuttlefish/host/commands/` contains roughly 45
+host-tool directories; a given instance spins up the subset its configuration
+requires (the VMM plus the display, modem, GNSS, sensor, security, logging, and
+input daemons):
 
 ```mermaid
 graph TB
@@ -2667,7 +2830,7 @@ point-to-point serial channels), vsock supports arbitrary TCP-like connections
 with multiplexed ports:
 
 ```cpp
-// Source: device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp:755-766
+// Source: device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp:756-766
 if (instance.vsock_guest_cid() >= 2) {
     if (instance.vhost_user_vsock()) {
         // vhost-user vsock (separate process)
@@ -3028,12 +3191,177 @@ endif
 
 ---
 
-## 58.8 Try It: Build and Launch a Custom Emulator Image
+## 58.8 Android 17 Cuttlefish Changes
+
+Cuttlefish is where most of the virtual-device churn lands each release, and
+Android 17 is no exception. This section collects the changes that matter for
+platform developers: a new desktop product, a guest-side VKMS display
+controller, a sandboxed host process model, a new NPU HAL, and the migration of
+the host launcher tooling out of the AOSP tree.
+
+### 58.8.1 The Desktop Product Target
+
+Android 17 adds `aosp_cf_x86_64_desktop` (and an ARM64 sibling) to the
+Cuttlefish product catalog. Unlike the handheld targets, the desktop product
+inherits a desktop-specific vendor stack and pulls its kernel from a separate
+tree (covered in sections 58.5.4 and 58.6.3). It is the virtual reference for
+the desktop Android form factor, exercising large-screen window management,
+binary translation in `ndk_translation_only` mode, and an uncompressed Chrome
+WebView. The product is registered in `device/google/cuttlefish/AndroidProducts.mk`
+alongside the long-standing phone, foldable, TV, Wear, and the expanded set of
+automotive (`auto`, `auto_md`, `auto_mdnd`, `auto_dd`, `auto_portrait`) targets.
+
+### 58.8.2 vkms_controller: Guest-Side Virtual Display Management
+
+Earlier Cuttlefish releases scattered virtual-display configuration logic
+between host commands and ad-hoc guest scripts. Android 17 consolidates it into
+a single guest binary, `vkms_controller`, that drives the kernel's VKMS
+(Virtual Kernel Mode Setting) ConfigFS interface directly. The host CLI becomes
+a thin, stateless proxy that simply runs `adb shell vkms_controller ...`.
+
+```cpp
+// Source: device/google/cuttlefish/guest/commands/vkms_controller/main.cpp
+namespace cuttlefish {
+namespace vkms_controller {
+
+constexpr std::string_view kUsage = R"(
+Usage: vkms_controller <command> [options]
+
+A guest-side utility for Virtual Kernel Mode Setting (VKMS).
+It manages virtual displays by interacting directly with the kernel's VKMS
+ConfigFS interface.
+
+Commands:
+  setup
+  hotplug
+  reset
+  list-presets
+  list-displays
+)";
+```
+
+The binary owns the work of correlating virtual hardware (the VKMS ConfigFS
+connector indices) to Android's SurfaceFlinger display IDs, persisting its state
+under `/data/vendor/vkms`. It supports defining displays with specific EDIDs and
+planes (`setup`), hot-plugging a connector on or off (`hotplug`), enumerating
+the monitor presets baked into the guest (`list-presets`), and resolving the
+current display topology (`list-displays`). It is installed via
+`device/google/cuttlefish/shared/device.mk`:
+
+```makefile
+# Source: device/google/cuttlefish/shared/device.mk
+PRODUCT_PACKAGES += \
+    checkpoint_gc \
+    vkms_controller \
+```
+
+The data flow when a test or the host CLI reconfigures displays:
+
+#### Display reconfiguration through vkms_controller
+
+```mermaid
+sequenceDiagram
+    participant CLI as Host CLI / Tradefed
+    participant ADB as adb shell
+    participant VKMS as vkms_controller (guest)
+    participant CFS as VKMS ConfigFS
+    participant SF as SurfaceFlinger
+
+    CLI->>ADB: "vkms_controller setup --screen=..."
+    ADB->>VKMS: exec guest binary
+    VKMS->>CFS: Write connector/plane config
+    CFS-->>VKMS: ConfigFS connector indices
+    VKMS->>VKMS: Persist state to /data/vendor/vkms
+    VKMS->>SF: Resolve SurfaceFlinger display IDs
+    VKMS-->>CLI: list-displays JSON
+```
+
+### 58.8.3 process_sandboxer: Sandboxing the Host Daemons
+
+A recurring concern with Cuttlefish is that the host runs a fleet of helper
+daemons (the VMM, modem simulator, GNSS proxy, secure_env, and so on) with
+broad host privileges. Android 17 introduces
+`device/google/cuttlefish/host/commands/process_sandboxer/`, which wraps those
+host processes in seccomp-based sandboxes built on Google's sandboxed-api /
+sandbox2 library.
+
+```cpp
+// Source: device/google/cuttlefish/host/commands/process_sandboxer/main.cpp
+#include <sandboxed_api/util/fileops.h>
+#include "host/commands/process_sandboxer/policies.h"
+#include "host/commands/process_sandboxer/sandbox_manager.h"
+
+namespace cuttlefish::process_sandboxer {
+absl::Status ProcessSandboxerMain(int argc, char** argv) {
+```
+
+The sandboxer carries a per-executable policy: the `policies/` directory holds a
+dedicated source file for each host tool that runs under the sandbox
+(`run_cvd.cpp`, `assemble_cvd.cpp`, `gnss_grpc_proxy.cpp`, `secure_env.cpp`,
+`logcat_receiver.cpp`, `modem_simulator.cpp`, `socket_vsock_proxy.cpp`, and so
+on), plus a `baseline.cpp` shared policy and a `no_policy.cpp` escape hatch.
+Each policy declares the syscalls and file paths a given daemon may use, so a
+compromised helper cannot reach beyond its declared footprint. A
+`sandboxer_proxy` companion lets a sandboxed process request privileged
+operations from the manager.
+
+This is the host-side analogue of the in-process isolation work happening
+elsewhere in the platform: rather than trusting every Cuttlefish helper with
+the launcher's full privileges, each one runs behind a least-privilege policy.
+
+### 58.8.4 The NPU Scheduling HAL
+
+Android 17's Cuttlefish gains a guest NPU (Neural Processing Unit) HAL under
+`device/google/cuttlefish/guest/hals/npu/`, written in Rust. It registers an
+`android.hardware.npu` scheduling service so the framework's NPU path has a
+virtual surface to exercise (see section 58.6.15 for the source excerpt). The
+HAL ships as its own APEX-packaged service with a VINTF fragment declaring
+`IScheduling/default`. It joins `virtio_media/` as the two notable new guest
+HAL directories this release.
+
+### 58.8.5 Host Launcher Tooling Migration
+
+The way developers obtain and run the Cuttlefish host tools changed in
+Android 17. The orchestrating `cvd` front-end and the Debian packaging are no
+longer part of the `device/google/cuttlefish` tree in AOSP; they moved to the
+standalone `github.com/google/android-cuttlefish` repository. The README now
+opens by pointing developers there:
+
+```
+# Source: device/google/cuttlefish/README.md
+For all host tools development please refer to
+https://github.com/google/android-cuttlefish/blob/main/docs/HostToolsMigration.md
+```
+
+In practice this means a local launch follows two tracks. The host package
+built from this tree still provides `launch_cvd` and `stop_cvd` (the
+`launch_cvd` symlink resolves to `cvd_internal_start`, built from
+`device/google/cuttlefish/host/commands/start/`), which is what the README's
+getting-started flow uses:
+
+```bash
+# Source: device/google/cuttlefish/README.md (paraphrased flow)
+mkdir cf && cd cf
+tar xvf /path/to/cvd-host_package.tar.gz
+unzip /path/to/aosp_cf_x86_64_phone-img-xxxxxx.zip
+HOME=$PWD ./bin/launch_cvd
+# ...
+HOME=$PWD ./bin/stop_cvd
+```
+
+The richer `cvd` lifecycle manager and the installable Debian packages
+(`cuttlefish-base`, `cuttlefish-user`) come from the external repository. The
+older `acloud` launcher referenced by pre-17 guides is not present in this tree
+at all.
+
+---
+
+## 58.9 Try It: Build and Launch a Custom Emulator Image
 
 This section walks through building a custom emulator image from source and
 launching it.
 
-### 58.8.1 Building the Emulator System Image
+### 58.9.1 Building the Emulator System Image
 
 ```bash
 # Step 1: Set up the build environment
@@ -3063,7 +3391,7 @@ The build produces images in `$ANDROID_PRODUCT_OUT/`:
 | `ramdisk.img` | Initial ramdisk |
 | `vendor_boot.img` | Vendor boot image |
 
-### 58.8.2 Launching with the Emulator
+### 58.9.2 Launching with the Emulator
 
 ```bash
 # Launch the emulator with the built images
@@ -3079,7 +3407,7 @@ emulator \
     -verbose                # verbose logging
 ```
 
-### 58.8.3 Building and Launching Cuttlefish
+### 58.9.3 Building and Launching Cuttlefish
 
 ```bash
 # Step 1: Choose Cuttlefish target
@@ -3098,7 +3426,7 @@ adb shell
 # Open https://localhost:8443 in a browser
 ```
 
-### 58.8.4 Customizing the Emulator Image
+### 58.9.4 Customizing the Emulator Image
 
 #### Adding a Custom HAL
 
@@ -3135,7 +3463,7 @@ Add custom SELinux policy:
 BOARD_VENDOR_SEPOLICY_DIRS += my/custom/sepolicy
 ```
 
-### 58.8.5 Debugging the Emulator
+### 58.9.5 Debugging the Emulator
 
 #### Kernel Logs
 
@@ -3192,7 +3520,7 @@ adb shell dumpsys wifi
 adb forward tcp:8080 tcp:8080
 ```
 
-### 58.8.6 Performance Tuning
+### 58.9.6 Performance Tuning
 
 #### CPU and Memory
 
@@ -3231,7 +3559,7 @@ emulator -gpu guest
 # (configured automatically via init.ranchu.rc)
 ```
 
-### 58.8.7 Advanced: Running Multiple Instances
+### 58.9.7 Advanced: Running Multiple Instances
 
 #### Emulator
 
@@ -3261,7 +3589,7 @@ launch_cvd --num_instances=3
 # - Console port
 ```
 
-### 58.8.8 Advanced: Custom Kernel
+### 58.9.8 Advanced: Custom Kernel
 
 ```bash
 # Step 1: Check out the kernel source
@@ -3278,7 +3606,7 @@ emulator -kernel /path/to/bzImage \
     -vendor $ANDROID_PRODUCT_OUT/vendor.img
 ```
 
-### 58.8.9 Understanding the Build Product Configuration Chain
+### 58.9.9 Understanding the Build Product Configuration Chain
 
 When building an emulator image, the product configuration follows a specific
 chain of inheritance. Let us trace through the x86_64 phone target:
@@ -3310,7 +3638,7 @@ This layered design means that adding a new emulator product (e.g., a new
 form factor) requires only creating a thin top-level makefile that inherits
 from the appropriate base.
 
-### 58.8.10 Testing HAL Implementations
+### 58.9.10 Testing HAL Implementations
 
 One of the most useful aspects of the emulator for platform developers is
 the ability to test HAL implementations. Here is a workflow for testing a
@@ -3356,7 +3684,7 @@ adb shell start
 adb shell dumpsys media.camera
 ```
 
-### 58.8.11 Tracing Emulator Communication
+### 58.9.11 Tracing Emulator Communication
 
 To debug the communication between guest HALs and the QEMU host, several
 techniques are available:
@@ -3403,7 +3731,7 @@ info mtree
 info ioports
 ```
 
-### 58.8.12 Building Slim Emulator Images
+### 58.9.12 Building Slim Emulator Images
 
 For CI/CD scenarios where boot time and image size matter, the "slim"
 emulator variant strips out unnecessary components:
@@ -3418,7 +3746,7 @@ The slim variant (`device/generic/goldfish/product/slim_handheld.mk`)
 inherits from `generic.mk` directly without the full handheld product
 stack, resulting in a smaller system image that boots faster.
 
-### 58.8.13 Running CTS on the Emulator
+### 58.9.13 Running CTS on the Emulator
 
 The emulator is a supported CTS (Compatibility Test Suite) target:
 
@@ -3445,7 +3773,7 @@ the emulator provides through its virtual HALs. The data injection support
 in the sensors HAL (`SensorFlagBits::DATA_INJECTION` flag on all sensors)
 is specifically designed for CTS compliance.
 
-### 58.8.14 Emulator Console Commands
+### 58.9.14 Emulator Console Commands
 
 The emulator exposes a telnet-based console for direct control:
 
@@ -3514,6 +3842,13 @@ architecture:
    support, foldable simulation, location/battery/telephony simulation, and
    rich console commands.
 
+8. **Android 17 Cuttlefish changes** -- A new `aosp_cf_x86_64_desktop` product,
+   the guest-side `vkms_controller` display utility, host daemons wrapped in
+   per-process seccomp sandboxes via `process_sandboxer`, a new Rust NPU
+   scheduling HAL, a 20-port HVC map (sensors split into control/data), and the
+   migration of the `cvd` launcher and Debian packaging to the external
+   `github.com/google/android-cuttlefish` repository.
+
 The key architectural principle throughout is that the emulator runs _real_
 Android -- the same kernel, the same framework, the same system image format.
 The virtual hardware layer is designed to be transparent to the software above
@@ -3545,5 +3880,12 @@ physical device or in the emulator.
 | `device/generic/goldfish/init/init.net.ranchu.sh` | Network initialization |
 | `device/generic/goldfish/sepolicy/vendor/qemu_props.te` | SELinux policy for qemu-props |
 | `device/generic/goldfish/sepolicy/vendor/hal_gnss_default.te` | SELinux policy for GNSS HAL |
-| `device/google/cuttlefish/shared/BoardConfig.mk` | Cuttlefish board config |
-| `device/google/cuttlefish/README.md` | Cuttlefish getting started guide |
+| `device/google/cuttlefish/shared/BoardConfig.mk` | Cuttlefish board config / kernel selection |
+| `device/google/cuttlefish/AndroidProducts.mk` | Cuttlefish product catalog (incl. desktop) |
+| `device/google/cuttlefish/vsoc_x86_64_only/desktop/aosp_cf.mk` | Desktop product (new in 17) |
+| `device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp` | crosvm command-line construction, HVC map |
+| `device/google/cuttlefish/host/commands/process_sandboxer/main.cpp` | Host process sandboxer (new in 17) |
+| `device/google/cuttlefish/guest/commands/vkms_controller/main.cpp` | Guest VKMS display controller (new in 17) |
+| `device/google/cuttlefish/guest/hals/npu/main.rs` | Guest NPU scheduling HAL (new in 17) |
+| `device/google/cuttlefish/shared/device.mk` | Shared device config (installs vkms_controller) |
+| `device/google/cuttlefish/README.md` | Cuttlefish getting started guide (host-tools migration) |

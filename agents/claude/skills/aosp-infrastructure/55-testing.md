@@ -400,8 +400,15 @@ examines the outcome of each test run module and decides whether to retry.
 
 ### 55.2.6  Test Types (Runners)
 
-TradeFed provides a rich set of test runner implementations under
-`tools/tradefederation/core/src/com/android/tradefed/testtype/`:
+TradeFed splits its sources into two roots. The core runner contract
+`IRemoteTest` is an interface under the `invocation_interfaces` root
+(`tools/tradefederation/core/invocation_interfaces/com/android/tradefed/testtype/`),
+and `IDeviceTest` lives under the main `src/` root
+(`tools/tradefederation/core/src/com/android/tradefed/testtype/`, where
+TradeFed-internal runners such as `FakeTest` and `TfTestLauncher` also live).
+Most concrete test-runner implementations live in the separate `test_framework`
+source root at
+`tools/tradefederation/core/test_framework/com/android/tradefed/testtype/`:
 
 | Runner Class | Purpose |
 |-------------|---------|
@@ -409,8 +416,8 @@ TradeFed provides a rich set of test runner implementations under
 | `GTest` | Native GoogleTest binaries on device |
 | `HostTest` | JUnit tests on host JVM |
 | `IsolatedHostTest` | Host tests in isolated classloader (Ravenwood) |
-| `PythonBinaryHostTest` | Python tests on host |
-| `RustBinaryHostTest` | Rust test binaries on host |
+| `PythonBinaryHostTest` | Python tests on host (`testtype/python/`) |
+| `RustBinaryHostTest` | Rust test binaries on host (`testtype/rust/`) |
 | `FakeTest` | Generates fake results for testing TF itself |
 | `TfTestLauncher` | Launches another TF process |
 
@@ -613,7 +620,7 @@ Results include:
 cycle.  It translates human-friendly test references into TradeFederation
 invocations.
 
-Source: `tools/asuite/atest/atest_main.py` (1683 lines)
+Source: `tools/asuite/atest/atest_main.py` (~1795 lines)
 
 From the module docstring:
 
@@ -976,6 +983,71 @@ flowchart TB
     Finders --> |"TestInfo"| Runners
     Runners --> Results
 ```
+
+### 55.3.14  Execution Plans and ACME Modes
+
+The default path above produces an internal `_TestExecutionPlan`
+(`tools/asuite/atest/atest_main.py`), an abstraction over "how this invocation's
+tests will execute." `_TestExecutionPlan.create()` picks one of two concrete
+plans: `_TestMappingExecutionPlan` for TEST_MAPPING runs and
+`_TestModuleExecutionPlan` for explicit module/class references. Each plan
+exposes `required_build_targets()`, `requires_device_update()`, and `execute()`,
+so the main loop can decide what to build, whether a device flash is needed, and
+how to run -- all without the runner code caring how the tests were selected.
+
+Android 17 layers a declarative selection model on top of this called **ACME**.
+Instead of naming modules, a developer (or a CI trigger) names *test triggers*
+and *execution plans* defined in protobuf (`test_configs_proto`, imported as
+`test_configs_pb2`), and atest resolves those into the modules to run. The
+entry points are registered in `tools/asuite/atest/arg_parser.py` and handled by
+modules under `tools/asuite/atest/acme/`:
+
+| Flag | Handler | Meaning |
+|------|---------|---------|
+| `--run-affected-triggers` | `acme/run_affected_triggers_mode.py` | Run every test trigger affected by the locally modified files |
+| `--test-execution-plans` | `acme/run_direct_mode.py` | Run named `TestExecutionPlan`s directly |
+| `--test-triggers` | `acme/run_direct_mode.py` | Run the execution plans referenced by named triggers |
+| `--test-workflows` | `acme/run_direct_mode.py` | Run named workflows |
+
+`acme_utils.py` walks `test_configs.triggers` and
+`get_execution_plans_for_test_triggers()` maps trigger names to the workflows
+and execution plans they reference. The affected-triggers mode reuses the
+`TEST_MAPPING`/`test_mapping` machinery to compute which triggers a diff
+touches, giving developers a way to reproduce locally exactly what presubmit
+will run for their change without hand-listing modules.
+
+On the harness side, 17 adds a matching TradeFed suite runner.
+`ExecutionPlanSuiteRunner`
+(`tools/tradefederation/core/src/com/android/tradefed/testtype/suite/ExecutionPlanSuiteRunner.java`)
+and its atest-facing subclass `AtestExecutionPlanSuiteRunner`
+(`tools/tradefederation/core/test_framework/com/android/tradefed/testtype/suite/AtestExecutionPlanSuiteRunner.java`,
+configured by `res/config/atest-execution-plan.xml`) run a precomputed execution
+plan as a suite rather than re-deriving modules inside TradeFed. Its use is
+gated behind a rollout flag (next section) while the feature stabilizes.
+
+### 55.3.15  Rollout-Controlled Features
+
+Because atest ships to thousands of developers continuously, risky behavior
+changes are introduced behind a percentage rollout rather than a hard switch.
+`tools/asuite/atest/rollout_control.py` defines `RolloutControlledFeature`
+objects, each with a `rollout_percentage`, an `env_control_flag` to force the
+feature on or off locally, and an optional randomization keyed by run ID so a
+single developer sees consistent behavior within a run. Android 17 ships these
+controlled features, among others:
+
+| Feature | Env flag | Notes |
+|---------|----------|-------|
+| Rolling TradeFed subprocess output | `ROLLING_TF_SUBPROCESS_OUTPUT` | Stream TF subprocess output live (100%) |
+| TradeFed preparer incremental setup | `TF_PREPARER_INCREMENTAL_SETUP` | Reuse prior device state across runs (100%) |
+| Atest indexing parallelization | `ATEST_INDEXING_PARALLEL` | Parse module-info/index files in parallel |
+| `AtestExecutionPlanSuiteRunner` | `USE_ATEST_EXECUTION_PLAN_SUITE_RUNNER` | Run via the new TF execution-plan runner |
+| Auto rebuild module info | `AUTO_REBUILD_MODULE_INFO` | Rebuild stale `module-info.json` automatically |
+| Early device check | `EARLY_DEVICE_CHECK` | Fail fast when a device test has no device |
+
+To force a feature regardless of the rollout percentage, set its env flag (for
+example `ATEST_INDEXING_PARALLEL=true atest ...`). This is the mechanism behind
+the visible 17 speedups -- parallel indexing and incremental preparer setup --
+without committing every developer to them at once.
 
 ---
 
@@ -2085,7 +2157,7 @@ without requiring a device or emulator.  It provides a lightweight environment
 where Android framework classes execute directly on a JDK 21+ host JVM,
 dramatically reducing test execution time from minutes to seconds.
 
-Source: `build/soong/java/ravenwood.go` (539 lines)
+Source: `build/soong/java/ravenwood.go` (~602 lines)
 
 ### 55.8.2  Module Type: android_ravenwood_test
 
@@ -2380,7 +2452,7 @@ The library is wired in as a static dependency under the `host:` target of
 `libhwui`'s `Android.bp`:
 
 ```blueprint
-// Source: frameworks/base/libs/hwui/Android.bp:162
+// Source: frameworks/base/libs/hwui/Android.bp:171
 host: {
     static_libs: [
         "libandroidfw",
@@ -2499,22 +2571,52 @@ is only to keep the linker happy and let *unit* tests of hwui's algorithmic
 core (paint, canvas, font, hierarchy traversal) run on a developer laptop
 in milliseconds.
 
-### 55.8.13  When to Use Ravenwood
+### 55.8.13  In-Process System Server
+
+Early Ravenwood could only host leaf utility classes. By Android 17 it stands up
+a lightweight, in-process **system server** so that code which looks up framework
+services through `Context.getSystemService()` or `ServiceManager` can run on the
+host. `RavenwoodSystemServer`
+(`frameworks/base/ravenwood/junit-impl-src/android/platform/test/ravenwood/RavenwoodSystemServer.java`)
+registers fake or proxied implementations into `ServiceManager` and
+`LocalServices` at runner startup, covering services such as:
+
+- `PLATFORM_COMPAT_SERVICE` / `PLATFORM_COMPAT_NATIVE_SERVICE` (app-compat change gating)
+- `INPUT_SERVICE`, `INPUT_METHOD_SERVICE`, `AUTOFILL_SERVICE`
+- `USER_SERVICE`, `ACTIVITY_SERVICE`, `ACTIVITY_TASK_SERVICE`
+- `WINDOW_SERVICE`, `DISPLAY_SERVICE`
+- the content service (`ContentResolver.CONTENT_SERVICE_NAME`) and dream service
+
+These are not the real services -- most are proxies that either delegate to a
+fake or throw "not implemented" for unsupported calls. Only `PLATFORM_COMPAT_*`
+and `INPUT_SERVICE` register unconditionally; the rest register inside
+`maybeRegisterExperimentalServices()`, gated by `isExperimentalApiEnabled()`. A
+companion `RavenwoodAppDriver`
+(`frameworks/base/ravenwood/junit-impl-src/android/app/RavenwoodAppDriver.java`)
+brings up enough of `ActivityThread`/`Application` state that tests can obtain a
+real `Context`, settings provider, and compat configuration on the host. The
+practical effect is that the class of code Ravenwood can cover expands from data
+structures to framework logic that talks to system services -- still without a
+device, but no longer limited to dependency-free leaf classes.
+
+### 55.8.14  When to Use Ravenwood
 
 Ravenwood is ideal for:
 
 - Testing `android.os.*` utilities (Bundle, Parcel, Handler, etc.)
 - Testing `android.util.*` data structures (SparseArray, LruCache, etc.)
 - Testing `android.content.*` basic classes
-- Testing framework services that can run without hardware
+- Testing framework logic that reaches system services through the in-process
+  system server (55.8.13), e.g. app-compat change gating or user-service lookups
 - Testing code that uses Android feature flags (aconfig)
 
 Ravenwood is NOT suitable for:
 
-- Tests requiring real UI rendering
+- Tests requiring real UI rendering or GPU composition
 - Tests needing real hardware (camera, sensors)
-- Tests involving Binder IPC to system services
-- Tests that need a full Activity lifecycle
+- Tests that depend on a service whose Ravenwood proxy is unimplemented (the
+  in-process system server fakes a curated set, not the whole platform)
+- Tests that need a full, real Activity lifecycle with windowing
 
 ---
 
@@ -3403,6 +3505,51 @@ flicker.assertLayersEnd { layerState ->
     layerState.isAbove(appLayer, wallpaperLayer)
 }
 ```
+
+### 55.11.10  Gating UI Tests by Form Factor and Environment
+
+As Android grew its desktop windowing, large-screen, and automotive surfaces,
+UI tests increasingly need to run on some form factors but not others, and to
+skip cleanly when running deviceless (Ravenwood/Robolectric) instead of failing.
+`LimitDevicesRule`
+(`platform_testing/libraries/health/rules/src/android/platform/test/rule/LimitDevicesRule.kt`)
+is the JUnit `TestRule` that enforces these constraints with annotations matched
+against `Build.PRODUCT`:
+
+| Annotation | Effect |
+|-----------|--------|
+| `@AllowedDevices(...)` | Run only on the listed `DeviceProduct` values |
+| `@DeniedDevices(...)` | Skip on the listed devices |
+| `@ScreenshotTestDevices(...)` | Restrict to the default screenshot devices (`CF_PHONE`, `CF_TABLET`) or an override list |
+| `@FlakyDevices(...)` | Run on the listed devices only when the `running-flaky-tests` instrumentation arg is set |
+| `@SkipOnDesktop` | Skip in desktop environments (`Build.PRODUCT` in the desktop product set) |
+| `@SkipOnDeviceless` | Skip when running off-device (Ravenwood/Robolectric) |
+| `@IgnoreLimit(true)` | Bypass the rule entirely (intended for local runs on arbitrary devices) |
+
+The target devices are named by the `DeviceProduct` enum (Cuttlefish products
+such as `CF_PHONE`, `CF_TABLET`, `CF_FOLDABLE`, `CF_DESKTOP`, `CF_AUTO`, plus
+real products), and a free `isDesktop()` helper exposes the same desktop
+detection to test bodies. A test gates itself like this:
+
+```kotlin
+class MyLargeScreenTest {
+    @get:Rule val limitDevices = LimitDevicesRule.readParamsFromInstrumentation()
+
+    @Test
+    @AllowedDevices(CF_TABLET, CF_FOLDABLE)
+    @SkipOnDesktop
+    fun splitScreenLayout_isCorrect() { /* ... */ }
+}
+```
+
+When the current device does not match the annotation, the rule throws an
+`AssumptionViolatedException` so the test is reported as skipped rather than
+failed. The same module thus participates in phone, tablet, foldable, desktop,
+and deviceless runs without per-configuration test forks. The companion
+`@SkipOnDesktop`/`@SkipOnDeviceless` annotations are the platform-side mechanism
+behind the 17 desktop-windowing and Ravenwood test sweeps: a test that cannot
+yet pass on a desktop window or off-device is annotated rather than disabled
+globally, keeping its phone coverage intact.
 
 ---
 
@@ -4326,13 +4473,15 @@ flowchart LR
 ### 55.15.1  Overview
 
 AOSP provides a rich collection of shared testing libraries under
-`platform_testing/libraries/` (35 subdirectories).  These libraries encapsulate
-common patterns, reduce boilerplate, and provide device interaction helpers.
+`platform_testing/libraries/` (38 subdirectories in Android 17).  These libraries
+encapsulate common patterns, reduce boilerplate, and provide device interaction
+helpers.
 
 ### 55.15.2  Directory Listing
 
 ```
 platform_testing/libraries/
+  androidbuildinternal/        -- Build-server result proto helpers
   annotations/                 -- Custom test annotations
   app-helpers/                 -- App interaction helpers
   audio-test-harness/          -- Audio testing framework
@@ -4345,29 +4494,37 @@ platform_testing/libraries/
   desktop-test-lib/            -- Desktop mode testing
   device-collectors/           -- Device-side metric collectors
   flag-helpers/                -- Feature flag test helpers
-  flicker/                     -- Window transition testing (31.11.5)
-  health/                      -- Device health checks
+  flicker/                     -- Window transition testing (55.11.5)
+  health/                      -- Device health checks (incl. LimitDevicesRule)
   junit-rules/                 -- Custom JUnit rules
   junitxml/                    -- JUnit XML result format
   launcher-helper/             -- Launcher interaction helpers
+  media/                       -- Media test scenario libraries
   media-helper/                -- Media test utilities
   metrics-helper/              -- Metrics collection and reporting
   motion/                      -- Motion/gesture testing
   notes-role-test-helper/      -- Notes role testing
   power-helper/                -- Power measurement helpers
-  rdroidtest/                  -- R Droid test utilities
+  rdroidtest/                  -- Custom Rust test harness (runtime ignore)
   runner/                      -- Custom test runners
-  screenshot/                  -- Screenshot testing (31.11.6)
+  screenshot/                  -- Screenshot testing (55.11.6)
+  sdv/                         -- Software Defined Vehicle test helpers
   sts-common-util/             -- STS shared utilities
   system-helpers/              -- System interaction helpers
   systemui-helper/             -- SystemUI test helpers
-  systemui-tapl/               -- SystemUI TAPL (31.11.4)
+  systemui-tapl/               -- SystemUI TAPL (55.11.4)
   tapl-common/                 -- Common TAPL utilities
   timeresult-helper/           -- Time-based result helpers
   tradefed-error-prone/        -- Error-prone rules for TF
+  uiautomator-accessibility/   -- Accessibility-driven UIAutomator helpers
   uiautomator-helpers/         -- UIAutomator extensions
   uinput-device-test-helper/   -- Synthetic input device helpers
 ```
+
+The Android 17 tree adds `androidbuildinternal/`, `media/`, `sdv/` (Software
+Defined Vehicle, covered in the SDV chapter), and `uiautomator-accessibility/`
+to the set, reflecting the growth of the automotive/SDV test surface and an
+accessibility-driven UI-helper layer.
 
 ### 55.15.3  Key Libraries
 
@@ -5517,34 +5674,34 @@ graph TB
 
 | File | Section |
 |------|---------|
-| `tools/tradefederation/core/src/com/android/tradefed/` | 31.2 |
-| `tools/tradefederation/core/src/com/android/tradefed/invoker/TestInvocation.java` | 31.2.2 |
-| `tools/tradefederation/core/src/com/android/tradefed/invoker/shard/ShardHelper.java` | 31.2.4 |
-| `tools/tradefederation/core/src/com/android/tradefed/command/CommandScheduler.java` | 31.2.2 |
-| `tools/tradefederation/core/src/com/android/tradefed/retry/BaseRetryDecision.java` | 31.2.5 |
-| `tools/asuite/atest/atest_main.py` | 31.3 |
-| `tools/asuite/atest/test_finders/` | 31.3.3 |
-| `system/libbase/TEST_MAPPING` | 31.4.2 |
-| `frameworks/base/TEST_MAPPING` | 31.4.2 |
-| `build/soong/cc/test.go` | 31.5.3, 31.10 |
-| `build/soong/rust/test.go` | 31.5.5 |
-| `build/soong/python/test.go` | 31.5.6 |
-| `build/soong/tradefed/autogen.go` | 31.5.8 |
-| `cts/` | 31.6 |
-| `cts/apps/CtsVerifier/` | 31.6.4 |
-| `test/vts/` | 31.7 |
-| `test/vts-testcase/` | 31.7.2 |
-| `build/soong/java/ravenwood.go` | 31.8 |
-| `build/soong/java/robolectric.go` | 31.9 |
-| `external/robolectric/` | 31.9 |
-| `external/googletest/` | 31.10 |
-| `build/soong/cc/fuzz.go` | 31.13.2 |
-| `build/soong/fuzz/fuzz_common.go` | 31.13.3 |
-| `build/soong/java/jacoco.go` | 31.14 |
-| `external/jacoco/` | 31.14 |
-| `external/mockito/` | 31.12.1 |
-| `external/dexmaker/` | 31.12.3 |
-| `platform_testing/libraries/` | 31.15 |
-| `platform_testing/libraries/flicker/` | 31.11.5 |
-| `platform_testing/libraries/screenshot/` | 31.11.6 |
-| `platform_testing/libraries/systemui-tapl/` | 31.11.4 |
+| `tools/tradefederation/core/src/com/android/tradefed/` | 55.2 |
+| `tools/tradefederation/core/src/com/android/tradefed/invoker/TestInvocation.java` | 55.2.2 |
+| `tools/tradefederation/core/src/com/android/tradefed/invoker/shard/ShardHelper.java` | 55.2.4 |
+| `tools/tradefederation/core/src/com/android/tradefed/command/CommandScheduler.java` | 55.2.2 |
+| `tools/tradefederation/core/src/com/android/tradefed/retry/BaseRetryDecision.java` | 55.2.5 |
+| `tools/asuite/atest/atest_main.py` | 55.3 |
+| `tools/asuite/atest/test_finders/` | 55.3.3 |
+| `system/libbase/TEST_MAPPING` | 55.4.2 |
+| `frameworks/base/TEST_MAPPING` | 55.4.2 |
+| `build/soong/cc/test.go` | 55.5.3, 55.10 |
+| `build/soong/rust/test.go` | 55.5.5 |
+| `build/soong/python/test.go` | 55.5.6 |
+| `build/soong/tradefed/autogen.go` | 55.5.8 |
+| `cts/` | 55.6 |
+| `cts/apps/CtsVerifier/` | 55.6.4 |
+| `test/vts/` | 55.7 |
+| `test/vts-testcase/` | 55.7.2 |
+| `build/soong/java/ravenwood.go` | 55.8 |
+| `build/soong/java/robolectric.go` | 55.9 |
+| `external/robolectric/` | 55.9 |
+| `external/googletest/` | 55.10 |
+| `build/soong/cc/fuzz.go` | 55.13.2 |
+| `build/soong/fuzz/fuzz_common.go` | 55.13.3 |
+| `build/soong/java/jacoco.go` | 55.14 |
+| `external/jacoco/` | 55.14 |
+| `external/mockito/` | 55.12.1 |
+| `external/dexmaker/` | 55.12.3 |
+| `platform_testing/libraries/` | 55.15 |
+| `platform_testing/libraries/flicker/` | 55.11.5 |
+| `platform_testing/libraries/screenshot/` | 55.11.6 |
+| `platform_testing/libraries/systemui-tapl/` | 55.11.4 |

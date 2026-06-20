@@ -120,7 +120,7 @@ content://com.android.externalstorage.documents/document/primary%3ADownload%2Ffi
 `ContentResolver` declares the scheme constant:
 
 ```java
-// frameworks/base/core/java/android/content/ContentResolver.java (line 262)
+// frameworks/base/core/java/android/content/ContentResolver.java (line 280)
 public static final String SCHEME_CONTENT = "content";
 ```
 
@@ -202,7 +202,7 @@ RPC-style interactions.  The provider interprets the method name and returns a
 `Bundle`:
 
 ```java
-// frameworks/base/core/java/android/content/ContentProvider.java (line 2744)
+// frameworks/base/core/java/android/content/ContentProvider.java (line 2754)
 public @Nullable Bundle call(@NonNull String authority, @NonNull String method,
         @Nullable String arg, @Nullable Bundle extras) {
     return call(method, arg, extras);
@@ -219,7 +219,7 @@ The `ContentProvider.Transport` inner class extends `ContentProviderNative`
 (the Binder stub) and wraps every incoming call with permission enforcement:
 
 ```java
-// frameworks/base/core/java/android/content/ContentProvider.java (line 236)
+// frameworks/base/core/java/android/content/ContentProvider.java (line 241)
 class Transport extends ContentProviderNative {
     @Override
     public Cursor query(@NonNull AttributionSource attributionSource, Uri uri,
@@ -288,7 +288,7 @@ The resolver first tries an unstable reference.  If the provider dies
 stable reference:
 
 ```java
-// frameworks/base/core/java/android/content/ContentResolver.java (around line 2050)
+// frameworks/base/core/java/android/content/ContentResolver.java (around line 2121)
 try {
     fd = unstableProvider.openTypedAssetFile(...);
 } catch (DeadObjectException e) {
@@ -323,7 +323,7 @@ step.
 single IPC call, which the provider can execute inside a transaction:
 
 ```java
-// frameworks/base/core/java/android/content/ContentProvider.java (line 2708)
+// frameworks/base/core/java/android/content/ContentProvider.java (line 2717)
 public @NonNull ContentProviderResult[] applyBatch(@NonNull String authority,
         @NonNull ArrayList<ContentProviderOperation> operations)
         throws OperationApplicationException {
@@ -347,9 +347,10 @@ Content providers can pass raw file descriptors across process boundaries using
 media data without copying bytes through Binder:
 
 ```java
-// ContentResolver.java (line 1511)
+// ContentResolver.java (line 1555)
 public final @Nullable InputStream openInputStream(@NonNull Uri uri)
         throws FileNotFoundException {
+    Objects.requireNonNull(uri, "uri");
     String scheme = uri.getScheme();
     if (SCHEME_ANDROID_RESOURCE.equals(scheme)) {
         OpenResourceIdResult r = getResourceId(uri);
@@ -385,6 +386,35 @@ The file descriptor modes supported are:
 | `"rw"` | Read-write |
 | `"rwt"` | Read-write with truncation |
 
+In Android 17, `ContentProvider.Transport` sanitizes the mode string before
+delegating to the provider.  If a caller asks to open a file with the
+truncate (`t`) or append (`a`) bit set but without the write (`w`) bit, the
+transport silently drops those bits rather than letting a nominally read-only
+open mutate the file.  The logic lives in `Transport.validateFileMode()`,
+which the transport calls from both `openFile()` and `openAssetFile()`:
+
+```java
+// frameworks/base/core/java/android/content/ContentProvider.java (line 795)
+private String validateFileMode(String mode) {
+    // We currently only support the following modes: r, w, wt, wa, rw, rwt
+    if (mode != null && mode.indexOf('w') == -1) {
+        // Don't allow truncation without write
+        if (mode.indexOf('t') != -1) {
+            mode = mode.replace("t", "");
+        }
+        // Don't allow appending without write
+        if (mode.indexOf('a') != -1) {
+            mode = mode.replace("a", "");
+        }
+    }
+    return mode;
+}
+```
+
+The dropping is deliberately silent (rather than throwing) to avoid breaking
+apps that pass sloppy mode strings; the sanitized mode is what actually
+reaches `enforceFilePermission()` and the provider's `openFile()`.
+
 ### 27.1.12 The CursorWindow and Shared Memory
 
 When a `Cursor` travels across process boundaries, the actual data is not
@@ -412,9 +442,26 @@ it through the `IBulkCursor` Binder interface.  The `BulkCursorToCursorAdaptor`
 (client side) provides a standard `Cursor` interface backed by the shared
 memory window.
 
-The default `CursorWindow` size is 2 MB.  If a query result exceeds this,
-the cursor automatically paginates by filling the window on demand as the
-client iterates.
+The `CursorWindow` size is not a hardcoded constant; it is read from a
+device resource and cached on first use:
+
+```java
+// frameworks/base/core/java/android/database/CursorWindow.java (line 795)
+private static int getCursorWindowSize() {
+    if (sCursorWindowSize < 0) {
+        // The cursor window size. resource xml file specifies the value in kB.
+        // convert it to bytes here by multiplying with 1024.
+        sCursorWindowSize = Resources.getSystem().getInteger(
+                com.android.internal.R.integer.config_cursorWindowSize) * 1024;
+    }
+    return sCursorWindowSize;
+}
+```
+
+The default value of `config_cursorWindowSize` is 2048 (KB), giving a 2 MB
+window, but a device overlay can change it.  If a query result exceeds the
+window, the cursor automatically paginates by filling the window on demand as
+the client iterates.
 
 ### 27.1.13 ContentValues
 
@@ -547,11 +594,13 @@ use content providers.
 `ContentProvider.attachInfo()` is the framework's initialization hook:
 
 ```java
-// frameworks/base/core/java/android/content/ContentProvider.java (line 2658)
+// frameworks/base/core/java/android/content/ContentProvider.java (line 2667)
 private void attachInfo(Context context, ProviderInfo info, boolean testing) {
     mNoPerms = testing;
     mCallingAttributionSource = new ThreadLocal<>();
 
+    // Only allow it to be set once, so after the content service gives
+    // this to us clients can't change it.
     if (mContext == null) {
         mContext = context;
         if (context != null && mTransport != null) {
@@ -567,6 +616,10 @@ private void attachInfo(Context context, ProviderInfo info, boolean testing) {
             mSingleUser = (info.flags & ProviderInfo.FLAG_SINGLE_USER) != 0;
             mSystemUserOnly = (info.flags & ProviderInfo.FLAG_SYSTEM_USER_ONLY) != 0;
             setAuthorities(info.authority);
+        }
+        if (Build.IS_DEBUGGABLE) {
+            setTransportLoggingEnabled(Log.isLoggable(getClass().getSimpleName(),
+                    Log.VERBOSE));
         }
         ContentProvider.this.onCreate();
     }
@@ -700,11 +753,11 @@ meaning it can be updated independently of the base system.
 packages/providers/MediaProvider/src/com/android/providers/media/MediaProvider.java
 ```
 
-At 13,000+ lines, `MediaProvider.java` is one of the largest single source
+At over 13,600 lines, `MediaProvider.java` is one of the largest single source
 files in AOSP.  It extends `ContentProvider` directly:
 
 ```java
-// packages/providers/MediaProvider/.../MediaProvider.java (line 401)
+// packages/providers/MediaProvider/.../MediaProvider.java (line 417)
 public class MediaProvider extends ContentProvider {
 ```
 
@@ -738,7 +791,7 @@ also be a UUID for removable storage.
 `MediaVolume` represents a storage volume within MediaProvider:
 
 ```java
-// packages/providers/MediaProvider/.../MediaVolume.java (line 45)
+// packages/providers/MediaProvider/.../MediaVolume.java (line 49)
 public final class MediaVolume implements Parcelable {
     private final @NonNull String mName;      // e.g., "external_primary"
     private final @Nullable UserHandle mUser; // null for public volumes
@@ -812,7 +865,7 @@ packages/providers/MediaProvider/src/com/android/providers/media/scan/ModernMedi
 ```
 
 ```java
-// ModernMediaScanner.java (line 183)
+// ModernMediaScanner.java (line 185)
 public class ModernMediaScanner implements MediaScanner {
 ```
 
@@ -849,7 +902,7 @@ public static final int REASON_IDLE    = 3;   // idle maintenance
 The batch size for operations is 32 items:
 
 ```java
-// ModernMediaScanner.java (line 207)
+// ModernMediaScanner.java (line 209)
 private static final int BATCH_SIZE = 32;
 ```
 
@@ -902,13 +955,13 @@ states as bit flags:
 
 ```java
 // packages/providers/MediaProvider/.../LocalCallingIdentity.java
-public static final int PERMISSION_IS_SELF          = 1 << 0;
-public static final int PERMISSION_IS_SHELL         = 1 << 1;
-public static final int PERMISSION_IS_MANAGER       = 1 << 2;
-public static final int PERMISSION_IS_SYSTEM_GALLERY = 1 << 3;
-public static final int PERMISSION_READ_IMAGES      = 1 << 8;
-public static final int PERMISSION_READ_VIDEO       = 1 << 9;
-public static final int PERMISSION_IS_REDACTION_NEEDED = 1 << 10;
+public static final int PERMISSION_IS_SELF             = 1 << 0;
+public static final int PERMISSION_IS_SHELL            = 1 << 1;
+public static final int PERMISSION_IS_MANAGER          = 1 << 2;
+public static final int PERMISSION_IS_REDACTION_NEEDED = 1 << 8;
+public static final int PERMISSION_READ_VIDEO          = 1 << 17;
+public static final int PERMISSION_READ_IMAGES         = 1 << 18;
+public static final int PERMISSION_IS_SYSTEM_GALLERY   = 1 << 22;
 ```
 
 ### 27.3.8 Photo Picker
@@ -950,7 +1003,7 @@ Transcoding is handled transparently at the file descriptor level.  The
 transcoding:
 
 ```java
-// MediaProvider.java (line 410)
+// MediaProvider.java (line 426)
 private static final int FLAG_TRANSFORM_TRANSCODING = 1 << 0;
 ```
 
@@ -962,7 +1015,7 @@ opens a photo, it receives a redacted file descriptor with EXIF location data
 removed:
 
 ```java
-// MediaProvider.java (line 413)
+// MediaProvider.java (line 429)
 private static final int FLAG_TRANSFORM_REDACTION = 1 << 1;
 ```
 
@@ -970,8 +1023,8 @@ Redacted URIs use a special synthetic path prefix and a unique hash-based
 identifier:
 
 ```java
-// SyntheticPathUtils.java
-public static final String REDACTED_URI_ID_PREFIX = "REDACTED_URI_";
+// packages/providers/MediaProvider/.../util/SyntheticPathUtils.java (line 45)
+public static final String REDACTED_URI_ID_PREFIX = "RUID";
 public static final int REDACTED_URI_ID_SIZE = 36;
 ```
 
@@ -986,7 +1039,7 @@ MediaProvider performs background maintenance during device idle periods.  The
 - Processing trash expiration (trashed files are auto-deleted after 30 days)
 
 ```java
-// MediaProvider.java (line 466)
+// MediaProvider.java (line 482)
 private static final int IDLE_MAINTENANCE_ROWS_LIMIT = 1000;
 ```
 
@@ -1033,7 +1086,7 @@ path of a media file.  Starting with Android 11 (API 30), this column returns
 a fake path that the system intercepts via FUSE:
 
 ```java
-// ContentResolver.java (line 114)
+// ContentResolver.java (line 132 and line 145)
 public static final boolean DEPRECATE_DATA_COLUMNS = true;
 public static final String DEPRECATE_DATA_PREFIX = "/mnt/content/";
 ```
@@ -1057,7 +1110,7 @@ packages/providers/ContactsProvider/src/com/android/providers/contacts/ContactsP
 ```
 
 ```java
-// ContactsProvider2.java (line 244)
+// ContactsProvider2.java (line 251)
 public class ContactsProvider2 extends AbstractContactsProvider
         implements OnAccountsUpdateListener {
 ```
@@ -1191,7 +1244,7 @@ Users can also manually control aggregation through
 ContactsProvider2 defines an extensive set of URI codes:
 
 ```java
-// ContactsProvider2.java (line 344)
+// ContactsProvider2.java (line 351)
 public static final int CONTACTS                    = 1000;
 public static final int CONTACTS_ID                 = 1001;
 public static final int CONTACTS_LOOKUP             = 1002;
@@ -1235,7 +1288,7 @@ queries the work profile's contacts provider and merges results.
 ### 27.4.8 Permissions
 
 ```java
-// ContactsProvider2.java (line 247-248)
+// ContactsProvider2.java (line 254-255)
 private static final String READ_PERMISSION = "android.permission.READ_CONTACTS";
 private static final String WRITE_PERMISSION = "android.permission.WRITE_CONTACTS";
 ```
@@ -1370,7 +1423,7 @@ packages/providers/CalendarProvider/src/com/android/providers/calendar/CalendarP
 ```
 
 ```java
-// CalendarProvider2.java (line 103)
+// CalendarProvider2.java (line 104)
 public class CalendarProvider2 extends SQLiteContentProvider
         implements OnAccountsUpdateListener {
 ```
@@ -1483,7 +1536,7 @@ The `CrossProfileCalendarHelper` enables managed profiles (work profiles) to
 share calendar data with the personal profile, subject to enterprise policy:
 
 ```java
-// CalendarProvider2.java (line 199)
+// CalendarProvider2.java (line 200)
 protected CrossProfileCalendarHelper mCrossProfileCalendarHelper;
 ```
 
@@ -1564,7 +1617,7 @@ expanded window, no new expansion is needed.  The minimum expansion span is
 two months:
 
 ```java
-// CalendarProvider2.java (line 274)
+// CalendarProvider2.java (line 275)
 private static final long MINIMUM_EXPANSION_SPAN =
         2L * 31 * 24 * 60 * 60 * 1000;
 ```
@@ -1599,7 +1652,7 @@ CalendarProvider tracks mutations for sync purposes.  When an event is modified,
 the provider marks it as dirty and records which sync adapter last mutated it:
 
 ```java
-// CalendarProvider2.java (line 212)
+// CalendarProvider2.java (line 213)
 private static final String SQL_UPDATE_EVENT_SET_DIRTY_AND_MUTATORS = "UPDATE " +
         Tables.EVENTS + " SET " +
         Events.DIRTY + "=1," +
@@ -1617,7 +1670,7 @@ locations, and attendee names/emails.  The search query is tokenized and
 each token is matched against these fields:
 
 ```java
-// CalendarProvider2.java (line 365)
+// CalendarProvider2.java (line 366)
 private static final String[] SEARCH_COLUMNS = new String[] {
     CalendarContract.Events.TITLE,
     CalendarContract.Events.DESCRIPTION,
@@ -1631,8 +1684,9 @@ The search uses SQL `LIKE` with a custom escape character (`#`) to handle
 special characters in queries:
 
 ```java
-// CalendarProvider2.java (line 341)
+// CalendarProvider2.java (line 342)
 private static final String SEARCH_ESCAPE_CHAR = "#";
+// (line 349)
 private static final Pattern SEARCH_ESCAPE_PATTERN =
     Pattern.compile("([%_" + SEARCH_ESCAPE_CHAR + "])");
 ```
@@ -1653,7 +1707,7 @@ frameworks/base/packages/SettingsProvider/src/com/android/providers/settings/Set
 ```
 
 ```java
-// SettingsProvider.java (line 197)
+// SettingsProvider.java (line 201)
 public class SettingsProvider extends ContentProvider {
 ```
 
@@ -1693,7 +1747,7 @@ graph TD
 Additionally, two internal namespaces exist:
 
 ```java
-// SettingsProvider.java (line 204-208)
+// SettingsProvider.java (line 208-212)
 public static final String TABLE_SYSTEM = "system";
 public static final String TABLE_SECURE = "secure";
 public static final String TABLE_GLOBAL = "global";
@@ -1709,7 +1763,7 @@ performance optimization because `call()` avoids the overhead of cursor
 creation and Binder marshaling of result sets:
 
 ```java
-// SettingsProvider.java (line 446)
+// SettingsProvider.java (line 463)
 @Override
 public Bundle call(String method, String name, Bundle args) {
     final int requestingUserId = getRequestingUserId(args);
@@ -1755,7 +1809,9 @@ frameworks/base/packages/SettingsProvider/src/com/android/providers/settings/Gen
 ```
 
 This means that reading a setting that has not changed since the last read
-requires zero IPC calls.
+requires zero IPC calls.  The generation index is exposed to clients through
+a shared-memory `MemoryIntArray`, so a client can poll the current generation
+without any Binder round-trip; only a generation mismatch forces a `call()`.
 
 ### 27.6.5 Settings Moved Between Namespaces
 
@@ -1763,7 +1819,7 @@ Over Android's history, settings have been moved between namespaces.  The
 provider maintains migration tables:
 
 ```java
-// SettingsProvider.java (line 300-327)
+// SettingsProvider.java (line 304-328)
 static final Set<String> sSecureMovedToGlobalSettings = new ArraySet<>();
 static final Set<String> sSystemMovedToGlobalSettings = new ArraySet<>();
 static final Set<String> sSystemMovedToSecureSettings = new ArraySet<>();
@@ -1797,7 +1853,7 @@ frameworks/base/packages/SettingsProvider/src/android/provider/settings/validato
 SettingsProvider also registers two system services:
 
 ```java
-// SettingsProvider.java (line 440-441)
+// SettingsProvider.java (line 457-458)
 ServiceManager.addService("settings", new SettingsService(this));
 ServiceManager.addService("device_config", new DeviceConfigService(this));
 ```
@@ -1805,20 +1861,39 @@ ServiceManager.addService("device_config", new DeviceConfigService(this));
 The `device_config` service exposes the `TABLE_CONFIG` namespace, used by
 feature flags and server-pushed configuration.
 
-### 27.6.8 Virtual Device Support
+### 27.6.8 Virtual Device Support (Device-Aware Settings)
 
-SettingsProvider supports per-virtual-device settings overrides.  When the
-calling context is associated with a virtual device (e.g., a companion display),
-the provider first checks for a device-specific setting, then falls back to the
-default device's setting:
+SettingsProvider supports per-virtual-device settings overrides, a feature
+made device-aware in the Android 17 timeframe.  Every entry into `call()`
+captures both the requesting user and the calling device:
 
 ```java
-// SettingsProvider.java (line 468-471)
+// SettingsProvider.java (line 464-465)
+final int requestingUserId = getRequestingUserId(args);
+final int callingDeviceId = getDeviceId();
+```
+
+When the calling context is associated with a virtual device (for example a
+companion display or a remote-display session), the provider first looks up a
+device-specific value, then falls back to the default device's setting if the
+virtual device has no override:
+
+```java
+// SettingsProvider.java (line 485-488)
 if (callingDeviceId != Context.DEVICE_ID_DEFAULT
         && (setting == null || setting.isNull())) {
     setting = getSecureSetting(name, requestingUserId, Context.DEVICE_ID_DEFAULT);
 }
 ```
+
+Two important constraints follow from how the device ID participates in the
+setting key (Section 27.6.10):
+
+1. Device-aware overrides apply only to the `Secure` and `System` namespaces.
+   `Global`, `config`, and `ssaid` settings are never device-scoped.
+2. Virtual-device overrides are intentionally *not* persisted to XML.  Virtual
+   devices are ephemeral, so `system_server` keeps device-specific values in
+   memory only and lets them disappear when the virtual device goes away.
 
 ### 27.6.9 The SettingsState Class
 
@@ -1830,7 +1905,7 @@ frameworks/base/packages/SettingsProvider/src/com/android/providers/settings/Set
 ```
 
 ```java
-// SettingsState.java (line 97)
+// SettingsState.java (line 99)
 public class SettingsState {
 ```
 
@@ -1843,7 +1918,7 @@ immediately and asynchronously flushed to XML.  However, for critical settings
 (like `DEVICE_PROVISIONED`), writes are synchronous:
 
 ```java
-// SettingsProvider.java (line 289)
+// SettingsProvider.java (line 292)
 private static final Set<String> CRITICAL_GLOBAL_SETTINGS = new ArraySet<>();
 static {
     CRITICAL_GLOBAL_SETTINGS.add(Settings.Global.DEVICE_PROVISIONED);
@@ -1898,7 +1973,7 @@ the server push mechanism can read/write it.
 Sync modes for DeviceConfig:
 
 ```java
-// SettingsProvider.java (line 520)
+// SettingsProvider.java (line 537)
 case Settings.CALL_METHOD_SET_SYNC_DISABLED_MODE_CONFIG -> {
     final int mode = getSyncDisabledMode(args);
     setSyncDisabledModeConfig(mode);
@@ -1916,7 +1991,7 @@ The three sync modes are:
 SettingsProvider creates fallback copies of settings files for crash recovery:
 
 ```java
-// SettingsProvider.java (line 264)
+// SettingsProvider.java (line 268)
 public static final int WRITE_FALLBACK_SETTINGS_FILES_JOB_ID = 1;
 public static final long ONE_DAY_INTERVAL_MILLIS = 24 * 60 * 60 * 1000L;
 ```
@@ -1931,7 +2006,7 @@ Instant Apps (apps that run without installation) have restricted access to
 settings.  Only an allowlisted subset of settings is readable:
 
 ```java
-// SettingsProvider.java (line 268-284)
+// SettingsProvider.java (line 272-274)
 private static final Set<String> OVERLAY_ALLOWED_GLOBAL_INSTANT_APP_SETTINGS = new ArraySet<>();
 private static final Set<String> OVERLAY_ALLOWED_SYSTEM_INSTANT_APP_SETTINGS = new ArraySet<>();
 private static final Set<String> OVERLAY_ALLOWED_SECURE_INSTANT_APP_SETTINGS = new ArraySet<>();
@@ -2031,7 +2106,7 @@ DocumentsProvider enforces a strict security model:
 1. The provider must require `android.permission.MANAGE_DOCUMENTS`:
 
 ```java
-// DocumentsProvider.java (line 170)
+// DocumentsProvider.java (line 170, check at line 180)
 @Override
 public void attachInfo(Context context, ProviderInfo info) {
     // ...
@@ -2278,7 +2353,7 @@ for backward compatibility.
 Observers register through `ContentResolver`:
 
 ```java
-// ContentResolver.java (line 2674)
+// ContentResolver.java (line 2762)
 public final void registerContentObserver(@NonNull Uri uri,
         boolean notifyForDescendants, @NonNull ContentObserver observer) {
     // ...
@@ -2295,7 +2370,7 @@ will fire when `content://media/external/images/media/42` changes.
 Providers (or any code with access to `ContentResolver`) fire notifications:
 
 ```java
-// ContentResolver.java (line 2774)
+// ContentResolver.java (line 2862)
 public void notifyChange(@NonNull Uri uri, @Nullable ContentObserver observer) {
     notifyChange(uri, observer, true /* sync to network */);
 }
@@ -2314,13 +2389,13 @@ public void notifyChange(@NonNull Collection<Uri> uris,
 Notification flags:
 
 ```java
-// ContentResolver.java
+// ContentResolver.java (lines 693-746)
 public static final int NOTIFY_SYNC_TO_NETWORK = 1 << 0;  // Trigger sync
 public static final int NOTIFY_SKIP_NOTIFY_FOR_DESCENDANTS = 1 << 1;
 public static final int NOTIFY_INSERT = 1 << 2;
 public static final int NOTIFY_UPDATE = 1 << 3;
 public static final int NOTIFY_DELETE = 1 << 4;
-public static final int NOTIFY_NO_DELAY = 1 << 5;
+public static final int NOTIFY_NO_DELAY = 1 << 15;
 ```
 
 ### 27.8.5 The Notification Flow
@@ -2473,13 +2548,14 @@ Two strategies address this:
 CalendarProvider uses a debounce strategy with a broadcast timeout:
 
 ```java
-// CalendarProvider2.java (line 384)
+// CalendarProvider2.java (line 385)
 private static final long UPDATE_BROADCAST_TIMEOUT_MILLIS =
     DateUtils.SECOND_IN_MILLIS;
 ```
 
 Any change notifications within a 1-second window are collapsed into a single
-broadcast.
+broadcast.  A separate `SYNC_UPDATE_BROADCAST_TIMEOUT_MILLIS` (30 seconds)
+coalesces the noisier stream of changes that sync adapters produce.
 
 ### 27.8.12 Cursor Auto-Refresh via setNotificationUri
 
@@ -2684,7 +2760,7 @@ For clone profiles, certain authorities are redirected.  MediaProvider is
 explicitly handled:
 
 ```java
-// ContentProvider.java (line 159)
+// ContentProvider.java (line 162)
 public static boolean isAuthorityRedirectedForCloneProfile(String authority) {
     return MediaStore.AUTHORITY.equals(authority);
 }
@@ -2827,7 +2903,7 @@ The `DEPRECATE_DATA_COLUMNS` mechanism in `ContentResolver` transforms file
 paths into content URIs transparently:
 
 ```java
-// ContentResolver.java (line 114)
+// ContentResolver.java (line 132 and line 145)
 public static final boolean DEPRECATE_DATA_COLUMNS = true;
 public static final String DEPRECATE_DATA_PREFIX = "/mnt/content/";
 ```
@@ -2843,12 +2919,120 @@ working while still enforcing scoped storage permissions.
 
 ---
 
-## 27.10 Try It Yourself
+## 27.10 Android 17 Changes for Content Providers
+
+Android 17 (SDK 37, codename Cinnamon Bun) introduced no sweeping redesign of
+the content-provider model; the `IContentProvider` shape, the `Transport`
+permission flow, and the `CursorWindow` transport are all unchanged.  The
+changes are targeted: a hardening of file-open modes, a more precise ANR
+contract for `ContentProviderClient`, and the formalization of device-aware
+settings.  This section collects them.
+
+### 27.10.1 File-Open Mode Sanitization
+
+As described in Section 27.1.11, `ContentProvider.Transport` now passes every
+`openFile()` / `openAssetFile()` mode string through `validateFileMode()`
+before permission checking and delegation.  The motivation is a security fix:
+a caller that requested a read open (`r`) but accidentally (or maliciously)
+set the truncate (`t`) or append (`a`) bit could previously cause writes
+through what looked like a read path.  The transport now silently strips `t`
+and `a` whenever the write bit `w` is absent.
+
+```mermaid
+flowchart TD
+    A["Caller: openFile(uri, mode)"] --> B["Transport.validateFileMode(mode)"]
+    B --> C{"mode contains w?"}
+    C -- "Yes" --> D["mode unchanged"]
+    C -- "No" --> E["strip t and a bits"]
+    D --> F["enforceFilePermission(updatedMode)"]
+    E --> F
+    F --> G["provider.openFile(uri, updatedMode)"]
+
+    style A fill:#4da6e8,stroke:#333,color:#000
+    style E fill:#e87d4d,stroke:#333,color:#000
+    style G fill:#4de84d,stroke:#333,color:#000
+```
+
+The fix is intentionally lenient (drop bits, do not throw) to avoid breaking
+apps that pass sloppy mode strings, but the net effect is that a read-only
+grant can no longer be coerced into truncating a file.
+
+### 27.10.2 ContentProviderClient ANR on Cancellation
+
+`ContentProviderClient.setDetectNotResponding(long)` has long let a caller arm
+a watchdog: if a remote provider call blocks longer than the configured
+timeout, the provider process is killed with an ANR.  The original timeout was
+fixed and started ticking the moment the call was made, which is awkward for
+long-running cancellable calls (a `query()` or `call()` that legitimately runs
+for a while but honors a `CancellationSignal`).
+
+Android 17 adds the system API `setDetectNotRespondingOnCancel(long, long)`,
+gated by the flag
+`android.content.flags.enable_content_provider_client_anr_on_cancel`:
+
+```java
+// frameworks/base/core/java/android/content/ContentProviderClient.java (line 222)
+@SystemApi
+@FlaggedApi(FLAG_ENABLE_CONTENT_PROVIDER_CLIENT_ANR_ON_CANCEL)
+@RequiresPermission(android.Manifest.permission.REMOVE_TASKS)
+public void setDetectNotRespondingOnCancel(
+        @DurationMillisLong long timeoutFixedMillis,
+        @DurationMillisLong long timeoutOnCancelMillis) {
+    // ...
+}
+```
+
+It configures two independent timeouts:
+
+| Parameter | Applies to | Clock starts |
+|-----------|-----------|--------------|
+| `timeoutFixedMillis` | All calls (including ones without a `CancellationSignal`) | When the call is made |
+| `timeoutOnCancelMillis` | Only calls that take a `CancellationSignal` | When the cancellation signal is fired |
+
+For a cancellable call, the watchdog therefore measures how long the provider
+takes to honor a cancel, not how long the call has been running. The legacy
+`setDetectNotResponding(long)` is now a thin wrapper that delegates with a zero
+on-cancel timeout, so existing callers behave exactly as before.
+
+Internally, the client schedules its watchdog runnables (`NotRespondingRunnable`,
+`CallNotCancelledRunnable`) in `beforeRemote()` and clears them in
+`afterRemote()`.  Android 17 also added an `afterRemote()` overload that takes
+the `CancellationSignal` so the client can detach its on-cancel listener once a
+call returns, preventing a cancel fired *after* the call completed from
+tripping the ANR detector (a former source of false-positive ANRs).
+
+### 27.10.3 ContentProviderClient Refactor
+
+Independent of the ANR work, `ContentProviderClient`'s per-operation
+boilerplate was consolidated in Android 17.  The repetitive pattern around each
+remote call (arm the watchdog, make the Binder call, translate
+`RemoteException` / `DeadObjectException`, disarm the watchdog) was factored
+into a small set of helper executors and functional interfaces.  This is an
+internal cleanup with no API surface change, but it is why the per-method
+bodies in this file are now much shorter than in earlier releases: each public
+method funnels its remote call through a shared executor that owns the ANR and
+exception handling.
+
+### 27.10.4 Device-Aware Settings
+
+The per-virtual-device settings story described in Section 27.6.8 was promoted
+to a first-class, documented behavior in the Android 17 timeframe.  Both the
+`call()` fast path and the legacy mutation path capture the calling device ID
+via `getDeviceId()` and thread it through the setting key (Section 27.6.10), so
+`Secure` and `System` settings can carry a virtual-device override that falls
+back to the default-device value when absent.  As noted earlier, these
+overrides are deliberately ephemeral (never persisted) because virtual devices
+themselves are ephemeral, and the mechanism is restricted to the `Secure` and
+`System` namespaces; `Global`, `config`, and `ssaid` remain device-agnostic.
+
+---
+
+## 27.11 Try It Yourself
 
 This section provides hands-on exercises for exploring content providers
 on an AOSP build or emulator.
 
-### 27.10.1 Querying MediaStore from the Shell
+### 27.11.1 Querying MediaStore from the Shell
 
 Use `content` shell command to query MediaProvider:
 
@@ -2868,7 +3052,7 @@ adb shell content query --uri content://media/external/audio/media \
 adb shell content query --uri content://media/external/fs_id
 ```
 
-### 27.10.2 Reading and Writing Settings
+### 27.11.2 Reading and Writing Settings
 
 ```bash
 # Read a system setting
@@ -2889,7 +3073,7 @@ adb shell settings list secure
 adb shell settings list global
 ```
 
-### 27.10.3 Querying Contacts
+### 27.11.3 Querying Contacts
 
 ```bash
 # List all contacts
@@ -2905,7 +3089,7 @@ adb shell content query --uri content://com.android.contacts/data \
     --where "mimetype='vnd.android.cursor.item/phone_v2'"
 ```
 
-### 27.10.4 Querying Calendar Events
+### 27.11.4 Querying Calendar Events
 
 ```bash
 # List all calendars
@@ -2917,7 +3101,7 @@ adb shell content query --uri content://com.android.calendar/events \
     --projection _id:title:dtstart:dtend:calendar_id
 ```
 
-### 27.10.5 Inserting and Deleting Content
+### 27.11.5 Inserting and Deleting Content
 
 ```bash
 # Insert a new contact (raw contact + data)
@@ -2935,7 +3119,7 @@ adb shell content insert --uri content://com.android.contacts/data \
 adb shell content delete --uri content://com.android.contacts/raw_contacts/1
 ```
 
-### 27.10.6 Observing Content Changes
+### 27.11.6 Observing Content Changes
 
 ```bash
 # Watch for changes to the media database
@@ -2950,7 +3134,7 @@ adb shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE \
 # The first terminal should show a notification
 ```
 
-### 27.10.7 Dumping Provider State
+### 27.11.7 Dumping Provider State
 
 ```bash
 # Dump MediaProvider state
@@ -2963,7 +3147,7 @@ adb shell dumpsys activity provider com.android.providers.settings/.SettingsProv
 adb shell dumpsys activity provider com.android.providers.contacts/.ContactsProvider2
 ```
 
-### 27.10.8 Examining the SAF
+### 27.11.8 Examining the SAF
 
 ```bash
 # List DocumentsProvider roots
@@ -2975,7 +3159,7 @@ adb shell content query \
     --uri content://com.android.externalstorage.documents/document/primary%3A/children
 ```
 
-### 27.10.9 Writing a Minimal ContentProvider
+### 27.11.9 Writing a Minimal ContentProvider
 
 Create a simple provider to understand the lifecycle:
 
@@ -3083,7 +3267,7 @@ Register in AndroidManifest.xml:
     android:grantUriPermissions="true" />
 ```
 
-### 27.10.10 Tracing Provider IPC
+### 27.11.10 Tracing Provider IPC
 
 Use system tracing to observe content provider Binder calls:
 
@@ -3107,7 +3291,7 @@ In the trace, you will see:
 3. The actual SQLite query (if the provider uses SQLite)
 4. The cursor serialization back across Binder
 
-### 27.10.11 Inspecting Provider Databases
+### 27.11.11 Inspecting Provider Databases
 
 On a userdebug/eng build, you can directly examine provider databases:
 
@@ -3125,7 +3309,7 @@ adb shell sqlite3 /data/data/com.android.providers.calendar/databases/calendar.d
     "SELECT name FROM sqlite_master WHERE type='table'"
 ```
 
-### 27.10.12 Performance Testing
+### 27.11.12 Performance Testing
 
 Measure content provider query latency:
 
@@ -3179,18 +3363,27 @@ foundations to its concrete implementations.  The key takeaways:
    permissions, URI grants, AppOps, and attribution sources work together to
    provide both broad and fine-grained access control.
 
+7. **Android 17 hardened the edges, not the core** -- The framework gained
+   file-open mode sanitization in `Transport` (truncate/append bits dropped
+   without write), a cancellation-aware ANR contract for
+   `ContentProviderClient` (`setDetectNotRespondingOnCancel`), an internal
+   refactor of that client's remote-call boilerplate, and a documented
+   device-aware path for `Secure`/`System` settings.
+
 ### Key Source Files Referenced
 
 | File | Description |
 |------|-------------|
-| `frameworks/base/core/java/android/content/ContentProvider.java` | Abstract base class (3,006 lines) |
-| `frameworks/base/core/java/android/content/ContentResolver.java` | Client-side facade (4,268 lines) |
-| `frameworks/base/core/java/android/content/ContentProviderNative.java` | Binder stub (974 lines) |
+| `frameworks/base/core/java/android/content/ContentProvider.java` | Abstract base class (3,019 lines) |
+| `frameworks/base/core/java/android/content/ContentResolver.java` | Client-side facade (4,369 lines) |
+| `frameworks/base/core/java/android/content/ContentProviderNative.java` | Binder stub (976 lines) |
+| `frameworks/base/core/java/android/content/ContentProviderClient.java` | Per-authority client with ANR detection (908 lines) |
 | `frameworks/base/core/java/android/content/IContentProvider.java` | IPC interface |
 | `frameworks/base/core/java/android/database/ContentObserver.java` | Change observer |
+| `frameworks/base/core/java/android/database/CursorWindow.java` | Shared-memory cursor window |
 | `frameworks/base/core/java/android/provider/DocumentsProvider.java` | SAF base class |
 | `frameworks/base/core/java/android/provider/DocumentsContract.java` | SAF contract constants |
-| `packages/providers/MediaProvider/src/.../MediaProvider.java` | MediaStore implementation (13,027 lines) |
+| `packages/providers/MediaProvider/src/.../MediaProvider.java` | MediaStore implementation (13,610 lines) |
 | `packages/providers/MediaProvider/src/.../LocalUriMatcher.java` | Media URI routing |
 | `packages/providers/MediaProvider/src/.../MediaVolume.java` | Volume representation |
 | `packages/providers/MediaProvider/src/.../scan/ModernMediaScanner.java` | Media file scanner |

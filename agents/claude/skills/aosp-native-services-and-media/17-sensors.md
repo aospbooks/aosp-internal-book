@@ -538,7 +538,7 @@ The `flags` field encodes:
 | `ADDITIONAL_INFO` | 6 | Supports additional info frames |
 | `DIRECT_CHANNEL_ASHMEM` | 10 | Supports ashmem direct channel |
 | `DIRECT_CHANNEL_GRALLOC` | 11 | Supports gralloc direct channel |
-| `DIRECT_REPORT` | 7-9 | Maximum direct report rate level |
+| `MASK_DIRECT_REPORT` / `SHIFT_DIRECT_REPORT` | 7-9 | Maximum direct report rate level (mask `0x380`, shift `7`) |
 
 ### 17.3.4 SensorDevice -- The Framework-Side HAL Proxy
 
@@ -962,6 +962,7 @@ Source: hardware/interfaces/sensors/aidl/android/hardware/sensors/SensorType.aid
 | `LINEAR_ACCELERATION` | 10 | Continuous | m/s^2 | Acceleration without gravity component |
 | `POSE_6DOF` | 28 | Continuous | matrix | Full 6-DOF pose (position + orientation) |
 | `DEVICE_ORIENTATION` | 27 | On-change | 0-3 | Device orientation in 90-degree increments |
+| `HINGE_ANGLE` | 36 | On-change | degrees | Hinge opening angle on foldables |
 | `HEADING` | 42 | Continuous | degrees | Direction relative to true north (automotive) |
 
 ### 17.5.3 Environment Sensors
@@ -1007,7 +1008,7 @@ Source: hardware/interfaces/sensors/aidl/android/hardware/sensors/SensorType.aid
 |------|----|---------------|-------------|
 | `HEAD_TRACKER` | 37 | Continuous | Head orientation for spatial audio |
 
-This type is discussed in detail in Section 15.7.
+This type is discussed in detail in Section 17.8.
 
 ### 17.5.8 Reporting Modes
 
@@ -1662,7 +1663,7 @@ relative to the **East-North-Up (ENU)** coordinate frame:
 ### 17.10.3 Head-Centric Frame
 
 The `HEAD_TRACKER` sensor uses a different coordinate system centered on
-the user's head (see Section 15.7.1).  This frame is natural for spatial
+the user's head (see Section 17.8.1).  This frame is natural for spatial
 audio processing where the audio scene is defined relative to the
 listener's head.
 
@@ -1994,9 +1995,266 @@ library.  The proxy handles:
 
 ---
 
-## 17.15 Try It -- Hands-On Sensor Exercises
+## 17.15 Android 17 Sensor Changes
 
-### 17.15.1 List All Sensors on a Device
+Android 17 layers two notable changes onto the architecture described above:
+a `SensorService`-side mechanism that stops streaming events to *frozen*
+processes, and a Context Hub Runtime Environment (CHRE) **data-flow** facility
+that lets nanoapps push high-throughput streams through shared memory rather
+than discrete event messages.  Both are gated by feature flags, so the legacy
+paths described in the earlier sections remain the fallback.
+
+### 17.15.1 Suspending Events for Frozen Clients
+
+Apps that are cached in the background can be *frozen* by the framework: the
+kernel freezer (`cgroup freezer`) stops scheduling their threads entirely.  A
+frozen app cannot drain its sensor socket, so before Android 17 `SensorService`
+would keep filling the per-connection `BitTube` until it backed up, wasting
+buffer memory and, for wake-up sensors, holding the service wake lock waiting
+for an acknowledgement that never comes.
+
+Android 17 adds an explicit frozen-state path, guarded by the
+`suspend_sensor_event_delivery_on_frozen_pid` flag:
+
+```
+Source: frameworks/base/core/java/android/hardware/flags/sensor_service.aconfig
+        frameworks/native/services/sensorservice/SensorService.cpp (line ~1956)
+        frameworks/native/services/sensorservice/SensorService.h (line ~348)
+```
+
+When the flag is enabled, each `SystemSensorManager` registers a lightweight
+listener binder with the service the first time it is constructed:
+
+```
+Source: frameworks/base/core/java/android/hardware/SystemSensorManager.java (line ~153)
+        frameworks/base/core/java/android/hardware/sensor/ISensorClientListener.aidl
+```
+
+`ISensorClientListener` is deliberately an **empty interface** -- it defines no
+methods.  Its only purpose is to give `SensorService` a binder object that
+represents the client process so the service can observe that process's
+lifecycle:
+
+```aidl
+// ISensorClientListener.aidl
+interface ISensorClientListener {
+    // This is an empty listener that creates a binder proxy object for sensor
+    // service to query the status of each system sensor manager.
+}
+```
+
+The Java side wires it up through `nativeRegisterClientListener()`, which calls
+`SensorManager::registerClientListener()` in `libsensor`, ultimately landing in
+`SensorService::registerClientListener()`:
+
+```
+Source: frameworks/base/core/jni/android_hardware_SensorManager.cpp (nativeRegisterClientListener)
+        frameworks/native/libs/sensor/include/sensor/ISensorServer.h (line ~62)
+        frameworks/native/services/sensorservice/SensorService.cpp (line ~1978)
+```
+
+For each registered listener, `SensorService` creates a `ClientStateRecipient`
+that is both an `IBinder::DeathRecipient` and an
+`IBinder::FrozenStateChangeCallback`, then attaches it with `linkToDeath()` and
+`addFrozenStateChangeCallback()`:
+
+```cpp
+// SensorService.cpp registerClientListener(), line ~1998
+sp<ClientStateRecipient> recipient = new ClientStateRecipient(this, listener, pid, uid);
+sp<IBinder> binder = IInterface::asBinder(listener);
+binder->linkToDeath(recipient);
+binder->addFrozenStateChangeCallback(recipient);
+mBinderStateRecipients[listener] = recipient;
+```
+
+When the client's frozen state changes, binder invokes
+`ClientStateRecipient::onStateChanged()`.  The recipient debounces the
+transition under `mFrozenStateLock` (two binder threads can otherwise both
+observe an unchanged value and post duplicate messages) and forwards the change
+to the service's `Looper` via a `FrozenStateChangeHandler`:
+
+```
+Source: frameworks/native/services/sensorservice/SensorService.cpp (line ~1934)
+        frameworks/native/services/sensorservice/SensorService.h (FrozenStateChangeHandler, line ~366)
+```
+
+The handler runs `onClientFrozenStateChange()`, which walks the active
+connections and toggles the frozen flag on every `SensorEventConnection` that
+belongs to the affected PID:
+
+```cpp
+// SensorService.cpp onClientFrozenStateChange(), line ~1956
+SensorDevice& dev(SensorDevice::getInstance());
+ConnectionSafeAutolock connLock = mConnectionHolder.lock(mLock);
+for (const sp<SensorEventConnection>& conn : connLock.getActiveConnections()) {
+    if (conn->getPid() == pid) {
+        dev.setFrozenStateForConnection(conn.get(), isFrozen);
+    }
+}
+```
+
+`SensorDevice::setFrozenStateForConnection()` records the state so the device
+layer can stop delivering events to that connection's identity while it is
+frozen, and resume when it thaws:
+
+```
+Source: frameworks/native/services/sensorservice/SensorDevice.h (line ~108)
+```
+
+```mermaid
+sequenceDiagram
+    participant FW as ActivityManager (freezer)
+    participant BD as Binder Driver
+    participant CSR as ClientStateRecipient
+    participant SS as SensorService Looper
+    participant SD as SensorDevice
+
+    FW->>BD: Freeze client PID (cgroup freezer)
+    BD->>CSR: onStateChanged(FROZEN)
+    CSR->>CSR: Debounce under mFrozenStateLock
+    CSR->>SS: post FrozenStateChangeHandler
+    SS->>SS: onClientFrozenStateChange(pid, true)
+    SS->>SD: setFrozenStateForConnection(conn, true)
+    Note over SD: Stop delivering events to this connection
+    FW->>BD: Thaw client PID
+    BD->>CSR: onStateChanged(UNFROZEN)
+    CSR->>SS: post FrozenStateChangeHandler
+    SS->>SD: setFrozenStateForConnection(conn, false)
+    Note over SD: Resume event delivery
+```
+
+If the client dies while registered, `binderDied()` (and `onClientDied()`)
+calls `unregisterClientListener()`, which removes the recipient and detaches the
+death and frozen-state callbacks.  Every entry point in this path is a no-op
+when the flag is off (the functions return `INVALID_OPERATION` /
+`UNKNOWN_TRANSACTION`), so devices that have not flipped the flag keep the
+pre-17 behaviour.
+
+### 17.15.2 CHRE Data Flows: High-Throughput Streaming Between Endpoints
+
+The Context Hub Runtime Environment (CHRE) runs sensor-processing *nanoapps* on
+a low-power coprocessor (the sensor hub) so the application processor can stay
+asleep.  Historically, a CHRE endpoint moved data by sending discrete *messages*
+to peers.  Android 17 introduces **data flows**: a shared-memory streaming
+primitive purpose-built for one source feeding many sinks with minimal copies.
+
+```
+Source: system/chre/chre_api/include/chre_api/chre/data_flow.h (@since v1.12)
+        system/chre/core/include/chre/core/data_flow_manager.h
+        system/chre/core/data_flow_manager.cc
+        system/chre/data_flow/
+```
+
+A data flow is uniquely identified by the message-hub ID of its source plus a
+data-flow ID.  The source nanoapp creates the flow and pushes elements into it;
+sink nanoapps (or endpoints on other hubs, or on the application processor)
+attach, read elements out of the same backing memory, and release them.  Because
+the payload lives in a shared region, the data is not copied per hop -- only
+small index and metadata updates cross the boundary.
+
+```mermaid
+sequenceDiagram
+    participant SRC as Source Nanoapp
+    participant DFM as DataFlowManager (CHRE core)
+    participant SHM as Shared Data Region
+    participant SNK as Sink Nanoapp
+
+    SRC->>DFM: chreDataFlowCreateAsync(...)
+    DFM-->>SRC: CHRE_EVENT_DATA_FLOW_CREATED (dataFlowId, size)
+    SNK->>DFM: request sink via endpoint messaging
+    DFM-->>SRC: sink-create request
+    SRC->>DFM: create sink, configure policy
+    DFM-->>SNK: CHRE_EVENT_DATA_FLOW_SINK_CREATED
+    SNK->>DFM: chreDataFlowSinkEnable()
+    loop Streaming
+        SRC->>SHM: write element (no copy)
+        DFM-->>SNK: CHRE_EVENT_DATA_FLOW_ALERT
+        SNK->>SHM: read + release element
+    end
+    SRC->>DFM: destroy flow (or on unload)
+    DFM-->>SNK: CHRE_EVENT_DATA_FLOW_STOPPED
+```
+
+Each sink configures a **policy** that controls when it is woken, which is the
+key to batching power-sensitive sensor streams.  `chreDataFlowSinkPolicy`
+combines a *new-data alert policy* with an *overwrite policy*:
+
+```
+Source: system/chre/chre_api/include/chre_api/chre/data_flow.h
+        (chreDataFlowSinkNewDataAlertPolicy, chreDataFlowSinkOverwritePolicy)
+```
+
+| Alert policy | Value | When the sink is alerted |
+|--------------|-------|--------------------------|
+| `NEVER` | 0 | Never; the sink polls the flow itself |
+| `OPPORTUNISTIC` | 1 | When the system deems wake-up cheap (uses a low watermark) |
+| `HIGH_WATER_MARK` | 2 | When the flow reaches a configured high watermark |
+| `PERIODIC` | 3 | On a configured period in milliseconds |
+| `STREAMING` | 4 | On every write (the platform may coalesce or throttle) |
+
+The overwrite policy is either `ALLOWED` (the source may overwrite data a slow
+sink has not yet read) or `DISALLOWED` (the source blocks rather than discard
+unread data).  Together these let a high-rate accelerometer source feed, say, an
+opportunistically-woken gesture sink and a streaming logging sink from the same
+buffer, each draining at its own cadence.
+
+On the framework side, the Context Hub HAL gained the shared-memory plumbing in
+its AIDL version 5.  A `SharedDataRegion` parcelable describes a block of shared
+memory (a mappable file descriptor, size, and required Android permissions) that
+backs one or more data flows; vendors are required to use the
+`/system/chre/data_flow:contexthub_data_flow` library rather than hand-rolling
+access to the layout:
+
+```
+Source: hardware/interfaces/contexthub/aidl/android/hardware/contexthub/SharedDataRegion.aidl
+        hardware/interfaces/contexthub/aidl/android/hardware/contexthub/DataFlowAlertFds.aidl
+        hardware/interfaces/contexthub/aidl/android/hardware/contexthub/IEndpointCommunication.aidl
+```
+
+The shared region is laid out as a set of `@FixedSize` structures so that 32-bit
+and 64-bit cores -- and endpoints built against different library versions --
+can interpret the same bytes.  All references are byte offsets from the region
+base, never raw pointers:
+
+```mermaid
+graph TB
+    subgraph "SharedDataRegion (mmaped FD)"
+        META["DataFlowMetadata<br/>version, elementConfig,<br/>blockListEpoch"]
+        SRC["DataFlowSourceMetadata<br/>writeIndex, tailBlockOffset"]
+        SNKM["DataFlowSinkMetadata<br/>readIndex, sourceFlags/sinkFlags"]
+        BLK["DataFlowBlockHeader + data<br/>(linked block list)"]
+    end
+    META --> SRC
+    META --> SNKM
+    META --> BLK
+    SRC -.->|writeIndex| BLK
+    SNKM -.->|readIndex| BLK
+```
+
+The source advances an atomic `writeIndex` in `DataFlowSourceMetadata`; each
+sink advances its own atomic `readIndex` in its `DataFlowSinkMetadata`, and the
+distance between the two is how far the sink is behind.  A split
+`sourceFlags`/`sinkFlags` pair (each a 16-bit value plus a counter) emulates a
+single source-set flag that the sink can atomically "clear" even across cores
+where a true read-modify-write would not be coherent; the source uses it to
+signal exceptional states such as `BLOCKING`, `OVERWRITE`, `FINISHED`, and
+`DISCONNECTED`.  When the source overwrites a slow sink, a `DataFlowAlertFds`
+record carries the waking and non-waking file descriptors used to notify the
+affected endpoints.
+
+CHRE's `DataFlowManager` (built only when `CHRE_DATA_FLOW_SUPPORT_ENABLED` is
+defined) owns this state on the coprocessor: it allocates blocks on demand,
+builds consumer policies, and routes alerts through the message router.  Data
+flows are the foundation for streaming sensor batches to nanoapps and to the
+host with far fewer wake-ups and copies than the per-message path, and they sit
+alongside -- not in place of -- the `ISensors` FMQ path that `SensorService`
+uses for the standard application sensor API.
+
+---
+
+## 17.16 Try It -- Hands-On Sensor Exercises
+
+### 17.16.1 List All Sensors on a Device
 
 ```shell
 adb shell dumpsys sensorservice
@@ -2011,7 +2269,7 @@ This dumps:
 - Operating mode and privacy state
 - Recent registration history
 
-### 17.15.2 Monitor Sensor Events in Real Time
+### 17.16.2 Monitor Sensor Events in Real Time
 
 Using `sensorservice` directly:
 
@@ -2045,7 +2303,7 @@ sm.registerListener(new SensorEventListener() {
 }, accel, SensorManager.SENSOR_DELAY_GAME);
 ```
 
-### 17.15.3 Examine Batching Behaviour
+### 17.16.3 Examine Batching Behaviour
 
 ```java
 // Request 100 Hz with 10-second batching
@@ -2059,7 +2317,7 @@ sm.flush(listener);
 // onFlushCompleted() will be called after all batched events are delivered
 ```
 
-### 17.15.4 Use a Direct Channel
+### 17.16.4 Use a Direct Channel
 
 ```java
 // Create shared memory
@@ -2080,7 +2338,7 @@ channel.configure(accel, SensorDirectChannel.RATE_STOP);
 channel.close();
 ```
 
-### 17.15.5 Inject Test Data
+### 17.16.5 Inject Test Data
 
 ```shell
 # Enable data injection mode
@@ -2099,7 +2357,7 @@ sm.injectSensorData(accel, fakeEvent.values, fakeEvent.accuracy,
         fakeEvent.timestamp);
 ```
 
-### 17.15.6 Trace Sensor Performance
+### 17.16.6 Trace Sensor Performance
 
 ```shell
 # Enable sensor atrace category
@@ -2112,7 +2370,7 @@ adb pull /data/local/tmp/sensors.trace
 # Open in Perfetto UI: ui.perfetto.dev
 ```
 
-### 17.15.7 Monitor Power Impact
+### 17.16.7 Monitor Power Impact
 
 ```shell
 # Battery historian can show wake lock durations
@@ -2128,7 +2386,7 @@ Check which sensors are active and their power draw:
 adb shell dumpsys sensorservice | grep "Active sensors"
 ```
 
-### 17.15.8 Inspect Sensor Fusion State
+### 17.16.8 Inspect Sensor Fusion State
 
 ```shell
 adb shell dumpsys sensorservice | grep -A5 "Fusion States"
@@ -2142,7 +2400,7 @@ This displays for each fusion mode:
 - Current attitude quaternion (x, y, z, w) and its magnitude
 - Estimated gyro bias vector
 
-### 17.15.9 Test Dynamic Sensors
+### 17.16.9 Test Dynamic Sensors
 
 If you have a Bluetooth sensor (e.g., a headset with head tracking):
 
@@ -2160,7 +2418,7 @@ sm.registerDynamicSensorCallback(new DynamicSensorCallback() {
 });
 ```
 
-### 17.15.10 Explore the Source
+### 17.16.10 Explore the Source
 
 Here is a roadmap for further reading in the AOSP source tree:
 
@@ -2210,8 +2468,15 @@ correctness and efficiency:
    wake-lock protocols ensure events are not lost during suspend, and
    UID policy throttles background applications.
 
-6. **Head tracking** is the newest sensor type, enabling spatial audio
-   in headphones via Bluetooth dynamic sensors.
+6. **Head tracking** (`HEAD_TRACKER`) enables spatial audio in headphones
+   via Bluetooth dynamic sensors, feeding the audio Spatializer.
+
+7. **Android 17** adds a frozen-client path so `SensorService` stops
+   streaming events to processes the framework has frozen (registered via the
+   empty `ISensorClientListener` binder and binder frozen-state callbacks), and
+   introduces CHRE **data flows** -- a shared-memory streaming primitive that
+   moves high-throughput sensor data between nanoapps and the host with minimal
+   copies and per-sink wake-up policies.
 
 The key design principle throughout is that sensor data flows through a
 single, well-audited path -- from hardware through the HAL, through

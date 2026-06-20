@@ -1014,12 +1014,16 @@ Notable observations:
   libaom (reference), dav1d (optimized for speed), and libgav1 (Google's implementation).
   In practice, dav1d is the preferred software decoder due to its superior performance.
 
-- **IAMF (Immersive Audio Model and Formats)**: This is a relatively new addition
-  supporting the IAMF standard for spatial audio, reflecting Android's push toward
-  immersive media.
+- **IAMF (Immersive Audio Model and Formats)**: The `iamf/` family is a software decoder
+  for the AOM Immersive Audio Model and Formats standard (`audio/iamf`), built on the
+  `external/iamf_tools` library. It is gated by the `iamf_software_decoder` flag in
+  `frameworks/av/media/aconfig/swcodec_flags.aconfig` and registered for `minsdk="36"`.
+  Section 16.3.13 walks through it.
 
-- **APV (Advanced Professional Video)**: Another recent addition for professional video
-  workflows.
+- **APV (Advanced Professional Video)**: The `apv/` family decodes and encodes Samsung's
+  APV intra-only professional codec (`video/apv`), built on `external/libopenapv`. It is
+  gated by the `apv_software_codec` flag and ships disabled by default (`enabled="false"`
+  in the codec list) so devices opt in explicitly. Section 16.3.12 covers it.
 
 Each software codec extends the `SimpleC2Component` base class and implements the
 `IntfImpl` pattern for parameter declaration:
@@ -1185,6 +1189,233 @@ input and output together. The client submits a `C2Work` with input data filled 
 component processes it and fills in the output data within the same `C2Work` structure,
 then returns it via the `onWorkDone` callback. This design eliminates the complex
 buffer-matching logic required by OMX.
+
+### 16.3.12 APV: The Advanced Professional Video Codec
+
+Android 17 adds a software codec for APV (Advanced Professional Video), the intra-only
+mezzanine codec that Samsung contributed and that the Alliance for Open Media has since
+adopted. APV targets professional capture and editing workflows where every frame is a
+keyframe: there is no inter-frame prediction, so each picture is independently decodable,
+which makes scrubbing, trimming, and frame-accurate editing cheap at the cost of a much
+higher bitrate. The Codec2 component lives in `frameworks/av/media/codec2/components/apv/`
+and wraps the `external/libopenapv` (`libopenapv`, the `oapv` API) reference library.
+
+Two components ship: a decoder and an encoder, registered against the `video/apv`
+media type.
+
+```cpp
+// frameworks/av/media/codec2/components/apv/C2SoftApvDec.cpp, line 37 and 55
+const char* MEDIA_MIMETYPE_VIDEO_APV = "video/apv";
+constexpr char COMPONENT_NAME[] = "c2.android.apv.decoder";
+constexpr uint32_t kDefaultOutputDelay = 8;
+```
+
+```cpp
+// frameworks/av/media/codec2/components/apv/C2SoftApvEnc.cpp, line 45
+constexpr char COMPONENT_NAME[] = "c2.android.apv.encoder";
+```
+
+The decoder declares a single supported profile, the 4:2:2 10-bit profile
+(`C2Config::PROFILE_APV_422_10`), reflecting APV's positioning as a high-fidelity capture
+format rather than a delivery format:
+
+```cpp
+// frameworks/av/media/codec2/components/apv/C2SoftApvEnc.cpp, line 119
+.withDefault(new C2StreamProfileLevelInfo::output(
+        0u, C2Config::PROFILE_APV_422_10, LEVEL_APV_1_BAND_0))
+.withFields({
+    C2F(mProfileLevel, profile).oneOf({C2Config::PROFILE_APV_422_10}),
+    C2F(mProfileLevel, level).oneOf({
+            C2Config::LEVEL_APV_1_BAND_0,
+            C2Config::LEVEL_APV_1_1_BAND_0,
+            C2Config::LEVEL_APV_2_BAND_0,
+            // ... up to LEVEL_APV_7_1_BAND_3
+    }),
+})
+```
+
+APV's levels are organized into bands (Band 0 through Band 3) that scale the allowed
+bitrate per level, which is why the level enum is a cross-product of level number and
+band. Because APV carries HDR metadata in the bitstream itself (mastering display color
+volume, content light level, and ITU-T T.35 user data for HDR10+), the decoder parses
+those out of each access unit and republishes them as `C2StreamHdrStaticMetadataInfo` and
+`C2StreamHdr10PlusInfo` so the rest of the pipeline sees standard Codec2 HDR parameters.
+The decoder's `getHdrInfo`, `getHDRStaticParams`, and `getHDR10PlusInfoData` helpers in
+`C2SoftApvDec.cpp` perform that extraction.
+
+The feature is staged behind two layers of flags so vendors can adopt it incrementally.
+The framework-facing `apv_support` flag in
+`frameworks/av/media/aconfig/codec_fwk.aconfig` controls whether the platform advertises
+APV at all (it gates the `MediaFormat.MIMETYPE_VIDEO_APV` plumbing and the
+`CodecProfileLevel.APVProfile*`/`APVLevel*` constants in
+`frameworks/base/media/java/android/media/MediaCodecInfo.java`), while the
+`apv_software_codec` flag in `frameworks/av/media/aconfig/swcodec_flags.aconfig` gates the
+software component itself. In the codec list the entries are declared
+`enabled="false" minsdk="36" variant="!slow-cpu"`:
+
+```xml
+<!-- frameworks/av/media/libstagefright/data/media_codecs_sw.xml, line 288 -->
+<MediaCodec name="c2.android.apv.decoder" type="video/apv"
+            enabled="false" minsdk="36" variant="!slow-cpu">
+    <Limit name="size" min="16x16" max="1920x1920"/>
+    <Limit name="alignment" value="2x2"/>
+    <Limit name="bitrate" range="1-240000000"/>
+    ...
+</MediaCodec>
+```
+
+Two things stand out in that declaration. The `enabled="false"` default means a device
+ships APV support only if its codec list overlay turns it on; APV is opt-in rather than
+universal. And the `variant="!slow-cpu"` attribute excludes low-end CPUs, because
+software-decoding a 10-bit 4:2:2 intra-only stream at the bitrates APV uses (up to
+240 Mbit/s in the limit above) is expensive. The `apv_software_codec_cq` flag adds a
+constant-quality rate-control mode for the encoder.
+
+### 16.3.13 IAMF: Immersive Audio Decoding
+
+The second new Codec2 family in Android 17 is a decoder for IAMF, the Alliance for Open
+Media's Immersive Audio Model and Formats standard. IAMF describes scene-based and
+channel-based immersive audio (think Dolby-Atmos-style object/bed mixes, but royalty
+free) as a tree of "audio elements" and "mix presentations" carried in OBUs (Open
+Bitstream Units, the same container concept AV1 uses). The component lives in
+`frameworks/av/media/codec2/components/iamf/` and is a decoder only: there is no
+software IAMF encoder in the tree.
+
+```cpp
+// frameworks/av/media/codec2/components/iamf/C2SoftIamfDec.cpp, line 38, 50
+constexpr char COMPONENT_NAME[] = "c2.android.iamf.decoder";
+// ... DOMAIN_AUDIO, MEDIA_MIMETYPE_AUDIO_IAMF ("audio/iamf")
+```
+
+Rather than implement the bitstream parser in `frameworks/av`, the component links the
+`external/iamf_tools` library and drives it through a small C++ API surface
+(`iamf_tools::api::IamfDecoderFactory` / `IamfDecoderInterface`, included from
+`<iamf_tools/iamf_decoder_factory.h>`). `external/iamf_tools` is one of the most active
+media repositories in the 16-to-17 changeset. The Codec2 wrapper is therefore mostly
+glue: it feeds OBUs to the decoder, pulls back decoded "temporal units," and translates
+between Android's channel-mask vocabulary and IAMF's loudspeaker-layout vocabulary.
+
+That translation is the interesting part, and it lives in `LayoutTranslation.cpp`. IAMF
+expresses output configurations as standardized layouts (ITU-R BS.2051 sound systems and
+IAMF extension layouts) rather than Android `CHANNEL_OUT_*` masks. `GetIamfLayout` maps a
+requested Android channel mask to the nearest IAMF layout, and `GetAndroidChannelMask`
+maps back:
+
+```cpp
+// frameworks/av/media/codec2/components/iamf/C2SoftIamfDec.cpp, line 187
+std::optional<iamf_tools::api::OutputLayout> C2SoftIamfDec::getTargetOutputLayout() {
+    // ...
+    //   stereo  -> kItu2051_SoundSystemA_0_2_0
+    //   5.1     -> kItu2051_SoundSystemB_0_5_0
+    //   7.1     -> kItu2051_SoundSystemI_0_7_0
+    //   mono    -> kIAMF_SoundSystemExtension_0_1_0
+}
+```
+
+The header note in `LayoutTranslation.h` is explicit that masks without an exact IAMF
+layout are rejected, except that `CHANNEL_OUT_5POINT1POINT2` and
+`CHANNEL_OUT_7POINT1POINT2` are snapped to their nearest equivalents. This is how an
+immersive mix is rendered down to whatever speaker configuration the device actually
+has: the application asks for a channel count or mask, the decoder picks an IAMF
+`OutputLayout`, and the `iamf_tools` engine performs the downmix/rendering internally,
+returning a `SelectedMix` that the component reads back to publish the real output
+channel mask.
+
+The codec list declares the decoder with `minsdk="36"` and documents the current codec
+support and IAMF profile limits inline:
+
+```xml
+<!-- frameworks/av/media/libstagefright/data/media_codecs_sw.xml, line 119 -->
+<MediaCodec name="c2.android.iamf.decoder" type="audio/iamf" minsdk="36">
+    <!-- IAMF v1.0 (Simple and Base profiles) support up to 18 input channels. -->
+    <Limit name="channel-count" max="18" />
+    <!-- The decoder currently supports Opus and PCM ... -->
+    <Limit name="sample-rate" ranges="16000,32000,44100,48000,96000" />
+    <Limit name="bitrate" range="1-21000000" />
+</MediaCodec>
+```
+
+The XML comments track real implementation limits: at this stage the decoder handles
+the Opus and PCM substream codecs, and the `iamf_aac_flac` flag in
+`swcodec_flags.aconfig` is the gate for extending it to AAC and FLAC substreams. The
+whole component is itself gated by `iamf_software_decoder`. On the framework side, the
+`audio_mix_presentation_support` flag in `codec_fwk.aconfig` adds the
+`MediaFormat.KEY_AUDIO_PRESENTATION_ID` key apps use to select among the mix
+presentations an IAMF stream offers.
+
+### 16.3.14 In-Process Software Codecs: ApexCodecs and LFI
+
+Historically every software codec on Android ran inside the dedicated
+`media.swcodec` HAL process, reached over Binder/Codec2-HAL even when the codec was
+Google's own software implementation. That isolation is good for security but costs an
+IPC hop and a process boundary on every buffer. Android 17 introduces an *in-process*
+path for select software audio codecs through a new module API, `libapexcodecs`, so the
+codec runs directly inside the client process while keeping the Codec2 programming model.
+
+The module lives in `frameworks/av/media/module/libapexcodecs/`, and its public API is
+`ApexCodecs.h`:
+
+```cpp
+// frameworks/av/media/module/libapexcodecs/include/apex/ApexCodecs.h
+/**
+ * An API to access and operate codecs implemented within an APEX module,
+ * used only by the OS when using the codecs within a client process
+ * (instead of via a HAL).
+ * NOTE: Many of the constants and types mirror the ones in the Codec 2.0 API.
+ */
+```
+
+As the comment says, the `ApexCodec_*` types deliberately mirror the Codec2 vocabulary
+(`ApexCodec_Status`, `ApexCodec_Configurable`, linear/graphic buffers, supported-values
+queries), so the same parameter and buffer model carries over without a HAL hop. The
+codec implementations are thin C2-to-ApexCodec adapters: `C2ApexAacDec` and
+`C2ApexOpusDec` in the same directory wrap the existing AAC and Opus software decoders.
+
+Which codecs are eligible is decided at runtime in `ApexCodecsStoreImpl.cpp`, gated by
+flags and platform constraints:
+
+```cpp
+// frameworks/av/media/module/libapexcodecs/ApexCodecsStoreImpl.cpp, line 108
+static std::map<std::string, ComponentDesc> BuildCodecs() {
+    std::map<std::string, ComponentDesc> codecs;
+#ifdef __aarch64__
+    if (android::media::swcodec::flags::opus_inproc_software_decoder()) {
+        // 64-bit-only devices, API level >= 37
+        if (GetApiLevel() >= 37 && sIs64bitOnly) {
+            AddCodec<C2ApexOpusDec>(&codecs);
+        }
+    }
+#endif
+    if (android::media::swcodec::flags::rust_aac_software_decoder()) {
+        if (GetApiLevel() >= 37) {
+            AddCodec<C2ApexAacDec>(&codecs);
+        }
+    }
+    // ...
+}
+```
+
+The gating is conservative: the in-process Opus decoder is admitted only on 64-bit-only
+`aarch64` devices at API level 37 or higher, and the in-process AAC decoder rides on the
+`rust_aac_software_decoder` flag. The corresponding framework flags
+(`in_process_sw_audio_codec` and `in_process_sw_audio_codec_support` in
+`frameworks/av/media/aconfig/codec_fwk.aconfig`) control whether `MediaCodecList` and the
+Codec2 client (`frameworks/av/media/codec2/hal/client/client.cpp`) advertise and route to
+the in-process variant at all. `frameworks/av/media/libstagefright/MediaCodecList.cpp` and
+`frameworks/av/media/libmedia/MediaCodecInfo.cpp` carry the `in_process_sw_audio_codec_support()`
+checks that decide which list a given component lands in.
+
+Running a codec inside the client process re-opens the security question that the HAL
+process was originally meant to answer, so Android 17 pairs the in-process path with a
+new sandboxing technology. The `in_process_sw_codec_lfi` flag names it: LFI, Lightweight
+Fault Isolation. LFI lives outside `frameworks/av`, in the new `system/lfi` project (with
+supporting `external/lfi/*` repositories that arrive in the 16-to-17 changeset), and it
+sandboxes native code inside a process by software-fault-isolating the codec's memory
+accesses and control flow rather than relying on a separate address space. The intent is
+to keep the latency and power win of running the codec in-process while bounding the
+blast radius of a malformed bitstream exploit to the sandbox instead of the whole client.
+LFI is the in-process security story; `libapexcodecs` is the codec-delivery and API
+story; the `in_process_sw_*` flags are the switches that turn the combination on.
 
 ---
 

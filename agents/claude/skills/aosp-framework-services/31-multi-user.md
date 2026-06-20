@@ -351,7 +351,13 @@ graph TB
 | `USER_TYPE_PROFILE_PRIVATE` | `FLAG_PROFILE` | 1 | Yes | Private Space |
 | `USER_TYPE_PROFILE_COMMUNAL` | `FLAG_PROFILE` | 1 | No | Shared communal |
 | `USER_TYPE_PROFILE_SUPERVISING` | `FLAG_PROFILE` | 1 | No | Supervised user |
+| `USER_TYPE_PROFILE_TEST` | `FLAG_PROFILE` | 4 (2/parent) | Yes | Debug-only profile |
 | `USER_TYPE_SYSTEM_HEADLESS` | `FLAG_SYSTEM` | 1 | No | Headless system user mode |
+
+`USER_TYPE_PROFILE_TEST` is registered only on `Build.IS_DEBUGGABLE` builds (see
+`getDefaultBuilders()` in `UserTypeFactory.java`); it borrows the managed-profile
+badges and exists purely for instrumentation. The catalog above reflects the
+default builders registered in `getDefaultBuilders()`.
 
 ### 31.2.3 Full System User
 
@@ -382,10 +388,14 @@ private static UserTypeDetails.Builder getDefaultTypeFullSecondary() {
     return new UserTypeDetails.Builder()
             .setName(USER_TYPE_FULL_SECONDARY)
             .setBaseType(FLAG_FULL)
-            .setMaxAllowed(getDefaultMaxAllowedSwitchableUsers())
+            .setMaxAllowed(getDefaultMaxAllowedForSwitchableTypes())
             .setDefaultRestrictions(getDefaultSecondaryUserRestrictions());
 }
 ```
+
+`getDefaultMaxAllowedForSwitchableTypes()` returns `getMaxSwitchableUsers() - 1`
+(it ties the per-type cap to the device-wide switchable-user budget). The same
+helper supplies the cap for clone and restricted profiles.
 
 Default restrictions for secondary users:
 
@@ -418,8 +428,11 @@ Key guest properties:
 
 - Only one guest allowed at a time
 - Can be ephemeral (data wiped on exit, controlled by `config_guestUserEphemeral`)
-- Inherits secondary user restrictions plus additional ones (e.g., `DISALLOW_CONFIG_WIFI`)
-- Disabled on single-user devices
+- Inherits secondary user restrictions plus additional ones. `getDefaultGuestUserRestrictions()`
+  adds `DISALLOW_INSTALL_UNKNOWN_SOURCES` and `DISALLOW_CONFIG_CREDENTIALS`, and
+  adds either `DISALLOW_CONFIG_WIFI_SHARED` or `DISALLOW_CONFIG_WIFI` depending on
+  the `android.multiuser.Flags.userRestrictionConfigWifiSharedPrivate()` flag
+- Disabled on single-user devices (`setEnabled(getMaxSwitchableUsers() > 1 ? 1 : 0)`)
 
 ### 31.2.6 Managed Profile (Work Profile)
 
@@ -496,8 +509,9 @@ private static UserTypeDetails.Builder getDefaultTypeFullRestricted() {
             .setName(USER_TYPE_FULL_RESTRICTED)
             .setBaseType(FLAG_FULL)
             .setDefaultUserInfoPropertyFlags(FLAG_RESTRICTED)
-            .setMaxAllowed(getDefaultMaxAllowedSwitchableUsers())
-            .setProfileParentRequired(false);
+            .setMaxAllowed(getDefaultMaxAllowedForSwitchableTypes())
+            .setProfileParentRequired(false) // a "parent", but not a profile parent
+            .setDefaultRestrictions(null);
 }
 ```
 
@@ -968,13 +982,13 @@ sequenceDiagram
 ```
 
 ```java
-// Source: frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyManagerService.java:22093
+// Source: frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyManagerService.java:21426
 public UserHandle createManagedProfile(
         ComponentName admin, String name, boolean useManagedProfilePlaceholder) {
     // Delegates to createManagedProfileInternal()
 }
 
-// Line 22107
+// Line 21440
 private UserHandle createManagedProfileInternal(
         ProvisioningParams provisioningParams, Caller caller) {
     // 1. Log provisioning action
@@ -984,7 +998,7 @@ private UserHandle createManagedProfileInternal(
 }
 ```
 
-The `createAndManageUser()` method (line 12984) provides a combined operation
+The `createAndManageUser()` method (line 12166) provides a combined operation
 that creates the profile and installs the Device Policy Controller (DPC) app
 in a single call, used by programmatic enterprise enrollment.
 
@@ -1012,7 +1026,7 @@ This is surfaced as "Pause work apps" in Settings and the work tab toggle in
 the launcher:
 
 ```java
-// Source: frameworks/base/core/java/android/os/UserManager.java:5929
+// Source: frameworks/base/core/java/android/os/UserManager.java:6008
 public boolean requestQuietModeEnabled(
         boolean enableQuietMode,
         @NonNull UserHandle userHandle,
@@ -1037,7 +1051,7 @@ When quiet mode is **disabled**:
 4. Notifications resume delivery
 
 ```java
-// Source: frameworks/base/services/core/java/com/android/server/pm/UserManagerService.java:2253
+// Source: frameworks/base/services/core/java/com/android/server/pm/UserManagerService.java:2307
 private void setQuietModeEnabled(int userId, boolean enableQuietMode,
         IntentSender target, String callingPackage) {
     // Toggle FLAG_QUIET_MODE
@@ -1046,21 +1060,27 @@ private void setQuietModeEnabled(int userId, boolean enableQuietMode,
 }
 ```
 
+The public entry point `requestQuietModeEnabled()` (line 2149) takes a
+`@QuietModeFlag int flags` and rejects a non-null `target` when *enabling* quiet
+mode (a target only makes sense when disabling and waiting for unlock).
+
 #### Quiet Mode Flags
 
-Two flags control special quiet mode behavior:
+Two flags control special quiet mode behavior (defined in
+`frameworks/base/core/java/android/os/UserManager.java` and accepted by the
+`@QuietModeFlag` IntDef):
 
 | Flag | Value | Purpose |
 |---|---|---|
 | `QUIET_MODE_DISABLE_ONLY_IF_CREDENTIAL_NOT_REQUIRED` | 0x1 | Only resume if no lock screen challenge |
-| `QUIET_MODE_DISABLE_WITHOUT_HIDING_PROFILE` | 0x2 | Resume without hiding the private space entry |
+| `QUIET_MODE_DISABLE_DONT_ASK_CREDENTIAL` | 0x2 | Resume without prompting for the profile credential |
 
 #### Profile Removal Cascade
 
 When a parent user is removed, all associated profiles are removed first:
 
 ```java
-// Source: frameworks/base/services/core/java/com/android/server/pm/UserManagerService.java:7082
+// Source: frameworks/base/services/core/java/com/android/server/pm/UserManagerService.java:7075
 private boolean removeUserWithProfilesUnchecked(int userId) {
     // 1. Find all profiles where profileGroupId == userId
     // 2. removeUserUnchecked() for each profile
@@ -1106,7 +1126,7 @@ boundaries:
 
 ```java
 // Source: frameworks/base/services/core/java/com/android/server/pm/CrossProfileIntentFilter.java:42
-public class CrossProfileIntentFilter extends WatchedIntentFilter {
+class CrossProfileIntentFilter extends WatchedIntentFilter {
     int mTargetUserId;          // Which user can receive
     int mFlags;                 // Behavior flags
     AccessControlLevel mAccessControlLevel;  // Who can modify
@@ -1246,8 +1266,10 @@ private static UserTypeDetails.Builder getDefaultTypeProfilePrivate() {
             .setProfileParentRequired(true)
             .setMaxAllowed(1)
             .setMaxAllowedPerParent(1)
-            .setEnabled(UserManager.isPrivateProfileEnabled() ? 1 : 0)
-            // ...
+            .setEnabled(!android.multiuser.Flags.blockPrivateSpaceCreation()
+                    || !ActivityManager.isLowRamDeviceStatic() ? 1 : 0)
+            // ... badges, labels, restrictions
+            .setDefaultRestrictions(getDefaultPrivateProfileRestrictions())
             .setDefaultUserProperties(new UserProperties.Builder()
                     .setStartWithParent(true)
                     .setCredentialShareableWithParent(true)
@@ -1255,17 +1277,30 @@ private static UserTypeDetails.Builder getDefaultTypeProfilePrivate() {
                     .setAllowStoppingUserWithDelayedLocking(true)
                     .setMediaSharedWithParent(false)
                     .setShowInLauncher(UserProperties.SHOW_IN_LAUNCHER_SEPARATE)
+                    .setShowInSettings(UserProperties.SHOW_IN_SETTINGS_SEPARATE)
                     .setShowInQuietMode(
                             UserProperties.SHOW_IN_QUIET_MODE_HIDDEN)
                     .setShowInSharingSurfaces(
                             UserProperties.SHOW_IN_SHARING_SURFACES_SEPARATE)
                     .setCrossProfileIntentFilterAccessControl(
                             UserProperties.CROSS_PROFILE_INTENT_FILTER_ACCESS_LEVEL_SYSTEM)
+                    .setInheritDevicePolicy(
+                            UserProperties.INHERIT_DEVICE_POLICY_FROM_PARENT)
+                    .setCrossProfileContentSharingStrategy(
+                            UserProperties.CROSS_PROFILE_CONTENT_SHARING_DELEGATE_FROM_PARENT)
                     .setProfileApiVisibility(
                             UserProperties.PROFILE_API_VISIBILITY_HIDDEN)
-                    .setItemsRestrictedOnHomeScreen(true));
+                    .setItemsRestrictedOnHomeScreen(true)
+                    .setUpdateCrossProfileIntentFiltersOnOTA(true));
 }
 ```
+
+The enablement predicate replaced the older `isPrivateProfileEnabled()` helper,
+which was removed during the Android 17 development cycle. Private Space is now
+gated by the `android.multiuser.Flags.blockPrivateSpaceCreation()` flag combined
+with a low-RAM device check: on a low-RAM device with the block flag set, the
+type is disabled. The default restrictions (`getDefaultPrivateProfileRestrictions()`)
+add `DISALLOW_BLUETOOTH_SHARING` on top of the common `DISALLOW_WALLPAPER`.
 
 ### 31.5.2 Key Differences from Work Profiles
 
@@ -1616,18 +1651,18 @@ foreground after boot:
 
 ```java
 // From UserManagerService.java
-@VisibleForTesting
-static final int BOOT_STRATEGY_TO_PREVIOUS_OR_FIRST_SWITCHABLE_USER = 0;
-@VisibleForTesting
-static final int BOOT_STRATEGY_TO_HSU_FOR_PROVISIONED_DEVICE = 1;
+static final int BOOT_STRATEGY_DO_NOT_OVERRIDE = -1;
+static final int HSUM_BOOT_STRATEGY_TO_PREVIOUS_FOREGROUND_USER = 0;
+static final int HSUM_BOOT_STRATEGY_TO_HSU_FOR_PROVISIONED_DEVICE = 1;
 
 private static final String BOOT_STRATEGY_PROPERTY = "persist.user.hsum_boot_strategy";
 ```
 
-| Strategy | Behavior |
-|---|---|
-| `TO_PREVIOUS_OR_FIRST_SWITCHABLE_USER` | Boot to the last active user, or the first switchable user |
-| `TO_HSU_FOR_PROVISIONED_DEVICE` | Boot to headless system user for provisioned devices |
+| Strategy | Value | Behavior |
+|---|---|---|
+| `BOOT_STRATEGY_DO_NOT_OVERRIDE` | -1 | No override; use the default boot-user selection |
+| `HSUM_BOOT_STRATEGY_TO_PREVIOUS_FOREGROUND_USER` | 0 | Boot to the previous foreground (last active) user |
+| `HSUM_BOOT_STRATEGY_TO_HSU_FOR_PROVISIONED_DEVICE` | 1 | Boot to the headless system user on provisioned devices |
 
 A `CountDownLatch` waits for the boot user to be determined:
 
@@ -1720,17 +1755,26 @@ public static final int FLAG_DEMO      = 0x00000200;
 public static final int FLAG_FULL      = 0x00000400;
 public static final int FLAG_SYSTEM    = 0x00000800;
 public static final int FLAG_PROFILE   = 0x00001000;
-public static final int FLAG_FOR_TESTING = 0x00002000;
+public static final int FLAG_EPHEMERAL_ON_CREATE = 0x00002000;
 public static final int FLAG_MAIN      = 0x00004000;
+public static final int FLAG_FOR_TESTING = 0x00008000;
 
 // Convenience checks
 public boolean isGuest()   { return (flags & FLAG_GUEST) != 0; }
 public boolean isAdmin()   { return (flags & FLAG_ADMIN) != 0; }
 public boolean isProfile() { return (flags & FLAG_PROFILE) != 0; }
 public boolean isFull()    { return (flags & FLAG_FULL) != 0; }
+public boolean isMain()    { return (flags & FLAG_MAIN) != 0; }
 public boolean isManagedProfile() { return (flags & FLAG_MANAGED_PROFILE) != 0; }
-public boolean isPrivateProfile() { ... }
+public boolean isCommunalProfile() { ... }   // checks userType, not flags
+public boolean isPrivateProfile()  { ... }   // checks userType, not flags
 ```
+
+`FLAG_EPHEMERAL_ON_CREATE` (`0x00002000`) is distinct from `FLAG_EPHEMERAL`: it
+marks a user that was *requested* ephemeral at creation time, even if the user
+ends up persistent. `isPrivateProfile()` and `isCommunalProfile()` resolve
+against the stored `userType` string rather than a bit, since those profile
+types do not carry a dedicated `UserInfo` flag.
 
 Common flag combinations:
 
@@ -2077,24 +2121,38 @@ the delay of creating a new user during the switch.
 `UserJourneyLogger` tracks the outcome of user management operations for telemetry:
 
 ```java
-// From UserJourneyLogger.java
-static final int USER_JOURNEY_USER_CREATE = 1;
-static final int USER_JOURNEY_USER_REMOVE = 2;
-static final int USER_JOURNEY_USER_LIFECYCLE = 3;
-static final int USER_JOURNEY_GRANT_ADMIN = 4;
-static final int USER_JOURNEY_REVOKE_ADMIN = 5;
-static final int USER_JOURNEY_PROMOTE_MAIN_USER = 6;
-static final int USER_JOURNEY_DEMOTE_MAIN_USER = 7;
+// From UserJourneyLogger.java — journey IDs map onto the
+// USER_LIFECYCLE_JOURNEY_REPORTED statsd atom rather than being literal ints.
+public static final int USER_JOURNEY_UNKNOWN =
+        FrameworkStatsLog.USER_LIFECYCLE_JOURNEY_REPORTED__JOURNEY__UNKNOWN;
+public static final int USER_JOURNEY_USER_SWITCH_FG = ...;
+public static final int USER_JOURNEY_USER_SWITCH_UI = ...;
+public static final int USER_JOURNEY_USER_START = ...;
+public static final int USER_JOURNEY_USER_CREATE = ...;
+public static final int USER_JOURNEY_USER_STOP = ...;
+public static final int USER_JOURNEY_USER_REMOVE = ...;
+public static final int USER_JOURNEY_GRANT_ADMIN = ...;
+public static final int USER_JOURNEY_REVOKE_ADMIN = ...;
+public static final int USER_JOURNEY_USER_LIFECYCLE = ...;
+public static final int USER_JOURNEY_PROMOTE_MAIN_USER = ...;
+public static final int USER_JOURNEY_DEMOTE_MAIN_USER = ...;
+public static final int USER_JOURNEY_USER_LOGOUT = ...;
 
 // Error codes
-static final int ERROR_CODE_UNSPECIFIED = 0;
-static final int ERROR_CODE_ABORTED = 1;
-static final int ERROR_CODE_INVALID_USER_TYPE = 2;
-static final int ERROR_CODE_USER_ALREADY_AN_ADMIN = 3;
-static final int ERROR_CODE_USER_IS_NOT_AN_ADMIN = 4;
-static final int ERROR_CODE_USER_IS_LAST_ADMIN = 5;
+public static final int ERROR_CODE_UNSPECIFIED = 0;
+public static final int ERROR_CODE_INCOMPLETE_OR_TIMEOUT = 2;
+public static final int ERROR_CODE_ABORTED = 3;
+public static final int ERROR_CODE_NULL_USER_INFO = 4;
+public static final int ERROR_CODE_USER_ALREADY_AN_ADMIN = 5;
+public static final int ERROR_CODE_USER_IS_NOT_AN_ADMIN = 6;
+public static final int ERROR_CODE_INVALID_USER_TYPE = 7;
+public static final int ERROR_CODE_USER_IS_LAST_ADMIN = 8;
 ```
 
+Each journey constant is an alias for a `FrameworkStatsLog` atom enum value, so
+the integers are owned by the statsd atom definition rather than hard-coded in
+the logger. The set covers user switch (foreground and UI-initiated), start,
+create, stop, remove, admin grant/revoke, main-user promote/demote, and logout.
 These journeys are logged to `FrameworkStatsLog` for device health monitoring and
 aggregate analytics.
 
@@ -2140,7 +2198,9 @@ private static UserTypeDetails.Builder getDefaultTypeProfileSupervising() {
             .setBaseType(FLAG_PROFILE)
             .setMaxAllowed(1)
             .setProfileParentRequired(false)
-            .setEnabled(android.multiuser.Flags.allowSupervisingProfile() ? 1 : 0)
+            .setLabels(R.string.profile_label_supervising)
+            .setDefaultRestrictions(getDefaultSupervisingProfileRestrictions())
+            .setDefaultSecureSettings(getDefaultNonManagedProfileSecureSettings())
             .setDefaultUserProperties(new UserProperties.Builder()
                     .setStartWithParent(false)
                     .setShowInLauncher(UserProperties.SHOW_IN_LAUNCHER_NO)
@@ -2155,7 +2215,13 @@ Notable properties:
 
 - Not shown in launcher or Settings (invisible to the supervised user)
 - Always visible to the system (for supervision enforcement)
-- Feature-flagged behind `allowSupervisingProfile()`
+- Carries `DISALLOW_INSTALL_APPS` by default
+  (`getDefaultSupervisingProfileRestrictions()`)
+
+In Android 17 the type is registered unconditionally: the
+`android.multiuser.allow_supervising_profile` flag that previously gated it was
+cleaned up, so `getDefaultTypeProfileSupervising()` no longer calls
+`setEnabled(...)`.
 
 ### 31.8.16 Multi-User Impact on System Services
 
@@ -2197,25 +2263,35 @@ before accessing another user's data.
 
 ### 31.8.17 Maximum User Limits
 
-Maximum user counts are device-configurable:
+Maximum user counts are device-configurable. The device-wide cap on switchable
+users comes from `UserManager.getMaxSwitchableUsers()`:
 
 ```java
-// Maximum switchable users (full users)
-// Default from config_multiuserMaximumUsers resource overlay
-private static int getDefaultMaxAllowedSwitchableUsers() {
-    return SystemProperties.getInt(
-            "fw.max_users", Resources.getSystem().getInteger(
-                    R.integer.config_multiuserMaximumUsers));
+// Source: frameworks/base/core/java/android/os/UserManager.java
+public static int getMaxSwitchableUsers() {
+    return Math.max(1, SystemProperties.getInt("fw.max_users",
+            Resources.getSystem().getInteger(R.integer.config_multiuserMaximumUsers)));
 }
 ```
 
-OEMs set this via:
+`UserTypeFactory` derives the per-type default cap from this, capping at one
+fewer than the switchable budget:
+
+```java
+// Source: frameworks/base/services/core/java/com/android/server/pm/UserTypeFactory.java
+private static int getDefaultMaxAllowedForSwitchableTypes() {
+    return getMaxSwitchableUsers() - 1;
+}
+```
+
+OEMs set the budget via:
 
 - `config_multiuserMaximumUsers` resource overlay (typical: 4-8)
 - `fw.max_users` system property (for testing)
 
 Per-type limits are also enforced -- for example, only 1 guest, only 1 private
-profile per parent, only 1 work profile per parent (production builds).
+profile per parent, only 1 work profile per parent (production builds, via
+`getMaxManagedProfiles()`, which returns 1 unless on a debuggable build).
 
 ### 31.8.18 User Switcher Controller in SystemUI
 
@@ -2579,9 +2655,179 @@ adb shell pm list users | grep -o "UserInfo{[0-9]*" | \
 
 ---
 
-## 31.9 Try It
+## 31.9 Android 17 Multi-User Changes
 
-### 31.9.1 Listing Users
+Android 17 did not redraw the multi-user architecture, but it did harden and
+clean up several corners of it: the Headless System User (HSU) became a
+first-class managed identity, Private Space and the Supervising profile shed
+their development feature flags, two new user restrictions landed, and the user
+type query API was reshaped. This section collects the changes that touch the
+classes covered earlier in the chapter, each verified against the Android 17
+source.
+
+### 31.9.1 Headless System User App Management
+
+In Headless System User Mode the system user (user 0) is not a human user, yet
+on automotive and other HSUM devices it still runs apps. Android 17 makes those
+apps manageable and visible rather than anonymous. `getDefaultTypeSystemHeadless()`
+now conditionally attaches a badge, an activity allowlist, and an allowlist mode
+to the headless system user type:
+
+```java
+// Source: frameworks/base/services/core/java/com/android/server/pm/UserTypeFactory.java
+private static UserTypeDetails.Builder getDefaultTypeSystemHeadless() {
+    final UserTypeDetails.Builder builder = new UserTypeDetails.Builder()
+            .setName(USER_TYPE_SYSTEM_HEADLESS)
+            .setBaseType(FLAG_SYSTEM)
+            .setDefaultUserInfoPropertyFlags(FLAG_PRIMARY
+                    | (android.multiuser.Flags.hsuNotAdmin() ? 0 : FLAG_ADMIN))
+            .setMaxAllowed(1)
+            .setDefaultRestrictions(getDefaultHeadlessSystemUserRestrictions());
+
+    if (android.multiuser.Flags.hsuAllowlistActivities()) {
+        builder.setActivitiesAllowlist(
+                com.android.internal.R.array.hsu_allowlist_activities);
+        builder.setActivitiesAllowlistMode(Resources.getSystem().getInteger(
+                com.android.internal.R.integer.config_hsuActivitiesAllowlistMode));
+    }
+    if (android.multiuser.Flags.hsuAppManagement()) {
+        builder.setIconBadge(com.android.internal.R.drawable.ic_hsu_icon_badge)
+                .setBadgePlain(com.android.internal.R.drawable.ic_hsu_badge)
+                .setBadgeNoBackground(
+                        com.android.internal.R.drawable.ic_hsu_badge_no_background)
+                .setBadgeLabels(com.android.internal.R.string.hsu_label_badge)
+                .setBadgeColors(com.android.internal.R.color.transparent)
+                .setDarkThemeBadgeColors(com.android.internal.R.color.transparent);
+    }
+    return builder;
+}
+```
+
+Three behaviors fall out of this, each behind its own `android.multiuser.Flags`
+gate:
+
+- **`hsuAppManagement()`** gives HSU apps a badge so they are visually
+  distinguishable in Settings (the badge resources are `ic_hsu_*`). The
+  `setActivitiesAllowlist`/`setActivitiesAllowlistMode` fields they configure are
+  read back through `getActivitiesAllowlist()`/`getActivitiesAllowlistMode()` on
+  `UserTypeDetails`.
+- **`hsuAllowlistActivities()`** restricts which activities the headless system
+  user may launch, via the `hsu_allowlist_activities` array and
+  `config_hsuActivitiesAllowlistMode`.
+- **`hsuNotAdmin()`** drops `FLAG_ADMIN` from the headless system user, so the
+  HSU is no longer implicitly an admin user.
+
+HSU notifications also gained dedicated handling on the SystemUI side: the new
+`HsuCoordinator` (in
+`frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/notification/collection/coordinator/HsuCoordinator.kt`)
+filters or allowlists notifications originating from the headless system user.
+
+The `getDefaultHeadlessSystemUserRestrictions()` baseline also adds
+`DISALLOW_MODIFY_ACCOUNTS`, so the headless system user cannot add or modify
+accounts.
+
+How the Android 17 HSU options layer onto the headless system user type:
+
+```mermaid
+graph TB
+    HSU["USER_TYPE_SYSTEM_HEADLESS<br/>user 0, FLAG_SYSTEM"]
+
+    HSU --> NOTADMIN{"hsuNotAdmin()"}
+    NOTADMIN -->|true| DROP["Drop FLAG_ADMIN<br/>HSU is not admin"]
+    NOTADMIN -->|false| KEEP["Keep FLAG_ADMIN"]
+
+    HSU --> APPMGMT{"hsuAppManagement()"}
+    APPMGMT -->|true| BADGE["ic_hsu_* badge<br/>visible in Settings"]
+
+    HSU --> ALLOWACT{"hsuAllowlistActivities()"}
+    ALLOWACT -->|true| ALLOW["hsu_allowlist_activities<br/>+ allowlist mode"]
+
+    style HSU fill:#e3f2fd
+    style DROP fill:#fce4ec
+    style BADGE fill:#e8f5e9
+    style ALLOW fill:#fff3e0
+```
+
+### 31.9.2 New User Restrictions
+
+Android 17 adds two user restrictions, both defined in
+`frameworks/base/core/java/android/os/UserManager.java`:
+
+| Restriction | String key | Effect |
+|---|---|---|
+| `DISALLOW_ADD_GUEST` | `no_add_guest` | The user cannot create a guest user |
+| `DISALLOW_TASK_CONTINUITY_HANDOFF` | `no_task_continuity_handoff` | Blocks cross-device task continuity (handoff) for the user |
+
+`DISALLOW_ADD_GUEST` complements the existing `DISALLOW_ADD_USER` and
+`DISALLOW_ADD_PRIVATE_PROFILE` (`no_add_private_profile`) controls, giving
+device policy a way to forbid guest creation specifically. Both new keys are
+registered in the `UserManager` restriction `@StringDef`/`@interface` set so they
+flow through `setUserRestriction()` and the merge logic in
+`updateUserRestrictionsInternalLR()` like any other restriction.
+
+### 31.9.3 Private Space and Supervising Profile Flag Cleanup
+
+Two profile types lost their development gates during the Android 17 cycle:
+
+- **Private Space.** The `isPrivateProfileEnabled()` helper on `UserManager` was
+  removed (see §31.5.1). The private profile type's `setEnabled(...)` predicate is
+  now expressed directly in `getDefaultTypeProfilePrivate()` using
+  `android.multiuser.Flags.blockPrivateSpaceCreation()` together with
+  `ActivityManager.isLowRamDeviceStatic()`, so the gating lives in the user-type
+  factory rather than a standalone API.
+- **Supervising profile.** The `android.multiuser.allow_supervising_profile`
+  flag was cleaned up, and `getDefaultTypeProfileSupervising()` no longer calls
+  `setEnabled(...)` (see §31.8.15). The supervising profile is therefore
+  registered unconditionally on Android 17.
+
+These are flag-cleanup changes: features that shipped behind flags in earlier
+releases are now baseline, with the dead flags and their helper APIs removed.
+
+### 31.9.4 User Type Query API
+
+`UserManager.isUserTypeEnabled(String)` is deprecated in favor of
+`isUserTypeSupported(String)`:
+
+```java
+// Source: frameworks/base/core/java/android/os/UserManager.java
+public boolean isUserTypeSupported(@NonNull String userType) { ... }
+
+/** @deprecated use {@link #isUserTypeSupported(String)} instead. */
+@Deprecated
+@FlaggedApi(android.multiuser.Flags.FLAG_QUERY_USER_TYPE_SUPPORTED)
+public boolean isUserTypeEnabled(@NonNull String userType) {
+    return isUserTypeSupported(userType);
+}
+```
+
+The rename (gated by `android.multiuser.Flags.queryUserTypeSupported()`) reflects
+that the question callers actually ask is whether a device *supports* a user
+type, not whether it is transiently "enabled." The deprecated method simply
+forwards to the new one.
+
+### 31.9.5 Multi-User Multiple Displays (MUMD) Refinements
+
+The three visibility modes that `UserVisibilityMediator` arbitrates are unchanged
+in name and meaning on Android 17 (verified in the mediator's class
+documentation):
+
+- **SUSD** (Single User on Single Display) for phones and tablets,
+- **MUMD** (Multiple Users on Multiple Displays) for automotive concurrent users,
+- **MUPAND** (MUltiple PAssengers, No Driver), the no-driver automotive extension.
+
+The Android 17 work here is on the automotive side rather than the mediator
+itself: a build flag (`RELEASE_CAR_SYS_EXP_MUMD_SCALABLE_UI_DRIVER`) advances the
+ScalableUI experience for MUMD concurrent-user devices, and a number of CTS host
+tests were updated to skip driver-only behaviors when running as a passenger user
+on MUMD hardware. The mediator continues to track per-display assignments through
+`mExtraDisplaysAssignedToUsers` and answer `isUserVisible(userId, displayId)`
+queries exactly as described in §31.8.8.
+
+---
+
+## 31.10 Try It
+
+### 31.10.1 Listing Users
 
 ```bash
 # List all users with their details
@@ -2612,7 +2858,7 @@ Users:
     State: RUNNING_UNLOCKED
 ```
 
-### 31.9.2 Creating Users
+### 31.10.2 Creating Users
 
 ```bash
 # Create a secondary user
@@ -2631,7 +2877,7 @@ adb shell cmd user create-profile-for --user-type android.os.usertype.profile.PR
 adb shell cmd user list-user-types
 ```
 
-### 31.9.3 Switching Users
+### 31.10.3 Switching Users
 
 ```bash
 # Switch to user 10
@@ -2644,7 +2890,7 @@ adb shell am get-current-user
 adb shell cmd user report-user-switchability
 ```
 
-### 31.9.4 Managing Profiles
+### 31.10.4 Managing Profiles
 
 ```bash
 # Enable quiet mode for a managed profile (user 11)
@@ -2660,7 +2906,7 @@ adb shell cmd user is-profile 11
 adb shell cmd user get-profile-parent 11
 ```
 
-### 31.9.5 User Restrictions
+### 31.10.5 User Restrictions
 
 ```bash
 # Set a restriction on user 10
@@ -2686,7 +2932,7 @@ Common restrictions:
 | `no_remove_user` | Cannot remove this user |
 | `no_user_switch` | Cannot switch away from this user |
 
-### 31.9.6 Inspecting Storage Layout
+### 31.10.6 Inspecting Storage Layout
 
 ```bash
 # List per-user data directories
@@ -2705,7 +2951,7 @@ adb shell ls /data/system/users/
 adb shell cat /data/system/users/10.xml
 ```
 
-### 31.9.7 Removing Users
+### 31.10.7 Removing Users
 
 ```bash
 # Remove user 10 (and all its profiles)
@@ -2715,7 +2961,7 @@ adb shell pm remove-user 10
 adb shell pm remove-user --set-ephemeral-if-in-use 10
 ```
 
-### 31.9.8 Monitoring User Events
+### 31.10.8 Monitoring User Events
 
 ```bash
 # Watch for user-related broadcasts
@@ -2728,7 +2974,7 @@ adb logcat -s UserManagerService
 adb logcat | grep -E "onUserStart|onUserStop|switchUser|UserState"
 ```
 
-### 31.9.9 Checking User Visibility
+### 31.10.9 Checking User Visibility
 
 ```bash
 # List visible users
@@ -2741,7 +2987,7 @@ adb shell cmd user is-visible 10
 adb shell cmd user get-main-display-for-user 10
 ```
 
-### 31.9.10 Private Space Operations
+### 31.10.10 Private Space Operations
 
 ```bash
 # Create Private Space profile
@@ -2758,7 +3004,7 @@ adb shell cmd user set-quiet-mode --disable <private_user_id>
 adb shell getprop persist.sys.user.private_profile
 ```
 
-### 31.9.11 Headless System User Mode Testing
+### 31.10.11 Headless System User Mode Testing
 
 ```bash
 # Check if device is in headless system user mode
@@ -2772,7 +3018,7 @@ adb reboot
 adb shell getprop persist.user.hsum_boot_strategy
 ```
 
-### 31.9.12 User Type Inspection
+### 31.10.12 User Type Inspection
 
 ```bash
 # List all registered user types
@@ -2785,7 +3031,7 @@ adb shell cmd user get-user-type 11
 adb shell dumpsys user | grep -A 30 "User properties"
 ```
 
-### 31.9.13 Performance Monitoring
+### 31.10.13 Performance Monitoring
 
 ```bash
 # Time user creation
@@ -2798,7 +3044,7 @@ adb logcat -s SystemServerTiming | grep -i user
 adb shell dumpsys user | grep -E "startRealtime|unlockRealtime"
 ```
 
-### 31.9.14 Multi-User Debugging Checklist
+### 31.10.14 Multi-User Debugging Checklist
 
 When investigating multi-user issues, check these in order:
 

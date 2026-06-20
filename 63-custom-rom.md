@@ -14,7 +14,7 @@ animations, kernel tweaks, HAL modifications -- applies equally to a physical
 device; only the `BoardConfig.mk` and kernel binaries change.
 
 Every file path, every command, and every code snippet in this chapter was
-verified against the AOSP source tree.
+verified against the Android 17 (`android17-release`) AOSP source tree.
 Where we quote source files we give their full tree-relative path so you can
 follow along on your own checkout.
 
@@ -53,8 +53,11 @@ Before writing any code, answer these questions:
 2. **What devices will you target?** We use the emulator (`goldfish`/`ranchu`);
    real devices require vendor blobs and kernel sources.
 
-3. **What Android version?** We build from AOSP `main` (currently targeting
-   Android 16, API level 36).
+3. **What Android version?** We build from AOSP `main`, which at the time of
+   writing is Android 17 (platform SDK 37, last-stable version 17). The
+   release configuration that pins these values lives under `build/release/`;
+   `build/release/flag_values/trunk_staging/RELEASE_PLATFORM_VERSION_LAST_STABLE.textproto`
+   carries `"17"` and `RELEASE_PLATFORM_SDK_VERSION.textproto` carries `"37"`.
 
 4. **What is the branding?** Custom ROM name, model string, build fingerprint.
 5. **What apps ship by default?** Which AOSP apps to keep, which to remove,
@@ -183,12 +186,20 @@ Building AOSP is resource-intensive. Here are the requirements:
 | Disk (with build) | 400 GB | 600 GB+ | 1 TB NVMe |
 | RAM | 32 GB | 64 GB+ | 64 GB |
 | CPU cores | 4 | 16+ | 16 cores |
-| OS | Ubuntu 20.04+ | Ubuntu 22.04 LTS | Ubuntu 22.04 |
+| OS | Ubuntu 22.04+ | Ubuntu 24.04 LTS | Ubuntu 24.04 |
 | File system | ext4 (case-sensitive) | ext4 | ext4 |
 
 The build is highly parallel. Each additional core shaves minutes off a full
 build. RAM is the second most important factor -- the linker (`lld`) and
 javac/d8 compilation stages can consume 2-4 GB per parallel job.
+
+A note on the build toolchain: AOSP ships its own host toolchain prebuilts,
+so you do **not** install a JDK or a C/C++ compiler from your distribution.
+The build picks up an in-tree OpenJDK (jdk21 is the global default, with jdk25
+present in-tree for opt-in toolchains; see
+`build/soong/ui/build/config.go`'s `ConfigJavaEnvironment`) and an in-tree
+clang. The host packages below are only the supporting libraries and tools the
+build scripts shell out to.
 
 ### 63.2.2 Required Packages (Ubuntu/Debian)
 
@@ -304,12 +315,13 @@ apt-get install -y -qq \
     rsync libssl-dev bc cpio kmod libelf-dev \
     lib32ncurses-dev lib32readline-dev lib32z1-dev \
     python3-protobuf python3-setuptools \
-    libvulkan-dev mesa-vulkan-drivers libpulse0 libgl1 \
-    openjdk-21-jdk
+    libvulkan-dev mesa-vulkan-drivers libpulse0 libgl1
 
-# 2. Set up Java
-echo "[2/6] Configuring Java..."
-update-alternatives --set java /usr/lib/jvm/java-21-openjdk-amd64/bin/java 2>/dev/null || true
+# 2. Java toolchain note
+echo "[2/6] Java toolchain..."
+# No host JDK install is needed: the AOSP build uses its in-tree prebuilt
+# OpenJDK (prebuilts/jdk/jdk21, with jdk25 also in-tree) and sets JAVA_HOME
+# itself when you source build/envsetup.sh and run lunch.
 
 # 3. Configure Git
 echo "[3/6] Configuring Git..."
@@ -414,12 +426,19 @@ sources them, which registers additional lunch targets.
 ### 63.2.8 Understanding Lunch Targets
 
 ```bash
-# List available targets
-lunch --print-all-targets 2>/dev/null | head -20
+# Run lunch with no arguments for an interactive menu, or list the pieces
+# of a target with the envsetup helpers:
+list_products   # every product (TARGET_PRODUCT) the tree knows about
+list_releases   # release configs (trunk_staging, next, ...)
+list_variants   # user, userdebug, eng
 
 # Select the emulator target (what we will base our ROM on)
 lunch sdk_phone64_x86_64-trunk_staging-userdebug
 ```
+
+`list_products`, `list_releases`, and `list_variants` are defined in
+`build/make/envsetup.sh`; `lunch` itself accepts a fully spelled
+`<product>-<release>-<variant>` string or, with no argument, prints a menu.
 
 A lunch target has the form `<product>-<release>-<variant>`:
 
@@ -448,7 +467,7 @@ flowchart TD
     B --> C["m (or make)"]
     C --> D["Soong (Android.bp)"]
     C --> E["Kati (Android.mk)"]
-    D --> F["Ninja build"]
+    D --> F["Siso (default) or Ninja"]
     E --> F
     F --> G["Compile C/C++ (clang)"]
     F --> H["Compile Java (javac + d8)"]
@@ -470,6 +489,16 @@ flowchart TD
     style C fill:#fff3e0
     style R fill:#e8f5e9
 ```
+
+In Android 17 the final build step runs through **Siso** rather than classic
+Ninja by default. `build/soong/ui/build/config.go` sets
+`NINJA_DEFAULT = NINJA_SISO`, so `m` drives the Soong-generated build graph with
+Siso unless you override it (set `SOONG_NINJA=ninja` to fall back to classic
+Ninja; macOS CI builders also fall back automatically). Siso is wire-compatible
+with the Ninja manifest Soong emits, so from a ROM author's perspective the
+build still "feels like Ninja" -- the same `m`, the same `out/` layout -- but it
+adds better remote-execution and caching hooks. Everything in this chapter works
+identically under either executor.
 
 ---
 
@@ -696,7 +725,7 @@ PRODUCT_MODEL := AospBook Phone
 PRODUCT_MANUFACTURER := AospBook
 
 # Build fingerprint (shown in Settings > About phone)
-BUILD_FINGERPRINT := AospBook/bookphone/bookdevice:16/AP3A.250318.001/eng.builder:userdebug/dev-keys
+BUILD_FINGERPRINT := AospBook/bookphone/bookdevice:17/BP1A.250505.005/eng.builder:userdebug/dev-keys
 
 # ============================================================
 # Additional product properties
@@ -902,6 +931,58 @@ multiple makefiles define the same variable.
 
 There is also `$(call inherit-product-if-exists, ...)` which silently succeeds
 if the file does not exist -- useful for optional vendor overlays.
+
+### 63.3.11 Generic System Images and Device Bring-Up
+
+Our `bookphone` product builds a complete device image, but Android also ships a
+**Generic System Image (GSI)**: a single `system.img` built to the Treble
+interface contract that can boot on top of any Treble-compliant vendor
+partition. The GSI is how you sanity-check a new device's vendor implementation
+against pure AOSP, and how Compatibility Test Suite on GSI (CTS-on-GSI) and the
+Vendor Test Suite validate the vendor/system split.
+
+The GSI products live in `build/make/target/product/`:
+
+```bash
+lunch aosp_arm64-trunk_staging-userdebug   # arm64 GSI
+lunch aosp_x86_64-trunk_staging-userdebug  # x86_64 GSI
+```
+
+`build/make/target/product/aosp_arm64.mk` documents itself as "the system image
+of aosp_arm64-userdebug is a GSI" and pulls in `generic_system.mk` plus
+`gsi_release.mk`; its board config comes from
+`build/make/target/board/BoardConfigGsiCommon.mk`. Android 17 also ships
+`aosp_arm64_fullmte.mk`, a GSI variant with the Arm Memory Tagging Extension
+forced on for heap-corruption testing.
+
+The bring-up flow for a real device using a GSI is:
+
+```mermaid
+graph TD
+    A["Vendor partition (vendor.img) from the OEM"] --> D["Boot a Treble device"]
+    B["m aosp_arm64 -> system.img (GSI)"] --> D
+    D --> E["fastboot flash system system.img"]
+    E --> F["Reboot; AOSP system runs on OEM vendor"]
+    F --> G["Run CTS-on-GSI / VTS to validate the split"]
+
+    style B fill:#fff3e0
+    style G fill:#e8f5e9
+```
+
+Flashing a GSI typically uses `fastbootd` (userspace fastboot) because `system`
+is a dynamic partition:
+
+```bash
+fastboot reboot fastboot          # enter fastbootd
+fastboot flash system system.img  # the GSI
+fastboot -w                        # wipe userdata (required on a different system)
+fastboot reboot
+```
+
+GSIs are a debugging and conformance tool, not a daily-driver ROM: they carry no
+vendor apps and rely entirely on the device's existing vendor partition. For our
+custom ROM we build the full device image instead, but knowing the GSI path is
+essential when bringing a custom ROM to a new piece of hardware.
 
 ---
 
@@ -2535,8 +2616,9 @@ The `m` command:
 
 1. Runs Soong to process all `Android.bp` files
 2. Runs Kati to process all `Android.mk` files
-3. Generates `build.ninja` in the output directory
-4. Invokes Ninja to execute the build plan
+3. Generates the Ninja-format build graph in the output directory
+4. Invokes the build executor (Siso by default in Android 17, classic Ninja if
+   `SOONG_NINJA=ninja`) to run the build plan
 
 ### 63.8.2 Build Output Structure
 
@@ -2731,6 +2813,63 @@ Common build errors and solutions:
 | `FAILED: out/.../module.jar` | Java compilation error | Check source code syntax and imports |
 | `Insufficient disk space` | Build output exceeds disk | Free space or move `out/` to larger disk |
 | `Killed (out of memory)` | OOM during linking | Reduce `-j` parallelism or add swap |
+
+### 63.8.9 16 KB Page Size
+
+A change that affects every native binary in an Android 17 ROM is the move to
+**16 KB memory page sizes**. Modern arm64 SoCs can run their MMU with a 16 KB
+base page instead of the historical 4 KB; doing so reduces TLB misses and
+improves throughput, but it means all native code (`.so` files, executables)
+must be laid out so that loadable segments are 16 KB aligned.
+
+The build system already defaults to this on 64-bit targets.
+`build/make/core/config.mk` sets the maximum supported page size for arm64 and
+x86_64 to 16384:
+
+```makefile
+# build/make/core/config.mk (key excerpt)
+else ifeq (,$(filter arm64 x86_64,$(TARGET_ARCH)))
+  # > 4096 only supported on arm64 and x86_64
+  TARGET_MAX_PAGE_SIZE_SUPPORTED := 4096
+else
+  # The default binary alignment for userspace is 16384.
+  TARGET_MAX_PAGE_SIZE_SUPPORTED := 16384
+endif
+```
+
+So binaries you build from source through Soong are already 16 KB compatible.
+What can break is a **prebuilt `.so` shipped inside a prebuilt APK or a vendor
+blob** that was linked with 4 KB alignment by some older toolchain. Such a
+library loads fine on a 4 KB kernel but fails to map on a 16 KB kernel.
+
+For development and testing, two knobs matter:
+
+| Mechanism | Where | Effect |
+|-----------|-------|--------|
+| `TARGET_MAX_PAGE_SIZE_SUPPORTED` | `build/make/core/config.mk` (auto) | Segment alignment of native modules; 16384 by default on arm64/x86_64 |
+| `TARGET_BOOTS_16K` | `BoardConfig.mk` | Marks the board as actually booting a 16 KB kernel (`build/make/core/android_soong_config_vars.mk`) |
+| `PRODUCT_16K_DEVELOPER_OPTION` | product makefile | Exposes the runtime "Boot with 16KB page size" developer toggle; sets `ro.product.build.16k_page.enabled` (`build/make/core/sysprop_config.mk`) |
+
+The emulator ships dedicated 16 KB products so you can verify alignment without
+real hardware. `device/generic/goldfish/64bitonly/product/sdk_phone16k_x86_64.mk`
+(and its arm64 sibling) inherit the 16 KB board details
+(`device/generic/goldfish/board/emu64x16k/details.mk`) and a 16 KB-cmdline
+kernel (`device/generic/goldfish/board/kernel/x86_64_16k.mk`). Build and boot
+one of those targets to confirm your prebuilts map cleanly:
+
+```bash
+lunch sdk_phone16k_x86_64-trunk_staging-userdebug
+m
+emulator
+# On the device, confirm the live page size:
+adb shell getconf PAGE_SIZE        # prints 16384 on a 16 KB build
+adb shell getprop ro.product.build.16k_page.enabled
+```
+
+If a prebuilt fails to load on the 16 KB target, rebuild it from source (which
+picks up the 16 KB alignment automatically) or re-link it with a 16 KB
+`max-page-size`. Auditing prebuilts for 16 KB readiness is now a standard step
+when bringing a ROM forward to Android 17.
 
 ---
 
@@ -3144,6 +3283,12 @@ Each `make_key` invocation creates two files:
 - `*.pk8` -- The private key in PKCS#8 DER format
 - `*.x509.pem` -- The public key certificate in X.509 PEM format
 
+`development/tools/make_key` takes an optional third argument selecting the key
+type: `rsa` (the default) or `ec`. APK Signature Scheme v3/v4 and modern AVB
+both accept EC keys, so `make_key platform "$SUBJECT" ec` is a valid choice if
+you prefer elliptic-curve keys. Whatever you pick, the `.pk8` / `.x509.pem`
+pair is consumed the same way by the signing tools below.
+
 ### 63.10.3 Configuring the Build to Use Release Keys
 
 Tell the build system to use your keys instead of the test keys:
@@ -3182,11 +3327,15 @@ m dist
 # The target-files ZIP is at:
 # out/dist/bookphone-target_files-<build_id>.zip
 
-# Step 2: Sign all APKs in the target-files
+# Step 2: Sign all APKs in the target-files.
+#   -d <dir> is the short form of --default_key_mappings: every APK that the
+#            stock build signed with testkey/platform/shared/media is re-signed
+#            with the matching key name found in <dir>.
+#   -o       also re-signs (replaces) the OTA verification keys with the
+#            release key in that directory.
 python3 build/make/tools/releasetools/sign_target_files_apks.py \
     -o \
     -d device/AospBook/bookphone/keys \
-    --default_key_mappings device/AospBook/bookphone/keys \
     out/dist/bookphone-target_files-*.zip \
     out/dist/bookphone-target_files-signed.zip
 
@@ -3220,6 +3369,20 @@ python3 build/make/tools/releasetools/ota_from_target_files.py \
     out/dist/bookphone-v2-target_files-signed.zip \
     out/dist/bookphone-ota-v1-to-v2.zip
 ```
+
+`build/make/tools/releasetools/` also ships narrower OTA helpers that are handy
+during ROM bring-up:
+
+- `ota_from_raw_img.py` builds an A/B payload directly from a set of `.img`
+  files instead of a full target-files package, which is convenient when you
+  only want to ship one or two repartitioned images.
+- `create_brick_ota.py` produces a recovery package that wipes the AVB/`vbmeta`
+  partitions to deliberately "brick" a device (used for RMA/secure-erase
+  flows), a reminder that an OTA payload is just a signed instruction set over
+  partitions.
+
+These supplement, rather than replace, the `ota_from_target_files.py` path that
+the rest of this section uses.
 
 **OTA generation workflow:**
 
@@ -3296,7 +3459,7 @@ BRAND/PRODUCT/DEVICE:VERSION/BUILD_ID/BUILD_NUMBER:VARIANT/KEYS
 Example:
 
 ```
-AospBook/bookphone/bookdevice:16/AP3A.250318.001/eng.builder.20250318:userdebug/release-keys
+AospBook/bookphone/bookdevice:17/BP1A.250505.005/eng.builder.20250505:userdebug/release-keys
 ```
 
 Set it in your product makefile:
@@ -3415,19 +3578,27 @@ repo init -u https://android.googlesource.com/kernel/manifest \
     -b common-android-mainline
 repo sync -j$(nproc)
 
-# Build the kernel
-# For x86_64 emulator:
-BUILD_CONFIG=common/build.config.gki.x86_64 build/build.sh
+# Build the kernel with Kleaf (the Bazel-based kernel build, now the
+# standard path; the legacy BUILD_CONFIG=... build/build.sh flow has been
+# retired in current branches).
+# For the x86_64 GKI used by the emulator:
+tools/bazel run //common:kernel_x86_64_dist -- --dist_dir=out/x86_64/dist
 
-# Or using Bazel (newer approach):
-tools/bazel run //common:kernel_x86_64_dist
+# arm64 equivalent:
+# tools/bazel run //common:kernel_aarch64_dist -- --dist_dir=out/aarch64/dist
 ```
 
-The kernel build produces:
+Kleaf wraps the kernel build in Bazel rules; `tools/bazel` is the checked-in
+launcher and the `*_dist` targets stage the kernel image plus modules into the
+`--dist_dir` you pass. The build configuration that used to live in
+`build.config.*` files is now expressed as Bazel `kernel_build` targets in the
+kernel tree.
+
+The kernel build stages its outputs into the `--dist_dir` you passed:
 
 ```
-out/android-mainline/dist/
-    bzImage                  # Kernel binary
+out/x86_64/dist/
+    bzImage                  # Kernel binary (x86_64)
     vmlinux                  # Uncompressed kernel (for debugging)
     System.map               # Symbol map
     *.ko                     # Kernel modules
@@ -3436,8 +3607,8 @@ out/android-mainline/dist/
 ### 63.11.4 Using a Custom Kernel with the Emulator
 
 ```bash
-# Option 1: Copy to prebuilts
-cp out/android-mainline/dist/bzImage \
+# Option 1: Copy into the goldfish kernel prebuilts the build consumes
+cp out/x86_64/dist/bzImage \
     prebuilts/qemu-kernel/x86_64/6.12/kernel-6.12
 
 # Option 2: Specify at emulator launch
@@ -5240,12 +5411,65 @@ release cadence first.
 
 ---
 
-## 63.15 Further Reading
+## 63.15 Try It
+
+Work these on an Android 17 (`android17-release`) checkout. They walk the full
+arc of the chapter from a registered product to a signed, page-size-correct
+image, so the early ones are prerequisites for the later ones.
+
+1. **Register and lunch your own product.** Create
+   `device/AospBook/bookphone/` with the four files from Section 63.3
+   (`AndroidProducts.mk`, `bookphone.mk`, `device.mk`, `BoardConfig.mk`),
+   `source build/envsetup.sh`, then run `list_products | grep bookphone` and
+   `lunch bookphone-trunk_staging-userdebug`. Confirm `printconfig` reports
+   `TARGET_PRODUCT=bookphone`.
+
+2. **Confirm the build executor.** Run `m nothing` and watch the output: the
+   default executor is Siso in Android 17. Re-run with `SOONG_NINJA=ninja m
+   nothing` and note that the build still succeeds with classic Ninja. Cross-
+   check the default in `build/soong/ui/build/config.go`
+   (`NINJA_DEFAULT = NINJA_SISO`).
+
+3. **Verify the platform version triple.** After lunch, run
+   `adb shell getprop ro.build.version.sdk` on a booted image and confirm `37`,
+   and `getprop ro.build.version.release` for `17`. Trace those values back to
+   `build/release/flag_values/trunk_staging/RELEASE_PLATFORM_SDK_VERSION.textproto`
+   and `RELEASE_PLATFORM_VERSION_LAST_STABLE.textproto`.
+
+4. **Build a 16 KB page-size image.** Build
+   `sdk_phone16k_x86_64-trunk_staging-userdebug`, launch the emulator, and run
+   `adb shell getconf PAGE_SIZE` (expect `16384`) and
+   `getprop ro.product.build.16k_page.enabled`. Then add a 4 KB-aligned prebuilt
+   `.so` and observe it fail to load on the 16 KB target; rebuild it from source
+   and watch it succeed.
+
+5. **Sign and package a release build.** Generate keys with
+   `development/tools/make_key`, set `PRODUCT_DEFAULT_DEV_CERTIFICATE` /
+   `PRODUCT_CERTIFICATE_OVERRIDES`, run `m dist`, then re-sign with
+   `build/make/tools/releasetools/sign_target_files_apks.py -o -d <keys>` and
+   produce a full OTA with `ota_from_target_files.py`. Verify the OTA package's
+   signature with `build/make/tools/releasetools/check_ota_package_signature.py`.
+
+6. **Build a custom kernel with Kleaf.** Sync `common-android-mainline`, run
+   `tools/bazel run //common:kernel_x86_64_dist -- --dist_dir=out/x86_64/dist`,
+   drop the resulting `bzImage` into `prebuilts/qemu-kernel/x86_64/6.12/`, and
+   boot the emulator with your kernel. Confirm your `printk` line shows up in
+   `adb logcat -b kernel`.
+
+7. **Add and discover a custom AIDL HAL.** Implement the `IBookLight` HAL from
+   Section 63.12 with its VINTF fragment and SELinux policy, then verify the
+   framework can see it with `adb shell lshal | grep booklight` and that there
+   are no `avc: denied` lines for it in logcat.
+
+If you want to go deeper, the source map below points at the subsystem that
+backs each step.
 
 | Topic | Source Location | Description |
 |-------|----------------|-------------|
 | Build system | `build/make/core/` | GNU Make build rules |
 | Soong build | `build/soong/` | Blueprint/Soong build system |
+| Build executor | `build/soong/ui/build/config.go` | Siso/Ninja selection (`NINJA_DEFAULT`) |
+| Release config | `build/release/` | Version/SDK flags (`RELEASE_PLATFORM_*`) |
 | Product configuration | `build/make/target/product/` | Base product makefiles |
 | Goldfish device | `device/generic/goldfish/` | Emulator device tree |
 | Framework config | `frameworks/base/core/res/res/values/config.xml` | Overridable framework values |
@@ -5267,18 +5491,20 @@ ROM from the ground up:
 
 | Section | Topic | Key Outcome |
 |---------|-------|-------------|
-| 34.1 | Planning | Defined AospBook ROM scope and architecture |
-| 34.2 | Environment Setup | Complete build host configuration |
-| 34.3 | Device Configuration | `AndroidProducts.mk`, `device.mk`, `BoardConfig.mk` |
-| 34.4 | Custom Apps | Prebuilt APKs and source-built apps in the image |
-| 34.5 | Framework Behavior | RROs, source mods, custom system service |
-| 34.6 | Boot Animation | `bootanimation.zip` creation and installation |
-| 34.7 | SystemUI | Status bar, quick settings, theme overlays |
-| 34.8 | Building & Flashing | `m`, emulator launch, `fastboot flash` |
-| 34.9 | Debugging | logcat, dumpsys, Perfetto, Winscope, SELinux |
-| 34.10 | Distribution | Key generation, signing, OTA packages |
-| 34.11 | Kernel | Custom kernel builds, kernel modules |
-| 34.12 | HAL | Custom AIDL HAL definition and implementation |
+| 63.1 | Planning | Defined AospBook ROM scope and architecture |
+| 63.2 | Environment Setup | Complete build host configuration; in-tree JDK; Siso default |
+| 63.3 | Device Configuration | `AndroidProducts.mk`, `device.mk`, `BoardConfig.mk` |
+| 63.4 | Custom Apps | Prebuilt APKs and source-built apps in the image |
+| 63.5 | Framework Behavior | RROs, source mods, custom system service |
+| 63.6 | Boot Animation | `bootanimation.zip` creation and installation |
+| 63.7 | SystemUI | Status bar, quick settings, theme overlays |
+| 63.8 | Building & Flashing | `m`, emulator launch, `fastboot flash`, 16 KB page size |
+| 63.9 | Debugging | logcat, dumpsys, Perfetto, Winscope, SELinux |
+| 63.10 | Distribution | Key generation, signing, OTA packages |
+| 63.11 | Kernel | Custom kernel builds (Kleaf), kernel modules |
+| 63.12 | HAL | Custom AIDL HAL definition and implementation |
+| 63.13 | Putting It All Together | End-to-end build, test, and release pipeline |
+| 63.14 | Case Study | MaruOS as a convergence custom ROM |
 
 **Key takeaways:**
 

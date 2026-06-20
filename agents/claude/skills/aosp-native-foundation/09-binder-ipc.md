@@ -1907,6 +1907,9 @@ Status ServiceManager::addService(const std::string& name,
                                   const sp<IBinder>& binder,
                                   bool allowIsolated,
                                   int32_t dumpPriority) {
+    SM_PERFETTO_TRACE_FUNC(PERFETTO_TE_PROTO_FIELDS(
+            PERFETTO_TE_PROTO_FIELD_CSTR(kProtoServiceName, name.c_str())));
+
     auto ctx = mAccess->getCallingContext();
 
     // Security: Only system UIDs can register services
@@ -1915,7 +1918,8 @@ Status ServiceManager::addService(const std::string& name,
             "App UIDs cannot add services.");
     }
 
-    // SELinux: Check if this caller can add this service name
+    // SELinux: Check if this caller can add this service name. canAddService()
+    // also resolves whether the name is fronted by an RPC Accessor (see 9.5.5).
     std::optional<std::string> accessorName;
     if (auto status = canAddService(ctx, name, &accessorName);
             !status.isOk()) {
@@ -1932,11 +1936,14 @@ Status ServiceManager::addService(const std::string& name,
             "Invalid service name.");
     }
 
-    // VINTF: For HAL services, verify VINTF manifest declaration
+#ifndef VENDORSERVICEMANAGER
+    // VINTF: For HAL services, verify VINTF manifest declaration. The vendor
+    // service manager is compiled with VENDORSERVICEMANAGER and skips this.
     if (!meetsDeclarationRequirements(ctx, binder, name)) {
         return Status::fromExceptionCode(Status::EX_ILLEGAL_ARGUMENT,
             "VINTF declaration error.");
     }
+#endif  // !VENDORSERVICEMANAGER
 
     // Register for death notification to clean up when server dies
     if (binder->remoteBinder() != nullptr &&
@@ -1945,20 +1952,18 @@ Status ServiceManager::addService(const std::string& name,
             "Couldn't linkToDeath.");
     }
 
-    // Store the service
-    mNameToService[name] = Service{
-        .binder = binder,
-        .allowIsolated = allowIsolated,
-        .dumpPriority = dumpPriority,
-        .ctx = ctx,
-    };
-
-    // Notify any processes waiting for this service
-    // (via registerForNotifications)
+    // Store the service (mNameToService[name] = Service{...})
+    // and notify any processes waiting via registerForNotifications().
     // ...
     return Status::ok();
 }
 ```
+
+The body is gated by `SM_PERFETTO_TRACE_FUNC`, so every `addService` /
+`getService` / `checkService` call is emitted as a Perfetto slice on the
+`servicemanager` track (see 9.10.2). The `#ifndef VENDORSERVICEMANAGER` guard
+matters: the framework and vendor service managers are the *same* binary built
+twice, and only the framework build enforces VINTF declaration.
 
 Service name validation is strict:
 
@@ -1999,6 +2004,39 @@ Status ServiceManager::checkService(const std::string& name,
 The difference: `getService()` passes `startIfNotFound=true`, which tries to
 start the service via init if it is not running. `checkService()` returns
 immediately (null if not found).
+
+The plain `getService` / `checkService` return only a raw `IBinder`. Modern
+clients call the richer `getService2` / `checkService2` variants, which return
+an `os::Service` union (`frameworks/native/cmds/servicemanager/ServiceManager.cpp:431`):
+
+```cpp
+os::Service ServiceManager::tryGetService(const std::string& name,
+                                          bool startIfNotFound) {
+    std::optional<std::string> accessorName;
+#ifndef VENDORSERVICEMANAGER
+    accessorName = getVintfAccessorName(name);
+#endif
+    if (accessorName.has_value()) {
+        // The service lives behind an RPC Accessor (e.g. inside a VM).
+        // Return the Accessor binder, not the service itself.
+        auto ctx = mAccess->getCallingContext();
+        if (!mAccess->canFind(ctx, name)) {
+            return os::Service::make<os::Service::Tag::accessor>(nullptr);
+        }
+        return os::Service::make<os::Service::Tag::accessor>(
+                tryGetBinder(*accessorName, startIfNotFound).service);
+    } else {
+        return os::Service::make<os::Service::Tag::serviceWithMetadata>(
+                tryGetBinder(name, startIfNotFound));
+    }
+}
+```
+
+The `os::Service` tagged union is how Android 17 lets the service manager hand
+back *either* a normal local binder *or* an RPC Accessor that the client uses to
+establish a socket connection to a service running where kernel binder is
+unavailable (inside a protected VM, for example). The Accessor path is covered
+in 9.9.10.
 
 ### 9.5.6 SELinux Access Control
 
@@ -2684,7 +2722,7 @@ status_t IPCThreadState::waitForResponse(Parcel *reply,
             goto finish;
 
         case BR_FROZEN_REPLY:
-            err = FAILED_TRANSACTION;
+            err = enableFrozenObjectErrorCode() ? FROZEN_OBJECT : FAILED_TRANSACTION;
             goto finish;
 
         case BR_REPLY: {
@@ -2721,6 +2759,21 @@ The `default` case is important: while waiting for a reply, the thread may
 receive other commands from the driver (like `BR_DEAD_BINDER` death
 notifications or nested `BR_TRANSACTION` calls). These are handled by
 `executeCommand()`.
+
+The `BR_FROZEN_REPLY` arm is worth a closer look. The kernel returns it when the
+target process is in the freezer cgroup (a cached app) and therefore cannot
+service a synchronous transaction. Historically `libbinder` collapsed this into
+the generic `FAILED_TRANSACTION` status, which callers could not distinguish
+from a real failure. Android 17 separates the two: when the build-time flag
+`android.os.binder.flags.enable_frozen_object_error` is set, the helper
+`enableFrozenObjectErrorCode()` returns true and `waitForResponse()` maps
+`BR_FROZEN_REPLY` to the dedicated `FROZEN_OBJECT` status code instead
+(`frameworks/native/libs/binder/IPCThreadState.cpp:105` and the flag definition
+in `frameworks/native/libs/binder/flags.aconfig`). `FROZEN_OBJECT` is defined as
+`UNKNOWN_ERROR + 9` in `system/core/libutils/include/utils/Errors.h:72`. The flag
+is `is_fixed_read_only`, so it compiles down to a constant and the dead branch is
+optimized away. This lets a caller retry once the target unfreezes rather than
+treating a transient freeze as a hard error.
 
 ### 9.7.6 Nested Transactions
 
@@ -3619,19 +3672,77 @@ graph LR
     CLIENT <-->|"TIPC Transport"| KM
 ```
 
-#### Service Access in VMs via AccessorProvider
+#### Service Access in VMs via the Accessor API
 
-The NDK `ABinderRpc_AccessorProvider` API enables automatic service discovery
-across VM boundaries. When a service is not available locally (because the
-process is in a VM without kernel binder), the AccessorProvider callback
-transparently sets up an RPC Binder connection to the host:
+The hardest part of running binder clients inside a VM is not the transport but
+*discovery*: code written against `defaultServiceManager()` expects to look a
+service up by name and get a binder back, but a guest VM has no kernel
+`servicemanager` and no `/dev/binder`. Android 17 closes this gap with the RPC
+**Accessor** API, which lets a process register a callback that produces a
+connection to the real service on demand. Existing `IServiceManager`-style
+lookups then transparently route through RPC Binder.
+
+There are two layers. The C++ layer in `libbinder` registers a provider that
+maps instance names to `Accessor` binders:
 
 ```cpp
-// Source: frameworks/native/libs/binder/ndk/include_platform/android/binder_rpc.h:75
-// AccessorProvider bridges service discovery in VMs
-// When kernel binder is unavailable, the provider creates
-// RPC connections to host services transparently
+// Source: frameworks/native/libs/binder/include/binder/IServiceManager.h:275-290
+typedef std::function<sp<IBinder>(const String16& instance)> RpcAccessorProvider;
+
+[[nodiscard]] std::weak_ptr<AccessorProvider> addAccessorProvider(
+        std::set<std::string>&& instances, RpcAccessorProvider&& providerCallback);
 ```
+
+The NDK layer (`libbinder_ndk`) exposes the same mechanism as a stable C API.
+A process injects a provider callback once; the service manager shim invokes it
+the first time a registered instance is requested:
+
+```cpp
+// Source: frameworks/native/libs/binder/ndk/include_platform/android/binder_rpc.h:94-168
+typedef ABinderRpc_Accessor* _Nullable
+        (*ABinderRpc_AccessorProvider_getAccessorCallback)(
+                const char* _Nonnull instance, void* _Nullable data);
+
+ABinderRpc_AccessorProvider* _Nullable ABinderRpc_registerAccessorProvider(
+        ABinderRpc_AccessorProvider_getAccessorCallback _Nonnull provider,
+        const char* _Nonnull const* _Nonnull instances, size_t numInstances,
+        void* _Nullable data,
+        ABinderRpc_AccessorProviderUserData_deleteCallback _Nullable onDelete);
+
+void ABinderRpc_unregisterAccessorProvider(
+        ABinderRpc_AccessorProvider* _Nonnull provider);
+```
+
+An `ABinderRpc_Accessor` itself is built from a connection-info callback that
+returns the socket coordinates (vsock CID/port, Unix path, etc.) for an
+instance:
+
+```cpp
+// Source: frameworks/native/libs/binder/ndk/include_platform/android/binder_rpc.h:223-299
+ABinderRpc_Accessor* _Nullable ABinderRpc_Accessor_new(
+        const char* _Nonnull instance,
+        ABinderRpc_ConnectionInfoProvider _Nonnull provider,
+        void* _Nullable data,
+        ABinderRpc_ConnectionInfoProviderUserData_delete _Nullable onDelete);
+
+binder_status_t ABinderRpc_Accessor_delegateAccessor(const char* _Nonnull instance,
+        AIBinder* _Nonnull binder, AIBinder* _Nullable* _Nonnull outDelegator);
+```
+
+The matching C++ free function `delegateAccessor()`
+(`frameworks/native/libs/binder/include/binder/IServiceManager.h:347`) wraps an
+Accessor obtained from another process so it can be re-served locally. These
+APIs were promoted to the LLNDK in the Android 17 cycle so that platform
+components outside the core platform (such as `virtmgr`) can use them.
+
+The service manager cooperates from the other side. As shown in 9.5.5, when a
+requested instance has an Accessor declared in VINTF, `tryGetService()` returns
+an `os::Service::Tag::accessor` binder instead of the service itself. The new
+`IServiceManager::checkServiceAccess` AIDL method
+(`frameworks/native/cmds/servicemanager/ServiceManager.cpp:1213`) lets a trusted
+proxy such as `virtmgr` delegate the SELinux `find`/`add`/`list` check for a
+name to `servicemanager` on behalf of a VM client, so the policy decision still
+happens with the real caller context even though the transport is a socket.
 
 ### 9.9.11 Kernel Binder vs. RPC Binder
 
@@ -3790,14 +3901,155 @@ When debugging AIDL binder exceptions, the status code can be decoded:
 These are the AIDL `binder::Status` exception codes, distinct from the kernel-
 level `status_t` return codes.
 
+### 9.10.9 Generic-Netlink Binder Reports
+
+The debugfs files in 9.10.1 are a *pull* interface: userspace has to read them.
+Android 17 adds a *push* diagnostics channel so userspace can subscribe to
+driver-side binder errors as they happen, implemented in
+`frameworks/native/libs/binder/BinderNetlink.cpp`. It uses Linux generic netlink
+rather than debugfs.
+
+`BinderNetlink::open()` resolves the kernel's generic-netlink family named
+`"binder"` (`genl_ctrl_resolve`) and joins its multicast group `"report"`
+(`genl_ctrl_resolve_grp`). The kernel then multicasts a report for notable
+events, and `getReport()` / `readReport()` decode the netlink attributes into a
+`Report` struct. The attribute set
+(`frameworks/native/libs/binder/BinderNetlink.cpp:43`) carries the error code and
+the transaction's context:
+
+| Attribute | Meaning |
+|-----------|---------|
+| `BINDER_A_REPORT_ERROR` | Driver-side error code for the event |
+| `BINDER_A_REPORT_CONTEXT` | Which binder context (binder / hwbinder / vndbinder) |
+| `BINDER_A_REPORT_FROM_PID` / `..._FROM_TID` | Sender process and thread |
+| `BINDER_A_REPORT_TO_PID` / `..._TO_TID` | Target process and thread |
+| `BINDER_A_REPORT_IS_REPLY` | Whether the failing transaction was a reply |
+| `BINDER_A_REPORT_FLAGS` / `..._CODE` / `..._DATA_SIZE` | Transaction flags, code, and size |
+
+Because each report names both endpoints and the binder context, a daemon can
+build a system-wide picture of *who* is hitting `FAILED_TRANSACTION`,
+buffer-full, or frozen-target errors without scraping per-process debugfs.
+`getStatistics()` exposes counters for received and dropped reports. The feature
+depends on a matching kernel uapi header
+(`<linux/android/binder_netlink.h>`); when that header is absent the file
+compiles a vendored copy of the attribute definitions so the build still works
+against older kernels.
+
 ---
 
-## 9.11 Try It: Write a Binder Service
+## 9.11 Android 17 Updates
+
+Binder is mature, so Android 17's changes are incremental rather than
+structural: the kernel driver, the `libbinder` ABI, and the AIDL toolchain are
+unchanged in shape. The work this cycle concentrated on three themes:
+diagnosability (richer error codes and a push-based report channel), making the
+freezer interaction less lossy, and extending RPC Binder so binder clients can
+run where there is no kernel binder at all. The earlier sections fold these into
+the relevant code paths; this section collects them so the 17 delta is visible
+in one place.
+
+### 9.11.1 A Distinct Error Code for Frozen Targets
+
+Sending a synchronous transaction to a process in the freezer cgroup has always
+failed, but `libbinder` reported the failure as the generic
+`FAILED_TRANSACTION`, indistinguishable from a buffer-full or malformed-call
+error. Android 17 adds a dedicated `FROZEN_OBJECT` status
+(`system/core/libutils/include/utils/Errors.h:72`, defined as
+`UNKNOWN_ERROR + 9`). When the build flag
+`android.os.binder.flags.enable_frozen_object_error`
+(`frameworks/native/libs/binder/flags.aconfig`) is set, `waitForResponse()` maps
+the kernel's `BR_FROZEN_REPLY` to `FROZEN_OBJECT` instead of
+`FAILED_TRANSACTION` (`frameworks/native/libs/binder/IPCThreadState.cpp:1196`,
+gated by the `enableFrozenObjectErrorCode()` helper at line 105). The flag is
+`is_fixed_read_only`, so it is a compile-time constant and the unused branch is
+dead-code-eliminated. The payoff is that a caller can now tell "the callee is
+temporarily frozen, retry when it thaws" apart from a genuine error. This pairs
+with the freeze-notification machinery from 9.2.9: clients that registered a
+`FrozenStateChangeCallback` learn when the target unfreezes and can re-issue the
+call.
+
+### 9.11.2 Generic-Netlink Binder Reports
+
+Section 9.10.9 describes the new `BinderNetlink.cpp` diagnostics channel: a
+generic-netlink subscription to the kernel binder driver's `"binder"` family and
+`"report"` multicast group that pushes structured error reports
+(`BINDER_A_REPORT_ERROR`, `BINDER_A_REPORT_CONTEXT`, sender/target PID and TID,
+flags, code, size) to userspace as they happen. This is the first binder
+diagnostics surface that does not require polling debugfs, and because each
+report names both endpoints and the binder context it lets a daemon attribute
+failures system-wide.
+
+### 9.11.3 Binder Observer: Latency Histograms and Spam Detection
+
+The optional `BinderObserver` infrastructure introduced in 9.8.1 grew a richer
+statistics pipeline this cycle, under
+`frameworks/native/libs/binder/observer/`. `IPCThreadState::executeCommand()`
+now brackets each served transaction with
+`BinderObserver::onBeginTransaction()` / `onEndTransaction()`
+(`frameworks/native/libs/binder/IPCThreadState.cpp:1752`), recording the calling
+UID, interface, and method. A `HistogramScale`
+(`frameworks/native/libs/binder/observer/HistogramScale.h`) buckets transaction
+latency on an exponential scale (factor 1.2), and `BinderStatsPusher`
+(`frameworks/native/libs/binder/observer/BinderStatsPusher.h`) aggregates the
+collected `BinderCallData` and pushes it to `statsd` as atoms, including a
+binder-spam signal. The per-thread stats queue is allocated lazily so processes
+that never opt in pay nothing. Two read-only flags in
+`frameworks/native/libs/binder/flags.aconfig` gate the new behavior:
+`binder_stats_v3` (latency histogram, main-thread detection, proc-state
+detection) and `enable_frozen_object_error` from 9.11.1.
+
+### 9.11.4 Cached Process Identity
+
+`getCallingUid()` and `clearCallingIdentity()` previously fell back to a
+`getuid()` / `getpid()` syscall when there was no active transaction identity.
+Profiling showed this costing a measurable fraction of cycles in `system_server`
+(it sits on the hot `clearCallingIdentity()` path). Android 17 memoizes the
+process UID and PID on first use in `IPCThreadState`
+(`frameworks/native/libs/binder/IPCThreadState.cpp:463`, where
+`getCallingUid()` returns `mCallingUid.value()` or the cached `getuid()`),
+avoiding repeated syscalls. This is safe under the existing rule that a process
+must not use binder after `fork()` (9.3.4), so the cached identity can never go
+stale.
+
+### 9.11.5 RPC Binder Accessors Reach the LLNDK
+
+The biggest RPC Binder change is the **Accessor** discovery mechanism detailed
+in 9.9.10 and 9.5.5. A process registers an `RpcAccessorProvider`
+(`frameworks/native/libs/binder/include/binder/IServiceManager.h:275`) — or, via
+the NDK, an `ABinderRpc_AccessorProvider`
+(`frameworks/native/libs/binder/ndk/include_platform/android/binder_rpc.h:147`) —
+that maps service instance names to Accessor binders. Ordinary `IServiceManager`
+lookups then transparently route through RPC Binder when an instance is declared
+as accessor-backed: the service manager returns an `os::Service::Tag::accessor`
+binder (9.5.5) and the new `IServiceManager::checkServiceAccess` AIDL method
+(`frameworks/native/cmds/servicemanager/ServiceManager.cpp:1213`) lets a trusted
+proxy like `virtmgr` delegate the SELinux check with the real caller's context.
+These NDK APIs were promoted to the LLNDK in the 17 cycle so platform components
+outside the core platform can use them, which is what lets a client inside a
+protected VM call a host service by name without ever touching `/dev/binder`.
+
+### 9.11.6 Private Compute Core Transaction Auditing
+
+For Private Compute Core / Private Compute Services processes, Android 17 adds
+opt-in outgoing-transaction auditing in `libbinder`. When the framework flag
+`android.app.privatecompute.flags.enablePccFrameworkSupport` is on,
+`ProcessState::isOutgoingTransactionsAuditable()` is set for PCC/PCS UIDs, and
+`IPCThreadState::logPccTransaction()`
+(`frameworks/native/libs/binder/IPCThreadState.cpp:1698`) records the interface
+and method name of each non-PCC-to-PCC outgoing call into a
+`PersistableBundle` and forwards it to the `pcc_sandbox_native` service's audit
+log. The lookup is rate-limited so a missing audit service cannot spam the log.
+This gives the PCC sandbox an authoritative record of which framework surfaces a
+sandboxed component reaches over binder.
+
+---
+
+## 9.12 Try It: Write a Binder Service
 
 This section walks through creating a complete Binder service and client. We
 will create a simple "echo" service that demonstrates the full lifecycle.
 
-### 9.11.1 Step 1: Define the AIDL Interface
+### 9.12.1 Step 1: Define the AIDL Interface
 
 Create the AIDL file:
 
@@ -3817,7 +4069,7 @@ interface IEchoService {
 }
 ```
 
-### 9.11.2 Step 2: Build Configuration
+### 9.12.2 Step 2: Build Configuration
 
 Create the `Android.bp` for the AIDL interface:
 
@@ -3842,7 +4094,7 @@ aidl_interface {
 }
 ```
 
-### 9.11.3 Step 3: Implement the Service (C++)
+### 9.12.3 Step 3: Implement the Service (C++)
 
 ```cpp
 // hardware/interfaces/example/echo/aidl/default/EchoService.h
@@ -3882,7 +4134,7 @@ private:
 }  // namespace aidl::android::hardware::echo
 ```
 
-### 9.11.4 Step 4: Service Main Entry Point
+### 9.12.4 Step 4: Service Main Entry Point
 
 ```cpp
 // hardware/interfaces/example/echo/aidl/default/main.cpp
@@ -3922,7 +4174,7 @@ int main() {
 }
 ```
 
-### 9.11.5 Step 5: Build Configuration for the Service
+### 9.12.5 Step 5: Build Configuration for the Service
 
 ```
 // hardware/interfaces/example/echo/aidl/default/Android.bp
@@ -3939,7 +4191,7 @@ cc_binary {
 }
 ```
 
-### 9.11.6 Step 6: Init Configuration
+### 9.12.6 Step 6: Init Configuration
 
 ```rc
 // hardware/interfaces/example/echo/aidl/default/echo-service.rc
@@ -3949,7 +4201,7 @@ service vendor.echo /vendor/bin/hw/android.hardware.echo-service
     group system
 ```
 
-### 9.11.7 Step 7: VINTF Manifest Entry
+### 9.12.7 Step 7: VINTF Manifest Entry
 
 Add to the device manifest:
 
@@ -3961,7 +4213,7 @@ Add to the device manifest:
 </hal>
 ```
 
-### 9.11.8 Step 8: Write the Client
+### 9.12.8 Step 8: Write the Client
 
 ```cpp
 // A simple client that calls the echo service
@@ -4003,7 +4255,7 @@ int main() {
 }
 ```
 
-### 9.11.9 Step 9: Implement in Rust
+### 9.12.9 Step 9: Implement in Rust
 
 The same service in Rust:
 
@@ -4058,7 +4310,7 @@ fn main() {
 }
 ```
 
-### 9.11.10 Step 10: Implement the Client in Java
+### 9.12.10 Step 10: Implement the Client in Java
 
 ```java
 // Java client for the echo service
@@ -4118,7 +4370,7 @@ is a local object (same process) or a remote proxy:
 This is the `queryLocalInterface()` optimization that avoids unnecessary
 serialization for in-process calls.
 
-### 9.11.11 Step 11: Handle Death Notifications
+### 9.12.11 Step 11: Handle Death Notifications
 
 ```cpp
 // C++ example: Register for death notifications
@@ -4142,7 +4394,7 @@ Death notifications are essential for robust client implementations. When the
 server process crashes, the client receives the notification and can attempt to
 reconnect or clean up resources.
 
-### 9.11.12 Step 12: Debugging Your Service
+### 9.12.12 Step 12: Debugging Your Service
 
 **List all registered services:**
 
@@ -4201,7 +4453,7 @@ duration_ms: 5000
 EOF
 ```
 
-### 9.11.13 Common Pitfalls
+### 9.12.13 Common Pitfalls
 
 1. **Binder thread pool not started.** If you forget
    `ABinderProcess_startThreadPool()`, your service will register but never
@@ -4236,7 +4488,7 @@ EOF
    }
    ```
 
-### 9.11.14 Architecture of a Complete Binder Service
+### 9.12.14 Architecture of a Complete Binder Service
 
 ```mermaid
 graph TD
@@ -4274,7 +4526,7 @@ graph TD
 
 ---
 
-## 9.12 Summary
+## 9.13 Summary
 
 ### Key Source Files
 
@@ -4305,6 +4557,13 @@ graph TD
 | hwservicemanager.rc | `system/hwservicemanager/hwservicemanager.rc` |
 | LazyServiceRegistrar | `frameworks/native/libs/binder/include/binder/LazyServiceRegistrar.h` |
 | Kernel header bridge | `frameworks/native/libs/binder/binder_module.h` |
+| libbinder feature flags | `frameworks/native/libs/binder/flags.aconfig` |
+| Netlink reports (17) | `frameworks/native/libs/binder/BinderNetlink.cpp` |
+| Binder observer (17) | `frameworks/native/libs/binder/observer/BinderObserver.cpp` |
+| Binder stats pusher (17) | `frameworks/native/libs/binder/observer/BinderStatsPusher.h` |
+| RPC Accessor (NDK) | `frameworks/native/libs/binder/ndk/include_platform/android/binder_rpc.h` |
+| Rust RPC Accessor | `frameworks/native/libs/binder/rust/src/accessor.rs` |
+| Error codes | `system/core/libutils/include/utils/Errors.h` |
 
 ### Architecture Summary
 
@@ -4390,6 +4649,13 @@ graph TB
 
 8. **HIDL and hwbinder are deprecated** in favor of AIDL for HAL interfaces
    starting with Android 13.
+
+9. **Android 17 sharpened binder's edges** rather than reshaping it: a distinct
+   `FROZEN_OBJECT` error for frozen targets, a generic-netlink push channel for
+   driver-side error reports, latency-histogram statistics in the binder
+   observer, cached process identity on the hot `clearCallingIdentity()` path,
+   and RPC Binder Accessors promoted to the LLNDK so binder clients can run
+   inside VMs with no kernel binder at all.
 
 ---
 

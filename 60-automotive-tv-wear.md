@@ -2864,7 +2864,323 @@ private final CarInputService mCarInputService;
 
 ---
 
-## 60.5 Try It
+## 60.5 Android 17: Automotive Windowing, Visibility Barriers, and the Road to SDV
+
+Android 17 invests heavily in the automotive form factor. Most of the new code in
+`packages/services/Car/` for this release is not about new vehicle properties or new HALs --
+it is about *windowing*. AAOS head units increasingly run several apps side by side on a single
+large display (a map next to a media player next to a climate panel), drive multiple physical
+displays for multiple occupants, and present each display through an OEM-authored, fully
+configurable layout. The phone WindowManager Shell was never designed for any of this, so 17
+ships a dedicated automotive shell library and a declarative panel framework on top of it. This
+section walks the three pieces that landed for 17 -- the `Car-WindowManager-Shell` library, the
+auto visibility barrier, and the Scalable UI panel framework -- and then points to where the
+larger Software Defined Vehicle (SDV) story is told.
+
+### 60.5.1 The Car WindowManager Shell Library
+
+Phone and tablet windowing is built from `frameworks/base/libs/WindowManager/Shell/`
+(`WMShellModule`, `WMShellBaseModule`), as Section 60.4.2 described. Automotive needs a different
+model: every container is a *multi-window root task* (there is no single fullscreen task that owns
+the display), containers must be layered and bounded explicitly by the system UI, and a container
+must be hideable without painting an opaque activity on top of it. Android 17 factors this into a
+standalone library, `Car-WindowManager-Shell`, declared in
+`packages/services/Car/libs/car-wm-shell-lib/Android.bp`. Its public surface is small and lives
+under `packages/services/Car/libs/car-wm-shell-lib/src/com/android/wm/shell/automotive/`.
+
+The central abstraction is the `AutoTaskStack` -- a task stack that is *always* in multi-window
+mode -- and its concrete form, the `RootTaskStack`:
+
+```kotlin
+// packages/services/Car/libs/car-wm-shell-lib/src/com/android/wm/shell/automotive/
+//   AutoTaskStack.kt
+
+/**
+ * Represents an auto task stack, which is always in multi-window mode.
+ */
+interface AutoTaskStack {
+    val id: Int
+    val displayId: Int
+    var leash: SurfaceControl
+    val name: String
+}
+
+data class AutoTaskStackState(
+    val bounds: Rect = Rect(),
+    val isAboveBarrier: Boolean,
+    val layer: Int
+)
+
+data class RootTaskStack(
+    override val id: Int,
+    override val displayId: Int,
+    override var leash: SurfaceControl,
+    override val name: String,
+    var rootTaskInfo: ActivityManager.RunningTaskInfo
+) : AutoTaskStack
+```
+
+Two fields in `AutoTaskStackState` are the heart of the new model. `layer` gives the system UI
+explicit Z-order control over containers (the phone shell mostly relies on activity order).
+`isAboveBarrier` ties the container to the visibility barrier described in Section 60.5.2: a
+stack below the barrier is hidden by WindowManager without any occluding surface. The `bounds`
+field lets the system UI place and resize each container deterministically, which is what makes
+fixed multi-pane car layouts possible.
+
+Clients drive the shell through the `AutoTaskStackController` interface:
+
+```kotlin
+// packages/services/Car/libs/car-wm-shell-lib/src/com/android/wm/shell/automotive/
+//   AutoTaskStackController.kt
+
+interface AutoTaskStackController {
+    var autoTransitionHandlerDelegate: AutoTaskStackTransitionHandlerDelegate?
+
+    val taskStackStateMap: Map<Int, AutoTaskStackState>
+
+    fun createRootTaskStack(
+        displayId: Int,
+        name: String,
+        listener: RootTaskStackListener
+    ): RootTaskStack?
+
+    fun destroyTaskStack(taskStackId: Int)
+
+    fun setDefaultRootTaskStackOnDisplay(displayId: Int, rootTaskStackId: Int?)
+
+    @ShellMainThread
+    fun startTransition(transaction: AutoTaskStackTransaction): IBinder?
+}
+```
+
+The controller follows a transaction-and-transition discipline rather than imperative window
+moves. A caller composes an `AutoTaskStackTransaction` (reparent a task into a stack, change a
+stack's `AutoTaskStackState`, send a `PendingIntent` into a stack) and calls `startTransition`;
+WindowManager then drives the change through a normal Shell transition, calling back into the
+caller's `AutoTaskStackTransitionHandlerDelegate` (`handleRequest`, `startAnimation`,
+`onTransitionConsumed`, `mergeAnimation`) so the animation stays in sync with the underlying
+window operations. `setDefaultRootTaskStackOnDisplay` registers a stack as the launch root for a
+display, so newly started activities are routed into a managed container instead of going
+fullscreen.
+
+Container lifecycle is reported through `RootTaskStackListener`, which adapts
+`ShellTaskOrganizer.TaskListener` so that callbacks split cleanly between the root container and
+its child tasks:
+
+```kotlin
+// packages/services/Car/libs/car-wm-shell-lib/src/com/android/wm/shell/automotive/
+//   RootTaskStackListener.kt
+
+interface RootTaskStackListener : ShellTaskOrganizer.TaskListener {
+    fun onRootTaskStackAppeared(rootTaskStack: RootTaskStack) {}
+    fun onRootTaskStackInfoChanged(rootTaskStack: RootTaskStack) {}
+    fun onRootTaskStackDestroyed(rootTaskStack: RootTaskStack) {}
+}
+```
+
+On the CarService side, `CarActivityService` grew its own lightweight `RootTaskListener`
+interface plus `registerRootTaskListener`/`unregisterRootTaskListener` so that automotive system
+services can observe root-task appear/vanish events without depending on the shell library
+directly:
+
+```java
+// packages/services/Car/service/src/com/android/car/am/CarActivityService.java
+
+/** Listener for root task callbacks. */
+public interface RootTaskListener {
+    void onRootTaskVanished(String name);
+    void onRootTaskAppeared(String name);
+}
+```
+
+The library and shell architecture:
+
+```mermaid
+graph TB
+    subgraph "System UI Process"
+        DELEG["AutoTaskStackTransitionHandlerDelegate<br/>(implemented by Car SystemUI)"]
+        CTRL["AutoTaskStackController<br/>car-wm-shell-lib"]
+        REPO["AutoTaskRepository<br/>tracks stacks + barrier tokens"]
+        BAR["AutoVisibilityBarrierController"]
+    end
+
+    subgraph "WindowManager / Shell Core"
+        STO["ShellTaskOrganizer"]
+        TR["Transitions"]
+        WM["WindowManagerService"]
+    end
+
+    subgraph "Containers on a Display"
+        RTS1["RootTaskStack A<br/>isAboveBarrier=true, layer=2"]
+        RTS2["RootTaskStack B<br/>isAboveBarrier=true, layer=1"]
+        BARRIER["Visibility Barrier Task<br/>(empty, Shell-organized)"]
+        RTS3["RootTaskStack C<br/>isAboveBarrier=false (hidden)"]
+    end
+
+    DELEG --> CTRL
+    CTRL --> STO
+    CTRL --> TR
+    BAR --> STO
+    BAR --> REPO
+    CTRL --> REPO
+    STO --> WM
+    TR --> WM
+    CTRL --> RTS1
+    CTRL --> RTS2
+    BAR --> BARRIER
+    CTRL --> RTS3
+```
+
+### 60.5.2 The Auto Visibility Barrier
+
+A recurring automotive problem is hiding a container reliably. On phones a task is hidden because
+something opaque covers it; in a multi-pane car layout there may be nothing opaque to cover a pane
+you want to dismiss, and leaving it visible underneath is both a UX and a driver-distraction
+problem. Android 17 solves this with the *visibility barrier*, implemented by
+`AutoVisibilityBarrierController` under
+`packages/services/Car/libs/car-wm-shell-lib/src/com/android/wm/shell/automotive/visibilitybarrier/`.
+
+The mechanism is deliberately simple. The controller creates one empty, Shell-organized task per
+display -- the barrier -- and relies on a WindowManager rule that siblings ordered *below* the
+barrier are made invisible. Any container can therefore be hidden by ordering it under the
+barrier (its `AutoTaskStackState.isAboveBarrier` becomes `false`) with no occluding activity
+required. The class documentation states the contract directly:
+
+```kotlin
+// packages/services/Car/libs/car-wm-shell-lib/src/com/android/wm/shell/automotive/
+//   visibilitybarrier/AutoVisibilityBarrierController.kt
+
+/**
+ * Controller to manage the visibility barrier for each display.
+ *
+ * The visibility barrier is an empty Shell-organized task. Siblings below the visibility barrier
+ * are made invisible by the WindowManager. This provides a reliable mechanism to hide tasks
+ * without needing to occlude them with a fullscreen visible activity.
+ *
+ * Note: A home activity can co-exist with the visibility barrier and either will not affect the
+ * other.
+ */
+@WMSingleton
+class AutoVisibilityBarrierController @Inject constructor(/* ... */) :
+    DisplayController.OnDisplaysChangedListener, AutoShellInitializable {
+
+    override fun initialize() {
+        if (!Flags.enableAutoVisibilityBarrier()) {
+            return
+        }
+        // ...register for display add/remove and create a barrier per display
+    }
+}
+```
+
+The controller listens for displays through `DisplayController.OnDisplaysChangedListener` and
+maintains one barrier per display, recording each barrier's token in `AutoTaskRepository` and
+dropping it on `onTaskVanished`. Like nearly every new windowing behavior in 17, it is gated by
+an aconfig flag so OEMs and the platform can stage the rollout:
+
+```
+# packages/services/Car/libs/car-wm-shell-lib/aconfig/flags.aconfig
+package: "com.android.wm.shell.automotive"
+container: "system_ext"
+
+flag {
+    name: "enable_mumd_car_wm_shell"
+    namespace: "car_framework"
+    description: "Enables proxy and host implementation in MUMD car-wm-shell for automotive"
+}
+
+flag {
+    name: "enable_auto_visibility_barrier"
+    namespace: "car_framework"
+    description: "Enables the dedicated auto visibility barrier controller on all displays"
+}
+```
+
+The `enable_mumd_car_wm_shell` flag is the second half of the story: in a Multi-User
+Multi-Display (MUMD) vehicle, the shell runs a proxy-and-host split so that the per-occupant
+system UI processes can each drive their own display's containers through the same
+`AutoTaskStackController` API.
+
+### 60.5.3 Scalable UI: Declarative Car Panels
+
+The shell library gives Car SystemUI primitives, but OEMs do not want to write transition code.
+Android 17 layers a declarative *Scalable UI* framework over the shell so a head-unit layout is
+described as a set of configurable **panels** with states, variants, and animations, rather than
+imperative window calls. The framework spans two locations: the reusable model and panel library
+at `packages/apps/Car/systemlibs/car-scalable-ui-lib/` (package `com.android.car.scalableui`,
+providing `Event`, `PanelTransaction`, `Panel`, and the variant/keyframe model), and the
+SystemUI wiring at `packages/apps/Car/SystemUI/src/com/android/systemui/car/wm/scalableui/`.
+
+The bridge class is `PanelAutoTaskStackTransitionHandlerDelegate` -- it implements the shell's
+`AutoTaskStackTransitionHandlerDelegate` and translates WindowManager transitions into panel
+events. Its companion pieces, documented in
+`packages/apps/Car/SystemUI/src/com/android/systemui/car/wm/scalableui/README.md`, are:
+
+| Component | Role |
+|-----------|------|
+| `PanelAutoTaskStackTransitionHandlerDelegate` | Bridge between Shell transitions and Scalable UI |
+| `PanelTransitionCoordinator` | Orchestrates panel animations and state changes |
+| `EventDispatcher` | Maps system events to `PanelTransaction`s |
+| `PanelConfigReader` / `ActionConfigReader` | Read declarative panel and action configuration |
+| `TaskPanel` / `DecorPanel` / `SysUIPanel` | The panel container types |
+
+The README draws the distinction that makes the framework efficient: *window state* (visibility,
+size, position, Z-order) is heavyweight and goes through WindowManager via an
+`AutoTaskStackTransaction`, while *surface* properties (alpha, scale, translation, crop) are
+animated cheaply on SurfaceFlinger through `AutoSurfaceTransaction`. A pure surface change (for
+example, fading a panel) never round-trips through WindowManager.
+
+```mermaid
+sequenceDiagram
+    participant Src as App launch / button event
+    participant WM as WindowManager / Shell
+    participant Delegate as PanelAutoTaskStackTransitionHandlerDelegate
+    participant Dispatch as EventDispatcher
+    participant Coord as PanelTransitionCoordinator
+    participant Surf as SurfaceFlinger
+
+    Src->>WM: Window change initiates transition
+    WM->>Delegate: handleRequest(transition, request)
+    Delegate->>Dispatch: Event from TransitionRequestInfo
+    Dispatch-->>Delegate: PanelTransaction
+    Delegate->>Coord: Build AutoTaskStackTransaction
+    Coord-->>Delegate: Transaction
+    Delegate-->>WM: Return transaction
+    WM->>Delegate: startAnimation(...)
+    Delegate->>Coord: Reconcile state + animate
+    Coord->>Surf: AutoSurfaceTransaction (alpha/scale/crop)
+```
+
+Scalable UI is where the secondary-display work also lands. The distant-display and driver/
+distant-display ("dewd") system UIs wire the framework in explicitly -- for example
+`packages/services/Car/car_product/distant_display/apps/CarDistantDisplaySystemUI/` constructs its
+initializer with `setScalableUIWMInitializer(...)` and `setScalableUIEventDispatcher(...)`, and the
+`packages/services/Car/car_product/dewd/` product carries its own Scalable UI sample RROs. As with
+the shell pieces, Scalable UI is staged behind flags so a given product can opt in per display
+(and MUMD products deliberately disable it on the per-occupant path while it matures).
+
+### 60.5.4 Cross-Reference: Software Defined Vehicle
+
+The windowing work above is the part of the 17 automotive story that lives inside CarService and
+Car SystemUI. The larger architectural shift in this release is the **Software Defined Vehicle
+(SDV)** platform -- a separate, vehicle-spanning stack (under trees such as
+`system/software_defined_vehicle/`, `hardware/sdv/`, and `device/google/sdv*`) that decouples
+vehicle functions from fixed ECUs, runs services across virtualized domains, and adds a gateway
+and middleware layer between Android and the rest of the car. SDV is a top-level subsystem in its
+own right, not a CarService feature, so it is covered in its own chapters rather than here:
+
+- **Chapter 65: Software Defined Vehicle** -- the SDV platform architecture, domains, and how it
+  relates to the AAOS stack covered in this chapter.
+- **Chapter 66: SDV Middleware** -- the gateway and middleware layer that brokers between Android,
+  the SDV services, and vehicle networks.
+
+For this chapter the takeaway is the boundary: CarService, the Vehicle HAL, occupant zones, and
+the new `Car-WindowManager-Shell`/Scalable UI windowing stack remain the Android-side automotive
+platform; the SDV chapters pick up where the vehicle abstraction leaves off.
+
+---
+
+## 60.6 Try It
 
 ### Exercise 60.1: Explore CarService Services
 

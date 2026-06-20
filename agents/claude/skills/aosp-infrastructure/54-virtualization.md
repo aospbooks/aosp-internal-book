@@ -4127,9 +4127,383 @@ The pvmfw README acknowledges this forward compatibility:
 
 ---
 
-## 54.27 Try It
+## 54.27 AVF Multitenancy
 
-### 54.27.1 Checking Device Support
+Through Android 16, a Microdroid VM hosted a single payload owned by a single
+app. Android 17 (the 26Q2 release) adds multitenancy, letting several mutually
+distrusting payloads share one VM while remaining isolated from each other. This
+matters when a confidential workload wants to compose code from multiple owners
+(for example, an APK payload plus a platform APEX) without paying the per-VM
+boot, memory, and attestation cost of running each in its own VM.
+
+### 54.27.1 The Signed TenancyConfig
+
+The trust model is a *signed declaration of trusted cohabitation by the VM
+owner*. The VM owner authors a `TenancyConfig` that names every tenant allowed
+into the VM, and any payload not described there is rejected by the pVM
+instance. From `packages/modules/Virtualization/docs/multitenancy.md`:
+
+> We introduce TenancyConfig, which is a signed declaration of trusted
+> cohabitation by the VM owner. This essentially is a description of each of the
+> tenants that will be allowed in the VM, any other payload not described in
+> this should be discarded by pVM instance. This config will be signed by the
+> use case owner & is reflected in the pVM certificates (DICE chains).
+
+Concretely the `TenancyConfig` is the payload config JSON file embedded in the
+APK, typically set with `VirtualMachineConfig#setPayloadConfigPath`. Because the
+config is part of the signed payload, it is measured into the DICE chain
+(Section 54.1.6), so the set of admitted tenants becomes part of the VM's
+verifiable identity rather than something the untrusted host can tamper with.
+
+### 54.27.2 Tenant Configuration Schema
+
+The config schema lives in
+`packages/modules/Virtualization/libs/libmicrodroid_payload_metadata/config/src/lib.rs`.
+The top-level `VmPayloadConfig` gains a `tenants: Vec<TenantConfig>` field
+(line 45). Each `TenantConfig` is an enum tagged by the `package` field as either
+an APK or an APEX tenant (lines 151-158):
+
+```rust
+#[serde(tag = "package")]
+pub enum TenantConfig {
+    #[serde(rename = "apex")]
+    Apex(TenantConfiguration),
+    #[serde(rename = "apk")]
+    Apk(TenantConfiguration),
+}
+```
+
+Both variants carry a `TenantConfiguration` (lines 203-222):
+
+```rust
+pub struct TenantConfiguration {
+    pub name: String,                         // tenant package name
+    pub uid: u32,                             // unique, in [10000, 65534]
+    pub task: Option<Task>,                   // optional entry point
+    pub min_version: u64,                     // minimum rollback_index/version_code
+    pub expected_authority: ExpectedAuthority,// signing authority
+    pub cgroup_config: Option<CgroupConfig>,  // optional memory cgroup limits
+}
+```
+
+The `expected_authority` is a per-build-type map (lines 162-172) so the same
+config works across `dev-keys`, `test-keys`, and `release-keys` builds:
+
+```rust
+pub struct ExpectedAuthority {
+    #[serde(rename = "dev-keys")]     pub dev_key: String,
+    #[serde(rename = "test-keys")]    pub test_key: String,
+    #[serde(rename = "release-keys")] pub release_key: String,
+}
+```
+
+At runtime `ExpectedAuthority::resolve_authority()` (lines 182-198) reads the
+`ro.build.tags` system property and selects the matching authority string,
+falling back to the `release-keys` value when the tag is absent. The authority
+is the hex-encoded SHA-512 hash of the signing certificate (for an APK tenant)
+or of the signing public key (for an APEX tenant).
+
+The following diagram shows how the signed config shapes a multitenant VM.
+
+```mermaid
+graph TB
+    OWNER["VM owner authors<br/>TenancyConfig (JSON)"]
+    OWNER -->|"signed, set via<br/>setPayloadConfigPath"| APK["Owner APK payload"]
+    APK -->|"measured into DICE"| DICE["pVM DICE chain"]
+    APK --> MM["microdroid_manager<br/>(in-guest)"]
+    T1["Tenant APK<br/>com.android.microdroid.test"] --> MM
+    T2["Tenant APEX<br/>com.android.virt"] --> MM
+    MM -->|"validate against<br/>TenancyConfig"| CHECK{"All tenants<br/>match config?"}
+    CHECK -->|"yes"| RUN["Tenants run<br/>(isolated by uid/SELinux)"]
+    CHECK -->|"no"| REJECT["Payload rejected"]
+```
+
+### 54.27.3 Tenant Validation in microdroid_manager
+
+Validation runs inside the guest, in `microdroid_manager`, at
+`packages/modules/Virtualization/guest/microdroid_manager/src/tenant_config.rs`.
+The `validate_tenants_against_tenant_config()` function (lines 32-119) enforces
+four invariants, documented at the top of the file:
+
+1. The provided tenant APKs and APEXes must exactly match the set described in
+   the config, compared by package name (lines 42-68). A count mismatch fails
+   with `PayloadInvalidConfig`.
+2. Tenant ordering in the config is irrelevant; lookup is by name through
+   `HashMap`s built at lines 37-40.
+3. The tenant's `rollback_index` (or `version_code` when no rollback index is
+   present) must be at least `min_version` (lines 101-107), defeating rollback
+   to a vulnerable build.
+4. The signing authority must match `expected_authority`. For an APK the
+   authority is `hex::encode(&apk_data.cert_hash)` (line 96); for an APEX it is
+   `hex::encode(Sha512::hash(&apex_data.public_key))` (line 84). An empty
+   expected authority is treated as "any" and skips the check (line 110).
+
+Because `expected_authority` is now mandatory in the schema (a deserialization
+test enforces this), a tenant cannot be admitted without pinning its signer.
+The comment at lines 217-218 explains why: Microdroid does not persist authority
+data in the replay-protected instance spec, so the authority must travel with
+the signed config on every boot.
+
+## 54.28 Trusty as a Protected VM
+
+Android 17 lets Trusty, the reference Trusted Execution Environment OS, run as a
+pVM rather than only in TrustZone's secure world. A "Trusty pVM" is a protected
+VM managed by AVF that runs the Trusty kernel plus its built-in Trusted
+Applications, isolated from the host by pKVM exactly like Microdroid. The design
+is documented in `packages/modules/Virtualization/guest/trusty/docs/trusty_vm.md`.
+
+### 54.28.1 Why Run a TEE in a pVM
+
+Moving a TEE workload into a pVM gives it a pKVM-enforced memory boundary and a
+DICE-based identity without consuming scarce secure-world resources. To work in
+the AVF environment, the Trusty kernel was extended with several capabilities
+(trusty_vm.md, lines 10-35):
+
+- **Virtio-vsock over PCI** for host-to-VM communication.
+- **Virtio-vsock over virtio-msg over FF-A**, a channel that lets the Trusty pVM
+  talk to TrustZone Secure Partitions through the Firmware Framework for Arm
+  (FF-A). FF-A memory sharing keeps the host kernel out of the communication
+  buffers, so the channel resists host information-disclosure attacks.
+- **Device tree parsing**, including the pvmfw memory region that carries the
+  DICE chain that gives the pVM a verifiable identity.
+- **PSCI** for CPU on/off management and **ARM TRNG** for entropy.
+
+### 54.28.2 Building and Signing the Trusty Payload
+
+A Trusty pVM image is a single signed ELF: the Trusty kernel and all its TAs are
+baked in, because Trusty pVMs do not yet load TAs dynamically (trusty_vm.md,
+lines 228-231). The image is produced by a chain of Soong rules
+(trusty_vm.md, lines 37-121):
+
+1. A `genrule` (for example `trusty_security_vm_arm64.bin`) compiles Trusty into
+   a raw binary.
+2. An `avb_add_hash_footer` rule (`trusty_security_vm_signed_bin`) signs it and
+   adds the pvmfw footer. Key arguments: `private_key` (`:avb_testkey_rsa4096`
+   in AOSP, re-signed for production), `partition_name: "boot"` as the AVB
+   domain separator, a fixed public `salt` for reproducible builds,
+   `rollback_index` set from `platform_security_patch_timestamp`, and `props`
+   carrying `com.android.virt.cap` and `com.android.virt.name`.
+3. A `cc_genrule`/`cc_object`/`cc_binary` chain wraps the signed blob in an ELF
+   that crosvm can load, installed via `prebuilt_etc` as `trusty_security_vm.elf`.
+
+The `com.android.virt.name` property is the only AVF-managed value inside the
+signature. As trusty_vm.md notes (lines 96-101), this prevents a malicious host
+from making two Trusty VMs signed by the same key impersonate each other for
+DICE-based authentication.
+
+### 54.28.3 The Launcher and Its CLI
+
+The pVM is started by the `trusty_security_vm_launcher` binary at
+`packages/modules/Virtualization/guest/trusty/security_vm/launcher`, a Rust
+service usually invoked from an `.rc` file at device boot. Its argument parsing
+lives in `.../launcher/src/main.rs`, and the `VmConfig` it builds plus the
+`run_vm()` entry point are in `.../launcher/src/lib.rs` (the `vm_launcher`
+crate, struct at line 35, `run_vm` at line 74).
+
+The CLI flags (main.rs, lines 35-83) include `--kernel` (the signed ELF),
+`--protected`, `--name`, `--memory-size-mib`, `--rpc-services-config` (repeatable),
+`--cpu-topology` (`one-cpu` or `match-host`), `--vm-instance-id`, and
+`--allow-ffa`. The FF-A flag is special: when set, the launcher converts it into
+a single TEE service request, the `guest_ffa_tee_service` constant defined at
+main.rs line 33 (lines 138-141):
+
+```rust
+let tee_services = match args.allow_ffa {
+    true => vec![GUEST_FFA_TEE_SERVICE.to_owned()],
+    false => Vec::new(),
+};
+```
+
+The following diagram shows the Trusty pVM launch and service-exposure flow.
+
+```mermaid
+sequenceDiagram
+    participant Init as "init (.rc service)"
+    participant Launcher as "trusty_security_vm_launcher"
+    participant VS as "VirtualizationService"
+    participant Trusty as "Trusty pVM"
+    participant Client as "Host client"
+
+    Init->>Launcher: "start with --kernel, --protected, --allow-ffa"
+    Launcher->>VS: "run_vm(VmConfig)"
+    VS->>Trusty: "boot signed ELF as pVM"
+    Launcher->>VS: "createAccessorBinder(rpc service, vsock port)"
+    Launcher->>Launcher: "register IAccessor in servicemanager"
+    Client->>Launcher: "look up IAccessor/<iface>/<instance>"
+    Client->>Trusty: "BinderRPC over vsock"
+```
+
+Because `--allow-ffa` requires `CAP_IPC_OWNER`, the FF-A-enabled launcher
+currently runs as `user root` in its `.rc` file; non-FF-A Trusty pVMs run as
+`user system` (trusty_vm.md, lines 166-177). This root requirement is a known
+temporary measure tracked for refinement.
+
+### 54.28.4 Instance Identity, RPC Services, and Early Boot
+
+A Trusty pVM uses a statically defined 64-byte instance ID built by
+`gen_instance_id_for_vm_with_trusted_hal.py` from a JSON config such as
+`.../launcher/security_vm_instance_id_config.json` (trusty_vm.md, lines 181-220).
+For the security VM the config marks it persistent
+(`"is_vm_persistent": true`), pins it to the `"system"` partition, and assigns a
+fixed `vm_primary_uuid`. The host always supplies the instance ID, which is only
+one input to the DICE chain, never a security guarantee on its own.
+
+The launcher acts as an accessor for the AIDL services the pVM implements over
+BinderRPC. Each service is described in a `--rpc-services-config` JSON entry
+with `port`, `accessor_name`, and `internal_rpc_service_name`
+(main.rs `RpcServiceConfig`, lines 178-183), and the matching `IAccessor`
+instances are declared in the `.rc` file so host processes can discover them.
+`register_accessor_service()` (main.rs, lines 192-206) calls
+`createAccessorBinder` and registers the result in the service manager.
+
+Security VMs that must run before `/data` is mounted use early boot: they take a
+fixed CID from the early-VM range and are mapped to their launcher by an
+`early_vms.xml` installed under `/system_ext/etc/avf/`, served by
+`early_virtmgr` (trusty_vm.md, lines 291-310; see also Section 54.6.11).
+
+## 54.29 TEE Service Access for pVMs
+
+The Trusty FF-A channel above is one instance of a more general Android 17
+mechanism: protected VMs declaring, up front, which Trusted Execution
+Environment services they may reach. The host cannot grant a pVM secure-world
+access silently; access is gated by SELinux and, for vendor services, by a HAL.
+
+### 54.29.1 Declaring TEE Services on the Config
+
+TEE services are requested through the VM raw config. The AIDL field is
+`String[] teeServices` in
+`packages/modules/Virtualization/android/virtualizationservice/aidl/android/system/virtualizationservice/VirtualMachineRawConfig.aidl`
+(line 141), mirrored in `VirtualMachineAppConfig.aidl` (line 149). Native
+clients populate it through the libavf LLNDK introduced in Android 17,
+`AVirtualMachineRawConfig_addTeeService`, declared at
+`packages/modules/Virtualization/libs/libavf/include/android/virtualization.h`
+(lines 238-239, `__INTRODUCED_IN(37)`) and implemented in
+`.../libs/libavf/src/lib.rs` (lines 326-339), which validates the UTF-8 string
+and pushes it onto `config.teeServices`. The header documents the constraints:
+
+> TEE services are only supported for protected VMs. Attempting to create a
+> non-protected VM with TEE service will fail `AVirtualMachine_createRaw`.
+> ... Vendor defined TEE services must be prefixed with `vendor.`.
+
+The service name must match a label in one of the `tee_service_contexts`
+SELinux files (for example `/system/etc/selinux/plat_tee_service_contexts` or a
+vendor equivalent), which is what makes a TEE service name a policy-controlled
+capability rather than a free-form string.
+
+### 54.29.2 SELinux Gating and the Vendor HAL Handover
+
+When a VM is created, `virtmgr` enforces the policy. In
+`packages/modules/Virtualization/android/virtmgr/src/virtualmachine.rs`
+(lines 704-726) it first refuses TEE services on a non-protected VM, then calls
+`check_tee_service_permission(&caller_secontext, &config.teeServices)`. That
+function, in `.../virtmgr/src/selinux.rs` (lines 231-242), resolves each service
+name to its SELinux context through `TeeServiceSelinuxBackend` (which wraps
+`selinux_android_tee_service_context_handle`, lines 125-142) and checks the
+caller against it with the `tee_service` class and `use` permission:
+
+```rust
+for tee_service in tee_services {
+    let tee_service_ctx = backend.lookup(tee_service)?;
+    check_access(caller_ctx, &tee_service_ctx, "tee_service", "use")
+        .with_context(|| format!("permission denied for {tee_service:?}"))?;
+}
+```
+
+Built-in services and `vendor.`-prefixed services then diverge. The only
+built-in service is `guest_ffa_tee_service`, which crosvm turns into an
+`--ffa=auto` argument (`.../virtmgr/src/crosvm.rs`, lines 1176-1189) — this is
+the Trusty FF-A path from Section 54.28. Vendor services require the
+`IVmCapabilitiesService` HAL (Section 54.7.1): `virtmgr` separates them out
+(virtualmachine.rs, lines 714-719) and refuses to start if the HAL is absent
+(lines 721-726). When vendor services are present the VM is started suspended
+(`start_suspended: !vendor_tee_services.is_empty()`, line 817); `virtmgr` then
+calls `grantAccessToVendorTeeServices(vm_pfd, vendor_tee_services)` on the HAL
+(`handle_vendor_tee_services_internal`, lines 1504-1516) and only resumes the VM
+afterward with `resume_full()` (line 1519). This is the concrete plumbing behind
+the capability-grant sequence already shown in Section 54.7.4.
+
+## 54.30 In-Guest Linux VM Management
+
+The graphics-accelerated Linux VM of Section 54.15 needs a small in-guest agent
+so the host can manage the guest's lifecycle. Android 17 adds
+`linux_vm_manager`, a host-tools Rust binary that runs *inside* the Debian guest
+and exposes management interfaces back to the host over vsock. Its source is at
+`packages/modules/Virtualization/guest/linux_vm_manager/`.
+
+### 54.30.1 Connecting Back to the Host over vsock
+
+On startup (`.../linux_vm_manager/src/main.rs`) the manager dials the host's
+`IVirtualMachineService` over an RPC-binder vsock connection. It reads its own
+CID with `vsock::get_local_cid()` and connects to `VMADDR_CID_HOST`
+(`get_vms_rpc_binder`, lines 31-40):
+
+```rust
+let port = vsock::get_local_cid().context("Could not determine local CID")?;
+let session = RpcSession::new();
+session.set_max_incoming_threads(1);
+session.setup_vsock_client(VMADDR_CID_HOST, port)
+```
+
+It then stands up a `DebianService` RPC server and registers an in-guest
+`GuestAgent` with the host via `service.registerGuestAgent(&guest_agent)`
+(main.rs, lines 53-61). The manager is deliberately not a static executable —
+its `Android.bp` warns that `static_executable: true` would crash the binder
+runtime with `SIGSEGV` — and it pulls in helper crates already used elsewhere in
+AVF (`forwarder_guest_launcher`, `shutdown_runner`, `storage_balloon_agent`) so
+the guest can forward ports, balloon storage, and power off cleanly.
+
+### 54.30.2 The IGuestAgent Interface
+
+The agent implements `IGuestAgent`, defined in
+`packages/modules/Virtualization/android/virtualizationservice/aidl/android/system/virtualizationcommon/IGuestAgent.aidl`.
+The Linux VM manager's implementation in `.../linux_vm_manager/src/guest_agent.rs`
+(lines 32-39) currently wires up the graceful-shutdown path:
+
+```rust
+impl IGuestAgent for GuestAgent {
+    fn shutdownAsync(&self) -> BinderResult<()> {
+        shutdown_runner::power_off().map_err(|e| { /* ... */ })
+    }
+}
+```
+
+`registerGuestAgent` is method 1 of `IVirtualMachineService`
+(`.../aidl/android/system/virtualmachineservice/IVirtualMachineService.aidl`,
+line 37); the host surfaces the registered agent through
+`IVirtualMachine.getGuestAgent()` and notifies callbacks via
+`IVirtualMachineCallback.onGuestAgentRegistered(cid, guestAgent)`. The host then
+drives the guest by calling `IGuestAgent` methods such as `shutdownAsync()`,
+`trimAsync()`, and the user lifecycle hooks (`userUnlocked`, `userLocked`,
+`userRemoved`) over the same vsock binder channel. Note that
+`linux_vm_manager` builds against the `_non_microdroid` AIDL variants
+(`android.system.virtualmachineservice_non_microdroid`,
+`android.system.virtualizationcommon_non_microdroid`), reflecting that it runs in
+a full Linux guest rather than in Microdroid.
+
+The following diagram shows the in-guest agent talking back to the host.
+
+```mermaid
+graph LR
+    subgraph "Host (Android)"
+        VMS["IVirtualMachineService"]
+        VM["IVirtualMachine.getGuestAgent()"]
+    end
+    subgraph "Linux guest (Debian)"
+        LVM["linux_vm_manager"]
+        GA["GuestAgent<br/>(IGuestAgent impl)"]
+        DS["DebianService<br/>RPC server"]
+    end
+    LVM -->|"vsock to VMADDR_CID_HOST"| VMS
+    LVM -->|"registerGuestAgent(GA)"| VMS
+    VMS --> VM
+    VM -->|"shutdownAsync()/trimAsync()"| GA
+    LVM --> GA
+    LVM --> DS
+```
+
+## 54.31 Try It
+
+### 54.31.1 Checking Device Support
 
 First, verify that your device supports virtualization:
 
@@ -4154,7 +4528,7 @@ Available OS list: ["microdroid"]
 Debug policy: none
 ```
 
-### 54.27.2 Running a Microdroid VM
+### 54.31.2 Running a Microdroid VM
 
 The simplest way to run a VM is using the shell helper script:
 
@@ -4181,7 +4555,7 @@ adb shell /apex/com.android.virt/bin/vm run-microdroid \
     --log /data/local/tmp/virt/log.txt
 ```
 
-### 54.27.3 Building a Payload App
+### 54.31.3 Building a Payload App
 
 Create a minimal VM payload:
 
@@ -4239,7 +4613,7 @@ adb shell /apex/com.android.virt/bin/vm run-app \
     --payload-binary-name MyMicrodroidPayload.so
 ```
 
-### 54.27.4 Java API Usage
+### 54.31.4 Java API Usage
 
 For programmatic VM management from an Android app:
 
@@ -4279,7 +4653,7 @@ vm.setCallback(executor, new VirtualMachineCallback() {
 vm.run();
 ```
 
-### 54.27.5 Running Tests
+### 54.31.5 Running Tests
 
 AVF includes comprehensive test suites:
 
@@ -4294,7 +4668,7 @@ atest MicrodroidTestApp
 atest MicrodroidTests#protectedVmHasValidDiceChain
 ```
 
-### 54.27.6 Debugging VMs
+### 54.31.6 Debugging VMs
 
 **Console output:**
 
@@ -4341,7 +4715,7 @@ adb shell /apex/com.android.virt/bin/vm run-microdroid \
     --dump-device-tree /data/local/tmp/vm_dt.dtb
 ```
 
-### 54.27.7 Custom VM Configuration
+### 54.31.7 Custom VM Configuration
 
 For advanced use cases, you can create a custom VM configuration:
 
@@ -4375,7 +4749,7 @@ adb push my_vm_config.json /data/local/tmp/
 adb shell /apex/com.android.virt/bin/vm run /data/local/tmp/my_vm_config.json
 ```
 
-### 54.27.8 Inspecting AVF Components
+### 54.31.8 Inspecting AVF Components
 
 **APEX contents:**
 
@@ -4404,7 +4778,7 @@ adb shell /apex/com.android.virt/bin/vm check-feature-enabled vendor_modules
 adb shell /apex/com.android.virt/bin/vm check-feature-enabled device_assignment
 ```
 
-### 54.27.9 Building AVF from Source
+### 54.31.9 Building AVF from Source
 
 To build the complete AVF stack from AOSP source:
 
@@ -4425,7 +4799,7 @@ adb install out/dist/com.android.virt.apex
 adb reboot
 ```
 
-### 54.27.10 Troubleshooting
+### 54.31.10 Troubleshooting
 
 **VM fails to start:**
 
@@ -4445,7 +4819,7 @@ adb reboot
 - Use `--cpu-topology match_host` to match host CPU topology
 - Use `--boost-uclamp` for benchmarking stability
 
-### 54.27.11 Remote Attestation Demo
+### 54.31.11 Remote Attestation Demo
 
 The `VmAttestationDemoApp` at `packages/modules/Virtualization/android/VmAttestationDemoApp/`
 demonstrates how a pVM payload can request remote attestation:

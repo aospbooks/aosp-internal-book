@@ -1110,7 +1110,7 @@ classDiagram
     }
     class Camera3SharedOutputStream {
         -mSurfaces: vector~IGraphicBufferProducer~
-        +switchSurface()
+        +updateStream()
     }
 
     Camera3StreamInterface <|-- Camera3IOStreamBase
@@ -1668,14 +1668,16 @@ Source: frameworks/base/core/java/android/hardware/camera2/CameraExtensionSessio
 
 ### 62.6.2 Supported Extension Types
 
-| Extension Type | Constant | Description |
-|---------------|----------|-------------|
-| Night Mode | `EXTENSION_NIGHT` | Multi-frame low-light enhancement |
-| HDR | `EXTENSION_HDR` | High dynamic range merging |
-| Bokeh | `EXTENSION_BOKEH` | Background blur / portrait mode |
-| Auto | `EXTENSION_AUTOMATIC` | Device-selected best mode |
-| Face Retouch | `EXTENSION_FACE_RETOUCH` | Skin smoothing and beautification |
-| Eyes Free Videography | `EXTENSION_EYES_FREE_VIDEOGRAPHY` | Stabilized hands-free video |
+| Extension Type | Constant | Value | Description |
+|---------------|----------|-------|-------------|
+| Auto | `EXTENSION_AUTOMATIC` | 0 | Device-selected best mode |
+| Face Retouch | `EXTENSION_FACE_RETOUCH` | 1 | Skin smoothing and beautification |
+| Bokeh | `EXTENSION_BOKEH` | 2 | Background blur / portrait mode |
+| HDR | `EXTENSION_HDR` | 3 | High dynamic range merging |
+| Night Mode | `EXTENSION_NIGHT` | 4 | Multi-frame low-light enhancement |
+
+These five public constants are defined in `CameraExtensionCharacteristics.java`;
+OEM-defined extensions start at `EXTENSION_VENDOR_START` (`0x4000`).
 
 ```java
 // Query supported extensions
@@ -1827,25 +1829,37 @@ Set<CaptureResult.Key> resultKeys =
 ### 62.6.8 Extension Strength Control (Android 15+)
 
 Android 15 added extension strength control, allowing applications to
-adjust the intensity of extension effects:
+adjust the intensity of extension effects.  Strength is a per-request
+control, `CaptureRequest.EXTENSION_STRENGTH`, a single integer in the range
+`0` to `100` where `0` means "apply no post-processing, return a regular
+frame" and `100` is the maximum effect.  It is only available when the key
+appears in the extension's `getAvailableCaptureRequestKeys()` list, so an
+application must check that list rather than assume the control exists:
+
+```
+Source: frameworks/base/core/java/android/hardware/camera2/CaptureRequest.java
+  → EXTENSION_STRENGTH ("android.extension.strength")
+```
 
 ```java
-// Check if strength control is supported
-if (extChars.isPostviewAvailable(
-        CameraExtensionCharacteristics.EXTENSION_BOKEH)) {
+// Check whether the chosen extension accepts a strength control
+Set<CaptureRequest.Key> requestKeys =
+    extChars.getAvailableCaptureRequestKeys(
+        CameraExtensionCharacteristics.EXTENSION_BOKEH);
 
-    // Query supported strength range
-    Range<Integer> strengthRange =
-        extChars.getExtensionSpecificStrengthRange(
-            CameraExtensionCharacteristics.EXTENSION_BOKEH);
-    // e.g., Range(0, 100) where 0 = no effect, 100 = maximum
-
-    // Apply strength to capture request
+if (requestKeys.contains(CaptureRequest.EXTENSION_STRENGTH)) {
     CaptureRequest.Builder builder =
         cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
-    builder.set(CaptureRequest.EXTENSION_STRENGTH, 75);  // 75% bokeh
+    builder.set(CaptureRequest.EXTENSION_STRENGTH, 75);  // 75% effect
 }
 ```
+
+The interpretation depends on the extension: for `EXTENSION_BOKEH` strength
+controls the amount of blur; for `EXTENSION_HDR` and `EXTENSION_NIGHT` it
+controls how many frames are fused and the brightness of the result; for
+`EXTENSION_FACE_RETOUCH` it controls the amount of cosmetic smoothing.  If
+the client omits the value, the extension picks a default and reports it back
+in the corresponding capture result.
 
 ### 62.6.9 Extension Postview
 
@@ -2075,20 +2089,26 @@ ACameraMetadata_const_entry physicalCameraIds;
 ACameraMetadata_getConstEntry(chars,
     ACAMERA_LOGICAL_MULTI_CAMERA_PHYSICAL_IDS, &physicalCameraIds);
 
-// Create physical camera aware capture request
+// Create a physical-camera-aware capture request: the trailing array
+// lists the physical IDs whose per-camera settings the request may carry.
 ACaptureRequest* request = NULL;
 const char* physicalIds[] = {"2", "4"};
-ACameraDevice_createCaptureRequestForPhysicalCameras(
+ACameraDevice_createCaptureRequest_withPhysicalIds(
     device, TEMPLATE_PREVIEW,
     2, physicalIds,
     &request);
 
-// Set physical camera ID on output target
-ACameraOutputTarget* target = NULL;
-ACameraOutputTarget_create(window, &target);
-ACaptureRequest_addTarget(request, target);
-ACaptureRequest_setPhysicalCameraTarget(request, target, "2");
+// Per-physical-camera settings are written with the
+// ACaptureRequest_setEntry_physicalCamera_* family, keyed by physical ID:
+uint8_t aeMode = ACAMERA_CONTROL_AE_MODE_ON;
+ACaptureRequest_setEntry_physicalCamera_u8(
+    request, "2", ACAMERA_CONTROL_AE_MODE, 1, &aeMode);
 ```
+
+The chapter's earlier Java example used `OutputConfiguration.setPhysicalCameraId()`
+to bind a whole stream to a sensor; at the NDK level the same routing is done
+by adding the output target normally and supplying per-physical settings
+through the `_physicalCamera_*` setters.
 
 ### 62.7.8 NDK Metadata Access
 
@@ -2156,7 +2176,273 @@ Source: frameworks/av/camera/ndk/include/camera/NdkCameraError.h
 
 ---
 
-## 62.8 Try It
+## 62.8 Multi-Client Shared Sessions (Android 17)
+
+Until Android 17 a camera was an exclusive resource: exactly one client held
+a given camera ID, and a higher-priority client could only take it by evicting
+the current owner (Section 62.2.3).  Android 17 adds an opt-in **shared mode**
+in which several clients can hold the same camera at once, observing a single
+shared stream configuration.  This is aimed at scenarios such as large-screen
+video conferencing, where a system "effects" surface and an app surface want
+the same sensor frames simultaneously.
+
+### 62.8.1 Opening a Camera in Shared Mode
+
+Shared mode is a privileged, opt-in capability.  An application first asks
+whether the device supports it, then opens with the shared variant of
+`openCamera`:
+
+```
+Source: frameworks/base/core/java/android/hardware/camera2/CameraManager.java
+  → isCameraDeviceSharingSupported(String)
+  → openSharedCamera(String, Executor, CameraDevice.StateCallback)
+```
+
+```java
+// Both APIs are @SystemApi and require SYSTEM_CAMERA + CAMERA permissions.
+if (cameraManager.isCameraDeviceSharingSupported(cameraId)) {
+    cameraManager.openSharedCamera(cameraId, executor, new CameraDevice.StateCallback() {
+        @Override
+        public void onOpenedInSharedMode(CameraDevice camera, boolean isPrimaryClient) {
+            // isPrimaryClient tells this client whether it currently controls capture.
+        }
+        @Override
+        public void onClientSharedAccessPriorityChanged(
+                CameraDevice camera, boolean isPrimaryClient) {
+            // Primary/secondary status can flip as higher-priority clients come and go.
+        }
+        @Override public void onOpened(CameraDevice camera) { /* non-shared path */ }
+        @Override public void onDisconnected(CameraDevice camera) { camera.close(); }
+        @Override public void onError(CameraDevice camera, int error) { camera.close(); }
+    });
+}
+```
+
+`openSharedCamera` is rejected with `UnsupportedOperationException` when
+`isCameraDeviceSharingSupported` returns false, and requires both
+`android.permission.SYSTEM_CAMERA` and `android.permission.CAMERA`.  The two
+new `StateCallback` hooks, `onOpenedInSharedMode()` and
+`onClientSharedAccessPriorityChanged()`, are defined in
+`frameworks/base/core/java/android/hardware/camera2/CameraDevice.java`.
+
+### 62.8.2 Primary and Secondary Clients
+
+Among all clients that have opened a camera in shared mode, exactly one is the
+**primary** client and the rest are **secondary**.  Priority is computed from
+the same two signals the eviction policy uses, the process state and the
+out-of-memory score, so a foreground or system client outranks a background
+one.  As clients come and go the primary can change, and every client is told
+via `onClientSharedAccessPriorityChanged()`.
+
+The capabilities differ sharply between the two roles:
+
+| Capability | Primary client | Secondary client |
+|------------|----------------|------------------|
+| Create capture requests, set any capture parameter | Yes | No |
+| `capture` / `setRepeatingRequest` / `stopRepeating` | Yes | No |
+| `startStreaming` / `stopStreaming` (default params) | Yes | Yes |
+| `captureBurst` / `setRepeatingBurst` / `switchToOffline` / `prepare` | No (unsupported in shared sessions) | No |
+
+Secondary clients cannot author capture requests; they can only ask the
+session to stream frames to their own surfaces with default parameters via
+`startStreaming(List<Surface>)`, and stop with `stopStreaming()`.
+
+```
+Source: frameworks/base/core/java/android/hardware/camera2/CameraSharedCaptureSession.java
+  → startStreaming(List<Surface>, ...) / stopStreaming()
+```
+
+### 62.8.3 The Shared Capture Session
+
+When a camera is opened in shared mode, the only legal session type is
+`SessionConfiguration.SESSION_SHARED`; any other value throws
+`IllegalArgumentException`.  The resulting `CameraCaptureSession` is castable
+to `CameraSharedCaptureSession`.
+
+```
+Source: frameworks/base/core/java/android/hardware/camera2/params/SessionConfiguration.java
+  → SESSION_SHARED = CameraDevice.SESSION_OPERATION_MODE_SHARED
+```
+
+Crucially, a shared session does not let each client pick its own stream
+geometry.  Every client must use the single, device-published configuration
+exposed through `CameraCharacteristics.SHARED_SESSION_CONFIGURATION`
+(Section 62.9.1); supplying any other output configuration fails session
+creation.  The framework synthesizes that key from a vendor XML file parsed by
+the camera service:
+
+```
+Source: frameworks/av/services/camera/libcameraservice/config/SharedSessionConfigReader.h
+        frameworks/av/services/camera/libcameraservice/config/SharedSessionConfigUtils.h
+```
+
+`SharedSessionConfigReader::SharedSessionConfig` captures one allowed output:
+surface type, width, height, optional physical camera ID, stream use case,
+timestamp base, mirror mode, readout-timestamp flag, format, usage, and
+dataspace, all parsed from the shared-session XML by
+`parseSharedSessionConfig()`.
+
+### 62.8.4 Shared Mode Through the Service
+
+The Binder surface gained an explicit `sharedMode` flag.
+`ICameraService.connectDevice()` now takes a trailing `boolean sharedMode`,
+and `ICameraDeviceUser` exposes `isPrimaryClient()` so a client can query its
+role; `ICameraDeviceCallbacks` carries the
+`onClientSharedAccessPriorityChanged(boolean primaryClient)` notification back
+to the framework.
+
+```
+Source: frameworks/av/camera/aidl/android/hardware/ICameraService.aidl
+  → connectDevice(..., boolean sharedMode)
+        frameworks/av/camera/aidl/android/hardware/camera2/ICameraDeviceUser.aidl
+  → isPrimaryClient()
+        frameworks/av/camera/aidl/android/hardware/camera2/ICameraDeviceCallbacks.aidl
+  → onClientSharedAccessPriorityChanged(boolean primaryClient)
+```
+
+Inside the camera service, `CameraService` threads the `sharedMode` flag
+through every connect path, tracks the set of PIDs sharing each camera, and
+keeps their relative priorities in sync.  The diagram below shows the full
+shared-mode connect with a secondary client joining later:
+
+```mermaid
+sequenceDiagram
+    participant A1 as Primary App
+    participant A2 as Secondary App
+    participant CS as CameraService (C++)
+    participant CDC as CameraDeviceClient
+    participant HAL as Camera HAL
+
+    A1->>CS: connectDevice(sharedMode=true)
+    CS->>CS: makeClient(sharedMode=true)
+    CS->>CDC: initialize() — first shared client
+    CS-->>A1: onOpenedInSharedMode(isPrimaryClient=true)
+
+    A2->>CS: connectDevice(sharedMode=true)
+    CS->>CS: addSharedClientPid() + updateSharedClientAccessPriorities()
+    CS-->>A2: onOpenedInSharedMode(isPrimaryClient=false)
+
+    A1->>CDC: setRepeatingRequest(preview)
+    CDC->>HAL: processCaptureRequest
+    A2->>CDC: startStreaming(secondarySurfaces)
+    CDC->>CDC: matchSharedStreamingRequest()
+    Note over CS: If A2 gains higher priority, primary flips
+    CS-->>A1: onClientSharedAccessPriorityChanged(false)
+    CS-->>A2: onClientSharedAccessPriorityChanged(true)
+```
+
+`CameraService` provides the supporting machinery, including
+`getHighestPrioritySharedClient()`, `addSharedClientPid()` /
+`removeSharedClientPid()`, `updateSharedClientAccessPriorities()`, and
+`notifySharedClientPrioritiesChanged()`, all declared in
+`frameworks/av/services/camera/libcameraservice/CameraService.h`.  On the
+per-client side, `CameraDeviceClient` tracks the shared streaming request and
+the shared request map (`mSharedStreamingRequest`, `mSharedRequestMap`) and
+implements `isPrimaryClient()`.
+
+```
+Source: frameworks/av/services/camera/libcameraservice/api2/CameraDeviceClient.h
+  → isPrimaryClient(), matchSharedStreamingRequest(), matchSharedCaptureRequest()
+```
+
+### 62.8.5 Shared Mode in the NDK
+
+The native API mirrors the Java surface.
+`ACameraManager_isCameraDeviceSharingSupported()` reports support,
+`ACameraManager_openSharedCamera()` opens in shared mode, and secondary
+clients drive frames with `ACameraCaptureSessionShared_startStreaming()` /
+`ACameraCaptureSessionShared_stopStreaming()` (with a logical-multi-camera
+variant, `ACameraCaptureSessionShared_logicalCamera_startStreaming()`).
+
+```
+Source: frameworks/av/camera/ndk/include/camera/NdkCameraManager.h
+  → ACameraManager_openSharedCamera, ACameraManager_isCameraDeviceSharingSupported
+        frameworks/av/camera/ndk/include/camera/NdkCameraCaptureSession.h
+  → ACameraCaptureSessionShared_startStreaming / _stopStreaming
+```
+
+---
+
+## 62.9 New Camera Metadata Sections (Android 17)
+
+The camera metadata tag space is partitioned into numbered **sections** (one
+per subsystem: control, sensor, lens, scaler, and so on), each occupying a
+16-bit slice of the tag namespace.  Android 17 appends two new sections to the
+master enumeration in
+`system/media/camera/include/system/camera_metadata_tags.h`, immediately
+before `ANDROID_SECTION_COUNT`:
+
+```
+Source: system/media/camera/include/system/camera_metadata_tags.h
+  → ANDROID_SHARED_SESSION, ANDROID_DESKTOP_EFFECTS (then ANDROID_SECTION_COUNT)
+        system/media/camera/docs/metadata_definitions.xml
+  → <section name="sharedSession">, <section name="desktopEffects">
+```
+
+The same two sections are mirrored into the HAL's metadata AIDL
+(`hardware/interfaces/camera/metadata/aidl/.../CameraMetadataSection.aidl`),
+keeping the framework and HAL tag namespaces aligned.
+
+### 62.9.1 The sharedSession Section
+
+This section backs the shared-session feature from Section 62.8.  It defines
+the device's single allowed shared configuration:
+
+| Tag | Type | Visibility | Purpose |
+|-----|------|-----------|---------|
+| `ANDROID_SHARED_SESSION_COLOR_SPACE` | enum | framework-only | Color space all shared outputs use (`UNSPECIFIED`, `SRGB`, `DISPLAY_P3`, `BT2020_HLG`) |
+| `ANDROID_SHARED_SESSION_OUTPUT_CONFIGURATIONS` | int64[] | framework-only | Packed list of allowed shared outputs (surface type, size, format, mirror mode, readout-timestamp flag, timestamp base, dataspace, usage, stream use case, physical ID) |
+
+Neither raw tag is set by the HAL: both are generated by the Android camera
+framework when a camera can be opened in shared mode.  They are then surfaced
+to system clients as the synthetic, `@SystemApi` key
+`CameraCharacteristics.SHARED_SESSION_CONFIGURATION`, whose value is a
+`SharedSessionConfiguration` object that enumerates the permitted output
+configurations.
+
+```
+Source: frameworks/base/core/java/android/hardware/camera2/CameraCharacteristics.java
+  → SHARED_SESSION_COLOR_SPACE, SHARED_SESSION_OUTPUT_CONFIGURATIONS,
+    SHARED_SESSION_CONFIGURATION (@SystemApi, @SyntheticKey)
+        frameworks/base/core/java/android/hardware/camera2/params/SharedSessionConfiguration.java
+```
+
+### 62.9.2 The desktopEffects Section
+
+The `desktopEffects` section exposes large-screen video-conferencing effects
+applied by the camera device itself, behind the `desktop_effects` aconfig
+flag.  All of its tags are `system` visibility, so they are not part of the
+public SDK.  A device advertises which effects it can apply through
+`ANDROID_DESKTOP_EFFECTS_CAPABILITIES`:
+
+| Capability | Control tag | Modes |
+|-----------|-------------|-------|
+| `BACKGROUND_BLUR` | `ANDROID_DESKTOP_EFFECTS_BACKGROUND_BLUR_MODE` | `OFF`, `LIGHT`, `FULL` |
+| `FACE_RETOUCH` | `ANDROID_DESKTOP_EFFECTS_FACE_RETOUCH_MODE` (+ `_FACE_RETOUCH_STRENGTH`) | `OFF`, `ON` |
+| `PORTRAIT_RELIGHT` | `ANDROID_DESKTOP_EFFECTS_PORTRAIT_RELIGHT_MODE` | `OFF`, `ON` |
+
+The static `ANDROID_DESKTOP_EFFECTS_BACKGROUND_BLUR_MODES` array lists which
+blur modes a device supports; that key only exists when `BACKGROUND_BLUR`
+appears in the capabilities list.  Face retouch carries an optional
+`ANDROID_DESKTOP_EFFECTS_FACE_RETOUCH_STRENGTH` byte.
+
+```
+Source: system/media/camera/docs/metadata_definitions.xml
+  → <section name="desktopEffects"> (aconfig_flag="desktop_effects")
+        hardware/interfaces/camera/metadata/aidl/android/hardware/camera/metadata/
+  → DesktopEffectsCapabilities.aidl, DesktopEffectsBackgroundBlurMode.aidl,
+    DesktopEffectsFaceRetouchMode.aidl, DesktopEffectsPortraitRelightMode.aidl
+```
+
+Because these effects run inside the camera device rather than in an
+application-side extension, they are distinct from the Camera Extensions of
+Section 62.6: the same conceptual operations (blur, retouch, relight) here
+become first-class, HAL-reported metadata controls intended for system
+conferencing surfaces.
+
+---
+
+## 62.10 Try It
 
 ### Exercise 62.1: Camera Device Enumeration
 
@@ -2831,6 +3117,16 @@ key architectural insights from this chapter:
 
 7. **NDK parity** -- The NDK camera API provides identical functionality to
    the Java API through the same underlying service.
+
+8. **Shared mode breaks the single-owner rule** -- Android 17 lets several
+   privileged clients hold one camera at once through `openSharedCamera`, with
+   one primary client driving capture and secondaries streaming with default
+   parameters against a single device-published configuration.
+
+9. **The metadata tag space grew** -- Android 17 appends the `sharedSession`
+   and `desktopEffects` sections, the latter exposing system-side conferencing
+   effects (background blur, face retouch, portrait relight) as HAL-reported
+   controls.
 
 The next chapter is the Custom ROM Guide -- the capstone that ties
 together everything in the book by walking through how to build,

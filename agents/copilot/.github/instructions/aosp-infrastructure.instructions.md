@@ -29,7 +29,13 @@ Play infrastructure.  This chapter dissects the architecture that makes that
 possible: the **APEX** container format, the **apexd** daemon that activates
 modules at boot, the catalog of 40+ Mainline modules shipped in AOSP, and the
 SDK Extensions mechanism that lets apps discover which module versions are
-present at runtime.
+present at runtime.  Android 17 (API level 37, codename CINNAMON_BUN) continues
+the trend: it adds a new "C" SDK-extension axis, ships fresh modules
+(`com.android.npumanager`, `com.android.webapp`, and the bootstrap APEXes), and
+teaches `apexd` to mount EROFS payloads directly from the APEX file without a
+loop device.  A new top-level `tools/mainline` repository now carries the
+open-source "train build" tooling that assembles those modules into the bundles
+shipped through Google Play.
 
 ---
 
@@ -88,6 +94,7 @@ than months.
 | Android 14 | U (2023) | ConfigInfrastructure, HealthFitness modules |
 | Android 15 | V (2024) | NeuralNetworks, ThreadNetwork, Profiling modules |
 | Android 16 | B / Baklava (2025) | UprobeStats; brand-new APEX support in apexd |
+| Android 17 | C / CinnamonBun (2026) | NpuManager, WebApp; new "C" SDK-extension axis; EROFS file-backed APEX mounts |
 
 ### 52.1.5  The Update Flow (High Level)
 
@@ -585,19 +592,37 @@ mounting process:
 // 5. verify the mount
 ```
 
-Step 2 creates a loop device from the `apex_payload.img` entry within the ZIP:
+Step 2 creates the block device that backs the payload.  As of Android 17,
+`MountPackageImpl` picks one of three strategies, in priority order: a
+`dm-linear` device for a *pinned* APEX, a **file-backed EROFS mount** that
+skips the block device entirely, or the classic loop device:
 
 ```cpp
-// Source: system/apex/apexd/apexd.cpp
+// Source: system/apex/apexd/apexd.cpp (MountPackageImpl)
 
-if (IsMountBeforeDataEnabled() && GetImageManager()->IsPinnedApex(apex)) {
+if (UsesPinnedApex() && GetImageManager()->IsPinnedApex(apex)) {
     linear_dev = OR_RETURN(CreateDmLinearForPayload(apex));
-    block_device = linear_dev.GetDevPath();
+    mount_device = linear_dev.GetDevPath();
+} else if (IsFileBackedMountEnabled() && fs_type == "erofs" &&
+           !mount_on_verity) {
+    mount_options = std::format("fsoffset={}", *apex.GetImageOffset());
+    mount_device = apex.GetPath();
+#if COM_ANDROID_APEX_FLAGS_MICRODROID_NO_LOOP_DEVICE
+} else if (instance.IsBlockApex(apex)) {
+    linear_dev = OR_RETURN(CreateDmLinearForBlockApex(apex, device_name));
+    mount_device = linear_dev.GetDevPath();
+#endif
 } else {
     loop = OR_RETURN(CreateLoopForApex(apex, loop_id));
-    block_device = loop.name;
+    mount_device = loop.name;
 }
 ```
+
+The EROFS file-backed branch is the headline change here (covered in detail in
+Section 52.11): when the `erofs_file_backed_mount` flag is on and a
+pre-installed EROFS APEX does not need its own dm-verity layer, `apexd` mounts
+the payload straight from the `.apex` file using the kernel's `fsoffset=` mount
+option, with no loop device involved.
 
 Step 3 wraps the block device with dm-verity for integrity verification.  Pre-
 installed APEXes on dm-verity-protected partitions (like `/system`) can skip
@@ -991,10 +1016,12 @@ or that can gracefully restart their services.
 
 ### 52.2.12  Brand-New APEX Support
 
-Android 16 (Baklava) introduces the concept of **brand-new APEXes** -- APEXes
+Android 16 (Baklava) introduced the concept of **brand-new APEXes** -- APEXes
 that can be installed on a device even if they were not pre-installed.  This
 allows Google to add entirely new modules to existing devices through Play
-updates.
+updates, and it remains the backstop in Android 17 for shipping new modules
+(like `com.android.npumanager` and `com.android.webapp`, both flag-gated) to
+fleets that did not factory-install them.
 
 The key infrastructure files:
 
@@ -1151,7 +1178,7 @@ When an APEX is activated, its contents become visible under `/apex/`:
 |   |   +-- extensions_db
 |   +-- javalib/
 |       +-- framework-sdkextensions.jar
-+-- com.android.sdkext@340090000/ # Versioned mount point
++-- com.android.sdkext@370090000/ # Versioned mount point
 +-- com.android.tethering/
 +-- com.android.permission/
 +-- ...
@@ -1240,9 +1267,11 @@ Mainline modules.  Each module typically produces one or more APEX packages.
 
 ### 52.3.1  Complete Module Inventory
 
-The following table lists every module directory in `packages/modules/`, its
-APEX package name(s), the Android release in which it became updatable, and a
-summary of what it provides.
+The following table lists every module directory in `packages/modules/` as of
+Android 17, its APEX package name(s), the Android release in which it became
+updatable, and a summary of what it provides.  Not every directory produces an
+APEX: some are APKs, some are pure code locations, and the Android 17 newcomers
+(`NpuManager`, `WebApp`, `WebViewBootstrap`) are gated behind release flags.
 
 | # | Module Directory | APEX Name | Launch | Description |
 |---|-----------------|-----------|--------|-------------|
@@ -1258,34 +1287,57 @@ summary of what it provides.
 | 10 | `DeviceLock` | `com.android.devicelock` | U (14) | Device financing/locking framework |
 | 11 | `DnsResolver` | `com.android.resolv` | Q (10) | DNS resolution (DNS-over-TLS, private DNS) |
 | 12 | `ExtServices` | `com.android.extservices` | R (11) | Extension services (notification ranking, autofill) |
-| 13 | `GeoTZ` | `com.android.geotz` | S (12) | Geolocation-based time zone detection |
-| 14 | `Gki` | `com.android.gki.*` | S (12) | Generic Kernel Image support modules |
-| 15 | `HealthFitness` | `com.android.healthfitness` | U (14) | Health Connect: health/fitness data platform |
-| 16 | `IPsec` | `com.android.ipsec` | R (11) | IKEv2/IPsec VPN framework |
-| 17 | `ImsMedia` | *(in Telephony)* | T (13) | IMS media handling for VoLTE/VoNR |
-| 18 | `IntentResolver` | *(APK)* | T (13) | Chooser/intent resolution UI |
-| 19 | `Media` | `com.android.media` / `com.android.media.swcodec` | Q (10) | Media framework, software codecs |
-| 20 | `ModuleMetadata` | *(APK)* | Q (10) | Module metadata provider |
-| 21 | `NetworkStack` | `com.android.networkstack` | Q (10) | Network connectivity evaluation, DHCP client |
-| 22 | `NeuralNetworks` | `com.android.neuralnetworks` | R (11) | NNAPI runtime and HAL |
-| 23 | `Nfc` | `com.android.nfcservices` | B (16) | NFC stack and services |
-| 24 | `OnDevicePersonalization` | `com.android.ondevicepersonalization` | T (13) | On-device ML personalization framework |
-| 25 | `Permission` | `com.android.permission` | R (11) | Permission controller, role manager, SafetyCenter |
-| 26 | `Profiling` | `com.android.profiling` | V (15) | System profiling infrastructure |
-| 27 | `RemoteKeyProvisioning` | `com.android.rkpd` | U (14) | Remote key provisioning for KeyStore |
-| 28 | `RuntimeI18n` | `com.android.i18n` | Q (10) | ICU internationalization library |
-| 29 | `Scheduling` | `com.android.scheduling` | S (12) | Job scheduling infrastructure |
-| 30 | `SdkExtensions` | `com.android.sdkext` | R (11) | SDK extension version management |
-| 31 | `StatsD` | `com.android.os.statsd` | R (11) | Metrics collection daemon |
-| 32 | `Telecom` | `com.android.telecom` | V (15) | Telecom call management framework |
-| 33 | `Telephony` | `com.android.telephonycore` / `com.android.telephonymodules` | U (14) | Telephony core and modules |
-| 34 | `ThreadNetwork` | `com.android.threadnetwork` | V (15) | Thread / Matter smart home networking |
-| 35 | `UprobeStats` | `com.android.uprobestats` | B (16) | eBPF-based uprobe statistics collection |
-| 36 | `Uwb` | `com.android.uwb` | T (13) | Ultra-Wideband ranging framework |
-| 37 | `Virtualization` | `com.android.virt` | T (13) | Android Virtualization Framework (pKVM, Microdroid) |
-| 38 | `Wifi` | `com.android.wifi` | R (11) | Wi-Fi framework and services |
-| 39 | `adb` | `com.android.adbd` | R (11) | Android Debug Bridge daemon |
-| 40 | `desktop` | *(multiple)* | V (15) | Desktop windowing support |
+| 13 | `GenericBootstrappingArchitecture` | *(APK: `GbaService`)* | C (17) | GBA (Generic Bootstrapping Architecture) carrier auth service |
+| 14 | `GeoTZ` | `com.android.geotz` | S (12) | Geolocation-based time zone detection |
+| 15 | `Gki` | `com.android.gki.*` | S (12) | Generic Kernel Image support modules |
+| 16 | `HealthFitness` | `com.android.healthfitness` | U (14) | Health Connect: health/fitness data platform |
+| 17 | `IPsec` | `com.android.ipsec` | R (11) | IKEv2/IPsec VPN framework |
+| 18 | `ImsMedia` | *(in Telephony)* | T (13) | IMS media handling for VoLTE/VoNR |
+| 19 | `ImsStack` | *(code location, no APEX)* | -- | IMS stack libraries (Java + native), not an APEX |
+| 20 | `IntentResolver` | *(APK)* | T (13) | Chooser/intent resolution UI |
+| 21 | `Media` | `com.android.media` / `com.android.media.swcodec` | Q (10) | Media framework, software codecs |
+| 22 | `ModuleMetadata` | *(APK)* | Q (10) | Module metadata provider |
+| 23 | `NetworkStack` | `com.android.networkstack` | Q (10) | Network connectivity evaluation, DHCP client |
+| 24 | `NeuralNetworks` | `com.android.neuralnetworks` | R (11) | NNAPI runtime and HAL |
+| 25 | `Nfc` | `com.android.nfcservices` | B (16) | NFC stack and services |
+| 26 | `NpuManager` | `com.android.npumanager` | C (17) | NPU access arbitration (flag-gated, `min_sdk 36`) |
+| 27 | `OnDevicePersonalization` | `com.android.ondevicepersonalization` | T (13) | On-device ML personalization framework |
+| 28 | `Permission` | `com.android.permission` | R (11) | Permission controller, role manager, SafetyCenter |
+| 29 | `Profiling` | `com.android.profiling` | V (15) | System profiling infrastructure |
+| 30 | `RemoteKeyProvisioning` | `com.android.rkpd` | U (14) | Remote key provisioning for KeyStore |
+| 31 | `RuntimeI18n` | `com.android.i18n` | Q (10) | ICU internationalization library |
+| 32 | `Scheduling` | `com.android.scheduling` | S (12) | Job scheduling infrastructure |
+| 33 | `SdkExtensions` | `com.android.sdkext` | R (11) | SDK extension version management |
+| 34 | `StatsD` | `com.android.os.statsd` | R (11) | Metrics collection daemon |
+| 35 | `Telecom` | `com.android.telecom` | V (15) | Telecom call management framework |
+| 36 | `Telephony` | `com.android.telephonycore` | U (14) | Telephony core (call/SMS framework, RIL bits) |
+| 37 | `ThreadNetwork` | `com.android.threadnetwork` | V (15) | Thread / Matter smart home networking |
+| 38 | `UprobeStats` | `com.android.uprobestats` | B (16) | eBPF-based uprobe statistics collection |
+| 39 | `Uwb` | `com.android.uwb` | T (13) | Ultra-Wideband ranging framework |
+| 40 | `Virtualization` | `com.android.virt` | T (13) | Android Virtualization Framework (pKVM, Microdroid) |
+| 41 | `WebApp` | `com.android.webapp` | C (17) | Progressive Web App (PWA) install/management (flag-gated) |
+| 42 | `WebViewBootstrap` | `com.android.webview.bootstrap` | V (15) | Empty bootstrap APEX reserving the WebView mount point |
+| 43 | `Wifi` | `com.android.wifi` | R (11) | Wi-Fi framework and services |
+| 44 | `adb` | `com.android.adbd` | R (11) | Android Debug Bridge daemon |
+| 45 | `desktop` | *(code location)* | V (15) | Desktop windowing serviceability code |
+
+A few notes on Android 17 specifics in this table:
+
+- **`com.android.telephonycore`** is the only Telephony APEX in 17.  Earlier
+  drafts of this chapter referenced a separate `com.android.telephonymodules`;
+  `packages/modules/Telephony/apex/Android.bp` now defines a single
+  `com.android.telephonycore` APEX with `com.android.telephony-*` classpath
+  fragments.
+- **`NpuManager`** and **`WebApp`** are the genuinely new Android 17 modules.
+  Both are gated behind release flags (`RELEASE_NPUMANAGER_MODULE`,
+  `RELEASE_WEBAPP_MODULE`) and inherit `b-launched-apex-module` defaults
+  (`min_sdk_version: "36"`).  `NpuManager` has its own coverage in
+  Chapter 50 (AI / AppFunctions); `WebApp` interacts with the package manager
+  (Chapter 26).
+- **`ImsStack`** is a code location (Java, native libs, flags) but produces no
+  APEX of its own; its output is consumed by the telephony stack.
+- **`GenericBootstrappingArchitecture`** ships an `android_app` named
+  `GbaService`, not an APEX.
 
 In addition to `packages/modules/`, several APEX modules are defined elsewhere
 in the tree:
@@ -1670,6 +1722,9 @@ gantt
 
     section B (Android 16)
     Bluetooth, Nfc, UprobeStats : 2025, 1y
+
+    section C (Android 17)
+    NpuManager, WebApp : 2026, 1y
 ```
 
 ### 52.3.12  Deep Dive: Media Module
@@ -1728,10 +1783,11 @@ The `derive_sdk` process:
 
 1. Reads `sdkinfo.pb` from each mounted APEX (at `/apex/<name>/etc/sdkinfo.pb`).
 2. Reads the `extensions_db` (a protobuf database of version requirements).
-3. For each extension (R, S, T, U, V, B, ad_services), calculates the highest
-   version where all module requirements are met.
+3. For each extension (R, S, T, U, V, B, C, ad_services), calculates the
+   highest version where all module requirements are met.
 
-4. Sets system properties: `build.version.extensions.r`, `.s`, `.t`, etc.
+4. Sets system properties: `build.version.extensions.r`, `.s`, `.t`, ...,
+   `.c`.
 
 ```cpp
 // Source: packages/modules/SdkExtensions/derive_sdk/derive_sdk.cpp
@@ -1785,10 +1841,16 @@ static const std::unordered_set<SdkModule> kUModules = {
 
 static const std::unordered_set<SdkModule> kVModules = {};
 
-static const std::unordered_set<SdkModule> kBModules = {
-    SdkModule::NEURAL_NETWORKS
-};
+static const std::unordered_set<SdkModule> kBModules = {SdkModule::NEURAL_NETWORKS};
+
+static const std::unordered_set<SdkModule> kCModules = {};
 ```
+
+Android 17 adds the `kCModules` set for the new "C" extension train.  It is
+empty today: the C axis exists so that *future* module updates can declare
+APIs targeting "Android 17 and up," but no module currently moves the C
+extension on its own.  The same pattern held for V (`kVModules` was, and still
+is, empty).
 
 ### 52.4.3  Version Derivation Algorithm
 
@@ -1878,6 +1940,7 @@ public class SdkExtensions {
     private static final int U_EXTENSION_INT;
     private static final int V_EXTENSION_INT;
     private static final int B_EXTENSION_INT;
+    private static final int C_EXTENSION_INT;          // Android 17
     private static final int AD_SERVICES_EXTENSION_INT;
 
     static {
@@ -1893,6 +1956,8 @@ public class SdkExtensions {
             "build.version.extensions.v", 0);
         B_EXTENSION_INT = SystemProperties.getInt(
             "build.version.extensions.b", 0);
+        C_EXTENSION_INT = SystemProperties.getInt(
+            "build.version.extensions.c", 0);
         AD_SERVICES_EXTENSION_INT = SystemProperties.getInt(
             "build.version.extensions.ad_services", 0);
     }
@@ -1916,6 +1981,7 @@ public class SdkExtensions {
         if (extension == VERSION_CODES.UPSIDE_DOWN_CAKE) return U_EXTENSION_INT;
         if (extension == VERSION_CODES.VANILLA_ICE_CREAM) return V_EXTENSION_INT;
         if (extension == VERSION_CODES.BAKLAVA) return B_EXTENSION_INT;
+        if (extension == VERSION_CODES.CINNAMON_BUN) return C_EXTENSION_INT;
         if (extension == AD_SERVICES) return AD_SERVICES_EXTENSION_INT;
         return 0;
     }
@@ -2075,6 +2141,16 @@ It bundles:
 - `extensions_db` -- The protobuf database of version requirements.
 - `framework-sdkextensions.jar` -- The Java API (`SdkExtensions` class).
 
+The `extensions_db` source lives in
+`packages/modules/SdkExtensions/gen_sdk/extensions_db.textpb`.  In Android 17
+the highest defined extension is **version 22**, at which most modules (ART,
+Conscrypt, Media, MediaProvider, Permissions, StatsD, Tethering, AppSearch,
+OnDevicePersonalization, ConfigInfrastructure, HealthFitness, NeuralNetworks,
+and others) are pinned.  Two modules are frozen below the current baseline:
+`gen_sdk/gen_sdk.py` lists `AD_SERVICES` and `EXT_SERVICES` in its
+`skipped_modules` set, holding both at version 20 (AdServices is discontinued
+after 20; ExtServices is no longer needed past 20).
+
 ### 52.4.9  Extension Version Lifecycle
 
 ```mermaid
@@ -2088,15 +2164,16 @@ sequenceDiagram
     DS->>DS: Read /apex/*/etc/sdkinfo.pb
     DS->>DS: Read extensions_db
     DS->>DS: Compute version for each extension
-    DS->>Props: Set build.version.extensions.r = 14
-    DS->>Props: Set build.version.extensions.s = 12
-    DS->>Props: Set build.version.extensions.t = 8
-    DS->>Props: Set build.version.extensions.u = 3
-    DS->>Props: Set build.version.extensions.v = 1
-    DS->>Props: Set build.version.extensions.b = 0
+    DS->>Props: Set build.version.extensions.r = 22
+    DS->>Props: Set build.version.extensions.s = 22
+    DS->>Props: Set build.version.extensions.t = 22
+    DS->>Props: Set build.version.extensions.u = 22
+    DS->>Props: Set build.version.extensions.v = 22
+    DS->>Props: Set build.version.extensions.b = 22
+    DS->>Props: Set build.version.extensions.c = 22
     Note over Props: Properties available system-wide
     App->>Props: SdkExtensions.getExtensionVersion(R)
-    Props->>App: 14
+    Props->>App: 22
 ```
 
 ---
@@ -2279,15 +2356,25 @@ Each APEX declares a `min_sdk_version` that determines:
 - Which NDK/SDK APIs the module's native code can use.
 
 The `packages/modules/common/sdk/Android.bp` file defines standard defaults
-for each launch window:
+for each launch window.  The lowest supported `min_sdk_version` is itself a
+release-flag decision in Android 17: `APEX_LOWEST_MIN_SDK_VERSION` is `"30"`
+(R) by default but flips to `"31"` (S) when
+`RELEASE_DEPRECATE_MAINLINE_R_SUPPORT` is set, reflecting the gradual sunset of
+R-era module support:
 
 ```
 // Source: packages/modules/common/sdk/Android.bp
 
+APEX_LOWEST_MIN_SDK_VERSION = select(
+    release_flag("RELEASE_DEPRECATE_MAINLINE_R_SUPPORT"), {
+        true: "31",
+        default: "30",
+    })
+
 apex_defaults {
     name: "r-launched-apex-module",
     defaults: ["any-launched-apex-modules"],
-    min_sdk_version: "30",  // APEX_LOWEST_MIN_SDK_VERSION
+    min_sdk_version: APEX_LOWEST_MIN_SDK_VERSION,
 }
 
 apex_defaults {
@@ -2325,6 +2412,11 @@ apex_defaults {
     compressible: true,
 }
 ```
+
+As of Android 17 the highest launch-window default is still
+`b-launched-apex-module` (`min_sdk_version: "36"`); there is no
+`c-launched-apex-module` yet, so the Android 17 newcomers `NpuManager` and
+`WebApp` both inherit the `b-launched` defaults.
 
 All updatable APEXes inherit from `any-launched-apex-modules`:
 
@@ -2735,20 +2827,24 @@ $ adb reboot
 
 ```bash
 $ adb shell pm list packages --apex-only --show-versioncode
-package:com.android.adbd versionCode:340090000
-package:com.android.art versionCode:340090000
-package:com.android.conscrypt versionCode:340090000
-package:com.android.i18n versionCode:340090000
-package:com.android.media versionCode:340090000
-package:com.android.media.swcodec versionCode:340090000
-package:com.android.os.statsd versionCode:340090000
-package:com.android.permission versionCode:340090000
-package:com.android.resolv versionCode:340090000
-package:com.android.sdkext versionCode:340090000
-package:com.android.tethering versionCode:340090000
-package:com.android.wifi versionCode:340090000
+package:com.android.adbd versionCode:370090000
+package:com.android.art versionCode:370090000
+package:com.android.conscrypt versionCode:370090000
+package:com.android.i18n versionCode:370090000
+package:com.android.media versionCode:370090000
+package:com.android.media.swcodec versionCode:370090000
+package:com.android.os.statsd versionCode:370090000
+package:com.android.permission versionCode:370090000
+package:com.android.resolv versionCode:370090000
+package:com.android.sdkext versionCode:370090000
+package:com.android.tethering versionCode:370090000
+package:com.android.wifi versionCode:370090000
 ...
 ```
+
+(On an Android 17 trunk-staging build the version codes start with `370…`; on
+older builds the leading SDK segment is lower, e.g. `340…` on the
+Tiramisu-era image.)
 
 **Inspect a mounted APEX:**
 
@@ -2765,11 +2861,13 @@ $ adb shell cat /apex/apex-info-list.xml
 
 ```bash
 $ adb shell getprop build.version.extensions.r
-14
+22
 $ adb shell getprop build.version.extensions.s
-12
+22
 $ adb shell getprop build.version.extensions.t
-8
+22
+$ adb shell getprop build.version.extensions.c
+22
 ```
 
 ### 52.6.6  Debugging APEX Issues
@@ -2952,22 +3050,22 @@ Fix: Ensure all dependencies use stable API levels (NDK, SDK stubs).
 
 ### 52.6.13  Module Versioning Strategy
 
-APEX version codes follow a specific format: `XYYZZZ000` where:
+At the source level, an APEX simply carries an `int64 version` in its
+`apex_manifest.pb` (see Section 52.2.3), and `SelectApexForActivation()` always
+prefers the higher number.  AOSP builds stamp this with the platform build
+number, so a locally built APEX reports a version code like `370090000` for an
+Android 17 (`bp1a`-style) trunk-staging build.
 
-- `X` -- Reserved (usually 3 for trunk).
-- `YY` -- Platform SDK version (e.g., 40 for B/Baklava SDK 36 encoded).
-- `ZZZ` -- Build number within the release.
-- `000` -- Variant (000 for release, 090 for development).
-
-For example, `340090000` means:
-
-- `3` -- Trunk
-- `40` -- SDK version encoding
-- `090` -- Development build
-- `000` -- Default variant
-
-This scheme ensures that newer module versions always have higher version codes,
-which is critical for the Play Store update mechanism.
+The released-train version codes that Google publishes follow a structured
+`XYYZZZNNN` convention so that newer trains always sort higher: a leading digit
+for the train type, a platform-SDK segment, an incrementing build segment, and
+a trailing variant segment (release vs. development).  This encoding is applied
+by the train-build tooling, not by AOSP's `apexer`; in Android 17 that tooling
+moved into the new `tools/mainline/train_build/` repository
+(`versioning_action.py` bumps the codes, `pack_action.py` packs the result --
+see Section 52.10).  Because the leading SDK segment advances with each
+platform release, an Android 17 train always outranks an Android 16 train of
+the same module, which is exactly what the Play Store update mechanism needs.
 
 ---
 
@@ -3646,7 +3744,282 @@ enforced through channel usage restrictions (`ChannelUsage`).
 
 ---
 
-## 52.10  Try It
+## 52.10  The `tools/mainline` Train-Build Repository
+
+Up to this point the chapter has treated each module as a self-contained APEX.
+In practice Google does not ship modules one at a time: related modules are
+bundled into a **train** -- a set of APEX and APK files released together,
+version-stamped together, and rolled out together through Google Play.  Android
+17 adds a new top-level repository, `tools/mainline`, that carries the
+open-source portion of the tooling that assembles those trains.
+
+### 52.10.1  Why a Separate Repository
+
+The per-module `Android.bp` files describe how to *build one APEX*.  Turning a
+collection of freshly built module artifacts into a signed, correctly versioned
+train is a separate, cross-module step: it must trim each module down to the
+architectures a given target needs, build the shared common-library APEX,
+re-stamp version codes so the train sorts above the previous release, and pack
+everything into the final bundle.  Historically this logic lived in
+Google-internal scripts.  Android 17 splits out the reusable, AOSP-shareable
+machinery into `tools/mainline/train_build/`, leaving the proprietary
+mock data and glue in `vendor/google/train_build`.
+
+### 52.10.2  The `train_build` Pipeline
+
+`tools/mainline/train_build/Android.bp` defines a set of `python_binary_host`
+"worker" binaries and `python_library_host` "action" libraries, each
+implementing one stage of the pipeline, plus `python_test_host` unit tests for
+every stage:
+
+| Stage | Action module | Responsibility |
+|-------|--------------|---------------|
+| Trim | `trim_action.py` | Strip a bundled APEX to the ABIs a target needs, mapping module ABIs onto DCLA arch sets |
+| DCLA build | `dcla_build_action.py` | Build the shared common-library APEX that dedupes native libs across modules |
+| Versioning | `versioning_action.py` | Bump per-module version codes so the train sorts above the previous release |
+| Pack | `pack_action.py` | Pack the trimmed, versioned modules into the final train artifact |
+
+Two orchestrators tie the stages together.  `primary_train_build_action.py`
+builds the **primary** train (and its Go variant), centered on the shared DCLA
+library APEX; `generic_train_build_action.py` builds the other train types.
+Each train is modeled as a `TrainBuildSpec` and dispatched by a `TrainType`
+enum:
+
+```python
+# Source: tools/mainline/train_build/generic_train_build_action.py
+
+class TrainType(Enum):
+  TELEMETRY = 1
+  GO_TELEMETRY = 2
+  ADSERVICES = 3
+  NPU = 9
+  GO_NONUPDATABLE = 4
+  NONUPDATABLE = 5
+  PRELOAD = 6
+  TIMEZONE = 7
+  UNKNOWN = 8
+```
+
+The presence of a dedicated `NPU` train type is itself an Android 17 signal:
+the new `com.android.npumanager` module (Section 52.11) is significant enough to
+ship on its own train cadence.
+
+### 52.10.3  The Shared DCLA Library APEX
+
+Section 52.5.7 introduced DCLA (Dynamic Common Lib APEX) at the build-rule
+level.  `primary_train_build_action.py` is where the shared library APEX
+actually gets assembled for a train.  It names two well-known shared-library
+APEXes -- the full-Android and the Android Go variant:
+
+```python
+# Source: tools/mainline/train_build/primary_train_build_action.py
+
+BIG_ANDROID_DCLA = 'com.google.mainline.primary.libs'
+GO_DCLA = 'com.google.mainline.go.primary.libs'
+```
+
+`dcla_apex_info.py` records, per module, which DCLA libraries that module
+expects to be provided externally, so the trimming and packing stages can wire
+the shared APEX into the train instead of letting each module bundle its own
+copy of `libc++`, `libcrypto`, and friends.
+
+### 52.10.4  Train-Build Flow
+
+The following diagram shows how per-module artifacts flow through the
+`train_build` stages into a finished train.
+
+```mermaid
+flowchart TD
+    MODS["Per-module artifacts<br/>(bundled APEX/APK)"] --> TRIM["trim_action<br/>(strip to needed ABIs)"]
+    DCLA["dcla_build_action<br/>(shared lib APEX)"] --> PACK
+    TRIM --> VER["versioning_action<br/>(bump version codes)"]
+    VER --> PACK["pack_action<br/>(assemble train)"]
+    SPEC["TrainBuildSpec<br/>(TrainType: PRIMARY / NPU / ...)"] --> ORCH["primary_/generic_<br/>train_build_action"]
+    ORCH --> TRIM
+    ORCH --> DCLA
+    ORCH --> VER
+    ORCH --> PACK
+    PACK --> TRAIN["Signed, versioned train<br/>(shipped via Google Play)"]
+```
+
+---
+
+## 52.11  Android 17 apexd and Module Changes
+
+Android 17 makes two notable changes to the runtime side of Mainline: `apexd`
+gains a way to activate EROFS APEX payloads without a loop device, and the
+module set itself grows with the `com.android.npumanager` and
+`com.android.webapp` newcomers.
+
+### 52.11.1  EROFS File-Backed Mounts
+
+Every loop device an APEX consumes is a finite kernel resource, and as the
+module count climbs (Section 52.3 now lists more than forty directories), so
+does the loop-device pressure at boot.  Android 17 addresses this for EROFS
+payloads with **file-backed mounting**: when the payload is EROFS and does not
+need its own dm-verity layer, `apexd` mounts the payload directly from the
+`.apex` file using the kernel's `fsoffset=` mount option, with no loop device
+in between.  This is the EROFS branch of `MountPackageImpl` shown earlier in
+Section 52.2.9:
+
+```cpp
+// Source: system/apex/apexd/apexd.cpp (MountPackageImpl, EROFS branch)
+
+} else if (IsFileBackedMountEnabled() && fs_type == "erofs" &&
+           !mount_on_verity) {
+    mount_options = std::format("fsoffset={}", *apex.GetImageOffset());
+    mount_device = apex.GetPath();
+```
+
+The feature is guarded by aconfig flags in `system/apex/apexd/apexd.aconfig`
+(package `com.android.apex.flags`):
+
+```
+// Source: system/apex/apexd/apexd.aconfig
+
+flag {
+  name: "erofs_file_backed_mount"
+  namespace: "treble"
+  description: "This flag controls if file-backed mounting for EROFS APEXes"
+}
+
+flag {
+  name: "microdroid_no_loop_device"
+  namespace: "treble"
+  description: "This flag controls if apexd activates apexes without loop devices"
+}
+```
+
+Because not every kernel supports file-backed EROFS mounts, `apexd` does not
+trust the flag blindly.  At runtime it performs a one-time **test mount** of a
+bundled empty EROFS image, and caches the result in a property so subsequent
+boots skip the probe:
+
+```cpp
+// Source: system/apex/apexd/apexd_mount.cpp
+
+static constexpr const char* kApexTestMountFolder = "/apex/.test@0.tmp";
+static constexpr const char* kTestMountImage =
+    "/system/etc/apexd/empty_erofs.img";
+
+// ...
+if (mount(kTestMountImage, kApexTestMountFolder, "erofs", mount_flags,
+          "fsoffset=0")) {
+    LOG(ERROR)
+        << "File-backed mount is disabled due to test mount failure (mount)";
+    return false;
+}
+```
+
+The companion `microdroid_no_loop_device` flag lets Microdroid activate *block*
+APEXes through a `dm-linear` device instead of a loop device (the
+`CreateDmLinearForBlockApex` branch of `MountPackageImpl`, compiled in only when
+the flag is built).  Together these two paths shrink the per-APEX loop-device
+cost as the module set keeps growing.
+
+```mermaid
+flowchart TD
+    START["MountPackageImpl: pick block device"] --> PINNED{"UsesPinnedApex()<br/>and pinned?"}
+    PINNED -->|Yes| DMLIN["dm-linear device"]
+    PINNED -->|No| EROFS{"file-backed flag on,<br/>EROFS, no extra verity?"}
+    EROFS -->|Yes| FB["File-backed mount<br/>(fsoffset=, no loop)"]
+    EROFS -->|No| BLK{"microdroid_no_loop_device<br/>and block APEX?"}
+    BLK -->|Yes| DMLIN2["dm-linear for block APEX"]
+    BLK -->|No| LOOP["Loop device<br/>(classic path)"]
+```
+
+### 52.11.2  NpuManager Module
+
+`com.android.npumanager` (`packages/modules/NpuManager/apex/Android.bp`) is one
+of the two genuinely new Android 17 modules.  It arbitrates access to on-device
+**Neural Processing Units (NPUs)** across competing apps -- apps do not get raw
+accelerator access; they ask the module's service whether loading a model is
+advisable, and the service answers based on memory budgets and priorities.  The
+APEX is gated behind the `RELEASE_NPUMANAGER_MODULE` release flag and inherits
+`b-launched-apex-module` defaults (`min_sdk_version: "36"`):
+
+```
+// Source: packages/modules/NpuManager/apex/Android.bp
+
+apex {
+    enabled: select(release_flag("RELEASE_NPUMANAGER_MODULE"), {
+        true: true,
+        false: false,
+    }),
+    name: "com.android.npumanager",
+    min_sdk_version: "36",
+    defaults: ["b-launched-apex-module"],
+    bootclasspath_fragments: ["com.android.npumanager-bootclasspath-fragment"],
+    systemserverclasspath_fragments:
+        ["com.android.npumanager-systemserverclasspath-fragment"],
+    native_shared_libs: ["libcom.android.npumanager"],
+    jni_libs: ["libnpumanager_service_jni"],
+}
+```
+
+The bootclasspath fragment contributes `framework-npumanager` (the public
+`NpuManager` API surface), the systemserver fragment contributes
+`service-npumanager` (`NpuManagerService`), and the module ships its own
+`npumanager-module-sdk` so other components can compile against its exported
+APIs.  The detailed admission-control architecture -- the model-loading
+policies, the Rust-backed native buffer management, and the paired
+`android.hardware.npu` vendor HAL -- is covered in Chapter 50.
+
+### 52.11.3  WebApp Module
+
+`com.android.webapp` (`packages/modules/WebApp/apex/Android.bp`) is the second
+Android 17 newcomer.  It installs and manages **Progressive Web Apps (PWAs)** as
+first-class installed entities, exposing a `WebAppManager`
+(`packages/modules/WebApp/framework/java/android/content/pm/webapp/WebAppManager.java`)
+backed by a `WebAppService` APK inside the APEX.  Like NpuManager it is
+flag-gated (`RELEASE_WEBAPP_MODULE`) and inherits `b-launched-apex-module`
+defaults:
+
+```
+// Source: packages/modules/WebApp/apex/Android.bp
+
+apex {
+    enabled: select(release_flag("RELEASE_WEBAPP_MODULE"), {
+        true: true,
+        false: false,
+    }),
+    name: "com.android.webapp",
+    defaults: ["b-launched-apex-module"],
+    binaries: ["aapt2"],
+    prebuilts: ["webapp-template-res"],
+    apps: ["WebAppService"],
+    bootclasspath_fragments: ["com.android.webapp-bootclasspath-fragment"],
+}
+```
+
+The bundled `aapt2` binary and `webapp-template-res` prebuilt let the module
+compile resources at install time to materialize a PWA as an installable
+package -- the package-manager integration is discussed in Chapter 26.
+
+### 52.11.4  Bootstrap and Code-Location Directories
+
+Not every Android 17 addition under `packages/modules/` is an updatable APEX:
+
+- `WebViewBootstrap` (`packages/modules/WebViewBootstrap/apex/Android.bp`)
+  defines `com.android.webview.bootstrap`, an essentially **empty** bootstrap
+  APEX (`v-launched-apex-module` defaults) that reserves a mount point; it
+  bundles no apps, libraries, or classpath fragments.
+- `ImsStack` (`packages/modules/ImsStack/`) is a **code location** -- Java,
+  native libs, and feature flags consumed by the telephony stack -- but
+  produces no APEX of its own.
+- `GenericBootstrappingArchitecture`
+  (`packages/modules/GenericBootstrappingArchitecture/`) ships an
+  `android_app` named `GbaService` (Generic Bootstrapping Architecture carrier
+  authentication), not an APEX.
+
+Distinguishing these from true APEX modules matters when reasoning about what
+`apexd` actually mounts at boot: only directories whose `Android.bp` declares an
+`apex {` (or `custom_apex {` / `virt_apex {`) stanza contribute a `/apex/<name>`
+mount.
+
+---
+
+## 52.12  Try It
 
 The following exercises walk through inspecting Mainline modules on a running
 device and understanding their structure from source.
@@ -3693,9 +4066,10 @@ Check all SDK extension versions:
 $ adb shell getprop | grep build.version.extensions
 ```
 
-Compare the R, S, T, U, V, and B extension versions.  Using the
-`kRModules`, `kSModules`, `kTModules` sets from `derive_sdk.cpp`, identify
-which modules contribute to each extension level.
+Compare the R, S, T, U, V, B, and C extension versions.  Using the
+`kRModules`, `kSModules`, `kTModules` (and the empty `kVModules` / `kCModules`)
+sets from `derive_sdk.cpp`, identify which modules contribute to each extension
+level.
 
 ### Exercise 52.4: Examine APEX Build Rules
 
@@ -3936,7 +4310,7 @@ The XML contains entries like:
     moduleName="com.android.sdkext"
     modulePath="/system/apex/com.android.sdkext.apex"
     preinstalledModulePath="/system/apex/com.android.sdkext.apex"
-    versionCode="340090000"
+    versionCode="370090000"
     versionName=""
     isFactory="true"
     isActive="true"
@@ -4093,15 +4467,20 @@ Key takeaways from this chapter:
   atomic unit.
 
 - **apexd** manages the full lifecycle: scanning partitions at boot, creating
-  loop devices and dm-verity tables, bind-mounting active versions, processing
-  staged updates, and supporting rollback.
+  loop (or, in Android 17, dm-linear / file-backed EROFS) devices and dm-verity
+  tables, bind-mounting active versions, processing staged updates, and
+  supporting rollback.
 
 - **40+ modules** in `packages/modules/` cover networking, security, media,
   telephony, ML, and more -- each with its own APEX name, signing key, and
-  version lifecycle.
+  version lifecycle.  Android 17 adds `com.android.npumanager` and
+  `com.android.webapp` (both flag-gated) and the new `tools/mainline`
+  train-build repository.
 
 - **SDK Extensions** solve the runtime API-availability problem by deriving
-  extension version numbers from actual installed module versions at boot time.
+  extension version numbers from actual installed module versions at boot time;
+  Android 17 (API 37, CinnamonBun) raises the extension-database baseline to
+  version 22 and adds a new "C" extension axis.
 
 - **Module boundaries** are enforced through `apex_available`, API surface
   annotations (`@SystemApi`), `min_sdk_version`, and hidden-API policies.
@@ -4114,11 +4493,16 @@ The source files central to understanding this system:
 | APEX tool | `system/apex/apexer/apexer.py` |
 | APEX manifest proto | `system/apex/proto/apex_manifest.proto` |
 | apexd daemon | `system/apex/apexd/apexd.cpp`, `apex_file.cpp`, `apex_constants.h` |
+| apexd EROFS file-backed mount | `system/apex/apexd/apexd_mount.cpp`, `apexd.aconfig` |
 | apexd init config | `system/apex/apexd/apexd.rc` |
 | Module defaults | `packages/modules/common/sdk/Android.bp` |
 | SDK Extensions API | `packages/modules/SdkExtensions/java/android/os/ext/SdkExtensions.java` |
 | derive_sdk | `packages/modules/SdkExtensions/derive_sdk/derive_sdk.cpp` |
+| Extension database | `packages/modules/SdkExtensions/gen_sdk/extensions_db.textpb` |
 | APEX file repository | `system/apex/apexd/apex_file_repository.h` |
+| Train-build tooling | `tools/mainline/train_build/` |
+| NpuManager APEX | `packages/modules/NpuManager/apex/Android.bp` |
+| WebApp APEX | `packages/modules/WebApp/apex/Android.bp` |
 
 ---
 
@@ -4153,10 +4537,16 @@ Android has used three distinct OTA schemes across its history. Understanding al
 three is essential because production devices span the full range.
 
 ```
-Source path: system/update_engine/        -- A/B and Virtual A/B engine
-             bootable/recovery/           -- Non-A/B recovery updater
-             system/core/fs_mgr/libsnapshot/ -- Virtual A/B snapshots
+Source path: system/update_engine/         -- A/B and Virtual A/B engine
+             bootable/recovery/            -- Non-A/B recovery updater
+             system/fs/fs_mgr/libsnapshot/ -- Virtual A/B snapshots
 ```
+
+In Android 17 the snapshot code moved out of `system/core`: `libsnapshot`,
+`snapuserd`, and the COW format implementation now live under
+`system/fs/fs_mgr/libsnapshot/` (the `system/core/fs_mgr/libsnapshot/` path used
+by earlier releases no longer exists). All snapshot citations in this chapter
+use the new location.
 
 **Non-A/B (Legacy)**. The original scheme, used from Android 1.0 through
 approximately Android 9 (though it remains supported). The device has a single
@@ -4201,7 +4591,16 @@ timeline
                      : COW snapshots for changed blocks
                      : Seamless update + storage efficient
                      : snapuserd for compression (Android 12+)
+        Android 17+  : UBLK userspace-block backend (opt-in)
+                     : zstd compression for REPLACE ops
+                     : squashfs OTA support removed
 ```
+
+Android 17 does not introduce a new scheme; it refines Virtual A/B. The big
+changes are the **UBLK** userspace-block-driver backend for serving snapshots
+(an alternative to the `dm-user` path), **zstd compression for `REPLACE`
+operations**, and the removal of squashfs build/OTA support. These are covered
+in detail in section 53.28.
 
 ### 53.1.2 High-Level Data Flow
 
@@ -4259,6 +4658,18 @@ ro.virtual_ab.retrofit=true     # Retrofitted (vs. launch)
 ro.virtual_ab.compression.enabled=true
 ro.virtual_ab.userspace.snapshots.enabled=true
 ro.virtual_ab.compression.xor.enabled=true
+
+# Virtual A/B UBLK backend (Android 17)
+ro.virtual_ab.ublk.enabled=true   # Device configured for UBLK snapshots
+```
+
+The `ro.virtual_ab.ublk.enabled` property is one of three conditions checked by
+`IsUblkEnabled()` before snapshots are served over UBLK rather than `dm-user`;
+the other two are an aconfig flag and a kernel version of 6.6 or newer (see
+section 53.28).
+
+```
+Source: system/fs/fs_mgr/libsnapshot/capabilities.cpp
 ```
 
 The relevant feature flag detection code lives in:
@@ -4317,9 +4728,15 @@ bootable/recovery/
     install/install.cpp              -- Package installation
     update_verifier/                 -- Post-boot verification
 
-system/core/fs_mgr/libsnapshot/
+system/fs/fs_mgr/libsnapshot/        -- (moved from system/core in Android 17)
     snapshot.cpp                     -- Snapshot manager
-    snapuserd/                       -- Userspace snapshot daemon
+    capabilities.cpp                 -- UBLK enablement decision
+    libsnapshot_cow/
+        writer_v3.cpp                -- COW v3 writer
+    snapuserd/
+        snapuserd_daemon.cpp         -- Daemon entry, UBLK/dm-user selection
+        dm_user_block_server.cpp     -- dm-user backend
+        ublk_block_server.cpp        -- UBLK backend (Android 17)
         user-space-merge/
             snapuserd_core.cpp       -- Core merge logic
 
@@ -4655,6 +5072,17 @@ const uint64_t kMaxSupportedMajorPayloadVersion = kBrilloMajorPayloadVersion;
 | 7 | `kPartialUpdateMinorPayloadVersion` | Partial updates (e.g., kernel only) |
 | 8 | `kZucchiniMinorPayloadVersion` | ZUCCHINI binary diffing |
 | 9 | `kLZ4DIFFMinorPayloadVersion` | LZ4DIFF for EROFS |
+| 10 | `kZstdMinorPayloadVersion` | REPLACE_ZSTD (zstd-compressed REPLACE) |
+
+```
+Source: system/update_engine/payload_consumer/payload_constants.h
+```
+
+Android 17 added minor version 10 (`kZstdMinorPayloadVersion`), and
+`kMaxSupportedMinorPayloadVersion` is now `kZstdMinorPayloadVersion`. The minor
+version of a payload is the highest version whose features it uses; a device
+refuses any payload whose minor version exceeds the maximum it supports
+(`kUnsupportedMinorPayloadVersion`, error 45).
 
 ### 53.3.3 The DeltaArchiveManifest
 
@@ -4693,6 +5121,7 @@ message InstallOperation {
     ZUCCHINI = 11;
     LZ4DIFF_BSDIFF = 12;
     LZ4DIFF_PUFFDIFF = 13;
+    REPLACE_ZSTD = 14;  // Android 17: write zstd-decompressed data
   }
   Type type = 1;
   repeated Extent src_extents = 6;
@@ -4714,6 +5143,7 @@ flowchart LR
         REPLACE["REPLACE<br/>Write raw data"]
         REPLACE_BZ["REPLACE_BZ<br/>Decompress bzip2, write"]
         REPLACE_XZ["REPLACE_XZ<br/>Decompress XZ, write"]
+        REPLACE_ZSTD["REPLACE_ZSTD<br/>Decompress zstd, write"]
         ZERO["ZERO<br/>Write zeros"]
         DISCARD["DISCARD<br/>Issue TRIM/discard"]
     end
@@ -4733,6 +5163,7 @@ flowchart LR
 | `REPLACE` | No | Write raw uncompressed data to target extents |
 | `REPLACE_BZ` | No | Decompress bzip2 blob, write to target |
 | `REPLACE_XZ` | No | Decompress XZ blob, write to target |
+| `REPLACE_ZSTD` | No | Decompress zstd blob, write to target (Android 17) |
 | `ZERO` | No | Fill target extents with zeros |
 | `DISCARD` | No | Issue discard/trim to target extents |
 | `SOURCE_COPY` | Yes | Copy extents from source to target |
@@ -4884,6 +5315,7 @@ bool DeltaPerformer::PerformInstallOperation(
     case InstallOperation::REPLACE:
     case InstallOperation::REPLACE_BZ:
     case InstallOperation::REPLACE_XZ:
+    case InstallOperation::REPLACE_ZSTD:   // Android 17
       return PerformReplaceOperation(operation);
     case InstallOperation::ZERO:
     case InstallOperation::DISCARD:
@@ -4900,6 +5332,30 @@ bool DeltaPerformer::PerformInstallOperation(
   }
 }
 ```
+
+The decompression for a `REPLACE_*` operation is applied by stacking the right
+`ExtentWriter` on top of the partition writer. `InstallOperationExecutor::ExecuteReplaceOperation`
+wraps the base writer in a `BzipExtentWriter`, `XzExtentWriter`, or -- new in
+Android 17 -- a `ZstdExtentWriter` depending on the operation type, then writes
+the decompressed bytes to the target extents:
+
+```
+Source: system/update_engine/payload_consumer/install_operation_executor.cc
+        system/update_engine/payload_consumer/zstd_extent_writer.cc
+```
+
+```cpp
+if (operation.type() == InstallOperation::REPLACE_BZ) {
+  writer = std::make_unique<BzipExtentWriter>(std::move(writer));
+} else if (operation.type() == InstallOperation::REPLACE_XZ) {
+  writer = std::make_unique<XzExtentWriter>(std::move(writer));
+} else if (operation.type() == InstallOperation::REPLACE_ZSTD) {
+  writer = std::make_unique<ZstdExtentWriter>(std::move(writer));
+}
+```
+
+`ZstdExtentWriter` feeds incoming bytes through a streaming `ZSTD_DStream` and
+forwards the decompressed output to the next writer in the stack.
 
 ### 53.4.3 Partition Writers
 
@@ -5155,7 +5611,7 @@ copy-on-write (COW) snapshots.
 ### 53.6.1 Architecture Overview
 
 ```
-Source: system/core/fs_mgr/libsnapshot/
+Source: system/fs/fs_mgr/libsnapshot/
         system/update_engine/aosp/dynamic_partition_control_android.h
 ```
 
@@ -5208,7 +5664,7 @@ The `ISnapshotManager` interface (implemented by `SnapshotManager`) coordinates
 snapshot creation, merge, and cleanup:
 
 ```
-Source: system/core/fs_mgr/libsnapshot/include/libsnapshot/snapshot.h
+Source: system/fs/fs_mgr/libsnapshot/include/libsnapshot/snapshot.h
 ```
 
 ```cpp
@@ -5234,11 +5690,17 @@ class ISnapshotManager {
 ### 53.6.4 The COW Format
 
 The Copy-On-Write format stores the modified blocks efficiently. AOSP has
-iterated on this format, currently supporting v2 and v3:
+iterated on this format; v2 and v3 are both still readable, and the Android 17
+writer (`CowWriterV3`) emits the v3 layout (`header_.prefix.major_version = 3`):
 
 ```
-Source: system/core/fs_mgr/libsnapshot/libsnapshot_cow/
+Source: system/fs/fs_mgr/libsnapshot/libsnapshot_cow/writer_v3.cpp
+        system/fs/fs_mgr/libsnapshot/libsnapshot_cow/cow_format.cpp
 ```
+
+The v3 format carries per-operation compression metadata, so a single COW image
+can mix uncompressed, lz4, and zstd blocks, and it supports the larger
+compression factors selected by `--compression_factor` (4k through 256k).
 
 COW operations:
 
@@ -5271,11 +5733,17 @@ flowchart LR
 
 `snapuserd` is the userspace daemon that serves snapshot block devices. It runs
 very early in the boot process (first-stage init) and presents merged views of
-base-partition + COW data through `dm-user` kernel devices.
+base-partition + COW data to the kernel through a userspace block device. That
+block device is abstracted behind an `IBlockServer` interface: historically the
+only backend was `dm-user`, but Android 17 added a `ublk` backend that the
+daemon can select at startup (covered in section 53.28). The interface lives in
+`snapuserd/include/snapuserd/block_server.h`; the two implementations are
+`dm_user_block_server.cpp` and `ublk_block_server.cpp`.
 
 ```
-Source: system/core/fs_mgr/libsnapshot/snapuserd/
-        system/core/fs_mgr/libsnapshot/snapuserd/user-space-merge/
+Source: system/fs/fs_mgr/libsnapshot/snapuserd/
+        system/fs/fs_mgr/libsnapshot/snapuserd/user-space-merge/
+        system/fs/fs_mgr/libsnapshot/snapuserd/include/snapuserd/block_server.h
 ```
 
 ```mermaid
@@ -5505,7 +5973,14 @@ OPTIONS.vabc_compression_param = None    # lz4, zstd, none
 OPTIONS.max_threads = None
 OPTIONS.vabc_cow_version = None
 OPTIONS.compression_factor = None        # 4k-256k
+OPTIONS.enable_replace_zstd = False      # Android 17: zstd for REPLACE ops
 ```
+
+The `--enable_replace_zstd` flag (added in Android 17) makes `delta_generator`
+emit `REPLACE_ZSTD` operations instead of plain `REPLACE`, shrinking full
+payloads and the full portions of incremental payloads. It is passed through to
+the native generator as `--enable_replace_zstd=true` and is mutually disabled by
+`--disable_replace_compression`.
 
 Key constants referenced during generation:
 
@@ -6273,19 +6748,31 @@ failure.
 
 ### 53.13.2 Merge Statistics
 
-For Virtual A/B, merge performance is tracked by `ISnapshotMergeStats`:
+For Virtual A/B, merge performance is recorded in a `SnapshotMergeReport`
+protobuf. After the merge finishes, `CleanupPreviousUpdateAction::ReportMergeStats`
+calls `SnapshotManager::ReadMergeReport()` and forwards the values to statsd via
+`SNAPSHOT_MERGE_REPORTED`:
 
 ```
-Source: system/update_engine/aosp/cleanup_previous_update_action.h
-        system/core/fs_mgr/libsnapshot/include/libsnapshot/snapshot_stats.h
+Source: system/update_engine/aosp/cleanup_previous_update_action.cc (ReportMergeStats)
+        system/fs/fs_mgr/libsnapshot/android/snapshot/snapshot.proto (SnapshotMergeReport)
 ```
 
-Merge stats include:
+Reported fields include:
 
-- Total merge duration.
-- Number of COW operations processed.
-- I/O statistics (bytes read/written).
-- Whether the merge was interrupted and resumed.
+- `merge_total_time_ms` -- total merge duration.
+- `resume_count` -- how many times the merge was interrupted and resumed.
+- `cow_file_size`, `total_cow_size_bytes`, `estimated_cow_size_bytes` -- COW
+  storage usage (actual vs. estimated).
+- `merge_failure_code` -- failure category if the merge did not complete.
+- `compression_enabled`, `xor_compression_used`, `iouring_used` -- which COW
+  features were active.
+- `ublk_used` -- new in Android 17, whether snapshots were served over the UBLK
+  backend rather than `dm-user`.
+
+In Android 17 the older `ISnapshotMergeStats` / `snapshot_stats.h` accumulator
+that update_engine used to instantiate was removed; stats are now read back from
+the persisted merge report instead.
 
 ### 53.13.3 Log Locations
 
@@ -7162,9 +7649,187 @@ sequenceDiagram
 
 ---
 
-## 53.26 Try It: Hands-On OTA Experiments
+## 53.26 Android 17 OTA Changes
 
-### 53.26.1 Inspecting a Payload
+Android 17 does not add a fourth update scheme. Instead it refines Virtual A/B
+along three axes: a new userspace-block-device backend (UBLK) for serving
+snapshots, zstd compression for `REPLACE` operations, and a set of removals and
+memory optimizations on both the generation and application sides. This section
+collects those changes and ties them back to the mechanisms described earlier in
+the chapter.
+
+### 53.26.1 The UBLK Snapshot Backend
+
+Through Android 16, `snapuserd` served snapshot block devices exclusively
+through the kernel `dm-user` device: the kernel forwarded each I/O request up to
+userspace over a `dm-user` character device, and `snapuserd` replied with merged
+base-plus-COW data. Android 17 introduces a second backend built on **UBLK**
+(userspace block driver), where `snapuserd` registers a `/dev/ublkb*` block
+device and services requests through the in-kernel `ublk` driver via the
+`libublksrv` host library (`external/ublksrv`).
+
+Both backends sit behind the same `IBlockServer` abstraction, so the merge
+logic, COW reader, and worker threads are unchanged; only the transport between
+kernel and daemon differs.
+
+```
+Source: system/fs/fs_mgr/libsnapshot/snapuserd/include/snapuserd/block_server.h
+        system/fs/fs_mgr/libsnapshot/snapuserd/dm_user_block_server.cpp
+        system/fs/fs_mgr/libsnapshot/snapuserd/ublk_block_server.cpp
+```
+
+Block-server backend selection:
+
+```mermaid
+flowchart TD
+    A["snapuserd starts<br/>(first-stage init)"] --> B{"-ublk / -noublk<br/>passed explicitly?"}
+    B -->|Yes| C[Honor the flag]
+    B -->|No| D{"Hint file<br/>/metadata/ota/snapuserd_mode?"}
+    D -->|ublk| E[Use UBLK]
+    D -->|dm-user| F[Use dm-user]
+    D -->|absent / invalid| G["Auto-detect:<br/>IsUblkEnabled()"]
+    G --> H{"property AND<br/>aconfig flag AND<br/>kernel >= 6.6?"}
+    H -->|Yes| E
+    H -->|No| F
+    C --> I["Initialize block_server_opener_"]
+    E --> I
+    F --> I
+```
+
+`IsUblkEnabled()` requires three conditions to all hold before UBLK is used:
+
+```
+Source: system/fs/fs_mgr/libsnapshot/capabilities.cpp
+```
+
+```cpp
+bool IsUblkEnabled() {
+  // ... test-only override elided ...
+  bool property_enabled =
+      android::base::GetBoolProperty("ro.virtual_ab.ublk.enabled", false);
+  bool flag_enabled = IsVabcWithUblkSupportEnabledByFlag();   // aconfig
+  bool kernel_support = KernelSupportsUblk();                 // uname >= 6.6
+  return (property_enabled && flag_enabled && kernel_support);
+}
+```
+
+`KernelSupportsUblk()` parses `uname()` and returns true only for kernel 6.6 or
+newer. The aconfig flag (`com::android::libsnapshot::vabc_with_ublk_support`) is
+the rollout gate; the build flag `RELEASE_VABC_UBLK_ENABLE_FLAG` drives it and
+was advanced to true in trunk staging during the 17 cycle.
+
+The chosen mode is persisted as a hint file at `/metadata/ota/snapuserd_mode`
+(`kSnapuserdModeHintFile`) so that the daemon makes a consistent choice across
+the boot stages, and first-stage init starts the daemon in the right mode:
+
+```
+Source: system/core/init/snapuserd_transition.cpp (LaunchFirstStageSnapuserd)
+        system/core/init/first_stage_mount_android.cpp
+        system/fs/fs_mgr/libsnapshot/snapshot.cpp (UpdateUsesUblk)
+```
+
+```cpp
+// first_stage_mount_android.cpp
+bool use_ublk = sm->UpdateUsesUblk();
+LOG(INFO) << "using snapuserd in " << (use_ublk ? "UBLK" : "dm-user") << " mode";
+LaunchFirstStageSnapuserd(use_ublk);
+```
+
+`LaunchFirstStageSnapuserd` forks `snapuserd` with `-ublk` or an explicit
+`-noublk` flag, so the early-boot daemon never relies on auto-detection. When
+UBLK is active, first-stage init also recognizes `/dev/block/ublkb*` and
+`/dev/ublk*` misc devices while waiting for partitions to appear.
+
+### 53.26.2 Forcing dm-user Per Update: disable_ublk
+
+Even on a UBLK-configured device, a specific OTA can force the legacy `dm-user`
+backend. The payload manifest carries a `disable_ublk` knob in
+`DynamicPartitionMetadata`:
+
+```
+Source: system/update_engine/update_metadata.proto (DynamicPartitionMetadata.disable_ublk)
+```
+
+```protobuf
+message DynamicPartitionMetadata {
+  // ...
+  optional uint64 compression_factor = 7;
+
+  // Whether to disable UBLK for OTA. This will force dm-user as OTA backend
+  // choice even if device was configured for UBLK based snapshots.
+  optional bool disable_ublk = 8;
+}
+```
+
+`ota_from_target_files` exposes a corresponding option to set this from the
+manifest, and it also disables UBLK automatically when the target build does not
+declare UBLK support. This gives OEMs an escape hatch if a particular kernel or
+device exhibits a UBLK regression, without rebuilding the device configuration.
+
+### 53.26.3 zstd Compression for REPLACE Operations
+
+Earlier releases compressed `REPLACE` data with bzip2 (`REPLACE_BZ`) or XZ
+(`REPLACE_XZ`). Android 17 adds `REPLACE_ZSTD` (operation type 14, minor payload
+version 10), which decompresses a zstd blob into the target extents. zstd gives
+ratios close to XZ at much higher decompression speed, which matters because
+`REPLACE` data dominates full payloads and the full portions of incrementals.
+
+```
+Source: system/update_engine/payload_consumer/zstd_extent_writer.cc
+        system/update_engine/payload_consumer/install_operation_executor.cc
+        system/update_engine/payload_generator/zstd_android.cc
+```
+
+On the application side, `REPLACE_ZSTD` dispatches through the same
+`PerformReplaceOperation` path as the other `REPLACE` variants (section 53.4.2);
+`InstallOperationExecutor` simply stacks a `ZstdExtentWriter` on top of the
+target writer. On the generation side, `--enable_replace_zstd` (section 53.7.1)
+tells `delta_generator` to emit `REPLACE_ZSTD` rather than `REPLACE`. Note this
+is distinct from VABC's `--vabc_compression_param=zstd,<level>`: the former
+compresses payload `REPLACE` blobs, the latter compresses the COW image written
+on-device.
+
+### 53.26.4 Removals and Memory Optimizations
+
+Android 17 trims the OTA stack and reduces its peak memory footprint:
+
+- **squashfs OTA support removed.** Build and OTA support for squashfs images
+  was removed from Soong, init, and the releasetools path (the
+  `libsquashfs_utils` dependency was dropped). Devices using squashfs system
+  images are no longer supported by the OTA generator.
+
+- **Retrofit dynamic-partition logic dropped.** The legacy retrofit path for
+  devices that gained dynamic partitions via an update was removed, simplifying
+  `DynamicPartitionMetadata` handling.
+
+- **Lower peak RAM during application.** `update_engine` no longer keeps the raw
+  manifest bytes resident after parsing and frees per-partition manifest memory
+  once a partition is finished. Large diff patches are now written to a
+  temporary file and applied via a file descriptor instead of being buffered
+  entirely in memory, which matters for the multi-gigabyte partitions on modern
+  devices.
+
+- **Merge-stats interface simplified.** The standalone `ISnapshotMergeStats` /
+  `snapshot_stats.h` accumulator was removed; merge metrics are read back from
+  the persisted `SnapshotMergeReport` (section 53.13.2), which gained the
+  `ublk_used` field to record which backend served the merge.
+
+```
+Source: build/make/tools/releasetools/ota_from_target_files.py
+        system/update_engine/aosp/cleanup_previous_update_action.cc
+        system/fs/fs_mgr/libsnapshot/android/snapshot/snapshot.proto
+```
+
+These changes are invisible to OTA clients: the `UpdateEngine` Java API, the
+payload format header, and the action pipeline are unchanged. A device that
+takes a 17 OTA may simply find its snapshots served over UBLK and its `REPLACE`
+data carried as zstd, with no change to how an update is requested or monitored.
+
+---
+
+## 53.27 Try It: Hands-On OTA Experiments
+
+### 53.27.1 Inspecting a Payload
 
 ```bash
 # Build the OTA tools
@@ -7185,7 +7850,7 @@ python3 system/update_engine/scripts/payload_info.py payload.bin
 #     - Data blob size
 ```
 
-### 53.26.2 Generating a Full OTA
+### 53.27.2 Generating a Full OTA
 
 ```bash
 # After building an image
@@ -7205,7 +7870,7 @@ unzip -l full_ota.zip
 # care_map.pb
 ```
 
-### 53.26.3 Generating an Incremental OTA
+### 53.27.3 Generating an Incremental OTA
 
 ```bash
 # Build source version
@@ -7222,7 +7887,7 @@ python3 build/make/tools/releasetools/ota_from_target_files.py \
     incremental_ota.zip
 ```
 
-### 53.26.4 Applying an OTA via ADB
+### 53.27.4 Applying an OTA via ADB
 
 ```bash
 # On the host, push the OTA package
@@ -7240,7 +7905,7 @@ adb reboot sideload
 adb sideload full_ota.zip
 ```
 
-### 53.26.5 Monitoring Update Progress
+### 53.27.5 Monitoring Update Progress
 
 ```bash
 # Watch update_engine logs
@@ -7259,7 +7924,7 @@ adb shell bootctl is-slot-marked-successful 0
 adb shell bootctl is-slot-marked-successful 1
 ```
 
-### 53.26.6 Observing Virtual A/B Merge
+### 53.27.6 Observing Virtual A/B Merge
 
 ```bash
 # After rebooting into new slot, watch the merge
@@ -7272,7 +7937,7 @@ adb shell snapshotctl dump
 adb shell snapshotctl map-snapshots
 ```
 
-### 53.26.7 Simulating an Update on Cuttlefish
+### 53.27.7 Simulating an Update on Cuttlefish
 
 ```bash
 # Launch Cuttlefish
@@ -7286,7 +7951,7 @@ launch_cvd
 # making it ideal for OTA testing.
 ```
 
-### 53.26.8 Examining Recovery Mode
+### 53.27.8 Examining Recovery Mode
 
 ```bash
 # Boot into recovery
@@ -7302,7 +7967,7 @@ adb pull /cache/recovery/last_log
 adb pull /cache/recovery/last_kmsg
 ```
 
-### 53.26.9 Building a Custom OTA with VABC Options
+### 53.27.9 Building a Custom OTA with VABC Options
 
 ```bash
 # Generate OTA with specific VABC options
@@ -7318,7 +7983,7 @@ python3 build/make/tools/releasetools/ota_from_target_files.py \
     optimized_ota.zip
 ```
 
-### 53.26.10 Payload Verification
+### 53.27.10 Payload Verification
 
 ```bash
 # Verify a payload's integrity
@@ -7333,9 +7998,28 @@ brillo_update_payload properties \
     --properties_file -
 ```
 
+### 53.27.11 Checking the Snapshot Backend (Android 17)
+
+```bash
+# Is the device configured for UBLK snapshots?
+adb shell getprop ro.virtual_ab.ublk.enabled
+
+# Kernel version (UBLK requires 6.6+)
+adb shell uname -r
+
+# After an OTA, see which mode first-stage init selected
+adb logcat -b all | grep -i "snapuserd in"   # "UBLK mode" or "dm-user mode"
+
+# UBLK block devices appear when the backend is active
+adb shell ls -la /dev/block/ublkb* /dev/ublk* 2>/dev/null
+
+# The persisted mode hint chosen for this update
+adb shell cat /metadata/ota/snapuserd_mode    # "ublk" or "dm-user"
+```
+
 ---
 
-## 53.27 Summary
+## 53.28 Summary
 
 ```mermaid
 mindmap
@@ -7354,6 +8038,8 @@ mindmap
         snapuserd
         Post-reboot merge
         Compression XOR
+        UBLK backend (Android 17)
+        REPLACE_ZSTD (Android 17)
     update_engine
       Action Pipeline
         DownloadAction
@@ -7406,9 +8092,12 @@ The key source paths for further exploration:
 | OTA generation scripts | `build/make/tools/releasetools/` |
 | Recovery mode | `bootable/recovery/` |
 | Update verifier | `bootable/recovery/update_verifier/` |
-| Snapshot manager | `system/core/fs_mgr/libsnapshot/` |
-| snapuserd daemon | `system/core/fs_mgr/libsnapshot/snapuserd/` |
-| COW format implementation | `system/core/fs_mgr/libsnapshot/libsnapshot_cow/` |
+| Snapshot manager | `system/fs/fs_mgr/libsnapshot/` |
+| UBLK enablement decision | `system/fs/fs_mgr/libsnapshot/capabilities.cpp` |
+| snapuserd daemon | `system/fs/fs_mgr/libsnapshot/snapuserd/` |
+| UBLK block server | `system/fs/fs_mgr/libsnapshot/snapuserd/ublk_block_server.cpp` |
+| COW format implementation | `system/fs/fs_mgr/libsnapshot/libsnapshot_cow/` |
+| zstd REPLACE writer | `system/update_engine/payload_consumer/zstd_extent_writer.cc` |
 | Framework API | `frameworks/base/core/java/android/os/UpdateEngine.java` |
 
 <!-- chapter:54-virtualization -->
@@ -11541,9 +12230,383 @@ The pvmfw README acknowledges this forward compatibility:
 
 ---
 
-## 54.27 Try It
+## 54.27 AVF Multitenancy
 
-### 54.27.1 Checking Device Support
+Through Android 16, a Microdroid VM hosted a single payload owned by a single
+app. Android 17 (the 26Q2 release) adds multitenancy, letting several mutually
+distrusting payloads share one VM while remaining isolated from each other. This
+matters when a confidential workload wants to compose code from multiple owners
+(for example, an APK payload plus a platform APEX) without paying the per-VM
+boot, memory, and attestation cost of running each in its own VM.
+
+### 54.27.1 The Signed TenancyConfig
+
+The trust model is a *signed declaration of trusted cohabitation by the VM
+owner*. The VM owner authors a `TenancyConfig` that names every tenant allowed
+into the VM, and any payload not described there is rejected by the pVM
+instance. From `packages/modules/Virtualization/docs/multitenancy.md`:
+
+> We introduce TenancyConfig, which is a signed declaration of trusted
+> cohabitation by the VM owner. This essentially is a description of each of the
+> tenants that will be allowed in the VM, any other payload not described in
+> this should be discarded by pVM instance. This config will be signed by the
+> use case owner & is reflected in the pVM certificates (DICE chains).
+
+Concretely the `TenancyConfig` is the payload config JSON file embedded in the
+APK, typically set with `VirtualMachineConfig#setPayloadConfigPath`. Because the
+config is part of the signed payload, it is measured into the DICE chain
+(Section 54.1.6), so the set of admitted tenants becomes part of the VM's
+verifiable identity rather than something the untrusted host can tamper with.
+
+### 54.27.2 Tenant Configuration Schema
+
+The config schema lives in
+`packages/modules/Virtualization/libs/libmicrodroid_payload_metadata/config/src/lib.rs`.
+The top-level `VmPayloadConfig` gains a `tenants: Vec<TenantConfig>` field
+(line 45). Each `TenantConfig` is an enum tagged by the `package` field as either
+an APK or an APEX tenant (lines 151-158):
+
+```rust
+#[serde(tag = "package")]
+pub enum TenantConfig {
+    #[serde(rename = "apex")]
+    Apex(TenantConfiguration),
+    #[serde(rename = "apk")]
+    Apk(TenantConfiguration),
+}
+```
+
+Both variants carry a `TenantConfiguration` (lines 203-222):
+
+```rust
+pub struct TenantConfiguration {
+    pub name: String,                         // tenant package name
+    pub uid: u32,                             // unique, in [10000, 65534]
+    pub task: Option<Task>,                   // optional entry point
+    pub min_version: u64,                     // minimum rollback_index/version_code
+    pub expected_authority: ExpectedAuthority,// signing authority
+    pub cgroup_config: Option<CgroupConfig>,  // optional memory cgroup limits
+}
+```
+
+The `expected_authority` is a per-build-type map (lines 162-172) so the same
+config works across `dev-keys`, `test-keys`, and `release-keys` builds:
+
+```rust
+pub struct ExpectedAuthority {
+    #[serde(rename = "dev-keys")]     pub dev_key: String,
+    #[serde(rename = "test-keys")]    pub test_key: String,
+    #[serde(rename = "release-keys")] pub release_key: String,
+}
+```
+
+At runtime `ExpectedAuthority::resolve_authority()` (lines 182-198) reads the
+`ro.build.tags` system property and selects the matching authority string,
+falling back to the `release-keys` value when the tag is absent. The authority
+is the hex-encoded SHA-512 hash of the signing certificate (for an APK tenant)
+or of the signing public key (for an APEX tenant).
+
+The following diagram shows how the signed config shapes a multitenant VM.
+
+```mermaid
+graph TB
+    OWNER["VM owner authors<br/>TenancyConfig (JSON)"]
+    OWNER -->|"signed, set via<br/>setPayloadConfigPath"| APK["Owner APK payload"]
+    APK -->|"measured into DICE"| DICE["pVM DICE chain"]
+    APK --> MM["microdroid_manager<br/>(in-guest)"]
+    T1["Tenant APK<br/>com.android.microdroid.test"] --> MM
+    T2["Tenant APEX<br/>com.android.virt"] --> MM
+    MM -->|"validate against<br/>TenancyConfig"| CHECK{"All tenants<br/>match config?"}
+    CHECK -->|"yes"| RUN["Tenants run<br/>(isolated by uid/SELinux)"]
+    CHECK -->|"no"| REJECT["Payload rejected"]
+```
+
+### 54.27.3 Tenant Validation in microdroid_manager
+
+Validation runs inside the guest, in `microdroid_manager`, at
+`packages/modules/Virtualization/guest/microdroid_manager/src/tenant_config.rs`.
+The `validate_tenants_against_tenant_config()` function (lines 32-119) enforces
+four invariants, documented at the top of the file:
+
+1. The provided tenant APKs and APEXes must exactly match the set described in
+   the config, compared by package name (lines 42-68). A count mismatch fails
+   with `PayloadInvalidConfig`.
+2. Tenant ordering in the config is irrelevant; lookup is by name through
+   `HashMap`s built at lines 37-40.
+3. The tenant's `rollback_index` (or `version_code` when no rollback index is
+   present) must be at least `min_version` (lines 101-107), defeating rollback
+   to a vulnerable build.
+4. The signing authority must match `expected_authority`. For an APK the
+   authority is `hex::encode(&apk_data.cert_hash)` (line 96); for an APEX it is
+   `hex::encode(Sha512::hash(&apex_data.public_key))` (line 84). An empty
+   expected authority is treated as "any" and skips the check (line 110).
+
+Because `expected_authority` is now mandatory in the schema (a deserialization
+test enforces this), a tenant cannot be admitted without pinning its signer.
+The comment at lines 217-218 explains why: Microdroid does not persist authority
+data in the replay-protected instance spec, so the authority must travel with
+the signed config on every boot.
+
+## 54.28 Trusty as a Protected VM
+
+Android 17 lets Trusty, the reference Trusted Execution Environment OS, run as a
+pVM rather than only in TrustZone's secure world. A "Trusty pVM" is a protected
+VM managed by AVF that runs the Trusty kernel plus its built-in Trusted
+Applications, isolated from the host by pKVM exactly like Microdroid. The design
+is documented in `packages/modules/Virtualization/guest/trusty/docs/trusty_vm.md`.
+
+### 54.28.1 Why Run a TEE in a pVM
+
+Moving a TEE workload into a pVM gives it a pKVM-enforced memory boundary and a
+DICE-based identity without consuming scarce secure-world resources. To work in
+the AVF environment, the Trusty kernel was extended with several capabilities
+(trusty_vm.md, lines 10-35):
+
+- **Virtio-vsock over PCI** for host-to-VM communication.
+- **Virtio-vsock over virtio-msg over FF-A**, a channel that lets the Trusty pVM
+  talk to TrustZone Secure Partitions through the Firmware Framework for Arm
+  (FF-A). FF-A memory sharing keeps the host kernel out of the communication
+  buffers, so the channel resists host information-disclosure attacks.
+- **Device tree parsing**, including the pvmfw memory region that carries the
+  DICE chain that gives the pVM a verifiable identity.
+- **PSCI** for CPU on/off management and **ARM TRNG** for entropy.
+
+### 54.28.2 Building and Signing the Trusty Payload
+
+A Trusty pVM image is a single signed ELF: the Trusty kernel and all its TAs are
+baked in, because Trusty pVMs do not yet load TAs dynamically (trusty_vm.md,
+lines 228-231). The image is produced by a chain of Soong rules
+(trusty_vm.md, lines 37-121):
+
+1. A `genrule` (for example `trusty_security_vm_arm64.bin`) compiles Trusty into
+   a raw binary.
+2. An `avb_add_hash_footer` rule (`trusty_security_vm_signed_bin`) signs it and
+   adds the pvmfw footer. Key arguments: `private_key` (`:avb_testkey_rsa4096`
+   in AOSP, re-signed for production), `partition_name: "boot"` as the AVB
+   domain separator, a fixed public `salt` for reproducible builds,
+   `rollback_index` set from `platform_security_patch_timestamp`, and `props`
+   carrying `com.android.virt.cap` and `com.android.virt.name`.
+3. A `cc_genrule`/`cc_object`/`cc_binary` chain wraps the signed blob in an ELF
+   that crosvm can load, installed via `prebuilt_etc` as `trusty_security_vm.elf`.
+
+The `com.android.virt.name` property is the only AVF-managed value inside the
+signature. As trusty_vm.md notes (lines 96-101), this prevents a malicious host
+from making two Trusty VMs signed by the same key impersonate each other for
+DICE-based authentication.
+
+### 54.28.3 The Launcher and Its CLI
+
+The pVM is started by the `trusty_security_vm_launcher` binary at
+`packages/modules/Virtualization/guest/trusty/security_vm/launcher`, a Rust
+service usually invoked from an `.rc` file at device boot. Its argument parsing
+lives in `.../launcher/src/main.rs`, and the `VmConfig` it builds plus the
+`run_vm()` entry point are in `.../launcher/src/lib.rs` (the `vm_launcher`
+crate, struct at line 35, `run_vm` at line 74).
+
+The CLI flags (main.rs, lines 35-83) include `--kernel` (the signed ELF),
+`--protected`, `--name`, `--memory-size-mib`, `--rpc-services-config` (repeatable),
+`--cpu-topology` (`one-cpu` or `match-host`), `--vm-instance-id`, and
+`--allow-ffa`. The FF-A flag is special: when set, the launcher converts it into
+a single TEE service request, the `guest_ffa_tee_service` constant defined at
+main.rs line 33 (lines 138-141):
+
+```rust
+let tee_services = match args.allow_ffa {
+    true => vec![GUEST_FFA_TEE_SERVICE.to_owned()],
+    false => Vec::new(),
+};
+```
+
+The following diagram shows the Trusty pVM launch and service-exposure flow.
+
+```mermaid
+sequenceDiagram
+    participant Init as "init (.rc service)"
+    participant Launcher as "trusty_security_vm_launcher"
+    participant VS as "VirtualizationService"
+    participant Trusty as "Trusty pVM"
+    participant Client as "Host client"
+
+    Init->>Launcher: "start with --kernel, --protected, --allow-ffa"
+    Launcher->>VS: "run_vm(VmConfig)"
+    VS->>Trusty: "boot signed ELF as pVM"
+    Launcher->>VS: "createAccessorBinder(rpc service, vsock port)"
+    Launcher->>Launcher: "register IAccessor in servicemanager"
+    Client->>Launcher: "look up IAccessor/<iface>/<instance>"
+    Client->>Trusty: "BinderRPC over vsock"
+```
+
+Because `--allow-ffa` requires `CAP_IPC_OWNER`, the FF-A-enabled launcher
+currently runs as `user root` in its `.rc` file; non-FF-A Trusty pVMs run as
+`user system` (trusty_vm.md, lines 166-177). This root requirement is a known
+temporary measure tracked for refinement.
+
+### 54.28.4 Instance Identity, RPC Services, and Early Boot
+
+A Trusty pVM uses a statically defined 64-byte instance ID built by
+`gen_instance_id_for_vm_with_trusted_hal.py` from a JSON config such as
+`.../launcher/security_vm_instance_id_config.json` (trusty_vm.md, lines 181-220).
+For the security VM the config marks it persistent
+(`"is_vm_persistent": true`), pins it to the `"system"` partition, and assigns a
+fixed `vm_primary_uuid`. The host always supplies the instance ID, which is only
+one input to the DICE chain, never a security guarantee on its own.
+
+The launcher acts as an accessor for the AIDL services the pVM implements over
+BinderRPC. Each service is described in a `--rpc-services-config` JSON entry
+with `port`, `accessor_name`, and `internal_rpc_service_name`
+(main.rs `RpcServiceConfig`, lines 178-183), and the matching `IAccessor`
+instances are declared in the `.rc` file so host processes can discover them.
+`register_accessor_service()` (main.rs, lines 192-206) calls
+`createAccessorBinder` and registers the result in the service manager.
+
+Security VMs that must run before `/data` is mounted use early boot: they take a
+fixed CID from the early-VM range and are mapped to their launcher by an
+`early_vms.xml` installed under `/system_ext/etc/avf/`, served by
+`early_virtmgr` (trusty_vm.md, lines 291-310; see also Section 54.6.11).
+
+## 54.29 TEE Service Access for pVMs
+
+The Trusty FF-A channel above is one instance of a more general Android 17
+mechanism: protected VMs declaring, up front, which Trusted Execution
+Environment services they may reach. The host cannot grant a pVM secure-world
+access silently; access is gated by SELinux and, for vendor services, by a HAL.
+
+### 54.29.1 Declaring TEE Services on the Config
+
+TEE services are requested through the VM raw config. The AIDL field is
+`String[] teeServices` in
+`packages/modules/Virtualization/android/virtualizationservice/aidl/android/system/virtualizationservice/VirtualMachineRawConfig.aidl`
+(line 141), mirrored in `VirtualMachineAppConfig.aidl` (line 149). Native
+clients populate it through the libavf LLNDK introduced in Android 17,
+`AVirtualMachineRawConfig_addTeeService`, declared at
+`packages/modules/Virtualization/libs/libavf/include/android/virtualization.h`
+(lines 238-239, `__INTRODUCED_IN(37)`) and implemented in
+`.../libs/libavf/src/lib.rs` (lines 326-339), which validates the UTF-8 string
+and pushes it onto `config.teeServices`. The header documents the constraints:
+
+> TEE services are only supported for protected VMs. Attempting to create a
+> non-protected VM with TEE service will fail `AVirtualMachine_createRaw`.
+> ... Vendor defined TEE services must be prefixed with `vendor.`.
+
+The service name must match a label in one of the `tee_service_contexts`
+SELinux files (for example `/system/etc/selinux/plat_tee_service_contexts` or a
+vendor equivalent), which is what makes a TEE service name a policy-controlled
+capability rather than a free-form string.
+
+### 54.29.2 SELinux Gating and the Vendor HAL Handover
+
+When a VM is created, `virtmgr` enforces the policy. In
+`packages/modules/Virtualization/android/virtmgr/src/virtualmachine.rs`
+(lines 704-726) it first refuses TEE services on a non-protected VM, then calls
+`check_tee_service_permission(&caller_secontext, &config.teeServices)`. That
+function, in `.../virtmgr/src/selinux.rs` (lines 231-242), resolves each service
+name to its SELinux context through `TeeServiceSelinuxBackend` (which wraps
+`selinux_android_tee_service_context_handle`, lines 125-142) and checks the
+caller against it with the `tee_service` class and `use` permission:
+
+```rust
+for tee_service in tee_services {
+    let tee_service_ctx = backend.lookup(tee_service)?;
+    check_access(caller_ctx, &tee_service_ctx, "tee_service", "use")
+        .with_context(|| format!("permission denied for {tee_service:?}"))?;
+}
+```
+
+Built-in services and `vendor.`-prefixed services then diverge. The only
+built-in service is `guest_ffa_tee_service`, which crosvm turns into an
+`--ffa=auto` argument (`.../virtmgr/src/crosvm.rs`, lines 1176-1189) — this is
+the Trusty FF-A path from Section 54.28. Vendor services require the
+`IVmCapabilitiesService` HAL (Section 54.7.1): `virtmgr` separates them out
+(virtualmachine.rs, lines 714-719) and refuses to start if the HAL is absent
+(lines 721-726). When vendor services are present the VM is started suspended
+(`start_suspended: !vendor_tee_services.is_empty()`, line 817); `virtmgr` then
+calls `grantAccessToVendorTeeServices(vm_pfd, vendor_tee_services)` on the HAL
+(`handle_vendor_tee_services_internal`, lines 1504-1516) and only resumes the VM
+afterward with `resume_full()` (line 1519). This is the concrete plumbing behind
+the capability-grant sequence already shown in Section 54.7.4.
+
+## 54.30 In-Guest Linux VM Management
+
+The graphics-accelerated Linux VM of Section 54.15 needs a small in-guest agent
+so the host can manage the guest's lifecycle. Android 17 adds
+`linux_vm_manager`, a host-tools Rust binary that runs *inside* the Debian guest
+and exposes management interfaces back to the host over vsock. Its source is at
+`packages/modules/Virtualization/guest/linux_vm_manager/`.
+
+### 54.30.1 Connecting Back to the Host over vsock
+
+On startup (`.../linux_vm_manager/src/main.rs`) the manager dials the host's
+`IVirtualMachineService` over an RPC-binder vsock connection. It reads its own
+CID with `vsock::get_local_cid()` and connects to `VMADDR_CID_HOST`
+(`get_vms_rpc_binder`, lines 31-40):
+
+```rust
+let port = vsock::get_local_cid().context("Could not determine local CID")?;
+let session = RpcSession::new();
+session.set_max_incoming_threads(1);
+session.setup_vsock_client(VMADDR_CID_HOST, port)
+```
+
+It then stands up a `DebianService` RPC server and registers an in-guest
+`GuestAgent` with the host via `service.registerGuestAgent(&guest_agent)`
+(main.rs, lines 53-61). The manager is deliberately not a static executable —
+its `Android.bp` warns that `static_executable: true` would crash the binder
+runtime with `SIGSEGV` — and it pulls in helper crates already used elsewhere in
+AVF (`forwarder_guest_launcher`, `shutdown_runner`, `storage_balloon_agent`) so
+the guest can forward ports, balloon storage, and power off cleanly.
+
+### 54.30.2 The IGuestAgent Interface
+
+The agent implements `IGuestAgent`, defined in
+`packages/modules/Virtualization/android/virtualizationservice/aidl/android/system/virtualizationcommon/IGuestAgent.aidl`.
+The Linux VM manager's implementation in `.../linux_vm_manager/src/guest_agent.rs`
+(lines 32-39) currently wires up the graceful-shutdown path:
+
+```rust
+impl IGuestAgent for GuestAgent {
+    fn shutdownAsync(&self) -> BinderResult<()> {
+        shutdown_runner::power_off().map_err(|e| { /* ... */ })
+    }
+}
+```
+
+`registerGuestAgent` is method 1 of `IVirtualMachineService`
+(`.../aidl/android/system/virtualmachineservice/IVirtualMachineService.aidl`,
+line 37); the host surfaces the registered agent through
+`IVirtualMachine.getGuestAgent()` and notifies callbacks via
+`IVirtualMachineCallback.onGuestAgentRegistered(cid, guestAgent)`. The host then
+drives the guest by calling `IGuestAgent` methods such as `shutdownAsync()`,
+`trimAsync()`, and the user lifecycle hooks (`userUnlocked`, `userLocked`,
+`userRemoved`) over the same vsock binder channel. Note that
+`linux_vm_manager` builds against the `_non_microdroid` AIDL variants
+(`android.system.virtualmachineservice_non_microdroid`,
+`android.system.virtualizationcommon_non_microdroid`), reflecting that it runs in
+a full Linux guest rather than in Microdroid.
+
+The following diagram shows the in-guest agent talking back to the host.
+
+```mermaid
+graph LR
+    subgraph "Host (Android)"
+        VMS["IVirtualMachineService"]
+        VM["IVirtualMachine.getGuestAgent()"]
+    end
+    subgraph "Linux guest (Debian)"
+        LVM["linux_vm_manager"]
+        GA["GuestAgent<br/>(IGuestAgent impl)"]
+        DS["DebianService<br/>RPC server"]
+    end
+    LVM -->|"vsock to VMADDR_CID_HOST"| VMS
+    LVM -->|"registerGuestAgent(GA)"| VMS
+    VMS --> VM
+    VM -->|"shutdownAsync()/trimAsync()"| GA
+    LVM --> GA
+    LVM --> DS
+```
+
+## 54.31 Try It
+
+### 54.31.1 Checking Device Support
 
 First, verify that your device supports virtualization:
 
@@ -11568,7 +12631,7 @@ Available OS list: ["microdroid"]
 Debug policy: none
 ```
 
-### 54.27.2 Running a Microdroid VM
+### 54.31.2 Running a Microdroid VM
 
 The simplest way to run a VM is using the shell helper script:
 
@@ -11595,7 +12658,7 @@ adb shell /apex/com.android.virt/bin/vm run-microdroid \
     --log /data/local/tmp/virt/log.txt
 ```
 
-### 54.27.3 Building a Payload App
+### 54.31.3 Building a Payload App
 
 Create a minimal VM payload:
 
@@ -11653,7 +12716,7 @@ adb shell /apex/com.android.virt/bin/vm run-app \
     --payload-binary-name MyMicrodroidPayload.so
 ```
 
-### 54.27.4 Java API Usage
+### 54.31.4 Java API Usage
 
 For programmatic VM management from an Android app:
 
@@ -11693,7 +12756,7 @@ vm.setCallback(executor, new VirtualMachineCallback() {
 vm.run();
 ```
 
-### 54.27.5 Running Tests
+### 54.31.5 Running Tests
 
 AVF includes comprehensive test suites:
 
@@ -11708,7 +12771,7 @@ atest MicrodroidTestApp
 atest MicrodroidTests#protectedVmHasValidDiceChain
 ```
 
-### 54.27.6 Debugging VMs
+### 54.31.6 Debugging VMs
 
 **Console output:**
 
@@ -11755,7 +12818,7 @@ adb shell /apex/com.android.virt/bin/vm run-microdroid \
     --dump-device-tree /data/local/tmp/vm_dt.dtb
 ```
 
-### 54.27.7 Custom VM Configuration
+### 54.31.7 Custom VM Configuration
 
 For advanced use cases, you can create a custom VM configuration:
 
@@ -11789,7 +12852,7 @@ adb push my_vm_config.json /data/local/tmp/
 adb shell /apex/com.android.virt/bin/vm run /data/local/tmp/my_vm_config.json
 ```
 
-### 54.27.8 Inspecting AVF Components
+### 54.31.8 Inspecting AVF Components
 
 **APEX contents:**
 
@@ -11818,7 +12881,7 @@ adb shell /apex/com.android.virt/bin/vm check-feature-enabled vendor_modules
 adb shell /apex/com.android.virt/bin/vm check-feature-enabled device_assignment
 ```
 
-### 54.27.9 Building AVF from Source
+### 54.31.9 Building AVF from Source
 
 To build the complete AVF stack from AOSP source:
 
@@ -11839,7 +12902,7 @@ adb install out/dist/com.android.virt.apex
 adb reboot
 ```
 
-### 54.27.10 Troubleshooting
+### 54.31.10 Troubleshooting
 
 **VM fails to start:**
 
@@ -11859,7 +12922,7 @@ adb reboot
 - Use `--cpu-topology match_host` to match host CPU topology
 - Use `--boost-uclamp` for benchmarking stability
 
-### 54.27.11 Remote Attestation Demo
+### 54.31.11 Remote Attestation Demo
 
 The `VmAttestationDemoApp` at `packages/modules/Virtualization/android/VmAttestationDemoApp/`
 demonstrates how a pVM payload can request remote attestation:
@@ -12358,8 +13421,15 @@ examines the outcome of each test run module and decides whether to retry.
 
 ### 55.2.6  Test Types (Runners)
 
-TradeFed provides a rich set of test runner implementations under
-`tools/tradefederation/core/src/com/android/tradefed/testtype/`:
+TradeFed splits its sources into two roots. The core runner contract
+`IRemoteTest` is an interface under the `invocation_interfaces` root
+(`tools/tradefederation/core/invocation_interfaces/com/android/tradefed/testtype/`),
+and `IDeviceTest` lives under the main `src/` root
+(`tools/tradefederation/core/src/com/android/tradefed/testtype/`, where
+TradeFed-internal runners such as `FakeTest` and `TfTestLauncher` also live).
+Most concrete test-runner implementations live in the separate `test_framework`
+source root at
+`tools/tradefederation/core/test_framework/com/android/tradefed/testtype/`:
 
 | Runner Class | Purpose |
 |-------------|---------|
@@ -12367,8 +13437,8 @@ TradeFed provides a rich set of test runner implementations under
 | `GTest` | Native GoogleTest binaries on device |
 | `HostTest` | JUnit tests on host JVM |
 | `IsolatedHostTest` | Host tests in isolated classloader (Ravenwood) |
-| `PythonBinaryHostTest` | Python tests on host |
-| `RustBinaryHostTest` | Rust test binaries on host |
+| `PythonBinaryHostTest` | Python tests on host (`testtype/python/`) |
+| `RustBinaryHostTest` | Rust test binaries on host (`testtype/rust/`) |
 | `FakeTest` | Generates fake results for testing TF itself |
 | `TfTestLauncher` | Launches another TF process |
 
@@ -12571,7 +13641,7 @@ Results include:
 cycle.  It translates human-friendly test references into TradeFederation
 invocations.
 
-Source: `tools/asuite/atest/atest_main.py` (1683 lines)
+Source: `tools/asuite/atest/atest_main.py` (~1795 lines)
 
 From the module docstring:
 
@@ -12934,6 +14004,71 @@ flowchart TB
     Finders --> |"TestInfo"| Runners
     Runners --> Results
 ```
+
+### 55.3.14  Execution Plans and ACME Modes
+
+The default path above produces an internal `_TestExecutionPlan`
+(`tools/asuite/atest/atest_main.py`), an abstraction over "how this invocation's
+tests will execute." `_TestExecutionPlan.create()` picks one of two concrete
+plans: `_TestMappingExecutionPlan` for TEST_MAPPING runs and
+`_TestModuleExecutionPlan` for explicit module/class references. Each plan
+exposes `required_build_targets()`, `requires_device_update()`, and `execute()`,
+so the main loop can decide what to build, whether a device flash is needed, and
+how to run -- all without the runner code caring how the tests were selected.
+
+Android 17 layers a declarative selection model on top of this called **ACME**.
+Instead of naming modules, a developer (or a CI trigger) names *test triggers*
+and *execution plans* defined in protobuf (`test_configs_proto`, imported as
+`test_configs_pb2`), and atest resolves those into the modules to run. The
+entry points are registered in `tools/asuite/atest/arg_parser.py` and handled by
+modules under `tools/asuite/atest/acme/`:
+
+| Flag | Handler | Meaning |
+|------|---------|---------|
+| `--run-affected-triggers` | `acme/run_affected_triggers_mode.py` | Run every test trigger affected by the locally modified files |
+| `--test-execution-plans` | `acme/run_direct_mode.py` | Run named `TestExecutionPlan`s directly |
+| `--test-triggers` | `acme/run_direct_mode.py` | Run the execution plans referenced by named triggers |
+| `--test-workflows` | `acme/run_direct_mode.py` | Run named workflows |
+
+`acme_utils.py` walks `test_configs.triggers` and
+`get_execution_plans_for_test_triggers()` maps trigger names to the workflows
+and execution plans they reference. The affected-triggers mode reuses the
+`TEST_MAPPING`/`test_mapping` machinery to compute which triggers a diff
+touches, giving developers a way to reproduce locally exactly what presubmit
+will run for their change without hand-listing modules.
+
+On the harness side, 17 adds a matching TradeFed suite runner.
+`ExecutionPlanSuiteRunner`
+(`tools/tradefederation/core/src/com/android/tradefed/testtype/suite/ExecutionPlanSuiteRunner.java`)
+and its atest-facing subclass `AtestExecutionPlanSuiteRunner`
+(`tools/tradefederation/core/test_framework/com/android/tradefed/testtype/suite/AtestExecutionPlanSuiteRunner.java`,
+configured by `res/config/atest-execution-plan.xml`) run a precomputed execution
+plan as a suite rather than re-deriving modules inside TradeFed. Its use is
+gated behind a rollout flag (next section) while the feature stabilizes.
+
+### 55.3.15  Rollout-Controlled Features
+
+Because atest ships to thousands of developers continuously, risky behavior
+changes are introduced behind a percentage rollout rather than a hard switch.
+`tools/asuite/atest/rollout_control.py` defines `RolloutControlledFeature`
+objects, each with a `rollout_percentage`, an `env_control_flag` to force the
+feature on or off locally, and an optional randomization keyed by run ID so a
+single developer sees consistent behavior within a run. Android 17 ships these
+controlled features, among others:
+
+| Feature | Env flag | Notes |
+|---------|----------|-------|
+| Rolling TradeFed subprocess output | `ROLLING_TF_SUBPROCESS_OUTPUT` | Stream TF subprocess output live (100%) |
+| TradeFed preparer incremental setup | `TF_PREPARER_INCREMENTAL_SETUP` | Reuse prior device state across runs (100%) |
+| Atest indexing parallelization | `ATEST_INDEXING_PARALLEL` | Parse module-info/index files in parallel |
+| `AtestExecutionPlanSuiteRunner` | `USE_ATEST_EXECUTION_PLAN_SUITE_RUNNER` | Run via the new TF execution-plan runner |
+| Auto rebuild module info | `AUTO_REBUILD_MODULE_INFO` | Rebuild stale `module-info.json` automatically |
+| Early device check | `EARLY_DEVICE_CHECK` | Fail fast when a device test has no device |
+
+To force a feature regardless of the rollout percentage, set its env flag (for
+example `ATEST_INDEXING_PARALLEL=true atest ...`). This is the mechanism behind
+the visible 17 speedups -- parallel indexing and incremental preparer setup --
+without committing every developer to them at once.
 
 ---
 
@@ -14043,7 +15178,7 @@ without requiring a device or emulator.  It provides a lightweight environment
 where Android framework classes execute directly on a JDK 21+ host JVM,
 dramatically reducing test execution time from minutes to seconds.
 
-Source: `build/soong/java/ravenwood.go` (539 lines)
+Source: `build/soong/java/ravenwood.go` (~602 lines)
 
 ### 55.8.2  Module Type: android_ravenwood_test
 
@@ -14338,7 +15473,7 @@ The library is wired in as a static dependency under the `host:` target of
 `libhwui`'s `Android.bp`:
 
 ```blueprint
-// Source: frameworks/base/libs/hwui/Android.bp:162
+// Source: frameworks/base/libs/hwui/Android.bp:171
 host: {
     static_libs: [
         "libandroidfw",
@@ -14457,22 +15592,52 @@ is only to keep the linker happy and let *unit* tests of hwui's algorithmic
 core (paint, canvas, font, hierarchy traversal) run on a developer laptop
 in milliseconds.
 
-### 55.8.13  When to Use Ravenwood
+### 55.8.13  In-Process System Server
+
+Early Ravenwood could only host leaf utility classes. By Android 17 it stands up
+a lightweight, in-process **system server** so that code which looks up framework
+services through `Context.getSystemService()` or `ServiceManager` can run on the
+host. `RavenwoodSystemServer`
+(`frameworks/base/ravenwood/junit-impl-src/android/platform/test/ravenwood/RavenwoodSystemServer.java`)
+registers fake or proxied implementations into `ServiceManager` and
+`LocalServices` at runner startup, covering services such as:
+
+- `PLATFORM_COMPAT_SERVICE` / `PLATFORM_COMPAT_NATIVE_SERVICE` (app-compat change gating)
+- `INPUT_SERVICE`, `INPUT_METHOD_SERVICE`, `AUTOFILL_SERVICE`
+- `USER_SERVICE`, `ACTIVITY_SERVICE`, `ACTIVITY_TASK_SERVICE`
+- `WINDOW_SERVICE`, `DISPLAY_SERVICE`
+- the content service (`ContentResolver.CONTENT_SERVICE_NAME`) and dream service
+
+These are not the real services -- most are proxies that either delegate to a
+fake or throw "not implemented" for unsupported calls. Only `PLATFORM_COMPAT_*`
+and `INPUT_SERVICE` register unconditionally; the rest register inside
+`maybeRegisterExperimentalServices()`, gated by `isExperimentalApiEnabled()`. A
+companion `RavenwoodAppDriver`
+(`frameworks/base/ravenwood/junit-impl-src/android/app/RavenwoodAppDriver.java`)
+brings up enough of `ActivityThread`/`Application` state that tests can obtain a
+real `Context`, settings provider, and compat configuration on the host. The
+practical effect is that the class of code Ravenwood can cover expands from data
+structures to framework logic that talks to system services -- still without a
+device, but no longer limited to dependency-free leaf classes.
+
+### 55.8.14  When to Use Ravenwood
 
 Ravenwood is ideal for:
 
 - Testing `android.os.*` utilities (Bundle, Parcel, Handler, etc.)
 - Testing `android.util.*` data structures (SparseArray, LruCache, etc.)
 - Testing `android.content.*` basic classes
-- Testing framework services that can run without hardware
+- Testing framework logic that reaches system services through the in-process
+  system server (55.8.13), e.g. app-compat change gating or user-service lookups
 - Testing code that uses Android feature flags (aconfig)
 
 Ravenwood is NOT suitable for:
 
-- Tests requiring real UI rendering
+- Tests requiring real UI rendering or GPU composition
 - Tests needing real hardware (camera, sensors)
-- Tests involving Binder IPC to system services
-- Tests that need a full Activity lifecycle
+- Tests that depend on a service whose Ravenwood proxy is unimplemented (the
+  in-process system server fakes a curated set, not the whole platform)
+- Tests that need a full, real Activity lifecycle with windowing
 
 ---
 
@@ -15361,6 +16526,51 @@ flicker.assertLayersEnd { layerState ->
     layerState.isAbove(appLayer, wallpaperLayer)
 }
 ```
+
+### 55.11.10  Gating UI Tests by Form Factor and Environment
+
+As Android grew its desktop windowing, large-screen, and automotive surfaces,
+UI tests increasingly need to run on some form factors but not others, and to
+skip cleanly when running deviceless (Ravenwood/Robolectric) instead of failing.
+`LimitDevicesRule`
+(`platform_testing/libraries/health/rules/src/android/platform/test/rule/LimitDevicesRule.kt`)
+is the JUnit `TestRule` that enforces these constraints with annotations matched
+against `Build.PRODUCT`:
+
+| Annotation | Effect |
+|-----------|--------|
+| `@AllowedDevices(...)` | Run only on the listed `DeviceProduct` values |
+| `@DeniedDevices(...)` | Skip on the listed devices |
+| `@ScreenshotTestDevices(...)` | Restrict to the default screenshot devices (`CF_PHONE`, `CF_TABLET`) or an override list |
+| `@FlakyDevices(...)` | Run on the listed devices only when the `running-flaky-tests` instrumentation arg is set |
+| `@SkipOnDesktop` | Skip in desktop environments (`Build.PRODUCT` in the desktop product set) |
+| `@SkipOnDeviceless` | Skip when running off-device (Ravenwood/Robolectric) |
+| `@IgnoreLimit(true)` | Bypass the rule entirely (intended for local runs on arbitrary devices) |
+
+The target devices are named by the `DeviceProduct` enum (Cuttlefish products
+such as `CF_PHONE`, `CF_TABLET`, `CF_FOLDABLE`, `CF_DESKTOP`, `CF_AUTO`, plus
+real products), and a free `isDesktop()` helper exposes the same desktop
+detection to test bodies. A test gates itself like this:
+
+```kotlin
+class MyLargeScreenTest {
+    @get:Rule val limitDevices = LimitDevicesRule.readParamsFromInstrumentation()
+
+    @Test
+    @AllowedDevices(CF_TABLET, CF_FOLDABLE)
+    @SkipOnDesktop
+    fun splitScreenLayout_isCorrect() { /* ... */ }
+}
+```
+
+When the current device does not match the annotation, the rule throws an
+`AssumptionViolatedException` so the test is reported as skipped rather than
+failed. The same module thus participates in phone, tablet, foldable, desktop,
+and deviceless runs without per-configuration test forks. The companion
+`@SkipOnDesktop`/`@SkipOnDeviceless` annotations are the platform-side mechanism
+behind the 17 desktop-windowing and Ravenwood test sweeps: a test that cannot
+yet pass on a desktop window or off-device is annotated rather than disabled
+globally, keeping its phone coverage intact.
 
 ---
 
@@ -16284,13 +17494,15 @@ flowchart LR
 ### 55.15.1  Overview
 
 AOSP provides a rich collection of shared testing libraries under
-`platform_testing/libraries/` (35 subdirectories).  These libraries encapsulate
-common patterns, reduce boilerplate, and provide device interaction helpers.
+`platform_testing/libraries/` (38 subdirectories in Android 17).  These libraries
+encapsulate common patterns, reduce boilerplate, and provide device interaction
+helpers.
 
 ### 55.15.2  Directory Listing
 
 ```
 platform_testing/libraries/
+  androidbuildinternal/        -- Build-server result proto helpers
   annotations/                 -- Custom test annotations
   app-helpers/                 -- App interaction helpers
   audio-test-harness/          -- Audio testing framework
@@ -16303,29 +17515,37 @@ platform_testing/libraries/
   desktop-test-lib/            -- Desktop mode testing
   device-collectors/           -- Device-side metric collectors
   flag-helpers/                -- Feature flag test helpers
-  flicker/                     -- Window transition testing (31.11.5)
-  health/                      -- Device health checks
+  flicker/                     -- Window transition testing (55.11.5)
+  health/                      -- Device health checks (incl. LimitDevicesRule)
   junit-rules/                 -- Custom JUnit rules
   junitxml/                    -- JUnit XML result format
   launcher-helper/             -- Launcher interaction helpers
+  media/                       -- Media test scenario libraries
   media-helper/                -- Media test utilities
   metrics-helper/              -- Metrics collection and reporting
   motion/                      -- Motion/gesture testing
   notes-role-test-helper/      -- Notes role testing
   power-helper/                -- Power measurement helpers
-  rdroidtest/                  -- R Droid test utilities
+  rdroidtest/                  -- Custom Rust test harness (runtime ignore)
   runner/                      -- Custom test runners
-  screenshot/                  -- Screenshot testing (31.11.6)
+  screenshot/                  -- Screenshot testing (55.11.6)
+  sdv/                         -- Software Defined Vehicle test helpers
   sts-common-util/             -- STS shared utilities
   system-helpers/              -- System interaction helpers
   systemui-helper/             -- SystemUI test helpers
-  systemui-tapl/               -- SystemUI TAPL (31.11.4)
+  systemui-tapl/               -- SystemUI TAPL (55.11.4)
   tapl-common/                 -- Common TAPL utilities
   timeresult-helper/           -- Time-based result helpers
   tradefed-error-prone/        -- Error-prone rules for TF
+  uiautomator-accessibility/   -- Accessibility-driven UIAutomator helpers
   uiautomator-helpers/         -- UIAutomator extensions
   uinput-device-test-helper/   -- Synthetic input device helpers
 ```
+
+The Android 17 tree adds `androidbuildinternal/`, `media/`, `sdv/` (Software
+Defined Vehicle, covered in the SDV chapter), and `uiautomator-accessibility/`
+to the set, reflecting the growth of the automotive/SDV test surface and an
+accessibility-driven UI-helper layer.
 
 ### 55.15.3  Key Libraries
 
@@ -17475,37 +18695,37 @@ graph TB
 
 | File | Section |
 |------|---------|
-| `tools/tradefederation/core/src/com/android/tradefed/` | 31.2 |
-| `tools/tradefederation/core/src/com/android/tradefed/invoker/TestInvocation.java` | 31.2.2 |
-| `tools/tradefederation/core/src/com/android/tradefed/invoker/shard/ShardHelper.java` | 31.2.4 |
-| `tools/tradefederation/core/src/com/android/tradefed/command/CommandScheduler.java` | 31.2.2 |
-| `tools/tradefederation/core/src/com/android/tradefed/retry/BaseRetryDecision.java` | 31.2.5 |
-| `tools/asuite/atest/atest_main.py` | 31.3 |
-| `tools/asuite/atest/test_finders/` | 31.3.3 |
-| `system/libbase/TEST_MAPPING` | 31.4.2 |
-| `frameworks/base/TEST_MAPPING` | 31.4.2 |
-| `build/soong/cc/test.go` | 31.5.3, 31.10 |
-| `build/soong/rust/test.go` | 31.5.5 |
-| `build/soong/python/test.go` | 31.5.6 |
-| `build/soong/tradefed/autogen.go` | 31.5.8 |
-| `cts/` | 31.6 |
-| `cts/apps/CtsVerifier/` | 31.6.4 |
-| `test/vts/` | 31.7 |
-| `test/vts-testcase/` | 31.7.2 |
-| `build/soong/java/ravenwood.go` | 31.8 |
-| `build/soong/java/robolectric.go` | 31.9 |
-| `external/robolectric/` | 31.9 |
-| `external/googletest/` | 31.10 |
-| `build/soong/cc/fuzz.go` | 31.13.2 |
-| `build/soong/fuzz/fuzz_common.go` | 31.13.3 |
-| `build/soong/java/jacoco.go` | 31.14 |
-| `external/jacoco/` | 31.14 |
-| `external/mockito/` | 31.12.1 |
-| `external/dexmaker/` | 31.12.3 |
-| `platform_testing/libraries/` | 31.15 |
-| `platform_testing/libraries/flicker/` | 31.11.5 |
-| `platform_testing/libraries/screenshot/` | 31.11.6 |
-| `platform_testing/libraries/systemui-tapl/` | 31.11.4 |
+| `tools/tradefederation/core/src/com/android/tradefed/` | 55.2 |
+| `tools/tradefederation/core/src/com/android/tradefed/invoker/TestInvocation.java` | 55.2.2 |
+| `tools/tradefederation/core/src/com/android/tradefed/invoker/shard/ShardHelper.java` | 55.2.4 |
+| `tools/tradefederation/core/src/com/android/tradefed/command/CommandScheduler.java` | 55.2.2 |
+| `tools/tradefederation/core/src/com/android/tradefed/retry/BaseRetryDecision.java` | 55.2.5 |
+| `tools/asuite/atest/atest_main.py` | 55.3 |
+| `tools/asuite/atest/test_finders/` | 55.3.3 |
+| `system/libbase/TEST_MAPPING` | 55.4.2 |
+| `frameworks/base/TEST_MAPPING` | 55.4.2 |
+| `build/soong/cc/test.go` | 55.5.3, 55.10 |
+| `build/soong/rust/test.go` | 55.5.5 |
+| `build/soong/python/test.go` | 55.5.6 |
+| `build/soong/tradefed/autogen.go` | 55.5.8 |
+| `cts/` | 55.6 |
+| `cts/apps/CtsVerifier/` | 55.6.4 |
+| `test/vts/` | 55.7 |
+| `test/vts-testcase/` | 55.7.2 |
+| `build/soong/java/ravenwood.go` | 55.8 |
+| `build/soong/java/robolectric.go` | 55.9 |
+| `external/robolectric/` | 55.9 |
+| `external/googletest/` | 55.10 |
+| `build/soong/cc/fuzz.go` | 55.13.2 |
+| `build/soong/fuzz/fuzz_common.go` | 55.13.3 |
+| `build/soong/java/jacoco.go` | 55.14 |
+| `external/jacoco/` | 55.14 |
+| `external/mockito/` | 55.12.1 |
+| `external/dexmaker/` | 55.12.3 |
+| `platform_testing/libraries/` | 55.15 |
+| `platform_testing/libraries/flicker/` | 55.11.5 |
+| `platform_testing/libraries/screenshot/` | 55.11.6 |
+| `platform_testing/libraries/systemui-tapl/` | 55.11.4 |
 
 <!-- chapter:56-debugging-tools -->
 # Chapter 56: Debugging and Profiling Tools
@@ -19022,7 +20242,9 @@ simpleperf includes scripts to generate flame graphs:
 python simpleperf/scripts/report_html.py -i perf.data -o report.html
 
 # Generate Brendan Gregg-style flame graph
-python simpleperf/scripts/inferno.py -i perf.data -o flame.html
+# (the inferno entry point is the inferno.sh / inferno.bat wrapper, which
+#  invokes system/extras/simpleperf/scripts/inferno/inferno.py)
+simpleperf/scripts/inferno.sh -i perf.data -o flame.html
 
 # Generate FlameGraph-compatible folded stacks
 simpleperf report -i perf.data -g --print-callgraph > stacks.txt
@@ -19116,7 +20338,7 @@ simpleperf includes a rich set of Python scripts in
 |--------|---------|
 | `app_profiler.py` | Automated app profiling with symbol resolution |
 | `report_html.py` | Generate interactive HTML report with flame chart |
-| `inferno.py` | Generate standalone flame graph HTML |
+| `inferno.sh` / `inferno/inferno.py` | Generate standalone flame graph HTML |
 | `report_sample.py` | Convert perf.data to protocol buffer format |
 | `annotate.py` | Source-level annotation of hot functions |
 | `pprof_proto_generator.py` | Generate pprof format for Go ecosystem |
@@ -20424,7 +21646,7 @@ ABI: 'arm64'
 Timestamp: 2024-01-15 14:30:00.123456789+0000
 Process uptime: 523s
 Cmdline: /system/bin/myservice
-pid: 12345, tid: 12345, name: myservice  >>> /system/bin/myservice <<<
+pid: 12345, ppid: 1, tid: 12345, name: myservice  >>> /system/bin/myservice <<<
 uid: 1000
 tagged_addr_ctrl: 0x0000000000000001 (PR_TAGGED_ADDR_ENABLE)
 signal 11 (SIGSEGV), code 1 (SEGV_MAPERR), fault addr 0x0000000000000000
@@ -20468,7 +21690,12 @@ memory map (165 entries):
 
 Modern tombstones are also written in protobuf format, defined in
 `system/core/debuggerd/proto/tombstone.proto`.  The protobuf format is
-machine-parseable and can be converted to text:
+machine-parseable and can be converted to text.  The top-level `Tombstone`
+message carries the crashing process identity (`pid`, `tid`, `uid`), the
+parent process id (`ppid`, field 29 -- added so triage tooling can attribute a
+crash to its launcher or zygote without re-reading `/proc`), the signal info,
+register sets, threads, memory mappings, and the GWP-ASan/Scudo "cause"
+records.  It can be rendered to the classic text layout shown above:
 
 ```bash
 # View proto tombstone as text
@@ -21528,6 +22755,15 @@ behind a safe, rate-limited API that any app can call without root access
 or special permissions.  This section examines how the module integrates with
 the debugging tools covered earlier in this chapter.
 
+Because it ships as a Mainline module, the Profiling subsystem evolves on its
+own train rather than with the platform dessert.  Android 17 (`CINNAMON_BUN`,
+SDK 37) is a substantial step: it adds the system-side **anomaly detector**
+(Section 56.19), grows the trigger catalogue from two types to twelve
+(Section 56.18.5), and adds result-delivery acknowledgement plus automatic
+cleanup of stale result files.  All of the new behaviour is guarded by aconfig
+flags in `packages/modules/Profiling/flags/flags.aconfig`, so an OTA of the
+module turns features on without a platform release.
+
 ### 56.18.1  Motivation
 
 Before the Profiling module, collecting system traces or heap profiles from
@@ -21731,15 +22967,33 @@ The background trace runs periodically (default ~24 hours, jittered between
 18--30 hours).  When a trigger fires, `ProfilingService` calls
 `processTrigger()` which snapshots the ring buffer.
 
-Available trigger types:
+The trigger type constants are defined in
+`packages/modules/Profiling/framework/java/android/os/ProfilingTrigger.java`.
+Android 15 shipped two triggers (`APP_FULLY_DRAWN` and `ANR`); Android 17
+expands the set to twelve, with the newer triggers gated behind aconfig flags
+in `packages/modules/Profiling/flags/flags.aconfig` (for example
+`profiling_trigger_oom`, `profiling_trigger_cold_start`, and
+`profiling_trigger_kill_excessive_cpu_usage`):
 
-| Trigger | When it fires | Data captured |
-|---------|--------------|---------------|
-| `TRIGGER_TYPE_APP_FULLY_DRAWN` | After `reportFullyDrawn()` on cold start | System trace snapshot (cold start performance) |
-| `TRIGGER_TYPE_ANR` | ANR detected for the app | System trace snapshot (thread contention, I/O) |
-| `TRIGGER_TYPE_APP_REQUEST_RUNNING_TRACE` | App calls `requestRunningSystemTrace()` | On-demand background trace snapshot |
-| `TRIGGER_TYPE_KILL_FORCE_STOP` | User force-stops the app | System trace snapshot |
-| `TRIGGER_TYPE_KILL_RECENTS` | User swipes app from Recents | System trace snapshot |
+| Trigger (`TRIGGER_TYPE_*`) | Value | When it fires | Since |
+|----------------------------|-------|---------------|-------|
+| `APP_FULLY_DRAWN` | 1 | After `reportFullyDrawn()` on cold start | 15 |
+| `ANR` | 2 | ANR detected for the app | 15 |
+| `APP_REQUEST_RUNNING_TRACE` | 3 | App calls `requestRunningSystemTrace()` | 17 |
+| `KILL_FORCE_STOP` | 4 | User force-stops the app | 17 |
+| `KILL_RECENTS` | 5 | User swipes app from Recents | 17 |
+| `KILL_TASK_MANAGER` | 6 | User kills app from the Task Manager | 17 |
+| `OOM` | 7 | App killed by the low-memory killer / OOM | 17 |
+| `ANOMALY` | 8 | Anomaly detector fires (see Section 56.19) | 17 |
+| `KILL_EXCESSIVE_CPU_USAGE` | 9 | App killed for excessive CPU use | 17 |
+| `COLD_START` | 10 | Cold-start launch detected | 17 |
+| `APP_COMPAT` | 11 | App-compat change applied to the app | 17 |
+
+(`TRIGGER_TYPE_NONE = 0` is the sentinel for "not trigger-initiated".)
+`ProfilingTrigger.isAppAddableTriggerType()` decides which of these an app may
+register for itself versus which the system raises on its behalf, and that
+gating is itself flag-controlled.  The `ANOMALY` trigger is the bridge to the
+anomaly-detector subsystem added in Android 17, covered in Section 56.19.
 
 ### 56.18.6  Rate Limiting Details
 
@@ -21785,6 +23039,21 @@ when a result is ready (common for system-triggered profiling), the service
 
 When the app next registers a global listener via
 `registerForAllProfilingResults()`, queued callbacks are delivered.
+
+Android 17 tightens this loop with two refinements, both flag-guarded:
+
+- **Delivery acknowledgement** (`notify_result_delivered`).  After the app's
+  callback has consumed a queued result, `ProfilingManager` calls back into the
+  service (`mProfilingService.notifyResultDelivered(...)`, see
+  `packages/modules/Profiling/framework/java/android/os/ProfilingManager.java`)
+  so the service knows the result was actually received and can stop retrying
+  and drop it from the queue, rather than relying solely on the retry/retention
+  ceiling.
+
+- **Old-file cleanup** (`old_files_cleanup`).  Result files that have already
+  been delivered are garbage-collected on both the service side and the app
+  side, so trigger-driven traces that pile up over days do not leak disk in the
+  app's private storage.
 
 ### 56.18.8  Practical Usage Patterns
 
@@ -21887,19 +23156,290 @@ Profiling module handles:
 
 ---
 
-## 56.19 Try It: Debug a Real Performance Issue
+## 56.19 The Anomaly Detector
+
+Android 17 adds a second pillar to the Profiling module: an on-device
+**anomaly detector**.  Where `ProfilingManager` is pull-based (an app asks for
+a trace), the anomaly detector is push-based: a privileged controller installs
+*rules* describing misbehaviour, the system watches continuous signals for
+those conditions, and when a rule matches it raises an `AnomalyReport` that can
+automatically capture a Perfetto trace through the Profiling pipeline.  The code
+lives in its own directory, `packages/modules/Profiling/anomaly-detector/`, and
+ships in the same `com.android.profiling` APEX.
+
+### 56.19.1 Why a Detector in the Platform
+
+The motivating problem is "the app that quietly hurts the device": a
+background process hammering a `system_server` binder interface, leaking
+memory until it trips the runtime limit, or otherwise degrading the system
+without ever crashing.  Catching these after the fact from a bugreport is
+slow, and asking every app to instrument itself does not scale.  The anomaly
+detector lets the platform (or an OEM's privileged system app) declare the
+condition once and have the system both *detect* it and *react* to it -- where
+the canonical reaction is "grab a trace at the moment it happens", using the
+same redacted, rate-limited Profiling plumbing from Section 56.18.
+
+### 56.19.2 The Rule API
+
+The public surface is `AnomalyDetectorManager`
+(`packages/modules/Profiling/anomaly-detector/framework/java/android/os/profiling/anomaly/AnomalyDetectorManager.java`),
+a `@SystemApi` system service registered under
+`Context.ANOMALY_DETECTOR_SERVICE` ("`anomaly_detector`") and gated by the
+`anomaly_detector_core_c` aconfig flag.  It exposes a single primary call:
+
+```java
+// AnomalyDetectorManager (SystemApi, PRIVILEGED_APPS, requires
+// CONFIGURE_ANOMALY_DETECTOR, @RequiresApi(37))
+public void setAnomalyDetectorRules(@NonNull Set<Rule> rules);
+```
+
+Important properties baked into the API contract:
+
+- **One controller per device.** Only a single privileged application may set
+  rules; a second caller is rejected.  This keeps the detector from becoming a
+  free-for-all of competing policies.
+
+- **Replace, not merge.** Each call replaces the full rule set, and an empty
+  set disables detection entirely.
+
+- **Permission-guarded.** The caller needs the signature/privileged
+  `CONFIGURE_ANOMALY_DETECTOR` permission.
+
+A `Rule`
+(`packages/modules/Profiling/anomaly-detector/framework/java/android/os/profiling/anomaly/Rule.java`)
+is built with a name and a *condition*.  Android 17 ships one condition type,
+`CONDITION_TYPE_BINDER_SPAM`, parameterised through a bundle with keys such as
+`BUNDLE_KEY_CONDITION_BINDER_SPAM_INTERFACE_NAME`,
+`..._METHOD_NAME`, `..._CALL_LIMIT`, and
+`..._BINDER_CALL_INTERVAL_MILLIS` -- in other words "more than N calls to this
+interface/method within this interval is an anomaly".  Rules cross the binder
+boundary to the service as `RuleParcel` objects via
+`IAnomalyDetectorService.setRules()`.
+
+### 56.19.3 Detector Architecture
+
+Internally the detector is a small pipeline of three pluggable roles, each
+with its own registry so new signal sources, detectors, and reactions can be
+added without touching the core:
+
+```mermaid
+graph LR
+    subgraph "Privileged Controller App"
+        CTRL["AnomalyDetectorManager.setAnomalyDetectorRules(rules)"]
+    end
+
+    subgraph "AnomalyDetectorService (system_server side of APEX)"
+        SVC["AnomalyDetectorService"]
+        COLL["SignalCollector<br/>(BinderSpam)"]
+        DET["AnomalyDetector<br/>(BinderSpamAnomalyDetector)"]
+        REP["AnomalyReport"]
+        HREG["AnomalyHandlerRegistry"]
+        PH["ProfileAnomalyHandler"]
+        LH["LogAnomalyHandler"]
+    end
+
+    subgraph "Reaction"
+        PROF["ProfilingService<br/>(TRIGGER_TYPE_ANOMALY)"]
+        LOGCAT["logcat"]
+    end
+
+    CTRL -->|"setRules (RuleParcel)"| SVC
+    SVC --> COLL
+    COLL -->|"SignalCollectorData"| DET
+    DET -->|"match"| REP
+    REP --> HREG
+    HREG --> PH
+    HREG --> LH
+    PH -->|"capture trace"| PROF
+    LH -->|"record"| LOGCAT
+```
+
+The three roles, all under
+`packages/modules/Profiling/anomaly-detector/service/java/com/android/os/profiling/anomaly/`:
+
+| Role | Type | Example | What it does |
+|------|------|---------|--------------|
+| Signal collector | `collector/SignalCollector.java` | `collector/binder/BinderSpamConfig.java` + `BinderSpamData.java` | Subscribes to a raw signal (here, per-interface binder call counts) and feeds `SignalCollectorData` to detectors |
+| Detector | `core/AnomalyDetector.java` | `detector/BinderSpamAnomalyDetector.java` | Evaluates collected data against the active rules and emits an `AnomalyReport` when a condition fires |
+| Handler | `core/AnomalyHandler.java` | `handler/ProfileAnomalyHandler.java`, `handler/LogAnomalyHandler.java` | Reacts to a report -- captures a profiling trace, or writes a structured log entry |
+
+The `BinderSpamAnomalyDetector` supports multiple rules and aggregates call
+data across binder transactions before deciding a process is spamming, so a
+single noisy method does not produce a storm of reports.
+
+### 56.19.4 From Report to Trace
+
+The link back into the rest of this chapter is `ProfileAnomalyHandler`.  When a
+detector raises an `AnomalyReport`, the handler asks the Profiling pipeline to
+capture a trace tagged with `TRIGGER_TYPE_ANOMALY` (value 8 in
+`ProfilingTrigger`, Section 56.18.5).  That trace flows through the same
+machinery as any other system-triggered profiling: it is collected by
+`traced`, redacted by `trace_redactor` so only the offending process's data
+survives, rate-limited, and delivered to the registered listener.  A
+`ProfilingSessionHelper`
+(`.../anomaly/handler/ProfilingSessionHelper.java`) bridges the detector's
+report to a Profiling session and bundles anomaly-highlighting metadata
+(via the `PerfettoMetadata` utility) into the result so the consuming tool can
+jump straight to the anomalous window.
+
+The practical payoff: a privileged monitoring app can install a binder-spam
+rule once, and from then on every offending background app produces a redacted
+Perfetto trace, captured at the moment of misbehaviour, without the monitoring
+app polling, attaching a profiler, or knowing which app would misbehave.
+
+### 56.19.5 Inspecting the Detector
+
+The service ships a shell command handler
+(`.../anomaly/service/java/.../AnomalyDetectorShellCommandHandler.java`) and a
+dumpsys hook for inspecting the currently active rules, which is the fastest
+way to confirm a controller's rules took effect:
+
+```bash
+# Show the active anomaly-detection rules
+adb shell dumpsys anomaly_detector
+```
+
+| Component | Path |
+|-----------|------|
+| AnomalyDetectorManager (SystemApi) | `packages/modules/Profiling/anomaly-detector/framework/java/android/os/profiling/anomaly/AnomalyDetectorManager.java` |
+| Rule | `packages/modules/Profiling/anomaly-detector/framework/java/android/os/profiling/anomaly/Rule.java` |
+| IAnomalyDetectorService.aidl | `packages/modules/Profiling/anomaly-detector/aidl/android/os/profiling/anomaly/IAnomalyDetectorService.aidl` |
+| AnomalyDetectorService | `packages/modules/Profiling/anomaly-detector/service/java/com/android/os/profiling/anomaly/AnomalyDetectorService.java` |
+| BinderSpamAnomalyDetector | `packages/modules/Profiling/anomaly-detector/service/java/com/android/os/profiling/anomaly/detector/BinderSpamAnomalyDetector.java` |
+| ProfileAnomalyHandler | `packages/modules/Profiling/anomaly-detector/service/java/com/android/os/profiling/anomaly/handler/ProfileAnomalyHandler.java` |
+| AnomalyRules.proto | `packages/modules/Profiling/anomaly-detector/proto/com/android/server/anomaly/AnomalyRules.proto` |
+
+## 56.20 UprobeStats: Dynamic Instrumentation
+
+The other profiling-adjacent Mainline module that matured in Android 17 is
+**UprobeStats** (`com.android.uprobestats`), in
+`packages/modules/UprobeStats/`.  It provides *dynamic instrumentation*:
+server-configurable probing of userspace processes (notably `system_server`)
+using kernel **uprobes** plus **eBPF**, observing function invocations without
+modifying or recompiling the target binary.  This is how the platform gathers
+fleet-wide statistics on rare or hard-to-instrument code paths, and in 17 it
+grows a binder-transaction probe and an app-facing event-delivery API.
+
+### 56.20.1 How a Uprobe Becomes a Statistic
+
+A UprobeStats *task* names a target process, one or more **probes** (a BPF
+program plus the function offsets to attach to), and an output sink.  The
+daemon resolves the function offsets in the target binary, attaches the BPF
+program at those addresses via a uprobe, and the BPF program writes a record to
+a ring buffer each time the function is hit.  The daemon drains the ring buffer
+and forwards each record either to **statsd** as an atom, or to a registered
+listener.
+
+```mermaid
+graph TB
+    subgraph "Configuration"
+        CFG["UprobestatsConfig<br/>(config.proto: tasks, probes, targets)"]
+    end
+
+    subgraph "uprobestats daemon (Rust)"
+        DAEMON["uprobestats.rs"]
+        OFFS["offsets.rs<br/>(resolve symbol -> file offset)"]
+        LOADER["uprobestatsbpfload<br/>(BPF loader)"]
+    end
+
+    subgraph "Kernel"
+        UPROBE["uprobe at target offset"]
+        BPF["BPF program + ring buffer"]
+    end
+
+    subgraph "Target Process"
+        FN["Instrumented function"]
+    end
+
+    subgraph "Output"
+        STATSD["statsd atom"]
+        BRIDGE["UprobeStatsBridgeService<br/>-> DynamicInstrumentationEventService"]
+    end
+
+    CFG --> DAEMON
+    DAEMON --> OFFS
+    DAEMON --> LOADER
+    LOADER --> BPF
+    OFFS --> UPROBE
+    FN -.->|"hit"| UPROBE
+    UPROBE --> BPF
+    BPF -->|"record"| DAEMON
+    DAEMON --> STATSD
+    DAEMON --> BRIDGE
+```
+
+The module is split across directories that mirror this flow:
+`config/` defines `UprobestatsConfig` (`config.proto`); `bpf_progs/` holds the
+BPF program sources; `bpfloader/` is `uprobestatsbpfload`, the module's own BPF
+loader (an APEX must ship its own loader); and `daemon/` is the Rust userspace
+daemon (`daemon/uprobestats.rs` and the `daemon/android/` helpers) that holds
+"the majority of the logic for the module" per its README.
+
+### 56.20.2 Android 17 Additions
+
+Three things changed in 17, all visible in the module's commit history and
+its current API surface:
+
+- **A binder-transaction probe.** `config.proto` gained a
+  `BinderTransactionFilter` and the BPF/handler side learned to capture binder
+  interface/method invocations, writing binder-transaction events to statsd.
+  This is the same raw signal the anomaly detector's binder-spam rule consumes
+  conceptually, but here it is a configurable, fleet-wide statistic.
+
+- **An app-facing event API.** Android 17 (`CINNAMON_BUN`, SDK 37) adds the
+  `dynamic_instrumentation` system service and a `@SystemApi`
+  `DynamicInstrumentationEventService`
+  (`packages/modules/UprobeStats/framework/java/android/service/uprobestats/DynamicInstrumentationEventService.java`)
+  that privileged apps extend to receive `DynamicInstrumentationEvent`s,
+  guarded by the `DYNAMIC_INSTRUMENTATION` permission.  Events are delivered
+  through a renamed bridge service,
+  `UprobeStatsBridgeService`/`UprobeStatsBridgeServiceImpl`
+  (formerly "uprobestats_service"), which batches events and only operates at
+  SDK level 37 and above (`@RequiresApi(Build.VERSION_CODES.CINNAMON_BUN)`).
+
+- **Hardened error reporting.** The BPF attach/load path now returns granular
+  error codes (a `UprobeStatsError` type), drains ring buffers before
+  attachment, and persists ring-buffer handles to avoid duplicate events --
+  reliability work that matters once the data feeds production statistics.
+
+### 56.20.3 Relationship to the Other Tools
+
+UprobeStats is not a tool a developer points at their own app the way they use
+simpleperf or Perfetto -- it is platform instrumentation, configured by the
+system, feeding statsd (and now privileged event listeners).  It complements
+this chapter's tools at a different altitude:
+
+| Tool | Granularity | Who drives it | Typical output |
+|------|-------------|---------------|----------------|
+| simpleperf / Perfetto | Sampling / tracing of a session | Developer or Profiling module | perf.data / trace file |
+| UprobeStats | Exact per-call counts on chosen functions | Platform (server config) | statsd atoms / dynamic-instrumentation events |
+| Anomaly detector | Continuous rule evaluation | Privileged controller | AnomalyReport -> redacted trace |
+
+| Component | Path |
+|-----------|------|
+| Module README | `packages/modules/UprobeStats/README.md` |
+| Config schema | `packages/modules/UprobeStats/config/config.proto` |
+| Daemon (Rust) | `packages/modules/UprobeStats/daemon/uprobestats.rs` |
+| BPF loader | `packages/modules/UprobeStats/bpfloader/` |
+| DynamicInstrumentationEventService (SystemApi) | `packages/modules/UprobeStats/framework/java/android/service/uprobestats/DynamicInstrumentationEventService.java` |
+| Bridge service | `packages/modules/UprobeStats/service/java/com/android/uprobestats/UprobeStatsBridgeServiceImpl.java` |
+| Bridge AIDL | `packages/modules/UprobeStats/service/aidl/com/android/uprobestats/IUprobeStatsBridgeService.aidl` |
+
+---
+
+## 56.21 Try It: Debug a Real Performance Issue
 
 This section walks through a complete debugging workflow for a realistic
 performance problem: an application that exhibits jank (dropped frames)
 during list scrolling.
 
-### 56.19.1 Problem Statement
+### 56.21.1 Problem Statement
 
 A user reports that a RecyclerView-based application stutters when scrolling
 quickly.  The app displays a list of items with images and text.  The
 stutter is reproducible on a Pixel device.
 
-### 56.19.2 Step 1: Confirm the Problem with gfxinfo
+### 56.21.2 Step 1: Confirm the Problem with gfxinfo
 
 ```bash
 # Reset frame stats
@@ -21928,7 +23468,7 @@ HISTOGRAM:
 The 16.63% jank rate confirms the problem.  For smooth 60fps scrolling,
 frame rendering must complete within 16.67ms.
 
-### 56.19.3 Step 2: Capture a Perfetto System Trace
+### 56.21.3 Step 2: Capture a Perfetto System Trace
 
 ```bash
 # Create trace config
@@ -21981,7 +23521,7 @@ adb shell perfetto -c /data/local/tmp/scroll_trace.pbtxt \
 adb pull /data/misc/perfetto-traces/scroll_trace.perfetto-trace .
 ```
 
-### 56.19.4 Step 3: Analyze in Perfetto UI
+### 56.21.4 Step 3: Analyze in Perfetto UI
 
 Open the trace in `ui.perfetto.dev` or Perfetto embedded in Android Studio.
 
@@ -22011,7 +23551,7 @@ flowchart TD
     O -- "Complex layout" --> R["Simplify layout hierarchy"]
 ```
 
-### 56.19.5 Step 4: CPU Profile the Hot Path
+### 56.21.5 Step 4: CPU Profile the Hot Path
 
 The Perfetto trace shows that `onBindViewHolder` is taking 25ms on some
 frames.  Let us use simpleperf to understand why:
@@ -22043,7 +23583,7 @@ Overhead  Command     Shared Object       Symbol
 The CPU profile reveals that JPEG decompression (`jpeg_decompress()`) is
 happening synchronously on the main thread during view binding.
 
-### 56.19.6 Step 5: Check for Memory Issues
+### 56.21.6 Step 5: Check for Memory Issues
 
 The GC activity in the trace suggests memory pressure.  Let us profile
 allocations:
@@ -22092,7 +23632,7 @@ LIMIT 10;
 **Expected finding**: Large allocations from bitmap decoding during each
 scroll event.
 
-### 56.19.7 Step 6: Verify with dumpsys meminfo
+### 56.21.7 Step 6: Verify with dumpsys meminfo
 
 ```bash
 # Before scrolling
@@ -22120,7 +23660,7 @@ Total PSS:         35,678    48,321   +12,643 KB
 The significant growth in both Java and Native heap during scrolling
 confirms that images are being decoded and not properly cached.
 
-### 56.19.8 Step 7: Root Cause and Fix
+### 56.21.8 Step 7: Root Cause and Fix
 
 The debugging workflow reveals:
 
@@ -22148,7 +23688,7 @@ flowchart LR
     D --> E
 ```
 
-### 56.19.9 Step 8: Verify the Fix
+### 56.21.9 Step 8: Verify the Fix
 
 After implementing the fix, re-run the same measurements:
 
@@ -22176,7 +23716,7 @@ The Perfetto trace should show:
 - No GC pauses during scroll
 - Smooth Choreographer frame cadence
 
-### 56.19.10 Debugging Checklist
+### 56.21.10 Debugging Checklist
 
 Use this checklist when debugging performance issues:
 
@@ -22235,12 +23775,26 @@ integrated with the platform.  The key takeaways from this chapter:
 8. **debuggerd/tombstoned** (`system/core/debuggerd/`) provides automatic
    crash dump generation with register capture via ptrace, stack unwinding,
    memory snapshots via VM process forking, and integration with GWP-ASan
-   and Scudo for memory error diagnosis.
+   and Scudo for memory error diagnosis.  Tombstones now also record the
+   crashing process's parent pid (`ppid`, `system/core/debuggerd/proto/tombstone.proto`).
+
+9. **The Profiling Mainline module** (`packages/modules/Profiling/`) wraps
+   Perfetto, heapprofd, and simpleperf behind a safe, rate-limited app API and
+   delivers redacted results.  Android 17 grows its trigger catalogue to twelve
+   types, adds result-delivery acknowledgement and old-file cleanup, and
+   introduces the **anomaly detector** (`anomaly-detector/`): a rule-driven
+   subsystem that watches signals such as binder spam and automatically
+   captures a redacted trace through the `TRIGGER_TYPE_ANOMALY` path.
+   **UprobeStats** (`packages/modules/UprobeStats/`) sits alongside it,
+   providing server-configured uprobe + eBPF instrumentation of system
+   processes that in 17 adds a binder-transaction probe and the
+   `dynamic_instrumentation` event API.
 
 The tools are designed to work together: use logcat and bugreport for triage,
 Perfetto for temporal analysis, simpleperf for CPU profiling, heapprofd for
-memory profiling, dumpsys for service state inspection, and tombstones for
-crash investigation.  Mastering this toolkit is essential for any Android
-platform engineer.
+memory profiling, dumpsys for service state inspection, tombstones for
+crash investigation, and the Profiling module (with its anomaly detector) for
+safe, automatic, production-grade capture.  Mastering this toolkit is essential
+for any Android platform engineer.
 
 

@@ -10,7 +10,13 @@ Play infrastructure.  This chapter dissects the architecture that makes that
 possible: the **APEX** container format, the **apexd** daemon that activates
 modules at boot, the catalog of 40+ Mainline modules shipped in AOSP, and the
 SDK Extensions mechanism that lets apps discover which module versions are
-present at runtime.
+present at runtime.  Android 17 (API level 37, codename CINNAMON_BUN) continues
+the trend: it adds a new "C" SDK-extension axis, ships fresh modules
+(`com.android.npumanager`, `com.android.webapp`, and the bootstrap APEXes), and
+teaches `apexd` to mount EROFS payloads directly from the APEX file without a
+loop device.  A new top-level `tools/mainline` repository now carries the
+open-source "train build" tooling that assembles those modules into the bundles
+shipped through Google Play.
 
 ---
 
@@ -69,6 +75,7 @@ than months.
 | Android 14 | U (2023) | ConfigInfrastructure, HealthFitness modules |
 | Android 15 | V (2024) | NeuralNetworks, ThreadNetwork, Profiling modules |
 | Android 16 | B / Baklava (2025) | UprobeStats; brand-new APEX support in apexd |
+| Android 17 | C / CinnamonBun (2026) | NpuManager, WebApp; new "C" SDK-extension axis; EROFS file-backed APEX mounts |
 
 ### 52.1.5  The Update Flow (High Level)
 
@@ -566,19 +573,37 @@ mounting process:
 // 5. verify the mount
 ```
 
-Step 2 creates a loop device from the `apex_payload.img` entry within the ZIP:
+Step 2 creates the block device that backs the payload.  As of Android 17,
+`MountPackageImpl` picks one of three strategies, in priority order: a
+`dm-linear` device for a *pinned* APEX, a **file-backed EROFS mount** that
+skips the block device entirely, or the classic loop device:
 
 ```cpp
-// Source: system/apex/apexd/apexd.cpp
+// Source: system/apex/apexd/apexd.cpp (MountPackageImpl)
 
-if (IsMountBeforeDataEnabled() && GetImageManager()->IsPinnedApex(apex)) {
+if (UsesPinnedApex() && GetImageManager()->IsPinnedApex(apex)) {
     linear_dev = OR_RETURN(CreateDmLinearForPayload(apex));
-    block_device = linear_dev.GetDevPath();
+    mount_device = linear_dev.GetDevPath();
+} else if (IsFileBackedMountEnabled() && fs_type == "erofs" &&
+           !mount_on_verity) {
+    mount_options = std::format("fsoffset={}", *apex.GetImageOffset());
+    mount_device = apex.GetPath();
+#if COM_ANDROID_APEX_FLAGS_MICRODROID_NO_LOOP_DEVICE
+} else if (instance.IsBlockApex(apex)) {
+    linear_dev = OR_RETURN(CreateDmLinearForBlockApex(apex, device_name));
+    mount_device = linear_dev.GetDevPath();
+#endif
 } else {
     loop = OR_RETURN(CreateLoopForApex(apex, loop_id));
-    block_device = loop.name;
+    mount_device = loop.name;
 }
 ```
+
+The EROFS file-backed branch is the headline change here (covered in detail in
+Section 52.11): when the `erofs_file_backed_mount` flag is on and a
+pre-installed EROFS APEX does not need its own dm-verity layer, `apexd` mounts
+the payload straight from the `.apex` file using the kernel's `fsoffset=` mount
+option, with no loop device involved.
 
 Step 3 wraps the block device with dm-verity for integrity verification.  Pre-
 installed APEXes on dm-verity-protected partitions (like `/system`) can skip
@@ -972,10 +997,12 @@ or that can gracefully restart their services.
 
 ### 52.2.12  Brand-New APEX Support
 
-Android 16 (Baklava) introduces the concept of **brand-new APEXes** -- APEXes
+Android 16 (Baklava) introduced the concept of **brand-new APEXes** -- APEXes
 that can be installed on a device even if they were not pre-installed.  This
 allows Google to add entirely new modules to existing devices through Play
-updates.
+updates, and it remains the backstop in Android 17 for shipping new modules
+(like `com.android.npumanager` and `com.android.webapp`, both flag-gated) to
+fleets that did not factory-install them.
 
 The key infrastructure files:
 
@@ -1132,7 +1159,7 @@ When an APEX is activated, its contents become visible under `/apex/`:
 |   |   +-- extensions_db
 |   +-- javalib/
 |       +-- framework-sdkextensions.jar
-+-- com.android.sdkext@340090000/ # Versioned mount point
++-- com.android.sdkext@370090000/ # Versioned mount point
 +-- com.android.tethering/
 +-- com.android.permission/
 +-- ...
@@ -1221,9 +1248,11 @@ Mainline modules.  Each module typically produces one or more APEX packages.
 
 ### 52.3.1  Complete Module Inventory
 
-The following table lists every module directory in `packages/modules/`, its
-APEX package name(s), the Android release in which it became updatable, and a
-summary of what it provides.
+The following table lists every module directory in `packages/modules/` as of
+Android 17, its APEX package name(s), the Android release in which it became
+updatable, and a summary of what it provides.  Not every directory produces an
+APEX: some are APKs, some are pure code locations, and the Android 17 newcomers
+(`NpuManager`, `WebApp`, `WebViewBootstrap`) are gated behind release flags.
 
 | # | Module Directory | APEX Name | Launch | Description |
 |---|-----------------|-----------|--------|-------------|
@@ -1239,34 +1268,57 @@ summary of what it provides.
 | 10 | `DeviceLock` | `com.android.devicelock` | U (14) | Device financing/locking framework |
 | 11 | `DnsResolver` | `com.android.resolv` | Q (10) | DNS resolution (DNS-over-TLS, private DNS) |
 | 12 | `ExtServices` | `com.android.extservices` | R (11) | Extension services (notification ranking, autofill) |
-| 13 | `GeoTZ` | `com.android.geotz` | S (12) | Geolocation-based time zone detection |
-| 14 | `Gki` | `com.android.gki.*` | S (12) | Generic Kernel Image support modules |
-| 15 | `HealthFitness` | `com.android.healthfitness` | U (14) | Health Connect: health/fitness data platform |
-| 16 | `IPsec` | `com.android.ipsec` | R (11) | IKEv2/IPsec VPN framework |
-| 17 | `ImsMedia` | *(in Telephony)* | T (13) | IMS media handling for VoLTE/VoNR |
-| 18 | `IntentResolver` | *(APK)* | T (13) | Chooser/intent resolution UI |
-| 19 | `Media` | `com.android.media` / `com.android.media.swcodec` | Q (10) | Media framework, software codecs |
-| 20 | `ModuleMetadata` | *(APK)* | Q (10) | Module metadata provider |
-| 21 | `NetworkStack` | `com.android.networkstack` | Q (10) | Network connectivity evaluation, DHCP client |
-| 22 | `NeuralNetworks` | `com.android.neuralnetworks` | R (11) | NNAPI runtime and HAL |
-| 23 | `Nfc` | `com.android.nfcservices` | B (16) | NFC stack and services |
-| 24 | `OnDevicePersonalization` | `com.android.ondevicepersonalization` | T (13) | On-device ML personalization framework |
-| 25 | `Permission` | `com.android.permission` | R (11) | Permission controller, role manager, SafetyCenter |
-| 26 | `Profiling` | `com.android.profiling` | V (15) | System profiling infrastructure |
-| 27 | `RemoteKeyProvisioning` | `com.android.rkpd` | U (14) | Remote key provisioning for KeyStore |
-| 28 | `RuntimeI18n` | `com.android.i18n` | Q (10) | ICU internationalization library |
-| 29 | `Scheduling` | `com.android.scheduling` | S (12) | Job scheduling infrastructure |
-| 30 | `SdkExtensions` | `com.android.sdkext` | R (11) | SDK extension version management |
-| 31 | `StatsD` | `com.android.os.statsd` | R (11) | Metrics collection daemon |
-| 32 | `Telecom` | `com.android.telecom` | V (15) | Telecom call management framework |
-| 33 | `Telephony` | `com.android.telephonycore` / `com.android.telephonymodules` | U (14) | Telephony core and modules |
-| 34 | `ThreadNetwork` | `com.android.threadnetwork` | V (15) | Thread / Matter smart home networking |
-| 35 | `UprobeStats` | `com.android.uprobestats` | B (16) | eBPF-based uprobe statistics collection |
-| 36 | `Uwb` | `com.android.uwb` | T (13) | Ultra-Wideband ranging framework |
-| 37 | `Virtualization` | `com.android.virt` | T (13) | Android Virtualization Framework (pKVM, Microdroid) |
-| 38 | `Wifi` | `com.android.wifi` | R (11) | Wi-Fi framework and services |
-| 39 | `adb` | `com.android.adbd` | R (11) | Android Debug Bridge daemon |
-| 40 | `desktop` | *(multiple)* | V (15) | Desktop windowing support |
+| 13 | `GenericBootstrappingArchitecture` | *(APK: `GbaService`)* | C (17) | GBA (Generic Bootstrapping Architecture) carrier auth service |
+| 14 | `GeoTZ` | `com.android.geotz` | S (12) | Geolocation-based time zone detection |
+| 15 | `Gki` | `com.android.gki.*` | S (12) | Generic Kernel Image support modules |
+| 16 | `HealthFitness` | `com.android.healthfitness` | U (14) | Health Connect: health/fitness data platform |
+| 17 | `IPsec` | `com.android.ipsec` | R (11) | IKEv2/IPsec VPN framework |
+| 18 | `ImsMedia` | *(in Telephony)* | T (13) | IMS media handling for VoLTE/VoNR |
+| 19 | `ImsStack` | *(code location, no APEX)* | -- | IMS stack libraries (Java + native), not an APEX |
+| 20 | `IntentResolver` | *(APK)* | T (13) | Chooser/intent resolution UI |
+| 21 | `Media` | `com.android.media` / `com.android.media.swcodec` | Q (10) | Media framework, software codecs |
+| 22 | `ModuleMetadata` | *(APK)* | Q (10) | Module metadata provider |
+| 23 | `NetworkStack` | `com.android.networkstack` | Q (10) | Network connectivity evaluation, DHCP client |
+| 24 | `NeuralNetworks` | `com.android.neuralnetworks` | R (11) | NNAPI runtime and HAL |
+| 25 | `Nfc` | `com.android.nfcservices` | B (16) | NFC stack and services |
+| 26 | `NpuManager` | `com.android.npumanager` | C (17) | NPU access arbitration (flag-gated, `min_sdk 36`) |
+| 27 | `OnDevicePersonalization` | `com.android.ondevicepersonalization` | T (13) | On-device ML personalization framework |
+| 28 | `Permission` | `com.android.permission` | R (11) | Permission controller, role manager, SafetyCenter |
+| 29 | `Profiling` | `com.android.profiling` | V (15) | System profiling infrastructure |
+| 30 | `RemoteKeyProvisioning` | `com.android.rkpd` | U (14) | Remote key provisioning for KeyStore |
+| 31 | `RuntimeI18n` | `com.android.i18n` | Q (10) | ICU internationalization library |
+| 32 | `Scheduling` | `com.android.scheduling` | S (12) | Job scheduling infrastructure |
+| 33 | `SdkExtensions` | `com.android.sdkext` | R (11) | SDK extension version management |
+| 34 | `StatsD` | `com.android.os.statsd` | R (11) | Metrics collection daemon |
+| 35 | `Telecom` | `com.android.telecom` | V (15) | Telecom call management framework |
+| 36 | `Telephony` | `com.android.telephonycore` | U (14) | Telephony core (call/SMS framework, RIL bits) |
+| 37 | `ThreadNetwork` | `com.android.threadnetwork` | V (15) | Thread / Matter smart home networking |
+| 38 | `UprobeStats` | `com.android.uprobestats` | B (16) | eBPF-based uprobe statistics collection |
+| 39 | `Uwb` | `com.android.uwb` | T (13) | Ultra-Wideband ranging framework |
+| 40 | `Virtualization` | `com.android.virt` | T (13) | Android Virtualization Framework (pKVM, Microdroid) |
+| 41 | `WebApp` | `com.android.webapp` | C (17) | Progressive Web App (PWA) install/management (flag-gated) |
+| 42 | `WebViewBootstrap` | `com.android.webview.bootstrap` | V (15) | Empty bootstrap APEX reserving the WebView mount point |
+| 43 | `Wifi` | `com.android.wifi` | R (11) | Wi-Fi framework and services |
+| 44 | `adb` | `com.android.adbd` | R (11) | Android Debug Bridge daemon |
+| 45 | `desktop` | *(code location)* | V (15) | Desktop windowing serviceability code |
+
+A few notes on Android 17 specifics in this table:
+
+- **`com.android.telephonycore`** is the only Telephony APEX in 17.  Earlier
+  drafts of this chapter referenced a separate `com.android.telephonymodules`;
+  `packages/modules/Telephony/apex/Android.bp` now defines a single
+  `com.android.telephonycore` APEX with `com.android.telephony-*` classpath
+  fragments.
+- **`NpuManager`** and **`WebApp`** are the genuinely new Android 17 modules.
+  Both are gated behind release flags (`RELEASE_NPUMANAGER_MODULE`,
+  `RELEASE_WEBAPP_MODULE`) and inherit `b-launched-apex-module` defaults
+  (`min_sdk_version: "36"`).  `NpuManager` has its own coverage in
+  Chapter 50 (AI / AppFunctions); `WebApp` interacts with the package manager
+  (Chapter 26).
+- **`ImsStack`** is a code location (Java, native libs, flags) but produces no
+  APEX of its own; its output is consumed by the telephony stack.
+- **`GenericBootstrappingArchitecture`** ships an `android_app` named
+  `GbaService`, not an APEX.
 
 In addition to `packages/modules/`, several APEX modules are defined elsewhere
 in the tree:
@@ -1651,6 +1703,9 @@ gantt
 
     section B (Android 16)
     Bluetooth, Nfc, UprobeStats : 2025, 1y
+
+    section C (Android 17)
+    NpuManager, WebApp : 2026, 1y
 ```
 
 ### 52.3.12  Deep Dive: Media Module
@@ -1709,10 +1764,11 @@ The `derive_sdk` process:
 
 1. Reads `sdkinfo.pb` from each mounted APEX (at `/apex/<name>/etc/sdkinfo.pb`).
 2. Reads the `extensions_db` (a protobuf database of version requirements).
-3. For each extension (R, S, T, U, V, B, ad_services), calculates the highest
-   version where all module requirements are met.
+3. For each extension (R, S, T, U, V, B, C, ad_services), calculates the
+   highest version where all module requirements are met.
 
-4. Sets system properties: `build.version.extensions.r`, `.s`, `.t`, etc.
+4. Sets system properties: `build.version.extensions.r`, `.s`, `.t`, ...,
+   `.c`.
 
 ```cpp
 // Source: packages/modules/SdkExtensions/derive_sdk/derive_sdk.cpp
@@ -1766,10 +1822,16 @@ static const std::unordered_set<SdkModule> kUModules = {
 
 static const std::unordered_set<SdkModule> kVModules = {};
 
-static const std::unordered_set<SdkModule> kBModules = {
-    SdkModule::NEURAL_NETWORKS
-};
+static const std::unordered_set<SdkModule> kBModules = {SdkModule::NEURAL_NETWORKS};
+
+static const std::unordered_set<SdkModule> kCModules = {};
 ```
+
+Android 17 adds the `kCModules` set for the new "C" extension train.  It is
+empty today: the C axis exists so that *future* module updates can declare
+APIs targeting "Android 17 and up," but no module currently moves the C
+extension on its own.  The same pattern held for V (`kVModules` was, and still
+is, empty).
 
 ### 52.4.3  Version Derivation Algorithm
 
@@ -1859,6 +1921,7 @@ public class SdkExtensions {
     private static final int U_EXTENSION_INT;
     private static final int V_EXTENSION_INT;
     private static final int B_EXTENSION_INT;
+    private static final int C_EXTENSION_INT;          // Android 17
     private static final int AD_SERVICES_EXTENSION_INT;
 
     static {
@@ -1874,6 +1937,8 @@ public class SdkExtensions {
             "build.version.extensions.v", 0);
         B_EXTENSION_INT = SystemProperties.getInt(
             "build.version.extensions.b", 0);
+        C_EXTENSION_INT = SystemProperties.getInt(
+            "build.version.extensions.c", 0);
         AD_SERVICES_EXTENSION_INT = SystemProperties.getInt(
             "build.version.extensions.ad_services", 0);
     }
@@ -1897,6 +1962,7 @@ public class SdkExtensions {
         if (extension == VERSION_CODES.UPSIDE_DOWN_CAKE) return U_EXTENSION_INT;
         if (extension == VERSION_CODES.VANILLA_ICE_CREAM) return V_EXTENSION_INT;
         if (extension == VERSION_CODES.BAKLAVA) return B_EXTENSION_INT;
+        if (extension == VERSION_CODES.CINNAMON_BUN) return C_EXTENSION_INT;
         if (extension == AD_SERVICES) return AD_SERVICES_EXTENSION_INT;
         return 0;
     }
@@ -2056,6 +2122,16 @@ It bundles:
 - `extensions_db` -- The protobuf database of version requirements.
 - `framework-sdkextensions.jar` -- The Java API (`SdkExtensions` class).
 
+The `extensions_db` source lives in
+`packages/modules/SdkExtensions/gen_sdk/extensions_db.textpb`.  In Android 17
+the highest defined extension is **version 22**, at which most modules (ART,
+Conscrypt, Media, MediaProvider, Permissions, StatsD, Tethering, AppSearch,
+OnDevicePersonalization, ConfigInfrastructure, HealthFitness, NeuralNetworks,
+and others) are pinned.  Two modules are frozen below the current baseline:
+`gen_sdk/gen_sdk.py` lists `AD_SERVICES` and `EXT_SERVICES` in its
+`skipped_modules` set, holding both at version 20 (AdServices is discontinued
+after 20; ExtServices is no longer needed past 20).
+
 ### 52.4.9  Extension Version Lifecycle
 
 ```mermaid
@@ -2069,15 +2145,16 @@ sequenceDiagram
     DS->>DS: Read /apex/*/etc/sdkinfo.pb
     DS->>DS: Read extensions_db
     DS->>DS: Compute version for each extension
-    DS->>Props: Set build.version.extensions.r = 14
-    DS->>Props: Set build.version.extensions.s = 12
-    DS->>Props: Set build.version.extensions.t = 8
-    DS->>Props: Set build.version.extensions.u = 3
-    DS->>Props: Set build.version.extensions.v = 1
-    DS->>Props: Set build.version.extensions.b = 0
+    DS->>Props: Set build.version.extensions.r = 22
+    DS->>Props: Set build.version.extensions.s = 22
+    DS->>Props: Set build.version.extensions.t = 22
+    DS->>Props: Set build.version.extensions.u = 22
+    DS->>Props: Set build.version.extensions.v = 22
+    DS->>Props: Set build.version.extensions.b = 22
+    DS->>Props: Set build.version.extensions.c = 22
     Note over Props: Properties available system-wide
     App->>Props: SdkExtensions.getExtensionVersion(R)
-    Props->>App: 14
+    Props->>App: 22
 ```
 
 ---
@@ -2260,15 +2337,25 @@ Each APEX declares a `min_sdk_version` that determines:
 - Which NDK/SDK APIs the module's native code can use.
 
 The `packages/modules/common/sdk/Android.bp` file defines standard defaults
-for each launch window:
+for each launch window.  The lowest supported `min_sdk_version` is itself a
+release-flag decision in Android 17: `APEX_LOWEST_MIN_SDK_VERSION` is `"30"`
+(R) by default but flips to `"31"` (S) when
+`RELEASE_DEPRECATE_MAINLINE_R_SUPPORT` is set, reflecting the gradual sunset of
+R-era module support:
 
 ```
 // Source: packages/modules/common/sdk/Android.bp
 
+APEX_LOWEST_MIN_SDK_VERSION = select(
+    release_flag("RELEASE_DEPRECATE_MAINLINE_R_SUPPORT"), {
+        true: "31",
+        default: "30",
+    })
+
 apex_defaults {
     name: "r-launched-apex-module",
     defaults: ["any-launched-apex-modules"],
-    min_sdk_version: "30",  // APEX_LOWEST_MIN_SDK_VERSION
+    min_sdk_version: APEX_LOWEST_MIN_SDK_VERSION,
 }
 
 apex_defaults {
@@ -2306,6 +2393,11 @@ apex_defaults {
     compressible: true,
 }
 ```
+
+As of Android 17 the highest launch-window default is still
+`b-launched-apex-module` (`min_sdk_version: "36"`); there is no
+`c-launched-apex-module` yet, so the Android 17 newcomers `NpuManager` and
+`WebApp` both inherit the `b-launched` defaults.
 
 All updatable APEXes inherit from `any-launched-apex-modules`:
 
@@ -2716,20 +2808,24 @@ $ adb reboot
 
 ```bash
 $ adb shell pm list packages --apex-only --show-versioncode
-package:com.android.adbd versionCode:340090000
-package:com.android.art versionCode:340090000
-package:com.android.conscrypt versionCode:340090000
-package:com.android.i18n versionCode:340090000
-package:com.android.media versionCode:340090000
-package:com.android.media.swcodec versionCode:340090000
-package:com.android.os.statsd versionCode:340090000
-package:com.android.permission versionCode:340090000
-package:com.android.resolv versionCode:340090000
-package:com.android.sdkext versionCode:340090000
-package:com.android.tethering versionCode:340090000
-package:com.android.wifi versionCode:340090000
+package:com.android.adbd versionCode:370090000
+package:com.android.art versionCode:370090000
+package:com.android.conscrypt versionCode:370090000
+package:com.android.i18n versionCode:370090000
+package:com.android.media versionCode:370090000
+package:com.android.media.swcodec versionCode:370090000
+package:com.android.os.statsd versionCode:370090000
+package:com.android.permission versionCode:370090000
+package:com.android.resolv versionCode:370090000
+package:com.android.sdkext versionCode:370090000
+package:com.android.tethering versionCode:370090000
+package:com.android.wifi versionCode:370090000
 ...
 ```
+
+(On an Android 17 trunk-staging build the version codes start with `370…`; on
+older builds the leading SDK segment is lower, e.g. `340…` on the
+Tiramisu-era image.)
 
 **Inspect a mounted APEX:**
 
@@ -2746,11 +2842,13 @@ $ adb shell cat /apex/apex-info-list.xml
 
 ```bash
 $ adb shell getprop build.version.extensions.r
-14
+22
 $ adb shell getprop build.version.extensions.s
-12
+22
 $ adb shell getprop build.version.extensions.t
-8
+22
+$ adb shell getprop build.version.extensions.c
+22
 ```
 
 ### 52.6.6  Debugging APEX Issues
@@ -2933,22 +3031,22 @@ Fix: Ensure all dependencies use stable API levels (NDK, SDK stubs).
 
 ### 52.6.13  Module Versioning Strategy
 
-APEX version codes follow a specific format: `XYYZZZ000` where:
+At the source level, an APEX simply carries an `int64 version` in its
+`apex_manifest.pb` (see Section 52.2.3), and `SelectApexForActivation()` always
+prefers the higher number.  AOSP builds stamp this with the platform build
+number, so a locally built APEX reports a version code like `370090000` for an
+Android 17 (`bp1a`-style) trunk-staging build.
 
-- `X` -- Reserved (usually 3 for trunk).
-- `YY` -- Platform SDK version (e.g., 40 for B/Baklava SDK 36 encoded).
-- `ZZZ` -- Build number within the release.
-- `000` -- Variant (000 for release, 090 for development).
-
-For example, `340090000` means:
-
-- `3` -- Trunk
-- `40` -- SDK version encoding
-- `090` -- Development build
-- `000` -- Default variant
-
-This scheme ensures that newer module versions always have higher version codes,
-which is critical for the Play Store update mechanism.
+The released-train version codes that Google publishes follow a structured
+`XYYZZZNNN` convention so that newer trains always sort higher: a leading digit
+for the train type, a platform-SDK segment, an incrementing build segment, and
+a trailing variant segment (release vs. development).  This encoding is applied
+by the train-build tooling, not by AOSP's `apexer`; in Android 17 that tooling
+moved into the new `tools/mainline/train_build/` repository
+(`versioning_action.py` bumps the codes, `pack_action.py` packs the result --
+see Section 52.10).  Because the leading SDK segment advances with each
+platform release, an Android 17 train always outranks an Android 16 train of
+the same module, which is exactly what the Play Store update mechanism needs.
 
 ---
 
@@ -3627,7 +3725,282 @@ enforced through channel usage restrictions (`ChannelUsage`).
 
 ---
 
-## 52.10  Try It
+## 52.10  The `tools/mainline` Train-Build Repository
+
+Up to this point the chapter has treated each module as a self-contained APEX.
+In practice Google does not ship modules one at a time: related modules are
+bundled into a **train** -- a set of APEX and APK files released together,
+version-stamped together, and rolled out together through Google Play.  Android
+17 adds a new top-level repository, `tools/mainline`, that carries the
+open-source portion of the tooling that assembles those trains.
+
+### 52.10.1  Why a Separate Repository
+
+The per-module `Android.bp` files describe how to *build one APEX*.  Turning a
+collection of freshly built module artifacts into a signed, correctly versioned
+train is a separate, cross-module step: it must trim each module down to the
+architectures a given target needs, build the shared common-library APEX,
+re-stamp version codes so the train sorts above the previous release, and pack
+everything into the final bundle.  Historically this logic lived in
+Google-internal scripts.  Android 17 splits out the reusable, AOSP-shareable
+machinery into `tools/mainline/train_build/`, leaving the proprietary
+mock data and glue in `vendor/google/train_build`.
+
+### 52.10.2  The `train_build` Pipeline
+
+`tools/mainline/train_build/Android.bp` defines a set of `python_binary_host`
+"worker" binaries and `python_library_host` "action" libraries, each
+implementing one stage of the pipeline, plus `python_test_host` unit tests for
+every stage:
+
+| Stage | Action module | Responsibility |
+|-------|--------------|---------------|
+| Trim | `trim_action.py` | Strip a bundled APEX to the ABIs a target needs, mapping module ABIs onto DCLA arch sets |
+| DCLA build | `dcla_build_action.py` | Build the shared common-library APEX that dedupes native libs across modules |
+| Versioning | `versioning_action.py` | Bump per-module version codes so the train sorts above the previous release |
+| Pack | `pack_action.py` | Pack the trimmed, versioned modules into the final train artifact |
+
+Two orchestrators tie the stages together.  `primary_train_build_action.py`
+builds the **primary** train (and its Go variant), centered on the shared DCLA
+library APEX; `generic_train_build_action.py` builds the other train types.
+Each train is modeled as a `TrainBuildSpec` and dispatched by a `TrainType`
+enum:
+
+```python
+# Source: tools/mainline/train_build/generic_train_build_action.py
+
+class TrainType(Enum):
+  TELEMETRY = 1
+  GO_TELEMETRY = 2
+  ADSERVICES = 3
+  NPU = 9
+  GO_NONUPDATABLE = 4
+  NONUPDATABLE = 5
+  PRELOAD = 6
+  TIMEZONE = 7
+  UNKNOWN = 8
+```
+
+The presence of a dedicated `NPU` train type is itself an Android 17 signal:
+the new `com.android.npumanager` module (Section 52.11) is significant enough to
+ship on its own train cadence.
+
+### 52.10.3  The Shared DCLA Library APEX
+
+Section 52.5.7 introduced DCLA (Dynamic Common Lib APEX) at the build-rule
+level.  `primary_train_build_action.py` is where the shared library APEX
+actually gets assembled for a train.  It names two well-known shared-library
+APEXes -- the full-Android and the Android Go variant:
+
+```python
+# Source: tools/mainline/train_build/primary_train_build_action.py
+
+BIG_ANDROID_DCLA = 'com.google.mainline.primary.libs'
+GO_DCLA = 'com.google.mainline.go.primary.libs'
+```
+
+`dcla_apex_info.py` records, per module, which DCLA libraries that module
+expects to be provided externally, so the trimming and packing stages can wire
+the shared APEX into the train instead of letting each module bundle its own
+copy of `libc++`, `libcrypto`, and friends.
+
+### 52.10.4  Train-Build Flow
+
+The following diagram shows how per-module artifacts flow through the
+`train_build` stages into a finished train.
+
+```mermaid
+flowchart TD
+    MODS["Per-module artifacts<br/>(bundled APEX/APK)"] --> TRIM["trim_action<br/>(strip to needed ABIs)"]
+    DCLA["dcla_build_action<br/>(shared lib APEX)"] --> PACK
+    TRIM --> VER["versioning_action<br/>(bump version codes)"]
+    VER --> PACK["pack_action<br/>(assemble train)"]
+    SPEC["TrainBuildSpec<br/>(TrainType: PRIMARY / NPU / ...)"] --> ORCH["primary_/generic_<br/>train_build_action"]
+    ORCH --> TRIM
+    ORCH --> DCLA
+    ORCH --> VER
+    ORCH --> PACK
+    PACK --> TRAIN["Signed, versioned train<br/>(shipped via Google Play)"]
+```
+
+---
+
+## 52.11  Android 17 apexd and Module Changes
+
+Android 17 makes two notable changes to the runtime side of Mainline: `apexd`
+gains a way to activate EROFS APEX payloads without a loop device, and the
+module set itself grows with the `com.android.npumanager` and
+`com.android.webapp` newcomers.
+
+### 52.11.1  EROFS File-Backed Mounts
+
+Every loop device an APEX consumes is a finite kernel resource, and as the
+module count climbs (Section 52.3 now lists more than forty directories), so
+does the loop-device pressure at boot.  Android 17 addresses this for EROFS
+payloads with **file-backed mounting**: when the payload is EROFS and does not
+need its own dm-verity layer, `apexd` mounts the payload directly from the
+`.apex` file using the kernel's `fsoffset=` mount option, with no loop device
+in between.  This is the EROFS branch of `MountPackageImpl` shown earlier in
+Section 52.2.9:
+
+```cpp
+// Source: system/apex/apexd/apexd.cpp (MountPackageImpl, EROFS branch)
+
+} else if (IsFileBackedMountEnabled() && fs_type == "erofs" &&
+           !mount_on_verity) {
+    mount_options = std::format("fsoffset={}", *apex.GetImageOffset());
+    mount_device = apex.GetPath();
+```
+
+The feature is guarded by aconfig flags in `system/apex/apexd/apexd.aconfig`
+(package `com.android.apex.flags`):
+
+```
+// Source: system/apex/apexd/apexd.aconfig
+
+flag {
+  name: "erofs_file_backed_mount"
+  namespace: "treble"
+  description: "This flag controls if file-backed mounting for EROFS APEXes"
+}
+
+flag {
+  name: "microdroid_no_loop_device"
+  namespace: "treble"
+  description: "This flag controls if apexd activates apexes without loop devices"
+}
+```
+
+Because not every kernel supports file-backed EROFS mounts, `apexd` does not
+trust the flag blindly.  At runtime it performs a one-time **test mount** of a
+bundled empty EROFS image, and caches the result in a property so subsequent
+boots skip the probe:
+
+```cpp
+// Source: system/apex/apexd/apexd_mount.cpp
+
+static constexpr const char* kApexTestMountFolder = "/apex/.test@0.tmp";
+static constexpr const char* kTestMountImage =
+    "/system/etc/apexd/empty_erofs.img";
+
+// ...
+if (mount(kTestMountImage, kApexTestMountFolder, "erofs", mount_flags,
+          "fsoffset=0")) {
+    LOG(ERROR)
+        << "File-backed mount is disabled due to test mount failure (mount)";
+    return false;
+}
+```
+
+The companion `microdroid_no_loop_device` flag lets Microdroid activate *block*
+APEXes through a `dm-linear` device instead of a loop device (the
+`CreateDmLinearForBlockApex` branch of `MountPackageImpl`, compiled in only when
+the flag is built).  Together these two paths shrink the per-APEX loop-device
+cost as the module set keeps growing.
+
+```mermaid
+flowchart TD
+    START["MountPackageImpl: pick block device"] --> PINNED{"UsesPinnedApex()<br/>and pinned?"}
+    PINNED -->|Yes| DMLIN["dm-linear device"]
+    PINNED -->|No| EROFS{"file-backed flag on,<br/>EROFS, no extra verity?"}
+    EROFS -->|Yes| FB["File-backed mount<br/>(fsoffset=, no loop)"]
+    EROFS -->|No| BLK{"microdroid_no_loop_device<br/>and block APEX?"}
+    BLK -->|Yes| DMLIN2["dm-linear for block APEX"]
+    BLK -->|No| LOOP["Loop device<br/>(classic path)"]
+```
+
+### 52.11.2  NpuManager Module
+
+`com.android.npumanager` (`packages/modules/NpuManager/apex/Android.bp`) is one
+of the two genuinely new Android 17 modules.  It arbitrates access to on-device
+**Neural Processing Units (NPUs)** across competing apps -- apps do not get raw
+accelerator access; they ask the module's service whether loading a model is
+advisable, and the service answers based on memory budgets and priorities.  The
+APEX is gated behind the `RELEASE_NPUMANAGER_MODULE` release flag and inherits
+`b-launched-apex-module` defaults (`min_sdk_version: "36"`):
+
+```
+// Source: packages/modules/NpuManager/apex/Android.bp
+
+apex {
+    enabled: select(release_flag("RELEASE_NPUMANAGER_MODULE"), {
+        true: true,
+        false: false,
+    }),
+    name: "com.android.npumanager",
+    min_sdk_version: "36",
+    defaults: ["b-launched-apex-module"],
+    bootclasspath_fragments: ["com.android.npumanager-bootclasspath-fragment"],
+    systemserverclasspath_fragments:
+        ["com.android.npumanager-systemserverclasspath-fragment"],
+    native_shared_libs: ["libcom.android.npumanager"],
+    jni_libs: ["libnpumanager_service_jni"],
+}
+```
+
+The bootclasspath fragment contributes `framework-npumanager` (the public
+`NpuManager` API surface), the systemserver fragment contributes
+`service-npumanager` (`NpuManagerService`), and the module ships its own
+`npumanager-module-sdk` so other components can compile against its exported
+APIs.  The detailed admission-control architecture -- the model-loading
+policies, the Rust-backed native buffer management, and the paired
+`android.hardware.npu` vendor HAL -- is covered in Chapter 50.
+
+### 52.11.3  WebApp Module
+
+`com.android.webapp` (`packages/modules/WebApp/apex/Android.bp`) is the second
+Android 17 newcomer.  It installs and manages **Progressive Web Apps (PWAs)** as
+first-class installed entities, exposing a `WebAppManager`
+(`packages/modules/WebApp/framework/java/android/content/pm/webapp/WebAppManager.java`)
+backed by a `WebAppService` APK inside the APEX.  Like NpuManager it is
+flag-gated (`RELEASE_WEBAPP_MODULE`) and inherits `b-launched-apex-module`
+defaults:
+
+```
+// Source: packages/modules/WebApp/apex/Android.bp
+
+apex {
+    enabled: select(release_flag("RELEASE_WEBAPP_MODULE"), {
+        true: true,
+        false: false,
+    }),
+    name: "com.android.webapp",
+    defaults: ["b-launched-apex-module"],
+    binaries: ["aapt2"],
+    prebuilts: ["webapp-template-res"],
+    apps: ["WebAppService"],
+    bootclasspath_fragments: ["com.android.webapp-bootclasspath-fragment"],
+}
+```
+
+The bundled `aapt2` binary and `webapp-template-res` prebuilt let the module
+compile resources at install time to materialize a PWA as an installable
+package -- the package-manager integration is discussed in Chapter 26.
+
+### 52.11.4  Bootstrap and Code-Location Directories
+
+Not every Android 17 addition under `packages/modules/` is an updatable APEX:
+
+- `WebViewBootstrap` (`packages/modules/WebViewBootstrap/apex/Android.bp`)
+  defines `com.android.webview.bootstrap`, an essentially **empty** bootstrap
+  APEX (`v-launched-apex-module` defaults) that reserves a mount point; it
+  bundles no apps, libraries, or classpath fragments.
+- `ImsStack` (`packages/modules/ImsStack/`) is a **code location** -- Java,
+  native libs, and feature flags consumed by the telephony stack -- but
+  produces no APEX of its own.
+- `GenericBootstrappingArchitecture`
+  (`packages/modules/GenericBootstrappingArchitecture/`) ships an
+  `android_app` named `GbaService` (Generic Bootstrapping Architecture carrier
+  authentication), not an APEX.
+
+Distinguishing these from true APEX modules matters when reasoning about what
+`apexd` actually mounts at boot: only directories whose `Android.bp` declares an
+`apex {` (or `custom_apex {` / `virt_apex {`) stanza contribute a `/apex/<name>`
+mount.
+
+---
+
+## 52.12  Try It
 
 The following exercises walk through inspecting Mainline modules on a running
 device and understanding their structure from source.
@@ -3674,9 +4047,10 @@ Check all SDK extension versions:
 $ adb shell getprop | grep build.version.extensions
 ```
 
-Compare the R, S, T, U, V, and B extension versions.  Using the
-`kRModules`, `kSModules`, `kTModules` sets from `derive_sdk.cpp`, identify
-which modules contribute to each extension level.
+Compare the R, S, T, U, V, B, and C extension versions.  Using the
+`kRModules`, `kSModules`, `kTModules` (and the empty `kVModules` / `kCModules`)
+sets from `derive_sdk.cpp`, identify which modules contribute to each extension
+level.
 
 ### Exercise 52.4: Examine APEX Build Rules
 
@@ -3917,7 +4291,7 @@ The XML contains entries like:
     moduleName="com.android.sdkext"
     modulePath="/system/apex/com.android.sdkext.apex"
     preinstalledModulePath="/system/apex/com.android.sdkext.apex"
-    versionCode="340090000"
+    versionCode="370090000"
     versionName=""
     isFactory="true"
     isActive="true"
@@ -4074,15 +4448,20 @@ Key takeaways from this chapter:
   atomic unit.
 
 - **apexd** manages the full lifecycle: scanning partitions at boot, creating
-  loop devices and dm-verity tables, bind-mounting active versions, processing
-  staged updates, and supporting rollback.
+  loop (or, in Android 17, dm-linear / file-backed EROFS) devices and dm-verity
+  tables, bind-mounting active versions, processing staged updates, and
+  supporting rollback.
 
 - **40+ modules** in `packages/modules/` cover networking, security, media,
   telephony, ML, and more -- each with its own APEX name, signing key, and
-  version lifecycle.
+  version lifecycle.  Android 17 adds `com.android.npumanager` and
+  `com.android.webapp` (both flag-gated) and the new `tools/mainline`
+  train-build repository.
 
 - **SDK Extensions** solve the runtime API-availability problem by deriving
-  extension version numbers from actual installed module versions at boot time.
+  extension version numbers from actual installed module versions at boot time;
+  Android 17 (API 37, CinnamonBun) raises the extension-database baseline to
+  version 22 and adds a new "C" extension axis.
 
 - **Module boundaries** are enforced through `apex_available`, API surface
   annotations (`@SystemApi`), `min_sdk_version`, and hidden-API policies.
@@ -4095,10 +4474,15 @@ The source files central to understanding this system:
 | APEX tool | `system/apex/apexer/apexer.py` |
 | APEX manifest proto | `system/apex/proto/apex_manifest.proto` |
 | apexd daemon | `system/apex/apexd/apexd.cpp`, `apex_file.cpp`, `apex_constants.h` |
+| apexd EROFS file-backed mount | `system/apex/apexd/apexd_mount.cpp`, `apexd.aconfig` |
 | apexd init config | `system/apex/apexd/apexd.rc` |
 | Module defaults | `packages/modules/common/sdk/Android.bp` |
 | SDK Extensions API | `packages/modules/SdkExtensions/java/android/os/ext/SdkExtensions.java` |
 | derive_sdk | `packages/modules/SdkExtensions/derive_sdk/derive_sdk.cpp` |
+| Extension database | `packages/modules/SdkExtensions/gen_sdk/extensions_db.textpb` |
 | APEX file repository | `system/apex/apexd/apex_file_repository.h` |
+| Train-build tooling | `tools/mainline/train_build/` |
+| NpuManager APEX | `packages/modules/NpuManager/apex/Android.bp` |
+| WebApp APEX | `packages/modules/WebApp/apex/Android.bp` |
 
 ---

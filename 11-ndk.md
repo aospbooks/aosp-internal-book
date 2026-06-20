@@ -147,7 +147,7 @@ components explicitly:
 The file `ndk_sysroot.go` registers three module types and a singleton:
 
 ```go
-// build/soong/cc/ndk_sysroot.go (lines 80-85)
+// build/soong/cc/ndk_sysroot.go (lines 81-86)
 func RegisterNdkModuleTypes(ctx android.RegistrationContext) {
     ctx.RegisterModuleType("ndk_headers", NdkHeadersFactory)
     ctx.RegisterModuleType("ndk_library", NdkLibraryFactory)
@@ -197,7 +197,7 @@ for `ndk_library {` reveals the complete list:
 | `libsync` | 26 | `system/core/libsync/Android.bp` |
 | `libneuralnetworks` | 27 | `packages/modules/NeuralNetworks/runtime/Android.bp` |
 | `libicu` | 31 | `external/icu/libicu/Android.bp` |
-| `libnativehelper` | 34 | `system/extras/module_ndk_libs/libnativehelper/Android.bp` |
+| `libnativehelper` | 31 (`"S"`) | `system/extras/module_ndk_libs/libnativehelper/Android.bp` |
 
 Each entry in this table corresponds to a Soong `ndk_library` block such as:
 
@@ -554,9 +554,9 @@ The NDK build integration in AOSP is handled by four key Go source files in
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `ndk_library.go` | 611 | Stub shared library generation |
-| `ndk_headers.go` | 276 | Header installation into sysroot |
-| `ndk_sysroot.go` | 320 | Sysroot assembly singleton |
+| `ndk_library.go` | 662 | Stub shared library generation |
+| `ndk_headers.go` | 280 | Header installation into sysroot |
+| `ndk_sysroot.go` | 321 | Sysroot assembly singleton |
 | `ndk_abi.go` | 102 | ABI dump and diff monitoring |
 
 ### 11.3.1 The `ndk_library` Module Type
@@ -571,7 +571,7 @@ The module type is implemented by `NdkLibraryFactory()` in
 `build/soong/cc/ndk_library.go`:
 
 ```go
-// build/soong/cc/ndk_library.go (lines 605-611)
+// build/soong/cc/ndk_library.go (lines 658-662)
 func NdkLibraryFactory() android.Module {
     module := newStubLibrary()
     android.InitAndroidArchModule(module, android.DeviceSupported,
@@ -585,7 +585,7 @@ func NdkLibraryFactory() android.Module {
 The `ndk_library` module type accepts these properties:
 
 ```go
-// build/soong/cc/ndk_library.go (lines 91-117)
+// build/soong/cc/ndk_library.go (lines 95-123)
 type libraryProperties struct {
     // Relative path to the symbol map.
     Symbol_file *string `android:"path"`
@@ -597,11 +597,31 @@ type libraryProperties struct {
     // applied.
     Unversioned_until *string
 
+    // If true, allow all symbols in this library to be called in
+    // native-only app processes (see Section 11.6.5). Should only be
+    // used by libraries with no dependency on the Android Runtime;
+    // otherwise use the `artless` tag in the symbol map per-symbol.
+    Bypass_artless_denylist *bool
+
     // DO NOT USE THIS
     // NDK libraries should not export their headers.
     Export_header_libs []string
 }
 ```
+
+The `Bypass_artless_denylist` property is new in Android 17. It is tied to
+the *artless* symbol tag added to the NDK toolchain in the same release.
+"Artless" means "no Android Runtime" -- callable from a native-only
+application process (one that never starts a JVM, the subject of
+Section 11.6.5). By default every `ndk_library` also produces a denylist stub
+that *blocks* the symbols incompatible with such a process; setting
+`bypass_artless_denylist: true` makes that denylist empty, declaring the whole
+library safe for native-only use. To opt in selectively instead, a `.map.txt`
+file can tag individual symbols with `artless`. The default-deny posture
+exists because most NDK entry points reach into the Android Runtime, and
+calling those from a JVM-less process would fail; bionic, `liblog`, and
+similarly runtime-free libraries are the ones marked artless. Section 11.8.2
+returns to the denylist's build-system machinery.
 
 The `symbol_file` property points to a `.map.txt` file that lists every exported
 symbol and the API level at which it was introduced. This is the source of truth
@@ -634,7 +654,7 @@ sequenceDiagram
 The stub generation begins in the `compile()` method of `stubDecorator`:
 
 ```go
-// build/soong/cc/ndk_library.go (lines 474-507)
+// build/soong/cc/ndk_library.go (lines 488-521)
 func (c *stubDecorator) compile(ctx ModuleContext, flags Flags,
         deps PathDeps) Objects {
     if !strings.HasSuffix(String(c.properties.Symbol_file), ".map.txt") {
@@ -654,7 +674,7 @@ func (c *stubDecorator) compile(ctx ModuleContext, flags Flags,
 The `ParseNativeAbiDefinition()` function invokes the `ndkstubgen` tool:
 
 ```go
-// build/soong/cc/ndk_library.go (lines 258-286)
+// build/soong/cc/ndk_library.go (lines 272-300)
 func ParseNativeAbiDefinition(ctx android.ModuleContext,
         symbolFile string, apiLevel android.ApiLevel,
         genstubFlags string) NdkApiOutputs {
@@ -686,7 +706,7 @@ func ParseNativeAbiDefinition(ctx android.ModuleContext,
 This invokes the `genStubSrc` rule:
 
 ```go
-// build/soong/cc/ndk_library.go (lines 38-43)
+// build/soong/cc/ndk_library.go (lines 39-44)
 genStubSrc = pctx.AndroidStaticRule("genStubSrc",
     blueprint.RuleParams{
         Command: "$ndkStubGenerator --arch $arch --api $apiLevel " +
@@ -708,7 +728,7 @@ Stub libraries are compiled with special flags that suppress warnings about
 the placeholder implementations:
 
 ```go
-// build/soong/cc/ndk_library.go (lines 220-232)
+// build/soong/cc/ndk_library.go (lines 234-246, comments elided)
 var stubLibraryCompilerFlags = []string{
     "-Wno-incompatible-library-redeclaration",
     "-Wno-incomplete-setjmp-declaration",
@@ -730,7 +750,7 @@ Each `ndk_library` produces stubs for every API level from `first_version` to
 the current release:
 
 ```go
-// build/soong/cc/ndk_library.go (lines 145-155)
+// build/soong/cc/ndk_library.go (lines 159-169)
 func ndkLibraryVersions(ctx android.BaseModuleContext,
         from android.ApiLevel) []string {
     versionStrs := []string{}
@@ -754,7 +774,7 @@ the symbols that were available at that API level.
 Stubs are installed into a versioned path within the sysroot:
 
 ```go
-// build/soong/cc/ndk_library.go (lines 562-569)
+// build/soong/cc/ndk_library.go (lines 593-596)
 func getVersionedLibraryInstallPath(ctx ModuleContext,
         apiLevel android.ApiLevel) android.OutputPath {
     return getUnversionedLibraryInstallPath(ctx).Join(ctx,
@@ -777,7 +797,7 @@ implemented in `build/soong/cc/ndk_headers.go`.
 #### Properties
 
 ```go
-// build/soong/cc/ndk_headers.go (lines 39-71)
+// build/soong/cc/ndk_headers.go (lines 42-73)
 type headerProperties struct {
     // Base directory of the headers being installed.
     From *string
@@ -819,7 +839,7 @@ Every NDK header is verified to be self-contained and valid C. This happens in
 the `NdkSingleton` in `ndk_sysroot.go`:
 
 ```go
-// build/soong/cc/ndk_sysroot.go (lines 121-158)
+// build/soong/cc/ndk_sysroot.go (lines 122-160)
 func verifyNdkHeaderIsCCompatible(ctx android.SingletonContext,
         src android.Path, dest android.Path) android.Path {
     // ...
@@ -855,7 +875,7 @@ Some NDK headers require preprocessing before installation (e.g., architecture-
 specific definitions). The `preprocessed_ndk_headers` module type handles this:
 
 ```go
-// build/soong/cc/ndk_headers.go (lines 192-215)
+// build/soong/cc/ndk_headers.go (lines 196-219)
 type preprocessedHeadersProperties struct {
     // The preprocessor to run.
     Preprocessor *string
@@ -863,11 +883,17 @@ type preprocessedHeadersProperties struct {
     // Source path to the files to be preprocessed.
     Srcs []string
 
+    // Source paths that should be excluded from the srcs glob.
+    Exclude_srcs []string
+
     // Install path within the sysroot relative to usr/include.
     To *string
 
     // Path to the NOTICE file.
     License *string
+
+    // Set to true if the headers should skip verification.
+    Skip_verification *bool
 }
 ```
 
@@ -883,7 +909,7 @@ The system uses STG (Symbol/Type Graph), a tool that extracts ABI information
 from ELF binaries using DWARF debug information:
 
 ```go
-// build/soong/cc/ndk_library.go (lines 51-55)
+// build/soong/cc/ndk_library.go (lines 53-58)
 stg = pctx.AndroidStaticRule("stg",
     blueprint.RuleParams{
         Command: "$stg -S :$symbolList --file-filter :$headersList " +
@@ -900,7 +926,7 @@ leaking through DWARF.
 The header filtering logic is in `ndk_sysroot.go`:
 
 ```go
-// build/soong/cc/ndk_sysroot.go (lines 186-196)
+// build/soong/cc/ndk_sysroot.go (lines 187-196)
 func writeNdkAbiSrcFilter(ctx android.BuilderContext,
         headerSrcPaths android.Paths,
         outputFile android.WritablePath) {
@@ -920,7 +946,7 @@ When an ABI dump exists for a given API level, the build compares it against
 the prebuilt reference dump stored in `prebuilts/abi-dumps/ndk/`:
 
 ```go
-// build/soong/cc/ndk_library.go (lines 57-65)
+// build/soong/cc/ndk_library.go (lines 60-68)
 stgdiff = pctx.AndroidStaticRule("stgdiff",
     blueprint.RuleParams{
         Command: "$stgdiff $args --stg $in -o $out || " +
@@ -945,7 +971,7 @@ The diff logic checks two things:
    additions are allowed, but removals or modifications are not.
 
 ```go
-// build/soong/cc/ndk_library.go (lines 397-471)
+// build/soong/cc/ndk_library.go (lines 411-485)
 func (this *stubDecorator) diffAbi(ctx ModuleContext) {
     // Catch any ABI changes compared to the checked-in definition
     // ...
@@ -993,7 +1019,7 @@ graph TD
 Interestingly, bionic libraries are currently exempted from ABI monitoring:
 
 ```go
-// build/soong/cc/ndk_library.go (lines 336-352)
+// build/soong/cc/ndk_library.go (lines 350-365)
 func (this *stubDecorator) canDumpAbi(ctx ModuleContext) bool {
     if runtime.GOOS == "darwin" {
         return false
@@ -1023,7 +1049,7 @@ Every `ndk_library` module registers itself in a global list of known NDK
 libraries:
 
 ```go
-// build/soong/cc/ndk_library.go (lines 195-218)
+// build/soong/cc/ndk_library.go (lines 209-232)
 func getNDKKnownLibs(config android.Config) *[]string {
     return config.Once(ndkKnownLibsKey, func() interface{} {
         return &[]string{}
@@ -1353,6 +1379,13 @@ this problem. It defines a set of system libraries that vendor code is
 **permitted** to use, with the guarantee that these libraries maintain ABI
 compatibility across platform updates.
 
+A note on currency before we begin: the VNDK has been deprecated since
+Android 14 and, as Section 11.5.9 details, the Android 17 platform no longer
+classifies any of its own libraries as VNDK. This section explains the VNDK as
+it was designed -- the mechanism is still in Soong because shipping devices
+carry frozen VNDK snapshots -- and then closes by mapping that design onto the
+current state.
+
 ### 11.5.2 VNDK Architecture
 
 ```mermaid
@@ -1395,7 +1428,7 @@ A library declares itself as VNDK by including a `vndk` block. The properties
 are defined in `build/soong/cc/vndk.go`:
 
 ```go
-// build/soong/cc/vndk.go (lines 45-76)
+// build/soong/cc/vndk.go (lines 45-77)
 type VndkProperties struct {
     Vndk struct {
         // declared as a VNDK or VNDK-SP module.
@@ -1669,15 +1702,34 @@ The key constraint on VNDK-SP is tighter than regular VNDK: VNDK-SP libraries
 can only depend on other VNDK-SP libraries or LL-NDK libraries. This prevents
 circular dependencies between system and vendor code loaded in the same process.
 
-### 11.5.9 The VNDK Deprecation Trend
+### 11.5.9 VNDK Deprecation: the State in Android 17
 
-Starting with Android 14, Google has been gradually reducing the VNDK's scope.
-The Vendor API Level concept (`RELEASE_BOARD_API_LEVEL`) replaces the VNDK
-version, and the VNDK APEX (`com.android.vndk.v*`) provides a cleaner packaging
-mechanism than the flat directory structure. For builds without VNDK, the linker
-configuration simplifies significantly -- vendor code links directly against
-system libraries, with namespace isolation relying on stub libraries and the
-linker config generator rather than a separate VNDK directory.
+Starting with Android 14, Google began retiring the VNDK, and by Android 17 the
+retirement is effectively complete for *new* platform code. The Vendor API
+Level (`RELEASE_BOARD_API_LEVEL`, configured under
+`build/release/flag_values/`) replaces the VNDK version as the
+system/vendor compatibility knob, and vendor code links directly against
+system libraries with namespace isolation provided by the linker config
+generator rather than a dedicated VNDK directory.
+
+The clearest evidence is in the tree itself: in the Android 17 source there is
+**no `vndk: {}` block left in any `frameworks/`, `system/`, or `hardware/`
+module**. Libraries like `libcutils` and `libutils` that the earlier sections
+of this chapter listed as VNDK-Core no longer carry the `vndk:` property at
+all -- they are plain `cc_library` modules with `vendor_available: true` where
+vendor access is still needed. The VNDK only survives as **frozen prebuilt
+snapshots** under `prebuilts/vndk/` (`v31` through `v34`), shipped so that an
+older vendor image built against, say, VNDK 34 can still run on a newer system
+image. There is no `v35`, `v36`, or `v37` snapshot, because the platform no
+longer produces a new VNDK each release.
+
+The Soong machinery described in this section -- `vndk.go`, the
+`vndk_prebuilt_shared` module type, the `vndkcore.libraries.<ver>.txt` family
+of files -- therefore remains in `build/soong/cc/` to *consume* those frozen
+snapshots, not to mint new ones. Read this section as the history and the
+backward-compatibility mechanism rather than a description of how libraries are
+classified in a fresh Android 17 build; for current builds, the LL-NDK layer of
+Section 11.4 is the live system/vendor ABI boundary.
 
 ---
 
@@ -1755,7 +1807,7 @@ The Camera NDK functions follow a consistent pattern: a thin C wrapper that
 delegates to an internal C++ implementation. Here is `ACameraManager_create()`:
 
 ```cpp
-// frameworks/av/camera/ndk/NdkCameraManager.cpp (lines 38-41)
+// frameworks/av/camera/ndk/NdkCameraManager.cpp (lines 37-41)
 EXPORT
 ACameraManager* ACameraManager_create() {
     ATRACE_CALL();
@@ -1766,7 +1818,7 @@ ACameraManager* ACameraManager_create() {
 And `ACameraDevice_close()`:
 
 ```cpp
-// frameworks/av/camera/ndk/NdkCameraDevice.cpp (lines 31-39)
+// frameworks/av/camera/ndk/NdkCameraDevice.cpp (lines 30-39)
 EXPORT
 camera_status_t ACameraDevice_close(ACameraDevice* device) {
     ATRACE_CALL();
@@ -1786,7 +1838,7 @@ functions explicitly marked with `EXPORT` appear in the shared library's dynamic
 symbol table:
 
 ```
-// frameworks/av/camera/ndk/Android.bp (lines 102-108)
+// frameworks/av/camera/ndk/Android.bp (lines 102-109)
 cflags: [
     "-DEXPORT=__attribute__((visibility(\"default\")))",
     "-Wall",
@@ -1802,11 +1854,13 @@ The Camera NDK has two variants. The standard library (`libcamera2ndk`) uses
 the framework's internal `CameraService` binder interface:
 
 ```cpp
-// frameworks/av/camera/ndk/NdkCameraManager.cpp (lines 27-32)
+// frameworks/av/camera/ndk/NdkCameraManager.cpp (lines 26-32)
 #ifdef __ANDROID_VNDK__
 #include "ndk_vendor/impl/ACameraManager.h"
 #else
 #include "impl/ACameraManager.h"
+#include <com_android_internal_camera_flags.h>
+namespace flags = com::android::internal::camera::flags;
 #endif
 ```
 
@@ -1967,7 +2021,7 @@ The Binder NDK is both an NDK library (for apps) and an LL-NDK library (for
 vendor code):
 
 ```
-// frameworks/native/libs/binder/ndk/Android.bp (lines 77-85, 271-279)
+// frameworks/native/libs/binder/ndk/Android.bp (lines 78-138, 283-291)
 cc_library {
     name: "libbinder_ndk",
     // ...
@@ -1988,7 +2042,9 @@ ndk_library {
     name: "libbinder_ndk",
     symbol_file: "libbinder_ndk.map.txt",
     first_version: "29",
-    // ...
+    export_header_libs: [
+        "libbinder_headers_platform_shared_ndk",
+    ],
 }
 ```
 
@@ -1998,9 +2054,8 @@ The Binder NDK wraps `libbinder`'s C++ classes in C-compatible types. The
 implementation in `ibinder.cpp` shows the pattern:
 
 ```cpp
-// frameworks/native/libs/binder/ndk/ibinder.cpp (lines 17-47)
+// frameworks/native/libs/binder/ndk/ibinder.cpp (lines 17-42)
 #include <android/binder_ibinder.h>
-#include <android/binder_ibinder_platform.h>
 #include <android/binder_stability.h>
 #include <android/binder_status.h>
 #include <binder/Functional.h>
@@ -2013,6 +2068,7 @@ using ::android::sp;
 using ::android::status_t;
 // ...
 
+// frameworks/native/libs/binder/ndk/ibinder.cpp (lines 99-100)
 AIBinder::AIBinder(const AIBinder_Class* clazz) : mClazz(clazz) {}
 AIBinder::~AIBinder() {}
 ```
@@ -2126,9 +2182,9 @@ The pattern is always:
 
 ### 11.6.5 Native Activity Thread (Rust) -- Pure-Native Service Processes
 
-Sections 11.6.1 through 11.6.3 covered NDK *bindings* — C APIs that let
+Sections 11.6.1 through 11.6.3 covered NDK *bindings* -- C APIs that let
 native code reach into framework subsystems whose implementations are
-written in Java or C++. API level 37 (2026) adds a complementary capability:
+written in Java or C++. API level 37 adds a complementary capability:
 a native-only application process that hosts `ANativeService` instances
 without ever loading a JVM. The implementation lives in
 `frameworks/base/libs/native_activity_thread/`, a Rust crate
@@ -2139,47 +2195,70 @@ how Android can host application code.
 
 #### The ANativeService Contract
 
-The public C surface is in `frameworks/native/include/private/native_service.h`:
+The public C surface is in `frameworks/native/include/android/native_service.h`,
+and every symbol in it is annotated `__INTRODUCED_IN(37)`. The service handle
+is opaque, the entry point is a free function the loader resolves by name, and
+the lifecycle callbacks are *registered* through setter functions rather than
+filled into a struct:
 
 ```c
-// Source: frameworks/native/include/private/native_service.h:44
+// Source: frameworks/native/include/android/native_service.h:67
 typedef struct ANativeService ANativeService;
 
-// Entry point — the loader resolves this symbol and calls it once per service.
+// Entry point. The loader resolves this symbol and calls it once per service.
 typedef void ANativeService_createFunc(ANativeService* _Nonnull service);
 extern ANativeService_createFunc ANativeService_onCreate;
 
-// Per-binding callbacks. The app fills these into the service in onCreate.
+// Trim-memory levels (a deliberately small subset of Java's ComponentCallbacks2).
+typedef enum ANativeServiceTrimMemoryLevel : int32_t {
+    ANATIVE_SERVICE_TRIM_MEMORY_UI_HIDDEN  = 20,
+    ANATIVE_SERVICE_TRIM_MEMORY_BACKGROUND = 40,
+} ANativeServiceTrimMemoryLevel;
+
+// Per-binding callback signatures. A binding is keyed by a uint64_t bindToken.
 typedef AIBinder* _Nullable (*ANativeService_onBindCallback)(
-    ANativeService* _Nonnull service, int32_t intentHash,
+    ANativeService* _Nonnull service, uint64_t bindToken,
     const char* _Nullable action, const char* _Nullable data);
 typedef bool (*ANativeService_onUnbindCallback)(
-    ANativeService* _Nonnull service, int32_t intentHash);
+    ANativeService* _Nonnull service, uint64_t bindToken);
 typedef void (*ANativeService_onRebindCallback)(
-    ANativeService* _Nonnull service, int32_t intentHash);
+    ANativeService* _Nonnull service, uint64_t bindToken);
 typedef void (*ANativeService_onDestroyCallback)(ANativeService* _Nonnull service);
 typedef void (*ANativeService_onTrimMemoryCallback)(
-    ANativeService* _Nonnull service, int32_t level);
+    ANativeService* _Nonnull service, ANativeServiceTrimMemoryLevel level);
+
+// Setters the app calls from onCreate (lines 212-274).
+void ANativeService_setOnBindCallback(ANativeService* _Nonnull, ANativeService_onBindCallback _Nonnull) __INTRODUCED_IN(37);
+void ANativeService_setOnUnbindCallback(ANativeService* _Nonnull, ANativeService_onUnbindCallback _Nullable) __INTRODUCED_IN(37);
+void ANativeService_setOnRebindCallback(ANativeService* _Nonnull, ANativeService_onRebindCallback _Nullable) __INTRODUCED_IN(37);
+void ANativeService_setOnDestroyCallback(ANativeService* _Nonnull, ANativeService_onDestroyCallback _Nullable) __INTRODUCED_IN(37);
+void ANativeService_setOnTrimMemoryCallback(ANativeService* _Nonnull, ANativeService_onTrimMemoryCallback _Nullable) __INTRODUCED_IN(37);
 ```
 
-The app's `.so` exports a single symbol (`ANativeService_onCreate` by
-default, overridable through an `android.app.func_name` `<meta-data>` in
-the manifest). The framework calls that function once per service
-instance; the app fills in the five callback pointers and any per-service
-state. From there, the framework dispatches lifecycle events
-(`onBind`/`onUnbind`/`onRebind`/`onDestroy`/`onTrimMemory`) by invoking
-the function pointers on the service's main thread.
+The app's `.so` exports a single entry point (`ANativeService_onCreate` by
+default, overridable through the `android.app.PROPERTY_NATIVE_SERVICE_FUNCTION_NAME`
+`<property>` in the manifest -- distinct from `NativeActivity`'s older
+`android.app.func_name` meta-data). The framework calls that function once per
+service instance on the process's main thread; inside it, the app registers the
+callbacks it cares about with the `ANativeService_setOn*Callback` setters. Every
+callback except `onBind` accepts a NULL implementation, in which case the system
+runs a default that does nothing. From there the framework dispatches lifecycle
+events (`onBind`/`onUnbind`/`onRebind`/`onDestroy`/`onTrimMemory`) by invoking
+the registered pointers on the service's main thread, identifying each binding
+by its `uint64_t bindToken`.
 
 This is intentionally narrower than Java `Service`: there is no
 `onStartCommand`, no `Application.onCreate`, no `Activity`. The Rust
-implementation makes this explicit by rejecting the
-`bindApplication` request with a comment that says so:
+implementation makes the second point explicit -- when ActivityManager sends a
+`bindApplication` request, the handler does the process-level setup it can
+(resetting the time zone, loading the shared font map) and then *finishes the
+attach without ever creating an `Application`*:
 
 ```rust
 // Source: frameworks/base/libs/native_activity_thread/src/
-//   native_activity_thread.rs:226
-fn handle_bind_application_request(&mut self) -> Result<()> {
-    atrace::trace_method!(AtraceTag::ActivityManager);
+//   native_activity_thread.rs:316
+fn handle_bind_application_request(&mut self, req: BindApplicationRequest) -> Result<()> {
+    // ... reset_time_zone(); load_system_font_map(req.system_font_map_fd) ...
     // We don't support calling Application.onCreate in native processes.
     self.activity_manager
         .finishAttachApplication(self.start_seq, 0)
@@ -2195,40 +2274,42 @@ activity thread carves out *the whole process*.
 
 #### Crate Layout
 
-The crate is small (~700 lines of Rust + three bindgen wrappers):
+The crate is about 2,200 lines of Rust across eight source files plus a single
+bindgen wrapper:
 
 | File | Role |
 |------|------|
-| `src/lib.rs` | Entry point `run_native_activity_thread(start_seq)`. Initializes binder, looks up `IActivityManagerStructured`, attaches as `INativeApplicationThread`, runs the looper. |
-| `src/native_activity_thread.rs` | Per-process state — service map, namespace factory, process-state cache. Implements `HandlerCallback<NativeApplicationThreadRequest>`. |
-| `src/native_application_thread.rs` | Binder server-side that implements `INativeApplicationThread`. Marshals each scheduled method into a typed `NativeApplicationThreadRequest` and sends it to the main thread. |
+| `src/lib.rs` | Entry point `run_native_activity_thread(start_seq)`. Starts the binder thread pool, looks up `IActivityManagerStructured`, attaches as `INativeApplicationThread`, runs the looper. |
+| `src/native_activity_thread.rs` | Per-process state -- service map, namespace factory, process-state cache. Implements `HandlerCallback<NativeApplicationThreadRequest>`. |
+| `src/native_application_thread.rs` | Binder server side that implements `INativeApplicationThread`. Marshals each scheduled method into a typed `NativeApplicationThreadRequest` and sends it to the main thread. |
 | `src/task.rs` | Rust-friendly `Handler` over the C `ALooper` API. Uses an `eventfd` + `mpsc::channel` to wake the main thread when work arrives from a binder thread. |
-| `src/library_loader.rs` | `NamespaceFactory` and `LoadedLibrary` — per-service isolated linker namespaces using `android_create_namespace` + `android_dlopen_ext`. |
-| `src/bindings/{dlext,looper,native_service}.h` | `rust_bindgen` wrappers that translate the three C headers into Rust types and `extern "C"` function declarations. |
+| `src/library_loader.rs` | `NamespaceFactory`, `LinkerNamespace`, and `LoadedLibrary` -- per-service isolated linker namespaces built on `android_create_namespace` + `android_dlopen_ext`. |
+| `src/font.rs`, `src/preload.rs`, `src/utils.rs` | Shared-font-map loading, library preloading, and small FFI/string helpers. |
+| `src/bindings.h` | The single `rust_bindgen` wrapper header that pulls in `dlext.h`, the looper header, and `native_service.h` and emits Rust types + `extern "C"` declarations. |
 
-The build wires the bindgen translations as three separate
-`rust_bindgen` modules, then composes them into `libnative_activity_thread`:
+The build wires that wrapper as one `rust_bindgen` module and feeds it to the
+`rust_library` as an `rlib`:
 
 ```blueprint
-// Source: frameworks/base/libs/native_activity_thread/Android.bp:32
-rust_bindgen { name: "libdlext_bindgen",          /* dlext.h */ }
-rust_bindgen { name: "liblooper_bindgen",         /* looper.h */ }
-rust_bindgen { name: "libnative_service_bindgen", /* native_service.h */ }
+// Source: frameworks/base/libs/native_activity_thread/Android.bp:21
+rust_bindgen {
+    name: "libnative_activity_thread_bindgen",
+    wrapper_src: "src/bindings.h",
+    source_stem: "native_activity_thread_bindings",
+    // header_libs + shared_libs: libandroid, libbinder_ndk, libcutils, libdl_android, ...
+}
 
 rust_library {
     name: "libnative_activity_thread",
-    rustlibs: [
-        "activitymanager_structured_aidl-rust",
-        "libbinder_rs",
-        "libdlext_bindgen", "liblooper_bindgen", "libnative_service_bindgen",
-        "native_application_thread_aidl-rust",
-        "libactivity_manager_procstate_aidl-rust",
-        // ... anyhow, log, libc, atrace_rust, logger
-    ],
+    defaults: ["libnative_activity_thread_defaults"], // srcs: ["src/lib.rs"]
+    // defaults pull in: activitymanager_structured_aidl-rust, libbinder_rs,
+    //   native_application_thread_aidl-rust, libactivity_manager_procstate_aidl-rust,
+    //   libanyhow/libatrace_rust/liblogger/liblibc/... and the bindgen rlib above,
+    //   plus shared_libs for libminikin (the system font bridge).
 }
 ```
 
-The crate's `default_visibility` is `["//system/zygote:__subpackages__"]` —
+The crate's `default_visibility` is `["//system/zygote:__subpackages__"]` --
 only the zygote can link it, because only the zygote should be deciding
 to start a native-only process.
 
@@ -2246,18 +2327,18 @@ sequenceDiagram
     participant Main as Main thread (ALooper)
     participant Binder as Binder thread pool
 
-    Zygote->>Proc: fork + execve(libnative_activity_thread entry)
-    Proc->>Proc: logger::init, ProcessState::start_thread_pool
-    Proc->>AM: lookup "activity_structured"
+    Zygote->>Proc: fork into libnative_activity_thread entry
+    Proc->>Proc: logger init, signal catcher, start_thread_pool
+    Proc->>AM: lookup activity_structured
     Proc->>Main: Handler::new_on_current_thread(NativeActivityThread)
     Note over Main: eventfd registered with ALooper<br/>plus mpsc receiver
-    Proc->>Binder: BnNativeApplicationThread::new_binder(...)
+    Proc->>Binder: BnNativeApplicationThread::new_binder(sender)
     Proc->>AM: attachNativeApplication(binder, start_seq)
-    Proc->>Main: run_thread_loop() — ALooper_pollOnce loop
-    AM->>Binder: scheduleCreateService(token, libs, ...)
-    Binder->>Binder: marshal to NativeApplicationThreadRequest::CreateService
+    Proc->>Main: run_thread_loop() ALooper_pollOnce
+    AM->>Binder: scheduleCreateService(token, libs, symbol, ...)
+    Binder->>Binder: marshal CreateService request
     Binder->>Main: mpsc send + eventfd_write
-    Main->>Main: ALooper wakes, drains mpsc, dispatches to NativeActivityThread
+    Main->>Main: ALooper wakes, drains mpsc, dispatches
     Main->>Main: create namespace, dlopen lib, call create_func
     Main->>AM: serviceDoneExecuting(token, ANON, 0, 0)
 ```
@@ -2283,37 +2364,46 @@ Two design choices deserve attention:
 A native application process can host multiple services from
 different libraries, and those libraries must not see each other's
 symbols. `library_loader.rs` enforces this by giving every service its
-own isolated linker namespace:
+own isolated linker namespace, wrapped in a safe `LinkerNamespace::create`
+helper over bionic's `android_create_namespace`:
 
 ```rust
-// Source: frameworks/base/libs/native_activity_thread/src/library_loader.rs:84
-let namespace = unsafe {
-    android_create_namespace(
-        name.as_ptr(),
-        ld_path.as_ptr(),
-        /* default_library_path= */ std::ptr::null_mut(),
-        ANDROID_NAMESPACE_TYPE_SHARED_ISOLATED as u64,
-        permitted_libs_dir.as_ptr(),
-        /* parent= */ std::ptr::null_mut(),
-    )
-};
-// ...
-let library = unsafe { LoadedLibrary::new(&req.library_name, &namespace)? };
-let create_func_addr = library.find_symbol(&req.base_symbol_name)?;
+// Source: frameworks/base/libs/native_activity_thread/src/library_loader.rs:333
+let mut ns_flags = ANDROID_NAMESPACE_TYPE_ISOLATED as u64;
+if is_shared {
+    ns_flags |= ANDROID_NAMESPACE_TYPE_SHARED as u64;
+}
+// (pre-API-24 apps additionally get ANDROID_NAMESPACE_TYPE_EXEMPT_LIST_ENABLED)
+
+let app_ns = LinkerNamespace::create(
+    namespace_name,
+    &final_library_path.join(":"),   // search paths
+    &permitted_path.join(":"),       // permitted-paths allowlist
+    None,                            // no parent
+    ns_flags,
+)?;
+app_ns.link_public_libraries(api_domain, is_shared, target_sdk_version, &uses_libraries)?;
+// ... link_apex_public / link_vendor_public / link_vndksp / link_product_public ...
 ```
 
-`ANDROID_NAMESPACE_TYPE_SHARED_ISOLATED` is the same flag the framework
-already uses to isolate the WebView and Java app classloaders. The
-`permitted_libs_dir` restricts which paths the namespace can search,
-preventing one service from loading another service's
-private dependencies. Each `LoadedLibrary` owns its `dlopen` handle and
-calls `dlclose` on drop, so destroying a service tears down its
-namespace too.
+The namespace is built `ISOLATED` (so it cannot see arbitrary libraries in the
+process) and, for shared libraries, also `SHARED` -- the same flag combination
+the framework uses for the WebView and Java app classloaders. The
+`permitted_path` allowlist restricts which paths the namespace can load from,
+preventing one service from reaching into another service's private
+dependencies; the explicit `link_*` calls then bridge the new namespace to the
+public library sets (the NDK/LL-NDK libraries, APEX public libraries, vendor and
+product public libraries) so a service can still reach the platform surface this
+chapter describes. Each `LoadedLibrary` (the `dlopen` handle, loaded with
+`android_dlopen_ext`) calls `dlclose` on drop, so destroying a service tears
+down its namespace too.
 
-This is also why the AIDL `scheduleCreateService` carries `library_paths`,
-`permitted_libs_dir`, `library_name`, and `base_symbol_name` rather than
-just a class name. The framework cannot pre-link anything — every
-service load is a fresh namespace + `dlopen` + `dlsym` round.
+This is also why the AIDL `scheduleCreateService` carries `zipPaths`,
+`libraryPaths`, `permittedLibsDir`, `libraryName`, and `baseSymbolName` (plus
+`targetSdkVersion`, `isShared`, and `processState`) rather than just a class
+name. The framework cannot pre-link anything -- every service load is a fresh
+namespace + `dlopen` + `dlsym` round, ending with a `transmute` of the resolved
+symbol to `ANativeService_createFunc` and a call into it.
 
 #### Memory Trimming and Process State
 
@@ -2322,59 +2412,61 @@ participating in the same lifecycle the rest of the system uses:
 
 ```rust
 // Source: frameworks/base/libs/native_activity_thread/src/
-//   native_activity_thread.rs:204
+//   native_activity_thread.rs:299
 fn handle_trim_memory_request(&mut self, level: i32) -> Result<()> {
-    // ... reject unknown levels
     if self.process_state <= ProcessStateEnum::IMPORTANT_FOREGROUND.0
-        && level == ANATIVE_SERVICE_TRIM_MEMORY_BACKGROUND
+        && level >= ANATIVE_SERVICE_TRIM_MEMORY_BACKGROUND
     {
-        return Ok(());  // foreground processes ignore the "background" hint
+        return Ok(());  // foreground processes ignore "background" and heavier hints
     }
     for service in self.services.values_mut() {
         if let Some(on_trim_memory) = service.service.callbacks.onTrimMemory {
-            unsafe { on_trim_memory(service.service.as_mut(), level) };
+            let native_service = service.service.as_mut();
+            unsafe { on_trim_memory(native_service, level) };
         }
     }
     Ok(())
 }
 ```
 
-Only two trim levels are accepted on the native side
-(`UI_HIDDEN = 20`, `BACKGROUND = 40`) — a deliberately smaller set than
-Java's `ComponentCallbacks2` constants. The Rust gate also short-circuits
-the foreground case so that a service running in
-`IMPORTANT_FOREGROUND` does not receive spurious "trim to background"
-calls during transient state changes.
+The native side exposes only two trim levels
+(`UI_HIDDEN = 20`, `BACKGROUND = 40`) -- a deliberately smaller set than
+Java's `ComponentCallbacks2` constants, and the header tells callers to test
+with `>=` rather than equality so new intermediate levels stay
+forward-compatible. The Rust gate uses that same `>=` comparison to
+short-circuit the foreground case: a service running at or above
+`IMPORTANT_FOREGROUND` does not receive `BACKGROUND`-or-heavier trim calls
+during transient state changes. Process state itself arrives through
+`setProcessState`, cached in `self.process_state` so this gate can consult it.
 
 #### Place in the NDK Story
 
 This crate fits the broader NDK arc: every API in Section 11.6 trades
 JVM-mediated convenience for direct C control. Camera2, Media, and
 Binder NDK let an app *use* framework services without crossing into
-Java. The native activity thread takes the next step — letting an app
+Java. The native activity thread takes the next step, letting an app
 *be* a framework client without a JVM at all. That has knock-on
 consequences worth noting in any native-only design discussion:
 
-- No Java security manager, no `Application` class, no
-  `ContextWrapper` — `Context` simply does not exist in this process.
-  Anything that needs a `Context` (most of the platform's high-level
-  APIs) is unavailable.
+- No `Application` class and no `ContextWrapper` -- `Context` simply does not
+  exist in this process. Anything that needs a `Context` (most of the
+  platform's high-level APIs) is unavailable.
 - Services only. No `Activity`, no `BroadcastReceiver`, no
   `ContentProvider`. Components that need to surface UI or accept
   arbitrary broadcasts still require a Java process.
-- Linker-namespace isolation is *intra-process*, not cross-process —
-  two services in the same native app can't access each other's
-  private libraries, but they share the same address space.
+- Linker-namespace isolation is *intra-process*, not cross-process: two
+  services in the same native app cannot access each other's private
+  libraries, but they share the same address space.
 - The Binder thread pool is started by `ProcessState::start_thread_pool()`
   during bring-up, so the process is a normal Binder participant from
   the moment it attaches.
 
-For most apps, a JVM-hosted Service is still the right choice — the
-ecosystem of libraries, the tooling, the ABI churn protection. The
-native activity thread is for the cases where avoiding the JVM is
-worth the loss: long-running on-device inference, audio/video pipelines
-where each megabyte of heap matters, and ports of native codebases
-(emulators, runtimes) that already have their own service abstraction.
+For most apps, a JVM-hosted Service is still the right choice for the ecosystem
+of libraries, the tooling, and the ABI-churn protection. The native activity
+thread is for the cases where avoiding the JVM is worth the loss: long-running
+on-device inference, audio/video pipelines where each megabyte of heap matters,
+and ports of native codebases (emulators, runtimes) that already carry their own
+service abstraction.
 
 ---
 
@@ -2690,13 +2782,209 @@ while the `Device_*_deps` properties target the host architecture variants.
 
 ---
 
-## 11.8 Try It: Write a Native NDK App
+## 11.8 NDK Additions in Android 17 (API Level 37)
+
+Android 17 finalizes NDK **API level 37**. The level is defined in
+`build/soong/android/api_levels.go`, where the codename `CinnamonBun` maps to
+37 (just past `Baklava` = 36, which was Android 16's level):
+
+```go
+// build/soong/android/api_levels.go (lines 507-508)
+"Baklava":     36,
+"CinnamonBun": 37,
+```
+
+Stub libraries are therefore generated for every level through 37 plus the
+`future` (`10000`) sentinel, exactly as Section 11.3.1 described. Every NDK
+symbol added this cycle is tagged `# introduced=37` in a `.map.txt` file and
+`__INTRODUCED_IN(37)` in its header, so a build targeting an older
+`minSdkVersion` still cannot link the new entry points. This section catalogs
+what those new symbols are and walks through the one structural build-system
+addition that came with them: the *artless* denylist.
+
+### 11.8.1 New APIs by Library
+
+The API-37 additions span seven NDK libraries. Each row below is verified
+against both the public header (`__INTRODUCED_IN(37)`) and the library's symbol
+map (`# introduced=37`):
+
+| Library | New API (selected) | Source header |
+|---------|--------------------|---------------|
+| `libnativewindow` | `ANativeWindow_setProducerThrottlingEnabled`, `ANativeWindow_isProducerThrottlingEnabled` | `frameworks/native/libs/nativewindow/include/android/native_window.h` |
+| `libbinder_ndk` | `AIBinder_addFrozenStateChangeCallback`, `AIBinder_removeFrozenStateChangeCallback`, `AIBinder_FrozenStateChangeCallback_new`/`_delete`, `AParcel_getDataCapacity`, `AParcel_setDataCapacity`, `APersistableBundle_putByteVector`/`getByteVector`/`getByteVectorKeys` | `frameworks/native/libs/binder/ndk/include_ndk/android/binder_ibinder.h`, `binder_parcel.h`, `persistable_bundle.h` |
+| `libaaudio` | `AAudioStream_setPlaybackParameters`/`getPlaybackParameters`, `AAudioStream_flushFromFrame`, `AAudio_getFlushFromFrameSupport`, `AAudioStreamBuilder_setPartialDataCallback`/`setRoutingChangedCallback` | `frameworks/av/media/libaaudio/include/aaudio/AAudio.h` |
+| `libmediandk` | `AImageReader_setDefaultBufferSize`/`setDefaultBufferDataSpace`/`setDefaultAHardwareBufferFormat`, `AImage_getTransform`, `ACodecEncoderCapabilities_getSupportedLayeringSchemas`, and new `AMEDIAFORMAT_KEY_*` keys (`HORIZONTAL_FLIP`, `VIDEO_BITRATE_LAYERING`, `CSD_VVC`, `HDR_ST2094_50_INFO`) | `frameworks/av/media/ndk/include/media/NdkImageReader.h`, `NdkImage.h`, `NdkMediaCodecInfo.h`, `NdkMediaFormat.h` |
+| `libc` (bionic) | `free_sized`, `free_aligned_sized`, `sched_setattr`, `sched_getattr` | `bionic/libc/include/stdlib.h`, `bionic/libc/include/sched.h` |
+| `libandroid` | `android_getnetworkblockedreason` (multinetwork) | `frameworks/native/include/android/multinetwork.h` |
+
+A few of these are worth a closer look.
+
+**Producer throttling on `ANativeWindow`.** When the CPU produces frames faster
+than the GPU consumes them, the buffer queue applies natural back-pressure. The
+two new accessors let an app turn that CPU-side throttling on or off explicitly:
+
+```c
+// frameworks/native/libs/nativewindow/include/android/native_window.h:414
+int32_t ANativeWindow_setProducerThrottlingEnabled(
+        ANativeWindow* _Nonnull window, bool enabled) __INTRODUCED_IN(37);
+int32_t ANativeWindow_isProducerThrottlingEnabled(
+        ANativeWindow* _Nonnull window, bool* _Nonnull outEnabled) __INTRODUCED_IN(37);
+```
+
+The setter has no effect in asynchronous mode, where throttling is always on.
+
+**Binder freeze-state callbacks.** App-standby and cached-process freezing mean
+a remote binder's process can be frozen out from under a caller. The new
+`AIBinder_FrozenStateChangeCallback` family lets native code register for
+transitions, mirroring the C++ `IBinder::FrozenStateChangeCallback`. These join
+a set of new platform/`systemapi` binder symbols collected under a fresh version
+node in the symbol map:
+
+```
+// frameworks/native/libs/binder/ndk/libbinder_ndk.map.txt:225
+LIBBINDER_NDK37 { # introduced=37
+  global:
+    AServiceManager_checkServiceAccess; # systemapi llndk
+    AIBinder_setMinRpcThreads; # systemapi
+    AServiceManager_registerLazyServiceWithFlags; # systemapi llndk
+    AIBinder_FrozenStateChangeCallback_new;
+    AIBinder_FrozenStateChangeCallback_delete;
+    AIBinder_addFrozenStateChangeCallback;
+    AIBinder_removeFrozenStateChangeCallback;
+    APersistableBundle_putByteVector;
+    APersistableBundle_getByteVector;
+    APersistableBundle_getByteVectorKeys;
+    AParcel_getDataCapacity;
+    AParcel_setDataCapacity;
+};
+```
+
+The `# systemapi` annotations are important: symbols so marked (Section 11.2.5)
+are available to system apps and LL-NDK consumers but excluded from the
+third-party app sysroot, so `AServiceManager_checkServiceAccess` and
+`AIBinder_setMinRpcThreads` do not widen the public NDK for ordinary apps.
+
+**`free_sized` / `free_aligned_sized` in bionic.** These match the C23 standard
+library additions; a caller that knows the original allocation size (or size and
+alignment) can pass it back to the allocator, which lets bionic's `malloc`
+implementation skip a size lookup:
+
+```c
+// bionic/libc/include/stdlib.h:197
+void free_sized(void* _Nullable __ptr, size_t __size) __INTRODUCED_IN(37);
+void free_aligned_sized(void* _Nullable __ptr, size_t __alignment,
+                        size_t __size) __INTRODUCED_IN(37);
+```
+
+`sched_setattr`/`sched_getattr` similarly expose the Linux deadline-scheduler
+attribute syscalls to native code.
+
+### 11.8.2 The Artless Denylist Build Machinery
+
+Section 11.3.1 introduced the new `bypass_artless_denylist` property on
+`ndk_library`. The machinery behind it lives in a build file added this cycle,
+`build/soong/cc/artless_denylist.go` (Copyright 2026). It exists to enforce, at
+build time, which NDK symbols are safe to call from the native-only application
+processes of Section 11.6.5 -- processes with no Android Runtime ("artless").
+
+The file registers two singleton module types and a build rule that runs
+`ndkstubgen` in a new mode:
+
+```go
+// build/soong/cc/artless_denylist.go (lines 29-41)
+func RegisterBuildComponents(ctx android.RegistrationContext) {
+    ctx.RegisterModuleType("all_artless_denylists", AllArtlessDenylistsFactory)
+    ctx.RegisterModuleType("all_artless_blocked_symbol_files",
+        AllArtlessBlockedSymbolFilesFactory)
+}
+
+var genNativeStubSrc = pctx.AndroidStaticRule("genNativeStubSrc",
+    blueprint.RuleParams{
+        Command: "$ndkStubGenerator --arch $arch --api current " +
+            "--api-map $apiMap --artless-denylist $flags $in $out",
+        // ...
+    }, "arch", "apiMap", "flags")
+```
+
+The `--artless-denylist` flag is the new `ndkstubgen` switch. Fed a library's
+`.map.txt`, it emits a *denylist* stub static library that resolves the symbols
+which are **not** safe in a JVM-less process, so that linking such a process
+against those symbols fails. The symbol-map parser learned a matching `artless`
+tag for opting individual symbols back in:
+
+```python
+# build/soong/cc/symbolfile/__init__.py (line 58, 116)
+Tag('artless'),
+# ...
+def has_artless_tags(self) -> bool:
+    return 'artless' in self.tags
+```
+
+Each `ndk_library` automatically creates a companion `<name>_denylist` module
+from its symbol file. Setting `bypass_artless_denylist: true` instead creates an
+*empty* denylist, declaring every symbol safe -- which is why bionic, `liblog`,
+the OpenGL ES libraries, and `libnativewindow` (none of which touch the Android
+Runtime) set it:
+
+```go
+// build/soong/cc/ndk_library.go (lines 629-639)
+if proptools.Bool(stub.properties.Bypass_artless_denylist) {
+    // Create an empty denylist to satisfy all_artless_denylists, which
+    // unconditionally adds dependencies for all NDK libraries.
+    props := &struct{ Name *string }{
+        Name: proptools.StringPtr(libName + "_denylist"),
+    }
+    ctx.CreateModule(ArtlessDenylistFactory, props)
+    return
+}
+```
+
+The denylist stubs are compiled with `-fvisibility=default` (the denylist must
+expose every symbol it blocks), the inverse of the visibility regime that the
+framework bindings of Section 11.6 use.
+
+### 11.8.3 Where API 37 Lands in the Layers
+
+The 17 additions slot cleanly into the stability tiers this chapter has built up.
+The diagram below groups the new symbols by their tier; nothing changes about
+how the tiers relate, only what each one now contains.
+
+```mermaid
+graph TD
+    NDK37["API 37 additions"]
+
+    NDK37 --> APP["App-only NDK<br/>(third-party apps)"]
+    NDK37 --> SYS["systemapi / LL-NDK<br/>(system apps + vendor)"]
+    NDK37 --> ART["Artless build gate<br/>(native-only processes)"]
+
+    APP --> APPLIST["ANativeWindow throttling<br/>AAudio playback params<br/>AImageReader defaults<br/>free_sized, sched_*attr"]
+    SYS --> SYSLIST["AServiceManager_checkServiceAccess<br/>AIBinder_setMinRpcThreads<br/>FrozenStateChange callbacks"]
+    ART --> ARTLIST["artless tag + --artless-denylist<br/>bypass_artless_denylist<br/>per-library denylist stub"]
+
+    style NDK37 fill:#333,color:white
+    style APP fill:#4a90d9,color:white
+    style SYS fill:#8b4513,color:white
+    style ART fill:#ff8c00,color:white
+    style APPLIST fill:#50c878,color:white
+    style SYSLIST fill:#9932cc,color:white
+    style ARTLIST fill:#dc143c,color:white
+```
+
+Taken together, API 37's theme is incremental surface growth (audio, imaging,
+window back-pressure, C23 allocator helpers) plus one genuinely new
+build-system concept: the artless denylist, which is the toolchain half of the
+native-only process story whose runtime half is the Rust crate of
+Section 11.6.5.
+
+---
+
+## 11.9 Try It: Write a Native NDK App
 
 This section walks through creating a minimal native Android application that
 uses several NDK APIs. We will build a native activity that initializes a
 window, logs messages, and queries sensor information.
 
-### 11.8.1 Project Structure
+### 11.9.1 Project Structure
 
 ```
 native-demo/
@@ -2706,7 +2994,7 @@ native-demo/
         main.cpp
 ```
 
-### 11.8.2 The Manifest
+### 11.9.2 The Manifest
 
 A native activity requires a specific manifest configuration:
 
@@ -2748,7 +3036,7 @@ Key points:
 - `android.app.lib_name` -- the name of the shared library (without `lib`
   prefix and `.so` suffix)
 
-### 11.8.3 The Build File
+### 11.9.3 The Build File
 
 For an AOSP tree build using Soong:
 
@@ -2798,7 +3086,7 @@ target_include_directories(app-glue PUBLIC ${APP_GLUE_DIR})
 target_link_libraries(native-demo app-glue)
 ```
 
-### 11.8.4 The Application Code
+### 11.9.4 The Application Code
 
 ```cpp
 // src/main.cpp -- Minimal NDK native activity
@@ -3036,7 +3324,7 @@ void android_main(struct android_app* app) {
 }
 ```
 
-### 11.8.5 Code Walkthrough
+### 11.9.5 Code Walkthrough
 
 #### Entry Point and Threading Model
 
@@ -3089,7 +3377,7 @@ sequenceDiagram
     Note over App: Sensor events start<br/>arriving on LOOPER_ID_USER
 ```
 
-### 11.8.6 Building and Running
+### 11.9.6 Building and Running
 
 #### Building within AOSP
 
@@ -3158,7 +3446,7 @@ I NativeDemo: Touch DOWN at (540.0, 1170.0)
 I NativeDemo: Touch UP at (540.0, 1170.0)
 ```
 
-### 11.8.7 Extension Points
+### 11.9.7 Extension Points
 
 From this minimal example, a real application would add:
 
@@ -3178,7 +3466,7 @@ From this minimal example, a real application would add:
 5. **Neural Networks** -- add `libneuralnetworks` for on-device ML inference
    using the NNAPI.
 
-### 11.8.8 Debugging NDK Applications
+### 11.9.8 Debugging NDK Applications
 
 #### Logcat Filtering
 
@@ -3254,7 +3542,7 @@ adb pull /data/local/tmp/perf.data
 simpleperf report -i perf.data
 ```
 
-### 11.8.9 Common Pitfalls
+### 11.9.9 Common Pitfalls
 
 1. **Missing `sdk_version`** -- if you forget to set `sdk_version: "current"`,
    your module links against platform libraries instead of NDK stubs. This means

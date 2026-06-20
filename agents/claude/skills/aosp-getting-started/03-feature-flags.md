@@ -12,9 +12,19 @@ Starting with Android 14 (API 34) and maturing significantly in Android 15
 (API 35), the **aconfig** system introduces a unified, build-and-runtime
 feature flag infrastructure.  It sits at the intersection of build policy,
 runtime configuration, code generation, and testing, touching nearly every layer
-of the platform.  As of the current AOSP tree, there are over 440 `.aconfig`
-declaration files spanning frameworks, system services, HALs, Mainline modules,
-and vendor partitions.
+of the platform.  As of the Android 17 (API 37) tree, there are nearly 500
+`.aconfig` declaration files spanning frameworks, system services, HALs,
+Mainline modules, and vendor partitions.
+
+Android 17 advances the system on several fronts that this chapter covers in
+detail: a **version-4 storage format** that lays the groundwork for
+**integer-valued flags** (the `flag_type` field and `value_int` plumbing in the
+proto schema), a **read-only Java optimization** path that lets R8 collapse a
+flag package down to a single class, the removal of the standalone DeviceConfig
+code-generation template, and the migration of the runtime daemon
+(`aconfigd-system`) to a pure-Rust binary with an earlier init entry point.
+These changes are surfaced in their respective sections rather than collected in
+a single place, with a consolidated tour in section 3.9.
 
 This chapter traces the entire feature flag pipeline: from the policy motivation
 behind trunk-stable development, through the `.aconfig` declaration format and
@@ -102,6 +112,15 @@ its declared default, not even by release configuration.  The build system
 uses this to enable compile-time optimizations -- the R8 optimizer can
 completely eliminate dead code branches behind fixed read-only flags.
 
+Until Android 17, every flag was implicitly boolean.  Android 17 adds a
+**flag type** dimension to the declaration schema (`FLAG_TYPE_BOOLEAN` versus
+`FLAG_TYPE_INTEGER`), so that a flag can carry an integer payload rather than a
+mere on/off state.  This is groundwork: the proto schema, the cache, the v4
+storage format, and the parser all carry the integer plumbing, and declaring an
+integer flag is gated behind the `RELEASE_ACONFIG_ENABLE_INT_FLAG` build flag,
+but accessor code generation for integer flags is not yet wired.  Sections 3.2.3
+and 3.9 cover the type field in detail.
+
 ### 3.1.4  High-Level Architecture
 
 The aconfig system spans build time and runtime:
@@ -180,9 +199,11 @@ pipeline:
 | `create-storage`   | Generate binary storage files (package_map, flag_map, flag_val, flag_info) |
 | `dump-cache`       | Dump cache contents in various formats (text, protobuf, custom) |
 
-The tool is registered as a host binary in the Soong build system through
-`pctx.HostBinToolVariable("aconfig", "aconfig")` in
-`build/soong/aconfig/init.go` (line 158).
+The tool is registered as a host binary in the Soong build system.  The Go
+variable that downstream build rules reference is assigned with
+`Aconfig = pctx.HostTool("aconfig")` in `build/soong/aconfig/init.go`; the
+package's `init()` function separately calls `pctx.HostBinToolVariable("aconfig",
+"aconfig")` to publish the corresponding Ninja variable.
 
 ### 3.2.2  The .aconfig File Format
 
@@ -245,18 +266,34 @@ flag {
 
 ### 3.2.3  Declaration Fields
 
-Each `flag_declaration` message supports these fields, as defined in
-`aconfig.proto` (lines 72-98):
+Each `flag_declaration` message supports these fields, as defined by the
+`flag_declaration` message in `aconfig.proto` (lines 80-110):
 
-| Field                | Type       | Required | Description                                       |
-|----------------------|------------|----------|---------------------------------------------------|
-| `name`               | `string`   | Yes      | Snake_case identifier (e.g., `mount_before_data`)  |
-| `namespace`          | `string`   | Yes      | Organizational grouping for server-side management |
-| `description`        | `string`   | Yes      | Human-readable purpose of the flag                 |
-| `bug`                | `string`   | Yes      | Bug tracker ID (can be repeated)                   |
-| `is_fixed_read_only` | `bool`     | No       | If true, value cannot change at runtime or via release config |
-| `is_exported`        | `bool`     | No       | If true, flag is accessible outside its container  |
-| `metadata`           | `message`  | No       | Additional metadata (purpose, storage backend)     |
+| Field                | Type        | Required | Description                                       |
+|----------------------|-------------|----------|---------------------------------------------------|
+| `name`               | `string`    | Yes      | Snake_case identifier (e.g., `mount_before_data`)  |
+| `namespace`          | `string`    | Yes      | Organizational grouping for server-side management |
+| `description`        | `string`    | Yes      | Human-readable purpose of the flag                 |
+| `bug`                | `string`    | Yes      | Bug tracker ID (can be repeated)                   |
+| `is_fixed_read_only` | `bool`      | No       | If true, value cannot change at runtime or via release config |
+| `is_exported`        | `bool`      | No       | If true, flag is accessible outside its container  |
+| `metadata`           | `message`   | No       | Additional metadata (purpose, storage backend)     |
+| `type`               | `flag_type` | No       | Value type; defaults to `FLAG_TYPE_UNSPECIFIED` (treated as boolean).  Added in Android 17 |
+
+The `type` field (field 8) is new in Android 17.  It is an enum:
+
+```protobuf
+enum flag_type {
+  FLAG_TYPE_UNSPECIFIED = 0;  // assume boolean for backward compatibility
+  FLAG_TYPE_BOOLEAN = 1;
+  FLAG_TYPE_INTEGER = 2;
+}
+```
+
+When a flag is `FLAG_TYPE_INTEGER`, its value is carried by the new `value_int`
+field on `flag_value` (field 5) and `parsed_flag` (field 14) rather than by the
+boolean `state`.  Section 3.9 covers integer flags and their current
+build-flag gating in more depth.
 
 The `metadata` message supports:
 
@@ -351,7 +388,8 @@ flag_value {
 Real release configurations store values as `.textproto` files:
 
 ```protobuf
-// File: build/release/aconfig/bp1a/.../single_thread_executor_flag_values.textproto
+// File: build/release/aconfig/bp1a/com.android.internal.camera.flags/
+//       single_thread_executor_flag_values.textproto
 
 flag_value {
   package: "com.android.internal.camera.flags"
@@ -360,6 +398,10 @@ flag_value {
   permission: READ_ONLY
 }
 ```
+
+A `flag_value` may now also carry an integer payload through the `value_int`
+field (Android 17), used when the corresponding declaration is
+`FLAG_TYPE_INTEGER`.
 
 ### 3.2.7  Value Resolution Order
 
@@ -579,7 +621,10 @@ The **package fingerprint** (`0xABCD1234L`) is a SipHash13 of the package name,
 used to verify that the correct storage file is being read.
 
 **Legacy DeviceConfig storage** -- template
-`FeatureFlagsImpl.deviceConfig.java.template`:
+`FeatureFlagsImpl.legacy_flag.internal.java.template`.  (Through Android 16 this
+path used a separate `FeatureFlagsImpl.deviceConfig.java.template`; Android 17
+removed that file and folded the DeviceConfig runtime read into the
+`legacy_flag.internal` template -- see section 3.3.9.)
 
 ```java
 package com.example.flags;
@@ -784,7 +829,7 @@ public class ExportedFlags {
 
     public static boolean myExportedFlag() {
         if (Build.VERSION.SDK_INT >= 36) {
-            return true;  // Finalized at SDK 36
+            return true;  // Finalized at API level 36
         }
         return Flags.myExportedFlag();
     }
@@ -794,39 +839,52 @@ public class ExportedFlags {
 This class provides stable flag accessors that include SDK version checks
 for finalized flags, ensuring backward compatibility when apps target
 multiple Android versions.  The `@Deprecated` annotation is applied to the
-original `Flags` and `FeatureFlags` classes to encourage migration to
-`ExportedFlags`.
+original `Flags`, `FeatureFlags`, `CustomFeatureFlags`, and
+`FakeFeatureFlagsImpl` classes to encourage migration to `ExportedFlags`.
+
+The SDK level baked into the check is not a constant -- it is the API level at
+which the flag was actually finalized.  The condition is produced by
+`ApiLevel::conditional()` in
+`build/make/tools/aconfig/convert_finalized_flags/src/lib.rs`, which reads the
+finalized-flags records (e.g. `prebuilts/sdk/<N>/finalized-flags.txt`).  Android
+17 extends this for **minor SDK versions**: for levels at or above Baklava the
+generated condition becomes a dual check against both the major and minor SDK,
+`Build.VERSION.SDK_INT >= 36 && Build.VERSION.SDK_INT_FULL >= <level>`, where
+`SDK_INT_FULL` encodes the minor version (the multiplier is 100000).  This path
+is gated by the `RELEASE_ACONFIG_SUPPORT_MINOR_SDK` build flag.  Independently,
+`RELEASE_ACONFIG_GENERATE_CHECKS_SDK_ANNOTATION` makes the generator emit an
+`@androidx.annotation.ChecksSdkIntAtLeast` annotation on each finalized exported
+getter so static analysis tools understand the version gate.
 
 ### 3.3.9  FeatureFlagsImpl Template Selection
 
-The aconfig Java codegen selects from multiple `FeatureFlagsImpl`
-templates based on the storage backend and code generation mode.
-The selection logic (from the `add_feature_flags_impl_template` function
-in `codegen/java.rs`) considers:
+The aconfig Java codegen selects from four `FeatureFlagsImpl` templates based
+on the code generation mode, whether the library is exported, and which storage
+backend the package uses.  In Android 17 the selection logic in the
+`add_feature_flags_impl_template` function (`codegen/java.rs`) is:
 
-1. **Test mode** -- uses `FeatureFlagsImpl.test_mode.java.template`
-   (throws on every access)
-2. **DeviceConfig storage** -- uses
-   `FeatureFlagsImpl.deviceConfig.java.template` (batch reads via
-   `DeviceConfig.getProperties()`)
-3. **New aconfigd storage** -- uses
-   `FeatureFlagsImpl.new_storage.java.template` (reads from
-   memory-mapped files via `AconfigPackageInternal`)
-4. **Legacy internal** -- uses
-   `FeatureFlagsImpl.legacy_flag.internal.java.template` (individual
-   `DeviceConfig.getBoolean()` calls per flag, without caching)
-5. **Exported mode** -- uses
-   `FeatureFlagsImpl.exported.java.template`
+1. **Test mode** (checked first, overrides everything else) -- uses
+   `FeatureFlagsImpl.test_mode.java.template` (throws on every access).
+2. **Exported library** -- uses `FeatureFlagsImpl.exported.java.template`.
+   Exported codegen always relies on new storage; the generator asserts that
+   exported flags do not use the DeviceConfig backend.
+3. **DeviceConfig storage** (`use_device_config`, non-exported) -- uses
+   `FeatureFlagsImpl.legacy_flag.internal.java.template`, which reads each flag
+   via `DeviceConfig.getProperties()` / `getBoolean()`.
+4. **New aconfigd storage** (the default, non-exported) -- uses
+   `FeatureFlagsImpl.new_storage.java.template`, which reads from memory-mapped
+   files via `PlatformAconfigPackageInternal` / `AconfigPackageInternal`.
 
-The complete template inventory in
-`build/make/tools/aconfig/aconfig/templates/`:
+Android 17 removed the previously separate `FeatureFlagsImpl.deviceConfig.java.template`;
+the DeviceConfig path now shares the `legacy_flag.internal` template.  The
+complete template inventory in `build/make/tools/aconfig/aconfig/templates/`
+(14 files) is:
 
 ```
 CustomFeatureFlags.java.template
 ExportedFlags.java.template
 FakeFeatureFlagsImpl.java.template
 FeatureFlags.java.template
-FeatureFlagsImpl.deviceConfig.java.template
 FeatureFlagsImpl.exported.java.template
 FeatureFlagsImpl.legacy_flag.internal.java.template
 FeatureFlagsImpl.new_storage.java.template
@@ -841,6 +899,14 @@ rust_test.template
 The template engine used is `TinyTemplate` (a Rust crate), with
 template directives like `{{ if condition }}`, `{{ for item in list }}`,
 and `{variable}` substitution.
+
+When the **read-only Java optimization** is active (Android 17, governed by the
+`RELEASE_ACONFIG_OPTIMIZE_READ_ONLY_JAVA` build flag) the generator can take an
+even more aggressive shortcut: read-only getters in `Flags.java` return their
+default value directly, and when impl-interface removal is also allowed (see
+section 3.6.6) the `FeatureFlags`, `FeatureFlagsImpl`, `CustomFeatureFlags`, and
+`FakeFeatureFlagsImpl` classes can be dropped entirely, collapsing a package down
+to a single `Flags` class.  Section 3.9 traces this path.
 
 ### 3.3.10  C++ Code Generation
 
@@ -1028,7 +1094,11 @@ message storage_file_info {
 }
 ```
 
-At boot time, the `aconfigd-system` service initializes the storage:
+At boot time, the `aconfigd-system` service initializes the storage.  In
+Android 17 `aconfigd-system` is a pure-Rust binary (a `rust_binary` Soong module
+in `system/server_configurable_flags/aconfigd/Android.bp`); the earlier
+`enable_full_rust_system_aconfigd` migration flag has been removed now that the
+Rust daemon is the only implementation.
 
 ```
 # From system/server_configurable_flags/aconfigd/aconfigd.rc
@@ -1040,6 +1110,7 @@ service early_system_aconfigd_platform_init
     group system
     oneshot
     disabled
+    file /dev/kmsg w
 
 on early-init
     mkdir /metadata/aconfig 0775 root system
@@ -1048,6 +1119,13 @@ on early-init
     mkdir /metadata/aconfig/boot 0775 root system
     exec_start early_system_aconfigd_platform_init
 ```
+
+The same `mkdir` block also runs under an `on post-fs` trigger, which then
+`exec_start`s the `system_aconfigd_platform_init` service.  The
+`early-platform-init` entry point is gated behind a runtime check
+(`enable_earlier_aconfigd()`) and writes an `/metadata/aconfig/early_init_done`
+marker once it has run, so platform storage can be available earlier in boot
+than before.
 
 The storage files are memory-mapped read-only by client processes.  The
 constant `STORAGE_LOCATION` in `aconfig_storage_read_api/src/lib.rs`
@@ -1083,6 +1161,12 @@ pub fn get_storage_file_version(
     file_path: &str
 ) -> Result<u32>
 ```
+
+Android 17 adds a fifth core reader, `get_int64_flag_value(file, index) ->
+Result<i64>`, for the new integer flags, alongside `get_flag_attribute` for
+reading a flag's info bits.  The integer reader is currently Rust-only; there is
+no corresponding `cxx::bridge` query for it yet, so C++ generated code still
+reads only booleans.
 
 These are low-level APIs intended only for use by generated code.
 Application developers should never call them directly.
@@ -1126,13 +1210,19 @@ Each entry contains:
 
 ```rust
 pub struct PackageTableNode {
-    pub package_name: String,    // e.g., "com.android.apex.flags"
-    pub package_id: u32,         // Unique ID within this container
-    pub boolean_start_index: u32,// Offset into flag_val for this package
-    pub fingerprint: u64,        // SipHash13 of flag names (v2+)
-    pub next_offset: Option<u32>,// Hash collision chain
+    pub package_name: String,        // e.g., "com.android.apex.flags"
+    pub package_id: u32,             // Unique ID within this container
+    pub fingerprint: u64,            // SipHash13 of flag names (v2+)
+    pub redact_exported_reads: bool, // v3: redact exported-flag reads
+    pub boolean_start_index: u32,    // Offset into flag_val for this package
+    pub int_start_index: u32,        // v4: offset of this package's int flags
+    pub next_offset: Option<u32>,    // Hash collision chain
 }
 ```
+
+The `int_start_index` field is new in Android 17's version-4 format (it is only
+serialized when the v4 writer is selected); it gives the offset of the package's
+first integer flag, mirroring `boolean_start_index` for booleans.
 
 The hash table size is chosen from a set of prime numbers
 (`HASH_PRIMES` array) to minimize collisions:
@@ -1167,6 +1257,12 @@ The `flag_type` distinguishes between:
 - `FixedReadOnlyBoolean` -- value permanently fixed, enables compiler
   optimizations
 
+Android 17's version-4 format adds three integer counterparts to the
+`StoredFlagType` enum -- `ReadWriteInt64`, `ReadOnlyInt64`, and
+`FixedReadOnlyInt64` -- alongside a `FlagValueType` enum (`Boolean`, `Int64`)
+that classifies how the value is stored.  These variants are only used when the
+v4 parser is enabled.
+
 **Flag Value** (`flag_val`):
 
 The flag value file is a compact array of boolean values.  Each flag
@@ -1183,14 +1279,14 @@ The flag info file stores attribute bitmasks for each flag:
 
 ```rust
 pub enum FlagInfoBit {
-    IsReadWrite = 0x01,
-    HasServerOverride = 0x02,
-    HasLocalOverride = 0x04,
+    HasServerOverride = 1 << 0,  // 0x01
+    IsReadWrite       = 1 << 1,  // 0x02
+    HasLocalOverride  = 1 << 2,  // 0x04
 }
 ```
 
-These bits track whether a flag has been overridden by server-side
-configuration or local `aflags` commands.
+These bits track whether a flag is read-write and whether it has been
+overridden by server-side configuration or local `aflags` commands.
 
 **Storage file versions** are encoded as the first four bytes of each
 file.  The current version scheme:
@@ -1200,9 +1296,16 @@ file.  The current version scheme:
 | 1       | Basic package/flag maps and value storage              |
 | 2       | Added package fingerprints (SipHash13 of flag names)   |
 | 3       | Added exported read redaction support                  |
+| 4       | Added integer flags (Android 17)                       |
 
-The default write version is 2 (`DEFAULT_FILE_VERSION`), and the
-maximum supported read version is 3 (`MAX_SUPPORTED_FILE_VERSION`).
+The default write version is 2 (`DEFAULT_FILE_VERSION`).  The maximum supported
+read version is conditional in Android 17:
+`MAX_SUPPORTED_FILE_VERSION = if cfg!(enable_parse_v4) { 4 } else { 3 }`.  The v4
+format adds the integer-flag storage discussed above -- the package node's
+`int_start_index`, the `Int64` `StoredFlagType` variants, and the flag-info
+header's `num_int_flags` / `int_flag_offset` fields plus the `int_nodes` list.
+Whether v4 is written and parsed is driven by the `RELEASE_ACONFIG_PARSE_V4`
+build flag (which sets the `enable_parse_v4` Rust cfg).
 
 ### 3.4.5  Package Fingerprint
 
@@ -1346,23 +1449,31 @@ sequenceDiagram
     Socket->>Socket: Handle override requests
 ```
 
-The socket service handles runtime flag override requests.  Internally
-(from `aconfigd_commands.rs`), it creates an `Aconfigd` instance and
-processes requests through a Unix domain socket:
+The socket service handles runtime flag override requests.  Internally (from
+`system/server_configurable_flags/aconfigd/src/aconfigd_commands.rs`), it creates
+an `Aconfigd` instance and processes requests through a Unix domain socket:
 
 ```rust
 const ACONFIGD_SOCKET: &str = "aconfigd_system";
 const ACONFIGD_ROOT_DIR: &str = "/metadata/aconfig";
 const STORAGE_RECORDS: &str =
     "/metadata/aconfig/storage_records.pb";
+const PLATFORM_STORAGE_RECORDS: &str =
+    "/metadata/aconfig/platform_storage_records.pb";
 
 pub fn start_socket() -> Result<()> {
     let fd = rustutils::sockets::
         android_get_control_socket(ACONFIGD_SOCKET)?;
     let listener = UnixListener::from(fd);
+    // Android 17 selects the records file at runtime:
+    let records = if enable_aconfigd_from_mainline() {
+        PLATFORM_STORAGE_RECORDS
+    } else {
+        STORAGE_RECORDS
+    };
     let mut aconfigd = Aconfigd::new(
         Path::new(ACONFIGD_ROOT_DIR),
-        Path::new(STORAGE_RECORDS));
+        Path::new(records));
     aconfigd.initialize_from_storage_record()?;
 
     for stream in listener.incoming() {
@@ -1379,6 +1490,10 @@ pub fn start_socket() -> Result<()> {
     Ok(())
 }
 ```
+
+The new `platform_storage_records.pb` (and the `enable_aconfigd_from_mainline()`
+switch that selects it) reflect Android 17's split between platform-owned storage
+records and the records the Mainline `aconfigd-mainline` daemon manages.
 
 The `/metadata/aconfig/` directory structure at runtime:
 
@@ -1485,8 +1600,10 @@ serves as the default if no runtime override is present.
 ### 3.4.10  The aflags CLI Tool
 
 The `aflags` binary is a device-side tool for inspecting and manipulating
-flag values.  It delegates to the updatable `aflags_updatable` binary
-in the ConfigInfrastructure APEX:
+flag values.  The on-device `aflags` (`build/make/tools/aconfig/aflags/src/main.rs`)
+is a thin shim that delegates to the updatable `aflags_updatable` binary in the
+ConfigInfrastructure APEX, where the real subcommand logic lives
+(`packages/modules/ConfigInfrastructure/aflags/src/main.rs`):
 
 ```rust
 // From build/make/tools/aconfig/aflags/src/main.rs
@@ -1504,15 +1621,22 @@ Common `aflags` commands:
 # List all flags and their values
 adb shell aflags list
 
-# Show a specific flag
-adb shell aflags list --package com.android.apex.flags
+# Filter the list to a container
+adb shell aflags list --container system
 
 # Override a flag value (read-write flags only)
 adb shell aflags enable com.android.apex.flags.mount_before_data
 
-# Clear an override
-adb shell aflags clear com.android.apex.flags.mount_before_data
+# Clear an override (the subcommand is "unset", not "clear")
+adb shell aflags unset com.android.apex.flags.mount_before_data
 ```
+
+The `enable`, `disable`, and `unset` subcommands accept an `-i`/`--immediate`
+flag.  Android 17 adds two listing capabilities: `aflags list --format proto`
+emits a Base64-encoded `ProtoFlagList` (gated by the
+`android.provider.flags.aflags_list_proto` flag), and, when the
+`aflags_list_mainline_beta` flag is set, `aflags list` also merges Mainline Beta
+flags read from `device_config` storage.
 
 ---
 
@@ -1670,10 +1794,11 @@ regardless of the runtime flag state.
 
 ### 3.6.1  Soong Module Types
 
-The aconfig build integration registers six module types through two
+The aconfig build integration registers its module types through two
 packages:
 
-**From `build/soong/aconfig/init.go`** (lines 163-170):
+**From `build/soong/aconfig/init.go`** (`RegisterBuildComponents`, lines
+148-156):
 
 ```go
 func RegisterBuildComponents(ctx android.RegistrationContext) {
@@ -1683,19 +1808,28 @@ func RegisterBuildComponents(ctx android.RegistrationContext) {
         ValuesFactory)
     ctx.RegisterModuleType("aconfig_value_set",
         ValueSetFactory)
-    ctx.RegisterSingletonModuleType(
-        "all_aconfig_declarations",
+    ctx.RegisterModuleType("all_aconfig_declarations",
         AllAconfigDeclarationsFactory)
-    ctx.RegisterParallelSingletonType(
-        "exported_java_aconfig_library",
+    ctx.RegisterParallelSingletonType("all_aconfig_declarations",
+        AllAconfigDeclarationsSingletonFactory)
+    ctx.RegisterParallelSingletonType("exported_java_aconfig_library",
         ExportedJavaDeclarationsLibraryFactory)
-    ctx.RegisterModuleType(
-        "all_aconfig_declarations_extension",
+    ctx.RegisterModuleType("all_aconfig_declarations_extension",
         AllAconfigDeclarationsExtensionFactory)
 }
 ```
 
-**From `build/soong/aconfig/codegen/init.go`** (lines 81-86):
+A change worth noting for Android 17: `all_aconfig_declarations` is now
+registered twice -- once as an ordinary module type
+(`AllAconfigDeclarationsFactory`) and once as a parallel singleton
+(`AllAconfigDeclarationsSingletonFactory`).  The previous single
+`RegisterSingletonModuleType` was split into a module that runs the finalized-flags
+/ metalava pipeline and a singleton that emits the combined artifacts (see
+section 3.6.10).  A new `all_aconfig_declarations_extension` module type
+accompanies the split.
+
+**From `build/soong/aconfig/codegen/init.go`** (`RegisterBuildComponents`, lines
+83-88):
 
 ```go
 func RegisterBuildComponents(ctx android.RegistrationContext) {
@@ -1717,12 +1851,16 @@ pipeline.  It processes `.aconfig` source files and produces a binary cache.
 
 **Properties** (from `aconfig_declarations.go` lines 39-56):
 
-| Property      | Type       | Required | Description                                        |
-|---------------|------------|----------|----------------------------------------------------|
-| `srcs`        | `[]string` | Yes      | List of `.aconfig` files                            |
-| `package`     | `string`   | Yes      | Java-style package name                             |
-| `container`   | `string`   | Yes      | Container the flags belong to                       |
-| `exportable`  | `bool`     | No       | Whether flags can be repackaged for export          |
+| Property      | Type                          | Required | Description                                        |
+|---------------|-------------------------------|----------|----------------------------------------------------|
+| `srcs`        | `proptools.Configurable[[]string]` | Yes | List of `.aconfig` files                            |
+| `package`     | `string`                      | Yes      | Java-style package name                             |
+| `container`   | `string`                      | Yes      | Container the flags belong to                       |
+| `exportable`  | `bool`                        | No       | Whether flags can be repackaged for export          |
+
+In Android 17 `srcs` became a `proptools.Configurable[[]string]` (rather than a
+plain `[]string`), so the list of declaration files can vary via `select()`
+based on product/release variables.
 
 Example from frameworks/base:
 
@@ -1738,29 +1876,38 @@ aconfig_declarations {
 ```
 
 The build action invokes `aconfig create-cache` with all declaration files
-and any matching values from the release configuration.  The core build
-rule in `init.go` (lines 27-45):
+and any matching values from the release configuration.  In Android 17 the core
+build rule in `init.go` (lines 32-51) writes the declarations and values to a
+**response file** to avoid command-line length limits, and uses Soong's
+`CpIfChanged` helper instead of a hand-written `cmp`/`mv` idiom:
 
 ```go
 aconfigRule = pctx.AndroidStaticRule("aconfig",
     blueprint.RuleParams{
-        Command: `${aconfig} create-cache` +
-            ` --package ${package}` +
-            ` ${container}` +
-            ` ${declarations}` +
-            ` ${values}` +
-            ` ${default-permission}` +
-            ` ${allow-read-write}` +
-            ` --cache ${out}.tmp` +
-            ` && ( if cmp -s ${out}.tmp ${out} ;` +
-            `   then rm ${out}.tmp ;` +
-            `   else mv ${out}.tmp ${out} ; fi )`,
+        Command2: blueprint.NewCommand(
+            Aconfig, ` create-cache`,
+            ` --package ${package}`,
+            ` ${container}`,
+            ` @${out}.rsp`,        // declarations + values via rspfile
+            ` ${default-permission}`,
+            ` ${allow-read-write}`,
+            ` ${mainline-beta-namespace-config}`,
+            ` ${force-read-only}`,
+            ` --cache ${out}.tmp`,
+            ` && `, android.CpIfChanged, ` ${out}.tmp ${out}`,
+        ),
+        Rspfile:        "${out}.rsp",
+        RspfileContent: "${declarations} ${values}",
+        Restat:         true,
     }, ...)
 ```
 
-The `cmp -s` / `mv` pattern is an optimization: the cache file is only
-updated if its contents actually changed, avoiding unnecessary rebuilds
-of downstream codegen targets.
+`CpIfChanged` only rewrites the cache file if its contents actually changed
+(`Restat: true` re-stats the output), avoiding unnecessary rebuilds of
+downstream codegen targets.  Two of the substituted arguments are wired to
+release-config build flags: `${allow-read-write}` is the negation of
+`RELEASE_ACONFIG_REQUIRE_ALL_READ_ONLY`, and `${force-read-only}` is driven by
+`RELEASE_CONFIG_FORCE_READ_ONLY`.
 
 ### 3.6.3  aconfig_values
 
@@ -1856,12 +2003,13 @@ flowchart LR
 The `java_aconfig_library` module type generates a Java library from an
 `aconfig_declarations` module:
 
-**Properties** (from `codegen/java_aconfig_library.go` lines 33-43):
+**Properties** (from `codegen/java_aconfig_library.go` lines 34-51):
 
-| Property               | Type     | Required | Description                                    |
-|------------------------|----------|----------|------------------------------------------------|
-| `aconfig_declarations` | `string` | Yes      | Name of the aconfig_declarations module         |
-| `mode`                 | `string` | No       | Code generation mode (default: `"production"`)  |
+| Property                        | Type     | Required | Description                                    |
+|---------------------------------|----------|----------|------------------------------------------------|
+| `aconfig_declarations`          | `string` | Yes      | Name of the aconfig_declarations module         |
+| `mode`                          | `string` | No       | Code generation mode (default: `"production"`)  |
+| `preserve_legacy_impl_interface`| `bool`   | No       | Force-keep the `FeatureFlags`/`FeatureFlagsImpl` indirection (Android 17) |
 
 Example:
 
@@ -1872,7 +2020,16 @@ java_aconfig_library {
 }
 ```
 
-The module automatically adds dependencies on:
+The `preserve_legacy_impl_interface` property is new in Android 17.  By default
+the codegen rule passes `--allow-impl-interface-removal`, driven by the
+`RELEASE_ACONFIG_DEFAULT_ALLOW_JAVA_IMPL_INTERFACE_REMOVAL` build flag; this lets
+read-only flags be dropped from the generated `FeatureFlags` interface and
+implementation when nothing needs the runtime indirection.  Setting
+`preserve_legacy_impl_interface: true` overrides that and keeps the full
+interface for callers that still depend on it.
+
+The module automatically adds dependencies on (only when `sdk_version` is not
+`"none"`):
 
 - `aconfig-annotations-lib` -- for R8 optimization annotations
 - `unsupportedappusage` -- for backward compatibility annotations
@@ -1991,6 +2148,20 @@ The singleton produces:
 These artifacts are distributed as part of the `docs`, `droid`, `sdk`,
 `release_config_metadata`, and `gms` build goals.
 
+In Android 17 the old `SingletonModule` was split into a plain **module**
+(`AllAconfigDeclarationsFactory`) and a **singleton**
+(`AllAconfigDeclarationsSingletonFactory`).  The singleton emits the combined
+artifacts above; the module holds the API-surface properties
+(`Api_signature_files`, `Finalized_flags_file`) and runs the metalava /
+record-finalized-flags pipeline to produce `finalized-flags.txt`, publishing it
+through `AllAconfigDeclarationsInfoProvider`.  A companion
+`all_aconfig_declarations_extension` module type
+(`build/soong/aconfig/all_aconfig_declarations_extension.go`) extends a base
+`all_aconfig_declarations` to generate an alternate `finalized-flags.txt` for
+additional API surfaces in dist builds.  The
+`RELEASE_ACONFIG_FINALIZE_NON_API_FLAGS` build flag adds a finalize step for
+non-API flags in this pipeline.
+
 ### 3.6.11  exported_java_aconfig_library
 
 The `exported_java_aconfig_library` singleton generates a JAR file
@@ -2094,8 +2265,8 @@ Examples of build flags:
 
 The `all_aconfig_declarations` singleton enforces a critical constraint:
 each package may only have one `aconfig_declarations` module in the
-entire tree.  This is checked during the singleton build action (from
-`all_aconfig_declarations.go` lines 205-216):
+entire tree.  This is checked during the singleton's `GenerateBuildActions`
+(from `all_aconfig_declarations.go`, around line 241):
 
 ```go
 var numOffendingPkg = 0
@@ -2129,17 +2300,32 @@ infrastructure through several build flags:
 
 | Build Flag                                  | Effect                                                |
 |---------------------------------------------|-------------------------------------------------------|
-| `RELEASE_ACONFIG_VALUE_SETS`                | Selects which value sets apply to this build            |
-| `RELEASE_ACONFIG_FLAG_DEFAULT_PERMISSION`   | Default permission for all flags                       |
-| `RELEASE_ACONFIG_REQUIRE_ALL_READ_ONLY`     | Forces all flags to READ_ONLY                          |
-| `RELEASE_CONFIG_FORCE_READ_ONLY`            | Forces all flags to read-only at build level           |
+| `RELEASE_ACONFIG_VALUE_SETS`                | Product variable (not a `flag_declaration`) listing the `aconfig_value_set` modules that apply |
+| `RELEASE_ACONFIG_FLAG_DEFAULT_PERMISSION`   | Default permission for all flags (defaults to `READ_WRITE`) |
+| `RELEASE_ACONFIG_REQUIRE_ALL_READ_ONLY`     | If true, it is an error to set any flag to `READ_WRITE` |
+| `RELEASE_CONFIG_FORCE_READ_ONLY`            | If true, aconfig forces all flag permissions to `READ_ONLY` |
 | `RELEASE_ACONFIG_EXTRA_RELEASE_CONFIGS`     | Additional release configs to generate artifacts for   |
-| `RELEASE_ACONFIG_STORAGE_VERSION`           | Version number for storage file format                 |
+| `RELEASE_ACONFIG_STORAGE_VERSION`           | Version number for storage file format (defaults to `"2"`) |
 
 The `RELEASE_ACONFIG_REQUIRE_ALL_READ_ONLY` flag is particularly important
-for production release builds.  When set, it overrides every flag's permission
-to `READ_ONLY`, ensuring that no flag can be changed at runtime in the
-released build.
+for production release builds.  When set, it forbids any flag from being
+`READ_WRITE`, ensuring that no flag can be changed at runtime in the released
+build.  (Note that `RELEASE_ACONFIG_VALUE_SETS` is read through
+`Config.ReleaseAconfigValueSets()` as a product variable; the others are
+`flag_declaration` entries under `build/release/flag_declarations/`.)
+
+Android 17 adds several more `RELEASE_ACONFIG_*` flag declarations under
+`build/release/flag_declarations/`:
+
+| Build Flag (Android 17)                                | Effect                                                              |
+|--------------------------------------------------------|---------------------------------------------------------------------|
+| `RELEASE_ACONFIG_OPTIMIZE_READ_ONLY_JAVA`              | Read-only Java getters return their default directly, bypassing test-override support |
+| `RELEASE_ACONFIG_ENABLE_INT_FLAG`                      | Allows declaring integer-typed aconfig flags                         |
+| `RELEASE_ACONFIG_GENERATE_CHECKS_SDK_ANNOTATION`       | Emit `@ChecksSdkIntAtLeast` on finalized exported getters            |
+| `RELEASE_ACONFIG_DEFAULT_ALLOW_JAVA_IMPL_INTERFACE_REMOVAL` | Default to removing unnecessary internal Java codegen where possible |
+| `RELEASE_ACONFIG_PARSE_V4`                             | Parse and write the v4 storage format (integer-flag storage)         |
+| `RELEASE_ACONFIG_SUPPORT_MINOR_SDK`                    | Generate minor-SDK (`SDK_INT_FULL`) checks for finalized flags        |
+| `RELEASE_ACONFIG_FINALIZE_NON_API_FLAGS`               | Run a finalize step for non-API flags in the finalized-flags pipeline |
 
 ---
 
@@ -2480,15 +2666,12 @@ when running tests from a host machine against a connected device.
 
 ### 3.7.11  Ravenwood Flag Support
 
-Ravenwood (Android's host-side device testing framework) supports aconfig
-flags through the same `SetFlagsRule` mechanism.  Since Ravenwood tests
-run on the host JVM without a real Android framework, the flag
-implementation uses the test mode with `FakeFeatureFlagsImpl`.
-
-The test infrastructure detects the Ravenwood environment and
-automatically uses the appropriate flag provider.  Ravenwood tests can
-use the same `@EnableFlags` and `@DisableFlags` annotations as device
-tests.
+Ravenwood (Android's host-side device testing framework) runs tests on the
+host JVM without a real Android framework.  Because `SetFlagsRule` works purely
+through reflection on the generated `Flags` / `FakeFeatureFlagsImpl` classes, the
+same rule and the same `@EnableFlags` / `@DisableFlags` annotations function
+under Ravenwood without a dedicated Ravenwood-specific flag provider.  Flag
+values resolve against the in-process fake rather than a live device.
 
 ### 3.7.12  Testing Architecture Diagram
 
@@ -2578,8 +2761,9 @@ Property categories relevant to flagging:
 - No centralized declaration -- properties are defined by convention
 - No build-system integration -- values are set in init scripts, build
   properties, or at runtime
-- Maximum key length of 91 characters, value length of 92 characters
-  (in older versions)
+- Property values are length-limited: `SystemProperties.PROP_VALUE_MAX` is 91
+  (the key length is effectively unbounded today, `PROP_NAME_MAX =
+  Integer.MAX_VALUE`)
 - No support for per-user or per-profile flags
 
 ### 3.8.2  Settings.Global and Settings.Secure
@@ -2610,7 +2794,10 @@ int value = Settings.Global.getInt(
 ### 3.8.3  DeviceConfig
 
 `DeviceConfig` (`android.provider.DeviceConfig`) was introduced in Android
-10 as a purpose-built feature flag system.  It stores flags organized by
+10 as a purpose-built feature flag system.  Its implementation now lives in the
+ConfigInfrastructure Mainline module at
+`packages/modules/ConfigInfrastructure/framework/java/android/provider/DeviceConfig.java`
+(it was modularized out of `frameworks/base`).  It stores flags organized by
 namespace and supports server-side flag pushes:
 
 ```java
@@ -2742,8 +2929,10 @@ flags.
 
 ### 3.8.7  @FlaggedApi Annotation
 
-The `@FlaggedApi` annotation bridges aconfig flags with the Android
-API surface.  When a new public API is gated by a flag:
+The `@FlaggedApi` annotation (`android.annotation.FlaggedApi`, whose source
+lives at `frameworks/libs/modules-utils/java/android/annotation/FlaggedApi.java`)
+bridges aconfig flags with the Android API surface.  When a new public API is
+gated by a flag:
 
 ```java
 @FlaggedApi(Flags.FLAG_MY_NEW_API)
@@ -2785,19 +2974,164 @@ benefits of type-safe generated code and centralized declaration.
 
 ---
 
-## 3.9  Try It
+## 3.9  Android 17 Changes
+
+This section consolidates the Android 17 changes to the aconfig system.  Several
+were noted in passing in earlier sections; here they are gathered with their
+source citations so the evolution from Android 16 is easy to see in one place.
+
+### 3.9.1  Integer Flags
+
+Through Android 16, every aconfig flag was boolean.  Android 17 introduces a
+**flag type** dimension so a flag can carry an integer value.  The proto schema
+in `build/make/tools/aconfig/aconfig_protos/protos/aconfig.proto` adds:
+
+```protobuf
+enum flag_type {
+  FLAG_TYPE_UNSPECIFIED = 0;  // assume boolean for backward compatibility
+  FLAG_TYPE_BOOLEAN = 1;
+  FLAG_TYPE_INTEGER = 2;
+}
+```
+
+with `flag_declaration.type` (field 8), `flag_value.value_int` (field 5), and
+`parsed_flag.type`/`value_int` (fields 13 and 14).  The whole pipeline carries
+the plumbing: the cache, the parser, and the storage format all understand
+integer flags.
+
+The feature is deliberately staged.  Declaring a `FLAG_TYPE_INTEGER` flag is
+rejected by the parser (`aconfig_protos/src/lib.rs`) unless the `enable_int_flag`
+Rust cfg is set, which the `RELEASE_ACONFIG_ENABLE_INT_FLAG` build flag
+(`build/release/flag_declarations/RELEASE_ACONFIG_ENABLE_INT_FLAG.textproto`)
+controls.  And although the storage format and the read API can carry integer
+values, **accessor code generation for integer flags is not yet wired** -- every
+generated Java/C++/Rust accessor in Android 17 still returns `bool`.  Integer
+flags are therefore best understood as schema-and-storage groundwork in this
+release.
+
+### 3.9.2  Version-4 Storage Format
+
+Integer flags require a new on-disk layout.  Android 17 adds **storage version
+4**, defined in `build/make/tools/aconfig/aconfig_storage_file/src/lib.rs`:
+
+```rust
+pub const MAX_SUPPORTED_FILE_VERSION: u32 =
+    if cfg!(enable_parse_v4) { 4 } else { 3 } as u32;
+pub const DEFAULT_FILE_VERSION: u32 = 2;
+```
+
+Whether v4 is read and written is gated by the `enable_parse_v4` cfg, set by the
+`RELEASE_ACONFIG_PARSE_V4` build flag.  Relative to v3, version 4 adds:
+
+- Three integer variants to `StoredFlagType` (`ReadWriteInt64`, `ReadOnlyInt64`,
+  `FixedReadOnlyInt64`) and a `FlagValueType` enum (`Boolean`, `Int64`).
+- An `int_start_index` field on `PackageTableNode` (the integer-flag analogue of
+  `boolean_start_index`), mirrored as `int_start_index` on the read API's
+  `PackageReadContext`.
+- `num_int_flags` and `int_flag_offset` fields on the flag-info header, plus an
+  `int_nodes` list.
+- A Rust read function `get_int64_flag_value(file, index) -> Result<i64>` in
+  `build/make/tools/aconfig/aconfig_storage_read_api/src/lib.rs`.  There is no
+  `cxx::bridge` counterpart yet, so C++ generated code reads only booleans.
+
+The read flow and the four storage file types are otherwise unchanged from
+section 3.4.
+
+### 3.9.3  Read-Only Java Optimization and Impl-Interface Removal
+
+Two cooperating build flags let Android 17 shrink the generated Java for
+read-only flags:
+
+- `RELEASE_ACONFIG_OPTIMIZE_READ_ONLY_JAVA` makes read-only getters in
+  `Flags.java` return their compile-time default value directly, bypassing the
+  `FEATURE_FLAGS` indirection.  `CustomFeatureFlags.isOptimizationEnabled()` (a
+  method marked `@AssumeTrueForR8`) reflects this so R8 can fold away the dynamic
+  read-only checks in release builds.
+- `RELEASE_ACONFIG_DEFAULT_ALLOW_JAVA_IMPL_INTERFACE_REMOVAL` lets the generator
+  drop read-only flags from the `FeatureFlags` interface and `FeatureFlagsImpl`
+  entirely.  It is plumbed into codegen as the `--allow-impl-interface-removal`
+  argument by `build/soong/aconfig/codegen/java_aconfig_library.go`, and the new
+  `preserve_legacy_impl_interface` module property opts a library out.
+
+When both apply to a package whose flags are all read-only, codegen can collapse
+the package down to a single `Flags` class with no `FeatureFlags`,
+`FeatureFlagsImpl`, `CustomFeatureFlags`, or `FakeFeatureFlagsImpl`.  The
+selection happens in `build/make/tools/aconfig/aconfig/src/codegen/java.rs`
+(the `is_read_only_optimized` / `preserve_impl_interface` logic) and
+`build/make/tools/aconfig/aconfig/src/commands.rs`
+(`optimize_read_only_getter = cfg!(optimize_read_only_java) && mode != Test`).
+
+### 3.9.4  Finalized-Flag and Exported-Flag Pipeline
+
+The `all_aconfig_declarations` module was split into a module (which runs the
+finalized-flags / metalava pipeline) and a singleton (which emits the combined
+flag artifacts), with a new `all_aconfig_declarations_extension` module type for
+extra API surfaces -- see section 3.6.10.  Two related codegen behaviors are new:
+
+- **Minor-SDK finalized checks.** For finalized exported flags at or above
+  Baklava, the generated `ExportedFlags` getter now checks both the major and the
+  minor SDK: `Build.VERSION.SDK_INT >= 36 && Build.VERSION.SDK_INT_FULL >=
+  <level>`.  The condition is produced by `ApiLevel::conditional()` in
+  `build/make/tools/aconfig/convert_finalized_flags/src/lib.rs` and gated by
+  `RELEASE_ACONFIG_SUPPORT_MINOR_SDK`.
+- **`@ChecksSdkIntAtLeast` generation.** With
+  `RELEASE_ACONFIG_GENERATE_CHECKS_SDK_ANNOTATION`, finalized exported getters
+  carry an `@androidx.annotation.ChecksSdkIntAtLeast` annotation so static
+  analysis understands the version gate.
+
+The `finalized_flag` message in
+`build/make/tools/aconfig/aconfig_protos/protos/aconfig_internal.proto` still
+records `name`, `package`, and `min_sdk`; a code comment reserves future minor
+SDK / SDK-extension support.
+
+### 3.9.5  Runtime Daemon and aflags
+
+The runtime side gained several refinements:
+
+- `aconfigd-system` is now a pure-Rust `rust_binary`
+  (`system/server_configurable_flags/aconfigd/Android.bp`); the
+  `enable_full_rust_system_aconfigd` migration flag has been removed.
+- A new `early-platform-init` entry point (gated by `enable_earlier_aconfigd()`)
+  initializes platform storage earlier in boot and writes an
+  `/metadata/aconfig/early_init_done` marker
+  (`system/server_configurable_flags/aconfigd/aconfigd.rc`).
+- A `platform_storage_records.pb` index and an `enable_aconfigd_from_mainline()`
+  switch split platform-owned records from Mainline-managed records
+  (`system/server_configurable_flags/aconfigd/src/aconfigd_commands.rs`).
+- `aflags list --format proto` emits a Base64-encoded `ProtoFlagList` (gated by
+  the `android.provider.flags.aflags_list_proto` flag), and `aflags list` can now
+  merge Mainline Beta flags from `device_config` when `aflags_list_mainline_beta`
+  is set.  The clear subcommand is `aflags unset`.
+
+### 3.9.6  Other Build-Integration Changes
+
+- The `aconfig create-cache` Soong rule now passes declarations and values
+  through a **response file** and uses `CpIfChanged` instead of an inline
+  `cmp`/`mv` (`build/soong/aconfig/init.go`); it also passes new
+  `mainline-beta-namespace-config` and `force-read-only` arguments.
+- `aconfig_declarations.srcs` is now a `proptools.Configurable[[]string]`, so the
+  set of declaration files can vary via `select()`
+  (`build/soong/aconfig/aconfig_declarations.go`).
+- Auto-added Java codegen dependencies (`aconfig-annotations-lib`,
+  `unsupportedappusage`, `aconfig_storage_stub`) are now added only when the
+  module's `sdk_version` is not `"none"`
+  (`build/soong/aconfig/codegen/java_aconfig_library.go`).
+
+---
+
+## 3.10  Try It
 
 The following exercises walk through the complete aconfig workflow, from
 declaring a flag to testing it in all states.
 
-### 3.9.1  Exercise 1: Inspect Existing Flags
+### 3.10.1  Exercise 1: Inspect Existing Flags
 
 Explore the flags declared in the AOSP tree:
 
 ```bash
 # Count all .aconfig declaration files
 find . -name "*.aconfig" -type f | wc -l
-# Expected: ~440+ files
+# Expected: ~490 files (Android 17)
 
 # Examine a simple flag declaration
 cat system/apex/apexd/apexd.aconfig
@@ -2809,7 +3143,7 @@ cat packages/modules/ConfigInfrastructure/framework/flags.aconfig
 cat frameworks/base/android-sdk-flags/Android.bp
 ```
 
-### 3.9.2  Exercise 2: Trace the Build Pipeline
+### 3.10.2  Exercise 2: Trace the Build Pipeline
 
 Follow a single flag through the build system:
 
@@ -2827,7 +3161,7 @@ find build/release/aconfig -name "*.textproto" \
     -exec grep -l "android.sdk" {} \;
 ```
 
-### 3.9.3  Exercise 3: Examine Generated Code
+### 3.10.3  Exercise 3: Examine Generated Code
 
 After building, inspect the generated flag code:
 
@@ -2848,7 +3182,7 @@ cat android/sdk/FeatureFlags.java
 cat android/sdk/FeatureFlagsImpl.java
 ```
 
-### 3.9.4  Exercise 4: Use the aconfig Tool Directly
+### 3.10.4  Exercise 4: Use the aconfig Tool Directly
 
 The `aconfig` binary can be used standalone for exploration:
 
@@ -2919,7 +3253,7 @@ find /tmp/java-out -name "*.java" -exec echo "=== {} ===" \; \
     -exec cat {} \;
 ```
 
-### 3.9.5  Exercise 5: Query Flags with dump-cache
+### 3.10.5  Exercise 5: Query Flags with dump-cache
 
 The `dump-cache` command supports rich formatting and filtering:
 
@@ -2947,7 +3281,7 @@ aconfig dump-cache \
     --format textproto
 ```
 
-### 3.9.6  Exercise 6: Write Flag-Guarded Code
+### 3.10.6  Exercise 6: Write Flag-Guarded Code
 
 Create a simple module that uses aconfig flags.
 
@@ -3023,7 +3357,7 @@ public class MyProcessor {
 }
 ```
 
-### 3.9.7  Exercise 7: Write Flag Tests
+### 3.10.7  Exercise 7: Write Flag Tests
 
 Write tests covering both flag states:
 
@@ -3078,7 +3412,7 @@ public class MyProcessorTest {
 }
 ```
 
-### 3.9.8  Exercise 8: Parameterized Flag Testing
+### 3.10.8  Exercise 8: Parameterized Flag Testing
 
 Test all flag combinations:
 
@@ -3126,7 +3460,7 @@ public class MyProcessorParameterizedTest {
 }
 ```
 
-### 3.9.9  Exercise 9: Inspect Runtime Flag State on Device
+### 3.10.9  Exercise 9: Inspect Runtime Flag State on Device
 
 Use device tools to examine and manipulate flags at runtime:
 
@@ -3149,8 +3483,8 @@ adb shell aflags enable \
 # Verify the override
 adb shell aflags list | grep dump_improvements
 
-# Clear the override
-adb shell aflags clear \
+# Clear the override (the subcommand is "unset")
+adb shell aflags unset \
     com.android.provider.flags.dump_improvements
 
 # Inspect flag storage files
@@ -3159,7 +3493,7 @@ adb shell ls -la /metadata/aconfig/maps/
 adb shell ls -la /metadata/aconfig/flags/
 ```
 
-### 3.9.10  Exercise 10: Create a C++ Flag Library
+### 3.10.10  Exercise 10: Create a C++ Flag Library
 
 Integrate aconfig with a native module:
 
@@ -3218,7 +3552,7 @@ void processFrame(Frame& frame) {
 }
 ```
 
-### 3.9.11  Exercise 11: Explore the Soong Build Integration
+### 3.10.11  Exercise 11: Explore the Soong Build Integration
 
 Trace how Soong processes aconfig modules:
 
@@ -3243,7 +3577,7 @@ cat build/soong/aconfig/codegen/java_aconfig_library.go
 cat build/soong/aconfig/all_aconfig_declarations.go
 ```
 
-### 3.9.12  Exercise 12: Examine the aconfig Proto Schema
+### 3.10.12  Exercise 12: Examine the aconfig Proto Schema
 
 Study the protobuf definitions that underpin the system:
 
@@ -3335,7 +3669,8 @@ continuous development cadence while maintaining platform stability.
 | `build/make/tools/aconfig/aconfig/templates/Flags.java.template` | Java Flags class template |
 | `build/make/tools/aconfig/aconfig/templates/FeatureFlags.java.template` | Java FeatureFlags interface template |
 | `build/make/tools/aconfig/aconfig/templates/FeatureFlagsImpl.new_storage.java.template` | New storage FeatureFlagsImpl template |
-| `build/make/tools/aconfig/aconfig/templates/FeatureFlagsImpl.deviceConfig.java.template` | DeviceConfig FeatureFlagsImpl template |
+| `build/make/tools/aconfig/aconfig/templates/FeatureFlagsImpl.legacy_flag.internal.java.template` | DeviceConfig (legacy) FeatureFlagsImpl template |
+| `build/make/tools/aconfig/aconfig/templates/ExportedFlags.java.template` | Exported flags accessor template |
 | `build/make/tools/aconfig/aconfig/templates/FeatureFlagsImpl.test_mode.java.template` | Test mode FeatureFlagsImpl template |
 | `build/make/tools/aconfig/aconfig/templates/FakeFeatureFlagsImpl.java.template` | Test fake implementation template |
 | `build/make/tools/aconfig/aconfig/templates/CustomFeatureFlags.java.template` | Custom delegation wrapper template |
@@ -3345,14 +3680,17 @@ continuous development cadence while maintaining platform stability.
 | `build/soong/aconfig/aconfig_declarations.go` | aconfig_declarations module type |
 | `build/soong/aconfig/aconfig_values.go` | aconfig_values module type |
 | `build/soong/aconfig/aconfig_value_set.go` | aconfig_value_set module type |
-| `build/soong/aconfig/all_aconfig_declarations.go` | Singleton collecting all declarations |
+| `build/soong/aconfig/all_aconfig_declarations.go` | Module + singleton collecting all declarations |
+| `build/soong/aconfig/all_aconfig_declarations_extension.go` | Extension module for extra API surfaces (Android 17) |
 | `build/soong/aconfig/exported_java_aconfig_library.go` | Exported JAR singleton |
 | `build/soong/aconfig/codegen/init.go` | Codegen module registration and build rules |
 | `build/soong/aconfig/codegen/java_aconfig_library.go` | java_aconfig_library module type |
 | `build/soong/aconfig/codegen/cc_aconfig_library.go` | cc_aconfig_library module type |
 | `build/soong/aconfig/codegen/rust_aconfig_library.go` | rust_aconfig_library module type |
 | `build/soong/aconfig/codegen/aconfig_declarations_group.go` | Group module type |
-| `build/make/tools/aconfig/aconfig_storage_read_api/src/lib.rs` | Storage read API |
+| `build/make/tools/aconfig/aconfig_storage_read_api/src/lib.rs` | Storage read API (incl. `get_int64_flag_value`) |
+| `build/make/tools/aconfig/aconfig_storage_file/src/lib.rs` | Storage file format, versions, `StoredFlagType` |
+| `build/make/tools/aconfig/convert_finalized_flags/src/lib.rs` | Finalized-flag SDK-level condition generation |
 | `build/make/tools/aconfig/aconfig_storage_file/protos/aconfig_storage_metadata.proto` | Storage metadata proto |
 | `system/server_configurable_flags/aconfigd/aconfigd.rc` | aconfigd init service definition |
 | `system/server_configurable_flags/aconfigd/src/aconfigd_commands.rs` | aconfigd command handlers |

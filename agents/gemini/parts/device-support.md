@@ -50,7 +50,7 @@ initialization. The pattern is identical across all five architectures. Here is
 the registration from `arm64_device.go`:
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 210-212
+// build/soong/cc/config/arm64_device.go
 func init() {
     registerToolchainFactory(android.Android, android.Arm64, arm64ToolchainFactory)
 }
@@ -59,37 +59,44 @@ func init() {
 And the corresponding registration from `riscv64_device.go`:
 
 ```go
-// build/soong/cc/config/riscv64_device.go, line 131-133
+// build/soong/cc/config/riscv64_device.go
 func init() {
     registerToolchainFactory(android.Android, android.Riscv64, riscv64ToolchainFactory)
 }
 ```
 
 The `registerToolchainFactory` function in `toolchain.go` stores these factories
-in a two-dimensional map indexed by OS type and architecture type:
+in a map indexed by OS type, architecture type, and a boolean that selects
+between the ordinary toolchain and the Lightweight Fault Isolation (LFI)
+toolchain (section 57.10). A parallel `registerLFIToolchainFactory` populates
+the `true` slot:
 
 ```go
-// build/soong/cc/config/toolchain.go, line 32-39
-var toolchainFactories = make(map[android.OsType]map[android.ArchType]toolchainFactory)
+// build/soong/cc/config/toolchain.go
+var toolchainFactories = make(map[android.OsType]map[android.ArchType]map[bool]toolchainFactory)
 
 func registerToolchainFactory(os android.OsType, arch android.ArchType, factory toolchainFactory) {
-    if toolchainFactories[os] == nil {
-        toolchainFactories[os] = make(map[android.ArchType]toolchainFactory)
-    }
-    toolchainFactories[os][arch] = factory
+    makeToolchainMap(os, arch)
+    toolchainFactories[os][arch][false] = factory
+}
+
+func registerLFIToolchainFactory(os android.OsType, arch android.ArchType, factory toolchainFactory) {
+    makeToolchainMap(os, arch)
+    toolchainFactories[os][arch][true] = factory
 }
 ```
 
 When Soong needs to compile a module for a given OS and architecture, it looks
-up the factory and calls it with the target `Arch` struct. The factory returns a
-`Toolchain` implementation that provides all the flags needed:
+up the factory (passing whether the target is an LFI variant) and calls it with
+the target `Arch` struct. The factory returns a `Toolchain` implementation that
+provides all the flags needed:
 
 ```go
-// build/soong/cc/config/toolchain.go, line 62-68
-func findToolchain(os android.OsType, arch android.Arch) (Toolchain, error) {
-    factory := toolchainFactories[os][arch.ArchType]
+// build/soong/cc/config/toolchain.go
+func findToolchain(os android.OsType, arch android.Arch, lfi bool) (Toolchain, error) {
+    factory := toolchainFactories[os][arch.ArchType][lfi]
     if factory == nil {
-        return nil, fmt.Errorf("Toolchain not found for %s arch %q", os.String(), arch.String())
+        return nil, fmt.Errorf("Toolchain not found for os: %q, arch %q, lfi: %t", os.String(), arch.String(), lfi)
     }
     return factory(arch), nil
 }
@@ -123,17 +130,17 @@ in `build/soong/cc/config/toolchain.go`. This is the central abstraction that
 lets Soong compile C/C++ code without hard-coding any architecture details:
 
 ```go
-// build/soong/cc/config/toolchain.go, line 70-112
+// build/soong/cc/config/toolchain.go
 type Toolchain interface {
     Name() string
     IncludeFlags() string
     ClangTriple() string
     ToolchainCflags() string
-    ToolchainLdflags() string
+    ToolchainLdflags() FlagsWithDeps
     Asflags() string
     Cflags() string
     Cppflags() string
-    Ldflags() string
+    Ldflags(ctx ToolchainFlagsContext) FlagsWithDeps
     InstructionSetFlags(string) (string, error)
     ndkTriple() string
     YasmFlags() string
@@ -153,6 +160,7 @@ type Toolchain interface {
     Bionic() bool
     Glibc() bool
     Musl() bool
+    Lfi() bool
 }
 ```
 
@@ -168,31 +176,34 @@ the full Clang target triple used with the `--target=` flag.
 that are layered on top of the base `Cflags()`.
 
 **Linking**: `Ldflags()`, `ToolchainLdflags()`, and the CRT (C Runtime)
-methods control how binaries are linked. Every bionic-based toolchain uses CRT
+methods control how binaries are linked. Both now return a `FlagsWithDeps`
+struct rather than a bare string, and `Ldflags()` takes a
+`ToolchainFlagsContext` so a toolchain can register Ninja phony rules or glob
+paths while computing its link flags. Every bionic-based toolchain uses CRT
 objects like `crtbegin_dynamic` and `crtend_android`.
 
 **Platform**: `Bionic()`, `Glibc()`, and `Musl()` indicate which C library the
-toolchain links against.
+toolchain links against. `Lfi()` reports whether this is a Lightweight Fault
+Isolation toolchain (covered in section 57.10), and defaults to `false` for the
+ordinary bionic toolchains.
 
 The base types `toolchain64Bit` and `toolchain32Bit` provide the `Is64Bit()`
 method, while `toolchainBionic` provides the Android-specific CRT objects and
 default shared libraries:
 
 ```go
-// build/soong/cc/config/bionic.go, line 17-46
+// build/soong/cc/config/bionic.go
 type toolchainBionic struct {
     toolchainBase
 }
 
 var (
     bionicDefaultSharedLibraries = []string{"libc", "libm", "libdl"}
-    bionicCrtBeginStaticBinary  = []string{"crtbegin_static"}
-    bionicCrtEndStaticBinary    = []string{"crtend_android"}
-    bionicCrtBeginSharedBinary  = []string{"crtbegin_dynamic"}
-    bionicCrtEndSharedBinary    = []string{"crtend_android"}
-    bionicCrtBeginSharedLibrary = []string{"crtbegin_so"}
-    bionicCrtEndSharedLibrary   = []string{"crtend_so"}
-    bionicCrtPadSegmentSharedLibrary = []string{"crt_pad_segment"}
+
+    bionicCrtBeginStaticBinary, bionicCrtEndStaticBinary   = []string{"crtbegin_static"}, []string{"crtend_android"}
+    bionicCrtBeginSharedBinary, bionicCrtEndSharedBinary   = []string{"crtbegin_dynamic"}, []string{"crtend_android"}
+    bionicCrtBeginSharedLibrary, bionicCrtEndSharedLibrary = []string{"crtbegin_so"}, []string{"crtend_so"}
+    bionicCrtPadSegmentSharedLibrary                       = []string{"crt_pad_segment"}
 )
 ```
 
@@ -203,7 +214,7 @@ Soong represents a target architecture using the `Arch` struct from
 to select the right toolchain, compiler flags, and source files:
 
 ```go
-// build/soong/android/arch.go (around line 95-110)
+// build/soong/android/arch.go
 type Arch struct {
     ArchType    ArchType
     ArchVariant string
@@ -234,7 +245,7 @@ The `ArchType` itself is defined as a simple struct with name and multilib
 classification:
 
 ```go
-// build/soong/android/arch.go (around line 128-138)
+// build/soong/android/arch.go
 type ArchType struct {
     Name     string   // "arm", "arm64", "x86", "x86_64", or "riscv64"
     Field    string   // Property field name, e.g., "Arm64"
@@ -245,7 +256,7 @@ type ArchType struct {
 The five architecture types are registered as package-level variables:
 
 ```go
-// build/soong/android/arch.go (around line 160-164)
+// build/soong/android/arch.go
 Arm     = newArch("arm", "lib32")
 Arm64   = newArch("arm64", "lib64")
 Riscv64 = newArch("riscv64", "lib64")
@@ -349,7 +360,29 @@ processor. The AOSP build system supports a wide range of ARM64
 micro-architectures, from the original ARMv8-A through the latest ARMv9.4-A
 extensions.
 
-**Source file**: `build/soong/cc/config/arm64_device.go` (212 lines)
+**Source file**: `build/soong/cc/config/arm64_device.go`
+
+The ARM64 base flags now include stack-clash protection and the strict
+implicit-declaration check that all LP64 architectures share:
+
+```go
+// build/soong/cc/config/arm64_device.go
+arm64Cflags = []string{
+    // Help catch common 32/64-bit errors.
+    // Common to all LP64 architectures.
+    "-Werror=implicit-function-declaration",
+
+    // For stack allocations larger than a page, touch each page immediately
+    // to ensure we hit the guard page on stack overflow.
+    // Common to all LP64 architectures.
+    "-fstack-clash-protection",
+}
+```
+
+The `-fstack-clash-protection` flag closes a class of stack-overflow attacks
+where a large stack allocation jumps clean over the guard page; the compiler
+probes each page as the frame grows so an overflow always faults. The same two
+flags appear verbatim in `riscv64_device.go`.
 
 ### 57.2.1 Architecture Variants
 
@@ -357,7 +390,7 @@ ARM64 supports ten architecture variants, each mapping to a specific `-march=`
 compiler flag:
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 30-41
+// build/soong/cc/config/arm64_device.go
 arm64ArchVariantCflags = map[string][]string{
     "armv8-a":            {"-march=armv8-a"},
     "armv8-a-branchprot": {"-march=armv8-a"},
@@ -402,8 +435,9 @@ like ROP (Return-Oriented Programming) and JOP (Jump-Oriented Programming).
 When the `branchprot` feature is enabled, AOSP applies these compiler flags:
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 43-49
+// build/soong/cc/config/arm64_device.go
 arm64ArchFeatureCflags = map[string][]string{
+    // When Pointer Authentication Codes (PAC) are available, -fstack-protector is unnecessary.
     "branchprot": {
         "-mbranch-protection=standard",
         "-fno-stack-protector",
@@ -421,6 +455,26 @@ PAC-signed return addresses already protect against stack buffer overflows that
 corrupt the return address -- the primary threat that stack protectors also
 defend against. Disabling the stack protector avoids the redundant canary check,
 saving a few instructions per function entry/exit.
+
+The `branchprot` feature also drives a matching linker flag. A separate
+`arm64ArchFeatureLdflags` map asks the linker to fail the link if any input
+object lacks BTI marking, so a single non-BTI translation unit cannot silently
+downgrade the whole binary:
+
+```go
+// build/soong/cc/config/arm64_device.go
+arm64ArchFeatureLdflags = map[string][]string{
+    "branchprot": {
+        "-Wl,-z,bti-report=error",
+    },
+}
+```
+
+This turns BTI into an all-or-nothing property of the binary: if every object is
+BTI-clean the resulting library is marked `GNU_PROPERTY_AARCH64_FEATURE_1_BTI`
+and the kernel maps its executable pages with `PROT_BTI`, but if any object is
+unmarked the build breaks rather than producing a binary with the protection
+silently dropped.
 
 ```mermaid
 graph LR
@@ -455,7 +509,7 @@ The file `bionic/libc/arch-arm64/bionic/note_memtag_heap_async.S` contains
 an ELF note that requests the kernel to enable MTE for heap allocations:
 
 ```asm
-// bionic/libc/arch-arm64/bionic/note_memtag_heap_async.S, line 34-46
+// bionic/libc/arch-arm64/bionic/note_memtag_heap_async.S
   .section ".note.android.memtag", "a", %note
   .p2align 2
   .long 1f - 0f                 // int32_t namesz
@@ -476,7 +530,7 @@ MTE-aware implementations when the hardware supports it. From
 `bionic/libc/arch-arm64/ifuncs.cpp`:
 
 ```cpp
-// bionic/libc/arch-arm64/ifuncs.cpp, line 54-60
+// bionic/libc/arch-arm64/ifuncs.cpp
 DEFINE_IFUNC_FOR(memchr) {
   if (arg->_hwcap2 & HWCAP2_MTE) {
     RETURN_FUNC(memchr_func_t, __memchr_aarch64_mte);
@@ -503,7 +557,7 @@ that code runs correctly (and acceptably fast) on both core types, while code
 tuned for the big core might be pathologically slow on the LITTLE core:
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 65-77
+// build/soong/cc/config/arm64_device.go
 "cortex-a75": []string{
     // Use the cortex-a55 since it is similar to the little
     // core (cortex-a55) and is sensitive to ordering.
@@ -526,7 +580,7 @@ out-of-order pipeline can compensate for sub-optimal scheduling.
 The complete set of supported ARM64 CPU variants:
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 58-88
+// build/soong/cc/config/arm64_device.go (condensed)
 arm64CpuVariantCflags = map[string][]string{
     "cortex-a53": {"-mcpu=cortex-a53"},
     "cortex-a55": {"-mcpu=cortex-a55"},
@@ -543,7 +597,7 @@ The mapping from CPU variant to compile flags is resolved through a two-level
 lookup. First, the variant-to-variable map:
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 123-135
+// build/soong/cc/config/arm64_device.go
 arm64CpuVariantCflagsVar = map[string]string{
     "cortex-a53": "${config.Arm64CortexA53Cflags}",
     "cortex-a55": "${config.Arm64CortexA55Cflags}",
@@ -567,12 +621,12 @@ The Cortex-A53, one of the most widely deployed ARM cores in history, has two
 notable hardware errata that AOSP works around at link time:
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 120
+// build/soong/cc/config/arm64_device.go
 pctx.StaticVariable("Arm64FixCortexA53Ldflags", "-Wl,--fix-cortex-a53-843419")
 ```
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 137-144
+// build/soong/cc/config/arm64_device.go
 arm64CpuVariantLdflags = map[string]string{
     "cortex-a53": "${config.Arm64FixCortexA53Ldflags}",
     "cortex-a72": "${config.Arm64FixCortexA53Ldflags}",
@@ -592,11 +646,22 @@ in big.LITTLE configurations.
 
 ### 57.2.6 ARM64 Toolchain Factory
 
-The factory function assembles all the layers into a single toolchain:
+The factory delegates flag assembly to a helper, `arm64ToolchainFlags`, which
+returns the toolchain Cflags and toolchain Ldflags as a pair. Splitting out the
+helper lets the LFI toolchain (section 57.10) reuse the exact same flag logic:
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 187-208
+// build/soong/cc/config/arm64_device.go
 func arm64ToolchainFactory(arch android.Arch) Toolchain {
+    toolchainCflags, toolchainLdflags := arm64ToolchainFlags(arch)
+    return &toolchainArm64{
+        toolchainCflags:  toolchainCflags,
+        toolchainLdflags: toolchainLdflags,
+    }
+}
+
+func arm64ToolchainFlags(arch android.Arch) (string, string) {
+    // Error now rather than having a confusing Ninja error
     if _, ok := arm64ArchVariantCflags[arch.ArchVariant]; !ok {
         panic(fmt.Sprintf("Unknown ARM64 architecture version: %q", arch.ArchVariant))
     }
@@ -608,16 +673,21 @@ func arm64ToolchainFactory(arch android.Arch) Toolchain {
         toolchainCflags = append(toolchainCflags, arm64ArchFeatureCflags[feature]...)
     }
 
-    extraLdflags := variantOrDefault(arm64CpuVariantLdflags, arch.CpuVariant)
-    return &toolchainArm64{
-        ldflags: strings.Join([]string{
-            "${config.Arm64Ldflags}",
-            extraLdflags,
-        }, " "),
-        toolchainCflags: strings.Join(toolchainCflags, " "),
+    extraLdflags := []string{"${config.Arm64Ldflags}"}
+    extraLdflags = append(extraLdflags,
+        variantOrDefault(arm64CpuVariantLdflags, arch.CpuVariant))
+    for _, feature := range arch.ArchFeatures {
+        extraLdflags = append(extraLdflags, arm64ArchFeatureLdflags[feature]...)
     }
+    return strings.Join(toolchainCflags, " "), strings.Join(extraLdflags, " ")
 }
 ```
+
+Note that the toolchain Ldflags now fold in both the per-CPU-variant linker
+flags (the Cortex-A53 erratum fix) and the per-feature linker flags (the BTI
+report flag for `branchprot`); they are carried on the toolchain's
+`toolchainLdflags` field and surfaced through `ToolchainLdflags()`, which
+returns a `FlagsWithDeps`.
 
 The flags are layered in this order:
 
@@ -637,7 +707,7 @@ ARM64 supports multiple page sizes (4KB, 16KB, 64KB). The linker flags enforce
 the maximum page size for correct segment alignment:
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 92-96
+// build/soong/cc/config/arm64_device.go
 pctx.VariableFunc("Arm64Ldflags", func(ctx android.PackageVarContext) string {
     maxPageSizeFlag := "-Wl,-z,max-page-size=" + ctx.Config().MaxPageSizeSupported()
     flags := append(arm64Ldflags, maxPageSizeFlag)
@@ -645,11 +715,18 @@ pctx.VariableFunc("Arm64Ldflags", func(ctx android.PackageVarContext) string {
 })
 ```
 
+`MaxPageSizeSupported()` is the alignment that the linker uses for ELF segment
+boundaries, and it is no longer a hardcoded 4096 on ARM64. As of Android 17 the
+build defaults it to 16384 for arm64 and x86_64 devices, so platform binaries
+are aligned to load correctly on a 16KB-page kernel. Section 57.11 traces that
+default and the bionic-side macro changes that go with it.
+
 The base linker flags also include segment separation for security:
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 51-54
+// build/soong/cc/config/arm64_device.go
 arm64Ldflags = []string{
+    // Separate-code is required for XOM
     "-Wl,-z,separate-code",
     "-Wl,-z,separate-loadable-segments",
 }
@@ -657,7 +734,10 @@ arm64Ldflags = []string{
 
 These flags ensure that code segments, data segments, and read-only segments are
 placed in separate memory pages, preventing accidental (or malicious) execution
-of data or modification of code.
+of data or modification of code. The `separate-code` flag in particular is what
+makes execute-only memory (XOM) possible: keeping code out of any page that also
+holds readable data means an attacker who can read process memory cannot read
+the instruction stream back to build a code-reuse payload.
 
 ---
 
@@ -678,7 +758,7 @@ x86/x86_64 images provide dramatically better performance during development.
 The x86 (32-bit) toolchain supports a wide range of Intel microarchitectures:
 
 ```go
-// build/soong/cc/config/x86_device.go, line 38-86
+// build/soong/cc/config/x86_device.go
 x86ArchVariantCflags = map[string][]string{
     "": []string{
         "-march=prescott",
@@ -698,6 +778,7 @@ x86ArchVariantCflags = map[string][]string{
     },
     "haswell":     []string{"-march=core-avx2"},
     "ivybridge":   []string{"-march=core-avx-i"},
+    "pantherlake": []string{"-march=pantherlake"},
     "sandybridge": []string{"-march=corei7"},
     "silvermont":  []string{"-march=slm"},
     "skylake":     []string{"-march=skylake"},
@@ -709,21 +790,31 @@ x86ArchVariantCflags = map[string][]string{
 The x86_64 toolchain has the same set of microarchitecture variants:
 
 ```go
-// build/soong/cc/config/x86_64_device.go, line 36-79
+// build/soong/cc/config/x86_64_device.go
 x86_64ArchVariantCflags = map[string][]string{
     "": []string{"-march=x86-64"},
-    "alderlake":  []string{"-march=alderlake"},
-    "broadwell":  []string{"-march=broadwell"},
-    "goldmont":   []string{"-march=goldmont"},
+    "alderlake":   []string{"-march=alderlake"},
+    "broadwell":   []string{"-march=broadwell"},
+    "goldmont":    []string{"-march=goldmont"},
     // ... same variants as x86
-    "haswell":    []string{"-march=core-avx2"},
-    "skylake":    []string{"-march=skylake"},
-    "tremont":    []string{"-march=tremont"},
+    "haswell":     []string{"-march=core-avx2"},
+    "pantherlake": []string{"-march=pantherlake"},
+    "skylake":     []string{"-march=skylake"},
+    "tremont":     []string{"-march=tremont"},
 }
 ```
 
 The default for x86 is `prescott` (Pentium 4 with SSE3), while x86_64 defaults
 to the baseline `x86-64` instruction set.
+
+The `pantherlake` variant is new in Android 17. Panther Lake is Intel's
+mobile-class hybrid design that follows Lunar Lake and Arrow Lake, and adding it
+here lets Soong emit `-march=pantherlake` for boards that declare it as their
+`TARGET_ARCH_VARIANT`. ART recognizes the same variant string in its x86 and
+x86_64 instruction-set-feature tables (`x86_known_variants` in
+`art/runtime/arch/x86/instruction_set_features_x86.cc`), so the JIT and AOT
+compilers can key off `pantherlake` the same way the static toolchain does; see
+Chapter 18 for how ART consumes those feature sets.
 
 ### 57.3.2 SIMD Instruction Sets: SSE and AVX
 
@@ -732,7 +823,7 @@ single mandatory SIMD extension, x86 has a progression of optional extensions.
 Both the x86 and x86_64 toolchains define feature flags for these:
 
 ```go
-// build/soong/cc/config/x86_64_device.go, line 81-97
+// build/soong/cc/config/x86_64_device.go
 x86_64ArchFeatureCflags = map[string][]string{
     "ssse3":  []string{"-mssse3"},
     "sse4":   []string{"-msse4"},
@@ -764,7 +855,7 @@ their `Android.bp` files when they know it helps.
 The 32-bit x86 toolchain has several unique requirements:
 
 ```go
-// build/soong/cc/config/x86_device.go, line 25-32
+// build/soong/cc/config/x86_device.go
 x86Cflags = []string{
     "-msse3",
     // -mstackrealign is needed to realign stack in native code
@@ -783,12 +874,12 @@ runtime), the stack may not be 16-byte aligned, causing crashes.
 The x86 toolchain also uses Yasm for assembly:
 
 ```go
-// build/soong/cc/config/x86_device.go, line 117
+// build/soong/cc/config/x86_device.go
 pctx.StaticVariable("X86YasmFlags", "-f elf32 -m x86")
 ```
 
 ```go
-// build/soong/cc/config/x86_64_device.go, line 124
+// build/soong/cc/config/x86_64_device.go
 pctx.StaticVariable("X86_64YasmFlags", "-f elf64 -m amd64")
 ```
 
@@ -797,7 +888,7 @@ pctx.StaticVariable("X86_64YasmFlags", "-f elf64 -m amd64")
 Both x86 toolchains share the same pattern as ARM64:
 
 ```go
-// build/soong/cc/config/x86_device.go, line 125-129
+// build/soong/cc/config/x86_device.go
 type toolchainX86 struct {
     toolchainBionic
     toolchain32Bit
@@ -806,7 +897,7 @@ type toolchainX86 struct {
 ```
 
 ```go
-// build/soong/cc/config/x86_64_device.go, line 132-136
+// build/soong/cc/config/x86_64_device.go
 type toolchainX86_64 struct {
     toolchainBionic
     toolchain64Bit
@@ -818,13 +909,13 @@ The key difference from ARM64 is the explicit `-m32`/`-m64` toolchain flags
 that control code generation model:
 
 ```go
-// build/soong/cc/config/x86_device.go, line 107-108
+// build/soong/cc/config/x86_device.go
 pctx.StaticVariable("X86ToolchainCflags", "-m32")
 pctx.StaticVariable("X86ToolchainLdflags", "-m32")
 ```
 
 ```go
-// build/soong/cc/config/x86_64_device.go, line 101-102
+// build/soong/cc/config/x86_64_device.go
 pctx.StaticVariable("X86_64ToolchainCflags", "-m64")
 pctx.StaticVariable("X86_64ToolchainLdflags", "-m64")
 ```
@@ -840,7 +931,7 @@ The Native Bridge mechanism is defined in
 declares the `NativeBridgeCallbacks` interface:
 
 ```cpp
-// frameworks/libs/binary_translation/native_bridge/native_bridge.h, line 48-62
+// frameworks/libs/binary_translation/native_bridge/native_bridge.h
 struct NativeBridgeCallbacks {
   uint32_t version;
 
@@ -891,7 +982,7 @@ graph TD
 The default x86_64 generic device configuration targets the emulator:
 
 ```makefile
-# device/generic/x86_64/BoardConfig.mk, line 9-15
+# device/generic/x86_64/BoardConfig.mk
 TARGET_CPU_ABI := x86_64
 TARGET_ARCH := x86_64
 TARGET_ARCH_VARIANT := x86_64
@@ -925,7 +1016,7 @@ two instruction encodings (ARM and Thumb).
 The ARM toolchain struct reflects its 32-bit nature:
 
 ```go
-// build/soong/cc/config/arm_device.go (line 247-252)
+// build/soong/cc/config/arm_device.go
 type toolchainArm struct {
     toolchainBionic
     toolchain32Bit
@@ -937,13 +1028,16 @@ type toolchainArm struct {
 The ARM factory function assembles three levels of flags:
 
 ```go
-// build/soong/cc/config/arm_device.go (line 303-316)
+// build/soong/cc/config/arm_device.go
 func armToolchainFactory(arch android.Arch) Toolchain {
     toolchainCflags := make([]string, 2, 3)
+
     toolchainCflags[0] = "${config.ArmToolchainCflags}"
     toolchainCflags[1] = armArchVariantCflagsVar[arch.ArchVariant]
+
     toolchainCflags = append(toolchainCflags,
         variantOrDefault(armCpuVariantCflagsVar, arch.CpuVariant))
+
     return &toolchainArm{
         ldflags:         "${config.ArmLdflags}",
         toolchainCflags: strings.Join(toolchainCflags, " "),
@@ -961,7 +1055,7 @@ for all ARM 32-bit Android targets.
 includes 18 different variants:
 
 ```go
-// build/soong/cc/config/arm_device.go (line 225-244)
+// build/soong/cc/config/arm_device.go
 armCpuVariantCflagsVar = map[string]string{
     "":               "${config.ArmGenericCflags}",
     "cortex-a7":      "${config.ArmCortexA7Cflags}",
@@ -987,7 +1081,7 @@ armCpuVariantCflagsVar = map[string]string{
 The Cortex-A8 erratum workaround is also specific to ARM 32-bit:
 
 ```go
-// build/soong/cc/config/arm_device.go (line 45-47)
+// build/soong/cc/config/arm_device.go
 armFixCortexA8LdFlags   = []string{"-Wl,--fix-cortex-a8"}
 armNoFixCortexA8LdFlags = []string{"-Wl,--no-fix-cortex-a8"}
 ```
@@ -1011,7 +1105,7 @@ graph TD
 The ARM 32-bit linker has its own specific flags:
 
 ```go
-// build/soong/cc/config/arm_device.go (line 39-43)
+// build/soong/cc/config/arm_device.go
 armLdflags = []string{
     "-Wl,-m,armelf",
     "-Wl,-mllvm", "-Wl,-enable-shrink-wrap=false",
@@ -1034,27 +1128,38 @@ significant industry interest. The AOSP RISC-V port is still maturing, as
 evidenced by the smaller configuration file and explicit workarounds for
 incomplete toolchain support.
 
-**Source file**: `build/soong/cc/config/riscv64_device.go` (133 lines)
+**Source file**: `build/soong/cc/config/riscv64_device.go`
 
 ### 57.4.1 Base ISA and Extensions
 
-The RISC-V configuration specifies a rich set of extensions:
+The RISC-V configuration specifies a rich set of extensions. As of Android 17
+the baseline shares the same LP64 hardening flags as ARM64
+(`-Werror=implicit-function-declaration` and `-fstack-clash-protection`) and the
+ISA string has grown a vector bit-manipulation extension:
 
 ```go
-// build/soong/cc/config/riscv64_device.go, line 25-36
+// build/soong/cc/config/riscv64_device.go
 riscv64Cflags = []string{
+    // Help catch common 32/64-bit errors.
+    // Common to all LP64 architectures.
     "-Werror=implicit-function-declaration",
+
+    // For stack allocations larger than a page, touch each page immediately
+    // to ensure we hit the guard page on stack overflow.
+    // Common to all LP64 architectures.
+    "-fstack-clash-protection",
+
     // This is already the driver's Android default, but duplicated here (and
     // below) for ease of experimentation with additional extensions.
-    "-march=rv64gcv_zba_zbb_zbs",
-    // TODO: remove when qemu V works
+    "-march=rv64gcv_zba_zbb_zbs_zvbb",
+    // TODO: remove when qemu V works (https://gitlab.com/qemu-project/qemu/-/issues/1976)
     // (Note that we'll probably want to wait for berberis to be good enough
     // that most people don't care about qemu's V performance either!)
     "-mno-implicit-float",
 }
 ```
 
-The ISA string `-march=rv64gcv_zba_zbb_zbs` decodes as follows:
+The ISA string `-march=rv64gcv_zba_zbb_zbs_zvbb` decodes as follows:
 
 | Component | Meaning |
 |---|---|
@@ -1065,10 +1170,14 @@ The ISA string `-march=rv64gcv_zba_zbb_zbs` decodes as follows:
 | `zba` | Address generation instructions (sh1add, sh2add, sh3add) |
 | `zbb` | Basic bit manipulation (clz, ctz, cpop, rev8, etc.) |
 | `zbs` | Single-bit instructions (bset, bclr, binv, bext) |
+| `zvbb` | Vector basic bit manipulation (vector clz/ctz/popcount/rotate) |
 
 This is a notably modern baseline -- the Vector extension in particular enables
 SIMD-like operations analogous to ARM's NEON or Intel's SSE, but with a
-scalable design that does not hard-code the vector width.
+scalable design that does not hard-code the vector width. The `zvbb` extension
+added in Android 17 brings the same bit-manipulation primitives (count leading
+zeros, population count, rotate) to vector registers, which is useful for
+cryptographic and hashing kernels.
 
 ### 57.4.2 QEMU and Berberis Workarounds
 
@@ -1094,7 +1203,7 @@ floating-point or vector instructions for non-floating-point operations
 Unlike ARM64 and x86, RISC-V has no CPU variant tuning:
 
 ```go
-// build/soong/cc/config/riscv64_device.go, line 38-49
+// build/soong/cc/config/riscv64_device.go
 riscv64ArchVariantCflags = map[string][]string{}
 riscv64CpuVariantCflags  = map[string][]string{}
 ```
@@ -1103,7 +1212,7 @@ The variant maps are empty, and the factory function only accepts the default
 (empty string) variant:
 
 ```go
-// build/soong/cc/config/riscv64_device.go, line 110-115
+// build/soong/cc/config/riscv64_device.go
 func riscv64ToolchainFactory(arch android.Arch) Toolchain {
     switch arch.ArchVariant {
     case "":
@@ -1123,15 +1232,19 @@ diversified to the point where micro-architecture-specific tuning is needed.
 The RISC-V linker flags are straightforward:
 
 ```go
-// build/soong/cc/config/riscv64_device.go, line 40-45
+// build/soong/cc/config/riscv64_device.go
 riscv64Ldflags = []string{
-    "-march=rv64gcv_zba_zbb_zbs",
+    // This is already the driver's Android default, but duplicated here (and
+    // above) for ease of experimentation with additional extensions.
+    "-march=rv64gcv_zba_zbb_zbs_zvbb",
     "-Wl,-z,max-page-size=4096",
 }
 ```
 
-Note the hardcoded 4KB page size, unlike ARM64 which uses a configurable
-`MaxPageSizeSupported()`. RISC-V Android currently only supports 4KB pages.
+Note the hardcoded 4KB page size, unlike ARM64 and x86_64, which take their
+maximum page size from the configurable `MaxPageSizeSupported()` (16KB by
+default in Android 17; see section 57.11). RISC-V Android currently only
+supports 4KB pages.
 
 ### 57.4.5 Berberis Binary Translation
 
@@ -1167,23 +1280,28 @@ The ART runtime has full RISC-V support with its own ISA feature tracking. The
 `Riscv64InstructionSetFeatures` class tracks extensions as a bitmap:
 
 ```cpp
-// art/runtime/arch/riscv64/instruction_set_features_riscv64.h (line 31-39)
+// art/runtime/arch/riscv64/instruction_set_features_riscv64.h
 class Riscv64InstructionSetFeatures final : public InstructionSetFeatures {
  public:
   enum {
-    kExtGeneric    = (1 << 0),  // G: IMAFD base set
-    kExtCompressed = (1 << 1),  // C: compressed instructions
-    kExtVector     = (1 << 2),  // V: vector instructions
-    kExtZba        = (1 << 3),  // Zba: address generation
-    kExtZbb        = (1 << 4),  // Zbb: basic bit-manipulation
-    kExtZbs        = (1 << 5),  // Zbs: single-bit manipulation
+    kExtGeneric    = (1 << 0),  // G extension covers the basic set IMAFD
+    kExtCompressed = (1 << 1),  // C extension adds compressed instructions
+    kExtVector     = (1 << 2),  // V extension adds vector instructions
+    kExtZba        = (1 << 3),  // Zba adds address generation bit-manipulation instructions
+    kExtZbb        = (1 << 4),  // Zbb adds basic bit-manipulation instructions
+    kExtZbs        = (1 << 5),  // Zbs adds single-bit bit-manipulation instructions
   };
 ```
+
+ART's feature bitmap tracks six extensions (G, C, V, Zba, Zbb, Zbs). Note that
+even though the Soong toolchain now requests `zvbb` at compile time (section
+57.4.1), ART has no `zvbb` bit yet, so the JIT does not key off it; this is a
+small example of the build toolchain leading ART's runtime feature model.
 
 The feature methods allow ART's JIT compiler to query capabilities:
 
 ```cpp
-// art/runtime/arch/riscv64/instruction_set_features_riscv64.h (line 71-79)
+// art/runtime/arch/riscv64/instruction_set_features_riscv64.h
 bool HasCompressed() const { return (bits_ & kExtCompressed) != 0; }
 bool HasVector() const { return (bits_ & kExtVector) != 0; }
 bool HasZba() const { return (bits_ & kExtZba) != 0; }
@@ -1195,7 +1313,7 @@ The `FromVariant()` implementation currently only recognizes the `"generic"`
 variant and uses the full basic feature set:
 
 ```cpp
-// art/runtime/arch/riscv64/instruction_set_features_riscv64.cc (line 30-46)
+// art/runtime/arch/riscv64/instruction_set_features_riscv64.cc
 constexpr uint32_t BasicFeatures() {
   return Riscv64InstructionSetFeatures::kExtGeneric |
          Riscv64InstructionSetFeatures::kExtCompressed |
@@ -1210,8 +1328,7 @@ Riscv64FeaturesUniquePtr Riscv64InstructionSetFeatures::FromVariant(
   if (variant != "generic") {
     LOG(WARNING) << "Unexpected CPU variant for Riscv64 using defaults: " << variant;
   }
-  return Riscv64FeaturesUniquePtr(
-      new Riscv64InstructionSetFeatures(BasicFeatures()));
+  return Riscv64FeaturesUniquePtr(new Riscv64InstructionSetFeatures(BasicFeatures()));
 }
 ```
 
@@ -1219,8 +1336,9 @@ Feature detection from C preprocessor defines is also implemented, allowing
 the build system to detect extensions at compile time:
 
 ```cpp
-// art/runtime/arch/riscv64/instruction_set_features_riscv64.cc (line 52-71)
+// art/runtime/arch/riscv64/instruction_set_features_riscv64.cc
 Riscv64FeaturesUniquePtr Riscv64InstructionSetFeatures::FromCppDefines() {
+  // Assume kExtGeneric is always present.
   uint32_t bits = kExtGeneric;
 #ifdef __riscv_c
   bits |= kExtCompressed;
@@ -1245,7 +1363,7 @@ Note that the `FromCpuInfo()` and `FromHwcap()` methods are not yet implemented
 for RISC-V:
 
 ```cpp
-// art/runtime/arch/riscv64/instruction_set_features_riscv64.cc (line 73-80)
+// art/runtime/arch/riscv64/instruction_set_features_riscv64.cc
 Riscv64FeaturesUniquePtr Riscv64InstructionSetFeatures::FromCpuInfo() {
   UNIMPLEMENTED(WARNING);
   return FromCppDefines();
@@ -1279,7 +1397,7 @@ maturity gap:
 The ARM64 feature header explicitly disables SVE:
 
 ```cpp
-// art/runtime/arch/arm64/instruction_set_features_arm64.h (line 25-26)
+// art/runtime/arch/arm64/instruction_set_features_arm64.h
 // SVE is currently not enabled.
 static constexpr bool kArm64AllowSVE = false;
 ```
@@ -1294,7 +1412,7 @@ changes to the register allocator and instruction selector.
 ART stores ARM64 features as a compact bitmap for serialization:
 
 ```cpp
-// art/runtime/arch/arm64/instruction_set_features_arm64.h (line 142-150)
+// art/runtime/arch/arm64/instruction_set_features_arm64.h
 enum {
     kA53Bitfield     = 1 << 0,
     kCRCBitField     = 1 << 1,
@@ -1308,14 +1426,14 @@ enum {
 And the private member variables track each feature:
 
 ```cpp
-// art/runtime/arch/arm64/instruction_set_features_arm64.h (line 152-158)
+// art/runtime/arch/arm64/instruction_set_features_arm64.h
 const bool fix_cortex_a53_835769_;
 const bool fix_cortex_a53_843419_;
 const bool has_crc_;      // optional in ARMv8.0, mandatory in ARMv8.1
 const bool has_lse_;      // ARMv8.1 Large System Extensions
 const bool has_fp16_;     // ARMv8.2 FP16 extensions
 const bool has_dotprod_;  // optional in ARMv8.2, mandatory in ARMv8.4
-const bool has_sve_;      // optional in ARMv8.2
+const bool has_sve_;      // optional in ARMv8.2.
 ```
 
 The JIT compiler uses these feature flags to select instruction patterns.
@@ -1361,7 +1479,7 @@ Device configurations declare a primary architecture and an optional secondary
 architecture using `TARGET_ARCH` and `TARGET_2ND_ARCH`:
 
 ```makefile
-# device/generic/arm64/BoardConfig.mk, line 10-19
+# device/generic/arm64/BoardConfig.mk
 TARGET_ARCH := arm64
 TARGET_ARCH_VARIANT := armv8-a
 TARGET_CPU_VARIANT := generic
@@ -1377,7 +1495,7 @@ TARGET_2ND_CPU_ABI2 := armeabi
 Similarly, for x86_64:
 
 ```makefile
-# device/generic/x86_64/BoardConfig.mk, line 9-15
+# device/generic/x86_64/BoardConfig.mk
 TARGET_CPU_ABI := x86_64
 TARGET_ARCH := x86_64
 TARGET_ARCH_VARIANT := x86_64
@@ -1409,7 +1527,7 @@ The multilib choice directly affects how Zygote processes are started. AOSP
 includes several Zygote initialization scripts:
 
 ```makefile
-# build/make/target/product/core_64_bit.mk, line 26-34
+# build/make/target/product/core_64_bit.mk
 PRODUCT_PACKAGES += init.zygote64.rc init.zygote64_32.rc
 
 # Set the zygote property to select the 64-bit primary, 32-bit secondary script
@@ -1426,10 +1544,11 @@ TARGET_SUPPORTS_64_BIT_APPS := true
 For 64-bit-only devices:
 
 ```makefile
-# build/make/target/product/core_64_bit_only.mk, line 23-33
+# build/make/target/product/core_64_bit_only.mk
 PRODUCT_PACKAGES += init.zygote64.rc
 
 PRODUCT_VENDOR_PROPERTIES += ro.zygote=zygote64
+# A 64-bit-only platform does not have dex2oat32, so make sure dex2oat64 is enabled.
 PRODUCT_VENDOR_PROPERTIES += dalvik.vm.dex2oat64.enabled=true
 
 TARGET_SUPPORTS_32_BIT_APPS := false
@@ -1454,7 +1573,7 @@ The valid values are decoded by `decodeMultilibTargets()` in
 `build/soong/android/arch.go`:
 
 ```go
-// build/soong/android/arch.go, line 1939-1981
+// build/soong/android/arch.go
 func decodeMultilibTargets(multilib string, targets []Target, prefer32 bool) ([]Target, error) {
     var buildTargets []Target
     switch multilib {
@@ -1535,7 +1654,7 @@ cc_library {
 A real example from bionic shows this pattern at scale:
 
 ```
-// bionic/libc/Android.bp (around line 980)
+// bionic/libc/Android.bp
 arch: {
     arm: {
         srcs: [
@@ -1599,7 +1718,7 @@ out/target/product/generic_arm64/
 This is configured in `build/make/core/envsetup.mk`:
 
 ```makefile
-# build/make/core/envsetup.mk, line 582-586
+# build/make/core/envsetup.mk
 $(TARGET_2ND_ARCH_VAR_PREFIX)TARGET_OUT_INTERMEDIATES := \
     $(PRODUCT_OUT)/obj_$(TARGET_2ND_ARCH)
 $(TARGET_2ND_ARCH_VAR_PREFIX)TARGET_OUT_SHARED_LIBRARIES := \
@@ -1622,7 +1741,7 @@ The `commonGlobalCflags` array defines flags applied to every C/C++ compilation
 in AOSP:
 
 ```go
-// build/soong/cc/config/global.go, line 32-160
+// build/soong/cc/config/global.go
 commonGlobalCflags = []string{
     "-O2",
     "-Wall",
@@ -1694,20 +1813,23 @@ reducing build output size without losing debug capability.
 Flags that apply only to device (not host) code:
 
 ```go
-// build/soong/cc/config/global.go, line 172-193
+// build/soong/cc/config/global.go
 deviceGlobalCflags = []string{
     "-ffunction-sections",
     "-fdata-sections",
     "-fno-short-enums",
     "-funwind-tables",
-    "-fstack-protector-strong",
     "-Wa,--noexecstack",
     "-D_FORTIFY_SOURCE=3",
+
+    // Add stack canaries on every frame, checked on return.
+    // -fstack-clash-protection isn't supported in clang for ILP32,
+    // so that's in each of the LP64 architectures' configurations instead.
+    "-fstack-protector-strong",
 
     "-Werror=non-virtual-dtor",
     "-Werror=address",
     "-Werror=sequence-point",
-    "-Werror=format-security",
 }
 ```
 
@@ -1718,7 +1840,11 @@ data via `--gc-sections`. This is critical for reducing binary size on mobile.
 **`-fstack-protector-strong`**: Inserts stack canaries in functions that have
 local arrays or take the address of a local variable. The "strong" variant
 protects more functions than `-fstack-protector` but fewer than
-`-fstack-protector-all`, balancing security with performance.
+`-fstack-protector-all`, balancing security with performance. The companion
+flag `-fstack-clash-protection` is not in this global list because Clang does
+not support it for 32-bit (ILP32) ARM; instead the LP64 architectures (ARM64,
+RISC-V 64) add it in their per-architecture base cflags, as shown in sections
+57.2 and 57.4.1.
 
 **`-D_FORTIFY_SOURCE=3`**: The highest level of compile-time and runtime
 buffer overflow detection. Level 3 extends beyond the basic `memcpy` /
@@ -1727,7 +1853,7 @@ buffer overflow detection. Level 3 extends beyond the basic `memcpy` /
 ### 57.6.3 Device Linker Flags
 
 ```go
-// build/soong/cc/config/global.go, line 206-220
+// build/soong/cc/config/global.go
 deviceGlobalLdflags = slices.Concat([]string{
     "-Wl,-z,noexecstack",
     "-Wl,-z,relro",
@@ -1757,7 +1883,7 @@ Together, these flags form a defense-in-depth strategy against exploitation.
 The common linker flags shared between device and host:
 
 ```go
-// build/soong/cc/config/global.go, line 195-199
+// build/soong/cc/config/global.go
 commonGlobalLdflags = []string{
     "-fuse-ld=lld",
     "-Wl,--icf=safe",
@@ -1778,7 +1904,7 @@ Some warnings are so important that modules cannot disable them even if they use
 `-Wno-error` or similar flags in their `Android.bp`:
 
 ```go
-// build/soong/cc/config/global.go, line 255-326
+// build/soong/cc/config/global.go
 noOverrideGlobalCflags = []string{
     "-Werror=address-of-temporary",
     "-Werror=dangling",
@@ -1832,28 +1958,35 @@ graph TB
 Global.go also manages the Clang compiler version:
 
 ```go
-// build/soong/cc/config/global.go, line 410-422
+// build/soong/cc/config/global.go
 CStdVersion               = "gnu23"
-CppStdVersion             = "gnu++20"
+CppDefaultStdVersion      = "gnu++20"
 ExperimentalCStdVersion   = "gnu2y"
 ExperimentalCppStdVersion = "gnu++2b"
 
-ClangDefaultBase         = "prebuilts/clang/host"
-ClangDefaultVersion      = "clang-r563880c"
-ClangDefaultShortVersion = "21"
+// prebuilts/clang default settings.
+ClangDefaultBase = "prebuilts/clang/host"
+// The Clang version used in the trunk branch.
+ClangDefaultVersion = "clang-r584948"
 ```
 
 AOSP uses C23 (`gnu23`) for C code and C++20 (`gnu++20`) for C++ code.
-The `gnu` prefix means GNU extensions are enabled. The specific Clang version
-`clang-r563880c` (Clang 21) is pinned in the source and can be overridden
-via environment variables.
+The `gnu` prefix means GNU extensions are enabled. The Clang version pinned for
+the trunk branch advanced to `clang-r584948` for Android 17 (the previous
+`ClangDefaultShortVersion` constant is gone; the version is read through getter
+functions that allow per-release overrides). The default still resolves through
+`prebuilts/clang/host` and can be overridden with the `LLVM_PREBUILTS_BASE` and
+related environment variables. The C++ standard version is itself now
+release-configurable: `CppDefaultStdVersion` is the fallback, and
+`ReleaseBuildCppStdVersion()` lets a release configuration bump the standard
+without editing this file.
 
 ### 57.6.7 Auto Variable Initialization
 
 A notable security feature is automatic variable initialization:
 
 ```go
-// build/soong/cc/config/global.go, line 454-463
+// build/soong/cc/config/global.go
 if ctx.Config().IsEnvTrue("AUTO_ZERO_INITIALIZE") {
     flags = append(flags, "-ftrivial-auto-var-init=zero")
 } else if ctx.Config().IsEnvTrue("AUTO_PATTERN_INITIALIZE") {
@@ -1876,7 +2009,7 @@ The `toolchain.go` file defines helper functions for all the sanitizer runtime
 libraries:
 
 ```go
-// build/soong/cc/config/toolchain.go, line 219-265
+// build/soong/cc/config/toolchain.go
 func AddressSanitizerRuntimeLibrary() string {
     return LibclangRuntimeLibrary("asan")
 }
@@ -1908,7 +2041,7 @@ Third-party code (anything under `external/`, most of `vendor/`, and most of
 `hardware/`) gets relaxed warning treatment:
 
 ```go
-// build/soong/cc/config/global.go (line 339-364)
+// build/soong/cc/config/global.go
 extraExternalCflags = []string{
     "-Wno-enum-compare",
     "-Wno-enum-compare-switch",
@@ -1928,7 +2061,7 @@ extraExternalCflags = []string{
 And the non-overridable flags for external code are even more permissive:
 
 ```go
-// build/soong/cc/config/global.go (line 370-393)
+// build/soong/cc/config/global.go
 noOverrideExternalGlobalCflags = []string{
     "-fcommon",
     "-Wno-format-insufficient-args",
@@ -1957,7 +2090,7 @@ link.
 AOSP bans certain compiler flags entirely:
 
 ```go
-// build/soong/cc/config/global.go (line 401-408)
+// build/soong/cc/config/global.go
 IllegalFlags = []string{
     "-w",
     "-pedantic",
@@ -1978,9 +2111,9 @@ warnings from legitimate GNU extension usage throughout AOSP.
 AOSP specifies modern language standards:
 
 ```go
-// build/soong/cc/config/global.go (line 410-413)
+// build/soong/cc/config/global.go
 CStdVersion               = "gnu23"
-CppStdVersion             = "gnu++20"
+CppDefaultStdVersion      = "gnu++20"
 ExperimentalCStdVersion   = "gnu2y"
 ExperimentalCppStdVersion = "gnu++2b"
 ```
@@ -2001,7 +2134,7 @@ The `clang.go` file maintains a list of GCC flags that Clang does not
 understand, which must be filtered out when processing legacy build files:
 
 ```go
-// build/soong/cc/config/clang.go, line 25-74
+// build/soong/cc/config/clang.go
 var ClangUnknownCflags = sorted([]string{
     "-finline-functions",
     "-finline-limit=64",
@@ -2206,10 +2339,13 @@ PRODUCT_MODEL := AOSP on ARM64
 PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true
 ```
 
-The `PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true` flag is a recent addition that
-prevents bionic from exposing a fixed `PAGE_SIZE` macro, allowing the system to
-support 16KB pages on ARM64 (a kernel configuration option that improves TLB
-performance).
+The `PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true` flag prevents bionic from
+exposing a fixed `PAGE_SIZE` macro, so code must read the page size at runtime
+instead of assuming 4096 at compile time. This matters because Android 17
+defaults the ARM64 and x86_64 ELF segment alignment to 16KB (section 57.11), and
+a binary that hardcoded `PAGE_SIZE == 4096` would misbehave on a 16KB-page
+kernel. Larger pages reduce TLB pressure and page-fault overhead at the cost of
+some memory fragmentation.
 
 ---
 
@@ -2258,7 +2394,7 @@ during dynamic linking and chooses an implementation based on hardware
 capabilities:
 
 ```cpp
-// bionic/libc/arch-arm64/ifuncs.cpp (line 41-49)
+// bionic/libc/arch-arm64/ifuncs.cpp
 static inline bool __bionic_is_oryon(unsigned long hwcap) {
   if (!(hwcap & HWCAP_CPUID)) return false;
 
@@ -2273,7 +2409,7 @@ static inline bool __bionic_is_oryon(unsigned long hwcap) {
 The `memcpy` ifunc resolver demonstrates the multi-level dispatch:
 
 ```cpp
-// bionic/libc/arch-arm64/ifuncs.cpp (line 69-79)
+// bionic/libc/arch-arm64/ifuncs.cpp
 DEFINE_IFUNC_FOR(memcpy) {
   if (arg->_hwcap2 & HWCAP2_MOPS) {
     RETURN_FUNC(memcpy_func_t, __memmove_aarch64_mops);
@@ -2312,7 +2448,7 @@ hot string functions. MTE-aware variants are selected when `HWCAP2_MTE` is
 present:
 
 ```cpp
-// bionic/libc/arch-arm64/ifuncs.cpp (line 100-108)
+// bionic/libc/arch-arm64/ifuncs.cpp
 DEFINE_IFUNC_FOR(memset) {
   if (arg->_hwcap2 & HWCAP2_MOPS) {
     RETURN_FUNC(memset_func_t, __memset_aarch64_mops);
@@ -2325,7 +2461,7 @@ DEFINE_IFUNC_FOR(memset) {
 ```
 
 ```cpp
-// bionic/libc/arch-arm64/ifuncs.cpp (line 117-123)
+// bionic/libc/arch-arm64/ifuncs.cpp
 DEFINE_IFUNC_FOR(strchr) {
   if (arg->_hwcap2 & HWCAP2_MTE) {
     RETURN_FUNC(strchr_func_t, __strchr_aarch64_mte);
@@ -2389,19 +2525,23 @@ execution context in ways that C cannot express:
 The ARM64 `setjmp.S` shows the register-level detail required:
 
 ```asm
-// bionic/libc/arch-arm64/bionic/setjmp.S (line 32-51)
-// According to AARCH64 PCS document we need to save:
-//   Core     x19 - x30, sp (see section 5.1.1)
-//   VFP      d8 - d15 (see section 5.1.2)
+// bionic/libc/arch-arm64/bionic/setjmp.S
+// According to AARCH64 PCS document we need to save the following
+// registers:
 //
-// jmp_buf layout:
-//   word   name            description
-//   0      sigflag/cookie  setjmp cookie in top 31 bits, signal mask flag in low bit
-//   1      sigmask         signal mask
-//   2      core_base       base of core registers (x18-x30, sp)
-//   16     float_base      base of float registers (d8-d15)
-//   24     checksum        checksum of core registers
-//   25     reserved        reserved entries (room to grow)
+// Core     x19 - x30, sp (see section 5.1.1)
+// VFP      d8 - d15 (see section 5.1.2)
+//
+// The internal structure of a jmp_buf is totally private.
+// Current layout (changes from release to release):
+//
+// word   name            description
+// 0      sigflag/cookie  setjmp cookie in top 63 bits, signal mask flag in low bit
+// 1      sigmask         signal mask (not used with _setjmp / _longjmp)
+// 2      core_base       base of core registers (x18-x30, sp)
+// 16     float_base      base of float registers (d8-d15)
+// 24     checksum
+// 25     reserved        reserved entries (room to grow)
 ```
 
 ### 57.8.6 Bionic: MTE Integration
@@ -2415,7 +2555,7 @@ ARM64 bionic includes ELF notes that control MTE behavior. Two variants exist:
   overhead, immediate error reporting)
 
 ```asm
-// bionic/libc/arch-arm64/bionic/note_memtag_heap_async.S (line 34-46)
+// bionic/libc/arch-arm64/bionic/note_memtag_heap_async.S
   .section ".note.android.memtag", "a", %note
   .p2align 2
   .long 1f - 0f                 // int32_t namesz
@@ -2472,7 +2612,7 @@ ART's `instruction_set_features.cc` dispatches feature detection to
 architecture-specific implementations:
 
 ```cpp
-// art/runtime/arch/instruction_set_features.cc (line 33-53)
+// art/runtime/arch/instruction_set_features.cc
 std::unique_ptr<const InstructionSetFeatures> InstructionSetFeatures::FromVariant(
     InstructionSet isa, const std::string& variant, std::string* error_msg) {
   switch (isa) {
@@ -2496,7 +2636,7 @@ The ARM64 feature detection (`instruction_set_features_arm64.cc`) is
 particularly detailed, tracking specific CPU errata and optional ISA extensions:
 
 ```cpp
-// art/runtime/arch/arm64/instruction_set_features_arm64.cc (line 52-85)
+// art/runtime/arch/arm64/instruction_set_features_arm64.cc
 static const char* arm64_variants_with_a53_835769_bug[] = {
     "default", "generic",
     "cortex-a53", "cortex-a53.a57", "cortex-a53.a72",
@@ -2686,7 +2826,7 @@ ARM 32-bit has a unique feature among AOSP architectures: two instruction
 encodings. The ARM toolchain supports switching between them:
 
 ```go
-// build/soong/cc/config/arm_device.go (line 49-54)
+// build/soong/cc/config/arm_device.go
 armArmCflags = []string{}
 
 armThumbCflags = []string{
@@ -2698,7 +2838,7 @@ armThumbCflags = []string{
 The toolchain's `InstructionSetFlags()` method selects between them:
 
 ```go
-// build/soong/cc/config/arm_device.go (line 288-297)
+// build/soong/cc/config/arm_device.go
 func (t *toolchainArm) InstructionSetFlags(isa string) (string, error) {
     switch isa {
     case "arm":
@@ -2727,7 +2867,7 @@ floating-point values are passed in integer registers at function call
 boundaries, even though the hardware FPU is used for computation:
 
 ```go
-// build/soong/cc/config/arm_device.go (line 56-77)
+// build/soong/cc/config/arm_device.go
 armArchVariantCflags = map[string][]string{
     "armv7-a": []string{
         "-march=armv7-a",
@@ -2767,7 +2907,7 @@ Even the way binaries are stripped varies by architecture. Bionic's
 `Android.bp` configures different strip behavior for each architecture:
 
 ```
-// bionic/libc/Android.bp (around line 135-165)
+// bionic/libc/Android.bp
 arch: {
     arm: {
         // arm32 does not produce complete exidx unwind information,
@@ -2812,7 +2952,7 @@ use DWARF-based unwinding and only need the symbol table kept.
 The bionic page size macro handling is architecture-aware:
 
 ```go
-// build/soong/cc/config/arm64_device.go (line 98-106)
+// build/soong/cc/config/arm64_device.go
 pctx.VariableFunc("Arm64Cflags", func(ctx android.PackageVarContext) string {
     flags := arm64Cflags
     if ctx.Config().NoBionicPageSizeMacro() {
@@ -2827,7 +2967,7 @@ pctx.VariableFunc("Arm64Cflags", func(ctx android.PackageVarContext) string {
 The same pattern exists for x86_64:
 
 ```go
-// build/soong/cc/config/x86_64_device.go (line 111-119)
+// build/soong/cc/config/x86_64_device.go
 pctx.VariableFunc("X86_64Cflags", func(ctx android.PackageVarContext) string {
     flags := x86_64Cflags
     if ctx.Config().NoBionicPageSizeMacro() {
@@ -2850,7 +2990,7 @@ marks it as deprecated, producing warnings when code uses it.
 Product configurations opt into this behavior:
 
 ```makefile
-# build/make/target/product/aosp_arm64.mk (line 80)
+# build/make/target/product/aosp_arm64.mk
 PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true
 ```
 
@@ -2860,7 +3000,7 @@ Several ARM 32-bit CPU variants require a manual define to advertise Large
 Physical Address Extensions (LPAE) support:
 
 ```go
-// build/soong/cc/config/arm_device.go (line 80-100)
+// build/soong/cc/config/arm_device.go
 "cortex-a7": []string{
     "-mcpu=cortex-a7",
     "-mfpu=neon-vfpv4",
@@ -2879,7 +3019,212 @@ load/store) relies on this macro to detect hardware support.
 
 ---
 
-## 57.9 Try It
+## 57.9 The LFI Toolchain: Lightweight Fault Isolation on ARM64
+
+Android 17 adds a sixth toolchain that does not correspond to a new CPU
+architecture at all. It is an ARM64 variant built for Lightweight Fault
+Isolation (LFI), an in-process sandbox that confines untrusted native code to a
+restricted region of the address space without a separate process or hardware
+domain crossing. The toolchain lives in its own file alongside the per-arch
+device configs:
+
+**Source file**: `build/soong/cc/config/arm64_lfi_device.go`
+
+### 57.9.1 Why a Separate Toolchain
+
+Section 57.1.1 showed that `toolchainFactories` is keyed not just by OS and
+architecture but by a boolean LFI flag, and that `registerLFIToolchainFactory`
+fills the `true` slot. The reason is that LFI is a code-generation property:
+sandboxed code must be compiled with a different target and a constrained
+instruction selection so that the LFI rewriter/verifier can prove it stays
+inside its sandbox. That decision has to be made when the toolchain is resolved,
+which happens early and is driven purely by the target's arch, so LFI is modeled
+as a parallel toolchain rather than a flag bolted onto the normal one.
+
+On the `android.Target` side this shows up as a dedicated `LFI bool` field, an
+`AndroidLFITarget` that is prepended to a module's target list when the module
+opts in, and a distinct `lfi_` variation name produced by the arch mutator:
+
+```go
+// build/soong/android/arch.go
+// If this is an LFI (Lightweight Fault Isolation) arch variant. There is also an LFI
+// transition mutator, but we have separate LFI arch variants as well because toolchain
+// resolution happens early, based on arch.
+LFI bool
+```
+
+```go
+// build/soong/android/arch.go
+func (target Target) ArchVariation() string {
+    var variation string
+    if target.NativeBridge {
+        variation = "native_bridge_"
+    } else if target.LFI {
+        variation = "lfi_"
+    }
+    variation += target.Arch.String()
+    return variation
+}
+```
+
+### 57.9.2 The LFI ARM64 Toolchain
+
+The LFI toolchain reuses ARM64's flag-assembly helper but pins the architecture
+to a fixed configuration. The factory ignores whatever variant the board
+declares and forces `armv8-a` with the Cortex-A53 tuning and the `branchprot`
+feature, because that is the only configuration the LFI compiler supports today:
+
+```go
+// build/soong/cc/config/arm64_lfi_device.go
+func arm64LFIToolchainFactory(arch android.Arch) Toolchain {
+    // Force armv8-a when compiling for lfi, as that's all the lfi compiler supports for now.
+    arch = android.Arch{
+        ArchType:     android.Arm64,
+        ArchVariant:  "armv8-a",
+        CpuVariant:   "cortex-a53",
+        Abi:          []string{"arm64-v8a"},
+        ArchFeatures: []string{"branchprot"},
+    }
+    toolchainCflags, toolchainLdflags := arm64ToolchainFlags(arch)
+    return &toolchainLFIArm64{
+        toolchainCflags:  toolchainCflags,
+        toolchainLdflags: toolchainLdflags,
+    }
+}
+
+func init() {
+    registerLFIToolchainFactory(android.Android, android.Arm64, arm64LFIToolchainFactory)
+}
+```
+
+Calling `arm64ToolchainFlags` (the helper extracted from the ordinary ARM64
+factory in section 57.2.6) means the LFI toolchain inherits the exact same
+PAC/BTI flags and Cortex-A53 erratum fixes as the normal build, which is why
+that helper was split out.
+
+The toolchain type itself differs from the ordinary ARM64 toolchain in two
+telling ways. First, its Clang triple is a custom one that the LFI back end
+recognizes; second, it embeds `toolchainLFI` (from
+`build/soong/cc/config/lfi.go`) rather than `toolchainBionic`, so it links with
+no CRT objects and reports `Lfi()` as true:
+
+```go
+// build/soong/cc/config/arm64_lfi_device.go
+func (t *toolchainLFIArm64) ClangTriple() string {
+    return "aarch64_lfi-unknown-linux-android30"
+}
+
+func (t *toolchainLFIArm64) Cflags() string {
+    return "${config.Arm64Cflags} -mno-outline-atomics"
+}
+```
+
+```go
+// build/soong/cc/config/lfi.go
+type toolchainLFI struct {
+    toolchainBase
+    toolchainNoCrt
+}
+
+func (toolchainLFI) Lfi() bool { return true }
+```
+
+The `aarch64_lfi-` triple steers the compiler into the sandbox-friendly code
+model, and `-mno-outline-atomics` keeps atomic operations inline (the
+out-of-line atomic helpers would call into runtime support outside the sandbox).
+This is the concrete payoff of the `Lfi()` method added to the `Toolchain`
+interface in section 57.1.2: ordinary bionic toolchains return `false`, and only
+this toolchain returns `true`, so the rest of the build can branch on whether it
+is producing sandboxed code.
+
+```mermaid
+graph TD
+    A["Module targets LFI arch variant"] --> B["arch mutator: lfi_arm64 variation"]
+    B --> C["findToolchain(os, arch, lfi=true)"]
+    C --> D["arm64LFIToolchainFactory()"]
+    D --> E["Force armv8-a + cortex-a53 + branchprot"]
+    E --> F["arm64ToolchainFlags() (shared with normal ARM64)"]
+    F --> G["toolchainLFIArm64<br/>triple: aarch64_lfi-unknown-linux-android30<br/>no CRT, Lfi() == true"]
+```
+
+## 57.10 16KB Page Size by Default
+
+The most consequential 17 change for architecture support is invisible in any
+single `-march=` flag: the platform now aligns 64-bit binaries for a 16KB page
+size by default. ARM64 has long allowed 4KB, 16KB, and 64KB pages, but until
+recently AOSP shipped binaries aligned for 4KB pages, which a 16KB-page kernel
+cannot load. Android 17 flips the default the other way.
+
+### 57.10.1 The Build-Side Default
+
+`TARGET_MAX_PAGE_SIZE_SUPPORTED` controls the alignment of ELF segments, and its
+default is computed in `build/make/core/config.mk`:
+
+```makefile
+# build/make/core/config.mk
+ifdef PRODUCT_MAX_PAGE_SIZE_SUPPORTED
+  TARGET_MAX_PAGE_SIZE_SUPPORTED := $(PRODUCT_MAX_PAGE_SIZE_SUPPORTED)
+else ifeq ($(strip $(call is-low-mem-device)),true)
+  # Low memory device will have 4096 binary alignment.
+  TARGET_MAX_PAGE_SIZE_SUPPORTED := 4096
+else ifeq ($(call math_lt,$(VSR_VENDOR_API_LEVEL),34),true)
+  TARGET_MAX_PAGE_SIZE_SUPPORTED := 4096
+else ifeq (,$(filter arm64 x86_64,$(TARGET_ARCH)))
+  # TARGET_MAX_PAGE_SIZE_SUPPORTED > 4096 is only supported in arm64 and
+  # x86_64 targets.
+  TARGET_MAX_PAGE_SIZE_SUPPORTED := 4096
+else
+  # The default binary alignment for userspace is 16384.
+  TARGET_MAX_PAGE_SIZE_SUPPORTED := 16384
+endif
+```
+
+The default is 16384 (16KB) unless something opts out: a low-memory device, a
+vendor still on an older VSR API level, or a 32-bit / RISC-V target (only arm64
+and x86_64 support pages larger than 4KB here). This value flows straight into
+the per-architecture linker flags as `MaxPageSizeSupported()`, which section
+57.2.7 showed feeding the ARM64 `-Wl,-z,max-page-size=` flag; the x86_64
+toolchain consumes it the same way. RISC-V keeps a hardcoded 4096
+(section 57.4.4).
+
+### 57.10.2 The Bionic-Side Macro
+
+Aligning segments for 16KB pages is only half the story. Code that hardcoded
+`PAGE_SIZE` as a compile-time constant of 4096 would compute wrong buffer sizes
+and `mmap` alignments on a 16KB kernel. Bionic addresses this with the
+page-size macro controls described in section 57.8.15:
+`-D__BIONIC_NO_PAGE_SIZE_MACRO` removes the `PAGE_SIZE` constant entirely so code
+must call `getpagesize()` or `sysconf(_SC_PAGE_SIZE)` at runtime, while
+`-D__BIONIC_DEPRECATED_PAGE_SIZE_MACRO` keeps the macro but flags its use. The
+generic AOSP arm64 product turns on the strict form:
+
+```makefile
+# build/make/target/product/aosp_arm64.mk
+PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true
+```
+
+`PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO` is read by Soong as `NoBionicPageSizeMacro()`
+and selects which of the two macros each LP64 architecture base-cflags function
+appends (the `Arm64Cflags` and `X86_64Cflags` `VariableFunc`s in sections 57.2
+and 57.8.15). The net effect for Android 17: platform binaries are 16KB-aligned,
+and the C library refuses to let new platform code assume a fixed page size, so
+the same image runs correctly on both 4KB and 16KB kernels.
+
+```mermaid
+graph TD
+    A["config.mk default<br/>TARGET_MAX_PAGE_SIZE_SUPPORTED = 16384<br/>(arm64 / x86_64, non-low-mem)"] --> B["MaxPageSizeSupported()"]
+    B --> C["arm64 / x86_64 Ldflags<br/>-Wl,-z,max-page-size=16384"]
+    C --> D["16KB-aligned ELF segments"]
+    E["PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO = true"] --> F["NoBionicPageSizeMacro()"]
+    F --> G["-D__BIONIC_NO_PAGE_SIZE_MACRO<br/>(no compile-time PAGE_SIZE)"]
+    G --> H["code reads page size at runtime"]
+    D --> I["Binary loads on 4KB and 16KB kernels"]
+    H --> I
+```
+
+---
+
+## 57.11 Try It
 
 ### Exercise 1: Inspect Architecture Flags for Your Device
 
@@ -3154,6 +3499,16 @@ design principles:
    `NativeBridgeCallbacks` interface enables binary translation (Berberis,
    Houdini) for running foreign-architecture native code.
 
+7. **A parallel LFI toolchain**: Android 17 models Lightweight Fault Isolation
+   as a separate ARM64 toolchain (`Lfi()` returns true), resolved through an
+   `lfi bool` key in the toolchain factory map, reusing the ordinary ARM64 flag
+   logic while pinning a sandbox-friendly target triple.
+
+Android 17 also defaults 64-bit binaries to a 16KB page-size alignment on arm64
+and x86_64, adds the Intel `pantherlake` x86/x86_64 variant (mirrored in ART's
+feature tables), extends the RISC-V baseline ISA with the `zvbb` vector
+bit-manipulation extension, and advances the pinned Clang to `clang-r584948`.
+
 The following table summarizes the characteristics of each supported
 architecture:
 
@@ -3161,12 +3516,13 @@ architecture:
 |---|---|---|---|---|---|
 | Bits | 32 | 64 | 32 | 64 | 64 |
 | Clang Triple | `armv7a-linux-androideabi` | `aarch64-linux-android` | `i686-linux-android` | `x86_64-linux-android` | `riscv64-linux-android` |
-| Arch Variants | 4 | 10 | 14 | 13 | 0 |
+| Arch Variants | 4 | 10 | 15 | 14 | 0 |
 | CPU Variants | 18 | 10 | 0 | 0 | 0 |
 | SIMD | NEON | NEON/SVE | SSE/AVX | SSE/AVX | RVV |
-| Default `-march=` | `armv7-a` | `armv8-a` | `prescott` | `x86-64` | `rv64gcv_zba_zbb_zbs` |
+| Default `-march=` | `armv7-a` | `armv8-a` | `prescott` | `x86-64` | `rv64gcv_zba_zbb_zbs_zvbb` |
 | Instruction Sets | ARM + Thumb | AArch64 | x86 | x86-64 | RV64 + C |
 | Errata Workarounds | Cortex-A8 | Cortex-A53 | None | None | QEMU V |
+| Default max page size | 4KB | 16KB | 4KB | 16KB | 4KB |
 | Float ABI | Soft (`softfp`) | Hard | N/A | N/A | Hard |
 | Yasm Support | No | No | Yes | Yes | No |
 | Secondary Arch For | ARM64 | N/A | x86_64 | N/A | N/A |
@@ -3196,11 +3552,15 @@ The key source files for architecture support are:
 | `build/soong/cc/config/x86_64_device.go` | x86_64 toolchain configuration |
 | `build/soong/cc/config/x86_device.go` | x86 toolchain configuration |
 | `build/soong/cc/config/riscv64_device.go` | RISC-V 64 toolchain configuration |
-| `build/soong/cc/config/global.go` | Global compiler flags |
-| `build/soong/cc/config/toolchain.go` | Toolchain interface and helpers |
+| `build/soong/cc/config/arm64_lfi_device.go` | ARM64 Lightweight Fault Isolation toolchain |
+| `build/soong/cc/config/lfi.go` | LFI toolchain base type |
+| `build/soong/cc/config/global.go` | Global compiler flags, Clang version |
+| `build/soong/cc/config/toolchain.go` | Toolchain interface and factory map |
 | `build/soong/cc/config/clang.go` | Clang-specific flag filtering |
 | `build/soong/cc/config/bionic.go` | Bionic CRT objects and defaults |
-| `build/soong/android/arch.go` | Multilib and architecture mutators |
+| `build/soong/cc/linker.go` | RELR / packed relocation linker flags |
+| `build/soong/android/arch.go` | Multilib, arch mutators, LFI target |
+| `build/make/core/config.mk` | `TARGET_MAX_PAGE_SIZE_SUPPORTED` default (16KB) |
 | `bionic/libc/arch-arm64/ifuncs.cpp` | ARM64 runtime function dispatch |
 | `art/runtime/arch/instruction_set_features.cc` | ART ISA feature detection |
 | `device/generic/arm64/BoardConfig.mk` | ARM64 reference device config |
@@ -5176,25 +5536,56 @@ to boot. Additional modules loaded later include:
 
 ### 58.5.4 Kernel Version Selection
 
-The Cuttlefish configuration shows how kernel versions are selected:
+In Android 17 the Cuttlefish kernel version is no longer a single hard-coded
+value. `device/google/cuttlefish/shared/BoardConfig.mk` defines a default and
+then selects per-product, with several targets reading their version from
+release-config variables:
 
 ```makefile
 # Source: device/google/cuttlefish/shared/BoardConfig.mk
-TARGET_KERNEL_USE ?= 6.12
+DEFAULT_TARGET_KERNEL_USE := 6.12
 
-SYSTEM_DLKM_SRC ?= \
-    kernel/prebuilts/$(TARGET_KERNEL_USE)/$(TARGET_KERNEL_ARCH)
-KERNEL_MODULES_PATH ?= \
-    kernel/prebuilts/common-modules/virtual-device/\
-$(TARGET_KERNEL_USE)/$(subst _,-,$(TARGET_KERNEL_ARCH))
-
-TARGET_KERNEL_PATH ?= \
-    $(SYSTEM_DLKM_SRC)/kernel-$(TARGET_KERNEL_USE)
+ifneq (,$(findstring cf_gwear_arm,$(PRODUCT_NAME)))
+TARGET_KERNEL_USE ?= 6.6
+else ifeq (true,$(CLOCKWORK_EMULATOR_PRODUCT))
+TARGET_KERNEL_USE ?= 6.1
+else ifneq (,$(findstring x86_tv,$(PRODUCT_NAME)))
+TARGET_KERNEL_USE ?= 6.1
+else ifneq (,$(filter cf_x86_64_desktop,$(PRODUCT_NAME)))
+TARGET_KERNEL_USE ?= $(RELEASE_KERNEL_CUTTLEFISH_X86_64_VERSION)
+TARGET_KERNEL_DIR ?= $(RELEASE_KERNEL_CUTTLEFISH_X86_64_DIR)
+else ifneq (,$(filter cf_arm64_desktop,$(PRODUCT_NAME)))
+TARGET_KERNEL_USE ?= $(RELEASE_KERNEL_CUTTLEFISH_ARM64_VERSION)
+TARGET_KERNEL_DIR ?= $(RELEASE_KERNEL_CUTTLEFISH_ARM64_DIR)
+else
+TARGET_KERNEL_USE ?= $(DEFAULT_TARGET_KERNEL_USE)
+endif
 ```
 
-The default kernel version is 6.12, with prebuilt kernels stored under
-`kernel/prebuilts/`. The `common-modules/virtual-device/` directory contains
-kernel modules specifically built for virtual device use.
+The default for a generic phone target is 6.12. Older form factors are pinned
+to long-term kernels (Wear OS on 6.6, the clockwork emulator and x86 TV on 6.1).
+The most interesting case is the **desktop** target: it reads its version and
+directory from `RELEASE_KERNEL_CUTTLEFISH_*` release-config variables and then
+sources its kernel and modules from a separate desktop-specific tree rather
+than the shared prebuilts:
+
+```makefile
+# Source: device/google/cuttlefish/shared/BoardConfig.mk
+ifneq (,$(filter cf_x86_64_desktop cf_arm64_desktop,$(PRODUCT_NAME)))
+SYSTEM_DLKM_SRC ?= device/google/desktop/cuttlefish-$(TARGET_KERNEL_ARCH)-kernels/$(TARGET_KERNEL_USE)/$(TARGET_KERNEL_DIR)/system_dlkm
+KERNEL_MODULES_PATH ?= device/google/desktop/cuttlefish-$(TARGET_KERNEL_ARCH)-kernels/$(TARGET_KERNEL_USE)/$(TARGET_KERNEL_DIR)/vendor_dlkm
+else
+SYSTEM_DLKM_SRC ?= kernel/prebuilts/$(TARGET_KERNEL_USE)/$(TARGET_KERNEL_ARCH)
+KERNEL_MODULES_PATH ?= \
+    kernel/prebuilts/common-modules/virtual-device/$(TARGET_KERNEL_USE)/$(subst _,-,$(TARGET_KERNEL_ARCH))
+endif
+
+TARGET_KERNEL_PATH ?= $(SYSTEM_DLKM_SRC)/kernel-$(TARGET_KERNEL_USE)
+```
+
+For everything other than desktop, prebuilt kernels are stored under
+`kernel/prebuilts/`, and the `common-modules/virtual-device/` directory holds
+kernel modules built specifically for virtual device use.
 
 ### 58.5.5 ZRAM and Memory Configuration
 
@@ -5275,40 +5666,89 @@ graph TB
 | Multi-instance | Multiple processes | `launch_cvd --num_instances=N` |
 | OTA updates | Not supported | A/B updates supported |
 | Snapshotting | QEMU snapshots | Not a primary feature |
-| Form factors | Phone, Tablet | Phone, TV, Auto, Wear |
+| Form factors | Phone, Tablet, Foldable, Wear, TV | Phone, Foldable, Tablet (pc), TV, Auto, Wear, Desktop |
 | Architecture | x86_64, ARM64, RISC-V | x86_64, ARM64, RISC-V |
 
 ### 58.6.3 Cuttlefish Device Targets
 
-From `device/google/cuttlefish/AndroidProducts.mk` and the directory
-structure, Cuttlefish supports a wider array of architectures and form factors:
+`device/google/cuttlefish/AndroidProducts.mk` enumerates the build targets.
+Each product name follows the `aosp_cf_<arch>_<formfactor>` convention and
+points at a thin `aosp_cf.mk` under a `vsoc_*` device directory. The "vsoc"
+prefix stands for "Virtual System on Chip." The device directories present in
+the Android 17 tree are:
 
-| Directory | Architecture |
-|-----------|-------------|
-| `vsoc_x86_64/` | x86_64 |
-| `vsoc_arm64/` | ARM64 |
-| `vsoc_riscv64/` | RISC-V 64-bit |
-| `vsoc_x86_64_only/` | x86_64 (64-bit only) |
-| `vsoc_arm64_only/` | ARM64 (64-bit only) |
+| Directory | Architecture / variant |
+|-----------|------------------------|
+| `vsoc_x86_64/` | x86_64 (with 32-bit support) |
+| `vsoc_x86_64_only/` | x86_64, 64-bit only |
+| `vsoc_x86_64_pgagnostic/` | x86_64, page-size agnostic (4KB/16KB) |
 | `vsoc_x86_64_minidroid/` | Minimal x86_64 |
+| `vsoc_x86_64_host/` | x86_64 host-side build |
+| `vsoc_arm64/` | ARM64 (with 32-bit support) |
+| `vsoc_arm64_only/` | ARM64, 64-bit only |
+| `vsoc_arm64_pgagnostic/` | ARM64, page-size agnostic |
 | `vsoc_arm64_minidroid/` | Minimal ARM64 |
+| `vsoc_arm/` and `vsoc_arm_minidroid/` | 32-bit ARM |
+| `vsoc_riscv64/` | RISC-V 64-bit |
 | `vsoc_riscv64_minidroid/` | Minimal RISC-V |
-| `vsoc_arm64_pgagnostic/` | ARM64 page-size agnostic |
 
-The "vsoc" prefix stands for "Virtual System on Chip."
+The form factors fan out from those directories. In Android 17 the catalog has
+grown well past the phone/tablet pair, and the `aosp_cf_*` product list now
+spans phone, foldable, tablet (`pc`), TV, Wear, Automotive (several `auto_*`
+layouts), and the new **desktop** target:
+
+| Product | Device dir | Notes |
+|---------|-----------|-------|
+| `aosp_cf_x86_64_phone` | `vsoc_x86_64/phone/` | The canonical CI reference target |
+| `aosp_cf_x86_64_foldable` | `vsoc_x86_64_only/phone/` | `aosp_cf_foldable.mk` overlay |
+| `aosp_cf_x86_64_pc` | `vsoc_x86_64_only/pc/` | Large-screen / tablet layout |
+| `aosp_cf_x86_64_tv` | `vsoc_x86_64_only/tv/` | Android TV |
+| `aosp_cf_x86_64_wear` | `vsoc_x86_64_only/wear/` | Wear OS |
+| `aosp_cf_x86_64_auto` (+ `auto_md`, `auto_mdnd`, `auto_dd`, `auto_portrait`, ...) | `vsoc_x86_64_only/auto*/` | Automotive, multi-display variants |
+| `aosp_cf_x86_64_desktop` | `vsoc_x86_64_only/desktop/` | New in Android 17 |
+| `aosp_cf_arm64_phone` / `aosp_cf_arm64_auto` | `vsoc_arm64*/` | ARM equivalents |
+| `aosp_cf_riscv64_phone` / `_wear` / `_slim` | `vsoc_riscv64*/` | RISC-V |
+
+#### The desktop target (Android 17)
+
+`aosp_cf_x86_64_desktop` is a notable Android 17 addition. Its product makefile
+`device/google/cuttlefish/vsoc_x86_64_only/desktop/aosp_cf.mk` inherits a
+desktop-specific vendor stack
+(`device/google/cuttlefish/shared/desktop/common_x86.mk` and
+`aosp_device_vendor.mk`) and sets `PRODUCT_MODEL := Cuttlefish AOSP x86_64
+Desktop`. Two things set it apart from the handheld targets:
+
+```makefile
+# Source: device/google/cuttlefish/vsoc_x86_64_only/desktop/aosp_cf.mk
+PRODUCT_NAME := aosp_cf_x86_64_desktop
+PRODUCT_DEVICE := vsoc_x86_64_only
+
+# Ika uses ndk-translation only.
+AL_BINARY_TRANSLATION_MODE := ndk_translation_only
+
+# ARC/Auto/Desktop - don't use compressed apks.
+UNCOMPRESS_CHROME_WEBVIEW = true
+```
+
+The desktop target also pulls its kernel from a separate location rather than
+the shared `kernel/prebuilts/` tree (see section 58.5.4), reflecting that the
+desktop Android effort ships its own kernel branch.
 
 ### 58.6.4 Host Tooling
 
 Cuttlefish includes an extensive suite of host-side tools under
-`device/google/cuttlefish/host/commands/`:
+`device/google/cuttlefish/host/commands/`. These build into the
+`cvd-host_package.tar.gz` artifact that runs alongside the guest images:
 
 | Tool | Purpose |
 |------|---------|
-| `start/` | Launch the virtual device |
+| `start/` | Launch the virtual device (builds `cvd_internal_start`, symlinked as `launch_cvd`) |
 | `stop/` | Stop the virtual device |
-| `run_cvd/` | Core virtual device runtime |
-| `assemble_cvd/` | Assemble disk images and configuration |
-| `cvd_env/` | Environment management |
+| `run_cvd/` | Core virtual device runtime that owns crosvm and the helper daemons |
+| `assemble_cvd/` | Assemble disk images and generate the VMM configuration |
+| `status/` and `restart_cvd/` | Query and restart a running instance |
+| `cvd_env/` | gRPC environment management |
+| `process_sandboxer/` | Wrap host daemons in seccomp sandboxes (new in Android 17) |
 | `console_forwarder/` | Serial console forwarding |
 | `kernel_log_monitor/` | Kernel log monitoring |
 | `log_tee/` | Log tee-ing and forwarding |
@@ -5318,8 +5758,11 @@ Cuttlefish includes an extensive suite of host-side tools under
 | `display/` | Display management |
 | `screen_recording_server/` | Screen recording service |
 | `record_cvd/` | Recording utility |
-| `secure_env/` | Security environment (KeyMint, etc.) |
+| `secure_env/` | Security environment (KeyMint, Gatekeeper, TPM) |
 | `sensors_simulator/` | Sensor simulation |
+| `vhost_user_input/` | vhost-user input device backend |
+| `casimir_control_server/` | NFC (Casimir) control |
+| `jcardsim/` | Java Card simulator for secure element / eSIM |
 | `health/` | Device health monitoring |
 | `host_bugreport/` | Bug report collection |
 | `metrics/` | Metrics collection |
@@ -5327,7 +5770,23 @@ Cuttlefish includes an extensive suite of host-side tools under
 | `powerbtn_cvd/` | Power button simulation |
 | `powerwash_cvd/` | Factory reset simulation |
 | `cvd_send_sms/` | SMS injection |
-| `cvd_update_location/` | Location update injection |
+| `cvd_update_location/` / `cvd_import_locations/` | Location update injection |
+
+Note the host-tooling story shifted significantly. The orchestrating `cvd`
+front-end and the Debian packaging no longer live in the AOSP `device/google/cuttlefish`
+tree; they were moved to the separate `github.com/google/android-cuttlefish`
+repository. The first lines of `device/google/cuttlefish/README.md` now point
+developers there:
+
+```
+# Source: device/google/cuttlefish/README.md
+For all host tools development please refer to
+https://github.com/google/android-cuttlefish/blob/main/docs/HostToolsMigration.md
+```
+
+The older `acloud` launcher that earlier guides referenced is not part of this
+tree at all in Android 17 — local launches go directly through `launch_cvd`
+(from the host package) or through `cvd` from the external repository.
 
 ### 58.6.5 Board Configuration Differences
 
@@ -5586,11 +6045,11 @@ graph TB
 #### PCI Slot Assignments
 
 ```cpp
-// Source: device/google/cuttlefish/host/libs/vm_manager/vm_manager.h:86-89
-static const int kNetPciDeviceNum = 1;     // Network on PCI slot 1
-static const int kGpuPciSlotNum = 2;        // GPU on PCI slot 2
+// Source: device/google/cuttlefish/host/libs/vm_manager/vm_manager.h:79-91
+static constexpr int kMaxDisks = 3;
 static const int kDefaultNumBootDevices = 2;
-static const int kMaxDisks = 3;
+static constexpr const int kNetPciDeviceNum = 1;   // Network on PCI slot 1
+static constexpr const int kGpuPciSlotNum = 2;     // GPU on PCI slot 2
 ```
 
 Network interfaces are assigned sub-addresses on PCI slot 1:
@@ -5622,7 +6081,7 @@ graph LR
 ```
 
 ```cpp
-// Source: device/google/cuttlefish/host/libs/vm_manager/crosvm_builder.h:64
+// Source: device/google/cuttlefish/host/libs/vm_manager/crosvm_builder.h:71-72
 void AddVhostUser(const std::string& type, const std::string& socket_path,
                   int max_queue_size = 256);
 ```
@@ -5641,12 +6100,15 @@ The default virtqueue size is 256 entries (must be a power of 2).
 
 ### 58.6.12 HVC Port Map
 
-Cuttlefish uses 18 **Hypervisor Virtual Console** (HVC) ports to tunnel
-communication between guest HALs and host-side daemons. Each HVC port
-appears as `/dev/hvcN` in the guest:
+Cuttlefish uses **Hypervisor Virtual Console** (HVC) ports to tunnel
+communication between guest HALs and host-side daemons. Each HVC port appears
+as `/dev/hvcN` in the guest. In Android 17 the map grew to 20 ports
+(`/dev/hvc0` through `/dev/hvc19`). The ports are allocated in a fixed order in
+`crosvm_manager.cpp`; even ports whose feature is disabled get a sink port so
+the PCI device IDs stay stable:
 
 ```cpp
-// Source: device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp:768-946
+// Source: device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp:769-945
 ```
 
 | Port | Guest Device | Host Endpoint | Purpose |
@@ -5664,34 +6126,53 @@ appears as `/dev/hvcN` in the guest:
 | `/dev/hvc10` | OEMLock | OEMLock daemon | OEM bootloader unlock |
 | `/dev/hvc11` | KeyMint | `secure_env` daemon | Rust KeyMint HAL |
 | `/dev/hvc12` | NFC | NFC daemon | NFC emulation |
-| `/dev/hvc13` | Sensors | `sensors_simulator` | Accelerometer/gyro/etc. |
+| `/dev/hvc13` | (vacant) | sink | Reserved for future use |
 | `/dev/hvc14` | MCU control | MCU daemon | Microcontroller control |
 | `/dev/hvc15` | MCU UART | MCU daemon | Microcontroller serial |
 | `/dev/hvc16` | Ti50 TPM | TPM daemon | TPM FIFO commands |
 | `/dev/hvc17` | JCardSim | Java Card simulator | eSIM/secure element |
+| `/dev/hvc18` | Sensors control | `sensors_simulator` | Sensor enable/config commands |
+| `/dev/hvc19` | Sensors data | `sensors_simulator` | Sensor sample stream |
 
-Each HVC port is backed by either a Unix socket or a pipe on the host side:
+Two changes stand out versus earlier releases: the single sensors port that
+used to sit at `/dev/hvc13` has been split into a **control** channel
+(`/dev/hvc18`) and a **data** channel (`/dev/hvc19`), and `/dev/hvc13` is now
+explicitly left vacant (a comment in the source marks it "feel free to use").
+
+Each HVC port is backed by either a pipe or a Unix socket on the host side. The
+builder exposes four helpers, all of which take string FIFO/socket paths:
 
 ```cpp
 // Source: device/google/cuttlefish/host/libs/vm_manager/crosvm_builder.h:42-45
-void AddHvcSink();                         // null device (unused port)
-void AddHvcReadOnly(Fd output, bool console); // one-way (kernel logs)
-void AddHvcReadWrite(Fd output, Fd input);    // bidirectional
-void AddHvcSocket(const std::string& socket); // Unix socket
+void AddHvcSink();                                            // null device (unused port)
+void AddHvcReadOnly(const std::string& output, bool console = false); // one-way (kernel logs)
+void AddHvcReadWrite(const std::string& output, const std::string& input); // bidirectional
+void AddHvcSocket(const std::string& socket);                 // Unix socket
 ```
 
 ### 58.6.13 GPU Pipeline and Display Modes
 
-Cuttlefish supports multiple GPU rendering modes, configured via the
-`--gpu_mode` flag:
+Cuttlefish supports several GPU rendering modes, configured via the
+`--gpu_mode` flag. The full set accepted by `assemble_cvd` in Android 17 is
+`{auto, custom, drm_virgl, gfxstream, gfxstream_guest_angle,
+gfxstream_guest_angle_host_swiftshader, gfxstream_guest_angle_host_lavapipe,
+guest_swiftshader}` (from
+`device/google/cuttlefish/host/commands/assemble_cvd/flags.cc`):
 
 | Mode | Description |
 |---|---|
-| `gfxstream` | Host GPU passthrough via gfxstream protocol (default) |
+| `auto` | Pick the best available mode for the detected host GPU |
+| `gfxstream` | Host GPU passthrough via gfxstream protocol |
 | `gfxstream_guest_angle` | ANGLE in guest, gfxstream transport to host GPU |
+| `gfxstream_guest_angle_host_swiftshader` | ANGLE guest, SwiftShader on the host |
+| `gfxstream_guest_angle_host_lavapipe` | ANGLE guest, Mesa lavapipe on the host |
 | `drm_virgl` | Virgl3D — OpenGL commands forwarded via virtio-gpu DRM |
 | `guest_swiftshader` | Pure software rendering in guest (SwiftShader Vulkan) |
-| `none` | No GPU — headless mode |
+| `custom` | Caller supplies an explicit GPU device configuration |
+
+Whether the Virtio GPU worker runs in-process or as a separate
+`vhost-user-gpu` backend is a second, orthogonal choice controlled by
+`--gpu_vhost_user_mode={auto, on, off}`.
 
 #### Display Architecture
 
@@ -5781,7 +6262,7 @@ When enabled, `vhost-net` moves network packet processing from crosvm
 userspace into the host kernel, significantly improving network throughput:
 
 ```cpp
-// Source: device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp:591
+// Source: device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp:596-598
 if (instance.vhost_net()) {
     crosvm_cmd.Cmd().AddParameter("--vhost-net");
 }
@@ -5789,33 +6270,65 @@ if (instance.vhost_net()) {
 
 ### 58.6.15 Guest HALs
 
-Cuttlefish implements 21 HALs that bridge Android's HAL interfaces to
-host-side daemons via virtio devices, vsock, or HVC serial ports:
+The guest-side HALs that bridge Android's HAL interfaces to host-side daemons
+(via virtio devices, vsock, or HVC serial ports) live under
+`device/google/cuttlefish/guest/hals/`. The set shifted in Android 17. The
+directories present in the 17 tree are:
 
 ```
 device/google/cuttlefish/guest/hals/
 ├── audio/           # virtio-snd / audio server
-├── bluetooth/       # HVC → root_canal simulator
-├── camera/          # vsock → host camera streaming
-├── confirmationui/  # HVC → Trusty integration
-├── gatekeeper/      # HVC → secure_env daemon
+├── bluetooth/       # HVC -> root_canal simulator
+├── camera/          # vsock -> host camera streaming
+├── confirmationui/  # HVC -> Trusty integration
+├── gatekeeper/      # HVC -> secure_env daemon
+├── gralloc/         # Graphics buffer allocation
 ├── health/          # Battery/charge monitoring
+├── hostapd/         # WiFi access-point daemon
 ├── identity/        # Identity credential HAL
-├── keymint/         # HVC → secure_env (KeyMint)
-├── light/           # vsock → light control (Rust)
-├── nfc/             # HVC → NFC daemon
-├── oemlock/         # HVC → OEM unlock
-├── ril/             # HVC → modem_simulator (telephony)
+├── ir/              # Consumer IR
+├── keymint/         # HVC -> secure_env (KeyMint)
+├── light/           # vsock -> light control (Rust)
+├── nfc/             # HVC -> NFC daemon
+├── npu/             # NPU scheduling HAL (Rust, new in 17)
+├── oemlock/         # HVC -> OEM unlock
 ├── secure_element/  # eSIM / secure chip access
-├── sensors/         # HVC → sensors_simulator
-├── vehicle/         # vsock → automotive VHAL
+├── vehicle/         # vsock -> automotive VHAL
+├── virtio_media/    # virtio-media V4L2 camera/codec provider
 └── vulkan/          # Graphics support
 ```
+
+Two earlier entries are gone: there is no longer a dedicated `ril/` HAL
+directory (telephony goes through the host `modem_simulator` over an HVC port)
+nor a `sensors/` directory here (the sensors bridge is driven from the host
+`sensors_simulator` over the `/dev/hvc18` and `/dev/hvc19` ports described
+above). The Android 17 additions of note are the **`npu/`** scheduling HAL
+and the **`virtio_media/`** provider.
 
 Each guest HAL typically reads/writes a virtio-console device (`/dev/hvcN`)
 or establishes a vsock connection to its host-side counterpart. The HAL
 interface exposed to Android frameworks is identical to what a real hardware
 HAL would provide — the virtualization is transparent to higher layers.
+
+#### Example: NPU scheduling HAL (Android 17, Rust)
+
+The NPU HAL is one of the genuinely new guest HALs. It is written in Rust and
+implements the `android.hardware.npu` scheduling interface, registering an
+`IScheduling/default` service so that Cuttlefish exposes an NPU-capable surface
+for testing the NPU framework path:
+
+```rust
+// Source: device/google/cuttlefish/guest/hals/npu/main.rs
+//! This implements the NPU Scheduling Service for Cuttlefish.
+use android_hardware_npu::aidl::android::hardware::npu::IScheduling::{
+    BnScheduling, IScheduling};
+const LOG_TAG: &str = "android.hardware.npu";
+```
+
+```xml
+<!-- Source: device/google/cuttlefish/guest/hals/npu/android.hardware.npu-service.xml -->
+<fqname>IScheduling/default</fqname>
+```
 
 #### Example: Camera HAL via Vsock
 
@@ -5828,18 +6341,28 @@ webcam to appear as the guest's camera:
 // Exposes standard Camera2 HAL interface to CameraService
 ```
 
-#### Example: Light HAL via Vsock (Rust)
+#### Example: Light HAL (Rust)
+
+The light HAL is implemented in Rust. Its entry point registers an `ILights`
+binder service, and the `lights` module implements the interface that controls
+the notification LED, backlight, and similar indicators:
 
 ```rust
-// Source: device/google/cuttlefish/guest/hals/light/lights_vsock_server.rs
-// Receives light state changes over vsock
-// Controls notification LED, backlight, etc.
+// Source: device/google/cuttlefish/guest/hals/light/main.rs
+//! This implements the Lights Service for Cuttlefish.
+use android_hardware_light::aidl::android::hardware::light::ILights::{
+    BnLights, ILights};
+mod lights;
+use lights::LightsService;
 ```
 
 ### 58.6.16 Host Microservice Orchestration
 
-Cuttlefish runs as a collection of ~48 host processes orchestrated by
-`launch_cvd` and `run_cvd`:
+Cuttlefish runs as a collection of host processes orchestrated by `launch_cvd`
+and `run_cvd`. `device/google/cuttlefish/host/commands/` contains roughly 45
+host-tool directories; a given instance spins up the subset its configuration
+requires (the VMM plus the display, modem, GNSS, sensor, security, logging, and
+input daemons):
 
 ```mermaid
 graph TB
@@ -5877,7 +6400,7 @@ point-to-point serial channels), vsock supports arbitrary TCP-like connections
 with multiplexed ports:
 
 ```cpp
-// Source: device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp:755-766
+// Source: device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp:756-766
 if (instance.vsock_guest_cid() >= 2) {
     if (instance.vhost_user_vsock()) {
         // vhost-user vsock (separate process)
@@ -6238,12 +6761,177 @@ endif
 
 ---
 
-## 58.8 Try It: Build and Launch a Custom Emulator Image
+## 58.8 Android 17 Cuttlefish Changes
+
+Cuttlefish is where most of the virtual-device churn lands each release, and
+Android 17 is no exception. This section collects the changes that matter for
+platform developers: a new desktop product, a guest-side VKMS display
+controller, a sandboxed host process model, a new NPU HAL, and the migration of
+the host launcher tooling out of the AOSP tree.
+
+### 58.8.1 The Desktop Product Target
+
+Android 17 adds `aosp_cf_x86_64_desktop` (and an ARM64 sibling) to the
+Cuttlefish product catalog. Unlike the handheld targets, the desktop product
+inherits a desktop-specific vendor stack and pulls its kernel from a separate
+tree (covered in sections 58.5.4 and 58.6.3). It is the virtual reference for
+the desktop Android form factor, exercising large-screen window management,
+binary translation in `ndk_translation_only` mode, and an uncompressed Chrome
+WebView. The product is registered in `device/google/cuttlefish/AndroidProducts.mk`
+alongside the long-standing phone, foldable, TV, Wear, and the expanded set of
+automotive (`auto`, `auto_md`, `auto_mdnd`, `auto_dd`, `auto_portrait`) targets.
+
+### 58.8.2 vkms_controller: Guest-Side Virtual Display Management
+
+Earlier Cuttlefish releases scattered virtual-display configuration logic
+between host commands and ad-hoc guest scripts. Android 17 consolidates it into
+a single guest binary, `vkms_controller`, that drives the kernel's VKMS
+(Virtual Kernel Mode Setting) ConfigFS interface directly. The host CLI becomes
+a thin, stateless proxy that simply runs `adb shell vkms_controller ...`.
+
+```cpp
+// Source: device/google/cuttlefish/guest/commands/vkms_controller/main.cpp
+namespace cuttlefish {
+namespace vkms_controller {
+
+constexpr std::string_view kUsage = R"(
+Usage: vkms_controller <command> [options]
+
+A guest-side utility for Virtual Kernel Mode Setting (VKMS).
+It manages virtual displays by interacting directly with the kernel's VKMS
+ConfigFS interface.
+
+Commands:
+  setup
+  hotplug
+  reset
+  list-presets
+  list-displays
+)";
+```
+
+The binary owns the work of correlating virtual hardware (the VKMS ConfigFS
+connector indices) to Android's SurfaceFlinger display IDs, persisting its state
+under `/data/vendor/vkms`. It supports defining displays with specific EDIDs and
+planes (`setup`), hot-plugging a connector on or off (`hotplug`), enumerating
+the monitor presets baked into the guest (`list-presets`), and resolving the
+current display topology (`list-displays`). It is installed via
+`device/google/cuttlefish/shared/device.mk`:
+
+```makefile
+# Source: device/google/cuttlefish/shared/device.mk
+PRODUCT_PACKAGES += \
+    checkpoint_gc \
+    vkms_controller \
+```
+
+The data flow when a test or the host CLI reconfigures displays:
+
+#### Display reconfiguration through vkms_controller
+
+```mermaid
+sequenceDiagram
+    participant CLI as Host CLI / Tradefed
+    participant ADB as adb shell
+    participant VKMS as vkms_controller (guest)
+    participant CFS as VKMS ConfigFS
+    participant SF as SurfaceFlinger
+
+    CLI->>ADB: "vkms_controller setup --screen=..."
+    ADB->>VKMS: exec guest binary
+    VKMS->>CFS: Write connector/plane config
+    CFS-->>VKMS: ConfigFS connector indices
+    VKMS->>VKMS: Persist state to /data/vendor/vkms
+    VKMS->>SF: Resolve SurfaceFlinger display IDs
+    VKMS-->>CLI: list-displays JSON
+```
+
+### 58.8.3 process_sandboxer: Sandboxing the Host Daemons
+
+A recurring concern with Cuttlefish is that the host runs a fleet of helper
+daemons (the VMM, modem simulator, GNSS proxy, secure_env, and so on) with
+broad host privileges. Android 17 introduces
+`device/google/cuttlefish/host/commands/process_sandboxer/`, which wraps those
+host processes in seccomp-based sandboxes built on Google's sandboxed-api /
+sandbox2 library.
+
+```cpp
+// Source: device/google/cuttlefish/host/commands/process_sandboxer/main.cpp
+#include <sandboxed_api/util/fileops.h>
+#include "host/commands/process_sandboxer/policies.h"
+#include "host/commands/process_sandboxer/sandbox_manager.h"
+
+namespace cuttlefish::process_sandboxer {
+absl::Status ProcessSandboxerMain(int argc, char** argv) {
+```
+
+The sandboxer carries a per-executable policy: the `policies/` directory holds a
+dedicated source file for each host tool that runs under the sandbox
+(`run_cvd.cpp`, `assemble_cvd.cpp`, `gnss_grpc_proxy.cpp`, `secure_env.cpp`,
+`logcat_receiver.cpp`, `modem_simulator.cpp`, `socket_vsock_proxy.cpp`, and so
+on), plus a `baseline.cpp` shared policy and a `no_policy.cpp` escape hatch.
+Each policy declares the syscalls and file paths a given daemon may use, so a
+compromised helper cannot reach beyond its declared footprint. A
+`sandboxer_proxy` companion lets a sandboxed process request privileged
+operations from the manager.
+
+This is the host-side analogue of the in-process isolation work happening
+elsewhere in the platform: rather than trusting every Cuttlefish helper with
+the launcher's full privileges, each one runs behind a least-privilege policy.
+
+### 58.8.4 The NPU Scheduling HAL
+
+Android 17's Cuttlefish gains a guest NPU (Neural Processing Unit) HAL under
+`device/google/cuttlefish/guest/hals/npu/`, written in Rust. It registers an
+`android.hardware.npu` scheduling service so the framework's NPU path has a
+virtual surface to exercise (see section 58.6.15 for the source excerpt). The
+HAL ships as its own APEX-packaged service with a VINTF fragment declaring
+`IScheduling/default`. It joins `virtio_media/` as the two notable new guest
+HAL directories this release.
+
+### 58.8.5 Host Launcher Tooling Migration
+
+The way developers obtain and run the Cuttlefish host tools changed in
+Android 17. The orchestrating `cvd` front-end and the Debian packaging are no
+longer part of the `device/google/cuttlefish` tree in AOSP; they moved to the
+standalone `github.com/google/android-cuttlefish` repository. The README now
+opens by pointing developers there:
+
+```
+# Source: device/google/cuttlefish/README.md
+For all host tools development please refer to
+https://github.com/google/android-cuttlefish/blob/main/docs/HostToolsMigration.md
+```
+
+In practice this means a local launch follows two tracks. The host package
+built from this tree still provides `launch_cvd` and `stop_cvd` (the
+`launch_cvd` symlink resolves to `cvd_internal_start`, built from
+`device/google/cuttlefish/host/commands/start/`), which is what the README's
+getting-started flow uses:
+
+```bash
+# Source: device/google/cuttlefish/README.md (paraphrased flow)
+mkdir cf && cd cf
+tar xvf /path/to/cvd-host_package.tar.gz
+unzip /path/to/aosp_cf_x86_64_phone-img-xxxxxx.zip
+HOME=$PWD ./bin/launch_cvd
+# ...
+HOME=$PWD ./bin/stop_cvd
+```
+
+The richer `cvd` lifecycle manager and the installable Debian packages
+(`cuttlefish-base`, `cuttlefish-user`) come from the external repository. The
+older `acloud` launcher referenced by pre-17 guides is not present in this tree
+at all.
+
+---
+
+## 58.9 Try It: Build and Launch a Custom Emulator Image
 
 This section walks through building a custom emulator image from source and
 launching it.
 
-### 58.8.1 Building the Emulator System Image
+### 58.9.1 Building the Emulator System Image
 
 ```bash
 # Step 1: Set up the build environment
@@ -6273,7 +6961,7 @@ The build produces images in `$ANDROID_PRODUCT_OUT/`:
 | `ramdisk.img` | Initial ramdisk |
 | `vendor_boot.img` | Vendor boot image |
 
-### 58.8.2 Launching with the Emulator
+### 58.9.2 Launching with the Emulator
 
 ```bash
 # Launch the emulator with the built images
@@ -6289,7 +6977,7 @@ emulator \
     -verbose                # verbose logging
 ```
 
-### 58.8.3 Building and Launching Cuttlefish
+### 58.9.3 Building and Launching Cuttlefish
 
 ```bash
 # Step 1: Choose Cuttlefish target
@@ -6308,7 +6996,7 @@ adb shell
 # Open https://localhost:8443 in a browser
 ```
 
-### 58.8.4 Customizing the Emulator Image
+### 58.9.4 Customizing the Emulator Image
 
 #### Adding a Custom HAL
 
@@ -6345,7 +7033,7 @@ Add custom SELinux policy:
 BOARD_VENDOR_SEPOLICY_DIRS += my/custom/sepolicy
 ```
 
-### 58.8.5 Debugging the Emulator
+### 58.9.5 Debugging the Emulator
 
 #### Kernel Logs
 
@@ -6402,7 +7090,7 @@ adb shell dumpsys wifi
 adb forward tcp:8080 tcp:8080
 ```
 
-### 58.8.6 Performance Tuning
+### 58.9.6 Performance Tuning
 
 #### CPU and Memory
 
@@ -6441,7 +7129,7 @@ emulator -gpu guest
 # (configured automatically via init.ranchu.rc)
 ```
 
-### 58.8.7 Advanced: Running Multiple Instances
+### 58.9.7 Advanced: Running Multiple Instances
 
 #### Emulator
 
@@ -6471,7 +7159,7 @@ launch_cvd --num_instances=3
 # - Console port
 ```
 
-### 58.8.8 Advanced: Custom Kernel
+### 58.9.8 Advanced: Custom Kernel
 
 ```bash
 # Step 1: Check out the kernel source
@@ -6488,7 +7176,7 @@ emulator -kernel /path/to/bzImage \
     -vendor $ANDROID_PRODUCT_OUT/vendor.img
 ```
 
-### 58.8.9 Understanding the Build Product Configuration Chain
+### 58.9.9 Understanding the Build Product Configuration Chain
 
 When building an emulator image, the product configuration follows a specific
 chain of inheritance. Let us trace through the x86_64 phone target:
@@ -6520,7 +7208,7 @@ This layered design means that adding a new emulator product (e.g., a new
 form factor) requires only creating a thin top-level makefile that inherits
 from the appropriate base.
 
-### 58.8.10 Testing HAL Implementations
+### 58.9.10 Testing HAL Implementations
 
 One of the most useful aspects of the emulator for platform developers is
 the ability to test HAL implementations. Here is a workflow for testing a
@@ -6566,7 +7254,7 @@ adb shell start
 adb shell dumpsys media.camera
 ```
 
-### 58.8.11 Tracing Emulator Communication
+### 58.9.11 Tracing Emulator Communication
 
 To debug the communication between guest HALs and the QEMU host, several
 techniques are available:
@@ -6613,7 +7301,7 @@ info mtree
 info ioports
 ```
 
-### 58.8.12 Building Slim Emulator Images
+### 58.9.12 Building Slim Emulator Images
 
 For CI/CD scenarios where boot time and image size matter, the "slim"
 emulator variant strips out unnecessary components:
@@ -6628,7 +7316,7 @@ The slim variant (`device/generic/goldfish/product/slim_handheld.mk`)
 inherits from `generic.mk` directly without the full handheld product
 stack, resulting in a smaller system image that boots faster.
 
-### 58.8.13 Running CTS on the Emulator
+### 58.9.13 Running CTS on the Emulator
 
 The emulator is a supported CTS (Compatibility Test Suite) target:
 
@@ -6655,7 +7343,7 @@ the emulator provides through its virtual HALs. The data injection support
 in the sensors HAL (`SensorFlagBits::DATA_INJECTION` flag on all sensors)
 is specifically designed for CTS compliance.
 
-### 58.8.14 Emulator Console Commands
+### 58.9.14 Emulator Console Commands
 
 The emulator exposes a telnet-based console for direct control:
 
@@ -6724,6 +7412,13 @@ architecture:
    support, foldable simulation, location/battery/telephony simulation, and
    rich console commands.
 
+8. **Android 17 Cuttlefish changes** -- A new `aosp_cf_x86_64_desktop` product,
+   the guest-side `vkms_controller` display utility, host daemons wrapped in
+   per-process seccomp sandboxes via `process_sandboxer`, a new Rust NPU
+   scheduling HAL, a 20-port HVC map (sensors split into control/data), and the
+   migration of the `cvd` launcher and Debian packaging to the external
+   `github.com/google/android-cuttlefish` repository.
+
 The key architectural principle throughout is that the emulator runs _real_
 Android -- the same kernel, the same framework, the same system image format.
 The virtual hardware layer is designed to be transparent to the software above
@@ -6755,8 +7450,15 @@ physical device or in the emulator.
 | `device/generic/goldfish/init/init.net.ranchu.sh` | Network initialization |
 | `device/generic/goldfish/sepolicy/vendor/qemu_props.te` | SELinux policy for qemu-props |
 | `device/generic/goldfish/sepolicy/vendor/hal_gnss_default.te` | SELinux policy for GNSS HAL |
-| `device/google/cuttlefish/shared/BoardConfig.mk` | Cuttlefish board config |
-| `device/google/cuttlefish/README.md` | Cuttlefish getting started guide |
+| `device/google/cuttlefish/shared/BoardConfig.mk` | Cuttlefish board config / kernel selection |
+| `device/google/cuttlefish/AndroidProducts.mk` | Cuttlefish product catalog (incl. desktop) |
+| `device/google/cuttlefish/vsoc_x86_64_only/desktop/aosp_cf.mk` | Desktop product (new in 17) |
+| `device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp` | crosvm command-line construction, HVC map |
+| `device/google/cuttlefish/host/commands/process_sandboxer/main.cpp` | Host process sandboxer (new in 17) |
+| `device/google/cuttlefish/guest/commands/vkms_controller/main.cpp` | Guest VKMS display controller (new in 17) |
+| `device/google/cuttlefish/guest/hals/npu/main.rs` | Guest NPU scheduling HAL (new in 17) |
+| `device/google/cuttlefish/shared/device.mk` | Shared device config (installs vkms_controller) |
+| `device/google/cuttlefish/README.md` | Cuttlefish getting started guide (host-tools migration) |
 
 <!-- chapter:59-device-policy -->
 # Chapter 59: Device Policy and Android Enterprise
@@ -7010,7 +7712,17 @@ Android Version | Key Enterprise Features
 13              | Role-based management, fine-grained permissions
 14              | DevicePolicyEngine, multi-admin resolution
 15              | Enhanced MTE, audit logging, device theft API
+16              | Content protection policy, system authority admins
+17              | Advanced Protection coexistence, multi-user managed provisioning
 ```
+
+Android 16 added a tri-state content-protection policy
+(`setContentProtectionPolicy`) and the `system:` authority prefix that lets
+trusted platform services act as policy-engine admins. Android 17 builds on
+that foundation: the new Advanced Protection Mode (AAPM) service drives several
+device policies (MTE, USB, install-unknown-sources) as a *system admin*, and a
+new multi-user managed-device provisioning flow lands properly for headless
+deployments. Both are covered in detail in section 59.8.
 
 ### 59.1.10  Headless System User Mode
 
@@ -7037,8 +7749,10 @@ creation of additional secondary users is blocked.
 ### 59.2.1  Overview and Class Hierarchy
 
 `DevicePolicyManagerService` is one of the largest system services in AOSP,
-weighing in at over 25,000 lines.  It implements the `IDevicePolicyManager`
-AIDL interface and runs inside the system server process.
+weighing in at roughly 24,000 lines on the Android 17 tree
+(`frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyManagerService.java`).
+It implements the `IDevicePolicyManager` AIDL interface and runs inside the
+system server process.
 
 ```mermaid
 classDiagram
@@ -7413,14 +8127,20 @@ private static final MostRestrictive<Boolean> TRUE_MORE_RESTRICTIVE =
         List.of(new BooleanPolicyValue(true), new BooleanPolicyValue(false)));
 ```
 
-Four resolution mechanisms exist:
+Every resolution mechanism subclasses the abstract `ResolutionMechanism<V>`.
+The Android 17 tree ships seven concrete mechanisms (all in the
+`com.android.server.devicepolicy` package), with `LeastRecent` and `ListUnion`
+added in this release:
 
-| Mechanism | Description | Example Policy |
-|-----------|-------------|----------------|
-| `MostRestrictive` | The most restrictive value wins | Camera disable, screen capture disable |
-| `TopPriority` | Higher-priority admin wins | Lock task, persistent preferred activity |
-| `PackageSetUnion` | Union of all admin values | User-control disabled packages |
-| `MostRecent` | Last value set wins | Specific per-admin settings |
+| Mechanism | Source file | Description | Example Policy |
+|-----------|-------------|-------------|----------------|
+| `MostRestrictive<V>` | `MostRestrictive.java` | The most restrictive value (per a declared ordering) wins | Camera disable, screen capture disable |
+| `TopPriority<V>` | `TopPriority.java` | Highest-priority admin (per an authority priority list) wins | Lock task, persistent preferred activity |
+| `MostRecent<V>` | `MostRecent.java` | The most recently set value wins | Per-admin settings without a strict ordering |
+| `LeastRecent<V>` | `LeastRecent.java` | The earliest set value wins (new in 17) | First-writer-wins policies |
+| `PackageSetUnion` | `PackageSetUnion.java` | Union of all admins' package sets | User-control disabled packages |
+| `ListUnion<T>` | `ListUnion.java` | Union of all admins' list values (new in 17) | Permitted-input-method style lists |
+| `FlagUnion` | `FlagUnion.java` | Bitwise OR of all admins' integer flags | Keyguard feature disable flags |
 
 Example: Security logging is resolved with `TRUE_MORE_RESTRICTIVE`, meaning
 if any admin enables security logging, it stays enabled:
@@ -7446,8 +8166,9 @@ private static final int POLICY_FLAG_GLOBAL_ONLY_POLICY = 1;
 private static final int POLICY_FLAG_LOCAL_ONLY_POLICY = 1 << 1;
 private static final int POLICY_FLAG_INHERITABLE = 1 << 2;
 private static final int POLICY_FLAG_NON_COEXISTABLE_POLICY = 1 << 3;
-private static final int POLICY_FLAG_USER_RESTRICTION_POLICY = 1 << 4;
-private static final int POLICY_FLAG_SKIP_ENFORCEMENT_IF_UNCHANGED = 1 << 5;
+static final int POLICY_FLAG_USER_RESTRICTION_POLICY = 1 << 4;
+static final int POLICY_FLAG_SKIP_ENFORCEMENT_IF_UNCHANGED = 1 << 5;
+private static final int POLICY_FLAG_PACKAGE_POLICY = 1 << 6;
 ```
 
 - **GLOBAL_ONLY**: the policy applies device-wide (e.g., auto time zone).
@@ -7455,44 +8176,76 @@ private static final int POLICY_FLAG_SKIP_ENFORCEMENT_IF_UNCHANGED = 1 << 5;
 - **INHERITABLE**: child profiles inherit the policy from their parent.
 - **NON_COEXISTABLE**: admin values are kept separate (e.g., app restrictions).
 - **USER_RESTRICTION**: marks user-restriction policies for special handling.
+- **SKIP_ENFORCEMENT_IF_UNCHANGED**: skips the enforcer callback when the
+  resolved value did not change, avoiding redundant downstream work.
+- **PACKAGE_POLICY**: marks policies keyed by a package identifier so the
+  engine can clean them up when the package is removed.
 
 ### 59.2.10  EnforcingAdmin: Admin Identity in the Policy Engine
 
 The `EnforcingAdmin` class models the identity of an admin within the policy
-engine.  It supports three authority types:
+engine.  On the Android 17 tree it recognizes four authority kinds, encoded as
+constant strings (or string prefixes):
 
 ```java
 // frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/
 //   EnforcingAdmin.java
-final class EnforcingAdmin {
-    static final String DPC_AUTHORITY = "enterprise";
-    static final String DEVICE_ADMIN_AUTHORITY = "device_admin";
-    static final String DEFAULT_AUTHORITY = "default";
-    static final String ROLE_AUTHORITY_PREFIX = "role:";
+public final class EnforcingAdmin {
+    public static final String ROLE_AUTHORITY_PREFIX = "role:";
+    public static final String SYSTEM_AUTHORITY_PREFIX = "system:";
+    public static final String DPC_AUTHORITY = "enterprise";
+    public static final String DEVICE_ADMIN_AUTHORITY = "device_admin";
 
-    private final String mPackageName;
     private final ComponentName mComponentName;
+    private final AdminKey mAdminKey;
     private Set<String> mAuthorities;
-    private final int mUserId;
     private final boolean mIsRoleAuthority;
 }
 ```
 
-Factory methods create the appropriate type:
+The earlier `DevicePolicyEngine` design keyed admins by `<packageName, userId>`;
+Android 16/17 refactored that into a sealed `AdminKey` hierarchy
+(`AdminKey.Package`, `AdminKey.Legacy`, `AdminKey.System`) so that an
+enterprise/role admin, a legacy device admin, and a system admin can never
+collide even when they share a package name.  Static factory methods build the
+appropriate identity for each authority:
 
 ```java
 static EnforcingAdmin createEnterpriseEnforcingAdmin(
         ComponentName componentName, int userId) {
     return new EnforcingAdmin(
-        componentName.getPackageName(), componentName,
-        Set.of(DPC_AUTHORITY), userId);
+        new AdminKey.Package(userId, componentName.getPackageName()),
+        componentName, /* isRoleAuthority */ false,
+        new HashSet<>(Set.of(DPC_AUTHORITY)));
 }
 
 static EnforcingAdmin createDeviceAdminEnforcingAdmin(
         ComponentName componentName, int userId) {
-    // Uses DEVICE_ADMIN_AUTHORITY for legacy admins
+    return new EnforcingAdmin(
+        new AdminKey.Legacy(userId, componentName),
+        componentName, /* isRoleAuthority */ false,
+        new HashSet<>(Set.of(DEVICE_ADMIN_AUTHORITY)));
+}
+
+static EnforcingAdmin createSystemEnforcingAdmin(String systemEntity) {
+    return new EnforcingAdmin(
+        new AdminKey.System(systemEntity),
+        /* componentName */ null, /* isRoleAuthority */ false,
+        getSystemAuthority(systemEntity));
 }
 ```
+
+The fourth factory, `createRoleEnforcingAdmin`, takes only a package name and
+user (no `ComponentName`) and resolves the package's held roles into a set of
+`role:<roleName>` authorities.  The `SYSTEM_AUTHORITY_PREFIX` (`"system:"`) and
+`createSystemEnforcingAdmin` path are the load-bearing addition that lets
+trusted platform services -- most notably Advanced Protection Mode (section
+59.8.28) -- set device policies through the same engine that DPCs use, without
+being a DPC.  Parsing of a persisted authority string back into an
+`android.app.admin.Authority` instance lives in `getParcelableAuthority`, which
+maps `"enterprise"` to `DpcAuthority`, `"device_admin"` to
+`DeviceAdminAuthority`, a `role:` prefix to `RoleAuthority`, and a `system:`
+prefix to `SystemAuthority`.
 
 ### 59.2.11  Permission Model for Policy APIs
 
@@ -9315,12 +10068,27 @@ static PolicyDefinition<Boolean> AUDIT_LOGGING = new PolicyDefinition<>(
     new BooleanPolicySerializer());
 ```
 
-The audit log callback interface:
+On the client side, `DevicePolicyManager` exposes audit logging through
+`setAuditLogEnabled(boolean)` / `isAuditLogEnabled()` and a streaming callback
+registered via `setAuditLogEventCallback(...)`.  The callback is delivered over
+the `IAuditLogEventsCallback` AIDL interface:
 
 ```java
-// Referenced in SecurityLogMonitor.java
-import android.app.admin.IAuditLogEventsCallback;
+// frameworks/base/core/java/android/app/admin/DevicePolicyManager.java
+public void setAuditLogEnabled(boolean enabled) { ... }
+public boolean isAuditLogEnabled() { ... }
+public void setAuditLogEventCallback(Executor executor,
+        Consumer<List<SecurityEvent>> callback) {
+    // wraps the consumer in an IAuditLogEventsCallback.Stub
+}
 ```
+
+Unlike legacy security logging -- which batches events and notifies the admin
+only when a buffer fills -- audit logging streams `SecurityEvent`s to the
+registered callback as they are produced, which is what makes it usable for
+near-real-time compliance monitoring. The corresponding server methods are
+`setAuditLogEnabled(String callerPackage, boolean enabled)` and
+`isAuditLogEnabled(String callerPackage)` on `IDevicePolicyManager`.
 
 ### 59.8.3  Network Logging
 
@@ -9577,16 +10345,23 @@ import static android.app.admin.DevicePolicyIdentifiers.MEMORY_TAGGING_POLICY;
 
 ### 59.8.12  Content Protection
 
-The DPC can control content protection features:
+The DPC can control content protection through a tri-state policy.  The
+`DevicePolicyManager` constants are:
 
 ```java
-// DevicePolicyManager.java
-public static final int CONTENT_PROTECTION_DISABLED = 0;
-
-// DevicePolicyManagerService.java
-import static android.Manifest.permission
-    .MANAGE_DEVICE_POLICY_CONTENT_PROTECTION;
+// frameworks/base/core/java/android/app/admin/DevicePolicyManager.java
+public static final int CONTENT_PROTECTION_NOT_CONTROLLED_BY_POLICY = 0;
+public static final int CONTENT_PROTECTION_DISABLED = 1;
+public static final int CONTENT_PROTECTION_ENABLED = 2;
 ```
+
+`setContentProtectionPolicy`/`getContentProtectionPolicy` are routed through the
+policy engine under `DevicePolicyIdentifiers.CONTENT_PROTECTION_POLICY`
+(`"contentProtection"`), and the client API is gated by
+`MANAGE_DEVICE_POLICY_CONTENT_PROTECTION`.  The default state,
+`CONTENT_PROTECTION_NOT_CONTROLLED_BY_POLICY`, leaves the device's own content
+protection setting untouched, distinguishing "no opinion" from an explicit
+disable.
 
 ### 59.8.13  Stolen Device State
 
@@ -9809,6 +10584,168 @@ graph TB
     ATTEST --> |"Attestation result"| SRV_ATTEST
 ```
 
+### 59.8.28  Advanced Protection Mode as a System Admin
+
+Android 16 introduced, and Android 17 expands, **Advanced Protection Mode
+(AAPM)** -- a single user-facing toggle (Settings) that turns on a hardened
+profile of security features at once.  Architecturally the interesting part is
+*how* it enforces those features: AAPM is **not** part of DPMS and is **not** a
+DPC.  It is a standalone system service that drives a handful of existing device
+policies as a *system admin* through the same policy engine described in section
+59.2.
+
+The service and its client API live outside the devicepolicy package:
+
+```java
+// frameworks/base/services/core/java/com/android/server/security/advancedprotection/
+//   AdvancedProtectionService.java                (the system service)
+// frameworks/base/core/java/android/security/advancedprotection/
+//   AdvancedProtectionManager.java                (the @SystemService client)
+public static final String ADVANCED_PROTECTION_SYSTEM_ENTITY =
+        "android.security.advancedprotection";
+```
+
+Each hardened capability is a "feature hook" under
+`services/core/java/com/android/server/security/advancedprotection/features/`,
+keyed by a stable feature id from `AdvancedProtectionManager`:
+
+```java
+// AdvancedProtectionManager.java
+public static final int FEATURE_ID_DISALLOW_CELLULAR_2G = 0;
+public static final int FEATURE_ID_DISALLOW_INSTALL_UNKNOWN_SOURCES = 1;
+public static final int FEATURE_ID_DISALLOW_USB = 2;
+public static final int FEATURE_ID_DISALLOW_WEP = 3;
+public static final int FEATURE_ID_ENABLE_MTE = 4;
+public static final int FEATURE_ID_DISALLOW_INSECURE_WIFI_AUTOJOIN = 5;
+public static final int FEATURE_ID_RESTRICT_NON_TOOL_A11Y_SERVICES = 6;
+```
+
+The bridge into device policy is what ties this chapter together.
+`MemoryTaggingExtensionHook`, for example, calls the *system* overload of
+`setMtePolicy` rather than the public `ComponentName` one:
+
+```java
+// services/core/java/com/android/server/security/advancedprotection/features/
+//   MemoryTaggingExtensionHook.java
+mDevicePolicyManager.setMtePolicy(ADVANCED_PROTECTION_SYSTEM_ENTITY, mtePolicy);
+```
+
+That overload (`DevicePolicyManager.setMtePolicy(String systemEntity, int
+policy)`) calls `IDevicePolicyManager.setMtePolicyBySystem(systemEntity,
+policy)`, and DPMS records the value against a
+`createSystemEnforcingAdmin(ADVANCED_PROTECTION_SYSTEM_ENTITY)` identity -- the
+`system:` authority from section 59.2.10.  Because AAPM's MTE preference enters
+the engine as just another admin's value, it coexists with any DPC's MTE policy
+under the normal resolution rules instead of fighting it.
+
+The hook diagram below shows the enforcement paths for the three feature hooks
+that exist in the 17 tree (MTE goes through DPMS; USB and install-unknown-sources
+go through `UserManager` restrictions):
+
+```mermaid
+graph LR
+    subgraph "AdvancedProtectionService"
+        TOGGLE["AAPM toggle<br/>(Settings)"]
+        MTE_HOOK["MemoryTaggingExtensionHook"]
+        USB_HOOK["UsbDataAdvancedProtectionHook"]
+        UIS_HOOK["DisallowInstallUnknownSourcesHook"]
+    end
+
+    TOGGLE --> MTE_HOOK
+    TOGGLE --> USB_HOOK
+    TOGGLE --> UIS_HOOK
+
+    MTE_HOOK -- "setMtePolicy('system:...')" --> DPMS["DevicePolicyManagerService<br/>(system EnforcingAdmin)"]
+    USB_HOOK -- "DISALLOW_USB" --> UM["UserManager<br/>restrictions"]
+    UIS_HOOK -- "DISALLOW_INSTALL_UNKNOWN_SOURCES" --> UM
+
+    DPMS --> ENGINE["DevicePolicyEngine<br/>(MostRestrictive resolve)"]
+```
+
+A subtle but important rule: a DPC cannot silently undo AAPM.  Because the user
+opted into Advanced Protection, several of these features are resolved with the
+restrictive value pinned by the system admin, so an enterprise admin's "allow"
+cannot relax a protection the user explicitly enabled.
+
+### 59.8.29  Multi-User Managed Device Provisioning
+
+Headless system user mode (section 59.1.10) needs a provisioning flow that does
+not assume the Device Owner runs as the human-facing user.  Android 17 lands the
+**multi-user managed device** provisioning path for exactly this case.  The new
+client surface in `DevicePolicyManager` is:
+
+```java
+// frameworks/base/core/java/android/app/admin/DevicePolicyManager.java
+public static final String ACTION_PROVISION_MULTIUSER_MANAGED_DEVICE =
+        "android.app.admin.action.PROVISION_MULTIUSER_MANAGED_DEVICE";
+public static final String ACTION_PROVISION_MULTIUSER_MANAGED_USER =
+        "android.app.admin.action.PROVISION_MULTIUSER_MANAGED_USER";
+
+// New provisioning result code
+public static final int RESULT_MULTIUSER_MANAGED_DEVICE_PROVISIONED = 124;
+
+// Kicks off the provisioning state machine (system API)
+public void startMultiuserManagedDeviceProvisioning();
+```
+
+The parameter objects backing the flow are the `Multiuser*ProvisioningParams`
+family in `frameworks/base/core/java/android/app/admin/`
+(`MultiuserManagedDeviceProvisioningParams.java`,
+`MultiuserManagedUserProvisioningParams.java`, and their `*Transport.aidl`
+parcelable forms), and completion is reported through
+`MultiuserDeviceProvisioningCompletion.java`.  The older
+`MultiUserDeviceProvisioningParams` is being deprecated in favor of these.
+
+Conceptually this separates "provision the device" from "provision a managed
+user on that device": the Device Owner is established against the headless
+system user, and managed users are then provisioned with their own owner state.
+This is the provisioning counterpart to `HEADLESS_DEVICE_OWNER_MODE_SINGLE_USER`
+and `HEADLESS_DEVICE_OWNER_MODE_AFFILIATED` from `DeviceAdminInfo`.
+
+### 59.8.30  Policy Schema Versioning and Migration
+
+Because the policy engine persists resolved state to disk (section 59.2.13), the
+on-disk schema is versioned so that an OTA can migrate older XML forward.  DPMS
+pins the current schema version:
+
+```java
+// frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/
+//   DevicePolicyManagerService.java
+static final int DPMS_VERSION = 6;
+// ... during boot:
+upgrader.upgradePolicy(DPMS_VERSION);
+```
+
+`PolicyVersionUpgrader.upgradePolicy(int)` walks a chain of `if (currentVersion
+== N)` steps from the persisted version up to `DPMS_VERSION`, rewriting policies
+and bumping the stored version at each step (for example, the version 5 -> 6 step
+flips the default of a boolean policy, so loading a version-5 file initializes
+the field to the old default before re-persisting at version 6).  A separate
+`PolicyMigrator.migrateV1PoliciesToDevicePolicyEngineLocked()` handles the
+one-time migration of pre-engine (Android 13 and earlier) policies -- permitted
+input methods, account-management-disabled, and similar -- into the
+`DevicePolicyEngine` representation.  Both run inside the DPMS lock during boot,
+which is why a first boot after a major upgrade does a small amount of policy
+bookkeeping before management APIs become fully live.
+
+### 59.8.31  Enterprise RCS Archival
+
+A smaller Android 17 addition is enterprise control over which app receives
+archived RCS messages.  `RcsArchivalAppTracker` tracks the single granted
+archival package per user:
+
+```java
+// frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/
+//   RcsArchivalAppTracker.java
+// "Tracks the enterprise RCS archival application."
+// KEY_ARCHIVAL_PACKAGE = "messages_archival"
+// Mapping: userId -> currently granted archival package name
+```
+
+It exists so that, on a managed device, the messaging-archival capability can be
+delegated to a designated app (for compliance retention) and revoked cleanly
+when that app changes, rather than being a free-for-all grant.
+
 ---
 
 ## 59.9  Try It
@@ -9823,7 +10760,7 @@ Examine the scale of the Device Policy Manager Service:
 ```bash
 # Count lines in the main service file
 wc -l frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyManagerService.java
-# Expected: ~25,000 lines
+# Expected: ~24,000 lines on the Android 17 tree
 
 # Count all Java files in the devicepolicy package
 find frameworks/base/services/devicepolicy/ -name "*.java" | wc -l
@@ -10478,15 +11415,19 @@ Here are the key architectural insights:
    determined at provisioning time and fundamentally shapes what policies can
    be enforced.
 
-2. **DevicePolicyManagerService** is the central policy broker.  At 25,000+
-   lines, it is one of AOSP's largest system services.  It validates caller
-   permissions, delegates to the policy engine for resolution, persists state
-   to XML, and notifies subsystems of policy changes.
+2. **DevicePolicyManagerService** is the central policy broker.  At roughly
+   24,000 lines, it is one of AOSP's largest system services.  It validates
+   caller permissions, delegates to the policy engine for resolution, persists
+   versioned state to XML (`DPMS_VERSION = 6` in Android 17), and notifies
+   subsystems of policy changes.
 
 3. **The DevicePolicyEngine** (introduced in Android 14) brings formal
-   multi-admin policy resolution with four strategies: `MostRestrictive`,
-   `TopPriority`, `PackageSetUnion`, and `MostRecent`.  This enables
-   coexistence of DPC admins, role-based admins, and legacy device admins.
+   multi-admin policy resolution.  Android 17 ships seven resolution strategies
+   -- `MostRestrictive`, `TopPriority`, `MostRecent`, `LeastRecent`,
+   `PackageSetUnion`, `ListUnion`, and `FlagUnion` -- and four admin authority
+   kinds (`enterprise`, `device_admin`, `role:`, and the newer `system:`).  This
+   lets DPC admins, role-based admins, legacy device admins, and trusted system
+   services such as Advanced Protection Mode coexist on the same policies.
 
 4. **Work profiles** leverage Android's multi-user infrastructure to create
    a cryptographically separate container for work data.  Cross-profile
@@ -13370,7 +14311,323 @@ private final CarInputService mCarInputService;
 
 ---
 
-## 60.5 Try It
+## 60.5 Android 17: Automotive Windowing, Visibility Barriers, and the Road to SDV
+
+Android 17 invests heavily in the automotive form factor. Most of the new code in
+`packages/services/Car/` for this release is not about new vehicle properties or new HALs --
+it is about *windowing*. AAOS head units increasingly run several apps side by side on a single
+large display (a map next to a media player next to a climate panel), drive multiple physical
+displays for multiple occupants, and present each display through an OEM-authored, fully
+configurable layout. The phone WindowManager Shell was never designed for any of this, so 17
+ships a dedicated automotive shell library and a declarative panel framework on top of it. This
+section walks the three pieces that landed for 17 -- the `Car-WindowManager-Shell` library, the
+auto visibility barrier, and the Scalable UI panel framework -- and then points to where the
+larger Software Defined Vehicle (SDV) story is told.
+
+### 60.5.1 The Car WindowManager Shell Library
+
+Phone and tablet windowing is built from `frameworks/base/libs/WindowManager/Shell/`
+(`WMShellModule`, `WMShellBaseModule`), as Section 60.4.2 described. Automotive needs a different
+model: every container is a *multi-window root task* (there is no single fullscreen task that owns
+the display), containers must be layered and bounded explicitly by the system UI, and a container
+must be hideable without painting an opaque activity on top of it. Android 17 factors this into a
+standalone library, `Car-WindowManager-Shell`, declared in
+`packages/services/Car/libs/car-wm-shell-lib/Android.bp`. Its public surface is small and lives
+under `packages/services/Car/libs/car-wm-shell-lib/src/com/android/wm/shell/automotive/`.
+
+The central abstraction is the `AutoTaskStack` -- a task stack that is *always* in multi-window
+mode -- and its concrete form, the `RootTaskStack`:
+
+```kotlin
+// packages/services/Car/libs/car-wm-shell-lib/src/com/android/wm/shell/automotive/
+//   AutoTaskStack.kt
+
+/**
+ * Represents an auto task stack, which is always in multi-window mode.
+ */
+interface AutoTaskStack {
+    val id: Int
+    val displayId: Int
+    var leash: SurfaceControl
+    val name: String
+}
+
+data class AutoTaskStackState(
+    val bounds: Rect = Rect(),
+    val isAboveBarrier: Boolean,
+    val layer: Int
+)
+
+data class RootTaskStack(
+    override val id: Int,
+    override val displayId: Int,
+    override var leash: SurfaceControl,
+    override val name: String,
+    var rootTaskInfo: ActivityManager.RunningTaskInfo
+) : AutoTaskStack
+```
+
+Two fields in `AutoTaskStackState` are the heart of the new model. `layer` gives the system UI
+explicit Z-order control over containers (the phone shell mostly relies on activity order).
+`isAboveBarrier` ties the container to the visibility barrier described in Section 60.5.2: a
+stack below the barrier is hidden by WindowManager without any occluding surface. The `bounds`
+field lets the system UI place and resize each container deterministically, which is what makes
+fixed multi-pane car layouts possible.
+
+Clients drive the shell through the `AutoTaskStackController` interface:
+
+```kotlin
+// packages/services/Car/libs/car-wm-shell-lib/src/com/android/wm/shell/automotive/
+//   AutoTaskStackController.kt
+
+interface AutoTaskStackController {
+    var autoTransitionHandlerDelegate: AutoTaskStackTransitionHandlerDelegate?
+
+    val taskStackStateMap: Map<Int, AutoTaskStackState>
+
+    fun createRootTaskStack(
+        displayId: Int,
+        name: String,
+        listener: RootTaskStackListener
+    ): RootTaskStack?
+
+    fun destroyTaskStack(taskStackId: Int)
+
+    fun setDefaultRootTaskStackOnDisplay(displayId: Int, rootTaskStackId: Int?)
+
+    @ShellMainThread
+    fun startTransition(transaction: AutoTaskStackTransaction): IBinder?
+}
+```
+
+The controller follows a transaction-and-transition discipline rather than imperative window
+moves. A caller composes an `AutoTaskStackTransaction` (reparent a task into a stack, change a
+stack's `AutoTaskStackState`, send a `PendingIntent` into a stack) and calls `startTransition`;
+WindowManager then drives the change through a normal Shell transition, calling back into the
+caller's `AutoTaskStackTransitionHandlerDelegate` (`handleRequest`, `startAnimation`,
+`onTransitionConsumed`, `mergeAnimation`) so the animation stays in sync with the underlying
+window operations. `setDefaultRootTaskStackOnDisplay` registers a stack as the launch root for a
+display, so newly started activities are routed into a managed container instead of going
+fullscreen.
+
+Container lifecycle is reported through `RootTaskStackListener`, which adapts
+`ShellTaskOrganizer.TaskListener` so that callbacks split cleanly between the root container and
+its child tasks:
+
+```kotlin
+// packages/services/Car/libs/car-wm-shell-lib/src/com/android/wm/shell/automotive/
+//   RootTaskStackListener.kt
+
+interface RootTaskStackListener : ShellTaskOrganizer.TaskListener {
+    fun onRootTaskStackAppeared(rootTaskStack: RootTaskStack) {}
+    fun onRootTaskStackInfoChanged(rootTaskStack: RootTaskStack) {}
+    fun onRootTaskStackDestroyed(rootTaskStack: RootTaskStack) {}
+}
+```
+
+On the CarService side, `CarActivityService` grew its own lightweight `RootTaskListener`
+interface plus `registerRootTaskListener`/`unregisterRootTaskListener` so that automotive system
+services can observe root-task appear/vanish events without depending on the shell library
+directly:
+
+```java
+// packages/services/Car/service/src/com/android/car/am/CarActivityService.java
+
+/** Listener for root task callbacks. */
+public interface RootTaskListener {
+    void onRootTaskVanished(String name);
+    void onRootTaskAppeared(String name);
+}
+```
+
+The library and shell architecture:
+
+```mermaid
+graph TB
+    subgraph "System UI Process"
+        DELEG["AutoTaskStackTransitionHandlerDelegate<br/>(implemented by Car SystemUI)"]
+        CTRL["AutoTaskStackController<br/>car-wm-shell-lib"]
+        REPO["AutoTaskRepository<br/>tracks stacks + barrier tokens"]
+        BAR["AutoVisibilityBarrierController"]
+    end
+
+    subgraph "WindowManager / Shell Core"
+        STO["ShellTaskOrganizer"]
+        TR["Transitions"]
+        WM["WindowManagerService"]
+    end
+
+    subgraph "Containers on a Display"
+        RTS1["RootTaskStack A<br/>isAboveBarrier=true, layer=2"]
+        RTS2["RootTaskStack B<br/>isAboveBarrier=true, layer=1"]
+        BARRIER["Visibility Barrier Task<br/>(empty, Shell-organized)"]
+        RTS3["RootTaskStack C<br/>isAboveBarrier=false (hidden)"]
+    end
+
+    DELEG --> CTRL
+    CTRL --> STO
+    CTRL --> TR
+    BAR --> STO
+    BAR --> REPO
+    CTRL --> REPO
+    STO --> WM
+    TR --> WM
+    CTRL --> RTS1
+    CTRL --> RTS2
+    BAR --> BARRIER
+    CTRL --> RTS3
+```
+
+### 60.5.2 The Auto Visibility Barrier
+
+A recurring automotive problem is hiding a container reliably. On phones a task is hidden because
+something opaque covers it; in a multi-pane car layout there may be nothing opaque to cover a pane
+you want to dismiss, and leaving it visible underneath is both a UX and a driver-distraction
+problem. Android 17 solves this with the *visibility barrier*, implemented by
+`AutoVisibilityBarrierController` under
+`packages/services/Car/libs/car-wm-shell-lib/src/com/android/wm/shell/automotive/visibilitybarrier/`.
+
+The mechanism is deliberately simple. The controller creates one empty, Shell-organized task per
+display -- the barrier -- and relies on a WindowManager rule that siblings ordered *below* the
+barrier are made invisible. Any container can therefore be hidden by ordering it under the
+barrier (its `AutoTaskStackState.isAboveBarrier` becomes `false`) with no occluding activity
+required. The class documentation states the contract directly:
+
+```kotlin
+// packages/services/Car/libs/car-wm-shell-lib/src/com/android/wm/shell/automotive/
+//   visibilitybarrier/AutoVisibilityBarrierController.kt
+
+/**
+ * Controller to manage the visibility barrier for each display.
+ *
+ * The visibility barrier is an empty Shell-organized task. Siblings below the visibility barrier
+ * are made invisible by the WindowManager. This provides a reliable mechanism to hide tasks
+ * without needing to occlude them with a fullscreen visible activity.
+ *
+ * Note: A home activity can co-exist with the visibility barrier and either will not affect the
+ * other.
+ */
+@WMSingleton
+class AutoVisibilityBarrierController @Inject constructor(/* ... */) :
+    DisplayController.OnDisplaysChangedListener, AutoShellInitializable {
+
+    override fun initialize() {
+        if (!Flags.enableAutoVisibilityBarrier()) {
+            return
+        }
+        // ...register for display add/remove and create a barrier per display
+    }
+}
+```
+
+The controller listens for displays through `DisplayController.OnDisplaysChangedListener` and
+maintains one barrier per display, recording each barrier's token in `AutoTaskRepository` and
+dropping it on `onTaskVanished`. Like nearly every new windowing behavior in 17, it is gated by
+an aconfig flag so OEMs and the platform can stage the rollout:
+
+```
+# packages/services/Car/libs/car-wm-shell-lib/aconfig/flags.aconfig
+package: "com.android.wm.shell.automotive"
+container: "system_ext"
+
+flag {
+    name: "enable_mumd_car_wm_shell"
+    namespace: "car_framework"
+    description: "Enables proxy and host implementation in MUMD car-wm-shell for automotive"
+}
+
+flag {
+    name: "enable_auto_visibility_barrier"
+    namespace: "car_framework"
+    description: "Enables the dedicated auto visibility barrier controller on all displays"
+}
+```
+
+The `enable_mumd_car_wm_shell` flag is the second half of the story: in a Multi-User
+Multi-Display (MUMD) vehicle, the shell runs a proxy-and-host split so that the per-occupant
+system UI processes can each drive their own display's containers through the same
+`AutoTaskStackController` API.
+
+### 60.5.3 Scalable UI: Declarative Car Panels
+
+The shell library gives Car SystemUI primitives, but OEMs do not want to write transition code.
+Android 17 layers a declarative *Scalable UI* framework over the shell so a head-unit layout is
+described as a set of configurable **panels** with states, variants, and animations, rather than
+imperative window calls. The framework spans two locations: the reusable model and panel library
+at `packages/apps/Car/systemlibs/car-scalable-ui-lib/` (package `com.android.car.scalableui`,
+providing `Event`, `PanelTransaction`, `Panel`, and the variant/keyframe model), and the
+SystemUI wiring at `packages/apps/Car/SystemUI/src/com/android/systemui/car/wm/scalableui/`.
+
+The bridge class is `PanelAutoTaskStackTransitionHandlerDelegate` -- it implements the shell's
+`AutoTaskStackTransitionHandlerDelegate` and translates WindowManager transitions into panel
+events. Its companion pieces, documented in
+`packages/apps/Car/SystemUI/src/com/android/systemui/car/wm/scalableui/README.md`, are:
+
+| Component | Role |
+|-----------|------|
+| `PanelAutoTaskStackTransitionHandlerDelegate` | Bridge between Shell transitions and Scalable UI |
+| `PanelTransitionCoordinator` | Orchestrates panel animations and state changes |
+| `EventDispatcher` | Maps system events to `PanelTransaction`s |
+| `PanelConfigReader` / `ActionConfigReader` | Read declarative panel and action configuration |
+| `TaskPanel` / `DecorPanel` / `SysUIPanel` | The panel container types |
+
+The README draws the distinction that makes the framework efficient: *window state* (visibility,
+size, position, Z-order) is heavyweight and goes through WindowManager via an
+`AutoTaskStackTransaction`, while *surface* properties (alpha, scale, translation, crop) are
+animated cheaply on SurfaceFlinger through `AutoSurfaceTransaction`. A pure surface change (for
+example, fading a panel) never round-trips through WindowManager.
+
+```mermaid
+sequenceDiagram
+    participant Src as App launch / button event
+    participant WM as WindowManager / Shell
+    participant Delegate as PanelAutoTaskStackTransitionHandlerDelegate
+    participant Dispatch as EventDispatcher
+    participant Coord as PanelTransitionCoordinator
+    participant Surf as SurfaceFlinger
+
+    Src->>WM: Window change initiates transition
+    WM->>Delegate: handleRequest(transition, request)
+    Delegate->>Dispatch: Event from TransitionRequestInfo
+    Dispatch-->>Delegate: PanelTransaction
+    Delegate->>Coord: Build AutoTaskStackTransaction
+    Coord-->>Delegate: Transaction
+    Delegate-->>WM: Return transaction
+    WM->>Delegate: startAnimation(...)
+    Delegate->>Coord: Reconcile state + animate
+    Coord->>Surf: AutoSurfaceTransaction (alpha/scale/crop)
+```
+
+Scalable UI is where the secondary-display work also lands. The distant-display and driver/
+distant-display ("dewd") system UIs wire the framework in explicitly -- for example
+`packages/services/Car/car_product/distant_display/apps/CarDistantDisplaySystemUI/` constructs its
+initializer with `setScalableUIWMInitializer(...)` and `setScalableUIEventDispatcher(...)`, and the
+`packages/services/Car/car_product/dewd/` product carries its own Scalable UI sample RROs. As with
+the shell pieces, Scalable UI is staged behind flags so a given product can opt in per display
+(and MUMD products deliberately disable it on the per-occupant path while it matures).
+
+### 60.5.4 Cross-Reference: Software Defined Vehicle
+
+The windowing work above is the part of the 17 automotive story that lives inside CarService and
+Car SystemUI. The larger architectural shift in this release is the **Software Defined Vehicle
+(SDV)** platform -- a separate, vehicle-spanning stack (under trees such as
+`system/software_defined_vehicle/`, `hardware/sdv/`, and `device/google/sdv*`) that decouples
+vehicle functions from fixed ECUs, runs services across virtualized domains, and adds a gateway
+and middleware layer between Android and the rest of the car. SDV is a top-level subsystem in its
+own right, not a CarService feature, so it is covered in its own chapters rather than here:
+
+- **Chapter 65: Software Defined Vehicle** -- the SDV platform architecture, domains, and how it
+  relates to the AAOS stack covered in this chapter.
+- **Chapter 66: SDV Middleware** -- the gateway and middleware layer that brokers between Android,
+  the SDV services, and vehicle networks.
+
+For this chapter the takeaway is the boundary: CarService, the Vehicle HAL, occupant zones, and
+the new `Car-WindowManager-Shell`/Scalable UI windowing stack remain the Android-side automotive
+platform; the SDV chapters pick up where the vehicle abstraction leaves off.
+
+---
+
+## 60.6 Try It
 
 ### Exercise 60.1: Explore CarService Services
 
@@ -13798,6 +15055,8 @@ graph TB
 | `PrintJobInfo.java` | Same directory | Print job state representation |
 | `PrintJob.java` | Same directory | Print job handle for apps |
 | `PrintAttributes.java` | Same directory | Page size, margins, color mode |
+| `PrinterInfo.java` | Same directory | Printer description (name, status, capabilities, setup intent) |
+| `flags/flags.aconfig` | Same directory | `android.print.flags` aconfig declarations |
 | `PrintedPdfDocument.java` | `frameworks/base/core/java/android/print/pdf/` | PDF rendering helper |
 | `PrintService.java` | `frameworks/base/core/java/android/printservice/` | Print service plugin base class |
 | `PrinterDiscoverySession.java` | Same directory | Printer discovery lifecycle |
@@ -13805,6 +15064,8 @@ graph TB
 | `UserState.java` | Same directory | Per-user print state management |
 | `RemotePrintSpooler.java` | Same directory | Spooler process proxy |
 | `RemotePrintService.java` | Same directory | Print service process proxy |
+| `PrintSpoolerService.java` | `frameworks/base/packages/PrintSpooler/src/com/android/printspooler/model/` | Spooler-process job store |
+| `flags/flags.aconfig` | `frameworks/base/packages/PrintSpooler/` | `com.android.printspooler.flags` aconfig declarations |
 
 ---
 
@@ -13834,10 +15095,35 @@ PrintJob job = printManager.print("My Document", new MyPrintDocumentAdapter(), n
 
 The `print()` method:
 
-1. Creates a `PrintDocumentAdapter` proxy for cross-process communication
+1. Creates a `PrintDocumentAdapterDelegate` proxy for cross-process communication
 2. Sends the print request to `PrintManagerImpl` via Binder IPC
-3. The system launches the print UI (from the `com.android.printspooler` package)
-4. Returns a `PrintJob` handle for tracking state
+3. Reads the `IntentSender` the system returns under `EXTRA_PRINT_DIALOG_INTENT`
+   and starts the print UI (from the `com.android.printspooler` package) with it
+4. Returns a `PrintJob` handle for tracking state, or `null` if printing is
+   unavailable
+
+The Android 17 implementation hardens this path. `print()` builds an
+`ActivityOptions` with
+`MODE_BACKGROUND_ACTIVITY_START_ALLOWED` so the spooler dialog is allowed to
+launch from the print request, and it now catches `ActivityNotFoundException`
+when the dialog activity cannot be resolved, returning `null` (the documented
+failure mode) instead of leaking the exception to the caller:
+
+```java
+// frameworks/base/core/java/android/print/PrintManager.java
+try {
+    ActivityOptions activityOptions = ActivityOptions.makeBasic()
+            .setPendingIntentBackgroundActivityStartMode(
+                    ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED);
+    mContext.startIntentSender(intent, null, 0, 0, 0, activityOptions.toBundle());
+    return new PrintJob(printJob, this);
+} catch (SendIntentException sie) {
+    Log.e(LOG_TAG, "Couldn't start print job config activity.", sie);
+} catch (ActivityNotFoundException anfe) {
+    Log.e(LOG_TAG, "Print preview activity not found: ", anfe);
+}
+return null;
+```
 
 ### 61.2.2 Querying Print Jobs
 
@@ -14279,17 +15565,31 @@ The `print()` method in `PrintManagerImpl` validates:
 
 1. The adapter is non-null
 2. Printing is enabled (not disabled by device policy)
-3. The calling user is valid
+3. The calling user is the current foreground user (or a profile of it)
 
-When printing is disabled by `DevicePolicyManager`, a toast message is shown
-to the user explaining why.
+Printing is gated by the `UserManager.DISALLOW_PRINTING` user restriction,
+which `DevicePolicyManager` sets when an admin disables printing:
+
+```java
+// frameworks/base/services/print/java/com/android/server/print/PrintManagerService.java
+private boolean isPrintingEnabled() {
+    return !mUserManager.hasUserRestriction(UserManager.DISALLOW_PRINTING,
+            Binder.getCallingUserHandle());
+}
+```
+
+When printing is disabled, `print()` fetches the human-readable reason through
+`DevicePolicyManagerInternal.getPrintingDisabledReasonForUser()`, shows it in a
+toast, drives the adapter through `start()`/`finish()` so the app's resources
+are released, and returns `null` without creating a job.
 
 ### 61.7.3 Content Observers and Broadcast Receivers
 
 `PrintManagerImpl` registers:
 
-- **Content observers** on `Settings.Secure.ENABLED_PRINT_SERVICES` to track
-  which print services the user has enabled in Settings
+- **Content observers** on `Settings.Secure.DISABLED_PRINT_SERVICES` to track
+  which print services the user has *disabled* in Settings (see Section 61.8.2 for
+  why Android tracks the disabled set rather than the enabled set)
 
 - **Package monitors** to detect installation, removal, or updates of print
   service packages
@@ -14343,8 +15643,27 @@ private final Intent mQueryIntent =
         new Intent(android.printservice.PrintService.SERVICE_INTERFACE);
 ```
 
-Enabled services are stored in `Settings.Secure.ENABLED_PRINT_SERVICES` as
-a colon-separated list of `ComponentName` strings.
+Since Android N, the system persists the *disabled* set rather than the enabled
+set: every installed print service is considered enabled unless its
+`ComponentName` appears in `Settings.Secure.DISABLED_PRINT_SERVICES` (a
+colon-separated list). `readDisabledPrintServicesLocked()` parses that setting
+into `mDisabledServices`, and `writeDisabledPrintServicesLocked()` persists it.
+`Settings.Secure.ENABLED_PRINT_SERVICES` survives only as a one-time migration
+input: `upgradePersistentStateIfNeeded()` reads any legacy enabled list,
+converts it into the equivalent disabled set, and then clears
+`ENABLED_PRINT_SERVICES` to `null` so the upgrade never runs again:
+
+```java
+// frameworks/base/services/print/java/com/android/server/print/UserState.java
+// Pre N we store the enabled services, in N and later we store the disabled services.
+// Hence if enabledSettingValue is still set, we need to upgrade.
+if (enabledSettingValue != null) {
+    // ... compute disabledServices = installed - enabled ...
+    writeDisabledPrintServicesLocked(disabledServices);
+    Settings.Secure.putStringForUser(mContext.getContentResolver(),
+            Settings.Secure.ENABLED_PRINT_SERVICES, null, mUserId);
+}
+```
 
 ### 61.8.3 Service Lifecycle Management
 
@@ -14354,7 +15673,7 @@ Active services are managed through `RemotePrintService` proxies:
 flowchart TB
     UNLOCK["User Unlocked"]
     QUERY["Query PackageManager<br/>for PrintService implementations"]
-    ENABLED["Check Settings.Secure<br/>ENABLED_PRINT_SERVICES"]
+    ENABLED["Filter out Settings.Secure<br/>DISABLED_PRINT_SERVICES"]
     BIND["Bind to enabled services<br/>(RemotePrintService)"]
     ACTIVE["Service active:<br/>can discover printers<br/>and process jobs"]
 
@@ -14802,11 +16121,19 @@ public Bundle print(@NonNull String printJobName, @NonNull IPrintDocumentAdapter
     intent.putExtra(PrintManager.EXTRA_PRINT_JOB, printJob);
     intent.putExtra(Intent.EXTRA_PACKAGE_NAME, packageName);
 
-    // Returns IntentSender to launch print dialog
+    ActivityOptions activityOptions = ActivityOptions.makeBasic()
+            .setPendingIntentCreatorBackgroundActivityStartMode(
+                    ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_DENIED);
     IntentSender intentSender = PendingIntent.getActivityAsUser(
             mContext, 0, intent, PendingIntent.FLAG_ONE_SHOT
                     | PendingIntent.FLAG_CANCEL_CURRENT | PendingIntent.FLAG_IMMUTABLE,
             activityOptions.toBundle(), new UserHandle(mUserId)).getIntentSender();
+
+    Bundle result = new Bundle();
+    result.putParcelable(PrintManager.EXTRA_PRINT_JOB, printJob);
+    result.putParcelable(PrintManager.EXTRA_PRINT_DIALOG_INTENT, intentSender);
+    return result;
+}
 ```
 
 Key implementation details:
@@ -14814,11 +16141,15 @@ Key implementation details:
 1. **Death tracking**: The adapter Binder is monitored via `PrintJobForAppCache` --
    if the creating app dies, its print jobs are cleaned up
 
-2. **PendingIntent**: The print dialog is launched through a `PendingIntent`,
-   ensuring proper security context even across process boundaries
+2. **PendingIntent**: The print dialog is launched through a `PendingIntent`
+   wrapped in a Bundle under `EXTRA_PRINT_DIALOG_INTENT`. The client
+   (`PrintManager.print()` in Section 61.2.1) reads that `IntentSender` and starts
+   it, so the dialog runs with the correct security context across process
+   boundaries
 
-3. **Background activity restriction**: Uses `MODE_BACKGROUND_ACTIVITY_START_DENIED`
-   to prevent apps from launching the print dialog from the background
+3. **Background activity restriction**: The `PendingIntent` is built with
+   `setPendingIntentCreatorBackgroundActivityStartMode(MODE_BACKGROUND_ACTIVITY_START_DENIED)`,
+   so the *creating* app cannot use this intent to launch background activities
 
 4. **Initial state**: Every print job starts as `STATE_CREATED` with 1 copy
 
@@ -15143,14 +16474,23 @@ private final PrintJobForAppCache mPrintJobForAppCache = new PrintJobForAppCache
 
 ### 61.20.3 Device Policy Integration
 
-Enterprise management can disable printing entirely through `DevicePolicyManager`:
+Enterprise management disables printing by setting the
+`UserManager.DISALLOW_PRINTING` user restriction. `isPrintingEnabled()` checks
+that restriction for the calling user; when it is set, `print()` and
+`createPrintJob()` refuse to create a job, and `print()` surfaces the admin's
+reason string via `DevicePolicyManagerInternal`:
 
 ```java
 // frameworks/base/services/print/java/com/android/server/print/PrintManagerService.java
 if (!isPrintingEnabled()) {
     DevicePolicyManagerInternal dpmi =
             LocalServices.getService(DevicePolicyManagerInternal.class);
-    // Show disabled message to user
+    CharSequence disabledMessage = dpmi.getPrintingDisabledReasonForUser(callingUserId);
+    if (disabledMessage != null) {
+        Toast.makeText(mContext, Looper.getMainLooper(), disabledMessage,
+                Toast.LENGTH_LONG).show();
+    }
+    // Drive the adapter through start()/finish() and return null.
 }
 ```
 
@@ -15160,18 +16500,34 @@ if (!isPrintingEnabled()) {
 
 ### 61.21.1 Shell Commands
 
-The `PrintShellCommand` class provides debugging commands:
+The `PrintShellCommand` class implements two `cmd print` subcommands, both of
+which control whether the system may bind to print services published by instant
+apps:
 
 ```bash
-# List print services
-$ adb shell cmd print list-services
+# Read the instant-app binding policy for a user (default: USER_SYSTEM)
+$ adb shell cmd print get-bind-instant-service-allowed [--user <USER_ID>]
 
-# Get print jobs
-$ adb shell cmd print get-print-jobs
-
-# Dump print service state
-$ adb shell dumpsys print
+# Set the instant-app binding policy
+$ adb shell cmd print set-bind-instant-service-allowed [--user <USER_ID>] true|false
 ```
+
+The richest view of live print state comes from `dumpsys`, which prints every
+`UserState`'s installed services, active services, spooler binding, and cached
+print jobs:
+
+```bash
+# Dump print manager state (text)
+$ adb shell dumpsys print
+
+# Dump as protobuf for structured analysis
+$ adb shell dumpsys print --proto
+```
+
+The `dumpsys print` handler in `PrintManagerService` (Section 61.7) snapshots
+the per-user `UserState` list under `mLock`, then renders it through a
+`DualDumpOutputStream` that targets either an `IndentingPrintWriter` (text) or a
+`ProtoOutputStream` (`--proto`).
 
 ### 61.21.2 Logging
 
@@ -15213,6 +16569,262 @@ The print framework supports protobuf-based dumps for structured analysis:
 
 ---
 
+## 61.23 Printer Setup Activity (Android 17)
+
+Android 17 lets a print service publish a *setup* activity for a printer, in
+addition to the long-standing *info* activity. The motivating case is a printer
+that a service can discover but cannot print to until the user finishes a
+one-time setup step (for example, claiming the printer, entering credentials, or
+installing a vendor profile). The feature is guarded by the
+`android.print.flags.enable_setup_activity` aconfig flag:
+
+```text
+# frameworks/base/core/java/android/print/flags/flags.aconfig
+flag {
+    name: "enable_setup_activity"
+    namespace: "printing"
+    description: "Enable PrintService implementations to provide a printer setup activity"
+    is_exported: true
+}
+```
+
+### 61.23.1 The setup intent on PrinterInfo
+
+`PrinterInfo` gains a nullable `mSetupIntent` (`PendingIntent`) alongside the
+existing `mInfoIntent`. A print service attaches it from
+`PrinterInfo.Builder.setSetupIntent()`:
+
+```java
+// frameworks/base/core/java/android/print/PrinterInfo.java
+@FlaggedApi(Flags.FLAG_ENABLE_SETUP_ACTIVITY)
+public @NonNull Builder setSetupIntent(@NonNull PendingIntent setupIntent) {
+    mSetupIntent = Objects.requireNonNull(setupIntent);
+    return this;
+}
+```
+
+Every field touchpoint -- the constructor, parceling, `hashCode()`, `equals()`,
+and `toString()` -- is wrapped in `if (Flags.enableSetupActivity())`, so the
+extra `PendingIntent` is read from and written to the parcel only when the flag
+is on. This keeps the wire format compatible with services compiled against the
+flag-off build. The accessor `getSetupIntent()` is deliberately marked `@hide`:
+only the framework's own print UI is meant to launch the setup screen, so a
+third-party app that obtains a `PrinterInfo` through other APIs cannot start it.
+
+### 61.23.2 How the spooler blocks printing until setup completes
+
+The print dialog (`PrintActivity` in the spooler) treats a printer with a setup
+intent as not-yet-printable. `needsSetup()` returns true only when the flag is
+on and the selected printer carries a setup intent:
+
+```java
+// frameworks/base/packages/PrintSpooler/src/com/android/printspooler/ui/PrintActivity.java
+private static boolean needsSetup(PrinterInfo printer) {
+    return android.print.flags.Flags.enableSetupActivity()
+            && printer != null
+            && printer.getSetupIntent() != null;
+}
+```
+
+When the user tries to print, `setupAndPrint()` first checks `needsSetup()`. If
+setup is required it launches the service's setup `PendingIntent` for a result
+(rather than confirming the print job), allowing the activity to launch from the
+spooler via `MODE_BACKGROUND_ACTIVITY_START_ALLOWED`. Only when setup is not
+required (or has completed) does the spooler fall through to `confirmPrint()`:
+
+```mermaid
+flowchart TB
+    PRESS["User presses Print"]
+    NEEDS{"needsSetup printer<br/>(flag on AND<br/>setupIntent != null)?"}
+    LAUNCH["startIntentSenderForResult<br/>(printer setup activity)"]
+    DONE{"Setup result OK?"}
+    CONFIRM["confirmPrint<br/>(spool job, STATE_QUEUED)"]
+    STAY["Stay on print dialog"]
+
+    PRESS --> NEEDS
+    NEEDS -->|"No"| CONFIRM
+    NEEDS -->|"Yes"| LAUNCH
+    LAUNCH --> DONE
+    DONE -->|"Yes"| CONFIRM
+    DONE -->|"No"| STAY
+```
+
+The setup activity may also return an alternate printer, in case the user picks
+a different one during setup.
+
+---
+
+## 61.24 Print Telemetry (Android 17)
+
+Android 17 adds structured statsd metrics to the print spooler so the platform
+can measure print outcomes, discovery, and UI engagement. All logging is gated
+by the `com.android.printspooler.flags.printing_telemetry` flag:
+
+```text
+# frameworks/base/packages/PrintSpooler/flags/flags.aconfig
+flag {
+  name: "printing_telemetry"
+  namespace: "printing"
+  description: "Metrics tracking final print job status, printer discovery, printer capabilities, and major UI actions."
+}
+```
+
+### 61.24.1 The statsd atoms
+
+The atoms live in a dedicated extension file and are emitted by the
+`printspooler` module:
+
+```text
+# frameworks/proto_logging/stats/atoms/printing/printing_extension_atoms.proto
+FrameworkPrintJob              (1071) - final job state + attributes
+FrameworkPrinterDiscovery      (1072) - discovered printer + capabilities
+FrameworkMainPrintUiLaunched   (1073) - print dialog opened
+FrameworkAdvancedOptionsUiLaunched (1074) - advanced options opened
+```
+
+`FrameworkPrintJob` carries the terminal state (completed / failed / canceled),
+color mode, media size, horizontal/vertical DPI, orientation, duplex mode,
+document type, whether the output was saved to PDF, page count, and the print
+service UID. `FrameworkPrinterDiscovery` records the discovering service UID and
+the printer's supported color modes, media sizes, and duplex modes. Two
+additional `Bips*` atoms (1075-1078) come from the built-in print service
+(`builtinprintservice`) rather than the spooler.
+
+### 61.24.2 Where the events are logged
+
+`PrintSpoolerService.logPrintJobFinalState()` emits a `FrameworkPrintJob` when a
+job reaches a final spooler state. It resolves the print service's UID, reads
+the optional attributes (`PrintAttributes`) and document info
+(`PrintDocumentInfo`), and hands them to an asynchronous logger:
+
+```java
+// frameworks/base/packages/PrintSpooler/src/com/android/printspooler/model/PrintSpoolerService.java
+private void logPrintJobFinalState(PrinterId printerId, PrintJobInfo printJob) {
+    if (!Flags.printingTelemetry()) {
+        return;
+    }
+    // ... resolve serviceUId, read PrintAttributes + PrintDocumentInfo ...
+    StatsAsyncLogger.INSTANCE.PrintJob(serviceUId, state, colorMode, size,
+            resolution, duplexMode, docType, savedPdf, pageCount);
+}
+```
+
+The proto comments name the exact source files for each atom: `FrameworkPrintJob`
+is logged from `PrintSpoolerService.java`, `FrameworkPrinterDiscovery` from
+`PrinterDiscoverySession.java`, and the two UI-launch atoms from `PrintActivity.java`.
+To support these atoms, Android 17 added small accessors used by the logger,
+including media-size and document-type lookups read from `PrintAttributes` and
+`PrintDocumentInfo`.
+
+---
+
+## 61.25 The Spooler Is No Longer Preinstalled Everywhere (Android 17)
+
+Earlier releases assumed `com.android.printspooler` was present on every user.
+Android 17 narrows the preinstall allowlist: the spooler is installed only for
+user types that need it.
+
+```xml
+<!-- build/make/target/product/sysconfig/preinstalled-packages-platform-handheld-system.xml -->
+<install-in-user-type package="com.android.printspooler">
+    <install-in user-type="FULL" />
+    <install-in user-type="android.os.usertype.profile.CLONE" />
+</install-in-user-type>
+```
+
+Because the spooler can now be absent on a given user, code that talks to it
+must tolerate that. The `dumpsys print` path is the visible example: a stale
+implementation called into `RemotePrintSpooler.dump()` for every user state,
+which failed when the spooler package was not installed. Android 17 adds an
+install check that short-circuits the dump:
+
+```java
+// frameworks/base/services/print/java/com/android/server/print/RemotePrintSpooler.java
+public void dump(@NonNull DualDumpOutputStream dumpStream) {
+    synchronized (mLock) {
+        if (!isInstalled()) {
+            return;
+        }
+        // ... write is_destroyed / is_bound ...
+    }
+}
+
+private boolean isInstalled() {
+    try {
+        mContext.createPackageContextAsUser(PRINT_SPOOLER_PACKAGE_NAME, 0, mUserHandle);
+        return true;
+    } catch (PackageManager.NameNotFoundException e) {
+        return false;
+    } catch (Exception e) {
+        Slog.e(LOG_TAG, "Failed to check if print spooler is installed", e);
+        return false;
+    }
+}
+```
+
+`isInstalled()` probes for the spooler package on the proxy's own
+`mUserHandle` via `createPackageContextAsUser()`. When it returns false the dump
+is skipped for that user, so `adb shell dumpsys print` succeeds on devices where
+some users have no spooler.
+
+---
+
+## Try It
+
+Use a device or emulator running Android 17 to observe the print framework in
+action.
+
+1. **Inspect live print state.** Open any app with print support (Chrome, Files,
+   Photos), start a print, then dump the framework state:
+
+   ```bash
+   adb shell dumpsys print
+   adb shell dumpsys print --proto > print_state.pb
+   ```
+
+   Note the per-user `UserState` sections, the installed and active print
+   services, and any cached print jobs. On a device with secondary users, confirm
+   the command no longer fails even though the spooler may be absent on some users
+   (Section 61.25).
+
+2. **Watch the disabled-services model.** List the print services, then toggle
+   one in Settings and re-read the secure setting that actually persists the
+   choice:
+
+   ```bash
+   adb shell settings get secure disabled_print_services
+   ```
+
+   Disable a service in Settings and observe the `ComponentName` appear in the
+   colon-separated list; the *enabled* setting stays empty (Section 61.8.2).
+
+3. **Trace a print job's lifecycle.** Enable verbose logging and follow a job
+   from `STATE_CREATED` through `STATE_QUEUED` to a terminal state:
+
+   ```bash
+   adb shell setprop log.tag.PrintManager VERBOSE
+   adb shell setprop log.tag.RemotePrintSpooler VERBOSE
+   adb logcat | grep -i print
+   ```
+
+4. **Toggle the new flags.** Inspect the Android 17 print flags and their state:
+
+   ```bash
+   adb shell device_config get printing enable_setup_activity
+   adb shell device_config get printing printing_telemetry
+   ```
+
+   With `printing_telemetry` on, complete a print and confirm a `FrameworkPrintJob`
+   atom is logged (Section 61.24).
+
+5. **Implement a minimal print service.** Build a `PrintService` subclass that
+   reports a single fake printer in `onCreatePrinterDiscoverySession()` and
+   completes jobs in `onPrintJobQueued()`. Attach a setup intent with
+   `PrinterInfo.Builder.setSetupIntent()` and watch the print dialog block on
+   setup before allowing the job (Section 61.23).
+
+---
+
 ## Summary
 
 Android's printing framework is a well-structured system built on four layers:
@@ -15237,6 +16849,18 @@ The spooler and print service proxies (`RemotePrintSpooler` and
 including binding lifecycle, timeouts, crash recovery, and deferred command
 queuing. The multi-user architecture ensures complete isolation between
 users while sharing the underlying framework infrastructure.
+
+Android 17 refines several of these layers. Print services can now publish a
+per-printer setup activity (`enable_setup_activity`), which the spooler launches
+to block printing until the user finishes setup. A new telemetry layer
+(`printing_telemetry`) emits structured statsd atoms for job outcomes, printer
+discovery, and print-dialog engagement. The persisted service state continues to
+track the *disabled* set in `Settings.Secure.DISABLED_PRINT_SERVICES`, with the
+legacy enabled-list setting surviving only as a one-time migration input.
+Because the spooler is no longer preinstalled on every user, framework code such
+as `dumpsys print` now guards spooler access with an install check, and
+`PrintManager.print()` returns `null` instead of leaking
+`ActivityNotFoundException` when the dialog activity cannot be resolved.
 
 <!-- chapter:62-camera2-pipeline -->
 # Chapter 62: Camera2 Pipeline Deep Dive
@@ -16351,7 +17975,7 @@ classDiagram
     }
     class Camera3SharedOutputStream {
         -mSurfaces: vector~IGraphicBufferProducer~
-        +switchSurface()
+        +updateStream()
     }
 
     Camera3StreamInterface <|-- Camera3IOStreamBase
@@ -16909,14 +18533,16 @@ Source: frameworks/base/core/java/android/hardware/camera2/CameraExtensionSessio
 
 ### 62.6.2 Supported Extension Types
 
-| Extension Type | Constant | Description |
-|---------------|----------|-------------|
-| Night Mode | `EXTENSION_NIGHT` | Multi-frame low-light enhancement |
-| HDR | `EXTENSION_HDR` | High dynamic range merging |
-| Bokeh | `EXTENSION_BOKEH` | Background blur / portrait mode |
-| Auto | `EXTENSION_AUTOMATIC` | Device-selected best mode |
-| Face Retouch | `EXTENSION_FACE_RETOUCH` | Skin smoothing and beautification |
-| Eyes Free Videography | `EXTENSION_EYES_FREE_VIDEOGRAPHY` | Stabilized hands-free video |
+| Extension Type | Constant | Value | Description |
+|---------------|----------|-------|-------------|
+| Auto | `EXTENSION_AUTOMATIC` | 0 | Device-selected best mode |
+| Face Retouch | `EXTENSION_FACE_RETOUCH` | 1 | Skin smoothing and beautification |
+| Bokeh | `EXTENSION_BOKEH` | 2 | Background blur / portrait mode |
+| HDR | `EXTENSION_HDR` | 3 | High dynamic range merging |
+| Night Mode | `EXTENSION_NIGHT` | 4 | Multi-frame low-light enhancement |
+
+These five public constants are defined in `CameraExtensionCharacteristics.java`;
+OEM-defined extensions start at `EXTENSION_VENDOR_START` (`0x4000`).
 
 ```java
 // Query supported extensions
@@ -17068,25 +18694,37 @@ Set<CaptureResult.Key> resultKeys =
 ### 62.6.8 Extension Strength Control (Android 15+)
 
 Android 15 added extension strength control, allowing applications to
-adjust the intensity of extension effects:
+adjust the intensity of extension effects.  Strength is a per-request
+control, `CaptureRequest.EXTENSION_STRENGTH`, a single integer in the range
+`0` to `100` where `0` means "apply no post-processing, return a regular
+frame" and `100` is the maximum effect.  It is only available when the key
+appears in the extension's `getAvailableCaptureRequestKeys()` list, so an
+application must check that list rather than assume the control exists:
+
+```
+Source: frameworks/base/core/java/android/hardware/camera2/CaptureRequest.java
+  → EXTENSION_STRENGTH ("android.extension.strength")
+```
 
 ```java
-// Check if strength control is supported
-if (extChars.isPostviewAvailable(
-        CameraExtensionCharacteristics.EXTENSION_BOKEH)) {
+// Check whether the chosen extension accepts a strength control
+Set<CaptureRequest.Key> requestKeys =
+    extChars.getAvailableCaptureRequestKeys(
+        CameraExtensionCharacteristics.EXTENSION_BOKEH);
 
-    // Query supported strength range
-    Range<Integer> strengthRange =
-        extChars.getExtensionSpecificStrengthRange(
-            CameraExtensionCharacteristics.EXTENSION_BOKEH);
-    // e.g., Range(0, 100) where 0 = no effect, 100 = maximum
-
-    // Apply strength to capture request
+if (requestKeys.contains(CaptureRequest.EXTENSION_STRENGTH)) {
     CaptureRequest.Builder builder =
         cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
-    builder.set(CaptureRequest.EXTENSION_STRENGTH, 75);  // 75% bokeh
+    builder.set(CaptureRequest.EXTENSION_STRENGTH, 75);  // 75% effect
 }
 ```
+
+The interpretation depends on the extension: for `EXTENSION_BOKEH` strength
+controls the amount of blur; for `EXTENSION_HDR` and `EXTENSION_NIGHT` it
+controls how many frames are fused and the brightness of the result; for
+`EXTENSION_FACE_RETOUCH` it controls the amount of cosmetic smoothing.  If
+the client omits the value, the extension picks a default and reports it back
+in the corresponding capture result.
 
 ### 62.6.9 Extension Postview
 
@@ -17316,20 +18954,26 @@ ACameraMetadata_const_entry physicalCameraIds;
 ACameraMetadata_getConstEntry(chars,
     ACAMERA_LOGICAL_MULTI_CAMERA_PHYSICAL_IDS, &physicalCameraIds);
 
-// Create physical camera aware capture request
+// Create a physical-camera-aware capture request: the trailing array
+// lists the physical IDs whose per-camera settings the request may carry.
 ACaptureRequest* request = NULL;
 const char* physicalIds[] = {"2", "4"};
-ACameraDevice_createCaptureRequestForPhysicalCameras(
+ACameraDevice_createCaptureRequest_withPhysicalIds(
     device, TEMPLATE_PREVIEW,
     2, physicalIds,
     &request);
 
-// Set physical camera ID on output target
-ACameraOutputTarget* target = NULL;
-ACameraOutputTarget_create(window, &target);
-ACaptureRequest_addTarget(request, target);
-ACaptureRequest_setPhysicalCameraTarget(request, target, "2");
+// Per-physical-camera settings are written with the
+// ACaptureRequest_setEntry_physicalCamera_* family, keyed by physical ID:
+uint8_t aeMode = ACAMERA_CONTROL_AE_MODE_ON;
+ACaptureRequest_setEntry_physicalCamera_u8(
+    request, "2", ACAMERA_CONTROL_AE_MODE, 1, &aeMode);
 ```
+
+The chapter's earlier Java example used `OutputConfiguration.setPhysicalCameraId()`
+to bind a whole stream to a sensor; at the NDK level the same routing is done
+by adding the output target normally and supplying per-physical settings
+through the `_physicalCamera_*` setters.
 
 ### 62.7.8 NDK Metadata Access
 
@@ -17397,7 +19041,273 @@ Source: frameworks/av/camera/ndk/include/camera/NdkCameraError.h
 
 ---
 
-## 62.8 Try It
+## 62.8 Multi-Client Shared Sessions (Android 17)
+
+Until Android 17 a camera was an exclusive resource: exactly one client held
+a given camera ID, and a higher-priority client could only take it by evicting
+the current owner (Section 62.2.3).  Android 17 adds an opt-in **shared mode**
+in which several clients can hold the same camera at once, observing a single
+shared stream configuration.  This is aimed at scenarios such as large-screen
+video conferencing, where a system "effects" surface and an app surface want
+the same sensor frames simultaneously.
+
+### 62.8.1 Opening a Camera in Shared Mode
+
+Shared mode is a privileged, opt-in capability.  An application first asks
+whether the device supports it, then opens with the shared variant of
+`openCamera`:
+
+```
+Source: frameworks/base/core/java/android/hardware/camera2/CameraManager.java
+  → isCameraDeviceSharingSupported(String)
+  → openSharedCamera(String, Executor, CameraDevice.StateCallback)
+```
+
+```java
+// Both APIs are @SystemApi and require SYSTEM_CAMERA + CAMERA permissions.
+if (cameraManager.isCameraDeviceSharingSupported(cameraId)) {
+    cameraManager.openSharedCamera(cameraId, executor, new CameraDevice.StateCallback() {
+        @Override
+        public void onOpenedInSharedMode(CameraDevice camera, boolean isPrimaryClient) {
+            // isPrimaryClient tells this client whether it currently controls capture.
+        }
+        @Override
+        public void onClientSharedAccessPriorityChanged(
+                CameraDevice camera, boolean isPrimaryClient) {
+            // Primary/secondary status can flip as higher-priority clients come and go.
+        }
+        @Override public void onOpened(CameraDevice camera) { /* non-shared path */ }
+        @Override public void onDisconnected(CameraDevice camera) { camera.close(); }
+        @Override public void onError(CameraDevice camera, int error) { camera.close(); }
+    });
+}
+```
+
+`openSharedCamera` is rejected with `UnsupportedOperationException` when
+`isCameraDeviceSharingSupported` returns false, and requires both
+`android.permission.SYSTEM_CAMERA` and `android.permission.CAMERA`.  The two
+new `StateCallback` hooks, `onOpenedInSharedMode()` and
+`onClientSharedAccessPriorityChanged()`, are defined in
+`frameworks/base/core/java/android/hardware/camera2/CameraDevice.java`.
+
+### 62.8.2 Primary and Secondary Clients
+
+Among all clients that have opened a camera in shared mode, exactly one is the
+**primary** client and the rest are **secondary**.  Priority is computed from
+the same two signals the eviction policy uses, the process state and the
+out-of-memory score, so a foreground or system client outranks a background
+one.  As clients come and go the primary can change, and every client is told
+via `onClientSharedAccessPriorityChanged()`.
+
+The capabilities differ sharply between the two roles:
+
+| Capability | Primary client | Secondary client |
+|------------|----------------|------------------|
+| Create capture requests, set any capture parameter | Yes | No |
+| `capture` / `setRepeatingRequest` / `stopRepeating` | Yes | No |
+| `startStreaming` / `stopStreaming` (default params) | Yes | Yes |
+| `captureBurst` / `setRepeatingBurst` / `switchToOffline` / `prepare` | No (unsupported in shared sessions) | No |
+
+Secondary clients cannot author capture requests; they can only ask the
+session to stream frames to their own surfaces with default parameters via
+`startStreaming(List<Surface>)`, and stop with `stopStreaming()`.
+
+```
+Source: frameworks/base/core/java/android/hardware/camera2/CameraSharedCaptureSession.java
+  → startStreaming(List<Surface>, ...) / stopStreaming()
+```
+
+### 62.8.3 The Shared Capture Session
+
+When a camera is opened in shared mode, the only legal session type is
+`SessionConfiguration.SESSION_SHARED`; any other value throws
+`IllegalArgumentException`.  The resulting `CameraCaptureSession` is castable
+to `CameraSharedCaptureSession`.
+
+```
+Source: frameworks/base/core/java/android/hardware/camera2/params/SessionConfiguration.java
+  → SESSION_SHARED = CameraDevice.SESSION_OPERATION_MODE_SHARED
+```
+
+Crucially, a shared session does not let each client pick its own stream
+geometry.  Every client must use the single, device-published configuration
+exposed through `CameraCharacteristics.SHARED_SESSION_CONFIGURATION`
+(Section 62.9.1); supplying any other output configuration fails session
+creation.  The framework synthesizes that key from a vendor XML file parsed by
+the camera service:
+
+```
+Source: frameworks/av/services/camera/libcameraservice/config/SharedSessionConfigReader.h
+        frameworks/av/services/camera/libcameraservice/config/SharedSessionConfigUtils.h
+```
+
+`SharedSessionConfigReader::SharedSessionConfig` captures one allowed output:
+surface type, width, height, optional physical camera ID, stream use case,
+timestamp base, mirror mode, readout-timestamp flag, format, usage, and
+dataspace, all parsed from the shared-session XML by
+`parseSharedSessionConfig()`.
+
+### 62.8.4 Shared Mode Through the Service
+
+The Binder surface gained an explicit `sharedMode` flag.
+`ICameraService.connectDevice()` now takes a trailing `boolean sharedMode`,
+and `ICameraDeviceUser` exposes `isPrimaryClient()` so a client can query its
+role; `ICameraDeviceCallbacks` carries the
+`onClientSharedAccessPriorityChanged(boolean primaryClient)` notification back
+to the framework.
+
+```
+Source: frameworks/av/camera/aidl/android/hardware/ICameraService.aidl
+  → connectDevice(..., boolean sharedMode)
+        frameworks/av/camera/aidl/android/hardware/camera2/ICameraDeviceUser.aidl
+  → isPrimaryClient()
+        frameworks/av/camera/aidl/android/hardware/camera2/ICameraDeviceCallbacks.aidl
+  → onClientSharedAccessPriorityChanged(boolean primaryClient)
+```
+
+Inside the camera service, `CameraService` threads the `sharedMode` flag
+through every connect path, tracks the set of PIDs sharing each camera, and
+keeps their relative priorities in sync.  The diagram below shows the full
+shared-mode connect with a secondary client joining later:
+
+```mermaid
+sequenceDiagram
+    participant A1 as Primary App
+    participant A2 as Secondary App
+    participant CS as CameraService (C++)
+    participant CDC as CameraDeviceClient
+    participant HAL as Camera HAL
+
+    A1->>CS: connectDevice(sharedMode=true)
+    CS->>CS: makeClient(sharedMode=true)
+    CS->>CDC: initialize() — first shared client
+    CS-->>A1: onOpenedInSharedMode(isPrimaryClient=true)
+
+    A2->>CS: connectDevice(sharedMode=true)
+    CS->>CS: addSharedClientPid() + updateSharedClientAccessPriorities()
+    CS-->>A2: onOpenedInSharedMode(isPrimaryClient=false)
+
+    A1->>CDC: setRepeatingRequest(preview)
+    CDC->>HAL: processCaptureRequest
+    A2->>CDC: startStreaming(secondarySurfaces)
+    CDC->>CDC: matchSharedStreamingRequest()
+    Note over CS: If A2 gains higher priority, primary flips
+    CS-->>A1: onClientSharedAccessPriorityChanged(false)
+    CS-->>A2: onClientSharedAccessPriorityChanged(true)
+```
+
+`CameraService` provides the supporting machinery, including
+`getHighestPrioritySharedClient()`, `addSharedClientPid()` /
+`removeSharedClientPid()`, `updateSharedClientAccessPriorities()`, and
+`notifySharedClientPrioritiesChanged()`, all declared in
+`frameworks/av/services/camera/libcameraservice/CameraService.h`.  On the
+per-client side, `CameraDeviceClient` tracks the shared streaming request and
+the shared request map (`mSharedStreamingRequest`, `mSharedRequestMap`) and
+implements `isPrimaryClient()`.
+
+```
+Source: frameworks/av/services/camera/libcameraservice/api2/CameraDeviceClient.h
+  → isPrimaryClient(), matchSharedStreamingRequest(), matchSharedCaptureRequest()
+```
+
+### 62.8.5 Shared Mode in the NDK
+
+The native API mirrors the Java surface.
+`ACameraManager_isCameraDeviceSharingSupported()` reports support,
+`ACameraManager_openSharedCamera()` opens in shared mode, and secondary
+clients drive frames with `ACameraCaptureSessionShared_startStreaming()` /
+`ACameraCaptureSessionShared_stopStreaming()` (with a logical-multi-camera
+variant, `ACameraCaptureSessionShared_logicalCamera_startStreaming()`).
+
+```
+Source: frameworks/av/camera/ndk/include/camera/NdkCameraManager.h
+  → ACameraManager_openSharedCamera, ACameraManager_isCameraDeviceSharingSupported
+        frameworks/av/camera/ndk/include/camera/NdkCameraCaptureSession.h
+  → ACameraCaptureSessionShared_startStreaming / _stopStreaming
+```
+
+---
+
+## 62.9 New Camera Metadata Sections (Android 17)
+
+The camera metadata tag space is partitioned into numbered **sections** (one
+per subsystem: control, sensor, lens, scaler, and so on), each occupying a
+16-bit slice of the tag namespace.  Android 17 appends two new sections to the
+master enumeration in
+`system/media/camera/include/system/camera_metadata_tags.h`, immediately
+before `ANDROID_SECTION_COUNT`:
+
+```
+Source: system/media/camera/include/system/camera_metadata_tags.h
+  → ANDROID_SHARED_SESSION, ANDROID_DESKTOP_EFFECTS (then ANDROID_SECTION_COUNT)
+        system/media/camera/docs/metadata_definitions.xml
+  → <section name="sharedSession">, <section name="desktopEffects">
+```
+
+The same two sections are mirrored into the HAL's metadata AIDL
+(`hardware/interfaces/camera/metadata/aidl/.../CameraMetadataSection.aidl`),
+keeping the framework and HAL tag namespaces aligned.
+
+### 62.9.1 The sharedSession Section
+
+This section backs the shared-session feature from Section 62.8.  It defines
+the device's single allowed shared configuration:
+
+| Tag | Type | Visibility | Purpose |
+|-----|------|-----------|---------|
+| `ANDROID_SHARED_SESSION_COLOR_SPACE` | enum | framework-only | Color space all shared outputs use (`UNSPECIFIED`, `SRGB`, `DISPLAY_P3`, `BT2020_HLG`) |
+| `ANDROID_SHARED_SESSION_OUTPUT_CONFIGURATIONS` | int64[] | framework-only | Packed list of allowed shared outputs (surface type, size, format, mirror mode, readout-timestamp flag, timestamp base, dataspace, usage, stream use case, physical ID) |
+
+Neither raw tag is set by the HAL: both are generated by the Android camera
+framework when a camera can be opened in shared mode.  They are then surfaced
+to system clients as the synthetic, `@SystemApi` key
+`CameraCharacteristics.SHARED_SESSION_CONFIGURATION`, whose value is a
+`SharedSessionConfiguration` object that enumerates the permitted output
+configurations.
+
+```
+Source: frameworks/base/core/java/android/hardware/camera2/CameraCharacteristics.java
+  → SHARED_SESSION_COLOR_SPACE, SHARED_SESSION_OUTPUT_CONFIGURATIONS,
+    SHARED_SESSION_CONFIGURATION (@SystemApi, @SyntheticKey)
+        frameworks/base/core/java/android/hardware/camera2/params/SharedSessionConfiguration.java
+```
+
+### 62.9.2 The desktopEffects Section
+
+The `desktopEffects` section exposes large-screen video-conferencing effects
+applied by the camera device itself, behind the `desktop_effects` aconfig
+flag.  All of its tags are `system` visibility, so they are not part of the
+public SDK.  A device advertises which effects it can apply through
+`ANDROID_DESKTOP_EFFECTS_CAPABILITIES`:
+
+| Capability | Control tag | Modes |
+|-----------|-------------|-------|
+| `BACKGROUND_BLUR` | `ANDROID_DESKTOP_EFFECTS_BACKGROUND_BLUR_MODE` | `OFF`, `LIGHT`, `FULL` |
+| `FACE_RETOUCH` | `ANDROID_DESKTOP_EFFECTS_FACE_RETOUCH_MODE` (+ `_FACE_RETOUCH_STRENGTH`) | `OFF`, `ON` |
+| `PORTRAIT_RELIGHT` | `ANDROID_DESKTOP_EFFECTS_PORTRAIT_RELIGHT_MODE` | `OFF`, `ON` |
+
+The static `ANDROID_DESKTOP_EFFECTS_BACKGROUND_BLUR_MODES` array lists which
+blur modes a device supports; that key only exists when `BACKGROUND_BLUR`
+appears in the capabilities list.  Face retouch carries an optional
+`ANDROID_DESKTOP_EFFECTS_FACE_RETOUCH_STRENGTH` byte.
+
+```
+Source: system/media/camera/docs/metadata_definitions.xml
+  → <section name="desktopEffects"> (aconfig_flag="desktop_effects")
+        hardware/interfaces/camera/metadata/aidl/android/hardware/camera/metadata/
+  → DesktopEffectsCapabilities.aidl, DesktopEffectsBackgroundBlurMode.aidl,
+    DesktopEffectsFaceRetouchMode.aidl, DesktopEffectsPortraitRelightMode.aidl
+```
+
+Because these effects run inside the camera device rather than in an
+application-side extension, they are distinct from the Camera Extensions of
+Section 62.6: the same conceptual operations (blur, retouch, relight) here
+become first-class, HAL-reported metadata controls intended for system
+conferencing surfaces.
+
+---
+
+## 62.10 Try It
 
 ### Exercise 62.1: Camera Device Enumeration
 
@@ -18072,6 +19982,16 @@ key architectural insights from this chapter:
 
 7. **NDK parity** -- The NDK camera API provides identical functionality to
    the Java API through the same underlying service.
+
+8. **Shared mode breaks the single-owner rule** -- Android 17 lets several
+   privileged clients hold one camera at once through `openSharedCamera`, with
+   one primary client driving capture and secondaries streaming with default
+   parameters against a single device-published configuration.
+
+9. **The metadata tag space grew** -- Android 17 appends the `sharedSession`
+   and `desktopEffects` sections, the latter exposing system-side conferencing
+   effects (background blur, face retouch, portrait relight) as HAL-reported
+   controls.
 
 The next chapter is the Custom ROM Guide -- the capstone that ties
 together everything in the book by walking through how to build,

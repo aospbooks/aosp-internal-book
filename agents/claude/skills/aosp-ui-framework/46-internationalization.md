@@ -27,6 +27,33 @@ transliteration, break iteration, and regular expression support. Without ICU,
 Android could not correctly sort a list of German names, break a Thai sentence
 into words, or format a Japanese date.
 
+Android 17 ships **ICU 78.3**, which implements **Unicode 17.0** and the
+**CLDR 48.2** locale dataset. The version constants are defined in
+`external/icu/icu4c/source/common/unicode/uvernum.h`:
+
+```c
+// external/icu/icu4c/source/common/unicode/uvernum.h
+#define U_ICU_VERSION_MAJOR_NUM 78
+#define U_ICU_VERSION_MINOR_NUM 3
+#define U_ICU_VERSION_PATCHLEVEL_NUM 0
+#define U_ICU_VERSION "78.3"
+#define U_ICU_VERSION_SHORT "78"
+```
+
+and the Unicode version is pinned in
+`external/icu/icu4c/source/common/unicode/uchar.h`:
+
+```c
+// external/icu/icu4c/source/common/unicode/uchar.h
+#define U_UNICODE_VERSION "17.0"
+```
+
+This is a significant uprev over the prior release (which carried ICU 77).
+Section 46.8 details what the bump brings: new Unicode 17.0 code points and
+emoji, refreshed CLDR collation and formatting data, and updated time-zone
+rules. Because ICU rides in the i18n APEX (see 46.1.3), the new data can reach
+devices through a Mainline update rather than a full platform OTA.
+
 ### 46.1.1 Source Layout
 
 ICU exists in AOSP at `external/icu/`. The directory is substantial:
@@ -47,9 +74,12 @@ external/icu/
         util/        # ULocale, Calendar, TimeZone, ...
         lang/        # UCharacter (character properties)
         number/      # Modern number formatting (NumberFormatter)
+        message2/    # MessageFormat 2.0 (technology preview)
+        segmenter/   # Modern segmentation API (internal/@hide on Android)
         impl/        # Internal implementation classes
     android_icu4c/   # Android-specific ICU4C wrappers
     libandroidicu/   # Shared library exposing stable ICU4C APIs to the NDK
+    libandroidicuinit/ # Initialization shim for libandroidicu
     libicu/          # Thin shim for platform-internal ICU usage
     build/           # Build rules for ICU data subsetting
     tools/           # Scripts for ICU version upgrades
@@ -84,9 +114,13 @@ external/icu/icu4c/source/data/
 ```
 
 At build time, the data is compiled into a `.dat` file and installed on device
-at `/apex/com.android.i18n/etc/icu/`. Since Android 10, ICU is delivered as
-part of the **i18n APEX module**, which allows ICU data and code to be updated
-independently of full platform OTA updates.
+at `/apex/com.android.i18n/etc/icu/icudt<major>l.dat` — on Android 17 that is
+`icudt78l.dat`, matching ICU major version 78. The exact path is asserted by
+`external/icu/android_icu4j/testing/src/android/icu/extratest/platform/AndroidDataFilesTest.java`,
+which builds it as `"/apex/com.android.i18n/etc/icu/icudt" +
+VersionInfo.ICU_VERSION.getMajor() + "l.dat"`. Since Android 10, ICU is
+delivered as part of the **i18n APEX module** (`com.android.i18n`), which allows
+ICU data and code to be updated independently of full platform OTA updates.
 
 ```mermaid
 graph TD
@@ -386,6 +420,13 @@ localeManager.setApplicationLocales(LocaleList.forLanguageTags("ja-JP,en-US"));
 LocaleList appLocales = localeManager.getApplicationLocales();
 ```
 
+`LocaleManager` also exposes the system-locale list (`getSystemLocales()` /
+`setSystemLocales()`) and lets an app supply a runtime override for its declared
+supported locales via `setOverrideLocaleConfig(LocaleConfig)`. The override
+LocaleConfig is what lets an app expand or shrink the language list that Settings
+offers for that app without shipping a new build; it is declared statically in
+`frameworks/base/core/java/android/app/LocaleConfig.java`.
+
 The server-side implementation lives at:
 
 **Source path**: `frameworks/base/services/core/java/com/android/server/locales/LocaleManagerService.java`
@@ -415,12 +456,16 @@ The service manages several responsibilities:
 | Package monitoring | Tracks app install/uninstall via `LocaleManagerServicePackageMonitor` |
 | LocaleConfig override | Allows system to override an app's declared supported locales |
 
-Supporting files in the same package:
+Supporting files in the same package
+(`frameworks/base/services/core/java/com/android/server/locales/`):
 
 - `LocaleManagerBackupHelper.java` -- Backup agent integration
 - `LocaleManagerServicePackageMonitor.java` -- Tracks package changes
 - `LocaleManagerShellCommand.java` -- `cmd locale_manager` shell interface
 - `LocaleManagerInternal.java` -- Internal API for system services
+- `SystemAppUpdateTracker.java` -- Re-applies stored locales after a system-app update
+- `AppLocaleChangedAtomRecord.java` / `AppSupportedLocalesChangedAtomRecord.java` --
+  Statsd atom records logged when an app's locales or supported-locale config change
 
 ### 46.2.4 Locale Resolution Algorithm
 
@@ -786,24 +831,28 @@ flowchart TD
 
 **Source path**: `frameworks/base/core/java/android/text/TextUtils.java`
 
-The `TextUtils.getLayoutDirectionFromLocale()` method checks whether the
-locale's script is inherently RTL:
+The `TextUtils.getLayoutDirectionFromLocale()` method asks ICU whether the
+locale is inherently RTL. In Android 17 it delegates to
+`ULocale.forLocale(locale).isRightToLeft()` rather than poking at the script's
+first code point directly, and it also honours the developer "force RTL" toggle:
 
 ```java
 // frameworks/base/core/java/android/text/TextUtils.java
 public static int getLayoutDirectionFromLocale(Locale locale) {
-    if (locale != null && !locale.equals(Locale.ROOT)) {
-        final int directionality = Character.getDirectionality(
-            Character.codePointAt(locale.getScript().isEmpty()
-                ? locale.getLanguage() : locale.getScript(), 0));
-        if (directionality == Character.DIRECTIONALITY_RIGHT_TO_LEFT
-                || directionality == Character.DIRECTIONALITY_RIGHT_TO_LEFT_ARABIC) {
-            return View.LAYOUT_DIRECTION_RTL;
-        }
-    }
-    return View.LAYOUT_DIRECTION_LTR;
+    return ((locale != null && !locale.equals(Locale.ROOT)
+                    && ULocale.forLocale(locale).isRightToLeft())
+            // If forcing into RTL layout mode, return RTL as default
+            || DisplayProperties.debug_force_rtl().orElse(false))
+        ? View.LAYOUT_DIRECTION_RTL
+        : View.LAYOUT_DIRECTION_LTR;
 }
 ```
+
+`ULocale.isRightToLeft()` consults ICU's locale data, so a locale like
+`ar` (Arabic) or `he` (Hebrew) resolves to RTL even when no script subtag is
+present, and `sr-Latn` correctly resolves to LTR while `sr-Cyrl` resolves to
+LTR as well (Cyrillic is left-to-right). The `DisplayProperties.debug_force_rtl()`
+branch is what the "Force RTL layout direction" developer option flips.
 
 ### 46.4.4 Bidirectional (Bidi) Text
 
@@ -1198,6 +1247,27 @@ width. The **optimal** strategy (based on the Knuth-Plass algorithm from TeX)
 considers all possible break points globally to minimize visual inconsistency
 across the entire paragraph. The **balanced** strategy tries to make all lines
 approximately the same width.
+
+Orthogonal to the break *strategy*, Minikin also carries CLDR-derived line-break
+*style* and *word-style* settings, exposed to apps through
+`android.graphics.text.LineBreakConfig` and defined natively in
+`frameworks/minikin/include/minikin/LineBreakStyle.h`:
+
+```cpp
+// frameworks/minikin/include/minikin/LineBreakStyle.h
+enum class LineBreakStyle : uint8_t {
+    None = 0, Loose = 1, Normal = 2, Strict = 3, NoBreak = 4, Auto = 5,
+};
+enum class LineBreakWordStyle : uint8_t {
+    None = 0, Phrase = 1, Auto = 2,
+};
+```
+
+These map to the Unicode `lb` and `lw` locale keywords (UTS #35). `Strict`,
+`Normal`, and `Loose` control how aggressively CJK text may break around small
+kana and certain punctuation, while `LineBreakWordStyle::Phrase` enables
+phrase-based breaking that keeps short Japanese and Korean phrases intact rather
+than breaking mid-phrase. `Auto` lets Minikin choose per locale and line count.
 
 ```mermaid
 flowchart TD
@@ -1638,12 +1708,133 @@ points a font covers:
 
 ---
 
-## 46.7 Try It
+## 46.7 Internationalization Changes in Android 17
+
+Android 17 does not redesign the i18n stack; the architecture in the preceding
+sections is intact. What changes is the *data and version layer* underneath it,
+plus a handful of locale-aware APIs that graduated or expanded. This section
+collects the differences that matter when porting prose or code from an earlier
+release.
+
+### 46.7.1 ICU 78 / Unicode 17.0 / CLDR 48.2
+
+The headline change is the ICU uprev. Android 17 carries **ICU 78.3**
+(`external/icu/icu4c/source/common/unicode/uvernum.h`), which implements
+**Unicode 17.0** (`external/icu/icu4c/source/common/unicode/uchar.h`) and
+integrates the **CLDR 48.2** locale dataset. The integration is visible in the
+16-to-17 changeset as a run of cherry-picks against ICU `maint-78`:
+
+```text
+ICU-23316 ICU 78.3 BRS Update version number to 78.3
+ICU-23316 Integrate CLDR 48.2 (final) to ICU maint-78
+ICU-23290 Integrate CLDR 48.1 ... to ICU maint-78
+```
+
+The practical effects ripple through every section above:
+
+| Layer | What the uprev brings |
+|-------|-----------------------|
+| Character properties (46.1.4) | New Unicode 17.0 code points gain general category, script, and bidi class data |
+| Collation (46.1.6) | Refreshed CLDR collation tailorings; some locales sort slightly differently |
+| Break iteration (46.1.7) | Updated dictionary/segmentation data for Thai, Khmer, Lao, CJK |
+| Formatting (46.1.8) | New/changed date, number, and currency patterns from CLDR 48.2 |
+| Plurals (46.3.4) | Plural-rule refinements for locales whose CLDR data changed |
+
+Because ICU rides in the `com.android.i18n` APEX, this entire data set can be
+shipped to devices through Mainline rather than a full OS image.
+
+### 46.7.2 Time Zone Data
+
+The time-zone database that ICU and `libcore` consult is updated independently
+of the ICU code, in the `system/timezone` module. Android 17's tree carries the
+IANA **2025c** release at distro format version `010`
+(`system/timezone/output_data/version/tz_version`). The 16-to-17 changeset shows
+the data rolling forward (`Update Android ICU data from 2025a to 2025b`, then the
+distro format being incremented). Like ICU, tzdata is APEX-delivered, so DST and
+zone-offset corrections reach devices without an OS update.
+
+### 46.7.3 Modern ICU APIs: MessageFormat 2.0 and Segmentation
+
+ICU 78 brings two newer API surfaces into `android_icu4j`:
+
+- **MessageFormat 2.0** lives in `external/icu/android_icu4j/src/main/java/android/icu/message2/`
+  (`MessageFormatter`, `MFParser`, `MFDataModel`, function factories for numbers,
+  dates, and text). It is a redesign of the classic `MessageFormat` that handles
+  grammatical agreement, gendered selection, and nested formatters in a single
+  declarative message string. On Android it is still marked a *technology
+  preview* (every public entry point in `MessageFormatter.java` is annotated
+  `@Deprecated` with "This API is for technology preview only"), so it is exposed
+  for experimentation rather than as a stable app API.
+- A **modern segmentation API** lives in
+  `external/icu/android_icu4j/src/main/java/android/icu/segmenter/` (`Segmenter`,
+  `Segments`, `LocalizedSegmenter`, `RuleBasedSegmenter`). It is a Streams-style
+  alternative to `BreakIterator`, but on Android it is `@hide` ("draft /
+  provisional / internal are hidden on Android"), so apps continue to use
+  `BreakIterator` (46.1.7) for word, line, and sentence boundaries.
+
+The takeaway: prefer the established `BreakIterator`, `NumberFormatter`, and
+`DateFormat` APIs for production code; treat `message2` and `segmenter` as
+upstream-tracking previews.
+
+### 46.7.4 Grammatical Inflection and System Terms of Address
+
+Android introduced the `grammatical-gender` configuration dimension and the
+`GrammaticalInflectionManager` API in an earlier release so that apps could
+select masculine, feminine, or neutral phrasing. The grammatical-gender values
+are defined on `Configuration`:
+
+```java
+// frameworks/base/core/java/android/content/res/Configuration.java
+public static final int GRAMMATICAL_GENDER_NOT_SPECIFIED = 0;
+public static final int GRAMMATICAL_GENDER_NEUTRAL       = 1;
+public static final int GRAMMATICAL_GENDER_FEMININE      = 2;
+public static final int GRAMMATICAL_GENDER_MASCULINE     = 3;
+```
+
+What is newer is the **system-wide "terms of address"** path. Behind the
+`android.app.system_terms_of_address_enabled` flag
+(`frameworks/base/core/java/android/app/grammatical_inflection_manager.aconfig`),
+`GrammaticalInflectionManager` adds a system-level grammatical gender that the
+user sets once and that apps read rather than each prompting individually:
+
+```java
+// frameworks/base/core/java/android/app/GrammaticalInflectionManager.java
+@FlaggedApi(Flags.FLAG_SYSTEM_TERMS_OF_ADDRESS_ENABLED)
+public int getSystemGrammaticalGender() { /* ... */ }
+
+// @hide system API used by Settings to set the system-wide value
+public void setSystemWideGrammaticalGender(int grammaticalGender) { /* ... */ }
+```
+
+`getSystemGrammaticalGender()` is the public, flag-gated read path; the
+matching `setSystemWideGrammaticalGender()` is a hidden system API that Settings
+uses to record the user's choice. The server side lives in its own package,
+`frameworks/base/services/core/java/com/android/server/grammaticalinflection/`
+(`GrammaticalInflectionService`, plus backup, package-monitor, and shell-command
+helpers that mirror the `LocaleManagerService` layout in 46.2.3). A per-app
+gender still flows through `setRequestedApplicationGrammaticalGender()`; the
+system value is the fallback when an app has not set its own.
+
+### 46.7.5 CJK Line-Break Word Style
+
+The phrase-based line-break controls described in 46.5.8
+(`LineBreakStyle` / `LineBreakWordStyle` in
+`frameworks/minikin/include/minikin/LineBreakStyle.h`, surfaced to apps through
+`android.graphics.text.LineBreakConfig`) remain the recommended way to get
+natural Japanese and Korean wrapping. `LINE_BREAK_WORD_STYLE_PHRASE` keeps short
+phrases together; `LINE_BREAK_STYLE_STRICT`/`NORMAL`/`LOOSE` tune CJK break
+permissiveness. With the CLDR 48.2 refresh these styles draw on updated
+segmentation data, so existing code does not change but the resulting line
+breaks track current CLDR conventions.
+
+---
+
+## 46.8 Try It
 
 This section provides hands-on exercises to explore Android's
 internationalization infrastructure.
 
-### 46.7.1 Exercise: Inspect ICU Data on a Device
+### 46.8.1 Exercise: Inspect ICU Data on a Device
 
 Connect to a device or emulator and inspect the ICU installation:
 
@@ -1652,31 +1843,31 @@ Connect to a device or emulator and inspect the ICU installation:
 adb shell pm list packages | grep i18n
 # Should show: package:com.android.i18n
 
-# Inspect ICU data location
+# Inspect ICU data location and read the major version off the filename
 adb shell ls -la /apex/com.android.i18n/etc/icu/
-# Should show icudt*.dat files
-
-# Check ICU version
-adb shell getprop persist.sys.icu.version
+# On Android 17: icudt78l.dat  (the "78" is the ICU major version)
 ```
 
-### 46.7.2 Exercise: Explore Locale Settings
+### 46.8.2 Exercise: Explore Locale Settings
 
 ```bash
-# List all available locales
-adb shell cmd locale_manager get-locales
+# List the device's supported locales
+adb shell cmd locale_manager list-device-locales
 
-# Get the system locale list
-adb shell settings get system system_locales
+# Get / set the system (device) locale
+adb shell cmd locale_manager get-device-locale
 
-# Set per-app locale (requires adb root or shell permissions)
+# Set a per-app locale (requires adb root or appropriate shell permissions)
 adb shell cmd locale_manager set-app-locales com.example.myapp --locales ja-JP
 
-# Verify per-app locale
+# Verify the per-app locale
 adb shell cmd locale_manager get-app-locales com.example.myapp
+
+# Inspect an app's resolved LocaleConfig (declared + any override)
+adb shell cmd locale_manager get-app-localeconfig com.example.myapp
 ```
 
-### 46.7.3 Exercise: Enable Pseudo-Locales
+### 46.8.3 Exercise: Enable Pseudo-Locales
 
 1. Enable Developer Options on the device
 2. Navigate to **Developer Options > Force RTL layout direction**
@@ -1687,7 +1878,7 @@ adb shell cmd locale_manager get-app-locales com.example.myapp
    - `en-XA`: Text becomes "[Heeelllloo Wooorrrlllddd]" style
    - `ar-XB`: Text is reversed and wrapped in RTL markers
 
-### 46.7.4 Exercise: Build a Multi-Locale App
+### 46.8.4 Exercise: Build a Multi-Locale App
 
 Create a minimal app that demonstrates locale-aware behavior:
 
@@ -1770,7 +1961,7 @@ Create locale-specific strings:
 </resources>
 ```
 
-### 46.7.5 Exercise: Inspect the Text Rendering Pipeline with Layout Inspector
+### 46.8.5 Exercise: Inspect the Text Rendering Pipeline with Layout Inspector
 
 1. Launch your app on a device or emulator
 2. Open Android Studio's Layout Inspector (Tools > Layout Inspector)
@@ -1779,7 +1970,7 @@ Create locale-specific strings:
 5. Use `adb shell dumpsys activity` to see the current `Configuration`
    including locale and layout direction
 
-### 46.7.6 Exercise: Explore System Fonts
+### 46.8.6 Exercise: Explore System Fonts
 
 ```bash
 # List all system fonts
@@ -1788,18 +1979,17 @@ adb shell ls /system/fonts/
 # Check font configuration
 adb shell cat /system/etc/fonts.xml | head -50
 
-# Inspect a specific font's metadata
-# (requires a font inspection tool or the following approach)
-adb shell cmd font list-families
+# Dump the resolved font configuration, families, and fallback chain
+adb shell cmd font dump
 
-# Check Noto CJK font
+# Show updatable-font module status (fonts shipped via the Fonts APEX)
+adb shell cmd font status
+
+# Check the Noto CJK font file
 adb shell ls -la /system/fonts/NotoSansCJK*
-
-# Examine fallback chain (device must be rooted or userdebug)
-adb shell dumpsys SurfaceFlinger --latency | head
 ```
 
-### 46.7.7 Exercise: Test RTL Layout
+### 46.8.7 Exercise: Test RTL Layout
 
 Create a layout that works correctly in both LTR and RTL:
 
@@ -1860,7 +2050,7 @@ Test by:
 3. Enabling "Force RTL layout direction" in Developer Options
 4. Using the `ar-XB` pseudo-locale
 
-### 46.7.8 Exercise: Use ICU4J Directly
+### 46.8.8 Exercise: Use ICU4J Directly
 
 ```java
 import android.icu.text.BreakIterator;
@@ -1897,7 +2087,7 @@ boolean isNormalized = nfc.isNormalized("Cafe\u0301");  // false (not NFC)
 String normalized = nfc.normalize("Cafe\u0301");         // "Cafe" (NFC)
 ```
 
-### 46.7.9 Exercise: Trace the Text Rendering Pipeline
+### 46.8.9 Exercise: Trace the Text Rendering Pipeline
 
 Enable systrace/perfetto tracing to observe the text rendering pipeline:
 
@@ -1937,7 +2127,7 @@ In the trace, look for:
 - `StaticLayout.generate` for text layout computation
 - Canvas `drawTextBlob` for the actual rendering
 
-### 46.7.10 Exercise: Build a Custom Font Configuration
+### 46.8.10 Exercise: Build a Custom Font Configuration
 
 For device vendors, create a custom font overlay:
 
@@ -1999,6 +2189,13 @@ Key takeaways from this chapter:
    fallback chains, and downloadable fonts all contribute to correct and
    efficient text display across languages.
 
+7. **Android 17 advances the data layer, not the architecture**: the stack moves
+   to ICU 78.3 (Unicode 17.0, CLDR 48.2) and IANA 2025c time-zone data, both
+   APEX-delivered; MessageFormat 2.0 and the modern segmentation API arrive as
+   previews; and grammatical inflection gains a system-wide "terms of address"
+   path. Existing i18n code keeps working while formatting, collation, and
+   segmentation track current CLDR conventions.
+
 ---
 
 ## Key Source Files Reference
@@ -2020,3 +2217,15 @@ Key takeaways from this chapter:
 | ResourcesImpl | `frameworks/base/core/java/android/content/res/ResourcesImpl.java` |
 | fonts.xml | `frameworks/base/data/fonts/fonts.xml` |
 | Font data directory | `frameworks/base/data/fonts/` |
+| ICU version constants | `external/icu/icu4c/source/common/unicode/uvernum.h` |
+| Unicode version | `external/icu/icu4c/source/common/unicode/uchar.h` |
+| MessageFormat 2.0 | `external/icu/android_icu4j/src/main/java/android/icu/message2/` |
+| ICU segmentation API | `external/icu/android_icu4j/src/main/java/android/icu/segmenter/` |
+| Time-zone data module | `system/timezone/` |
+| Configuration (grammatical gender) | `frameworks/base/core/java/android/content/res/Configuration.java` |
+| GrammaticalInflectionManager | `frameworks/base/core/java/android/app/GrammaticalInflectionManager.java` |
+| GrammaticalInflectionService | `frameworks/base/services/core/java/com/android/server/grammaticalinflection/` |
+| LineBreakConfig | `frameworks/base/graphics/java/android/graphics/text/LineBreakConfig.java` |
+| LineBreakStyle (Minikin) | `frameworks/minikin/include/minikin/LineBreakStyle.h` |
+| LocaleManager | `frameworks/base/core/java/android/app/LocaleManager.java` |
+| LocaleConfig | `frameworks/base/core/java/android/app/LocaleConfig.java` |

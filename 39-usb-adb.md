@@ -148,6 +148,7 @@ graph LR
         UPERM["UsbPermissionManager<br/>per-user permissions"]
         U4M["Usb4Manager<br/>USB4/Thunderbolt"]
         UALSA["UsbAlsaManager<br/>audio devices"]
+        UAUTH["UsbAuthManager<br/>host device authorization"]
     end
 
     US --> UDM
@@ -156,7 +157,13 @@ graph LR
     US --> UPERM
     US --> U4M
     US --> UALSA
+    US --> UAUTH
 ```
+
+`UsbAuthManager` is constructed only when the `enableUsbHostAuthorization` flag
+is set (see `frameworks/base/services/usb/java/com/android/server/usb/UsbService.java`
+around the `mAuthManager = new UsbAuthManager(...)` call); it bridges to a new
+out-of-process Rust daemon and is covered in Section 39.10.
 
 The service's lifecycle follows the standard `SystemService` pattern:
 
@@ -636,6 +643,7 @@ oneway interface IUsb {
     void switchRole(in String portName, in PortRole role, long transactionId);
     void limitPowerTransfer(in String portName, boolean limit, long transactionId);
     void resetUsbPort(in String portName, long transactionId);
+    void queryStaticPortInformation(long transactionId);
 }
 ```
 
@@ -644,6 +652,7 @@ Key operations:
 | Method | Purpose |
 |--------|---------|
 | `queryPortStatus()` | Retrieve current status of all Type-C ports |
+| `queryStaticPortInformation()` | Retrieve fixed per-port capabilities that never change at runtime |
 | `switchRole()` | Trigger DR_SWAP or PR_SWAP for role switching |
 | `enableUsbData()` | Enable/disable USB data signaling |
 | `enableContaminantPresenceDetection()` | Moisture/debris detection |
@@ -1996,26 +2005,36 @@ private void startAccessoryMode() {
 
 ### 39.7.5 Userspace AOA Implementation
 
-Modern AOSP includes a userspace AOA implementation as an alternative to the
-kernel-based accessory driver:
+Android 17 includes a userspace AOA implementation as an alternative to the
+kernel `f_accessory` gadget driver. Gating is the product of a build flag and a
+device property, evaluated in the `UsbDeviceManager` constructor
+(`frameworks/base/services/usb/java/com/android/server/usb/UsbDeviceManager.java`):
 
 ```java
-// From UsbDeviceManager constructor
+boolean deviceEnabledUserspaceAoa =
+        SystemProperties.getBoolean(DEVICE_UAOA_ENABLED_PROPERTY, false);
+boolean featureEnabledUserspaceAoa =
+        android.hardware.usb.flags.Flags.enableAoaUserspaceImplementation();
+
 mEnableAoaUserspaceImplementation =
-        android.hardware.usb.flags.Flags.enableAoaUserspaceImplementation()
-                && deviceEnabledUserspaceAoa
-                && nativeCheckAccessoryFfsDirectories();
+        featureEnabledUserspaceAoa && deviceEnabledUserspaceAoa;
 ```
 
-When userspace AOA is enabled, accessory string descriptors are read from
-FunctionFS rather than the kernel driver:
-```java
-if (mEnableAoaUserspaceImplementation) {
-    mAccessoryStrings = nativeGetAccessoryStringsFromFfs();
-} else {
-    mAccessoryStrings = nativeGetAccessoryStrings();
-}
-```
+`DEVICE_UAOA_ENABLED_PROPERTY` is `ro.usb.userspace.aoa.enabled` -- the same
+property that starts the `aoad` daemon (Section 39.11). When the flag and
+property are both set, `UsbDeviceManager` connects to `aoad` and queries its
+`AoaInitializationStatus`; if the daemon failed to open the accessory control
+endpoint, userspace AOA is disabled and the kernel driver is used instead. On a
+successful handover, `UsbDeviceManager` also disables the in-kernel AOA driver
+on older kernels (below 6.6) by writing `0` to the kernel's
+`android_kernel_aoa_enabled` toggle.
+
+Earlier development drops of this code read accessory string descriptors from
+FunctionFS directly in `system_server` via a native helper; that helper was
+removed and the protocol work now lives entirely in the `aoad` daemon, so
+`UsbDeviceManager` retains only the legacy kernel-driver path
+(`nativeGetAccessoryStrings()`) and otherwise routes through `aoad`. The full
+daemon architecture is covered in Section 39.11.
 
 ### 39.7.6 AOA Version 2 (Audio)
 
@@ -2182,8 +2201,12 @@ private boolean isDenyListed(int clazz, int subClass) {
 
 Source: `frameworks/base/services/usb/java/com/android/server/usb/UsbPermissionManager.java`
 
-Access to USB devices requires explicit permission. The permission model works
-as follows:
+Access to USB devices requires explicit permission. (On builds with USB host
+device authorization enabled, a device must first be *authorized* at the kernel
+level before it is even enumerated into a `UsbDevice` the framework can grant
+permission for -- see Section 39.10. Permission, described here, is the
+older per-app/per-device gate that still applies once a device is authorized.)
+The permission model works as follows:
 
 ```mermaid
 graph TD
@@ -2600,9 +2623,376 @@ stateDiagram-v2
 
 ---
 
-## 39.10 Try It: Hands-On Experiments
+## 39.10 USB Host Device Authorization (Android 17)
 
-### 39.10.1 Explore USB State Machine
+### 39.10.1 Why a New Authorization Layer
+
+The host-mode permission model in Section 39.8 answers the question "may *this
+app* talk to *this device*." It does not answer a more basic question that
+becomes urgent on desktop and large-screen form factors: "should this machine
+let *any* USB device attach at all, right now, given who is logged in and
+whether the screen is locked?" A laptop-style Android device sitting at a login
+screen should not silently enumerate an attacker's USB keyboard that injects
+keystrokes ("juice jacking" / BadUSB), and a docked desktop should be able to
+trust its dock's internal hub while still challenging a freshly plugged-in
+storage stick.
+
+Android 17 introduces **USB host device authorization** to enforce exactly this
+policy, at the point where the kernel would otherwise authorize a freshly
+attached device. The decision -- allow, deny, defer, or ask the user -- is made
+by a new out-of-process Rust daemon driven by a declarative policy, with the
+framework supplying the current "system state" (booted, logged in, screen
+locked, set-up) and relaying any interactive prompts to the user.
+
+The whole feature is gated by the `enable_usb_host_authorization` flag in the
+`usb_desktop` aconfig namespace
+(`frameworks/base/services/usb/java/com/android/server/usb/flags/usb_flags.aconfig`),
+reflecting that this is primarily desktop/large-screen hardening. On a phone
+build with the flag off, none of this runs and host devices behave as in
+earlier releases.
+
+### 39.10.2 Components
+
+```mermaid
+graph TD
+    subgraph "Kernel"
+        UDEV["USB device attach<br/>(sysfs authorized node)"]
+        UEVENTD["ueventd USB add/remove"]
+    end
+
+    subgraph "usbauthservice (Rust daemon, service usb_auth)"
+        MGR["AuthorizationManager<br/>(state + device lists)"]
+        RULES["Policy rules<br/>(rules.rs)"]
+        AUTHZ["authorize_device()<br/>(authorization.rs)"]
+    end
+
+    subgraph "system_server"
+        UAUTH["UsbAuthManager.java"]
+        UHM3["UsbHostManager"]
+    end
+
+    subgraph "SystemUI"
+        UI["UsbAuthorizationActivity<br/>(ask dialog)"]
+    end
+
+    UEVENTD -->|"device add/remove"| MGR
+    MGR --> AUTHZ
+    AUTHZ --> RULES
+    AUTHZ -->|"allow/deny: write authorized"| UDEV
+    UAUTH -->|"setSystemState() / setAuthorizationStatus()"| MGR
+    MGR -->|"events: ask / check-persisted"| UAUTH
+    UAUTH --> UI
+    UI -->|"user choice"| UAUTH
+    UHM3 -->|"usbDeviceAdded()"| UAUTH
+```
+
+The pieces:
+
+| Component | Type | Source Path | Role |
+|-----------|------|-------------|------|
+| `usbauthservice` | Rust daemon | `frameworks/native/services/usbauthservice/usbauthservice.rs` | Registers Binder service `usb_auth`; owns policy + decisions |
+| Policy engine | Rust | `frameworks/native/services/usbauthservice/rules.rs`, `authorization.rs`, `manager.rs` | Parses the rule language, evaluates a device against the active state |
+| `IUsbAuthManager` | Internal AIDL | `frameworks/base/core/java/android/hardware/usb/IUsbAuthManager.aidl` | Framework-to-daemon control surface |
+| `IUsbAuthEventsListener` | Internal AIDL | `frameworks/base/core/java/android/hardware/usb/IUsbAuthEventsListener.aidl` | Daemon-to-framework callbacks (oneway) |
+| `UsbAuthManager` | Java | `frameworks/base/services/usb/java/com/android/server/usb/UsbAuthManager.java` | Connects to `usb_auth`, maps Android events to system states, drives UI |
+| `UsbAuthorizationActivity` | SystemUI | `frameworks/base/packages/SystemUI/src/com/android/systemui/usb/UsbAuthorizationActivity.kt` | The user-facing "allow this USB device?" dialog |
+
+The daemon's `usbauthservice.rc`
+(`frameworks/native/services/usbauthservice/usbauthservice.rc`) declares the
+`usb_auth` service running as `user system` / `group system` in `class
+late_start`. It is a Tokio-based Rust binary that listens to ueventd USB
+add/remove events rather than polling.
+
+### 39.10.3 The AIDL Surface
+
+The interface is a framework-internal AIDL package (named
+`android.hardware.usb.auth` in Soong, declared `unstable` with the Rust backend
+in `frameworks/base/core/java/Android.bp`), not a stable VINTF HAL -- every file
+is `@hide`. `IUsbAuthManager` exposes:
+
+```
+interface IUsbAuthManager {
+    List<UsbAuthDeviceInfo> getAuthorizedUsbDevices();
+    List<UsbAuthDeviceInfo> getDeferredUsbDevices();
+    List<UsbAuthDeviceInfo> getDevicesAwaitingAuthorization();
+    List<UsbAuthDeviceInfo> getDevicesAwaitingPersistedAuthorization();
+    UsbAuthorizationStatus getAuthorizationStatus(in UsbAuthDeviceInfo device);
+    void setAuthorizationStatus(in UsbAuthDeviceInfo device,
+            in UsbAuthorizationStatus status);
+    void setSystemState(in UsbAuthorizationSystemState state);
+    boolean registerForUsbAuthorizationEvents(in IUsbAuthEventsListener listener);
+    void unregisterForUsbAuthorizationEvents(in IUsbAuthEventsListener listener);
+}
+```
+
+The oneway callback interface delivers the daemon's asynchronous decisions:
+
+```
+oneway interface IUsbAuthEventsListener {
+    void onDeviceAskForAuthorization(in UsbAuthDeviceInfo device);
+    void onDeviceCheckPersistedAuthorization(in UsbAuthDeviceInfo device);
+    void onDeviceAuthorizationStatusChanged(in UsbAuthDeviceInfo device,
+            in UsbAuthorizationStatus status,
+            in UsbAuthorizationSystemState systemState);
+}
+```
+
+A `UsbAuthDeviceInfo`
+(`frameworks/base/core/java/android/hardware/usb/UsbAuthDeviceInfo.aidl`)
+carries the identifying attributes the policy matches against: sysfs path, bus
+and device numbers, vendor/product IDs, the device-level
+`bDeviceClass`/`bDeviceSubClass`/`bDeviceProtocol`, the first interface's
+`bInterfaceClass`/`SubClass`/`Protocol`, `bcdDevice`, serial number,
+manufacturer, and product strings.
+
+Two small enums complete the contract. `UsbAuthorizationStatus`
+(`UsbAuthorizationStatus.aidl`) is `DENIED = 0`, `AUTHORIZED = 1`, and
+`DENIED_AND_DEFERRED = 2`. `UsbAuthorizationSystemState`
+(`UsbAuthorizationSystemState.aidl`) is `BOOTED = 0`, `LOGGED_IN = 1`,
+`SCREEN_LOCKED = 2`, and `SET_UP = 3`. These four states must stay in sync with
+the daemon's `ALL_SYSTEM_STATES` constant in `rules.rs` -- the daemon's
+`README.md` calls this out explicitly.
+
+### 39.10.4 The Policy Language and Decision Flow
+
+The daemon loads a text policy whose rules are evaluated in order; the first
+match wins, falling back to a default rule. Each rule is an **action**
+optionally constrained by **device attributes** and a **system condition**:
+
+```
+<action> [<device matchers>] [when <state condition>]
+```
+
+The six actions (`Action` in `rules.rs`) are `allow`, `allow-persisted`, `ask`,
+`deny`, `defer`, and `remove`. Device matchers (parsed in `rules.rs`,
+applied in `authorization.rs`) include `with-id <vid:pid>`, `with-interface
+<class:subclass:protocol>` (where `*` is a wildcard, combined with `any-of` /
+`one-of` / `none-of` / `equals`), `with-bcd-device-range`, `via-port`, `name`,
+`serial`, and `internal-device`. Conditions match the system state, e.g. `when
+LoggedIn` or `when one-of { Booted, ScreenLocked }`.
+
+What each action does once a device matches:
+
+| Action | Effect |
+|--------|--------|
+| `allow` | Writes `1` to the device's sysfs `authorized` node; device enumerates |
+| `deny` / `remove` | Writes `0` to sysfs; device is not enumerated |
+| `defer` | Writes `0` now, but re-evaluates the device on every system-state change (status `DENIED_AND_DEFERRED`) |
+| `ask` | No sysfs write; fires `onDeviceAskForAuthorization` so the framework can prompt the user |
+| `allow-persisted` | No sysfs write; fires `onDeviceCheckPersistedAuthorization` so the framework can consult a remembered decision (no UI) |
+
+```mermaid
+graph TD
+    ADD["ueventd: USB device added"] --> EVAL["Match against active-state rules"]
+    EVAL -->|"allow"| WAUTH["Write authorized=1<br/>status AUTHORIZED"]
+    EVAL -->|"deny / remove"| WDENY["Write authorized=0<br/>status DENIED"]
+    EVAL -->|"defer"| WDEFER["Write authorized=0<br/>re-check on state change"]
+    EVAL -->|"ask"| ASKUI["Callback onDeviceAskForAuthorization"]
+    EVAL -->|"allow-persisted"| ASKP["Callback onDeviceCheckPersistedAuthorization"]
+    ASKUI -->|"user allows"| WAUTH
+    ASKUI -->|"user denies"| WDENY
+    ASKP -->|"trusted before"| WAUTH
+    ASKP -->|"not trusted"| WDEFER
+```
+
+The "interactive" part is deliberately split: the daemon never shows UI or
+handles a PIN itself. For an `ask` device it simply notifies the framework,
+which (in `UsbAuthManager`) launches the SystemUI `UsbAuthorizationActivity`
+dialog; the user's choice flows back through `UsbService.setAuthorizationResponse(...)`
+to `UsbAuthManager.setAuthorizationResponse(...)` and finally
+`IUsbAuthManager.setAuthorizationStatus(...)`, at which point the daemon writes
+the sysfs `authorized` node. So the daemon is a pure policy/decision engine and
+the framework owns the human-facing "interactive PIN/prompt" experience.
+
+One safety detail worth calling out: if the device's boot disk happens to sit on
+USB, the daemon force-marks it as `internal-device` so a restrictive policy can
+never de-authorize the storage the system is running from (`manager.rs`).
+
+### 39.10.5 Static vs. Interactive Policy
+
+Two policies ship as `prebuilt_etc` files installed under `/etc/usb_auth/`:
+
+- `frameworks/native/services/usbauthservice/config/desktop_auth_policy.conf`
+  -> `usb_auth/policy.conf`: the **static** policy. Representative rules allow
+  HID and hub interfaces and internal devices outright, allow specific
+  ethernet dongles by VID:PID during setup/boot, allow everything once
+  `LoggedIn`, and `defer` while `ScreenLocked`.
+
+- `frameworks/native/services/usbauthservice/config/desktop_interactive_auth_policy.conf`
+  -> `usb_auth/interactive_policy.conf`: the **interactive** policy. It is
+  stricter -- e.g. only a plain hub is allowed unconditionally, HID at the
+  login screen becomes `ask`, previously-trusted devices use `allow-persisted`,
+  and the default for anything else is `defer`. It can also `import-allowlist`
+  vendor rules, optionally only `when debuggable`.
+
+The daemon chooses the interactive policy only when host authorization is
+enabled; otherwise it loads the static policy, and an interactive-policy load
+failure falls back to the static one (`manager.rs`). The files are named
+`desktop_*` because, as noted, this is a desktop-connectivity feature.
+
+### 39.10.6 Framework Integration
+
+`UsbService` constructs a `UsbAuthManager` (and hands it to `UsbHostManager` via
+`setAuthManager`) only when `enableUsbHostAuthorization()` is true. From there:
+
+1. `UsbHostManager.usbDeviceAdded()` calls `mAuthManager.usbDeviceAdded(deviceAddress)`
+   for each attaching device; with authorization on, host enumeration is gated
+   on the device first being authorized.
+2. `UsbAuthManager` registers an `IUsbAuthEventsListener` and translates Android
+   lifecycle events into `setSystemState(...)` calls -- screen lock/unlock,
+   user login state, and special repair/factory modes map to `SCREEN_LOCKED`,
+   `LOGGED_IN`, `BOOTED`, and `SET_UP` respectively (`onUpdateScreenLockedState`,
+   `onUpdateLoggedInState`, `pinAuthorizationMode` in `UsbAuthManager.java`).
+3. When the daemon asks, `UsbAuthManager` drives the SystemUI dialog and posts a
+   screen-locked reminder notification when devices are waiting on an unlock.
+
+The result is a single policy-driven gate that adapts to context: the same
+keyboard that is challenged at the lock screen is trusted once the owner has
+logged in.
+
+---
+
+## 39.11 The aoad Daemon and the system/usb Split (Android 17)
+
+### 39.11.1 A New Top-Level USB Repo
+
+Android 17 carves a dedicated `system/usb` git project out of the platform. Its
+first inhabitant is **`aoad`**, the userspace Android Open Accessory daemon that
+moves AOA protocol handling out of the kernel's `f_accessory` driver (and out of
+the framework's native `system_server` code) into a standalone process speaking
+to FunctionFS. The repo layout is:
+
+```
+system/usb/
+    aoa/
+        aidl/   # android.hardware.usb.aoa interface
+        daemon/ # aoad (C++)
+    tests/      # host-side stability tests moved here from CTS
+```
+
+`aoad` (`system/usb/aoa/daemon/main.cpp`) is a C++ binary that registers itself
+as the `aoad` Binder service. Its `aoad.rc`
+(`system/usb/aoa/daemon/aoad.rc`) ships the service as `disabled`, running as
+`user system` / `group system usb uhid` with seclabel `u:r:aoad:s0`, started by
+a property trigger on `ro.usb.userspace.aoa.enabled=true` -- the same property
+`UsbDeviceManager` checks when deciding whether to use userspace AOA
+(Section 39.7.5).
+
+### 39.11.2 The IUsbAoa Interface
+
+The daemon implements `android.hardware.usb.aoa.IUsbAoa`
+(`system/usb/aoa/aidl/android/hardware/usb/aoa/IUsbAoa.aidl`):
+
+```
+interface IUsbAoa {
+    void setCallback(in IUsbAoaCallback callback);
+    AoaInitializationStatus getInitializationStatus();
+    ParcelFileDescriptor openAccessory();
+    ParcelFileDescriptor openAccessoryForInputStream();
+    ParcelFileDescriptor openAccessoryForOutputStream();
+    int getMaxPacketSize();
+    AccessoryMetadata getAccessoryStrings();
+    boolean isStartRequested();
+}
+```
+
+The oneway `IUsbAoaCallback` reports handshake progress with a single
+`onAccessoryStateChanged(in AccessoryHandshakeState state)`. The
+`AccessoryHandshakeState` enum mirrors the AOA control requests: `UNKNOWN = 0`,
+`GET_PROTOCOL = 1`, `SEND_STRING = 2`, `START = 3`. `AccessoryMetadata` carries
+the six AOA strings (manufacturer, model, description, version, URI, serial),
+and `AoaInitializationStatus` reports whether the FunctionFS directories are
+present plus an `openControlResult` code that the framework uses to decide
+whether the handover succeeded.
+
+### 39.11.3 What the Daemon Does
+
+`aoad` owns the AOA gadget's FunctionFS endpoints. On startup
+`UsbAoaService::initialize()` (`system/usb/aoa/daemon/UsbAoaService.cpp`) checks
+the FunctionFS directories, opens the accessory control endpoint, and -- on
+success -- starts a monitor thread. The endpoint paths and the USB descriptors
+(vendor-specific class/subclass, full/high/super-speed variants) live in
+`system/usb/aoa/daemon/AoaDescriptors.h`.
+
+```mermaid
+graph TD
+    subgraph "USB Host (Accessory)"
+        ACC["Car dock / controller<br/>(USB host)"]
+    end
+
+    subgraph "aoad (system/usb)"
+        VCRM["VendorControlRequestMonitor<br/>(epoll on ctrl ep0)"]
+        SVC["UsbAoaService<br/>(IUsbAoa)"]
+        BRIDGE["AccessoryLegacyBridgeThread<br/>(Linux AIO data pump)"]
+    end
+
+    subgraph "FunctionFS"
+        EP0C["ctrl ep0<br/>(vendor control requests)"]
+        EP12["aoa ep1/ep2<br/>(bulk IN/OUT)"]
+    end
+
+    subgraph "system_server"
+        UDM3["UsbDeviceManager"]
+        APP3["App socket FD"]
+    end
+
+    ACC -->|"GET_PROTOCOL / SEND_STRING / START"| EP0C
+    EP0C --> VCRM
+    VCRM -->|"notifyStateChange()"| SVC
+    SVC -->|"IUsbAoaCallback"| UDM3
+    UDM3 -->|"openAccessory()"| SVC
+    SVC --> BRIDGE
+    BRIDGE <--> EP12
+    BRIDGE <-->|"socketpair FD"| APP3
+```
+
+Two worker components do the real work:
+
+- **`VendorControlRequestMonitor`** (`system/usb/aoa/daemon/VendorControlRequestMonitor.cpp`)
+  watches the FunctionFS control endpoint (`ep0`) via epoll and decodes the AOA
+  vendor `bRequest` codes -- `ACCESSORY_GET_PROTOCOL` (51),
+  `ACCESSORY_SEND_STRING` (52), `ACCESSORY_START` (53), plus the HID-over-AOA
+  set (54-57) and `ACCESSORY_SET_AUDIO_MODE` (58). As the handshake advances it
+  calls back into the service, which fires `onAccessoryStateChanged`. It also
+  registers AOA HID accessories through `/dev/uhid` (hence the `uhid` group in
+  the `.rc`).
+
+- **`AccessoryLegacyBridgeThread`** (`system/usb/aoa/daemon/AccessoryLegacyBridgeThread.cpp`)
+  is the data pump. `openAccessory()` creates a `socketpair` and spawns this
+  thread to shuttle bytes between the FunctionFS bulk endpoints (using Linux
+  AIO) and the app-facing socket. The app side of the socketpair is returned to
+  the framework as a `ParcelFileDescriptor`, preserving the same single-FD
+  accessory-stream contract that the old kernel `/dev/usb_accessory` node
+  exposed -- which is why it is called the "legacy bridge."
+
+### 39.11.4 How the Framework Drives aoad
+
+`UsbDeviceManager` is the consumer. When userspace AOA is enabled (the flag and
+`ro.usb.userspace.aoa.enabled` are both set), `UsbDeviceManager.getUsbAoaService()`
+looks up the `aoad` Binder service, calls `setCallback(...)` with an
+`IUsbAoaCallback.Stub`, and links to the daemon's death so it can fall back if
+`aoad` crashes (see the `IUsbAoa`/`IUsbAoaCallback` imports and
+`getUsbAoaService()` in
+`frameworks/base/services/usb/java/com/android/server/usb/UsbDeviceManager.java`).
+It then uses `getInitializationStatus()` to confirm the control endpoint opened,
+`openAccessory()` to obtain the data FD it hands to the accessory app, and
+`getAccessoryStrings()` / `getMaxPacketSize()` for the metadata it used to read
+from the kernel.
+
+Crucially, when the handover succeeds `UsbDeviceManager` disables the in-kernel
+AOA driver on kernels older than 6.6 (newer kernels coordinate cleanly), so the
+two implementations never both drive the gadget. If `aoad` reports a failed
+`openControlResult`, the framework reverts `mEnableAoaUserspaceImplementation` to
+`false` and the classic kernel path takes over -- the userspace path is a strict
+upgrade that degrades safely. The host-side stability tests for this path now
+live under `system/usb/tests/hostside/`, having moved out of CTS as part of the
+split.
+
+---
+
+## 39.12 Try It: Hands-On Experiments
+
+### 39.12.1 Explore USB State Machine
 
 Monitor USB state changes in real time:
 
@@ -2619,7 +3009,7 @@ adb shell getprop sys.usb.controller
 adb shell getprop persist.sys.usb.config
 ```
 
-### 39.10.2 Switch USB Functions
+### 39.12.2 Switch USB Functions
 
 ```bash
 # Switch to MTP mode
@@ -2641,7 +3031,7 @@ adb shell svc usb getFunctions
 adb shell svc usb resetUsbGadget
 ```
 
-### 39.10.3 Inspect USB HAL State
+### 39.12.3 Inspect USB HAL State
 
 ```bash
 # Dump USB service state
@@ -2657,7 +3047,7 @@ adb shell dumpsys usb | grep "hal version"
 adb shell service list | grep usb
 ```
 
-### 39.10.4 ADB Protocol Exploration
+### 39.12.4 ADB Protocol Exploration
 
 ```bash
 # Check ADB version and protocol
@@ -2682,7 +3072,7 @@ adb connect <device-ip>:5555
 adb shell cat /config/usb_gadget/g1/UDC
 ```
 
-### 39.10.5 Test File Transfer Performance
+### 39.12.5 Test File Transfer Performance
 
 ```bash
 # Create a test file
@@ -2699,7 +3089,7 @@ time adb pull /data/local/tmp/testfile /tmp/pulled_file
 # USB 3.x: ~100+ MB/s (device dependent)
 ```
 
-### 39.10.6 Explore MTP from Device Side
+### 39.12.6 Explore MTP from Device Side
 
 ```bash
 # Check MTP server status
@@ -2715,7 +3105,7 @@ adb shell dumpsys media.mtp
 adb shell ls -la /dev/usb-ffs/mtp/
 ```
 
-### 39.10.7 USB Host Mode Exploration
+### 39.12.7 USB Host Mode Exploration
 
 ```bash
 # List connected USB devices (host mode)
@@ -2734,7 +3124,7 @@ adb logcat -s UsbHostManager:*
 adb shell "dumpsys usb -dump-raw"
 ```
 
-### 39.10.8 Build and Test USB HAL Changes
+### 39.12.8 Build and Test USB HAL Changes
 
 ```bash
 # Build the default USB HAL
@@ -2753,7 +3143,7 @@ atest VtsHalUsbV1_0TargetTest
 atest VtsHalUsbGadgetV1_0TargetTest
 ```
 
-### 39.10.9 ADB Over WiFi Pairing
+### 39.12.9 ADB Over WiFi Pairing
 
 ```bash
 # On the device: Enable wireless debugging in Developer Options
@@ -2769,7 +3159,7 @@ adb connect <device-ip>:<connection-port>
 adb devices -l
 ```
 
-### 39.10.10 Port Forwarding Experiment
+### 39.12.10 Port Forwarding Experiment
 
 ```bash
 # Forward local port to device port
@@ -2787,7 +3177,7 @@ adb forward --remove tcp:8080
 adb reverse --remove-all
 ```
 
-### 39.10.11 Investigate USB Accessory Mode
+### 39.12.11 Investigate USB Accessory Mode
 
 ```bash
 # Check accessory support
@@ -2801,7 +3191,7 @@ adb logcat -s UsbDeviceManager:* | grep -i accessory
 adb shell getprop ro.usb.userspace.aoa.enabled
 ```
 
-### 39.10.12 Trace USB Stack with ftrace
+### 39.12.12 Trace USB Stack with ftrace
 
 ```bash
 # Enable USB tracing (requires root)
@@ -2817,7 +3207,7 @@ adb shell "echo 0 > /sys/kernel/debug/tracing/events/gadget/enable"
 adb shell "echo 0 > /sys/kernel/debug/tracing/events/usb/enable"
 ```
 
-### 39.10.13 Dump ADB Protocol Traffic
+### 39.12.13 Dump ADB Protocol Traffic
 
 ```bash
 # Set ADB trace categories
@@ -2831,7 +3221,7 @@ adb shell setprop persist.adb.trace_mask 0xffff
 adb shell stop adbd && adb shell start adbd
 ```
 
-### 39.10.14 Explore ConfigFS Gadget Configuration
+### 39.12.14 Explore ConfigFS Gadget Configuration
 
 On devices with configfs gadget support, you can inspect the USB gadget
 configuration directly:
@@ -2866,7 +3256,7 @@ adb shell ls /config/usb_gadget/g1/functions/
 adb shell cat /config/usb_gadget/g1/UDC
 ```
 
-### 39.10.15 Monitor USB Type-C Port Status
+### 39.12.15 Monitor USB Type-C Port Status
 
 ```bash
 # View Type-C port information
@@ -2888,7 +3278,7 @@ adb shell udevadm monitor --kernel --subsystem-match=typec 2>/dev/null || \
     echo "Use logcat to monitor UEvents"
 ```
 
-### 39.10.16 Benchmark USB Data Throughput
+### 39.12.16 Benchmark USB Data Throughput
 
 ```bash
 # Test raw ADB transfer speed
@@ -2911,7 +3301,7 @@ adb shell dumpsys usb | grep -i speed
 adb shell cat /sys/class/udc/*/current_speed 2>/dev/null
 ```
 
-### 39.10.17 Explore ADB Key Management
+### 39.12.17 Explore ADB Key Management
 
 ```bash
 # View authorized keys on device
@@ -2929,7 +3319,7 @@ adb shell settings put global development_settings_enabled 0
 # Or via Settings > Developer Options > Revoke USB debugging authorizations
 ```
 
-### 39.10.18 Write a Simple USB Host Application
+### 39.12.18 Write a Simple USB Host Application
 
 Create a minimal application that enumerates USB devices:
 
@@ -2972,7 +3362,7 @@ public class UsbEnumerator extends Activity {
 }
 ```
 
-### 39.10.19 Debug USB Connection Issues
+### 39.12.19 Debug USB Connection Issues
 
 Common USB debugging techniques:
 
@@ -3001,7 +3391,7 @@ adb start-server
 adb devices
 ```
 
-### 39.10.20 Inspect MTP Object Tree
+### 39.12.20 Inspect MTP Object Tree
 
 ```bash
 # Use Android's mtp-send/receive tools (if available)
@@ -3019,6 +3409,44 @@ adb logcat -s MtpServer:V MtpDatabase:V MtpService:V
 # 0x1009 = GET_OBJECT (file download)
 # 0x100D = SEND_OBJECT (file upload)
 # 0x100B = DELETE_OBJECT
+```
+
+### 39.12.21 Inspect USB Host Device Authorization
+
+On a build with `enable_usb_host_authorization` enabled (desktop/large-screen
+form factors), inspect the new daemon and policy:
+
+```bash
+# Is the usb_auth daemon running?
+adb shell service list | grep usb_auth
+adb shell ps -A | grep usbauthservice
+
+# View the deployed authorization policies
+adb shell cat /etc/usb_auth/policy.conf
+adb shell cat /etc/usb_auth/interactive_policy.conf
+
+# Watch authorization decisions as the system state changes
+adb logcat -s UsbAuthManager:* usbauthservice:*
+
+# A device's kernel authorization gate (1 = authorized, 0 = blocked/deferred)
+adb shell cat /sys/bus/usb/devices/1-1/authorized 2>/dev/null
+```
+
+### 39.12.22 Inspect the Userspace AOA Daemon
+
+```bash
+# Is userspace AOA selected on this device?
+adb shell getprop ro.usb.userspace.aoa.enabled
+
+# Is the aoad daemon registered?
+adb shell service list | grep aoad
+
+# Watch the AOA handshake driven by aoad
+adb logcat -s UsbDeviceManager:* aoad:*
+
+# FunctionFS endpoints aoad uses for the accessory control + bulk paths
+adb shell ls -la /dev/usb-ffs/ctrl/ 2>/dev/null
+adb shell ls -la /dev/usb-ffs/aoa/ 2>/dev/null
 ```
 
 ---
@@ -3067,6 +3495,20 @@ native code, parsing device descriptors and maintaining deny lists. The
 permission model requires explicit user consent for application access to USB
 devices.
 
+**USB Host Device Authorization (Section 39.10)**: Android 17 adds a
+desktop/large-screen hardening layer. A new Rust daemon (`usbauthservice`,
+service `usb_auth`) evaluates each attaching host device against a declarative
+policy keyed on the system state (booted, logged in, screen locked, set-up) and
+writes the kernel's sysfs `authorized` node to allow, deny, or defer the device,
+or asks the framework (`UsbAuthManager` + a SystemUI dialog) to prompt the user.
+
+**The aoad Daemon (Section 39.11)**: AOA protocol handling moves out of the
+kernel and `system_server` into a standalone `aoad` C++ daemon in the new
+`system/usb` repo, exposing `android.hardware.usb.aoa.IUsbAoa`. It monitors the
+FunctionFS control endpoint for the AOA handshake and bridges the bulk endpoints
+to an app-facing file descriptor, with `UsbDeviceManager` gating the handover on
+a flag plus `ro.usb.userspace.aoa.enabled`.
+
 ### Key Source Paths Reference
 
 | Component | Path |
@@ -3080,3 +3522,8 @@ devices.
 | ADB client | `packages/modules/adb/client/` |
 | MTP native library | `frameworks/av/media/mtp/` |
 | MTP service | `packages/services/Mtp/` |
+| USB host auth daemon | `frameworks/native/services/usbauthservice/` |
+| USB auth AIDL | `frameworks/base/core/java/android/hardware/usb/IUsbAuthManager.aidl` |
+| USB auth framework bridge | `frameworks/base/services/usb/java/com/android/server/usb/UsbAuthManager.java` |
+| Userspace AOA daemon (aoad) | `system/usb/aoa/daemon/` |
+| AOA AIDL | `system/usb/aoa/aidl/android/hardware/usb/aoa/` |

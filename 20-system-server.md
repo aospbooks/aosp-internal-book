@@ -62,7 +62,7 @@ initialization steps.
 
 ### 20.1.2 The run() Method -- Initializing the World
 
-The `run()` method (line 836) is where all initialization happens. It follows
+The `run()` method (line 852) is where all initialization happens. It follows
 a carefully ordered sequence:
 
 ```
@@ -97,10 +97,10 @@ Several critical early steps deserve attention.
 **Binder thread pool configuration:**
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, line 493
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 510
 private static final int sMaxBinderThreads = 31;
 // ...
-// line 932
+// line 948
 BinderInternal.setMaxThreads(sMaxBinderThreads);
 ```
 
@@ -111,7 +111,7 @@ simultaneously serves hundreds of client processes.
 **Main looper preparation:**
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, line 934
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 954
 android.os.Process.setThreadPriority(
         android.os.Process.THREAD_PRIORITY_FOREGROUND);
 Looper.prepareMainLooper();
@@ -126,7 +126,7 @@ deliver. These thresholds help identify performance problems.
 **System context creation:**
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, line 1160
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 1176
 private void createSystemContext() {
     ActivityThread activityThread = ActivityThread.systemMain();
     mSystemContext = activityThread.getSystemContext();
@@ -145,7 +145,7 @@ content providers, and the rest of the framework APIs.
 **SystemServiceManager creation:**
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, line 978
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 1001
 mSystemServiceManager = new SystemServiceManager(mSystemContext);
 mSystemServiceManager.setStartInfo(mRuntimeRestart,
         mRuntimeStartElapsedTime, mRuntimeStartUptime);
@@ -161,16 +161,17 @@ so any code within `system_server` can access it without Binder.
 
 ### 20.1.3 Service Module Organization
 
-The `frameworks/base/services/` directory contains 59 modules organized by
-functional area. The main module is `services/java/` which contains
-`SystemServer.java` itself. The core module `services/core/` hosts the
-majority of services, with 74 Java files and 102 subdirectory packages
-directly under `com.android.server`:
+The `frameworks/base/services/` directory groups services by functional
+area. The main module is `services/java/` which contains
+`SystemServer.java` itself, and the core module `services/core/` hosts the
+majority of services directly under `com.android.server`. Around it sit
+roughly four dozen feature-specific modules (the exact set shifts release
+to release):
 
 ```
 frameworks/base/services/
   +-- java/              # SystemServer.java entry point
-  +-- core/              # Core services (102 sub-packages)
+  +-- core/              # Core services (many sub-packages)
   +-- accessibility/     # AccessibilityManagerService
   +-- appfunctions/      # AppFunctionManagerService
   +-- appprediction/     # AppPredictionManagerService
@@ -179,6 +180,7 @@ frameworks/base/services/
   +-- backup/            # BackupManagerService
   +-- companion/         # CompanionDeviceManagerService
   +-- contentcapture/    # ContentCaptureManagerService
+  +-- contentrestriction/ # ContentRestrictionService (Android 17)
   +-- contentsuggestions/ # ContentSuggestionsManagerService
   +-- contextualsearch/  # ContextualSearchManagerService
   +-- coverage/          # CoverageService
@@ -195,7 +197,7 @@ frameworks/base/services/
   +-- restrictions/      # RestrictionsManagerService
   +-- searchui/          # SearchUiManagerService
   +-- selectiontoolbar/  # SelectionToolbarManagerService
-  +-- serial/            # SerialManagerService
+  +-- serial/            # SerialManagerService (Android 17 wired serial API)
   +-- smartspace/        # SmartspaceManagerService
   +-- supervision/       # SupervisionService
   +-- systemcaptions/    # SystemCaptionsManagerService
@@ -205,16 +207,19 @@ frameworks/base/services/
   +-- usb/               # UsbService
   +-- voiceinteraction/  # VoiceInteractionManagerService
   +-- wifi/              # (managed via APEX jar)
-  +-- ... (59 total entries)
+  +-- ...                # plus more feature modules
 ```
+
+The `serial/` module is new in Android 17: it hosts `SerialManagerService`,
+the system_server half of the wired Serial API covered in 20.30.
 
 ### 20.1.4 The Four Startup Phases
 
 After initialization, `SystemServer.run()` calls four methods in strict
-sequence (lines 1031-1034):
+sequence (lines 1047-1050):
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, line 1024
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 1043
 // Start services.
 try {
     t.traceBegin("StartServices");
@@ -228,10 +233,10 @@ try {
 ```
 
 After all services are started, the main thread enters `Looper.loop()` at
-line 1081 and never returns:
+line 1097 and never returns:
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, line 1080
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 1097
 // Loop forever.
 Looper.loop();
 throw new RuntimeException("Main thread loop unexpectedly exited");
@@ -714,10 +719,11 @@ area:
 | Service | Class | Source Package | Purpose |
 |---------|-------|---------------|---------|
 | UsbService | `UsbService.Lifecycle` | `usb/` | USB host/device management |
-| SerialManagerService | `SerialManagerService.Lifecycle` | `serial/` | Serial port management |
+| SerialManagerService | `SerialManagerService.Lifecycle` | `serial/` | Android 17 wired serial port API (gated by `enable_wired_serial_api`); see 20.30 |
 | HardwarePropertiesManagerService | `HardwarePropertiesManagerService` | core | CPU/GPU temperatures |
 | ConsumerIrService | `ConsumerIrService` | core | IR blaster |
 | VibratorManagerService | `VibratorManagerService.Lifecycle` | `vibrator/` | Haptic feedback |
+| MultisensoryService | `MultisensoryService.Lifecycle` | `multisensory/` | Audio-haptic feedback for the Multisensory Design System (gated by `enable_multisensory_feedback`, non-TV) |
 | DockObserver | `DockObserver` | core | Dock state detection |
 | WiredAccessoryManager | `WiredAccessoryManager` | core | Wired headset detection |
 | MidiService | `MidiService.Lifecycle` | `midi/` | MIDI device management |
@@ -735,6 +741,8 @@ area:
 | AmbientContextManagerService | `AmbientContextManagerService` | `ambientcontext/` | Ambient context detection |
 | WearableSensingManagerService | `WearableSensingManagerService` | `wearable/` | Wearable sensor processing |
 | OnDeviceIntelligenceManagerService | Loaded from APEX | On-device intelligence | On-device AI services |
+| PccSandboxManagerService | `PccSandboxManagerService` | `privatecompute/` | Private Compute Core sandbox management (gated by `enable_pcc_framework_support`) |
+| ContentRestrictionService | `ContentRestrictionService.Lifecycle` | `contentrestriction/` | Content classification/restriction API (gated by `content_restriction_api`) |
 
 #### System Infrastructure
 
@@ -857,7 +865,7 @@ sub-package listing organized by functional domain:
 #### System Services
 - `flags/` -- FeatureFlagsService
 - `compat/` -- PlatformCompat
-- `crashrecovery/` -- CrashRecoveryAdaptor
+- `crashrecovery/` -- CrashRecoveryHelper (the engine now lives in the `packages/modules/CrashRecovery/` module)
 - `criticalevents/` -- CriticalEventLog
 - `cpu/` -- CpuMonitorService
 - `gpu/` -- GpuService
@@ -916,7 +924,7 @@ sub-package listing organized by functional domain:
 
 ### 20.4.1 startBootstrapServices()
 
-The bootstrap phase (line 1176-1451 of `SystemServer.java`) starts the
+The bootstrap phase (line 1192-1462 of `SystemServer.java`) starts the
 services that form the critical dependency chain. The exact order is
 significant because of mutual dependencies:
 
@@ -967,23 +975,23 @@ graph TD
 
 Key dependency relationships in the bootstrap phase:
 
-1. **Watchdog starts first** (line 1192-1196): It must be running before any
+1. **Watchdog starts first** (line 1208-1210): It must be running before any
    service that might deadlock.
-2. **Installer before PackageManager** (line 1228-1230): `installd` must
+2. **Installer before PackageManager** (line 1244): `installd` must
    create critical directories before PMS scans packages.
-3. **AMS and ATMS together** (line 1274-1283): These two are tightly coupled
+3. **AMS and ATMS together** (line 1290-1303): These two are tightly coupled
    -- ATMS manages activities/tasks while AMS manages processes.
-4. **PowerManager early** (line 1296-1302): Many services need power management.
-5. **DisplayManager before PMS** (line 1339-1341): Package manager needs
+4. **PowerManager early** (line 1316): Many services need power management.
+5. **DisplayManager before PMS** (line 1349): Package manager needs
    display metrics for density-based resource selection.
-6. **PHASE_WAIT_FOR_DEFAULT_DISPLAY** (line 1344-1346): All services needing
+6. **PHASE_WAIT_FOR_DEFAULT_DISPLAY** (line 1355): All services needing
    display information wait here.
-7. **PackageManager pauses Watchdog** (line 1364-1370): PMS initialization is
+7. **PackageManager pauses Watchdog** (line 1372-1374): PMS initialization is
    so slow that the Watchdog is explicitly paused.
 
 ### 20.4.2 startCoreServices()
 
-Core services (line 1457-1533) are simpler -- no circular dependencies:
+Core services (line 1467-1549) are simpler -- no circular dependencies:
 
 ```
 startCoreServices()
@@ -1004,7 +1012,7 @@ startCoreServices()
 
 ### 20.4.3 startOtherServices()
 
-The `startOtherServices()` method (line 1539-3600+) is by far the longest.
+The `startOtherServices()` method (line 1550-3677) is by far the longest.
 It contains conditional service starts based on device features, form
 factor (phone/watch/TV/auto), and feature flags. The high-level flow:
 
@@ -2955,10 +2963,10 @@ at all.
 ### 20.16.2 Updating the Watchdog Timeout
 
 After all services are started, the Watchdog timeout is updated from
-system settings (line 1037):
+system settings (line 1053):
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, line 1037
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 1053
 updateWatchdogTimeout(t);
 ```
 
@@ -2967,7 +2975,7 @@ This call registers a `SettingsObserver` that watches for changes to
 adjusted dynamically by the server-side configuration system:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/Watchdog.java, line 617
+// frameworks/base/services/core/java/com/android/server/Watchdog.java, line 615
 void updateWatchdogTimeout(long timeoutMillis) {
     if (!DB && !Build.IS_USERDEBUG
             && timeoutMillis
@@ -3291,7 +3299,7 @@ Many service starts in modern AOSP are gated by feature flags. This
 allows services to be enabled/disabled without code changes:
 
 ```java
-// Example: IntrusionDetectionService
+// Example: IntrusionDetectionService (line 1842)
 if (!isWatch && !isTv && !isAutomotive
         && android.security.Flags.aflApi()) {
     t.traceBegin("StartIntrusionDetectionService");
@@ -3299,37 +3307,41 @@ if (!isWatch && !isTv && !isAutomotive
     t.traceEnd();
 }
 
-// Example: AdvancedProtectionService
-if (!isWatch && !isTv && !isAutomotive
-        && android.security.Flags.aapmApi()) {
-    t.traceBegin("StartAdvancedProtectionService");
-    mSystemServiceManager.startService(
-            AdvancedProtectionService.Lifecycle.class);
-    t.traceEnd();
-}
-
-// Example: TradeInModeService
+// Example: TradeInModeService (line 1873)
 if (!isWatch && !isTv && !isAutomotive && enableTradeInMode()) {
     t.traceBegin("StartTradeInModeService");
     mSystemServiceManager.startService(TradeInModeService.class);
     t.traceEnd();
 }
 
-// Example: UserRecoveryManagerService
-if (enableUserRecoveryManager()) {
-    t.traceBegin("StartUserRecoveryManager");
-    mSystemServiceManager.startService(
-            UserRecoveryManagerService.class);
+// Example: the Android 17 wired Serial API (line 2551), gated by
+// the android.hardware.serial.flags.enable_wired_serial_api flag
+if (android.hardware.serial.flags.Flags.enableWiredSerialApi()) {
+    t.traceBegin("StartSerialManagerService");
+    mSystemServiceManager.startService(SerialManagerService.Lifecycle.class);
+    t.traceEnd();
+}
+
+// Example: ContentRestrictionService (line 3142)
+if (android.app.contentrestriction.flags.Flags.contentRestrictionApi()) {
+    t.traceBegin("StartContentRestrictionService");
+    mSystemServiceManager.startService(ContentRestrictionService.Lifecycle.class);
     t.traceEnd();
 }
 ```
 
+Some services that earlier releases gated behind a flag have since
+graduated: in Android 17 `AdvancedProtectionService` (line 1867) is
+gated only by form factor (`!isWatch && !isTv && !isAutomotive`) and no
+longer requires the `android.security.Flags.aapmApi()` check it carried
+when the API was being stabilized.
+
 ### 20.21.2 FeatureFlagsService
 
-The `FeatureFlagsService` is started in the bootstrap phase (line 1240):
+The `FeatureFlagsService` is started in the bootstrap phase (line 1256):
 
 ```java
-// line 1240
+// line 1256
 t.traceBegin("StartFeatureFlagsService");
 mSystemServiceManager.startService(FeatureFlagsService.class);
 t.traceEnd();
@@ -3340,33 +3352,34 @@ values during their initialization. It provides the mechanism for
 distributing runtime flag overrides and keeping processes in sync with
 the latest flag values.
 
-### 20.21.3 Crash Recovery Flags
+### 20.21.3 Crash Recovery as a Module
 
-The crash recovery mechanism is itself flag-gated (line 1319):
-
-```java
-// line 1319
-if (!Flags.refactorCrashrecovery()) {
-    CrashRecoveryAdaptor.rescuePartyRegisterHealthObserver(mSystemContext);
-}
-```
-
-And later (line 3208):
+In earlier releases the crash recovery logic was guarded by a
+`refactorCrashrecovery()` flag, with the in-platform `RescueParty` and
+`PackageWatchdog` reached through a `CrashRecoveryAdaptor` shim when the
+flag was off. That migration has completed: in Android 17 crash recovery
+runs unconditionally as a module. `SystemServer` references the
+implementation only by a string class name so the code can live in a
+mainline-style module rather than in the platform JAR:
 
 ```java
-// line 3208
-if (Flags.refactorCrashrecovery()) {
-    t.traceBegin("StartCrashRecoveryModule");
-    CrashRecoveryAdaptor.initializeCrashrecoveryModuleService(
-            mSystemServiceManager);
-    t.traceEnd();
-} else {
-    CrashRecoveryAdaptor.packageWatchdogNoteBoot(mSystemContext);
-}
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 406
+private static final String CRASHRECOVERY_MODULE_LIFECYCLE_CLASS =
+        "com.android.server.crashrecovery.CrashRecoveryModule$Lifecycle";
 ```
 
-This shows the ongoing migration of crash recovery logic from the
-platform to a modular implementation.
+After `PackageManagerService.systemReady()`, the module is started by
+name -- there is no flag check and no `else` fallback to the old adaptor:
+
+```java
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 3259
+t.traceBegin("StartCrashRecoveryModule");
+mSystemServiceManager.startService(CRASHRECOVERY_MODULE_LIFECYCLE_CLASS);
+t.traceEnd();
+```
+
+Section 20.26 covers the `CrashRecoveryModule`, `PackageWatchdog`, and
+`RescueParty` internals that this single start line pulls in.
 
 ---
 
@@ -3520,8 +3533,8 @@ updatable, but it all runs in the same process.
 
 | File Path | Lines | Purpose |
 |-----------|-------|---------|
-| `frameworks/base/services/java/com/android/server/SystemServer.java` | ~3600 | Entry point, startup orchestration |
-| `frameworks/base/services/core/java/com/android/server/SystemService.java` | 641 | Service base class, boot phase constants |
+| `frameworks/base/services/java/com/android/server/SystemServer.java` | ~3860 | Entry point, startup orchestration |
+| `frameworks/base/services/core/java/com/android/server/SystemService.java` | ~700 | Service base class, boot phase constants |
 | `frameworks/base/services/core/java/com/android/server/SystemServiceManager.java` | ~500 | Service lifecycle management |
 | `frameworks/base/services/core/java/com/android/server/Watchdog.java` | ~1100 | Deadlock detection, thread monitoring |
 | `frameworks/base/core/java/com/android/server/ServiceThread.java` | 52 | Handler thread base class |
@@ -3927,20 +3940,25 @@ This system is built on three cooperating components: `PackageWatchdog`,
 
 **Key source files:**
 
+In Android 17 the crash recovery code has moved out of `frameworks/base`
+and into a standalone mainline module under
+`packages/modules/CrashRecovery/`, so the previous platform paths no
+longer exist:
+
 | File | Description |
 |------|-------------|
-| `frameworks/base/packages/CrashRecovery/services/platform/java/com/android/server/crashrecovery/CrashRecoveryModule.java` | Module lifecycle |
-| `frameworks/base/packages/CrashRecovery/services/platform/java/com/android/server/PackageWatchdog.java` | Failure monitoring engine |
-| `frameworks/base/packages/CrashRecovery/services/platform/java/com/android/server/RescueParty.java` | Escalating mitigation logic |
+| `packages/modules/CrashRecovery/service/java/com/android/server/crashrecovery/CrashRecoveryModule.java` | Module lifecycle |
+| `packages/modules/CrashRecovery/service/java/com/android/server/PackageWatchdog.java` | Failure monitoring engine |
+| `packages/modules/CrashRecovery/service/java/com/android/server/RescueParty.java` | Escalating mitigation logic |
 | `frameworks/base/services/core/java/com/android/server/crashrecovery/CrashRecoveryHelper.java` | Connectivity module health listener |
 
 ### 20.26.1 CrashRecoveryModule Lifecycle
 
-`CrashRecoveryModule` is delivered as an APEX module and follows the
+`CrashRecoveryModule` is delivered as a mainline module and follows the
 `SystemService` lifecycle:
 
 ```java
-// frameworks/base/packages/CrashRecovery/services/platform/java/com/android/server/crashrecovery/CrashRecoveryModule.java
+// packages/modules/CrashRecovery/service/java/com/android/server/crashrecovery/CrashRecoveryModule.java
 public static class Lifecycle extends SystemService {
     @Override
     public void onStart() {
@@ -4012,7 +4030,7 @@ graph TB
 **Failure reasons:**
 
 ```java
-// frameworks/base/packages/CrashRecovery/services/platform/java/com/android/server/PackageWatchdog.java
+// packages/modules/CrashRecovery/service/java/com/android/server/PackageWatchdog.java
 public static final int FAILURE_REASON_UNKNOWN = 0;
 public static final int FAILURE_REASON_NATIVE_CRASH = 1;
 public static final int FAILURE_REASON_EXPLICIT_HEALTH_CHECK = 2;
@@ -4101,7 +4119,7 @@ flowchart TB
 The escalation constants:
 
 ```java
-// frameworks/base/packages/CrashRecovery/services/platform/java/com/android/server/RescueParty.java
+// packages/modules/CrashRecovery/service/java/com/android/server/RescueParty.java
 static final int RESCUE_LEVEL_NONE = 0;
 static final int RESCUE_LEVEL_SCOPED_DEVICE_CONFIG_RESET = 1;
 static final int RESCUE_LEVEL_ALL_DEVICE_CONFIG_RESET = 2;
@@ -4125,7 +4143,7 @@ with development and testing:
 - **Explicit enable** -- `persist.sys.enable_rescue` overrides all disable checks
 
 ```java
-// frameworks/base/packages/CrashRecovery/services/platform/java/com/android/server/RescueParty.java
+// packages/modules/CrashRecovery/service/java/com/android/server/RescueParty.java
 // We're disabled on userdebug devices connected over USB, since that's
 // a decent signal that someone is actively trying to debug the device,
 // or that it's in a lab environment.
@@ -4157,7 +4175,7 @@ is meaningless without a target package.
 To prevent rapid factory reset cycles, RescueParty implements throttling:
 
 ```java
-// frameworks/base/packages/CrashRecovery/services/platform/java/com/android/server/RescueParty.java
+// packages/modules/CrashRecovery/service/java/com/android/server/RescueParty.java
 static final long DEFAULT_FACTORY_RESET_THROTTLE_DURATION_MIN = 1440; // 24 hours
 ```
 
@@ -4620,9 +4638,203 @@ TrafficStats.setThreadStatsUid(mInfo.mUid);
 
 ---
 
-## 20.29 Try It
+## 20.29 The Android 17 Wired Serial API
 
-### 20.29.1 Listing All System Services
+Android 17 reworks serial-port support into a proper, app-facing API.
+Earlier releases exposed a small `SerialService` inside `system_server`
+that could only open the handful of UART paths an OEM listed in
+`config_serialPorts`, callable only by privileged apps holding the
+`SERIAL_PORT` permission. The new wired Serial API enumerates real USB
+serial adapters, asks the user for consent per port, and hands the app a
+file descriptor it can read and write -- the platform piece behind the
+Web Serial API on Android. The whole feature is gated by the
+`android.hardware.serial.flags.enable_wired_serial_api` flag.
+
+### 20.29.1 Three-Layer Architecture
+
+The feature spans three processes: the app's `SerialManager` client, the
+`SerialManagerService` facade in `system_server`, and a separate Rust
+daemon (`serialservice`) that does the actual device enumeration and
+file-descriptor work. `SerialManagerService` owns user consent and
+policy; it never touches `/dev` itself, instead proxying open requests to
+the native daemon over a Binder interface named `native_serial`.
+
+The following diagram shows how an app reaches a physical serial port.
+
+```mermaid
+graph TD
+    subgraph App["App process"]
+        SM["SerialManager<br/>(android.hardware.serial)"]
+    end
+    subgraph SysServer["system_server"]
+        SMS["SerialManagerService<br/>(ISerialManager.Stub)"]
+        UAM["SerialUserAccessManager<br/>(per-user consent)"]
+        SDF["SerialDeviceFilter<br/>(available ports)"]
+        SMS --> UAM
+        SMS --> SDF
+    end
+    subgraph Native["serialservice (Rust daemon)"]
+        NSM["ISerialManager impl<br/>binder: native_serial"]
+        DEV["/dev/tty* serial nodes"]
+        NSM --> DEV
+    end
+
+    SM -->|"android.hardware.serial.ISerialManager (Binder)"| SMS
+    SDF -->|"android.hardware.serialservice.ISerialManager (Binder)"| NSM
+    SMS -->|"requestOpen() returns ParcelFileDescriptor"| NSM
+
+    style SMS fill:#fdd,stroke:#333
+    style NSM fill:#ddf,stroke:#333
+```
+
+### 20.29.2 SerialManagerService in system_server
+
+`SerialManagerService`
+(`frameworks/base/services/serial/java/com/android/server/serial/SerialManagerService.java`)
+extends `ISerialManager.Stub` and is started from `startOtherServices()`.
+The start is flag-gated, and when wired serial is off the legacy
+`SerialService` is started instead (and only on non-watch devices):
+
+```java
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 2551
+if (android.hardware.serial.flags.Flags.enableWiredSerialApi()) {
+    t.traceBegin("StartSerialManagerService");
+    mSystemServiceManager.startService(SerialManagerService.Lifecycle.class);
+    t.traceEnd();
+} else {
+    if (!isWatch) {
+        t.traceBegin("StartSerialService");
+        mSystemServiceManager.startService(SerialService.Lifecycle.class);
+        t.traceEnd();
+    }
+}
+```
+
+The service is a `SystemService` via its inner `Lifecycle` class, which
+publishes the binder under `Context.SERIAL_SERVICE` in `onStart()` and
+forwards `onUserUnlocking()` / `onUserStopping()` so per-user access state
+can be loaded and torn down (used only when the `persistent_access` flag
+is on):
+
+```java
+// frameworks/base/services/serial/java/com/android/server/serial/SerialManagerService.java, line 573
+public static class Lifecycle extends SystemService {
+    @Override
+    public void onStart() {
+        if (enableWiredSerialApi()) {
+            mService = new SerialManagerService(mContext);
+            publishBinderService(Context.SERIAL_SERVICE, mService);
+        }
+    }
+    // onUserUnlocking() / onUserStopping() ...
+}
+```
+
+`SerialManagerService` connects to the native daemon lazily. The first
+call that needs a device (`getSerialPorts()`, `requestOpen()`, a listener
+registration, or a shell command) runs `connectToNativeService()`, which
+calls `ServiceManager.waitForService("native_serial")`, builds a
+`SerialDeviceFilter` over that binder, and starts listening for
+connect/disconnect events. The constant for the daemon name and the
+lazy-connect logic live together:
+
+```java
+// frameworks/base/services/serial/java/com/android/server/serial/SerialManagerService.java, line 91
+private static final String NATIVE_SERIAL_SERVICE_NAME = "native_serial";
+```
+
+### 20.29.3 User Consent and Port Filtering
+
+Two helper classes keep the policy in `system_server` rather than the
+daemon:
+
+- `SerialUserAccessManager`
+  (`frameworks/base/services/serial/java/com/android/server/serial/SerialUserAccessManager.java`)
+  is created per user. When an app calls `requestOpen()`, the service
+  routes through `requestAccess()`, which shows the consent dialog named
+  by `config_portAccessDialogComponent` and only proceeds with the open
+  once the user grants access. `grantSerialPortAccess()` /
+  `revokeSerialPortAccess()` (guarded by the `MANAGE_SERIAL_PORTS`
+  permission) let a manager app pre-authorize or withdraw access, and the
+  `persistent` flag determines whether a grant survives a reboot.
+- `SerialDeviceFilter`
+  (`frameworks/base/services/serial/java/com/android/server/serial/SerialDeviceFilter.java`)
+  maintains the set of currently available `SerialPortInfo` entries,
+  dropping any USB IDs listed in `config_blockedUsbSerialIds`, and fans
+  port add/remove events out to registered `ISerialPortListener` clients.
+
+`requestOpen()` also verifies, via `PackageManagerInternal.isSameApp()`,
+that the supplied package name actually belongs to the calling UID before
+any consent or open happens, so an app cannot impersonate another. The
+public flags (`SerialPort.OPEN_FLAG_*`) are translated to `open(2)` flags
+in `toOsConstants()`, always adding `O_NOCTTY` so a port never becomes the
+process's controlling terminal.
+
+### 20.29.4 The native_serial Rust Daemon
+
+The device-facing work lives outside `system_server` in a small Rust
+binary at `frameworks/native/services/serialservice/`. It registers a
+lazy binder service so it only starts when first needed:
+
+```rust
+// frameworks/native/services/serialservice/rust/service.rs, line 53
+binder::register_lazy_service(
+    "native_serial",
+    BnSerialManager::new_async_binder(
+        SerialManager::new().await,
+        TokioRuntime(Handle::current()),
+        BinderFeatures::default(),
+    )
+    .as_binder(),
+)?;
+```
+
+The daemon is declared in `serialservice.rc` as a `late_start`,
+`oneshot`, `disabled` service that runs as the `system` user from
+`/system_ext/bin/serialservice`; the `disabled` plus lazy-service
+registration means init only spawns it on demand. Its
+`android.hardware.serialservice.ISerialManager` AIDL is intentionally
+narrow -- `getSerialPorts()`, listener register/unregister, and
+`requestOpen()` returning a `ParcelFileDescriptor`. The Rust
+implementation (`rust/serial_manager.rs`) watches `ueventd` device nodes
+to keep the port list current and applies `TIOCEXCL` for exclusive opens.
+Splitting enumeration and file I/O into a separate, sandboxed Rust process
+keeps that USB-driven, memory-unsafe-prone code out of `system_server`
+while the privileged consent and policy logic stays in the framework.
+
+### 20.29.5 Client API and Backward Compatibility
+
+Apps talk to the feature through `SerialManager`
+(`frameworks/base/core/java/android/hardware/serial/SerialManager.java`),
+obtained from `Context.getSystemService(Context.SERIAL_SERVICE)`. The new
+class extends the old `android.hardware.SerialManager` so existing
+callers keep compiling: `getPorts()` returns rich `SerialPort` objects for
+the new flow, while the legacy `getSerialPorts()` and
+`openSerialPort(path, speed)` methods are overridden to route the old
+config-port behavior through the new service. `SystemServiceRegistry`
+picks which manager to register based on the same flag:
+
+```java
+// frameworks/base/core/java/android/app/SystemServiceRegistry.java, line 913
+if (enableWiredSerialApi()) {
+    registerService(Context.SERIAL_SERVICE, android.hardware.serial.SerialManager.class,
+            ...);
+    // Redirect requests for the old SerialManager class to the new one.
+    SYSTEM_SERVICE_NAMES.put(android.hardware.SerialManager.class, Context.SERIAL_SERVICE);
+} else {
+    registerService(Context.SERIAL_SERVICE, android.hardware.SerialManager.class, ...);
+}
+```
+
+So with the flag off, the platform behaves exactly as before; with it on,
+both the modern and legacy `SerialManager` class names resolve to the new,
+consent-gated implementation backed by the `native_serial` daemon.
+
+---
+
+## 20.30 Try It
+
+### 20.30.1 Listing All System Services
 
 Use `service list` to see all registered Binder services:
 
@@ -4649,7 +4861,7 @@ Count the total:
 adb shell service list | head -1
 ```
 
-### 20.29.2 Inspecting system_server Process
+### 20.30.2 Inspecting system_server Process
 
 View basic process information:
 
@@ -4667,7 +4879,7 @@ adb shell cat /proc/$(adb shell pidof system_server)/status | head -20
 adb shell dumpsys meminfo system_server
 ```
 
-### 20.29.3 Dumpsys Commands
+### 20.30.3 Dumpsys Commands
 
 `dumpsys` is the primary tool for inspecting service state. Each service
 implements a `dump()` method:
@@ -4699,7 +4911,7 @@ adb shell dumpsys system_server_dumper --name SystemServer
 adb shell dumpsys system_server_dumper --name Watchdog
 ```
 
-### 20.29.4 Inspecting Boot Phases
+### 20.30.4 Inspecting Boot Phases
 
 Boot phase transitions are logged and can be traced:
 
@@ -4726,7 +4938,7 @@ duration_ms: 60000
 EOF
 ```
 
-### 20.29.5 Observing Service Start Order
+### 20.30.5 Observing Service Start Order
 
 The SystemServer logs each service start with timing information:
 
@@ -4738,7 +4950,7 @@ adb shell logcat -s SystemServer SystemServiceManager
 adb shell logcat | grep -E "PHASE_|startBootPhase"
 ```
 
-### 20.29.6 Watchdog Diagnostics
+### 20.30.6 Watchdog Diagnostics
 
 ```bash
 # Dump Watchdog state
@@ -4754,7 +4966,7 @@ adb shell logcat -b crash | grep -i watchdog
 adb shell cat /data/system/watchdog-timeout-history.txt
 ```
 
-### 20.29.7 Thread Inspection
+### 20.30.7 Thread Inspection
 
 ```bash
 # List all system_server threads with names
@@ -4770,7 +4982,7 @@ adb shell kill -3 $(adb shell pidof system_server)
 adb shell ls -la /data/anr/
 ```
 
-### 20.29.8 Service Dependencies and Boot Timing
+### 20.30.8 Service Dependencies and Boot Timing
 
 ```bash
 # View how long each service took to start
@@ -4786,7 +4998,7 @@ adb shell service check package
 adb shell service call activity 1  # IBinder.FIRST_CALL_TRANSACTION
 ```
 
-### 20.29.9 Examining SystemServiceManager State
+### 20.30.9 Examining SystemServiceManager State
 
 ```bash
 # Dump all registered system services
@@ -4800,7 +5012,7 @@ This shows:
 - Service start times
 - Active user IDs
 
-### 20.29.10 Monitoring Binder Thread Pool
+### 20.30.10 Monitoring Binder Thread Pool
 
 ```bash
 # Check Binder thread usage
@@ -4815,7 +5027,7 @@ adb shell cat /sys/kernel/debug/binder/proc/$(adb shell pidof system_server) \
     2>/dev/null | head -50
 ```
 
-### 20.29.11 Forcing a Watchdog Timeout (Development Only)
+### 20.30.11 Forcing a Watchdog Timeout (Development Only)
 
 On userdebug/eng builds, you can test the Watchdog by inducing a deadlock.
 **WARNING: This will crash system_server and restart the runtime.**
@@ -4828,7 +5040,7 @@ adb shell settings put global watchdog_timeout_millis 10000
 adb shell setprop persist.sys.debug.watchdog_timeout 10
 ```
 
-### 20.29.12 Tracing Service Startup with Perfetto
+### 20.30.12 Tracing Service Startup with Perfetto
 
 ```bash
 # Record a boot trace
@@ -4845,7 +5057,7 @@ The trace will show all the `TimingsTraceAndSlog` spans from SystemServer,
 including every service start and boot phase transition, with precise
 timestamps.
 
-### 20.29.13 Simulating Boot Phases
+### 20.30.13 Simulating Boot Phases
 
 You can watch boot phases progress in real time during a reboot:
 
@@ -4868,7 +5080,7 @@ SystemServiceManager: Starting phase 600
 SystemServiceManager: Starting phase 1000
 ```
 
-### 20.29.14 Examining Service Registration
+### 20.30.14 Examining Service Registration
 
 To see how a specific service is registered:
 
@@ -4882,7 +5094,7 @@ adb shell service check package
 adb shell dumpsys -l
 ```
 
-### 20.29.15 Monitoring Looper Statistics
+### 20.30.15 Monitoring Looper Statistics
 
 ```bash
 # Dump looper statistics to see message processing times

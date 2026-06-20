@@ -63,7 +63,7 @@ initialization steps.
 
 ### 20.1.2 The run() Method -- Initializing the World
 
-The `run()` method (line 836) is where all initialization happens. It follows
+The `run()` method (line 852) is where all initialization happens. It follows
 a carefully ordered sequence:
 
 ```
@@ -98,10 +98,10 @@ Several critical early steps deserve attention.
 **Binder thread pool configuration:**
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, line 493
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 510
 private static final int sMaxBinderThreads = 31;
 // ...
-// line 932
+// line 948
 BinderInternal.setMaxThreads(sMaxBinderThreads);
 ```
 
@@ -112,7 +112,7 @@ simultaneously serves hundreds of client processes.
 **Main looper preparation:**
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, line 934
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 954
 android.os.Process.setThreadPriority(
         android.os.Process.THREAD_PRIORITY_FOREGROUND);
 Looper.prepareMainLooper();
@@ -127,7 +127,7 @@ deliver. These thresholds help identify performance problems.
 **System context creation:**
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, line 1160
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 1176
 private void createSystemContext() {
     ActivityThread activityThread = ActivityThread.systemMain();
     mSystemContext = activityThread.getSystemContext();
@@ -146,7 +146,7 @@ content providers, and the rest of the framework APIs.
 **SystemServiceManager creation:**
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, line 978
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 1001
 mSystemServiceManager = new SystemServiceManager(mSystemContext);
 mSystemServiceManager.setStartInfo(mRuntimeRestart,
         mRuntimeStartElapsedTime, mRuntimeStartUptime);
@@ -162,16 +162,17 @@ so any code within `system_server` can access it without Binder.
 
 ### 20.1.3 Service Module Organization
 
-The `frameworks/base/services/` directory contains 59 modules organized by
-functional area. The main module is `services/java/` which contains
-`SystemServer.java` itself. The core module `services/core/` hosts the
-majority of services, with 74 Java files and 102 subdirectory packages
-directly under `com.android.server`:
+The `frameworks/base/services/` directory groups services by functional
+area. The main module is `services/java/` which contains
+`SystemServer.java` itself, and the core module `services/core/` hosts the
+majority of services directly under `com.android.server`. Around it sit
+roughly four dozen feature-specific modules (the exact set shifts release
+to release):
 
 ```
 frameworks/base/services/
   +-- java/              # SystemServer.java entry point
-  +-- core/              # Core services (102 sub-packages)
+  +-- core/              # Core services (many sub-packages)
   +-- accessibility/     # AccessibilityManagerService
   +-- appfunctions/      # AppFunctionManagerService
   +-- appprediction/     # AppPredictionManagerService
@@ -180,6 +181,7 @@ frameworks/base/services/
   +-- backup/            # BackupManagerService
   +-- companion/         # CompanionDeviceManagerService
   +-- contentcapture/    # ContentCaptureManagerService
+  +-- contentrestriction/ # ContentRestrictionService (Android 17)
   +-- contentsuggestions/ # ContentSuggestionsManagerService
   +-- contextualsearch/  # ContextualSearchManagerService
   +-- coverage/          # CoverageService
@@ -196,7 +198,7 @@ frameworks/base/services/
   +-- restrictions/      # RestrictionsManagerService
   +-- searchui/          # SearchUiManagerService
   +-- selectiontoolbar/  # SelectionToolbarManagerService
-  +-- serial/            # SerialManagerService
+  +-- serial/            # SerialManagerService (Android 17 wired serial API)
   +-- smartspace/        # SmartspaceManagerService
   +-- supervision/       # SupervisionService
   +-- systemcaptions/    # SystemCaptionsManagerService
@@ -206,16 +208,19 @@ frameworks/base/services/
   +-- usb/               # UsbService
   +-- voiceinteraction/  # VoiceInteractionManagerService
   +-- wifi/              # (managed via APEX jar)
-  +-- ... (59 total entries)
+  +-- ...                # plus more feature modules
 ```
+
+The `serial/` module is new in Android 17: it hosts `SerialManagerService`,
+the system_server half of the wired Serial API covered in 20.30.
 
 ### 20.1.4 The Four Startup Phases
 
 After initialization, `SystemServer.run()` calls four methods in strict
-sequence (lines 1031-1034):
+sequence (lines 1047-1050):
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, line 1024
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 1043
 // Start services.
 try {
     t.traceBegin("StartServices");
@@ -229,10 +234,10 @@ try {
 ```
 
 After all services are started, the main thread enters `Looper.loop()` at
-line 1081 and never returns:
+line 1097 and never returns:
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, line 1080
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 1097
 // Loop forever.
 Looper.loop();
 throw new RuntimeException("Main thread loop unexpectedly exited");
@@ -715,10 +720,11 @@ area:
 | Service | Class | Source Package | Purpose |
 |---------|-------|---------------|---------|
 | UsbService | `UsbService.Lifecycle` | `usb/` | USB host/device management |
-| SerialManagerService | `SerialManagerService.Lifecycle` | `serial/` | Serial port management |
+| SerialManagerService | `SerialManagerService.Lifecycle` | `serial/` | Android 17 wired serial port API (gated by `enable_wired_serial_api`); see 20.30 |
 | HardwarePropertiesManagerService | `HardwarePropertiesManagerService` | core | CPU/GPU temperatures |
 | ConsumerIrService | `ConsumerIrService` | core | IR blaster |
 | VibratorManagerService | `VibratorManagerService.Lifecycle` | `vibrator/` | Haptic feedback |
+| MultisensoryService | `MultisensoryService.Lifecycle` | `multisensory/` | Audio-haptic feedback for the Multisensory Design System (gated by `enable_multisensory_feedback`, non-TV) |
 | DockObserver | `DockObserver` | core | Dock state detection |
 | WiredAccessoryManager | `WiredAccessoryManager` | core | Wired headset detection |
 | MidiService | `MidiService.Lifecycle` | `midi/` | MIDI device management |
@@ -736,6 +742,8 @@ area:
 | AmbientContextManagerService | `AmbientContextManagerService` | `ambientcontext/` | Ambient context detection |
 | WearableSensingManagerService | `WearableSensingManagerService` | `wearable/` | Wearable sensor processing |
 | OnDeviceIntelligenceManagerService | Loaded from APEX | On-device intelligence | On-device AI services |
+| PccSandboxManagerService | `PccSandboxManagerService` | `privatecompute/` | Private Compute Core sandbox management (gated by `enable_pcc_framework_support`) |
+| ContentRestrictionService | `ContentRestrictionService.Lifecycle` | `contentrestriction/` | Content classification/restriction API (gated by `content_restriction_api`) |
 
 #### System Infrastructure
 
@@ -858,7 +866,7 @@ sub-package listing organized by functional domain:
 #### System Services
 - `flags/` -- FeatureFlagsService
 - `compat/` -- PlatformCompat
-- `crashrecovery/` -- CrashRecoveryAdaptor
+- `crashrecovery/` -- CrashRecoveryHelper (the engine now lives in the `packages/modules/CrashRecovery/` module)
 - `criticalevents/` -- CriticalEventLog
 - `cpu/` -- CpuMonitorService
 - `gpu/` -- GpuService
@@ -917,7 +925,7 @@ sub-package listing organized by functional domain:
 
 ### 20.4.1 startBootstrapServices()
 
-The bootstrap phase (line 1176-1451 of `SystemServer.java`) starts the
+The bootstrap phase (line 1192-1462 of `SystemServer.java`) starts the
 services that form the critical dependency chain. The exact order is
 significant because of mutual dependencies:
 
@@ -968,23 +976,23 @@ graph TD
 
 Key dependency relationships in the bootstrap phase:
 
-1. **Watchdog starts first** (line 1192-1196): It must be running before any
+1. **Watchdog starts first** (line 1208-1210): It must be running before any
    service that might deadlock.
-2. **Installer before PackageManager** (line 1228-1230): `installd` must
+2. **Installer before PackageManager** (line 1244): `installd` must
    create critical directories before PMS scans packages.
-3. **AMS and ATMS together** (line 1274-1283): These two are tightly coupled
+3. **AMS and ATMS together** (line 1290-1303): These two are tightly coupled
    -- ATMS manages activities/tasks while AMS manages processes.
-4. **PowerManager early** (line 1296-1302): Many services need power management.
-5. **DisplayManager before PMS** (line 1339-1341): Package manager needs
+4. **PowerManager early** (line 1316): Many services need power management.
+5. **DisplayManager before PMS** (line 1349): Package manager needs
    display metrics for density-based resource selection.
-6. **PHASE_WAIT_FOR_DEFAULT_DISPLAY** (line 1344-1346): All services needing
+6. **PHASE_WAIT_FOR_DEFAULT_DISPLAY** (line 1355): All services needing
    display information wait here.
-7. **PackageManager pauses Watchdog** (line 1364-1370): PMS initialization is
+7. **PackageManager pauses Watchdog** (line 1372-1374): PMS initialization is
    so slow that the Watchdog is explicitly paused.
 
 ### 20.4.2 startCoreServices()
 
-Core services (line 1457-1533) are simpler -- no circular dependencies:
+Core services (line 1467-1549) are simpler -- no circular dependencies:
 
 ```
 startCoreServices()
@@ -1005,7 +1013,7 @@ startCoreServices()
 
 ### 20.4.3 startOtherServices()
 
-The `startOtherServices()` method (line 1539-3600+) is by far the longest.
+The `startOtherServices()` method (line 1550-3677) is by far the longest.
 It contains conditional service starts based on device features, form
 factor (phone/watch/TV/auto), and feature flags. The high-level flow:
 
@@ -2956,10 +2964,10 @@ at all.
 ### 20.16.2 Updating the Watchdog Timeout
 
 After all services are started, the Watchdog timeout is updated from
-system settings (line 1037):
+system settings (line 1053):
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, line 1037
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 1053
 updateWatchdogTimeout(t);
 ```
 
@@ -2968,7 +2976,7 @@ This call registers a `SettingsObserver` that watches for changes to
 adjusted dynamically by the server-side configuration system:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/Watchdog.java, line 617
+// frameworks/base/services/core/java/com/android/server/Watchdog.java, line 615
 void updateWatchdogTimeout(long timeoutMillis) {
     if (!DB && !Build.IS_USERDEBUG
             && timeoutMillis
@@ -3292,7 +3300,7 @@ Many service starts in modern AOSP are gated by feature flags. This
 allows services to be enabled/disabled without code changes:
 
 ```java
-// Example: IntrusionDetectionService
+// Example: IntrusionDetectionService (line 1842)
 if (!isWatch && !isTv && !isAutomotive
         && android.security.Flags.aflApi()) {
     t.traceBegin("StartIntrusionDetectionService");
@@ -3300,37 +3308,41 @@ if (!isWatch && !isTv && !isAutomotive
     t.traceEnd();
 }
 
-// Example: AdvancedProtectionService
-if (!isWatch && !isTv && !isAutomotive
-        && android.security.Flags.aapmApi()) {
-    t.traceBegin("StartAdvancedProtectionService");
-    mSystemServiceManager.startService(
-            AdvancedProtectionService.Lifecycle.class);
-    t.traceEnd();
-}
-
-// Example: TradeInModeService
+// Example: TradeInModeService (line 1873)
 if (!isWatch && !isTv && !isAutomotive && enableTradeInMode()) {
     t.traceBegin("StartTradeInModeService");
     mSystemServiceManager.startService(TradeInModeService.class);
     t.traceEnd();
 }
 
-// Example: UserRecoveryManagerService
-if (enableUserRecoveryManager()) {
-    t.traceBegin("StartUserRecoveryManager");
-    mSystemServiceManager.startService(
-            UserRecoveryManagerService.class);
+// Example: the Android 17 wired Serial API (line 2551), gated by
+// the android.hardware.serial.flags.enable_wired_serial_api flag
+if (android.hardware.serial.flags.Flags.enableWiredSerialApi()) {
+    t.traceBegin("StartSerialManagerService");
+    mSystemServiceManager.startService(SerialManagerService.Lifecycle.class);
+    t.traceEnd();
+}
+
+// Example: ContentRestrictionService (line 3142)
+if (android.app.contentrestriction.flags.Flags.contentRestrictionApi()) {
+    t.traceBegin("StartContentRestrictionService");
+    mSystemServiceManager.startService(ContentRestrictionService.Lifecycle.class);
     t.traceEnd();
 }
 ```
 
+Some services that earlier releases gated behind a flag have since
+graduated: in Android 17 `AdvancedProtectionService` (line 1867) is
+gated only by form factor (`!isWatch && !isTv && !isAutomotive`) and no
+longer requires the `android.security.Flags.aapmApi()` check it carried
+when the API was being stabilized.
+
 ### 20.21.2 FeatureFlagsService
 
-The `FeatureFlagsService` is started in the bootstrap phase (line 1240):
+The `FeatureFlagsService` is started in the bootstrap phase (line 1256):
 
 ```java
-// line 1240
+// line 1256
 t.traceBegin("StartFeatureFlagsService");
 mSystemServiceManager.startService(FeatureFlagsService.class);
 t.traceEnd();
@@ -3341,33 +3353,34 @@ values during their initialization. It provides the mechanism for
 distributing runtime flag overrides and keeping processes in sync with
 the latest flag values.
 
-### 20.21.3 Crash Recovery Flags
+### 20.21.3 Crash Recovery as a Module
 
-The crash recovery mechanism is itself flag-gated (line 1319):
-
-```java
-// line 1319
-if (!Flags.refactorCrashrecovery()) {
-    CrashRecoveryAdaptor.rescuePartyRegisterHealthObserver(mSystemContext);
-}
-```
-
-And later (line 3208):
+In earlier releases the crash recovery logic was guarded by a
+`refactorCrashrecovery()` flag, with the in-platform `RescueParty` and
+`PackageWatchdog` reached through a `CrashRecoveryAdaptor` shim when the
+flag was off. That migration has completed: in Android 17 crash recovery
+runs unconditionally as a module. `SystemServer` references the
+implementation only by a string class name so the code can live in a
+mainline-style module rather than in the platform JAR:
 
 ```java
-// line 3208
-if (Flags.refactorCrashrecovery()) {
-    t.traceBegin("StartCrashRecoveryModule");
-    CrashRecoveryAdaptor.initializeCrashrecoveryModuleService(
-            mSystemServiceManager);
-    t.traceEnd();
-} else {
-    CrashRecoveryAdaptor.packageWatchdogNoteBoot(mSystemContext);
-}
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 406
+private static final String CRASHRECOVERY_MODULE_LIFECYCLE_CLASS =
+        "com.android.server.crashrecovery.CrashRecoveryModule$Lifecycle";
 ```
 
-This shows the ongoing migration of crash recovery logic from the
-platform to a modular implementation.
+After `PackageManagerService.systemReady()`, the module is started by
+name -- there is no flag check and no `else` fallback to the old adaptor:
+
+```java
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 3259
+t.traceBegin("StartCrashRecoveryModule");
+mSystemServiceManager.startService(CRASHRECOVERY_MODULE_LIFECYCLE_CLASS);
+t.traceEnd();
+```
+
+Section 20.26 covers the `CrashRecoveryModule`, `PackageWatchdog`, and
+`RescueParty` internals that this single start line pulls in.
 
 ---
 
@@ -3521,8 +3534,8 @@ updatable, but it all runs in the same process.
 
 | File Path | Lines | Purpose |
 |-----------|-------|---------|
-| `frameworks/base/services/java/com/android/server/SystemServer.java` | ~3600 | Entry point, startup orchestration |
-| `frameworks/base/services/core/java/com/android/server/SystemService.java` | 641 | Service base class, boot phase constants |
+| `frameworks/base/services/java/com/android/server/SystemServer.java` | ~3860 | Entry point, startup orchestration |
+| `frameworks/base/services/core/java/com/android/server/SystemService.java` | ~700 | Service base class, boot phase constants |
 | `frameworks/base/services/core/java/com/android/server/SystemServiceManager.java` | ~500 | Service lifecycle management |
 | `frameworks/base/services/core/java/com/android/server/Watchdog.java` | ~1100 | Deadlock detection, thread monitoring |
 | `frameworks/base/core/java/com/android/server/ServiceThread.java` | 52 | Handler thread base class |
@@ -3928,20 +3941,25 @@ This system is built on three cooperating components: `PackageWatchdog`,
 
 **Key source files:**
 
+In Android 17 the crash recovery code has moved out of `frameworks/base`
+and into a standalone mainline module under
+`packages/modules/CrashRecovery/`, so the previous platform paths no
+longer exist:
+
 | File | Description |
 |------|-------------|
-| `frameworks/base/packages/CrashRecovery/services/platform/java/com/android/server/crashrecovery/CrashRecoveryModule.java` | Module lifecycle |
-| `frameworks/base/packages/CrashRecovery/services/platform/java/com/android/server/PackageWatchdog.java` | Failure monitoring engine |
-| `frameworks/base/packages/CrashRecovery/services/platform/java/com/android/server/RescueParty.java` | Escalating mitigation logic |
+| `packages/modules/CrashRecovery/service/java/com/android/server/crashrecovery/CrashRecoveryModule.java` | Module lifecycle |
+| `packages/modules/CrashRecovery/service/java/com/android/server/PackageWatchdog.java` | Failure monitoring engine |
+| `packages/modules/CrashRecovery/service/java/com/android/server/RescueParty.java` | Escalating mitigation logic |
 | `frameworks/base/services/core/java/com/android/server/crashrecovery/CrashRecoveryHelper.java` | Connectivity module health listener |
 
 ### 20.26.1 CrashRecoveryModule Lifecycle
 
-`CrashRecoveryModule` is delivered as an APEX module and follows the
+`CrashRecoveryModule` is delivered as a mainline module and follows the
 `SystemService` lifecycle:
 
 ```java
-// frameworks/base/packages/CrashRecovery/services/platform/java/com/android/server/crashrecovery/CrashRecoveryModule.java
+// packages/modules/CrashRecovery/service/java/com/android/server/crashrecovery/CrashRecoveryModule.java
 public static class Lifecycle extends SystemService {
     @Override
     public void onStart() {
@@ -4013,7 +4031,7 @@ graph TB
 **Failure reasons:**
 
 ```java
-// frameworks/base/packages/CrashRecovery/services/platform/java/com/android/server/PackageWatchdog.java
+// packages/modules/CrashRecovery/service/java/com/android/server/PackageWatchdog.java
 public static final int FAILURE_REASON_UNKNOWN = 0;
 public static final int FAILURE_REASON_NATIVE_CRASH = 1;
 public static final int FAILURE_REASON_EXPLICIT_HEALTH_CHECK = 2;
@@ -4102,7 +4120,7 @@ flowchart TB
 The escalation constants:
 
 ```java
-// frameworks/base/packages/CrashRecovery/services/platform/java/com/android/server/RescueParty.java
+// packages/modules/CrashRecovery/service/java/com/android/server/RescueParty.java
 static final int RESCUE_LEVEL_NONE = 0;
 static final int RESCUE_LEVEL_SCOPED_DEVICE_CONFIG_RESET = 1;
 static final int RESCUE_LEVEL_ALL_DEVICE_CONFIG_RESET = 2;
@@ -4126,7 +4144,7 @@ with development and testing:
 - **Explicit enable** -- `persist.sys.enable_rescue` overrides all disable checks
 
 ```java
-// frameworks/base/packages/CrashRecovery/services/platform/java/com/android/server/RescueParty.java
+// packages/modules/CrashRecovery/service/java/com/android/server/RescueParty.java
 // We're disabled on userdebug devices connected over USB, since that's
 // a decent signal that someone is actively trying to debug the device,
 // or that it's in a lab environment.
@@ -4158,7 +4176,7 @@ is meaningless without a target package.
 To prevent rapid factory reset cycles, RescueParty implements throttling:
 
 ```java
-// frameworks/base/packages/CrashRecovery/services/platform/java/com/android/server/RescueParty.java
+// packages/modules/CrashRecovery/service/java/com/android/server/RescueParty.java
 static final long DEFAULT_FACTORY_RESET_THROTTLE_DURATION_MIN = 1440; // 24 hours
 ```
 
@@ -4621,9 +4639,203 @@ TrafficStats.setThreadStatsUid(mInfo.mUid);
 
 ---
 
-## 20.29 Try It
+## 20.29 The Android 17 Wired Serial API
 
-### 20.29.1 Listing All System Services
+Android 17 reworks serial-port support into a proper, app-facing API.
+Earlier releases exposed a small `SerialService` inside `system_server`
+that could only open the handful of UART paths an OEM listed in
+`config_serialPorts`, callable only by privileged apps holding the
+`SERIAL_PORT` permission. The new wired Serial API enumerates real USB
+serial adapters, asks the user for consent per port, and hands the app a
+file descriptor it can read and write -- the platform piece behind the
+Web Serial API on Android. The whole feature is gated by the
+`android.hardware.serial.flags.enable_wired_serial_api` flag.
+
+### 20.29.1 Three-Layer Architecture
+
+The feature spans three processes: the app's `SerialManager` client, the
+`SerialManagerService` facade in `system_server`, and a separate Rust
+daemon (`serialservice`) that does the actual device enumeration and
+file-descriptor work. `SerialManagerService` owns user consent and
+policy; it never touches `/dev` itself, instead proxying open requests to
+the native daemon over a Binder interface named `native_serial`.
+
+The following diagram shows how an app reaches a physical serial port.
+
+```mermaid
+graph TD
+    subgraph App["App process"]
+        SM["SerialManager<br/>(android.hardware.serial)"]
+    end
+    subgraph SysServer["system_server"]
+        SMS["SerialManagerService<br/>(ISerialManager.Stub)"]
+        UAM["SerialUserAccessManager<br/>(per-user consent)"]
+        SDF["SerialDeviceFilter<br/>(available ports)"]
+        SMS --> UAM
+        SMS --> SDF
+    end
+    subgraph Native["serialservice (Rust daemon)"]
+        NSM["ISerialManager impl<br/>binder: native_serial"]
+        DEV["/dev/tty* serial nodes"]
+        NSM --> DEV
+    end
+
+    SM -->|"android.hardware.serial.ISerialManager (Binder)"| SMS
+    SDF -->|"android.hardware.serialservice.ISerialManager (Binder)"| NSM
+    SMS -->|"requestOpen() returns ParcelFileDescriptor"| NSM
+
+    style SMS fill:#fdd,stroke:#333
+    style NSM fill:#ddf,stroke:#333
+```
+
+### 20.29.2 SerialManagerService in system_server
+
+`SerialManagerService`
+(`frameworks/base/services/serial/java/com/android/server/serial/SerialManagerService.java`)
+extends `ISerialManager.Stub` and is started from `startOtherServices()`.
+The start is flag-gated, and when wired serial is off the legacy
+`SerialService` is started instead (and only on non-watch devices):
+
+```java
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 2551
+if (android.hardware.serial.flags.Flags.enableWiredSerialApi()) {
+    t.traceBegin("StartSerialManagerService");
+    mSystemServiceManager.startService(SerialManagerService.Lifecycle.class);
+    t.traceEnd();
+} else {
+    if (!isWatch) {
+        t.traceBegin("StartSerialService");
+        mSystemServiceManager.startService(SerialService.Lifecycle.class);
+        t.traceEnd();
+    }
+}
+```
+
+The service is a `SystemService` via its inner `Lifecycle` class, which
+publishes the binder under `Context.SERIAL_SERVICE` in `onStart()` and
+forwards `onUserUnlocking()` / `onUserStopping()` so per-user access state
+can be loaded and torn down (used only when the `persistent_access` flag
+is on):
+
+```java
+// frameworks/base/services/serial/java/com/android/server/serial/SerialManagerService.java, line 573
+public static class Lifecycle extends SystemService {
+    @Override
+    public void onStart() {
+        if (enableWiredSerialApi()) {
+            mService = new SerialManagerService(mContext);
+            publishBinderService(Context.SERIAL_SERVICE, mService);
+        }
+    }
+    // onUserUnlocking() / onUserStopping() ...
+}
+```
+
+`SerialManagerService` connects to the native daemon lazily. The first
+call that needs a device (`getSerialPorts()`, `requestOpen()`, a listener
+registration, or a shell command) runs `connectToNativeService()`, which
+calls `ServiceManager.waitForService("native_serial")`, builds a
+`SerialDeviceFilter` over that binder, and starts listening for
+connect/disconnect events. The constant for the daemon name and the
+lazy-connect logic live together:
+
+```java
+// frameworks/base/services/serial/java/com/android/server/serial/SerialManagerService.java, line 91
+private static final String NATIVE_SERIAL_SERVICE_NAME = "native_serial";
+```
+
+### 20.29.3 User Consent and Port Filtering
+
+Two helper classes keep the policy in `system_server` rather than the
+daemon:
+
+- `SerialUserAccessManager`
+  (`frameworks/base/services/serial/java/com/android/server/serial/SerialUserAccessManager.java`)
+  is created per user. When an app calls `requestOpen()`, the service
+  routes through `requestAccess()`, which shows the consent dialog named
+  by `config_portAccessDialogComponent` and only proceeds with the open
+  once the user grants access. `grantSerialPortAccess()` /
+  `revokeSerialPortAccess()` (guarded by the `MANAGE_SERIAL_PORTS`
+  permission) let a manager app pre-authorize or withdraw access, and the
+  `persistent` flag determines whether a grant survives a reboot.
+- `SerialDeviceFilter`
+  (`frameworks/base/services/serial/java/com/android/server/serial/SerialDeviceFilter.java`)
+  maintains the set of currently available `SerialPortInfo` entries,
+  dropping any USB IDs listed in `config_blockedUsbSerialIds`, and fans
+  port add/remove events out to registered `ISerialPortListener` clients.
+
+`requestOpen()` also verifies, via `PackageManagerInternal.isSameApp()`,
+that the supplied package name actually belongs to the calling UID before
+any consent or open happens, so an app cannot impersonate another. The
+public flags (`SerialPort.OPEN_FLAG_*`) are translated to `open(2)` flags
+in `toOsConstants()`, always adding `O_NOCTTY` so a port never becomes the
+process's controlling terminal.
+
+### 20.29.4 The native_serial Rust Daemon
+
+The device-facing work lives outside `system_server` in a small Rust
+binary at `frameworks/native/services/serialservice/`. It registers a
+lazy binder service so it only starts when first needed:
+
+```rust
+// frameworks/native/services/serialservice/rust/service.rs, line 53
+binder::register_lazy_service(
+    "native_serial",
+    BnSerialManager::new_async_binder(
+        SerialManager::new().await,
+        TokioRuntime(Handle::current()),
+        BinderFeatures::default(),
+    )
+    .as_binder(),
+)?;
+```
+
+The daemon is declared in `serialservice.rc` as a `late_start`,
+`oneshot`, `disabled` service that runs as the `system` user from
+`/system_ext/bin/serialservice`; the `disabled` plus lazy-service
+registration means init only spawns it on demand. Its
+`android.hardware.serialservice.ISerialManager` AIDL is intentionally
+narrow -- `getSerialPorts()`, listener register/unregister, and
+`requestOpen()` returning a `ParcelFileDescriptor`. The Rust
+implementation (`rust/serial_manager.rs`) watches `ueventd` device nodes
+to keep the port list current and applies `TIOCEXCL` for exclusive opens.
+Splitting enumeration and file I/O into a separate, sandboxed Rust process
+keeps that USB-driven, memory-unsafe-prone code out of `system_server`
+while the privileged consent and policy logic stays in the framework.
+
+### 20.29.5 Client API and Backward Compatibility
+
+Apps talk to the feature through `SerialManager`
+(`frameworks/base/core/java/android/hardware/serial/SerialManager.java`),
+obtained from `Context.getSystemService(Context.SERIAL_SERVICE)`. The new
+class extends the old `android.hardware.SerialManager` so existing
+callers keep compiling: `getPorts()` returns rich `SerialPort` objects for
+the new flow, while the legacy `getSerialPorts()` and
+`openSerialPort(path, speed)` methods are overridden to route the old
+config-port behavior through the new service. `SystemServiceRegistry`
+picks which manager to register based on the same flag:
+
+```java
+// frameworks/base/core/java/android/app/SystemServiceRegistry.java, line 913
+if (enableWiredSerialApi()) {
+    registerService(Context.SERIAL_SERVICE, android.hardware.serial.SerialManager.class,
+            ...);
+    // Redirect requests for the old SerialManager class to the new one.
+    SYSTEM_SERVICE_NAMES.put(android.hardware.SerialManager.class, Context.SERIAL_SERVICE);
+} else {
+    registerService(Context.SERIAL_SERVICE, android.hardware.SerialManager.class, ...);
+}
+```
+
+So with the flag off, the platform behaves exactly as before; with it on,
+both the modern and legacy `SerialManager` class names resolve to the new,
+consent-gated implementation backed by the `native_serial` daemon.
+
+---
+
+## 20.30 Try It
+
+### 20.30.1 Listing All System Services
 
 Use `service list` to see all registered Binder services:
 
@@ -4650,7 +4862,7 @@ Count the total:
 adb shell service list | head -1
 ```
 
-### 20.29.2 Inspecting system_server Process
+### 20.30.2 Inspecting system_server Process
 
 View basic process information:
 
@@ -4668,7 +4880,7 @@ adb shell cat /proc/$(adb shell pidof system_server)/status | head -20
 adb shell dumpsys meminfo system_server
 ```
 
-### 20.29.3 Dumpsys Commands
+### 20.30.3 Dumpsys Commands
 
 `dumpsys` is the primary tool for inspecting service state. Each service
 implements a `dump()` method:
@@ -4700,7 +4912,7 @@ adb shell dumpsys system_server_dumper --name SystemServer
 adb shell dumpsys system_server_dumper --name Watchdog
 ```
 
-### 20.29.4 Inspecting Boot Phases
+### 20.30.4 Inspecting Boot Phases
 
 Boot phase transitions are logged and can be traced:
 
@@ -4727,7 +4939,7 @@ duration_ms: 60000
 EOF
 ```
 
-### 20.29.5 Observing Service Start Order
+### 20.30.5 Observing Service Start Order
 
 The SystemServer logs each service start with timing information:
 
@@ -4739,7 +4951,7 @@ adb shell logcat -s SystemServer SystemServiceManager
 adb shell logcat | grep -E "PHASE_|startBootPhase"
 ```
 
-### 20.29.6 Watchdog Diagnostics
+### 20.30.6 Watchdog Diagnostics
 
 ```bash
 # Dump Watchdog state
@@ -4755,7 +4967,7 @@ adb shell logcat -b crash | grep -i watchdog
 adb shell cat /data/system/watchdog-timeout-history.txt
 ```
 
-### 20.29.7 Thread Inspection
+### 20.30.7 Thread Inspection
 
 ```bash
 # List all system_server threads with names
@@ -4771,7 +4983,7 @@ adb shell kill -3 $(adb shell pidof system_server)
 adb shell ls -la /data/anr/
 ```
 
-### 20.29.8 Service Dependencies and Boot Timing
+### 20.30.8 Service Dependencies and Boot Timing
 
 ```bash
 # View how long each service took to start
@@ -4787,7 +4999,7 @@ adb shell service check package
 adb shell service call activity 1  # IBinder.FIRST_CALL_TRANSACTION
 ```
 
-### 20.29.9 Examining SystemServiceManager State
+### 20.30.9 Examining SystemServiceManager State
 
 ```bash
 # Dump all registered system services
@@ -4801,7 +5013,7 @@ This shows:
 - Service start times
 - Active user IDs
 
-### 20.29.10 Monitoring Binder Thread Pool
+### 20.30.10 Monitoring Binder Thread Pool
 
 ```bash
 # Check Binder thread usage
@@ -4816,7 +5028,7 @@ adb shell cat /sys/kernel/debug/binder/proc/$(adb shell pidof system_server) \
     2>/dev/null | head -50
 ```
 
-### 20.29.11 Forcing a Watchdog Timeout (Development Only)
+### 20.30.11 Forcing a Watchdog Timeout (Development Only)
 
 On userdebug/eng builds, you can test the Watchdog by inducing a deadlock.
 **WARNING: This will crash system_server and restart the runtime.**
@@ -4829,7 +5041,7 @@ adb shell settings put global watchdog_timeout_millis 10000
 adb shell setprop persist.sys.debug.watchdog_timeout 10
 ```
 
-### 20.29.12 Tracing Service Startup with Perfetto
+### 20.30.12 Tracing Service Startup with Perfetto
 
 ```bash
 # Record a boot trace
@@ -4846,7 +5058,7 @@ The trace will show all the `TimingsTraceAndSlog` spans from SystemServer,
 including every service start and boot phase transition, with precise
 timestamps.
 
-### 20.29.13 Simulating Boot Phases
+### 20.30.13 Simulating Boot Phases
 
 You can watch boot phases progress in real time during a reboot:
 
@@ -4869,7 +5081,7 @@ SystemServiceManager: Starting phase 600
 SystemServiceManager: Starting phase 1000
 ```
 
-### 20.29.14 Examining Service Registration
+### 20.30.14 Examining Service Registration
 
 To see how a specific service is registered:
 
@@ -4883,7 +5095,7 @@ adb shell service check package
 adb shell dumpsys -l
 ```
 
-### 20.29.15 Monitoring Looper Statistics
+### 20.30.15 Monitoring Looper Statistics
 
 ```bash
 # Dump looper statistics to see message processing times
@@ -4969,13 +5181,13 @@ The Javadoc in the source captures this precisely:
 > BroadcastReceiver components, and startService or bindService to communicate with a
 > background Service."
 
-The Intent class itself is roughly 12,000 lines long, containing hundreds of standard
+The Intent class itself is over 13,000 lines long, containing hundreds of standard
 action constants, category constants, extra key definitions, and flag declarations. The
 actual data carried by an individual Intent instance, however, fits into a compact set of
-private fields (around line 8010 in the source):
+private fields (around line 8129 in the source):
 
 ```java
-// frameworks/base/core/java/android/content/Intent.java, line ~8010
+// frameworks/base/core/java/android/content/Intent.java, line ~8129
 private String mAction;
 private Uri mData;
 private String mType;
@@ -4992,6 +5204,9 @@ private Intent mSelector;
 private ClipData mClipData;
 private int mContentUserHint = UserHandle.USER_CURRENT;
 ```
+
+The `mExtendedFlags` field (line 8138) is the carrier for the Android 17 intent-redirect
+defenses; it holds the `EXTENDED_FLAG_*` bits described in Section 21.9.4.
 
 These fields partition into two tiers of importance.
 
@@ -5139,7 +5354,7 @@ flowchart TD
 
 ### 21.1.4 The filterEquals Contract
 
-A critical method on Intent is `filterEquals()`, defined around line 11969:
+A critical method on Intent is `filterEquals()`, defined around line 12088:
 
 ```java
 // frameworks/base/core/java/android/content/Intent.java
@@ -5244,7 +5459,8 @@ intent.setType("image/jpeg");  // This clears mData!
 intent.setDataAndType(Uri.parse("content://media/images/1"), "image/jpeg");
 ```
 
-The source code confirms this mutual exclusion pattern (around line 10440):
+The source code confirms this mutual exclusion pattern (`setData()` at line 10488,
+`setType()` at line 10545, `setDataAndType()` at line 10605):
 
 ```java
 public @NonNull Intent setData(@Nullable Uri data) {
@@ -5268,12 +5484,12 @@ public @NonNull Intent setDataAndType(@Nullable Uri data, @Nullable String type)
 
 ### 21.1.7 The Selector Mechanism
 
-The `mSelector` field (line 8024) provides a powerful but rarely used indirection
+The `mSelector` field provides a powerful but rarely used indirection
 mechanism. When a selector is set, the system uses the selector Intent for resolution
 instead of the main Intent. However, the main Intent's identity (for `filterEquals`)
 remains based on the main Intent, not the selector.
 
-From the source (line ~10590):
+From the source (`setSelector()` at line ~10740):
 
 ```java
 // Intent.java
@@ -5341,7 +5557,7 @@ shareIntent.setClipData(clip);
 
 ### 21.1.9 Intent Copy Modes
 
-The Intent class defines three copy modes (line ~8033):
+The Intent class defines three copy modes (line ~8152):
 
 ```java
 private static final int COPY_MODE_ALL = 0;      // Full copy
@@ -5524,7 +5740,9 @@ flowchart TD
 
 The Intent's action must be listed in the filter's action set. If the filter specifies
 no actions, the match always fails. If the Intent's action is null, modern Android
-(targeting V+) blocks the match via the `BLOCK_NULL_ACTION_INTENTS` compatibility change.
+(targeting V+) blocks the match via the `BLOCK_NULL_ACTION_INTENTS` compatibility change
+(change ID `293560872`, declared at `IntentFilter.java` line 202). The server-side hook
+that applies this is in `SaferIntentUtils` (Section 21.10).
 
 ```java
 // IntentFilter.java
@@ -5565,8 +5783,8 @@ quality constant that encodes how specific the match was:
 Higher values indicate more specific matches. The `MATCH_ADJUSTMENT_NORMAL` value
 (`0x8000`) is added to successful matches as a quality baseline.
 
-The data matching logic from `IntentFilter.matchData()` (line ~1742) follows a
-hierarchical evaluation:
+The data matching logic from `IntentFilter.matchData()` (the private overload at
+line ~1743) follows a hierarchical evaluation:
 
 ```mermaid
 flowchart TD
@@ -5612,7 +5830,7 @@ that are absent from the Intent do not cause failure. If the filter has no categ
 it only matches Intents with no categories.
 
 ```java
-// IntentFilter.java, line ~1904
+// IntentFilter.java, line ~1905
 public final String matchCategories(Set<String> categories) {
     if (categories == null) {
         return null;  // Success: no categories required
@@ -5667,11 +5885,11 @@ match quality (more specific matches first).
 
 ### 21.2.5 The Full match() Method
 
-The complete `match()` method in IntentFilter (line ~2452) orchestrates all three tests
+The complete `match()` method in IntentFilter (line ~2453) orchestrates all three tests
 plus the newer extras matching:
 
 ```java
-// IntentFilter.java, line ~2452
+// IntentFilter.java, line ~2453
 public final int match(String action, String type, String scheme,
         Uri data, Set<String> categories, String logTag, boolean supportWildcards,
         @Nullable Collection<String> ignoreActions, @Nullable Bundle extras) {
@@ -5704,13 +5922,14 @@ public final int match(String action, String type, String scheme,
 
 Note the fourth test: extras matching. While still a hidden API, this allows system
 services to create IntentFilters that match against specific extra values. The
-`matchExtras()` method (line ~1941) checks that every key-value pair in the filter's
-extras exists with an identical value in the Intent's extras.
+`matchExtras()` method (line ~1942) checks that every key-value pair in the filter's
+extras exists with an identical value in the Intent's extras, returning the `NO_MATCH_EXTRAS`
+sentinel (`-5`, defined at line 303) on a mismatch.
 
 The convenience method that most client code uses:
 
 ```java
-// IntentFilter.java, line ~2386
+// IntentFilter.java, line ~2387
 public final int match(ContentResolver resolver, Intent intent,
         boolean resolve, String logTag) {
     String type = resolve ? intent.resolveType(resolver) : intent.getType();
@@ -5731,7 +5950,7 @@ used (returns the explicitly-set type or null).
 IntentFilter also exposes a `Predicate<Intent>` API for functional-style matching:
 
 ```java
-// IntentFilter.java, line ~2348
+// IntentFilter.java, asPredicate()
 public @NonNull Predicate<Intent> asPredicate() {
     return i -> match(null, i, false, TAG) >= 0;
 }
@@ -7079,7 +7298,7 @@ Recent AOSP versions added `UriRelativeFilterGroup` for more granular URI matchi
 This is gated behind the `FLAG_RELATIVE_REFERENCE_INTENT_FILTERS` feature flag:
 
 ```java
-// IntentFilter.java, line ~1619
+// IntentFilter.java, line ~1620
 @FlaggedApi(Flags.FLAG_RELATIVE_REFERENCE_INTENT_FILTERS)
 public final void addUriRelativeFilterGroup(@NonNull UriRelativeFilterGroup group) {
     Objects.requireNonNull(group);
@@ -7515,19 +7734,26 @@ flowchart TD
 
 ### 21.9.4 Intent Redirect Prevention
 
-Android 15 introduced `FLAG_PREVENT_INTENT_REDIRECT`, tracked by the flag constant
-`preventIntentRedirect` (visible in the Intent.java imports at line 23):
+The `prevent_intent_redirect` feature, surfaced through `FLAG_PREVENT_INTENT_REDIRECT`
+and the `preventIntentRedirect()` flag accessor, defends against the confused-deputy
+class of attacks where one app embeds an Intent inside another Intent's extras and a
+privileged receiver blindly relaunches it. The flag is imported into `Intent.java`:
 
 ```java
-// Intent.java imports
+// frameworks/base/core/java/android/content/Intent.java, lines 22-23
 import static android.security.Flags.FLAG_PREVENT_INTENT_REDIRECT;
 import static android.security.Flags.preventIntentRedirect;
 ```
 
-This addresses a class of vulnerabilities where an app launches an activity with an
-Intent that contains another Intent in its extras, and the receiving activity blindly
-launches the inner Intent with its own elevated permissions. The framework now validates
-and blocks these redirect chains when the security flag is enabled.
+In the Android 17 tree this is no longer a single boolean: it is a wired-up
+**creator-token** system. When an Intent carries nested Intents in its extras or
+ClipData, the system stamps each nested Intent with a token identifying the creator and
+records which extra keys hold those nested Intents, so that when the inner Intent is
+later launched the platform can re-check the original creator's permissions instead of
+the relaunching app's. The flag definition lives at
+`frameworks/base/core/java/android/security/responsible_apis_flags.aconfig`
+(`name: "prevent_intent_redirect"`, bug `361143368`, `is_fixed_read_only: true`). The
+full token mechanism and its `EXTENDED_FLAG_*` markers are covered in Section 21.11.
 
 ### 21.9.5 URI Permission Grants
 
@@ -7724,7 +7950,274 @@ to control how your activities are launched.
 
 ---
 
-## 21.10 Try It
+## 21.10 Safer Intent Matching (Android 17)
+
+Two long-running hardening efforts converge in Android 17 into a single resolution pass
+that the platform calls "Safer Intent." The first tightens which components an
+**explicit** Intent is allowed to reach; the second lets app developers opt their own
+components into that strictness declaratively. Both run inside `SaferIntentUtils`, a
+helper that hooks PackageManager and ActivityManager resolution:
+
+```
+frameworks/base/services/core/java/com/android/server/pm/SaferIntentUtils.java
+```
+
+The class Javadoc enumerates its four hook points: activity resolution
+(`ComputerEngine.queryIntentActivitiesInternal` / `ResolveIntentHelper.resolveIntentInternal`),
+service resolution (`Computer.queryIntentServicesInternal`), static receiver resolution
+(`ResolveIntentHelper.queryIntentReceiversInternal`), and runtime receiver resolution
+(`ActivityManagerService.broadcastIntentLockedTraced`). After PackageManager produces a
+candidate `List<ResolveInfo>`, `SaferIntentUtils` post-processes it and removes entries
+the caller should not be allowed to hit.
+
+### 21.10.1 Two Enforcement Generations
+
+`SaferIntentUtils` ships two implementations of the same idea, selected at runtime:
+
+| Method | Generation | Gate |
+|--------|-----------|------|
+| `enforceIntentFilterMatchingWithAppCompat()` | Android 15 (V) | `ENFORCE_INTENTS_TO_MATCH_INTENT_FILTERS` change ID `161252188` |
+| `enforceIntentFilterMatchingWithIntentMatchingFlags()` | Android 17 | `Flags.enableIntentMatchingFlags()` |
+
+The dispatcher picks the newer path when the `enable_intent_matching_flags` feature flag
+is on (`frameworks/base/services/core/java/com/android/server/pm/SaferIntentUtils.java`,
+the call to `enforceIntentFilterMatchingWithIntentMatchingFlags` around line 268). The
+flag is declared in
+`frameworks/base/core/java/android/security/responsible_apis_flags.aconfig`:
+
+```
+// responsible_apis_flags.aconfig
+flag {
+    name: "enable_intent_matching_flags"
+    is_exported: true
+    namespace: "permissions"
+    is_fixed_read_only: true
+    description: "Applies intentMatchingFlags while matching intents to application components"
+    bug: "364354494"
+}
+```
+
+Both generations share the same exemptions: the pass is skipped entirely when the caller
+is system or root (`ActivityManager.canAccessUnexportedComponents()`), and per-component
+it is skipped when the caller is the same app as the target (`computer.isCallerSameApp()`).
+This keeps intra-app navigation and system traffic untouched.
+
+### 21.10.2 The Two Rules
+
+Regardless of generation, the enforcement applies two rules to every surviving candidate,
+both visible in `enforceIntentFilterMatchingWithIntentMatchingFlags()`:
+
+1. **An explicit Intent must actually match the target component's intent filters.** For
+   each candidate the code walks `comp.getIntents()` and calls
+   `IntentResolver.intentMatchesFilter(intentFilter, intent, resolvedType)`. If no filter
+   matches, the candidate is dropped. This closes the historical gap where naming a
+   component by class name let a caller reach it even if the Intent's action/data did not
+   match any declared filter.
+
+2. **An Intent with a null action does not match any filter.** A missing action is treated
+   as a non-match unless the component explicitly opts back in (see 21.10.3).
+
+```mermaid
+flowchart TD
+    A["Resolved candidate list (after normal matching)"] --> B{"Caller system/root?"}
+    B -->|Yes| Z["Return list unchanged"]
+    B -->|No| C["For each candidate"]
+    C --> D{"Caller same app as target?"}
+    D -->|Yes| C
+    D -->|No| E{"enableIntentMatchingFlags on?"}
+    E -->|Yes| F["Read component intentMatchingFlags"]
+    E -->|No| G["Use ENFORCE_INTENTS_TO_MATCH_INTENT_FILTERS compat change"]
+    F --> H{"Intent matches a declared filter?"}
+    G --> H
+    H -->|No, or null action not allowed| I["Drop candidate; log UNSAFE_INTENT_EVENT_REPORTED"]
+    H -->|Yes| J["Keep candidate"]
+    I --> C
+    J --> C
+```
+
+When a mismatch is detected and `Flags.enforceIntentFilterMatch()` is enabled, the system
+also stamps the Intent with `EXTENDED_FLAG_FILTER_MISMATCH` (the marker bit examined in
+Section 21.11) so downstream code can tell that the Intent reached a component it did not
+formally match. Every mismatch and every null-action match is also reported through
+`FrameworkStatsLog` (`UNSAFE_INTENT_EVENT_REPORTED`) with a boolean recording whether the
+access was actually blocked, which lets the platform measure breakage before fully
+enforcing.
+
+### 21.10.3 The intentMatchingFlags Manifest Attribute
+
+The Android 17 generation reads its policy from a new per-component manifest attribute,
+`android:intentMatchingFlags`, declared in
+`frameworks/base/core/res/res/values/attrs_manifest.xml` (line ~2073) and accepted on
+`<activity>`, `<activity-alias>`, `<receiver>`, `<service>`, and `<provider>`:
+
+```xml
+<!-- attrs_manifest.xml -->
+<attr name="intentMatchingFlags">
+    <flag name="none" value="0x0001" />
+    <flag name="enforceIntentFilter" value="0x0002" />
+    <flag name="allowNullAction" value="0x0004" />
+</attr>
+```
+
+The values map to constants in
+`frameworks/base/core/java/com/android/internal/pm/pkg/component/ParsedMainComponentImpl.java`:
+
+| Manifest flag | Constant | Effect |
+|---------------|----------|--------|
+| `none` | `INTENT_MATCHING_FLAGS_NONE` (`1`) | Disable all special matching rules; takes precedence when combined |
+| `enforceIntentFilter` | `INTENT_MATCHING_FLAGS_ENFORCE_INTENT_FILTER` (`1 << 1`) | Explicit intents must match a filter; null-action intents are blocked |
+| `allowNullAction` | `INTENT_MATCHING_FLAGS_ALLOW_NULL_ACTION` (`1 << 2`) | Used with `enforceIntentFilter` to let null-action intents through |
+
+The reader fetches the component's value via `comp.getIntentMatchingFlags()`
+(`ParsedMainComponentImpl.getIntentMatchingFlags()`, line ~118) and computes two booleans:
+`enforceIntentFilter` (default-on when the feature flag is set, but turned off when the
+component declares `none` or omits `enforceIntentFilter`) and `allowNullAction`. The block
+decision is then simply:
+
+```java
+// SaferIntentUtils.enforceIntentFilterMatchingWithIntentMatchingFlags()
+boolean blockIntent = false;
+if (enforceIntentFilter) {
+    if ((hasNullAction && !allowNullAction) || !intentMatchesComponent) {
+        blockIntent = true;
+    }
+}
+```
+
+This gives a component three useful postures: strict (`enforceIntentFilter`), strict but
+tolerant of action-less intents (`enforceIntentFilter|allowNullAction`, useful for legacy
+filters that key only on data or category), and fully relaxed (`none`).
+
+### 21.10.4 The Intent Firewall Filters
+
+Android 17 also extends the on-device **Intent Firewall** with two new filter types,
+gated by flags in the same aconfig file:
+
+```
+// responsible_apis_flags.aconfig
+flag { name: "enable_intent_firewall_component_class_filter"  ... bug: "428733109" }
+flag { name: "enable_intent_firewall_extra_key_value_filter"  ... bug: "428733109" }
+```
+
+The component-class filter lets a firewall rule match on the target component's class, and
+the extra-key/value filter lets a rule match on a specific key/value pair inside the
+Intent's extras. These complement the existing action/category/data matchers the firewall
+already supports and let a device policy block, for example, intents carrying a particular
+sensitive extra key regardless of action.
+
+## 21.11 Intent Creator Tokens and Redirect Hardening (Android 17)
+
+Section 21.9.4 introduced `prevent_intent_redirect` at a high level. Android 17 turns it
+into a concrete mechanism built on three new pieces of `Intent` state: an extended-flags
+bitmask, a creator-token record, and a set of "nested intent keys." All three live in:
+
+```
+frameworks/base/core/java/android/content/Intent.java
+```
+
+### 21.11.1 Extended Flags
+
+The Intent carries a parallel flag word, `mExtendedFlags` (line 8138), distinct from the
+public `mFlags`. Three bits are defined (lines ~7999-8013):
+
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| `EXTENDED_FLAG_FILTER_MISMATCH` | `1 << 0` | Set by the system when an external intent did not match the receiving component's filter (see 21.10.2) |
+| `EXTENDED_FLAG_MISSING_CREATOR_OR_INVALID_TOKEN` | `1 << 1` | The creator token of this intent is missing or invalid |
+| `EXTENDED_FLAG_NESTED_INTENT_KEYS_COLLECTED` | `1 << 2` | `collectExtraIntentKeys()` has run on this intent |
+
+These are application-opaque: the Javadoc explicitly notes they are "not normally set by
+application code," but set by the system during resolution and parceling.
+
+### 21.11.2 The Creator Token
+
+When an Intent crosses a process boundary carrying nested Intents, the system attaches a
+`CreatorTokenInfo` record (the private inner class at line ~12551):
+
+```java
+// Intent.java, line ~12551
+private static class CreatorTokenInfo {
+    private IBinder mCreatorToken;                 // identifies the creator
+    private ArraySet<NestedIntentKey> mNestedIntentKeys; // where nested intents live
+}
+```
+
+The token is a Binder minted for the creating app. The hidden accessors
+`setCreatorToken()`, `getCreatorToken()`, and `removeCreatorTokenInfo()` (lines ~12623-12650)
+manage it. During `writeToParcel()` the token is only serialized when
+`preventIntentRedirect()` is true (line ~12955), so devices with the flag off pay no
+parceling cost.
+
+The crucial behavior is described in the Javadoc of `removeLaunchSecurityProtection()`
+(line ~12900):
+
+```java
+// Intent.java
+@FlaggedApi(FLAG_PREVENT_INTENT_REDIRECT)
+public void removeLaunchSecurityProtection() {
+    mExtendedFlags &= ~EXTENDED_FLAG_MISSING_CREATOR_OR_INVALID_TOKEN;
+    removeCreatorTokenInfo();
+}
+```
+
+When a foreign embedded Intent arrives without a trusted creator token, the system marks
+it `EXTENDED_FLAG_MISSING_CREATOR_OR_INVALID_TOKEN` (this happens in the read path around
+line 940). At launch time the platform then refuses to honor it, or refuses to let it
+grant URI access to targets the original creator could not reach. `removeLaunchSecurityProtection()`
+is the documented opt-out for the rare app that genuinely needs the legacy behavior.
+
+### 21.11.3 Collecting Nested Intent Keys
+
+To check redirects efficiently, the system must know which extra keys (and which ClipData
+items) hold Intents, without unparceling the entire extras Bundle. The client collects
+these keys with `collectExtraIntentKeys()` (line ~12658), which records a
+`NestedIntentKey` for every nested Intent it finds:
+
+```java
+// Intent.java, NestedIntentKey types (line ~12561)
+NESTED_INTENT_KEY_TYPE_EXTRA_PARCEL        = 1 << 0; // an Intent extra
+NESTED_INTENT_KEY_TYPE_EXTRA_PARCEL_ARRAY  = 1 << 1; // an element of an Intent[] extra
+NESTED_INTENT_KEY_TYPE_EXTRA_PARCEL_LIST   = 1 << 2; // an element of an Intent list extra
+NESTED_INTENT_KEY_TYPE_CLIP_DATA           = 1 << 3; // an Intent inside ClipData items
+```
+
+Each key records its type, the extra key string, and an index (for array/list/ClipData
+cases). Once collection runs, the Intent is stamped `EXTENDED_FLAG_NESTED_INTENT_KEYS_COLLECTED`
+so the work is not repeated. The system server has a catch-all: `collectExtraIntentKeys(true)`
+(the `forceUnparcel` overload at line ~12674) re-collects keys server-side if the client
+never did, governed by the
+`prevent_intent_redirect_collect_nested_keys_on_server_if_not_collected` flag.
+
+```mermaid
+flowchart TD
+    A["App A builds Intent with nested Intent in extras"] --> B["collectExtraIntentKeys: record NestedIntentKey for each nested intent"]
+    B --> C["System mints creator token for App A; stamps CreatorTokenInfo"]
+    C --> D["Intent parceled to App B (token + keys travel with it)"]
+    D --> E["App B relaunches the nested Intent"]
+    E --> F{"Nested Intent has valid creator token?"}
+    F -->|Yes| G["Re-check using App A's identity; allow only what A could do"]
+    F -->|No| H["EXTENDED_FLAG_MISSING_CREATOR_OR_INVALID_TOKEN set; block launch / deny URI grant"]
+```
+
+### 21.11.4 Rollout Flags
+
+The redirect defense ships behind a family of staged flags in
+`frameworks/base/core/java/android/security/responsible_apis_flags.aconfig`, all under bug
+`361143368`, so the platform can tune behavior without a code change:
+
+| Flag | Behavior when enabled |
+|------|----------------------|
+| `prevent_intent_redirect` | Master switch; turns on token stamping and checks |
+| `prevent_intent_redirect_abort_or_throw_exception` | Abort the launch or throw a SecurityException on a bad redirect |
+| `prevent_intent_redirect_collect_nested_keys_on_server_if_not_collected` | Server collects nested keys if the client did not |
+| `prevent_intent_redirect_show_toast` | Show a toast when an activity start is blocked |
+| `prevent_intent_redirect_throw_exception_if_nested_keys_not_collected` | Throw if an intent did not collect nested keys |
+
+This staged design lets Google ship token plumbing first (collect-only, toast, metrics)
+and flip to hard enforcement (`abort_or_throw_exception`) once breakage is understood,
+mirroring the metrics-then-block pattern used by Safer Intent matching in Section 21.10.
+
+## 21.12 Try It
 
 This section provides hands-on exercises to explore the Intent system using real AOSP
 tools and source code.
@@ -8067,39 +8560,42 @@ intent2.setIdentifier("notification_2");
 Navigate through these key methods in the AOSP source, tracing the data flow:
 
 ```
-1. Intent constructor and field initialization:
-   frameworks/base/core/java/android/content/Intent.java:8049-8100
+1. Intent field declarations:
+   frameworks/base/core/java/android/content/Intent.java:8129-8148
 
 2. Intent.filterEquals() - understand identity:
-   frameworks/base/core/java/android/content/Intent.java:11969-11982
+   frameworks/base/core/java/android/content/Intent.java:12088
 
 3. IntentFilter.match() - the complete matching algorithm:
-   frameworks/base/core/java/android/content/IntentFilter.java:2452-2500
+   frameworks/base/core/java/android/content/IntentFilter.java:2453
 
 4. IntentFilter.matchData() - the complex data matching:
-   frameworks/base/core/java/android/content/IntentFilter.java:1742-1833
+   frameworks/base/core/java/android/content/IntentFilter.java:1743
 
-5. ComponentResolverBase.queryActivities() - system-side resolution:
+5. ComponentResolverBase.componentExists() - explicit lookup:
    frameworks/base/services/core/java/com/android/server/pm/resolution/
-       ComponentResolverBase.java:128-131
+       ComponentResolverBase.java:78
 
-6. BroadcastQueue.enqueueBroadcastLocked() - broadcast entry point:
+6. BroadcastRecord delivery states:
    frameworks/base/services/core/java/com/android/server/am/
-       BroadcastQueue.java:112
+       BroadcastRecord.java:194-228
 
-7. BroadcastRecord delivery states:
-   frameworks/base/services/core/java/com/android/server/am/
-       BroadcastRecord.java:196-234
+7. PendingIntent.checkPendingIntent() - security validation:
+   frameworks/base/core/java/android/app/PendingIntent.java:442
 
-8. PendingIntent.checkPendingIntent() - security validation:
-   frameworks/base/core/java/android/app/PendingIntent.java:442-478
-
-9. CrossProfileIntentFilter access control:
+8. CrossProfileIntentFilter access control:
    frameworks/base/services/core/java/com/android/server/pm/
-       CrossProfileIntentFilter.java:42-98
+       CrossProfileIntentFilter.java:42
 
-10. IntentFilter.needsVerification() - App Link eligibility:
-    frameworks/base/core/java/android/content/IntentFilter.java:754-756
+9. IntentFilter.needsVerification() - App Link eligibility:
+   frameworks/base/core/java/android/content/IntentFilter.java:755
+
+10. SaferIntentUtils - Android 17 Safer Intent matching:
+    frameworks/base/services/core/java/com/android/server/pm/
+        SaferIntentUtils.java:278
+
+11. Intent creator-token redirect hardening:
+    frameworks/base/core/java/android/content/Intent.java:12551-12903
 ```
 
 ### Exercise 21.15: Build a Broadcast Delivery Monitor
@@ -8264,6 +8760,8 @@ Key source files examined:
 | `frameworks/base/services/core/java/com/android/server/am/BroadcastProcessQueue.java` | Per-process queue |
 | `frameworks/base/services/core/java/com/android/server/pm/resolution/ComponentResolverBase.java` | Component resolution |
 | `frameworks/base/services/core/java/com/android/server/pm/CrossProfileIntentFilter.java` | Cross-profile routing |
+| `frameworks/base/services/core/java/com/android/server/pm/SaferIntentUtils.java` | Safer Intent matching enforcement (Android 17) |
+| `frameworks/base/core/java/android/security/responsible_apis_flags.aconfig` | Feature flags for intent matching and redirect prevention |
 
 The resolution algorithm applies three sequential tests -- action, data, and category --
 each of which must pass. The match quality hierarchy (EMPTY < SCHEME < HOST < PORT <
@@ -8272,6 +8770,11 @@ modern broadcast system uses per-process queues with delivery state tracking, de
 for cached processes, and classification-based prioritization. PendingIntents delegate
 execution authority through system-managed tokens, with mandatory mutability declarations
 since Android 12 and mandatory explicitness for mutable PendingIntents since Android 14.
+Android 17 layers on Safer Intent matching, where `SaferIntentUtils` drops resolved
+components that an explicit Intent does not actually match (driven by the new
+`intentMatchingFlags` manifest attribute), and a creator-token system that blocks intent
+redirect attacks by re-checking the original creator's identity when a nested Intent is
+relaunched.
 
 ### Version History of Major Intent System Changes
 
@@ -8289,7 +8792,9 @@ since Android 12 and mandatory explicitness for mutable PendingIntents since And
 | 12 (S) | 31 | PendingIntent mutability required, exported required |
 | 13 (T) | 33 | Type-safe getParcelableExtra, registered receiver export flag |
 | 14 (U) | 34 | Mutable implicit PendingIntent blocked |
-| 15 (V) | 35 | Null action intent blocking, intent redirect prevention |
+| 15 (V) | 35 | Null action intent blocking, `ENFORCE_INTENTS_TO_MATCH_INTENT_FILTERS` (AppCompat generation) |
+| 16 | 36 | UriRelativeFilterGroup query/fragment matching API |
+| 17 | 37 | `intentMatchingFlags` manifest attribute, IntentMatchingFlags enforcement generation, creator-token intent-redirect hardening, Intent Firewall component-class and extra-key/value filters |
 
 ### Design Principles
 
@@ -8371,14 +8876,14 @@ share the same lock and reduce cross-lock contention.
 ### 22.1.2 Class Declaration and Inheritance
 
 ```java
-// frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java, line 543
+// frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java, line 602
 public class ActivityManagerService extends IActivityManager.Stub
         implements Watchdog.Monitor, BatteryStatsImpl.BatteryCallback,
                    ActivityManagerGlobalLock {
 ```
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityTaskManagerService.java, line 336
+// frameworks/base/services/core/java/com/android/server/wm/ActivityTaskManagerService.java, line 339
 public class ActivityTaskManagerService extends IActivityTaskManager.Stub {
 ```
 
@@ -8393,16 +8898,16 @@ AMS and ATMS use different global locks, which is a critical design decision
 for concurrency:
 
 ```java
-// In AMS (line 685):
+// In AMS (line 782):
 final ActivityManagerGlobalLock mGlobalLock = ActivityManagerService.this;
 
-// The process-specific lock (line 723):
+// The process-specific lock (line 820):
 final ActivityManagerGlobalLock mProcLock = ENABLE_PROC_LOCK
         ? new ActivityManagerProcLock() : mGlobalLock;
 ```
 
 ```java
-// In ATMS (line 412):
+// In ATMS:
 final WindowManagerGlobalLock mGlobalLock = new WindowManagerGlobalLock();
 ```
 
@@ -8413,7 +8918,7 @@ they almost always need to be modified together.
 
 AMS, on the other hand, has its own `ActivityManagerGlobalLock` plus a
 separate `mProcLock` for process-specific operations. The lock ordering
-convention documented in the source (lines 698-724) specifies:
+convention documented in the source specifies:
 
 1. `mGlobalLock` (AMS) -- acquired first
 2. `mProcLock` -- acquired second if needed
@@ -8430,26 +8935,34 @@ The naming convention for methods reflects this:
 
 ```java
 // frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java
-CachedAppOptimizer mCachedAppOptimizer;     // line 646 - freezer/compaction
-OomAdjuster mOomAdjuster;                    // line 647 - OOM adjustment engine
-BroadcastQueue mBroadcastQueue;              // line 738 - broadcast dispatch
-BroadcastController mBroadcastController;    // line 742 - broadcast management
-final IntentFirewall mIntentFirewall;        // line 680 - intent filtering
+private CachedAppOptimizer mCachedAppOptimizer;  // line 740 - freezer/compaction
+OomAdjuster mOomAdjuster;                          // line 741 - OOM adjustment engine
+ProcessStateController mProcessStateController;    // line 743 - owns the OomAdjuster
+private BroadcastQueue mBroadcastQueue;            // line 835 - broadcast dispatch
+BroadcastController mBroadcastController;           // line 839 - broadcast management
+public final IntentFirewall mIntentFirewall;       // line 774 - intent filtering
 ```
+
+In Android 17 the OOM adjustment machinery was moved out of the `am` package
+into a new `com.android.server.am.psc` (Process State Controller) sub-package.
+AMS no longer constructs an `OomAdjuster` directly; instead it builds a
+`ProcessStateController` and obtains the adjuster from it
+(`ActivityManagerService.java`, lines 2600-2605). Section 22.7 covers this new
+package in detail.
 
 Important timing constants defined in AMS:
 
 ```java
-// line 580: How long before a started process must attach
+// line 648: How long before a started process must attach
 static final int PROC_START_TIMEOUT = 10 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
 
-// line 583: How long for bindApplication to complete before ANR
+// line 651: How long for bindApplication to complete before ANR
 static final int BIND_APPLICATION_TIMEOUT = 15 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
 
-// line 587: Delay before killing an unused app zygote
+// line 655: Delay before killing an unused app zygote
 static final int KILL_APP_ZYGOTE_DELAY_MS = 5 * 1000;
 
-// line 596-597: Broadcast timeouts
+// line 664-665: Broadcast timeouts
 static final int BROADCAST_FG_TIMEOUT = 10 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
 static final int BROADCAST_BG_TIMEOUT = 60 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
 ```
@@ -8458,22 +8971,21 @@ static final int BROADCAST_BG_TIMEOUT = 60 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
 
 ```java
 // frameworks/base/services/core/java/com/android/server/wm/ActivityTaskManagerService.java
-ActivityTaskSupervisor mTaskSupervisor;              // line 421
-ActivityClientController mActivityClientController;  // line 422
-RootWindowContainer mRootWindowContainer;            // line 423
-WindowManagerService mWindowManager;                 // line 424
+ActivityTaskSupervisor mTaskSupervisor;              // line 426
+ActivityClientController mActivityClientController;  // line 427
+RootWindowContainer mRootWindowContainer;            // line 429
+WindowManagerService mWindowManager;                 // line 430
 
 // Process tracking
-final ProcessMap<WindowProcessController> mProcessNames = new ProcessMap<>();  // line 430
-final WindowProcessControllerMap mProcessMap = new WindowProcessControllerMap<>();  // line 432
-volatile WindowProcessController mHomeProcess;       // line 434
-volatile WindowProcessController mTopApp;            // line 441
+final ProcessMap<WindowProcessController> mProcessNames = new ProcessMap<>();
+final WindowProcessControllerMap mProcessMap = new WindowProcessControllerMap<>();
+volatile WindowProcessController mHomeProcess;
+volatile WindowProcessController mTopApp;
 ```
 
 ATMS also manages app switching policy:
 
 ```java
-// line 549-561
 private volatile int mAppSwitchesState = APP_SWITCH_ALLOW;
 static final int APP_SWITCH_DISALLOW = 0;
 static final int APP_SWITCH_FG_ONLY = 1;
@@ -8589,7 +9101,7 @@ Every running activity is represented server-side by an `ActivityRecord`
 instance. The lifecycle states are defined as an enum:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, line 558
+// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, line 553
 enum State {
     INITIALIZING,
     STARTED,
@@ -8633,11 +9145,11 @@ stateDiagram-v2
 
 ### 22.2.2 ActivityRecord Key Fields
 
-The `ActivityRecord` class (declared at line 376) extends `WindowToken`,
+The `ActivityRecord` class (declared at line 372) extends `WindowToken`,
 making it simultaneously an activity representation and a window container:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, line 376
+// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, line 372
 final class ActivityRecord extends WindowToken {
 ```
 
@@ -8645,46 +9157,40 @@ Key fields include:
 
 ```java
 // Identity and configuration
-final ActivityTaskManagerService mAtmService;  // line 431
-final ActivityInfo info;                        // line 434 - from AndroidManifest
-final int mUserId;                             // line 436
-final String packageName;                      // line 439
-final ComponentName mActivityComponent;        // line 441
-final Intent intent;                           // line 452
-final String processName;                      // line 455
-final String taskAffinity;                     // line 456
+final ActivityTaskManagerService mAtmService;
+final ActivityInfo info;                       // from AndroidManifest
+final int mUserId;
+final String packageName;
+final ComponentName mActivityComponent;
+final Intent intent;
+final String processName;
+final String taskAffinity;
 
 // State tracking
-WindowProcessController app;                  // line 499 - hosting process
-private State mState;                         // line 500 - current lifecycle state
-private Task task;                            // line 468 - containing task
-
-// Timing
-long createTime = System.currentTimeMillis(); // line 469
-long lastVisibleTime;                         // line 470
-long pauseTime;                               // line 471
+WindowProcessController app;                   // hosting process
+private State mState;                          // current lifecycle state
+private Task task;                             // containing task
 
 // Result handling
-ActivityRecord resultTo;                      // line 480
-final String resultWho;                       // line 481
-final int requestCode;                        // line 482
+ActivityRecord resultTo;
+final String resultWho;
+final int requestCode;
 
 // Lifecycle flags
-boolean finishing;                            // line 515
-boolean delayedResume;                        // line 514
-int launchMode;                               // line 517
+boolean finishing;
+int launchMode;
 ```
 
 Timeout constants that protect against hung applications:
 
 ```java
-// line 416: Pause must complete within 500ms
+// line 409: Pause must complete within 500ms
 private static final int PAUSE_TIMEOUT = 500;
 
-// line 425: Stop must complete within 11s (just before ANR at 10s)
-private static final int STOP_TIMEOUT = 11 * 1000;
+// line 418: Stop must complete within 11s
+static final int STOP_TIMEOUT = 11 * 1000;
 
-// line 429: Destroy must complete within 10s
+// line 422: Destroy must complete within 10s
 private static final int DESTROY_TIMEOUT = 10 * 1000;
 ```
 
@@ -8745,11 +9251,11 @@ sequenceDiagram
 
 ### 22.2.4 Inside execute()
 
-The `ActivityStarter.execute()` method (line 785) is the main entry point.
+The `ActivityStarter.execute()` method (line 837) is the main entry point.
 Let us trace its logic:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 785
+// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 837
 int execute() {
     // ...
     try {
@@ -8785,7 +9291,7 @@ int execute() {
                 return res;
             }
 
-            res = executeRequest(mRequest);  // line 855 -- the real work
+            res = executeRequest(mRequest);  // the real work
         }
         // ...
     }
@@ -8794,15 +9300,15 @@ int execute() {
 
 ### 22.2.5 Inside executeRequest()
 
-The `executeRequest()` method (line 1028) performs extensive validation:
+The `executeRequest()` method (line 1087) performs extensive validation:
 
-1. **Caller validation** (lines 1063-1074): Resolves the calling
-   `WindowProcessController` and extracts PID/UID.
+1. **Caller validation**: Resolves the calling `WindowProcessController` and
+   extracts PID/UID.
 
-2. **Intent resolution** (lines 1145-1165): Checks if the target component
-   exists. If not, checks for archived apps.
+2. **Intent resolution**: Checks if the target component exists. If not,
+   checks for archived apps.
 
-3. **Permission checks** (lines 1218-1223): Delegates to
+3. **Permission checks**: Delegates to
    `ActivityTaskSupervisor.checkStartAnyActivityPermission()`.
 
 4. **Activity interceptors** (various lines): A chain of
@@ -8822,10 +9328,10 @@ The `executeRequest()` method (line 1028) performs extensive validation:
 
 ### 22.2.6 Inside startActivityInner()
 
-This is the core method (line 1934) where the actual task targeting happens:
+This is the core method (line 2015) where the actual task targeting happens:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 1934
+// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 2015
 int startActivityInner(final ActivityRecord r, ActivityRecord sourceRecord,
         IVoiceInteractionSession voiceSession, IVoiceInteractor voiceInteractor,
         int startFlags, ActivityOptions options, Task inTask,
@@ -8835,7 +9341,7 @@ int startActivityInner(final ActivityRecord r, ActivityRecord sourceRecord,
     setInitialState(r, options, inTask, inTaskFragment, startFlags,
             sourceRecord, voiceSession, voiceInteractor, balVerdict, realCallingUid);
 
-    computeLaunchingTaskFlags();   // line 2897 - resolve FLAG_ACTIVITY_NEW_TASK, etc.
+    computeLaunchingTaskFlags();   // resolve FLAG_ACTIVITY_NEW_TASK, etc.
     mIntent.setFlags(mLaunchFlags);
 
     final Task reusedTask = resolveReusableTask(includeLaunchedFromBubble);
@@ -8914,7 +9420,7 @@ class: `WindowContainer`. Understanding this hierarchy is essential for
 understanding how the system manages windows, tasks, and displays.
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/WindowContainer.java, line 115
+// frameworks/base/services/core/java/com/android/server/wm/WindowContainer.java, line 117
 class WindowContainer<E extends WindowContainer> extends ConfigurationContainer<E>
         implements Comparable<WindowContainer>, Animatable {
 ```
@@ -9073,17 +9579,17 @@ graph TB
 
 ### 22.3.4 Task (Back Stack) Internals
 
-The `Task` class (line 209) extends `TaskFragment`:
+The `Task` class (line 207) extends `TaskFragment`:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/Task.java, line 209
+// frameworks/base/services/core/java/com/android/server/wm/Task.java, line 207
 class Task extends TaskFragment {
 ```
 
 And `TaskFragment` extends `WindowContainer`:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/TaskFragment.java, line 124
+// frameworks/base/services/core/java/com/android/server/wm/TaskFragment.java, line 123
 class TaskFragment extends WindowContainer<WindowContainer> {
 ```
 
@@ -9102,7 +9608,7 @@ Key Task attributes:
 Tasks also have a reparenting system with three modes:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/Task.java, line 273-277
+// frameworks/base/services/core/java/com/android/server/wm/Task.java, lines 275-279
 static final int REPARENT_MOVE_ROOT_TASK_TO_FRONT = 0;
 static final int REPARENT_KEEP_ROOT_TASK_AT_FRONT = 1;
 static final int REPARENT_LEAVE_ROOT_TASK_IN_PLACE = 2;
@@ -9116,7 +9622,7 @@ A key architectural insight is that `ActivityRecord` extends `WindowToken`:
 // frameworks/base/services/core/java/com/android/server/wm/WindowToken.java, line 63
 class WindowToken extends WindowContainer<WindowState> {
 
-// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, line 376
+// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, line 372
 final class ActivityRecord extends WindowToken {
 ```
 
@@ -9131,7 +9637,7 @@ are children in the container tree.
 ### 22.3.6 WindowState Core Fields
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/WindowState.java, line 274
+// frameworks/base/services/core/java/com/android/server/wm/WindowState.java, line 277
 class WindowState extends WindowContainer<WindowState>
         implements WindowManagerPolicy.WindowState, InsetsControlTarget, InputTarget {
 ```
@@ -9154,7 +9660,7 @@ Key fields of `WindowState`:
 ### 22.3.7 DisplayContent and Display Areas
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java, line 288
+// frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java, line 299
 class DisplayContent extends RootDisplayArea
         implements WindowManagerPolicy.DisplayContentInfo {
 ```
@@ -9199,10 +9705,10 @@ graph TB
     end
 ```
 
-The `TaskDisplayArea` (line 74) is particularly important:
+The `TaskDisplayArea` (line 73) is particularly important:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/TaskDisplayArea.java, line 74
+// frameworks/base/services/core/java/com/android/server/wm/TaskDisplayArea.java, line 73
 final class TaskDisplayArea extends DisplayArea<WindowContainer> {
 ```
 
@@ -9212,10 +9718,10 @@ determining which activity is currently focused.
 
 ### 22.3.8 RootWindowContainer
 
-The `RootWindowContainer` (line 171) is the apex of the entire hierarchy:
+The `RootWindowContainer` (line 167) is the apex of the entire hierarchy:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/RootWindowContainer.java, line 171
+// frameworks/base/services/core/java/com/android/server/wm/RootWindowContainer.java, line 167
 class RootWindowContainer extends WindowContainer<DisplayContent>
         implements DisplayManager.DisplayListener {
 ```
@@ -9264,12 +9770,12 @@ sequenceDiagram
 
 ### 22.4.2 Server-Side: WMS.addWindow()
 
-The `addWindow()` method in WMS (line 1626) is one of the most important
+The `addWindow()` method in WMS (line 1672) is one of the most important
 methods in the entire window management system. It performs extensive
 validation and setup:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java, line 1626
+// frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java, line 1672
 public int addWindow(Session session, IWindow client, LayoutParams attrs,
         int viewVisibility, int displayId, int requestUserId,
         @InsetsType int requestedVisibleTypes,
@@ -9321,7 +9827,7 @@ The token validation in `addWindow()` is a critical security gate. The system
 verifies that the window type matches the token:
 
 ```java
-// line 1771-1825 (simplified)
+// around line 1817 (simplified)
 if (rootType >= FIRST_APPLICATION_WINDOW && rootType <= LAST_APPLICATION_WINDOW) {
     activity = token.asActivityRecord();
     if (activity == null) {
@@ -9354,7 +9860,7 @@ This ensures that:
 When validation passes, a new `WindowState` is created:
 
 ```java
-// line 1846-1848
+// around line 1892
 final WindowState win = new WindowState(this, session, client, token, parentWindow,
         appOp[0], attrs, viewVisibility, session.mUid, userId,
         session.mCanAddInternalSystemWindow);
@@ -9380,34 +9886,43 @@ After creation, the window goes through:
 
 ### 22.4.6 The addWindowInner() Method
 
-After the main validation, `addWindowInner()` (line 1977) handles type-specific
+After the main validation, `addWindowInner()` (line 2044) handles type-specific
 setup:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java, line 1977
+// frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java, line 2044
 private int addWindowInner(@NonNull WindowState win, @NonNull DisplayPolicy displayPolicy,
         @NonNull ActivityRecord activity, @NonNull DisplayContent displayContent,
         @NonNull IWindow client, @NonNull LayoutParams attrs, int uid,
         @NonNull WindowRelayoutResult result) {
     // ...
-    win.mToken.addWindow(win);      // line 1985 - add to token
-    displayPolicy.addWindowLw(win, attrs); // line 1986
+    win.mToken.addWindow(win);                          // add to token
+    displayPolicy.addWindowLw(win, attrs);
+    displayPolicy.setDropInputModePolicy(win, win.mAttrs);
 
     if (type == TYPE_APPLICATION_STARTING && activity != null) {
-        activity.attachStartingWindow(win);   // Starting/splash window
-    } else if (type == TYPE_INPUT_METHOD) {
-        displayContent.setInputMethodWindowLocked(win);  // IME
-    } else if (type == TYPE_INPUT_METHOD_DIALOG) {
-        displayContent.computeImeLayeringTarget(true);
-    } else {
-        // Handle wallpaper window
-        if (type == TYPE_WALLPAPER) {
-            displayContent.mWallpaperController.clearLastWallpaperTimeoutTime();
+        activity.attachStartingWindow(win);             // Starting/splash window
+    } else if (type == TYPE_INPUT_METHOD
+            && (win.mAttrs.flags & FLAG_NOT_TOUCHABLE) == 0) {
+        // In Android 17 the IME window is attached via the ImeWindowToken,
+        // which is the source of truth across user-profile switches.
+        final ImeWindowToken imeToken = win.mToken.asImeToken();
+        if (/* token agrees with the display's current IME token */) {
+            displayContent.setImeWindow(win);
         }
+    } else if (type == TYPE_WALLPAPER) {
+        displayContent.mWallpaperController.clearLastWallpaperTimeoutTime();
     }
     // ...
 }
 ```
+
+The IME-attachment path changed in Android 17. Earlier releases stored the
+input-method window directly on the `DisplayContent`; the current code resolves
+an `ImeWindowToken` and only attaches the window when that token matches the
+display's `ImeContainer` token, guarding against a race in which a work-profile
+switch moves the IME away while a stale `InputMethodService` is still adding its
+window.
 
 ### 22.4.7 The Session Binder Object
 
@@ -9417,31 +9932,30 @@ Each app process that creates windows establishes a `Session` with WMS:
 // frameworks/base/services/core/java/com/android/server/wm/Session.java, line 104
 class Session extends IWindowSession.Stub implements IBinder.DeathRecipient {
     final WindowManagerService mService;
+    final IWindowSessionCallback mCallback;
     final int mUid;
     final int mPid;
 ```
 
-The Session acts as a per-process proxy. The three key methods for window
-management are:
+The Session acts as a per-process proxy. The two window-add entry points (both
+forwarding into `WMS.addWindow()`) are:
 
 ```java
-// line 258-279
+// line 264
 public int addToDisplay(IWindow window, WindowManager.LayoutParams attrs,
-        int viewVisibility, int displayId, ...) {
+        int viewVisibility, int displayId, @InsetsType int requestedVisibleTypes,
+        InputChannel outInputChannel, WindowRelayoutResult result) {
     return mService.addWindow(this, window, attrs, viewVisibility, displayId,
             UserHandle.getUserId(mUid), requestedVisibleTypes, outInputChannel, result);
 }
 
+// line 272
 public int addToDisplayAsUser(IWindow window, WindowManager.LayoutParams attrs,
-        int viewVisibility, int displayId, int userId, ...) {
+        int viewVisibility, int displayId, int userId,
+        @InsetsType int requestedVisibleTypes,
+        InputChannel outInputChannel, WindowRelayoutResult result) {
     return mService.addWindow(this, window, attrs, viewVisibility, displayId, userId,
             requestedVisibleTypes, outInputChannel, result);
-}
-
-public int addToDisplayWithoutInputChannel(IWindow window, ...) {
-    return mService.addWindow(this, window, attrs, viewVisibility, displayId,
-            UserHandle.getUserId(mUid), WindowInsets.Type.defaultVisible(),
-            null /* outInputChannel */, result);
 }
 ```
 
@@ -9455,7 +9969,7 @@ process dies, all its windows are automatically cleaned up.
 ### 22.5.1 Class Overview
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java, line 408
+// frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java, line 412
 public class WindowManagerService extends IWindowManager.Stub
         implements Watchdog.Monitor, WindowManagerPolicy.WindowManagerFuncs {
 ```
@@ -9470,51 +9984,51 @@ WMS implements three interfaces:
 
 ```java
 // Active sessions (one per client process)
-final ArraySet<Session> mSessions = new ArraySet<>();      // line 630
+final ArraySet<Session> mSessions = new ArraySet<>();      // line 637
 
 // Master window map: IWindow Binder -> WindowState
-final HashMap<IBinder, WindowState> mWindowMap = new HashMap<>(); // line 633
+final HashMap<IBinder, WindowState> mWindowMap = new HashMap<>(); // line 640
 
 // Input token -> WindowState mapping
-final HashMap<IBinder, WindowState> mInputToWindowMap = new HashMap<>(); // line 636
+final HashMap<IBinder, WindowState> mInputToWindowMap = new HashMap<>(); // line 643
 
 // The global lock (shared with ATMS)
-final WindowManagerGlobalLock mGlobalLock;                 // line 639
+final WindowManagerGlobalLock mGlobalLock;                 // line 647
 
 // Windows currently being resized
-final ArrayList<WindowState> mResizingWindows = new ArrayList<>(); // line 646
+final ArrayList<WindowState> mResizingWindows = new ArrayList<>(); // line 654
 
 // Windows with changing frames
-final ArrayList<WindowState> mFrameChangingWindows = new ArrayList<>(); // line 652
+final ArrayList<WindowState> mFrameChangingWindows = new ArrayList<>(); // line 660
 ```
 
 ### 22.5.3 Key Component References
 
 ```java
 // Policy and layout
-WindowManagerPolicy mPolicy;                          // line 606
-final WindowManagerFlags mFlags;                      // line 608
-final WindowSurfacePlacer mWindowPlacerLocked;       // line 541
-final StartingSurfaceController mStartingSurfaceController; // line 518
+WindowManagerPolicy mPolicy;                          // line 614
+final WindowManagerFlags mFlags;
+final WindowSurfacePlacer mWindowPlacerLocked;        // line 549
+final StartingSurfaceController mStartingSurfaceController; // line 526
 
 // External services
-final IActivityManager mActivityManager;             // line 610
-final ActivityManagerInternal mAmInternal;            // line 611
-ActivityTaskManagerService mAtmService;              // (set during init)
+final IActivityManager mActivityManager;              // line 616
+final ActivityManagerInternal mAmInternal;            // line 617
+ActivityTaskManagerService mAtmService;               // (set during init)
 
 // Display settings
-final DisplayWindowSettings mDisplayWindowSettings;   // line 622
-final DisplayAreaPolicy.Provider mDisplayAreaPolicyProvider; // line 487
+final DisplayWindowSettings mDisplayWindowSettings;   // line 629
+final DisplayAreaPolicy.Provider mDisplayAreaPolicyProvider;
 
 // Tracing and debugging
-final WindowTracing mWindowTracing;                  // line 484
-final TransitionTracer mTransitionTracer;            // line 485
+final WindowTracing mWindowTracing;                   // line 483
+final TransitionTracer mTransitionTracer;
 ```
 
 ### 22.5.4 Constants and Configuration
 
 ```java
-// Focus update modes (line 439-447)
+// Focus update modes (line 438 onward)
 static final int UPDATE_FOCUS_NORMAL = 0;
 static final int UPDATE_FOCUS_WILL_ASSIGN_LAYERS = 1;
 static final int UPDATE_FOCUS_PLACING_SURFACES = 2;
@@ -9522,11 +10036,11 @@ static final int UPDATE_FOCUS_WILL_PLACE_SURFACES = 3;
 static final int UPDATE_FOCUS_REMOVING_FOCUS = 4;
 
 // Timing constants
-static final int MAX_ANIMATION_DURATION = 10 * 1000;          // line 418
-static final int WINDOW_FREEZE_TIMEOUT_DURATION = 2000;       // line 421
-static final int LAST_ANR_LIFETIME_DURATION_MSECS = 2 * 60 * 60 * 1000; // line 424
+static final int MAX_ANIMATION_DURATION = 10 * 1000;
+static final int WINDOW_FREEZE_TIMEOUT_DURATION = 2000;       // line 420
+static final int LAST_ANR_LIFETIME_DURATION_MSECS = 2 * 60 * 60 * 1000;
 
-// Animation scales (line 474-478)
+// Animation scales (line 474 onward)
 static final int WINDOW_ANIMATION_SCALE = 0;
 static final int TRANSITION_ANIMATION_SCALE = 1;
 private static final int ANIMATION_DURATION_SCALE = 2;
@@ -9618,7 +10132,7 @@ for the first window that:
 WMS provides diagnostic dumps at three priority levels:
 
 ```java
-// line 543-572
+// line 551
 private final PriorityDump.PriorityDumper mPriorityDumper = new PriorityDump.PriorityDumper() {
     @Override
     public void dumpCritical(...) {
@@ -9700,23 +10214,23 @@ sequenceDiagram
 
 ### 22.6.3 ActivityStarter Pipeline Stages
 
-The `ActivityStarter` (line 169) processes each start request through a
+The `ActivityStarter` (line 175) processes each start request through a
 well-defined pipeline:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 169
+// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 175
 class ActivityStarter {
-    private final ActivityTaskManagerService mService;           // line 188
-    private final RootWindowContainer mRootWindowContainer;     // line 189
-    private final ActivityTaskSupervisor mSupervisor;           // line 190
-    private final ActivityStartInterceptor mInterceptor;        // line 191
-    private final ActivityStartController mController;          // line 192
+    private final ActivityTaskManagerService mService;          // line 194
+    private final RootWindowContainer mRootWindowContainer;     // line 195
+    private final ActivityTaskSupervisor mSupervisor;           // line 196
+    private final ActivityStartInterceptor mInterceptor;        // line 197
+    private final ActivityStartController mController;           // line 198
 ```
 
 The ActivityStarter uses a **pool** pattern to avoid allocation:
 
 ```java
-// line 323-345
+// line 332
 static class DefaultFactory implements Factory {
     private final int MAX_STARTER_COUNT = 3;
     private SynchronizedPool<ActivityStarter> mStarterPool =
@@ -9739,11 +10253,11 @@ starter, and a re-entrant starter from the current one.
 
 ### 22.6.4 computeLaunchingTaskFlags()
 
-This method (line 2897) determines which task the activity will land in by
+This method (line 3026) determines which task the activity will land in by
 adjusting the intent flags:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 2897
+// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 3026
 private void computeLaunchingTaskFlags() {
 ```
 
@@ -9751,7 +10265,6 @@ Key rules implemented:
 
 1. **No source + no explicit task** -- Forces `FLAG_ACTIVITY_NEW_TASK`:
    ```java
-   // line 2954-2962
    if (mSourceRecord == null) {
        if ((mLaunchFlags & FLAG_ACTIVITY_NEW_TASK) == 0 && mInTask == null) {
            Slog.w(TAG, "startActivity called from non-Activity context; forcing "
@@ -9763,7 +10276,6 @@ Key rules implemented:
 
 2. **Source is singleInstance** -- New activity must go in its own task:
    ```java
-   // line 2963-2967
    } else if (mSourceRecord.launchMode == LAUNCH_SINGLE_INSTANCE) {
        mLaunchFlags |= FLAG_ACTIVITY_NEW_TASK;
    }
@@ -9771,18 +10283,23 @@ Key rules implemented:
 
 3. **Target is singleInstance/singleTask** -- Always gets its own task:
    ```java
-   // line 2968-2972
    } else if (isLaunchModeOneOf(LAUNCH_SINGLE_INSTANCE, LAUNCH_SINGLE_TASK)) {
        mLaunchFlags |= FLAG_ACTIVITY_NEW_TASK;
    }
    ```
 
-4. **LAUNCH_ADJACENT** -- Requires both `NEW_TASK` and a source record:
+4. **LAUNCH_ADJACENT** -- Requires both `NEW_TASK` and a source record. In
+   Android 17 this branch also honors a per-task opt-out: even with the flags
+   set, the request is downgraded if the source task (or any ancestor) has
+   `isLaunchAdjacentDisabled()`:
    ```java
-   // line 2975-2989
    if ((mLaunchFlags & FLAG_ACTIVITY_LAUNCH_ADJACENT) != 0) {
        final boolean hasNewTaskFlag = (mLaunchFlags & FLAG_ACTIVITY_NEW_TASK) != 0;
        if (!hasNewTaskFlag || mSourceRecord == null) {
+           mLaunchFlags &= ~FLAG_ACTIVITY_LAUNCH_ADJACENT;
+       }
+       if (mSourceRecord != null && mSourceRecord.getTask() != null
+               && mSourceRecord.getTask().isLaunchAdjacentDisabled()) {
            mLaunchFlags &= ~FLAG_ACTIVITY_LAUNCH_ADJACENT;
        }
    }
@@ -9790,11 +10307,11 @@ Key rules implemented:
 
 ### 22.6.5 computeTargetTask()
 
-This method (line 2211) determines the existing task to reuse (or null for a
+This method (line 2306) determines the existing task to reuse (or null for a
 new task):
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 2211
+// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 2306
 private Task computeTargetTask() {
     if (mStartActivity.resultTo == null && mInTask == null && !mAddingToTask
             && (mLaunchFlags & FLAG_ACTIVITY_NEW_TASK) != 0) {
@@ -9899,15 +10416,14 @@ unless they meet specific criteria. The `BackgroundActivityStartController`
 evaluates a `BalVerdict`:
 
 ```java
-// ActivityStarter.java, line 202-205
+// ActivityStarter.java, line 213
 @VisibleForTesting(visibility = VisibleForTesting.Visibility.PRIVATE)
 BalVerdict mBalVerdict;
 ```
 
-The BAL check happens in `isAllowedToStart()` (line 2263):
+The BAL check happens in `isAllowedToStart()` (line 2359):
 
 ```java
-// line 2283-2291
 boolean blockBalInTask = (newTask
         || !targetTask.isUidPresent(mCallingUid)
         || (LAUNCH_SINGLE_INSTANCE == mLaunchMode
@@ -9935,7 +10451,7 @@ Before an activity is actually started, a chain of interceptors can modify
 or block the launch:
 
 ```java
-// ATMS fields (line 520-521)
+// ATMS fields (line 528)
 private SparseArray<ActivityInterceptorCallback> mActivityInterceptorCallbacks =
         new SparseArray<>();
 ```
@@ -9943,9 +10459,9 @@ private SparseArray<ActivityInterceptorCallback> mActivityInterceptorCallbacks =
 Interceptor ordering is defined by ranges:
 
 ```java
-// From ActivityInterceptorCallback.java
-// SYSTEM_FIRST_ORDERED_ID through SYSTEM_LAST_ORDERED_ID for system
-// MAINLINE_FIRST_ORDERED_ID through MAINLINE_LAST_ORDERED_ID for mainline
+// frameworks/base/services/core/java/com/android/server/wm/ActivityInterceptorCallback.java
+// SYSTEM_FIRST_ORDERED_ID (0) through SYSTEM_LAST_ORDERED_ID for system
+// MAINLINE_FIRST_ORDERED_ID (1000) through MAINLINE_LAST_ORDERED_ID for mainline
 ```
 
 Common interceptors include:
@@ -9954,7 +10470,7 @@ Common interceptors include:
 2. **Suspended App** -- Blocks launches of suspended apps
 3. **Confirm Credentials** -- Handles work profile unlock
 4. **Dream** -- Handles launching during dream/screensaver
-5. **Harmfull App Warning** -- Shows warning for sideloaded apps
+5. **Harmful App Warning** -- Shows warning for sideloaded apps
 
 ### 22.6.9 The Task Weight Limit
 
@@ -9962,10 +10478,10 @@ An important safety mechanism prevents apps from creating too many activities
 in a single task:
 
 ```java
-// ActivityStarter.java, line 182
+// ActivityStarter.java, line 188
 private static final long MAX_TASK_WEIGHT_FOR_ADDING_ACTIVITY = 300;
 
-// line 1978-1985 (in startActivityInner)
+// in startActivityInner() (around line 2059)
 if (targetTask != null) {
     if (targetTask.getTreeWeight() > MAX_TASK_WEIGHT_FOR_ADDING_ACTIVITY) {
         Slog.e(TAG, "Remove " + targetTask + " because it has contained too many"
@@ -9986,73 +10502,82 @@ surfaces).
 
 ## 22.7 Process Management
 
-### 22.7.1 ProcessList and OOM Adjustment
+### 22.7.1 The Process State Controller (Android 17)
 
-The `ProcessList` class (line 184) manages all application processes and
-their priority levels:
+Android 17 carved the OOM-adjustment machinery out of the `am` package into a
+new `com.android.server.am.psc` (Process State Controller) sub-package. This is
+the single largest structural change to process management since the AMS/ATMS
+split. The README in that package states its goals plainly: isolate the OOM
+adjuster logic, expose a clear `ProcessStateController` interface, and
+centralize all process state that affects OOM adjustment.
+
+```
+frameworks/base/services/core/java/com/android/server/am/psc/
+    ProcessStateController.java   -- public entry point (builder + sessions)
+    OomAdjuster.java              -- abstract OOM adjuster (line 190)
+    OomAdjusterImpl.java          -- graph-based implementation (line 125)
+    Constants.java                -- OOM adj + scheduling-group constants
+    ProcessNode.java              -- a process in the importance graph
+    ProcessEdge.java / GraphEdge  -- service/provider binding edges
+    CapabilityController.java     -- propagates capabilities across edges
+    ProcessRecordInternal.java    -- per-process state owned by psc
+    ...
+```
+
+AMS no longer constructs an `OomAdjuster` directly. Instead it builds a
+`ProcessStateController` and obtains the adjuster from it:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/am/ProcessList.java, line 184
-public final class ProcessList implements ProcessStateController.ProcessLruUpdater {
+// ActivityManagerService.java, lines 2600-2605
+mProcessStateController = new ProcessStateController
+        .Builder(mProcessList, activeUids, oomConstants, new OomAdjusterCallback())
+        .setHandlerThread(handlerThread)
+        .setHostingTypeProvider(this)
+        .build();
+mOomAdjuster = mProcessStateController.getOomAdjuster();
 ```
+
+`ProcessStateController` exposes a *session* API for batching updates
+(`startBatchSession()`, `startServiceBatchSession()`) and update entry points
+(`runUpdate()`, `runPendingUpdate()`, `runFullUpdate()`, `runFollowUpUpdate()`).
+Callers that previously poked the `OomAdjuster` now go through the controller,
+which keeps process-state bookkeeping consistent. The package is still being
+landed incrementally (tracked internally by the AOSP team), so some logic still
+lives in the legacy `am` classes, but the constants, the adjuster, and the new
+graph model are firmly in `psc`.
 
 ### 22.7.2 OOM Adjustment Values
 
 The OOM adjustment (oom_adj) value determines how aggressively the Low Memory
 Killer Daemon (LMKD) will terminate a process. Lower values mean higher
-priority:
+priority. In Android 17 these constants moved from `ProcessList` to
+`com.android.server.am.psc.Constants`:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/am/ProcessList.java
-// line 295: System process
-public static final int SYSTEM_ADJ = -900;
-
-// line 292: Persistent system services
-public static final int PERSISTENT_PROC_ADJ = -800;
-
-// line 288: Persistent service bindings
-public static final int PERSISTENT_SERVICE_ADJ = -700;
-
-// line 284: Current foreground app
-public static final int FOREGROUND_APP_ADJ = 0;
-
-// line 280: Recently top, now FGS
-public static final int PERCEPTIBLE_RECENT_FOREGROUND_APP_ADJ = 50;
-
-// line 271: Visible but not foreground
-public static final int VISIBLE_APP_ADJ = 100;
-
-// line 267: Perceptible (e.g., background music)
-public static final int PERCEPTIBLE_APP_ADJ = 200;
-
-// line 262: Perceptible medium
-public static final int PERCEPTIBLE_MEDIUM_APP_ADJ = 225;
-
-// line 257: Perceptible low
-public static final int PERCEPTIBLE_LOW_APP_ADJ = 250;
-
-// line 253: Backup in progress
-public static final int BACKUP_APP_ADJ = 300;
-
-// line 249: Heavy-weight app
-public static final int HEAVY_WEIGHT_APP_ADJ = 400;
-
-// line 244: Background service
-public static final int SERVICE_ADJ = 500;
-
-// line 240: Home app
-public static final int HOME_APP_ADJ = 600;
-
-// line 234: Previous app (for quick switch)
-public static final int PREVIOUS_APP_ADJ = 700;
-
-// line 226: Old service (B list)
-public static final int SERVICE_B_ADJ = 800;
-
-// line 213: Cached app (invisible)
-public static final int CACHED_APP_MIN_ADJ = 900;
-public static final int CACHED_APP_MAX_ADJ = 999;
+// frameworks/base/services/core/java/com/android/server/am/psc/Constants.java
+public static final int SYSTEM_ADJ = -900;                       // line 173 - System process
+public static final int PERSISTENT_PROC_ADJ = -800;              // line 170 - Persistent services
+public static final int PERSISTENT_SERVICE_ADJ = -700;           // line 166 - Persistent bindings
+public static final int FOREGROUND_APP_ADJ = 0;                  // line 162 - Current foreground app
+public static final int PERCEPTIBLE_RECENT_FOREGROUND_APP_ADJ = 50;  // line 158 - Recently top, now FGS
+public static final int VISIBLE_APP_ADJ = 100;                   // line 147 - Visible but not foreground
+public static final int PERCEPTIBLE_APP_ADJ = 200;               // line 139 - Perceptible (e.g. BG music)
+public static final int PERCEPTIBLE_MEDIUM_APP_ADJ = 225;        // line 134 - Perceptible medium
+public static final int PERCEPTIBLE_LOW_APP_ADJ = 250;           // line 129 - Perceptible low
+public static final int BACKUP_APP_ADJ = 300;                    // line 125 - Backup in progress
+public static final int HEAVY_WEIGHT_APP_ADJ = 400;              // line 121 - Heavy-weight app
+public static final int SERVICE_ADJ = 500;                       // line 116 - Background service
+public static final int HOME_APP_ADJ = 600;                      // line 112 - Home app
+public static final int PREVIOUS_APP_ADJ = 700;                  // line 102 - Previous app (quick switch)
+public static final int SERVICE_B_ADJ = 800;                     // line 90  - Old service (B list)
+public static final int CACHED_APP_MIN_ADJ = 900;                // line 77  - Cached app (invisible)
+public static final int CACHED_APP_MAX_ADJ = 999;                // line 76
 ```
+
+`ProcessList` still imports these (e.g.
+`import static com.android.server.am.psc.Constants.CACHED_APP_MAX_ADJ;`) and
+prints them in `dumpsys activity oom`, but the source of truth is now the `psc`
+package.
 
 This forms a priority ladder:
 
@@ -10104,17 +10629,18 @@ graph LR
 ### 22.7.3 Scheduling Groups
 
 In addition to OOM adj, processes are assigned scheduling groups that affect
-CPU allocation:
+CPU allocation. These constants moved to `psc/Constants.java` alongside the OOM
+adj values:
 
 ```java
-// line 305-319
+// frameworks/base/services/core/java/com/android/server/am/psc/Constants.java, lines 192-206
 public static final int SCHED_GROUP_UNDEFINED = Integer.MIN_VALUE;
 public static final int SCHED_GROUP_BACKGROUND = 0;
 static final int SCHED_GROUP_RESTRICTED = 1;
-static final int SCHED_GROUP_DEFAULT = 2;
+public static final int SCHED_GROUP_DEFAULT = 2;
 public static final int SCHED_GROUP_TOP_APP = 3;
-static final int SCHED_GROUP_TOP_APP_BOUND = 4;
-static final int SCHED_GROUP_FOREGROUND_WINDOW = 5;
+public static final int SCHED_GROUP_TOP_APP_BOUND = 4;
+public static final int SCHED_GROUP_FOREGROUND_WINDOW = 5;
 ```
 
 The scheduling group maps directly to Linux cgroup settings:
@@ -10128,16 +10654,23 @@ The scheduling group maps directly to Linux cgroup settings:
 Each running process is tracked by a `ProcessRecord`:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/am/ProcessRecord.java, line 85
-class ProcessRecord extends ProcessRecordInternal implements WindowProcessListener {
-    final ActivityManagerService mService;       // line 88
-    volatile ApplicationInfo info;               // line 95
-    final ProcessInfo processInfo;               // line 96
-    final boolean appZygote;                     // line 97
+// frameworks/base/services/core/java/com/android/server/am/ProcessRecord.java, line 91
+class ProcessRecord extends ProcessRecordInternal implements WindowProcessListener,
+        ... {
+    final ActivityManagerService mService;       // where we came from
+    volatile ApplicationInfo info;               // first app in the process
+    final ProcessInfo processInfo;               // process-specific manifest info
+    final boolean appZygote;                     // forked from the app zygote
 
-    private UidRecord mUidRecord;                // line 106
-    private final PackageList mPkgList;          // line 111
+    private UidRecord mUidRecord;
+    private final PackageList mPkgList;
 ```
+
+Note that `ProcessRecordInternal` is itself part of the Android 17 `psc`
+refactor -- it lives in `com.android.server.am.psc` and is imported into
+`ProcessRecord` (`import com.android.server.am.psc.ProcessRecordInternal;`). It
+holds the process state that the OOM adjuster reads while traversing the
+importance graph.
 
 ProcessRecord fields track:
 
@@ -10153,7 +10686,7 @@ When a new activity needs to be launched in a process that does not yet exist,
 the system forks it from the Zygote. The flow goes through `ProcessList.startProcess()`:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/am/ProcessList.java, line 2453
+// frameworks/base/services/core/java/com/android/server/am/ProcessList.java, line 2505
 private Process.ProcessStartResult startProcess(HostingRecord hostingRecord,
         String entryPoint, ProcessRecord app, int uid, int[] gids,
         int runtimeFlags, int zygotePolicyFlags, int mountExternal,
@@ -10220,7 +10753,7 @@ ProcessList communicates with the Low Memory Killer Daemon through a local
 socket using a binary protocol:
 
 ```java
-// line 372-383
+// frameworks/base/services/core/java/com/android/server/am/ProcessList.java, lines 297-308
 static final byte LMK_TARGET = 0;          // Set kill thresholds
 static final byte LMK_PROCPRIO = 1;        // Set process priority
 static final byte LMK_PROCREMOVE = 2;      // Process removed
@@ -10239,15 +10772,26 @@ When OOM adj changes, ProcessList sends `LMK_PROCPRIO` commands to LMKD, which
 writes the values to `/proc/<pid>/oom_score_adj`. When memory is low, LMKD
 kills processes with the highest oom_score_adj first.
 
-### 22.7.8 The OomAdjuster
+### 22.7.8 The OomAdjuster and the Importance Graph
 
-The `OomAdjuster` (line 168) is an abstract class that computes the OOM
-adjustment for every process:
+In Android 17 the `OomAdjuster` is an abstract class in the `psc` package, with
+the concrete logic in `OomAdjusterImpl`:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/am/OomAdjuster.java, line 168
+// frameworks/base/services/core/java/com/android/server/am/psc/OomAdjuster.java, line 190
 public abstract class OomAdjuster {
+
+// frameworks/base/services/core/java/com/android/server/am/psc/OomAdjusterImpl.java, line 125
+public class OomAdjusterImpl extends OomAdjuster {
 ```
+
+The implementation models the system as an **importance graph**: each process
+is a `ProcessNode` (embedded in its `ProcessRecordInternal`), and service or
+provider bindings are `ProcessEdge` objects connecting a client node to a
+server node. A `CapabilityController` walks these edges to propagate
+capabilities and importance from clients to the processes they bind. The core
+per-process computation is `OomAdjusterImpl.computeOomAdjLSP()`, reached from
+`performUpdateOomAdjLSP()`.
 
 The computation considers:
 
@@ -10321,8 +10865,8 @@ PROCESS_STATE_CACHED_EMPTY = 19;          // Cached, no content
 Modern Android (11+) uses the CachedAppOptimizer to freeze cached processes:
 
 ```java
-// ActivityManagerService.java, line 646
-CachedAppOptimizer mCachedAppOptimizer;
+// ActivityManagerService.java, line 740
+private CachedAppOptimizer mCachedAppOptimizer;
 ```
 
 When a process becomes cached, the optimizer can:
@@ -10377,7 +10921,7 @@ every lifecycle transition flows through it.
 ### 22.8.1 setState() Implementation
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, line 5704
+// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, line 5732
 void setState(State state, String reason) {
     ProtoLog.v(WM_DEBUG_STATES, "State movement: %s from:%s to:%s reason:%s",
             this, mState, state, reason);
@@ -10390,8 +10934,9 @@ void setState(State state, String reason) {
     final State prevState = mState;
     mState = state;
 
-    if (getTaskFragment() != null) {
-        getTaskFragment().onActivityStateChanged(this, state, reason);
+    final TaskFragment taskFragment = getTaskFragment();
+    if (taskFragment != null) {
+        taskFragment.onActivityStateChanged(this, state, reason);
     }
     // ...
 ```
@@ -10406,7 +10951,7 @@ The method performs these key actions after updating the state:
 3. **Triggers process state recalculation** -- via
    `mTaskSupervisor.onProcessActivityStateChanged(app, false)`.
 
-4. **State-specific side effects** (lines 5736-5783):
+4. **State-specific side effects** (the `switch (state)` block):
 
 ```java
 switch (state) {
@@ -10419,10 +10964,19 @@ switch (state) {
         if (app != null) {
             app.updateProcessInfo(false, true, true, true);
         }
+        mAtmService.mH.post(this::notifyActivityStartedToContentCaptureService);
         break;
     case PAUSED:
         mAtmService.updateBatteryStats(this, false);
         mAtmService.updateActivityUsageStats(this, Event.ACTIVITY_PAUSED);
+        break;
+    case STOPPING:
+        // An activity can be STOPPED directly from RESUMED; record the PAUSED
+        // usage in that case since it is conceptually cycled through PAUSED.
+        if (prevState == RESUMED) {
+            mAtmService.updateBatteryStats(this, false);
+            mAtmService.updateActivityUsageStats(this, Event.ACTIVITY_PAUSED);
+        }
         break;
     case STOPPED:
         mAtmService.updateActivityUsageStats(this, Event.ACTIVITY_STOPPED);
@@ -10477,7 +11031,7 @@ Resuming activities is one of the most complex operations in the framework.
 The entry point is `Task.resumeTopActivityUncheckedLocked()`:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/Task.java, line 5240
+// frameworks/base/services/core/java/com/android/server/wm/Task.java, line 5369
 boolean resumeTopActivityUncheckedLocked(ActivityRecord prev, ActivityOptions options,
         boolean deferPause) {
 ```
@@ -10485,7 +11039,7 @@ boolean resumeTopActivityUncheckedLocked(ActivityRecord prev, ActivityOptions op
 This method has re-entrancy protection:
 
 ```java
-// line 299: Guard against recursive calls
+// line 297: Guard against recursive calls
 boolean mInResumeTopActivity = false;
 ```
 
@@ -10579,7 +11133,7 @@ When `startActivityInner()` finds an existing task to reuse (via
 `resolveReusableTask()` or `computeTargetTask()`), it calls `recycleTask()`:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 2384
+// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 2511
 int recycleTask(Task targetTask, ActivityRecord targetTaskTop, Task reusedTask,
         NeededUriGrants intentGrants) {
     // Should not recycle task from a different user
@@ -10600,9 +11154,9 @@ int recycleTask(Task targetTask, ActivityRecord targetTaskTop, Task reusedTask,
 
 Key operations in `recycleTask()`:
 
-1. **User check** -- Rejects cross-user task recycling (line 2388)
+1. **User check** -- Rejects cross-user task recycling
 2. **Intent assignment** -- Sets the task's base intent if it was moved by affinity
-3. **Power mode** -- Starts power mode for the launch (line 2411)
+3. **Power mode** -- Starts power mode for the launch
 4. **Target root task** -- Positions the task in the hierarchy
 5. **`START_FLAG_ONLY_IF_NEEDED`** -- Short-circuits if the activity is
    already at the top
@@ -10613,7 +11167,6 @@ Key operations in `recycleTask()`:
 The return value indicates what happened:
 
 ```java
-// line 2473
 return mMovedToFront ? START_TASK_TO_FRONT : START_DELIVERED_TO_TOP;
 ```
 
@@ -10637,7 +11190,8 @@ The most commonly encountered combinations:
 ### 22.10.3 The deliverNewIntent Mechanism
 
 When an existing activity receives a new intent (e.g., singleTop or
-singleTask re-delivery), the framework uses `deliverNewIntent()`:
+singleTask re-delivery), the framework uses `deliverNewIntentLocked()`
+(`ActivityRecord.java`, line 5082):
 
 ```mermaid
 sequenceDiagram
@@ -10646,16 +11200,24 @@ sequenceDiagram
     participant CLM as ClientLifecycleManager
     participant App as App Process
 
-    AS->>AR: deliverNewIntent(callingUid, intent, intentGrants)
-    AR->>AR: Check mIntentDelivered flag
-    AR->>AR: addNewIntentLocked(intent)
-    AR->>CLM: scheduleTransaction(NewIntentItem)
-    CLM->>App: schedule(ClientTransaction)
-    App->>App: Activity.onNewIntent(intent)
+    AS->>AR: deliverNewIntentLocked(callingUid, intent, intentGrants, ...)
+    AR->>AR: Grant URI permissions from intent
+    alt RESUMED, PAUSED, or top while sleeping (and attached)
+        AR->>CLM: scheduleTransactionItem(NewIntentItem)
+        CLM->>App: schedule(ClientTransaction)
+        App->>App: Activity.onNewIntent(intent)
+    else Not currently visible
+        AR->>AR: addNewIntentLocked(intent) -- queued for next resume
+    end
 ```
 
-The `mIntentDelivered` flag (line 274) ensures the intent is delivered at
-most once, even if multiple code paths converge on `deliverNewIntent()`.
+In Android 17 the method delivers the intent immediately (wrapping it in a
+`NewIntentItem` transaction) only when the activity is `RESUMED`, `PAUSED`, or
+the top activity behind the lock screen, and is attached to its process.
+Otherwise the intent is queued via `addNewIntentLocked()` and delivered the
+next time the activity resumes. The `NewIntentItem` carries a `resume` flag so
+the client returns to `RESUMED` only if it was already resumed, avoiding spurious
+extra lifecycle callbacks.
 
 ---
 
@@ -10668,7 +11230,7 @@ be displayed side-by-side within a single task. This is managed through
 `TaskFragment`:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/TaskFragment.java, line 124
+// frameworks/base/services/core/java/com/android/server/wm/TaskFragment.java, line 123
 class TaskFragment extends WindowContainer<WindowContainer> {
 ```
 
@@ -10722,19 +11284,19 @@ sequenceDiagram
 When starting an activity in a TaskFragment, the system checks compatibility:
 
 ```java
-// TaskFragment.java
+// TaskFragment.java, lines 155-175
 static final int EMBEDDING_ALLOWED = 0;
-static final int EMBEDDING_DISALLOWED_MIN_DIMENSION_VIOLATION = 1;
-static final int EMBEDDING_DISALLOWED_NEW_TASK = 2;
-static final int EMBEDDING_DISALLOWED_UNTRUSTED_HOST = 3;
+static final int EMBEDDING_DISALLOWED_UNTRUSTED_HOST = 1;
+static final int EMBEDDING_DISALLOWED_MIN_DIMENSION_VIOLATION = 2;
+static final int EMBEDDING_DISALLOWED_NEW_TASK = 3;
 ```
 
 These checks prevent:
 
+- Untrusted apps from embedding activities that disallow untrusted embedding
 - Activities from being embedded in containers too small for their minimum
   dimensions
-- Activities that require `NEW_TASK` from being embedded
-- Untrusted apps from embedding activities from other packages
+- Activities that are started on a new task from being embedded
 
 ### 22.11.4 Split-Screen and Freeform Windows
 
@@ -10788,7 +11350,7 @@ system can display a "starting window" (splash screen) to provide immediate
 visual feedback. There are two types:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, lines 407-409
+// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, lines 400-402
 static final int STARTING_WINDOW_TYPE_NONE = 0;
 static final int STARTING_WINDOW_TYPE_SNAPSHOT = 1;
 static final int STARTING_WINDOW_TYPE_SPLASH_SCREEN = 2;
@@ -10834,7 +11396,7 @@ sequenceDiagram
 When the starting window is added to WMS, it gets special handling:
 
 ```java
-// WindowManagerService.java, line 1988-1991
+// WindowManagerService.java, in addWindowInner() (around line 2056)
 if (type == TYPE_APPLICATION_STARTING && activity != null) {
     activity.attachStartingWindow(win);
     ProtoLog.v(WM_DEBUG_STARTING_WINDOW, "addWindow: %s startingWindow=%s",
@@ -10898,7 +11460,7 @@ layout rules:
 The `DisplayPolicy` is consulted during `addWindow()`:
 
 ```java
-// WMS.addWindow(), line 1850
+// WMS.addWindow(), around line 1896
 displayPolicy.adjustWindowParamsLw(win, win.mAttrs);
 // ...
 res = displayPolicy.validateAddingWindowLw(attrs, callingPid, callingUid);
@@ -10907,7 +11469,7 @@ res = displayPolicy.validateAddingWindowLw(attrs, callingPid, callingUid);
 And during layout:
 
 ```java
-// line 1986
+// in addWindowInner()
 displayPolicy.addWindowLw(win, attrs);
 ```
 
@@ -11060,7 +11622,7 @@ sequenceDiagram
 ATMS uses `AnrController` objects to manage ANR handling:
 
 ```java
-// ActivityTaskManagerService.java, line 578
+// ActivityTaskManagerService.java, line 587
 @GuardedBy("itself")
 private final List<AnrController> mAnrController = new ArrayList<>();
 ```
@@ -11080,7 +11642,7 @@ used for kiosk-mode applications, enterprise device management, and
 educational deployments.
 
 ```java
-// ActivityTaskManagerService.java, line 518
+// ActivityTaskManagerService.java, line 526
 private LockTaskController mLockTaskController;
 ```
 
@@ -11100,7 +11662,7 @@ The `LockTaskController` enforces restrictions at multiple points:
 1. **Activity start** -- `isAllowedToStart()` checks
    `isLockTaskModeViolation()`:
    ```java
-   // ActivityStarter.java, line 2299-2309
+   // ActivityStarter.java, in isAllowedToStart() (around line 2396)
    if (!newTask) {
        if (mService.getLockTaskController().isLockTaskModeViolation(
                targetTask, isNewClearTask)) {
@@ -11124,7 +11686,7 @@ The `LockTaskController` enforces restrictions at multiple points:
 ### 22.17.1 RecentTasks Manager
 
 ```java
-// ActivityTaskManagerService.java, line 473
+// ActivityTaskManagerService.java, line 481
 private RecentTasks mRecentTasks;
 ```
 
@@ -11202,7 +11764,7 @@ them to remain visible.
 ### 22.18.2 The occludesParent() Check
 
 ```java
-// ActivityRecord.java, line 665
+// ActivityRecord.java, line 662
 private boolean mOccludesParent;
 ```
 
@@ -11211,6 +11773,16 @@ This field is set based on:
 - The activity's theme (transparent vs. opaque)
 - Whether it fills the parent bounds
 - Whether it has the `windowIsFloating` style attribute
+
+In Android 17 the visibility and occlusion logic was extracted into a
+dedicated `WindowContainerVisibilityHelper` interface
+(`frameworks/base/services/core/java/com/android/server/wm/WindowContainerVisibilityHelper.java`).
+It centralizes three previously-scattered computations: the visibility state of
+a `TaskFragment` (`getTaskFragmentVisibility()`), whether an `ActivityRecord`
+should be visible (`shouldActivityBeVisible()`), and whether a container has
+content that fills it. `ActivityRecord.shouldBeVisible()` and
+`TaskFragment.getVisibility()` now delegate to this helper rather than carrying
+their own copies of the rules.
 
 ### 22.18.3 Visibility States for TaskFragment
 
@@ -11509,7 +12081,7 @@ The `ActivityClientController` is the server-side endpoint for activity-level
 operations initiated by the client process:
 
 ```java
-// ActivityTaskManagerService.java, line 422
+// ActivityTaskManagerService.java, line 427
 ActivityClientController mActivityClientController;
 ```
 
@@ -11551,11 +12123,11 @@ server-side state machine to trigger the next state transition.
 
 ### 22.24.1 Role and Responsibilities
 
-The `ActivityTaskSupervisor` (line 185) acts as a coordination layer between
+The `ActivityTaskSupervisor` (line 184) acts as a coordination layer between
 ATMS and the container hierarchy:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityTaskSupervisor.java, line 185
+// frameworks/base/services/core/java/com/android/server/wm/ActivityTaskSupervisor.java, line 184
 public class ActivityTaskSupervisor implements RecentTasks.Callbacks {
 ```
 
@@ -11588,7 +12160,7 @@ their initialization. When all activities report idle, the system can:
 `ActivityTaskSupervisor` has its own handler for deferred operations:
 
 ```java
-// line 2823
+// line 2813
 private final class ActivityTaskSupervisorHandler extends Handler {
     @Override
     public void handleMessage(Message msg) {
@@ -11618,7 +12190,7 @@ The `ActivityStartController` manages the creation and recycling of
 `ActivityStarter` instances:
 
 ```java
-// ActivityTaskManagerService.java, line 519
+// ActivityTaskManagerService.java, line 527
 private ActivityStartController mActivityStartController;
 ```
 
@@ -11681,7 +12253,7 @@ Each `DisplayContent` manages a complete display with its own:
 - Rotation controller
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java, line 288
+// frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java, line 299
 class DisplayContent extends RootDisplayArea
         implements WindowManagerPolicy.DisplayContentInfo {
 ```
@@ -11753,7 +12325,7 @@ When a window is added with `addWindow()`, an `InputChannel` is created if
 the window accepts input:
 
 ```java
-// WMS.addWindow(), line 1861-1864
+// WMS.addWindow(), around line 1907
 final boolean openInputChannels = (outInputChannel != null
         && (attrs.inputFeatures & INPUT_FEATURE_NO_INPUT_CHANNEL) == 0);
 if (openInputChannels) {
@@ -11807,11 +12379,11 @@ sends this to the native `InputDispatcher` via `InputManagerService`.
 Windows can have special input features:
 
 ```java
-// WindowManager.LayoutParams
-INPUT_FEATURE_NO_INPUT_CHANNEL = 0x0002;      // No input
-INPUT_FEATURE_SPY = 0x0020;                    // Spy on input (see events but don't consume)
-INPUT_FEATURE_SENSITIVE_FOR_PRIVACY = 0x0040;  // Mark as sensitive
-INPUT_FEATURE_DISPLAY_TOPOLOGY_AWARE = 0x0100; // Cross-display topology
+// WindowManager.LayoutParams (frameworks/base/core/java/android/view/WindowManager.java)
+INPUT_FEATURE_NO_INPUT_CHANNEL = 1 << 0;       // No input
+INPUT_FEATURE_SPY = 1 << 2;                    // Spy on input (see events but don't consume)
+INPUT_FEATURE_SENSITIVE_FOR_PRIVACY = 1 << 3;  // Mark as sensitive
+INPUT_FEATURE_DISPLAY_TOPOLOGY_AWARE = 1 << 4; // Cross-display topology
 ```
 
 Spy windows are used by SystemUI for gesture detection (edge swipes,
@@ -11849,7 +12421,7 @@ Activity launches use a two-phase approach:
 1. **Prepare phase**: Validate, resolve, check permissions (can fail)
 2. **Commit phase**: Create task, add activity, schedule resume (should not fail)
 
-The comment "From now on, no exceptions or errors allowed!" at line 1923 in
+The comment "From now on, no exceptions or errors allowed!" at line 1977 in
 `addWindow()` marks the boundary between these phases.
 
 ### 22.28.4 The Deferred Execution Pattern
@@ -12112,12 +12684,125 @@ automatic cleanup: removing an ActivityRecord removes all its windows.
 
 ---
 
-## 22.32 Try It: Tracing and Debugging
+## 22.32 Android 17: Desktop Windowing in the WM Core
+
+Desktop windowing -- freeform, movable, resizable app windows with captions, a
+taskbar, and (increasingly) multiple desktops across external displays -- has
+been maturing across releases. In Android 17 a large share of that work lands in
+the WM core itself, not just in the Shell. This section covers the parts that
+live in `frameworks/base/services/core/java/com/android/server/wm`.
+
+### 22.32.1 The Desktop Mode Gate
+
+Whether a device and a given launch can use desktop windowing is decided by
+`DesktopModeHelper`:
+
+```java
+// frameworks/base/services/core/java/com/android/server/wm/DesktopModeHelper.java, line 100
+public static boolean canEnterDesktopMode(@NonNull Context context) {
+    return (isDeviceEligibleForDesktopMode(context)
+            && DesktopModeFlags.ENABLE_DESKTOP_WINDOWING_MODE.isTrue())
+            || isDesktopModeEnabledByDevOption(context);
+}
+```
+
+Device eligibility combines several config resources and developer options:
+
+| Helper method | What it checks |
+|---------------|----------------|
+| `isDesktopModeSupported()` | `R.bool.config_isDesktopModeSupported` |
+| `canInternalDisplayHostDesktops()` | `R.bool.config_canInternalDisplayHostDesktops` |
+| `isDesktopModeSupportedOnInternalDisplay()` | restrictions off, or internal display can host |
+| `isDeviceEligibleForDesktopMode()` | supported, or enabled via dev option |
+| `shouldEnforceDeviceRestrictions()` | the `ENFORCE_DEVICE_RESTRICTIONS` build flag |
+
+The feature flags themselves are modeled as enums rather than raw booleans:
+
+- `DesktopModeFlags` (`frameworks/base/core/java/android/window/DesktopModeFlags.java`)
+  wraps trunk-stable flags such as `ENABLE_DESKTOP_WINDOWING_MODE`, exposing an
+  `isTrue()` accessor that also honors a developer-option override.
+- `DesktopExperienceFlags`
+  (`frameworks/base/core/java/android/window/DesktopExperienceFlags.java`)
+  carries the broader "desktop experience" flags, including the
+  multiple-desktops activation flags for desktop-first displays.
+
+### 22.32.2 Where Desktop Windows Land: Launch Params
+
+When an activity launches into a freeform/desktop context, its initial bounds
+are computed server-side. The `LaunchParamsController` registers a dedicated
+modifier for this, after the default one:
+
+```java
+// frameworks/base/services/core/java/com/android/server/wm/LaunchParamsController.java
+void registerDefaultModifiers(ActivityTaskSupervisor supervisor) {
+    final Context context = mService.mContext;
+    registerModifier(new TaskLaunchParamsModifier(supervisor, context));
+    registerModifier(new DesktopModeLaunchParamsModifier(context, supervisor,
+            new DesktopModeCompatPolicy(context)));
+}
+```
+
+`DesktopModeLaunchParamsModifier`
+(`frameworks/base/services/core/java/com/android/server/wm/DesktopModeLaunchParamsModifier.java`)
+extends `DefaultLaunchParamsModifier` and overrides `onCalculate()` to size and
+position desktop windows. The actual geometry comes from
+`DesktopModeBoundsCalculator`
+(`frameworks/base/services/core/java/com/android/server/wm/DesktopModeBoundsCalculator.java`),
+whose `calculateInitialBounds()` derives an "ideal" size from the stable display
+bounds scaled by `DESKTOP_MODE_INITIAL_BOUNDS_SCALE`, leaving
+`DESKTOP_MODE_LANDSCAPE_APP_PADDING` for landscape apps.
+
+```mermaid
+flowchart TD
+    Start["startActivityInner() -> computeLaunchParams()"] --> LPC["LaunchParamsController.calculate()"]
+    LPC --> M1["TaskLaunchParamsModifier<br/>(window layout prefs)"]
+    M1 --> M2["DesktopModeLaunchParamsModifier.onCalculate()"]
+    M2 --> Gate{"canEnterDesktopMode()<br/>and freeform context?"}
+    Gate -->|No| Continue["RESULT_CONTINUE<br/>(use default bounds)"]
+    Gate -->|Yes| Calc["DesktopModeBoundsCalculator<br/>.calculateInitialBounds()"]
+    Calc --> Ideal["calculateIdealSize(stableBounds, scale)"]
+    Ideal --> OutBounds["outParams.mBounds set"]
+```
+
+### 22.32.3 App Compatibility in Freeform
+
+Because desktop windows can take arbitrary sizes, the app-compat machinery has
+desktop-aware policies. `AppCompatConfiguration` caches the device's desktop
+capability at construction:
+
+```java
+// frameworks/base/services/core/java/com/android/server/wm/AppCompatConfiguration.java, line 409
+mCanEnterDesktopMode = DesktopModeHelper.canEnterDesktopMode(mContext);
+```
+
+`AppCompatUtils.isInDesktopMode()` treats a window as being in desktop mode when
+its parent windowing mode is `WINDOWING_MODE_FREEFORM` and the device can enter
+desktop mode, and `DesktopAppCompatAspectRatioPolicy` constrains how letterboxed
+or fixed-aspect-ratio apps are sized inside desktop windows. This keeps legacy
+apps usable when dragged into a freeform window.
+
+### 22.32.4 Connected Displays and Multiple Desktops
+
+Android 17 invests heavily in *connected displays* (driving a desktop session on
+an external monitor) and *multiple desktops* (more than one virtual desktop per
+display). Much of this is flag-gated in `DesktopExperienceFlags`, and the
+server-side plumbing rides on the existing multi-display hierarchy from Section
+22.26: each external display is another `DisplayContent` under
+`RootWindowContainer`, with its own `TaskDisplayArea`. Activities are positioned
+into the correct display's task area by the same launch-params pipeline, and
+cross-display moves are coordinated through the transition system (Section
+22.22). The practical effect for the WM core is that the "which display, which
+desktop, what bounds" decision is now a first-class part of activity launch,
+rather than an afterthought handled entirely by the Shell.
+
+---
+
+## 22.33 Try It: Tracing and Debugging
 
 This section provides hands-on exercises for observing the activity and
 window management system in action.
 
-### 22.32.1 Exercise 1: Inspect Window Hierarchy with dumpsys
+### 22.33.1 Exercise 1: Inspect Window Hierarchy with dumpsys
 
 **Objective**: Examine the live window hierarchy to understand the container
 tree.
@@ -12176,7 +12861,7 @@ This shows:
 adb shell dumpsys activity activities | grep -A 20 "com.android.settings"
 ```
 
-### 22.32.2 Exercise 2: Monitor Activity Lifecycle Events
+### 22.33.2 Exercise 2: Monitor Activity Lifecycle Events
 
 **Objective**: Watch lifecycle transitions in real-time.
 
@@ -12195,7 +12880,7 @@ I ActivityTaskManager: START u0 {cmp=com.android.settings/.Settings} from uid 20
 I ActivityTaskManager: Displayed com.android.settings/.Settings: +412ms
 ```
 
-### 22.32.3 Exercise 3: Inspect Process Priorities
+### 22.33.3 Exercise 3: Inspect Process Priorities
 
 **Objective**: Observe OOM adj values for running processes.
 
@@ -12223,7 +12908,7 @@ The `dumpsys activity oom` output groups processes by their OOM adj bucket:
     proc #5: cch+5 B/-/-  trm: 0 12350:com.example.app/u0a94 (cch-activity)
 ```
 
-### 22.32.4 Exercise 4: Force a Configuration Change
+### 22.33.4 Exercise 4: Force a Configuration Change
 
 **Objective**: Observe how the framework handles configuration changes.
 
@@ -12242,7 +12927,7 @@ You will see:
 2. Activities being destroyed and recreated (unless they handle the change)
 3. Window layout recalculation
 
-### 22.32.5 Exercise 5: Examine Task State with am Commands
+### 22.33.5 Exercise 5: Examine Task State with am Commands
 
 ```bash
 # List all tasks
@@ -12261,7 +12946,7 @@ adb shell am task focus <taskId>
 adb shell am task remove <taskId>
 ```
 
-### 22.32.6 Exercise 6: Window Inspector with wm Commands
+### 22.33.6 Exercise 6: Window Inspector with wm Commands
 
 ```bash
 # Get display info
@@ -12280,7 +12965,7 @@ adb shell wm density reset
 adb shell dumpsys SurfaceFlinger --list
 ```
 
-### 22.32.7 Debugging Tips for Framework Developers
+### 22.33.7 Debugging Tips for Framework Developers
 
 1. **Enable verbose WM logging**:
    ```bash
@@ -12314,6 +12999,35 @@ adb shell dumpsys SurfaceFlinger --list
    ```
    This shows all surface layers, their Z-order, and buffer state.
 
+### 22.33.8 Exercise 7: Inspect Desktop Windowing and OOM State
+
+**Objective**: Observe the Android 17 desktop-windowing and process-state
+machinery.
+
+```bash
+# Is desktop windowing available on this build?
+adb shell dumpsys window | grep -i desktop
+
+# List tasks and their windowing modes (look for freeform mode)
+adb shell dumpsys activity activities | grep -E "mode=|windowingMode"
+
+# Force a task into freeform (on a device that supports desktop mode)
+adb shell am stack list
+adb shell wm set-multi-window-config   # inspect current multi-window config
+
+# Process priorities now reported via the Process State Controller
+adb shell dumpsys activity oom
+
+# Check connected/external displays
+adb shell dumpsys display | grep -E "Display id|mType|flags"
+```
+
+The `dumpsys activity oom` output still prints the OOM adj buckets
+(`FOREGROUND`, `VISIBLE`, `PERCEPTIBLE`, `CACHED`, ...), but in Android 17 those
+values are computed by `OomAdjusterImpl` inside the
+`com.android.server.am.psc` package and the constants come from
+`psc/Constants.java`.
+
 ---
 
 ## Summary
@@ -12322,8 +13036,8 @@ In this chapter we explored the three pillars of Android's activity and
 window management:
 
 1. **AMS and ATMS Architecture**: The historical split between
-   process management (AMS, ~19,921 lines in `com.android.server.am`) and
-   activity/task management (ATMS, ~8,130 lines in `com.android.server.wm`).
+   process management (AMS, ~21,200 lines in `com.android.server.am`) and
+   activity/task management (ATMS, ~8,450 lines in `com.android.server.wm`).
    AMS uses its own `ActivityManagerGlobalLock` plus `mProcLock`, while ATMS
    shares the `WindowManagerGlobalLock` with WMS. This shared lock eliminates
    deadlocks between activity and window operations while ensuring atomicity
@@ -12337,7 +13051,7 @@ window management:
    10s destroy, 10s idle.
 
 3. **The Container Hierarchy**: Built on `WindowContainer`
-   (line 115), the unified tree extends from `RootWindowContainer` through
+   (line 117), the unified tree extends from `RootWindowContainer` through
    `DisplayContent` (inherits from `RootDisplayArea`), `DisplayArea`,
    `TaskDisplayArea`, `Task` (extends `TaskFragment`), `TaskFragment`
    (extends `WindowContainer`), `ActivityRecord` (extends `WindowToken`),
@@ -12346,34 +13060,39 @@ window management:
 
 4. **Window Addition Flow**: The path from
    `WindowManager.addView()` through `ViewRootImpl.setView()`,
-   `Session.addToDisplay()` (Binder IPC), to `WMS.addWindow()` (line 1626)
-   with its extensive 350-line validation (token checks for each window type,
+   `Session.addToDisplay()` (Binder IPC), to `WMS.addWindow()` (line 1672)
+   with its extensive validation (token checks for each window type,
    permission verification, display access control, duplicate detection) and
    setup (`WindowState` creation, `InputChannel` pair, surface allocation,
-   policy configuration).
+   policy configuration). In Android 17 the IME-window attachment path
+   resolves an `ImeWindowToken` to survive work-profile switches.
 
-5. **WMS Architecture**: The ~10,983-line service with its
+5. **WMS Architecture**: The ~11,600-line service with its
    `mWindowMap` (global window registry), `mSessions` (per-process
    connections), display-thread model, five focus update modes, the
    `WindowSurfacePlacer` layout engine, and the `PriorityDumper` for
    diagnostic data collection at critical/high/normal priorities.
 
 6. **Intent Resolution and Launch Pipeline**: From
-   `ATMS.startActivityAsUser()` (line 1280) through the `ActivityStarter`
-   pipeline: `execute()` (line 785, metrics + HeavyWeight check) ->
-   `executeRequest()` (line 1028, validation + permissions + interceptors +
-   BAL check + ActivityRecord creation) -> `startActivityInner()` (line 1934,
+   `ATMS.startActivityAsUser()` (line 1302) through the `ActivityStarter`
+   pipeline: `execute()` (line 837, metrics + HeavyWeight check) ->
+   `executeRequest()` (line 1087, validation + permissions + interceptors +
+   BAL check + ActivityRecord creation) -> `startActivityInner()` (line 2015,
    `computeLaunchingTaskFlags()` + `computeTargetTask()` + task reuse/creation
    + resume). Five launch modes, the 300-weight task limit, the interceptor
    chain, and the move-to-front decision logic.
 
-7. **Process Management**: The OOM adj ladder from
-   `SYSTEM_ADJ` (-900) through `FOREGROUND_APP_ADJ` (0) to
-   `CACHED_APP_MAX_ADJ` (999), with 16 named levels. Six scheduling groups
-   mapping to Linux cgroups. Process start via `ProcessList.startProcess()`
-   (line 2453) which forks from Zygote (regular, app, or WebView).
-   Communication with LMKD via 12 binary protocol commands over a local
-   socket. The `CachedAppOptimizer` freezer for cached process power savings.
+7. **Process Management (psc refactor)**: In Android 17 the OOM-adjustment
+   machinery moved to the new `com.android.server.am.psc` package. The OOM adj
+   ladder from `SYSTEM_ADJ` (-900) through `FOREGROUND_APP_ADJ` (0) to
+   `CACHED_APP_MAX_ADJ` (999), and the six scheduling groups, now live in
+   `psc/Constants.java`. AMS builds a `ProcessStateController` and obtains the
+   `OomAdjuster` (now abstract, with `OomAdjusterImpl` implementing a
+   graph-based importance model) from it. Process start via
+   `ProcessList.startProcess()` (line 2505) forks from Zygote (regular, app, or
+   WebView). Communication with LMKD via 12 binary protocol commands over a
+   local socket. The `CachedAppOptimizer` freezer for cached process power
+   savings.
 
 8. **Advanced Topics**: The `setState()` side effects
    and battery/usage stats integration. The recursive `resumeTopActivity`
@@ -12382,11 +13101,19 @@ window management:
    starting window (splash screen) system. The `WindowSurfacePlacer` layout
    loop. Configuration change propagation. ANR detection timeouts. Lock task
    mode enforcement. The recent tasks persistence system. Visibility
-   computation via `ensureActivitiesVisible()`. Shell transitions (Android 13+)
+   computation via `ensureActivitiesVisible()`, now refactored into the
+   `WindowContainerVisibilityHelper`. Shell transitions (Android 13+)
    and their animation controllers. The input dispatch connection via
    `InputChannel` socket pairs. And the design patterns that recur throughout
    the system: container trees, object pools, two-phase commits, deferred
    execution, and unforgeable Binder tokens.
+
+9. **Desktop Windowing (Android 17)**: The maturing desktop-windowing path,
+   gated by `DesktopModeFlags`/`DesktopExperienceFlags` and
+   `DesktopModeHelper.canEnterDesktopMode()`, with server-side launch
+   positioning via the `DesktopModeLaunchParamsModifier` and
+   `DesktopModeBoundsCalculator`, plus the connected-displays and
+   multiple-desktops work tracked through dedicated flag enums.
 
 The next chapter will take a deep dive into the window system mechanics --
 how frames are computed, how surfaces are managed, and how the new shell
@@ -12462,7 +13189,7 @@ The key insight is that all three Java layers (App, WM Core, WM Shell) can issue
 frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java
 ```
 
-At 10,983 lines, it is one of the largest classes in the Android framework. WMS extends `IWindowManager.Stub` and implements `Watchdog.Monitor` and `WindowManagerPolicy.WindowManagerFuncs`:
+At over 11,500 lines in the Android 17 tree, it is one of the largest classes in the Android framework. WMS extends `IWindowManager.Stub` and implements `Watchdog.Monitor` and `WindowManagerPolicy.WindowManagerFuncs`:
 
 ```java
 public class WindowManagerService extends IWindowManager.Stub
@@ -12481,10 +13208,11 @@ WMS is responsible for:
 Key constants define the operational boundaries:
 
 ```java
-static final int MAX_ANIMATION_DURATION = 10 * 1000;           // 10 seconds
 static final int WINDOW_FREEZE_TIMEOUT_DURATION = 2000;        // 2 seconds
 static final int LAST_ANR_LIFETIME_DURATION_MSECS = 2 * 60 * 60 * 1000; // 2 hours
 ```
+
+(The per-animation duration cap is `TransitionAnimation.MAX_ANIMATION_DURATION`, imported and applied in `WindowState.applyAnimationLocked()` via `restrictDuration()`, rather than a WMS field.)
 
 WMS holds references to critical subsystem controllers:
 
@@ -12496,7 +13224,7 @@ WMS holds references to critical subsystem controllers:
 
 The window system models all window-related objects as a tree of `WindowContainer` nodes. Every node maintains a parent reference, a list of children in z-order, and a 1:1 mapping to a `SurfaceControl` in the SurfaceFlinger layer tree.
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/WindowContainer.java` (3,803 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/WindowContainer.java` (over 3,800 lines)
 
 ```java
 class WindowContainer<E extends WindowContainer> extends ConfigurationContainer<E>
@@ -12655,7 +13383,7 @@ RootWindowContainer
 
 `WindowState` is the server-side representation of a single window. It extends `WindowContainer<WindowState>`, meaning its children are sub-windows (TYPE_APPLICATION_PANEL, TYPE_APPLICATION_MEDIA, etc.).
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/WindowState.java` (6,191 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/WindowState.java` (over 6,400 lines)
 
 ```java
 class WindowState extends WindowContainer<WindowState>
@@ -12687,7 +13415,7 @@ Key fields:
 
 `DisplayContent` represents one logical display in the window hierarchy. It extends `RootDisplayArea`, which itself extends `DisplayArea.Dimmable`, which extends `DisplayArea`, which extends `WindowContainer`.
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java` (7,311 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java` (over 7,700 lines)
 
 ```java
 class DisplayContent extends RootDisplayArea
@@ -12872,7 +13600,7 @@ The parallel sync system prevents dependency cycles: if sync B depends on sync A
 
 ### 23.1.13 DisplayContent Internals
 
-`DisplayContent` (7,311 lines) maintains extensive state for its display. Key internal structures beyond those already discussed:
+`DisplayContent` (over 7,700 lines in the Android 17 tree) maintains extensive state for its display. Key internal structures beyond those already discussed:
 
 ```java
 // Display metrics and configuration
@@ -13205,7 +13933,7 @@ The Shell Transitions system (`ENABLE_SHELL_TRANSITIONS = true`) is now the prim
 
 ### 23.3.2 TransitionController (WM Core Side)
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/TransitionController.java` (2,049 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/TransitionController.java` (over 2,200 lines)
 
 `TransitionController` manages the collection and synchronization phases of transitions on the WM Core side. Its Javadoc provides the key architectural insight:
 
@@ -13230,7 +13958,7 @@ class TransitionController {
 
 ### 23.3.3 Transition (WM Core Side)
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/Transition.java` (4,587 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/Transition.java` (nearly 5,000 lines)
 
 Each `Transition` instance represents a single transition from creation through collection, readiness, playing, and completion. The transition types are defined in `WindowManager`:
 
@@ -13666,25 +14394,28 @@ The desktop mode directory contains a substantial number of components (50+ file
 
 ```
 desktopmode/
-├── DesktopTasksController.kt          — Central controller
-├── DesktopTasksLimiter.kt            — Enforces max open task count
-├── WindowDragTransitionHandler.kt     — Drag-to-move transitions
-├── DragToDesktopTransitionHandler.kt  — Drag from dock to desktop
-├── DesktopImeHandler.kt              — IME integration for freeform
-├── DesktopImmersiveController.kt     — Immersive mode in desktop
-├── DesktopDisplayEventHandler.kt     — Display connect/disconnect
-├── DisplayFocusResolver.kt           — Per-display focus for desktop
-├── DesktopPipTransitionController.kt — PiP within desktop mode
-├── DesktopTaskPosition.kt            — Window position management
-├── DesktopWallpaperActivity.kt       — Desktop wallpaper surface
-├── DesktopModeVisualIndicator.java   — Drag visual indicator
-├── multidesks/                        — Multi-desk support
-├── minimize/                          — Task minimization
-├── education/                         — User onboarding
-├── animation/                         — Desktop-specific animations
-├── data/                              — Desktop state persistence
-├── common/                            — Shared utilities
-└── desktopfirst/                      — Desktop-first experience
+├── DesktopTasksController.kt              — Central controller
+├── DesktopTasksLimiter.kt                — Enforces max open task count
+├── WindowDragTransitionHandler.kt         — Drag-to-move transitions
+├── DragToDesktopTransitionHandler.kt      — Drag from dock to desktop
+├── DesktopImeHandler.kt                  — IME integration for freeform
+├── DesktopImmersiveController.kt         — Immersive mode in desktop
+├── DesktopDisplayEventHandler.kt         — Display connect/disconnect
+├── DesktopModeMoveToDisplayTransitionHandler.kt — Move a desk task to another display
+├── DisplayDisconnectTransitionHandler.kt  — Migrate desks off a removed display
+├── DesktopPipTransitionController.kt     — PiP within desktop mode
+├── DesktopTaskPosition.kt                — Window position management
+├── DesktopWallpaperActivity.kt           — Desktop wallpaper surface
+├── DesktopModeVisualIndicator.java       — Drag visual indicator
+├── multidesks/                            — Multi-desk support (DesksController, DesksOrganizer)
+├── homescreenpeeking/                     — Home-screen peek hot corners
+├── desktoptaskshandlers/                  — Desk task transition handlers
+├── minimize/                              — Task minimization
+├── education/                             — User onboarding
+├── animation/                             — Desktop-specific animations
+├── data/                                  — Desktop state persistence
+├── common/                                — Shared utilities
+└── desktopfirst/                          — Desktop-first experience
 ```
 
 Desktop mode introduces transition types specific to windowing operations:
@@ -13773,7 +14504,7 @@ TaskDisplayArea
         └── Task (another leaf task)
 ```
 
-The `Task` class (7,190 lines) extends `TaskFragment`:
+The `Task` class (over 7,500 lines) extends `TaskFragment`:
 
 ```java
 class Task extends TaskFragment { ... }
@@ -14533,7 +15264,7 @@ The `prepareSurfaces()` method, called during the surface placement pass, allows
 
 The animation leash is the key mechanism that enables smooth animations of window containers. The `SurfaceAnimator` class manages this:
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimator.java` (647 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimator.java` (about 640 lines)
 
 From the source Javadoc:
 
@@ -15288,15 +16019,15 @@ Desktop windowing is the most complex Shell feature, providing a full desktop ex
 - **Task limiting** (`DesktopTasksLimiter`) to manage resource usage
 - **Window drag** (`WindowDragTransitionHandler`) for move/resize operations
 - **Desktop wallpaper** (`DesktopWallpaperActivity`) as a background surface
-- **Multi-desk support** (`multidesks/`) for virtual desktop switching
-- **Display focus resolution** (`DisplayFocusResolver`) for multi-display desktop
+- **Multi-desk support** (`multidesks/`, with `DesksController` and `DesksOrganizer`) for virtual desktop switching
+- **Cross-display moves** (`DesktopModeMoveToDisplayTransitionHandler`, `DisplayDisconnectTransitionHandler`) for multi-display desktop
 - **Immersive mode** (`DesktopImmersiveController`) for fullscreen apps in desktop
 - **IME handling** (`DesktopImeHandler`) for keyboard layout in freeform windows
 - **Minimization** (`minimize/`) for task bar integration
 
 The desktop mode directory alone contains 50+ files, reflecting the significant engineering investment in bringing desktop-class windowing to Android.
 
-**Cross-reference:** Detailed desktop mode analysis is in Part 2, section 69.
+**Cross-reference:** Chapter 22 (Activity and Window Management) covers the *WM-core* side of desktop windowing -- how `Task` windowing modes, the desktop task lifecycle, and `DesktopExperienceFlags` gating drive policy. This chapter covers the *Shell presentation* side: the surfaces, transition handlers, and caption decorations that animate desktop windows. Detailed desktop mode analysis is also in the companion report, Part 2, section 69.
 
 ### 23.10.5 Predictive Back
 
@@ -15519,30 +16250,32 @@ For common topics, use this cross-reference to find the relevant section(s) in t
 
 The following table lists the most important source files for each section of this chapter, with line counts to indicate complexity:
 
+Line counts are approximate as of the Android 17 (`android17-release`) tree.
+
 | File | Lines | Chapter Section |
 |------|-------|-----------------|
-| `WindowManagerService.java` | 10,983 | 16.1 (Architecture) |
-| `WindowContainer.java` | 3,803 | 16.1 (Hierarchy) |
-| `WindowState.java` | 6,191 | 16.1 (Window state) |
-| `DisplayContent.java` | 7,311 | 16.1, 16.5 (Display) |
-| `RootWindowContainer.java` | -- | 16.1 (Hierarchy root) |
-| `Task.java` | 7,190 | 16.1, 16.4 (Tasks) |
-| `ActivityRecord.java` | 9,788 | 16.1 (Activities) |
-| `TaskFragment.java` | -- | 16.1 (Task fragments) |
-| `DisplayArea.java` | -- | 16.8 (Z-order) |
-| `DisplayAreaPolicy.java` | -- | 16.8 (Z-order policy) |
-| `TransitionController.java` | 2,049 | 16.3 (Core transitions) |
-| `Transition.java` | 4,587 | 16.3 (Transition state) |
-| `Transitions.java` (Shell) | -- | 16.3 (Shell animation) |
-| `SurfaceAnimator.java` | 647 | 16.7 (Leash mechanism) |
-| `InsetsStateController.java` | -- | 16.9 (Insets) |
-| `InputMonitor.java` | -- | 16.6 (Input) |
-| `StageCoordinator.java` | -- | 16.4 (Split screen) |
-| `PipTaskOrganizer.java` | -- | 16.4 (PiP) |
-| `DesktopTasksController.kt` | -- | 16.4 (Desktop) |
-| `BackAnimationController.java` | -- | 16.10 (Predictive back) |
-| `WMShellModule.java` | -- | 16.2 (DI) |
-| `WMShellConcurrencyModule.java` | -- | 16.2 (Threading) |
+| `WindowManagerService.java` | ~11,600 | 23.1 (Architecture) |
+| `WindowContainer.java` | ~3,800 | 23.1 (Hierarchy) |
+| `WindowState.java` | ~6,400 | 23.1 (Window state) |
+| `DisplayContent.java` | ~7,700 | 23.1, 23.5 (Display) |
+| `RootWindowContainer.java` | ~3,950 | 23.1 (Hierarchy root) |
+| `Task.java` | ~7,560 | 23.1, 23.4 (Tasks) |
+| `ActivityRecord.java` | ~9,900 | 23.1 (Activities) |
+| `TaskFragment.java` | ~3,550 | 23.1 (Task fragments) |
+| `DisplayArea.java` | ~880 | 23.8 (Z-order) |
+| `DisplayAreaPolicy.java` | -- | 23.8 (Z-order policy) |
+| `TransitionController.java` | ~2,240 | 23.3 (Core transitions) |
+| `Transition.java` | ~4,970 | 23.3 (Transition state) |
+| `Transitions.java` (Shell) | -- | 23.3 (Shell animation) |
+| `SurfaceAnimator.java` | ~640 | 23.7 (Leash mechanism) |
+| `InsetsStateController.java` | ~580 | 23.9 (Insets) |
+| `InputMonitor.java` | -- | 23.6 (Input) |
+| `StageCoordinator.java` | -- | 23.4 (Split screen) |
+| `PipTaskOrganizer.java` | -- | 23.4 (PiP) |
+| `DesktopTasksController.kt` | -- | 23.4 (Desktop) |
+| `BackAnimationController.java` | -- | 23.10 (Predictive back) |
+| `WMShellModule.java` | -- | 23.2 (DI) |
+| `WMShellConcurrencyModule.java` | -- | 23.2 (Threading) |
 
 ### 23.11.4 Debugging the Window System
 
@@ -15633,6 +16366,91 @@ For quick reference, the core architectural patterns:
 
 ---
 
+## 23.12 Android 17 Window System Changes
+
+Android 17 does not restructure the window system, but it does land focused changes on the parts this chapter owns: insets delivery, connected-display presentation, and caption-bar handling. The desktop *windowing-mode policy and lifecycle* live in WM core and are covered in Chapter 22; the changes below are the window, surface, insets, and display-side pieces. Each flag here is a real entry in the Android 17 (`android17-release`) tree, so a reader can grep the same name in source.
+
+### 23.12.1 Insets Delivery and Rotation
+
+Two `windowing_frontend` flags refine how insets reach clients.
+
+**Source file:** `frameworks/base/core/java/android/window/flags/windowing_frontend.aconfig`
+
+- `send_new_insets_state_with_rotation` -- *"Send the new InsetsState to the shell when the display rotates."* Before this, the insets snapshot and the rotation could be delivered out of step, so a client could briefly lay out against pre-rotation insets. The display-update path now bundles the fresh `InsetsState` with the rotation event. The flag is read in `DisplayUpdater.java`, `DeferredDisplayUpdater.java`, and `DisplayRotation.java` (all under `frameworks/base/services/core/java/com/android/server/wm/`) via `com.android.window.flags.Flags.sendNewInsetsStateWithRotation()`.
+
+- `synced_insets_animation` -- *"Synchronize the applied insets to a view with the ongoing system insets animation."* This is a client-side change consumed in `frameworks/base/core/java/android/view/InsetsController.java` and `frameworks/base/core/java/android/view/ViewRootImpl.java`. It keeps the insets a view sees in step with the in-flight system-bar/IME animation, so content does not jump a frame ahead of (or behind) the bar it is reacting to. This refines the insets contract described in section 23.9 rather than replacing it: the server still grants an `InsetsSourceControl` with a leash, and the client still animates it; the flag just tightens the timing of when the *applied* insets value updates.
+
+Insets delivery on rotation (Android 17):
+
+```mermaid
+sequenceDiagram
+    participant DR as DisplayRotation
+    participant DU as DisplayUpdater
+    participant ISC as InsetsStateController
+    participant Client as ViewRootImpl / InsetsController
+
+    DR->>DU: rotation computed
+    Note over DU: sendNewInsetsStateWithRotation()<br/>bundles fresh InsetsState
+    DU->>ISC: snapshot InsetsState for new rotation
+    ISC->>Client: rotation + matching InsetsState together
+    Note over Client: syncedInsetsAnimation()<br/>keeps applied insets in step<br/>with ongoing bar/IME animation
+```
+
+### 23.12.2 Connected-Display Presentation
+
+The connected-display work (external monitors, large screens) adds display-side gates in the `lse_desktop_experience` namespace.
+
+**Source file:** `frameworks/base/core/java/android/window/flags/lse_desktop_experience.aconfig`
+
+- `mask_presentation_flags_on_internal_displays` -- *"Mask Display.FLAG_PRESENTATION for certain apps on internal displays."* Some apps treat any `FLAG_PRESENTATION` display as a secondary external screen; on a connected-display device the internal panel should not look like a presentation target to those apps, so the flag masks the flag for them.
+- `enable_connected_displays_wallpaper_presentations` -- extends wallpaper presentation to connected external displays.
+- `disable_display_force_freeform_on_pc` -- *"Prevents a display from being forced to freeform solely due to it being on PC."* A display attached to a PC form factor is no longer unconditionally pushed into freeform windowing; the windowing mode is decided by policy instead.
+- `enable_presentation_stops_top_task_bugfix` -- corrects top-task handling when a presentation is shown on a display.
+
+The display content-mode machinery itself is gated by `DesktopExperienceFlags.ENABLE_DISPLAY_CONTENT_MODE_MANAGEMENT`, read in `DisplayContent.java` (e.g. around the content-mode update paths). `DesktopExperienceFlags` (`frameworks/base/core/java/android/window/DesktopExperienceFlags.java`) is the Android 17 gating mechanism that wraps these window flags with a developer-options override, so the whole connected-display feature can be toggled coherently for testing.
+
+On the Shell side, two transition handlers in `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/desktopmode/` own the surface choreography when displays come and go:
+
+- `DesktopModeMoveToDisplayTransitionHandler.kt` -- animates moving a desk task to another display.
+- `DisplayDisconnectTransitionHandler.kt` -- *"animate the transition from disconnecting a display,"* migrating its content off the removed display (its own source TODO notes it may move out of the desktop package as it generalizes).
+
+These complement, rather than replace, the per-`DisplayContent` reparenting model from section 23.5: WM core still reparents `Task` containers across `DisplayContent` instances, and these handlers provide the Shell-side animation for that reparent.
+
+### 23.12.3 Caption-Bar Insets Refactor
+
+Caption bars (the title bars on freeform/desktop windows from section 23.10.9) gained finer insets control in Android 17.
+
+- `FLAG_FORCE_CONSUMING_OPAQUE_CAPTION_BAR` (`frameworks/base/core/java/android/view/InsetsSource.java`) is a caption-specific sibling of `FLAG_FORCE_CONSUMING` (section 23.9.9). When set, the `captionBar()` insets are consumed *even when the caption bar is requested visible* -- unless the window opts into `APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND`. This lets the system keep app content out from under an opaque caption while still allowing apps that draw their own transparent caption background to take the space.
+- `refactor_caption_sandboxing_to_core` (`lse_desktop_experience`) -- *"Refactor sandboxing of caption insets from app bounds from shell to core."* The logic that excludes caption insets from an app's reported bounds is moving from Shell into WM core, consolidating where the app-bounds sandboxing decision is made.
+- `exclude_caption_insets_opt_out_api` (exported) -- *"Allow app developers to opt out from OVERRIDE_EXCLUDE_CAPTION_INSETS_FROM_APP_BOUNDS,"* giving apps a public API to opt out of the caption-insets exclusion behavior.
+
+Together these tighten the section 23.9 insets model for the desktop/caption case: caption insets become a first-class, core-owned insets source with an explicit consume policy and an app opt-out, rather than a Shell-only adjustment to app bounds.
+
+### 23.12.4 Flexible Split
+
+The two-pane split from section 23.4.2 is generalizing toward flexible layouts in Android 17, gated by Shell flags in `frameworks/base/libs/WindowManager/Shell/aconfig/multitasking.aconfig`:
+
+- `enable_flexible_split` -- read across `StageCoordinator.java` and `DesktopTasksController.kt` as `com.android.wm.shell.Flags.enableFlexibleSplit()`.
+- `enable_flexible_two_app_split` -- read in `SplitStatusBarHider.kt` and related split components as `enableFlexibleTwoAppSplit()`, covering the two-app flexible split layout (including 10:90 / 90:10 ratios) and the matching status-bar handling.
+
+The new `LayoutEngine.kt` (`.../splitscreen/LayoutEngine.kt`) computes flexible-split bounds from a node tree (`calculateFlexibleSplit()`), which is the layout substrate for moving beyond a single fixed divider. This is an evolution of the `StageCoordinator` / `SplitLayout` model in section 23.4.2, not a replacement: the stage and listener structure is unchanged.
+
+---
+
+## Try It
+
+Use a device or emulator running Android 17 (`android17-release`) to observe the structures this chapter describes. The window system exposes most of its state through `dumpsys window`.
+
+1. **Walk the WindowContainer tree.** Run `adb shell dumpsys window containers` and trace the hierarchy from `RootWindowContainer` down through `DisplayContent`, the `DisplayArea` nodes, `TaskDisplayArea`, `Task`, `ActivityRecord`, and `WindowState` (section 23.1.4). Confirm system windows (status bar, nav bar, IME) sit in their own `DisplayArea.Tokens` nodes separate from the app `TaskDisplayArea`.
+
+2. **Inspect per-display insets.** With an app open, run `adb shell dumpsys window displays` and find the `InsetsState` / `InsetsSourceProvider` block (section 23.9). Show or hide the IME and re-dump to see the `ime()` source appear and disappear, and the focused window's `InsetsControlTarget` change.
+
+3. **Watch a transition.** Run `adb shell dumpsys window transitions`, then launch and close an app while re-dumping. Observe a `Transition` move through collecting/ready/playing, and note the track assignment (section 23.3.9). Capturing a Winscope trace during the launch lets you replay the leash animation (section 23.7.2) frame by frame.
+
+4. **Exercise the Android 17 paths.** If the device supports connected displays or desktop windowing, enable the desktop-experience developer toggle (backed by `DesktopExperienceFlags`, section 23.12.2) and attach an external display. Move a window between displays and watch `dumpsys window displays` show the `Task` reparent to the second `DisplayContent`. Rotate the device with an app that reacts to insets to see the bundled rotation + `InsetsState` delivery (section 23.12.1).
+
+5. **Map a window type to its layer.** Pick a window from `dumpsys window windows`, note its type and the `DisplayArea` it landed in, and reconcile that against the type-to-`DisplayArea` routing in sections 23.8.5 and 23.8.10.
+
 ## Summary
 
 ### Architecture Recap
@@ -15672,7 +16490,7 @@ The window system is one of the largest subsystems in AOSP:
 | Window API (`view/`) | 50,000+ | 50+ |
 | Total | 400,000+ | 700+ |
 
-The five largest individual source files -- `WindowManagerService.java` (10,983 lines), `ActivityRecord.java` (9,788 lines), `DisplayContent.java` (7,311 lines), `Task.java` (7,190 lines), and `WindowState.java` (6,191 lines) -- together exceed 41,000 lines of Java code, reflecting the deep complexity of window management.
+The five largest individual source files in the Android 17 tree -- `WindowManagerService.java` (~11,600 lines), `ActivityRecord.java` (~9,900 lines), `DisplayContent.java` (~7,700 lines), `Task.java` (~7,560 lines), and `WindowState.java` (~6,400 lines) -- together exceed 43,000 lines of Java code, reflecting the deep complexity of window management.
 
 ### Evolution Direction
 
@@ -15684,7 +16502,7 @@ The window system is evolving in several clear directions:
 
 3. **Parallel transitions**: The track-based parallel transition system continues to evolve with flags like `ENABLE_PARALLEL_CD_TRANSITIONS_DURING_RECENTS` for more concurrent animation support.
 
-4. **Multi-display maturity**: Features like `ENABLE_PRESENTATION_FOR_CONNECTED_DISPLAYS`, `ENABLE_DISPLAY_CONTENT_MODE_MANAGEMENT`, and the `DisplayFocusResolver` indicate deepening multi-display support beyond mirroring toward true multi-display computing.
+4. **Multi-display maturity**: Android 17 flags like `enable_connected_displays_wallpaper_presentations` and `mask_presentation_flags_on_internal_displays`, the `DesktopExperienceFlags.ENABLE_DISPLAY_CONTENT_MODE_MANAGEMENT` gate, and the cross-display desk handlers (`DesktopModeMoveToDisplayTransitionHandler`, `DisplayDisconnectTransitionHandler`) indicate deepening multi-display support beyond mirroring toward true multi-display computing (see section 23.12).
 
 5. **Flexible split**: The `enableFlexibleSplit` and `enableFlexibleTwoAppSplit` flags suggest movement toward more dynamic multi-window layouts beyond the traditional two-pane split.
 
@@ -15781,8 +16599,8 @@ ioctls that trigger scanout of composed framebuffers.
 ### 24.1.2 DisplayManagerService
 
 `DisplayManagerService` (DMS) is a `SystemService` registered during
-`system_server` boot. At 6601 lines, it is one of the largest services in
-the framework. Its Javadoc explains the architecture:
+`system_server` boot. At over 7,300 lines in Android 17, it is one of the
+largest services in the framework. Its Javadoc explains the architecture:
 
 > The DisplayManagerService manages the global lifecycle of displays,
 > decides how to configure logical displays based on the physical display
@@ -16039,40 +16857,57 @@ before notifying PowerManager; for ON transitions, PowerManager is notified
 first. This prevents race conditions where the system thinks the display
 is on while it is still powering down.
 
-### 24.1.9 Display Mode Director
+### 24.1.9 Display Mode Director and the Vote System
 
-`DisplayModeDirector` sits between `DisplayManagerService` and
-`RefreshRateSelector`, translating high-level mode requests from various
-sources (app, settings, performance hints) into `DesiredDisplayModeSpecs`:
+`DisplayModeDirector` (in the `display/mode/` package) is the framework-side
+policy engine that translates high-level mode requests from many sources (app
+`setFrameRate` calls, the user's peak-refresh-rate setting, performance hints,
+proximity, skin temperature) into the `DesiredDisplayModeSpecs` that DMS hands
+to SurfaceFlinger. It is built on a *vote* abstraction: every input registers a
+`Vote` at a fixed priority in `VotesStorage`, and `VoteSummary` collapses the
+votes for a display into a single resolved set of size and refresh-rate
+constraints.
 
 ```mermaid
 graph TD
     subgraph "Vote Sources"
-        APP["App Request<br/>(setFrameRate)"]
-        SET["Settings<br/>(peak refresh rate)"]
-        PERF["Performance Hint<br/>(game mode)"]
-        LOW["Low Power Mode"]
-        PROX["Proximity"]
-        SKIN["Skin Temperature"]
+        APP["App Request<br/>(RequestedRefreshRateVote)"]
+        SET["Settings<br/>(SupportedRefreshRatesVote)"]
+        PERF["Performance Hint<br/>(SystemRequestObserver)"]
+        LOW["Low Power Mode<br/>(RefreshRateVote)"]
+        PROX["Proximity<br/>(ProximitySensorObserver)"]
+        SKIN["Skin Temperature<br/>(SkinThermalStatusObserver)"]
+        HDR["HDR Preference<br/>(HdrPreferenceVote)"]
     end
 
     subgraph "DisplayModeDirector"
-        DIR["Vote Aggregation"]
+        VS["VotesStorage<br/>(priority-keyed Votes)"]
+        SUM["VoteSummary<br/>(resolve conflicts)"]
         SPEC["DesiredDisplayModeSpecs"]
     end
 
-    APP --> DIR
-    SET --> DIR
-    PERF --> DIR
-    LOW --> DIR
-    PROX --> DIR
-    SKIN --> DIR
-    DIR --> SPEC
+    APP --> VS
+    SET --> VS
+    PERF --> VS
+    LOW --> VS
+    PROX --> VS
+    SKIN --> VS
+    HDR --> VS
+    VS --> SUM
+    SUM --> SPEC
     SPEC --> DMS_OUT["DisplayManagerService<br/>(applies to LogicalDisplay)"]
 ```
 
-Each vote source has a priority, and the director resolves conflicts by
-prioritising system constraints (thermal, low power) over app requests.
+Each `Vote` is keyed by a numeric priority, and `VoteSummary` resolves
+conflicts by letting higher-priority system constraints (thermal, low power)
+narrow or veto the ranges requested by lower-priority sources such as apps.
+The concrete vote classes (`SizeVote`, `RefreshRateVote`,
+`SupportedRefreshRatesVote`, `RequestedRefreshRateVote`, `WorkDurationsVote`,
+`HdrPreferenceVote`, and others) all live alongside `DisplayModeDirector` in
+`frameworks/base/services/core/java/com/android/server/display/mode/`. Note that
+the SurfaceFlinger-side selector that picks the final hardware mode from this
+spec is a separate C++ class, `RefreshRateSelector` (Section 24.3.6); the
+framework never references it directly.
 
 ### 24.1.10 Handler Message Protocol
 
@@ -16090,6 +16925,11 @@ DMS uses a handler-based message protocol for asynchronous operations:
 | Display group event | `MSG_DELIVER_DISPLAY_GROUP_EVENT` (8) | Notify of group additions/removals |
 | Device state received | `MSG_RECEIVED_DEVICE_STATE` (9) | Process foldable state change |
 | Dispatch pending events | `MSG_DISPATCH_PENDING_PROCESS_EVENTS` (10) | Batch event delivery |
+| Deliver display snapshot | `MSG_DELIVER_DISPLAY_SNAPSHOT` (11) | Send a snapshot of all displays to a newly registered callback |
+
+The `MSG_DELIVER_DISPLAY_SNAPSHOT` message (added so a freshly registered
+listener receives the complete current display set in one batch) is defined at
+`frameworks/base/services/core/java/com/android/server/display/DisplayManagerService.java:314`.
 
 The `MSG_REQUEST_TRAVERSAL` message is particularly important: when
 display configuration changes, DMS must schedule a traversal in
@@ -16771,7 +17611,7 @@ a high refresh rate. The `SmallAreaDetectionController` in
 
 ### 24.4.1 DisplayRotation: The Policy Engine
 
-`DisplayRotation` (2255 lines) owns the mapping between the requested
+`DisplayRotation` (around 2,275 lines) owns the mapping between the requested
 orientation (from the topmost Activity) and the actual physical rotation
 of the display. It resides in `WindowManagerService` and is instantiated
 per-`DisplayContent`:
@@ -16984,7 +17824,11 @@ public final class DeviceStateManagerService extends SystemService {
 }
 ```
 
-The service defines device states using properties:
+Each device state is described by a `DeviceState` whose behaviour is encoded as
+a set of integer *property* constants. These constants are defined in the public
+API class `android.hardware.devicestate.DeviceState`
+(`frameworks/base/core/java/android/hardware/devicestate/DeviceState.java`), not
+in the service itself:
 
 | Property | Description |
 |----------|-------------|
@@ -17005,7 +17849,11 @@ The `DeviceStateProvider` interface supplies the physical device state.
 from the hinge angle sensor and hall effect sensor to determine the fold
 posture. The provider reports state changes to `DeviceStateManagerService`,
 which then consults the `DeviceStatePolicy` to determine the appropriate
-system response.
+system response. The foldable provider and policy ship in the dedicated
+`frameworks/base/services/foldables/devicestateprovider/` module
+(`FoldableDeviceStateProvider.java`, `BookStyleDeviceStatePolicy.java`), while
+the `DeviceStatePolicy` interface lives in
+`frameworks/base/services/core/java/com/android/server/devicestate/`.
 
 ```mermaid
 graph TD
@@ -17073,12 +17921,26 @@ sequenceDiagram
     DMS3->>DMS3: Notify WindowManager of display change
 ```
 
-The mapper emits specific events for different scenarios:
+The mapper emits specific events for different scenarios. The full set of
+event bits is defined in
+`frameworks/base/services/core/java/com/android/server/display/LogicalDisplayMapper.java`;
+the ones relevant to display swapping are:
 
 ```java
 public static final int LOGICAL_DISPLAY_EVENT_SWAPPED = 1 << 3;
 public static final int LOGICAL_DISPLAY_EVENT_DEVICE_STATE_TRANSITION = 1 << 5;
 ```
+
+Alongside these, Android 17 carries dedicated bits for connected (external)
+displays and for the device-state lifecycle:
+`LOGICAL_DISPLAY_EVENT_CONNECTED` (`1 << 7`),
+`LOGICAL_DISPLAY_EVENT_DISCONNECTED` (`1 << 8`),
+`LOGICAL_DISPLAY_EVENT_REFRESH_RATE_CHANGED` (`1 << 9`),
+`LOGICAL_DISPLAY_EVENT_STATE_CHANGED` (`1 << 10`), and
+`LOGICAL_DISPLAY_EVENT_COMMITTED_STATE_CHANGED` (`1 << 11`). The connect and
+disconnect events are distinct from add and remove: a display can be physically
+connected (and reported to apps that opted in) before the system decides to
+enable a `LogicalDisplay` for it.
 
 ### 24.5.4 BookStyleDeviceStatePolicy
 
@@ -17101,7 +17963,12 @@ For book-style foldables (where the fold axis is vertical, like a book),
 
 Modern foldables can run both displays simultaneously. The
 `DisplayTopologyCoordinator` manages the spatial relationship between
-displays, and `DisplayTopologyStore` persists the topology configuration.
+displays, and the `DisplayTopologyStore` interface persists the topology
+configuration. In Android 17 its concrete implementation is
+`DisplayTopologyXmlStore`
+(`frameworks/base/services/core/java/com/android/server/display/DisplayTopologyXmlStore.java`),
+which writes a per-user `display_topology.xml` under the credential-encrypted
+system directory (Section 24.12 covers the multi-display topology API in full).
 When concurrent displays are active, the system:
 
 - Assigns separate `DisplayGroup` instances if the displays serve
@@ -17261,10 +18128,11 @@ for `NEVER`, the window is inset by the cutout safe insets.
 
 ### 24.6.4 WmDisplayCutout
 
-`WmDisplayCutout` is the window-manager-internal wrapper that adds rotation
-awareness to `DisplayCutout`. When the display rotates, the cutout bounds
-must be rotated accordingly. `WmDisplayCutout` caches rotated variants to
-avoid recomputation:
+`WmDisplayCutout`
+(`frameworks/base/services/core/java/com/android/server/wm/utils/WmDisplayCutout.java`)
+is the window-manager-internal wrapper that adds rotation awareness to
+`DisplayCutout`. When the display rotates, the cutout bounds must be rotated
+accordingly. `WmDisplayCutout` caches rotated variants to avoid recomputation:
 
 ```mermaid
 graph LR
@@ -17581,7 +18449,13 @@ classDiagram
 The `Changes` flags are critical for the snapshot builder's incremental
 update path. When only `Buffer` has changed (no geometry, hierarchy, or
 visibility changes), the fast path can update just the buffer reference
-in existing snapshots without re-walking the hierarchy tree.
+in existing snapshots without re-walking the hierarchy tree. The flags shown
+above are illustrative, not exhaustive: the full `enum class Changes` in
+`frameworks/native/services/surfaceflinger/FrontEnd/RequestedLayerState.h`
+also covers `Input`, `Z`, `Mirror`, `Parent`, `RelativeParent`, `Metadata`,
+`SidebandStream`, `Animation`, `BufferSize`, `GameMode`, and, new in the
+Android 17 cycle, `PostProcess` (used by the per-layer LUT and picture-profile
+work described in Section 24.13).
 
 ### 24.7.7 LayerHierarchy: Parent-Child Tree
 
@@ -17606,8 +18480,10 @@ The hierarchy handles:
   (used for PopupWindows, tooltips)
 - **Mirror layers**: Layers that reference another layer's subtree for
   display mirroring
-- **Cycle detection**: The hierarchy builder detects and breaks relative-Z
-  loops via `fixRelativeZLoop()`
+- **Cycle detection**: while building the hierarchy, a detected relative-Z
+  loop is broken by calling `LayerLifecycleManager::fixRelativeZLoop()` (the
+  method lives on `LayerLifecycleManager` and is invoked from
+  `LayerHierarchy.cpp`)
 
 ### 24.7.8 LayerSnapshot Properties
 
@@ -17771,7 +18647,8 @@ The `BLASTBufferQueue` class manages several maps:
 // frameworks/native/libs/gui/include/gui/BLASTBufferQueue.h
 class BLASTBufferQueue : public ConsumerBase::FrameAvailableListener {
     sp<IGraphicBufferProducer> mProducer;
-    sp<BLASTBufferItemConsumer> mConsumer;
+    sp<IGraphicBufferConsumer> mConsumer;
+    sp<BLASTBufferItemConsumer> mBufferItemConsumer;
     // Submitted buffers awaiting release
     // Size hint: kSubmittedBuffersMapSizeHint = 8
     ftl::SmallMap<...> mSubmitted;
@@ -17780,6 +18657,10 @@ class BLASTBufferQueue : public ConsumerBase::FrameAvailableListener {
     ftl::SmallMap<...> mDequeueTimestamps;
 };
 ```
+
+The actual `BLASTBufferItemConsumer` instance is held in `mBufferItemConsumer`;
+`mConsumer` is the plain `IGraphicBufferConsumer` side of the underlying
+BufferQueue.
 
 The `syncNextTransaction()` method allows callers to intercept the next
 transaction before it is applied, enabling operations like
@@ -18010,8 +18891,10 @@ graph TD
     ML2 --> LS2
 ```
 
-The `LayerLifecycleManager.updateDisplayMirrorLayers()` method manages
-mirror layer references when layer hierarchy changes occur.
+`LayerLifecycleManager` manages mirror layer references when layer hierarchy
+changes occur. Its public entry point is `updateDisplayMirrors()`, which
+delegates to the private `updateDisplayMirrorLayers()` helper
+(`frameworks/native/services/surfaceflinger/FrontEnd/LayerLifecycleManager.h`).
 
 ### 24.9.5 MediaProjection Integration
 
@@ -18131,13 +19014,20 @@ priority-ordered pipeline of `TintController` instances:
 // frameworks/base/services/core/java/com/android/server/display/color/
 //     ColorDisplayService.java
 public final class ColorDisplayService extends SystemService {
-    // Color modes
-    static final int COLOR_MODE_NATURAL = 0;
-    static final int COLOR_MODE_BOOSTED = 1;
-    static final int COLOR_MODE_SATURATED = 2;
-    static final int COLOR_MODE_AUTOMATIC = 3;
     // ...
 }
+```
+
+The colour-mode constants themselves are declared on the public-facing
+`android.hardware.display.ColorDisplayManager`
+(`frameworks/base/core/java/android/hardware/display/ColorDisplayManager.java`)
+and imported by the service:
+
+```java
+public static final int COLOR_MODE_NATURAL = 0;
+public static final int COLOR_MODE_BOOSTED = 1;
+public static final int COLOR_MODE_SATURATED = 2;
+public static final int COLOR_MODE_AUTOMATIC = 3;
 ```
 
 ### 24.10.2 TintController Hierarchy
@@ -18324,19 +19214,24 @@ is applied in SurfaceFlinger's shader as a separate transform.
 
 "Even Dimmer" is an accessibility feature (formerly "Extra Dim") that
 reduces display brightness below the minimum hardware brightness by
-applying a dimming colour matrix. The
-`ReduceBrightColorsTintController` generates a matrix that scales all
-colour channels:
+applying a dimming colour matrix. `ReduceBrightColorsTintController`
+generates a matrix that scales all colour channels, while
+`ColorDisplayService` caps the reduction:
 
 ```java
-// Maximum reduction allowed
+// frameworks/base/services/core/java/com/android/server/display/color/
+//     ColorDisplayService.java
 private static final int EVEN_DIMMER_MAX_PERCENT_ALLOWED = 100;
 ```
 
 The percentage is set through `Settings.Secure.REDUCE_BRIGHT_COLORS_LEVEL`
 and converted to a matrix with diagonal values less than 1.0. This works
 in conjunction with (not instead of) the hardware brightness control,
-allowing the display to appear dimmer than the backlight minimum.
+allowing the display to appear dimmer than the backlight minimum. In Android
+17 the feature has graduated: the `even_dimmer` aconfig flag was removed and
+the implementation (driven by `DisplayDeviceConfig.isEvenDimmerAvailable()`
+and the even-dimmer nit-to-strength mapping in `LocalDisplayAdapter`) is no
+longer flag-gated.
 
 ### 24.10.11 Color Mode Selection
 
@@ -18359,10 +19254,10 @@ is communicated to SurfaceFlinger via the `SURFACE_FLINGER_TRANSACTION_DISPLAY_C
 
 ### 24.11.1 DisplayPowerController: The State Machine
 
-`DisplayPowerController` (3507 lines) manages the power state of a single
-display. It runs on its own handler and communicates asynchronously with
-both `PowerManagerService` (via `DisplayPowerCallbacks`) and the display
-hardware.
+`DisplayPowerController` (roughly 3,280 lines in Android 17) manages the power
+state of a single display. It runs on its own handler and communicates
+asynchronously with both `PowerManagerService` (via `DisplayPowerCallbacks`)
+and the display hardware.
 
 ```java
 // frameworks/base/services/core/java/com/android/server/display/
@@ -18457,12 +19352,27 @@ to determine the target brightness. It supports multiple modes:
 | Doze | `AUTO_BRIGHTNESS_MODE_DOZE` | AOD brightness curve |
 | Bedtime Wear | `AUTO_BRIGHTNESS_MODE_BEDTIME_WEAR` | Wear OS bedtime mode |
 
-**BrightnessClamperController** enforces brightness limits from:
+**BrightnessClamperController**
+(`frameworks/base/services/core/java/com/android/server/display/brightness/clamper/BrightnessClamperController.java`)
+enforces brightness limits through a set of `BrightnessModifier` implementations
+in the same package, each contributing a cap or floor:
 
-- Thermal throttling (reduce brightness when device is hot)
-- High Brightness Mode (HBM) restrictions
-- Power saving mode constraints
-- Even Dimmer accessibility feature
+- Thermal throttling (`BrightnessThermalModifier`) reduces brightness when the
+  device is hot
+- Power constraints (`BrightnessPowerModifier`) and low-power mode
+  (`BrightnessLowPowerModeModifier`)
+- HDR brightness boost (`HdrBrightnessModifier`)
+- Low/high ambient-lux limits (`BrightnessLowLuxModifier`,
+  `BrightnessMaxLuxModifier`) and Wear bedtime mode
+  (`BrightnessWearBedtimeModeModifier`)
+
+Android 17 adds a dedicated `MODIFIER_SUNLIGHT` brightness reason
+(`BrightnessReason.MODIFIER_SUNLIGHT = 0x40` in
+`frameworks/base/services/core/java/com/android/server/display/brightness/BrightnessReason.java`)
+so that brightness applied to fight direct sunlight is tracked distinctly from
+ordinary auto-brightness. The 17 cycle also folds the former
+`NormalBrightnessModeController` into this clamper framework (gated by the
+`refactor_normal_brightness_mode_controller` flag).
 
 ### 24.11.4 Always-On Display (AOD)
 
@@ -18591,10 +19501,14 @@ enforce time-in-state limits that protect the display hardware.
 
 ### 24.11.10 Brightness Nit Ranges
 
-`DisplayPowerController` supports a detailed nit-based brightness range
-for telemetry, with 37 buckets from 0-1 nits through 2750-3000 nits:
+The display pipeline records a detailed nit-based brightness range for
+telemetry, with 37 buckets from 0-1 nits through 2750-3000 nits. In Android 17
+this lives in the extracted `DisplayBrightnessReporter`, not directly in
+`DisplayPowerController`:
 
 ```java
+// frameworks/base/services/core/java/com/android/server/display/brightness/
+//     DisplayBrightnessReporter.java
 private static final float[] BRIGHTNESS_RANGE_BOUNDARIES = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 30, 40, 50, 60, 70, 80,
     90, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1200,
@@ -18638,58 +19552,310 @@ trace marker.
 
 ---
 
-## Summary
+## 24.12 Connected Displays and the Display Topology API
 
-The Android display system is a deep vertical stack that begins with
-hardware VSYNC interrupts and extends through native C++ composition,
-Java framework services, and application-level APIs. The key architectural
-decisions that define this system are:
+Android's external-display story matured substantially in Android 17. Where
+earlier releases mostly mirrored the built-in panel to an HDMI or USB-C sink,
+17 introduces a first-class *display topology* the system persists and exposes
+to apps, plus content-mode management that lets a connected display extend the
+workspace rather than only mirror it.
 
-1. **Logical/Physical separation**: `LogicalDisplay` decouples the
-   system-visible display from the underlying hardware, enabling foldable
-   display swapping, virtual displays, and future multi-panel configurations.
+### 24.12.1 The Topology Data Model
 
-2. **DisplayArea tree**: The `DisplayAreaPolicyBuilder` creates a flexible
-   container hierarchy that enforces Z-ordering while allowing features
-   (magnification, one-handed mode, cutout hiding) to target specific
-   window-type ranges.
+A topology describes the spatial arrangement of every active display as a tree.
+`DisplayTopology`
+(`frameworks/base/core/java/android/hardware/display/DisplayTopology.java`)
+stores each display as a `TreeNode` attached to its parent on one of four sides:
 
-3. **VSYNC-driven pipeline**: Every frame starts with a predicted VSYNC
-   from `VSyncPredictor`, flows through `VSyncDispatchTimerQueue` to
-   `EventThread`, crosses into Java-land via `Choreographer`, and
-   culminates in `CompositionEngine::present()`.
+```java
+// frameworks/base/core/java/android/hardware/display/DisplayTopology.java
+public static final int POSITION_LEFT = 0;
+public static final int POSITION_TOP = 1;
+public static final int POSITION_RIGHT = 2;
+public static final int POSITION_BOTTOM = 3;
+```
 
-4. **Transaction-based buffer delivery**: `BLASTBufferQueue` bundles buffer
-   submission with geometry changes in atomic `SurfaceControl.Transaction`
-   operations, eliminating the class of bugs that arose from
-   buffer-geometry desynchronisation.
+Each node carries a logical size, density, the attachment side relative to its
+parent, and a floating-point offset (in density-independent pixels) along the
+shared edge. `DisplayTopology` provides `addDisplay()`, `removeDisplay()`,
+`rearrange()`, and a `normalize()` step that clamps offsets and removes
+overlaps so adjacent displays stay edge-connected. A flattened
+`DisplayTopologyGraph`
+(`frameworks/base/core/java/android/hardware/display/DisplayTopologyGraph.java`)
+adjacency view is what the input system consumes to move the pointer across the
+seam between displays.
 
-5. **Front-end/back-end split**: SurfaceFlinger's refactored architecture
-   separates layer state management (`LayerLifecycleManager`,
-   `LayerSnapshotBuilder`) from composition (`CompositionEngine`,
-   `HWComposer`), enabling better testing, incremental updates, and
-   reduced lock contention.
+### 24.12.2 The Public DisplayManager API
 
-6. **Priority-ordered colour transforms**: `DisplayTransformManager`
-   composes multiple 4x4 colour matrices (night display, white balance,
-   saturation, accessibility) in a defined priority order, producing a
-   single combined transform for SurfaceFlinger.
+Apps and system UI read and adjust the arrangement through new
+`DisplayManager` methods, all guarded by the `display_topology_api` flag:
 
-7. **State-driven foldable support**: `DeviceStateManagerService` provides
-   a clean state-machine abstraction for foldable postures, with
-   `LogicalDisplayMapper` handling the complex display swapping that makes
-   fold/unfold transitions appear seamless to applications.
+```java
+// frameworks/base/core/java/android/hardware/display/DisplayManager.java
+@FlaggedApi(Flags.FLAG_DISPLAY_TOPOLOGY_API)
+public DisplayTopology getDisplayTopology();
+public void setDisplayTopology(DisplayTopology topology);
+public void registerTopologyListener(Executor executor,
+        Consumer<DisplayTopology> listener);
+public void unregisterTopologyListener(Consumer<DisplayTopology> listener);
+```
 
-These subsystems interact constantly during normal device operation.
-A single frame touches the VSYNC predictor, Choreographer, ViewRootImpl,
-BLASTBufferQueue, the SurfaceFlinger front-end, CompositionEngine,
-HWComposer, and the kernel DRM driver -- a pipeline that completes in
-under 16 milliseconds at 60 Hz, or under 8 milliseconds at 120 Hz.
+The `display_topology_api` flag is declared `is_fixed_read_only` in
+`frameworks/base/services/core/java/com/android/server/display/feature/display_flags.aconfig`,
+so on a given build the API is either compiled in or compiled out.
 
-### End-to-End Frame Lifecycle
+### 24.12.3 Coordinator and Per-User Persistence
 
-To illustrate how these subsystems interact, consider the lifecycle of a
-single frame from touch to photon:
+```mermaid
+graph TD
+    APP["App / System UI"] -->|"get/set/listen"| DM["DisplayManager"]
+    DM --> DMS12["DisplayManagerService"]
+    DMS12 --> COORD["DisplayTopologyCoordinator"]
+    COORD -->|"onDisplayAdded/Changed/Removed"| TOPO["DisplayTopology<br/>(in-memory tree)"]
+    COORD -->|"save/restore"| STORE["DisplayTopologyStore<br/>(interface)"]
+    STORE --> XML["DisplayTopologyXmlStore<br/>(per-user XML)"]
+    XML --> FILE["data/system_ce/&lt;userId&gt;/<br/>display_topology.xml"]
+    COORD -->|"DisplayTopologyGraph"| INPUT["Input (cross-display pointer)"]
+```
+
+`DisplayTopologyCoordinator`
+(`frameworks/base/services/core/java/com/android/server/display/DisplayTopologyCoordinator.java`)
+maintains the live topology and reacts to display add, change, and remove
+events. Persistence is abstracted behind the `DisplayTopologyStore` interface,
+whose Android 17 implementation is `DisplayTopologyXmlStore`. The XML store
+writes a per-user `display_topology.xml` under the credential-encrypted system
+directory (`Environment.getDataSystemCeDirectory(userId)`), keeps an ordered
+most-recently-used list of remembered topologies, and batches writes using a
+reorder threshold (`MIN_REORDER_WHICH_TRIGGERS_PERSISTENCE = 10`) so that minor
+re-orderings do not thrash the disk. It also reads immutable vendor and product
+topology files shipped under the device's etc display-config directory.
+
+### 24.12.4 Content Mode: Mirror versus Extend
+
+The other half of the connected-display work is *content-mode management*,
+gated by the `enable_display_content_mode_management` flag (namespace
+`lse_desktop_experience`). When enabled, a connected display may run in either
+mirror or extended mode, and the default for a capable external display becomes
+extended. A display advertises its ability to switch via
+`DisplayDeviceInfo.FLAG_ALLOWS_CONTENT_MODE_SWITCH`
+(`1 << 20`), and `LogicalDisplay.canHostTasksLocked()` uses that flag to decide
+whether the display can host its own task stack rather than just reflecting the
+default display. The user preference is stored in
+`Settings.Secure.MIRROR_BUILT_IN_DISPLAY` (1 = mirror, 0 = extend), and
+`DisplayGroupAllocator` chooses each display's content mode and group.
+
+Two policy classes split the work. `SecondaryDisplayPolicy`
+(`frameworks/base/services/core/java/com/android/server/display/SecondaryDisplayPolicy.java`)
+governs how a newly connected display is treated, including downgrading a
+desktop-mode preference to "ask" when desktop mode is unavailable.
+`ExternalDisplayPolicy`
+(`frameworks/base/services/core/java/com/android/server/display/ExternalDisplayPolicy.java`)
+gates external displays on thermal headroom: it registers a
+`SkinThermalStatusObserver` and calls `disableExternalDisplays()` when the skin
+temperature reaches a critical level, then emits `EVENT_DISPLAY_CONNECTED` to
+notify the rest of the system. Usage telemetry (mirroring, extended,
+presentation) flows through `ExternalDisplayStatsService`.
+
+## 24.13 Adaptive Refresh Rate, HDR, and Display LUTs
+
+Android 17 advances three rendering-quality areas that all terminate in
+SurfaceFlinger and the Hardware Composer: adaptive refresh rate, HDR on
+connected displays, and per-layer colour lookup tables.
+
+### 24.13.1 Adaptive Refresh Rate and Frame-Rate Categories
+
+A variable-refresh-rate (VRR) panel can run a continuum of refresh rates rather
+than a small set of fixed modes. SurfaceFlinger detects this through
+`DisplayMode.getVrrConfig()` and caches it as `mIsVrrDisplay` in
+`RefreshRateSelector`
+(`frameworks/native/services/surfaceflinger/Scheduler/RefreshRateSelector.h`).
+Because exact-Hz requests are a poor fit for a continuum, apps increasingly
+express intent as a *frame-rate category* instead:
+
+```java
+// frameworks/base/core/java/android/view/Surface.java
+public static final int FRAME_RATE_CATEGORY_DEFAULT = 0;
+public static final int FRAME_RATE_CATEGORY_NO_PREFERENCE = 1;
+public static final int FRAME_RATE_CATEGORY_LOW = 2;
+public static final int FRAME_RATE_CATEGORY_NORMAL = 3;
+public static final int FRAME_RATE_CATEGORY_HIGH_HINT = 4;
+public static final int FRAME_RATE_CATEGORY_HIGH = 5;
+```
+
+`RefreshRateSelector` maps these categories onto Hz ranges anchored at
+`kFrameRateCategoryRateNormal = 60_Hz` and `kFrameRateCategoryRateHigh = 90_Hz`
+(with `kMinSupportedFrameRate = 20_Hz`). A category vote arrives as
+`LayerVoteType::ExplicitCategory` (Section 24.3.6).
+
+```mermaid
+graph TD
+    VRI13["ViewRootImpl<br/>setPreferredFrameRateCategory()"] -->|"Transaction.setFrameRateCategory()"| LFE["Layer (SurfaceFlinger)"]
+    LFE --> LI["LayerInfo<br/>(isVoteValidForMrr)"]
+    LI -->|"ExplicitCategory vote"| RRS13["RefreshRateSelector<br/>(VRR vs MRR)"]
+    RRS13 --> RANGE["Hz range<br/>(Normal 60-120, High 90-120)"]
+```
+
+The Android 17 churn around this is mostly refinement of an API that first
+landed in 16. `Display.hasArrSupport()`
+(`frameworks/base/core/java/android/view/Display.java`) lets callers skip
+`setFrameRateCategory` on multiple-refresh-rate (MRR) panels, while
+`LayerInfo::isVoteValidForMrr()` restricts category votes to ARR/VRR devices
+unless the `frame_rate_category_mrr` flag is set. Android 17 also adds
+`Display.getFrameRateVelocityMapping()` (returning `FrameRateVelocityPoint`
+entries) so scrolling content can map fling velocity to a target rate. The
+MRR-specific flags `frame_rate_category_mrr` and `mrr_full_frame_rate_list`
+live in
+`frameworks/native/services/surfaceflinger/surfaceflinger_flags_new.aconfig`.
+
+### 24.13.2 HDR on Connected Displays
+
+HDR output is no longer limited to the built-in panel. Android 17 adds the
+`connected_display_hdr_v3` flag (namespace `core_graphics`, in
+`surfaceflinger_flags_new.aconfig`) on top of the earlier
+`connected_display_hdr_v2`, enabling HDR selection on external displays.
+System-wide HDR conversion is still expressed through `HdrConversionMode`:
+
+```java
+// frameworks/base/core/java/android/hardware/display/HdrConversionMode.java
+public static final int HDR_CONVERSION_UNSUPPORTED = 0;
+public static final int HDR_CONVERSION_PASSTHROUGH = 1;
+public static final int HDR_CONVERSION_SYSTEM = 2;
+public static final int HDR_CONVERSION_FORCE = 3;
+```
+
+For refresh-rate policy, HDR preference now participates in the framework vote
+system through `HdrPreferenceVote`
+(`frameworks/base/services/core/java/com/android/server/display/mode/HdrPreferenceVote.java`),
+whose `updateSummary()` ANDs an `allowHdr` flag so a system or battery-driven
+vote can veto HDR even when the user requested it. DMS continues to honour
+per-device disabled HDR types via `mUserDisabledHdrTypes`. SurfaceFlinger also
+gains higher-fidelity capture through the `true_hdr_screenshots` and
+`local_tonemap_screenshots` flags.
+
+### 24.13.3 Display Colour LUTs
+
+Android 17 exposes a public API for attaching colour lookup tables (LUTs) to a
+surface, giving apps and the system fine-grained control over the display
+colour transform beyond the global matrix pipeline of Section 24.10. The native
+representation is `DisplayLuts`
+(`frameworks/native/libs/gui/include/gui/DisplayLuts.h`), which carries one or
+more `Entry` records (each with a dimension, size, and sampling key) plus a
+shared-memory file descriptor holding the LUT data; the HAL capability is
+described by `LutProperties`
+(`frameworks/native/libs/gui/aidl/android/gui/LutProperties.aidl`).
+
+The framework surface is
+`frameworks/base/core/java/android/hardware/DisplayLuts.java` and
+`frameworks/base/core/java/android/hardware/LutProperties.java`:
+
+```java
+// frameworks/base/core/java/android/hardware/LutProperties.java
+public static final int ONE_DIMENSION = 1;
+public static final int THREE_DIMENSION = 3;
+public static final int SAMPLING_KEY_RGB = 0;
+public static final int SAMPLING_KEY_MAX_RGB = 1;
+public static final int SAMPLING_KEY_CIE_Y = 2;
+```
+
+A LUT is attached per layer via `SurfaceControl.Transaction.setLuts()` (passing
+`null` clears it), and an app can discover device support through
+`OverlayProperties.getLutProperties()`, which returns `null` for virtual
+displays. The entire surface is guarded by the `luts_api` flag.
+
+### 24.13.4 Picture Profiles
+
+A related, system-level facility lets a connected TV-style display apply
+hardware picture processing (gamma, colour temperature, hue, saturation) per
+layer. A `PictureProfile`
+(`frameworks/base/media/java/android/media/quality/PictureProfile.java`) is
+identified at the surface layer by an opaque `PictureProfileHandle` and applied
+through `SurfaceControl.Transaction.setPictureProfileHandle()`. Because the
+hardware can process only a limited number of layers at once, the active set is
+bounded by `SurfaceControl.getMaxPictureProfiles()` and arbitrated by content
+priority. Profiles carry per-HDR-stream-status variants (SDR, HDR10, Dolby
+Vision, HLG, HDR10+, HDR Vivid) and are managed through `MediaQualityManager`.
+The feature is gated by the `apply_picture_profiles` flag.
+
+## 24.14 RenderEngine and Multi-Display Modeset in Android 17
+
+Two lower-level reworks underpin the features above.
+
+### 24.14.1 Skia Graphite RenderEngine Rollout
+
+SurfaceFlinger's GPU client-composition path (RenderEngine, Section 24.7.10)
+is migrating from Skia Ganesh to Skia Graphite on Vulkan. Android 17 carries a
+staged-rollout set of flags in
+`frameworks/native/services/surfaceflinger/surfaceflinger_flags_new.aconfig`:
+`force_compile_graphite_renderengine` (compiles but does not enable Graphite;
+also toggleable via the `debug.renderengine.graphite` system property), plus the
+per-device opt-in rollout flags `graphite_renderengine_preview_rollout`,
+`graphite_renderengine_preview2_rollout`, and
+`graphite_renderengine_desktop_rollout`. None are default-on; the final state is
+chosen by each device's release configuration.
+
+### 24.14.2 Atomic Multi-Display Modeset
+
+The connected-display and topology features rest on a reworked modeset path in
+SurfaceFlinger that can change several displays' modes atomically rather than
+one at a time. The Android 17 work adds a `SurfaceControl` atomic-modeset API,
+a display-command modeset implementation, and a modeset state machine (the
+`modeset_multi_display`, `display_command_modeset`, `modeset_state_machine`, and
+`synced_resolution_switch` flags in the SurfaceFlinger aconfig files). Pacesetter
+selection (Section 24.3.7) was also updated to prefer the display capable of the
+highest peak frame rate, and the legacy HIDL power path was removed from
+SurfaceFlinger. Follower (secondary) displays gain their own refresh-rate
+selection and back-pressure handling so that a slow external panel cannot stall
+the pacesetter.
+
+## Try It
+
+The display stack exposes most of its internal state through `dumpsys` and
+`cmd` interfaces, which is the fastest way to connect the classes in this
+chapter to a running device. The following commands are all available on a
+standard Android 17 build over `adb shell`:
+
+| Command | Purpose |
+|---------|---------|
+| `dumpsys display` | DisplayManagerService state: logical displays, devices, groups, mode votes |
+| `dumpsys SurfaceFlinger` | SurfaceFlinger layer tree and composition stats |
+| `dumpsys SurfaceFlinger --frametimeline` | Per-frame timing (expected vs actual present) |
+| `dumpsys SurfaceFlinger --list` | List all layers |
+| `dumpsys window displays` | WindowManagerService display info |
+| `dumpsys window display-areas` | DisplayArea hierarchy (Section 24.2) |
+| `dumpsys color_display` | ColorDisplayService state (Section 24.10) |
+| `dumpsys device_state` | DeviceStateManagerService posture (Section 24.5) |
+| `cmd display set-brightness <0.0-1.0>` | Set display brightness |
+| `cmd display reset-brightness-configuration` | Reset auto-brightness |
+| `wm size` / `wm density` | Display logical size and density |
+| `settings put system accelerometer_rotation 0/1` | Lock/unlock rotation (Section 24.4) |
+
+Suggested explorations:
+
+1. **Watch a fold/unfold swap.** On a foldable (or the foldable emulator), run
+   `dumpsys device_state` and `dumpsys display` before and after folding, and
+   confirm that logical display 0's backing physical device changes while its
+   display ID stays the same (Section 24.5.3). Look for the
+   `LOGICAL_DISPLAY_EVENT_SWAPPED` transition in the DMS dump.
+
+2. **Force an overlay display.** Run
+   `adb shell setprop persist.sys.overlay_display "1920x1080/320"` and observe a
+   new logical display appear in `dumpsys display` via the
+   `OverlayDisplayAdapter` (Section 24.9.8). This needs no external hardware.
+
+3. **Inspect the refresh-rate vote.** While scrolling a list, capture
+   `dumpsys display` and find the `DisplayModeDirector` vote summary
+   (Section 24.1.9); compare the resolved `DesiredDisplayModeSpecs` against the
+   modes the panel actually supports.
+
+4. **Read the topology.** On a build with the connected-display flags enabled,
+   attach an external display and inspect the persisted
+   `display_topology.xml` under the per-user system directory, then change the
+   arrangement and confirm the file updates (Section 24.12.3).
+
+5. **Trace a frame.** Capture a `perfetto` trace and correlate the
+   `FrameTimeline` events (Section 24.3.11) with the end-to-end latency
+   breakdown below. A single frame from touch to photon traverses the entire
+   stack:
 
 ```mermaid
 sequenceDiagram
@@ -18732,7 +19898,7 @@ sequenceDiagram
     HW2->>HW2: Photons reach user's eye
 ```
 
-**Typical latency breakdown (at 120 Hz, 8.33ms period):**
+   Typical latency breakdown at 120 Hz (8.33ms period):
 
 | Phase | Duration | Notes |
 |-------|----------|-------|
@@ -18744,10 +19910,63 @@ sequenceDiagram
 | HWC commit | 0.2-0.5ms | DRM atomic commit |
 | **Total** | **3.7-12.5ms** | Must fit in 8.33ms for 120Hz |
 
-When the total exceeds the VSYNC period, the frame misses its deadline
-and is presented one period late (a "jank" frame). The `FrameTimeline`
-records these misses, and tools like `perfetto` and `dumpsys SurfaceFlinger
---frametimeline` expose them for performance analysis.
+   When the total exceeds the VSYNC period, the frame misses its deadline and is
+   presented one period late (a "jank" frame), which `FrameTimeline` and
+   `dumpsys SurfaceFlinger --frametimeline` expose for analysis.
+
+## Summary
+
+The Android display system is a deep vertical stack that begins with
+hardware VSYNC interrupts and extends through native C++ composition,
+Java framework services, and application-level APIs. The key architectural
+decisions that define this system are:
+
+1. **Logical/Physical separation**: `LogicalDisplay` decouples the
+   system-visible display from the underlying hardware, enabling foldable
+   display swapping, virtual displays, and future multi-panel configurations.
+
+2. **DisplayArea tree**: The `DisplayAreaPolicyBuilder` creates a flexible
+   container hierarchy that enforces Z-ordering while allowing features
+   (magnification, one-handed mode, cutout hiding) to target specific
+   window-type ranges.
+
+3. **VSYNC-driven pipeline**: Every frame starts with a predicted VSYNC
+   from `VSyncPredictor`, flows through `VSyncDispatchTimerQueue` to
+   `EventThread`, crosses into Java-land via `Choreographer`, and
+   culminates in `CompositionEngine::present()`.
+
+4. **Transaction-based buffer delivery**: `BLASTBufferQueue` bundles buffer
+   submission with geometry changes in atomic `SurfaceControl.Transaction`
+   operations, eliminating the class of bugs that arose from
+   buffer-geometry desynchronisation.
+
+5. **Front-end/back-end split**: SurfaceFlinger's refactored architecture
+   separates layer state management (`LayerLifecycleManager`,
+   `LayerSnapshotBuilder`) from composition (`CompositionEngine`,
+   `HWComposer`), enabling better testing, incremental updates, and
+   reduced lock contention.
+
+6. **Priority-ordered colour transforms**: `DisplayTransformManager`
+   composes multiple 4x4 colour matrices (night display, white balance,
+   saturation, accessibility) in a defined priority order, producing a
+   single combined transform for SurfaceFlinger.
+
+7. **State-driven foldable support**: `DeviceStateManagerService` provides
+   a clean state-machine abstraction for foldable postures, with
+   `LogicalDisplayMapper` handling the complex display swapping that makes
+   fold/unfold transitions appear seamless to applications.
+
+8. **Connected-display maturity (Android 17)**: a persisted, app-visible
+   `DisplayTopology`, content-mode management (mirror versus extend), adaptive
+   refresh rate driven by frame-rate categories, HDR on external displays, and
+   per-layer colour LUTs and picture profiles all build on a reworked atomic
+   multi-display modeset path in SurfaceFlinger.
+
+These subsystems interact constantly during normal device operation.
+A single frame touches the VSYNC predictor, Choreographer, ViewRootImpl,
+BLASTBufferQueue, the SurfaceFlinger front-end, CompositionEngine,
+HWComposer, and the kernel DRM driver -- a pipeline that completes in
+under 16 milliseconds at 60 Hz, or under 8 milliseconds at 120 Hz.
 
 ### Quick Reference: Key Source Paths
 
@@ -18778,24 +19997,11 @@ records these misses, and tools like `perfetto` and `dumpsys SurfaceFlinger
 | LayerSnapshotBuilder | `frameworks/native/services/surfaceflinger/FrontEnd/LayerSnapshotBuilder.h` |
 | CompositionEngine | `frameworks/native/services/surfaceflinger/CompositionEngine/include/compositionengine/CompositionEngine.h` |
 | BLASTBufferQueue | `frameworks/native/libs/gui/include/gui/BLASTBufferQueue.h` |
-
-### Debugging Commands
-
-| Command | Purpose |
-|---------|---------|
-| `dumpsys display` | DisplayManagerService state |
-| `dumpsys SurfaceFlinger` | SurfaceFlinger layer tree, composition stats |
-| `dumpsys SurfaceFlinger --frametimeline` | Frame timing data |
-| `dumpsys SurfaceFlinger --list` | List all layers |
-| `dumpsys window displays` | WindowManagerService display info |
-| `dumpsys window display-areas` | DisplayArea hierarchy |
-| `dumpsys color_display` | ColorDisplayService state |
-| `dumpsys device_state` | DeviceStateManagerService state |
-| `cmd display set-brightness <0.0-1.0>` | Set display brightness |
-| `cmd display reset-brightness-configuration` | Reset auto-brightness |
-| `wm size` | Display logical size |
-| `wm density` | Display density |
-| `settings put system accelerometer_rotation 0/1` | Lock/unlock rotation |
+| DisplayTopologyCoordinator | `frameworks/base/services/core/java/com/android/server/display/DisplayTopologyCoordinator.java` |
+| DisplayTopology (API) | `frameworks/base/core/java/android/hardware/display/DisplayTopology.java` |
+| HdrConversionMode | `frameworks/base/core/java/android/hardware/display/HdrConversionMode.java` |
+| DisplayLuts | `frameworks/native/libs/gui/include/gui/DisplayLuts.h` |
+| BrightnessClamperController | `frameworks/base/services/core/java/com/android/server/display/brightness/clamper/BrightnessClamperController.java` |
 
 
 <!-- chapter:25-view-system -->
@@ -18828,7 +20034,7 @@ The Android view system is built on three pillars:
 
 1. **`View`** -- the atomic building block.  Every visible element on screen
    (Button, TextView, ImageView, custom widgets) is a `View` subclass.  At
-   ~34,918 lines, `View.java` is one of the largest files in the Android
+   over 35,000 lines, `View.java` is one of the largest files in the Android
    framework, handling measurement, layout, drawing, touch events, focus,
    accessibility, animations, and more.
 
@@ -18844,7 +20050,7 @@ The Android view system is built on three pillars:
    measure-layout-draw cycle through `performTraversals()`.
 
 ```
-Source: frameworks/base/core/java/android/view/ViewGroup.java (line 139)
+Source: frameworks/base/core/java/android/view/ViewGroup.java (line 142)
 
     public abstract class ViewGroup extends View implements ViewParent, ViewManager {
         ...
@@ -18927,13 +20133,14 @@ WindowManagerImpl.addView(decorView, layoutParams)
        -> viewRootImpl.setView(decorView, layoutParams, panelParent)
 ```
 
-Inside `ViewRootImpl.setView()` (line 1511):
+Inside `ViewRootImpl.setView()` (line 1649):
 
 ```
 Source: frameworks/base/core/java/android/view/ViewRootImpl.java
 
     public void setView(View view, WindowManager.LayoutParams attrs,
             View panelParentView, int userId) {
+        checkThreadCompat();
         synchronized (this) {
             if (mView == null) {
                 mView = view;
@@ -19200,7 +20407,7 @@ The measurement system communicates constraints from parent to child using
 **size** in a single `int`:
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 31726)
+Source: frameworks/base/core/java/android/view/View.java (line 31989)
 
     public static class MeasureSpec {
         private static final int MODE_SHIFT = 30;
@@ -19264,7 +20471,7 @@ Instead they override `onMeasure()`.  The `measure()` method handles:
    shadows in 9-patch backgrounds).
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 28542)
+Source: frameworks/base/core/java/android/view/View.java (line 28787)
 
     public final void measure(int widthMeasureSpec, int heightMeasureSpec) {
         ...
@@ -19307,7 +20514,7 @@ The base `View.onMeasure()` simply picks the larger of the background size
 and the minimum size:
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 28672)
+Source: frameworks/base/core/java/android/view/View.java (line 28917)
 
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         setMeasuredDimension(
@@ -19353,12 +20560,12 @@ The spec-combination table:
 After measurement, `performLayout()` positions the root view at (0, 0):
 
 ```
-Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 5164)
+Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 5554)
 
     host.layout(0, 0, host.getMeasuredWidth(), host.getMeasuredHeight());
 ```
 
-`View.layout()` (line 25798) stores the position and calls `onLayout()`:
+`View.layout()` (line 26040) stores the position and calls `onLayout()`:
 
 ```
 Source: frameworks/base/core/java/android/view/View.java
@@ -19400,7 +20607,7 @@ again before layout to ensure a fresh measurement.
 
 ### 25.2.7 View.draw() -- The Seven Steps
 
-`View.draw()` (line 25251) executes drawing in a precisely defined order:
+`View.draw()` (line 25493) executes drawing in a precisely defined order:
 
 ```
 Source: frameworks/base/core/java/android/view/View.java
@@ -19454,7 +20661,7 @@ framework sets `PFLAG_SKIP_DRAW`, and `updateDisplayListIfDirty()` bypasses
 `draw()` entirely, calling `dispatchDraw()` directly:
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 24116)
+Source: frameworks/base/core/java/android/view/View.java (line 24771)
 
     if ((mPrivateFlags & PFLAG_SKIP_DRAW) == PFLAG_SKIP_DRAW) {
         dispatchDraw(canvas);
@@ -19480,10 +20687,13 @@ on each ancestor until reaching `ViewRootImpl`, which calls
 `scheduleTraversals()`.  This triggers a full measure-layout-draw cycle.
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 28478)
+Source: frameworks/base/core/java/android/view/View.java (line 28723)
 
     public void requestLayout() {
         if (mMeasureCache != null) mMeasureCache.clear();
+        ...
+        // If this view is currently requesting layout while a layout pass is
+        // running, route the request through ViewRootImpl so it can be deferred.
         ...
         mPrivateFlags |= PFLAG_FORCE_LAYOUT;
         mPrivateFlags |= PFLAG_INVALIDATED;
@@ -19510,7 +20720,7 @@ size and position have not.  It propagates a dirty rectangle up to
 `ViewRootImpl`, triggering only a draw pass (no measure or layout).
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 21249)
+Source: frameworks/base/core/java/android/view/View.java (line 21431, 21453)
 
     public void invalidate() {
         invalidate(true);
@@ -19547,14 +20757,16 @@ graph TB
 
 ### 25.2.10 performTraversals() -- The Orchestrator
 
-`ViewRootImpl.performTraversals()` (line 3574) is the single largest method
+`ViewRootImpl.performTraversals()` (line 3924) is the single largest method
 in the view system, spanning hundreds of lines.  It orchestrates the entire
-rendering pipeline:
+rendering pipeline.  In Android 17 it takes the frame's VSYNC timestamp
+(`performTraversals(long frameTimeNanos)`) so that animation, choreographer,
+and frame-rate-voting work can be pinned to a single consistent frame time:
 
 ```
 Source: frameworks/base/core/java/android/view/ViewRootImpl.java
 
-    private void performTraversals() {
+    private void performTraversals(long frameTimeNanos) {
         final View host = mView;
         if (host == null || !mAdded) return;
         ...
@@ -19606,7 +20818,7 @@ measurement.
 These are thin wrappers that add tracing:
 
 ```
-Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 5082)
+Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 5472)
 
     private void performMeasure(int childWidthMeasureSpec,
             int childHeightMeasureSpec) {
@@ -19623,7 +20835,7 @@ Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 5082)
 ```
 
 ```
-Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 5148)
+Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 5538)
 
     private void performLayout(WindowManager.LayoutParams lp,
             int desiredWindowWidth, int desiredWindowHeight) {
@@ -19663,7 +20875,7 @@ Before tracing the dispatch chain, we must understand `MotionEvent` -- the
 object that carries all touch information:
 
 ```
-Source: frameworks/base/core/java/android/view/MotionEvent.java (line 197)
+Source: frameworks/base/core/java/android/view/MotionEvent.java (line 199)
 
     public final class MotionEvent extends InputEvent implements Parcelable {
 ```
@@ -19724,7 +20936,7 @@ for (int h = 0; h < historySize; h++) {
 behavior throughout the framework:
 
 ```
-Source: frameworks/base/core/java/android/view/ViewConfiguration.java (line 51)
+Source: frameworks/base/core/java/android/view/ViewConfiguration.java (line 50)
 ```
 
 | Constant | Default Value | Purpose |
@@ -19806,7 +21018,7 @@ Touch events flow through `ViewPostImeInputStage`, which calls
 For leaf `View` objects, the dispatch is straightforward:
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 16750)
+Source: frameworks/base/core/java/android/view/View.java (line 16932)
 
     public boolean dispatchTouchEvent(MotionEvent event) {
         if (event.isTargetAccessibilityFocus()) {
@@ -19834,7 +21046,7 @@ Source: frameworks/base/core/java/android/view/View.java (line 16750)
    etc.
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 16796)
+Source: frameworks/base/core/java/android/view/View.java (line 16978)
 
     private boolean performOnTouchCallback(MotionEvent event) {
         boolean handled = false;
@@ -19854,7 +21066,7 @@ Source: frameworks/base/core/java/android/view/View.java (line 16796)
 
 ### 25.3.6 ViewGroup.dispatchTouchEvent() -- The Full Algorithm
 
-`ViewGroup.dispatchTouchEvent()` (line 2646) implements the complete touch
+`ViewGroup.dispatchTouchEvent()` (line 2756) implements the complete touch
 dispatch algorithm.  This is the most critical event-handling code in
 Android:
 
@@ -20005,7 +21217,7 @@ The default `ViewGroup.onInterceptTouchEvent()` almost always returns
 `false`:
 
 ```
-Source: frameworks/base/core/java/android/view/ViewGroup.java (line 3311)
+Source: frameworks/base/core/java/android/view/ViewGroup.java (line 3421)
 
     public boolean onInterceptTouchEvent(MotionEvent ev) {
         if (ev.isFromSource(InputDevice.SOURCE_MOUSE)
@@ -20023,7 +21235,7 @@ detect scroll gestures and intercept them from their children.
 
 ### 25.3.9 onTouchEvent() -- Click and Long-Press Handling
 
-`View.onTouchEvent()` (line 18265) implements the built-in gesture
+`View.onTouchEvent()` (line 18447) implements the built-in gesture
 recognition for clicks, long-presses, and touch feedback:
 
 ```
@@ -20095,7 +21307,9 @@ Key behaviors:
   feedback is delayed by `ViewConfiguration.getTapTimeout()` (100ms) to
   distinguish taps from scroll starts.
 - **Long-press** detection: A `CheckForLongPress` Runnable is posted with
-  `ViewConfiguration.getLongPressTimeout()` (usually 500ms).
+  `ViewConfiguration.getLongPressTimeout()`, whose default is
+  `DEFAULT_LONG_PRESS_TIMEOUT = 400` ms (overridable via the
+  `Settings.Secure.LONG_PRESS_TIMEOUT` accessibility setting).
 - **Click** is posted via `PerformClick` Runnable rather than called directly,
   allowing the view's visual state to update before the click handler runs.
 
@@ -20178,9 +21392,10 @@ stateDiagram-v2
 `scheduleTraversals()` is the gateway to the rendering pipeline:
 
 ```
-Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 3085)
+Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 3307)
 
     void scheduleTraversals() {
+        checkThreadCompat();
         if (!mTraversalScheduled) {
             mTraversalScheduled = true;
             mTraversalBarrier = mQueue.postSyncBarrier();
@@ -20213,19 +21428,19 @@ The `Choreographer` coordinates all frame-related work through five callback
 types, executed in strict order:
 
 ```
-Source: frameworks/base/core/java/android/view/Choreographer.java (line 1156)
+Source: frameworks/base/core/java/android/view/Choreographer.java (line 1201)
 
     mFrameInfo.markInputHandlingStart();
-    doCallbacks(Choreographer.CALLBACK_INPUT, frameIntervalNanos);
+    doCallbacks(Choreographer.CALLBACK_INPUT);
 
     mFrameInfo.markAnimationsStart();
-    doCallbacks(Choreographer.CALLBACK_ANIMATION, frameIntervalNanos);
-    doCallbacks(Choreographer.CALLBACK_INSETS_ANIMATION, frameIntervalNanos);
+    doCallbacks(Choreographer.CALLBACK_ANIMATION);
+    doCallbacks(Choreographer.CALLBACK_INSETS_ANIMATION);
 
     mFrameInfo.markPerformTraversalsStart();
-    doCallbacks(Choreographer.CALLBACK_TRAVERSAL, frameIntervalNanos);
+    doCallbacks(Choreographer.CALLBACK_TRAVERSAL);
 
-    doCallbacks(Choreographer.CALLBACK_COMMIT, frameIntervalNanos);
+    doCallbacks(Choreographer.CALLBACK_COMMIT);
 ```
 
 ```mermaid
@@ -20254,16 +21469,21 @@ When the Choreographer fires `CALLBACK_TRAVERSAL`, it invokes
 `mTraversalRunnable`:
 
 ```
-Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 3123)
+Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 3347)
 
-    void doTraversal() {
+    void doTraversal(long frameTimeNanos) {
         if (mTraversalScheduled) {
             mTraversalScheduled = false;
             mQueue.removeSyncBarrier(mTraversalBarrier);
-            performTraversals();
+            performTraversals(frameTimeNanos);
         }
     }
 ```
+
+In Android 17 `doTraversal()` carries the VSYNC frame time supplied by the
+`Choreographer` (extracted from the frame data) and forwards it to
+`performTraversals(long)`, so that the entire traversal -- including
+frame-rate voting -- works against a single, consistent frame timestamp.
 
 The sync barrier is removed *before* `performTraversals()` runs, allowing
 normal messages to be processed once the traversal completes.
@@ -20296,7 +21516,7 @@ The result includes the new window frame, insets, and possibly a new
 called during an ongoing layout pass:
 
 ```
-Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 5129)
+Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 5519)
 
     boolean requestLayoutDuringLayout(final View view) {
         if (!mLayoutRequesters.contains(view)) {
@@ -20394,36 +21614,66 @@ sequenceDiagram
 
 This guarantees that any `Runnable` posted to the handler *after*
 `scheduleTraversals()` will execute *after* the traversal completes.  The
-AOSP source contains a comment (line 3088) explicitly documenting this
-guarantee as a public API contract.
+AOSP source contains a comment inside `scheduleTraversals()` (around line
+3315) that explicitly calls this behavior "load-bearing for public API
+correctness," with a worked `textView.setText(...)` / `getHandler().post(...)`
+example demonstrating the contract.
 
 ### 25.4.9 Frame Rate Voting
 
-Modern `ViewRootImpl` participates in frame rate voting for Variable Refresh
-Rate (VRR) displays.  Views can influence the display refresh rate:
+`ViewRootImpl` participates in frame-rate voting for Variable Refresh Rate
+(VRR) and Adaptive Refresh Rate (ARR) displays -- a story Android 17 expands
+considerably (see Section 25.13).  An app can hint the refresh rate it wants
+through the public `View.setRequestedFrameRate(float)` API:
 
-```java
-// Request high frame rate for smooth scrolling
-view.setRequestedFrameRate(120f);
+```
+Source: frameworks/base/core/java/android/view/View.java (line 35127)
 
-// Let the system decide
-view.setRequestedFrameRate(
-    View.REQUESTED_FRAME_RATE_CATEGORY_DEFAULT);
+    public void setRequestedFrameRate(float frameRate) { ... }
 ```
 
-During `performTraversals()`, `ViewRootImpl` collects frame rate votes from
-all views in the hierarchy and reports the preferred category to
-SurfaceFlinger.  Categories include:
+```java
+// Request a specific high frame rate (a positive value is treated as Hz)
+view.setRequestedFrameRate(120f);
 
-| Category | Value | Typical Use |
-|----------|-------|-------------|
-| `FRAME_RATE_CATEGORY_HIGH` | 4 | Active scrolling, animation |
+// Or vote by category using the float sentinels on View:
+view.setRequestedFrameRate(View.REQUESTED_FRAME_RATE_CATEGORY_HIGH);
+
+// Reset to "no opinion" (the default)
+view.setRequestedFrameRate(View.REQUESTED_FRAME_RATE_CATEGORY_DEFAULT);
+```
+
+The `View`-side category constants are *negative float sentinels*, distinct
+from the *integer* `Surface.FRAME_RATE_CATEGORY_*` values that the votes are
+resolved into:
+
+```
+Source: frameworks/base/core/java/android/view/View.java (line 5958)
+
+    public static final float REQUESTED_FRAME_RATE_CATEGORY_DEFAULT       = Float.NaN;
+    public static final float REQUESTED_FRAME_RATE_CATEGORY_NO_PREFERENCE  = -1;
+    public static final float REQUESTED_FRAME_RATE_CATEGORY_LOW           = -2;
+    public static final float REQUESTED_FRAME_RATE_CATEGORY_NORMAL        = -3;
+    public static final float REQUESTED_FRAME_RATE_CATEGORY_HIGH          = -4;
+```
+
+During `performTraversals()`, `ViewRootImpl` aggregates the per-view votes
+into `mPreferredFrameRateCategory` / `mPreferredFrameRate` (fields declared
+around line 1228 of `ViewRootImpl.java`) and resolves them to one of the
+`Surface` integer categories before reporting to SurfaceFlinger:
+
+| `Surface` category | Value | Typical use |
+|--------------------|-------|-------------|
+| `FRAME_RATE_CATEGORY_NO_PREFERENCE` | 1 | No opinion |
+| `FRAME_RATE_CATEGORY_LOW` | 2 | Static content, clock widgets |
 | `FRAME_RATE_CATEGORY_NORMAL` | 3 | General UI interaction |
-| `FRAME_RATE_CATEGORY_LOW` | 1 | Static content, clock widgets |
-| `FRAME_RATE_CATEGORY_NO_PREFERENCE` | 0 | No opinion |
+| `FRAME_RATE_CATEGORY_HIGH_HINT` | 4 | Hint toward high (intermediate) |
+| `FRAME_RATE_CATEGORY_HIGH` | 5 | Active scrolling, animation |
 
-This system reduces power consumption by lowering the refresh rate when the
-screen content is static.
+These integer values are defined in
+`frameworks/base/core/java/android/view/Surface.java` (lines 315-346).  The
+mechanism reduces power consumption by lowering the refresh rate when the
+screen content is static, while still ramping up for scrolling and animation.
 
 ---
 
@@ -20476,7 +21726,7 @@ holds:
   the display list.
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 5763, 5997)
+Source: frameworks/base/core/java/android/view/View.java (line 5804, 6034)
 
     final RenderNode mRenderNode;
 
@@ -20491,7 +21741,7 @@ When a view needs redrawing, `updateDisplayListIfDirty()` re-records its
 display list:
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 24064)
+Source: frameworks/base/core/java/android/view/View.java (line 24306)
 
     public RenderNode updateDisplayListIfDirty() {
         final RenderNode renderNode = mRenderNode;
@@ -20586,13 +21836,14 @@ The separation is fundamental:
 
 ### 25.5.6 The draw() Method in ViewRootImpl
 
-`ViewRootImpl.draw()` (line 5767) decides between hardware and software
+`ViewRootImpl.draw()` (line 6161) decides between hardware and software
 rendering:
 
 ```
 Source: frameworks/base/core/java/android/view/ViewRootImpl.java
 
-    private boolean draw(boolean fullRedrawNeeded, ...) {
+    private boolean draw(boolean fullRedrawNeeded,
+            @Nullable SurfaceSyncGroup activeSyncGroup, ...) {
         Surface surface = mSurface;
         if (!surface.isValid()) return false;
         ...
@@ -20745,7 +21996,7 @@ sequenceDiagram
 The dispatch uses `View.dispatchApplyWindowInsets()`:
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 12931)
+Source: frameworks/base/core/java/android/view/View.java (line 13081)
 
     public WindowInsets dispatchApplyWindowInsets(WindowInsets insets) {
         try {
@@ -20901,7 +22152,7 @@ When the user presses a directional key, `View.focusSearch()` delegates to
 focusable view:
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 14872)
+Source: frameworks/base/core/java/android/view/View.java (line 15022)
 
     public View focusSearch(@FocusRealDirection int direction) {
         if (mParent != null) {
@@ -20956,7 +22207,7 @@ graph TB
 `ViewGroup` provides three focus strategies via `setDescendantFocusability()`:
 
 ```
-Source: frameworks/base/core/java/android/view/ViewGroup.java (line 3336)
+Source: frameworks/base/core/java/android/view/ViewGroup.java (line 3446)
 
     public boolean requestFocus(int direction,
             Rect previouslyFocusedRect) {
@@ -21060,7 +22311,7 @@ graph TB
 Each view creates its accessibility representation on demand:
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 9513)
+Source: frameworks/base/core/java/android/view/View.java (line 9564)
 
     public AccessibilityNodeInfo createAccessibilityNodeInfo() {
         if (mAccessibilityDelegate != null) {
@@ -21089,7 +22340,7 @@ Source: frameworks/base/core/java/android/view/View.java (line 9513)
 The base implementation sets many properties from the view's state:
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 9569)
+Source: frameworks/base/core/java/android/view/View.java (line 9620)
 
     @CallSuper
     public void onInitializeAccessibilityNodeInfo(
@@ -21454,25 +22705,33 @@ new `ContextThemeWrapper` and uses it for constructing the view.  This allows
 different parts of the same layout to have different themes (e.g., a dark
 toolbar in a light activity).
 
-### 25.9.11 Precompiled Layouts
+### 25.9.11 Precompiled Layouts (Removed)
 
-Starting with Android 10, the system can precompile commonly used layouts
-during device boot.  The compiled format stores the view hierarchy as a
-binary blob that can be deserialized faster than parsing XML:
+Around Android 10, AOSP experimented with *precompiled layouts*: at build
+time a tool would generate code that inflated a layout directly, skipping the
+runtime `XmlPullParser` and reflection-based view construction.  At runtime
+`LayoutInflater` would call into the generated inflater and fall back to XML
+parsing if it was unavailable.
+
+That feature never became broadly useful and has since been **removed** from
+the platform.  The vestige in the current source is a comment on the
+`@hide` `createView(Context, String, String, AttributeSet)` overload in
+`frameworks/base/core/java/android/view/LayoutInflater.java` (around line
+930), which notes it was "originally for internal use by precompiled layouts,
+which have since been removed."  In Android 17 every inflation therefore goes
+through the standard `XmlPullParser` path described in this section:
 
 ```mermaid
 graph LR
-    XML["XML Layout Resource"] --> Compiler["Layout Compiler<br/>(build time)"]
-    Compiler --> Dex["Compiled Layout<br/>(.dex or binary)"]
-    Dex --> Inflater["LayoutInflater<br/>(runtime)"]
-    Inflater --> ViewTree["View Hierarchy"]
-
-    XML -->|"fallback"| Parser["XmlPullParser<br/>(runtime)"]
-    Parser --> Inflater
+    XML["XML Layout Resource"] --> Parser["XmlResourceParser<br/>(runtime)"]
+    Parser --> Inflater["LayoutInflater.inflate()"]
+    Inflater --> Factory["Factory2 / createViewFromTag()"]
+    Factory --> ViewTree["View Hierarchy"]
 ```
 
-This optimization is primarily used for system layouts (status bar,
-notification shade, etc.) where inflation performance is critical.
+The practical takeaway for inflation performance is unchanged: the framework
+relies on the static `sConstructorMap` cache (Section 25.9.4) plus tools like
+View Binding (Section 25.9.12) rather than a precompiled-layout fast path.
 
 ### 25.9.12 View Binding and Data Binding
 
@@ -22028,34 +23287,162 @@ public class UserCard extends LinearLayout {
 
 | Concept | Primary File | Key Method/Class |
 |---------|-------------|-----------------|
-| View measurement | `View.java:28542` | `measure()`, `onMeasure()` |
-| View layout | `View.java:25798` | `layout()`, `onLayout()` |
-| View drawing | `View.java:25251` | `draw()`, `onDraw()` |
-| MeasureSpec | `View.java:31726` | `MeasureSpec` inner class |
-| Touch dispatch (View) | `View.java:16750` | `dispatchTouchEvent()` |
-| Touch dispatch (ViewGroup) | `ViewGroup.java:2646` | `dispatchTouchEvent()` |
-| Touch interception | `ViewGroup.java:3311` | `onInterceptTouchEvent()` |
-| Touch handling | `View.java:18265` | `onTouchEvent()` |
-| Traversal orchestration | `ViewRootImpl.java:3574` | `performTraversals()` |
-| Schedule traversals | `ViewRootImpl.java:3085` | `scheduleTraversals()` |
-| Measure entry | `ViewRootImpl.java:5082` | `performMeasure()` |
-| Layout entry | `ViewRootImpl.java:5148` | `performLayout()` |
-| Draw entry | `ViewRootImpl.java:5767` | `draw()` |
-| Display list recording | `View.java:24064` | `updateDisplayListIfDirty()` |
-| Invalidation | `View.java:21249` | `invalidate()` |
-| Layout request | `View.java:28478` | `requestLayout()` |
-| Choreographer frame | `Choreographer.java:1157` | `doCallbacks()` |
+| View measurement | `View.java:28787` | `measure()`, `onMeasure()` |
+| View layout | `View.java:26040` | `layout()`, `onLayout()` |
+| View drawing | `View.java:25493` | `draw()`, `onDraw()` |
+| MeasureSpec | `View.java:31989` | `MeasureSpec` inner class |
+| Touch dispatch (View) | `View.java:16932` | `dispatchTouchEvent()` |
+| Touch dispatch (ViewGroup) | `ViewGroup.java:2756` | `dispatchTouchEvent()` |
+| Touch interception | `ViewGroup.java:3421` | `onInterceptTouchEvent()` |
+| Touch handling | `View.java:18447` | `onTouchEvent()` |
+| Traversal orchestration | `ViewRootImpl.java:3924` | `performTraversals(long)` |
+| Schedule traversals | `ViewRootImpl.java:3307` | `scheduleTraversals()` |
+| Measure entry | `ViewRootImpl.java:5472` | `performMeasure()` |
+| Layout entry | `ViewRootImpl.java:5538` | `performLayout()` |
+| Draw entry | `ViewRootImpl.java:6161` | `draw()` |
+| Display list recording | `View.java:24306` | `updateDisplayListIfDirty()` |
+| Invalidation | `View.java:21431` | `invalidate()` |
+| Layout request | `View.java:28723` | `requestLayout()` |
+| Choreographer frame | `Choreographer.java:1201` | `doCallbacks()` |
+| Frame-rate request | `View.java:35127` | `setRequestedFrameRate()` |
 | Window insets | `WindowInsets.java:80` | `WindowInsets`, `Type` |
-| Insets dispatch | `View.java:12931` | `dispatchApplyWindowInsets()` |
-| Accessibility | `View.java:9513` | `createAccessibilityNodeInfo()` |
+| Insets dispatch | `View.java:13081` | `dispatchApplyWindowInsets()` |
+| Accessibility | `View.java:9564` | `createAccessibilityNodeInfo()` |
 | Layout inflation | `LayoutInflater.java:509` | `inflate()` |
 | ThreadedRenderer | `ThreadedRenderer.java:67` | `ThreadedRenderer` |
 | Focus search | `FocusFinder.java:38` | `FocusFinder` |
-| ViewRootImpl setup | `ViewRootImpl.java:1511` | `setView()` |
+| ViewRootImpl setup | `ViewRootImpl.java:1649` | `setView()` |
 
 ---
 
-## 25.12 Try It: Hands-On Experiments
+## 25.12 Android 17 View System Updates
+
+The view system is mature, so Android 17's changes are evolutionary rather
+than structural.  Three threads dominate the 16->17 delta in
+`frameworks/base` for the view, input, and HWUI code: a much deeper
+Adaptive Refresh Rate (ARR) frame-rate story, synchronized window-insets
+animations becoming the default, and continued investment in moving HWUI
+rendering work out of the app process.  This section folds those into the
+machinery covered above.
+
+### 25.12.1 Adaptive Refresh Rate and the View Velocity API
+
+Section 25.4.9 introduced frame-rate voting.  Android 17 builds it out into a
+full **Adaptive Refresh Rate (ARR)** pipeline that lets the toolkit pick a
+sensible refresh rate per frame instead of always running the panel at its
+peak.  The relevant pieces, all in
+`frameworks/base/core/java/android/view/View.java`:
+
+- **`setRequestedFrameRate(float)`** (line 35127) -- an app's explicit vote,
+  either a positive Hz value or one of the negative
+  `REQUESTED_FRAME_RATE_CATEGORY_*` sentinels (line 5958).
+- **`setFrameContentVelocity(float)`** / **`getFrameContentVelocity()`**
+  (line 35083) -- the *View Velocity* API.  A scrolling container reports how
+  fast its content is moving (pixels/second); HWUI and the platform map that
+  velocity to a frame-rate category, so fast flings get a high refresh rate
+  and slow drifts get a lower one.
+
+```
+Source: frameworks/base/core/java/android/view/View.java (line 35083)
+
+    @FlaggedApi(FLAG_VIEW_VELOCITY_API)
+    public void setFrameContentVelocity(float pixelsPerSecond) { ... }
+```
+
+`ViewRootImpl` aggregates these signals into `mPreferredFrameRateCategory`,
+`mPreferredFrameRate`, and an `mIsFrameRateBoosting` flag (fields declared
+around line 1228 of
+`frameworks/base/core/java/android/view/ViewRootImpl.java`) and resolves them
+to the integer `Surface.FRAME_RATE_CATEGORY_*` values during the traversal
+before reporting to SurfaceFlinger.  This is also why `performTraversals()`
+and `doTraversal()` now carry the VSYNC `frameTimeNanos` (Sections 25.2.10 and
+25.4.4): the frame time pins the velocity-to-rate mapping to a single,
+consistent frame.
+
+How the per-frame decision flows:
+
+```mermaid
+graph TD
+    Vote["View votes:<br/>setRequestedFrameRate() /<br/>setFrameContentVelocity()"] --> Agg["ViewRootImpl aggregates<br/>(mPreferredFrameRateCategory,<br/>mPreferredFrameRate)"]
+    Agg --> Resolve["Resolve to Surface<br/>FRAME_RATE_CATEGORY_* (1-5)"]
+    Resolve --> SF["Report to SurfaceFlinger<br/>during traversal"]
+    SF --> Panel["Display driver picks<br/>refresh rate"]
+```
+
+On Multiple-Refresh-Rate (MRR) panels the platform skips the
+`setFrameRateCategory` calls (gated by a `hasArrSupport` check), so the same
+toolkit code is a no-op on hardware that cannot vary its refresh rate.
+
+### 25.12.2 Synchronized Window Insets Animations
+
+The inset-animation callback API (Section 25.6.6) describes how a view
+interpolates its layout as the IME or system bars slide in and out.  In
+Android 17 the platform adds a **synchronized insets animation**: the system
+window's geometry and the app's animated frame advance together, so the IME
+and the content it pushes up stay visually locked instead of drifting apart
+during the transition.
+
+The default-on behavior is exposed to the inset-controller host through
+`usesSyncedInsetsAnimationByDefault()`:
+
+```
+Source: frameworks/base/core/java/android/view/InsetsController.java (line 241)
+
+    /**
+     * @return {@code true} if the default synchronized insets animation is
+     *         enabled for this host, {@code false} otherwise.
+     */
+    default boolean usesSyncedInsetsAnimationByDefault() {
+        return false;
+    }
+```
+
+Because perfectly synced animation depends on the render pipeline keeping up,
+the feature is disabled on devices without high-end graphics, and there is an
+activity-level opt-out for apps that drive their own inset animations and do
+not want the synchronized path.  From an app's perspective the
+`WindowInsetsAnimation.Callback` contract in Section 25.6.6 is unchanged --
+the synchronization happens below the callback, inside `InsetsController` and
+`ViewRootImpl`.
+
+### 25.12.3 HWUI: Moving Rendering Out of the App Process
+
+Section 25.5 described HWUI's UI-thread / render-thread split inside the app
+process.  Android 17 continues a longer-running effort to push parts of that
+work *out* of the app process entirely -- rendering some `RenderNode` layers
+remotely (in SurfaceFlinger) rather than on the app's own render thread.  The
+goal is better isolation and the ability to composite app-recorded display
+lists without round-tripping every layer through the app.
+
+This work is staged behind HWUI aconfig flags in
+`frameworks/base/libs/hwui/aconfig/hwui_flags.aconfig` and touches the
+`CanvasContext` / render-pipeline abstractions (for example, allowing drawing
+without a `Surface` and plumbing a separate rendering size through to HWUI).
+For app developers the surface stays the same: you still record display lists
+with a `RecordingCanvas` into a `RenderNode` (Section 25.5.3) and the
+`ThreadedRenderer` still drives `syncAndDrawFrame()`.  Where the GPU work
+ultimately executes is becoming an implementation detail the platform can
+relocate without changing the recording API.
+
+A smaller but visible HWUI change in this release is that `ViewRootImpl`
+abstracts the rounded-corner radii callback *through* HWUI rather than
+computing it directly, keeping the `RoundedCorners` / `DisplayShape` data
+(Section 25.6.7) consistent with what the render pipeline actually clips.
+
+### 25.12.4 What Did Not Change
+
+It is worth being explicit about continuity, because the fundamentals carry
+across releases.  The measure-layout-draw contract (Section 25.2), the
+`MeasureSpec` bit packing, the `ViewGroup.dispatchTouchEvent()` algorithm
+(Section 25.3.6), the `InputStage` pipeline (Section 25.4.7), the
+`RenderNode` display-list model (Section 25.5), and the typed
+`WindowInsets.Type` flags (Section 25.6.2) are all unchanged in Android 17.
+The deltas above are refinements layered on top of that stable core, which is
+why the bulk of this chapter remains accurate release over release.
+
+---
+
+## 25.13 Try It: Hands-On Experiments
 
 ### Experiment 25.1: Trace the Measure-Layout-Draw Cycle
 
@@ -22875,6 +24262,11 @@ View System, covering:
 - **Custom Views** (Section 25.10): The complete custom view contract,
   `Canvas` / `Paint` primitives, performance best practices, and custom
   `ViewGroup` layout.
+
+- **Android 17 Updates** (Section 25.12): The expanded Adaptive Refresh Rate
+  pipeline and View Velocity API, default synchronized window-insets
+  animations, and HWUI's move toward out-of-process rendering -- all
+  refinements on top of an otherwise stable core.
 
 The view system is where every line of application UI code ultimately
 executes.  Understanding its internals -- from the `MeasureSpec` bit packing

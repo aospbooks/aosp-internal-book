@@ -29,8 +29,8 @@ frameworks/base/services/companion/java/com/android/server/companion/
     CompanionDeviceManagerService.java
 ```
 
-This single file (~999 lines) serves as the orchestrator. It does not implement
-all functionality itself; instead it delegates to a set of specialized
+This file (~1,154 lines in Android 17) serves as the orchestrator. It does not
+implement all functionality itself; instead it delegates to a set of specialized
 processors and managers, each living in its own sub-package:
 
 | Sub-package        | Key Class                          | Responsibility                                |
@@ -44,8 +44,16 @@ processors and managers, each living in its own sub-package:
 | `datatransfer/`    | `SystemDataTransferProcessor`      | Permission sync across devices                |
 | `datatransfer/contextsync/` | `CrossDeviceSyncController` | Call metadata sync                       |
 | `datatransfer/continuity/`  | `TaskContinuityManagerService` | Task handoff between devices            |
-| `datasync/`        | `DataSyncProcessor`                | Generic data synchronization                  |
+| `datasync/`        | `DataSyncProcessor`                | Generic metadata synchronization              |
+| `actionrequest/`   | `ActionRequestProcessor`           | App-driven action requests (Android 17)       |
+| `devicetrust/`     | `TrustedDeviceProcessor`           | Trusted-device key exchange (Android 17)      |
+| `powerexemption/`  | `CompanionExemptionProcessor`      | Power and auto-revoke exemptions (Android 17) |
 | `virtual/`         | `VirtualDeviceManagerService`      | Virtual device creation & management          |
+
+The `actionrequest/`, `devicetrust/`, and `powerexemption/` packages are new in
+Android 17 and are covered in section 51.8. `CompanionDeviceManagerService` also
+holds a top-level `BackupRestoreProcessor` that backs up and restores
+associations across device migration.
 
 The class diagram below shows how `CompanionDeviceManagerService` coordinates
 its delegates:
@@ -59,14 +67,18 @@ classDiagram
         -DevicePresenceProcessor mDevicePresenceProcessor
         -CompanionTransportManager mTransportManager
         -SystemDataTransferProcessor mSystemDataTransferProcessor
-        -CrossDeviceSyncController mCrossDeviceSyncController
         -DataSyncProcessor mDataSyncProcessor
+        -ActionRequestProcessor mActionRequestProcessor
+        -TrustedDeviceProcessor mTrustedDeviceProcessor
+        -CompanionExemptionProcessor mCompanionExemptionProcessor
+        -BackupRestoreProcessor mBackupRestoreProcessor
         +associate()
         +disassociate()
         +attachSystemDataTransport()
         +detachSystemDataTransport()
         +sendMessage()
         +enableSystemDataSync()
+        +requestAction()
     }
 
     class AssociationStore {
@@ -101,6 +113,13 @@ classDiagram
     DisassociationProcessor --> CompanionTransportManager
 ```
 
+The processor fields are declared together in `CompanionDeviceManagerService`
+(see `frameworks/base/services/companion/java/com/android/server/companion/CompanionDeviceManagerService.java`,
+lines 154-170) and wired up in the constructor (lines 200-236), where each
+processor receives the shared `AssociationStore` and `CompanionTransportManager`
+so that all of them observe the same association set and the same transport
+channels.
+
 ### 51.1.2 Permission Model
 
 CDM enforces a strict permission model. The key permissions are declared as
@@ -108,6 +127,7 @@ static imports at the top of `CompanionDeviceManagerService.java`:
 
 ```java
 import static android.Manifest.permission.ACCESS_COMPANION_INFO;
+import static android.Manifest.permission.ACCESS_COMPANION_MESSAGE_PCC;
 import static android.Manifest.permission.ASSOCIATE_COMPANION_DEVICES;
 import static android.Manifest.permission.BLUETOOTH_CONNECT;
 import static android.Manifest.permission.DELIVER_COMPANION_MESSAGES;
@@ -116,6 +136,9 @@ import static android.Manifest.permission.REQUEST_COMPANION_SELF_MANAGED;
 import static android.Manifest.permission.REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE;
 import static android.Manifest.permission.USE_COMPANION_TRANSPORTS;
 ```
+
+Source:
+`frameworks/base/services/companion/java/com/android/server/companion/CompanionDeviceManagerService.java`, lines 20-28.
 
 These map to distinct capabilities:
 
@@ -139,6 +162,9 @@ These map to distinct capabilities:
 
 - **ACCESS_COMPANION_INFO** -- required to query companion information for
   other users.
+
+- **ACCESS_COMPANION_MESSAGE_PCC** -- added in Android 17; gates access to the
+  Private Compute Core message path used by trusted-device and AI-agent flows.
 
 ### 51.1.3 Boot Sequence
 
@@ -165,7 +191,7 @@ Map<Integer, Associations> userToAssociationsMap =
 ```
 
 Source:
-`frameworks/base/services/companion/java/com/android/server/companion/association/AssociationStore.java`, line 169.
+`frameworks/base/services/companion/java/com/android/server/companion/association/AssociationStore.java`, lines 177-180 (inside `refreshCache()` at line 164).
 
 ### 51.1.4 The Inner Binder Stub
 
@@ -235,11 +261,19 @@ final AssociationInfo association =
                 .setDeviceId(null)
                 .setPackagesToNotify(null)
                 .setMetadata(new PersistableBundle())
+                .setExtraPermissions(extraPermissions)
+                .setRemoteAiAgentSupported(isRemoteAiAgentSupported)
                 .build();
 ```
 
 Source:
-`frameworks/base/services/companion/java/com/android/server/companion/association/AssociationRequestsProcessor.java`, lines 326-344.
+`frameworks/base/services/companion/java/com/android/server/companion/association/AssociationRequestsProcessor.java`, lines 335-355.
+
+The last two setters are new in Android 17: `setExtraPermissions()` carries an
+optional set of permissions tied to the association, and
+`setRemoteAiAgentSupported()` records whether the companion can host a remote AI
+agent (used by the Computer Control flow in section 51.9). The value flows in
+from `AssociationRequest.isRemoteAiAgentSupported()`.
 
 Key fields:
 
@@ -256,6 +290,8 @@ Key fields:
 | `systemDataSyncFlags`  | Bitmask controlling what system data is synced                |
 | `transportFlags`       | Flags controlling transport behavior                          |
 | `deviceId`             | Optional `DeviceId` with custom ID and MAC                    |
+| `extraPermissions`     | Android 17: extra permissions associated with the device      |
+| `remoteAiAgentSupported` | Android 17: whether the companion can host a remote AI agent |
 
 ### 51.2.2 Device Profiles
 
@@ -271,7 +307,7 @@ private static final Set<String> DEVICE_PROFILES_WITH_REQUIRED_CONFIRMATION = ne
 ```
 
 Source:
-`frameworks/base/services/companion/java/com/android/server/companion/association/AssociationRequestsProcessor.java`, lines 142-145.
+`frameworks/base/services/companion/java/com/android/server/companion/association/AssociationRequestsProcessor.java`, lines 144-147.
 
 The full set of device profiles includes:
 
@@ -305,7 +341,7 @@ addRoleHolderForAssociation(mContext, association, success -> {
 ```
 
 Source:
-`AssociationRequestsProcessor.java`, lines 375-388.
+`AssociationRequestsProcessor.java`, lines 390-403.
 
 ### 51.2.3 The Association Flow
 
@@ -366,7 +402,10 @@ public void processNewAssociationRequest(@NonNull AssociationRequest request,
 ```
 
 Source:
-`AssociationRequestsProcessor.java`, lines 169-242.
+`AssociationRequestsProcessor.java`, lines 171-249 (the permission helpers
+`enforcePermissionForCreatingAssociation` and `enforceUsesCompanionDeviceFeature`
+are static imports from `com.android.server.companion.utils.PermissionsUtils`
+and `PackageUtils`, a refactor introduced in Android 17).
 
 ### 51.2.4 Rate Limiting
 
@@ -391,7 +430,8 @@ if (++recent >= ASSOCIATE_WITHOUT_PROMPT_MAX_PER_TIME_WINDOW) {
 ```
 
 Source:
-`AssociationRequestsProcessor.java`, lines 536-557.
+`AssociationRequestsProcessor.java`, lines 534-555 (the constants are declared at
+lines 140-141).
 
 ### 51.2.5 AssociationStore -- Persistence and Change Notification
 
@@ -421,10 +461,13 @@ public static final int CHANGE_TYPE_ADDED = 0;
 public static final int CHANGE_TYPE_REMOVED = 1;
 public static final int CHANGE_TYPE_UPDATED_ADDRESS_CHANGED = 2;
 public static final int CHANGE_TYPE_UPDATED_ADDRESS_UNCHANGED = 3;
+public static final int CHANGE_TYPE_UPDATED_DATA_SYNC_TYPES = 4;
 ```
 
 Source:
-`AssociationStore.java`, lines 73-76.
+`AssociationStore.java`, lines 77-81. Android 17 adds
+`CHANGE_TYPE_UPDATED_DATA_SYNC_TYPES`, fired when the per-association system
+data sync flags change (see `DataSyncProcessor` in section 51.3.6).
 
 The notification logic distinguishes between address-changing and non-changing
 updates. Remote listeners are only notified for significant changes (add,
@@ -439,7 +482,7 @@ if (changeType != CHANGE_TYPE_UPDATED_ADDRESS_UNCHANGED) {
 ```
 
 Source:
-`AssociationStore.java`, lines 570-582.
+`AssociationStore.java`, lines 601-608.
 
 Write operations are dispatched to a single-threaded executor to avoid blocking
 the caller:
@@ -460,7 +503,7 @@ private void writeCacheToDisk(@UserIdInt int userId) {
 ```
 
 Source:
-`AssociationStore.java`, lines 307-318.
+`AssociationStore.java`, lines 325-336.
 
 ### 51.2.6 Disassociation
 
@@ -484,7 +527,7 @@ public static final String REASON_PKG_DATA_CLEARED = "pkg-data-cleared";
 ```
 
 Source:
-`DisassociationProcessor.java`, lines 61-66.
+`DisassociationProcessor.java`, lines 71-76.
 
 A critical design aspect: if the companion app process is in the foreground
 when disassociation is triggered, the actual removal is deferred. The
@@ -503,7 +546,7 @@ if (packageProcessImportance <= IMPORTANCE_FOREGROUND && deviceProfile != null
 ```
 
 Source:
-`DisassociationProcessor.java`, lines 146-156.
+`DisassociationProcessor.java`, lines 160-174.
 
 Self-managed associations are automatically removed after 90 days of inactivity:
 
@@ -512,7 +555,7 @@ private static final long ASSOCIATION_REMOVAL_TIME_WINDOW_DEFAULT = DAYS.toMilli
 ```
 
 Source:
-`DisassociationProcessor.java`, line 72.
+`DisassociationProcessor.java`, line 82.
 
 The `InactiveAssociationsRemovalService` (a `JobService`) periodically invokes
 `removeIdleSelfManagedAssociations()` to clean up stale entries.
@@ -650,7 +693,7 @@ private static boolean isOneway(int message) {
 ```
 
 Source:
-`Transport.java`, lines 119-129.
+`Transport.java`, lines 133-143 (`HEADER_LENGTH = 12` is declared at line 77).
 
 This classification determines message handling:
 
@@ -706,7 +749,7 @@ protected final void handleMessage(int message, int sequence, @NonNull byte[] da
 ```
 
 Source:
-`Transport.java`, lines 278-299.
+`Transport.java`, lines 335-356.
 
 ### 51.3.3 Transport Lifecycle
 
@@ -742,7 +785,7 @@ private Transport createTransport(AssociationInfo association,
 ```
 
 Source:
-`CompanionTransportManager.java`, lines 299-333.
+`CompanionTransportManager.java`, lines 322-356.
 
 The transport type selection follows a priority:
 
@@ -824,7 +867,7 @@ private enum MessageType {
 ```
 
 Source:
-`SecureChannel.java`, lines 622-629.
+`SecureChannel.java`, lines 652-659.
 
 The channel handles a potential collision where both sides try to initiate
 simultaneously. The resolution uses byte-level comparison of the Client Init
@@ -843,7 +886,7 @@ if (compareByteArray(mClientInit, handshakeMessage) < 0) {
 ```
 
 Source:
-`SecureChannel.java`, lines 387-406.
+`SecureChannel.java`, lines 416-437.
 
 Pre-shared key authentication constructs a role-specific token by hashing the
 role name concatenated with the key:
@@ -863,7 +906,7 @@ private byte[] constructToken(D2DHandshakeContext.Role role, byte[] authValue)
 ```
 
 Source:
-`SecureChannel.java`, lines 586-596.
+`SecureChannel.java`, lines 616-626.
 
 ### 51.3.5 Permission Sync
 
@@ -972,7 +1015,7 @@ public DataSyncProcessor(
 ```
 
 Source:
-`DataSyncProcessor.java`, lines 58-81.
+`DataSyncProcessor.java`, lines 62-86.
 
 When a transport connects, the processor automatically broadcasts the local
 device's metadata to all newly connected associations. The metadata is grouped
@@ -980,82 +1023,73 @@ by user ID to ensure privacy:
 
 ```java
 private void broadcastMetadata(List<AssociationInfo> associations) {
+    SparseArray<List<AssociationInfo>> newAssociations = new SparseArray<>();
     synchronized (mAssociationsWithTransport) {
         // Isolate newly attached associations and group by user.
-        associations.stream()
-                .filter(association ->
-                        !mAssociationsWithTransport.contains(association.getId()))
-                .collect(Collectors.groupingBy(AssociationInfo::getUserId))
-                .forEach(this::sendMetadataUpdate);
+        for (AssociationInfo association : associations) {
+            if (!mAssociationsWithTransport.contains(association.getId())) {
+                int userId = association.getUserId();
+                // ... add association to newAssociations.get(userId) ...
+            }
+        }
         // Update the set of associations with transport.
         mAssociationsWithTransport.clear();
-        mAssociationsWithTransport.addAll(associations.stream()
-                .map(AssociationInfo::getId)
-                .collect(Collectors.toSet()));
+        for (AssociationInfo association : associations) {
+            mAssociationsWithTransport.add(association.getId());
+        }
+    }
+    for (int i = 0; i < newAssociations.size(); i++) {
+        sendMetadataUpdate(newAssociations.keyAt(i), newAssociations.valueAt(i));
     }
 }
 ```
 
 Source:
-`DataSyncProcessor.java`, lines 116-131.
+`DataSyncProcessor.java`, lines 183-209. (Android 17 rewrote this method to use
+an explicit `SparseArray` grouping rather than the older stream-based collector.)
 
-When metadata is received from a remote device, a timestamp is automatically
-added and the association record is updated:
+When metadata is received from a remote device, the payload is parsed and handed
+to `setRemoteMetadata()`, which adds a timestamp and updates the association
+record:
 
 ```java
 private void onReceiveMetadataUpdate(int associationId, byte[] data) {
     PersistableBundle metadata;
-    metadata = PersistableBundle.readFromStream(new ByteArrayInputStream(data));
-    metadata.putLong(AssociationInfo.METADATA_TIMESTAMP, System.currentTimeMillis());
-
-    AssociationInfo association =
-            mAssociationStore.getAssociationWithCallerChecks(associationId);
-    AssociationInfo updated = (new AssociationInfo.Builder(association))
-            .setMetadata(metadata)
-            .build();
-    mAssociationStore.updateAssociation(updated);
-}
-```
-
-Source:
-`DataSyncProcessor.java`, lines 133-150.
-
-The `LocalMetadataStore` manages per-user metadata persistence using XML:
-
-```java
-public class LocalMetadataStore {
-    private static final String FILE_NAME = "cdm_local_metadata.xml";
-    private static final String ROOT_TAG = "bundle";
-    private static final int READ_FROM_DISK_TIMEOUT = 5; // in seconds
-```
-
-Source:
-`LocalMetadataStore.java`, lines 56-61.
-
-It uses a cache-first strategy: reads go to the in-memory `SparseArray` first,
-falling back to disk reads with a 5-second timeout:
-
-```java
-@GuardedBy("mLock")
-@NonNull
-private PersistableBundle readMetadataFromCache(@UserIdInt int userId) {
-    PersistableBundle cachedMetadata = mCachedPerUser.get(userId);
-    if (cachedMetadata == null) {
-        Future<PersistableBundle> future =
-                mExecutor.submit(() -> readMetadataFromStore(userId));
-        try {
-            cachedMetadata = future.get(READ_FROM_DISK_TIMEOUT, TimeUnit.SECONDS);
-        } catch (TimeoutException e) {
-            Slog.e(TAG, "Reading metadata from disk timed out.", e);
-        }
-        // ...
+    try {
+        metadata = PersistableBundle.readFromStream(new ByteArrayInputStream(data));
+    } catch (IOException e) {
+        throw new RuntimeException("Failed to parse received metadata", e);
     }
-    return cachedMetadata;
+    setRemoteMetadata(associationId, metadata);
 }
 ```
 
 Source:
-`LocalMetadataStore.java`, lines 99-121.
+`DataSyncProcessor.java`, lines 211-222. `setRemoteMetadata()` stamps the bundle
+with `AssociationInfo.METADATA_TIMESTAMP` (line 149) before calling
+`mAssociationStore.updateAssociation()`.
+
+In Android 17 the `LocalMetadataStore` was reduced to a thin subclass of a shared
+`PersistableBundleStore` helper in the `utils/` package. It only supplies the log
+tag and the on-disk file name:
+
+```java
+public class LocalMetadataStore extends PersistableBundleStore {
+
+    private static final String TAG = "CDM_LocalMetadataStore";
+    // A binary file w/o file extension
+    private static final String FILE_NAME = "cdm_local_metadata";
+
+    public String getTag() { return TAG; }
+    public String getFileName() { return FILE_NAME; }
+}
+```
+
+Source:
+`LocalMetadataStore.java` (the whole file is 46 lines). The cache-first read,
+disk timeout, and per-user `SparseArray` caching now live in
+`frameworks/base/services/companion/java/com/android/server/companion/utils/PersistableBundleStore.java`,
+which both `LocalMetadataStore` and other CDM stores reuse.
 
 The metadata sync architecture:
 
@@ -1109,55 +1143,58 @@ The controller manages:
 
 ### 51.3.8 Task Continuity
 
-The `TaskContinuityManagerService` (copyright 2025) is a newer feature that
-enables seamless task handoff between paired devices:
+The `TaskContinuityManagerService` enables seamless task handoff between paired
+devices. It was restructured in Android 17 around a per-user `HandoffController`:
 
 ```
 frameworks/base/services/companion/java/com/android/server/companion/datatransfer/continuity/
     TaskContinuityManagerService.java
-    TaskBroadcaster.java
-    UniversalClipboardService.java
+    FeatureController.java
+    MultiUserResourceCache.java
     connectivity/
-    handoff/
-    messages/
-    tasks/
+    handoff/      -- HandoffController, In/OutboundHandoffRequestHandler
+    messages/     -- HandoffRequestMessage, HandoffRequestResultMessage, etc.
+    settings/     -- HandoffPreferenceStore, HandoffSettingsManager
+    tasks/        -- TaskBroadcaster, RemoteTaskFactory, RemoteTaskListenerHolder
 ```
 
-The service components:
+The service is a plain `SystemService`. Its handoff state is kept in a
+`MultiUserResourceCache<HandoffController>`, with per-user enablement preferences
+in a `HandoffPreferenceStore`/`HandoffSettingsManager`:
 
 ```java
-public final class TaskContinuityManagerService
-    extends SystemService implements TaskContinuityMessenger.Listener {
+public final class TaskContinuityManagerService extends SystemService {
 
-    private InboundHandoffRequestController mInboundHandoffRequestController;
-    private OutboundHandoffRequestController mOutboundHandoffRequestController;
+    private final MultiUserResourceCache<HandoffController> mHandoffControllerCache;
+    private HandoffPreferenceStore mHandoffPreferenceStore;
+    private HandoffSettingsManager mHandoffSettingsManager;
     private TaskContinuityManagerServiceImpl mTaskContinuityManagerService;
-    private TaskBroadcaster mTaskBroadcaster;
-    private TaskContinuityMessenger mTaskContinuityMessenger;
-    private RemoteTaskStore mRemoteTaskStore;
+    // ...
 }
 ```
 
 Source:
-`TaskContinuityManagerService.java`, lines 56-66.
+`TaskContinuityManagerService.java`, lines 45-60. (Android 17 replaced the older
+single-instance `InboundHandoffRequestController`/`OutboundHandoffRequestController`
+fields with per-association handlers owned by each `HandoffController`, and the
+`UniversalClipboardService` was removed from this package.)
 
-The service publishes a binder service under `Context.TASK_CONTINUITY_SERVICE`
-and provides APIs for:
+In `onStart()` the service publishes a binder service under
+`Context.TASK_CONTINUITY_SERVICE` and provides APIs for:
 
-- **Registering remote task listeners** (requires `READ_REMOTE_TASKS` permission)
-- **Requesting task handoff** (requires `REQUEST_TASK_HANDOFF` permission)
+- **Registering remote task listeners** (requires `READ_REMOTE_TASKS`, enforced
+  via `@EnforcePermission(READ_REMOTE_TASKS)` on the inner stub).
+
+- **Requesting task handoff** (requires `REQUEST_TASK_HANDOFF`).
 
 Task continuity messages flow through the CDM transport using
-`MESSAGE_ONEWAY_TASK_CONTINUITY`. The message types include:
-
-- `ContinuityDeviceConnected` -- notifies that a continuity-capable device
-  has connected.
-
-- `HandoffRequestMessage` / `HandoffRequestResultMessage` -- request/response
-  for task transfer.
-
-- `RemoteTaskAddedMessage` / `RemoteTaskUpdatedMessage` / `RemoteTaskRemovedMessage`
-  -- remote task list synchronization.
+`MESSAGE_ONEWAY_TASK_CONTINUITY`. The concrete message types live under
+`messages/` and include `HandoffRequestMessage` / `HandoffRequestResultMessage`
+(request/response for a task transfer), `HandoffActivityDataMessage` (the activity
+payload to resume), `TaskStackBroadcastMessage` (remote task-stack
+synchronization), and `RemoteTaskInfo` (a single remote task descriptor). The
+per-association request flow is driven by `InboundHandoffRequestHandler` and
+`OutboundHandoffRequestHandler` in `handoff/`.
 
 ---
 
@@ -1172,18 +1209,19 @@ representation_ of that hardware within the Android framework.
 
 ```
 frameworks/base/services/companion/java/com/android/server/companion/virtual/
-    VirtualDeviceManagerService.java   (~1070 lines)
-    VirtualDeviceImpl.java             (~1872 lines)
-    GenericWindowPolicyController.java (~482 lines)
-    InputController.java               (~226 lines)
-    SensorController.java              (~391 lines)
-    CameraAccessController.java        (~335 lines)
+    VirtualDeviceManagerService.java   (~1334 lines)
+    VirtualDeviceImpl.java             (~2087 lines)
+    VirtualDeviceShellCommand.java
+    GenericWindowPolicyController.java (~587 lines)
+    InputController.java               (~272 lines)
+    SensorController.java              (~392 lines)
+    CameraAccessController.java        (~345 lines)
     VirtualDeviceLog.java
     PermissionUtils.java
     ViewConfigurationController.java
     audio/
     camera/
-    computercontrol/
+    computercontrol/   -- Computer Control sessions (covered in section 51.9)
 ```
 
 The service architecture:
@@ -1267,30 +1305,33 @@ sequenceDiagram
 
 ### 51.4.3 VirtualDeviceImpl -- The Device Instance
 
-`VirtualDeviceImpl` (1872 lines) is the concrete implementation of a single
-virtual device. It extends `IVirtualDevice.Stub` and implements
+`VirtualDeviceImpl` (~2,087 lines in Android 17) is the concrete implementation
+of a single virtual device. It extends `IVirtualDevice.Stub` and implements
 `IBinder.DeathRecipient` to auto-cleanup when the owning app dies.
 
 The constructor initializes all subsystem controllers:
 
 ```java
 VirtualDeviceImpl(
-        Context context,
-        AssociationInfo associationInfo,
-        VirtualDeviceManagerService service,
-        VirtualDeviceLog virtualDeviceLog,
-        IBinder token,
-        AttributionSource attributionSource,
+        @NonNull Context context,
+        @Nullable AssociationInfo associationInfo,
+        @NonNull VirtualDeviceManagerService service,
+        @NonNull VirtualDeviceLog virtualDeviceLog,
+        @NonNull IBinder token,
+        @NonNull AttributionSource attributionSource,
         int deviceId,
-        CameraAccessController cameraAccessController,
-        PendingTrampolineCallback pendingTrampolineCallback,
-        IVirtualDeviceActivityListener activityListener,
-        IVirtualDeviceSoundEffectListener soundEffectListener,
-        VirtualDeviceParams params) {
+        @DeviceProfile int deviceProfile,
+        @Nullable CameraAccessController cameraAccessController,
+        @NonNull PendingTrampolineCallback pendingTrampolineCallback,
+        @NonNull IVirtualDeviceActivityListener activityListener,
+        @Nullable IVirtualDeviceSoundEffectListener soundEffectListener,
+        @NonNull VirtualDeviceParams params) {
 ```
 
 Source:
-`VirtualDeviceImpl.java`, lines 426-438.
+`VirtualDeviceImpl.java`, lines 489-502. In Android 17 `associationInfo` is now
+`@Nullable` (a virtual device can be created without a CDM association under the
+right permissions) and a `@DeviceProfile int deviceProfile` parameter was added.
 
 Key initialization details:
 
@@ -1305,7 +1346,7 @@ Key initialization details:
     ```
 
     Source:
-    `VirtualDeviceImpl.java`, lines 155-159.
+    `VirtualDeviceImpl.java`, lines 176-180.
 
 2. **Persistent device ID** is derived from the CDM association:
 
@@ -1316,7 +1357,7 @@ Key initialization details:
     ```
 
     Source:
-    `VirtualDeviceImpl.java`, lines 588-590.
+    `VirtualDeviceImpl.java`, lines 680-682.
 
 3. **Device policies** are copied from `VirtualDeviceParams`:
 
@@ -1386,7 +1427,7 @@ private class GwpcActivityListener implements GenericWindowPolicyController.Acti
 ```
 
 Source:
-`VirtualDeviceImpl.java`, lines 251-270.
+`VirtualDeviceImpl.java`, lines 310-330.
 
 The intent interception mechanism allows the VDM owner to intercept specific
 intents launched on virtual displays:
@@ -1407,7 +1448,7 @@ IVirtualDeviceIntentInterceptor.Stub.asInterface(interceptor.getKey())
 ```
 
 Source:
-`VirtualDeviceImpl.java`, lines 369-374.
+`VirtualDeviceImpl.java`, lines 423-425.
 
 ### 51.4.6 Running Apps Tracking
 
@@ -1423,7 +1464,7 @@ private ArraySet<Pair<Integer, String>> mAllRunningUidPackagePairs = new ArraySe
 ```
 
 Source:
-`VirtualDeviceImpl.java`, lines 220-225.
+`VirtualDeviceImpl.java`, lines 281-284.
 
 When the set changes, it notifies multiple subsystems:
 
@@ -1439,7 +1480,7 @@ if (mCameraAccessController != null) {
 ```
 
 Source:
-`VirtualDeviceImpl.java`, lines 415-422.
+`VirtualDeviceImpl.java`, lines 467-474.
 
 ### 51.4.7 Power Management
 
@@ -1464,7 +1505,7 @@ void onLockdownChanged(boolean lockdownActive) {
 ```
 
 Source:
-`VirtualDeviceImpl.java`, lines 562-574.
+`VirtualDeviceImpl.java`, lines 647-659.
 
 The `LOCK_STATE_ALWAYS_UNLOCKED` option requires the
 `ADD_ALWAYS_UNLOCKED_DISPLAY` permission and sets the
@@ -1476,12 +1517,14 @@ VDM supports mirror displays for screen sharing use cases. Creating mirror
 displays requires specific device profiles and permissions:
 
 ```java
-private static final List<String> DEVICE_PROFILES_ALLOWING_MIRROR_DISPLAYS = List.of(
-        AssociationRequest.DEVICE_PROFILE_APP_STREAMING);
+private static final List<Integer> DEVICE_PROFILES_ALLOWING_MIRROR_DISPLAYS = List.of(
+        VirtualDevice.DEVICE_PROFILE_APP_STREAMING);
 ```
 
 Source:
-`VirtualDeviceImpl.java`, lines 163-164.
+`VirtualDeviceImpl.java`, lines 184-185. (In Android 17 the list is keyed by the
+integer `VirtualDevice.DEVICE_PROFILE_*` constants rather than the string
+`AssociationRequest.DEVICE_PROFILE_*` names.)
 
 After Android Baklava, the `ADD_MIRROR_DISPLAY` permission is required instead
 of relying on the app streaming role:
@@ -1493,7 +1536,7 @@ public static final long CHECK_ADD_MIRROR_DISPLAY_PERMISSION = 378605160L;
 ```
 
 Source:
-`VirtualDeviceImpl.java`, lines 151-153.
+`VirtualDeviceImpl.java`, lines 172-174.
 
 ### 51.4.9 Death Handling and Cleanup
 
@@ -1509,7 +1552,7 @@ try {
 ```
 
 Source:
-`VirtualDeviceImpl.java`, lines 537-540.
+`VirtualDeviceImpl.java`, lines 615-619.
 
 When the death callback fires, the device performs a comprehensive cleanup:
 closing all virtual displays, releasing all input devices, stopping the audio
@@ -1533,9 +1576,9 @@ frameworks/base/services/companion/java/com/android/server/companion/virtual/
 It creates and tracks virtual input devices via `InputManagerInternal`:
 
 ```java
-class InputController {
+final class InputController {
     @GuardedBy("mLock")
-    private final ArrayMap<IBinder, IVirtualInputDevice> mInputDevices = new ArrayMap<>();
+    private final ArrayMap<IBinder, VirtualInputDevice> mInputDevices = new ArrayMap<>();
 
     private final InputManagerInternal mInputManagerInternal;
     private final InputManager mInputManager;
@@ -1543,7 +1586,7 @@ class InputController {
 ```
 
 Source:
-`InputController.java`, lines 47-57.
+`InputController.java`, lines 55-65.
 
 The controller supports seven types of virtual input devices:
 
@@ -1560,18 +1603,18 @@ The controller supports seven types of virtual input devices:
 Each creation follows the same pattern:
 
 ```java
-IVirtualInputDevice createKeyboard(@NonNull IBinder token,
-        @NonNull VirtualKeyboardConfig config) {
-    IVirtualInputDevice device = mInputManagerInternal.createVirtualKeyboard(token, config);
+IVirtualKeyboard createKeyboard(@NonNull IBinder token, @NonNull VirtualKeyboardConfig config)
+        throws RemoteException {
+    IVirtualKeyboard device = mInputManagerInternal.createVirtualKeyboard(token, config);
     Counter.logIncrementWithUid("virtual_devices.value_virtual_keyboard_created_count",
             mAttributionSource.getUid());
-    addDevice(token, device);
+    addDevice(token, device.getInputDeviceId(), config);
     return device;
 }
 ```
 
 Source:
-`InputController.java`, lines 93-100.
+`InputController.java`, lines 102-109.
 
 The `close()` method iterates over all tracked devices and closes them via
 `InputManagerInternal`:
@@ -1580,10 +1623,10 @@ The `close()` method iterates over all tracked devices and closes them via
 void close() {
     mInputManager.unregisterInputDeviceListener(mInputDeviceListener);
     synchronized (mLock) {
-        final Iterator<Map.Entry<IBinder, IVirtualInputDevice>> iterator =
+        final Iterator<Map.Entry<IBinder, VirtualInputDevice>> iterator =
                 mInputDevices.entrySet().iterator();
         while (iterator.hasNext()) {
-            final Map.Entry<IBinder, IVirtualInputDevice> entry = iterator.next();
+            final Map.Entry<IBinder, VirtualInputDevice> entry = iterator.next();
             final IBinder token = entry.getKey();
             iterator.remove();
             mInputManagerInternal.closeVirtualInputDevice(token);
@@ -1593,7 +1636,7 @@ void close() {
 ```
 
 Source:
-`InputController.java`, lines 71-83.
+`InputController.java`, lines 79-91.
 
 Additional display-level settings are managed through the controller:
 
@@ -1625,7 +1668,7 @@ final int handle = mSensorManagerInternal.createRuntimeSensor(mVirtualDeviceId,
 ```
 
 Source:
-`SensorController.java`, lines 131-135.
+`SensorController.java`, lines 132-136.
 
 Each sensor is tracked by two data structures:
 
@@ -1648,7 +1691,7 @@ static final class SensorDescriptor {
 ```
 
 Source:
-`SensorController.java`, lines 355-365.
+`SensorController.java`, lines 356-365.
 
 Sending sensor events goes through the native sensor infrastructure:
 
@@ -1664,7 +1707,7 @@ boolean sendSensorEvent(@NonNull IBinder token, @NonNull VirtualSensorEvent even
 ```
 
 Source:
-`SensorController.java`, lines 156-168.
+`SensorController.java`, lines 157-169.
 
 The controller also supports sensor additional info (e.g., calibration data):
 
@@ -1684,7 +1727,7 @@ boolean sendSensorAdditionalInfo(@NonNull IBinder token,
 ```
 
 Source:
-`SensorController.java`, lines 170-199.
+`SensorController.java`, lines 171-200.
 
 The `RuntimeSensorCallbackWrapper` bridges framework sensor configuration
 requests back to the VDM client:
@@ -1705,7 +1748,7 @@ private final class RuntimeSensorCallbackWrapper
 ```
 
 Source:
-`SensorController.java`, lines 246-280.
+`SensorController.java`, lines 247-281.
 
 Direct sensor channels are also supported, allowing high-rate sensor data to
 be shared via shared memory:
@@ -1721,7 +1764,7 @@ public int onDirectChannelCreated(ParcelFileDescriptor fd) {
 ```
 
 Source:
-`SensorController.java`, lines 283-307.
+`SensorController.java`, lines 284-307.
 
 ```mermaid
 flowchart LR
@@ -1761,12 +1804,12 @@ frameworks/base/services/companion/java/com/android/server/companion/virtual/
 The controller extends `CameraManager.AvailabilityCallback`:
 
 ```java
-class CameraAccessController extends CameraManager.AvailabilityCallback
+final class CameraAccessController extends CameraManager.AvailabilityCallback
         implements AutoCloseable {
 ```
 
 Source:
-`CameraAccessController.java`, line 45.
+`CameraAccessController.java`, lines 45-46.
 
 It uses a reference-counting mechanism for observers:
 
@@ -1782,7 +1825,7 @@ public void startObservingIfNeeded() {
 ```
 
 Source:
-`CameraAccessController.java`, lines 121-128.
+`CameraAccessController.java`, lines 129-136.
 
 When a camera is opened (`onCameraOpened`), the controller checks if the
 opening app is running on any virtual device:
@@ -1807,7 +1850,7 @@ public void onCameraOpened(@NonNull String cameraId, @NonNull String packageName
 ```
 
 Source:
-`CameraAccessController.java`, lines 196-236.
+`CameraAccessController.java`, lines 204-246.
 
 Blocking is implemented through camera injection -- injecting a non-existent
 external camera ID, which effectively disconnects the app from the real camera:
@@ -1832,7 +1875,7 @@ private void startBlocking(String packageName, String cameraId) {
 ```
 
 Source:
-`CameraAccessController.java`, lines 260-286.
+`CameraAccessController.java`, lines 270-296.
 
 The `ERROR_INJECTION_UNSUPPORTED` error is expected and means the camera was
 successfully blocked (no external camera to map to). A callback notifies the
@@ -1852,7 +1895,7 @@ synchronized (mLock) {
 ```
 
 Source:
-`CameraAccessController.java`, lines 307-320.
+`CameraAccessController.java`, lines 318-332.
 
 ```mermaid
 flowchart TD
@@ -1919,7 +1962,8 @@ public void onRunningAppsChanged(@NonNull ArraySet<Integer> runningUids) {
 ```
 
 Source:
-`VirtualAudioController.java`, lines 129-175.
+`VirtualAudioController.java`, lines 131-177 (`UPDATE_REROUTING_APPS_DELAY_MS`
+is declared at line 54).
 
 The routing notification sends the list of UIDs that need audio re-routing
 to the client via `IAudioRoutingCallback`:
@@ -1942,7 +1986,7 @@ private void notifyAppsNeedingAudioRoutingChanged() {
 ```
 
 Source:
-`VirtualAudioController.java`, lines 231-253.
+`VirtualAudioController.java`, lines 233-255.
 
 The controller also forwards playback and recording configuration changes
 to the client via `IAudioConfigChangedCallback`:
@@ -1964,7 +2008,7 @@ public void onPlaybackConfigChanged(List<AudioPlaybackConfiguration> configs) {
 ```
 
 Source:
-`VirtualAudioController.java`, lines 177-195.
+`VirtualAudioController.java`, lines 180-197.
 
 ```mermaid
 sequenceDiagram
@@ -2041,9 +2085,7 @@ The policy enforcement chain for `canContainActivity()`:
 
 ```mermaid
 flowchart TD
-    A[canContainActivity called] --> B{Is mirror display?}
-    B -->|Yes| BLOCK1[Block: Mirror displays cannot contain activities]
-    B -->|No| C{Is secure display?}
+    A[canContainActivity called] --> C{"Secure or local-only display?"}
     C -->|No| D{Has FLAG_CAN_DISPLAY_ON_REMOTE_DEVICES?}
     D -->|No| BLOCK2[Block: Requires canDisplayOnRemoteDevices=true]
     D -->|Yes| E{User allowed?}
@@ -2069,11 +2111,9 @@ Implementation:
 public boolean canContainActivity(@NonNull ActivityInfo activityInfo,
         @WindowConfiguration.WindowingMode int windowingMode, int launchingFromDisplayId,
         boolean isNewTask) {
-    // Mirror displays cannot contain activities.
-    if (waitAndGetIsMirrorDisplay()) {
-        return false;
-    }
-    if (!mIsSecureDisplay && (activityInfo.flags & FLAG_CAN_DISPLAY_ON_REMOTE_DEVICES) == 0) {
+    if (!mIsSecureDisplay && (activityInfo.flags & FLAG_CAN_DISPLAY_ON_REMOTE_DEVICES) == 0
+            && !mLocalDeviceOnly) {
+        logActivityLaunchBlocked("Display requires android:canDisplayOnRemoteDevices=true");
         return false;
     }
     final UserHandle activityUser =
@@ -2095,7 +2135,10 @@ public boolean canContainActivity(@NonNull ActivityInfo activityInfo,
 ```
 
 Source:
-`GenericWindowPolicyController.java`, lines 299-348.
+`GenericWindowPolicyController.java`, lines 316-356. In Android 17 the
+`FLAG_CAN_DISPLAY_ON_REMOTE_DEVICES` gate is skipped for displays created with the
+new `mLocalDeviceOnly` flag (local virtual displays that never leave the host),
+and the standalone mirror-display short-circuit was dropped from this method.
 
 The policy logic is an XOR pattern:
 
@@ -2112,7 +2155,7 @@ private boolean isAllowedByPolicy(ComponentName component) {
 ```
 
 Source:
-`GenericWindowPolicyController.java`, lines 466-474.
+`GenericWindowPolicyController.java`, lines 493-501.
 
 When `mActivityLaunchAllowedByDefault` is `true`, the exemptions list acts as
 a **blocklist**. When `false`, the exemptions act as an **allowlist**.
@@ -2126,19 +2169,22 @@ controller notifies the VDM owner and optionally blocks the window:
 @Override
 public boolean keepActivityOnWindowFlagsChanged(ActivityInfo activityInfo, int windowFlags,
         int systemWindowFlags) {
-    if ((windowFlags & FLAG_SECURE) != 0 && (mCurrentWindowFlags & FLAG_SECURE) == 0) {
-        mHandler.post(
-                () -> mActivityListener.onSecureWindowShown(displayId, activityInfo));
+    final int displayId = waitAndGetDisplayId();
+    if (displayId != INVALID_DISPLAY) {
+        final ComponentName componentName = activityInfo.getComponentName();
+        // ... track per-component window flags via mWindowFlagsTracker ...
+        if (Objects.equals(componentName, topComponentName)) {
+            detectSecureWindowStatusChange(windowFlags, currentWindowFlags, componentName,
+                    activityInfo.applicationInfo.uid, displayId);
+        }
     }
-    if ((windowFlags & FLAG_SECURE) == 0 && (mCurrentWindowFlags & FLAG_SECURE) != 0) {
-        mHandler.post(() -> mActivityListener.onSecureWindowHidden(displayId));
-    }
-    mCurrentWindowFlags = windowFlags;
 
-    if (!CompatChanges.isChangeEnabled(ALLOW_SECURE_ACTIVITY_DISPLAY_ON_REMOTE_DEVICE, ...)) {
-        if ((windowFlags & FLAG_SECURE) != 0
+    if (!CompatChanges.isChangeEnabled(ALLOW_SECURE_ACTIVITY_DISPLAY_ON_REMOTE_DEVICE,
+            activityInfo.packageName,
+            UserHandle.getUserHandleForUid(activityInfo.applicationInfo.uid))) {
+        if (isSecureContent(windowFlags)
                 || (systemWindowFlags & SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS) != 0) {
-            notifyActivityBlocked(activityInfo, null);
+            notifyActivityBlocked(activityInfo, /* intentSender= */ null);
             return false;
         }
     }
@@ -2147,7 +2193,12 @@ public boolean keepActivityOnWindowFlagsChanged(ActivityInfo activityInfo, int w
 ```
 
 Source:
-`GenericWindowPolicyController.java`, lines 355-386.
+`GenericWindowPolicyController.java`, lines 365-399. Android 17 refactored the
+secure-window bookkeeping into a per-component `mWindowFlagsTracker` and a
+`detectSecureWindowStatusChange()` helper, which is what now fires the
+`onSecureWindowShown`/`onSecureWindowHidden` activity-listener callbacks; the
+`ALLOW_SECURE_ACTIVITY_DISPLAY_ON_REMOTE_DEVICE` compatibility change is declared
+at line 126.
 
 For apps targeting Tiramisu or later, the `FLAG_SECURE` check can be opted
 into via the `ALLOW_SECURE_ACTIVITY_DISPLAY_ON_REMOTE_DEVICE` compatibility
@@ -2169,7 +2220,7 @@ private boolean activityMatchesDisplayCategory(ActivityInfo activityInfo) {
 ```
 
 Source:
-`GenericWindowPolicyController.java`, lines 444-450.
+`GenericWindowPolicyController.java`, lines 473-479.
 
 This enables specialized displays (e.g., a "AUTOMOTIVE" category display
 that only shows automotive-flagged activities).
@@ -2189,7 +2240,7 @@ public boolean canShowTasksInHostDeviceRecents() {
 ```
 
 Source:
-`GenericWindowPolicyController.java`, lines 419-423.
+`GenericWindowPolicyController.java`, lines 447-451.
 
 This can be dynamically updated:
 
@@ -2213,7 +2264,7 @@ public @Nullable ComponentName getCustomHomeComponent() {
 ```
 
 Source:
-`GenericWindowPolicyController.java`, lines 425-427.
+`GenericWindowPolicyController.java`, lines 454-456.
 
 This is applicable only to displays that support home activities (created with
 the relevant virtual display flags). If null, the system-default secondary
@@ -2326,9 +2377,311 @@ sequenceDiagram
 
 ---
 
-## 51.7 Try It
+## 51.7 New CDM Subsystems in Android 17
 
-### 51.7.1 Inspect Companion Device Associations
+Android 17 adds three sibling packages under
+`frameworks/base/services/companion/java/com/android/server/companion/`, all wired
+into `CompanionDeviceManagerService` next to the existing processors. They share
+the same `AssociationStore` and `CompanionTransportManager` as everything else,
+so they observe the same association set and the same transport channels.
+
+### 51.7.1 Action Requests
+
+The `actionrequest/` package lets a companion app ask its paired devices to
+activate or deactivate a stateful capability and report back the result. The
+`ActionRequestProcessor` implements the `requestAction -> notifyActionRequestResult`
+loop and tracks which actions are currently active per association:
+
+```
+frameworks/base/services/companion/java/com/android/server/companion/actionrequest/
+    ActionRequestProcessor.java
+```
+
+The supported actions are a small fixed set, declared as `STATEFUL_ACTIONS`:
+
+```java
+import static android.companion.ActionRequest.REQUEST_NEARBY_ADVERTISING;
+import static android.companion.ActionRequest.REQUEST_NEARBY_SCANNING;
+import static android.companion.ActionRequest.REQUEST_TRANSPORT;
+// ...
+private static final Set<Integer> STATEFUL_ACTIONS = Set.of(
+        REQUEST_NEARBY_SCANNING,
+        REQUEST_NEARBY_ADVERTISING,
+        REQUEST_TRANSPORT);
+```
+
+Source:
+`ActionRequestProcessor.java`, lines 82-86.
+
+`requestAction()` validates the action against `STATEFUL_ACTIONS`, then dispatches
+to each named association (skipping any that no longer exist). The companion app
+later reports `RESULT_ACTIVATED`, `RESULT_DEACTIVATED`, or
+`RESULT_FAILED_TO_ACTIVATE` through `processActionResult()`, which updates the
+processor's per-association state and fans the result out to registered
+`IOnActionResultListener` callbacks:
+
+```java
+public void requestAction(@NonNull ActionRequest request,
+        @NonNull String serviceName, int[] associationIds) {
+    // ...
+    if (!STATEFUL_ACTIONS.contains(action)) {
+        Slog.w(TAG, "Action " + action + " is not a supported action.");
+        return;
+    }
+    Binder.withCleanCallingIdentity(() -> {
+        for (int id : associationIds) {
+            final AssociationInfo association = mAssociationStore.getAssociationById(id);
+            if (association == null) { continue; }
+            handleActionRequest(association, request, serviceName);
+        }
+    });
+}
+```
+
+Source:
+`ActionRequestProcessor.java`, lines 151-184. `CompanionDeviceManagerService`
+exposes this as `requestAction()` and `setRequestActionAllowList()` on the Binder
+interface (see `CompanionDeviceManagerService.java`, lines 799 and 807).
+
+### 51.7.2 Trusted Devices
+
+The `devicetrust/` package establishes and stores per-association session keys so
+two paired devices can recognize each other as trusted without re-running the
+full UKEY2 attestation handshake every time. `TrustedDeviceProcessor` registers
+for `MESSAGE_REQUEST_TRUSTED_DEVICE` on the transport manager and runs a
+key-exchange when a transport connects:
+
+```
+frameworks/base/services/companion/java/com/android/server/companion/devicetrust/
+    TrustedDeviceProcessor.java
+    PskProvider.java               -- pre-shared-key provider interface
+    BluetoothPasskeyProvider.java  -- "BT_PASSKEY" provider
+    RandomKeyProvider.java         -- "RANDOM_KEY" provider
+    TrustedDeviceStore.java        -- persisted session keys
+```
+
+```java
+public class TrustedDeviceProcessor {
+    private final SparseArray<Transport> mCurrentSessions = new SparseArray<>();
+    private final Set<PskProvider> mPskProviders = new HashSet<>();
+    // ...
+    mTransportManager.addListener(MESSAGE_REQUEST_TRUSTED_DEVICE, mOnMessageReceivedListener);
+    mTransportManager.addListener(mOnTransportChangedListener);
+}
+```
+
+Source:
+`TrustedDeviceProcessor.java`, lines 59-87.
+
+Keys are derived with HKDF (`hkdfExtract`/`hkdfExpand` from the new `utils/`
+`CryptoUtils`). The set of available keys is supplied by pluggable `PskProvider`
+implementations, each identified by a `NAME`: `BluetoothPasskeyProvider`
+(`"BT_PASSKEY"`) and `RandomKeyProvider` (`"RANDOM_KEY"`). `CompanionDeviceManagerService`
+registers and removes providers dynamically:
+
+```java
+mTrustedDeviceProcessor.addPskProvider(new RandomKeyProvider());
+// ...
+mTrustedDeviceProcessor.removePskProvider(RandomKeyProvider.NAME);
+```
+
+Source:
+`CompanionDeviceManagerService.java`, lines 718-720. The `PskProvider` interface
+exposes a single `byte[] getKey(int userId, int associationId)` method
+(`PskProvider.java`, lines 27-43), and `loadKeysForUser()` snapshots the available
+keys when a user is unlocked (`TrustedDeviceProcessor.java`, line 111).
+
+### 51.7.3 Power Exemptions
+
+The `powerexemption/` package consolidates the power and background-execution
+exemptions that companion apps receive while a device is associated. Previously
+scattered, these are now managed by `CompanionExemptionProcessor`:
+
+```
+frameworks/base/services/companion/java/com/android/server/companion/powerexemption/
+    CompanionExemptionProcessor.java
+    CompanionExemptionStore.java
+```
+
+The processor listens for association changes and, when a companion device is
+present, places the app on the power-save permanent allowlist via
+`PowerExemptionManager`. When the device disconnects or the association is
+removed, the exemption is withdrawn:
+
+```java
+public void exemptPackage(int userId, String packageName, boolean hasPresentDevices) {
+    // ... resolve PackageInfo, then run as system ...
+}
+```
+
+Source:
+`CompanionExemptionProcessor.java`, line 127. The processor also keeps the
+companion app exempt from permission auto-revoke
+(`updateAutoRevokeExemptions()`, line 212) and updates the
+`ActivityTaskManagerInternal` view of associations (`updateAtm()`, line 107).
+`CompanionDeviceManagerService` drives these on user unlock and package events
+(see `CompanionDeviceManagerService.java`, lines 209-211, 303, 327, and 335).
+
+### 51.7.4 Backup and Restore of Associations
+
+A top-level `BackupRestoreProcessor` lets associations survive a device migration
+or a backup-and-restore cycle. It serializes the association disk store and the
+system-data-transfer request store into a versioned payload, and reconstitutes
+them on restore, holding "pending" associations until the owning app is
+reinstalled:
+
+```java
+class BackupRestoreProcessor {
+    private static final int BACKUP_AND_RESTORE_VERSION = 0;
+
+    byte[] getBackupPayload(int userId) { /* ... */ }
+    void applyRestoredPayload(byte[] payload, int userId) { /* ... */ }
+    public void restorePendingAssociations(int userId, String packageName) { /* ... */ }
+}
+```
+
+Source:
+`BackupRestoreProcessor.java`, lines 48-209. When a package is added,
+`CompanionDeviceManagerService` calls
+`mBackupRestoreProcessor.restorePendingAssociations(userId, packageName)` to finish
+binding any associations that were waiting for that app
+(`CompanionDeviceManagerService.java`, line 340).
+
+### 51.7.5 Health Connect Data Types
+
+Android 17 also adds new Health Connect record types such as
+`MenstrualCyclePhaseRecord`. These are not part of CompanionDeviceManager or
+VirtualDeviceManager: they live entirely in the Health Connect (HealthFitness)
+mainline module under
+`packages/modules/HealthFitness/framework/java/android/health/connect/datatypes/MenstrualCyclePhaseRecord.java`,
+with the server-side helper at
+`packages/modules/HealthFitness/service/java/com/android/server/healthconnect/fitness/recordhelpers/MenstrualCyclePhaseRecordHelper.java`.
+A companion app (for example a wearable) reaches that data through the normal
+Health Connect permission and API surface, not through a CDM transport, so it is
+covered by the Health Connect material rather than this chapter.
+
+---
+
+## 51.8 Computer Control Sessions
+
+The `virtual/computercontrol/` package is the largest new addition to VDM in
+Android 17. It implements **Computer Control**: a controlled, on-device automation
+surface where an approved agent (such as a remote AI agent advertised via the
+association's `remoteAiAgentSupported` flag from section 51.2.1) drives a virtual
+display, injects input, and reads back UI state, under explicit user consent and a
+per-agent allowlist.
+
+```
+frameworks/base/services/companion/java/com/android/server/companion/virtual/computercontrol/
+    ComputerControlSessionProcessor.java   -- session lifecycle orchestrator
+    ComputerControlSessionImpl.java        -- a single active session
+    ComputerControlSessionRequest.java
+    ComputerControlAllowlistController.java -- per-agent app allowlist + consent
+    AutomatedPackagesRepository.java       -- which packages an agent may automate
+    ComputerControlAudioCapture.java
+    ComputerControlAudioInjector.java
+    ComputerControlDataStore.java
+    ComputerControlStatsController.java
+    InteractiveMirrorImpl.java
+    SessionLifecycle.java
+    PausableTimer.java
+```
+
+### 51.8.1 Service Integration
+
+`VirtualDeviceManagerService` owns a single `ComputerControlSessionProcessor` and
+an `IComputerControlConsentManager`, both created at construction time:
+
+```java
+private final ComputerControlSessionProcessor mComputerControlSessionProcessor;
+private final IComputerControlConsentManager mComputerControlConsentManager;
+// ...
+mComputerControlSessionProcessor =
+        new ComputerControlSessionProcessor(context, mLocalService, /* factory */ ...);
+```
+
+Source:
+`VirtualDeviceManagerService.java`, lines 166-167 and 218-219. The processor is
+initialized (`initialize()`) and registered for monitoring during the service's
+boot phase (lines 284 and 319).
+
+### 51.8.2 Requesting a Session
+
+A client requests automation through the VDM Binder interface, which forwards to
+`processNewSessionRequest()`. The processor first checks availability and the
+caller's `ACCESS_COMPUTER_CONTROL` permission, then posts session creation onto
+its handler:
+
+```java
+public void processNewSessionRequest(@NonNull ComputerControlSessionRequest request) {
+    // ... validate ...
+    mHandler.post(() -> createSession(request));
+}
+```
+
+Source:
+`ComputerControlSessionProcessor.java`, line 177. Availability is gated by
+`isComputerControlAvailable()` (line 290), which is reached from
+`VirtualDeviceManagerService.java`, line 757.
+
+The relationship between the VDM service, the session processor, the allowlist
+controller, and a live session:
+
+```mermaid
+flowchart TD
+    Client["Agent app<br/>(ACCESS_COMPUTER_CONTROL)"] -->|requestSession| VDMS[VirtualDeviceManagerService]
+    VDMS -->|processNewSessionRequest| CCP[ComputerControlSessionProcessor]
+    CCP -->|"isComputerControlAvailable()"| ALC[ComputerControlAllowlistController]
+    ALC -->|consent + per-agent allowlist| Consent[IComputerControlConsentManager]
+    CCP -->|createSession| Session[ComputerControlSessionImpl]
+    Session -->|hosts| VD[VirtualDeviceImpl]
+    VD -->|virtual display + input| Target["Automated app<br/>on virtual display"]
+    Session -->|"audio capture/inject"| Audio["ComputerControlAudioCapture<br/>ComputerControlAudioInjector"]
+```
+
+### 51.8.3 The Per-Agent Allowlist and Consent
+
+`ComputerControlAllowlistController` enforces which packages a given agent is
+allowed to automate. The processor exposes per-agent allowlist management that an
+agent uses to declare its targets:
+
+```java
+public void addAppToAutomatableAppListForAgent(int agentUid, String agentPackageName, ...);
+public void removeAppFromAutomatableAppListForAgent(int agentUid, ...);
+public void clearAutomatableAppListForAgent(int agentUid, String agentPackageName);
+public String[] getAutomatableAppListForAgent(int agentUid, String agentPackageName);
+```
+
+Source:
+`ComputerControlSessionProcessor.java`, lines 346-392. Before a target can be
+automated, the controller checks both that the agent is approved
+(`isPackageApprovedToRunAutomation()`, line 399) and that the target is
+automatable (`isPackageTargetableForAutomation()`, line 407). The
+`ACCESS_COMPUTER_CONTROL` permission itself is enforced inside
+`ComputerControlAllowlistController` (see
+`ComputerControlAllowlistController.java`, line 234).
+
+### 51.8.4 Session Lifecycle
+
+A Computer Control session runs on a virtual display. `createSession()` builds a
+`VirtualDeviceImpl` through the injected factory, attaches the agent's input and
+audio paths, and tracks the session so the VDM service can answer
+`isComputerControlSession(deviceId)` and `isComputerControlDisplay(displayId)`.
+Sessions can be closed by user intent (`closeSessionByUserIntent()`, line 473) and
+support a handover where one mirror display takes over from another. The companion
+audio paths (`ComputerControlAudioCapture` / `ComputerControlAudioInjector`) let
+the agent hear and speak through the session, while `InteractiveMirrorImpl`
+provides the interactive mirror surface the agent drives.
+
+Source:
+`ComputerControlSessionProcessor.java`, lines 424-473;
+`VirtualDeviceManagerService.java`, lines 395 and 599.
+
+---
+
+## 51.9 Try It
+
+### 51.9.1 Inspect Companion Device Associations
 
 List all associations for user 0:
 
@@ -2353,7 +2706,7 @@ Association{id=1,
   lastTimeConnected=1710100000000}
 ```
 
-### 51.7.2 Create a Test Association via Shell
+### 51.9.2 Create a Test Association via Shell
 
 Create a self-managed association for testing:
 
@@ -2365,7 +2718,7 @@ adb shell cmd companiondevice associate \
     --display-name "Test Device"
 ```
 
-### 51.7.3 Inspect Virtual Devices
+### 51.9.3 Inspect Virtual Devices
 
 Dump the state of all virtual devices:
 
@@ -2387,7 +2740,7 @@ For virtual device-specific information:
 adb shell dumpsys companion_device_manager virtual_devices
 ```
 
-### 51.7.4 Using the VirtualDeviceManager API
+### 51.9.4 Using the VirtualDeviceManager API
 
 To create a virtual device programmatically, an app needs:
 
@@ -2433,7 +2786,7 @@ VirtualTouchscreenConfig touchConfig = new VirtualTouchscreenConfig.Builder(1920
 device.createVirtualTouchscreen(touchConfig);
 ```
 
-### 51.7.5 Debugging Transport Issues
+### 51.9.5 Debugging Transport Issues
 
 To inspect active transports:
 
@@ -2454,7 +2807,7 @@ adb shell cmd companiondevice override-transport-type 2
 adb shell cmd companiondevice override-transport-type 0
 ```
 
-### 51.7.6 Inspecting Window Policy
+### 51.9.6 Inspecting Window Policy
 
 To see which activities are blocked on virtual displays:
 
@@ -2469,7 +2822,7 @@ D GenericWindowPolicyController: Virtual device activity launch disallowed
     on display 2, reason: Activity launch disallowed by policy: com.example/.SecretActivity
 ```
 
-### 51.7.7 Testing Sensor Injection
+### 51.9.7 Testing Sensor Injection
 
 Virtual sensors appear in the standard sensor list. To verify:
 
@@ -2480,7 +2833,7 @@ adb shell dumpsys sensorservice
 Virtual sensors created through VDM will show up with the device ID and
 name specified in the `VirtualSensorConfig`.
 
-### 51.7.8 Monitoring Audio Routing
+### 51.9.8 Monitoring Audio Routing
 
 To monitor audio routing changes for virtual devices:
 
@@ -2495,7 +2848,7 @@ I VirtualAudioController: Audio is playing, do not change rerouted apps
 I VirtualAudioController: The last playing app removed, delay change rerouted apps
 ```
 
-### 51.7.9 Camera Access Blocking
+### 51.9.9 Camera Access Blocking
 
 To monitor camera blocking on virtual devices:
 
@@ -2509,7 +2862,7 @@ Look for:
 D CameraAccessController: startBlocking() cameraId: 0 packageName: com.example.camera
 ```
 
-### 51.7.10 Key Source Files Reference
+### 51.9.10 Key Source Files Reference
 
 For quick reference, here are all the key source files discussed in this
 chapter, organized by subsystem:
@@ -2561,6 +2914,16 @@ chapter, organized by subsystem:
 | Context sync | `frameworks/base/services/companion/java/com/android/server/companion/datatransfer/contextsync/CrossDeviceSyncController.java` |
 | Task continuity | `frameworks/base/services/companion/java/com/android/server/companion/datatransfer/continuity/TaskContinuityManagerService.java` |
 
+**Android 17 CDM Subsystems:**
+
+| File | Path |
+|------|------|
+| Action requests | `frameworks/base/services/companion/java/com/android/server/companion/actionrequest/ActionRequestProcessor.java` |
+| Trusted devices | `frameworks/base/services/companion/java/com/android/server/companion/devicetrust/TrustedDeviceProcessor.java` |
+| Power exemptions | `frameworks/base/services/companion/java/com/android/server/companion/powerexemption/CompanionExemptionProcessor.java` |
+| Backup/restore | `frameworks/base/services/companion/java/com/android/server/companion/BackupRestoreProcessor.java` |
+| Shared bundle store | `frameworks/base/services/companion/java/com/android/server/companion/utils/PersistableBundleStore.java` |
+
 **VirtualDeviceManager:**
 
 | File | Path |
@@ -2572,6 +2935,7 @@ chapter, organized by subsystem:
 | Sensor controller | `frameworks/base/services/companion/java/com/android/server/companion/virtual/SensorController.java` |
 | Camera controller | `frameworks/base/services/companion/java/com/android/server/companion/virtual/CameraAccessController.java` |
 | Audio controller | `frameworks/base/services/companion/java/com/android/server/companion/virtual/audio/VirtualAudioController.java` |
+| Computer Control (Android 17) | `frameworks/base/services/companion/java/com/android/server/companion/virtual/computercontrol/ComputerControlSessionProcessor.java` |
 
 ---
 
@@ -2600,6 +2964,12 @@ comprehensive framework for multi-device Android experiences:
   device profiles control role grants, transport encryption protects data
   in transit, camera injection blocks unauthorized hardware access, and window
   policies prevent sensitive activities from leaking to remote displays.
+
+- **Android 17 additions** broaden the framework: CDM gains action requests
+  (`actionrequest/`), persisted trusted-device keys (`devicetrust/`), consolidated
+  power exemptions (`powerexemption/`), and association backup/restore, while VDM
+  gains Computer Control sessions (`virtual/computercontrol/`) that let an approved
+  agent automate apps on a virtual display under explicit per-agent consent.
 
 This architecture enables use cases ranging from smartwatch pairing to full
 desktop-class app streaming, all built on the same foundational infrastructure.
