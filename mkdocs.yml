@@ -90,8 +90,8 @@ extra:
 
 nav:
   - Introduction: index.md
+  - Frontmatter: 00-frontmatter.md
   - "Part I: Getting Started":
-    - "Frontmatter": 00-frontmatter.md
     - "1. Introduction": 01-introduction.md
     - "2. Source Code & Build System": 02-source-and-build.md
     - "3. Feature Flags (aconfig)": 03-feature-flags.md

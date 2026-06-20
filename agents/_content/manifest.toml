@@ -13,7 +13,7 @@ description = "AOSP Internals book content (67 chapters + 4 appendices) packaged
 id = "getting-started"
 roman = "I"
 title = "Getting Started"
-chapters = ["00-frontmatter", "01-introduction", "02-source-and-build", "03-feature-flags"]
+chapters = ["01-introduction", "02-source-and-build", "03-feature-flags"]
 
 [[parts]]
 id = "kernel-and-boot"
