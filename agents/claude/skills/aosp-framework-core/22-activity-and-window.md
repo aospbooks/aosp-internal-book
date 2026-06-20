@@ -3900,6 +3900,16 @@ The feature flags themselves are modeled as enums rather than raw booleans:
   carries the broader "desktop experience" flags, including the
   multiple-desktops activation flags for desktop-first displays.
 
+The Shell-side gate has also been refactored. The old static helper
+`DesktopModeStatus`
+(`frameworks/base/libs/WindowManager/Shell/shared/src/com/android/wm/shell/shared/desktopmode/DesktopModeStatus.java`)
+is now `@Deprecated(forRemoval = true)` and points callers at two newer shared
+interfaces in the same package: `DesktopState` (which features are available on
+the device and on a given display, such as `canEnterDesktopMode`) and
+`DesktopConfig` (per-feature tuning like the window-decoration view-host pool
+size). Both are shared between WM Shell, SystemUI, and Launcher so the three
+agree on what desktop windowing is enabled.
+
 ### 22.32.2 Where Desktop Windows Land: Launch Params
 
 When an activity launches into a freeform/desktop context, its initial bounds
@@ -3968,6 +3978,20 @@ cross-display moves are coordinated through the transition system (Section
 22.22). The practical effect for the WM core is that the "which display, which
 desktop, what bounds" decision is now a first-class part of activity launch,
 rather than an afterthought handled entirely by the Shell.
+
+A display can also default to *desktop-first* rather than phone-first. The Shell
+side of that decision lives in `DesktopDisplayModeController`
+(`frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/desktopmode/desktopfirst/DesktopDisplayModeController.kt`),
+which sets a display's root windowing mode to freeform so apps launch into a
+desktop session by default, with `DesktopFirstListenerManager` tracking the
+listeners interested in that mode. The behavior is gated by the
+`enable_desktop_first_*` flag family and, for multi-desk activation on such
+displays, `enable_multiple_desktops_default_activation_in_desktop_first_displays`.
+Per-display desktop layout survives across sessions through
+`DesktopPersistentRepository`
+(`frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/desktopmode/data/persistence/DesktopPersistentRepository.kt`),
+which serializes the in-memory `DesktopRepository` state to a DataStore-backed
+protobuf so reconnecting a monitor restores its desks and window bounds.
 
 ---
 

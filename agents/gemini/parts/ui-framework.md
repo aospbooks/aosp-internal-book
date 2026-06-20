@@ -7217,6 +7217,18 @@ configurable initial delay and a repeat interval of 60ms:
 public static final int KEYBOARD_REPEAT_INTERVAL_MS = 60;
 ```
 
+Android 17's desktop and connected-display work touches magnification only at
+the flag level so far. The `desktop_magnification_settings_polish` flag
+(`packages/apps/Settings/aconfig/accessibility/accessibility_flags.aconfig`,
+namespace `accessibility`, marked `PURPOSE_BUGFIX`) polishes the magnification
+settings UI for touch and keyboard input form factors rather than adding a new
+magnification mode, and `enable_autoclick_for_connected_displays`
+(`frameworks/base/services/accessibility/accessibility.aconfig`, also a bugfix
+flag) fixes autoclick on external displays. There is no separate desktop
+magnification engine; the same `FullScreenMagnificationController`, which already
+tracks per-display state in its `mDisplays` array, drives magnification on
+connected displays.
+
 ### 46.5.8 Always-On Magnification
 
 The `AlwaysOnMagnificationFeatureFlag` controls a feature where magnification

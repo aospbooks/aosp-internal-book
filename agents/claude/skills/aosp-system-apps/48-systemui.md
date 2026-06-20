@@ -1803,6 +1803,24 @@ functionality to connected displays.  When enabled, a `HomeStatusBarComponent`
 48.2.3) is created per-display, each with its own icon pipeline and visibility
 management.  The flag is read in `PhoneStatusBarViewController`.
 
+Around this sits a small connected-display UI stack.  `ConnectedDisplayInteractor`
+(`src/com/android/systemui/display/domain/interactor/ConnectedDisplayInteractor.kt`)
+exposes a `connectedDisplayState` flow that reports `CONNECTED` when an external
+display is attached and `CONNECTED_SECURE` when that display also has
+`FLAG_SECURE`.  `ConnectedDisplayIconViewModel`
+(`src/com/android/systemui/statusbar/systemstatusicons/connecteddisplay/ui/viewmodel/ConnectedDisplayIconViewModel.kt`)
+maps that state to the status-bar connected-display icon, with the chip itself
+gated by `status_bar_is_connected_display_chip_controlled_by_config`.  When a
+display is first plugged in, `ExternalDisplayConnectionDialog`
+(`src/com/android/systemui/display/ui/view/ExternalDisplayConnectionDialog.kt`,
+with the Compose path behind `enable_compose_external_display_dialog`) asks the
+user whether to mirror or extend.  The per-display classes are built by the
+`SystemUIDisplaySubcomponent` and `PerDisplaySystemUIModule`
+(`src/com/android/systemui/display/dagger/`): the subcomponent is a
+`@PerDisplaySingleton` scope created when a display appears and whose
+coroutine scope is cancelled when the display is removed, so display-scoped
+controllers tear down with their display.
+
 ---
 
 ## 48.11  Navigation Bar

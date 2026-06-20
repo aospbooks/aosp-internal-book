@@ -3632,6 +3632,15 @@ UCI session states follow the standard state machine:
 | `ACTIVE` | 0x02 | Actively ranging |
 | `IDLE` | 0x03 | Configured but not ranging |
 
+Below the UCI layer sits the `android.hardware.uwb` AIDL HAL (`IUwb` /
+`IUwbChip`), and Android 17 ships a reference vendor implementation of it for
+NXP SR1XX silicon at `hardware/nxp/uwb`. The thin AIDL service binary
+(`android.hardware.uwb-service.nxp`, registered as init service
+`vendor.uwb_hal`) bridges into NXP's legacy HAL core under `halimpl/`, which
+handles HBCI firmware download, the SPI TML transport, OTP calibration, and
+session/time-sync. This is what makes hardware UWB ranging work on NXP
+devices feeding the stack described above.
+
 ### 54.9.5  Ranging Measurements
 
 A `RangingReport` contains one or more `RangingMeasurement` objects, each

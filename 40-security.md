@@ -2123,6 +2123,47 @@ Normal World                    Secure World
 The data is encrypted and integrity-protected by the TA before it crosses
 to the normal world for persistence.
 
+### 40.5.13  Trusty for the Android Desktop Form Factor
+
+Android 17 adds a Trusty build aimed at the "Android Desktop" device class:
+Android running as a desktop OS on PC-class arm64 and x86_64 hardware.  This is
+a form-factor signal in the TEE, separate from desktop *windowing* (freeform
+multi-window, desks, window decorations), which lives in WindowManager and
+WMShell and is covered in chapters 22 and 23.  What Android 17 adds here is the
+secure-world bring-up for that hardware, not any window-management code.
+
+The device configs live in `trusty/device/desktop/` (copyright 2024).  The
+common include `trusty/device/desktop/common/desktop-inc.mk` is headed
+"Configurations common to Trusty builds for Android Desktop," and two project
+trees build the targets: `trusty/device/desktop/arm64/desktop-arm64/` and
+`trusty/device/desktop/x86_64/desktop-x86_64/`, each with the base project
+makefile plus `_ext_boot`, `-test`, and `-test-debug` variants (for example
+`project/desktop-x86_64.mk` and `project/desktop-arm64_ext_boot.mk`).  The LK
+kernel platform glue for these targets is the Rust code under
+`trusty/kernel/platform/desktop/`.  The desktop Trusty image is signed and
+packaged as a Trusty VM rather than burned into a TrustZone secure world; the
+Android-17 release tooling renames the signing tool to `ResignTrustyVM` for
+this (the desktop Trusty VM is installed under `vm/trusty_vm`, per
+`trusty/vendor/google/aosp/scripts/Android.bp`).
+
+The trusted apps for this target are gathered under `trusty/user/desktop/app/`.
+The set is the security stack a desktop device needs: `gsc_svc` is the service
+for the Google Security Chip (a Titan-class security chip); `pinweaver` does
+knowledge-factor throttling; `finger_guard` guards fingerprint enrollment and
+matching; `keymint_provisioning` and `keymint_strongbox` provide KeyMint and
+its StrongBox security level; `secretkeeper` and `weaver` provide the secret
+storage primitives covered in sections 40.5.7 and 40.14; and `hwbcc`, `hwkey`,
+and `vm_rkp` supply boot-certificate, hardware-key, and remote key provisioning
+support for the VM.  The `gsc_svc` app serves the `IGsc` AIDL interface
+(`android.system.desktop.security.gsc.IGsc`, in
+`trusty/user/desktop/interface/gscd/`), whose one method `transmit(byte[])`
+relays a serialized TPM 2.0 command to the GSC firmware and returns the
+response.  Other desktop AIDL interfaces sit alongside it under
+`trusty/user/desktop/interface/` (`pinweaver`, `finger_guard`, `boot_params`,
+`keymint_provisioning`), backed by support libraries under
+`trusty/user/desktop/lib/` such as `gsc_svc_client`, `tpm_commands`,
+`keymint_access_policy`, and `secretkeeper_secure_store`.
+
 ---
 
 ## 40.6  Gatekeeper and Biometrics
@@ -4273,7 +4314,134 @@ security domains agree on session keys without a shared transport or a
 pre-shared secret.  The SEE AuthMgr borrows only AuthGraph's DICE
 certificate-chain and key types for its own DICE-based authentication protocol.
 
-## 40.13  Try It
+## 40.13  external/keyattestation: The Relying-Party Verifier Library
+
+Section 40.4.7 covers the *producer* side of key attestation: a key is
+generated inside secure hardware, and KeyMint emits a certificate chain whose
+leaf carries a `KeyDescription` extension describing the key's properties and
+the device's verified-boot state.  The relying party then has to *verify* that
+chain: a server, an enterprise enrollment backend, or another app validates the
+chain back to a trusted root, parses the attestation extension, and decides
+whether to trust the key.  Historically each verifier reimplemented that logic,
+often imperfectly.
+
+`external/keyattestation` is the AOSP home for that verifier side.  It is a
+small Kotlin library (`java_library` named `keyattestation`, declared in
+`external/keyattestation/Android.bp`) that parses and validates Android key
+attestation certificate chains on behalf of a relying party.  The entry point
+is the `Verifier` class
+(`external/keyattestation/src/main/kotlin/Verifier.kt`), constructed with three
+caller-supplied sources (a set of trust anchors, a set of revoked certificate
+serial numbers, and a time source) and exposing a single `verify(chain)`
+method:
+
+```kotlin
+val verifier = Verifier(
+  { setOf(TrustAnchor(rootCertificate, null)) },  // trust anchors
+  { setOf<String>() },                            // revoked serials
+  { Instant.now() },                              // time source
+)
+val result = verifier.verify(certificateChain)
+```
+
+`verify` returns a sealed `VerificationResult`: `Success` (carrying the
+attested public key, the challenge, the security level, the verified-boot
+state, and device identity), or one of several failure states
+(`PathValidationFailure`, `ChainParsingFailure`, `ChallengeMismatch`,
+`ExtensionParsingFailure`, `ExtensionConstraintViolation`).  Beyond plain path
+validation it enforces attestation-specific invariants: the key's `origin` must
+be `GENERATED`, and the attestation security level must equal the KeyMint
+security level.
+
+Two design choices shape the library.  Validation runs through a custom JCA
+provider instead of the stock PKIX validator.  `KeyAttestationProvider`
+(`external/keyattestation/src/main/kotlin/provider/KeyAttestationProvider.kt`)
+registers a `CertPathValidator` algorithm named `"KeyAttestation"`, backed by
+`KeyAttestationCertPathValidator`
+(`external/keyattestation/src/main/kotlin/provider/KeyAttestationCertPathValidator.kt`).
+That class exists because older devices emit chains that do not fully conform
+to RFC 5280 and so cannot be validated by the JDK's built-in
+`PKIXCertPathValidator`; the custom validator is deliberately more permissive
+about those chains.  Revocation is handled by a `PKIXRevocationChecker`
+subclass, `RevocationChecker`
+(`external/keyattestation/src/main/kotlin/provider/RevocationChecker.kt`), which
+fails any certificate whose hex serial appears in the caller-supplied revoked
+set.  The other choice is what the library leaves out: it ships only the
+verification logic and a set of well-known roots
+(`external/keyattestation/roots.json`).  Fetching the live revocation list
+(from the Android attestation status endpoint) and supplying the trust anchors
+are the caller's job, which keeps the library free of network and policy
+assumptions.
+
+This is the verifier counterpart to the KeyMint producer path.  KeyMint mints
+the chain inside the TEE or StrongBox; `keyattestation` is what a relying party
+links in to check that chain.  The module is visible to
+`frameworks/base/core/java` and to vendor subpackages (per its `Android.bp`
+`visibility` list), so several callers share one implementation instead of each
+writing its own.
+
+## 40.14  Weaver: Throttle-Resistant Secret Slots
+
+Gatekeeper (section 40.6.1) verifies a knowledge factor inside the TEE and
+throttles guessing.  Weaver is the storage primitive that backs that throttling
+and ties the credential to file-based encryption.  It provides a fixed array of
+*slots*, each holding a key-value pair, where the value can be read back only by
+presenting the correct key.  The lockscreen flow stores a
+synthetic-password-derived secret as a Weaver value, keyed by a secret derived
+from the user's credential, so that the encryption key material is released
+only when the credential is presented and the per-slot throttle permits it.
+
+The HAL contract lives in
+`hardware/interfaces/weaver/aidl/android/hardware/weaver/IWeaver.aidl`.  It is
+deliberately small: `getConfig()` reports the slot count and key/value sizes
+(recommended at least 64 slots and 16-byte keys/values); `write()` overwrites a
+slot idempotently; `read(slotId, key)` returns a `WeaverReadResponse` whose
+`WeaverReadStatus` is `OK` (with the value), `INCORRECT_KEY`, `THROTTLE`, or
+`FAILED`; and `getTimeout(slotId)` reports the remaining throttle.  The AIDL
+spells out the throttle rules the implementation must honor: throttling is per
+slot, the failure count must be persisted across reboots, a throttled read must
+reveal nothing and must not change the failure count, and key comparison must
+be constant-time.  One rule is easy to miss: the failure count must be
+incremented *before* the key is checked and reset to zero only on success, so
+an attacker cannot test a key without the attempt being counted.
+
+`system/weaver` is the Rust *reference TA and HAL service* implementing that
+contract (it is not the HAL interface itself, which is under
+`hardware/interfaces/weaver`).  The core logic is `WeaverTa` in
+`system/weaver/ta/src/lib.rs`, which runs inside the secure environment and
+processes CBOR-encoded requests forwarded by the HAL service in
+`system/weaver/hal/src/lib.rs`.  Each `Slot` stores its `slot_key`,
+`slot_value`, a `failure_counter`, and a `last_checked_timestamp`.  The
+throttle policy is the `TIMEOUT_TABLE` in that file: failures 0-4 incur no
+delay, then the timeout grows steeply (1 minute at 5 failures, 5/15/30/90
+minutes, then hours, days, and ultimately years), and once the table is
+exhausted further attempts return a timeout of `i64::MAX`.  Slots are required
+to persist across boots and across an untrusted factory reset (with the value
+cleared), so the throttle cannot be reset by rebooting.  This is the
+hardware-backed counterpart to the in-TEE throttling that section 40.6.1
+describes for Gatekeeper.
+
+```mermaid
+flowchart TD
+    LS["LockSettingsService<br/>(normal world)"] -->|"read(slotId, key)"| HAL["Weaver HAL service<br/>(system/weaver/hal)"]
+    HAL -->|"CBOR request"| TA["WeaverTa<br/>(system/weaver/ta, secure env)"]
+    TA -->|"check throttle, then<br/>compare key constant-time"| SLOT["Persistent slot<br/>(key, value, failure_counter)"]
+    SLOT -->|"OK + value, or<br/>INCORRECT_KEY / THROTTLE + timeout"| HAL
+    HAL -->|"WeaverReadResponse"| LS
+```
+
+The newest addition to the contract is `warmUp()`, a `oneway` hint added in
+Weaver AIDL v3 (in `hardware/interfaces/weaver/aidl`, not in `system/weaver`).
+It conveys that a read or write will probably happen within a few seconds (for
+example when the user starts entering their PIN), so an implementation whose
+secure hardware sits in a low-power state can begin transitioning to a ready
+state asynchronously, cutting the latency of the upcoming credential check.  It
+is purely advisory: reads and writes must still work without a preceding
+`warmUp()`, there is no matching cool-down call (implementations re-enter low
+power after an idle timeout, recommended at five seconds), and the method may
+be a no-op where it does not apply.
+
+## 40.15  Try It
 
 This section provides hands-on exercises for exploring Android's security
 subsystems.

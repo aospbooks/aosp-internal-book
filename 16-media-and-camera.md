@@ -2910,6 +2910,495 @@ All metrics keys are prefixed with `android.media.mediacodec.`:
 | Error | `errstate` | string | Error state |
 | Lifecycle | `lifetimeMs` | int64 | Total lifetime (ms) |
 
+### 16.2.10 The Complete Buffer Lifecycle in Detail
+
+To fully understand MediaCodec, we must trace a buffer through every stage. The
+`queueInputBuffer` and `dequeueOutputBuffer` methods reveal the complete protocol.
+
+#### Input Buffer Queuing
+
+```cpp
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3690
+status_t MediaCodec::queueInputBuffer(
+        size_t index,
+        size_t offset,
+        size_t size,
+        int64_t presentationTimeUs,
+        uint32_t flags,
+        AString *errorDetailMsg) {
+    ScopedTrace trace(ATRACE_TAG, "MediaCodec::queueInputBuffer#native");
+    if (errorDetailMsg != NULL) {
+        errorDetailMsg->clear();
+    }
+
+    sp<AMessage> msg = new AMessage(kWhatQueueInputBuffer, this);
+    msg->setSize("index", index);
+    msg->setSize("offset", offset);
+    msg->setSize("size", size);
+    msg->setInt64("timeUs", presentationTimeUs);
+    msg->setInt32("flags", flags);
+    msg->setPointer("errorDetailMsg", errorDetailMsg);
+    sp<AMessage> response;
+    return PostAndAwaitResponse(msg, &response);
+}
+```
+
+The parameters are:
+
+- **index**: The buffer slot obtained from `dequeueInputBuffer`
+- **offset**: Byte offset within the buffer where valid data starts
+- **size**: Number of valid data bytes
+- **presentationTimeUs**: The presentation timestamp in microseconds
+- **flags**: Bitfield including `BUFFER_FLAG_CODEC_CONFIG`, `BUFFER_FLAG_END_OF_STREAM`,
+  `BUFFER_FLAG_KEY_FRAME`, `BUFFER_FLAG_DECODE_ONLY`
+
+#### Large Frame Audio (Multi-Access-Unit Buffers)
+
+A newer API supports queuing multiple access units in a single buffer, which is
+particularly important for large-frame audio codecs:
+
+```cpp
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3713
+status_t MediaCodec::queueInputBuffers(
+        size_t index,
+        size_t offset,
+        size_t size,
+        const sp<BufferInfosWrapper> &infos,
+        AString *errorDetailMsg) {
+    ScopedTrace trace(ATRACE_TAG, "MediaCodec::queueInputBuffers#native");
+    sp<AMessage> msg = new AMessage(kWhatQueueInputBuffer, this);
+    uint32_t bufferFlags = 0;
+    uint32_t flagsinAllAU = BUFFER_FLAG_DECODE_ONLY | BUFFER_FLAG_CODECCONFIG;
+    uint32_t andFlags = flagsinAllAU;
+    if (infos == nullptr || infos->value.empty()) {
+        ALOGE("ERROR: Large Audio frame with no BufferInfo");
+        return BAD_VALUE;
+    }
+    // Compute combined flags across all access units
+    int infoIdx = 0;
+    std::vector<AccessUnitInfo> &accessUnitInfo = infos->value;
+    int64_t minTimeUs = accessUnitInfo.front().mTimestamp;
+    bool foundEndOfStream = false;
+    for ( ; infoIdx < accessUnitInfo.size() && !foundEndOfStream; ++infoIdx) {
+        bufferFlags |= accessUnitInfo[infoIdx].mFlags;
+        andFlags &= accessUnitInfo[infoIdx].mFlags;
+        if (bufferFlags & BUFFER_FLAG_END_OF_STREAM) {
+            foundEndOfStream = true;
+        }
+    }
+    bufferFlags = bufferFlags & (andFlags | (~flagsinAllAU));
+```
+
+The flag aggregation logic is subtle: `BUFFER_FLAG_DECODE_ONLY` is set in the aggregate
+only if ALL access units have it set (via the AND operation). Other flags are set if
+ANY access unit has them (via the OR operation). The expression
+`bufferFlags & (andFlags | (~flagsinAllAU))` achieves this by masking out the
+"all-must-agree" flags unless they were present in every access unit.
+
+#### Secure Input Buffers (DRM)
+
+For DRM-protected content, the secure queuing path includes encryption metadata:
+
+```cpp
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3757
+status_t MediaCodec::queueSecureInputBuffer(
+        size_t index,
+        size_t offset,
+        const CryptoPlugin::SubSample *subSamples,
+        size_t numSubSamples,
+        const uint8_t key[16],
+        const uint8_t iv[16],
+        CryptoPlugin::Mode mode,
+        const CryptoPlugin::Pattern &pattern,
+        int64_t presentationTimeUs,
+        uint32_t flags,
+        AString *errorDetailMsg) {
+    // ...
+    msg->setPointer("subSamples", (void *)subSamples);
+    msg->setSize("numSubSamples", numSubSamples);
+    msg->setPointer("key", (void *)key);
+    msg->setPointer("iv", (void *)iv);
+    msg->setInt32("mode", mode);
+    msg->setInt32("encryptBlocks", pattern.mEncryptBlocks);
+    msg->setInt32("skipBlocks", pattern.mSkipBlocks);
+```
+
+The `CryptoPlugin::SubSample` structure describes which portions of the buffer are
+encrypted and which are clear (unencrypted). The `pattern` parameter supports CENC
+pattern-based encryption where encryption is applied in a repeating pattern of
+encrypted and clear blocks.
+
+#### Codec2-Native Buffer Queuing
+
+For Codec2 components, there is a direct path that avoids legacy buffer conversion:
+
+```cpp
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3847
+status_t MediaCodec::queueBuffer(
+        size_t index,
+        const std::shared_ptr<C2Buffer> &buffer,
+        const sp<BufferInfosWrapper> &bufferInfos,
+        const sp<AMessage> &tunings,
+        AString *errorDetailMsg) {
+    // ...
+    sp<WrapperObject<std::shared_ptr<C2Buffer>>> obj{
+        new WrapperObject<std::shared_ptr<C2Buffer>>{buffer}};
+    msg->setObject("c2buffer", obj);
+    if (OK != (err = generateFlagsFromAccessUnitInfo(msg, bufferInfos))) {
+        return err;
+    }
+    msg->setObject("accessUnitInfo", bufferInfos);
+    if (tunings && tunings->countEntries() > 0) {
+        msg->setMessage("tunings", tunings);
+    }
+```
+
+This path accepts a `C2Buffer` directly, along with per-buffer `tunings` -- runtime
+parameter changes that take effect for this specific buffer. This is how applications
+can change encoder parameters (like bitrate) on a per-frame basis.
+
+#### Output Buffer Dequeuing
+
+The `dequeueOutputBuffer` method returns decoded data:
+
+```cpp
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3939
+status_t MediaCodec::dequeueOutputBuffer(
+        size_t *index,
+        size_t *offset,
+        size_t *size,
+        int64_t *presentationTimeUs,
+        uint32_t *flags,
+        int64_t timeoutUs) {
+    ScopedTrace trace(ATRACE_TAG, "MediaCodec::dequeueOutputBuffer#native");
+    sp<AMessage> msg = new AMessage(kWhatDequeueOutputBuffer, this);
+    msg->setInt64("timeoutUs", timeoutUs);
+
+    sp<AMessage> response;
+    status_t err;
+    if ((err = PostAndAwaitResponse(msg, &response)) != OK) {
+        return err;
+    }
+
+    CHECK(response->findSize("index", index));
+    CHECK(response->findSize("offset", offset));
+    CHECK(response->findSize("size", size));
+    CHECK(response->findInt64("timeUs", presentationTimeUs));
+    CHECK(response->findInt32("flags", (int32_t *)flags));
+
+    return OK;
+}
+```
+
+The output returns five pieces of information:
+
+1. **index**: Buffer slot to use with `getOutputBuffer` or `releaseOutputBuffer`
+2. **offset**: Start of valid data within the buffer
+3. **size**: Amount of valid decoded data
+4. **presentationTimeUs**: When this frame should be presented
+5. **flags**: Output flags (EOS, codec config, etc.)
+
+#### Output Rendering and Release
+
+Decoded buffers can be rendered to a surface or simply released:
+
+```cpp
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3965
+status_t MediaCodec::renderOutputBufferAndRelease(size_t index) {
+    ScopedTrace(ATRACE_TAG, "MediaCodec::renderOutputBufferAndRelease#native");
+    sp<AMessage> msg = new AMessage(kWhatReleaseOutputBuffer, this);
+    msg->setSize("index", index);
+    msg->setInt32("render", true);
+    sp<AMessage> response;
+    return PostAndAwaitResponse(msg, &response);
+}
+
+// With explicit timestamp for precise rendering control
+status_t MediaCodec::renderOutputBufferAndRelease(size_t index, int64_t timestampNs) {
+    ScopedTrace trace(ATRACE_TAG, "MediaCodec::renderOutputBufferAndRelease#native");
+    sp<AMessage> msg = new AMessage(kWhatReleaseOutputBuffer, this);
+    msg->setSize("index", index);
+    msg->setInt32("render", true);
+    msg->setInt64("timestampNs", timestampNs);
+    sp<AMessage> response;
+    return PostAndAwaitResponse(msg, &response);
+}
+
+status_t MediaCodec::releaseOutputBuffer(size_t index) {
+    ScopedTrace trace(ATRACE_TAG, "MediaCodec::releaseOutputBuffer#native");
+    sp<AMessage> msg = new AMessage(kWhatReleaseOutputBuffer, this);
+    msg->setSize("index", index);
+    sp<AMessage> response;
+    return PostAndAwaitResponse(msg, &response);
+}
+```
+
+The timestamped variant `renderOutputBufferAndRelease(index, timestampNs)` allows the
+application to specify exactly when a frame should be displayed, enabling precise
+frame pacing for smooth video playback.
+
+---
+
+### 16.2.11 The onMessageReceived Handler
+
+The central message dispatcher (line 4469) is the heart of MediaCodec's asynchronous
+architecture. It processes all state transitions and buffer flow:
+
+```cpp
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4469
+void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
+    switch (msg->what()) {
+        case kWhatCodecNotify:
+        {
+            int32_t what;
+            CHECK(msg->findInt32("what", &what));
+            switch (what) {
+                case kWhatError:
+                case kWhatCryptoError:
+                {
+                    int32_t err, actionCode;
+                    CHECK(msg->findInt32("err", &err));
+                    CHECK(msg->findInt32("actionCode", &actionCode));
+                    ALOGE("Codec reported err %#x/%s, actionCode %d, "
+                          "while in state %d/%s",
+                          err, StrMediaError(err).c_str(), actionCode,
+                          mState, stateString(mState).c_str());
+                    if (err == DEAD_OBJECT) {
+                        mFlags |= kFlagSawMediaServerDie;
+                        mFlags &= ~kFlagIsComponentAllocated;
+                    }
+```
+
+Error handling distinguishes between `DEAD_OBJECT` (the codec process died) and other
+errors. When `DEAD_OBJECT` is detected, the `kFlagSawMediaServerDie` flag is set,
+triggering special recovery logic that attempts to reconnect with the codec service.
+
+---
+
+### 16.2.12 Battery and Power Management
+
+MediaCodec integrates with Android's battery tracking system through `BatteryChecker`:
+
+```cpp
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4256
+BatteryChecker::BatteryChecker(const sp<AMessage> &msg, int64_t timeoutUs)
+    : mTimeoutUs(timeoutUs)
+    , mLastActivityTimeUs(-1ll)
+    , mBatteryStatNotified(false)
+    , mBatteryCheckerGeneration(0)
+    , mIsExecuting(false)
+    , mBatteryCheckerMsg(msg) {}
+
+void BatteryChecker::onCodecActivity(std::function<void()> batteryOnCb) {
+    if (!isExecuting()) {
+        return;
+    }
+    if (!mBatteryStatNotified) {
+        batteryOnCb();
+        mBatteryStatNotified = true;
+        sp<AMessage> msg = mBatteryCheckerMsg->dup();
+        msg->setInt32("generation", mBatteryCheckerGeneration);
+        msg->post(mTimeoutUs);
+        mLastActivityTimeUs = -1ll;
+    } else {
+        mLastActivityTimeUs = ALooper::GetNowUs();
+    }
+}
+```
+
+The BatteryChecker implements a timeout-based approach: it records that the codec is
+active when buffer activity occurs, and if no activity is seen for the timeout period,
+it records that the codec is idle. This prevents battery statistics from being inflated
+by codecs that are configured but not actively processing data.
+
+Additionally, HDR content at high resolutions triggers a CPU boost request:
+
+```cpp
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4230
+void MediaCodec::requestCpuBoostIfNeeded() {
+    if (mCpuBoostRequested) {
+        return;
+    }
+    int32_t colorFormat;
+    if (mOutputFormat->contains("hdr-static-info")
+            && mOutputFormat->findInt32("color-format", &colorFormat)
+            && ((mSoftRenderer != NULL
+                    && colorFormat == OMX_COLOR_FormatYUV420Planar16)
+                || mOwnerName.equalsIgnoreCase("codec2::software"))) {
+        int32_t left, top, right, bottom, width, height;
+        int64_t totalPixel = 0;
+        if (mOutputFormat->findRect("crop", &left, &top, &right, &bottom)) {
+            totalPixel = (right - left + 1) * (bottom - top + 1);
+        } else if (mOutputFormat->findInt32("width", &width)
+                && mOutputFormat->findInt32("height", &height)) {
+            totalPixel = width * height;
+        }
+        if (totalPixel >= 1920 * 1080) {
+            mResourceManagerProxy->addResource(
+                MediaResource::CpuBoostResource());
+            mCpuBoostRequested = true;
+        }
+    }
+}
+```
+
+Software-decoded HDR content at 1080p or above triggers the CPU boost because the
+tone-mapping operation required for HDR-to-SDR conversion is computationally expensive.
+
+---
+
+### 16.2.13 Vendor Parameter Support
+
+MediaCodec exposes vendor-specific parameters through a discovery and subscription API:
+
+```cpp
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4208
+status_t MediaCodec::querySupportedVendorParameters(
+        std::vector<std::string> *names) {
+    return mCodec->querySupportedParameters(names);
+}
+
+status_t MediaCodec::describeParameter(
+        const std::string &name, CodecParameterDescriptor *desc) {
+    return mCodec->describeParameter(name, desc);
+}
+
+status_t MediaCodec::subscribeToVendorParameters(
+        const std::vector<std::string> &names) {
+    return mCodec->subscribeToParameters(names);
+}
+
+status_t MediaCodec::unsubscribeFromVendorParameters(
+        const std::vector<std::string> &names) {
+    return mCodec->unsubscribeFromParameters(names);
+}
+```
+
+This enables hardware vendors to expose codec-specific tuning parameters (like vendor-
+proprietary quality settings or hardware-specific modes) without modifying the core
+MediaCodec API.
+
+---
+
+### 16.2.14 The Dequeue Handler: Synchronous Mode Detail
+
+The internal `handleDequeueOutputBuffer` method reveals the complexity of synchronous
+buffer management:
+
+```cpp
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4371
+MediaCodec::DequeueOutputResult MediaCodec::handleDequeueOutputBuffer(
+        const sp<AReplyToken> &replyID, bool newRequest) {
+    if (!isExecuting()) {
+        PostReplyWithError(replyID, INVALID_OPERATION);
+    } else if (mFlags & kFlagIsAsync) {
+        PostReplyWithError(replyID, INVALID_OPERATION);
+    } else if (newRequest && (mFlags & kFlagDequeueOutputPending)) {
+        PostReplyWithError(replyID, INVALID_OPERATION);
+    } else if (mFlags & kFlagStickyError) {
+        PostReplyWithError(replyID, getStickyError());
+    } else if (mFlags & kFlagOutputBuffersChanged) {
+        PostReplyWithError(replyID, INFO_OUTPUT_BUFFERS_CHANGED);
+        mFlags &= ~kFlagOutputBuffersChanged;
+    } else {
+        sp<AMessage> response = new AMessage;
+        BufferInfo *info = peekNextPortBuffer(kPortIndexOutput);
+        if (!info) {
+            return DequeueOutputResult::kNoBuffer;
+        }
+
+        const sp<MediaCodecBuffer> &buffer = info->mData;
+        handleOutputFormatChangeIfNeeded(buffer);
+        if (mFlags & kFlagOutputFormatChanged) {
+            PostReplyWithError(replyID, INFO_FORMAT_CHANGED);
+            mFlags &= ~kFlagOutputFormatChanged;
+            return DequeueOutputResult::kRepliedWithError;
+        }
+
+        ssize_t index = dequeuePortBuffer(kPortIndexOutput);
+        if (discardDecodeOnlyOutputBuffer(index)) {
+            return DequeueOutputResult::kDiscardedBuffer;
+        }
+
+        response->setSize("index", index);
+        response->setSize("offset", buffer->offset());
+        response->setSize("size", buffer->size());
+
+        int64_t timeUs;
+        CHECK(buffer->meta()->findInt64("timeUs", &timeUs));
+        response->setInt64("timeUs", timeUs);
+
+        int32_t flags;
+        CHECK(buffer->meta()->findInt32("flags", &flags));
+        response->setInt32("flags", flags);
+
+        statsBufferReceived(timeUs, buffer);
+        response->postReply(replyID);
+        return DequeueOutputResult::kSuccess;
+    }
+    return DequeueOutputResult::kRepliedWithError;
+}
+```
+
+The dequeue handler implements several important behaviors:
+
+1. **Output format changes** (`INFO_FORMAT_CHANGED`): When the codec's output format
+   changes (e.g., resolution change during adaptive playback), the change is delivered
+   as a special return value from `dequeueOutputBuffer`, not as a separate callback.
+
+2. **Output buffer changes** (`INFO_OUTPUT_BUFFERS_CHANGED`): When the buffer set itself
+   changes, this signal tells the client to re-acquire buffer references.
+
+3. **Decode-only buffers**: Frames marked as decode-only (used for seeking, where
+   frames must be decoded but not displayed) are silently discarded.
+
+4. **Sticky errors**: Once a fatal error occurs, all subsequent dequeue calls return
+   the same error until the codec is reset.
+
+---
+
+### 16.2.15 The ReleaseSurface: Drain Without Display
+
+When a codec needs to flush or release while holding buffered frames, MediaCodec
+creates a temporary `ReleaseSurface` to drain those buffers:
+
+```cpp
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 784
+class MediaCodec::ReleaseSurface {
+    public:
+        explicit ReleaseSurface(uint64_t usage) {
+            std::tie(mConsumer, mSurface) =
+                BufferItemConsumer::create(usage);
+            struct FrameAvailableListener :
+                    public BufferItemConsumer::FrameAvailableListener {
+                FrameAvailableListener(
+                        const sp<BufferItemConsumer> &consumer) {
+                    mConsumer = consumer;
+                }
+                void onFrameAvailable(const BufferItem&) override {
+                    BufferItem buffer;
+                    sp<BufferItemConsumer> consumer = mConsumer.promote();
+                    if (consumer != nullptr
+                            && consumer->acquireBuffer(&buffer, 0) == NO_ERROR) {
+                        consumer->releaseBuffer(
+                            buffer.mGraphicBuffer, buffer.mFence);
+                    }
+                }
+                wp<BufferItemConsumer> mConsumer;
+            };
+            mFrameAvailableListener =
+                sp<FrameAvailableListener>::make(mConsumer);
+            mConsumer->setFrameAvailableListener(mFrameAvailableListener);
+            mConsumer->setName(String8{"MediaCodec.release"});
+        }
+```
+
+The `ReleaseSurface` creates a dummy buffer consumer that immediately acquires and
+releases any frame queued to it. This allows the codec to complete its pending output
+operations without requiring a real display surface.
+
+---
+
 ### 16.2.16 Format Shaping
 
 MediaCodec includes a **format shaping** feature that can modify encoder parameters
@@ -2933,6 +3422,43 @@ kCodecRequestedVideoQPBMax - QP B-frame max after shaping
 
 The `kCodecShapingEnhanced` metric tracks how many fields were modified: -1 means
 shaping is disabled, 0 or more indicates the number of adjusted fields.
+
+---
+
+### 16.3.10 Codec2 Error Handling and Recovery
+
+The Codec2 framework implements layered error handling:
+
+```mermaid
+graph TD
+    subgraph "Error Sources"
+        HW_ERR["Hardware Error<br/>(timeout, corruption)"]
+        BUF_ERR["Buffer Error<br/>(allocation failure)"]
+        CFG_ERR["Config Error<br/>(invalid parameter)"]
+        HAL_ERR["HAL Error<br/>(process crash)"]
+    end
+
+    subgraph "Error Handling"
+        C2ERR["c2_status_t<br/>(C2_OK, C2_BAD_VALUE, etc.)"]
+        WATCH["CCodecWatchdog<br/>(stuck detection)"]
+        RECOV["Recovery<br/>(reset + reconfigure)"]
+        RECLAIM["ResourceManager<br/>(reclaim + reallocate)"]
+    end
+
+    HW_ERR --> C2ERR
+    BUF_ERR --> C2ERR
+    CFG_ERR --> C2ERR
+    HAL_ERR --> RECOV
+
+    C2ERR --> WATCH
+    WATCH --> RECOV
+    RECOV --> RECLAIM
+```
+
+When the CCodecWatchdog detects a stuck codec (no activity for 3.3 seconds), it
+initiates a release sequence. If the codec process dies (`DEAD_OBJECT`), MediaCodec's
+`onMessageReceived` handler triggers full recovery including re-initialization from
+the `UNINITIALIZED` state.
 
 ---
 
@@ -2988,6 +3514,35 @@ buffer allocation, and error handling.
 
 ---
 
+### 16.4.7 StagefrightRecorder Output Format Selection
+
+StagefrightRecorder selects the appropriate writer based on the output format:
+
+```mermaid
+graph TD
+    OF["Output Format"]
+    OF -->|THREE_GPP| MP4W["MPEG4Writer<br/>(3GP container)"]
+    OF -->|MPEG_4| MP4W2["MPEG4Writer<br/>(MP4 container)"]
+    OF -->|WEBM| WEBM["WebmWriter<br/>(WebM container)"]
+    OF -->|AMR_NB| AMRW["AMRWriter"]
+    OF -->|AMR_WB| AMRW
+    OF -->|AAC_ADTS| AACW["AACWriter"]
+    OF -->|MPEG_2_TS| TSW["MPEG2TSWriter"]
+    OF -->|OGG| OGGW["OggWriter"]
+    OF -->|RTP_AVP| RTPW["ARTPWriter"]
+```
+
+Each writer handles the specific container format requirements:
+
+- **MPEG4Writer** handles both MP4 and 3GP, including moov atom management,
+  chunk interleaving, and HEIF/AVIF image writing
+- **WebmWriter** produces Matroska-based containers for VP8/VP9/Opus content
+- **AMRWriter** and **AACWriter** handle simple audio-only containers
+- **MPEG2TSWriter** produces transport streams suitable for streaming
+- **ARTPWriter** produces RTP packets for real-time streaming
+
+---
+
 ### 16.4.8 MediaPlayerFactory: Player Selection
 
 The MediaPlayerService uses a factory pattern to select the appropriate player
@@ -3020,6 +3575,8 @@ graph TD
     RTP --> NP
     SS --> NP
 ```
+
+---
 
 ### 16.4.9 NuPlayerRenderer: Frame Scheduling Detail
 
@@ -3059,6 +3616,99 @@ versa.
 
 ---
 
+### 16.5.7 Camera HAL3 Request Pipeline Detail
+
+The Camera3Device implements a sophisticated request pipeline:
+
+```mermaid
+graph TD
+    subgraph "Request Pipeline"
+        RQ["Request Queue"]
+        RT["Request Thread"]
+        IFR["In-Flight Requests"]
+        HAL_Q["HAL Request Queue"]
+    end
+
+    subgraph "Result Pipeline"
+        PR["Partial Results"]
+        FR["Full Results"]
+        BUF["Buffer Returns"]
+        META["Metadata Returns"]
+    end
+
+    RQ -->|"dequeue"| RT
+    RT -->|"processCaptureRequest"| HAL_Q
+    HAL_Q -->|"track"| IFR
+    IFR -->|"partial_result"| PR
+    IFR -->|"complete"| FR
+    FR --> BUF
+    FR --> META
+```
+
+Camera3Device tracks in-flight requests to ensure that:
+
+- Results are delivered in order
+- Partial results are accumulated correctly
+- Buffer references are properly managed
+- Stale requests are detected and cleaned up
+
+The `StatusTracker` monitors the device state and ensures proper transitions between
+idle, active, and error states.
+
+---
+
+### 16.5.8 Stream Management and Buffer Allocation
+
+The device3 directory includes several specialized stream types:
+
+```mermaid
+classDiagram
+    class Camera3Stream {
+        +start()
+        +stop()
+        +getBuffer()
+        +returnBuffer()
+    }
+
+    class Camera3OutputStream {
+        -sp~Surface~ mConsumer
+        +queueBufferToConsumer()
+    }
+
+    class Camera3InputStream {
+        +getInputBuffer()
+        +returnInputBuffer()
+    }
+
+    class Camera3SharedOutputStream {
+        -Vector~sp~Surface~~ mSurfaces
+        +attachSurface()
+        +detachSurface()
+    }
+
+    Camera3Stream <|-- Camera3OutputStream
+    Camera3Stream <|-- Camera3InputStream
+    Camera3OutputStream <|-- Camera3SharedOutputStream
+```
+
+- **Camera3OutputStream**: Standard output stream that queues frames to a Surface
+  (BufferQueue consumer). Used for preview, recording, and still capture.
+- **Camera3InputStream**: Input stream for reprocessing. Allows captured frames
+  to be fed back into the camera pipeline for operations like noise reduction
+  or HDR+ merging.
+- **Camera3SharedOutputStream**: Enables multiple consumers to share a single
+  camera output stream, used for simultaneous preview and analysis.
+- **Camera3StreamSplitter**: Splits a single stream into multiple copies for
+  different consumers.
+
+The `Camera3BufferManager` handles buffer allocation strategies:
+
+- Pre-allocating buffers for low-latency operation
+- Dynamic buffer allocation to minimize memory usage
+- Buffer handoff between streams during reconfiguration
+
+---
+
 ### 16.5.9 Camera Torch (Flashlight) Management
 
 CameraService also manages the device flashlight:
@@ -3089,6 +3739,50 @@ void CameraService::broadcastTorchModeStatus(
 
 The torch management integrates with the virtual device mapper, ensuring that
 torch status updates are sent with the correct camera ID mapping for virtual devices.
+
+---
+
+### 16.6.4 Extractor Security Architecture
+
+The media extractor security model deserves special attention because media parsing
+is one of the most exploited attack surfaces:
+
+```mermaid
+graph TD
+    subgraph "App Process"
+        MP["MediaPlayer"]
+        MR["MediaRecorder"]
+    end
+
+    subgraph "MediaServer Process"
+        NP["NuPlayer"]
+        NME["NuMediaExtractor"]
+    end
+
+    subgraph "Extractor Process (sandboxed)"
+        MEF["MediaExtractorFactory"]
+        EP["Extractor Plugins<br/>(loaded as .so)"]
+    end
+
+    MP --> NP
+    NP --> NME
+    NME -->|"Binder IPC"| MEF
+    MEF --> EP
+
+    style EP fill:#ffcdd2
+```
+
+The extractor process has:
+
+- **Minimal permissions**: No access to network, sensors, or other services
+- **Seccomp filter**: System call whitelist limits the attack surface
+- **Separate address space**: Exploiting an extractor vulnerability does not
+  compromise the main media service
+- **Plugin isolation**: Each extractor is a shared library loaded with `dlopen`,
+  enabling modular updates
+
+The `media.stagefright.extractremote` property can be set to `false` for debugging
+to run extractors in-process, but this should never be done in production.
 
 ---
 
@@ -3132,6 +3826,83 @@ an `ExtractorDef` structure containing:
 - A UUID for identification
 - A sniff function for format detection
 - A creator function for instantiation
+
+---
+
+### 16.7.5 The Codec Capability Query Pipeline
+
+Applications query codec capabilities through a multi-layered process:
+
+```mermaid
+sequenceDiagram
+    participant App as Application
+    participant MCL as MediaCodecList
+    participant MCI as MediaCodecInfo
+    participant VC as VideoCapabilities
+    participant XML as media_codecs.xml
+    participant HAL as Codec2 HAL
+
+    App->>MCL: getInstance()
+    MCL->>XML: Parse codec declarations
+    MCL->>HAL: Query component capabilities
+    HAL-->>MCL: C2Param capabilities
+    MCL-->>App: IMediaCodecList
+
+    App->>MCL: findCodecByName("c2.android.avc.decoder")
+    MCL-->>App: codecIndex
+
+    App->>MCL: getCodecInfo(codecIndex)
+    MCL-->>App: MediaCodecInfo
+
+    App->>MCI: getCapabilitiesForType("video/avc")
+    MCI-->>App: CodecCapabilities
+
+    App->>VC: getSupportedWidthsFor(1080)
+    Note over VC: Compute from block model:<br/>block count, aspect ratio,<br/>alignment constraints
+    VC-->>App: Range(1, 4096)
+
+    App->>VC: getSupportedFrameRatesFor(1920, 1080)
+    Note over VC: Compute from block rate:<br/>blocks_per_frame * fps <= max_blocks_per_sec
+    VC-->>App: Range(0.0, 240.0)
+```
+
+The capability computation is performance-based: the `media_codecs_performance.xml`
+file specifies measured throughput for each codec at various resolution/frame-rate
+combinations. The `VideoCapabilities` class interpolates between these data points
+to answer queries about arbitrary resolution/frame-rate combinations.
+
+---
+
+### 16.7.6 HDR Format Support
+
+The media pipeline supports multiple HDR formats, each with different metadata and
+transfer function requirements:
+
+| HDR Format | Transfer Function | Metadata | Container Support |
+|---|---|---|---|
+| HLG | ARIB STD-B67 | None required | MP4, MPEG-TS |
+| HDR10 | SMPTE ST 2084 (PQ) | Static (SMPTE ST 2086) | MP4, WebM |
+| HDR10+ | SMPTE ST 2084 (PQ) | Dynamic (per-frame) | MP4 |
+| Dolby Vision | PQ or HLG | Dynamic (RPU) | MP4 |
+
+MediaCodec tracks HDR information through multiple metric keys:
+
+```
+kCodecConfigColorStandard    - BT.709, BT.2020, etc.
+kCodecConfigColorRange       - Limited, Full
+kCodecConfigColorTransfer    - SDR, HLG, PQ
+kCodecParsedColorStandard    - As parsed from bitstream
+kCodecParsedColorRange       - As parsed from bitstream
+kCodecParsedColorTransfer    - As parsed from bitstream
+kCodecHdrStaticInfo          - Mastering display metadata
+kCodecHdr10PlusInfo          - Dynamic metadata present
+kCodecHdrFormat              - Which HDR format
+```
+
+The distinction between "config" and "parsed" metadata is important: the config values
+are what the application requested during `configure()`, while the parsed values are
+what the codec actually found in the bitstream. A mismatch may indicate incorrect
+content labeling.
 
 ---
 
@@ -3503,767 +4274,6 @@ adb shell dumpsys media.metrics
 # - android.media.mediacodec.judder-count: <judder events>
 ```
 
----
-
-### 16.2.10 The Complete Buffer Lifecycle in Detail
-
-To fully understand MediaCodec, we must trace a buffer through every stage. The
-`queueInputBuffer` and `dequeueOutputBuffer` methods reveal the complete protocol.
-
-#### Input Buffer Queuing
-
-```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3690
-status_t MediaCodec::queueInputBuffer(
-        size_t index,
-        size_t offset,
-        size_t size,
-        int64_t presentationTimeUs,
-        uint32_t flags,
-        AString *errorDetailMsg) {
-    ScopedTrace trace(ATRACE_TAG, "MediaCodec::queueInputBuffer#native");
-    if (errorDetailMsg != NULL) {
-        errorDetailMsg->clear();
-    }
-
-    sp<AMessage> msg = new AMessage(kWhatQueueInputBuffer, this);
-    msg->setSize("index", index);
-    msg->setSize("offset", offset);
-    msg->setSize("size", size);
-    msg->setInt64("timeUs", presentationTimeUs);
-    msg->setInt32("flags", flags);
-    msg->setPointer("errorDetailMsg", errorDetailMsg);
-    sp<AMessage> response;
-    return PostAndAwaitResponse(msg, &response);
-}
-```
-
-The parameters are:
-
-- **index**: The buffer slot obtained from `dequeueInputBuffer`
-- **offset**: Byte offset within the buffer where valid data starts
-- **size**: Number of valid data bytes
-- **presentationTimeUs**: The presentation timestamp in microseconds
-- **flags**: Bitfield including `BUFFER_FLAG_CODEC_CONFIG`, `BUFFER_FLAG_END_OF_STREAM`,
-  `BUFFER_FLAG_KEY_FRAME`, `BUFFER_FLAG_DECODE_ONLY`
-
-#### Large Frame Audio (Multi-Access-Unit Buffers)
-
-A newer API supports queuing multiple access units in a single buffer, which is
-particularly important for large-frame audio codecs:
-
-```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3713
-status_t MediaCodec::queueInputBuffers(
-        size_t index,
-        size_t offset,
-        size_t size,
-        const sp<BufferInfosWrapper> &infos,
-        AString *errorDetailMsg) {
-    ScopedTrace trace(ATRACE_TAG, "MediaCodec::queueInputBuffers#native");
-    sp<AMessage> msg = new AMessage(kWhatQueueInputBuffer, this);
-    uint32_t bufferFlags = 0;
-    uint32_t flagsinAllAU = BUFFER_FLAG_DECODE_ONLY | BUFFER_FLAG_CODECCONFIG;
-    uint32_t andFlags = flagsinAllAU;
-    if (infos == nullptr || infos->value.empty()) {
-        ALOGE("ERROR: Large Audio frame with no BufferInfo");
-        return BAD_VALUE;
-    }
-    // Compute combined flags across all access units
-    int infoIdx = 0;
-    std::vector<AccessUnitInfo> &accessUnitInfo = infos->value;
-    int64_t minTimeUs = accessUnitInfo.front().mTimestamp;
-    bool foundEndOfStream = false;
-    for ( ; infoIdx < accessUnitInfo.size() && !foundEndOfStream; ++infoIdx) {
-        bufferFlags |= accessUnitInfo[infoIdx].mFlags;
-        andFlags &= accessUnitInfo[infoIdx].mFlags;
-        if (bufferFlags & BUFFER_FLAG_END_OF_STREAM) {
-            foundEndOfStream = true;
-        }
-    }
-    bufferFlags = bufferFlags & (andFlags | (~flagsinAllAU));
-```
-
-The flag aggregation logic is subtle: `BUFFER_FLAG_DECODE_ONLY` is set in the aggregate
-only if ALL access units have it set (via the AND operation). Other flags are set if
-ANY access unit has them (via the OR operation). The expression
-`bufferFlags & (andFlags | (~flagsinAllAU))` achieves this by masking out the
-"all-must-agree" flags unless they were present in every access unit.
-
-#### Secure Input Buffers (DRM)
-
-For DRM-protected content, the secure queuing path includes encryption metadata:
-
-```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3757
-status_t MediaCodec::queueSecureInputBuffer(
-        size_t index,
-        size_t offset,
-        const CryptoPlugin::SubSample *subSamples,
-        size_t numSubSamples,
-        const uint8_t key[16],
-        const uint8_t iv[16],
-        CryptoPlugin::Mode mode,
-        const CryptoPlugin::Pattern &pattern,
-        int64_t presentationTimeUs,
-        uint32_t flags,
-        AString *errorDetailMsg) {
-    // ...
-    msg->setPointer("subSamples", (void *)subSamples);
-    msg->setSize("numSubSamples", numSubSamples);
-    msg->setPointer("key", (void *)key);
-    msg->setPointer("iv", (void *)iv);
-    msg->setInt32("mode", mode);
-    msg->setInt32("encryptBlocks", pattern.mEncryptBlocks);
-    msg->setInt32("skipBlocks", pattern.mSkipBlocks);
-```
-
-The `CryptoPlugin::SubSample` structure describes which portions of the buffer are
-encrypted and which are clear (unencrypted). The `pattern` parameter supports CENC
-pattern-based encryption where encryption is applied in a repeating pattern of
-encrypted and clear blocks.
-
-#### Codec2-Native Buffer Queuing
-
-For Codec2 components, there is a direct path that avoids legacy buffer conversion:
-
-```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3847
-status_t MediaCodec::queueBuffer(
-        size_t index,
-        const std::shared_ptr<C2Buffer> &buffer,
-        const sp<BufferInfosWrapper> &bufferInfos,
-        const sp<AMessage> &tunings,
-        AString *errorDetailMsg) {
-    // ...
-    sp<WrapperObject<std::shared_ptr<C2Buffer>>> obj{
-        new WrapperObject<std::shared_ptr<C2Buffer>>{buffer}};
-    msg->setObject("c2buffer", obj);
-    if (OK != (err = generateFlagsFromAccessUnitInfo(msg, bufferInfos))) {
-        return err;
-    }
-    msg->setObject("accessUnitInfo", bufferInfos);
-    if (tunings && tunings->countEntries() > 0) {
-        msg->setMessage("tunings", tunings);
-    }
-```
-
-This path accepts a `C2Buffer` directly, along with per-buffer `tunings` -- runtime
-parameter changes that take effect for this specific buffer. This is how applications
-can change encoder parameters (like bitrate) on a per-frame basis.
-
-#### Output Buffer Dequeuing
-
-The `dequeueOutputBuffer` method returns decoded data:
-
-```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3939
-status_t MediaCodec::dequeueOutputBuffer(
-        size_t *index,
-        size_t *offset,
-        size_t *size,
-        int64_t *presentationTimeUs,
-        uint32_t *flags,
-        int64_t timeoutUs) {
-    ScopedTrace trace(ATRACE_TAG, "MediaCodec::dequeueOutputBuffer#native");
-    sp<AMessage> msg = new AMessage(kWhatDequeueOutputBuffer, this);
-    msg->setInt64("timeoutUs", timeoutUs);
-
-    sp<AMessage> response;
-    status_t err;
-    if ((err = PostAndAwaitResponse(msg, &response)) != OK) {
-        return err;
-    }
-
-    CHECK(response->findSize("index", index));
-    CHECK(response->findSize("offset", offset));
-    CHECK(response->findSize("size", size));
-    CHECK(response->findInt64("timeUs", presentationTimeUs));
-    CHECK(response->findInt32("flags", (int32_t *)flags));
-
-    return OK;
-}
-```
-
-The output returns five pieces of information:
-
-1. **index**: Buffer slot to use with `getOutputBuffer` or `releaseOutputBuffer`
-2. **offset**: Start of valid data within the buffer
-3. **size**: Amount of valid decoded data
-4. **presentationTimeUs**: When this frame should be presented
-5. **flags**: Output flags (EOS, codec config, etc.)
-
-#### Output Rendering and Release
-
-Decoded buffers can be rendered to a surface or simply released:
-
-```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3965
-status_t MediaCodec::renderOutputBufferAndRelease(size_t index) {
-    ScopedTrace(ATRACE_TAG, "MediaCodec::renderOutputBufferAndRelease#native");
-    sp<AMessage> msg = new AMessage(kWhatReleaseOutputBuffer, this);
-    msg->setSize("index", index);
-    msg->setInt32("render", true);
-    sp<AMessage> response;
-    return PostAndAwaitResponse(msg, &response);
-}
-
-// With explicit timestamp for precise rendering control
-status_t MediaCodec::renderOutputBufferAndRelease(size_t index, int64_t timestampNs) {
-    ScopedTrace trace(ATRACE_TAG, "MediaCodec::renderOutputBufferAndRelease#native");
-    sp<AMessage> msg = new AMessage(kWhatReleaseOutputBuffer, this);
-    msg->setSize("index", index);
-    msg->setInt32("render", true);
-    msg->setInt64("timestampNs", timestampNs);
-    sp<AMessage> response;
-    return PostAndAwaitResponse(msg, &response);
-}
-
-status_t MediaCodec::releaseOutputBuffer(size_t index) {
-    ScopedTrace trace(ATRACE_TAG, "MediaCodec::releaseOutputBuffer#native");
-    sp<AMessage> msg = new AMessage(kWhatReleaseOutputBuffer, this);
-    msg->setSize("index", index);
-    sp<AMessage> response;
-    return PostAndAwaitResponse(msg, &response);
-}
-```
-
-The timestamped variant `renderOutputBufferAndRelease(index, timestampNs)` allows the
-application to specify exactly when a frame should be displayed, enabling precise
-frame pacing for smooth video playback.
-
-### 16.2.11 The onMessageReceived Handler
-
-The central message dispatcher (line 4469) is the heart of MediaCodec's asynchronous
-architecture. It processes all state transitions and buffer flow:
-
-```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4469
-void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
-    switch (msg->what()) {
-        case kWhatCodecNotify:
-        {
-            int32_t what;
-            CHECK(msg->findInt32("what", &what));
-            switch (what) {
-                case kWhatError:
-                case kWhatCryptoError:
-                {
-                    int32_t err, actionCode;
-                    CHECK(msg->findInt32("err", &err));
-                    CHECK(msg->findInt32("actionCode", &actionCode));
-                    ALOGE("Codec reported err %#x/%s, actionCode %d, "
-                          "while in state %d/%s",
-                          err, StrMediaError(err).c_str(), actionCode,
-                          mState, stateString(mState).c_str());
-                    if (err == DEAD_OBJECT) {
-                        mFlags |= kFlagSawMediaServerDie;
-                        mFlags &= ~kFlagIsComponentAllocated;
-                    }
-```
-
-Error handling distinguishes between `DEAD_OBJECT` (the codec process died) and other
-errors. When `DEAD_OBJECT` is detected, the `kFlagSawMediaServerDie` flag is set,
-triggering special recovery logic that attempts to reconnect with the codec service.
-
-### 16.2.12 Battery and Power Management
-
-MediaCodec integrates with Android's battery tracking system through `BatteryChecker`:
-
-```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4256
-BatteryChecker::BatteryChecker(const sp<AMessage> &msg, int64_t timeoutUs)
-    : mTimeoutUs(timeoutUs)
-    , mLastActivityTimeUs(-1ll)
-    , mBatteryStatNotified(false)
-    , mBatteryCheckerGeneration(0)
-    , mIsExecuting(false)
-    , mBatteryCheckerMsg(msg) {}
-
-void BatteryChecker::onCodecActivity(std::function<void()> batteryOnCb) {
-    if (!isExecuting()) {
-        return;
-    }
-    if (!mBatteryStatNotified) {
-        batteryOnCb();
-        mBatteryStatNotified = true;
-        sp<AMessage> msg = mBatteryCheckerMsg->dup();
-        msg->setInt32("generation", mBatteryCheckerGeneration);
-        msg->post(mTimeoutUs);
-        mLastActivityTimeUs = -1ll;
-    } else {
-        mLastActivityTimeUs = ALooper::GetNowUs();
-    }
-}
-```
-
-The BatteryChecker implements a timeout-based approach: it records that the codec is
-active when buffer activity occurs, and if no activity is seen for the timeout period,
-it records that the codec is idle. This prevents battery statistics from being inflated
-by codecs that are configured but not actively processing data.
-
-Additionally, HDR content at high resolutions triggers a CPU boost request:
-
-```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4230
-void MediaCodec::requestCpuBoostIfNeeded() {
-    if (mCpuBoostRequested) {
-        return;
-    }
-    int32_t colorFormat;
-    if (mOutputFormat->contains("hdr-static-info")
-            && mOutputFormat->findInt32("color-format", &colorFormat)
-            && ((mSoftRenderer != NULL
-                    && colorFormat == OMX_COLOR_FormatYUV420Planar16)
-                || mOwnerName.equalsIgnoreCase("codec2::software"))) {
-        int32_t left, top, right, bottom, width, height;
-        int64_t totalPixel = 0;
-        if (mOutputFormat->findRect("crop", &left, &top, &right, &bottom)) {
-            totalPixel = (right - left + 1) * (bottom - top + 1);
-        } else if (mOutputFormat->findInt32("width", &width)
-                && mOutputFormat->findInt32("height", &height)) {
-            totalPixel = width * height;
-        }
-        if (totalPixel >= 1920 * 1080) {
-            mResourceManagerProxy->addResource(
-                MediaResource::CpuBoostResource());
-            mCpuBoostRequested = true;
-        }
-    }
-}
-```
-
-Software-decoded HDR content at 1080p or above triggers the CPU boost because the
-tone-mapping operation required for HDR-to-SDR conversion is computationally expensive.
-
-### 16.2.13 Vendor Parameter Support
-
-MediaCodec exposes vendor-specific parameters through a discovery and subscription API:
-
-```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4208
-status_t MediaCodec::querySupportedVendorParameters(
-        std::vector<std::string> *names) {
-    return mCodec->querySupportedParameters(names);
-}
-
-status_t MediaCodec::describeParameter(
-        const std::string &name, CodecParameterDescriptor *desc) {
-    return mCodec->describeParameter(name, desc);
-}
-
-status_t MediaCodec::subscribeToVendorParameters(
-        const std::vector<std::string> &names) {
-    return mCodec->subscribeToParameters(names);
-}
-
-status_t MediaCodec::unsubscribeFromVendorParameters(
-        const std::vector<std::string> &names) {
-    return mCodec->unsubscribeFromParameters(names);
-}
-```
-
-This enables hardware vendors to expose codec-specific tuning parameters (like vendor-
-proprietary quality settings or hardware-specific modes) without modifying the core
-MediaCodec API.
-
-### 16.2.14 The Dequeue Handler: Synchronous Mode Detail
-
-The internal `handleDequeueOutputBuffer` method reveals the complexity of synchronous
-buffer management:
-
-```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4371
-MediaCodec::DequeueOutputResult MediaCodec::handleDequeueOutputBuffer(
-        const sp<AReplyToken> &replyID, bool newRequest) {
-    if (!isExecuting()) {
-        PostReplyWithError(replyID, INVALID_OPERATION);
-    } else if (mFlags & kFlagIsAsync) {
-        PostReplyWithError(replyID, INVALID_OPERATION);
-    } else if (newRequest && (mFlags & kFlagDequeueOutputPending)) {
-        PostReplyWithError(replyID, INVALID_OPERATION);
-    } else if (mFlags & kFlagStickyError) {
-        PostReplyWithError(replyID, getStickyError());
-    } else if (mFlags & kFlagOutputBuffersChanged) {
-        PostReplyWithError(replyID, INFO_OUTPUT_BUFFERS_CHANGED);
-        mFlags &= ~kFlagOutputBuffersChanged;
-    } else {
-        sp<AMessage> response = new AMessage;
-        BufferInfo *info = peekNextPortBuffer(kPortIndexOutput);
-        if (!info) {
-            return DequeueOutputResult::kNoBuffer;
-        }
-
-        const sp<MediaCodecBuffer> &buffer = info->mData;
-        handleOutputFormatChangeIfNeeded(buffer);
-        if (mFlags & kFlagOutputFormatChanged) {
-            PostReplyWithError(replyID, INFO_FORMAT_CHANGED);
-            mFlags &= ~kFlagOutputFormatChanged;
-            return DequeueOutputResult::kRepliedWithError;
-        }
-
-        ssize_t index = dequeuePortBuffer(kPortIndexOutput);
-        if (discardDecodeOnlyOutputBuffer(index)) {
-            return DequeueOutputResult::kDiscardedBuffer;
-        }
-
-        response->setSize("index", index);
-        response->setSize("offset", buffer->offset());
-        response->setSize("size", buffer->size());
-
-        int64_t timeUs;
-        CHECK(buffer->meta()->findInt64("timeUs", &timeUs));
-        response->setInt64("timeUs", timeUs);
-
-        int32_t flags;
-        CHECK(buffer->meta()->findInt32("flags", &flags));
-        response->setInt32("flags", flags);
-
-        statsBufferReceived(timeUs, buffer);
-        response->postReply(replyID);
-        return DequeueOutputResult::kSuccess;
-    }
-    return DequeueOutputResult::kRepliedWithError;
-}
-```
-
-The dequeue handler implements several important behaviors:
-
-1. **Output format changes** (`INFO_FORMAT_CHANGED`): When the codec's output format
-   changes (e.g., resolution change during adaptive playback), the change is delivered
-   as a special return value from `dequeueOutputBuffer`, not as a separate callback.
-
-2. **Output buffer changes** (`INFO_OUTPUT_BUFFERS_CHANGED`): When the buffer set itself
-   changes, this signal tells the client to re-acquire buffer references.
-
-3. **Decode-only buffers**: Frames marked as decode-only (used for seeking, where
-   frames must be decoded but not displayed) are silently discarded.
-
-4. **Sticky errors**: Once a fatal error occurs, all subsequent dequeue calls return
-   the same error until the codec is reset.
-
-### 16.2.15 The ReleaseSurface: Drain Without Display
-
-When a codec needs to flush or release while holding buffered frames, MediaCodec
-creates a temporary `ReleaseSurface` to drain those buffers:
-
-```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 784
-class MediaCodec::ReleaseSurface {
-    public:
-        explicit ReleaseSurface(uint64_t usage) {
-            std::tie(mConsumer, mSurface) =
-                BufferItemConsumer::create(usage);
-            struct FrameAvailableListener :
-                    public BufferItemConsumer::FrameAvailableListener {
-                FrameAvailableListener(
-                        const sp<BufferItemConsumer> &consumer) {
-                    mConsumer = consumer;
-                }
-                void onFrameAvailable(const BufferItem&) override {
-                    BufferItem buffer;
-                    sp<BufferItemConsumer> consumer = mConsumer.promote();
-                    if (consumer != nullptr
-                            && consumer->acquireBuffer(&buffer, 0) == NO_ERROR) {
-                        consumer->releaseBuffer(
-                            buffer.mGraphicBuffer, buffer.mFence);
-                    }
-                }
-                wp<BufferItemConsumer> mConsumer;
-            };
-            mFrameAvailableListener =
-                sp<FrameAvailableListener>::make(mConsumer);
-            mConsumer->setFrameAvailableListener(mFrameAvailableListener);
-            mConsumer->setName(String8{"MediaCodec.release"});
-        }
-```
-
-The `ReleaseSurface` creates a dummy buffer consumer that immediately acquires and
-releases any frame queued to it. This allows the codec to complete its pending output
-operations without requiring a real display surface.
-
----
-
-### 16.3.10 Codec2 Error Handling and Recovery
-
-The Codec2 framework implements layered error handling:
-
-```mermaid
-graph TD
-    subgraph "Error Sources"
-        HW_ERR["Hardware Error<br/>(timeout, corruption)"]
-        BUF_ERR["Buffer Error<br/>(allocation failure)"]
-        CFG_ERR["Config Error<br/>(invalid parameter)"]
-        HAL_ERR["HAL Error<br/>(process crash)"]
-    end
-
-    subgraph "Error Handling"
-        C2ERR["c2_status_t<br/>(C2_OK, C2_BAD_VALUE, etc.)"]
-        WATCH["CCodecWatchdog<br/>(stuck detection)"]
-        RECOV["Recovery<br/>(reset + reconfigure)"]
-        RECLAIM["ResourceManager<br/>(reclaim + reallocate)"]
-    end
-
-    HW_ERR --> C2ERR
-    BUF_ERR --> C2ERR
-    CFG_ERR --> C2ERR
-    HAL_ERR --> RECOV
-
-    C2ERR --> WATCH
-    WATCH --> RECOV
-    RECOV --> RECLAIM
-```
-
-When the CCodecWatchdog detects a stuck codec (no activity for 3.3 seconds), it
-initiates a release sequence. If the codec process dies (`DEAD_OBJECT`), MediaCodec's
-`onMessageReceived` handler triggers full recovery including re-initialization from
-the `UNINITIALIZED` state.
-
----
-
-### 16.4.7 StagefrightRecorder Output Format Selection
-
-StagefrightRecorder selects the appropriate writer based on the output format:
-
-```mermaid
-graph TD
-    OF["Output Format"]
-    OF -->|THREE_GPP| MP4W["MPEG4Writer<br/>(3GP container)"]
-    OF -->|MPEG_4| MP4W2["MPEG4Writer<br/>(MP4 container)"]
-    OF -->|WEBM| WEBM["WebmWriter<br/>(WebM container)"]
-    OF -->|AMR_NB| AMRW["AMRWriter"]
-    OF -->|AMR_WB| AMRW
-    OF -->|AAC_ADTS| AACW["AACWriter"]
-    OF -->|MPEG_2_TS| TSW["MPEG2TSWriter"]
-    OF -->|OGG| OGGW["OggWriter"]
-    OF -->|RTP_AVP| RTPW["ARTPWriter"]
-```
-
-Each writer handles the specific container format requirements:
-
-- **MPEG4Writer** handles both MP4 and 3GP, including moov atom management,
-  chunk interleaving, and HEIF/AVIF image writing
-- **WebmWriter** produces Matroska-based containers for VP8/VP9/Opus content
-- **AMRWriter** and **AACWriter** handle simple audio-only containers
-- **MPEG2TSWriter** produces transport streams suitable for streaming
-- **ARTPWriter** produces RTP packets for real-time streaming
-
----
-
-### 16.5.7 Camera HAL3 Request Pipeline Detail
-
-The Camera3Device implements a sophisticated request pipeline:
-
-```mermaid
-graph TD
-    subgraph "Request Pipeline"
-        RQ["Request Queue"]
-        RT["Request Thread"]
-        IFR["In-Flight Requests"]
-        HAL_Q["HAL Request Queue"]
-    end
-
-    subgraph "Result Pipeline"
-        PR["Partial Results"]
-        FR["Full Results"]
-        BUF["Buffer Returns"]
-        META["Metadata Returns"]
-    end
-
-    RQ -->|"dequeue"| RT
-    RT -->|"processCaptureRequest"| HAL_Q
-    HAL_Q -->|"track"| IFR
-    IFR -->|"partial_result"| PR
-    IFR -->|"complete"| FR
-    FR --> BUF
-    FR --> META
-```
-
-Camera3Device tracks in-flight requests to ensure that:
-
-- Results are delivered in order
-- Partial results are accumulated correctly
-- Buffer references are properly managed
-- Stale requests are detected and cleaned up
-
-The `StatusTracker` monitors the device state and ensures proper transitions between
-idle, active, and error states.
-
----
-
-### 16.5.8 Stream Management and Buffer Allocation
-
-The device3 directory includes several specialized stream types:
-
-```mermaid
-classDiagram
-    class Camera3Stream {
-        +start()
-        +stop()
-        +getBuffer()
-        +returnBuffer()
-    }
-
-    class Camera3OutputStream {
-        -sp~Surface~ mConsumer
-        +queueBufferToConsumer()
-    }
-
-    class Camera3InputStream {
-        +getInputBuffer()
-        +returnInputBuffer()
-    }
-
-    class Camera3SharedOutputStream {
-        -Vector~sp~Surface~~ mSurfaces
-        +attachSurface()
-        +detachSurface()
-    }
-
-    Camera3Stream <|-- Camera3OutputStream
-    Camera3Stream <|-- Camera3InputStream
-    Camera3OutputStream <|-- Camera3SharedOutputStream
-```
-
-- **Camera3OutputStream**: Standard output stream that queues frames to a Surface
-  (BufferQueue consumer). Used for preview, recording, and still capture.
-- **Camera3InputStream**: Input stream for reprocessing. Allows captured frames
-  to be fed back into the camera pipeline for operations like noise reduction
-  or HDR+ merging.
-- **Camera3SharedOutputStream**: Enables multiple consumers to share a single
-  camera output stream, used for simultaneous preview and analysis.
-- **Camera3StreamSplitter**: Splits a single stream into multiple copies for
-  different consumers.
-
-The `Camera3BufferManager` handles buffer allocation strategies:
-
-- Pre-allocating buffers for low-latency operation
-- Dynamic buffer allocation to minimize memory usage
-- Buffer handoff between streams during reconfiguration
-
----
-
-### 16.6.4 Extractor Security Architecture
-
-The media extractor security model deserves special attention because media parsing
-is one of the most exploited attack surfaces:
-
-```mermaid
-graph TD
-    subgraph "App Process"
-        MP["MediaPlayer"]
-        MR["MediaRecorder"]
-    end
-
-    subgraph "MediaServer Process"
-        NP["NuPlayer"]
-        NME["NuMediaExtractor"]
-    end
-
-    subgraph "Extractor Process (sandboxed)"
-        MEF["MediaExtractorFactory"]
-        EP["Extractor Plugins<br/>(loaded as .so)"]
-    end
-
-    MP --> NP
-    NP --> NME
-    NME -->|"Binder IPC"| MEF
-    MEF --> EP
-
-    style EP fill:#ffcdd2
-```
-
-The extractor process has:
-
-- **Minimal permissions**: No access to network, sensors, or other services
-- **Seccomp filter**: System call whitelist limits the attack surface
-- **Separate address space**: Exploiting an extractor vulnerability does not
-  compromise the main media service
-- **Plugin isolation**: Each extractor is a shared library loaded with `dlopen`,
-  enabling modular updates
-
-The `media.stagefright.extractremote` property can be set to `false` for debugging
-to run extractors in-process, but this should never be done in production.
-
----
-
-### 16.7.5 The Codec Capability Query Pipeline
-
-Applications query codec capabilities through a multi-layered process:
-
-```mermaid
-sequenceDiagram
-    participant App as Application
-    participant MCL as MediaCodecList
-    participant MCI as MediaCodecInfo
-    participant VC as VideoCapabilities
-    participant XML as media_codecs.xml
-    participant HAL as Codec2 HAL
-
-    App->>MCL: getInstance()
-    MCL->>XML: Parse codec declarations
-    MCL->>HAL: Query component capabilities
-    HAL-->>MCL: C2Param capabilities
-    MCL-->>App: IMediaCodecList
-
-    App->>MCL: findCodecByName("c2.android.avc.decoder")
-    MCL-->>App: codecIndex
-
-    App->>MCL: getCodecInfo(codecIndex)
-    MCL-->>App: MediaCodecInfo
-
-    App->>MCI: getCapabilitiesForType("video/avc")
-    MCI-->>App: CodecCapabilities
-
-    App->>VC: getSupportedWidthsFor(1080)
-    Note over VC: Compute from block model:<br/>block count, aspect ratio,<br/>alignment constraints
-    VC-->>App: Range(1, 4096)
-
-    App->>VC: getSupportedFrameRatesFor(1920, 1080)
-    Note over VC: Compute from block rate:<br/>blocks_per_frame * fps <= max_blocks_per_sec
-    VC-->>App: Range(0.0, 240.0)
-```
-
-The capability computation is performance-based: the `media_codecs_performance.xml`
-file specifies measured throughput for each codec at various resolution/frame-rate
-combinations. The `VideoCapabilities` class interpolates between these data points
-to answer queries about arbitrary resolution/frame-rate combinations.
-
----
-
-### 16.7.6 HDR Format Support
-
-The media pipeline supports multiple HDR formats, each with different metadata and
-transfer function requirements:
-
-| HDR Format | Transfer Function | Metadata | Container Support |
-|---|---|---|---|
-| HLG | ARIB STD-B67 | None required | MP4, MPEG-TS |
-| HDR10 | SMPTE ST 2084 (PQ) | Static (SMPTE ST 2086) | MP4, WebM |
-| HDR10+ | SMPTE ST 2084 (PQ) | Dynamic (per-frame) | MP4 |
-| Dolby Vision | PQ or HLG | Dynamic (RPU) | MP4 |
-
-MediaCodec tracks HDR information through multiple metric keys:
-
-```
-kCodecConfigColorStandard    - BT.709, BT.2020, etc.
-kCodecConfigColorRange       - Limited, Full
-kCodecConfigColorTransfer    - SDR, HLG, PQ
-kCodecParsedColorStandard    - As parsed from bitstream
-kCodecParsedColorRange       - As parsed from bitstream
-kCodecParsedColorTransfer    - As parsed from bitstream
-kCodecHdrStaticInfo          - Mastering display metadata
-kCodecHdr10PlusInfo          - Dynamic metadata present
-kCodecHdrFormat              - Which HDR format
-```
-
-The distinction between "config" and "parsed" metadata is important: the config values
-are what the application requested during `configure()`, while the parsed values are
-what the codec actually found in the bitstream. A mismatch may indicate incorrect
-content labeling.
-
----
-
 ### 16.9.11 Debugging Tips: Common Issues and Solutions
 
 ### Issue: Codec Allocation Fails
@@ -4486,4 +4496,3 @@ in Android media in the past decade, bringing type safety, better buffer managem
 and improved vendor extensibility. Meanwhile, the media pipeline continues to grow
 with new codec support (AV1, IAMF, APV), HDR formats (HDR10+, Dolby Vision), and
 professional video features.
-

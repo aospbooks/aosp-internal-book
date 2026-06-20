@@ -233,7 +233,7 @@ frameworks/base/services/
 ```
 
 The `serial/` module is new in Android 17: it hosts `SerialManagerService`,
-the system_server half of the wired Serial API covered in 20.30.
+the system_server half of the wired Serial API covered in 20.29.
 
 ### 20.1.4 The Four Startup Phases
 
@@ -741,7 +741,7 @@ area:
 | Service | Class | Source Package | Purpose |
 |---------|-------|---------------|---------|
 | UsbService | `UsbService.Lifecycle` | `usb/` | USB host/device management |
-| SerialManagerService | `SerialManagerService.Lifecycle` | `serial/` | Android 17 wired serial port API (gated by `enable_wired_serial_api`); see 20.30 |
+| SerialManagerService | `SerialManagerService.Lifecycle` | `serial/` | Android 17 wired serial port API (gated by `enable_wired_serial_api`); see 20.29 |
 | HardwarePropertiesManagerService | `HardwarePropertiesManagerService` | core | CPU/GPU temperatures |
 | ConsumerIrService | `ConsumerIrService` | core | IR blaster |
 | VibratorManagerService | `VibratorManagerService.Lifecycle` | `vibrator/` | Haptic feedback |
@@ -4854,9 +4854,50 @@ consent-gated implementation backed by the `native_serial` daemon.
 
 ---
 
-## 20.30 Try It
+## 20.30 Three Flag-Gated Android 17 Services
 
-### 20.30.1 Listing All System Services
+Android 17 adds three more managers to `system_server`, each started only
+when an aconfig flag is on. They appear in the service table earlier in this
+chapter; the following describes what each does and how it is gated.
+
+`MultisensoryService`
+(`frameworks/base/services/core/java/com/android/server/multisensory/MultisensoryService.java`)
+plays coordinated audio-haptic feedback for the Multisensory Design System,
+pairing vibration with audio playback. It registers under
+`Context.MULTISENSORY_MANAGER_SERVICE`. `SystemServer` starts it only off TV
+devices and only when the flag is set:
+
+```java
+// frameworks/base/services/java/com/android/server/SystemServer.java
+if (!isTv && android.os.multisensory.Flags.enableMultisensoryFeedback()) {
+    mSystemServiceManager.startService(MultisensoryService.Lifecycle.class);
+}
+```
+
+`ContentRestrictionService`
+(`frameworks/base/services/contentrestriction/java/com/android/server/contentrestriction/ContentRestrictionService.java`)
+handles per-user content restrictions, classifying and enforcing content
+limits through a delegated app service with role-based access. It registers
+under `Context.CONTENT_RESTRICTION_SERVICE` and starts when
+`android.app.contentrestriction.flags.Flags.contentRestrictionApi()` is on.
+
+`PccSandboxManagerService`
+(`frameworks/base/services/core/java/com/android/server/privatecompute/PccSandboxManagerService.java`)
+manages components running in the Private Compute Core sandbox (see
+Chapter 51 for PCC itself), publishing both a Binder interface and a native
+service interface for sandbox communication. It registers under
+`Context.PCC_SANDBOX_SERVICE`, gated by
+`android.app.privatecompute.flags.Flags.enablePccFrameworkSupport()`; the
+service re-checks the same flag in `onStart()` before publishing.
+
+None of the three is a stub: each has a working implementation, but all three
+stay unstarted on a stock build until their flag is turned on.
+
+---
+
+## 20.31 Try It
+
+### 20.31.1 Listing All System Services
 
 Use `service list` to see all registered Binder services:
 
@@ -4883,7 +4924,7 @@ Count the total:
 adb shell service list | head -1
 ```
 
-### 20.30.2 Inspecting system_server Process
+### 20.31.2 Inspecting system_server Process
 
 View basic process information:
 
@@ -4901,7 +4942,7 @@ adb shell cat /proc/$(adb shell pidof system_server)/status | head -20
 adb shell dumpsys meminfo system_server
 ```
 
-### 20.30.3 Dumpsys Commands
+### 20.31.3 Dumpsys Commands
 
 `dumpsys` is the primary tool for inspecting service state. Each service
 implements a `dump()` method:
@@ -4933,7 +4974,7 @@ adb shell dumpsys system_server_dumper --name SystemServer
 adb shell dumpsys system_server_dumper --name Watchdog
 ```
 
-### 20.30.4 Inspecting Boot Phases
+### 20.31.4 Inspecting Boot Phases
 
 Boot phase transitions are logged and can be traced:
 
@@ -4960,7 +5001,7 @@ duration_ms: 60000
 EOF
 ```
 
-### 20.30.5 Observing Service Start Order
+### 20.31.5 Observing Service Start Order
 
 The SystemServer logs each service start with timing information:
 
@@ -4972,7 +5013,7 @@ adb shell logcat -s SystemServer SystemServiceManager
 adb shell logcat | grep -E "PHASE_|startBootPhase"
 ```
 
-### 20.30.6 Watchdog Diagnostics
+### 20.31.6 Watchdog Diagnostics
 
 ```bash
 # Dump Watchdog state
@@ -4988,7 +5029,7 @@ adb shell logcat -b crash | grep -i watchdog
 adb shell cat /data/system/watchdog-timeout-history.txt
 ```
 
-### 20.30.7 Thread Inspection
+### 20.31.7 Thread Inspection
 
 ```bash
 # List all system_server threads with names
@@ -5004,7 +5045,7 @@ adb shell kill -3 $(adb shell pidof system_server)
 adb shell ls -la /data/anr/
 ```
 
-### 20.30.8 Service Dependencies and Boot Timing
+### 20.31.8 Service Dependencies and Boot Timing
 
 ```bash
 # View how long each service took to start
@@ -5020,7 +5061,7 @@ adb shell service check package
 adb shell service call activity 1  # IBinder.FIRST_CALL_TRANSACTION
 ```
 
-### 20.30.9 Examining SystemServiceManager State
+### 20.31.9 Examining SystemServiceManager State
 
 ```bash
 # Dump all registered system services
@@ -5034,7 +5075,7 @@ This shows:
 - Service start times
 - Active user IDs
 
-### 20.30.10 Monitoring Binder Thread Pool
+### 20.31.10 Monitoring Binder Thread Pool
 
 ```bash
 # Check Binder thread usage
@@ -5049,7 +5090,7 @@ adb shell cat /sys/kernel/debug/binder/proc/$(adb shell pidof system_server) \
     2>/dev/null | head -50
 ```
 
-### 20.30.11 Forcing a Watchdog Timeout (Development Only)
+### 20.31.11 Forcing a Watchdog Timeout (Development Only)
 
 On userdebug/eng builds, you can test the Watchdog by inducing a deadlock.
 **WARNING: This will crash system_server and restart the runtime.**
@@ -5062,7 +5103,7 @@ adb shell settings put global watchdog_timeout_millis 10000
 adb shell setprop persist.sys.debug.watchdog_timeout 10
 ```
 
-### 20.30.12 Tracing Service Startup with Perfetto
+### 20.31.12 Tracing Service Startup with Perfetto
 
 ```bash
 # Record a boot trace
@@ -5079,7 +5120,7 @@ The trace will show all the `TimingsTraceAndSlog` spans from SystemServer,
 including every service start and boot phase transition, with precise
 timestamps.
 
-### 20.30.13 Simulating Boot Phases
+### 20.31.13 Simulating Boot Phases
 
 You can watch boot phases progress in real time during a reboot:
 
@@ -5102,7 +5143,7 @@ SystemServiceManager: Starting phase 600
 SystemServiceManager: Starting phase 1000
 ```
 
-### 20.30.14 Examining Service Registration
+### 20.31.14 Examining Service Registration
 
 To see how a specific service is registered:
 
@@ -5116,7 +5157,7 @@ adb shell service check package
 adb shell dumpsys -l
 ```
 
-### 20.30.15 Monitoring Looper Statistics
+### 20.31.15 Monitoring Looper Statistics
 
 ```bash
 # Dump looper statistics to see message processing times
@@ -12747,6 +12788,16 @@ The feature flags themselves are modeled as enums rather than raw booleans:
   carries the broader "desktop experience" flags, including the
   multiple-desktops activation flags for desktop-first displays.
 
+The Shell-side gate has also been refactored. The old static helper
+`DesktopModeStatus`
+(`frameworks/base/libs/WindowManager/Shell/shared/src/com/android/wm/shell/shared/desktopmode/DesktopModeStatus.java`)
+is now `@Deprecated(forRemoval = true)` and points callers at two newer shared
+interfaces in the same package: `DesktopState` (which features are available on
+the device and on a given display, such as `canEnterDesktopMode`) and
+`DesktopConfig` (per-feature tuning like the window-decoration view-host pool
+size). Both are shared between WM Shell, SystemUI, and Launcher so the three
+agree on what desktop windowing is enabled.
+
 ### 22.32.2 Where Desktop Windows Land: Launch Params
 
 When an activity launches into a freeform/desktop context, its initial bounds
@@ -12815,6 +12866,20 @@ cross-display moves are coordinated through the transition system (Section
 22.22). The practical effect for the WM core is that the "which display, which
 desktop, what bounds" decision is now a first-class part of activity launch,
 rather than an afterthought handled entirely by the Shell.
+
+A display can also default to *desktop-first* rather than phone-first. The Shell
+side of that decision lives in `DesktopDisplayModeController`
+(`frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/desktopmode/desktopfirst/DesktopDisplayModeController.kt`),
+which sets a display's root windowing mode to freeform so apps launch into a
+desktop session by default, with `DesktopFirstListenerManager` tracking the
+listeners interested in that mode. The behavior is gated by the
+`enable_desktop_first_*` flag family and, for multi-desk activation on such
+displays, `enable_multiple_desktops_default_activation_in_desktop_first_displays`.
+Per-display desktop layout survives across sessions through
+`DesktopPersistentRepository`
+(`frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/desktopmode/data/persistence/DesktopPersistentRepository.kt`),
+which serializes the in-memory `DesktopRepository` state to a DataStore-backed
+protobuf so reconnecting a monitor restores its desks and window bounds.
 
 ---
 
@@ -16048,6 +16113,41 @@ Desktop windowing is the most complex Shell feature, providing a full desktop ex
 
 The desktop mode directory alone contains 50+ files, reflecting the significant engineering investment in bringing desktop-class windowing to Android.
 
+**Multiple desks.** A single display can host more than one *desk* (virtual
+desktop), each with its own set of open windows, in the same way a Linux desktop
+offers several workspaces. The `multidesks/` package implements this on top of
+the desktop-windowing stack. `DesksController`
+(`.../desktopmode/multidesks/DesksController.kt`) owns the create/activate/
+deactivate/remove logic and drives a `DesksOrganizer` (the `RootTaskDesksOrganizer`
+implementation) that gives each desk its own root task container under the
+display's `TaskDisplayArea`; activating a desk reorders its container to the
+front and a `DeskSwitchTransitionHandler` animates the lateral move between two
+desks on the same display. The per-desk state -- `activeTasks`, `visibleTasks`,
+`minimizedTasks`, and the `leftTiledTaskId`/`rightTiledTaskId` snap slots -- is
+held in the `Desk` data model (`.../desktopmode/data/Desk.kt`) inside the
+per-display `DesktopRepository`, which `DesktopUserRepositories` instantiates per
+user. So multiple desks reuse the existing per-display task hierarchy and
+transition machinery rather than introducing a parallel one: a desk is a root
+task the organizer shows or hides, and switching desks is an ordinary Shell
+transition.
+
+A few desktop sub-features round out the surface presentation.
+`DesktopWallpaperActivity` (`.../desktopmode/DesktopWallpaperActivity.kt`) is a
+transparent activity that paints the wallpaper behind the freeform windows, gated
+by `enable_desktop_windowing_wallpaper_activity`. `DesktopImmersiveController`
+(`.../desktopmode/DesktopImmersiveController.kt`) moves a freeform task in and out
+of a full-immersive state where the task fills the display and the status bar is
+transient, via `moveTaskToImmersive()`. `DesktopHomeScreenPeekController`
+(`.../desktopmode/homescreenpeeking/DesktopHomeScreenPeekController.kt`) shifts
+the desktop windows toward a screen edge to peek at the home screen behind them,
+gated by `enable_home_screen_peeking`. First-run onboarding for the desktop
+gestures lives in `education/`: `AppHandleEducationController` introduces the
+app-handle drag that pulls an app into a freeform window
+(`enable_desktop_windowing_app_handle_education`), and
+`AppToWebEducationController` introduces the app-to-web transition
+(`enable_desktop_windowing_app_to_web_education`,
+`enable_enhanced_app_to_web_transition`).
+
 **Cross-reference:** Chapter 22 (Activity and Window Management) covers the *WM-core* side of desktop windowing -- how `Task` windowing modes, the desktop task lifecycle, and `DesktopExperienceFlags` gating drive policy. This chapter covers the *Shell presentation* side: the surfaces, transition handlers, and caption decorations that animate desktop windows. Detailed desktop mode analysis is also in the companion report, Part 2, section 69.
 
 ### 23.10.5 Predictive Back
@@ -16168,6 +16268,15 @@ Key capabilities:
 - **View host pooling**: Reuses `SurfaceControlViewHost` instances for efficiency
 
 The caption bar system has evolved from a legacy `DecorView`-based approach (where the app process rendered its own title bar) to a Shell-based approach (where Shell renders the title bar externally). The Shell approach provides consistent styling, eliminates app-side rendering overhead, and enables system-level drag/resize handling.
+
+Resizing also covers *snapping*. Dragging a freeform window to a screen edge, or
+toggling maximize, snaps it to half the display through `SnapController`
+(`frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/desktopmode/SnapController.kt`),
+whose `snapToHalfScreen()` takes a `DesktopTasksController.SnapPosition` (left or
+right) and is wired into the window-decoration drag positioners. Snapping works
+across monitors when `enable_cross_display_snap_support` is set, and
+`enable_freeform_box_shadows_v2` controls the drop shadow drawn around freeform
+windows.
 
 ### 23.10.10 Shell Initialization and Lifecycle
 

@@ -4695,6 +4695,24 @@ changing its overall structure:
 None of these changes the OAT/VDEX file format version or the odrefresh
 recompilation triggers covered in section 18.8.
 
+### 18.11.7 libcore Class Library Uprev to OpenJDK 25
+
+The Java class library ART executes -- `libcore` (project `libcore/`, whose
+`ojluni/` tree holds the OpenJDK-derived `java.*` sources) -- tracks upstream
+OpenJDK on a per-file basis rather than wholesale. The mapping table
+`libcore/EXPECTED_UPSTREAM` records, for each `ojluni` file, the exact upstream
+release tag it was last rebased from. Android 17 advances that tracking so the
+single largest group of files now follows **OpenJDK 25** (`jdk25u/jdk-25.0.1-ga`):
+of the roughly 2,774 mapped files, about 1,206 cite the `jdk-25.0.1-ga` tag (plus
+one early `jdk-25+26` build for `java.lang.foreign.MemoryLayout`), making 25 the
+plurality version. libcore remains a deliberate mix -- files still sit on
+`jdk21u/jdk-21.0.6-ga`, `jdk17u/jdk-17.0.14-ga`, `jdk11u/jdk-11.0.26-ga`, and
+even `jdk8u`/`jdk7u` tags where Android carries local divergence or has not yet
+rebased -- so "OpenJDK 25" describes the dominant tracking point, not a uniform
+baseline. This uprev is purely a class-library refresh: it does not change the
+ART runtime, compiler, GC, or DEX/OAT formats described in this chapter, only the
+`java.*` source that `dex2oat` compiles and the runtime loads.
+
 ---
 
 ## 18.12 The Native Rust Zygote (zygote_next)
@@ -4900,7 +4918,145 @@ intended to eventually succeed the classic zygote, but does not do so in 17.
 
 ---
 
-## 18.13 Try It
+---
+
+## 18.13 ART Reference Summary
+
+This section gathers cross-subsystem reference material for the runtime: a
+data-flow map tying the pieces together, a table of representative performance
+characteristics, and the per-release ART version history.
+
+### 18.13.1 Architecture Cross-Reference
+
+The following diagram shows the major data flow between ART's subsystems
+during a typical app execution:
+
+```mermaid
+flowchart TD
+    subgraph "Install Time"
+        A1["APK\n(classes.dex)"] --> A2["dex2oat"]
+        A2 --> A3[".oat\n(native code)"]
+        A2 --> A4[".vdex\n(verified DEX)"]
+        A2 --> A5[".art\n(app image)"]
+    end
+
+    subgraph "Runtime: Class Loading"
+        B1["ClassLinker"] --> B2["DexFileLoader"]
+        B2 --> B3["DexFile"]
+        B1 --> B4["OatFileManager"]
+        B4 --> B5["OatFile"]
+        B1 --> B6["ClassVerifier"]
+        B6 --> B7["VerifierDeps"]
+    end
+
+    subgraph "Runtime: Execution"
+        C1["Nterp\nInterpreter"] --> C2["JIT\nCompiler"]
+        C2 --> C3["JIT Code\nCache"]
+        C1 --> C4["Profile\nSaver"]
+        C4 --> C5[".prof\nfile"]
+        C5 -->|"bg-dexopt"| A2
+    end
+
+    subgraph "Runtime: Memory"
+        D1["gc::Heap"] --> D2["RegionSpace"]
+        D1 --> D3["LargeObjectSpace"]
+        D1 --> D4["NonMovingSpace"]
+        D1 --> D5["ConcurrentCopying\nCollector"]
+        D5 --> D6["CardTable"]
+        D5 --> D7["ReadBarrierTable"]
+    end
+
+    subgraph "Runtime: Native"
+        E1["JavaVMExt"] --> E2["JNIEnvExt"]
+        E2 --> E3["LocalRefTable"]
+        E1 --> E4["NativeLibraries"]
+        E4 --> E5["libnativeloader"]
+        E5 --> E6["LinkerNamespace"]
+    end
+
+    A3 --> B5
+    A4 --> B3
+    A5 --> B1
+    B1 --> C1
+    C1 --> D1
+    B1 --> E1
+```
+
+### 18.13.2 Performance Characteristics
+
+Understanding ART's performance characteristics helps developers make
+informed choices:
+
+| Operation | Typical Latency | Notes |
+|-----------|----------------|-------|
+| Object allocation (TLAB) | 10-50 ns | Bump pointer, thread-local |
+| Object allocation (slow path) | 100-500 ns | Region allocation + potential GC |
+| Virtual method call (compiled) | 5-10 ns | vtable lookup + indirect call |
+| Interface method call (IMT, no conflict) | 5-15 ns | Hash + indirect call |
+| Interface method call (IMT, conflict) | 20-100 ns | Linear search in conflict table |
+| JNI call (standard) | 100-500 ns | Thread state transition overhead |
+| JNI call (@FastNative) | 30-100 ns | Reduced overhead |
+| JNI call (@CriticalNative) | 5-20 ns | Nearly native call speed |
+| Class loading | 10-100 us | Depends on class complexity |
+| Class verification | 50-500 us | Depends on method count/complexity |
+| JIT baseline compilation | 1-10 ms | Per method |
+| JIT optimized compilation | 5-50 ms | Per method, with inlining |
+| Minor GC (young gen CC) | 1-5 ms total, <1 ms pause | Generational, concurrent |
+| Major GC (full CC) | 10-100 ms total, 1-5 ms pause | Full heap, concurrent |
+| dex2oat (speed-profile) | 5-60 seconds | Per app, depends on profile |
+| dex2oat (boot image) | 30-120 seconds | Full boot classpath |
+
+### 18.13.3 Version History
+
+ART has evolved significantly over Android releases:
+
+| Android Version | ART Changes |
+|----------------|------------|
+| 5.0 (Lollipop) | ART becomes default runtime, replaces Dalvik |
+| 6.0 (Marshmallow) | Profile-guided compilation, improved GC |
+| 7.0 (Nougat) | JIT compiler added, hybrid AOT+JIT model |
+| 8.0 (Oreo) | Concurrent Copying collector, faster boot |
+| 9.0 (Pie) | Hidden API restrictions, compact DEX |
+| 10 | Generational CC, improved startup |
+| 11 | Memory-constrained device optimizations |
+| 12 | ART module (Mainline), odrefresh |
+| 13 | Improved profile-guided optimization |
+| 14 | Mark-Compact (CMC) collector, RISC-V support |
+| 15 | Continued CMC rollout, improved JIT |
+| 16 | Generational CMC, DEX container (V41) groundwork |
+| 17 | Pantherlake x86 variant (AVX2), AVX2 vectorization for x86-64, V41 container maturation, value-class flag, record classes treated as normal, MADV_FREE re-enabled for CC GC |
+
+Key source files for further exploration:
+
+| Component | File |
+|-----------|------|
+| Runtime singleton | `art/runtime/runtime.h` (1,400+ lines) |
+| DEX file format | `art/libdexfile/dex/dex_file.h` |
+| DEX structures | `art/libdexfile/dex/dex_file_structs.h` |
+| dex2oat driver | `art/dex2oat/dex2oat.cc` (2,000+ lines) |
+| Compiler filters | `art/libartbase/base/compiler_filter.h` |
+| JIT front-end | `art/runtime/jit/jit.h` |
+| JIT code cache | `art/runtime/jit/jit_code_cache.h` |
+| Optimizing compiler | `art/compiler/optimizing/optimizing_compiler.cc` |
+| GC heap | `art/runtime/gc/heap.h` |
+| CC collector | `art/runtime/gc/collector/concurrent_copying.h` |
+| Region space | `art/runtime/gc/space/region_space.h` |
+| Page reclaim (MADV_FREE) | `art/libartbase/base/mem_map.cc` |
+| Class flags | `art/runtime/mirror/class_flags.h` |
+| x86 ISA features | `art/runtime/arch/x86/instruction_set_features_x86.cc` |
+| x86-64 SIMD width | `art/compiler/optimizing/code_generator_x86_64.h` |
+| Class linker | `art/runtime/class_linker.cc` (11,710 lines) |
+| JNI VM | `art/runtime/jni/java_vm_ext.h` |
+| JNI env | `art/runtime/jni/jni_env_ext.h` |
+| OAT header | `art/runtime/oat/oat.h` |
+| VDEX format | `art/runtime/vdex_file.h` |
+| odrefresh | `art/odrefresh/odrefresh.h` |
+| libnativeloader | `art/libnativeloader/library_namespaces.h` |
+| JVMTI | `art/openjdkjvmti/OpenjdkJvmTi.cc` |
+
+---
+
+## 18.14 Try It
 
 ### Exercise 18.1 -- Inspect a DEX File
 
@@ -5416,6 +5572,8 @@ adb shell cat /data/misc/apexdata/com.android.art/cache-info.xml
 
 ---
 
+---
+
 ## Summary
 
 The ART runtime is a multi-layered execution engine that balances startup
@@ -5456,134 +5614,6 @@ architectural decisions include:
    survive system updates by detecting changes in APEX versions, boot
    classpath checksums, and system properties, then triggering selective
    re-compilation.
-
-### Architecture Cross-Reference
-
-The following diagram shows the major data flow between ART's subsystems
-during a typical app execution:
-
-```mermaid
-flowchart TD
-    subgraph "Install Time"
-        A1["APK\n(classes.dex)"] --> A2["dex2oat"]
-        A2 --> A3[".oat\n(native code)"]
-        A2 --> A4[".vdex\n(verified DEX)"]
-        A2 --> A5[".art\n(app image)"]
-    end
-
-    subgraph "Runtime: Class Loading"
-        B1["ClassLinker"] --> B2["DexFileLoader"]
-        B2 --> B3["DexFile"]
-        B1 --> B4["OatFileManager"]
-        B4 --> B5["OatFile"]
-        B1 --> B6["ClassVerifier"]
-        B6 --> B7["VerifierDeps"]
-    end
-
-    subgraph "Runtime: Execution"
-        C1["Nterp\nInterpreter"] --> C2["JIT\nCompiler"]
-        C2 --> C3["JIT Code\nCache"]
-        C1 --> C4["Profile\nSaver"]
-        C4 --> C5[".prof\nfile"]
-        C5 -->|"bg-dexopt"| A2
-    end
-
-    subgraph "Runtime: Memory"
-        D1["gc::Heap"] --> D2["RegionSpace"]
-        D1 --> D3["LargeObjectSpace"]
-        D1 --> D4["NonMovingSpace"]
-        D1 --> D5["ConcurrentCopying\nCollector"]
-        D5 --> D6["CardTable"]
-        D5 --> D7["ReadBarrierTable"]
-    end
-
-    subgraph "Runtime: Native"
-        E1["JavaVMExt"] --> E2["JNIEnvExt"]
-        E2 --> E3["LocalRefTable"]
-        E1 --> E4["NativeLibraries"]
-        E4 --> E5["libnativeloader"]
-        E5 --> E6["LinkerNamespace"]
-    end
-
-    A3 --> B5
-    A4 --> B3
-    A5 --> B1
-    B1 --> C1
-    C1 --> D1
-    B1 --> E1
-```
-
-### Performance Characteristics
-
-Understanding ART's performance characteristics helps developers make
-informed choices:
-
-| Operation | Typical Latency | Notes |
-|-----------|----------------|-------|
-| Object allocation (TLAB) | 10-50 ns | Bump pointer, thread-local |
-| Object allocation (slow path) | 100-500 ns | Region allocation + potential GC |
-| Virtual method call (compiled) | 5-10 ns | vtable lookup + indirect call |
-| Interface method call (IMT, no conflict) | 5-15 ns | Hash + indirect call |
-| Interface method call (IMT, conflict) | 20-100 ns | Linear search in conflict table |
-| JNI call (standard) | 100-500 ns | Thread state transition overhead |
-| JNI call (@FastNative) | 30-100 ns | Reduced overhead |
-| JNI call (@CriticalNative) | 5-20 ns | Nearly native call speed |
-| Class loading | 10-100 us | Depends on class complexity |
-| Class verification | 50-500 us | Depends on method count/complexity |
-| JIT baseline compilation | 1-10 ms | Per method |
-| JIT optimized compilation | 5-50 ms | Per method, with inlining |
-| Minor GC (young gen CC) | 1-5 ms total, <1 ms pause | Generational, concurrent |
-| Major GC (full CC) | 10-100 ms total, 1-5 ms pause | Full heap, concurrent |
-| dex2oat (speed-profile) | 5-60 seconds | Per app, depends on profile |
-| dex2oat (boot image) | 30-120 seconds | Full boot classpath |
-
-### Version History
-
-ART has evolved significantly over Android releases:
-
-| Android Version | ART Changes |
-|----------------|------------|
-| 5.0 (Lollipop) | ART becomes default runtime, replaces Dalvik |
-| 6.0 (Marshmallow) | Profile-guided compilation, improved GC |
-| 7.0 (Nougat) | JIT compiler added, hybrid AOT+JIT model |
-| 8.0 (Oreo) | Concurrent Copying collector, faster boot |
-| 9.0 (Pie) | Hidden API restrictions, compact DEX |
-| 10 | Generational CC, improved startup |
-| 11 | Memory-constrained device optimizations |
-| 12 | ART module (Mainline), odrefresh |
-| 13 | Improved profile-guided optimization |
-| 14 | Mark-Compact (CMC) collector, RISC-V support |
-| 15 | Continued CMC rollout, improved JIT |
-| 16 | Generational CMC, DEX container (V41) groundwork |
-| 17 | Pantherlake x86 variant (AVX2), AVX2 vectorization for x86-64, V41 container maturation, value-class flag, record classes treated as normal, MADV_FREE re-enabled for CC GC |
-
-Key source files for further exploration:
-
-| Component | File |
-|-----------|------|
-| Runtime singleton | `art/runtime/runtime.h` (1,400+ lines) |
-| DEX file format | `art/libdexfile/dex/dex_file.h` |
-| DEX structures | `art/libdexfile/dex/dex_file_structs.h` |
-| dex2oat driver | `art/dex2oat/dex2oat.cc` (2,000+ lines) |
-| Compiler filters | `art/libartbase/base/compiler_filter.h` |
-| JIT front-end | `art/runtime/jit/jit.h` |
-| JIT code cache | `art/runtime/jit/jit_code_cache.h` |
-| Optimizing compiler | `art/compiler/optimizing/optimizing_compiler.cc` |
-| GC heap | `art/runtime/gc/heap.h` |
-| CC collector | `art/runtime/gc/collector/concurrent_copying.h` |
-| Region space | `art/runtime/gc/space/region_space.h` |
-| Page reclaim (MADV_FREE) | `art/libartbase/base/mem_map.cc` |
-| Class flags | `art/runtime/mirror/class_flags.h` |
-| x86 ISA features | `art/runtime/arch/x86/instruction_set_features_x86.cc` |
-| x86-64 SIMD width | `art/compiler/optimizing/code_generator_x86_64.h` |
-| Class linker | `art/runtime/class_linker.cc` (11,710 lines) |
-| JNI VM | `art/runtime/jni/java_vm_ext.h` |
-| JNI env | `art/runtime/jni/jni_env_ext.h` |
-| OAT header | `art/runtime/oat/oat.h` |
-| VDEX format | `art/runtime/vdex_file.h` |
-| odrefresh | `art/odrefresh/odrefresh.h` |
-| libnativeloader | `art/libnativeloader/library_namespaces.h` |
-| JVMTI | `art/openjdkjvmti/OpenjdkJvmTi.cc` |
 
 <!-- chapter:19-native-bridge -->
 # Chapter 19: Native Bridge and Binary Translation

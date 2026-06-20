@@ -32818,6 +32818,28 @@ vold also switched its random-key generation to BoringSSL's `RAND_bytes()`
 instead of reading `/dev/urandom` directly, consolidating randomness into
 `RandUtils.cpp`.
 
+### 34.26.7 Photo Picker Search and Category Grid
+
+The Kotlin Photo Picker in MediaProvider gains two browsing surfaces in
+Android 17. The search feature
+(`packages/providers/MediaProvider/photopicker/src/com/android/photopicker/features/search/`)
+queries an on-device AppSearch index of media, capped at
+`MAX_DOCUMENT_COUNT = 50000` documents in
+`packages/providers/MediaProvider/src/com/android/providers/media/appsearch/AppSearchDbManager.java`.
+A privileged app can also supply cloud results by implementing the
+`SearchMediaService` SPI
+(`packages/providers/MediaProvider/apex/framework/java/android/provider/SearchMediaService.java`),
+whose `onSearchMedia()` callback returns a `SearchMediaResultPage` and which
+is bound through the `BIND_SEARCH_MEDIA_SERVICE` permission. The category-grid
+feature
+(`packages/providers/MediaProvider/photopicker/src/com/android/photopicker/features/categorygrid/`)
+browses albums and categories by provider authority, so it can list media
+sets across volumes including an SD card. A separate
+`PhotoPickerSelectionParams`
+(`packages/providers/MediaProvider/photopicker/framework/java/android/widget/photopicker/PhotoPickerSelectionParams.java`)
+lets callers of the embedded picker constrain selection by file size, video
+duration, resolution, and MIME type.
+
 ---
 
 ## 34.27 Try It

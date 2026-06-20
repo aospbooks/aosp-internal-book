@@ -1804,6 +1804,24 @@ functionality to connected displays.  When enabled, a `HomeStatusBarComponent`
 48.2.3) is created per-display, each with its own icon pipeline and visibility
 management.  The flag is read in `PhoneStatusBarViewController`.
 
+Around this sits a small connected-display UI stack.  `ConnectedDisplayInteractor`
+(`src/com/android/systemui/display/domain/interactor/ConnectedDisplayInteractor.kt`)
+exposes a `connectedDisplayState` flow that reports `CONNECTED` when an external
+display is attached and `CONNECTED_SECURE` when that display also has
+`FLAG_SECURE`.  `ConnectedDisplayIconViewModel`
+(`src/com/android/systemui/statusbar/systemstatusicons/connecteddisplay/ui/viewmodel/ConnectedDisplayIconViewModel.kt`)
+maps that state to the status-bar connected-display icon, with the chip itself
+gated by `status_bar_is_connected_display_chip_controlled_by_config`.  When a
+display is first plugged in, `ExternalDisplayConnectionDialog`
+(`src/com/android/systemui/display/ui/view/ExternalDisplayConnectionDialog.kt`,
+with the Compose path behind `enable_compose_external_display_dialog`) asks the
+user whether to mirror or extend.  The per-display classes are built by the
+`SystemUIDisplaySubcomponent` and `PerDisplaySystemUIModule`
+(`src/com/android/systemui/display/dagger/`): the subcomponent is a
+`@PerDisplaySingleton` scope created when a display appears and whose
+coroutine scope is cancelled when the display is removed, so display-scoped
+controllers tear down with their display.
+
 ---
 
 ## 48.11  Navigation Bar
@@ -5866,6 +5884,24 @@ graph TD
     TAC0 --> C0[TaskbarControllers]
     TAC1 --> C1[TaskbarControllers]
 ```
+
+Whether a connected display gets its own taskbar at all is gated by
+`enable_taskbar_connected_displays`
+(`frameworks/base/core/java/android/window/flags/lse_desktop_experience.aconfig`,
+namespace `lse_desktop_experience`); when the flag is off, the per-display path
+above still runs but only the primary display's taskbar is created.
+
+Two desktop-class taskbar features round this out. When more recent apps are
+open than fit on the taskbar, `TaskbarOverflowView`
+(`quickstep/src/com/android/launcher3/taskbar/TaskbarOverflowView.java`) draws an
+overflow item that collapses the surplus icons into one chip and expands them on
+tap, gated by `enable_taskbar_overflow` (same `lse_desktop_experience`
+namespace). The keyboard task switcher is `KeyboardQuickSwitchController`
+(`quickstep/src/com/android/launcher3/taskbar/KeyboardQuickSwitchController.java`,
+with its `KeyboardQuickSwitchView` and `KeyboardQuickSwitchViewController`), the
+Alt+Tab switcher that cycles through recent tasks. Its
+`enable_alt_tab_kqs_flatenning` flag (read through `TaskbarDesktopExperienceFlags`)
+flattens the switcher so the apps are shown in a single non-grouped list.
 
 ---
 

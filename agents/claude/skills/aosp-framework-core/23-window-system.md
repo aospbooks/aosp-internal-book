@@ -2904,6 +2904,41 @@ Desktop windowing is the most complex Shell feature, providing a full desktop ex
 
 The desktop mode directory alone contains 50+ files, reflecting the significant engineering investment in bringing desktop-class windowing to Android.
 
+**Multiple desks.** A single display can host more than one *desk* (virtual
+desktop), each with its own set of open windows, in the same way a Linux desktop
+offers several workspaces. The `multidesks/` package implements this on top of
+the desktop-windowing stack. `DesksController`
+(`.../desktopmode/multidesks/DesksController.kt`) owns the create/activate/
+deactivate/remove logic and drives a `DesksOrganizer` (the `RootTaskDesksOrganizer`
+implementation) that gives each desk its own root task container under the
+display's `TaskDisplayArea`; activating a desk reorders its container to the
+front and a `DeskSwitchTransitionHandler` animates the lateral move between two
+desks on the same display. The per-desk state -- `activeTasks`, `visibleTasks`,
+`minimizedTasks`, and the `leftTiledTaskId`/`rightTiledTaskId` snap slots -- is
+held in the `Desk` data model (`.../desktopmode/data/Desk.kt`) inside the
+per-display `DesktopRepository`, which `DesktopUserRepositories` instantiates per
+user. So multiple desks reuse the existing per-display task hierarchy and
+transition machinery rather than introducing a parallel one: a desk is a root
+task the organizer shows or hides, and switching desks is an ordinary Shell
+transition.
+
+A few desktop sub-features round out the surface presentation.
+`DesktopWallpaperActivity` (`.../desktopmode/DesktopWallpaperActivity.kt`) is a
+transparent activity that paints the wallpaper behind the freeform windows, gated
+by `enable_desktop_windowing_wallpaper_activity`. `DesktopImmersiveController`
+(`.../desktopmode/DesktopImmersiveController.kt`) moves a freeform task in and out
+of a full-immersive state where the task fills the display and the status bar is
+transient, via `moveTaskToImmersive()`. `DesktopHomeScreenPeekController`
+(`.../desktopmode/homescreenpeeking/DesktopHomeScreenPeekController.kt`) shifts
+the desktop windows toward a screen edge to peek at the home screen behind them,
+gated by `enable_home_screen_peeking`. First-run onboarding for the desktop
+gestures lives in `education/`: `AppHandleEducationController` introduces the
+app-handle drag that pulls an app into a freeform window
+(`enable_desktop_windowing_app_handle_education`), and
+`AppToWebEducationController` introduces the app-to-web transition
+(`enable_desktop_windowing_app_to_web_education`,
+`enable_enhanced_app_to_web_transition`).
+
 **Cross-reference:** Chapter 22 (Activity and Window Management) covers the *WM-core* side of desktop windowing -- how `Task` windowing modes, the desktop task lifecycle, and `DesktopExperienceFlags` gating drive policy. This chapter covers the *Shell presentation* side: the surfaces, transition handlers, and caption decorations that animate desktop windows. Detailed desktop mode analysis is also in the companion report, Part 2, section 69.
 
 ### 23.10.5 Predictive Back
@@ -3024,6 +3059,15 @@ Key capabilities:
 - **View host pooling**: Reuses `SurfaceControlViewHost` instances for efficiency
 
 The caption bar system has evolved from a legacy `DecorView`-based approach (where the app process rendered its own title bar) to a Shell-based approach (where Shell renders the title bar externally). The Shell approach provides consistent styling, eliminates app-side rendering overhead, and enables system-level drag/resize handling.
+
+Resizing also covers *snapping*. Dragging a freeform window to a screen edge, or
+toggling maximize, snaps it to half the display through `SnapController`
+(`frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/desktopmode/SnapController.kt`),
+whose `snapToHalfScreen()` takes a `DesktopTasksController.SnapPosition` (left or
+right) and is wired into the window-decoration drag positioners. Snapping works
+across monitors when `enable_cross_display_snap_support` is set, and
+`enable_freeform_box_shadows_v2` controls the drop shadow drawn around freeform
+windows.
 
 ### 23.10.10 Shell Initialization and Lifecycle
 

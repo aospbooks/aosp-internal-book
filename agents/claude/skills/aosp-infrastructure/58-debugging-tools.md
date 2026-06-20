@@ -4727,19 +4727,35 @@ asynchronous, batched socket-receive pattern.
 
 ---
 
-## 58.23 Try It: Debug a Real Performance Issue
+## 58.23 New Traceur Trace Categories
+
+Traceur (`packages/apps/Traceur/`), the system tracing UI, adds two
+toggleable Perfetto categories in Android 17, both defined in
+`packages/apps/Traceur/src_common/com/android/traceur/PerfettoUtils.java` with
+their user-visible labels in `TraceUtils.java`. The `wattson` category
+("Wattson power estimation") feeds the on-device power model: it enables the
+`linux.sys_stats` data source for periodic cpufreq and cpuidle samples plus a
+set of `linux.ftrace` events including `power/cpu_frequency`,
+`power/cpu_idle`, `power/suspend_resume`, `sched/sched_switch`, and the
+`cpuhp/*` hotplug tracepoints. The `mq` category ("messagequeue tracing")
+turns on a `track_event` data source scoped to the `mq` category, capturing
+Looper and `MessageQueue` dispatch.
+
+---
+
+## 58.24 Try It: Debug a Real Performance Issue
 
 This section walks through a complete debugging workflow for a realistic
 performance problem: an application that exhibits jank (dropped frames)
 during list scrolling.
 
-### 58.23.1 Problem Statement
+### 58.24.1 Problem Statement
 
 A user reports that a RecyclerView-based application stutters when scrolling
 quickly.  The app displays a list of items with images and text.  The
 stutter is reproducible on a Pixel device.
 
-### 58.23.2 Step 1: Confirm the Problem with gfxinfo
+### 58.24.2 Step 1: Confirm the Problem with gfxinfo
 
 ```bash
 # Reset frame stats
@@ -4768,7 +4784,7 @@ HISTOGRAM:
 The 16.63% jank rate confirms the problem.  For smooth 60fps scrolling,
 frame rendering must complete within 16.67ms.
 
-### 58.23.3 Step 2: Capture a Perfetto System Trace
+### 58.24.3 Step 2: Capture a Perfetto System Trace
 
 ```bash
 # Create trace config
@@ -4821,7 +4837,7 @@ adb shell perfetto -c /data/local/tmp/scroll_trace.pbtxt \
 adb pull /data/misc/perfetto-traces/scroll_trace.perfetto-trace .
 ```
 
-### 58.23.4 Step 3: Analyze in Perfetto UI
+### 58.24.4 Step 3: Analyze in Perfetto UI
 
 Open the trace in `ui.perfetto.dev` or Perfetto embedded in Android Studio.
 
@@ -4851,7 +4867,7 @@ flowchart TD
     O -- "Complex layout" --> R["Simplify layout hierarchy"]
 ```
 
-### 58.23.5 Step 4: CPU Profile the Hot Path
+### 58.24.5 Step 4: CPU Profile the Hot Path
 
 The Perfetto trace shows that `onBindViewHolder` is taking 25ms on some
 frames.  Let us use simpleperf to understand why:
@@ -4883,7 +4899,7 @@ Overhead  Command     Shared Object       Symbol
 The CPU profile reveals that JPEG decompression (`jpeg_decompress()`) is
 happening synchronously on the main thread during view binding.
 
-### 58.23.6 Step 5: Check for Memory Issues
+### 58.24.6 Step 5: Check for Memory Issues
 
 The GC activity in the trace suggests memory pressure.  Let us profile
 allocations:
@@ -4932,7 +4948,7 @@ LIMIT 10;
 **Expected finding**: Large allocations from bitmap decoding during each
 scroll event.
 
-### 58.23.7 Step 6: Verify with dumpsys meminfo
+### 58.24.7 Step 6: Verify with dumpsys meminfo
 
 ```bash
 # Before scrolling
@@ -4960,7 +4976,7 @@ Total PSS:         35,678    48,321   +12,643 KB
 The significant growth in both Java and Native heap during scrolling
 confirms that images are being decoded and not properly cached.
 
-### 58.23.8 Step 7: Root Cause and Fix
+### 58.24.8 Step 7: Root Cause and Fix
 
 The debugging workflow reveals:
 
@@ -4988,7 +5004,7 @@ flowchart LR
     D --> E
 ```
 
-### 58.23.9 Step 8: Verify the Fix
+### 58.24.9 Step 8: Verify the Fix
 
 After implementing the fix, re-run the same measurements:
 
@@ -5016,7 +5032,7 @@ The Perfetto trace should show:
 - No GC pauses during scroll
 - Smooth Choreographer frame cadence
 
-### 58.23.10 Debugging Checklist
+### 58.24.10 Debugging Checklist
 
 Use this checklist when debugging performance issues:
 

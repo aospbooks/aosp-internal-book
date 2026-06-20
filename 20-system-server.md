@@ -211,7 +211,7 @@ frameworks/base/services/
 ```
 
 The `serial/` module is new in Android 17: it hosts `SerialManagerService`,
-the system_server half of the wired Serial API covered in 20.30.
+the system_server half of the wired Serial API covered in 20.29.
 
 ### 20.1.4 The Four Startup Phases
 
@@ -719,7 +719,7 @@ area:
 | Service | Class | Source Package | Purpose |
 |---------|-------|---------------|---------|
 | UsbService | `UsbService.Lifecycle` | `usb/` | USB host/device management |
-| SerialManagerService | `SerialManagerService.Lifecycle` | `serial/` | Android 17 wired serial port API (gated by `enable_wired_serial_api`); see 20.30 |
+| SerialManagerService | `SerialManagerService.Lifecycle` | `serial/` | Android 17 wired serial port API (gated by `enable_wired_serial_api`); see 20.29 |
 | HardwarePropertiesManagerService | `HardwarePropertiesManagerService` | core | CPU/GPU temperatures |
 | ConsumerIrService | `ConsumerIrService` | core | IR blaster |
 | VibratorManagerService | `VibratorManagerService.Lifecycle` | `vibrator/` | Haptic feedback |
@@ -4832,9 +4832,50 @@ consent-gated implementation backed by the `native_serial` daemon.
 
 ---
 
-## 20.30 Try It
+## 20.30 Three Flag-Gated Android 17 Services
 
-### 20.30.1 Listing All System Services
+Android 17 adds three more managers to `system_server`, each started only
+when an aconfig flag is on. They appear in the service table earlier in this
+chapter; the following describes what each does and how it is gated.
+
+`MultisensoryService`
+(`frameworks/base/services/core/java/com/android/server/multisensory/MultisensoryService.java`)
+plays coordinated audio-haptic feedback for the Multisensory Design System,
+pairing vibration with audio playback. It registers under
+`Context.MULTISENSORY_MANAGER_SERVICE`. `SystemServer` starts it only off TV
+devices and only when the flag is set:
+
+```java
+// frameworks/base/services/java/com/android/server/SystemServer.java
+if (!isTv && android.os.multisensory.Flags.enableMultisensoryFeedback()) {
+    mSystemServiceManager.startService(MultisensoryService.Lifecycle.class);
+}
+```
+
+`ContentRestrictionService`
+(`frameworks/base/services/contentrestriction/java/com/android/server/contentrestriction/ContentRestrictionService.java`)
+handles per-user content restrictions, classifying and enforcing content
+limits through a delegated app service with role-based access. It registers
+under `Context.CONTENT_RESTRICTION_SERVICE` and starts when
+`android.app.contentrestriction.flags.Flags.contentRestrictionApi()` is on.
+
+`PccSandboxManagerService`
+(`frameworks/base/services/core/java/com/android/server/privatecompute/PccSandboxManagerService.java`)
+manages components running in the Private Compute Core sandbox (see
+Chapter 51 for PCC itself), publishing both a Binder interface and a native
+service interface for sandbox communication. It registers under
+`Context.PCC_SANDBOX_SERVICE`, gated by
+`android.app.privatecompute.flags.Flags.enablePccFrameworkSupport()`; the
+service re-checks the same flag in `onStart()` before publishing.
+
+None of the three is a stub: each has a working implementation, but all three
+stay unstarted on a stock build until their flag is turned on.
+
+---
+
+## 20.31 Try It
+
+### 20.31.1 Listing All System Services
 
 Use `service list` to see all registered Binder services:
 
@@ -4861,7 +4902,7 @@ Count the total:
 adb shell service list | head -1
 ```
 
-### 20.30.2 Inspecting system_server Process
+### 20.31.2 Inspecting system_server Process
 
 View basic process information:
 
@@ -4879,7 +4920,7 @@ adb shell cat /proc/$(adb shell pidof system_server)/status | head -20
 adb shell dumpsys meminfo system_server
 ```
 
-### 20.30.3 Dumpsys Commands
+### 20.31.3 Dumpsys Commands
 
 `dumpsys` is the primary tool for inspecting service state. Each service
 implements a `dump()` method:
@@ -4911,7 +4952,7 @@ adb shell dumpsys system_server_dumper --name SystemServer
 adb shell dumpsys system_server_dumper --name Watchdog
 ```
 
-### 20.30.4 Inspecting Boot Phases
+### 20.31.4 Inspecting Boot Phases
 
 Boot phase transitions are logged and can be traced:
 
@@ -4938,7 +4979,7 @@ duration_ms: 60000
 EOF
 ```
 
-### 20.30.5 Observing Service Start Order
+### 20.31.5 Observing Service Start Order
 
 The SystemServer logs each service start with timing information:
 
@@ -4950,7 +4991,7 @@ adb shell logcat -s SystemServer SystemServiceManager
 adb shell logcat | grep -E "PHASE_|startBootPhase"
 ```
 
-### 20.30.6 Watchdog Diagnostics
+### 20.31.6 Watchdog Diagnostics
 
 ```bash
 # Dump Watchdog state
@@ -4966,7 +5007,7 @@ adb shell logcat -b crash | grep -i watchdog
 adb shell cat /data/system/watchdog-timeout-history.txt
 ```
 
-### 20.30.7 Thread Inspection
+### 20.31.7 Thread Inspection
 
 ```bash
 # List all system_server threads with names
@@ -4982,7 +5023,7 @@ adb shell kill -3 $(adb shell pidof system_server)
 adb shell ls -la /data/anr/
 ```
 
-### 20.30.8 Service Dependencies and Boot Timing
+### 20.31.8 Service Dependencies and Boot Timing
 
 ```bash
 # View how long each service took to start
@@ -4998,7 +5039,7 @@ adb shell service check package
 adb shell service call activity 1  # IBinder.FIRST_CALL_TRANSACTION
 ```
 
-### 20.30.9 Examining SystemServiceManager State
+### 20.31.9 Examining SystemServiceManager State
 
 ```bash
 # Dump all registered system services
@@ -5012,7 +5053,7 @@ This shows:
 - Service start times
 - Active user IDs
 
-### 20.30.10 Monitoring Binder Thread Pool
+### 20.31.10 Monitoring Binder Thread Pool
 
 ```bash
 # Check Binder thread usage
@@ -5027,7 +5068,7 @@ adb shell cat /sys/kernel/debug/binder/proc/$(adb shell pidof system_server) \
     2>/dev/null | head -50
 ```
 
-### 20.30.11 Forcing a Watchdog Timeout (Development Only)
+### 20.31.11 Forcing a Watchdog Timeout (Development Only)
 
 On userdebug/eng builds, you can test the Watchdog by inducing a deadlock.
 **WARNING: This will crash system_server and restart the runtime.**
@@ -5040,7 +5081,7 @@ adb shell settings put global watchdog_timeout_millis 10000
 adb shell setprop persist.sys.debug.watchdog_timeout 10
 ```
 
-### 20.30.12 Tracing Service Startup with Perfetto
+### 20.31.12 Tracing Service Startup with Perfetto
 
 ```bash
 # Record a boot trace
@@ -5057,7 +5098,7 @@ The trace will show all the `TimingsTraceAndSlog` spans from SystemServer,
 including every service start and boot phase transition, with precise
 timestamps.
 
-### 20.30.13 Simulating Boot Phases
+### 20.31.13 Simulating Boot Phases
 
 You can watch boot phases progress in real time during a reboot:
 
@@ -5080,7 +5121,7 @@ SystemServiceManager: Starting phase 600
 SystemServiceManager: Starting phase 1000
 ```
 
-### 20.30.14 Examining Service Registration
+### 20.31.14 Examining Service Registration
 
 To see how a specific service is registered:
 
@@ -5094,7 +5135,7 @@ adb shell service check package
 adb shell dumpsys -l
 ```
 
-### 20.30.15 Monitoring Looper Statistics
+### 20.31.15 Monitoring Looper Statistics
 
 ```bash
 # Dump looper statistics to see message processing times

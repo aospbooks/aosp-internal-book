@@ -1688,6 +1688,24 @@ graph TD
     TAC1 --> C1[TaskbarControllers]
 ```
 
+Whether a connected display gets its own taskbar at all is gated by
+`enable_taskbar_connected_displays`
+(`frameworks/base/core/java/android/window/flags/lse_desktop_experience.aconfig`,
+namespace `lse_desktop_experience`); when the flag is off, the per-display path
+above still runs but only the primary display's taskbar is created.
+
+Two desktop-class taskbar features round this out. When more recent apps are
+open than fit on the taskbar, `TaskbarOverflowView`
+(`quickstep/src/com/android/launcher3/taskbar/TaskbarOverflowView.java`) draws an
+overflow item that collapses the surplus icons into one chip and expands them on
+tap, gated by `enable_taskbar_overflow` (same `lse_desktop_experience`
+namespace). The keyboard task switcher is `KeyboardQuickSwitchController`
+(`quickstep/src/com/android/launcher3/taskbar/KeyboardQuickSwitchController.java`,
+with its `KeyboardQuickSwitchView` and `KeyboardQuickSwitchViewController`), the
+Alt+Tab switcher that cycles through recent tasks. Its
+`enable_alt_tab_kqs_flatenning` flag (read through `TaskbarDesktopExperienceFlags`)
+flattens the switcher so the apps are shown in a single non-grouped list.
+
 ---
 
 ## 49.7 Search Integration
