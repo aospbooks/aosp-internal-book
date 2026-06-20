@@ -7855,7 +7855,7 @@ kernel with the same architecture as production devices.
 - **Chapter 4 (Boot Process)**: How the kernel is loaded and init processes begin
 - **Chapter 10 (Hardware Abstraction)**: HALs that depend on kernel drivers
 - **Chapter 40 (Security)**: SELinux policy, seccomp filters, verified boot chain
-- **Chapter 56 (Debugging Tools)**: Perfetto tracing, CPU scheduling, memory tuning
+- **Chapter 58 (Debugging Tools)**: Perfetto tracing, CPU scheduling, memory tuning
 
 ### Key File Reference
 

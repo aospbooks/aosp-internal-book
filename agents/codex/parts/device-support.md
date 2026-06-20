@@ -1,5 +1,5 @@
-<!-- chapter:57-architecture-support -->
-# Chapter 57: Architecture Support
+<!-- chapter:59-architecture-support -->
+# Chapter 59: Architecture Support
 
 Android runs on a wider range of processor architectures than any other major
 operating system. From low-power ARM Cortex-A7 chips in entry-level phones to
@@ -22,7 +22,7 @@ binaries.
 
 ---
 
-## 57.1 Supported Architectures
+## 59.1 Supported Architectures
 
 AOSP officially supports five CPU architectures, each mapped to a specific
 Soong `ArchType` and Clang target triple. These five architectures are
@@ -43,7 +43,7 @@ variant tuning, and linker flags. These five files -- plus the shared
 `global.go`, `toolchain.go`, `clang.go`, and `bionic.go` -- form the
 foundation of AOSP's cross-compilation infrastructure.
 
-### 57.1.1 Architecture Registration Flow
+### 59.1.1 Architecture Registration Flow
 
 Every architecture registers itself with the build system during Go package
 initialization. The pattern is identical across all five architectures. Here is
@@ -68,7 +68,7 @@ func init() {
 The `registerToolchainFactory` function in `toolchain.go` stores these factories
 in a map indexed by OS type, architecture type, and a boolean that selects
 between the ordinary toolchain and the Lightweight Fault Isolation (LFI)
-toolchain (section 57.10). A parallel `registerLFIToolchainFactory` populates
+toolchain (section 59.10). A parallel `registerLFIToolchainFactory` populates
 the `true` slot:
 
 ```go
@@ -123,7 +123,7 @@ graph TD
     M --> N
 ```
 
-### 57.1.2 The Toolchain Interface
+### 59.1.2 The Toolchain Interface
 
 All architecture-specific toolchains implement the `Toolchain` interface defined
 in `build/soong/cc/config/toolchain.go`. This is the central abstraction that
@@ -184,7 +184,7 @@ objects like `crtbegin_dynamic` and `crtend_android`.
 
 **Platform**: `Bionic()`, `Glibc()`, and `Musl()` indicate which C library the
 toolchain links against. `Lfi()` reports whether this is a Lightweight Fault
-Isolation toolchain (covered in section 57.10), and defaults to `false` for the
+Isolation toolchain (covered in section 59.10), and defaults to `false` for the
 ordinary bionic toolchains.
 
 The base types `toolchain64Bit` and `toolchain32Bit` provide the `Is64Bit()`
@@ -207,7 +207,7 @@ var (
 )
 ```
 
-### 57.1.3 The Arch Struct
+### 59.1.3 The Arch Struct
 
 Soong represents a target architecture using the `Arch` struct from
 `build/soong/android/arch.go`. This struct carries all the information needed
@@ -284,7 +284,7 @@ graph LR
     G --> H["toolchainArm64<br/>Cflags: -march=armv8.2-a+dotprod -mcpu=cortex-a55"]
 ```
 
-### 57.1.4 Architecture Hierarchy in the Toolchain
+### 59.1.4 Architecture Hierarchy in the Toolchain
 
 Each architecture toolchain is assembled from three layers through Go struct
 embedding:
@@ -352,7 +352,7 @@ classDiagram
 
 ---
 
-## 57.2 ARM64 (AArch64)
+## 59.2 ARM64 (AArch64)
 
 ARM64, formally AArch64, is the primary architecture for Android devices.
 Virtually every phone, tablet, and wearable shipping today uses an ARM64
@@ -368,7 +368,7 @@ implicit-declaration check that all LP64 architectures share:
 ```go
 // build/soong/cc/config/arm64_device.go
 arm64Cflags = []string{
-    // Help catch common 32/64-bit errors.
+    // Help catch common 32/66-bit errors.
     // Common to all LP64 architectures.
     "-Werror=implicit-function-declaration",
 
@@ -384,7 +384,7 @@ where a large stack allocation jumps clean over the guard page; the compiler
 probes each page as the frame grows so an overflow always faults. The same two
 flags appear verbatim in `riscv64_device.go`.
 
-### 57.2.1 Architecture Variants
+### 59.2.1 Architecture Variants
 
 ARM64 supports ten architecture variants, each mapping to a specific `-march=`
 compiler flag:
@@ -426,7 +426,7 @@ flag as plain `armv8-a`, but the build system knows to apply the `branchprot`
 architecture feature, which adds compiler flags for hardware-enforced control
 flow integrity.
 
-### 57.2.2 Branch Protection: PAC and BTI
+### 59.2.2 Branch Protection: PAC and BTI
 
 Pointer Authentication Codes (PAC) and Branch Target Identification (BTI) are
 hardware security features that protect against control-flow hijacking attacks
@@ -499,7 +499,7 @@ In the PAC+BTI flow, if an attacker overwrites the saved LR on the stack, the
 fault. The BTI landing pad ensures that indirect branches can only land at
 intended targets.
 
-### 57.2.3 Memory Tagging Extension (MTE)
+### 59.2.3 Memory Tagging Extension (MTE)
 
 ARMv8.5-A introduced the Memory Tagging Extension (MTE), a hardware feature
 that detects memory safety bugs such as use-after-free and buffer overflows.
@@ -545,7 +545,7 @@ upper bits of pointers. Regular pointer arithmetic or SIMD-based comparisons
 might accidentally trip over the tag bits unless the code is written to be
 tag-aware.
 
-### 57.2.4 CPU Variant Tuning and big.LITTLE
+### 59.2.4 CPU Variant Tuning and big.LITTLE
 
 ARM's big.LITTLE (and later DynamIQ) heterogeneous computing architecture pairs
 high-performance "big" cores (e.g., Cortex-A76) with efficient "LITTLE" cores
@@ -615,7 +615,7 @@ arm64CpuVariantCflagsVar = map[string]string{
 Notice how the big cores (A72, A73, A75, A76) all map to their corresponding
 LITTLE core flags (A53 or A55).
 
-### 57.2.5 Cortex-A53 Erratum Workarounds
+### 59.2.5 Cortex-A53 Erratum Workarounds
 
 The Cortex-A53, one of the most widely deployed ARM cores in history, has two
 notable hardware errata that AOSP works around at link time:
@@ -644,11 +644,11 @@ insert veneer code to avoid them. Note that this fix is also applied to A72,
 A73, Kryo, and Exynos cores, because they may be paired with A53 LITTLE cores
 in big.LITTLE configurations.
 
-### 57.2.6 ARM64 Toolchain Factory
+### 59.2.6 ARM64 Toolchain Factory
 
 The factory delegates flag assembly to a helper, `arm64ToolchainFlags`, which
 returns the toolchain Cflags and toolchain Ldflags as a pair. Splitting out the
-helper lets the LFI toolchain (section 57.10) reuse the exact same flag logic:
+helper lets the LFI toolchain (section 59.10) reuse the exact same flag logic:
 
 ```go
 // build/soong/cc/config/arm64_device.go
@@ -701,7 +701,7 @@ graph TB
     F --> G["Final clang invocation"]
 ```
 
-### 57.2.7 Page Size Configuration
+### 59.2.7 Page Size Configuration
 
 ARM64 supports multiple page sizes (4KB, 16KB, 64KB). The linker flags enforce
 the maximum page size for correct segment alignment:
@@ -718,7 +718,7 @@ pctx.VariableFunc("Arm64Ldflags", func(ctx android.PackageVarContext) string {
 `MaxPageSizeSupported()` is the alignment that the linker uses for ELF segment
 boundaries, and it is no longer a hardcoded 4096 on ARM64. As of Android 17 the
 build defaults it to 16384 for arm64 and x86_64 devices, so platform binaries
-are aligned to load correctly on a 16KB-page kernel. Section 57.11 traces that
+are aligned to load correctly on a 16KB-page kernel. Section 59.11 traces that
 default and the bionic-side macro changes that go with it.
 
 The base linker flags also include segment separation for security:
@@ -741,7 +741,7 @@ the instruction stream back to build a code-reuse payload.
 
 ---
 
-## 57.3 x86 and x86_64
+## 59.3 x86 and x86_64
 
 The x86 architecture family serves two main roles in AOSP: as the target for
 Chromebook and embedded devices, and as the native architecture for the Android
@@ -753,7 +753,7 @@ x86/x86_64 images provide dramatically better performance during development.
 - `build/soong/cc/config/x86_device.go` (193 lines)
 - `build/soong/cc/config/x86_64_device.go` (200 lines)
 
-### 57.3.1 x86 Architecture Variants
+### 59.3.1 x86 Architecture Variants
 
 The x86 (32-bit) toolchain supports a wide range of Intel microarchitectures:
 
@@ -816,7 +816,7 @@ x86_64 instruction-set-feature tables (`x86_known_variants` in
 compilers can key off `pantherlake` the same way the static toolchain does; see
 Chapter 18 for how ART consumes those feature sets.
 
-### 57.3.2 SIMD Instruction Sets: SSE and AVX
+### 59.3.2 SIMD Instruction Sets: SSE and AVX
 
 The x86 SIMD landscape is more fragmented than ARM's NEON -- instead of a
 single mandatory SIMD extension, x86 has a progression of optional extensions.
@@ -850,7 +850,7 @@ Intel processors, AVX instructions cause the CPU to reduce its clock frequency
 mixes AVX and non-AVX instructions. Individual libraries can opt into AVX via
 their `Android.bp` files when they know it helps.
 
-### 57.3.3 x86-Specific Compiler Flags
+### 59.3.3 x86-Specific Compiler Flags
 
 The 32-bit x86 toolchain has several unique requirements:
 
@@ -883,7 +883,7 @@ pctx.StaticVariable("X86YasmFlags", "-f elf32 -m x86")
 pctx.StaticVariable("X86_64YasmFlags", "-f elf64 -m amd64")
 ```
 
-### 57.3.4 x86 Toolchain Structure
+### 59.3.4 x86 Toolchain Structure
 
 Both x86 toolchains share the same pattern as ARM64:
 
@@ -920,7 +920,7 @@ pctx.StaticVariable("X86_64ToolchainCflags", "-m64")
 pctx.StaticVariable("X86_64ToolchainLdflags", "-m64")
 ```
 
-### 57.3.5 Native Bridge for ARM Compatibility
+### 59.3.5 Native Bridge for ARM Compatibility
 
 x86/x86_64 Android devices face a compatibility challenge: the vast majority of
 Android NDK apps are compiled for ARM. To run these apps, AOSP includes the
@@ -977,7 +977,7 @@ graph TD
     H --> I["Execute on host x86/x86_64 CPU"]
 ```
 
-### 57.3.6 The Emulator Target
+### 59.3.6 The Emulator Target
 
 The default x86_64 generic device configuration targets the emulator:
 
@@ -1005,7 +1005,7 @@ Goldmont-based processors that do not implement these optional extensions:
 },
 ```
 
-### 57.3.7 ARM 32-bit: The Legacy Secondary Architecture
+### 59.3.7 ARM 32-bit: The Legacy Secondary Architecture
 
 ARM 32-bit support in AOSP exists primarily as the secondary architecture for
 ARM64 devices, allowing legacy 32-bit apps to run. The ARM toolchain is the
@@ -1100,7 +1100,7 @@ graph TD
     end
 ```
 
-### 57.3.8 ARM 32-bit Linker Configuration
+### 59.3.8 ARM 32-bit Linker Configuration
 
 The ARM 32-bit linker has its own specific flags:
 
@@ -1120,7 +1120,7 @@ compiler bugs create a complex web of workarounds across the toolchain.
 
 ---
 
-## 57.4 RISC-V 64
+## 59.4 RISC-V 64
 
 RISC-V is the newest architecture supported by AOSP, first added in 2022. It
 is an open, royalty-free instruction set architecture that has generated
@@ -1130,7 +1130,7 @@ incomplete toolchain support.
 
 **Source file**: `build/soong/cc/config/riscv64_device.go`
 
-### 57.4.1 Base ISA and Extensions
+### 59.4.1 Base ISA and Extensions
 
 The RISC-V configuration specifies a rich set of extensions. As of Android 17
 the baseline shares the same LP64 hardening flags as ARM64
@@ -1140,7 +1140,7 @@ ISA string has grown a vector bit-manipulation extension:
 ```go
 // build/soong/cc/config/riscv64_device.go
 riscv64Cflags = []string{
-    // Help catch common 32/64-bit errors.
+    // Help catch common 32/66-bit errors.
     // Common to all LP64 architectures.
     "-Werror=implicit-function-declaration",
 
@@ -1179,7 +1179,7 @@ added in Android 17 brings the same bit-manipulation primitives (count leading
 zeros, population count, rotate) to vector registers, which is useful for
 cryptographic and hashing kernels.
 
-### 57.4.2 QEMU and Berberis Workarounds
+### 59.4.2 QEMU and Berberis Workarounds
 
 The RISC-V configuration contains a revealing TODO comment about the state of
 the ecosystem:
@@ -1198,7 +1198,7 @@ The `-mno-implicit-float` flag prevents the compiler from automatically using
 floating-point or vector instructions for non-floating-point operations
 (like structure copies), which works around QEMU V bugs.
 
-### 57.4.3 Minimal Variant Configuration
+### 59.4.3 Minimal Variant Configuration
 
 Unlike ARM64 and x86, RISC-V has no CPU variant tuning:
 
@@ -1227,7 +1227,7 @@ This simplicity reflects the current state of the RISC-V Android ecosystem:
 there is only one target configuration, and the hardware landscape has not yet
 diversified to the point where micro-architecture-specific tuning is needed.
 
-### 57.4.4 RISC-V Linker Configuration
+### 59.4.4 RISC-V Linker Configuration
 
 The RISC-V linker flags are straightforward:
 
@@ -1243,10 +1243,10 @@ riscv64Ldflags = []string{
 
 Note the hardcoded 4KB page size, unlike ARM64 and x86_64, which take their
 maximum page size from the configurable `MaxPageSizeSupported()` (16KB by
-default in Android 17; see section 57.11). RISC-V Android currently only
+default in Android 17; see section 59.11). RISC-V Android currently only
 supports 4KB pages.
 
-### 57.4.5 Berberis Binary Translation
+### 59.4.5 Berberis Binary Translation
 
 The `frameworks/libs/binary_translation/` directory contains Berberis, Google's
 open-source binary translation framework. While primarily designed for
@@ -1274,7 +1274,7 @@ the primary translation direction: RISC-V 64 guest code running on an x86_64
 host. This allows developers to work with RISC-V Android images on x86_64
 workstations.
 
-### 57.4.6 ART RISC-V Feature Detection
+### 59.4.6 ART RISC-V Feature Detection
 
 The ART runtime has full RISC-V support with its own ISA feature tracking. The
 `Riscv64InstructionSetFeatures` class tracks extensions as a bitmap:
@@ -1295,7 +1295,7 @@ class Riscv64InstructionSetFeatures final : public InstructionSetFeatures {
 
 ART's feature bitmap tracks six extensions (G, C, V, Zba, Zbb, Zbs). Note that
 even though the Soong toolchain now requests `zvbb` at compile time (section
-57.4.1), ART has no `zvbb` bit yet, so the JIT does not key off it; this is a
+59.4.1), ART has no `zvbb` bit yet, so the JIT does not key off it; this is a
 small example of the build toolchain leading ART's runtime feature model.
 
 The feature methods allow ART's JIT compiler to query capabilities:
@@ -1379,7 +1379,7 @@ The `UNIMPLEMENTED(WARNING)` calls indicate that runtime hardware detection is
 not yet complete for RISC-V, which is another marker of the architecture's
 early-adoption status in AOSP.
 
-### 57.4.7 Comparing RISC-V and ARM64 Feature Tracking
+### 59.4.7 Comparing RISC-V and ARM64 Feature Tracking
 
 The contrast between RISC-V and ARM64 feature tracking in ART reveals the
 maturity gap:
@@ -1407,7 +1407,7 @@ This means that even though the Soong toolchain supports ARMv9 variants
 instructions. This is a pragmatic choice -- SVE support requires significant
 changes to the register allocator and instruction selector.
 
-### 57.4.8 ART ARM64 Feature Bitmap
+### 59.4.8 ART ARM64 Feature Bitmap
 
 ART stores ARM64 features as a compact bitmap for serialization:
 
@@ -1441,7 +1441,7 @@ For example, when `has_lse_` is true, atomic operations use the single-instructi
 `LDADD`, `SWPAL`, etc., instead of the multi-instruction LL/SC loop
 (`LDAXR` / `STLXR`). This can be 2-3x faster in high-contention scenarios.
 
-### 57.4.9 RISC-V Device Configuration
+### 59.4.9 RISC-V Device Configuration
 
 The ART test device for RISC-V reveals the early-adoption nature of the port:
 
@@ -1466,14 +1466,14 @@ yet. This is a temporary measure while the RISC-V ecosystem catches up.
 
 ---
 
-## 57.5 Multi-Architecture Builds
+## 59.5 Multi-Architecture Builds
 
 Modern Android devices typically support multiple architectures simultaneously.
 A 64-bit ARM device also runs 32-bit ARM code. An x86_64 device also runs
 x86 code. AOSP's build system handles this through the "multilib" mechanism,
 which builds the same module for multiple architectures.
 
-### 57.5.1 Primary and Secondary Architectures
+### 59.5.1 Primary and Secondary Architectures
 
 Device configurations declare a primary architecture and an optional secondary
 architecture using `TARGET_ARCH` and `TARGET_2ND_ARCH`:
@@ -1521,7 +1521,7 @@ graph LR
 RISC-V currently has no secondary architecture -- it is 64-bit only. There is
 no 32-bit RISC-V Android port.
 
-### 57.5.2 Zygote Configuration
+### 59.5.2 Zygote Configuration
 
 The multilib choice directly affects how Zygote processes are started. AOSP
 includes several Zygote initialization scripts:
@@ -1556,7 +1556,7 @@ TARGET_SUPPORTS_64_BIT_APPS := true
 TARGET_SUPPORTS_OMX_SERVICE := false
 ```
 
-### 57.5.3 The compile_multilib Property
+### 59.5.3 The compile_multilib Property
 
 In `Android.bp` files, modules use the `compile_multilib` property to control
 which architectures they are built for:
@@ -1620,7 +1620,7 @@ func decodeMultilibTargets(multilib string, targets []Target, prefer32 bool) ([]
 | `"first_prefer32"` | Like `first` but prefers 32-bit |
 | `"common"` | Architecture-independent (e.g., Java) |
 
-### 57.5.4 Architecture-Specific Sources in Android.bp
+### 59.5.4 Architecture-Specific Sources in Android.bp
 
 The `arch:` block in `Android.bp` files allows modules to include
 architecture-specific source files, compiler flags, or dependencies:
@@ -1701,7 +1701,7 @@ arch: {
 },
 ```
 
-### 57.5.5 Output Directory Structure
+### 59.5.5 Output Directory Structure
 
 The multilib mechanism produces output in separate directories. The 32-bit
 secondary architecture outputs go to `obj_<arch>`:
@@ -1727,7 +1727,7 @@ $(TARGET_2ND_ARCH_VAR_PREFIX)TARGET_OUT_SHARED_LIBRARIES := \
 
 ---
 
-## 57.6 Compiler Configuration
+## 59.6 Compiler Configuration
 
 The compiler configuration in AOSP is centralized in
 `build/soong/cc/config/global.go` (633 lines) and applies to all architectures.
@@ -1735,7 +1735,7 @@ This file defines the common compilation flags, warning policies, debug
 settings, and Clang toolchain paths that form the baseline for every native
 build.
 
-### 57.6.1 Common Global CFLAGS
+### 59.6.1 Common Global CFLAGS
 
 The `commonGlobalCflags` array defines flags applied to every C/C++ compilation
 in AOSP:
@@ -1808,7 +1808,7 @@ of hard-to-reproduce bugs."
 **`-gz=zstd`**: Compresses debug information with Zstandard, significantly
 reducing build output size without losing debug capability.
 
-### 57.6.2 Device-Specific CFLAGS
+### 59.6.2 Device-Specific CFLAGS
 
 Flags that apply only to device (not host) code:
 
@@ -1844,13 +1844,13 @@ protects more functions than `-fstack-protector` but fewer than
 flag `-fstack-clash-protection` is not in this global list because Clang does
 not support it for 32-bit (ILP32) ARM; instead the LP64 architectures (ARM64,
 RISC-V 64) add it in their per-architecture base cflags, as shown in sections
-57.2 and 57.4.1.
+59.2 and 59.4.1.
 
 **`-D_FORTIFY_SOURCE=3`**: The highest level of compile-time and runtime
 buffer overflow detection. Level 3 extends beyond the basic `memcpy` /
 `strcpy` checks of level 2 to cover more functions and usage patterns.
 
-### 57.6.3 Device Linker Flags
+### 59.6.3 Device Linker Flags
 
 ```go
 // build/soong/cc/config/global.go
@@ -1898,7 +1898,7 @@ significantly faster and is the only linker supported by AOSP.
 machine code to save space. The "safe" mode only folds functions whose address
 is never taken, avoiding subtle bugs.
 
-### 57.6.4 Non-Overridable Flags
+### 59.6.4 Non-Overridable Flags
 
 Some warnings are so important that modules cannot disable them even if they use
 `-Wno-error` or similar flags in their `Android.bp`:
@@ -1924,7 +1924,7 @@ These are appended *after* the module's own cflags, so they cannot be
 overridden. The flags target critical safety issues: null dereference, dangling
 pointers, format string bugs, and buffer overflows.
 
-### 57.6.5 The Flag Layering Model
+### 59.6.5 The Flag Layering Model
 
 The complete set of flags applied to a compilation command is assembled in
 layers:
@@ -1953,7 +1953,7 @@ graph TB
     B --> C --> D --> E --> F --> G
 ```
 
-### 57.6.6 Clang Toolchain Version
+### 59.6.6 Clang Toolchain Version
 
 Global.go also manages the Clang compiler version:
 
@@ -1981,7 +1981,7 @@ release-configurable: `CppDefaultStdVersion` is the fallback, and
 `ReleaseBuildCppStdVersion()` lets a release configuration bump the standard
 without editing this file.
 
-### 57.6.7 Auto Variable Initialization
+### 59.6.7 Auto Variable Initialization
 
 A notable security feature is automatic variable initialization:
 
@@ -2003,7 +2003,7 @@ By default, all stack variables are zero-initialized. This eliminates an
 entire class of uninitialized-variable bugs at a small runtime cost. The
 comment references bug b/131390872, which tracked the rollout of this feature.
 
-### 57.6.8 Sanitizer Runtime Libraries
+### 59.6.8 Sanitizer Runtime Libraries
 
 The `toolchain.go` file defines helper functions for all the sanitizer runtime
 libraries:
@@ -2035,7 +2035,7 @@ resolved to architecture-specific binaries using the
 `LibclangRuntimeLibraryArch()` method from each toolchain (e.g., `"aarch64"` for
 ARM64, `"i686"` for x86).
 
-### 57.6.9 External Code Flags
+### 59.6.9 External Code Flags
 
 Third-party code (anything under `external/`, most of `vendor/`, and most of
 `hardware/`) gets relaxed warning treatment:
@@ -2085,7 +2085,7 @@ old behavior where tentative definitions are "common" symbols that can be
 merged across translation units. Without `-fcommon`, these libraries fail to
 link.
 
-### 57.6.10 Illegal Flags
+### 59.6.10 Illegal Flags
 
 AOSP bans certain compiler flags entirely:
 
@@ -2106,7 +2106,7 @@ warning infrastructure. `-Wno-all` and `-Wno-everything` have the same
 effect. `-pedantic` flags are banned because they trigger thousands of
 warnings from legitimate GNU extension usage throughout AOSP.
 
-### 57.6.11 Language Standard Versions
+### 59.6.11 Language Standard Versions
 
 AOSP specifies modern language standards:
 
@@ -2128,7 +2128,7 @@ ExperimentalCppStdVersion = "gnu++2b"
 - The "experimental" versions (`gnu2y`, `gnu++2b`) target the next standard
   revision and are used for modules that opt into bleeding-edge features.
 
-### 57.6.12 Clang Unknown Flags Filter
+### 59.6.12 Clang Unknown Flags Filter
 
 The `clang.go` file maintains a list of GCC flags that Clang does not
 understand, which must be filtered out when processing legacy build files:
@@ -2162,13 +2162,13 @@ silently removes these rather than causing build failures.
 
 ---
 
-## 57.7 Generic Device Configurations
+## 59.7 Generic Device Configurations
 
 AOSP provides generic device configurations under `device/generic/` for
 reference, testing, and emulator use. These configurations define the minimum
 viable settings for each supported architecture.
 
-### 57.7.1 Directory Structure
+### 59.7.1 Directory Structure
 
 ```
 device/generic/
@@ -2190,7 +2190,7 @@ device/generic/
     goldfish/         - Legacy emulator
 ```
 
-### 57.7.2 ARM64 Generic Device
+### 59.7.2 ARM64 Generic Device
 
 The ARM64 generic device is the most common reference target:
 
@@ -2225,7 +2225,7 @@ PRODUCT_NAME := mini_arm64
 PRODUCT_DEVICE := arm64
 ```
 
-### 57.7.3 ARM 32-bit Generic Device
+### 59.7.3 ARM 32-bit Generic Device
 
 The 32-bit ARM device targets the ARMv7-A architecture with NEON:
 
@@ -2241,7 +2241,7 @@ TARGET_CPU_ABI2 := armeabi
 This has no secondary architecture -- it is pure 32-bit. The `armeabi`
 secondary ABI provides compatibility with ancient pre-NEON ARM code (ARMv5TE).
 
-### 57.7.4 x86_64 Generic Device
+### 59.7.4 x86_64 Generic Device
 
 ```makefile
 # device/generic/x86_64/BoardConfig.mk
@@ -2254,7 +2254,7 @@ TARGET_2ND_ARCH := x86
 TARGET_2ND_ARCH_VARIANT := x86_64
 ```
 
-### 57.7.5 ART Test Devices
+### 59.7.5 ART Test Devices
 
 The `device/generic/art/` directory contains specialized configurations for
 testing the ART runtime on different CPU variants. These are not real devices
@@ -2289,7 +2289,7 @@ The ART test configurations also include vendor-specific variants:
 | `riscv64/` | RISC-V 64 | RISC-V ART testing |
 | `silvermont/` | Silvermont | Intel Atom testing |
 
-### 57.7.6 Android Automotive (Car)
+### 59.7.6 Android Automotive (Car)
 
 The `device/generic/car/` directory demonstrates multi-architecture automotive
 targets:
@@ -2307,7 +2307,7 @@ device/generic/car/
     gsi_car_x86_64.mk         - x86_64 GSI
 ```
 
-### 57.7.7 Trusty TEE
+### 59.7.7 Trusty TEE
 
 The Trusty Trusted Execution Environment provides a secure world that runs
 alongside Android:
@@ -2321,7 +2321,7 @@ Trusty runs as a separate OS in ARM TrustZone (or equivalent secure monitor
 mode), and its build system must produce code for the secure world that is
 compatible with the normal world's architecture.
 
-### 57.7.8 The AOSP Product Build
+### 59.7.8 The AOSP Product Build
 
 The full AOSP product combines a generic device with system, vendor, and
 product image configurations:
@@ -2342,20 +2342,20 @@ PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true
 The `PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true` flag prevents bionic from
 exposing a fixed `PAGE_SIZE` macro, so code must read the page size at runtime
 instead of assuming 4096 at compile time. This matters because Android 17
-defaults the ARM64 and x86_64 ELF segment alignment to 16KB (section 57.11), and
+defaults the ARM64 and x86_64 ELF segment alignment to 16KB (section 59.11), and
 a binary that hardcoded `PAGE_SIZE == 4096` would misbehave on a 16KB-page
 kernel. Larger pages reduce TLB pressure and page-fault overhead at the cost of
 some memory fragmentation.
 
 ---
 
-## 57.8 Architecture-Specific Code Patterns
+## 59.8 Architecture-Specific Code Patterns
 
 Across AOSP, several major components contain hand-tuned assembly code for each
 supported architecture. This section examines the patterns used in bionic, ART,
 and other performance-critical subsystems.
 
-### 57.8.1 Bionic: Architecture Directories
+### 59.8.1 Bionic: Architecture Directories
 
 Bionic organizes architecture-specific code in `arch-<arch>/` subdirectories:
 
@@ -2386,7 +2386,7 @@ bionic/libc/
         string/       - RISC-V string functions (SiFive contributed)
 ```
 
-### 57.8.2 Bionic: The ifunc Dispatch Pattern (ARM64)
+### 59.8.2 Bionic: The ifunc Dispatch Pattern (ARM64)
 
 ARM64 bionic uses the GNU indirect function (ifunc) mechanism to select the
 best implementation of common functions at runtime. The ifunc resolver runs
@@ -2471,7 +2471,7 @@ DEFINE_IFUNC_FOR(strchr) {
 }
 ```
 
-### 57.8.3 Bionic: ARM 32-bit CPU-Variant String Functions
+### 59.8.3 Bionic: ARM 32-bit CPU-Variant String Functions
 
 ARM 32-bit bionic takes a different approach: instead of runtime ifunc dispatch,
 it compiles multiple CPU-variant-specific implementations and selects at build
@@ -2492,7 +2492,7 @@ Each `memcpy.S` contains different hand-written assembly that exploits the
 target core's pipeline characteristics -- prefetch distances, store buffer
 depths, cache line sizes, and NEON instruction scheduling.
 
-### 57.8.4 Bionic: RISC-V String Functions with Vector Extension
+### 59.8.4 Bionic: RISC-V String Functions with Vector Extension
 
 The RISC-V string implementations in bionic were contributed by SiFive and use
 the RISC-V Vector extension:
@@ -2508,7 +2508,7 @@ The copyright headers in these files attribute them to both "The Android Open
 Source Project" and "SiFive, Inc." -- SiFive is a leading RISC-V chip designer
 that contributed these optimized implementations.
 
-### 57.8.5 Bionic: Low-Level Architecture Functions
+### 59.8.5 Bionic: Low-Level Architecture Functions
 
 Every architecture must implement a set of core low-level functions in assembly.
 These cannot be written in C because they manipulate the stack, registers, or
@@ -2544,7 +2544,7 @@ The ARM64 `setjmp.S` shows the register-level detail required:
 // 25     reserved        reserved entries (room to grow)
 ```
 
-### 57.8.6 Bionic: MTE Integration
+### 59.8.6 Bionic: MTE Integration
 
 ARM64 bionic includes ELF notes that control MTE behavior. Two variants exist:
 
@@ -2574,7 +2574,7 @@ These notes are linked into binaries that opt into MTE. The dynamic linker
 reads them and configures the process's memory tagging mode before the main
 program runs.
 
-### 57.8.7 ART Runtime: Architecture-Specific Entrypoints
+### 59.8.7 ART Runtime: Architecture-Specific Entrypoints
 
 The Android Runtime (ART) contains extensive architecture-specific code for JIT
 compilation, garbage collection, and JNI transitions. Each architecture has a
@@ -2606,7 +2606,7 @@ art/runtime/arch/
     riscv64/ - RISC-V 64 entrypoints
 ```
 
-### 57.8.8 ART: Instruction Set Feature Detection
+### 59.8.8 ART: Instruction Set Feature Detection
 
 ART's `instruction_set_features.cc` dispatches feature detection to
 architecture-specific implementations:
@@ -2695,7 +2695,7 @@ The comment about Pixel 3a is instructive -- it shows that even Google's own
 devices can have incorrect `TARGET_CPU_VARIANT` settings, making runtime
 validation essential.
 
-### 57.8.9 ART: Quick Entrypoints
+### 59.8.9 ART: Quick Entrypoints
 
 The `quick_entrypoints_arm64.S` file contains the assembly routines that bridge
 managed (Java/Kotlin) code with the ART runtime. These are some of the most
@@ -2721,7 +2721,7 @@ calling convention) and native code (which uses the platform ABI). The
 tracks the current managed stack frame -- essential for garbage collection, stack
 walking, and exception handling.
 
-### 57.8.10 ART: Multiple Feature Detection Strategies
+### 59.8.10 ART: Multiple Feature Detection Strategies
 
 ART implements six different strategies for detecting CPU features, reflecting
 the reality that no single detection method is reliable across all devices:
@@ -2761,7 +2761,7 @@ Pixel 3a, where the device incorrectly reports its CPU variant.
 For RISC-V, only `FromVariant()` and `FromCppDefines()` are currently
 functional -- the hardware detection paths remain as stubs.
 
-### 57.8.11 Architecture-Specific Build Patterns Summary
+### 59.8.11 Architecture-Specific Build Patterns Summary
 
 ```mermaid
 graph TB
@@ -2820,7 +2820,7 @@ The three-level optimization strategy:
    at build time, or where a single binary must run on multiple hardware
    generations.
 
-### 57.8.12 The ARM 32-bit Instruction Set: ARM vs. Thumb
+### 59.8.12 The ARM 32-bit Instruction Set: ARM vs. Thumb
 
 ARM 32-bit has a unique feature among AOSP architectures: two instruction
 encodings. The ARM toolchain supports switching between them:
@@ -2860,7 +2860,7 @@ the `instruction_set: "arm"` property in their `Android.bp` when they need the
 full 32-bit instruction set (e.g., for hand-tuned assembly that uses
 instructions not available in Thumb).
 
-### 57.8.13 The ARM 32-bit Soft Float and NEON
+### 59.8.13 The ARM 32-bit Soft Float and NEON
 
 ARM 32-bit Android uses soft-float ABI (`-mfloat-abi=softfp`), meaning
 floating-point values are passed in integer registers at function call
@@ -2901,7 +2901,7 @@ The `-mfpu=` flag specifies the FPU type:
 The `armv7-a-neon` variant is the most commonly used for modern 32-bit devices,
 as it enables NEON SIMD optimizations.
 
-### 57.8.14 Bionic Strip Configuration Per Architecture
+### 59.8.14 Bionic Strip Configuration Per Architecture
 
 Even the way binaries are stripped varies by architecture. Bionic's
 `Android.bp` configures different strip behavior for each architecture:
@@ -2947,7 +2947,7 @@ the `.ARM.exidx` section) that is incomplete in some cases, so the
 `.debug_frame` section must be preserved as a fallback. All other architectures
 use DWARF-based unwinding and only need the symbol table kept.
 
-### 57.8.15 Page Size Macro Handling
+### 59.8.15 Page Size Macro Handling
 
 The bionic page size macro handling is architecture-aware:
 
@@ -2994,7 +2994,7 @@ Product configurations opt into this behavior:
 PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true
 ```
 
-### 57.8.16 ARM 32-bit LPAE Workaround
+### 59.8.16 ARM 32-bit LPAE Workaround
 
 Several ARM 32-bit CPU variants require a manual define to advertise Large
 Physical Address Extensions (LPAE) support:
@@ -3019,7 +3019,7 @@ load/store) relies on this macro to detect hardware support.
 
 ---
 
-## 57.9 The LFI Toolchain: Lightweight Fault Isolation on ARM64
+## 59.9 The LFI Toolchain: Lightweight Fault Isolation on ARM64
 
 Android 17 adds a sixth toolchain that does not correspond to a new CPU
 architecture at all. It is an ARM64 variant built for Lightweight Fault
@@ -3030,9 +3030,9 @@ device configs:
 
 **Source file**: `build/soong/cc/config/arm64_lfi_device.go`
 
-### 57.9.1 Why a Separate Toolchain
+### 59.9.1 Why a Separate Toolchain
 
-Section 57.1.1 showed that `toolchainFactories` is keyed not just by OS and
+Section 59.1.1 showed that `toolchainFactories` is keyed not just by OS and
 architecture but by a boolean LFI flag, and that `registerLFIToolchainFactory`
 fills the `true` slot. The reason is that LFI is a code-generation property:
 sandboxed code must be compiled with a different target and a constrained
@@ -3067,7 +3067,7 @@ func (target Target) ArchVariation() string {
 }
 ```
 
-### 57.9.2 The LFI ARM64 Toolchain
+### 59.9.2 The LFI ARM64 Toolchain
 
 The LFI toolchain reuses ARM64's flag-assembly helper but pins the architecture
 to a fixed configuration. The factory ignores whatever variant the board
@@ -3098,7 +3098,7 @@ func init() {
 ```
 
 Calling `arm64ToolchainFlags` (the helper extracted from the ordinary ARM64
-factory in section 57.2.6) means the LFI toolchain inherits the exact same
+factory in section 59.2.6) means the LFI toolchain inherits the exact same
 PAC/BTI flags and Cortex-A53 erratum fixes as the normal build, which is why
 that helper was split out.
 
@@ -3133,7 +3133,7 @@ The `aarch64_lfi-` triple steers the compiler into the sandbox-friendly code
 model, and `-mno-outline-atomics` keeps atomic operations inline (the
 out-of-line atomic helpers would call into runtime support outside the sandbox).
 This is the concrete payoff of the `Lfi()` method added to the `Toolchain`
-interface in section 57.1.2: ordinary bionic toolchains return `false`, and only
+interface in section 59.1.2: ordinary bionic toolchains return `false`, and only
 this toolchain returns `true`, so the rest of the build can branch on whether it
 is producing sandboxed code.
 
@@ -3147,7 +3147,7 @@ graph TD
     F --> G["toolchainLFIArm64<br/>triple: aarch64_lfi-unknown-linux-android30<br/>no CRT, Lfi() == true"]
 ```
 
-## 57.10 16KB Page Size by Default
+## 59.10 16KB Page Size by Default
 
 The most consequential 17 change for architecture support is invisible in any
 single `-march=` flag: the platform now aligns 64-bit binaries for a 16KB page
@@ -3155,7 +3155,7 @@ size by default. ARM64 has long allowed 4KB, 16KB, and 64KB pages, but until
 recently AOSP shipped binaries aligned for 4KB pages, which a 16KB-page kernel
 cannot load. Android 17 flips the default the other way.
 
-### 57.10.1 The Build-Side Default
+### 59.10.1 The Build-Side Default
 
 `TARGET_MAX_PAGE_SIZE_SUPPORTED` controls the alignment of ELF segments, and its
 default is computed in `build/make/core/config.mk`:
@@ -3183,16 +3183,16 @@ The default is 16384 (16KB) unless something opts out: a low-memory device, a
 vendor still on an older VSR API level, or a 32-bit / RISC-V target (only arm64
 and x86_64 support pages larger than 4KB here). This value flows straight into
 the per-architecture linker flags as `MaxPageSizeSupported()`, which section
-57.2.7 showed feeding the ARM64 `-Wl,-z,max-page-size=` flag; the x86_64
+59.2.7 showed feeding the ARM64 `-Wl,-z,max-page-size=` flag; the x86_64
 toolchain consumes it the same way. RISC-V keeps a hardcoded 4096
-(section 57.4.4).
+(section 59.4.4).
 
-### 57.10.2 The Bionic-Side Macro
+### 59.10.2 The Bionic-Side Macro
 
 Aligning segments for 16KB pages is only half the story. Code that hardcoded
 `PAGE_SIZE` as a compile-time constant of 4096 would compute wrong buffer sizes
 and `mmap` alignments on a 16KB kernel. Bionic addresses this with the
-page-size macro controls described in section 57.8.15:
+page-size macro controls described in section 59.8.15:
 `-D__BIONIC_NO_PAGE_SIZE_MACRO` removes the `PAGE_SIZE` constant entirely so code
 must call `getpagesize()` or `sysconf(_SC_PAGE_SIZE)` at runtime, while
 `-D__BIONIC_DEPRECATED_PAGE_SIZE_MACRO` keeps the macro but flags its use. The
@@ -3205,8 +3205,8 @@ PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true
 
 `PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO` is read by Soong as `NoBionicPageSizeMacro()`
 and selects which of the two macros each LP64 architecture base-cflags function
-appends (the `Arm64Cflags` and `X86_64Cflags` `VariableFunc`s in sections 57.2
-and 57.8.15). The net effect for Android 17: platform binaries are 16KB-aligned,
+appends (the `Arm64Cflags` and `X86_64Cflags` `VariableFunc`s in sections 59.2
+and 59.8.15). The net effect for Android 17: platform binaries are 16KB-aligned,
 and the C library refuses to let new platform code assume a fixed page size, so
 the same image runs correctly on both 4KB and 16KB kernels.
 
@@ -3224,7 +3224,7 @@ graph TD
 
 ---
 
-## 57.11 Try It
+## 59.11 Try It
 
 ### Exercise 1: Inspect Architecture Flags for Your Device
 
@@ -3463,7 +3463,7 @@ grep 'liblog.*logging.cpp.*\.o' out/combined-*.ninja | head -1
 ```
 
 This exercise demonstrates the practical result of the layered flag system
-described in Section 57.6.5.
+described in Section 59.6.5.
 
 ---
 
@@ -3567,8 +3567,8 @@ The key source files for architecture support are:
 | `build/make/target/product/core_64_bit.mk` | 64-bit product configuration |
 | `frameworks/libs/binary_translation/` | Berberis binary translation |
 
-<!-- chapter:58-emulator -->
-# Chapter 58: Emulator Architecture
+<!-- chapter:60-emulator -->
+# Chapter 60: Emulator Architecture
 
 The Android Emulator is one of the most critical developer tools in the AOSP
 ecosystem. Far more than a simple simulator, it is a full system-level virtual
@@ -3590,9 +3590,9 @@ means when there is no physical hardware.
 
 ---
 
-## 58.1 Emulator Architecture Overview
+## 60.1 Emulator Architecture Overview
 
-### 58.1.1 The Software Stack
+### 60.1.1 The Software Stack
 
 The Android Emulator is built on a custom fork of QEMU, the open-source
 machine emulator and virtualizer. When a developer types `emulator` at the
@@ -3623,7 +3623,7 @@ Host machine (Linux/macOS/Windows)
             +-- Location / Telephony / Battery simulation
 ```
 
-### 58.1.2 Execution Modes
+### 60.1.2 Execution Modes
 
 The emulator supports two fundamental execution modes:
 
@@ -3644,7 +3644,7 @@ On macOS, Apple's Hypervisor Framework replaces KVM; on Windows, the Intel
 HAXM (Hardware Accelerated Execution Manager) or Windows Hypervisor Platform
 (WHPX) serves the same role.
 
-### 58.1.3 High-Level Data Flow
+### 60.1.3 High-Level Data Flow
 
 ```mermaid
 graph TB
@@ -3684,7 +3684,7 @@ system image that ships on physical devices (or very close to it). The
 emulator's job is to provide the virtual hardware that this real software
 expects to find.
 
-### 58.1.4 Key Source Directories
+### 60.1.4 Key Source Directories
 
 | Directory | Purpose |
 |-----------|---------|
@@ -3696,7 +3696,7 @@ expects to find.
 | `device/generic/goldfish/board/` | Board configuration (architecture-specific) |
 | `device/generic/goldfish/product/` | Product configuration makefiles |
 
-### 58.1.5 Product Configurations
+### 60.1.5 Product Configurations
 
 The emulator defines several product targets, listed in
 `device/generic/goldfish/AndroidProducts.mk`:
@@ -3724,7 +3724,7 @@ specialized form factors (phone, tablet, slim) and graphics backends
 
 ---
 
-## 58.2 The Goldfish Device Platform
+## 60.2 The Goldfish Device Platform
 
 "Goldfish" is the original virtual hardware platform for the Android Emulator.
 The name refers to the collection of virtual devices (timers, interrupt
@@ -3733,7 +3733,7 @@ time, Goldfish has evolved significantly -- most of the original custom
 Goldfish devices have been replaced by standard virtio devices in the modern
 "Ranchu" platform, but the name persists in the AOSP source tree.
 
-### 58.2.1 Product Configuration Hierarchy
+### 60.2.1 Product Configuration Hierarchy
 
 The Goldfish product configuration follows a layered inheritance pattern:
 
@@ -3770,7 +3770,7 @@ The property `ro.kernel.qemu=1` is a well-known flag that the framework uses
 to detect that it is running inside the emulator. The SoC model is reported as
 "ranchu" -- the modern codename for the emulator's virtual platform.
 
-### 58.2.2 Board Configuration
+### 60.2.2 Board Configuration
 
 The board configuration lives in `device/generic/goldfish/board/`. Each
 architecture variant has its own directory:
@@ -3820,7 +3820,7 @@ Key takeaways:
 - The WiFi subsystem uses `NL80211` with the `mac80211_hwsim` kernel module
   to simulate a wireless network interface.
 
-### 58.2.3 HAL Implementations
+### 60.2.3 HAL Implementations
 
 The heart of the Goldfish device platform is its collection of HAL
 (Hardware Abstraction Layer) implementations. These are located under
@@ -3879,7 +3879,7 @@ graph LR
     style HAL_GRALLOC fill:#e8f5e9
 ```
 
-#### 58.2.3.1 Audio HAL
+#### 60.2.3.1 Audio HAL
 
 **Location:** `device/generic/goldfish/hals/audio/`
 
@@ -3935,7 +3935,7 @@ The 80ms host latency is higher than a physical device (which targets 5-20ms)
 because audio data must transit through QEMU's virtual sound card and the
 host's audio subsystem.
 
-#### 58.2.3.2 Camera HAL
+#### 60.2.3.2 Camera HAL
 
 **Location:** `device/generic/goldfish/hals/camera/`
 
@@ -3992,7 +3992,7 @@ std::string getLogicalCameraId(const int index) {
 }
 ```
 
-#### 58.2.3.3 Sensors HAL
+#### 60.2.3.3 Sensors HAL
 
 **Location:** `device/generic/goldfish/hals/sensors/`
 
@@ -4122,7 +4122,7 @@ sequenceDiagram
     SF->>SF: Dispatch to registered listeners
 ```
 
-#### 58.2.3.4 GNSS HAL
+#### 60.2.3.4 GNSS HAL
 
 **Location:** `device/generic/goldfish/hals/gnss/`
 
@@ -4182,7 +4182,7 @@ vndbinder_use(hal_gnss_default);
 allow hal_gnss_default self:vsock_socket create_socket_perms_no_ioctl;
 ```
 
-#### 58.2.3.5 Radio (Telephony) HAL
+#### 60.2.3.5 Radio (Telephony) HAL
 
 **Location:** `device/generic/goldfish/hals/radio/`
 
@@ -4255,7 +4255,7 @@ network types as configured in the product makefile:
 PRODUCT_VENDOR_PROPERTIES += ro.telephony.default_network=33
 ```
 
-#### 58.2.3.6 Fingerprint HAL
+#### 60.2.3.6 Fingerprint HAL
 
 **Location:** `device/generic/goldfish/hals/fingerprint/`
 
@@ -4287,7 +4287,7 @@ ndk::ScopedAStatus Hal::getSensorProps(std::vector<SensorProps>* out) {
 The emulator's Extended Controls window provides a virtual fingerprint
 scanner that triggers authentication events through this HAL.
 
-#### 58.2.3.7 Hardware Composer (HWC3) HAL
+#### 60.2.3.7 Hardware Composer (HWC3) HAL
 
 **Location:** `device/generic/goldfish/hals/hwc3/`
 
@@ -4340,7 +4340,7 @@ std::array<std::int8_t, 16> ToLibyuvColorMatrix(
             int indexIn = (4 * r) + c;
             int indexOut = (4 * c) + r;
             float clampedValue = std::max(-128.0f,
-                std::min(127.0f, in[indexIn] * 64.0f + 0.5f));
+                std::min(127.0f, in[indexIn] * 66.0f + 0.5f));
             out[indexOut] = static_cast<std::int8_t>(clampedValue);
         }
     }
@@ -4355,7 +4355,7 @@ DRM-related source files: `Drm.cpp`, `DrmClient.cpp`, `DrmConnector.cpp`,
 `DrmAtomicRequest.cpp`, `DrmBuffer.cpp`, `DrmEventListener.cpp`,
 `DrmMode.cpp`.
 
-#### 58.2.3.8 Gralloc (Graphics Allocator) HAL
+#### 60.2.3.8 Gralloc (Graphics Allocator) HAL
 
 **Location:** `device/generic/goldfish/hals/gralloc/`
 
@@ -4421,7 +4421,7 @@ ndk::ScopedAStatus getIMapperLibrarySuffix(std::string* outResult) override {
 }
 ```
 
-### 58.2.4 Init Scripts
+### 60.2.4 Init Scripts
 
 The emulator's boot process is controlled by init scripts in
 `device/generic/goldfish/init/`. The primary script is `init.ranchu.rc`:
@@ -4478,7 +4478,7 @@ setprop debug.renderengine.backend \
     ${ro.boot.debug.renderengine.backend:-skiaglthreaded}
 ```
 
-### 58.2.5 SELinux Policy
+### 60.2.5 SELinux Policy
 
 The emulator defines custom SELinux policy under
 `device/generic/goldfish/sepolicy/`. The vendor policy directory contains
@@ -4525,7 +4525,7 @@ The `qemu_props` domain is granted permission to set specific property
 categories and to communicate over vsock (VirtIO socket) -- the primary
 communication channel between the guest kernel and the QEMU host.
 
-### 58.2.6 Detailed Package Inventory
+### 60.2.6 Detailed Package Inventory
 
 The emulator's product configuration pulls in a significant number of packages.
 Here is a categorized breakdown from
@@ -4633,9 +4633,9 @@ only specific subsystems are needed.
 
 ---
 
-## 58.3 Virtual Hardware
+## 60.3 Virtual Hardware
 
-### 58.3.1 The Goldfish-Pipe: Host-Guest Communication
+### 60.3.1 The Goldfish-Pipe: Host-Guest Communication
 
 The goldfish-pipe is the central communication mechanism between the Android
 guest and the QEMU host. It is a virtual device that provides a bidirectional
@@ -4731,7 +4731,7 @@ The protocol uses a simple length-prefixed framing:
 - Messages of 64KB or larger use a 4-byte binary network-order length with
   the high bit set
 
-### 58.3.2 The Sensor HAL Threading Model
+### 60.3.2 The Sensor HAL Threading Model
 
 The sensors HAL has a sophisticated multi-threaded architecture that merits
 detailed examination. The `MultihalSensors` class header
@@ -4887,7 +4887,7 @@ graph TB
     style MAIN fill:#fff3e0
 ```
 
-### 58.3.3 Display Discovery and VSync
+### 60.3.3 Display Discovery and VSync
 
 The HWC3 HAL discovers displays by querying the QEMU host through the render
 control encoder. From
@@ -4950,7 +4950,7 @@ When the host supports multiple display configurations (multi-config mode),
 the display finder enumerates all available configurations and presents them
 to SurfaceFlinger through the HWC3 interface.
 
-### 58.3.4 The Audio Write Thread
+### 60.3.4 The Audio Write Thread
 
 The audio HAL's output stream uses a dedicated write thread with FMQ (Fast
 Message Queue) for low-latency communication with AudioFlinger. From
@@ -4986,7 +4986,7 @@ The FMQ mechanism allows AudioFlinger to write audio data without Binder
 round-trips. The `EventFlag` provides lightweight signaling between the
 AudioFlinger process and the HAL service process using shared memory.
 
-### 58.3.5 Wake Lock Management
+### 60.3.5 Wake Lock Management
 
 The emulator setup script manages power state through wake locks. From
 `device/generic/goldfish/init/init.setup.ranchu.sh`:
@@ -5010,7 +5010,7 @@ development because a suspended emulator would be unresponsive. The
 `ro.boot.qemu.allowsuspend=1` flag can be set to allow the guest to suspend,
 which is useful for testing power management behavior.
 
-### 58.3.6 The QEMU Properties Service
+### 60.3.6 The QEMU Properties Service
 
 The `qemu-props` service (`device/generic/goldfish/qemu-props/qemu-props.cpp`)
 is one of the first services started during emulator boot. It reads properties
@@ -5092,9 +5092,9 @@ int main(const int argc, const char* argv[]) {
 }
 ```
 
-### 58.3.7 Virtual Sensors
+### 60.3.7 Virtual Sensors
 
-The virtual sensors (covered in detail in section 58.2.3.3) are driven by the
+The virtual sensors (covered in detail in section 60.2.3.3) are driven by the
 emulator's Extended Controls UI. When a user interacts with the sensor controls
 (tilting the virtual device, changing proximity, adjusting light level), the
 emulator host sends text-based sensor events through the QEMU pipe.
@@ -5138,9 +5138,9 @@ CTS (Compatibility Test Suite):
 }
 ```
 
-### 58.3.8 Virtual GPS
+### 60.3.8 Virtual GPS
 
-GPS simulation flows through the GNSS HAL (section 58.2.3.4). The emulator
+GPS simulation flows through the GNSS HAL (section 60.2.3.4). The emulator
 supports:
 
 - Fixed GPS coordinates (set via Extended Controls)
@@ -5151,7 +5151,7 @@ The GPS service is registered at the QEMU host level as the "gps" qemud
 service. The `GnssHwListener` class on the guest side parses incoming NMEA
 data and dispatches it to the Android location framework.
 
-### 58.3.9 Virtual Camera
+### 60.3.9 Virtual Camera
 
 The camera subsystem supports multiple virtual camera backends:
 
@@ -5177,7 +5177,7 @@ Host -> Guest: "ok"
 Host -> Guest: <frame_data>    (raw frame data)
 ```
 
-### 58.3.10 Virtual Telephony
+### 60.3.10 Virtual Telephony
 
 The telephony subsystem uses a full modem simulator that communicates with the
 radio HAL via AT commands. The emulator supports:
@@ -5200,7 +5200,7 @@ PRODUCT_COPY_FILES += \
     device/generic/goldfish/hals/radio/data/numeric_operator.xml:data/misc/modem_simulator/etc/modem_simulator/files/numeric_operator.xml \
 ```
 
-### 58.3.11 GPU Emulation
+### 60.3.11 GPU Emulation
 
 GPU emulation is one of the most architecturally complex parts of the
 emulator. The system supports three rendering modes:
@@ -5276,15 +5276,15 @@ setprop ro.opengles.version ${ro.boot.opengles.version}
 ```
 
 The gralloc HAL creates host-side GPU resources ("color buffers") through the
-render control encoder, as shown in section 58.2.3.8. This allows efficient
+render control encoder, as shown in section 60.2.3.8. This allows efficient
 zero-copy rendering where the guest composes frames that are directly displayed
 by the emulator's window.
 
 ---
 
-## 58.4 Emulator Networking
+## 60.4 Emulator Networking
 
-### 58.4.1 Network Architecture
+### 60.4.1 Network Architecture
 
 The emulator implements a virtual network that provides internet connectivity
 to the guest while isolating it from the host's physical network. The
@@ -5322,7 +5322,7 @@ graph TB
     style DNS fill:#e1f5fe
 ```
 
-### 58.4.2 Default IP Addressing
+### 60.4.2 Default IP Addressing
 
 Each emulator instance is assigned a unique IP address range:
 
@@ -5333,7 +5333,7 @@ Each emulator instance is assigned a unique IP address range:
 | DNS server | 10.0.2.3 |
 | Guest eth0 | 10.0.2.15 (DHCP assigned) |
 
-### 58.4.3 VirtIO WiFi
+### 60.4.3 VirtIO WiFi
 
 Modern emulator builds use VirtIO WiFi instead of the legacy `eth0` interface.
 The networking script from
@@ -5374,7 +5374,7 @@ on post-fs-data && property:ro.boot.qemu.virtiowifi=1
     start ranchu-net
 ```
 
-### 58.4.4 Port Forwarding and ADB Connection
+### 60.4.4 Port Forwarding and ADB Connection
 
 The emulator supports TCP and UDP port forwarding between the host and guest.
 ADB uses port forwarding to communicate with the guest:
@@ -5396,7 +5396,7 @@ The ADB daemon inside the guest listens on a well-known port. The emulator
 automatically sets up the forwarding so that `adb devices` shows the emulator
 instance as a connected device.
 
-### 58.4.5 Inter-Emulator Networking
+### 60.4.5 Inter-Emulator Networking
 
 The networking script supports a secondary interface (`eth1`) for
 inter-emulator communication:
@@ -5417,7 +5417,7 @@ When multiple emulator instances need to communicate with each other (e.g.,
 for testing multi-device scenarios), they can be configured with a shared
 network where each instance gets a unique IP on the `eth1` interface.
 
-### 58.4.6 Bluetooth Networking
+### 60.4.6 Bluetooth Networking
 
 Bluetooth is emulated through VirtIO console devices. The init script creates
 a symlink for the Bluetooth device:
@@ -5441,9 +5441,9 @@ guest to use the emulator's Bluetooth stack.
 
 ---
 
-## 58.5 Ranchu vs. Goldfish Kernels
+## 60.5 Ranchu vs. Goldfish Kernels
 
-### 58.5.1 Historical Context
+### 60.5.1 Historical Context
 
 The emulator has gone through two major kernel generations:
 
@@ -5456,7 +5456,7 @@ The emulator has gone through two major kernel generations:
    name "ranchu" is a type of goldfish, reflecting the evolutionary
    relationship.
 
-### 58.5.2 VirtIO Device Migration
+### 60.5.2 VirtIO Device Migration
 
 The migration from custom Goldfish devices to standard VirtIO devices was a
 major architectural improvement:
@@ -5503,7 +5503,7 @@ VirtIO does not directly address: a high-bandwidth, low-latency channel for
 serialized GPU commands and other bulk data transfers between guest HALs and
 host services.
 
-### 58.5.3 Kernel Module Configuration
+### 60.5.3 Kernel Module Configuration
 
 The modern Ranchu kernel uses loadable kernel modules for VirtIO devices. The
 Cuttlefish board configuration (which uses the same kernel) shows the required
@@ -5534,7 +5534,7 @@ to boot. Additional modules loaded later include:
 - `mac80211_hwsim.ko` -- WiFi simulation
 - `cfg80211.ko`, `mac80211.ko` -- wireless networking stack
 
-### 58.5.4 Kernel Version Selection
+### 60.5.4 Kernel Version Selection
 
 In Android 17 the Cuttlefish kernel version is no longer a single hard-coded
 value. `device/google/cuttlefish/shared/BoardConfig.mk` defines a default and
@@ -5587,7 +5587,7 @@ For everything other than desktop, prebuilt kernels are stored under
 `kernel/prebuilts/`, and the `common-modules/virtual-device/` directory holds
 kernel modules built specifically for virtual device use.
 
-### 58.5.5 ZRAM and Memory Configuration
+### 60.5.5 ZRAM and Memory Configuration
 
 The Ranchu kernel enables zram for memory compression:
 
@@ -5611,9 +5611,9 @@ swap, which is optimal for zram since there is no seek penalty.
 
 ---
 
-## 58.6 Cuttlefish: The Cloud-Friendly Alternative
+## 60.6 Cuttlefish: The Cloud-Friendly Alternative
 
-### 58.6.1 What is Cuttlefish?
+### 60.6.1 What is Cuttlefish?
 
 Cuttlefish is a configurable virtual Android device that runs in cloud
 environments without requiring a physical display, audio device, or any
@@ -5624,7 +5624,7 @@ cloud gaming, and development on remote machines.
 
 **Location:** `device/google/cuttlefish/`
 
-### 58.6.2 Architecture Comparison
+### 60.6.2 Architecture Comparison
 
 ```mermaid
 graph TB
@@ -5669,7 +5669,7 @@ graph TB
 | Form factors | Phone, Tablet, Foldable, Wear, TV | Phone, Foldable, Tablet (pc), TV, Auto, Wear, Desktop |
 | Architecture | x86_64, ARM64, RISC-V | x86_64, ARM64, RISC-V |
 
-### 58.6.3 Cuttlefish Device Targets
+### 60.6.3 Cuttlefish Device Targets
 
 `device/google/cuttlefish/AndroidProducts.mk` enumerates the build targets.
 Each product name follows the `aosp_cf_<arch>_<formfactor>` convention and
@@ -5731,10 +5731,10 @@ UNCOMPRESS_CHROME_WEBVIEW = true
 ```
 
 The desktop target also pulls its kernel from a separate location rather than
-the shared `kernel/prebuilts/` tree (see section 58.5.4), reflecting that the
+the shared `kernel/prebuilts/` tree (see section 60.5.4), reflecting that the
 desktop Android effort ships its own kernel branch.
 
-### 58.6.4 Host Tooling
+### 60.6.4 Host Tooling
 
 Cuttlefish includes an extensive suite of host-side tools under
 `device/google/cuttlefish/host/commands/`. These build into the
@@ -5788,7 +5788,7 @@ The older `acloud` launcher that earlier guides referenced is not part of this
 tree at all in Android 17 — local launches go directly through `launch_cvd`
 (from the host package) or through `cvd` from the external repository.
 
-### 58.6.5 Board Configuration Differences
+### 60.6.5 Board Configuration Differences
 
 The Cuttlefish board configuration
 (`device/google/cuttlefish/shared/BoardConfig.mk`) differs from Goldfish in
@@ -5843,7 +5843,7 @@ Notable Cuttlefish-specific kernel parameters:
 - `cma=0` -- Disables Contiguous Memory Allocator (not needed in a VM).
 - `panic=-1` -- Reboots immediately on kernel panic.
 
-### 58.6.6 Getting Started with Cuttlefish
+### 60.6.6 Getting Started with Cuttlefish
 
 From the official `device/google/cuttlefish/README.md`:
 
@@ -5877,7 +5877,7 @@ HOME=$PWD ./bin/launch_cvd
 HOME=$PWD ./bin/stop_cvd
 ```
 
-### 58.6.7 Cuttlefish VirtIO Module Dependencies
+### 60.6.7 Cuttlefish VirtIO Module Dependencies
 
 The Cuttlefish board configuration illustrates the full VirtIO stack required
 for a virtual device. The modules are split between ramdisk (first-stage init)
@@ -5938,7 +5938,7 @@ module is loaded in first-stage init with `mac80211_hwsim.radios=0` to avoid
 creating unwanted radios; the actual radio creation is done later by the
 `mac80211_create_radios` tool.
 
-### 58.6.8 Cuttlefish vs Goldfish: Architectural Differences
+### 60.6.8 Cuttlefish vs Goldfish: Architectural Differences
 
 ```mermaid
 graph TB
@@ -5978,7 +5978,7 @@ microservice architecture where each function (VM management, display,
 modem, GNSS, logging) runs as a separate process. This makes Cuttlefish more
 modular and easier to debug, but also more complex to set up.
 
-### 58.6.9 When to Use Which
+### 60.6.9 When to Use Which
 
 | Scenario | Recommended |
 |----------|------------|
@@ -5998,7 +5998,7 @@ AOSP. Google uses it internally for continuous testing, and it is the
 recommended target for platform developers who do not need the interactive
 GUI features of the Android Studio emulator.
 
-### 58.6.10 Crosvm Device Architecture
+### 60.6.10 Crosvm Device Architecture
 
 Cuttlefish's default VMM is **crosvm** (Chrome OS Virtual Machine monitor),
 a Rust-based VMM originally developed for Chrome OS. The VM manager code at
@@ -6060,7 +6060,7 @@ Network interfaces are assigned sub-addresses on PCI slot 1:
 | Ethernet | 00:01.2 | `cvd-etap-NN` | Wired network |
 | WiFi | 00:01.3 | `cvd-wtap-NN` | Wireless (optional) |
 
-### 58.6.11 Vhost-User Device Model
+### 60.6.11 Vhost-User Device Model
 
 Cuttlefish uses the **vhost-user** protocol to run device backends as separate
 host processes, rather than inside the crosvm process. This provides better
@@ -6098,7 +6098,7 @@ Supported vhost-user device types:
 
 The default virtqueue size is 256 entries (must be a power of 2).
 
-### 58.6.12 HVC Port Map
+### 60.6.12 HVC Port Map
 
 Cuttlefish uses **Hypervisor Virtual Console** (HVC) ports to tunnel
 communication between guest HALs and host-side daemons. Each HVC port appears
@@ -6150,7 +6150,7 @@ void AddHvcReadWrite(const std::string& output, const std::string& input); // bi
 void AddHvcSocket(const std::string& socket);                 // Unix socket
 ```
 
-### 58.6.13 GPU Pipeline and Display Modes
+### 60.6.13 GPU Pipeline and Display Modes
 
 Cuttlefish supports several GPU rendering modes, configured via the
 `--gpu_mode` flag. The full set accepted by `assemble_cvd` in Android 17 is
@@ -6209,7 +6209,7 @@ The Wayland compositor receives rendered frames and can forward them to:
 // Frames sent via Wayland socket to compositor
 ```
 
-### 58.6.14 Networking Architecture
+### 60.6.14 Networking Architecture
 
 #### TAP Devices and Bridge Configuration
 
@@ -6268,7 +6268,7 @@ if (instance.vhost_net()) {
 }
 ```
 
-### 58.6.15 Guest HALs
+### 60.6.15 Guest HALs
 
 The guest-side HALs that bridge Android's HAL interfaces to host-side daemons
 (via virtio devices, vsock, or HVC serial ports) live under
@@ -6356,7 +6356,7 @@ mod lights;
 use lights::LightsService;
 ```
 
-### 58.6.16 Host Microservice Orchestration
+### 60.6.16 Host Microservice Orchestration
 
 Cuttlefish runs as a collection of host processes orchestrated by `launch_cvd`
 and `run_cvd`. `device/google/cuttlefish/host/commands/` contains roughly 45
@@ -6392,7 +6392,7 @@ images (system, vendor, userdata, boot) and generates the crosvm configuration.
 Then `run_cvd` launches crosvm and all supporting daemons, monitoring their
 health and restarting them if they crash.
 
-### 58.6.17 Vsock: The Glue Between Host and Guest
+### 60.6.17 Vsock: The Glue Between Host and Guest
 
 Vsock (Virtual Sockets) is the primary general-purpose communication channel
 between the Cuttlefish host and guest. Unlike HVC ports (which are
@@ -6422,7 +6422,7 @@ Guest components that use vsock include:
 - **Socket proxy** — generic socket-to-vsock tunneling
   (`common/frontend/socket_vsock_proxy/`)
 
-### 58.6.18 Multi-Instance Support
+### 60.6.18 Multi-Instance Support
 
 Cuttlefish can run multiple virtual devices simultaneously on a single host,
 each with its own set of TAP devices, vsock CID, HVC ports, and display:
@@ -6443,9 +6443,9 @@ instance. This enables large-scale parallel testing in CI/CD environments.
 
 ---
 
-## 58.7 Emulator Features
+## 60.7 Emulator Features
 
-### 58.7.1 Snapshots
+### 60.7.1 Snapshots
 
 Snapshots are one of the most powerful features of the Android Emulator. They
 capture the complete state of the virtual machine -- CPU registers, memory
@@ -6496,7 +6496,7 @@ typically at `~/.android/avd/<name>.avd/snapshots/`.
 - `textures/` -- GPU texture and buffer data
 - `<disk>-snapshot.img` -- Copy-on-write disk overlays
 
-### 58.7.2 Screen Recording
+### 60.7.2 Screen Recording
 
 The emulator supports screen recording in multiple formats:
 
@@ -6507,7 +6507,7 @@ Recording is started through the Extended Controls UI or via the gRPC
 control interface. On the Cuttlefish side, the
 `screen_recording_server` host command provides similar functionality.
 
-### 58.7.3 Location Simulation
+### 60.7.3 Location Simulation
 
 The emulator provides rich location simulation capabilities:
 
@@ -6518,7 +6518,7 @@ The emulator provides rich location simulation capabilities:
 
 These controls feed into the GNSS HAL through the QEMU GPS service.
 
-### 58.7.4 Battery Simulation
+### 60.7.4 Battery Simulation
 
 The emulator simulates a virtual battery with configurable:
 
@@ -6528,7 +6528,7 @@ The emulator simulates a virtual battery with configurable:
 - Battery health status
 - Battery temperature
 
-### 58.7.5 Multi-Display Support
+### 60.7.5 Multi-Display Support
 
 The emulator supports multiple virtual displays, enabling developers to test
 multi-screen scenarios. The `MultiDisplayProvider` package
@@ -6557,7 +6557,7 @@ PRODUCT_COPY_FILES += \
     device/generic/goldfish/input/virtio_input_multi_touch_11.idc:...
 ```
 
-### 58.7.6 Foldable Device Simulation
+### 60.7.6 Foldable Device Simulation
 
 The emulator can simulate foldable devices, using the hinge angle sensors
 defined in the sensors HAL. The goldfish source tree includes specific
@@ -6608,7 +6608,7 @@ sequenceDiagram
     WM->>WM: Reconfigure displays and windows
 ```
 
-### 58.7.7 Wear OS and Rotary Input
+### 60.7.7 Wear OS and Rotary Input
 
 The emulator supports Wear OS form factors with rotary input simulation.
 The input device configuration file for rotary input:
@@ -6621,7 +6621,7 @@ device/generic/goldfish/input/virtio_input_rotary.idc
 This allows developers to test Wear OS apps that respond to the rotating
 bezel or crown.
 
-### 58.7.8 Virtual Device Property Configuration
+### 60.7.8 Virtual Device Property Configuration
 
 The emulator uses a layered property system to configure virtual hardware
 parameters. Properties can be set at multiple levels:
@@ -6680,7 +6680,7 @@ Notable property explanations:
 | `debug.stagefright.ccodec` | `4` | Use Codec2 for media decoding |
 | `persist.sys.zram_enabled` | `1` | Enable zram swap |
 
-### 58.7.9 Emulator Configuration Files
+### 60.7.9 Emulator Configuration Files
 
 The emulator uses INI-format configuration files stored in the AVD
 directory and in the device source tree. From
@@ -6707,7 +6707,7 @@ PRODUCT_COPY_FILES += \
     device/generic/goldfish/data/etc/config.ini.nexus5:config.ini
 ```
 
-### 58.7.10 Display Configuration Files
+### 60.7.10 Display Configuration Files
 
 The emulator supports multiple display layout configurations for different
 device form factors:
@@ -6728,7 +6728,7 @@ These XML files configure display properties like:
 - App compatibility overrides (for apps that do not handle
   multi-window/foldable correctly)
 
-### 58.7.11 UWB (Ultra-Wideband) Emulation
+### 60.7.11 UWB (Ultra-Wideband) Emulation
 
 
 The emulator includes UWB HAL support through VirtIO console:
@@ -6746,7 +6746,7 @@ service vendor.uwb_hal \
     disabled
 ```
 
-### 58.7.12 Thread Networking
+### 60.7.12 Thread Networking
 
 Thread network support is provided through a simulated RCP (Radio
 Co-Processor):
@@ -6761,7 +6761,7 @@ endif
 
 ---
 
-## 58.8 Android 17 Cuttlefish Changes
+## 60.8 Android 17 Cuttlefish Changes
 
 Cuttlefish is where most of the virtual-device churn lands each release, and
 Android 17 is no exception. This section collects the changes that matter for
@@ -6769,19 +6769,19 @@ platform developers: a new desktop product, a guest-side VKMS display
 controller, a sandboxed host process model, a new NPU HAL, and the migration of
 the host launcher tooling out of the AOSP tree.
 
-### 58.8.1 The Desktop Product Target
+### 60.8.1 The Desktop Product Target
 
 Android 17 adds `aosp_cf_x86_64_desktop` (and an ARM64 sibling) to the
 Cuttlefish product catalog. Unlike the handheld targets, the desktop product
 inherits a desktop-specific vendor stack and pulls its kernel from a separate
-tree (covered in sections 58.5.4 and 58.6.3). It is the virtual reference for
+tree (covered in sections 60.5.4 and 60.6.3). It is the virtual reference for
 the desktop Android form factor, exercising large-screen window management,
 binary translation in `ndk_translation_only` mode, and an uncompressed Chrome
 WebView. The product is registered in `device/google/cuttlefish/AndroidProducts.mk`
 alongside the long-standing phone, foldable, TV, Wear, and the expanded set of
 automotive (`auto`, `auto_md`, `auto_mdnd`, `auto_dd`, `auto_portrait`) targets.
 
-### 58.8.2 vkms_controller: Guest-Side Virtual Display Management
+### 60.8.2 vkms_controller: Guest-Side Virtual Display Management
 
 Earlier Cuttlefish releases scattered virtual-display configuration logic
 between host commands and ad-hoc guest scripts. Android 17 consolidates it into
@@ -6846,7 +6846,7 @@ sequenceDiagram
     VKMS-->>CLI: list-displays JSON
 ```
 
-### 58.8.3 process_sandboxer: Sandboxing the Host Daemons
+### 60.8.3 process_sandboxer: Sandboxing the Host Daemons
 
 A recurring concern with Cuttlefish is that the host runs a fleet of helper
 daemons (the VMM, modem simulator, GNSS proxy, secure_env, and so on) with
@@ -6879,17 +6879,17 @@ This is the host-side analogue of the in-process isolation work happening
 elsewhere in the platform: rather than trusting every Cuttlefish helper with
 the launcher's full privileges, each one runs behind a least-privilege policy.
 
-### 58.8.4 The NPU Scheduling HAL
+### 60.8.4 The NPU Scheduling HAL
 
 Android 17's Cuttlefish gains a guest NPU (Neural Processing Unit) HAL under
 `device/google/cuttlefish/guest/hals/npu/`, written in Rust. It registers an
 `android.hardware.npu` scheduling service so the framework's NPU path has a
-virtual surface to exercise (see section 58.6.15 for the source excerpt). The
+virtual surface to exercise (see section 60.6.15 for the source excerpt). The
 HAL ships as its own APEX-packaged service with a VINTF fragment declaring
 `IScheduling/default`. It joins `virtio_media/` as the two notable new guest
 HAL directories this release.
 
-### 58.8.5 Host Launcher Tooling Migration
+### 60.8.5 Host Launcher Tooling Migration
 
 The way developers obtain and run the Cuttlefish host tools changed in
 Android 17. The orchestrating `cvd` front-end and the Debian packaging are no
@@ -6926,12 +6926,12 @@ at all.
 
 ---
 
-## 58.9 Try It: Build and Launch a Custom Emulator Image
+## 60.9 Try It: Build and Launch a Custom Emulator Image
 
 This section walks through building a custom emulator image from source and
 launching it.
 
-### 58.9.1 Building the Emulator System Image
+### 60.9.1 Building the Emulator System Image
 
 ```bash
 # Step 1: Set up the build environment
@@ -6961,7 +6961,7 @@ The build produces images in `$ANDROID_PRODUCT_OUT/`:
 | `ramdisk.img` | Initial ramdisk |
 | `vendor_boot.img` | Vendor boot image |
 
-### 58.9.2 Launching with the Emulator
+### 60.9.2 Launching with the Emulator
 
 ```bash
 # Launch the emulator with the built images
@@ -6977,7 +6977,7 @@ emulator \
     -verbose                # verbose logging
 ```
 
-### 58.9.3 Building and Launching Cuttlefish
+### 60.9.3 Building and Launching Cuttlefish
 
 ```bash
 # Step 1: Choose Cuttlefish target
@@ -6996,7 +6996,7 @@ adb shell
 # Open https://localhost:8443 in a browser
 ```
 
-### 58.9.4 Customizing the Emulator Image
+### 60.9.4 Customizing the Emulator Image
 
 #### Adding a Custom HAL
 
@@ -7033,7 +7033,7 @@ Add custom SELinux policy:
 BOARD_VENDOR_SEPOLICY_DIRS += my/custom/sepolicy
 ```
 
-### 58.9.5 Debugging the Emulator
+### 60.9.5 Debugging the Emulator
 
 #### Kernel Logs
 
@@ -7090,7 +7090,7 @@ adb shell dumpsys wifi
 adb forward tcp:8080 tcp:8080
 ```
 
-### 58.9.6 Performance Tuning
+### 60.9.6 Performance Tuning
 
 #### CPU and Memory
 
@@ -7129,7 +7129,7 @@ emulator -gpu guest
 # (configured automatically via init.ranchu.rc)
 ```
 
-### 58.9.7 Advanced: Running Multiple Instances
+### 60.9.7 Advanced: Running Multiple Instances
 
 #### Emulator
 
@@ -7159,7 +7159,7 @@ launch_cvd --num_instances=3
 # - Console port
 ```
 
-### 58.9.8 Advanced: Custom Kernel
+### 60.9.8 Advanced: Custom Kernel
 
 ```bash
 # Step 1: Check out the kernel source
@@ -7176,7 +7176,7 @@ emulator -kernel /path/to/bzImage \
     -vendor $ANDROID_PRODUCT_OUT/vendor.img
 ```
 
-### 58.9.9 Understanding the Build Product Configuration Chain
+### 60.9.9 Understanding the Build Product Configuration Chain
 
 When building an emulator image, the product configuration follows a specific
 chain of inheritance. Let us trace through the x86_64 phone target:
@@ -7208,7 +7208,7 @@ This layered design means that adding a new emulator product (e.g., a new
 form factor) requires only creating a thin top-level makefile that inherits
 from the appropriate base.
 
-### 58.9.10 Testing HAL Implementations
+### 60.9.10 Testing HAL Implementations
 
 One of the most useful aspects of the emulator for platform developers is
 the ability to test HAL implementations. Here is a workflow for testing a
@@ -7254,7 +7254,7 @@ adb shell start
 adb shell dumpsys media.camera
 ```
 
-### 58.9.11 Tracing Emulator Communication
+### 60.9.11 Tracing Emulator Communication
 
 To debug the communication between guest HALs and the QEMU host, several
 techniques are available:
@@ -7301,7 +7301,7 @@ info mtree
 info ioports
 ```
 
-### 58.9.12 Building Slim Emulator Images
+### 60.9.12 Building Slim Emulator Images
 
 For CI/CD scenarios where boot time and image size matter, the "slim"
 emulator variant strips out unnecessary components:
@@ -7316,7 +7316,7 @@ The slim variant (`device/generic/goldfish/product/slim_handheld.mk`)
 inherits from `generic.mk` directly without the full handheld product
 stack, resulting in a smaller system image that boots faster.
 
-### 58.9.13 Running CTS on the Emulator
+### 60.9.13 Running CTS on the Emulator
 
 The emulator is a supported CTS (Compatibility Test Suite) target:
 
@@ -7343,7 +7343,7 @@ the emulator provides through its virtual HALs. The data injection support
 in the sensors HAL (`SensorFlagBits::DATA_INJECTION` flag on all sensors)
 is specifically designed for CTS compliance.
 
-### 58.9.14 Emulator Console Commands
+### 60.9.14 Emulator Console Commands
 
 The emulator exposes a telnet-based console for direct control:
 
@@ -7460,8 +7460,8 @@ physical device or in the emulator.
 | `device/google/cuttlefish/shared/device.mk` | Shared device config (installs vkms_controller) |
 | `device/google/cuttlefish/README.md` | Cuttlefish getting started guide (host-tools migration) |
 
-<!-- chapter:59-device-policy -->
-# Chapter 59: Device Policy and Android Enterprise
+<!-- chapter:61-device-policy -->
+# Chapter 61: Device Policy and Android Enterprise
 
 Android Enterprise is the umbrella term for the collection of APIs,
 infrastructure components, and management modes that allow organizations to
@@ -7476,9 +7476,9 @@ out to the individual subsystem enforcers that make each policy stick.
 
 ---
 
-## 59.1  Enterprise Architecture
+## 61.1  Enterprise Architecture
 
-### 59.1.1  The Problem Space
+### 61.1.1  The Problem Space
 
 Enterprise mobility management (EMM) must reconcile two opposing requirements:
 
@@ -7493,7 +7493,7 @@ isolation (work profiles), privilege tiers (Device Owner vs. Profile Owner),
 and fine-grained policy APIs (over 250 individually controllable policies in
 modern AOSP).
 
-### 59.1.2  Management Modes
+### 61.1.2  Management Modes
 
 Android defines four primary management modes, each offering different
 trade-offs between IT control and user freedom:
@@ -7536,7 +7536,7 @@ graph TB
     end
 ```
 
-### 59.1.3  Device Owner (DO)
+### 61.1.3  Device Owner (DO)
 
 A Device Owner is a Device Policy Client (DPC) app that has full management
 authority over the entire device.  It is provisioned during the initial setup
@@ -7578,7 +7578,7 @@ import static com.android.server.devicepolicy.DevicePolicyStatsLog
     .DEVICE_POLICY_MANAGEMENT_MODE__MANAGEMENT_MODE__PROFILE_OWNER;
 ```
 
-### 59.1.4  Profile Owner (PO)
+### 61.1.4  Profile Owner (PO)
 
 A Profile Owner manages a single Android user (typically a managed profile).
 Unlike a Device Owner, multiple Profile Owners can coexist on a device (one
@@ -7607,7 +7607,7 @@ void load() {
 }
 ```
 
-### 59.1.5  COPE (Corporate-Owned, Personally-Enabled)
+### 61.1.5  COPE (Corporate-Owned, Personally-Enabled)
 
 COPE is a hybrid mode introduced in Android 11.  The device is corporate-owned
 (a Device Owner exists), but the user also has a personal profile.  A Profile
@@ -7635,14 +7635,14 @@ import static com.android.server.pm.UserManagerInternal
     .OWNER_TYPE_PROFILE_OWNER_OF_ORGANIZATION_OWNED_DEVICE;
 ```
 
-### 59.1.6  BYOD (Bring Your Own Device)
+### 61.1.6  BYOD (Bring Your Own Device)
 
 In BYOD mode, the device belongs to the employee.  Only a work profile is
 created, and the Profile Owner manages only that profile.  The IT admin has no
 control over the personal side.  This is the most privacy-respecting
 management mode.
 
-### 59.1.7  Management Mode Decision Flow
+### 61.1.7  Management Mode Decision Flow
 
 ```mermaid
 flowchart TD
@@ -7667,7 +7667,7 @@ flowchart TD
     style LEGACY fill:#fbb,stroke:#333,stroke-width:2px
 ```
 
-### 59.1.8  Management Modes in Detail: Policy Scope Matrix
+### 61.1.8  Management Modes in Detail: Policy Scope Matrix
 
 The following matrix shows which DPM APIs are available under each management
 mode.  Understanding these scopes is essential when building a DPC.
@@ -7693,7 +7693,7 @@ App restrictions         | Yes  | Work only | Work only | No
 USB data signaling       | Yes  | No        | No        | No
 ```
 
-### 59.1.9  Android Enterprise Feature Evolution
+### 61.1.9  Android Enterprise Feature Evolution
 
 Android Enterprise capabilities have evolved significantly across platform
 versions:
@@ -7722,9 +7722,9 @@ trusted platform services act as policy-engine admins. Android 17 builds on
 that foundation: the new Advanced Protection Mode (AAPM) service drives several
 device policies (MTE, USB, install-unknown-sources) as a *system admin*, and a
 new multi-user managed-device provisioning flow lands properly for headless
-deployments. Both are covered in detail in section 59.8.
+deployments. Both are covered in detail in section 61.8.
 
-### 59.1.10  Headless System User Mode
+### 61.1.10  Headless System User Mode
 
 Modern Android supports headless system user mode, particularly relevant for
 automotive and multi-user scenarios.  The `DeviceAdminInfo` class defines
@@ -7744,9 +7744,9 @@ creation of additional secondary users is blocked.
 
 ---
 
-## 59.2  DevicePolicyManagerService
+## 61.2  DevicePolicyManagerService
 
-### 59.2.1  Overview and Class Hierarchy
+### 61.2.1  Overview and Class Hierarchy
 
 `DevicePolicyManagerService` is one of the largest system services in AOSP,
 weighing in at roughly 24,000 lines on the Android 17 tree
@@ -7827,7 +7827,7 @@ Source file locations:
 | Admin state | `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/ActiveAdmin.java` |
 | Per-user data | `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyData.java` |
 
-### 59.2.2  DPMS Internal Architecture
+### 61.2.2  DPMS Internal Architecture
 
 Before diving into boot, it helps to see the internal components of DPMS
 and how they relate:
@@ -7887,7 +7887,7 @@ The separation into these components reflects years of refactoring.  The
 original DPMS was a single monolithic class; the engine, monitors, and
 helpers were extracted to improve maintainability and testability.
 
-### 59.2.3  Service Registration and Boot
+### 61.2.3  Service Registration and Boot
 
 DPMS is registered as a system service by `SystemServer`.  Its boot lifecycle
 follows the standard `SystemService` phases:
@@ -7928,7 +7928,7 @@ case SystemService.PHASE_BOOT_COMPLETED:
     break;
 ```
 
-### 59.2.4  The Admin Component Model
+### 61.2.4  The Admin Component Model
 
 An admin component is a `BroadcastReceiver` subclass that extends
 `DeviceAdminReceiver`.  The system discovers it through manifest declarations:
@@ -7981,7 +7981,7 @@ public static final int USES_POLICY_DISABLE_CAMERA = 8;
 public static final int USES_POLICY_DISABLE_KEYGUARD_FEATURES = 9;
 ```
 
-### 59.2.5  ActiveAdmin: Per-Admin State
+### 61.2.5  ActiveAdmin: Per-Admin State
 
 When an admin component is activated (either as a device admin, profile owner,
 or device owner), DPMS creates an `ActiveAdmin` object that stores the complete
@@ -8027,7 +8027,7 @@ private static final String TAG_MIN_PASSWORD_LENGTH = "min-password-length";
 // ... many more
 ```
 
-### 59.2.6  DevicePolicyData: Per-User State
+### 61.2.6  DevicePolicyData: Per-User State
 
 Beyond individual admin state, DPMS maintains per-user data in
 `DevicePolicyData`:
@@ -8065,7 +8065,7 @@ The data is persisted to XML files in each user's system directory:
 /data/system/device_owner_2.xml
 ```
 
-### 59.2.7  The DevicePolicyEngine: Multi-Admin Policy Resolution
+### 61.2.7  The DevicePolicyEngine: Multi-Admin Policy Resolution
 
 Starting in Android 14, AOSP introduced the `DevicePolicyEngine` to handle
 scenarios where multiple management admins set conflicting policies.  This is
@@ -8110,7 +8110,7 @@ final class DevicePolicyEngine {
 }
 ```
 
-### 59.2.8  Resolution Mechanisms
+### 61.2.8  Resolution Mechanisms
 
 Each policy definition declares a resolution mechanism that determines how
 conflicting values from multiple admins are reconciled:
@@ -8155,7 +8155,7 @@ static PolicyDefinition<Boolean> SECURITY_LOGGING = new PolicyDefinition<>(
     new BooleanPolicySerializer());
 ```
 
-### 59.2.9  Policy Flags
+### 61.2.9  Policy Flags
 
 Each `PolicyDefinition` carries flags that control its scope and behavior:
 
@@ -8181,7 +8181,7 @@ private static final int POLICY_FLAG_PACKAGE_POLICY = 1 << 6;
 - **PACKAGE_POLICY**: marks policies keyed by a package identifier so the
   engine can clean them up when the package is removed.
 
-### 59.2.10  EnforcingAdmin: Admin Identity in the Policy Engine
+### 61.2.10  EnforcingAdmin: Admin Identity in the Policy Engine
 
 The `EnforcingAdmin` class models the identity of an admin within the policy
 engine.  On the Android 17 tree it recognizes four authority kinds, encoded as
@@ -8240,14 +8240,14 @@ user (no `ComponentName`) and resolves the package's held roles into a set of
 `role:<roleName>` authorities.  The `SYSTEM_AUTHORITY_PREFIX` (`"system:"`) and
 `createSystemEnforcingAdmin` path are the load-bearing addition that lets
 trusted platform services -- most notably Advanced Protection Mode (section
-59.8.28) -- set device policies through the same engine that DPCs use, without
+61.8.28) -- set device policies through the same engine that DPCs use, without
 being a DPC.  Parsing of a persisted authority string back into an
 `android.app.admin.Authority` instance lives in `getParcelableAuthority`, which
 maps `"enterprise"` to `DpcAuthority`, `"device_admin"` to
 `DeviceAdminAuthority`, a `role:` prefix to `RoleAuthority`, and a `system:`
 prefix to `SystemAuthority`.
 
-### 59.2.11  Permission Model for Policy APIs
+### 61.2.11  Permission Model for Policy APIs
 
 Starting in Android 13, many DPM APIs transitioned from requiring a specific
 admin `ComponentName` to using fine-grained permissions.  The DPMS imports
@@ -8275,7 +8275,7 @@ import static android.Manifest.permission.MANAGE_DEVICE_POLICY_WIPE_DATA;
 This allows non-DPC apps (such as role holders) to manage specific policies
 without being a full Device Owner or Profile Owner.
 
-### 59.2.12  Delegation: Sharing Admin Capabilities
+### 61.2.12  Delegation: Sharing Admin Capabilities
 
 A Device Owner or Profile Owner can delegate specific management capabilities
 to other apps without granting them full admin status:
@@ -8307,7 +8307,7 @@ public class DelegatedAdminReceiver extends BroadcastReceiver {
 }
 ```
 
-### 59.2.13  Policy Persistence and XML Format
+### 61.2.13  Policy Persistence and XML Format
 
 DPMS persists all policy state to XML files.  Understanding the XML format
 is essential for debugging and for reading the `dumpsys device_policy` output.
@@ -8364,7 +8364,7 @@ Key attributes in the policy XML:
 | `lock-task-component` | Allowed lock task packages |
 | `affiliation-id` | Enterprise affiliation identifier |
 
-### 59.2.14  Caller Identity and Permission Checking
+### 61.2.14  Caller Identity and Permission Checking
 
 Every DPM API call goes through rigorous caller identity verification.
 The `CallerIdentity` class captures the calling context:
@@ -8403,7 +8403,7 @@ flowchart TD
     CHECK5 -- No --> DENY
 ```
 
-### 59.2.15  Thread Safety and Locking
+### 61.2.15  Thread Safety and Locking
 
 DPMS uses a global lock object for synchronization:
 
@@ -8417,7 +8417,7 @@ The `Owners` class uses its own lock (`mData`) to protect ownership data.
 The `DevicePolicyEngine` uses `mLock` for policy state.  Care must be taken
 to avoid deadlocks when acquiring multiple locks.
 
-### 59.2.16  Policy Enforcement Flow
+### 61.2.16  Policy Enforcement Flow
 
 When an admin calls a DPM API, the request flows through several layers:
 
@@ -8447,7 +8447,7 @@ sequenceDiagram
     DPMS-->>DPC: return
 ```
 
-### 59.2.17  Binder Caches
+### 61.2.17  Binder Caches
 
 DPMS uses `IpcDataCache` to avoid repeated Binder calls for frequently
 queried policy states.  The `DevicePolicyCacheImpl` class provides an
@@ -8470,9 +8470,9 @@ private void pushToDevicePolicyManager() {
 
 ---
 
-## 59.3  Work Profiles
+## 61.3  Work Profiles
 
-### 59.3.1  Conceptual Model
+### 61.3.1  Conceptual Model
 
 A work profile is an Android managed profile -- a separate user space that
 runs on the same device as the personal profile.  It has its own:
@@ -8511,7 +8511,7 @@ graph TB
     end
 ```
 
-### 59.3.2  Managed Profile Creation
+### 61.3.2  Managed Profile Creation
 
 Work profiles are created through the `DevicePolicyManager` API.  The
 primary entry point is `createAndProvisionManagedProfile()`:
@@ -8586,7 +8586,7 @@ public UserHandle createAndProvisionManagedProfile(
 }
 ```
 
-### 59.3.3  Profile Provisioning Preconditions
+### 61.3.3  Profile Provisioning Preconditions
 
 DPMS checks extensive preconditions before allowing profile creation.  The
 status codes reveal what can go wrong:
@@ -8604,7 +8604,7 @@ public static final int STATUS_NOT_SYSTEM_USER = 9;
 // ... and more
 ```
 
-### 59.3.4  Cross-Profile Intent Filters
+### 61.3.4  Cross-Profile Intent Filters
 
 Cross-profile intent filters control which intents can be resolved across
 the work/personal boundary.  The DPC configures them through:
@@ -8657,7 +8657,7 @@ private static final String TAG_CROSS_PROFILE_WIDGET_PROVIDERS =
     "cross-profile-widget-providers";
 ```
 
-### 59.3.5  Work Mode Toggle
+### 61.3.5  Work Mode Toggle
 
 Users can turn the work profile on and off.  When the work profile is
 paused, all work apps are suspended, notifications are hidden, and
@@ -8681,7 +8681,7 @@ private static final String TAG_PROFILE_MAXIMUM_TIME_OFF = "profile-max-time-off
 private static final String TAG_PROFILE_OFF_DEADLINE = "profile-off-deadline";
 ```
 
-### 59.3.6  Personal Apps Suspension (COPE)
+### 61.3.6  Personal Apps Suspension (COPE)
 
 In organization-owned scenarios, the Profile Owner can suspend personal
 apps if the work profile has been turned off beyond a configured deadline.
@@ -8709,7 +8709,7 @@ public static final int PERSONAL_APPS_SUSPENDED_EXPLICITLY = 1;
 public static final int PERSONAL_APPS_SUSPENDED_PROFILE_TIMEOUT = 2;
 ```
 
-### 59.3.7  Work Profile Data Isolation
+### 61.3.7  Work Profile Data Isolation
 
 The work profile achieves data isolation through multiple mechanisms:
 
@@ -8771,7 +8771,7 @@ import static android.net.ConnectivityManager
     .PROFILE_NETWORK_PREFERENCE_ENTERPRISE_NO_FALLBACK;
 ```
 
-### 59.3.8  Work Profile Managed Subscriptions
+### 61.3.8  Work Profile Managed Subscriptions
 
 On devices with eSIM support, the work profile can have its own managed
 subscription:
@@ -8783,7 +8783,7 @@ public final class ManagedSubscriptionsPolicy implements Parcelable {
 }
 ```
 
-### 59.3.9  Keep Profiles Running
+### 61.3.9  Keep Profiles Running
 
 A relatively new feature allows profiles to keep running even when they
 are in the "quiet" state:
@@ -8797,7 +8797,7 @@ This is important for scenarios where work apps need to receive push
 notifications or sync data even when the work profile is "paused" from the
 user's perspective.
 
-### 59.3.10  Work Profile Telephony
+### 61.3.10  Work Profile Telephony
 
 Work profiles have implications for telephony.  When the work profile is
 paused, the DPMS can show notifications about missed work calls:
@@ -8812,7 +8812,7 @@ import static android.app.admin.DevicePolicyResources.Strings.Core
     .WORK_PROFILE_TELEPHONY_PAUSED_TURN_ON_BUTTON;
 ```
 
-### 59.3.11  Work Profile Deletion
+### 61.3.11  Work Profile Deletion
 
 When a work profile is deleted (either by the user, the admin, or due to
 policy violations), the DPMS sends appropriate notifications:
@@ -8831,9 +8831,9 @@ import static android.app.admin.DevicePolicyResources.Strings.Core
 
 ---
 
-## 59.4  Device Administration
+## 61.4  Device Administration
 
-### 59.4.1  DeviceAdminReceiver: The Admin Callback Interface
+### 61.4.1  DeviceAdminReceiver: The Admin Callback Interface
 
 `DeviceAdminReceiver` is the base class for all device admin components.  It
 extends `BroadcastReceiver` and provides callback methods for policy events:
@@ -8885,7 +8885,7 @@ classDiagram
     BroadcastReceiver <|-- DeviceAdminReceiver
 ```
 
-### 59.4.2  Admin Lifecycle
+### 61.4.2  Admin Lifecycle
 
 The admin lifecycle follows a specific sequence:
 
@@ -8906,7 +8906,7 @@ stateDiagram-v2
     ProfileOwner --> Active : clearProfileOwner
 ```
 
-### 59.4.3  Password Policies
+### 61.4.3  Password Policies
 
 Password policies are among the most commonly used device admin capabilities.
 Android supports two approaches:
@@ -8952,7 +8952,7 @@ PasswordPolicy passwordPolicy = new PasswordPolicy();
 // letters, numeric, symbols, nonletter, history length
 ```
 
-### 59.4.4  Password Expiration
+### 61.4.4  Password Expiration
 
 Admins can force periodic password changes:
 
@@ -8965,7 +8965,7 @@ private static final String TAG_PASSWORD_EXPIRATION_TIMEOUT = "password-expirati
 When a password expires, the `ACTION_PASSWORD_EXPIRING` broadcast is sent
 to the admin.  The admin can then prompt the user to change their password.
 
-### 59.4.5  Maximum Failed Password Attempts
+### 61.4.5  Maximum Failed Password Attempts
 
 Admins can configure automatic data wipe after too many failed unlock
 attempts:
@@ -8978,7 +8978,7 @@ private static final String TAG_MAX_FAILED_PASSWORD_WIPE = "max-failed-password-
 When the threshold is exceeded, DPMS either wipes the work profile (for
 a Profile Owner) or factory-resets the device (for a Device Owner).
 
-### 59.4.6  Device Lock
+### 61.4.6  Device Lock
 
 The `USES_POLICY_FORCE_LOCK` policy allows an admin to immediately lock the
 device or set a maximum idle time before automatic lock:
@@ -9002,7 +9002,7 @@ import static com.android.internal.widget.LockPatternUtils.StrongAuthTracker
     .STRONG_AUTH_REQUIRED_AFTER_DPM_LOCK_NOW;
 ```
 
-### 59.4.7  Encryption Policy
+### 61.4.7  Encryption Policy
 
 Admins can require storage encryption:
 
@@ -9022,7 +9022,7 @@ public static final int ENCRYPTION_STATUS_ACTIVE_PER_USER = 5;
 // Indicates file-based encryption is active
 ```
 
-### 59.4.8  Camera Disable Policy
+### 61.4.8  Camera Disable Policy
 
 The camera disable policy is a boolean policy that can be set per-user or
 globally:
@@ -9047,7 +9047,7 @@ graph TD
     CACHE --> CAMERA[CameraService checks cache]
 ```
 
-### 59.4.9  Screen Capture Disable
+### 61.4.9  Screen Capture Disable
 
 Similar to camera disable, screen capture can be disabled per-user:
 
@@ -9056,7 +9056,7 @@ Similar to camera disable, screen capture can be disabled per-user:
 private static final String TAG_DISABLE_SCREEN_CAPTURE = "disable-screen-capture";
 ```
 
-### 59.4.10  Keyguard Feature Disable
+### 61.4.10  Keyguard Feature Disable
 
 Admins can selectively disable keyguard features:
 
@@ -9079,7 +9079,7 @@ The `KEYGUARD_DISABLED_FEATURES` policy is handled specially in the engine:
 static final PolicyDefinition<Integer> KEYGUARD_DISABLED_FEATURES = ...;
 ```
 
-### 59.4.11  Factory Reset (Wipe)
+### 61.4.11  Factory Reset (Wipe)
 
 The most drastic admin action is wiping the device:
 
@@ -9111,7 +9111,7 @@ public static final int FACTORY_RESET_FLAG_WIPE_EUICC = 4;
 public static final int FACTORY_RESET_FLAG_WIPE_FACTORY_RESET_PROTECTION = 8;
 ```
 
-### 59.4.12  Factory Reset Protection (FRP)
+### 61.4.12  Factory Reset Protection (FRP)
 
 FRP prevents unauthorized factory resets.  The admin can configure which
 accounts are allowed to unlock after a factory reset:
@@ -9123,7 +9123,7 @@ public final class FactoryResetProtectionPolicy implements Parcelable {
 }
 ```
 
-### 59.4.13  Account Management
+### 61.4.13  Account Management
 
 Admins can control which account types can be added or removed:
 
@@ -9133,7 +9133,7 @@ private static final String TAG_DISABLE_ACCOUNT_MANAGEMENT = "disable-account-ma
 private static final String TAG_ACCOUNT_TYPE = "account-type";
 ```
 
-### 59.4.14  VPN Policy
+### 61.4.14  VPN Policy
 
 Admins can enforce always-on VPN with lockdown mode:
 
@@ -9163,7 +9163,7 @@ When lockdown mode is enabled:
 - If the VPN disconnects, traffic is blocked again.
 - Certain system-level traffic (captive portal detection) may be exempted.
 
-### 59.4.15  Permitted Services Control
+### 61.4.15  Permitted Services Control
 
 Admins can restrict which accessibility services and input methods are allowed:
 
@@ -9180,7 +9180,7 @@ This ensures that only approved accessibility services and keyboards are
 used in the managed environment, preventing data leakage through malicious
 input methods or accessibility services.
 
-### 59.4.16  Metered Data Control
+### 61.4.16  Metered Data Control
 
 Admins can prevent specific apps from using metered (cellular) data:
 
@@ -9190,7 +9190,7 @@ private static final String TAG_METERED_DATA_DISABLED_PACKAGES =
     "metered_data_disabled_packages";
 ```
 
-### 59.4.17  Trust Agent Management
+### 61.4.17  Trust Agent Management
 
 Admins can control trust agents (Smart Lock features):
 
@@ -9203,7 +9203,7 @@ private static final String TAG_TRUST_AGENT_COMPONENT_OPTIONS =
 private static final String TAG_TRUST_AGENT_COMPONENT = "component";
 ```
 
-### 59.4.18  Nearby Streaming Policies
+### 61.4.18  Nearby Streaming Policies
 
 Admins can control nearby streaming of notifications and apps:
 
@@ -9215,7 +9215,7 @@ private static final String TAG_NEARBY_APP_STREAMING_POLICY =
     "nearby-app-streaming-policy";
 ```
 
-### 59.4.19  Organization Identity
+### 61.4.19  Organization Identity
 
 The admin can set organization name and color for branding:
 
@@ -9228,7 +9228,7 @@ private static final String TAG_ORGANIZATION_NAME = "organization-name";
 The organization name appears in Settings and in notifications related to
 the managed profile.
 
-### 59.4.20  Support Messages
+### 61.4.20  Support Messages
 
 Admins can set short and long support messages displayed to users:
 
@@ -9241,7 +9241,7 @@ private static final String TAG_LONG_SUPPORT_MESSAGE = "long-support-message";
 The short message appears in the Settings app next to the admin entry.
 The long message provides detailed information about the management policies.
 
-### 59.4.21  Session Messages (Multi-User)
+### 61.4.21  Session Messages (Multi-User)
 
 For multi-user devices (e.g., shared tablets), admins can set session
 start/end messages:
@@ -9252,7 +9252,7 @@ private static final String TAG_START_USER_SESSION_MESSAGE = "start_user_session
 private static final String TAG_END_USER_SESSION_MESSAGE = "end_user_session_message";
 ```
 
-### 59.4.22  User Restrictions
+### 61.4.22  User Restrictions
 
 Beyond the specific policy APIs, Device Owners and Profile Owners can set
 user restrictions that limit device functionality:
@@ -9296,7 +9296,7 @@ private static final int POLICY_FLAG_USER_RESTRICTION_POLICY = 1 << 4;
 //  policies and this is the way we can identify them."
 ```
 
-### 59.4.23  Lock Task Mode
+### 61.4.23  Lock Task Mode
 
 Lock task mode pins the device to specific apps, useful for kiosks and
 single-purpose devices:
@@ -9330,9 +9330,9 @@ static PolicyDefinition<LockTaskPolicy> LOCK_TASK = new PolicyDefinition<>(
 
 ---
 
-## 59.5  Managed Configurations
+## 61.5  Managed Configurations
 
-### 59.5.1  App Restrictions Framework
+### 61.5.1  App Restrictions Framework
 
 Managed configurations (also called app restrictions) allow an admin to
 push key-value configuration to managed apps.  This is the primary mechanism
@@ -9357,7 +9357,7 @@ sequenceDiagram
     DPMS-->>APP: Bundle with restrictions
 ```
 
-### 59.5.2  Restriction Types
+### 61.5.2  Restriction Types
 
 The restrictions are communicated as a `Bundle` containing typed key-value
 pairs.  Apps declare their supported restrictions in an XML resource:
@@ -9396,7 +9396,7 @@ Supported restriction types:
 | Bundle | `bundle` | `Bundle` (nested) |
 | Bundle array | `bundle_array` | `Parcelable[]` |
 
-### 59.5.3  Delegation of App Restrictions
+### 61.5.3  Delegation of App Restrictions
 
 The app-restrictions capability can be delegated:
 
@@ -9408,7 +9408,7 @@ public static final String DELEGATION_APP_RESTRICTIONS = "delegation-app-restric
 This allows an EMM agent to delegate configuration management to a
 purpose-built configuration app.
 
-### 59.5.4  RestrictionsManager
+### 61.5.4  RestrictionsManager
 
 Apps retrieve their managed configurations through `RestrictionsManager`:
 
@@ -9427,7 +9427,7 @@ updates:
 import android.service.restrictions.RestrictionsReceiver;
 ```
 
-### 59.5.5  Policy Engine Treatment
+### 61.5.5  Policy Engine Treatment
 
 App restrictions use the `NON_COEXISTABLE_POLICY` flag, meaning each admin's
 restrictions are stored independently rather than being merged:
@@ -9441,7 +9441,7 @@ restrictions are stored independently rather than being merged:
 //  queried independent of each other."
 ```
 
-### 59.5.6  Managed Configurations Architecture
+### 61.5.6  Managed Configurations Architecture
 
 ```mermaid
 graph TB
@@ -9475,7 +9475,7 @@ graph TB
     APP_XML --> |"Declare supported<br/>restrictions"| CONSOLE
 ```
 
-### 59.5.7  Managed App Config for Common Use Cases
+### 61.5.7  Managed App Config for Common Use Cases
 
 Common managed configuration patterns:
 
@@ -9502,9 +9502,9 @@ Common managed configuration patterns:
 
 ---
 
-## 59.6  COPE and Fully Managed Devices
+## 61.6  COPE and Fully Managed Devices
 
-### 59.6.1  Fully Managed Device Provisioning
+### 61.6.1  Fully Managed Device Provisioning
 
 A fully managed device is provisioned during the initial setup through
 `provisionFullyManagedDevice()`:
@@ -9524,7 +9524,7 @@ public final class FullyManagedDeviceProvisioningParams implements Parcelable {
 }
 ```
 
-### 59.6.2  Provisioning Methods
+### 61.6.2  Provisioning Methods
 
 Android supports multiple provisioning entry points:
 
@@ -9566,7 +9566,7 @@ public static final String ACTION_PROVISION_MANAGED_USER
     = "android.app.action.PROVISION_MANAGED_USER";
 ```
 
-### 59.6.3  Device Owner Capabilities
+### 61.6.3  Device Owner Capabilities
 
 A Device Owner has the broadest set of capabilities:
 
@@ -9581,7 +9581,7 @@ A Device Owner has the broadest set of capabilities:
 | **Telephony** | Configure APNs, manage subscriptions |
 | **Identity** | Set organization name, set device owner lock screen info |
 
-### 59.6.4  COPE Architecture
+### 61.6.4  COPE Architecture
 
 COPE combines Device Owner authority on the personal side with Profile Owner
 authority in the work profile.  The key distinction is the
@@ -9621,7 +9621,7 @@ graph TB
     end
 ```
 
-### 59.6.5  COPE vs. Fully Managed Comparison
+### 61.6.5  COPE vs. Fully Managed Comparison
 
 ```
 Feature                  | Fully Managed | COPE
@@ -9635,7 +9635,7 @@ Factory reset control    | Full          | Via FRP
 Personal app suspension  | N/A           | Yes (if work off too long)
 ```
 
-### 59.6.6  Financed Devices
+### 61.6.6  Financed Devices
 
 Android also supports a "financed device" mode for devices under a financing
 agreement:
@@ -9656,7 +9656,7 @@ new TopPriority<>(List.of(
     EnforcingAdmin.DPC_AUTHORITY))
 ```
 
-### 59.6.7  System Update Policy
+### 61.6.7  System Update Policy
 
 Device Owners can control how system updates are applied:
 
@@ -9679,7 +9679,7 @@ Four update strategies:
 import android.app.admin.FreezePeriod;
 ```
 
-### 59.6.8  Always-On VPN
+### 61.6.8  Always-On VPN
 
 Device and profile owners can enforce always-on VPN:
 
@@ -9693,9 +9693,9 @@ connects (lockdown mode).
 
 ---
 
-## 59.7  Cross-Profile Communication
+## 61.7  Cross-Profile Communication
 
-### 59.7.1  The Cross-Profile Boundary
+### 61.7.1  The Cross-Profile Boundary
 
 The work/personal boundary is one of Android Enterprise's most important
 security features.  By default, apps in one profile cannot see or interact
@@ -9729,7 +9729,7 @@ graph TB
     P_CALENDAR <--> CPCP <--> W_CALENDAR
 ```
 
-### 59.7.2  Cross-Profile Intent Filters
+### 61.7.2  Cross-Profile Intent Filters
 
 The DPC controls which intents cross the profile boundary:
 
@@ -9755,7 +9755,7 @@ public static final int FLAG_MANAGED_CAN_ACCESS_PARENT = 0x0002;
 // Work apps can resolve intents to personal apps
 ```
 
-### 59.7.3  Default Cross-Profile Intent Filters
+### 61.7.3  Default Cross-Profile Intent Filters
 
 The system provides default cross-profile intent filters for essential
 functionality even before the DPC configures any.  These typically include:
@@ -9764,7 +9764,7 @@ functionality even before the DPC configures any.  These typically include:
 - **Web URLs**: allowing link navigation across profiles.
 - **Settings**: allowing access to device settings from either profile.
 
-### 59.7.4  CrossProfileApps API
+### 61.7.4  CrossProfileApps API
 
 The `CrossProfileApps` class provides a higher-level API for cross-profile
 interaction:
@@ -9789,7 +9789,7 @@ public class CrossProfileApps {
 }
 ```
 
-### 59.7.5  Cross-Profile App Manifest Declaration
+### 61.7.5  Cross-Profile App Manifest Declaration
 
 Apps that want to interact across profiles declare this in their manifest:
 
@@ -9802,7 +9802,7 @@ Apps that want to interact across profiles declare this in their manifest:
 </manifest>
 ```
 
-### 59.7.6  Work Contacts in Personal Apps
+### 61.7.6  Work Contacts in Personal Apps
 
 One of the most visible cross-profile features is showing work contacts
 in the personal phone app.  This is controlled by multiple policies:
@@ -9846,7 +9846,7 @@ graph LR
     BCS -->|"if allowed"| WC
 ```
 
-### 59.7.7  Cross-Profile Calendar
+### 61.7.7  Cross-Profile Calendar
 
 The admin can allow personal calendar apps to see work calendar events:
 
@@ -9858,7 +9858,7 @@ private static final String TAG_CROSS_PROFILE_CALENDAR_PACKAGES_NULL =
     "cross-profile-calendar-packages-null";
 ```
 
-### 59.7.8  Cross-Profile Widget Providers
+### 61.7.8  Cross-Profile Widget Providers
 
 Widget providers can be allowed to show work widgets on the personal
 launcher:
@@ -9877,7 +9877,7 @@ The policy engine defines this as a specific policy:
 static final PolicyDefinition<...> CROSS_PROFILE_WIDGET_PROVIDER = ...;
 ```
 
-### 59.7.9  Cross-Profile Packages
+### 61.7.9  Cross-Profile Packages
 
 Admins can configure a set of packages allowed for cross-profile communication:
 
@@ -9886,7 +9886,7 @@ Admins can configure a set of packages allowed for cross-profile communication:
 private static final String TAG_CROSS_PROFILE_PACKAGES = "cross-profile-packages";
 ```
 
-### 59.7.10  Connected Work and Personal Apps
+### 61.7.10  Connected Work and Personal Apps
 
 The `crossProfile` manifest attribute enables "connected" apps that work
 across both profiles:
@@ -9914,7 +9914,7 @@ When an app declares `crossProfile="true"`, it gains several capabilities:
 3. The app can use `CrossProfileApps.canInteractAcrossProfiles()` to check
    whether it currently has permission.
 
-### 59.7.11  Cross-Profile Data Sharing Patterns
+### 61.7.11  Cross-Profile Data Sharing Patterns
 
 Several patterns exist for sharing data across profiles:
 
@@ -9948,7 +9948,7 @@ Each pattern has different security implications:
 | Direct start | App + user + admin consent | Switching between personal/work instances |
 | Clipboard | Admin-controlled | Copy-paste across profiles |
 
-### 59.7.12  Cross-Profile Content Provider Access
+### 61.7.12  Cross-Profile Content Provider Access
 
 The system provides special URIs for cross-profile provider access.
 For contacts, the `ContactsContract.Directory` class provides:
@@ -9962,7 +9962,7 @@ Directories with the `ENTERPRISE` flag indicate work contacts available
 to the personal profile.  The system enforces access based on the admin's
 caller ID and contact search policies.
 
-### 59.7.13  Profile Interaction Flow
+### 61.7.13  Profile Interaction Flow
 
 The complete flow when a personal app tries to interact with a work app:
 
@@ -9996,9 +9996,9 @@ sequenceDiagram
 
 ---
 
-## 59.8  Compliance and Security
+## 61.8  Compliance and Security
 
-### 59.8.1  Security Logging
+### 61.8.1  Security Logging
 
 Security logging captures security-relevant events on the device.  The
 `SecurityLogMonitor` class manages the log buffer:
@@ -10054,7 +10054,7 @@ Security events include:
 - Certificate installs
 - Key generation events
 
-### 59.8.2  Audit Logging
+### 61.8.2  Audit Logging
 
 In addition to security logging, Android supports audit logging:
 
@@ -10090,7 +10090,7 @@ near-real-time compliance monitoring. The corresponding server methods are
 `setAuditLogEnabled(String callerPackage, boolean enabled)` and
 `isAuditLogEnabled(String callerPackage)` on `IDevicePolicyManager`.
 
-### 59.8.3  Network Logging
+### 61.8.3  Network Logging
 
 Network logging captures DNS queries and TCP connections:
 
@@ -10159,7 +10159,7 @@ sequenceDiagram
     DPMS-->>DPC: List<NetworkEvent>
 ```
 
-### 59.8.4  Device Attestation
+### 61.8.4  Device Attestation
 
 Device attestation allows the DPC to prove device identity to a remote
 server using hardware-backed keys:
@@ -10204,7 +10204,7 @@ can be verified against Google's root CA.  The attestation extension
 contains device properties (OS version, patch level, boot state,
 device IDs).
 
-### 59.8.5  Attestation Certificate Chain Structure
+### 61.8.5  Attestation Certificate Chain Structure
 
 The attestation certificate chain has a specific structure that remote
 servers verify:
@@ -10259,7 +10259,7 @@ Within `teeEnforced`, the server can verify:
 - `rootOfTrust` -- verified boot state, public key, device locked state
 - `attestationApplicationId` -- signing certificate of requesting app
 
-### 59.8.6  Certificate Management
+### 61.8.6  Certificate Management
 
 The DPC can install CA certificates and client certificates:
 
@@ -10277,7 +10277,7 @@ The `CertificateMonitor` tracks admin-installed certificates:
 // Monitors CA certificates installed by the admin
 ```
 
-### 59.8.7  Password Compliance Checking
+### 61.8.7  Password Compliance Checking
 
 The DPC can check if the current password meets requirements:
 
@@ -10299,7 +10299,7 @@ public static final String ACTION_CHECK_POLICY_COMPLIANCE
     = "android.app.action.CHECK_POLICY_COMPLIANCE";
 ```
 
-### 59.8.8  Compliance Acknowledgement
+### 61.8.8  Compliance Acknowledgement
 
 Starting in Android 12, the system requires DPCs to acknowledge compliance
 status:
@@ -10310,7 +10310,7 @@ public static final String ACTION_COMPLIANCE_ACKNOWLEDGEMENT_REQUIRED
     = "android.app.action.COMPLIANCE_ACKNOWLEDGEMENT_REQUIRED";
 ```
 
-### 59.8.9  Security Patching Verification
+### 61.8.9  Security Patching Verification
 
 The DPC can query the device's security patch level and enforce minimum
 levels.  The DPMS imports system update query permissions:
@@ -10321,7 +10321,7 @@ import static android.Manifest.permission
     .MANAGE_DEVICE_POLICY_QUERY_SYSTEM_UPDATES;
 ```
 
-### 59.8.10  USB Data Signaling Control
+### 61.8.10  USB Data Signaling Control
 
 For high-security environments, USB data can be disabled:
 
@@ -10331,7 +10331,7 @@ import static android.Manifest.permission
     .MANAGE_DEVICE_POLICY_USB_DATA_SIGNALLING;
 ```
 
-### 59.8.11  Memory Tagging Extension (MTE)
+### 61.8.11  Memory Tagging Extension (MTE)
 
 On supported hardware, the DPC can enable MTE for enhanced memory safety:
 
@@ -10343,7 +10343,7 @@ import static android.Manifest.permission.MANAGE_DEVICE_POLICY_MTE;
 import static android.app.admin.DevicePolicyIdentifiers.MEMORY_TAGGING_POLICY;
 ```
 
-### 59.8.12  Content Protection
+### 61.8.12  Content Protection
 
 The DPC can control content protection through a tri-state policy.  The
 `DevicePolicyManager` constants are:
@@ -10363,7 +10363,7 @@ policy engine under `DevicePolicyIdentifiers.CONTENT_PROTECTION_POLICY`
 protection setting untouched, distinguishing "no opinion" from an explicit
 disable.
 
-### 59.8.13  Stolen Device State
+### 61.8.13  Stolen Device State
 
 Android supports a device theft API:
 
@@ -10375,7 +10375,7 @@ import static android.app.admin.flags.Flags.FLAG_DEVICE_THEFT_API_ENABLED;
 import static android.Manifest.permission.QUERY_DEVICE_STOLEN_STATE;
 ```
 
-### 59.8.14  Device Policy State
+### 61.8.14  Device Policy State
 
 The DPC can query the complete device policy state:
 
@@ -10386,7 +10386,7 @@ public final class DevicePolicyState implements Parcelable {
 }
 ```
 
-### 59.8.15  Enterprise-Specific ID
+### 61.8.15  Enterprise-Specific ID
 
 For privacy-preserving device identification, Android generates
 enterprise-specific IDs:
@@ -10398,7 +10398,7 @@ enterprise-specific IDs:
 // hardware identifiers
 ```
 
-### 59.8.16  Remote Bugreport
+### 61.8.16  Remote Bugreport
 
 The DPC can request a bug report from the device:
 
@@ -10411,7 +10411,7 @@ The DPC can request a bug report from the device:
 private static final String TAG_LAST_BUG_REPORT_REQUEST = "last-bug-report-request";
 ```
 
-### 59.8.17  Wi-Fi SSID Policy
+### 61.8.17  Wi-Fi SSID Policy
 
 Admins can control which Wi-Fi networks the device can connect to:
 
@@ -10427,7 +10427,7 @@ import static android.app.admin.WifiSsidPolicy.WIFI_SSID_POLICY_TYPE_DENYLIST;
 In allowlist mode, only specified SSIDs can be connected to.  In denylist
 mode, specified SSIDs are blocked.
 
-### 59.8.18  Private DNS Policy
+### 61.8.18  Private DNS Policy
 
 The admin can configure private DNS (DNS-over-TLS) settings:
 
@@ -10442,7 +10442,7 @@ public static final int PRIVATE_DNS_SET_NO_ERROR = 0;
 public static final int PRIVATE_DNS_SET_ERROR_FAILURE_SETTING = 1;
 ```
 
-### 59.8.19  Preferential Network Service
+### 61.8.19  Preferential Network Service
 
 For enterprise scenarios requiring dedicated network paths:
 
@@ -10454,7 +10454,7 @@ import android.app.admin.PreferentialNetworkServiceConfig;
 This allows the admin to configure enterprise network preferences, ensuring
 work traffic uses specific network slices or enterprise APNs.
 
-### 59.8.20  APN Configuration (Telephony)
+### 61.8.20  APN Configuration (Telephony)
 
 Device Owners can manage APN (Access Point Name) settings:
 
@@ -10466,7 +10466,7 @@ import static android.provider.Telephony.Carriers.ENFORCE_MANAGED_URI;
 import static android.provider.Telephony.Carriers.INVALID_APN_ID;
 ```
 
-### 59.8.21  Package Policy
+### 61.8.21  Package Policy
 
 Admins can control which packages are allowed for specific purposes:
 
@@ -10477,7 +10477,7 @@ import android.app.admin.PackagePolicy;
 // capabilities (e.g., cross-profile intent handling)
 ```
 
-### 59.8.22  Ephemeral Users
+### 61.8.22  Ephemeral Users
 
 Device Owners can force ephemeral user creation, ensuring all user data
 is deleted when the user logs out:
@@ -10490,7 +10490,7 @@ private static final String TAG_FORCE_EPHEMERAL_USERS = "force_ephemeral_users";
 This is particularly useful for shared devices in education or retail
 environments.
 
-### 59.8.23  Protected Packages
+### 61.8.23  Protected Packages
 
 The admin can protect specific packages from user interference:
 
@@ -10499,7 +10499,7 @@ The admin can protect specific packages from user interference:
 private static final String TAG_PROTECTED_PACKAGES = "protected-packages";
 ```
 
-### 59.8.24  Bypass Role Qualifications
+### 61.8.24  Bypass Role Qualifications
 
 In some enterprise scenarios, the admin needs to grant roles to packages
 that do not meet the normal qualification criteria:
@@ -10510,7 +10510,7 @@ private static final String TAG_BYPASS_ROLE_QUALIFICATIONS =
     "bypass-role-qualifications";
 ```
 
-### 59.8.25  Secondary Lock Screen
+### 61.8.25  Secondary Lock Screen
 
 The admin can enable a secondary lock screen:
 
@@ -10523,7 +10523,7 @@ This allows the DPC to implement an additional lock screen (e.g., for
 compliance verification) that appears before or after the standard lock
 screen.
 
-### 59.8.26  App Exemptions
+### 61.8.26  App Exemptions
 
 Admins can exempt specific apps from various system restrictions:
 
@@ -10540,7 +10540,7 @@ These exemptions ensure that critical enterprise apps (like VPN clients
 or management agents) continue to function even under battery optimization
 or suspension policies.
 
-### 59.8.27  Complete Compliance Architecture
+### 61.8.27  Complete Compliance Architecture
 
 ```mermaid
 graph TB
@@ -10584,7 +10584,7 @@ graph TB
     ATTEST --> |"Attestation result"| SRV_ATTEST
 ```
 
-### 59.8.28  Advanced Protection Mode as a System Admin
+### 61.8.28  Advanced Protection Mode as a System Admin
 
 Android 16 introduced, and Android 17 expands, **Advanced Protection Mode
 (AAPM)** -- a single user-facing toggle (Settings) that turns on a hardened
@@ -10592,7 +10592,7 @@ profile of security features at once.  Architecturally the interesting part is
 *how* it enforces those features: AAPM is **not** part of DPMS and is **not** a
 DPC.  It is a standalone system service that drives a handful of existing device
 policies as a *system admin* through the same policy engine described in section
-59.2.
+61.2.
 
 The service and its client API live outside the devicepolicy package:
 
@@ -10634,7 +10634,7 @@ That overload (`DevicePolicyManager.setMtePolicy(String systemEntity, int
 policy)`) calls `IDevicePolicyManager.setMtePolicyBySystem(systemEntity,
 policy)`, and DPMS records the value against a
 `createSystemEnforcingAdmin(ADVANCED_PROTECTION_SYSTEM_ENTITY)` identity -- the
-`system:` authority from section 59.2.10.  Because AAPM's MTE preference enters
+`system:` authority from section 61.2.10.  Because AAPM's MTE preference enters
 the engine as just another admin's value, it coexists with any DPC's MTE policy
 under the normal resolution rules instead of fighting it.
 
@@ -10667,9 +10667,9 @@ opted into Advanced Protection, several of these features are resolved with the
 restrictive value pinned by the system admin, so an enterprise admin's "allow"
 cannot relax a protection the user explicitly enabled.
 
-### 59.8.29  Multi-User Managed Device Provisioning
+### 61.8.29  Multi-User Managed Device Provisioning
 
-Headless system user mode (section 59.1.10) needs a provisioning flow that does
+Headless system user mode (section 61.1.10) needs a provisioning flow that does
 not assume the Device Owner runs as the human-facing user.  Android 17 lands the
 **multi-user managed device** provisioning path for exactly this case.  The new
 client surface in `DevicePolicyManager` is:
@@ -10702,9 +10702,9 @@ system user, and managed users are then provisioned with their own owner state.
 This is the provisioning counterpart to `HEADLESS_DEVICE_OWNER_MODE_SINGLE_USER`
 and `HEADLESS_DEVICE_OWNER_MODE_AFFILIATED` from `DeviceAdminInfo`.
 
-### 59.8.30  Policy Schema Versioning and Migration
+### 61.8.30  Policy Schema Versioning and Migration
 
-Because the policy engine persists resolved state to disk (section 59.2.13), the
+Because the policy engine persists resolved state to disk (section 61.2.13), the
 on-disk schema is versioned so that an OTA can migrate older XML forward.  DPMS
 pins the current schema version:
 
@@ -10728,7 +10728,7 @@ input methods, account-management-disabled, and similar -- into the
 which is why a first boot after a major upgrade does a small amount of policy
 bookkeeping before management APIs become fully live.
 
-### 59.8.31  Enterprise RCS Archival
+### 61.8.31  Enterprise RCS Archival
 
 A smaller Android 17 addition is enterprise control over which app receives
 archived RCS messages.  `RcsArchivalAppTracker` tracks the single granted
@@ -10748,12 +10748,12 @@ when that app changes, rather than being a free-for-all grant.
 
 ---
 
-## 59.9  Try It
+## 61.9  Try It
 
 This section provides hands-on exercises to explore the Device Policy
 framework using the AOSP source code and Android development tools.
 
-### 59.9.1  Exercise 1: Inspect the DPMS Source
+### 61.9.1  Exercise 1: Inspect the DPMS Source
 
 Examine the scale of the Device Policy Manager Service:
 
@@ -10775,7 +10775,7 @@ grep "MANAGE_DEVICE_POLICY_" \
     | wc -l
 ```
 
-### 59.9.2  Exercise 2: Explore the DPM Client API
+### 61.9.2  Exercise 2: Explore the DPM Client API
 
 ```bash
 # Count public API methods in DevicePolicyManager
@@ -10796,7 +10796,7 @@ grep "ACTION_PROVISION" \
     frameworks/base/core/java/android/app/admin/DevicePolicyManager.java
 ```
 
-### 59.9.3  Exercise 3: Build a Minimal Device Admin
+### 61.9.3  Exercise 3: Build a Minimal Device Admin
 
 Create a minimal device admin app to understand the admin component lifecycle.
 
@@ -10922,7 +10922,7 @@ public class AdminActivity extends Activity {
 }
 ```
 
-### 59.9.4  Exercise 4: Set Up a Test Device Owner
+### 61.9.4  Exercise 4: Set Up a Test Device Owner
 
 Use ADB to explore device owner functionality on an emulator:
 
@@ -10944,7 +10944,7 @@ adb shell cat /data/system/device_owner_2.xml
 adb shell cat /data/system/users/0/device_policies.xml
 ```
 
-### 59.9.5  Exercise 5: Create and Inspect a Work Profile
+### 61.9.5  Exercise 5: Create and Inspect a Work Profile
 
 ```bash
 # On an emulator with the DPC test app installed:
@@ -10971,7 +10971,7 @@ adb shell am broadcast -a android.intent.action.MANAGED_PROFILE_UNAVAILABLE \
     --user 0
 ```
 
-### 59.9.6  Exercise 6: Explore Managed Configurations
+### 61.9.6  Exercise 6: Explore Managed Configurations
 
 ```bash
 # Set app restrictions for a package in the work profile
@@ -10987,7 +10987,7 @@ adb shell dumpsys device_policy | grep -A 20 "Active Admins"
 adb shell dumpsys device_policy | grep -A 10 "application-restrictions"
 ```
 
-### 59.9.7  Exercise 7: Examine Policy Engine Resolution
+### 61.9.7  Exercise 7: Examine Policy Engine Resolution
 
 Study how the policy engine resolves conflicting policies:
 
@@ -11007,7 +11007,7 @@ grep "static.*CompletableFuture" \
     | head -20
 ```
 
-### 59.9.8  Exercise 8: Security and Network Logging
+### 61.9.8  Exercise 8: Security and Network Logging
 
 ```bash
 # Enable security logging (requires device owner)
@@ -11028,7 +11028,7 @@ wc -l frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy
 wc -l frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/NetworkLogger.java
 ```
 
-### 59.9.9  Exercise 9: Trace a Policy Call Through the Stack
+### 61.9.9  Exercise 9: Trace a Policy Call Through the Stack
 
 Follow the `setCameraDisabled()` call from the client API through to
 enforcement:
@@ -11059,7 +11059,7 @@ grep -rn "DevicePolicyCache\|isCameraDisabled\|CAMERA_DISABLED" \
     frameworks/base/services/core/ --include="*.java" | head -10
 ```
 
-### 59.9.10  Exercise 10: Build a Complete DPC with Managed Config
+### 61.9.10  Exercise 10: Build a Complete DPC with Managed Config
 
 Create a DPC that demonstrates managed configurations:
 
@@ -11145,7 +11145,7 @@ private void registerForChanges() {
 }
 ```
 
-### 59.9.11  Exercise 11: Explore the Ownership Transfer API
+### 61.9.11  Exercise 11: Explore the Ownership Transfer API
 
 Device and profile ownership can be transferred between DPC apps:
 
@@ -11174,7 +11174,7 @@ static final String ADMIN_TYPE_DEVICE_OWNER = "device-owner";
 static final String ADMIN_TYPE_PROFILE_OWNER = "profile-owner";
 ```
 
-### 59.9.12  Exercise 12: ADB Device Policy Commands
+### 61.9.12  Exercise 12: ADB Device Policy Commands
 
 The DPMS provides a shell command interface:
 
@@ -11207,7 +11207,7 @@ frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/
     DevicePolicyManagerServiceShellCommand.java
 ```
 
-### 59.9.13  Exercise 13: Cross-Profile Communication
+### 61.9.13  Exercise 13: Cross-Profile Communication
 
 Test cross-profile intent resolution:
 
@@ -11249,7 +11249,7 @@ dpm.addCrossProfileIntentFilter(admin, filter,
     DevicePolicyManager.FLAG_MANAGED_CAN_ACCESS_PARENT);
 ```
 
-### 59.9.14  Exercise 14: Implement Password Complexity Enforcement
+### 61.9.14  Exercise 14: Implement Password Complexity Enforcement
 
 ```java
 // DPC: enforcing password complexity
@@ -11281,7 +11281,7 @@ public void enforcePasswordPolicy(ComponentName admin) {
 }
 ```
 
-### 59.9.15  Exercise 15: Device Attestation Verification
+### 61.9.15  Exercise 15: Device Attestation Verification
 
 ```java
 // DPC: generate an attested key pair
@@ -11321,7 +11321,7 @@ private byte[] generateServerChallenge() {
 }
 ```
 
-### 59.9.16  Exercise 16: Work Profile with Managed Config End-to-End
+### 61.9.16  Exercise 16: Work Profile with Managed Config End-to-End
 
 This exercise combines profile creation, app installation, and managed
 configuration in a complete flow:
@@ -11376,7 +11376,7 @@ private void configureWorkProfile(UserHandle workProfile) {
 }
 ```
 
-### 59.9.17  Key Source Files Reference
+### 61.9.17  Key Source Files Reference
 
 For further exploration, here are the critical source files:
 
@@ -11444,21 +11444,25 @@ Here are the key architectural insights:
    enabling non-DPC apps to participate in device management through roles
    and delegation.
 
-<!-- chapter:60-automotive-tv-wear -->
-# Chapter 60: Automotive, TV, and Wear
+<!-- chapter:62-form-factors -->
+# Chapter 62: Device Form Factors
 
 Android is not a single-device operating system. The same platform that powers phones also drives
-car dashboards, living-room televisions, and wrist-worn wearables. Each form factor imposes
-radically different constraints -- an instrument cluster must never crash, a TV must respond to a
-D-pad, a watch must survive on a tiny battery for days -- yet all three share the core Android
-framework. This chapter dissects how AOSP adapts itself to three of its most divergent form
-factors: Android Automotive OS (AAOS), Android TV, and Wear OS. We will trace each vertical from
-the HAL layer through system services, window management, and specialized UI shells, quoting real
-source code and referencing actual file paths throughout.
+car dashboards, living-room televisions, wrist-worn wearables, and -- increasingly -- head-worn
+XR devices. Each form factor imposes radically different constraints -- an instrument cluster must
+never crash, a TV must respond to a D-pad, a watch must survive on a tiny battery for days -- yet
+all of them share the core Android framework. This chapter dissects how AOSP adapts itself to its
+most divergent device form factors: Android Automotive OS (AAOS), Android TV, Wear OS, and the
+emerging Android XR surface. It then turns to the **Software Defined Vehicle (SDV)** platform that
+arrives in Android 17 -- a separate, vehicle-spanning stack that runs a headless "Core" VM of
+vehicle service bundles beside AAOS, with its own middleware, SOME/IP transport, and gateway into
+the AAOS image. We will trace each vertical from the HAL layer through system services, window
+management, specialized UI shells, and the SDV service fabric, quoting real source code and
+referencing actual file paths throughout.
 
 ---
 
-## 60.1 Automotive (AAOS)
+## 62.1 Automotive (AAOS)
 
 Android Automotive OS is the most architecturally ambitious form-factor adaptation in AOSP. Unlike
 Android Auto (a phone-projection protocol), AAOS runs as the primary head-unit operating system.
@@ -11472,7 +11476,7 @@ packages/apps/Car/               -- Car launcher, SystemUI, Settings, Cluster
 hardware/interfaces/automotive/  -- Vehicle HAL, EVS, audio control, CAN
 ```
 
-### 60.1.1 CarService: The Central Automotive Daemon
+### 62.1.1 CarService: The Central Automotive Daemon
 
 CarService is a persistent Android service that bootstraps all car-specific subsystems. Its
 lifecycle begins in `CarServiceImpl`, which is the actual `Service` subclass:
@@ -11651,7 +11655,7 @@ graph TB
     CAS --> AC_HAL
 ```
 
-### 60.1.2 The Vehicle HAL
+### 62.1.2 The Vehicle HAL
 
 The Vehicle HAL is the boundary between Android and the vehicle's electronic control units (ECUs).
 It defines a property-based abstraction: every piece of vehicle data (speed, gear, HVAC
@@ -11832,7 +11836,7 @@ graph LR
     VP --> AT
 ```
 
-### 60.1.3 Car Property System
+### 62.1.3 Car Property System
 
 The car property system is the primary interface for applications to read and write vehicle data.
 `CarPropertyService` exposes properties to apps through `CarPropertyManager`:
@@ -11904,7 +11908,7 @@ sequenceDiagram
     CPM-->>App: onChangeEvent(CarPropertyValue)
 ```
 
-### 60.1.4 Occupant Zones
+### 62.1.4 Occupant Zones
 
 Multi-zone vehicles have separate displays and user sessions for different seating positions.
 `CarOccupantZoneService` manages the mapping between physical seat positions, displays, Android
@@ -12078,7 +12082,7 @@ be assigned to the rear-seat display while the primary user controls the driver 
 This requires both the `enableProfileUserAssignmentForMultiDisplay` config boolean and the
 `FEATURE_MANAGED_USERS` system feature.
 
-### 60.1.5 Instrument Cluster
+### 62.1.5 Instrument Cluster
 
 The instrument cluster is the display behind the steering wheel. AAOS supports rendering
 navigation, phone-call, and media information on this display. The
@@ -12139,7 +12143,7 @@ sequenceDiagram
     ICS->>Renderer: Update cluster mode
 ```
 
-### 60.1.6 FixedActivityService
+### 62.1.6 FixedActivityService
 
 In automotive, certain displays must always show specific activities. The driver's instrument
 cluster must always show the cluster UI; a rear-seat entertainment screen might always show a
@@ -12260,7 +12264,7 @@ stateDiagram-v2
     Monitoring --> [*]: stopFixedActivityMode
 ```
 
-### 60.1.7 CarActivityService
+### 62.1.7 CarActivityService
 
 `CarActivityService` manages activity placement across multiple displays, handles launch-on-
 display routing, and provides the `CarSystemUIProxy` interface that lets Car SystemUI control
@@ -12339,7 +12343,7 @@ sequenceDiagram
     end
 ```
 
-### 60.1.8 Car Power Management
+### 62.1.8 Car Power Management
 
 Automotive power management differs fundamentally from mobile. A car's power state is driven
 by the vehicle's ignition system, not a user pressing a power button. The
@@ -12407,7 +12411,7 @@ private static final String COMPONENT_STATE_ORIGINAL = "original";
 Power policy definitions interact with the native power policy daemon at:
 `android.frameworks.automotive.powerpolicy.internal.ICarPowerPolicySystemNotification`
 
-### 60.1.9 Garage Mode
+### 62.1.9 Garage Mode
 
 Garage Mode is the period after the driver turns off the ignition but before the vehicle
 fully shuts down. During this window, AAOS performs maintenance tasks:
@@ -12512,7 +12516,7 @@ sequenceDiagram
     Note over VHAL: System enters deep sleep
 ```
 
-### 60.1.10 Car Audio Multi-Zone Architecture
+### 62.1.10 Car Audio Multi-Zone Architecture
 
 Automotive audio is fundamentally more complex than phone audio. A car may have separate
 speaker zones for driver, passenger, and rear seats, each playing different media. The
@@ -12561,7 +12565,7 @@ Audio zones are mapped to occupant zones, so each passenger gets independent vol
 control and audio focus. Navigation audio in the driver zone can duck the driver's music
 without affecting the passenger's audio.
 
-### 60.1.11 Driver Distraction and UX Restrictions
+### 62.1.11 Driver Distraction and UX Restrictions
 
 AAOS enforces safety by restricting UI complexity while driving. The
 `CarDrivingStateService` monitors vehicle speed and gear to determine whether the car is
@@ -12580,7 +12584,7 @@ graph LR
 When the driving state is `MOVING`, activities that are not marked as distraction-optimized
 are blocked and replaced with a blocking activity that informs the user.
 
-### 60.1.12 Car-Specific SystemUI
+### 62.1.12 Car-Specific SystemUI
 
 AAOS replaces the phone's SystemUI with a car-specific variant located at:
 `packages/apps/Car/SystemUI/`
@@ -12660,7 +12664,7 @@ packages/apps/Car/SystemUI/src/com/android/systemui/car/hvac/
     FanDirectionButtons.java       -- Air direction buttons
 ```
 
-### 60.1.13 Car Launcher
+### 62.1.13 Car Launcher
 
 The automotive launcher is significantly different from the phone launcher. It provides a
 home screen designed for large touchscreens with minimal distraction:
@@ -12725,7 +12729,7 @@ graph TB
     Infra --> DockGroup
 ```
 
-### 60.1.14 External View System (EVS)
+### 62.1.14 External View System (EVS)
 
 The Exterior View System provides camera-based features like rearview, surround view, and
 parking assistance. The EVS HAL is defined at:
@@ -12735,7 +12739,7 @@ It supports both AIDL (current) and HIDL (legacy 1.1) interfaces. The `CarEvsSer
 CarService manages camera lifecycle, display routing, and integrates with the occupant zone
 system to determine which display should show the camera feed.
 
-### 60.1.15 Automotive HAL Directory Structure
+### 62.1.15 Automotive HAL Directory Structure
 
 The full set of automotive HAL interfaces:
 
@@ -12751,7 +12755,7 @@ hardware/interfaces/automotive/
   remoteaccess/        -- Remote wake and task execution
 ```
 
-### 60.1.16 Product Configuration
+### 62.1.16 Product Configuration
 
 Automotive product builds are configured through makefiles in:
 `packages/services/Car/car_product/build/`
@@ -12794,14 +12798,14 @@ packages/services/Car/car_product/rro/
 
 ---
 
-## 60.2 Android TV
+## 62.2 Android TV
 
 Android TV transforms Android into a 10-foot UI experience. The framework additions focus on
 three areas: a TV Input Framework (TIF) for managing broadcast and HDMI sources, HDMI-CEC
 control for device coordination, and a specialized windowing system for D-pad navigation
 and picture-in-picture.
 
-### 60.2.1 TV Input Framework (TIF) Architecture
+### 62.2.1 TV Input Framework (TIF) Architecture
 
 The TV Input Framework is the cornerstone of Android TV. It abstracts TV input sources --
 built-in tuners, HDMI ports, IP streams, and third-party inputs -- into a uniform model.
@@ -12862,7 +12866,7 @@ graph TB
     TIMS --> TRMS
 ```
 
-### 60.2.2 TvInputService
+### 62.2.2 TvInputService
 
 `TvInputService` is the abstract base class that all TV input providers must extend. It follows
 a pattern similar to `InputMethodService` -- each provider runs as a bound service that creates
@@ -12929,7 +12933,7 @@ A `TvInputService` declares itself in the manifest with the `BIND_TV_INPUT` perm
 </service>
 ```
 
-### 60.2.3 TvInputManagerService Internals
+### 62.2.3 TvInputManagerService Internals
 
 Looking deeper at `TvInputManagerService`, the service manages per-user state and handles
 DVB device discovery:
@@ -13001,7 +13005,7 @@ When the TV wakes up, the service sends a delayed message to claim CEC active so
 status. This message is cancelled if the TV switches inputs or goes back to sleep, preventing
 unnecessary CEC traffic.
 
-### 60.2.4 TvInputHardwareManager
+### 62.2.4 TvInputHardwareManager
 
 `TvInputHardwareManager` bridges the framework with physical TV input hardware. It manages
 HDMI port connections, routes audio/video, and tracks hardware-backed TV inputs:
@@ -13032,7 +13036,7 @@ from the HDMI-CEC service and updates the input list accordingly. This enables a
 input source discovery -- when a user plugs in a Blu-ray player, it appears as a TV input
 without manual configuration.
 
-### 60.2.5 Tuner Resource Manager
+### 62.2.5 Tuner Resource Manager
 
 The `TunerResourceManagerService` arbitrates access to limited hardware tuner resources
 (frontends, demuxes, LNBs, CAS sessions) among competing clients:
@@ -13102,7 +13106,7 @@ frameworks/base/services/core/java/com/android/server/tv/tunerresourcemanager/
   TunerResourceBasic.java  -- Base resource class
 ```
 
-### 60.2.6 HDMI-CEC
+### 62.2.6 HDMI-CEC
 
 Consumer Electronics Control (CEC) allows HDMI-connected devices to control each other.
 When you turn on a TV, CEC can automatically turn on the connected soundbar and switch
@@ -13185,7 +13189,7 @@ sequenceDiagram
     TV_DEV->>TV_DEV: Wake up display
 ```
 
-### 60.2.7 TV HAL Interfaces
+### 62.2.7 TV HAL Interfaces
 
 The complete TV HAL surface:
 
@@ -13227,7 +13231,7 @@ graph TB
     LNB2 --> FE
 ```
 
-### 60.2.8 TV Picture-in-Picture (PIP)
+### 62.2.8 TV Picture-in-Picture (PIP)
 
 Android TV has its own PIP implementation tailored for the big-screen experience. Unlike
 the phone PIP (which shows a small floating window), TV PIP places the secondary content
@@ -13381,7 +13385,7 @@ public abstract class TvPipModule {
 }
 ```
 
-### 60.2.9 D-pad Navigation
+### 62.2.9 D-pad Navigation
 
 Android TV uses D-pad (directional pad) navigation instead of touch. This fundamentally changes
 how focus management works in the framework. The key infrastructure:
@@ -13416,7 +13420,7 @@ graph LR
     FocusFinder --> NewFocus
 ```
 
-### 60.2.10 TvSettings
+### 62.2.10 TvSettings
 
 Android TV uses a specialized settings application rather than the standard phone Settings app.
 The TV Settings app (`packages/apps/TvSettings/` -- typically vendor-specific) provides a
@@ -13437,7 +13441,7 @@ library, the `java_sdk_library com.android.libraries.tv.tvsystem`
 (`frameworks/opt/tv/tvsystem/`), which exposes TV-flavored shims over hidden system APIs
 such as `TvUserManager`, `TvAudioManager`, `TvWifiManager`, and `TvPackageInstaller`.
 
-### 60.2.11 TV Interactive App Framework
+### 62.2.11 TV Interactive App Framework
 
 The TV Interactive App framework extends TIF to support hybrid broadcast/broadband (HBB-TV),
 interactive advertisements, and two-screen experiences:
@@ -13450,7 +13454,7 @@ frameworks/base/services/core/java/com/android/server/tv/interactive/
 This service manages `TvInteractiveAppService` instances that can overlay interactive content
 on top of TV video streams, responding to both broadcast signals and internet data.
 
-### 60.2.12 Media Quality HAL
+### 62.2.12 Media Quality HAL
 
 The Media Quality HAL (`hardware/interfaces/tv/mediaquality/`) enables TV-specific video
 processing features:
@@ -13469,14 +13473,14 @@ processing features:
 
 ---
 
-## 60.3 Wear OS
+## 62.3 Wear OS
 
 Wear OS adapts Android for wrist-worn devices with tiny circular displays, extreme battery
 constraints, and a UI paradigm centered on glanceable information. While much of Wear OS's
 proprietary implementation lives outside AOSP (in Google Play Services for Wear), the
 framework-level adaptations are visible in the base platform.
 
-### 60.3.1 Round Display Support
+### 62.3.1 Round Display Support
 
 The most visible Wear adaptation is support for circular displays. The framework provides
 several mechanisms:
@@ -13519,7 +13523,7 @@ boolean isWatch = (uiMode & Configuration.UI_MODE_TYPE_MASK)
 Resource qualifiers (`-watch`, `-round`, `-notround`) enable dimension, layout, and drawable
 overrides per display shape.
 
-### 60.3.2 Ambient Mode and Always-On Display
+### 62.3.2 Ambient Mode and Always-On Display
 
 Wear devices support an ambient mode where the watch face continues to be visible but in a
 low-power state. This involves:
@@ -13558,7 +13562,7 @@ stateDiagram-v2
     end note
 ```
 
-### 60.3.3 Burn-in Protection
+### 62.3.3 Burn-in Protection
 
 OLED displays on watches are susceptible to burn-in if static pixels remain illuminated
 continuously. The framework implements burn-in protection through:
@@ -13595,7 +13599,7 @@ graph LR
     TC --> DP
 ```
 
-### 60.3.4 Watch Face Framework
+### 62.3.4 Watch Face Framework
 
 Watch faces are the most distinctive Wear UI element. The framework defines a
 `WatchFaceService` that extends `WallpaperService` to provide always-visible, continuously
@@ -13662,7 +13666,7 @@ graph TB
     CP4 --> LONG
 ```
 
-### 60.3.5 Tiles API
+### 62.3.5 Tiles API
 
 Wear OS Tiles provide glanceable information surfaces that users swipe between from the
 watch face. Unlike full activities, Tiles are declaratively defined using a layout DSL and
@@ -13696,7 +13700,7 @@ Tiles are built using a protobuf-based layout schema:
 - **TimelineEntry**: Tiles can define time-based layouts that automatically switch
 - **Clickable**: Elements can trigger actions (launch activity, send message)
 
-### 60.3.6 Reduced Windowing
+### 62.3.6 Reduced Windowing
 
 Wear OS significantly simplifies the windowing system compared to phone:
 
@@ -13738,7 +13742,7 @@ graph TB
     end
 ```
 
-### 60.3.7 Battery Optimization for Wearables
+### 62.3.7 Battery Optimization for Wearables
 
 Wear OS employs aggressive battery optimization beyond standard Android:
 
@@ -13789,7 +13793,7 @@ graph TB
     DOZE --> BATCH
 ```
 
-### 60.3.8 Wear-Specific Resource Qualifiers and Configuration
+### 62.3.8 Wear-Specific Resource Qualifiers and Configuration
 
 Wear devices use a comprehensive set of resource qualifiers for adapting layouts:
 
@@ -13842,7 +13846,7 @@ Apps targeting Wear must account for the ~30% of screen area near the edges of a
 display being partially clipped. The `BoxInsetLayout` and curved text APIs help manage
 this constraint automatically.
 
-### 60.3.9 Wearable Sensing Framework
+### 62.3.9 Wearable Sensing Framework
 
 AOSP includes a framework for wearable-specific sensing capabilities:
 
@@ -13891,14 +13895,14 @@ graph TB
 
 ---
 
-## 60.4 Form Factor Customization Points
+## 62.4 Form Factor Customization Points
 
 The key architectural insight across all three form factors is that AOSP does not use
 compile-time `#ifdef` branching. Instead, customization is achieved through runtime
 overlays, Dagger module substitution, product configuration, and abstraction layers. This
 section catalogs the specific customization points.
 
-### 60.4.1 SystemUI Variants
+### 62.4.1 SystemUI Variants
 
 SystemUI is the most visibly customized component. AOSP provides three variants:
 
@@ -13921,7 +13925,7 @@ PRODUCT_PACKAGES += CarSystemUI
 # PRODUCT_PACKAGES += SystemUI
 ```
 
-### 60.4.2 WMShell Module Variants
+### 62.4.2 WMShell Module Variants
 
 The Window Manager Shell provides Dagger module variants for different form factors. The
 base module is shared, with form-factor-specific modules layered on top:
@@ -13994,7 +13998,7 @@ graph TB
     TV --> TVPIP
 ```
 
-### 60.4.3 Device Overlays (Runtime Resource Overlays)
+### 62.4.3 Device Overlays (Runtime Resource Overlays)
 
 Runtime Resource Overlays (RROs) are the primary mechanism for visual and behavioral
 customization without source code changes. Each form factor uses RROs extensively:
@@ -14041,7 +14045,7 @@ The overlay can then replace any resource -- colors, dimensions, layouts, string
 in the target package. This is how OEMs customize the look and feel of the car UI without
 forking SystemUI source code.
 
-### 60.4.4 Product Configuration
+### 62.4.4 Product Configuration
 
 Product configuration is where form-factor selection begins. The build system reads makefile
 variables to determine which packages, overlays, and properties to include.
@@ -14105,7 +14109,7 @@ PRODUCT_PACKAGES += \
     WearSystemUI
 ```
 
-### 60.4.5 Feature Flags and Configuration
+### 62.4.5 Feature Flags and Configuration
 
 Beyond properties and overlays, form-factor behavior is controlled through:
 
@@ -14139,7 +14143,7 @@ Beyond properties and overlays, form-factor behavior is controlled through:
 packages/services/Car/car_product/sepolicy/  -- Automotive SEPolicy
 ```
 
-### 60.4.6 How OEMs Customize Per Form Factor
+### 62.4.6 How OEMs Customize Per Form Factor
 
 The OEM customization stack for any form factor follows a layered pattern:
 
@@ -14188,7 +14192,7 @@ Specific OEM customization patterns by form factor:
 - Battery optimization tuning for specific hardware
 - Custom complications providers for device sensors
 
-### 60.4.7 Multi-Display Architecture Across Form Factors
+### 62.4.7 Multi-Display Architecture Across Form Factors
 
 Multi-display support varies dramatically across form factors:
 
@@ -14222,7 +14226,7 @@ Automotive has the most complex multi-display needs, which is why the occupant z
 exists exclusively in the Car framework. TV handles multi-content through PIP on a single
 display. Wear has the simplest model with a single, small display.
 
-### 60.4.8 Service Registration Differences
+### 62.4.8 Service Registration Differences
 
 Each form factor registers different system services during `SystemServer` startup:
 
@@ -14272,7 +14276,7 @@ if (pm.hasSystemFeature(PackageManager.FEATURE_HDMI_CEC)) {
 }
 ```
 
-### 60.4.9 Input Model Differences
+### 62.4.9 Input Model Differences
 
 Each form factor has a fundamentally different input model:
 
@@ -14317,7 +14321,7 @@ private final CarInputService mCarInputService;
 
 ---
 
-## 60.5 Android 17: Automotive Windowing, Visibility Barriers, and the Road to SDV
+## 62.5 Android 17: Automotive Windowing, Visibility Barriers, and the Road to SDV
 
 Android 17 invests heavily in the automotive form factor. Most of the new code in
 `packages/services/Car/` for this release is not about new vehicle properties or new HALs --
@@ -14330,10 +14334,10 @@ section walks the three pieces that landed for 17 -- the `Car-WindowManager-Shel
 auto visibility barrier, and the Scalable UI panel framework -- and then points to where the
 larger Software Defined Vehicle (SDV) story is told.
 
-### 60.5.1 The Car WindowManager Shell Library
+### 62.5.1 The Car WindowManager Shell Library
 
 Phone and tablet windowing is built from `frameworks/base/libs/WindowManager/Shell/`
-(`WMShellModule`, `WMShellBaseModule`), as Section 60.4.2 described. Automotive needs a different
+(`WMShellModule`, `WMShellBaseModule`), as Section 62.4.2 described. Automotive needs a different
 model: every container is a *multi-window root task* (there is no single fullscreen task that owns
 the display), containers must be layered and bounded explicitly by the system UI, and a container
 must be hideable without painting an opaque activity on top of it. Android 17 factors this into a
@@ -14375,7 +14379,7 @@ data class RootTaskStack(
 
 Two fields in `AutoTaskStackState` are the heart of the new model. `layer` gives the system UI
 explicit Z-order control over containers (the phone shell mostly relies on activity order).
-`isAboveBarrier` ties the container to the visibility barrier described in Section 60.5.2: a
+`isAboveBarrier` ties the container to the visibility barrier described in Section 62.5.2: a
 stack below the barrier is hidden by WindowManager without any occluding surface. The `bounds`
 field lets the system UI place and resize each container deterministically, which is what makes
 fixed multi-pane car layouts possible.
@@ -14484,7 +14488,7 @@ graph TB
     CTRL --> RTS3
 ```
 
-### 60.5.2 The Auto Visibility Barrier
+### 62.5.2 The Auto Visibility Barrier
 
 A recurring automotive problem is hiding a container reliably. On phones a task is hidden because
 something opaque covers it; in a multi-pane car layout there may be nothing opaque to cover a pane
@@ -14554,7 +14558,7 @@ Multi-Display (MUMD) vehicle, the shell runs a proxy-and-host split so that the 
 system UI processes can each drive their own display's containers through the same
 `AutoTaskStackController` API.
 
-### 60.5.3 Scalable UI: Declarative Car Panels
+### 62.5.3 Scalable UI: Declarative Car Panels
 
 The shell library gives Car SystemUI primitives, but OEMs do not want to write transition code.
 Android 17 layers a declarative *Scalable UI* framework over the shell so a head-unit layout is
@@ -14612,28 +14616,26 @@ initializer with `setScalableUIWMInitializer(...)` and `setScalableUIEventDispat
 the shell pieces, Scalable UI is staged behind flags so a given product can opt in per display
 (and MUMD products deliberately disable it on the per-occupant path while it matures).
 
-### 60.5.4 Cross-Reference: Software Defined Vehicle
+### 62.5.4 Cross-Reference: Software Defined Vehicle
 
 The windowing work above is the part of the 17 automotive story that lives inside CarService and
 Car SystemUI. The larger architectural shift in this release is the **Software Defined Vehicle
 (SDV)** platform -- a separate, vehicle-spanning stack (under trees such as
 `system/software_defined_vehicle/`, `hardware/sdv/`, and `device/google/sdv*`) that decouples
 vehicle functions from fixed ECUs, runs services across virtualized domains, and adds a gateway
-and middleware layer between Android and the rest of the car. SDV is a top-level subsystem in its
-own right, not a CarService feature, so it is covered in its own chapters rather than here:
-
-- **Chapter 65: Software Defined Vehicle** -- the SDV platform architecture, domains, and how it
-  relates to the AAOS stack covered in this chapter.
-- **Chapter 66: SDV Middleware** -- the gateway and middleware layer that brokers between Android,
-  the SDV services, and vehicle networks.
+and middleware layer between Android and the rest of the car. SDV is a subsystem in its own right,
+not a CarService feature, so it is covered in its own sections of this chapter: Section 62.7
+walks the SDV platform architecture (the headless Core VM, the service-bundle model, and the
+control-plane agents that supervise it), and Section 62.8 walks the SDV middleware and vehicle
+communication fabric (VSIDL, the three middleware agents, SOME/IP, and the gateway).
 
 For this chapter the takeaway is the boundary: CarService, the Vehicle HAL, occupant zones, and
 the new `Car-WindowManager-Shell`/Scalable UI windowing stack remain the Android-side automotive
-platform; the SDV chapters pick up where the vehicle abstraction leaves off.
+platform; the SDV sections (§62.7 and §62.8) pick up where the vehicle abstraction leaves off.
 
 ---
 
-## 60.6 Android 17: Android XR as an Emerging Form Factor
+## 62.6 Android 17: Android XR as an Emerging Form Factor
 
 Automotive, TV, and Wear are the form factors that AOSP ships and supports today. Android 17 adds
 the first platform-level *signal* of a fourth one -- **Android XR**, the headset and glasses form
@@ -14667,9 +14669,678 @@ release's other AI-and-devices additions -- see **Appendix D: Android 17 Platfor
 
 ---
 
-## 60.7 Try It
+## 62.7 Software Defined Vehicle: Architecture
 
-### Exercise 60.1: Explore CarService Services
+Android 17's marquee device-support addition is the **Software Defined Vehicle (SDV)** platform: an entire new top-level source tree (`system/software_defined_vehicle/`), a flagship reference device (`device/google/sdv`), a new HAL/AIDL contract package (`hardware/sdv/interfaces`), and an automotive display-safety service (`packages/services/display_safety`). SDV is not "Android in the dashboard" the way Android Automotive OS (AAOS) is. It is a *headless* vehicle operating system: a "Core" VM runs the vehicle's safety- and power-relevant services with no UI at all, and one or more AAOS In-Vehicle Infotainment (IVI) VMs — plus non-Android automotive ECUs — talk to it over a service fabric. The Core VM has no display, no launcher, and no apps in the AAOS sense; it hosts *service bundles*, units of vehicle functionality described in a new interface language and generated to Rust, supervised by a lifecycle manager and an orchestrator that bring bundles up and down as the vehicle changes power and driving state.
+
+This section is the architecture overview. It walks the headless Core VM, the service-bundle model and the VSIDL-to-Rust toolchain, the four control-plane agents that supervise bundles (orchestration, lifecycle management, the service-bundles registry, and the health monitor), the update manager, the vehicle power-state manager (vpm), the automotive display-safety runtime, and how an AAOS IVI VM integrates through the SDV Gateway. The wire-level transport — the middleware comm stack, SOME/IP, the VSIDL grammar, and the gateway's network plumbing — is the subject of Section 62.8; this section cross-references it rather than duplicating it.
+
+### 62.7.1 What "Software Defined Vehicle" Means Here
+
+#### The Headless Core VM
+
+The defining architectural decision of SDV is that the vehicle's services run in a VM with no user interface. `device/google/sdv/sdv_core_base/sdv_core_base.mk` states it directly in its header comment: "Software-Defined Vehicle (SDV) is a headless vehicle Android OS." The Core VM is Android — it boots `init`, it runs Binder, it uses APEX modules — but it ships none of SystemUI, no launcher, and no AAOS app stack. Its job is to host vehicle *service bundles* and the agents that supervise them.
+
+The Cuttlefish targets make the headlessness concrete. SDV is designed to run as multiple cooperating VMs on one host: a Core VM and one or more IVI VMs. `device/google/sdv/cuttlefish_multi_tenancy/` carries example multi-VM launch configurations that boot several VM instances, each given a distinct `androidboot.sdv.instance_name` via bootconfig and each running with no GPU (`gpu_mode: "none"`) because there is nothing to draw. The VMs reach each other over a virtual network, and SDV-RPC traffic is pinned to a dedicated VLAN named by the `androidboot.sdv.rpc.interface` bootconfig property (default `sdv_rpc`), configured through the `SDV_RPC_INTERFACE` build variable (`device/google/sdv/sdv_core_base/BoardConfig.mk`; `system/software_defined_vehicle/sdv_gateway/README.md`).
+
+#### The Four Trees
+
+SDV is deliberately spread across four locations in the tree, each with a distinct role:
+
+- `system/software_defined_vehicle/` — the platform itself: 17 subrepos holding the agents, the middleware comm stack, the VSIDL toolchain, and shared libraries. This is where the running code lives.
+- `device/google/sdv` — the reference device. It composes the platform code into lunch targets (`sdv_core_base`, `sdv_ivi_base`, and friends) and decides which agents and APEXes land in which VM.
+- `hardware/sdv/interfaces` — the stable contract package. Every cross-process boundary that needs version stability (the gateway, the registry, the lifecycle internal interface, vpm, telemetry, the RPC agent) has its `@VintfStability` AIDL frozen here under `aidl_api/`.
+- `packages/services/display_safety` — the automotive Driver-UI runtime ("HARry") and its safety monitor, which runs on the IVI side.
+
+This section treats `system/software_defined_vehicle/` and the device/HAL composition; Section 62.8 treats the middleware and SOME/IP subrepos in depth.
+
+#### The Layering
+
+The high-level picture is a vehicle-service fabric beneath and beside AAOS. Bundles run in the Core VM; the comm stack carries their traffic; SOME/IP bridges across VMs and ECUs; and an AAOS IVI VM reaches the fabric through the SDV Gateway.
+
+The SDV platform stack and the seam to AAOS
+
+```mermaid
+graph TB
+    subgraph CoreVM["SDV Core VM (headless, no UI)"]
+        ORCH["Orchestration agent<br/>(orch_config.textproto)"]
+        LCM["Lifecycle Manager<br/>+ bundle runner"]
+        REG["Service Bundles Registry<br/>(IRegistry)"]
+        HM["Health Monitor<br/>(heartbeats)"]
+        UM["Update Manager"]
+        VPM["Vehicle Power Manager<br/>(sdv_vpm_agent)"]
+        BUNDLE["Service bundles<br/>(VSIDL-generated Rust)"]
+    end
+
+    subgraph Comm["SDV middleware comm stack (Section 62.8)"]
+        SD["Service Discovery<br/>(sd_agent)"]
+        DT["Data Tunnel<br/>(pub/sub)"]
+        RPC["RPC agent<br/>(IRpcAgent)"]
+    end
+
+    subgraph Wire["Cross-VM / cross-ECU (Section 62.8)"]
+        SOMEIP["SOME/IP stack<br/>+ broker (vsomeip)"]
+        ECU["External ECUs<br/>(non-Android)"]
+    end
+
+    subgraph IVI["AAOS IVI VM"]
+        GW["SDV Gateway<br/>(ISdvGateway + vhal_proxy)"]
+        VHAL["Vehicle HAL<br/>(sdv-emulator-service)"]
+        CAR["CarService<br/>(packages/services/Car)"]
+        DS["Display Safety / HARry<br/>(packages/services/display_safety)"]
+    end
+
+    ORCH --> LCM
+    LCM --> BUNDLE
+    REG --- ORCH
+    VPM --> ORCH
+    BUNDLE --> SD
+    BUNDLE --> DT
+    BUNDLE --> RPC
+    HM -.heartbeats.-> BUNDLE
+    SD --> SOMEIP
+    DT --> SOMEIP
+    RPC --> SOMEIP
+    SOMEIP <--> ECU
+    GW --> RPC
+    GW --> DT
+    VHAL --> GW
+    CAR --> VHAL
+    DS --> GW
+```
+
+### 62.7.2 The Service Bundle Model
+
+#### What a Service Bundle Is
+
+The unit of deployment in the Core VM is the **service bundle**, not the Android app or the standalone daemon. A service bundle is a shared library — VSIDL-generated Rust compiled to a `.so` — that the lifecycle manager loads into a host process and drives through a fixed lifecycle. Bundles ship inside APEX modules; the APEX carries the bundle's native library plus a manifest entry describing where everything lives.
+
+The metadata contract is the `SdvServiceBundleManifest` proto (`system/software_defined_vehicle/service_bundles_registry/proto/sdv_service_bundles_manifest.proto`). Each entry carries the bundle `name`, a `version_number` and `version_name`, the `native_library_path` (relative to the APEX root), and a set of optional config paths: `orchestration_config_path`, `scheduling_config_path`, `health_config_path`, `diagnostics_config_path`, `user_config_path`, `vsidl_schemas_path`, `external_protocol_mapping_path` (the SOME/IP mapping), and `authorization_policy_path` (which superseded the deprecated `access_control_list_policy_path`). The proto reserves three field-number ranges by audience — low numbers for bundle execution, a middle range for the SDV agents, and a high range for OEM custom metadata — so that a bundle's manifest never collides between layers.
+
+#### VSIDL Generates Rust
+
+Service interfaces are not written in AIDL. They are described in `.vsidl` service-bundle definitions plus `.proto` message schemas, and the `vsidlc` compiler (`system/software_defined_vehicle/vsidl/vsidlc`) walks the catalog and emits Rust middleware bindings into `generated_rs/` directories. The companion `someip_translation_generator` emits the SOME/IP-to-proto translation code, and `vsidl_rc_generator` emits resource-control glue. All three are host tools installed by the Core target (`device/google/sdv/sdv_core_base/sdv_packages_core_services.mk` lists `vsidlc`, `vsidl_rc_generator`, and `someip_translation_generator` under `SDV_CORE_SERVICES_HOST_PACKAGES`). On-device, the `sdv_vsidl_provider_agent` (APEX `com.android.sdv.vsidl_provider`) serves bundle VSIDL schemas at runtime. This is the SDV equivalent of AIDL stub generation, and the full grammar and transport mapping belong to Section 62.8.
+
+A concrete `.vsidl` makes the shape clear. The vehicle power manager's bundle definition (`system/software_defined_vehicle/vpm/stable/vsidl/vpm.vsidl`) declares a `service_bundle` named `VpmSystemServiceBundle` with three interface slots: a `server` exporting the RPC service `com.android.sdv.vpm.VpmSystemService`, a `client` of `com.android.sdv.vpm.client.PowerNotificationService`, and a Data Tunnel `publisher` of `com.android.sdv.vpm.vehicle.VehicleStateChange`. A bundle therefore declares, in one place, what it serves over RPC, what it consumes, and what it publishes on the pub/sub fabric.
+
+#### Fully Qualified Instance Names
+
+Bundles can run in multiple instances, so SDV identifies a running unit by a **Fully Qualified Instance Name (FQIN)**. In the orchestrator's common crate (`system/software_defined_vehicle/orchestration/common/src/fqin.rs`) an FQIN is three fields — `package_name`, `service_bundle_name`, and `instance_name` — formatted as `package/bundle/instance`. The orchestrator's FQIN converts to the lifecycle manager's `ServiceFqin` representation, which additionally carries a VM name (`local-vm` for the current VM). The FQIN is the key the control-plane agents use everywhere: the lifecycle manager keys its process table by it, the orchestrator keys its desired-state map by it, and the health monitor keys heartbeat tracking by it.
+
+The service-bundle model, from APEX to running instance
+
+```mermaid
+flowchart TD
+    subgraph Author["Authoring (host)"]
+        VSIDL[".vsidl + .proto catalog"]
+        VSIDLC["vsidlc / someip_translation_generator"]
+        RS["generated_rs/<br/>(Rust bindings)"]
+        VSIDL --> VSIDLC --> RS
+    end
+
+    subgraph Pkg["Packaging"]
+        SO["bundle .so<br/>(native_library_path)"]
+        MAN["SdvServiceBundleManifest<br/>(name, version, config paths)"]
+        APEX["APEX module"]
+        RS --> SO
+        SO --> APEX
+        MAN --> APEX
+    end
+
+    subgraph Run["Core VM runtime"]
+        REG2["Service Bundles Registry<br/>scans APEXes -> caches metadata"]
+        ORCH2["Orchestrator<br/>desired state per FQIN"]
+        LCM2["Lifecycle Manager<br/>launch / start / stop / shutdown"]
+        RUNNER["lifecycle_service_bundle_runner<br/>(one process per instance)"]
+        APEX --> REG2
+        REG2 --> ORCH2
+        REG2 --> LCM2
+        ORCH2 --> LCM2
+        LCM2 --> RUNNER
+        RUNNER --> INST["Loaded bundle instance<br/>(FQIN package/bundle/instance)"]
+    end
+```
+
+### 62.7.3 The Service Bundles Registry
+
+The first control-plane agent in the boot order is the **Service Bundles Registry**. Its README (`system/software_defined_vehicle/service_bundles_registry/README.md`) gives it three jobs: scan, detect, and cache the metadata of locally available SDV service bundles; verify their security restrictions; and provide that cached metadata to a limited set of SDV agents and automotive services. It is the catalog the rest of the control plane reads from — the orchestrator and the lifecycle manager both ask the registry "what bundles exist and where are their config files" before they can do anything.
+
+The registry's public interface is the stable, `@VintfStability` `IRegistry.aidl` (`hardware/sdv/interfaces/service_bundles_registry/google/sdv/service_bundles_registry/IRegistry.aidl`). The frozen contract is small: a single method `getAvailableServiceBundlesMetadata()` returning a `List<ServiceBundleMetadata>`. The interface is currently at frozen API version 3 (the versioned snapshots live under `hardware/sdv/interfaces/service_bundles_registry/aidl_api/google.sdv.service_bundles_registry/`, with `3/` being the current frozen version). The `ServiceBundleMetadata` parcelable mirrors the manifest proto: it carries `name`, `versionNumber`, `versionName`, `packageName`, `nativeLibraryPath`, and the nullable config-path fields (`orchestrationConfigPath`, `healthConfigPath`, `authorizationPolicyPath`, `vsidlSchemasPath`, and the rest), plus a `customMetadata` array of `KeyValuePair`.
+
+The agent binary is `sdv_service_bundles_registry_agent`, installed by the Core target and registered as a system service rather than shipped in its own APEX. When the registry has finished its scan and is ready to serve, it registers the binder service descriptor `google.sdv.service_bundles_registry.IRegistry/default` and sets the system property `ro.sdv.sbr.state.ready` to `true` — a readiness signal the other agents wait on (`system/software_defined_vehicle/service_bundles_registry/src/registry/binder.rs`).
+
+### 62.7.4 Lifecycle Management
+
+#### The Lifecycle Manager's Job
+
+The **Lifecycle Manager** (`system/software_defined_vehicle/lifecycle_management/`) is the agent that actually launches, starts, stops, and kills bundle processes. Its README describes it as the central dispatcher through which SDV agents control service-bundle lifecycles. Other agents — chiefly the orchestrator — drive it through the `ILifecycleManager` AIDL (`system/software_defined_vehicle/lifecycle_management/aidl/google/sdv/lifecycle/ILifecycleManager.aidl`):
+
+- `launchService(ServiceFqin)` — bring a bundle to the CREATED state (loaded, constructed, but not yet running).
+- `startService(ServiceFqin)` — transition CREATED to STARTED (running).
+- `stopService(ServiceFqin)` — transition STARTED back to CREATED (stopped but still loaded).
+- `shutdownService(ServiceFqin)` — gracefully bring a bundle to DESTROYED.
+- `killService(ServiceFqin)` — forcefully stop a bundle.
+- `getServiceBundleState(ServiceFqin)` — return the current `IServiceBundleState`.
+
+The two persistent states a loaded bundle can hold are defined in `IServiceBundleState.aidl` as an int-backed enum: `CREATED = 1` (reached after `onCreate` or after `onStop`) and `STARTED = 2` (reached after `onStart`). Error returns use the `ResponseCode` enum (`SERVICE_NOT_FOUND`, `PERMISSION_DENIED`, `OPERATION_FAILED`, `VALUE_CORRUPTED`, `INVALID_ARGUMENT`, `INTERNAL_ERROR`).
+
+#### The Bundle Lifecycle and the Runner
+
+A bundle's own code sees the lifecycle through the `IService` interface, which is frozen in the stable HAL package (`hardware/sdv/interfaces/lifecycle_management/aidl/google/sdv/lifecycle/internal/IService.aidl`). It is four callbacks that mirror a native constructor/destructor pair around a start/stop pair: `onCreate()`, `onStart()`, `onStop()`, `onDestroy()`. `onCreate` and `onDestroy` are guaranteed to be called exactly once; `onStart`/`onStop` can cycle. The matching `IServiceManager` (same package) is how a bundle process registers itself back with the manager: `registerService(ServiceFqin, IService)`, `unregisterService(ServiceFqin)`, and `getPid()`.
+
+The mechanism that turns a bundle library into a running process is the `lifecycle_service_bundle_runner`. The lifecycle agent does not load bundle code into its own address space; instead, for each instance it spawns a fresh `lifecycle_service_bundle_runner` process, passing the bundle's native-library path and the FQIN as arguments (`system/software_defined_vehicle/lifecycle_management/service_bundle_runner/src/main.rs`). The runner dynamically loads the bundle `.so` from its APEX, starts a binder thread pool, registers an `IService` back with the manager via `IServiceManager`, and then runs the bundle's executor on its main thread. When the agent launches an instance it allocates a per-bundle user ID, creates the bundle's data directory, applies the SELinux domain, spawns the runner, and waits (with a registration timeout) for the runner to register before considering the launch successful (`system/software_defined_vehicle/lifecycle_management/src/lifecycle_manager/agent.rs`). Isolation is therefore per instance: one process, one UID, one SELinux context per running bundle. The agent binary `sdv_lifecycle_agent` and the `lifecycle_service_bundle_runner` are both system binaries installed by the Core target.
+
+The service-bundle lifecycle state machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> Destroyed
+    Destroyed --> Created : launchService -> onCreate
+    Created --> Started : startService -> onStart
+    Started --> Created : stopService -> onStop
+    Created --> Destroyed : shutdownService -> onDestroy
+    Started --> Destroyed : shutdownService -> onStop then onDestroy
+    Created --> Destroyed : killService forced
+    Started --> Destroyed : killService forced
+    Destroyed --> [*]
+```
+
+### 62.7.5 Orchestration
+
+#### Desired State, Not Imperative Control
+
+The **Orchestrator** is the brain of the Core VM control plane. Where the lifecycle manager is imperative ("launch this, start that"), the orchestrator is declarative: it holds a *desired* lifecycle state for every bundle instance, recomputes that desired state whenever the vehicle changes mode, and drives the lifecycle manager until reality matches. Its README (`system/software_defined_vehicle/orchestration/README.md`) calls it "an SDV agent responsible for managing the lifecycle of service bundles based on orchestrator configurations." The binary is `sdv_orchestration_agent`, shipped in the APEX `com.android.sdv.orchestrator`.
+
+At startup the orchestrator's `Agent::new()` (`system/software_defined_vehicle/orchestration/engine/src/agent.rs`) reads a VM-level config path from the system property `persist.sdv.orchestrator_config_path`, fetches per-bundle orchestration configs from the registry, builds an `Evaluator` from the combined configuration, restores the previously persisted modes from backup, and constructs the `OrchestratorEngine`. The engine sets `ro.sdv.orchestrator.state.ready` once it is up.
+
+#### Modes, Conditions, and the Evaluator
+
+Orchestration configuration is textproto. The schema lives in `system/software_defined_vehicle/orchestration/distributed_config/src/protos/` as `vm_config.proto`, `service_bundle_config.proto`, and the shared `common.proto`. A `ServiceBundleConfig` lists the bundle's instances and a set of `InstancesStateConfiguration` entries; each entry pairs an optional `condition` with the instance states it wants (`created`, `started`, `destroyed`). The condition is a boolean expression over the system's current modes — `common.proto` defines `Condition` as a oneof of `power_state`, `vehicle_state`, `custom_state`, and the logical operators `not`/`and`/`or`. The Rust side mirrors this with a `Condition` enum (`distributed_config/src/condition.rs`) carrying `State { mode, state }`, `And`, `Or`, `Not`, and `Empty` (always true), evaluated with three-valued logic so partially-undefined conditions behave sanely.
+
+A **mode** is what the orchestrator tracks (`orchestration/common/src/mode.rs`): `Power`, `Vehicle`, and OEM-defined `Custom(String)`. When a mode changes, the `Evaluator` updates its orchestration state (with timestamp validation so stale updates are dropped) and evaluates every bundle's conditions to produce a fresh `HashMap<Fqin, InstanceState>` of what each instance should be. Where several conditions apply to one instance, the states merge by precedence: `Destroyed` beats `Started` beats `Created` (`orchestration/common/src/instance_state.rs`). The "config can live VM-wide or per-bundle" design is why this subtree is named *distributed* config (`orchestration/distributed_config/README.md`): a bundle ships its own slice of orchestration policy in its APEX, and the orchestrator stitches the slices together at startup.
+
+#### Enforcement, Crashes, and Retry
+
+The engine's `enforce_instances_states()` (`orchestration/engine/src/engine.rs`) reconciles desired state against reality, calling the lifecycle manager concurrently across instances up to a thread cap (default 12). Each instance is managed by an `InstanceManager` (`orchestration/engine/src/instance_manager.rs`) that tracks the last known state and classifies failures as transient (retry), persistent (kill, then retry), or permanent (give up). It is bounded by a `RetryConfiguration` (`orchestration/common/src/retry_configuration.rs`) carrying `max_retries`.
+
+The orchestrator publishes instance state outward through `IOrchestrationAgent.aidl`: a subscriber registers an `IServiceBundleInstanceStateChangeListener`, and the orchestrator calls back `onServiceBundleInstanceStateChanged(fqin, newRecoveryState, expectedLifecycleState)`. Two enums carry that state. `ServiceBundleInstanceLifecycleState` is the *intent* — `STARTED`, `CREATED`, or `DESTROYED`. `ServiceBundleInstanceRecoveryState` is the *health* — `OPERATIONAL` (reached its required state), `RETRYING` (recovering from a crash or a failed transition), or `RETRY_FAILED` (the orchestrator has given up). Because the lifecycle manager can itself crash, the orchestrator holds its connection through a `PersistentBinderConnection` (`orchestration/persistent_binder/lib.rs`) that relinks death notifications and reconnects transparently; after a lifecycle-manager crash the engine processes a `Recovery` event (`orchestration/common/src/mode.rs`) to re-enforce every instance.
+
+How the orchestrator reconciles desired state on a mode change
+
+```mermaid
+sequenceDiagram
+    participant VPM as Vehicle Power Manager
+    participant ORCH as Orchestrator engine
+    participant EVAL as Evaluator
+    participant LCM as Lifecycle Manager
+    participant RUN as Bundle instance
+
+    VPM->>ORCH: power / vehicle mode update
+    ORCH->>EVAL: update_orchestration_state(mode)
+    EVAL-->>ORCH: HashMap FQIN to desired InstanceState
+    ORCH->>ORCH: enforce_instances_states (concurrent)
+    ORCH->>LCM: launchService / startService / stopService / shutdownService
+    LCM->>RUN: onCreate / onStart / onStop / onDestroy
+    RUN-->>LCM: state reached
+    LCM-->>ORCH: ServiceBundleState
+    ORCH-->>ORCH: notify listeners (lifecycle + recovery state)
+```
+
+### 62.7.6 Health Monitoring
+
+The **Health Monitor** (`system/software_defined_vehicle/health_monitor/`) is, per its README, "a VM-internal service which is responsible for monitoring heartbeats from critical services and generating VM health report." It is the watchdog tier beneath the orchestrator: the orchestrator decides what *should* run, the health monitor notices when something that is running has gone silent. The binary is `sdv_health_monitor`, shipped in the APEX `com.android.sdv.health`.
+
+Bundles opt into monitoring by registering a heartbeat configuration rather than being watched implicitly. The monitor's registration path (`system/software_defined_vehicle/health_monitor/src/hb_explicit_registration.rs`) takes a `RegisterConfiguration` keyed by FQIN, and the configuration itself (`hb_config.rs`) is four numbers: `initial_delay_ms` (grace period between start and the first expected heartbeat), `period_ms` (how often the bundle should beat), `num_periods` (how many beats may be missed before the bundle is considered unhealthy), and `task_duration_ms` (the expected length of the bundle's work). A bundle is marked unhealthy when no heartbeat has arrived within `period_ms * num_periods + task_duration_ms`. The monitor tracks each bundle through a small state machine (`sb_recovery_monitor.rs`): `Normal` while healthy, `Recovering` once recovery has been triggered, and `FailedRecovery` if recovery did not restore it. The health verdict feeds back into the orchestrator's recovery/retry handling, so a bundle that stops beating is restarted by the same machinery that restarts one that crashed.
+
+### 62.7.7 Vehicle Power-State Manager (vpm)
+
+#### Power and Vehicle States
+
+The **Vehicle Power-state Manager (vpm)** is the agent that owns the VM's relationship to the vehicle's power and driving state, and it is the upstream that drives the orchestrator's `Power` and `Vehicle` modes. The agent binary is `sdv_vpm_agent` (`system/software_defined_vehicle/vpm/android/sdv/vpm/Android.bp`), packaged in the APEX `com.android.sdv.vpm`.
+
+vpm's state vocabulary is defined as VSIDL protos. The power side (`system/software_defined_vehicle/vpm/stable/vsidl/power.proto`) defines `PowerStateReport` with a full suspend/resume lifecycle: `POWER_OFF_EXIT` (cold boot), `SUSPEND_TO_RAM_EXIT` / `SUSPEND_TO_DISK_EXIT` (resume), `ON` (running normally), the `_ENTER` states that begin a shutdown or suspend, `WAIT_FOR_FINISH` (the VM has done initial cleanup and is waiting for the OEM's go/cancel signal), `SHUTDOWN_CANCELLED`, and the `_POST_FINISH` states where SDV agents do their final cleanup before the platform powers off or suspends. The comments are precise about who may rely on whom in each phase — for instance, during `POWER_OFF_ENTER` agents must stay up because OEM applications may still need them, but during `POWER_OFF_POST_FINISH` everyone cleans up.
+
+The vehicle side (`system/software_defined_vehicle/vpm/stable/vsidl/vehicle.proto`) defines `VpmVehicleState` as a ladder of vehicle activity: `LOW_POWER` (car off from the user's view but the power-control unit still sees it), `SOFTWARE_UPDATE`, `PARK` (a few ECUs powered for a specific activity), `LIFE_ON_BOARD` (comfort ECUs, customer present), `VEHICLE_ON` (engine ECUs powered, driving not yet possible), and `TRACTION_ON` (driving possible). These are the values an orchestration `condition` matches against when it gates a bundle by `vehicle_state`.
+
+#### The OEM-Facing and Client-Facing Interfaces
+
+vpm exposes two faces. The OEM-facing RPC service `VpmSystemService` lets the OEM's platform integration set the vehicle state and request power transitions (the requests are `TURN_ON`, `PREPARE_SHUTDOWN`, `CANCEL_SHUTDOWN`, `FINISH_SHUTDOWN`, with a `ShutdownType` of `POWER_OFF`, `SUSPEND_TO_RAM`, or `SUSPEND_TO_DISK`). After a successful vehicle-state change, vpm publishes the new state on the Data Tunnel topic `com.android.sdv.vpm.vehicle.VehicleStateChange` so any bundle can react. The bundle-facing client side is the stable HAL AIDL: `IPowerStateClientApi.aidl` (`hardware/sdv/interfaces/vehicle_power_manager/aidl/google/sdv/vpm/IPowerStateClientApi.aidl`) lets a client `subscribeToPowerStateReport(IPowerStateReportListener)` and receive `PowerStateReport` callbacks. This is the path by which the orchestrator (and any power-aware bundle) learns of power transitions and recomputes desired state.
+
+### 62.7.8 Update Manager
+
+The **Update Manager** (`system/software_defined_vehicle/update_manager/`) handles both system (partition) updates and service-bundle (APEX) updates for the VM. The agent binary is `sdv_update_manager_agent`, shipped in the APEX `com.android.sdv.update_manager`. Its interfaces are VSIDL service definitions (`update_manager/catalog/update_manager_agent.vsidl` and `update_manager_client.vsidl`) exposing an `UpdateManagerService` and a client-side `UpdateManagerListenerService` for status callbacks.
+
+The update model is a small state machine over a payload. The payload proto (`update_manager/catalog/payload.proto`) distinguishes a `SystemUpdatePayload` (a path to an OTA image, with optional offset/size) from a `ServiceBundleUpdatePayload` (one or more APEX paths plus a `boot_attempts` count for retry). The service proto (`update_manager/catalog/update_manager_service.proto`) drives them through `Prepare`, `Activate`, `Commit`, and `Rollback`, with `Suspend`/`Resume` available for system updates and `UninstallApex` for removing a bundle. Crucially, the update path is power-aware: the service proto documents that if the Update Manager is in the `PREPARE` state and vpm signals the VM is suspending or powering off, the update is suspended — the same power modes that gate bundle lifecycles also gate the update flow.
+
+### 62.7.9 The Platform Layer and Shared Common Code
+
+#### platform
+
+The `system/software_defined_vehicle/platform/` tree is the native foundation the agents and bundles build on. Its README describes it as "native libraries and wrappers ... Log & Trace, Time Sync and others," and the subtree carries those wrappers in C, C++, and Rust flavors. The most load-bearing is `platform/status/`, which defines the SDV error/status API: `libsdv_status` (a C ABI-stable core), `libsdv_status_cpp` (the C++ `SdvStatus`/`SdvStatusOr` wrappers), and `libsdv_status_rs` (the Rust `SdvStatus`/`SdvResult` types) — the result type every agent returns. Alongside it the platform tree carries logging and tracing libraries, a `power` library, open-DICE initialization, and `adbd_auth` glue, giving every SDV component the same observability, error-handling, and attestation primitives regardless of which language it is written in.
+
+#### common
+
+The `system/software_defined_vehicle/common/` tree holds shared infrastructure. The piece worth naming is `common/lib_dump/`, a thin wrapper around `libbinder_rust` that exposes the `ISdvAgent.aidl` interface (`common/lib_dump/aidl/google/sdv/agent/ISdvAgent.aidl`) so every agent gets uniform `dumpsys` support — a single, simple interface that the registry, orchestrator, lifecycle manager, and the rest implement so an operator can dump any agent the same way. The tree also carries shared protos, vendored third-party code, and the `performance_image_generator` used to build the SDV "performance" image variants (`sdv_core_perf_cf`).
+
+### 62.7.10 Display Safety: the HARry Driver-UI Runtime
+
+#### What Display Safety Is
+
+On the IVI side, `packages/services/display_safety` implements the automotive Driver-UI runtime and its safety enforcement. It is a large Rust workspace (the root `packages/services/display_safety/Cargo.toml` enumerates dozens of crates) split into three tiers: a `framework/` of reusable rendering, audio, layout, and monitoring crates; a `reference/` implementation (`harry-app`, the `safety-monitor`, and ADAS visualization); and a `service/` layer that bridges the UI to the SDV fabric. The motivation is regulatory: a driver-facing display must not show distracting or non-compliant content while the vehicle is in motion, and the cluster/Driver-UI must render deterministically. The framework's graphics path wraps the Impeller engine (`framework/graphics/impeller`), drives layout through a Taffy-based engine (`framework/har-layout`), and instruments itself with a performance-monitoring crate (`framework/har-monitoring`).
+
+#### The Safety Monitor
+
+The distraction-and-compliance enforcement lives in `packages/services/display_safety/reference/safety-monitor`, which builds the `har_safety_monitor` binary. It captures the rendered screen, takes vehicle data over gRPC, and runs a set of pluggable algorithms over the result — a static-pixel check, a TFLite inference path for ML-based classification, and correlation/computer-vision filters — to decide whether what is on screen is safe for the current vehicle state, issuing verdicts back over a gRPC control interface. It is, in effect, an independent referee watching the Driver-UI's output.
+
+#### The SDV Service Bundle Bridge
+
+The seam between this IVI-side Rust runtime and the SDV fabric is `packages/services/display_safety/service/har-sdv-service`, which builds `libhar_sdv_service_bundle` — an SDV service bundle. It depends on the SDV middleware (`libsdv_comms`, the generated SDV comms code) on one side and on the gRPC services (`libhar_grpc_services`, generated from `vehicledata.proto` and `driverui.proto`) on the other, so it publishes vehicle data and serves the Driver-UI over gRPC *through* the SDV middleware. Vehicle data flows in from a publisher service bundle (`service/vehicledata/`), through the SDV fabric, into the HARry app and the safety monitor.
+
+The whole runtime ships as APEXes built only for SDV/display-safety products: `com.google.display_safety.har` carries the `harry_app`, the `har_safety_monitor`, and the rendering assets, while `com.sdv.google.display_safety.services_bundle.apex` carries the service-bundle `.so`s and their orchestration/ACL configs. The product wiring lives in `device/google/sdv_display_safety`, whose makefiles (`sdv_harry_common.mk`, `sdv_ivi_cf_ds.mk`, `sdv_ivi_arm64_ds.mk`, `sdv_media_har_cf.mk`) layer the display-safety stack onto the IVI and media products and pull in the AAOS DriverUI app from `packages/services/Car`.
+
+### 62.7.11 Integrating AAOS Through the SDV Gateway
+
+#### The Gateway as the IVI's Door to the Fabric
+
+The AAOS IVI VM is a full Android Automotive image; it is not built from SDV-aware code top to bottom. So how does CarService, or a Vehicle HAL service, reach vehicle data that physically lives in another VM? Through the **SDV Gateway**. The gateway (`system/software_defined_vehicle/sdv_gateway/`, contract in `hardware/sdv/interfaces/sdv_gateway/`) is a `@VintfStability` AIDL service that runs on the IVI VM and gives non-SDV-aware native and Java clients a controlled entry point into the comm stack.
+
+The entry interface `ISdvGateway.aidl` is intentionally tiny — `getVersion()` and `createSession()` — and all the work happens on the returned `ISdvGatewaySession`. A session is per-process and isolated; through it a client calls `initComms(InitCommsParams)` to bring up bidirectional communication with remote SDV services, then `registerRpcServer(...)` / `findRpcServerByName(...)` to expose or locate RPC servers in Service Discovery, and `createPublication(...)` / `subscribeToPublicationByName(...)` to use the Data Tunnel pub/sub. The session also exposes the calling app's `ServiceIdentity`, an authorization service, and handles to the underlying Service Discovery and Data Tunnel agents. In other words, the gateway is the IVI-side adaptor that turns "I am an ordinary Android service" into "I am a participant in the SDV fabric" — without the IVI client linking the full SDV middleware.
+
+#### Gating: the Gateway Config
+
+Because the gateway hands ordinary Android processes the keys to the vehicle fabric, access is allowlisted. The gateway requires a config file installed at `/vendor/etc/sdv_gateway_config.json` that declares, per process UID, which SDV package names (the second element of the FQIN) that UID's native service is permitted to use when calling `initComms` (`system/software_defined_vehicle/sdv_gateway/README.md`). The format maps a UID to an array of allowed package names — for example a UID `2942` allowed to use `com.oemspecific.vhal`; a UID of `-1` grants a package name to all UIDs. The README recommends defining unique AIDs for the gateway's native clients and restricting each to only the package names it needs. An empty config blocks every native application from using the gateway. The reference config (`device/google/sdv/sdv_ivi_base/sdv_gateway_config.json`) ships with only the propagation flags (`propagate_rpc_network_changes_to_data_tunnel`, `propagate_rpc_network_changes_to_service_discovery`, both `false`), meaning the reference image's separate VLANs for RPC, Service Discovery, and Data Tunnel are kept independent.
+
+#### VHAL Proxy: Vehicle Properties Across VMs
+
+The concrete CarService integration is the Vehicle HAL. On the IVI VM the SDV products wire a SDV-specific VHAL — `device/google/sdv/sdv_ivi_cf/sdv_ivi_cf.mk` sets `LOCAL_VHAL_PRODUCT_PACKAGE := android.hardware.automotive.vehicle@V1-sdv-emulator-service`. That VHAL uses the gateway's **vhal_proxy** library (`system/software_defined_vehicle/sdv_gateway/vhal_proxy/libvhal_proxy`). The `VhalProxy` class reads and writes Android `VehiclePropValue`s by translating them to and from SDV proto messages and routing them over the gateway: `ReadMessages`/`WriteMessages` move properties, `Subscribe`/`Unsubscribe` register for incoming updates, and the proxy's config (a JSON of protobuf descriptors and property-to-service-unit mappings) decides which property maps to which SDV publication and whether each is an `ACTION_SUBSCRIBE` or `ACTION_PUBLISH`. CarService, sitting above the VHAL exactly as it does on a normal automotive build, is therefore unaware that the vehicle property it reads originated in a service bundle in the Core VM: the gateway and vhal_proxy make the cross-VM hop invisible.
+
+The IVI's SDV-facing services are installed by `device/google/sdv/sdv_ivi_base/sdv_packages_ivi_services.mk` (the gateway, `libvhal_proxy`, the gateway networking service, and the SDV IVI runtime) and started by `device/google/sdv/sdv_ivi_base/sdv.agents.rc`, which brings up the gateway, Service Discovery, and RPC agents in order once the SDV network is ready. The transport beneath them — RPC, Data Tunnel, SOME/IP across VMs and to external ECUs — is the subject of Section 62.8.
+
+How a CarService VHAL read reaches a Core VM service bundle
+
+```mermaid
+flowchart LR
+    CAR["CarService<br/>(packages/services/Car)"] --> VHAL["sdv-emulator-service<br/>(Vehicle HAL)"]
+    VHAL --> PROXY["libvhal_proxy<br/>(VehiclePropValue to proto)"]
+    PROXY --> SESS["ISdvGatewaySession<br/>(initComms / subscribe)"]
+    SESS --> GWCFG["sdv_gateway_config.json<br/>(UID to package allowlist)"]
+    SESS --> COMM["RPC / Data Tunnel agents"]
+    COMM --> XVM["SOME/IP across VMs<br/>(Section 62.8)"]
+    XVM --> BUNDLE["Vehicle service bundle<br/>in SDV Core VM"]
+```
+
+### 62.7.12 Composing It All: the Reference Device
+
+`device/google/sdv` ties the platform into buildable products. OEM products are meant to inherit one SDV "base" target plus a vendor target (`device/google/sdv/README.md`). The bases are `sdv_base` (comm stack only), `sdv_core_base` (the full set of Core services), `sdv_media_base` (Core plus media APIs), and `sdv_ivi_base` (an AAOS IVI capable of talking to SDV services on other VMs). The canonical "what runs in the Core VM" list is `device/google/sdv/sdv_core_base/sdv_packages_core_services.mk`: the lifecycle client libraries, `orch_config.textproto`, `sdv_lifecycle_agent`, `sdv_orchestration_agent`, `sdv_service_bundles_registry_agent`, `lifecycle_service_bundle_runner`, `sdv_someip_broker_agent_comms`, `sdv_update_manager_agent`, `sdv_health_monitor`, `sdv_vsidl_provider_agent`, the comm-stack agents (`dt_agent`, `rpcagent`, `sdv_sd_agent`), and the matching APEXes (`com.android.sdv.health`, `com.android.sdv.orchestrator`, `com.android.sdv.update_manager`, `com.android.sdv.vsidl_provider`, `com.android.sdv.dt`). The same file demands a SOME/IP broker config and warns if no SOME/IP agent is installed, because a Core VM with no transport agent cannot talk to anything.
+
+The sample lunch targets (`device/google/sdv/AndroidProducts.mk`) are the Cuttlefish and ARM64 instances of these bases: `sdv_core_cf`, `sdv_core_perf_cf`, `sdv_core_tiny_cf`, `sdv_ivi_cf`, `sdv_media_cf`, `sdv_media_har_cf`, and their `*_arm64` peers. Booting a Core VM plus an IVI VM together — as `device/google/sdv/cuttlefish_multi_tenancy/` configures — is the smallest end-to-end SDV system: a headless Core hosting bundles, an AAOS IVI reaching them through the gateway, and the comm fabric between.
+
+---
+
+## 62.8 SDV Middleware and Vehicle Communication
+
+Section 62.7 introduced the Software Defined Vehicle (SDV) platform that arrives in Android 17: a headless vehicle Android OS where a *Core* VM runs vehicle services with no UI, alongside one or more Android Automotive OS (AAOS) In-Vehicle Infotainment (IVI) VMs and non-Android automotive ECUs. That section covered the architecture overview, the Core VM, and the orchestration that drives bundle lifecycle. This section goes one layer down, into the *communication fabric* that ties all of those pieces together: the VSIDL interface-definition language and its Rust code generator, the three-agent middleware (Service Discovery, Data Tunnel, RPC) with its secure mesh, the SOME/IP stack that carries cross-VM and cross-ECU traffic, the SDV Gateway that lets ordinary AAOS apps and the VHAL reach the fabric, and the automotive-domain service catalog (diagnostics, configuration, calibration, vehicle mode, user profile) layered on top. The source lives almost entirely under `system/software_defined_vehicle/`, with the stable contracts in `hardware/sdv/interfaces/`.
+
+### 62.8.1 The Shape of the Fabric
+
+If Binder is how processes talk *inside* one Android VM (Chapter 9), the SDV middleware is how Service Bundles talk *across* VMs and out to physically separate ECUs. The design borrows Android's idioms — AIDL contracts, a registry, identity-aware calls — but stretches them over a network of mutually distrusting compute nodes inside a single vehicle.
+
+Three concepts recur throughout this section:
+
+- **Service Bundle** — the SDV unit of deployment and the analogue of an Android service. A bundle publishes topics, subscribes to topics, and offers or consumes RPC services. Its interface is described in VSIDL (§62.8.2).
+- **FQIN (Fully Qualified Instance Name)** — the vehicle-wide identity of a bundle instance. `ServiceFqin` (`hardware/sdv/interfaces/middleware/service_discovery/google/sdv/identity/ServiceFqin.aidl`) is four strings: `sdvVmName`, `sdvPackageName`, `serviceBundleName`, and `serviceInstanceName` (the last assigned by the Orchestrator at load time). The FQIN is what gets baked into TLS certificates so the mesh can authenticate peers.
+- **SID (Service ID)** — a 64-bit numeric identity that fast lookups use at runtime. `ServiceIdentity` (`.../identity/ServiceIdentity.aidl`) pairs the `long sid` with an EC public key and the human-readable FQIN.
+
+#### The three middleware agents
+
+Inside any one VM, a Service Bundle reaches the fabric through three agents, each a Binder service defined in `hardware/sdv/interfaces/middleware/`:
+
+- **Service Discovery** (`service_discovery/`) registers, finds, and watches service units and topics.
+- **Data Tunnel** (`data_tunnel/`) carries named-topic publish/subscribe traffic over Android FastMessageQueues (FMQ).
+- **RPC** (`rpc/`) carries request/response calls over sockets.
+
+A bundle does not connect to those agents one by one. The Lifecycle Manager (§62.7.4) hands each bundle a single use-once `ContextInitializationToken` (`hardware/sdv/interfaces/middleware/ctx/aidl/google/sdv/comms/ContextInitializationToken.aidl`) that bundles all four Binder connections it needs:
+
+```java
+// Source: hardware/sdv/interfaces/middleware/ctx/aidl/google/sdv/comms/ContextInitializationToken.aidl:31
+parcelable ContextInitializationToken {
+    ServiceIdentity identity;
+    IServiceRegistrationAgent sr_agent;
+    IServiceDiscoveryAgent sd_agent;
+    IAgentService dt_agent;          // Data Tunnel
+    IRpcAgent rpc_agent;
+}
+```
+
+The comment on the token states its lifecycle plainly: it is "the use-once Context initialisation value issued by LifecycleManager to Service Bundles that enables them to create the SDV SDK Context object." From that token the bundle builds its SDK `Context`, and everything else flows from there.
+
+The overall layering, from the bundle down to the wire, looks like this.
+
+How a Service Bundle reaches the fabric, and how the fabric reaches other VMs and ECUs
+
+```mermaid
+graph TB
+    subgraph App["Service Bundle (Rust, VSIDL generated_rs)"]
+        SDK["SDV SDK Context<br/>(from ContextInitializationToken)"]
+    end
+
+    subgraph Agents["Per-VM middleware agents (Binder)"]
+        SD["Service Discovery<br/>(sd_agent, Rust)"]
+        DT["Data Tunnel<br/>(dt_agent, C++, FMQ)"]
+        RPC["RPC agent<br/>(IRpcAgent, sockets)"]
+    end
+
+    subgraph Sec["Identity and security"]
+        ID["Identity Agent<br/>(SID + FQIN)"]
+        CA["Certificate Authority<br/>(per-VM, mTLS)"]
+        AZ["Authz service<br/>(ACL / permission)"]
+    end
+
+    subgraph Wire["Cross-VM and cross-ECU"]
+        BROK["SOME/IP broker<br/>(Rust)"]
+        STACK["SOME/IP stack agent<br/>(C++, vsomeip)"]
+        ECU["External ECUs<br/>(non-Android)"]
+    end
+
+    SDK --> SD
+    SDK --> DT
+    SDK --> RPC
+    SD --> ID
+    SD --> CA
+    SD --> AZ
+    SD --> BROK
+    DT --> BROK
+    RPC --> BROK
+    BROK --> STACK
+    STACK <--> ECU
+```
+
+### 62.8.2 VSIDL: Describing Services and Generating Rust
+
+SDV does not hand-write the marshalling code that moves messages between bundles. It describes services in a *Vehicle Service Interface Definition Language* (VSIDL) and generates the middleware bindings, the same way AIDL generates Binder stubs. The toolchain lives under `system/software_defined_vehicle/vsidl/` and is written in Rust.
+
+#### The .vsidl and .proto catalog
+
+A *catalog* is a directory holding two kinds of files: `.proto` files that define message types, and `.vsidl` files that define service bundles. The compiler README spells out the split: "From `.proto` files it reads message names, rpc interfaces, and type definitions. From `.vsidl` files it reads service bundle definitions" (`system/software_defined_vehicle/vsidl/vsidlc/README.md`).
+
+A `.vsidl` file is itself textproto, conforming to the grammar in `system/software_defined_vehicle/vsidl/language/src/protos/sdv/vsidl/v1/syntax.proto`. A bundle declares the topics it publishes and subscribes to and the RPC services it serves or calls:
+
+```protobuf
+// Source: system/software_defined_vehicle/samples/vsidl/complex/catalog/complex_message_publisher.vsidl:18
+package: "com.android.sdv.sample.complex"
+
+service_bundle {
+    name: "ComplexMessagePublisher"
+
+    publisher {
+        message: "ComplexMessage"
+        topic: "complex-message"
+        capacity: 50
+    }
+
+    server {
+        service: "ComplexMessageRPC"
+        channel: "complex-message-rpc"
+    }
+}
+```
+
+A subscriber/client bundle is the mirror image: a `subscriber` block naming the same topic, and a `client` block naming the same RPC channel. Topics are *named* — `complex-message` here — and that name is the rendezvous point the two halves use without ever knowing each other's FQIN at authoring time.
+
+#### vsidlc and generated_rs
+
+The compiler `vsidlc` (`system/software_defined_vehicle/vsidl/vsidlc/`) walks the catalog recursively and emits Rust middleware bindings into an `output/generated_rs` directory (per its README). Internally it runs a small pipeline of generation steps — service-bundle bindings, RPC bindings, diagnostics bindings, and a generated `Android.bp` — under `system/software_defined_vehicle/vsidl/vsidlc/src/rust/steps/`. The output is the SDV equivalent of an AIDL stub: typed publisher/subscriber/server/client handles the bundle code links against, so application logic never touches the wire format directly.
+
+A companion tool, `vsidl_rc_generator` (`system/software_defined_vehicle/vsidl/vsidl_rc_generator/`), produces the *runtime* configuration the agents load rather than the code the bundle links. Its README lists the outputs: "Schemas of Protobuf messages used in the catalog, SOME/IP mapping files, [and] Diagnostic declarations," serialized as `vsidl-config.binpb`, `someip-config.binpb`, and `diagnostics-config.binpb`.
+
+#### SOME/IP translation modes
+
+Because a topic may have to cross onto a SOME/IP bus to reach a non-Android ECU, message types carry a *translation mode* that decides how the SOME/IP layer treats their bytes. The parser recognizes three modes (`system/software_defined_vehicle/vsidl/language/src/parser/converter.rs`): `INTERPRET_AS_BYTES`, `DYNAMIC_LIBRARY`, and a default `REFLECTION`. The `someip_translation_generator` (`system/software_defined_vehicle/some_ip/someip_translation_generator/`) reads these tags and emits translation code: its README documents a `static-lib` mode that handles messages tagged `INTERPRET_AS_BYTES` (the bytes go on the wire as-is) and a `dyn-lib` mode for messages tagged `DYNAMIC_LIBRARY` (translation code is compiled into a shared library). This is the seam where SDV's protobuf-shaped messages meet SOME/IP's fixed wire layout.
+
+#### The VSIDL provider agent
+
+Catalog metadata also has to be queryable at runtime — sometimes from a different VM. `sdv_vsidl_provider_agent` (`system/software_defined_vehicle/vsidl/provider/agent/sdv/`) is an RPC service that answers descriptor queries: publication descriptors, RPC method descriptors, message descriptors, and diagnostics declarations. Its client library (`system/software_defined_vehicle/vsidl/provider/clientlib/`) can source that metadata three ways — from local config files, from on-device APEXes, or by delegating to another VM's provider agent — so a tool or bundle can introspect a service bundle that lives on a peer VM. There is an `ivi/` variant of the agent for the IVI side as well.
+
+### 62.8.3 The Middleware: Discovery, Data Tunnel, RPC, and the Secure Mesh
+
+With VSIDL covering the contract, the runtime fabric is the three agents plus the identity and security layer beneath them. The implementations live under `system/software_defined_vehicle/middleware/`; the contracts under `hardware/sdv/interfaces/middleware/`.
+
+#### Service Discovery
+
+`IServiceRegistrationAgent` registers a service unit and returns a one-use `RegistrationToken`; `IServiceDiscoveryAgent` finds and watches units. The registration call carries the unit name, its `UnitType`, an ACL, and application metadata (`.../service_discovery/discovery/IServiceRegistrationAgent.aidl`), and discovery offers both type-based and name-based lookups plus topic enumeration:
+
+```java
+// Source: hardware/sdv/interfaces/middleware/service_discovery/google/sdv/service_discovery/discovery/IServiceDiscoveryAgent.aidl
+ServiceUnitDefinition getServiceUnit(in ServiceFqin fqin, in String unitName);
+// ... plus listServiceUnitsByType/ByName, fetchPublishersByTopicName, listTopics
+```
+
+A third interface, `ITransportSupportAgent`, lets a transport (such as the SOME/IP broker) redeem a `RegistrationToken` for the full `ServiceUnitDefinition` and attach transport-specific metadata to it. That indirection is how the wire layer learns where to actually send bytes for a logically-registered service. The Service Discovery agent itself, `sdv_sd_agent`, is Rust (`system/software_defined_vehicle/middleware/service_discovery/sdv_sd_agent/srcs/main.rs`).
+
+#### Data Tunnel
+
+Data Tunnel is named-topic pub/sub. `IAgentService` (`hardware/sdv/interfaces/middleware/data_tunnel/aidl/google/sdv/data_tunnel/IAgentService.aidl`) has a publisher register a publication — handing over an `MQDescriptor` for the FastMessageQueue it will write into — and subscribers attach by unit identifier or by topic name:
+
+- `Connect(long sid, out ClientDescriptor)` establishes the per-client channel.
+- `RegisterPublication(RegistrationToken, MQDescriptor<byte,...>, out PublicationDescriptor)` registers a topic backed by an FMQ the publisher allocates.
+- `SubscribeToPublicationExtended(SubscriptionParams, out SubscriptionResult)` subscribes with a readiness listener.
+- `GetLastMessageByTopic(UnitType, String topicName, out byte[])` reads the most recent value of a topic.
+
+Using FMQ means same-VM pub/sub is effectively zero-copy through shared memory; cross-VM topics ride the SOME/IP broker instead. The Data Tunnel agent is C++, and it ships with a companion APEX `com.android.sdv.dt` that carries the ACLs governing inter-VM Data Tunnel communication (`system/software_defined_vehicle/middleware/data_tunnel/apex/Android.bp`).
+
+#### RPC
+
+RPC is socket-based request/response. `IRpcAgent` (`hardware/sdv/interfaces/middleware/rpc/google/sdv/rpc/IRpcAgent.aidl`) is small and pointed: a server redeems a `RegistrationToken` to get a socket to listen on, and a client asks for a connection to a named server:
+
+```java
+// Source: hardware/sdv/interfaces/middleware/rpc/google/sdv/rpc/IRpcAgent.aidl:26
+interface IRpcAgent {
+    ParcelFileDescriptor registerServer(in RegistrationToken token);
+    void registerServerPort(in RegistrationToken token, int port);
+    ParcelFileDescriptor getFdConnection(in long sid, @utf8InCpp String unitName);
+    @utf8InCpp String getAddressConnection(in long sid, @utf8InCpp String unitName);
+    @utf8InCpp String getNetworkInterfaceName();
+}
+```
+
+`getNetworkInterfaceName()` returns the network interface the agent binds to — by default the dedicated SDV-RPC VLAN discussed in §62.8.4.
+
+#### Identity, the certificate mesh, and authorization
+
+The agents above are only safe because of a security layer that runs beneath them. It has three parts, all under `hardware/sdv/interfaces/middleware/service_discovery/google/sdv/`:
+
+- **Identity** (`identity/IIdentityAgent.aidl`) mints and verifies `ServiceIdentity` records: `createIdentity(EcPublicKey, ServiceFqin, ...)`, `verifyIdentity(...)`, and lookups by SID, by FQIN, or by OS process identifier.
+- **Certificate Authority** (`ca/ICertificateAuthority.aidl`) issues X.509 certificates for FQINs. `requestCertification(String request)` takes a PEM PKCS#10 request whose subject-alternative DNS name encodes the FQIN; `addAuthoritiesListener(...)` lets a peer learn as VMs join or leave. The CA is gated on boot state — `isEnabled()` returns false in the UNLOCKED boot mode and true when LOCKED.
+- **Authorization** (`authz/IAuthzService.aidl`) answers `isAuthorized(subject_fqin, object_fqin, object_service_unit_name)` so the middleware can deny calls between bundles that policy does not permit.
+
+The certificate material is EC (P-256); the helper that builds the self-signed per-VM root encodes the BASE32 FQIN into the certificate subject and subject-alternative name (`system/software_defined_vehicle/middleware/crypto_rpc/src/cert.rs`). The `crypto_rpc` library README states the coupling directly: it "enables TLS for RPC," and "Service Discovery and SDV RPC library depend on each other in terms of X509 certificate signing and usage."
+
+The result is the **secure mesh**: each SDV VM runs its own CA, and the set of CAs is shared across VMs so any node can validate any peer's certificate. `IMeshStatus` (`.../mesh/IMeshStatus.aidl`) reports whether this VM is connected to every other VM declared in the vehicle's `vvmconfig` (`isComplete()`) and the per-peer `PeerConnectionStatus`. Mesh provisioning writes a truststore file `/vvmtruststore/uds_pubs` via `IUdsPubsProvisioner` (`.../mesh/provisioning/IUdsPubsProvisioner.aidl`), and that step is only available in the UNLOCKED boot mode — the device is provisioned, then locked.
+
+The security and identity layer beneath the three agents
+
+```mermaid
+graph LR
+    BUNDLE["Service Bundle"] -->|register| SR["IServiceRegistrationAgent"]
+    SR -->|"createIdentity()"| ID["IIdentityAgent<br/>(SID + FQIN)"]
+    SR -->|"requestCertification()"| CA["ICertificateAuthority<br/>(per-VM root, P-256)"]
+    BUNDLE -->|"call peer"| AZ["IAuthzService<br/>(isAuthorized)"]
+    CA -->|"share roots"| MESH["Secure mesh<br/>(IMeshStatus, uds_pubs)"]
+    MESH -->|"mTLS peers"| PEER["Other SDV VMs"]
+    AZ -->|"allow / deny"| RPC["RPC / Data Tunnel<br/>over mTLS"]
+```
+
+### 62.8.4 SOME/IP: Crossing VM and ECU Boundaries
+
+Same-VM traffic stays in Binder and FMQ. The moment a topic or RPC has to reach another VM or a non-Android ECU, it goes onto **SOME/IP** — the AUTOSAR automotive service protocol — through two cooperating processes under `system/software_defined_vehicle/some_ip/`.
+
+#### The stack agent and vsomeip
+
+`sdv_someip_stack_agent` is C++. It wraps the open-source `vsomeip` library: `StackImpl` constructs `vsomeip::runtime::get()` and creates a vsomeip application (`system/software_defined_vehicle/some_ip/vsomeip_stack/src/stack.cpp`), then exposes a Binder interface, `ISomeIpStack`. The wire configuration — which SOME/IP service IDs and instance IDs this node offers, their TCP/UDP ports, and the service-discovery multicast group — lives in `system/software_defined_vehicle/some_ip/vsomeip_stack/vsomeip_config.json`, the standard vsomeip configuration format.
+
+`ISomeIpStack` (`hardware/sdv/interfaces/some_ip/stack_agent/aidl/google/sdv/someip/ISomeIpStack.aidl`) is the boundary between SDV's world and the SOME/IP wire, and it speaks in raw `byte[]` payloads on both sides:
+
+```java
+// Source: hardware/sdv/interfaces/some_ip/stack_agent/aidl/google/sdv/someip/ISomeIpStack.aidl
+byte[] rpc_transact(in SomeIpService service, char method_id, in byte[] payload);   // sync RPC
+void   rpc_oneway  (in SomeIpService service, char method_id, in byte[] payload);   // fire-and-forget
+oneway void monitor_service(in SomeIpService service);                              // track availability
+oneway void publish(in SomeIpService service, char event_id, in byte[] payload);    // emit event
+void subscribe_eventgroup(in SomeIpService service, char eventgroup, in char[] event_ids);
+```
+
+A `SomeIpService` is the SOME/IP triple — a 16-bit `service_id`, a 16-bit `instance_id`, and a `SomeIpServiceVersion` (`byte major`, `int minor`) — defined in `SomeIpService.aidl` and `SomeIpServiceVersion.aidl` in the same directory.
+
+#### The broker
+
+The stack agent only knows SOME/IP. Mapping SDV's topics, RPC channels, and protobuf messages onto SOME/IP services, events, and method IDs is the job of `sdv_someip_broker_agent_comms`, which is Rust. Its module header states its purpose: "This agent is responsible for enabling communication between SOME/IP communication and SDV" (`system/software_defined_vehicle/some_ip/broker_agent_comms/src/main.rs`). The broker has sub-modules for service discovery, pub/sub, and RPC, plus a `translator` that converts between SOME/IP bytes and SDV types using the mappings generated by `vsidl_rc_generator` (§62.8.2). It connects to the stack agent over Binder (`google.sdv.someip.ISomeIpStack/default`) and registers callbacks so SOME/IP events, availability changes, and inbound RPC requests are routed back into the SDV agents.
+
+#### Callbacks: how traffic flows in both directions
+
+`ISomeIpStack` is paired with three callback interfaces the broker registers so the flow is bidirectional:
+
+- `ISomeIpServiceAvailabilityCallback` — the stack tells the broker when a SOME/IP service appears or disappears (SOME/IP service discovery).
+- `IEventNotificationCallback` — the stack delivers a subscribed SOME/IP event up to the broker, which fans it out to Data Tunnel subscribers.
+- `IRpcRequestCallback` — `byte[] onRpcRequest(SomeIpService, char method_id, byte[] payload)`: the stack hands an inbound SOME/IP RPC request to the broker and sends the returned bytes back as the response.
+
+A separate, tiny interface, `ISomeIpLoadIndicators` (`hardware/sdv/interfaces/some_ip/load_indicators/aidl/.../ISomeIpLoadIndicators.aidl`), reports a single `int pendingSomeIpEventCounter`: zero means idle, a positive value is the depth of the unprocessed SOME/IP event queue, and a negative value signals an error — a cheap real-time backpressure signal the stack agent samples periodically.
+
+The round trip for an outbound RPC and an inbound event
+
+```mermaid
+sequenceDiagram
+    participant B as Service Bundle
+    participant RA as RPC agent / Data Tunnel
+    participant BR as SOME/IP broker (Rust)
+    participant ST as SOME/IP stack agent (C++)
+    participant E as External ECU
+
+    Note over B,E: Outbound RPC (SDV bundle calls an ECU)
+    B->>RA: call remote service
+    RA->>BR: route by FQIN
+    BR->>ST: rpc_transact(service, method_id, bytes)
+    ST->>E: SOME/IP request over vsomeip
+    E-->>ST: SOME/IP response
+    ST-->>BR: response bytes
+    BR-->>RA: translated reply
+    RA-->>B: result
+
+    Note over B,E: Inbound event (ECU notifies the vehicle)
+    E->>ST: SOME/IP event
+    ST->>BR: onEvent(service, event_id, bytes)
+    BR->>RA: publish to Data Tunnel topic
+    RA->>B: deliver to subscriber
+```
+
+#### The SDV-RPC VLAN
+
+SDV-RPC traffic rides a dedicated VLAN so it can be isolated and policed separately from ordinary networking. The interface name is set either as a bootconfig variable, `androidboot.sdv.rpc.interface=sdv_rpc`, or via the `SDV_RPC_INTERFACE` build variable, and the reference Cuttlefish targets (`sdv_core_cf`, `sdv_ivi_cf`) default it to `sdv_rpc` (`system/software_defined_vehicle/sdv_gateway/README.md`). At runtime the gateway and networking services read it from the `ro.boot.sdv.rpc.interface` system property (`system/software_defined_vehicle/sdv_gateway/service/cpp/SdvGatewayService.cpp`).
+
+### 62.8.5 The SDV Gateway: Bringing the IVI and the VHAL onto the Fabric
+
+The middleware so far assumes SDV-aware Rust bundles built from VSIDL. But an AAOS IVI VM is full of ordinary Java apps and a Vehicle HAL that know nothing about FQINs, registration tokens, or the secure mesh. The **SDV Gateway** (`system/software_defined_vehicle/sdv_gateway/`) is the adapter that lets those non-SDV-aware clients reach the fabric. It is implemented mainly in C++ (the `service/`, `libsdvgateway`, and `vhal_proxy` pieces) with Java for the networking service and client SDK. Section 62.7.11 introduced the gateway from the AAOS side; this section details its interfaces.
+
+#### The session model
+
+A client first obtains the gateway, then opens a session. `ISdvGateway` (`hardware/sdv/interfaces/sdv_gateway/google/sdv/gateway/ISdvGateway.aidl`) is deliberately minimal — `getVersion()` and `createSession()` — and a process may hold only one session at a time. `ISdvGatewaySession` (`.../ISdvGatewaySession.aidl`) is the substantial interface; it mirrors the three middleware agents but for an untrusted caller:
+
+- `initComms(InitCommsParams)` — establishes the session's comms. `InitCommsParams` (`.../InitCommsParams.aidl`) carries the caller's `PublicKey` plus the three FQIN strings it is asking to use: `sdvPackageName`, `serviceBundleName`, `serviceInstanceName`.
+- `registerRpcServer(RegisterRpcServerParams)` / `findRpcServerByName(FindRpcServerByNameParams)` — the gateway side of RPC; the find result returns a `SocketAddress`, a subject-alternative name, and the peer VM name.
+- `createPublication(CreatePublicationParams)` returning `IDataTunnelPublication`, and `subscribeToPublicationByName(...)` — the gateway side of Data Tunnel.
+- `rpcCredentialsConfig()` returning `RpcCredentialsConfigResult` (a `useInsecureRpc` flag plus the subject-alternative name), `requestCertificateChain(...)`, and `setAuthoritiesListener(...)` — the gateway side of the certificate mesh.
+
+Status comes back as `SdvGatewayStatusCode` (`.../SdvGatewayStatusCode.aidl`), a gRPC-style enum (`OK`, `CANCELLED`, … `UNAUTHENTICATED`).
+
+#### The privileged interfaces
+
+Behind the public session, the gateway also exposes a set of *privileged* interfaces under `hardware/sdv/interfaces/sdv_gateway/google/sdv/privileged/`, reserved for trusted system services rather than arbitrary apps:
+
+- `IPrivilegedGatewayNetworking` (`privileged/gatewaynetworking/`) — used only by the Java `sdv_gatewaynetworking_service`. It supplies `getRpcNetworkInterfaceName()`, `setRpcNetworkHandle(long)`, `onCarPowerStateChanged(CarPowerState)`, and listener registration. `CarPowerState` enumerates the AAOS power states (`WAIT_FOR_VHAL`, `ON`, `SHUTDOWN_PREPARE`, `SUSPEND_ENTER`, `HIBERNATION_ENTER`, …) so the fabric can react to vehicle power transitions.
+- `IPrivilegedIdentityAgent`, `IPrivilegedServiceRegistrationAgent`, `IPrivilegedServiceDiscoveryAgent` — the same identity/registration/discovery operations as §62.8.3, but taking an explicit *process identifier* argument so the gateway can act on behalf of a specific client process rather than its own.
+
+The gateway AIDL is versioned and frozen under `hardware/sdv/interfaces/sdv_gateway/aidl_api/`: the public `google.sdv.gateway` package is at API v3 (with v1/v2 snapshots retained), and the privileged packages are at v2/v3 — the same backward-compatibility discipline as any stable AIDL HAL (Chapter 10).
+
+#### The VHAL proxy
+
+The flagship gateway client is the **VHAL proxy** (`system/software_defined_vehicle/sdv_gateway/vhal_proxy/libvhal_proxy/`). It lets a Vehicle HAL service surface vehicle properties as Data Tunnel topics and vice versa. Per its README, `VhalProxy` "handles parsing a VHAL proxy configuration file, subscribing to the services defined via Data Tunnel Publishers, and reading protobuf messages from those services. For every message, this library handles converting the protobuf value for each property ID and area ID pair, and creating a corresponding `VehiclePropValue`." Its API surface is four calls: `ReadMessages`, `WriteMessages`, `Subscribe`, and `Unsubscribe`. The config maps protobuf message types to VHAL property/area pairs and a Data Tunnel action (subscribe or publish) — a sample lives at `system/software_defined_vehicle/samples/vhal_proxy/sdv_emulated_vhal/VhalProxySampleConfig.json`.
+
+This is what makes a stock AAOS CarService (§62.1) work over SDV: CarService reads vehicle properties from the VHAL exactly as on a one-VM device, and the VHAL proxy quietly sources those properties from vehicle services running in the Core VM, through the gateway, over the fabric.
+
+#### The UID allowlist
+
+Because the gateway lets an untrusted process claim an SDV package name (the second FQIN element), it must police which process may claim which name. That is the job of `sdv_gateway_config.json`, installed at `/vendor/etc/sdv_gateway_config.json`. The README is explicit: the file contains "the SDV package names (the second element of the FQIN) that native service (e.g. VHAL) are allowed to use when calling `initComms`," and "an empty config would prevent all native applications from using the SDV Gateway."
+
+The allowlist is keyed by Android user ID:
+
+```json
+// Source: system/software_defined_vehicle/sdv_gateway/README.md (config example)
+{
+  "allowed_native_packagename": {
+     "2942": [ "com.oemspecific.vhal" ]
+  },
+  "propagate_rpc_network_changes_to_data_tunnel": false,
+  "propagate_rpc_network_changes_to_service_discovery": false
+}
+```
+
+UID `2942` here may register only the `com.oemspecific.vhal` SDV package name; a UID of `-1` grants a name to all UIDs. The README recommends giving each native gateway client a unique AID and allowlisting only the names it truly needs, "to add another layer of security against the compromise or misuse of service discovery identities." The two `propagate_rpc_network_changes_*` flags, both `false` in the reference `device/google/sdv/sdv_ivi_base/sdv_gateway_config.json`, control whether an SDV-RPC VLAN change is pushed to the Data Tunnel and Service Discovery agents (relevant only when those agents share the RPC interface rather than running on separate VLANs).
+
+### 62.8.6 Automotive Services: the Domain Catalog
+
+The fabric so far is domain-agnostic plumbing. On top of it, `system/software_defined_vehicle/automotive_services/` ships the *automotive-specific* service catalog. The repo README names the five: "Diagnostics, Configuration, Calibration, Vehicle Mode, User Profile." These are defined in VSIDL/proto and implemented in Rust as ordinary service bundles riding the Data Tunnel and RPC agents.
+
+#### Diagnostics (ISO 14229-1 / AUTOSAR)
+
+Diagnostics is the most developed of the five and the one that most clearly shows SDV adopting an automotive standard rather than inventing one. Its README states the lineage outright: "APIs are based on ISO 14229-1:2020 and AUTOSAR Diagnostic Event Manager standards" (`system/software_defined_vehicle/automotive_services/diagnostics/README.md`), and links the ISO 14229-1:2020 (UDS) and AUTOSAR DEM specifications as external references.
+
+The interface set under `system/software_defined_vehicle/automotive_services/diagnostics/vsidl/v1/` maps directly onto UDS:
+
+- `diagnostics_manager_service.proto` — the RPC API a service uses to query connection parameters from the Diagnostics Manager.
+- `connection.proto` — `SessionType` (default, programming, extended-diagnostic, safety-system-diagnostic sessions per UDS) and `ConnectionParameters` (source/target address, session type).
+- `event.proto` — fault events whose `Status` enum (PASS, FAIL, PRE_PASS, PRE_FAIL) follows the AUTOSAR Diagnostic Event Manager, with an `OperationCycle` (START/STOP/RESTART) and an `EnableCondition` published over Data Tunnel.
+- `response_code.proto` — the ISO 14229-1 negative-response codes.
+- Per-service interfaces for the standard UDS routines: `routine_control_service.proto`, `io_control_service.proto`, `ecu_reset_service.proto`, `security_access_service.proto`, `authentication_service.proto`, `file_transfer_service.proto`, and `fault_listener_service.proto`.
+
+A reference `sdv_diagnostics_agent` (`system/software_defined_vehicle/automotive_services/diagnostics/tests/agent/src/main.rs`) wires these together and listens for DoIP (Diagnostics over IP, ISO 13400) traffic — the path an external diagnostic tester uses to reach the vehicle.
+
+#### Configuration, Calibration, Vehicle Mode, User Profile
+
+The remaining four follow the same pattern — proto-defined VSIDL services, Rust implementations:
+
+- **Configuration / Calibration (ConCal)** (`automotive_services/concal/`) lets services be reconfigured and calibrated at runtime. `ConCalCalibrationService` (`concal/catalog/concal_calibration_service.proto`) exposes `GetCalibrationConfigIds`, `StartCalibration`, `UpdateConfigForCalibration`, and `FinishCalibration`, with companion registration, update, and notification services.
+- **User Profile** (`automotive_services/user_preferences/`) manages per-user settings. `UserPreferencesManagementService` (`user_preferences/vsidl/v1/user_preferences_management_service.proto`) offers `RequestSettingsChange`, `SubscribeToSettingsChangeAndGetSettings`, and `UnsubscribeFromSettingsChange`, alongside admin, registry, and change-notifier services.
+- **Vehicle Mode** is named in the catalog README as one of the five automotive services; vehicle power-state handling itself lives in the Vehicle Power Manager (`system/software_defined_vehicle/vpm/`), covered with orchestration in §62.7.7.
+
+### 62.8.7 Samples and Tools
+
+SDV ships an unusually large body of runnable examples and host tooling, because a distributed multi-VM fabric is hard to learn from contracts alone.
+
+#### Samples
+
+`system/software_defined_vehicle/samples/` holds reference bundles, each with its own README:
+
+- **quickstart** (`samples/quickstart/`) packages two bundles (a `Manager` and a `Monitor`) into an APEX, with `vsidlc`-generated Rust middleware, demonstrating the end-to-end flow from `.vsidl` to a deployable, lifecycle-launched bundle.
+- **qos_scheduling** (`samples/qos_scheduling/`) shows scheduling profiles affecting CPU-bound bundles.
+- **tracing** instruments both C++ (Perfetto SDK) and Rust (the `tracing` crate plus `libatrace_rust`) bundles and shows AIDL calls auto-emitting ATrace events.
+- **sdv_gateway** (`samples/sdv_gateway/`) is an IVI app reaching SDV services through the gateway client library, exercising Service Discovery, Data Tunnel, and RPC together with TLS.
+- **oem_partition_update_client** demonstrates the OEM A/B partition update flow (prepare, activate, commit, rollback) via an `OemUpdater` crate.
+- **cujs** (`samples/cujs/`) is a large set of Critical User Journeys — pub/sub, RPC, pub/sub-with-power-suspend, multi-publisher, and robustness scenarios — that double as integration tests across VMs.
+
+#### Host tools
+
+`system/software_defined_vehicle/tools/` holds the host-side, mostly-Rust tooling that supports the build and provisioning flows:
+
+- **regenerator** (`tools/regenerator/`) re-runs `vsidlc` to refresh generated middleware catalogs, driven by `CATALOG_UPDATE` textproto files that record the output path, dependency catalogs, and generator flags.
+- **vvmconfig_generator** (`tools/vvmconfig_generator/`) converts a human-readable JSON vehicle-VM topology into the CBOR `vvmconfig` blob the Service Discovery agent consumes — JSON in git, binary CBOR at build time.
+- **sdv_provisioning_tool** (`tools/sdv_provisioning_tool/`) drives secure-mesh provisioning: it waits until the mesh is complete, writes `/vvmtruststore/uds_pubs`, and returns its SHA-256 as the factory trust anchor.
+- **vhal_json_generator** (`tools/vhal_json_generator/`) is a Rust host binary that reads VSIDL VHAL mappings and emits the JSON config the VHAL proxy (§62.8.5) loads.
+- **test_uds_certs_generator** (`tools/test_uds_certs_generator/`) generates `uds_certs` files for development and testing of the mesh.
+
+---
+
+## 62.9 Try It
+
+### Exercise 62.1: Explore CarService Services
 
 List all services registered by `ICarImpl`:
 
@@ -14694,7 +15365,7 @@ adb shell dumpsys car_service --print-timing
 adb shell getprop boot.car_service_created
 ```
 
-### Exercise 60.2: Inspect Vehicle HAL Properties
+### Exercise 62.2: Inspect Vehicle HAL Properties
 
 Query vehicle properties using the car service shell:
 
@@ -14713,7 +15384,7 @@ adb shell cmd car_service set-property HVAC_TEMPERATURE_SET \
     --area 49 --type 1 -- 22.5
 ```
 
-### Exercise 60.3: Trace a VHAL Property Event
+### Exercise 62.3: Trace a VHAL Property Event
 
 Use `atrace` to follow a property change through the stack:
 
@@ -14733,7 +15404,7 @@ adb shell atrace --async_stop > car_trace.html
 # CarPropertyService.onPropertyChange
 ```
 
-### Exercise 60.4: Examine TV Input Framework
+### Exercise 62.4: Examine TV Input Framework
 
 On a TV emulator or device:
 
@@ -14751,7 +15422,7 @@ adb shell dumpsys hdmi_control
 adb shell cmd hdmi_control cec_setting set hdmi_cec_enabled 1
 ```
 
-### Exercise 60.5: Investigate TV PIP Behavior
+### Exercise 62.5: Investigate TV PIP Behavior
 
 On a TV emulator:
 
@@ -14767,7 +15438,7 @@ adb shell input keyevent KEYCODE_DPAD_LEFT
 adb shell input keyevent KEYCODE_DPAD_RIGHT
 ```
 
-### Exercise 60.6: Check Device Form Factor
+### Exercise 62.6: Check Device Form Factor
 
 Determine the form factor programmatically:
 
@@ -14786,7 +15457,7 @@ adb shell pm list features | grep -E "automotive|leanback|watch"
 # android.hardware.type.watch
 ```
 
-### Exercise 60.7: Inspect Automotive Power States
+### Exercise 62.7: Inspect Automotive Power States
 
 On an automotive emulator:
 
@@ -14804,7 +15475,7 @@ adb shell cmd car_service garage-mode query
 adb shell cmd car_service power-off --skip-garagemode
 ```
 
-### Exercise 60.8: Explore Car SystemUI Components
+### Exercise 62.8: Explore Car SystemUI Components
 
 ```bash
 # List Car SystemUI services:
@@ -14818,7 +15489,7 @@ adb shell cmd car_service get-property HVAC_TEMPERATURE_SET
 adb shell cmd car_service get-property HVAC_FAN_SPEED
 ```
 
-### Exercise 60.9: Examine Occupant Zones
+### Exercise 62.9: Examine Occupant Zones
 
 ```bash
 # Dump occupant zone configuration:
@@ -14832,7 +15503,7 @@ adb shell dumpsys car_service --occ-zone
 # - Input type support per display
 ```
 
-### Exercise 60.10: Build Automotive Emulator Image
+### Exercise 62.10: Build Automotive Emulator Image
 
 ```bash
 # Set up the build environment:
@@ -14848,7 +15519,7 @@ m -j$(nproc)
 emulator -no-snapshot
 ```
 
-### Exercise 60.11: Trace CEC Message Handling
+### Exercise 62.11: Trace CEC Message Handling
 
 ```bash
 # Enable CEC debug logging:
@@ -14862,7 +15533,7 @@ adb logcat -s HdmiControlService:D HdmiCecLocalDeviceTv:D
 adb shell cmd hdmi_control onetouchplay
 ```
 
-### Exercise 60.12: Investigate WMShell Module Selection
+### Exercise 62.12: Investigate WMShell Module Selection
 
 Examine which WMShell module is active:
 
@@ -14884,7 +15555,7 @@ frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/WMShell
 frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/TvWMShellModule.java
 ```
 
-### Exercise 60.13: Measure Wear Battery Impact of AOD
+### Exercise 62.13: Measure Wear Battery Impact of AOD
 
 On a Wear emulator or device:
 
@@ -14903,7 +15574,7 @@ adb shell input keyevent KEYCODE_WAKEUP
 adb shell dumpsys batterystats --checkin
 ```
 
-### Exercise 60.14: Compare RRO Layering
+### Exercise 62.14: Compare RRO Layering
 
 Examine how RROs stack across an automotive product:
 
@@ -14918,7 +15589,7 @@ adb shell cmd overlay list com.android.systemui
 adb shell dumpsys overlay | grep -A 3 "car"
 ```
 
-### Exercise 60.15: Source Code Exploration Tasks
+### Exercise 62.15: Source Code Exploration Tasks
 
 Study the following files to understand form-factor abstractions:
 
@@ -14961,6 +15632,40 @@ Study the following files to understand form-factor abstractions:
 10. **Wearable Sensing**:
         - `frameworks/base/services/core/java/com/android/server/wearable/WearableSensingManagerService.java`
         - `frameworks/base/core/java/android/app/wearable/WearableSensingManager.java`
+
+### Exercise 62.16: Explore the SDV Platform (Architecture)
+
+These exercises use the AOSP 17 source tree; none require building a vehicle. Run them from the root of a synced `android17-release` checkout.
+
+1. **List the Core VM's agents.** Open `device/google/sdv/sdv_core_base/sdv_packages_core_services.mk` and map each `SDV_CORE_SERVICES_PACKAGES` entry to a subsection of §62.7. Which entries are agents, which are APEXes, and which are host build tools?
+
+2. **Read a real service-bundle definition.** Open `system/software_defined_vehicle/vpm/stable/vsidl/vpm.vsidl`. Identify the bundle's `server`, `client`, and `publisher` slots. Then open `system/software_defined_vehicle/vpm/stable/vsidl/power.proto` and `vehicle.proto` and list the `PowerStateReport` and `VpmVehicleState` enum values. Which of these would an orchestration `condition` match against?
+
+3. **Trace the lifecycle contract.** Read `system/software_defined_vehicle/lifecycle_management/aidl/google/sdv/lifecycle/ILifecycleManager.aidl` and `hardware/sdv/interfaces/lifecycle_management/aidl/google/sdv/lifecycle/internal/IService.aidl`. Match each `ILifecycleManager` method (`launchService`, `startService`, `stopService`, `shutdownService`) to the `IService` callback it triggers (`onCreate`, `onStart`, `onStop`, `onDestroy`).
+
+4. **Inspect the orchestration config schema.** Open `system/software_defined_vehicle/orchestration/distributed_config/src/protos/service_bundle_config.proto` and `common.proto`. How does an `InstancesStateConfiguration` pair a `condition` with desired instance states? What are the three logical operators a `Condition` can use?
+
+5. **Find the frozen registry API.** List `hardware/sdv/interfaces/service_bundles_registry/aidl_api/google.sdv.service_bundles_registry/` and confirm the current frozen version. Open the version-3 `IRegistry.aidl` and confirm it exposes only `getAvailableServiceBundlesMetadata()`.
+
+6. **Read the gateway allowlist.** Open `system/software_defined_vehicle/sdv_gateway/README.md` and `device/google/sdv/sdv_ivi_base/sdv_gateway_config.json`. Explain what `allowed_native_packagename` gates, and why a UID of `-1` is a security risk worth avoiding.
+
+7. **Find the display-safety bundle.** In `packages/services/display_safety/service/har-sdv-service/Android.bp`, find the `libhar_sdv_service_bundle` module and list its dependencies. Which dependency is the SDV middleware, and which is the gRPC service layer?
+
+### Exercise 62.17: Explore the SDV Communication Fabric (Middleware)
+
+These commands assume an SDV Core VM or a Cuttlefish SDV target (`sdv_core_cf`, `sdv_ivi_cf`) and a checked-out tree at `system/software_defined_vehicle/`.
+
+1. **Read a service bundle's contract.** Open `system/software_defined_vehicle/samples/vsidl/complex/catalog/complex_message_publisher.vsidl` and its subscriber peer. Identify the shared `topic` name and the shared RPC `channel` — that is the only thing the two halves agree on at authoring time.
+
+2. **See what `vsidlc` would generate.** Read `system/software_defined_vehicle/vsidl/vsidlc/README.md`, then look at the generation steps under `system/software_defined_vehicle/vsidl/vsidlc/src/rust/steps/`. Note that the output goes into `output/generated_rs`, the SDV analogue of AIDL stubs.
+
+3. **Trace the SOME/IP boundary.** Read `hardware/sdv/interfaces/some_ip/stack_agent/aidl/google/sdv/someip/ISomeIpStack.aidl`. Find `rpc_transact`, `publish`, and `subscribe_eventgroup`, and confirm that every payload crossing this interface is a raw `byte[]` — translation happens in the broker, not the stack.
+
+4. **Inspect the gateway allowlist.** Read `device/google/sdv/sdv_ivi_base/sdv_gateway_config.json` and the "Service config" section of `system/software_defined_vehicle/sdv_gateway/README.md`. Work out which UID is allowed to claim which SDV package name, and what an empty config would do.
+
+5. **Map a UDS routine to a proto.** Open `system/software_defined_vehicle/automotive_services/diagnostics/vsidl/v1/connection.proto` and find the `SessionType` enum. Match each value against ISO 14229-1's diagnostic session types (default, programming, extended, safety-system).
+
+6. **Check the mesh on a running target.** On a Core VM, `adb shell` and list the SDV agent services with `service list | grep sdv` (or `dumpsys`), then look for the Data Tunnel APEX `com.android.sdv.dt`. Inspecting `/vvmtruststore/` shows the mesh truststore the provisioning tool wrote.
 
 ---
 
@@ -15023,8 +15728,88 @@ adding round-display and battery-optimization support. All three prove that Andr
 architecture -- despite its complexity -- is genuinely modular enough to serve radically
 different device categories from a single codebase.
 
-<!-- chapter:61-print-services -->
-# Chapter 61: Print Services
+### Software Defined Vehicle
+
+The SDV platform (§62.7 and §62.8) is the next step beyond AAOS: rather than running the whole
+vehicle stack inside one Android image, it splits the vehicle into a headless Core VM of service
+bundles and one or more AAOS IVI VMs that reach them over a service fabric.
+
+- **SDV is a headless vehicle OS.** The Core VM runs Android with no UI
+  (`device/google/sdv/sdv_core_base/sdv_core_base.mk`), hosting *service bundles* and the agents
+  that supervise them, while AAOS IVI VMs and external ECUs talk to it over a service fabric.
+- **The unit of deployment is the service bundle**, a VSIDL-generated Rust `.so` shipped in an
+  APEX with an `SdvServiceBundleManifest` entry, identified at runtime by a Fully Qualified
+  Instance Name (`package/bundle/instance`).
+- **VSIDL replaces AIDL for bundle interfaces.** `vsidlc` and its companions generate Rust
+  middleware bindings (`generated_rs`) and SOME/IP translation from `.vsidl` + `.proto` catalogs;
+  per-message translation modes (`INTERPRET_AS_BYTES`, `DYNAMIC_LIBRARY`) decide how a type
+  crosses onto SOME/IP.
+- **Four control-plane agents supervise bundles.** The Service Bundles Registry (`IRegistry`,
+  frozen at v3) catalogs them; the Lifecycle Manager (`ILifecycleManager` + the `IService`
+  callbacks, via `lifecycle_service_bundle_runner` processes) launches/starts/stops them; the
+  Orchestrator holds a *desired* state per FQIN and reconciles it on every mode change with
+  retry/recovery semantics; the Health Monitor watches per-bundle heartbeats and feeds failures
+  back into recovery.
+- **vpm drives the modes.** The vehicle power-state manager (`sdv_vpm_agent`) defines the
+  `PowerStateReport` and `VpmVehicleState` ladders and publishes transitions, which are exactly
+  what orchestration conditions match against; the Update Manager is power-aware in the same way.
+- **The communication fabric is a network-spanning version of Android's IPC idioms.** Three
+  Binder agents — Service Discovery (Rust), Data Tunnel (C++, named-topic pub/sub over FMQ), and
+  RPC (socket-based) — are handed to a bundle as one `ContextInitializationToken`. Beneath them, a
+  per-VM certificate authority, identity agent, and authorization service form a
+  mutually-authenticated **secure mesh** over mTLS with P-256 certificates that encode the FQIN.
+- **SOME/IP carries cross-VM and cross-ECU traffic.** A C++ `vsomeip` stack agent presents
+  `ISomeIpStack` (raw `byte[]` payloads), and a Rust broker maps SDV topics/RPC/messages onto
+  SOME/IP services, events, and methods.
+- **AAOS integrates through the SDV Gateway.** `ISdvGateway`/`ISdvGatewaySession`, plus privileged
+  interfaces, give ordinary IVI native/Java clients and the VHAL proxy a UID-allowlisted door into
+  the fabric (`/vendor/etc/sdv_gateway_config.json`); `libvhal_proxy` makes a Core-VM vehicle
+  property look like an ordinary VHAL property to CarService, with SDV-RPC traffic on a dedicated
+  VLAN.
+- **The domain catalog and tooling round it out.** `automotive_services/` layers Diagnostics
+  (ISO 14229-1 / AUTOSAR DEM, DoIP), Configuration, Calibration, Vehicle Mode, and User Profile on
+  top, while `samples/` and `tools/` provide runnable references and the host-side
+  codegen/provisioning toolchain. Display safety (HARry) is an IVI-side Rust runtime whose
+  `libhar_sdv_service_bundle` joins the SDV fabric, with a `har_safety_monitor` enforcing
+  distraction/compliance constraints, shipped as SDV-only APEXes.
+
+### Key Source Files Reference
+
+SDV platform (§62.7) and middleware (§62.8):
+
+| File | Purpose |
+|------|---------|
+| `device/google/sdv/sdv_core_base/sdv_packages_core_services.mk` | Canonical list of agents/APEXes installed in the Core VM |
+| `device/google/sdv/AndroidProducts.mk` | SDV lunch targets (Core/IVI/Media, cf and arm64) |
+| `device/google/sdv/sdv_core_base/sdv_core_base.mk` | Declares SDV a headless vehicle Android OS |
+| `system/software_defined_vehicle/service_bundles_registry/proto/sdv_service_bundles_manifest.proto` | Service-bundle manifest schema |
+| `hardware/sdv/interfaces/service_bundles_registry/google/sdv/service_bundles_registry/IRegistry.aidl` | Registry stable AIDL (frozen v3) |
+| `system/software_defined_vehicle/lifecycle_management/aidl/google/sdv/lifecycle/ILifecycleManager.aidl` | Lifecycle control interface |
+| `hardware/sdv/interfaces/lifecycle_management/aidl/google/sdv/lifecycle/internal/IService.aidl` | Bundle lifecycle callbacks (onCreate/onStart/onStop/onDestroy) |
+| `system/software_defined_vehicle/lifecycle_management/service_bundle_runner/src/main.rs` | The per-instance bundle runner process |
+| `system/software_defined_vehicle/orchestration/engine/src/engine.rs` | Orchestrator reconciliation engine |
+| `system/software_defined_vehicle/health_monitor/src/hb_config.rs` | Heartbeat monitoring configuration |
+| `system/software_defined_vehicle/vpm/stable/vsidl/power.proto` | `PowerStateReport` enum |
+| `system/software_defined_vehicle/vpm/stable/vsidl/vehicle.proto` | `VpmVehicleState` enum |
+| `hardware/sdv/interfaces/vehicle_power_manager/aidl/google/sdv/vpm/IPowerStateClientApi.aidl` | Client power-state subscription AIDL |
+| `system/software_defined_vehicle/update_manager/catalog/update_manager_service.proto` | Update Manager state machine |
+| `hardware/sdv/interfaces/middleware/ctx/aidl/google/sdv/comms/ContextInitializationToken.aidl` | The use-once token bundling a Service Bundle's four agent connections |
+| `hardware/sdv/interfaces/middleware/service_discovery/google/sdv/identity/ServiceFqin.aidl` | Vehicle-wide bundle identity (the FQIN) |
+| `hardware/sdv/interfaces/middleware/rpc/google/sdv/rpc/IRpcAgent.aidl` | Socket-based RPC agent contract |
+| `hardware/sdv/interfaces/middleware/data_tunnel/aidl/google/sdv/data_tunnel/IAgentService.aidl` | Named-topic pub/sub over FMQ |
+| `hardware/sdv/interfaces/middleware/service_discovery/google/sdv/ca/ICertificateAuthority.aidl` | Per-VM CA for the secure mesh |
+| `system/software_defined_vehicle/vsidl/vsidlc/README.md` | VSIDL compiler: catalog to `generated_rs` |
+| `system/software_defined_vehicle/vsidl/language/src/protos/sdv/vsidl/v1/syntax.proto` | The VSIDL textproto grammar |
+| `hardware/sdv/interfaces/some_ip/stack_agent/aidl/google/sdv/someip/ISomeIpStack.aidl` | SOME/IP stack boundary (raw bytes) |
+| `system/software_defined_vehicle/some_ip/broker_agent_comms/src/main.rs` | SOME/IP-to-SDV broker (Rust) |
+| `hardware/sdv/interfaces/sdv_gateway/google/sdv/gateway/ISdvGatewaySession.aidl` | Gateway session for non-SDV-aware clients |
+| `system/software_defined_vehicle/sdv_gateway/README.md` | Gateway config, UID allowlist, SDV-RPC VLAN |
+| `system/software_defined_vehicle/sdv_gateway/vhal_proxy/libvhal_proxy/README.md` | VHAL proxy: properties to Data Tunnel topics |
+| `system/software_defined_vehicle/automotive_services/diagnostics/README.md` | Diagnostics: ISO 14229-1 / AUTOSAR DEM |
+| `packages/services/display_safety/service/har-sdv-service/Android.bp` | The display-safety SDV service bundle |
+
+<!-- chapter:63-print-services -->
+# Chapter 63: Print Services
 
 Android's printing framework provides a complete system for discovering printers,
 rendering documents, spooling print jobs, and delivering them to physical or
@@ -15039,7 +15824,7 @@ printer discovery, and the spooler architecture.
 
 ---
 
-## 61.1 Architecture Overview
+## 63.1 Architecture Overview
 
 The printing framework is organized into four major layers:
 
@@ -15109,7 +15894,7 @@ graph TB
 
 ---
 
-## 61.2 PrintManager -- The Client API
+## 63.2 PrintManager -- The Client API
 
 `PrintManager` is the system service accessor for printing capabilities. It
 is annotated as a `@SystemService` and requires `PackageManager.FEATURE_PRINTING`:
@@ -15122,7 +15907,7 @@ public final class PrintManager {
     public static final String PRINT_SPOOLER_PACKAGE_NAME = "com.android.printspooler";
 ```
 
-### 61.2.1 Starting a Print Job
+### 63.2.1 Starting a Print Job
 
 An application initiates printing by calling `PrintManager.print()` from an
 Activity:
@@ -15165,7 +15950,7 @@ try {
 return null;
 ```
 
-### 61.2.2 Querying Print Jobs
+### 63.2.2 Querying Print Jobs
 
 Applications can query their own print jobs (but not those of other apps):
 
@@ -15182,7 +15967,7 @@ for (PrintJob job : jobs) {
 }
 ```
 
-### 61.2.3 Print Job State Change Listeners
+### 63.2.3 Print Job State Change Listeners
 
 Apps can register for state change notifications:
 
@@ -15194,7 +15979,7 @@ private static final int MSG_NOTIFY_PRINT_JOB_STATE_CHANGED = 1;
 The listener mechanism uses a handler-based callback to deliver state changes
 on the main thread.
 
-### 61.2.4 Service Selection Constants
+### 63.2.4 Service Selection Constants
 
 ```java
 // frameworks/base/core/java/android/print/PrintManager.java
@@ -15208,13 +15993,13 @@ are currently enabled or disabled in Settings.
 
 ---
 
-## 61.3 PrintDocumentAdapter -- The Rendering Contract
+## 63.3 PrintDocumentAdapter -- The Rendering Contract
 
 `PrintDocumentAdapter` is the abstract class that applications implement to
 provide content for printing. It defines a strict lifecycle contract between
 the application and the print framework.
 
-### 61.3.1 Lifecycle
+### 63.3.1 Lifecycle
 
 ```mermaid
 stateDiagram-v2
@@ -15256,7 +16041,7 @@ public abstract class PrintDocumentAdapter {
 }
 ```
 
-### 61.3.2 The Layout-Write Protocol
+### 63.3.2 The Layout-Write Protocol
 
 The interaction between the system and the adapter follows a callback protocol:
 
@@ -15291,7 +16076,7 @@ Key rules:
 - The adapter **must** close the `ParcelFileDescriptor` passed to `onWrite()`
 - The `extras` bundle contains `EXTRA_PRINT_PREVIEW` to indicate preview mode
 
-### 61.3.3 Cancellation
+### 63.3.3 Cancellation
 
 The `CancellationSignal` parameter allows the system to request cancellation:
 
@@ -15307,7 +16092,7 @@ cancellationSignal.setOnCancelListener(new OnCancelListener() {
 This is important when the user changes print options during an ongoing
 layout -- the system cancels the current layout and requests a new one.
 
-### 61.3.4 PrintDocumentInfo
+### 63.3.4 PrintDocumentInfo
 
 After layout, the adapter reports document metadata:
 
@@ -15324,11 +16109,11 @@ previously rendered pages and skip the `onWrite()` call.
 
 ---
 
-## 61.4 Print Job Lifecycle
+## 63.4 Print Job Lifecycle
 
 A print job transitions through seven states, tracked by `PrintJobInfo`:
 
-### 61.4.1 State Constants
+### 63.4.1 State Constants
 
 ```java
 // frameworks/base/core/java/android/print/PrintJobInfo.java
@@ -15341,7 +16126,7 @@ public static final int STATE_FAILED = 6;    // Printing failed
 public static final int STATE_CANCELED = 7;  // Canceled (terminal)
 ```
 
-### 61.4.2 State Machine
+### 63.4.2 State Machine
 
 ```mermaid
 stateDiagram-v2
@@ -15368,7 +16153,7 @@ stateDiagram-v2
     CANCELED --> [*]
 ```
 
-### 61.4.3 Internal State Groupings
+### 63.4.3 Internal State Groupings
 
 The system uses aggregate state constants for filtering:
 
@@ -15379,7 +16164,7 @@ The system uses aggregate state constants for filtering:
 | `STATE_ANY_ACTIVE` | `CREATED`, `QUEUED`, `STARTED`, `BLOCKED` | Non-terminal states |
 | `STATE_ANY_SCHEDULED` | `QUEUED`, `STARTED`, `BLOCKED` | Delivered to print service |
 
-### 61.4.4 PrintJob Wrapper
+### 63.4.4 PrintJob Wrapper
 
 The `PrintJob` class provides a convenient wrapper for applications:
 
@@ -15406,11 +16191,11 @@ those cannot change.
 
 ---
 
-## 61.5 PrintAttributes -- Describing Print Output
+## 63.5 PrintAttributes -- Describing Print Output
 
 `PrintAttributes` encapsulates how content should be formatted for printing:
 
-### 61.5.1 Media Size
+### 63.5.1 Media Size
 
 Media sizes define page dimensions using the standard `MediaSize` class:
 
@@ -15425,7 +16210,7 @@ MediaSize.JIS_B5       // 182 x 257mm
 
 Sizes are stored in mils (thousandths of an inch) internally.
 
-### 61.5.2 Color and Duplex Modes
+### 63.5.2 Color and Duplex Modes
 
 ```java
 // Color modes
@@ -15438,14 +16223,14 @@ public static final int DUPLEX_MODE_LONG_EDGE = 2;  // Book-style
 public static final int DUPLEX_MODE_SHORT_EDGE = 4;  // Notepad-style
 ```
 
-### 61.5.3 Resolution and Margins
+### 63.5.3 Resolution and Margins
 
 `Resolution` defines DPI (dots per inch) for horizontal and vertical axes.
 `Margins` define minimum margins in mils on all four sides.
 
 ---
 
-## 61.6 PDF Rendering with PrintedPdfDocument
+## 63.6 PDF Rendering with PrintedPdfDocument
 
 `PrintedPdfDocument` is a helper class that simplifies creating PDF output
 from Android's Canvas-based graphics API:
@@ -15461,7 +16246,7 @@ public class PrintedPdfDocument extends PdfDocument {
     private final Rect mContentRect;
 ```
 
-### 61.6.1 Coordinate System
+### 63.6.1 Coordinate System
 
 The class converts between three coordinate systems:
 
@@ -15487,7 +16272,7 @@ For an 8.5 x 11 inch letter page:
 - Width: 8500 mils -> 612 points
 - Height: 11000 mils -> 792 points
 
-### 61.6.2 Usage Pattern
+### 63.6.2 Usage Pattern
 
 ```java
 // Typical implementation in a PrintDocumentAdapter
@@ -15515,7 +16300,7 @@ public void onWrite(PageRange[] pages, ParcelFileDescriptor destination,
 }
 ```
 
-### 61.6.3 Content Rect
+### 63.6.3 Content Rect
 
 The content rectangle accounts for margins, giving the drawable area:
 
@@ -15531,7 +16316,7 @@ mContentRect = new Rect(marginLeft, marginTop,
 
 ---
 
-## 61.7 PrintManagerService -- The System Service
+## 63.7 PrintManagerService -- The System Service
 
 `PrintManagerService` wraps the `PrintManagerImpl` Binder service and integrates
 with the `SystemService` lifecycle:
@@ -15558,7 +16343,7 @@ public final class PrintManagerService extends SystemService {
 }
 ```
 
-### 61.7.1 Multi-User Architecture
+### 63.7.1 Multi-User Architecture
 
 Each user gets an independent `UserState` instance that manages print services,
 the spooler connection, and printer discovery:
@@ -15599,7 +16384,7 @@ class PrintManagerImpl extends IPrintManager.Stub {
     private final SparseArray<UserState> mUserStates = new SparseArray<>();
 ```
 
-### 61.7.2 Permission Enforcement
+### 63.7.2 Permission Enforcement
 
 The `print()` method in `PrintManagerImpl` validates:
 
@@ -15623,12 +16408,12 @@ When printing is disabled, `print()` fetches the human-readable reason through
 toast, drives the adapter through `start()`/`finish()` so the app's resources
 are released, and returns `null` without creating a job.
 
-### 61.7.3 Content Observers and Broadcast Receivers
+### 63.7.3 Content Observers and Broadcast Receivers
 
 `PrintManagerImpl` registers:
 
 - **Content observers** on `Settings.Secure.DISABLED_PRINT_SERVICES` to track
-  which print services the user has *disabled* in Settings (see Section 61.8.2 for
+  which print services the user has *disabled* in Settings (see Section 63.8.2 for
   why Android tracks the disabled set rather than the enabled set)
 
 - **Package monitors** to detect installation, removal, or updates of print
@@ -15636,7 +16421,7 @@ are released, and returns `null` without creating a job.
 
 ---
 
-## 61.8 UserState -- Per-User Print Management
+## 63.8 UserState -- Per-User Print Management
 
 `UserState` is the core per-user coordinator. It implements three callback
 interfaces:
@@ -15649,7 +16434,7 @@ final class UserState implements
         RemotePrintServiceRecommendationServiceCallbacks {  // Recommendations
 ```
 
-### 61.8.1 Internal State
+### 63.8.1 Internal State
 
 ```java
 // Active (bound) print services
@@ -15671,7 +16456,7 @@ private PrinterDiscoverySessionMediator mPrinterDiscoverySession;
 private final RemotePrintSpooler mSpooler;
 ```
 
-### 61.8.2 Service Discovery
+### 63.8.2 Service Discovery
 
 When a user is unlocked, `UserState` discovers print services by querying
 `PackageManager` for services with the action
@@ -15705,7 +16490,7 @@ if (enabledSettingValue != null) {
 }
 ```
 
-### 61.8.3 Service Lifecycle Management
+### 63.8.3 Service Lifecycle Management
 
 Active services are managed through `RemotePrintService` proxies:
 
@@ -15735,13 +16520,13 @@ private static final int SERVICE_RESTART_DELAY_MILLIS = 500;
 
 ---
 
-## 61.9 PrintService -- The Plugin API
+## 63.9 PrintService -- The Plugin API
 
 `PrintService` is the base class for print service plugins. Third-party apps
 (e.g., HP Print Service, Mopria Print Service) extend this class to support
 specific printers.
 
-### 61.9.1 Service Declaration
+### 63.9.1 Service Declaration
 
 A print service must declare itself in the manifest with specific permissions
 and intent filters:
@@ -15759,7 +16544,7 @@ and intent filters:
 
 The `BIND_PRINT_SERVICE` permission ensures only the system can bind to it.
 
-### 61.9.2 Key Callbacks
+### 63.9.2 Key Callbacks
 
 ```java
 // frameworks/base/core/java/android/printservice/PrintService.java
@@ -15782,7 +16567,7 @@ public abstract class PrintService extends Service {
 }
 ```
 
-### 61.9.3 Print Job Processing Flow
+### 63.9.3 Print Job Processing Flow
 
 ```mermaid
 sequenceDiagram
@@ -15815,7 +16600,7 @@ sequenceDiagram
     end
 ```
 
-### 61.9.4 Accessing Print Data
+### 63.9.4 Accessing Print Data
 
 The print service accesses the spooled document through `PrintDocument`:
 
@@ -15840,12 +16625,12 @@ The data is always a PDF file, regardless of the original content format.
 
 ---
 
-## 61.10 Printer Discovery
+## 63.10 Printer Discovery
 
 Printer discovery is managed through `PrinterDiscoverySession`, which has
 its own lifecycle independent of the print service.
 
-### 61.10.1 Discovery Lifecycle
+### 63.10.1 Discovery Lifecycle
 
 ```mermaid
 stateDiagram-v2
@@ -15859,7 +16644,7 @@ stateDiagram-v2
     Destroyed --> [*]
 ```
 
-### 61.10.2 Key Methods
+### 63.10.2 Key Methods
 
 ```java
 // frameworks/base/core/java/android/printservice/PrinterDiscoverySession.java
@@ -15889,7 +16674,7 @@ public abstract class PrinterDiscoverySession {
 }
 ```
 
-### 61.10.3 PrinterInfo and Capabilities
+### 63.10.3 PrinterInfo and Capabilities
 
 Printers are described using `PrinterInfo`:
 
@@ -15914,14 +16699,14 @@ graph LR
     end
 ```
 
-### 61.10.4 Priority List
+### 63.10.4 Priority List
 
 The `priorityList` parameter in `onStartPrinterDiscovery()` contains printers
 that should be discovered first -- typically printers the user has used
 recently. This allows print services to prioritize network discovery for
 known printers.
 
-### 61.10.5 Printer State Tracking
+### 63.10.5 Printer State Tracking
 
 When the user selects a printer in the print UI, the system calls
 `onStartPrinterStateTracking()` for that printer. The service should then
@@ -15931,12 +16716,12 @@ discovered printers upfront.
 
 ---
 
-## 61.11 The Print Spooler
+## 63.11 The Print Spooler
 
 The print spooler (`com.android.printspooler`) is a separate system process
 that manages the print queue and hosts the print preview UI.
 
-### 61.11.1 RemotePrintSpooler
+### 63.11.1 RemotePrintSpooler
 
 `RemotePrintSpooler` is the system service's proxy to the spooler process:
 
@@ -15950,7 +16735,7 @@ final class RemotePrintSpooler {
     private IPrintSpooler mRemoteInstance;
 ```
 
-### 61.11.2 Timed Remote Calls
+### 63.11.2 Timed Remote Calls
 
 All calls to the spooler use `TimedRemoteCaller` to enforce timeouts:
 
@@ -15965,7 +16750,7 @@ private final SetPrintJobTagCaller mSetPrintJobTagCaller;
 The binding timeout is 10 seconds on production builds, 120 seconds on
 engineering builds (to accommodate debugger attachment).
 
-### 61.11.3 Spooler Binding Lifecycle
+### 63.11.3 Spooler Binding Lifecycle
 
 ```mermaid
 sequenceDiagram
@@ -15990,7 +16775,7 @@ sequenceDiagram
     RPS->>SP: unbindService()
 ```
 
-### 61.11.4 Spooler Callbacks
+### 63.11.4 Spooler Callbacks
 
 The spooler notifies the system service of state changes through
 `PrintSpoolerCallbacks`:
@@ -16006,7 +16791,7 @@ public static interface PrintSpoolerCallbacks {
 
 ---
 
-## 61.12 RemotePrintService -- Service Process Proxy
+## 63.12 RemotePrintService -- Service Process Proxy
 
 `RemotePrintService` manages the lifecycle of a bound print service:
 
@@ -16020,7 +16805,7 @@ final class RemotePrintService implements DeathRecipient {
     private boolean mHasPrinterDiscoverySession;
 ```
 
-### 61.12.1 Deferred Commands
+### 63.12.1 Deferred Commands
 
 If the service is not yet bound when a command arrives, it is added to
 `mPendingCommands` and executed after binding completes:
@@ -16043,7 +16828,7 @@ flowchart TB
     CONNECTED --> FLUSH
 ```
 
-### 61.12.2 Death Handling
+### 63.12.2 Death Handling
 
 When a print service process dies:
 
@@ -16056,7 +16841,7 @@ The `RemotePrintService` detects the death, notifies `UserState` through
 `PrintServiceCallbacks.onServiceDied()`, and the `UserState` schedules
 a restart after 500ms.
 
-### 61.12.3 Tracked Printers
+### 63.12.3 Tracked Printers
 
 The proxy tracks which printers are being actively monitored:
 
@@ -16070,7 +16855,7 @@ restart, providing seamless recovery from service crashes.
 
 ---
 
-## 61.13 The Complete Print Flow
+## 63.13 The Complete Print Flow
 
 Here is the end-to-end flow from a user pressing "Print" in an application
 to the document arriving at the printer:
@@ -16132,7 +16917,7 @@ sequenceDiagram
 
 ---
 
-## 61.14 The print() Method Internals
+## 63.14 The print() Method Internals
 
 The `UserState.print()` method reveals the internal mechanics of job creation:
 
@@ -16183,7 +16968,7 @@ Key implementation details:
 
 2. **PendingIntent**: The print dialog is launched through a `PendingIntent`
    wrapped in a Bundle under `EXTRA_PRINT_DIALOG_INTENT`. The client
-   (`PrintManager.print()` in Section 61.2.1) reads that `IntentSender` and starts
+   (`PrintManager.print()` in Section 63.2.1) reads that `IntentSender` and starts
    it, so the dialog runs with the correct security context across process
    boundaries
 
@@ -16193,7 +16978,7 @@ Key implementation details:
 
 4. **Initial state**: Every print job starts as `STATE_CREATED` with 1 copy
 
-### 61.14.1 PrintJobForAppCache
+### 63.14.1 PrintJobForAppCache
 
 When applications create print jobs, they are tracked in a cache keyed by
 app ID. This serves two purposes:
@@ -16217,7 +17002,7 @@ public List<PrintJobInfo> getPrintJobInfos(int appId) {
     // spooler knows about (some jobs are being processed).
 ```
 
-### 61.14.2 Cancel and Restart Flow
+### 63.14.2 Cancel and Restart Flow
 
 Canceling a print job involves both the spooler and the print service:
 
@@ -16254,7 +17039,7 @@ public void restartPrintJob(@NonNull PrintJobId printJobId, int appId) {
 }
 ```
 
-### 61.14.3 Job Routing to Services
+### 63.14.3 Job Routing to Services
 
 When the spooler notifies that a job is queued, `UserState` routes it to the
 correct print service based on the printer's `ComponentName`:
@@ -16282,12 +17067,12 @@ the printer and when the job was queued, the job immediately fails with
 
 ---
 
-## 61.15 PrintManagerImpl Binder Service
+## 63.15 PrintManagerImpl Binder Service
 
 The `PrintManagerImpl` inner class handles all Binder calls with careful
 security enforcement:
 
-### 61.15.1 User Resolution
+### 63.15.1 User Resolution
 
 Every API call resolves the calling user and validates permissions:
 
@@ -16307,7 +17092,7 @@ synchronized (mLock) {
 }
 ```
 
-### 61.15.2 Custom Printer Icon Security
+### 63.15.2 Custom Printer Icon Security
 
 Custom printer icons from print services undergo user boundary validation
 to prevent cross-user information leakage:
@@ -16329,7 +17114,7 @@ private Icon validateIconUserBoundary(Icon icon, int resolvedCallingId) {
 }
 ```
 
-### 61.15.3 Print Services Query
+### 63.15.3 Print Services Query
 
 The `READ_PRINT_SERVICES` permission is required to enumerate print services:
 
@@ -16344,7 +17129,7 @@ public List<PrintServiceInfo> getPrintServices(int selectionFlags, int userId) {
 
 ---
 
-## 61.16 Print Service Recommendations
+## 63.16 Print Service Recommendations
 
 Android provides a recommendation system for suggesting print services that
 the user might want to install. `RemotePrintServiceRecommendationService`
@@ -16360,7 +17145,7 @@ can communicate with a discovered printer.
 
 ---
 
-## 61.17 AIDL Interfaces
+## 63.17 AIDL Interfaces
 
 The print framework defines several AIDL interfaces for cross-process
 communication:
@@ -16381,7 +17166,7 @@ communication:
 | `ILayoutResultCallback` | App -> System | Layout result delivery |
 | `IWriteResultCallback` | App -> System | Write result delivery |
 
-### 61.17.1 Listener Interfaces
+### 63.17.1 Listener Interfaces
 
 The `PrintManager` client API exposes three listener interfaces:
 
@@ -16431,7 +17216,7 @@ mHandler = new Handler(context.getMainLooper(), null, false) {
 };
 ```
 
-### 61.17.2 PrintManager Internal Extras
+### 63.17.2 PrintManager Internal Extras
 
 The `PrintManager` uses several hidden extras for communication with the
 print dialog activity:
@@ -16453,7 +17238,7 @@ a `PrintManager` instance that can access all print jobs regardless of app ID.
 
 ---
 
-## 61.18 PrintFileDocumentAdapter
+## 63.18 PrintFileDocumentAdapter
 
 For the common case of printing an existing file, Android provides
 `PrintFileDocumentAdapter`:
@@ -16468,7 +17253,7 @@ spooler without the application needing to implement the full
 
 ---
 
-## 61.19 Threading Model
+## 63.19 Threading Model
 
 The print framework uses careful threading to avoid blocking the UI:
 
@@ -16490,11 +17275,11 @@ The documentation explicitly warns:
 
 ---
 
-## 61.20 Security Model
+## 63.20 Security Model
 
 The print framework enforces several security boundaries:
 
-### 61.20.1 Permission Requirements
+### 63.20.1 Permission Requirements
 
 | Permission | Purpose |
 |-----------|---------|
@@ -16502,7 +17287,7 @@ The print framework enforces several security boundaries:
 | `INTERACT_ACROSS_USERS_FULL` | Cross-user print management |
 | Feature: `FEATURE_PRINTING` | Device must support printing |
 
-### 61.20.2 App Isolation
+### 63.20.2 App Isolation
 
 Applications can only see their own print jobs. The `PrintJobForAppCache`
 in `UserState` maintains per-app caches:
@@ -16512,7 +17297,7 @@ in `UserState` maintains per-app caches:
 private final PrintJobForAppCache mPrintJobForAppCache = new PrintJobForAppCache();
 ```
 
-### 61.20.3 Device Policy Integration
+### 63.20.3 Device Policy Integration
 
 Enterprise management disables printing by setting the
 `UserManager.DISALLOW_PRINTING` user restriction. `isPrintingEnabled()` checks
@@ -16536,9 +17321,9 @@ if (!isPrintingEnabled()) {
 
 ---
 
-## 61.21 Debugging Print Services
+## 63.21 Debugging Print Services
 
-### 61.21.1 Shell Commands
+### 63.21.1 Shell Commands
 
 The `PrintShellCommand` class implements two `cmd print` subcommands, both of
 which control whether the system may bind to print services published by instant
@@ -16564,12 +17349,12 @@ $ adb shell dumpsys print
 $ adb shell dumpsys print --proto
 ```
 
-The `dumpsys print` handler in `PrintManagerService` (Section 61.7) snapshots
+The `dumpsys print` handler in `PrintManagerService` (Section 63.7) snapshots
 the per-user `UserState` list under `mLock`, then renders it through a
 `DualDumpOutputStream` that targets either an `IndentingPrintWriter` (text) or a
 `ProtoOutputStream` (`--proto`).
 
-### 61.21.2 Logging
+### 63.21.2 Logging
 
 Enable verbose logging for print components:
 
@@ -16581,7 +17366,7 @@ $ adb shell setprop log.tag.RemotePrintService VERBOSE
 $ adb shell setprop log.tag.UserState VERBOSE
 ```
 
-### 61.21.3 Proto Dump
+### 63.21.3 Proto Dump
 
 The print framework supports protobuf-based dumps for structured analysis:
 
@@ -16593,7 +17378,7 @@ The print framework supports protobuf-based dumps for structured analysis:
 
 ---
 
-## 61.22 Key Constants Reference
+## 63.22 Key Constants Reference
 
 | Constant | Value | Location |
 |----------|-------|----------|
@@ -16609,7 +17394,7 @@ The print framework supports protobuf-based dumps for structured analysis:
 
 ---
 
-## 61.23 Printer Setup Activity (Android 17)
+## 63.23 Printer Setup Activity (Android 17)
 
 Android 17 lets a print service publish a *setup* activity for a printer, in
 addition to the long-standing *info* activity. The motivating case is a printer
@@ -16628,7 +17413,7 @@ flag {
 }
 ```
 
-### 61.23.1 The setup intent on PrinterInfo
+### 63.23.1 The setup intent on PrinterInfo
 
 `PrinterInfo` gains a nullable `mSetupIntent` (`PendingIntent`) alongside the
 existing `mInfoIntent`. A print service attaches it from
@@ -16651,7 +17436,7 @@ flag-off build. The accessor `getSetupIntent()` is deliberately marked `@hide`:
 only the framework's own print UI is meant to launch the setup screen, so a
 third-party app that obtains a `PrinterInfo` through other APIs cannot start it.
 
-### 61.23.2 How the spooler blocks printing until setup completes
+### 63.23.2 How the spooler blocks printing until setup completes
 
 The print dialog (`PrintActivity` in the spooler) treats a printer with a setup
 intent as not-yet-printable. `needsSetup()` returns true only when the flag is
@@ -16694,7 +17479,7 @@ a different one during setup.
 
 ---
 
-## 61.24 Print Telemetry (Android 17)
+## 63.24 Print Telemetry (Android 17)
 
 Android 17 adds structured statsd metrics to the print spooler so the platform
 can measure print outcomes, discovery, and UI engagement. All logging is gated
@@ -16709,7 +17494,7 @@ flag {
 }
 ```
 
-### 61.24.1 The statsd atoms
+### 63.24.1 The statsd atoms
 
 The atoms live in a dedicated extension file and are emitted by the
 `printspooler` module:
@@ -16730,7 +17515,7 @@ the printer's supported color modes, media sizes, and duplex modes. Two
 additional `Bips*` atoms (1075-1078) come from the built-in print service
 (`builtinprintservice`) rather than the spooler.
 
-### 61.24.2 Where the events are logged
+### 63.24.2 Where the events are logged
 
 `PrintSpoolerService.logPrintJobFinalState()` emits a `FrameworkPrintJob` when a
 job reaches a final spooler state. It resolves the print service's UID, reads
@@ -16758,7 +17543,7 @@ including media-size and document-type lookups read from `PrintAttributes` and
 
 ---
 
-## 61.25 The Spooler Is No Longer Preinstalled Everywhere (Android 17)
+## 63.25 The Spooler Is No Longer Preinstalled Everywhere (Android 17)
 
 Earlier releases assumed `com.android.printspooler` was present on every user.
 Android 17 narrows the preinstall allowlist: the spooler is installed only for
@@ -16825,7 +17610,7 @@ action.
    Note the per-user `UserState` sections, the installed and active print
    services, and any cached print jobs. On a device with secondary users, confirm
    the command no longer fails even though the spooler may be absent on some users
-   (Section 61.25).
+   (Section 63.25).
 
 2. **Watch the disabled-services model.** List the print services, then toggle
    one in Settings and re-read the secure setting that actually persists the
@@ -16836,7 +17621,7 @@ action.
    ```
 
    Disable a service in Settings and observe the `ComponentName` appear in the
-   colon-separated list; the *enabled* setting stays empty (Section 61.8.2).
+   colon-separated list; the *enabled* setting stays empty (Section 63.8.2).
 
 3. **Trace a print job's lifecycle.** Enable verbose logging and follow a job
    from `STATE_CREATED` through `STATE_QUEUED` to a terminal state:
@@ -16855,13 +17640,13 @@ action.
    ```
 
    With `printing_telemetry` on, complete a print and confirm a `FrameworkPrintJob`
-   atom is logged (Section 61.24).
+   atom is logged (Section 63.24).
 
 5. **Implement a minimal print service.** Build a `PrintService` subclass that
    reports a single fake printer in `onCreatePrinterDiscoverySession()` and
    completes jobs in `onPrintJobQueued()`. Attach a setup intent with
    `PrinterInfo.Builder.setSetupIntent()` and watch the print dialog block on
-   setup before allowing the job (Section 61.23).
+   setup before allowing the job (Section 63.23).
 
 ---
 
@@ -16902,8 +17687,8 @@ as `dumpsys print` now guards spooler access with an install check, and
 `PrintManager.print()` returns `null` instead of leaking
 `ActivityNotFoundException` when the dialog activity cannot be resolved.
 
-<!-- chapter:62-camera2-pipeline -->
-# Chapter 62: Camera2 Pipeline Deep Dive
+<!-- chapter:64-camera2-pipeline -->
+# Chapter 64: Camera2 Pipeline Deep Dive
 
 The camera subsystem is among the most complex and performance-critical
 pipelines in AOSP.  A single photo capture can involve dozens of metadata
@@ -16919,9 +17704,9 @@ here is annotated with the exact AOSP source file where it lives.
 
 ---
 
-## 62.1 Camera2 Architecture
+## 64.1 Camera2 Architecture
 
-### 62.1.1 The Four-Layer Stack
+### 64.1.1 The Four-Layer Stack
 
 The Camera2 subsystem spans four layers:
 
@@ -16941,7 +17726,7 @@ The Camera2 subsystem spans four layers:
 4. **Hardware ISP / Sensor** -- The actual image signal processor and sensor
    silicon.
 
-### 62.1.2 End-to-End Architecture Diagram
+### 64.1.2 End-to-End Architecture Diagram
 
 ```mermaid
 graph TD
@@ -16992,7 +17777,7 @@ graph TD
     FP -->|CaptureResult| CD
 ```
 
-### 62.1.3 CameraManager -- The Entry Point
+### 64.1.3 CameraManager -- The Entry Point
 
 `CameraManager` is the system service that applications obtain via
 `Context.getSystemService(Context.CAMERA_SERVICE)`.  It is annotated with
@@ -17038,7 +17823,7 @@ The `CameraManager` maintains three internal caches:
    physical camera stream configurations, cached because the computation
    requires many Binder calls.
 
-### 62.1.4 CameraDevice -- The Device Handle
+### 64.1.4 CameraDevice -- The Device Handle
 
 `CameraDevice` is an abstract class representing an opened camera.  The
 concrete implementation is `CameraDeviceImpl` in the `impl/` package.
@@ -17080,7 +17865,7 @@ stateDiagram-v2
     Closed --> [*]
 ```
 
-### 62.1.5 CameraDeviceImpl -- The Java-Side Implementation
+### 64.1.5 CameraDeviceImpl -- The Java-Side Implementation
 
 `CameraDeviceImpl` is the concrete implementation of the abstract
 `CameraDevice` class.  It lives in the application process and communicates
@@ -17131,7 +17916,7 @@ public class CameraDeviceCallbacks extends ICameraDeviceCallbacks.Stub {
 }
 ```
 
-### 62.1.6 Hardware Support Levels
+### 64.1.6 Hardware Support Levels
 
 The Camera2 API defines hardware support levels that indicate what features
 a device can provide.  These are queried via
@@ -17150,7 +17935,7 @@ Source: frameworks/base/core/java/android/hardware/camera2/CameraCharacteristics
         frameworks/base/core/java/android/hardware/camera2/CameraMetadata.java
 ```
 
-### 62.1.7 CameraCaptureSession -- The Configured Pipeline
+### 64.1.7 CameraCaptureSession -- The Configured Pipeline
 
 A `CameraCaptureSession` represents a configured set of output surfaces.
 Creating a session is expensive (hundreds of milliseconds) because the
@@ -17196,7 +17981,7 @@ stateDiagram-v2
     Closed --> [*]
 ```
 
-### 62.1.8 Session Configuration via OutputConfiguration
+### 64.1.8 Session Configuration via OutputConfiguration
 
 Starting with API 24, sessions are configured using `SessionConfiguration`
 and `OutputConfiguration` objects that provide more control over how output
@@ -17236,9 +18021,9 @@ cameraDevice.createCaptureSession(config);
 
 ---
 
-## 62.2 CameraService Internals
+## 64.2 CameraService Internals
 
-### 62.2.1 CameraService -- The Native Gatekeeper
+### 64.2.1 CameraService -- The Native Gatekeeper
 
 `CameraService` is the central native service that mediates all camera
 access.  It runs in its own process (`cameraserver`) and is registered with
@@ -17302,7 +18087,7 @@ classDiagram
     CameraDeviceClient --> Camera3Device
 ```
 
-### 62.2.2 Service Startup and Provider Registration
+### 64.2.2 Service Startup and Provider Registration
 
 When `cameraserver` starts, `CameraService` enumerates camera providers
 through `CameraProviderManager`.  The provider manager discovers camera
@@ -17334,7 +18119,7 @@ Source: frameworks/av/services/camera/libcameraservice/common/CameraProviderMana
         frameworks/av/services/camera/libcameraservice/common/CameraProviderManager.cpp
 ```
 
-### 62.2.3 Client Connection and Eviction
+### 64.2.3 Client Connection and Eviction
 
 When an application calls `CameraManager.openCamera()`, the Java framework
 connects to `CameraService` via AIDL.  The service performs several checks
@@ -17380,7 +18165,7 @@ receives `CameraDevice.StateCallback.onDisconnected()`.
 Source: frameworks/av/services/camera/libcameraservice/utils/ClientManager.h
 ```
 
-### 62.2.4 CameraDeviceClient -- The API2 Entry Point
+### 64.2.4 CameraDeviceClient -- The API2 Entry Point
 
 `CameraDeviceClient` is the per-client object that implements the
 `ICameraDeviceUser` AIDL interface.  It receives capture requests from the
@@ -17403,7 +18188,7 @@ Key operations:
 | `waitUntilIdle` | `waitUntilIdle()` | Block until pipeline drains |
 | `flush` | `flush()` | Abort all pending requests |
 
-### 62.2.5 Camera3Device -- The HAL Interface Driver
+### 64.2.5 Camera3Device -- The HAL Interface Driver
 
 `Camera3Device` is the core engine that manages the Camera HAL v3+
 interface.  It translates framework requests into HAL capture requests and
@@ -17437,7 +18222,7 @@ It has two transport-specific subclasses:
 - `HidlCamera3Device` -- for HIDL-based camera HALs
 - `AidlCamera3Device` -- for AIDL-based camera HALs
 
-### 62.2.6 Camera3Device Internal Threads
+### 64.2.6 Camera3Device Internal Threads
 
 Camera3Device operates several internal threads:
 
@@ -17483,7 +18268,7 @@ returned by the HAL:
 **StatusTracker** monitors the readiness of all streams and the HAL.  It
 coalesces status updates to avoid thrashing the "idle" / "active" state.
 
-### 62.2.7 Metadata Mappers
+### 64.2.7 Metadata Mappers
 
 Camera3Device applies several metadata mappers that transform coordinates
 and values between the application coordinate space and the HAL coordinate
@@ -17500,7 +18285,7 @@ These mappers are applied in order during both request submission (converting
 app coordinates to HAL coordinates) and result delivery (converting HAL
 coordinates back to app coordinates).
 
-### 62.2.8 CameraProviderManager -- HAL Discovery
+### 64.2.8 CameraProviderManager -- HAL Discovery
 
 `CameraProviderManager` is responsible for discovering, connecting to, and
 managing camera HAL provider services.  It maintains the mapping between
@@ -17548,7 +18333,7 @@ For each discovered camera, the provider manager caches:
 - **Conflicting devices** -- Other cameras that cannot operate simultaneously
 - **System camera kind** -- PUBLIC, SYSTEM_ONLY_CAMERA, or HIDDEN_SECURE_CAMERA
 
-### 62.2.9 Camera Flash Control
+### 64.2.9 Camera Flash Control
 
 `CameraFlashlight` manages the camera flashlight (torch mode) independently
 of the camera capture pipeline:
@@ -17566,7 +18351,7 @@ When a camera device is opened by an application, any active torch on that
 camera is automatically turned off (since the ISP takes control of the flash
 LED).
 
-### 62.2.10 CameraService Watchdog
+### 64.2.10 CameraService Watchdog
 
 `CameraServiceWatchdog` is a dedicated thread that monitors camera
 operations for timeouts.  If a camera HAL call takes longer than the
@@ -17582,9 +18367,9 @@ of the most common sources of camera failures on production devices.
 
 ---
 
-## 62.3 Capture Pipeline
+## 64.3 Capture Pipeline
 
-### 62.3.1 The Request-Result Model
+### 64.3.1 The Request-Result Model
 
 Camera2 uses a fully asynchronous **request-result pipeline**.  Every frame
 captured by the camera is the result of a `CaptureRequest` submitted by the
@@ -17621,7 +18406,7 @@ sequenceDiagram
     CDI-->>App: CaptureCallback.onCaptureCompleted()
 ```
 
-### 62.3.2 CaptureRequest in Detail
+### 64.3.2 CaptureRequest in Detail
 
 A `CaptureRequest` is an immutable bundle of:
 
@@ -17666,7 +18451,7 @@ Key metadata categories in CaptureRequest:
 | **Color Correction** | `COLOR_CORRECTION_MODE`, `COLOR_CORRECTION_TRANSFORM` | Color processing |
 | **Tonemap** | `TONEMAP_MODE`, `TONEMAP_CURVE` | Tone mapping control |
 
-### 62.3.3 CaptureResult in Detail
+### 64.3.3 CaptureResult in Detail
 
 A `CaptureResult` contains the actual settings used by the camera device for
 a particular frame, plus additional read-only metadata about the capture:
@@ -17700,7 +18485,7 @@ Key read-only result metadata:
 | `STATISTICS_FACES` | Detected face rectangles, scores, IDs |
 | `STATISTICS_LENS_SHADING_MAP` | Per-channel lens shading correction map |
 
-### 62.3.4 Frame Number Tracking
+### 64.3.4 Frame Number Tracking
 
 Every request submitted through the pipeline is assigned a monotonically
 increasing **frame number**.  This number ties together:
@@ -17736,7 +18521,7 @@ graph LR
     HAL_REQ --> BUFFER
 ```
 
-### 62.3.5 3A Convergence Loop
+### 64.3.5 3A Convergence Loop
 
 One of the most critical aspects of the capture pipeline is the
 **3A convergence loop** -- the process by which auto-exposure (AE),
@@ -17798,7 +18583,7 @@ The 3A state machines are defined in `CameraMetadata`:
 | `FLASH_REQUIRED` | Scene is too dark, needs flash |
 | `PRECAPTURE` | Pre-capture metering in progress |
 
-### 62.3.6 In-Flight Request Management
+### 64.3.6 In-Flight Request Management
 
 `Camera3Device` maintains an `InFlightRequest` map that tracks every
 request currently being processed by the HAL:
@@ -17824,7 +18609,7 @@ have been received:
 3. Final result metadata
 4. All output buffers
 
-### 62.3.7 The HAL Contract
+### 64.3.7 The HAL Contract
 
 The camera HAL must satisfy a strict ordering contract:
 
@@ -17841,7 +18626,7 @@ The camera HAL must satisfy a strict ordering contract:
 Source: hardware/interfaces/camera/device/aidl/android/hardware/camera/device/ICameraDeviceSession.aidl
 ```
 
-### 62.3.8 Reprocessing
+### 64.3.8 Reprocessing
 
 Camera2 supports reprocessing -- sending a previously captured image back
 through the ISP for additional processing (e.g., ZSL capture):
@@ -17871,7 +18656,7 @@ The key requirement is a **reprocessable capture session**, created with
 an input configuration (for receiving frames to reprocess) and output
 configurations (for the reprocessed results).
 
-### 62.3.9 DNG Raw Capture
+### 64.3.9 DNG Raw Capture
 
 Camera2 supports capturing DNG (Digital Negative) raw images for
 professional photography workflows:
@@ -17913,7 +18698,7 @@ color matrices, and noise model from `CameraCharacteristics` and
 `CaptureResult` into the DNG file.  This enables desktop RAW processors
 (Lightroom, RawTherapee) to correctly develop the image.
 
-### 62.3.10 JPEG/R HDR Photos
+### 64.3.10 JPEG/R HDR Photos
 
 Android 14 introduced JPEG/R (also called Ultra HDR), which embeds an
 HDR gain map inside a standard JPEG file.  The camera service implements
@@ -17950,7 +18735,7 @@ The JPEG/R file is backward-compatible: devices that don't understand HDR
 display the SDR JPEG, while HDR-capable displays use the gain map to
 reconstruct the full HDR content.
 
-### 62.3.11 Flush and Idle
+### 64.3.11 Flush and Idle
 
 Applications can drain the pipeline using two mechanisms:
 
@@ -17969,9 +18754,9 @@ Source: frameworks/av/services/camera/libcameraservice/device3/Camera3Device.cpp
 
 ---
 
-## 62.4 Image Streams
+## 64.4 Image Streams
 
-### 62.4.1 Stream Architecture
+### 64.4.1 Stream Architecture
 
 Camera2 delivers image data through **streams**.  Each stream is backed by a
 BufferQueue (producer-consumer pair) and is represented by a
@@ -18024,7 +18809,7 @@ classDiagram
     Camera3OutputStream <|-- Camera3SharedOutputStream
 ```
 
-### 62.4.2 ImageReader
+### 64.4.2 ImageReader
 
 `ImageReader` is the primary mechanism for applications to receive camera
 image data for processing (as opposed to display):
@@ -18068,7 +18853,7 @@ Source: frameworks/base/core/java/android/media/ImageReader.java
         frameworks/base/core/jni/android_media_ImageReader.cpp
 ```
 
-### 62.4.3 SurfaceTexture for Preview
+### 64.4.3 SurfaceTexture for Preview
 
 For camera preview, applications typically use `SurfaceTexture` (accessed via
 `TextureView`) or `SurfaceView`.  The camera streams frames in `PRIVATE`
@@ -18102,7 +18887,7 @@ The preview stream uses the `PRIVATE` format because:
 2. No CPU access is needed -- pixels go directly from ISP to display
 3. It avoids the overhead of format conversion
 
-### 62.4.4 Multiple Simultaneous Streams
+### 64.4.4 Multiple Simultaneous Streams
 
 Camera2 supports multiple simultaneous output streams.  The guaranteed
 stream combinations depend on the hardware level.  For a `FULL` device,
@@ -18135,7 +18920,7 @@ Size[] previewSizes = map.getOutputSizes(SurfaceTexture.class);
 long minDuration = map.getOutputMinFrameDuration(ImageFormat.JPEG, jpegSizes[0]);
 ```
 
-### 62.4.5 High Speed Capture
+### 64.4.5 High Speed Capture
 
 Camera2 supports high-speed video capture (120fps or 240fps) through
 `CameraConstrainedHighSpeedCaptureSession`:
@@ -18198,7 +18983,7 @@ List<CaptureRequest> highSpeedRequests =
 highSpeedSession.setRepeatingBurst(highSpeedRequests, callback, handler);
 ```
 
-### 62.4.6 Stream Use Cases (Android 13+)
+### 64.4.6 Stream Use Cases (Android 13+)
 
 Android 13 introduced `StreamUseCase` -- a hint that helps the camera HAL
 optimize stream configuration:
@@ -18213,7 +18998,7 @@ optimize stream configuration:
 | Video Call | `VIDEO_CALL` | Optimized for conferencing |
 | Cropped RAW | `CROPPED_RAW` | RAW with crop applied |
 
-### 62.4.7 Buffer Management
+### 64.4.7 Buffer Management
 
 Camera3Device includes a `Camera3BufferManager` that provides two buffer
 management strategies:
@@ -18263,7 +19048,7 @@ sequenceDiagram
     end
 ```
 
-### 62.4.8 Composite Streams
+### 64.4.8 Composite Streams
 
 The camera service implements several **composite streams** that perform
 additional processing on HAL output before delivering to the application:
@@ -18280,9 +19065,9 @@ internally sets up the composite processing pipeline.
 
 ---
 
-## 62.5 Multi-Camera
+## 64.5 Multi-Camera
 
-### 62.5.1 Logical Camera Architecture
+### 64.5.1 Logical Camera Architecture
 
 Starting with Android 9 (API 28), Camera2 introduced the **logical
 multi-camera** model.  A logical camera is a virtual camera backed by two or
@@ -18329,7 +19114,7 @@ boolean isLogicalMultiCamera = Arrays.stream(capabilities)
     .anyMatch(c -> c == CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA);
 ```
 
-### 62.5.2 Physical Camera Access
+### 64.5.2 Physical Camera Access
 
 Applications can access individual physical cameras through the logical
 camera for specialized use cases:
@@ -18359,7 +19144,7 @@ if (physicalResult != null) {
 }
 ```
 
-### 62.5.3 Camera Characteristics for Multi-Camera
+### 64.5.3 Camera Characteristics for Multi-Camera
 
 The `CameraCharacteristics` for a logical camera includes keys that describe
 the multi-camera relationship:
@@ -18378,7 +19163,7 @@ the multi-camera relationship:
 Source: frameworks/base/core/java/android/hardware/camera2/CameraCharacteristics.java
 ```
 
-### 62.5.4 Multi-Resolution Streams
+### 64.5.4 Multi-Resolution Streams
 
 For logical multi-cameras where physical cameras have different maximum
 resolutions, `MultiResolutionImageReader` provides a unified interface:
@@ -18406,7 +19191,7 @@ multiResReader.setOnImageAvailableListener(reader -> {
 }, handler);
 ```
 
-### 62.5.5 Physical Camera Streams at the HAL Level
+### 64.5.5 Physical Camera Streams at the HAL Level
 
 When physical camera streams are requested, the camera service configures
 the HAL with annotated stream configurations:
@@ -18447,7 +19232,7 @@ field set for physical streams.  The HAL is responsible for:
 3. Applying per-physical-camera metadata overrides
 4. Color-matching outputs from different sensors
 
-### 62.5.6 Camera Pose and Calibration
+### 64.5.6 Camera Pose and Calibration
 
 For augmented reality and computational photography applications, the
 multi-camera framework provides precise geometric calibration data:
@@ -18468,7 +19253,7 @@ These values enable applications to:
 - Correct lens distortion in software
 - Align images from different physical cameras
 
-### 62.5.7 Concurrent Camera Access
+### 64.5.7 Concurrent Camera Access
 
 Android 11 (API 30) introduced concurrent camera access, allowing
 applications to open multiple cameras simultaneously:
@@ -18487,7 +19272,7 @@ boolean supported = cameraManager.isConcurrentSessionConfigurationSupported(
 );
 ```
 
-### 62.5.8 Multi-Camera Data Flow
+### 64.5.8 Multi-Camera Data Flow
 
 ```mermaid
 sequenceDiagram
@@ -18512,7 +19297,7 @@ sequenceDiagram
 
 ---
 
-### 62.5.9 Camera Offline Session
+### 64.5.9 Camera Offline Session
 
 Android 11 introduced `CameraOfflineSession`, which allows an application
 to disconnect from the camera device while preserving in-flight capture
@@ -18555,9 +19340,9 @@ sequenceDiagram
 
 ---
 
-## 62.6 Camera Extensions
+## 64.6 Camera Extensions
 
-### 62.6.1 Extensions Architecture
+### 64.6.1 Extensions Architecture
 
 Camera Extensions (introduced in Android 12, `CameraExtensionSession`)
 provide access to device-specific image processing algorithms that go
@@ -18571,7 +19356,7 @@ Source: frameworks/base/core/java/android/hardware/camera2/CameraExtensionSessio
         frameworks/base/core/java/android/hardware/camera2/impl/CameraExtensionSessionImpl.java
 ```
 
-### 62.6.2 Supported Extension Types
+### 64.6.2 Supported Extension Types
 
 | Extension Type | Constant | Value | Description |
 |---------------|----------|-------|-------------|
@@ -18597,7 +19382,7 @@ for (int extension : supportedExtensions) {
 }
 ```
 
-### 62.6.3 Extension Session Lifecycle
+### 64.6.3 Extension Session Lifecycle
 
 Creating an extension session replaces the standard `CameraCaptureSession`:
 
@@ -18629,7 +19414,7 @@ sequenceDiagram
     EXT-->>App: ExtensionCaptureCallback.onCaptureResultAvailable()
 ```
 
-### 62.6.4 Extension Implementation Architecture
+### 64.6.4 Extension Implementation Architecture
 
 Extensions have two implementation models:
 
@@ -18652,7 +19437,7 @@ Source: frameworks/base/core/java/android/hardware/camera2/extension/IAdvancedEx
         frameworks/base/core/java/android/hardware/camera2/extension/IPreviewExtenderImpl.aidl
 ```
 
-### 62.6.5 Extension Proxy Service
+### 64.6.5 Extension Proxy Service
 
 Camera extensions are delivered by OEM-provided APKs that expose their
 functionality through a proxy service:
@@ -18675,7 +19460,7 @@ graph TD
     F -->|false| H[Extension unavailable]
 ```
 
-### 62.6.6 Extension Capture Callbacks
+### 64.6.6 Extension Capture Callbacks
 
 `CameraExtensionSession.ExtensionCaptureCallback` provides extension-specific
 lifecycle callbacks:
@@ -18709,7 +19494,7 @@ ExtensionCaptureCallback callback = new ExtensionCaptureCallback() {
 };
 ```
 
-### 62.6.7 Extension Metadata Support
+### 64.6.7 Extension Metadata Support
 
 Starting with Android 14, extensions can report and accept a subset of
 Camera2 metadata keys:
@@ -18731,7 +19516,7 @@ Set<CaptureResult.Key> resultKeys =
 // - JPEG_ORIENTATION
 ```
 
-### 62.6.8 Extension Strength Control (Android 15+)
+### 64.6.8 Extension Strength Control (Android 15+)
 
 Android 15 added extension strength control, allowing applications to
 adjust the intensity of extension effects.  Strength is a per-request
@@ -18766,7 +19551,7 @@ controls how many frames are fused and the brightness of the result; for
 the client omits the value, the extension picks a default and reports it back
 in the corresponding capture result.
 
-### 62.6.9 Extension Postview
+### 64.6.9 Extension Postview
 
 Postview provides a quick, lower-resolution preview image while the
 extension processes the full-resolution output:
@@ -18791,7 +19576,7 @@ sequenceDiagram
 This pattern is visible in Google Camera and similar apps -- a slightly
 blurred preview appears immediately, then sharpens when processing completes.
 
-### 62.6.10 Extension Latency
+### 64.6.10 Extension Latency
 
 Extensions can report their expected capture latency:
 
@@ -18808,9 +19593,9 @@ multi-frame capture and post-processing phase.
 
 ---
 
-## 62.7 Camera NDK
+## 64.7 Camera NDK
 
-### 62.7.1 NDK Camera API Overview
+### 64.7.1 NDK Camera API Overview
 
 The Camera NDK (`libcamera2ndk.so`) provides C-language access to the
 Camera2 pipeline for native applications.  It mirrors the Java API structure
@@ -18835,7 +19620,7 @@ Source: frameworks/av/camera/ndk/include/camera/NdkCameraManager.h
         frameworks/av/camera/ndk/include/camera/NdkCameraError.h
 ```
 
-### 62.7.2 NDK API Mapping
+### 64.7.2 NDK API Mapping
 
 | Java API | NDK Struct / Function Prefix | Header |
 |----------|------------------------------|--------|
@@ -18846,7 +19631,7 @@ Source: frameworks/av/camera/ndk/include/camera/NdkCameraManager.h
 | `CameraMetadata` | `ACameraMetadata_*` | `NdkCameraMetadata.h` |
 | `CaptureResult` | Uses `ACameraMetadata` | `NdkCameraMetadata.h` |
 
-### 62.7.3 NDK Camera Lifecycle
+### 64.7.3 NDK Camera Lifecycle
 
 ```c
 // 1. Get camera manager
@@ -18900,7 +19685,7 @@ ACameraDevice_createCaptureSession(device, outputs, &sessionCallbacks, &session)
 ACameraCaptureSession_setRepeatingRequest(session, NULL, 1, &request, NULL);
 ```
 
-### 62.7.4 NDK Capture Callbacks
+### 64.7.4 NDK Capture Callbacks
 
 ```c
 ACameraCaptureSession_captureCallbacks captureCallbacks = {
@@ -18925,7 +19710,7 @@ void onCaptureCompleted(void* context,
 }
 ```
 
-### 62.7.5 NDK to Framework Mapping
+### 64.7.5 NDK to Framework Mapping
 
 Internally, the NDK camera calls go through the same `CameraService` as the
 Java API.  The NDK implementation wraps `ICameraDeviceUser`:
@@ -18956,7 +19741,7 @@ The NDK uses the same request templates, the same metadata tag space
 (prefixed with `ACAMERA_` instead of `CaptureRequest.`), and the same
 error codes (mapped to `camera_status_t` enum values).
 
-### 62.7.6 NDK Window Targets
+### 64.7.6 NDK Window Targets
 
 The NDK camera uses `ANativeWindow` as the surface abstraction.  This is
 typically obtained from:
@@ -18981,7 +19766,7 @@ AImageReader_getWindow(imageReader, &readerWindow);
 // Use readerWindow as a capture target
 ```
 
-### 62.7.7 NDK Physical Camera Access
+### 64.7.7 NDK Physical Camera Access
 
 The NDK camera API also supports multi-camera features (API level 29+):
 
@@ -19015,7 +19800,7 @@ to bind a whole stream to a sensor; at the NDK level the same routing is done
 by adding the output target normally and supplying per-physical settings
 through the `_physicalCamera_*` setters.
 
-### 62.7.8 NDK Metadata Access
+### 64.7.8 NDK Metadata Access
 
 The NDK provides typed metadata access through tag constants:
 
@@ -19055,7 +19840,7 @@ ACaptureRequest_setEntry_float(request,
     ACAMERA_CONTROL_ZOOM_RATIO, 1, &zoomRatio);
 ```
 
-### 62.7.9 NDK Error Handling
+### 64.7.9 NDK Error Handling
 
 The NDK camera returns `camera_status_t` error codes:
 
@@ -19081,17 +19866,17 @@ Source: frameworks/av/camera/ndk/include/camera/NdkCameraError.h
 
 ---
 
-## 62.8 Multi-Client Shared Sessions (Android 17)
+## 64.8 Multi-Client Shared Sessions (Android 17)
 
 Until Android 17 a camera was an exclusive resource: exactly one client held
 a given camera ID, and a higher-priority client could only take it by evicting
-the current owner (Section 62.2.3).  Android 17 adds an opt-in **shared mode**
+the current owner (Section 64.2.3).  Android 17 adds an opt-in **shared mode**
 in which several clients can hold the same camera at once, observing a single
 shared stream configuration.  This is aimed at scenarios such as large-screen
 video conferencing, where a system "effects" surface and an app surface want
 the same sensor frames simultaneously.
 
-### 62.8.1 Opening a Camera in Shared Mode
+### 64.8.1 Opening a Camera in Shared Mode
 
 Shared mode is a privileged, opt-in capability.  An application first asks
 whether the device supports it, then opens with the shared variant of
@@ -19130,7 +19915,7 @@ new `StateCallback` hooks, `onOpenedInSharedMode()` and
 `onClientSharedAccessPriorityChanged()`, are defined in
 `frameworks/base/core/java/android/hardware/camera2/CameraDevice.java`.
 
-### 62.8.2 Primary and Secondary Clients
+### 64.8.2 Primary and Secondary Clients
 
 Among all clients that have opened a camera in shared mode, exactly one is the
 **primary** client and the rest are **secondary**.  Priority is computed from
@@ -19157,7 +19942,7 @@ Source: frameworks/base/core/java/android/hardware/camera2/CameraSharedCaptureSe
   → startStreaming(List<Surface>, ...) / stopStreaming()
 ```
 
-### 62.8.3 The Shared Capture Session
+### 64.8.3 The Shared Capture Session
 
 When a camera is opened in shared mode, the only legal session type is
 `SessionConfiguration.SESSION_SHARED`; any other value throws
@@ -19172,7 +19957,7 @@ Source: frameworks/base/core/java/android/hardware/camera2/params/SessionConfigu
 Crucially, a shared session does not let each client pick its own stream
 geometry.  Every client must use the single, device-published configuration
 exposed through `CameraCharacteristics.SHARED_SESSION_CONFIGURATION`
-(Section 62.9.1); supplying any other output configuration fails session
+(Section 64.9.1); supplying any other output configuration fails session
 creation.  The framework synthesizes that key from a vendor XML file parsed by
 the camera service:
 
@@ -19187,7 +19972,7 @@ timestamp base, mirror mode, readout-timestamp flag, format, usage, and
 dataspace, all parsed from the shared-session XML by
 `parseSharedSessionConfig()`.
 
-### 62.8.4 Shared Mode Through the Service
+### 64.8.4 Shared Mode Through the Service
 
 The Binder surface gained an explicit `sharedMode` flag.
 `ICameraService.connectDevice()` now takes a trailing `boolean sharedMode`,
@@ -19250,7 +20035,7 @@ Source: frameworks/av/services/camera/libcameraservice/api2/CameraDeviceClient.h
   → isPrimaryClient(), matchSharedStreamingRequest(), matchSharedCaptureRequest()
 ```
 
-### 62.8.5 Shared Mode in the NDK
+### 64.8.5 Shared Mode in the NDK
 
 The native API mirrors the Java surface.
 `ACameraManager_isCameraDeviceSharingSupported()` reports support,
@@ -19268,7 +20053,7 @@ Source: frameworks/av/camera/ndk/include/camera/NdkCameraManager.h
 
 ---
 
-## 62.9 New Camera Metadata Sections (Android 17)
+## 64.9 New Camera Metadata Sections (Android 17)
 
 The camera metadata tag space is partitioned into numbered **sections** (one
 per subsystem: control, sensor, lens, scaler, and so on), each occupying a
@@ -19288,9 +20073,9 @@ The same two sections are mirrored into the HAL's metadata AIDL
 (`hardware/interfaces/camera/metadata/aidl/.../CameraMetadataSection.aidl`),
 keeping the framework and HAL tag namespaces aligned.
 
-### 62.9.1 The sharedSession Section
+### 64.9.1 The sharedSession Section
 
-This section backs the shared-session feature from Section 62.8.  It defines
+This section backs the shared-session feature from Section 64.8.  It defines
 the device's single allowed shared configuration:
 
 | Tag | Type | Visibility | Purpose |
@@ -19312,7 +20097,7 @@ Source: frameworks/base/core/java/android/hardware/camera2/CameraCharacteristics
         frameworks/base/core/java/android/hardware/camera2/params/SharedSessionConfiguration.java
 ```
 
-### 62.9.2 The desktopEffects Section
+### 64.9.2 The desktopEffects Section
 
 The `desktopEffects` section exposes large-screen video-conferencing effects
 applied by the camera device itself, behind the `desktop_effects` aconfig
@@ -19341,15 +20126,15 @@ Source: system/media/camera/docs/metadata_definitions.xml
 
 Because these effects run inside the camera device rather than in an
 application-side extension, they are distinct from the Camera Extensions of
-Section 62.6: the same conceptual operations (blur, retouch, relight) here
+Section 64.6: the same conceptual operations (blur, retouch, relight) here
 become first-class, HAL-reported metadata controls intended for system
 conferencing surfaces.
 
 ---
 
-## 62.10 Try It
+## 64.10 Try It
 
-### Exercise 62.1: Camera Device Enumeration
+### Exercise 64.1: Camera Device Enumeration
 
 Enumerate all cameras on the device and print their characteristics:
 
@@ -19425,7 +20210,7 @@ public class CameraEnumerator {
 
 ---
 
-### Exercise 62.2: Preview + Still Capture Pipeline
+### Exercise 64.2: Preview + Still Capture Pipeline
 
 Build a minimal preview + still capture pipeline:
 
@@ -19561,7 +20346,7 @@ public class MinimalCameraCapture {
 
 ---
 
-### Exercise 62.3: YUV Frame Analysis Pipeline
+### Exercise 64.3: YUV Frame Analysis Pipeline
 
 Add real-time frame analysis using a YUV stream alongside preview:
 
@@ -19611,7 +20396,7 @@ analysisReader.setOnImageAvailableListener(reader -> {
 
 ---
 
-### Exercise 62.4: Manual Exposure Control
+### Exercise 64.4: Manual Exposure Control
 
 Implement a manual exposure control demonstrating per-frame metadata:
 
@@ -19673,7 +20458,7 @@ if (hasManualSensor) {
 
 ---
 
-### Exercise 62.5: Multi-Camera Zoom
+### Exercise 64.5: Multi-Camera Zoom
 
 Demonstrate smooth zoom across physical cameras:
 
@@ -19724,7 +20509,7 @@ for (int i = 0; i <= steps; i++) {
 
 ---
 
-### Exercise 62.6: Camera Extensions -- Night Mode
+### Exercise 64.6: Camera Extensions -- Night Mode
 
 Use camera extensions to capture a night mode photo:
 
@@ -19797,7 +20582,7 @@ if (extChars.getSupportedExtensions().contains(
 
 ---
 
-### Exercise 62.7: NDK Camera Preview
+### Exercise 64.7: NDK Camera Preview
 
 Implement a minimal NDK camera preview using the C API:
 
@@ -19916,7 +20701,7 @@ void stopNdkPreview() {
 
 ---
 
-### Exercise 62.8: Tracing the Camera Pipeline with dumpsys
+### Exercise 64.8: Tracing the Camera Pipeline with dumpsys
 
 Use `dumpsys` to inspect the running camera state:
 
@@ -19957,7 +20742,7 @@ adb shell dumpsys SurfaceFlinger --latency <surface-name>
 
 ---
 
-### Exercise 62.9: Source Code Exploration
+### Exercise 64.9: Source Code Exploration
 
 Explore the camera source code to understand the architecture:
 

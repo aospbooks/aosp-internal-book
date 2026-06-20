@@ -159,7 +159,7 @@ helpful but not strictly required.
 
 ### A Note on Scope
 
-Android is vast. Even across sixty-nine chapters, this book cannot cover
+Android is vast. Even across sixty-seven chapters, this book cannot cover
 every subsystem exhaustively. I have focused on the areas that matter most
 to platform-level work, and within each area, I have prioritized the
 architectural patterns and critical code paths over encyclopedic API
@@ -195,9 +195,9 @@ stands on the foundation they built.
 
 ### Structure
 
-This book is organized into sixty-nine chapters spanning the complete AOSP
+This book is organized into sixty-seven chapters spanning the complete AOSP
 stack, from the build system to specialized device form factors. The chapters
-are grouped into sixteen thematic parts (I through XVI), followed by four
+are grouped into fifteen thematic parts (I through XV), followed by four
 appendices, though each chapter is designed to be readable on its own.
 
 **Part I: Getting Started**
@@ -286,67 +286,60 @@ appendices, though each chapter is designed to be readable on its own.
 | 40 | Security | SELinux policies, Keymint, Gatekeeper, verified boot, TEE, permissions |
 | 41 | Credential Manager and Passkeys | CredentialManager, FIDO2/passkeys, credential providers |
 | 42 | DRM and Content Protection | MediaDrm, Widevine, the DRM HAL, secure decode paths |
-| 68 | LFI In-Process Sandbox | Lightweight Fault Isolation: in-process sandboxing of untrusted code |
+| 43 | LFI In-Process Sandbox | Lightweight Fault Isolation: in-process sandboxing of untrusted code |
 
 **Part X: UI Framework**
 
 | Chapter | Title | Focus |
 |---------|-------|-------|
-| 43 | Widgets, RemoteViews, and RemoteCompose | Cross-process UI: RemoteViews, AppWidgetService, RemoteCompose renderer |
-| 44 | WebView | The WebView module, Chromium integration, the renderer process model |
-| 45 | Accessibility | AccessibilityManagerService, accessibility services, the event pipeline |
-| 46 | Internationalization | ICU, locales, resource qualifiers, bidirectional text, fonts |
+| 44 | Widgets, RemoteViews, and RemoteCompose | Cross-process UI: RemoteViews, AppWidgetService, RemoteCompose renderer |
+| 45 | WebView | The WebView module, Chromium integration, the renderer process model |
+| 46 | Accessibility | AccessibilityManagerService, accessibility services, the event pipeline |
+| 47 | Internationalization | ICU, locales, resource qualifiers, bidirectional text, fonts |
 
 **Part XI: System Apps**
 
 | Chapter | Title | Focus |
 |---------|-------|-------|
-| 47 | SystemUI | Status bar, notification shade, quick settings, keyguard, plugin system |
-| 48 | Launcher3 | Home screen architecture, workspace, all-apps, drag-and-drop, widgets |
-| 49 | Settings App | Settings app architecture, preference framework, search indexing |
+| 48 | SystemUI | Status bar, notification shade, quick settings, keyguard, plugin system |
+| 49 | Launcher3 | Home screen architecture, workspace, all-apps, drag-and-drop, widgets |
+| 50 | Settings App | Settings app architecture, preference framework, search indexing |
 
 **Part XII: AI & Devices**
 
 | Chapter | Title | Focus |
 |---------|-------|-------|
-| 50 | AI, AppFunctions, and Computer Control | On-device AI integration, AppFunctions framework, accessibility automation |
-| 51 | CompanionDeviceManager and Virtual Devices | VDM architecture, virtual displays, virtual input, CDM policies |
-| 67 | NPU Manager | The neural-processing-unit manager, accelerator scheduling, ML offload |
+| 51 | AI, AppFunctions, and Computer Control | On-device AI integration, AppFunctions framework, accessibility automation |
+| 52 | CompanionDeviceManager and Virtual Devices | VDM architecture, virtual displays, virtual input, CDM policies |
+| 53 | NPU Manager | The neural-processing-unit manager, accelerator scheduling, ML offload |
 
 **Part XIII: Infrastructure**
 
 | Chapter | Title | Focus |
 |---------|-------|-------|
-| 52 | Mainline Modules | APEX packaging, module boundaries, train updates, module policy |
-| 53 | OTA Updates | update_engine, A/B and virtual A/B, snapshot/COW, payload generation |
-| 54 | Virtualization Framework | pKVM, crosvm, protected VMs, Microdroid, the virtualization HAL |
-| 55 | Testing Frameworks and Infrastructure | CTS, VTS, Ravenwood, Atest, TradeFed, host-side vs. device-side |
-| 56 | Debugging and Profiling Tools | gdb, lldb, Perfetto, systrace, logcat, bugreport, tombstones |
+| 54 | Mainline Modules | APEX packaging, module boundaries, train updates, module policy |
+| 55 | OTA Updates | update_engine, A/B and virtual A/B, snapshot/COW, payload generation |
+| 56 | Virtualization Framework | pKVM, crosvm, protected VMs, Microdroid, the virtualization HAL |
+| 57 | Testing Frameworks and Infrastructure | CTS, VTS, Ravenwood, Atest, TradeFed, host-side vs. device-side |
+| 58 | Debugging and Profiling Tools | gdb, lldb, Perfetto, systrace, logcat, bugreport, tombstones |
 
 **Part XIV: Device Support**
 
 | Chapter | Title | Focus |
 |---------|-------|-------|
-| 57 | Architecture Support | ARM64, x86_64, RISC-V: build targets, kernel configs, ABI specifics |
-| 58 | Emulator Architecture | Cuttlefish, Goldfish, QEMU/crosvm integration, virtio devices, snapshots |
-| 59 | Device Policy and Android Enterprise | DevicePolicyManager, managed profiles, provisioning, enterprise APIs |
-| 60 | Automotive, TV, and Wear | Car service, vehicle HAL, Leanback/TIF, Wear ongoing activities |
-| 61 | Print Services | PrintManagerService, print spooler, print service plugins |
-| 62 | Camera2 Pipeline Deep Dive | Camera2/CameraX, the camera HAL3 pipeline, capture sessions, requests |
+| 59 | Architecture Support | ARM64, x86_64, RISC-V: build targets, kernel configs, ABI specifics |
+| 60 | Emulator Architecture | Cuttlefish, Goldfish, QEMU/crosvm integration, virtio devices, snapshots |
+| 61 | Device Policy and Android Enterprise | DevicePolicyManager, managed profiles, provisioning, enterprise APIs |
+| 62 | Device Form Factors | Automotive + Software Defined Vehicle, Android TV (Leanback/TIF), Wear, and emerging Android XR |
+| 63 | Print Services | PrintManagerService, print spooler, print service plugins |
+| 64 | Camera2 Pipeline Deep Dive | Camera2/CameraX, the camera HAL3 pipeline, capture sessions, requests |
 
 **Part XV: Practical**
 
 | Chapter | Title | Focus |
 |---------|-------|-------|
-| 63 | Custom ROM Guide | Practical guide: forking, device trees, vendor blobs, OTA, signing |
-| 64 | Running Windows Games on Android | Translation layers, Wine/Proton, graphics translation, input mapping |
-
-**Part XVI: Software Defined Vehicle**
-
-| Chapter | Title | Focus |
-|---------|-------|-------|
-| 65 | Software Defined Vehicle | The headless SDV platform, Core VM, service bundles, lifecycle and orchestration |
-| 66 | SDV Middleware and Vehicle Communication | The service fabric, vehicle ECU communication, AAOS IVI VM integration |
+| 65 | Custom ROM Guide | Practical guide: forking, device trees, vendor blobs, OTA, signing |
+| 66 | Running Windows Games on Android | Translation layers, Wine/Proton, graphics translation, input mapping |
 
 **Appendices**
 
@@ -449,12 +442,12 @@ System), and 24 (Display System).
 **For the security researcher:**
 Read Chapter 5 (Kernel) for the kernel attack surface, Chapter 7 (Bionic) for
 the libc implementation, Chapter 9 (Binder) for the IPC attack surface,
-Chapter 40 (Security/TEE) for the security model, and Chapter 54
+Chapter 40 (Security/TEE) for the security model, and Chapter 56
 (Virtualization) for the isolation architecture.
 
 **For the ROM developer:**
 Start with Chapter 2 (Build System), Chapter 4 (Boot), and Chapter 10 (HAL),
-then skip to Chapter 63 (Custom ROM Guide) for the practical walk-through.
+then skip to Chapter 65 (Custom ROM Guide) for the practical walk-through.
 Return to earlier chapters as needed for deeper understanding.
 
 **For the curious application developer:**
@@ -516,7 +509,7 @@ The exercises assume access to either a physical device running an AOSP build
 or a Cuttlefish virtual device. Cuttlefish is recommended for most exercises,
 as it provides full AOSP functionality without requiring physical hardware.
 See Chapter 2 (Source Code and Build System) for checkout and build
-instructions, and Chapter 58 (Emulator Architecture) for Cuttlefish setup.
+instructions, and Chapter 60 (Emulator Architecture) for Cuttlefish setup.
 
 ---
 
@@ -2189,7 +2182,7 @@ packages/
         Media/            --   Media framework components
         Permission/       --   Permission controller
         NeuralNetworks/   --   NNAPI runtime
-        NpuManager/       --   NPU Manager (added in 17, Chapter 67)
+        NpuManager/       --   NPU Manager (added in 17, Chapter 53)
         DnsResolver/      --   DNS resolution
         IPsec/            --   IPsec VPN
         Nfc/              --   NFC stack
@@ -2361,11 +2354,11 @@ system/
     fs/                   -- Filesystem stack (split out of system/core in 17):
         fs_mgr/           --   Filesystem manager (mount, verity, overlayfs)
         casefolding_remover/ -- Case-folding migration tool
-    lfi/                  -- Lightweight Fault Isolation runtime (Chapter 68):
+    lfi/                  -- Lightweight Fault Isolation runtime (Chapter 43):
         boxrt/            --   Runtime stubs linked into the sandboxed library
         allocator/        --   Minimal thread-safe allocator
         relocator/        --   Static-PIE loader for lfi-bind libraries
-    software_defined_vehicle/ -- SDV platform (Part XVI, Chapters 65-66)
+    software_defined_vehicle/ -- SDV platform (covered in Chapter 62)
     netd/                 -- Network daemon
     vold/                 -- Volume daemon (disk encryption, mounting)
     update_engine/        -- OTA update engine
@@ -2386,9 +2379,9 @@ expanded with **`mmd`** (the Memory Management Daemon, which centralizes
 compaction and reclaim policy) and **`guardian`** (the `pmgd` Process Memory
 Guardian that triggers heap dumps on memory anomalies), both alongside the
 existing `lmkd`. Android 17 also added **`system/lfi/`**, the runtime support for
-Lightweight Fault Isolation (an in-process software sandbox; see Chapter 68), and
-**`system/software_defined_vehicle/`**, the new SDV platform that anchors Part XVI
-(Chapters 65-66).
+Lightweight Fault Isolation (an in-process software sandbox; see Chapter 43), and
+**`system/software_defined_vehicle/`**, the new SDV platform, covered in
+Chapter 62 (Device Form Factors).
 
 **Who cares about this directory:** System engineers, security researchers
 (sepolicy, lfi), boot engineers (init, fs_mgr), storage engineers (vold), network
@@ -2432,7 +2425,7 @@ hardware/
 Android 17 added **`hardware/sdv/`** (currently `hardware/sdv/interfaces/`), the
 HAL-interface side of the Software Defined Vehicle platform that pairs with
 `system/software_defined_vehicle/` and `device/google/sdv/`. SDV is covered in
-Part XVI (Chapters 65-66).
+Chapter 62 (Device Form Factors).
 
 **Who cares about this directory:** HAL implementors, SoC vendors, device
 bring-up engineers, driver developers.
@@ -2459,8 +2452,8 @@ device/
 
 Android 17 introduced **`device/google/sdv/`**, the set of product
 configurations (Cuttlefish-based `sdv_cf`, `arm64` variants, and the lighter
-`sdv_core_*` tiers) for the Software Defined Vehicle platform. See Part XVI
-(Chapters 65-66).
+`sdv_core_*` tiers) for the Software Defined Vehicle platform. See Chapter 62
+(Device Form Factors).
 
 A device configuration directory typically contains:
 
@@ -2703,7 +2696,7 @@ Isolation: the `lfi-verifier` (verifies that sandboxed machine code stays within
 its region), `lfi-bind` and `lfi-runtime` glue, the `disarm`/`fadec` ARM/x86
 decoders, and the `rlbox`/`rlbox-lfi` sandboxing wrappers. It pairs with the
 in-tree runtime support in `system/lfi/`; the full design is covered in
-Chapter 68.
+Chapter 43.
 
 **Who cares about this directory:** Anyone debugging a third-party library
 behavior, updating an external dependency, or auditing licenses.
@@ -3220,7 +3213,7 @@ how the pieces fit together. This is the focus of the early chapters:
 
 Once you understand the architecture, you can explore the live system:
 
-- **Chapter 56**: Debugging tools -- logcat, dumpsys, Perfetto, LLDB, Android
+- **Chapter 58**: Debugging tools -- logcat, dumpsys, Perfetto, LLDB, Android
   Studio platform debugging
 - **Chapter 18**: ART internals -- garbage collection, JIT/AOT, class loading
 - **Chapter 13**: Graphics pipeline -- SurfaceFlinger, HWUI, BufferQueue, HWC
@@ -3231,16 +3224,16 @@ Once you understand the architecture, you can explore the live system:
 With understanding comes the ability to modify:
 
 - **Chapter 10**: HAL development -- implementing a hardware abstraction layer
-- **Chapters 47-49**: System app development -- customizing SystemUI, Launcher,
+- **Chapters 48-49**: System app development -- customizing SystemUI, Launcher,
   Settings
-- **Chapter 52**: Mainline modules -- developing updatable components
+- **Chapter 54**: Mainline modules -- developing updatable components
 
 ### 1.7.6 Phase 5: Advanced Topics and Mastery
 
-- **Chapter 56**: Performance optimization -- profiling, tracing, benchmarking
+- **Chapter 58**: Performance optimization -- profiling, tracing, benchmarking
 - **Chapter 40**: Security architecture -- SELinux, Keystore, verified boot,
   sandboxing
-- **Chapter 55**: Testing -- CTS, VTS, writing platform tests
+- **Chapter 57**: Testing -- CTS, VTS, writing platform tests
 
 ### 1.7.7 Tracing an API Call End-to-End
 
@@ -3568,7 +3561,7 @@ As of Android 17, Mainline modules include:
 | **Telephony** | APEX | Telephony framework |
 | **Permission Controller** | APK | Permission UI |
 | **Neural Networks** | APEX | NNAPI runtime |
-| **NPU Manager** | APEX | NPU/AI-accelerator management (new in 17, Chapter 67) |
+| **NPU Manager** | APEX | NPU/AI-accelerator management (new in 17, Chapter 53) |
 | **StatsD** | APEX | Metrics collection |
 | **IPsec** | APEX | VPN |
 | **SDK Extensions** | APEX | API extension mechanism |

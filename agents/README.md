@@ -2,10 +2,10 @@
 
 Bundled context for coding agents (Claude Code, Gemini CLI, Codex / AGENTS.md
 tools, GitHub Copilot) that gives them offline access to the entire AOSP
-Internals book — 65 chapters + 3 appendices, packaged as 16 Part-skills.
+Internals book — 67 chapters + 4 appendices, packaged as 16 Part-skills.
 
 The chapter content lives at the repo root (`./00-frontmatter.md` …
-`./64-windows-games.md`); the four `agents/<platform>/` directories are
+`./66-windows-games.md`); the four `agents/<platform>/` directories are
 generated from one canonical source by `agents/build.py`.
 
 ## Install
@@ -53,14 +53,14 @@ Copy the `.github/` tree into your project root:
 | `aosp-framework-core` | VI | Framework Core | 20–25 |
 | `aosp-framework-services` | VII | Framework Services | 26–34 |
 | `aosp-connectivity` | VIII | Connectivity | 35–39 |
-| `aosp-security` | IX | Security | 40–42 |
-| `aosp-ui-framework` | X | UI Framework | 43–46 |
-| `aosp-system-apps` | XI | System Apps | 47–49 |
-| `aosp-ai-and-devices` | XII | AI & Devices | 50–51 |
-| `aosp-infrastructure` | XIII | Infrastructure | 52–56 |
-| `aosp-device-support` | XIV | Device Support | 57–62 |
-| `aosp-practical` | XV | Practical | 63–64 |
-| `aosp-appendices` | App. | Appendices | A, B, C |
+| `aosp-security` | IX | Security | 40–43 |
+| `aosp-ui-framework` | X | UI Framework | 44–47 |
+| `aosp-system-apps` | XI | System Apps | 48–50 |
+| `aosp-ai-and-devices` | XII | AI & Devices | 51–53 |
+| `aosp-infrastructure` | XIII | Infrastructure | 54–58 |
+| `aosp-device-support` | XIV | Device Support | 59–64 |
+| `aosp-practical` | XV | Practical | 65–66 |
+| `aosp-appendices` | App. | Appendices | A, B, C, D |
 
 ## Maintenance (for contributors to this repo)
 

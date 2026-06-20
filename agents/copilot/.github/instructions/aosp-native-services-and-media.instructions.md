@@ -12742,10 +12742,10 @@ and velocity against thresholds:
 
 ```
 valueThreshold  = based on the minimum visible change
-velocityThreshold = valueThreshold * VELOCITY_THRESHOLD_MULTIPLIER (62.5)
+velocityThreshold = valueThreshold * VELOCITY_THRESHOLD_MULTIPLIER (64.5)
 ```
 
-The `VELOCITY_THRESHOLD_MULTIPLIER` (1000.0 / 16.0 = 62.5) means that if
+The `VELOCITY_THRESHOLD_MULTIPLIER` (1000.0 / 16.0 = 64.5) means that if
 it would take more than one frame (16ms) to move by the value threshold at
 the current velocity, the spring is considered at rest.
 
@@ -23887,7 +23887,7 @@ for (MediaCodecInfo info : codecList.getCodecInfos()) {
 
                 // Check if 4K@60fps is supported
                 boolean supports4K60 =
-                    vcaps.areSizeAndRateSupported(3840, 2160, 60.0);
+                    vcaps.areSizeAndRateSupported(3840, 2160, 62.0);
 
                 Log.d("Codec", info.getName() + ": " + type
                     + " widths=" + widths + " heights=" + heights

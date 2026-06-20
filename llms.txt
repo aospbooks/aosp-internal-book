@@ -1,6 +1,6 @@
 # AOSP Internals: A Developer's Guide to the Android Open Source Project
 
-> A source-referenced technical book covering the full Android Open Source Project stack, from kernel to apps. Every architectural claim points to a specific file path and line number in AOSP `main`, so the book doubles as an annotated index of the codebase. 69 chapters and 4 appendices, ~235,000 lines of prose with ~1,500 architectural diagrams.
+> A source-referenced technical book covering the full Android Open Source Project stack, from kernel to apps. Every architectural claim points to a specific file path and line number in AOSP `main`, so the book doubles as an annotated index of the codebase. 67 chapters and 4 appendices, ~235,000 lines of prose with ~1,500 architectural diagrams.
 
 The book is organized bottom-up: build system → kernel/boot → native foundation → HAL → native services → runtime → framework core → framework services → connectivity → security → UI → system apps → infrastructure → device support → practical custom-ROM guide. Each chapter ends with hands-on "Try It" exercises that exercise the subsystem on a real device or emulator.
 
@@ -75,53 +75,49 @@ When using this site as background for AOSP work, prefer fetching the chapter th
 - [Chapter 40: Security (TEE/Trusty)](https://aospbooks.github.io/aosp-internal-book/40-security/): SELinux on Android, Keystore/Keymint, Trusty TEE, gatekeeper/weaver, AVB, dm-verity, hardware-backed attestation
 - [Chapter 41: Credential Manager](https://aospbooks.github.io/aosp-internal-book/41-credential-manager/): CredentialManagerService, credential providers, passkeys/FIDO2, password and autofill integration, digital credentials
 - [Chapter 42: DRM](https://aospbooks.github.io/aosp-internal-book/42-drm/): MediaDrm framework, Widevine L1/L2/L3, OEMCrypto, license acquisition, secure decoder/display path
-- [Chapter 68: LFI In-Process Sandbox](https://aospbooks.github.io/aosp-internal-book/68-lfi-sandbox/): Lightweight Fault Isolation, memory-safe in-process sandboxing for untrusted code (software codecs) without a separate process; the external/lfi verifier and runtime, the Soong LFI toolchain, and the libapexcodecs/codec2 integration
+- [Chapter 43: LFI In-Process Sandbox](https://aospbooks.github.io/aosp-internal-book/43-lfi-sandbox/): Lightweight Fault Isolation, memory-safe in-process sandboxing for untrusted code (software codecs) without a separate process; the external/lfi verifier and runtime, the Soong LFI toolchain, and the libapexcodecs/codec2 integration
 
 ## Part X: UI Framework
 
-- [Chapter 43: Widgets & RemoteViews](https://aospbooks.github.io/aosp-internal-book/43-widgets-remoteviews/): AppWidget framework, RemoteViews, RemoteCompose, host/provider model, update flow
-- [Chapter 44: WebView](https://aospbooks.github.io/aosp-internal-book/44-webview/): WebView Mainline module, Chromium content layer, renderer process, JS bridges, sandboxing
-- [Chapter 45: Accessibility](https://aospbooks.github.io/aosp-internal-book/45-accessibility/): AccessibilityService, AccessibilityNodeInfo, TalkBack, magnification, accessibility events, Switch Access
-- [Chapter 46: Internationalization](https://aospbooks.github.io/aosp-internal-book/46-internationalization/): ICU, locale resolution, resource qualifier matching, RTL support, formatters, Unicode in AOSP
+- [Chapter 44: Widgets & RemoteViews](https://aospbooks.github.io/aosp-internal-book/44-widgets-remoteviews/): AppWidget framework, RemoteViews, RemoteCompose, host/provider model, update flow
+- [Chapter 45: WebView](https://aospbooks.github.io/aosp-internal-book/45-webview/): WebView Mainline module, Chromium content layer, renderer process, JS bridges, sandboxing
+- [Chapter 46: Accessibility](https://aospbooks.github.io/aosp-internal-book/46-accessibility/): AccessibilityService, AccessibilityNodeInfo, TalkBack, magnification, accessibility events, Switch Access
+- [Chapter 47: Internationalization](https://aospbooks.github.io/aosp-internal-book/47-internationalization/): ICU, locale resolution, resource qualifier matching, RTL support, formatters, Unicode in AOSP
 
 ## Part XI: System Apps
 
-- [Chapter 47: SystemUI](https://aospbooks.github.io/aosp-internal-book/47-systemui/): SystemUI process, status bar, notification shade, keyguard, Quick Settings, Monet/dynamic color
-- [Chapter 48: Launcher3](https://aospbooks.github.io/aosp-internal-book/48-launcher3/): Launcher3, model loader, Recents/Overview, gesture nav, all-apps, predictions, work profile
-- [Chapter 49: Settings](https://aospbooks.github.io/aosp-internal-book/49-settings-app/): Settings app structure, SettingsProvider, SettingsLib, search index, slice surface
+- [Chapter 48: SystemUI](https://aospbooks.github.io/aosp-internal-book/48-systemui/): SystemUI process, status bar, notification shade, keyguard, Quick Settings, Monet/dynamic color
+- [Chapter 49: Launcher3](https://aospbooks.github.io/aosp-internal-book/49-launcher3/): Launcher3, model loader, Recents/Overview, gesture nav, all-apps, predictions, work profile
+- [Chapter 50: Settings](https://aospbooks.github.io/aosp-internal-book/50-settings-app/): Settings app structure, SettingsProvider, SettingsLib, search index, slice surface
 
 ## Part XII: AI & Devices
 
-- [Chapter 50: AI & AppFunctions](https://aospbooks.github.io/aosp-internal-book/50-ai-appfunctions/): on-device ML in AOSP, NNAPI, AppFunctions framework for assistant integration, Computer Control
-- [Chapter 51: Companion & Virtual Devices](https://aospbooks.github.io/aosp-internal-book/51-companion-virtual-device/): CompanionDeviceManager, virtual displays/inputs/cameras, cross-device experiences
-- [Chapter 67: NPU Manager](https://aospbooks.github.io/aosp-internal-book/67-npu-manager/): the NpuManager mainline module for on-device neural accelerators, model-load admission control (budget/turn-taking policies, priorities), the Rust NDK ANpuBuffer/INpuAllocator, the android.hardware.npu HAL, and libwrapfd buffer protection
+- [Chapter 51: AI & AppFunctions](https://aospbooks.github.io/aosp-internal-book/51-ai-appfunctions/): on-device ML in AOSP, NNAPI, AppFunctions framework for assistant integration, Computer Control
+- [Chapter 52: Companion & Virtual Devices](https://aospbooks.github.io/aosp-internal-book/52-companion-virtual-device/): CompanionDeviceManager, virtual displays/inputs/cameras, cross-device experiences
+- [Chapter 53: NPU Manager](https://aospbooks.github.io/aosp-internal-book/53-npu-manager/): the NpuManager mainline module for on-device neural accelerators, model-load admission control (budget/turn-taking policies, priorities), the Rust NDK ANpuBuffer/INpuAllocator, the android.hardware.npu HAL, and libwrapfd buffer protection
 
 ## Part XIII: Infrastructure
 
-- [Chapter 52: Mainline Modules (APEX)](https://aospbooks.github.io/aosp-internal-book/52-mainline-modules/): Project Mainline, APEX format/manifest/signing, apexd, module catalog, SDK Extensions, module boundaries
-- [Chapter 53: OTA Updates](https://aospbooks.github.io/aosp-internal-book/53-ota-updates/): A/B updates, update_engine, payload format, virtual A/B with snapshots, rollback protection
-- [Chapter 54: Virtualization (pKVM/crosvm)](https://aospbooks.github.io/aosp-internal-book/54-virtualization/): Android Virtualization Framework, pKVM hypervisor, crosvm, microdroid, isolated workloads
-- [Chapter 55: Testing (CTS/VTS/Ravenwood)](https://aospbooks.github.io/aosp-internal-book/55-testing/): CTS/VTS/MTS, Tradefed, Ravenwood (host-side framework testing), atest, presubmit infrastructure
-- [Chapter 56: Debugging Tools (Perfetto)](https://aospbooks.github.io/aosp-internal-book/56-debugging-tools/): Perfetto trace pipeline, atrace, simpleperf, heapprofd, logcat, dumpsys conventions
+- [Chapter 54: Mainline Modules (APEX)](https://aospbooks.github.io/aosp-internal-book/54-mainline-modules/): Project Mainline, APEX format/manifest/signing, apexd, module catalog, SDK Extensions, module boundaries
+- [Chapter 55: OTA Updates](https://aospbooks.github.io/aosp-internal-book/55-ota-updates/): A/B updates, update_engine, payload format, virtual A/B with snapshots, rollback protection
+- [Chapter 56: Virtualization (pKVM/crosvm)](https://aospbooks.github.io/aosp-internal-book/56-virtualization/): Android Virtualization Framework, pKVM hypervisor, crosvm, microdroid, isolated workloads
+- [Chapter 57: Testing (CTS/VTS/Ravenwood)](https://aospbooks.github.io/aosp-internal-book/57-testing/): CTS/VTS/MTS, Tradefed, Ravenwood (host-side framework testing), atest, presubmit infrastructure
+- [Chapter 58: Debugging Tools (Perfetto)](https://aospbooks.github.io/aosp-internal-book/58-debugging-tools/): Perfetto trace pipeline, atrace, simpleperf, heapprofd, logcat, dumpsys conventions
 
 ## Part XIV: Device Support
 
-- [Chapter 57: Architecture Support](https://aospbooks.github.io/aosp-internal-book/57-architecture-support/): ARM (32/64), x86_64, RISC-V port, ABI matrix, per-arch toolchain and runtime considerations
-- [Chapter 58: Emulator](https://aospbooks.github.io/aosp-internal-book/58-emulator/): QEMU-based Android emulator, AVD format, hardware acceleration (KVM/HAXM/HVF), guest kernel, Studio integration
-- [Chapter 59: Device Policy](https://aospbooks.github.io/aosp-internal-book/59-device-policy/): DevicePolicyManager, work profiles, fully-managed devices, COPE, restrictions, enrollment flows
-- [Chapter 60: Automotive/TV/Wear](https://aospbooks.github.io/aosp-internal-book/60-automotive-tv-wear/): Android Automotive (CarService, vehicle HAL), Android TV (Leanback, TIF), Wear OS specifics
-- [Chapter 61: Print Services](https://aospbooks.github.io/aosp-internal-book/61-print-services/): PrintManager, print services, IPP, default printer service, PDF generation
-- [Chapter 62: Camera2 Pipeline](https://aospbooks.github.io/aosp-internal-book/62-camera2-pipeline/): Camera2 API, CameraDeviceImpl, CaptureRequest/Result, capture pipeline, camera HAL3
+- [Chapter 59: Architecture Support](https://aospbooks.github.io/aosp-internal-book/59-architecture-support/): ARM (32/64), x86_64, RISC-V port, ABI matrix, per-arch toolchain and runtime considerations
+- [Chapter 60: Emulator](https://aospbooks.github.io/aosp-internal-book/60-emulator/): QEMU-based Android emulator, AVD format, hardware acceleration (KVM/HAXM/HVF), guest kernel, Studio integration
+- [Chapter 61: Device Policy](https://aospbooks.github.io/aosp-internal-book/61-device-policy/): DevicePolicyManager, work profiles, fully-managed devices, COPE, restrictions, enrollment flows
+- [Chapter 62: Device Form Factors](https://aospbooks.github.io/aosp-internal-book/62-form-factors/): the non-phone Android targets — Android Automotive (CarService, vehicle HAL) and the Software Defined Vehicle platform (headless Core VM, VSIDL service bundles, SOME/IP middleware, SDV gateway), Android TV (Leanback, TIF), Wear OS, and the emerging Android XR surface
+- [Chapter 63: Print Services](https://aospbooks.github.io/aosp-internal-book/63-print-services/): PrintManager, print services, IPP, default printer service, PDF generation
+- [Chapter 64: Camera2 Pipeline](https://aospbooks.github.io/aosp-internal-book/64-camera2-pipeline/): Camera2 API, CameraDeviceImpl, CaptureRequest/Result, capture pipeline, camera HAL3
 
 ## Part XV: Practical
 
-- [Chapter 63: Custom ROM Guide](https://aospbooks.github.io/aosp-internal-book/63-custom-rom/): step-by-step capstone — picking a device, syncing source, applying vendor blobs, branding, building, flashing, OTA channel
-- [Chapter 64: Running Windows Games on Android](https://aospbooks.github.io/aosp-internal-book/64-windows-games/): the GameNative/Winlator stack for Windows PC games on unrooted ARM Android — glibc rootfs and PRoot, bionic redirections, FEX and Box64 x86-64 translation with ARM64EC, Wine, DXVK/VKD3D to Vulkan via Turnip/Vortek, and PulseAudio to AAudio
+- [Chapter 65: Custom ROM Guide](https://aospbooks.github.io/aosp-internal-book/65-custom-rom/): step-by-step capstone — picking a device, syncing source, applying vendor blobs, branding, building, flashing, OTA channel
+- [Chapter 66: Running Windows Games on Android](https://aospbooks.github.io/aosp-internal-book/66-windows-games/): the GameNative/Winlator stack for Windows PC games on unrooted ARM Android — glibc rootfs and PRoot, bionic redirections, FEX and Box64 x86-64 translation with ARM64EC, Wine, DXVK/VKD3D to Vulkan via Turnip/Vortek, and PulseAudio to AAudio
 
-## Part XVI: Software Defined Vehicle
-
-- [Chapter 65: Software Defined Vehicle](https://aospbooks.github.io/aosp-internal-book/65-software-defined-vehicle/): the Android 17 SDV platform, headless Core VM, the VSIDL-generated-Rust service-bundle model, orchestration/lifecycle/health monitoring, the service-bundles registry, update manager, vehicle power-state manager, display safety, and AAOS integration via the SDV gateway
-- [Chapter 66: SDV Middleware and Vehicle Communication](https://aospbooks.github.io/aosp-internal-book/66-sdv-middleware-and-communication/): the SDV communication fabric, VSIDL and its Rust codegen, service discovery / data tunnel / RPC agent, the SOME/IP stack and broker, the SDV gateway with VHAL proxy, and the automotive_services domain catalog (diagnostics, configuration, calibration)
 
 ## Appendices
 

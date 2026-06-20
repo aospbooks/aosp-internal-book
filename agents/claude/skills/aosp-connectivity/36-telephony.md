@@ -4624,7 +4624,7 @@ alert into the full-screen warning, siren, and vibration a user actually sees.
 That is `packages/apps/CellBroadcastReceiver` (package
 `com.android.cellbroadcastreceiver`), an updatable Mainline module — it ships in
 the `com.android.cellbroadcast` APEX (`packages/apps/CellBroadcastReceiver/apex/Android.bp`),
-the same APEX that carries the `CellBroadcastService` module and which Chapter 52's
+the same APEX that carries the `CellBroadcastService` module and which Chapter 54's
 Mainline catalog lists as module 6 (R-launched, "Emergency alert message handling
 (CMAS/ETWS)").
 

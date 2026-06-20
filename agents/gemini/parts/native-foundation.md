@@ -7460,7 +7460,7 @@ details matter for the rest of this chapter:
   callers; its only in-tree call sites are bionic's malloc-iterate tests
   (`bionic/tests/malloc_iterate_test.cpp`, which brackets the call exactly that way) and libprocinfo's
   own `process_map_test.cpp`. Crash tooling has a different shape: `debuggerd`
-  and its `crash_dump` helper (Chapter 56) are a *separate* process that `PTRACE_SEIZE`s the target
+  and its `crash_dump` helper (Chapter 58) are a *separate* process that `PTRACE_SEIZE`s the target
   and reads its `maps` from the outside, and `libunwindstack`
   (`system/unwinding/libunwindstack/Maps.cpp`) reads through the *allocating* `ReadMapFile()` /
   `ReadMapFileContent()` path. Both still build on `libprocinfo`, just not on the async-safe variant.
@@ -8380,7 +8380,7 @@ For deeper exploration of the topics covered in this chapter:
 - Chapter 18 (ART Runtime) covers garbage collection algorithms and managed heap internals.
 - Chapter 29 (Power Management) covers the Process Memory Guardian daemon (pmgd) in Section 29.14
   and the interaction between memory management and power states (suspend, doze mode).
-- Chapter 56 (Debugging Tools) covers additional debugging techniques including Perfetto and
+- Chapter 58 (Debugging Tools) covers additional debugging techniques including Perfetto and
   systrace integration.
 
 ---
@@ -8389,7 +8389,7 @@ For deeper exploration of the topics covered in this chapter:
 
 This section provides hands-on exercises to explore Android's memory management in practice.
 
-### Exercise 52.1: Observe lmkd in Action
+### Exercise 54.1: Observe lmkd in Action
 
 Monitor lmkd's behavior on a running device:
 
@@ -8415,7 +8415,7 @@ adb shell "for p in /proc/[0-9]*/oom_score_adj; do \
 done" | sort -n
 ```
 
-### Exercise 52.2: Analyze Memory with dumpsys
+### Exercise 54.2: Analyze Memory with dumpsys
 
 ```shell
 # 1. Get system-wide memory summary
@@ -8435,7 +8435,7 @@ adb shell dumpsys SurfaceFlinger --dispsync | head -50
 adb shell dumpsys meminfo --gpu
 ```
 
-### Exercise 52.3: Profile Native Memory with heapprofd
+### Exercise 54.3: Profile Native Memory with heapprofd
 
 ```shell
 # 1. Start heap profiling for a target app
@@ -8469,7 +8469,7 @@ adb pull /data/misc/perfetto-traces/heap_profile.perfetto-trace .
 # Use flamegraph view to identify allocation hotspots
 ```
 
-### Exercise 52.4: Explore zRAM
+### Exercise 54.4: Explore zRAM
 
 ```shell
 # 1. Check zRAM configuration
@@ -8493,7 +8493,7 @@ adb shell vmstat 1 10
 # Watch the si (swap in) and so (swap out) columns
 ```
 
-### Exercise 52.4b: Inspect mmd (Android 17+)
+### Exercise 54.4b: Inspect mmd (Android 17+)
 
 ```shell
 # 1. Is mmd managing zRAM on this device?
@@ -8516,7 +8516,7 @@ adb shell getprop | grep 'mmd.zram.writeback'
 adb shell getprop | grep 'mmd.zram.recompression'
 ```
 
-### Exercise 52.5: Detect Unreachable Memory
+### Exercise 54.5: Detect Unreachable Memory
 
 ```shell
 # 1. Enable unreachable memory detection for a debug build
@@ -8531,7 +8531,7 @@ adb shell dumpsys -t 600 meminfo --unreachable $(adb shell pidof com.android.sys
 # - "referencing Z unreachable bytes" = transitive leak graph
 ```
 
-### Exercise 52.6: Experiment with Memory Cgroups
+### Exercise 54.6: Experiment with Memory Cgroups
 
 ```shell
 # 1. Check cgroup version in use
@@ -8551,7 +8551,7 @@ adb shell "uid=\$(dumpsys package com.android.settings | \
 adb shell cat /dev/memcg/apps/memory.stat
 ```
 
-### Exercise 52.7: Monitor Graphics Memory
+### Exercise 54.7: Monitor Graphics Memory
 
 ```shell
 # 1. Check DMA-BUF allocation summary
@@ -8568,7 +8568,7 @@ adb shell dumpsys gpu
 adb shell ls /dev/dma_heap/
 ```
 
-### Exercise 52.8: Trigger and Observe onTrimMemory
+### Exercise 54.8: Trigger and Observe onTrimMemory
 
 Create a test application with the following code:
 
@@ -8615,7 +8615,7 @@ adb shell am send-trim-memory com.example.memorytest RUNNING_LOW
 # Open multiple other apps to increase pressure
 ```
 
-### Exercise 52.9: Examine MTE on Supported Hardware
+### Exercise 54.9: Examine MTE on Supported Hardware
 
 ```shell
 # 1. Check if MTE is available
@@ -8631,7 +8631,7 @@ adb shell getprop persist.arm64.memtag.default
 adb shell getprop | grep memtag.process
 ```
 
-### Exercise 52.10: Trace Memory with Perfetto
+### Exercise 54.10: Trace Memory with Perfetto
 
 ```shell
 # 1. Create a Perfetto trace config for comprehensive memory analysis
@@ -8716,7 +8716,7 @@ echo "  - LMK kill events in the timeline"
 echo "  - Correlation between memory drops and process kills"
 ```
 
-### Exercise 52.11: Analyze DMA-BUF Allocations
+### Exercise 54.11: Analyze DMA-BUF Allocations
 
 ```shell
 # 1. Check what DMA-BUF heaps are available
@@ -8748,7 +8748,7 @@ adb shell dumpsys SurfaceFlinger | \
   sed -n '/GraphicBufferAllocator/,/^$/p'
 ```
 
-### Exercise 52.12: Investigate Process OOM Scores in Real-Time
+### Exercise 54.12: Investigate Process OOM Scores in Real-Time
 
 ```shell
 # 1. Create a monitoring script
@@ -8786,7 +8786,7 @@ adb shell chmod 755 /data/local/tmp/oom_monitor.sh
 adb shell /data/local/tmp/oom_monitor.sh
 ```
 
-### Exercise 52.13: Compare Memory Metrics
+### Exercise 54.13: Compare Memory Metrics
 
 ```shell
 # Compare PSS, RSS, USS, and VSS for a single process
@@ -8810,7 +8810,7 @@ adb shell "pid=\$(pidof com.android.systemui); \
   dumpsys meminfo \$pid | head -30"
 ```
 
-### Exercise 52.14: Build a Memory Pressure Experiment
+### Exercise 54.14: Build a Memory Pressure Experiment
 
 Write a shell script that creates controlled memory pressure and observes the system's response:
 
@@ -8855,7 +8855,7 @@ kill $PSI_PID $LOG_PID 2>/dev/null
 echo "=== Experiment Complete ==="
 ```
 
-### Exercise 52.15: Investigate lmkd Kill History
+### Exercise 54.15: Investigate lmkd Kill History
 
 ```shell
 # 1. Parse recent lmkd kills from the event log
@@ -8878,7 +8878,7 @@ adb shell "logcat -b main -d | grep 'Kill.*to free' | \
   awk '{sum+=\$1; count++} END {print \"Total freed: \" sum \"kB in \" count \" kills\"}'"
 ```
 
-### Exercise 52.16: Memory Stress Testing with memtest
+### Exercise 54.16: Memory Stress Testing with memtest
 
 ```shell
 # Build and push a simple memory stress tool
@@ -8943,7 +8943,7 @@ echo "Use 'adb shell am start-activity' to launch multiple heavy apps"
 echo "Monitor with: adb logcat -s lowmemorykiller:* lmkd:*"
 ```
 
-### Exercise 52.17: Audit Memory Security Features
+### Exercise 54.17: Audit Memory Security Features
 
 ```shell
 # 1. Check which security features are active

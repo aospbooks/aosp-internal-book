@@ -4,7 +4,7 @@ description: |
   AOSP Part XV — Practical. Use when reasoning about building a custom AOSP
   ROM end-to-end: picking a target device, syncing source, applying vendor
   blobs, branding, building, flashing the resulting images, and shipping
-  OTA updates on your own channel. Chapter 63 (Custom ROM Guide).
+  OTA updates on your own channel. Chapter 65 (Custom ROM Guide).
 metadata:
   author: 'utzcoz'
   last-updated: '2026-06-20'
@@ -17,8 +17,8 @@ working custom ROM you can flash to a real device.
 
 ## Chapters in this Part
 
-- `63-custom-rom.md` — step-by-step capstone — picking a device, syncing source, applying vendor blobs, branding, building, flashing, OTA channel
+- `65-custom-rom.md` — step-by-step capstone — picking a device, syncing source, applying vendor blobs, branding, building, flashing, OTA channel
 
 ## When to load which chapter
 
-- Any question about building/flashing your own ROM end-to-end → `63-custom-rom.md`
+- Any question about building/flashing your own ROM end-to-end → `65-custom-rom.md`

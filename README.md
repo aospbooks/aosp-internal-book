@@ -13,7 +13,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 <!-- --8<-- [start:coverage] -->
 ## What This Book Covers
 
-69 chapters organized bottom-to-top through the Android architecture:
+67 chapters organized bottom-to-top through the Android architecture:
 
 | Part | Ch. | Topics |
 |------|-----|--------|
@@ -60,32 +60,30 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 | IX | 40 | Security (TEE/Trusty) |
 | IX | 41 | Credential Manager |
 | IX | 42 | DRM |
-| IX | 68 | LFI In-Process Sandbox |
-| X | 43 | Widgets & RemoteViews (RemoteCompose) |
-| X | 44 | WebView |
-| X | 45 | Accessibility |
-| X | 46 | Internationalization |
-| XI | 47 | SystemUI (Monet/Keyguard) |
-| XI | 48 | Launcher3 |
-| XI | 49 | Settings |
-| XII | 50 | AI & AppFunctions (Computer Control) |
-| XII | 51 | Companion & Virtual Devices |
-| XII | 67 | NPU Manager |
-| XIII | 52 | Mainline Modules (APEX) |
-| XIII | 53 | OTA Updates |
-| XIII | 54 | Virtualization (pKVM/crosvm) |
-| XIII | 55 | Testing (CTS/VTS/Ravenwood) |
-| XIII | 56 | Debugging Tools (Perfetto) |
-| XIV | 57 | Architecture Support (ARM/x86/RISC-V) |
-| XIV | 58 | Emulator |
-| XIV | 59 | Device Policy |
-| XIV | 60 | Automotive/TV/Wear |
-| XIV | 61 | Print Services |
-| XIV | 62 | Camera2 Pipeline |
-| XV | 63 | Custom ROM Guide (step-by-step) |
-| XV | 64 | Running Windows Games on Android |
-| XVI | 65 | Software Defined Vehicle |
-| XVI | 66 | SDV Middleware & Vehicle Communication |
+| IX | 43 | LFI In-Process Sandbox |
+| X | 44 | Widgets & RemoteViews (RemoteCompose) |
+| X | 45 | WebView |
+| X | 46 | Accessibility |
+| X | 47 | Internationalization |
+| XI | 48 | SystemUI (Monet/Keyguard) |
+| XI | 49 | Launcher3 |
+| XI | 50 | Settings |
+| XII | 51 | AI & AppFunctions (Computer Control) |
+| XII | 52 | Companion & Virtual Devices |
+| XII | 53 | NPU Manager |
+| XIII | 54 | Mainline Modules (APEX) |
+| XIII | 55 | OTA Updates |
+| XIII | 56 | Virtualization (pKVM/crosvm) |
+| XIII | 57 | Testing (CTS/VTS/Ravenwood) |
+| XIII | 58 | Debugging Tools (Perfetto) |
+| XIV | 59 | Architecture Support (ARM/x86/RISC-V) |
+| XIV | 60 | Emulator |
+| XIV | 61 | Device Policy |
+| XIV | 62 | Device Form Factors |
+| XIV | 63 | Print Services |
+| XIV | 64 | Camera2 Pipeline |
+| XV | 65 | Custom ROM Guide (step-by-step) |
+| XV | 66 | Running Windows Games on Android |
 | App. | A | Key Files Reference |
 | App. | B | Glossary |
 | App. | C | Why Kotlin Isn't on the Public API |
@@ -110,7 +108,7 @@ A comprehensive technical book covering the full AOSP stack — from kernel to a
 ./serve.sh epub      # build EPUB → site/aosp-internals.epub
 ```
 
-The `pdf` command stops any running server, then builds all 69 chapters into a
+The `pdf` command stops any running server, then builds all 67 chapters into a
 single PDF with rendered Mermaid diagrams (takes a while — uses Playwright/Chromium).
 
 The `epub` command works the same way, producing an EPUB3 file with rendered
@@ -159,7 +157,7 @@ Tests `mkdocs build` on push to `main` and PRs (~2 min).
 ## Project Structure
 
 ```
-[0-9]*.md                  69 chapter files
+[0-9]*.md                  67 chapter files
 [A-D]-appendix-*.md        4 appendix files
 index.md                   Website homepage
 mkdocs.yml                 MkDocs config (Material theme + Mermaid)

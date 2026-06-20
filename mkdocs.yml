@@ -142,39 +142,36 @@ nav:
     - "40. Security": 40-security.md
     - "41. Credential Manager": 41-credential-manager.md
     - "42. DRM": 42-drm.md
-    - "68. LFI In-Process Sandbox": 68-lfi-sandbox.md
+    - "43. LFI In-Process Sandbox": 43-lfi-sandbox.md
   - "Part X: UI Framework":
-    - "43. Widgets & RemoteViews": 43-widgets-remoteviews.md
-    - "44. WebView": 44-webview.md
-    - "45. Accessibility": 45-accessibility.md
-    - "46. Internationalization": 46-internationalization.md
+    - "44. Widgets & RemoteViews": 44-widgets-remoteviews.md
+    - "45. WebView": 45-webview.md
+    - "46. Accessibility": 46-accessibility.md
+    - "47. Internationalization": 47-internationalization.md
   - "Part XI: System Apps":
-    - "47. SystemUI": 47-systemui.md
-    - "48. Launcher3": 48-launcher3.md
-    - "49. Settings": 49-settings-app.md
+    - "48. SystemUI": 48-systemui.md
+    - "49. Launcher3": 49-launcher3.md
+    - "50. Settings": 50-settings-app.md
   - "Part XII: AI & Devices":
-    - "50. AI & AppFunctions": 50-ai-appfunctions.md
-    - "51. Companion & Virtual Devices": 51-companion-virtual-device.md
-    - "67. NPU Manager": 67-npu-manager.md
+    - "51. AI & AppFunctions": 51-ai-appfunctions.md
+    - "52. Companion & Virtual Devices": 52-companion-virtual-device.md
+    - "53. NPU Manager": 53-npu-manager.md
   - "Part XIII: Infrastructure":
-    - "52. Mainline Modules": 52-mainline-modules.md
-    - "53. OTA Updates": 53-ota-updates.md
-    - "54. Virtualization": 54-virtualization.md
-    - "55. Testing": 55-testing.md
-    - "56. Debugging Tools": 56-debugging-tools.md
+    - "54. Mainline Modules": 54-mainline-modules.md
+    - "55. OTA Updates": 55-ota-updates.md
+    - "56. Virtualization": 56-virtualization.md
+    - "57. Testing": 57-testing.md
+    - "58. Debugging Tools": 58-debugging-tools.md
   - "Part XIV: Device Support":
-    - "57. Architecture Support": 57-architecture-support.md
-    - "58. Emulator": 58-emulator.md
-    - "59. Device Policy": 59-device-policy.md
-    - "60. Automotive/TV/Wear": 60-automotive-tv-wear.md
-    - "61. Print Services": 61-print-services.md
-    - "62. Camera2 Pipeline": 62-camera2-pipeline.md
+    - "59. Architecture Support": 59-architecture-support.md
+    - "60. Emulator": 60-emulator.md
+    - "61. Device Policy": 61-device-policy.md
+    - "62. Device Form Factors": 62-form-factors.md
+    - "63. Print Services": 63-print-services.md
+    - "64. Camera2 Pipeline": 64-camera2-pipeline.md
   - "Part XV: Practical":
-    - "63. Custom ROM Guide": 63-custom-rom.md
-    - "64. Windows Games on Android": 64-windows-games.md
-  - "Part XVI: Software Defined Vehicle":
-    - "65. Software Defined Vehicle": 65-software-defined-vehicle.md
-    - "66. SDV Middleware & Vehicle Communication": 66-sdv-middleware-and-communication.md
+    - "65. Custom ROM Guide": 65-custom-rom.md
+    - "66. Windows Games on Android": 66-windows-games.md
   - Appendices:
     - "A. Key Files Reference": A-appendix-key-files.md
     - "B. Glossary": B-appendix-glossary.md

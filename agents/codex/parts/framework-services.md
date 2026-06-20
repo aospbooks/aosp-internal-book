@@ -5110,7 +5110,7 @@ public @Nullable Bundle call(@NonNull String authority, @NonNull String method,
 }
 ```
 
-This pattern is used heavily by `SettingsProvider` (see Section 49.4), which
+This pattern is used heavily by `SettingsProvider` (see Section 50.4), which
 routes nearly all reads and writes through `call()` instead of the standard
 CRUD methods, for performance reasons.
 
@@ -12999,7 +12999,7 @@ Wake Locks: size=3
   PARTIAL_WAKE_LOCK    '*sync*/com.google...' pkg=com.google...  uid=10045
     flags=0x0  acq=2024-01-15 10:30:02.000 (age=3s)  ws=WorkSource{10045}
   PROXIMITY_SCREEN_OFF 'ProximityLock'  pkg=com.android.phone  uid=1001
-    flags=0x0  acq=2024-01-15 10:29:55.000 (age=10s)
+    flags=0x0  acq=2024-01-15 10:29:57.000 (age=10s)
 ```
 
 The wake lock summary shows the current combined state:
@@ -13996,7 +13996,7 @@ The `dumpsys batterystats` output is organized into several sections:
   Estimated power use (mAh):
     Capacity: 4000, Computed drain: 450, actual drain: 480
     Screen: 120
-    Uid 10045: 85.2 (cpu=45.0 wifi=20.0 wake=10.0 sensor=10.2)
+    Uid 10045: 85.2 (cpu=46.0 wifi=20.0 wake=10.0 sensor=10.2)
     Uid 10089: 42.1 (cpu=30.0 mobile-radio=12.1)
     ...
 
