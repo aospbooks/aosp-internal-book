@@ -3188,37 +3188,516 @@ platform; the SDV sections (§62.7 and §62.8) pick up where the vehicle abstrac
 
 ---
 
-## 62.6 Android 17: Android XR as an Emerging Form Factor
+## 62.6 Android XR
 
-Automotive, TV, and Wear are the form factors that AOSP ships and supports today. Android 17 adds
-the first platform-level *signal* of a fourth one -- **Android XR**, the headset and glasses form
-factor built on the Khronos **OpenXR** standard. It is worth understanding precisely how thin this
-signal is in 17, because it is easy to overstate.
+Automotive, TV, and Wear are the form factors AOSP ships and supports as full vertical stacks
+today. Android 17 adds the first platform-level groundwork for a fourth one: **Android XR**, the
+head-worn headset and glasses form factor built on the Khronos **OpenXR** standard. It is worth
+understanding this groundwork precisely, because it is easy to overstate. The blunt version, which
+the rest of this section backs up file by file: **Android XR is not merged into AOSP.** Android 17
+upstreams only the *API-usage surface XR apps compile against* -- the feature strings, manifest
+properties, tracking permissions and AppOps, the vendored OpenXR headers, and a few telemetry atom
+definitions -- **not a working XR stack.** There is no XR runtime, no OpenXR loader, no compositor,
+no scene/spatial SDK, no XR HAL, and no XR device or emulator target in the AOSP 17 tree. Those
+pieces live off-tree: a vendor runtime on the device implements the OpenXR ABI, and the
+separately-distributed Jetpack XR SDK gives apps the high-level scene API. The sections below walk
+what AOSP 17 actually contains -- and keep insisting on the distinction, because the upstream
+footprint is small enough to be mistaken for the whole thing.
 
-There is no in-tree XR runtime, loader, or system consumer in AOSP 17. What landed is two things:
+### 62.6.1 What "Android XR" Is in AOSP 17 -- and What It Isn't
 
-- **Vendored OpenXR headers.** `external/openxr-sdk/` is the newly vendored Khronos OpenXR SDK
-  (`release-1.1.50` per its `METADATA`). Its in-tree `Android.bp` exposes a single module,
-  `cc_library_headers { name: "openxr_headers" }`, over `include/` -- the OpenXR *headers*, not a
-  loader or runtime. As of 17 no in-tree platform module consumes `openxr_headers`; the SDK simply
-  makes the standard XR ABI available to native code that opts in.
-- **Two flag-gated feature strings.** `frameworks/base/core/api/current.txt` declares
-  `FEATURE_XR_API_OPENXR = "android.software.xr.api.openxr"` and
-  `FEATURE_XR_API_SPATIAL = "android.software.xr.api.spatial"`, both annotated
-  `@FlaggedApi("android.xr.xr_manifest_entries")`. These are the `<uses-feature>` strings an XR app
-  declares to require an OpenXR-capable (or spatial-capable) device.
+Almost the entire in-tree XR surface is hidden behind a single aconfig flag. The flag is declared
+in `frameworks/base/core/java/android/content/pm/xr.aconfig`:
+
+```
+flag {
+    namespace: "xr"
+    name: "xr_manifest_entries"
+    description: "Adds manifest entries used by Android XR"
+    bug: "364416355"
+    is_exported: true
+}
+```
+
+The flag is `is_exported`, so the `@FlaggedApi("android.xr.xr_manifest_entries")` annotation can be
+applied to public API in `frameworks/base`. Its default value is **disabled**: there is no release
+override for `xr_manifest_entries` anywhere under `build/release`, so on a stock AOSP 17 build the
+flag stays off and the XR API surface, permissions, and manifest properties it gates are inert. A
+device that actually ships XR turns the flag on through its release configuration.
+
+What is *not* in the tree is everything that would make a headset boot:
+
+- **No XR HAL.** There is no `hardware/interfaces/xr/` and no XR HAL AIDL/HIDL package.
+- **No XR runtime or OpenXR loader.** The compositor and the loader that resolves the OpenXR ABI to
+  a runtime live on the device, supplied by the vendor (see Section 62.6.2).
+- **No XR system service.** There is no XR equivalent of `CarService` or `TvInputManagerService`
+  under `frameworks/base/services`; nothing implements an `android.xr.*` runtime service.
+- **No XR device, lunch target, or emulator.** AOSP 17 has no XR reference device and no XR
+  emulator image. (Do not mistake `emu64xr` for one -- that is a RISC-V binary-translation
+  emulator target, unrelated to XR; likewise `IDvr` is TV tuner, `VrrConfig` is variable refresh
+  rate, `RtcpXr` is VoIP statistics, and `uxr` is an automotive UX-restrictions abbreviation. None
+  of these are Android XR.)
+
+The headset context for this groundwork surfaces only in telemetry: the statsd atom file
+`frameworks/proto_logging/stats/atoms/xr/recorder/xr_recorder_extension_atoms.proto` logs XR
+recorder state changes and, in its logging-source comment, references the "Moohan" headset that
+the first Android XR devices are built around. The atom is a logging definition, not a runtime --
+it is another instance of the platform reserving vocabulary ahead of the device.
 
 The intended division of labor mirrors how the other form factors handle hardware-specific stacks:
-the platform defines the contract (the OpenXR headers/ABI and the feature strings), a *vendor*
-runtime implements the OpenXR ABI on the device, and apps declare the feature so they only install
-where that runtime exists. None of the runtime side lives in AOSP 17 -- there is no XR equivalent
-of CarService, TvInputManagerService, or the Wear windowing path in this release. Treat Android XR
-in 17 as a contract and a placeholder for a form factor that is being prepared, not a shipping
-subsystem on par with the three covered above.
+the platform defines the *contract* (the OpenXR ABI via vendored headers, the feature strings apps
+declare, the tracking permissions the framework enforces), a *vendor* runtime implements the
+OpenXR ABI on the device, and the off-tree Jetpack XR SDK gives apps a high-level scene API on top.
+Only the contract lives in AOSP 17. Put plainly: Android 17 upstreams the API-usage surface XR apps
+compile against, not a working XR stack.
 
-For the full Android 17 view of this change -- the SDK vendoring details, the wider set of
-flag-gated XR permissions and window properties in `current.txt`, and where it sits among the
-release's other AI-and-devices additions -- see **Appendix D: Android 17 Platform Updates**.
+How small that footprint really is shows up in the 16-to-17 changeset. Across that window AOSP
+gains exactly **one** new XR project: `external/openxr-sdk` (the OpenXR SDK pinned to
+`release-1.1.50`, covered in Section 62.6.2). The platform commits that mention "spatial,"
+"head-tracking," or "passthrough" in the same window are almost all about spatial *audio* -- the
+the audio `Spatializer` (`frameworks/av/services/audiopolicy`) and `frameworks/av/media/libheadtracking` (Section 62.6.8) -- not about
+XR. In other words, the XR *platform-code* footprint added in 17 is deliberately minimal: a vendored
+header package and a flag-gated contract, with the runtime left entirely to the vendor.
+
+### 62.6.2 The OpenXR SDK in the Tree
+
+The one piece of XR *code* vendored into AOSP 17 is the Khronos OpenXR SDK at
+`external/openxr-sdk/`. Its `METADATA` pins the version to `release-1.1.50`, and
+`external/openxr-sdk/include/openxr/openxr.h` defines the matching API version:
+
+```c
+#define XR_MAKE_VERSION(major, minor, patch) \
+    ((((major) & 0xffffULL) << 48) | (((minor) & 0xffffULL) << 32) | ((patch) & 0xffffffffULL))
+
+#define XR_CURRENT_API_VERSION XR_MAKE_VERSION(1, 1, 50)
+```
+
+What matters for AOSP is what the build exposes. `external/openxr-sdk/Android.bp` declares exactly
+one module:
+
+```
+cc_library_headers {
+    name: "openxr_headers",
+    export_include_dirs: ["include"],
+}
+```
+
+That is the entire built surface -- the OpenXR *headers*, nothing more. The SDK's loader source
+under `external/openxr-sdk/src/loader/` is present in the checkout but is **not** built by
+`Android.bp`: there is no `cc_library` for it. And grepping the whole AOSP 17 tree for modules that
+depend on `openxr_headers` returns zero in-tree consumers -- no platform module compiles against
+the OpenXR ABI.
+
+Headers-only is the deliberate shape. The OpenXR ABI is a contract between an application (or a
+higher-level SDK) and a *runtime*: on a real headset the runtime and the loader that finds it are
+supplied by the vendor, the same way a GPU vendor supplies the Vulkan ICD rather than AOSP shipping
+one. Vendoring just the headers makes the standard XR ABI available to native code that opts in,
+without committing AOSP to a particular runtime implementation.
+
+### 62.6.3 The Flag-Gated XR API Surface
+
+On top of the headers, Android 17 adds a public Java API surface that lets an app *declare* what XR
+capabilities it needs and *describe* how it wants to be presented. All of it is gated by
+`@FlaggedApi("android.xr.xr_manifest_entries")` and is therefore inert on a stock build, but it is
+present in `frameworks/base/core/api/current.txt`, so it is part of the public SDK contract.
+
+The feature strings live in `frameworks/base/core/java/android/content/pm/PackageManager.java`. An
+app names them in `<uses-feature>` to require an XR-capable device:
+
+- `FEATURE_XR_API_OPENXR` (`"android.software.xr.api.openxr"`) -- the device exposes an OpenXR
+  runtime. Its declared *version* is encoded as `major << 16 | minor` (major in bits 31-16, minor
+  in bits 15-0), so OpenXR 1.1 is `0x00010001`. The same encoding is used by the feature XML in
+  Section 62.6.5.
+- `FEATURE_XR_API_SPATIAL` (`"android.software.xr.api.spatial"`) -- the device supports the spatial
+  (system-composited) presentation model.
+- `FEATURE_XR_INPUT_CONTROLLER` (`"android.hardware.xr.input.controller"`),
+  `FEATURE_XR_INPUT_HAND_TRACKING` (`"android.hardware.xr.input.hand_tracking"`), and
+  `FEATURE_XR_INPUT_EYE_TRACKING` (`"android.hardware.xr.input.eye_tracking"`) -- the available XR
+  input modalities.
+- `FEATURE_XR_PERIPHERAL` (`"android.hardware.type.xr_peripheral"`) -- this one is gated by a
+  *separate* flag, `@FlaggedApi(com.android.microxr.Flags.FLAG_XR_GLASSES_FEATURE)`
+  (`"com.android.microxr.xr_glasses_feature"`), reflecting the lighter glasses peripheral form
+  factor rather than a full headset.
+
+How an XR activity is presented is described with window properties in
+`frameworks/base/core/java/android/view/XrWindowProperties.java`. The central one is
+`PROPERTY_XR_ACTIVITY_START_MODE` (`"android.window.PROPERTY_XR_ACTIVITY_START_MODE"`), whose value
+selects one of (each a full `XR_ACTIVITY_START_MODE_*` constant, abbreviated here by suffix):
+
+- `FULL_SPACE_UNMANAGED` -- the activity renders its own scene graph and "controls its own scene
+  graph," the mode documented for activities that use OpenXR directly to draw their world.
+- `FULL_SPACE_MANAGED` -- the system renders the activity from a scene graph it composites.
+- `HOME_SPACE` -- the activity sits in the shared home-space environment alongside other windows.
+- `UNDEFINED` -- the reset/default value.
+
+Two more properties tune presentation: `PROPERTY_XR_BOUNDARY_TYPE_RECOMMENDED` (the recommended
+play-area boundary type) and `PROPERTY_XR_USES_CUSTOM_FULL_SPACE_MANAGED_ANIMATION` (the app draws
+its own enter/exit animation in managed full-space mode). Separately,
+`DisplayManager.DISPLAY_CATEGORY_XR_PROJECTED`
+(`"android.hardware.display.category.XR_PROJECTED"`,
+`frameworks/base/core/java/android/hardware/display/DisplayManager.java`) lets a caller enumerate
+projected XR displays.
+
+This is purely declarative API. There is no `android.xr.*` runtime service or scene SDK in AOSP 17
+to *act* on these declarations -- the runtime that reads the start mode and composites the scene is
+the off-tree vendor stack, and the high-level scene API apps write against is the off-tree Jetpack
+XR SDK.
+
+The following diagram shows the flag-gated XR contract: what an app declares, the flag that gates
+it, the platform's in-tree declarations, and the off-tree pieces (shown dashed) that actually run
+the experience.
+
+```mermaid
+graph TB
+    subgraph App["XR Application (manifest)"]
+        UF["&lt;uses-feature&gt;<br/>FEATURE_XR_API_OPENXR / SPATIAL<br/>FEATURE_XR_INPUT_* / XR_PERIPHERAL"]
+        PROP["&lt;property&gt;<br/>PROPERTY_XR_ACTIVITY_START_MODE<br/>(FULL_SPACE_UNMANAGED / MANAGED / HOME_SPACE)"]
+        PERM["&lt;uses-permission&gt;<br/>EYE/FACE/HAND/HEAD_TRACKING<br/>SCENE_UNDERSTANDING_*"]
+    end
+
+    FLAG["aconfig flag<br/>android.xr.xr_manifest_entries<br/>(disabled by default in AOSP)"]
+
+    subgraph Platform["AOSP 17 in-tree (contract only)"]
+        PM["PackageManager FEATURE_XR_* strings<br/>(core/api/current.txt)"]
+        XWP["XrWindowProperties<br/>start mode / boundary / animation"]
+        MAN["AndroidManifest.xml<br/>XR tracking permissions + groups"]
+        HDR["external/openxr-sdk<br/>openxr_headers (headers only)"]
+    end
+
+    subgraph Vendor["Off-tree (NOT in AOSP)"]
+        RT["Vendor OpenXR runtime + loader<br/>compositor"]
+        SDK["Jetpack XR SDK<br/>(scene / spatial APIs)"]
+    end
+
+    UF --> FLAG
+    PROP --> FLAG
+    PERM --> FLAG
+    FLAG --> PM
+    FLAG --> XWP
+    FLAG --> MAN
+    HDR -.ABI.-> RT
+    SDK -.app-facing.-> UF
+    RT -.implements contract.-> Platform
+```
+
+### 62.6.4 XR Privacy: Tracking Permissions and AppOps
+
+The most concrete and consequential XR surface in AOSP 17 is the privacy machinery. A headset
+continuously senses the wearer's body and surroundings -- where the eyes look, the geometry of the
+face, the pose of the hands, the orientation of the head, and a reconstructed mesh of the room.
+That is a class of data Android had no permissions for, so 17 introduces a dedicated XR
+tracking permission family in `frameworks/base/core/res/AndroidManifest.xml`, every entry carrying
+`android:featureFlag="android.xr.xr_manifest_entries"`.
+
+The runtime (dangerous) permissions -- the ones an app must request and the user must grant -- are:
+
+| Permission | What it exposes |
+| --- | --- |
+| `EYE_TRACKING_COARSE` / `EYE_TRACKING_FINE` | gaze direction at two fidelities |
+| `FACE_TRACKING` | facial geometry / expression |
+| `HAND_TRACKING` | hand and finger pose |
+| `HEAD_TRACKING` | head pose and orientation |
+| `SCENE_UNDERSTANDING_COARSE` / `SCENE_UNDERSTANDING_FINE` | reconstructed environment geometry |
+
+Alongside these, Android 17 defines XR-specific permission-groups -- `XR_TRACKING`, plus the more
+sensitive `XR_EYE_SENSITIVE` and `XR_TRACKING_SENSITIVE` -- intended for the eye and fine-tracking
+data, which are especially identifying, so it can be surfaced separately from coarse tracking. (In
+the manifest the individual permissions still sit in the `UNDEFINED` group; the XR grouping is
+applied at runtime, not via a static `permissionGroup` attribute.) A
+second tier of `signature|privileged` permissions is reserved for the system and OEM components:
+`EYE_CALIBRATION`, `FACE_TRACKING_CALIBRATION`, `IMPORT_XR_ANCHOR`, and
+`XR_TRACKING_IN_BACKGROUND` (the right to keep tracking the wearer while not in the foreground,
+which is exactly why it is privileged).
+
+Each runtime tracking permission is paired with an AppOp in
+`frameworks/base/core/java/android/app/AppOpsManager.java`, so the framework can audit and revoke
+access at runtime, per app, the same way it does for camera and location:
+
+| AppOp constant | Op string |
+| --- | --- |
+| `OP_EYE_TRACKING_COARSE` / `OP_EYE_TRACKING_FINE` | `android:eye_tracking_coarse` / `android:eye_tracking_fine` |
+| `OP_FACE_TRACKING` | `android:face_tracking` |
+| `OP_HAND_TRACKING` | `android:hand_tracking` |
+| `OP_HEAD_TRACKING` | `android:head_tracking` |
+| `OP_SCENE_UNDERSTANDING_COARSE` / `OP_SCENE_UNDERSTANDING_FINE` | `android:scene_understanding_coarse` / `android:scene_understanding_fine` |
+
+The reason XR needs an entirely new permission *class* rather than reusing camera or sensor
+permissions is that the data is qualitatively different. Eye gaze is biometric and reveals
+attention and intent; face and hand tracking reconstruct the body; scene understanding builds a
+persistent 3D map of the user's home. None of these map cleanly onto "take a photo" or "read the
+accelerometer," and they carry distinct consent and retention concerns, so the platform models
+each as its own permission with its own AppOp. The permissions and AppOps ship in 17 even though no
+in-tree runtime produces the data yet -- the privacy contract is deliberately in place before any
+device can sense it.
+
+The following diagram shows the body- and environment-tracking permission-to-AppOp model and where
+the (off-tree) runtime sits relative to it.
+
+```mermaid
+graph LR
+    subgraph Sensing["What a headset senses"]
+        EYE["Gaze"]
+        FACE["Face geometry"]
+        HAND["Hand pose"]
+        HEAD["Head pose"]
+        SCENE["Room mesh"]
+    end
+
+    subgraph Perms["Dangerous permissions (AndroidManifest.xml)"]
+        PE["EYE_TRACKING_COARSE/FINE"]
+        PF["FACE_TRACKING"]
+        PH["HAND_TRACKING"]
+        PHd["HEAD_TRACKING"]
+        PS["SCENE_UNDERSTANDING_COARSE/FINE"]
+    end
+
+    subgraph Ops["AppOps (AppOpsManager.java)"]
+        OE["OP_EYE_TRACKING_*"]
+        OF["OP_FACE_TRACKING"]
+        OH["OP_HAND_TRACKING"]
+        OHd["OP_HEAD_TRACKING"]
+        OS["OP_SCENE_UNDERSTANDING_*"]
+    end
+
+    RT["Off-tree vendor OpenXR runtime<br/>(produces the data; NOT in AOSP)"]
+
+    EYE --> PE --> OE
+    FACE --> PF --> OF
+    HAND --> PH --> OH
+    HEAD --> PHd --> OHd
+    SCENE --> PS --> OS
+    RT -.guarded by.-> Ops
+```
+
+### 62.6.5 Feature Declarations and Device Opt-In
+
+For the `<uses-feature>` strings of Section 62.6.3 to mean anything, a device has to *declare* the
+matching system features. The declaration XML for that lives in `frameworks/native/data/etc/`:
+
+| File | Feature declared | Version |
+| --- | --- | --- |
+| `android.software.xr.api.openxr-1_0.xml` | `android.software.xr.api.openxr` | `65536` (= `0x00010000`, OpenXR 1.0) |
+| `android.software.xr.api.openxr-1_1.xml` | `android.software.xr.api.openxr` | `65537` (= `0x00010001`, OpenXR 1.1) |
+| `android.software.xr.api.openxr-1_2.xml` | `android.software.xr.api.openxr` | `65538` (= `0x00010002`, OpenXR 1.2) |
+| `android.software.xr.api.spatial-1.xml` | `android.software.xr.api.spatial` | `1` |
+| `android.hardware.xr.input.controller.xml` | `android.hardware.xr.input.controller` | (none) |
+| `android.hardware.xr.input.hand_tracking.xml` | `android.hardware.xr.input.hand_tracking` | (none) |
+| `android.hardware.xr.input.eye_tracking.xml` | `android.hardware.xr.input.eye_tracking` | (none) |
+
+The OpenXR version attribute is the same `major << 16 | minor` integer encoding used by
+`FEATURE_XR_API_OPENXR` -- a device declares the highest OpenXR version its runtime supports, and
+`PackageManager` lets an app require at least that version.
+
+Crucially, AOSP installs **none** of these by default. They are not listed in the permission
+makefiles that base and handheld products copy; they sit in `frameworks/native/data/etc/` purely as
+opt-in fragments. An XR device pulls the ones it supports into its system image with
+`PRODUCT_COPY_FILES` in its own device makefile, the same mechanism every optional hardware feature
+uses. Because there is no XR HAL, no XR input backing, and no lunch target in AOSP 17, declaring
+these features only becomes meaningful on a vendor build that also supplies the runtime; on a stock
+build there is nothing to declare them against.
+
+### 62.6.6 MicroXR: The XR Glasses Split
+
+Everything in Sections 62.6.1 through 62.6.5 is the *headset* story, gated by the `android.xr`
+flag `xr_manifest_entries`. Android 17 carves out a second, lighter form factor at the flag level:
+**XR glasses**, which ride a separate aconfig package, `com.android.microxr`.
+
+The split starts in the flag itself. The glasses flag is declared in a file of its own,
+`frameworks/base/core/java/android/content/pm/glasses.aconfig`:
+
+```
+package: "com.android.microxr"
+container: "system"
+
+flag {
+    namespace: "xr"
+    name: "xr_glasses_feature"
+    description: "Adds features used by Android XR Glasses"
+    bug: "430302860"
+    is_exported: true
+}
+```
+
+Like `xr_manifest_entries`, `xr_glasses_feature` is `is_exported` (so it can gate public API) and is
+**disabled by default** -- there is no release override for it under `build/release`, so on a stock
+AOSP 17 build the glasses surface is inert. The two flags are independent: full XR headsets ride
+`android.xr` / `xr_manifest_entries` (Section 62.6.3), and XR glasses ride
+`com.android.microxr` / `xr_glasses_feature`. The build wiring sits in
+`frameworks/base/AconfigFlags.bp`, under a `// XR - Glasses` comment, which declares
+`com.android.microxr.flags-aconfig` from `core/java/android/content/pm/glasses.aconfig` and a
+`com.android.microxr.flags-aconfig-java` library whose `apex_available` lists both the platform and
+`com.android.permission` -- so the glasses flag is reachable from the permission module, not just
+the framework.
+
+The one public API the glasses flag gates is a *device-class* feature string in
+`frameworks/base/core/java/android/content/pm/PackageManager.java` (around lines 4596-4604):
+
+```java
+/**
+ * Feature for {@link #getSystemAvailableFeatures} and
+ * {@link #hasSystemFeature}: An XR peripheral is defined as a full stack Android device with
+ * or without a display, with or without inputs, and no user-installable apps. XR peripherals
+ * are worn on the user's body and likely require a companion device for user interactions.
+ */
+@FlaggedApi(com.android.microxr.Flags.FLAG_XR_GLASSES_FEATURE)
+@SdkConstant(SdkConstantType.FEATURE)
+public static final String FEATURE_XR_PERIPHERAL = "android.hardware.type.xr_peripheral";
+```
+
+Two things about `FEATURE_XR_PERIPHERAL` matter. First, it is gated by
+`com.android.microxr.Flags.FLAG_XR_GLASSES_FEATURE` (`"com.android.microxr.xr_glasses_feature"`),
+not by the headset flag. Second, and easy to miss, it is an `android.hardware.type.*` string -- a
+**device-class marker**, a peer of `FEATURE_PC` (`android.hardware.type.pc`), `FEATURE_WATCH`, and
+`FEATURE_TELEVISION` -- *not* an `android.software.xr.*` / `android.hardware.xr.*` *capability* like
+the headset features in Section 62.6.3. It says "this device is an XR peripheral," the way other
+features say "this device is a PC" or "a watch." And unlike the headset capability features, it
+ships **no opt-in feature XML** in `frameworks/native/data/etc/`: there is no
+`android.hardware.type.xr_peripheral.xml` fragment for a device to copy in, so a glasses device
+declares the class through its own configuration rather than by pulling a stock fragment.
+
+#### Where in-tree code actually acts on the glasses class
+
+`FEATURE_XR_PERIPHERAL` is almost entirely a contract -- but not *only* a contract. Unlike the
+headset feature strings, which nothing in AOSP reads, a handful of modules already branch on the XR
+peripheral class, each treating glasses as a constrained device alongside WATCH, TV, and
+AUTOMOTIVE:
+
+- **Wi-Fi.** `WifiGlobals` caches the class at construction:
+  `mIsXrPeripheral = mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_XR_PERIPHERAL)`
+  (`packages/modules/Wifi/service/java/com/android/server/wifi/WifiGlobals.java:104`), then consults
+  the flag to tune Wi-Fi behavior for the peripheral.
+- **Bluetooth.** `Util.isXrDevice()`
+  (`packages/modules/Bluetooth/android/app/src/com/android/bluetooth/Util.kt:266`) is defined right
+  next to `isTv()` and `isWatch()` and resolves to `hasSystemFeature(FEATURE_XR_PERIPHERAL)`. Its
+  consumer, `media_audio/sink/MediaAudioServer.kt:605`, lumps XR devices with IoT and TV devices
+  (`if (context.isIotDevice() || context.isTv() || context.isXrDevice())`) when deciding media-audio
+  sink behavior.
+- **MediaProvider.** `ProcessingUtils`
+  (`packages/providers/MediaProvider/src/com/android/providers/media/localsearch/ProcessingUtils.java:112`)
+  disables on-device media processing on XR peripherals, listing `FEATURE_XR_PERIPHERAL` alongside
+  `FEATURE_WATCH`, `FEATURE_AUTOMOTIVE`, `FEATURE_TELEVISION`, and `FEATURE_EMBEDDED` as device types
+  that "can possibly support UI for search services" only on phones, tablets, and PCs.
+
+That is the whole of it: three modules that special-case glasses as a stripped-down device class.
+There is no MicroXR *runtime*, *service*, *app*, *HAL*, or *device target* behind the flag -- the
+behavior is "do less" gating, the same shape as the existing WATCH/TV/AUTOMOTIVE checks.
+
+#### MicroXR telemetry: the glasses counterpart to the headset recorder atoms
+
+Where the headset groundwork surfaces only as the "Moohan" recorder atoms (Section 62.6.1), the
+glasses groundwork surfaces as a parallel statsd atom family under
+`frameworks/proto_logging/stats/atoms/microxr/microxr_extension_atoms.proto` (with shared enums in
+`frameworks/proto_logging/stats/enums/microxr/enums.proto`). These atoms read as a portrait of the
+glasses hardware Google plans to ship:
+
+- **Wear state.** `MicroXrDonDoffStateChanged` logs a `DonDoffState` of `DONNED` (worn), `DOFFED`
+  (not worn), or `DISABLED` -- the don/doff detection a body-worn device needs.
+- **Capture.** `MicroXrPhotoCaptured` / `MicroXrVideoCaptured` log captures triggered by a button
+  press on the glasses or by a voice command (`PhotoOrVideoTrigger` = `BUTTON` / `VOICE`), including
+  latency through a **"Darklight"** HDR capture pipeline and an HDR-vs-non-HDR `CaptureMode`.
+- **A separate MCU co-processor.** A cluster of atoms reports the glasses' microcontroller as a
+  distinct chip from the application processor: `MicroXrMcuCrashOccurred` (crash dump or watchdog
+  failure), `MicroXrMcuPowerDeepSleepInfo`, `MicroXrMcuBootTimeReported`, and
+  `MicroXrMcuMemorySnapshotReported`.
+- **Power and updates.** `MicroXrApWakeupReported` (the MCU waking the application processor) and
+  `MicroXrOtaReported` (over-the-air update outcomes) round out the set.
+
+This is Google/vendor *glasses telemetry* living in `proto_logging` -- statsd definitions, not a
+public framework API an app can call -- and, exactly as with the headset side, there is **no**
+MicroXR module, service, app, HAL, or device target anywhere in AOSP to produce or consume it. The
+atoms reserve the logging vocabulary ahead of the hardware, the same pattern the headset XR
+contract follows.
+
+### 62.6.7 The Legacy VR Framework Android XR Succeeds
+
+Android XR is not the platform's first attempt at head-worn computing. The earlier **Daydream-era
+VR framework** is, by Android 17, almost entirely gone. The `android.hardware.vr@1.0` `IVr` HAL was
+removed -- there is no `hardware/interfaces/vr/` tree (only a stale name in a Watchdog HAL-monitor
+list remains). The orchestrating `VrManagerService` is gone from `frameworks/base/services`; only
+the internal `VrManagerInternal` interface used by ActivityManager/WindowManager survives.
+
+What remains is a set of inert API remnants kept for source compatibility:
+
+- `android.app.VrManager` (`frameworks/base/core/java/android/app/VrManager.java`) -- still a
+  `@SystemApi`, but its calls reach a system service that no longer exists.
+- `android.service.vr.VrListenerService` -- the abstract service apps once extended.
+- `Vr2dDisplay` (`frameworks/base/services/core/java/com/android/server/vr/Vr2dDisplay.java`) --
+  the virtual display that hosted 2D apps inside a VR scene.
+- `PackageManager.FEATURE_VR_MODE` (`"android.software.vr.mode"`), now `@Deprecated`, plus the
+  still-declared `FEATURE_VR_MODE_HIGH_PERFORMANCE` (`"android.hardware.vr.high_performance"`) and
+  `FEATURE_VR_HEADTRACKING` (`"android.hardware.vr.headtracking"`), which no AOSP device populates.
+- `Activity.setVrModeEnabled(...)` (`frameworks/base/core/java/android/app/Activity.java`) still
+  exists, routing through `ActivityClient.setVrMode` and throwing
+  `PackageManager.NameNotFoundException` if the requested `VrListenerService` is not installed or
+  enabled; with the VR HAL and service removed, the path no longer activates a VR mode.
+
+The contrast is the point. The old VR framework was an Android-side mode toggle layered on a thin
+HAL; Android XR is architecturally distinct -- it is built on the cross-vendor OpenXR ABI, defines
+a body- and environment-tracking privacy model, and pushes the runtime and compositor entirely to
+the vendor side. The 17 tree reflects a clean break: the Daydream-era code is being retired to
+inert remnants while the OpenXR-based contract is laid down fresh.
+
+### 62.6.8 Cross-Reference: Head-Tracked Spatial Audio
+
+One subsystem XR builds on does already ship in AOSP, and it predates XR: the audio
+**Spatializer**. Chapter 15 (Audio System, Section 15.2.17) covers the `SpatializerThread`, the
+specialized `MixerThread` in AudioFlinger that renders spatial audio and drives HAL latency modes
+for low-latency **head-tracked** audio. Head-tracked spatialization is exactly the kind of platform
+capability an XR runtime composes with -- a headset wants room-anchored sound that stays fixed as
+the wearer turns their head -- but it is *not* XR-exclusive: the Spatializer serves regular phones,
+tablets, and TVs with spatial-audio output and head-tracking headphones. It is an example of an
+adjacent, already-real subsystem that Android XR will lean on, rather than a piece of the XR
+groundwork that 17 newly added.
+
+### 62.6.9 What's Next: Predicting Android XR's Path into AOSP
+
+Everything above is what AOSP 17 *contains*. This section is the opposite: it is an **informed
+prediction** of how the rest of the stack might land upstream, read off what 17 already stages and
+what is conspicuously missing. It is **forward-looking, not a published roadmap** -- Google has not
+committed to any of it in the tree, so treat each item as "this is the shape the gaps suggest,"
+hedged with *likely* and *would*, not as a statement of plans.
+
+The reasoning is straightforward: 17 lays down a contract with no implementation, and a contract
+with no implementation is the kind of thing that usually precedes the implementation. The most
+likely next steps, each tied to something already half-present:
+
+- **The flags flip on.** `xr_manifest_entries` (headsets) and `xr_glasses_feature` (glasses) are
+  both `is_exported` and default-off with no release override (Sections 62.6.1, 62.6.6). The cheapest
+  possible change once devices ship is a release override that flips them on for XR products,
+  activating the API surface that is already merged. This needs no new code at all.
+- **A loader/runtime built from the vendored SDK.** `external/openxr-sdk` ships the OpenXR
+  *headers* only -- the loader source is present in the checkout but not built by `Android.bp`
+  (Section 62.6.2). The obvious next move is a `cc_library` (or similar) that actually compiles the
+  OpenXR loader from that already-vendored source, giving AOSP an in-tree way to resolve the OpenXR
+  ABI to a runtime instead of leaving both to the vendor.
+- **An XR HAL under `hardware/interfaces/`.** There is no `hardware/interfaces/xr/` today
+  (Section 62.6.1). A device-tracking/compositor HAL contract is the natural place for the
+  platform-vendor boundary to be specified, the way every other form factor has one; if XR is to be
+  more than a vendor black box, an `xr` (or `microxr`) HAL package would likely appear here.
+- **Real compositor support in WindowManager/SurfaceFlinger.** `XrWindowProperties` already lets an
+  app declare `FULL_SPACE_UNMANAGED` / `FULL_SPACE_MANAGED` / `HOME_SPACE` start modes
+  (Section 62.6.3), but nothing in-tree composites them. Honoring those modes would mean
+  WindowManager and SurfaceFlinger gaining genuine full-space / home-space compositor paths behind
+  `XrWindowProperties`, rather than the declarations being inert.
+- **A scene/spatial system service.** The `android.xr.*` runtime and scene classes live only in the
+  off-tree Jetpack XR SDK today; AOSP has no XR system service (Section 62.6.1). If the scene model
+  is to be a platform guarantee rather than an app-bundled library, some of that runtime would
+  likely move or be mirrored into a system service under `frameworks/base/services`, the role
+  `CarService` and `TvInputManagerService` play for their form factors.
+- **Feature XMLs installed by default.** The opt-in fragments in `frameworks/native/data/etc/`
+  (Section 62.6.5) are copied by no product today. An XR reference product would add them to its
+  `PRODUCT_COPY_FILES`, and the glasses class -- which has *no* fragment at all today (Section 62.6.6)
+  -- would likely gain one if it is to be declared the stock way.
+- **An XR device / emulator (lunch) target.** There is no XR reference device or emulator image in
+  17, which means there is nothing to run XR CTS against (Section 62.6.1). A lunch target -- a
+  reference device or an emulator image -- is what would let the contract above be tested in CI, so
+  it is a plausible precondition for any of the rest to be exercised upstream.
+
+None of this is promised by the 17 tree. The point of cataloguing it is that the absences are
+specific and the staged pieces are specific, so the missing layers can be named precisely: a built
+loader, a HAL, compositor paths, a system service, default-installed feature XMLs, and a test
+target. If and when Android XR lands in AOSP as a vertical stack the way Automotive, TV, and Wear
+have, these are the slots it would fill.
 
 ---
 
