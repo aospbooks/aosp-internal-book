@@ -79,8 +79,8 @@ chapter only when nothing fits and the code is substantial.
 | Situation | Action |
 |---|---|
 | Extends an existing subsystem | **Fold** a new numbered section into that chapter (preferred) |
-| Substantial NEW top-level subsystem, fits no chapter | **New chapter** — appended number, continuing past the last one |
-| Cluster of related new repos forming a new domain | **New Part** appended after the last numbered Part, before Appendices |
+| Substantial NEW top-level subsystem, fits no chapter | **New chapter** — append it (number past the last one) by default; or, if the user wants logical ordering, **insert** it at its Part position via a coordinated whole-book renumber (see `bookkeeping.md` → "Renumbering chapters") |
+| Cluster of related new repos forming a new domain | **New Part** appended after the last numbered Part, before Appendices (or inserted at its logical position via a renumber) |
 | `external/*` dep, or thin/stub/relocation/prebuilt | **Integration note** in the most relevant chapter (how/why integrated), or leave to the appendix — never its own chapter |
 
 A new chapter must clear all three: (a) genuinely new top-level

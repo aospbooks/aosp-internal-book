@@ -68,6 +68,51 @@ A new Part is **appended after the last numbered Part, before Appendices**
 - Update `README.md` + `agents/README.md` Part tables/counts, then regenerate
   and gate.
 
+## Renumbering chapters (inserting a chapter at its logical position)
+
+By default new chapters are *appended* (next free number) — no renumber needed.
+Only when the user explicitly wants logical ordering do you renumber. It is a
+single all-or-nothing cascade; a half-applied renumber silently breaks
+cross-references. Treat it as its own task, separate from polish.
+
+**1. Compute the mapping first, and confirm it.** Decide each new chapter's
+target position (usually the end of its `manifest.toml` Part), then walk the
+Parts in order assigning sequential numbers to produce a complete `old → new`
+table. Insertions cascade: every chapter at or after the lowest insertion point
+shifts up. The user's example number may be approximate — show them the exact
+computed table and get sign-off before touching files (the blast radius is every
+file from the first moved chapter onward plus every cross-reference book-wide).
+
+**2. Rename in an order that never collides.** Renaming `NN-slug.md` upward
+(e.g. 52→54, 53→55) must go highest-first (or via temp names) so you never
+overwrite a not-yet-moved file. `git mv` each file.
+
+**3. For each MOVED chapter, rewrite its own numbers.** Change the
+`# Chapter OLD:` heading to `# Chapter NEW:` and rewrite EVERY internal section
+number: `## OLD.x` → `## NEW.x`, `### OLD.x.y` → `### NEW.x.y`, and any in-prose
+`OLD.x` / `§OLD.x` self-references. Anchor on the line-leading number so you do
+not clobber unrelated digits (e.g. version numbers). Re-run `./serve.sh png` —
+Mermaid diagrams that referenced the old section numbers in labels also change.
+
+**4. Fix every cross-reference book-wide.** Across ALL chapters (moved and not),
+update references to a moved chapter/section: "Chapter OLD" → "Chapter NEW",
+"ch OLD", "§OLD.x", "(see OLD.x)", and the `[Chapter OLD: …](…/OLD-slug/)` links
+in prose. Do this as a mapping-driven pass (highest old-number first to avoid
+double-rewrites) and grep afterward for any stale "Chapter OLD" left behind.
+This is the step most likely to leave silent breakage — verify with a final
+grep that no reference points to a number that moved.
+
+**5. Bookkeeping.** Update `manifest.toml` (chapter slugs keep their names; only
+their `NN-` filename prefixes changed — fix the slugs in the Part `chapters`
+lists), `mkdocs.yml` nav (numbers + filenames), the `docs/` symlinks (remove old,
+add new), `README.md` + `agents/README.md` (the coverage table + per-Part ranges
++ counts), and `llms.txt` (the `Chapter N` text and `<slug>` URLs). Then
+regenerate `agents/build.py` and run `--check`.
+
+**6. Gate.** `mkdocs build` in Docker; `serve.sh png errors=0` on every renamed
+chapter; a book-wide grep proving no cross-reference points at a stale number;
+`build.py --check` exit 0.
+
 ## The `git checkout -- agents/` trap
 
 To clear a subagent's stray `build.py` regen between waves, people reach for
