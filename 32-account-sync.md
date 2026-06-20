@@ -788,6 +788,13 @@ authenticator UI flows (login screens, credential entry):
 Source: frameworks/base/core/java/android/accounts/AccountAuthenticatorActivity.java
 ```
 
+This class is marked `@Deprecated` in the framework: the Javadoc advises
+applications to extend `Activity` directly because the base class is not
+compatible with AppCompat and the behavior it provides (stashing the
+`AccountAuthenticatorResponse` and finishing with a result) is small enough to
+implement by hand. The pattern below is still instructive, but new
+authenticators typically wire the response into a plain `Activity`.
+
 ```java
 public class LoginActivity extends AccountAuthenticatorActivity {
 
@@ -1460,15 +1467,23 @@ sequenceDiagram
 
 The sync framework uses exemption levels to determine priority:
 
-| Exemption Level | Description | Effect |
-|----------------|-------------|--------|
-| `SYNC_EXEMPTION_NONE` | Normal sync | Subject to all restrictions |
-| `SYNC_EXEMPTION_PROMOTE_BUCKET` | Temporary bucket promotion | Moves app to higher standby bucket |
-| `SYNC_EXEMPTION_PROMOTE_BUCKET_WITH_TEMP_ALLOWLIST` | Promotion + allowlist | Also grants temporary FGS start |
+| Exemption Level | Value | Description | Effect |
+|----------------|-------|-------------|--------|
+| `SYNC_EXEMPTION_NONE` | 0 | Normal sync | Subject to all restrictions |
+| `SYNC_EXEMPTION_PROMOTE_BUCKET` | 1 | Temporary bucket promotion | Moves app to higher standby bucket (shown as `STANDBY-EXEMPTED` in `dumpsys content`) |
+| `SYNC_EXEMPTION_PROMOTE_BUCKET_WITH_TEMP` | 2 | Promotion + temp allowlist | Also grants a temporary power allowlist / FGS start (shown as `STANDBY-EXEMPTED(TOP)`) |
 
-Exemptions are applied internally by `SyncManager` when processing
-system-initiated syncs (e.g., account changes) that should not be
-throttled by App Standby.
+```
+Source: frameworks/base/core/java/android/content/ContentResolver.java
+        frameworks/base/services/core/java/com/android/server/content/SyncManager.md
+```
+
+The constants live in `ContentResolver` (`SYNC_EXEMPTION_NONE`,
+`SYNC_EXEMPTION_PROMOTE_BUCKET`, `SYNC_EXEMPTION_PROMOTE_BUCKET_WITH_TEMP`).
+Exemptions are computed by `ContentService` per caller (see
+`getSyncExemptionAndCleanUpExtrasForCaller()`) so that a sync requested by a
+foreground app on behalf of a background sync adapter is not throttled by App
+Standby. The `SyncManager.md` design note describes the two levels in detail.
 
 ### 32.5.8 ContentResolver to SyncManager Flow
 
@@ -1707,9 +1722,182 @@ SyncManager interprets the result:
 
 ---
 
-## 32.6 Try It
+## 32.6 Account and Sync in Android 17
 
-### Exercise 63.1: List All Accounts
+The account and sync framework is one of the oldest subsystems in the
+platform, so its public API surface barely moves between releases. Android 17
+nevertheless reworked the storage path inside `AccountManagerService` and
+hardened the data that crosses the `SyncManager` boundary. The changes below
+all landed in the 17 development branch and ship with no new app-facing API,
+but they change how the system stores credentials and how it tolerates hostile
+sync requests.
+
+### 32.6.1 Decoupled CE and DE Account Databases
+
+Historically the credential-encrypted (CE) and device-encrypted (DE) account
+databases were treated as one logical store: the CE database was opened by
+attaching it to the DE database with SQLite's `ATTACH DATABASE`, and writes that
+touched both ran inside a single DE-rooted transaction. Android 17 removes that
+coupling. The two databases now have independent `SQLiteOpenHelper` instances
+and are no longer attached for normal operation:
+
+```
+Source: frameworks/base/services/core/java/com/android/server/accounts/AccountsDb.java
+```
+
+- `CeDatabaseHelper` and `DeDatabaseHelper` are separate `SQLiteOpenHelper`
+  subclasses, each owning its own connection.
+- Both helpers call `db.enableWriteAheadLogging()` in `onConfigure()`, so each
+  database uses WAL journaling independently.
+- CE-only operations no longer open a transaction on the DE database, so a CE
+  write does not block on DE locks (and vice versa).
+
+This work was developed behind the `com.android.server.accounts.detach_de_ce`
+aconfig flag and then promoted to the default behavior in 17 when the flag was
+removed, so the decoupled path is the only path on a 17 device. The `attachCeDatabase()`
+method still exists for first-boot migration of a pre-N (Nougat) database into
+the split layout, but steady-state reads and writes go through the two
+independent helpers.
+
+```mermaid
+graph TD
+    subgraph "Before: attached + shared transaction"
+        AMS1[AccountManagerService]
+        DEH1["DeDatabaseHelper<br/>accounts_de.db"]
+        AMS1 -->|"ATTACH accounts_ce.db<br/>single DE transaction"| DEH1
+        DEH1 -.attached.-> CE1["accounts_ce.db"]
+    end
+
+    subgraph "Android 17: independent helpers + WAL"
+        AMS2[AccountManagerService]
+        DEH2["DeDatabaseHelper<br/>accounts_de.db (WAL)"]
+        CEH2["CeDatabaseHelper<br/>accounts_ce.db (WAL)"]
+        AMS2 -->|DE ops| DEH2
+        AMS2 -->|CE ops| CEH2
+    end
+```
+
+A related optimization tightened `invalidateAuthToken`: the SQL that finds the
+tokens to delete now returns the token type and the owning account name in the
+same query, so the service no longer issues a second round of queries to map
+account IDs back to names. The net effect is fewer database round-trips on a hot
+path that every credential refresh hits.
+
+```
+Source: frameworks/base/services/core/java/com/android/server/accounts/AccountsDb.java
+```
+
+### 32.6.2 Coalesced Account-Removed Broadcasts
+
+When an account is removed, `AccountManagerService` sends the targeted
+`AccountManager.ACTION_ACCOUNT_REMOVED` broadcast to each interested package.
+A burst of removals (for example tearing down a work profile, or removing
+several accounts of one type) could previously generate a storm of broadcasts.
+Android 17 coalesces them using the broadcast delivery-group mechanism:
+
+```
+Source: frameworks/base/services/core/java/com/android/server/accounts/AccountManagerService.java
+```
+
+```java
+// sendAccountRemovedBroadcast() in AccountManagerService
+final Bundle options = BroadcastOptions.makeBasic()
+        .setDeliveryGroupPolicy(BroadcastOptions.DELIVERY_GROUP_POLICY_MOST_RECENT)
+        .setDeliveryGroupMatchingKey(
+                AccountManager.ACTION_ACCOUNT_REMOVED,
+                account.name + "/" + account.type)
+        .toBundle();
+mContext.sendBroadcastAsUser(intent, new UserHandle(userId),
+        null /* receiverPermission */, options);
+```
+
+With `DELIVERY_GROUP_POLICY_MOST_RECENT` and a matching key of
+`name/type`, the system keeps only the most recent pending broadcast for a given
+account when several are queued, instead of delivering every intermediate one.
+This change was developed behind a `coalesce_account_removed_broadcast` aconfig
+flag, whose cleanup makes the coalesced delivery the default on 17.
+
+### 32.6.3 Sanitizing Sync Extras
+
+`ContentResolver.requestSync()` lets one app schedule a sync in another app and
+pass an arbitrary extras `Bundle`. Because those extras are persisted by
+`SyncStorageEngine` and replayed later, a malicious or buggy caller could push
+oversized or deeply nested data into system state. Android 17 sanitizes and
+bounds the extras when a `SyncOperation` is constructed:
+
+```
+Source: frameworks/base/services/core/java/com/android/server/content/SyncOperation.java
+```
+
+```java
+private static final int MAX_SYNC_EXTRA_STRING_LENGTH = 127;
+private static final int MAX_SYNC_EXTRA_ARRAY_LENGTH = 10;
+```
+
+`sanitizeAndCheckSyncExtras()` enforces several rules:
+
+| Rule | Behavior |
+|------|----------|
+| String value longer than 127 chars | Truncated to 127 characters (logged) |
+| String/primitive array longer than 10 elements | Rejected with `IllegalArgumentException` |
+| Nested `Bundle` | Rejected with `IllegalArgumentException` |
+| Unsupported value type | Rejected with `IllegalArgumentException` |
+
+When sanitization throws, `SyncManager` catches the exception during
+`SyncOperation` creation and drops the sync request rather than letting the
+malformed extras reach persistent storage or a sync adapter. This is a
+defense-in-depth change: legitimate sync extras (a handful of small booleans and
+strings) are unaffected, while pathological payloads are rejected at the door.
+
+### 32.6.4 SyncManager Receivers Off the Main Thread
+
+`SyncManager` registers broadcast receivers for connectivity changes, account
+changes, package changes, and boot completion. Earlier releases dispatched these
+on the main thread, where the handler could block on locks held by other system
+services. Android 17 runs `SyncManager`'s receivers and scheduling work on its
+own dedicated handler thread instead:
+
+```
+Source: frameworks/base/services/core/java/com/android/server/content/SyncManager.java
+```
+
+```java
+mThread = new HandlerThread("SyncManager",
+        android.os.Process.THREAD_PRIORITY_BACKGROUND);
+mThread.start();
+mSyncHandler = new SyncHandler(mThread.getLooper());
+```
+
+Receivers are registered against `mSyncHandler` rather than the default main
+`Looper`, so a slow lock acquisition during sync scheduling no longer stalls the
+`system_server` main thread. The same change also stops repeatedly taking a lock
+just to check whether `JobScheduler` is connected. This was gated by the
+`com.android.server.am.syncmanager_off_main_thread` flag, later cleaned up so the
+off-main-thread behavior is the default.
+
+### 32.6.5 Concurrency Hardening
+
+Android 17 also fixed a cluster of lock-ordering bugs in
+`AccountManagerService` that could deadlock `system_server`. The fixes touch the
+shared-account rename path (`renameSharedAccountAsUser`) and the permission-grant
+path (`grantAppPermission`), and a separate fix prevents a crash when a user is
+removed while account work is in flight:
+
+```
+Source: frameworks/base/services/core/java/com/android/server/accounts/AccountManagerService.java
+```
+
+These are not API changes, but they matter for anyone debugging an ANR or
+watchdog kill that traces back into `AccountManagerService`: on 17 the database
+and broadcast paths take their locks in a consistent order, and the CE/DE
+decoupling from 32.6.1 reduces the cross-database locking that those deadlocks
+depended on.
+
+---
+
+## 32.7 Try It
+
+### Exercise 32.1: List All Accounts
 
 Enumerate all accounts on the device:
 
@@ -1753,7 +1941,7 @@ public class AccountLister {
 
 ---
 
-### Exercise 63.2: Custom Authenticator
+### Exercise 32.2: Custom Authenticator
 
 Build a minimal account authenticator:
 
@@ -1877,7 +2065,7 @@ public class AuthService extends Service {
 
 ---
 
-### Exercise 63.3: Custom Sync Adapter
+### Exercise 32.3: Custom Sync Adapter
 
 Build a sync adapter that pairs with the authenticator above:
 
@@ -1983,7 +2171,7 @@ ContentResolver.requestSync(account, "com.example.demo.provider", extras);
 
 ---
 
-### Exercise 63.4: Periodic Sync Configuration
+### Exercise 32.4: Periodic Sync Configuration
 
 Set up and monitor periodic sync:
 
@@ -2030,7 +2218,7 @@ new Handler(Looper.getMainLooper()).postDelayed(() -> {
 
 ---
 
-### Exercise 63.5: Debugging with dumpsys
+### Exercise 32.5: Debugging with dumpsys
 
 Use `dumpsys` to inspect the account and sync state:
 
@@ -2079,7 +2267,7 @@ adb logcat -s SyncManager:V SyncJobService:V
 
 ---
 
-### Exercise 63.6: Source Code Exploration
+### Exercise 32.6: Source Code Exploration
 
 Explore the account and sync source code:
 

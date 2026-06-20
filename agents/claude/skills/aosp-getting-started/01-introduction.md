@@ -26,6 +26,14 @@ analyzing the platform, or simply a curious application developer who wants to
 understand what happens when you call `startActivity()`, this book will give you
 the knowledge you need to read, understand, modify, build, and debug AOSP.
 
+This book targets **Android 17** -- API level 37, internal codename
+**Cinnamon Bun** (`VERSION_CODES.CINNAMON_BUN = 37` in
+`frameworks/base/core/java/android/os/Build.java`, following `BAKLAVA = 36`).
+Source citations are pinned to the AOSP `main` branch (the development trunk,
+also published as the `android17-release` branch) as it stood in mid-2026.
+Where Android 17 added or reshaped a subsystem, we note it and point to the
+chapter that covers it in depth.
+
 This first chapter sets the stage. We will define precisely what AOSP is (and
 what it is not), survey the architecture from kernel to application, walk through
 the source tree directory by directory, establish who maintains what, review the
@@ -136,7 +144,7 @@ layers:
 
 ```mermaid
 graph TB
-    subgraph Consumer["Consumer Device (e.g., Samsung Galaxy S25)"]
+    subgraph Consumer["Consumer Device (e.g., Samsung Galaxy S26)"]
         subgraph OEM["OEM Layer (One UI / MIUI / ColorOS / etc.)"]
             OEM_UI["Custom SystemUI, Launcher, Settings"]
             OEM_FW["Framework Extensions"]
@@ -285,11 +293,13 @@ Let us examine each layer in detail, from the bottom up.
 
 ### 1.3.2 Layer 1: The Linux Kernel
 
-Android runs on the Linux kernel. As of Android 16, the kernel is based on the
-**Linux 6.x Long-Term Support (LTS)** branch (6.12 for the Android 16 GKI) with
-Android-specific patches
+Android runs on the Linux kernel. As of Android 17, the kernel is based on the
+**Linux 6.x Long-Term Support (LTS)** branch (the `android17-6.18` GKI targets
+Linux 6.18, up from Android 16's `android16-6.12`) with Android-specific patches
 managed through the **Android Common Kernel (ACK)** and the **Generic Kernel
-Image (GKI)** initiative.
+Image (GKI)** initiative. The supported kernel branches and their lifetimes are
+tracked in `kernel/configs/kernel-lifetimes.xml`, and per-branch GKI config
+fragments live under `kernel/configs/`.
 
 #### Android-Specific Kernel Features
 
@@ -1364,6 +1374,7 @@ packages/
         Media/            --   Media framework components
         Permission/       --   Permission controller
         NeuralNetworks/   --   NNAPI runtime
+        NpuManager/       --   NPU Manager (added in 17, Chapter 67)
         DnsResolver/      --   DNS resolution
         IPsec/            --   IPsec VPN
         Nfc/              --   NFC stack
@@ -1500,7 +1511,6 @@ system/
         libutils/         --   C++ utility library (RefBase, String, Vector)
         liblog/           --   Android logging library
         libsparse/        --   Sparse image handling
-        fs_mgr/           --   Filesystem manager (mount, verity, overlayfs)
         healthd/          --   Battery health daemon
         bootstat/         --   Boot statistics
         storaged/         --   Storage health monitoring
@@ -1528,7 +1538,19 @@ system/
     bpf/                  -- BPF (Berkeley Packet Filter) programs
     connectivity/         -- Connectivity components
     media/                -- Low-level media components
-    memory/               -- Memory management (lmkd, libmeminfo)
+    memory/               -- Memory management:
+        lmkd/             --   Low-memory killer daemon (PSI-driven)
+        libmeminfo/       --   Memory accounting library
+        mmd/              --   Memory Management Daemon (compaction/reclaim policy)
+        guardian/         --   pmgd Process Memory Guardian (heap-dump triggering)
+    fs/                   -- Filesystem stack (split out of system/core in 17):
+        fs_mgr/           --   Filesystem manager (mount, verity, overlayfs)
+        casefolding_remover/ -- Case-folding migration tool
+    lfi/                  -- Lightweight Fault Isolation runtime (Chapter 68):
+        boxrt/            --   Runtime stubs linked into the sandboxed library
+        allocator/        --   Minimal thread-safe allocator
+        relocator/        --   Static-PIE loader for lfi-bind libraries
+    software_defined_vehicle/ -- SDV platform (Part XVI, Chapters 65-66)
     netd/                 -- Network daemon
     vold/                 -- Volume daemon (disk encryption, mounting)
     update_engine/        -- OTA update engine
@@ -1543,9 +1565,20 @@ system/
     ...
 ```
 
+The `system/` tree gained several top-level trees in Android 17. **`fs_mgr` moved
+out of `system/core`** into the new `system/fs/` tree. The memory-management story
+expanded with **`mmd`** (the Memory Management Daemon, which centralizes
+compaction and reclaim policy) and **`guardian`** (the `pmgd` Process Memory
+Guardian that triggers heap dumps on memory anomalies), both alongside the
+existing `lmkd`. Android 17 also added **`system/lfi/`**, the runtime support for
+Lightweight Fault Isolation (an in-process software sandbox; see Chapter 68), and
+**`system/software_defined_vehicle/`**, the new SDV platform that anchors Part XVI
+(Chapters 65-66).
+
 **Who cares about this directory:** System engineers, security researchers
-(sepolicy), boot engineers (init, fs_mgr), storage engineers (vold), network
-engineers (netd), anyone debugging system daemons.
+(sepolicy, lfi), boot engineers (init, fs_mgr), storage engineers (vold), network
+engineers (netd), memory engineers (lmkd, mmd, guardian), anyone debugging system
+daemons.
 
 #### `hardware/` -- Hardware Abstraction
 
@@ -1568,6 +1601,7 @@ hardware/
     libhardware/      -- Legacy HAL loading library (hw_get_module)
     libhardware_legacy/ -- Even older HAL loading
     ril/              -- Radio Interface Layer (telephony, legacy)
+    sdv/              -- SDV HAL interfaces (Software Defined Vehicle, added in 17)
 
     google/           -- Google-specific hardware support
     qcom/             -- Qualcomm hardware support
@@ -1579,6 +1613,11 @@ hardware/
     st/               -- STMicroelectronics
     synaptics/        -- Synaptics (touch)
 ```
+
+Android 17 added **`hardware/sdv/`** (currently `hardware/sdv/interfaces/`), the
+HAL-interface side of the Software Defined Vehicle platform that pairs with
+`system/software_defined_vehicle/` and `device/google/sdv/`. SDV is covered in
+Part XVI (Chapters 65-66).
 
 **Who cares about this directory:** HAL implementors, SoC vendors, device
 bring-up engineers, driver developers.
@@ -1595,11 +1634,18 @@ device/
         tv/           --   Android TV emulator
         common/       --   Common configuration shared across generics
     google/           -- Google devices (Pixel)
+        sdv/          --   Software Defined Vehicle products (added in 17;
+                      --   sdv_base, sdv_cf, sdv_core_*, sdv_ivi_arm64, etc.)
     google_car/       -- Google Automotive
     amlogic/          -- Amlogic SoC devices
     linaro/           -- Linaro reference boards
     sample/           -- Sample device configuration (template)
 ```
+
+Android 17 introduced **`device/google/sdv/`**, the set of product
+configurations (Cuttlefish-based `sdv_cf`, `arm64` variants, and the lighter
+`sdv_core_*` tiers) for the Software Defined Vehicle platform. See Part XVI
+(Chapters 65-66).
 
 A device configuration directory typically contains:
 
@@ -1809,7 +1855,7 @@ early.
 
 #### `external/` -- Third-Party Libraries
 
-With over **467 subdirectories**, `external/` is one of the widest directories
+With over **470 subdirectories**, `external/` is one of the widest directories
 in AOSP. It contains third-party open-source libraries used throughout the
 platform:
 
@@ -1836,6 +1882,13 @@ platform:
 Each subdirectory in `external/` has its own upstream project, license, and
 update cadence. The `tools/external_updater/` tool helps maintain these
 dependencies by tracking upstream versions and automating updates.
+
+Android 17 added **`external/lfi/`**, the upstream tooling for Lightweight Fault
+Isolation: the `lfi-verifier` (verifies that sandboxed machine code stays within
+its region), `lfi-bind` and `lfi-runtime` glue, the `disarm`/`fadec` ARM/x86
+decoders, and the `rlbox`/`rlbox-lfi` sandboxing wrappers. It pairs with the
+in-tree runtime support in `system/lfi/`; the full design is covered in
+Chapter 68.
 
 **Who cares about this directory:** Anyone debugging a third-party library
 behavior, updating an external dependency, or auditing licenses.
@@ -1986,7 +2039,7 @@ infrastructure. Google's specific responsibilities include:
 **Mainline Modules:**
 
 - Google develops and maintains Mainline modules that can be updated via the
-  Play Store independently of full OS updates. As of Android 16, over 30
+  Play Store independently of full OS updates. As of Android 17, over 30
   modules are "mainlined," including:
   - Connectivity (WiFi, Bluetooth, Tethering, DNS)
   - Media (codecs, extractors)
@@ -2133,7 +2186,7 @@ the init system, and dm-verity.
 ## 1.6 AOSP Version History
 
 Android has evolved dramatically since its initial release. The following table
-documents every major release, from Android 1.0 to Android 16.
+documents every major release, from Android 1.0 to Android 17.
 
 ### 1.6.1 Complete Version Table
 
@@ -2174,6 +2227,7 @@ documents every major release, from Android 1.0 to Android 16.
 | **14** | 34 | **Android 14** | Oct 2023 | Grammatical inflection API, regional preferences, path interop, credential manager, health connect, ultra HDR, lossless USB audio. **Platform stability** improvements. |
 | **15** | 35 | **Android 15 (Vanilla Ice Cream)** | 2024 | App archiving, partial screen sharing, satellite connectivity APIs, improved PDF rendering, **AV1 software codec**, NFC tap-to-pay improvements, private space (separate profile for sensitive apps), enhanced security for screen recording/projection, Health Connect expansion. |
 | **16** | 36 | **Android 16 (Baklava)** | Jun 2025 | **16 KB page size** support mandatory for new apps targeting API 36. **Live Updates** notification API for ongoing tasks (ride-share, delivery, navigation). **Predictive back gesture** on by default for apps targeting API 36. **Edge-to-edge enforcement** extended (must opt out explicitly). **Adaptive layouts** required for large-screen / foldable apps. Linux **6.12** LTS GKI. Continued Mainline module expansion. Performance class 16. |
+| **17** | 37 | **Android 17 (Cinnamon Bun)** | 2026 | New **Software Defined Vehicle (SDV)** platform (`system/software_defined_vehicle/`, `device/google/sdv/`, `hardware/sdv/`). **NPU Manager** Mainline module (`packages/modules/NpuManager`) for on-device NPU/AI accelerators. **Lightweight Fault Isolation (LFI)** in-process sandbox (`system/lfi`, `external/lfi`), first used by the swcodec APEX. Memory-management daemon **mmd** and the **pmgd** Process Memory Guardian. `fs_mgr` relocated from `system/core` to `system/fs`. Full version encoding (`SDK_INT_FULL`) for minor versions. First `android17-6.18` (Linux **6.18**) GKI configs. |
 
 ### 1.6.2 Architectural Milestones
 
@@ -2221,6 +2275,10 @@ timeline
         2025 (16)        : 16 KB page size
                           : Live Updates API
                           : Adaptive layouts mandate
+        2026 (17)        : Software Defined Vehicle platform
+                          : NPU Manager module
+                          : LFI in-process sandbox
+                          : mmd memory daemon
 ```
 
 ---
@@ -2680,7 +2738,7 @@ graph TB
     style Mainline_Model fill:#e8f5e9,stroke:#2e7d32
 ```
 
-As of Android 16, Mainline modules include:
+As of Android 17, Mainline modules include:
 
 | Module | Type | What It Updates |
 |---|---|---|
@@ -2695,6 +2753,7 @@ As of Android 16, Mainline modules include:
 | **Telephony** | APEX | Telephony framework |
 | **Permission Controller** | APK | Permission UI |
 | **Neural Networks** | APEX | NNAPI runtime |
+| **NPU Manager** | APEX | NPU/AI-accelerator management (new in 17, Chapter 67) |
 | **StatsD** | APEX | Metrics collection |
 | **IPsec** | APEX | VPN |
 | **SDK Extensions** | APEX | API extension mechanism |
@@ -3120,7 +3179,7 @@ This chapter established the foundational knowledge needed to work with AOSP:
    SoC vendors (kernel, HALs, drivers), OEMs (customization, device bring-up),
    and the community (custom ROMs, bug reports, contributions).
 
-5. **Android has evolved dramatically** over 15+ years and 35 API levels, with
+5. **Android has evolved dramatically** over 15+ years and 37 API levels, with
    major architectural shifts including the move from Dalvik to ART, Project
    Treble for the vendor split, Project Mainline for modular updates, and GKI
    for kernel standardization.

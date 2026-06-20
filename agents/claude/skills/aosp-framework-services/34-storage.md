@@ -81,9 +81,11 @@ Dynamic partitions provide several advantages:
 4. **Virtual A/B** -- The system uses copy-on-write (COW) snapshots to avoid
    needing twice the physical space for two complete slot copies.
 
-The `super` partition metadata is managed by `liblp` in
-`system/core/fs_mgr/liblp/`.  The partition layout is described in the `fstab`
-file, which vold reads at startup:
+The `super` partition metadata is managed by `liblp`.  In Android 17 the
+filesystem-management code was carved out of `system/core` into a dedicated
+`system/fs` repository, so `liblp` now lives at `system/fs/fs_mgr/liblp/`
+(alongside `system/fs/fs_mgr/libdm/` and `fs_mgr.cpp` itself).  The partition
+layout is described in the `fstab` file, which vold reads at startup:
 
 ```cpp
 // system/vold/main.cpp (lines 235-294)
@@ -2101,14 +2103,13 @@ static bool create_de_key(userid_t user_id, bool ephemeral) {
 The `KeyGeneration` structure controls key generation:
 
 ```cpp
-// system/vold/FsCrypt.cpp (lines 129-135)
+// system/vold/FsCrypt.cpp (lines 133-139)
 static KeyGeneration makeGen(const EncryptionOptions& options) {
     if (options.version == 0) {
         LOG(ERROR) << "EncryptionOptions not initialized";
         return android::vold::neverGen();
     }
-    return KeyGeneration{FSCRYPT_MAX_KEY_SIZE, true,
-                         options.use_hw_wrapped_key};
+    return KeyGeneration{FSCRYPT_MAX_KEY_SIZE, true, options.key_type};
 }
 ```
 
@@ -2249,12 +2250,12 @@ for the entire `userdata` partition.  This encrypts the filesystem metadata
 (directory structure, file names, sizes, permissions) using `dm-default-key`:
 
 ```cpp
-// system/vold/MetadataCrypt.cpp (lines 59-70)
+// system/vold/MetadataCrypt.cpp (lines 61-66)
 struct CryptoOptions {
     struct CryptoType cipher = invalid_crypto_type;
     bool use_legacy_options_format = false;
-    bool set_dun = true;
-    bool use_hw_wrapped_key = false;
+    bool set_dun = true;  // Non-legacy driver always sets DUN
+    KeyType key_type = KeyType::kRaw;
 };
 
 static const std::string kDmNameUserdata = "userdata";
@@ -2265,31 +2266,43 @@ constexpr CryptoType supported_crypto_types[] = {
 };
 ```
 
+The `bool use_hw_wrapped_key` flag that earlier releases carried here was
+replaced in Android 17 by a three-valued `KeyType` enum
+(`kRaw`, `kHwWrappedV0`, `kHwWrapped`) shared with file-based encryption
+(`system/extras/libfscrypt/include/fscrypt/fscrypt.h`).  This is the same
+refactor that distinguishes the original hardware-wrapped key format
+(`wrappedkey_v0` in the fstab metadata-encryption options) from the newer
+`wrappedkey` format that Android 17 parses in
+`MetadataCrypt.cpp`'s option parser.
+
 The metadata encryption setup creates a `dm-default-key` device:
 
 ```cpp
-// system/vold/MetadataCrypt.cpp (lines 155-212)
-static bool create_crypto_blk_dev(
-        const std::string& dm_name,
-        const std::string& blk_device,
-        const KeyBuffer& key,
-        const CryptoOptions& options,
-        std::string* crypto_blkdev,
-        uint64_t* nr_sec,
-        bool is_userdata) {
-
+// system/vold/MetadataCrypt.cpp (lines 156-217)
+static bool create_crypto_blk_dev(const std::string& dm_name, const std::string& blk_device,
+                                  const KeyBuffer& key, const CryptoOptions& options,
+                                  std::string* crypto_blkdev, uint64_t* nr_sec, bool is_userdata) {
     if (!get_number_of_sectors(blk_device, nr_sec)) return false;
     *nr_sec &= ~7;  // Align to 4096-byte sectors
 
-    auto target = std::make_unique<DmTargetDefaultKey>(
-        0, *nr_sec,
-        options.cipher.get_kernel_name(),
-        hex_key, blk_device, 0);
+    KeyBuffer module_key;
+    if (!prepareKeyForUse(key, options.key_type, &module_key)) return false;
+    // ... StrToHex(module_key) ...
 
-    if (options.use_legacy_options_format)
-        target->SetUseLegacyOptionsFormat();
+    auto target = std::make_unique<DmTargetDefaultKey>(
+        0, *nr_sec, options.cipher.get_kernel_name(), hex_key, blk_device, 0);
+    if (options.use_legacy_options_format) target->SetUseLegacyOptionsFormat();
     if (options.set_dun) target->SetSetDun();
-    if (options.use_hw_wrapped_key) target->SetWrappedKeyV0();
+
+    switch (options.key_type) {
+        case KeyType::kRaw:
+            break;
+        case KeyType::kHwWrappedV0:
+        case KeyType::kHwWrapped:
+            // "wrappedkey_v0" works for both wrapped key versions for now.
+            target->SetWrappedKeyV0();
+            break;
+    }
 
     DmTable table;
     table.AddTarget(std::move(target));
@@ -2309,6 +2322,13 @@ static bool create_crypto_blk_dev(
     return true;
 }
 ```
+
+Rather than calling `exportWrappedStorageKey()` inline, Android 17 routes the
+key through the shared `prepareKeyForUse()` helper
+(`system/vold/KeyUtil.h`), which returns the long-term key unchanged for a raw
+key, or re-wraps it with the ephemeral wrapping key for a hardware-wrapped key.
+The `switch` on `options.key_type` then decides whether to set the
+`wrappedkey_v0` flag on the `dm-default-key` target.
 
 ```mermaid
 graph LR
@@ -2336,27 +2356,29 @@ graph LR
 
 On devices with Inline Encryption Engine (ICE) support, vold can use
 hardware-wrapped keys.  These keys never leave the hardware encryption engine
-in plaintext:
+in plaintext.  In Android 17 the per-key plumbing was consolidated behind
+`prepareKeyForUse()`, declared in `system/vold/KeyUtil.h`:
 
 ```cpp
-// system/vold/MetadataCrypt.cpp (lines 163-171)
-KeyBuffer module_key;
-if (options.use_hw_wrapped_key) {
-    if (!exportWrappedStorageKey(key, &module_key)) {
-        LOG(ERROR) << "Failed to get ephemeral wrapped key";
-        return false;
-    }
-} else {
-    module_key = key;
-}
+// system/vold/KeyUtil.h (lines 47-53)
+// Prepares a file-based or metadata encryption key for runtime use. Given a
+// long-term, persistent key "lt_key", this sets "kernel_key" to the key that
+// should be passed to the kernel to en/decrypt the storage. If it's a raw key,
+// then this is just a copy of "lt_key". If it's a wrapped key, then "lt_key" is
+// re-wrapped with the ephemeral wrapping key.
+bool prepareKeyForUse(const KeyBuffer& lt_key, android::fscrypt::KeyType type,
+                      KeyBuffer* kernel_key);
 ```
 
-The `KeyStorage` module handles key wrapping with the Keystore HAL:
+The wrapping itself is performed by `generateWrappedStorageKey()` and
+`exportWrappedStorageKey()`, which Android 17 moved out of `KeyStorage.cpp`
+and made file-local `static` helpers inside `system/vold/KeyUtil.cpp` (they
+are no longer exported through a header).  They call into the Keystore HAL.
+A separate binding seed can be mixed into all stored keys via
+`setKeyStorageBindingSeed()`, still declared in `system/vold/KeyStorage.h`:
 
 ```cpp
-// system/vold/KeyStorage.h (lines 67-69)
-bool generateWrappedStorageKey(KeyBuffer* key);
-bool exportWrappedStorageKey(const KeyBuffer& ksKey, KeyBuffer* key);
+// system/vold/KeyStorage.h (line 67)
 bool setKeyStorageBindingSeed(const std::vector<uint8_t>& seed);
 ```
 
@@ -3226,7 +3248,7 @@ void cp_abortChanges(const std::string& message, bool retry);
 
 bool cp_needsRollback();
 bool cp_needsCheckpoint();
-bool cp_isCheckpointing();
+android::binder::Status cp_isCheckpointing(bool& result);
 
 android::binder::Status cp_prepareCheckpoint();
 android::binder::Status cp_restoreCheckpoint(
@@ -3237,6 +3259,15 @@ void cp_resetCheckpoint();
 }  // namespace vold
 }  // namespace android
 ```
+
+Android 17 tightened the concurrency model around this state: `cp_isCheckpointing()`
+returns a `binder::Status`, and the underlying `isCheckpointing` flag is now
+`GUARDED_BY(isCheckpointingLock)` with Clang thread-safety annotations so the
+compiler enforces that callers hold the lock before reading it
+(`system/vold/Checkpoint.cpp`).  The same release records how long enabling a
+checkpoint took into the `vold.udc.enable_checkpoint.latency.ms` system property,
+and mounts f2fs userdata with `,discard,checkpoint=enable` so background discard
+runs while a checkpoint is active.
 
 Two checkpoint mechanisms are supported:
 
@@ -3285,11 +3316,11 @@ The `KeyGeneration` structure in `system/vold/KeyUtil.h` controls how
 encryption keys are generated:
 
 ```cpp
-// system/vold/KeyUtil.h (lines 32-37)
+// system/vold/KeyUtil.h (lines 33-37)
 struct KeyGeneration {
-    size_t keysize;           // Key size in bytes
-    bool allow_gen;           // Whether key generation is permitted
-    bool use_hw_wrapped_key;  // Use hardware-wrapped keys
+    size_t keysize;                       // Key size in bytes
+    bool allow_gen;                       // Whether key generation is permitted
+    android::fscrypt::KeyType key_type;   // Raw vs hardware-wrapped key
 };
 
 // Generate a storage key per the spec
@@ -3826,7 +3857,9 @@ physical storage medium.
 | 12 | FUSE passthrough, improved performance |
 | 13 | Per-app media permissions (READ_MEDIA_IMAGES, etc.) |
 | 14 | Photo Picker, READ_MEDIA_VISUAL_USER_SELECTED |
-| 15+ | FUSE BPF, further performance improvements |
+| 15 | FUSE BPF, further performance improvements |
+| 16 | f2fs uses kernel page size for block size; project-quota tolerance on legacy userdata |
+| 17 | `system/fs` repo split (fs_mgr/liblp/libdm carved out of `system/core`); casefolding migration of `/data/media` via the `casefolding_remover` Rust service; `KeyType` enum unifies raw and hardware-wrapped key handling; `wrappedkey` (v2) metadata-encryption option; `vold` adds `syncStorage()` and `setMaxLockElapsedTime()` |
 
 This timeline shows the steady progression from unrestricted filesystem
 access toward a fully mediated, encrypted, and privacy-preserving storage
@@ -4320,7 +4353,247 @@ f2fs-specific optimizations:
 
 ---
 
-## 34.26 Try It
+## 34.26 Android 17 Storage Changes
+
+Android 17 reshaped the storage subsystem in three ways that ripple through the
+rest of this chapter: it split filesystem-management code into a new top-level
+repository, it added a dedicated service to migrate the case-folding state of
+`/data/media` without losing data, and it refactored how vold describes raw
+versus hardware-wrapped encryption keys.  This section gathers those changes and
+the smaller vold API additions in one place.
+
+### 34.26.1 The system/fs Repository Split
+
+In Android 17 the filesystem-management code that had historically lived under
+`system/core/fs_mgr` was carved out into a new top-level repository,
+`system/fs`.  The new repository holds two subtrees:
+
+- `system/fs/fs_mgr/` -- the fstab parser and mount logic (`fs_mgr.cpp`),
+  `liblp` (the `super` partition metadata library introduced in 34.1.2),
+  `libdm` (the device-mapper wrapper used by metadata encryption and adoptable
+  storage), and the overlayfs control code used by `adb remount`.
+- `system/fs/casefolding_remover/` -- a brand-new service, described below.
+
+For this chapter that means any reference to `liblp`, `libdm`, or `fs_mgr.cpp`
+now resolves under `system/fs/fs_mgr/` rather than `system/core/fs_mgr/`.  The
+code itself is largely the same; the move is a project reorganization, and the
+build modules (`libfs_mgr`, `liblp`, `libdm`) keep their names.
+
+### 34.26.2 Case-Folding and Why /data/media Must Migrate
+
+Case-folding lets a directory compare filenames case-insensitively at the
+filesystem layer.  vold enables it on emulated and adopted media storage when
+the `external_storage.casefold.enabled` build property is set: the f2fs path
+passes `-O casefold -C utf8` to `mkfs`, and the ext4 path adds `casefold` plus
+`encoding=utf8` (`system/vold/fs/F2fs.cpp`, `system/vold/fs/Ext4.cpp`).  The
+flag is also applied to the `/data/media` tree on adopted private volumes via
+`FS_CASEFOLD_FL` (`system/vold/model/PrivateVolume.cpp`).
+
+The complication is that the case-folding flag (`FS_CASEFOLD_FL`) can only be
+set on an **empty** directory.  `/data/media` is created early in boot and is
+almost never empty after first boot, so flipping the
+`external_storage.casefold.enabled` decision on an existing device (for example
+across an OTA, or via the `persist.sys.casefold.enabled.override` property)
+cannot simply re-flag the existing directory.  The directory contents have to be
+moved into a freshly created, correctly flagged directory.  That migration is
+exactly what the new `casefolding_remover` service performs.
+
+### 34.26.3 The casefolding_remover Service
+
+`casefolding_remover` is a new Rust `init` service that lives in
+`system/fs/casefolding_remover/`.  Its build module is declared in
+`system/fs/casefolding_remover/Android.bp` (a `rust_binary` named
+`casefolding_remover`, plus an `aidl_interface` and a `cc_library_static`), and
+it is wired into init by `system/fs/casefolding_remover/casefolding_remover.rc`:
+
+```
+service casefolding_remover /system/bin/casefolding_remover
+    user media_rw
+    group media_rw
+    capabilities DAC_OVERRIDE CHOWN
+    class core
+    oneshot
+    disabled
+```
+
+It runs as `media_rw` (the owner of `/data/media`), holds `DAC_OVERRIDE` and
+`CHOWN` so it can relabel the directories it moves, and is `disabled` so init
+starts it explicitly rather than at class start.
+
+The migration logic is in `system/fs/casefolding_remover/src/main.rs`.  When the
+service starts, `adjust_casefolding()` compares the actual `FS_CASEFOLD_FL` on
+`/data/media` (read with the `FS_IOC_GETFLAGS` ioctl) against the desired state
+from `external_storage.casefold.enabled` and the
+`persist.sys.casefold.enabled.override` override.  If they already match, there
+is nothing to do.  If `/data/media` happens to be empty, it just sets the flag
+directly with `FS_IOC_SETFLAGS`.  Otherwise it performs an atomic directory
+swap:
+
+1. Create `/data/media/temp`, copy `/data/media`'s SELinux label, owner, group,
+   and mode onto it (`copy_directory_metadata()`), then rename it out to
+   `/data/media_temp` and set the desired case-fold flag on that now-empty
+   directory.
+2. Record the eventual location of the original data in the
+   `ro.casefolding.original_folder` property -- `/data/media/uncasefolded` when
+   enabling, `/data/media/casefolded` when disabling -- and set
+   `persist.sys.casefolding.status` to `Enabling` or `Disabling`.
+3. Rename the original `/data/media` to `/data/media_temp/<(un)casefolded>`,
+   then rename `/data/media_temp` back to `/data/media`.  The comment in
+   `main.rs` warns that nothing may run between these two renames: if the first
+   succeeds and the second fails, the device will not boot.
+
+After the swap, `/data/media` has the correct SELinux label, owner/group, and
+case-fold flag, and the original (wrongly folded) contents survive under
+`/data/media/(un)casefolded`.  The service then sets `ro.casefolding.adjusted=1`
+to let init continue and, when a migration is pending, registers a binder
+service and joins the thread pool instead of exiting.
+
+The migration is described by a one-method AIDL interface,
+`system/fs/casefolding_remover/android/os/casefoldingremover/ICasefoldingRemover.aidl`:
+
+```aidl
+package android.os.casefoldingremover;
+
+interface ICasefoldingRemover {
+	void moveFolder(String source, String dest);
+}
+```
+
+The reason the data is moved lazily, one subtree at a time, is encryption.  The
+per-user directories under `/data/media/<user_id>` are CE-encrypted, so their
+contents cannot be moved until the user's CE key is installed.  vold therefore
+drives the actual moves as keys become available.
+
+### 34.26.4 How vold Drives the Migration
+
+vold links the `libcasefoldingremover` C++ stub
+(`system/vold/Android.bp`) and calls the service from `FsCrypt.cpp` through a
+small helper:
+
+```cpp
+// system/vold/FsCrypt.cpp (lines 578-586)
+static void remove_casefolding_from_folder(std::string const& folder, std::string const& leaf) {
+    std::string original_folder = android::base::GetProperty("ro.casefolding.original_folder", "");
+    if (original_folder.empty()) return;
+
+    original_folder = StringPrintf("%s/%s", original_folder.c_str(), leaf.c_str());
+    interface_cast<ICasefoldingRemover>(
+            defaultServiceManager()->waitForService(String16("android.os.casefoldingremover")))
+            ->moveFolder(String16(original_folder.c_str()), String16(folder.c_str()));
+}
+```
+
+If no migration is pending the property is empty and the call is a no-op.
+Otherwise `original_folder` points at `/data/media/(un)casefolded` and `leaf`
+selects the subtree to move.  vold calls the helper at two points:
+
+- For `/data/media/obb` when preparing user 0's special directories, with the
+  leaf `"obb"` (`FsCrypt.cpp` line 636).  `/data/media/obb` is encrypted with
+  the device policy, so it can be moved as soon as device-encrypted storage is
+  ready.
+- For each user's `/data/media/<user_id>` directory, with the leaf
+  `StringPrintf("%u", user_id)`, immediately after the CE policy has been
+  applied during `fscrypt_prepare_user_storage()` (`FsCrypt.cpp` line 1039) --
+  that is, once the user's CE key is installed.
+
+On the service side, `move_folder()` validates that the source lives under
+`ro.casefolding.original_folder` and the destination under `/data/media`, then
+hard-links the subtree across with `link_recursively()` (preserving SELinux
+labels and ownership per directory) and removes the source.  Because both
+directories are on the same filesystem, hard-linking moves the data without
+recopying file contents.  As the original tree empties out it is pruned, and
+when the last subtree is gone `persist.sys.casefolding.status` flips to
+`Enabled` or `Disabled`.  If recursive linking fails, the service falls back to
+a plain `rename` of the subtree (which keeps the wrong case-fold flag but
+preserves the data) and records `Enabling failed` / `Disabling failed`.
+
+```mermaid
+sequenceDiagram
+    participant init
+    participant CR as "casefolding_remover (Rust)"
+    participant vold
+    participant FS as "/data/media"
+
+    init->>CR: start service (oneshot)
+    CR->>FS: get FS_CASEFOLD_FL on /data/media
+    Note over CR: compare with external_storage.casefold.enabled + override
+    alt already matches
+        CR->>init: set ro.casefolding.adjusted=1 (no-op)
+    else needs migration
+        CR->>FS: rename /data/media -> /data/media_temp/(un)casefolded
+        CR->>FS: rename /data/media_temp -> /data/media (new flag)
+        CR->>CR: set ro.casefolding.original_folder + persist.sys.casefolding.status
+        CR->>init: set ro.casefolding.adjusted=1
+        CR->>CR: register android.os.casefoldingremover, join thread pool
+        Note over vold,FS: later, as keys install
+        vold->>CR: moveFolder(original/obb, /data/media/obb)
+        vold->>CR: moveFolder(original/user_id, /data/media/user_id)
+        CR->>FS: link_recursively + prune original tree
+        CR->>CR: persist.sys.casefolding.status = Enabled/Disabled
+    end
+```
+
+### 34.26.5 The KeyType Refactor
+
+Android 17 replaced the assorted `bool use_hw_wrapped_key` flags scattered
+across vold with a single `KeyType` enum defined alongside the encryption
+options in `system/extras/libfscrypt/include/fscrypt/fscrypt.h`:
+
+```cpp
+// system/extras/libfscrypt/include/fscrypt/fscrypt.h (lines 32-47)
+enum class KeyType {
+    kRaw,
+    kHwWrappedV0,
+    kHwWrapped,
+};
+
+struct EncryptionOptions {
+    int version;
+    int contents_mode;
+    int filenames_mode;
+    int flags;
+    KeyType key_type;
+    bool dusize_4k;
+
+    // Ensure that "version" is not valid on creation and so must be explicitly set
+    EncryptionOptions() : version(0) {}
+};
+```
+
+This single enum now flows through `KeyGeneration` (34.14.1), the metadata
+encryption `CryptoOptions` (34.8.9), and file-based encryption.  Two distinct
+hardware-wrapped formats are now expressible: `kHwWrappedV0` corresponds to the
+original `wrappedkey_v0` fstab metadata-encryption flag, while `kHwWrapped`
+corresponds to a new `wrappedkey` flag parsed by `MetadataCrypt.cpp`.  Both
+currently program the `dm-default-key` target with `wrappedkey_v0`, but the type
+distinction lets the platform evolve the two formats independently.  The other
+visible piece of this refactor is `prepareKeyForUse()` (34.8.10), which
+centralizes "leave a raw key alone, re-wrap a hardware-wrapped key" so callers no
+longer branch on a boolean.
+
+### 34.26.6 New vold Binder Methods
+
+Two methods were added to the vold Binder interface
+(`system/vold/binder/android/os/IVold.aidl`):
+
+- `syncStorage()` -- a thin wrapper around the global `sync()` syscall, exposed
+  so the framework can force a storage flush on demand.  Its implementation in
+  `system/vold/VoldNativeService.cpp` takes no lock because `sync()` is global.
+- `setMaxLockElapsedTime(int maxTime)` -- lets the framework push a bound on how
+  long a user-key lock operation may take, surfaced through the f2fs sysfs node
+  `max_lock_elapsed_time`.  `StorageManagerService.configureFilesystem()` reads
+  the `max_lock_elapsed_time` value from the `storage_native_boot` DeviceConfig
+  namespace (defaulting to `DEFAULT_MAX_LOCK_ELAPSED_TIME = 500`) and calls
+  `mVold.setMaxLockElapsedTime(maxTime)`
+  (`frameworks/base/services/core/java/com/android/server/StorageManagerService.java`).
+
+vold also switched its random-key generation to BoringSSL's `RAND_bytes()`
+instead of reading `/dev/urandom` directly, consolidating randomness into
+`RandUtils.cpp`.
+
+---
+
+## 34.27 Try It
 
 This section provides practical exercises for exploring the Android storage
 subsystem hands-on.

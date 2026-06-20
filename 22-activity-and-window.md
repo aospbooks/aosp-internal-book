@@ -50,14 +50,14 @@ share the same lock and reduce cross-lock contention.
 ### 22.1.2 Class Declaration and Inheritance
 
 ```java
-// frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java, line 543
+// frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java, line 602
 public class ActivityManagerService extends IActivityManager.Stub
         implements Watchdog.Monitor, BatteryStatsImpl.BatteryCallback,
                    ActivityManagerGlobalLock {
 ```
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityTaskManagerService.java, line 336
+// frameworks/base/services/core/java/com/android/server/wm/ActivityTaskManagerService.java, line 339
 public class ActivityTaskManagerService extends IActivityTaskManager.Stub {
 ```
 
@@ -72,16 +72,16 @@ AMS and ATMS use different global locks, which is a critical design decision
 for concurrency:
 
 ```java
-// In AMS (line 685):
+// In AMS (line 782):
 final ActivityManagerGlobalLock mGlobalLock = ActivityManagerService.this;
 
-// The process-specific lock (line 723):
+// The process-specific lock (line 820):
 final ActivityManagerGlobalLock mProcLock = ENABLE_PROC_LOCK
         ? new ActivityManagerProcLock() : mGlobalLock;
 ```
 
 ```java
-// In ATMS (line 412):
+// In ATMS:
 final WindowManagerGlobalLock mGlobalLock = new WindowManagerGlobalLock();
 ```
 
@@ -92,7 +92,7 @@ they almost always need to be modified together.
 
 AMS, on the other hand, has its own `ActivityManagerGlobalLock` plus a
 separate `mProcLock` for process-specific operations. The lock ordering
-convention documented in the source (lines 698-724) specifies:
+convention documented in the source specifies:
 
 1. `mGlobalLock` (AMS) -- acquired first
 2. `mProcLock` -- acquired second if needed
@@ -109,26 +109,34 @@ The naming convention for methods reflects this:
 
 ```java
 // frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java
-CachedAppOptimizer mCachedAppOptimizer;     // line 646 - freezer/compaction
-OomAdjuster mOomAdjuster;                    // line 647 - OOM adjustment engine
-BroadcastQueue mBroadcastQueue;              // line 738 - broadcast dispatch
-BroadcastController mBroadcastController;    // line 742 - broadcast management
-final IntentFirewall mIntentFirewall;        // line 680 - intent filtering
+private CachedAppOptimizer mCachedAppOptimizer;  // line 740 - freezer/compaction
+OomAdjuster mOomAdjuster;                          // line 741 - OOM adjustment engine
+ProcessStateController mProcessStateController;    // line 743 - owns the OomAdjuster
+private BroadcastQueue mBroadcastQueue;            // line 835 - broadcast dispatch
+BroadcastController mBroadcastController;           // line 839 - broadcast management
+public final IntentFirewall mIntentFirewall;       // line 774 - intent filtering
 ```
+
+In Android 17 the OOM adjustment machinery was moved out of the `am` package
+into a new `com.android.server.am.psc` (Process State Controller) sub-package.
+AMS no longer constructs an `OomAdjuster` directly; instead it builds a
+`ProcessStateController` and obtains the adjuster from it
+(`ActivityManagerService.java`, lines 2600-2605). Section 22.7 covers this new
+package in detail.
 
 Important timing constants defined in AMS:
 
 ```java
-// line 580: How long before a started process must attach
+// line 648: How long before a started process must attach
 static final int PROC_START_TIMEOUT = 10 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
 
-// line 583: How long for bindApplication to complete before ANR
+// line 651: How long for bindApplication to complete before ANR
 static final int BIND_APPLICATION_TIMEOUT = 15 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
 
-// line 587: Delay before killing an unused app zygote
+// line 655: Delay before killing an unused app zygote
 static final int KILL_APP_ZYGOTE_DELAY_MS = 5 * 1000;
 
-// line 596-597: Broadcast timeouts
+// line 664-665: Broadcast timeouts
 static final int BROADCAST_FG_TIMEOUT = 10 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
 static final int BROADCAST_BG_TIMEOUT = 60 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
 ```
@@ -137,22 +145,21 @@ static final int BROADCAST_BG_TIMEOUT = 60 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
 
 ```java
 // frameworks/base/services/core/java/com/android/server/wm/ActivityTaskManagerService.java
-ActivityTaskSupervisor mTaskSupervisor;              // line 421
-ActivityClientController mActivityClientController;  // line 422
-RootWindowContainer mRootWindowContainer;            // line 423
-WindowManagerService mWindowManager;                 // line 424
+ActivityTaskSupervisor mTaskSupervisor;              // line 426
+ActivityClientController mActivityClientController;  // line 427
+RootWindowContainer mRootWindowContainer;            // line 429
+WindowManagerService mWindowManager;                 // line 430
 
 // Process tracking
-final ProcessMap<WindowProcessController> mProcessNames = new ProcessMap<>();  // line 430
-final WindowProcessControllerMap mProcessMap = new WindowProcessControllerMap<>();  // line 432
-volatile WindowProcessController mHomeProcess;       // line 434
-volatile WindowProcessController mTopApp;            // line 441
+final ProcessMap<WindowProcessController> mProcessNames = new ProcessMap<>();
+final WindowProcessControllerMap mProcessMap = new WindowProcessControllerMap<>();
+volatile WindowProcessController mHomeProcess;
+volatile WindowProcessController mTopApp;
 ```
 
 ATMS also manages app switching policy:
 
 ```java
-// line 549-561
 private volatile int mAppSwitchesState = APP_SWITCH_ALLOW;
 static final int APP_SWITCH_DISALLOW = 0;
 static final int APP_SWITCH_FG_ONLY = 1;
@@ -268,7 +275,7 @@ Every running activity is represented server-side by an `ActivityRecord`
 instance. The lifecycle states are defined as an enum:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, line 558
+// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, line 553
 enum State {
     INITIALIZING,
     STARTED,
@@ -312,11 +319,11 @@ stateDiagram-v2
 
 ### 22.2.2 ActivityRecord Key Fields
 
-The `ActivityRecord` class (declared at line 376) extends `WindowToken`,
+The `ActivityRecord` class (declared at line 372) extends `WindowToken`,
 making it simultaneously an activity representation and a window container:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, line 376
+// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, line 372
 final class ActivityRecord extends WindowToken {
 ```
 
@@ -324,46 +331,40 @@ Key fields include:
 
 ```java
 // Identity and configuration
-final ActivityTaskManagerService mAtmService;  // line 431
-final ActivityInfo info;                        // line 434 - from AndroidManifest
-final int mUserId;                             // line 436
-final String packageName;                      // line 439
-final ComponentName mActivityComponent;        // line 441
-final Intent intent;                           // line 452
-final String processName;                      // line 455
-final String taskAffinity;                     // line 456
+final ActivityTaskManagerService mAtmService;
+final ActivityInfo info;                       // from AndroidManifest
+final int mUserId;
+final String packageName;
+final ComponentName mActivityComponent;
+final Intent intent;
+final String processName;
+final String taskAffinity;
 
 // State tracking
-WindowProcessController app;                  // line 499 - hosting process
-private State mState;                         // line 500 - current lifecycle state
-private Task task;                            // line 468 - containing task
-
-// Timing
-long createTime = System.currentTimeMillis(); // line 469
-long lastVisibleTime;                         // line 470
-long pauseTime;                               // line 471
+WindowProcessController app;                   // hosting process
+private State mState;                          // current lifecycle state
+private Task task;                             // containing task
 
 // Result handling
-ActivityRecord resultTo;                      // line 480
-final String resultWho;                       // line 481
-final int requestCode;                        // line 482
+ActivityRecord resultTo;
+final String resultWho;
+final int requestCode;
 
 // Lifecycle flags
-boolean finishing;                            // line 515
-boolean delayedResume;                        // line 514
-int launchMode;                               // line 517
+boolean finishing;
+int launchMode;
 ```
 
 Timeout constants that protect against hung applications:
 
 ```java
-// line 416: Pause must complete within 500ms
+// line 409: Pause must complete within 500ms
 private static final int PAUSE_TIMEOUT = 500;
 
-// line 425: Stop must complete within 11s (just before ANR at 10s)
-private static final int STOP_TIMEOUT = 11 * 1000;
+// line 418: Stop must complete within 11s
+static final int STOP_TIMEOUT = 11 * 1000;
 
-// line 429: Destroy must complete within 10s
+// line 422: Destroy must complete within 10s
 private static final int DESTROY_TIMEOUT = 10 * 1000;
 ```
 
@@ -424,11 +425,11 @@ sequenceDiagram
 
 ### 22.2.4 Inside execute()
 
-The `ActivityStarter.execute()` method (line 785) is the main entry point.
+The `ActivityStarter.execute()` method (line 837) is the main entry point.
 Let us trace its logic:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 785
+// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 837
 int execute() {
     // ...
     try {
@@ -464,7 +465,7 @@ int execute() {
                 return res;
             }
 
-            res = executeRequest(mRequest);  // line 855 -- the real work
+            res = executeRequest(mRequest);  // the real work
         }
         // ...
     }
@@ -473,15 +474,15 @@ int execute() {
 
 ### 22.2.5 Inside executeRequest()
 
-The `executeRequest()` method (line 1028) performs extensive validation:
+The `executeRequest()` method (line 1087) performs extensive validation:
 
-1. **Caller validation** (lines 1063-1074): Resolves the calling
-   `WindowProcessController` and extracts PID/UID.
+1. **Caller validation**: Resolves the calling `WindowProcessController` and
+   extracts PID/UID.
 
-2. **Intent resolution** (lines 1145-1165): Checks if the target component
-   exists. If not, checks for archived apps.
+2. **Intent resolution**: Checks if the target component exists. If not,
+   checks for archived apps.
 
-3. **Permission checks** (lines 1218-1223): Delegates to
+3. **Permission checks**: Delegates to
    `ActivityTaskSupervisor.checkStartAnyActivityPermission()`.
 
 4. **Activity interceptors** (various lines): A chain of
@@ -501,10 +502,10 @@ The `executeRequest()` method (line 1028) performs extensive validation:
 
 ### 22.2.6 Inside startActivityInner()
 
-This is the core method (line 1934) where the actual task targeting happens:
+This is the core method (line 2015) where the actual task targeting happens:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 1934
+// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 2015
 int startActivityInner(final ActivityRecord r, ActivityRecord sourceRecord,
         IVoiceInteractionSession voiceSession, IVoiceInteractor voiceInteractor,
         int startFlags, ActivityOptions options, Task inTask,
@@ -514,7 +515,7 @@ int startActivityInner(final ActivityRecord r, ActivityRecord sourceRecord,
     setInitialState(r, options, inTask, inTaskFragment, startFlags,
             sourceRecord, voiceSession, voiceInteractor, balVerdict, realCallingUid);
 
-    computeLaunchingTaskFlags();   // line 2897 - resolve FLAG_ACTIVITY_NEW_TASK, etc.
+    computeLaunchingTaskFlags();   // resolve FLAG_ACTIVITY_NEW_TASK, etc.
     mIntent.setFlags(mLaunchFlags);
 
     final Task reusedTask = resolveReusableTask(includeLaunchedFromBubble);
@@ -593,7 +594,7 @@ class: `WindowContainer`. Understanding this hierarchy is essential for
 understanding how the system manages windows, tasks, and displays.
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/WindowContainer.java, line 115
+// frameworks/base/services/core/java/com/android/server/wm/WindowContainer.java, line 117
 class WindowContainer<E extends WindowContainer> extends ConfigurationContainer<E>
         implements Comparable<WindowContainer>, Animatable {
 ```
@@ -752,17 +753,17 @@ graph TB
 
 ### 22.3.4 Task (Back Stack) Internals
 
-The `Task` class (line 209) extends `TaskFragment`:
+The `Task` class (line 207) extends `TaskFragment`:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/Task.java, line 209
+// frameworks/base/services/core/java/com/android/server/wm/Task.java, line 207
 class Task extends TaskFragment {
 ```
 
 And `TaskFragment` extends `WindowContainer`:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/TaskFragment.java, line 124
+// frameworks/base/services/core/java/com/android/server/wm/TaskFragment.java, line 123
 class TaskFragment extends WindowContainer<WindowContainer> {
 ```
 
@@ -781,7 +782,7 @@ Key Task attributes:
 Tasks also have a reparenting system with three modes:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/Task.java, line 273-277
+// frameworks/base/services/core/java/com/android/server/wm/Task.java, lines 275-279
 static final int REPARENT_MOVE_ROOT_TASK_TO_FRONT = 0;
 static final int REPARENT_KEEP_ROOT_TASK_AT_FRONT = 1;
 static final int REPARENT_LEAVE_ROOT_TASK_IN_PLACE = 2;
@@ -795,7 +796,7 @@ A key architectural insight is that `ActivityRecord` extends `WindowToken`:
 // frameworks/base/services/core/java/com/android/server/wm/WindowToken.java, line 63
 class WindowToken extends WindowContainer<WindowState> {
 
-// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, line 376
+// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, line 372
 final class ActivityRecord extends WindowToken {
 ```
 
@@ -810,7 +811,7 @@ are children in the container tree.
 ### 22.3.6 WindowState Core Fields
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/WindowState.java, line 274
+// frameworks/base/services/core/java/com/android/server/wm/WindowState.java, line 277
 class WindowState extends WindowContainer<WindowState>
         implements WindowManagerPolicy.WindowState, InsetsControlTarget, InputTarget {
 ```
@@ -833,7 +834,7 @@ Key fields of `WindowState`:
 ### 22.3.7 DisplayContent and Display Areas
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java, line 288
+// frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java, line 299
 class DisplayContent extends RootDisplayArea
         implements WindowManagerPolicy.DisplayContentInfo {
 ```
@@ -878,10 +879,10 @@ graph TB
     end
 ```
 
-The `TaskDisplayArea` (line 74) is particularly important:
+The `TaskDisplayArea` (line 73) is particularly important:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/TaskDisplayArea.java, line 74
+// frameworks/base/services/core/java/com/android/server/wm/TaskDisplayArea.java, line 73
 final class TaskDisplayArea extends DisplayArea<WindowContainer> {
 ```
 
@@ -891,10 +892,10 @@ determining which activity is currently focused.
 
 ### 22.3.8 RootWindowContainer
 
-The `RootWindowContainer` (line 171) is the apex of the entire hierarchy:
+The `RootWindowContainer` (line 167) is the apex of the entire hierarchy:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/RootWindowContainer.java, line 171
+// frameworks/base/services/core/java/com/android/server/wm/RootWindowContainer.java, line 167
 class RootWindowContainer extends WindowContainer<DisplayContent>
         implements DisplayManager.DisplayListener {
 ```
@@ -943,12 +944,12 @@ sequenceDiagram
 
 ### 22.4.2 Server-Side: WMS.addWindow()
 
-The `addWindow()` method in WMS (line 1626) is one of the most important
+The `addWindow()` method in WMS (line 1672) is one of the most important
 methods in the entire window management system. It performs extensive
 validation and setup:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java, line 1626
+// frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java, line 1672
 public int addWindow(Session session, IWindow client, LayoutParams attrs,
         int viewVisibility, int displayId, int requestUserId,
         @InsetsType int requestedVisibleTypes,
@@ -1000,7 +1001,7 @@ The token validation in `addWindow()` is a critical security gate. The system
 verifies that the window type matches the token:
 
 ```java
-// line 1771-1825 (simplified)
+// around line 1817 (simplified)
 if (rootType >= FIRST_APPLICATION_WINDOW && rootType <= LAST_APPLICATION_WINDOW) {
     activity = token.asActivityRecord();
     if (activity == null) {
@@ -1033,7 +1034,7 @@ This ensures that:
 When validation passes, a new `WindowState` is created:
 
 ```java
-// line 1846-1848
+// around line 1892
 final WindowState win = new WindowState(this, session, client, token, parentWindow,
         appOp[0], attrs, viewVisibility, session.mUid, userId,
         session.mCanAddInternalSystemWindow);
@@ -1059,34 +1060,43 @@ After creation, the window goes through:
 
 ### 22.4.6 The addWindowInner() Method
 
-After the main validation, `addWindowInner()` (line 1977) handles type-specific
+After the main validation, `addWindowInner()` (line 2044) handles type-specific
 setup:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java, line 1977
+// frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java, line 2044
 private int addWindowInner(@NonNull WindowState win, @NonNull DisplayPolicy displayPolicy,
         @NonNull ActivityRecord activity, @NonNull DisplayContent displayContent,
         @NonNull IWindow client, @NonNull LayoutParams attrs, int uid,
         @NonNull WindowRelayoutResult result) {
     // ...
-    win.mToken.addWindow(win);      // line 1985 - add to token
-    displayPolicy.addWindowLw(win, attrs); // line 1986
+    win.mToken.addWindow(win);                          // add to token
+    displayPolicy.addWindowLw(win, attrs);
+    displayPolicy.setDropInputModePolicy(win, win.mAttrs);
 
     if (type == TYPE_APPLICATION_STARTING && activity != null) {
-        activity.attachStartingWindow(win);   // Starting/splash window
-    } else if (type == TYPE_INPUT_METHOD) {
-        displayContent.setInputMethodWindowLocked(win);  // IME
-    } else if (type == TYPE_INPUT_METHOD_DIALOG) {
-        displayContent.computeImeLayeringTarget(true);
-    } else {
-        // Handle wallpaper window
-        if (type == TYPE_WALLPAPER) {
-            displayContent.mWallpaperController.clearLastWallpaperTimeoutTime();
+        activity.attachStartingWindow(win);             // Starting/splash window
+    } else if (type == TYPE_INPUT_METHOD
+            && (win.mAttrs.flags & FLAG_NOT_TOUCHABLE) == 0) {
+        // In Android 17 the IME window is attached via the ImeWindowToken,
+        // which is the source of truth across user-profile switches.
+        final ImeWindowToken imeToken = win.mToken.asImeToken();
+        if (/* token agrees with the display's current IME token */) {
+            displayContent.setImeWindow(win);
         }
+    } else if (type == TYPE_WALLPAPER) {
+        displayContent.mWallpaperController.clearLastWallpaperTimeoutTime();
     }
     // ...
 }
 ```
+
+The IME-attachment path changed in Android 17. Earlier releases stored the
+input-method window directly on the `DisplayContent`; the current code resolves
+an `ImeWindowToken` and only attaches the window when that token matches the
+display's `ImeContainer` token, guarding against a race in which a work-profile
+switch moves the IME away while a stale `InputMethodService` is still adding its
+window.
 
 ### 22.4.7 The Session Binder Object
 
@@ -1096,31 +1106,30 @@ Each app process that creates windows establishes a `Session` with WMS:
 // frameworks/base/services/core/java/com/android/server/wm/Session.java, line 104
 class Session extends IWindowSession.Stub implements IBinder.DeathRecipient {
     final WindowManagerService mService;
+    final IWindowSessionCallback mCallback;
     final int mUid;
     final int mPid;
 ```
 
-The Session acts as a per-process proxy. The three key methods for window
-management are:
+The Session acts as a per-process proxy. The two window-add entry points (both
+forwarding into `WMS.addWindow()`) are:
 
 ```java
-// line 258-279
+// line 264
 public int addToDisplay(IWindow window, WindowManager.LayoutParams attrs,
-        int viewVisibility, int displayId, ...) {
+        int viewVisibility, int displayId, @InsetsType int requestedVisibleTypes,
+        InputChannel outInputChannel, WindowRelayoutResult result) {
     return mService.addWindow(this, window, attrs, viewVisibility, displayId,
             UserHandle.getUserId(mUid), requestedVisibleTypes, outInputChannel, result);
 }
 
+// line 272
 public int addToDisplayAsUser(IWindow window, WindowManager.LayoutParams attrs,
-        int viewVisibility, int displayId, int userId, ...) {
+        int viewVisibility, int displayId, int userId,
+        @InsetsType int requestedVisibleTypes,
+        InputChannel outInputChannel, WindowRelayoutResult result) {
     return mService.addWindow(this, window, attrs, viewVisibility, displayId, userId,
             requestedVisibleTypes, outInputChannel, result);
-}
-
-public int addToDisplayWithoutInputChannel(IWindow window, ...) {
-    return mService.addWindow(this, window, attrs, viewVisibility, displayId,
-            UserHandle.getUserId(mUid), WindowInsets.Type.defaultVisible(),
-            null /* outInputChannel */, result);
 }
 ```
 
@@ -1134,7 +1143,7 @@ process dies, all its windows are automatically cleaned up.
 ### 22.5.1 Class Overview
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java, line 408
+// frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java, line 412
 public class WindowManagerService extends IWindowManager.Stub
         implements Watchdog.Monitor, WindowManagerPolicy.WindowManagerFuncs {
 ```
@@ -1149,51 +1158,51 @@ WMS implements three interfaces:
 
 ```java
 // Active sessions (one per client process)
-final ArraySet<Session> mSessions = new ArraySet<>();      // line 630
+final ArraySet<Session> mSessions = new ArraySet<>();      // line 637
 
 // Master window map: IWindow Binder -> WindowState
-final HashMap<IBinder, WindowState> mWindowMap = new HashMap<>(); // line 633
+final HashMap<IBinder, WindowState> mWindowMap = new HashMap<>(); // line 640
 
 // Input token -> WindowState mapping
-final HashMap<IBinder, WindowState> mInputToWindowMap = new HashMap<>(); // line 636
+final HashMap<IBinder, WindowState> mInputToWindowMap = new HashMap<>(); // line 643
 
 // The global lock (shared with ATMS)
-final WindowManagerGlobalLock mGlobalLock;                 // line 639
+final WindowManagerGlobalLock mGlobalLock;                 // line 647
 
 // Windows currently being resized
-final ArrayList<WindowState> mResizingWindows = new ArrayList<>(); // line 646
+final ArrayList<WindowState> mResizingWindows = new ArrayList<>(); // line 654
 
 // Windows with changing frames
-final ArrayList<WindowState> mFrameChangingWindows = new ArrayList<>(); // line 652
+final ArrayList<WindowState> mFrameChangingWindows = new ArrayList<>(); // line 660
 ```
 
 ### 22.5.3 Key Component References
 
 ```java
 // Policy and layout
-WindowManagerPolicy mPolicy;                          // line 606
-final WindowManagerFlags mFlags;                      // line 608
-final WindowSurfacePlacer mWindowPlacerLocked;       // line 541
-final StartingSurfaceController mStartingSurfaceController; // line 518
+WindowManagerPolicy mPolicy;                          // line 614
+final WindowManagerFlags mFlags;
+final WindowSurfacePlacer mWindowPlacerLocked;        // line 549
+final StartingSurfaceController mStartingSurfaceController; // line 526
 
 // External services
-final IActivityManager mActivityManager;             // line 610
-final ActivityManagerInternal mAmInternal;            // line 611
-ActivityTaskManagerService mAtmService;              // (set during init)
+final IActivityManager mActivityManager;              // line 616
+final ActivityManagerInternal mAmInternal;            // line 617
+ActivityTaskManagerService mAtmService;               // (set during init)
 
 // Display settings
-final DisplayWindowSettings mDisplayWindowSettings;   // line 622
-final DisplayAreaPolicy.Provider mDisplayAreaPolicyProvider; // line 487
+final DisplayWindowSettings mDisplayWindowSettings;   // line 629
+final DisplayAreaPolicy.Provider mDisplayAreaPolicyProvider;
 
 // Tracing and debugging
-final WindowTracing mWindowTracing;                  // line 484
-final TransitionTracer mTransitionTracer;            // line 485
+final WindowTracing mWindowTracing;                   // line 483
+final TransitionTracer mTransitionTracer;
 ```
 
 ### 22.5.4 Constants and Configuration
 
 ```java
-// Focus update modes (line 439-447)
+// Focus update modes (line 438 onward)
 static final int UPDATE_FOCUS_NORMAL = 0;
 static final int UPDATE_FOCUS_WILL_ASSIGN_LAYERS = 1;
 static final int UPDATE_FOCUS_PLACING_SURFACES = 2;
@@ -1201,11 +1210,11 @@ static final int UPDATE_FOCUS_WILL_PLACE_SURFACES = 3;
 static final int UPDATE_FOCUS_REMOVING_FOCUS = 4;
 
 // Timing constants
-static final int MAX_ANIMATION_DURATION = 10 * 1000;          // line 418
-static final int WINDOW_FREEZE_TIMEOUT_DURATION = 2000;       // line 421
-static final int LAST_ANR_LIFETIME_DURATION_MSECS = 2 * 60 * 60 * 1000; // line 424
+static final int MAX_ANIMATION_DURATION = 10 * 1000;
+static final int WINDOW_FREEZE_TIMEOUT_DURATION = 2000;       // line 420
+static final int LAST_ANR_LIFETIME_DURATION_MSECS = 2 * 60 * 60 * 1000;
 
-// Animation scales (line 474-478)
+// Animation scales (line 474 onward)
 static final int WINDOW_ANIMATION_SCALE = 0;
 static final int TRANSITION_ANIMATION_SCALE = 1;
 private static final int ANIMATION_DURATION_SCALE = 2;
@@ -1297,7 +1306,7 @@ for the first window that:
 WMS provides diagnostic dumps at three priority levels:
 
 ```java
-// line 543-572
+// line 551
 private final PriorityDump.PriorityDumper mPriorityDumper = new PriorityDump.PriorityDumper() {
     @Override
     public void dumpCritical(...) {
@@ -1379,23 +1388,23 @@ sequenceDiagram
 
 ### 22.6.3 ActivityStarter Pipeline Stages
 
-The `ActivityStarter` (line 169) processes each start request through a
+The `ActivityStarter` (line 175) processes each start request through a
 well-defined pipeline:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 169
+// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 175
 class ActivityStarter {
-    private final ActivityTaskManagerService mService;           // line 188
-    private final RootWindowContainer mRootWindowContainer;     // line 189
-    private final ActivityTaskSupervisor mSupervisor;           // line 190
-    private final ActivityStartInterceptor mInterceptor;        // line 191
-    private final ActivityStartController mController;          // line 192
+    private final ActivityTaskManagerService mService;          // line 194
+    private final RootWindowContainer mRootWindowContainer;     // line 195
+    private final ActivityTaskSupervisor mSupervisor;           // line 196
+    private final ActivityStartInterceptor mInterceptor;        // line 197
+    private final ActivityStartController mController;           // line 198
 ```
 
 The ActivityStarter uses a **pool** pattern to avoid allocation:
 
 ```java
-// line 323-345
+// line 332
 static class DefaultFactory implements Factory {
     private final int MAX_STARTER_COUNT = 3;
     private SynchronizedPool<ActivityStarter> mStarterPool =
@@ -1418,11 +1427,11 @@ starter, and a re-entrant starter from the current one.
 
 ### 22.6.4 computeLaunchingTaskFlags()
 
-This method (line 2897) determines which task the activity will land in by
+This method (line 3026) determines which task the activity will land in by
 adjusting the intent flags:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 2897
+// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 3026
 private void computeLaunchingTaskFlags() {
 ```
 
@@ -1430,7 +1439,6 @@ Key rules implemented:
 
 1. **No source + no explicit task** -- Forces `FLAG_ACTIVITY_NEW_TASK`:
    ```java
-   // line 2954-2962
    if (mSourceRecord == null) {
        if ((mLaunchFlags & FLAG_ACTIVITY_NEW_TASK) == 0 && mInTask == null) {
            Slog.w(TAG, "startActivity called from non-Activity context; forcing "
@@ -1442,7 +1450,6 @@ Key rules implemented:
 
 2. **Source is singleInstance** -- New activity must go in its own task:
    ```java
-   // line 2963-2967
    } else if (mSourceRecord.launchMode == LAUNCH_SINGLE_INSTANCE) {
        mLaunchFlags |= FLAG_ACTIVITY_NEW_TASK;
    }
@@ -1450,18 +1457,23 @@ Key rules implemented:
 
 3. **Target is singleInstance/singleTask** -- Always gets its own task:
    ```java
-   // line 2968-2972
    } else if (isLaunchModeOneOf(LAUNCH_SINGLE_INSTANCE, LAUNCH_SINGLE_TASK)) {
        mLaunchFlags |= FLAG_ACTIVITY_NEW_TASK;
    }
    ```
 
-4. **LAUNCH_ADJACENT** -- Requires both `NEW_TASK` and a source record:
+4. **LAUNCH_ADJACENT** -- Requires both `NEW_TASK` and a source record. In
+   Android 17 this branch also honors a per-task opt-out: even with the flags
+   set, the request is downgraded if the source task (or any ancestor) has
+   `isLaunchAdjacentDisabled()`:
    ```java
-   // line 2975-2989
    if ((mLaunchFlags & FLAG_ACTIVITY_LAUNCH_ADJACENT) != 0) {
        final boolean hasNewTaskFlag = (mLaunchFlags & FLAG_ACTIVITY_NEW_TASK) != 0;
        if (!hasNewTaskFlag || mSourceRecord == null) {
+           mLaunchFlags &= ~FLAG_ACTIVITY_LAUNCH_ADJACENT;
+       }
+       if (mSourceRecord != null && mSourceRecord.getTask() != null
+               && mSourceRecord.getTask().isLaunchAdjacentDisabled()) {
            mLaunchFlags &= ~FLAG_ACTIVITY_LAUNCH_ADJACENT;
        }
    }
@@ -1469,11 +1481,11 @@ Key rules implemented:
 
 ### 22.6.5 computeTargetTask()
 
-This method (line 2211) determines the existing task to reuse (or null for a
+This method (line 2306) determines the existing task to reuse (or null for a
 new task):
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 2211
+// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 2306
 private Task computeTargetTask() {
     if (mStartActivity.resultTo == null && mInTask == null && !mAddingToTask
             && (mLaunchFlags & FLAG_ACTIVITY_NEW_TASK) != 0) {
@@ -1578,15 +1590,14 @@ unless they meet specific criteria. The `BackgroundActivityStartController`
 evaluates a `BalVerdict`:
 
 ```java
-// ActivityStarter.java, line 202-205
+// ActivityStarter.java, line 213
 @VisibleForTesting(visibility = VisibleForTesting.Visibility.PRIVATE)
 BalVerdict mBalVerdict;
 ```
 
-The BAL check happens in `isAllowedToStart()` (line 2263):
+The BAL check happens in `isAllowedToStart()` (line 2359):
 
 ```java
-// line 2283-2291
 boolean blockBalInTask = (newTask
         || !targetTask.isUidPresent(mCallingUid)
         || (LAUNCH_SINGLE_INSTANCE == mLaunchMode
@@ -1614,7 +1625,7 @@ Before an activity is actually started, a chain of interceptors can modify
 or block the launch:
 
 ```java
-// ATMS fields (line 520-521)
+// ATMS fields (line 528)
 private SparseArray<ActivityInterceptorCallback> mActivityInterceptorCallbacks =
         new SparseArray<>();
 ```
@@ -1622,9 +1633,9 @@ private SparseArray<ActivityInterceptorCallback> mActivityInterceptorCallbacks =
 Interceptor ordering is defined by ranges:
 
 ```java
-// From ActivityInterceptorCallback.java
-// SYSTEM_FIRST_ORDERED_ID through SYSTEM_LAST_ORDERED_ID for system
-// MAINLINE_FIRST_ORDERED_ID through MAINLINE_LAST_ORDERED_ID for mainline
+// frameworks/base/services/core/java/com/android/server/wm/ActivityInterceptorCallback.java
+// SYSTEM_FIRST_ORDERED_ID (0) through SYSTEM_LAST_ORDERED_ID for system
+// MAINLINE_FIRST_ORDERED_ID (1000) through MAINLINE_LAST_ORDERED_ID for mainline
 ```
 
 Common interceptors include:
@@ -1633,7 +1644,7 @@ Common interceptors include:
 2. **Suspended App** -- Blocks launches of suspended apps
 3. **Confirm Credentials** -- Handles work profile unlock
 4. **Dream** -- Handles launching during dream/screensaver
-5. **Harmfull App Warning** -- Shows warning for sideloaded apps
+5. **Harmful App Warning** -- Shows warning for sideloaded apps
 
 ### 22.6.9 The Task Weight Limit
 
@@ -1641,10 +1652,10 @@ An important safety mechanism prevents apps from creating too many activities
 in a single task:
 
 ```java
-// ActivityStarter.java, line 182
+// ActivityStarter.java, line 188
 private static final long MAX_TASK_WEIGHT_FOR_ADDING_ACTIVITY = 300;
 
-// line 1978-1985 (in startActivityInner)
+// in startActivityInner() (around line 2059)
 if (targetTask != null) {
     if (targetTask.getTreeWeight() > MAX_TASK_WEIGHT_FOR_ADDING_ACTIVITY) {
         Slog.e(TAG, "Remove " + targetTask + " because it has contained too many"
@@ -1665,73 +1676,82 @@ surfaces).
 
 ## 22.7 Process Management
 
-### 22.7.1 ProcessList and OOM Adjustment
+### 22.7.1 The Process State Controller (Android 17)
 
-The `ProcessList` class (line 184) manages all application processes and
-their priority levels:
+Android 17 carved the OOM-adjustment machinery out of the `am` package into a
+new `com.android.server.am.psc` (Process State Controller) sub-package. This is
+the single largest structural change to process management since the AMS/ATMS
+split. The README in that package states its goals plainly: isolate the OOM
+adjuster logic, expose a clear `ProcessStateController` interface, and
+centralize all process state that affects OOM adjustment.
+
+```
+frameworks/base/services/core/java/com/android/server/am/psc/
+    ProcessStateController.java   -- public entry point (builder + sessions)
+    OomAdjuster.java              -- abstract OOM adjuster (line 190)
+    OomAdjusterImpl.java          -- graph-based implementation (line 125)
+    Constants.java                -- OOM adj + scheduling-group constants
+    ProcessNode.java              -- a process in the importance graph
+    ProcessEdge.java / GraphEdge  -- service/provider binding edges
+    CapabilityController.java     -- propagates capabilities across edges
+    ProcessRecordInternal.java    -- per-process state owned by psc
+    ...
+```
+
+AMS no longer constructs an `OomAdjuster` directly. Instead it builds a
+`ProcessStateController` and obtains the adjuster from it:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/am/ProcessList.java, line 184
-public final class ProcessList implements ProcessStateController.ProcessLruUpdater {
+// ActivityManagerService.java, lines 2600-2605
+mProcessStateController = new ProcessStateController
+        .Builder(mProcessList, activeUids, oomConstants, new OomAdjusterCallback())
+        .setHandlerThread(handlerThread)
+        .setHostingTypeProvider(this)
+        .build();
+mOomAdjuster = mProcessStateController.getOomAdjuster();
 ```
+
+`ProcessStateController` exposes a *session* API for batching updates
+(`startBatchSession()`, `startServiceBatchSession()`) and update entry points
+(`runUpdate()`, `runPendingUpdate()`, `runFullUpdate()`, `runFollowUpUpdate()`).
+Callers that previously poked the `OomAdjuster` now go through the controller,
+which keeps process-state bookkeeping consistent. The package is still being
+landed incrementally (tracked internally by the AOSP team), so some logic still
+lives in the legacy `am` classes, but the constants, the adjuster, and the new
+graph model are firmly in `psc`.
 
 ### 22.7.2 OOM Adjustment Values
 
 The OOM adjustment (oom_adj) value determines how aggressively the Low Memory
 Killer Daemon (LMKD) will terminate a process. Lower values mean higher
-priority:
+priority. In Android 17 these constants moved from `ProcessList` to
+`com.android.server.am.psc.Constants`:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/am/ProcessList.java
-// line 295: System process
-public static final int SYSTEM_ADJ = -900;
-
-// line 292: Persistent system services
-public static final int PERSISTENT_PROC_ADJ = -800;
-
-// line 288: Persistent service bindings
-public static final int PERSISTENT_SERVICE_ADJ = -700;
-
-// line 284: Current foreground app
-public static final int FOREGROUND_APP_ADJ = 0;
-
-// line 280: Recently top, now FGS
-public static final int PERCEPTIBLE_RECENT_FOREGROUND_APP_ADJ = 50;
-
-// line 271: Visible but not foreground
-public static final int VISIBLE_APP_ADJ = 100;
-
-// line 267: Perceptible (e.g., background music)
-public static final int PERCEPTIBLE_APP_ADJ = 200;
-
-// line 262: Perceptible medium
-public static final int PERCEPTIBLE_MEDIUM_APP_ADJ = 225;
-
-// line 257: Perceptible low
-public static final int PERCEPTIBLE_LOW_APP_ADJ = 250;
-
-// line 253: Backup in progress
-public static final int BACKUP_APP_ADJ = 300;
-
-// line 249: Heavy-weight app
-public static final int HEAVY_WEIGHT_APP_ADJ = 400;
-
-// line 244: Background service
-public static final int SERVICE_ADJ = 500;
-
-// line 240: Home app
-public static final int HOME_APP_ADJ = 600;
-
-// line 234: Previous app (for quick switch)
-public static final int PREVIOUS_APP_ADJ = 700;
-
-// line 226: Old service (B list)
-public static final int SERVICE_B_ADJ = 800;
-
-// line 213: Cached app (invisible)
-public static final int CACHED_APP_MIN_ADJ = 900;
-public static final int CACHED_APP_MAX_ADJ = 999;
+// frameworks/base/services/core/java/com/android/server/am/psc/Constants.java
+public static final int SYSTEM_ADJ = -900;                       // line 173 - System process
+public static final int PERSISTENT_PROC_ADJ = -800;              // line 170 - Persistent services
+public static final int PERSISTENT_SERVICE_ADJ = -700;           // line 166 - Persistent bindings
+public static final int FOREGROUND_APP_ADJ = 0;                  // line 162 - Current foreground app
+public static final int PERCEPTIBLE_RECENT_FOREGROUND_APP_ADJ = 50;  // line 158 - Recently top, now FGS
+public static final int VISIBLE_APP_ADJ = 100;                   // line 147 - Visible but not foreground
+public static final int PERCEPTIBLE_APP_ADJ = 200;               // line 139 - Perceptible (e.g. BG music)
+public static final int PERCEPTIBLE_MEDIUM_APP_ADJ = 225;        // line 134 - Perceptible medium
+public static final int PERCEPTIBLE_LOW_APP_ADJ = 250;           // line 129 - Perceptible low
+public static final int BACKUP_APP_ADJ = 300;                    // line 125 - Backup in progress
+public static final int HEAVY_WEIGHT_APP_ADJ = 400;              // line 121 - Heavy-weight app
+public static final int SERVICE_ADJ = 500;                       // line 116 - Background service
+public static final int HOME_APP_ADJ = 600;                      // line 112 - Home app
+public static final int PREVIOUS_APP_ADJ = 700;                  // line 102 - Previous app (quick switch)
+public static final int SERVICE_B_ADJ = 800;                     // line 90  - Old service (B list)
+public static final int CACHED_APP_MIN_ADJ = 900;                // line 77  - Cached app (invisible)
+public static final int CACHED_APP_MAX_ADJ = 999;                // line 76
 ```
+
+`ProcessList` still imports these (e.g.
+`import static com.android.server.am.psc.Constants.CACHED_APP_MAX_ADJ;`) and
+prints them in `dumpsys activity oom`, but the source of truth is now the `psc`
+package.
 
 This forms a priority ladder:
 
@@ -1783,17 +1803,18 @@ graph LR
 ### 22.7.3 Scheduling Groups
 
 In addition to OOM adj, processes are assigned scheduling groups that affect
-CPU allocation:
+CPU allocation. These constants moved to `psc/Constants.java` alongside the OOM
+adj values:
 
 ```java
-// line 305-319
+// frameworks/base/services/core/java/com/android/server/am/psc/Constants.java, lines 192-206
 public static final int SCHED_GROUP_UNDEFINED = Integer.MIN_VALUE;
 public static final int SCHED_GROUP_BACKGROUND = 0;
 static final int SCHED_GROUP_RESTRICTED = 1;
-static final int SCHED_GROUP_DEFAULT = 2;
+public static final int SCHED_GROUP_DEFAULT = 2;
 public static final int SCHED_GROUP_TOP_APP = 3;
-static final int SCHED_GROUP_TOP_APP_BOUND = 4;
-static final int SCHED_GROUP_FOREGROUND_WINDOW = 5;
+public static final int SCHED_GROUP_TOP_APP_BOUND = 4;
+public static final int SCHED_GROUP_FOREGROUND_WINDOW = 5;
 ```
 
 The scheduling group maps directly to Linux cgroup settings:
@@ -1807,16 +1828,23 @@ The scheduling group maps directly to Linux cgroup settings:
 Each running process is tracked by a `ProcessRecord`:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/am/ProcessRecord.java, line 85
-class ProcessRecord extends ProcessRecordInternal implements WindowProcessListener {
-    final ActivityManagerService mService;       // line 88
-    volatile ApplicationInfo info;               // line 95
-    final ProcessInfo processInfo;               // line 96
-    final boolean appZygote;                     // line 97
+// frameworks/base/services/core/java/com/android/server/am/ProcessRecord.java, line 91
+class ProcessRecord extends ProcessRecordInternal implements WindowProcessListener,
+        ... {
+    final ActivityManagerService mService;       // where we came from
+    volatile ApplicationInfo info;               // first app in the process
+    final ProcessInfo processInfo;               // process-specific manifest info
+    final boolean appZygote;                     // forked from the app zygote
 
-    private UidRecord mUidRecord;                // line 106
-    private final PackageList mPkgList;          // line 111
+    private UidRecord mUidRecord;
+    private final PackageList mPkgList;
 ```
+
+Note that `ProcessRecordInternal` is itself part of the Android 17 `psc`
+refactor -- it lives in `com.android.server.am.psc` and is imported into
+`ProcessRecord` (`import com.android.server.am.psc.ProcessRecordInternal;`). It
+holds the process state that the OOM adjuster reads while traversing the
+importance graph.
 
 ProcessRecord fields track:
 
@@ -1832,7 +1860,7 @@ When a new activity needs to be launched in a process that does not yet exist,
 the system forks it from the Zygote. The flow goes through `ProcessList.startProcess()`:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/am/ProcessList.java, line 2453
+// frameworks/base/services/core/java/com/android/server/am/ProcessList.java, line 2505
 private Process.ProcessStartResult startProcess(HostingRecord hostingRecord,
         String entryPoint, ProcessRecord app, int uid, int[] gids,
         int runtimeFlags, int zygotePolicyFlags, int mountExternal,
@@ -1899,7 +1927,7 @@ ProcessList communicates with the Low Memory Killer Daemon through a local
 socket using a binary protocol:
 
 ```java
-// line 372-383
+// frameworks/base/services/core/java/com/android/server/am/ProcessList.java, lines 297-308
 static final byte LMK_TARGET = 0;          // Set kill thresholds
 static final byte LMK_PROCPRIO = 1;        // Set process priority
 static final byte LMK_PROCREMOVE = 2;      // Process removed
@@ -1918,15 +1946,26 @@ When OOM adj changes, ProcessList sends `LMK_PROCPRIO` commands to LMKD, which
 writes the values to `/proc/<pid>/oom_score_adj`. When memory is low, LMKD
 kills processes with the highest oom_score_adj first.
 
-### 22.7.8 The OomAdjuster
+### 22.7.8 The OomAdjuster and the Importance Graph
 
-The `OomAdjuster` (line 168) is an abstract class that computes the OOM
-adjustment for every process:
+In Android 17 the `OomAdjuster` is an abstract class in the `psc` package, with
+the concrete logic in `OomAdjusterImpl`:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/am/OomAdjuster.java, line 168
+// frameworks/base/services/core/java/com/android/server/am/psc/OomAdjuster.java, line 190
 public abstract class OomAdjuster {
+
+// frameworks/base/services/core/java/com/android/server/am/psc/OomAdjusterImpl.java, line 125
+public class OomAdjusterImpl extends OomAdjuster {
 ```
+
+The implementation models the system as an **importance graph**: each process
+is a `ProcessNode` (embedded in its `ProcessRecordInternal`), and service or
+provider bindings are `ProcessEdge` objects connecting a client node to a
+server node. A `CapabilityController` walks these edges to propagate
+capabilities and importance from clients to the processes they bind. The core
+per-process computation is `OomAdjusterImpl.computeOomAdjLSP()`, reached from
+`performUpdateOomAdjLSP()`.
 
 The computation considers:
 
@@ -2000,8 +2039,8 @@ PROCESS_STATE_CACHED_EMPTY = 19;          // Cached, no content
 Modern Android (11+) uses the CachedAppOptimizer to freeze cached processes:
 
 ```java
-// ActivityManagerService.java, line 646
-CachedAppOptimizer mCachedAppOptimizer;
+// ActivityManagerService.java, line 740
+private CachedAppOptimizer mCachedAppOptimizer;
 ```
 
 When a process becomes cached, the optimizer can:
@@ -2056,7 +2095,7 @@ every lifecycle transition flows through it.
 ### 22.8.1 setState() Implementation
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, line 5704
+// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, line 5732
 void setState(State state, String reason) {
     ProtoLog.v(WM_DEBUG_STATES, "State movement: %s from:%s to:%s reason:%s",
             this, mState, state, reason);
@@ -2069,8 +2108,9 @@ void setState(State state, String reason) {
     final State prevState = mState;
     mState = state;
 
-    if (getTaskFragment() != null) {
-        getTaskFragment().onActivityStateChanged(this, state, reason);
+    final TaskFragment taskFragment = getTaskFragment();
+    if (taskFragment != null) {
+        taskFragment.onActivityStateChanged(this, state, reason);
     }
     // ...
 ```
@@ -2085,7 +2125,7 @@ The method performs these key actions after updating the state:
 3. **Triggers process state recalculation** -- via
    `mTaskSupervisor.onProcessActivityStateChanged(app, false)`.
 
-4. **State-specific side effects** (lines 5736-5783):
+4. **State-specific side effects** (the `switch (state)` block):
 
 ```java
 switch (state) {
@@ -2098,10 +2138,19 @@ switch (state) {
         if (app != null) {
             app.updateProcessInfo(false, true, true, true);
         }
+        mAtmService.mH.post(this::notifyActivityStartedToContentCaptureService);
         break;
     case PAUSED:
         mAtmService.updateBatteryStats(this, false);
         mAtmService.updateActivityUsageStats(this, Event.ACTIVITY_PAUSED);
+        break;
+    case STOPPING:
+        // An activity can be STOPPED directly from RESUMED; record the PAUSED
+        // usage in that case since it is conceptually cycled through PAUSED.
+        if (prevState == RESUMED) {
+            mAtmService.updateBatteryStats(this, false);
+            mAtmService.updateActivityUsageStats(this, Event.ACTIVITY_PAUSED);
+        }
         break;
     case STOPPED:
         mAtmService.updateActivityUsageStats(this, Event.ACTIVITY_STOPPED);
@@ -2156,7 +2205,7 @@ Resuming activities is one of the most complex operations in the framework.
 The entry point is `Task.resumeTopActivityUncheckedLocked()`:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/Task.java, line 5240
+// frameworks/base/services/core/java/com/android/server/wm/Task.java, line 5369
 boolean resumeTopActivityUncheckedLocked(ActivityRecord prev, ActivityOptions options,
         boolean deferPause) {
 ```
@@ -2164,7 +2213,7 @@ boolean resumeTopActivityUncheckedLocked(ActivityRecord prev, ActivityOptions op
 This method has re-entrancy protection:
 
 ```java
-// line 299: Guard against recursive calls
+// line 297: Guard against recursive calls
 boolean mInResumeTopActivity = false;
 ```
 
@@ -2258,7 +2307,7 @@ When `startActivityInner()` finds an existing task to reuse (via
 `resolveReusableTask()` or `computeTargetTask()`), it calls `recycleTask()`:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 2384
+// frameworks/base/services/core/java/com/android/server/wm/ActivityStarter.java, line 2511
 int recycleTask(Task targetTask, ActivityRecord targetTaskTop, Task reusedTask,
         NeededUriGrants intentGrants) {
     // Should not recycle task from a different user
@@ -2279,9 +2328,9 @@ int recycleTask(Task targetTask, ActivityRecord targetTaskTop, Task reusedTask,
 
 Key operations in `recycleTask()`:
 
-1. **User check** -- Rejects cross-user task recycling (line 2388)
+1. **User check** -- Rejects cross-user task recycling
 2. **Intent assignment** -- Sets the task's base intent if it was moved by affinity
-3. **Power mode** -- Starts power mode for the launch (line 2411)
+3. **Power mode** -- Starts power mode for the launch
 4. **Target root task** -- Positions the task in the hierarchy
 5. **`START_FLAG_ONLY_IF_NEEDED`** -- Short-circuits if the activity is
    already at the top
@@ -2292,7 +2341,6 @@ Key operations in `recycleTask()`:
 The return value indicates what happened:
 
 ```java
-// line 2473
 return mMovedToFront ? START_TASK_TO_FRONT : START_DELIVERED_TO_TOP;
 ```
 
@@ -2316,7 +2364,8 @@ The most commonly encountered combinations:
 ### 22.10.3 The deliverNewIntent Mechanism
 
 When an existing activity receives a new intent (e.g., singleTop or
-singleTask re-delivery), the framework uses `deliverNewIntent()`:
+singleTask re-delivery), the framework uses `deliverNewIntentLocked()`
+(`ActivityRecord.java`, line 5082):
 
 ```mermaid
 sequenceDiagram
@@ -2325,16 +2374,24 @@ sequenceDiagram
     participant CLM as ClientLifecycleManager
     participant App as App Process
 
-    AS->>AR: deliverNewIntent(callingUid, intent, intentGrants)
-    AR->>AR: Check mIntentDelivered flag
-    AR->>AR: addNewIntentLocked(intent)
-    AR->>CLM: scheduleTransaction(NewIntentItem)
-    CLM->>App: schedule(ClientTransaction)
-    App->>App: Activity.onNewIntent(intent)
+    AS->>AR: deliverNewIntentLocked(callingUid, intent, intentGrants, ...)
+    AR->>AR: Grant URI permissions from intent
+    alt RESUMED, PAUSED, or top while sleeping (and attached)
+        AR->>CLM: scheduleTransactionItem(NewIntentItem)
+        CLM->>App: schedule(ClientTransaction)
+        App->>App: Activity.onNewIntent(intent)
+    else Not currently visible
+        AR->>AR: addNewIntentLocked(intent) -- queued for next resume
+    end
 ```
 
-The `mIntentDelivered` flag (line 274) ensures the intent is delivered at
-most once, even if multiple code paths converge on `deliverNewIntent()`.
+In Android 17 the method delivers the intent immediately (wrapping it in a
+`NewIntentItem` transaction) only when the activity is `RESUMED`, `PAUSED`, or
+the top activity behind the lock screen, and is attached to its process.
+Otherwise the intent is queued via `addNewIntentLocked()` and delivered the
+next time the activity resumes. The `NewIntentItem` carries a `resume` flag so
+the client returns to `RESUMED` only if it was already resumed, avoiding spurious
+extra lifecycle callbacks.
 
 ---
 
@@ -2347,7 +2404,7 @@ be displayed side-by-side within a single task. This is managed through
 `TaskFragment`:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/TaskFragment.java, line 124
+// frameworks/base/services/core/java/com/android/server/wm/TaskFragment.java, line 123
 class TaskFragment extends WindowContainer<WindowContainer> {
 ```
 
@@ -2401,19 +2458,19 @@ sequenceDiagram
 When starting an activity in a TaskFragment, the system checks compatibility:
 
 ```java
-// TaskFragment.java
+// TaskFragment.java, lines 155-175
 static final int EMBEDDING_ALLOWED = 0;
-static final int EMBEDDING_DISALLOWED_MIN_DIMENSION_VIOLATION = 1;
-static final int EMBEDDING_DISALLOWED_NEW_TASK = 2;
-static final int EMBEDDING_DISALLOWED_UNTRUSTED_HOST = 3;
+static final int EMBEDDING_DISALLOWED_UNTRUSTED_HOST = 1;
+static final int EMBEDDING_DISALLOWED_MIN_DIMENSION_VIOLATION = 2;
+static final int EMBEDDING_DISALLOWED_NEW_TASK = 3;
 ```
 
 These checks prevent:
 
+- Untrusted apps from embedding activities that disallow untrusted embedding
 - Activities from being embedded in containers too small for their minimum
   dimensions
-- Activities that require `NEW_TASK` from being embedded
-- Untrusted apps from embedding activities from other packages
+- Activities that are started on a new task from being embedded
 
 ### 22.11.4 Split-Screen and Freeform Windows
 
@@ -2467,7 +2524,7 @@ system can display a "starting window" (splash screen) to provide immediate
 visual feedback. There are two types:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, lines 407-409
+// frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java, lines 400-402
 static final int STARTING_WINDOW_TYPE_NONE = 0;
 static final int STARTING_WINDOW_TYPE_SNAPSHOT = 1;
 static final int STARTING_WINDOW_TYPE_SPLASH_SCREEN = 2;
@@ -2513,7 +2570,7 @@ sequenceDiagram
 When the starting window is added to WMS, it gets special handling:
 
 ```java
-// WindowManagerService.java, line 1988-1991
+// WindowManagerService.java, in addWindowInner() (around line 2056)
 if (type == TYPE_APPLICATION_STARTING && activity != null) {
     activity.attachStartingWindow(win);
     ProtoLog.v(WM_DEBUG_STARTING_WINDOW, "addWindow: %s startingWindow=%s",
@@ -2577,7 +2634,7 @@ layout rules:
 The `DisplayPolicy` is consulted during `addWindow()`:
 
 ```java
-// WMS.addWindow(), line 1850
+// WMS.addWindow(), around line 1896
 displayPolicy.adjustWindowParamsLw(win, win.mAttrs);
 // ...
 res = displayPolicy.validateAddingWindowLw(attrs, callingPid, callingUid);
@@ -2586,7 +2643,7 @@ res = displayPolicy.validateAddingWindowLw(attrs, callingPid, callingUid);
 And during layout:
 
 ```java
-// line 1986
+// in addWindowInner()
 displayPolicy.addWindowLw(win, attrs);
 ```
 
@@ -2739,7 +2796,7 @@ sequenceDiagram
 ATMS uses `AnrController` objects to manage ANR handling:
 
 ```java
-// ActivityTaskManagerService.java, line 578
+// ActivityTaskManagerService.java, line 587
 @GuardedBy("itself")
 private final List<AnrController> mAnrController = new ArrayList<>();
 ```
@@ -2759,7 +2816,7 @@ used for kiosk-mode applications, enterprise device management, and
 educational deployments.
 
 ```java
-// ActivityTaskManagerService.java, line 518
+// ActivityTaskManagerService.java, line 526
 private LockTaskController mLockTaskController;
 ```
 
@@ -2779,7 +2836,7 @@ The `LockTaskController` enforces restrictions at multiple points:
 1. **Activity start** -- `isAllowedToStart()` checks
    `isLockTaskModeViolation()`:
    ```java
-   // ActivityStarter.java, line 2299-2309
+   // ActivityStarter.java, in isAllowedToStart() (around line 2396)
    if (!newTask) {
        if (mService.getLockTaskController().isLockTaskModeViolation(
                targetTask, isNewClearTask)) {
@@ -2803,7 +2860,7 @@ The `LockTaskController` enforces restrictions at multiple points:
 ### 22.17.1 RecentTasks Manager
 
 ```java
-// ActivityTaskManagerService.java, line 473
+// ActivityTaskManagerService.java, line 481
 private RecentTasks mRecentTasks;
 ```
 
@@ -2881,7 +2938,7 @@ them to remain visible.
 ### 22.18.2 The occludesParent() Check
 
 ```java
-// ActivityRecord.java, line 665
+// ActivityRecord.java, line 662
 private boolean mOccludesParent;
 ```
 
@@ -2890,6 +2947,16 @@ This field is set based on:
 - The activity's theme (transparent vs. opaque)
 - Whether it fills the parent bounds
 - Whether it has the `windowIsFloating` style attribute
+
+In Android 17 the visibility and occlusion logic was extracted into a
+dedicated `WindowContainerVisibilityHelper` interface
+(`frameworks/base/services/core/java/com/android/server/wm/WindowContainerVisibilityHelper.java`).
+It centralizes three previously-scattered computations: the visibility state of
+a `TaskFragment` (`getTaskFragmentVisibility()`), whether an `ActivityRecord`
+should be visible (`shouldActivityBeVisible()`), and whether a container has
+content that fills it. `ActivityRecord.shouldBeVisible()` and
+`TaskFragment.getVisibility()` now delegate to this helper rather than carrying
+their own copies of the rules.
 
 ### 22.18.3 Visibility States for TaskFragment
 
@@ -3188,7 +3255,7 @@ The `ActivityClientController` is the server-side endpoint for activity-level
 operations initiated by the client process:
 
 ```java
-// ActivityTaskManagerService.java, line 422
+// ActivityTaskManagerService.java, line 427
 ActivityClientController mActivityClientController;
 ```
 
@@ -3230,11 +3297,11 @@ server-side state machine to trigger the next state transition.
 
 ### 22.24.1 Role and Responsibilities
 
-The `ActivityTaskSupervisor` (line 185) acts as a coordination layer between
+The `ActivityTaskSupervisor` (line 184) acts as a coordination layer between
 ATMS and the container hierarchy:
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/ActivityTaskSupervisor.java, line 185
+// frameworks/base/services/core/java/com/android/server/wm/ActivityTaskSupervisor.java, line 184
 public class ActivityTaskSupervisor implements RecentTasks.Callbacks {
 ```
 
@@ -3267,7 +3334,7 @@ their initialization. When all activities report idle, the system can:
 `ActivityTaskSupervisor` has its own handler for deferred operations:
 
 ```java
-// line 2823
+// line 2813
 private final class ActivityTaskSupervisorHandler extends Handler {
     @Override
     public void handleMessage(Message msg) {
@@ -3297,7 +3364,7 @@ The `ActivityStartController` manages the creation and recycling of
 `ActivityStarter` instances:
 
 ```java
-// ActivityTaskManagerService.java, line 519
+// ActivityTaskManagerService.java, line 527
 private ActivityStartController mActivityStartController;
 ```
 
@@ -3360,7 +3427,7 @@ Each `DisplayContent` manages a complete display with its own:
 - Rotation controller
 
 ```java
-// frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java, line 288
+// frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java, line 299
 class DisplayContent extends RootDisplayArea
         implements WindowManagerPolicy.DisplayContentInfo {
 ```
@@ -3432,7 +3499,7 @@ When a window is added with `addWindow()`, an `InputChannel` is created if
 the window accepts input:
 
 ```java
-// WMS.addWindow(), line 1861-1864
+// WMS.addWindow(), around line 1907
 final boolean openInputChannels = (outInputChannel != null
         && (attrs.inputFeatures & INPUT_FEATURE_NO_INPUT_CHANNEL) == 0);
 if (openInputChannels) {
@@ -3486,11 +3553,11 @@ sends this to the native `InputDispatcher` via `InputManagerService`.
 Windows can have special input features:
 
 ```java
-// WindowManager.LayoutParams
-INPUT_FEATURE_NO_INPUT_CHANNEL = 0x0002;      // No input
-INPUT_FEATURE_SPY = 0x0020;                    // Spy on input (see events but don't consume)
-INPUT_FEATURE_SENSITIVE_FOR_PRIVACY = 0x0040;  // Mark as sensitive
-INPUT_FEATURE_DISPLAY_TOPOLOGY_AWARE = 0x0100; // Cross-display topology
+// WindowManager.LayoutParams (frameworks/base/core/java/android/view/WindowManager.java)
+INPUT_FEATURE_NO_INPUT_CHANNEL = 1 << 0;       // No input
+INPUT_FEATURE_SPY = 1 << 2;                    // Spy on input (see events but don't consume)
+INPUT_FEATURE_SENSITIVE_FOR_PRIVACY = 1 << 3;  // Mark as sensitive
+INPUT_FEATURE_DISPLAY_TOPOLOGY_AWARE = 1 << 4; // Cross-display topology
 ```
 
 Spy windows are used by SystemUI for gesture detection (edge swipes,
@@ -3528,7 +3595,7 @@ Activity launches use a two-phase approach:
 1. **Prepare phase**: Validate, resolve, check permissions (can fail)
 2. **Commit phase**: Create task, add activity, schedule resume (should not fail)
 
-The comment "From now on, no exceptions or errors allowed!" at line 1923 in
+The comment "From now on, no exceptions or errors allowed!" at line 1977 in
 `addWindow()` marks the boundary between these phases.
 
 ### 22.28.4 The Deferred Execution Pattern
@@ -3791,12 +3858,125 @@ automatic cleanup: removing an ActivityRecord removes all its windows.
 
 ---
 
-## 22.32 Try It: Tracing and Debugging
+## 22.32 Android 17: Desktop Windowing in the WM Core
+
+Desktop windowing -- freeform, movable, resizable app windows with captions, a
+taskbar, and (increasingly) multiple desktops across external displays -- has
+been maturing across releases. In Android 17 a large share of that work lands in
+the WM core itself, not just in the Shell. This section covers the parts that
+live in `frameworks/base/services/core/java/com/android/server/wm`.
+
+### 22.32.1 The Desktop Mode Gate
+
+Whether a device and a given launch can use desktop windowing is decided by
+`DesktopModeHelper`:
+
+```java
+// frameworks/base/services/core/java/com/android/server/wm/DesktopModeHelper.java, line 100
+public static boolean canEnterDesktopMode(@NonNull Context context) {
+    return (isDeviceEligibleForDesktopMode(context)
+            && DesktopModeFlags.ENABLE_DESKTOP_WINDOWING_MODE.isTrue())
+            || isDesktopModeEnabledByDevOption(context);
+}
+```
+
+Device eligibility combines several config resources and developer options:
+
+| Helper method | What it checks |
+|---------------|----------------|
+| `isDesktopModeSupported()` | `R.bool.config_isDesktopModeSupported` |
+| `canInternalDisplayHostDesktops()` | `R.bool.config_canInternalDisplayHostDesktops` |
+| `isDesktopModeSupportedOnInternalDisplay()` | restrictions off, or internal display can host |
+| `isDeviceEligibleForDesktopMode()` | supported, or enabled via dev option |
+| `shouldEnforceDeviceRestrictions()` | the `ENFORCE_DEVICE_RESTRICTIONS` build flag |
+
+The feature flags themselves are modeled as enums rather than raw booleans:
+
+- `DesktopModeFlags` (`frameworks/base/core/java/android/window/DesktopModeFlags.java`)
+  wraps trunk-stable flags such as `ENABLE_DESKTOP_WINDOWING_MODE`, exposing an
+  `isTrue()` accessor that also honors a developer-option override.
+- `DesktopExperienceFlags`
+  (`frameworks/base/core/java/android/window/DesktopExperienceFlags.java`)
+  carries the broader "desktop experience" flags, including the
+  multiple-desktops activation flags for desktop-first displays.
+
+### 22.32.2 Where Desktop Windows Land: Launch Params
+
+When an activity launches into a freeform/desktop context, its initial bounds
+are computed server-side. The `LaunchParamsController` registers a dedicated
+modifier for this, after the default one:
+
+```java
+// frameworks/base/services/core/java/com/android/server/wm/LaunchParamsController.java
+void registerDefaultModifiers(ActivityTaskSupervisor supervisor) {
+    final Context context = mService.mContext;
+    registerModifier(new TaskLaunchParamsModifier(supervisor, context));
+    registerModifier(new DesktopModeLaunchParamsModifier(context, supervisor,
+            new DesktopModeCompatPolicy(context)));
+}
+```
+
+`DesktopModeLaunchParamsModifier`
+(`frameworks/base/services/core/java/com/android/server/wm/DesktopModeLaunchParamsModifier.java`)
+extends `DefaultLaunchParamsModifier` and overrides `onCalculate()` to size and
+position desktop windows. The actual geometry comes from
+`DesktopModeBoundsCalculator`
+(`frameworks/base/services/core/java/com/android/server/wm/DesktopModeBoundsCalculator.java`),
+whose `calculateInitialBounds()` derives an "ideal" size from the stable display
+bounds scaled by `DESKTOP_MODE_INITIAL_BOUNDS_SCALE`, leaving
+`DESKTOP_MODE_LANDSCAPE_APP_PADDING` for landscape apps.
+
+```mermaid
+flowchart TD
+    Start["startActivityInner() -> computeLaunchParams()"] --> LPC["LaunchParamsController.calculate()"]
+    LPC --> M1["TaskLaunchParamsModifier<br/>(window layout prefs)"]
+    M1 --> M2["DesktopModeLaunchParamsModifier.onCalculate()"]
+    M2 --> Gate{"canEnterDesktopMode()<br/>and freeform context?"}
+    Gate -->|No| Continue["RESULT_CONTINUE<br/>(use default bounds)"]
+    Gate -->|Yes| Calc["DesktopModeBoundsCalculator<br/>.calculateInitialBounds()"]
+    Calc --> Ideal["calculateIdealSize(stableBounds, scale)"]
+    Ideal --> OutBounds["outParams.mBounds set"]
+```
+
+### 22.32.3 App Compatibility in Freeform
+
+Because desktop windows can take arbitrary sizes, the app-compat machinery has
+desktop-aware policies. `AppCompatConfiguration` caches the device's desktop
+capability at construction:
+
+```java
+// frameworks/base/services/core/java/com/android/server/wm/AppCompatConfiguration.java, line 409
+mCanEnterDesktopMode = DesktopModeHelper.canEnterDesktopMode(mContext);
+```
+
+`AppCompatUtils.isInDesktopMode()` treats a window as being in desktop mode when
+its parent windowing mode is `WINDOWING_MODE_FREEFORM` and the device can enter
+desktop mode, and `DesktopAppCompatAspectRatioPolicy` constrains how letterboxed
+or fixed-aspect-ratio apps are sized inside desktop windows. This keeps legacy
+apps usable when dragged into a freeform window.
+
+### 22.32.4 Connected Displays and Multiple Desktops
+
+Android 17 invests heavily in *connected displays* (driving a desktop session on
+an external monitor) and *multiple desktops* (more than one virtual desktop per
+display). Much of this is flag-gated in `DesktopExperienceFlags`, and the
+server-side plumbing rides on the existing multi-display hierarchy from Section
+22.26: each external display is another `DisplayContent` under
+`RootWindowContainer`, with its own `TaskDisplayArea`. Activities are positioned
+into the correct display's task area by the same launch-params pipeline, and
+cross-display moves are coordinated through the transition system (Section
+22.22). The practical effect for the WM core is that the "which display, which
+desktop, what bounds" decision is now a first-class part of activity launch,
+rather than an afterthought handled entirely by the Shell.
+
+---
+
+## 22.33 Try It: Tracing and Debugging
 
 This section provides hands-on exercises for observing the activity and
 window management system in action.
 
-### 22.32.1 Exercise 1: Inspect Window Hierarchy with dumpsys
+### 22.33.1 Exercise 1: Inspect Window Hierarchy with dumpsys
 
 **Objective**: Examine the live window hierarchy to understand the container
 tree.
@@ -3855,7 +4035,7 @@ This shows:
 adb shell dumpsys activity activities | grep -A 20 "com.android.settings"
 ```
 
-### 22.32.2 Exercise 2: Monitor Activity Lifecycle Events
+### 22.33.2 Exercise 2: Monitor Activity Lifecycle Events
 
 **Objective**: Watch lifecycle transitions in real-time.
 
@@ -3874,7 +4054,7 @@ I ActivityTaskManager: START u0 {cmp=com.android.settings/.Settings} from uid 20
 I ActivityTaskManager: Displayed com.android.settings/.Settings: +412ms
 ```
 
-### 22.32.3 Exercise 3: Inspect Process Priorities
+### 22.33.3 Exercise 3: Inspect Process Priorities
 
 **Objective**: Observe OOM adj values for running processes.
 
@@ -3902,7 +4082,7 @@ The `dumpsys activity oom` output groups processes by their OOM adj bucket:
     proc #5: cch+5 B/-/-  trm: 0 12350:com.example.app/u0a94 (cch-activity)
 ```
 
-### 22.32.4 Exercise 4: Force a Configuration Change
+### 22.33.4 Exercise 4: Force a Configuration Change
 
 **Objective**: Observe how the framework handles configuration changes.
 
@@ -3921,7 +4101,7 @@ You will see:
 2. Activities being destroyed and recreated (unless they handle the change)
 3. Window layout recalculation
 
-### 22.32.5 Exercise 5: Examine Task State with am Commands
+### 22.33.5 Exercise 5: Examine Task State with am Commands
 
 ```bash
 # List all tasks
@@ -3940,7 +4120,7 @@ adb shell am task focus <taskId>
 adb shell am task remove <taskId>
 ```
 
-### 22.32.6 Exercise 6: Window Inspector with wm Commands
+### 22.33.6 Exercise 6: Window Inspector with wm Commands
 
 ```bash
 # Get display info
@@ -3959,7 +4139,7 @@ adb shell wm density reset
 adb shell dumpsys SurfaceFlinger --list
 ```
 
-### 22.32.7 Debugging Tips for Framework Developers
+### 22.33.7 Debugging Tips for Framework Developers
 
 1. **Enable verbose WM logging**:
    ```bash
@@ -3993,6 +4173,35 @@ adb shell dumpsys SurfaceFlinger --list
    ```
    This shows all surface layers, their Z-order, and buffer state.
 
+### 22.33.8 Exercise 7: Inspect Desktop Windowing and OOM State
+
+**Objective**: Observe the Android 17 desktop-windowing and process-state
+machinery.
+
+```bash
+# Is desktop windowing available on this build?
+adb shell dumpsys window | grep -i desktop
+
+# List tasks and their windowing modes (look for freeform mode)
+adb shell dumpsys activity activities | grep -E "mode=|windowingMode"
+
+# Force a task into freeform (on a device that supports desktop mode)
+adb shell am stack list
+adb shell wm set-multi-window-config   # inspect current multi-window config
+
+# Process priorities now reported via the Process State Controller
+adb shell dumpsys activity oom
+
+# Check connected/external displays
+adb shell dumpsys display | grep -E "Display id|mType|flags"
+```
+
+The `dumpsys activity oom` output still prints the OOM adj buckets
+(`FOREGROUND`, `VISIBLE`, `PERCEPTIBLE`, `CACHED`, ...), but in Android 17 those
+values are computed by `OomAdjusterImpl` inside the
+`com.android.server.am.psc` package and the constants come from
+`psc/Constants.java`.
+
 ---
 
 ## Summary
@@ -4001,8 +4210,8 @@ In this chapter we explored the three pillars of Android's activity and
 window management:
 
 1. **AMS and ATMS Architecture**: The historical split between
-   process management (AMS, ~19,921 lines in `com.android.server.am`) and
-   activity/task management (ATMS, ~8,130 lines in `com.android.server.wm`).
+   process management (AMS, ~21,200 lines in `com.android.server.am`) and
+   activity/task management (ATMS, ~8,450 lines in `com.android.server.wm`).
    AMS uses its own `ActivityManagerGlobalLock` plus `mProcLock`, while ATMS
    shares the `WindowManagerGlobalLock` with WMS. This shared lock eliminates
    deadlocks between activity and window operations while ensuring atomicity
@@ -4016,7 +4225,7 @@ window management:
    10s destroy, 10s idle.
 
 3. **The Container Hierarchy**: Built on `WindowContainer`
-   (line 115), the unified tree extends from `RootWindowContainer` through
+   (line 117), the unified tree extends from `RootWindowContainer` through
    `DisplayContent` (inherits from `RootDisplayArea`), `DisplayArea`,
    `TaskDisplayArea`, `Task` (extends `TaskFragment`), `TaskFragment`
    (extends `WindowContainer`), `ActivityRecord` (extends `WindowToken`),
@@ -4025,34 +4234,39 @@ window management:
 
 4. **Window Addition Flow**: The path from
    `WindowManager.addView()` through `ViewRootImpl.setView()`,
-   `Session.addToDisplay()` (Binder IPC), to `WMS.addWindow()` (line 1626)
-   with its extensive 350-line validation (token checks for each window type,
+   `Session.addToDisplay()` (Binder IPC), to `WMS.addWindow()` (line 1672)
+   with its extensive validation (token checks for each window type,
    permission verification, display access control, duplicate detection) and
    setup (`WindowState` creation, `InputChannel` pair, surface allocation,
-   policy configuration).
+   policy configuration). In Android 17 the IME-window attachment path
+   resolves an `ImeWindowToken` to survive work-profile switches.
 
-5. **WMS Architecture**: The ~10,983-line service with its
+5. **WMS Architecture**: The ~11,600-line service with its
    `mWindowMap` (global window registry), `mSessions` (per-process
    connections), display-thread model, five focus update modes, the
    `WindowSurfacePlacer` layout engine, and the `PriorityDumper` for
    diagnostic data collection at critical/high/normal priorities.
 
 6. **Intent Resolution and Launch Pipeline**: From
-   `ATMS.startActivityAsUser()` (line 1280) through the `ActivityStarter`
-   pipeline: `execute()` (line 785, metrics + HeavyWeight check) ->
-   `executeRequest()` (line 1028, validation + permissions + interceptors +
-   BAL check + ActivityRecord creation) -> `startActivityInner()` (line 1934,
+   `ATMS.startActivityAsUser()` (line 1302) through the `ActivityStarter`
+   pipeline: `execute()` (line 837, metrics + HeavyWeight check) ->
+   `executeRequest()` (line 1087, validation + permissions + interceptors +
+   BAL check + ActivityRecord creation) -> `startActivityInner()` (line 2015,
    `computeLaunchingTaskFlags()` + `computeTargetTask()` + task reuse/creation
    + resume). Five launch modes, the 300-weight task limit, the interceptor
    chain, and the move-to-front decision logic.
 
-7. **Process Management**: The OOM adj ladder from
-   `SYSTEM_ADJ` (-900) through `FOREGROUND_APP_ADJ` (0) to
-   `CACHED_APP_MAX_ADJ` (999), with 16 named levels. Six scheduling groups
-   mapping to Linux cgroups. Process start via `ProcessList.startProcess()`
-   (line 2453) which forks from Zygote (regular, app, or WebView).
-   Communication with LMKD via 12 binary protocol commands over a local
-   socket. The `CachedAppOptimizer` freezer for cached process power savings.
+7. **Process Management (psc refactor)**: In Android 17 the OOM-adjustment
+   machinery moved to the new `com.android.server.am.psc` package. The OOM adj
+   ladder from `SYSTEM_ADJ` (-900) through `FOREGROUND_APP_ADJ` (0) to
+   `CACHED_APP_MAX_ADJ` (999), and the six scheduling groups, now live in
+   `psc/Constants.java`. AMS builds a `ProcessStateController` and obtains the
+   `OomAdjuster` (now abstract, with `OomAdjusterImpl` implementing a
+   graph-based importance model) from it. Process start via
+   `ProcessList.startProcess()` (line 2505) forks from Zygote (regular, app, or
+   WebView). Communication with LMKD via 12 binary protocol commands over a
+   local socket. The `CachedAppOptimizer` freezer for cached process power
+   savings.
 
 8. **Advanced Topics**: The `setState()` side effects
    and battery/usage stats integration. The recursive `resumeTopActivity`
@@ -4061,11 +4275,19 @@ window management:
    starting window (splash screen) system. The `WindowSurfacePlacer` layout
    loop. Configuration change propagation. ANR detection timeouts. Lock task
    mode enforcement. The recent tasks persistence system. Visibility
-   computation via `ensureActivitiesVisible()`. Shell transitions (Android 13+)
+   computation via `ensureActivitiesVisible()`, now refactored into the
+   `WindowContainerVisibilityHelper`. Shell transitions (Android 13+)
    and their animation controllers. The input dispatch connection via
    `InputChannel` socket pairs. And the design patterns that recur throughout
    the system: container trees, object pools, two-phase commits, deferred
    execution, and unforgeable Binder tokens.
+
+9. **Desktop Windowing (Android 17)**: The maturing desktop-windowing path,
+   gated by `DesktopModeFlags`/`DesktopExperienceFlags` and
+   `DesktopModeHelper.canEnterDesktopMode()`, with server-side launch
+   positioning via the `DesktopModeLaunchParamsModifier` and
+   `DesktopModeBoundsCalculator`, plus the connected-displays and
+   multiple-desktops work tracked through dedicated flag enums.
 
 The next chapter will take a deep dive into the window system mechanics --
 how frames are computed, how surfaces are managed, and how the new shell

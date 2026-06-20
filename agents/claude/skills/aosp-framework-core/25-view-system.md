@@ -27,7 +27,7 @@ The Android view system is built on three pillars:
 
 1. **`View`** -- the atomic building block.  Every visible element on screen
    (Button, TextView, ImageView, custom widgets) is a `View` subclass.  At
-   ~34,918 lines, `View.java` is one of the largest files in the Android
+   over 35,000 lines, `View.java` is one of the largest files in the Android
    framework, handling measurement, layout, drawing, touch events, focus,
    accessibility, animations, and more.
 
@@ -43,7 +43,7 @@ The Android view system is built on three pillars:
    measure-layout-draw cycle through `performTraversals()`.
 
 ```
-Source: frameworks/base/core/java/android/view/ViewGroup.java (line 139)
+Source: frameworks/base/core/java/android/view/ViewGroup.java (line 142)
 
     public abstract class ViewGroup extends View implements ViewParent, ViewManager {
         ...
@@ -126,13 +126,14 @@ WindowManagerImpl.addView(decorView, layoutParams)
        -> viewRootImpl.setView(decorView, layoutParams, panelParent)
 ```
 
-Inside `ViewRootImpl.setView()` (line 1511):
+Inside `ViewRootImpl.setView()` (line 1649):
 
 ```
 Source: frameworks/base/core/java/android/view/ViewRootImpl.java
 
     public void setView(View view, WindowManager.LayoutParams attrs,
             View panelParentView, int userId) {
+        checkThreadCompat();
         synchronized (this) {
             if (mView == null) {
                 mView = view;
@@ -399,7 +400,7 @@ The measurement system communicates constraints from parent to child using
 **size** in a single `int`:
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 31726)
+Source: frameworks/base/core/java/android/view/View.java (line 31989)
 
     public static class MeasureSpec {
         private static final int MODE_SHIFT = 30;
@@ -463,7 +464,7 @@ Instead they override `onMeasure()`.  The `measure()` method handles:
    shadows in 9-patch backgrounds).
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 28542)
+Source: frameworks/base/core/java/android/view/View.java (line 28787)
 
     public final void measure(int widthMeasureSpec, int heightMeasureSpec) {
         ...
@@ -506,7 +507,7 @@ The base `View.onMeasure()` simply picks the larger of the background size
 and the minimum size:
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 28672)
+Source: frameworks/base/core/java/android/view/View.java (line 28917)
 
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         setMeasuredDimension(
@@ -552,12 +553,12 @@ The spec-combination table:
 After measurement, `performLayout()` positions the root view at (0, 0):
 
 ```
-Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 5164)
+Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 5554)
 
     host.layout(0, 0, host.getMeasuredWidth(), host.getMeasuredHeight());
 ```
 
-`View.layout()` (line 25798) stores the position and calls `onLayout()`:
+`View.layout()` (line 26040) stores the position and calls `onLayout()`:
 
 ```
 Source: frameworks/base/core/java/android/view/View.java
@@ -599,7 +600,7 @@ again before layout to ensure a fresh measurement.
 
 ### 25.2.7 View.draw() -- The Seven Steps
 
-`View.draw()` (line 25251) executes drawing in a precisely defined order:
+`View.draw()` (line 25493) executes drawing in a precisely defined order:
 
 ```
 Source: frameworks/base/core/java/android/view/View.java
@@ -653,7 +654,7 @@ framework sets `PFLAG_SKIP_DRAW`, and `updateDisplayListIfDirty()` bypasses
 `draw()` entirely, calling `dispatchDraw()` directly:
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 24116)
+Source: frameworks/base/core/java/android/view/View.java (line 24771)
 
     if ((mPrivateFlags & PFLAG_SKIP_DRAW) == PFLAG_SKIP_DRAW) {
         dispatchDraw(canvas);
@@ -679,10 +680,13 @@ on each ancestor until reaching `ViewRootImpl`, which calls
 `scheduleTraversals()`.  This triggers a full measure-layout-draw cycle.
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 28478)
+Source: frameworks/base/core/java/android/view/View.java (line 28723)
 
     public void requestLayout() {
         if (mMeasureCache != null) mMeasureCache.clear();
+        ...
+        // If this view is currently requesting layout while a layout pass is
+        // running, route the request through ViewRootImpl so it can be deferred.
         ...
         mPrivateFlags |= PFLAG_FORCE_LAYOUT;
         mPrivateFlags |= PFLAG_INVALIDATED;
@@ -709,7 +713,7 @@ size and position have not.  It propagates a dirty rectangle up to
 `ViewRootImpl`, triggering only a draw pass (no measure or layout).
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 21249)
+Source: frameworks/base/core/java/android/view/View.java (line 21431, 21453)
 
     public void invalidate() {
         invalidate(true);
@@ -746,14 +750,16 @@ graph TB
 
 ### 25.2.10 performTraversals() -- The Orchestrator
 
-`ViewRootImpl.performTraversals()` (line 3574) is the single largest method
+`ViewRootImpl.performTraversals()` (line 3924) is the single largest method
 in the view system, spanning hundreds of lines.  It orchestrates the entire
-rendering pipeline:
+rendering pipeline.  In Android 17 it takes the frame's VSYNC timestamp
+(`performTraversals(long frameTimeNanos)`) so that animation, choreographer,
+and frame-rate-voting work can be pinned to a single consistent frame time:
 
 ```
 Source: frameworks/base/core/java/android/view/ViewRootImpl.java
 
-    private void performTraversals() {
+    private void performTraversals(long frameTimeNanos) {
         final View host = mView;
         if (host == null || !mAdded) return;
         ...
@@ -805,7 +811,7 @@ measurement.
 These are thin wrappers that add tracing:
 
 ```
-Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 5082)
+Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 5472)
 
     private void performMeasure(int childWidthMeasureSpec,
             int childHeightMeasureSpec) {
@@ -822,7 +828,7 @@ Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 5082)
 ```
 
 ```
-Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 5148)
+Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 5538)
 
     private void performLayout(WindowManager.LayoutParams lp,
             int desiredWindowWidth, int desiredWindowHeight) {
@@ -862,7 +868,7 @@ Before tracing the dispatch chain, we must understand `MotionEvent` -- the
 object that carries all touch information:
 
 ```
-Source: frameworks/base/core/java/android/view/MotionEvent.java (line 197)
+Source: frameworks/base/core/java/android/view/MotionEvent.java (line 199)
 
     public final class MotionEvent extends InputEvent implements Parcelable {
 ```
@@ -923,7 +929,7 @@ for (int h = 0; h < historySize; h++) {
 behavior throughout the framework:
 
 ```
-Source: frameworks/base/core/java/android/view/ViewConfiguration.java (line 51)
+Source: frameworks/base/core/java/android/view/ViewConfiguration.java (line 50)
 ```
 
 | Constant | Default Value | Purpose |
@@ -1005,7 +1011,7 @@ Touch events flow through `ViewPostImeInputStage`, which calls
 For leaf `View` objects, the dispatch is straightforward:
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 16750)
+Source: frameworks/base/core/java/android/view/View.java (line 16932)
 
     public boolean dispatchTouchEvent(MotionEvent event) {
         if (event.isTargetAccessibilityFocus()) {
@@ -1033,7 +1039,7 @@ Source: frameworks/base/core/java/android/view/View.java (line 16750)
    etc.
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 16796)
+Source: frameworks/base/core/java/android/view/View.java (line 16978)
 
     private boolean performOnTouchCallback(MotionEvent event) {
         boolean handled = false;
@@ -1053,7 +1059,7 @@ Source: frameworks/base/core/java/android/view/View.java (line 16796)
 
 ### 25.3.6 ViewGroup.dispatchTouchEvent() -- The Full Algorithm
 
-`ViewGroup.dispatchTouchEvent()` (line 2646) implements the complete touch
+`ViewGroup.dispatchTouchEvent()` (line 2756) implements the complete touch
 dispatch algorithm.  This is the most critical event-handling code in
 Android:
 
@@ -1204,7 +1210,7 @@ The default `ViewGroup.onInterceptTouchEvent()` almost always returns
 `false`:
 
 ```
-Source: frameworks/base/core/java/android/view/ViewGroup.java (line 3311)
+Source: frameworks/base/core/java/android/view/ViewGroup.java (line 3421)
 
     public boolean onInterceptTouchEvent(MotionEvent ev) {
         if (ev.isFromSource(InputDevice.SOURCE_MOUSE)
@@ -1222,7 +1228,7 @@ detect scroll gestures and intercept them from their children.
 
 ### 25.3.9 onTouchEvent() -- Click and Long-Press Handling
 
-`View.onTouchEvent()` (line 18265) implements the built-in gesture
+`View.onTouchEvent()` (line 18447) implements the built-in gesture
 recognition for clicks, long-presses, and touch feedback:
 
 ```
@@ -1294,7 +1300,9 @@ Key behaviors:
   feedback is delayed by `ViewConfiguration.getTapTimeout()` (100ms) to
   distinguish taps from scroll starts.
 - **Long-press** detection: A `CheckForLongPress` Runnable is posted with
-  `ViewConfiguration.getLongPressTimeout()` (usually 500ms).
+  `ViewConfiguration.getLongPressTimeout()`, whose default is
+  `DEFAULT_LONG_PRESS_TIMEOUT = 400` ms (overridable via the
+  `Settings.Secure.LONG_PRESS_TIMEOUT` accessibility setting).
 - **Click** is posted via `PerformClick` Runnable rather than called directly,
   allowing the view's visual state to update before the click handler runs.
 
@@ -1377,9 +1385,10 @@ stateDiagram-v2
 `scheduleTraversals()` is the gateway to the rendering pipeline:
 
 ```
-Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 3085)
+Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 3307)
 
     void scheduleTraversals() {
+        checkThreadCompat();
         if (!mTraversalScheduled) {
             mTraversalScheduled = true;
             mTraversalBarrier = mQueue.postSyncBarrier();
@@ -1412,19 +1421,19 @@ The `Choreographer` coordinates all frame-related work through five callback
 types, executed in strict order:
 
 ```
-Source: frameworks/base/core/java/android/view/Choreographer.java (line 1156)
+Source: frameworks/base/core/java/android/view/Choreographer.java (line 1201)
 
     mFrameInfo.markInputHandlingStart();
-    doCallbacks(Choreographer.CALLBACK_INPUT, frameIntervalNanos);
+    doCallbacks(Choreographer.CALLBACK_INPUT);
 
     mFrameInfo.markAnimationsStart();
-    doCallbacks(Choreographer.CALLBACK_ANIMATION, frameIntervalNanos);
-    doCallbacks(Choreographer.CALLBACK_INSETS_ANIMATION, frameIntervalNanos);
+    doCallbacks(Choreographer.CALLBACK_ANIMATION);
+    doCallbacks(Choreographer.CALLBACK_INSETS_ANIMATION);
 
     mFrameInfo.markPerformTraversalsStart();
-    doCallbacks(Choreographer.CALLBACK_TRAVERSAL, frameIntervalNanos);
+    doCallbacks(Choreographer.CALLBACK_TRAVERSAL);
 
-    doCallbacks(Choreographer.CALLBACK_COMMIT, frameIntervalNanos);
+    doCallbacks(Choreographer.CALLBACK_COMMIT);
 ```
 
 ```mermaid
@@ -1453,16 +1462,21 @@ When the Choreographer fires `CALLBACK_TRAVERSAL`, it invokes
 `mTraversalRunnable`:
 
 ```
-Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 3123)
+Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 3347)
 
-    void doTraversal() {
+    void doTraversal(long frameTimeNanos) {
         if (mTraversalScheduled) {
             mTraversalScheduled = false;
             mQueue.removeSyncBarrier(mTraversalBarrier);
-            performTraversals();
+            performTraversals(frameTimeNanos);
         }
     }
 ```
+
+In Android 17 `doTraversal()` carries the VSYNC frame time supplied by the
+`Choreographer` (extracted from the frame data) and forwards it to
+`performTraversals(long)`, so that the entire traversal -- including
+frame-rate voting -- works against a single, consistent frame timestamp.
 
 The sync barrier is removed *before* `performTraversals()` runs, allowing
 normal messages to be processed once the traversal completes.
@@ -1495,7 +1509,7 @@ The result includes the new window frame, insets, and possibly a new
 called during an ongoing layout pass:
 
 ```
-Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 5129)
+Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 5519)
 
     boolean requestLayoutDuringLayout(final View view) {
         if (!mLayoutRequesters.contains(view)) {
@@ -1593,36 +1607,66 @@ sequenceDiagram
 
 This guarantees that any `Runnable` posted to the handler *after*
 `scheduleTraversals()` will execute *after* the traversal completes.  The
-AOSP source contains a comment (line 3088) explicitly documenting this
-guarantee as a public API contract.
+AOSP source contains a comment inside `scheduleTraversals()` (around line
+3315) that explicitly calls this behavior "load-bearing for public API
+correctness," with a worked `textView.setText(...)` / `getHandler().post(...)`
+example demonstrating the contract.
 
 ### 25.4.9 Frame Rate Voting
 
-Modern `ViewRootImpl` participates in frame rate voting for Variable Refresh
-Rate (VRR) displays.  Views can influence the display refresh rate:
+`ViewRootImpl` participates in frame-rate voting for Variable Refresh Rate
+(VRR) and Adaptive Refresh Rate (ARR) displays -- a story Android 17 expands
+considerably (see Section 25.13).  An app can hint the refresh rate it wants
+through the public `View.setRequestedFrameRate(float)` API:
 
-```java
-// Request high frame rate for smooth scrolling
-view.setRequestedFrameRate(120f);
+```
+Source: frameworks/base/core/java/android/view/View.java (line 35127)
 
-// Let the system decide
-view.setRequestedFrameRate(
-    View.REQUESTED_FRAME_RATE_CATEGORY_DEFAULT);
+    public void setRequestedFrameRate(float frameRate) { ... }
 ```
 
-During `performTraversals()`, `ViewRootImpl` collects frame rate votes from
-all views in the hierarchy and reports the preferred category to
-SurfaceFlinger.  Categories include:
+```java
+// Request a specific high frame rate (a positive value is treated as Hz)
+view.setRequestedFrameRate(120f);
 
-| Category | Value | Typical Use |
-|----------|-------|-------------|
-| `FRAME_RATE_CATEGORY_HIGH` | 4 | Active scrolling, animation |
+// Or vote by category using the float sentinels on View:
+view.setRequestedFrameRate(View.REQUESTED_FRAME_RATE_CATEGORY_HIGH);
+
+// Reset to "no opinion" (the default)
+view.setRequestedFrameRate(View.REQUESTED_FRAME_RATE_CATEGORY_DEFAULT);
+```
+
+The `View`-side category constants are *negative float sentinels*, distinct
+from the *integer* `Surface.FRAME_RATE_CATEGORY_*` values that the votes are
+resolved into:
+
+```
+Source: frameworks/base/core/java/android/view/View.java (line 5958)
+
+    public static final float REQUESTED_FRAME_RATE_CATEGORY_DEFAULT       = Float.NaN;
+    public static final float REQUESTED_FRAME_RATE_CATEGORY_NO_PREFERENCE  = -1;
+    public static final float REQUESTED_FRAME_RATE_CATEGORY_LOW           = -2;
+    public static final float REQUESTED_FRAME_RATE_CATEGORY_NORMAL        = -3;
+    public static final float REQUESTED_FRAME_RATE_CATEGORY_HIGH          = -4;
+```
+
+During `performTraversals()`, `ViewRootImpl` aggregates the per-view votes
+into `mPreferredFrameRateCategory` / `mPreferredFrameRate` (fields declared
+around line 1228 of `ViewRootImpl.java`) and resolves them to one of the
+`Surface` integer categories before reporting to SurfaceFlinger:
+
+| `Surface` category | Value | Typical use |
+|--------------------|-------|-------------|
+| `FRAME_RATE_CATEGORY_NO_PREFERENCE` | 1 | No opinion |
+| `FRAME_RATE_CATEGORY_LOW` | 2 | Static content, clock widgets |
 | `FRAME_RATE_CATEGORY_NORMAL` | 3 | General UI interaction |
-| `FRAME_RATE_CATEGORY_LOW` | 1 | Static content, clock widgets |
-| `FRAME_RATE_CATEGORY_NO_PREFERENCE` | 0 | No opinion |
+| `FRAME_RATE_CATEGORY_HIGH_HINT` | 4 | Hint toward high (intermediate) |
+| `FRAME_RATE_CATEGORY_HIGH` | 5 | Active scrolling, animation |
 
-This system reduces power consumption by lowering the refresh rate when the
-screen content is static.
+These integer values are defined in
+`frameworks/base/core/java/android/view/Surface.java` (lines 315-346).  The
+mechanism reduces power consumption by lowering the refresh rate when the
+screen content is static, while still ramping up for scrolling and animation.
 
 ---
 
@@ -1675,7 +1719,7 @@ holds:
   the display list.
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 5763, 5997)
+Source: frameworks/base/core/java/android/view/View.java (line 5804, 6034)
 
     final RenderNode mRenderNode;
 
@@ -1690,7 +1734,7 @@ When a view needs redrawing, `updateDisplayListIfDirty()` re-records its
 display list:
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 24064)
+Source: frameworks/base/core/java/android/view/View.java (line 24306)
 
     public RenderNode updateDisplayListIfDirty() {
         final RenderNode renderNode = mRenderNode;
@@ -1785,13 +1829,14 @@ The separation is fundamental:
 
 ### 25.5.6 The draw() Method in ViewRootImpl
 
-`ViewRootImpl.draw()` (line 5767) decides between hardware and software
+`ViewRootImpl.draw()` (line 6161) decides between hardware and software
 rendering:
 
 ```
 Source: frameworks/base/core/java/android/view/ViewRootImpl.java
 
-    private boolean draw(boolean fullRedrawNeeded, ...) {
+    private boolean draw(boolean fullRedrawNeeded,
+            @Nullable SurfaceSyncGroup activeSyncGroup, ...) {
         Surface surface = mSurface;
         if (!surface.isValid()) return false;
         ...
@@ -1944,7 +1989,7 @@ sequenceDiagram
 The dispatch uses `View.dispatchApplyWindowInsets()`:
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 12931)
+Source: frameworks/base/core/java/android/view/View.java (line 13081)
 
     public WindowInsets dispatchApplyWindowInsets(WindowInsets insets) {
         try {
@@ -2100,7 +2145,7 @@ When the user presses a directional key, `View.focusSearch()` delegates to
 focusable view:
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 14872)
+Source: frameworks/base/core/java/android/view/View.java (line 15022)
 
     public View focusSearch(@FocusRealDirection int direction) {
         if (mParent != null) {
@@ -2155,7 +2200,7 @@ graph TB
 `ViewGroup` provides three focus strategies via `setDescendantFocusability()`:
 
 ```
-Source: frameworks/base/core/java/android/view/ViewGroup.java (line 3336)
+Source: frameworks/base/core/java/android/view/ViewGroup.java (line 3446)
 
     public boolean requestFocus(int direction,
             Rect previouslyFocusedRect) {
@@ -2259,7 +2304,7 @@ graph TB
 Each view creates its accessibility representation on demand:
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 9513)
+Source: frameworks/base/core/java/android/view/View.java (line 9564)
 
     public AccessibilityNodeInfo createAccessibilityNodeInfo() {
         if (mAccessibilityDelegate != null) {
@@ -2288,7 +2333,7 @@ Source: frameworks/base/core/java/android/view/View.java (line 9513)
 The base implementation sets many properties from the view's state:
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 9569)
+Source: frameworks/base/core/java/android/view/View.java (line 9620)
 
     @CallSuper
     public void onInitializeAccessibilityNodeInfo(
@@ -2653,25 +2698,33 @@ new `ContextThemeWrapper` and uses it for constructing the view.  This allows
 different parts of the same layout to have different themes (e.g., a dark
 toolbar in a light activity).
 
-### 25.9.11 Precompiled Layouts
+### 25.9.11 Precompiled Layouts (Removed)
 
-Starting with Android 10, the system can precompile commonly used layouts
-during device boot.  The compiled format stores the view hierarchy as a
-binary blob that can be deserialized faster than parsing XML:
+Around Android 10, AOSP experimented with *precompiled layouts*: at build
+time a tool would generate code that inflated a layout directly, skipping the
+runtime `XmlPullParser` and reflection-based view construction.  At runtime
+`LayoutInflater` would call into the generated inflater and fall back to XML
+parsing if it was unavailable.
+
+That feature never became broadly useful and has since been **removed** from
+the platform.  The vestige in the current source is a comment on the
+`@hide` `createView(Context, String, String, AttributeSet)` overload in
+`frameworks/base/core/java/android/view/LayoutInflater.java` (around line
+930), which notes it was "originally for internal use by precompiled layouts,
+which have since been removed."  In Android 17 every inflation therefore goes
+through the standard `XmlPullParser` path described in this section:
 
 ```mermaid
 graph LR
-    XML["XML Layout Resource"] --> Compiler["Layout Compiler<br/>(build time)"]
-    Compiler --> Dex["Compiled Layout<br/>(.dex or binary)"]
-    Dex --> Inflater["LayoutInflater<br/>(runtime)"]
-    Inflater --> ViewTree["View Hierarchy"]
-
-    XML -->|"fallback"| Parser["XmlPullParser<br/>(runtime)"]
-    Parser --> Inflater
+    XML["XML Layout Resource"] --> Parser["XmlResourceParser<br/>(runtime)"]
+    Parser --> Inflater["LayoutInflater.inflate()"]
+    Inflater --> Factory["Factory2 / createViewFromTag()"]
+    Factory --> ViewTree["View Hierarchy"]
 ```
 
-This optimization is primarily used for system layouts (status bar,
-notification shade, etc.) where inflation performance is critical.
+The practical takeaway for inflation performance is unchanged: the framework
+relies on the static `sConstructorMap` cache (Section 25.9.4) plus tools like
+View Binding (Section 25.9.12) rather than a precompiled-layout fast path.
 
 ### 25.9.12 View Binding and Data Binding
 
@@ -3227,34 +3280,162 @@ public class UserCard extends LinearLayout {
 
 | Concept | Primary File | Key Method/Class |
 |---------|-------------|-----------------|
-| View measurement | `View.java:28542` | `measure()`, `onMeasure()` |
-| View layout | `View.java:25798` | `layout()`, `onLayout()` |
-| View drawing | `View.java:25251` | `draw()`, `onDraw()` |
-| MeasureSpec | `View.java:31726` | `MeasureSpec` inner class |
-| Touch dispatch (View) | `View.java:16750` | `dispatchTouchEvent()` |
-| Touch dispatch (ViewGroup) | `ViewGroup.java:2646` | `dispatchTouchEvent()` |
-| Touch interception | `ViewGroup.java:3311` | `onInterceptTouchEvent()` |
-| Touch handling | `View.java:18265` | `onTouchEvent()` |
-| Traversal orchestration | `ViewRootImpl.java:3574` | `performTraversals()` |
-| Schedule traversals | `ViewRootImpl.java:3085` | `scheduleTraversals()` |
-| Measure entry | `ViewRootImpl.java:5082` | `performMeasure()` |
-| Layout entry | `ViewRootImpl.java:5148` | `performLayout()` |
-| Draw entry | `ViewRootImpl.java:5767` | `draw()` |
-| Display list recording | `View.java:24064` | `updateDisplayListIfDirty()` |
-| Invalidation | `View.java:21249` | `invalidate()` |
-| Layout request | `View.java:28478` | `requestLayout()` |
-| Choreographer frame | `Choreographer.java:1157` | `doCallbacks()` |
+| View measurement | `View.java:28787` | `measure()`, `onMeasure()` |
+| View layout | `View.java:26040` | `layout()`, `onLayout()` |
+| View drawing | `View.java:25493` | `draw()`, `onDraw()` |
+| MeasureSpec | `View.java:31989` | `MeasureSpec` inner class |
+| Touch dispatch (View) | `View.java:16932` | `dispatchTouchEvent()` |
+| Touch dispatch (ViewGroup) | `ViewGroup.java:2756` | `dispatchTouchEvent()` |
+| Touch interception | `ViewGroup.java:3421` | `onInterceptTouchEvent()` |
+| Touch handling | `View.java:18447` | `onTouchEvent()` |
+| Traversal orchestration | `ViewRootImpl.java:3924` | `performTraversals(long)` |
+| Schedule traversals | `ViewRootImpl.java:3307` | `scheduleTraversals()` |
+| Measure entry | `ViewRootImpl.java:5472` | `performMeasure()` |
+| Layout entry | `ViewRootImpl.java:5538` | `performLayout()` |
+| Draw entry | `ViewRootImpl.java:6161` | `draw()` |
+| Display list recording | `View.java:24306` | `updateDisplayListIfDirty()` |
+| Invalidation | `View.java:21431` | `invalidate()` |
+| Layout request | `View.java:28723` | `requestLayout()` |
+| Choreographer frame | `Choreographer.java:1201` | `doCallbacks()` |
+| Frame-rate request | `View.java:35127` | `setRequestedFrameRate()` |
 | Window insets | `WindowInsets.java:80` | `WindowInsets`, `Type` |
-| Insets dispatch | `View.java:12931` | `dispatchApplyWindowInsets()` |
-| Accessibility | `View.java:9513` | `createAccessibilityNodeInfo()` |
+| Insets dispatch | `View.java:13081` | `dispatchApplyWindowInsets()` |
+| Accessibility | `View.java:9564` | `createAccessibilityNodeInfo()` |
 | Layout inflation | `LayoutInflater.java:509` | `inflate()` |
 | ThreadedRenderer | `ThreadedRenderer.java:67` | `ThreadedRenderer` |
 | Focus search | `FocusFinder.java:38` | `FocusFinder` |
-| ViewRootImpl setup | `ViewRootImpl.java:1511` | `setView()` |
+| ViewRootImpl setup | `ViewRootImpl.java:1649` | `setView()` |
 
 ---
 
-## 25.12 Try It: Hands-On Experiments
+## 25.12 Android 17 View System Updates
+
+The view system is mature, so Android 17's changes are evolutionary rather
+than structural.  Three threads dominate the 16->17 delta in
+`frameworks/base` for the view, input, and HWUI code: a much deeper
+Adaptive Refresh Rate (ARR) frame-rate story, synchronized window-insets
+animations becoming the default, and continued investment in moving HWUI
+rendering work out of the app process.  This section folds those into the
+machinery covered above.
+
+### 25.12.1 Adaptive Refresh Rate and the View Velocity API
+
+Section 25.4.9 introduced frame-rate voting.  Android 17 builds it out into a
+full **Adaptive Refresh Rate (ARR)** pipeline that lets the toolkit pick a
+sensible refresh rate per frame instead of always running the panel at its
+peak.  The relevant pieces, all in
+`frameworks/base/core/java/android/view/View.java`:
+
+- **`setRequestedFrameRate(float)`** (line 35127) -- an app's explicit vote,
+  either a positive Hz value or one of the negative
+  `REQUESTED_FRAME_RATE_CATEGORY_*` sentinels (line 5958).
+- **`setFrameContentVelocity(float)`** / **`getFrameContentVelocity()`**
+  (line 35083) -- the *View Velocity* API.  A scrolling container reports how
+  fast its content is moving (pixels/second); HWUI and the platform map that
+  velocity to a frame-rate category, so fast flings get a high refresh rate
+  and slow drifts get a lower one.
+
+```
+Source: frameworks/base/core/java/android/view/View.java (line 35083)
+
+    @FlaggedApi(FLAG_VIEW_VELOCITY_API)
+    public void setFrameContentVelocity(float pixelsPerSecond) { ... }
+```
+
+`ViewRootImpl` aggregates these signals into `mPreferredFrameRateCategory`,
+`mPreferredFrameRate`, and an `mIsFrameRateBoosting` flag (fields declared
+around line 1228 of
+`frameworks/base/core/java/android/view/ViewRootImpl.java`) and resolves them
+to the integer `Surface.FRAME_RATE_CATEGORY_*` values during the traversal
+before reporting to SurfaceFlinger.  This is also why `performTraversals()`
+and `doTraversal()` now carry the VSYNC `frameTimeNanos` (Sections 25.2.10 and
+25.4.4): the frame time pins the velocity-to-rate mapping to a single,
+consistent frame.
+
+How the per-frame decision flows:
+
+```mermaid
+graph TD
+    Vote["View votes:<br/>setRequestedFrameRate() /<br/>setFrameContentVelocity()"] --> Agg["ViewRootImpl aggregates<br/>(mPreferredFrameRateCategory,<br/>mPreferredFrameRate)"]
+    Agg --> Resolve["Resolve to Surface<br/>FRAME_RATE_CATEGORY_* (1-5)"]
+    Resolve --> SF["Report to SurfaceFlinger<br/>during traversal"]
+    SF --> Panel["Display driver picks<br/>refresh rate"]
+```
+
+On Multiple-Refresh-Rate (MRR) panels the platform skips the
+`setFrameRateCategory` calls (gated by a `hasArrSupport` check), so the same
+toolkit code is a no-op on hardware that cannot vary its refresh rate.
+
+### 25.12.2 Synchronized Window Insets Animations
+
+The inset-animation callback API (Section 25.6.6) describes how a view
+interpolates its layout as the IME or system bars slide in and out.  In
+Android 17 the platform adds a **synchronized insets animation**: the system
+window's geometry and the app's animated frame advance together, so the IME
+and the content it pushes up stay visually locked instead of drifting apart
+during the transition.
+
+The default-on behavior is exposed to the inset-controller host through
+`usesSyncedInsetsAnimationByDefault()`:
+
+```
+Source: frameworks/base/core/java/android/view/InsetsController.java (line 241)
+
+    /**
+     * @return {@code true} if the default synchronized insets animation is
+     *         enabled for this host, {@code false} otherwise.
+     */
+    default boolean usesSyncedInsetsAnimationByDefault() {
+        return false;
+    }
+```
+
+Because perfectly synced animation depends on the render pipeline keeping up,
+the feature is disabled on devices without high-end graphics, and there is an
+activity-level opt-out for apps that drive their own inset animations and do
+not want the synchronized path.  From an app's perspective the
+`WindowInsetsAnimation.Callback` contract in Section 25.6.6 is unchanged --
+the synchronization happens below the callback, inside `InsetsController` and
+`ViewRootImpl`.
+
+### 25.12.3 HWUI: Moving Rendering Out of the App Process
+
+Section 25.5 described HWUI's UI-thread / render-thread split inside the app
+process.  Android 17 continues a longer-running effort to push parts of that
+work *out* of the app process entirely -- rendering some `RenderNode` layers
+remotely (in SurfaceFlinger) rather than on the app's own render thread.  The
+goal is better isolation and the ability to composite app-recorded display
+lists without round-tripping every layer through the app.
+
+This work is staged behind HWUI aconfig flags in
+`frameworks/base/libs/hwui/aconfig/hwui_flags.aconfig` and touches the
+`CanvasContext` / render-pipeline abstractions (for example, allowing drawing
+without a `Surface` and plumbing a separate rendering size through to HWUI).
+For app developers the surface stays the same: you still record display lists
+with a `RecordingCanvas` into a `RenderNode` (Section 25.5.3) and the
+`ThreadedRenderer` still drives `syncAndDrawFrame()`.  Where the GPU work
+ultimately executes is becoming an implementation detail the platform can
+relocate without changing the recording API.
+
+A smaller but visible HWUI change in this release is that `ViewRootImpl`
+abstracts the rounded-corner radii callback *through* HWUI rather than
+computing it directly, keeping the `RoundedCorners` / `DisplayShape` data
+(Section 25.6.7) consistent with what the render pipeline actually clips.
+
+### 25.12.4 What Did Not Change
+
+It is worth being explicit about continuity, because the fundamentals carry
+across releases.  The measure-layout-draw contract (Section 25.2), the
+`MeasureSpec` bit packing, the `ViewGroup.dispatchTouchEvent()` algorithm
+(Section 25.3.6), the `InputStage` pipeline (Section 25.4.7), the
+`RenderNode` display-list model (Section 25.5), and the typed
+`WindowInsets.Type` flags (Section 25.6.2) are all unchanged in Android 17.
+The deltas above are refinements layered on top of that stable core, which is
+why the bulk of this chapter remains accurate release over release.
+
+---
+
+## 25.13 Try It: Hands-On Experiments
 
 ### Experiment 25.1: Trace the Measure-Layout-Draw Cycle
 
@@ -4074,6 +4255,11 @@ View System, covering:
 - **Custom Views** (Section 25.10): The complete custom view contract,
   `Canvas` / `Paint` primitives, performance best practices, and custom
   `ViewGroup` layout.
+
+- **Android 17 Updates** (Section 25.12): The expanded Adaptive Refresh Rate
+  pipeline and View Velocity API, default synchronized window-insets
+  animations, and HWUI's move toward out-of-process rendering -- all
+  refinements on top of an otherwise stable core.
 
 The view system is where every line of application UI code ultimately
 executes.  Understanding its internals -- from the `MeasureSpec` bit packing

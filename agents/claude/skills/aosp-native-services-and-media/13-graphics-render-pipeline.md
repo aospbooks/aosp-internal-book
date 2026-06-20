@@ -92,25 +92,33 @@ The graphics stack spans multiple top-level directories in AOSP:
 
 ### 13.1.4 Pipeline Selection
 
-HWUI supports two rendering backends, selected at boot time via system properties:
-
-```
-# Source: frameworks/base/libs/hwui/Properties.h
-# Property: debug.hwui.renderer
-#   "skiavk" → SkiaVulkan pipeline
-#   "skiagl" → SkiaGL pipeline
-```
-
-As seen in `RenderThread.cpp` (line 286):
+HWUI selects its rendering backend at boot time. The `RenderPipelineType` enum in
+`Properties.h` enumerates the possibilities:
 
 ```cpp
-// frameworks/base/libs/hwui/renderthread/RenderThread.cpp, line 286
+// frameworks/base/libs/hwui/Properties.h, line 267
+enum class RenderPipelineType { SkiaGL, SkiaVulkan, SkiaCpu, NotInitialized = 128 };
+```
+
+`SkiaGL` and `SkiaVulkan` are the two GPU-backed pipelines, chosen via the
+`debug.hwui.renderer` property (`"skiagl"` or `"skiavk"`). `SkiaCpu` is a software
+pipeline used for headless and test contexts where no GPU surface is available; its
+`SkiaCpuPipeline` (`frameworks/base/libs/hwui/pipeline/skia/SkiaCpuPipeline.h`)
+disables image pinning and renders entirely on the CPU.
+
+The `pipelineToString()` helper in `RenderThread.cpp` reports the active pipeline in
+`dumpsys gfxinfo`:
+
+```cpp
+// frameworks/base/libs/hwui/renderthread/RenderThread.cpp, line 303
 static const char* pipelineToString() {
     switch (auto renderType = Properties::getRenderPipelineType()) {
         case RenderPipelineType::SkiaGL:
             return "Skia (OpenGL)";
         case RenderPipelineType::SkiaVulkan:
             return "Skia (Vulkan)";
+        case RenderPipelineType::SkiaCpu:
+            return "Skia (CPU)";
         default:
             LOG_ALWAYS_FATAL("canvas context type %d not supported",
                              (int32_t)renderType);
@@ -118,11 +126,11 @@ static const char* pipelineToString() {
 }
 ```
 
-The `CanvasContext::create()` factory in `CanvasContext.cpp` (line 82) instantiates the
+The `CanvasContext::create()` factory in `CanvasContext.cpp` (line 88) instantiates the
 correct pipeline:
 
 ```cpp
-// frameworks/base/libs/hwui/renderthread/CanvasContext.cpp, line 82
+// frameworks/base/libs/hwui/renderthread/CanvasContext.cpp, line 88
 CanvasContext* CanvasContext::create(RenderThread& thread, bool translucent,
                                      RenderNode* rootRenderNode,
                                      IContextFactory* contextFactory,
@@ -139,7 +147,15 @@ CanvasContext* CanvasContext::create(RenderThread& thread, bool translucent,
                 contextFactory,
                 std::make_unique<skiapipeline::SkiaVulkanPipeline>(thread),
                 uiThreadId, renderThreadId);
+        case RenderPipelineType::SkiaCpu:
+            return new CanvasContext(thread, translucent, rootRenderNode,
+                contextFactory,
+                std::make_unique<skiapipeline::SkiaCpuPipeline>(thread),
+                uiThreadId, renderThreadId);
+        default:
+            break;
     }
+    return nullptr;
 }
 ```
 
@@ -548,7 +564,7 @@ The Vulkan HAL is loaded by the `Hal` class in `driver.cpp`. The loading sequenc
 tries multiple sources in priority order:
 
 ```cpp
-// frameworks/native/vulkan/libvulkan/driver.cpp, line 249
+// frameworks/native/vulkan/libvulkan/driver.cpp, line 241
 bool Hal::Open() {
     ATRACE_CALL();
     const nsecs_t openTime = systemTime();
@@ -566,20 +582,24 @@ bool Hal::Open() {
 
     result = LoadUpdatedDriver(&module);      // 1. Game/updated driver
     if (result == -ENOENT) {
-        result = LoadDriverFromApex(&module); // 2. Vulkan APEX
-    }
-    if (result == -ENOENT) {
-        result = LoadBuiltinDriver(&module);  // 3. Built-in vendor driver
+        result = LoadBuiltinDriver(&module);  // 2. Built-in vendor or APEX driver
     }
     // ...
 }
 ```
 
-The `LoadDriver()` function (line 157) searches for the vendor HAL using system
-properties:
+Android 17 collapses the loader to two sources. `LoadUpdatedDriver()` (line 224) tries
+the Game/updatable driver namespace from `GraphicsEnv`. If that is absent
+(`-ENOENT`), `LoadBuiltinDriver()` (line 202) loads the vendor driver -- and that
+function now also handles the APEX case directly: when the `ro.vulkan.apex` property is
+set, it resolves the named APEX namespace and loads `vulkan.<name>.so` from there.
+Earlier releases routed APEX loading through a separate `LoadDriverFromApex()` step in
+`Hal::Open`; that step has been folded into `LoadBuiltinDriver`.
+
+The `LoadDriver()` function searches for the vendor HAL using system properties:
 
 ```cpp
-// frameworks/native/vulkan/libvulkan/driver.cpp, line 145
+// frameworks/native/vulkan/libvulkan/driver.cpp, line 141
 const std::array<const char*, 2> HAL_SUBNAME_KEY_PROPERTIES = {{
     "ro.hardware.vulkan",
     "ro.board.platform",
@@ -592,21 +612,34 @@ the vendor partition.
 ### 13.3.3 Driver Loading from APEX
 
 Android supports loading Vulkan drivers from APEX modules, enabling driver updates
-outside of full OTA updates:
+outside of full OTA updates. In Android 17 this is handled inside
+`LoadBuiltinDriver()` (line 202): when the `ro.vulkan.apex` property names an APEX, the
+builtin path resolves that APEX's linker namespace and loads `vulkan.<name>.so` from it
+instead of from the vendor partition:
 
 ```cpp
-// frameworks/native/vulkan/libvulkan/driver.cpp, line 206
-int LoadDriverFromApex(const hwvulkan_module_t** module) {
-    auto apex_name = android::base::GetProperty(
-        RO_VULKAN_APEX_PROPERTY, "");
-    if (apex_name == "") return -ENOENT;
-    std::replace(apex_name.begin(), apex_name.end(), '.', '_');
-    auto ns = android_get_exported_namespace(apex_name.c_str());
-    if (!ns) return -ENOENT;
-    // ...
-    return LoadDriver(ns, apex_name.c_str(), module);
+// frameworks/native/vulkan/libvulkan/driver.cpp, line 202
+int LoadBuiltinDriver(const hwvulkan_module_t** module) {
+    ATRACE_CALL();
+    android_namespace_t* library_namespace = nullptr;
+    const char* ns_name = nullptr;
+
+    // Builtin driver is loaded from APEX when ro.vulkan.apex is set
+    auto apex_name = android::base::GetProperty(RO_VULKAN_APEX_PROPERTY, "");
+    if (apex_name != "") {
+        ALOGD("Loading builtin Vulkan driver from APEX: ro.vulkan.apex=%s",
+              apex_name.c_str());
+        std::replace(apex_name.begin(), apex_name.end(), '.', '_');
+        library_namespace = android_get_exported_namespace(apex_name.c_str());
+        // ...
+    }
+    // ... otherwise fall back to the vendor partition driver
 }
 ```
+
+Earlier releases used a separate `LoadDriverFromApex()` step in `Hal::Open`; that step
+has been folded into `LoadBuiltinDriver` so APEX and vendor-partition loading share one
+code path.
 
 ### 13.3.4 Instance and Device Creation (`api.cpp`)
 
@@ -637,7 +670,7 @@ Layers can be injected via:
 
 ### 13.3.5 The `CreateInfoWrapper` Class
 
-The `CreateInfoWrapper` in `driver.cpp` (line 82) is a critical piece of infrastructure
+The `CreateInfoWrapper` in `driver.cpp` (line 78) is a critical piece of infrastructure
 that sanitizes `VkInstanceCreateInfo` and `VkDeviceCreateInfo` structures. It performs:
 
 - API version validation between the app request and the ICD capability
@@ -646,7 +679,7 @@ that sanitizes `VkInstanceCreateInfo` and `VkDeviceCreateInfo` structures. It pe
 - Layer name resolution
 
 ```cpp
-// frameworks/native/vulkan/libvulkan/driver.cpp, line 82
+// frameworks/native/vulkan/libvulkan/driver.cpp, line 78
 class CreateInfoWrapper {
 public:
     CreateInfoWrapper(const VkInstanceCreateInfo& create_info,
@@ -678,7 +711,7 @@ Key operations:
 surface transforms are isomorphic but encoded differently:
 
 ```cpp
-// frameworks/native/vulkan/libvulkan/swapchain.cpp, line 82
+// frameworks/native/vulkan/libvulkan/swapchain.cpp, line 141
 VkSurfaceTransformFlagBitsKHR TranslateNativeToVulkanTransform(
     int native) {
     switch (native) {
@@ -697,7 +730,7 @@ VkSurfaceTransformFlagBitsKHR TranslateNativeToVulkanTransform(
 spaces:
 
 ```cpp
-// frameworks/native/vulkan/libvulkan/swapchain.cpp, line 162
+// frameworks/native/vulkan/libvulkan/swapchain.cpp, line 221
 const static VkColorSpaceKHR
     colorSpaceSupportedByVkEXTSwapchainColorspace[] = {
     VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT,
@@ -711,11 +744,11 @@ const static VkColorSpaceKHR
 };
 ```
 
-**Presentation timing** -- The `TimingInfo` class (line 181) tracks per-frame timing
+**Presentation timing** -- The `TimingInfo` class (line 240) tracks per-frame timing
 data for `VK_GOOGLE_display_timing`:
 
 ```cpp
-// frameworks/native/vulkan/libvulkan/swapchain.cpp, line 181
+// frameworks/native/vulkan/libvulkan/swapchain.cpp, line 240
 class TimingInfo {
 public:
     TimingInfo(const VkPresentTimeGOOGLE* qp, uint64_t nativeFrameId)
@@ -980,16 +1013,16 @@ into GPU commands using either OpenGL or Vulkan. Key concepts:
 
 ```cpp
 // Used by RenderThread to create the Skia GPU context
-// frameworks/base/libs/hwui/renderthread/RenderThread.cpp, line 232
+// frameworks/base/libs/hwui/renderthread/RenderThread.cpp, line 250
 sk_sp<GrDirectContext> grContext(
     GrDirectContexts::MakeGL(std::move(glInterface), options));
 ```
 
 **GrContextOptions**: Configuration for the GPU context, set by HWUI in
-`RenderThread.cpp` (line 255):
+`RenderThread.cpp` (line 272):
 
 ```cpp
-// frameworks/base/libs/hwui/renderthread/RenderThread.cpp, line 255
+// frameworks/base/libs/hwui/renderthread/RenderThread.cpp, line 272
 void RenderThread::initGrContextOptions(GrContextOptions& options) {
     options.fPreferExternalImagesOverES3 = true;
     options.fDisableDistanceFieldPaths = true;
@@ -1135,7 +1168,7 @@ Ganesh uses several strategies depending on path complexity:
 
 HWUI disables distance field paths:
 ```cpp
-// RenderThread.cpp, line 257
+// RenderThread.cpp, line 274 (inside initGrContextOptions)
 options.fDisableDistanceFieldPaths = true;
 ```
 
@@ -1471,7 +1504,7 @@ application. It is created once per process and manages the GPU context (GL or V
 frame timing, and all rendering operations.
 
 ```cpp
-// frameworks/base/libs/hwui/renderthread/RenderThread.cpp, line 158
+// frameworks/base/libs/hwui/renderthread/RenderThread.cpp, line 175
 RenderThread& RenderThread::getInstance() {
     [[clang::no_destroy]] static sp<RenderThread> sInstance = []() {
         sp<RenderThread> thread = sp<RenderThread>::make();
@@ -1486,10 +1519,10 @@ RenderThread& RenderThread::getInstance() {
 ### 13.7.2 Initialization
 
 When the RenderThread starts, it initializes several subsystems in
-`initThreadLocals()` (line 204):
+`initThreadLocals()` (line 221):
 
 ```cpp
-// frameworks/base/libs/hwui/renderthread/RenderThread.cpp, line 204
+// frameworks/base/libs/hwui/renderthread/RenderThread.cpp, line 221
 void RenderThread::initThreadLocals() {
     setupFrameInterval();
     initializeChoreographer();
@@ -1500,15 +1533,15 @@ void RenderThread::initThreadLocals() {
 }
 ```
 
-The thread runs at `PRIORITY_DISPLAY` priority (line 394) and integrates directly
+The thread runs at `PRIORITY_DISPLAY` priority and integrates directly
 with the Choreographer for VSYNC timing.
 
 ### 13.7.3 The Thread Loop
 
-The main loop in `threadLoop()` (line 393) follows a classic work-queue pattern:
+The main loop in `threadLoop()` (line 420) follows a classic work-queue pattern:
 
 ```cpp
-// frameworks/base/libs/hwui/renderthread/RenderThread.cpp, line 393
+// frameworks/base/libs/hwui/renderthread/RenderThread.cpp, line 420
 bool RenderThread::threadLoop() {
     setpriority(PRIO_PROCESS, 0, PRIORITY_DISPLAY);
     Looper::setForThread(mLooper);
@@ -1541,7 +1574,7 @@ bool RenderThread::threadLoop() {
 The RenderThread listens for VSYNC signals via `AChoreographer`:
 
 ```cpp
-// frameworks/base/libs/hwui/renderthread/RenderThread.cpp, line 106
+// frameworks/base/libs/hwui/renderthread/RenderThread.cpp, line 123
 class ChoreographerSource : public VsyncSource {
 public:
     virtual void requestNextVsync() override {
@@ -1557,7 +1590,7 @@ The VSYNC callback delivers timing data including the vsync ID, frame deadline,
 and frame interval:
 
 ```cpp
-// frameworks/base/libs/hwui/renderthread/RenderThread.cpp, line 58
+// frameworks/base/libs/hwui/renderthread/RenderThread.cpp, line 61
 void RenderThread::extendedFrameCallback(
     const AChoreographerFrameCallbackData* cbData, void* data) {
     // ...
@@ -1656,7 +1689,7 @@ status_t EglManager::fenceWait(int fence) {
 shared across threads (the RenderThread and the HardwareBitmapUploader thread):
 
 ```cpp
-// frameworks/base/libs/hwui/renderthread/VulkanManager.cpp, line 85
+// frameworks/base/libs/hwui/renderthread/VulkanManager.cpp, line 87
 sp<VulkanManager> VulkanManager::getInstance() {
     std::lock_guard _lock{sLock};
     sp<VulkanManager> vulkanManager = sWeakInstance.promote();
@@ -1668,10 +1701,10 @@ sp<VulkanManager> VulkanManager::getInstance() {
 }
 ```
 
-The VulkanManager enables 26 Vulkan extensions (line 49):
+The VulkanManager enables 26 Vulkan extensions (line 51):
 
 ```cpp
-// frameworks/base/libs/hwui/renderthread/VulkanManager.cpp, line 49
+// frameworks/base/libs/hwui/renderthread/VulkanManager.cpp, line 51
 static std::array<std::string_view, 26> sEnableExtensions{
     VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME,
     VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
@@ -1692,11 +1725,11 @@ static std::array<std::string_view, 26> sEnableExtensions{
 };
 ```
 
-**Device setup** (line 125) follows the standard Vulkan initialization pattern: enumerate
+**Device setup** (line 127) follows the standard Vulkan initialization pattern: enumerate
 physical devices, select extensions, create a logical device:
 
 ```cpp
-// frameworks/base/libs/hwui/renderthread/VulkanManager.cpp, line 125
+// frameworks/base/libs/hwui/renderthread/VulkanManager.cpp, line 127
 void VulkanManager::setupDevice() {
     constexpr VkApplicationInfo app_info = {
         VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -1769,7 +1802,7 @@ void CacheManager::setupCacheLimits() {
 cleanup:
 
 ```cpp
-// line 281
+// CacheManager.cpp, line 299
 void CacheManager::onThreadIdle() {
     if (!mGrContext || mFrameCompletions.size() == 0) return;
     const nsecs_t now = systemTime(CLOCK_MONOTONIC);
@@ -1809,7 +1842,7 @@ stateDiagram-v2
 The RenderThread lazily creates the GPU context on first use:
 
 ```cpp
-// frameworks/base/libs/hwui/renderthread/RenderThread.cpp, line 218
+// frameworks/base/libs/hwui/renderthread/RenderThread.cpp, line 235
 void RenderThread::requireGlContext() {
     if (mEglManager->hasEglContext()) return;
     mEglManager->initialize();
@@ -2100,21 +2133,41 @@ Composer (HWC) cannot handle all layers through hardware overlays. Common scenar
 ### 13.9.2 Skia-Based RenderEngine
 
 Modern AOSP uses a Skia-based RenderEngine, replacing the legacy OpenGL-based
-implementation. This lives in `frameworks/native/libs/renderengine/skia/`.
+implementation. This lives in `frameworks/native/libs/renderengine/skia/`. In Android 17
+the engine spans two axes: the *graphics API* (GL or Vulkan) and the *Skia backend*
+(Ganesh or Graphite). These are captured by two enums in
+`frameworks/native/libs/renderengine/include/renderengine/RenderEngine.h` (lines 152
+and 159):
+
+```cpp
+// frameworks/native/libs/renderengine/include/renderengine/RenderEngine.h, line 152
+enum class GraphicsApi { GL, Vk, ftl_last = Vk };
+enum class SkiaBackend { Ganesh, Graphite, ftl_last = Graphite };
+```
+
+`RenderEngine::create()` in `RenderEngine.cpp` (line 36) maps these to a concrete
+implementation: `GraphiteVkRenderEngine` when the backend is Graphite, otherwise
+`GaneshVkRenderEngine` (Vulkan) or `SkiaGLRenderEngine` (GL). The Graphite path
+(`frameworks/native/libs/renderengine/skia/GraphiteVkRenderEngine.cpp`) is new in
+Android 17 and Vulkan-only. Section 13.43 covers its rollout in detail.
 
 ```mermaid
 graph TD
     A["SurfaceFlinger"] --> B["RenderEngine"]
-    B --> C["SkiaRenderEngine"]
-    C --> D["Skia (Ganesh)"]
-    D --> E{"Backend"}
-    E -->|GL| F["GL RenderEngine"]
-    E -->|Vulkan| G["Vulkan RenderEngine"]
+    B --> RT["RenderEngineThreaded<br/>(optional wrapper)"]
+    RT --> C["SkiaRenderEngine"]
+    B --> C
+    C --> D{"Skia backend"}
+    D -->|Ganesh GL| F["SkiaGLRenderEngine"]
+    D -->|Ganesh Vk| G["GaneshVkRenderEngine"]
+    D -->|Graphite Vk| GR["GraphiteVkRenderEngine<br/>(A17)"]
     F --> H["GPU"]
     G --> H
+    GR --> H
 
     style B fill:#9C27B0,color:#fff
     style C fill:#FF9800,color:#fff
+    style GR fill:#4CAF50,color:#fff
 ```
 
 ### 13.9.3 RenderEngine Operations
@@ -2285,11 +2338,19 @@ Buffer allocation is handled by the Gralloc HAL, defined via AIDL in
 ```
 // hardware/interfaces/graphics/allocator/aidl/android/hardware/graphics/allocator/IAllocator.aidl
 interface IAllocator {
-    AllocationResult allocate(in BufferDescriptorInfo descriptor,
-                              in int count);
+    // Deprecated since IMapper 5.0; descriptor is an opaque byte[] built by
+    // the client from a BufferDescriptorInfo.
+    AllocationResult allocate(in byte[] descriptor, in int count);
+    // The current entry point: takes a structured BufferDescriptorInfo.
+    AllocationResult allocate2(in BufferDescriptorInfo descriptor, in int count);
     boolean isSupported(in BufferDescriptorInfo descriptor);
+    String getIMapperLibrarySuffix();
 }
 ```
+
+Android 17 uses `allocate2()` as the live allocation entry point; the original
+`allocate()` taking an opaque `byte[]` descriptor remains only for back-compat with
+pre-IMapper-5.0 clients.
 
 ### 13.10.3 EGL Driver Loading
 
@@ -2334,7 +2395,7 @@ graph TD
     style G fill:#2196F3,color:#fff
 ```
 
-For Vulkan (`driver.cpp`, line 232):
+For Vulkan (`driver.cpp`, line 224):
 ```cpp
 int LoadUpdatedDriver(const hwvulkan_module_t** module) {
     auto ns = android::GraphicsEnv::getInstance().getDriverNamespace();
@@ -3067,7 +3128,7 @@ AnimatorManager& animators() { return mAnimatorManager; }
 The RenderThread supports frame callbacks for custom rendering (e.g., `TextureView`):
 
 ```cpp
-// RenderThread.cpp, line 368
+// RenderThread.cpp, line 385
 void RenderThread::dispatchFrameCallbacks() {
     ATRACE_CALL();
     mFrameCallbackTaskPending = false;
@@ -3089,7 +3150,7 @@ The RenderThread uses a sophisticated scheduling algorithm that accounts for the
 frame deadline:
 
 ```cpp
-// RenderThread.cpp, line 73
+// RenderThread.cpp, line 76
 void RenderThread::frameCallback(
         int64_t vsyncId, int64_t frameDeadline,
         int64_t frameTimeNanos, int64_t frameInterval) {
@@ -3650,7 +3711,7 @@ When all CanvasContexts are stopped (all windows hidden), the CacheManager sched
 the GPU context for destruction after a timeout:
 
 ```cpp
-// CacheManager.cpp, line 298
+// CacheManager.cpp, line 316
 void CacheManager::scheduleDestroyContext() {
     if (mMemoryPolicy.contextTimeout > 0) {
         mRenderThread.queue().postDelayed(
@@ -3985,17 +4046,25 @@ timeline
     section Android 13+
         Graphite development : Next-gen Skia backend
         ADPF integration : Performance hints
+    section Android 17
+        Graphite in RenderEngine : GraphiteVkRenderEngine rollout
+        Display LUTs : HWC/SurfaceFlinger HDR tone-map LUTs
+        Multi-display modeset : State-machine driven mode switching
+        GPU composition offload : Threaded RenderEngine for virtual displays
 ```
 
 ### 13.33.2 Graphite Adoption Path
 
-Skia's Graphite backend is being developed as the successor to Ganesh. Its adoption
-path for Android includes:
+Skia's Graphite backend is the successor to Ganesh. In Android 17 it has reached
+production code in SurfaceFlinger's RenderEngine (`GraphiteVkRenderEngine`, gated behind
+the rollout flags described in Section 13.43), while HWUI still renders with Ganesh
+(its `RenderPipelineType` enum has no Graphite variant). Its adoption path for Android
+is:
 
-1. Feature parity with Ganesh for Android use cases
+1. Feature parity with Ganesh for Android use cases (composition first)
 2. Performance validation on representative workloads
-3. Gradual rollout behind feature flags
-4. Eventual replacement of Ganesh in HWUI
+3. Gradual rollout behind feature flags -- in A17, RenderEngine on phones, then desktop
+4. Eventual extension to HWUI's per-app rendering
 
 ### 13.33.3 Vulkan-First Strategy
 
@@ -4542,9 +4611,366 @@ graph TD
 
 ---
 
-## 13.41 Try It: Trace a Frame
+## 13.41 Android 17: Threaded RenderEngine and GPU Composition Offload
 
-### 13.41.1 Using Perfetto to Trace Frame Rendering
+### 13.41.1 The Threaded RenderEngine
+
+SurfaceFlinger has long supported running its RenderEngine on a dedicated worker thread
+inside the SurfaceFlinger process. The wrapper that implements this is
+`RenderEngineThreaded`, declared in
+`frameworks/native/libs/renderengine/threaded/RenderEngineThreaded.h` (line 38). It owns a
+single worker thread and a queue of work items; every call into the `RenderEngine` API is
+turned into a lambda and enqueued for that thread:
+
+```cpp
+// frameworks/native/libs/renderengine/threaded/RenderEngineThreaded.h, line 100
+const char* const mThreadName = "RenderEngine";
+std::thread mThread GUARDED_BY(mThreadMutex);
+// ...
+using Work = std::function<void(renderengine::RenderEngine&)>;
+mutable std::queue<Work> mFunctionCalls GUARDED_BY(mThreadMutex);
+```
+
+The constructor spins up the thread, which runs `threadMain()` and drains the work queue:
+
+```cpp
+// frameworks/native/libs/renderengine/threaded/RenderEngineThreaded.cpp, line 50
+mThread = std::thread(&RenderEngineThreaded::threadMain, this, factory);
+```
+
+This is a *thread*, not a process: the name "out-of-process rendering" (OOPR) is a
+misnomer for Android's actual design. Composition still runs inside SurfaceFlinger's
+address space; the win is that GPU command recording and submission move off the
+SurfaceFlinger main thread, freeing it to keep latching buffers and handling
+transactions. Whether the wrapper is used is decided at creation time via
+`RenderEngine::Threaded::Yes/No` (set by `chooseRenderEngineType()` in
+`frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp`), and code can query it at
+runtime through `mRenderEngine->isThreaded()`.
+
+### 13.41.2 Offloading Virtual-Display Composition (Android 17)
+
+Android 17 uses the threaded RenderEngine to offload *virtual display* client
+composition entirely off the main thread. This is gated by the `offload_gpu_composition`
+flag:
+
+```
+# frameworks/native/services/surfaceflinger/surfaceflinger_flags_new.aconfig
+flag {
+  name: "offload_gpu_composition"
+  namespace: "window_surfaces"
+  description: "Offload virtual display client composition from main thread"
+  is_fixed_read_only: true
+}
+```
+
+The decision is made in `SurfaceFlinger.cpp`, which combines the flag with the threaded
+capability of the engine:
+
+```cpp
+// frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp, line 3258
+const bool canOffloadGpuComposition =
+        FlagManager::getInstance().offload_gpu_composition() &&
+        mRenderEngine->isThreaded();
+```
+
+When `canOffloadGpuComposition` holds and no main-thread client composition is required,
+SurfaceFlinger lets virtual GPU displays composite asynchronously on the RenderEngine
+thread, returning a future for the present fence rather than blocking the main thread.
+
+```mermaid
+graph TD
+    A["SurfaceFlinger main thread"] --> B{"offload_gpu_composition<br/>and isThreaded()?"}
+    B -->|"No"| C["Composite on main thread<br/>(blocking)"]
+    B -->|"Yes (virtual display)"| D["Enqueue Work lambda"]
+    D --> E["RenderEngine thread<br/>(threadMain drains queue)"]
+    E --> F["GPU command record + submit"]
+    F --> G["Present fence future<br/>returned to main thread"]
+
+    style A fill:#9C27B0,color:#fff
+    style E fill:#2196F3,color:#fff
+    style G fill:#4CAF50,color:#fff
+```
+
+The related `force_slower_follower_gpu_composition_platform` flag (same aconfig file)
+forces "follower" connected displays onto GPU composition so that a slower secondary
+display does not throttle the primary; together these flags give SurfaceFlinger finer
+control over where and on which thread composition runs in multi-display setups.
+
+---
+
+## 13.42 Android 17: Display LUTs for HDR Tone Mapping
+
+### 13.42.1 What Display LUTs Are
+
+A long-standing cost in the graphics pipeline is HDR-to-SDR tone mapping: when an HDR
+layer is shown on a panel that cannot reach the content's peak brightness, the colors
+must be remapped. Android 17 introduces a *display LUT* (look-up table) path that lets
+this remapping be expressed as a 1D or 3D table, generated once per buffer, and applied
+either by RenderEngine's GPU shader or by the display hardware via HWC.
+
+The HAL contract lives under
+`hardware/interfaces/graphics/composer/aidl/android/hardware/graphics/composer3/`:
+
+| AIDL file | Purpose |
+|-----------|---------|
+| `Luts.aidl` | A shared-memory (`ParcelFileDescriptor`) blob of 32-bit-float LUT data plus `offsets[]` and per-LUT `LutProperties[]` |
+| `LutProperties.aidl` | Per-LUT metadata: dimension and sampling key |
+| `DisplayLuts.aidl` | Per-display aggregation; lets the HWC hand candidate LUTs back to SurfaceFlinger |
+
+`LutProperties.aidl` defines the two enums that describe a LUT:
+
+```aidl
+// hardware/interfaces/graphics/composer/aidl/android/hardware/graphics/composer3/LutProperties.aidl
+@VintfStability enum Dimension { ONE_D = 1, THREE_D = 3 }
+@VintfStability enum SamplingKey { RGB, MAX_RGB, CIE_Y }
+```
+
+A 1D LUT remaps each channel independently; a 3D LUT is an RGB cube sampled with
+trilinear interpolation. The `SamplingKey` selects how the lookup index is derived:
+per-channel `RGB`, the channel maximum `MAX_RGB`, or luminance `CIE_Y`.
+
+### 13.42.2 Plumbing Through SurfaceFlinger
+
+A layer carries its LUTs in `LayerState`:
+
+```cpp
+// frameworks/native/libs/gui/include/gui/LayerState.h, line 535
+std::shared_ptr<gui::DisplayLuts> luts;
+```
+
+The `gui::DisplayLuts` C++ class
+(`frameworks/native/libs/gui/include/gui/DisplayLuts.h`) wraps the LUT file descriptor,
+the offsets, and a vector of `Entry{dimension, size, samplingKey}` records, exposing the
+descriptor through `getLutFileDescriptor()`.
+
+SurfaceFlinger's composition engine tracks up to three LUT sources per output layer in
+`OutputLayerCompositionState`
+(`frameworks/native/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/OutputLayerCompositionState.h`):
+the app-supplied `luts`, HWC-supplied `appLuts`, and `generatedLuts` computed from the
+buffer's Adaptive Global Tone Map (AGTM) metadata. The generation happens in
+`OutputLayer::createLutsFromAgtm()`
+(`frameworks/native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp`,
+line 76), which parses SMPTE 2094-50 AGTM data, derives a target HDR/SDR ratio from the
+display's brightness and SDR white point, and bakes a tone-mapping LUT into an ashmem
+region.
+
+### 13.42.3 Applying the LUT in RenderEngine
+
+When composition falls to the GPU, the Skia RenderEngine applies the LUT through a Skia
+runtime-effect shader implemented in
+`frameworks/native/libs/renderengine/skia/filters/LutShader.cpp`. The shader branches on
+the LUT dimension and sampling key, doing linear interpolation for 1D tables and
+trilinear interpolation for 3D tables, with the 3D cube flattened as
+`index = z + N * (y + N * x)`. The entry point is `LutShader::lutShader()`, declared in
+`frameworks/native/libs/renderengine/skia/filters/LutShader.h` (line 35); it maps and
+mmaps the LUT file descriptor and builds one runtime shader per `LutProperties` entry.
+`renderengine::LayerSettings`
+(`frameworks/native/libs/renderengine/include/renderengine/LayerSettings.h`) carries the
+`std::shared_ptr<gui::DisplayLuts> luts` down into the draw call.
+
+```mermaid
+graph TD
+    A["HDR buffer<br/>(AGTM / SMPTE 2094-50)"] --> B["OutputLayer::createLutsFromAgtm()"]
+    B --> C["gui::DisplayLuts<br/>(ashmem fd + LutProperties)"]
+    C --> D{"Composition path"}
+    D -->|"HWC (DEVICE)"| E["HWC applies LUT<br/>in display hardware"]
+    D -->|"GPU (CLIENT)"| F["LutShader runtime effect"]
+    F --> G["1D linear / 3D trilinear<br/>tone-mapped output"]
+
+    style A fill:#4CAF50,color:#fff
+    style C fill:#FF9800,color:#fff
+    style F fill:#2196F3,color:#fff
+```
+
+Pushing tone mapping into a LUT means the expensive per-pixel transfer-function math runs
+once when the table is built, after which both the GPU shader and the display controller
+can apply it cheaply -- and a display that supports LUTs natively can skip GPU
+composition for the layer entirely.
+
+---
+
+## 13.43 Android 17: Graphite in SurfaceFlinger RenderEngine
+
+### 13.43.1 The Graphite Backend
+
+Skia's Graphite backend -- designed for explicit modern APIs and multi-threaded
+recording -- reaches production AOSP code in Android 17, specifically inside
+SurfaceFlinger's RenderEngine. The implementation is
+`GraphiteVkRenderEngine`
+(`frameworks/native/libs/renderengine/skia/GraphiteVkRenderEngine.cpp`), a Vulkan-only
+engine that reports `SkiaBackend::Graphite`:
+
+```cpp
+// frameworks/native/libs/renderengine/skia/GraphiteVkRenderEngine.h, line 51
+SkiaBackend backend() const override { return SkiaBackend::Graphite; }
+```
+
+`RenderEngine::create()` dispatches to it when the requested backend is Graphite,
+otherwise to the Ganesh engines:
+
+```cpp
+// frameworks/native/libs/renderengine/RenderEngine.cpp, line 43
+if (args.skiaBackend == SkiaBackend::Graphite) {
+    // ...
+    return android::renderengine::skia::GraphiteVkRenderEngine::create(args);
+}
+// ... else GaneshVkRenderEngine::create(args) or the GL engine
+```
+
+Supporting code lives under
+`frameworks/native/libs/renderengine/skia/compat/` (for example
+`GraphiteBackendTexture`, `GraphiteGpuContext`, `GraphitePipelineManager`), which adapts
+Graphite's resource and pipeline model to the same `SkiaRenderEngine` interface Ganesh
+uses.
+
+### 13.43.2 The Rollout Flags
+
+Graphite is gated behind several flags in
+`frameworks/native/services/surfaceflinger/`:
+
+| Flag | Meaning |
+|------|---------|
+| `graphite_renderengine` | Compile AND enable the Graphite Vulkan backend (fixed read-only) |
+| `force_compile_graphite_renderengine` | Compile Graphite but do not enable it unless `graphite_renderengine` is also set |
+| `graphite_renderengine_preview_rollout` | R/W flag enabling Graphite if the `debug.renderengine.graphite_preview_optin` sysprop is set |
+| `graphite_renderengine_preview2_rollout` | Second-wave R/W rollout flag |
+| `graphite_renderengine_desktop_rollout` | R/W rollout flag for desktop devices |
+
+SurfaceFlinger combines them in `shouldUseGraphiteIfSupported()`:
+
+```cpp
+// frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp, line 877
+bool shouldUseGraphiteIfSupported() {
+    return FlagManager::getInstance().graphite_renderengine() ||
+            (FlagManager::getInstance().graphite_renderengine_preview_rollout() &&
+             base::GetBoolProperty(PROPERTY_DEBUG_RENDERENGINE_GRAPHITE_PREVIEW_OPTIN, false)) ||
+            // preview2 and desktop rollout checks ...
+            (FlagManager::getInstance().graphite_renderengine_desktop_rollout() &&
+             base::GetBoolProperty(PROPERTY_DEBUG_RENDERENGINE_GRAPHITE_DESKTOP_OPTIN, false));
+}
+```
+
+`chooseRenderEngineType()` then sets `SkiaBackend::Graphite` only when
+`shouldUseGraphiteIfSupported()` is true *and* the device can support Vulkan
+(`RenderEngine::canSupport(GraphicsApi::Vk)`); otherwise it falls back to Ganesh.
+
+```mermaid
+graph TD
+    A["chooseRenderEngineType()"] --> B{"debug.renderengine.backend<br/>set?"}
+    B -->|"skiagl / skiavk / *threaded"| C["Honor explicit backend<br/>(Ganesh)"]
+    B -->|"unset"| D{"shouldUseGraphiteIfSupported()<br/>and canSupport(Vk)?"}
+    D -->|"Yes"| E["SkiaBackend::Graphite<br/>GraphiteVkRenderEngine"]
+    D -->|"No"| F["SkiaBackend::Ganesh<br/>GaneshVk or GL engine"]
+
+    style E fill:#4CAF50,color:#fff
+    style F fill:#FF9800,color:#fff
+```
+
+Note the scope: this is RenderEngine (system compositor) only. HWUI's per-app
+`RenderPipelineType` enum (Section 13.1.4) still has no Graphite variant in Android 17,
+so application rendering continues on Ganesh.
+
+---
+
+## 13.44 Android 17: Multi-Display Modeset
+
+### 13.44.1 The Modeset State Machine
+
+As Android grows beyond phones to connected and desktop displays, switching display modes
+(resolution and refresh rate) must be coordinated across several displays at once and
+must avoid the data races that a naive "set it on the next frame" approach invites.
+Android 17 reworks this around an explicit state machine in
+`frameworks/native/services/surfaceflinger/Display/DisplayModeController.h` (line 46).
+
+Each physical display's mode request flows through three states -- *desired*, *pending*,
+and *active*:
+
+```cpp
+// frameworks/native/services/surfaceflinger/Display/DisplayModeController.h
+enum class DesiredModeAction {
+    None,
+    InitiateDisplayModeSwitch,
+    MergeDisplayModeSwitch,
+    InitiateRenderRateSwitch,
+};
+enum class ModeChangeResult { Changed, Rejected, Aborted };
+```
+
+`setDesiredMode()` (line 82) records the request; multiple requests within a frame are
+merged into one desired request. On the next frame, the desired request is relayed to the
+HWC and becomes *pending* (tracked by `pendingModeOpt` and `isModeSetPending()`); it
+becomes *active* only once the HWC signals the present fence confirming the mode set.
+`initiateModeChange()` (line 112) has single- and multi-display overloads, and ultimately
+calls into the HWC:
+
+```cpp
+// frameworks/native/services/surfaceflinger/DisplayHardware/HWComposer.cpp, line 767
+status_t HWComposer::setActiveModeWithConstraints(
+        PhysicalDisplayId displayId, hal::HWConfigId hwcModeId,
+        const hal::VsyncPeriodChangeConstraints& constraints,
+        hal::VsyncPeriodChangeTimeline* outTimeline) {
+    auto error = mDisplayData[displayId].hwcDisplay
+            ->setActiveConfigWithConstraints(hwcModeId, constraints, outTimeline);
+    // ...
+}
+```
+
+### 13.44.2 The Guard Flags
+
+Four aconfig flags in
+`frameworks/native/services/surfaceflinger/surfaceflinger_flags_new.aconfig` gate the new
+machinery (all in the `core_graphics` namespace):
+
+| Flag | Description |
+|------|-------------|
+| `display_command_modeset` | Guards use of the new display-command-based modeset |
+| `modeset_state_machine` | Prevents data races causing modeset failures and deadlocks (bugfix) |
+| `modeset_multi_display` | Allows multiple displays to be modeset at the same time |
+| `synced_resolution_switch` | Synchronizes a resolution modeset with framebuffer resizing |
+
+`modeset_state_machine` is checked at many points in `SurfaceFlinger.cpp`'s commit and
+mode-switch paths; when enabled it routes mode changes through `DisplayModeController`'s
+pending/finalize logic instead of the legacy code.
+
+### 13.44.3 Atomic Modeset via DisplayCommand
+
+The new path can also batch a mode set into the same atomic HWC command stream as the
+rest of a frame. The composer3 `DisplayCommand.aidl` gained an `ActiveConfigCommand`
+field, and `ActiveConfigCommand.aidl` carries the target config plus a seamless
+requirement:
+
+```aidl
+// hardware/interfaces/graphics/composer/aidl/android/hardware/graphics/composer3/ActiveConfigCommand.aidl
+parcelable ActiveConfigCommand {
+    int configId;            // config to make active
+    boolean seamlessRequired; // fail if a seamless transition is impossible
+}
+```
+
+If `seamlessRequired` is set and a seamless transition is not possible, the command
+fails; if not seamless, the display mode must be updated even when no present or validate
+command accompanies it. Batching the mode set into the display command lets several
+displays change mode in lockstep.
+
+```mermaid
+graph TD
+    A["DisplayManager policy"] --> B["DMC::setDesiredMode()<br/>(desired)"]
+    B --> C["commit: takeDesiredMode<br/>if resolution matches"]
+    C --> D["DMC::initiateModeChange()<br/>(pending)"]
+    D --> E["HWC setActiveModeWithConstraints<br/>or ActiveConfigCommand"]
+    E --> F["Present fence signals"]
+    F --> G["DMC::finalizeModeChange()<br/>(active)"]
+
+    style B fill:#4CAF50,color:#fff
+    style D fill:#FF9800,color:#fff
+    style G fill:#2196F3,color:#fff
+```
+
+---
+
+## 13.45 Try It: Trace a Frame
+
+### 13.45.1 Using Perfetto to Trace Frame Rendering
 
 Perfetto (the system-wide tracing tool) is the primary way to observe the graphics
 pipeline in action. The ATRACE calls scattered throughout the code (`ATRACE_CALL()`,
@@ -4588,7 +5014,7 @@ adb pull /data/misc/perfetto-traces/trace.perfetto-trace .
 # Open at https://ui.perfetto.dev
 ```
 
-### 13.41.2 What to Look For in the Trace
+### 13.45.2 What to Look For in the Trace
 
 In the Perfetto UI, you will see these key tracks:
 
@@ -4608,7 +5034,7 @@ graph LR
     D --> E
 ```
 
-### 13.41.3 Key Trace Events
+### 13.45.3 Key Trace Events
 
 | Trace Event | Source File | Meaning |
 |-------------|------------|---------|
@@ -4621,7 +5047,7 @@ graph LR
 | `dequeueBuffer` | `BufferQueueProducer.cpp` | Buffer acquisition |
 | `queueBuffer` | `BufferQueueProducer.cpp` | Buffer completion |
 
-### 13.41.4 Measuring Frame Timing with `dumpsys gfxinfo`
+### 13.45.4 Measuring Frame Timing with `dumpsys gfxinfo`
 
 ```bash
 # Enable frame stats collection
@@ -4643,7 +5069,7 @@ The four columns correspond to:
 - **Process**: RenderThread GPU command recording
 - **Execute**: GPU execution and swap time
 
-### 13.41.5 GPU Memory Debugging
+### 13.45.5 GPU Memory Debugging
 
 ```bash
 # Dump HWUI memory usage
@@ -4663,7 +5089,7 @@ adb shell dumpsys gfxinfo com.example.myapp meminfo
 #   Buffers: 3.21 MB
 ```
 
-### 13.41.6 Vulkan Validation Layers
+### 13.45.6 Vulkan Validation Layers
 
 Enable Vulkan validation for debugging:
 
@@ -4676,7 +5102,7 @@ adb shell setprop debug.vulkan.layers VK_LAYER_KHRONOS_validation
 # Select the target app and enable "Vulkan validation"
 ```
 
-### 13.41.7 GPU Rendering Profile Bars
+### 13.45.7 GPU Rendering Profile Bars
 
 The on-device GPU rendering profiler visualizes frame timing as color-coded bars:
 
@@ -4693,7 +5119,7 @@ The bars show:
 - **Orange**: Execute (GPU + swap)
 - **Green line**: 16ms budget threshold
 
-### 13.41.8 ANGLE Debugging
+### 13.45.8 ANGLE Debugging
 
 To force a specific app to use ANGLE:
 
@@ -4705,7 +5131,7 @@ adb shell settings put global angle_gl_driver_selection_values \
     angle
 ```
 
-### 13.41.9 Inspecting the Render Pipeline
+### 13.45.9 Inspecting the Render Pipeline
 
 ```bash
 # Check which pipeline is active
@@ -4718,7 +5144,7 @@ adb shell stop
 adb shell start
 ```
 
-### 13.41.10 Building and Testing Graphics Changes
+### 13.45.10 Building and Testing Graphics Changes
 
 When modifying HWUI:
 
@@ -4748,7 +5174,7 @@ adb sync
 adb shell /data/nativetest64/libvulkan_test/libvulkan_test
 ```
 
-### 13.41.11 SKP Capture for Debugging
+### 13.45.11 SKP Capture for Debugging
 
 HWUI supports capturing Skia Picture (SKP) files that record all drawing commands
 for offline analysis:
@@ -4780,7 +5206,7 @@ SKP files contain:
 This is invaluable for debugging rendering issues because you can replay the
 exact sequence of draw calls in Skia's debugger tool.
 
-### 13.41.12 Overdraw Debugging
+### 13.45.12 Overdraw Debugging
 
 HWUI can visualize overdraw (regions drawn multiple times per frame):
 
@@ -4809,7 +5235,7 @@ graph TD
     style G fill:#F44336,color:#fff
 ```
 
-### 13.41.13 GPU Completion Timeline
+### 13.45.13 GPU Completion Timeline
 
 For detailed GPU timing analysis:
 
@@ -4825,7 +5251,7 @@ adb shell setprop debug.hwui.profile true
 # - queueBuffer: Time to submit a buffer
 ```
 
-### 13.41.14 Inspecting BufferQueue State
+### 13.45.14 Inspecting BufferQueue State
 
 ```bash
 # Dump BufferQueue state for all surfaces
@@ -4843,7 +5269,7 @@ adb shell dumpsys SurfaceFlinger
 # - Buffer queue state (slots, pending buffers)
 ```
 
-### 13.41.15 Hardware Composer Debugging
+### 13.45.15 Hardware Composer Debugging
 
 ```bash
 # Dump HWC state
@@ -4856,7 +5282,7 @@ adb shell dumpsys SurfaceFlinger --hwc
 # - GPU fallback reasons
 ```
 
-### 13.41.16 Tracing GPU Memory
+### 13.45.16 Tracing GPU Memory
 
 ```bash
 # Trace GPU memory allocations
@@ -4879,7 +5305,7 @@ duration_ms: 5000
 EOF
 ```
 
-### 13.41.17 Forcing Specific Render Behavior
+### 13.45.17 Forcing Specific Render Behavior
 
 ```bash
 # Force all rendering through GPU composition (no HWC overlays)
@@ -4894,7 +5320,7 @@ adb shell service call SurfaceFlinger 1002
 # These are useful for diagnosing composition-related issues
 ```
 
-### 13.41.18 Interactive GPU Debugging with RenderDoc
+### 13.45.18 Interactive GPU Debugging with RenderDoc
 
 For advanced GPU debugging, RenderDoc can be used on Android:
 
@@ -4912,7 +5338,7 @@ adb install renderdoc-server.apk
 #   - GPU timing per draw call
 ```
 
-### 13.41.19 Monitoring Frame Drops
+### 13.45.19 Monitoring Frame Drops
 
 ```bash
 # Watch for jank in real-time
@@ -4963,6 +5389,11 @@ The architecture reflects decades of evolution:
 7. **Android 10.0**: ANGLE integration for GL-on-Vulkan
 8. **Android 12.0**: Vulkan as default render pipeline on supported devices
 9. **Android 13.0+**: Skia Graphite backend development begins
+10. **Android 17**: Graphite reaches production in SurfaceFlinger RenderEngine
+    (`GraphiteVkRenderEngine`); display LUTs offload HDR tone mapping to per-layer Skia
+    shaders; a modeset state machine coordinates mode switches across multiple displays;
+    and a threaded RenderEngine offloads virtual-display GPU composition off the main
+    thread
 
 The key design principle throughout is **separation of concerns with minimal
 cross-thread synchronization**. The UI thread records, the RenderThread renders,

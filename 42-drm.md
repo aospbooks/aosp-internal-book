@@ -15,7 +15,9 @@ system that ships on virtually every Android device (Section 42.4), and walk thr
 ClearKey reference plugin line by line (Section 42.5). We then cover the secure codec path
 that protects decrypted frames from being captured in the clear (Section 42.6), the metrics
 and logging infrastructure that enables diagnostics without leaking protected material
-(Section 42.7), and finish with hands-on exercises (Section 42.8).
+(Section 42.7), and the Android 17 DRM HAL changes that freeze the AIDL interface at version
+2 and add the key-handle decrypt-decode fast path (Section 42.8), before finishing with
+hands-on exercises (Section 42.9).
 
 ---
 
@@ -666,8 +668,14 @@ The DRM HAL has gone through significant evolution:
 | 1.2 | HIDL | hwbinder | Added offline license management |
 | 1.3 | HIDL | hwbinder | Added log messages |
 | 1.4 | HIDL | hwbinder | Added requiresSecureDecoder with level |
-| AIDL v1 | AIDL | binder | Unified interface, Stable AIDL |
-| AIDL v2 (current) | AIDL | binder | Added KeyHandleResult, getKeyHandle |
+| AIDL V1 | AIDL | binder | Unified interface, stable AIDL (frozen) |
+| AIDL V2 (current in 17) | AIDL | binder | Frozen; adds `ICryptoPlugin::getKeyHandle()` and the `KeyHandleResult` parcelable |
+
+The `versions_with_info` block in
+`hardware/interfaces/drm/aidl/Android.bp` declares both V1 and V2, and the interface is
+marked `frozen: true`, so Android 17 ships V2 as the highest frozen AIDL DRM HAL version.
+Section 42.8 covers exactly what V2 adds over V1 and how the framework version-gates the new
+method.
 
 The directory structure reflects this evolution:
 
@@ -1829,16 +1837,20 @@ policy is violated.
 
 ### 42.6.10 Key Handle Optimization
 
-The AIDL v2 DRM HAL introduces `getKeyHandle()` as a performance optimization:
+The V2 DRM HAL adds `getKeyHandle()` to `ICryptoPlugin` for combined decrypt-and-decode
+hardware paths:
 
 ```
 // Source: hardware/interfaces/drm/aidl/android/hardware/drm/ICryptoPlugin.aidl
 KeyHandleResult getKeyHandle(in byte[] keyId, in Mode mode);
 ```
 
-This allows the crypto plugin to pre-resolve a key ID into an opaque handle, reducing
-the per-sample overhead of looking up the key during `decrypt()`. The handle can reference
-a pre-loaded key in the TEE, avoiding repeated key-ID-to-key-material resolution.
+This resolves a key ID into an opaque handle (`KeyHandleResult.keyHandle`) that a fused
+secure decrypt-decode component can consume directly, instead of routing each sample through
+`decrypt()`. The handle can reference a pre-loaded key inside the TEE, avoiding repeated
+key-ID-to-key-material resolution. Because this method only exists from V2 of the AIDL HAL,
+the framework version-gates the call; Section 42.8 traces that gating and the full Android 17
+plumbing.
 
 ---
 
@@ -2174,9 +2186,182 @@ public int getErrorContext();   // Additional error context
 
 ---
 
-## 42.8 Try It: DRM Experimentation Exercises
+## 42.8 DRM HAL Changes in Android 17
 
-### 42.8.1 Exercise 1: Query Supported DRM Schemes
+Android 17 does not change the shape of the DRM stack described above. The Java API,
+`libmediadrm`, the dual AIDL+HIDL routing, ClearKey, and the secure codec path all carry
+forward. What changed is the AIDL DRM HAL contract: the `android.hardware.drm` interface is
+now frozen at version 2, and the V2 delta over V1 is wired all the way through the framework.
+This section pins down exactly what is in V2, how the framework discovers it at runtime, and
+why it matters for the secure decode path.
+
+### 42.8.1 The AIDL DRM HAL Is Frozen at V2
+
+The DRM HAL interface bundle declares its versions in its build file. In Android 17 the
+interface is frozen and the highest declared version is 2:
+
+```
+// Source: hardware/interfaces/drm/aidl/Android.bp
+aidl_interface {
+    name: "android.hardware.drm",
+    stability: "vintf",
+    frozen: true,
+    versions_with_info: [
+        { version: "1", /* ... */ },
+        { version: "2", /* ... */ },
+    ],
+}
+```
+
+A matching `aidl_api/android.hardware.drm/2/` snapshot directory holds the frozen V2 ABI.
+`frozen: true` means the AIDL toolchain rejects any unversioned change to the interface; a
+new method or field would have to land as a future V3. The convenience default in the same
+build file pins the NDK link target to V2:
+
+```
+// Source: hardware/interfaces/drm/aidl/Android.bp
+cc_defaults {
+    name: "android.hardware.drm-media_drm-ndk-shared",
+    shared_libs: ["android.hardware.drm-V2-ndk"],
+}
+```
+
+### 42.8.2 What V2 Adds Over V1
+
+Comparing the two frozen snapshots shows the V2 delta is small and surgical. It is confined
+to `ICryptoPlugin`: a single new method, plus one new parcelable that the method returns.
+
+```
+// Source: hardware/interfaces/drm/aidl/android/hardware/drm/ICryptoPlugin.aidl
+KeyHandleResult getKeyHandle(in byte[] keyId, in Mode mode);
+```
+
+```
+// Source: hardware/interfaces/drm/aidl/android/hardware/drm/KeyHandleResult.aidl
+@VintfStability
+parcelable KeyHandleResult {
+    /**
+     * An opaque handle to the selected key.
+     */
+    byte[] keyHandle;
+}
+```
+
+The V1 `aidl_api` snapshot of `ICryptoPlugin` has the original six methods (`decrypt`,
+`getLogMessages`, `notifyResolution`, `requiresSecureDecoderComponent`,
+`setMediaDrmSession`, `setSharedBufferBase`). V2 adds `getKeyHandle()` as a seventh, and the
+`KeyHandleResult.aidl` file only exists from version 2 onward (its header carries a 2025
+copyright). No other interface (`IDrmFactory`, `IDrmPlugin`, `IDrmPluginListener`) changed
+between V1 and V2.
+
+The purpose of `getKeyHandle()` is the combined decrypt-and-decode hardware path. Its
+contract notes that the returned handle "is used by components that perform decryption and
+decoding in the same step." Instead of calling `decrypt()` for every sample and handing the
+decrypted bytes to a separate decoder, a fused secure component can resolve the key once into
+an opaque handle and then drive a single hardware operation that both decrypts and decodes,
+keeping the content in protected memory throughout.
+
+### 42.8.3 Runtime Version Gating in the Framework
+
+Because V2 is a strict superset of V1, the framework must not blindly call `getKeyHandle()`
+against an older plugin. Android 17 adds the method to the full `libmediadrm` crypto stack
+and gates it on the negotiated interface version. The unified `CryptoHal` router forwards to
+the AIDL backend when it is active, otherwise to HIDL:
+
+```cpp
+// Source: frameworks/av/drm/libmediadrm/CryptoHal.cpp
+DrmStatus CryptoHal::getKeyHandle(const uint8_t key[16], CryptoPlugin::Mode mode,
+                                  size_t sourceSize, size_t offset,
+                                  const CryptoPlugin::SubSample* subSamples,
+                                  size_t numSubSamples, Vector<uint8_t>& keyHandle) {
+    if (mCryptoHalAidl->initCheck() == OK)
+        return mCryptoHalAidl->getKeyHandle(key, mode, sourceSize, offset, subSamples,
+                                            numSubSamples, keyHandle);
+    return mCryptoHalHidl->getKeyHandle(key, mode, sourceSize, offset, subSamples,
+                                        numSubSamples, keyHandle);
+}
+```
+
+The AIDL backend queries the plugin's reported interface version and refuses the call if the
+plugin only implements V1, returning `ERROR_UNSUPPORTED` rather than crossing a Binder call
+the plugin cannot satisfy:
+
+```cpp
+// Source: frameworks/av/drm/libmediadrm/CryptoHalAidl.cpp
+int32_t version = 0;
+if (mPlugin->getInterfaceVersion(&version).isOk() && version < 2) {
+    return DrmStatus(ERROR_UNSUPPORTED, "getKeyHandle is not supported by the HAL");
+}
+```
+
+Before reaching the plugin, `CryptoHalAidl::getKeyHandle()` runs the same subsample and
+buffer-bounds validation as `decrypt()` does, using `__builtin_add_overflow` to reject
+integer-overflowing subsample sizes and to confirm the sample fits inside the source buffer.
+It then forwards a 16-byte key ID and the cipher mode to the plugin and copies out the opaque
+handle:
+
+```cpp
+// Source: frameworks/av/drm/libmediadrm/CryptoHalAidl.cpp
+KeyHandleResult result;
+::ndk::ScopedAStatus statusAidl = mPlugin->getKeyHandle(keyIdAidl, aMode, &result);
+status_t err = statusAidlToDrmStatus(statusAidl);
+if (err != OK) { /* log and return */ }
+keyHandle = toVector(result.keyHandle);
+```
+
+### 42.8.4 Caller and ClearKey Behavior
+
+The handle path is driven from the codec buffer channel. `CCodecBufferChannel` calls
+`mCrypto->getKeyHandle()` in its encrypted-buffer attach path, falling back to the normal
+`decrypt()` flow when the HAL does not provide a handle:
+
+```
+// Source: frameworks/av/media/codec2/sfplugin/CCodecBufferChannel.cpp
+const DrmStatus drmStatus = mCrypto->getKeyHandle(key, mode, size, offset, subSamples, ...);
+```
+
+```mermaid
+sequenceDiagram
+    participant CC as CCodecBufferChannel
+    participant CH as CryptoHal
+    participant CHA as CryptoHalAidl
+    participant CP as ICryptoPlugin V2 (HAL)
+
+    CC->>CH: getKeyHandle(key, mode, size, ...)
+    CH->>CHA: getKeyHandle (AIDL backend active)
+    CHA->>CP: getInterfaceVersion()
+    alt version is less than 2
+        CHA-->>CC: ERROR_UNSUPPORTED (fall back to decrypt)
+    else version is 2 or higher
+        CHA->>CP: getKeyHandle(keyId, mode)
+        CP-->>CHA: KeyHandleResult{keyHandle}
+        CHA-->>CC: opaque key handle
+    end
+```
+
+The AOSP reference ClearKey plugin does implement the V2 method, but since it is a
+software-only plugin with no fused secure decode-decrypt block, it simply declines:
+
+```cpp
+// Source: frameworks/av/drm/mediadrm/plugins/clearkey/aidl/CryptoPlugin.cpp
+::ndk::ScopedAStatus CryptoPlugin::getKeyHandle(const std::vector<uint8_t>& in_keyId,
+        Mode in_mode, KeyHandleResult* _aidl_return) {
+    // Clearkey plugin does not have key handle
+    return toNdkScopedAStatus(Status::ERROR_DRM_CANNOT_HANDLE);
+}
+```
+
+So even on a device whose HAL advertises V2, a scheme without a hardware key-handle path
+(ClearKey, or any L3-only plugin) returns `ERROR_DRM_CANNOT_HANDLE`, and the codec channel
+transparently uses the per-sample `decrypt()` path. The key-handle fast path is an
+opportunistic optimization for hardware-backed schemes (Widevine L1), not a new requirement
+for every plugin.
+
+---
+
+## 42.9 Try It: DRM Experimentation Exercises
+
+### 42.9.1 Exercise 1: Query Supported DRM Schemes
 
 Write a simple Android application that queries which DRM schemes are available on the
 device:
@@ -2227,7 +2412,7 @@ public class DrmSchemeQuery {
 - The security level check reveals whether the device has L1 (hardware TEE) support.
 - `getSupportedCryptoSchemes()` returns all registered HAL factory UUIDs.
 
-### 42.8.2 Exercise 2: ClearKey Playback with ExoPlayer
+### 42.9.2 Exercise 2: ClearKey Playback with ExoPlayer
 
 Use ExoPlayer (now part of AndroidX Media3) to play ClearKey-encrypted DASH content:
 
@@ -2279,7 +2464,7 @@ public class ClearKeyPlayback {
 }
 ```
 
-### 42.8.3 Exercise 3: Inspect DRM Properties
+### 42.9.3 Exercise 3: Inspect DRM Properties
 
 Open a DRM session and query plugin properties:
 
@@ -2333,7 +2518,7 @@ public class DrmPropertyInspector {
 }
 ```
 
-### 42.8.4 Exercise 4: Examine HAL Interfaces with dumpsys
+### 42.9.4 Exercise 4: Examine HAL Interfaces with dumpsys
 
 Use `adb shell` to inspect the running DRM HAL:
 
@@ -2354,7 +2539,7 @@ adb shell lshal | grep drm
 adb shell cmd drm_manager list
 ```
 
-### 42.8.5 Exercise 5: Trace DRM Operations
+### 42.9.5 Exercise 5: Trace DRM Operations
 
 Use `atrace` and `systrace` to observe DRM operations during playback:
 
@@ -2371,7 +2556,7 @@ adb logcat -s DrmHal:V DrmHalAidl:V CryptoHalAidl:V \
     DrmSessionManager:V DrmMetricsLogger:V
 ```
 
-### 42.8.6 Exercise 6: Build ClearKey from Source
+### 42.9.6 Exercise 6: Build ClearKey from Source
 
 Build the ClearKey HAL plugin from the AOSP source:
 
@@ -2394,7 +2579,7 @@ adb shell /data/nativetest64/VtsHalDrmTargetTest/VtsHalDrmTargetTest \
     --hal_service_instance=android.hardware.drm.IDrmFactory/clearkey
 ```
 
-### 42.8.7 Exercise 7: Monitor DRM Session Lifecycle
+### 42.9.7 Exercise 7: Monitor DRM Session Lifecycle
 
 Write a listener-based monitor that tracks all DRM events:
 
@@ -2458,7 +2643,7 @@ public class DrmSessionMonitor {
 }
 ```
 
-### 42.8.8 Exercise 8: Inspect ClearKey Source Code
+### 42.9.8 Exercise 8: Inspect ClearKey Source Code
 
 Trace the complete ClearKey key-request/response flow through the source:
 

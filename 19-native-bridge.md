@@ -431,39 +431,56 @@ frameworks/libs/binary_translation/
 
 ### 19.2.2  Directory Map
 
-The binary translation tree contains over 35 subdirectories.  Here is the
-complete layout with the role of each component:
+In Android 17 the binary translation tree was reorganized: every module that
+makes up the CPU-emulation core was moved under a single new top-level
+`cpu_emulation/` directory (commit "cpu_emulation: consolidate modules under new
+directory", `Bug: 476465845`).  Before the move the decoder, interpreter, the
+two JIT tiers, the IR backend, the assembler, and the intrinsics each sat at the
+top level; now they are siblings under `cpu_emulation/`, which makes the
+boundary between *the engine that emulates a guest CPU* and *the runtime that
+hosts it* explicit.  The translator dispatcher itself was also split out of
+`runtime/` into its own `cpu_emulation/translator/` module.  Section 19.8
+walks the three-tier engine that lives there.
 
 ```
 frameworks/libs/binary_translation/
     Android.bp              # Top-level build
-    README.md               # Getting started (239 lines)
+    README.md               # Getting started (238 lines)
     OWNERS
     berberis_config.mk      # Product package lists
     enable_riscv64_to_x86_64.mk  # Product configuration
 
-    # ---- Core Translation Pipeline ----
-    decoder/                # Instruction decoder (RISC-V → IR)
-        include/berberis/decoder/riscv64/
-            decoder.h       # Template-based decoder (2373 lines)
-    interpreter/            # Instruction-by-instruction interpreter
-        riscv64/
-            interpreter-main.cc
-            interpreter.h
-            interpreter-demultiplexers.cc
-            interpreter-V*.cc   # Vector instruction handlers
-    lite_translator/        # Lightweight JIT: riscv64 → x86_64
-        riscv64_to_x86_64/
-            lite_translator.cc
-            lite_translate_region.cc
-    heavy_optimizer/        # Optimizing JIT (region-based)
-        riscv64/
-    backend/                # x86_64 code generation
-        x86_64/
-        common/
-        gen_lir.py          # LIR generation script
-    assembler/              # x86_64 assembler
-    code_gen_lib/           # Common code generation utilities
+    # ---- CPU Emulation Core (Android 17 consolidation) ----
+    cpu_emulation/
+        decoder/            # Instruction decoder (RISC-V → IR)
+            include/berberis/decoder/riscv64/
+                decoder.h   # Template-based decoder (2374 lines)
+        interpreter/        # Instruction-by-instruction interpreter
+            riscv64/
+                interpreter-main.cc
+                interpreter.h
+                interpreter-demultiplexers.cc
+                interpreter-V*.cc   # Vector instruction handlers
+        lite_translator/    # Lightweight JIT: riscv64 → x86_64
+            riscv64_to_x86_64/
+                lite_translator.cc
+                lite_translate_region.cc
+        heavy_optimizer/    # Optimizing JIT (region-based)
+            riscv64/
+        translator/         # Tier dispatcher (split out of runtime/ in 17)
+            include/berberis/translator/translator.h
+            riscv64/
+                translator.cc            # Arch-independent init
+                translator_x86_64.cc     # Three-tier dispatch (host=x86_64)
+                translator_arm64.cc       # Interpreter-only (host=arm64)
+        backend/            # x86_64 code generation (IR → machine code)
+            x86_64/
+            common/
+            gen_lir.py      # LIR generation script
+        assembler/          # x86_64 / RISC-V assembler
+        code_gen_lib/       # Per direction code-gen helpers (riscv64_to_x86_64, arm64_to_x86_64, ...)
+        intrinsics/         # Optimized instruction implementations
+        insn_tests/         # Per-ISA instruction conformance tests
     exec_region/            # Executable memory management
 
     # ---- Guest Environment ----
@@ -504,10 +521,9 @@ frameworks/libs/binary_translation/
 
     # ---- Supporting Infrastructure ----
     proxy_loader/           # Proxy library discovery & loading
-    runtime/                # Initialization, translator dispatch
+    runtime/                # Initialization, guest entry, per-direction subdirs
     runtime_primitives/     # Translation cache, trampolines
     calling_conventions/    # ABI parameter passing rules
-    intrinsics/             # Optimized instruction implementations
     kernel_api/             # Syscall emulation
     native_activity/        # ANativeActivity wrapping
     tiny_loader/            # Lightweight ELF loader
@@ -563,8 +579,8 @@ The same decoder template powers both the interpreter (where the consumer
 executes semantics immediately) and the translators (where the consumer emits
 host instructions).
 
-From `frameworks/libs/binary_translation/decoder/include/berberis/decoder/riscv64/decoder.h`
-(lines 34-37):
+From `frameworks/libs/binary_translation/cpu_emulation/decoder/include/berberis/decoder/riscv64/decoder.h`
+(lines 35-37):
 
 ```cpp
 template <class InsnConsumer>
@@ -612,7 +628,7 @@ The decoder supports:
 ### 19.2.5  The Interpreter
 
 The interpreter is the simplest execution backend.  In
-`frameworks/libs/binary_translation/interpreter/riscv64/interpreter-main.cc`:
+`frameworks/libs/binary_translation/cpu_emulation/interpreter/riscv64/interpreter-main.cc`:
 
 ```cpp
 void InterpretInsn(ThreadState* state) {
@@ -1152,7 +1168,8 @@ are built from the `android_api/` subdirectories.
 
 ### 19.2.14  Runtime Initialization
 
-The Berberis runtime is initialized through `InitBerberis()`:
+The Berberis runtime is initialized through `InitBerberis()`, in
+`frameworks/libs/binary_translation/runtime/berberis.cc` (lines 37-55):
 
 ```cpp
 // runtime/berberis.cc
@@ -1163,30 +1180,44 @@ bool InitBerberisUnsafe() {
   InitGuestThreadManager();
   InitGuestFunctionWrapper(&IsAddressGuestExecutable);
   InitTranslator();
-  InitCrashReporter();
+  InitGuestSignalHandling();
   InitGuestArch();
   return true;
 }
 
 void InitBerberis() {
+  // C++11 guarantees this is called only once and is thread-safe.
   static bool initialized = InitBerberisUnsafe();
   UNUSED(initialized);
 }
 ```
 
 The `static bool` trick ensures thread-safe one-time initialization (C++11
-guarantees).
+guarantees).  `InitTranslator()` is the call that brings up the three-tier
+engine; in the Android 17 tree it lives in the consolidated translator module
+(section 19.8), not in `runtime/`.  The same file also exposes
+`PreZygoteForkUnsafe()`, which clears the translation cache before the Zygote
+forks an app process so that no stale compiled code survives the fork.
 
-The translation cache manages compiled code regions:
+When guest code is overwritten (for example a self-modifying JIT inside the
+guest, or `dlclose`), the runtime invalidates the affected compiled regions.
+In Android 17 this lives in
+`frameworks/libs/binary_translation/runtime/runtime_library/runtime_library.cc`
+(lines 54-59):
 
 ```cpp
-// runtime/translator.cc
+// runtime/runtime_library/runtime_library.cc
 void InvalidateGuestRange(GuestAddr start, GuestAddr end) {
   TranslationCache* cache = TranslationCache::GetInstance();
   cache->InvalidateGuestRange(start, end);
+  // ...
   FlushGuestCodeCache();
 }
 ```
+
+The `TranslationCache::InvalidateGuestRange` implementation is in
+`frameworks/libs/binary_translation/runtime_primitives/translation_cache.cc`
+(line 261).
 
 ### 19.2.15  Crash Reporting with Guest State
 
@@ -2120,25 +2151,23 @@ The RISC-V focus represents a strategic investment:
 
 ### 19.7.7  Multi-Target Architecture
 
-Berberis's architecture supports multiple guest-to-host translation pairs.
-The code already contains references to ARM64 support:
+Berberis's architecture supports multiple guest-to-host translation pairs, and
+the Android 17 tree carries scaffolding for two directions beyond the production
+RISC-V-to-x86_64 path.  Per-architecture state and ABI directories exist for
+both ARM (32-bit) and ARM64 guests:
 
 ```
-guest_state/arm/
-guest_state/arm64/
-guest_abi/arm/
-guest_abi/arm64/
+frameworks/libs/binary_translation/guest_state/arm/
+frameworks/libs/binary_translation/guest_state/arm64/
+frameworks/libs/binary_translation/guest_abi/arm/
+frameworks/libs/binary_translation/guest_abi/arm64/
 ```
 
-And the program runner has an ARM64 variant:
-
-```
-berberis_program_runner_riscv64_to_arm64
-```
-
-This suggests that Berberis could eventually support RISC-V-to-ARM64
-translation as well, which would be relevant for running RISC-V apps on
-ARM-based Android devices.
+There is also a RISC-V-on-ARM64-*host* path, where the host machine is ARM64
+and the guest is still RISC-V.  Section 19.9 covers both ARM64 directions in
+detail.  The short version: ARM64 work is scaffolding, not production -- the
+ARM64-host translator only interprets, and the ARM64-guest syscall bridge is a
+stub.
 
 ```mermaid
 graph TD
@@ -2175,7 +2204,272 @@ in the decoder template.
 
 ---
 
-## 19.8  Try It
+## 19.8  The Three-Tier CPU Emulation Engine
+
+Section 19.2.3 introduced Berberis's interpreter, lite translator, and heavy
+optimizer as three execution backends.  The Android 17 reorganization made the
+relationship between them explicit: all three, plus the decoder, the IR backend,
+and the dispatcher that chooses between them, now live under
+`frameworks/libs/binary_translation/cpu_emulation/`.  This section walks the
+dispatcher that ties the tiers together.
+
+### 19.8.1  The Translator Module
+
+Before Android 17 the per-region translation dispatcher lived inside the
+`runtime/` library.  The 17 reorganization split it into its own module
+(commit "translator_riscv64: split out from runtime", `Bug: 476465845`) so the
+runtime no longer depends on the full code generator.  The public entry point is
+a single function in
+`frameworks/libs/binary_translation/cpu_emulation/translator/include/berberis/translator/translator.h`:
+
+```cpp
+void InitTranslator();
+```
+
+The arch-independent half of the implementation is in
+`frameworks/libs/binary_translation/cpu_emulation/translator/riscv64/translator.cc`
+(lines 88-92).  It wires up the per-host dispatcher, the virtual call frame used
+to return into the host, and the interpreter:
+
+```cpp
+void InitTranslator() {
+  InitTranslatorArch();
+  InitVirtualGuestCallFrameReturnAddress(ToGuestAddr(g_native_bridge_call_guest + 1));
+  InitInterpreter();
+}
+```
+
+`InitTranslatorArch()` has two definitions chosen at build time by the *host*
+architecture: a full version in `translator_x86_64.cc` and a near-empty stub in
+`translator_arm64.cc`.  That split is the seam that lets the same RISC-V front
+end target either an x86_64 or an ARM64 host (section 19.9).
+
+### 19.8.2  Translation Modes
+
+The x86_64 dispatcher in
+`frameworks/libs/binary_translation/cpu_emulation/translator/riscv64/translator_x86_64.cc`
+(lines 50-60) enumerates the policies that decide which tier runs:
+
+```cpp
+enum class TranslationMode {
+  kInterpretOnly,
+  kLiteTranslateOrFallbackToInterpret,
+  kHeavyOptimizeOrFallbackToInterpret,
+  kHeavyOptimizeOrFallbackToLiteTranslator,
+  kLiteTranslateThenHeavyOptimize,
+  kTwoGear = kLiteTranslateThenHeavyOptimize,
+  kNumModes
+};
+
+TranslationMode g_translation_mode = TranslationMode::kTwoGear;
+```
+
+The default is **two-gear** (`kLiteTranslateThenHeavyOptimize`): a region is
+first lite-translated, and only the hot regions are later promoted to the heavy
+optimizer.  `UpdateTranslationMode()` (lines 62-86) lets a developer override
+the policy by name (`"interpret-only"`, `"two-gear"`, and so on) through a
+config string, which is invaluable when isolating a miscompilation to a single
+tier.
+
+### 19.8.3  Two-Gear Promotion
+
+The dispatcher distinguishes two *gears* (lines 88-91):
+
+```cpp
+enum class TranslationGear {
+  kFirst,
+  kSecond,
+};
+```
+
+The first gear runs when a region is translated for the first time; the second
+gear runs when a region that was already lite-translated is being promoted.
+The decision lives in `TranslateRegion`
+(`translator_x86_64.cc`, lines 156-229).  In two-gear mode the first gear calls
+`TryLiteTranslateAndInstallRegion` with self-profiling enabled, threading the
+region's invocation counter into the generated code:
+
+```cpp
+} else if (g_translation_mode == TranslationMode::kTwoGear &&
+           kGear == TranslationGear::kFirst) {
+  std::tie(success, host_code_piece, size, kind) = TryLiteTranslateAndInstallRegion(
+      pc, {.enable_self_profiling = true, .counter_location = &(entry->invocation_counter)});
+  if (!success) {
+    // Heavy supports more insns than lite, so try to heavy optimize. If that
+    // fails, then fallback to interpret.
+    std::tie(success, host_code_piece, size, kind) = HeavyOptimizeRegion(pc);
+    // ...
+  }
+}
+```
+
+The injected counter increments every time the region executes.  When it crosses
+a threshold the region is re-entered at the second gear, which acquires the cache
+slot with `LockForGearUpTranslation` (line 165) and runs `HeavyOptimizeRegion`.
+Each tier reports back the kind of code it produced, and the result is committed
+to the translation cache with `SetTranslatedAndUnlock` (line 228):
+
+```cpp
+GuestCodeEntry::Kind kInterpreted = GuestCodeEntry::Kind::kInterpreted;
+GuestCodeEntry::Kind kLiteTranslated = GuestCodeEntry::Kind::kLiteTranslated;
+GuestCodeEntry::Kind kHeavyOptimized = GuestCodeEntry::Kind::kHeavyOptimized;
+```
+
+Every tier can fall back to the one below it: lite falls back to the
+interpreter for instructions it cannot translate, and heavy falls back to lite
+or to the interpreter.  The interpreter is the universal backstop, so a region
+that no JIT can handle still runs correctly, just slowly.
+
+### 19.8.4  Tier Promotion State Machine
+
+The lifecycle of a single guest region under the default two-gear policy:
+
+```mermaid
+stateDiagram-v2
+    [*] --> NotTranslated
+    NotTranslated --> Interpreted : non-executable or single insn
+    NotTranslated --> LiteTranslated : first gear lite-translate
+    NotTranslated --> Interpreted : lite and heavy both fail
+    LiteTranslated --> HeavyOptimized : counter crosses threshold, second gear
+    LiteTranslated --> NotTranslated : InvalidateGuestRange
+    HeavyOptimized --> NotTranslated : InvalidateGuestRange
+    Interpreted --> NotTranslated : InvalidateGuestRange
+```
+
+### 19.8.5  Where Each Tier Lives Now
+
+After the consolidation, the three tiers and their shared infrastructure map to
+these paths under `cpu_emulation/`:
+
+| Tier or component | Android 17 path |
+|---|---|
+| Decoder | `frameworks/libs/binary_translation/cpu_emulation/decoder/` |
+| Interpreter | `frameworks/libs/binary_translation/cpu_emulation/interpreter/riscv64/` |
+| Lite translator | `frameworks/libs/binary_translation/cpu_emulation/lite_translator/riscv64_to_x86_64/` |
+| Heavy optimizer | `frameworks/libs/binary_translation/cpu_emulation/heavy_optimizer/riscv64/` |
+| IR backend | `frameworks/libs/binary_translation/cpu_emulation/backend/` |
+| Assembler | `frameworks/libs/binary_translation/cpu_emulation/assembler/` |
+| Intrinsics | `frameworks/libs/binary_translation/cpu_emulation/intrinsics/` |
+| Tier dispatcher | `frameworks/libs/binary_translation/cpu_emulation/translator/` |
+
+The translation cache that the dispatcher writes to, the trampolines, and the
+`runtime/` initialization remain outside `cpu_emulation/` -- they are part of the
+*host* runtime, not the guest-CPU emulator.
+
+---
+
+## 19.9  ARM64 Scaffolding
+
+The Android 17 tree carries two distinct ARM64 efforts, and it is important not
+to conflate them.  Both are scaffolding -- enough structure to build and test
+the path, but not a production translator.
+
+### 19.9.1  Two ARM64 Directions
+
+```mermaid
+graph LR
+    subgraph "ARM64 as host"
+        RV_G["RISC-V guest"] --> ARM_H["ARM64 host"]
+    end
+    subgraph "ARM64 as guest"
+        ARM_G["ARM64 guest"] --> X64_H["x86_64 host"]
+    end
+
+    style RV_G fill:#e8f5e9
+    style ARM_H fill:#fff3e0
+    style ARM_G fill:#fce4ec
+    style X64_H fill:#e3f2fd
+```
+
+- **ARM64 as host**: the same RISC-V front end, but the generated (or
+  interpreted) code runs on an ARM64 machine. This is selected by the *host*
+  build architecture.
+- **ARM64 as guest**: ARM64 native code is the input, translated to run on an
+  x86_64 host. This mirrors what Houdini does (section 19.4) but using the
+  Berberis engine.
+
+### 19.9.2  ARM64 as Host: Interpreter Only
+
+When Berberis is built for an ARM64 host, the translator's arch hook resolves to
+the stub in
+`frameworks/libs/binary_translation/cpu_emulation/translator/riscv64/translator_arm64.cc`.
+Compare it with the x86_64 dispatcher from section 19.8: there are no tiers at
+all.  `InitTranslatorArch()` is empty, and `TranslateRegion` records every
+executable region as `kInterpreted`:
+
+```cpp
+void InitTranslatorArch() {}
+
+void TranslateRegion(GuestAddr pc) {
+  using Kind = GuestCodeEntry::Kind;
+  TranslationCache* cache = TranslationCache::GetInstance();
+  GuestCodeEntry* entry = cache->AddAndLockForTranslation(pc, 0);
+  if (!entry) {
+    return;
+  }
+  // ... executability check ...
+  cache->SetTranslatedAndUnlock(pc, entry, insn_size, Kind::kInterpreted, {kEntryInterpret, 0});
+}
+```
+
+In other words, RISC-V-on-ARM64 currently *only interprets*; there is no lite or
+heavy JIT for that host yet.  The supporting host runtime entry points live in
+`frameworks/libs/binary_translation/runtime/runtime_library/runtime_library_arm64.cc`
+and the assembly stub `frameworks/libs/binary_translation/base/raw_syscall_arm64.S`.
+
+### 19.9.3  ARM64 as Guest: State, ABI, and Syscalls
+
+The ARM64-guest direction is further along on the data-structure side than on
+the translation side.  The tree carries per-architecture guest state and ABI
+modules:
+
+```
+frameworks/libs/binary_translation/guest_state/arm64/
+frameworks/libs/binary_translation/guest_abi/arm64/
+frameworks/libs/binary_translation/cpu_emulation/code_gen_lib/arm64_to_x86_64/
+frameworks/libs/binary_translation/cpu_emulation/insn_tests/arm64/
+```
+
+There is a runtime direction directory
+`frameworks/libs/binary_translation/runtime/arm64_to_x86_64/` and guest-entry
+plumbing in `frameworks/libs/binary_translation/runtime/arm64/`
+(`init_guest_arch.cc`, `init_kernel_args.cc`, `run_guest_call.cc`).
+
+The syscall layer, however, is explicitly unfinished.  The ARM64-guest syscall
+bridge in
+`frameworks/libs/binary_translation/kernel_api/runtime_bridge_riscv64_to_arm64.cc`
+is a stub that returns `-ENOSYS` and traces the call:
+
+```cpp
+long RunGuestSyscall___NR_rt_sigaction(long sig_num_arg,
+                                       long act_arg,
+                                       long old_act_arg,
+                                       long sigset_size_arg) {
+  UNUSED(sig_num_arg, act_arg, old_act_arg, sigset_size_arg);
+  TRACE("unimplemented syscall __NR_rt_sigaction");
+  errno = ENOSYS;
+  return -1;
+}
+```
+
+The generated syscall-number tables for the direction do exist
+(`frameworks/libs/binary_translation/kernel_api/arm64/gen_syscall_emulation_arm64_to_x86_64-inl.h`),
+so the wiring is in place even though the implementations are not.
+
+### 19.9.4  What This Means for the Roadmap
+
+The takeaway: in Android 17 Berberis is a production RISC-V-to-x86_64
+translator with ARM64 build-out underway on two fronts.  The ARM64-host path can
+interpret RISC-V but has no JIT; the ARM64-guest path has its state, ABI, and
+code-generation directories and its instruction tests, but its syscall emulation
+is stubbed.  Neither ARM64 direction is a substitute for Houdini or IBT
+(section 19.4) yet.  The community DigitalisX64 distribution (section 19.5)
+takes the ARM64-guest engine and packages it for the x86_64 emulator, which is
+the most complete ARM64 path that ships from a public source today.
+
+---
+
+## 19.10  Try It
 
 ### Exercise 19.1: Inspect the NativeBridge State
 
@@ -2346,7 +2640,7 @@ decoupling allows Berberis to compile without depending on the exact version of
 
 ### Exercise 19.10: Examine the Decoder Opcodes
 
-Open `frameworks/libs/binary_translation/decoder/include/berberis/decoder/riscv64/decoder.h`
+Open `frameworks/libs/binary_translation/cpu_emulation/decoder/include/berberis/decoder/riscv64/decoder.h`
 and:
 
 1. Find the `BranchOpcode` enum and list all branch types.
@@ -2368,7 +2662,12 @@ Berberis, Google's open-source reference implementation, demonstrates the full
 complexity of binary translation on Android: multi-tier translation (interpreter,
 lite JIT, heavy optimizer), dual linker namespaces, JNI trampoline generation
 from method shorty strings, guest CPU state management, proxy library
-interception, and crash reporting with dual stack traces.
+interception, and crash reporting with dual stack traces.  In Android 17 the
+engine was reorganized: the decoder, the three tiers, the IR backend, the
+assembler, the intrinsics, and the tier dispatcher were consolidated under a new
+`cpu_emulation/` directory, and the dispatcher's two-gear policy
+(lite-translate, then heavy-optimize hot regions) is now its own module split out
+of `runtime/`.
 
 The `native_bridge_support` libraries provide the guest-side runtime
 environment -- 26+ proxy libraries, a guest linker, a guest VDSO, and a guest
@@ -2378,7 +2677,11 @@ execution environment for foreign-ISA applications.
 The RISC-V focus positions Berberis as a strategic investment in Android's
 future.  The comments in `riscv64_device.go` explicitly position it as a QEMU
 successor, and the comprehensive vector extension support and CTS compatibility
-demonstrate production-grade ambition.
+demonstrate production-grade ambition.  Alongside the production
+RISC-V-to-x86_64 path, the 17 tree carries ARM64 scaffolding in two directions
+-- an interpreter-only RISC-V-on-ARM64 host path and an ARM64-guest path whose
+state, ABI, and code-generation directories exist but whose syscall emulation is
+still stubbed.
 
 ### Key source files
 
@@ -2388,8 +2691,10 @@ demonstrate production-grade ambition.
 | `art/libnativebridge/native_bridge.cc` | ART-side bridge management |
 | `frameworks/libs/binary_translation/native_bridge/native_bridge.cc` | Berberis NativeBridgeItf export |
 | `frameworks/libs/binary_translation/README.md` | Berberis getting started |
-| `frameworks/libs/binary_translation/decoder/include/berberis/decoder/riscv64/decoder.h` | RISC-V decoder |
-| `frameworks/libs/binary_translation/interpreter/riscv64/interpreter-main.cc` | Interpreter entry |
+| `frameworks/libs/binary_translation/cpu_emulation/decoder/include/berberis/decoder/riscv64/decoder.h` | RISC-V decoder |
+| `frameworks/libs/binary_translation/cpu_emulation/interpreter/riscv64/interpreter-main.cc` | Interpreter entry |
+| `frameworks/libs/binary_translation/cpu_emulation/translator/riscv64/translator_x86_64.cc` | Three-tier dispatch (host=x86_64) |
+| `frameworks/libs/binary_translation/cpu_emulation/translator/riscv64/translator_arm64.cc` | Interpreter-only dispatch (host=arm64) |
 | `frameworks/libs/binary_translation/guest_state/riscv64/include/berberis/guest_state/guest_state_arch.h` | RISC-V register definitions |
 | `frameworks/libs/binary_translation/guest_loader/guest_loader.cc` | Guest ELF loading |
 | `frameworks/libs/binary_translation/jni/jni_trampolines.cc` | JNI trampoline generation |

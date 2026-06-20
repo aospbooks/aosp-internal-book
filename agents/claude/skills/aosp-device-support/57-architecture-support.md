@@ -49,7 +49,7 @@ initialization. The pattern is identical across all five architectures. Here is
 the registration from `arm64_device.go`:
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 210-212
+// build/soong/cc/config/arm64_device.go
 func init() {
     registerToolchainFactory(android.Android, android.Arm64, arm64ToolchainFactory)
 }
@@ -58,37 +58,44 @@ func init() {
 And the corresponding registration from `riscv64_device.go`:
 
 ```go
-// build/soong/cc/config/riscv64_device.go, line 131-133
+// build/soong/cc/config/riscv64_device.go
 func init() {
     registerToolchainFactory(android.Android, android.Riscv64, riscv64ToolchainFactory)
 }
 ```
 
 The `registerToolchainFactory` function in `toolchain.go` stores these factories
-in a two-dimensional map indexed by OS type and architecture type:
+in a map indexed by OS type, architecture type, and a boolean that selects
+between the ordinary toolchain and the Lightweight Fault Isolation (LFI)
+toolchain (section 57.10). A parallel `registerLFIToolchainFactory` populates
+the `true` slot:
 
 ```go
-// build/soong/cc/config/toolchain.go, line 32-39
-var toolchainFactories = make(map[android.OsType]map[android.ArchType]toolchainFactory)
+// build/soong/cc/config/toolchain.go
+var toolchainFactories = make(map[android.OsType]map[android.ArchType]map[bool]toolchainFactory)
 
 func registerToolchainFactory(os android.OsType, arch android.ArchType, factory toolchainFactory) {
-    if toolchainFactories[os] == nil {
-        toolchainFactories[os] = make(map[android.ArchType]toolchainFactory)
-    }
-    toolchainFactories[os][arch] = factory
+    makeToolchainMap(os, arch)
+    toolchainFactories[os][arch][false] = factory
+}
+
+func registerLFIToolchainFactory(os android.OsType, arch android.ArchType, factory toolchainFactory) {
+    makeToolchainMap(os, arch)
+    toolchainFactories[os][arch][true] = factory
 }
 ```
 
 When Soong needs to compile a module for a given OS and architecture, it looks
-up the factory and calls it with the target `Arch` struct. The factory returns a
-`Toolchain` implementation that provides all the flags needed:
+up the factory (passing whether the target is an LFI variant) and calls it with
+the target `Arch` struct. The factory returns a `Toolchain` implementation that
+provides all the flags needed:
 
 ```go
-// build/soong/cc/config/toolchain.go, line 62-68
-func findToolchain(os android.OsType, arch android.Arch) (Toolchain, error) {
-    factory := toolchainFactories[os][arch.ArchType]
+// build/soong/cc/config/toolchain.go
+func findToolchain(os android.OsType, arch android.Arch, lfi bool) (Toolchain, error) {
+    factory := toolchainFactories[os][arch.ArchType][lfi]
     if factory == nil {
-        return nil, fmt.Errorf("Toolchain not found for %s arch %q", os.String(), arch.String())
+        return nil, fmt.Errorf("Toolchain not found for os: %q, arch %q, lfi: %t", os.String(), arch.String(), lfi)
     }
     return factory(arch), nil
 }
@@ -122,17 +129,17 @@ in `build/soong/cc/config/toolchain.go`. This is the central abstraction that
 lets Soong compile C/C++ code without hard-coding any architecture details:
 
 ```go
-// build/soong/cc/config/toolchain.go, line 70-112
+// build/soong/cc/config/toolchain.go
 type Toolchain interface {
     Name() string
     IncludeFlags() string
     ClangTriple() string
     ToolchainCflags() string
-    ToolchainLdflags() string
+    ToolchainLdflags() FlagsWithDeps
     Asflags() string
     Cflags() string
     Cppflags() string
-    Ldflags() string
+    Ldflags(ctx ToolchainFlagsContext) FlagsWithDeps
     InstructionSetFlags(string) (string, error)
     ndkTriple() string
     YasmFlags() string
@@ -152,6 +159,7 @@ type Toolchain interface {
     Bionic() bool
     Glibc() bool
     Musl() bool
+    Lfi() bool
 }
 ```
 
@@ -167,31 +175,34 @@ the full Clang target triple used with the `--target=` flag.
 that are layered on top of the base `Cflags()`.
 
 **Linking**: `Ldflags()`, `ToolchainLdflags()`, and the CRT (C Runtime)
-methods control how binaries are linked. Every bionic-based toolchain uses CRT
+methods control how binaries are linked. Both now return a `FlagsWithDeps`
+struct rather than a bare string, and `Ldflags()` takes a
+`ToolchainFlagsContext` so a toolchain can register Ninja phony rules or glob
+paths while computing its link flags. Every bionic-based toolchain uses CRT
 objects like `crtbegin_dynamic` and `crtend_android`.
 
 **Platform**: `Bionic()`, `Glibc()`, and `Musl()` indicate which C library the
-toolchain links against.
+toolchain links against. `Lfi()` reports whether this is a Lightweight Fault
+Isolation toolchain (covered in section 57.10), and defaults to `false` for the
+ordinary bionic toolchains.
 
 The base types `toolchain64Bit` and `toolchain32Bit` provide the `Is64Bit()`
 method, while `toolchainBionic` provides the Android-specific CRT objects and
 default shared libraries:
 
 ```go
-// build/soong/cc/config/bionic.go, line 17-46
+// build/soong/cc/config/bionic.go
 type toolchainBionic struct {
     toolchainBase
 }
 
 var (
     bionicDefaultSharedLibraries = []string{"libc", "libm", "libdl"}
-    bionicCrtBeginStaticBinary  = []string{"crtbegin_static"}
-    bionicCrtEndStaticBinary    = []string{"crtend_android"}
-    bionicCrtBeginSharedBinary  = []string{"crtbegin_dynamic"}
-    bionicCrtEndSharedBinary    = []string{"crtend_android"}
-    bionicCrtBeginSharedLibrary = []string{"crtbegin_so"}
-    bionicCrtEndSharedLibrary   = []string{"crtend_so"}
-    bionicCrtPadSegmentSharedLibrary = []string{"crt_pad_segment"}
+
+    bionicCrtBeginStaticBinary, bionicCrtEndStaticBinary   = []string{"crtbegin_static"}, []string{"crtend_android"}
+    bionicCrtBeginSharedBinary, bionicCrtEndSharedBinary   = []string{"crtbegin_dynamic"}, []string{"crtend_android"}
+    bionicCrtBeginSharedLibrary, bionicCrtEndSharedLibrary = []string{"crtbegin_so"}, []string{"crtend_so"}
+    bionicCrtPadSegmentSharedLibrary                       = []string{"crt_pad_segment"}
 )
 ```
 
@@ -202,7 +213,7 @@ Soong represents a target architecture using the `Arch` struct from
 to select the right toolchain, compiler flags, and source files:
 
 ```go
-// build/soong/android/arch.go (around line 95-110)
+// build/soong/android/arch.go
 type Arch struct {
     ArchType    ArchType
     ArchVariant string
@@ -233,7 +244,7 @@ The `ArchType` itself is defined as a simple struct with name and multilib
 classification:
 
 ```go
-// build/soong/android/arch.go (around line 128-138)
+// build/soong/android/arch.go
 type ArchType struct {
     Name     string   // "arm", "arm64", "x86", "x86_64", or "riscv64"
     Field    string   // Property field name, e.g., "Arm64"
@@ -244,7 +255,7 @@ type ArchType struct {
 The five architecture types are registered as package-level variables:
 
 ```go
-// build/soong/android/arch.go (around line 160-164)
+// build/soong/android/arch.go
 Arm     = newArch("arm", "lib32")
 Arm64   = newArch("arm64", "lib64")
 Riscv64 = newArch("riscv64", "lib64")
@@ -348,7 +359,29 @@ processor. The AOSP build system supports a wide range of ARM64
 micro-architectures, from the original ARMv8-A through the latest ARMv9.4-A
 extensions.
 
-**Source file**: `build/soong/cc/config/arm64_device.go` (212 lines)
+**Source file**: `build/soong/cc/config/arm64_device.go`
+
+The ARM64 base flags now include stack-clash protection and the strict
+implicit-declaration check that all LP64 architectures share:
+
+```go
+// build/soong/cc/config/arm64_device.go
+arm64Cflags = []string{
+    // Help catch common 32/64-bit errors.
+    // Common to all LP64 architectures.
+    "-Werror=implicit-function-declaration",
+
+    // For stack allocations larger than a page, touch each page immediately
+    // to ensure we hit the guard page on stack overflow.
+    // Common to all LP64 architectures.
+    "-fstack-clash-protection",
+}
+```
+
+The `-fstack-clash-protection` flag closes a class of stack-overflow attacks
+where a large stack allocation jumps clean over the guard page; the compiler
+probes each page as the frame grows so an overflow always faults. The same two
+flags appear verbatim in `riscv64_device.go`.
 
 ### 57.2.1 Architecture Variants
 
@@ -356,7 +389,7 @@ ARM64 supports ten architecture variants, each mapping to a specific `-march=`
 compiler flag:
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 30-41
+// build/soong/cc/config/arm64_device.go
 arm64ArchVariantCflags = map[string][]string{
     "armv8-a":            {"-march=armv8-a"},
     "armv8-a-branchprot": {"-march=armv8-a"},
@@ -401,8 +434,9 @@ like ROP (Return-Oriented Programming) and JOP (Jump-Oriented Programming).
 When the `branchprot` feature is enabled, AOSP applies these compiler flags:
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 43-49
+// build/soong/cc/config/arm64_device.go
 arm64ArchFeatureCflags = map[string][]string{
+    // When Pointer Authentication Codes (PAC) are available, -fstack-protector is unnecessary.
     "branchprot": {
         "-mbranch-protection=standard",
         "-fno-stack-protector",
@@ -420,6 +454,26 @@ PAC-signed return addresses already protect against stack buffer overflows that
 corrupt the return address -- the primary threat that stack protectors also
 defend against. Disabling the stack protector avoids the redundant canary check,
 saving a few instructions per function entry/exit.
+
+The `branchprot` feature also drives a matching linker flag. A separate
+`arm64ArchFeatureLdflags` map asks the linker to fail the link if any input
+object lacks BTI marking, so a single non-BTI translation unit cannot silently
+downgrade the whole binary:
+
+```go
+// build/soong/cc/config/arm64_device.go
+arm64ArchFeatureLdflags = map[string][]string{
+    "branchprot": {
+        "-Wl,-z,bti-report=error",
+    },
+}
+```
+
+This turns BTI into an all-or-nothing property of the binary: if every object is
+BTI-clean the resulting library is marked `GNU_PROPERTY_AARCH64_FEATURE_1_BTI`
+and the kernel maps its executable pages with `PROT_BTI`, but if any object is
+unmarked the build breaks rather than producing a binary with the protection
+silently dropped.
 
 ```mermaid
 graph LR
@@ -454,7 +508,7 @@ The file `bionic/libc/arch-arm64/bionic/note_memtag_heap_async.S` contains
 an ELF note that requests the kernel to enable MTE for heap allocations:
 
 ```asm
-// bionic/libc/arch-arm64/bionic/note_memtag_heap_async.S, line 34-46
+// bionic/libc/arch-arm64/bionic/note_memtag_heap_async.S
   .section ".note.android.memtag", "a", %note
   .p2align 2
   .long 1f - 0f                 // int32_t namesz
@@ -475,7 +529,7 @@ MTE-aware implementations when the hardware supports it. From
 `bionic/libc/arch-arm64/ifuncs.cpp`:
 
 ```cpp
-// bionic/libc/arch-arm64/ifuncs.cpp, line 54-60
+// bionic/libc/arch-arm64/ifuncs.cpp
 DEFINE_IFUNC_FOR(memchr) {
   if (arg->_hwcap2 & HWCAP2_MTE) {
     RETURN_FUNC(memchr_func_t, __memchr_aarch64_mte);
@@ -502,7 +556,7 @@ that code runs correctly (and acceptably fast) on both core types, while code
 tuned for the big core might be pathologically slow on the LITTLE core:
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 65-77
+// build/soong/cc/config/arm64_device.go
 "cortex-a75": []string{
     // Use the cortex-a55 since it is similar to the little
     // core (cortex-a55) and is sensitive to ordering.
@@ -525,7 +579,7 @@ out-of-order pipeline can compensate for sub-optimal scheduling.
 The complete set of supported ARM64 CPU variants:
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 58-88
+// build/soong/cc/config/arm64_device.go (condensed)
 arm64CpuVariantCflags = map[string][]string{
     "cortex-a53": {"-mcpu=cortex-a53"},
     "cortex-a55": {"-mcpu=cortex-a55"},
@@ -542,7 +596,7 @@ The mapping from CPU variant to compile flags is resolved through a two-level
 lookup. First, the variant-to-variable map:
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 123-135
+// build/soong/cc/config/arm64_device.go
 arm64CpuVariantCflagsVar = map[string]string{
     "cortex-a53": "${config.Arm64CortexA53Cflags}",
     "cortex-a55": "${config.Arm64CortexA55Cflags}",
@@ -566,12 +620,12 @@ The Cortex-A53, one of the most widely deployed ARM cores in history, has two
 notable hardware errata that AOSP works around at link time:
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 120
+// build/soong/cc/config/arm64_device.go
 pctx.StaticVariable("Arm64FixCortexA53Ldflags", "-Wl,--fix-cortex-a53-843419")
 ```
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 137-144
+// build/soong/cc/config/arm64_device.go
 arm64CpuVariantLdflags = map[string]string{
     "cortex-a53": "${config.Arm64FixCortexA53Ldflags}",
     "cortex-a72": "${config.Arm64FixCortexA53Ldflags}",
@@ -591,11 +645,22 @@ in big.LITTLE configurations.
 
 ### 57.2.6 ARM64 Toolchain Factory
 
-The factory function assembles all the layers into a single toolchain:
+The factory delegates flag assembly to a helper, `arm64ToolchainFlags`, which
+returns the toolchain Cflags and toolchain Ldflags as a pair. Splitting out the
+helper lets the LFI toolchain (section 57.10) reuse the exact same flag logic:
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 187-208
+// build/soong/cc/config/arm64_device.go
 func arm64ToolchainFactory(arch android.Arch) Toolchain {
+    toolchainCflags, toolchainLdflags := arm64ToolchainFlags(arch)
+    return &toolchainArm64{
+        toolchainCflags:  toolchainCflags,
+        toolchainLdflags: toolchainLdflags,
+    }
+}
+
+func arm64ToolchainFlags(arch android.Arch) (string, string) {
+    // Error now rather than having a confusing Ninja error
     if _, ok := arm64ArchVariantCflags[arch.ArchVariant]; !ok {
         panic(fmt.Sprintf("Unknown ARM64 architecture version: %q", arch.ArchVariant))
     }
@@ -607,16 +672,21 @@ func arm64ToolchainFactory(arch android.Arch) Toolchain {
         toolchainCflags = append(toolchainCflags, arm64ArchFeatureCflags[feature]...)
     }
 
-    extraLdflags := variantOrDefault(arm64CpuVariantLdflags, arch.CpuVariant)
-    return &toolchainArm64{
-        ldflags: strings.Join([]string{
-            "${config.Arm64Ldflags}",
-            extraLdflags,
-        }, " "),
-        toolchainCflags: strings.Join(toolchainCflags, " "),
+    extraLdflags := []string{"${config.Arm64Ldflags}"}
+    extraLdflags = append(extraLdflags,
+        variantOrDefault(arm64CpuVariantLdflags, arch.CpuVariant))
+    for _, feature := range arch.ArchFeatures {
+        extraLdflags = append(extraLdflags, arm64ArchFeatureLdflags[feature]...)
     }
+    return strings.Join(toolchainCflags, " "), strings.Join(extraLdflags, " ")
 }
 ```
+
+Note that the toolchain Ldflags now fold in both the per-CPU-variant linker
+flags (the Cortex-A53 erratum fix) and the per-feature linker flags (the BTI
+report flag for `branchprot`); they are carried on the toolchain's
+`toolchainLdflags` field and surfaced through `ToolchainLdflags()`, which
+returns a `FlagsWithDeps`.
 
 The flags are layered in this order:
 
@@ -636,7 +706,7 @@ ARM64 supports multiple page sizes (4KB, 16KB, 64KB). The linker flags enforce
 the maximum page size for correct segment alignment:
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 92-96
+// build/soong/cc/config/arm64_device.go
 pctx.VariableFunc("Arm64Ldflags", func(ctx android.PackageVarContext) string {
     maxPageSizeFlag := "-Wl,-z,max-page-size=" + ctx.Config().MaxPageSizeSupported()
     flags := append(arm64Ldflags, maxPageSizeFlag)
@@ -644,11 +714,18 @@ pctx.VariableFunc("Arm64Ldflags", func(ctx android.PackageVarContext) string {
 })
 ```
 
+`MaxPageSizeSupported()` is the alignment that the linker uses for ELF segment
+boundaries, and it is no longer a hardcoded 4096 on ARM64. As of Android 17 the
+build defaults it to 16384 for arm64 and x86_64 devices, so platform binaries
+are aligned to load correctly on a 16KB-page kernel. Section 57.11 traces that
+default and the bionic-side macro changes that go with it.
+
 The base linker flags also include segment separation for security:
 
 ```go
-// build/soong/cc/config/arm64_device.go, line 51-54
+// build/soong/cc/config/arm64_device.go
 arm64Ldflags = []string{
+    // Separate-code is required for XOM
     "-Wl,-z,separate-code",
     "-Wl,-z,separate-loadable-segments",
 }
@@ -656,7 +733,10 @@ arm64Ldflags = []string{
 
 These flags ensure that code segments, data segments, and read-only segments are
 placed in separate memory pages, preventing accidental (or malicious) execution
-of data or modification of code.
+of data or modification of code. The `separate-code` flag in particular is what
+makes execute-only memory (XOM) possible: keeping code out of any page that also
+holds readable data means an attacker who can read process memory cannot read
+the instruction stream back to build a code-reuse payload.
 
 ---
 
@@ -677,7 +757,7 @@ x86/x86_64 images provide dramatically better performance during development.
 The x86 (32-bit) toolchain supports a wide range of Intel microarchitectures:
 
 ```go
-// build/soong/cc/config/x86_device.go, line 38-86
+// build/soong/cc/config/x86_device.go
 x86ArchVariantCflags = map[string][]string{
     "": []string{
         "-march=prescott",
@@ -697,6 +777,7 @@ x86ArchVariantCflags = map[string][]string{
     },
     "haswell":     []string{"-march=core-avx2"},
     "ivybridge":   []string{"-march=core-avx-i"},
+    "pantherlake": []string{"-march=pantherlake"},
     "sandybridge": []string{"-march=corei7"},
     "silvermont":  []string{"-march=slm"},
     "skylake":     []string{"-march=skylake"},
@@ -708,21 +789,31 @@ x86ArchVariantCflags = map[string][]string{
 The x86_64 toolchain has the same set of microarchitecture variants:
 
 ```go
-// build/soong/cc/config/x86_64_device.go, line 36-79
+// build/soong/cc/config/x86_64_device.go
 x86_64ArchVariantCflags = map[string][]string{
     "": []string{"-march=x86-64"},
-    "alderlake":  []string{"-march=alderlake"},
-    "broadwell":  []string{"-march=broadwell"},
-    "goldmont":   []string{"-march=goldmont"},
+    "alderlake":   []string{"-march=alderlake"},
+    "broadwell":   []string{"-march=broadwell"},
+    "goldmont":    []string{"-march=goldmont"},
     // ... same variants as x86
-    "haswell":    []string{"-march=core-avx2"},
-    "skylake":    []string{"-march=skylake"},
-    "tremont":    []string{"-march=tremont"},
+    "haswell":     []string{"-march=core-avx2"},
+    "pantherlake": []string{"-march=pantherlake"},
+    "skylake":     []string{"-march=skylake"},
+    "tremont":     []string{"-march=tremont"},
 }
 ```
 
 The default for x86 is `prescott` (Pentium 4 with SSE3), while x86_64 defaults
 to the baseline `x86-64` instruction set.
+
+The `pantherlake` variant is new in Android 17. Panther Lake is Intel's
+mobile-class hybrid design that follows Lunar Lake and Arrow Lake, and adding it
+here lets Soong emit `-march=pantherlake` for boards that declare it as their
+`TARGET_ARCH_VARIANT`. ART recognizes the same variant string in its x86 and
+x86_64 instruction-set-feature tables (`x86_known_variants` in
+`art/runtime/arch/x86/instruction_set_features_x86.cc`), so the JIT and AOT
+compilers can key off `pantherlake` the same way the static toolchain does; see
+Chapter 18 for how ART consumes those feature sets.
 
 ### 57.3.2 SIMD Instruction Sets: SSE and AVX
 
@@ -731,7 +822,7 @@ single mandatory SIMD extension, x86 has a progression of optional extensions.
 Both the x86 and x86_64 toolchains define feature flags for these:
 
 ```go
-// build/soong/cc/config/x86_64_device.go, line 81-97
+// build/soong/cc/config/x86_64_device.go
 x86_64ArchFeatureCflags = map[string][]string{
     "ssse3":  []string{"-mssse3"},
     "sse4":   []string{"-msse4"},
@@ -763,7 +854,7 @@ their `Android.bp` files when they know it helps.
 The 32-bit x86 toolchain has several unique requirements:
 
 ```go
-// build/soong/cc/config/x86_device.go, line 25-32
+// build/soong/cc/config/x86_device.go
 x86Cflags = []string{
     "-msse3",
     // -mstackrealign is needed to realign stack in native code
@@ -782,12 +873,12 @@ runtime), the stack may not be 16-byte aligned, causing crashes.
 The x86 toolchain also uses Yasm for assembly:
 
 ```go
-// build/soong/cc/config/x86_device.go, line 117
+// build/soong/cc/config/x86_device.go
 pctx.StaticVariable("X86YasmFlags", "-f elf32 -m x86")
 ```
 
 ```go
-// build/soong/cc/config/x86_64_device.go, line 124
+// build/soong/cc/config/x86_64_device.go
 pctx.StaticVariable("X86_64YasmFlags", "-f elf64 -m amd64")
 ```
 
@@ -796,7 +887,7 @@ pctx.StaticVariable("X86_64YasmFlags", "-f elf64 -m amd64")
 Both x86 toolchains share the same pattern as ARM64:
 
 ```go
-// build/soong/cc/config/x86_device.go, line 125-129
+// build/soong/cc/config/x86_device.go
 type toolchainX86 struct {
     toolchainBionic
     toolchain32Bit
@@ -805,7 +896,7 @@ type toolchainX86 struct {
 ```
 
 ```go
-// build/soong/cc/config/x86_64_device.go, line 132-136
+// build/soong/cc/config/x86_64_device.go
 type toolchainX86_64 struct {
     toolchainBionic
     toolchain64Bit
@@ -817,13 +908,13 @@ The key difference from ARM64 is the explicit `-m32`/`-m64` toolchain flags
 that control code generation model:
 
 ```go
-// build/soong/cc/config/x86_device.go, line 107-108
+// build/soong/cc/config/x86_device.go
 pctx.StaticVariable("X86ToolchainCflags", "-m32")
 pctx.StaticVariable("X86ToolchainLdflags", "-m32")
 ```
 
 ```go
-// build/soong/cc/config/x86_64_device.go, line 101-102
+// build/soong/cc/config/x86_64_device.go
 pctx.StaticVariable("X86_64ToolchainCflags", "-m64")
 pctx.StaticVariable("X86_64ToolchainLdflags", "-m64")
 ```
@@ -839,7 +930,7 @@ The Native Bridge mechanism is defined in
 declares the `NativeBridgeCallbacks` interface:
 
 ```cpp
-// frameworks/libs/binary_translation/native_bridge/native_bridge.h, line 48-62
+// frameworks/libs/binary_translation/native_bridge/native_bridge.h
 struct NativeBridgeCallbacks {
   uint32_t version;
 
@@ -890,7 +981,7 @@ graph TD
 The default x86_64 generic device configuration targets the emulator:
 
 ```makefile
-# device/generic/x86_64/BoardConfig.mk, line 9-15
+# device/generic/x86_64/BoardConfig.mk
 TARGET_CPU_ABI := x86_64
 TARGET_ARCH := x86_64
 TARGET_ARCH_VARIANT := x86_64
@@ -924,7 +1015,7 @@ two instruction encodings (ARM and Thumb).
 The ARM toolchain struct reflects its 32-bit nature:
 
 ```go
-// build/soong/cc/config/arm_device.go (line 247-252)
+// build/soong/cc/config/arm_device.go
 type toolchainArm struct {
     toolchainBionic
     toolchain32Bit
@@ -936,13 +1027,16 @@ type toolchainArm struct {
 The ARM factory function assembles three levels of flags:
 
 ```go
-// build/soong/cc/config/arm_device.go (line 303-316)
+// build/soong/cc/config/arm_device.go
 func armToolchainFactory(arch android.Arch) Toolchain {
     toolchainCflags := make([]string, 2, 3)
+
     toolchainCflags[0] = "${config.ArmToolchainCflags}"
     toolchainCflags[1] = armArchVariantCflagsVar[arch.ArchVariant]
+
     toolchainCflags = append(toolchainCflags,
         variantOrDefault(armCpuVariantCflagsVar, arch.CpuVariant))
+
     return &toolchainArm{
         ldflags:         "${config.ArmLdflags}",
         toolchainCflags: strings.Join(toolchainCflags, " "),
@@ -960,7 +1054,7 @@ for all ARM 32-bit Android targets.
 includes 18 different variants:
 
 ```go
-// build/soong/cc/config/arm_device.go (line 225-244)
+// build/soong/cc/config/arm_device.go
 armCpuVariantCflagsVar = map[string]string{
     "":               "${config.ArmGenericCflags}",
     "cortex-a7":      "${config.ArmCortexA7Cflags}",
@@ -986,7 +1080,7 @@ armCpuVariantCflagsVar = map[string]string{
 The Cortex-A8 erratum workaround is also specific to ARM 32-bit:
 
 ```go
-// build/soong/cc/config/arm_device.go (line 45-47)
+// build/soong/cc/config/arm_device.go
 armFixCortexA8LdFlags   = []string{"-Wl,--fix-cortex-a8"}
 armNoFixCortexA8LdFlags = []string{"-Wl,--no-fix-cortex-a8"}
 ```
@@ -1010,7 +1104,7 @@ graph TD
 The ARM 32-bit linker has its own specific flags:
 
 ```go
-// build/soong/cc/config/arm_device.go (line 39-43)
+// build/soong/cc/config/arm_device.go
 armLdflags = []string{
     "-Wl,-m,armelf",
     "-Wl,-mllvm", "-Wl,-enable-shrink-wrap=false",
@@ -1033,27 +1127,38 @@ significant industry interest. The AOSP RISC-V port is still maturing, as
 evidenced by the smaller configuration file and explicit workarounds for
 incomplete toolchain support.
 
-**Source file**: `build/soong/cc/config/riscv64_device.go` (133 lines)
+**Source file**: `build/soong/cc/config/riscv64_device.go`
 
 ### 57.4.1 Base ISA and Extensions
 
-The RISC-V configuration specifies a rich set of extensions:
+The RISC-V configuration specifies a rich set of extensions. As of Android 17
+the baseline shares the same LP64 hardening flags as ARM64
+(`-Werror=implicit-function-declaration` and `-fstack-clash-protection`) and the
+ISA string has grown a vector bit-manipulation extension:
 
 ```go
-// build/soong/cc/config/riscv64_device.go, line 25-36
+// build/soong/cc/config/riscv64_device.go
 riscv64Cflags = []string{
+    // Help catch common 32/64-bit errors.
+    // Common to all LP64 architectures.
     "-Werror=implicit-function-declaration",
+
+    // For stack allocations larger than a page, touch each page immediately
+    // to ensure we hit the guard page on stack overflow.
+    // Common to all LP64 architectures.
+    "-fstack-clash-protection",
+
     // This is already the driver's Android default, but duplicated here (and
     // below) for ease of experimentation with additional extensions.
-    "-march=rv64gcv_zba_zbb_zbs",
-    // TODO: remove when qemu V works
+    "-march=rv64gcv_zba_zbb_zbs_zvbb",
+    // TODO: remove when qemu V works (https://gitlab.com/qemu-project/qemu/-/issues/1976)
     // (Note that we'll probably want to wait for berberis to be good enough
     // that most people don't care about qemu's V performance either!)
     "-mno-implicit-float",
 }
 ```
 
-The ISA string `-march=rv64gcv_zba_zbb_zbs` decodes as follows:
+The ISA string `-march=rv64gcv_zba_zbb_zbs_zvbb` decodes as follows:
 
 | Component | Meaning |
 |---|---|
@@ -1064,10 +1169,14 @@ The ISA string `-march=rv64gcv_zba_zbb_zbs` decodes as follows:
 | `zba` | Address generation instructions (sh1add, sh2add, sh3add) |
 | `zbb` | Basic bit manipulation (clz, ctz, cpop, rev8, etc.) |
 | `zbs` | Single-bit instructions (bset, bclr, binv, bext) |
+| `zvbb` | Vector basic bit manipulation (vector clz/ctz/popcount/rotate) |
 
 This is a notably modern baseline -- the Vector extension in particular enables
 SIMD-like operations analogous to ARM's NEON or Intel's SSE, but with a
-scalable design that does not hard-code the vector width.
+scalable design that does not hard-code the vector width. The `zvbb` extension
+added in Android 17 brings the same bit-manipulation primitives (count leading
+zeros, population count, rotate) to vector registers, which is useful for
+cryptographic and hashing kernels.
 
 ### 57.4.2 QEMU and Berberis Workarounds
 
@@ -1093,7 +1202,7 @@ floating-point or vector instructions for non-floating-point operations
 Unlike ARM64 and x86, RISC-V has no CPU variant tuning:
 
 ```go
-// build/soong/cc/config/riscv64_device.go, line 38-49
+// build/soong/cc/config/riscv64_device.go
 riscv64ArchVariantCflags = map[string][]string{}
 riscv64CpuVariantCflags  = map[string][]string{}
 ```
@@ -1102,7 +1211,7 @@ The variant maps are empty, and the factory function only accepts the default
 (empty string) variant:
 
 ```go
-// build/soong/cc/config/riscv64_device.go, line 110-115
+// build/soong/cc/config/riscv64_device.go
 func riscv64ToolchainFactory(arch android.Arch) Toolchain {
     switch arch.ArchVariant {
     case "":
@@ -1122,15 +1231,19 @@ diversified to the point where micro-architecture-specific tuning is needed.
 The RISC-V linker flags are straightforward:
 
 ```go
-// build/soong/cc/config/riscv64_device.go, line 40-45
+// build/soong/cc/config/riscv64_device.go
 riscv64Ldflags = []string{
-    "-march=rv64gcv_zba_zbb_zbs",
+    // This is already the driver's Android default, but duplicated here (and
+    // above) for ease of experimentation with additional extensions.
+    "-march=rv64gcv_zba_zbb_zbs_zvbb",
     "-Wl,-z,max-page-size=4096",
 }
 ```
 
-Note the hardcoded 4KB page size, unlike ARM64 which uses a configurable
-`MaxPageSizeSupported()`. RISC-V Android currently only supports 4KB pages.
+Note the hardcoded 4KB page size, unlike ARM64 and x86_64, which take their
+maximum page size from the configurable `MaxPageSizeSupported()` (16KB by
+default in Android 17; see section 57.11). RISC-V Android currently only
+supports 4KB pages.
 
 ### 57.4.5 Berberis Binary Translation
 
@@ -1166,23 +1279,28 @@ The ART runtime has full RISC-V support with its own ISA feature tracking. The
 `Riscv64InstructionSetFeatures` class tracks extensions as a bitmap:
 
 ```cpp
-// art/runtime/arch/riscv64/instruction_set_features_riscv64.h (line 31-39)
+// art/runtime/arch/riscv64/instruction_set_features_riscv64.h
 class Riscv64InstructionSetFeatures final : public InstructionSetFeatures {
  public:
   enum {
-    kExtGeneric    = (1 << 0),  // G: IMAFD base set
-    kExtCompressed = (1 << 1),  // C: compressed instructions
-    kExtVector     = (1 << 2),  // V: vector instructions
-    kExtZba        = (1 << 3),  // Zba: address generation
-    kExtZbb        = (1 << 4),  // Zbb: basic bit-manipulation
-    kExtZbs        = (1 << 5),  // Zbs: single-bit manipulation
+    kExtGeneric    = (1 << 0),  // G extension covers the basic set IMAFD
+    kExtCompressed = (1 << 1),  // C extension adds compressed instructions
+    kExtVector     = (1 << 2),  // V extension adds vector instructions
+    kExtZba        = (1 << 3),  // Zba adds address generation bit-manipulation instructions
+    kExtZbb        = (1 << 4),  // Zbb adds basic bit-manipulation instructions
+    kExtZbs        = (1 << 5),  // Zbs adds single-bit bit-manipulation instructions
   };
 ```
+
+ART's feature bitmap tracks six extensions (G, C, V, Zba, Zbb, Zbs). Note that
+even though the Soong toolchain now requests `zvbb` at compile time (section
+57.4.1), ART has no `zvbb` bit yet, so the JIT does not key off it; this is a
+small example of the build toolchain leading ART's runtime feature model.
 
 The feature methods allow ART's JIT compiler to query capabilities:
 
 ```cpp
-// art/runtime/arch/riscv64/instruction_set_features_riscv64.h (line 71-79)
+// art/runtime/arch/riscv64/instruction_set_features_riscv64.h
 bool HasCompressed() const { return (bits_ & kExtCompressed) != 0; }
 bool HasVector() const { return (bits_ & kExtVector) != 0; }
 bool HasZba() const { return (bits_ & kExtZba) != 0; }
@@ -1194,7 +1312,7 @@ The `FromVariant()` implementation currently only recognizes the `"generic"`
 variant and uses the full basic feature set:
 
 ```cpp
-// art/runtime/arch/riscv64/instruction_set_features_riscv64.cc (line 30-46)
+// art/runtime/arch/riscv64/instruction_set_features_riscv64.cc
 constexpr uint32_t BasicFeatures() {
   return Riscv64InstructionSetFeatures::kExtGeneric |
          Riscv64InstructionSetFeatures::kExtCompressed |
@@ -1209,8 +1327,7 @@ Riscv64FeaturesUniquePtr Riscv64InstructionSetFeatures::FromVariant(
   if (variant != "generic") {
     LOG(WARNING) << "Unexpected CPU variant for Riscv64 using defaults: " << variant;
   }
-  return Riscv64FeaturesUniquePtr(
-      new Riscv64InstructionSetFeatures(BasicFeatures()));
+  return Riscv64FeaturesUniquePtr(new Riscv64InstructionSetFeatures(BasicFeatures()));
 }
 ```
 
@@ -1218,8 +1335,9 @@ Feature detection from C preprocessor defines is also implemented, allowing
 the build system to detect extensions at compile time:
 
 ```cpp
-// art/runtime/arch/riscv64/instruction_set_features_riscv64.cc (line 52-71)
+// art/runtime/arch/riscv64/instruction_set_features_riscv64.cc
 Riscv64FeaturesUniquePtr Riscv64InstructionSetFeatures::FromCppDefines() {
+  // Assume kExtGeneric is always present.
   uint32_t bits = kExtGeneric;
 #ifdef __riscv_c
   bits |= kExtCompressed;
@@ -1244,7 +1362,7 @@ Note that the `FromCpuInfo()` and `FromHwcap()` methods are not yet implemented
 for RISC-V:
 
 ```cpp
-// art/runtime/arch/riscv64/instruction_set_features_riscv64.cc (line 73-80)
+// art/runtime/arch/riscv64/instruction_set_features_riscv64.cc
 Riscv64FeaturesUniquePtr Riscv64InstructionSetFeatures::FromCpuInfo() {
   UNIMPLEMENTED(WARNING);
   return FromCppDefines();
@@ -1278,7 +1396,7 @@ maturity gap:
 The ARM64 feature header explicitly disables SVE:
 
 ```cpp
-// art/runtime/arch/arm64/instruction_set_features_arm64.h (line 25-26)
+// art/runtime/arch/arm64/instruction_set_features_arm64.h
 // SVE is currently not enabled.
 static constexpr bool kArm64AllowSVE = false;
 ```
@@ -1293,7 +1411,7 @@ changes to the register allocator and instruction selector.
 ART stores ARM64 features as a compact bitmap for serialization:
 
 ```cpp
-// art/runtime/arch/arm64/instruction_set_features_arm64.h (line 142-150)
+// art/runtime/arch/arm64/instruction_set_features_arm64.h
 enum {
     kA53Bitfield     = 1 << 0,
     kCRCBitField     = 1 << 1,
@@ -1307,14 +1425,14 @@ enum {
 And the private member variables track each feature:
 
 ```cpp
-// art/runtime/arch/arm64/instruction_set_features_arm64.h (line 152-158)
+// art/runtime/arch/arm64/instruction_set_features_arm64.h
 const bool fix_cortex_a53_835769_;
 const bool fix_cortex_a53_843419_;
 const bool has_crc_;      // optional in ARMv8.0, mandatory in ARMv8.1
 const bool has_lse_;      // ARMv8.1 Large System Extensions
 const bool has_fp16_;     // ARMv8.2 FP16 extensions
 const bool has_dotprod_;  // optional in ARMv8.2, mandatory in ARMv8.4
-const bool has_sve_;      // optional in ARMv8.2
+const bool has_sve_;      // optional in ARMv8.2.
 ```
 
 The JIT compiler uses these feature flags to select instruction patterns.
@@ -1360,7 +1478,7 @@ Device configurations declare a primary architecture and an optional secondary
 architecture using `TARGET_ARCH` and `TARGET_2ND_ARCH`:
 
 ```makefile
-# device/generic/arm64/BoardConfig.mk, line 10-19
+# device/generic/arm64/BoardConfig.mk
 TARGET_ARCH := arm64
 TARGET_ARCH_VARIANT := armv8-a
 TARGET_CPU_VARIANT := generic
@@ -1376,7 +1494,7 @@ TARGET_2ND_CPU_ABI2 := armeabi
 Similarly, for x86_64:
 
 ```makefile
-# device/generic/x86_64/BoardConfig.mk, line 9-15
+# device/generic/x86_64/BoardConfig.mk
 TARGET_CPU_ABI := x86_64
 TARGET_ARCH := x86_64
 TARGET_ARCH_VARIANT := x86_64
@@ -1408,7 +1526,7 @@ The multilib choice directly affects how Zygote processes are started. AOSP
 includes several Zygote initialization scripts:
 
 ```makefile
-# build/make/target/product/core_64_bit.mk, line 26-34
+# build/make/target/product/core_64_bit.mk
 PRODUCT_PACKAGES += init.zygote64.rc init.zygote64_32.rc
 
 # Set the zygote property to select the 64-bit primary, 32-bit secondary script
@@ -1425,10 +1543,11 @@ TARGET_SUPPORTS_64_BIT_APPS := true
 For 64-bit-only devices:
 
 ```makefile
-# build/make/target/product/core_64_bit_only.mk, line 23-33
+# build/make/target/product/core_64_bit_only.mk
 PRODUCT_PACKAGES += init.zygote64.rc
 
 PRODUCT_VENDOR_PROPERTIES += ro.zygote=zygote64
+# A 64-bit-only platform does not have dex2oat32, so make sure dex2oat64 is enabled.
 PRODUCT_VENDOR_PROPERTIES += dalvik.vm.dex2oat64.enabled=true
 
 TARGET_SUPPORTS_32_BIT_APPS := false
@@ -1453,7 +1572,7 @@ The valid values are decoded by `decodeMultilibTargets()` in
 `build/soong/android/arch.go`:
 
 ```go
-// build/soong/android/arch.go, line 1939-1981
+// build/soong/android/arch.go
 func decodeMultilibTargets(multilib string, targets []Target, prefer32 bool) ([]Target, error) {
     var buildTargets []Target
     switch multilib {
@@ -1534,7 +1653,7 @@ cc_library {
 A real example from bionic shows this pattern at scale:
 
 ```
-// bionic/libc/Android.bp (around line 980)
+// bionic/libc/Android.bp
 arch: {
     arm: {
         srcs: [
@@ -1598,7 +1717,7 @@ out/target/product/generic_arm64/
 This is configured in `build/make/core/envsetup.mk`:
 
 ```makefile
-# build/make/core/envsetup.mk, line 582-586
+# build/make/core/envsetup.mk
 $(TARGET_2ND_ARCH_VAR_PREFIX)TARGET_OUT_INTERMEDIATES := \
     $(PRODUCT_OUT)/obj_$(TARGET_2ND_ARCH)
 $(TARGET_2ND_ARCH_VAR_PREFIX)TARGET_OUT_SHARED_LIBRARIES := \
@@ -1621,7 +1740,7 @@ The `commonGlobalCflags` array defines flags applied to every C/C++ compilation
 in AOSP:
 
 ```go
-// build/soong/cc/config/global.go, line 32-160
+// build/soong/cc/config/global.go
 commonGlobalCflags = []string{
     "-O2",
     "-Wall",
@@ -1693,20 +1812,23 @@ reducing build output size without losing debug capability.
 Flags that apply only to device (not host) code:
 
 ```go
-// build/soong/cc/config/global.go, line 172-193
+// build/soong/cc/config/global.go
 deviceGlobalCflags = []string{
     "-ffunction-sections",
     "-fdata-sections",
     "-fno-short-enums",
     "-funwind-tables",
-    "-fstack-protector-strong",
     "-Wa,--noexecstack",
     "-D_FORTIFY_SOURCE=3",
+
+    // Add stack canaries on every frame, checked on return.
+    // -fstack-clash-protection isn't supported in clang for ILP32,
+    // so that's in each of the LP64 architectures' configurations instead.
+    "-fstack-protector-strong",
 
     "-Werror=non-virtual-dtor",
     "-Werror=address",
     "-Werror=sequence-point",
-    "-Werror=format-security",
 }
 ```
 
@@ -1717,7 +1839,11 @@ data via `--gc-sections`. This is critical for reducing binary size on mobile.
 **`-fstack-protector-strong`**: Inserts stack canaries in functions that have
 local arrays or take the address of a local variable. The "strong" variant
 protects more functions than `-fstack-protector` but fewer than
-`-fstack-protector-all`, balancing security with performance.
+`-fstack-protector-all`, balancing security with performance. The companion
+flag `-fstack-clash-protection` is not in this global list because Clang does
+not support it for 32-bit (ILP32) ARM; instead the LP64 architectures (ARM64,
+RISC-V 64) add it in their per-architecture base cflags, as shown in sections
+57.2 and 57.4.1.
 
 **`-D_FORTIFY_SOURCE=3`**: The highest level of compile-time and runtime
 buffer overflow detection. Level 3 extends beyond the basic `memcpy` /
@@ -1726,7 +1852,7 @@ buffer overflow detection. Level 3 extends beyond the basic `memcpy` /
 ### 57.6.3 Device Linker Flags
 
 ```go
-// build/soong/cc/config/global.go, line 206-220
+// build/soong/cc/config/global.go
 deviceGlobalLdflags = slices.Concat([]string{
     "-Wl,-z,noexecstack",
     "-Wl,-z,relro",
@@ -1756,7 +1882,7 @@ Together, these flags form a defense-in-depth strategy against exploitation.
 The common linker flags shared between device and host:
 
 ```go
-// build/soong/cc/config/global.go, line 195-199
+// build/soong/cc/config/global.go
 commonGlobalLdflags = []string{
     "-fuse-ld=lld",
     "-Wl,--icf=safe",
@@ -1777,7 +1903,7 @@ Some warnings are so important that modules cannot disable them even if they use
 `-Wno-error` or similar flags in their `Android.bp`:
 
 ```go
-// build/soong/cc/config/global.go, line 255-326
+// build/soong/cc/config/global.go
 noOverrideGlobalCflags = []string{
     "-Werror=address-of-temporary",
     "-Werror=dangling",
@@ -1831,28 +1957,35 @@ graph TB
 Global.go also manages the Clang compiler version:
 
 ```go
-// build/soong/cc/config/global.go, line 410-422
+// build/soong/cc/config/global.go
 CStdVersion               = "gnu23"
-CppStdVersion             = "gnu++20"
+CppDefaultStdVersion      = "gnu++20"
 ExperimentalCStdVersion   = "gnu2y"
 ExperimentalCppStdVersion = "gnu++2b"
 
-ClangDefaultBase         = "prebuilts/clang/host"
-ClangDefaultVersion      = "clang-r563880c"
-ClangDefaultShortVersion = "21"
+// prebuilts/clang default settings.
+ClangDefaultBase = "prebuilts/clang/host"
+// The Clang version used in the trunk branch.
+ClangDefaultVersion = "clang-r584948"
 ```
 
 AOSP uses C23 (`gnu23`) for C code and C++20 (`gnu++20`) for C++ code.
-The `gnu` prefix means GNU extensions are enabled. The specific Clang version
-`clang-r563880c` (Clang 21) is pinned in the source and can be overridden
-via environment variables.
+The `gnu` prefix means GNU extensions are enabled. The Clang version pinned for
+the trunk branch advanced to `clang-r584948` for Android 17 (the previous
+`ClangDefaultShortVersion` constant is gone; the version is read through getter
+functions that allow per-release overrides). The default still resolves through
+`prebuilts/clang/host` and can be overridden with the `LLVM_PREBUILTS_BASE` and
+related environment variables. The C++ standard version is itself now
+release-configurable: `CppDefaultStdVersion` is the fallback, and
+`ReleaseBuildCppStdVersion()` lets a release configuration bump the standard
+without editing this file.
 
 ### 57.6.7 Auto Variable Initialization
 
 A notable security feature is automatic variable initialization:
 
 ```go
-// build/soong/cc/config/global.go, line 454-463
+// build/soong/cc/config/global.go
 if ctx.Config().IsEnvTrue("AUTO_ZERO_INITIALIZE") {
     flags = append(flags, "-ftrivial-auto-var-init=zero")
 } else if ctx.Config().IsEnvTrue("AUTO_PATTERN_INITIALIZE") {
@@ -1875,7 +2008,7 @@ The `toolchain.go` file defines helper functions for all the sanitizer runtime
 libraries:
 
 ```go
-// build/soong/cc/config/toolchain.go, line 219-265
+// build/soong/cc/config/toolchain.go
 func AddressSanitizerRuntimeLibrary() string {
     return LibclangRuntimeLibrary("asan")
 }
@@ -1907,7 +2040,7 @@ Third-party code (anything under `external/`, most of `vendor/`, and most of
 `hardware/`) gets relaxed warning treatment:
 
 ```go
-// build/soong/cc/config/global.go (line 339-364)
+// build/soong/cc/config/global.go
 extraExternalCflags = []string{
     "-Wno-enum-compare",
     "-Wno-enum-compare-switch",
@@ -1927,7 +2060,7 @@ extraExternalCflags = []string{
 And the non-overridable flags for external code are even more permissive:
 
 ```go
-// build/soong/cc/config/global.go (line 370-393)
+// build/soong/cc/config/global.go
 noOverrideExternalGlobalCflags = []string{
     "-fcommon",
     "-Wno-format-insufficient-args",
@@ -1956,7 +2089,7 @@ link.
 AOSP bans certain compiler flags entirely:
 
 ```go
-// build/soong/cc/config/global.go (line 401-408)
+// build/soong/cc/config/global.go
 IllegalFlags = []string{
     "-w",
     "-pedantic",
@@ -1977,9 +2110,9 @@ warnings from legitimate GNU extension usage throughout AOSP.
 AOSP specifies modern language standards:
 
 ```go
-// build/soong/cc/config/global.go (line 410-413)
+// build/soong/cc/config/global.go
 CStdVersion               = "gnu23"
-CppStdVersion             = "gnu++20"
+CppDefaultStdVersion      = "gnu++20"
 ExperimentalCStdVersion   = "gnu2y"
 ExperimentalCppStdVersion = "gnu++2b"
 ```
@@ -2000,7 +2133,7 @@ The `clang.go` file maintains a list of GCC flags that Clang does not
 understand, which must be filtered out when processing legacy build files:
 
 ```go
-// build/soong/cc/config/clang.go, line 25-74
+// build/soong/cc/config/clang.go
 var ClangUnknownCflags = sorted([]string{
     "-finline-functions",
     "-finline-limit=64",
@@ -2205,10 +2338,13 @@ PRODUCT_MODEL := AOSP on ARM64
 PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true
 ```
 
-The `PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true` flag is a recent addition that
-prevents bionic from exposing a fixed `PAGE_SIZE` macro, allowing the system to
-support 16KB pages on ARM64 (a kernel configuration option that improves TLB
-performance).
+The `PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true` flag prevents bionic from
+exposing a fixed `PAGE_SIZE` macro, so code must read the page size at runtime
+instead of assuming 4096 at compile time. This matters because Android 17
+defaults the ARM64 and x86_64 ELF segment alignment to 16KB (section 57.11), and
+a binary that hardcoded `PAGE_SIZE == 4096` would misbehave on a 16KB-page
+kernel. Larger pages reduce TLB pressure and page-fault overhead at the cost of
+some memory fragmentation.
 
 ---
 
@@ -2257,7 +2393,7 @@ during dynamic linking and chooses an implementation based on hardware
 capabilities:
 
 ```cpp
-// bionic/libc/arch-arm64/ifuncs.cpp (line 41-49)
+// bionic/libc/arch-arm64/ifuncs.cpp
 static inline bool __bionic_is_oryon(unsigned long hwcap) {
   if (!(hwcap & HWCAP_CPUID)) return false;
 
@@ -2272,7 +2408,7 @@ static inline bool __bionic_is_oryon(unsigned long hwcap) {
 The `memcpy` ifunc resolver demonstrates the multi-level dispatch:
 
 ```cpp
-// bionic/libc/arch-arm64/ifuncs.cpp (line 69-79)
+// bionic/libc/arch-arm64/ifuncs.cpp
 DEFINE_IFUNC_FOR(memcpy) {
   if (arg->_hwcap2 & HWCAP2_MOPS) {
     RETURN_FUNC(memcpy_func_t, __memmove_aarch64_mops);
@@ -2311,7 +2447,7 @@ hot string functions. MTE-aware variants are selected when `HWCAP2_MTE` is
 present:
 
 ```cpp
-// bionic/libc/arch-arm64/ifuncs.cpp (line 100-108)
+// bionic/libc/arch-arm64/ifuncs.cpp
 DEFINE_IFUNC_FOR(memset) {
   if (arg->_hwcap2 & HWCAP2_MOPS) {
     RETURN_FUNC(memset_func_t, __memset_aarch64_mops);
@@ -2324,7 +2460,7 @@ DEFINE_IFUNC_FOR(memset) {
 ```
 
 ```cpp
-// bionic/libc/arch-arm64/ifuncs.cpp (line 117-123)
+// bionic/libc/arch-arm64/ifuncs.cpp
 DEFINE_IFUNC_FOR(strchr) {
   if (arg->_hwcap2 & HWCAP2_MTE) {
     RETURN_FUNC(strchr_func_t, __strchr_aarch64_mte);
@@ -2388,19 +2524,23 @@ execution context in ways that C cannot express:
 The ARM64 `setjmp.S` shows the register-level detail required:
 
 ```asm
-// bionic/libc/arch-arm64/bionic/setjmp.S (line 32-51)
-// According to AARCH64 PCS document we need to save:
-//   Core     x19 - x30, sp (see section 5.1.1)
-//   VFP      d8 - d15 (see section 5.1.2)
+// bionic/libc/arch-arm64/bionic/setjmp.S
+// According to AARCH64 PCS document we need to save the following
+// registers:
 //
-// jmp_buf layout:
-//   word   name            description
-//   0      sigflag/cookie  setjmp cookie in top 31 bits, signal mask flag in low bit
-//   1      sigmask         signal mask
-//   2      core_base       base of core registers (x18-x30, sp)
-//   16     float_base      base of float registers (d8-d15)
-//   24     checksum        checksum of core registers
-//   25     reserved        reserved entries (room to grow)
+// Core     x19 - x30, sp (see section 5.1.1)
+// VFP      d8 - d15 (see section 5.1.2)
+//
+// The internal structure of a jmp_buf is totally private.
+// Current layout (changes from release to release):
+//
+// word   name            description
+// 0      sigflag/cookie  setjmp cookie in top 63 bits, signal mask flag in low bit
+// 1      sigmask         signal mask (not used with _setjmp / _longjmp)
+// 2      core_base       base of core registers (x18-x30, sp)
+// 16     float_base      base of float registers (d8-d15)
+// 24     checksum
+// 25     reserved        reserved entries (room to grow)
 ```
 
 ### 57.8.6 Bionic: MTE Integration
@@ -2414,7 +2554,7 @@ ARM64 bionic includes ELF notes that control MTE behavior. Two variants exist:
   overhead, immediate error reporting)
 
 ```asm
-// bionic/libc/arch-arm64/bionic/note_memtag_heap_async.S (line 34-46)
+// bionic/libc/arch-arm64/bionic/note_memtag_heap_async.S
   .section ".note.android.memtag", "a", %note
   .p2align 2
   .long 1f - 0f                 // int32_t namesz
@@ -2471,7 +2611,7 @@ ART's `instruction_set_features.cc` dispatches feature detection to
 architecture-specific implementations:
 
 ```cpp
-// art/runtime/arch/instruction_set_features.cc (line 33-53)
+// art/runtime/arch/instruction_set_features.cc
 std::unique_ptr<const InstructionSetFeatures> InstructionSetFeatures::FromVariant(
     InstructionSet isa, const std::string& variant, std::string* error_msg) {
   switch (isa) {
@@ -2495,7 +2635,7 @@ The ARM64 feature detection (`instruction_set_features_arm64.cc`) is
 particularly detailed, tracking specific CPU errata and optional ISA extensions:
 
 ```cpp
-// art/runtime/arch/arm64/instruction_set_features_arm64.cc (line 52-85)
+// art/runtime/arch/arm64/instruction_set_features_arm64.cc
 static const char* arm64_variants_with_a53_835769_bug[] = {
     "default", "generic",
     "cortex-a53", "cortex-a53.a57", "cortex-a53.a72",
@@ -2685,7 +2825,7 @@ ARM 32-bit has a unique feature among AOSP architectures: two instruction
 encodings. The ARM toolchain supports switching between them:
 
 ```go
-// build/soong/cc/config/arm_device.go (line 49-54)
+// build/soong/cc/config/arm_device.go
 armArmCflags = []string{}
 
 armThumbCflags = []string{
@@ -2697,7 +2837,7 @@ armThumbCflags = []string{
 The toolchain's `InstructionSetFlags()` method selects between them:
 
 ```go
-// build/soong/cc/config/arm_device.go (line 288-297)
+// build/soong/cc/config/arm_device.go
 func (t *toolchainArm) InstructionSetFlags(isa string) (string, error) {
     switch isa {
     case "arm":
@@ -2726,7 +2866,7 @@ floating-point values are passed in integer registers at function call
 boundaries, even though the hardware FPU is used for computation:
 
 ```go
-// build/soong/cc/config/arm_device.go (line 56-77)
+// build/soong/cc/config/arm_device.go
 armArchVariantCflags = map[string][]string{
     "armv7-a": []string{
         "-march=armv7-a",
@@ -2766,7 +2906,7 @@ Even the way binaries are stripped varies by architecture. Bionic's
 `Android.bp` configures different strip behavior for each architecture:
 
 ```
-// bionic/libc/Android.bp (around line 135-165)
+// bionic/libc/Android.bp
 arch: {
     arm: {
         // arm32 does not produce complete exidx unwind information,
@@ -2811,7 +2951,7 @@ use DWARF-based unwinding and only need the symbol table kept.
 The bionic page size macro handling is architecture-aware:
 
 ```go
-// build/soong/cc/config/arm64_device.go (line 98-106)
+// build/soong/cc/config/arm64_device.go
 pctx.VariableFunc("Arm64Cflags", func(ctx android.PackageVarContext) string {
     flags := arm64Cflags
     if ctx.Config().NoBionicPageSizeMacro() {
@@ -2826,7 +2966,7 @@ pctx.VariableFunc("Arm64Cflags", func(ctx android.PackageVarContext) string {
 The same pattern exists for x86_64:
 
 ```go
-// build/soong/cc/config/x86_64_device.go (line 111-119)
+// build/soong/cc/config/x86_64_device.go
 pctx.VariableFunc("X86_64Cflags", func(ctx android.PackageVarContext) string {
     flags := x86_64Cflags
     if ctx.Config().NoBionicPageSizeMacro() {
@@ -2849,7 +2989,7 @@ marks it as deprecated, producing warnings when code uses it.
 Product configurations opt into this behavior:
 
 ```makefile
-# build/make/target/product/aosp_arm64.mk (line 80)
+# build/make/target/product/aosp_arm64.mk
 PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true
 ```
 
@@ -2859,7 +2999,7 @@ Several ARM 32-bit CPU variants require a manual define to advertise Large
 Physical Address Extensions (LPAE) support:
 
 ```go
-// build/soong/cc/config/arm_device.go (line 80-100)
+// build/soong/cc/config/arm_device.go
 "cortex-a7": []string{
     "-mcpu=cortex-a7",
     "-mfpu=neon-vfpv4",
@@ -2878,7 +3018,212 @@ load/store) relies on this macro to detect hardware support.
 
 ---
 
-## 57.9 Try It
+## 57.9 The LFI Toolchain: Lightweight Fault Isolation on ARM64
+
+Android 17 adds a sixth toolchain that does not correspond to a new CPU
+architecture at all. It is an ARM64 variant built for Lightweight Fault
+Isolation (LFI), an in-process sandbox that confines untrusted native code to a
+restricted region of the address space without a separate process or hardware
+domain crossing. The toolchain lives in its own file alongside the per-arch
+device configs:
+
+**Source file**: `build/soong/cc/config/arm64_lfi_device.go`
+
+### 57.9.1 Why a Separate Toolchain
+
+Section 57.1.1 showed that `toolchainFactories` is keyed not just by OS and
+architecture but by a boolean LFI flag, and that `registerLFIToolchainFactory`
+fills the `true` slot. The reason is that LFI is a code-generation property:
+sandboxed code must be compiled with a different target and a constrained
+instruction selection so that the LFI rewriter/verifier can prove it stays
+inside its sandbox. That decision has to be made when the toolchain is resolved,
+which happens early and is driven purely by the target's arch, so LFI is modeled
+as a parallel toolchain rather than a flag bolted onto the normal one.
+
+On the `android.Target` side this shows up as a dedicated `LFI bool` field, an
+`AndroidLFITarget` that is prepended to a module's target list when the module
+opts in, and a distinct `lfi_` variation name produced by the arch mutator:
+
+```go
+// build/soong/android/arch.go
+// If this is an LFI (Lightweight Fault Isolation) arch variant. There is also an LFI
+// transition mutator, but we have separate LFI arch variants as well because toolchain
+// resolution happens early, based on arch.
+LFI bool
+```
+
+```go
+// build/soong/android/arch.go
+func (target Target) ArchVariation() string {
+    var variation string
+    if target.NativeBridge {
+        variation = "native_bridge_"
+    } else if target.LFI {
+        variation = "lfi_"
+    }
+    variation += target.Arch.String()
+    return variation
+}
+```
+
+### 57.9.2 The LFI ARM64 Toolchain
+
+The LFI toolchain reuses ARM64's flag-assembly helper but pins the architecture
+to a fixed configuration. The factory ignores whatever variant the board
+declares and forces `armv8-a` with the Cortex-A53 tuning and the `branchprot`
+feature, because that is the only configuration the LFI compiler supports today:
+
+```go
+// build/soong/cc/config/arm64_lfi_device.go
+func arm64LFIToolchainFactory(arch android.Arch) Toolchain {
+    // Force armv8-a when compiling for lfi, as that's all the lfi compiler supports for now.
+    arch = android.Arch{
+        ArchType:     android.Arm64,
+        ArchVariant:  "armv8-a",
+        CpuVariant:   "cortex-a53",
+        Abi:          []string{"arm64-v8a"},
+        ArchFeatures: []string{"branchprot"},
+    }
+    toolchainCflags, toolchainLdflags := arm64ToolchainFlags(arch)
+    return &toolchainLFIArm64{
+        toolchainCflags:  toolchainCflags,
+        toolchainLdflags: toolchainLdflags,
+    }
+}
+
+func init() {
+    registerLFIToolchainFactory(android.Android, android.Arm64, arm64LFIToolchainFactory)
+}
+```
+
+Calling `arm64ToolchainFlags` (the helper extracted from the ordinary ARM64
+factory in section 57.2.6) means the LFI toolchain inherits the exact same
+PAC/BTI flags and Cortex-A53 erratum fixes as the normal build, which is why
+that helper was split out.
+
+The toolchain type itself differs from the ordinary ARM64 toolchain in two
+telling ways. First, its Clang triple is a custom one that the LFI back end
+recognizes; second, it embeds `toolchainLFI` (from
+`build/soong/cc/config/lfi.go`) rather than `toolchainBionic`, so it links with
+no CRT objects and reports `Lfi()` as true:
+
+```go
+// build/soong/cc/config/arm64_lfi_device.go
+func (t *toolchainLFIArm64) ClangTriple() string {
+    return "aarch64_lfi-unknown-linux-android30"
+}
+
+func (t *toolchainLFIArm64) Cflags() string {
+    return "${config.Arm64Cflags} -mno-outline-atomics"
+}
+```
+
+```go
+// build/soong/cc/config/lfi.go
+type toolchainLFI struct {
+    toolchainBase
+    toolchainNoCrt
+}
+
+func (toolchainLFI) Lfi() bool { return true }
+```
+
+The `aarch64_lfi-` triple steers the compiler into the sandbox-friendly code
+model, and `-mno-outline-atomics` keeps atomic operations inline (the
+out-of-line atomic helpers would call into runtime support outside the sandbox).
+This is the concrete payoff of the `Lfi()` method added to the `Toolchain`
+interface in section 57.1.2: ordinary bionic toolchains return `false`, and only
+this toolchain returns `true`, so the rest of the build can branch on whether it
+is producing sandboxed code.
+
+```mermaid
+graph TD
+    A["Module targets LFI arch variant"] --> B["arch mutator: lfi_arm64 variation"]
+    B --> C["findToolchain(os, arch, lfi=true)"]
+    C --> D["arm64LFIToolchainFactory()"]
+    D --> E["Force armv8-a + cortex-a53 + branchprot"]
+    E --> F["arm64ToolchainFlags() (shared with normal ARM64)"]
+    F --> G["toolchainLFIArm64<br/>triple: aarch64_lfi-unknown-linux-android30<br/>no CRT, Lfi() == true"]
+```
+
+## 57.10 16KB Page Size by Default
+
+The most consequential 17 change for architecture support is invisible in any
+single `-march=` flag: the platform now aligns 64-bit binaries for a 16KB page
+size by default. ARM64 has long allowed 4KB, 16KB, and 64KB pages, but until
+recently AOSP shipped binaries aligned for 4KB pages, which a 16KB-page kernel
+cannot load. Android 17 flips the default the other way.
+
+### 57.10.1 The Build-Side Default
+
+`TARGET_MAX_PAGE_SIZE_SUPPORTED` controls the alignment of ELF segments, and its
+default is computed in `build/make/core/config.mk`:
+
+```makefile
+# build/make/core/config.mk
+ifdef PRODUCT_MAX_PAGE_SIZE_SUPPORTED
+  TARGET_MAX_PAGE_SIZE_SUPPORTED := $(PRODUCT_MAX_PAGE_SIZE_SUPPORTED)
+else ifeq ($(strip $(call is-low-mem-device)),true)
+  # Low memory device will have 4096 binary alignment.
+  TARGET_MAX_PAGE_SIZE_SUPPORTED := 4096
+else ifeq ($(call math_lt,$(VSR_VENDOR_API_LEVEL),34),true)
+  TARGET_MAX_PAGE_SIZE_SUPPORTED := 4096
+else ifeq (,$(filter arm64 x86_64,$(TARGET_ARCH)))
+  # TARGET_MAX_PAGE_SIZE_SUPPORTED > 4096 is only supported in arm64 and
+  # x86_64 targets.
+  TARGET_MAX_PAGE_SIZE_SUPPORTED := 4096
+else
+  # The default binary alignment for userspace is 16384.
+  TARGET_MAX_PAGE_SIZE_SUPPORTED := 16384
+endif
+```
+
+The default is 16384 (16KB) unless something opts out: a low-memory device, a
+vendor still on an older VSR API level, or a 32-bit / RISC-V target (only arm64
+and x86_64 support pages larger than 4KB here). This value flows straight into
+the per-architecture linker flags as `MaxPageSizeSupported()`, which section
+57.2.7 showed feeding the ARM64 `-Wl,-z,max-page-size=` flag; the x86_64
+toolchain consumes it the same way. RISC-V keeps a hardcoded 4096
+(section 57.4.4).
+
+### 57.10.2 The Bionic-Side Macro
+
+Aligning segments for 16KB pages is only half the story. Code that hardcoded
+`PAGE_SIZE` as a compile-time constant of 4096 would compute wrong buffer sizes
+and `mmap` alignments on a 16KB kernel. Bionic addresses this with the
+page-size macro controls described in section 57.8.15:
+`-D__BIONIC_NO_PAGE_SIZE_MACRO` removes the `PAGE_SIZE` constant entirely so code
+must call `getpagesize()` or `sysconf(_SC_PAGE_SIZE)` at runtime, while
+`-D__BIONIC_DEPRECATED_PAGE_SIZE_MACRO` keeps the macro but flags its use. The
+generic AOSP arm64 product turns on the strict form:
+
+```makefile
+# build/make/target/product/aosp_arm64.mk
+PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true
+```
+
+`PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO` is read by Soong as `NoBionicPageSizeMacro()`
+and selects which of the two macros each LP64 architecture base-cflags function
+appends (the `Arm64Cflags` and `X86_64Cflags` `VariableFunc`s in sections 57.2
+and 57.8.15). The net effect for Android 17: platform binaries are 16KB-aligned,
+and the C library refuses to let new platform code assume a fixed page size, so
+the same image runs correctly on both 4KB and 16KB kernels.
+
+```mermaid
+graph TD
+    A["config.mk default<br/>TARGET_MAX_PAGE_SIZE_SUPPORTED = 16384<br/>(arm64 / x86_64, non-low-mem)"] --> B["MaxPageSizeSupported()"]
+    B --> C["arm64 / x86_64 Ldflags<br/>-Wl,-z,max-page-size=16384"]
+    C --> D["16KB-aligned ELF segments"]
+    E["PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO = true"] --> F["NoBionicPageSizeMacro()"]
+    F --> G["-D__BIONIC_NO_PAGE_SIZE_MACRO<br/>(no compile-time PAGE_SIZE)"]
+    G --> H["code reads page size at runtime"]
+    D --> I["Binary loads on 4KB and 16KB kernels"]
+    H --> I
+```
+
+---
+
+## 57.11 Try It
 
 ### Exercise 1: Inspect Architecture Flags for Your Device
 
@@ -3153,6 +3498,16 @@ design principles:
    `NativeBridgeCallbacks` interface enables binary translation (Berberis,
    Houdini) for running foreign-architecture native code.
 
+7. **A parallel LFI toolchain**: Android 17 models Lightweight Fault Isolation
+   as a separate ARM64 toolchain (`Lfi()` returns true), resolved through an
+   `lfi bool` key in the toolchain factory map, reusing the ordinary ARM64 flag
+   logic while pinning a sandbox-friendly target triple.
+
+Android 17 also defaults 64-bit binaries to a 16KB page-size alignment on arm64
+and x86_64, adds the Intel `pantherlake` x86/x86_64 variant (mirrored in ART's
+feature tables), extends the RISC-V baseline ISA with the `zvbb` vector
+bit-manipulation extension, and advances the pinned Clang to `clang-r584948`.
+
 The following table summarizes the characteristics of each supported
 architecture:
 
@@ -3160,12 +3515,13 @@ architecture:
 |---|---|---|---|---|---|
 | Bits | 32 | 64 | 32 | 64 | 64 |
 | Clang Triple | `armv7a-linux-androideabi` | `aarch64-linux-android` | `i686-linux-android` | `x86_64-linux-android` | `riscv64-linux-android` |
-| Arch Variants | 4 | 10 | 14 | 13 | 0 |
+| Arch Variants | 4 | 10 | 15 | 14 | 0 |
 | CPU Variants | 18 | 10 | 0 | 0 | 0 |
 | SIMD | NEON | NEON/SVE | SSE/AVX | SSE/AVX | RVV |
-| Default `-march=` | `armv7-a` | `armv8-a` | `prescott` | `x86-64` | `rv64gcv_zba_zbb_zbs` |
+| Default `-march=` | `armv7-a` | `armv8-a` | `prescott` | `x86-64` | `rv64gcv_zba_zbb_zbs_zvbb` |
 | Instruction Sets | ARM + Thumb | AArch64 | x86 | x86-64 | RV64 + C |
 | Errata Workarounds | Cortex-A8 | Cortex-A53 | None | None | QEMU V |
+| Default max page size | 4KB | 16KB | 4KB | 16KB | 4KB |
 | Float ABI | Soft (`softfp`) | Hard | N/A | N/A | Hard |
 | Yasm Support | No | No | Yes | Yes | No |
 | Secondary Arch For | ARM64 | N/A | x86_64 | N/A | N/A |
@@ -3195,11 +3551,15 @@ The key source files for architecture support are:
 | `build/soong/cc/config/x86_64_device.go` | x86_64 toolchain configuration |
 | `build/soong/cc/config/x86_device.go` | x86 toolchain configuration |
 | `build/soong/cc/config/riscv64_device.go` | RISC-V 64 toolchain configuration |
-| `build/soong/cc/config/global.go` | Global compiler flags |
-| `build/soong/cc/config/toolchain.go` | Toolchain interface and helpers |
+| `build/soong/cc/config/arm64_lfi_device.go` | ARM64 Lightweight Fault Isolation toolchain |
+| `build/soong/cc/config/lfi.go` | LFI toolchain base type |
+| `build/soong/cc/config/global.go` | Global compiler flags, Clang version |
+| `build/soong/cc/config/toolchain.go` | Toolchain interface and factory map |
 | `build/soong/cc/config/clang.go` | Clang-specific flag filtering |
 | `build/soong/cc/config/bionic.go` | Bionic CRT objects and defaults |
-| `build/soong/android/arch.go` | Multilib and architecture mutators |
+| `build/soong/cc/linker.go` | RELR / packed relocation linker flags |
+| `build/soong/android/arch.go` | Multilib, arch mutators, LFI target |
+| `build/make/core/config.mk` | `TARGET_MAX_PAGE_SIZE_SUPPORTED` default (16KB) |
 | `bionic/libc/arch-arm64/ifuncs.cpp` | ARM64 runtime function dispatch |
 | `art/runtime/arch/instruction_set_features.cc` | ART ISA feature detection |
 | `device/generic/arm64/BoardConfig.mk` | ARM64 reference device config |

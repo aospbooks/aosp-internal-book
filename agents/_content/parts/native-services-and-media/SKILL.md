@@ -12,7 +12,7 @@ description: |
   Chapters 12–17.
 metadata:
   author: 'utzcoz'
-  last-updated: '2026-06-16'
+  last-updated: '2026-06-20'
 ---
 
 # AOSP Part IV — Native Services & Media

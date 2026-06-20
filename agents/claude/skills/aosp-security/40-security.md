@@ -1654,7 +1654,7 @@ When a key is deleted:
 
 Starting with Android 12, devices support Remote Key Provisioning.  Instead
 of burning attestation keys in the factory, keys are provisioned from a Google
-backend after the device passes integrity checks.  The relevant module is:
+backend after the device passes integrity checks.  The relevant modules are:
 
 ```
 system/security/keystore2/src/remote_provisioning.rs
@@ -1667,6 +1667,13 @@ Benefits:
 - Supports key rotation and revocation at scale.
 - Reduces the blast radius of key compromise.
 
+Keystore2 decides whether to route attestation through RKP in
+`RemProvState::get_rkpd_attestation_key_and_certs`
+(`system/security/keystore2/src/remote_provisioning.rs`).  RKP is attempted
+only for asymmetric keys (`is_asymmetric_key`) bound to an app domain, and
+only when RKP is actually enabled on the device.  The hardening details that
+landed for Android 17 are covered in section 40.10.5.
+
 ### 40.4.12  KeyMint AIDL Interface
 
 The KeyMint HAL is defined in AIDL at
@@ -1677,12 +1684,16 @@ The KeyMint HAL is defined in AIDL at
 | `IKeyMintDevice.aidl` | Main device interface (generateKey, importKey, begin) |
 | `IKeyMintOperation.aidl` | Per-operation interface (update, finish, abort) |
 | `SecurityLevel.aidl` | TEE, StrongBox, Software levels |
-| `Algorithm.aidl` | RSA, EC, AES, HMAC, 3DES |
+| `Algorithm.aidl` | RSA, EC, ML_DSA, AES, HMAC, 3DES |
+| `MlDsaVariant.aidl` | Post-quantum ML-DSA-65 / ML-DSA-87 selector (Android 17) |
 | `KeyCharacteristics.aidl` | Key properties returned from generateKey |
 | `KeyCreationResult.aidl` | Key blob + characteristics + certificates |
 | `HardwareAuthToken.aidl` | Authentication token structure |
-| `Tag.aidl` | Key parameter tags (PURPOSE, ALGORITHM, KEY_SIZE, etc.) |
-| `ErrorCode.aidl` | Detailed error codes |
+| `Tag.aidl` | Key parameter tags (PURPOSE, ALGORITHM, KEY_SIZE, ML_DSA_VARIANT, etc.) |
+| `ErrorCode.aidl` | Detailed error codes (including UNSUPPORTED_ML_DSA_VARIANT) |
+
+`Algorithm.aidl` gained an `ML_DSA = 4` value in Android 17, introducing the
+first post-quantum key type into the HAL; the full story is in section 40.10.
 
 The `IKeyMintDevice` interface defines these core operations:
 
@@ -1708,12 +1719,19 @@ interface IKeyMintDevice {
                       in byte[] keyBlob,
                       in KeyParameter[] params,
                       in HardwareAuthToken authToken);
-    byte[] deviceLocked(in boolean passwordOnly,
-                        in TimeStampToken timestampToken);
-    byte[] earlyBootEnded();
+    void deviceLocked(in boolean passwordOnly,
+                      in @nullable TimeStampToken timestampToken);
+    void earlyBootEnded();
     ...
 }
 ```
+
+`deviceLocked` is marked `@deprecated` in
+`hardware/interfaces/security/keymint/aidl/android/hardware/security/keymint/IKeyMintDevice.aidl`:
+the comment notes the method "has never been used due to design limitations,"
+so implementations should return `ErrorCode::UNIMPLEMENTED`.  The
+`TimeStampToken` argument is therefore vestigial here.  Where authenticated
+timestamps actually come from in Android 17 is described in section 40.10.3.
 
 ### 40.4.13  Keystore2 Authorization Flow
 
@@ -3663,12 +3681,436 @@ or netlink configuration.
 
 ---
 
-## 40.10  Try It
+## 40.10  Android 17 Security Updates
+
+Android 17 pushes the hardware-backed security stack in three directions at
+once: it adds the first post-quantum key algorithm to KeyMint, it consolidates
+the secure-clock interface inside the KeyMint trusted application, and it lets
+the whole KeyMint/Gatekeeper trust domain run inside a protected VM reached over
+`IAccessor`.  Keystore2 also gains an optional attestation-certificate
+post-processing hook and a set of Remote Key Provisioning safety limits.  This
+section folds those changes into the architecture described above.
+
+(The unrelated in-process native sandbox introduced in Android 17 is covered in
+its own chapter on the Lightweight Fault Isolation sandbox; this chapter only
+notes that KeyMint and Gatekeeper are unaffected by it.)
+
+### 40.10.1  ML-DSA Post-Quantum Keys
+
+The headline cryptographic change is ML-DSA (Module-Lattice Digital Signature
+Algorithm, FIPS 204), the standardized form of CRYSTALS-Dilithium.  It is the
+first post-quantum signature scheme exposed through the KeyMint HAL.  The HAL
+adds it as a new top-level algorithm in
+`hardware/interfaces/security/keymint/aidl/android/hardware/security/keymint/Algorithm.aidl`:
+
+```aidl
+enum Algorithm {
+    RSA = 1,
+    // 2 removed, do not reuse.
+    EC = 3,
+    ML_DSA = 4,
+    AES = 32,
+    TRIPLE_DES = 33,
+    HMAC = 128,
+}
+```
+
+Two parameter sets are supported, selected by `MlDsaVariant.aidl`:
+
+```aidl
+enum MlDsaVariant {
+    // ML-DSA-44 is not supported.
+    ML_DSA_65 = 1,
+    ML_DSA_87 = 2,
+}
+```
+
+Because ML-DSA parameter sets are not described by a single key-size integer
+the way RSA and EC are, the variant is carried by a new tag rather than
+`Tag::KEY_SIZE`.  `Tag.aidl` defines `ML_DSA_VARIANT = TagType.ENUM | 11`, and
+`KeyParameterValue.aidl` adds a matching `MlDsaVariant mlDsaVariant` arm.  The
+contract in
+`hardware/interfaces/security/keymint/aidl/android/hardware/security/keymint/IKeyMintDevice.aidl`
+makes the rules explicit: `Tag::ML_DSA_VARIANT` must be supplied to generate an
+ML-DSA key (otherwise `generateKey` returns
+`ErrorCode::UNSUPPORTED_ML_DSA_VARIANT`, defined as `-87` in `ErrorCode.aidl`);
+no `KEY_SIZE` is passed; TEE implementations must support both ML-DSA-65 and
+ML-DSA-87; StrongBox does not support ML-DSA at all; the only purposes allowed
+are `SIGN` or `ATTEST_KEY` (never both); and the only digest is `Digest::NONE`.
+
+The variant is also recorded in the attestation record.  The
+`AuthorizationList` schema documented in `KeyCreationResult.aidl` carries it as
+`mlDsaVariant [11] EXPLICIT INTEGER OPTIONAL`, the ASN.1 counterpart of the new
+tag.
+
+The reference KeyMint TA implements the algorithm in
+`system/keymint/common/src/crypto/mldsa.rs`.  Public keys are encoded as a
+`SubjectPublicKeyInfo` whose `AlgorithmIdentifier` OID is
+`2.16.840.1.101.3.4.3.18` for ML-DSA-65 or `2.16.840.1.101.3.4.3.19` for
+ML-DSA-87 (RFC 9881), with absent parameters.
+
+The KeyMint algorithm taxonomy after Android 17 looks like this.
+
+```mermaid
+flowchart TD
+    A["Algorithm.aidl"] --> B["Asymmetric"]
+    A --> C["Symmetric block"]
+    A --> D["MAC"]
+    B --> B1["RSA = 1"]
+    B --> B2["EC = 3"]
+    B --> B3["ML_DSA = 4 (post-quantum, Android 17)"]
+    C --> C1["AES = 32"]
+    C --> C2["TRIPLE_DES = 33"]
+    D --> D1["HMAC = 128"]
+    B3 --> E["MlDsaVariant.aidl"]
+    E --> E1["ML_DSA_65 = 1"]
+    E --> E2["ML_DSA_87 = 2"]
+```
+
+### 40.10.2  ML-DSA Seed Import
+
+An ML-DSA private key is fully determined by a 32-byte seed; the large expanded
+key (4032 bytes for ML-DSA-65, 4896 bytes for ML-DSA-87) is derived from it.
+Android 17 therefore lets a key be imported in seed form rather than as the
+expanded blob.  `system/keymint/common/src/crypto/mldsa.rs` defines
+`SEED_SIZE = 32` and stores the key as the seed itself:
+
+```rust
+pub enum Key {
+    MlDsa65([u8; SEED_SIZE]),
+    MlDsa87([u8; SEED_SIZE]),
+}
+```
+
+`import_raw_key` accepts a bare 32-byte seed plus a variant, while
+`import_pkcs8_key` accepts the PKCS#8 form defined in RFC 9881 section 6.  That
+PKCS#8 structure has a `CHOICE` of seed / expandedKey / both; the
+implementation supports only the seed alternative.  Because the seed has a
+fixed 32-byte length, the code skips full ASN.1 parsing and instead matches a
+22-byte DER prefix (the SEQUENCE, version, algorithm OID, and the
+context-tagged seed wrapper) followed by the seed bytes.  Any other length or
+prefix is rejected with `InvalidArgument`.  Keystore2 mirrors this on the
+service side: insecure (software) import of an ML-DSA private key expects the
+PKCS#8 seed format.
+
+### 40.10.3  The Timestamp Interface Folds Into the KeyMint HAL
+
+Authenticated timestamps, defined by `ISecureClock` in
+`hardware/interfaces/security/secureclock/aidl/`, are used to bound the freshness
+of `HardwareAuthToken`s.  In Android 17 the secure-clock functionality is served
+by the KeyMint trusted application itself rather than by a separate timestamp
+service.  The KeyMint TA dispatch loop in `system/keymint/ta/src/lib.rs` handles
+the `SecureClockGenerateTimeStamp` request directly, calling
+`generate_timestamp` in `system/keymint/ta/src/clock.rs`:
+
+```rust
+pub fn generate_timestamp(&self, challenge: i64) -> Result<TimeStampToken, Error> {
+    if let Some(clock) = &self.imp.clock {
+        let mut ret =
+            TimeStampToken { challenge, timestamp: clock.now().into(), mac: Vec::new() };
+        let mac_input = self.dev.keys.timestamp_token_mac_input(&ret)?;
+        ret.mac = self.device_hmac(&mac_input)?;
+        Ok(ret)
+    } else {
+        Err(km_err!(Unimplemented, "no clock available"))
+    }
+}
+```
+
+Because KeyMint and the secure clock now share the same `device_hmac` shared
+secret, a single trusted application can both issue and verify the timestamp
+token, removing the need for a standalone `hal_timestamp_service`.  The SELinux
+policy was updated to match: `system/sepolicy/private/hal_keymint.te` no longer
+attaches a separate timestamp service attribute, and the documented model is
+that "the keymint HAL serves the timestamp interface also."
+
+This change also explains the deprecation noted in section 40.4.12.  The
+`deviceLocked` method in `IKeyMintDevice.aidl` still takes a `TimeStampToken`
+argument, but it is marked `@deprecated` and its parameters are annotated
+"N/A due to the deprecation," so a conformant implementation returns
+`ErrorCode::UNIMPLEMENTED` and never consumes the token there.
+
+### 40.10.4  KeyMint, Gatekeeper, and RKP Inside a Protected VM
+
+Android 17 extends the protected-VM (Microdroid) model to the hardware-backed
+security HALs.  Instead of a vendor service registered directly with
+`servicemanager`, the KeyMint, Gatekeeper, SecureClock, SharedSecret, and
+Remotely Provisioned Component interfaces can be hosted inside a security VM and
+reached through `android.os.IAccessor` proxies.  `servicemanager` resolves the
+client-visible name to an `IAccessor` that forwards binder traffic into the VM.
+
+`system/sepolicy/private/service.te` defines a dedicated SELinux type for each
+accessor so the policy can keep the in-VM services distinct from the
+host-registered ones:
+
+```
+type accessor_trusty_keymint_comm_service, service_manager_type;
+type accessor_trusty_gatekeeper_service, service_manager_type;
+type accessor_trusty_hwcrypto_sharedsecret_service, service_manager_type;
+type accessor_trusty_keymint_provisioning_service, service_manager_type;
+type accessor_trusty_keymint_provisioning_thal_service, service_manager_type;
+type accessor_trusty_keymint_remotelyprovisionedcomponent_service, service_manager_type;
+type accessor_trusty_keymint_secureclock_service, service_manager_type;
+```
+
+`system/sepolicy/private/service_contexts` binds the `IAccessor`-namespaced
+names to those types, for example:
+
+```
+android.os.IAccessor/ICommService/security_vm_keymint              u:object_r:accessor_trusty_keymint_comm_service:s0
+android.os.IAccessor/IGatekeeper/security_vm_gatekeeper            u:object_r:accessor_trusty_gatekeeper_service:s0
+android.os.IAccessor/IRemotelyProvisionedComponent/security_vm_keymint u:object_r:accessor_trusty_keymint_remotelyprovisionedcomponent_service:s0
+android.os.IAccessor/ISecureClock/security_vm_keymint             u:object_r:accessor_trusty_keymint_secureclock_service:s0
+android.os.IAccessor/IProvisioning/security_vm_keymint            u:object_r:accessor_trusty_keymint_provisioning_thal_service:s0
+```
+
+The system-side KeyMint HAL is granted `find` on its accessor in
+`system/sepolicy/private/hal_keymint_system.te`, and per-interface accessor
+permissions were added across the keymint-in-vm policy ("keymint-in-vm: Add
+permissions for IRemotelyProvisionedComponent accessor," and the equivalents for
+`ISecureClock`, `IProvisioning`, `ISharedSecret`, and `IGatekeeper").  The
+result is that the entire root-of-trust HAL surface can be isolated inside a
+protected VM while the framework keeps talking to it through ordinary binder
+names.
+
+The accessor indirection that makes this work is shown below.
+
+```mermaid
+flowchart LR
+    KS["Keystore2 / system_server"] --> SM["servicemanager"]
+    SM --> ACC["IAccessor proxy<br/>(accessor_trusty_keymint_*)"]
+    ACC --> VM["Security VM (Microdroid)"]
+    VM --> KM["KeyMint TA"]
+    VM --> RKP["IRemotelyProvisionedComponent"]
+    VM --> SC["ISecureClock"]
+    VM --> GK["IGatekeeper"]
+```
+
+### 40.10.5  Remote Key Provisioning Hardening
+
+Several RKP changes in Android 17 tighten when and how Keystore2 reaches the
+provisioning daemon (RKPD):
+
+- **RKP is gated on a hostname property.**
+  `RemProvState::is_rkp_enabled` in
+  `system/security/keystore2/src/remote_provisioning.rs` now treats RKP as
+  enabled only when `remote_provisioning.hostname` is set to a non-empty value.
+  On an RKP-only device with no hostname configured, key generation fails with
+  `ResponseCode::OUT_OF_KEYS_PERMANENT_ERROR` instead of silently falling back,
+  which surfaces a misconfiguration early rather than handing out unattested
+  keys.
+
+- **ML-DSA counts as an asymmetric algorithm for RKP.**
+  `is_asymmetric_key` matches `Algorithm::RSA`, `Algorithm::EC`, and now
+  `Algorithm::ML_DSA`, so post-quantum keys flow through the same remote
+  attestation path as classical asymmetric keys.
+
+- **Concurrent RKPD calls are capped.**
+  `system/security/keystore2/rkpd_client/src/lib.rs` defines
+  `RKP_MAX_CONCURRENT_OPERATIONS = 15` and guards each call with a
+  `ConcurrentOperation` RAII counter; exceeding the cap returns
+  `TooManyConcurrentOperations` rather than starving the rest of the system's
+  threads on the network round-trip.
+
+```mermaid
+flowchart TD
+    A["generateKey (asymmetric, app domain)"] --> B{"is_rkp_enabled()<br/>hostname set?"}
+    B -->|No, RKP-only| C["OUT_OF_KEYS_PERMANENT_ERROR"]
+    B -->|No, hybrid| D["Fall back to factory key"]
+    B -->|Yes| E{"under concurrency cap?"}
+    E -->|No| F["TooManyConcurrentOperations"]
+    E -->|Yes| G["Fetch key + cert chain from RKPD"]
+```
+
+### 40.10.6  Attestation Certificate Post-Processing
+
+Keystore2 gained an optional hook to rewrite the RKP attestation certificate
+chain after KeyMint produces it.  When the system property
+`remote_provisioning.use_cert_processor` is true,
+`KeystoreSecurityLevel::generate_key` in
+`system/security/keystore2/src/security_level.rs` routes the freshly generated
+chain through `process_certificate_chain`
+(`system/security/keystore2/postprocessor_client/src/lib.rs`) instead of
+storing the raw chain.  That helper connects to the lazily started binder
+service `rkp_cert_processor.service`, with a 5-second timeout; if the connection
+ever times out, an `AtomicBool` latches the failure so the post-processor is not
+retried until the next reboot.  Critically, any failure falls back to the
+original certificate chain, so post-processing can never block key generation.
+
+The post-processor service itself lives in
+`packages/services/DroidfoodAttestationFixer`.  It builds a Rust binary,
+`rkp_cert_processor`, that registers a lazy AIDL service implementing
+`IKeystoreCertificatePostProcessor` (defined in
+`system/security/keystore2/aidl/android/security/postprocessor/`).  Its
+`processKeystoreCertificates` implementation in
+`packages/services/DroidfoodAttestationFixer/src/lib.rs` base64-encodes the leaf
+and remaining chain, sends them to a backend over a small `libcurl` bridge, and
+returns the overwritten chain (falling back to the original on any decode or
+server error).  The whole package is flag-gated: its
+`droidfood_attestation_flags.aconfig` declares
+`droidfood_attestation_bringup` (a `is_fixed_read_only` flag in the
+`android.security.postprocessor` package), and the service is installed to
+`system_ext` and started `disabled` / `oneshot` from
+`packages/services/DroidfoodAttestationFixer/droidfoodattestation.rc`, so it
+runs only when explicitly enabled for the Droidfood (internal dogfood) program.
+
+The post-processing flow, including its fail-safe fallback, is shown below.
+
+```mermaid
+flowchart TD
+    A["generate_key produces RKP chain"] --> B{"use_cert_processor property?"}
+    B -->|No| C["Store raw concatenated chain"]
+    B -->|Yes| D["process_certificate_chain"]
+    D --> E{"connect to rkp_cert_processor.service<br/>within 5s?"}
+    E -->|No| F["Latch failure, use original chain"]
+    E -->|Yes| G["processKeystoreCertificates over libcurl"]
+    G --> H{"server returned valid chain?"}
+    H -->|No| F
+    H -->|Yes| I["Replace leaf + remaining chain"]
+```
+
+---
+
+## 40.11  Security Posture and Version Evolution
+
+This section steps back from individual subsystems to look at how Android keeps
+its security current: updatable components, patch levels, and the long arc of
+attack-surface reduction that culminates in the Android 17 features above.
+
+### 40.11.1  Security Updates and Mainline Modules
+
+Starting with Android 10, security-critical components can be updated
+independently of full OS updates through Project Mainline:
+
+| Module | Security Role |
+|--------|-------------|
+| **Conscrypt** | TLS implementation (certificate validation, cipher suites) |
+| **DNS Resolver** | Private DNS (DoT/DoH) |
+| **Media Codecs** | Prevents media-based exploits |
+| **Networking** | Network stack security patches |
+| **Permission Controller** | Permission management and privacy |
+| **DocumentsUI** | Prevents file manager exploits |
+| **tethering** | Hotspot/tethering security |
+
+These modules are updated via the Play Store as APEX packages, allowing
+Google to push security fixes without waiting for OEM/carrier approval.
+
+### 40.11.2  Monthly Security Patch Levels
+
+Android uses two security patch levels:
+
+1. **Platform SPL** (`ro.build.version.security_patch`): Patches to the
+   Android framework, system libraries, and core.
+2. **Vendor SPL** (`ro.vendor.build.security_patch`): Patches to vendor
+   components, HALs, and kernel.
+
+Both are dates (e.g., `2026-03-05`).  CTS verifies that the device's
+patch level matches its claimed security patches.
+
+The Keystore attestation certificate includes the patch level, allowing
+relying parties to require a minimum patch level before trusting the device.
+
+### 40.11.3  Attack Surface Reduction Over Time
+
+Each Android version reduces the attack surface:
+
+| Version | Key Security Improvements |
+|---------|-------------------------|
+| 5.0 | SELinux enforcing, FDE |
+| 6.0 | Runtime permissions, Verified Boot v1 |
+| 7.0 | FBE, Network Security Config, Verified Boot v2 (AVB) |
+| 8.0 | Treble HAL isolation, seccomp for all apps |
+| 9.0 | StrongBox, BiometricPrompt, cleartext default off |
+| 10 | Scoped storage, FBE mandatory, mount namespace per app |
+| 11 | Scoped storage enforced, one-time permissions |
+| 12 | KeyMint AIDL, Remote Key Provisioning |
+| 13 | SDK Sandbox, photo picker |
+| 14 | Credential Manager, improved passkey support |
+| 15 | Per-app locale, tighter intent restrictions |
+| 16 | Advanced Protection mode, Identity Credential maturation |
+| 17 | ML-DSA post-quantum keys, KeyMint/Gatekeeper in protected VMs, RKP hardening |
+
+### 40.11.4  Security Architecture Principles
+
+Several cross-cutting principles emerge from the code:
+
+1. **No single point of failure** -- every security mechanism is designed to
+   be useful even if other mechanisms are bypassed.  SELinux blocks access
+   even if DAC permissions are wrong.  Encryption protects data even if
+   filesystem permissions are bypassed.  Verified Boot detects tampering even
+   if the attacker has root.
+
+2. **Hardware-anchored trust** -- the most sensitive operations (key storage,
+   authentication verification, boot verification) are anchored in hardware
+   that software cannot modify.  The TEE, StrongBox, and boot ROM fuses
+   provide guarantees that no amount of software compromise can violate.
+
+3. **Principle of least authority** -- every component runs with the minimum
+   privileges needed.  Apps start with no permissions.  HALs are confined
+   to their specific domain.  Even system services are restricted by SELinux
+   neverallow rules.
+
+4. **Defense in depth with independent layers** -- the sandbox is enforced by
+   UID isolation AND SELinux AND seccomp AND mount namespaces.  An attacker
+   must bypass ALL of these simultaneously.
+
+5. **Progressive tightening** -- each Android version tightens restrictions
+   for apps targeting the new SDK level while maintaining backward compatibility
+   for older apps.  This is visible in the versioned untrusted_app domains
+   and the network security config defaults.
+
+6. **Open source verification** -- all security-critical code (SELinux policy,
+   AVB, Keystore2, biometric HALs) is open source, enabling independent
+   audit and verification.
+
+### 40.11.5  Security Testing in AOSP
+
+AOSP includes extensive security tests:
+
+| Test Suite | Path | Tests |
+|-----------|------|-------|
+| SELinux CTS | `system/sepolicy/tests/` | Neverallow validation, context correctness |
+| Keystore VTS | `hardware/interfaces/security/keymint/aidl/vts/` | HAL conformance |
+| ML-DSA VTS | `hardware/interfaces/security/keymint/aidl/vts/functional/MlDsaTest.cpp` | Post-quantum key conformance |
+| Biometric VTS | `hardware/interfaces/biometrics/fingerprint/aidl/vts/` | HAL conformance |
+| AVB tests | `external/avb/test/` | Image verification, signing |
+| Keystore2 unit tests | `system/security/keystore2/src/*/tests.rs` | Rust unit tests |
+| Treble sepolicy tests | `system/sepolicy/treble_sepolicy_tests_for_release/` | Vendor isolation |
+
+Running the SELinux tests:
+
+```bash
+# Build the sepolicy tests
+mmm system/sepolicy/tests
+
+# Run treble sepolicy tests
+python3 system/sepolicy/tests/treble_tests.py \
+    -l system/sepolicy/prebuilts/api/<api>/ \
+    -f <compiled_policy>
+```
+
+Running Keystore2 tests:
+
+```bash
+# Rust unit tests
+cd system/security/keystore2
+atest keystore2_test
+```
+
+For deeper background, the Android Security Bulletin tracks monthly patches and
+CVEs, the Android CDD lists mandatory security requirements, and the in-tree
+READMEs (`external/avb/README.md`, `system/sepolicy/README.md`, and the
+Keystore2 design notes under `system/security/keystore2/`) document each
+subsystem.
+
+---
+
+## 40.12  Try It
 
 This section provides hands-on exercises for exploring Android's security
 subsystems.
 
-### Exercise 29.1: Inspect SELinux Policy
+### Exercise 40.1: Inspect SELinux Policy
 
 Build the sepolicy and inspect its contents:
 
@@ -3702,7 +4144,7 @@ adb shell dmesg | grep 'avc:  denied'
 adb shell ls -Z /data/data/com.example.myapp/
 ```
 
-### Exercise 29.2: Examine Verified Boot State
+### Exercise 40.2: Examine Verified Boot State
 
 ```bash
 # Check the verified boot state from userspace
@@ -3720,7 +4162,7 @@ adb shell getprop ro.boot.vbmeta.device_state
 avbtool info_image --image boot.img
 ```
 
-### Exercise 29.3: Explore Keystore Keys
+### Exercise 40.3: Explore Keystore Keys
 
 ```bash
 # List all Keystore aliases for the current user
@@ -3741,7 +4183,7 @@ val keyPair = keyGen.generateKeyPair()
 adb shell dumpsys keystore2
 ```
 
-### Exercise 29.4: Verify App Sandbox Isolation
+### Exercise 40.4: Verify App Sandbox Isolation
 
 ```bash
 # Check the UID of a running app
@@ -3760,7 +4202,7 @@ adb shell cat /proc/<pid>/attr/current
 # Output: u:r:untrusted_app:s0:c42,c256,c512,c768
 ```
 
-### Exercise 29.5: Inspect Encryption Status
+### Exercise 40.5: Inspect Encryption Status
 
 ```bash
 # Check FBE status
@@ -3779,7 +4221,7 @@ adb shell ls /data/system_ce/0/
 adb shell dmctl table userdata
 ```
 
-### Exercise 29.6: Test Network Security Config
+### Exercise 40.6: Test Network Security Config
 
 Create a test app with network security config:
 
@@ -3813,7 +4255,7 @@ Then test:
 # HTTPS to other hosts should succeed
 ```
 
-### Exercise 29.7: Examine Trusty Services
+### Exercise 40.7: Examine Trusty Services
 
 ```bash
 # On a Trusty-enabled device, check for the Trusty IPC device
@@ -3829,7 +4271,7 @@ adb shell service check android.hardware.security.keymint.IKeyMintDevice/default
 adb shell service check android.hardware.gatekeeper.IGatekeeper/default
 ```
 
-### Exercise 29.8: Audit SELinux Policy Changes
+### Exercise 40.8: Audit SELinux Policy Changes
 
 Practice the audit2allow workflow:
 
@@ -3851,7 +4293,7 @@ cd system/sepolicy
 mmm .
 ```
 
-### Exercise 29.9: Trace a Key Generation through the Stack
+### Exercise 40.9: Trace a Key Generation through the Stack
 
 Use system tracing to follow a key generation from app to TEE:
 
@@ -3881,7 +4323,7 @@ duration_ms: 10000
 EOF
 ```
 
-### Exercise 29.10: Build and Flash Custom AVB Keys
+### Exercise 40.10: Build and Flash Custom AVB Keys
 
 For development purposes only, on an unlocked device:
 
@@ -3912,7 +4354,7 @@ fastboot flash vbmeta vbmeta.img
 fastboot flash boot boot.img
 ```
 
-### Exercise 29.11: Write a Custom SELinux Policy for a New Daemon
+### Exercise 40.11: Write a Custom SELinux Policy for a New Daemon
 
 This exercise walks through creating SELinux policy from scratch for a
 hypothetical new system daemon called `my_daemon`.
@@ -3965,7 +4407,7 @@ mmm system/sepolicy
 # Deploy and test
 ```
 
-### Exercise 29.12: Analyze the Authentication Flow
+### Exercise 40.12: Analyze the Authentication Flow
 
 Trace the complete flow from screen unlock to key availability:
 
@@ -3983,7 +4425,7 @@ adb logcat -s keystore2:* GateKeeper:* Fingerprint:*
 # - Super key unlocking
 ```
 
-### Exercise 29.13: Measure the Security Surface
+### Exercise 40.13: Measure the Security Surface
 
 Quantify the security-relevant code:
 
@@ -4003,7 +4445,7 @@ find hardware/interfaces/biometrics -name "*.aidl" | wc -l
 wc -l external/avb/libavb/*.c external/avb/libavb/*.h
 ```
 
-### Exercise 29.14: Examine Verified Boot on a Real Device
+### Exercise 40.14: Examine Verified Boot on a Real Device
 
 ```bash
 # Dump the full vbmeta information
@@ -4025,7 +4467,7 @@ adb shell cat /proc/device-mapper/verity/status
 adb shell dmctl status system
 ```
 
-### Exercise 29.15: Explore Hardware-Backed Key Properties
+### Exercise 40.15: Explore Hardware-Backed Key Properties
 
 ```java
 // In an Android app, generate a key and inspect its properties
@@ -4081,93 +4523,12 @@ compromised:
 The key insight is that these layers are not alternatives -- they are
 **cumulative**.  An attacker must defeat all of them simultaneously to fully
 compromise a device.  Each layer assumes the layer below it might be
-partially compromised and provides independent protection.
+partially compromised and provides independent protection.  Android 17 extends
+the same philosophy to new fronts: post-quantum signatures hedge against future
+cryptographic breaks, and moving the root-of-trust HALs into protected VMs
+shrinks the host attack surface that can reach them.
 
-### Security Updates and Mainline Modules
-
-Starting with Android 10, security-critical components can be updated
-independently of full OS updates through Project Mainline:
-
-| Module | Security Role |
-|--------|-------------|
-| **Conscrypt** | TLS implementation (certificate validation, cipher suites) |
-| **DNS Resolver** | Private DNS (DoT/DoH) |
-| **Media Codecs** | Prevents media-based exploits |
-| **Networking** | Network stack security patches |
-| **Permission Controller** | Permission management and privacy |
-| **DocumentsUI** | Prevents file manager exploits |
-| **tethering** | Hotspot/tethering security |
-
-These modules are updated via the Play Store as APEX packages, allowing
-Google to push security fixes without waiting for OEM/carrier approval.
-
-### Monthly Security Patch Levels
-
-Android uses two security patch levels:
-
-1. **Platform SPL** (`ro.build.version.security_patch`): Patches to the
-   Android framework, system libraries, and core.
-2. **Vendor SPL** (`ro.vendor.build.security_patch`): Patches to vendor
-   components, HALs, and kernel.
-
-Both are dates (e.g., `2025-03-05`).  CTS verifies that the device's
-patch level matches its claimed security patches.
-
-The Keystore attestation certificate includes the patch level, allowing
-relying parties to require a minimum patch level before trusting the device.
-
-### Attack Surface Reduction Over Time
-
-Each Android version reduces the attack surface:
-
-| Version | Key Security Improvements |
-|---------|-------------------------|
-| 5.0 | SELinux enforcing, FDE |
-| 6.0 | Runtime permissions, Verified Boot v1 |
-| 7.0 | FBE, Network Security Config, Verified Boot v2 (AVB) |
-| 8.0 | Treble HAL isolation, seccomp for all apps |
-| 9.0 | StrongBox, BiometricPrompt, cleartext default off |
-| 10 | Scoped storage, FBE mandatory, mount namespace per app |
-| 11 | Scoped storage enforced, one-time permissions |
-| 12 | KeyMint AIDL, Remote Key Provisioning |
-| 13 | SDK Sandbox, photo picker |
-| 14 | Credential Manager, improved passkey support |
-| 15 | Per-app locale, tighter intent restrictions |
-
-### Security Architecture Principles
-
-Several cross-cutting principles emerge from the code:
-
-1. **No single point of failure** -- every security mechanism is designed to
-   be useful even if other mechanisms are bypassed.  SELinux blocks access
-   even if DAC permissions are wrong.  Encryption protects data even if
-   filesystem permissions are bypassed.  Verified Boot detects tampering even
-   if the attacker has root.
-
-2. **Hardware-anchored trust** -- the most sensitive operations (key storage,
-   authentication verification, boot verification) are anchored in hardware
-   that software cannot modify.  The TEE, StrongBox, and boot ROM fuses
-   provide guarantees that no amount of software compromise can violate.
-
-3. **Principle of least authority** -- every component runs with the minimum
-   privileges needed.  Apps start with no permissions.  HALs are confined
-   to their specific domain.  Even system services are restricted by SELinux
-   neverallow rules.
-
-4. **Defense in depth with independent layers** -- the sandbox is enforced by
-   UID isolation AND SELinux AND seccomp AND mount namespaces.  An attacker
-   must bypass ALL of these simultaneously.
-
-5. **Progressive tightening** -- each Android version tightens restrictions
-   for apps targeting the new SDK level while maintaining backward compatibility
-   for older apps.  This is visible in the versioned untrusted_app domains
-   and the network security config defaults.
-
-6. **Open source verification** -- all security-critical code (SELinux policy,
-   AVB, Keystore2, biometric HALs) is open source, enabling independent
-   audit and verification.
-
-### Key Source Paths
+### Key Source Files Reference
 
 | Path | Component | Language |
 |------|-----------|---------|
@@ -4198,47 +4559,9 @@ Several cross-cutting principles emerge from the code:
 | `hardware/interfaces/biometrics/fingerprint/aidl/` | Fingerprint HAL | AIDL |
 | `hardware/interfaces/biometrics/face/aidl/` | Face HAL | AIDL |
 | `hardware/interfaces/security/keymint/aidl/` | KeyMint HAL | AIDL |
+| `system/keymint/common/src/crypto/mldsa.rs` | ML-DSA post-quantum keys (Android 17) | Rust |
+| `system/keymint/ta/src/clock.rs` | KeyMint-hosted secure clock | Rust |
+| `system/security/keystore2/src/remote_provisioning.rs` | RKP routing and gating | Rust |
+| `system/security/keystore2/postprocessor_client/` | Attestation cert post-processing client | Rust |
+| `packages/services/DroidfoodAttestationFixer/` | RKP cert post-processor service | Rust/C++ |
 | `frameworks/base/packages/NetworkSecurityConfig/` | Network security | Java |
-
-### Security Testing in AOSP
-
-AOSP includes extensive security tests:
-
-| Test Suite | Path | Tests |
-|-----------|------|-------|
-| SELinux CTS | `system/sepolicy/tests/` | Neverallow validation, context correctness |
-| Keystore VTS | `hardware/interfaces/security/keymint/aidl/vts/` | HAL conformance |
-| Biometric VTS | `hardware/interfaces/biometrics/fingerprint/aidl/vts/` | HAL conformance |
-| AVB tests | `external/avb/test/` | Image verification, signing |
-| Keystore2 unit tests | `system/security/keystore2/src/*/tests.rs` | Rust unit tests |
-| Treble sepolicy tests | `system/sepolicy/treble_sepolicy_tests_for_release/` | Vendor isolation |
-
-Running the SELinux tests:
-
-```bash
-# Build the sepolicy tests
-mmm system/sepolicy/tests
-
-# Run treble sepolicy tests
-python3 system/sepolicy/tests/treble_tests.py \
-    -l system/sepolicy/prebuilts/api/<api>/ \
-    -f <compiled_policy>
-```
-
-Running Keystore2 tests:
-
-```bash
-# Rust unit tests
-cd system/security/keystore2
-atest keystore2_test
-```
-
-### Further Reading
-
-- Android Security Bulletin: monthly security patches and CVEs.
-- Android CDD (Compatibility Definition Document): mandatory security
-  requirements for all Android devices.
-- Keystore2 design docs in `system/security/keystore2/`.
-- AVB README at `external/avb/README.md`.
-- SELinux README at `system/sepolicy/README.md`.
-- Trusty documentation at `trusty/` and `system/core/trusty/`.

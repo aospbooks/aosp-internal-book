@@ -170,29 +170,32 @@ Source: `packages/modules/Bluetooth/service/src/BluetoothService.kt`
 ```kotlin
 class BluetoothService(context: Context) : SystemService(context) {
     private val looper = HandlerThread("BluetoothSystemServer").apply { start() }.looper
-    private val serviceDispatcher = Handler(looper).asCoroutineDispatcher()
-    private val scope = CoroutineScope(serviceDispatcher + SupervisorJob())
 
     private var supervisor: BluetoothSupervisor
 
     init {
-        Log.d("Booting now")
-        val bluetoothComponent =
-            if (Flags.userRestrictionRefactor()) {
-                BluetoothComponent(context)
-            } else { null }
-        supervisor = runBlocking(serviceDispatcher) {
-            BluetoothSupervisor(context, looper, bluetoothComponent)
-        }
+        val bluetoothComponent = BluetoothComponent(context)
+        supervisor =
+            if (Flags.systemServerMigrateBmsToKotlin()) {
+                BluetoothSupervisorNew(context, looper, bluetoothComponent)
+            } else {
+                BluetoothSupervisorLegacy(context, looper, bluetoothComponent)
+            }
         // ...
     }
 
     override fun onStart() {
-        publishBinderService(SERVICE_NAME,
-            BluetoothServiceBinder(looper, supervisor.api(), context))
+        publishBinderService(SERVICE_NAME, ServerBinder(looper, supervisor.api, context))
     }
 }
 ```
+
+A feature flag (`Flags.systemServerMigrateBmsToKotlin()`, aconfig
+`system_server_migrate_bms_to_kotlin`) selects between the new and legacy
+supervisor implementations while the Kotlin migration lands. `BluetoothComponent`
+holds the resolved Bluetooth app package/component name and validates the device
+configuration; user-restriction handling lives in the separate
+`BluetoothRestriction` class, initialized alongside it.
 
 `BluetoothManagerService` is the Java class that handles the heavy lifting:
 binding to the `AdapterService`, managing enable/disable state transitions,
@@ -204,7 +207,8 @@ Key design features of `BluetoothManagerService`:
 
 - **Crash recovery**: Tracks crash timestamps in `mCrashTimestamps`, restarts
   the service up to `MAX_ERROR_RESTART_RETRIES` (6) times with a
-  `SERVICE_RESTART_TIME_MS` (400 ms) delay.
+  `SERVICE_RESTART_DELAY` (`Duration.ofMillis(400)`) backoff, multiplied by the
+  retry counter.
 - **State management**: Uses `BluetoothAdapterState` (Kotlin flow-based) to
   track and wait on adapter state transitions with timeout support.
 - **Handler messages**: All state transitions are serialized through
@@ -395,7 +399,10 @@ system/
     srvc/        # GATT-based services (DIS, etc.)
   audio_hal_interface/  # Audio HAL integration
     aidl/        # AIDL audio HAL client
-  rust/          # Rust components (new GATT server)
+  rust/          # Rust components
+    src/         # bluetooth_rs crate: le_audio (ISO + periodic-advertising sync), pdl, types modules
+    private_gatt/ # Rust GATT server (shares ATT channel with C++ via arbiter)
+    macros/      # Procedural-macro support
   main/          # Stack initialization and shim layer
     shim/        # GD-to-Fluoride shim
   include/       # Public headers
@@ -550,10 +557,24 @@ Source: `packages/modules/Bluetooth/system/gd/storage/config_keys.h`
 ### 37.2.4 Rust Components
 
 Android is progressively introducing Rust into the Bluetooth stack for memory
-safety. The Rust GATT server shares the ATT channel with the existing C++ GATT
-client.
+safety, and Android 17 reorganized those components. The Rust tree under
+`packages/modules/Bluetooth/system/rust/` now holds three pieces:
 
-Source: `packages/modules/Bluetooth/system/rust/src/gatt.rs`
+```
+rust/
+  src/          # bluetooth_rs crate: le_audio (ISO manager + periodic-advertising sync), pdl, types modules
+  private_gatt/ # the Rust GATT server (moved out of src/ in 17)
+  macros/       # procedural-macro support
+```
+
+#### The Rust GATT server (private_gatt)
+
+The Rust GATT server shares the ATT bearer with the existing C++ GATT client.
+In Android 17 it moved from `system/rust/src/` into its own crate at
+`system/rust/private_gatt/`, and its global state was removed so it no longer
+relies on static singletons.
+
+Source: `packages/modules/Bluetooth/system/rust/private_gatt/src/gatt.rs`
 
 ```rust
 //! This module is a simple GATT server that shares the ATT channel with the
@@ -571,10 +592,44 @@ mod opcode_types;
 mod server;
 ```
 
-The `arbiter` manages which side (C++ or Rust) handles each incoming ATT
-packet. The `ffi` module provides the Foreign Function Interface bindings
-between Rust and C++. This dual-language approach exemplifies Android's
-incremental memory-safety strategy.
+The `arbiter` decides which side (C++ or Rust) handles each incoming ATT PDU
+by inspecting its handle range, the `mtu` module implements ATT MTU exchange,
+and `ffi` provides the C++ interop bindings (`stack/arbiter/acl_arbiter.h` on
+the C++ side).
+
+#### The Rust LE Audio module
+
+The bigger Android 17 addition is the `le_audio` module of the `bluetooth_rs`
+crate (`system/rust/`, alongside the `pdl` and `types` modules), declared from
+`lib.rs`:
+
+Source: `packages/modules/Bluetooth/system/rust/src/lib.rs`
+
+```rust
+pub mod le_audio;
+pub mod pdl;
+pub mod types;
+```
+
+`le_audio` contains two isochronous-transport managers that the LE Audio
+profiles build on, each split into a `traits.rs` (interface), a `manager.rs`
+(implementation), and an `ffi.rs` (`#[cxx::bridge]` to a C++ shim):
+
+| Module | Source | Purpose |
+|--------|--------|---------|
+| ISO Manager | `system/rust/src/le_audio/iso_manager/` | Manage CIG/CIS (connected) and BIG/BIS (broadcast) isochronous groups and streams |
+| Periodic Advertising Sync | `system/rust/src/le_audio/periodic_advertising_sync/` | Synchronize to periodic advertising trains (PAST/PA sync) and deliver BIGInfo reports |
+
+Both managers are built on Tokio async primitives: `oneshot`/`mpsc`/`broadcast`
+channels coordinate command completions and event streams, and `Drop`
+implementations on the Arc-wrapped resources trigger asynchronous teardown
+(RAII). Handle types (`CigId`, `CisId`, `BigHandle`, `SyncHandle`,
+`IsoConnectionHandle`) are newtype wrappers that mask the controller's reserved
+bits, and time values such as the periodic-advertising interval are modeled as
+`std::time::Duration` rather than raw HCI 1.25 ms units. This dual-language
+approach exemplifies Android's incremental memory-safety strategy: new
+transport managers are written in Rust and bridged to the C++ stack through
+`cxx` shims rather than rewriting the whole stack at once.
 
 ### 37.2.5 BTIF: The JNI Bridge
 
@@ -743,7 +798,7 @@ hearingaid/    -- HearingAidService
 hfp/           -- HeadsetService (HFP Audio Gateway)
 hfpclient/     -- HeadsetClientService
 hid/           -- HidHostService, HidDeviceService
-le_audio/      -- LeAudioService
+le_audio/      -- LeAudioService (Unicast Client), LeAudioPeripheralService (acceptor)
 le_scan/       -- Scanning
 map/           -- BluetoothMapService
 mapclient/     -- MapClientService
@@ -1012,8 +1067,9 @@ public interface BluetoothProfile {
     @SystemApi int PAN = 5;             // PAN
     // ... PBAP, GATT, GATT_SERVER, MAP, SAP, A2DP_SINK,
     // AVRCP_CONTROLLER, AVRCP, HID_DEVICE, OPP, HEADSET_CLIENT,
-    // HEARING_AID, LE_AUDIO, LE_AUDIO_BROADCAST, VOLUME_CONTROL,
+    // HEARING_AID, LE_AUDIO (22), LE_AUDIO_BROADCAST (26), VOLUME_CONTROL,
     // CSIP_SET_COORDINATOR, LE_CALL_CONTROL, HAP_CLIENT, BATTERY, etc.
+    int LE_AUDIO_PERIPHERAL = 33;       // LE Audio acceptor (Android 17)
 }
 ```
 
@@ -1200,7 +1256,11 @@ Source: `packages/modules/Bluetooth/android/app/src/com/android/bluetooth/opp/`
 
 ### 37.3.13 LE Audio Profiles
 
-LE Audio is a major new profile family introduced in Bluetooth 5.2:
+LE Audio is a profile family introduced in Bluetooth 5.2. Historically AOSP
+implemented only the *Unicast Client* (central/initiator) side, where the phone
+drives earbuds and hearing aids. Android 17 added the *Peripheral* (acceptor)
+side as well, letting the phone itself act as an LE Audio sink and source for a
+peer host; that role is covered in Section 37.3.14.
 
 Source: `packages/modules/Bluetooth/android/app/src/com/android/bluetooth/le_audio/LeAudioService.java`
 
@@ -1244,6 +1304,151 @@ graph TB
     BASS --> BIS
 ```
 
+### 37.3.14 LE Audio Peripheral (BAP Acceptor) Role
+
+Through Android 16, AOSP's LE Audio implementation was a *Unicast Client*: the
+phone acts as the BAP *Initiator* and *Audio Source/Sink Client*, driving
+earbuds and hearing aids. Android 17 adds the complementary *Peripheral* role,
+where the phone is the BAP *Acceptor* (server). A peer host (for example a PC,
+a car head unit, or a smart display) connects to the phone, discovers its
+Published Audio Capabilities, and streams audio to or from it. The phone
+becomes an LE Audio speaker, microphone, or both.
+
+The peripheral stack is a separate, self-contained implementation under
+`packages/modules/Bluetooth/system/bta/le_audio/server/`, with its own
+framework profile (`BluetoothProfile.LE_AUDIO_PERIPHERAL = 33`).
+
+#### Native server: LeAudioServer
+
+The native entry point is the `LeAudioServer` interface, whose static methods
+the JNI layer calls. The implementation, `LeAudioServerImpl`, composes the
+GATT-level audio services and the ASE machinery.
+
+Source: `packages/modules/Bluetooth/system/bta/include/bta_le_audio_server_api.h`
+
+```cpp
+class LeAudioServer {
+public:
+  static void Initialize(le_audio::LeAudioServerCallbacks* callbacks,
+                         std::unique_ptr<LeAudioServerDependencies> dependencies);
+  static void Cleanup(void);
+  static LeAudioServer* Get(void);
+  static void DebugDump(int fd);
+  static void ConfirmStreamStartRequest(const RawAddress& peer_address, bool allowed);
+  static void StopStream(const RawAddress& peer_address, uint8_t stream_id);
+};
+```
+
+The server is assembled from injectable factories (`LeAudioServerDependencies`),
+which keeps the components testable in isolation:
+
+```cpp
+struct LeAudioServerDependencies {
+  std::function<std::shared_ptr<LeAudioServerConfigManager>()> config_manager_factory;
+  std::function<std::shared_ptr<Pacs>()> pacs_factory;
+  std::function<std::shared_ptr<Ascs>()> ascs_factory;
+  std::function<std::shared_ptr<AseManager>(std::shared_ptr<Ascs>)> ase_manager_factory;
+  std::function<audio::le_audio::IPeripheralAudioSessionFactory*()>
+          peripheral_audio_session_factory;
+  std::function<audio::le_audio::IPeripheralAudioProviderFactory*()>
+          peripheral_audio_provider_factory;
+};
+```
+
+`LeAudioServerImpl` implements both `Pacs::Callbacks` and `AseManager::Callbacks`:
+
+Source: `packages/modules/Bluetooth/system/bta/le_audio/server/server.cc`
+
+```cpp
+class LeAudioServerImpl : public LeAudioServer,
+                          public Pacs::Callbacks,
+                          public AseManager::Callbacks {
+  // Initialize() registers the PACS and ASCS GATT services, builds the
+  // ASE manager, starts the peripheral audio sessions, and begins
+  // advertising the LE Audio services via the GD advertising-manager shim.
+};
+```
+
+#### The GATT services and ASE machinery
+
+The acceptor role is built from the BAP server-side GATT services and a set of
+per-endpoint state machines:
+
+| Component | Source | Role |
+|-----------|--------|------|
+| PACS | `system/bta/le_audio/pacs/pacs.h` | Published Audio Capabilities Service: exposes sink/source codec capabilities, audio locations, and supported/available audio contexts to the client |
+| ASCS | `system/bta/le_audio/ascs/ascs.h` | Audio Stream Control Service: receives the client's ASE Control Point writes (Config Codec, Config QoS, Enable, Release, Update Metadata) |
+| ASE Manager | `system/bta/le_audio/ascs/ase_manager.h` | Owns one ASE state machine per Audio Stream Endpoint and drives codec/QoS negotiation |
+| ASE state machine | `system/bta/le_audio/ascs/ase_state_machine.h` | Per-ASE BAP state machine (IDLE, CODEC_CONFIGURED, QOS_CONFIGURED, ENABLING, STREAMING, DISABLING, RELEASING) |
+| Config manager | `system/bta/le_audio/server/le_audio_server_config_manager.h` | Translates Audio HAL capabilities into PAC records and decides the ISO data path (software vs. offload) |
+| Peripheral Audio HAL client | `system/bta/le_audio/audio_hal_client/peripheral_audio_hal_client.h` | `PeripheralAudioHalDecoder` (ISO to speaker) and `PeripheralAudioHalEncoder` (mic to ISO) |
+
+The per-ASE state machine follows the BAP/ASCS Audio Stream Endpoint lifecycle:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> CodecConfigured : CONFIG_CODEC
+    CodecConfigured --> QosConfigured : CONFIG_QOS
+    QosConfigured --> Enabling : ENABLE
+    Enabling --> Streaming : RECEIVER_START_READY
+    Streaming --> Disabling : DISABLE
+    Disabling --> QosConfigured : RECEIVER_STOP_READY
+    QosConfigured --> Releasing : RELEASE
+    Streaming --> Releasing : RELEASE
+    Releasing --> Idle : released
+    CodecConfigured --> Idle : RELEASE
+```
+
+#### Framework profile
+
+On the Java/Kotlin side the role is exposed as a profile service. Unlike the
+heavyweight Unicast `LeAudioService`, the peripheral service is a thin
+orchestrator that delegates policy to a dedicated manager.
+
+| Class | Source | Role |
+|-------|--------|------|
+| `BluetoothLeAudioPeripheral` | `framework/java/android/bluetooth/BluetoothLeAudioPeripheral.java` | `@SystemApi` profile proxy (guarded by `Flags.FLAG_LEAUDIO_PERIPHERAL_FEATURE`) |
+| `LeAudioPeripheralService` | `android/app/src/com/android/bluetooth/le_audio/LeAudioPeripheralService.kt` | `ProfileService` for `LE_AUDIO_PERIPHERAL`; owns the policy manager and native interface |
+| `PeripheralPolicyManager` | `android/app/src/com/android/bluetooth/le_audio/PeripheralPolicyManager.kt` | Arbitrates stream requests, tracks the active sink/source device and per-peer stream state |
+| `LeAudioPeripheralNativeInterface` | `android/app/src/com/android/bluetooth/le_audio/LeAudioPeripheralNativeInterface.kt` | JNI bridge to the native `LeAudioServer` |
+| `LeAudioPeripheralServiceBinder` | `android/app/src/com/android/bluetooth/le_audio/LeAudioPeripheralServiceBinder.kt` | Permission-checked binder (`BLUETOOTH_CONNECT`, `BLUETOOTH_PRIVILEGED`) |
+
+`AdapterService` reports peripheral devices through the standard active-device
+plumbing: Android 17 extended `getActiveDevices()` to handle the
+`LE_AUDIO_PERIPHERAL` profile.
+
+#### Stream-start request flow
+
+A stream is initiated by the *remote* host (the client), not the phone, so the
+acceptor's job is to admit or reject the request. The decision crosses from the
+native ASCS up to the policy manager and back:
+
+```mermaid
+sequenceDiagram
+    participant Peer as Remote Host (Client)
+    participant Ascs as ASCS / ASE Manager
+    participant Server as LeAudioServerImpl
+    participant Policy as PeripheralPolicyManager
+    participant Native as LeAudioServer (native)
+
+    Peer->>Ascs: ASE Control Point: Enable
+    Ascs->>Server: OnAseEnableRequest()
+    Server->>Policy: OnStreamStartRequest(address, requests)
+    Policy->>Policy: Arbitrate vs. active device
+    Policy->>Native: confirmStreamStartRequest(device, allowed)
+    Native->>Ascs: ConfirmAseEnableRequest()
+    Ascs->>Ascs: ASE: Enabling to Streaming
+    Ascs-->>Server: OnStreamStarted()
+    Server-->>Policy: OnStreamStarted (JNI callback)
+```
+
+The isochronous transport for these streams runs through the native ISO
+manager (and, where the Rust path is used, the Rust ISO/periodic-sync managers
+described in Section 37.2.4). Call control and media control for the peripheral
+are handled by dedicated CCP and MCP clients under `system/bta/ccp/` and
+`system/bta/mcp/`.
+
 ---
 
 ## 37.4 BLE (Bluetooth Low Energy)
@@ -1282,7 +1487,7 @@ graph TB
         GD_SCAN["LeScanningManagerImpl"]
         GD_ACL["AclManagerLeImpl"]
         STACK_GATT["stack/gatt/"]
-        RUST_GATT["rust/src/gatt.rs"]
+        RUST_GATT["rust/private_gatt/<br/>(Rust GATT server)"]
     end
 
     APP_ADV --> BLE_ADV --> GATT_SVC
@@ -1506,9 +1711,10 @@ GATT server operations:
 - Send notifications/indications to subscribed clients
 - Manage multiple simultaneous client connections
 
-The new Rust GATT server (`system/rust/src/gatt.rs`) uses an arbiter to share
-the ATT bearer with the C++ implementation, enabling both to coexist on the
-same connection.
+The Rust GATT server (`system/rust/private_gatt/src/gatt.rs`) uses an arbiter to
+share the ATT bearer with the C++ implementation, enabling both to coexist on
+the same connection. Android 17 moved this server into its own `private_gatt`
+crate and removed its static global state.
 
 ### 37.4.6 BLE Connection Management
 
@@ -1629,6 +1835,114 @@ EATT uses L2CAP Credit-Based Flow Control (CoC) channels, with each channel
 acting as an independent ATT bearer. The `eattSupport` parameter in
 `BluetoothManager.openGattServer()` controls whether the server uses EATT
 for notifications.
+
+### 37.4.10 Channel Sounding and Distance Measurement
+
+Bluetooth 6.0 introduced *Channel Sounding* (CS), a ranging technique that
+measures the distance between two LE devices using phase-based and round-trip
+timing measurements across many radio channels. AOSP exposes it through a
+*distance measurement* API that can fall back to RSSI-based estimation when the
+controller does not support CS. Android 17 built this feature out
+substantially: it tightened the security model, added power/RSSI reporting in
+results, and migrated the service-side glue to Kotlin.
+
+The host capability is gated on a controller feature bit:
+
+Source: `packages/modules/Bluetooth/system/gd/hci/controller.h`
+
+```cpp
+virtual bool SupportsBleChannelSounding() const = 0;
+```
+
+#### Native distance measurement manager
+
+The native engine is `DistanceMeasurementManager` in the GD HCI layer. It
+supports three methods and drives the CS HCI command sequence.
+
+Source: `packages/modules/Bluetooth/system/gd/hci/distance_measurement_manager.h`
+
+```cpp
+enum DistanceMeasurementMethod {
+  METHOD_AUTO,   // pick the best available method
+  METHOD_RSSI,   // RSSI + TX power estimation
+  METHOD_CS,     // Channel Sounding
+};
+
+void StartDistanceMeasurement(int32_t app_uid, const Address& address,
+                              uint16_t connection_handle, hci::Role local_hci_role,
+                              uint16_t interval, DistanceMeasurementMethod method,
+                              DistanceMeasurementSightType sight_type,
+                              DistanceMeasurementLocationType location_type);
+void StopDistanceMeasurement(const Address& address, uint16_t connection_handle,
+                             DistanceMeasurementMethod method);
+```
+
+For a CS session the implementation
+(`distance_measurement_manager_impl.cc`) walks a per-connection state machine
+that issues the LE Channel Sounding HCI commands in order:
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant DMM as DistanceMeasurementManager
+    participant HCI as HCI / Controller
+
+    App->>DMM: StartDistanceMeasurement(METHOD_CS)
+    DMM->>HCI: LE CS Read Remote Supported Capabilities
+    DMM->>HCI: LE CS Set Default Settings
+    DMM->>HCI: LE CS Create Config
+    Note over DMM,HCI: WAIT_FOR_SECURITY_ENABLED
+    DMM->>HCI: LE CS Security Enable
+    HCI-->>DMM: LE CS Security Enable Complete
+    DMM->>HCI: LE CS Set Procedure Parameters
+    DMM->>HCI: LE CS Procedure Enable
+    HCI-->>DMM: CS subevent results
+    DMM-->>App: OnDistanceMeasurementResult(...)
+```
+
+A result carries far more than a raw distance. The callback reports distance
+and error in centimetres, azimuth/altitude angles, delay spread, a confidence
+level, a Normalized Attack Detector Metric (NADM) attack level, relative
+velocity, and (new in Android 17) the remote TX power and reflector RSSI.
+
+#### Security enforcement for ranging
+
+Channel Sounding can leak proximity information, so Android 17 added the
+`enforce_security_for_ranging` flag that requires an *encrypted, LE Secure
+Connections* link before a session can start. The flag is defined alongside the
+power/RSSI result flag in the ranging aconfig:
+
+Source: `packages/modules/Bluetooth/flags/ranging.aconfig`
+
+When the flag is set, the service-side manager's `checkLinkRequirements()`
+rejects the session unless the device is bonded with the Secure Connections
+pairing algorithm and the LE link is currently encrypted with AES and a 16-byte
+key:
+
+Source: `packages/modules/Bluetooth/android/app/src/com/android/bluetooth/gatt/DistanceMeasurementManager.java`
+
+In the native stack the same guarantee is enforced over the air: the state
+machine sends `LE CS Security Enable` and waits for its completion before
+issuing `LE CS Procedure Enable`, so ranging never runs on an unencrypted link.
+
+#### Framework and service surface
+
+The public API lives in `android.bluetooth.le`:
+
+| Class | Source | Purpose |
+|-------|--------|---------|
+| `DistanceMeasurementManager` | `framework/java/android/bluetooth/le/DistanceMeasurementManager.java` | Start a session, query supported methods |
+| `DistanceMeasurementParams` | `.../le/DistanceMeasurementParams.java` | Device, duration, frequency, method id, CS params |
+| `ChannelSoundingParams` | `.../le/ChannelSoundingParams.java` | Sight type, location type, CS security level (1-4) |
+| `DistanceMeasurementResult` | `.../le/DistanceMeasurementResult.java` | Distance, angles, NADM, velocity, TX power, RSSI |
+| `DistanceMeasurementSession` | `.../le/DistanceMeasurementSession.java` | Session handle with `Callback` (onStarted/onResult/onStopped) |
+| `DistanceMeasurementMethod` | `.../le/DistanceMeasurementMethod.java` | Describes a method (AUTO/RSSI/CHANNEL_SOUNDING) |
+
+The service side sits inside `GattService`. Android 17 converted its native
+glue to Kotlin: `DistanceMeasurementNativeInterface.kt` (JNI calls),
+`DistanceMeasurementNativeCallback.kt` (native to framework callbacks), and
+`DistanceMeasurementBinder.kt` (the IPC entry point), all under
+`packages/modules/Bluetooth/android/app/src/com/android/bluetooth/gatt/`.
 
 ---
 
@@ -2867,6 +3181,12 @@ adb logcat -s VolumeControlService
 
 # Monitor coordinated sets
 adb logcat -s CsipSetCoordinatorService
+
+# Monitor the LE Audio Peripheral (acceptor) role (Android 17)
+adb logcat -s LeAudioPeripheralService PeripheralPolicyManager
+
+# Monitor Channel Sounding / distance measurement (Android 17)
+adb logcat -s DistanceMeasurementManager DistanceMeasurementNativeCallback
 ```
 
 ### 37.8.17 Bluetooth System Properties
@@ -2955,14 +3275,21 @@ Key architectural highlights:
   the legacy Fluoride (Broadcom-derived) architecture to the modular
   Gabeldorsche design, starting with the lowest layers (HCI, ACL) and working
   up.
-- **Rust integration**: New components like the GATT server are written in Rust
-  for memory safety, coexisting with C++ through FFI bindings and an arbiter
-  pattern.
+- **Rust integration**: Memory-safe components coexist with C++ through `cxx`
+  FFI bridges. The Rust GATT server (now in its own `private_gatt` crate) uses
+  an arbiter to share the ATT bearer with the C++ client, and Android 17 added a
+  Rust LE Audio crate housing the isochronous (CIG/CIS, BIG/BIS) and
+  periodic-advertising-sync managers.
 - **AIDL HAL**: The Bluetooth HAL operates at the HCI level, providing a clean
   vendor abstraction with just six methods (`initialize`, `close`, plus four
   send methods for HCI command, ACL, SCO, and ISO packets).
 - **Rich profile support**: Over 25 Bluetooth profiles are implemented, from
-  classic A2DP/HFP to modern LE Audio with BAP, CSIP, VCP, MCP, and TBS.
+  classic A2DP/HFP to modern LE Audio with BAP, CSIP, VCP, MCP, and TBS. Android
+  17 added the LE Audio Peripheral (BAP acceptor) role, letting the phone itself
+  act as an LE Audio speaker/microphone for a peer host.
+- **Ranging**: Channel Sounding distance measurement is built out in Android 17
+  with an enforced LE Secure Connections security model and richer results
+  (NADM attack level, remote TX power, RSSI).
 - **Hardware offload**: Audio encoding can be offloaded to the SoC's DSP for
   power efficiency, with the Audio HAL providing a separate data path via
   Fast Message Queues.
@@ -2998,7 +3325,10 @@ framework.
 | SMP | `packages/modules/Bluetooth/system/stack/smp/` |
 | GATT | `packages/modules/Bluetooth/system/stack/gatt/` |
 | A2DP Codecs | `packages/modules/Bluetooth/system/stack/a2dp/` |
-| Rust Components | `packages/modules/Bluetooth/system/rust/` |
+| Rust GATT server | `packages/modules/Bluetooth/system/rust/private_gatt/` |
+| Rust LE Audio (ISO, PA sync) | `packages/modules/Bluetooth/system/rust/src/le_audio/` |
+| LE Audio Peripheral (native) | `packages/modules/Bluetooth/system/bta/le_audio/server/` |
+| Distance Measurement (CS) | `packages/modules/Bluetooth/system/gd/hci/distance_measurement_manager.h` |
 | Audio HAL Interface | `packages/modules/Bluetooth/system/audio_hal_interface/` |
 | Bluetooth AIDL HAL | `hardware/interfaces/bluetooth/aidl/` |
 | Bluetooth Audio HAL | `hardware/interfaces/bluetooth/audio/aidl/` |
@@ -3012,8 +3342,9 @@ The Bluetooth specification itself is freely available from the Bluetooth SIG
 at https://www.bluetooth.com/specifications/specs/. Key specification documents
 relevant to AOSP:
 
-- **Core Specification 5.4**: The foundational Bluetooth specification
-  defining the radio, baseband, L2CAP, SDP, GAP, and GATT protocols.
+- **Core Specification 6.0**: The foundational Bluetooth specification
+  defining the radio, baseband, L2CAP, SDP, GAP, and GATT protocols, and the
+  Channel Sounding feature that AOSP's distance-measurement API builds on.
 - **A2DP 1.4**: Advanced Audio Distribution Profile specification, defining
   audio streaming procedures and SBC codec requirements.
 - **HFP 1.9**: Hands-Free Profile specification with LC3 super wideband

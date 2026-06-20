@@ -73,14 +73,21 @@ All animations on the UI thread share a single timing source: the
 subsystem and dispatches five ordered callback types every frame:
 
 ```
-// frameworks/base/core/java/android/view/Choreographer.java, lines 311-353
+// frameworks/base/core/java/android/view/Choreographer.java, lines 321-363
 
 CALLBACK_INPUT       = 0   // Input events
 CALLBACK_ANIMATION   = 1   // Animator frame callbacks
 CALLBACK_INSETS_ANIMATION = 2   // WindowInsetsAnimation updates
 CALLBACK_TRAVERSAL   = 3   // View measure/layout/draw
-CALLBACK_COMMIT      = 4   // Post-draw commit; adjusts start time for skipped frames
+CALLBACK_COMMIT      = 4   // Post-draw commit; reports a corrected frame start time
 ```
+
+The `CALLBACK_COMMIT` phase runs after traversal and reports a better
+estimate of the frame's true start time so that the view hierarchy can
+correct for delays caused by heavy layout work.  Note that in Android 17 the
+`AnimationHandler` no longer posts per-animator commit callbacks: the
+start-time commit/jank-compensation hook that earlier releases bolted onto
+each `ValueAnimator` has been removed (see §14.3.12).
 
 The `AnimationHandler` registers a `FrameCallback` with Choreographer that,
 on each VSYNC, iterates all registered `AnimationFrameCallback` instances --
@@ -113,7 +120,7 @@ sequenceDiagram
 | `frameworks/base/core/java/android/animation/` | Property Animation framework | ~13,400 |
 | `frameworks/base/core/java/android/transition/` | Transition Framework | ~9,200 |
 | `frameworks/base/libs/hwui/` (Animator*) | Native HWUI animators | ~830 |
-| `frameworks/base/core/java/android/view/Choreographer.java` | Timing pulse | 1,714 |
+| `frameworks/base/core/java/android/view/Choreographer.java` | Timing pulse | 1,741 |
 | `frameworks/base/services/core/java/com/android/server/wm/` (anim) | WM animation infrastructure | ~2,400 |
 | `frameworks/base/libs/WindowManager/Shell/src/.../transition/` | Shell transitions | ~8,200 |
 | `frameworks/base/libs/WindowManager/Shell/src/.../back/` | Predictive back | ~3,200 |
@@ -871,7 +878,7 @@ classDiagram
 
 ### 14.3.3 ValueAnimator Deep Dive
 
-`ValueAnimator.java` (1,821 lines) is the engine of property animation.
+`ValueAnimator.java` (1,776 lines) is the engine of property animation.
 
 **Key fields** (lines 96-279):
 
@@ -879,29 +886,32 @@ classDiagram
 // frameworks/base/core/java/android/animation/ValueAnimator.java
 
 private static float sDurationScale = 1.0f;    // System-wide scale (line 96)
-long mStartTime = -1;                          // First frame time (line 115)
-boolean mStartTimeCommitted;                   // Jank compensation flag (line 129)
-float mSeekFraction = -1;                      // Seek position (line 135)
-private long mDuration = 300;                  // Default 300ms (line 218)
-private int mRepeatCount = 0;                  // Default: play once (line 226)
-private int mRepeatMode = RESTART;             // RESTART or REVERSE (line 234)
-private TimeInterpolator mInterpolator = sDefaultInterpolator;  // (line 253)
-PropertyValuesHolder[] mValues;                // Animated properties (line 263)
-HashMap<String, PropertyValuesHolder> mValuesMap;  // Name-to-PVH lookup (line 269)
+long mStartTime = -1;                          // First frame time (line 113)
+float mSeekFraction = -1;                      // Seek position (line 119)
+private long mDuration = 300;                  // Default 300ms (line 202)
+private int mRepeatCount = 0;                  // Default: play once (line 211)
+private int mRepeatMode = RESTART;             // RESTART or REVERSE (line 218)
+private TimeInterpolator mInterpolator = sDefaultInterpolator;  // (line 237)
+PropertyValuesHolder[] mValues;                // Animated properties (line 247)
+HashMap<String, PropertyValuesHolder> mValuesMap;  // Name-to-PVH lookup
 ```
+
+Note that the `mStartTimeCommitted` "jank compensation" flag present in older
+releases is gone in Android 17: the per-animator commit callback that adjusted
+the start time was removed (see §14.3.12).
 
 **Duration Scale**: The system-wide `sDurationScale` multiplies all animation
 durations.  Developer Options > "Animator duration scale" modifies this.
-When set to 0, `areAnimatorsEnabled()` returns false (line 411):
+When set to 0, `areAnimatorsEnabled()` returns false (line 394):
 
 ```
-// ValueAnimator.java, line 410-412
+// ValueAnimator.java, lines 394-396
 public static boolean areAnimatorsEnabled() {
     return !(sDurationScale == 0);
 }
 ```
 
-**Factory methods** (lines 433-515):
+**Factory methods** (lines 417-515):
 
 | Factory | Evaluator | Description |
 |---|---|---|
@@ -1063,14 +1073,14 @@ or ending child animators as needed.
 
 ### 14.3.9 AnimationHandler and Background Pausing
 
-`AnimationHandler` (579 lines) manages the per-thread animation loop.
+`AnimationHandler` (515 lines) manages the per-thread animation loop.
 
-Key mechanism -- **background pausing** (lines 196-288):  When all windows in
+Key mechanism -- **background pausing** (lines 271-287):  When all windows in
 a process go to the background, `AnimationHandler` pauses all infinite-duration
 animators to save CPU.  It tracks visibility through `mAnimatorRequestors`:
 
 ```
-// frameworks/base/core/java/android/animation/AnimationHandler.java, lines 272-288
+// frameworks/base/core/java/android/animation/AnimationHandler.java, lines 271-287
 
 private Choreographer.FrameCallback mPauser = frameTimeNanos -> {
     if (mAnimatorRequestors.size() > 0) {
@@ -1092,7 +1102,7 @@ private Choreographer.FrameCallback mPauser = frameTimeNanos -> {
 
 ### 14.3.10 ValueAnimator.start() Complete Flow
 
-The `start()` method (lines 1117-1159) orchestrates the full animation
+The `start()` method (around lines 1100-1160) orchestrates the full animation
 startup sequence.  Here is the detailed flow:
 
 ```mermaid
@@ -1113,7 +1123,7 @@ flowchart TD
     M --> N[Return -- first frame will come via Choreographer]
 ```
 
-Key implementation detail -- `addAnimationCallback(0)` at line 1143 calls
+Key implementation detail -- `addAnimationCallback(0)` (around line 1126) calls
 through to `AnimationHandler.addAnimationFrameCallback()`, which:
 
 1. Adds this ValueAnimator to the `mAnimationCallbacks` list
@@ -1122,11 +1132,11 @@ through to `AnimationHandler.addAnimationFrameCallback()`, which:
 
 ### 14.3.11 The animateBasedOnTime() Algorithm
 
-This method (lines 1409-1434) is called each frame and converts wall-clock
+This method (lines 1373-1398) is called each frame and converts wall-clock
 time to an animation fraction:
 
 ```
-// ValueAnimator.java, lines 1409-1434
+// ValueAnimator.java, lines 1373-1398
 
 boolean animateBasedOnTime(long currentTime) {
     boolean done = false;
@@ -1161,28 +1171,26 @@ private long getScaledDuration() {
 }
 ```
 
-### 14.3.12 Jank Compensation: commitAnimationFrame
+### 14.3.12 Start-Time Correction and the Removed Commit Hook
 
-After the TRAVERSAL callback, Choreographer dispatches COMMIT callbacks.
-ValueAnimator registers a commit callback to compensate for jank:
+Through Android 16, `ValueAnimator` registered a per-animator commit callback
+(`commitAnimationFrame`) on Choreographer's `CALLBACK_COMMIT` phase, guarded by
+an `mStartTimeCommitted` flag.  Its job was to nudge `mStartTime` forward when
+the first frame of an animation was delayed by heavy layout work, so that the
+animation did not "jump" ahead to a later position once it finally ran.
 
-```
-// ValueAnimator.java, lines 1384-1395
+In Android 17 this hook has been **removed**: `ValueAnimator` no longer has
+`commitAnimationFrame` or `mStartTimeCommitted`, and `AnimationHandler` no
+longer posts commit callbacks for its registered animators (compare the
+`doAnimationFrame()` body in §14.3.17 -- it dispatches frame callbacks and
+nothing else).  The `CALLBACK_COMMIT` phase still exists on Choreographer
+(`frameworks/base/core/java/android/view/Choreographer.java`, line 363) and is
+used by the view hierarchy itself to report a corrected frame start time after
+traversal, but the property-animation framework no longer participates in it.
 
-public void commitAnimationFrame(long frameTime) {
-    if (!mStartTimeCommitted) {
-        mStartTimeCommitted = true;
-        long adjustment = frameTime - mLastFrameTime;
-        if (adjustment > 0) {
-            mStartTime += adjustment;
-        }
-    }
-}
-```
-
-If the first frame of an animation is delayed by heavy layout work, the
-commit callback adjusts `mStartTime` forward so the animation does not
-appear to "jump" to a later position.
+`ValueAnimator` still tracks `mLastFrameTime` (line 161) for first-frame
+detection and start-delay handling; what is gone is the explicit start-time
+fudge that the old commit callback performed.
 
 ### 14.3.13 Duration Scale and Accessibility
 
@@ -1250,11 +1258,11 @@ for Material Design elevation changes:
 | File | Lines | Purpose |
 |---|---|---|
 | `Animator.java` | ~850 | Abstract base for all animators |
-| `ValueAnimator.java` | 1,821 | Core timing engine |
+| `ValueAnimator.java` | 1,776 | Core timing engine |
 | `ObjectAnimator.java` | 1,004 | Property-targeting animator |
-| `AnimatorSet.java` | 2,280 | Multi-animator orchestration |
+| `AnimatorSet.java` | 2,272 | Multi-animator orchestration |
 | `PropertyValuesHolder.java` | 1,729 | Per-property value management |
-| `AnimationHandler.java` | 579 | Frame callback manager |
+| `AnimationHandler.java` | 515 | Frame callback manager |
 | `Keyframe.java` | ~300 | Single time/value pair |
 | `KeyframeSet.java` | ~300 | Ordered keyframe collection |
 | `FloatKeyframeSet.java` | ~150 | Optimized float keyframes |
@@ -1275,11 +1283,12 @@ for Material Design elevation changes:
 
 ### 14.3.17 AnimationHandler.doAnimationFrame() Deep Dive
 
-The per-frame animation dispatch (lines 395-416) is the core of the
-animation loop:
+The per-frame animation dispatch (lines 376-389) is the core of the
+animation loop.  In Android 17 it has been simplified -- it dispatches each
+due frame callback and nothing else:
 
 ```
-// AnimationHandler.java, lines 395-416
+// AnimationHandler.java, lines 376-389
 
 private void doAnimationFrame(long frameTime) {
     long currentTime = SystemClock.uptimeMillis();
@@ -1291,14 +1300,6 @@ private void doAnimationFrame(long frameTime) {
         }
         if (isCallbackDue(callback, currentTime)) {
             callback.doAnimationFrame(frameTime);
-            if (mCommitCallbacks.contains(callback)) {
-                getProvider().postCommitCallback(new Runnable() {
-                    @Override
-                    public void run() {
-                        commitAnimationFrame(callback, getProvider().getFrameTime());
-                    }
-                });
-            }
         }
     }
     cleanUpList();
@@ -1311,32 +1312,28 @@ Key details:
    iterating.  The list is cleaned up at the end.
 2. **Delay checking**: `isCallbackDue()` checks if the start delay has elapsed
    by comparing against `mDelayedCallbackStartTime`.
-3. **Commit callback**: If the animation has registered for commit timing
-   (for jank compensation), a commit callback is posted to run after
-   traversals.
+3. **No more commit callback**: Earlier releases posted a commit callback per
+   animator here (for the start-time jank compensation of §14.3.12).  That
+   path is gone in Android 17 -- the loop ends after invoking `doAnimationFrame`
+   on each due callback.
 
 ### 14.3.18 AnimationFrameCallbackProvider
 
 The `AnimationHandler` uses a pluggable callback provider for its timing
-source.  The default implementation wraps Choreographer:
+source.  In Android 17 the `AnimationFrameCallbackProvider` interface was
+trimmed to three methods (the `postCommitCallback` and `getFrameTime` members
+were dropped along with the commit hook of §14.3.12).  The default
+implementation wraps Choreographer:
 
 ```java
+// frameworks/base/core/java/android/animation/AnimationHandler.java, lines 468-510
+
 private class MyFrameCallbackProvider implements AnimationFrameCallbackProvider {
     final Choreographer mChoreographer = Choreographer.getInstance();
 
     @Override
     public void postFrameCallback(Choreographer.FrameCallback callback) {
         mChoreographer.postFrameCallback(callback);
-    }
-
-    @Override
-    public void postCommitCallback(Runnable runnable) {
-        mChoreographer.postCallback(Choreographer.CALLBACK_COMMIT, runnable, null);
-    }
-
-    @Override
-    public long getFrameTime() {
-        return mChoreographer.getFrameTime();
     }
 
     @Override
@@ -1349,6 +1346,13 @@ private class MyFrameCallbackProvider implements AnimationFrameCallbackProvider 
         Choreographer.setFrameDelay(delay);
     }
 }
+
+// The interface itself (lines 510-514):
+public interface AnimationFrameCallbackProvider {
+    void postFrameCallback(Choreographer.FrameCallback callback);
+    long getFrameDelay();
+    void setFrameDelay(long delay);
+}
 ```
 
 For testing, a custom provider can replace Choreographer with a manual
@@ -1357,12 +1361,12 @@ clock, enabling deterministic animation testing.
 ### 14.3.19 Auto-Cancel in AnimationHandler
 
 When a new `ObjectAnimator` starts with `setAutoCancel(true)`,
-`AnimationHandler.autoCancelBasedOn()` (line 466) scans all running
+`AnimationHandler.autoCancelBasedOn()` (line 431) scans all running
 callbacks and cancels any `ObjectAnimator` that targets the same property
 on the same object:
 
 ```
-// AnimationHandler.java, lines 466-476
+// AnimationHandler.java, lines 431-441
 
 void autoCancelBasedOn(ObjectAnimator objectAnimator) {
     for (int i = mAnimationCallbacks.size() - 1; i >= 0; i--) {
@@ -1822,7 +1826,7 @@ element state between the calling and called activities.
 
 Key source files:
 
-- `frameworks/base/core/java/android/app/ActivityOptions.java` (~3,085 lines)
+- `frameworks/base/core/java/android/app/ActivityOptions.java` (~2,982 lines)
 - `frameworks/base/core/java/android/app/ActivityTransitionCoordinator.java` (~1,122 lines)
 - `frameworks/base/core/java/android/app/EnterTransitionCoordinator.java`
 - `frameworks/base/core/java/android/app/ExitTransitionCoordinator.java`
@@ -1922,7 +1926,10 @@ shared element state before and after the fragment swap.
 
 ### 14.5.6 ActivityOptions Animation Types
 
-`ActivityOptions` defines numerous animation styles through constants:
+`ActivityOptions` defines numerous animation styles through constants
+(`frameworks/base/core/java/android/app/ActivityOptions.java`, lines 506-530).
+The internal values are sparse -- several intermediate slots are now unused --
+so do not assume they are contiguous:
 
 | Constant | Value | Description |
 |---|---|---|
@@ -1932,9 +1939,9 @@ shared element state before and after the fragment swap.
 | `ANIM_THUMBNAIL_SCALE_UP` | 3 | Scale up from a thumbnail |
 | `ANIM_THUMBNAIL_SCALE_DOWN` | 4 | Scale down to a thumbnail |
 | `ANIM_SCENE_TRANSITION` | 5 | Shared element scene transition |
-| `ANIM_CLIP_REVEAL` | 6 | Circular reveal clip |
-| `ANIM_OPEN_CROSS_PROFILE_APPS` | 7 | Cross-profile app launch |
-| `ANIM_FROM_STYLE` | 8 | From window animation style |
+| `ANIM_CLIP_REVEAL` | 11 | Circular reveal clip |
+| `ANIM_OPEN_CROSS_PROFILE_APPS` | 12 | Cross-profile app launch |
+| `ANIM_FROM_STYLE` | 14 | From window animation style |
 
 ### 14.5.7 ActivityTransitionCoordinator
 
@@ -2030,9 +2037,9 @@ Key source files in `frameworks/base/services/core/java/com/android/server/wm/`:
 
 | File | Lines | Purpose |
 |---|---|---|
-| `WindowAnimator.java` | 365 | Per-frame animation dispatch |
-| `SurfaceAnimator.java` | 647 | Leash-based surface animation |
-| `SurfaceAnimationRunner.java` | 359 | Lock-free animation execution |
+| `WindowAnimator.java` | 342 | Per-frame animation dispatch |
+| `SurfaceAnimator.java` | 640 | Leash-based surface animation |
+| `SurfaceAnimationRunner.java` | 338 | Lock-free animation execution |
 | `WindowAnimationSpec.java` | ~300 | Wraps legacy `Animation` for surfaces |
 | `LocalAnimationAdapter.java` | ~180 | Adapter for local animations |
 | `AnimationAdapter.java` | ~100 | Interface for animation implementations |
@@ -2040,7 +2047,7 @@ Key source files in `frameworks/base/services/core/java/com/android/server/wm/`:
 
 ### 14.6.2 SurfaceAnimator and the Leash Pattern
 
-The `SurfaceAnimator` (647 lines) implements a key architectural pattern:
+The `SurfaceAnimator` (640 lines) implements a key architectural pattern:
 the **animation leash**.  Instead of directly animating a window's surface,
 it creates a temporary parent surface (the "leash"), reparents the window's
 children onto the leash, and hands the leash to the animation system:
@@ -2085,7 +2092,7 @@ reparented back to their original parent and the leash is destroyed.
 
 ### 14.6.3 SurfaceAnimationRunner
 
-`SurfaceAnimationRunner` (359 lines) executes animations **without holding
+`SurfaceAnimationRunner` (338 lines) executes animations **without holding
 the WindowManager lock**.  This is critical for performance -- the WM lock
 is heavily contended, and holding it during animation would cause jank:
 
@@ -2109,21 +2116,27 @@ frame rate.
 
 ### 14.6.4 WindowAnimator
 
-`WindowAnimator` (365 lines) is the per-frame dispatch coordinator.  It
-schedules Choreographer callbacks and manages the overall animation state:
+`WindowAnimator` (342 lines) is the per-frame dispatch coordinator.  It
+schedules Choreographer callbacks and manages the overall animation state.
+In Android 17 the per-frame timing is driven by a `Choreographer.VsyncCallback`
+(`mAnimationVsyncCallback`); the scheduling state is tracked with a boolean
+(`mAnimationFrameCallbackScheduled`) rather than a stored `FrameCallback`:
 
 ```
-// frameworks/base/services/core/java/com/android/server/wm/WindowAnimator.java, lines 47-73
+// frameworks/base/services/core/java/com/android/server/wm/WindowAnimator.java, lines 50-72
 
 public class WindowAnimator {
     final WindowManagerService mService;
-    final Choreographer.FrameCallback mAnimationFrameCallback;
     final Choreographer.VsyncCallback mAnimationVsyncCallback;
-    long mCurrentTime;
+    long mCurrentTime;                       // time of current animation step
     private Choreographer mChoreographer;
+    private boolean mAnimationFrameCallbackScheduled;
     ...
 }
 ```
+
+A callback is posted at vsync-app, which then schedules the actual animation
+tick at vsync-sf so the work lands at the time the compositor expects it.
 
 ### 14.6.5 SurfaceAnimator.startAnimation() Flow
 
@@ -2213,14 +2226,14 @@ graph TD
 
 The WM's `Transition.java` (distinct from the framework's
 `android.transition.Transition`) manages the server-side state machine for
-shell transitions.  At approximately 4,587 lines, it tracks:
+shell transitions.  At approximately 4,968 lines, it tracks:
 
 - Participating windows and tasks
 - Transition type (open, close, change, etc.)
 - Ready state and sync barriers
 - Animation state for each participant
 
-The `TransitionController` (approximately 2,049 lines) manages the lifecycle
+The `TransitionController` (approximately 2,241 lines) manages the lifecycle
 of all active transitions and coordinates with the Shell process.
 
 ---
@@ -2265,15 +2278,19 @@ sequenceDiagram
 
 ### 14.7.3 Transitions.java
 
-`Transitions.java` (1,964 lines) is the central coordinator in the Shell
-process.  It implements `ITransitionPlayer` and receives transition callbacks
-from the WindowManager core:
+`Transitions.java` (2,355 lines) is the central coordinator in the Shell
+process.  It receives transition callbacks from the WindowManager core through
+an inner `TransitionPlayerImpl extends ITransitionPlayer.Stub`; the outer class
+itself implements `RemoteCallable` and the Shell command handler interface:
 
 ```
-// frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java
+// frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java, line 143
 
-public class Transitions implements ... RemoteCallable<Transitions> {
+public class Transitions implements RemoteCallable<Transitions>,
+        ShellCommandHandler.ShellCommandActionHandler {
     ...
+    // The Binder entry point is an inner class:
+    private class TransitionPlayerImpl extends ITransitionPlayer.Stub { ... }
 }
 ```
 
@@ -2297,7 +2314,7 @@ graph TD
 
 ### 14.7.5 DefaultTransitionHandler
 
-`DefaultTransitionHandler` (1,081 lines) handles the common cases: app
+`DefaultTransitionHandler` (1,208 lines) handles the common cases: app
 launches, task switches, and activity closes.  It loads window animations
 from resources and applies them to `SurfaceControl` leashes:
 
@@ -2578,6 +2595,13 @@ run until the simulated system reaches equilibrium.
 Source directory:
 `frameworks/base/core/java/com/android/internal/dynamicanimation/animation/`
 (6 files, ~1,750 lines)
+
+This is the platform's own internal copy of the physics-animation engine.  The
+API that apps compile against is the AndroidX `androidx.dynamicanimation`
+library, which is shipped as a Jetpack artifact rather than as platform source
+(in the AOSP tree it appears only under `prebuilts/`, not as buildable source).
+The two share the same design and class names; the platform copy here is what
+the framework's own UI uses internally.
 
 ### 14.9.2 DynamicAnimation Base Class
 
@@ -3245,13 +3269,13 @@ stutter.
 
 ### 14.11.1 AnimatedVectorDrawable
 
-`AnimatedVectorDrawable` (approximately 1,870 lines) animates the
+`AnimatedVectorDrawable` (approximately 1,876 lines) animates the
 individual properties of a `VectorDrawable` -- paths, groups, and fills.
 Starting from API 25, it runs on the **RenderThread** for jank-free
 performance:
 
 ```
-// frameworks/base/graphics/java/android/graphics/drawable/AnimatedVectorDrawable.java, lines 71-80
+// frameworks/base/graphics/java/android/graphics/drawable/AnimatedVectorDrawable.java, lines 77-85
 
 /**
  * Starting from API 25, AnimatedVectorDrawable runs on RenderThread (as
@@ -3442,7 +3466,7 @@ thread.
 
 ### 14.12.1 Overview
 
-`Choreographer` (1,714 lines) is the central timing coordinator for all
+`Choreographer` (1,741 lines) is the central timing coordinator for all
 UI-thread work in Android.  It receives VSYNC signals from the display
 subsystem and dispatches ordered callbacks that collectively produce each
 frame.
@@ -3453,7 +3477,7 @@ Source:
 ### 14.12.2 Callback Types and Ordering
 
 ```
-// Choreographer.java, lines 303-355
+// Choreographer.java, lines 321-363
 
 CALLBACK_INPUT           = 0  // Input event processing
 CALLBACK_ANIMATION       = 1  // Animation frame callbacks
@@ -3495,27 +3519,36 @@ private static final ThreadLocal<Choreographer> sThreadInstance =
         if (looper == null) {
             throw new IllegalStateException("The current thread must have a looper!");
         }
-        Choreographer choreographer = new Choreographer(looper, VSYNC_SOURCE_APP);
+        Choreographer choreographer = new Choreographer(looper);
         if (looper == Looper.getMainLooper()) {
-            mMainInstance = choreographer;
+            sMainInstance = choreographer;
         }
         return choreographer;
     }
 };
 ```
 
+In Android 17 the constructor no longer takes a `vsyncSource` argument (see
+§14.12.4 and §14.12.11) -- a separate `sSfThreadInstance` ThreadLocal supplies
+the SurfaceFlinger-timed instance.
+
 ### 14.12.4 VSYNC Integration
 
-Choreographer receives VSYNC through `FrameDisplayEventReceiver`:
+Choreographer receives VSYNC through `FrameDisplayEventReceiver`.  In Android 17
+the `[DisplayEventReceiver][Choreographer] Remove vsyncSource and merge
+instances` change dropped the `vsyncSource` parameter from both the
+Choreographer constructor and `FrameDisplayEventReceiver`.  A Choreographer is
+now distinguished only by an optional `layerHandle` (the default UI instance
+passes none; a SurfaceControl-attached instance passes its layer handle):
 
 ```
-// Choreographer.java, lines 361-376
+// Choreographer.java, lines 371-388
 
-private Choreographer(Looper looper, int vsyncSource, long layerHandle) {
+private Choreographer(Looper looper, long layerHandle) {
     mLooper = looper;
     mHandler = new FrameHandler(looper);
     mDisplayEventReceiver = USE_VSYNC
-            ? new FrameDisplayEventReceiver(looper, vsyncSource, layerHandle)
+            ? new FrameDisplayEventReceiver(looper, layerHandle)
             : null;
     mLastFrameTimeNanos = Long.MIN_VALUE;
     mFrameIntervalNanos = (long)(1000000000 / getRefreshRate());
@@ -3553,7 +3586,7 @@ Each callback type has its own `CallbackQueue` (a singly-linked list sorted
 by due time):
 
 ```
-// Choreographer.java, postCallbackDelayedInternal (lines 612-634)
+// Choreographer.java, postCallbackDelayedInternal (lines 622-644)
 
 private void postCallbackDelayedInternal(int callbackType,
         Object action, Object token, long delayMillis) {
@@ -3591,12 +3624,12 @@ frameInterval`.
 ### 14.12.8 Buffer Stuffing Recovery
 
 Modern Choreographer includes buffer stuffing detection and recovery
-(lines 236-283).  When the app is blocked waiting for buffer release
-(indicating too many queued frames), Choreographer adds timing offsets
-to recover:
+(`BufferStuffingState`, around lines 244-282).  When the app is blocked waiting
+for buffer release (indicating too many queued frames), Choreographer adds
+timing offsets to recover:
 
 ```
-// Choreographer.java, lines 280-283
+// Choreographer.java, lines 290-294
 public void onWaitForBufferRelease(long durationNanos) {
     if (durationNanos > mLastFrameIntervalNanos / 2) {
         mBufferStuffingState.isStuffed.set(true);
@@ -3607,7 +3640,7 @@ public void onWaitForBufferRelease(long durationNanos) {
 ### 14.12.9 FrameInfo for Jank Tracking
 
 ```
-// Choreographer.java, lines 296-297
+// Choreographer.java, line 307
 FrameInfo mFrameInfo = new FrameInfo();
 ```
 
@@ -3643,19 +3676,26 @@ sequenceDiagram
 Each `doCallbacks()` call extracts all callbacks from the queue whose due
 time has passed and invokes them.
 
-### 14.12.11 VSYNC Source Types
+### 14.12.11 App vs SurfaceFlinger Timing
 
-Choreographer supports two VSYNC sources:
+Through Android 16, Choreographer carried an explicit VSYNC source on each
+instance (`VSYNC_SOURCE_APP` for UI rendering and `VSYNC_SOURCE_SURFACE_FLINGER`
+for compositor-timed work).  Android 17 **removed those constants** and merged
+the construction path: there is no `vsyncSource` argument anymore.  The
+distinction now lives in *which* instance you fetch rather than in a per-VSYNC
+enum:
 
-| Source | Constant | Usage |
+| Instance | Accessor | Usage |
 |---|---|---|
-| App VSYNC | `VSYNC_SOURCE_APP` | UI rendering (default) |
-| SF VSYNC | `VSYNC_SOURCE_SURFACE_FLINGER` | Compositor-timed operations |
+| App Choreographer | `Choreographer.getInstance()` | UI rendering (default) |
+| SF Choreographer | `Choreographer.getSfInstance()` (now `@Deprecated`) | Compositor-timed operations |
+| SurfaceControl-attached | `getInstanceForSurfaceControl(layerHandle, looper)` | Per-layer timing |
 
-App VSYNC fires slightly earlier than SF VSYNC to give the app time to
-render before SurfaceFlinger composites.  The `SurfaceAnimationRunner` uses
-SF VSYNC via `SfVsyncFrameCallbackProvider` to synchronize WM animations
-with the compositor.
+App-timed VSYNC still fires slightly earlier than SurfaceFlinger-timed VSYNC to
+give the app time to render before composition.  The `SurfaceAnimationRunner`
+uses the SF-timed pulse via `SfVsyncFrameCallbackProvider` to synchronize WM
+animations with the compositor.  `getSfInstance()` is now deprecated in favor
+of using vsync IDs with the regular Choreographer.
 
 ### 14.12.12 Frame Scheduling
 
@@ -3699,14 +3739,21 @@ The `FrameDisplayEventReceiver` is a private inner class that bridges
 between the native display event system and the Java Choreographer:
 
 ```java
-private final class FrameDisplayEventReceiver extends DisplayEventReceiver {
+// Choreographer.java, lines 1579-1620 (simplified). In Android 17 the
+// constructor takes (Looper, long layerHandle) -- the vsyncSource argument
+// was removed -- and mLastVsyncEventData is a final field copied into rather
+// than reassigned.
+private final class FrameDisplayEventReceiver extends DisplayEventReceiver
+        implements Runnable {
+    private final VsyncEventData mLastVsyncEventData = new VsyncEventData();
+
     @Override
     public void onVsync(long timestampNanos, long physicalDisplayId,
             int frame, VsyncEventData vsyncEventData) {
         ...
         mTimestampNanos = timestampNanos;
         mFrame = frame;
-        mLastVsyncEventData = vsyncEventData;
+        mLastVsyncEventData.copyFrom(vsyncEventData);
         Message msg = Message.obtain(mHandler, this);
         msg.setAsynchronous(true);
         mHandler.sendMessageAtTime(msg, timestampNanos / TimeUtils.NANOS_PER_MS);
@@ -4001,9 +4048,182 @@ next VSYNC (`setDesiredPresentTime()`) for smoother timing.
 
 ---
 
-## 14.14 Try It
+## 14.14 Adaptive Refresh Rate and Frame Rate Hints
 
-### 14.14.1 Property Animation: Bouncing Ball
+Android 17 continues the platform's push toward Adaptive Refresh Rate (ARR)
+displays, where the panel's refresh rate is chosen per-frame rather than fixed.
+For animations this matters directly: the smoother an animation needs to be, the
+higher the frame rate the system should request, and conversely a slow drift can
+run at a lower rate to save power.  Several APIs added or reworked in this
+release let animation code participate in that decision instead of leaving the
+refresh rate entirely to platform heuristics.
+
+### 14.14.1 The Frame Rate Decision Problem
+
+On a multi-refresh-rate (MRR) panel the display hops between a small set of
+fixed rates (for example 60Hz and 120Hz).  On an ARR panel the achievable rate
+is effectively continuous within a range, so the question is no longer "60 or
+120?" but "what rate best matches the content's motion?"  Running a slow,
+barely-moving animation at 120Hz wastes power; running a fast swipe at 60Hz
+looks choppy.
+
+The platform already infers a frame rate "category" from view invalidations, but
+that heuristic cannot know how *fast* content is actually moving.  The Android 17
+APIs close that gap by letting a view (or drawable) tell the framework either an
+explicit preferred rate, a coarse category, or a velocity that the system maps
+to a rate.
+
+```mermaid
+graph TD
+    subgraph "Inputs the framework can use"
+        V["View.setRequestedFrameRate()<br/>(explicit rate or category)"]
+        FV["View.setFrameContentVelocity()<br/>(pixels per second)"]
+        AIH["AnimatedImageDrawable<br/>frame rate hint (fps)"]
+    end
+    subgraph "Per-View resolution"
+        V --> VP["View.votePreferredFrameRate()"]
+        FV --> VP
+        VP --> CAT["calculateFrameRateCategory()"]
+    end
+    CAT --> VRI["ViewRootImpl.votePreferredFrameRate()"]
+    AIH --> CB["Drawable.Callback.onFrameRateHint()"]
+    VRI --> SF["SurfaceControl / SurfaceFlinger<br/>frame rate selection"]
+    CB --> SF
+```
+
+### 14.14.2 View Frame Rate Preferences
+
+`View` exposes a public preferred-frame-rate API
+(`frameworks/base/core/java/android/view/View.java`, lines 35127 and 35159):
+
+```java
+// Set an explicit rate, or one of the category constants
+public void setRequestedFrameRate(float frameRate);
+public float getRequestedFrameRate();
+```
+
+A positive `frameRate` is an explicit request in Hz; otherwise one of the
+category sentinels (defined around lines 5958-5966) is passed:
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `REQUESTED_FRAME_RATE_CATEGORY_DEFAULT` | `Float.NaN` | Let the framework decide (default) |
+| `REQUESTED_FRAME_RATE_CATEGORY_NO_PREFERENCE` | -1 | No opinion |
+| `REQUESTED_FRAME_RATE_CATEGORY_LOW` | -2 | Slow/idle motion |
+| `REQUESTED_FRAME_RATE_CATEGORY_NORMAL` | -3 | Standard UI motion |
+| `REQUESTED_FRAME_RATE_CATEGORY_HIGH` | -4 | Fast/high-smoothness motion |
+
+The preference is stored in `mPreferredFrameRate` and is only valid while the
+view keeps invalidating; it does **not** propagate to child views of a
+`ViewGroup`.  Internally, `votePreferredFrameRate()` and
+`calculateFrameRateCategory()` (around lines 34954 and 34909) combine the
+explicit preference with the view's measured behavior and forward the result to
+`ViewRootImpl.votePreferredFrameRate()`, which ultimately influences the
+SurfaceControl frame rate vote.  These paths are guarded by the
+`toolkit_set_frame_rate_read_only` and related flags in
+`frameworks/base/core/java/android/view/flags/refresh_rate_flags.aconfig`.
+
+A companion velocity API lets a view report how fast its content is scrolling so
+the framework can pick a rate from motion rather than from invalidation counts
+(`setFrameContentVelocity(float pixelsPerSecond)` / `getFrameContentVelocity()`,
+around lines 35083 and 35107, gated by the `view_velocity_api` flag).
+
+### 14.14.3 Velocity-to-Rate Mapping on the Display
+
+Because the right rate for a given motion speed depends on the panel, Android 17
+adds a per-`Display` query that exposes the device's velocity-to-rate curve
+(`frameworks/base/core/java/android/view/Display.java`, line 1482):
+
+```java
+@NonNull
+public List<FrameRateVelocityPoint> getFrameRateVelocityMapping();
+```
+
+Each `FrameRateVelocityPoint`
+(`frameworks/base/core/java/android/view/FrameRateVelocityPoint.java`) pairs a
+frame rate with the content velocity above which that rate becomes worthwhile:
+
+```java
+public final class FrameRateVelocityPoint implements Parcelable {
+    public float getFramePerSecond();   // the rate
+    public float getDpPerSecond();      // velocity threshold, in dp/s
+}
+```
+
+Two details make this safe to use across devices:
+
+1. The velocity is expressed in **dp per second** (it was renamed from
+   pixels-per-second during development), so the mapping is density-independent.
+2. The returned list is read-only and non-empty, and it must be **re-queried**
+   whenever `DisplayListener#onDisplayChanged` fires (for example when a foldable
+   moves content between its inner and outer screens, each of which has its own
+   mapping).  The `Display` object caches the list in
+   `mCachedFrameRateVelocityMapping` and refreshes it on display change.
+
+The mapping is the bridge between an animation's known velocity (from a fling,
+spring, or scroll) and the rate the app should request through the View APIs
+above.
+
+### 14.14.4 AnimatedImageDrawable Frame Rate Hints
+
+Animated images (GIF/WebP) decode at their own intrinsic frame rate, which the
+toolkit cannot infer from invalidations.  Android 17 lets
+`AnimatedImageDrawable` push that rate up to its host so the display can be
+driven at the image's real cadence instead of a guessed one
+(`frameworks/base/graphics/java/android/graphics/drawable/AnimatedImageDrawable.java`).
+
+When the `animated_image_frame_rate_hint` flag is set and the drawable lives on
+a thread with a `Looper`, native code reports the decoded fps through a callback
+that the drawable forwards to its `Callback`:
+
+```java
+// AnimatedImageDrawable.java, lines 466-467 and 620-632
+if (Flags.animatedImageFrameRateHint() && Looper.myLooper() != null) {
+    nSetOnFrameRateHintListener(mState.mNativePtr, new WeakReference<>(this));
+}
+// ... native -> callOnFrameRateHint -> cb.onFrameRateHint(drawable, fps);
+```
+
+The receiving end is a new default method on `Drawable.Callback`
+(`frameworks/base/graphics/java/android/graphics/drawable/Drawable.java`,
+line 446):
+
+```java
+default void onFrameRateHint(@NonNull Drawable source, float fps) {}
+```
+
+A `View` hosting the drawable can implement `onFrameRateHint()` to translate the
+reported fps into a `setRequestedFrameRate()` call, so an animated sticker that
+plays at, say, 24fps no longer forces the panel to a higher rate.  The "must be
+on a Looper thread" requirement is deliberate: the listener is dispatched onto
+the host's message loop, so a drawable decoded on a worker without a Looper
+simply does not register the hint.
+
+### 14.14.5 RenderThread and the Animation Timestamp
+
+The HWUI and surface-animation paths discussed in §14.10 and §14.6 remain the
+key to jank-free motion, and Android 17 tightens the timing contract between
+them and the compositor.  Changes in this release pass the exact timestamp used
+to compute an animation's value down to HWUI and SurfaceFlinger (the
+"plumb animation time to SF" work in the 16->17 changeset), so the value
+sampled on the RenderThread and the time the frame is actually latched agree.
+This matters most on ARR panels, where the presentation time is not a fixed
+interval after VSYNC: feeding the real animation timestamp forward lets the
+compositor pick a refresh rate and present time that match the motion the
+animator computed, rather than approximating it.
+
+The takeaway for app authors is unchanged in spirit but sharper in Android 17:
+prefer RenderThread-backed animations (`ViewPropertyAnimator`,
+`AnimatedVectorDrawable`) for smoothness, and, when you know how fast your
+content is moving, hand that information to the platform through the frame rate
+and velocity APIs so an adaptive display can spend power only where motion
+warrants it.
+
+---
+
+## 14.15 Try It
+
+### 14.15.1 Property Animation: Bouncing Ball
 
 Create a simple property animation that bounces a view:
 
@@ -4036,7 +4256,7 @@ ball.animate()
     .start();
 ```
 
-### 14.14.2 Shared Element Activity Transition
+### 14.15.2 Shared Element Activity Transition
 
 In the calling Activity:
 
@@ -4064,7 +4284,7 @@ getWindow().setSharedElementEnterTransition(new ChangeImageTransform());
     android:transitionName="hero_image" />
 ```
 
-### 14.14.3 SpringAnimation for Natural Motion
+### 14.15.3 SpringAnimation for Natural Motion
 
 ```java
 View view = findViewById(R.id.springy_view);
@@ -4084,7 +4304,7 @@ springAnim.setStartVelocity(velocityFromFling);
 springAnim.start();
 ```
 
-### 14.14.4 Multi-Property AnimatorSet
+### 14.15.4 Multi-Property AnimatorSet
 
 ```java
 View card = findViewById(R.id.card);
@@ -4101,7 +4321,7 @@ enterSet.setInterpolator(new DecelerateInterpolator());
 enterSet.start();
 ```
 
-### 14.14.5 Transition Framework: Scene Change
+### 14.15.5 Transition Framework: Scene Change
 
 ```java
 ViewGroup sceneRoot = findViewById(R.id.scene_root);
@@ -4124,7 +4344,7 @@ viewToMove.setLayoutParams(params);
 // The framework automatically captures end values and animates!
 ```
 
-### 14.14.6 Tracing Animations with Perfetto
+### 14.15.6 Tracing Animations with Perfetto
 
 To capture animation frame timing in Perfetto:
 
@@ -4182,7 +4402,7 @@ Things to look for in the trace:
 4. **VSYNC alignment**: Animation property updates should happen in the
    ANIMATION callback and be reflected in the same frame's TRAVERSAL pass.
 
-### 14.14.7 Debugging Animation Issues
+### 14.15.7 Debugging Animation Issues
 
 Common diagnostic tools and techniques:
 
@@ -4205,7 +4425,7 @@ adb shell dumpsys window animator
 adb shell setprop debug.hwui.show_dirty_regions true
 ```
 
-### 14.14.8 AnimatedVectorDrawable in Practice
+### 14.15.8 AnimatedVectorDrawable in Practice
 
 Create an animated checkmark that draws itself:
 
@@ -4252,7 +4472,7 @@ AnimatedVectorDrawable avd = (AnimatedVectorDrawable) imageView.getDrawable();
 avd.start();
 ```
 
-### 14.14.9 Custom TypeEvaluator for Complex Types
+### 14.15.9 Custom TypeEvaluator for Complex Types
 
 For custom types, implement `TypeEvaluator`:
 
@@ -4281,7 +4501,7 @@ animator.setDuration(1000);
 animator.start();
 ```
 
-### 14.14.10 Keyframe Animation for Complex Timing
+### 14.15.10 Keyframe Animation for Complex Timing
 
 Create multi-segment animations with different timing per segment:
 
@@ -4300,7 +4520,7 @@ animator.setDuration(1500);
 animator.start();
 ```
 
-### 14.14.11 Reading Animation State from Dumpsys
+### 14.15.11 Reading Animation State from Dumpsys
 
 The WindowManager dumpsys provides animation state information:
 
@@ -4325,7 +4545,7 @@ Key fields to examine:
 - `mAnimation` -- The active AnimationAdapter
 - `mPendingAnimations` / `mRunningAnimations` -- In SurfaceAnimationRunner
 
-### 14.14.12 Animation Performance Best Practices
+### 14.15.12 Animation Performance Best Practices
 
 1. **Prefer `ViewPropertyAnimator` and RenderNode properties** for simple
    view animations -- they run on RenderThread and survive UI thread jank.
@@ -4348,7 +4568,7 @@ Key fields to examine:
    that drops occasional frames is invisible to the eye but measurable in
    traces.
 
-### 14.14.13 ViewPropertyAnimator for Concise View Animation
+### 14.15.13 ViewPropertyAnimator for Concise View Animation
 
 `ViewPropertyAnimator` provides the most concise API for common View
 animations.  It is accessed through `view.animate()` and returns a builder:
@@ -4373,7 +4593,7 @@ Under the hood, `ViewPropertyAnimator` creates `RenderNodeAnimator` instances
 that run on the RenderThread, providing the best possible performance for
 view property animations.
 
-### 14.14.14 Gesture-Driven Animation with SpringAnimation
+### 14.15.14 Gesture-Driven Animation with SpringAnimation
 
 Implement a draggable view that springs back to its original position:
 
@@ -4414,7 +4634,7 @@ draggable.setOnTouchListener((v, event) -> {
 });
 ```
 
-### 14.14.15 Transition Framework with Scenes
+### 14.15.15 Transition Framework with Scenes
 
 Build a two-scene transition with XML scenes:
 
@@ -4477,7 +4697,7 @@ button.setOnClickListener(v -> {
 This produces a smooth animation where the box follows an arc path from
 top-left to bottom-right while simultaneously changing color and size.
 
-### 14.14.16 FlingAnimation for Scroll-Like Motion
+### 14.15.16 FlingAnimation for Scroll-Like Motion
 
 ```java
 View card = findViewById(R.id.card);
@@ -4510,7 +4730,7 @@ fling.addEndListener((animation, canceled, value, velocity) -> {
 });
 ```
 
-### 14.14.17 Custom Interpolator
+### 14.15.17 Custom Interpolator
 
 Build a custom interpolator that combines ease-in with a bounce:
 
@@ -4542,7 +4762,7 @@ public class EaseInBounceInterpolator extends BaseInterpolator
 }
 ```
 
-### 14.14.18 Window Insets Animation
+### 14.15.18 Window Insets Animation
 
 Animate keyboard appearance with WindowInsetsAnimation (API 30+):
 
@@ -4579,7 +4799,7 @@ view.setWindowInsetsAnimationCallback(
     });
 ```
 
-### 14.14.19 Multi-Property Physics Animation
+### 14.15.19 Multi-Property Physics Animation
 
 Chain spring animations for a natural "rubber band" effect:
 
@@ -4630,7 +4850,7 @@ bubble.setOnTouchListener((v, event) -> {
 });
 ```
 
-### 14.14.20 Perfetto Trace Analysis Walkthrough
+### 14.15.20 Perfetto Trace Analysis Walkthrough
 
 After capturing a trace with animation categories, open it in
 ui.perfetto.dev and look for these patterns:
@@ -4721,6 +4941,7 @@ timeline
         2022 : Predictive Back animations
         2023 : Predictive Back cross-activity/task
         2024 : Enhanced foldable animations, desktop mode
+        2025 : Adaptive refresh rate frame rate APIs, animation timestamp to SF
 ```
 
 ### Decision Guide: Which Animation API to Use
@@ -4880,31 +5101,33 @@ public void disableAnimations() {
 
 | Section | Primary Source Files |
 |---|---|
-| 10.2 View Animation | `frameworks/base/core/java/android/view/animation/Animation.java` (1,363 lines) |
-| | `frameworks/base/core/java/android/view/animation/AnimationSet.java` (553 lines) |
+| 14.2 View Animation | `frameworks/base/core/java/android/view/animation/Animation.java` (1,363 lines) |
+| | `frameworks/base/core/java/android/view/animation/AnimationSet.java` (552 lines) |
 | | `frameworks/base/core/java/android/view/animation/PathInterpolator.java` (245 lines) |
-| 10.3 Property Animation | `frameworks/base/core/java/android/animation/ValueAnimator.java` (1,821 lines) |
+| 14.3 Property Animation | `frameworks/base/core/java/android/animation/ValueAnimator.java` (1,776 lines) |
 | | `frameworks/base/core/java/android/animation/ObjectAnimator.java` (1,004 lines) |
-| | `frameworks/base/core/java/android/animation/AnimatorSet.java` (2,280 lines) |
+| | `frameworks/base/core/java/android/animation/AnimatorSet.java` (2,272 lines) |
 | | `frameworks/base/core/java/android/animation/PropertyValuesHolder.java` (1,729 lines) |
-| | `frameworks/base/core/java/android/animation/AnimationHandler.java` (579 lines) |
-| 10.4 Transition Framework | `frameworks/base/core/java/android/transition/Transition.java` (2,451 lines) |
+| | `frameworks/base/core/java/android/animation/AnimationHandler.java` (515 lines) |
+| 14.4 Transition Framework | `frameworks/base/core/java/android/transition/Transition.java` (2,451 lines) |
 | | `frameworks/base/core/java/android/transition/TransitionManager.java` (470 lines) |
 | | `frameworks/base/core/java/android/transition/ChangeBounds.java` (~500 lines) |
 | | `frameworks/base/core/java/android/transition/Fade.java` (~200 lines) |
-| 10.6 WM Animations | `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimator.java` (647 lines) |
-| | `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimationRunner.java` (359 lines) |
-| | `frameworks/base/services/core/java/com/android/server/wm/WindowAnimator.java` (365 lines) |
-| 10.7 Shell Transitions | `frameworks/base/libs/WindowManager/Shell/src/.../transition/Transitions.java` (1,964 lines) |
-| | `frameworks/base/libs/WindowManager/Shell/src/.../transition/DefaultTransitionHandler.java` (1,081 lines) |
-| 10.8 Predictive Back | `frameworks/base/libs/WindowManager/Shell/src/.../back/BackAnimationController.java` |
-| 10.9 Physics Animation | `frameworks/base/core/java/com/android/internal/dynamicanimation/animation/SpringAnimation.java` |
+| 14.6 WM Animations | `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimator.java` (640 lines) |
+| | `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimationRunner.java` (338 lines) |
+| | `frameworks/base/services/core/java/com/android/server/wm/WindowAnimator.java` (342 lines) |
+| 14.7 Shell Transitions | `frameworks/base/libs/WindowManager/Shell/src/.../transition/Transitions.java` (2,355 lines) |
+| | `frameworks/base/libs/WindowManager/Shell/src/.../transition/DefaultTransitionHandler.java` (1,208 lines) |
+| 14.8 Predictive Back | `frameworks/base/libs/WindowManager/Shell/src/.../back/BackAnimationController.java` |
+| 14.9 Physics Animation | `frameworks/base/core/java/com/android/internal/dynamicanimation/animation/SpringAnimation.java` |
 | | `frameworks/base/core/java/com/android/internal/dynamicanimation/animation/SpringForce.java` |
 | | `frameworks/base/core/java/com/android/internal/dynamicanimation/animation/DynamicAnimation.java` |
-| 10.10 HWUI Animation | `frameworks/base/libs/hwui/Animator.cpp` (~460 lines) |
+| 14.10 HWUI Animation | `frameworks/base/libs/hwui/Animator.cpp` (~460 lines) |
 | | `frameworks/base/libs/hwui/AnimatorManager.cpp` (~207 lines) |
-| 10.11 Drawable Animation | `frameworks/base/graphics/java/android/graphics/drawable/AnimatedVectorDrawable.java` (~1,870 lines) |
-| 10.12 Choreographer | `frameworks/base/core/java/android/view/Choreographer.java` (1,714 lines) |
+| 14.11 Drawable Animation | `frameworks/base/graphics/java/android/graphics/drawable/AnimatedVectorDrawable.java` (~1,876 lines) |
+| | `frameworks/base/graphics/java/android/graphics/drawable/AnimatedImageDrawable.java` (~681 lines) |
+| 14.12 Choreographer | `frameworks/base/core/java/android/view/Choreographer.java` (1,741 lines) |
+| 14.14 Adaptive Refresh Rate | `frameworks/base/core/java/android/view/FrameRateVelocityPoint.java` |
 
 ### Glossary of Animation Terms
 
@@ -4956,8 +5179,9 @@ source files:
 
 - `frameworks/base/core/java/android/view/ViewPropertyAnimator.java` -- The
   concise view animation API
-- `frameworks/base/core/java/android/view/RenderNodeAnimator.java` -- JNI
-  bridge to HWUI animations
+- `frameworks/base/graphics/java/android/graphics/animation/RenderNodeAnimator.java`
+  -- JNI bridge to HWUI animations (the `android.view.RenderNodeAnimator` class
+  is now a thin compatibility subclass of this)
 - `frameworks/base/libs/hwui/Interpolator.h` -- Native interpolator
   declarations
 - `frameworks/base/libs/hwui/PropertyValuesAnimatorSet.cpp` -- Native

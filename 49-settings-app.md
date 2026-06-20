@@ -54,11 +54,20 @@ that mirror the top-level categories a user sees:
 | `accessibility/` | TalkBack, Magnification, Captions |
 | `accounts/` | Account sync, Add account |
 | `notification/` | Notification channels, DND modes |
+| `privatespace/` | Private space setup and management |
+| `supervision/` | Supervision dashboard, PIN management, content filters |
+| `appfunctions/` | Device-state AppFunction services that expose Settings to on-device agents |
 | `activityembedding/` | Two-pane layout for large screens |
 | `widget/` | Custom preference widgets |
 | `slices/` | Settings Slices provider |
 | `overlay/` | FeatureFactory for OEM customisation |
-| `spa/` | Settings Page Architecture (new Compose-based UI) |
+| `spa/` | Settings Page Architecture (Compose-based UI, predates Catalyst) |
+
+In Android 17 a fourth presentation layer joins the activity/fragment, dashboard
+tile, and SPA Compose stacks: **Catalyst**, a declarative `*Screen.kt`
+preference model annotated with `@ProvidePreferenceScreen`.  Roughly 230 screens
+have been migrated to it, and the same metadata also feeds the new AppFunctions
+"device state" surface that lets on-device agents read and drive Settings (§49.14).
 
 The total source tree contains well over 1,000 Java/Kotlin files -- making the
 Settings app one of the largest applications in AOSP.
@@ -855,6 +864,42 @@ on the UI thread to refresh all preference summaries and states.
 After toggling developer options on or off, the fragment calls
 `SystemPropPoker.getInstance().poke()` to notify all system services that
 properties have changed.
+
+### 49.3.6 Desktop Experience Developer Toggles
+
+Android 17 promotes the connected-display / desktop-windowing work that began as
+flag-only experiments into first-class developer toggles.  The controllers live
+in their own subpackage,
+`packages/apps/Settings/src/com/android/settings/development/desktopexperience/`,
+and are registered alongside the other window-management controllers in
+`DevelopmentSettingsDashboardFragment.buildPreferenceControllers()`:
+
+```java
+// DevelopmentSettingsDashboardFragment.java
+controllers.add(new FreeformWindowsPreferenceController(context, fragment));
+controllers.add(new DesktopModePreferenceController(context, fragment));
+controllers.add(new DesktopModeSecondaryDisplayPreferenceController(context, fragment));
+controllers.add(new DesktopExperiencePreferenceController(context, fragment));
+```
+
+Each writes to a `Settings.Global` development key:
+
+| Controller | Global key written | Effect |
+|-----------|--------------------|--------|
+| `FreeformWindowsPreferenceController` | `DEVELOPMENT_ENABLE_FREEFORM_WINDOWS_SUPPORT` | Legacy freeform-window override |
+| `DesktopModePreferenceController` | `DEVELOPMENT_OVERRIDE_DESKTOP_MODE_FEATURES` | Force desktop windowing on the built-in display |
+| `DesktopModeSecondaryDisplayPreferenceController` | `DEVELOPMENT_FORCE_DESKTOP_MODE_ON_EXTERNAL_DISPLAYS` | Force desktop mode on connected external displays |
+| `DesktopExperiencePreferenceController` | `DEVELOPMENT_OVERRIDE_DESKTOP_EXPERIENCE_FEATURES` | Master override for the bundled desktop-experience feature set |
+
+The two newer overrides do not use a plain on/off integer.  They store an
+`android.window.DesktopModeFlags.ToggleOverride` value -- `OVERRIDE_UNSET`,
+`OVERRIDE_OFF`, or `OVERRIDE_ON` -- so the toggle can express "leave the
+build default alone" as a distinct state from explicitly forcing the feature on
+or off.  `DesktopExperiencePreferenceController` reads `DesktopState` (from
+`com.android.wm.shell.shared.desktopmode`) to decide whether the toggle is even
+applicable, and because changing the desktop feature set requires reinitialising
+window-management state, it implements `RebootConfirmationDialogHost` and prompts
+for a reboot after the value changes.
 
 ---
 
@@ -2216,19 +2261,36 @@ The `order` metadata controls the position within the category.
 
 ### 49.14.1 The Catalyst Migration
 
-AOSP is gradually migrating Settings pages from the traditional
-`DashboardFragment` + XML approach to a new architecture called **Catalyst**
-(internally also referred to as SPA -- Settings Page Architecture).
+AOSP is migrating Settings pages off the traditional `DashboardFragment` + XML
+approach onto a declarative architecture called **Catalyst**.  Catalyst is the
+successor to the earlier Compose-based SPA (Settings Page Architecture); both
+still ship, but in Android 17 Catalyst is where the active migration happens.
+The migration is gated by `com.android.settings.flags.catalyst` (the master
+switch checked in `SettingsApplication.onCreate()`) and a rolling per-quarter
+flag such as `catalystMigration26q2`, so a given screen renders through Catalyst
+only when its own feature flag is enabled.
 
-**Source file**: `packages/apps/Settings/src/com/android/settings/CatalystSettingsActivity.kt`
+Instead of declaring a screen as an XML `PreferenceScreen` plus a set of
+imperative `BasePreferenceController` subclasses, Catalyst declares the screen as
+a single Kotlin class annotated with `@ProvidePreferenceScreen` that *describes*
+its preference hierarchy and implements small provider interfaces for the
+behaviours it needs (availability, summary, indexing, lifecycle).  By Android 17
+roughly 230 of these `*Screen.kt` classes exist across the tree.  The model buys:
 
-Catalyst uses a declarative preference hierarchy defined in code (using
-the `settingslib/metadata` APIs) rather than XML resources.  This enables:
+- Type-safe preference definitions instead of string-keyed XML
+- A single declarative source of truth for UI, search index, and the
+  AppFunctions "device state" surface (§49.14.8)
+- Programmatic preference composition via a Kotlin DSL
+- Per-screen feature-flag gating and incremental, hybrid-mode migration
 
-- Type-safe preference definitions
-- Programmatic preference composition
-- Better testing support
-- Gradual migration (hybrid mode)
+**Key source files**:
+
+| File | Role |
+|------|------|
+| `packages/apps/Settings/src/com/android/settings/CatalystSettingsActivity.kt` | Activity + fragment that host a Catalyst screen |
+| `frameworks/base/packages/SettingsLib/Metadata/src/com/android/settingslib/metadata/Annotations.kt` | `@ProvidePreferenceScreen` / `@ProvidePreferenceScreenOptions` |
+| `frameworks/base/packages/SettingsLib/Metadata/src/com/android/settingslib/metadata/PreferenceScreenRegistry.kt` | Runtime registry of screen factories |
+| `frameworks/base/packages/SettingsLib/Metadata/processor/` | Annotation processor that generates the collector |
 
 ### 49.14.2 CatalystSettingsActivity
 
@@ -2282,13 +2344,22 @@ public static class VibrationSettingsActivity extends CatalystSettingsActivity {
 
 ### 49.14.3 CatalystFragment
 
-The `CatalystFragment` is a `DashboardFragment` that creates its preference
-screen programmatically from a `PreferenceScreenCreator`:
+`CatalystFragment` deliberately extends `DashboardFragment` rather than the
+plainer `PreferenceFragment` so that injected tiles and preference highlighting
+keep working.  It returns `0` from `getPreferenceScreenResId()` (no XML) and
+builds the screen programmatically from the screen creator resolved out of the
+`PreferenceScreenRegistry`:
 
 ```kotlin
 // CatalystSettingsActivity.kt
 open class CatalystFragment : DashboardFragment() {
     override fun getPreferenceScreenResId() = 0  // No XML resource
+
+    override fun getLogTag(): String = javaClass.simpleName
+
+    override fun getMetricsCategory() =
+        context?.let { getPreferenceScreenCreator(it) as? Instrumentable }?.metricsCategory
+            ?: METRICS_CATEGORY_UNKNOWN
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         preferenceScreen = createPreferenceScreen()
@@ -2299,11 +2370,12 @@ open class CatalystFragment : DashboardFragment() {
 
 ### 49.14.4 Hybrid Mode
 
-During the migration, fragments can operate in **hybrid mode** where the
-preference hierarchy comes from Catalyst but XML-defined controllers are
-still used for some preferences.  The `DashboardFragment` handles this by
-detecting hybrid mode and removing controllers for preferences that have
-been migrated:
+A screen rarely flips to Catalyst all at once.  In **hybrid mode** the preference
+hierarchy is still inflated from XML, but the preference *metadata* (titles,
+summaries, indexing) comes from the Catalyst `Screen`.  `DashboardFragment` keys
+this off `isCatalystEnabled()` and, when hybrid, drops any legacy controller
+whose key is already owned by the Catalyst hierarchy so the two layers do not
+both try to drive the same preference:
 
 ```java
 // DashboardFragment.java
@@ -2320,6 +2392,176 @@ private void removeControllersForHybridMode() {
     }
 }
 ```
+
+### 49.14.5 The Declarative Screen Model
+
+The defining 17 change is that a screen is now a *data declaration* rather than
+an XML file plus a bag of controllers.  A Catalyst screen is a Kotlin class
+annotated with `@ProvidePreferenceScreen(KEY)` that mixes in the provider
+interfaces it needs.  `DataSaverScreen` is a compact, representative example:
+
+```kotlin
+// datausage/DataSaverScreen.kt
+@ProvidePreferenceScreen(DataSaverScreen.KEY)
+open class DataSaverScreen(context: Context) :
+    PreferenceScreenMixin,
+    PreferenceAvailabilityProvider,
+    PreferenceSummaryProvider,
+    PreferenceIndexableProvider,
+    PreferenceLifecycleProvider {
+
+    override val key get() = KEY
+    override val title get() = R.string.data_saver_title
+    override val icon: Int get() = R.drawable.ic_settings_data_usage
+
+    override fun isAvailable(context: Context) =
+        context.resources.getBoolean(R.bool.config_show_data_saver)
+
+    override fun getSummary(context: Context): CharSequence? = when {
+        dataSaverStore.getBoolean(DATA_SAVER_KEY) == true ->
+            context.getString(R.string.data_saver_on)
+        else -> context.getString(R.string.data_saver_off)
+    }
+
+    override fun getPreferenceHierarchy(context: Context, coroutineScope: CoroutineScope) =
+        preferenceHierarchy(context) { +DataSaverMainSwitchPreference() }
+
+    override fun isFlagEnabled(context: Context) =
+        Flags.catalystRestrictBackgroundParentEntry()
+
+    companion object { const val KEY = "restrict_background_parent_entry" }
+}
+```
+
+Several things are worth calling out:
+
+- **`preferenceHierarchy { }`** is a DSL from `settingslib/metadata`; the unary
+  `+` operator adds a child preference to the screen.  Nested groups and child
+  screens compose the same way, so the whole page tree is one expression.
+- **Provider interfaces are opt-in.**  A screen that needs to react to data
+  changes adds `PreferenceLifecycleProvider` and implements `onCreate` /
+  `onStart` / `onResume`, receiving a `PreferenceLifecycleContext` it can use to
+  call `notifyPreferenceChange(key)` and re-render just the affected rows.
+  `PreferenceAvailabilityProvider`, `PreferenceSummaryProvider`, and
+  `PreferenceIndexableProvider` similarly fold what used to be controller methods
+  (`isAvailable`, `getSummary`, search indexing) into the screen class.
+- **`isFlagEnabled()`** is the per-screen migration gate.  Until the flag flips,
+  the legacy XML + controller path renders the page; afterwards Catalyst owns it.
+
+### 49.14.6 From Annotation to Runtime: Processor, Collector, Registry
+
+`@ProvidePreferenceScreen` has `SOURCE` retention, so it never reaches the APK as
+metadata.  Instead an annotation processor under
+`frameworks/base/packages/SettingsLib/Metadata/processor/` scans every annotated
+class at build time and generates a *collector* whose name is configured by the
+`@ProvidePreferenceScreenOptions` annotation on `SettingsApplication`:
+
+```java
+// SettingsApplication.java
+@ProvidePreferenceScreenOptions(
+        codegenCollector = "com.android.settings/PreferenceScreenCollector/get")
+public class SettingsApplication extends Application {
+```
+
+At process start, `SettingsApplication.onCreate()` only wires Catalyst up when
+the master flag is on, handing the generated factory map to the global
+`PreferenceScreenRegistry`:
+
+```java
+// SettingsApplication.java
+if (Flags.catalyst()) {
+    PreferenceScreenRegistry.INSTANCE.setPreferenceScreenMetadataFactories(
+            preferenceScreenFactories()); // returns PreferenceScreenCollector.get()
+    PreferenceScreenRegistry.INSTANCE.setPreferenceUiActionMetricsLogger(
+            new SettingsMetricsLogger(this));
+    PreferenceBindingFactory.setDefaultFactory(new SettingsPreferenceBindingFactory());
+}
+```
+
+`PreferenceScreenRegistry` (in `settingslib/metadata`) is an `object` singleton
+holding `preferenceScreenMetadataFactories: FixedArrayMap<String,
+PreferenceScreenMetadataFactory>`, keyed by screen key.  When
+`CatalystSettingsActivity` is launched with a `bindingScreenKey`, the fragment
+looks the factory up in the registry, builds the `PreferenceScreenMetadata`, and
+materialises the `preferenceHierarchy` into live `Preference` widgets.  The same
+registry also answers whether a screen is *parameterized* -- screens whose
+content depends on arguments (a specific SIM, app, or account) declare
+`parameterized = true` and expose a `parameters(...)` flow that the registry
+enumerates.
+
+This is the end-to-end Catalyst chain:
+
+#### Catalyst screen pipeline from build-time annotation to rendered page
+
+```mermaid
+flowchart TD
+    A["@ProvidePreferenceScreen<br/>(*Screen.kt classes)"] --> B["Annotation processor<br/>(SettingsLib/Metadata/processor)"]
+    B --> C["Generated PreferenceScreenCollector"]
+    C --> D["SettingsApplication.onCreate()<br/>if Flags.catalyst()"]
+    D --> E["PreferenceScreenRegistry<br/>(key to factory map)"]
+    F["CatalystSettingsActivity<br/>(bindingScreenKey)"] --> G["CatalystFragment"]
+    G --> E
+    E --> H["PreferenceScreenMetadata<br/>+ preferenceHierarchy DSL"]
+    H --> I["Live Preference widgets<br/>+ search index + AppFunctions metadata"]
+```
+
+### 49.14.7 Worked Example: The Supervision Dashboard
+
+Android 17 ships a new top-level **Supervision** dashboard
+(`Settings > Supervision`), built natively on Catalyst, that consolidates
+on-device parental-supervision controls.  The package lives at
+`packages/apps/Settings/src/com/android/settings/supervision/` and the landing
+page is declared by `SupervisionDashboardScreen.kt`:
+
+```kotlin
+// supervision/SupervisionDashboardScreen.kt
+@ProvidePreferenceScreen(SupervisionDashboardScreen.KEY)
+open class SupervisionDashboardScreen :
+    PreferenceAvailabilityProvider,
+    PreferenceScreenMixin,
+    PreferenceLifecycleProvider,
+    OnRoleHoldersChangedListener {
+```
+
+The screen pulls together three groups: a primary switch to toggle supervision
+on or off, a list of supervision features (web content filters, app-store
+filters, and features dynamically injected by the device's supervising app), and
+an entry point into PIN management
+(`supervision/credentialmanagement/SupervisionPinManagementScreen.kt`).  It
+talks to the framework through `android.app.supervision.SupervisionManager` and
+watches `RoleManager.ROLE_SUPERVISION` so that when the supervising app changes,
+`onRoleHoldersChanged()` rebuilds the injected feature list.  The whole feature
+is flag-gated: the activity in `AndroidManifest.xml` carries
+`android:featureFlag="android.app.supervision.flags.enable_supervision_settings_screen"`,
+and the screen branches on `Flags.enableSupervisionSettingsUiUpdates()` to choose
+between the older main-switch layout and the newer set-up-PIN flow.  This screen
+is a good template for how a brand-new dashboard is built in the Catalyst era:
+no preference XML, no `DashboardFragment` subclass, just a declarative `Screen`
+class plus a manifest activity that extends `CatalystSettingsActivity`.
+
+### 49.14.8 API-First: Exposing Settings to On-Device Agents
+
+The declarative metadata is not only used to draw pixels -- it is the source of
+truth for a new **API-First / AppFunctions** surface that lets on-device agents
+read and drive Settings.  The plumbing lives under
+`packages/apps/Settings/src/com/android/settings/appfunctions/`, where
+"device state" services aggregate every Catalyst screen's metadata, current
+values, and writability into a structured document an agent can query and act on.
+
+Because the screen already declares its title, summary, availability, indexable
+status, and (via `PersistentPreference` / read-write permits in the registry)
+whether a value may be changed by an external caller, the AppFunctions layer can
+expose a setting without any per-setting glue code.  A screen opts a preference
+out by leaving it non-writable; high-sensitivity preferences are reported with
+`writable = false` so agents are told up front they cannot change them.  The
+registry carries `defaultReadPermit` / `defaultWritePermit` (`ReadWritePermit`)
+to set the baseline policy -- read is allowed by default, write is disallowed by
+default -- which the per-preference declarations then refine.
+
+This is why the Catalyst migration matters beyond UI cleanliness: each migrated
+`*Screen.kt` simultaneously yields a rendered page, a search-index entry, and an
+agent-addressable capability from one declaration.  Chapter 50 picks up the
+AppFunctions and on-device-agent story in depth.
 
 ---
 
@@ -2683,6 +2925,12 @@ discussed in this chapter:
 | `packages/apps/Settings/src/com/android/settings/SettingsPreferenceFragment.java` | Base preference fragment |
 | `packages/apps/Settings/src/com/android/settings/deviceinfo/aboutphone/MyDeviceInfoFragment.java` | About phone page |
 | `packages/apps/Settings/src/com/android/settings/activityembedding/ActivityEmbeddingUtils.java` | Two-pane detection |
+| `packages/apps/Settings/src/com/android/settings/CatalystSettingsActivity.kt` | Catalyst screen host activity + fragment |
+| `packages/apps/Settings/src/com/android/settings/datausage/DataSaverScreen.kt` | Representative `@ProvidePreferenceScreen` example |
+| `packages/apps/Settings/src/com/android/settings/supervision/SupervisionDashboardScreen.kt` | Supervision dashboard (Catalyst) |
+| `packages/apps/Settings/src/com/android/settings/development/desktopexperience/DesktopExperiencePreferenceController.java` | Desktop-experience developer toggle |
+| `frameworks/base/packages/SettingsLib/Metadata/src/com/android/settingslib/metadata/Annotations.kt` | `@ProvidePreferenceScreen` annotation |
+| `frameworks/base/packages/SettingsLib/Metadata/src/com/android/settingslib/metadata/PreferenceScreenRegistry.kt` | Runtime screen-factory registry |
 | `packages/apps/Settings/res/xml/top_level_settings.xml` | Homepage XML layout |
 | `frameworks/base/packages/SettingsProvider/src/com/android/providers/settings/SettingsProvider.java` | Settings content provider |
 | `frameworks/base/packages/SettingsProvider/src/com/android/providers/settings/SettingsState.java` | Per-namespace settings storage |
@@ -3038,6 +3286,14 @@ Key takeaways:
 10. **Slices** expose individual settings as remotely embeddable UI
     components, enabling system surfaces like Quick Settings and the Google
     app to inline setting controls.
+
+11. **Catalyst** is the Android 17 declarative successor to XML + controllers:
+    a screen is a single `@ProvidePreferenceScreen`-annotated `*Screen.kt`
+    class whose `preferenceHierarchy { }` declaration feeds the UI, the search
+    index, and the AppFunctions agent surface at once.  A build-time annotation
+    processor collects the screens into `PreferenceScreenRegistry`, gated per
+    screen behind migration flags, with new dashboards such as Supervision built
+    natively on it.
 
 The next chapter examines AI, AppFunctions, and Computer Control -- how
 Android exposes app capabilities to on-device AI and lets agents drive

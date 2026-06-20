@@ -142,6 +142,7 @@ nav:
     - "40. Security": 40-security.md
     - "41. Credential Manager": 41-credential-manager.md
     - "42. DRM": 42-drm.md
+    - "68. LFI In-Process Sandbox": 68-lfi-sandbox.md
   - "Part X: UI Framework":
     - "43. Widgets & RemoteViews": 43-widgets-remoteviews.md
     - "44. WebView": 44-webview.md
@@ -154,6 +155,7 @@ nav:
   - "Part XII: AI & Devices":
     - "50. AI & AppFunctions": 50-ai-appfunctions.md
     - "51. Companion & Virtual Devices": 51-companion-virtual-device.md
+    - "67. NPU Manager": 67-npu-manager.md
   - "Part XIII: Infrastructure":
     - "52. Mainline Modules": 52-mainline-modules.md
     - "53. OTA Updates": 53-ota-updates.md
@@ -170,6 +172,9 @@ nav:
   - "Part XV: Practical":
     - "63. Custom ROM Guide": 63-custom-rom.md
     - "64. Windows Games on Android": 64-windows-games.md
+  - "Part XVI: Software Defined Vehicle":
+    - "65. Software Defined Vehicle": 65-software-defined-vehicle.md
+    - "66. SDV Middleware & Vehicle Communication": 66-sdv-middleware-and-communication.md
   - Appendices:
     - "A. Key Files Reference": A-appendix-key-files.md
     - "B. Glossary": B-appendix-glossary.md

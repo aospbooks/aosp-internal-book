@@ -16,7 +16,12 @@ the kernel integrates into the AOSP build system, and how to debug kernel-level
 problems on real and emulated devices.
 
 Throughout this chapter, we reference real files in the AOSP source tree. Every
-path, config fragment, and module name cited here can be found in that tree.
+path, config fragment, and module name cited here can be found in that tree. The
+chapter is current as of Android 17, whose Android Common Kernel branch is
+`android17-6.18` (upstream LTS 6.18). Section 5.8 collects the kernel-layer
+changes that landed with Android 17, including the new GKI branch, the maturing
+16 KB page size story, and the relocation of `fs_mgr` and its sibling libraries
+out of `system/core` into the new `system/fs/` tree.
 
 ---
 
@@ -27,8 +32,9 @@ path, config fragment, and module name cited here can be found in that tree.
 Android does not maintain a permanent fork of the Linux kernel. Instead, Google
 maintains a set of "Android Common Kernel" (ACK) branches that track specific
 upstream Long-Term Support (LTS) releases. Each ACK branch starts from an
-upstream LTS tag (e.g., `6.6`, `6.12`) and adds a curated set of patches that
-provide Android-specific functionality. These patches fall into several
+upstream LTS tag (e.g., `6.6`, `6.12`, `6.18`) and adds a curated set of patches
+that provide Android-specific functionality. Android 17's branch is
+`android17-6.18`, tracking upstream LTS 6.18. These patches fall into several
 categories:
 
 1. **Android-specific drivers** that implement core platform features (Binder,
@@ -227,8 +233,8 @@ graph TB
         end
 
         subgraph "Kernel Module Interface (KMI)"
-            KMI["Stable Symbol List<br/>~35,710 exported symbols<br/>abi_symbollist"]
-            ABI["ABI Definition<br/>abi.stg (7.8 MB)"]
+            KMI["Stable Symbol List<br/>(tens of thousands of<br/>exported symbols)<br/>abi_symbollist"]
+            ABI["ABI Definition<br/>abi.stg (multi-MB)"]
         end
 
         subgraph "Vendor-Built (SoC/Device Specific)"
@@ -267,10 +273,12 @@ The KMI is the contract between the GKI core kernel and vendor modules. It
 consists of:
 
 1. **A symbol list** -- the set of kernel functions and variables that vendor
-   modules are allowed to call. For kernel 6.6, this list contains
-   approximately 35,710 entries.
+   modules are allowed to call. The size of this list varies by branch as the
+   KMI is curated; for kernel 6.6 it contains approximately 35,710 entries, while
+   the newer 6.18 branch ships a tighter list of roughly 22,961 entries.
 
-    **Source**: `kernel/prebuilts/6.6/arm64/abi_symbollist` (35,710 lines)
+    **Source**: `kernel/prebuilts/6.6/arm64/abi_symbollist` (35,710 lines),
+    `kernel/prebuilts/6.18/arm64/abi_symbollist` (22,961 lines)
 
     The symbol list begins with commonly used symbols and is organized into
     sections:
@@ -290,10 +298,12 @@ consists of:
     ```
 
 2. **An ABI definition** -- a machine-readable description of the types,
-   structures, and function signatures exported by the KMI. For kernel 6.6, this
-   file is approximately 7.8 MB.
+   structures, and function signatures exported by the KMI. For kernel 6.6 this
+   file is approximately 7.8 MB; the 6.18 branch's `abi.stg` is comparable in
+   size (roughly 7.7 MB).
 
-    **Source**: `kernel/prebuilts/6.6/arm64/abi.stg` (7,819,214 bytes)
+    **Source**: `kernel/prebuilts/6.6/arm64/abi.stg` (7,819,214 bytes),
+    `kernel/prebuilts/6.18/arm64/abi.stg` (~7.7 MB)
 
 3. **Module versioning** (`CONFIG_MODVERSIONS=y`) -- CRC checksums are computed
    for each exported symbol based on its prototype. A module compiled against
@@ -376,6 +386,11 @@ kernel/prebuilts/
     6.12/
         arm64/
         x86_64/
+    6.18/                   # Android 17 GKI prebuilt (LTS 6.18)
+        arm64/              # ~104 .ko modules; includes a 16k/ subtree
+            16k/            # 16 KB page size variant of the same kernel + modules
+            x86_64/
+        x86_64/
     common-modules/
         virtual-device/
             6.1/
@@ -383,6 +398,7 @@ kernel/prebuilts/
                 arm64/   # 57 device-specific modules
                 x86-64/
             6.12/
+            6.18/
             mainline/
         trusty/
     mainline/
@@ -390,22 +406,37 @@ kernel/prebuilts/
         x86_64/
 ```
 
-The kernel version string for the 6.6 arm64 prebuilt reveals its lineage:
+The kernel version string for the 6.18 arm64 prebuilt reveals its lineage:
 
 ```
-BOARD_KERNEL_VERSION := 6.6.100-android15-8-gf988247102d3-ab14039625-4k
+BOARD_KERNEL_VERSION := 6.18.16-android17-1-gb61cd7ae4209-ab15097451-4k
 ```
 
-**Source**: `kernel/prebuilts/6.6/arm64/kernel_version.mk`
+**Source**: `kernel/prebuilts/6.18/arm64/kernel_version.mk`
 
 Breaking this down:
 
-- `6.6.100` -- upstream LTS version 6.6, patch level 100
-- `android15` -- Android 15 ACK branch
-- `8` -- eighth release from this branch
-- `gf988247102d3` -- git commit hash
-- `ab14039625` -- Android build ID
-- `4k` -- 4K page size variant
+- `6.18.16` -- upstream LTS version 6.18, patch level 16
+- `android17` -- Android 17 ACK branch
+- `1` -- first release from this branch (the branch is new in Android 17)
+- `gb61cd7ae4209` -- git commit hash
+- `ab15097451` -- Android build ID
+- `4k` -- 4 KB page size variant
+
+The 16 KB page size build under `kernel/prebuilts/6.18/arm64/16k/` carries the
+same lineage without the `-4k` suffix:
+
+```
+BOARD_KERNEL_VERSION := 6.18.16-android17-1-gb61cd7ae4209-ab15097451
+```
+
+**Source**: `kernel/prebuilts/6.18/arm64/16k/kernel_version.mk`
+
+For comparison, the older Android 15 / kernel 6.6 prebuilt reads
+`6.6.100-android15-8-gf988247102d3-ab14039625-4k`, which decodes the same way
+(LTS 6.6 patch level 100, Android 15 ACK branch, eighth release).
+
+**Source**: `kernel/prebuilts/6.6/arm64/kernel_version.mk`
 
 ### 5.2.7 GKI Release Lifecycle
 
@@ -421,12 +452,20 @@ dates. These are tracked in `kernel/configs/kernel-lifetimes.xml`:
     <lts-versions>
         <release version="6.12.23" launch="2025-06-12" eol="2026-10-01"/>
         <release version="6.12.30" launch="2025-07-11" eol="2026-11-01"/>
-        <release version="6.12.38" launch="2025-08-11" eol="2026-12-01"/>
+        <release version="6.12.38" launch="2025-08-11" eol="2027-01-01"/>
+        <release version="6.12.58" launch="2025-12-11" eol="2027-04-01"/>
     </lts-versions>
+</branch>
+<branch name="android17-6.18"
+        min_android_release="17"
+        version="6.18"
+        launch="2025-11-30"
+        eol="2030-07-01">
+    <no-releases reason="branch in pre-release phase"/>
 </branch>
 ```
 
-**Source**: `kernel/configs/kernel-lifetimes.xml`, lines 146-152
+**Source**: `kernel/configs/kernel-lifetimes.xml`, lines 157-167
 
 Key observations from this file:
 
@@ -447,6 +486,14 @@ The complete lineage of supported kernel versions:
 | android14-6.1 | 6.1 | 14 | 2022-12 | 2029-07 |
 | android15-6.6 | 6.6 | 15 | 2023-10 | 2028-07 |
 | android16-6.12 | 6.12 | 16 | 2024-11 | 2029-07 |
+| android17-6.18 | 6.18 | 17 | 2025-11 | 2030-07 |
+
+The `android17-6.18` branch is the newest entry. At the time the Android 17
+source tree was cut it was still in its pre-release phase: its entry carries a
+`<no-releases reason="branch in pre-release phase"/>` marker rather than a list
+of individual LTS releases, because no quarterly GKI release had been published
+for it yet. Note also that the Android 11 (`r/`) kernel config fragments were
+removed in this cycle, retiring the oldest still-tracked config directory.
 
 ### 5.2.8 How Vendors Extend Without Forking
 
@@ -997,7 +1044,7 @@ The PSI monitor configuration in lmkd:
 #define PSI_POLL_PERIOD_LONG_MS 100
 ```
 
-**Source**: `system/memory/lmkd/lmkd.cpp`, lines 117-121
+**Source**: `system/memory/lmkd/lmkd.cpp`, lines 122-126
 
 The PSI interface is initialized through the libpsi library:
 
@@ -1025,7 +1072,7 @@ its importance:
 #define PREVIOUS_APP_ADJ 700     // Previous foreground app
 ```
 
-**Source**: `system/memory/lmkd/lmkd.cpp`, lines 79-80, 98
+**Source**: `system/memory/lmkd/lmkd.cpp`, lines 84-85, 103
 
 When memory pressure is detected, lmkd kills processes starting from the highest
 OOM adjustment score (least important) and works downward until sufficient memory
@@ -1292,7 +1339,7 @@ CONFIG_SECURITY_SELINUX=y
 CONFIG_DEFAULT_SECURITY_SELINUX=y
 ```
 
-**Source**: `kernel/configs/b/android-6.12/android-base.config`, lines 222-226, 57
+**Source**: `kernel/configs/b/android-6.12/android-base.config`, lines 224-226, 57
 
 Android runs SELinux in enforcing mode on production devices. Every process,
 file, socket, and kernel object is assigned a security label, and the SELinux
@@ -1320,7 +1367,7 @@ CONFIG_SECCOMP=y
 CONFIG_SECCOMP_FILTER=y
 ```
 
-**Source**: `kernel/configs/b/android-6.12/android-base.config`, lines 221-222
+**Source**: `kernel/configs/b/android-6.12/android-base.config`, lines 222-223
 
 Seccomp filters use BPF programs (not eBPF -- these are classic BPF) to examine
 each system call and its arguments. If a system call is not on the allowlist, the
@@ -1343,7 +1390,7 @@ CONFIG_CGROUP_FREEZER=y
 CONFIG_CGROUP_SCHED=y
 ```
 
-**Source**: `kernel/configs/b/android-6.12/android-base.config`, lines 33-37
+**Source**: `kernel/configs/b/android-6.12/android-base.config`, lines 34-38
 
 These cgroups serve specific Android purposes:
 
@@ -1365,7 +1412,7 @@ on init
     mkdir /dev/cpuctl/rt
 ```
 
-**Source**: `device/generic/goldfish/init/init.ranchu.rc`, lines 47-50
+**Source**: `device/generic/goldfish/init/init.ranchu.rc`, lines 49-52
 
 These cgroup directories correspond to Android's process scheduling groups:
 
@@ -1507,7 +1554,7 @@ that it does not include a DTB in the boot image:
 BOARD_INCLUDE_DTB_IN_BOOTIMG := false
 ```
 
-**Source**: `device/generic/goldfish/board/BoardConfigCommon.mk`, line 75
+**Source**: `device/generic/goldfish/board/BoardConfigCommon.mk`, line 76
 
 Instead, the emulator's QEMU host provides device information through a
 combination of:
@@ -1774,15 +1821,22 @@ kernel/configs/
         kconfig_xml_fixup.py     # XML fixup utility
     xsd/
         approvedBuild/           # XML schema definitions
-    b/                           # Android 16 (Baklava) release
+    b/                           # Android 16 release fragments
         android-6.12/
             Android.bp
             android-base.config
             android-base-conditional.xml
             android-tv-base.config
             android-tv-base-conditional.xml
-    c/                           # Android 16 QPR (Custard)
-        android-6.12/
+    c/                           # next release letter, kernel 6.18 fragments
+        android-6.18/
+    d/                           # Android 17 release fragments, kernel 6.18
+        android-6.18/
+            Android.bp
+            android-base.config
+            android-base-conditional.xml
+            android-tv-base.config
+            android-tv-base-conditional.xml
     v/                           # Android 15 (Vanilla Ice Cream)
         android-6.1/
         android-6.6/
@@ -1796,15 +1850,17 @@ kernel/configs/
         android-4.19/
         android-5.4/
         android-5.10/
-    r/                           # Android 11 (Red Velvet)
-        android-5.4/
 ```
 
 **Source**: `kernel/configs/`
 
-The directory naming convention uses the first letter of the Android dessert
-codename: `b` for Baklava (Android 16), `v` for Vanilla Ice Cream (Android 15),
-`u` for Upside Down Cake (Android 14), and so on.
+The directory naming convention uses successive release letters, roughly
+tracking the first letter of the Android dessert codename: `v` for Vanilla Ice
+Cream (Android 15), `b` for Baklava (Android 16), and `c`/`d` for the kernel
+6.18 fragments introduced for Android 17. Android 17 adds new `c/android-6.18`
+and `d/android-6.18` directories (see Section 5.8). At the same time the
+oldest tracked directory, `r/` (the Android 11 fragments), was removed in this
+cycle, so the tree no longer carries pre-android12 config sets.
 
 ### 5.5.3 Base Configuration Fragment
 
@@ -1814,7 +1870,7 @@ are **mandatory** for Android to function. These are tested as part of VTS
 compatibility matrix.
 
 Examining the Android 16 / kernel 6.12 base config
-(`kernel/configs/b/android-6.12/android-base.config`), we find 262 lines
+(`kernel/configs/b/android-6.12/android-base.config`), we find 261 lines
 organized into:
 
 **Explicitly disabled options** (lines 1-15):
@@ -1951,12 +2007,14 @@ kernel branch. It serves as the authoritative source for:
         <release version="6.6.30" launch="2024-07-12" eol="2025-11-01"/>
         <release version="6.6.46" launch="2024-09-16" eol="2025-11-01"/>
         <!-- ... more releases ... -->
-        <release version="6.6.98" launch="2025-08-11" eol="2026-12-01"/>
+        <release version="6.6.98" launch="2025-08-11" eol="2027-01-01"/>
+        <release version="6.6.102" launch="2025-10-09" eol="2027-02-01"/>
+        <release version="6.6.118" launch="2026-01-12" eol="2027-05-01"/>
     </lts-versions>
 </branch>
 ```
 
-**Source**: `kernel/configs/kernel-lifetimes.xml`, lines 128-144
+**Source**: `kernel/configs/kernel-lifetimes.xml`, lines 137-155
 
 This data is consumed by VTS tests, the framework compatibility matrix checker,
 and the build system to enforce that devices ship with supported kernel versions.
@@ -2239,7 +2297,7 @@ BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE := 0x06000000
 BOARD_RAMDISK_USE_LZ4 := true
 ```
 
-**Source**: `device/generic/goldfish/board/BoardConfigCommon.mk`, lines 76-79
+**Source**: `device/generic/goldfish/board/BoardConfigCommon.mk`, lines 76-80
 
 Boot image version 4 is the latest format, supporting:
 
@@ -2367,7 +2425,7 @@ BOARD_EMULATOR_DYNAMIC_PARTITIONS_PARTITION_LIST := \
     vendor
 ```
 
-**Source**: `device/generic/goldfish/board/BoardConfigCommon.mk`, lines 44-55
+**Source**: `device/generic/goldfish/board/BoardConfigCommon.mk`, lines 45-58
 
 The `system_dlkm` partition is specifically for GKI kernel modules:
 
@@ -2377,7 +2435,7 @@ BOARD_SYSTEM_DLKMIMAGE_FILE_SYSTEM_TYPE := erofs  # we never write here
 TARGET_COPY_OUT_SYSTEM_DLKM := system_dlkm
 ```
 
-**Source**: `device/generic/goldfish/board/BoardConfigCommon.mk`, lines 67-69
+**Source**: `device/generic/goldfish/board/BoardConfigCommon.mk`, lines 68-70
 
 The comment "we never write here" confirms that `system_dlkm` is a read-only
 partition -- kernel modules are loaded from it but never modified at runtime.
@@ -2511,7 +2569,7 @@ GPU memory tracking tracepoints:
 CONFIG_TRACE_GPU_MEM=y
 ```
 
-**Source**: `kernel/configs/b/android-6.12/android-base.config`, line 243
+**Source**: `kernel/configs/b/android-6.12/android-base.config`, line 244
 
 ### 5.7.4 Integration with Perfetto
 
@@ -2874,7 +2932,298 @@ Several kernel features assist with memory debugging:
 
 ---
 
-## 5.8 Try It: Examine the Emulator Kernel
+## 5.8 Android 17 Kernel Changes
+
+Android 17 carries several changes that touch the kernel layer directly. The most
+visible is a new Generic Kernel Image branch built on a newer upstream LTS; the
+most structural is the relocation of the filesystem-management libraries
+(`fs_mgr`, `liblp`, `libsnapshot`, `libdm`, and friends) out of `system/core`
+into a dedicated `system/fs/` tree. This section gathers those changes in one
+place so the rest of the chapter can keep using the stable Android 16 / kernel
+6.12 fragments as worked examples while remaining accurate for Android 17.
+
+### 5.8.1 The android17-6.18 GKI Branch
+
+Each Android release pairs with one or more Android Common Kernel branches.
+Android 17 introduces `android17-6.18`, tracking upstream LTS 6.18. It is
+registered in the kernel lifecycle data alongside the older branches:
+
+```xml
+<branch name="android17-6.18"
+        min_android_release="17"
+        version="6.18"
+        launch="2025-11-30"
+        eol="2030-07-01">
+    <no-releases reason="branch in pre-release phase"/>
+</branch>
+```
+
+**Source**: `kernel/configs/kernel-lifetimes.xml`, lines 165-167
+
+Two details are worth calling out:
+
+1. **Pre-release status.** Unlike the older branches, `android17-6.18` carries a
+   `<no-releases reason="branch in pre-release phase"/>` marker instead of a list
+   of quarterly LTS releases. At the point the Android 17 tree was cut, no
+   stabilized GKI release had been published for the branch yet, so there were no
+   per-release launch and EOL dates to track.
+
+2. **Minimum LTS.** The matching conditional fragment pins the minimum LTS
+   version for the branch:
+
+   ```xml
+   <kernel minlts="6.18.0" />
+   ```
+
+   **Source**: `kernel/configs/d/android-6.18/android-base-conditional.xml`
+
+A GKI prebuilt for the branch ships in the tree. Its version string encodes the
+full lineage:
+
+```
+BOARD_KERNEL_VERSION := 6.18.16-android17-1-gb61cd7ae4209-ab15097451-4k
+```
+
+**Source**: `kernel/prebuilts/6.18/arm64/kernel_version.mk`
+
+This is upstream LTS 6.18 patch level 16, the Android 17 ACK branch, the first
+release from that branch, a git commit hash, an Android build ID, and the 4 KB
+page size variant. The 6.18 prebuilt ships roughly 104 GKI `.ko` modules and a
+trimmed KMI: its `abi_symbollist` holds about 22,961 entries, noticeably smaller
+than the ~35,710 of the 6.6 branch, reflecting Google's continued curation of
+the stable symbol surface.
+
+**Source**: `kernel/prebuilts/6.18/arm64/abi_symbollist`,
+`kernel/prebuilts/6.18/arm64/abi.stg`
+
+#### New release-letter config directories
+
+The kernel config fragments are organized into per-release-letter directories
+(Section 5.5.2). Android 17 adds two new ones for kernel 6.18:
+
+```
+kernel/configs/
+    c/
+        android-6.18/      # android-base.config, conditional XML, TV fragments
+    d/
+        android-6.18/      # android-base.config, conditional XML, TV fragments
+```
+
+**Source**: `kernel/configs/d/android-6.18/`, `kernel/configs/c/android-6.18/`
+
+At the snapshot used for this chapter the `android-base.config` files under
+`c/android-6.18` and `d/android-6.18` are still empty placeholders (the branch's
+requirements are being staged), while the conditional XML already declares
+`minlts="6.18.0"`. Because of that, the substantive config citations in this
+chapter continue to use the fully populated Android 16 / kernel 6.12 fragments
+under `kernel/configs/b/android-6.12/`, which remain in the tree and unchanged.
+In the same cycle the Android 11 fragments under `kernel/configs/r/` were
+removed, retiring the oldest tracked config set.
+
+**Source**: `kernel/configs/d/android-6.18/Android.bp`
+
+The `Android.bp` for the new directory wires the fragments into Soong with the
+`kernel_config_d_6.18` rule, and (like the other directories) supports a Google
+TV variant selected by the `using_tv_gki` Soong config variable.
+
+The build-system order that pairs the emulator with a kernel version is
+unchanged for Android 17. The goldfish emulator still defaults to the kernel 6.12
+prebuilts under `prebuilts/qemu-kernel/` (`TARGET_KERNEL_USE ?= 6.12` in
+`device/generic/goldfish/board/kernel/arm64.mk`); the 6.18 image lives in the
+GKI prebuilt tree (`kernel/prebuilts/6.18/`) ahead of the emulator switching to
+it. The mechanics in Section 5.6 therefore apply unchanged.
+
+### 5.8.2 16 KB Page Size Matures
+
+Section 5.6.6 introduced 16 KB page size kernels. In the Android 17 timeframe the
+16 KB story is no longer an experimental side build: the 6.18 GKI prebuilt ships
+a complete 16 KB variant next to the 4 KB one. Under
+`kernel/prebuilts/6.18/arm64/` there is a `16k/` subtree containing its own
+kernel image and a full set of `.ko` modules, distinct from the 4 KB modules in
+the parent directory.
+
+```
+kernel/prebuilts/6.18/arm64/
+    kernel_version.mk        # 4 KB build: ...-ab15097451-4k
+    *.ko                     # 4 KB modules
+    16k/
+        kernel_version.mk    # 16 KB build (no -4k suffix)
+        *.ko                 # 16 KB modules
+```
+
+**Source**: `kernel/prebuilts/6.18/arm64/16k/`
+
+The version strings differ only in the page size suffix. The 4 KB build appends
+`-4k`; the 16 KB build omits it:
+
+```
+# 4 KB:  6.18.16-android17-1-gb61cd7ae4209-ab15097451-4k
+# 16 KB: 6.18.16-android17-1-gb61cd7ae4209-ab15097451
+```
+
+**Source**: `kernel/prebuilts/6.18/arm64/16k/kernel_version.mk`
+
+On the emulator side, the page size variants remain selected by separate board
+makefiles (`arm64_16k.mk`, `x86_64_16k.mk`) that point at a `*_16k` prebuilt
+path, exactly as described in Section 5.6.6. A device or emulator running the
+16 KB kernel needs all of its loadable modules compiled for 16 KB pages, which is
+why the 6.18 prebuilt ships a parallel `16k/` module set rather than reusing the
+4 KB `.ko` files.
+
+### 5.8.3 fs_mgr Moves to system/fs
+
+Historically the partition- and filesystem-management code lived under
+`system/core`: `fs_mgr` (mounting and fstab handling), `liblp` (logical/dynamic
+partition metadata), `libsnapshot` (snapshot-based, "virtual A/B" OTA),
+`libdm` (a device-mapper wrapper), and supporting libraries such as `libfiemap`,
+`libfs_avb`, `libfstab`, and `libvbmeta`. Android 17 relocates this entire family
+into a new top-level tree, `system/fs/`.
+
+```
+system/fs/
+    fs_mgr/
+        fs_mgr.cpp
+        fs_mgr_dm_linear.cpp
+        liblp/
+        libsnapshot/
+        libdm/
+        libfiemap/
+        libfs_avb/
+        libfstab/
+        libvbmeta/
+        libstorage_literals/
+        ...
+    casefolding_remover/
+```
+
+**Source**: `system/fs/fs_mgr/`
+
+The corresponding directories under `system/core` (`system/core/fs_mgr`,
+`system/core/liblp`, `system/core/libsnapshot`, `system/core/libdm`) no longer
+exist in the Android 17 tree. This is a relocation, not a rewrite: the
+`Android.bp` under `system/fs/fs_mgr` still carries the original 2017 copyright
+header and the `system_core_fs_mgr_license` name, and the module names
+(`libfs_mgr`, `liblp`, `libsnapshot`, `libdm`) are unchanged, so consumers that
+depend on those Soong modules build without modification.
+
+**Source**: `system/fs/fs_mgr/Android.bp`
+
+Why does this matter for a kernel chapter? Because `fs_mgr` and its siblings sit
+directly on top of the kernel's storage stack:
+
+- `fs_mgr` reads the fstab and performs first-stage mounts, including setting up
+  **dm-verity** and **dm-default-key** device-mapper targets discussed in
+  Section 5.3.8.
+- `liblp` manages the **dynamic (logical) partition** metadata inside the super
+  partition (Section 5.6.9).
+- `libsnapshot` implements snapshot-based OTA using the kernel's `dm-snapshot`
+  and userspace snapshot (`dm-user`) mechanisms.
+- `libdm` is the thin userspace wrapper over the kernel device-mapper ioctls that
+  all of the above rely on.
+
+So the device-mapper and dynamic-partition machinery described throughout this
+chapter is now driven by code under `system/fs/` rather than `system/core/`. When
+following a verified-boot or OTA code path in the Android 17 source, look for it
+under `system/fs/fs_mgr/` (for example, `system/fs/fs_mgr/libsnapshot/` for the
+snapshot/OTA logic and `system/fs/fs_mgr/liblp/` for super-partition metadata).
+
+### 5.8.4 mmd: Centralized ZRAM and Memory Tuning
+
+Android 17 introduces a new native daemon, **mmd** (the Android Memory Management
+Daemon), under `system/memory/mmd/`. Its job is to centralize ZRAM (compressed
+swap) setup and maintenance, which had previously been scattered across `init`,
+`fs_mgr`, and `system_server`.
+
+**Source**: `system/memory/mmd/README.md`
+
+mmd takes over two responsibilities that touch the kernel directly:
+
+1. **ZRAM setup.** On boot, `mmd_setup` configures the `zramN` block devices and
+   calls `swapon`, replacing the ad-hoc `swapon_all` path. The configuration
+   (number of devices, compression algorithm, swap priority) is driven by system
+   properties such as `mmd.zram.enabled` and `mmd.zram.comp_algorithm`.
+
+   **Source**: `system/memory/mmd/mmd.rc`
+
+2. **ZRAM maintenance.** Once running, mmd performs ZRAM writeback and
+   recompression on its own schedule, accepting Binder requests from
+   `system_server` via an `IMmd` AIDL interface rather than having
+   `system_server` poke the kernel's zram sysfs files directly.
+
+The handoff is visible in the relocated `fs_mgr`: the legacy `swapon_all` path is
+now explicitly deprecated in favor of mmd, and it skips zram setup when mmd is
+configured to own it.
+
+```cpp
+// swapon_all is deprecated to setup zram after mmd is launched. swapon_all
+// command should skip setting up zram if mmd is enabled by AConfig flag and
+// mmd is configured to set up zram.
+```
+
+**Source**: `system/fs/fs_mgr/fs_mgr.cpp` (swapon_all handling)
+
+For the emulator, the older flow still applies: `init.ranchu.rc` loads `zram.ko`
+via `modprobe` during early init and writes the zram compression algorithm
+directly (the Section 5.9 exercises reference these lines), so the emulator does
+not yet depend on mmd to bring up swap.
+
+### 5.8.5 casefolding_remover: A New system/fs Tool
+
+Alongside the relocated `fs_mgr`, the new `system/fs/` tree adds a small Rust
+tool, **casefolding_remover**. It exists to migrate the `/data/media` directory
+between casefolded and non-casefolded layouts when the relevant system property
+configuration changes.
+
+**Source**: `system/fs/casefolding_remover/src/main.rs`
+
+Case folding is a kernel ext4/f2fs feature (the `FS_CASEFOLD_FL` inode flag) that
+makes a directory perform case-insensitive name lookups, which Android can use
+for external-storage emulation. The tool's job, when the requested casefolding
+state no longer matches what is on disk, is to:
+
+1. Set the correct casefolding flag on a fresh `/data/media_temp` directory.
+2. Move the original `/data/media` under `/data/media_temp`.
+3. Rename `/data/media_temp` into place as the new `/data/media`.
+4. Start a service that migrates folders back as their encryption keys become
+   available (so it cooperates with file-based encryption and Direct Boot).
+
+It is implemented as a Rust binary plus an `android.os.casefoldingremover` AIDL
+interface, and runs as a one-shot init service:
+
+```
+service casefolding_remover /system/bin/casefolding_remover
+    user media_rw
+    group media_rw
+    capabilities DAC_OVERRIDE CHOWN
+    class core
+    oneshot
+    disabled
+```
+
+**Source**: `system/fs/casefolding_remover/casefolding_remover.rc`
+
+The tool's `Android.bp` header still reads `// system/core/casefolding_remover`,
+a leftover from before the directory was placed under `system/fs/`, which is a
+useful reminder that the `system/fs/` consolidation happened late in the cycle.
+
+**Source**: `system/fs/casefolding_remover/Android.bp`
+
+### 5.8.6 Summary of Android 17 Kernel-Layer Changes
+
+| Area | Android 16 | Android 17 | Source |
+|------|------------|------------|--------|
+| GKI branch | `android16-6.12` (LTS 6.12) | adds `android17-6.18` (LTS 6.18) | `kernel/configs/kernel-lifetimes.xml` |
+| Kernel prebuilt | `kernel/prebuilts/6.12/` | adds `kernel/prebuilts/6.18/` (~104 modules) | `kernel/prebuilts/6.18/arm64/` |
+| KMI symbol list | ~35,710 (6.6) | ~22,961 (6.18) | `kernel/prebuilts/6.18/arm64/abi_symbollist` |
+| Config dirs | `b/android-6.12` | adds `c/`, `d/android-6.18`; drops `r/` | `kernel/configs/d/android-6.18/` |
+| 16 KB page size | side build | full 16 KB module set in `6.18/arm64/16k/` | `kernel/prebuilts/6.18/arm64/16k/` |
+| fs_mgr family | `system/core/{fs_mgr,liblp,libsnapshot,libdm}` | moved to `system/fs/fs_mgr/` | `system/fs/fs_mgr/` |
+| ZRAM/swap setup | `init` + `fs_mgr` `swapon_all` | new `mmd` daemon owns ZRAM | `system/memory/mmd/` |
+| New fs tool | n/a | `casefolding_remover` (Rust) | `system/fs/casefolding_remover/` |
+
+---
+
+## 5.9 Try It: Examine the Emulator Kernel
 
 This section provides hands-on exercises for exploring the Android emulator's
 kernel. These exercises assume you have an AOSP source tree synced and an
@@ -3106,7 +3455,7 @@ on early-init
     exec u:r:modprobe:s0 -- /system/bin/modprobe -a -d /system/lib/modules zram.ko
 ```
 
-**Source**: `device/generic/goldfish/init/init.ranchu.rc`, lines 37-38
+**Source**: `device/generic/goldfish/init/init.ranchu.rc`, lines 39-40
 
 This shows:
 
@@ -3122,7 +3471,7 @@ on init
     write /proc/sys/vm/page-cluster 0
 ```
 
-**Source**: `device/generic/goldfish/init/init.ranchu.rc`, lines 41-42
+**Source**: `device/generic/goldfish/init/init.ranchu.rc`, lines 43-44
 
 ### Exercise 10: Examine the Emulator's Filesystem Layout
 
@@ -3156,7 +3505,7 @@ Notable observations:
 
 ---
 
-## 5.9 Summary
+## 5.10 Summary
 
 The Android kernel is a carefully managed extension of the Linux kernel, with
 additions that support Android's unique requirements for IPC (Binder), memory
@@ -3178,6 +3527,13 @@ set of requirements, verified at build time, test time (VTS), and boot time
 (`kernel-lifetimes.xml`) provides transparency about which kernels are supported
 and for how long.
 
+Android 17 advances this picture in a few concrete ways, collected in Section
+5.8: a new `android17-6.18` GKI branch (upstream LTS 6.18) with its own prebuilt
+and a trimmed KMI; a fully fledged 16 KB page size build shipping next to the
+4 KB one; the relocation of the `fs_mgr`/`liblp`/`libsnapshot`/`libdm` family out
+of `system/core` into the new `system/fs/` tree; and the new `mmd` daemon taking
+over ZRAM setup and maintenance from `init` and `fs_mgr`.
+
 For developers working with AOSP, understanding the kernel layer is essential
 for:
 
@@ -3187,7 +3543,7 @@ for:
   tree changes
 - Maintaining and updating kernels for devices in the field
 
-The exercises in section 5.8 provide a starting point for hands-on kernel
+The exercises in section 5.9 provide a starting point for hands-on kernel
 exploration using the Android emulator, which includes a fully functional GKI
 kernel with the same architecture as production devices.
 
@@ -3233,10 +3589,14 @@ kernel with the same architecture as production devices.
 | `kernel/configs/` | Kernel configuration fragments and lifecycle data |
 | `kernel/configs/b/android-6.12/android-base.config` | Android 16 mandatory kernel config |
 | `kernel/configs/b/android-6.12/android-base-conditional.xml` | Architecture-specific requirements |
-| `kernel/configs/kernel-lifetimes.xml` | Branch support lifecycle |
+| `kernel/configs/d/android-6.18/` | Android 17 kernel 6.18 config fragments |
+| `kernel/configs/kernel-lifetimes.xml` | Branch support lifecycle (incl. `android17-6.18`) |
 | `kernel/configs/approved-ogki-builds.xml` | Approved OEM GKI builds |
 | `kernel/prebuilts/6.6/arm64/` | GKI 6.6 prebuilt kernel and modules |
 | `kernel/prebuilts/6.6/arm64/abi_symbollist` | KMI symbol list (35,710 symbols) |
+| `kernel/prebuilts/6.18/arm64/` | Android 17 GKI 6.18 prebuilt (4 KB), ~104 modules |
+| `kernel/prebuilts/6.18/arm64/16k/` | Android 17 GKI 6.18 prebuilt (16 KB page size) |
+| `kernel/prebuilts/6.18/arm64/kernel_version.mk` | 6.18 kernel version string |
 | `kernel/prebuilts/common-modules/virtual-device/` | Virtual device kernel modules |
 | `prebuilts/qemu-kernel/arm64/6.12/` | Emulator kernel prebuilts |
 | `device/generic/goldfish/` | Emulator device configuration |
@@ -3247,6 +3607,9 @@ kernel with the same architecture as production devices.
 | `system/memory/lmkd/lmkd.cpp` | lmkd main logic |
 | `system/memory/lmkd/libpsi/psi.cpp` | PSI monitor interface |
 | `system/incremental_delivery/incfs/` | Incremental FS userspace library |
+| `system/memory/mmd/` | Memory Management Daemon (ZRAM setup/maintenance, Android 17) |
+| `system/fs/fs_mgr/` | fs_mgr, liblp, libsnapshot, libdm (moved from `system/core` in Android 17) |
+| `system/fs/casefolding_remover/` | `/data/media` casefolding migration tool (Android 17) |
 | `system/core/debuggerd/` | Crash dump handler |
 | `frameworks/native/libs/binder/IPCThreadState.cpp` | Binder userspace IPC |
 | `external/perfetto/src/traced/probes/ftrace/` | Perfetto kernel trace integration |

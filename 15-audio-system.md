@@ -51,14 +51,14 @@ The `audioserver` process hosts three primary services:
 
 | Service | Binder interface | Source |
 |---------|-----------------|--------|
-| AudioFlinger | `IAudioFlinger` | `frameworks/av/services/audioflinger/AudioFlinger.cpp` (5,126 lines) |
-| AudioPolicyService | `IAudioPolicyService` | `frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp` (2,790 lines) |
-| AAudioService | `IAAudioService` | `frameworks/av/services/oboeservice/AAudioService.cpp` (472 lines) |
+| AudioFlinger | `IAudioFlinger` | `frameworks/av/services/audioflinger/AudioFlinger.cpp` (5,288 lines) |
+| AudioPolicyService | `IAudioPolicyService` | `frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp` (2,759 lines) |
+| AAudioService | `IAAudioService` | `frameworks/av/services/oboeservice/AAudioService.cpp` (527 lines) |
 
 AudioFlinger is registered first:
 
 ```cpp
-// AudioFlinger.cpp, line 293-298
+// AudioFlinger.cpp, line 303-308
 void AudioFlinger::instantiate() {
     sp<IServiceManager> sm(defaultServiceManager());
     sm->addService(String16(IAudioFlinger::DEFAULT_SERVICE_NAME),
@@ -278,21 +278,25 @@ or sent directly to the HAL for hardware decode (offload path).
 
 AudioFlinger is the central mixing engine of Android audio. It is the single
 most complex component in the audio stack, with the core implementation spread
-across six source files totaling over 26,000 lines:
+across six source files totaling over 27,000 lines:
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `AudioFlinger.cpp` | 5,126 | Service entry point, Binder methods |
-| `Threads.cpp` | 11,818 | All thread loop implementations |
-| `Tracks.cpp` | 3,976 | Track objects (playback, record, mmap) |
-| `Effects.cpp` | 3,896 | Effect chain management |
-| `PatchPanel.cpp` | 1,012 | Audio routing patches |
-| `FastMixer.cpp` | 541 | Low-latency fast mixer path |
+| `AudioFlinger.cpp` | 5,288 | Service entry point, Binder methods |
+| `Threads.cpp` | 12,053 | All thread loop implementations |
+| `Tracks.cpp` | 4,057 | Track objects (playback, record, mmap) |
+| `Effects.cpp` | 3,898 | Effect chain management |
+| `PatchPanel.cpp` | 1,085 | Audio routing patches |
+| `fastpath/FastMixer.cpp` | 517 | Low-latency fast mixer path |
 
-All files are under:
-```
-frameworks/av/services/audioflinger/
-```
+The first five files are under `frameworks/av/services/audioflinger/`. The
+fast-path code has been split into a `fastpath/` subdirectory (`FastMixer.cpp`,
+`FastCapture.cpp`, `FastThread.cpp`, `StateQueue.cpp`, and their dump/state
+helpers), and the audioflinger directory now also carries `afutils/`,
+`datapath/`, `sounddose/`, and `timing/` subdirectories for utility, HAL
+stream, sound-dose, and frame-counter helpers respectively. The thread classes
+themselves are declared in `Threads.h` (2,573 lines) and implemented in
+`Threads.cpp`.
 
 ### 15.2.1 AudioFlinger Initialization
 
@@ -300,7 +304,7 @@ The `AudioFlinger` constructor is surprisingly simple. The heavy lifting
 happens in `onFirstRef()`:
 
 ```cpp
-// AudioFlinger.cpp, line 300-330
+// AudioFlinger.cpp, line 310-341
 AudioFlinger::AudioFlinger()
 {
     // Move the audio session unique ID generator start base as time passes
@@ -326,7 +330,7 @@ allocated session IDs when reconnecting.
 In `onFirstRef()`, the factory-based device discovery begins:
 
 ```cpp
-// AudioFlinger.cpp, line 332-353
+// AudioFlinger.cpp, line 342-363
 void AudioFlinger::onFirstRef()
 {
     audio_utils::lock_guard _l(mutex());
@@ -350,7 +354,7 @@ AudioFlinger implements multiple callback interfaces through a diamond
 inheritance pattern:
 
 ```cpp
-// AudioFlinger.h, line 57-64
+// AudioFlinger.h, line 60-67
 class AudioFlinger
     : public AudioFlingerServerAdapter::Delegate  // IAudioFlinger client interface
     , public IAfClientCallback
@@ -1891,7 +1895,7 @@ MMAP (zero-copy) and Legacy (fallback through AudioTrack/AudioRecord).
 
 The source is at:
 ```
-frameworks/av/media/libaaudio/ (171 files)
+frameworks/av/media/libaaudio/ (215 files)
 ```
 
 Organized into subdirectories:
@@ -1908,10 +1912,10 @@ Organized into subdirectories:
 
 ### 15.4.1 AudioStream Base Class
 
-All AAudio streams derive from `AudioStream` (779 lines):
+All AAudio streams derive from `AudioStream` (880 lines):
 
 ```cpp
-// AudioStream.cpp, line 46-51
+// AudioStream.cpp, line 54-59
 AudioStream::AudioStream()
         : mPlayerBase(new MyPlayerBase())
         , mStreamId(AAudio_getNextStreamId())
@@ -1923,46 +1927,50 @@ AudioStream::AudioStream()
 Stream IDs are sequential, starting at 1:
 
 ```cpp
-// AudioStream.cpp, line 41-44
+// AudioStream.cpp, line 49-52
 static aaudio_stream_id_t AAudio_getNextStreamId() {
     static std::atomic <aaudio_stream_id_t> nextStreamId{1};
     return nextStreamId++;
 }
 ```
 
-The `open()` method copies parameters from the builder:
+The `open()` method copies parameters from the open request. Note that the
+client builder (`AudioStreamBuilder`) and the service both funnel through an
+`AAudioStreamOpenRequest`, so `AudioStream::open()` takes that request type
+rather than the builder directly -- the AAudioService calls `open()` without
+ever calling `build()`:
 
 ```cpp
-// AudioStream.cpp, line 72-131
-aaudio_result_t AudioStream::open(const AudioStreamBuilder& builder)
+// AudioStream.cpp, line 81-130
+aaudio_result_t AudioStream::open(const AAudioStreamOpenRequest& openRequest)
 {
-    aaudio_result_t result = builder.validate();
+    aaudio_result_t result = openRequest.validate();
     if (result != AAUDIO_OK) {
         return result;
     }
 
-    mSamplesPerFrame = builder.getSamplesPerFrame();
-    mChannelMask = builder.getChannelMask();
-    mSampleRate = builder.getSampleRate();
-    mDeviceIds = builder.getDeviceIds();
-    mFormat = builder.getFormat();
-    mSharingMode = builder.getSharingMode();
-    mSharingModeMatchRequired = builder.isSharingModeMatchRequired();
-    mPerformanceMode = builder.getPerformanceMode();
+    mSamplesPerFrame = openRequest.getSamplesPerFrame();
+    mChannelMask = openRequest.getChannelMask();
+    mSampleRate = openRequest.getSampleRate();
+    mDeviceIds = openRequest.getDeviceIds();
+    mFormat = openRequest.getFormat();
+    mSharingMode = openRequest.getSharingMode();
+    mSharingModeMatchRequired = openRequest.isSharingModeMatchRequired();
+    mPerformanceMode = openRequest.getPerformanceMode();
 
-    mUsage = builder.getUsage();
+    mUsage = openRequest.getUsage();
     if (mUsage == AAUDIO_UNSPECIFIED) {
         mUsage = AAUDIO_USAGE_MEDIA;
     }
-    mContentType = builder.getContentType();
+    mContentType = openRequest.getContentType();
     if (mContentType == AAUDIO_UNSPECIFIED) {
         mContentType = AAUDIO_CONTENT_TYPE_MUSIC;
     }
-    // ... spatialization, input preset, capture policy ...
+    // ... tags, spatialization, input preset, capture policy ...
 
     // callbacks
-    mFramesPerDataCallback = builder.getFramesPerDataCallback();
-    mDataCallbackProc = builder.getDataCallbackProc();
+    mFramesPerDataCallback = openRequest.getFramesPerDataCallback();
+    mDataCallbackProc = openRequest.getDataCallbackProc();
     // ...
 }
 ```
@@ -2006,7 +2014,7 @@ graph TB
     SSMMAP --> EPMMAP
     SSShared --> EPShared
     EPShared --> AF
-    EPMMAP -->|MmapStreamInterface| MMAPT
+    EPMMAP -->|"MmapStreamInterface / IMmapStream"| MMAPT
     MMAPT -->|HAL| HAL[Audio HAL]
     ASI <-->|shared memory| FIFO
     FG --> FIFO
@@ -2031,7 +2039,8 @@ The MMAP path flows through:
 2. `AAudioService.openStream()` (Binder)
 3. `AAudioServiceStreamMMAP` (service side)
 4. `AAudioServiceEndpointMMAP` (HAL interface)
-5. `MmapStreamInterface` (AudioFlinger)
+5. `MmapStreamInterface` (AudioFlinger) -- in Android 17 this is a thin C++
+   adapter over the stable AIDL `IMmapStream` binder interface (Section 15.11)
 
 ### 15.4.4 Legacy Fallback
 
@@ -2050,7 +2059,7 @@ regardless of the underlying path.
 The lock-free FIFO is critical for AAudio's low-latency operation:
 
 ```cpp
-// FifoBuffer.cpp, line 38-50
+// FifoBuffer.cpp, line 42-54
 FifoBuffer::FifoBuffer(int32_t bytesPerFrame)
         : mBytesPerFrame(bytesPerFrame) {}
 
@@ -2070,7 +2079,7 @@ The `FifoControllerIndirect` variant uses externally-provided read/write index
 pointers, enabling the shared memory MMAP path:
 
 ```cpp
-// FifoBuffer.cpp, line 52-65
+// FifoBuffer.cpp, line 56-69
 FifoBufferIndirect::FifoBufferIndirect(
         int32_t bytesPerFrame,
         fifo_frames_t capacityInFrames,
@@ -2089,7 +2098,7 @@ FifoBufferIndirect::FifoBufferIndirect(
 The wrapping buffer logic handles the circular nature:
 
 ```cpp
-// FifoBuffer.cpp, line 71-80
+// FifoBuffer.cpp, line 75-84
 void FifoBuffer::fillWrappingBuffer(
         WrappingBuffer *wrappingBuffer,
         int32_t framesAvailable,
@@ -2161,7 +2170,7 @@ stateDiagram-v2
 The stream destruction has a safety assertion:
 
 ```cpp
-// AudioStream.cpp, line 66-69
+// AudioStream.cpp, line 75-78
 LOG_ALWAYS_FATAL_IF(
     !(getState() == AAUDIO_STREAM_STATE_CLOSED
       || getState() == AAUDIO_STREAM_STATE_UNINITIALIZED),
@@ -2194,42 +2203,43 @@ AAudioStreamBuilder_delete(builder);
 ```
 
 The builder validation ensures all parameters are consistent before attempting
-to open the stream. The `open()` method copies validated parameters:
+to open the stream. The `open()` method copies validated parameters from the
+`AAudioStreamOpenRequest`:
 
 ```cpp
-// AudioStream.cpp, line 72-131
-aaudio_result_t AudioStream::open(const AudioStreamBuilder& builder)
+// AudioStream.cpp, line 81-130
+aaudio_result_t AudioStream::open(const AAudioStreamOpenRequest& openRequest)
 {
-    aaudio_result_t result = builder.validate();
+    aaudio_result_t result = openRequest.validate();
     if (result != AAUDIO_OK) {
         return result;
     }
     // Copy parameters from the Builder because the Builder may
     // be deleted after this call.
-    mSamplesPerFrame = builder.getSamplesPerFrame();
-    mChannelMask = builder.getChannelMask();
-    mSampleRate = builder.getSampleRate();
-    mDeviceIds = builder.getDeviceIds();
-    mFormat = builder.getFormat();
-    mSharingMode = builder.getSharingMode();
+    mSamplesPerFrame = openRequest.getSamplesPerFrame();
+    mChannelMask = openRequest.getChannelMask();
+    mSampleRate = openRequest.getSampleRate();
+    mDeviceIds = openRequest.getDeviceIds();
+    mFormat = openRequest.getFormat();
+    mSharingMode = openRequest.getSharingMode();
     // ...
-    mUsage = builder.getUsage();
+    mUsage = openRequest.getUsage();
     if (mUsage == AAUDIO_UNSPECIFIED) {
         mUsage = AAUDIO_USAGE_MEDIA;
     }
-    mContentType = builder.getContentType();
+    mContentType = openRequest.getContentType();
     if (mContentType == AAUDIO_UNSPECIFIED) {
         mContentType = AAUDIO_CONTENT_TYPE_MUSIC;
     }
     // ...
     mSpatializationBehavior =
-            builder.getSpatializationBehavior();
+            openRequest.getSpatializationBehavior();
     if (mSpatializationBehavior == AAUDIO_UNSPECIFIED) {
         mSpatializationBehavior =
                 AAUDIO_SPATIALIZATION_BEHAVIOR_AUTO;
     }
-    mIsContentSpatialized = builder.isContentSpatialized();
-    mInputPreset = builder.getInputPreset();
+    mIsContentSpatialized = openRequest.isContentSpatialized();
+    mInputPreset = openRequest.getInputPreset();
     if (mInputPreset == AAUDIO_UNSPECIFIED) {
         mInputPreset = AAUDIO_INPUT_PRESET_VOICE_RECOGNITION;
     }
@@ -2249,10 +2259,10 @@ AAudio supports two callback modes for data delivery:
 **Standard callback** -- Called with exactly `framesPerDataCallback` frames:
 
 ```cpp
-// AudioStream.cpp, line 117-124
-    mFramesPerDataCallback = builder.getFramesPerDataCallback();
-    mDataCallbackProc = builder.getDataCallbackProc();
-    mPartialDataCallbackProc = builder.getPartialDataCallbackProc();
+// AudioStream.cpp, line 126-132
+    mFramesPerDataCallback = openRequest.getFramesPerDataCallback();
+    mDataCallbackProc = openRequest.getDataCallbackProc();
+    mPartialDataCallbackProc = openRequest.getPartialDataCallbackProc();
     if (mPartialDataCallbackProc != nullptr) {
         mDataCallbackWrapper =
                 &AudioStream::partialDataCallbackInternal;
@@ -2287,7 +2297,7 @@ It tracks the relationship between frame position and time, compensating for:
 AAudio logs detailed metrics on stream open:
 
 ```cpp
-// AudioStream.cpp, line 134-150
+// AudioStream.cpp, line 149-165
 void AudioStream::logOpenActual() {
     if (mMetricsId.size() > 0) {
         android::mediametrics::LogItem item(mMetricsId);
@@ -2311,10 +2321,10 @@ void AudioStream::logOpenActual() {
 ## 15.5 Oboe Service (AAudioService)
 
 The AAudioService runs inside the `audioserver` process and manages server-side
-AAudio streams. It is defined across 39 files in:
+AAudio streams. It is defined across roughly 40 files in:
 
 ```
-frameworks/av/services/oboeservice/ (39 files)
+frameworks/av/services/oboeservice/ (41 files)
 ```
 
 ### 15.5.1 Service Architecture
@@ -2352,11 +2362,11 @@ graph TB
 
 ### 15.5.2 Stream Opening
 
-The `openStream()` method (line 94-150 of `AAudioService.cpp`) handles both
+The `openStream()` method (line 101-170 of `AAudioService.cpp`) handles both
 MMAP and shared stream creation:
 
 ```cpp
-// AAudioService.cpp, line 94-150
+// AAudioService.cpp, line 101-145
 Status AAudioService::openStream(
         const StreamRequest &_request,
         StreamParameters* _paramsOut,
@@ -2376,7 +2386,7 @@ Status AAudioService::openStream(
 The MMAP offload mode has stricter requirements:
 
 ```cpp
-// AAudioService.cpp, line 130-134
+// AAudioService.cpp, line 147-151
 if (performanceMode ==
         AAUDIO_PERFORMANCE_MODE_POWER_SAVING_OFFLOADED &&
         (sharingMode != AAUDIO_SHARING_MODE_EXCLUSIVE ||
@@ -2389,12 +2399,12 @@ if (performanceMode ==
 There is a per-process stream limit:
 
 ```cpp
-// AAudioService.cpp, line 44
+// AAudioService.cpp, line 46
 #define MAX_STREAMS_PER_PROCESS   8
 ```
 
 ```cpp
-// AAudioService.cpp, line 144-150
+// AAudioService.cpp, line 162-168
 const int32_t count =
         AAudioClientTracker::getInstance().getStreamCount(pid);
 if (count >= MAX_STREAMS_PER_PROCESS) {
@@ -2469,8 +2479,8 @@ is "stolen" -- it is converted from exclusive to shared. The `openStream()`
 method uses a `mOpenLock` to serialize this:
 
 ```cpp
-// AAudioService.cpp, line 112
-const std::unique_lock<std::recursive_mutex> lock(mOpenLock);
+// AAudioService.cpp, line 134
+std::unique_lock ul(mOpenLock);
 ```
 
 The comment explains the ordering requirement:
@@ -2537,7 +2547,7 @@ For offloaded MMAP, additional offload info is prepared:
 The actual HAL open uses `MmapStreamInterface::openMmapStream()`:
 
 ```cpp
-// AAudioServiceEndpointMMAP.cpp, line 218-231
+// AAudioServiceEndpointMMAP.cpp, line 214-226
     const std::lock_guard<std::mutex> lock(mMmapStreamLock);
     const status_t status = MmapStreamInterface::openMmapStream(
             isOutput,
@@ -2551,6 +2561,14 @@ The actual HAL open uses `MmapStreamInterface::openMmapStream()`:
             mMmapStream,
             &mPortHandle);
 ```
+
+In Android 17 `mMmapStream` is a `sp<MmapStreamInterface>` that wraps a stable
+AIDL `IMmapStream` binder proxy rather than a raw C++ pointer into AudioFlinger
+(see `frameworks/av/services/oboeservice/AAudioServiceEndpointMMAP.h` line 144,
+where the member is declared `GUARDED_BY(mMmapStreamLock)`). Every subsequent
+control call -- `createTrack()`, `startTrack()`, `stopTrack()`,
+`releaseTrack()`, `standby()` -- is forwarded across that binder boundary.
+Section 15.11 covers the new interface in detail.
 
 ### 15.5.6 Shared Endpoints
 
@@ -2588,7 +2606,7 @@ Android provides a comprehensive audio effects framework with both built-in
 effects and vendor-supplied effects. The source spans:
 
 ```
-frameworks/av/media/libeffects/ (245 files, ~40,305 lines)
+frameworks/av/media/libeffects/ (314 files)
 ```
 
 ### 15.6.1 Effects Framework Architecture
@@ -2873,7 +2891,7 @@ It is one of the effects checked by AudioFlinger during effect matching:
 Modern Android uses AIDL for the effects HAL interface:
 
 ```
-hardware/interfaces/audio/aidl/ (272 AIDL files total)
+hardware/interfaces/audio/aidl/ (326 AIDL files total)
 ```
 
 Key effect AIDL interfaces:
@@ -3059,9 +3077,9 @@ multiple components:
 |-----------|------|-------|
 | Head Tracking Processor | `frameworks/av/media/libheadtracking/HeadTrackingProcessor.cpp` | 262 |
 | Sensor Pose Provider | `frameworks/av/media/libheadtracking/SensorPoseProvider.cpp` | 446 |
-| Spatializer (C++) | `frameworks/av/services/audiopolicy/service/Spatializer.cpp` | 1,314 |
+| Spatializer (C++) | `frameworks/av/services/audiopolicy/service/Spatializer.cpp` | 1,339 |
 | Spatializer (Java) | `frameworks/base/media/java/android/media/Spatializer.java` | 1,121 |
-| SpatializerHelper (Java) | `frameworks/base/services/core/java/com/android/server/audio/SpatializerHelper.java` | 1,802 |
+| SpatializerHelper (Java) | `frameworks/base/services/core/java/com/android/server/audio/SpatializerHelper.java` | 1,807 |
 
 ### 15.7.1 System Architecture
 
@@ -3477,7 +3495,7 @@ Android has gone through several HAL interface generations:
 | 2.0 - 7.1 | HIDL | `hardware/interfaces/audio/2.0/` through `7.1/` |
 | Current | AIDL | `hardware/interfaces/audio/aidl/` |
 
-The AIDL HAL is the current standard, with 272 AIDL files across core, effect,
+The AIDL HAL is the current standard, with 326 AIDL files across core, effect,
 and common definitions.
 
 ### 15.8.2 AIDL Core Interface: IModule
@@ -3616,11 +3634,16 @@ if (mDevicesFactoryHal->getHalVersion() <=
 MMAP support is queried through `getMmapPolicyInfos()`:
 
 ```cpp
-// AudioFlinger.cpp, line 388-413
+// AudioFlinger.cpp, line 398-423
 status_t AudioFlinger::getMmapPolicyInfos(
         AudioMMapPolicyType policyType,
         std::vector<AudioMMapPolicyInfo> *policyInfos) {
     audio_utils::lock_guard _l(mutex());
+    if (const auto it = mPolicyInfos.find(policyType);
+            it != mPolicyInfos.end()) {
+        *policyInfos = it->second;          // cached result
+        return NO_ERROR;
+    }
     if (mDevicesFactoryHal->getHalVersion() >
             kMaxAAudioPropertyDeviceHalVersion) {
         audio_utils::lock_guard lock(hardwareMutex());
@@ -3641,6 +3664,9 @@ status_t AudioFlinger::getMmapPolicyInfos(
     return NO_ERROR;
 }
 ```
+
+Android 17 added the `mPolicyInfos` cache as the first check, so repeated MMAP
+policy queries skip the HAL round-trip entirely after the first call.
 
 ### 15.8.8 Bluetooth Audio Integration
 
@@ -3771,7 +3797,7 @@ The native `AudioTrack` class is the primary client-side API for audio
 playback. It is defined in:
 
 ```
-frameworks/av/media/libaudioclient/AudioTrack.cpp (3,894 lines)
+frameworks/av/media/libaudioclient/AudioTrack.cpp (3,960 lines)
 ```
 
 #### Minimum Frame Count
@@ -3779,7 +3805,7 @@ frameworks/av/media/libaudioclient/AudioTrack.cpp (3,894 lines)
 The minimum buffer size is calculated from the HAL:
 
 ```cpp
-// AudioTrack.cpp, line 116-119
+// AudioTrack.cpp, line 118-122
 status_t AudioTrack::getMinFrameCount(
         size_t* frameCount,
         audio_stream_type_t streamType,
@@ -3870,13 +3896,13 @@ application, the other is being filled by the HAL.
 point for both AudioFlinger and AudioPolicyService:
 
 ```
-frameworks/av/media/libaudioclient/AudioSystem.cpp (3,201 lines)
+frameworks/av/media/libaudioclient/AudioSystem.cpp (3,269 lines)
 ```
 
 It maintains service connection state:
 
 ```cpp
-// AudioSystem.cpp, line 68-76
+// AudioSystem.cpp, line 71-79
 std::mutex AudioSystem::gMutex;
 dynamic_policy_callback AudioSystem::gDynPolicyCallback = NULL;
 record_config_callback AudioSystem::gRecordConfigCallback = NULL;
@@ -3911,7 +3937,7 @@ Key static methods:
 The Java `AudioTrack` class is the most commonly used audio playback API:
 
 ```
-frameworks/base/media/java/android/media/AudioTrack.java (4,707 lines)
+frameworks/base/media/java/android/media/AudioTrack.java (4,971 lines)
 ```
 
 It wraps the native `AudioTrack` through JNI, adding:
@@ -4026,7 +4052,7 @@ AudioSystem maintains singleton connections to both AudioFlinger and
 AudioPolicyService. It provides static methods that hide the Binder IPC:
 
 ```cpp
-// AudioSystem.cpp, line 68-79
+// AudioSystem.cpp, line 71-79
 std::mutex AudioSystem::gMutex;
 dynamic_policy_callback AudioSystem::gDynPolicyCallback = NULL;
 record_config_callback AudioSystem::gRecordConfigCallback = NULL;
@@ -4183,7 +4209,7 @@ Key system properties that control audio behavior:
 Every audio operation logs metrics through the MediaMetrics system:
 
 ```cpp
-// AudioFlinger.cpp, line 327-329
+// AudioFlinger.cpp, line 337-340
     mediametrics::LogItem(mMetricsId)
         .set(AMEDIAMETRICS_PROP_EVENT,
              AMEDIAMETRICS_PROP_EVENT_VALUE_CTOR)
@@ -4224,7 +4250,7 @@ Key trace points:
 AudioFlinger uses `audio_utils::mutex` which tracks lock contention:
 
 ```cpp
-// AudioFlinger.cpp, line 820-822
+// AudioFlinger.cpp, line 830-831
     writeStr(fd, audio_utils::mutex::all_stats_to_string());
     writeStr(fd, audio_utils::mutex::all_threads_to_string());
 ```
@@ -4252,7 +4278,7 @@ The mutex statistics show:
 AudioFlinger uses a TimerQueue for deferred operations:
 
 ```cpp
-// AudioFlinger.cpp, line 352
+// AudioFlinger.cpp, line 362
     ALOGD("%s: TimerQueue %s", __func__,
             mTimerQueue->ready() ? "ready" : "uninitialized");
 ```
@@ -4260,7 +4286,7 @@ AudioFlinger uses a TimerQueue for deferred operations:
 The TimerQueue dump is available in stats output:
 
 ```cpp
-// AudioFlinger.cpp, line 1005-1006
+// AudioFlinger.cpp, line 1015-1016
         dprintf(fd, "\n ## BEGIN TimerQueue dump\n");
         dprintf(fd, "%s\n", mTimerQueue->toString().c_str());
 ```
@@ -4271,7 +4297,7 @@ AudioFlinger integrates with the Android power management system through
 `AudioPowerManager`:
 
 ```cpp
-// AudioFlinger.cpp, line 974-979
+// AudioFlinger.cpp, line 984-989
         dprintf(fd, "\n ## BEGIN power dump\n");
         char value[PROPERTY_VALUE_MAX];
         property_get("ro.build.display.id", value,
@@ -4294,7 +4320,7 @@ The power manager tracks:
 AudioFlinger uses TimeCheck as a watchdog for HAL calls:
 
 ```cpp
-// AudioFlinger.cpp, line 816-817
+// AudioFlinger.cpp, line 826-827
     dprintf(fd, "\nTimeCheck:\n");
     writeStr(fd, mediautils::TimeCheck::toString());
 ```
@@ -4308,7 +4334,7 @@ restart to prevent the entire audio system from hanging.
 AudioFlinger's dump system detects potential deadlocks:
 
 ```cpp
-// AudioFlinger.cpp, line 109-112
+// AudioFlinger.cpp, line 110-112
 constexpr auto kDeadlockedString =
         "AudioFlinger may be deadlocked\n"sv;
 constexpr auto kHardwareLockedString =
@@ -4321,7 +4347,7 @@ During dump, it uses `FallibleLockGuard` which attempts to acquire locks
 without blocking:
 
 ```cpp
-// AudioFlinger.cpp, line 916-926
+// AudioFlinger.cpp, line 925-935
     {
         FallibleLockGuard l{hardwareMutex()};
         if (!l) writeStr(fd, kHardwareLockedString);
@@ -4345,7 +4371,7 @@ that `dumpsys` never hangs even when the audio system is in trouble.
 AudioFlinger can dump unreachable memory for leak detection:
 
 ```cpp
-// AudioFlinger.cpp, line 1009-1015
+// AudioFlinger.cpp, line 1019-1024
     if (parsedArgs.shouldDumpMem) {
         dprintf(fd, "\n ## BEGIN memory dump \n");
         writeStr(fd, dumpMemoryAddresses(100 /* limit */));
@@ -4367,7 +4393,7 @@ adb shell dumpsys media.audio_flinger --memory
 AudioFlinger tracks battery usage per client UID:
 
 ```cpp
-// AudioFlinger.cpp, line 323
+// AudioFlinger.cpp, line 333
     BatteryNotifier::getInstance().noteResetAudio();
 ```
 
@@ -4390,7 +4416,238 @@ application is consuming through audio playback.
 
 ---
 
-## 15.11 Try It
+## 15.11 The Stable MMAP AIDL Interface (Android 17)
+
+For most of AAudio's history the MMAP control path crossed the AudioFlinger
+boundary through a raw C++ object. AudioFlinger handed the AAudioService a
+`sp<MmapStreamInterface>` whose virtual methods (`createMmapBuffer()`,
+`createTrack()`, `start()`, `stop()`, `standby()`) were called in-process. That
+worked because both sides linked the same C++ ABI inside `audioserver`, but it
+left the MMAP surface outside the stable, versioned binder world that the rest
+of the audio stack had moved to.
+
+Android 17 closes that gap. The MMAP stream is now controlled through a stable
+AIDL binder interface, `IMmapStream`, declared in
+`frameworks/av/media/libaudioclient/aidl/android/media/IMmapStream.aidl`. The
+old C++ `MmapStreamInterface` survives as a thin convenience wrapper around the
+new binder proxy, so callers that already used it keep compiling, while the
+actual control traffic now travels over a versioned interface.
+
+### 15.11.1 The IMmapStream Interface
+
+`IMmapStream` is a hidden (`@hide`) binder interface whose methods mirror the
+operations a MMAP client needs to drive a hardware stream:
+
+```aidl
+// IMmapStream.aidl
+interface IMmapStream {
+    MmapBufferInfo createMmapBuffer(in int minSizeFrames);
+    MmapStreamPosition getMmapPosition();
+    MmapObservablePosition getObservablePosition();
+    MmapCreateTrackResponse createTrack(in AudioClient client,
+                                        in AudioAttributes attr);
+    void startTrack(in int portId);
+    void stopTrack(in int portHandle);
+    void releaseTrack(in int portId);
+    void standby();
+    void reportData(in byte[] buffer);
+    void drain(long wakeUpNanos, boolean allowSoftWakeUp,
+               out TimerQueueHandle handle);
+    void activate(in TimerQueueHandle handle);
+    void setPlaybackParameters(in AudioPlaybackRate rate);
+    void getPlaybackParameters(out AudioPlaybackRate rate);
+}
+```
+
+The buffer handoff is a parcelable rather than a raw struct. `createMmapBuffer()`
+returns a `MmapBufferInfo` carrying the shared-memory file descriptor as a
+`ParcelFileDescriptor`, so the kernel buffer is transferred and reclaimed
+through the normal binder FD machinery:
+
+```aidl
+// MmapBufferInfo.aidl
+parcelable MmapBufferInfo {
+    ParcelFileDescriptor sharedFd;
+    int bufferSizeFrames;
+    int burstSizeFrames;
+    int flags;  // audio_mmap_buffer_flag
+}
+```
+
+The position and track-creation results are likewise nested parcelables on the
+interface (`MmapStreamPosition`, `MmapObservablePosition`, and
+`MmapCreateTrackResponse`, which returns the allocated `portId` and the thread's
+`ioHandle`).
+
+### 15.11.2 Obtaining a Stream: openMmapStream
+
+A client no longer receives a bare C++ pointer. It calls
+`IAudioFlingerService.openMmapStream()`, which takes an `OpenMmapRequest` and
+returns an `OpenMmapResponse` whose `stream` field is the `IMmapStream` binder:
+
+```aidl
+// IAudioFlingerService.aidl, line 145
+OpenMmapResponse openMmapStream(in OpenMmapRequest request);
+```
+
+```aidl
+// OpenMmapResponse.aidl
+parcelable OpenMmapResponse {
+    AudioConfigBase config;
+    int[] deviceIds;
+    int sessionId;
+    IMmapStream stream;   // the AIDL control interface
+    int portId;
+}
+```
+
+On the AudioFlinger side, `openMmapStream()` parses the request, opens or
+reuses a `MmapThread`, and wraps that thread in an adapter before returning it
+in the response:
+
+```cpp
+// AudioFlinger.cpp, line 512-550 (abridged)
+status_t AudioFlinger::openMmapStream(const media::OpenMmapRequest& request,
+                                media::OpenMmapResponse* response) {
+    // ... parse request into native types ...
+    sp<media::IMmapStream> interface;
+    audio_port_handle_t portId;
+    status = openMmapStreamImpl(isOutput, attr, &config, client, &deviceIds,
+                                &sessionId, callback, offloadInfoOrNull,
+                                interface, &portId);
+    // build the AIDL response (even on error, to permit retry)
+    MmapStreamInterface::buildResponse(
+        isOutput, config, deviceIds, sessionId, interface, portId, response);
+    return status;
+}
+```
+
+`openMmapStreamImpl()` produces the binder object from the chosen thread:
+
+```cpp
+// AudioFlinger.cpp, line 649
+interface = IAfMmapThread::createMmapStreamInterfaceAdapter(thread);
+```
+
+### 15.11.3 The Server-Side Adapter
+
+The adapter that turns an internal `MmapThread` into the binder object is
+`MmapThreadHandle`, a `BnMmapStream` subclass. It holds the thread by strong
+pointer and forwards every AIDL call to the thread's C++ interface
+(`IAfMmapThread`), translating between AIDL parcelables and the legacy native
+types on the way:
+
+```cpp
+// Threads.cpp, line 10378
+class MmapThreadHandle : public media::BnMmapStream {
+public:
+    explicit MmapThreadHandle(const sp<IAfMmapThread>& thread);
+    binder::Status createMmapBuffer(int32_t minSizeFrames,
+            media::MmapBufferInfo* _aidl_return) final;
+    binder::Status startTrack(int32_t portId) final;
+    binder::Status stopTrack(int32_t portId) final;
+    // ... remaining IMmapStream methods ...
+private:
+    const sp<IAfMmapThread> mThread;
+};
+
+// Threads.cpp, line 10409
+sp<media::IMmapStream> IAfMmapThread::createMmapStreamInterfaceAdapter(
+        const sp<IAfMmapThread>& mmapThread) {
+    return sp<MmapThreadHandle>::make(mmapThread);
+}
+```
+
+`createMmapBuffer()` is the clearest illustration of the translation work. The
+native `MmapThread` fills an `audio_mmap_buffer_info` struct; the handle copies
+its fields into the `MmapBufferInfo` parcelable and `dup()`s the shared-memory
+FD into the `ParcelFileDescriptor` so binder can own the transfer:
+
+```cpp
+// Threads.cpp, line 10427
+binder::Status MmapThreadHandle::createMmapBuffer(
+        int32_t minSizeFrames, media::MmapBufferInfo* _aidl_return) {
+    struct audio_mmap_buffer_info info;
+    const status_t status = mThread->createMmapBuffer(minSizeFrames, &info);
+    if (status == NO_ERROR) {
+        const int bufferFd = info.shared_memory_fd;
+        _aidl_return->sharedFd.reset(binder::unique_fd(dup(bufferFd)));
+        _aidl_return->bufferSizeFrames = info.buffer_size_frames;
+        _aidl_return->burstSizeFrames = info.burst_size_frames;
+        _aidl_return->flags = static_cast<int32_t>(info.flags);
+    }
+    return aidl_utils::binderStatusFromStatusT(status);
+}
+```
+
+The track methods do the same kind of conversion in the other direction:
+`startTrack(int32_t portId)` and `stopTrack(int32_t portId)` translate the AIDL
+`int32_t` back to a native `audio_port_handle_t` before calling the thread.
+
+### 15.11.4 The Client Side Keeps MmapStreamInterface
+
+The AAudioService endpoint did not have to be rewritten. It still holds a
+`sp<MmapStreamInterface>`:
+
+```cpp
+// AAudioServiceEndpointMMAP.h, line 144
+android::sp<android::MmapStreamInterface> mMmapStream GUARDED_BY(mMmapStreamLock);
+```
+
+In Android 17 that `MmapStreamInterface` is constructed around the
+`IMmapStream` binder proxy returned by `openMmapStream()` and stores it in a
+`const sp<media::IMmapStream> mStream` member
+(`frameworks/av/media/libaudioclient/include/media/MmapStreamInterface.h`, line
+248). Each C++ call -- `createMmapBuffer()`, `createTrack()`, `startTrack()`,
+`stopTrack()`, `releaseTrack()`, `standby()` -- now delegates to the matching
+binder method on `mStream`. The endpoint code reads exactly as before:
+
+```cpp
+// AAudioServiceEndpointMMAP.cpp, line 800
+const status_t status = mMmapStream->createMmapBuffer(minSizeFrames,
+                                                      &mMmapBufferinfo);
+// AAudioServiceEndpointMMAP.cpp, line 402 / 421
+mMmapStream->startTrack(clientHandle);
+mMmapStream->stopTrack(clientHandle);
+```
+
+### 15.11.5 Why This Matters
+
+```mermaid
+graph TB
+    subgraph "Client side (AAudioService endpoint)"
+        EP["AAudioServiceEndpointMMAP"]
+        MSI["MmapStreamInterface<br/>C++ wrapper"]
+        PROXY["BpMmapStream<br/>binder proxy"]
+    end
+
+    subgraph "Server side (AudioFlinger)"
+        AF["AudioFlinger.openMmapStream()"]
+        HANDLE["MmapThreadHandle<br/>BnMmapStream"]
+        MT["MmapThread (IAfMmapThread)"]
+    end
+
+    EP --> MSI
+    MSI --> PROXY
+    PROXY -.->|"IMmapStream binder"| HANDLE
+    AF -->|"createMmapStreamInterfaceAdapter()"| HANDLE
+    HANDLE --> MT
+    MT -->|HAL| HALOUT["Audio HAL"]
+```
+
+Moving MMAP control onto a `@VintfStability`-adjacent stable AIDL surface gives
+the audio team the same benefits the rest of the stack already enjoys: a
+versioned, introspectable interface; parcelable buffer descriptors that carry
+their FD lifetime correctly; and the option to place the MMAP control endpoint
+in a different process from its caller in the future. The two new control
+methods on the interface -- `drain()` and `activate()`, which exchange a
+`TimerQueueHandle` -- also let the service schedule client wake-ups against
+AudioFlinger's `TimerQueue` (Section 15.10.6) instead of busy-waiting, which is
+how the new power-saving offloaded MMAP mode coordinates its draining.
+
+---
+
+## 15.12 Try It
 
 ### Exercise 1: Dump the Audio System State
 
@@ -4843,30 +5100,31 @@ with their locations and sizes:
 
 | File | Path (relative to AOSP root) | Lines |
 |------|------------------------------|-------|
-| AudioFlinger.cpp | `frameworks/av/services/audioflinger/AudioFlinger.cpp` | 5,126 |
-| AudioFlinger.h | `frameworks/av/services/audioflinger/AudioFlinger.h` | ~400 |
-| Threads.cpp | `frameworks/av/services/audioflinger/Threads.cpp` | 11,818 |
-| Threads.h | `frameworks/av/services/audioflinger/Threads.h` | 2,555 |
-| Tracks.cpp | `frameworks/av/services/audioflinger/Tracks.cpp` | 3,976 |
-| Effects.cpp | `frameworks/av/services/audioflinger/Effects.cpp` | 3,896 |
-| PatchPanel.cpp | `frameworks/av/services/audioflinger/PatchPanel.cpp` | 1,012 |
-| FastMixer.cpp | `frameworks/av/services/audioflinger/fastpath/FastMixer.cpp` | 541 |
-| IAfThread.h | `frameworks/av/services/audioflinger/IAfThread.h` | 724 |
-| AudioPolicyService.cpp | `frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp` | 2,790 |
-| AudioPolicyInterface.h | `frameworks/av/services/audiopolicy/AudioPolicyInterface.h` | 740 |
-| Spatializer.cpp | `frameworks/av/services/audiopolicy/service/Spatializer.cpp` | 1,314 |
-| AudioStream.cpp | `frameworks/av/media/libaaudio/src/core/AudioStream.cpp` | 779 |
-| FifoBuffer.cpp | `frameworks/av/media/libaaudio/src/fifo/FifoBuffer.cpp` | ~120 |
-| AAudioService.cpp | `frameworks/av/services/oboeservice/AAudioService.cpp` | 472 |
-| AAudioServiceEndpointMMAP.cpp | `frameworks/av/services/oboeservice/AAudioServiceEndpointMMAP.cpp` | ~350 |
+| AudioFlinger.cpp | `frameworks/av/services/audioflinger/AudioFlinger.cpp` | 5,288 |
+| AudioFlinger.h | `frameworks/av/services/audioflinger/AudioFlinger.h` | 838 |
+| Threads.cpp | `frameworks/av/services/audioflinger/Threads.cpp` | 12,053 |
+| Threads.h | `frameworks/av/services/audioflinger/Threads.h` | 2,573 |
+| Tracks.cpp | `frameworks/av/services/audioflinger/Tracks.cpp` | 4,057 |
+| Effects.cpp | `frameworks/av/services/audioflinger/Effects.cpp` | 3,898 |
+| PatchPanel.cpp | `frameworks/av/services/audioflinger/PatchPanel.cpp` | 1,085 |
+| FastMixer.cpp | `frameworks/av/services/audioflinger/fastpath/FastMixer.cpp` | 517 |
+| IAfThread.h | `frameworks/av/services/audioflinger/IAfThread.h` | 738 |
+| AudioPolicyService.cpp | `frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp` | 2,759 |
+| AudioPolicyInterface.h | `frameworks/av/services/audiopolicy/AudioPolicyInterface.h` | 782 |
+| Spatializer.cpp | `frameworks/av/services/audiopolicy/service/Spatializer.cpp` | 1,339 |
+| AudioStream.cpp | `frameworks/av/media/libaaudio/src/core/AudioStream.cpp` | 880 |
+| FifoBuffer.cpp | `frameworks/av/media/libaaudio/src/fifo/FifoBuffer.cpp` | 224 |
+| AAudioService.cpp | `frameworks/av/services/oboeservice/AAudioService.cpp` | 527 |
+| AAudioServiceEndpointMMAP.cpp | `frameworks/av/services/oboeservice/AAudioServiceEndpointMMAP.cpp` | 879 |
+| IMmapStream.aidl | `frameworks/av/media/libaudioclient/aidl/android/media/IMmapStream.aidl` | new in 17 |
 | HeadTrackingProcessor.cpp | `frameworks/av/media/libheadtracking/HeadTrackingProcessor.cpp` | 262 |
 | SensorPoseProvider.cpp | `frameworks/av/media/libheadtracking/SensorPoseProvider.cpp` | 446 |
-| AudioTrack.cpp | `frameworks/av/media/libaudioclient/AudioTrack.cpp` | 3,894 |
+| AudioTrack.cpp | `frameworks/av/media/libaudioclient/AudioTrack.cpp` | 3,960 |
 | AudioRecord.cpp | `frameworks/av/media/libaudioclient/AudioRecord.cpp` | 1,891 |
-| AudioSystem.cpp | `frameworks/av/media/libaudioclient/AudioSystem.cpp` | 3,201 |
-| AudioTrack.java | `frameworks/base/media/java/android/media/AudioTrack.java` | 4,707 |
+| AudioSystem.cpp | `frameworks/av/media/libaudioclient/AudioSystem.cpp` | 3,269 |
+| AudioTrack.java | `frameworks/base/media/java/android/media/AudioTrack.java` | 4,971 |
 | Spatializer.java | `frameworks/base/media/java/android/media/Spatializer.java` | 1,121 |
-| SpatializerHelper.java | `frameworks/base/services/core/java/com/android/server/audio/SpatializerHelper.java` | 1,802 |
+| SpatializerHelper.java | `frameworks/base/services/core/java/com/android/server/audio/SpatializerHelper.java` | 1,807 |
 | IModule.aidl | `hardware/interfaces/audio/aidl/android/hardware/audio/core/IModule.aidl` | ~600 |
 
 ### Key Concepts Glossary
@@ -4949,10 +5207,11 @@ cts/tests/tests/media/audio/
 ```
 
 The audio system continues to evolve with each Android release. Recent
-additions include AIDL Audio HAL migration, MMAP PCM offload support,
-improved spatial audio with multiple head tracker support, sound dose
-monitoring for hearing protection compliance, and the Eraser effect for
-audio source separation. The core architecture, however, remains remarkably
+additions include AIDL Audio HAL migration, MMAP PCM offload support, the move
+of MMAP stream control onto the stable AIDL `IMmapStream` interface in Android
+17 (Section 15.11), improved spatial audio with multiple head tracker support,
+sound dose monitoring for hearing protection compliance, and the Eraser effect
+for audio source separation. The core architecture, however, remains remarkably
 stable -- the AudioFlinger mixing loop, the shared memory data path, and
 the policy/mechanism separation have been proven over more than 15 years
 of Android releases.

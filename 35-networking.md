@@ -112,6 +112,15 @@ The key networking Mainline modules are:
 Each module ships as an APEX package, providing a self-contained update unit
 with its own versioning, signing, and rollback capability.
 
+Android 17 pushes this trend further by carrying native networking binaries
+inside the modules themselves rather than only on the read-only system and
+vendor partitions. Two examples documented later in this chapter are the
+*mainline supplicant* (`/apex/com.android.wifi/bin/wpa_supplicant_mainline`, a
+wpa_supplicant build shipped inside the Wi-Fi APEX, Section 35.27) and the
+multi-proxy PAC handler services that the Connectivity APEX binds to as
+APEX-resident apps (Section 35.26). Both let Google update security-sensitive
+networking code through Play System Updates without an OEM build.
+
 ### 35.1.4 Network IDs and Routing
 
 Every active network in Android is assigned a unique **network ID** (netId), an
@@ -823,6 +832,17 @@ AIDL interface, handling:
 - OWE (Opportunistic Wireless Encryption) for open networks
 - SAE (Simultaneous Authentication of Equals) for WPA3
 - DPP (Device Provisioning Protocol) for easy onboarding
+
+`SupplicantStaIfaceHal` does not bind to one fixed transport. Its factory
+`createStaIfaceHalMockable()` in
+`packages/modules/Wifi/service/java/com/android/server/wifi/SupplicantStaIfaceHal.java`
+picks the first available backend in a strict preference order: the AIDL
+*mainline* implementation (a supplicant binary shipped inside the Wi-Fi APEX,
+covered in Section 35.27), then the AIDL *vendor* implementation (the supplicant
+on the vendor partition), then the legacy HIDL implementation. Each candidate
+exposes an `isServiceAvailable()` / `serviceDeclared()` probe; the first that
+answers yes wins. The same three-tier selection exists for Wi-Fi Direct in
+`SupplicantP2pIfaceHal`.
 
 ### 35.3.6 Network Selection
 
@@ -4137,16 +4157,25 @@ The UID information flows from:
 
 ### 35.22.1 mDNS Service Discovery
 
-netd includes an mDNS (multicast DNS) service for local network service
-discovery:
-
-**Source file:** `system/netd/server/MDnsService.cpp`
+mDNS (multicast DNS) powers Android's Network Service Discovery (NSD) API. The
+implementation has moved into the Connectivity module: `NsdService`
+(`packages/modules/Connectivity/service-t/src/com/android/server/NsdService.java`)
+drives a pure-Java mDNS stack under
+`packages/modules/Connectivity/service-t/src/com/android/server/connectivity/mdns/`
+(`MdnsDiscoveryManager`, `MdnsAdvertiser`, `MdnsSocketProvider`, and the packet
+reader/writer classes), so discovery and advertisement no longer depend on a
+native daemon. A legacy `MDnsService` still ships in `system/netd/server/MDnsService.cpp`
+as the compatibility backend, but new devices use the in-module Java backend.
 
 mDNS enables:
 
 - Device discovery on local networks (e.g., Chromecast, printers)
 - Service advertisement (NSD - Network Service Discovery API)
 - Zero-configuration networking
+
+In Android 17, NSD discovery is also gated by a per-app, per-service-type
+access model backed by the `ACCESS_LOCAL_NETWORK` permission and a system
+"picker" UI. That access-control flow is covered in Section 35.28.
 
 ### 35.22.2 Multicast Routing for Local Networks
 
@@ -4301,9 +4330,406 @@ NetworkAgent, NetworkMonitor, and the kernel.
 
 ---
 
-## 35.26 Try It: Network Debugging
+## 35.26 Multi-Proxy and Multi-PAC Framework
 
-### 35.26.1 dumpsys connectivity
+### 35.26.1 Why a New Proxy Stack
+
+Historically Android supported a single, system-wide HTTP proxy. The proxy was
+either a static host/port or a **PAC** (Proxy Auto-Config) URL: a JavaScript
+file whose `FindProxyForURL(url, host)` function returns which proxy (if any) to
+use for a given request. The legacy implementation lives in
+`packages/modules/Connectivity/service/src/com/android/server/connectivity/ProxyTracker.java`,
+which holds one global `ProxyInfo` and, for PAC, hands the script to a single
+out-of-process PAC processor. Every network and every app shares that one proxy
+decision.
+
+That model breaks down on a multi-network device. A managed work network may
+ship its own PAC script while the personal Wi-Fi uses none; a VPN may want a
+different proxy than the underlying transport. Android 17 introduces a redesigned
+proxy stack that can run **multiple independent PAC scripts simultaneously**,
+selected by context (network, user, or application UID). The AIDL header for the
+new PAC processor states the goal directly: it supports "running multiple
+PacProcessors to allow using different PAC scripts to be used based on context,
+such as network, user, or application UID"
+(`packages/modules/Connectivity/commercial/pac/multipacprocessor/src/com/android/multipacprocessor/IMultiPacService.aidl`).
+
+This is a scaffolded feature in the 17 tree: the wiring, service contracts, and
+coordinator are in place behind a flag, while several leaf operations are still
+stubbed (`UnsupportedOperationException`). It is documented here because the
+architecture is the durable part and is what an integrator needs to understand.
+
+### 35.26.2 Two Cooperating Services: PacProcessor and ProxyServer
+
+The new stack splits the job that the legacy single PAC service did into two
+cooperating, APEX-resident services, each running its own pool of paired
+`{ProxyServer; PacProcessor}` instances:
+
+- **MultiPacService** — runs the `PacProcessor` instances that actually evaluate
+  PAC JavaScript. Package `com.android.multiproxyhandler` ships the proxy side;
+  package `com.android.multipacprocessor` ships the PAC side
+  (`packages/modules/Connectivity/commercial/pac/multipacprocessor/src/com/android/multipacprocessor/MultiPacService.java`).
+- **MultiProxyService** — runs local HTTP proxy servers. Its purpose, per its
+  AIDL doc, is "running local HTTP servers \[...] to provide PAC support for apps
+  that can't directly access PacProcessors"
+  (`packages/modules/Connectivity/commercial/pac/multiproxyhandler/src/com/android/multiproxyhandler/MultiProxyService.java`).
+
+Both are exposed via AIDL stubs —
+`packages/modules/Connectivity/commercial/pac/multipacprocessor/src/com/android/multipacprocessor/IMultiPacService.aidl`
+and
+`packages/modules/Connectivity/commercial/pac/multiproxyhandler/src/com/android/multiproxyhandler/IMultiProxyService.aidl`.
+In the 17 tree both interface bodies are intentionally empty placeholders; the
+binding, lifecycle, and intent contracts are settled, and the RPC methods are
+filled in as the implementation lands. Both apps live inside the Connectivity
+(`com.android.tethering`) APEX, which is why the coordinator restricts its
+service lookup to packages under `/apex/com.android.tethering/`.
+
+### 35.26.3 PacCoordinator
+
+The orchestrator is `PacCoordinator`
+(`packages/modules/Connectivity/service/src/com/android/server/connectivity/proxy/PacCoordinator.java`).
+Its own class comment describes the role: it coordinates "the PAC script download
+and \[manages] the MultiPacService and MultiProxyService services \[...] keeps
+track of the PAC scripts that are currently in use and ensures that the
+corresponding PAC components serving these scripts are running."
+
+It runs entirely on the ConnectivityService handler thread. Every public method
+opens with `ensureRunningOnHandlerThread()`, and the service-binding callbacks
+are posted back onto that handler via `mConnectivityServiceHandler::post`, so all
+state mutation is single-threaded. The two key entry points are:
+
+```java
+// PacCoordinator.java
+public void startServingPacScript(ProxyInfo proxy, Optional<Integer> netId) {
+    ensureRunningOnHandlerThread();
+    bindToPacComponentsIfNeeded();
+    mPacDownloader.downloadPacScript(
+            new PacKey(proxy.getPacFileUrl(), netId), this::onPacScriptDownloaded);
+}
+
+public void stopServingPacScript(ProxyInfo proxy, Optional<Integer> netId) { ... }
+```
+
+`startServingPacScript()` binds to both services if needed, then schedules a
+download of the PAC script and, on completion, asks the two services to stand up
+a `{ProxyServer; PacProcessor}` pair for that script. If a pair is already
+running for the key, the call is a no-op. The key is a `PacKey`
+(`packages/modules/Connectivity/commercial/pac/common/src/com/android/commercial/PacKey.java`),
+a parcelable pair of the PAC `Uri` and an `Optional<Integer>` network id —
+`Optional.empty()` (serialized as `-1`) means the default network. The download
+itself is delegated to `PacDownloader`
+(`packages/modules/Connectivity/service/src/com/android/server/connectivity/proxy/PacDownloader.java`),
+which fetches the script over the requested network so a per-network PAC is
+retrieved through that network.
+
+Binding uses `BIND_AUTO_CREATE | BIND_NOT_FOREGROUND`. The `NOT_FOREGROUND` flag
+is deliberate: a long-running or blocking PAC evaluation (the proxy server makes
+blocking calls into the PAC processor while resolving a URL) must not be allowed
+to drag the system process into a foreground-priority state.
+
+Description of how a PAC request flows through the coordinator:
+
+```mermaid
+graph TD
+    PT["MultiProxyTracker<br/>(IProxyTracker)"] -->|"network proxy changed"| PC["PacCoordinator<br/>(CS handler thread)"]
+    PC -->|"bindToPacComponentsIfNeeded()"| BIND["bindService<br/>(BIND_AUTO_CREATE | BIND_NOT_FOREGROUND)"]
+    BIND --> MPS["MultiPacService<br/>(com.android.multipacprocessor)"]
+    BIND --> MXS["MultiProxyService<br/>(com.android.multiproxyhandler)"]
+    PC -->|"new PacKey(url, netId)"| DL["PacDownloader.downloadPacScript()"]
+    DL -->|"onPacScriptDownloaded()"| PC
+    PC -->|"start pair"| MPS
+    PC -->|"start pair"| MXS
+    MXS -->|"local HTTP proxy for apps"| APP["App HTTP traffic"]
+    MXS -->|"blocking FindProxyForURL()"| MPS
+    PC -->|"setup complete"| PT
+```
+
+### 35.26.4 MultiProxyTracker and ConnectivityService Wiring
+
+`ConnectivityService` reaches the new stack through the `IProxyTracker`
+interface. The legacy `ProxyTracker` and the new `MultiProxyTracker`
+(`packages/modules/Connectivity/service/src/com/android/server/connectivity/proxy/MultiProxyTracker.java`)
+both implement that interface, so the rest of ConnectivityService is agnostic to
+which one is in use. The selection happens at construction, gated by a flag:
+
+```java
+// ConnectivityService.java
+final boolean multiProxyEnabled =
+        mDeps.isMultiProxyEnabled()
+                && mResources.get().getBoolean(R.bool.config_enable_multi_proxy_system);
+mProxyTracker = multiProxyEnabled
+        ? mDeps.makeMultiProxyTracker(mContext, mHandler)
+        : /* legacy ProxyTracker */ ...;
+```
+
+`isMultiProxyEnabled()` returns `com.android.tethering.flags.Flags.enableMultiProxySystem()`,
+so both an aconfig flag and a resource overlay (`config_enable_multi_proxy_system`)
+must be set before the multi-proxy path is used; otherwise ConnectivityService
+falls back to the classic single `ProxyTracker`. `MultiProxyTracker` is the
+`IProxyTracker` whose `updateNetworkProxy(network, newProxy, oldProxy)` and
+`updateDefaultNetworkState(...)` callbacks are what ultimately drive
+`PacCoordinator.startServingPacScript()` per network. It also serves as the
+`MultiPacProxyInstalledListener` that `PacCoordinator` notifies once a proxy
+server is running and its PAC script is loaded.
+
+---
+
+## 35.27 The Mainline Supplicant
+
+### 35.27.1 Motivation
+
+The traditional `wpa_supplicant` is a vendor component: it lives on the vendor
+partition and is reached through the Wi-Fi supplicant HAL. Fixing a supplicant
+bug or shipping a new Wi-Fi feature therefore required an OEM build. Android 17
+adds a second, *updatable* supplicant — the **mainline supplicant** — shipped
+inside the Wi-Fi APEX (`com.android.wifi`) so Google can update it through Play
+System Updates.
+
+The mainline supplicant does **not** replace the vendor supplicant. It runs
+alongside it and acts as a thin front door: its root AIDL interface hands back
+the vendor supplicant for the bulk of STA/P2P work, while the mainline binary
+itself owns a small, evolving set of capabilities (today: Wi-Fi Aware / NAN
+interface management and per-user identity). This lets new supplicant-side code
+ship in the module while existing vendor behavior is untouched.
+
+### 35.27.2 The wifi_mainline_supplicant Service
+
+The binary is launched by an init service declared in
+`external/wpa_supplicant_8/wpa_supplicant/aidl/config/mainline_supplicant.rc`:
+
+```
+service wpa_supplicant_mainline /apex/com.android.wifi/bin/wpa_supplicant_mainline \
+    -O/data/misc/wifi/mainline_supplicant/sockets -dd \
+    -g@android:wpa_wlan0
+    interface aidl wifi_mainline_supplicant
+    class main
+    user wifi
+    group wifi net_raw net_admin
+    capabilities NET_RAW NET_ADMIN
+    socket wpa_wlan0 dgram 660 wifi wifi
+    disabled
+    oneshot
+```
+
+Key points: the executable lives under `/apex/com.android.wifi/bin/` (inside the
+module, hence updatable); it registers in servicemanager under the AIDL instance
+name `wifi_mainline_supplicant`; it runs as user `wifi` with `NET_RAW`/`NET_ADMIN`
+capabilities; and it is `disabled oneshot`, so init does not start it at boot —
+the framework starts it on demand. A matching SELinux domain is defined in
+`system/sepolicy/private/wifi_mainline_supplicant.te`. The C++ side of the
+interface is implemented in
+`external/wpa_supplicant_8/wpa_supplicant/aidl/mainline_supplicant.cpp`.
+
+### 35.27.3 IMainlineSupplicant
+
+The AIDL contract is
+`packages/modules/Wifi/aidl/mainline_supplicant/android/system/wifi/mainline_supplicant/IMainlineSupplicant.aidl`,
+in package `android.system.wifi.mainline_supplicant`. It is explicitly an
+*unstable* interface (it ships with the module, not the platform), and it is
+small:
+
+```java
+interface IMainlineSupplicant {
+    @PropagateAllowBlocking ISupplicant getVendorSupplicant();
+    @PropagateAllowBlocking ISupplicantNanIface addNanInterface(in String ifaceName);
+    void removeNanInterface(in String ifaceName);
+    void setCurrentUserIdentity(in int userId);
+}
+```
+
+- `getVendorSupplicant()` returns the standard vendor `ISupplicant` root —
+  this is how STA and P2P operations get routed back to the vendor supplicant.
+- `addNanInterface()` / `removeNanInterface()` register and tear down a Wi-Fi
+  Aware (NAN) interface (e.g. `aware0`), returning the vendor NAN iface object.
+- `setCurrentUserIdentity()` tells the supplicant which user is in the
+  foreground so it can load that user's credential-encrypted (CE) configuration.
+
+### 35.27.4 MainlineSupplicantAidlManager
+
+The framework side is `MainlineSupplicantAidlManager`
+(`packages/modules/Wifi/service/java/com/android/server/wifi/MainlineSupplicantAidlManager.java`).
+It resolves the binder by name through a small JNI shim,
+`packages/modules/Wifi/service/java/com/android/server/wifi/mainline_supplicant/ServiceManagerWrapper.java`:
+
+```java
+// MainlineSupplicantAidlManager.java
+private static final String MAINLINE_SUPPLICANT_SERVICE_NAME = "wifi_mainline_supplicant";
+
+protected IMainlineSupplicant getNewServiceBinderMockable() {
+    return IMainlineSupplicant.Stub.asInterface(
+            ServiceManagerWrapper.waitForService(MAINLINE_SUPPLICANT_SERVICE_NAME));
+}
+```
+
+`startDaemon()` fetches the binder, caches the vendor `ISupplicant` returned by
+`getVendorSupplicant()`, and links a death recipient; `terminate()` asks the
+supplicant to exit and waits on a latch for the binder-death confirmation. NAN
+interface acquisition (`getWifiNanIface()`) wraps `addNanInterface()` and hands
+the result to the Aware stack as an `AwareIfaceAidlSupplicantImpl`. Death
+callbacks are posted onto the `WifiThreadRunner`, keeping the manager's state
+single-threaded.
+
+Whether the mainline supplicant is used at all is decided by
+`isServiceAvailable()`, which requires several conditions to all hold:
+
+```java
+// MainlineSupplicantAidlManager.java
+public static boolean isServiceAvailable(WifiContext context) {
+    boolean isEnabledInOverlay = context.getResourceCache().getBoolean(
+            com.android.wifi.resources.R.bool.config_wifiMainlineSupplicantEnabled);
+    return isEnabledInOverlay && (Environment.isSdkAtLeastC() || hasPcFeature(context))
+            && Flags.mainlineSupplicant()
+            && Environment.isMainlineSupplicantBinaryInWifiApex()
+            && !isUnsupportedDevice(context);
+}
+```
+
+That is: a resource overlay (`config_wifiMainlineSupplicantEnabled`) enables it,
+the platform is Android 17+ (or a PC form factor), the `mainlineSupplicant`
+aconfig flag is on, the binary actually exists inside the Wi-Fi APEX, and the
+device is not one of the resource-constrained form factors (watch, embedded,
+leanback/TV, automotive) that `isUnsupportedDevice()` excludes.
+
+### 35.27.5 HAL Selection: Mainline, Vendor, or HIDL
+
+Section 35.3.5 noted that `SupplicantStaIfaceHal.createStaIfaceHalMockable()`
+picks a backend in a preference order. The mainline supplicant slots in at the
+top of that order:
+
+```java
+// SupplicantStaIfaceHal.java
+if (SupplicantStaIfaceHalAidlMainlineImpl.isServiceAvailable(mContext)) {
+    // AIDL Mainline implementation (supplicant shipped in the Wi-Fi APEX)
+    return new SupplicantStaIfaceHalAidlMainlineImpl(...);
+} else if (SupplicantStaIfaceHalAidlVendorImpl.serviceDeclared()) {
+    // AIDL Vendor implementation (supplicant on the vendor partition)
+    return new SupplicantStaIfaceHalAidlVendorImpl(...);
+} else if (SupplicantStaIfaceHalHidlImpl.serviceDeclared()) {
+    // Legacy HIDL implementation
+    return new SupplicantStaIfaceHalHidlImpl(...);
+}
+```
+
+The mainline STA implementation
+(`packages/modules/Wifi/service/java/com/android/server/wifi/SupplicantStaIfaceHalAidlMainlineImpl.java`)
+and its P2P counterpart
+(`packages/modules/Wifi/service/java/com/android/server/wifi/p2p/SupplicantP2pIfaceHalAidlMainlineImpl.java`)
+both start the mainline daemon, call `getVendorSupplicant()` to obtain the vendor
+`ISupplicant`, and then drive ordinary STA/P2P operations through that vendor
+interface. The mainline-only surface (NAN interface management, current-user
+identity) is reached directly through `IMainlineSupplicant`. So on a device where
+the mainline supplicant is enabled, the framework gets an updatable supplicant
+process whose Aware/identity logic ships in the module while its STA/P2P
+mechanics still run through the vendor supplicant.
+
+---
+
+## 35.28 NSD Service-Access Picker and the Local-Network Permission
+
+### 35.28.1 The Problem: Local Network Visibility
+
+Until recently, any app with the `INTERNET` permission could use the NSD API to
+enumerate every mDNS service on the local network — printers, smart-home hubs,
+TVs, other phones. That is a meaningful privacy leak: the set of services on
+someone's home network is identifying. Android 17 closes it with a new
+runtime permission, `ACCESS_LOCAL_NETWORK`, plus a **service-access picker**: a
+user-driven allowlist that lets an app reach specific services it does not have
+blanket permission to discover.
+
+### 35.28.2 DiscoveryRequest Flags
+
+`DiscoveryRequest`
+(`packages/modules/Connectivity/framework-t/src/android/net/nsd/DiscoveryRequest.java`)
+gains three flags that tell `NsdService` how to behave when an app discovers
+services without holding `ACCESS_LOCAL_NETWORK`:
+
+- `FLAG_NO_PICKER` — never show the picker; fail if the app lacks the
+  permission.
+- `FLAG_SHOW_PICKER` — force the picker UI; on selection the app is granted
+  access to the chosen service even without the permission.
+- `FLAG_USER_APPROVED_ONLY` — show nothing; return only services the user has
+  already approved for this app.
+
+If neither `FLAG_NO_PICKER` nor `FLAG_SHOW_PICKER` is set, the default behavior
+depends on the app's permission and the `USE_NSD_PICKER_WHEN_NO_LOCAL_NET_PERMISSION`
+compatibility change.
+
+### 35.28.3 Enforcement in NsdService
+
+`NsdService`
+(`packages/modules/Connectivity/service-t/src/com/android/server/NsdService.java`)
+gates the feature on the aconfig flag `FLAG_NSD_SERVICE_PICKER`
+(`mEnablePicker = mDeps.isAconfigFlagEnabled(FLAG_NSD_SERVICE_PICKER)`). Two
+enforcement points matter:
+
+- **Discovery**: `checkDiscoveryPermissionsAndPicker()` decides, from the request
+  flags and the caller's permission, whether to discover directly, refuse, or
+  launch the picker. When the picker path is chosen, `NsdService` does not deliver
+  raw results to the app — it routes them through a `PickerListener` whose
+  `startPicker()` shows the system UI.
+- **Resolve / register-callback**: `checkQueryServicePermissions()` allows an
+  operation either when the caller holds `ACCESS_LOCAL_NETWORK` or when the
+  service is in the per-app allowlist
+  (`mAccessRepository.isServiceAllowed(uid, packageName, serviceName, serviceType)`).
+
+When the user picks a service, `handleServiceSelected()` records it:
+`mAccessRepository.addAllowedService(uid, packageName, serviceName, serviceType)`.
+On client connect/disconnect, `NsdService` calls `loadPackage()` and
+`unloadPackage()` so the allowlist is paged in only while a client is active.
+
+### 35.28.4 ServiceAccessRepository and ServiceAccessDb
+
+The allowlist itself is split into an in-memory repository and a SQLite-backed
+store, both under
+`packages/modules/Connectivity/service-t/src/com/android/server/connectivity/mdns/internal/`:
+
+- `ServiceAccessRepository.java` is the in-memory cache and orchestrator. It maps
+  each `(uid, packageName)` to the set of `(serviceName, serviceType)` tuples the
+  user approved, keeps "last seen" timestamps for LRU eviction, caps entries per
+  client, and runs entirely on the `NsdService` handler thread (it is explicitly
+  not thread-safe). Its main methods are `addAllowedService()`, `isServiceAllowed()`,
+  `loadPackage()`, `unloadPackage()`, and a `maybeScheduleDatabaseMaintenance()`
+  that prunes entries for uninstalled packages.
+- `ServiceAccessDb.java` is the persistence layer: a small SQLite database
+  (`NsdServiceAccess.db`) with a `package` table tracking known packages and a
+  `service_access` table holding the approved `(uid, package, serviceName,
+  serviceType, last_seen_time)` rows, with a cascading delete so uninstalling a
+  package removes its grants.
+
+Description of the access-control decision path:
+
+```mermaid
+graph TD
+    APP["App: discoverServices(request)"] --> NSD["NsdService"]
+    NSD --> CHK["checkDiscoveryPermissionsAndPicker()"]
+    CHK -->|"has ACCESS_LOCAL_NETWORK"| DIRECT["Discover and deliver to app"]
+    CHK -->|"FLAG_NO_PICKER, no permission"| FAIL["Reject"]
+    CHK -->|"picker path"| PICK["PickerListener.startPicker()"]
+    PICK --> UI["System picker UI"]
+    UI -->|"user selects a service"| SEL["handleServiceSelected()"]
+    SEL --> ADD["ServiceAccessRepository.addAllowedService()"]
+    ADD --> DB["ServiceAccessDb (NsdServiceAccess.db)"]
+    SEL -->|"return chosen service"| APP
+    APP -->|"later: resolveService()"| QCHK["checkQueryServicePermissions()"]
+    QCHK -->|"isServiceAllowed()? or has permission"| ALLOW["Allow resolve"]
+```
+
+### 35.28.5 NsdManager API
+
+For apps, `NsdManager`
+(`packages/modules/Connectivity/framework-t/src/android/net/nsd/NsdManager.java`)
+adds `checkPermissionForService(serviceName, serviceType, executor, resultReceiver)`
+so an app can ask whether a previously approved service is still accessible before
+resolving it. The result is one of `SERVICE_PERMISSION_GRANTED` or
+`SERVICE_PERMISSION_DENIED`. This pairs with the `DiscoveryRequest` flags so an
+app can drive the whole flow: discover with `FLAG_USER_APPROVED_ONLY`, and if a
+service it cares about is missing, re-discover with `FLAG_SHOW_PICKER` to prompt
+the user.
+
+---
+
+## 35.29 Try It: Network Debugging
+
+### 35.29.1 dumpsys connectivity
 
 The most powerful tool for debugging Android networking is `dumpsys connectivity`.
 It provides a comprehensive snapshot of the entire connectivity state.
@@ -4359,7 +4785,7 @@ NetworkRequest [ REQUEST id=1, [ Capabilities: INTERNET&NOT_RESTRICTED
 
 3. **Default network**: The currently selected default network
 
-### 35.26.2 dumpsys wifi
+### 35.29.2 dumpsys wifi
 
 ```bash
 # Full Wi-Fi dump
@@ -4378,7 +4804,7 @@ Key information in the Wi-Fi dump:
 - SoftAP state
 - Connection history and failure reasons
 
-### 35.26.3 dumpsys netd
+### 35.29.3 dumpsys netd
 
 ```bash
 # netd status
@@ -4393,7 +4819,7 @@ adb shell iptables -L -v -n
 adb shell ip6tables -L -v -n
 ```
 
-### 35.26.4 DNS Debugging
+### 35.29.4 DNS Debugging
 
 ```bash
 # DNS resolver state
@@ -4407,7 +4833,7 @@ adb shell settings get global private_dns_mode
 adb shell settings get global private_dns_specifier
 ```
 
-### 35.26.5 Network Diagnostics Commands
+### 35.29.5 Network Diagnostics Commands
 
 ```bash
 # Check connectivity
@@ -4433,7 +4859,7 @@ adb shell cat /proc/net/tcp6
 adb shell cat /proc/net/dev
 ```
 
-### 35.26.6 ConnectivityDiagnosticsManager
+### 35.29.6 ConnectivityDiagnosticsManager
 
 For programmatic network diagnostics, Android provides the
 `ConnectivityDiagnosticsManager` API:
@@ -4473,7 +4899,7 @@ cdm.registerConnectivityDiagnosticsCallback(
         });
 ```
 
-### 35.26.7 Simulating Network Conditions
+### 35.29.7 Simulating Network Conditions
 
 For testing, Android provides several tools to simulate network conditions:
 
@@ -4497,7 +4923,7 @@ adb shell settings put global captive_portal_mode 1  # Enable (prompt)
 adb shell dumpsys connectivity --diag
 ```
 
-### 35.26.8 Reading BPF Maps
+### 35.29.8 Reading BPF Maps
 
 For advanced debugging of BPF-based traffic control:
 
@@ -4512,7 +4938,7 @@ adb shell cat /sys/fs/bpf/
 adb shell dumpsys connectivity trafficcontroller
 ```
 
-### 35.26.9 Common Debugging Scenarios
+### 35.29.9 Common Debugging Scenarios
 
 **Scenario 1: Network connected but no Internet**
 
@@ -4590,7 +5016,7 @@ adb shell dumpsys tethering | grep "DHCP"
 adb shell cat /proc/sys/net/ipv4/ip_forward
 ```
 
-### 35.26.10 Network Logging and Tracing
+### 35.29.10 Network Logging and Tracing
 
 For deeper analysis, enable verbose logging:
 
@@ -4609,7 +5035,7 @@ adb logcat -s ConnectivityService:V NetworkAgent:V \
 adb shell setprop log.tag.Netd VERBOSE
 ```
 
-### 35.26.11 Developer Options: Network Settings
+### 35.29.11 Developer Options: Network Settings
 
 The Settings app provides several network-related developer options:
 
@@ -4620,7 +5046,7 @@ The Settings app provides several network-related developer options:
 | USB configuration | Select USB tethering mode |
 | Networking diagnostics | Run connectivity tests |
 
-### 35.26.12 Programmatic Network Testing
+### 35.29.12 Programmatic Network Testing
 
 ```java
 // Test if a specific network has connectivity
@@ -4710,8 +5136,14 @@ kernel subsystems into a cohesive whole. The key architectural insights are:
 
 The networking stack continues to evolve rapidly. Recent additions include
 Wi-Fi 7 MLO support, satellite connectivity, Thread mesh networking, and
-DoH for encrypted DNS. The modular architecture ensures these features can be
-delivered to users without waiting for full platform upgrades.
+DoH for encrypted DNS. Android 17 pushes modularization into native code with
+the *mainline supplicant* (an updatable `wpa_supplicant` shipped inside the
+Wi-Fi APEX), redesigns the proxy stack to support multiple concurrent PAC
+scripts per network/user/UID via `PacCoordinator` and the APEX-resident
+MultiPacService/MultiProxyService, and adds a per-app, user-driven NSD
+service-access picker behind the new `ACCESS_LOCAL_NETWORK` permission. The
+modular architecture ensures these features can be delivered to users without
+waiting for full platform upgrades.
 
 ### Key Source Files Reference
 
@@ -4741,3 +5173,10 @@ delivered to users without waiting for full platform upgrades.
 | NetworkMonitor | `packages/modules/NetworkStack/src/com/android/server/connectivity/NetworkMonitor.java` |
 | NetworkSecurityConfig | `frameworks/base/packages/NetworkSecurityConfig/platform/src/android/security/net/config/NetworkSecurityConfig.java` |
 | XmlConfigSource | `frameworks/base/packages/NetworkSecurityConfig/platform/src/android/security/net/config/XmlConfigSource.java` |
+| PacCoordinator | `packages/modules/Connectivity/service/src/com/android/server/connectivity/proxy/PacCoordinator.java` |
+| MultiProxyTracker | `packages/modules/Connectivity/service/src/com/android/server/connectivity/proxy/MultiProxyTracker.java` |
+| IMultiProxyService | `packages/modules/Connectivity/commercial/pac/multiproxyhandler/src/com/android/multiproxyhandler/IMultiProxyService.aidl` |
+| IMainlineSupplicant | `packages/modules/Wifi/aidl/mainline_supplicant/android/system/wifi/mainline_supplicant/IMainlineSupplicant.aidl` |
+| MainlineSupplicantAidlManager | `packages/modules/Wifi/service/java/com/android/server/wifi/MainlineSupplicantAidlManager.java` |
+| NsdService | `packages/modules/Connectivity/service-t/src/com/android/server/NsdService.java` |
+| ServiceAccessRepository | `packages/modules/Connectivity/service-t/src/com/android/server/connectivity/mdns/internal/ServiceAccessRepository.java` |

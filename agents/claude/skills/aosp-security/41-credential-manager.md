@@ -490,20 +490,28 @@ permissions) can set the origin, which providers use to verify the relying party
 
 ### 41.2.9 Package Lifecycle Handling
 
-When a provider package is updated or removed, the service reacts:
+When a provider package is updated or removed, the service reacts on a per-user basis:
 
 ```java
 // CredentialManagerService.handlePackageRemovedMultiModeLocked()
 protected void handlePackageRemovedMultiModeLocked(String packageName, int userId) {
     updateProvidersWhenPackageRemoved(new SettingsWrapper(mContext), packageName, userId);
-    // Remove from user-configurable services cache
-    // Remove from system services cache
-    // Evict from CredentialDescriptionRegistry
+    List<CredentialManagerServiceImpl> services = peekServiceListForUserLocked(userId);
+    // ... collect services whose component belongs to packageName, then for each:
+    //   removeServiceFromCache(serviceToBeRemoved, userId);
+    //   removeServiceFromSystemServicesCache(serviceToBeRemoved, userId);
+    //   CredentialDescriptionRegistry.forUser(userId)
+    //       .evictProviderWithPackageName(serviceToBeRemoved.getServicePackageName());
 }
 ```
 
-For package updates, `CredentialManagerServiceImpl.handlePackageUpdateLocked()`
-re-validates the provider's manifest and capabilities.
+The `userId` argument matters: in Android 17, `updateProvidersWhenPackageRemoved()`
+writes the `CREDENTIAL_SERVICE` and `CREDENTIAL_SERVICE_PRIMARY` settings *for that
+user* when the `multi_user_fix_enabled` flag is set, rather than for
+`UserHandle.myUserId()` as the legacy path did. This is the multi-user correctness fix
+discussed in section 41.8.2. For package updates,
+`CredentialManagerServiceImpl.handlePackageUpdateLocked()` re-validates the provider's
+manifest and capabilities.
 
 ---
 
@@ -985,7 +993,10 @@ one for each stored password matching the calling app.
 
 The Credential Manager integrates with the existing autofill framework through a
 specialized code path. The `getCandidateCredentials()` Binder method is restricted
-to the system's configured credential-autofill service:
+to the system's configured credential-autofill service. On Android 17 this caller
+check is unconditional (the `safeguard_candidate_credentials_api_caller` bugfix flag
+that previously gated it has graduated), and it rejects callers it cannot positively
+identify:
 
 ```java
 // From CredentialManagerServiceStub.getCandidateCredentials()
@@ -993,10 +1004,16 @@ String credentialManagerAutofillCompName = mContext.getResources().getString(
         R.string.config_defaultCredentialManagerAutofillService);
 ComponentName componentName = ComponentName.unflattenFromString(
         credentialManagerAutofillCompName);
-// Verify the caller IS this configured autofill service
+if (componentName == null) {
+    throw new SecurityException(
+            "Credential Autofill service does not exist on this device.");
+}
 PackageManager pm = mContext.createContextAsUser(
         UserHandle.getUserHandleForUid(callingUid), 0).getPackageManager();
 String callingProcessPackage = pm.getNameForUid(callingUid);
+if (callingProcessPackage == null) {
+    throw new SecurityException("Couldn't determine the identity of the caller.");
+}
 if (!Objects.equals(componentName.getPackageName(), callingProcessPackage)) {
     throw new SecurityException(callingProcessPackage
             + " is not the device's credential autofill package.");
@@ -1127,10 +1144,23 @@ public Set<FilterResult> getMatchingProviders(Set<Set<String>> supportedElementK
 }
 ```
 
-Matching uses set containment -- a provider matches if its registered element keys
-are a superset of the requested element keys:
+Matching uses set containment. A request carries a *set of* element-key sets
+(`Set<Set<String>>`); `canProviderSatisfyAny()` returns true if the provider's
+registered keys are a superset of *any one* of those requested sets, and the
+single-set helper `checkForMatch()` does the actual `containsAll` test:
 
 ```java
+// From CredentialDescriptionRegistry.java
+private static boolean canProviderSatisfyAny(Set<String> registeredElementKeys,
+        Set<Set<String>> requestedElementKeys) {
+    for (Set<String> requestedUnflattenedString : requestedElementKeys) {
+        if (registeredElementKeys.containsAll(requestedUnflattenedString)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static boolean checkForMatch(Set<String> registeredElementKeys,
         Set<String> requestedElementKeys) {
     return registeredElementKeys.containsAll(requestedElementKeys);
@@ -1461,23 +1491,31 @@ connectThenExecute.whenComplete((result, error) ->
 
 ### 41.7.9 Feature Flags
 
-The Credential Manager uses `android.credentials.flags.Flags` for feature gating:
+The Credential Manager uses `android.credentials.flags.Flags` for feature gating. The
+flag set is declared in `frameworks/base/core/java/android/credentials/flags.aconfig`
+and queried at the call sites that still branch on a flag:
 
 ```java
 // Referenced throughout the codebase:
 import android.credentials.flags.Flags;
 
-// Examples:
-if (Flags.clearSessionEnabled()) {
-    // Bind client binder death recipient for session cleanup
-}
+// RequestSession.finalizeAndEmitFinalPhaseMetric():
 if (Flags.metricBugfixesContinued()) {
-    // Apply continued metric bugfixes
+    mRequestSessionMetric.captureMissingLogMetadata();
+}
+
+// CredentialManagerService.removeProvidersFromSettings(): per-user settings writes
+if (Flags.multiUserFixEnabled()) {
+    // write CREDENTIAL_SERVICE / CREDENTIAL_SERVICE_PRIMARY for the affected userId
+    // (legacy path used UserHandle.myUserId())
 }
 ```
 
 These flags allow gradual rollout of behavior changes without code branches, following
-the AOSP trunk-stable development model.
+the AOSP trunk-stable development model. As flags graduate to "launched" their branches
+collapse: by Android 17 the `clear_session_enabled` and `hybrid_filter_opt_fix_enabled`
+flags cited by earlier code paths have been removed (their behavior is now
+unconditional), while several bugfix flags described in section 41.8 are still live.
 
 ### 41.7.10 Security Considerations
 
@@ -1785,9 +1823,131 @@ Optimization strategies:
 
 ---
 
-## 41.8 Try It
+## 41.8 Android 17 Changes
 
-### 41.7.1 Inspecting Credential Manager State
+The Credential Manager framework is mature by Android 17, so the release brings no new
+top-level architecture. The 16-to-17 work is a cluster of correctness and
+hardening fixes, expressed through new entries in
+`frameworks/base/core/java/android/credentials/flags.aconfig`, plus the retirement of
+flags whose behavior has graduated to unconditional. This section maps each change to
+the code it gates.
+
+### 41.8.1 The Android 17 Flag Set
+
+The flags relevant to this release, all in the `credential_manager` namespace:
+
+| Flag | Kind | What it changes |
+|---|---|---|
+| `multi_user_fix_enabled` | bugfix | Settings writes during package/service removal target the affected `userId` |
+| `parceled_credential_fix_enabled` | bugfix | `GetCredentialProviderData` parcels entry lists as `ParceledListSlice` |
+| `ttl_fix_enabled` | bugfix | Mitigation for the "transaction too large" parceling failure |
+| `package_update_fix_enabled` | bugfix | Removes a provider from settings when its app is updated or its component changes |
+| `cpif_exc_fix_enabled` | bugfix | Catches exceptions thrown inside `CredentialProviderInfoFactory` |
+| `safeguard_candidate_credentials_api_caller` | bugfix | Restricts `getCandidateCredentials()` to the credential-autofill service |
+| `metric_bugfixes_continued` | bugfix | Continued metric-logging corrections (25Q3 work) |
+
+**Source:** `frameworks/base/core/java/android/credentials/flags.aconfig`
+
+Two flags that earlier code branched on have been **removed** in 17, collapsing their
+branches: `clear_session_enabled` and `hybrid_filter_opt_fix_enabled`. Citations to
+`Flags.clearSessionEnabled()` from older sources no longer compile against the 17 tree
+because the symbol is gone; the session-cleanup behavior it gated is now always on.
+
+### 41.8.2 Multi-User Settings Correctness
+
+The most consequential fix is `multi_user_fix_enabled`. Before it, provider settings
+were written against `UserHandle.myUserId()` (the user that `system_server`'s call
+happened to resolve to) rather than the user whose package actually changed. On a
+device with multiple users or a work profile, removing a provider for one user could
+read or write another user's `CREDENTIAL_SERVICE` value.
+
+```java
+// From CredentialManagerService.removeProvidersFromSettings(), Android 17
+if (Flags.multiUserFixEnabled()) {
+    settingsWrapper.putStringForUser(
+            Settings.Secure.CREDENTIAL_SERVICE_PRIMARY,
+            String.join(SETTINGS_DELIMITER, filteredPrimaryProviders),
+            userId,                       // affected user
+            /* overrideableByRestore= */ true);
+} else {
+    settingsWrapper.putStringForUser(
+            Settings.Secure.CREDENTIAL_SERVICE_PRIMARY,
+            String.join(SETTINGS_DELIMITER, filteredPrimaryProviders),
+            UserHandle.myUserId(),        // legacy: wrong user on multi-user devices
+            /* overrideableByRestore= */ true);
+}
+```
+
+The same `userId`-versus-`myUserId()` branch appears for the `CREDENTIAL_SERVICE`
+(secondary) key. The fix is reached from `handlePackageRemovedMultiModeLocked()` (section
+41.2.9), which now threads the `userId` all the way down.
+
+**Source:** `frameworks/base/services/credentials/java/com/android/server/credentials/CredentialManagerService.java`
+
+### 41.8.3 Parceling Large Provider Responses
+
+A provider with many stored credentials can produce a `GetCredentialProviderData`
+whose entry lists overflow the Binder transaction limit when the UI intent is built. In
+Android 17, `parceled_credential_fix_enabled` switches the three entry lists
+(credential entries, action chips, authentication entries) from raw
+`writeTypedList()` to `ParceledListSlice`, which streams large lists across Binder
+without tripping `TransactionTooLargeException`:
+
+```java
+// From GetCredentialProviderData.writeToParcel(), Android 17
+if (Flags.parceledCredentialFixEnabled()) {
+    dest.writeTypedObject(new ParceledListSlice<>(mCredentialEntries), flags);
+    dest.writeTypedObject(new ParceledListSlice<>(mActionChips), flags);
+    dest.writeTypedObject(new ParceledListSlice<>(mAuthenticationEntries), flags);
+} else {
+    dest.writeTypedList(mCredentialEntries);
+    dest.writeTypedList(mActionChips);
+    dest.writeTypedList(mAuthenticationEntries);
+}
+```
+
+The read path in the `Parcel` constructor mirrors this with
+`in.readTypedObject(ParceledListSlice.CREATOR)`. The companion `ttl_fix_enabled` flag
+addresses the same transaction-size class of failure on the request side. Together
+they make the selector robust for password managers that hold hundreds of entries.
+
+**Source:** `frameworks/base/core/java/android/credentials/selection/GetCredentialProviderData.java`
+
+### 41.8.4 Hardening Provider Discovery and the Autofill Caller
+
+Two fixes harden the boundaries the service depends on:
+
+- **`cpif_exc_fix_enabled`** wraps the provider-discovery path so that an exception
+  thrown while `CredentialProviderInfoFactory` parses a malformed provider manifest no
+  longer takes down the enumeration. A single broken provider package can no longer
+  prevent the rest of the device's providers from being listed.
+
+- **`safeguard_candidate_credentials_api_caller`** (now graduated to unconditional)
+  enforces that only the OEM-configured credential-autofill component, named by
+  `config_defaultCredentialManagerAutofillService`, may call
+  `getCandidateCredentials()`. The check rejects a caller whose component name cannot be
+  resolved, whose calling package cannot be determined, or whose package does not match
+  the configured autofill service (section 41.5.2). This closes a path by which an
+  arbitrary app could have harvested credential candidates intended only for the
+  autofill surface.
+
+**Source:** `frameworks/base/services/credentials/java/com/android/server/credentials/CredentialManagerService.java`
+
+### 41.8.5 Identity Credential API Deprecation
+
+Separately from Credential Manager, Android 17 continues to wind down the older
+`android.security.identity` (Identity Credential) API in favor of the digital-credential
+flow described in section 41.6, where identity documents move through the same
+`CredentialManager` path using a provider-defined type string
+(`"com.credman.IdentityCredential"`) and the `CredentialDescriptionRegistry`. App code
+targeting digital identity should use the Credential Manager registry path rather than
+the deprecated standalone API.
+
+---
+
+## 41.9 Try It
+
+### 41.9.1 Inspecting Credential Manager State
 
 **List enabled credential providers:**
 
@@ -1812,7 +1972,7 @@ This shows:
 - Provider capability information
 - Service binding states
 
-### 41.7.2 Enabling a Provider
+### 41.9.2 Enabling a Provider
 
 ```bash
 # Set a provider as enabled (requires WRITE_SECURE_SETTINGS)
@@ -1824,7 +1984,7 @@ adb shell settings put --user 0 secure credential_service_primary \
     "com.example.myprovider/.MyCredentialProviderService"
 ```
 
-### 41.7.3 Implementing a Minimal Provider
+### 41.9.3 Implementing a Minimal Provider
 
 A basic password provider demonstrates the two-phase protocol.
 
@@ -1946,7 +2106,7 @@ credentialManager.getCredential(
 )
 ```
 
-### 41.7.4 Debugging Provider Communication
+### 41.9.4 Debugging Provider Communication
 
 **Enable verbose logging:**
 
@@ -1968,7 +2128,7 @@ adb logcat | grep -E "CredentialManagerServiceImpl|RemoteCredentialService"
 adb logcat | grep "Remote provider response timed"
 ```
 
-### 41.7.5 Credential Description API
+### 41.9.5 Credential Description API
 
 **Check if the description API is enabled:**
 
@@ -1982,7 +2142,7 @@ adb shell device_config get credential enable_credential_description_api
 adb shell device_config put credential enable_credential_description_api true
 ```
 
-### 41.7.6 Testing Passkey Flows
+### 41.9.6 Testing Passkey Flows
 
 To test passkey creation and authentication:
 
@@ -2008,7 +2168,7 @@ val createRequest = CreateCredentialRequest(
 credentialManager.createCredential(context, createRequest, ...)
 ```
 
-### 41.7.7 DeviceConfig Flags
+### 41.9.7 DeviceConfig Flags
 
 The Credential Manager respects several `DeviceConfig` flags:
 
@@ -2025,7 +2185,7 @@ adb shell device_config get credential enable_credential_manager
 adb shell device_config put credential enable_credential_manager false
 ```
 
-### 41.7.8 Sequence of Key Log Messages
+### 41.9.8 Sequence of Key Log Messages
 
 When tracing a complete get-credential flow, look for these log messages in order:
 

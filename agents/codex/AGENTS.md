@@ -1,4 +1,4 @@
-# AOSP Internals book content (65 chapters + 3 appendices) packaged as 16 Part-skills.
+# AOSP Internals book content (69 chapters + 4 appendices) packaged as 17 Part-skills.
 
 > AOSP Internals plugin, packaged version 2026.05.25.
 > Source: https://github.com/aospbooks/aosp-internal-book
@@ -104,7 +104,9 @@ Keystore/Keymint, Trusty TEE, gatekeeper/weaver, Android Verified Boot,
 dm-verity, hardware-backed attestation, Credential Manager (CredentialManagerService,
 credential providers, passkeys/FIDO2, password and autofill integration,
 digital credentials), or DRM (MediaDrm framework, Widevine L1/L2/L3,
-OEMCrypto, license acquisition, secure decoder/display path). Chapters 40–42.
+OEMCrypto, license acquisition, secure decoder/display path), or the LFI
+in-process sandbox (Lightweight Fault Isolation for untrusted code such as
+software codecs). Chapters 40–42, 68.
 
 ### Part X — UI Framework (`parts/ui-framework.md`)
 
@@ -129,8 +131,10 @@ SettingsLib, search index, slice surface). Chapters 47–49.
 AOSP Part XII — AI & Devices. Use when reasoning about on-device ML in
 AOSP, NNAPI, the AppFunctions framework for assistant integration, the
 Computer Control flow, CompanionDeviceManager, or virtual devices
-(virtual displays/inputs/cameras for cross-device experiences).
-Chapters 50–51.
+(virtual displays/inputs/cameras for cross-device experiences), or the
+NpuManager module for on-device neural accelerators (model-load admission
+control, the NDK ANpuBuffer surface, the android.hardware.npu HAL).
+Chapters 50–51, 67.
 
 ### Part XIII — Infrastructure (`parts/infrastructure.md`)
 
@@ -161,12 +165,22 @@ ROM end-to-end: picking a target device, syncing source, applying vendor
 blobs, branding, building, flashing the resulting images, and shipping
 OTA updates on your own channel. Chapter 63 (Custom ROM Guide).
 
+### Part XVI — Software Defined Vehicle (`parts/sdv.md`)
+
+AOSP Part XVI — Software Defined Vehicle. Use when reasoning about the
+Android 17 SDV platform: the headless Core VM, VSIDL-generated-Rust
+service bundles, orchestration / lifecycle / health monitoring, the
+service-bundles registry, update manager, vehicle power-state manager,
+display safety, and the SDV gateway that bridges Android Automotive (AAOS)
+and cross-ECU traffic over SOME/IP. Chapters 65–66.
+
 ### Part App. — Appendices (`parts/appendices.md`)
 
 AOSP Internals — Appendices. Use when looking up a key file path
 (per-chapter table of the most important AOSP source files: build, init,
 kernel, HAL, framework services, system apps, infrastructure) or the
 meaning of an AOSP-specific acronym/term (Treble, VINTF, GKI, APEX, AIDL,
-HIDL, etc.). Reference material — load when you need a concrete path or
-a definition rather than narrative explanation.
+HIDL, etc.), why Kotlin is absent from the public API, or what changed from
+Android 16 to Android 17. Reference material — load when you need a concrete
+path, a definition, or a changelog rather than narrative explanation.
 

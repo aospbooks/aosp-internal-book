@@ -396,11 +396,12 @@ The Android recovery system provides a minimal environment for applying system
 updates (OTAs) and performing factory resets. The recovery code lives in
 `bootable/recovery/`.
 
-Recovery operates through boot modes -- as we can see in
-`system/core/init/first_stage_init.cpp` (lines 66-70):
+Recovery operates through boot modes. The `BootMode` enum is declared in
+`system/core/init/util.h` (lines 43-47), shared between first-stage and second-stage
+init:
 
 ```cpp
-// system/core/init/first_stage_init.cpp, lines 66-70
+// system/core/init/util.h, lines 43-47
 enum class BootMode {
     NORMAL_MODE,
     RECOVERY_MODE,
@@ -409,20 +410,20 @@ enum class BootMode {
 ```
 
 When in recovery mode, first-stage init takes a different path -- skipping the normal
-first-stage mount procedure. From line 523-524:
+first-stage mount procedure. From `first_stage_init.cpp` line 535-536:
 
 ```cpp
-// system/core/init/first_stage_init.cpp, lines 523-524
+// system/core/init/first_stage_init.cpp, lines 535-536
 if (IsRecoveryMode()) {
     LOG(INFO) << "First stage mount skipped (recovery mode)";
 ```
 
 Modern A/B devices boot the recovery ramdisk from the regular boot partition rather
-than a separate recovery partition. The `ForceNormalBoot()` function (lines 117-119)
+than a separate recovery partition. The `ForceNormalBoot()` function (line 116)
 determines whether to redirect from recovery into normal boot:
 
 ```cpp
-// system/core/init/first_stage_init.cpp, lines 117-119
+// system/core/init/first_stage_init.cpp, lines 116-119
 bool ForceNormalBoot(const std::string& cmdline, const std::string& bootconfig) {
     return bootconfig.find("androidboot.force_normal_boot = \"1\"") != std::string::npos ||
            cmdline.find("androidboot.force_normal_boot=1") != std::string::npos;
@@ -506,7 +507,7 @@ depending on how it is invoked:
 
 Note line 60: the process priority is immediately boosted to -20 (highest priority)
 to ensure init gets as much CPU time as possible during boot. This priority is
-restored to 0 (normal) later, at line 1245 of `init.cpp`, just before entering the
+restored to 0 (normal) later, at line 1289 of `init.cpp`, just before entering the
 main event loop.
 
 The first-stage init has a separate, minimal entry point at
@@ -526,21 +527,17 @@ partition.
 ### 4.3.2 First-Stage Init: Building the Foundation
 
 First-stage init's implementation is in `system/core/init/first_stage_init.cpp`. The
-`FirstStageMain()` function (starting at line 333) is one of the most critical
+`FirstStageMain()` function (starting at line 338) is one of the most critical
 pieces of code in all of Android -- if it fails, the device will not boot.
 
 #### Phase 1: Emergency Infrastructure
 
-The very first thing init does is set up crash handlers, then build the minimal
-filesystem infrastructure needed to communicate with the outside world:
+The very first thing init does is record a boot-clock start time, then build the
+minimal filesystem infrastructure needed to communicate with the outside world:
 
 ```cpp
-// system/core/init/first_stage_init.cpp, lines 333-349
+// system/core/init/first_stage_init.cpp, lines 338-352
 int FirstStageMain(int argc, char** argv) {
-    if (REBOOT_BOOTLOADER_ON_PANIC) {
-        InstallRebootSignalHandlers();
-    }
-
     boot_clock::time_point start_time = boot_clock::now();
 
     std::vector<std::pair<std::string, int>> errors;
@@ -560,13 +557,16 @@ int FirstStageMain(int argc, char** argv) {
 The `CHECKCALL` macro is notable: rather than aborting on the first failure, it
 collects all errors and reports them later. This is because at this point, logging
 is not yet initialized (we do not even have `/dev/kmsg` yet), so we cannot report
-errors until the basic filesystem mounts complete.
+errors until the basic filesystem mounts complete. (Note that on Android 17 the
+reboot-on-panic signal handlers are no longer installed at the very top of
+`FirstStageMain()`; they are installed later, only once devices are created and the
+device is not already attempting to boot a new slot. See Phase 3.)
 
 The critical filesystem setup continues with device nodes and pseudo-filesystems
-(lines 350-404):
+(lines 353-405):
 
 ```cpp
-// system/core/init/first_stage_init.cpp, lines 351-381
+// system/core/init/first_stage_init.cpp, lines 353-382
 CHECKCALL(mkdir("/dev/pts", 0755));
 CHECKCALL(mkdir("/dev/socket", 0755));
 CHECKCALL(mkdir("/dev/dm-user", 0755));
@@ -597,7 +597,7 @@ Note the security-conscious choices here:
 Only after these mounts complete can init actually log messages:
 
 ```cpp
-// system/core/init/first_stage_init.cpp, lines 412-424
+// system/core/init/first_stage_init.cpp, lines 413-425
 SetStdioToDevNull(argv);
 // Now that tmpfs is mounted on /dev and we have /dev/kmsg, we can actually
 // talk to the outside world...
@@ -621,12 +621,12 @@ modules before it can mount partitions (because the storage controller driver mi
 itself be a module):
 
 ```cpp
-// system/core/init/first_stage_init.cpp, lines 441-458
+// system/core/init/first_stage_init.cpp, lines 453-470
 boot_clock::time_point module_start_time = boot_clock::now();
 int module_count = 0;
 BootMode boot_mode = GetBootMode(cmdline, bootconfig);
-if (!LoadKernelModules(boot_mode, want_console,
-                       want_parallel, module_count)) {
+if (!LoadKernelModules(boot_mode, want_console, want_parallel_mode, want_parallel_test,
+                       module_count)) {
     if (want_console != FirstStageConsoleParam::DISABLED) {
         LOG(ERROR) << "Failed to load kernel modules, starting console";
     } else {
@@ -643,21 +643,34 @@ if (module_count > 0) {
 }
 ```
 
-The `LoadKernelModules()` function (lines 215-290) searches for module directories
-under `/lib/modules/`, matching the running kernel version. It supports parallel
-module loading to speed up boot:
+On Android 17, parallel module loading is no longer a simple on/off boolean. The
+`want_parallel_mode` is selected from the bootconfig before the call above (lines
+439-451): `androidboot.load_modules_parallel` can be `"true"` (NORMAL),
+`"performance"` (PERFORMANCE), or `"conservative"` (CONSERVATIVE), each tuning how
+aggressively `libmodprobe` parallelizes the dependency graph, with NONE as the
+default. A separate `androidboot.load_modules_parallel_test=true` enables a test
+mode. The `LoadKernelModules()` function (lines 218-296) searches for module
+directories under `/lib/modules/`, matching the running kernel version, and applies
+the selected parallel mode:
 
 ```cpp
-// system/core/init/first_stage_init.cpp, lines 282-284
-bool retval = (want_parallel) ? m.LoadModulesParallel(std::thread::hardware_concurrency())
-                              : m.LoadListedModules(!want_console);
+// system/core/init/first_stage_init.cpp, lines 287-290
+bool retval = (want_parallel_mode != Modprobe::LoadParallelMode::NONE)
+                      ? m.LoadModulesParallel(std::thread::hardware_concurrency(),
+                                              want_parallel_mode, want_parallel_test)
+                      : m.LoadListedModules(!want_console);
 ```
+
+The module directory search is also page-size aware on Android 17: directories with a
+`_16k` or `_64k` suffix are skipped unless the suffix matches the running kernel's
+page size, so a single `/lib/modules` tree can ship 4K, 16K, and 64K module sets side
+by side (`GetPageSizeSuffix()`, lines 237-263).
 
 The module load list varies by boot mode. Charger mode loads fewer modules since the
 device only needs to display a charging animation:
 
 ```cpp
-// system/core/init/first_stage_init.cpp, lines 187-212
+// system/core/init/first_stage_init.cpp, lines 190-212
 std::string GetModuleLoadList(BootMode boot_mode, const std::string& dir_path) {
     std::string module_load_file;
     switch (boot_mode) {
@@ -678,10 +691,13 @@ std::string GetModuleLoadList(BootMode boot_mode, const std::string& dir_path) {
 #### Phase 3: Mounting Partitions
 
 With kernel modules loaded (including storage drivers), first-stage init can now
-mount the essential partitions:
+mount the essential partitions. On Android 17 a hibernation-resume hook runs first:
+`MaybeResumeFromHibernation()` (line 472) checks for `androidboot.hibernation_resume_device`
+in the bootconfig and, if present, writes it to `/sys/power/resume` so the kernel can
+restore a hibernation image instead of cold-booting. Then the first-stage mount runs:
 
 ```cpp
-// system/core/init/first_stage_init.cpp, lines 526-540
+// system/core/init/first_stage_init.cpp, lines 538-553
 if (!fsm) {
     fsm = CreateFirstStageMount(cmdline);
 }
@@ -691,6 +707,8 @@ if (!fsm) {
 
 if (!created_devices && !fsm->DoCreateDevices()) {
     LOG(FATAL) << "Failed to create devices required for first stage mount";
+} else if (REBOOT_BOOTLOADER_ON_PANIC && !AttemptingToBootNewSlot()) {
+    InstallRebootSignalHandlers();
 }
 
 if (!fsm->DoFirstStageMount()) {
@@ -698,10 +716,20 @@ if (!fsm->DoFirstStageMount()) {
 }
 ```
 
-This is where dm-verity is configured. The `FirstStageMount` class (in
-`system/core/init/first_stage_mount.cpp`) reads the fstab, creates device-mapper
-nodes for verity-protected partitions, and mounts `/system`, `/vendor`, and other
-required partitions.
+Note where the reboot-on-panic handlers are installed on Android 17: only after the
+required block devices exist, and only when the device is *not* already attempting to
+boot a new A/B slot (`AttemptingToBootNewSlot()`). Installing them earlier would risk
+rebooting back into a known-bad slot during a failed update.
+
+This is where dm-verity is configured. Android 17 splits the first-stage mount across
+three files. The `FirstStageMount` base class in `system/core/init/first_stage_mount.cpp`
+holds the device-independent logic (reading the fstab, creating device-mapper nodes,
+mounting partitions), while the Android-specific behavior -- logical/super partitions,
+DSU, snapuserd, overlays, and verity -- lives in the `FirstStageMountAndroid` subclass
+in `system/core/init/first_stage_mount_android.cpp`. The factory
+`FirstStageMount::Create()` (in `first_stage_mount_android.cpp`, line 48) builds the
+right subclass; Microdroid uses a separate `first_stage_mount_microdroid.cpp`. This
+refactor isolates Android-only mount code from the lightweight Microdroid VM path.
 
 #### Phase 4: Handoff to SELinux Setup
 
@@ -709,13 +737,14 @@ After partitions are mounted, first-stage init prepares for the SELinux transiti
 and `exec()`s itself as the "selinux_setup" phase:
 
 ```cpp
-// system/core/init/first_stage_init.cpp, lines 557-575
+// system/core/init/first_stage_init.cpp, lines 571-589
 const char* path = "/system/bin/init";
 const char* args[] = {path, "selinux_setup", nullptr};
 auto fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
 dup2(fd, STDOUT_FILENO);
 dup2(fd, STDERR_FILENO);
 close(fd);
+// (HWASan builds also re-export HWASAN_OPTIONS here.)
 execv(path, const_cast<char**>(args));
 
 // execv() only returns if an error happened, in which case we
@@ -726,10 +755,12 @@ PLOG(FATAL) << "execv(\"" << path << "\") failed";
 Note the critical detail: the `execv()` call replaces the first-stage init binary
 (from the ramdisk) with the full init binary from `/system/bin/init`. This is now
 possible because `/system` has been mounted. Before the exec, the ramdisk
-filesystem is freed to reclaim memory (line 549):
+filesystem is freed to reclaim memory (line 563), and the first-stage start time is
+exported to the environment (via `kEnvFirstStageStartedAt`) so the second stage can
+record stage boot times for bootstat:
 
 ```cpp
-// system/core/init/first_stage_init.cpp, lines 548-549
+// system/core/init/first_stage_init.cpp, lines 562-564
 if (old_root_dir && old_root_info.st_dev != new_root_info.st_dev) {
     FreeRamdisk(old_root_dir.get(), old_root_info.st_dev);
 }
@@ -840,15 +871,15 @@ flowchart TD
 ### 4.3.5 Second-Stage Init: The Main Event
 
 Second-stage init is where the real orchestration begins. The `SecondStageMain()`
-function in `system/core/init/init.cpp` (starting at line 1048) is the heart of
+function in `system/core/init/init.cpp` (starting at line 1066) is the heart of
 Android's userspace startup.
 
 #### Initial Setup
 
 ```cpp
-// system/core/init/init.cpp, lines 1048-1063
+// system/core/init/init.cpp, lines 1066-1069
 int SecondStageMain(int argc, char** argv) {
-    if (REBOOT_BOOTLOADER_ON_PANIC) {
+    if (REBOOT_BOOTLOADER_ON_PANIC && !AttemptingToBootNewSlot()) {
         InstallRebootSignalHandlers();
     }
 
@@ -865,24 +896,24 @@ int SecondStageMain(int argc, char** argv) {
 
 The second-stage init then performs a rapid series of setup steps:
 
-1. **Property initialization** (line 1108): `PropertyInit()` sets up the property
+1. **Property initialization** (line 1126): `PropertyInit()` sets up the property
    system, which is Android's global key-value configuration store
 
-2. **SELinux context restoration** (lines 1122-1123): Restores security labels on
+2. **SELinux context restoration** (lines 1140-1141): Restores security labels on
    `/dev` nodes created during first-stage
 
-3. **Epoll event loop setup** (lines 1125-1136): Creates the event loop that will
+3. **Epoll event loop setup** (lines 1143-1154): Creates the event loop that will
    drive init's main loop, registers signal handlers for SIGCHLD (child death) and
    SIGTERM
 
-4. **Property service startup** (line 1137): `StartPropertyService()` launches the
+4. **Property service startup** (line 1155): `StartPropertyService()` launches the
    property service thread that handles property set requests from other processes
 
-5. **Boot scripts loading** (line 1179): `LoadBootScripts()` parses all the init.rc
+5. **Boot scripts loading** (line 1208): `LoadBootScripts()` parses all the init.rc
    files
 
 ```cpp
-// system/core/init/init.cpp, lines 1108-1179
+// system/core/init/init.cpp, lines 1126-1208
 PropertyInit();
 
 // Umount second stage resources after property service has read the .prop files.
@@ -914,7 +945,7 @@ LoadBootScripts(am, sm);
 The `LoadBootScripts()` function is where init.rc files are parsed:
 
 ```cpp
-// system/core/init/init.cpp, lines 339-363
+// system/core/init/init.cpp, lines 347-371
 static void LoadBootScripts(ActionManager& action_manager, ServiceList& service_list) {
     Parser parser = CreateParser(action_manager, service_list);
 
@@ -949,10 +980,10 @@ Init.rc files are loaded from five locations in a specific order:
 5. `/odm/etc/init/` -- ODM (Original Design Manufacturer) services
 6. `/product/etc/init/` -- product-specific services
 
-The parser recognizes three section types (from `CreateParser()`, lines 275-284):
+The parser recognizes three section types (from `CreateParser()`, lines 283-292):
 
 ```cpp
-// system/core/init/init.cpp, lines 275-284
+// system/core/init/init.cpp, lines 283-292
 Parser CreateParser(ActionManager& action_manager, ServiceList& service_list) {
     Parser parser;
 
@@ -972,7 +1003,7 @@ After all scripts are loaded, init queues the trigger sequence that drives the
 entire boot:
 
 ```cpp
-// system/core/init/init.cpp, lines 1205-1243
+// system/core/init/init.cpp, lines 1238-1282
 am.QueueBuiltinAction(SetupCgroupsAction, "SetupCgroups");
 am.QueueBuiltinAction(TestPerfEventSelinuxAction, "TestPerfEventSelinux");
 am.QueueEventTrigger("early-init");
@@ -1009,7 +1040,7 @@ is the backbone of the init.rc trigger chain.
 Init then enters its infinite event loop:
 
 ```cpp
-// system/core/init/init.cpp, lines 1244-1296
+// system/core/init/init.cpp, lines 1289-1331
 // Restore prio before main loop
 setpriority(PRIO_PROCESS, 0, 0);
 while (true) {
@@ -1203,7 +1234,7 @@ The `late-init` trigger is the main boot orchestrator, chaining together the
 filesystem mount and service start sequence:
 
 ```
-# system/core/rootdir/init.rc, lines 508-537
+# system/core/rootdir/init.rc, lines 518-546
 on late-init
     trigger early-fs
 
@@ -1225,7 +1256,6 @@ on late-init
 
     # Should be before netd, but after apex, properties and logging is available.
     trigger load-bpf-programs
-    trigger bpf-progs-loaded
 
     # Now we can start zygote.
     trigger zygote-start
@@ -1233,6 +1263,11 @@ on late-init
     # Remove a file to wake up anything waiting for firmware.
     trigger firmware_mounts_complete
 ```
+
+On Android 17 there is a single `trigger load-bpf-programs` here. Earlier releases
+also queued a separate `bpf-progs-loaded` trigger (and a `wait_for_prop
+bpf.progs_loaded 1`); that extra trigger was removed, so do not expect it in the
+current `init.rc`.
 
 The trigger chain diagram:
 
@@ -1260,7 +1295,7 @@ The `post-fs-data` trigger is particularly important because it prepares the `/d
 partition:
 
 ```
-# system/core/rootdir/init.rc, lines 654-684
+# system/core/rootdir/init.rc, lines 663-680
 on post-fs-data
 
     # Start checkpoint before we touch data
@@ -1284,7 +1319,7 @@ on post-fs-data
 The `zygote-start` trigger is where the critical Java runtime begins:
 
 ```
-# system/core/rootdir/init.rc, lines 1101-1105
+# system/core/rootdir/init.rc, lines 1091-1095
 on zygote-start
     wait_for_prop odsign.verification.done 1
     start statsd
@@ -2408,7 +2443,7 @@ efficient lookup. Each property area file is memory-mapped into every process th
 reads properties, making reads extremely fast (no IPC needed).
 
 The property storage is initialized in `PropertyInit()`, which is called from
-`SecondStageMain()` in `init.cpp` (line 1108). The property info area
+`SecondStageMain()` in `init.cpp` (line 1126). The property info area
 (`/dev/__properties__/property_info`) describes the trie structure and is parsed by
 `property_info_area` (defined in `property_service.cpp` line 116):
 
@@ -2678,10 +2713,10 @@ private static final String WIFI_SERVICE_CLASS =
 ### 4.8.3 Safe Mode Detection
 
 Before starting the bulk of other services, WindowManagerService checks for safe
-mode (line 1851):
+mode (line 1887):
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, lines 1849-1862
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 1887
 final boolean safeMode = wm.detectSafeMode();
 if (safeMode) {
     Settings.Global.putInt(context.getContentResolver(),
@@ -2699,7 +2734,7 @@ where possible. For example, the secondary Zygote preload and HIDL service
 initialization run in background threads:
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, lines 1750-1755
+// frameworks/base/services/java/com/android/server/SystemServer.java, lines 1781-1786
 SystemServerInitThreadPool.submit(() -> {
     TimingsTraceAndSlog traceLog = TimingsTraceAndSlog.newAsyncLog();
     traceLog.traceBegin(START_HIDL_SERVICES);
@@ -2709,17 +2744,17 @@ SystemServerInitThreadPool.submit(() -> {
 ```
 
 However, parallelization is constrained by the Watchdog: if a thread holds a lock
-for too long, the Watchdog will kill system_server. The Watchdog is started as the
-very first bootstrap service (line 1193) to ensure it can detect deadlocks from the
+for too long, the Watchdog will kill system_server. The Watchdog is started very
+early among the bootstrap services to ensure it can detect deadlocks from the
 earliest possible point.
 
 ### 4.8.5 The Final Handoff
 
 When all services are started and boot phases are complete, system_server enters its
-main Looper (line 1081):
+main Looper (line 1097):
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, lines 1080-1082
+// frameworks/base/services/java/com/android/server/SystemServer.java, lines 1096-1098
 // Loop forever.
 Looper.loop();
 throw new RuntimeException("Main thread loop unexpectedly exited");
@@ -2728,7 +2763,7 @@ throw new RuntimeException("Main thread loop unexpectedly exited");
 The `Looper.loop()` call never returns under normal operation. The main thread
 processes messages from various system services, including ActivityManagerService's
 handler messages, WindowManagerService display updates, and more. If the main loop
-exits, the RuntimeException at line 1082 causes system_server to crash, which
+exits, the RuntimeException causes system_server to crash, which
 triggers Zygote to restart, which triggers init to restart Zygote -- the entire Java
 framework reboots.
 
@@ -2751,10 +2786,10 @@ Init records timing information in system properties:
 | `ro.boottime.init.modules` | Duration of kernel module loading |
 | `ro.boottime.init.cold_boot_wait` | Time init waited for ueventd |
 
-These are set in `RecordStageBoottimes()` (init.cpp lines 885-912):
+These are set in `RecordStageBoottimes()` (init.cpp lines 904-931):
 
 ```cpp
-// system/core/init/init.cpp, lines 885-912
+// system/core/init/init.cpp, lines 904-931
 static void RecordStageBoottimes(const boot_clock::time_point& second_stage_start_time) {
     int64_t first_stage_start_time_ns = -1;
     if (auto first_stage_start_time_str = getenv(kEnvFirstStageStartedAt);
@@ -2779,13 +2814,30 @@ static void RecordStageBoottimes(const boot_clock::time_point& second_stage_star
 ### 4.9.2 Bootchart
 
 Android supports bootchart, a tool that records CPU, disk I/O, and process activity
-during boot. Bootchart is started via init.rc:
+during boot. On Android 17, bootchart starts in two places. To capture from the very
+beginning of second-stage init, the `on early-init` block starts it on a tmpfs
+directory:
 
 ```
-# system/core/rootdir/init.rc, line 670-671
+# system/core/rootdir/init.rc, lines 16-18
+# Allow bootchart to capture from the beginning of second-stage init.
+mkdir /dev/bootchart 0755 root root
+bootchart start
+```
+
+It is restarted later from `on post-fs-data`, once `/data` is mounted, so the trace
+can be persisted across the reboot:
+
+```
+# system/core/rootdir/init.rc, lines 679-680
 mkdir /data/bootchart 0755 shell shell encryption=Require
 bootchart start
 ```
+
+Android 17 also added early bootcharting that can be enabled directly from the kernel
+command line / bootconfig (`ro.boot.bootchart.enabled`), so the chart can begin even
+before the `bootchart start` command runs; `on early-init && property:ro.boot.bootchart.enabled=""`
+(init.rc line 113) removes the directory when the feature is off.
 
 To capture a bootchart:
 
@@ -2828,17 +2880,23 @@ adb pull /data/local/tmp/boot_trace
 ### 4.9.4 Boot Monitor
 
 For debuggable builds, init supports a boot timeout monitor that triggers a kernel
-panic if boot does not complete within a specified time. This is configured via the
-`ro.boot.boot_timeout` property and implemented in `StartSecondStageBootMonitor()`
-(init.cpp lines 1022-1046):
+panic if boot does not complete within a specified time. Android 17 refactored this
+into a thread spawned only when `ro.boot.boot_timeout` is set on a `ro.debuggable`
+build (init.cpp lines 1158-1163 gate it; `StartSecondStageBootMonitor()` is at line
+1061). The monitor body is `SecondStageBootMonitor()` (lines 1035-1059):
 
 ```cpp
-// system/core/init/init.cpp, lines 1022-1046
+// system/core/init/init.cpp, lines 1035-1059
 static void SecondStageBootMonitor(int timeout_sec) {
     auto cur_time = boot_clock::now().time_since_epoch();
     int cur_sec = std::chrono::duration_cast<std::chrono::seconds>(cur_time).count();
     int extra_sec = timeout_sec <= cur_sec ? 0 : timeout_sec - cur_sec;
     auto boot_timeout = std::chrono::seconds(extra_sec);
+
+    // since boot_completed isn't updated in the recovery boot, let's skip the monitor
+    if (IsRecoveryMode()) {
+        return;
+    }
 
     LOG(INFO) << "Started BootMonitorThread, expiring in " << timeout_sec
               << " seconds from boot-up";
@@ -2853,15 +2911,19 @@ static void SecondStageBootMonitor(int timeout_sec) {
 }
 ```
 
-This safety net is invaluable during development: if a code change causes an infinite
-boot loop, the device will eventually panic and (on devices with
+Note the Android 17 addition of the `IsRecoveryMode()` early return: `sys.boot_completed`
+is never set during a recovery boot, so the monitor would always fire there; it is now
+skipped. This safety net is invaluable during development: if a code change causes an
+infinite boot loop, the device will eventually panic and (on devices with
 `REBOOT_BOOTLOADER_ON_PANIC` enabled) reboot into the bootloader, allowing the
 developer to flash a fixed image.
 
 ### 4.9.5 Common Boot Optimization Techniques
 
-1. **Parallel kernel module loading**: Set `androidboot.load_modules_parallel=true`
-   in bootconfig to enable parallel module loading during first-stage init
+1. **Parallel kernel module loading**: Set `androidboot.load_modules_parallel` in
+   bootconfig to enable parallel module loading during first-stage init. On Android 17
+   this accepts `true` (NORMAL), `performance`, or `conservative` to tune how
+   aggressively `libmodprobe` walks the dependency graph in parallel
 
 2. **Lazy Zygote preloading**: The secondary (32-bit) Zygote uses
    `--enable-lazy-preload` to defer class preloading until first use
@@ -2869,23 +2931,31 @@ developer to flash a fixed image.
 3. **SystemServerInitThreadPool**: system_server parallelizes service initialization
    using a thread pool for independent services
 
-4. **APEX preloading**: Pre-creating loop devices accelerates APEX mounting (see
-   `InitExtraDevices()` in init.cpp lines 869-883):
+4. **Mount-before-data APEX activation**: On Android 17, when the
+   `com.android.apex.flags.mount_before_data` build flag is set, apexd can activate
+   APEXes before `/data` is mounted. To avoid apexd stalling on the
+   `/dev/block/by-name/userdata` symlink, first-stage init pre-initializes the
+   `userdata` block device. The hook is `FirstStageMountAndroid::GetExtraBlockDevices()`
+   in `system/core/init/first_stage_mount_android.cpp` (lines 117-126):
 
     ```cpp
-    // system/core/init/init.cpp, lines 869-883
-    static void InitExtraDevices() {
+    // system/core/init/first_stage_mount_android.cpp, lines 117-126
+    void FirstStageMountAndroid::GetExtraBlockDevices(std::set<std::string>* devices) {
         if constexpr (com::android::apex::flags::mount_before_data()) {
-            constexpr int kMaxLoopDevices = 128;
-            std::thread([]() {
-                dm::LoopControl loop_control;
-                for (int i = 0; i < kMaxLoopDevices; i++) {
-                    (void)loop_control.Add(i);
-                }
-            }).detach();
+            // Even before /data is mounted, apexd needs to access the block device
+            // backing /data. Let's initialize "userdata" so that apexd can avoid
+            // waiting for the symlink (/dev/block/by-name/userdata).
+            if (data_on_userdata_) {
+                devices->insert("userdata");
+            }
         }
     }
     ```
+
+   (Earlier releases instead pre-created a pool of loop devices in init; that
+   apexd-specific loop pre-creation was reverted, and the mount-before-data path now
+   relies on the userdata-device hook above plus the bootstrap mount namespace in
+   `system/core/init/mount_namespace.cpp`.)
 
 5. **Bootchart analysis**: Use bootchart to identify the longest-running boot steps
    and optimize them
@@ -3198,10 +3268,10 @@ off.
 
 Init supports mount namespaces to provide different filesystem views to different
 processes. The `SetupMountNamespaces()` function (called from `SecondStageMain()` at
-line 1170) creates separate mount namespaces:
+line 1198) creates separate mount namespaces:
 
 ```cpp
-// system/core/init/init.cpp, line 1170
+// system/core/init/init.cpp, line 1198
 if (!SetupMountNamespaces()) {
     PLOG(FATAL) << "SetupMountNamespaces failed";
 }
@@ -3242,16 +3312,16 @@ granting those permissions to init itself.
 
 APEXes can include their own init.rc scripts. When an APEX is activated, init
 parses its scripts and integrates them into the action and service lists. The
-`CreateApexConfigParser()` function (init.cpp lines 312-337) creates a parser
+`CreateApexConfigParser()` function (init.cpp lines 320-345) creates a parser
 specifically for APEX scripts:
 
 ```cpp
-// system/core/init/init.cpp, lines 312-337
-Parser CreateApexConfigParser(ActionManager& action_manager,
-                               ServiceList& service_list) {
+// system/core/init/init.cpp, lines 320-345
+Parser CreateApexConfigParser(ActionManager& action_manager, ServiceList& service_list) {
     Parser parser;
     auto subcontext = GetSubcontext();
-    // ...
+    // ... read /apex/apex-info-list.xml and restrict each subcontext to the
+    // APEXes that belong to its partition (PartitionMatchesSubcontext) ...
     parser.AddSectionParser("service",
         std::make_unique<ServiceParser>(&service_list, subcontext));
     parser.AddSectionParser("on",
@@ -3261,16 +3331,18 @@ Parser CreateApexConfigParser(ActionManager& action_manager,
 ```
 
 APEX init scripts can define new services and actions, but they are restricted to
-operations that their SELinux policy allows.
+operations that their SELinux policy allows. On Android 17 the parser also reads
+`/apex/apex-info-list.xml` and, for each subcontext, narrows the set of APEXes whose
+scripts it will accept to those whose partition matches that subcontext.
 
 ### 4.13.4 Control Messages: start/stop/restart
 
 Control messages are the mechanism by which system services start and stop init-
 managed services at runtime. The control message map is defined in init.cpp
-(lines 516-531):
+(lines 528-542):
 
 ```cpp
-// system/core/init/init.cpp, lines 516-531
+// system/core/init/init.cpp, lines 528-542
 static const std::map<std::string, ControlMessageFunction, std::less<>>&
     GetControlMessageMap() {
     [[clang::no_destroy]]
@@ -3313,7 +3385,7 @@ the backbone of init's entire operation.
 The epoll instance is created in `SecondStageMain()`:
 
 ```cpp
-// system/core/init/init.cpp, lines 1125-1128
+// system/core/init/init.cpp, lines 1143-1146
 Epoll epoll;
 if (auto result = epoll.Open(); !result.ok()) {
     PLOG(FATAL) << result.error();
@@ -3336,7 +3408,7 @@ The epoll has a "first callback" mechanism that ensures child reaping always hap
 before any other event processing:
 
 ```cpp
-// system/core/init/init.cpp, line 1133
+// system/core/init/init.cpp, line 1151
 epoll.SetFirstCallback(ReapAnyOutstandingChildren);
 ```
 
@@ -3344,7 +3416,7 @@ This prevents a race condition where a service monitors another service's exit
 (through `init.svc.*` properties) and requests a restart before init has reaped
 the zombie process.
 
-The main loop's structure (lines 1246-1296) follows a classic event-driven pattern:
+The main loop's structure (lines 1289-1331) follows a classic event-driven pattern:
 
 1. Check for pending shutdown
 2. Execute one queued action (from init.rc triggers)
@@ -3353,12 +3425,12 @@ The main loop's structure (lines 1246-1296) follows a classic event-driven patte
 5. Wait on epoll (with timeout)
 6. Handle control messages
 
-The single-action-per-iteration design (line 1261, `am.ExecuteOneCommand()`) is
+The single-action-per-iteration design (line 1305, `am.ExecuteOneCommand()`) is
 deliberate: it prevents any single burst of actions from starving signal handling or
 property processing. If more actions are pending, the next action time is set to
 "now", which causes epoll to return immediately.
 
-When there is no pending work, init calls `mallopt(M_PURGE_ALL, 0)` (line 1286) to
+When there is no pending work, init calls `mallopt(M_PURGE_ALL, 0)` (line 1330) to
 release memory back to the kernel. This is a small but important optimization:
 during steady-state operation (after boot), init is mostly idle, and releasing its
 heap pages reduces memory pressure on the system.
@@ -3366,10 +3438,10 @@ heap pages reduces memory pressure on the system.
 ### 4.13.6 The GSI (Generic System Image) Check
 
 Init checks whether the device is running a GSI during second-stage startup
-(init.cpp lines 1186-1195):
+(init.cpp lines 1215-1224):
 
 ```cpp
-// system/core/init/init.cpp, lines 1186-1195
+// system/core/init/init.cpp, lines 1215-1224
 auto is_running = android::gsi::IsGsiRunning() ? "1" : "0";
 SetProperty(gsi::kGsiBootedProp, is_running);
 auto is_installed = android::gsi::IsGsiInstalled() ? "1" : "0";
@@ -3387,7 +3459,203 @@ running on a GSI, which is commonly used for VTS (Vendor Test Suite) testing.
 
 ---
 
-## 4.14 The Complete Boot Sequence in One Diagram
+## 4.14 Android 17 Boot and Init Changes
+
+Android 17 reworked several corners of the boot path. The changes cluster into four
+themes: a refactor that splits Android-specific first-stage mount logic from the
+Microdroid VM path, a new OTA snapshot backend (UBLK), a desktop/x86 firmware-crash
+collector that runs as an init service, and finer-grained boot instrumentation. This
+section walks through each.
+
+### 4.14.1 First-Stage Mount Refactor and Mount-Before-Data
+
+Earlier releases had a single `FirstStageMount` implementation that mixed
+Android-specific concerns (logical "super" partitions, DSU, the Virtual A/B snapuserd
+daemon, overlays, dm-verity) with the generic mount logic. Android 17 split this into
+a class hierarchy so that the lightweight Microdroid VM environment no longer has to
+carry the Android-only code.
+
+The base class `FirstStageMount` lives in `system/core/init/first_stage_mount.h` and
+`first_stage_mount.cpp`. It holds the device-independent steps -- reading the fstab,
+creating the required block devices, and mounting partitions -- and exposes virtual
+hooks that subclasses fill in:
+
+Heading: first-stage mount class hierarchy
+
+```mermaid
+classDiagram
+    class FirstStageMount {
+        +Create(cmdline) FirstStageMount
+        +DoCreateDevices() bool
+        +DoFirstStageMount() bool
+        #MountOverlays()
+        #UseDsuIfPresent()
+        #SaveRamdiskPathToSnapuserd()
+        #GetExtraBlockDevices(devices)
+    }
+    class FirstStageMountAndroid {
+        +DoCreateDevices() bool
+        #MountOverlays()
+        #UseDsuIfPresent()
+        #GetExtraBlockDevices(devices)
+    }
+    FirstStageMount <|-- FirstStageMountAndroid
+    note for FirstStageMount "Microdroid build links a different Create() that returns the plain base class"
+```
+
+The factory `FirstStageMount::Create()` has two build-mutually-exclusive definitions.
+The Android build links `system/core/init/first_stage_mount_android.cpp` (line 48):
+it reads the default fstab, decides whether `/data` is backed by the `userdata`
+partition, filters the fstab to first-stage entries, and returns a
+`FirstStageMountAndroid`. The Microdroid build instead links
+`system/core/init/first_stage_mount_microdroid.cpp`, whose `Create()` returns a plain
+base `FirstStageMount` over a microdroid-specific fstab. The net effect is that
+`first_stage_init.cpp` calls the same `CreateFirstStageMount()` ->
+`DoCreateDevices()` -> `DoFirstStageMount()` sequence as before, but the heavy
+Android-only logic is now isolated in the subclass rather than compiled into the
+Microdroid VM image.
+
+This refactor enables the **mount-before-data** optimization. When the
+`com.android.apex.flags.mount_before_data` build flag is set, apexd can activate
+APEXes before `/data` is mounted, shaving time off the critical boot path. apexd
+needs the block device that backs `/data`, so `FirstStageMountAndroid` pre-initializes
+the `userdata` device through the `GetExtraBlockDevices()` hook (shown in section
+4.9.5) instead of making apexd wait for the `/dev/block/by-name/userdata` symlink to
+appear. The bootstrap and default mount namespaces that this implies are set up in
+`system/core/init/mount_namespace.cpp` (the `mount_before_data` branches at lines 92
+and 208). Note that mount-before-data is deliberately disabled on DSU/GSI, where the
+partition layout differs from a normal boot.
+
+First-stage init also gained a hibernation-resume hook. `MaybeResumeFromHibernation()`
+in `system/core/init/first_stage_init.cpp` (line 472, called from `FirstStageMain()`)
+reads `androidboot.hibernation_resume_device` from the bootconfig and, when present,
+writes it to `/sys/power/resume`, allowing the kernel to restore a hibernation image
+rather than performing a full cold boot.
+
+### 4.14.2 UBLK: The New OTA Snapshot Backend
+
+Virtual A/B OTAs apply the update to the inactive partitions as copy-on-write (COW)
+snapshots, served at runtime by a userspace daemon. Historically that daemon attached
+to `dm-user` block devices. Android 17 introduces **UBLK** (userspace block device) as
+an alternative backend: the COW snapshots can be served through the kernel's
+`ublk` driver instead of `dm-user`.
+
+The choice is plumbed through the update payload. `system/update_engine/update_metadata.proto`
+adds a `disable_ublk` field (field 8 of the dynamic-partition metadata):
+
+```proto
+// system/update_engine/update_metadata.proto, lines 385-387
+// Whether to disable UBLK for OTA. This will force dm-user as OTA backend
+// choice even if device was configured for UBLK based snapshots.
+optional bool disable_ublk = 8;
+```
+
+So a device may be *configured* for UBLK-based snapshots, and the OTA payload can
+still force the dm-user path with `disable_ublk`. After a successful update,
+update_engine reports whether UBLK was actually used; the cleanup action reads
+`report.ublk_used()` and folds it into the OTA metrics
+(`system/update_engine/aosp/cleanup_previous_update_action.cc`, around line 500). On
+the init side, the snapuserd transition that runs during SELinux setup (described in
+section 4.3.3) is the piece that re-attaches the snapshot daemon after policy load;
+the UBLK work changes which kernel mechanism backs those snapshot devices, not the
+five-step transition itself.
+
+### 4.14.3 ACPI BERT Collector: Firmware Crash Reporting on Desktop/x86
+
+Android's desktop and x86 form factors run on platforms with a UEFI/ACPI firmware.
+When that firmware detects a fatal error during boot, it records a **BERT** (Boot
+Error Record Table) per the ACPI APEI specification. Android 17 adds a small init
+service, `bert_collector`, that picks up this table on the next boot and files it into
+DropBox so it survives as a crash report. The code lives in the new repository
+`system/acpi/bert_collector` (adapted from the ChromiumOS crash reporter).
+
+The collector is a one-shot daemon started late in boot, declared in
+`system/acpi/bert_collector/bert_collector.rc`:
+
+```
+# system/acpi/bert_collector/bert_collector.rc
+service bert_collector /system/bin/bert_collector
+    user system
+    group system
+    class late_start
+    oneshot
+```
+
+Because the BERT table is only created when the firmware hit a critical error, the
+service does nothing on a healthy boot: it checks for the table, finds nothing, and
+exits. The flow is:
+
+Heading: BERT collector data flow
+
+```mermaid
+flowchart TD
+    FW["UEFI/ACPI firmware<br/>detects fatal boot error"]
+    SYS["Kernel exposes table at<br/>/sys/firmware/acpi/tables/BERT<br/>+ data/BERT"]
+    SVC["init starts bert_collector<br/>(class late_start, oneshot)"]
+    CHK{"BERT table present?"}
+    EXIT["Exit (healthy boot)"]
+    READ["Read + validate table<br/>(signature BERT, length checks)"]
+    HDR["Build report header<br/>(fingerprint, device, kernel)"]
+    ENC["Base64-encode table + data"]
+    DROP["DropBoxManager.addText<br/>tag DesktopFirmwareCrash"]
+
+    FW --> SYS --> SVC --> CHK
+    CHK -- no --> EXIT
+    CHK -- yes --> READ --> HDR --> ENC --> DROP
+
+    style FW fill:#6c5ce7,color:#fff
+    style DROP fill:#d63031,color:#fff
+    style EXIT fill:#00b894,color:#fff
+```
+
+The implementation in `system/acpi/bert_collector/bert_collector.cpp` reads two files
+the kernel exports under `/sys/firmware/acpi/tables`: the fixed-size `BERT` table and
+the variable-length `data/BERT` region (paths defined in
+`system/acpi/bert_collector/bert_collector.h`). It validates the table
+(`BertCheckTable()` confirms the `BERT` signature, the expected struct length, and a
+sane region length), assembles a text report whose header carries
+`ro.build.fingerprint`, `ro.product.device`, `ro.revision`, and `/proc/version`, then
+Base64-encodes the raw table and data into the report body. Finally `DumpReport()`
+hands the report to `DropBoxManager` under the tag `DesktopFirmwareCrash`:
+
+```cpp
+// system/acpi/bert_collector/bert_collector.cpp, lines 166-178 (DumpReport)
+bool DumpReport(const std::string &report, const android::String16 tag) {
+  android::sp<android::os::DropBoxManager> dropbox(
+      new android::os::DropBoxManager());
+  android::binder::Status status = dropbox->addText(tag, report);
+  // ... log and return status.isOk()
+}
+```
+
+Filing the record into DropBox means the firmware crash is collected through the same
+pipeline as tombstones and ANRs, so it can be surfaced by bug reports and telemetry
+rather than being lost on the next boot. The collector is gated to platforms that have
+ACPI firmware; it is a no-op on phones and other devices that do not expose
+`/sys/firmware/acpi/tables/BERT`.
+
+### 4.14.4 Boot Instrumentation: Event Timestamps and Feature Flags
+
+Android 17 introduced init feature flags in `system/core/init/init.aconfig` under the
+package `com.android.init.flags`. Two flags are relevant to boot:
+
+| Flag | Effect |
+|---|---|
+| `enable_init_event_timestamp` | Records the timestamp of each `on <event>` trigger so boot-time analysis tools can attribute time to specific init phases |
+| `ignore_bionic_signal_profiler_before_exec` | Ignores the bionic signal profiler in init's children before they `exec()`, avoiding spurious profiling signals during the fork/exec window |
+
+The `enable_init_event_timestamp` flag pairs with the bootchart changes from section
+4.9.2: between early bootcharting (which can start from the kernel command line via
+`ro.boot.bootchart.enabled`) and per-event timestamps, Android 17 gives a much finer
+breakdown of where second-stage init spends its time, without needing a userdebug
+build to enable a separate trace.
+
+These flags are read-only at build time (`is_fixed_read_only: true`), so they are
+fixed for a given system image rather than toggled at runtime.
+
+---
+
+## 4.15 The Complete Boot Sequence in One Diagram
 
 The following diagram summarizes the entire boot sequence covered in this chapter,
 showing the flow between all major components:
@@ -3497,12 +3765,12 @@ flowchart TD
 
 ---
 
-## 4.15 Try It: Add a Custom Init Service
+## 4.16 Try It: Add a Custom Init Service
 
 Now that we understand the complete boot sequence, let us walk through a practical
 exercise: adding a custom native daemon that starts during boot.
 
-### 4.15.1 Step 1: Write the Native Daemon
+### 4.16.1 Step 1: Write the Native Daemon
 
 Create a simple daemon that logs a message to the kernel log every few seconds.
 
@@ -3532,7 +3800,7 @@ int main(int /* argc */, char** argv) {
 }
 ```
 
-### 4.15.2 Step 2: Create the Build File
+### 4.16.2 Step 2: Create the Build File
 
 Create `device/generic/car/mybootdaemon/Android.bp`:
 
@@ -3555,7 +3823,7 @@ The `init_rc` field tells the build system to install our init.rc file alongside
 binary. The build system will place it at `/system/etc/init/mybootdaemon.rc`, which
 is one of the directories that init parses during `LoadBootScripts()`.
 
-### 4.15.3 Step 3: Create the init.rc File
+### 4.16.3 Step 3: Create the init.rc File
 
 Create `device/generic/car/mybootdaemon/mybootdaemon.rc`:
 
@@ -3587,7 +3855,7 @@ The `on property:sys.boot_completed=1` trigger starts our daemon after the syste
 has fully booted. This is the safest time to start custom daemons because all
 system services are available.
 
-### 4.15.4 Step 4: Add the SELinux Policy
+### 4.16.4 Step 4: Add the SELinux Policy
 
 For a real device, you must create SELinux policy for your daemon. Without it,
 SELinux will deny all operations and your daemon will fail to function.
@@ -3615,7 +3883,7 @@ And add the file context in `device/generic/car/sepolicy/private/file_contexts`:
 /system/bin/mybootdaemon      u:object_r:mybootdaemon_exec:s0
 ```
 
-### 4.15.5 Step 5: Build and Test
+### 4.16.5 Step 5: Build and Test
 
 Add the module to your device makefile (e.g., `device/generic/car/device.mk`):
 
@@ -3637,7 +3905,7 @@ For a full system image build:
 m
 ```
 
-### 4.15.6 Step 6: Verify
+### 4.16.6 Step 6: Verify
 
 After flashing the image or booting the emulator:
 
@@ -3666,7 +3934,7 @@ adb shell getprop init.svc.mybootdaemon
 # Expected: "running"
 ```
 
-### 4.15.7 Common Pitfalls
+### 4.16.7 Common Pitfalls
 
 **Problem: Service fails to start with "permission denied"**
 
@@ -3715,7 +3983,7 @@ adb shell ps -eZ | grep mybootdaemon
 # Expected: u:r:mybootdaemon:s0
 ```
 
-### 4.15.8 Understanding Service States
+### 4.16.8 Understanding Service States
 
 Init tracks each service through a set of state flags. Understanding these states
 is critical for debugging service startup issues:
@@ -3797,7 +4065,7 @@ This function iterates over all services, checking for two conditions:
 The function returns the next time it needs to run, which is used to set the epoll
 timeout in the main loop.
 
-### 4.15.9 Advanced: Making a Persistent Daemon
+### 4.16.9 Advanced: Making a Persistent Daemon
 
 To create a daemon that is automatically restarted by init if it crashes, modify
 the rc file:

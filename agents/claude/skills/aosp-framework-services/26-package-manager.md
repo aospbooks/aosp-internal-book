@@ -1402,11 +1402,13 @@ There are several entry points for package installation:
 4. **APEX** -- Module updates that may contain APKs
 5. **Intent-based** -- `ACTION_INSTALL_PACKAGE` intent (deprecated)
 
-All modern installation flows go through `PackageInstallerService`:
+All modern installation flows go through `PackageInstallerService`
+(`frameworks/base/services/core/java/com/android/server/pm/PackageInstallerService.java`),
+which is the binder endpoint for the `PackageInstaller` API:
 
 ```java
-public class PackageInstallerService implements PackageSender,
-        TestUtilityService {
+public class PackageInstallerService extends IPackageInstaller.Stub implements
+        PackageSessionProvider {
 ```
 
 ### 26.4.2 PackageInstallerSession
@@ -3774,12 +3776,310 @@ adb shell device_config get app_hibernation app_hibernation_enabled
 
 ---
 
-## 26.10 Try It -- Practical Exercises
+## 26.10 The Web App Installer (Android 17)
+
+Android 17 adds a first-party path for turning a Progressive Web App (PWA) into a
+real, installed Android package. Until now, a browser that wanted to "Add to Home
+Screen" either created a lightweight WebAPK through Play services or dropped a
+shortcut that just relaunched the browser. Android 17 moves the capability into the
+platform: a new updatable APEX, `com.android.webapp`, fetches a site's web manifest,
+generates a signed APK on-device, and installs it through the same
+`PackageInstaller` pipeline described in Section 26.4. The whole module lives outside
+`frameworks/base` at `packages/modules/WebApp`, but its public surface is an
+`android.content.pm.webapp` API, so it is fundamentally a PackageManager client and a
+new sibling to the install path.
+
+The feature is gated by the `enable_web_app_service_v2` aconfig flag
+(`packages/modules/WebApp/flags/flags.aconfig`), which lives in the
+`lse_desktop_experience` namespace -- the same namespace used by the large-screen
+desktop windowing work -- because the primary consumer is a desktop-class browser
+installing standalone web apps. The APEX itself is compiled in only when the
+`RELEASE_WEBAPP_MODULE` build flag is set
+(`packages/modules/WebApp/apex/Android.bp`), and even on a build that ships the APEX,
+the runtime path is a no-op until the `Settings.Global` value `enable_webapp_minter`
+is set to `1`.
+
+### 26.10.1 Module Layout and the APEX Boundary
+
+The Web App module is a self-contained mainline module with four parts: a framework
+library that exposes the SDK API, an AIDL contract, a privileged system app that does
+the work, and the APEX that packages everything together.
+
+```mermaid
+graph TB
+    subgraph "Caller (e.g. a browser app)"
+        WAM["WebAppManager<br/>(android.content.pm.webapp)"]
+    end
+
+    subgraph "com.android.webapp APEX"
+        SVC["WebAppService<br/>(LifecycleService)"]
+        INST["WebAppInstaller"]
+        MINT["ApkMinter + ApkKeyStore"]
+        TMPL["webapp-template.zip<br/>+ bundled aapt2"]
+    end
+
+    subgraph "Platform"
+        PI["PackageInstaller<br/>(Section 26.4)"]
+        PMS["PackageManagerService"]
+    end
+
+    WAM -->|"bindService + AIDL"| SVC
+    SVC --> INST
+    INST --> MINT
+    MINT --> TMPL
+    INST -->|"createSession / commit"| PI
+    PI --> PMS
+```
+
+The pieces map to concrete source as follows:
+
+- **Framework API** (`packages/modules/WebApp/framework/java/android/content/pm/webapp/`):
+  `WebAppManager`, `WebAppInstallRequest`, and `WebAppQueryRequest`. These are the
+  classes an app links against. They are exported as a `@SystemApi` available to
+  module libraries and gated with `@FlaggedApi(Flags.FLAG_ENABLE_WEB_APP_SERVICE_V2)`.
+- **AIDL contract** (`packages/modules/WebApp/framework/aidl/com/android/webapp/`):
+  `IWebAppService` plus the `IWebAppInstallCallback` and `IWebAppQueryCallback`
+  result callbacks. Every method is annotated `@PermissionManuallyEnforced` -- the
+  service checks eligibility itself rather than relying on a manifest permission.
+- **System service** (`packages/modules/WebApp/service/java/com/android/webapp/service/`):
+  `WebAppService` (the bound entry point) and `WebAppInstaller` (the install state
+  machine), written in Kotlin.
+- **APEX** (`packages/modules/WebApp/apex/`): bundles the `WebAppService` privileged
+  app, a copy of the `aapt2` binary, the APK template, and a bootclasspath fragment
+  for the `framework-webapp` library.
+
+### 26.10.2 Registering the System Service
+
+`WebAppManager` is not a binder service of its own. It is a thin context wrapper
+registered with the platform's `SystemServiceRegistry`. The registration is performed
+by `WebAppFrameworkInitializer.registerServiceWrappers()`
+(`packages/modules/WebApp/framework/java/android/content/pm/webapp/WebAppFrameworkInitializer.java`),
+which `frameworks/base` invokes from its static initializer
+(`frameworks/base/core/java/android/app/SystemServiceRegistry.java`):
+
+```java
+// In SystemServiceRegistry's static block:
+WebAppFrameworkInitializer.registerServiceWrappers();
+```
+
+The service name is the new constant `Context.WEB_APP_SERVICE`
+(`frameworks/base/core/java/android/content/Context.java`), whose value is the string
+`"web_app"`:
+
+```java
+@FlaggedApi(com.android.webapp.flags.Flags.FLAG_ENABLE_WEB_APP_SERVICE_V2)
+public static final String WEB_APP_SERVICE = "web_app";
+```
+
+A caller therefore obtains the manager exactly like any other system service:
+
+```java
+WebAppManager webAppManager = context.getSystemService(WebAppManager.class);
+```
+
+Because the implementation ships in an APEX rather than in the system server,
+`WebAppManager` does not hold a binder to a long-lived service. Instead it discovers
+and binds to the privileged `WebAppService` app on demand, which keeps the installer
+process out of memory except while an install is actually in flight.
+
+### 26.10.3 Discovering and Binding the WebAppService
+
+The interesting design choice is how `WebAppManager` finds the service. Rather than a
+hardcoded component, it resolves an `Intent` whose action is the AIDL interface name
+and keeps only the single matching **system** app
+(`packages/modules/WebApp/framework/java/android/content/pm/webapp/WebAppManager.java`):
+
+```java
+Intent intent = new Intent(IWebAppService.class.getName());
+List<ResolveInfo> services =
+        mContext.getPackageManager()
+                .queryIntentServices(intent, PackageManager.MATCH_SYSTEM_ONLY);
+// ... pick the one ResolveInfo whose applicationInfo has FLAG_SYSTEM
+```
+
+If more than one system app claims the action the manager logs `Log.wtf`, because the
+contract assumes exactly one provider. Requests are queued while the bind is in
+flight: `WebAppManager` maintains a list of pending `Runnable`s, drains them in
+`onServiceConnected`, and runs the blocking AIDL calls on a single-threaded executor
+so the caller's thread is never blocked. It tracks an active-request count and unbinds
+the service once the count drops back to zero, so the installer APEX process is torn
+down promptly after the last install or query completes.
+
+The following diagram shows the full asynchronous install round trip across the
+process boundary.
+
+```mermaid
+sequenceDiagram
+    participant App as Browser App
+    participant WAM as WebAppManager
+    participant SVC as WebAppService
+    participant INST as WebAppInstaller
+    participant PI as PackageInstaller
+
+    App->>WAM: install(request, executor, callback)
+    WAM->>WAM: queryIntentServices(MATCH_SYSTEM_ONLY)
+    WAM->>SVC: bindService(BIND_AUTO_CREATE)
+    SVC-->>WAM: onServiceConnected (IWebAppService)
+    WAM->>SVC: install(title, manifestUrl, callback)
+    SVC->>SVC: verify caller is browser-eligible
+    SVC->>INST: enqueueRequest(InstallRequest)
+    INST->>INST: fetch + parse web manifest
+    INST->>INST: download icons, mint + sign APK
+    INST->>PI: createSession / write / commit
+    PI-->>INST: STATUS_SUCCESS
+    INST-->>App: onInstallResult(RESULT_SUCCESS, pkg)
+    WAM->>SVC: unbindService (active requests == 0)
+```
+
+### 26.10.4 The Install Request and Result Contract
+
+`WebAppManager` exposes two asynchronous operations, each taking an `Executor` and a
+functional callback so results are delivered off the binder thread:
+
+- `install(WebAppInstallRequest, Executor, ObjIntConsumer<String>)` -- the
+  `ObjIntConsumer` receives the installed package name (or `null`) and a result code.
+- `query(WebAppQueryRequest, Executor, IntConsumer)` -- the `IntConsumer` receives a
+  query result code.
+
+A `WebAppInstallRequest`
+(`packages/modules/WebApp/framework/java/android/content/pm/webapp/WebAppInstallRequest.java`)
+is built with a `Builder` that takes only a display title and the PWA manifest URL --
+the installer derives everything else (name, icons, colors, start URL) from the
+fetched manifest. Its result codes spell out exactly why an install can fail:
+
+| Result code | Meaning |
+|-------------|---------|
+| `RESULT_SUCCESS` | Install completed; package name returned |
+| `RESULT_NETWORK_ERROR` | Manifest or icon download failed or timed out |
+| `RESULT_INTERNAL_ERROR` | Minting, package manager, or unexpected failure |
+| `RESULT_PERMISSION_DENIED` | Caller is not eligible to hold the browser role |
+| `RESULT_DUPLICATED_REQUEST` | An identical request is already in the queue |
+| `RESULT_INVALID_ARGUMENTS` | Bad manifest URL or no usable icons |
+| `RESULT_CANCELLED_BY_USER` | User declined the confirmation dialog |
+| `RESULT_SECURITY_ERROR` | `PackageInstaller` blocked the install |
+| `RESULT_UNAVAILABLE` | The minter is disabled (`enable_webapp_minter` is 0) |
+
+`WebAppQueryRequest`
+(`packages/modules/WebApp/framework/java/android/content/pm/webapp/WebAppQueryRequest.java`)
+lets a caller ask whether a given package was installed by the Web App service. The
+answer is deliberately privacy-preserving: an app that does not hold
+`QUERY_ALL_PACKAGES` only learns about packages it itself installed, and otherwise
+receives `RESULT_PERMISSION_DENIED` rather than a true/false that would leak the
+existence of an unrelated package.
+
+### 26.10.5 Caller Eligibility: the Browser Role
+
+Web app installation is not a public capability for arbitrary apps. The
+`WebAppService.install()` implementation
+(`packages/modules/WebApp/service/java/com/android/webapp/service/WebAppService.kt`)
+enforces that the caller is a legitimate browser before doing any work. It clears the
+calling identity, maps the calling UID to a single package, and then checks that the
+package can handle a browsable `http:` view intent:
+
+```kotlin
+val intent = Intent(Intent.ACTION_VIEW).apply {
+    addCategory(Intent.CATEGORY_BROWSABLE)
+    setData("http:".toUri())
+}
+val resolveInfo = pm.queryIntentActivities(intent, /* MATCH_ALL */ ...)
+if (resolveInfo.none { it.activityInfo.packageName == callingPackage }) {
+    callback.onInstallResult(WebAppInstallRequest.RESULT_PERMISSION_DENIED, null)
+    return
+}
+```
+
+In other words, eligibility is tied to the `RoleManager.ROLE_BROWSER` concept: only an
+app that registers as a browser can mint web apps. The service runs these
+`PackageManager` and role queries with its own (privileged) identity by wrapping them
+in `clearCallingIdentity()` / `restoreCallingIdentity()`, so a malicious caller cannot
+piggyback on the system app's visibility.
+
+### 26.10.6 Minting and Signing the APK On-Device
+
+Once a request is accepted it is handed to `WebAppInstaller`
+(`packages/modules/WebApp/service/java/com/android/webapp/service/WebAppInstaller.kt`),
+which processes a bounded queue of requests one at a time and shuts the service down
+when the queue empties. For each request it:
+
+1. **Fetches and parses the web manifest** over HTTP into a `PwaManifest` model,
+   pulling out name, start URL, display mode, theme/background colors, orientation,
+   and the icon list.
+2. **Downloads the icons** into a per-package working directory under the service's
+   cache, sorting them into density buckets (`mdpi` through `xxxhdpi`) and handling
+   `maskable` and `monochrome` icon purposes for adaptive and notification icons.
+3. **Shows a confirmation dialog** (`InstallConfirmActivity`) and suspends on a Kotlin
+   coroutine continuation until the user approves or cancels.
+4. **Mints a signed APK** via `ApkMinter`
+   (`packages/modules/WebApp/service/java/com/android/webapp/service/minter/ApkMinter.kt`).
+5. **Installs it** through `PackageInstaller`.
+
+The minting step is what makes this module unusual: it builds a real APK at runtime.
+`ApkMinter` unpacks a template ZIP shipped inside the APEX, renders the
+`AndroidManifest.xml.mustache` and `colors.xml.mustache` templates with values from
+the manifest, and then shells out to the `aapt2` binary that the APEX bundles to
+compile and link resources. Both paths are fixed inside the APEX image:
+
+```kotlin
+private const val TEMPLATE_FILE = "/apex/com.android.webapp/res/webapp-template.zip"
+private const val AAPT2_EXEC = "/apex/com.android.webapp/bin/aapt2"
+```
+
+The package name is deterministic but opaque: `generatePackageName()` takes the
+SHA-256 of the calling package name concatenated with the manifest URL and prefixes it
+with `com.android.webapp`, so the same site installed by the same browser always maps
+to the same package. Signing is done by `ApkKeyStore`
+(`packages/modules/WebApp/service/java/com/android/webapp/service/minter/ApkKeyStore.kt`),
+which generates a hardware-backed RSA key in the `AndroidKeyStore` on first use and
+signs the APK with v2 and v3 signature schemes (v1 and v4 are disabled). Because every
+web app on the device is signed by this one service-owned key, the service can later
+recognize "apps it installed" by comparing signing certificates -- which is exactly
+how `WebAppQueryRequest` is answered.
+
+### 26.10.7 The Privileged Permissions It Needs
+
+`WebAppService` runs as the privileged app `com.android.webapp.service` and is granted
+exactly three privileged permissions through its APEX allowlist
+(`packages/modules/WebApp/apex/permissions/com.android.webapp.service.xml`):
+
+| Permission | Why it is needed |
+|------------|------------------|
+| `INSTALL_PACKAGES` | Install the minted APK silently, without the system install dialog |
+| `START_ACTIVITIES_FROM_BACKGROUND` | Launch the confirmation dialog from the background service |
+| `SUBSTITUTE_NOTIFICATION_APP_NAME` | Show install progress notifications under the calling browser's name, not the installer's |
+
+The actual install uses a normal `PackageInstaller` session built with
+`SessionParams(MODE_FULL_INSTALL)`, attributing the originating UID to the calling
+browser so the install source is recorded correctly. Holding `INSTALL_PACKAGES` is
+what lets the commit proceed without prompting the user a second time, since the user
+already approved through the module's own confirmation dialog. This is the same commit
+machinery covered in Section 26.4.8 -- the Web App service is simply a privileged
+client of it, not a new install pathway inside PMS.
+
+### 26.10.8 Where It Fits in the Package Manager Story
+
+The Web App installer is worth understanding precisely because it does **not** modify
+PMS. It demonstrates how a mainline module can layer a new install experience entirely
+on top of the existing, stable `PackageInstaller` API:
+
+- It is an APEX, so it can be updated independently of the platform.
+- It reuses the install pipeline, signature schemes, and source attribution already
+  built into PMS instead of adding privileged install code to the system server.
+- Its public API lives under `android.content.pm.webapp`, signalling that the platform
+  now treats "installed web app" as a first-class kind of package.
+
+The result, from PMS's point of view, is an ordinary third-party APK that happens to
+have been generated on the device and signed by a system component. Everything PMS
+does with it -- scanning, permission grants, intent resolution, visibility filtering --
+is identical to any other installed app.
+
+---
+
+## 26.11 Try It -- Practical Exercises
 
 This section provides hands-on exercises to explore PMS functionality using
 common Android development tools.
 
-### 26.10.1 Inspecting an APK
+### 26.11.1 Inspecting an APK
 
 **Exercise 1: Examine APK structure**
 
@@ -3815,7 +4115,7 @@ $ apksigner verify -v2-scheme-only /path/to/app.apk
 $ apksigner verify -v3-scheme-only /path/to/app.apk
 ```
 
-### 26.10.2 Querying Package Information
+### 26.11.2 Querying Package Information
 
 **Exercise 3: Use pm shell commands**
 
@@ -3852,7 +4152,7 @@ $ adb shell cat /data/system/users/0/package-restrictions.xml
 $ adb shell cat /data/misc_de/0/apexdata/com.android.permission/runtime-permissions.xml
 ```
 
-### 26.10.3 Installing and Managing Packages
+### 26.11.3 Installing and Managing Packages
 
 **Exercise 5: Install workflows**
 
@@ -3898,7 +4198,7 @@ $ adb shell pm uninstall --user all com.example.app
 $ adb shell pm clear com.example.app
 ```
 
-### 26.10.4 Working with Permissions
+### 26.11.4 Working with Permissions
 
 **Exercise 7: Permission operations**
 
@@ -3922,7 +4222,7 @@ $ adb shell pm list permissions -d -g
 $ adb shell pm reset-permissions com.example.app
 ```
 
-### 26.10.5 Intent Resolution Inspection
+### 26.11.5 Intent Resolution Inspection
 
 **Exercise 8: Query intent resolution**
 
@@ -3945,7 +4245,7 @@ $ adb shell pm set-home-activity com.example.launcher/.LauncherActivity
 $ adb shell pm clear-default-browser-status
 ```
 
-### 26.10.6 Working with Overlays
+### 26.11.6 Working with Overlays
 
 **Exercise 9: Overlay management**
 
@@ -4006,7 +4306,7 @@ $ adb install overlay.apk
 $ adb shell cmd overlay enable com.example.theme.overlay
 ```
 
-### 26.10.7 Dumpsys Exploration
+### 26.11.7 Dumpsys Exploration
 
 **Exercise 11: Comprehensive PMS dump**
 
@@ -4033,7 +4333,7 @@ $ adb shell dumpsys package preferred
 $ adb shell dumpsys overlay
 ```
 
-### 26.10.8 Split APK Exercises
+### 26.11.8 Split APK Exercises
 
 **Exercise 13: Create and install split APKs**
 
@@ -4081,7 +4381,7 @@ $ adb shell pm install-commit 1234
 $ adb shell pm path com.example.app
 ```
 
-### 26.10.9 Package Database Exploration
+### 26.11.9 Package Database Exploration
 
 **Exercise 15: Deep dive into packages.xml**
 
@@ -4130,7 +4430,7 @@ $ adb logcat -s PermissionManagerService:D
 $ adb logcat -s PackageManager:V -e "resolve|intent"
 ```
 
-### 26.10.10 Performance Analysis
+### 26.11.10 Performance Analysis
 
 **Exercise 17: Measure boot scanning time**
 
@@ -4166,7 +4466,7 @@ $ adb logcat -s PackageManager:V | grep -i "intent\|resolve\|match"
 $ adb shell setprop log.tag.PackageManager INFO
 ```
 
-### 26.10.11 Advanced: Tracing PMS Behavior
+### 26.11.11 Advanced: Tracing PMS Behavior
 
 **Exercise 12: System trace analysis**
 
@@ -4194,7 +4494,7 @@ Key trace sections to look for:
 - `queryIntentActivities` -- Activity query time
 - `installPackage` -- Full installation time
 
-### 26.10.12 Advanced: Building and Testing PMS Changes
+### 26.11.12 Advanced: Building and Testing PMS Changes
 
 **Exercise 19: Build the PMS module**
 
@@ -4237,7 +4537,7 @@ $ adb forward tcp:8700 jdwp:$(adb shell pidof system_server)
 # Trigger the breakpoint by installing an app or launching an activity
 ```
 
-### 26.10.13 Advanced: Overlay Development Workflow
+### 26.11.13 Advanced: Overlay Development Workflow
 
 **Exercise 21: Full overlay development cycle**
 
@@ -4280,7 +4580,7 @@ $ adb shell cmd overlay disable --user current com.example.my.overlay
 $ adb uninstall com.example.my.overlay
 ```
 
-### 26.10.14 Troubleshooting Common PMS Issues
+### 26.11.14 Troubleshooting Common PMS Issues
 
 **Exercise 22: Diagnose installation failures**
 
@@ -4444,6 +4744,11 @@ This chapter covered its critical subsystems:
   `OverlayManagerService`, including idmap files, overlay states, fabricated overlays,
   and overlay configuration.
 
+- **Web App Installer** (Section 26.10): The Android 17 `com.android.webapp` APEX that
+  mints and installs a signed APK from a PWA manifest on-device, exposed through the
+  new `android.content.pm.webapp.WebAppManager` system service and layered on top of
+  the existing `PackageInstaller` pipeline.
+
 ### Design Philosophy and Evolution
 
 PMS has evolved significantly across Android versions. Understanding this evolution
@@ -4476,6 +4781,15 @@ lock contention. Fabricated overlays enabled Material You theming.
 **Android 14 (U):** Update ownership, package archival, safer intent utilities.
 
 **Android 15 (V):** 16KB page size alignment. Continued decomposition and cleanup.
+
+**Android 16:** Further refactoring of the install path -- package update logging was
+moved into `InstallPackageHelper` -- and continued tightening of the privileged
+permission allowlist handling in `PackageManagerShellCommand`.
+
+**Android 17:** The Web App installer (`com.android.webapp`) lands as an updatable
+APEX with a new `android.content.pm.webapp` API, mounting a PWA-to-APK install
+experience on top of the existing `PackageInstaller` pipeline without changing PMS
+itself.
 
 This evolution explains several aspects of the current codebase:
 
@@ -4553,6 +4867,9 @@ When investigating PMS issues, these techniques are most useful:
 | `ParallelPackageParser.java` | `frameworks/base/services/core/java/com/android/server/pm/` | Parallel APK parsing |
 | `PackageCacher.java` | `frameworks/base/services/core/java/com/android/server/pm/parsing/` | Parse result caching |
 | `ApkSignatureVerifier.java` | `frameworks/base/core/java/android/util/apk/` | Signature verification |
+| `WebAppManager.java` | `packages/modules/WebApp/framework/java/android/content/pm/webapp/` | Web App installer system-service API (Android 17) |
+| `WebAppService.kt` | `packages/modules/WebApp/service/java/com/android/webapp/service/` | Bound service that mints and installs web apps |
+| `ApkMinter.kt` | `packages/modules/WebApp/service/java/com/android/webapp/service/minter/` | On-device APK generation from a PWA manifest |
 
 ### Further Reading
 

@@ -7,7 +7,7 @@ name = "aosp-internals"
 version = "2026.05.25"
 repo_url = "https://github.com/aospbooks/aosp-internal-book"
 site_url = "https://aospbooks.github.io/aosp-internal-book/"
-description = "AOSP Internals book content (65 chapters + 3 appendices) packaged as 16 Part-skills."
+description = "AOSP Internals book content (69 chapters + 4 appendices) packaged as 17 Part-skills."
 
 [[parts]]
 id = "getting-started"
@@ -61,7 +61,7 @@ chapters = ["35-networking", "36-telephony", "37-bluetooth", "38-nfc", "39-usb-a
 id = "security"
 roman = "IX"
 title = "Security"
-chapters = ["40-security", "41-credential-manager", "42-drm"]
+chapters = ["40-security", "41-credential-manager", "42-drm", "68-lfi-sandbox"]
 
 [[parts]]
 id = "ui-framework"
@@ -79,7 +79,7 @@ chapters = ["47-systemui", "48-launcher3", "49-settings-app"]
 id = "ai-and-devices"
 roman = "XII"
 title = "AI & Devices"
-chapters = ["50-ai-appfunctions", "51-companion-virtual-device"]
+chapters = ["50-ai-appfunctions", "51-companion-virtual-device", "67-npu-manager"]
 
 [[parts]]
 id = "infrastructure"
@@ -100,7 +100,13 @@ title = "Practical"
 chapters = ["63-custom-rom", "64-windows-games"]
 
 [[parts]]
+id = "sdv"
+roman = "XVI"
+title = "Software Defined Vehicle"
+chapters = ["65-software-defined-vehicle", "66-sdv-middleware-and-communication"]
+
+[[parts]]
 id = "appendices"
 roman = "App."
 title = "Appendices"
-chapters = ["A-appendix-key-files", "B-appendix-glossary", "C-appendix-kotlin-public-api"]
+chapters = ["A-appendix-key-files", "B-appendix-glossary", "C-appendix-kotlin-public-api", "D-appendix-android-17-updates"]

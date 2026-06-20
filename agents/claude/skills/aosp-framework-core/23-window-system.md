@@ -66,7 +66,7 @@ The key insight is that all three Java layers (App, WM Core, WM Shell) can issue
 frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java
 ```
 
-At 10,983 lines, it is one of the largest classes in the Android framework. WMS extends `IWindowManager.Stub` and implements `Watchdog.Monitor` and `WindowManagerPolicy.WindowManagerFuncs`:
+At over 11,500 lines in the Android 17 tree, it is one of the largest classes in the Android framework. WMS extends `IWindowManager.Stub` and implements `Watchdog.Monitor` and `WindowManagerPolicy.WindowManagerFuncs`:
 
 ```java
 public class WindowManagerService extends IWindowManager.Stub
@@ -85,10 +85,11 @@ WMS is responsible for:
 Key constants define the operational boundaries:
 
 ```java
-static final int MAX_ANIMATION_DURATION = 10 * 1000;           // 10 seconds
 static final int WINDOW_FREEZE_TIMEOUT_DURATION = 2000;        // 2 seconds
 static final int LAST_ANR_LIFETIME_DURATION_MSECS = 2 * 60 * 60 * 1000; // 2 hours
 ```
+
+(The per-animation duration cap is `TransitionAnimation.MAX_ANIMATION_DURATION`, imported and applied in `WindowState.applyAnimationLocked()` via `restrictDuration()`, rather than a WMS field.)
 
 WMS holds references to critical subsystem controllers:
 
@@ -100,7 +101,7 @@ WMS holds references to critical subsystem controllers:
 
 The window system models all window-related objects as a tree of `WindowContainer` nodes. Every node maintains a parent reference, a list of children in z-order, and a 1:1 mapping to a `SurfaceControl` in the SurfaceFlinger layer tree.
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/WindowContainer.java` (3,803 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/WindowContainer.java` (over 3,800 lines)
 
 ```java
 class WindowContainer<E extends WindowContainer> extends ConfigurationContainer<E>
@@ -259,7 +260,7 @@ RootWindowContainer
 
 `WindowState` is the server-side representation of a single window. It extends `WindowContainer<WindowState>`, meaning its children are sub-windows (TYPE_APPLICATION_PANEL, TYPE_APPLICATION_MEDIA, etc.).
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/WindowState.java` (6,191 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/WindowState.java` (over 6,400 lines)
 
 ```java
 class WindowState extends WindowContainer<WindowState>
@@ -291,7 +292,7 @@ Key fields:
 
 `DisplayContent` represents one logical display in the window hierarchy. It extends `RootDisplayArea`, which itself extends `DisplayArea.Dimmable`, which extends `DisplayArea`, which extends `WindowContainer`.
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java` (7,311 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java` (over 7,700 lines)
 
 ```java
 class DisplayContent extends RootDisplayArea
@@ -476,7 +477,7 @@ The parallel sync system prevents dependency cycles: if sync B depends on sync A
 
 ### 23.1.13 DisplayContent Internals
 
-`DisplayContent` (7,311 lines) maintains extensive state for its display. Key internal structures beyond those already discussed:
+`DisplayContent` (over 7,700 lines in the Android 17 tree) maintains extensive state for its display. Key internal structures beyond those already discussed:
 
 ```java
 // Display metrics and configuration
@@ -809,7 +810,7 @@ The Shell Transitions system (`ENABLE_SHELL_TRANSITIONS = true`) is now the prim
 
 ### 23.3.2 TransitionController (WM Core Side)
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/TransitionController.java` (2,049 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/TransitionController.java` (over 2,200 lines)
 
 `TransitionController` manages the collection and synchronization phases of transitions on the WM Core side. Its Javadoc provides the key architectural insight:
 
@@ -834,7 +835,7 @@ class TransitionController {
 
 ### 23.3.3 Transition (WM Core Side)
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/Transition.java` (4,587 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/Transition.java` (nearly 5,000 lines)
 
 Each `Transition` instance represents a single transition from creation through collection, readiness, playing, and completion. The transition types are defined in `WindowManager`:
 
@@ -1270,25 +1271,28 @@ The desktop mode directory contains a substantial number of components (50+ file
 
 ```
 desktopmode/
-├── DesktopTasksController.kt          — Central controller
-├── DesktopTasksLimiter.kt            — Enforces max open task count
-├── WindowDragTransitionHandler.kt     — Drag-to-move transitions
-├── DragToDesktopTransitionHandler.kt  — Drag from dock to desktop
-├── DesktopImeHandler.kt              — IME integration for freeform
-├── DesktopImmersiveController.kt     — Immersive mode in desktop
-├── DesktopDisplayEventHandler.kt     — Display connect/disconnect
-├── DisplayFocusResolver.kt           — Per-display focus for desktop
-├── DesktopPipTransitionController.kt — PiP within desktop mode
-├── DesktopTaskPosition.kt            — Window position management
-├── DesktopWallpaperActivity.kt       — Desktop wallpaper surface
-├── DesktopModeVisualIndicator.java   — Drag visual indicator
-├── multidesks/                        — Multi-desk support
-├── minimize/                          — Task minimization
-├── education/                         — User onboarding
-├── animation/                         — Desktop-specific animations
-├── data/                              — Desktop state persistence
-├── common/                            — Shared utilities
-└── desktopfirst/                      — Desktop-first experience
+├── DesktopTasksController.kt              — Central controller
+├── DesktopTasksLimiter.kt                — Enforces max open task count
+├── WindowDragTransitionHandler.kt         — Drag-to-move transitions
+├── DragToDesktopTransitionHandler.kt      — Drag from dock to desktop
+├── DesktopImeHandler.kt                  — IME integration for freeform
+├── DesktopImmersiveController.kt         — Immersive mode in desktop
+├── DesktopDisplayEventHandler.kt         — Display connect/disconnect
+├── DesktopModeMoveToDisplayTransitionHandler.kt — Move a desk task to another display
+├── DisplayDisconnectTransitionHandler.kt  — Migrate desks off a removed display
+├── DesktopPipTransitionController.kt     — PiP within desktop mode
+├── DesktopTaskPosition.kt                — Window position management
+├── DesktopWallpaperActivity.kt           — Desktop wallpaper surface
+├── DesktopModeVisualIndicator.java       — Drag visual indicator
+├── multidesks/                            — Multi-desk support (DesksController, DesksOrganizer)
+├── homescreenpeeking/                     — Home-screen peek hot corners
+├── desktoptaskshandlers/                  — Desk task transition handlers
+├── minimize/                              — Task minimization
+├── education/                             — User onboarding
+├── animation/                             — Desktop-specific animations
+├── data/                                  — Desktop state persistence
+├── common/                                — Shared utilities
+└── desktopfirst/                          — Desktop-first experience
 ```
 
 Desktop mode introduces transition types specific to windowing operations:
@@ -1377,7 +1381,7 @@ TaskDisplayArea
         └── Task (another leaf task)
 ```
 
-The `Task` class (7,190 lines) extends `TaskFragment`:
+The `Task` class (over 7,500 lines) extends `TaskFragment`:
 
 ```java
 class Task extends TaskFragment { ... }
@@ -2137,7 +2141,7 @@ The `prepareSurfaces()` method, called during the surface placement pass, allows
 
 The animation leash is the key mechanism that enables smooth animations of window containers. The `SurfaceAnimator` class manages this:
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimator.java` (647 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimator.java` (about 640 lines)
 
 From the source Javadoc:
 
@@ -2892,15 +2896,15 @@ Desktop windowing is the most complex Shell feature, providing a full desktop ex
 - **Task limiting** (`DesktopTasksLimiter`) to manage resource usage
 - **Window drag** (`WindowDragTransitionHandler`) for move/resize operations
 - **Desktop wallpaper** (`DesktopWallpaperActivity`) as a background surface
-- **Multi-desk support** (`multidesks/`) for virtual desktop switching
-- **Display focus resolution** (`DisplayFocusResolver`) for multi-display desktop
+- **Multi-desk support** (`multidesks/`, with `DesksController` and `DesksOrganizer`) for virtual desktop switching
+- **Cross-display moves** (`DesktopModeMoveToDisplayTransitionHandler`, `DisplayDisconnectTransitionHandler`) for multi-display desktop
 - **Immersive mode** (`DesktopImmersiveController`) for fullscreen apps in desktop
 - **IME handling** (`DesktopImeHandler`) for keyboard layout in freeform windows
 - **Minimization** (`minimize/`) for task bar integration
 
 The desktop mode directory alone contains 50+ files, reflecting the significant engineering investment in bringing desktop-class windowing to Android.
 
-**Cross-reference:** Detailed desktop mode analysis is in Part 2, section 69.
+**Cross-reference:** Chapter 22 (Activity and Window Management) covers the *WM-core* side of desktop windowing -- how `Task` windowing modes, the desktop task lifecycle, and `DesktopExperienceFlags` gating drive policy. This chapter covers the *Shell presentation* side: the surfaces, transition handlers, and caption decorations that animate desktop windows. Detailed desktop mode analysis is also in the companion report, Part 2, section 69.
 
 ### 23.10.5 Predictive Back
 
@@ -3123,30 +3127,32 @@ For common topics, use this cross-reference to find the relevant section(s) in t
 
 The following table lists the most important source files for each section of this chapter, with line counts to indicate complexity:
 
+Line counts are approximate as of the Android 17 (`android17-release`) tree.
+
 | File | Lines | Chapter Section |
 |------|-------|-----------------|
-| `WindowManagerService.java` | 10,983 | 16.1 (Architecture) |
-| `WindowContainer.java` | 3,803 | 16.1 (Hierarchy) |
-| `WindowState.java` | 6,191 | 16.1 (Window state) |
-| `DisplayContent.java` | 7,311 | 16.1, 16.5 (Display) |
-| `RootWindowContainer.java` | -- | 16.1 (Hierarchy root) |
-| `Task.java` | 7,190 | 16.1, 16.4 (Tasks) |
-| `ActivityRecord.java` | 9,788 | 16.1 (Activities) |
-| `TaskFragment.java` | -- | 16.1 (Task fragments) |
-| `DisplayArea.java` | -- | 16.8 (Z-order) |
-| `DisplayAreaPolicy.java` | -- | 16.8 (Z-order policy) |
-| `TransitionController.java` | 2,049 | 16.3 (Core transitions) |
-| `Transition.java` | 4,587 | 16.3 (Transition state) |
-| `Transitions.java` (Shell) | -- | 16.3 (Shell animation) |
-| `SurfaceAnimator.java` | 647 | 16.7 (Leash mechanism) |
-| `InsetsStateController.java` | -- | 16.9 (Insets) |
-| `InputMonitor.java` | -- | 16.6 (Input) |
-| `StageCoordinator.java` | -- | 16.4 (Split screen) |
-| `PipTaskOrganizer.java` | -- | 16.4 (PiP) |
-| `DesktopTasksController.kt` | -- | 16.4 (Desktop) |
-| `BackAnimationController.java` | -- | 16.10 (Predictive back) |
-| `WMShellModule.java` | -- | 16.2 (DI) |
-| `WMShellConcurrencyModule.java` | -- | 16.2 (Threading) |
+| `WindowManagerService.java` | ~11,600 | 23.1 (Architecture) |
+| `WindowContainer.java` | ~3,800 | 23.1 (Hierarchy) |
+| `WindowState.java` | ~6,400 | 23.1 (Window state) |
+| `DisplayContent.java` | ~7,700 | 23.1, 23.5 (Display) |
+| `RootWindowContainer.java` | ~3,950 | 23.1 (Hierarchy root) |
+| `Task.java` | ~7,560 | 23.1, 23.4 (Tasks) |
+| `ActivityRecord.java` | ~9,900 | 23.1 (Activities) |
+| `TaskFragment.java` | ~3,550 | 23.1 (Task fragments) |
+| `DisplayArea.java` | ~880 | 23.8 (Z-order) |
+| `DisplayAreaPolicy.java` | -- | 23.8 (Z-order policy) |
+| `TransitionController.java` | ~2,240 | 23.3 (Core transitions) |
+| `Transition.java` | ~4,970 | 23.3 (Transition state) |
+| `Transitions.java` (Shell) | -- | 23.3 (Shell animation) |
+| `SurfaceAnimator.java` | ~640 | 23.7 (Leash mechanism) |
+| `InsetsStateController.java` | ~580 | 23.9 (Insets) |
+| `InputMonitor.java` | -- | 23.6 (Input) |
+| `StageCoordinator.java` | -- | 23.4 (Split screen) |
+| `PipTaskOrganizer.java` | -- | 23.4 (PiP) |
+| `DesktopTasksController.kt` | -- | 23.4 (Desktop) |
+| `BackAnimationController.java` | -- | 23.10 (Predictive back) |
+| `WMShellModule.java` | -- | 23.2 (DI) |
+| `WMShellConcurrencyModule.java` | -- | 23.2 (Threading) |
 
 ### 23.11.4 Debugging the Window System
 
@@ -3237,6 +3243,91 @@ For quick reference, the core architectural patterns:
 
 ---
 
+## 23.12 Android 17 Window System Changes
+
+Android 17 does not restructure the window system, but it does land focused changes on the parts this chapter owns: insets delivery, connected-display presentation, and caption-bar handling. The desktop *windowing-mode policy and lifecycle* live in WM core and are covered in Chapter 22; the changes below are the window, surface, insets, and display-side pieces. Each flag here is a real entry in the Android 17 (`android17-release`) tree, so a reader can grep the same name in source.
+
+### 23.12.1 Insets Delivery and Rotation
+
+Two `windowing_frontend` flags refine how insets reach clients.
+
+**Source file:** `frameworks/base/core/java/android/window/flags/windowing_frontend.aconfig`
+
+- `send_new_insets_state_with_rotation` -- *"Send the new InsetsState to the shell when the display rotates."* Before this, the insets snapshot and the rotation could be delivered out of step, so a client could briefly lay out against pre-rotation insets. The display-update path now bundles the fresh `InsetsState` with the rotation event. The flag is read in `DisplayUpdater.java`, `DeferredDisplayUpdater.java`, and `DisplayRotation.java` (all under `frameworks/base/services/core/java/com/android/server/wm/`) via `com.android.window.flags.Flags.sendNewInsetsStateWithRotation()`.
+
+- `synced_insets_animation` -- *"Synchronize the applied insets to a view with the ongoing system insets animation."* This is a client-side change consumed in `frameworks/base/core/java/android/view/InsetsController.java` and `frameworks/base/core/java/android/view/ViewRootImpl.java`. It keeps the insets a view sees in step with the in-flight system-bar/IME animation, so content does not jump a frame ahead of (or behind) the bar it is reacting to. This refines the insets contract described in section 23.9 rather than replacing it: the server still grants an `InsetsSourceControl` with a leash, and the client still animates it; the flag just tightens the timing of when the *applied* insets value updates.
+
+Insets delivery on rotation (Android 17):
+
+```mermaid
+sequenceDiagram
+    participant DR as DisplayRotation
+    participant DU as DisplayUpdater
+    participant ISC as InsetsStateController
+    participant Client as ViewRootImpl / InsetsController
+
+    DR->>DU: rotation computed
+    Note over DU: sendNewInsetsStateWithRotation()<br/>bundles fresh InsetsState
+    DU->>ISC: snapshot InsetsState for new rotation
+    ISC->>Client: rotation + matching InsetsState together
+    Note over Client: syncedInsetsAnimation()<br/>keeps applied insets in step<br/>with ongoing bar/IME animation
+```
+
+### 23.12.2 Connected-Display Presentation
+
+The connected-display work (external monitors, large screens) adds display-side gates in the `lse_desktop_experience` namespace.
+
+**Source file:** `frameworks/base/core/java/android/window/flags/lse_desktop_experience.aconfig`
+
+- `mask_presentation_flags_on_internal_displays` -- *"Mask Display.FLAG_PRESENTATION for certain apps on internal displays."* Some apps treat any `FLAG_PRESENTATION` display as a secondary external screen; on a connected-display device the internal panel should not look like a presentation target to those apps, so the flag masks the flag for them.
+- `enable_connected_displays_wallpaper_presentations` -- extends wallpaper presentation to connected external displays.
+- `disable_display_force_freeform_on_pc` -- *"Prevents a display from being forced to freeform solely due to it being on PC."* A display attached to a PC form factor is no longer unconditionally pushed into freeform windowing; the windowing mode is decided by policy instead.
+- `enable_presentation_stops_top_task_bugfix` -- corrects top-task handling when a presentation is shown on a display.
+
+The display content-mode machinery itself is gated by `DesktopExperienceFlags.ENABLE_DISPLAY_CONTENT_MODE_MANAGEMENT`, read in `DisplayContent.java` (e.g. around the content-mode update paths). `DesktopExperienceFlags` (`frameworks/base/core/java/android/window/DesktopExperienceFlags.java`) is the Android 17 gating mechanism that wraps these window flags with a developer-options override, so the whole connected-display feature can be toggled coherently for testing.
+
+On the Shell side, two transition handlers in `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/desktopmode/` own the surface choreography when displays come and go:
+
+- `DesktopModeMoveToDisplayTransitionHandler.kt` -- animates moving a desk task to another display.
+- `DisplayDisconnectTransitionHandler.kt` -- *"animate the transition from disconnecting a display,"* migrating its content off the removed display (its own source TODO notes it may move out of the desktop package as it generalizes).
+
+These complement, rather than replace, the per-`DisplayContent` reparenting model from section 23.5: WM core still reparents `Task` containers across `DisplayContent` instances, and these handlers provide the Shell-side animation for that reparent.
+
+### 23.12.3 Caption-Bar Insets Refactor
+
+Caption bars (the title bars on freeform/desktop windows from section 23.10.9) gained finer insets control in Android 17.
+
+- `FLAG_FORCE_CONSUMING_OPAQUE_CAPTION_BAR` (`frameworks/base/core/java/android/view/InsetsSource.java`) is a caption-specific sibling of `FLAG_FORCE_CONSUMING` (section 23.9.9). When set, the `captionBar()` insets are consumed *even when the caption bar is requested visible* -- unless the window opts into `APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND`. This lets the system keep app content out from under an opaque caption while still allowing apps that draw their own transparent caption background to take the space.
+- `refactor_caption_sandboxing_to_core` (`lse_desktop_experience`) -- *"Refactor sandboxing of caption insets from app bounds from shell to core."* The logic that excludes caption insets from an app's reported bounds is moving from Shell into WM core, consolidating where the app-bounds sandboxing decision is made.
+- `exclude_caption_insets_opt_out_api` (exported) -- *"Allow app developers to opt out from OVERRIDE_EXCLUDE_CAPTION_INSETS_FROM_APP_BOUNDS,"* giving apps a public API to opt out of the caption-insets exclusion behavior.
+
+Together these tighten the section 23.9 insets model for the desktop/caption case: caption insets become a first-class, core-owned insets source with an explicit consume policy and an app opt-out, rather than a Shell-only adjustment to app bounds.
+
+### 23.12.4 Flexible Split
+
+The two-pane split from section 23.4.2 is generalizing toward flexible layouts in Android 17, gated by Shell flags in `frameworks/base/libs/WindowManager/Shell/aconfig/multitasking.aconfig`:
+
+- `enable_flexible_split` -- read across `StageCoordinator.java` and `DesktopTasksController.kt` as `com.android.wm.shell.Flags.enableFlexibleSplit()`.
+- `enable_flexible_two_app_split` -- read in `SplitStatusBarHider.kt` and related split components as `enableFlexibleTwoAppSplit()`, covering the two-app flexible split layout (including 10:90 / 90:10 ratios) and the matching status-bar handling.
+
+The new `LayoutEngine.kt` (`.../splitscreen/LayoutEngine.kt`) computes flexible-split bounds from a node tree (`calculateFlexibleSplit()`), which is the layout substrate for moving beyond a single fixed divider. This is an evolution of the `StageCoordinator` / `SplitLayout` model in section 23.4.2, not a replacement: the stage and listener structure is unchanged.
+
+---
+
+## Try It
+
+Use a device or emulator running Android 17 (`android17-release`) to observe the structures this chapter describes. The window system exposes most of its state through `dumpsys window`.
+
+1. **Walk the WindowContainer tree.** Run `adb shell dumpsys window containers` and trace the hierarchy from `RootWindowContainer` down through `DisplayContent`, the `DisplayArea` nodes, `TaskDisplayArea`, `Task`, `ActivityRecord`, and `WindowState` (section 23.1.4). Confirm system windows (status bar, nav bar, IME) sit in their own `DisplayArea.Tokens` nodes separate from the app `TaskDisplayArea`.
+
+2. **Inspect per-display insets.** With an app open, run `adb shell dumpsys window displays` and find the `InsetsState` / `InsetsSourceProvider` block (section 23.9). Show or hide the IME and re-dump to see the `ime()` source appear and disappear, and the focused window's `InsetsControlTarget` change.
+
+3. **Watch a transition.** Run `adb shell dumpsys window transitions`, then launch and close an app while re-dumping. Observe a `Transition` move through collecting/ready/playing, and note the track assignment (section 23.3.9). Capturing a Winscope trace during the launch lets you replay the leash animation (section 23.7.2) frame by frame.
+
+4. **Exercise the Android 17 paths.** If the device supports connected displays or desktop windowing, enable the desktop-experience developer toggle (backed by `DesktopExperienceFlags`, section 23.12.2) and attach an external display. Move a window between displays and watch `dumpsys window displays` show the `Task` reparent to the second `DisplayContent`. Rotate the device with an app that reacts to insets to see the bundled rotation + `InsetsState` delivery (section 23.12.1).
+
+5. **Map a window type to its layer.** Pick a window from `dumpsys window windows`, note its type and the `DisplayArea` it landed in, and reconcile that against the type-to-`DisplayArea` routing in sections 23.8.5 and 23.8.10.
+
 ## Summary
 
 ### Architecture Recap
@@ -3276,7 +3367,7 @@ The window system is one of the largest subsystems in AOSP:
 | Window API (`view/`) | 50,000+ | 50+ |
 | Total | 400,000+ | 700+ |
 
-The five largest individual source files -- `WindowManagerService.java` (10,983 lines), `ActivityRecord.java` (9,788 lines), `DisplayContent.java` (7,311 lines), `Task.java` (7,190 lines), and `WindowState.java` (6,191 lines) -- together exceed 41,000 lines of Java code, reflecting the deep complexity of window management.
+The five largest individual source files in the Android 17 tree -- `WindowManagerService.java` (~11,600 lines), `ActivityRecord.java` (~9,900 lines), `DisplayContent.java` (~7,700 lines), `Task.java` (~7,560 lines), and `WindowState.java` (~6,400 lines) -- together exceed 43,000 lines of Java code, reflecting the deep complexity of window management.
 
 ### Evolution Direction
 
@@ -3288,7 +3379,7 @@ The window system is evolving in several clear directions:
 
 3. **Parallel transitions**: The track-based parallel transition system continues to evolve with flags like `ENABLE_PARALLEL_CD_TRANSITIONS_DURING_RECENTS` for more concurrent animation support.
 
-4. **Multi-display maturity**: Features like `ENABLE_PRESENTATION_FOR_CONNECTED_DISPLAYS`, `ENABLE_DISPLAY_CONTENT_MODE_MANAGEMENT`, and the `DisplayFocusResolver` indicate deepening multi-display support beyond mirroring toward true multi-display computing.
+4. **Multi-display maturity**: Android 17 flags like `enable_connected_displays_wallpaper_presentations` and `mask_presentation_flags_on_internal_displays`, the `DesktopExperienceFlags.ENABLE_DISPLAY_CONTENT_MODE_MANAGEMENT` gate, and the cross-display desk handlers (`DesktopModeMoveToDisplayTransitionHandler`, `DisplayDisconnectTransitionHandler`) indicate deepening multi-display support beyond mirroring toward true multi-display computing (see section 23.12).
 
 5. **Flexible split**: The `enableFlexibleSplit` and `enableFlexibleTwoAppSplit` flags suggest movement toward more dynamic multi-window layouts beyond the traditional two-pane split.
 

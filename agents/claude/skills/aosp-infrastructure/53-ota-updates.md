@@ -28,10 +28,16 @@ Android has used three distinct OTA schemes across its history. Understanding al
 three is essential because production devices span the full range.
 
 ```
-Source path: system/update_engine/        -- A/B and Virtual A/B engine
-             bootable/recovery/           -- Non-A/B recovery updater
-             system/core/fs_mgr/libsnapshot/ -- Virtual A/B snapshots
+Source path: system/update_engine/         -- A/B and Virtual A/B engine
+             bootable/recovery/            -- Non-A/B recovery updater
+             system/fs/fs_mgr/libsnapshot/ -- Virtual A/B snapshots
 ```
+
+In Android 17 the snapshot code moved out of `system/core`: `libsnapshot`,
+`snapuserd`, and the COW format implementation now live under
+`system/fs/fs_mgr/libsnapshot/` (the `system/core/fs_mgr/libsnapshot/` path used
+by earlier releases no longer exists). All snapshot citations in this chapter
+use the new location.
 
 **Non-A/B (Legacy)**. The original scheme, used from Android 1.0 through
 approximately Android 9 (though it remains supported). The device has a single
@@ -76,7 +82,16 @@ timeline
                      : COW snapshots for changed blocks
                      : Seamless update + storage efficient
                      : snapuserd for compression (Android 12+)
+        Android 17+  : UBLK userspace-block backend (opt-in)
+                     : zstd compression for REPLACE ops
+                     : squashfs OTA support removed
 ```
+
+Android 17 does not introduce a new scheme; it refines Virtual A/B. The big
+changes are the **UBLK** userspace-block-driver backend for serving snapshots
+(an alternative to the `dm-user` path), **zstd compression for `REPLACE`
+operations**, and the removal of squashfs build/OTA support. These are covered
+in detail in section 53.28.
 
 ### 53.1.2 High-Level Data Flow
 
@@ -134,6 +149,18 @@ ro.virtual_ab.retrofit=true     # Retrofitted (vs. launch)
 ro.virtual_ab.compression.enabled=true
 ro.virtual_ab.userspace.snapshots.enabled=true
 ro.virtual_ab.compression.xor.enabled=true
+
+# Virtual A/B UBLK backend (Android 17)
+ro.virtual_ab.ublk.enabled=true   # Device configured for UBLK snapshots
+```
+
+The `ro.virtual_ab.ublk.enabled` property is one of three conditions checked by
+`IsUblkEnabled()` before snapshots are served over UBLK rather than `dm-user`;
+the other two are an aconfig flag and a kernel version of 6.6 or newer (see
+section 53.28).
+
+```
+Source: system/fs/fs_mgr/libsnapshot/capabilities.cpp
 ```
 
 The relevant feature flag detection code lives in:
@@ -192,9 +219,15 @@ bootable/recovery/
     install/install.cpp              -- Package installation
     update_verifier/                 -- Post-boot verification
 
-system/core/fs_mgr/libsnapshot/
+system/fs/fs_mgr/libsnapshot/        -- (moved from system/core in Android 17)
     snapshot.cpp                     -- Snapshot manager
-    snapuserd/                       -- Userspace snapshot daemon
+    capabilities.cpp                 -- UBLK enablement decision
+    libsnapshot_cow/
+        writer_v3.cpp                -- COW v3 writer
+    snapuserd/
+        snapuserd_daemon.cpp         -- Daemon entry, UBLK/dm-user selection
+        dm_user_block_server.cpp     -- dm-user backend
+        ublk_block_server.cpp        -- UBLK backend (Android 17)
         user-space-merge/
             snapuserd_core.cpp       -- Core merge logic
 
@@ -530,6 +563,17 @@ const uint64_t kMaxSupportedMajorPayloadVersion = kBrilloMajorPayloadVersion;
 | 7 | `kPartialUpdateMinorPayloadVersion` | Partial updates (e.g., kernel only) |
 | 8 | `kZucchiniMinorPayloadVersion` | ZUCCHINI binary diffing |
 | 9 | `kLZ4DIFFMinorPayloadVersion` | LZ4DIFF for EROFS |
+| 10 | `kZstdMinorPayloadVersion` | REPLACE_ZSTD (zstd-compressed REPLACE) |
+
+```
+Source: system/update_engine/payload_consumer/payload_constants.h
+```
+
+Android 17 added minor version 10 (`kZstdMinorPayloadVersion`), and
+`kMaxSupportedMinorPayloadVersion` is now `kZstdMinorPayloadVersion`. The minor
+version of a payload is the highest version whose features it uses; a device
+refuses any payload whose minor version exceeds the maximum it supports
+(`kUnsupportedMinorPayloadVersion`, error 45).
 
 ### 53.3.3 The DeltaArchiveManifest
 
@@ -568,6 +612,7 @@ message InstallOperation {
     ZUCCHINI = 11;
     LZ4DIFF_BSDIFF = 12;
     LZ4DIFF_PUFFDIFF = 13;
+    REPLACE_ZSTD = 14;  // Android 17: write zstd-decompressed data
   }
   Type type = 1;
   repeated Extent src_extents = 6;
@@ -589,6 +634,7 @@ flowchart LR
         REPLACE["REPLACE<br/>Write raw data"]
         REPLACE_BZ["REPLACE_BZ<br/>Decompress bzip2, write"]
         REPLACE_XZ["REPLACE_XZ<br/>Decompress XZ, write"]
+        REPLACE_ZSTD["REPLACE_ZSTD<br/>Decompress zstd, write"]
         ZERO["ZERO<br/>Write zeros"]
         DISCARD["DISCARD<br/>Issue TRIM/discard"]
     end
@@ -608,6 +654,7 @@ flowchart LR
 | `REPLACE` | No | Write raw uncompressed data to target extents |
 | `REPLACE_BZ` | No | Decompress bzip2 blob, write to target |
 | `REPLACE_XZ` | No | Decompress XZ blob, write to target |
+| `REPLACE_ZSTD` | No | Decompress zstd blob, write to target (Android 17) |
 | `ZERO` | No | Fill target extents with zeros |
 | `DISCARD` | No | Issue discard/trim to target extents |
 | `SOURCE_COPY` | Yes | Copy extents from source to target |
@@ -759,6 +806,7 @@ bool DeltaPerformer::PerformInstallOperation(
     case InstallOperation::REPLACE:
     case InstallOperation::REPLACE_BZ:
     case InstallOperation::REPLACE_XZ:
+    case InstallOperation::REPLACE_ZSTD:   // Android 17
       return PerformReplaceOperation(operation);
     case InstallOperation::ZERO:
     case InstallOperation::DISCARD:
@@ -775,6 +823,30 @@ bool DeltaPerformer::PerformInstallOperation(
   }
 }
 ```
+
+The decompression for a `REPLACE_*` operation is applied by stacking the right
+`ExtentWriter` on top of the partition writer. `InstallOperationExecutor::ExecuteReplaceOperation`
+wraps the base writer in a `BzipExtentWriter`, `XzExtentWriter`, or -- new in
+Android 17 -- a `ZstdExtentWriter` depending on the operation type, then writes
+the decompressed bytes to the target extents:
+
+```
+Source: system/update_engine/payload_consumer/install_operation_executor.cc
+        system/update_engine/payload_consumer/zstd_extent_writer.cc
+```
+
+```cpp
+if (operation.type() == InstallOperation::REPLACE_BZ) {
+  writer = std::make_unique<BzipExtentWriter>(std::move(writer));
+} else if (operation.type() == InstallOperation::REPLACE_XZ) {
+  writer = std::make_unique<XzExtentWriter>(std::move(writer));
+} else if (operation.type() == InstallOperation::REPLACE_ZSTD) {
+  writer = std::make_unique<ZstdExtentWriter>(std::move(writer));
+}
+```
+
+`ZstdExtentWriter` feeds incoming bytes through a streaming `ZSTD_DStream` and
+forwards the decompressed output to the next writer in the stack.
 
 ### 53.4.3 Partition Writers
 
@@ -1030,7 +1102,7 @@ copy-on-write (COW) snapshots.
 ### 53.6.1 Architecture Overview
 
 ```
-Source: system/core/fs_mgr/libsnapshot/
+Source: system/fs/fs_mgr/libsnapshot/
         system/update_engine/aosp/dynamic_partition_control_android.h
 ```
 
@@ -1083,7 +1155,7 @@ The `ISnapshotManager` interface (implemented by `SnapshotManager`) coordinates
 snapshot creation, merge, and cleanup:
 
 ```
-Source: system/core/fs_mgr/libsnapshot/include/libsnapshot/snapshot.h
+Source: system/fs/fs_mgr/libsnapshot/include/libsnapshot/snapshot.h
 ```
 
 ```cpp
@@ -1109,11 +1181,17 @@ class ISnapshotManager {
 ### 53.6.4 The COW Format
 
 The Copy-On-Write format stores the modified blocks efficiently. AOSP has
-iterated on this format, currently supporting v2 and v3:
+iterated on this format; v2 and v3 are both still readable, and the Android 17
+writer (`CowWriterV3`) emits the v3 layout (`header_.prefix.major_version = 3`):
 
 ```
-Source: system/core/fs_mgr/libsnapshot/libsnapshot_cow/
+Source: system/fs/fs_mgr/libsnapshot/libsnapshot_cow/writer_v3.cpp
+        system/fs/fs_mgr/libsnapshot/libsnapshot_cow/cow_format.cpp
 ```
+
+The v3 format carries per-operation compression metadata, so a single COW image
+can mix uncompressed, lz4, and zstd blocks, and it supports the larger
+compression factors selected by `--compression_factor` (4k through 256k).
 
 COW operations:
 
@@ -1146,11 +1224,17 @@ flowchart LR
 
 `snapuserd` is the userspace daemon that serves snapshot block devices. It runs
 very early in the boot process (first-stage init) and presents merged views of
-base-partition + COW data through `dm-user` kernel devices.
+base-partition + COW data to the kernel through a userspace block device. That
+block device is abstracted behind an `IBlockServer` interface: historically the
+only backend was `dm-user`, but Android 17 added a `ublk` backend that the
+daemon can select at startup (covered in section 53.28). The interface lives in
+`snapuserd/include/snapuserd/block_server.h`; the two implementations are
+`dm_user_block_server.cpp` and `ublk_block_server.cpp`.
 
 ```
-Source: system/core/fs_mgr/libsnapshot/snapuserd/
-        system/core/fs_mgr/libsnapshot/snapuserd/user-space-merge/
+Source: system/fs/fs_mgr/libsnapshot/snapuserd/
+        system/fs/fs_mgr/libsnapshot/snapuserd/user-space-merge/
+        system/fs/fs_mgr/libsnapshot/snapuserd/include/snapuserd/block_server.h
 ```
 
 ```mermaid
@@ -1380,7 +1464,14 @@ OPTIONS.vabc_compression_param = None    # lz4, zstd, none
 OPTIONS.max_threads = None
 OPTIONS.vabc_cow_version = None
 OPTIONS.compression_factor = None        # 4k-256k
+OPTIONS.enable_replace_zstd = False      # Android 17: zstd for REPLACE ops
 ```
+
+The `--enable_replace_zstd` flag (added in Android 17) makes `delta_generator`
+emit `REPLACE_ZSTD` operations instead of plain `REPLACE`, shrinking full
+payloads and the full portions of incremental payloads. It is passed through to
+the native generator as `--enable_replace_zstd=true` and is mutually disabled by
+`--disable_replace_compression`.
 
 Key constants referenced during generation:
 
@@ -2148,19 +2239,31 @@ failure.
 
 ### 53.13.2 Merge Statistics
 
-For Virtual A/B, merge performance is tracked by `ISnapshotMergeStats`:
+For Virtual A/B, merge performance is recorded in a `SnapshotMergeReport`
+protobuf. After the merge finishes, `CleanupPreviousUpdateAction::ReportMergeStats`
+calls `SnapshotManager::ReadMergeReport()` and forwards the values to statsd via
+`SNAPSHOT_MERGE_REPORTED`:
 
 ```
-Source: system/update_engine/aosp/cleanup_previous_update_action.h
-        system/core/fs_mgr/libsnapshot/include/libsnapshot/snapshot_stats.h
+Source: system/update_engine/aosp/cleanup_previous_update_action.cc (ReportMergeStats)
+        system/fs/fs_mgr/libsnapshot/android/snapshot/snapshot.proto (SnapshotMergeReport)
 ```
 
-Merge stats include:
+Reported fields include:
 
-- Total merge duration.
-- Number of COW operations processed.
-- I/O statistics (bytes read/written).
-- Whether the merge was interrupted and resumed.
+- `merge_total_time_ms` -- total merge duration.
+- `resume_count` -- how many times the merge was interrupted and resumed.
+- `cow_file_size`, `total_cow_size_bytes`, `estimated_cow_size_bytes` -- COW
+  storage usage (actual vs. estimated).
+- `merge_failure_code` -- failure category if the merge did not complete.
+- `compression_enabled`, `xor_compression_used`, `iouring_used` -- which COW
+  features were active.
+- `ublk_used` -- new in Android 17, whether snapshots were served over the UBLK
+  backend rather than `dm-user`.
+
+In Android 17 the older `ISnapshotMergeStats` / `snapshot_stats.h` accumulator
+that update_engine used to instantiate was removed; stats are now read back from
+the persisted merge report instead.
 
 ### 53.13.3 Log Locations
 
@@ -3037,9 +3140,187 @@ sequenceDiagram
 
 ---
 
-## 53.26 Try It: Hands-On OTA Experiments
+## 53.26 Android 17 OTA Changes
 
-### 53.26.1 Inspecting a Payload
+Android 17 does not add a fourth update scheme. Instead it refines Virtual A/B
+along three axes: a new userspace-block-device backend (UBLK) for serving
+snapshots, zstd compression for `REPLACE` operations, and a set of removals and
+memory optimizations on both the generation and application sides. This section
+collects those changes and ties them back to the mechanisms described earlier in
+the chapter.
+
+### 53.26.1 The UBLK Snapshot Backend
+
+Through Android 16, `snapuserd` served snapshot block devices exclusively
+through the kernel `dm-user` device: the kernel forwarded each I/O request up to
+userspace over a `dm-user` character device, and `snapuserd` replied with merged
+base-plus-COW data. Android 17 introduces a second backend built on **UBLK**
+(userspace block driver), where `snapuserd` registers a `/dev/ublkb*` block
+device and services requests through the in-kernel `ublk` driver via the
+`libublksrv` host library (`external/ublksrv`).
+
+Both backends sit behind the same `IBlockServer` abstraction, so the merge
+logic, COW reader, and worker threads are unchanged; only the transport between
+kernel and daemon differs.
+
+```
+Source: system/fs/fs_mgr/libsnapshot/snapuserd/include/snapuserd/block_server.h
+        system/fs/fs_mgr/libsnapshot/snapuserd/dm_user_block_server.cpp
+        system/fs/fs_mgr/libsnapshot/snapuserd/ublk_block_server.cpp
+```
+
+Block-server backend selection:
+
+```mermaid
+flowchart TD
+    A["snapuserd starts<br/>(first-stage init)"] --> B{"-ublk / -noublk<br/>passed explicitly?"}
+    B -->|Yes| C[Honor the flag]
+    B -->|No| D{"Hint file<br/>/metadata/ota/snapuserd_mode?"}
+    D -->|ublk| E[Use UBLK]
+    D -->|dm-user| F[Use dm-user]
+    D -->|absent / invalid| G["Auto-detect:<br/>IsUblkEnabled()"]
+    G --> H{"property AND<br/>aconfig flag AND<br/>kernel >= 6.6?"}
+    H -->|Yes| E
+    H -->|No| F
+    C --> I["Initialize block_server_opener_"]
+    E --> I
+    F --> I
+```
+
+`IsUblkEnabled()` requires three conditions to all hold before UBLK is used:
+
+```
+Source: system/fs/fs_mgr/libsnapshot/capabilities.cpp
+```
+
+```cpp
+bool IsUblkEnabled() {
+  // ... test-only override elided ...
+  bool property_enabled =
+      android::base::GetBoolProperty("ro.virtual_ab.ublk.enabled", false);
+  bool flag_enabled = IsVabcWithUblkSupportEnabledByFlag();   // aconfig
+  bool kernel_support = KernelSupportsUblk();                 // uname >= 6.6
+  return (property_enabled && flag_enabled && kernel_support);
+}
+```
+
+`KernelSupportsUblk()` parses `uname()` and returns true only for kernel 6.6 or
+newer. The aconfig flag (`com::android::libsnapshot::vabc_with_ublk_support`) is
+the rollout gate; the build flag `RELEASE_VABC_UBLK_ENABLE_FLAG` drives it and
+was advanced to true in trunk staging during the 17 cycle.
+
+The chosen mode is persisted as a hint file at `/metadata/ota/snapuserd_mode`
+(`kSnapuserdModeHintFile`) so that the daemon makes a consistent choice across
+the boot stages, and first-stage init starts the daemon in the right mode:
+
+```
+Source: system/core/init/snapuserd_transition.cpp (LaunchFirstStageSnapuserd)
+        system/core/init/first_stage_mount_android.cpp
+        system/fs/fs_mgr/libsnapshot/snapshot.cpp (UpdateUsesUblk)
+```
+
+```cpp
+// first_stage_mount_android.cpp
+bool use_ublk = sm->UpdateUsesUblk();
+LOG(INFO) << "using snapuserd in " << (use_ublk ? "UBLK" : "dm-user") << " mode";
+LaunchFirstStageSnapuserd(use_ublk);
+```
+
+`LaunchFirstStageSnapuserd` forks `snapuserd` with `-ublk` or an explicit
+`-noublk` flag, so the early-boot daemon never relies on auto-detection. When
+UBLK is active, first-stage init also recognizes `/dev/block/ublkb*` and
+`/dev/ublk*` misc devices while waiting for partitions to appear.
+
+### 53.26.2 Forcing dm-user Per Update: disable_ublk
+
+Even on a UBLK-configured device, a specific OTA can force the legacy `dm-user`
+backend. The payload manifest carries a `disable_ublk` knob in
+`DynamicPartitionMetadata`:
+
+```
+Source: system/update_engine/update_metadata.proto (DynamicPartitionMetadata.disable_ublk)
+```
+
+```protobuf
+message DynamicPartitionMetadata {
+  // ...
+  optional uint64 compression_factor = 7;
+
+  // Whether to disable UBLK for OTA. This will force dm-user as OTA backend
+  // choice even if device was configured for UBLK based snapshots.
+  optional bool disable_ublk = 8;
+}
+```
+
+`ota_from_target_files` exposes a corresponding option to set this from the
+manifest, and it also disables UBLK automatically when the target build does not
+declare UBLK support. This gives OEMs an escape hatch if a particular kernel or
+device exhibits a UBLK regression, without rebuilding the device configuration.
+
+### 53.26.3 zstd Compression for REPLACE Operations
+
+Earlier releases compressed `REPLACE` data with bzip2 (`REPLACE_BZ`) or XZ
+(`REPLACE_XZ`). Android 17 adds `REPLACE_ZSTD` (operation type 14, minor payload
+version 10), which decompresses a zstd blob into the target extents. zstd gives
+ratios close to XZ at much higher decompression speed, which matters because
+`REPLACE` data dominates full payloads and the full portions of incrementals.
+
+```
+Source: system/update_engine/payload_consumer/zstd_extent_writer.cc
+        system/update_engine/payload_consumer/install_operation_executor.cc
+        system/update_engine/payload_generator/zstd_android.cc
+```
+
+On the application side, `REPLACE_ZSTD` dispatches through the same
+`PerformReplaceOperation` path as the other `REPLACE` variants (section 53.4.2);
+`InstallOperationExecutor` simply stacks a `ZstdExtentWriter` on top of the
+target writer. On the generation side, `--enable_replace_zstd` (section 53.7.1)
+tells `delta_generator` to emit `REPLACE_ZSTD` rather than `REPLACE`. Note this
+is distinct from VABC's `--vabc_compression_param=zstd,<level>`: the former
+compresses payload `REPLACE` blobs, the latter compresses the COW image written
+on-device.
+
+### 53.26.4 Removals and Memory Optimizations
+
+Android 17 trims the OTA stack and reduces its peak memory footprint:
+
+- **squashfs OTA support removed.** Build and OTA support for squashfs images
+  was removed from Soong, init, and the releasetools path (the
+  `libsquashfs_utils` dependency was dropped). Devices using squashfs system
+  images are no longer supported by the OTA generator.
+
+- **Retrofit dynamic-partition logic dropped.** The legacy retrofit path for
+  devices that gained dynamic partitions via an update was removed, simplifying
+  `DynamicPartitionMetadata` handling.
+
+- **Lower peak RAM during application.** `update_engine` no longer keeps the raw
+  manifest bytes resident after parsing and frees per-partition manifest memory
+  once a partition is finished. Large diff patches are now written to a
+  temporary file and applied via a file descriptor instead of being buffered
+  entirely in memory, which matters for the multi-gigabyte partitions on modern
+  devices.
+
+- **Merge-stats interface simplified.** The standalone `ISnapshotMergeStats` /
+  `snapshot_stats.h` accumulator was removed; merge metrics are read back from
+  the persisted `SnapshotMergeReport` (section 53.13.2), which gained the
+  `ublk_used` field to record which backend served the merge.
+
+```
+Source: build/make/tools/releasetools/ota_from_target_files.py
+        system/update_engine/aosp/cleanup_previous_update_action.cc
+        system/fs/fs_mgr/libsnapshot/android/snapshot/snapshot.proto
+```
+
+These changes are invisible to OTA clients: the `UpdateEngine` Java API, the
+payload format header, and the action pipeline are unchanged. A device that
+takes a 17 OTA may simply find its snapshots served over UBLK and its `REPLACE`
+data carried as zstd, with no change to how an update is requested or monitored.
+
+---
+
+## 53.27 Try It: Hands-On OTA Experiments
+
+### 53.27.1 Inspecting a Payload
 
 ```bash
 # Build the OTA tools
@@ -3060,7 +3341,7 @@ python3 system/update_engine/scripts/payload_info.py payload.bin
 #     - Data blob size
 ```
 
-### 53.26.2 Generating a Full OTA
+### 53.27.2 Generating a Full OTA
 
 ```bash
 # After building an image
@@ -3080,7 +3361,7 @@ unzip -l full_ota.zip
 # care_map.pb
 ```
 
-### 53.26.3 Generating an Incremental OTA
+### 53.27.3 Generating an Incremental OTA
 
 ```bash
 # Build source version
@@ -3097,7 +3378,7 @@ python3 build/make/tools/releasetools/ota_from_target_files.py \
     incremental_ota.zip
 ```
 
-### 53.26.4 Applying an OTA via ADB
+### 53.27.4 Applying an OTA via ADB
 
 ```bash
 # On the host, push the OTA package
@@ -3115,7 +3396,7 @@ adb reboot sideload
 adb sideload full_ota.zip
 ```
 
-### 53.26.5 Monitoring Update Progress
+### 53.27.5 Monitoring Update Progress
 
 ```bash
 # Watch update_engine logs
@@ -3134,7 +3415,7 @@ adb shell bootctl is-slot-marked-successful 0
 adb shell bootctl is-slot-marked-successful 1
 ```
 
-### 53.26.6 Observing Virtual A/B Merge
+### 53.27.6 Observing Virtual A/B Merge
 
 ```bash
 # After rebooting into new slot, watch the merge
@@ -3147,7 +3428,7 @@ adb shell snapshotctl dump
 adb shell snapshotctl map-snapshots
 ```
 
-### 53.26.7 Simulating an Update on Cuttlefish
+### 53.27.7 Simulating an Update on Cuttlefish
 
 ```bash
 # Launch Cuttlefish
@@ -3161,7 +3442,7 @@ launch_cvd
 # making it ideal for OTA testing.
 ```
 
-### 53.26.8 Examining Recovery Mode
+### 53.27.8 Examining Recovery Mode
 
 ```bash
 # Boot into recovery
@@ -3177,7 +3458,7 @@ adb pull /cache/recovery/last_log
 adb pull /cache/recovery/last_kmsg
 ```
 
-### 53.26.9 Building a Custom OTA with VABC Options
+### 53.27.9 Building a Custom OTA with VABC Options
 
 ```bash
 # Generate OTA with specific VABC options
@@ -3193,7 +3474,7 @@ python3 build/make/tools/releasetools/ota_from_target_files.py \
     optimized_ota.zip
 ```
 
-### 53.26.10 Payload Verification
+### 53.27.10 Payload Verification
 
 ```bash
 # Verify a payload's integrity
@@ -3208,9 +3489,28 @@ brillo_update_payload properties \
     --properties_file -
 ```
 
+### 53.27.11 Checking the Snapshot Backend (Android 17)
+
+```bash
+# Is the device configured for UBLK snapshots?
+adb shell getprop ro.virtual_ab.ublk.enabled
+
+# Kernel version (UBLK requires 6.6+)
+adb shell uname -r
+
+# After an OTA, see which mode first-stage init selected
+adb logcat -b all | grep -i "snapuserd in"   # "UBLK mode" or "dm-user mode"
+
+# UBLK block devices appear when the backend is active
+adb shell ls -la /dev/block/ublkb* /dev/ublk* 2>/dev/null
+
+# The persisted mode hint chosen for this update
+adb shell cat /metadata/ota/snapuserd_mode    # "ublk" or "dm-user"
+```
+
 ---
 
-## 53.27 Summary
+## 53.28 Summary
 
 ```mermaid
 mindmap
@@ -3229,6 +3529,8 @@ mindmap
         snapuserd
         Post-reboot merge
         Compression XOR
+        UBLK backend (Android 17)
+        REPLACE_ZSTD (Android 17)
     update_engine
       Action Pipeline
         DownloadAction
@@ -3281,7 +3583,10 @@ The key source paths for further exploration:
 | OTA generation scripts | `build/make/tools/releasetools/` |
 | Recovery mode | `bootable/recovery/` |
 | Update verifier | `bootable/recovery/update_verifier/` |
-| Snapshot manager | `system/core/fs_mgr/libsnapshot/` |
-| snapuserd daemon | `system/core/fs_mgr/libsnapshot/snapuserd/` |
-| COW format implementation | `system/core/fs_mgr/libsnapshot/libsnapshot_cow/` |
+| Snapshot manager | `system/fs/fs_mgr/libsnapshot/` |
+| UBLK enablement decision | `system/fs/fs_mgr/libsnapshot/capabilities.cpp` |
+| snapuserd daemon | `system/fs/fs_mgr/libsnapshot/snapuserd/` |
+| UBLK block server | `system/fs/fs_mgr/libsnapshot/snapuserd/ublk_block_server.cpp` |
+| COW format implementation | `system/fs/fs_mgr/libsnapshot/libsnapshot_cow/` |
+| zstd REPLACE writer | `system/update_engine/payload_consumer/zstd_extent_writer.cc` |
 | Framework API | `frameworks/base/core/java/android/os/UpdateEngine.java` |

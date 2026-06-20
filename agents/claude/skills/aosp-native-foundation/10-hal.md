@@ -1413,18 +1413,29 @@ later versions inherit from 2.4.
 
 ### 10.3.9 HIDL Deprecation Status
 
-As of Android 13 (2022), HIDL is officially deprecated.  New HALs must use
-AIDL.  Existing HIDL HALs are being migrated to AIDL on a per-interface basis.
-The HIDL runtime and hwservicemanager remain available for backward
-compatibility with older vendor partitions, but no new HIDL interfaces will be
-accepted into AOSP.
+HIDL was officially deprecated back in Android 13 (2022), and by the Android 17
+tree the migration is effectively complete: every directory under
+`hardware/interfaces/` is now an `aidl/` package, and the `.hal`/`hidl/`
+subtrees that once sat beside them have been removed.  No new HIDL interfaces
+are accepted into AOSP.  The HIDL runtime (`system/libhidl`) and
+`hwservicemanager` survive only as a compatibility shim so a newer framework can
+still talk to an older vendor partition that froze a HIDL HAL years ago.
 
 Key files reflecting this deprecation:
 
 - `system/libhidl/transport/ServiceManagement.cpp` contains `NoHwServiceManager`
-  for devices that have fully migrated away from HIDL.
+  (line 209) -- a stand-in `IServiceManager` returned on devices that have
+  fully migrated away from HIDL, so callers that still reach for the HwBinder
+  service manager get a well-behaved no-op rather than a crash.
 - The `isHidlSupported()` function (line 75) checks whether HwBinder is even
-  available on the device.
+  available on the device.  Where it returns false,
+  `gDefaultServiceManager` is set to the `NoHwServiceManager` (lines 367-370)
+  and HIDL `getService` lookups short-circuit (line 565).
+
+In other words, a device launching with Android 17 can ship with no HIDL stack
+at all: `system/libhidl` and `system/hwservicemanager` exist for backward
+compatibility, but a clean AIDL-only device never instantiates a real
+`hwservicemanager`.
 
 ---
 
@@ -2274,27 +2285,60 @@ Backward compatibility is enforced: version N+1 must be a superset of version N.
 You can add new methods, types, and fields, but cannot remove or change
 existing ones.
 
+**The `@VersionSupport` annotation.**  The AIDL compiler grew an
+interface-level annotation that pins an interface to a single declared version.
+Its schema is registered in `system/tools/aidl/aidl_language.cpp` (lines
+226-229): it is named `VersionSupport`, applies only to interface declarations
+(`CONTEXT_TYPE_INTERFACE`), and takes one required integer parameter,
+`version`.  In source it reads like this (from the AIDL toolchain's own test
+interface, `system/tools/aidl/tests/trunk_stable_test/.../ITrunkStableTest.aidl`):
+
+```java
+@VersionSupport(version=2)
+interface ITrunkStableTest {
+    // ...
+}
+```
+
+The compiler cross-checks the declared number against the interface's real
+frozen version.  `AidlInterface::VersionSpecificCheckValid()` in
+`system/tools/aidl/aidl_language.cpp` (lines 1870-1882) raises an error if the
+`@VersionSupport` version does not equal the actual version being built, and
+`AidlInterface::Version()` (lines 1904-1910) makes the annotation the
+authoritative source of an interface's version when present.  This tightens the
+trunk-stable model: with the annotation in the source, the version an interface
+claims to support is written down at the type itself rather than inferred only
+from the `aidl_interface` build flag, so an interface that is wired into the
+wrong version stanza fails the build instead of silently mis-versioning.
+
 ### 10.4.10 The hardware/interfaces/ Directory
 
 The `hardware/interfaces/` directory contains all AOSP HAL interface
-definitions.  As of current AOSP, it contains 55 top-level interface
-directories:
+definitions.  In the Android 17 tree it holds 51 hardware interface directories
+(excluding the infrastructure directories `common`, `compatibility_matrices`,
+`scripts`, `staging`, and `tests`).  Every one of these is now an `aidl/`
+package; the legacy `hidl/` and `*.hal` subtrees have been pruned, and the
+HIDL-only `configstore` interface that earlier releases shipped is gone:
 
 | Category | HAL Interfaces |
 |----------|---------------|
 | **Media** | audio, camera, cas, drm, media, soundtrigger |
-| **Connectivity** | bluetooth, nfc, radio, tetheroffload, wifi, uwb, threadnetwork |
+| **Connectivity** | bluetooth, nfc, radio, tetheroffload, wifi, uwb, threadnetwork, macsec |
 | **Display** | graphics, light |
-| **Sensors** | sensors, contexthub |
+| **Sensors** | sensors, contexthub, motioncontext |
+| **Compute** | neuralnetworks, npu |
 | **Biometrics** | biometrics (face, fingerprint) |
-| **Security** | gatekeeper, keymaster, security, weaver, oemlock, authsecret, confirmationui, identity, secure_element |
+| **Security** | gatekeeper, keymaster, security (including security/see), weaver, oemlock, authsecret, confirmationui, identity, secure_element, rebootescrow |
 | **Power** | power, thermal, health, memtrack |
 | **Input** | input, vibrator, ir |
-| **Storage** | boot, fastboot, dumpstate |
+| **Boot/Diag** | boot, fastboot, dumpstate, atrace |
 | **Automotive** | automotive (vehicle, audiocontrol, evs, can, etc.) |
-| **TV** | tv |
-| **Other** | broadcastradio, configstore, gnss, macsec, neuralnetworks, renderscript, usb, virtualization |
+| **TV** | tv, broadcastradio |
+| **Other** | gnss, renderscript, usb, virtualization, apexkey |
 | **Infrastructure** | common, compatibility_matrices, scripts, staging, tests |
+
+The newest additions -- `motioncontext`, `npu`, and the `security/see` Trusted
+HAL family -- are covered in detail in section 10.8.
 
 Each interface directory typically contains:
 
@@ -2601,26 +2645,27 @@ flowchart TD
 ### 10.5.4.1 Detailed Compatibility Matrix Analysis
 
 To understand the scale of compatibility checking, let us examine the framework
-compatibility matrix for FCM level 202504
-(`hardware/interfaces/compatibility_matrices/compatibility_matrix.202504.xml`).
-This 736-line file encodes the complete set of HAL requirements for devices
-launching with Android 16.
+compatibility matrix for FCM level 202604
+(`hardware/interfaces/compatibility_matrices/compatibility_matrix.202604.xml`),
+the matrix that devices launching with Android 17 must satisfy.  It encodes the
+complete set of HAL requirements for the release.
 
-The matrix includes entries for every hardware subsystem:
+The matrix includes entries for every hardware subsystem (versions below are
+from the Android 17 matrix):
 
 | HAL Package | Required Versions | Instance Pattern |
 |-------------|------------------|------------------|
-| `android.hardware.audio.core` | 1-3 | default, a2dp, bluetooth, hearing_aid, msd, r_submix, stub, usb |
-| `android.hardware.audio.effect` | 1-3 | default |
-| `android.hardware.biometrics.face` | 3-4 | default, virtual |
+| `android.hardware.audio.core` | 1-4 | default, a2dp, bluetooth, hearing_aid, msd, r_submix, stub, usb |
+| `android.hardware.audio.effect` | 1-4 | default |
+| `android.hardware.biometrics.face` | 3-5 | default, virtual |
 | `android.hardware.biometrics.fingerprint` | 3-5 | default, virtual |
 | `android.hardware.bluetooth` | (latest) | default |
-| `android.hardware.bluetooth.audio` | 3-5 | default |
-| `android.hardware.camera.provider` | 1-3 | regex: `[^/]+/[0-9]+` |
-| `android.hardware.gnss` | 2-6 | default |
-| `android.hardware.graphics.allocator` | 1-2 | default |
-| `android.hardware.graphics.composer3` | 4 | default |
-| `android.hardware.health` | 3-4 | default |
+| `android.hardware.bluetooth.audio` | 3-6 | default |
+| `android.hardware.camera.provider` | 1-4 | regex: `[^/]+/[0-9]+` |
+| `android.hardware.gnss` | 2-7 | default |
+| `android.hardware.graphics.allocator` | 1-3 | default |
+| `android.hardware.graphics.composer3` | 4-5 | default |
+| `android.hardware.health` | 3-5 | default |
 | `android.hardware.identity` | 1-5 | default |
 | `android.hardware.power` | (latest) | default |
 | `android.hardware.sensors` | (latest) | default |
@@ -2682,23 +2727,41 @@ The Framework Compatibility Matrix level identifies the Android version that a
 device targets.  The `hardware/interfaces/compatibility_matrices/` directory
 contains matrices for each level:
 
+The Android 17 tree ships matrices for `7.xml` and `8.xml` plus the four
+date-based levels, with `202704` newly added for the next release:
+
 | File | FCM Level | Android Version |
 |------|-----------|----------------|
-| `compatibility_matrix.5.xml` | 5 | Android 11 |
-| `compatibility_matrix.6.xml` | 6 | Android 12 |
 | `compatibility_matrix.7.xml` | 7 | Android 13 |
 | `compatibility_matrix.8.xml` | 8 | Android 14 |
 | `compatibility_matrix.202404.xml` | 202404 | Android 15 |
 | `compatibility_matrix.202504.xml` | 202504 | Android 16 |
-| `compatibility_matrix.202604.xml` | 202604 | Android 17 (future) |
+| `compatibility_matrix.202604.xml` | 202604 | Android 17 |
+| `compatibility_matrix.202704.xml` | 202704 | Android 18 |
 
-The level naming changed from simple integers (5, 6, 7, 8) to date-based
-identifiers (202404, 202504, 202604) starting with Android 15.
+The level naming changed from simple integers to date-based identifiers
+(`YYYYMM`, where the month is always `04`) starting with Android 15.  The
+mapping is not folklore: the enum `Level` in
+`system/libvintf/include/vintf/Level.h` (lines 32-59) assigns symbolic letters
+to each level (`V = 202404`, `B = 202504`, `C = 202604`, `D = 202704`), and
+`GetDescription()` in `system/libvintf/analyze_matrix/analyze_matrix.cpp`
+(lines 87-94) prints them as "Android 15 (V)" through "Android 18 (D)".  By
+that table, the **target FCM level for a device launching with Android 17 is
+202604**; the `202704` matrix in the same tree is the in-development matrix for
+the next release (Android 18), which is how AOSP stages the next year's HAL
+requirements while the current release is still shipping.
 
 A device declares its target FCM level in the device manifest.  The framework
 selects the appropriate compatibility matrix based on that level.  This is how
 older devices can continue to work with newer frameworks -- the framework knows
 what HAL versions the device era supports and only requires those.
+
+The runtime also derives an FCM level straight from the GKI kernel release.
+`RuntimeInfo::gkiAndroidReleaseToLevel()` in `system/libvintf/RuntimeInfo.cpp`
+(lines 186-218) maps an Android release number to a `Level`: release 17 maps to
+`Level::C` (202604) and release 18 to `Level::D` (202704).  That gives VINTF a
+second, independent signal for what the kernel was built for when it validates
+compatibility at boot.
 
 ### 10.5.6 libvintf Internals
 
@@ -3552,14 +3615,253 @@ AServiceManager_registerForServiceNotifications(
 
 ---
 
-## 10.7 Try It: Write a Minimal AIDL HAL
+## 10.7 New HAL Surface in Android 17
+
+Every release adds a handful of HAL packages, and Android 17's additions are
+worth a section of their own because they show where the platform is heading:
+on-device motion intelligence, a first-class NPU contract, and a family of
+"Trusted HALs" that live inside a TEE and are reachable only from protected
+virtual machines.  All of them are AIDL `@VintfStability` interfaces -- there is
+no HIDL in this story at all -- and all of them are listed (as optional) in the
+Android 17 framework compatibility matrix
+`hardware/interfaces/compatibility_matrices/compatibility_matrix.202604.xml`.
+
+### 10.7.1 The Motion Context HAL
+
+`android.hardware.motioncontext` is an offloaded motion-classification service.
+A client subscribes to coarse motion signals (walking, in-vehicle, still, and
+so on) and the HAL delivers events from a low-power island instead of waking the
+application processor for every sample.  The root interface is tiny -- it is a
+factory that hands back a per-client object:
+
+```java
+// hardware/interfaces/motioncontext/aidl/android/hardware/motioncontext/IMotionContext.aidl (lines 28-44)
+
+@VintfStability
+interface IMotionContext {
+    IMotionContextClient registerClient(in IMotionContextCallback callback);
+}
+```
+
+The supporting types live in the same package:
+`IMotionContextClient` (the per-client handle used to configure subscriptions),
+`IMotionContextCallback` (the event sink), and the data parcelables
+`MotionEvent`, `MotionState`, `MotionSubscription`, `EventDeliveryReason`, and
+`ErrorCode`.  A client can attach a "dwell time" to a subscription so the HAL
+filters transient events on the offload engine, which is the whole point: the
+client gets the benefit of the full motion-signal suite while keeping the
+application processor asleep.
+
+The reference implementation under
+`hardware/interfaces/motioncontext/aidl/default/` registers a single
+`default` instance.  Its `init` service definition runs the daemon as the
+`context_hub` user, tying it to the same low-power subsystem that owns the
+Context Hub HAL:
+
+```
+# hardware/interfaces/motioncontext/aidl/default/motioncontext-service-default.rc
+
+service vendor.motioncontext-default /vendor/bin/hw/android.hardware.motioncontext-service.default
+    class hal
+    user context_hub
+    group context_hub
+```
+
+The interface is frozen at version 1
+(`hardware/interfaces/motioncontext/aidl/aidl_api/android.hardware.motioncontext/1/`).
+In the Android 17 matrix it appears as an optional `aidl` HAL pinned to
+`<version>1</version>` with a single `default` instance.
+
+### 10.7.2 The NPU HAL
+
+`android.hardware.npu` standardizes how the platform tells a Neural Processing
+Unit which workloads matter.  It is not an inference API -- that remains
+`android.hardware.neuralnetworks` -- it is a *scheduling* contract.  The
+framework feeds the NPU a set of per-UID priorities so the hardware can run
+high-priority work ahead of background work:
+
+```java
+// hardware/interfaces/npu/aidl/android/hardware/npu/IScheduling.aidl (lines 35-67)
+
+@VintfStability
+interface IScheduling {
+    void setSchedulingConfigs(in SchedulingConfig[] schedulingConfigs);
+    void updateSchedulingConfigs(in SchedulingConfig[] configs);
+    void setCallback(in @nullable ISchedulingCallback callback);
+}
+```
+
+Each `SchedulingConfig` carries a Linux `uid`, a `priority` in the range
+`MIN_PRIORITY = 0` (highest) to `MAX_PRIORITY = 1000` (lowest), and two policy
+booleans -- `hasDirectAccess` (may this UID submit work straight to the NPU?)
+and `canAttributeOtherUid` (may it bill work to other UIDs?), defined in
+`hardware/interfaces/npu/aidl/android/hardware/npu/SchedulingConfig.aidl`
+(lines 24-54).  The `ISchedulingCallback` lets the NPU report scheduling
+decisions back, using the `WorkInfo`, `StartReason`, `EndReason`, and `Uuid`
+parcelables in the same package.
+
+What is notable for the platform story is how the NPU HAL is delivered.  Its
+`aidl_interface` module in `hardware/interfaces/npu/aidl/Android.bp` marks the
+Java and NDK backends `apex_available` for both `//apex_available:platform` and
+`com.android.npumanager`, with `min_sdk_version: "36"`.  In other words the NPU
+HAL contract is packaged for the NPU Manager APEX -- a Mainline-style updatable
+module -- rather than being baked permanently into the system image.  The HAL is
+listed in the Android 17 matrix as an optional `aidl` HAL at `<version>1</version>`
+with a `default` instance.
+
+### 10.7.3 The Trusted HAL family: security/see
+
+The largest new cluster is `hardware/interfaces/security/see/` -- "see" for
+*Secure Embedded Environment*.  These are **Trusted HALs**: AIDL interfaces whose
+implementations live inside a TEE (a Trusted Execution Environment), and which
+are made available to Android **protected VMs**.  The directory's own README
+states the rule plainly:
+
+> This directory contains the AIDL interface definitions for services
+> implemented in a TEE and made available to Android protected VMs.
+> (`hardware/interfaces/security/see/README.md`)
+
+The family contains several independent HALs:
+
+| Package | Root interface | Purpose |
+|---------|---------------|---------|
+| `android.hardware.security.see.hwcrypto` | `IHwCryptoKey` | DICE-bound key derivation and a batched crypto command list, all inside the secure environment |
+| `android.hardware.security.see.storage` | `ISecureStorage` | Tamper-evident, rollback-protected filesystem for trusted services |
+| `android.hardware.security.see.authmgr` | `IAuthMgrAuthorization` | Authenticates a pVM's AuthMgr frontend to the TEE-side backend before clients reach trusted services |
+| `android.hardware.security.see.devicestate` | `IDeviceState` | Exposes secure device-state (e.g. boot/lock state) to trusted code |
+| `android.hardware.security.see.hdcp` | `IHdcpAuthControl` | HDCP authentication control for protected media paths |
+| `android.hardware.security.see.ext` | `ITrustedHalExt` | A required, *non*-VINTF-stable extension on every Trusted HAL's root binder |
+
+The HwCrypto HAL is the workhorse.  Its README
+(`hardware/interfaces/security/see/hwcrypto/aidl/README.md`) describes
+DICE-bound key derivation (keys cryptographically tied to the device identity
+and the caller's software version), opaque keys whose material never leaves the
+secure environment (`IOpaqueKey`), a command-list interface that runs a sequence
+of crypto operations in a single IPC, and `ProtectionId`-scoped keys that bind
+key use to specific memory regions such as trusted video buffers.  The entry
+point is `IHwCryptoKey`
+(`hardware/interfaces/security/see/hwcrypto/aidl/android/hardware/security/see/hwcrypto/IHwCryptoKey.aidl`).
+
+The AuthMgr HAL is the gatekeeper.  `IAuthMgrAuthorization`
+(`hardware/interfaces/security/see/authmgr/aidl/android/hardware/security/see/authmgr/IAuthMgrAuthorization.aidl`)
+runs a two-phase protocol: phase 1 authenticates the AuthMgr frontend (running
+inside a pVM) to the AuthMgr backend (in the TEE) by verifying a signature over a
+backend-issued challenge against a key recovered from a validated DICE
+certificate chain, and also enforces rollback protection; phase 2 then authorizes
+individual clients in that pVM to reach trusted services.  This is why the data
+types in the package are DICE artifacts -- `DiceLeafArtifacts`,
+`DiceChainEntry`, `DicePolicy`, `ExplicitKeyDiceCertChain`, and
+`SignedConnectionRequest`.
+
+The `ITrustedHalExt` requirement is a clever VTS hook.  Every top-level Trusted
+HAL must add `ITrustedHalExt`
+(`hardware/interfaces/security/see/ext/aidl/android/hardware/security/see/ext/ITrustedHalExt.aidl`)
+as an extension on its root binder.  The interface body is empty -- it exists
+only so VTS can confirm that the binder library exposing the Trusted HAL was
+built with the correct *vendor* stability guarantees.  Deliberately, this
+extension is *not* VINTF-stable, which is the whole test: a correctly built
+trusted binder can carry it, an incorrectly built one cannot.
+
+### 10.7.4 exclusive-to="virtual-machine" and the VINTF picture
+
+The Trusted HALs introduce a VINTF concept this chapter has not needed before:
+a HAL that is not reachable from the Android host at all.  In the Android 17
+matrix, three of the `security.see` entries carry a new attribute:
+
+```xml
+<!-- hardware/interfaces/compatibility_matrices/compatibility_matrix.202604.xml (security.see.storage stanza) -->
+<hal format="aidl" exclusive-to="virtual-machine">
+    <name>android.hardware.security.see.storage</name>
+    <version>1</version>
+    <interface>
+        <name>ISecureStorage</name>
+        <instance>default</instance>
+    </interface>
+</hal>
+```
+
+The `exclusive-to` attribute is backed by the `ExclusiveTo` enum in
+`system/libvintf/include/vintf/ExclusiveTo.h` (lines 26-40), which has exactly
+two values: `EMPTY` (the default -- a normal host-accessible service) and `VM`,
+serialized as the string `"virtual-machine"`.  Its comment is the contract:
+a `VM`-exclusive service is "Exclusive to processes inside virtual machines on
+devices" and "Host processes do not have access to these services."  VINTF
+threads `ExclusiveTo` through manifest and matrix matching across
+`system/libvintf/` (it appears in `HalManifest`, `ManifestHal`,
+`CompatibilityMatrix`, `MatrixHal`, and the instance classes), so a Trusted HAL
+declared `exclusive-to="virtual-machine"` is matched against pVM manifests, not
+the host manifest.  `devicestate`, `storage`, and `authmgr` are all marked this
+way; `hwcrypto` is not, because it is reachable from the host as well.
+
+This diagram shows where each new HAL sits relative to the host OS, a protected
+VM, and the TEE.
+
+```mermaid
+graph TD
+    subgraph "Application Processor (Android host)"
+        APP["App / framework"]
+        MC["motioncontext HAL<br/>(user context_hub)"]
+        NPU["npu HAL<br/>(IScheduling, NPU Manager APEX)"]
+        HWC["security.see.hwcrypto<br/>(IHwCryptoKey, host-reachable)"]
+        APP --> MC
+        APP --> NPU
+        APP --> HWC
+    end
+
+    subgraph "Protected VM (pVM)"
+        FE["AuthMgr frontend"]
+        TS["Trusted-service clients"]
+    end
+
+    subgraph "TEE (Trusted Execution Environment)"
+        BE["AuthMgr backend<br/>(IAuthMgrAuthorization)"]
+        SS["security.see.storage<br/>(ISecureStorage)"]
+        DS["security.see.devicestate<br/>(IDeviceState)"]
+    end
+
+    FE -->|"DICE-authenticated channel"| BE
+    TS -->|"exclusive-to=virtual-machine"| SS
+    TS -->|"exclusive-to=virtual-machine"| DS
+    HWC -.->|"keys live in"| BE
+
+    style SS fill:#e8f5e9
+    style DS fill:#e8f5e9
+    style BE fill:#fff3e0
+```
+
+### 10.7.5 The 202704 matrix and the next-release staging pattern
+
+While Android 17's target FCM level is 202604, the same tree already carries
+`hardware/interfaces/compatibility_matrices/compatibility_matrix.202704.xml`,
+declared `level="202704"` on its root element.  Per the `Level` enum in
+`system/libvintf/include/vintf/Level.h` (line 48), 202704 is `Level::D`, which
+`analyze_matrix.cpp` prints as "Android 18 (D)".  This is AOSP's standard staging
+pattern: the next release's compatibility matrix is committed into the current
+tree (it was added in 2026) so HAL owners can register new version requirements
+for the upcoming release while the current one is still shipping.  The new
+HALs in this section appear in both the 202604 and 202704 matrices, so a device
+that adopts them is forward-compatible with the next level as well.
+
+```mermaid
+flowchart LR
+    A["compatibility_matrix.202404.xml<br/>Level V (Android 15)"] --> B["compatibility_matrix.202504.xml<br/>Level B (Android 16)"]
+    B --> C["compatibility_matrix.202604.xml<br/>Level C (Android 17, target)"]
+    C --> D["compatibility_matrix.202704.xml<br/>Level D (Android 18, staged)"]
+
+    style C fill:#e8f5e9
+    style D fill:#fff3e0
+```
+
+---
+
+## 10.8 Try It: Write a Minimal AIDL HAL
 
 In this section, we will write a complete AIDL HAL from scratch: interface
 definition, implementation in both C++ and Rust, VINTF manifest, init.rc, build
 rules, and a client.  We will create a simple "Greeting" HAL that demonstrates
 all the concepts covered in this chapter.
 
-### 10.7.1 Step 1: Define the AIDL Interface
+### 10.8.1 Step 1: Define the AIDL Interface
 
 Create the directory structure:
 
@@ -3652,7 +3954,7 @@ Key observations:
 - Error reporting uses `ServiceSpecificException`, which maps to
   `EX_SERVICE_SPECIFIC` in the Binder protocol.
 
-### 10.7.2 Step 2: Create the Build Definition
+### 10.8.2 Step 2: Create the Build Definition
 
 ```
 // hardware/interfaces/greeting/aidl/Android.bp
@@ -3692,7 +3994,7 @@ This generates libraries for all four backends:
 - `android.hardware.greeting-V1-ndk`
 - `android.hardware.greeting-V1-rust`
 
-### 10.7.3 Step 3: Implement the HAL in C++ (NDK Backend)
+### 10.8.3 Step 3: Implement the HAL in C++ (NDK Backend)
 
 The NDK backend is the recommended choice for C++ vendor HAL implementations.
 
@@ -3857,7 +4159,7 @@ Key build flags:
 - `vintf_fragments` -- automatically installs the VINTF manifest fragment.
 - `static_libs` includes the generated NDK interface library.
 
-### 10.7.4 Step 4: Implement the HAL in Rust
+### 10.8.4 Step 4: Implement the HAL in Rust
 
 An alternative implementation in Rust (as shown by the Lights HAL):
 
@@ -3971,7 +4273,7 @@ rust_binary {
 }
 ```
 
-### 10.7.5 Step 5: Write the VINTF Manifest Fragment
+### 10.8.5 Step 5: Write the VINTF Manifest Fragment
 
 ```xml
 <!-- hardware/interfaces/greeting/aidl/default/greeting-default.xml -->
@@ -3994,7 +4296,7 @@ The fragment declares:
 - **version**: The frozen API version this implementation provides
 - **fqname**: `InterfaceName/instance`
 
-### 10.7.6 Step 6: Write the init.rc Service Definition
+### 10.8.6 Step 6: Write the init.rc Service Definition
 
 ```
 # hardware/interfaces/greeting/aidl/default/greeting-default.rc
@@ -4023,7 +4325,7 @@ service vendor.greeting-default /vendor/bin/hw/android.hardware.greeting-service
     rlimit rtprio 10 10
 ```
 
-### 10.7.7 Step 7: Write a Client
+### 10.8.7 Step 7: Write a Client
 
 **C++ client (NDK):**
 
@@ -4139,7 +4441,7 @@ fn main() {
 }
 ```
 
-### 10.7.8 Step 8: Build and Test
+### 10.8.8 Step 8: Build and Test
 
 **Build the HAL:**
 
@@ -4195,7 +4497,7 @@ adb shell service check android.hardware.greeting.IGreeting/default
 # Expected: Service android.hardware.greeting.IGreeting/default: found
 ```
 
-### 10.7.9 Step 9: Freeze the API
+### 10.8.9 Step 9: Freeze the API
 
 Before shipping the HAL, freeze the API to create an immutable version
 snapshot:
@@ -4231,7 +4533,7 @@ To add new methods in a future version:
 4. Run `m android.hardware.greeting-update-api` to create version 2.
 5. Re-add `frozen: true`.
 
-### 10.7.9.1 Understanding API Evolution
+### 10.8.9.1 Understanding API Evolution
 
 API evolution is the most important aspect of long-term HAL maintenance.  Let
 us walk through how you would add a new method to the Greeting HAL in version 2.
@@ -4346,7 +4648,7 @@ ndk::ScopedAStatus Greeting::greetInLanguage(
   or a transaction error.  The client must handle this gracefully, typically
   by falling back to `greetByName()`.
 
-### 10.7.10 Debugging HAL Services
+### 10.8.10 Debugging HAL Services
 
 Several tools are available for debugging HAL services at runtime:
 
@@ -4403,7 +4705,7 @@ adb shell cat /sys/kernel/debug/binder/transactions
 adb shell cat /sys/kernel/debug/binder/proc/<pid>
 ```
 
-### 10.7.11 Common Pitfalls
+### 10.8.11 Common Pitfalls
 
 When developing AIDL HALs, several common issues arise:
 
@@ -4439,9 +4741,9 @@ success but clients get `nullptr` from `getService()`.
 
 ---
 
-## 10.8 Summary
+## 10.9 Summary
 
-### 10.8.1 Architecture Comparison
+### 10.9.1 Architecture Comparison
 
 The following diagram summarizes the three HAL generations and their
 relationship to the system architecture:
@@ -4482,7 +4784,7 @@ graph TD
     end
 ```
 
-### 10.8.2 Key Metrics
+### 10.9.2 Key Metrics
 
 | Metric | Legacy HAL | HIDL | AIDL HAL |
 |--------|-----------|------|----------|
@@ -4495,7 +4797,7 @@ graph TD
 | APEX updatability | No | Limited | Yes |
 | Memory per HAL | Shared with host | 2-8 MB per process | 2-8 MB per process |
 
-### 10.8.3 Decision Tree: Which HAL Technology to Use
+### 10.9.3 Decision Tree: Which HAL Technology to Use
 
 ```mermaid
 flowchart TD
@@ -4516,7 +4818,7 @@ flowchart TD
     style I fill:#fff3e0
 ```
 
-### 10.8.4 The Big Picture
+### 10.9.4 The Big Picture
 
 The HAL is the critical boundary between Android's open-source framework and
 vendor-proprietary hardware support.  Its design has evolved through three
@@ -4569,7 +4871,7 @@ The key files for further exploration:
 | `frameworks/native/cmds/servicemanager/ServiceManager.cpp` | ~120 | Service manager VINTF integration |
 | `hardware/interfaces/compatibility_matrices/compatibility_matrix.202504.xml` | 736 | Framework compatibility matrix |
 
-### 10.8.5 What Happens When You Press the Power Button: A HAL Trace
+### 10.9.5 What Happens When You Press the Power Button: A HAL Trace
 
 To make the HAL architecture concrete, let us trace what happens when a user
 presses the power button to wake the device.  This involves multiple HALs
@@ -4608,7 +4910,7 @@ Each HAL is a separate process, running in its own SELinux domain, accessed
 through Binder IPC.  The framework orchestrates them without knowing their
 implementation details -- only their AIDL interfaces.
 
-### 10.8.6 Future Directions
+### 10.9.6 Future Directions
 
 The HAL architecture continues to evolve:
 

@@ -11,7 +11,7 @@ description: |
   logcat, dumpsys). Chapters 52–56.
 metadata:
   author: 'utzcoz'
-  last-updated: '2026-06-16'
+  last-updated: '2026-06-20'
 ---
 
 # AOSP Part XIII — Infrastructure

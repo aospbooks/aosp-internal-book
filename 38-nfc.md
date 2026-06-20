@@ -1916,8 +1916,8 @@ must prioritize or compress entries.
 ### 38.6.10 Preferred Payment Services and Wallet Role
 
 Android designates one "preferred payment service" that handles payment AIDs
-by default.  This is tied to the **Wallet Role** introduced in recent Android
-versions:
+by default.  This is tied to the **Wallet Role** (`RoleManager.ROLE_WALLET`),
+which replaced the older "default payment app" setting:
 
 ```java
 // Source: packages/modules/Nfc/NfcNci/src/com/android/nfc/cardemulation/
@@ -1926,11 +1926,35 @@ final WalletRoleObserver mWalletRoleObserver;
 final PreferredServices mPreferredServices;
 ```
 
+`WalletRoleObserver` watches role changes through `RoleManager` and resolves the
+active holder per user:
+
+```java
+// Source: packages/modules/Nfc/NfcNci/src/com/android/nfc/cardemulation/
+//         WalletRoleObserver.java
+public PackageAndUser getDefaultWalletRoleHolder(int userId) {
+    // ...
+    List<String> roleHolders = mRoleManager.getRoleHoldersAsUser(
+            RoleManager.ROLE_WALLET, roleUserHandle);
+    // ...
+}
+```
+
+When the holder changes, `CardEmulationManager.onWalletRoleHolderChanged()` fans
+the new package out to `PreferredServices` and `RegisteredAidCache`
+(`packages/modules/Nfc/NfcNci/src/com/android/nfc/cardemulation/CardEmulationManager.java`),
+so the routing table follows the wallet role.
+
 The Wallet Role holder gets priority for:
 
 - Payment category AIDs
 - Tap-to-pay UI
 - Default contactless payment selection
+
+The Wallet Role coverage is widened in Android 17.  Section 38.10 describes the
+new **associated-package** plumbing that lets the role holder grant role-holder
+routing priority to a sibling package without that package owning the role
+itself.
 
 ### 38.6.11 Observe Mode and Polling Loop Filters
 
@@ -1967,6 +1991,37 @@ public void onObserveModeEnabledInFirmware() {
     onObserveModeStateChanged(true);
 }
 ```
+
+Apps toggle observe mode with `NfcAdapter.setObserveModeEnabled(boolean)`, gated
+by `isObserveModeSupported()`.  The service rejects the toggle if a transaction
+or tag operation is already in progress, so the state machine never flips
+mid-APDU:
+
+```java
+// Source: packages/modules/Nfc/NfcNci/src/com/android/nfc/NfcService.java
+private boolean setObserveModeInternal(boolean enable, int callingUid,
+        String packageName, int triggerSource) {
+    synchronized (NfcService.this) {
+        if (mCardEmulationManager.isHostCardEmulationActivated()) {
+            return false;   // cannot toggle during a transaction
+        }
+        if (mTagConnected) {
+            return false;   // cannot toggle during tag operations
+        }
+        boolean result = mDeviceHost.setObserveMode(enable);
+        // ... statsd + event log ...
+    }
+}
+```
+
+Android 17 adds `NfcAdapter.allowOneTransaction()` (guarded by the
+`nfcstack_26q2_updates` flag in `packages/modules/Nfc/flags/flags.aconfig`),
+which temporarily disables observe mode for a *single* HCE transaction and then
+re-enables it automatically once the transaction completes or the RF field is
+lost.  This is the building block a wallet uses to let one tap-to-pay through
+without permanently leaving observe mode off.  It reaches the service through
+`INfcAdapter.allowOneTransaction()`
+(`packages/modules/Nfc/framework/java/android/nfc/INfcAdapter.aidl`).
 
 ### 38.6.12 Off-Host Card Emulation
 
@@ -2794,9 +2849,267 @@ classDiagram
 
 ---
 
-## 38.10 Try It: NFC Development Exercises
+## 38.10 Tap to X and the Gesture Exchange API
 
-### 38.10.1 Exercise 1: Read an NDEF Tag
+Android 17 introduces a new system-API surface called **Tap to X** that turns a
+contactless tap into an app-defined "exchange" gesture rather than just an NDEF
+read or a payment.  The canonical use is **Tap to Share**: two phones, or a
+phone and an accessory, briefly hold their NFC antennas together and the
+platform hands the foreground app a `Tag` it can transceive with, without the
+usual NDEF dispatch, sounds, or vibration.  The whole surface is guarded by the
+`tap_to_x` aconfig flag.
+
+#### Mermaid: Tap to X gesture-exchange flow
+
+```mermaid
+flowchart TD
+    APP["Privileged app<br/>(holds PERFORM_GESTURE_EXCHANGE)"]
+    LISTENER["NfcGestureExchangeCallbackListener<br/>(IReaderCallback.Stub)"]
+    ADAPTER["NfcAdapter.registerGestureExchangeReaderCallback()"]
+    SVC["NfcService.registerGestureExchangeCallback()"]
+    POLL["Polling loop<br/>onRemoteEndpointDiscovered()"]
+    SELECT["SELECT GESTURE_EXCHAGE_AID<br/>(A00000047609)"]
+    CB["callback.onTagDiscovered(gestureTag)"]
+
+    APP --> ADAPTER
+    ADAPTER --> LISTENER
+    LISTENER -->|"registerGestureExchangeCallback (binder)"| SVC
+    POLL -->|"ISO-DEP endpoint"| SELECT
+    SELECT -->|"90 00 success"| CB
+    CB --> LISTENER
+    LISTENER -->|"executor.execute"| APP
+```
+
+### 38.10.1 The PERFORM_GESTURE_EXCHANGE permission
+
+Tap to X is not an ordinary app capability.  Registering for gesture exchange
+requires the new signature-level permission `PERFORM_GESTURE_EXCHANGE`, enforced
+inside the service:
+
+```java
+// Source: packages/modules/Nfc/NfcNci/src/com/android/nfc/NfcPermissions.java
+static final String GESTURE_EXCHANGE_PERMISSION =
+        android.Manifest.permission.PERFORM_GESTURE_EXCHANGE;
+
+public static void enforceGestureExchangePermissions(Context context) {
+    context.enforceCallingOrSelfPermission(GESTURE_EXCHANGE_PERMISSION,
+            GESTURE_EXCHANGE_PERM_ERROR);
+}
+```
+
+Every gesture-exchange entry point in `NfcService` calls
+`enforceGestureExchangePermissions()` before touching state, so only the trusted
+holder (for example a system Tap-to-Share component) can intercept the gesture.
+
+### 38.10.2 NfcGestureExchangeCallbackListener
+
+Apps do not talk to the service directly.  `NfcAdapter` keeps a single
+`NfcGestureExchangeCallbackListener`, which is itself an `IReaderCallback.Stub`
+binder object that multiplexes one or more app `ReaderCallback`s:
+
+```java
+// Source: packages/modules/Nfc/framework/java/android/nfc/
+//         NfcGestureExchangeCallbackListener.java
+public final class NfcGestureExchangeCallbackListener extends IReaderCallback.Stub {
+    private final Map<ReaderCallback, Executor> mCallbackMap = new HashMap<>();
+
+    public void register(@NonNull Executor executor, @NonNull ReaderCallback callback) {
+        // first registration links to NFC service death and calls
+        // NfcAdapter.getService().registerGestureExchangeCallback(this);
+    }
+
+    @Override
+    public void onTagDiscovered(Tag tag) {
+        // fan the tag out to each registered ReaderCallback on its executor
+    }
+}
+```
+
+The application-facing methods are `registerGestureExchangeReaderCallback()` and
+`unregisterGestureExchangeReaderCallback()` on `NfcAdapter`, both
+`@FlaggedApi(FLAG_TAP_TO_X)` and both requiring `PERFORM_GESTURE_EXCHANGE`
+(`packages/modules/Nfc/framework/java/android/nfc/NfcAdapter.java`).  The
+listener also installs a `DeathRecipient`: if the NFC service process dies, it
+re-registers the callback once the service comes back, so a long-lived
+Tap-to-Share component does not silently stop receiving gestures.
+
+Registering a gesture callback implicitly suppresses platform feedback.  The
+documentation notes it behaves like passing `FLAG_READER_NO_PLATFORM_SOUNDS`,
+so a gesture tap does not play the usual tag chirp or vibration.
+
+### 38.10.3 The gesture-exchange AID and polling-loop interception
+
+A gesture tap is detected by selecting a fixed application identifier rather
+than reading NDEF.  The primary AID is a constant in `NfcService`, returned to
+callers via `NfcAdapter.getGestureExchangeAid()`:
+
+```java
+// Source: packages/modules/Nfc/NfcNci/src/com/android/nfc/NfcService.java
+public static final String GESTURE_EXCHAGE_AID = "A00000047609";
+public static final String GESTURE_EXCHAGE_SECONDARY_AID_SETTINGS_KEY =
+        "nfc.gesture_exchange_secondary_aid";
+public static final String GESTURE_EXCHANGE_COMPONENT_SETTINGS_KEY =
+        "nfc.gesture_exchange_component";
+```
+
+When a gesture poll frame has been configured, `mGestureExchangeEnabled` is set
+and the discovery handler checks the endpoint for the gesture AID *before*
+falling through to ordinary NDEF reading.  On an ISO-DEP endpoint with no reader
+mode active, `NfcService` transceives a `SELECT` for the (optional) secondary
+AID and then the primary `GESTURE_EXCHAGE_AID`; a `90 00` status word means the
+remote end is a gesture target:
+
+```java
+// Source: packages/modules/Nfc/NfcNci/src/com/android/nfc/NfcService.java
+byte[] gestureAidCheckCmd = buildSelectAidCommand(GESTURE_EXCHAGE_AID);
+respData = tag.transceive(gestureAidCheckCmd, false, retCode);
+if (respData != null && respData.length >= 2
+        && respData[respData.length - 2] == (byte) 0x90
+        && respData[respData.length - 1] == 0x00) {
+    // Gesture Exchange AID exists, skip NDEF read
+    if (SdkLevel.isAtLeastC() && mNfcGestureExchangeCallback != null) {
+        Tag gestureTag = buildGestureTag(tag, gestureComponent, GESTURE_EXCHAGE_AID);
+        mNfcGestureExchangeCallback.onTagDiscovered(gestureTag);
+    } else {
+        // fall back to dispatching a synthetic gesture intent
+    }
+}
+```
+
+`buildGestureTag()` wraps the live ISO-DEP endpoint as a `Tag` that also carries
+a synthetic Android Application Record (the configured gesture component) and an
+`EXTRA_AID`, so the gesture target is dispatched to exactly the right component
+even on the legacy intent path.  The `mGestureExchangeEnabled` flag itself is
+driven by a `Settings.Secure` poll-frame value watched by a `ContentObserver`
+in `NfcService` (`updateGesturePollFrame()`), which also pushes the default poll
+frame down to the controller via `mDeviceHost.setDefaultFrame()`.
+
+### 38.10.4 Tap-to-X routing: gesture vs NDEF vs payment
+
+The gesture path is deliberately layered *on top of* the existing dispatch
+chain (Section 38.5) rather than replacing it.  Within
+`onRemoteEndpointDiscovered()`, the precedence for an ISO-DEP endpoint is:
+
+1. An explicit **reader-mode** request from a foreground app wins outright.
+2. Otherwise, if **gesture exchange** is enabled, the service selects the
+   secondary then primary gesture AID; a match short-circuits to the gesture
+   callback (or a synthetic gesture dispatch) and starts presence checking.
+3. Otherwise the endpoint falls through to ordinary **NDEF read** and the
+   three-tier tag-dispatch intents.
+
+```mermaid
+flowchart TD
+    EP["ISO-DEP endpoint discovered"]
+    RM{"Reader mode<br/>requested?"}
+    GE{"Gesture exchange<br/>enabled?"}
+    SECOND{"Secondary AID<br/>selects 90 00?"}
+    PRIMARY{"Primary gesture<br/>AID selects 90 00?"}
+    READER["Deliver to reader-mode callback"]
+    GCB["Deliver gestureTag to callback"]
+    NDEF["NDEF read then tag dispatch"]
+
+    EP --> RM
+    RM -->|"yes"| READER
+    RM -->|"no"| GE
+    GE -->|"no"| NDEF
+    GE -->|"yes"| SECOND
+    SECOND -->|"yes"| GCB
+    SECOND -->|"no"| PRIMARY
+    PRIMARY -->|"yes"| GCB
+    PRIMARY -->|"no"| NDEF
+```
+
+This keeps Tap to X invisible to ordinary tags and ordinary payment taps: a
+plain NDEF poster or a contactless card never answers the gesture `SELECT`, so
+it flows straight through to the NDEF/HCE paths described earlier in the
+chapter.
+
+## 38.11 Wallet Role Associated Packages
+
+Android 17 loosens the one-package assumption baked into the Wallet Role
+(Section 38.6.10).  Previously only the single `ROLE_WALLET` holder package got
+role-holder routing priority.  In 17 the holder can **declare an associated
+package** that shares its priority, which matters when a wallet ships its
+NFC/observe-mode logic in a sibling app or an app signed with a different
+certificate.
+
+The opt-in is a manifest application property,
+`PROPERTY_ALLOW_SHARED_ROLE_PRIORITY`:
+
+```java
+// Source: packages/modules/Nfc/framework/java/android/nfc/cardemulation/
+//         CardEmulation.java
+public static final String PROPERTY_ALLOW_SHARED_ROLE_PRIORITY =
+        "android.nfc.cardemulation.PROPERTY_ALLOW_SHARED_ROLE_PRIORITY";
+```
+
+Per its documentation, the role holder can set the property's `android:value` to
+`true` (share priority with any package signed by the same certificate) or to a
+specific package name (share with exactly that package, even if signed
+differently).  `RegisteredAidCache` reads this property off the wallet holder
+(and, failing that, the preferred payment service) and records the associated
+package, even when that package owns no card-emulation service at all:
+
+```java
+// Source: packages/modules/Nfc/NfcNci/src/com/android/nfc/cardemulation/
+//         RegisteredAidCache.java
+PackageManager.Property prop = pm.getProperty(
+        CardEmulation.PROPERTY_ALLOW_SHARED_ROLE_PRIORITY,
+        mDefaultWalletHolderPackageName);
+// Associated wallet role package may not have any CE service (only for ability
+// to toggle observe mode), so add these packages directly here.
+if (prop.getString() != null) {
+    mAssociatedRolePackageNames.add(prop.getString());
+}
+```
+
+Resolution then treats the holder and its associated packages uniformly.
+`isDefaultOrAssociatedWalletService()` and `isDefaultOrAssociatedWalletPackage()`
+return `true` for the holder *or* any associated service/package (gated by the
+`nfc_associated_role_services` flag), so the associated app can register AIDs at
+role-holder priority and toggle observe mode (Section 38.6.11) as if it were the
+wallet itself.  As noted in the source comment above, a frequent reason for the
+association is precisely to let a helper package call
+`setObserveModeEnabled()` / `allowOneTransaction()` on the wallet's behalf
+without it owning any HCE service.
+
+## 38.12 NFC Mainline Flags in Android 17
+
+Because NFC ships as the `com.android.nfcservices` Mainline APEX (Section
+38.1.8), almost every 17 behavior change is gated by an aconfig flag, so the
+platform can ship the code and turn it on per release train.  Most live in the
+module flag set `packages/modules/Nfc/flags/flags.aconfig` (container
+`com.android.nfcservices`, accessor `com.android.nfc.module.flags.Flags`):
+
+| Module flag | Gates |
+|------|-------|
+| `tap_to_x` | The Tap to X / gesture-exchange API (Section 38.10) and the observe-mode-always-on feature it depends on |
+| `nfcstack_26q2_updates` | NCI-stack updates, including `NfcAdapter.allowOneTransaction()` (Section 38.6.11) and the V2 tag-app preference store |
+| `screen_state_attribute_toggle` | Runtime toggling of `requireDeviceUnlock` / `requireDeviceScreenOn` on an HCE service |
+| `get_polling_loop_filters` | API to fetch the polling-loop filters a service registered |
+| `nfc_power_saving_mode` | Get/set the controller's power-saving mode |
+| `oem_extension_25q4` | OEM extension hooks for the 25Q4 train (`NfcOemExtension`) |
+
+A handful of framework-side flags live in the `android.nfc` namespace instead
+and gate public-API surface in the `framework/` tree.  The most relevant here is
+`android.nfc.nfc_associated_role_services`, which gates the wallet-role
+associated-package feature (Section 38.11): it guards both the
+`PROPERTY_ALLOW_SHARED_ROLE_PRIORITY` field (see
+`packages/modules/Nfc/framework/api/current.txt`) and the
+`Flags.nfcAssociatedRoleServices()` branches in
+`packages/modules/Nfc/NfcNci/src/com/android/nfc/cardemulation/RegisteredAidCache.java`.
+
+Module flags are read through the generated `com.android.nfc.module.flags.Flags`
+accessor (for example `@FlaggedApi(FLAG_TAP_TO_X)` on `NfcAdapter` methods).
+Reading the relevant flag is the most reliable way to tell, at runtime, whether
+a given Android 17 NFC behavior is actually active on a device, since Mainline
+trains enable them independently of the platform dessert.
+
+---
+
+## 38.13 Try It: NFC Development Exercises
+
+### 38.13.1 Exercise 1: Read an NDEF Tag
 
 **Goal**: Build an activity that reads NDEF messages from tags.
 
@@ -2898,7 +3211,7 @@ public class ReadNdefActivity extends Activity {
 **Verification**: write an NDEF URI tag with a tool like NFC TagWriter, then
 tap your phone.  The activity should launch and display the tag content.
 
-### 38.10.2 Exercise 2: Write an NDEF Tag
+### 38.13.2 Exercise 2: Write an NDEF Tag
 
 **Goal**: Write NDEF content to a blank or rewritable tag.
 
@@ -2996,7 +3309,7 @@ public class WriteNdefActivity extends Activity {
 **Verification**: tap a blank NTAG213/215/216 tag, then read it back with
 Exercise 1 or any NFC reader app.
 
-### 38.10.3 Exercise 3: Implement a Payment HCE Service
+### 38.13.3 Exercise 3: Implement a Payment HCE Service
 
 **Goal**: Build a minimal HCE service that responds to payment SELECT commands.
 
@@ -3124,7 +3437,7 @@ public class DemoPaymentService extends HostApduService {
 **Verification**: use an NFC reader app on another phone to send a SELECT APDU
 for the Visa AID.
 
-### 38.10.4 Exercise 4: Use Reader Mode
+### 38.13.4 Exercise 4: Use Reader Mode
 
 **Goal**: Use reader mode for reliable tag reading without card emulation
 interference.
@@ -3231,7 +3544,7 @@ public class ReaderModeActivity extends Activity
 **Verification**: tap various NFC tags and cards.  The activity should display
 their technology details and content.
 
-### 38.10.5 Exercise 5: Foreground Dispatch
+### 38.13.5 Exercise 5: Foreground Dispatch
 
 **Goal**: Use foreground dispatch to intercept tags destined for other apps.
 
@@ -3304,7 +3617,7 @@ public class ForegroundDispatchActivity extends Activity {
 }
 ```
 
-### 38.10.6 Exercise 6: Dump the NFC Routing Table
+### 38.13.6 Exercise 6: Dump the NFC Routing Table
 
 **Goal**: Use `dumpsys` to inspect the NFC service state and routing table.
 
@@ -3353,7 +3666,7 @@ adb logcat -s NfcService:V NfcDispatcher:V NfcCardEmulationManager:V
 adb shell setprop persist.nfc.snoop_log_mode full
 ```
 
-### 38.10.7 Exercise 7: Inspect NFC HAL via AIDL
+### 38.13.7 Exercise 7: Inspect NFC HAL via AIDL
 
 **Goal**: Understand the HAL interface by examining the AIDL definitions.
 
@@ -3383,7 +3696,7 @@ atest VtsHalNfcTargetTest
 3. What events does `INfcClientCallback` deliver?
 4. How does the HAL handle power management (`NfcCloseType`)?
 
-### 38.10.8 Exercise 8: NFC-F FeliCa Emulation
+### 38.13.8 Exercise 8: NFC-F FeliCa Emulation
 
 **Goal**: Build a minimal NFC-F (FeliCa) card emulation service.
 
@@ -3517,6 +3830,15 @@ Off-host card emulation routes transactions directly to the SE.
 **NFC-F and NFC-V** -- FeliCa (NFC-F) support includes reader mode via `NfcF`
 and host emulation via `HostNfcFService`.  NFC-V (ISO 15693) provides
 longer-range communication for inventory and industrial tags.
+
+**Android 17** -- the NFC Mainline module adds **Tap to X** (the
+`PERFORM_GESTURE_EXCHANGE`-gated `NfcGestureExchangeCallbackListener` /
+gesture-exchange API behind the `tap_to_x` flag), the
+`allowOneTransaction()` single-tap observe-mode escape hatch, and
+**wallet-role associated packages** (`PROPERTY_ALLOW_SHARED_ROLE_PRIORITY`) that
+let the `ROLE_WALLET` holder share routing priority with a sibling package.
+Almost every change is gated by an aconfig flag in
+`packages/modules/Nfc/flags/flags.aconfig`.
 
 The key source files to study:
 

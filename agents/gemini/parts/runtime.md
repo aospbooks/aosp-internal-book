@@ -584,6 +584,12 @@ Key components of a `mirror::Class`:
 - **class_size** -- size of an instance of this class
 - **status** -- current class status (loaded, verified, initialized, etc.)
 - **class_loader** -- reference to the ClassLoader that loaded this class
+- **class_flags** -- a `uint32_t` bitset (`art/runtime/mirror/class_flags.h`)
+  that the GC and runtime use to take fast paths without inspecting the whole
+  class. The common case is `kClassFlagNormal`; other bits mark strings, arrays,
+  reference classes, class loaders, the dex cache, and (Android 17) record and
+  value classes. The exact layout, and how Android 17 reworked record classes,
+  is covered in section 18.11.
 
 #### DexCache
 
@@ -635,7 +641,7 @@ Source: `art/libdexfile/` (library that parses and validates DEX files).
 The DEX header is defined in `art/libdexfile/dex/dex_file.h`:
 
 ```
-// art/libdexfile/dex/dex_file.h, lines 137-161
+// art/libdexfile/dex/dex_file.h, lines 134-179
 struct Header {
   Magic magic_ = {};              // "dex\n035\0" or similar
   uint32_t checksum_ = 0;        // adler32 of everything except magic and this field
@@ -663,15 +669,36 @@ struct Header {
 };
 ```
 
-DEX version 41 adds container support (multiple DEX files in a single container):
+DEX version 41 (magic `dex\n041\0`) adds *container* support: several logical
+DEX files are concatenated into one contiguous blob, and each one carries two
+extra header words pointing back at the enclosing container. The DEX-container
+version constant is `DexFile::kDexContainerVersion = 41`
+(`art/libdexfile/dex/dex_file.h`, line 112), and the extended header is
+`HeaderV41`:
 
 ```
-// art/libdexfile/dex/dex_file.h, lines 184-187
+// art/libdexfile/dex/dex_file.h, lines 181-184
 struct HeaderV41 : public Header {
   uint32_t container_size_ = 0;  // total size of all dex files in the container
   uint32_t header_offset_ = 0;   // offset of this dex's header in the container
 };
 ```
+
+`DexFile::HasDexContainer()` returns true for V41-or-newer files (even a
+container holding a single DEX), and `GetDexContainerRange()` reconstructs the
+whole container span by walking back `header_offset_` bytes from `Begin()` and
+spanning `container_size_` bytes (`art/libdexfile/dex/dex_file.h`, lines
+291-303). The loader keys multi-entry handling off this: in
+`art/libdexfile/dex/dex_file_loader.h` (line 113) every non-primary DEX whose
+version is `>= kDexContainerVersion` is opened as a container entry, and the
+loader asserts `IsDexContainerLastEntry()` once the final entry has been
+consumed (line 213). Two Android 17 hardening fixes tightened this path: the
+verifier now rejects a header whose claimed `container_size_` exceeds the actual
+mapped size ("[V41] Check that the claimed size is LE than the actual size"),
+and the loader ignores any superfluous bytes trailing a container so a plain
+`.dex` file is required to hold exactly one container ("Ensure we ignore
+superfluous data after dex container"). See section 18.11 (Android 17 changes)
+for how the V41 rollout interacts with profiles and dex2oat.
 
 ### 18.2.2 File Layout
 
@@ -1106,16 +1133,20 @@ This would produce a DEX file with approximately:
 - **Class def**: 1 entry for `com.example.Hello`.
 - **Code items**: 3 items for the three methods of Hello.
 
-### 18.2.16 Standard vs Compact DEX
+### 18.2.16 Standard vs Container DEX
 
-ART historically supported two DEX variants:
-
-- **Standard DEX** (`StandardDexFile`) -- the traditional DEX format as
-  described above.
-- **Compact DEX** (now deprecated) -- an internal optimization that used
-  more compact encodings for code items and debug info. Compact DEX was
-  used in VDEX files to reduce storage overhead but has been phased out
-  in favor of improved standard DEX handling.
+ART once supported two on-disk DEX variants -- the traditional standard DEX and
+an internal *compact DEX* (`CompactDexFile`) that re-encoded code items and
+debug info to shrink VDEX files. Compact DEX has been removed; the only
+`DexFile` subclass left in the tree is `StandardDexFile`
+(`art/libdexfile/dex/standard_dex_file.h`). The space-saving role compact DEX
+used to play is now filled by the DEX *container* format (V41, section 18.2.1):
+multiple logical DEX files share one mapped blob, and unchanged shared data
+(strings, type lists, debug info) is laid out once rather than per-DEX. Because
+the container is a property of the standard format itself, ART no longer needs a
+separate compact subclass -- a single `StandardDexFile` instance can be a
+container entry, and the loader distinguishes entries with `HasDexContainer()`
+and `IsDexContainerLastEntry()`.
 
 ### 18.2.17 DEX File Validation
 
@@ -1390,7 +1421,12 @@ The `CompilerOptions` (`art/dex2oat/driver/compiler_options.h`) configure
 the compilation behavior:
 
 - **Instruction set** -- Target ISA (ARM, ARM64, x86, x86-64, RISC-V 64)
-- **Instruction set features** -- CPU features (NEON, SSE, etc.)
+- **Instruction set features** -- CPU features (NEON on ARM; SSSE3 / SSE4.1 /
+  SSE4.2 / AVX / AVX2 / POPCNT on x86). For x86 these are derived from a named
+  CPU variant by `X86InstructionSetFeatures::FromVariant()`
+  (`art/runtime/arch/x86/instruction_set_features_x86.cc`); Android 17 adds the
+  `pantherlake` variant (see section 18.11), which like `kabylake` and
+  `alderlake` enables AVX2.
 - **Compiler filter** -- What to compile
 - **Profile** -- Path to the profile file for PGO
 - **Debuggable** -- Whether to generate debuggable code
@@ -1981,9 +2017,13 @@ the stack when registers are exhausted.
 
 Each code generator applies architecture-specific optimizations:
 
-- **ARM64**: NEON vectorization, paired loads/stores, conditional
+- **ARM64**: NEON vectorization (128-bit), paired loads/stores, conditional
   selection
-- **x86-64**: SSE/AVX vectorization, addressing mode optimization
+- **x86-64**: SIMD vectorization and addressing-mode optimization. The vector
+  width follows the detected features -- 128-bit XMM under SSE4.1, and 256-bit
+  YMM when AVX2 is available (`HLoopOptimization` reads
+  `CodeGeneratorX86_64::GetSIMDRegisterWidth()`, which returns `4 * kX86_64WordSize`
+  with AVX2). Android 17 extends AVX2 codegen to x86-64 (see section 18.11).
 - **RISC-V 64**: Extension-aware code generation
 
 ### 18.4.14 Entrypoints
@@ -2351,11 +2391,12 @@ primary garbage collector. It uses a region-based copying algorithm that can
 run mostly concurrently with application (mutator) threads.
 
 ```
-// art/runtime/gc/collector/concurrent_copying.h, lines 57-73
+// art/runtime/gc/collector/concurrent_copying.h, lines 59-76
 class ConcurrentCopying : public GarbageCollector {
  public:
   static constexpr bool kEnableNoFromSpaceRefsVerification = kIsDebugBuild;
   static constexpr bool kEnableFromSpaceAccountingCheck = kIsDebugBuild;
+  static constexpr bool kVerboseMode = false;
   static constexpr bool kGrayDirtyImmuneObjects = true;
 
   ConcurrentCopying(Heap* heap,
@@ -2553,7 +2594,8 @@ class RegionSpace final : public ContinuousMemMapAllocSpace {
 };
 ```
 
-Regions can be in one of several states:
+Regions are 256 KB (`kRegionSize`, `art/runtime/gc/space/region_space.h`, line
+236) and can be in one of several states:
 
 - **Free** -- available for allocation
 - **Open** -- currently being allocated into (one per thread for TLABs)
@@ -2562,6 +2604,19 @@ Regions can be in one of several states:
 - **To-space** -- destination for copied objects
 - **Large** -- spans multiple regions for large objects
 
+When the CC collector reclaims an evacuated region it zeroes and releases the
+backing pages through `ZeroAndProtectRegion()`, which calls the shared
+`ZeroMemory()` helper in `art/libartbase/base/mem_map.cc`. In Android 17 that
+helper once again hands resident pages to the kernel with `MADV_FREE` rather
+than `MADV_DONTNEED` (`ClearMemory()`, lines 1300-1315). `MADV_FREE` lets the
+kernel reclaim the pages lazily under memory pressure while leaving them mapped
+and zero-cost to re-touch, so a region that is freed and quickly re-allocated
+avoids a hard page fault. This path had been temporarily forced to
+`MADV_DONTNEED`; the Android 17 commit "Revert 'Temporarily disable MADV_FREE
+use with CC GC'" restores `MADV_FREE` as the default for resident reclaim, while
+non-resident pages still use `MADV_DONTNEED`. See section 18.11 for the wider
+Android 17 memory-management story.
+
 #### Thread-Local Allocation Buffers (TLABs)
 
 Each thread gets a TLAB from the region space for lock-free allocation.
@@ -2569,7 +2624,7 @@ The default TLAB size is 32 KB, with partial TLABs of 16 KB when the
 region is partially full:
 
 ```
-// art/runtime/gc/heap.h, lines 137-139
+// art/runtime/gc/heap.h, lines 138-139
 static constexpr size_t kPartialTlabSize = 16 * KB;
 static constexpr bool kUsePartialTlabs = true;
 ```
@@ -4394,7 +4449,218 @@ invoke `dex2oat`.
 
 ---
 
-## 18.11 Try It
+## 18.11 Android 17 Changes
+
+Android 17 ships the ART module with a focused set of runtime, compiler, and GC
+changes. None of them alter the architecture described above, but several touch
+data structures and code paths that earlier sections reference, so this section
+collects them with their source citations.
+
+### 18.11.1 Pantherlake x86 ISA Variant (AVX2)
+
+ART's x86 back-end selects CPU features from a named *variant* rather than
+probing at compile time. The list of known variants and the feature each one
+implies lives in `art/runtime/arch/x86/instruction_set_features_x86.cc`. Android
+17 adds `pantherlake` (Intel's Panther Lake client architecture) to that list:
+
+```
+// art/runtime/arch/x86/instruction_set_features_x86.cc, lines 43-115
+static constexpr const char* x86_known_variants[] = {
+    "atom", "sandybridge", "silvermont", "goldmont", "goldmont-plus",
+    "goldmont-without-sha-xsaves", "tremont", "kabylake", "alderlake",
+    "pantherlake", "default",
+};
+// ... pantherlake also appears in the ssse3 / sse4_1 / sse4_2 / popcnt / avx / avx2 arrays
+static constexpr const char* x86_variants_with_avx2[] = {
+    "kabylake", "alderlake", "pantherlake",
+};
+```
+
+Because `pantherlake` is listed in `x86_variants_with_avx2`,
+`X86InstructionSetFeatures::FromVariant("pantherlake", ...)` returns a feature
+set with `HasAVX2()` true (alongside SSSE3, SSE4.1, SSE4.2, AVX, and POPCNT).
+The AVX2 bit lives at position 4 of the feature bitmap
+(`kAvx2Bitfield = 1 << 4`, `art/runtime/arch/x86/instruction_set_features_x86.h`,
+line 141); an Android 17 fix corrected that bit position so the bitmap encoding
+of x86 features round-trips correctly.
+
+### 18.11.2 AVX2 Vectorization on x86-64
+
+With AVX2 detected, the optimizing compiler widens its SIMD code generation from
+128-bit XMM registers to 256-bit YMM registers. The decision is made in
+`CodeGeneratorX86_64::GetSIMDRegisterWidth()`:
+
+```
+// art/compiler/optimizing/code_generator_x86_64.h, lines 460-462
+size_t GetSIMDRegisterWidth() const override {
+  return GetInstructionSetFeatures().HasAVX2() ? 4 * kX86_64WordSize : 2 * kX86_64WordSize;
+}
+```
+
+`4 * kX86_64WordSize` is 32 bytes (256-bit YMM); without AVX2 the width is
+`2 * kX86_64WordSize` (16 bytes, 128-bit XMM). The loop vectorizer reads this
+width when it decides how many lanes a vector operation packs:
+`HLoopOptimization::TrySetVectorLength()` uses
+`simd_register_size_ / DataType::Size(type)` for the x86 and x86-64 cases
+(`art/compiler/optimizing/loop_optimization.cc`, lines 2161-2219), so a
+`float`/`int` loop on an AVX2 target processes eight elements per iteration
+instead of four. Android 17 added the AVX2-based vectorization path for x86-64;
+the matching vector emitters in
+`art/compiler/optimizing/code_generator_vector_x86_64.cc` branch on
+`GetInstructionSetFeatures().HasAVX2()` to emit YMM forms.
+
+```mermaid
+flowchart TD
+    A["x86-64 CPU variant\n(e.g. pantherlake)"] --> B["X86InstructionSetFeatures::\nFromVariant"]
+    B --> C{"HasAVX2()?"}
+    C -->|"yes"| D["GetSIMDRegisterWidth()\n= 32 bytes (256-bit YMM)"]
+    C -->|"no"| E["GetSIMDRegisterWidth()\n= 16 bytes (128-bit XMM)"]
+    D --> F["HLoopOptimization:\n8 floats / iteration"]
+    E --> G["HLoopOptimization:\n4 floats / iteration"]
+```
+
+### 18.11.3 DEX Container Format (V41)
+
+Section 18.2.1 introduced the `HeaderV41` extension and the container concept.
+Android 17 is where the V41 container format matures across the toolchain:
+
+- **Loader and verifier**: `DexFile::kDexContainerVersion = 41` gates container
+  handling (`art/libdexfile/dex/dex_file.h`, line 112). The loader opens any
+  non-primary DEX of version `>= 41` as a container entry and validates that the
+  last entry's end matches the container end
+  (`art/libdexfile/dex/dex_file_loader.h`, lines 113 and 213). Two hardening
+  fixes landed: the verifier rejects a header whose claimed `container_size_`
+  exceeds the actually-mapped size, and the loader now ignores any superfluous
+  bytes after a container so a plain `.dex` must contain exactly one container.
+- **Profiles**: a container can pack what used to be `classes.dex`,
+  `classes2.dex`, ... into a single zip entry, so the zip-entry name is no
+  longer a unique profile key. `ProfileCompilationInfo::GetProfileDexFileBaseKey()`
+  switches V41 container DEX files to a flattened-index syntax (`base.apk!1`,
+  `base.apk!2`, ...) instead of the legacy `base.apk!classes2.dex`, while plain
+  multi-dex APKs keep the old zip-entry-name form
+  (`art/libprofile/profile/profile_compilation_info.cc`, lines 645-663).
+
+The V41 rollout is staged behind a release flag (`RELEASE_USE_DEX_V41`) that
+toggled on and off through development before settling; the format and the
+runtime code that parses it are present in the Android 17 ART module regardless,
+so a device that receives V41-encoded DEX from `dex2oat` or the build system
+parses it correctly.
+
+### 18.11.4 Value Classes and Record Classes
+
+`mirror::Class` carries a `class_flags` bitset
+(`art/runtime/mirror/class_flags.h`) that the GC and runtime consult to take
+fast paths. Android 17 makes two related changes here.
+
+**Value classes (new flag).** A new bit marks value-based classes:
+
+```
+// art/runtime/mirror/class_flags.h, line 78
+static constexpr uint32_t kClassFlagValue             = 0x00008000;
+```
+
+A class is flagged when the verifier finds the `Ljdk/internal/ValueBased;`
+runtime annotation on it. This is gated behind the `value_classes` aconfig flag
+(`art/build/flags/art-flags.aconfig`), so it is inert unless the flag is on:
+
+```
+// art/runtime/class_linker.cc, lines 10319-10331 (condensed)
+bool ClassLinker::VerifyValueClass(Handle<mirror::Class> klass) {
+  if (!com::android::art::flags::value_classes()) {
+    return true;
+  }
+  ValueClassAnnotationVisitor visitor;
+  annotations::VisitClassAnnotations(klass, &visitor);
+  if (visitor.IsValueClass()) {
+    klass->SetValueClass();   // sets kClassFlagValue
+  }
+  return true;
+}
+```
+
+Value classes remain a preview-stage Java feature; for now the flag only records
+the property (`IsValueClass()` becomes queryable), and the full set of identity
+and immutability checks is still to come.
+
+**Record classes (now "normal").** Record classes are detected the same way --
+the `@dalvik.annotation.Record` annotation drives `SetRecordClass()`, which sets
+`kClassFlagRecord = 0x00000800` (`art/runtime/mirror/class_flags.h`, line 66).
+The Android 17 change is that setting the record flag no longer *clears*
+`kClassFlagNormal`:
+
+```
+// art/runtime/mirror/class.h, lines 346-348
+ALWAYS_INLINE void SetRecordClass() REQUIRES_SHARED(Locks::mutator_lock_) {
+  AddRemoveClassFlags(kClassFlagRecord);   // was: AddRemoveClassFlags(kClassFlagRecord, kClassFlagNormal)
+}
+```
+
+Records are a language feature whose only runtime obligation is real
+immutability; for object scanning they behave exactly like ordinary classes. By
+keeping `kClassFlagNormal` set, the GC fast paths
+(`MarkSweep::ScanObjectVisit`, `Object::FastVisitReferences`) no longer need to
+special-case `kClassFlagRecord` and simply test `kClassFlagNormal`. Both
+`kClassFlagRecord` and `kClassFlagValue` are added to
+`kClassFlagPerfettoIgnoredFlags` so heap-dump tooling masks them out when
+classifying object kinds (`art/runtime/mirror/class_flags.h`, lines 96-97).
+
+### 18.11.5 MADV_FREE Re-enabled for the CC GC
+
+When the Concurrent Copying collector reclaims an evacuated region it releases
+the backing pages through `ZeroMemory()` in
+`art/libartbase/base/mem_map.cc`. For *resident* pages that helper hands the
+range to the kernel with `MADV_FREE`; only non-resident pages use
+`MADV_DONTNEED`:
+
+```
+// art/libartbase/base/mem_map.cc, lines 1300-1315
+static inline void ClearMemory(uint8_t* page_begin, size_t size, bool resident, size_t page_size) {
+  if (resident) {
+    RawClearMemory(page_begin, page_begin + size);
+#ifdef MADV_FREE
+    bool res = madvise(page_begin, size, MADV_FREE);
+    CHECK_NE(res, -1) << "madvise failed";
+#endif  // MADV_FREE
+  } else {
+    bool res = madvise(page_begin, size, MADV_DONTNEED);
+    CHECK_NE(res, -1) << "madvise failed";
+  }
+}
+```
+
+`MADV_FREE` is cheaper than `MADV_DONTNEED`: the kernel keeps the pages mapped
+and reclaims them lazily only under memory pressure, so a region that is freed
+and quickly reused avoids a hard page fault and a fresh zero-fill. This behavior
+had been temporarily disabled for the CC GC; the Android 17 commit "Revert
+'Temporarily disable MADV_FREE use with CC GC'" restores `MADV_FREE` as the
+default for resident reclaim. ART's region-space reclaim reaches this helper via
+`RegionSpace::ZeroAndProtectRegion()` -> `ZeroMemory()`
+(`art/runtime/gc/space/region_space.cc`, lines 396-397).
+
+### 18.11.6 dex2oat and the 17 Toolchain
+
+The Android 17 ART changes above flow through `dex2oat` (section 18.3) without
+changing its overall structure:
+
+- `dex2oat` records the target instruction set and its features in the OAT/VDEX
+  it produces; on an x86-64 build configured for `pantherlake` it therefore
+  emits AVX2-aware (256-bit YMM) vectorized code where the optimizer can apply
+  it.
+- When the build or runtime supplies V41 container DEX, `dex2oat` consumes it
+  through the same `DexFileLoader` container path described in section 18.11.3,
+  and the profiles it reads use the flattened-index profile keys for container
+  entries.
+- Record and value class flags are set during class linking
+  (`ClassLinker::VerifyClass` -> `VerifyRecordClass` / `VerifyValueClass`), so
+  AOT-compiled images built by `dex2oat` carry the same `class_flags` the
+  runtime would compute.
+
+None of these changes the OAT/VDEX file format version or the odrefresh
+recompilation triggers covered in section 18.8.
+
+---
+
+## 18.12 Try It
 
 ### Exercise 18.1 -- Inspect a DEX File
 
@@ -5048,6 +5314,8 @@ ART has evolved significantly over Android releases:
 | 13 | Improved profile-guided optimization |
 | 14 | Mark-Compact (CMC) collector, RISC-V support |
 | 15 | Continued CMC rollout, improved JIT |
+| 16 | Generational CMC, DEX container (V41) groundwork |
+| 17 | Pantherlake x86 variant (AVX2), AVX2 vectorization for x86-64, V41 container maturation, value-class flag, record classes treated as normal, MADV_FREE re-enabled for CC GC |
 
 Key source files for further exploration:
 
@@ -5064,6 +5332,10 @@ Key source files for further exploration:
 | GC heap | `art/runtime/gc/heap.h` |
 | CC collector | `art/runtime/gc/collector/concurrent_copying.h` |
 | Region space | `art/runtime/gc/space/region_space.h` |
+| Page reclaim (MADV_FREE) | `art/libartbase/base/mem_map.cc` |
+| Class flags | `art/runtime/mirror/class_flags.h` |
+| x86 ISA features | `art/runtime/arch/x86/instruction_set_features_x86.cc` |
+| x86-64 SIMD width | `art/compiler/optimizing/code_generator_x86_64.h` |
 | Class linker | `art/runtime/class_linker.cc` (11,710 lines) |
 | JNI VM | `art/runtime/jni/java_vm_ext.h` |
 | JNI env | `art/runtime/jni/jni_env_ext.h` |
@@ -5507,39 +5779,56 @@ frameworks/libs/binary_translation/
 
 ### 19.2.2  Directory Map
 
-The binary translation tree contains over 35 subdirectories.  Here is the
-complete layout with the role of each component:
+In Android 17 the binary translation tree was reorganized: every module that
+makes up the CPU-emulation core was moved under a single new top-level
+`cpu_emulation/` directory (commit "cpu_emulation: consolidate modules under new
+directory", `Bug: 476465845`).  Before the move the decoder, interpreter, the
+two JIT tiers, the IR backend, the assembler, and the intrinsics each sat at the
+top level; now they are siblings under `cpu_emulation/`, which makes the
+boundary between *the engine that emulates a guest CPU* and *the runtime that
+hosts it* explicit.  The translator dispatcher itself was also split out of
+`runtime/` into its own `cpu_emulation/translator/` module.  Section 19.8
+walks the three-tier engine that lives there.
 
 ```
 frameworks/libs/binary_translation/
     Android.bp              # Top-level build
-    README.md               # Getting started (239 lines)
+    README.md               # Getting started (238 lines)
     OWNERS
     berberis_config.mk      # Product package lists
     enable_riscv64_to_x86_64.mk  # Product configuration
 
-    # ---- Core Translation Pipeline ----
-    decoder/                # Instruction decoder (RISC-V → IR)
-        include/berberis/decoder/riscv64/
-            decoder.h       # Template-based decoder (2373 lines)
-    interpreter/            # Instruction-by-instruction interpreter
-        riscv64/
-            interpreter-main.cc
-            interpreter.h
-            interpreter-demultiplexers.cc
-            interpreter-V*.cc   # Vector instruction handlers
-    lite_translator/        # Lightweight JIT: riscv64 → x86_64
-        riscv64_to_x86_64/
-            lite_translator.cc
-            lite_translate_region.cc
-    heavy_optimizer/        # Optimizing JIT (region-based)
-        riscv64/
-    backend/                # x86_64 code generation
-        x86_64/
-        common/
-        gen_lir.py          # LIR generation script
-    assembler/              # x86_64 assembler
-    code_gen_lib/           # Common code generation utilities
+    # ---- CPU Emulation Core (Android 17 consolidation) ----
+    cpu_emulation/
+        decoder/            # Instruction decoder (RISC-V → IR)
+            include/berberis/decoder/riscv64/
+                decoder.h   # Template-based decoder (2374 lines)
+        interpreter/        # Instruction-by-instruction interpreter
+            riscv64/
+                interpreter-main.cc
+                interpreter.h
+                interpreter-demultiplexers.cc
+                interpreter-V*.cc   # Vector instruction handlers
+        lite_translator/    # Lightweight JIT: riscv64 → x86_64
+            riscv64_to_x86_64/
+                lite_translator.cc
+                lite_translate_region.cc
+        heavy_optimizer/    # Optimizing JIT (region-based)
+            riscv64/
+        translator/         # Tier dispatcher (split out of runtime/ in 17)
+            include/berberis/translator/translator.h
+            riscv64/
+                translator.cc            # Arch-independent init
+                translator_x86_64.cc     # Three-tier dispatch (host=x86_64)
+                translator_arm64.cc       # Interpreter-only (host=arm64)
+        backend/            # x86_64 code generation (IR → machine code)
+            x86_64/
+            common/
+            gen_lir.py      # LIR generation script
+        assembler/          # x86_64 / RISC-V assembler
+        code_gen_lib/       # Per direction code-gen helpers (riscv64_to_x86_64, arm64_to_x86_64, ...)
+        intrinsics/         # Optimized instruction implementations
+        insn_tests/         # Per-ISA instruction conformance tests
     exec_region/            # Executable memory management
 
     # ---- Guest Environment ----
@@ -5580,10 +5869,9 @@ frameworks/libs/binary_translation/
 
     # ---- Supporting Infrastructure ----
     proxy_loader/           # Proxy library discovery & loading
-    runtime/                # Initialization, translator dispatch
+    runtime/                # Initialization, guest entry, per-direction subdirs
     runtime_primitives/     # Translation cache, trampolines
     calling_conventions/    # ABI parameter passing rules
-    intrinsics/             # Optimized instruction implementations
     kernel_api/             # Syscall emulation
     native_activity/        # ANativeActivity wrapping
     tiny_loader/            # Lightweight ELF loader
@@ -5639,8 +5927,8 @@ The same decoder template powers both the interpreter (where the consumer
 executes semantics immediately) and the translators (where the consumer emits
 host instructions).
 
-From `frameworks/libs/binary_translation/decoder/include/berberis/decoder/riscv64/decoder.h`
-(lines 34-37):
+From `frameworks/libs/binary_translation/cpu_emulation/decoder/include/berberis/decoder/riscv64/decoder.h`
+(lines 35-37):
 
 ```cpp
 template <class InsnConsumer>
@@ -5688,7 +5976,7 @@ The decoder supports:
 ### 19.2.5  The Interpreter
 
 The interpreter is the simplest execution backend.  In
-`frameworks/libs/binary_translation/interpreter/riscv64/interpreter-main.cc`:
+`frameworks/libs/binary_translation/cpu_emulation/interpreter/riscv64/interpreter-main.cc`:
 
 ```cpp
 void InterpretInsn(ThreadState* state) {
@@ -6228,7 +6516,8 @@ are built from the `android_api/` subdirectories.
 
 ### 19.2.14  Runtime Initialization
 
-The Berberis runtime is initialized through `InitBerberis()`:
+The Berberis runtime is initialized through `InitBerberis()`, in
+`frameworks/libs/binary_translation/runtime/berberis.cc` (lines 37-55):
 
 ```cpp
 // runtime/berberis.cc
@@ -6239,30 +6528,44 @@ bool InitBerberisUnsafe() {
   InitGuestThreadManager();
   InitGuestFunctionWrapper(&IsAddressGuestExecutable);
   InitTranslator();
-  InitCrashReporter();
+  InitGuestSignalHandling();
   InitGuestArch();
   return true;
 }
 
 void InitBerberis() {
+  // C++11 guarantees this is called only once and is thread-safe.
   static bool initialized = InitBerberisUnsafe();
   UNUSED(initialized);
 }
 ```
 
 The `static bool` trick ensures thread-safe one-time initialization (C++11
-guarantees).
+guarantees).  `InitTranslator()` is the call that brings up the three-tier
+engine; in the Android 17 tree it lives in the consolidated translator module
+(section 19.8), not in `runtime/`.  The same file also exposes
+`PreZygoteForkUnsafe()`, which clears the translation cache before the Zygote
+forks an app process so that no stale compiled code survives the fork.
 
-The translation cache manages compiled code regions:
+When guest code is overwritten (for example a self-modifying JIT inside the
+guest, or `dlclose`), the runtime invalidates the affected compiled regions.
+In Android 17 this lives in
+`frameworks/libs/binary_translation/runtime/runtime_library/runtime_library.cc`
+(lines 54-59):
 
 ```cpp
-// runtime/translator.cc
+// runtime/runtime_library/runtime_library.cc
 void InvalidateGuestRange(GuestAddr start, GuestAddr end) {
   TranslationCache* cache = TranslationCache::GetInstance();
   cache->InvalidateGuestRange(start, end);
+  // ...
   FlushGuestCodeCache();
 }
 ```
+
+The `TranslationCache::InvalidateGuestRange` implementation is in
+`frameworks/libs/binary_translation/runtime_primitives/translation_cache.cc`
+(line 261).
 
 ### 19.2.15  Crash Reporting with Guest State
 
@@ -7196,25 +7499,23 @@ The RISC-V focus represents a strategic investment:
 
 ### 19.7.7  Multi-Target Architecture
 
-Berberis's architecture supports multiple guest-to-host translation pairs.
-The code already contains references to ARM64 support:
+Berberis's architecture supports multiple guest-to-host translation pairs, and
+the Android 17 tree carries scaffolding for two directions beyond the production
+RISC-V-to-x86_64 path.  Per-architecture state and ABI directories exist for
+both ARM (32-bit) and ARM64 guests:
 
 ```
-guest_state/arm/
-guest_state/arm64/
-guest_abi/arm/
-guest_abi/arm64/
+frameworks/libs/binary_translation/guest_state/arm/
+frameworks/libs/binary_translation/guest_state/arm64/
+frameworks/libs/binary_translation/guest_abi/arm/
+frameworks/libs/binary_translation/guest_abi/arm64/
 ```
 
-And the program runner has an ARM64 variant:
-
-```
-berberis_program_runner_riscv64_to_arm64
-```
-
-This suggests that Berberis could eventually support RISC-V-to-ARM64
-translation as well, which would be relevant for running RISC-V apps on
-ARM-based Android devices.
+There is also a RISC-V-on-ARM64-*host* path, where the host machine is ARM64
+and the guest is still RISC-V.  Section 19.9 covers both ARM64 directions in
+detail.  The short version: ARM64 work is scaffolding, not production -- the
+ARM64-host translator only interprets, and the ARM64-guest syscall bridge is a
+stub.
 
 ```mermaid
 graph TD
@@ -7251,7 +7552,272 @@ in the decoder template.
 
 ---
 
-## 19.8  Try It
+## 19.8  The Three-Tier CPU Emulation Engine
+
+Section 19.2.3 introduced Berberis's interpreter, lite translator, and heavy
+optimizer as three execution backends.  The Android 17 reorganization made the
+relationship between them explicit: all three, plus the decoder, the IR backend,
+and the dispatcher that chooses between them, now live under
+`frameworks/libs/binary_translation/cpu_emulation/`.  This section walks the
+dispatcher that ties the tiers together.
+
+### 19.8.1  The Translator Module
+
+Before Android 17 the per-region translation dispatcher lived inside the
+`runtime/` library.  The 17 reorganization split it into its own module
+(commit "translator_riscv64: split out from runtime", `Bug: 476465845`) so the
+runtime no longer depends on the full code generator.  The public entry point is
+a single function in
+`frameworks/libs/binary_translation/cpu_emulation/translator/include/berberis/translator/translator.h`:
+
+```cpp
+void InitTranslator();
+```
+
+The arch-independent half of the implementation is in
+`frameworks/libs/binary_translation/cpu_emulation/translator/riscv64/translator.cc`
+(lines 88-92).  It wires up the per-host dispatcher, the virtual call frame used
+to return into the host, and the interpreter:
+
+```cpp
+void InitTranslator() {
+  InitTranslatorArch();
+  InitVirtualGuestCallFrameReturnAddress(ToGuestAddr(g_native_bridge_call_guest + 1));
+  InitInterpreter();
+}
+```
+
+`InitTranslatorArch()` has two definitions chosen at build time by the *host*
+architecture: a full version in `translator_x86_64.cc` and a near-empty stub in
+`translator_arm64.cc`.  That split is the seam that lets the same RISC-V front
+end target either an x86_64 or an ARM64 host (section 19.9).
+
+### 19.8.2  Translation Modes
+
+The x86_64 dispatcher in
+`frameworks/libs/binary_translation/cpu_emulation/translator/riscv64/translator_x86_64.cc`
+(lines 50-60) enumerates the policies that decide which tier runs:
+
+```cpp
+enum class TranslationMode {
+  kInterpretOnly,
+  kLiteTranslateOrFallbackToInterpret,
+  kHeavyOptimizeOrFallbackToInterpret,
+  kHeavyOptimizeOrFallbackToLiteTranslator,
+  kLiteTranslateThenHeavyOptimize,
+  kTwoGear = kLiteTranslateThenHeavyOptimize,
+  kNumModes
+};
+
+TranslationMode g_translation_mode = TranslationMode::kTwoGear;
+```
+
+The default is **two-gear** (`kLiteTranslateThenHeavyOptimize`): a region is
+first lite-translated, and only the hot regions are later promoted to the heavy
+optimizer.  `UpdateTranslationMode()` (lines 62-86) lets a developer override
+the policy by name (`"interpret-only"`, `"two-gear"`, and so on) through a
+config string, which is invaluable when isolating a miscompilation to a single
+tier.
+
+### 19.8.3  Two-Gear Promotion
+
+The dispatcher distinguishes two *gears* (lines 88-91):
+
+```cpp
+enum class TranslationGear {
+  kFirst,
+  kSecond,
+};
+```
+
+The first gear runs when a region is translated for the first time; the second
+gear runs when a region that was already lite-translated is being promoted.
+The decision lives in `TranslateRegion`
+(`translator_x86_64.cc`, lines 156-229).  In two-gear mode the first gear calls
+`TryLiteTranslateAndInstallRegion` with self-profiling enabled, threading the
+region's invocation counter into the generated code:
+
+```cpp
+} else if (g_translation_mode == TranslationMode::kTwoGear &&
+           kGear == TranslationGear::kFirst) {
+  std::tie(success, host_code_piece, size, kind) = TryLiteTranslateAndInstallRegion(
+      pc, {.enable_self_profiling = true, .counter_location = &(entry->invocation_counter)});
+  if (!success) {
+    // Heavy supports more insns than lite, so try to heavy optimize. If that
+    // fails, then fallback to interpret.
+    std::tie(success, host_code_piece, size, kind) = HeavyOptimizeRegion(pc);
+    // ...
+  }
+}
+```
+
+The injected counter increments every time the region executes.  When it crosses
+a threshold the region is re-entered at the second gear, which acquires the cache
+slot with `LockForGearUpTranslation` (line 165) and runs `HeavyOptimizeRegion`.
+Each tier reports back the kind of code it produced, and the result is committed
+to the translation cache with `SetTranslatedAndUnlock` (line 228):
+
+```cpp
+GuestCodeEntry::Kind kInterpreted = GuestCodeEntry::Kind::kInterpreted;
+GuestCodeEntry::Kind kLiteTranslated = GuestCodeEntry::Kind::kLiteTranslated;
+GuestCodeEntry::Kind kHeavyOptimized = GuestCodeEntry::Kind::kHeavyOptimized;
+```
+
+Every tier can fall back to the one below it: lite falls back to the
+interpreter for instructions it cannot translate, and heavy falls back to lite
+or to the interpreter.  The interpreter is the universal backstop, so a region
+that no JIT can handle still runs correctly, just slowly.
+
+### 19.8.4  Tier Promotion State Machine
+
+The lifecycle of a single guest region under the default two-gear policy:
+
+```mermaid
+stateDiagram-v2
+    [*] --> NotTranslated
+    NotTranslated --> Interpreted : non-executable or single insn
+    NotTranslated --> LiteTranslated : first gear lite-translate
+    NotTranslated --> Interpreted : lite and heavy both fail
+    LiteTranslated --> HeavyOptimized : counter crosses threshold, second gear
+    LiteTranslated --> NotTranslated : InvalidateGuestRange
+    HeavyOptimized --> NotTranslated : InvalidateGuestRange
+    Interpreted --> NotTranslated : InvalidateGuestRange
+```
+
+### 19.8.5  Where Each Tier Lives Now
+
+After the consolidation, the three tiers and their shared infrastructure map to
+these paths under `cpu_emulation/`:
+
+| Tier or component | Android 17 path |
+|---|---|
+| Decoder | `frameworks/libs/binary_translation/cpu_emulation/decoder/` |
+| Interpreter | `frameworks/libs/binary_translation/cpu_emulation/interpreter/riscv64/` |
+| Lite translator | `frameworks/libs/binary_translation/cpu_emulation/lite_translator/riscv64_to_x86_64/` |
+| Heavy optimizer | `frameworks/libs/binary_translation/cpu_emulation/heavy_optimizer/riscv64/` |
+| IR backend | `frameworks/libs/binary_translation/cpu_emulation/backend/` |
+| Assembler | `frameworks/libs/binary_translation/cpu_emulation/assembler/` |
+| Intrinsics | `frameworks/libs/binary_translation/cpu_emulation/intrinsics/` |
+| Tier dispatcher | `frameworks/libs/binary_translation/cpu_emulation/translator/` |
+
+The translation cache that the dispatcher writes to, the trampolines, and the
+`runtime/` initialization remain outside `cpu_emulation/` -- they are part of the
+*host* runtime, not the guest-CPU emulator.
+
+---
+
+## 19.9  ARM64 Scaffolding
+
+The Android 17 tree carries two distinct ARM64 efforts, and it is important not
+to conflate them.  Both are scaffolding -- enough structure to build and test
+the path, but not a production translator.
+
+### 19.9.1  Two ARM64 Directions
+
+```mermaid
+graph LR
+    subgraph "ARM64 as host"
+        RV_G["RISC-V guest"] --> ARM_H["ARM64 host"]
+    end
+    subgraph "ARM64 as guest"
+        ARM_G["ARM64 guest"] --> X64_H["x86_64 host"]
+    end
+
+    style RV_G fill:#e8f5e9
+    style ARM_H fill:#fff3e0
+    style ARM_G fill:#fce4ec
+    style X64_H fill:#e3f2fd
+```
+
+- **ARM64 as host**: the same RISC-V front end, but the generated (or
+  interpreted) code runs on an ARM64 machine. This is selected by the *host*
+  build architecture.
+- **ARM64 as guest**: ARM64 native code is the input, translated to run on an
+  x86_64 host. This mirrors what Houdini does (section 19.4) but using the
+  Berberis engine.
+
+### 19.9.2  ARM64 as Host: Interpreter Only
+
+When Berberis is built for an ARM64 host, the translator's arch hook resolves to
+the stub in
+`frameworks/libs/binary_translation/cpu_emulation/translator/riscv64/translator_arm64.cc`.
+Compare it with the x86_64 dispatcher from section 19.8: there are no tiers at
+all.  `InitTranslatorArch()` is empty, and `TranslateRegion` records every
+executable region as `kInterpreted`:
+
+```cpp
+void InitTranslatorArch() {}
+
+void TranslateRegion(GuestAddr pc) {
+  using Kind = GuestCodeEntry::Kind;
+  TranslationCache* cache = TranslationCache::GetInstance();
+  GuestCodeEntry* entry = cache->AddAndLockForTranslation(pc, 0);
+  if (!entry) {
+    return;
+  }
+  // ... executability check ...
+  cache->SetTranslatedAndUnlock(pc, entry, insn_size, Kind::kInterpreted, {kEntryInterpret, 0});
+}
+```
+
+In other words, RISC-V-on-ARM64 currently *only interprets*; there is no lite or
+heavy JIT for that host yet.  The supporting host runtime entry points live in
+`frameworks/libs/binary_translation/runtime/runtime_library/runtime_library_arm64.cc`
+and the assembly stub `frameworks/libs/binary_translation/base/raw_syscall_arm64.S`.
+
+### 19.9.3  ARM64 as Guest: State, ABI, and Syscalls
+
+The ARM64-guest direction is further along on the data-structure side than on
+the translation side.  The tree carries per-architecture guest state and ABI
+modules:
+
+```
+frameworks/libs/binary_translation/guest_state/arm64/
+frameworks/libs/binary_translation/guest_abi/arm64/
+frameworks/libs/binary_translation/cpu_emulation/code_gen_lib/arm64_to_x86_64/
+frameworks/libs/binary_translation/cpu_emulation/insn_tests/arm64/
+```
+
+There is a runtime direction directory
+`frameworks/libs/binary_translation/runtime/arm64_to_x86_64/` and guest-entry
+plumbing in `frameworks/libs/binary_translation/runtime/arm64/`
+(`init_guest_arch.cc`, `init_kernel_args.cc`, `run_guest_call.cc`).
+
+The syscall layer, however, is explicitly unfinished.  The ARM64-guest syscall
+bridge in
+`frameworks/libs/binary_translation/kernel_api/runtime_bridge_riscv64_to_arm64.cc`
+is a stub that returns `-ENOSYS` and traces the call:
+
+```cpp
+long RunGuestSyscall___NR_rt_sigaction(long sig_num_arg,
+                                       long act_arg,
+                                       long old_act_arg,
+                                       long sigset_size_arg) {
+  UNUSED(sig_num_arg, act_arg, old_act_arg, sigset_size_arg);
+  TRACE("unimplemented syscall __NR_rt_sigaction");
+  errno = ENOSYS;
+  return -1;
+}
+```
+
+The generated syscall-number tables for the direction do exist
+(`frameworks/libs/binary_translation/kernel_api/arm64/gen_syscall_emulation_arm64_to_x86_64-inl.h`),
+so the wiring is in place even though the implementations are not.
+
+### 19.9.4  What This Means for the Roadmap
+
+The takeaway: in Android 17 Berberis is a production RISC-V-to-x86_64
+translator with ARM64 build-out underway on two fronts.  The ARM64-host path can
+interpret RISC-V but has no JIT; the ARM64-guest path has its state, ABI, and
+code-generation directories and its instruction tests, but its syscall emulation
+is stubbed.  Neither ARM64 direction is a substitute for Houdini or IBT
+(section 19.4) yet.  The community DigitalisX64 distribution (section 19.5)
+takes the ARM64-guest engine and packages it for the x86_64 emulator, which is
+the most complete ARM64 path that ships from a public source today.
+
+---
+
+## 19.10  Try It
 
 ### Exercise 19.1: Inspect the NativeBridge State
 
@@ -7422,7 +7988,7 @@ decoupling allows Berberis to compile without depending on the exact version of
 
 ### Exercise 19.10: Examine the Decoder Opcodes
 
-Open `frameworks/libs/binary_translation/decoder/include/berberis/decoder/riscv64/decoder.h`
+Open `frameworks/libs/binary_translation/cpu_emulation/decoder/include/berberis/decoder/riscv64/decoder.h`
 and:
 
 1. Find the `BranchOpcode` enum and list all branch types.
@@ -7444,7 +8010,12 @@ Berberis, Google's open-source reference implementation, demonstrates the full
 complexity of binary translation on Android: multi-tier translation (interpreter,
 lite JIT, heavy optimizer), dual linker namespaces, JNI trampoline generation
 from method shorty strings, guest CPU state management, proxy library
-interception, and crash reporting with dual stack traces.
+interception, and crash reporting with dual stack traces.  In Android 17 the
+engine was reorganized: the decoder, the three tiers, the IR backend, the
+assembler, the intrinsics, and the tier dispatcher were consolidated under a new
+`cpu_emulation/` directory, and the dispatcher's two-gear policy
+(lite-translate, then heavy-optimize hot regions) is now its own module split out
+of `runtime/`.
 
 The `native_bridge_support` libraries provide the guest-side runtime
 environment -- 26+ proxy libraries, a guest linker, a guest VDSO, and a guest
@@ -7454,7 +8025,11 @@ execution environment for foreign-ISA applications.
 The RISC-V focus positions Berberis as a strategic investment in Android's
 future.  The comments in `riscv64_device.go` explicitly position it as a QEMU
 successor, and the comprehensive vector extension support and CTS compatibility
-demonstrate production-grade ambition.
+demonstrate production-grade ambition.  Alongside the production
+RISC-V-to-x86_64 path, the 17 tree carries ARM64 scaffolding in two directions
+-- an interpreter-only RISC-V-on-ARM64 host path and an ARM64-guest path whose
+state, ABI, and code-generation directories exist but whose syscall emulation is
+still stubbed.
 
 ### Key source files
 
@@ -7464,8 +8039,10 @@ demonstrate production-grade ambition.
 | `art/libnativebridge/native_bridge.cc` | ART-side bridge management |
 | `frameworks/libs/binary_translation/native_bridge/native_bridge.cc` | Berberis NativeBridgeItf export |
 | `frameworks/libs/binary_translation/README.md` | Berberis getting started |
-| `frameworks/libs/binary_translation/decoder/include/berberis/decoder/riscv64/decoder.h` | RISC-V decoder |
-| `frameworks/libs/binary_translation/interpreter/riscv64/interpreter-main.cc` | Interpreter entry |
+| `frameworks/libs/binary_translation/cpu_emulation/decoder/include/berberis/decoder/riscv64/decoder.h` | RISC-V decoder |
+| `frameworks/libs/binary_translation/cpu_emulation/interpreter/riscv64/interpreter-main.cc` | Interpreter entry |
+| `frameworks/libs/binary_translation/cpu_emulation/translator/riscv64/translator_x86_64.cc` | Three-tier dispatch (host=x86_64) |
+| `frameworks/libs/binary_translation/cpu_emulation/translator/riscv64/translator_arm64.cc` | Interpreter-only dispatch (host=arm64) |
 | `frameworks/libs/binary_translation/guest_state/riscv64/include/berberis/guest_state/guest_state_arch.h` | RISC-V register definitions |
 | `frameworks/libs/binary_translation/guest_loader/guest_loader.cc` | Guest ELF loading |
 | `frameworks/libs/binary_translation/jni/jni_trampolines.cc` | JNI trampoline generation |

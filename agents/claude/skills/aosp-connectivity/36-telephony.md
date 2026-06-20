@@ -4019,7 +4019,456 @@ sequenceDiagram
 
 ---
 
-## 36.11 Try It
+## 36.11 Satellite and Non-Terrestrial Networks (NTN)
+
+Android 17 carries a full satellite messaging and connectivity stack. The work
+started as an emergency SOS feature on a single OEM device and has grown into a
+general framework: a public `SatelliteManager` API, a large internal controller
+graph in `frameworks/opt/telephony`, a vendor-facing `SatelliteService` HAL, and
+carrier-roaming "non-terrestrial network" (NTN) modes where a normal SIM camps
+on a satellite the carrier has provisioned. This section walks the architecture
+top to bottom and calls out what 17 added on top of 16.
+
+### 36.11.1 Two Flavours of Satellite: OEM-Provisioned vs Carrier-Roaming
+
+There are two distinct connection models, and almost every class in the stack
+branches on which one is active:
+
+- **OEM-provisioned (P2P/SOS).** The device — not the carrier — owns the
+  relationship with the satellite operator. The modem switches into a dedicated
+  satellite mode and exchanges *datagrams* (SOS, SMS-shaped, or keep-alive)
+  rather than IP. This is the original emergency-messaging path.
+- **Carrier-roaming NTN.** A regular carrier SIM lists satellite PLMNs in its
+  carrier config; when terrestrial coverage drops, the device "roams" onto the
+  carrier's satellite network and can carry SMS, MMS, and in some
+  configurations data and voice. The connect behaviour is governed by
+  `CarrierConfigManager.KEY_CARRIER_ROAMING_NTN_CONNECT_TYPE_INT`, whose values
+  are `CARRIER_ROAMING_NTN_CONNECT_AUTOMATIC`, `CARRIER_ROAMING_NTN_CONNECT_MANUAL`,
+  and (new) `CARRIER_ROAMING_NTN_CONNECT_HYBRID`
+  (`frameworks/base/telephony/java/android/telephony/CarrierConfigManager.java`).
+
+The non-terrestrial radio technology in use is one of
+`NT_RADIO_TECHNOLOGY_NB_IOT_NTN`, `NT_RADIO_TECHNOLOGY_NR_NTN`, or
+`NT_RADIO_TECHNOLOGY_EMTC_NTN`
+(`frameworks/base/telephony/java/android/telephony/satellite/SatelliteManager.java`).
+Android 17 fills in the **NR-NTN** path (the 3GPP Release-17 5G-NR satellite
+profile) behind the `nr_ntn` flag, alongside the older NB-IoT-NTN path.
+
+```mermaid
+graph TD
+    subgraph "Apps"
+        Msg["Messaging app / Emergency UI"]
+        Pointing["Pointing UI app"]
+    end
+    subgraph "Public API"
+        SM["SatelliteManager"]
+    end
+    subgraph "Telephony service (packages/services/Telephony)"
+        PIM["PhoneInterfaceManager"]
+    end
+    subgraph "Controller graph (frameworks/opt/telephony)"
+        SC["SatelliteController"]
+        SSC["SatelliteSessionController"]
+        DC["DatagramController"]
+        DD["DatagramDispatcher"]
+        DR["DatagramReceiver"]
+        PAC["PointingAppController"]
+        SMI["SatelliteModemInterface"]
+    end
+    subgraph "Vendor"
+        HAL["SatelliteService HAL"]
+        Modem["Satellite modem"]
+    end
+
+    Msg --> SM
+    SM --> PIM
+    PIM --> SC
+    SC --> SSC
+    SC --> DC
+    DC --> DD
+    DC --> DR
+    SC --> PAC
+    PAC --> Pointing
+    SC --> SMI
+    SMI --> HAL
+    HAL --> Modem
+```
+
+### 36.11.2 SatelliteController -- the Central Coordinator
+
+`SatelliteController` is the brain of the stack and, at roughly twelve thousand
+lines, the largest single class in the telephony module
+(`frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteController.java`).
+It is a singleton `Handler` that owns the other satellite objects and arbitrates
+every enable/disable request:
+
+```java
+// frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteController.java
+public class SatelliteController extends Handler {
+    @NonNull private final SatelliteModemInterface mSatelliteModemInterface;
+    @NonNull protected SatelliteSessionController mSatelliteSessionController;
+    @NonNull private final PointingAppController mPointingAppController;
+    @NonNull private final DatagramController mDatagramController;
+    @NonNull private final ControllerMetricsStats mControllerMetricsStats;
+    ...
+}
+```
+
+Its responsibilities include: tracking provisioning state per subscription;
+loading and validating the satellite carrier config (`SatelliteConfig` /
+`SatelliteConfigParser`, refreshable through the config updater in 17); resolving
+which PLMNs are allowed and which connect type applies; driving NTN signal-strength
+reporting; and serialising enable requests. Android 17 reworked enablement into a
+**strategy pattern** with bitmask-based arbitration — `SatelliteEnablementController`,
+`SatelliteEnablementStrategy`, plus `AutoEnablementController` and
+`ManualEnablementController` — so that an automatic carrier-roaming trigger and an
+explicit user toggle no longer fight over the modem
+(`frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteEnablementController.java`).
+
+### 36.11.3 The Session State Machine
+
+`SatelliteSessionController` is a `StateMachine` that mirrors the modem's
+satellite mode and gates datagram transfer. Its states map onto
+`SatelliteManager.SATELLITE_MODEM_STATE_*`:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unavailable
+    Unavailable --> PowerOff : satellite supported
+    PowerOff --> Enabling : enable request
+    Enabling --> NotConnected : modem on
+    NotConnected --> Connected : acquired satellite
+    Connected --> Transferring : send or receive datagram
+    Transferring --> Listening : transfer done
+    Listening --> Connected : listen timer expires
+    Connected --> Suspended : flag gated suspend
+    Suspended --> Connected : resume
+    Connected --> Disabling : disable request
+    Disabling --> PowerOff : modem off
+```
+
+The `Suspended` state is new in Android 17, gated by the `satellite_suspend`
+flag: it lets the framework park a carrier-roaming NTN session (for example, to
+let a higher-priority terrestrial network take over) without tearing the modem
+down (`frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteSessionController.java`).
+The `Listening` state exists because satellite links are half-duplex and
+expensive; after a send or receive the modem stays in a short listening window
+(`DEFAULT_SATELLITE_STAY_AT_LISTENING_FROM_SENDING_MILLIS`) before dropping back
+to idle.
+
+### 36.11.4 Datagrams: Dispatch and Receive
+
+Satellite messaging does not use the normal SMS/data paths. Payloads are
+`SatelliteDatagram` blobs routed through three classes:
+
+- `DatagramController` — the front door; tracks send/receive transfer state and
+  the active datagram type (`DATAGRAM_TYPE_SOS_MESSAGE`, `DATAGRAM_TYPE_SMS`,
+  `DATAGRAM_TYPE_KEEP_ALIVE`, `DATAGRAM_TYPE_CHECK_PENDING_INCOMING_SMS`).
+- `DatagramDispatcher` — queues and sends outbound datagrams, retrying as the
+  link allows.
+- `DatagramReceiver` — polls the modem for pending inbound datagrams and fans
+  them out to registered `SatelliteDatagramCallback`s.
+
+```java
+// frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/DatagramController.java
+import static android.telephony.satellite.SatelliteManager.DATAGRAM_TYPE_CHECK_PENDING_INCOMING_SMS;
+import static android.telephony.satellite.SatelliteManager.DATAGRAM_TYPE_KEEP_ALIVE;
+
+public class DatagramController {
+    private final AtomicInteger mDatagramType =
+            new AtomicInteger(DATAGRAM_TYPE_UNKNOWN);
+    ...
+}
+```
+
+The flow for sending an SOS message:
+
+```mermaid
+sequenceDiagram
+    participant App as "Emergency UI"
+    participant SM as "SatelliteManager"
+    participant SC as "SatelliteController"
+    participant DC as "DatagramController"
+    participant DD as "DatagramDispatcher"
+    participant Modem as "SatelliteService HAL"
+
+    App->>SM: sendDatagram(SOS)
+    SM->>SC: sendSatelliteDatagram()
+    SC->>DC: sendDatagram(type=SOS)
+    DC->>DD: enqueue + send
+    DD->>Modem: sendDatagram (AIDL)
+    Modem-->>DD: ack
+    DD-->>DC: SEND_SUCCESS
+    DC-->>App: onSendDatagramStateChanged
+```
+
+### 36.11.5 Pointing the Antenna
+
+Satellites in the NB-IoT-NTN profile are not geostationary from the handset's
+point of view; the user often has to aim the phone. `PointingAppController`
+launches the OEM pointing UI and streams `PointingInfo` (antenna azimuth/
+elevation derived from `AntennaPosition` and `AntennaDirection`) so the UI can
+show an arrow guiding the user toward the satellite
+(`frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/PointingAppController.java`).
+The launch intent attributes are described by
+`PointingUiAppLaunchIntentAttributes`
+(`frameworks/base/telephony/java/android/telephony/satellite/PointingUiAppLaunchIntentAttributes.java`).
+
+### 36.11.6 NTN Signal Strength
+
+Satellite links report their own signal metric, distinct from cellular bars.
+`NtnSignalStrength` exposes five levels — `NTN_SIGNAL_STRENGTH_NONE`, `POOR`,
+`MODERATE`, `GOOD`, `GREAT`
+(`frameworks/base/telephony/java/android/telephony/satellite/NtnSignalStrength.java`).
+`SatelliteController` registers with the modem for NTN signal changes and
+notifies app callbacks via `INtnSignalStrengthCallback`. For carrier-roaming
+NTN, the per-RAT thresholds that decide how many "bars" to draw come from
+carrier config: `KEY_NTN_LTE_RSRP_THRESHOLDS_INT_ARRAY`,
+`KEY_NTN_LTE_RSRQ_THRESHOLDS_INT_ARRAY`, and `KEY_NTN_LTE_RSSNR_THRESHOLDS_INT_ARRAY`,
+selected by `KEY_PARAMETERS_USED_FOR_NTN_LTE_SIGNAL_BAR_INT`
+(`frameworks/base/telephony/java/android/telephony/CarrierConfigManager.java`).
+`NtnCapabilityResolver` decides, for a given network registration, whether the
+serving cell is terrestrial or non-terrestrial and which NT radio technology it
+is using when the modem does not report it directly
+(`frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/NtnCapabilityResolver.java`).
+
+### 36.11.7 The SatelliteService HAL and the Public API
+
+The framework talks to the modem through a vendor `SatelliteService`, bound on
+the `android.telephony.satellite.SatelliteService` action, with
+`SatelliteImplBase` as the convenience base class
+(`frameworks/base/telephony/java/android/telephony/satellite/stub/SatelliteService.java`,
+`SatelliteImplBase.java`). On the framework side, `SatelliteModemInterface`
+wraps that binding and, for older HAL versions, routes newer requests such as
+`SatelliteNetworkInfo` and prioritized network scans through compatibility paths
+(`frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteModemInterface.java`).
+
+Apps reach all of this through `SatelliteManager`, whose entry points are
+enforced and dispatched by `PhoneInterfaceManager`
+(`packages/services/Telephony/src/com/android/phone/PhoneInterfaceManager.java`)
+behind the `SATELLITE_COMMUNICATION` permission — for example
+`requestSatelliteEnabled`, `provisionSatelliteService`, `sendSatelliteDatagram`,
+`pollPendingSatelliteDatagrams`, and the registration calls. Android 17 adds the
+carrier-enablement entry points (`requestEnableSatelliteForCarrier`, automatic
+carrier mode, and `getManualConnectSatellitePlmnsForCarrier`) plus a richer
+metrics surface (`ControllerMetricsStats`, `CarrierRoamingSatelliteSessionStats`,
+separate Rx/Tx data-usage metrics) under
+`frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/metrics/`.
+
+---
+
+## 36.12 The ImsStack Module -- AOSP's Reference IMS Implementation
+
+Section 36.5 described the IMS *framework* — `ImsResolver`, `ImsServiceController`,
+and the `android.telephony.ims.ImsService` contract that a carrier or OEM IMS
+implementation must satisfy. Historically that implementation was a closed
+vendor APK, and AOSP shipped no real one. Android 17 fills the gap with a
+complete in-tree IMS stack at `packages/modules/ImsStack`: a privileged system
+app, `com.android.imsstack`, backed by a native SIP engine, `libimsstack`. This
+is the first time the platform carries an end-to-end VoLTE/VoWiFi/RCS stack in
+open source.
+
+### 36.12.1 Packaging: a Privileged system_ext App with a Native SIP Engine
+
+The module builds the `ImsStack` APK as a privileged, platform-signed,
+`system_ext` app that bundles the native engine as a JNI library
+(`packages/modules/ImsStack/java/Android.bp`):
+
+```
+android_app {
+    name: "ImsStack",
+    privileged: true,
+    certificate: "platform",
+    system_ext_specific: true,
+    jni_libs: [ "libimsstack", ... ],
+    required: [ "privapp_permissions_com.android.imsstack", ... ],
+}
+```
+
+Its manifest declares the package `com.android.imsstack`, runs `persistent` in
+its own process, and is `directBootAware` so IMS can come up before the user
+unlocks (important for emergency calling). It requests a broad set of
+privileged permissions — `MODIFY_PHONE_STATE`, `READ_PRIVILEGED_PHONE_STATE`,
+`CONNECTIVITY_USE_RESTRICTED_NETWORKS`, `USE_ICC_AUTH_WITH_DEVICE_IDENTIFIER`,
+`com.android.telephony.permission.USE_IMSMEDIA`, and more — that an ordinary app
+could never hold (`packages/modules/ImsStack/java/AndroidManifest.xml`).
+
+### 36.12.2 Plugging into the IMS Framework
+
+The app's service is declared on the standard IMS action so `ImsResolver` can
+discover and bind it exactly like any vendor IMS service:
+
+```xml
+<!-- packages/modules/ImsStack/java/AndroidManifest.xml -->
+<service android:name=".imsservice.ImsService" ... >
+    <intent-filter>
+        <action android:name="android.telephony.ims.ImsService"/>
+    </intent-filter>
+</service>
+```
+
+`com.android.imsstack.imsservice.ImsService` extends
+`android.telephony.ims.ImsService` and creates `MmTelFeature` and `RcsFeature`
+instances on demand — the same features the framework expects from any IMS
+provider (`packages/modules/ImsStack/java/src/com/android/imsstack/imsservice/ImsService.java`):
+
+```java
+// packages/modules/ImsStack/java/src/com/android/imsstack/imsservice/ImsService.java
+public class ImsService extends android.telephony.ims.ImsService {
+    @Override public void onCreate() {
+        super.onCreate();
+        ImsServiceController.create(getApplicationContext());
+    }
+}
+```
+
+`ImsServiceController` is a singleton that manages the MMTel and RCS features
+(`packages/modules/ImsStack/java/src/com/android/imsstack/imsservice/ImsServiceController.java`),
+and `ImsMmTelService` implements the call/SMS/registration surface
+(`packages/modules/ImsStack/java/src/com/android/imsstack/imsservice/mmtel/ImsMmTelService.java`).
+
+### 36.12.3 Layered Internals
+
+```mermaid
+graph TD
+    Framework["ImsResolver / ImsServiceController<br/>(frameworks/opt/telephony)"]
+    subgraph "ImsStack app (com.android.imsstack)"
+        IS["imsservice<br/>(ImsService, MmTel, RCS/UCE)"]
+        EN["enabler<br/>(AOS, MTC/MTS, SSC, media)"]
+        CORE["core<br/>(agents, carrier, config)"]
+        JNI["jni<br/>(JniIms, NativeCommands)"]
+    end
+    subgraph "libimsstack (native)"
+        ENG["engine<br/>(SIP transactions, dialogs)"]
+        PROTO["protocol<br/>(SIP/SDP parsers, DOM/XML)"]
+        PLAT["platform<br/>(sockets, timers, TLS)"]
+    end
+
+    Framework --> IS
+    IS --> EN
+    EN --> CORE
+    CORE --> JNI
+    JNI --> ENG
+    ENG --> PROTO
+    ENG --> PLAT
+```
+
+The Java side splits into `imsservice` (the framework-facing features),
+`enabler` (feature enablers: always-on session, MT call setup, SMS-over-IP, UCE
+presence, media), and `core` (config and the data-connection agents). The
+`jni` package (`JniIms`, `NativeCommands`,
+`packages/modules/ImsStack/java/src/com/android/imsstack/jni/`) marshals calls
+across to the native library.
+
+### 36.12.4 libimsstack -- the Native SIP Engine
+
+The heavy lifting lives in C++ under
+`packages/modules/ImsStack/native/libimsstack`, built as a single
+`cc_library_shared` named `libimsstack` that statically links the engine,
+protocol, config, enabler, platform, and JNI sublibraries
+(`packages/modules/ImsStack/native/libimsstack/Android.bp`). `JNI_OnLoad` in
+`libimsstack.cpp` wires the native commands to the Java `jni` package
+(`packages/modules/ImsStack/native/libimsstack/libimsstack.cpp`). The two most
+important subtrees are:
+
+- **protocol** — a from-scratch SIP and SDP implementation: header parsers
+  (`SipCSeqHeader`, `SipContentTypeHeader`, `SipGeolocationRoutingHeader`, …),
+  an SDP model (`SdpDescription`, `SdpMediaDescription`, `SdpAvCodec`), and a DOM
+  XML parser used for IMS XML bodies
+  (`packages/modules/ImsStack/native/libimsstack/protocol/sip/`,
+  `.../protocol/SipStackManager.cpp`).
+- **engine** — the SIP transaction and dialog state machines that turn those
+  messages into call/registration logic: `SipStack`, `SipStackTransaction`,
+  `SipForkedTransactionManager`, plus the `CoreService`/`Connection` call model
+  (`packages/modules/ImsStack/native/libimsstack/engine/sipcore/SipStack.cpp`).
+
+A `platform` layer abstracts sockets, timers, and TLS so the engine can run on
+the Android networking stack
+(`packages/modules/ImsStack/native/libimsstack/platform/`).
+
+### 36.12.5 Where It Fits
+
+Because `ImsStack` is just another `ImsService` discovered by `ImsResolver`
+(§36.5.2), a device that ships it gets working VoLTE, VoWiFi, and RCS without a
+proprietary blob, while a carrier override can still point `ImsResolver` at a
+vendor implementation. The IMS *media* plane (RTP/RTCP) is still handled by the
+separate `ImsMedia` service covered in §36.9; `ImsStack` requests it through the
+`USE_IMSMEDIA` permission and the enabler's media package.
+
+---
+
+## 36.13 Generic Bootstrapping Architecture (GBA / BSF)
+
+A handful of IMS and carrier services (XCAP/Ut for supplementary-service
+provisioning, some MBMS and entitlement servers) authenticate the device against
+the operator network using 3GPP **Generic Bootstrapping Architecture**: the
+SIM's AKA credentials are bootstrapped with the operator's Bootstrapping Server
+Function (BSF) to derive a shared key (Ks) and a bootstrapping transaction
+identifier (B-TID), from which per-application keys (Ks_NAF) are computed for
+each Network Application Function (NAF). Android 17 ships an AOSP default
+implementation of this as a standalone module,
+`packages/modules/GenericBootstrappingArchitecture`.
+
+### 36.13.1 The GbaService Contract
+
+The framework defines an extensible service contract: a `GbaService` bound on
+`android.telephony.gba.GbaService`, guarded by the `BIND_GBA_SERVICE`
+permission, that receives `onAuthenticationRequest` and replies with
+`reportKeysAvailable(token, gbaKey, btId, …)` or `reportAuthenticationFailure`
+(`frameworks/base/telephony/java/android/telephony/gba/GbaService.java`). On the
+telephony side, `GbaManager` is the client: it binds the configured GBA service,
+forwards `GbaAuthRequest`s, and tracks the binding across deaths and config
+changes (`frameworks/opt/telephony/src/java/com/android/internal/telephony/GbaManager.java`).
+
+```mermaid
+sequenceDiagram
+    participant Caller as "IMS / XCAP client"
+    participant GM as "GbaManager"
+    participant GS as "DefaultGbaService"
+    participant Auth as "GbaAuthManagerImpl"
+    participant BSF as "Carrier BSF (network)"
+
+    Caller->>GM: bootstrapAuthenticationRequest(NAF, protocol)
+    GM->>GS: authenticationRequest (AIDL)
+    GS->>Auth: performGbaAuthentication()
+    Auth->>BSF: HTTP Digest AKA bootstrap
+    BSF-->>Auth: B-TID, key lifetime
+    Auth->>Auth: derive Ks_NAF from SIM AKA
+    Auth-->>GS: GbaResult(Ks_NAF, B-TID, lifetime)
+    GS-->>GM: reportKeysAvailable
+    GM-->>Caller: GbaAuthResult
+```
+
+### 36.13.2 The DefaultGbaService Module
+
+The module builds a privileged, platform-signed app, `com.android.gbaservice`,
+that runs as `android.uid.system`, is `directBootAware`, and declares its
+service on the GBA action behind `BIND_GBA_SERVICE`
+(`packages/modules/GenericBootstrappingArchitecture/Android.bp`,
+`AndroidManifest.xml`). `DefaultGbaService` extends
+`android.telephony.gba.GbaService` and serialises requests through a
+single-threaded executor, since each bootstrap touches the SIM
+(`packages/modules/GenericBootstrappingArchitecture/src/com/android/gbaservice/DefaultGbaService.java`).
+
+The real protocol work is in `GbaAuthManagerImpl`, which builds a
+`GbaNetworkTask` parameterised for either `3GPP-bootstrapping` (GBA_ME) or the
+UICC-based variant (GBA_U), runs the HTTP Digest-AKA exchange against the BSF,
+and returns a `GbaResult` carrying Ks_NAF, the B-TID, and the key lifetime
+(`packages/modules/GenericBootstrappingArchitecture/src/com/android/gbaservice/GbaAuthManagerImpl.java`,
+`GbaNetworkTask.java`). The AKA challenge itself is answered by the SIM through
+`TelephonyManager` ICC authentication (`TelephonyManagerGbaMe` /
+`TelephonyManagerGbaU`), which is why the app holds the
+`USE_ICC_AUTH_WITH_DEVICE_IDENTIFIER`-class privileges. Derived bootstrap keys
+are cached in a small SQLite database (`GbaDbHelper`) keyed by NAF id so repeat
+requests can skip the round trip until the key lifetime expires.
+
+The default service can be overridden: a vendor GBA service named in the
+relevant config replaces `DefaultGbaService` while keeping the same framework
+contract, exactly as the IMS service can be overridden in §36.5.2.
+
+---
+
+## 36.14 Try It
 
 ### Exercise 36-1: Inspect the Telephony Service with dumpsys
 
@@ -4657,6 +5106,13 @@ The telephony stack embodies several design principles worth noting:
 | `ImsPhoneCallTracker.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/imsphone/ImsPhoneCallTracker.java` | |
 | `PhoneGlobals.java` | `packages/services/Telephony/src/com/android/phone/PhoneGlobals.java` | |
 | `CallsManager.java` | `packages/services/Telecomm/src/com/android/server/telecom/CallsManager.java` | |
+| `SatelliteController.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteController.java` | ~11 885 |
+| `SatelliteSessionController.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteSessionController.java` | |
+| `SatelliteManager.java` | `frameworks/base/telephony/java/android/telephony/satellite/SatelliteManager.java` | |
+| `ImsService.java` (ImsStack) | `packages/modules/ImsStack/java/src/com/android/imsstack/imsservice/ImsService.java` | |
+| `libimsstack.cpp` | `packages/modules/ImsStack/native/libimsstack/libimsstack.cpp` | |
+| `DefaultGbaService.java` | `packages/modules/GenericBootstrappingArchitecture/src/com/android/gbaservice/DefaultGbaService.java` | |
+| `GbaManager.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/GbaManager.java` | |
 
 ### Directory Structure Reference
 

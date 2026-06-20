@@ -249,7 +249,17 @@ Android Version | Key Enterprise Features
 13              | Role-based management, fine-grained permissions
 14              | DevicePolicyEngine, multi-admin resolution
 15              | Enhanced MTE, audit logging, device theft API
+16              | Content protection policy, system authority admins
+17              | Advanced Protection coexistence, multi-user managed provisioning
 ```
+
+Android 16 added a tri-state content-protection policy
+(`setContentProtectionPolicy`) and the `system:` authority prefix that lets
+trusted platform services act as policy-engine admins. Android 17 builds on
+that foundation: the new Advanced Protection Mode (AAPM) service drives several
+device policies (MTE, USB, install-unknown-sources) as a *system admin*, and a
+new multi-user managed-device provisioning flow lands properly for headless
+deployments. Both are covered in detail in section 59.8.
 
 ### 59.1.10  Headless System User Mode
 
@@ -276,8 +286,10 @@ creation of additional secondary users is blocked.
 ### 59.2.1  Overview and Class Hierarchy
 
 `DevicePolicyManagerService` is one of the largest system services in AOSP,
-weighing in at over 25,000 lines.  It implements the `IDevicePolicyManager`
-AIDL interface and runs inside the system server process.
+weighing in at roughly 24,000 lines on the Android 17 tree
+(`frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyManagerService.java`).
+It implements the `IDevicePolicyManager` AIDL interface and runs inside the
+system server process.
 
 ```mermaid
 classDiagram
@@ -652,14 +664,20 @@ private static final MostRestrictive<Boolean> TRUE_MORE_RESTRICTIVE =
         List.of(new BooleanPolicyValue(true), new BooleanPolicyValue(false)));
 ```
 
-Four resolution mechanisms exist:
+Every resolution mechanism subclasses the abstract `ResolutionMechanism<V>`.
+The Android 17 tree ships seven concrete mechanisms (all in the
+`com.android.server.devicepolicy` package), with `LeastRecent` and `ListUnion`
+added in this release:
 
-| Mechanism | Description | Example Policy |
-|-----------|-------------|----------------|
-| `MostRestrictive` | The most restrictive value wins | Camera disable, screen capture disable |
-| `TopPriority` | Higher-priority admin wins | Lock task, persistent preferred activity |
-| `PackageSetUnion` | Union of all admin values | User-control disabled packages |
-| `MostRecent` | Last value set wins | Specific per-admin settings |
+| Mechanism | Source file | Description | Example Policy |
+|-----------|-------------|-------------|----------------|
+| `MostRestrictive<V>` | `MostRestrictive.java` | The most restrictive value (per a declared ordering) wins | Camera disable, screen capture disable |
+| `TopPriority<V>` | `TopPriority.java` | Highest-priority admin (per an authority priority list) wins | Lock task, persistent preferred activity |
+| `MostRecent<V>` | `MostRecent.java` | The most recently set value wins | Per-admin settings without a strict ordering |
+| `LeastRecent<V>` | `LeastRecent.java` | The earliest set value wins (new in 17) | First-writer-wins policies |
+| `PackageSetUnion` | `PackageSetUnion.java` | Union of all admins' package sets | User-control disabled packages |
+| `ListUnion<T>` | `ListUnion.java` | Union of all admins' list values (new in 17) | Permitted-input-method style lists |
+| `FlagUnion` | `FlagUnion.java` | Bitwise OR of all admins' integer flags | Keyguard feature disable flags |
 
 Example: Security logging is resolved with `TRUE_MORE_RESTRICTIVE`, meaning
 if any admin enables security logging, it stays enabled:
@@ -685,8 +703,9 @@ private static final int POLICY_FLAG_GLOBAL_ONLY_POLICY = 1;
 private static final int POLICY_FLAG_LOCAL_ONLY_POLICY = 1 << 1;
 private static final int POLICY_FLAG_INHERITABLE = 1 << 2;
 private static final int POLICY_FLAG_NON_COEXISTABLE_POLICY = 1 << 3;
-private static final int POLICY_FLAG_USER_RESTRICTION_POLICY = 1 << 4;
-private static final int POLICY_FLAG_SKIP_ENFORCEMENT_IF_UNCHANGED = 1 << 5;
+static final int POLICY_FLAG_USER_RESTRICTION_POLICY = 1 << 4;
+static final int POLICY_FLAG_SKIP_ENFORCEMENT_IF_UNCHANGED = 1 << 5;
+private static final int POLICY_FLAG_PACKAGE_POLICY = 1 << 6;
 ```
 
 - **GLOBAL_ONLY**: the policy applies device-wide (e.g., auto time zone).
@@ -694,44 +713,76 @@ private static final int POLICY_FLAG_SKIP_ENFORCEMENT_IF_UNCHANGED = 1 << 5;
 - **INHERITABLE**: child profiles inherit the policy from their parent.
 - **NON_COEXISTABLE**: admin values are kept separate (e.g., app restrictions).
 - **USER_RESTRICTION**: marks user-restriction policies for special handling.
+- **SKIP_ENFORCEMENT_IF_UNCHANGED**: skips the enforcer callback when the
+  resolved value did not change, avoiding redundant downstream work.
+- **PACKAGE_POLICY**: marks policies keyed by a package identifier so the
+  engine can clean them up when the package is removed.
 
 ### 59.2.10  EnforcingAdmin: Admin Identity in the Policy Engine
 
 The `EnforcingAdmin` class models the identity of an admin within the policy
-engine.  It supports three authority types:
+engine.  On the Android 17 tree it recognizes four authority kinds, encoded as
+constant strings (or string prefixes):
 
 ```java
 // frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/
 //   EnforcingAdmin.java
-final class EnforcingAdmin {
-    static final String DPC_AUTHORITY = "enterprise";
-    static final String DEVICE_ADMIN_AUTHORITY = "device_admin";
-    static final String DEFAULT_AUTHORITY = "default";
-    static final String ROLE_AUTHORITY_PREFIX = "role:";
+public final class EnforcingAdmin {
+    public static final String ROLE_AUTHORITY_PREFIX = "role:";
+    public static final String SYSTEM_AUTHORITY_PREFIX = "system:";
+    public static final String DPC_AUTHORITY = "enterprise";
+    public static final String DEVICE_ADMIN_AUTHORITY = "device_admin";
 
-    private final String mPackageName;
     private final ComponentName mComponentName;
+    private final AdminKey mAdminKey;
     private Set<String> mAuthorities;
-    private final int mUserId;
     private final boolean mIsRoleAuthority;
 }
 ```
 
-Factory methods create the appropriate type:
+The earlier `DevicePolicyEngine` design keyed admins by `<packageName, userId>`;
+Android 16/17 refactored that into a sealed `AdminKey` hierarchy
+(`AdminKey.Package`, `AdminKey.Legacy`, `AdminKey.System`) so that an
+enterprise/role admin, a legacy device admin, and a system admin can never
+collide even when they share a package name.  Static factory methods build the
+appropriate identity for each authority:
 
 ```java
 static EnforcingAdmin createEnterpriseEnforcingAdmin(
         ComponentName componentName, int userId) {
     return new EnforcingAdmin(
-        componentName.getPackageName(), componentName,
-        Set.of(DPC_AUTHORITY), userId);
+        new AdminKey.Package(userId, componentName.getPackageName()),
+        componentName, /* isRoleAuthority */ false,
+        new HashSet<>(Set.of(DPC_AUTHORITY)));
 }
 
 static EnforcingAdmin createDeviceAdminEnforcingAdmin(
         ComponentName componentName, int userId) {
-    // Uses DEVICE_ADMIN_AUTHORITY for legacy admins
+    return new EnforcingAdmin(
+        new AdminKey.Legacy(userId, componentName),
+        componentName, /* isRoleAuthority */ false,
+        new HashSet<>(Set.of(DEVICE_ADMIN_AUTHORITY)));
+}
+
+static EnforcingAdmin createSystemEnforcingAdmin(String systemEntity) {
+    return new EnforcingAdmin(
+        new AdminKey.System(systemEntity),
+        /* componentName */ null, /* isRoleAuthority */ false,
+        getSystemAuthority(systemEntity));
 }
 ```
+
+The fourth factory, `createRoleEnforcingAdmin`, takes only a package name and
+user (no `ComponentName`) and resolves the package's held roles into a set of
+`role:<roleName>` authorities.  The `SYSTEM_AUTHORITY_PREFIX` (`"system:"`) and
+`createSystemEnforcingAdmin` path are the load-bearing addition that lets
+trusted platform services -- most notably Advanced Protection Mode (section
+59.8.28) -- set device policies through the same engine that DPCs use, without
+being a DPC.  Parsing of a persisted authority string back into an
+`android.app.admin.Authority` instance lives in `getParcelableAuthority`, which
+maps `"enterprise"` to `DpcAuthority`, `"device_admin"` to
+`DeviceAdminAuthority`, a `role:` prefix to `RoleAuthority`, and a `system:`
+prefix to `SystemAuthority`.
 
 ### 59.2.11  Permission Model for Policy APIs
 
@@ -2554,12 +2605,27 @@ static PolicyDefinition<Boolean> AUDIT_LOGGING = new PolicyDefinition<>(
     new BooleanPolicySerializer());
 ```
 
-The audit log callback interface:
+On the client side, `DevicePolicyManager` exposes audit logging through
+`setAuditLogEnabled(boolean)` / `isAuditLogEnabled()` and a streaming callback
+registered via `setAuditLogEventCallback(...)`.  The callback is delivered over
+the `IAuditLogEventsCallback` AIDL interface:
 
 ```java
-// Referenced in SecurityLogMonitor.java
-import android.app.admin.IAuditLogEventsCallback;
+// frameworks/base/core/java/android/app/admin/DevicePolicyManager.java
+public void setAuditLogEnabled(boolean enabled) { ... }
+public boolean isAuditLogEnabled() { ... }
+public void setAuditLogEventCallback(Executor executor,
+        Consumer<List<SecurityEvent>> callback) {
+    // wraps the consumer in an IAuditLogEventsCallback.Stub
+}
 ```
+
+Unlike legacy security logging -- which batches events and notifies the admin
+only when a buffer fills -- audit logging streams `SecurityEvent`s to the
+registered callback as they are produced, which is what makes it usable for
+near-real-time compliance monitoring. The corresponding server methods are
+`setAuditLogEnabled(String callerPackage, boolean enabled)` and
+`isAuditLogEnabled(String callerPackage)` on `IDevicePolicyManager`.
 
 ### 59.8.3  Network Logging
 
@@ -2816,16 +2882,23 @@ import static android.app.admin.DevicePolicyIdentifiers.MEMORY_TAGGING_POLICY;
 
 ### 59.8.12  Content Protection
 
-The DPC can control content protection features:
+The DPC can control content protection through a tri-state policy.  The
+`DevicePolicyManager` constants are:
 
 ```java
-// DevicePolicyManager.java
-public static final int CONTENT_PROTECTION_DISABLED = 0;
-
-// DevicePolicyManagerService.java
-import static android.Manifest.permission
-    .MANAGE_DEVICE_POLICY_CONTENT_PROTECTION;
+// frameworks/base/core/java/android/app/admin/DevicePolicyManager.java
+public static final int CONTENT_PROTECTION_NOT_CONTROLLED_BY_POLICY = 0;
+public static final int CONTENT_PROTECTION_DISABLED = 1;
+public static final int CONTENT_PROTECTION_ENABLED = 2;
 ```
+
+`setContentProtectionPolicy`/`getContentProtectionPolicy` are routed through the
+policy engine under `DevicePolicyIdentifiers.CONTENT_PROTECTION_POLICY`
+(`"contentProtection"`), and the client API is gated by
+`MANAGE_DEVICE_POLICY_CONTENT_PROTECTION`.  The default state,
+`CONTENT_PROTECTION_NOT_CONTROLLED_BY_POLICY`, leaves the device's own content
+protection setting untouched, distinguishing "no opinion" from an explicit
+disable.
 
 ### 59.8.13  Stolen Device State
 
@@ -3048,6 +3121,168 @@ graph TB
     ATTEST --> |"Attestation result"| SRV_ATTEST
 ```
 
+### 59.8.28  Advanced Protection Mode as a System Admin
+
+Android 16 introduced, and Android 17 expands, **Advanced Protection Mode
+(AAPM)** -- a single user-facing toggle (Settings) that turns on a hardened
+profile of security features at once.  Architecturally the interesting part is
+*how* it enforces those features: AAPM is **not** part of DPMS and is **not** a
+DPC.  It is a standalone system service that drives a handful of existing device
+policies as a *system admin* through the same policy engine described in section
+59.2.
+
+The service and its client API live outside the devicepolicy package:
+
+```java
+// frameworks/base/services/core/java/com/android/server/security/advancedprotection/
+//   AdvancedProtectionService.java                (the system service)
+// frameworks/base/core/java/android/security/advancedprotection/
+//   AdvancedProtectionManager.java                (the @SystemService client)
+public static final String ADVANCED_PROTECTION_SYSTEM_ENTITY =
+        "android.security.advancedprotection";
+```
+
+Each hardened capability is a "feature hook" under
+`services/core/java/com/android/server/security/advancedprotection/features/`,
+keyed by a stable feature id from `AdvancedProtectionManager`:
+
+```java
+// AdvancedProtectionManager.java
+public static final int FEATURE_ID_DISALLOW_CELLULAR_2G = 0;
+public static final int FEATURE_ID_DISALLOW_INSTALL_UNKNOWN_SOURCES = 1;
+public static final int FEATURE_ID_DISALLOW_USB = 2;
+public static final int FEATURE_ID_DISALLOW_WEP = 3;
+public static final int FEATURE_ID_ENABLE_MTE = 4;
+public static final int FEATURE_ID_DISALLOW_INSECURE_WIFI_AUTOJOIN = 5;
+public static final int FEATURE_ID_RESTRICT_NON_TOOL_A11Y_SERVICES = 6;
+```
+
+The bridge into device policy is what ties this chapter together.
+`MemoryTaggingExtensionHook`, for example, calls the *system* overload of
+`setMtePolicy` rather than the public `ComponentName` one:
+
+```java
+// services/core/java/com/android/server/security/advancedprotection/features/
+//   MemoryTaggingExtensionHook.java
+mDevicePolicyManager.setMtePolicy(ADVANCED_PROTECTION_SYSTEM_ENTITY, mtePolicy);
+```
+
+That overload (`DevicePolicyManager.setMtePolicy(String systemEntity, int
+policy)`) calls `IDevicePolicyManager.setMtePolicyBySystem(systemEntity,
+policy)`, and DPMS records the value against a
+`createSystemEnforcingAdmin(ADVANCED_PROTECTION_SYSTEM_ENTITY)` identity -- the
+`system:` authority from section 59.2.10.  Because AAPM's MTE preference enters
+the engine as just another admin's value, it coexists with any DPC's MTE policy
+under the normal resolution rules instead of fighting it.
+
+The hook diagram below shows the enforcement paths for the three feature hooks
+that exist in the 17 tree (MTE goes through DPMS; USB and install-unknown-sources
+go through `UserManager` restrictions):
+
+```mermaid
+graph LR
+    subgraph "AdvancedProtectionService"
+        TOGGLE["AAPM toggle<br/>(Settings)"]
+        MTE_HOOK["MemoryTaggingExtensionHook"]
+        USB_HOOK["UsbDataAdvancedProtectionHook"]
+        UIS_HOOK["DisallowInstallUnknownSourcesHook"]
+    end
+
+    TOGGLE --> MTE_HOOK
+    TOGGLE --> USB_HOOK
+    TOGGLE --> UIS_HOOK
+
+    MTE_HOOK -- "setMtePolicy('system:...')" --> DPMS["DevicePolicyManagerService<br/>(system EnforcingAdmin)"]
+    USB_HOOK -- "DISALLOW_USB" --> UM["UserManager<br/>restrictions"]
+    UIS_HOOK -- "DISALLOW_INSTALL_UNKNOWN_SOURCES" --> UM
+
+    DPMS --> ENGINE["DevicePolicyEngine<br/>(MostRestrictive resolve)"]
+```
+
+A subtle but important rule: a DPC cannot silently undo AAPM.  Because the user
+opted into Advanced Protection, several of these features are resolved with the
+restrictive value pinned by the system admin, so an enterprise admin's "allow"
+cannot relax a protection the user explicitly enabled.
+
+### 59.8.29  Multi-User Managed Device Provisioning
+
+Headless system user mode (section 59.1.10) needs a provisioning flow that does
+not assume the Device Owner runs as the human-facing user.  Android 17 lands the
+**multi-user managed device** provisioning path for exactly this case.  The new
+client surface in `DevicePolicyManager` is:
+
+```java
+// frameworks/base/core/java/android/app/admin/DevicePolicyManager.java
+public static final String ACTION_PROVISION_MULTIUSER_MANAGED_DEVICE =
+        "android.app.admin.action.PROVISION_MULTIUSER_MANAGED_DEVICE";
+public static final String ACTION_PROVISION_MULTIUSER_MANAGED_USER =
+        "android.app.admin.action.PROVISION_MULTIUSER_MANAGED_USER";
+
+// New provisioning result code
+public static final int RESULT_MULTIUSER_MANAGED_DEVICE_PROVISIONED = 124;
+
+// Kicks off the provisioning state machine (system API)
+public void startMultiuserManagedDeviceProvisioning();
+```
+
+The parameter objects backing the flow are the `Multiuser*ProvisioningParams`
+family in `frameworks/base/core/java/android/app/admin/`
+(`MultiuserManagedDeviceProvisioningParams.java`,
+`MultiuserManagedUserProvisioningParams.java`, and their `*Transport.aidl`
+parcelable forms), and completion is reported through
+`MultiuserDeviceProvisioningCompletion.java`.  The older
+`MultiUserDeviceProvisioningParams` is being deprecated in favor of these.
+
+Conceptually this separates "provision the device" from "provision a managed
+user on that device": the Device Owner is established against the headless
+system user, and managed users are then provisioned with their own owner state.
+This is the provisioning counterpart to `HEADLESS_DEVICE_OWNER_MODE_SINGLE_USER`
+and `HEADLESS_DEVICE_OWNER_MODE_AFFILIATED` from `DeviceAdminInfo`.
+
+### 59.8.30  Policy Schema Versioning and Migration
+
+Because the policy engine persists resolved state to disk (section 59.2.13), the
+on-disk schema is versioned so that an OTA can migrate older XML forward.  DPMS
+pins the current schema version:
+
+```java
+// frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/
+//   DevicePolicyManagerService.java
+static final int DPMS_VERSION = 6;
+// ... during boot:
+upgrader.upgradePolicy(DPMS_VERSION);
+```
+
+`PolicyVersionUpgrader.upgradePolicy(int)` walks a chain of `if (currentVersion
+== N)` steps from the persisted version up to `DPMS_VERSION`, rewriting policies
+and bumping the stored version at each step (for example, the version 5 -> 6 step
+flips the default of a boolean policy, so loading a version-5 file initializes
+the field to the old default before re-persisting at version 6).  A separate
+`PolicyMigrator.migrateV1PoliciesToDevicePolicyEngineLocked()` handles the
+one-time migration of pre-engine (Android 13 and earlier) policies -- permitted
+input methods, account-management-disabled, and similar -- into the
+`DevicePolicyEngine` representation.  Both run inside the DPMS lock during boot,
+which is why a first boot after a major upgrade does a small amount of policy
+bookkeeping before management APIs become fully live.
+
+### 59.8.31  Enterprise RCS Archival
+
+A smaller Android 17 addition is enterprise control over which app receives
+archived RCS messages.  `RcsArchivalAppTracker` tracks the single granted
+archival package per user:
+
+```java
+// frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/
+//   RcsArchivalAppTracker.java
+// "Tracks the enterprise RCS archival application."
+// KEY_ARCHIVAL_PACKAGE = "messages_archival"
+// Mapping: userId -> currently granted archival package name
+```
+
+It exists so that, on a managed device, the messaging-archival capability can be
+delegated to a designated app (for compliance retention) and revoked cleanly
+when that app changes, rather than being a free-for-all grant.
+
 ---
 
 ## 59.9  Try It
@@ -3062,7 +3297,7 @@ Examine the scale of the Device Policy Manager Service:
 ```bash
 # Count lines in the main service file
 wc -l frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyManagerService.java
-# Expected: ~25,000 lines
+# Expected: ~24,000 lines on the Android 17 tree
 
 # Count all Java files in the devicepolicy package
 find frameworks/base/services/devicepolicy/ -name "*.java" | wc -l
@@ -3717,15 +3952,19 @@ Here are the key architectural insights:
    determined at provisioning time and fundamentally shapes what policies can
    be enforced.
 
-2. **DevicePolicyManagerService** is the central policy broker.  At 25,000+
-   lines, it is one of AOSP's largest system services.  It validates caller
-   permissions, delegates to the policy engine for resolution, persists state
-   to XML, and notifies subsystems of policy changes.
+2. **DevicePolicyManagerService** is the central policy broker.  At roughly
+   24,000 lines, it is one of AOSP's largest system services.  It validates
+   caller permissions, delegates to the policy engine for resolution, persists
+   versioned state to XML (`DPMS_VERSION = 6` in Android 17), and notifies
+   subsystems of policy changes.
 
 3. **The DevicePolicyEngine** (introduced in Android 14) brings formal
-   multi-admin policy resolution with four strategies: `MostRestrictive`,
-   `TopPriority`, `PackageSetUnion`, and `MostRecent`.  This enables
-   coexistence of DPC admins, role-based admins, and legacy device admins.
+   multi-admin policy resolution.  Android 17 ships seven resolution strategies
+   -- `MostRestrictive`, `TopPriority`, `MostRecent`, `LeastRecent`,
+   `PackageSetUnion`, `ListUnion`, and `FlagUnion` -- and four admin authority
+   kinds (`enterprise`, `device_admin`, `role:`, and the newer `system:`).  This
+   lets DPC admins, role-based admins, legacy device admins, and trusted system
+   services such as Advanced Protection Mode coexist on the same policies.
 
 4. **Work profiles** leverage Android's multi-user infrastructure to create
    a cryptographically separate container for work data.  Cross-profile

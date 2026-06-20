@@ -25,9 +25,9 @@ The framework revolves around five central classes:
 | Class | Role | Lines |
 |---|---|---|
 | `AppWidgetProvider` | BroadcastReceiver convenience wrapper for providers | 220 |
-| `AppWidgetHost` | Host-side connection to AppWidgetService | 726 |
-| `AppWidgetHostView` | The actual View container that renders RemoteViews | ~800 |
-| `AppWidgetManager` | System-service client proxy (singleton) | ~1,500 |
+| `AppWidgetHost` | Host-side connection to AppWidgetService | 751 |
+| `AppWidgetHostView` | The actual View container that renders RemoteViews | 1,241 |
+| `AppWidgetManager` | System-service client proxy (singleton) | 1,876 |
 | `AppWidgetProviderInfo` | Parcelable metadata describing a widget provider | 647 |
 
 Plus newer additions:
@@ -96,7 +96,7 @@ The hook methods that subclasses override:
 
 ### 43.1.3 AppWidgetHost -- The Host Entry Point
 
-`AppWidgetHost` (726 lines) is the host application's handle to the widget system.
+`AppWidgetHost` (751 lines) is the host application's handle to the widget system.
 Launcher3, for example, creates an `AppWidgetHost` with a fixed host ID of 1024.
 
 The class has three critical architectural elements:
@@ -194,8 +194,9 @@ Key fields:
 
 ### 43.1.5 AppWidgetEvent -- Engagement Metrics
 
-`AppWidgetEvent` (401 lines) is a newer addition (Android 16, flagged under
-`FLAG_ENGAGEMENT_METRICS`) that tracks user interactions with widgets:
+`AppWidgetEvent` (401 lines) is a newer addition (still flagged under
+`engagement_metrics` in `frameworks/base/core/java/android/appwidget/flags.aconfig`)
+that tracks user interactions with widgets:
 
 ```java
 // frameworks/base/core/java/android/appwidget/AppWidgetEvent.java
@@ -231,7 +232,10 @@ public Builder endVisibility() {
 ```
 
 Events are serialized to `PersistableBundle` and reported to `UsageStatsManager` via
-`AppWidgetHost.reportAllWidgetEvents()`.
+`AppWidgetHost.reportAllWidgetEvents()`
+(`frameworks/base/core/java/android/appwidget/AppWidgetHost.java:693`). A provider
+queries its own widgets' events through `AppWidgetManager.queryAppWidgetEvents()`
+(see Section 43.10.3).
 
 ### 43.1.6 Widget Lifecycle
 
@@ -486,7 +490,7 @@ Hard limits prevent abuse:
 ## 43.3 RemoteViews
 
 `RemoteViews` is the central mechanism for cross-process UI in Android. Defined in
-`frameworks/base/core/java/android/widget/RemoteViews.java` (10,874 lines), it
+`frameworks/base/core/java/android/widget/RemoteViews.java` (11,236 lines), it
 serializes a description of view modifications as `Parcelable` actions that can be
 sent over Binder, then applied (inflated) in the receiving process.
 
@@ -944,7 +948,7 @@ Several security measures apply:
 RemoteCompose is a new rendering system within AOSP that provides a
 programmatic alternative to XML layouts for cross-process rendering. Located in
 `frameworks/base/core/java/com/android/internal/widget/remotecompose/`, it
-comprises 265 Java files totaling over 60,000 lines of code.
+comprises 299 Java files totaling roughly 77,000 lines of code.
 
 ### 43.5.1 Design Goals
 
@@ -1000,9 +1004,9 @@ contains:
 // frameworks/base/.../remotecompose/core/CoreDocument.java
 public class CoreDocument implements Serializable {
     public static final int MAJOR_VERSION = 1;
-    public static final int MINOR_VERSION = 2;
+    public static final int MINOR_VERSION = 3;
     public static final int PATCH_VERSION = 0;
-    public static final int DOCUMENT_API_LEVEL = 8;
+    public static final int DOCUMENT_API_LEVEL = 9;
 
     ArrayList<Operation> mOperations = new ArrayList<>();
     RootLayoutComponent mRootLayoutComponent = null;
@@ -1954,12 +1958,212 @@ Widget resizing involves:
 
 ---
 
-## 43.10 Try It: Build a Custom Widget
+## 43.10 Android 17 Widget Changes
+
+The widget stack received several incremental but consequential changes in
+Android 17. They are gated behind flags in
+`frameworks/base/core/java/android/appwidget/flags.aconfig`, which is the
+authoritative list of what is in flight for the platform. This section covers the
+ones that change the developer-visible contract or the rendering pipeline.
+
+### 43.10.1 Connected-Display Awareness
+
+With more devices driving external and connected displays, a widget now needs to
+know *which* display it is rendering on so it can size itself and read the correct
+`DisplayMetrics`. Android 17 adds this under the `widget_display_changes` flag
+(`FLAG_WIDGET_DISPLAY_CHANGES`).
+
+The framework exposes a new option key on the widget's option bundle,
+`AppWidgetManager.OPTION_APPWIDGET_DISPLAY_ID`
+(`frameworks/base/core/java/android/appwidget/AppWidgetManager.java:270`):
+
+```java
+// frameworks/base/core/java/android/appwidget/AppWidgetManager.java
+@FlaggedApi(Flags.FLAG_WIDGET_DISPLAY_CHANGES)
+public static final String OPTION_APPWIDGET_DISPLAY_ID = "appWidgetDisplayId";
+```
+
+`AppWidgetHostView` populates this key whenever it pushes new size options to the
+service, reading its own attached display
+(`frameworks/base/core/java/android/appwidget/AppWidgetHostView.java:450`):
+
+```java
+// frameworks/base/core/java/android/appwidget/AppWidgetHostView.java
+if (widgetDisplayChanges() && getDisplay() != null) {
+    options.putInt(AppWidgetManager.OPTION_APPWIDGET_DISPLAY_ID,
+            getDisplay().getDisplayId());
+}
+```
+
+A provider reading `OPTION_APPWIDGET_DISPLAY_ID` from the options bundle can hand
+the id to `DisplayManager.getDisplay(int)` to recover the `Display` and its
+density, then build appropriately scaled `RemoteViews`. Before this change a widget
+moved to a secondary display could only infer sizing from the min/max width and
+height extras.
+
+The same flag also gates the public complex-unit padding overload,
+`setViewPadding(int, float, float, float, float, int)`
+(`frameworks/base/core/java/android/widget/RemoteViews.java:7624`), which lets a
+provider express padding in any `TypedValue.COMPLEX_UNIT_*` (such as `COMPLEX_UNIT_DIP`)
+instead of being limited to a pixel `ViewPaddingAction`. This matters precisely
+because pixel values do not survive a move between displays of different densities.
+
+### 43.10.2 Persisting RemoteViews Previews to Protobuf
+
+Generated previews (Section 43.2.8) are `RemoteViews` snapshots of widget content
+shown in the picker. Persisting a live `RemoteViews` parcel across reboots is
+fragile because a `Parcel` is not a stable on-disk format. Android 17 adds a stable
+protobuf representation under the `remote_views_proto` flag
+(`FLAG_REMOTE_VIEWS_PROTO`).
+
+The wire format is defined in
+`frameworks/base/core/proto/android/widget/remoteviews.proto` as the
+`RemoteViewsProto` message, and the encode/decode logic lives in a dedicated
+1,597-line companion,
+`frameworks/base/core/java/android/widget/RemoteViewsSerializers.java`. `RemoteViews`
+itself gains two flagged methods
+(`frameworks/base/core/java/android/widget/RemoteViews.java:10681` and `:10752`):
+
+```java
+// frameworks/base/core/java/android/widget/RemoteViews.java
+@FlaggedApi(FLAG_REMOTE_VIEWS_PROTO)
+public void writePreviewToProto(@NonNull Context context, ProtoOutputStream out) { ... }
+
+@FlaggedApi(FLAG_REMOTE_VIEWS_PROTO)
+public static RemoteViews createPreviewFromProto(Context context, ProtoInputStream in)
+        throws Exception { ... }
+```
+
+Unlike a `Parcel`, the proto encodes resource *names* rather than raw integer
+resource IDs (for example `out.write(RemoteViewsProto.LAYOUT_ID, ...)` writes the
+resource name), so a preview survives an APK update that reshuffles resource ID
+allocation. The `.proto` carries an explicit `Next tag` marker and documents that
+deleted fields must be `reserved`, signalling that this is intended as a durable,
+forward-compatible format. `RemoteViewsSerializers` knows how to round-trip
+`CharSequence` spans, `ColorStateList`, `Icon`, and `BlendMode` through the same
+proto schema.
+
+### 43.10.3 Querying Engagement Events
+
+Section 43.1.5 introduced `AppWidgetEvent`. Android 17 closes the loop with a
+provider-facing read API, `AppWidgetManager.queryAppWidgetEvents()`
+(`frameworks/base/core/java/android/appwidget/AppWidgetManager.java:1688`), still
+flagged under `engagement_metrics`:
+
+```java
+// frameworks/base/core/java/android/appwidget/AppWidgetManager.java
+@FlaggedApi(Flags.FLAG_ENGAGEMENT_METRICS)
+@NonNull
+public List<AppWidgetEvent> queryAppWidgetEvents(long beginTime, long endTime) {
+    ParceledListSlice<AppWidgetEvent> events = mService.queryAppWidgetEvents(
+            mPackageName, beginTime, endTime);
+    return events != null ? events.getList() : Collections.emptyList();
+}
+```
+
+The method returns only events for widgets provided by the calling package and
+requires no additional permission. Events are retained by the system for only a few
+days. The host side feeds the pipeline: `AppWidgetHost.reportAllWidgetEvents()`
+(`frameworks/base/core/java/android/appwidget/AppWidgetHost.java:693`) flushes
+collected `AppWidgetEvent`s to the service, which forwards them to
+`UsageStatsManager` and triggers periodic collection through
+`ReportWidgetEventsJob`
+(`frameworks/base/services/appwidget/java/com/android/server/appwidget/ReportWidgetEventsJob.java`).
+
+### 43.10.4 List Setters and Smaller System Corner Radius
+
+Two smaller refinements round out the release:
+
+- **`setCharSequenceList()`** — a new generic setter
+  (`frameworks/base/core/java/android/widget/RemoteViews.java:8262`) that invokes a
+  view method taking a single `List<CharSequence>` argument. The action serializes
+  the list with `Parcel.writeCharSequenceList()` and, under `remote_views_proto`,
+  round-trips through `writeCharSequenceListToProto()`. This fills a long-standing
+  gap where only scalar `CharSequence` setters were reachable through reflection.
+
+- **Smaller default widget corner radius** — the `use_smaller_app_widget_system_radius`
+  flag (fixed read-only) changes the system-provided background radius from 28dp to
+  24dp. The two values coexist in
+  `frameworks/base/core/res/res/values/dimens.xml:1115`, each tagged with the
+  feature flag so the resource resolves to the right value at runtime:
+
+```xml
+<!-- frameworks/base/core/res/res/values/dimens.xml -->
+<dimen name="system_app_widget_background_radius"
+    android:featureFlag="!android.appwidget.flags.use_smaller_app_widget_system_radius">28dp</dimen>
+<dimen name="system_app_widget_background_radius"
+    android:featureFlag="android.appwidget.flags.use_smaller_app_widget_system_radius">24dp</dimen>
+```
+
+### 43.10.5 New Widget Categories and App-Lock Removal
+
+`AppWidgetProviderInfo` gains `WIDGET_CATEGORY_NOT_KEYGUARD` (value 8,
+`frameworks/base/core/java/android/appwidget/AppWidgetProviderInfo.java:108`),
+gated by the `not_keyguard_category` flag. A provider tags a widget with this
+category to declare that it should be offered everywhere *except* the keyguard,
+which is a cleaner contract than the previous all-or-nothing
+`WIDGET_CATEGORY_KEYGUARD`.
+
+On the service side, the `app_lock_widget_removal` flag wires
+`AppWidgetServiceImpl`
+(`frameworks/base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java`)
+to remove widgets that belong to packages placed under an app lock, so a locked
+app's content is not left exposed on the home screen.
+
+## 43.11 Android 17 RemoteCompose Changes
+
+RemoteCompose continues to be the fastest-moving part of this subsystem. Between
+Android 16 and 17 the in-tree package grew to 299 Java files (roughly 77,000
+lines), and the document format version advanced.
+
+### 43.11.1 Document Version Bump
+
+`CoreDocument`
+(`frameworks/base/core/java/com/android/internal/widget/remotecompose/core/CoreDocument.java`)
+now declares `MINOR_VERSION = 3` and `DOCUMENT_API_LEVEL = 9` (Android 16 shipped
+`MINOR_VERSION = 2` / `DOCUMENT_API_LEVEL = 8`):
+
+```java
+// frameworks/base/.../remotecompose/core/CoreDocument.java
+public static final int MAJOR_VERSION = 1;
+public static final int MINOR_VERSION = 3;
+public static final int PATCH_VERSION = 0;
+public static final int DOCUMENT_API_LEVEL = 9;
+```
+
+The API level is the contract a player advertises and a document requires. A player
+exposes its supported level through the `ID_API_LEVEL` time variable
+(`TimeVariables.updateTime()` loads `DOCUMENT_API_LEVEL + BUILD`), and a document
+gates operations on it via `WireBuffer.mValidOperations[]` (Section 43.5.4). When a
+host's player advertises level 9, a document built against level 8 still loads,
+because the `canBeDisplayed()` check
+(`frameworks/base/core/java/com/android/internal/widget/remotecompose/player/RemoteComposeDocument.java`)
+compares both the major/minor version and the required-capability bitmask before
+the player attempts to paint. This forward/backward-compatibility handshake is what
+lets a widget host and a provider compiled against different platform levels still
+interoperate.
+
+### 43.11.2 Continued Growth of the Operation Set
+
+The operation registry in
+`frameworks/base/core/java/com/android/internal/widget/remotecompose/core/Operations.java`
+keeps the opcode assignments stable across versions (the draw, data, matrix,
+modifier, and layout opcodes documented in Sections 43.6 and 43.7 are unchanged),
+which is exactly what the version-gating mechanism requires: an opcode's numeric
+value must never be reused so that an older player can reliably reject an operation
+it does not understand rather than misinterpret it. New capabilities are added by
+appending new opcodes and bumping `MINOR_VERSION`, not by repurposing existing ones.
+The `remote_document_features_2025q4` flag in `flags.aconfig` tracks the latest
+round of additions feeding into this growth.
+
+---
+
+## 43.12 Try It: Build a Custom Widget
 
 This section provides a practical exercise demonstrating the concepts covered
 in this chapter.
 
-### 43.10.1 XML-Based Widget (Traditional)
+### 43.12.1 XML-Based Widget (Traditional)
 
 **Step 1: Create the AppWidgetProvider**
 
@@ -2061,7 +2265,7 @@ public class MyWidgetProvider extends AppWidgetProvider {
 </receiver>
 ```
 
-### 43.10.2 Collection Widget with RemoteViewsService
+### 43.12.2 Collection Widget with RemoteViewsService
 
 **Step 1: Implement the factory**
 
@@ -2149,7 +2353,7 @@ public void onUpdate(Context context, AppWidgetManager manager,
 }
 ```
 
-### 43.10.3 Sized RemoteViews for Responsive Layout
+### 43.12.3 Sized RemoteViews for Responsive Layout
 
 ```java
 @Override
@@ -2184,7 +2388,7 @@ public void onUpdate(Context context, AppWidgetManager manager,
 }
 ```
 
-### 43.10.4 RemoteCompose Widget (DrawInstructions)
+### 43.12.4 RemoteCompose Widget (DrawInstructions)
 
 ```java
 @Override
@@ -2214,7 +2418,7 @@ When the host's `AppWidgetHostView` receives these RemoteViews, it detects
 `mHasDrawInstructions == true` and uses a `RemoteComposePlayer` instead of
 inflating an XML layout.
 
-### 43.10.5 Engagement Metrics
+### 43.12.5 Engagement Metrics
 
 ```java
 // In your widget's AppWidgetHostView setup
@@ -2236,7 +2440,7 @@ for (AppWidgetEvent event : events) {
 }
 ```
 
-### 43.10.6 Build and Test
+### 43.12.6 Build and Test
 
 To build a widget within the AOSP tree:
 
@@ -2259,7 +2463,7 @@ adb shell dumpsys appwidget
 adb shell dumpsys meminfo com.example.widget
 ```
 
-### 43.10.7 Debugging Tips
+### 43.12.7 Debugging Tips
 
 1. **Widget not appearing in picker**: Verify the `<receiver>` has the correct
    intent-filter and `<meta-data>` in the manifest. Check `adb shell dumpsys
@@ -2329,7 +2533,7 @@ The key takeaways:
    enforcing security policy, managing state persistence, and handling periodic
    updates via `AlarmManager`.
 
-3. **RemoteCompose** is a significant new addition (265 files, 60,000+ lines)
+3. **RemoteCompose** is a significant new addition (299 files, ~77,000 lines)
    that provides a binary bytecode format for rendering. It supports draw
    operations, layout containers, modifiers, variables, expressions, animations,
    haptics, and accessibility -- far exceeding what `RemoteViews` can express.
@@ -2353,7 +2557,9 @@ The key takeaways:
 | `frameworks/base/core/java/android/appwidget/AppWidgetManager.java` | Public API entry point |
 | `frameworks/base/core/java/android/appwidget/AppWidgetProviderInfo.java` | Widget metadata (647 lines) |
 | `frameworks/base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java` | system_server implementation |
-| `frameworks/base/core/java/android/widget/RemoteViews.java` | RemoteViews action serialization (10,874 lines) |
+| `frameworks/base/core/java/android/widget/RemoteViews.java` | RemoteViews action serialization (11,236 lines) |
+| `frameworks/base/core/java/android/widget/RemoteViewsSerializers.java` | RemoteViews protobuf preview serialization (1,597 lines) |
+| `frameworks/base/core/proto/android/widget/remoteviews.proto` | `RemoteViewsProto` preview wire format |
 | `frameworks/base/core/java/android/widget/RemoteViewsService.java` | Collection widget service (321 lines) |
 | `frameworks/base/core/java/android/widget/RemoteViewsAdapter.java` | Collection widget adapter (1,305 lines) |
 | `frameworks/base/core/java/com/android/internal/widget/remotecompose/core/CoreDocument.java` | RemoteCompose document model |
