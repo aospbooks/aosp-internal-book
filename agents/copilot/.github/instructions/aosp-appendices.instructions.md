@@ -3076,7 +3076,7 @@ Setup/teardown uses dedicated activities (`SetupSupervisionActivity.kt`, `Enable
 
 ## D.12 AI & Devices
 
-Android 17 pushes on-device AI deeper into the platform: a new NPU Manager mainline module arbitrating access to neural accelerators, a new PersonalContext system app building an on-device personal-context surface, and the first integration of the Khronos OpenXR SDK signalling Android XR runtime support. CHRE grows a high-throughput data-flow subsystem for always-on sensing.
+Android 17 pushes on-device AI deeper into the platform: a new NPU Manager mainline module arbitrating access to neural accelerators, a new PersonalContext system app building an on-device personal-context surface, and the first vendoring of the Khronos OpenXR SDK headers alongside a flag-gated Android XR API surface (covering both headsets and MicroXR glasses). CHRE grows a high-throughput data-flow subsystem for always-on sensing.
 
 ### New projects
 
