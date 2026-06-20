@@ -4244,6 +4244,18 @@ The comment at lines 217-218 explains why: Microdroid does not persist authority
 data in the replay-protected instance spec, so the authority must travel with
 the signed config on every boot.
 
+A concrete Android 17 consumer of this multitenant pVM model is **AiSeal**, the
+platform's sealed environment for on-device AI host payloads. Its in-VM native
+host service lives at `frameworks/native/services/aisealhostservice/`, which
+loads a `VmPayloadConfig` plus an `AiSealPayloadConfig` of tenants whose
+`exported_services` are reached from the host over vsock
+(`aisealhostservice/src/config.rs`, `aisealhostservice/src/main.rs`). The VM is
+protected by default but gated by the `service.aiseal.protected_vm` property
+(`AISEAL_PROTECTED_VM_FLAG` in `config.rs`, default `true`), which can select a
+non-protected VM where a protected VM is unavailable (such as on Cuttlefish,
+Section 54.1.5). The AiSeal framework and API surface,
+along with its per-user key handling, are covered in Chapter 50.
+
 ## 54.28 Trusty as a Protected VM
 
 Android 17 lets Trusty, the reference Trusted Execution Environment OS, run as a

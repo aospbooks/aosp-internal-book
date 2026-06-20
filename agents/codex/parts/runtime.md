@@ -4660,7 +4660,210 @@ recompilation triggers covered in section 18.8.
 
 ---
 
-## 18.12 Try It
+## 18.12 The Native Rust Zygote (zygote_next)
+
+Android 17 ships a second, ground-up reimplementation of the zygote process
+written in Rust. It lives in its own top-level project, `system/zygote/`, and
+builds a daemon binary named `zygote_next` (`system/zygote/zygote/Android.bp`,
+the `rust_binary { name: "zygote_next" }` target). It is roughly 9,000-10,000
+lines of Rust across a handful of crates and is an experiment in replacing the
+classic C++/Java zygote described in section 18.1.4 (and the launcher in
+`frameworks/base/cmds/app_process`). This section explains what it is, how it
+differs structurally from the classic zygote, and -- importantly -- how it is
+gated, because it is not the default process launcher in Android 17.
+
+### 18.12.1 Why a Native Rust Zygote
+
+The classic zygote is a Java class (`ZygoteInit` /
+`frameworks/base/core/java/com/android/internal/os/Zygote*`) launched by the
+native `app_process` runner, which embeds the ART runtime and then runs the
+`com.android.internal.os.ZygoteInit` main. Its forking, file-descriptor
+hygiene, capability dropping, and SELinux/UID transitions are implemented partly
+in Java and partly in C++ JNI helpers. That code is security critical -- it runs
+as root and decides exactly what an app process inherits -- and it is exactly the
+kind of pointer-and-syscall code where C++ memory-safety bugs are most dangerous.
+
+The native zygote rewrites this layer in Rust for three stated reasons, all
+visible in the project structure (`system/zygote/README.md`):
+
+- **Memory safety.** The lowest crate, `zygote-sys`
+  (`system/zygote/zygote-sys/`), is the single `unsafe` FFI boundary that wraps
+  raw `libc`/Linux syscalls (`fork`, `clone3`, `setresuid`/`setresgid`,
+  `prctl`, `epoll_wait`, socket calls) and Android-specific helpers
+  (SELinux context, cpuset policy) into safe `Result`-returning Rust APIs.
+  Everything above it -- the server loop, the spawn logic, the
+  capability/rlimit handling in `child_process.rs` -- is safe Rust.
+- **Startup and footprint.** A native daemon avoids embedding a full managed
+  runtime purely to run the launcher logic; the `zygote_next` binary preloads
+  shared libraries and then forks, rather than booting ART to run Java spawn
+  code.
+- **Maintainability.** The security-critical file-descriptor allowlists are
+  data tables in `system/zygote/zygote/src/species/android_native.rs` with an
+  explicit per-entry review action, rather than scattered imperative checks.
+
+This does not replace the ART runtime itself: a spawned Android app process
+still needs the managed runtime, the boot image, and class preloading covered in
+sections 18.1 through 18.6. The native zygote is a replacement for the
+*process-creation and specialization machinery*, not for ART.
+
+### 18.12.2 The Species and Subspecies Model
+
+The classic zygote bakes in one notion of "what gets forked" (a managed app
+process), with a few special cases bolted on (the system_server fork, the
+app-zygote, the WebView zygote). The native zygote abstracts that variability
+behind a `Species` trait
+(`system/zygote/zygote/src/species.rs`). A species is the set of callbacks that
+decide what a particular flavor of child process preloads, which file
+descriptors and sockets it is allowed to inherit, and how control is finally
+handed to the new process (the `gestate` method, which never returns).
+
+The species implemented in 17 are tagged by `SpeciesTag`
+(`system/zygote/zygote/src/species.rs`):
+
+- `AndroidNative` (`"android-native-app"`, in
+  `system/zygote/zygote/src/species/android_native.rs`) -- the species that
+  produces ordinary Android app processes. This is the species the
+  `zygote_next.rc` service launches with (`--species android-native-app`).
+- `LibApp` (`"lib-app"`, in
+  `system/zygote/zygote/src/species/lib_app.rs`) -- loads a shared library that
+  exports a `zygote_entry` symbol and hands control to it; used for native,
+  non-managed payloads.
+- `Mock` (`"mock"`) -- a test-only species.
+
+A **subspecies** is the native zygote's equivalent of the classic *child
+zygote* (the app-zygote / per-app-zygote and WebView zygote). Instead of forking
+a child that immediately becomes an app, the server can fork a child that itself
+becomes a new zygote server bound to its own socket, ready to spawn further
+processes with a restricted profile. This is driven by the `SpawnSubspecies`
+message and handled by `Server::handle_message_spawn_subspecies` ->
+`Server::re_initialize_as_subspecies`
+(`system/zygote/zygote/src/server.rs`), which resets the file-descriptor
+registry and rebinds the epoll loop and signal handling for the child server.
+The `SpawnSubspeciesAndroidNative` payload carries the restricted library paths,
+UID/GID range, and preload function that the subspecies will enforce -- the same
+role the classic app-zygote plays in restricting a sandboxed process.
+
+The following diagram shows the native zygote species fork model and how a
+subspecies becomes a second server.
+
+```mermaid
+flowchart TD
+    Init["init starts<br/>zygote_next (disabled by default)"] --> Server["zygote_next Server<br/>(species: android-native-app)"]
+    Server -->|"preload libraries"| Server
+
+    SS["system_server / framework<br/>(NativeZygoteProcess client)"] -->|"Spawn (FlatBuffers)"| Server
+    SS -->|"SpawnSubspecies (FlatBuffers)"| Server
+
+    Server -->|"fork() + Species::gestate()"| App1["App process<br/>(AndroidNative species)"]
+    Server -->|"fork() + re_initialize_as_subspecies()"| Sub["Subspecies server<br/>(own socket, restricted profile)"]
+
+    Sub -->|"fork() + gestate()"| App2["Sandboxed child process"]
+```
+
+### 18.12.3 The FlatBuffers Command IPC
+
+The classic zygote command protocol is a newline-delimited list of text
+arguments written over a `stream` `LocalSocket` (the `socket zygote stream 660
+root system` line in `system/core/rootdir/init.zygote64.rc`, backing a
+`LocalServerSocket`); the new `zygote_next` uses a `seqpacket` socket instead.
+The native zygote replaces that with a typed, FlatBuffers-encoded command
+protocol. The schema lives in
+`system/zygote/zygote-messages/schemas/messages.fbs` and is compiled into Rust
+bindings in the `zygote-messages` crate
+(`system/zygote/zygote-messages/`).
+
+The root type is a `Parcel` wrapping a `Message` union. The union members are
+the full command vocabulary: `IdentityQuery` / `IdentityQueryResponse` (ask the
+server which species/arch it is), `Spawn` and `SpawnSubspecies` (with a
+`SpawnCommon` carrying UID/GID, capabilities, rlimits, SELinux `se_info`, and
+scheduling priorities, plus a `SpawnPayload` union selecting
+`SpawnAndroidNative`, `SpawnSubspeciesAndroidNative`, `SpawnLibApp`, or
+`SpawnMock`), `SpawnResponse` (the spawned PID), and `Stat` / `StatResponse`
+for process introspection.
+
+On the framework side the client is `NativeZygoteProcess`
+(`frameworks/base/core/java/android/os/NativeZygoteProcess.java`), an
+`IZygoteProcess` implementation that connects to the `zygote_next` seqpacket
+socket and calls JNI methods in
+`frameworks/base/core/jni/android_os_NativeZygoteProcess.cpp`. The JNI layer
+builds the FlatBuffer (`CreateSpawnParcel`) and writes it to the socket; the
+note in that file that `RESPONSE_DATA_BUF_SIZE` must stay in sync with
+`MESSAGE_BUFFER_SIZE` in `system/zygote/zygote-messages/src/lib.rs` shows the
+two sides share one schema. The server's `epoll` loop dispatches each decoded
+`Message` (`Server::run` in `system/zygote/zygote/src/server.rs`): an
+`IdentityQuery` is answered, a `Spawn`/`SpawnSubspecies` triggers a `fork()`
+followed by `child_process::re_initialize` and either `Species::gestate` (for an
+app) or `re_initialize_as_subspecies` (for a subspecies server).
+
+### 18.12.4 Relationship to the Classic Zygote and Boot Flow
+
+The native zygote reuses the same fork-and-specialize idea as the classic model
+in section 18.1.4: a long-lived server preloads shared resources once, then
+`fork()`s a child per process and re-initializes it (drop the capability
+bounding set, set secondary groups, set rlimits, `setresgid` to the target GID,
+apply seccomp filters while still privileged -- before the UID change -- then
+`setresuid` to the target UID and overwrite the capability set --
+`child_process::re_initialize` in
+`system/zygote/zygote/src/child_process.rs`). The mechanics map almost one to
+one onto the Java `Zygote.forkAndSpecialize` path, with the file-descriptor
+sanitization driven by the per-species allowlists rather than the classic
+`ZygoteCommandBuffer` argument parsing.
+
+What differs is the launch wiring and how a process picks which zygote to use:
+
+- **Boot ordering (cross-reference Chapter 4, Boot and Init).** The classic
+  primary zygote is started by an init `.rc` service early in boot. The native
+  zygote's service `zygote_next` is marked `disabled` in
+  `system/zygote/zygote/zygote_next.rc` and only auto-starts later, when the
+  property `persist.zygote.zygote_next.start_on_boot` is `true`; otherwise it is
+  started on demand the first time a native process is requested. Init service
+  ordering and property-triggered starts are covered in Chapter 4.
+- **system_server (cross-reference Chapter 20, system_server).** The classic
+  zygote still forks `system_server` exactly as described in Chapter 20; the
+  native zygote does not change that path in 17. The native zygote's
+  *subspecies* are the analog of the child/app zygotes, not of system_server.
+- **Selection is flag-gated.** `Process.start` chooses the native path only when
+  the aconfig flag `android.os.Flags.nativeFrameworkPrototype()` is enabled
+  *and* the per-process `ZYGOTE_POLICY_FLAG_NATIVE_PROCESS` policy bit is set
+  (`frameworks/base/core/java/android/os/Process.java`, the `isNative`
+  computation); otherwise it falls back to the classic `ZygoteProcess`.
+
+### 18.12.5 Default vs Flag-Gated Status in Android 17
+
+The native Rust zygote is **experimental and off by default in Android 17**. The
+evidence is consistent across three layers:
+
+- The init service `zygote_next` is declared `disabled`
+  (`system/zygote/zygote/zygote_next.rc`); nothing starts it at boot unless the
+  persisted opt-in property is set.
+- The aconfig flag controlling the framework side,
+  `native_framework_prototype` in
+  `frameworks/base/core/java/android/os/flags.aconfig`, is in fact overridden to
+  `ENABLED` in stock release configs
+  (`build/release/aconfig/trunk_staging/android.os/native_framework_prototype_flag_values.textproto`
+  and the `cp2a` variant), so `nativeFrameworkPrototype()` returns true. What
+  keeps `zygote_next` off for ordinary processes is the *second* gate in the
+  `isNative` computation: the per-process `ZYGOTE_POLICY_FLAG_NATIVE_PROCESS`
+  bit. That bit is set in exactly one place
+  (`ActiveServices.java`), and only when
+  `nativeFrameworkPrototype() && r.mIsNativeIsolated`, where `mIsNativeIsolated`
+  requires `ServiceInfo.FLAG_NATIVE_SERVICE` together with
+  `FLAG_ISOLATED_PROCESS` -- a new native-only isolated
+  service type. Ordinary apps and `system_server` never set that bit, so they
+  always fall back to the classic `ZygoteProcess`.
+- The Java client is annotated `@hide` and carries TODOs about still evolving
+  toward parity (`NativeZygoteProcess.java`), and the JNI layer carries a TODO
+  to remove its temporary opt-in logic once `zygote_next` is used on all
+  form-factors (`android_os_NativeZygoteProcess.cpp`).
+
+In other words: the classic C++/Java zygote of section 18.1.4 remains the
+default process launcher in Android 17, and the Rust `zygote_next` is a
+forward-looking prototype that an enabled build can opt into per process. It is
+intended to eventually succeed the classic zygote, but does not do so in 17.
+
+---
+
+## 18.13 Try It
 
 ### Exercise 18.1 -- Inspect a DEX File
 
