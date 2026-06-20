@@ -64,8 +64,15 @@ the new-module gap analysis.
 These protect book integrity during autonomous rewrites. Full detail in
 `references/invariants.md` — read it before editing any chapter.
 
-1. **Chapter identity is immutable** — filename and the `# Chapter N: Title`
-   line (number AND title) never change. Only body content changes.
+1. **Chapter title is immutable; the number may be renumbered, but only as a
+   coordinated whole-book operation.** The `# Chapter N: Title` *title* text and
+   the slug never change. The *number* `N` (and the filename's `NN-` prefix) may
+   change to insert a new chapter at its logical position — but NEVER as an
+   ad-hoc single-chapter edit. A renumber is all-or-nothing: rename the files,
+   update each moved chapter's heading AND every internal section number
+   (`## N.x` → `## M.x`), and fix every cross-reference book-wide, in one pass
+   (see `references/bookkeeping.md` → "Renumbering"). Default to appending new
+   chapters; renumber only when the user asks for logical ordering.
 2. **Manual section numbering** (`## N.1`, `### N.1.2`) is preserved, monotonic,
    **no duplicates**. Terminal structure stays "Try It" then "Summary" (an
    optional key-files table may follow Summary). No epigraph under the title.

@@ -5,11 +5,23 @@ are the guardrails that let autonomous rewrites stay safe. Read this before
 editing any chapter; re-read CLAUDE.md if anything here is ambiguous — CLAUDE.md
 is the source of truth.
 
-## Chapter identity (immutable)
+## Chapter identity (title immutable; number renumberable as a coordinated op)
 
-- Filename `NN-slug.md` and the `# Chapter N: Title` line (number AND title)
-  never change. Titles use a colon only — never `--` or `—`.
-- Only body content changes: verify/correct existing prose, append new sections.
+- The chapter **title** text and the slug never change. Titles use a colon only
+  — never `--` or `—`. When polishing an existing chapter in place, treat the
+  whole `# Chapter N: Title` line and the `NN-slug.md` filename as fixed and
+  change only body content.
+- The chapter **number** `N` (and the filename's `NN-` prefix) MAY change, but
+  ONLY as a deliberate, whole-book **renumber** that inserts a new chapter at
+  its logical position and cascades the numbers of everything after it. Never
+  renumber a single chapter ad hoc, and never renumber during routine polish —
+  it is its own task, all-or-nothing. One coordinated pass must update: the
+  affected files' names, each moved chapter's `# Chapter N:` heading, **every
+  internal section number** in those chapters (`## N.x`/`### N.x.y` → the new
+  number), **every cross-reference** to a moved chapter/section across the whole
+  book, and all bookkeeping. See `references/bookkeeping.md` → "Renumbering
+  chapters". If you cannot finish the whole cascade, do not start it — a
+  half-applied renumber corrupts cross-references silently.
 
 ## Section structure
 
