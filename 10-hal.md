@@ -1413,13 +1413,18 @@ later versions inherit from 2.4.
 
 ### 10.3.9 HIDL Deprecation Status
 
-HIDL was officially deprecated back in Android 13 (2022), and by the Android 17
-tree the migration is effectively complete: every directory under
-`hardware/interfaces/` is now an `aidl/` package, and the `.hal`/`hidl/`
-subtrees that once sat beside them have been removed.  No new HIDL interfaces
-are accepted into AOSP.  The HIDL runtime (`system/libhidl`) and
-`hwservicemanager` survive only as a compatibility shim so a newer framework can
-still talk to an older vendor partition that froze a HIDL HAL years ago.
+HIDL was officially deprecated back in Android 13 (2022), and no new HIDL
+interfaces are accepted into AOSP.  The deprecation is real but not a clean
+sweep: HIDL is frozen, not gone.  The Android 17 tree still ships about 726
+`.hal` files across `hardware/interfaces/` -- audio, wifi, gnss, radio, camera,
+keymaster, secure_element, bluetooth, and others all retain frozen `.hal`
+versions alongside (or instead of) their newer `aidl/` packages, and roughly a
+dozen of the interface directories still have no top-level `aidl/` at all.
+These survive because a HAL that froze a HIDL interface years ago must keep that
+exact wire contract available for vendor partitions that target it.  The HIDL
+runtime (`system/libhidl`) and `hwservicemanager` likewise survive as a
+compatibility shim so a newer framework can still talk to an older vendor
+partition that froze a HIDL HAL.
 
 Key files reflecting this deprecation:
 
@@ -1485,15 +1490,16 @@ The key advantages of AIDL HALs:
 An AIDL HAL interface looks almost identical to a regular framework AIDL
 interface, with one critical addition: the `@VintfStability` annotation.
 
-Here is the Lights HAL interface:
+Here is the Lights HAL interface, frozen at version 3 in Android 17:
 
 ```java
-// hardware/interfaces/light/aidl/android/hardware/light/ILights.aidl (lines 17-47)
+// hardware/interfaces/light/aidl/android/hardware/light/ILights.aidl (lines 17-62)
 
 package android.hardware.light;
 
-import android.hardware.light.HwLightState;
 import android.hardware.light.HwLight;
+import android.hardware.light.HwLightEffect;
+import android.hardware.light.HwLightState;
 
 /**
  * Allows controlling logical lights/indicators, mapped to LEDs in a
@@ -1504,8 +1510,8 @@ interface ILights {
     /**
      * Set light identified by id to the provided state.
      *
-     * If control over an invalid light is requested, this method exists with
-     * EX_UNSUPPORTED_OPERATION.
+     * If control over an invalid light is requested, this method must throw an
+     * UnsupportedOperationException.
      *
      * @param id ID of logical light to set as returned by getLights()
      * @param state describes what the light should look like.
@@ -1518,11 +1524,25 @@ interface ILights {
      * @return List of available lights
      */
     HwLight[] getLights();
+
+    /**
+     * Plays light effects on one or more lights.
+     *
+     * If the effect is ill formed or requests unsupported frame rates this
+     * method must throw an IllegalArgumentException.
+     *
+     * @param effects Effects that should be applied to the different lights.
+     */
+    void setLightEffects(in HwLightEffect[] effects);
 }
 ```
 
 This is straightforward AIDL.  The `@VintfStability` annotation is the only
 indicator that this is a HAL interface rather than a regular framework service.
+Version 3 added the third method, `setLightEffects`, which takes an array of
+`HwLightEffect` parcelables (each a series of color control points, a frame
+schedule, and an interpolation mode) so a light can play an animation rather
+than a single static state.
 
 ### 10.4.3 The @VintfStability Annotation
 
@@ -1577,6 +1597,10 @@ aidl_interface {
             version: "2",
             imports: [],
         },
+        {
+            version: "3",
+            imports: [],
+        },
     ],
 }
 ```
@@ -1587,7 +1611,7 @@ Key fields:
 - `frozen: true` -- the latest version is frozen (no modifications allowed).
 - `vendor_available: true` -- the generated libraries are available to vendor code.
 - `backend.rust.enabled: true` -- generate Rust bindings.
-- `versions_with_info` -- lists all frozen API versions (1 and 2).
+- `versions_with_info` -- lists all frozen API versions (1, 2, and 3).
 
 **Reference implementation in Rust** (`hardware/interfaces/light/aidl/default/`):
 
@@ -1620,28 +1644,10 @@ fn main() {
 }
 ```
 
-The implementation (`lights.rs`, lines 37-80):
+The implementation (`lights.rs`):
 
 ```rust
-// hardware/interfaces/light/aidl/default/lights.rs (lines 37-80)
-
-pub struct LightsService {
-    lights: Mutex<HashMap<i32, Light>>,
-}
-
-impl Interface for LightsService {}
-
-impl Default for LightsService {
-    fn default() -> Self {
-        let id_mapping_closure =
-            |light_id| HwLight {
-                id: light_id,
-                ordinal: light_id,
-                r#type: LightType::BACKLIGHT,
-            };
-        Self::new((1..=NUM_DEFAULT_LIGHTS).map(id_mapping_closure))
-    }
-}
+// hardware/interfaces/light/aidl/default/lights.rs (lines 132-168)
 
 impl ILights for LightsService {
     fn setLightState(&self, id: i32, state: &HwLightState) -> binder::Result<()> {
@@ -1656,6 +1662,25 @@ impl ILights for LightsService {
         }
     }
 
+    fn setLightEffects(&self, effects: &[HwLightEffect]) -> binder::Result<()> {
+        info!("Lights setting effect for {} lights", effects.len());
+
+        // Validate every effect first, then apply.
+        for effect in effects {
+            let validation_err = self.validate_effect(effect);
+            if validation_err != ExceptionCode::NONE {
+                return Err(Status::new_exception(validation_err, None));
+            }
+        }
+        for effect in effects {
+            if let Some(light) = self.lights.lock().unwrap()
+                .get_mut(&effect.lightId) {
+                light.effect = effect.clone();
+            }
+        }
+        Ok(())
+    }
+
     fn getLights(&self) -> binder::Result<Vec<HwLight>> {
         info!("Lights reporting supported lights");
         Ok(self.lights.lock().unwrap().values()
@@ -1663,6 +1688,10 @@ impl ILights for LightsService {
     }
 }
 ```
+
+The version-3 `setLightEffects` validates each `HwLightEffect` (frame counts,
+frame rate) before mutating any light, so an ill-formed request throws
+`IllegalArgumentException` without leaving the lights half-updated.
 
 **VINTF manifest fragment** (`lights-default.xml`):
 
@@ -1676,6 +1705,12 @@ impl ILights for LightsService {
     </hal>
 </manifest>
 ```
+
+The fragment still declares `<version>2</version>` even though the interface is
+frozen at version 3 and the implementation links the V3 library.  A manifest
+fragment advertises the *minimum* interface version the service guarantees, and
+a client asking for V2 is satisfied by a V3 implementation (AIDL HAL versions
+are additive), so the reference fragment was never bumped.
 
 **init.rc service definition** (`lights-default.rc`):
 
@@ -1703,7 +1738,7 @@ rust_binary {
         "liblogger",
         "liblog_rust",
         "libbinder_rs",
-        "android.hardware.light-V2-rust",
+        "android.hardware.light-V3-rust",
     ],
     srcs: [ "main.rs" ],
 }
@@ -1715,7 +1750,7 @@ The complete flow from build to runtime:
 flowchart TD
     subgraph "Build Time"
         A1["ILights.aidl"] -->|"aidl compiler"| A2["Generated Rust bindings<br/>(BnLights, ILights trait)"]
-        A2 --> A3["Compiled into<br/>android.hardware.light-V2-rust"]
+        A2 --> A3["Compiled into<br/>android.hardware.light-V3-rust"]
         A3 --> A4["lights.rs + main.rs"]
         A4 --> A5["Binary:<br/>android.hardware.lights-service.example"]
     end
@@ -2405,10 +2440,10 @@ This single module definition generates the following library variants:
 
 | Generated Library | Language | Used By |
 |-------------------|----------|---------|
-| `android.hardware.light-V2-java` | Java | Framework services |
-| `android.hardware.light-V2-ndk` | C++ (NDK) | Vendor HAL implementations (C++) |
-| `android.hardware.light-V2-cpp` | C++ (platform) | Framework native code |
-| `android.hardware.light-V2-rust` | Rust | Vendor HAL implementations (Rust) |
+| `android.hardware.light-V3-java` | Java | Framework services |
+| `android.hardware.light-V3-ndk` | C++ (NDK) | Vendor HAL implementations (C++) |
+| `android.hardware.light-V3-cpp` | C++ (platform) | Framework native code |
+| `android.hardware.light-V3-rust` | Rust | Vendor HAL implementations (Rust) |
 
 The naming convention is `<package>-V<version>-<backend>`.
 
@@ -2430,10 +2465,14 @@ hardware/interfaces/light/aidl/
                 android/hardware/light/ILights.aidl
                 android/hardware/light/HwLight.aidl
                 android/hardware/light/HwLightState.aidl
-            current/                              # Latest snapshot
+            3/                                    # Frozen version 3 (adds HwLightEffect)
                 android/hardware/light/ILights.aidl
                 android/hardware/light/HwLight.aidl
                 android/hardware/light/HwLightState.aidl
+                android/hardware/light/HwLightEffect.aidl
+            current/                              # Latest snapshot
+                android/hardware/light/ILights.aidl
+                ...
 ```
 
 The frozen version snapshots are immutable -- the files contain a header warning:
@@ -2491,9 +2530,14 @@ wrong version stanza fails the build instead of silently mis-versioning.
 The `hardware/interfaces/` directory contains all AOSP HAL interface
 definitions.  In the Android 17 tree it holds 51 hardware interface directories
 (excluding the infrastructure directories `common`, `compatibility_matrices`,
-`scripts`, `staging`, and `tests`).  Every one of these is now an `aidl/`
-package; the legacy `hidl/` and `*.hal` subtrees have been pruned, and the
-HIDL-only `configstore` interface that earlier releases shipped is gone:
+`scripts`, `staging`, and `tests`).  Most carry an `aidl/` package, and the
+HIDL-only `configstore` interface that earlier releases shipped is gone.  But
+the `.hal`/`hidl/` subtrees have *not* all been pruned: roughly 726 `.hal` files
+still ship, and about a dozen of these directories (`audio`, `camera`,
+`biometrics`, `tv`, `automotive`, `graphics`, `input`, `media`, `security`,
+`renderscript`, `virtualization`, `atrace`, `apexkey`) have no top-level `aidl/`
+of their own -- their interfaces are either still frozen HIDL `.hal`
+definitions, nested AIDL packages one level down, or non-HAL build artifacts:
 
 | Category | HAL Interfaces |
 |----------|---------------|
@@ -2582,10 +2626,10 @@ file generates bindings for four language backends:
 ```mermaid
 graph TD
     A["ILights.aidl<br/>(interface definition)"] --> B["AIDL Compiler"]
-    B --> C["Java bindings<br/>(android.hardware.light-V2-java)"]
-    B --> D["C++ bindings<br/>(android.hardware.light-V2-cpp)"]
-    B --> E["NDK C++ bindings<br/>(android.hardware.light-V2-ndk)"]
-    B --> F["Rust bindings<br/>(android.hardware.light-V2-rust)"]
+    B --> C["Java bindings<br/>(android.hardware.light-V3-java)"]
+    B --> D["C++ bindings<br/>(android.hardware.light-V3-cpp)"]
+    B --> E["NDK C++ bindings<br/>(android.hardware.light-V3-ndk)"]
+    B --> F["Rust bindings<br/>(android.hardware.light-V3-rust)"]
 
     C --> G["Framework services<br/>(system partition)"]
     D --> H["Framework native code<br/>(system partition)"]

@@ -903,7 +903,7 @@ The InputFlinger source lives at
 |-----------|---------|
 | `reader/` | EventHub + InputReader: reads raw kernel events |
 | `dispatcher/` | InputDispatcher: routes events to windows |
-| `reporter/` | InteractionReporter: surfaces interaction signals (e.g. attention-service wake-up) |
+| `reporter/` | InputReporter: surfaces unhandled/dropped-key reporting (the `InteractionReporter` lives at the inputflinger root, not here) |
 | `trace/` | Perfetto tracing integration |
 | `rust/` | Rust FFI components via `IInputFlingerRust` |
 | `aidl/` | AIDL interface definitions |
@@ -929,9 +929,13 @@ The comment in `InputManager.cpp` describes the complete pipeline:
  */
 ```
 
-The `InteractionReporter` stage (in `reporter/InputReporter.cpp`) is the second-to-last
-listener before the dispatcher. It surfaces interaction signals -- for example, waking
-the attention service on a user interaction -- without disturbing the event stream.
+The `InteractionReporter` stage (in
+`frameworks/native/services/inputflinger/InteractionReporter.cpp`, at the
+inputflinger root) is the second-to-last listener before the dispatcher. It
+surfaces interaction signals -- for example, waking the attention service on a
+user interaction -- without disturbing the event stream. (The similarly named
+`InputReporter` under `reporter/` is a different, unrelated class that only
+reports unhandled and dropped keys.)
 
 Let us trace this pipeline from hardware to application:
 
@@ -3761,7 +3765,8 @@ InputReader
   -> InputDispatcher
 ```
 
-`InteractionReporter` (in `frameworks/native/services/inputflinger/reporter/InputReporter.cpp`)
+`InteractionReporter` (in `frameworks/native/services/inputflinger/InteractionReporter.cpp`,
+listed in `Android.bp` at line 93)
 observes the event stream and reports user-interaction signals to interested
 system components -- for example, linking the interaction provider with the
 attention service's wake-up API so that user activity can keep attention-aware
@@ -6685,10 +6690,9 @@ Android 17 and Vulkan-only. Section 13.43 covers its rollout in detail.
 
 ```mermaid
 graph TD
-    A["SurfaceFlinger"] --> B["RenderEngine"]
-    B --> RT["RenderEngineThreaded<br/>(optional wrapper)"]
+    A["SurfaceFlinger"] --> B["RenderEngine::create()"]
+    B --> RT["RenderEngineThreaded<br/>(always, in A17)"]
     RT --> C["SkiaRenderEngine"]
-    B --> C
     C --> D{"Skia backend"}
     D -->|Ganesh GL| F["SkiaGLRenderEngine"]
     D -->|Ganesh Vk| G["GaneshVkRenderEngine"]
@@ -8612,7 +8616,8 @@ compatibility through ANGLE.
 
 ### 13.33.4 GPU Driver Updatability
 
-The APEX-based driver loading mechanism (`LoadDriverFromApex` in `driver.cpp`) enables:
+The APEX-based driver loading mechanism (folded into `LoadBuiltinDriver` in
+`driver.cpp`, line 202, as described in 13.3.3) enables:
 
 - Monthly GPU driver updates without OTA
 - Faster bug fixes for GPU-related issues
@@ -9170,14 +9175,24 @@ The constructor spins up the thread, which runs `threadMain()` and drains the wo
 mThread = std::thread(&RenderEngineThreaded::threadMain, this, factory);
 ```
 
-This is a *thread*, not a process: the name "out-of-process rendering" (OOPR) is a
-misnomer for Android's actual design. Composition still runs inside SurfaceFlinger's
-address space; the win is that GPU command recording and submission move off the
-SurfaceFlinger main thread, freeing it to keep latching buffers and handling
-transactions. Whether the wrapper is used is decided at creation time via
-`RenderEngine::Threaded::Yes/No` (set by `chooseRenderEngineType()` in
-`frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp`), and code can query it at
-runtime through `mRenderEngine->isThreaded()`.
+This wrapper runs RenderEngine on another *thread*, still inside SurfaceFlinger's
+own address space; the win is that GPU command recording and submission move off
+the SurfaceFlinger main thread, freeing it to keep latching buffers and handling
+transactions. In Android 17 the non-threaded path is gone: `RenderEngine::create()`
+in `frameworks/native/libs/renderengine/RenderEngine.cpp` (lines 66-71) *always*
+returns `RenderEngineThreaded::create(...)`, and if a caller requested
+`Threaded::No` it logs an error ("Non-threaded RenderEngine not supported") and
+proceeds with the threaded engine anyway. The `Threaded::Yes/No` builder option,
+`chooseRenderEngineType()` in
+`frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp` (line 887), and the
+`mRenderEngine->isThreaded()` query all still exist and feed feature gates such as
+the offload-composition flag below, but the underlying engine object is the
+threaded wrapper either way.
+
+Note that this off-main-thread threading is a *different* feature from out-of-process
+rendering (OOPR). RenderEngineThreaded keeps composition inside SurfaceFlinger and
+only moves GPU submission to a worker thread. The separate, genuinely cross-process
+OOPR render-command channel that Android 17 also ships is covered in 13.41.3.
 
 ### 13.41.2 Offloading Virtual-Display Composition (Android 17)
 
@@ -9227,6 +9242,54 @@ The related `force_slower_follower_gpu_composition_platform` flag (same aconfig 
 forces "follower" connected displays onto GPU composition so that a slower secondary
 display does not throttle the primary; together these flags give SurfaceFlinger finer
 control over where and on which thread composition runs in multi-display setups.
+
+### 13.41.3 The Real OOPR: a Client-Recorded Render-Command Channel
+
+Separate from the threaded RenderEngine, Android 17 ships actual out-of-process
+rendering infrastructure: a cross-process channel where a *client* process records
+Skia draw commands and SurfaceFlinger replays them, instead of the client rendering
+into a GraphicBuffer and handing the finished pixels over. It is flag-gated by
+`out_of_process_rendering` (namespace `window_surfaces`) in
+`frameworks/native/libs/gui/libgui_flags.aconfig` and is not the default path yet,
+but the machinery is fully present in the tree.
+
+The channel is built from a shared-memory region and a pair of producer/consumer
+endpoints:
+
+- `RenderCommandBufferProducer` (`frameworks/native/libs/gui/RenderCommandBufferProducer.cpp`)
+  lives in the client. Its constructor (line 51) allocates an `IpcRenderRegion` in an
+  ashmem region (`ashmem_create_region`, line 33) and exposes `startRecording()`
+  (line 73) / `finishRecordingAndPostFrame()` (line 79) so the client records a frame's
+  worth of draw ops.
+  The fd is passed to SurfaceFlinger by serializing the producer into a transaction
+  (`writeToParcel` dups the ashmem fd) via
+  `SurfaceComposerClient::Transaction::setRenderCommandBuffer()`
+  (`SurfaceComposerClient.cpp`, line 2564) and a paired
+  `setRenderCommandBufferFrameId()`.
+- `RenderCommandBufferConsumer` (`frameworks/native/libs/gui/RenderCommandBufferConsumer.cpp`)
+  is the SurfaceFlinger end. It adopts the fd, maps the same `IpcRenderRegion`, and
+  `consumerAcquire(frameNumber)` / `getCurrentBuffer()` hand the recorded
+  `RenderCommandBuffer` to SurfaceFlinger for replay.
+- `IpcRenderRegion` (defined in `gui/RenderCommandBuffer.h`) is the shared struct: a
+  `LocklessStaticQueue` of command buffers plus a `MagicRingBuffer` upload buffer
+  (`gui/MagicRingBuffer.h`), a lock-free single-producer/single-consumer ring that maps
+  the same physical pages twice in virtual memory so wrap-around is automatic and reads
+  are zero-copy and contiguous. The lock-free queues are how the producer and consumer
+  share the region without a mutex across the process boundary.
+- `RenderResourceCache` (`frameworks/native/services/surfaceflinger/RenderResourceCache.{h,cpp}`,
+  held as `mIpcCache` in `SurfaceFlinger.h`, line 1718) tracks the GraphicBuffers a
+  client registers for use in its recorded commands, keyed by the client's binder token,
+  and reaps them via a `DeathRecipient` when the client dies.
+
+On the compositor side a layer carries a `renderCommandBufferFrameId` through its
+`LayerFECompositionState`, and SurfaceFlinger handles
+`eRenderCommandBufferChanged` / `eRenderCommandBufferFrameIdChanged` transaction
+bits (`SurfaceFlinger.cpp`, around line 6016) to pick up the right recorded frame.
+There is even a `--render-command-buffer` dumpsys hook
+(`dumpRenderCommandBuffers`, `SurfaceFlinger.cpp` line 7122) that dumps a layer's
+recorded buffer to a file. So unlike RenderEngineThreaded, this is genuinely
+out-of-process: the draw commands originate in another process and cross into
+SurfaceFlinger through shared memory rather than as a finished framebuffer.
 
 ---
 

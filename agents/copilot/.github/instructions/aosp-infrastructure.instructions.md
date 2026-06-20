@@ -1332,7 +1332,7 @@ A few notes on Android 17 specifics in this table:
   Both are gated behind release flags (`RELEASE_NPUMANAGER_MODULE`,
   `RELEASE_WEBAPP_MODULE`) and inherit `b-launched-apex-module` defaults
   (`min_sdk_version: "36"`).  `NpuManager` has its own coverage in
-  Chapter 51 (AI / AppFunctions); `WebApp` interacts with the package manager
+  Chapter 53 (NPU Manager); `WebApp` interacts with the package manager
   (Chapter 26).
 - **`ImsStack`** is a code location (Java, native libs, flags) but produces no
   APEX of its own; its output is consumed by the telephony stack.
@@ -3963,7 +3963,7 @@ The bootclasspath fragment contributes `framework-npumanager` (the public
 `npumanager-module-sdk` so other components can compile against its exported
 APIs.  The detailed admission-control architecture -- the model-loading
 policies, the Rust-backed native buffer management, and the paired
-`android.hardware.npu` vendor HAL -- is covered in Chapter 51.
+`android.hardware.npu` vendor HAL -- is covered in Chapter 53.
 
 ### 54.11.3  WebApp Module
 
@@ -4600,7 +4600,7 @@ Android 17 does not introduce a new scheme; it refines Virtual A/B. The big
 changes are the **UBLK** userspace-block-driver backend for serving snapshots
 (an alternative to the `dm-user` path), **zstd compression for `REPLACE`
 operations**, and the removal of squashfs build/OTA support. These are covered
-in detail in section 55.28.
+in detail in section 55.26.
 
 ### 55.1.2 High-Level Data Flow
 
@@ -4666,7 +4666,7 @@ ro.virtual_ab.ublk.enabled=true   # Device configured for UBLK snapshots
 The `ro.virtual_ab.ublk.enabled` property is one of three conditions checked by
 `IsUblkEnabled()` before snapshots are served over UBLK rather than `dm-user`;
 the other two are an aconfig flag and a kernel version of 6.6 or newer (see
-section 55.28).
+section 55.26).
 
 ```
 Source: system/fs/fs_mgr/libsnapshot/capabilities.cpp
@@ -4684,7 +4684,6 @@ FeatureFlag GetDynamicPartitionsFeatureFlag() override;
 FeatureFlag GetVirtualAbFeatureFlag() override;
 FeatureFlag GetVirtualAbCompressionFeatureFlag() override;
 FeatureFlag GetVirtualAbCompressionXorFeatureFlag() override;
-FeatureFlag GetVirtualAbUserspaceSnapshotsFeatureFlag() override;
 ```
 
 Each `FeatureFlag` can be `NONE`, `RETROFIT`, or `LAUNCH`, distinguishing
@@ -5590,13 +5589,13 @@ reading the entire partition:
 ```protobuf
 // bootable/recovery/update_verifier/care_map.proto
 message CareMap {
-  repeated CareMapEntry partitions = 1;
-}
-
-message CareMapEntry {
-  string name = 1;
-  string ranges = 2;      // Block ranges, e.g., "0-1000,2000-3000"
-  string id = 3;           // Fingerprint/hash
+  message PartitionInfo {
+    string name = 1;
+    string ranges = 2;        // Block ranges, e.g., "0-1000,2000-3000"
+    string id = 3;            // Hash/id
+    string fingerprint = 4;   // Build fingerprint
+  }
+  repeated PartitionInfo partitions = 1;
 }
 ```
 
@@ -5736,7 +5735,7 @@ very early in the boot process (first-stage init) and presents merged views of
 base-partition + COW data to the kernel through a userspace block device. That
 block device is abstracted behind an `IBlockServer` interface: historically the
 only backend was `dm-user`, but Android 17 added a `ublk` backend that the
-daemon can select at startup (covered in section 55.28). The interface lives in
+daemon can select at startup (covered in section 55.26). The interface lives in
 `snapuserd/include/snapuserd/block_server.h`; the two implementations are
 `dm_user_block_server.cpp` and `ublk_block_server.cpp`.
 
@@ -6357,7 +6356,8 @@ The `InstallPackage` function in `install.cpp` handles:
 static constexpr int kRecoveryApiVersion = 3;
 static constexpr int VERIFICATION_PROGRESS_TIME = 60;
 static constexpr float VERIFICATION_PROGRESS_FRACTION = 0.25;
-// RETRY_LIMIT for automatic retry on transient errors
+
+// recovery.cpp -- RETRY_LIMIT for automatic retry on transient errors
 static constexpr int RETRY_LIMIT = 4;
 ```
 
@@ -6516,9 +6516,14 @@ public static final class UpdateStatusConstants {
     public static final int REPORTING_ERROR_EVENT = 7;
     public static final int ATTEMPTING_ROLLBACK = 8;
     public static final int DISABLED = 9;
-    public static final int CLEANUP_PREVIOUS_UPDATE = 10;
 }
 ```
+
+The Java `UpdateStatusConstants` class stops at `DISABLED = 9`. The native
+`UpdateStatus` enum (`system/update_engine/client_library/include/update_engine/update_status.h`)
+carries two additional states that are not mirrored in the Java constants:
+`NEED_PERMISSION_TO_UPDATE = 10` and `CLEANUP_PREVIOUS_UPDATE = 11` (the
+post-reboot snapshot-merge phase of a Virtual A/B update).
 
 ### 55.10.4 UpdateEngineStable
 
@@ -6692,7 +6697,7 @@ This prevents downgrading to older, potentially vulnerable builds.
 The SPL is verified during OTA installation:
 
 ```
-Source: bootable/recovery/install/spl_check.h
+Source: bootable/recovery/install/include/install/spl_check.h
 ```
 
 If the target build has an older SPL than the source, the OTA is rejected unless
@@ -7177,7 +7182,7 @@ Source: system/update_engine/common/cpu_limiter.h
         system/update_engine/common/cpu_limiter.cc
 ```
 
-The `CpuLimiter` class monitors system load and throttles the update process
+The `CPULimiter` class monitors system load and throttles the update process
 when the CPU is under heavy use. This is especially important during the
 compute-intensive phases of applying diff operations (bsdiff, puffdiff,
 zucchini).
@@ -8455,13 +8460,16 @@ As described in `packages/modules/Virtualization/docs/pvm_dice_chain.md`:
 > involved in the VM's loading and boot process.
 
 Vendors construct the chain from ROM to ABL, then hand it off to pvmfw. The
-handover format is CBOR-encoded:
+handover format is CBOR-encoded. Illustrative CDDL for the three fields (the
+labels below are descriptive, not source identifiers; the Rust side parses this
+as `BccHandover` and walks it via `DiceChainInfo` / `DiceChainEntry` in
+`packages/modules/Virtualization/guest/pvmfw/src/dice/chain.rs`):
 
 ```
-PvmfwDiceHandover = {
+DiceHandover = {
   1 : bstr .size 32,     ; CDI_Attest
   2 : bstr .size 32,     ; CDI_Seal
-  3 : DiceCertChain,     ; Android DICE chain
+  3 : DiceChain,         ; Android DICE chain
 }
 ```
 
@@ -8882,7 +8890,6 @@ filters. Seccomp policies are architecture-specific:
 ```
 external/crosvm/jail/seccomp/
     aarch64/           # ARM64 seccomp policies
-    arm/               # ARM32 seccomp policies
     x86_64/            # x86_64 seccomp policies
     riscv64/           # RISC-V seccomp policies
 ```
@@ -9153,8 +9160,8 @@ Microdroid VMs are configured through JSON files. The base configuration from
           "path": "/apex/com.android.virt/etc/fs/microdroid_vbmeta.img"
         },
         {
-          "label": "super",
-          "path": "/apex/com.android.virt/etc/fs/microdroid_super.img"
+          "label": "system_a",
+          "path": "/apex/com.android.virt/etc/fs/microdroid.img"
         }
       ],
       "writable": false
@@ -9169,8 +9176,8 @@ Microdroid VMs are configured through JSON files. The base configuration from
 The configuration specifies:
 
 - **Kernel** -- Path to the Microdroid kernel binary
-- **Disks** -- Disk images including vbmeta (for verified boot) and super (the system
-  partition in Android's dynamic partitions format)
+- **Disks** -- Disk images including `vbmeta_a` (for verified boot) and `system_a`
+  (the read-only system image, `microdroid.img`)
 
 - **Memory** -- 256 MiB default allocation
 - **Console** -- `hvc0` for virtio console I/O
@@ -9239,14 +9246,14 @@ Microdroid uses a minimal filesystem layout from
 `packages/modules/Virtualization/build/microdroid/fstab.microdroid`:
 
 ```
-system /system ext4 noatime,ro,errors=panic wait,slotselect,avb=vbmeta,first_stage_mount,logical
+/dev/block/by-name/system /system erofs noatime,ro wait,slotselect,avb=vbmeta,first_stage_mount
 /dev/block/by-name/microdroid-vendor /vendor ext4 noatime,ro,errors=panic wait,first_stage_mount,avb_hashtree_digest=/proc/device-tree/avf/vendor_hashtree_descriptor_root_digest
 ```
 
 Key filesystem characteristics:
 
 - **Root** -- Read-only, remounted after post-fs
-- **/system** -- Read-only, verified boot via AVB
+- **/system** -- Read-only `erofs`, verified boot via AVB (`avb=vbmeta`)
 - **/vendor** -- Optional, verified via hashtree digest
 - **/data** -- tmpfs (128 MiB), ephemeral
 - **/mnt/apk** -- Mount point for payload APK
@@ -9656,7 +9663,7 @@ The configuration data memory layout:
 
 ### 56.5.9 Configuration Versions
 
-The configuration format has evolved across four versions:
+The configuration format has evolved across five versions:
 
 **Version 1.0:**
 
@@ -9675,8 +9682,13 @@ The configuration format has evolved across four versions:
 
 - Entry 4: Reserved memory (optional, for confidential data to specific guests)
 
-Each blob is referred to by offset and size in the entry array. Missing optional
-entries are denoted by zero size.
+**Version 1.4:**
+
+- Entry 5: Extra rollback info (`ExtraRollback`, optional)
+
+The `Entry` enum also defines a `TrustedKeys` entry (entry 6) that is not yet
+wired to a config version in `entry_count()`. Each blob is referred to by offset
+and size in the entry array. Missing optional entries are denoted by zero size.
 
 ### 56.5.10 VBMeta Properties
 
@@ -10562,6 +10574,7 @@ impl Header {
     const VERSION_1_1: Version = Version { major: 1, minor: 1 };
     const VERSION_1_2: Version = Version { major: 1, minor: 2 };
     const VERSION_1_3: Version = Version { major: 1, minor: 3 };
+    const VERSION_1_4: Version = Version { major: 1, minor: 4 };
 }
 ```
 
@@ -10585,6 +10598,8 @@ pub enum Entry {
     VmDtbo,          // Entry 2: Device assignment DTBO (v1.1)
     VmBaseDtbo,      // Entry 3: VM reference DT (v1.2)
     ReservedMem,     // Entry 4: Reserved memory (v1.3)
+    ExtraRollback,   // Entry 5: Extra rollback info (v1.4)
+    TrustedKeys,     // Entry 6: Trusted keys (defined, not yet versioned)
     _VARIANT_COUNT,  // Sentinel for counting
 }
 ```
@@ -10618,8 +10633,9 @@ pub fn entry_count(&self) -> Result<usize> {
         Self::VERSION_1_1 => Entry::VmDtbo,
         Self::VERSION_1_2 => Entry::VmBaseDtbo,
         Self::VERSION_1_3 => Entry::ReservedMem,
+        Self::VERSION_1_4 => Entry::ExtraRollback,
         v @ Version { major: 1, .. } => {
-            const LATEST: Version = Header::VERSION_1_3;
+            const LATEST: Version = Header::VERSION_1_4;
             warn!("Parsing unknown config data version {v} as version {LATEST}");
             return Ok(Entry::COUNT);
         }
@@ -10629,8 +10645,9 @@ pub fn entry_count(&self) -> Result<usize> {
 }
 ```
 
-This means a v1.4 config will be parsed as v1.3, with any new entries beyond
-the known set silently ignored. Major version changes (2.x) would be rejected.
+This means a config with an unknown 1.x minor version is parsed as the latest
+known version (currently 1.4), with any new entries beyond the known set
+silently ignored. Major version changes (2.x) would be rejected.
 
 ### 56.9.4 Error Handling
 
@@ -17743,7 +17760,7 @@ platform_testing/libraries/
 ```
 
 The Android 17 tree adds `androidbuildinternal/`, `media/`, `sdv/` (Software
-Defined Vehicle, covered in the SDV chapter), and `uiautomator-accessibility/`
+Defined Vehicle, covered in Chapter 62 (Device Form Factors), §62.7), and `uiautomator-accessibility/`
 to the set, reflecting the growth of the automotive/SDV test surface and an
 accessibility-driven UI-helper layer.
 

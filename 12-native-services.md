@@ -902,7 +902,7 @@ The InputFlinger source lives at
 |-----------|---------|
 | `reader/` | EventHub + InputReader: reads raw kernel events |
 | `dispatcher/` | InputDispatcher: routes events to windows |
-| `reporter/` | InteractionReporter: surfaces interaction signals (e.g. attention-service wake-up) |
+| `reporter/` | InputReporter: surfaces unhandled/dropped-key reporting (the `InteractionReporter` lives at the inputflinger root, not here) |
 | `trace/` | Perfetto tracing integration |
 | `rust/` | Rust FFI components via `IInputFlingerRust` |
 | `aidl/` | AIDL interface definitions |
@@ -928,9 +928,13 @@ The comment in `InputManager.cpp` describes the complete pipeline:
  */
 ```
 
-The `InteractionReporter` stage (in `reporter/InputReporter.cpp`) is the second-to-last
-listener before the dispatcher. It surfaces interaction signals -- for example, waking
-the attention service on a user interaction -- without disturbing the event stream.
+The `InteractionReporter` stage (in
+`frameworks/native/services/inputflinger/InteractionReporter.cpp`, at the
+inputflinger root) is the second-to-last listener before the dispatcher. It
+surfaces interaction signals -- for example, waking the attention service on a
+user interaction -- without disturbing the event stream. (The similarly named
+`InputReporter` under `reporter/` is a different, unrelated class that only
+reports unhandled and dropped keys.)
 
 Let us trace this pipeline from hardware to application:
 
@@ -3760,7 +3764,8 @@ InputReader
   -> InputDispatcher
 ```
 
-`InteractionReporter` (in `frameworks/native/services/inputflinger/reporter/InputReporter.cpp`)
+`InteractionReporter` (in `frameworks/native/services/inputflinger/InteractionReporter.cpp`,
+listed in `Android.bp` at line 93)
 observes the event stream and reports user-interaction signals to interested
 system components -- for example, linking the interaction provider with the
 attention service's wake-up API so that user activity can keep attention-aware

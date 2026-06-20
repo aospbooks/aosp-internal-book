@@ -903,8 +903,6 @@ stateDiagram-v2
     Connecting --> Disconnected : TIMEOUT/REJECT
     Connecting --> Disconnecting : DISCONNECT from remote
     Connected --> Disconnecting : DISCONNECT
-    Connected --> Streaming : START_STREAM
-    Streaming --> Connected : SUSPEND_STREAM
     Disconnecting --> Disconnected : DISCONNECTED
     Disconnecting --> Connecting : CONNECT from remote
 ```

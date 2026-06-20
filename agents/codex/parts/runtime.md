@@ -4522,9 +4522,10 @@ size_t GetSIMDRegisterWidth() const override {
 `4 * kX86_64WordSize` is 32 bytes (256-bit YMM); without AVX2 the width is
 `2 * kX86_64WordSize` (16 bytes, 128-bit XMM). The loop vectorizer reads this
 width when it decides how many lanes a vector operation packs:
-`HLoopOptimization::TrySetVectorLength()` uses
+`HLoopOptimization::TrySetVectorType()` computes the lane count as
 `simd_register_size_ / DataType::Size(type)` for the x86 and x86-64 cases
-(`art/compiler/optimizing/loop_optimization.cc`, lines 2161-2219), so a
+(`art/compiler/optimizing/loop_optimization.cc`, lines 2161-2219) and passes it
+to `TrySetVectorLength()`, which only stores and validates the result, so a
 `float`/`int` loop on an AVX2 target processes eight elements per iteration
 instead of four. Android 17 added the AVX2-based vectorization path for x86-64;
 the matching vector emitters in
@@ -4533,12 +4534,12 @@ the matching vector emitters in
 
 ```mermaid
 flowchart TD
-    A["x86-64 CPU variant\n(e.g. pantherlake)"] --> B["X86InstructionSetFeatures::\nFromVariant"]
+    A["x86-64 CPU variant<br/>(e.g. pantherlake)"] --> B["X86InstructionSetFeatures::<br/>FromVariant"]
     B --> C{"HasAVX2()?"}
-    C -->|"yes"| D["GetSIMDRegisterWidth()\n= 32 bytes (256-bit YMM)"]
-    C -->|"no"| E["GetSIMDRegisterWidth()\n= 16 bytes (128-bit XMM)"]
-    D --> F["HLoopOptimization:\n8 floats / iteration"]
-    E --> G["HLoopOptimization:\n4 floats / iteration"]
+    C -->|"yes"| D["GetSIMDRegisterWidth()<br/>= 32 bytes (256-bit YMM)"]
+    C -->|"no"| E["GetSIMDRegisterWidth()<br/>= 16 bytes (128-bit XMM)"]
+    D --> F["HLoopOptimization:<br/>8 floats / iteration"]
+    E --> G["HLoopOptimization:<br/>4 floats / iteration"]
 ```
 
 ### 18.11.3 DEX Container Format (V41)

@@ -253,7 +253,7 @@ defends against corruption of critical data like the allocator dispatch table.
 
 Bionic's TLS implementation is tightly integrated with the kernel. Each thread
 has a **Thread Control Block (TCB)** accessible via a dedicated register
-(TPIDR_EL0 on AArch64, GS segment on x86-64). The TCB layout is defined in
+(TPIDR_EL0 on AArch64, FS segment on x86-64). The TCB layout is defined in
 `bionic/libc/private/bionic_tls.h`.
 
 From `bionic/libc/bionic/pthread_create.cpp` (lines 62-71):

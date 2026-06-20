@@ -389,7 +389,9 @@ Sample mappings:
 |----------|--------|
 | `isSystemServer=true` | `system_server` |
 | `user=system seinfo=platform` | `system_app` |
-| `user=_app minTargetSdkVersion=34` | `untrusted_app` |
+| `user=_app minTargetSdkVersion=37` | `untrusted_app` |
+| `user=_app minTargetSdkVersion=34` | `untrusted_app_34` |
+| `user=_app minTargetSdkVersion=32` | `untrusted_app_32` |
 | `user=_app minTargetSdkVersion=30` | `untrusted_app_30` |
 | `user=_app minTargetSdkVersion=29` | `untrusted_app_29` |
 | `user=_isolated` | `isolated_app` |
@@ -2462,10 +2464,14 @@ and other properties.  The domain assignment is driven by `seapp_contexts`:
 # System server
 isSystemServer=true domain=system_server_startup
 
-# Apps with targetSdkVersion >= 34
-user=_app domain=untrusted_app type=app_data_file levelFrom=all
+# Apps with targetSdkVersion >= 37
+user=_app minTargetSdkVersion=37 domain=untrusted_app type=app_data_file levelFrom=all
 
-# Apps with targetSdkVersion 30-33
+# Apps with targetSdkVersion 34-36 / 32-33
+user=_app minTargetSdkVersion=34 domain=untrusted_app_34 ...
+user=_app minTargetSdkVersion=32 domain=untrusted_app_32 ...
+
+# Apps with targetSdkVersion 30-31
 user=_app minTargetSdkVersion=30 domain=untrusted_app_30 ...
 
 # Isolated processes
@@ -2479,7 +2485,7 @@ The untrusted_app domain (`system/sepolicy/private/untrusted_app.te`):
 ### Untrusted apps.
 ###
 ### This file defines the rules for untrusted apps running with
-### targetSdkVersion >= 34.
+### targetSdkVersion >= 37.
 ###
 
 typeattribute untrusted_app coredomain;
@@ -9817,7 +9823,7 @@ which piece does what is the key to reading the codec integration later.
 does not modify its internals. There are six components, each a separate upstream
 project mirrored into AOSP.
 
-**`lfi-verifier` (builds `liblfiv`).** The verifier is the root of trust. It scans
+**`lfi-verifier` (builds the `lfi-verifier` library and the `lfi-verify` host tool).** The verifier is the root of trust. It scans
 a compiled code buffer and decides whether every instruction is sandbox-safe
 before the runtime is ever allowed to execute it. Its public interface is a
 handful of per-architecture entry points in
@@ -9925,7 +9931,7 @@ This division of labor is summarized below.
 ```mermaid
 flowchart LR
   subgraph trusted["Trusted host side"]
-    VER["liblfiv verifier<br/>(external/lfi/lfi-verifier)"]
+    VER["lfi-verifier library<br/>(external/lfi/lfi-verifier)"]
     RUN["liblfi runtime<br/>(external/lfi/lfi-runtime)"]
     TRAMP["generated trampolines<br/>(lfi-bind LFI_CALL)"]
   end
@@ -10064,7 +10070,7 @@ flowchart TD
   CC --> LFILIB["libopus.a (LFI-built) + libc_lfi / libm_lfi"]
   LFILIB --> PIE["relink as static-PIE with boxrt + relocator"]
   PIE --> BIND["lfi-bind: generate init + trampolines"]
-  BIND --> VER["liblfiv verifier (LFI_BOX_FULL)"]
+  BIND --> VER["lfi-verifier (LFI_BOX_FULL)"]
   VER -->|"errors=0"| OUT["libopus_lfi sandbox image<br/>(in com.android.media.swcodec)"]
   VER -->|"unsafe instruction"| FAIL["build/load rejected"]
 ```
@@ -10351,7 +10357,7 @@ checkout.
   `SECURITY_MODEL_MEMORY_SAFE`, separate from the separate-process
   `SECURITY_MODEL_SANDBOXED`.
 - **Verifier, runtime, and binding split across two trees.** `external/lfi`
-  vendors the toolchain — `lfi-verifier`/`liblfiv` (the trusted root that rejects
+  vendors the toolchain — `lfi-verifier` (the trusted root that rejects
   unsafe instructions), `lfi-runtime`/`liblfi` (reserves/maps the box and handles
   host calls), `lfi-bind` (generates init + `LFI_CALL` trampolines), `rlbox`/
   `rlbox-lfi` (a higher-level API, not yet used), and the `disarm`/`fadec`

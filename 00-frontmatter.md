@@ -479,8 +479,8 @@ source paths to help you navigate the tree efficiently.
 ### Cross-References
 
 Chapters and sections are numbered hierarchically. When you see a reference
-like `§9.3`, it means Chapter 9, Section 3. References like `§22.42` point
-to Chapter 22, Section 42. These cross-references are used extensively to
+like `§9.3`, it means Chapter 9, Section 3. References like `§22.3` point
+to Chapter 22, Section 3. These cross-references are used extensively to
 connect related concepts across the book without duplicating material.
 
 When a concept is first introduced, it is explained in full. Subsequent
@@ -635,7 +635,7 @@ Cross-references use the `§` symbol followed by chapter and section numbers:
 |----------|---------|
 | `§9` | Chapter 9 (Binder) |
 | `§9.3` | Chapter 9, Section 3 |
-| `§22.42` | Chapter 22, Section 42 |
+| `§22.3` | Chapter 22, Section 3 |
 | `§A` | Appendix A |
 
 Cross-references appear in parentheses when used as supplementary pointers:

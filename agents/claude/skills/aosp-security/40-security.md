@@ -388,7 +388,9 @@ Sample mappings:
 |----------|--------|
 | `isSystemServer=true` | `system_server` |
 | `user=system seinfo=platform` | `system_app` |
-| `user=_app minTargetSdkVersion=34` | `untrusted_app` |
+| `user=_app minTargetSdkVersion=37` | `untrusted_app` |
+| `user=_app minTargetSdkVersion=34` | `untrusted_app_34` |
+| `user=_app minTargetSdkVersion=32` | `untrusted_app_32` |
 | `user=_app minTargetSdkVersion=30` | `untrusted_app_30` |
 | `user=_app minTargetSdkVersion=29` | `untrusted_app_29` |
 | `user=_isolated` | `isolated_app` |
@@ -2461,10 +2463,14 @@ and other properties.  The domain assignment is driven by `seapp_contexts`:
 # System server
 isSystemServer=true domain=system_server_startup
 
-# Apps with targetSdkVersion >= 34
-user=_app domain=untrusted_app type=app_data_file levelFrom=all
+# Apps with targetSdkVersion >= 37
+user=_app minTargetSdkVersion=37 domain=untrusted_app type=app_data_file levelFrom=all
 
-# Apps with targetSdkVersion 30-33
+# Apps with targetSdkVersion 34-36 / 32-33
+user=_app minTargetSdkVersion=34 domain=untrusted_app_34 ...
+user=_app minTargetSdkVersion=32 domain=untrusted_app_32 ...
+
+# Apps with targetSdkVersion 30-31
 user=_app minTargetSdkVersion=30 domain=untrusted_app_30 ...
 
 # Isolated processes
@@ -2478,7 +2484,7 @@ The untrusted_app domain (`system/sepolicy/private/untrusted_app.te`):
 ### Untrusted apps.
 ###
 ### This file defines the rules for untrusted apps running with
-### targetSdkVersion >= 34.
+### targetSdkVersion >= 37.
 ###
 
 typeattribute untrusted_app coredomain;

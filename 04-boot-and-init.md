@@ -971,7 +971,7 @@ static void LoadBootScripts(ActionManager& action_manager, ServiceList& service_
 }
 ```
 
-Init.rc files are loaded from five locations in a specific order:
+Init.rc files are loaded from six locations in a specific order:
 
 1. `/system/etc/init/hw/init.rc` -- the master init.rc file
 2. `/system/etc/init/` -- system partition services
@@ -2390,7 +2390,7 @@ class.
 
 ### 4.6.6 Ueventd: Device Node Management
 
-As mentioned in section 3.3.1, when init is invoked with the name `ueventd`, it
+As mentioned in section 4.3.1, when init is invoked with the name `ueventd`, it
 becomes the device node manager. Ueventd listens for kernel uevents and creates
 device nodes in `/dev/` with appropriate permissions.
 
@@ -4116,8 +4116,6 @@ than four times in four minutes. This is the same mechanism used for Zygote itse
 This chapter traced the complete Android boot sequence from power-on to home screen:
 
 1. **Bootloader** loads and verifies the kernel using AVB (`external/avb/libavb/`)
-
-1. **Bootloader** loads and verifies the kernel using AVB (`external/avb/libavb/`)
 2. **Linux kernel** launches `/init` as PID 1
 3. **First-stage init** (`system/core/init/first_stage_init.cpp`) mounts partitions
    and loads kernel modules
@@ -4153,21 +4151,21 @@ in this chapter:
 
 | File Path | Purpose | Section |
 |---|---|---|
-| `system/core/init/first_stage_main.cpp` | First-stage init entry point | 3.3.1 |
-| `system/core/init/first_stage_init.cpp` | First-stage init implementation | 3.3.2 |
-| `system/core/init/main.cpp` | Init dispatch (all modes) | 3.3.1 |
-| `system/core/init/init.cpp` | Second-stage init + main loop | 3.3.5 |
-| `system/core/init/selinux.cpp` | SELinux policy loading | 3.3.3 |
-| `system/core/init/property_service.cpp` | Property service implementation | 3.3.6, 3.8 |
-| `system/core/rootdir/init.rc` | Master init.rc configuration | 3.3.7 |
-| `system/core/rootdir/init.zygote64.rc` | 64-bit Zygote service definition | 3.3.7 |
-| `system/core/rootdir/init.zygote64_32.rc` | Dual Zygote (64+32) definition | 3.3.7 |
-| `frameworks/base/cmds/app_process/app_main.cpp` | Zygote native entry point | 3.4.1 |
-| `frameworks/base/core/java/com/android/internal/os/ZygoteInit.java` | Zygote Java entry point | 3.4.2-3.4.5 |
-| `frameworks/base/services/java/com/android/server/SystemServer.java` | system_server entry point | 3.5 |
-| `external/avb/libavb/avb_vbmeta_image.h` | VBMeta image format | 3.2.3 |
-| `external/avb/libavb/avb_slot_verify.h` | Slot verification API | 3.2.3 |
-| `external/avb/libavb/avb_hashtree_descriptor.h` | dm-verity hashtree format | 3.2.3 |
+| `system/core/init/first_stage_main.cpp` | First-stage init entry point | 4.3.1 |
+| `system/core/init/first_stage_init.cpp` | First-stage init implementation | 4.3.2 |
+| `system/core/init/main.cpp` | Init dispatch (all modes) | 4.3.1 |
+| `system/core/init/init.cpp` | Second-stage init + main loop | 4.3.5 |
+| `system/core/init/selinux.cpp` | SELinux policy loading | 4.3.3 |
+| `system/core/init/property_service.cpp` | Property service implementation | 4.3.6, 4.7 |
+| `system/core/rootdir/init.rc` | Master init.rc configuration | 4.3.7 |
+| `system/core/rootdir/init.zygote64.rc` | 64-bit Zygote service definition | 4.3.7 |
+| `system/core/rootdir/init.zygote64_32.rc` | Dual Zygote (64+32) definition | 4.3.7 |
+| `frameworks/base/cmds/app_process/app_main.cpp` | Zygote native entry point | 4.4.1 |
+| `frameworks/base/core/java/com/android/internal/os/ZygoteInit.java` | Zygote Java entry point | 4.4.2-4.4.5 |
+| `frameworks/base/services/java/com/android/server/SystemServer.java` | system_server entry point | 4.5 |
+| `external/avb/libavb/avb_vbmeta_image.h` | VBMeta image format | 4.2.3 |
+| `external/avb/libavb/avb_slot_verify.h` | Slot verification API | 4.2.3 |
+| `external/avb/libavb/avb_hashtree_descriptor.h` | dm-verity hashtree format | 4.2.3 |
 
 ### Architectural Insights
 

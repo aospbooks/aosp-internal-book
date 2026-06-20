@@ -4549,7 +4549,7 @@ platform_testing/libraries/
 ```
 
 The Android 17 tree adds `androidbuildinternal/`, `media/`, `sdv/` (Software
-Defined Vehicle, covered in the SDV chapter), and `uiautomator-accessibility/`
+Defined Vehicle, covered in Chapter 62 (Device Form Factors), §62.7), and `uiautomator-accessibility/`
 to the set, reflecting the growth of the automotive/SDV test surface and an
 accessibility-driven UI-helper layer.
 

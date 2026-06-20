@@ -191,13 +191,16 @@ As described in `packages/modules/Virtualization/docs/pvm_dice_chain.md`:
 > involved in the VM's loading and boot process.
 
 Vendors construct the chain from ROM to ABL, then hand it off to pvmfw. The
-handover format is CBOR-encoded:
+handover format is CBOR-encoded. Illustrative CDDL for the three fields (the
+labels below are descriptive, not source identifiers; the Rust side parses this
+as `BccHandover` and walks it via `DiceChainInfo` / `DiceChainEntry` in
+`packages/modules/Virtualization/guest/pvmfw/src/dice/chain.rs`):
 
 ```
-PvmfwDiceHandover = {
+DiceHandover = {
   1 : bstr .size 32,     ; CDI_Attest
   2 : bstr .size 32,     ; CDI_Seal
-  3 : DiceCertChain,     ; Android DICE chain
+  3 : DiceChain,         ; Android DICE chain
 }
 ```
 
@@ -618,7 +621,6 @@ filters. Seccomp policies are architecture-specific:
 ```
 external/crosvm/jail/seccomp/
     aarch64/           # ARM64 seccomp policies
-    arm/               # ARM32 seccomp policies
     x86_64/            # x86_64 seccomp policies
     riscv64/           # RISC-V seccomp policies
 ```
@@ -889,8 +891,8 @@ Microdroid VMs are configured through JSON files. The base configuration from
           "path": "/apex/com.android.virt/etc/fs/microdroid_vbmeta.img"
         },
         {
-          "label": "super",
-          "path": "/apex/com.android.virt/etc/fs/microdroid_super.img"
+          "label": "system_a",
+          "path": "/apex/com.android.virt/etc/fs/microdroid.img"
         }
       ],
       "writable": false
@@ -905,8 +907,8 @@ Microdroid VMs are configured through JSON files. The base configuration from
 The configuration specifies:
 
 - **Kernel** -- Path to the Microdroid kernel binary
-- **Disks** -- Disk images including vbmeta (for verified boot) and super (the system
-  partition in Android's dynamic partitions format)
+- **Disks** -- Disk images including `vbmeta_a` (for verified boot) and `system_a`
+  (the read-only system image, `microdroid.img`)
 
 - **Memory** -- 256 MiB default allocation
 - **Console** -- `hvc0` for virtio console I/O
@@ -975,14 +977,14 @@ Microdroid uses a minimal filesystem layout from
 `packages/modules/Virtualization/build/microdroid/fstab.microdroid`:
 
 ```
-system /system ext4 noatime,ro,errors=panic wait,slotselect,avb=vbmeta,first_stage_mount,logical
+/dev/block/by-name/system /system erofs noatime,ro wait,slotselect,avb=vbmeta,first_stage_mount
 /dev/block/by-name/microdroid-vendor /vendor ext4 noatime,ro,errors=panic wait,first_stage_mount,avb_hashtree_digest=/proc/device-tree/avf/vendor_hashtree_descriptor_root_digest
 ```
 
 Key filesystem characteristics:
 
 - **Root** -- Read-only, remounted after post-fs
-- **/system** -- Read-only, verified boot via AVB
+- **/system** -- Read-only `erofs`, verified boot via AVB (`avb=vbmeta`)
 - **/vendor** -- Optional, verified via hashtree digest
 - **/data** -- tmpfs (128 MiB), ephemeral
 - **/mnt/apk** -- Mount point for payload APK
@@ -1392,7 +1394,7 @@ The configuration data memory layout:
 
 ### 56.5.9 Configuration Versions
 
-The configuration format has evolved across four versions:
+The configuration format has evolved across five versions:
 
 **Version 1.0:**
 
@@ -1411,8 +1413,13 @@ The configuration format has evolved across four versions:
 
 - Entry 4: Reserved memory (optional, for confidential data to specific guests)
 
-Each blob is referred to by offset and size in the entry array. Missing optional
-entries are denoted by zero size.
+**Version 1.4:**
+
+- Entry 5: Extra rollback info (`ExtraRollback`, optional)
+
+The `Entry` enum also defines a `TrustedKeys` entry (entry 6) that is not yet
+wired to a config version in `entry_count()`. Each blob is referred to by offset
+and size in the entry array. Missing optional entries are denoted by zero size.
 
 ### 56.5.10 VBMeta Properties
 
@@ -2298,6 +2305,7 @@ impl Header {
     const VERSION_1_1: Version = Version { major: 1, minor: 1 };
     const VERSION_1_2: Version = Version { major: 1, minor: 2 };
     const VERSION_1_3: Version = Version { major: 1, minor: 3 };
+    const VERSION_1_4: Version = Version { major: 1, minor: 4 };
 }
 ```
 
@@ -2321,6 +2329,8 @@ pub enum Entry {
     VmDtbo,          // Entry 2: Device assignment DTBO (v1.1)
     VmBaseDtbo,      // Entry 3: VM reference DT (v1.2)
     ReservedMem,     // Entry 4: Reserved memory (v1.3)
+    ExtraRollback,   // Entry 5: Extra rollback info (v1.4)
+    TrustedKeys,     // Entry 6: Trusted keys (defined, not yet versioned)
     _VARIANT_COUNT,  // Sentinel for counting
 }
 ```
@@ -2354,8 +2364,9 @@ pub fn entry_count(&self) -> Result<usize> {
         Self::VERSION_1_1 => Entry::VmDtbo,
         Self::VERSION_1_2 => Entry::VmBaseDtbo,
         Self::VERSION_1_3 => Entry::ReservedMem,
+        Self::VERSION_1_4 => Entry::ExtraRollback,
         v @ Version { major: 1, .. } => {
-            const LATEST: Version = Header::VERSION_1_3;
+            const LATEST: Version = Header::VERSION_1_4;
             warn!("Parsing unknown config data version {v} as version {LATEST}");
             return Ok(Entry::COUNT);
         }
@@ -2365,8 +2376,9 @@ pub fn entry_count(&self) -> Result<usize> {
 }
 ```
 
-This means a v1.4 config will be parsed as v1.3, with any new entries beyond
-the known set silently ignored. Major version changes (2.x) would be rejected.
+This means a config with an unknown 1.x minor version is parsed as the latest
+known version (currently 1.4), with any new entries beyond the known set
+silently ignored. Major version changes (2.x) would be rejected.
 
 ### 56.9.4 Error Handling
 

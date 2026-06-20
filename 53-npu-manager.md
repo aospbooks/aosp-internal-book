@@ -172,12 +172,14 @@ manually in `NpuManagerServiceImpl`.
 An app describes a model with `ModelLoadRequest`
 (`framework/java/android/npumanager/ModelLoadRequest.java`), built with an id, a
 coarse size bucket, and a priority. The size is not a byte count but one of three
-buckets defined in `framework/java/android/npumanager/NpuModelSize.aidl` and
-re-exported on `NpuManager`:
+buckets. The `NpuModelSize` enum
+(`framework/java/android/npumanager/NpuModelSize.aidl`) defines them with bare,
+unprefixed names (`LESS_THAN_1GB`, `BETWEEN_1GB_AND_2GB`, `GREATER_THAN_2G`);
+`NpuManager` re-exports them as prefixed constants:
 
-- `NPU_MODEL_SIZE_LESS_THAN_1GB`
-- `NPU_MODEL_SIZE_BETWEEN_1GB_AND_2GB`
-- `NPU_MODEL_SIZE_GREATER_THAN_2G`
+- `NPU_MODEL_SIZE_LESS_THAN_1GB` (`NpuModelSize.LESS_THAN_1GB`)
+- `NPU_MODEL_SIZE_BETWEEN_1GB_AND_2GB` (`NpuModelSize.BETWEEN_1GB_AND_2GB`)
+- `NPU_MODEL_SIZE_GREATER_THAN_2G` (`NpuModelSize.GREATER_THAN_2G`)
 
 The model priority is a two-value bucket on the request itself,
 `NPU_MODEL_PRIORITY_NORMAL` versus `NPU_MODEL_PRIORITY_BACKGROUND`. This is
@@ -474,7 +476,8 @@ Underneath the C API, the Rust client talks to the service through
 `INpuAllocator` (`framework/java/android/npumanager/INpuAllocator.aidl`), obtained
 from `INpuManagerService.createAllocator()`. The client side
 (`ndk/npu_allocator_client.rs`) batches requests into `getBuffers()`, checks
-`isSupported()`, returns buffers with `putBuffers()`, and streams data with
+`isSupported()`, returns buffers with `putBuffers()`, adjusts a buffer's
+priority with `setPriority()`, and streams data with
 `loadFileSegmentToBuffer()`. Replies come back asynchronously on
 `INpuAllocatorCallback` (`onGetBuffer`, `onLoad`, `onNotifyPreempted`). The
 service implementation of the allocator is `NpuAllocator`

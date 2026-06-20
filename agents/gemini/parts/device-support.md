@@ -12135,7 +12135,7 @@ sequenceDiagram
 
     NavApp->>CNS: sendNavigationState(bundle)
     CNS->>ICS: onNavigationStateChanged()
-    ICS->>Renderer: IInstrumentCluster.setNavigationState()
+    ICS->>Renderer: IInstrumentClusterNavigation.onNavigationStateChanged() (via getNavigationService())
     Renderer->>ClusterDisplay: Render navigation turn card
 
     Note over CHS,Renderer: Cluster state changes via VHAL
@@ -12749,7 +12749,6 @@ hardware/interfaces/automotive/
   evs/           -- Exterior View System cameras
   audiocontrol/  -- Multi-zone audio routing
   can/           -- CAN bus interface
-  sv/            -- Surround View
   ivn_android_device/  -- In-Vehicle Networking
   occupant_awareness/  -- Occupant detection (presence, attention)
   remoteaccess/        -- Remote wake and task execution
@@ -14250,7 +14249,10 @@ graph TB
         TIMS2[TvInputManagerService]
         TRMS2[TunerResourceManagerService]
         HDMI[HdmiControlService]
-        TVWS[TvWatchdogService]
+    end
+
+    subgraph "TV Optional Library Services<br/>(com.android.libraries.tv.tvsystem)"
+        TVWS["TvWatchdogService<br/>(not started by SystemServer)"]
     end
 
     subgraph "Wear Additional Services"
@@ -14265,14 +14267,21 @@ The services are conditionally started based on device features:
 // Automotive: started when ro.hardware.type == automotive
 // CarService is started as a persistent service
 
-// TV: started when android.software.leanback feature present
-if (pm.hasSystemFeature(PackageManager.FEATURE_LEANBACK)) {
+// TV: started when this is a TV device (isTv = leanback feature) OR
+// the FEATURE_LIVE_TV feature is present -- NOT gated on FEATURE_LEANBACK alone
+// (frameworks/base/services/java/com/android/server/SystemServer.java)
+if (isTv || pm.hasSystemFeature(PackageManager.FEATURE_LIVE_TV)) {
     mSystemServiceManager.startService(TvInputManagerService.class);
 }
 
 // HDMI-CEC: started on TV devices
 if (pm.hasSystemFeature(PackageManager.FEATURE_HDMI_CEC)) {
     // HdmiControlService starts
+}
+
+// TunerResourceManagerService: gated on FEATURE_TUNER
+if (pm.hasSystemFeature(PackageManager.FEATURE_TUNER)) {
+    // TunerResourceManagerService starts
 }
 ```
 
@@ -15166,7 +15175,7 @@ The Cuttlefish targets make the headlessness concrete. SDV is designed to run as
 
 SDV is deliberately spread across four locations in the tree, each with a distinct role:
 
-- `system/software_defined_vehicle/` — the platform itself: 17 subrepos holding the agents, the middleware comm stack, the VSIDL toolchain, and shared libraries. This is where the running code lives.
+- `system/software_defined_vehicle/` — the platform itself: 16 subrepos holding the agents, the middleware comm stack, the VSIDL toolchain, and shared libraries. This is where the running code lives.
 - `device/google/sdv` — the reference device. It composes the platform code into lunch targets (`sdv_core_base`, `sdv_ivi_base`, and friends) and decides which agents and APEXes land in which VM.
 - `hardware/sdv/interfaces` — the stable contract package. Every cross-process boundary that needs version stability (the gateway, the registry, the lifecycle internal interface, vpm, telemetry, the RPC agent) has its `@VintfStability` AIDL frozen here under `aidl_api/`.
 - `packages/services/display_safety` — the automotive Driver-UI runtime ("HARry") and its safety monitor, which runs on the IVI side.
@@ -15238,7 +15247,7 @@ The metadata contract is the `SdvServiceBundleManifest` proto (`system/software_
 
 #### VSIDL Generates Rust
 
-Service interfaces are not written in AIDL. They are described in `.vsidl` service-bundle definitions plus `.proto` message schemas, and the `vsidlc` compiler (`system/software_defined_vehicle/vsidl/vsidlc`) walks the catalog and emits Rust middleware bindings into `generated_rs/` directories. The companion `someip_translation_generator` emits the SOME/IP-to-proto translation code, and `vsidl_rc_generator` emits resource-control glue. All three are host tools installed by the Core target (`device/google/sdv/sdv_core_base/sdv_packages_core_services.mk` lists `vsidlc`, `vsidl_rc_generator`, and `someip_translation_generator` under `SDV_CORE_SERVICES_HOST_PACKAGES`). On-device, the `sdv_vsidl_provider_agent` (APEX `com.android.sdv.vsidl_provider`) serves bundle VSIDL schemas at runtime. This is the SDV equivalent of AIDL stub generation, and the full grammar and transport mapping belong to Section 62.8.
+Service interfaces are not written in AIDL. They are described in `.vsidl` service-bundle definitions plus `.proto` message schemas, and the `vsidlc` compiler (`system/software_defined_vehicle/vsidl/vsidlc`) walks the catalog and emits Rust middleware bindings into `generated_rs/` directories. The companion `someip_translation_generator` emits the SOME/IP-to-proto translation code, and `vsidl_rc_generator` (the "Runtime Configuration generator") emits the runtime-configuration outputs that bundles consume through the VSIDL provider library (`libsdv_config_provider`). All three are host tools installed by the Core target (`device/google/sdv/sdv_core_base/sdv_packages_core_services.mk` lists `vsidlc`, `vsidl_rc_generator`, and `someip_translation_generator` under `SDV_CORE_SERVICES_HOST_PACKAGES`). On-device, the `sdv_vsidl_provider_agent` (APEX `com.android.sdv.vsidl_provider`) serves bundle VSIDL schemas at runtime. This is the SDV equivalent of AIDL stub generation, and the full grammar and transport mapping belong to Section 62.8.
 
 A concrete `.vsidl` makes the shape clear. The vehicle power manager's bundle definition (`system/software_defined_vehicle/vpm/stable/vsidl/vpm.vsidl`) declares a `service_bundle` named `VpmSystemServiceBundle` with three interface slots: a `server` exporting the RPC service `com.android.sdv.vpm.VpmSystemService`, a `client` of `com.android.sdv.vpm.client.PowerNotificationService`, and a Data Tunnel `publisher` of `com.android.sdv.vpm.vehicle.VehicleStateChange`. A bundle therefore declares, in one place, what it serves over RPC, what it consumes, and what it publishes on the pub/sub fabric.
 
@@ -15413,7 +15422,7 @@ The distraction-and-compliance enforcement lives in `packages/services/display_s
 
 #### The SDV Service Bundle Bridge
 
-The seam between this IVI-side Rust runtime and the SDV fabric is `packages/services/display_safety/service/har-sdv-service`, which builds `libhar_sdv_service_bundle` — an SDV service bundle. It depends on the SDV middleware (`libsdv_comms`, the generated SDV comms code) on one side and on the gRPC services (`libhar_grpc_services`, generated from `vehicledata.proto` and `driverui.proto`) on the other, so it publishes vehicle data and serves the Driver-UI over gRPC *through* the SDV middleware. Vehicle data flows in from a publisher service bundle (`service/vehicledata/`), through the SDV fabric, into the HARry app and the safety monitor.
+The seam between this IVI-side Rust runtime and the SDV fabric is `packages/services/display_safety/service/har-sdv-service`, which builds `libhar_sdv_service_bundle` — an SDV service bundle. Its `Android.bp` depends on the bundle's generated SDV middleware/comms bindings (`libsdv_mw_rs_com_sdv_google_display_safety_har_sdv_service_bundle`, plus the core SDV libraries `libsdv_rs` and `libsdv_log_rust`) on one side and on the gRPC services (`libhar_grpc_services`, generated from `vehicledata.proto` and `driverui.proto`) on the other, so it publishes vehicle data and serves the Driver-UI over gRPC *through* the SDV middleware. Vehicle data flows in from a publisher service bundle (`service/vehicledata/`), through the SDV fabric, into the HARry app and the safety monitor.
 
 The whole runtime ships as APEXes built only for SDV/display-safety products: `com.google.display_safety.har` carries the `harry_app`, the `har_safety_monitor`, and the rendering assets, while `com.sdv.google.display_safety.services_bundle.apex` carries the service-bundle `.so`s and their orchestration/ACL configs. The product wiring lives in `device/google/sdv_display_safety`, whose makefiles (`sdv_harry_common.mk`, `sdv_ivi_cf_ds.mk`, `sdv_ivi_arm64_ds.mk`, `sdv_media_har_cf.mk`) layer the display-safety stack onto the IVI and media products and pull in the AAOS DriverUI app from `packages/services/Car`.
 
@@ -15452,7 +15461,7 @@ flowchart LR
 
 `device/google/sdv` ties the platform into buildable products. OEM products are meant to inherit one SDV "base" target plus a vendor target (`device/google/sdv/README.md`). The bases are `sdv_base` (comm stack only), `sdv_core_base` (the full set of Core services), `sdv_media_base` (Core plus media APIs), and `sdv_ivi_base` (an AAOS IVI capable of talking to SDV services on other VMs). The canonical "what runs in the Core VM" list is `device/google/sdv/sdv_core_base/sdv_packages_core_services.mk`: the lifecycle client libraries, `orch_config.textproto`, `sdv_lifecycle_agent`, `sdv_orchestration_agent`, `sdv_service_bundles_registry_agent`, `lifecycle_service_bundle_runner`, `sdv_someip_broker_agent_comms`, `sdv_update_manager_agent`, `sdv_health_monitor`, `sdv_vsidl_provider_agent`, the comm-stack agents (`dt_agent`, `rpcagent`, `sdv_sd_agent`), and the matching APEXes (`com.android.sdv.health`, `com.android.sdv.orchestrator`, `com.android.sdv.update_manager`, `com.android.sdv.vsidl_provider`, `com.android.sdv.dt`). The same file demands a SOME/IP broker config and warns if no SOME/IP agent is installed, because a Core VM with no transport agent cannot talk to anything.
 
-The sample lunch targets (`device/google/sdv/AndroidProducts.mk`) are the Cuttlefish and ARM64 instances of these bases: `sdv_core_cf`, `sdv_core_perf_cf`, `sdv_core_tiny_cf`, `sdv_ivi_cf`, `sdv_media_cf`, `sdv_media_har_cf`, and their `*_arm64` peers. Booting a Core VM plus an IVI VM together — as `device/google/sdv/cuttlefish_multi_tenancy/` configures — is the smallest end-to-end SDV system: a headless Core hosting bundles, an AAOS IVI reaching them through the gateway, and the comm fabric between.
+The sample lunch targets (`device/google/sdv/AndroidProducts.mk`) are the Cuttlefish and ARM64 instances of these bases: `sdv_core_cf`, `sdv_core_perf_cf`, `sdv_core_tiny_cf`, `sdv_ivi_cf`, `sdv_media_cf`, `sdv_media_har_arm64`, and their `*_arm64`/`*_cf` peers. (The display-safety media-HAR Cuttlefish target `sdv_media_har_cf` lives in a separate device tree, `device/google/sdv_display_safety/`, not in `device/google/sdv/`.) Booting a Core VM plus an IVI VM together — as `device/google/sdv/cuttlefish_multi_tenancy/` configures — is the smallest end-to-end SDV system: a headless Core hosting bundles, an AAOS IVI reaching them through the gateway, and the comm fabric between.
 
 ---
 
@@ -15737,7 +15746,7 @@ Behind the public session, the gateway also exposes a set of *privileged* interf
 - `IPrivilegedGatewayNetworking` (`privileged/gatewaynetworking/`) — used only by the Java `sdv_gatewaynetworking_service`. It supplies `getRpcNetworkInterfaceName()`, `setRpcNetworkHandle(long)`, `onCarPowerStateChanged(CarPowerState)`, and listener registration. `CarPowerState` enumerates the AAOS power states (`WAIT_FOR_VHAL`, `ON`, `SHUTDOWN_PREPARE`, `SUSPEND_ENTER`, `HIBERNATION_ENTER`, …) so the fabric can react to vehicle power transitions.
 - `IPrivilegedIdentityAgent`, `IPrivilegedServiceRegistrationAgent`, `IPrivilegedServiceDiscoveryAgent` — the same identity/registration/discovery operations as §62.8.3, but taking an explicit *process identifier* argument so the gateway can act on behalf of a specific client process rather than its own.
 
-The gateway AIDL is versioned and frozen under `hardware/sdv/interfaces/sdv_gateway/aidl_api/`: the public `google.sdv.gateway` package is at API v3 (with v1/v2 snapshots retained), and the privileged packages are at v2/v3 — the same backward-compatibility discipline as any stable AIDL HAL (Chapter 10).
+The gateway AIDL is versioned and frozen under `hardware/sdv/interfaces/sdv_gateway/aidl_api/`: the public `google.sdv.gateway` package is at API v3 (with v1/v2 snapshots retained), and the privileged packages are at mixed versions — `gatewaynetworking` at v3, `identity` and `service_discovery` at v2 — the same backward-compatibility discipline as any stable AIDL HAL (Chapter 10).
 
 #### The VHAL proxy
 
@@ -15749,7 +15758,7 @@ This is what makes a stock AAOS CarService (§62.1) work over SDV: CarService re
 
 Because the gateway lets an untrusted process claim an SDV package name (the second FQIN element), it must police which process may claim which name. That is the job of `sdv_gateway_config.json`, installed at `/vendor/etc/sdv_gateway_config.json`. The README is explicit: the file contains "the SDV package names (the second element of the FQIN) that native service (e.g. VHAL) are allowed to use when calling `initComms`," and "an empty config would prevent all native applications from using the SDV Gateway."
 
-The allowlist is keyed by Android user ID:
+The allowlist is keyed by process UID (the same key §62.7.11 uses):
 
 ```json
 // Source: system/software_defined_vehicle/sdv_gateway/README.md (config example)
@@ -15850,17 +15859,17 @@ Query vehicle properties using the car service shell:
 
 ```bash
 # Get vehicle speed:
-adb shell cmd car_service get-property PERF_VEHICLE_SPEED
+adb shell cmd car_service get-property-value PERF_VEHICLE_SPEED
 
 # Get gear selection:
-adb shell cmd car_service get-property GEAR_SELECTION
+adb shell cmd car_service get-property-value GEAR_SELECTION
 
-# List all available properties:
-adb shell cmd car_service list-properties
+# List all property configs (or one config by name/id):
+adb shell cmd car_service get-carpropertyconfig
 
 # Set HVAC temperature (on emulator):
-adb shell cmd car_service set-property HVAC_TEMPERATURE_SET \
-    --area 49 --type 1 -- 22.5
+# set-property-value <PROPERTY> <areaId> <data>
+adb shell cmd car_service set-property-value HVAC_TEMPERATURE_SET 49 22.5
 ```
 
 ### Exercise 62.3: Trace a VHAL Property Event
@@ -15964,8 +15973,8 @@ adb shell dumpsys activity services com.android.systemui | grep car
 adb shell dumpsys car_service --act
 
 # Inspect HVAC properties used by SystemUI:
-adb shell cmd car_service get-property HVAC_TEMPERATURE_SET
-adb shell cmd car_service get-property HVAC_FAN_SPEED
+adb shell cmd car_service get-property-value HVAC_TEMPERATURE_SET
+adb shell cmd car_service get-property-value HVAC_FAN_SPEED
 ```
 
 ### Exercise 62.9: Examine Occupant Zones
@@ -20326,18 +20335,21 @@ The NDK camera returns `camera_status_t` error codes:
 | Error Code | Value | Meaning |
 |------------|-------|---------|
 | `ACAMERA_OK` | 0 | Success |
-| `ACAMERA_ERROR_INVALID_PARAMETER` | -10002 | Invalid argument |
-| `ACAMERA_ERROR_CAMERA_DISCONNECTED` | -10004 | Camera disconnected |
-| `ACAMERA_ERROR_NOT_ENOUGH_MEMORY` | -10005 | Memory allocation failure |
-| `ACAMERA_ERROR_METADATA_NOT_FOUND` | -10006 | Metadata key not in result |
-| `ACAMERA_ERROR_CAMERA_DEVICE` | -10007 | Fatal camera device error |
-| `ACAMERA_ERROR_CAMERA_SERVICE` | -10008 | Camera service error |
-| `ACAMERA_ERROR_SESSION_CLOSED` | -10009 | Capture session closed |
-| `ACAMERA_ERROR_CAMERA_IN_USE` | -10013 | Camera already open |
-| `ACAMERA_ERROR_MAX_CAMERAS_IN_USE` | -10014 | Max simultaneous cameras |
-| `ACAMERA_ERROR_CAMERA_DISABLED` | -10015 | Camera disabled by policy |
-| `ACAMERA_ERROR_PERMISSION_DENIED` | -10016 | No camera permission |
-| `ACAMERA_ERROR_UNSUPPORTED_OPERATION` | -10017 | Operation not supported |
+| `ACAMERA_ERROR_UNKNOWN` | -10000 | Unspecified failure (`ACAMERA_ERROR_BASE`) |
+| `ACAMERA_ERROR_INVALID_PARAMETER` | -10001 | Invalid argument |
+| `ACAMERA_ERROR_CAMERA_DISCONNECTED` | -10002 | Camera disconnected |
+| `ACAMERA_ERROR_NOT_ENOUGH_MEMORY` | -10003 | Memory allocation failure |
+| `ACAMERA_ERROR_METADATA_NOT_FOUND` | -10004 | Metadata key not in result |
+| `ACAMERA_ERROR_CAMERA_DEVICE` | -10005 | Fatal camera device error |
+| `ACAMERA_ERROR_CAMERA_SERVICE` | -10006 | Camera service error |
+| `ACAMERA_ERROR_SESSION_CLOSED` | -10007 | Capture session closed |
+| `ACAMERA_ERROR_INVALID_OPERATION` | -10008 | Invalid internal operation |
+| `ACAMERA_ERROR_STREAM_CONFIGURE_FAIL` | -10009 | Stream configuration unsupported |
+| `ACAMERA_ERROR_CAMERA_IN_USE` | -10010 | Camera already open |
+| `ACAMERA_ERROR_MAX_CAMERA_IN_USE` | -10011 | Max simultaneous cameras |
+| `ACAMERA_ERROR_CAMERA_DISABLED` | -10012 | Camera disabled by policy |
+| `ACAMERA_ERROR_PERMISSION_DENIED` | -10013 | No camera permission |
+| `ACAMERA_ERROR_UNSUPPORTED_OPERATION` | -10014 | Operation not supported |
 
 ```
 Source: frameworks/av/camera/ndk/include/camera/NdkCameraError.h

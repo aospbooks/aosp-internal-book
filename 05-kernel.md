@@ -274,10 +274,10 @@ consists of:
 
 1. **A symbol list** -- the set of kernel functions and variables that vendor
    modules are allowed to call. The size of this list varies by branch as the
-   KMI is curated; for kernel 6.6 it contains approximately 35,710 entries, while
+   KMI is curated; for kernel 6.6 it contains approximately 38,840 entries, while
    the newer 6.18 branch ships a tighter list of roughly 22,961 entries.
 
-    **Source**: `kernel/prebuilts/6.6/arm64/abi_symbollist` (35,710 lines),
+    **Source**: `kernel/prebuilts/6.6/arm64/abi_symbollist` (38,840 lines),
     `kernel/prebuilts/6.18/arm64/abi_symbollist` (22,961 lines)
 
     The symbol list begins with commonly used symbols and is organized into
@@ -376,7 +376,7 @@ kernel/prebuilts/
             vmlinux                  # ELF kernel with debug info
             System.map               # Symbol address map
             System.map-allsyms       # Full symbol map
-            abi_symbollist           # KMI symbol list (35,710 lines)
+            abi_symbollist           # KMI symbol list (38,840 lines)
             abi_symbollist.raw       # Raw symbol names
             abi.stg                  # ABI definition (~7.8 MB)
             abi-full.stg             # Full ABI definition
@@ -395,7 +395,7 @@ kernel/prebuilts/
         virtual-device/
             6.1/
             6.6/
-                arm64/   # 57 device-specific modules
+                arm64/   # 54 device-specific modules
                 x86-64/
             6.12/
             6.18/
@@ -433,7 +433,7 @@ BOARD_KERNEL_VERSION := 6.18.16-android17-1-gb61cd7ae4209-ab15097451
 **Source**: `kernel/prebuilts/6.18/arm64/16k/kernel_version.mk`
 
 For comparison, the older Android 15 / kernel 6.6 prebuilt reads
-`6.6.100-android15-8-gf988247102d3-ab14039625-4k`, which decodes the same way
+`6.6.119-android15-8-gf79a8f9ddb6e-ab14880967-4k`, which decodes the same way
 (LTS 6.6 patch level 100, Android 15 ACK branch, eighth release).
 
 **Source**: `kernel/prebuilts/6.6/arm64/kernel_version.mk`
@@ -1579,7 +1579,7 @@ goldfish_sync.ko           # Synchronization primitives for GPU emulation
 
 Beyond the goldfish-specific modules, the emulator loads a substantial set of
 GKI and virtual device modules. The virtual device common modules for kernel 6.6
-arm64 include 57 modules:
+arm64 include 54 modules:
 
 ```
 kernel/prebuilts/common-modules/virtual-device/6.6/arm64/
@@ -2396,7 +2396,7 @@ The build system needs to know the kernel version for compatibility checking. Fo
 prebuilt kernels, this is provided by `kernel_version.mk`:
 
 ```makefile
-BOARD_KERNEL_VERSION := 6.6.100-android15-8-gf988247102d3-ab14039625-4k
+BOARD_KERNEL_VERSION := 6.6.119-android15-8-gf79a8f9ddb6e-ab14880967-4k
 ```
 
 **Source**: `kernel/prebuilts/6.6/arm64/kernel_version.mk`
@@ -2990,7 +2990,7 @@ This is upstream LTS 6.18 patch level 16, the Android 17 ACK branch, the first
 release from that branch, a git commit hash, an Android build ID, and the 4 KB
 page size variant. The 6.18 prebuilt ships roughly 104 GKI `.ko` modules and a
 trimmed KMI: its `abi_symbollist` holds about 22,961 entries, noticeably smaller
-than the ~35,710 of the 6.6 branch, reflecting Google's continued curation of
+than the ~38,840 of the 6.6 branch, reflecting Google's continued curation of
 the stable symbol surface.
 
 **Source**: `kernel/prebuilts/6.18/arm64/abi_symbollist`,
@@ -3214,7 +3214,7 @@ useful reminder that the `system/fs/` consolidation happened late in the cycle.
 |------|------------|------------|--------|
 | GKI branch | `android16-6.12` (LTS 6.12) | adds `android17-6.18` (LTS 6.18) | `kernel/configs/kernel-lifetimes.xml` |
 | Kernel prebuilt | `kernel/prebuilts/6.12/` | adds `kernel/prebuilts/6.18/` (~104 modules) | `kernel/prebuilts/6.18/arm64/` |
-| KMI symbol list | ~35,710 (6.6) | ~22,961 (6.18) | `kernel/prebuilts/6.18/arm64/abi_symbollist` |
+| KMI symbol list | ~38,840 (6.6) | ~22,961 (6.18) | `kernel/prebuilts/6.18/arm64/abi_symbollist` |
 | Config dirs | `b/android-6.12` | adds `c/`, `d/android-6.18`; drops `r/` | `kernel/configs/d/android-6.18/` |
 | 16 KB page size | side build | full 16 KB module set in `6.18/arm64/16k/` | `kernel/prebuilts/6.18/arm64/16k/` |
 | fs_mgr family | `system/core/{fs_mgr,liblp,libsnapshot,libdm}` | moved to `system/fs/fs_mgr/` | `system/fs/fs_mgr/` |
@@ -3240,7 +3240,7 @@ ls kernel/prebuilts/
 
 # Check the kernel version string
 cat kernel/prebuilts/6.6/arm64/kernel_version.mk
-# Output: BOARD_KERNEL_VERSION := 6.6.100-android15-8-gf988247102d3-ab14039625-4k
+# Output: BOARD_KERNEL_VERSION := 6.6.119-android15-8-gf79a8f9ddb6e-ab14880967-4k
 
 # Count the GKI modules
 ls kernel/prebuilts/6.6/arm64/*.ko | wc -l
@@ -3266,7 +3266,7 @@ modules:
 ```bash
 # Count total KMI symbols
 wc -l kernel/prebuilts/6.6/arm64/abi_symbollist
-# Output: 35710
+# Output: 38840
 
 # Look at the structure
 head -30 kernel/prebuilts/6.6/arm64/abi_symbollist
@@ -3593,7 +3593,7 @@ kernel with the same architecture as production devices.
 | `kernel/configs/kernel-lifetimes.xml` | Branch support lifecycle (incl. `android17-6.18`) |
 | `kernel/configs/approved-ogki-builds.xml` | Approved OEM GKI builds |
 | `kernel/prebuilts/6.6/arm64/` | GKI 6.6 prebuilt kernel and modules |
-| `kernel/prebuilts/6.6/arm64/abi_symbollist` | KMI symbol list (35,710 symbols) |
+| `kernel/prebuilts/6.6/arm64/abi_symbollist` | KMI symbol list (38,840 symbols) |
 | `kernel/prebuilts/6.18/arm64/` | Android 17 GKI 6.18 prebuilt (4 KB), ~104 modules |
 | `kernel/prebuilts/6.18/arm64/16k/` | Android 17 GKI 6.18 prebuilt (16 KB page size) |
 | `kernel/prebuilts/6.18/arm64/kernel_version.mk` | 6.18 kernel version string |

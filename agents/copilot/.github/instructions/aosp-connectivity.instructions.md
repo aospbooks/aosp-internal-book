@@ -11855,8 +11855,6 @@ stateDiagram-v2
     Connecting --> Disconnected : TIMEOUT/REJECT
     Connecting --> Disconnecting : DISCONNECT from remote
     Connected --> Disconnecting : DISCONNECT
-    Connected --> Streaming : START_STREAM
-    Streaming --> Connected : SUSPEND_STREAM
     Disconnecting --> Disconnected : DISCONNECTED
     Disconnecting --> Connecting : CONNECT from remote
 ```
@@ -14690,17 +14688,26 @@ power by reducing or stopping NFC polling when the screen is off:
 ```java
 // Source: packages/modules/Nfc/NfcNci/src/com/android/nfc/NfcService.java
 // minimum screen state that enables NFC polling
-static final int NFC_POLLING_MODE = ScreenStateHelper.SCREEN_STATE_ON_UNLOCKED;
+static final int NFC_POLLING_MODE = ScreenStateHelper.SCREEN_STATE_OFF_UNLOCKED;
 ```
 
-`ScreenStateHelper` maps display state to four levels:
+`ScreenStateHelper` maps display state to five levels whose values are a
+bitmask, not a sequence (`packages/modules/Nfc/NfcNci/src/com/android/nfc/ScreenStateHelper.java`):
 
 | Screen State | Value | Polling Behavior |
 |-------------|-------|-----------------|
-| `SCREEN_STATE_OFF` | 1 | No polling (except always-on/SE) |
-| `SCREEN_STATE_ON_LOCKED` | 2 | Limited polling (lock screen pay) |
-| `SCREEN_STATE_ON_UNLOCKED` | 3 | Full polling |
-| `SCREEN_STATE_UNKNOWN` | 0 | Treated as off |
+| `SCREEN_STATE_UNKNOWN` | `0x00` | Treated as off |
+| `SCREEN_STATE_OFF_UNLOCKED` | `0x01` | Screen off but device unlocked (the polling threshold) |
+| `SCREEN_STATE_OFF_LOCKED` | `0x02` | Screen off and locked |
+| `SCREEN_STATE_ON_LOCKED` | `0x04` | Limited polling (lock screen pay) |
+| `SCREEN_STATE_ON_UNLOCKED` | `0x08` | Full polling |
+
+The values matter because `NfcService` enables reader polling with the numeric
+comparison `screenState >= NFC_POLLING_MODE`.  With `NFC_POLLING_MODE` set to
+`SCREEN_STATE_OFF_UNLOCKED` (`0x01`), every state with a value at or above
+`0x01` is permitted, so only `SCREEN_STATE_UNKNOWN` (`0x00`) falls below the
+threshold.  Because the constants are a bitmask rather than a strict ordering,
+this `>=` test is what determines polling, not a literal "screen is on" check.
 
 Screen state changes trigger `MSG_APPLY_SCREEN_STATE` which recalculates
 discovery parameters and updates the NFCC accordingly.

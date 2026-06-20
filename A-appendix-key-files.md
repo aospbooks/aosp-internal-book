@@ -487,7 +487,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `external/crosvm/` | CrosVM virtual machine monitor |
 | `external/qemu/android/android-grpc/` | Emulator gRPC control interface |
 
-## Automotive, TV, and Wear (Chapter 62)
+## Device Form Factors (Chapter 62)
 
 | File Path | Purpose |
 |-----------|---------|

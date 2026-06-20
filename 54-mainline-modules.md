@@ -1313,7 +1313,7 @@ A few notes on Android 17 specifics in this table:
   Both are gated behind release flags (`RELEASE_NPUMANAGER_MODULE`,
   `RELEASE_WEBAPP_MODULE`) and inherit `b-launched-apex-module` defaults
   (`min_sdk_version: "36"`).  `NpuManager` has its own coverage in
-  Chapter 51 (AI / AppFunctions); `WebApp` interacts with the package manager
+  Chapter 53 (NPU Manager); `WebApp` interacts with the package manager
   (Chapter 26).
 - **`ImsStack`** is a code location (Java, native libs, flags) but produces no
   APEX of its own; its output is consumed by the telephony stack.
@@ -3944,7 +3944,7 @@ The bootclasspath fragment contributes `framework-npumanager` (the public
 `npumanager-module-sdk` so other components can compile against its exported
 APIs.  The detailed admission-control architecture -- the model-loading
 policies, the Rust-backed native buffer management, and the paired
-`android.hardware.npu` vendor HAL -- is covered in Chapter 51.
+`android.hardware.npu` vendor HAL -- is covered in Chapter 53.
 
 ### 54.11.3  WebApp Module
 

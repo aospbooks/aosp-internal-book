@@ -2157,18 +2157,21 @@ The NDK camera returns `camera_status_t` error codes:
 | Error Code | Value | Meaning |
 |------------|-------|---------|
 | `ACAMERA_OK` | 0 | Success |
-| `ACAMERA_ERROR_INVALID_PARAMETER` | -10002 | Invalid argument |
-| `ACAMERA_ERROR_CAMERA_DISCONNECTED` | -10004 | Camera disconnected |
-| `ACAMERA_ERROR_NOT_ENOUGH_MEMORY` | -10005 | Memory allocation failure |
-| `ACAMERA_ERROR_METADATA_NOT_FOUND` | -10006 | Metadata key not in result |
-| `ACAMERA_ERROR_CAMERA_DEVICE` | -10007 | Fatal camera device error |
-| `ACAMERA_ERROR_CAMERA_SERVICE` | -10008 | Camera service error |
-| `ACAMERA_ERROR_SESSION_CLOSED` | -10009 | Capture session closed |
-| `ACAMERA_ERROR_CAMERA_IN_USE` | -10013 | Camera already open |
-| `ACAMERA_ERROR_MAX_CAMERAS_IN_USE` | -10014 | Max simultaneous cameras |
-| `ACAMERA_ERROR_CAMERA_DISABLED` | -10015 | Camera disabled by policy |
-| `ACAMERA_ERROR_PERMISSION_DENIED` | -10016 | No camera permission |
-| `ACAMERA_ERROR_UNSUPPORTED_OPERATION` | -10017 | Operation not supported |
+| `ACAMERA_ERROR_UNKNOWN` | -10000 | Unspecified failure (`ACAMERA_ERROR_BASE`) |
+| `ACAMERA_ERROR_INVALID_PARAMETER` | -10001 | Invalid argument |
+| `ACAMERA_ERROR_CAMERA_DISCONNECTED` | -10002 | Camera disconnected |
+| `ACAMERA_ERROR_NOT_ENOUGH_MEMORY` | -10003 | Memory allocation failure |
+| `ACAMERA_ERROR_METADATA_NOT_FOUND` | -10004 | Metadata key not in result |
+| `ACAMERA_ERROR_CAMERA_DEVICE` | -10005 | Fatal camera device error |
+| `ACAMERA_ERROR_CAMERA_SERVICE` | -10006 | Camera service error |
+| `ACAMERA_ERROR_SESSION_CLOSED` | -10007 | Capture session closed |
+| `ACAMERA_ERROR_INVALID_OPERATION` | -10008 | Invalid internal operation |
+| `ACAMERA_ERROR_STREAM_CONFIGURE_FAIL` | -10009 | Stream configuration unsupported |
+| `ACAMERA_ERROR_CAMERA_IN_USE` | -10010 | Camera already open |
+| `ACAMERA_ERROR_MAX_CAMERA_IN_USE` | -10011 | Max simultaneous cameras |
+| `ACAMERA_ERROR_CAMERA_DISABLED` | -10012 | Camera disabled by policy |
+| `ACAMERA_ERROR_PERMISSION_DENIED` | -10013 | No camera permission |
+| `ACAMERA_ERROR_UNSUPPORTED_OPERATION` | -10014 | Operation not supported |
 
 ```
 Source: frameworks/av/camera/ndk/include/camera/NdkCameraError.h
