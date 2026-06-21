@@ -1797,6 +1797,23 @@ Key patterns used in system_server:
 3. **Message priorities**: `Message.setAsynchronous(true)` bypasses sync
    barriers, used for time-critical operations.
 
+`android.os.MessageQueue` is a core OS primitive used everywhere, not specific
+to system_server, so its full treatment belongs in the core threading layer.
+The piece that matters here: Android 17 adds a lock-free reimplementation,
+selected at build time by the `release_package_messagequeue_implementation`
+Soong config. The default `CombinedMessageQueue` variant picks the
+implementation at runtime, falling back to the legacy `synchronized`-guarded
+queue and switching to the concurrent "DeliQueue" (a Treiber stack plus a
+per-looper min-heap, coordinated with `VarHandle` CAS instead of a monitor lock)
+for processes that qualify. Qualification is gated by the compat change
+`USE_NEW_MESSAGEQUEUE` (`@EnabledAfter(targetSdkVersion = BAKLAVA)`, i.e. apps
+targeting SDK 37+) and the `use_concurrent_message_queue_in_apps` aconfig flag,
+and the concurrent path is allowed for system (core-UID) processes such as
+system_server. The source lives in
+`frameworks/base/core/java/android/os/CombinedDeliMessageQueue/MessageQueue.java`
+and `frameworks/base/core/java/android/os/MessageStack.java`, with the legacy
+variant under `frameworks/base/core/java/android/os/LegacyMessageQueue/`.
+
 ### 20.6.6 Binder Threads
 
 In addition to the named threads, `system_server` maintains a pool of

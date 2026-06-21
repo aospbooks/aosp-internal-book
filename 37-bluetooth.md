@@ -2793,6 +2793,14 @@ LE Audio uses ISO (Isochronous) channels instead, which provide:
 - Support for multiple streams
 - Broadcast capability
 
+In Android 17 the audio framework, not the Bluetooth stack, decides when the
+HFP SCO link comes up. The HFP profile (`HeadsetService` and `HeadsetStateMachine`)
+consults `HeadsetSystemInterface.isScoManagedByAudioEnabled()` and, when it is
+set, defers SCO audio start to the audio framework's communication-device routing
+rather than driving it from the profile. The framework side of that handoff -- the deprecated
+`startBluetoothSco()` path, `setCommunicationDevice()`, and the audio HAL
+`IBluetooth.setScoConfig()` call -- is covered in Chapter 15, Section 15.12.
+
 ### 37.7.10 Audio Latency and Quality
 
 Bluetooth audio involves inherent latency from encoding, buffering, and

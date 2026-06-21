@@ -6310,6 +6310,74 @@ import com.android.vcard.VCardComposer;
 import com.android.vcard.VCardConfig;
 ```
 
+### 27.4.15 The Contacts Picker (Android 17)
+
+Reading contacts has historically meant holding `READ_CONTACTS`, which grants an
+app the whole address book even when it needs one phone number. Android 17 adds
+a picker that returns only the contact data the user selects, with no contacts
+permission for the calling app. The contract lives in the framework at
+`frameworks/base/core/java/android/provider/ContactsPickerSessionContract.java`
+and the picker itself is a new system app at `packages/apps/ContactsPicker`. The
+whole API is gated on the `enable_system_contacts_picker` flag (`@FlaggedApi`).
+
+An app starts the picker with `startActivityForResult()` on the
+`ACTION_PICK_CONTACTS` action
+(`"android.provider.action.PICK_CONTACTS"`, line 105 of the contract). The
+required `EXTRA_PICK_CONTACTS_REQUESTED_DATA_FIELDS` extra lists the MIME types
+the app wants (phone, email, postal, and so on, drawn from
+`ContactsContract.CommonDataKinds`); the picker both filters the list to
+contacts that have one of those fields and limits the returned columns to those
+fields. `EXTRA_PICK_CONTACTS_MATCH_ALL_DATA_FIELDS`,
+`EXTRA_PICK_CONTACTS_SELECTION_LIMIT` (default 50, max 100), and the standard
+`EXTRA_ALLOW_MULTIPLE` tune the selection. Only a system app resolves this
+action; the docstring notes that third-party handlers are ignored.
+
+The result is not the contact data itself but a one-time pointer to it. On
+selection the picker app, which does hold `READ_CONTACTS`, resolves the chosen
+rows and inserts a session into the `ContactsPickerSessionProvider`
+(`packages/apps/ContactsPicker` writes through the provider at
+`packages/providers/ContactsProvider/src/com/android/providers/contacts/picker/ContactsPickerSessionProvider.java`).
+That provider stores the selected `ContactsContract.Data` row IDs and the
+requesting app's UID, then returns a session URI of the form
+`content://com.android.contacts.picker.sessions/sessions/<session_id>`. The
+session URI travels back to the caller in the result `Intent` carrying
+`FLAG_GRANT_READ_URI_PERMISSION`, so the caller gets temporary read access to
+exactly that URI and nothing else. Querying the session URI projects rows out of
+the `ContactsContract.Data` table for the selected fields; passing a selection
+or selection arguments throws `UnsupportedOperationException`, since the user has
+already made the selection. Writing the session row is itself protected by the
+`signature|privileged` permission `MANAGE_CONTACTS_PICKER_SESSION`, so only the
+picker can create a session on a requester's behalf.
+
+The following diagram shows the session handoff between the three processes.
+
+```mermaid
+sequenceDiagram
+    participant App as "Calling app (no READ_CONTACTS)"
+    participant Picker as "ContactsPicker (system app)"
+    participant Provider as "ContactsPickerSessionProvider"
+    App->>Picker: "startActivityForResult(ACTION_PICK_CONTACTS, requested fields)"
+    Note over Picker: "User selects contacts"
+    Picker->>Provider: "insert(selected Data row IDs, requester UID)"
+    Provider-->>Picker: "session URI"
+    Picker-->>App: "RESULT_OK + session URI<br/>(FLAG_GRANT_READ_URI_PERMISSION)"
+    App->>Provider: "query(session URI, projection)"
+    Provider-->>App: "Cursor over selected ContactsContract.Data rows"
+```
+
+Sessions are short-lived. `ContactsPickerSessionProvider` schedules a daily
+`ContactsPickerJobService` cleanup that deletes sessions older than 24 hours,
+and an insert prunes the oldest rows once the table reaches `MAX_SESSION_COUNT`
+(5000). Backward compatibility runs through the same picker app: its
+`AndroidManifest.xml` registers intent filters for both `ACTION_PICK_CONTACTS`
+and the legacy `Intent.ACTION_PICK`, and `ContactsPickerAction`
+(`packages/apps/ContactsPicker/src/com/android/contactspicker/config/ContactsPickerAction.kt`)
+records which action launched it. For a legacy `ACTION_PICK` the picker returns
+the old result format (one or more contact content URIs); for
+`ACTION_PICK_CONTACTS` it returns the single session URI described above. An
+existing app that already uses `ACTION_PICK` keeps working unchanged and is
+served by the same UI.
+
 ---
 
 ## 27.5 CalendarProvider
@@ -7986,12 +8054,44 @@ finer-grained checks in
 For the threat model behind end-to-end-encryption key verification, see
 Chapter 40, Security.
 
-## 27.13 Try It Yourself
+## 27.13 PartnerBookmarksProvider: Read-Only OEM Bookmarks
+
+`packages/providers/PartnerBookmarksProvider/` is a small bundled provider that
+exposes a set of default browser bookmarks an OEM or carrier ships with the
+device. The provider class
+(`packages/providers/PartnerBookmarksProvider/src/com/android/providers/partnerbookmarks/PartnerBookmarksProvider.java`)
+lives in the package `com.android.providers.partnerbookmarks` and registers the
+authority `com.android.partnerbookmarks`. A browser reads the partner bookmarks
+once, on first run, through the contract in
+`packages/providers/PartnerBookmarksProvider/src/com/android/providers/partnerbookmarks/PartnerBookmarksContract.java`
+and imports them into its own bookmark store.
+
+It is useful here for two reasons. First, it is read-only: `query()` is
+implemented, but `insert()`, `update()`, and `delete()` all throw
+`UnsupportedOperationException`. A provider does not have to back every CRUD
+verb, and one that only exposes data declares that by refusing the mutating
+calls. Second, the data does not come from a SQLite database at all. The
+provider reads its rows from its own resources, the string-array `bookmarks`
+(alternating title and URL entries) and the `bookmark_preloads` icon array in
+`res/values/`, and serves them back through a `MatrixCursor`. An OEM customizes
+the shipped bookmarks by overlaying those resources rather than by writing to
+the provider.
+
+The contract exposes one table, `bookmarks`, addressed at
+`content://com.android.partnerbookmarks/bookmarks`, whose rows are either a
+bookmark (`BOOKMARK_TYPE_BOOKMARK`) or a folder (`BOOKMARK_TYPE_FOLDER`). The
+import expects a single top-level folder whose `PARENT` is
+`BOOKMARK_PARENT_ROOT_ID`; more than one root-level entry causes the import to
+fail, which keeps a partner's bookmark tree well-formed. Favicons and
+touch-icons ride along as `FAVICON` and `TOUCHICON` blob columns so the browser
+can show them without a network fetch.
+
+## 27.14 Try It Yourself
 
 This section provides hands-on exercises for exploring content providers
 on an AOSP build or emulator.
 
-### 27.13.1 Querying MediaStore from the Shell
+### 27.14.1 Querying MediaStore from the Shell
 
 Use `content` shell command to query MediaProvider:
 
@@ -8011,7 +8111,7 @@ adb shell content query --uri content://media/external/audio/media \
 adb shell content query --uri content://media/external/fs_id
 ```
 
-### 27.13.2 Reading and Writing Settings
+### 27.14.2 Reading and Writing Settings
 
 ```bash
 # Read a system setting
@@ -8032,7 +8132,7 @@ adb shell settings list secure
 adb shell settings list global
 ```
 
-### 27.13.3 Querying Contacts
+### 27.14.3 Querying Contacts
 
 ```bash
 # List all contacts
@@ -8048,7 +8148,7 @@ adb shell content query --uri content://com.android.contacts/data \
     --where "mimetype='vnd.android.cursor.item/phone_v2'"
 ```
 
-### 27.13.4 Querying Calendar Events
+### 27.14.4 Querying Calendar Events
 
 ```bash
 # List all calendars
@@ -8060,7 +8160,7 @@ adb shell content query --uri content://com.android.calendar/events \
     --projection _id:title:dtstart:dtend:calendar_id
 ```
 
-### 27.13.5 Inserting and Deleting Content
+### 27.14.5 Inserting and Deleting Content
 
 ```bash
 # Insert a new contact (raw contact + data)
@@ -8078,7 +8178,7 @@ adb shell content insert --uri content://com.android.contacts/data \
 adb shell content delete --uri content://com.android.contacts/raw_contacts/1
 ```
 
-### 27.13.6 Observing Content Changes
+### 27.14.6 Observing Content Changes
 
 ```bash
 # Watch for changes to the media database
@@ -8093,7 +8193,7 @@ adb shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE \
 # The first terminal should show a notification
 ```
 
-### 27.13.7 Dumping Provider State
+### 27.14.7 Dumping Provider State
 
 ```bash
 # Dump MediaProvider state
@@ -8106,7 +8206,7 @@ adb shell dumpsys activity provider com.android.providers.settings/.SettingsProv
 adb shell dumpsys activity provider com.android.providers.contacts/.ContactsProvider2
 ```
 
-### 27.13.8 Examining the SAF
+### 27.14.8 Examining the SAF
 
 ```bash
 # List DocumentsProvider roots
@@ -8118,7 +8218,7 @@ adb shell content query \
     --uri content://com.android.externalstorage.documents/document/primary%3A/children
 ```
 
-### 27.13.9 Writing a Minimal ContentProvider
+### 27.14.9 Writing a Minimal ContentProvider
 
 Create a simple provider to understand the lifecycle:
 
@@ -8226,7 +8326,7 @@ Register in AndroidManifest.xml:
     android:grantUriPermissions="true" />
 ```
 
-### 27.13.10 Tracing Provider IPC
+### 27.14.10 Tracing Provider IPC
 
 Use system tracing to observe content provider Binder calls:
 
@@ -8250,7 +8350,7 @@ In the trace, you will see:
 3. The actual SQLite query (if the provider uses SQLite)
 4. The cursor serialization back across Binder
 
-### 27.13.11 Inspecting Provider Databases
+### 27.14.11 Inspecting Provider Databases
 
 On a userdebug/eng build, you can directly examine provider databases:
 
@@ -8268,7 +8368,7 @@ adb shell sqlite3 /data/data/com.android.providers.calendar/databases/calendar.d
     "SELECT name FROM sqlite_master WHERE type='table'"
 ```
 
-### 27.13.12 Performance Testing
+### 27.14.12 Performance Testing
 
 Measure content provider query latency:
 
@@ -8353,6 +8453,7 @@ foundations to its concrete implementations.  The key takeaways:
 | `frameworks/base/packages/SettingsProvider/src/.../SettingsProvider.java` | Settings implementation |
 | `frameworks/base/packages/SettingsProvider/src/.../SettingsState.java` | Settings persistence |
 | `frameworks/base/packages/SettingsProvider/src/.../GenerationRegistry.java` | Cache invalidation |
+| `packages/providers/PartnerBookmarksProvider/src/.../PartnerBookmarksProvider.java` | Read-only OEM bookmarks provider |
 
 <!-- chapter:28-notifications -->
 # Chapter 28: Notification System
@@ -10338,13 +10439,38 @@ UI thread. The inflation process:
 4. If inflation fails (e.g., custom view too large), a fallback minimal
    layout is shown.
 
-Memory limits for custom views are enforced to prevent malicious apps from
-causing OOM in SystemUI:
+Memory limits for custom views are enforced to prevent apps from causing OOM
+in SystemUI:
 
 ```kotlin
 // CustomViewMemorySizeExceededException.kt
 // Thrown when a custom RemoteViews exceeds the memory limit
 ```
+
+`NotificationCustomContentMemoryVerifier`
+(`frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/notification/row/NotificationCustomContentMemoryVerifier.kt`)
+implements the check. After a custom view is inflated, `satisfiesMemoryLimits()`
+walks the view hierarchy and sums the byte size of every `ImageView`'s drawable
+(`computeViewHierarchyImageViewSize()`); bitmaps count their
+`allocationByteCount`, other drawables are estimated as `width * height * 4`.
+Two thresholds, both read from `config.xml`, govern the outcome:
+
+| Threshold | Config integer | Default | Effect |
+|-----------|----------------|---------|--------|
+| Warn | `config_notificationWarnRemoteViewSizeBytes` | 2,000,000 (~2 MB) | Logs a warning; notification still posts |
+| Strip | `config_notificationStripRemoteViewSizeBytes` | 5,000,000 (~5 MB) | Notification dropped for apps targeting SDK 37 (warning only otherwise; see SDK gate below) |
+
+Android 17 (SDK 37) makes the strip threshold enforceable. For apps targeting
+SDK 37 (`Build.VERSION_CODES.CINNAMON_BUN`) a custom view that exceeds the strip
+limit causes the notification to be dropped; apps targeting an earlier SDK only
+get a logcat warning that the notification "WILL be dropped when targetSdk is set
+to" SDK 37. The gate is the compatibility change
+`CHECK_SIZE_OF_INFLATED_CUSTOM_VIEWS` (`@EnabledAfter(targetSdkVersion =
+Build.VERSION_CODES.BAKLAVA)`,
+`frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/notification/row/NotificationCustomContentCompat.java`),
+checked per UID with `CompatChanges.isChangeEnabled(...)`. The whole check is
+also held behind the `notification_custom_view_uri_restriction` aconfig flag, so
+it is inert until both the flag and the per-app target SDK gate are satisfied.
 
 ### 28.9.11 Swipe to Dismiss
 
@@ -30597,10 +30723,26 @@ bool prepareKeyForUse(const KeyBuffer& lt_key, android::fscrypt::KeyType type,
                       KeyBuffer* kernel_key);
 ```
 
-The wrapping itself is performed by `generateWrappedStorageKey()` and
-`exportWrappedStorageKey()`, which Android 17 moved out of `KeyStorage.cpp`
-and made file-local `static` helpers inside `system/vold/KeyUtil.cpp` (they
-are no longer exported through a header).  They call into the Keystore HAL.
+`generateStorageKey()` and `prepareKeyForUse()` dispatch on the `KeyType`, and
+the two wrapped formats take different routes in Android 17.  The legacy
+`kHwWrappedV0` format still goes through KeyMint: `generateV0WrappedStorageKey()`
+asks Keystore to generate an AES key tagged `TAG_STORAGE_KEY`, and
+`prepareV0WrappedKeyForUse()` calls `Keystore::exportKey()`, which invokes
+`convertStorageKeyToEphemeral()` on the security level to re-wrap the long-term
+blob with a fresh ephemeral wrapping key
+(`system/vold/Keystore.cpp`, lines 153-179).
+
+The newer `kHwWrapped` format drops KeyMint entirely and uses Linux kernel block
+ioctls instead.  `generateWrappedStorageKey()` opens the userdata block device
+and issues `BLKCRYPTOGENERATEKEY` to produce the long-term key, and
+`prepareWrappedKeyForUse()` issues `BLKCRYPTOPREPAREKEY` to turn it into the
+ephemeral key the kernel programs into the inline engine
+(`system/vold/KeyUtil.cpp`, lines 81-199).  This is the same path the upstream
+kernel uses for hardware-wrapped inline encryption keys, so it no longer needs a
+KeyMint round-trip.  Both ioctls operate on the main userdata block device, with
+the long-term key capped at `BLK_CRYPTO_MAX_HW_WRAPPED_KEY_SIZE` (128 bytes as of
+kernel v6.17).
+
 A separate binding seed can be mixed into all stored keys via
 `setKeyStorageBindingSeed()`, still declared in `system/vold/KeyStorage.h`:
 

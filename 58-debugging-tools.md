@@ -4743,19 +4743,118 @@ Looper and `MessageQueue` dispatch.
 
 ---
 
-## 58.24 Try It: Debug a Real Performance Issue
+## 58.24 DeviceDiagnostics: On-Device Hardware Health
+
+The tools so far in this chapter inspect software state. DeviceDiagnostics
+(`packages/apps/DeviceDiagnostics/`, package `com.android.devicediagnostics`)
+inspects the hardware itself. It is the app behind **System > Reset options >
+Device Diagnostics**: a Settings preference launches its `MainActivity`, and
+from there the user runs component checks and produces a signed report of the
+device's physical condition. The app is aimed at refurbishment and trade-in:
+it answers "is this screen, battery, and storage still good, and is this the
+device it claims to be" rather than "why is this app slow."
+
+### 58.24.1 Two Entry Paths
+
+`MainActivity` (a `CollapsingToolbarBaseActivity` rendering
+`res/xml/preferences_main.xml`) offers two top-level paths:
+
+- **Component health** (`DiagnosticsActivity`, `diagnostics_landing.xml`) runs
+  on-device checks: a manual **screen test** and **touch test** (the
+  `evaluated/ScreenTest*` and `TouchTest*` activities walk the user through
+  full-screen patterns and a touch grid), plus read-only **Battery** and
+  **Storage** detail screens (`BatteryActivity`, `StorageActivity`).
+- **Evaluation mode** (`EvaluationModeActivity`) is the attested, two-device
+  flow used when grading a device for trade-in. It pairs over Bluetooth and
+  exchanges QR codes between the device under test and a trusted verifier
+  device (the `trusted/` activities), and it is only offered when Bluetooth is
+  enabled.
+
+### 58.24.2 The DeviceReport and Key Attestation
+
+The hardware facts the app collects are gathered by the helpers in
+`DeviceDiagnosticsLib/src/main/java/com/android/devicediagnostics/evaluated/`
+(battery, storage, camera, hinge, sensor, screen, lock, product) into a single
+`DeviceReport` protobuf defined in
+`DeviceDiagnosticsLib/src/main/proto/diagnostics.proto`. The report carries
+fields a buyer cares about: battery `cycle_count` and `state_of_health`,
+storage `useful_lifetime_remaining`, hinge fold counts, moisture-intrusion
+sensor state, factory-reset-protection status, and the screen/touch test
+results.
+
+To make the report trustworthy, it embeds a **key attestation** certificate
+chain from the device's keystore. `AttestationController` sends the attestation
+record (with a caller-supplied challenge) to a verifier that parses it as a
+`ParsedAttestationRecord` and validates the chain over the network; a
+self-check may soft-fail the network step, but a graded device must verify.
+This is what lets a remote party trust that the report came from genuine,
+non-rooted hardware rather than a spoofing app.
+
+```mermaid
+graph TB
+    MAIN["MainActivity<br/>(preferences_main)"]
+    DIAG["DiagnosticsActivity<br/>(component health)"]
+    EVAL["EvaluationModeActivity<br/>(trade-in / trusted)"]
+    TESTS["evaluated/* tests<br/>(screen, touch, battery,<br/>storage, sensors, hinge)"]
+    REPORT["DeviceReport protobuf<br/>(diagnostics.proto)"]
+    ATT["AttestationController<br/>(key attestation + verify)"]
+    CP["Content providers<br/>(GetStatus / Evaluate / TradeInMode)"]
+
+    MAIN --> DIAG
+    MAIN --> EVAL
+    DIAG --> TESTS
+    EVAL --> TESTS
+    TESTS --> REPORT
+    REPORT --> ATT
+    REPORT --> CP
+```
+
+### 58.24.3 Trade-In Mode and Privileged Surfaces
+
+Three exported content providers expose the report and the trade-in workflow to
+privileged callers rather than to ordinary apps. `GetStatusContentProvider`
+returns the assembled `DeviceReport` as a single-row cursor, rendered to JSON by
+`DeviceReportJsonFormatter`, and is guarded by `READ_PRIVILEGED_PHONE_STATE`.
+`EvaluateContentProvider` and `TradeInModeTestingContentProvider` drive the
+evaluation flow and are guarded by the `ENTER_TRADE_IN_MODE` permission.
+
+Trade-in mode itself lives in the separate `tradeinmode/` component: a
+`tradeinmode` Java command-line tool (a `java_binary` whose `main_class` is
+`com.android.devicediagnostics.commands.Commands`) plus an `AttestationCli`,
+keyed off the `persist.adb.tradeinmode` system property. The shipped
+`tradeinmode.rc` does not launch that command; it gates `adbd` on the
+property, stopping `adbd` when `persist.adb.tradeinmode` is `-1` on a
+non-debuggable build so the device cannot fall back to a normal shell. It lets a device be
+placed into a restricted state where a kiosk or partner can read the
+attested diagnostic report over adb without unlocking the device. The bulk of
+the UI and collection logic is built as a reusable `DeviceDiagnosticsLib`
+Android library, with `app/` and `tradeinmode/` as the shipping artifacts.
+
+| Component | Path |
+|-----------|------|
+| App entry / landing | `packages/apps/DeviceDiagnostics/DeviceDiagnosticsLib/src/main/java/com/android/devicediagnostics/MainActivity.kt` |
+| Component-health landing | `.../DiagnosticsActivity.kt`, `res/xml/diagnostics_landing.xml` |
+| Hardware collectors | `.../evaluated/` (BatteryUtilities, StorageUtilities, CameraUtilities, HingeUtilities, SensorUtilities, ScreenUtilities, LockUtilities) |
+| Report schema | `.../proto/diagnostics.proto` |
+| Attestation | `.../AttestationController.kt`, `.../trusted/` |
+| Privileged providers | `.../GetStatusContentProvider.kt`, `.../EvaluateContentProvider.kt`, `.../TradeInModeTestingContentProvider.kt` |
+| Trade-in command | `packages/apps/DeviceDiagnostics/tradeinmode/` |
+
+---
+
+## 58.25 Try It: Debug a Real Performance Issue
 
 This section walks through a complete debugging workflow for a realistic
 performance problem: an application that exhibits jank (dropped frames)
 during list scrolling.
 
-### 58.24.1 Problem Statement
+### 58.25.1 Problem Statement
 
 A user reports that a RecyclerView-based application stutters when scrolling
 quickly.  The app displays a list of items with images and text.  The
 stutter is reproducible on a Pixel device.
 
-### 58.24.2 Step 1: Confirm the Problem with gfxinfo
+### 58.25.2 Step 1: Confirm the Problem with gfxinfo
 
 ```bash
 # Reset frame stats
@@ -4784,7 +4883,7 @@ HISTOGRAM:
 The 16.63% jank rate confirms the problem.  For smooth 60fps scrolling,
 frame rendering must complete within 16.67ms.
 
-### 58.24.3 Step 2: Capture a Perfetto System Trace
+### 58.25.3 Step 2: Capture a Perfetto System Trace
 
 ```bash
 # Create trace config
@@ -4837,7 +4936,7 @@ adb shell perfetto -c /data/local/tmp/scroll_trace.pbtxt \
 adb pull /data/misc/perfetto-traces/scroll_trace.perfetto-trace .
 ```
 
-### 58.24.4 Step 3: Analyze in Perfetto UI
+### 58.25.4 Step 3: Analyze in Perfetto UI
 
 Open the trace in `ui.perfetto.dev` or Perfetto embedded in Android Studio.
 
@@ -4867,7 +4966,7 @@ flowchart TD
     O -- "Complex layout" --> R["Simplify layout hierarchy"]
 ```
 
-### 58.24.5 Step 4: CPU Profile the Hot Path
+### 58.25.5 Step 4: CPU Profile the Hot Path
 
 The Perfetto trace shows that `onBindViewHolder` is taking 25ms on some
 frames.  Let us use simpleperf to understand why:
@@ -4899,7 +4998,7 @@ Overhead  Command     Shared Object       Symbol
 The CPU profile reveals that JPEG decompression (`jpeg_decompress()`) is
 happening synchronously on the main thread during view binding.
 
-### 58.24.6 Step 5: Check for Memory Issues
+### 58.25.6 Step 5: Check for Memory Issues
 
 The GC activity in the trace suggests memory pressure.  Let us profile
 allocations:
@@ -4948,7 +5047,7 @@ LIMIT 10;
 **Expected finding**: Large allocations from bitmap decoding during each
 scroll event.
 
-### 58.24.7 Step 6: Verify with dumpsys meminfo
+### 58.25.7 Step 6: Verify with dumpsys meminfo
 
 ```bash
 # Before scrolling
@@ -4976,7 +5075,7 @@ Total PSS:         35,678    48,321   +12,643 KB
 The significant growth in both Java and Native heap during scrolling
 confirms that images are being decoded and not properly cached.
 
-### 58.24.8 Step 7: Root Cause and Fix
+### 58.25.8 Step 7: Root Cause and Fix
 
 The debugging workflow reveals:
 
@@ -5004,7 +5103,7 @@ flowchart LR
     D --> E
 ```
 
-### 58.24.9 Step 8: Verify the Fix
+### 58.25.9 Step 8: Verify the Fix
 
 After implementing the fix, re-run the same measurements:
 
@@ -5032,7 +5131,7 @@ The Perfetto trace should show:
 - No GC pauses during scroll
 - Smooth Choreographer frame cadence
 
-### 58.24.10 Debugging Checklist
+### 58.25.10 Debugging Checklist
 
 Use this checklist when debugging performance issues:
 

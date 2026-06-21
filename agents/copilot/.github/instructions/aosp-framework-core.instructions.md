@@ -1819,6 +1819,23 @@ Key patterns used in system_server:
 3. **Message priorities**: `Message.setAsynchronous(true)` bypasses sync
    barriers, used for time-critical operations.
 
+`android.os.MessageQueue` is a core OS primitive used everywhere, not specific
+to system_server, so its full treatment belongs in the core threading layer.
+The piece that matters here: Android 17 adds a lock-free reimplementation,
+selected at build time by the `release_package_messagequeue_implementation`
+Soong config. The default `CombinedMessageQueue` variant picks the
+implementation at runtime, falling back to the legacy `synchronized`-guarded
+queue and switching to the concurrent "DeliQueue" (a Treiber stack plus a
+per-looper min-heap, coordinated with `VarHandle` CAS instead of a monitor lock)
+for processes that qualify. Qualification is gated by the compat change
+`USE_NEW_MESSAGEQUEUE` (`@EnabledAfter(targetSdkVersion = BAKLAVA)`, i.e. apps
+targeting SDK 37+) and the `use_concurrent_message_queue_in_apps` aconfig flag,
+and the concurrent path is allowed for system (core-UID) processes such as
+system_server. The source lives in
+`frameworks/base/core/java/android/os/CombinedDeliMessageQueue/MessageQueue.java`
+and `frameworks/base/core/java/android/os/MessageStack.java`, with the legacy
+variant under `frameworks/base/core/java/android/os/LegacyMessageQueue/`.
+
 ### 20.6.6 Binder Threads
 
 In addition to the named threads, `system_server` maintains a pool of
@@ -11622,6 +11639,64 @@ If the activity declared `android:configChanges` in its manifest for the
 changed configuration fields, it receives `onConfigurationChanged()` instead
 of being destroyed and recreated.
 
+**Android 17: fewer default relaunches.** For apps targeting SDK 37
+(`Build.VERSION_CODES.CINNAMON_BUN`), the system stops recreating an activity by
+default for a set of low-impact configuration changes:
+`CONFIG_KEYBOARD`, `CONFIG_KEYBOARD_HIDDEN`, `CONFIG_NAVIGATION`,
+`CONFIG_TOUCHSCREEN`, and `CONFIG_COLOR_MODE`. Before this change an app
+had to list each of these in `android:configChanges` to avoid a relaunch; now
+the no-relaunch behavior is the default and an app opts *back into* recreation
+with the new `android:recreateOnConfigChanges` manifest attribute. The attribute
+is parsed alongside `configChanges`: at parse time the effective handled-config
+mask is `configChanges | ((~recreateOnConfigChanges) & RECREATE_ON_CONFIG_CHANGES_MASK)`,
+so any bit the app did *not* name in `recreateOnConfigChanges` is treated as
+handled (no relaunch).
+
+```java
+// frameworks/base/core/java/com/android/internal/pm/pkg/component/ParsedActivityUtils.java
+public static final int RECREATE_ON_CONFIG_CHANGES_MASK =
+        ActivityInfo.CONFIG_MCC | ActivityInfo.CONFIG_MNC
+                | (shouldSkipActivityRecreationOnConfigChange() ? (ActivityInfo.CONFIG_KEYBOARD
+                | ActivityInfo.CONFIG_KEYBOARD_HIDDEN | ActivityInfo.CONFIG_NAVIGATION
+                | ActivityInfo.CONFIG_TOUCHSCREEN | ActivityInfo.CONFIG_COLOR_MODE)
+                : 0);
+```
+
+`shouldSkipActivityRecreationOnConfigChange()` gates the new bits on two things:
+the window flag `enable_less_activity_recreation_on_config_change` and the
+compat change `ActivityInfo.SKIP_ACTIVITY_RECREATION_ON_CONFIG_CHANGE`
+(`454795633L`, declared `@Overridable`). The `CONFIG_MCC`/`CONFIG_MNC` defaults
+predate this and apply regardless.
+
+`CONFIG_UI_MODE` is deliberately *not* in this mask. Desk docking is handled by
+a separate runtime path on the client. When a configuration change arrives,
+`ActivityThread.handleActivityConfigurationChanged()` calls
+`shouldSkipActivityRelaunchWhenDocking()` and `onlyDeskInUiModeChanged()`; if the
+only `uiMode` change is into or out of `UI_MODE_TYPE_DESK`, it ORs
+`CONFIG_UI_MODE` into the activity's `handledConfigChanges` for that one decision
+so the activity gets `onConfigurationChanged()` instead of a relaunch. This is a
+per-event runtime suppression in the client process, not a parse-time mask bit,
+so it stays independent of `recreateOnConfigChanges`.
+
+There is a correctness guard on the server side.
+`AppCompatRecreateOnConfigChangePolicy` (in the `wm` package) inspects the
+package's resources and re-adds a config bit to the recreate mask when the app
+actually ships alternate resources qualified by that config. It only ever
+re-adds the five bits the skip set covers, so it looks for the matching
+qualifiers: a keyboard-hidden directory like `-keyshidden`, or a color-mode one
+like `-widecg`. (`-night` is a `uiMode` qualifier, not `colorMode`, so it does
+not trigger this policy.) The reasoning is that an activity which loads
+keyboard- or color-mode-specific resources still needs a fresh `onCreate()` to
+pick up the right ones, so skipping the relaunch only happens when there is
+nothing config-specific to reload.
+
+**Source:** `frameworks/base/core/res/res/values/attrs_manifest.xml` (the
+`recreateOnConfigChanges` attr), `frameworks/base/core/java/android/content/pm/ActivityInfo.java`,
+`frameworks/base/services/core/java/com/android/server/wm/AppCompatRecreateOnConfigChangePolicy.java`,
+`frameworks/base/core/java/android/app/ActivityThread.java` (the desk-docking
+runtime suppression, `shouldSkipActivityRelaunchWhenDocking()` /
+`onlyDeskInUiModeChanged()`).
+
 ---
 
 ## 22.15 Advanced: ANR Detection in the Activity System
@@ -12880,6 +12955,119 @@ Per-display desktop layout survives across sessions through
 (`frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/desktopmode/data/persistence/DesktopPersistentRepository.kt`),
 which serializes the in-memory `DesktopRepository` state to a DataStore-backed
 protobuf so reconnecting a monitor restores its desks and window bounds.
+
+### 22.32.5 SDK 37: No Orientation or Resizability Opt-Out on Large Screens
+
+Large-screen devices already ignore an app's orientation request by default.
+A `DisplayContent` whose smallest width is at least
+`WindowManager.LARGE_SCREEN_SMALLEST_SCREEN_WIDTH_DP` (600dp) returns `true`
+from `getIgnoreOrientationRequest()` unless that behavior was turned off:
+
+```java
+// frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java, line 7195
+boolean getIgnoreOrientationRequest() {
+    if (mHasSetIgnoreOrientationRequest) {
+        return super.getIgnoreOrientationRequest();
+    }
+    // Large screen (sw >= 600dp) ignores orientation request by default.
+    return isLargeScreen() && !mWmService.isIgnoreOrientationRequestDisabled();
+}
+```
+
+When the display ignores orientation requests, the values an app sets through
+`screenOrientation` in the manifest and `setRequestedOrientation()` at runtime
+do not change the window's orientation. What apps could still do, until
+Android 17, was opt out of the matching *resizability* restriction with the
+package property `android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY`,
+which let a non-resizable activity (`resizeableActivity="false"`, or a fixed
+`minAspectRatio`/`maxAspectRatio`) keep its compatibility sizing instead of
+being treated as universally resizable.
+
+For apps targeting SDK 37 (`Build.VERSION_CODES.CINNAMON_BUN`), that opt-out is
+disabled. `AppCompatResizeOverrides` carries the compat change:
+
+```java
+// frameworks/base/services/core/java/com/android/server/wm/AppCompatResizeOverrides.java, line 53
+@ChangeId
+@EnabledAfter(targetSdkVersion = Build.VERSION_CODES.BAKLAVA)
+static final long DISABLE_OPT_OUT_UNIVERSAL_RESIZABLE_BY_DEFAULT = 447301631L;
+```
+
+`@EnabledAfter(BAKLAVA)` (SDK 36) means the change activates for apps targeting
+SDK 37 and above. When it is enabled, `allowRestrictedResizability()` returns
+`false` before it ever reads the package property, so
+`PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY` has no effect. The activity is
+treated as universally resizable on large screens, and its `resizeableActivity`,
+`minAspectRatio`, and `maxAspectRatio` declarations stop constraining the window
+the way they did on older target SDKs. Combined with the existing
+`getIgnoreOrientationRequest()` default above, an SDK-37 app on a >600dp display
+no longer controls either its orientation or its resizability through the
+manifest and runtime knobs it used before.
+
+This is the WM-core side of the form-factor work covered in Chapter 62; the
+aspect-ratio and letterboxing policies that decide how a window is finally sized
+live in the sibling `AppCompat*` classes (`AppCompatAspectRatioPolicy`,
+`AppCompatAspectRatioOverrides`, `AppCompatOrientationPolicy`) in the same `wm`
+package.
+
+### 22.32.6 RRO-Tunable App-Compat Knobs: Camera Compat and Self-Kill Recovery
+
+Some app-compat behavior is left for an OEM to tune per device through an
+overlay or runtime resource overlay (RRO) rather than a compile-time decision.
+`AppCompatConfiguration` reads several boolean resources from
+`frameworks/base/core/res/res/values/config.xml` at construction, so an overlay
+that redefines those booleans changes the behavior without touching framework
+code. Three of them control treatments that matter on large screens and
+foldables.
+
+The first two govern the *simulate requested orientation* camera-compat
+treatment. When a fixed-orientation activity opens the camera on a display that
+ignores orientation requests, the camera sensor buffer and the app window can
+disagree about which way is up, which shows as a sideways or stretched
+viewfinder. `AppCompatCameraSimReqOrientationPolicy` letterboxes the activity to
+its expected orientation and adjusts the camera and display rotation signals to
+match what the app would see on a portrait phone. Two resources gate it:
+
+```xml
+<!-- frameworks/base/core/res/res/values/config.xml, line 6781, 6789 -->
+<bool name="config_isCameraCompatSimulateRequestedOrientationTreatmentEnabled">true</bool>
+<bool name="config_isCameraCompatSimReqOrientationLandscapeTreatmentEnabled">false</bool>
+```
+
+`AppCompatConfiguration` reads both at line 394 into
+`mIsCameraCompatSimReqOrientationTreatmentEnabled` and
+`mIsCameraCompatLandscapeTreatmentEnabled`. The first is the master switch for
+the treatment, queried through `isCameraCompatSimReqOrientationTreatmentEnabled()`
+and folded into `isAnyCameraCompatTreatmentEnabled()`. The second extends the
+treatment to landscape cameras (apps that hardcode a portrait sensor): per the
+`isCameraCompatLandscapeTreatmentEnabled()` doc comment, it only takes effect
+when the first resource is also true, since the same policy applies both. An OEM
+whose camera HAL already returns correctly oriented buffers can turn the
+treatment off in an overlay; a device with landscape sensors can opt into the
+landscape variant.
+
+The third resource controls *self-kill recovery* during display moves.
+`AppCompatDisplayCompatPolicy` detects apps that finish themselves when they
+receive a configuration change while moving between displays and relaunches them
+on the new display to keep the session alive. A move between two internal
+displays (the fold/unfold transition on a foldable) is normally exempt, because
+the two physical panels usually share most of their configuration. When the two
+panels differ enough (for example in density) that the exemption causes
+problems, an OEM can remove it:
+
+```xml
+<!-- frameworks/base/core/res/res/values/config.xml, line 3553 -->
+<bool name="config_enableSelfKillRecoveryBetweenInternalDisplays">false</bool>
+```
+
+`onMovedToDisplay()` short-circuits when both the previous and new display are
+`TYPE_INTERNAL`, unless
+`AppCompatConfiguration.isSelfKillRecoveryBetweenInternalDisplaysEnabled()`
+(backed by this resource) returns true, in which case the fold transition runs
+through the same `SelfKillStateMachine` as a move to an external monitor. The
+same policy class also names a Computer Control compat mode for moves to or from
+a virtual Computer Control display, on top of the display-compat mode used for
+games.
 
 ---
 

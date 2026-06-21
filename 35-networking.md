@@ -2243,7 +2243,51 @@ static const std::vector<const char*> FILTER_OUTPUT = {
 };
 ```
 
-### 35.8.10 Default Security Behavior by Target SDK
+### 35.8.10 The usesCleartextTraffic Manifest Flag Is Deprecated in Android 17
+
+The manifest attribute `android:usesCleartextTraffic` is the older, coarser
+control: a single boolean on `<application>` that the runtime folds into the
+default `NetworkSecurityConfig` when the app ships no XML config of its own.
+Android 17 (`CINNAMON_BUN`, API 37) begins deprecating it in favor of the
+Network Security Config XML.
+
+The change is wired as a compatibility change plus an aconfig flag. The
+`network_security` flag `deprecate_uses_cleartext_traffic2`
+(`frameworks/base/core/java/android/security/flags.aconfig`) is described as
+"the XML application flag usesCleartextTraffic is ignored for targetSdk version
+C+". The matching `@ChangeId` lives in `ManifestConfigSource`:
+
+```java
+// frameworks/base/packages/NetworkSecurityConfig/platform/src/android/security/net/config/ManifestConfigSource.java
+@ChangeId
+@Disabled
+static final long DEPRECATE_USES_CLEARTEXT_TRAFFIC = 415007211L;
+```
+
+When the config source builds the default config for an app with no XML, it
+reads the manifest flag and then zeroes it out if both the change and the
+aconfig flag are on:
+
+```java
+boolean usesCleartextTraffic =
+        (mApplicationInfo.flags & ApplicationInfo.FLAG_USES_CLEARTEXT_TRAFFIC) != 0
+        && !mApplicationInfo.isInstantApp();
+if (CompatChanges.isChangeEnabled(DEPRECATE_USES_CLEARTEXT_TRAFFIC) &&
+    deprecateUsesCleartextTraffic2()) {
+    usesCleartextTraffic = false;
+}
+```
+
+For an affected app, the manifest attribute is treated as `false` regardless of
+its declared value. An app that still needs cleartext for specific hosts must
+say so in a Network Security Config (a `<domain-config cleartextTrafficPermitted=
+"true">` for those hosts), which is the more granular and auditable mechanism the
+deprecation pushes apps toward. `DEFAULT_CLEARTEXT_TRAFFIC_PERMITTED` itself is
+unchanged (still `true`), so the default-deny-by-target-SDK behavior in the table
+below is what governs apps that supply neither the manifest flag nor an XML
+config.
+
+### 35.8.11 Default Security Behavior by Target SDK
 
 | Target SDK | Cleartext | User CAs | CT Required |
 |-----------|-----------|----------|------------|
@@ -2251,6 +2295,7 @@ static const std::vector<const char*> FILTER_OUTPUT = {
 | 24-27 | Allowed | Not trusted | No |
 | 28+ (Android 9) | Blocked | Not trusted | No |
 | 36+ (BAKLAVA) | Blocked | Not trusted | Yes (default) |
+| 37+ (CINNAMON_BUN) | Blocked | Not trusted | Yes; `usesCleartextTraffic` manifest flag ignored |
 
 ---
 
@@ -4999,9 +5044,114 @@ traffic it never wanted.
 
 ---
 
-## 35.31 Try It: Network Debugging
+## 35.31 Wi-Fi RTT and 802.11az Secure Ranging
 
-### 35.31.1 dumpsys connectivity
+Wi-Fi RTT (Round-Trip Time) lets a device measure its distance to a Wi-Fi
+access point or to another device by timing the fine-timing-measurement (FTM)
+frame exchange defined by IEEE 802.11mc. The API has existed since Android 9:
+an app builds a `RangingRequest`, submits it through `WifiRttManager`, and gets
+back a list of `RangingResult` objects carrying a distance in millimetres and a
+distance standard deviation. Android 17 keeps that API and adds support for the
+newer IEEE 802.11az ranging amendment, including its secure variant.
+
+The framework classes live in the Wifi mainline module under
+`packages/modules/Wifi/framework/java/android/net/wifi/rtt/`.
+
+### 35.31.1 The Ranging Request Path
+
+`WifiRttManager`
+(`packages/modules/Wifi/framework/java/android/net/wifi/rtt/WifiRttManager.java`)
+is obtained from `Context.getSystemService(WifiRttManager.class)` and gated on
+the `android.hardware.wifi.rtt` feature. A ranging request names its peers two
+ways:
+
+- By `ScanResult` (or `ResponderConfig`), to range against an access point.
+- By `PeerHandle`, to range against another Wi-Fi Aware (NAN) peer. The
+  `PeerHandle` is the same opaque Aware peer identifier described in the Aware
+  material earlier in this chapter; ranging reuses it so an app that has already
+  discovered a peer over Aware can measure distance to it without a separate
+  association.
+
+`ResponderConfig`
+(`.../rtt/ResponderConfig.java`) describes one peer. For 802.11az it gains a
+`supports80211azNtb` field with `is80211azNtbSupported()` / Builder
+`set80211azNtbSupported()` (NTB = non-trigger-based ranging), plus
+`getPeerHandle()` / `setPeerHandle()` for the Aware case and a
+`getSecureRangingConfig()` accessor. The `fromScanResult()` factory inspects the
+scan result's capabilities and, when it sees PASN support, fills in a secure
+configuration automatically.
+
+### 35.31.2 802.11az Secure Ranging: PASN and Frame Protection
+
+The 802.11mc exchange is unauthenticated, so a nearby attacker can spoof FTM
+frames and lie about distance. 802.11az adds Pre-Association Security
+Negotiation (PASN): the two devices run a lightweight authenticated key
+exchange before ranging, then protect the ranging frames. Android 17 exposes
+this through two new classes, both guarded by the `secure_ranging` aconfig flag
+(`packages/modules/Wifi/flags/wifi_flags.aconfig`):
+
+- `SecureRangingConfig` (`.../rtt/SecureRangingConfig.java`) carries the
+  per-session security options: `isSecureHeLtfEnabled()` (encrypted HE-LTF
+  Long Training Fields, which prevent an observer from replaying the ranging
+  waveform), `isRangingFrameProtectionEnabled()`, and the `PasnConfig` to use.
+- `PasnConfig` (`.../rtt/PasnConfig.java`) holds the authentication parameters:
+  a set of base AKMs (`AKM_PASN`, `AKM_SAE`, `AKM_FT_*`, `AKM_FILS_*`) and
+  pairwise ciphers (`CIPHER_CCMP_128`, `CIPHER_GCMP_256`, and so on), an
+  optional password or SSID, and a PASN comeback cookie. The static helpers
+  `getBaseAkmsFromCapabilities()` and `getCiphersFromCapabilities()` derive the
+  AKM and cipher bitmasks from a scan result's capability string.
+
+The PASN key cache is what lets repeated ranging sessions skip the full
+handshake: when the responder cannot immediately admit a requester it returns a
+*comeback cookie* and a back-off delay, which the requester echoes on its next
+attempt. `RangingResult` surfaces both through `getPasnComebackCookie()` and
+`getPasnComebackAfterMillis()`, alongside `isRangingAuthenticated()`,
+`isRangingFrameProtected()`, and `isSecureHeLtfEnabled()` so the caller can tell
+whether a given measurement was actually secured.
+
+### 35.31.3 Choosing a Security Mode
+
+`RangingRequest`
+(`.../rtt/RangingRequest.java`) gains a security mode that the requester sets
+with `Builder.setSecurityMode()`:
+
+| Mode | Behavior |
+|------|----------|
+| `SECURITY_MODE_OPEN` | Plain 802.11mc/az ranging, no authentication |
+| `SECURITY_MODE_OPPORTUNISTIC` | Use secure ranging when both peers support it, otherwise fall back to open |
+| `SECURITY_MODE_SECURE_AUTH` | Require authenticated PASN with a base AKM; drop peers that cannot do it |
+
+`WifiRttManager.getRttCharacteristics()` advertises what the local radio can do
+through new boolean keys: `CHARACTERISTICS_KEY_BOOLEAN_NTB_INITIATOR`,
+`CHARACTERISTICS_KEY_BOOLEAN_SECURE_HE_LTF_SUPPORTED`,
+`CHARACTERISTICS_KEY_BOOLEAN_RANGING_FRAME_PROTECTION_SUPPORTED`, and an integer
+`CHARACTERISTICS_KEY_INT_MAX_SUPPORTED_SECURE_HE_LTF_PROTO_VERSION`. An app can
+read these once and decide whether to ask for `SECURITY_MODE_SECURE_AUTH` or
+settle for opportunistic security.
+
+The decision path for a single peer:
+
+```mermaid
+flowchart TD
+    A["RangingRequest with peer + security mode"] --> B["WifiRttManager.startRanging()"]
+    B --> C{"Security mode?"}
+    C -->|"SECURE_AUTH"| D{"Peer supports PASN?"}
+    D -->|No| E["Drop peer from request"]
+    D -->|Yes| F["PASN authenticated key exchange"]
+    C -->|"OPPORTUNISTIC"| G{"Peer supports PASN?"}
+    G -->|Yes| F
+    G -->|No| H["Open 802.11mc/az FTM"]
+    C -->|"OPEN"| H
+    F --> I["Protected FTM with secure HE-LTF"]
+    I --> J["RangingResult: authenticated, frame-protected"]
+    H --> K["RangingResult: distance only"]
+```
+
+---
+
+## 35.32 Try It: Network Debugging
+
+### 35.32.1 dumpsys connectivity
 
 The most powerful tool for debugging Android networking is `dumpsys connectivity`.
 It provides a comprehensive snapshot of the entire connectivity state.
@@ -5057,7 +5207,7 @@ NetworkRequest [ REQUEST id=1, [ Capabilities: INTERNET&NOT_RESTRICTED
 
 3. **Default network**: The currently selected default network
 
-### 35.31.2 dumpsys wifi
+### 35.32.2 dumpsys wifi
 
 ```bash
 # Full Wi-Fi dump
@@ -5076,7 +5226,7 @@ Key information in the Wi-Fi dump:
 - SoftAP state
 - Connection history and failure reasons
 
-### 35.31.3 dumpsys netd
+### 35.32.3 dumpsys netd
 
 ```bash
 # netd status
@@ -5091,7 +5241,7 @@ adb shell iptables -L -v -n
 adb shell ip6tables -L -v -n
 ```
 
-### 35.31.4 DNS Debugging
+### 35.32.4 DNS Debugging
 
 ```bash
 # DNS resolver state
@@ -5105,7 +5255,7 @@ adb shell settings get global private_dns_mode
 adb shell settings get global private_dns_specifier
 ```
 
-### 35.31.5 Network Diagnostics Commands
+### 35.32.5 Network Diagnostics Commands
 
 ```bash
 # Check connectivity
@@ -5131,7 +5281,7 @@ adb shell cat /proc/net/tcp6
 adb shell cat /proc/net/dev
 ```
 
-### 35.31.6 ConnectivityDiagnosticsManager
+### 35.32.6 ConnectivityDiagnosticsManager
 
 For programmatic network diagnostics, Android provides the
 `ConnectivityDiagnosticsManager` API:
@@ -5171,7 +5321,7 @@ cdm.registerConnectivityDiagnosticsCallback(
         });
 ```
 
-### 35.31.7 Simulating Network Conditions
+### 35.32.7 Simulating Network Conditions
 
 For testing, Android provides several tools to simulate network conditions:
 
@@ -5195,7 +5345,7 @@ adb shell settings put global captive_portal_mode 1  # Enable (prompt)
 adb shell dumpsys connectivity --diag
 ```
 
-### 35.31.8 Reading BPF Maps
+### 35.32.8 Reading BPF Maps
 
 For advanced debugging of BPF-based traffic control:
 
@@ -5210,7 +5360,7 @@ adb shell cat /sys/fs/bpf/
 adb shell dumpsys connectivity trafficcontroller
 ```
 
-### 35.31.9 Common Debugging Scenarios
+### 35.32.9 Common Debugging Scenarios
 
 **Scenario 1: Network connected but no Internet**
 
@@ -5288,7 +5438,7 @@ adb shell dumpsys tethering | grep "DHCP"
 adb shell cat /proc/sys/net/ipv4/ip_forward
 ```
 
-### 35.31.10 Network Logging and Tracing
+### 35.32.10 Network Logging and Tracing
 
 For deeper analysis, enable verbose logging:
 
@@ -5307,7 +5457,7 @@ adb logcat -s ConnectivityService:V NetworkAgent:V \
 adb shell setprop log.tag.Netd VERBOSE
 ```
 
-### 35.31.11 Developer Options: Network Settings
+### 35.32.11 Developer Options: Network Settings
 
 The Settings app provides several network-related developer options:
 
@@ -5318,7 +5468,7 @@ The Settings app provides several network-related developer options:
 | USB configuration | Select USB tethering mode |
 | Networking diagnostics | Run connectivity tests |
 
-### 35.31.12 Programmatic Network Testing
+### 35.32.12 Programmatic Network Testing
 
 ```java
 // Test if a specific network has connectivity

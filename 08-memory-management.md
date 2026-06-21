@@ -1816,13 +1816,20 @@ timeline
         BufferAllocator : Unified C++ wrapper
                         : Transparent fallback to ION
                         : Defined in libdmabufheap
+    section Android 17
+        ION removed : libdmabufheap drops the ION path
+                    : Allocation goes straight to /dev/dma_heap/
+                    : ION methods kept only as no-op shims
 ```
 
 **Source directories**:
 
-- `system/memory/libion/` -- Legacy ION userspace library
-- `system/memory/libdmabufheap/` -- DMA-BUF heap allocator (modern)
+- `system/memory/libion/` -- Legacy ION userspace library (still present, no longer used by `BufferAllocator`)
+- `system/memory/libdmabufheap/` -- DMA-BUF heap allocator (the only path in Android 17)
 - `frameworks/native/libs/ui/` -- GraphicBuffer, Gralloc interface
+
+Section 8.5.2 describes ION as it worked before the transition; Section 8.5.9 covers its removal in
+Android 17.
 
 ### 8.5.2 The ION Allocator (Legacy)
 
@@ -1878,31 +1885,25 @@ ION heap types:
 ### 8.5.3 DMA-BUF Heaps (Modern)
 
 DMA-BUF heaps are the upstream Linux replacement for ION. Each heap exposes its own device node
-under `/dev/dma_heap/`:
+under `/dev/dma_heap/`, and in Android 17 this root is the only allocation path the library knows
+(see Section 8.5.9):
 
 ```c
-// system/memory/libdmabufheap/BufferAllocator.cpp (lines 39-41)
+// system/memory/libdmabufheap/BufferAllocator.cpp (line 36)
 static constexpr char kDmaHeapRoot[] = "/dev/dma_heap/";
-static constexpr char kIonDevice[] = "/dev/ion";
-static constexpr char kIonSystemHeapName[] = "ion_system_heap";
 ```
 
-The `BufferAllocator` class transparently handles the ION-to-DMA-BUF transition:
+`BufferAllocator::Alloc` opens the named heap and allocates from it. Earlier releases tried a
+DMA-BUF heap first and fell back to `/dev/ion`; the current code drops that fallback and simply
+fails if the heap does not exist:
 
 ```c
-// system/memory/libdmabufheap/BufferAllocator.cpp (lines 267-286)
-int BufferAllocator::Alloc(const std::string& heap_name, size_t len,
-                           unsigned int heap_flags, size_t legacy_align) {
-    // Try DMA-BUF heap first
+// system/memory/libdmabufheap/BufferAllocator.cpp (Alloc)
+int BufferAllocator::Alloc(const std::string& heap_name, size_t len, unsigned int) {
     int dma_buf_heap_fd = OpenDmabufHeap(heap_name);
-    if (dma_buf_heap_fd >= 0)
-        return DmabufAlloc(heap_name, len, dma_buf_heap_fd);
+    if (dma_buf_heap_fd < 0) return -1;
 
-    // Fall back to ION if DMA-BUF heap doesn't exist
-    if (ion_fd_ >= 0)
-        return IonAlloc(heap_name, len, heap_flags, legacy_align);
-
-    return -1;
+    return DmabufAlloc(heap_name, len, dma_buf_heap_fd);
 }
 ```
 
@@ -2179,6 +2180,47 @@ which fronts the per-device memtrack HAL. This is the path -- process to `libmem
 memtrack proxy to the HAL -- that produces the `GL mtrack` line in the `dumpsys meminfo` output
 shown in Section 8.7.1; the JNI layer (`frameworks/base/core/jni/android_os_Debug.cpp`) calls
 `memtrack_proc_get()` to add the missing graphics memory to each process's report.
+
+### 8.5.9 ION Removal in Android 17
+
+Android 17 removes ION as a supported allocator. `libdmabufheap` (commit "libdmabufheap: Remove
+most ION support") drops every ION code path: `BufferAllocator` no longer opens `/dev/ion`, the
+`kIonDevice` and `kIonSystemHeapName` constants are gone from `BufferAllocator.cpp`, and allocation
+goes straight to `/dev/dma_heap/`. The ION-shaped entry points stay in the header only to keep the
+ABI stable for prebuilts; they are marked deprecated and do nothing useful:
+
+```cpp
+// system/memory/libdmabufheap/BufferAllocator.cpp
+[[deprecated("ION support is removed. Retained for binary compatibility.")]]
+bool BufferAllocator::CheckIonSupport() {
+    return false;
+}
+
+[[deprecated("ION support is removed. Retained for binary compatibility.")]]
+int BufferAllocator::MapNameToIonHeap(const std::string&, const std::string&, unsigned int,
+                                      unsigned int, unsigned int) {
+    /* If ION support is not detected, ignore the mappings */
+    return 0;
+}
+```
+
+`CheckIonSupport()` returns `false`, `MapNameToIonHeap()` is a no-op, and the legacy alignment and
+`CustomCpuSyncLegacyIon` overloads forward to their DMA-BUF-only equivalents. The header
+(`system/memory/libdmabufheap/include/BufferAllocator/BufferAllocator.h`) marks the retained
+`ion_fd_` field and the `ion_heap_data`/`IonHeapConfig` structs `[[deprecated("Retained for ABI
+compatibility for GRF")]]`, so they occupy space in the object but are never populated.
+
+For vendors this means a device must ship DMA-BUF heaps: each buffer pool that used to be an ION
+heap needs a matching `/dev/dma_heap/<name>` node, registered through the kernel's `dma-buf` heap
+framework (system, CMA, and vendor-specific heaps) rather than the old ION heap registration. The
+heap-name-to-properties mapping that `MapNameToIonHeap()` used to express now lives in
+`/vendor/etc/dma_heap.json` (the schema added alongside this change), which `BufferAllocator`'s
+Rust and C++ config readers consume. `system/memory/libion/` still exists as a standalone library,
+but `BufferAllocator` no longer links its allocation path, so a vendor blob that calls into
+`libion` directly is the only remaining way `/dev/ion` gets touched, and that depends on a kernel
+that still builds the ION driver. The Android 17 reference configs do not enable `CONFIG_ION`;
+the only `CONFIG_ION=y` lines left in the tree are the old `kernel/configs/s/` (Android 12)
+recommended configs.
 
 ---
 
@@ -3634,7 +3676,92 @@ reasoning above with concrete numbers when validating a device's move to 16 KB p
 
 ---
 
-## 8.12 Key Source Files Reference
+## 8.12 Memory Limiter
+
+Android 17 adds a `system_server` service, `MemoryLimiter`, that caps the memory a single app
+process may use through cgroup v2 (`frameworks/base/services/core/java/com/android/server/am/MemoryLimiter.java`).
+It is distinct from the daemons in Section 8.10: `mmd` shapes swap and `lmkd` decides which process
+dies under global pressure, while pmgd (Section 29.14) watches a small set of vendor-named
+processes. `MemoryLimiter` instead applies a budget to *every* application process and derives that
+budget from the process's ActivityManager state. The service is owned by `ActivityManagerService`,
+which constructs it with `MemoryLimiter.getDefaultMemoryLimiter()` and calls `onSystemReady()` once
+the system is up.
+
+### 8.12.1 Java Service and Native Worker
+
+`MemoryLimiter` splits across two layers. The Java class in the `am` package tracks process state
+and configuration and feeds process information down to a native worker over JNI
+(`frameworks/base/services/core/jni/com_android_server_am_MemoryLimiter.cpp`). The native layer
+owns the cgroup interaction: it writes the limits into the cgroup v2 files and uses `inotify`
+(`IN_MODIFY`) on each process's `memory.events` file to learn when a limit fires, then notifies
+the Java layer. The class is documented as not thread-safe; AMS calls into it while holding the AMS
+lock. Because the native side holds the cgroup watch descriptors, the instance allocates native
+resources that are released only when it is closed, which in production happens when
+`system_server` exits.
+
+The two cgroup v2 attributes it programs are `memory.high` (a soft limit that throttles the process
+and triggers kernel reclaim when crossed) and `memory.swap.max` (a cap on the process's swap). The
+source is inconsistent about the swap attribute's name: the native worker writes `memory.swap.max`
+(the file that actually caps swap), while the Java layer's strings and comments call it
+`memory.swap.high`. The native worker adds a margin to the programmed `memory.high` and uses a
+10 MB hysteresis band: once
+both the memory and swap events have fired it stops relying on cgroup events for that process and
+polls instead, re-enabling events only after the process drops back below the limit.
+
+### 8.12.2 Per-State Limits
+
+`MemoryLimiter` only watches application processes (`uid >= FIRST_APPLICATION_UID`, i.e. 10000);
+system UIDs are exempt so core services are never throttled. It maps each process's
+`ActivityManager.ProcessState` to one of four limit classes:
+
+| Limit class | `memory.high` | `memory.swap.max` |
+|---|---|---|
+| Unrestricted (`PERSISTENT`, `PERSISTENT_UI`) | unlimited | unlimited |
+| Visible (`TOP`, `BOUND_TOP`, `IMPORTANT_FOREGROUND`, `TOP_SLEEPING`) | config `memVisible` | config `swapVisible` |
+| Not-visible (foreground service, `SERVICE`, `RECEIVER`, `HOME`, `BACKUP`, etc.) | config `memNotVisible` | config `swapNotVisible` |
+| Cached (`CACHED_*`) | left unchanged | unlimited |
+
+When a process exceeds its `memory.high` or `memory.swap.max`, the native layer reports the breach
+and the Java layer emits a statsd atom (one per process) and a log line. There is a third,
+stronger action: if a process's combined anonymous memory plus swap exceeds the sum of its
+`memory.high` and `memory.swap.max`, `MemoryLimiter` emits a third atom, notifies the process
+through the ProfilingManager service so it can capture diagnostics, and kills the process after a
+30-second delay (`KILL_DELAY_MS`).
+
+### 8.12.3 Configuration and Flags
+
+The service is configured by an optional vendor XML file, `/vendor/etc/memory-limiter-config.xml`,
+validated against `frameworks/base/services/core/xsd/memory-limiter-config/memory-limiter-config.xsd`.
+If the file is absent, `MemoryLimiter` is disabled; if it is present but invalid, the service throws
+a fatal exception. The file carries a `<version>` (must be 1) and a `<configList>` of `<limitSet>`
+entries. Each `limitSet` has a `minimumRequiredMemTotal` and the four MiB values
+(`memVisible`/`memNotVisible`/`swapVisible`/`swapNotVisible`); at startup `MemoryLimiter` picks the
+entry with the largest `minimumRequiredMemTotal` that is still at or below the device's total RAM,
+so a 14 GB phone and a 10 GB phone get different budgets from one file. If no entry applies, the
+service stays disabled, which is not treated as an error.
+
+The feature is gated by aconfig flags in the `system_performance` namespace
+(`frameworks/base/services/core/java/com/android/server/am/flags.aconfig`, package
+`com.android.server.am`): `memory_limiter_enable` (master switch),
+`memory_limiter_default_app_limits`, and `memory_limiter_trigger` (the ProfilingManager trigger on
+an over-memory event). The design doc `frameworks/base/services/core/java/com/android/server/am/MemoryLimiter.md`
+also documents a force-on override, `com.android.server.am.memory_limiter_force_on`, for bypassing
+the vendor file (the doc itself prints the package with a `serve` typo); it is not declared in
+`flags.aconfig`.
+
+### 8.12.4 Runtime Inspection
+
+`am memory-limiter` (handled by `ActivityManagerShellCommand.runMemoryLimiter`) exposes the service
+at runtime. `am memory-limiter status` prints whether monitoring is on, the computed visible and
+not-visible memory and swap limits, the number of watched processes, and the event count.
+`am memory-limiter ignore <uid|all|none>` temporarily excludes a UID (or every process) from
+limiting, which is useful when benchmarking. `am memory-limiter manual <pid> <percent|none>`
+overrides a single process's limit with a custom percentage until it next changes state or
+restarts.
+
+---
+
+## 8.13 Key Source Files Reference
 
 | Component | Path |
 |---|---|
@@ -3651,13 +3778,17 @@ reasoning above with concrete numbers when validating a device's move to 16 KB p
 | ZramMaintenance JobService | `frameworks/base/services/core/java/com/android/server/memory/ZramMaintenance.java` |
 | CachedAppOptimizer (per-process writeback caller) | `frameworks/base/services/core/java/com/android/server/am/CachedAppOptimizer.java` |
 | Process Memory Guardian (pmgd) | `system/memory/guardian/README.md` (covered in Chapter 29) |
+| Memory Limiter service (Java) | `frameworks/base/services/core/java/com/android/server/am/MemoryLimiter.java` |
+| Memory Limiter native worker (JNI) | `frameworks/base/services/core/jni/com_android_server_am_MemoryLimiter.cpp` |
+| Memory Limiter config schema | `frameworks/base/services/core/xsd/memory-limiter-config/memory-limiter-config.xsd` |
+| Memory Limiter design doc | `frameworks/base/services/core/java/com/android/server/am/MemoryLimiter.md` |
 | lmkd protocol definitions | `system/memory/lmkd/include/lmkd.h` |
 | Process reaper | `system/memory/lmkd/reaper.cpp` |
 | Watchdog | `system/memory/lmkd/watchdog.cpp` |
 | Kill statistics | `system/memory/lmkd/statslog.h` |
 | PSI monitor library | `system/memory/lmkd/libpsi/psi.cpp` |
 | PSI header | `system/memory/lmkd/libpsi/include/psi/psi.h` |
-| ION allocator | `system/memory/libion/ion.c` |
+| ION allocator (legacy, no longer used by BufferAllocator) | `system/memory/libion/ion.c` |
 | DMA-BUF heap allocator | `system/memory/libdmabufheap/BufferAllocator.cpp` |
 | DMA-BUF heap include | `system/memory/libdmabufheap/include/BufferAllocator/BufferAllocator.h` |
 | GraphicBufferAllocator | `frameworks/native/libs/ui/GraphicBufferAllocator.cpp` |
@@ -3678,7 +3809,7 @@ reasoning above with concrete numbers when validating a device's move to 16 KB p
 
 ---
 
-## 8.13 Further Reading
+## 8.14 Further Reading
 
 For deeper exploration of the topics covered in this chapter:
 
@@ -3720,7 +3851,7 @@ For deeper exploration of the topics covered in this chapter:
 
 ---
 
-## 8.14 Try It
+## 8.15 Try It
 
 This section provides hands-on exercises to explore Android's memory management in practice.
 

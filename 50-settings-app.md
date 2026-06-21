@@ -1370,7 +1370,9 @@ It provides:
 - `getSettingsIntelligencePkgName()` -- Returns the package name of the search app
 - `initSearchToolbar()` -- Initialises the search bar on the homepage
 - `buildSearchIntent()` -- Creates the intent to launch the search UI
-- `sendPreIndexIntent()` -- Notifies Settings Intelligence to re-index
+- `sendPreIndexIntent()` -- A hook the Settings app calls (for example after
+  enabling developer options) to let an OEM build kick off pre-indexing; the AOSP
+  default implementation is an empty no-op
 
 The search toolbar is initialised on the homepage and triggers a transition to
 the Settings Intelligence search activity:
@@ -1418,6 +1420,90 @@ sequenceDiagram
     User->>SI: Tap result
     SI->>Homepage: Deep-link intent to fragment
 ```
+
+### 50.5.9 The SettingsIntelligence App
+
+Everything above describes the Settings side of the contract: the annotations,
+the providers, and the keys Settings exports. The *consumer* is a separate APK,
+`packages/apps/SettingsIntelligence`, package name `com.android.settings.intelligence`.
+It owns the search UI, the search index database, and the suggestion backend, so
+the Settings app itself ships no search index and no suggestion ranking logic.
+
+The app holds the `READ_SEARCH_INDEXABLES` permission and queries every provider
+that answers the `android.content.action.SEARCH_INDEXABLES_PROVIDER` intent, not
+just the Settings provider. Any system app can publish a `SearchIndexablesProvider`
+and its preferences become searchable from the Settings search bar.
+
+**Search index.** `IndexDatabaseHelper` (in `search/indexing/`) opens an SQLite
+database named `search_index.db` whose primary table, `prefs_index`, is an FTS4
+virtual table for full-text matching. The `site_map` table is FTS4 as well;
+`meta_index` (the index metadata row) and `saved_queries` are plain tables:
+
+**Source file**: `packages/apps/SettingsIntelligence/src/com/android/settings/intelligence/search/indexing/IndexDatabaseHelper.java`
+
+```java
+// IndexDatabaseHelper.java
+private static final String DATABASE_NAME = "search_index.db";
+private static final int DATABASE_VERSION = 121;
+
+interface Tables {
+    String TABLE_PREFS_INDEX = "prefs_index";    // FTS4 virtual table
+    String TABLE_SITE_MAP = "site_map";          // FTS4: parent/child breadcrumbs
+    String TABLE_META_INDEX = "meta_index";      // build fingerprint, locale
+    String TABLE_SAVED_QUERIES = "saved_queries";
+}
+```
+
+`DatabaseIndexingManager` rebuilds the index when the meta row shows a stale build
+fingerprint or locale. It calls `PreIndexDataCollector` to walk the registered
+providers, converts each row through `IndexDataConverter`, and writes the result
+into `prefs_index`. The rebuild is triggered from the search UI rather than by a
+broadcast: opening search calls `SearchFeatureProviderImpl.updateIndexAsync()`
+(from `SearchFragment`), which hands off to `DatabaseIndexingManager.indexDatabase()`.
+That method runs a full re-index only when `IndexDatabaseHelper.isFullIndex()`
+reports the stored build fingerprint or locale no longer matches; otherwise it
+applies an incremental update.
+
+**Query path.** `SearchActivity` hosts `SearchFragment`, which dispatches each
+keystroke to a `SearchResultAggregator`. The aggregator fans the query out to
+several `SearchQueryTask` implementations in parallel: `DatabaseResultTask` runs
+the FTS4 match against `prefs_index`, while `InstalledAppResultTask`,
+`InputDeviceResultTask`, and `AccessibilityServiceResultTask` add results that are
+not in the static index. Results merge, deduplicate, and rank before display.
+`SavedQueryController` records recent queries into the `saved_queries` table so the
+empty search screen can show recent searches.
+
+**Suggestions backend.** The same APK exports a `SuggestionService` bound under the
+`BIND_SETTINGS_SUGGESTIONS_SERVICE` permission. It extends the framework class
+`android.service.settings.suggestions.SuggestionService`, so SystemUI and Settings
+homepage suggestion chips call into it:
+
+**Source file**: `packages/apps/SettingsIntelligence/src/com/android/settings/intelligence/suggestions/SuggestionService.java`
+
+```java
+public class SuggestionService extends
+        android.service.settings.suggestions.SuggestionService {
+    @Override
+    public List<Suggestion> onGetSuggestions() { /* ... */ }
+    @Override
+    public void onSuggestionDismissed(Suggestion suggestion) { /* ... */ }
+    @Override
+    public void onSuggestionLaunched(Suggestion suggestion) { /* ... */ }
+}
+```
+
+Candidate suggestions come from `SuggestionParser`, are filtered by the six checkers
+in `suggestions/eligibility/` that `CandidateSuggestion.isEligible()` runs in order
+(provider, connectivity, feature, account, already-dismissed, automotive), and are
+ordered by `SuggestionRanker`. The ranker turns each candidate into a feature vector
+via `SuggestionFeaturizer` and scores it with a fixed-weight linear function: a
+weighted sum (dot product) of features such as whether a suggestion was shown,
+dismissed, or clicked and how long ago. The weights are constants in a `WEIGHTS` map
+and the score is used directly as the sort key, with no sigmoid applied at runtime
+(the source comment notes the weights were fit offline by training a binary
+classifier). The features are persisted per-suggestion in `SuggestionEventStore`, and
+dismissals and launches feed back through `onSuggestionDismissed` and
+`onSuggestionLaunched` so a dismissed suggestion stops resurfacing.
 
 ---
 
@@ -2866,8 +2952,13 @@ adb shell pm query-activities -a com.android.settings.action.EXTRA_SETTINGS
 ### 50.18.4 Debugging Search Indexing
 
 ```bash
-# Force re-index
-adb shell am broadcast -a com.android.settings.intelligence.REINDEX
+# There is no re-index broadcast receiver in AOSP. Re-indexing is driven from the
+# search UI: SearchFragment calls updateIndexAsync(), which re-indexes when the
+# stored build fingerprint or locale is stale. To force a rebuild, clear the index
+# database so the next search opens with an empty/stale fingerprint, then launch
+# Settings search.
+adb shell pm clear com.android.settings.intelligence
+adb shell am start -a com.android.settings.action.SETTINGS_SEARCH
 
 # Query the search provider directly
 adb shell content query \

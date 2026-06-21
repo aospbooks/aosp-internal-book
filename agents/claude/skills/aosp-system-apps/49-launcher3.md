@@ -1852,6 +1852,62 @@ the `AllAppsSearchUiDelegate` interface, which controls:
 The `qsb/` package provides the Quick Search Bar integration on the workspace,
 which is a separate search entry point that typically launches Google Search.
 
+### 49.7.7 App Prediction and the AppPredictionService
+
+The suggested apps that fill the prediction row at the top of All Apps and the
+predicted slots in the Hotseat do not come from Launcher3. Launcher3 is the client
+of a system `AppPredictionService`; a separate app supplies the predictions.
+
+On the Launcher side, `QuickstepModelDelegate` opens prediction sessions through
+the framework `AppPredictor` API, one per surface, tagged with a UI surface string:
+
+**Source file**: `quickstep/src/com/android/launcher3/model/QuickstepModelDelegate.java`
+
+```java
+// QuickstepModelDelegate.recreatePredictors()
+mAllPredictionAppsState.registerPredictor(mContext,
+        new AppPredictionContext.Builder(mContext)
+            .setUiSurface("home")          // All Apps prediction row
+            .setPredictedTargetCount(mIDP.numDatabaseAllAppsColumns)
+            .build(),
+        mModel, PredictionUpdateTask::new);
+// ... and a second session with setUiSurface("hotseat")
+```
+
+Each launch is reported back to the service as an `AppTargetEvent`, and the service
+pushes a fresh list of `AppTarget`s that Launcher3 renders through
+`appprediction/PredictionRowView.java` (All Apps) and the hotseat predictor.
+
+The service behind these sessions is selectable by the device. AOSP ships a minimal
+reference implementation in `packages/apps/OnDeviceAppPrediction`, package
+`com.android.apppredictionservice`. Its single class, `PredictionService`, extends
+`android.service.appprediction.AppPredictionService` and is registered for the
+`android.service.appprediction.AppPredictionService` action:
+
+**Source file**: `packages/apps/OnDeviceAppPrediction/src/com/android/apppredictionservice/PredictionService.java`
+
+```java
+public class PredictionService extends AppPredictionService {
+    @Override
+    public void onCreatePredictionSession(
+            AppPredictionContext context, AppPredictionSessionId sessionId) {
+        if (context.getUiSurface().equals("home")
+                || context.getUiSurface().equals("overview")) {
+            activeLauncherSessions.add(sessionId);
+            postPredictionUpdate(sessionId);
+        }
+    }
+}
+```
+
+Its logic is deliberately simple: it keeps the five most recently launched apps,
+seeded on first boot from the default calendar, gallery, maps, email, and browser
+handlers, and moves an app to the front of the list on each `onAppTargetEvent`.
+There is no on-device model. A production build replaces this with a Google or OEM
+predictor that ranks by usage history and context. The reference app exists so the
+prediction row has something to show on a stock AOSP image; its `README` notes that
+the project is unsupported and slated for removal from the manifest.
+
 ---
 
 ## 49.8 Folder System

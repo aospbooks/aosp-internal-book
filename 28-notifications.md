@@ -1981,13 +1981,38 @@ UI thread. The inflation process:
 4. If inflation fails (e.g., custom view too large), a fallback minimal
    layout is shown.
 
-Memory limits for custom views are enforced to prevent malicious apps from
-causing OOM in SystemUI:
+Memory limits for custom views are enforced to prevent apps from causing OOM
+in SystemUI:
 
 ```kotlin
 // CustomViewMemorySizeExceededException.kt
 // Thrown when a custom RemoteViews exceeds the memory limit
 ```
+
+`NotificationCustomContentMemoryVerifier`
+(`frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/notification/row/NotificationCustomContentMemoryVerifier.kt`)
+implements the check. After a custom view is inflated, `satisfiesMemoryLimits()`
+walks the view hierarchy and sums the byte size of every `ImageView`'s drawable
+(`computeViewHierarchyImageViewSize()`); bitmaps count their
+`allocationByteCount`, other drawables are estimated as `width * height * 4`.
+Two thresholds, both read from `config.xml`, govern the outcome:
+
+| Threshold | Config integer | Default | Effect |
+|-----------|----------------|---------|--------|
+| Warn | `config_notificationWarnRemoteViewSizeBytes` | 2,000,000 (~2 MB) | Logs a warning; notification still posts |
+| Strip | `config_notificationStripRemoteViewSizeBytes` | 5,000,000 (~5 MB) | Notification dropped for apps targeting SDK 37 (warning only otherwise; see SDK gate below) |
+
+Android 17 (SDK 37) makes the strip threshold enforceable. For apps targeting
+SDK 37 (`Build.VERSION_CODES.CINNAMON_BUN`) a custom view that exceeds the strip
+limit causes the notification to be dropped; apps targeting an earlier SDK only
+get a logcat warning that the notification "WILL be dropped when targetSdk is set
+to" SDK 37. The gate is the compatibility change
+`CHECK_SIZE_OF_INFLATED_CUSTOM_VIEWS` (`@EnabledAfter(targetSdkVersion =
+Build.VERSION_CODES.BAKLAVA)`,
+`frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/notification/row/NotificationCustomContentCompat.java`),
+checked per UID with `CompatChanges.isChangeEnabled(...)`. The whole check is
+also held behind the `notification_custom_view_uri_restriction` aconfig flag, so
+it is inert until both the flag and the per-app target SDK gate are satisfied.
 
 ### 28.9.11 Swipe to Dismiss
 

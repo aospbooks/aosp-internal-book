@@ -1417,6 +1417,72 @@ blast radius of a malformed bitstream exploit to the sandbox instead of the whol
 LFI is the in-process security story; `libapexcodecs` is the codec-delivery and API
 story; the `in_process_sw_*` flags are the switches that turn the combination on.
 
+### 16.3.15 VVC (H.266): Framework Plumbing for a Vendor Codec
+
+Android 17 adds framework support for VVC (Versatile Video Coding, H.266) under
+the MIME type `video/vvc`. Unlike APV and IAMF, no software codec for VVC ships
+in the tree: there is no `frameworks/av/media/codec2/components/vvc/` directory,
+no `c2.android.vvc` component, and no `media_codecs_sw.xml` entry. What Android
+17 adds is the plumbing a vendor decoder plugs into, so a device with a hardware
+or vendor VVC codec can expose it through the standard `MediaCodec` and
+`MediaExtractor` APIs.
+
+The MIME constant exists on both the native and Java sides:
+
+```cpp
+// frameworks/av/media/module/foundation/MediaDefs.cpp, line 41
+const char *MEDIA_MIMETYPE_VIDEO_VVC = "video/vvc";
+```
+
+```java
+// frameworks/base/media/java/android/media/MediaFormat.java, line 188
+@FlaggedApi(FLAG_VVC_SUPPORT)
+public static final String MIMETYPE_VIDEO_VVC = "video/vvc";
+```
+
+`MediaCodecInfo` gains VVC profile constants (`VVCProfileMain10`,
+`VVCProfileMain10Still`, `VVCProfileMain10HDR10`, and more) and the matching
+tier/level constants (`VVCMainTierLevel10` through `VVCHighTierLevel63`), all
+behind `@FlaggedApi(FLAG_VVC_SUPPORT)`. On the Codec2 side, `C2Config.h` defines
+the `PROFILE_VVC_*` enum from `_C2_PL_VVC_BASE`, and `C2Config.cpp` carries the
+string-to-enum table that lets a vendor codec declare profiles like
+`vvc-main-10` and `vvc-main-10-still`:
+
+```cpp
+// frameworks/av/media/codec2/vndk/C2Config.cpp, line 138
+{ "vvc-main-10" , C2Config::PROFILE_VVC_MAIN_10 },
+{ "vvc-main-10-still" , C2Config::PROFILE_VVC_MAIN_10_STILL },
+// ... 15 vvc- profile mappings here (plus 23 vvc- level mappings in a separate table) ...
+```
+
+`VideoCapabilities` validates a declared VVC codec's profile/level against this
+set, gated by the `vvc_support()` flag in `codec_fwk.aconfig`:
+
+```cpp
+// frameworks/av/media/libmedia/VideoCapabilities.cpp, line 1871
+} else if (android::media::codec::vvc_support()
+        && base::EqualsIgnoreCase(mMediaType, MIMETYPE_VIDEO_VVC)) {
+```
+
+Container support follows in the MP4 extractor, where a VVC track is recognized
+only on Android 17 and later and only when a second flag is set:
+
+```cpp
+// frameworks/av/media/module/extractors/mp4/MPEG4Extractor.cpp, line 5714
+mIsVVC = false;
+if (isAtLeastRelease(37, "CinnamonBun")) {
+    mIsVVC = com::android::media::extractor::flags::extractor_mp4_enable_vvc() &&
+             !strcasecmp(mime, MEDIA_MIMETYPE_VIDEO_VVC);
+}
+```
+
+So VVC in AOSP 17 is decode-side plumbing gated by two flags: `vvc_support`
+(`frameworks/av/media/aconfig/codec_fwk.aconfig`) for the framework
+profile/level and `MediaCodec` integration, and `extractor_mp4_enable_vvc`
+(`frameworks/av/media/module/extractors/extractor.aconfig`) for MP4 demuxing.
+Whether a device can actually decode `video/vvc` depends on a vendor supplying
+the codec component.
+
 ---
 
 ## 16.4 MediaPlayer and MediaRecorder
@@ -1756,6 +1822,59 @@ static void addBatteryData(uint32_t params) {
 
 This ensures that the system's battery statistics properly account for video encoding,
 which is a power-intensive operation.
+
+Android 17 adds a constant-quality recording path to `MediaRecorder`. The older
+`setVideoEncodingBitRate()` targets a bitrate; the new
+`setVideoEncodingQuality()` instead asks the encoder to hold a quality level and
+let the bitrate float, which keeps complex scenes from being starved of bits:
+
+```java
+// frameworks/base/media/java/android/media/MediaRecorder.java, line 1177
+@FlaggedApi(FLAG_QUALITY_SETTING_SUPPORT)
+public void setVideoEncodingQuality(@IntRange(from = 0) int quality) {
+    Preconditions.checkArgument(quality >= 0, "Video encoding quality is negative");
+    setParameter("video-param-encoding-quality=" + quality);
+}
+```
+
+The quality value is encoder-specific; an app queries the valid span with
+`MediaCodecInfo.EncoderCapabilities.getQualityRange()`. Setting both a quality
+and a bitrate leaves behavior undefined. The parameter travels through
+`StagefrightRecorder::setParamVideoEncodingQuality()` into `mVideoEncodingQuality`,
+and when the recorder builds the encoder format it writes the value under the
+`"quality"` key:
+
+```cpp
+// frameworks/av/media/libmediaplayerservice/StagefrightRecorder.cpp, line 2108
+if (mVideoEncodingQuality != -1) {
+    format->setInt32("quality", mVideoEncodingQuality);
+}
+```
+
+`MediaCodecSource::adjustMediaFormatForConstantQuality()` is where the request is
+honored or dropped. It checks whether the selected encoder advertises
+`BITRATE_MODE_CQ`; if it does, it sets `KEY_BITRATE_MODE` to `BITRATE_MODE_CQ`,
+and if it does not, it logs a warning and removes the `quality` key so recording
+falls back to bitrate control:
+
+```cpp
+// frameworks/av/media/libstagefright/MediaCodecSource.cpp, line 520
+int32_t videoEncodingQuality = -1;
+if (format->findInt32(KEY_QUALITY, &videoEncodingQuality) && videoEncodingQuality != -1) {
+    if (!isCQSupported) {
+        ALOGW("Selected encoder does not support CQ mode, falling back to bitrate control.");
+        format->removeEntryByName(KEY_QUALITY);
+    } else {
+        format->setInt32(KEY_BITRATE_MODE, BITRATE_MODE_CQ);
+    }
+}
+```
+
+`BITRATE_MODE_CQ` is the same constant-quality rate-control mode `ACodec` maps to
+`OMX_Video_ControlRateConstantQuality` (Section 16.2.7); the Android 17 addition
+is the recorder-level API and the encoder-capability check that routes a
+recording session into it. The whole path is gated by the
+`FLAG_QUALITY_SETTING_SUPPORT` flag.
 
 ### 16.4.6 The MediaPlayer Playback Pipeline
 

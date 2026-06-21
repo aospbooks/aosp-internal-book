@@ -1613,6 +1613,44 @@ A complete manifest registration for handling NFC tags:
 5. **Not using foreground dispatch** -- for apps that need guaranteed tag access
    (e.g., tag writers), foreground dispatch avoids the activity chooser.
 
+### 38.5.13 The Bundled Tag Viewer App
+
+AOSP ships a small reference handler for the bottom of the dispatch chain at
+`packages/apps/Tag/` (package `com.android.apps.tag`). It is a privileged app
+with one activity, `TagViewer`, that displays the contents of a scanned NDEF
+tag when nothing more specific claims it.
+
+Its registration shows the catch-all pattern from 38.5.1 in practice. The
+activity sets `android:priority="-10"` so any other matching handler wins the
+chooser ordering, and it filters on `TECH_DISCOVERED` with a tech-list of a
+single technology, `android.nfc.tech.Ndef`
+(`packages/apps/Tag/res/xml/filter_nfc.xml`), plus a `VIEW` filter for the
+`vnd.android.cursor.item/ndef_msg` MIME type:
+
+```xml
+<!-- Source: packages/apps/Tag/AndroidManifest.xml -->
+<activity android:name="TagViewer"
+    android:priority="-10"
+    android:permission="android.permission.DISPATCH_NFC_MESSAGE">
+    <intent-filter>
+        <action android:name="android.nfc.action.TECH_DISCOVERED"/>
+    </intent-filter>
+    <meta-data android:name="android.nfc.action.TECH_DISCOVERED"
+        android:resource="@xml/filter_nfc"/>
+</activity>
+```
+
+`TagViewer.resolveIntent()` reads the `EXTRA_NDEF_MESSAGES` array that
+`NfcDispatcher` packed into the intent (38.5.6) and hands the first message to
+`NdefMessageParser` (`packages/apps/Tag/src/com/android/apps/tag/message/`),
+which classifies each record into a typed renderer: Smart Poster, URI, Text,
+image, vCard, generic MIME, or an unknown-record fallback. Each renderer
+inflates its own view, so a scanned tag shows up as readable rows rather than
+raw bytes. The app parses only the first NDEF message on the tag and covers
+these record types and nothing more. It is a viewer for inspecting tags by hand,
+and it carries no framework logic of its own. The dispatch that delivers tags
+to it is covered in 38.4 and the rest of 38.5.
+
 ---
 
 ## 38.6 Host Card Emulation (HCE)

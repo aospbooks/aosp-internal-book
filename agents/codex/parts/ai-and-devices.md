@@ -7068,6 +7068,20 @@ The full set of device profiles includes:
 - **DEVICE_PROFILE_AUTOMOTIVE_PROJECTION** -- car head-unit projection
 - **DEVICE_PROFILE_COMPUTER** -- desktop/laptop companion
 - **DEVICE_PROFILE_WEARABLE_SENSING** -- wearable health/sensor devices
+- **DEVICE_PROFILE_VIRTUAL_DEVICE** -- limited virtual-device role
+  (`android.app.role.COMPANION_DEVICE_VIRTUAL_DEVICE`)
+- **DEVICE_PROFILE_FITNESS_TRACKER** -- Android 17: fitness band / tracker
+  companion (flag `FLAG_BAND_DEVICE_PROFILE`)
+- **DEVICE_PROFILE_MEDICAL** -- Android 17: medical device companion (flag
+  `FLAG_ENABLE_MEDICAL_PROFILE`)
+
+The last two are new in Android 17. Both are declared in
+`frameworks/base/core/java/android/companion/AssociationRequest.java`,
+each guarded by a `@FlaggedApi` annotation pointing at an aconfig flag in
+`frameworks/base/core/java/android/companion/flags.aconfig`:
+`DEVICE_PROFILE_FITNESS_TRACKER` maps to the role string
+`android.app.role.COMPANION_DEVICE_FITNESS_TRACKER`, and `DEVICE_PROFILE_MEDICAL`
+maps to `android.app.role.COMPANION_DEVICE_MEDICAL`.
 
 Each profile maps to an Android Role. When an association is created, the
 companion app is automatically granted the corresponding role (if it does not
@@ -7092,6 +7106,18 @@ addRoleHolderForAssociation(mContext, association, success -> {
 
 Source:
 `AssociationRequestsProcessor.java`, lines 390-403.
+
+The role-to-permission mapping for each profile lives in
+`frameworks/base/services/companion/java/com/android/server/companion/utils/RolesUtils.java`.
+The two Android 17 profiles are handled differently there.
+`DEVICE_PROFILE_FITNESS_TRACKER` is a *role alias*: a `ROLE_ALIASES` map points
+it at `DEVICE_PROFILE_WATCH`, so a fitness tracker reuses the watch role and its
+permission set (notifications, phone, call logs, SMS, contacts, calendar, nearby
+devices, media output) rather than defining a separate role.
+`DEVICE_PROFILE_MEDICAL` is its own role with a narrower set in
+`PROFILE_PERMISSION_SETS`: post-notifications, nearby devices, schedule-exact-alarm,
+and bypass-Do-Not-Disturb, reflecting that a medical companion needs to deliver
+time-critical alerts but not the broad messaging access a watch gets.
 
 ### 52.2.3 The Association Flow
 

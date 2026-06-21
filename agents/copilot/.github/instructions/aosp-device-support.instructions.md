@@ -18527,6 +18527,58 @@ SessionConfiguration config = new SessionConfiguration(
 cameraDevice.createCaptureSession(config);
 ```
 
+### 64.1.9 Updating Output Surfaces Without Reconfiguring (Android 17)
+
+Before Android 17 the only way to change which `Surface` an output stream wrote
+to was `finalizeOutputConfigurations()`, and that only filled in a deferred
+surface once. Replacing a surface that already had one, or swapping surfaces to
+move between two preview targets, meant tearing the session down and building a
+new one, which drops frames during the gap. Android 17 adds
+`updateOutputConfigurations()` on `CameraCaptureSession` for in-place surface
+changes:
+
+```
+Source: frameworks/base/core/java/android/hardware/camera2/CameraCaptureSession.java, line 1072
+        frameworks/base/core/java/android/hardware/camera2/impl/CameraDeviceImpl.java, line 1289
+```
+
+```java
+@FlaggedApi(Flags.FLAG_SEAMLESS_TRANSITIONS)
+public void updateOutputConfigurations(@NonNull List<OutputConfiguration> configurations)
+        throws CameraAccessException;
+```
+
+The list size must equal the number of outputs the session was created with;
+this call replaces surfaces, it does not add or remove streams. Each supplied
+`OutputConfiguration` is matched back to an existing stream by its properties
+(size, format, and so on) rather than by identity, so the new configuration can
+carry a fresh surface added with `OutputConfiguration.addSurface()` or be marked
+deferred again with `makeDeferredAndRemoveSurfaces()`. The method is gated by the
+`FLAG_SEAMLESS_TRANSITIONS` flag and is the API behind seamless use-case
+transitions: an app can swap the preview surface, or fill in a deferred capture
+surface, without re-running `createCaptureSession()`.
+
+The implementation in `CameraDeviceImpl.updateOutputConfigurations()` builds two
+maps of the currently configured outputs, one keyed by the configuration as-is
+and one keyed by its deferred form, then matches each new configuration to a
+stream id. The matched stream ids and new configurations are forwarded over a
+single binder call:
+
+```
+Source: frameworks/av/camera/aidl/android/hardware/camera2/ICameraDeviceUser.aidl, line 260
+```
+
+```aidl
+void updateOutputConfigurations(in int[] streamIds, in OutputConfiguration[] configurations);
+```
+
+Active requests that target a replaced surface are stopped by the call. When a
+surface that has in-flight buffers is replaced, the framework holds a weak
+reference to the old surface (`mReplacedOutputs` in `CameraDeviceImpl`) so that
+outstanding buffers can drain and return before the old producer connection is
+torn down. Stale entries are pruned on the next `updateOutputConfigurations()`
+call.
+
 ---
 
 ## 64.2 CameraService Internals
@@ -19642,15 +19694,53 @@ SessionConfiguration sessionConfig = new SessionConfiguration(
 );
 ```
 
-Physical camera result metadata is accessed through `TotalCaptureResult`:
+Physical camera result metadata is accessed through `TotalCaptureResult`. Older
+code used `getPhysicalCameraResults()`, which returns a `Map<String,
+CaptureResult>`. Android 17 deprecates that method in favor of
+`getPhysicalCameraTotalResults()`, which returns full `TotalCaptureResult`
+objects per physical camera instead of plain `CaptureResult`:
+
+```
+Source: frameworks/base/core/java/android/hardware/camera2/TotalCaptureResult.java, line 187 (deprecated) and 212
+```
 
 ```java
-// Get the result for a specific physical camera
-CaptureResult physicalResult = totalResult.getPhysicalCameraResults().get("3");
+// Android 17: get the full TotalCaptureResult for a physical camera
+Map<String, TotalCaptureResult> physResults = totalResult.getPhysicalCameraTotalResults();
+TotalCaptureResult physicalResult = physResults.get("3");
 if (physicalResult != null) {
     Long timestamp = physicalResult.get(CaptureResult.SENSOR_TIMESTAMP);
 }
 ```
+
+The full-result form matters for reprocessing: to reprocess a physical-camera
+frame from a `MultiResolutionImageReader`, the app must hand
+`createReprocessCaptureRequest()` the physical camera's `TotalCaptureResult`,
+which the deprecated map could not provide.
+
+By default a logical camera returns physical metadata only for physical streams
+the request actually targeted. Android 17 adds the
+`LOGICAL_MULTI_CAMERA_ADDITIONAL_RESULTS` key (a boolean, present on both
+`CaptureRequest` and `CaptureResult`) that asks the device to also include the
+backing physical cameras' metadata in the result even when no physical stream
+was requested; the app then reads it back through
+`getPhysicalCameraTotalResults()`:
+
+```
+Source: frameworks/base/core/java/android/hardware/camera2/CaptureRequest.java, line 4438
+        frameworks/base/core/java/android/hardware/camera2/CaptureResult.java, line 6115
+```
+
+```java
+// Request additional physical metadata (gated by FLAG_LOGICAL_MULTI_CAMERA_ADDITIONAL_RESULTS)
+builder.set(CaptureRequest.LOGICAL_MULTI_CAMERA_ADDITIONAL_RESULTS, true);
+```
+
+The key maps to the `ANDROID_LOGICAL_MULTI_CAMERA_ADDITIONAL_RESULTS` metadata
+tag (HAL version 3.12), defined in
+`system/media/camera/docs/metadata_definitions.xml` and surfaced to vendors as
+the `LogicalMultiCameraAdditionalResults` enum (`OFF`/`ON`) in
+`hardware/interfaces/camera/metadata/aidl/`.
 
 ### 64.5.3 Camera Characteristics for Multi-Camera
 

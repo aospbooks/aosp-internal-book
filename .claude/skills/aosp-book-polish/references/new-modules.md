@@ -11,11 +11,12 @@ only to "cover the new modules" without mentioning the rest.
 Always do the analysis in a subagent (read-only), not inline — it keeps the
 candidate set deterministic and the verification honest, and it scales.
 
-There are **two ways to build the candidate set**. They answer different
-questions; for thorough coverage do (A) on a version bump and (B) when the user
+There are **three ways to build the candidate set**. They answer different
+questions; for thorough coverage do (A) on a version bump, (B) when the user
 asks to "read across the whole source and find what's left" (or periodically,
 since (A) by construction never flags a subsystem that existed before the diff
-baseline and was never written up).
+baseline and was never written up), and (C) whenever official release notes
+exist for the version — they surface a class neither (A) nor (B) can.
 
 **(A) Changeset-driven — what's NEW (don't guess, derive it):**
 - The *added* projects in the changeset: `manifest-snapshots/_compare/<old>-to-<new>/added-removed.txt`.
@@ -43,10 +44,44 @@ have been in AOSP for releases but never got a chapter.
   `toolchain/`, `kernel/prebuilts`, `device/`, `test/`, `cts/`, `tools/test/`,
   `*-vendor`). This typically cuts ~1000 projects to a few dozen candidates.
 
+**(C) Release-notes-driven — what GOOGLE called out (the behavior/API class):**
+methods (A) and (B) are both *project*-granular: they find new repos and
+never-covered subsystems. They are structurally blind to the most common kind of
+version change — a **new framework API, behavior change, or deprecation inside a
+repo that merely "moved"**. A new `CameraCaptureSession.updateOutputConfigurations()`
+method, an SDK-gated relaunch-behavior change, or a deprecated manifest attribute
+never appears as an added *project*; on a real release `frameworks/base` alone
+carries 15,000+ commits, so a project-level diff cannot surface them. The fix is
+to mine the official release notes directly:
+- Fetch the version's announcement pages (WebFetch). For Android these are the
+  developer **Beta/release blog** (`android-developers.googleblog.com`, the
+  "behavior changes" / "features" post) and the AOSP **whatsnew** page
+  (`source.android.com/docs/whatsnew/android-NN-release`, the platform-internals
+  list). Ask the fetch to enumerate every feature with its exact API / class /
+  permission / flag / property names.
+- For EACH highlighted item, extract its distinctive token (the symbol, flag,
+  constant, or manifest attr) and grep it across the chapter bodies
+  `[0-9][0-9]-*.md`. Zero hits (or hits only in the appendix / only the generic
+  English word) ⇒ candidate. Triage with a script; the high-signal tokens are
+  CamelCase symbols / `ALL_CAPS` constants / `dotted.flag.names`, not common words.
+- Triage is noisy by nature (generic tokens like "lock-free" or "Login" match many
+  chapters), so a grep hit is only a *hint*: hand every candidate to a verifying
+  subagent that reads the candidate chapter AND opens the AOSP source. Release-note
+  prose is loose — it frames Play-services/app-SDK features and platform changes
+  alike, and it paraphrases. Verify (1) that the change is genuinely an **AOSP
+  platform** change (not a Google Play / first-party-app feature), and (2) the
+  exact symbol/flag/path before writing. The blog regularly names a flag that
+  doesn't exist verbatim in AOSP — the agents on the 17 pass corrected several
+  (`enable_windowing_edge_drag_resize`, `status_bar_connected_displays`).
+- Classify each confirmed gap as a **fold** (almost always — these extend an
+  existing subsystem's chapter; e.g. a new camera2 method → the camera chapter, an
+  SDK-37 activity-relaunch change → the activity/window chapter), not a new chapter.
+
 For (B) especially, hand the candidate list to verification subagents
 **partitioned by tree area** (e.g. one for `system/`, one for `packages/`, one
 for `frameworks/`+`hardware/`) — it's too much for one agent and the areas are
-independent.
+independent. For (C), partition the highlighted items by their home chapter's
+Part so each agent verifies a coherent set.
 
 **Coverage check (deterministic, both methods):** for EACH candidate, grep the
 main chapters `[0-9][0-9]-*.md` (NOT the appendices) for the module's **source

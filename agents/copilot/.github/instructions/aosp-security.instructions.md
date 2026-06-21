@@ -1695,6 +1695,106 @@ only for asymmetric keys (`is_asymmetric_key`) bound to an app domain, and
 only when RKP is actually enabled on the device.  The hardening details that
 landed for Android 17 are covered in section 40.10.5.
 
+The Keystore2 logic above is only the consumer.  The work of talking to the
+RKP backend, generating certificate signing requests, and caching the signed
+keys belongs to a separate mainline module described next.
+
+#### 40.4.11.1  The RKPD Mainline Module
+
+The provisioning daemon is the `com.android.rkpd` APEX, defined in
+`packages/modules/RemoteKeyProvisioning`.  The APEX manifest
+(`apex/manifest.json`) names it `com.android.rkpd`, and the payload is the
+`rkpdapp` Android application under `app/`
+(`com.android.rkpdapp`, registered for preinstall in
+`app/sysconfig/preinstalled-packages-com.android.rkpdapp.xml`).  Packaging the
+daemon as an APEX-bundled app lets the provisioning logic and its server
+protocol ship updates over the network without a full system OTA.
+
+The daemon is split into three pieces:
+
+| Piece | Location | Role |
+|-------|----------|------|
+| `rkpdapp` | `app/src/com/android/rkpdapp/` | The provisioning app: server protocol, CSR generation, key database |
+| system-server shim | `system-server/src/android/security/rkp/service/` | `RegistrationProxy` / `RemotelyProvisionedKey`, the in-process API Keystore2 and other callers bind to |
+| registration util | `util/src/com/android/rkpdapp/` | `RkpRegistrationCheck`, a command-line check of provisioning status |
+
+The shim exists because `rkpdapp` cannot host a system service itself and needs
+network access that system_server is not allowed to perform.  As the
+`system-server/README.md` explains, system_server hosts a visible service and
+proxies every call through to the `rkpdapp` process, which does the network
+work.  The app exposes two components in `app/AndroidManifest.xml`: the
+`RemoteProvisioningService` bound through the `com.android.rkpdapp.IRemoteProvisioning`
+action, and `PeriodicProvisioner`, a WorkManager `Worker`
+(`app/src/com/android/rkpdapp/provisioner/PeriodicProvisioner.java`) that
+refills the key pool on a schedule.
+
+When a caller asks for a registration,
+`RemoteProvisioningService.getRegistration`
+(`app/src/com/android/rkpdapp/service/RemoteProvisioningService.java`) first
+rejects the request if no provisioning URL is configured (`Settings.getDefaultUrl`
+empty), and restricts binders to the system UID and itself.  It then resolves
+the named `IRemotelyProvisionedComponent` through `ServiceManagerInterface` and
+hands back an `IRegistration` backed by `RegistrationBinder`.
+
+#### 40.4.11.2  The Provisioning Round-Trip
+
+`Provisioner.provisionKeys`
+(`app/src/com/android/rkpdapp/provisioner/Provisioner.java`) drives the
+end-to-end flow against two collaborators: `SystemInterface`, which wraps the
+KeyMint `IRemotelyProvisionedComponent` HAL, and `ServerInterface`, which speaks
+HTTP to the RKP backend (`app/src/com/android/rkpdapp/interfaces/`).
+
+The HAL side generates the raw material.  `SystemInterface.generateKey` calls
+`IRemotelyProvisionedComponent.generateEcdsaP256KeyPair`, which returns a
+`MacedPublicKey` (a public key MAC'd by a device-private key the host never
+sees).  A batch of these is then passed to `SystemInterface.generateCsr`, which
+calls `generateCertificateRequestV2` (the v3 HAL path) or the older
+`generateCertificateRequest` plus `DeviceInfo` / `ProtectedData` (v1), producing
+a CBOR certificate signing request.
+
+The server side runs in two HTTP operations defined in `ServerInterface`:
+
+1. `fetchGeek` GETs `:fetchEekChain`, retrieving the Google Endpoint Encryption
+   Key chain (GEEK) and a challenge.  The GEEK chain is what the CSR is encrypted
+   to, binding the request to the genuine backend.
+2. `requestSignedCertificates` POSTs the CSR to `:signCertificates`, and the
+   backend returns an X.509 certificate chain for each provisioned key.
+
+`Provisioner` stores the signed keys in a Room database
+(`app/src/com/android/rkpdapp/database/`, `ProvisionedKeyDao` /
+`ProvisionedKey`) keyed by the owning `IRemotelyProvisionedComponent` and an
+expiration time, so Keystore2 can later draw a pre-attested key from the pool
+without a fresh network round-trip.  `WidevineProvisioner` reuses the same
+machinery for the Widevine DRM component.
+
+```mermaid
+sequenceDiagram
+    participant KS as "Keystore2 (rkpd_client)"
+    participant SS as "system_server shim (RegistrationProxy)"
+    participant APP as "rkpdapp (Provisioner)"
+    participant HAL as "IRemotelyProvisionedComponent (KeyMint HAL)"
+    participant SRV as "RKP backend"
+    KS->>SS: getRegistration(irpcName)
+    SS->>APP: bind IRemoteProvisioning
+    APP->>HAL: generateEcdsaP256KeyPair()
+    HAL-->>APP: MacedPublicKey[]
+    APP->>SRV: GET :fetchEekChain (GEEK + challenge)
+    SRV-->>APP: GEEK chain
+    APP->>HAL: generateCertificateRequestV2(keys, challenge)
+    HAL-->>APP: CSR (CBOR)
+    APP->>SRV: POST :signCertificates (CSR)
+    SRV-->>APP: X.509 cert chains
+    APP->>APP: store in ProvisionedKey DB
+    KS->>SS: getKey() draws pooled key + chain
+```
+
+Behavior is gated by aconfig flags in `flags/rkpd_flags.aconfig`
+(`com.android.rkpd.flags`), including `enable_feedback_loop` (report cert use
+back to the server via `ConfirmCertificates`), `report_device_reset`, and
+`enable_widevine_multiple_round_trips`.  The post-processing that may rewrite
+the returned chain, and the Keystore2-side gating and concurrency cap, are
+separate and covered in sections 40.10.5 and 40.10.6.
+
 ### 40.4.12  KeyMint AIDL Interface
 
 The KeyMint HAL is defined in AIDL at
@@ -3708,6 +3808,7 @@ Android has progressively tightened HTTPS requirements:
 | 10 | TLS 1.3 enabled by default |
 | 14 | System-only CA trust for targetSdk >= 34 |
 | 16 (Baklava) | Certificate Transparency enabled by default |
+| 17 (Cinnamon Bun) | `usesCleartextTraffic` manifest flag deprecated; ignored for targetSdk >= 37 (see ch35 §35.8.10) |
 
 ### 40.9.11  DNS over TLS / DNS over HTTPS
 
@@ -4051,6 +4152,119 @@ flowchart TD
     H -->|No| F
     H -->|Yes| I["Replace leaf + remaining chain"]
 ```
+
+### 40.10.7  HPKE Hybrid Public-Key Encryption Through JCA
+
+Hybrid Public Key Encryption (HPKE, RFC 9180) combines a KEM (key
+encapsulation), a KDF, and an AEAD into one scheme: a sender encapsulates a
+fresh symmetric key to the recipient's public key and uses it to seal a
+message, so the recipient needs only its private key to open it. BoringSSL has
+implemented HPKE for a while and Conscrypt exposed it internally, but Android 17
+promotes it to a public API under `android.crypto.hpke`, gated by the
+`com.android.libcore.hpke_public_api` aconfig flag
+(`libcore/libcore.aconfig`).
+
+The public surface lives in libcore at
+`libcore/luni/src/main/java/android/crypto/hpke/`. An app does not talk to a JCA
+`Cipher`; instead the entry point is `Hpke`, which resolves an implementation
+through the JCA Provider mechanism under a custom service type, `ConscryptHpke`:
+
+```java
+// app code
+Hpke hpke = Hpke.getInstance(
+        "DHKEM_X25519_HKDF_SHA256/HKDF_SHA256/AES_128_GCM");
+Sender sender = new Sender.Builder(hpke, recipientPublicKey).build();
+byte[] enc = sender.getEncapsulated();   // send to recipient
+byte[] ct  = sender.seal(plaintext, aad);
+```
+
+The suite name is a `KEM/KDF/AEAD` triple. The three components are named with
+`AlgorithmParameterSpec` subclasses, each a `java.security.spec.NamedParameterSpec`:
+`KemParameterSpec` (for example `DHKEM_X25519_HKDF_SHA256`), `KdfParameterSpec`
+(`HKDF_SHA256`), and `AeadParameterSpec`, whose constants are
+`AeadParameterSpec.AES_128_GCM`, `AES_256_GCM`, and `CHACHA20POLY1305`.
+
+The provider-facing contract is `HpkeSpi`
+(`libcore/luni/src/main/java/android/crypto/hpke/HpkeSpi.java`), the
+Service-Provider-Interface a crypto provider implements to supply HPKE. Its
+methods mirror the RFC operations:
+
+```java
+void engineInitSender(PublicKey recipientKey, byte[] info,
+        PrivateKey senderKey, byte[] psk, byte[] psk_id);
+void engineInitRecipient(byte[] encapsulated, PrivateKey recipientKey,
+        byte[] info, PublicKey senderKey, byte[] psk, byte[] psk_id);
+byte[] engineSeal(byte[] plaintext, byte[] aad);
+byte[] engineOpen(byte[] ciphertext, byte[] aad);
+byte[] engineExport(int length, byte[] context);
+byte[] getEncapsulated();
+```
+
+Conscrypt registers the implementations in its provider. `OpenSSLProvider`
+(`external/conscrypt/repackaged/common/src/main/java/com/android/org/conscrypt/OpenSSLProvider.java`)
+puts a `ConscryptHpke.<suite>` entry for each supported KEM/KDF/AEAD triple,
+choosing the adapter class that bridges to `android.crypto.hpke.HpkeSpi` when
+that public interface is present on the platform:
+
+```java
+String baseClass = classExists("android.crypto.hpke.HpkeSpi")
+        ? PREFIX + "AndroidHpkeSpi" : PREFIX + "HpkeImpl";
+put("ConscryptHpke.DHKEM_X25519_HKDF_SHA256/HKDF_SHA256/AES_128_GCM",
+        baseClass + "$X25519_AES_128");
+```
+
+`AndroidHpkeSpi`
+(`external/conscrypt/repackaged/platform/src/main/java/com/android/org/conscrypt/AndroidHpkeSpi.java`)
+adapts the public `HpkeSpi` to Conscrypt's internal SPI, and `HpkeImpl`
+(`.../common/src/main/java/com/android/org/conscrypt/HpkeImpl.java`) drives
+BoringSSL through `NativeCrypto.EVP_HPKE_CTX_*`. So `Hpke.getInstance()` ->
+`Provider.getService("ConscryptHpke", suite)` -> `AndroidHpkeSpi` ->
+`HpkeImpl` -> BoringSSL. The current implementation supports the base HPKE mode;
+the PSK and authenticated modes are not yet wired through.
+
+### 40.10.8  Lock-Screen Rate-Limiting Rename and Recovery Shortlink
+
+Two smaller lock-screen changes land in `frameworks/base`. First, the method
+that reports how long primary authentication is throttled was renamed:
+`LockPatternUtils#getLockoutAttemptDeadline(int)` became `getLockoutEndTime(int)`,
+and it now returns a `java.time.Duration` instead of a raw deadline timestamp.
+The value is the time since boot at which the user may attempt PIN, pattern, or
+password again, or `Duration.ZERO` when no lockout is in effect
+(`frameworks/base/core/java/com/android/internal/widget/LockPatternUtils.java`,
+lines 1187-1197). The result is served through a `PropertyInvalidatedCache` and
+backed by `ParcelDuration getLockoutEndTime(int userId)` on the lock-settings
+binder interface (`ILockSettings.aidl`, line 76).
+
+Second, a new string resource `config_lockscreenLockoutShortlink` (default
+`g.co/android/unlock`) gives the bouncer a recovery URL to show once a device is
+locked out (`frameworks/base/core/res/res/values/config.xml`, line 1552, with
+its `java-symbol` in `symbols.xml`). SystemUI substitutes it into the locked-out
+bouncer messages when the `android.security.Flags.lockscreenTimeoutShortlink`
+aconfig flag is set
+(`frameworks/base/packages/SystemUI/src/com/android/systemui/bouncer/shared/model/BouncerMessageStrings.kt`),
+so a user who has forgotten the credential is pointed at the account-recovery
+flow rather than only being told to wait.
+
+### 40.10.9  SELinux memfd Class Compatibility
+
+Android 17 expects the SELinux policy to treat anonymous memory file descriptors
+as their own object class. The kernel and `libsepol` carry a policy capability
+`memfd_class` (`POLICYDB_CAP_MEMFD_CLASS` in
+`external/selinux/libsepol/src/polcaps.c`); when it is enabled, the kernel labels
+`memfd_create()` descriptors with the `memfd_file` class instead of folding them
+into the generic `file` class. AOSP's userspace policy already defines that class
+(`class memfd_file` in `system/sepolicy/private/security_classes`) and relies on
+it throughout: `domain.te` grants every domain `memfd_file` access to its own
+descriptors and locks down `ioctl` on others, and media, sensor, allocator, and
+zygote domains pass `memfd_file` descriptors across IPC
+(`system/sepolicy/private/domain.te`, `app.te`, `mediaserver.te`).
+
+Because those allow rules name the `memfd_file` class explicitly, a device whose
+kernel does not enable the `memfd_class` capability would see those descriptors
+labeled `file`, the `memfd_file` rules would never match, and the affected IPC
+would be denied. Devices must therefore enable the `memfd_class` policy
+capability and support the `memfd_file` class so the shipped policy applies as
+written.
 
 ---
 

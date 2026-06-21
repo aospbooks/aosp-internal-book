@@ -4713,6 +4713,110 @@ baseline. This uprev is purely a class-library refresh: it does not change the
 ART runtime, compiler, GC, or DEX/OAT formats described in this chapter, only the
 `java.*` source that `dex2oat` compiles and the runtime loads.
 
+### 18.11.8 Generational Mark-Compact Collection
+
+Section 18.5.6 described generational collection for the Concurrent Copying
+collector (the `use_generational_cc_` / `young_gen_` flags). The Mark-Compact
+collector of section 18.5.17 gains the same generational treatment: a minor GC
+traces and compacts only recently-allocated objects instead of the whole heap.
+The feature is controlled by the `use_generational_cmc` aconfig flag and the
+`persist.device_config.runtime_native_boot.use_generational_gc` system property,
+both read in `ShouldUseGenerationalGC()`:
+
+```
+// art/runtime/gc/collector/mark_compact.cc, lines 331-338
+bool ShouldUseGenerationalGC() {
+  if (gUseUserfaultfd && !com::android::art::flags::use_generational_cmc()) {
+    return false;
+  }
+  return GetBoolProperty(
+      "persist.device_config.runtime_native_boot.use_generational_gc", true);
+}
+```
+
+The flag itself is fixed read-only (`art/build/flags/art-flags.aconfig`, the
+`use_generational_cmc` entry, namespace `art_performance`). When generational
+CMC is on, `MarkCompact` keeps `use_generational_` set and flips `young_gen_`
+for each minor collection (`art/runtime/gc/collector/mark_compact.cc`, lines
+508-511, 524-525); `GetGcType()` already reports `kGcTypeSticky` for the
+collector (`art/runtime/gc/collector/mark_compact.h`, line 69).
+
+Unlike the two-generation CC scheme, generational CMC tracks three generations
+and promotes by age rather than after a single survival:
+
+```
+// art/runtime/gc/collector/mark_compact.cc, lines 1190-1196 (condensed)
+// All allocations since the last GC are in the young generation. Objects that
+// survive one GC move to the mid generation; objects that survive a second
+// contiguous GC are promoted to the old generation. A young GC marks both
+// young and mid objects, then compacts and promotes the survivors one
+// generation up.
+```
+
+The old generation is not compacted; the `mid_gen_end_` pointer segregates
+young from mid during marking and becomes `old_gen_end_` at the end of a cycle.
+The card table (section 18.5.10) identifies old-generation objects holding
+references into younger generations so a minor GC need not rescan the whole
+heap.
+
+### 18.11.9 Static Final Fields Are No Longer Reflectively Writable
+
+Before Android 17, an app could overwrite a `static final` field through
+reflection (`Field.setAccessible(true)` followed by `Field.set(...)`) or JNI
+(`SetStatic<Type>Field`). For apps targeting SDK 37 (`SdkVersion::kC`,
+`art/libartbase/base/sdk_version.h` line 44), ART now rejects those writes with
+an `IllegalAccessException`. The gate is the target SDK version, so existing
+binaries keep working until they recompile against the new target.
+
+The decision lives in `ArtField::IsUnmodifiable()`, which short-circuits for
+apps targeting Android B (SDK 36) or older:
+
+```
+// art/runtime/art_field-inl.h, lines 528-534
+// Before and on Android B any field could be overwritten using reflection, with
+// final fields in record classes being the only exception. For compatibility,
+// allow apps targeting B or an older release to overwrite such fields.
+uint32_t target_sdk_version = Runtime::Current()->GetTargetSdkVersion();
+if (IsSdkVersionSetAndAtMost(target_sdk_version, SdkVersion::kB)) {
+  return false;
+}
+```
+
+For an app targeting SDK 37 or higher the method returns true for an ordinary
+`static final` field, and the reflection path throws:
+
+```
+// art/runtime/native/java_lang_reflect_Field.cc, lines 351-385 (condensed)
+ALWAYS_INLINE inline static bool ThrowIAEIfFieldIsNotOverwritable(
+    ObjPtr<mirror::Field> field) {
+  ArtField* art_field = field->GetArtField();
+  // ... record an overwrite-attempt metric ...
+  if (art_field->IsWriteProtected()) {
+    // System.in/out/err: modifiable via setIn/setOut/setErr only.
+    // Reflection/JNI may still overwrite them for apps targeting B or older.
+    ...
+  } else if (!IsUnmodifiable(field)) {
+    return false;
+  }
+  ThrowIllegalAccessException(...);
+  return true;
+}
+```
+
+The JNI path enforces the same rule. `JNI::SetStaticField` runs through
+`EnsureModifiable()`, which calls `RecordModificationAttempt()` and then aborts
+the write when `IsUnmodifiable()` holds (`art/runtime/jni/jni_internal.cc`,
+lines 1653-1683). Two carve-outs survive: the write-protected
+`System.in`/`out`/`err` fields (mutable only through `System.setIn/setOut/setErr`),
+and class redefinition under a Java-debuggable runtime, which Android Studio
+relies on for hot-swapping fields. Apps targeting SDK 37 and higher also lose
+the ability to modify `static final` fields whose type is `MethodHandle`,
+`VarHandle`, an `Atomic*FieldUpdater`, or `Unsafe`, even where a plain field
+would still be writable (`art/runtime/art_field-inl.h`, lines 536-552). Each
+attempt increments a runtime metric -- `BcpStaticFinalFieldOverwrite` for
+boot-classpath fields, `AppStaticFinalFieldOverwrite` for app fields -- so the
+platform can measure how many apps still rely on the old behavior.
+
 ---
 
 ## 18.12 The Native Rust Zygote (zygote_next)
@@ -5023,8 +5127,8 @@ ART has evolved significantly over Android releases:
 | 13 | Improved profile-guided optimization |
 | 14 | Mark-Compact (CMC) collector, RISC-V support |
 | 15 | Continued CMC rollout, improved JIT |
-| 16 | Generational CMC, DEX container (V41) groundwork |
-| 17 | Pantherlake x86 variant (AVX2), AVX2 vectorization for x86-64, V41 container maturation, value-class flag, record classes treated as normal, MADV_FREE re-enabled for CC GC |
+| 16 | DEX container (V41) groundwork |
+| 17 | Generational mark-compact (CMC) GC, static-final fields no longer reflectively writable, libcore uprev to OpenJDK 25, Pantherlake x86 variant (AVX2), AVX2 vectorization for x86-64, V41 container maturation, value-class flag, record classes treated as normal, MADV_FREE re-enabled for CC GC |
 
 Key source files for further exploration:
 

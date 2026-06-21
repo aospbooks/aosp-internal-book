@@ -2717,6 +2717,40 @@ graph TB
     style OUT fill:#d94a4a,color:#fff
 ```
 
+### 2.5.8 The Read-Only Source Tree During a Build
+
+Android 17 builds run with the source tree mounted read-only. `soong_ui`
+executes the build inside an `nsjail` sandbox
+(`prebuilts/build-tools/linux-x86/bin/nsjail`) and bind-mounts the source
+directory with the read-only flag by default. The flag comes from
+`SandboxConfig.SrcDirMountFlag()`, which returns nsjail's `-R` (read-only) bind
+unless the source dir is explicitly made writable, in which case it returns `-B`
+(`build/soong/ui/build/sandbox_config.go`, lines 31-37, used in
+`build/soong/ui/build/sandbox_linux.go`). On top of that, Kati runs with
+`--werror_writable`, so writing into a read-only directory during product
+configuration is a hard error rather than a warning
+(`build/soong/ui/build/kati.go`, lines 145-146).
+
+The intent is that the build only ever writes under `out/`. Steps that need to
+update checked-in files, such as `m update-api`, build the generated files under
+`out/` and let `soong_ui` copy them back into the tree after the sandboxed build
+finishes (`build/soong/ui/build/update_api.go`, lines 25-30). A build that tries
+to modify the source while it runs fails with a filesystem error. Ninja
+recognizes the kernel's "Read-only file system" message and prints a hint
+(`build/soong/ui/status/ninja.go`, lines 326-330):
+
+1. Generate the file directly under `out/`, which is read-write (recommended).
+2. `BUILD_BROKEN_SRC_DIR_RW_ALLOWLIST := <path> ...` to make a subset of the
+   tree read-write (discouraged).
+3. `BUILD_BROKEN_SRC_DIR_IS_WRITABLE := true` to make the entire tree read-write
+   (highly discouraged).
+
+The first two are wired through `BoardConfig`/`dumpvars` into
+`SetSrcDirIsRO()` and `SetSrcDirRWAllowlist()`
+(`build/soong/ui/build/config.go`, lines 807-808), so a device that genuinely
+needs to write into the tree during config can opt out, at the cost of losing
+the guarantee that a clean checkout stays clean.
+
 ---
 
 ## 2.6 Product Configuration
@@ -3098,6 +3132,23 @@ Its source lives in `build/soong/cmd/release_config/`, which also ships the
 finalized (the codename flips to `REL` and the SDK number is locked).
 
 **Source:** `build/soong/cmd/release_config/release_config/main.go`
+
+The **Canary** release channel that Android publishes starting with Android 17
+is a release-process change, not a build-system artifact. It replaces the old
+Developer Preview with a continuous channel: builds are cut from the trunk on a
+rolling basis and shipped to flashable devices and the emulator, so the latest
+in-development platform is always available without waiting for a numbered
+preview drop. None of this shows up as a new release config. There is no
+`canary` (or `next`) file in `build/release/release_configs/`; that directory
+holds `trunk_staging`, the `eng`/`user`/`userdebug` build variants, the dated
+`mainline_2026_NN` configs, and the per-quarter device configs (`ap2a`, `ap3a`,
+`bp1a` and so on). The word `CANARY` does appear in two unrelated places: as a
+preview codename mapped to API level 10000 in
+`build/soong/android/api_levels.go`, and in the
+`RELEASE_PLATFORM_VERSION_KNOWN_CODENAMES` value list. Neither is a release
+config you can pass to `lunch`. For source builds the working trunk config
+remains `trunk_staging`; the Canary channel is how prebuilt rolling images reach
+testers, layered on top of the same trunk-stable model described in Chapter 3.
 
 ### 2.6.9 Device Configuration: Goldfish (Emulator)
 

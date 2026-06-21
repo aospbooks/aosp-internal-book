@@ -2370,10 +2370,26 @@ bool prepareKeyForUse(const KeyBuffer& lt_key, android::fscrypt::KeyType type,
                       KeyBuffer* kernel_key);
 ```
 
-The wrapping itself is performed by `generateWrappedStorageKey()` and
-`exportWrappedStorageKey()`, which Android 17 moved out of `KeyStorage.cpp`
-and made file-local `static` helpers inside `system/vold/KeyUtil.cpp` (they
-are no longer exported through a header).  They call into the Keystore HAL.
+`generateStorageKey()` and `prepareKeyForUse()` dispatch on the `KeyType`, and
+the two wrapped formats take different routes in Android 17.  The legacy
+`kHwWrappedV0` format still goes through KeyMint: `generateV0WrappedStorageKey()`
+asks Keystore to generate an AES key tagged `TAG_STORAGE_KEY`, and
+`prepareV0WrappedKeyForUse()` calls `Keystore::exportKey()`, which invokes
+`convertStorageKeyToEphemeral()` on the security level to re-wrap the long-term
+blob with a fresh ephemeral wrapping key
+(`system/vold/Keystore.cpp`, lines 153-179).
+
+The newer `kHwWrapped` format drops KeyMint entirely and uses Linux kernel block
+ioctls instead.  `generateWrappedStorageKey()` opens the userdata block device
+and issues `BLKCRYPTOGENERATEKEY` to produce the long-term key, and
+`prepareWrappedKeyForUse()` issues `BLKCRYPTOPREPAREKEY` to turn it into the
+ephemeral key the kernel programs into the inline engine
+(`system/vold/KeyUtil.cpp`, lines 81-199).  This is the same path the upstream
+kernel uses for hardware-wrapped inline encryption keys, so it no longer needs a
+KeyMint round-trip.  Both ioctls operate on the main userdata block device, with
+the long-term key capped at `BLK_CRYPTO_MAX_HW_WRAPPED_KEY_SIZE` (128 bytes as of
+kernel v6.17).
+
 A separate binding seed can be mixed into all stored keys via
 `setKeyStorageBindingSeed()`, still declared in `system/vold/KeyStorage.h`:
 

@@ -2594,6 +2594,12 @@ flowchart TD
 
 **Other init/boot changes.** A reworked **boot monitor** lands, though enabling it by default was reverted again this cycle. Boot analysis gains `ro.boottime.event.*` properties and richer bootchart capture (early bootcharting via kernel command line, full-command-line capture, CPU model detection from `/proc/cpuinfo`). Init now passes the shutdown reason to the kernel on reboot, adds reboot reasons for long power-key presses, mounts `securityfs`, and removes the interactive FDR prompt when the TPM has been cleared. `ueventd` gains wildcard matching in sysfs attribute specs and can pull firmware from bootstrap APEXes before the full APEX set is ready.
 
+**ION allocator removed (dma-buf heaps only).** `BufferAllocator` (`system/memory/libdmabufheap/BufferAllocator.cpp`) now allocates only from `/dev/dma_heap/*`; the legacy ION path (`system/memory/libion`) is reduced to deprecated no-op shims, so DMA-buf heaps are the single graphics/media buffer allocator.
+
+**Read-only AOSP source tree at build time.** Soong now mounts the checkout read-only during a sandboxed build: `SandboxConfig.SrcDirMountFlag()` returns `-R` (`build/soong/ui/build/sandbox_config.go`) so build actions cannot write back into the tree and all generated output is confined to `out/`.
+
+**Memory Limiter system service.** A new `MemoryLimiter` service (`frameworks/base/services/core/java/com/android/server/am/MemoryLimiter.java`, JNI `com_android_server_am_MemoryLimiter.cpp`, flag `memory_limiter_enable`) applies cgroup-v2 per-process limits to app UIDs, soft-throttling at `memory.high` and killing a process whose combined anon+swap stays over budget; it complements the system-wide `mmd` swap daemon and the vendor-process-scoped `pmgd` (D.7).
+
 ### Notable integrations
 
 - **GKI kernel: first `android17-6.18` configs.** `kernel/configs` adds the `android17-6.18` branch targeting the Linux 6.18 GKI kernel, while pruning Android R configs and refreshing OGKI approved-build lists and `kernel-lifetimes.xml`.
@@ -2700,6 +2706,11 @@ flowchart LR
 - **New Codec2 software components and AudioFlinger MMAP AIDL.** `frameworks/av/media/codec2/components/` gains APV codecs (`libcodec2_soft_apvdec`/`...apvenc`, `apv/C2SoftApvDec.cpp`) and an IAMF decoder (`libcodec2_soft_iamfdec`, `iamf/C2SoftIamfDec.cpp`). AudioFlinger also moves MMAP stream control onto stable AIDL via `IMmapStream` (`frameworks/av/media/libaudioclient/aidl/android/media/IMmapStream.aidl`, `createMmapBuffer`/`startTrack`/`stopTrack`).
 - **Photo Picker: search and categories (`packages/providers/MediaProvider`).** The Kotlin Photo Picker becomes default on T+ and grows two major features under `photopicker/src/com/android/photopicker/features/`: a `search/` feature (local on-device search backed by AppSearch with a 50k-document limit and restricted-word filtering, plus a cloud-provider `SearchMediaService` SPI) and a `categorygrid/` feature (album/category browsing, including SD-card categories). The embedded picker gains a V2 API surface, `PhotoPickerSelectionParams`, and a location-metadata feature flag.
 - **`packages/modules/Media` API surface.** Mostly housekeeping, but `MediaParser` is migrated onto Media3/ExoPlayer, gains track-aware seeking (per-track duration in `MediaFormat`), deprecates `SAMPLE_FLAG_DECODE_ONLY`, and the media-metrics AIDL is converted to stable AIDL.
+- **VVC / H.266 framework plumbing.** The media framework adds the `MEDIA_MIMETYPE_VIDEO_VVC` MIME type (`frameworks/av/media/module/foundation/MediaDefs.cpp`) and VVC profile/level mappings (`frameworks/av/media/codec2/vndk/C2Config.cpp`, `PROFILE_VVC_MAIN_10`) so a vendor VVC codec can plug into `MediaCodec`. No software VVC codec is bundled, unlike the new APV/IAMF components.
+- **Constant-quality video recording.** `MediaRecorder.setVideoEncodingQuality(int)` (`frameworks/base/media/java/android/media/MediaRecorder.java`) holds a fixed quality level and lets the bitrate float, plumbed through `StagefrightRecorder.cpp` and `MediaCodecSource::adjustMediaFormatForConstantQuality()` onto encoders supporting `BITRATE_MODE_CQ`.
+- **Dynamic camera session output updates + logical multi-camera metadata.** `CameraCaptureSession.updateOutputConfigurations(List<OutputConfiguration>)` (`frameworks/base/core/java/android/hardware/camera2/CameraCaptureSession.java`, AIDL `ICameraDeviceUser.aidl`) swaps a session's output surfaces in place without tearing it down, and `LOGICAL_MULTI_CAMERA_ADDITIONAL_RESULTS` (`CaptureRequest.java`) requests per-physical-camera metadata without dedicated physical streams.
+- **Background audio hardening at SDK 37.** `HardeningEnforcer` (`frameworks/base/services/core/java/com/android/server/audio/HardeningEnforcer.java`) blocks audio-focus and volume-control requests from background apps targeting SDK 37 unless they hold an exemption, enforced through AppOps (`OP_TAKE_AUDIO_FOCUS`, `OP_CONTROL_AUDIO`) from `AudioService`.
+- **Audio-managed Bluetooth SCO.** The audio HAL gains `IBluetooth.setScoConfig(ScoConfig)` (`hardware/interfaces/audio/aidl/android/hardware/audio/core/IBluetooth.aidl`) so the audio framework owns the SCO link lifecycle (selected via `AudioManager.setCommunicationDevice`) rather than the Bluetooth stack, gated by `bluetooth.sco.managed_by_audio` and `AudioDeviceBroker`'s `mScoManagedByAudio`.
 
 ## D.5 Runtime
 
@@ -2746,6 +2757,12 @@ FD inheritance is now governed by explicit, dated allow-lists in each species (`
 **Value and record classes.** `mirror::Class` gains first-class `IsValueClass()`/`SetValueClass()` and `IsRecordClass()`/`SetRecordClass()` accessors (`art/runtime/mirror/class.h` lines 341-357), backed by new `mirror::Class` flags (`kClassFlagValue`/`kClassFlagRecord`). This is groundwork for Valhalla-style value classes; records are now treated as normal classes carrying the record flag.
 
 **GC tuning.** The collector re-enables eager `MADV_FREE`-based page release under the concurrent-copying GC (reverting an earlier temporary disable; `art/runtime/gc/collector/garbage_collector.cc` ~line 465), and GC knobs are now reported through the `ArtDeviceStatus` pulled atom for fleet telemetry.
+
+**Generational mark-compact (CMC) GC.** The mark-compact collector gains a generational mode behind the `use_generational_cmc` aconfig flag (`art/build/flags/art-flags.aconfig`, `art_performance` namespace), gated at runtime by `ShouldUseGenerationalGC()` (`art/runtime/gc/collector/mark_compact.cc`). A minor GC traces and compacts only recently-allocated objects rather than the whole heap, promoting survivors by age.
+
+**Static final fields no longer reflectively writable at SDK 37.** For apps targeting SDK 37, `ArtField::IsUnmodifiable()` (`art/runtime/art_field-inl.h`) returns true for ordinary `static final` fields, so reflective (`java_lang_reflect_Field.cc`) and JNI (`jni_internal.cc`) writes throw `IllegalAccessException` instead of silently mutating a constant.
+
+**Lock-free `MessageQueue` at SDK 37.** Android 17 adds a concurrent `MessageQueue` reimplementation selected by the `release_package_messagequeue_implementation` Soong config; the default `CombinedMessageQueue` (`frameworks/base/core/java/android/os/CombinedDeliMessageQueue/MessageQueue.java`) picks at runtime between the legacy `synchronized` queue and a `VarHandle`-CAS "DeliQueue", switching to the lock-free path for system processes and apps gated by the `USE_NEW_MESSAGEQUEUE` compat change (`@EnabledAfter(BAKLAVA)`, SDK 37+).
 
 ### Notable integrations
 
@@ -2806,6 +2823,12 @@ flowchart TD
 ```
 
 **SystemUI scene container (flexiglass).** SystemUI continues the shade/keyguard rewrite around the scene framework under `frameworks/base/packages/SystemUI/src/com/android/systemui/scene/` (`data`, `domain`, `ui/{view,viewmodel,compose}`, `shared`). Numerous `[flexiglass]` and `[Desktop]` shade/status-bar commits feed this; the Compose-backed `SceneWindowRootView` path is the direction of travel for the shade and lockscreen.
+
+**Large-screen orientation/resizability opt-out removed at SDK 37.** For apps targeting SDK 37, the window manager stops honoring `resizeableActivity` and the restricted-resizability property on large screens (>600dp), forcing universal resizability; the SDK gate is `DISABLE_OPT_OUT_UNIVERSAL_RESIZABLE_BY_DEFAULT` (`frameworks/base/services/core/java/com/android/server/wm/AppCompatResizeOverrides.java`).
+
+**Reduced activity relaunch on config changes.** At SDK 37 a set of config changes (keyboard, keyboard-hidden, navigation, touchscreen, color-mode) no longer recreates the activity by default; the masked set is `RECREATE_ON_CONFIG_CHANGES_MASK` (`frameworks/base/core/java/android/internal/pm/pkg/component/ParsedActivityUtils.java`) and an app opts a change back into relaunch via the `android:recreateOnConfigChanges` manifest attribute, enforced by `AppCompatRecreateOnConfigChangePolicy`.
+
+**Custom notification view memory cap.** SystemUI now verifies that a notification's custom `RemoteViews` stay under a memory limit (`config_notificationStripRemoteViewSizeBytes`, ~5 MB) via `NotificationCustomContentMemoryVerifier` (`frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/notification/row/NotificationCustomContentMemoryVerifier.kt`); for SDK 37 apps an oversized view drops the notification rather than only logging a warning.
 
 ### Notable integrations
 
@@ -2871,6 +2894,8 @@ flowchart TD
 
 **mmd as a statsd producer.** `mmd` reports its own ZRAM telemetry as statsd atoms via `statslog_rust`: `ZramSetupExecuted` from the setup service, plus `ZramMaintenanceExecuted`/`ZramMmStatMmd`/`ZramIoStatMmd`/`ZramBdStatMmd` from maintenance (`system/memory/mmd/src/atom.rs:29-39`). UprobeStats and the Profiling anomaly detector are likewise statsd producers, so A17's memory, tracing, profiling and metrics subsystems are increasingly stitched together through the statsd pipeline.
 
+**PartnerBookmarksProvider** (`packages/providers/PartnerBookmarksProvider`) is a small read-only provider exposing an OEM/carrier's preloaded browser bookmarks; `query()` serves rows from `res/values/` string arrays through a `MatrixCursor` while `insert`/`update`/`delete` throw `UnsupportedOperationException`.
+
 ## D.8 Connectivity
 
 Android 17's connectivity surface is dominated by one cross-cutting theme: **generic ranging**. A new system service unifies UWB, Bluetooth Channel Sounding, Wi-Fi RTT and BLE RSSI behind a single `RangingManager` API, and the controller-level stacks in Bluetooth, Wi-Fi and UWB all grew the primitives that feed it. Alongside ranging, Wi-Fi gained a new Unsynchronized Service Discovery (USD) service, NFC added a gesture-exchange API for tap-to-X, and telephony continued building out satellite / NTN support.
@@ -2930,6 +2955,18 @@ graph TD
 
 **Connectivity (Tethering/NetworkStack).** The 877-commit Connectivity delta is mostly incremental hardening of Tethering, NetworkStack and ConnectivityService; the notable new-capability item is the device-to-device path under `nearby/` gated by `enable_d2d_connectivity_service` (`packages/modules/Connectivity/nearby/flags/d2d_connectivity.aconfig`).
 
+**`usesCleartextTraffic` deprecation.** Apps targeting SDK 37 no longer have the `android:usesCleartextTraffic` manifest flag honored; the compat change `DEPRECATE_USES_CLEARTEXT_TRAFFIC` (`frameworks/base/packages/NetworkSecurityConfig/.../NetworkSecurityConfig.java`) routes cleartext policy entirely through Network Security Config XML so per-domain rules apply instead of a single global toggle.
+
+**Wi-Fi RTT 802.11az secure ranging.** Wi-Fi RTT gains 802.11az secure ranging behind the `secure_ranging` flag: `SecureRangingConfig` and `PasnConfig` (`packages/modules/Wifi/framework/java/android/net/wifi/rtt/`) negotiate PASN (Pre-Association Security Negotiation) to authenticate and protect FTM frames, with open/opportunistic/authenticated modes and `RangingResult.isRangingAuthenticated()`/`isRangingFrameProtected()` status.
+
+**UWB OOB ranging spec v2/v3.** The UWB module extends its out-of-band ranging packet format (`packages/modules/Uwb/ranging/service/oob/oob_packets.pdl`) so two devices can exchange ranging parameters over a side channel (NFC/BLE) before opening the UWB session, feeding the generic ranging stack in D.8.
+
+**Integrated VoIP call logs.** Self-managed VoIP apps can write into the shared system call log (`CallLog.Calls`, new `UUID` column) gated by `telecom_integrated_call_log` flags; `CallAttributes.setLogExcluded()`/`setContactUri()` (`frameworks/base/telecomm/framework/java/android/telecom/CallAttributes.java`) control per-call inclusion, and dialers query VoIP calls via `INCLUDE_VOIP_CALLS_PARAM_KEY`.
+
+**OTT call auto-routing to a premium slice.** When a transactional self-managed VoIP call starts, the system requests a premium 5G slice on the app's behalf via `NET_CAPABILITY_PRIORITIZE_UNIFIED_COMMUNICATIONS` (value 38, `packages/modules/Connectivity/framework/src/android/net/NetworkCapabilities.java`); `ConnectivityService` maps the request onto modem URSP rules, and an app opts out through `PhoneAccount.CAPABILITY_OPT_OUT_OF_PREMIUM_NETWORK`.
+
+**SIM Toolkit app (`Stk`).** The bundled SIM Toolkit UI (`packages/apps/Stk`, package `com.android.stk`) runs inside the phone process and renders proactive SIM commands: `CatService` broadcasts `CAT_CMD_ACTION` (guarded by `RECEIVE_STK_COMMANDS`) to `StkAppService`, which switches on the `CommandType` and launches the matching activity (`StkDialogActivity`, `StkMenuActivity`, `StkInputActivity`, tone player).
+
 ## D.9 Security
 
 Android 17 reshapes the hardware-backed security stack around two themes: moving the secure services (KeyMint, SecureClock, SharedSecret, RKP, Gatekeeper) into protected VMs, and introducing a general in-process sandboxing primitive (LFI) so untrusted native code can run inside trusted processes. Several new repos appear: a dedicated Weaver implementation, the SEE AuthMgr, and an out-of-tree key-attestation verification library.
@@ -2976,8 +3013,12 @@ flowchart TD
 
 ### Notable integrations
 
-- **RKP module** (`packages/modules/RemoteKeyProvisioning`, 55 commits): hardening rather than new architecture — fallback to a default provisioning URL when the server omits/returns a bad one, reset-to-default config on repeated failures/boot, Widevine provisioning moved to the request POST body and gated on model + OEMCrypto/crypto version, device-reset reporting via `UnverifiedDeviceInfo`, and support for the updated `requestSignedCertificates` server API and Sigma.
-- **Weaver warmup/timeout** flags (`android.security.enable_weaver_warmup`, `enable_weaver_get_timeout`, `frameworks/base/core/java/android/security/flags.aconfig`) are consumed by `LockSettingsService` and the keyguard/bouncer UI to pre-warm the Weaver TA before the credential prompt, reducing unlock latency for the new throttling path.
+- **RKP module** (`packages/modules/RemoteKeyProvisioning`, the `com.android.rkpd` APEX, 55 commits): hardening rather than new architecture — fallback to a default provisioning URL when the server omits/returns a bad one, reset-to-default config on repeated failures/boot, Widevine provisioning moved to the request POST body and gated on model + OEMCrypto/crypto version, device-reset reporting via `UnverifiedDeviceInfo`, and support for the updated `requestSignedCertificates` server API and Sigma.
+- **Weaver warmup/timeout** flags (`android.security.enable_weaver_warmup`, `enable_weaver_get_timeout`, `frameworks/base/core/java/android/security/flags.aconfig`) are consumed by `LockSettingsService` and the keyguard/bouncer UI to pre-warm the Weaver TA before the credential prompt, reducing unlock latency for the new throttling path. The framework flag pairs with a new HAL-level `IWeaver.warmUp()` hint in Weaver v3 (`hardware/interfaces/weaver/aidl/android/hardware/weaver/IWeaver.aidl`) that lets the secure element transition to a ready state ahead of an imminent read/write.
+- **HPKE JCA SPI** (`HpkeSpi`). A public Service-Provider Interface for Hybrid Public Key Encryption lands at `libcore/luni/src/main/java/android/crypto/hpke/HpkeSpi.java`; Conscrypt registers `ConscryptHpke.<suite>` entries that bridge to it (`external/conscrypt/.../AndroidHpkeSpi.java`) and route to BoringSSL, exposing HPKE through the standard JCA provider mechanism.
+- **Hardware-wrapped storage keys via kernel ioctls.** Metadata encryption gains a new wrapped-key format: `system/vold/MetadataCrypt.cpp` parses `wrappedkey` alongside the original `wrappedkey_v0` fstab flag, and a `KeyType` enum (`kRaw`/`kHwWrappedV0`/`kHwWrapped`, `system/extras/libfscrypt/include/fscrypt/fscrypt.h`) drives `prepareKeyForUse()` so hardware-wrapped key material reaches the `dm-default-key` inline encryption engine without ever appearing in plaintext.
+- **Lock-screen lockout UX.** `LockPatternUtils.getLockoutEndTime(int)` (`frameworks/base/core/java/com/android/internal/widget/LockPatternUtils.java`, backed by `ILockSettings.aidl`) returns when a throttled user may retry, and a new `config_lockscreenLockoutShortlink` string surfaces an account-recovery link in the lockout UI.
+- **SEPolicy `memfd_class` / `memfd_file`.** When the kernel enables the `memfd_class` policy capability, `memfd_create()` descriptors are labeled with the new `memfd_file` SELinux class (`system/sepolicy/private/security_classes`) rather than generic `file`; Android 17 policy names `memfd_file` in its allow rules (`domain.te`, `app.te`), so devices must enable the capability to match shipped policy.
 - **PCC / Private Compute Core** is granted keystore access in sepolicy ("Allow keystore operations from within PCC").
 
 ## D.10 UI Framework
@@ -3057,6 +3098,14 @@ Setup/teardown uses dedicated activities (`SetupSupervisionActivity.kt`, `Enable
 
 **DocumentsUI: approved document handlers & private space.** A new `approveddochandlers/` package (`ApprovedDocHandlers.kt`, `ApprovedDocMenuController.kt`, gated by `isUseApprovedDocumentHandlerEnabled`) governs which apps may open documents via signature-based trust. The picker also gains "move content into Private Space" (`isMovingContentIntoPrivateSpaceEnabled`) and a new `picker/TrampolineActivity.kt` / `PickFilesFragment.kt`.
 
+**Contact Picker privacy API.** A new app-agnostic contacts picker (`ACTION_PICK_CONTACTS`, app `packages/apps/ContactsPicker`, provider `packages/providers/ContactsProvider/.../picker/ContactsPickerSessionProvider.java`) returns a short-lived session URI granting temporary read access only to the rows the user selected, so an app can ask for individual contacts without holding `READ_CONTACTS`.
+
+**SettingsIntelligence app.** Settings search moves into a separate `packages/apps/SettingsIntelligence` APK (`com.android.settings.intelligence`) that owns the FTS search index (`search_index.db`) and suggestion ranking, indexing every `SearchIndexablesProvider` rather than only the Settings app.
+
+**Location privacy indicators.** SystemUI reworks the location indicator into a distinct privacy chip behind `android.location.flags.location_indicators_enabled` (`frameworks/base/location/java/android/location/flags/location.aconfig`, consumed by `frameworks/base/packages/SystemUI/.../privacy/`), with a longer hold time and optional outline styling separate from the camera/microphone chips.
+
+**EyeDropper app.** A new `packages/apps/EyeDropper` (`com.android.eyedropper`, gated by `enable_eye_dropper_api`) answers an `OPEN_EYE_DROPPER` intent with the ARGB value of a pixel the user taps, providing a system color picker any app can invoke.
+
 ## D.12 AI & Devices
 
 Android 17 pushes on-device AI deeper into the platform: a new NPU Manager mainline module arbitrating access to neural accelerators, a new PersonalContext system app building an on-device personal-context surface, and the first vendoring of the Khronos OpenXR SDK headers alongside a flag-gated Android XR API surface (covering both headsets and MicroXR glasses). CHRE grows a high-throughput data-flow subsystem for always-on sensing.
@@ -3107,6 +3156,8 @@ CHRE (`system/chre`, 536 commits) gains a new **data-flow** subsystem for high-t
 
 Health Connect (`packages/modules/HealthFitness`, 689 commits) is mostly incremental API/UX work: new bulk `grantHealthPermissions` / `revokeHealthPermissions` APIs, derivation of distance and calories from step data, reduced conversion layers in the Changelogs API, and continued build-out of cross-device "matchmaking" / device-data-provider flows (`service/.../onboarding/matchmaking/`, `apk/src/.../controller/matchmaking/`, `.../newDevices/DeviceDataProvider*`).
 
+**CompanionDeviceManager FITNESS_TRACKER / MEDICAL profiles.** `AssociationRequest` (`frameworks/base/core/java/android/companion/AssociationRequest.java`) adds two device profiles, `DEVICE_PROFILE_FITNESS_TRACKER` and `DEVICE_PROFILE_MEDICAL` (flags `FLAG_BAND_DEVICE_PROFILE` / `FLAG_ENABLE_MEDICAL_PROFILE`), each backed by a companion role (`android.app.role.COMPANION_DEVICE_FITNESS_TRACKER` / `..._MEDICAL`) granted to the associating app.
+
 ## D.13 Infrastructure
 
 Android 17's build and virtualization plumbing moved on two fronts. The Soong build system grew a first-class machine-readable "API/compliance" database and continued migrating off Kati-era Make logic, while AVF (the Android Virtualization Framework) turned protected VMs into a multi-tenant, Trusty-capable platform. A new top-level `tools/mainline` repository carries the open-source mainline-train build tooling.
@@ -3152,6 +3203,8 @@ flowchart TD
 **Partial analysis and on-demand variants.** Soong gained an opt-in `SOONG_PARTIAL_ANALYSIS` env var (`build/soong/ui/build/config.go`) restricting the analysis graph to a named target set and its transitive closure. Blueprint added a `PrePartial()` mutator group running before partial analysis (`build/blueprint/context.go`) and a "passive" `moduleGroup` flag for module groups not yet in the build graph. The variant system shifted toward "variants on demand" (VoD): rather than eagerly splitting every os/arch/image variant, Blueprint creates and mutates dependency variants lazily via `createVariantOnDemand`/`searchOnDemandVariant`. Several eager-split paths (test module types, `PRODUCT_HOST_PACKAGES`, `vndk_prebuilt_library`) were retained for correctness during the transition.
 
 **Release-config maturity.** The Make-era release-config logic now lives entirely under Soong (`build/soong/cmd/release_config/`), and naming is enforced: maps must be named `release_config_map.textproto` (`.../release_config_lib/release_configs.go`). build/make's 871 new vs 154 dropped commits are largely build-ID bumps plus removal of legacy product entries, winding down the Kati path.
+
+**Android Canary release channel.** Alongside the build changes, the release *process* gains a continuous Canary channel: rolling builds cut from the trunk-stable tree are published to testers continuously, replacing the periodic Developer Preview drops. The `CANARY` codename maps to API level 10000 (`build/soong/android/api_levels.go`); source builds still use the `trunk_staging` release config.
 
 ### Notable integrations
 
@@ -3262,6 +3315,7 @@ graph TB
 - **AIDL relocation into `hardware/sdv/interfaces`.** Several interface sets moved out of `system/` into the new HAL package: the SDV Gateway interfaces, the Service Bundles Registry AIDL, vpm stable AIDL, and (after a revert) the Telemetry AIDL. This makes the SDV hardware contract a versioned, VINTF-stable surface independent of the agent implementations.
 - **VHAL proxy bridge & OEM/PDK.** `sdv_gateway/vhal_proxy` (`libvhal_proxy`, `config_loader`) lets an unmodified VHAL join the SDV fabric under an allowlisted SDV package name. The reference device supports a custom `/oem_ab` partition (`sdv_core_base/oem_ab/`) for OEM service bundles, and Core targets are PDK-buildable (SDV KeyMint is force-added because the PDK is tested without `system/software_defined_vehicle/` sources).
 - **Security model.** VM-level permissions are an APEX with id `com.oem.sdv.authz` (reference `com.oem.sdv.authz.allow_all.{core,ivi}`); the gateway config additionally restricts native clients by UID, and the middleware ships `crypto_rpc` and `service_authz` for authenticated RPC.
+- **Large-screen app-compat RRO knobs.** New runtime-overlayable config booleans tune large-screen/foldable behavior: `config_isCameraCompatSimulateRequestedOrientationTreatmentEnabled` (and the landscape variant) drive camera-compat letterboxing through `AppCompatCameraSimReqOrientationPolicy` (`frameworks/base/services/core/java/com/android/server/wm/AppCompatConfiguration.java`), and `config_enableSelfKillRecoveryBetweenInternalDisplays` (`frameworks/base/core/res/res/values/config.xml`) lets an app that self-finishes during a fold transition be relaunched to preserve its session.
 
 ## D.15 Practical
 
@@ -3290,6 +3344,8 @@ Traceur adds two Perfetto trace categories developers can toggle in the system t
 - `mq` ("messagequeue tracing"): enables the `mq` `track_event` category for Looper/MessageQueue dispatch tracing (`src_common/com/android/traceur/PerfettoUtils.java:851`).
 
 Traceur also bumped `targetSdk` to 36, enabled R8 bytecode optimization, and removed the dead `bitmaps_in_traceur` flag and the WinscopeUtils/view-capture path.
+
+**DeviceDiagnostics** (`packages/apps/DeviceDiagnostics`, package `com.android.devicediagnostics`) is the hardware-health and trade-in app behind Settings > Reset options > Device Diagnostics: component checks (screen, touch, battery, storage, sensors, hinge) collect a `DeviceReport` protobuf carrying a key-attestation chain, and the separate `tradeinmode/` component gates `adbd` on `persist.adb.tradeinmode` so a partner can read the attested report over adb without unlocking.
 
 ## D.16 Key Source Files Reference
 

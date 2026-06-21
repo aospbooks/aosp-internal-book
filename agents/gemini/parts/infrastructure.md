@@ -3684,7 +3684,53 @@ soong_config_variables: {
 },
 ```
 
-### 54.9.7  Session Management
+### 54.9.7  Out-of-Band Ranging Spec (v2/v3)
+
+When two devices range with each other they have to agree on which technology to
+use and how to configure it before any ranging frames fly. The generic Ranging
+stack carries that negotiation over an out-of-band (OOB) channel -- typically
+BLE GATT -- using a small message protocol defined in
+`packages/modules/Uwb/ranging/service/oob/oob_packets.pdl`. The `.pdl` file is a
+packet description that the `pdlc` tool compiles into the Java parsers used by
+the OOB initiator and responder
+(`packages/modules/Uwb/ranging/service/java/com/android/server/ranging/oob/`).
+Every message begins with the same two-byte `OobMessage` header: a `version`
+byte and a `MessageId`.
+
+The protocol is versioned. The `Version` enum declares `V1 = 1`, `V2 = 2`, and
+`CURRENT = 3`, so a device advertises which revision it speaks and the two sides
+fall back to the lowest common version. Two later revisions add capabilities on
+top of the v1 baseline:
+
+- **v2 -- supported-technology transitioning.** The capabilities exchange can
+  now say whether a device can switch ranging technologies mid-session rather
+  than tearing the session down and starting over. `CapabilitiesResponseV2` adds
+  a `supported_transitioning` field of type `TechnologyTransitioning`, whose
+  values are `NOT_SUPPORTED` and `MAKE_BEFORE_BREAK`. The initiator reads this
+  field to pick a "make before break" engine that brings up the next technology
+  before dropping the current one. (The OOB protocol negotiates several
+  technologies through the `Technology` / `TechnologySet` types: UWB, BLE
+  channel sounding, Wi-Fi NAN RTT, and BLE RSSI.)
+
+- **v3 -- motion notification.** A new `MOTION_NOTIFICATION` message
+  (`MessageId = 0x8`) carries a `Motion` payload reporting detected movement as
+  `NOT_DETECTED`, `SLIGHT`, `MODERATE`, or `LARGE`. Support for it is announced
+  through a `supported_motion` field (type `MotionIndicator`, values
+  `NOT_SUPPORTED` / `SUPPORTED`) added to `ConfigurationRequestV3`. The initiator
+  session handles incoming `MotionNotification` messages in
+  `session/OobInitiatorRangingSession.java` (the `oob/` package only holds the
+  protocol builders and parsers), so an application can react to a peer
+  reporting that it is moving.
+
+The full message set is the `MessageId` enum: capabilities request/response,
+configuration request/response, stop request/response, and the v3 motion
+notification. Because each message type is versioned independently in the PDL
+(for example `CapabilitiesResponseV1` versus `CapabilitiesResponseV2`, and
+`ConfigurationRequestV1` versus `ConfigurationRequestV3`), the generated parser
+selects the right layout from the header version, which is how a v3 device stays
+interoperable with a v1 or v2 peer.
+
+### 54.9.8  Session Management
 
 `UwbSessionManager` is the central class for UWB session lifecycle:
 
@@ -3710,14 +3756,14 @@ The session manager tracks per-session state, handles multicast list updates
 (adding/removing controlees), manages suspend/resume, and routes ranging
 notifications to the correct callback.
 
-### 54.9.8  Country Code and Regulatory
+### 54.9.9  Country Code and Regulatory
 
 `UwbCountryCode` determines the device's operating country and configures
 channel restrictions accordingly.  It listens for telephony and Wi-Fi country
 code changes, defaulting to the SIM-based country.  Regulatory compliance is
 enforced through channel usage restrictions (`ChannelUsage`).
 
-### 54.9.9  Key Source Paths
+### 54.9.10  Key Source Paths
 
 | Component | Path |
 |-----------|------|
@@ -23681,19 +23727,118 @@ Looper and `MessageQueue` dispatch.
 
 ---
 
-## 58.24 Try It: Debug a Real Performance Issue
+## 58.24 DeviceDiagnostics: On-Device Hardware Health
+
+The tools so far in this chapter inspect software state. DeviceDiagnostics
+(`packages/apps/DeviceDiagnostics/`, package `com.android.devicediagnostics`)
+inspects the hardware itself. It is the app behind **System > Reset options >
+Device Diagnostics**: a Settings preference launches its `MainActivity`, and
+from there the user runs component checks and produces a signed report of the
+device's physical condition. The app is aimed at refurbishment and trade-in:
+it answers "is this screen, battery, and storage still good, and is this the
+device it claims to be" rather than "why is this app slow."
+
+### 58.24.1 Two Entry Paths
+
+`MainActivity` (a `CollapsingToolbarBaseActivity` rendering
+`res/xml/preferences_main.xml`) offers two top-level paths:
+
+- **Component health** (`DiagnosticsActivity`, `diagnostics_landing.xml`) runs
+  on-device checks: a manual **screen test** and **touch test** (the
+  `evaluated/ScreenTest*` and `TouchTest*` activities walk the user through
+  full-screen patterns and a touch grid), plus read-only **Battery** and
+  **Storage** detail screens (`BatteryActivity`, `StorageActivity`).
+- **Evaluation mode** (`EvaluationModeActivity`) is the attested, two-device
+  flow used when grading a device for trade-in. It pairs over Bluetooth and
+  exchanges QR codes between the device under test and a trusted verifier
+  device (the `trusted/` activities), and it is only offered when Bluetooth is
+  enabled.
+
+### 58.24.2 The DeviceReport and Key Attestation
+
+The hardware facts the app collects are gathered by the helpers in
+`DeviceDiagnosticsLib/src/main/java/com/android/devicediagnostics/evaluated/`
+(battery, storage, camera, hinge, sensor, screen, lock, product) into a single
+`DeviceReport` protobuf defined in
+`DeviceDiagnosticsLib/src/main/proto/diagnostics.proto`. The report carries
+fields a buyer cares about: battery `cycle_count` and `state_of_health`,
+storage `useful_lifetime_remaining`, hinge fold counts, moisture-intrusion
+sensor state, factory-reset-protection status, and the screen/touch test
+results.
+
+To make the report trustworthy, it embeds a **key attestation** certificate
+chain from the device's keystore. `AttestationController` sends the attestation
+record (with a caller-supplied challenge) to a verifier that parses it as a
+`ParsedAttestationRecord` and validates the chain over the network; a
+self-check may soft-fail the network step, but a graded device must verify.
+This is what lets a remote party trust that the report came from genuine,
+non-rooted hardware rather than a spoofing app.
+
+```mermaid
+graph TB
+    MAIN["MainActivity<br/>(preferences_main)"]
+    DIAG["DiagnosticsActivity<br/>(component health)"]
+    EVAL["EvaluationModeActivity<br/>(trade-in / trusted)"]
+    TESTS["evaluated/* tests<br/>(screen, touch, battery,<br/>storage, sensors, hinge)"]
+    REPORT["DeviceReport protobuf<br/>(diagnostics.proto)"]
+    ATT["AttestationController<br/>(key attestation + verify)"]
+    CP["Content providers<br/>(GetStatus / Evaluate / TradeInMode)"]
+
+    MAIN --> DIAG
+    MAIN --> EVAL
+    DIAG --> TESTS
+    EVAL --> TESTS
+    TESTS --> REPORT
+    REPORT --> ATT
+    REPORT --> CP
+```
+
+### 58.24.3 Trade-In Mode and Privileged Surfaces
+
+Three exported content providers expose the report and the trade-in workflow to
+privileged callers rather than to ordinary apps. `GetStatusContentProvider`
+returns the assembled `DeviceReport` as a single-row cursor, rendered to JSON by
+`DeviceReportJsonFormatter`, and is guarded by `READ_PRIVILEGED_PHONE_STATE`.
+`EvaluateContentProvider` and `TradeInModeTestingContentProvider` drive the
+evaluation flow and are guarded by the `ENTER_TRADE_IN_MODE` permission.
+
+Trade-in mode itself lives in the separate `tradeinmode/` component: a
+`tradeinmode` Java command-line tool (a `java_binary` whose `main_class` is
+`com.android.devicediagnostics.commands.Commands`) plus an `AttestationCli`,
+keyed off the `persist.adb.tradeinmode` system property. The shipped
+`tradeinmode.rc` does not launch that command; it gates `adbd` on the
+property, stopping `adbd` when `persist.adb.tradeinmode` is `-1` on a
+non-debuggable build so the device cannot fall back to a normal shell. It lets a device be
+placed into a restricted state where a kiosk or partner can read the
+attested diagnostic report over adb without unlocking the device. The bulk of
+the UI and collection logic is built as a reusable `DeviceDiagnosticsLib`
+Android library, with `app/` and `tradeinmode/` as the shipping artifacts.
+
+| Component | Path |
+|-----------|------|
+| App entry / landing | `packages/apps/DeviceDiagnostics/DeviceDiagnosticsLib/src/main/java/com/android/devicediagnostics/MainActivity.kt` |
+| Component-health landing | `.../DiagnosticsActivity.kt`, `res/xml/diagnostics_landing.xml` |
+| Hardware collectors | `.../evaluated/` (BatteryUtilities, StorageUtilities, CameraUtilities, HingeUtilities, SensorUtilities, ScreenUtilities, LockUtilities) |
+| Report schema | `.../proto/diagnostics.proto` |
+| Attestation | `.../AttestationController.kt`, `.../trusted/` |
+| Privileged providers | `.../GetStatusContentProvider.kt`, `.../EvaluateContentProvider.kt`, `.../TradeInModeTestingContentProvider.kt` |
+| Trade-in command | `packages/apps/DeviceDiagnostics/tradeinmode/` |
+
+---
+
+## 58.25 Try It: Debug a Real Performance Issue
 
 This section walks through a complete debugging workflow for a realistic
 performance problem: an application that exhibits jank (dropped frames)
 during list scrolling.
 
-### 58.24.1 Problem Statement
+### 58.25.1 Problem Statement
 
 A user reports that a RecyclerView-based application stutters when scrolling
 quickly.  The app displays a list of items with images and text.  The
 stutter is reproducible on a Pixel device.
 
-### 58.24.2 Step 1: Confirm the Problem with gfxinfo
+### 58.25.2 Step 1: Confirm the Problem with gfxinfo
 
 ```bash
 # Reset frame stats
@@ -23722,7 +23867,7 @@ HISTOGRAM:
 The 16.63% jank rate confirms the problem.  For smooth 60fps scrolling,
 frame rendering must complete within 16.67ms.
 
-### 58.24.3 Step 2: Capture a Perfetto System Trace
+### 58.25.3 Step 2: Capture a Perfetto System Trace
 
 ```bash
 # Create trace config
@@ -23775,7 +23920,7 @@ adb shell perfetto -c /data/local/tmp/scroll_trace.pbtxt \
 adb pull /data/misc/perfetto-traces/scroll_trace.perfetto-trace .
 ```
 
-### 58.24.4 Step 3: Analyze in Perfetto UI
+### 58.25.4 Step 3: Analyze in Perfetto UI
 
 Open the trace in `ui.perfetto.dev` or Perfetto embedded in Android Studio.
 
@@ -23805,7 +23950,7 @@ flowchart TD
     O -- "Complex layout" --> R["Simplify layout hierarchy"]
 ```
 
-### 58.24.5 Step 4: CPU Profile the Hot Path
+### 58.25.5 Step 4: CPU Profile the Hot Path
 
 The Perfetto trace shows that `onBindViewHolder` is taking 25ms on some
 frames.  Let us use simpleperf to understand why:
@@ -23837,7 +23982,7 @@ Overhead  Command     Shared Object       Symbol
 The CPU profile reveals that JPEG decompression (`jpeg_decompress()`) is
 happening synchronously on the main thread during view binding.
 
-### 58.24.6 Step 5: Check for Memory Issues
+### 58.25.6 Step 5: Check for Memory Issues
 
 The GC activity in the trace suggests memory pressure.  Let us profile
 allocations:
@@ -23886,7 +24031,7 @@ LIMIT 10;
 **Expected finding**: Large allocations from bitmap decoding during each
 scroll event.
 
-### 58.24.7 Step 6: Verify with dumpsys meminfo
+### 58.25.7 Step 6: Verify with dumpsys meminfo
 
 ```bash
 # Before scrolling
@@ -23914,7 +24059,7 @@ Total PSS:         35,678    48,321   +12,643 KB
 The significant growth in both Java and Native heap during scrolling
 confirms that images are being decoded and not properly cached.
 
-### 58.24.8 Step 7: Root Cause and Fix
+### 58.25.8 Step 7: Root Cause and Fix
 
 The debugging workflow reveals:
 
@@ -23942,7 +24087,7 @@ flowchart LR
     D --> E
 ```
 
-### 58.24.9 Step 8: Verify the Fix
+### 58.25.9 Step 8: Verify the Fix
 
 After implementing the fix, re-run the same measurements:
 
@@ -23970,7 +24115,7 @@ The Perfetto trace should show:
 - No GC pauses during scroll
 - Smooth Choreographer frame cadence
 
-### 58.24.10 Debugging Checklist
+### 58.25.10 Debugging Checklist
 
 Use this checklist when debugging performance issues:
 

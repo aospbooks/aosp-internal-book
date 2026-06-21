@@ -8830,12 +8830,93 @@ This returns the number of currently enabled services and assigned shortcuts
 whose packages are not in the final permitted set, computed with the same
 legacy-versus-strict logic as the enforcement path.
 
-## 46.13 Try It
+## 46.13 The EyeDropper App
+
+EyeDropper (`packages/apps/EyeDropper/`, package `com.android.eyedropper`) is a
+small system app that lets the user pick a single pixel on the display and
+returns that pixel's color to the caller. It is a general-purpose color picker:
+any app can invoke it through the public `OPEN_EYE_DROPPER` intent and get back the
+ARGB value of the chosen pixel. Its on-screen reticle has accessibility roots:
+the dimensions and drawing were adapted from the Accessibility Scanner color
+picker (`res/values/dimens.xml` notes the reticle is "copied from Accessibility
+Scanner Color Picker," and `ui/touchscreen/TouchscreenReticle.kt` cites the
+accessibility auditor's picker UI). That lineage is where it sits in this
+chapter, but the intent itself is framed for any caller, not tied to a specific
+low-vision or color-vision feature.
+
+### 46.13.1 What It Does and How It Is Invoked
+
+The app exposes one activity, `MainActivity`, with an intent filter for
+`android.intent.action.OPEN_EYE_DROPPER`. The action and its result extra are
+declared in the framework so callers do not depend on the app package directly:
+
+```java
+// frameworks/base/core/java/android/content/Intent.java:4744
+// Activity Action: Launch an eye dropper. It allows the user to pick a pixel
+// on the display. The color of the selected pixel is returned to the
+// requesting activity as an activity result. Pixels from secure windows and
+// protected buffers are blacked out.
+// Output: EXTRA_COLOR is the color of the selected pixel in ARGB (0xFFRRGGBB).
+public static final String ACTION_OPEN_EYE_DROPPER =
+        "android.intent.action.OPEN_EYE_DROPPER";
+```
+
+A caller starts the activity for a result; on selection the activity sets
+`RESULT_OK` with `Intent.EXTRA_COLOR` holding the ARGB integer, and on
+cancellation it sets `RESULT_CANCELED`
+(`MainActivity.sendColor`/`onAbort`). The action is gated by the
+`enable_eye_dropper_api` aconfig flag (`packages/apps/EyeDropper/flags/`), and
+the activity is themed transparent so it overlays whatever is on screen.
+
+### 46.13.2 How a Color Gets Picked
+
+`MainActivity` does not draw the picker itself. On first window focus it
+captures a screenshot of every connected display and binds to
+`EyeDropperControllerService`, handing it the per-display screenshots through a
+local binder (`EyeDropperServiceConnection`). The capture goes through
+`IWindowManager.screenCapture` with both the secure-content and
+protected-content policies set to `REDACT`, so protected surfaces come back
+blacked out rather than readable (`util/ScreenCaptureHelper.kt`). The captured
+hardware bitmap is copied to a software `ARGB_8888` bitmap so individual pixels
+can be read with `getPixel()`.
+
+The service renders a transparent overlay per display and runs one of two input
+modes: a pointer/reticle mode for desktop windowing (cursor driven) and a
+touchscreen reticle mode (`ui/touchscreen/`). When the user commits a pixel, the
+overlay reports the coordinate, the service reads the color from that display's
+screenshot, removes every overlay, and the activity returns the color to the
+caller. Input-device or display changes, a configuration change, or the escape
+key route through the same abort path, so the request always ends in a result
+or a cancel.
+
+```mermaid
+sequenceDiagram
+    participant Caller as "Caller activity"
+    participant MA as "MainActivity"
+    participant WM as "IWindowManager"
+    participant Svc as "EyeDropperControllerService"
+    participant User as "User"
+    Caller->>MA: "startActivityForResult(OPEN_EYE_DROPPER)"
+    MA->>WM: "screenCapture(REDACT secure/protected)"
+    WM-->>MA: "per-display screenshots"
+    MA->>Svc: "bind + showUiOverlay()"
+    Svc->>User: "transparent reticle overlay"
+    User->>Svc: "pick pixel (or abort)"
+    Svc->>MA: "onSelectColor(argb) / onAbort()"
+    MA-->>Caller: "RESULT_OK + EXTRA_COLOR (or RESULT_CANCELED)"
+```
+
+The app holds three privileged permissions to do this work:
+`INTERNAL_SYSTEM_WINDOW` to add the overlay, `READ_FRAME_BUFFER` for the screen
+capture, and `INJECT_EVENTS` to read the cursor position
+(`AndroidManifest.xml`).
+
+## 46.14 Try It
 
 This section provides hands-on exercises for exploring the accessibility
 framework.
 
-### 46.13.1 Exercise: Inspect the Accessibility Tree
+### 46.14.1 Exercise: Inspect the Accessibility Tree
 
 Use `uiautomator` to dump the accessibility tree and compare it with the
 View hierarchy:
@@ -8855,7 +8936,7 @@ Open `a11y-tree.xml` and identify:
 2. Which views are marked `clickable="true"` but have no `content-desc`?
 3. Do any `ImageView` elements lack content descriptions?
 
-### 46.13.2 Exercise: Write a Minimal AccessibilityService
+### 46.14.2 Exercise: Write a Minimal AccessibilityService
 
 Create a minimal accessibility service that logs all events to logcat:
 
@@ -8933,7 +9014,7 @@ adb logcat -s A11yDemo
 Navigate through any app and observe the event stream. Note the frequency
 of events and the information each carries.
 
-### 46.13.3 Exercise: Explore Touch Exploration State Transitions
+### 46.14.3 Exercise: Explore Touch Exploration State Transitions
 
 Enable TalkBack, then observe the touch exploration states by enabling debug
 logging:
@@ -8959,7 +9040,7 @@ Perform these interactions and observe the state transitions in logcat:
 
 5. **Two-finger triple-tap**: Observe the shortcut activation.
 
-### 46.13.4 Exercise: Test Magnification Gestures
+### 46.14.4 Exercise: Test Magnification Gestures
 
 Enable magnification through Settings > Accessibility > Magnification.
 
@@ -8979,7 +9060,7 @@ Enable magnification through Settings > Accessibility > Magnification.
    adb shell dumpsys accessibility | grep -A 20 "Magnification"
    ```
 
-### 46.13.5 Exercise: Audit Content Descriptions
+### 46.14.5 Exercise: Audit Content Descriptions
 
 Use the Accessibility Scanner app (available from Google Play) or write a
 script to audit missing content descriptions:
@@ -9009,7 +9090,7 @@ for node in root.iter('node'):
         print(f"MISSING: {class_name} at {bounds}")
 ```
 
-### 46.13.6 Exercise: Monitor AccessibilityManagerService Event Dispatch
+### 46.14.6 Exercise: Monitor AccessibilityManagerService Event Dispatch
 
 Use the accessibility tracing facility to observe event dispatch in detail:
 
@@ -9031,7 +9112,7 @@ The dump output includes:
 - Magnification state
 - Input filter configuration
 
-### 46.13.7 Exercise: Implement a Switch Access-like Scanner
+### 46.14.7 Exercise: Implement a Switch Access-like Scanner
 
 Build a simplified version of Switch Access that highlights elements one at
 a time:
@@ -9127,7 +9208,7 @@ This exercise demonstrates the core principles of Switch Access:
 tree traversal, node filtering, accessibility focus management, and action
 execution.
 
-### 46.13.8 Exercise: Trace an AccessibilityEvent End-to-End
+### 46.14.8 Exercise: Trace an AccessibilityEvent End-to-End
 
 Set a breakpoint or add logging at each stage of the event pipeline and
 click a button in any app. Trace the event through:
@@ -9144,7 +9225,7 @@ click a button in any app. Trace the event through:
 Document the timing at each stage. On a typical device, the end-to-end
 latency from View event to service callback is 5-15ms.
 
-### 46.13.9 Exercise: Examine Magnification Internals
+### 46.14.9 Exercise: Examine Magnification Internals
 
 Explore the magnification implementation by examining the display
 magnification state through WindowManager:
@@ -9172,7 +9253,7 @@ adb shell dumpsys accessibility | grep -i magnif
 
 Note how the `MagnificationSpec` values change as you pan and zoom.
 
-### 46.13.10 Exercise: Build an Accessibility Audit Tool
+### 46.14.10 Exercise: Build an Accessibility Audit Tool
 
 Combine the knowledge from this chapter to build a comprehensive accessibility
 auditing tool:
@@ -9273,7 +9354,7 @@ include:
 - Lists that do not provide `CollectionInfo` / `CollectionItemInfo`
 - Decorative images that should be marked as not important for accessibility
 
-### 46.13.11 Exercise: Explore the Accessibility Settings Database
+### 46.14.11 Exercise: Explore the Accessibility Settings Database
 
 The accessibility framework stores its configuration in `Settings.Secure`.
 Explore these settings to understand how the system persists state:
@@ -9317,7 +9398,7 @@ adb shell settings get secure accessibility_captioning_enabled
 Modify these settings directly to toggle accessibility features without
 using the Settings UI. This is particularly useful for automated testing.
 
-### 46.13.12 Exercise: UiAutomation for Testing
+### 46.14.12 Exercise: UiAutomation for Testing
 
 The `UiAutomation` framework provides programmatic accessibility service
 access for testing. It uses the same infrastructure as regular accessibility
@@ -9354,7 +9435,7 @@ AccessibilityEvent event = uiAutomation.executeAndWaitForEvent(
 `UiAutomationManager.sendAccessibilityEventLocked()` pathway that ensures
 test events are always dispatched regardless of normal filtering rules.
 
-### 46.13.13 Exercise: Observe the EventStreamTransformation Pipeline
+### 46.14.13 Exercise: Observe the EventStreamTransformation Pipeline
 
 Construct a mental model of the input transformation pipeline by observing
 its behavior with different features enabled:
@@ -9382,7 +9463,7 @@ The order of transformations matters. Magnification gesture detection runs
 before touch exploration, so a triple-tap for magnification is intercepted
 before TouchExplorer can interpret it as double-tap-plus-single-tap.
 
-### 46.13.14 Exercise: Performance Profiling
+### 46.14.14 Exercise: Performance Profiling
 
 Measure the performance impact of accessibility services on your application:
 

@@ -2708,6 +2708,53 @@ flowchart TD
     F --> G
 ```
 
+### 36.7.12 Integrated VoIP Call Logs
+
+Until Android 17 the system call log was effectively a cellular log. A VoIP app
+managing its own calls through Telecom (a self-managed `ConnectionService` or
+the `CallControl` API) had to keep its own in-app history; its calls did not
+appear in the system dialer's recents alongside cellular calls. Android 17 adds
+*integrated call logs* so a VoIP call can be written into the shared
+`CallLog.Calls` provider and shown by the system dialer, with a user opt-out and
+a per-call avatar. The work is gated by two aconfig flags that live in different
+git projects and packages: the stage-1 flag `integrated_call_logs`
+(`packages/services/Telecomm/flags/telecom_integrated_call_log.aconfig`, package
+`com.android.server.telecom.flags`) and the stage-2 flag
+`integrated_call_logs_stage2` (`packages/modules/Telephony/telecom/flags/26Q2_migration_flags.aconfig`,
+package `android.telecom.flags`).
+
+A VoIP app opts a call in or out at call-creation time through `CallAttributes`
+(`frameworks/base/telecomm/framework/java/android/telecom/CallAttributes.java`).
+The builder gains:
+
+- `setLogExcluded(boolean)` (flag `FLAG_INTEGRATED_CALL_LOGS`) -- exclude this
+  call from the system log entirely.
+- `setIsGroupCall(boolean)` and a new call type `CallAttributes.MESSAGING`
+  (flag `FLAG_INTEGRATED_CALL_LOGS_STAGE2`) -- mark group/conference calls and
+  callback-style messaging calls.
+- `setContactUri(Uri)` (flag `FLAG_INTEGRATED_CALL_LOGS_STAGE2`) -- a URI into
+  the app's VoIP contact directory or a CP2 contact, which is how the dialer
+  resolves the participant's display name and avatar image for the log entry.
+
+The call-log contract picks up matching additions in `CallLog.Calls`
+(`frameworks/base/core/java/android/provider/CallLog.java`): a `UUID` column
+keyed to the Telecom call (flag `FLAG_INTEGRATED_CALL_LOGS`), a
+`FEATURES_GROUP_CALL` feature bit, and a separate query surface for VoIP rows so
+older dialers are not disturbed -- `CONTENT_VOIP_URI`, the
+`INCLUDE_VOIP_CALLS_PARAM_KEY` query parameter, and the pre-built
+`CONTENT_URI_WITH_VOIP_CALLS` (the latter two under `FLAG_FILTER_VOIP_CALL_LOGS`).
+A dialer that understands integrated logs queries with VoIP calls included; one
+that does not keeps seeing only cellular rows.
+
+The user preference is plumbed through `TelecomManager`
+(`frameworks/base/telecomm/framework/java/android/telecom/TelecomManager.java`).
+`ACTION_CONFIGURE_CALL_LOG_INTEGRATION` launches the settings surface where the
+user enables or disables logging for a VoIP app, and when that choice changes,
+Telecom broadcasts `ACTION_VOIP_CALL_LOG_PREFERENCE` to the affected app with the
+new state in `EXTRA_VOIP_CALL_LOG_PREFERENCE_STATUS`. The app re-reads the
+preference and stops or resumes contributing entries accordingly. All three are
+gated by `FLAG_INTEGRATED_CALL_LOGS_STAGE2`.
+
 ---
 
 ## 36.8 Data Connection
@@ -3245,6 +3292,91 @@ private static final int EVENT_SLICE_CONFIG_CHANGED = 24;
 URSP (UE Route Selection Policy) rules map traffic descriptors to network
 slices, allowing different apps or traffic types to use different network
 slices for QoS guarantees.
+
+### 36.8.20 Auto-Routing OTT Calls onto a Premium Slice (Android 17)
+
+Network slicing (Section 36.8.19) gives the platform a way to put specific
+traffic on a dedicated 5G connection, but it leaves open the question of *which*
+traffic should get a slice. Android 17 wires up one concrete answer: when an
+over-the-top (OTT) voice or video call is in progress, the system can request a
+premium slice on the calling app's behalf so the call gets a low-latency path
+without the app having to plumb slice requests itself.
+
+The mechanism lives in the Connectivity Mainline module
+(`packages/modules/Connectivity`), not in the telephony stack, but it sits on
+top of the same URSP/slice plumbing. The key capability is a new
+`NetworkCapabilities` constant,
+`NET_CAPABILITY_PRIORITIZE_UNIFIED_COMMUNICATIONS` (value 38, in
+`packages/modules/Connectivity/framework/src/android/net/NetworkCapabilities.java`).
+Its javadoc states that the network "may offer a dedicated slice for
+high-priority, low-latency data paths" and that the capability can be requested
+either by an OTT app directly through `ConnectivityManager.requestNetwork()`
+or by the system on the app's behalf when it detects an active OTT call.
+
+The system-driven path is the new part. A `ConnectivityCallListenerService`
+(`packages/modules/Connectivity/framework/src/android/net/ConnectivityCallListenerService.java`)
+listens for Telecom call events and decides, in `isCallEligibleForSlicing()`,
+whether a call qualifies. A call is eligible when it is a transactional,
+self-managed VoIP call (it carries `Call.Details.PROPERTY_IS_TRANSACTIONAL` and
+is self-managed) and the app has not set the
+`PhoneAccount.CAPABILITY_OPT_OUT_OF_PREMIUM_NETWORK` flag
+(`frameworks/base/telecomm/framework/java/android/telecom/PhoneAccount.java`,
+value `0x200000`). When such a call starts, the service resolves the app's UID
+and calls `ConnectivityManager.onOttCallStateChanged(uid, true)`; when the call
+ends it calls the same method with `false`. The whole behaviour is gated behind
+the `ConnectivityManager.FEATURE_OTT_NETWORK_SLICING` feature bit, so a build or
+module that does not enable it keeps the prior behaviour.
+
+Inside `ConnectivityService` the UID is tracked by
+`AppOptInDefaultNetworkController`, which tags the UID with a `POLICY_OTT` flag
+while the call is active. For each such UID the service builds the slice request
+in `getOttSlicingRequests()`
+(`packages/modules/Connectivity/service/src/com/android/server/ConnectivityService.java`):
+
+```java
+// ConnectivityService.getOttSlicingRequests()
+// Layer 1: prefer unmetered (e.g. Wi-Fi) if available
+new NetworkCapabilities.Builder()
+        .addCapability(NET_CAPABILITY_INTERNET)
+        .addCapability(NET_CAPABILITY_NOT_VCN_MANAGED)
+        .addCapability(NET_CAPABILITY_NOT_METERED)
+        .build();
+// Layer 2: cellular premium slice for unified communications
+new NetworkCapabilities.Builder()
+        .addTransportType(TRANSPORT_CELLULAR)
+        .addCapability(NET_CAPABILITY_NOT_VCN_MANAGED)
+        .addCapability(NET_CAPABILITY_PRIORITIZE_UNIFIED_COMMUNICATIONS)
+        .build();
+```
+
+The two-layer request prefers an unmetered network when one is present and falls
+back to the cellular slice otherwise. The cellular leg carries the unified-
+communications capability, which the data stack maps onto a slice through the
+URSP machinery already described: the modem's URSP rules and
+`TrafficDescriptor` connection capability `CONNECTION_CAPABILITY_UNIFIED_COMMUNICATIONS`
+(`frameworks/base/telephony/java/android/telephony/data/TrafficDescriptor.java`)
+select the route, and `DataNetworkController` brings up the matching data
+network. As the capability javadoc notes, this is a hint: a carrier that has not
+provisioned a unified-communications slice simply serves the request on its best
+available network.
+
+```mermaid
+graph TD
+    OTT["OTT app: transactional self-managed call<br/>via TelecomManager.addCall"]
+    LISTEN["ConnectivityCallListenerService<br/>isCallEligibleForSlicing()"]
+    CM["ConnectivityManager.onOttCallStateChanged(uid)"]
+    CS["ConnectivityService<br/>AppOptInDefaultNetworkController (POLICY_OTT)"]
+    REQ["getOttSlicingRequests()<br/>PRIORITIZE_UNIFIED_COMMUNICATIONS"]
+    DNC["DataNetworkController<br/>URSP / slice match"]
+    SLICE["Premium 5G slice"]
+
+    OTT --> LISTEN
+    LISTEN --> CM
+    CM --> CS
+    CS --> REQ
+    REQ --> DNC
+    DNC --> SLICE
+```
 
 ---
 
@@ -4675,6 +4807,78 @@ surface across platform versions for the satellite stack of §36.11.
 provides the TS.43 carrier-entitlement authentication (EAP-AKA and OIDC) that the
 entitlement flow in §36.14.5 relies on to obtain an authenticated token from the
 carrier's entitlement server.
+
+### 36.14.7 Stk -- the SIM Application Toolkit App
+
+The SIM Application Toolkit (STK, the 3GPP "card application toolkit" / CAT) lets
+the SIM itself drive the UI: the card can ask the phone to show text, present a
+menu, prompt for input, place a call, send an SMS, play a tone, or open a browser.
+The card issues these as **proactive commands**, and the phone executes each one
+and returns a *terminal response*. Two pieces split the work: a framework-side
+service that parses the card's command bytes, and a standalone app that renders
+them.
+
+The parser is `CatService` in the `com.android.internal.telephony.cat` package
+(`frameworks/opt/telephony/src/java/com/android/internal/telephony/cat/CatService.java`),
+constructed per UICC profile by `UiccProfile` (`CatService.getInstance(...)` in
+`frameworks/opt/telephony/src/java/com/android/internal/telephony/uicc/UiccProfile.java`).
+It registers for `RIL_UNSOL_STK_PROACTIVE_COMMAND` (handled as
+`MSG_ID_PROACTIVE_COMMAND`) and decodes the raw APDU into a typed `CatCmdMessage`
+using the BER-TLV / comprehension-TLV parsers and `CommandParamsFactory` in the
+same package. The command kinds are the `AppInterface.CommandType` enum —
+`DISPLAY_TEXT` (0x21), `GET_INKEY` (0x22), `GET_INPUT` (0x23), `SET_UP_MENU`
+(0x25), `SELECT_ITEM`, `SET_UP_CALL` (0x10), `SEND_SMS`, `PLAY_TONE`,
+`LAUNCH_BROWSER`, `REFRESH`, and the rest
+(`frameworks/opt/telephony/src/java/com/android/internal/telephony/cat/AppInterface.java`).
+
+`CatService` does not draw anything. For commands that need UI it calls
+`broadcastCatCmdIntent`, which sends `CAT_CMD_ACTION`
+(`com.android.internal.stk.command`) carrying the `CatCmdMessage` to the default
+STK app, guarded by the `RECEIVE_STK_COMMANDS` permission
+(`AppInterface.STK_PERMISSION`). The app is `Stk` (package `com.android.stk`,
+`packages/apps/Stk`), which runs inside the phone process
+(`android:process="com.android.phone"` in `packages/apps/Stk/AndroidManifest.xml`).
+`StkCmdReceiver` receives the broadcast and forwards it to `StkAppService` (a
+long-lived `Service`); `StkAppService.handleCmd` switches on the `CommandType` and
+launches the matching UI — `StkDialogActivity` for `DISPLAY_TEXT`,
+`StkMenuActivity` for `SET_UP_MENU` / `SELECT_ITEM`, `StkInputActivity` for
+`GET_INPUT` / `GET_INKEY`, the tone player for `PLAY_TONE`, and so on
+(`packages/apps/Stk/src/com/android/stk/StkAppService.java`). When the user
+answers (or a command completes), the result flows back through `StkAppService`
+to `CatService.sendTerminalResponse`, which encodes the terminal response and
+returns it to the card over RIL.
+
+```mermaid
+sequenceDiagram
+    participant Card as "UICC (SIM card)"
+    participant RIL as "RIL"
+    participant CS as "CatService (cat)"
+    participant RX as "StkCmdReceiver"
+    participant SVC as "StkAppService"
+    participant UI as "Stk activities (menu/dialog/input)"
+
+    Card->>RIL: proactive command (APDU)
+    RIL->>CS: RIL_UNSOL_STK_PROACTIVE_COMMAND
+    CS->>CS: parse BER-TLV into CatCmdMessage
+    CS->>RX: broadcast CAT_CMD_ACTION (RECEIVE_STK_COMMANDS)
+    RX->>SVC: forward command
+    SVC->>UI: launch UI per CommandType
+    UI-->>SVC: user result
+    SVC->>CS: terminal response
+    CS->>RIL: sendTerminalResponse
+    RIL->>Card: terminal response (APDU)
+```
+
+The app's launcher entry point is `StkMain`, the activity that carries the
+MAIN/LAUNCHER intent filter; it is the icon the user taps to open the card's
+top-level menu (delivered earlier by a `SET_UP_MENU` command), and it routes
+into the separate `StkLauncherActivity`. Because not every SIM provides a
+toolkit menu, `StkAppInstaller` enables or disables the `StkMain` component with
+`PackageManager.setComponentEnabledSetting` so the icon only appears when the card
+has registered a main menu (`packages/apps/Stk/src/com/android/stk/StkAppInstaller.java`,
+`StkMain.java`). The result is a clean split: `CatService` owns the protocol
+(parsing commands and emitting terminal responses), and the `Stk` app owns the
+presentation.
 
 ---
 

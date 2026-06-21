@@ -17184,6 +17184,64 @@ if (mAudioPolicyManager != nullptr) {
 Note the careful lock management: `Spatializer::create()` acquires its own
 locks, so the AudioPolicyService mutex must be released to avoid deadlock.
 
+### 15.3.12 Background Audio Hardening (Android 17 / API 37)
+
+The foreground/background policy in Section 15.3.10 governs how concurrent audio
+is mixed; Android 17 adds a separate gate in the Java `AudioService` that can
+deny background apps the audio operations themselves. Apps that target API 37
+(`Build.VERSION_CODES.CINNAMON_BUN = 37`) face restrictions on requesting audio
+focus and on changing volume from the background. The logic lives in
+`HardeningEnforcer`:
+
+```
+Source: frameworks/base/services/core/java/com/android/server/audio/HardeningEnforcer.java
+        frameworks/base/services/core/java/com/android/server/audio/AudioService.java, line 12795
+```
+
+`AudioService.requestAudioFocus()` calls `mHardeningEnforcer.blockFocusMethod()`
+and, when it returns true, returns `AudioManager.AUDIOFOCUS_REQUEST_FAILED`
+(value 0) instead of granting focus. Volume entry points such as
+`setStreamVolume()` route through `blockVolumeMethod()` the same way.
+
+The enforcer does not test process state directly. It asks AppOps whether the
+caller may perform the operation, and the background restriction is expressed as
+those AppOps being denied for a background uid:
+
+- `OP_TAKE_AUDIO_FOCUS` gates audio-focus requests
+- `OP_CONTROL_AUDIO` is the strict (full) audio-control gate
+- `OP_CONTROL_AUDIO_PARTIAL` is the partial volume-control gate
+
+If AppOps denies the op, the enforcer computes an enforcement level
+(`DENIED_IF_PARTIAL` or `DENIED_IF_FULL`) and then decides whether to actually
+block, layering several exemptions:
+
+```java
+// HardeningEnforcer.blockFocusMethod(), frameworks/.../audio/HardeningEnforcer.java, line 425
+boolean isPreCinnamonBun = targetSdk < Build.VERSION_CODES.CINNAMON_BUN;
+// ...
+} else if (isPreCinnamonBun) {
+    yield new int[]{DENIED_IF_PARTIAL,
+        AUDIO_HARDENING_REPORTED__EXEMPTION_REASON__HARDENING_EXEMPTION_TARGET_SDK};
+```
+
+An app targeting below API 37 is held at `DENIED_IF_PARTIAL` (the exemption
+reason is recorded as `HARDENING_EXEMPTION_TARGET_SDK`), so it is only blocked
+under partial hardening; an app targeting API 37 or higher with no other
+exemption falls through to `DENIED_IF_FULL` and is blocked. Other exemptions
+short-circuit ahead of the target-SDK check: privileged callers (holding
+permissions such as `MODIFY_AUDIO_SETTINGS_PRIVILEGED`), focus requests with
+`USAGE_ALARM` backed by `SCHEDULE_EXACT_ALARM`/`USE_EXACT_ALARM`, and callers
+holding `BLUETOOTH_CONNECT` are allowed or held at partial.
+
+Two tiers of enforcement are controlled by flags in `com.android.media.audio`:
+`hardeningPartial()` / `hardeningPartialVolume()` for the partial tier and
+`hardeningStrict()` for the strict tier. A per-call override
+(`HardeningOverride.ENABLE`/`DISABLE`, plus `AudioManager.HARDENING_THROW` which
+turns a block into an `IllegalStateException` for testing) can force the
+decision either way. Every decision is written to the `AUDIO_HARDENING_REPORTED`
+metrics atom with its API type, enforcement level, and exemption reason, so the
+rollout can be measured before the strict tier is enabled.
+
 ---
 
 ## 15.4 AAudio
@@ -19946,7 +20004,132 @@ how the new power-saving offloaded MMAP mode coordinates its draining.
 
 ---
 
-## 15.12 Try It
+## 15.12 Audio-Managed Bluetooth SCO (Android 17)
+
+Hands-free voice audio over Bluetooth runs on a SCO (synchronous
+connection-oriented) link rather than the A2DP or LE Audio data path. For most
+of Android's history the Bluetooth stack decided when to bring that SCO link up
+and down: an app called `AudioManager.startBluetoothSco()`, the request reached
+the headset profile (HFP) service, and the Bluetooth stack opened the link and
+told the audio framework about it afterward. Android 17 inverts that ownership.
+The audio framework now drives SCO routing the same way it routes to a speaker
+or a wired headset, and the HFP profile follows the audio framework's lead
+instead of the other way round.
+
+### 15.12.1 The Communication Device Model
+
+The replacement for the old SCO calls is the communication-device API on
+`AudioManager`:
+`frameworks/base/media/java/android/media/AudioManager.java` exposes
+`setCommunicationDevice(AudioDeviceInfo)`, `clearCommunicationDevice()`,
+`getCommunicationDevice()`, and `getAvailableCommunicationDevices()`. An app
+that wants call audio on a Bluetooth headset picks the matching
+`AudioDeviceInfo` from the available list and calls `setCommunicationDevice()`;
+the framework figures out that this is a SCO device and brings the link up. The
+older entry points are deprecated in favour of this surface:
+
+| Deprecated method | Replacement |
+|-------------------|-------------|
+| `startBluetoothSco()` | `setCommunicationDevice(AudioDeviceInfo)` |
+| `startBluetoothScoVirtualCall()` | `setCommunicationDevice(AudioDeviceInfo)` |
+| `stopBluetoothSco()` | `clearCommunicationDevice()` |
+| `setBluetoothScoOn(boolean)` | `setCommunicationDevice(AudioDeviceInfo)` |
+| `isBluetoothScoOn()` | `getCommunicationDevice()` |
+
+The `@deprecated` javadoc on each of these methods names its replacement
+directly. The deprecated calls keep working: `AudioService` forwards them to
+`AudioDeviceBroker.startBluetoothScoForClient()` /
+`stopBluetoothScoForClient()`, which translate them into the same
+communication-device selection that `setCommunicationDevice()` performs.
+
+### 15.12.2 Who Owns SCO Now
+
+The handoff is gated by a single flag in `AudioDeviceBroker`
+(`frameworks/base/services/core/java/com/android/server/audio/AudioDeviceBroker.java`):
+
+```java
+// AudioDeviceBroker.java
+private final boolean mScoManagedByAudio;
+...
+mScoManagedByAudio = scoManagedByAudio()
+        && BluetoothProperties.isScoManagedByAudioEnabled().orElse(false);
+```
+
+The flag is true only when both the `scoManagedByAudio()` feature flag and the
+`bluetooth.sco.managed_by_audio` system property agree. When it is set, a
+communication-device selection that resolves to a SCO device makes
+`AudioDeviceBroker` call into `BtHelper` to start or stop SCO itself, rather
+than waiting for the Bluetooth stack to report a link. When the flag is clear
+the broker keeps the legacy path, so a device can fall back to the old
+behaviour. The HFP profile reads the same setting:
+`packages/modules/Bluetooth/android/app/src/com/android/bluetooth/hfp/HeadsetService.java`
+calls `mNativeInterface.setIsScoManagedByAudio(...)` at startup and checks
+`isScoManagedByAudioEnabled()` throughout its connection logic, deferring SCO
+audio start to the audio framework when the new mode is on. A comment on a field
+in `HeadsetService` marks the new dependency directly: a device can be left
+"waiting for audio framework to start SCO."
+
+### 15.12.3 Down to the HAL
+
+When the audio framework decides SCO should be on or off, it configures the link
+through the audio HAL rather than through Bluetooth control. The
+`IBluetooth` interface
+(`hardware/interfaces/audio/aidl/android/hardware/audio/core/IBluetooth.aidl`)
+carries a `ScoConfig` parcelable and a `setScoConfig(ScoConfig)` method:
+
+```java
+// IBluetooth.aidl
+parcelable ScoConfig {
+    @nullable Boolean isEnabled;        // SCO on/off
+    @nullable Boolean isNrecEnabled;    // noise reduction / echo cancel
+    @VintfStability enum Mode { UNSPECIFIED, SCO, SCO_WB, SCO_SWB }
+    Mode mode = Mode.UNSPECIFIED;       // narrowband / wideband / super-wideband
+    @nullable @utf8InCpp String debugName;
+}
+ScoConfig setScoConfig(in ScoConfig config);
+```
+
+The bridge from framework parameters to this call lives in
+`frameworks/av/media/libaudiohal/impl/DeviceHalAidl.cpp`, whose
+`filterAndUpdateBtScoParameters()` reads the legacy `BT_SCO`, `bt_headset_nrec`,
+and `bt_wbs` parameter keys and turns them into a `setScoConfig()` call on the HAL.
+A field left unset in `ScoConfig` keeps its current value, so the framework can
+flip just the enable bit or just the codec mode without disturbing the rest.
+The result is that SCO routing now flows through the same chain as any other
+device:
+
+```mermaid
+graph TD
+    APP["App: setCommunicationDevice(BT SCO device)"]
+    AS["AudioService"]
+    ADB["AudioDeviceBroker<br/>(mScoManagedByAudio)"]
+    BTH["BtHelper"]
+    HAL["DeviceHalAidl<br/>filterAndUpdateBtScoParameters()"]
+    IBT["IBluetooth.setScoConfig(ScoConfig)"]
+    HFP["HeadsetService (HFP)<br/>follows audio framework"]
+    HFPJNI["HFP native interface"]
+    PROP["bluetooth.sco.managed_by_audio<br/>(shared system property)"]
+
+    APP --> AS
+    AS --> ADB
+    ADB -->|start/stop SCO| BTH
+    ADB --> HAL
+    HAL --> IBT
+    PROP -.->|read by| ADB
+    PROP -.->|read by| HFP
+    HFP -->|setIsScoManagedByAudio| HFPJNI
+```
+
+For apps the practical change is small: migrate off `startBluetoothSco()` /
+`setBluetoothScoOn()` to `setCommunicationDevice()`, which has been the
+recommended call since the communication-device API was introduced. The
+architectural change is larger. SCO is no longer a special case owned by the
+Bluetooth profile; it is a routable device that the audio policy and the audio
+HAL manage alongside the speaker, the wired headset, and LE Audio.
+
+---
+
+## 15.13 Try It
 
 ### Exercise 1: Dump the Audio System State
 
@@ -21935,6 +22118,72 @@ blast radius of a malformed bitstream exploit to the sandbox instead of the whol
 LFI is the in-process security story; `libapexcodecs` is the codec-delivery and API
 story; the `in_process_sw_*` flags are the switches that turn the combination on.
 
+### 16.3.15 VVC (H.266): Framework Plumbing for a Vendor Codec
+
+Android 17 adds framework support for VVC (Versatile Video Coding, H.266) under
+the MIME type `video/vvc`. Unlike APV and IAMF, no software codec for VVC ships
+in the tree: there is no `frameworks/av/media/codec2/components/vvc/` directory,
+no `c2.android.vvc` component, and no `media_codecs_sw.xml` entry. What Android
+17 adds is the plumbing a vendor decoder plugs into, so a device with a hardware
+or vendor VVC codec can expose it through the standard `MediaCodec` and
+`MediaExtractor` APIs.
+
+The MIME constant exists on both the native and Java sides:
+
+```cpp
+// frameworks/av/media/module/foundation/MediaDefs.cpp, line 41
+const char *MEDIA_MIMETYPE_VIDEO_VVC = "video/vvc";
+```
+
+```java
+// frameworks/base/media/java/android/media/MediaFormat.java, line 188
+@FlaggedApi(FLAG_VVC_SUPPORT)
+public static final String MIMETYPE_VIDEO_VVC = "video/vvc";
+```
+
+`MediaCodecInfo` gains VVC profile constants (`VVCProfileMain10`,
+`VVCProfileMain10Still`, `VVCProfileMain10HDR10`, and more) and the matching
+tier/level constants (`VVCMainTierLevel10` through `VVCHighTierLevel63`), all
+behind `@FlaggedApi(FLAG_VVC_SUPPORT)`. On the Codec2 side, `C2Config.h` defines
+the `PROFILE_VVC_*` enum from `_C2_PL_VVC_BASE`, and `C2Config.cpp` carries the
+string-to-enum table that lets a vendor codec declare profiles like
+`vvc-main-10` and `vvc-main-10-still`:
+
+```cpp
+// frameworks/av/media/codec2/vndk/C2Config.cpp, line 138
+{ "vvc-main-10" , C2Config::PROFILE_VVC_MAIN_10 },
+{ "vvc-main-10-still" , C2Config::PROFILE_VVC_MAIN_10_STILL },
+// ... 15 vvc- profile mappings here (plus 23 vvc- level mappings in a separate table) ...
+```
+
+`VideoCapabilities` validates a declared VVC codec's profile/level against this
+set, gated by the `vvc_support()` flag in `codec_fwk.aconfig`:
+
+```cpp
+// frameworks/av/media/libmedia/VideoCapabilities.cpp, line 1871
+} else if (android::media::codec::vvc_support()
+        && base::EqualsIgnoreCase(mMediaType, MIMETYPE_VIDEO_VVC)) {
+```
+
+Container support follows in the MP4 extractor, where a VVC track is recognized
+only on Android 17 and later and only when a second flag is set:
+
+```cpp
+// frameworks/av/media/module/extractors/mp4/MPEG4Extractor.cpp, line 5714
+mIsVVC = false;
+if (isAtLeastRelease(37, "CinnamonBun")) {
+    mIsVVC = com::android::media::extractor::flags::extractor_mp4_enable_vvc() &&
+             !strcasecmp(mime, MEDIA_MIMETYPE_VIDEO_VVC);
+}
+```
+
+So VVC in AOSP 17 is decode-side plumbing gated by two flags: `vvc_support`
+(`frameworks/av/media/aconfig/codec_fwk.aconfig`) for the framework
+profile/level and `MediaCodec` integration, and `extractor_mp4_enable_vvc`
+(`frameworks/av/media/module/extractors/extractor.aconfig`) for MP4 demuxing.
+Whether a device can actually decode `video/vvc` depends on a vendor supplying
+the codec component.
+
 ---
 
 ## 16.4 MediaPlayer and MediaRecorder
@@ -22274,6 +22523,59 @@ static void addBatteryData(uint32_t params) {
 
 This ensures that the system's battery statistics properly account for video encoding,
 which is a power-intensive operation.
+
+Android 17 adds a constant-quality recording path to `MediaRecorder`. The older
+`setVideoEncodingBitRate()` targets a bitrate; the new
+`setVideoEncodingQuality()` instead asks the encoder to hold a quality level and
+let the bitrate float, which keeps complex scenes from being starved of bits:
+
+```java
+// frameworks/base/media/java/android/media/MediaRecorder.java, line 1177
+@FlaggedApi(FLAG_QUALITY_SETTING_SUPPORT)
+public void setVideoEncodingQuality(@IntRange(from = 0) int quality) {
+    Preconditions.checkArgument(quality >= 0, "Video encoding quality is negative");
+    setParameter("video-param-encoding-quality=" + quality);
+}
+```
+
+The quality value is encoder-specific; an app queries the valid span with
+`MediaCodecInfo.EncoderCapabilities.getQualityRange()`. Setting both a quality
+and a bitrate leaves behavior undefined. The parameter travels through
+`StagefrightRecorder::setParamVideoEncodingQuality()` into `mVideoEncodingQuality`,
+and when the recorder builds the encoder format it writes the value under the
+`"quality"` key:
+
+```cpp
+// frameworks/av/media/libmediaplayerservice/StagefrightRecorder.cpp, line 2108
+if (mVideoEncodingQuality != -1) {
+    format->setInt32("quality", mVideoEncodingQuality);
+}
+```
+
+`MediaCodecSource::adjustMediaFormatForConstantQuality()` is where the request is
+honored or dropped. It checks whether the selected encoder advertises
+`BITRATE_MODE_CQ`; if it does, it sets `KEY_BITRATE_MODE` to `BITRATE_MODE_CQ`,
+and if it does not, it logs a warning and removes the `quality` key so recording
+falls back to bitrate control:
+
+```cpp
+// frameworks/av/media/libstagefright/MediaCodecSource.cpp, line 520
+int32_t videoEncodingQuality = -1;
+if (format->findInt32(KEY_QUALITY, &videoEncodingQuality) && videoEncodingQuality != -1) {
+    if (!isCQSupported) {
+        ALOGW("Selected encoder does not support CQ mode, falling back to bitrate control.");
+        format->removeEntryByName(KEY_QUALITY);
+    } else {
+        format->setInt32(KEY_BITRATE_MODE, BITRATE_MODE_CQ);
+    }
+}
+```
+
+`BITRATE_MODE_CQ` is the same constant-quality rate-control mode `ACodec` maps to
+`OMX_Video_ControlRateConstantQuality` (Section 16.2.7); the Android 17 addition
+is the recorder-level API and the encoder-capability check that routes a
+recording session into it. The whole path is gated by the
+`FLAG_QUALITY_SETTING_SUPPORT` flag.
 
 ### 16.4.6 The MediaPlayer Playback Pipeline
 

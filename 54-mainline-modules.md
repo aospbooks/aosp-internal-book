@@ -3683,7 +3683,53 @@ soong_config_variables: {
 },
 ```
 
-### 54.9.7  Session Management
+### 54.9.7  Out-of-Band Ranging Spec (v2/v3)
+
+When two devices range with each other they have to agree on which technology to
+use and how to configure it before any ranging frames fly. The generic Ranging
+stack carries that negotiation over an out-of-band (OOB) channel -- typically
+BLE GATT -- using a small message protocol defined in
+`packages/modules/Uwb/ranging/service/oob/oob_packets.pdl`. The `.pdl` file is a
+packet description that the `pdlc` tool compiles into the Java parsers used by
+the OOB initiator and responder
+(`packages/modules/Uwb/ranging/service/java/com/android/server/ranging/oob/`).
+Every message begins with the same two-byte `OobMessage` header: a `version`
+byte and a `MessageId`.
+
+The protocol is versioned. The `Version` enum declares `V1 = 1`, `V2 = 2`, and
+`CURRENT = 3`, so a device advertises which revision it speaks and the two sides
+fall back to the lowest common version. Two later revisions add capabilities on
+top of the v1 baseline:
+
+- **v2 -- supported-technology transitioning.** The capabilities exchange can
+  now say whether a device can switch ranging technologies mid-session rather
+  than tearing the session down and starting over. `CapabilitiesResponseV2` adds
+  a `supported_transitioning` field of type `TechnologyTransitioning`, whose
+  values are `NOT_SUPPORTED` and `MAKE_BEFORE_BREAK`. The initiator reads this
+  field to pick a "make before break" engine that brings up the next technology
+  before dropping the current one. (The OOB protocol negotiates several
+  technologies through the `Technology` / `TechnologySet` types: UWB, BLE
+  channel sounding, Wi-Fi NAN RTT, and BLE RSSI.)
+
+- **v3 -- motion notification.** A new `MOTION_NOTIFICATION` message
+  (`MessageId = 0x8`) carries a `Motion` payload reporting detected movement as
+  `NOT_DETECTED`, `SLIGHT`, `MODERATE`, or `LARGE`. Support for it is announced
+  through a `supported_motion` field (type `MotionIndicator`, values
+  `NOT_SUPPORTED` / `SUPPORTED`) added to `ConfigurationRequestV3`. The initiator
+  session handles incoming `MotionNotification` messages in
+  `session/OobInitiatorRangingSession.java` (the `oob/` package only holds the
+  protocol builders and parsers), so an application can react to a peer
+  reporting that it is moving.
+
+The full message set is the `MessageId` enum: capabilities request/response,
+configuration request/response, stop request/response, and the v3 motion
+notification. Because each message type is versioned independently in the PDL
+(for example `CapabilitiesResponseV1` versus `CapabilitiesResponseV2`, and
+`ConfigurationRequestV1` versus `ConfigurationRequestV3`), the generated parser
+selects the right layout from the header version, which is how a v3 device stays
+interoperable with a v1 or v2 peer.
+
+### 54.9.8  Session Management
 
 `UwbSessionManager` is the central class for UWB session lifecycle:
 
@@ -3709,14 +3755,14 @@ The session manager tracks per-session state, handles multicast list updates
 (adding/removing controlees), manages suspend/resume, and routes ranging
 notifications to the correct callback.
 
-### 54.9.8  Country Code and Regulatory
+### 54.9.9  Country Code and Regulatory
 
 `UwbCountryCode` determines the device's operating country and configures
 channel restrictions accordingly.  It listens for telephony and Wi-Fi country
 code changes, defaulting to the SIM-based country.  Regulatory compliance is
 enforced through channel usage restrictions (`ChannelUsage`).
 
-### 54.9.9  Key Source Paths
+### 54.9.10  Key Source Paths
 
 | Component | Path |
 |-----------|------|

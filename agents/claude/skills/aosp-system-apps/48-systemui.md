@@ -599,6 +599,47 @@ stateDiagram-v2
     SHADE --> KEYGUARD : Lock
 ```
 
+### 48.2.7  Privacy Indicators and the Location Indicator
+
+The privacy indicators are the chips that appear at the status bar end when an
+app uses the camera, microphone, or location. The code lives in
+`frameworks/base/packages/SystemUI/src/com/android/systemui/privacy/`.
+`AppOpsPrivacyItemMonitor` watches AppOps and turns active accesses into
+`PrivacyItem` objects; `PrivacyItemController` holds the current list and feeds
+the `OngoingPrivacyChip`. Each item carries a `PrivacyType` (defined in
+`PrivacyItem.kt`): `TYPE_CAMERA`, `TYPE_MICROPHONE`, `TYPE_LOCATION`, and
+`TYPE_MEDIA_PROJECTION`, each with its own icon and label.
+
+Which sources are shown is controlled by two `DeviceConfig` flags in the
+`privacy` namespace, read by `PrivacyConfig`: `PROPERTY_MIC_CAMERA_ENABLED`
+covers camera and microphone, and a separate path gates location. The AppOps
+that drive each are split in `AppOpsPrivacyItemMonitor`: `OPS_MIC_CAMERA` covers
+the camera and record-audio ops, while `OPS_LOCATION` is `OP_FINE_LOCATION`.
+When `locationAvailable` is off, location ops are filtered out and never become
+a `PrivacyItem`.
+
+Android 17 reworks the location indicator behind the aconfig flag
+`android.location.flags.location_indicators_enabled`
+(`frameworks/base/location/java/android/location/flags/location.aconfig`), with
+companion flags `location_indicators_animation` and `location_indicators_outline`.
+`PrivacyConfig.locationAvailable` is initialized from
+`locationIndicatorsEnabled()`, so the flag is what enables the indicator at all.
+When the flag is on, a location access produces a distinct chip rather than
+reusing the camera/microphone style: `PrivacyConfig.privacyItemsAreLocationOnly()`
+reports whether every active item is `TYPE_LOCATION`, and when that holds,
+`getPrivacyColor()` returns `R.color.privacy_chip_location_only_background`. With
+`location_indicators_outline` also on, `getPrivacyOutlineColor()` and
+`getPrivacyOutlineStroke()` give the location-only chip a 1px outline instead of
+the filled background used for camera and microphone.
+
+The flag also changes how long a location chip lingers.
+`PrivacyItemController.processNewList()` holds a location-only set for
+`TIME_TO_HOLD_INDICATORS_FOR_LOCATION` (10 seconds) rather than the
+`TIME_TO_HOLD_INDICATORS` (5 seconds) used for other accesses, so a brief
+location read stays visible long enough for the user to notice. Tapping any of
+these chips still opens the privacy dialog (`PrivacyDialogControllerV2`) listing
+which apps used which sources.
+
 ---
 
 ## 48.3  Notification Shade

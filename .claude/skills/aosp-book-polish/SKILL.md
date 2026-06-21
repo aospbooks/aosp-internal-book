@@ -125,7 +125,7 @@ This phase is required even when Phase B looks done — new modules are easy to
 miss because they have no existing chapter. **Always run it.** The full
 procedure is in `references/new-modules.md`. In brief:
 
-1. **Gap analysis (in a subagent)** — two candidate sets, see
+1. **Gap analysis (in a subagent)** — three candidate sets, see
    `references/new-modules.md`:
    - **(A) changeset-driven** (version bump): the *added* projects (changeset
      `added-removed.txt` + the new-version appendix's enumerated new modules).
@@ -135,11 +135,21 @@ procedure is in `references/new-modules.md`. In brief:
      platform roots, drop noise (`external/`, `prebuilts/`, `vendor/`, `device/`,
      test/toolchain). This catches subsystems that predate the diff baseline and
      were never written up — (A) by construction cannot.
-   Either way, produce the *uncovered* list with, per module: real source path,
+   - **(C) release-notes-driven** (whenever official notes exist — always run on a
+     version bump): WebFetch the developer Beta/release blog and the
+     `source.android.com/docs/whatsnew` page, extract every called-out feature's
+     exact API/flag/symbol, and grep each token across the chapter bodies. This is
+     the ONLY method that finds new framework *APIs / behavior changes /
+     deprecations inside repos that merely moved* (e.g. a new camera2 method, an
+     SDK-37 relaunch-behavior change) — (A) and (B) are project-granular and
+     structurally blind to them. Verify each is a real AOSP platform change (not a
+     Play/first-party-app feature) and confirm the exact symbol in source; blog
+     prose loosely names flags that don't exist verbatim.
+   Whichever method, produce the *uncovered* list with, per item: real source path,
    what it is (verified from source), substance (LOC / substantial-vs-stub), and
-   a recommended placement. Beware the name-grep's false positives (concept
-   covered under another name; deprecated/sample/empty repos) — verify concept
-   coverage and substance, don't trust the grep.
+   a recommended placement. Beware the grep's false positives (concept covered
+   under another name; deprecated/sample/empty repos; generic-word matches) —
+   verify coverage and substance, don't trust the grep.
 2. **Placement policy (threshold):**
    - A new capability that **extends an existing subsystem** → fold a new
      numbered section into that chapter (preferred — do this first).

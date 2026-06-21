@@ -615,6 +615,47 @@ stateDiagram-v2
     SHADE --> KEYGUARD : Lock
 ```
 
+### 48.2.7  Privacy Indicators and the Location Indicator
+
+The privacy indicators are the chips that appear at the status bar end when an
+app uses the camera, microphone, or location. The code lives in
+`frameworks/base/packages/SystemUI/src/com/android/systemui/privacy/`.
+`AppOpsPrivacyItemMonitor` watches AppOps and turns active accesses into
+`PrivacyItem` objects; `PrivacyItemController` holds the current list and feeds
+the `OngoingPrivacyChip`. Each item carries a `PrivacyType` (defined in
+`PrivacyItem.kt`): `TYPE_CAMERA`, `TYPE_MICROPHONE`, `TYPE_LOCATION`, and
+`TYPE_MEDIA_PROJECTION`, each with its own icon and label.
+
+Which sources are shown is controlled by two `DeviceConfig` flags in the
+`privacy` namespace, read by `PrivacyConfig`: `PROPERTY_MIC_CAMERA_ENABLED`
+covers camera and microphone, and a separate path gates location. The AppOps
+that drive each are split in `AppOpsPrivacyItemMonitor`: `OPS_MIC_CAMERA` covers
+the camera and record-audio ops, while `OPS_LOCATION` is `OP_FINE_LOCATION`.
+When `locationAvailable` is off, location ops are filtered out and never become
+a `PrivacyItem`.
+
+Android 17 reworks the location indicator behind the aconfig flag
+`android.location.flags.location_indicators_enabled`
+(`frameworks/base/location/java/android/location/flags/location.aconfig`), with
+companion flags `location_indicators_animation` and `location_indicators_outline`.
+`PrivacyConfig.locationAvailable` is initialized from
+`locationIndicatorsEnabled()`, so the flag is what enables the indicator at all.
+When the flag is on, a location access produces a distinct chip rather than
+reusing the camera/microphone style: `PrivacyConfig.privacyItemsAreLocationOnly()`
+reports whether every active item is `TYPE_LOCATION`, and when that holds,
+`getPrivacyColor()` returns `R.color.privacy_chip_location_only_background`. With
+`location_indicators_outline` also on, `getPrivacyOutlineColor()` and
+`getPrivacyOutlineStroke()` give the location-only chip a 1px outline instead of
+the filled background used for camera and microphone.
+
+The flag also changes how long a location chip lingers.
+`PrivacyItemController.processNewList()` holds a location-only set for
+`TIME_TO_HOLD_INDICATORS_FOR_LOCATION` (10 seconds) rather than the
+`TIME_TO_HOLD_INDICATORS` (5 seconds) used for other accesses, so a brief
+location read stays visible long enough for the user to notice. Tapping any of
+these chips still opens the privacy dialog (`PrivacyDialogControllerV2`) listing
+which apps used which sources.
+
 ---
 
 ## 48.3  Notification Shade
@@ -6064,6 +6105,62 @@ the `AllAppsSearchUiDelegate` interface, which controls:
 The `qsb/` package provides the Quick Search Bar integration on the workspace,
 which is a separate search entry point that typically launches Google Search.
 
+### 49.7.7 App Prediction and the AppPredictionService
+
+The suggested apps that fill the prediction row at the top of All Apps and the
+predicted slots in the Hotseat do not come from Launcher3. Launcher3 is the client
+of a system `AppPredictionService`; a separate app supplies the predictions.
+
+On the Launcher side, `QuickstepModelDelegate` opens prediction sessions through
+the framework `AppPredictor` API, one per surface, tagged with a UI surface string:
+
+**Source file**: `quickstep/src/com/android/launcher3/model/QuickstepModelDelegate.java`
+
+```java
+// QuickstepModelDelegate.recreatePredictors()
+mAllPredictionAppsState.registerPredictor(mContext,
+        new AppPredictionContext.Builder(mContext)
+            .setUiSurface("home")          // All Apps prediction row
+            .setPredictedTargetCount(mIDP.numDatabaseAllAppsColumns)
+            .build(),
+        mModel, PredictionUpdateTask::new);
+// ... and a second session with setUiSurface("hotseat")
+```
+
+Each launch is reported back to the service as an `AppTargetEvent`, and the service
+pushes a fresh list of `AppTarget`s that Launcher3 renders through
+`appprediction/PredictionRowView.java` (All Apps) and the hotseat predictor.
+
+The service behind these sessions is selectable by the device. AOSP ships a minimal
+reference implementation in `packages/apps/OnDeviceAppPrediction`, package
+`com.android.apppredictionservice`. Its single class, `PredictionService`, extends
+`android.service.appprediction.AppPredictionService` and is registered for the
+`android.service.appprediction.AppPredictionService` action:
+
+**Source file**: `packages/apps/OnDeviceAppPrediction/src/com/android/apppredictionservice/PredictionService.java`
+
+```java
+public class PredictionService extends AppPredictionService {
+    @Override
+    public void onCreatePredictionSession(
+            AppPredictionContext context, AppPredictionSessionId sessionId) {
+        if (context.getUiSurface().equals("home")
+                || context.getUiSurface().equals("overview")) {
+            activeLauncherSessions.add(sessionId);
+            postPredictionUpdate(sessionId);
+        }
+    }
+}
+```
+
+Its logic is deliberately simple: it keeps the five most recently launched apps,
+seeded on first boot from the default calendar, gallery, maps, email, and browser
+handlers, and moves an app to the front of the list on each `onAppTargetEvent`.
+There is no on-device model. A production build replaces this with a Google or OEM
+predictor that ranks by usage history and context. The reference app exists so the
+prediction row has something to show on a stock AOSP image; its `README` notes that
+the project is unsupported and slated for removal from the manifest.
+
 ---
 
 ## 49.8 Folder System
@@ -8195,7 +8292,9 @@ It provides:
 - `getSettingsIntelligencePkgName()` -- Returns the package name of the search app
 - `initSearchToolbar()` -- Initialises the search bar on the homepage
 - `buildSearchIntent()` -- Creates the intent to launch the search UI
-- `sendPreIndexIntent()` -- Notifies Settings Intelligence to re-index
+- `sendPreIndexIntent()` -- A hook the Settings app calls (for example after
+  enabling developer options) to let an OEM build kick off pre-indexing; the AOSP
+  default implementation is an empty no-op
 
 The search toolbar is initialised on the homepage and triggers a transition to
 the Settings Intelligence search activity:
@@ -8243,6 +8342,90 @@ sequenceDiagram
     User->>SI: Tap result
     SI->>Homepage: Deep-link intent to fragment
 ```
+
+### 50.5.9 The SettingsIntelligence App
+
+Everything above describes the Settings side of the contract: the annotations,
+the providers, and the keys Settings exports. The *consumer* is a separate APK,
+`packages/apps/SettingsIntelligence`, package name `com.android.settings.intelligence`.
+It owns the search UI, the search index database, and the suggestion backend, so
+the Settings app itself ships no search index and no suggestion ranking logic.
+
+The app holds the `READ_SEARCH_INDEXABLES` permission and queries every provider
+that answers the `android.content.action.SEARCH_INDEXABLES_PROVIDER` intent, not
+just the Settings provider. Any system app can publish a `SearchIndexablesProvider`
+and its preferences become searchable from the Settings search bar.
+
+**Search index.** `IndexDatabaseHelper` (in `search/indexing/`) opens an SQLite
+database named `search_index.db` whose primary table, `prefs_index`, is an FTS4
+virtual table for full-text matching. The `site_map` table is FTS4 as well;
+`meta_index` (the index metadata row) and `saved_queries` are plain tables:
+
+**Source file**: `packages/apps/SettingsIntelligence/src/com/android/settings/intelligence/search/indexing/IndexDatabaseHelper.java`
+
+```java
+// IndexDatabaseHelper.java
+private static final String DATABASE_NAME = "search_index.db";
+private static final int DATABASE_VERSION = 121;
+
+interface Tables {
+    String TABLE_PREFS_INDEX = "prefs_index";    // FTS4 virtual table
+    String TABLE_SITE_MAP = "site_map";          // FTS4: parent/child breadcrumbs
+    String TABLE_META_INDEX = "meta_index";      // build fingerprint, locale
+    String TABLE_SAVED_QUERIES = "saved_queries";
+}
+```
+
+`DatabaseIndexingManager` rebuilds the index when the meta row shows a stale build
+fingerprint or locale. It calls `PreIndexDataCollector` to walk the registered
+providers, converts each row through `IndexDataConverter`, and writes the result
+into `prefs_index`. The rebuild is triggered from the search UI rather than by a
+broadcast: opening search calls `SearchFeatureProviderImpl.updateIndexAsync()`
+(from `SearchFragment`), which hands off to `DatabaseIndexingManager.indexDatabase()`.
+That method runs a full re-index only when `IndexDatabaseHelper.isFullIndex()`
+reports the stored build fingerprint or locale no longer matches; otherwise it
+applies an incremental update.
+
+**Query path.** `SearchActivity` hosts `SearchFragment`, which dispatches each
+keystroke to a `SearchResultAggregator`. The aggregator fans the query out to
+several `SearchQueryTask` implementations in parallel: `DatabaseResultTask` runs
+the FTS4 match against `prefs_index`, while `InstalledAppResultTask`,
+`InputDeviceResultTask`, and `AccessibilityServiceResultTask` add results that are
+not in the static index. Results merge, deduplicate, and rank before display.
+`SavedQueryController` records recent queries into the `saved_queries` table so the
+empty search screen can show recent searches.
+
+**Suggestions backend.** The same APK exports a `SuggestionService` bound under the
+`BIND_SETTINGS_SUGGESTIONS_SERVICE` permission. It extends the framework class
+`android.service.settings.suggestions.SuggestionService`, so SystemUI and Settings
+homepage suggestion chips call into it:
+
+**Source file**: `packages/apps/SettingsIntelligence/src/com/android/settings/intelligence/suggestions/SuggestionService.java`
+
+```java
+public class SuggestionService extends
+        android.service.settings.suggestions.SuggestionService {
+    @Override
+    public List<Suggestion> onGetSuggestions() { /* ... */ }
+    @Override
+    public void onSuggestionDismissed(Suggestion suggestion) { /* ... */ }
+    @Override
+    public void onSuggestionLaunched(Suggestion suggestion) { /* ... */ }
+}
+```
+
+Candidate suggestions come from `SuggestionParser`, are filtered by the six checkers
+in `suggestions/eligibility/` that `CandidateSuggestion.isEligible()` runs in order
+(provider, connectivity, feature, account, already-dismissed, automotive), and are
+ordered by `SuggestionRanker`. The ranker turns each candidate into a feature vector
+via `SuggestionFeaturizer` and scores it with a fixed-weight linear function: a
+weighted sum (dot product) of features such as whether a suggestion was shown,
+dismissed, or clicked and how long ago. The weights are constants in a `WEIGHTS` map
+and the score is used directly as the sort key, with no sigmoid applied at runtime
+(the source comment notes the weights were fit offline by training a binary
+classifier). The features are persisted per-suggestion in `SuggestionEventStore`, and
+dismissals and launches feed back through `onSuggestionDismissed` and
+`onSuggestionLaunched` so a dismissed suggestion stops resurfacing.
 
 ---
 
@@ -9691,8 +9874,13 @@ adb shell pm query-activities -a com.android.settings.action.EXTRA_SETTINGS
 ### 50.18.4 Debugging Search Indexing
 
 ```bash
-# Force re-index
-adb shell am broadcast -a com.android.settings.intelligence.REINDEX
+# There is no re-index broadcast receiver in AOSP. Re-indexing is driven from the
+# search UI: SearchFragment calls updateIndexAsync(), which re-indexes when the
+# stored build fingerprint or locale is stale. To force a rebuild, clear the index
+# database so the next search opens with an empty/stale fingerprint, then launch
+# Settings search.
+adb shell pm clear com.android.settings.intelligence
+adb shell am start -a com.android.settings.action.SETTINGS_SEARCH
 
 # Query the search provider directly
 adb shell content query \
