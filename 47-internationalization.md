@@ -28,7 +28,7 @@ Android could not correctly sort a list of German names, break a Thai sentence
 into words, or format a Japanese date.
 
 Android 17 ships **ICU 78.3**, which implements **Unicode 17.0** and the
-**CLDR 49.2** locale dataset. The version constants are defined in
+**CLDR 48.2** locale dataset. The version constants are defined in
 `external/icu/icu4c/source/common/unicode/uvernum.h`:
 
 ```c
@@ -850,8 +850,8 @@ public static int getLayoutDirectionFromLocale(Locale locale) {
 
 `ULocale.isRightToLeft()` consults ICU's locale data, so a locale like
 `ar` (Arabic) or `he` (Hebrew) resolves to RTL even when no script subtag is
-present, and `sr-Latn` correctly resolves to LTR while `sr-Cyrl` resolves to
-LTR as well (Cyrillic is left-to-right). The `DisplayProperties.debug_force_rtl()`
+present, while Serbian (`sr`, whether written in Latin or Cyrillic) resolves to
+LTR because neither script is right-to-left. The `DisplayProperties.debug_force_rtl()`
 branch is what the "Force RTL layout direction" developer option flips.
 
 ### 47.4.4 Bidirectional (Bidi) Text
@@ -1418,7 +1418,9 @@ evolution clear:
 > in the system. For the device vendors: please add your font configurations to
 > the `platform/frameworks/base/data/font_fallback.xml`.
 
-The modern system uses `font_fallback.xml` and a JSON-based configuration:
+Note that the `font_fallback.xml` the comment points vendors toward is not
+actually present in the tree; the modern configuration is the trio of JSON files
+that sit alongside the legacy `fonts.xml`:
 
 ```
 frameworks/base/data/fonts/
@@ -1716,18 +1718,20 @@ plus a handful of locale-aware APIs that graduated or expanded. This section
 collects the differences that matter when porting prose or code from an earlier
 release.
 
-### 47.7.1 ICU 78 / Unicode 17.0 / CLDR 49.2
+### 47.7.1 ICU 78 / Unicode 17.0 / CLDR 48.2
 
 The headline change is the ICU uprev. Android 17 carries **ICU 78.3**
 (`external/icu/icu4c/source/common/unicode/uvernum.h`), which implements
 **Unicode 17.0** (`external/icu/icu4c/source/common/unicode/uchar.h`) and
-integrates the **CLDR 49.2** locale dataset. The integration is visible in the
-16-to-17 changeset as a run of cherry-picks against ICU `maint-78`:
+integrates the **CLDR 48.2** locale dataset. The bundled
+`external/icu/icu4c/source/data/misc/icuver.txt` records both stamps
+(`CLDRVersion{"48"}`, `DataVersion{"78.3.0.0"}`). The integration is visible
+in the 16-to-17 changeset as a run of cherry-picks against ICU `maint-78`:
 
 ```text
 ICU-23316 ICU 78.3 BRS Update version number to 78.3
-ICU-23316 Integrate CLDR 49.2 (final) to ICU maint-78
-ICU-23290 Integrate CLDR 49.1 ... to ICU maint-78
+ICU-23316 Integrate CLDR 48.2 (final) to ICU maint-78
+ICU-23290 Integrate CLDR 48.1 final1 to ICU maint-78
 ```
 
 The practical effects ripple through every section above:
@@ -1737,7 +1741,7 @@ The practical effects ripple through every section above:
 | Character properties (47.1.4) | New Unicode 17.0 code points gain general category, script, and bidi class data |
 | Collation (47.1.6) | Refreshed CLDR collation tailorings; some locales sort slightly differently |
 | Break iteration (47.1.7) | Updated dictionary/segmentation data for Thai, Khmer, Lao, CJK |
-| Formatting (47.1.8) | New/changed date, number, and currency patterns from CLDR 49.2 |
+| Formatting (47.1.8) | New/changed date, number, and currency patterns from CLDR 48.2 |
 | Plurals (47.3.4) | Plural-rule refinements for locales whose CLDR data changed |
 
 Because ICU rides in the `com.android.i18n` APEX, this entire data set can be
@@ -1749,8 +1753,9 @@ The time-zone database that ICU and `libcore` consult is updated independently
 of the ICU code, in the `system/timezone` module. Android 17's tree carries the
 IANA **2025c** release at distro format version `010`
 (`system/timezone/output_data/version/tz_version`). The 16-to-17 changeset shows
-the data rolling forward (`Update Android ICU data from 2025a to 2025b`, then the
-distro format being incremented). Like ICU, tzdata is APEX-delivered, so DST and
+the data rolling forward (`Update Android TZDB from 2025a to 2025b`, then to
+2025c), with the distro format incremented to version `010`. Like ICU, tzdata is
+APEX-delivered, so DST and
 zone-offset corrections reach devices without an OS update.
 
 ### 47.7.3 Modern ICU APIs: MessageFormat 2.0 and Segmentation
@@ -1823,7 +1828,7 @@ The phrase-based line-break controls described in 47.5.8
 `android.graphics.text.LineBreakConfig`) remain the recommended way to get
 natural Japanese and Korean wrapping. `LINE_BREAK_WORD_STYLE_PHRASE` keeps short
 phrases together; `LINE_BREAK_STYLE_STRICT`/`NORMAL`/`LOOSE` tune CJK break
-permissiveness. With the CLDR 49.2 refresh these styles draw on updated
+permissiveness. With the CLDR 48.2 refresh these styles draw on updated
 segmentation data, so existing code does not change but the resulting line
 breaks track current CLDR conventions.
 
@@ -2190,7 +2195,7 @@ Key takeaways from this chapter:
    efficient text display across languages.
 
 7. **Android 17 advances the data layer, not the architecture**: the stack moves
-   to ICU 78.3 (Unicode 17.0, CLDR 49.2) and IANA 2025c time-zone data, both
+   to ICU 78.3 (Unicode 17.0, CLDR 48.2) and IANA 2025c time-zone data, both
    APEX-delivered; MessageFormat 2.0 and the modern segmentation API arrive as
    previews; and grammatical inflection gains a system-wide "terms of address"
    path. Existing i18n code keeps working while formatting, collation, and

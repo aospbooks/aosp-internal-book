@@ -2620,22 +2620,30 @@ respawn limit 10 20  # Max 10 restarts in 20 seconds
 exec ionice -c3 update_engine
 ```
 
-On Android, this is translated to an init `.rc` service definition:
+On Android, this is translated to an init `.rc` service definition in
+`system/update_engine/update_engine.rc`:
 
 ```
-service update_engine /system/bin/update_engine --logtostderr --foreground
+service update_engine /system/bin/update_engine --logtostderr --logtofile --foreground
     class late_start
     user root
-    group root system wakelock inet cache
-    writepid /dev/cpuset/system-background/tasks
+    group root system wakelock inet cache media_rw
+    task_profiles OtaProfiles
+    disabled
+
+on property:ro.boot.slot_suffix=*
+    enable update_engine
 ```
 
 Key service characteristics:
 
 - Runs as **root** (needs direct block device access).
-- Member of `system`, `wakelock`, `inet`, `cache` groups.
-- Placed in the **system-background** CPU set to minimize UI impact.
-- Uses **idle I/O priority** (`ionice -c3`) so updates don't cause jank.
+- Member of `system`, `wakelock`, `inet`, `cache`, `media_rw` groups.
+- Started **disabled** and only enabled once `ro.boot.slot_suffix` is set,
+  so it never runs on a non-A/B device.
+- Logs to both stderr and a file (`--logtostderr --logtofile`).
+- Applies the `OtaProfiles` task profile to keep its CPU and I/O footprint
+  out of the foreground UI's way during an update.
 
 ### 55.18.2 Persistent Preferences
 

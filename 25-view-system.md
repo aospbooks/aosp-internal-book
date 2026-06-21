@@ -3379,7 +3379,7 @@ The default-on behavior is exposed to the inset-controller host through
 `usesSyncedInsetsAnimationByDefault()`:
 
 ```
-Source: frameworks/base/core/java/android/view/InsetsController.java (line 241)
+Source: frameworks/base/core/java/android/view/InsetsController.java (line 244)
 
     /**
      * @return {@code true} if the default synchronized insets animation is

@@ -187,12 +187,12 @@ for `ndk_library {` reveals the complete list:
 | `libEGL` | 9 | `frameworks/native/opengl/libs/Android.bp` |
 | `libGLESv1_CM` | 9 | `frameworks/native/opengl/libs/Android.bp` |
 | `libGLESv2` | 9 | `frameworks/native/opengl/libs/Android.bp` |
-| `libGLESv3` | 9 | `frameworks/native/opengl/libs/Android.bp` |
+| `libGLESv3` | 18 | `frameworks/native/opengl/libs/Android.bp` |
 | `libmediandk` | 21 | `frameworks/av/media/ndk/Android.bp` |
 | `libcamera2ndk` | 24 | `frameworks/av/camera/ndk/Android.bp` |
 | `libnativewindow` | 26 | `frameworks/native/libs/nativewindow/Android.bp` |
 | `libaaudio` | 26 | `frameworks/av/media/libaaudio/Android.bp` |
-| `libvulkan` | 26 | `frameworks/native/vulkan/libvulkan/Android.bp` |
+| `libvulkan` | 24 | `frameworks/native/vulkan/libvulkan/Android.bp` |
 | `libbinder_ndk` | 29 | `frameworks/native/libs/binder/ndk/Android.bp` |
 | `libsync` | 26 | `system/core/libsync/Android.bp` |
 | `libneuralnetworks` | 27 | `packages/modules/NeuralNetworks/runtime/Android.bp` |

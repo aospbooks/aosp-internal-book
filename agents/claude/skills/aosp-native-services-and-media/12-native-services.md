@@ -1488,7 +1488,7 @@ Key files include:
 | `Tracks.cpp` | Audio track lifecycle and mixing |
 | `Effects.h` / `.cpp` | Audio effect chain processing |
 | `PatchPanel.h` / `.cpp` | Audio routing patch management |
-| `MelReporter.h` / `.cpp` | Sound dose measurement (Media Exposure Limit) |
+| `MelReporter.h` / `.cpp` | Sound dose measurement (Momentary Exposure Level) |
 | `DeviceEffectManager.h` / `.cpp` | Per-device audio effects |
 | `Client.h` / `.cpp` | Per-client state tracking |
 
@@ -1811,8 +1811,11 @@ its own process with restricted permissions (using seccomp sandboxing).
 
 ### 12.6.1 MediaCodecService
 
-The codec service runs as `media.codec` and hosts the hardware codec HAL
-implementations. It uses seccomp-bpf sandboxing to restrict system calls:
+This is the legacy codec service. The binary is named
+`android.hardware.media.omx@1.0-service` and only renames its `argv[0]` to
+`media.codec` at startup; it is a vendor-only, 32-bit HIDL HAL that registers
+the `IOmx`/`IOmxStore` interfaces, so it has nothing to do with the modern
+Codec2 path. It uses seccomp-bpf sandboxing to restrict system calls:
 
 > `frameworks/av/services/mediacodec/main_codecservice.cpp`
 
@@ -1843,8 +1846,11 @@ Key observations:
 - Applies minijail seccomp policies from `/system/etc/seccomp_policy/`.
 - Registers the `IOmx` HAL interface for OMX-based codecs.
 
-A separate `media.swcodec` process handles software-only codecs, further
-isolating them from hardware codec drivers.
+OMX is legacy and deprecated; this service survives only for older vendor codec
+HALs. The current path is the `mediaswcodec` binary (`main_swcodecservice.cpp`,
+`argv[0]` renamed to `media.swcodec`), which calls `RegisterCodecServices()` to
+expose software codecs through the Codec2 (C2) framework described in
+Section 12.6.3, keeping them isolated from hardware codec drivers.
 
 ### 12.6.2 MediaExtractorService
 
@@ -4423,9 +4429,9 @@ roles:
 | servicemanager | `servicemanager` | `manager` | Service registry and discovery |
 | SurfaceFlinger | `surfaceflinger` | `SurfaceFlinger` | Display composition |
 | InputFlinger | (in system_server) | `inputflinger` | Input event routing |
-| AudioFlinger | `audioserver` | `audio` | Audio mixing and routing |
+| AudioFlinger | `audioserver` | `media.audio_flinger` | Audio mixing and routing |
 | CameraService | `cameraserver` | `media.camera` | Camera hardware management |
-| MediaCodecService | `media.codec` | (HIDL) | Hardware codec hosting |
+| MediaCodecService (legacy OMX) | `android.hardware.media.omx@1.0-service` (argv[0] `media.codec`) | `IOmx` (HIDL) | Legacy vendor OMX codec HAL; current path is Codec2 via `mediaswcodec` |
 | installd | `installd` | `installd` | APK installation, dexopt |
 | GpuService | `gpuservice` | `gpu` | GPU stats and driver management |
 | SensorService | `sensorservice` | `sensorservice` | Sensor access and fusion |

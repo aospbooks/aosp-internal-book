@@ -3701,8 +3701,7 @@ timeline
              : Declarative modules
              : Go-based build logic
     2020-present : Soong + Bazel (experimental)
-                 : Mixed builds
-                 : bp2build conversion
+                 : Kleaf kernel builds
                  : Remote Build Execution (RBE)
 ```
 
@@ -3762,10 +3761,11 @@ simpler and less error-prone.
 
 **Generation 3: Bazel (2020-present, experimental).**
 Google has been working on migrating the build to Bazel, the open-source
-version of their internal Blaze build system. This effort is tracked through
-the `build/pesto/` directory and tools like `bp2build`. As of the current
-release, Bazel is used for kernel builds (Kleaf) and select experiments, but
-the platform build remains Soong-driven.
+version of their internal Blaze build system. The remaining work is tracked
+through the `build/pesto/` directory. As of the current release, Bazel is used
+for kernel builds (Kleaf) and select experiments, but the platform build
+remains Soong-driven. (An earlier `bp2build` tool, which converted `Android.bp`
+files to Bazel `BUILD` files, has since been removed from the tree.)
 
 The migration to Bazel is motivated by:
 
@@ -5046,7 +5046,6 @@ package-level settings with the `package` module:
 package {
     default_team: "trendy_team_android_settings_app",
     default_applicable_licenses: ["packages_apps_Settings_license"],
-    default_visibility: [":__subpackages__"],
 }
 ```
 
@@ -6345,9 +6344,10 @@ holds `trunk_staging`, the `eng`/`user`/`userdebug` build variants, the dated
 `mainline_2026_NN` configs, and the per-quarter device configs (`ap2a`, `ap3a`,
 `bp1a` and so on). The word `CANARY` does appear in two unrelated places: as a
 preview codename mapped to API level 10000 in
-`build/soong/android/api_levels.go`, and in the
-`RELEASE_PLATFORM_VERSION_KNOWN_CODENAMES` value list. Neither is a release
-config you can pass to `lunch`. For source builds the working trunk config
+`build/soong/android/api_levels.go`, and in the `cp2a` release config's
+`RELEASE_PLATFORM_VERSION_KNOWN_CODENAMES` value list (the `trunk_staging`
+list ends at `Baklava` and does not include it). Neither is a release config
+you can pass to `lunch`. For source builds the working trunk config
 remains `trunk_staging`; the Canary channel is how prebuilt rolling images reach
 testers, layered on top of the same trunk-stable model described in Chapter 3.
 
@@ -6871,29 +6871,19 @@ experimental and limited:
   Bazel build files alongside their Soong definitions.
 - **Build experiments:** The `build/pesto/experiments/` directory contains
   experimental Bazel integration tests.
-- **bp2build:** A tool that converts `Android.bp` files to Bazel `BUILD` files
-  has been developed, though its use remains limited.
 
-### 2.8.3 bp2build: Converting Android.bp to BUILD
+### 2.8.3 bp2build: A Since-Removed Conversion Step
 
-The `bp2build` tool (part of `build/soong/`) automatically converts
-`Android.bp` module definitions into Bazel `BUILD.bazel` files. This is the
-primary mechanism for the Soong-to-Bazel migration.
+For a few years the migration relied on a tool called `bp2build`, which lived
+under `build/soong/` and converted `Android.bp` module definitions into Bazel
+`BUILD.bazel` files. It worked by parsing all `Android.bp` files (the same way
+Soong does), generating an equivalent Bazel rule for each module type that had
+a registered conversion, and writing `BUILD.bazel` files alongside the
+`Android.bp` files. The conversion was opt-in and incremental: only modules
+explicitly enabled for it were converted.
 
-The conversion works by:
+A typical conversion turned an `Android.bp` module like this:
 
-1. Parsing all `Android.bp` files (same as Soong does normally)
-2. For each module type that has a registered Bazel conversion, generating the
-   equivalent Bazel rule
-3. Writing `BUILD.bazel` files alongside the `Android.bp` files
-
-Not all module types have Bazel equivalents yet. The conversion is
-opt-in and incremental -- only modules that have been explicitly enabled for
-Bazel conversion are included.
-
-Example conversion:
-
-**Android.bp:**
 ```
 cc_library {
     name: "libfoo",
@@ -6902,7 +6892,8 @@ cc_library {
 }
 ```
 
-**Generated BUILD.bazel:**
+into a generated `BUILD.bazel` rule like this:
+
 ```python
 cc_library_shared(
     name = "libfoo",
@@ -6910,6 +6901,11 @@ cc_library_shared(
     dynamic_deps = [":libbar"],
 )
 ```
+
+`bp2build` has since been removed from the AOSP tree; no `build/soong/bp2build/`
+directory or functional code remains. The remaining Bazel work centers on Kleaf
+(Section 2.9) and the `build/pesto/` experiments rather than on whole-tree
+`Android.bp` conversion.
 
 ### 2.8.4 The `build/pesto/` Directory
 
@@ -7002,10 +6998,13 @@ RBE works by:
 For large builds, RBE can dramatically reduce build times by distributing
 compilation across hundreds of machines.
 
-### 2.8.8 Mixed Builds
+### 2.8.8 Mixed Builds: The Abandoned Transition
 
-The long-term migration plan involves **mixed builds** where Soong and Bazel
-coexist:
+For a while the planned route to Bazel ran through **mixed builds**, where
+Soong and Bazel would build different modules and feed a single Ninja manifest.
+The `bp2build` tool (Section 2.8.3) generated the `BUILD.bazel` files that the
+Bazel half consumed. That transition was abandoned and `bp2build` was removed;
+the diagram below records the plan as it once stood.
 
 ```mermaid
 graph LR
@@ -7016,8 +7015,8 @@ graph LR
         Kati --> NJ1
     end
 
-    subgraph "Mixed Build (Transition)"
-        ABP2[Android.bp] --> BP2B[bp2build]
+    subgraph "Mixed Build (former plan, since dropped)"
+        ABP2[Android.bp] --> BP2B["bp2build (removed)"]
         BP2B --> BUILD[BUILD.bazel]
         BUILD --> Bazel[Bazel]
         ABP2 --> Soong2[Soong]
@@ -7025,9 +7024,9 @@ graph LR
         Bazel --> NJ2
     end
 
-    subgraph "Future (Goal)"
+    subgraph "Goal as once stated"
         BUILD2[BUILD.bazel] --> Bazel2[Bazel]
-        Bazel2 --> NJ3[Ninja / Direct]
+        Bazel2 --> NJ3["Ninja / Direct"]
     end
 
     style Soong fill:#50b848,color:#fff
@@ -7035,9 +7034,10 @@ graph LR
     style Bazel2 fill:#4a90d9,color:#fff
 ```
 
-In a mixed build, some modules are built by Soong and some by Bazel, with the
-results combined into a single Ninja manifest. The `bp2build` tool
-automatically generates `BUILD.bazel` files from `Android.bp` definitions.
+In that design some modules would have been built by Soong and others by Bazel,
+with the results combined into a single Ninja manifest. The current build is
+purely Soong + Kati driven, and the whole-tree `Android.bp`-to-Bazel conversion
+no longer exists.
 
 ---
 
@@ -7622,12 +7622,11 @@ func (c *soongApiSingleton) GenerateBuildActions(ctx android.SingletonContext) {
 **Source:** `build/soong/soong_api/soong_api.go`, lines 104-141
 
 The records are written out as `soong_api.json`, packed into a
-`soong_api.zip`, and loaded into a queryable `soong_api.db`. Each record also
-records CIPD provenance (`CipdVersion`, `CipdPackageName`), which is how a
-prebuilt sourced from a `cipd_package` module (Section 2.4.2) carries its
-upstream package version into SBOM generation. Client libraries (Java and
-Python) and a `soong_api_query` tool let downstream tools read the database
-without re-running analysis.
+`soong_api.zip`, and loaded into a queryable `soong_api.db` by the
+`soong_api_db_loader` host tool. Each record also records CIPD provenance
+(`CipdVersion`, `CipdPackageName`), which is how a prebuilt sourced from a
+`cipd_package` module (Section 2.4.2) carries its upstream package version into
+SBOM generation.
 
 ### 2.10.8 Partial Analysis and On-Demand Variants
 
@@ -7881,7 +7880,7 @@ development.
 | **APEX** | Android Pony EXpress. A container format for independently updatable system components. |
 | **Blueprint** | The meta-build framework underlying Soong. A Go library for parsing module definitions and generating Ninja manifests. |
 | **BoardConfig.mk** | Device-level configuration file that defines architecture, partition sizes, and hardware features. |
-| **bp2build** | Tool that converts Android.bp files to Bazel BUILD files for the Soong-to-Bazel migration. |
+| **bp2build** | A since-removed tool that converted Android.bp files to Bazel BUILD files during an earlier Soong-to-Bazel migration effort. |
 | **bpfmt** | Blueprint file formatter (analogous to gofmt for Go). |
 | **Context** | The central state object in Blueprint that orchestrates the four build phases. |
 | **Cuttlefish** | A cloud-friendly Android virtual device (alternative to the Goldfish emulator). |
@@ -9536,7 +9535,7 @@ backend the package uses.  In Android 17 the selection logic in the
 Android 17 removed the previously separate `FeatureFlagsImpl.deviceConfig.java.template`;
 the DeviceConfig path now shares the `legacy_flag.internal` template.  The
 complete template inventory in `build/make/tools/aconfig/aconfig/templates/`
-(14 files) is:
+(13 files) is:
 
 ```
 CustomFeatureFlags.java.template

@@ -555,7 +555,7 @@ graph TD
 All system call stubs in Bionic are auto-generated from a single definition
 file:
 
-**Source file:** `bionic/libc/SYSCALLS.TXT` (384 lines)
+**Source file:** `bionic/libc/SYSCALLS.TXT` (391 lines)
 
 From `bionic/libc/SYSCALLS.TXT` (lines 1-14):
 
@@ -850,7 +850,7 @@ From `bionic/libc/SECCOMP_BLOCKLIST_APP.TXT` (lines 1-7):
 
 **Blocked system calls for apps:**
 
-The `SECCOMP_BLOCKLIST_APP.TXT` file (51 lines) removes dangerous system calls
+The `SECCOMP_BLOCKLIST_APP.TXT` file (50 lines) removes dangerous system calls
 from app processes:
 
 ```
@@ -884,7 +884,7 @@ swapon(const char*, int) all
 swapoff(const char*) all
 ```
 
-**The app allowlist** (`SECCOMP_ALLOWLIST_APP.TXT`, 62 lines) re-enables
+**The app allowlist** (`SECCOMP_ALLOWLIST_APP.TXT`, 61 lines) re-enables
 specific calls that apps need but are not in the base SYSCALLS.TXT set, often
 for backward compatibility:
 
@@ -1085,9 +1085,9 @@ source files totaling over 7,000 lines of C++. The key files are:
 | `linker_main.cpp` | 859 | Entry point, initialization, main linking sequence |
 | `linker_relocate.cpp` | 686 | Relocation processing |
 | `linker_namespaces.h` | 183 | Namespace data structures |
-| `linker_soinfo.h` | ~400 | `soinfo` structure definition |
-| `linker_config.cpp` | ~500 | Configuration file parser |
-| `dlfcn.cpp` | ~100 | `dlopen`/`dlsym` API surface |
+| `linker_soinfo.h` | 539 | `soinfo` structure definition |
+| `linker_config.cpp` | 619 | Configuration file parser |
+| `dlfcn.cpp` | 357 | `dlopen`/`dlsym` API surface |
 
 ### 7.3.2 The Linker Entry Point
 
@@ -1147,12 +1147,12 @@ graph TD
     F --> G["Parse LD_DEBUG,<br/>LD_LIBRARY_PATH, LD_PRELOAD"]
     G --> H["Load/locate executable"]
     H --> I["Create soinfo for executable"]
-    I --> J["Init linker config + namespaces"]
+    I --> N["Init VDSO<br/>(add_vdso)"]
+    N --> J["Init linker config + namespaces"]
     J --> K["Prelink executable<br/>(parse .dynamic section)"]
     K --> L["Load DT_NEEDED + LD_PRELOAD<br/>(BFS dependency walk)"]
     L --> M["Relocate all libraries"]
-    M --> N["Init VDSO"]
-    N --> O["Finalize static TLS"]
+    M --> O["Finalize static TLS"]
     O --> P["Init CFI shadow"]
     P --> Q["Call .preinit_array"]
     Q --> R["Call .init_array for all libs"]
@@ -2321,10 +2321,10 @@ graph TD
         APEX2["com.android.vndk.vXX<br/>(VNDK APEX)"]
     end
 
-    SYS -->|"libc.so, libm.so, libdl.so"| VNDK
-    SYS -->|"libc.so, libm.so, libdl.so"| VNDK_PROD
-    SYS -->|"libc.so, libm.so, libdl.so"| SPHAL
-    SYS -->|"libc.so, libm.so, libdl.so"| RS
+    VNDK -->|"libc.so, libm.so, libdl.so"| SYS
+    VNDK_PROD -->|"libc.so, libm.so, libdl.so"| SYS
+    SPHAL -->|"libc.so, libm.so, libdl.so"| SYS
+    RS -->|"libc.so, libm.so, libdl.so"| SYS
 
     VDEF -->|"LLNDK libraries"| SYS
     VDEF -->|"VNDK-SP, VNDK-core"| VVNDK
@@ -4108,6 +4108,8 @@ sequenceDiagram
     Note over L: Phase 3: Executable setup
     L->>L: get_executable_info() or load_executable()
     L->>L: Create somain soinfo
+    L->>L: __libc_init_mte() [AArch64]
+    L->>L: add_vdso() [link VDSO as vdso soinfo]
     L->>L: PIE validation (ET_DYN required)
     L->>L: init_default_namespaces()
 
@@ -4131,20 +4133,15 @@ sequenceDiagram
         L->>L: protect_relro()
     end
 
-    Note over L: Phase 6: VDSO
-    L->>L: add_vdso()
-    L->>L: Link VDSO as [vdso] soinfo
-
-    Note over L: Phase 7: MTE & TLS
-    L->>L: __libc_init_mte() [AArch64]
+    Note over L: Phase 6: Stack tagging & TLS
     L->>L: __libc_init_mte_stack() [AArch64]
     L->>L: linker_finalize_static_tls()
     L->>L: __libc_init_main_thread_final()
 
-    Note over L: Phase 8: CFI
+    Note over L: Phase 7: CFI
     L->>L: CFIShadow::InitialLinkDone()
 
-    Note over L: Phase 9: Initialization
+    Note over L: Phase 8: Initialization
     L->>LC: Call __libc_preinit() [.preinit_array]
     LC->>LC: Init TLS, globals, properties
     LC->>LC: Init Scudo allocator
@@ -4156,7 +4153,7 @@ sequenceDiagram
         L->>L: si->call_constructors()
     end
 
-    Note over L: Phase 10: Handoff
+    Note over L: Phase 9: Handoff
     L->>L: purge_unused_memory()
     L->>A: Jump to AT_ENTRY (executable entry point)
     A->>LC: __libc_init() -> main(argc, argv, envp)

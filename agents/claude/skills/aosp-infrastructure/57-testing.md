@@ -1767,8 +1767,8 @@ Source location: `cts/`
 
 ```
 cts/
-  tests/          -- Device-side test modules (87 directories)
-  hostsidetests/  -- Host-side test modules (95 directories)
+  tests/          -- Device-side test modules (96 directories)
+  hostsidetests/  -- Host-side test modules (102 directories)
   apps/           -- Test helper apps (CtsVerifier, etc.)
   common/         -- Shared utilities
   libs/           -- Shared libraries

@@ -36,7 +36,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `build/make/core/product_config.mk` | Product configuration loading and validation |
 | `build/make/core/board_config.mk` | Board-level hardware configuration |
 | `build/make/core/binary.mk` | Shared rules for building native binaries |
-| `build/make/core/tasks/berberis_test.mk` | Build configuration for native bridge testing |
+| `frameworks/libs/binary_translation/berberis_config.mk` | Berberis (riscv64-to-x86_64) product-package configuration for native bridge |
 | `build/make/envsetup.sh` | Shell environment setup; defines `lunch`, `m`, `mm`, `mmm` |
 | `build/soong/cmd/soong_build/main.go` | Soong build system entry point |
 | `build/soong/android/module.go` | Base module type definitions for Soong |
@@ -185,7 +185,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp` | Compositor main class |
 | `frameworks/native/services/surfaceflinger/SurfaceFlinger.h` | SurfaceFlinger declarations |
 | `frameworks/native/services/surfaceflinger/Scheduler/Scheduler.cpp` | VSYNC scheduling and frame pacing |
-| `frameworks/native/services/surfaceflinger/Scheduler/VsyncController.cpp` | VSYNC signal generation |
+| `frameworks/native/services/surfaceflinger/Scheduler/VSyncReactor.cpp` | VSYNC controller implementation (`VsyncController` interface in `VsyncController.h`) |
 | `frameworks/native/services/surfaceflinger/CompositionEngine/` | Composition strategy engine |
 | `frameworks/native/services/surfaceflinger/DisplayHardware/HWComposer.cpp` | HWC abstraction layer |
 | `frameworks/native/services/surfaceflinger/DisplayHardware/PowerAdvisor.cpp` | Power hint integration |
@@ -377,7 +377,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/base/services/core/java/com/android/server/pm/InstallPackageHelper.java` | Package installation logic |
 | `frameworks/base/services/core/java/com/android/server/pm/PackageInstallerService.java` | Installer session management |
 | `frameworks/base/services/core/java/com/android/server/pm/permission/PermissionManagerService.java` | Runtime permission management |
-| `frameworks/base/services/core/java/com/android/server/pm/pkg/parsing/ParsingPackageUtils.java` | APK manifest parsing |
+| `frameworks/base/core/java/com/android/internal/pm/pkg/parsing/ParsingPackageUtils.java` | APK manifest parsing |
 | `frameworks/base/services/core/java/com/android/server/pm/resolution/ComponentResolver.java` | Intent filter resolution |
 | `frameworks/base/services/core/java/com/android/server/pm/dex/DexManager.java` | DEX file optimization tracking |
 | `frameworks/base/core/java/android/content/pm/PackageManager.java` | Public PackageManager API |
@@ -585,11 +585,6 @@ throughout AOSP and this book.
   Comprises the virtualization service, pKVM hypervisor, and Microdroid
   guest OS. Introduced in Android 13.
 
-**BHB** (BufferHub)
-: A system for zero-copy buffer sharing between processes, used primarily by
-  VR and low-latency display paths. Manages buffer lifecycle and
-  synchronization.
-
 **Binder**
 : Android's primary IPC mechanism. A kernel driver (`/dev/binder`) combined
   with userspace libraries provides object-oriented, synchronous remote
@@ -601,15 +596,23 @@ throughout AOSP and this book.
   `libdl`, and the dynamic linker (`linker64`). Optimized for size, security
   (MTE support), and Android-specific features (system properties).
 
-**BLAST** (Buffer Layer Accelerated SurfaceTexture)
-: The modern buffer submission path in SurfaceFlinger that replaces the
-  legacy BufferQueue model. Bundles buffer submission with
-  SurfaceFlinger transactions for atomic, synchronized updates.
+**BLAST**
+: A SurfaceFlinger codename (the source spells it out only as the "Buffer
+  State Layer" path; there is no official acronym expansion). The modern
+  buffer submission path in SurfaceFlinger that replaces the legacy
+  BufferQueue model. Bundles buffer submission with SurfaceFlinger
+  transactions for atomic, synchronized updates, via `BLASTBufferQueue`.
 
 **Blueprint**
 : The build description language used by Soong. `Android.bp` files use a
   JSON-like declarative syntax to define modules (libraries, binaries, APKs,
   APEX packages).
+
+**BufferHub** (legacy/removed)
+: A former system for zero-copy buffer sharing between processes, associated
+  with the old VR and low-latency display paths. Effectively removed in
+  modern AOSP (no `libui` headers remain, and VR support is gone); listed
+  here only because older references still mention it.
 
 **BufferQueue**
 : A producer-consumer queue for sharing graphical buffers between processes.
@@ -1008,7 +1011,7 @@ files that metalava produces and validates against:
 
 - `frameworks/base/core/api/current.txt` — the canonical public Android SDK
   signature. The in-tree copy is ~65k lines, ~4 MB, in
-  metalava's "Signature format: 2.0".
+  metalava's "Signature format: 6.0".
 - `frameworks/base/services/api/current.txt` — the system-services API surface
   exposed to in-process callers.
 - The corresponding `system-current.txt` and `module-lib-current.txt` siblings
@@ -1081,7 +1084,7 @@ class members listed in `frameworks/base/core/api/current.txt` (and the adjacent
 is human-readable text. Its first lines look like:
 
 ```
-// Signature format: 2.0
+// Signature format: 6.0
 package android {
 
   public final class Manifest {
@@ -2368,7 +2371,7 @@ find frameworks/base/core -name 'Manifest.java' -path '*/java/android/*'
 head -3 frameworks/base/core/java/android/Manifest.java
 ```
 
-**What to look for**: the signature file opens with `// Signature format: 2.0`
+**What to look for**: the signature file opens with `// Signature format: 6.0`
 followed by `package android {`. Every class is described in Java-flavor syntax.
 The `Manifest.java` source file should exist at
 `frameworks/base/core/java/android/Manifest.java` and be Java, not Kotlin.
@@ -2779,7 +2782,7 @@ FD inheritance is now governed by explicit, dated allow-lists in each species (`
 
 **Static final fields no longer reflectively writable at SDK 37.** For apps targeting SDK 37, `ArtField::IsUnmodifiable()` (`art/runtime/art_field-inl.h`) returns true for ordinary `static final` fields, so reflective (`java_lang_reflect_Field.cc`) and JNI (`jni_internal.cc`) writes throw `IllegalAccessException` instead of silently mutating a constant.
 
-**Lock-free `MessageQueue` at SDK 37.** Android 17 adds a concurrent `MessageQueue` reimplementation selected by the `release_package_messagequeue_implementation` Soong config; the default `CombinedMessageQueue` (`frameworks/base/core/java/android/os/CombinedDeliMessageQueue/MessageQueue.java`) picks at runtime between the legacy `synchronized` queue and a `VarHandle`-CAS "DeliQueue", switching to the lock-free path for system processes and apps gated by the `USE_NEW_MESSAGEQUEUE` compat change (`@EnabledAfter(BAKLAVA)`, SDK 37+).
+**Lock-free `MessageQueue` at SDK 37.** Android 17 adds a concurrent `MessageQueue` reimplementation selected by the `release_package_messagequeue_implementation` Soong config; the default `CombinedMessageQueue` (`frameworks/base/core/java/android/os/CombinedMessageQueue/MessageQueue.java`, the config's `conditions_default`) picks at runtime between the legacy `synchronized` queue and a `VarHandle`-CAS "DeliQueue", switching to the lock-free path for system processes and apps gated by the `USE_NEW_MESSAGEQUEUE` compat change (`@EnabledAfter(BAKLAVA)`, SDK 37+).
 
 ### Notable integrations
 

@@ -158,7 +158,7 @@ helpful but not strictly required.
 
 ### A Note on Scope
 
-Android is vast. Even across sixty-seven chapters, this book cannot cover
+Android is vast. Even across sixty-six chapters, this book cannot cover
 every subsystem exhaustively. I have focused on the areas that matter most
 to platform-level work, and within each area, I have prioritized the
 architectural patterns and critical code paths over encyclopedic API
@@ -194,7 +194,7 @@ stands on the foundation they built.
 
 ### Structure
 
-This book is organized into sixty-seven chapters spanning the complete AOSP
+This book is organized into sixty-six chapters spanning the complete AOSP
 stack, from the build system to specialized device form factors. The chapters
 are grouped into fifteen thematic parts (I through XV), followed by four
 appendices, though each chapter is designed to be readable on its own.

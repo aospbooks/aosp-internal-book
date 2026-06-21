@@ -2362,7 +2362,7 @@ ExtraRenderingInfo info = node.getExtraRenderingInfo();
 if (info != null) {
     Size textSize = info.getTextSizeInPx();
     int textSizeUnit = info.getTextSizeUnit();
-    CharSequence layoutParams = info.getLayoutSize();
+    Size layoutSize = info.getLayoutSize();
 }
 ```
 
@@ -2492,23 +2492,37 @@ installed in `AccessibilityInputFilter`:
 ```mermaid
 flowchart LR
     Input["Input Events"] --> AIF["AccessibilityInputFilter"]
-    AIF --> MK["MouseKeysInterceptor<br/>(new in 17)"]
-    MK --> MagGH["MagnificationGestureHandler"]
-    MagGH --> MEI["MotionEventInjector"]
-    MEI --> TE["TouchExplorer"]
-    TE --> AC["AutoclickController"]
+
+    subgraph Motion["Per-display motion chain (head to tail)"]
+        MEI["MotionEventInjector"] --> MagGH["MagnificationGestureHandler"]
+        MagGH --> TE["TouchExplorer"]
+        TE --> AC["AutoclickController"]
+    end
+
+    subgraph Keys["Default-display key-event handlers"]
+        MK["MouseKeysInterceptor<br/>(new in 17)"]
+        KI["KeyboardInterceptor"]
+        MKH["MagnificationKeyHandler"]
+    end
+
+    AIF --> MEI
+    AIF --> MK
     AC --> Output["Input Pipeline"]
 ```
 
 Each transformation in the chain can consume, modify, or pass through events.
-`AccessibilityInputFilter` builds the chain per display with
-`addFirstEventHandler`, prepending each enabled feature, so the head-to-tail
-order with everything on is roughly mouse keys, then magnification gesture
-detection, then motion-event injection, then touch exploration, then
-autoclick. The order matters: magnification gestures are detected before touch
-exploration, so a triple-tap for magnification is not misinterpreted as a
-touch exploration gesture. The `KeyboardInterceptor` is a special case --
-it handles only key events and does not forward them to the rest of the chain.
+`AccessibilityInputFilter` builds the per-display motion chain with
+`addFirstEventHandler` (`enableFeaturesForDisplay`), which prepends each enabled
+feature, so the order of `addFirstEventHandler` calls -- autoclick, touch
+exploration, generic-motion, magnification, then motion-event injection --
+reverses into a head-to-tail order of motion-event injection, then
+magnification gesture detection, then touch exploration, then autoclick. The
+order matters: magnification gestures are detected before touch exploration, so
+a triple-tap for magnification is not misinterpreted as a touch exploration
+gesture. Key-event handlers are installed separately on the default display by
+`enableDisplayIndependentFeatures`: `MouseKeysInterceptor` (new in 17),
+`KeyboardInterceptor`, and `MagnificationKeyHandler` each handle key events and
+do not feed into the motion chain.
 
 The chain is configured based on feature flags:
 
@@ -2677,9 +2691,10 @@ public static final int ALL_POINTER_ID_BITS = 0xFFFFFFFF;
 ```
 
 It maintains a bitmask of active pointer IDs, the last received event for each
-pointer, and timing information used for gesture detection. The 32-pointer
-limit matches the maximum pointer ID defined in the native input system
-(`MAX_POINTER_ID` in `frameworks/native/include/input/Input.h`).
+pointer, and timing information used for gesture detection. The 32-pointer limit
+covers pointer IDs 0 through `MAX_POINTER_ID` (31, defined in the native input
+system at `frameworks/native/include/input/Input.h`), i.e. `MAX_POINTER_ID + 1`
+distinct IDs.
 
 ### 46.8.13 Touch Exploration and Multi-Display
 
@@ -3270,7 +3285,7 @@ The app exposes one activity, `MainActivity`, with an intent filter for
 declared in the framework so callers do not depend on the app package directly:
 
 ```java
-// frameworks/base/core/java/android/content/Intent.java:4744
+// frameworks/base/core/java/android/content/Intent.java:4754
 // Activity Action: Launch an eye dropper. It allows the user to pick a pixel
 // on the display. The color of the selected pixel is returned to the
 // requesting activity as an activity result. Pixels from secure windows and

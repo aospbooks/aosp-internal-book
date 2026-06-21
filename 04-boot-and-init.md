@@ -279,11 +279,11 @@ sequenceDiagram
 ```
 
 The central function is `avb_slot_verify()`, defined in
-`external/avb/libavb/avb_slot_verify.h`. The result codes (lines 45-55) tell the
+`external/avb/libavb/avb_slot_verify.h`. The result codes (lines 48-58) tell the
 bootloader exactly what happened:
 
 ```c
-// external/avb/libavb/avb_slot_verify.h, lines 45-55
+// external/avb/libavb/avb_slot_verify.h, lines 48-58
 typedef enum {
   AVB_SLOT_VERIFY_RESULT_OK,
   AVB_SLOT_VERIFY_RESULT_ERROR_OOM,
@@ -356,10 +356,10 @@ When a data block is read, the kernel computes its hash and walks up the tree to
 verify it against the root hash. If any block has been modified, the hash mismatch
 is detected and the kernel takes action based on the configured error mode.
 
-The hashtree error modes are defined in `avb_slot_verify.h` (lines 86-93):
+The hashtree error modes are defined in `avb_slot_verify.h` (lines 89-96):
 
 ```c
-// external/avb/libavb/avb_slot_verify.h, lines 86-93
+// external/avb/libavb/avb_slot_verify.h, lines 89-96
 typedef enum {
   AVB_HASHTREE_ERROR_MODE_RESTART_AND_INVALIDATE,
   AVB_HASHTREE_ERROR_MODE_RESTART,
@@ -776,10 +776,10 @@ SELinux policy loading strategy. The two key concepts are:
 2. **Split policy**: Treble devices combine policy from `/system`, `/vendor`,
    `/product`, and `/odm` partitions
 
-The `SetupSelinux()` function (lines 780-836) orchestrates the process:
+The `SetupSelinux()` function (lines 785-841) orchestrates the process:
 
 ```cpp
-// system/core/init/selinux.cpp, lines 780-829
+// system/core/init/selinux.cpp, lines 785-841 (abridged)
 int SetupSelinux(char** argv) {
     SetStdioToDevNull(argv);
     InitKernelLogging(argv);
@@ -805,11 +805,11 @@ int SetupSelinux(char** argv) {
     execv(path, const_cast<char**>(args));
 ```
 
-The `LoadSelinuxPolicyAndroid()` function (lines 685-708) demonstrates the careful
+The `LoadSelinuxPolicyAndroid()` function (lines 690-713) demonstrates the careful
 five-step process needed when snapuserd (Virtual A/B snapshot daemon) is running:
 
 ```cpp
-// system/core/init/selinux.cpp, lines 670-708 (comment + function)
+// system/core/init/selinux.cpp, lines 675-713 (comment + function)
 // We use a five-step process to address this:
 //  (1) Read the policy into a string, with snapuserd running.
 //  (2) Rewrite the snapshot device-mapper tables, to generate new dm-user
@@ -1592,11 +1592,11 @@ specialization. This is what enables IPC for application processes.
 ### 4.4.2 ZygoteInit.java: The Java-Side Entry Point
 
 `ZygoteInit.main()` in
-`frameworks/base/core/java/com/android/internal/os/ZygoteInit.java` (line 814) is
+`frameworks/base/core/java/com/android/internal/os/ZygoteInit.java` (line 824) is
 the Java entry point:
 
 ```java
-// frameworks/base/core/java/com/android/internal/os/ZygoteInit.java, lines 814-931
+// frameworks/base/core/java/com/android/internal/os/ZygoteInit.java, lines 824-941
 @UnsupportedAppUsage
 public static void main(String[] argv) {
     ZygoteServer zygoteServer = null;
@@ -1890,19 +1890,19 @@ applications depend on. The entry point is `SystemServer.java` at
 
 ### 4.5.1 SystemServer Entry Point
 
-The `main()` method at line 710 is strikingly simple:
+The `main()` method at line 726 is strikingly simple:
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, lines 710-712
+// frameworks/base/services/java/com/android/server/SystemServer.java, lines 726-728
 public static void main(String[] args) {
     new SystemServer().run();
 }
 ```
 
-The constructor (lines 714-727) records startup information:
+The constructor (lines 730-743) records startup information:
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, lines 714-727
+// frameworks/base/services/java/com/android/server/SystemServer.java, lines 730-743
 public SystemServer() {
     // Check for factory test mode.
     mFactoryTestMode = FactoryTest.getMode();
@@ -1923,11 +1923,11 @@ and was restarted by Zygote, which itself was restarted by init).
 
 ### 4.5.2 The run() Method: Bootstrap
 
-The private `run()` method (lines 836-1083) contains the complete system_server
+The private `run()` method (lines 852-1099) contains the complete system_server
 initialization sequence. It begins with critical setup:
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, lines 836-953
+// frameworks/base/services/java/com/android/server/SystemServer.java, lines 852-1001 (abridged)
 private void run() {
     // ...
     t.traceBegin("InitBeforeStartServices");
@@ -1972,7 +1972,7 @@ Key setup steps:
 - **`clearGrowthLimit()`**: Removes the heap growth limit, giving system_server
   access to all available heap memory
 - **`setMaxThreads(31)`**: Sets the maximum Binder thread count to 31 (the constant
-  `sMaxBinderThreads` at line 493), much higher than the default for regular apps
+  `sMaxBinderThreads` at line 510), much higher than the default for regular apps
 - **`Looper.prepareMainLooper()`**: Sets up the message loop for the main thread
 - **`System.loadLibrary("android_servers")`**: Loads the native companion library
   containing JNI implementations for system services
@@ -1981,10 +1981,10 @@ Key setup steps:
 ### 4.5.3 The Four Service Start Phases
 
 After initialization, `run()` starts services in four distinct phases (lines
-1024-1044):
+1047-1050):
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, lines 1024-1044
+// frameworks/base/services/java/com/android/server/SystemServer.java, lines 1041-1050
 // Start services.
 try {
     t.traceBegin("StartServices");
@@ -2012,12 +2012,12 @@ throw new RuntimeException("Main thread loop unexpectedly exited");
 
 ### 4.5.4 Bootstrap Services
 
-The `startBootstrapServices()` method (lines 1176-1451) starts the services that
+The `startBootstrapServices()` method (lines 1192-1461) starts the services that
 have complex mutual dependencies and must be initialized together. These are the
 absolute foundation of the system:
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, lines 1170-1175
+// frameworks/base/services/java/com/android/server/SystemServer.java, lines 1186-1191
 /**
  * Starts the small tangle of critical services that are needed to get the
  * system off the ground.  These services have complex mutual dependencies
@@ -2030,40 +2030,40 @@ The bootstrap service start order (extracted from the actual source):
 
 | Order | Service | Source Line | Purpose |
 |---|---|---|---|
-| 1 | ArtModuleServiceInitializer | 1187 | ART runtime integration |
-| 2 | Watchdog | 1193 | Deadlock detection |
-| 3 | ProtoLogConfigurationService | 1200 | ProtoLog framework |
-| 4 | PlatformCompat | 1211 | App compatibility framework |
-| 5 | FileIntegrityService | 1222 | File system integrity |
-| 6 | Installer | 1229 | Package installation support |
-| 7 | DeviceIdentifiersPolicyService | 1235 | Device ID access policy |
-| 8 | FeatureFlagsService | 1241 | Runtime feature flags |
-| 9 | UriGrantsManagerService | 1246 | Content URI permissions |
-| 10 | PowerStatsService | 1250 | Power measurement |
-| 11 | IStatsService | 1255 | Statistics collection (native) |
-| 12 | MemtrackProxyService | 1261 | Memory tracking |
-| 13 | AccessCheckingService | 1266 | Permission and AppOp management |
-| 14 | ActivityTaskManagerService + ActivityManagerService | 1274-1283 | Activity lifecycle, process management |
-| 15 | DataLoaderManagerService | 1287 | Incremental data loading |
-| 16 | IncrementalService | 1293 | Incremental APK installation |
-| 17 | PowerManagerService | 1301 | Power state management |
-| 18 | ThermalManagerService | 1305 | Thermal monitoring |
-| 19 | RecoverySystemService | 1316 | OTA and recovery |
-| 20 | LightsService | 1327 | LED and backlight control |
-| 21 | DisplayManagerService | 1340 | Display management |
-| 22 | PHASE_WAIT_FOR_DEFAULT_DISPLAY | 1345 | *First boot phase checkpoint* |
-| 23 | DomainVerificationService | 1357 | App link verification |
-| 24 | PackageManagerService | 1363 | Package management |
-| 25 | DexUseManagerLocal | 1377 | DEX file usage tracking |
-| 26 | UserManagerService | 1397 | Multi-user management |
-| 27 | OverlayManagerService | 1426 | Runtime resource overlays |
-| 28 | SensorPrivacyService | 1437 | Sensor access control |
-| 29 | SensorService | 1449 | Hardware sensor management |
+| 1 | ArtModuleServiceInitializer | 1195 | ART runtime integration |
+| 2 | Watchdog | 1208 | Deadlock detection |
+| 3 | ProtoLogConfigurationService | 1215 | ProtoLog framework |
+| 4 | PlatformCompat | 1226 | App compatibility framework |
+| 5 | FileIntegrityService | 1237 | File system integrity |
+| 6 | Installer | 1244 | Package installation support |
+| 7 | DeviceIdentifiersPolicyService | 1250 | Device ID access policy |
+| 8 | FeatureFlagsService | 1256 | Runtime feature flags |
+| 9 | UriGrantsManagerService | 1261 | Content URI permissions |
+| 10 | PowerStatsService | 1265 | Power measurement |
+| 11 | IStatsService | 1270 | Statistics collection (native) |
+| 12 | MemtrackProxyService | 1276 | Memory tracking |
+| 13 | AccessCheckingService | 1281 | Permission and AppOp management |
+| 14 | ActivityTaskManagerService + ActivityManagerService | 1290-1294 | Activity lifecycle, process management |
+| 15 | DataLoaderManagerService | 1302 | Incremental data loading |
+| 16 | IncrementalService | 1308 | Incremental APK installation |
+| 17 | PowerManagerService | 1316 | Power state management |
+| 18 | ThermalManagerService | 1320 | Thermal monitoring |
+| 19 | RecoverySystemService | 1331 | OTA and recovery |
+| 20 | LightsService | 1336 | LED and backlight control |
+| 21 | DisplayManagerService | 1349 | Display management |
+| 22 | PHASE_WAIT_FOR_DEFAULT_DISPLAY | 1355 | *First boot phase checkpoint* |
+| 23 | DomainVerificationService | 1366 | App link verification |
+| 24 | PackageManagerService | 1372 | Package management |
+| 25 | DexUseManagerLocal | 1389 | DEX file usage tracking |
+| 26 | UserManagerService | 1406 | Multi-user management |
+| 27 | OverlayManagerService | 1435 | Runtime resource overlays |
+| 28 | SensorPrivacyService | 1446 | Sensor access control |
+| 29 | SensorService | 1458 | Hardware sensor management |
 
-Note the `PHASE_WAIT_FOR_DEFAULT_DISPLAY` at step 22 (line 1345):
+Note the `PHASE_WAIT_FOR_DEFAULT_DISPLAY` at step 22 (line 1355):
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, lines 1344-1346
+// frameworks/base/services/java/com/android/server/SystemServer.java, lines 1354-1356
 // We need the default display before we can initialize the package manager.
 t.traceBegin("WaitForDisplay");
 mSystemServiceManager.startBootPhase(t, SystemService.PHASE_WAIT_FOR_DEFAULT_DISPLAY);
@@ -2076,7 +2076,7 @@ is available.
 
 ### 4.5.5 Core Services
 
-The `startCoreServices()` method (lines 1457-1533) starts essential services that
+The `startCoreServices()` method (lines 1467-1544) starts essential services that
 do not have the complex interdependencies of bootstrap services:
 
 | Order | Service | Purpose |
@@ -2096,7 +2096,7 @@ do not have the complex interdependencies of bootstrap services:
 
 ### 4.5.6 Other Services
 
-The `startOtherServices()` method (lines 1539 onward) starts the remaining
+The `startOtherServices()` method (lines 1550 onward) starts the remaining
 ~70+ system services. This is the longest method in all of SystemServer, starting
 services like:
 
@@ -2636,7 +2636,7 @@ key services is essential for platform developers.
 
 ### 4.8.1 startOtherServices: The Bulk of the Framework
 
-The `startOtherServices()` method in `SystemServer.java` (starting at line 1539) is
+The `startOtherServices()` method in `SystemServer.java` (starting at line 1550) is
 the longest method in the class. It starts the "grab bag" of services that constitute
 the Android framework. Here is a detailed breakdown of the key services started in
 this method:
@@ -3775,12 +3775,102 @@ flowchart TD
 
 ---
 
-## 4.16 Try It: Add a Custom Init Service
+## 4.16 Reference: Architecture, Glossary, and Further Reading
+
+### 4.16.1 Architectural Insights
+
+The boot sequence reveals several fundamental design principles of Android:
+
+**Separation of concerns through exec chains**: First-stage init, SELinux setup,
+and second-stage init are all the same binary (`/system/bin/init`) but execute as
+separate process images via `exec()`. Each stage has a focused responsibility and
+a well-defined interface to the next stage (via command-line arguments and
+environment variables).
+
+**Event-driven, single-threaded main loop**: Init's main loop is deliberately
+single-threaded for determinism. Properties, signals, and timers are all multiplexed
+through epoll. The only multi-threaded aspect is the property service thread, which
+communicates with the main loop through an eventfd.
+
+**Fork-based process creation**: Zygote's fork model is the key optimization that
+makes Android's app startup times possible. By paying the cost of framework loading
+once (in Zygote) and sharing it across all apps via copy-on-write, Android avoids
+the 2-5 second startup penalty that would occur if each app loaded the framework
+independently.
+
+**Boot phase progression**: system_server's phased boot allows services to perform
+staged initialization. A service can do basic setup during its constructor, then
+wait for `PHASE_SYSTEM_SERVICES_READY` before accessing other services, and
+`PHASE_BOOT_COMPLETED` before assuming the system is fully operational. This
+eliminates timing-dependent bugs that would occur if services tried to use other
+services that had not yet started.
+
+**Property triggers as a coordination mechanism**: The property system serves as a
+lightweight publish-subscribe mechanism during boot. Services announce their state
+by setting properties (e.g., `init.svc.zygote=running`), and init.rc triggers
+respond to those state changes to orchestrate the boot sequence. The
+`wait_for_prop` command provides synchronous waiting when strict ordering is
+required.
+
+**Defense in depth**: The boot sequence implements multiple layers of security:
+
+- AVB ensures only verified code runs
+- dm-verity provides runtime integrity checking
+- SELinux confines every process to its security domain
+- The property system enforces MAC on all configuration changes
+- Services run with minimal privileges (user/group/capabilities)
+
+The source files referenced in this chapter are the authoritative documentation for
+Android's boot process. When the code changes, this documentation changes with it,
+which is why reading the actual source is always more reliable than any external
+documentation, including this book.
+
+### 4.16.2 Glossary of Terms
+
+| Term | Definition |
+|---|---|
+| **ABL** | Android Bootloader; Qualcomm's UEFI-based bootloader |
+| **APEX** | Android Pony EXpress; updatable system component package |
+| **AVB** | Android Verified Boot; chain-of-trust verification system |
+| **BPF** | Berkeley Packet Filter; kernel-level packet filtering |
+| **DTB** | Device Tree Blob; hardware description for the kernel |
+| **dm-verity** | Device-mapper verity; runtime filesystem integrity verification |
+| **epoll** | Linux I/O event notification facility |
+| **fstab** | Filesystem table; describes mount points and options |
+| **GKI** | Generic Kernel Image; standardized Android kernel |
+| **GSI** | Generic System Image; standardized system partition for testing |
+| **init.rc** | Init configuration language files |
+| **PID 1** | The first userspace process; init in Android |
+| **RPMB** | Replay Protected Memory Block; secure storage on eMMC/UFS |
+| **SELinux** | Security-Enhanced Linux; mandatory access control |
+| **SoC** | System on Chip; integrated circuit with CPU, GPU, etc. |
+| **USAP** | Unspecialized App Process; pre-forked Zygote child |
+| **VBMeta** | Verified Boot Metadata; signed partition verification data |
+| **Zygote** | Process that pre-loads framework and forks all app processes |
+| **system_server** | Central framework process hosting 100+ system services |
+
+### 4.16.3 Further Reading
+
+To continue exploring the topics covered in this chapter:
+
+- **Chapter 22** will cover Android's process management and how
+  ActivityManagerService manages the lifecycle of application processes that Zygote
+  creates
+- **Chapter 9** will examine the Binder IPC mechanism that system_server services
+  use to communicate with applications
+- The Android source code at `system/core/init/README.md` contains additional
+  documentation on the init.rc language
+- The `external/avb/README.md` file provides detailed documentation on the AVB
+  protocol and tools
+
+---
+
+## 4.17 Try It: Add a Custom Init Service
 
 Now that we understand the complete boot sequence, let us walk through a practical
 exercise: adding a custom native daemon that starts during boot.
 
-### 4.16.1 Step 1: Write the Native Daemon
+### 4.17.1 Step 1: Write the Native Daemon
 
 Create a simple daemon that logs a message to the kernel log every few seconds.
 
@@ -3810,7 +3900,7 @@ int main(int /* argc */, char** argv) {
 }
 ```
 
-### 4.16.2 Step 2: Create the Build File
+### 4.17.2 Step 2: Create the Build File
 
 Create `device/generic/car/mybootdaemon/Android.bp`:
 
@@ -3833,7 +3923,7 @@ The `init_rc` field tells the build system to install our init.rc file alongside
 binary. The build system will place it at `/system/etc/init/mybootdaemon.rc`, which
 is one of the directories that init parses during `LoadBootScripts()`.
 
-### 4.16.3 Step 3: Create the init.rc File
+### 4.17.3 Step 3: Create the init.rc File
 
 Create `device/generic/car/mybootdaemon/mybootdaemon.rc`:
 
@@ -3865,7 +3955,7 @@ The `on property:sys.boot_completed=1` trigger starts our daemon after the syste
 has fully booted. This is the safest time to start custom daemons because all
 system services are available.
 
-### 4.16.4 Step 4: Add the SELinux Policy
+### 4.17.4 Step 4: Add the SELinux Policy
 
 For a real device, you must create SELinux policy for your daemon. Without it,
 SELinux will deny all operations and your daemon will fail to function.
@@ -3893,7 +3983,7 @@ And add the file context in `device/generic/car/sepolicy/private/file_contexts`:
 /system/bin/mybootdaemon      u:object_r:mybootdaemon_exec:s0
 ```
 
-### 4.16.5 Step 5: Build and Test
+### 4.17.5 Step 5: Build and Test
 
 Add the module to your device makefile (e.g., `device/generic/car/device.mk`):
 
@@ -3915,7 +4005,7 @@ For a full system image build:
 m
 ```
 
-### 4.16.6 Step 6: Verify
+### 4.17.6 Step 6: Verify
 
 After flashing the image or booting the emulator:
 
@@ -3944,7 +4034,7 @@ adb shell getprop init.svc.mybootdaemon
 # Expected: "running"
 ```
 
-### 4.16.7 Common Pitfalls
+### 4.17.7 Common Pitfalls
 
 **Problem: Service fails to start with "permission denied"**
 
@@ -3993,7 +4083,7 @@ adb shell ps -eZ | grep mybootdaemon
 # Expected: u:r:mybootdaemon:s0
 ```
 
-### 4.16.8 Understanding Service States
+### 4.17.8 Understanding Service States
 
 Init tracks each service through a set of state flags. Understanding these states
 is critical for debugging service startup issues:
@@ -4075,7 +4165,7 @@ This function iterates over all services, checking for two conditions:
 The function returns the next time it needs to run, which is used to set the epoll
 timeout in the main loop.
 
-### 4.16.9 Advanced: Making a Persistent Daemon
+### 4.17.9 Advanced: Making a Persistent Daemon
 
 To create a daemon that is automatically restarted by init if it crashes, modify
 the rc file:
@@ -4166,89 +4256,3 @@ in this chapter:
 | `external/avb/libavb/avb_vbmeta_image.h` | VBMeta image format | 4.2.3 |
 | `external/avb/libavb/avb_slot_verify.h` | Slot verification API | 4.2.3 |
 | `external/avb/libavb/avb_hashtree_descriptor.h` | dm-verity hashtree format | 4.2.3 |
-
-### Architectural Insights
-
-The boot sequence reveals several fundamental design principles of Android:
-
-**Separation of concerns through exec chains**: First-stage init, SELinux setup,
-and second-stage init are all the same binary (`/system/bin/init`) but execute as
-separate process images via `exec()`. Each stage has a focused responsibility and
-a well-defined interface to the next stage (via command-line arguments and
-environment variables).
-
-**Event-driven, single-threaded main loop**: Init's main loop is deliberately
-single-threaded for determinism. Properties, signals, and timers are all multiplexed
-through epoll. The only multi-threaded aspect is the property service thread, which
-communicates with the main loop through an eventfd.
-
-**Fork-based process creation**: Zygote's fork model is the key optimization that
-makes Android's app startup times possible. By paying the cost of framework loading
-once (in Zygote) and sharing it across all apps via copy-on-write, Android avoids
-the 2-5 second startup penalty that would occur if each app loaded the framework
-independently.
-
-**Boot phase progression**: system_server's phased boot allows services to perform
-staged initialization. A service can do basic setup during its constructor, then
-wait for `PHASE_SYSTEM_SERVICES_READY` before accessing other services, and
-`PHASE_BOOT_COMPLETED` before assuming the system is fully operational. This
-eliminates timing-dependent bugs that would occur if services tried to use other
-services that had not yet started.
-
-**Property triggers as a coordination mechanism**: The property system serves as a
-lightweight publish-subscribe mechanism during boot. Services announce their state
-by setting properties (e.g., `init.svc.zygote=running`), and init.rc triggers
-respond to those state changes to orchestrate the boot sequence. The
-`wait_for_prop` command provides synchronous waiting when strict ordering is
-required.
-
-**Defense in depth**: The boot sequence implements multiple layers of security:
-
-- AVB ensures only verified code runs
-- dm-verity provides runtime integrity checking
-- SELinux confines every process to its security domain
-- The property system enforces MAC on all configuration changes
-- Services run with minimal privileges (user/group/capabilities)
-
-The source files referenced in this chapter are the authoritative documentation for
-Android's boot process. When the code changes, this documentation changes with it
--- which is why reading the actual source is always more reliable than any external
-documentation, including this book.
-
-### Glossary of Terms
-
-| Term | Definition |
-|---|---|
-| **ABL** | Android Bootloader; Qualcomm's UEFI-based bootloader |
-| **APEX** | Android Pony EXpress; updatable system component package |
-| **AVB** | Android Verified Boot; chain-of-trust verification system |
-| **BPF** | Berkeley Packet Filter; kernel-level packet filtering |
-| **DTB** | Device Tree Blob; hardware description for the kernel |
-| **dm-verity** | Device-mapper verity; runtime filesystem integrity verification |
-| **epoll** | Linux I/O event notification facility |
-| **fstab** | Filesystem table; describes mount points and options |
-| **GKI** | Generic Kernel Image; standardized Android kernel |
-| **GSI** | Generic System Image; standardized system partition for testing |
-| **init.rc** | Init configuration language files |
-| **PID 1** | The first userspace process; init in Android |
-| **RPMB** | Replay Protected Memory Block; secure storage on eMMC/UFS |
-| **SELinux** | Security-Enhanced Linux; mandatory access control |
-| **SoC** | System on Chip; integrated circuit with CPU, GPU, etc. |
-| **USAP** | Unspecialized App Process; pre-forked Zygote child |
-| **VBMeta** | Verified Boot Metadata; signed partition verification data |
-| **Zygote** | Process that pre-loads framework and forks all app processes |
-| **system_server** | Central framework process hosting 100+ system services |
-
-### Further Reading
-
-To continue exploring the topics covered in this chapter:
-
-- **Chapter 22** will cover Android's process management and how
-  ActivityManagerService manages the lifecycle of application processes that Zygote
-  creates
-- **Chapter 9** will examine the Binder IPC mechanism that system_server services
-  use to communicate with applications
-- The Android source code at `system/core/init/README.md` contains additional
-  documentation on the init.rc language
-- The `external/avb/README.md` file provides detailed documentation on the AVB
-  protocol and tools

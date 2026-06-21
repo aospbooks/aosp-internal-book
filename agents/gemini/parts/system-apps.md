@@ -1759,8 +1759,10 @@ The `PerDisplayRepository<T>` machinery comes from the shared
 `com.android.app.displaylib` library (`frameworks/libs/systemui/displaylib`).
 Components like `SysUiState` are tracked per-display through a
 `PerDisplayInstanceRepositoryImpl`, so each connected display gets its own
-instance.  The earlier `ShadeWindowGoesAround` gating flag has been retired in
-Android 17 -- the per-display repository is now created unconditionally.
+instance. In Android 17 the per-display `SysUiState` repository is provided
+unconditionally by `PerDisplayRepositoriesModule.provideSysUiStateRepository`
+(`frameworks/base/packages/SystemUI/src/com/android/systemui/dagger/PerDisplayRepositoriesModule.kt`),
+not behind a feature flag.
 
 ### 48.10.2  Per-Display Status Bar
 
@@ -2878,7 +2880,7 @@ a small library at `frameworks/base/libs/dream/lowlight/`, packaged as
 `LowLightDreamLib` and linked into SystemUI variants that need it.
 
 This section walks through the library's surface, the state machine it
-implements, and how SystemUI's `LowLightMonitor` consumes it.
+implements, and how SystemUI consumes it from its `lowlight/` package.
 
 ### 48.14.1  What the Library Owns and What It Does Not
 
@@ -3087,20 +3089,24 @@ defines a low-light dream points the binding at e.g.
 binds `null`, and `LowLightDreamManager.setAmbientLightMode` becomes a
 no-op. The library compiles into every SystemUI flavour either way.
 
-### 48.14.5  Consumption Path: SystemUI's LowLightMonitor
+### 48.14.5  Consumption Path: SystemUI's lowlight Package
 
-The consumer of the library in upstream AOSP is
-`com.android.systemui.lowlightclock.LowLightMonitor`. The monitor
-subscribes to whatever ambient-light source the SystemUI variant
-provides (vendor sensor service, light sensor, OEM cloud signal),
-maps that signal to one of the three enum values, and calls
+The consumer of the library in upstream AOSP lives in SystemUI's
+`com.android.systemui.lowlight` package. `AmbientLightModeMonitor`
+subscribes to the device light sensor and a debounce algorithm to
+classify ambient light as `AMBIENT_LIGHT_MODE_LIGHT`,
+`AMBIENT_LIGHT_MODE_DARK`, or `AMBIENT_LIGHT_MODE_UNDECIDED`.
+`LowLightBehaviorCoreStartable` is the `CoreStartable` that ties that
+signal together with keyguard, dock, and power state; when low-light
+behavior calls for the low-light dream, `LowLightClockDreamAction`
+(in `lowlightclock/`) invokes
 `lowLightDreamManager.setAmbientLightMode(mode)`. The library handles
 the rest:
 
 ```mermaid
 flowchart LR
-    Sensor["Ambient light source<br/>(sensor / OEM service)"]
-    Monitor["LowLightMonitor<br/>(SystemUI)"]
+    Sensor["Light sensor<br/>(AmbientLightModeMonitor)"]
+    Monitor["LowLightBehaviorCoreStartable<br/>(SystemUI lowlight/)"]
     Mgr["LowLightDreamManager<br/>(LowLightDreamLib)"]
     Coord["LowLightTransitionCoordinator"]
     HostUI["Host enter/exit listener<br/>(lowlightclock UI)"]
@@ -3149,7 +3155,8 @@ For the broader screensaver / `DreamService` architecture (DreamManagerService,
 | `frameworks/base/libs/dream/lowlight/src/com/android/dream/lowlight/dagger/LowLightDreamModule.kt` | `@Provides` for timeout, main dispatcher, application coroutine scope |
 | `frameworks/base/libs/dream/lowlight/src/com/android/dream/lowlight/dagger/LowLightDreamComponent.kt` | Dagger `@Subcomponent` host wires `DreamManager` + `ComponentName?` into |
 | `frameworks/base/libs/dream/lowlight/res/values/config.xml` | `config_lowLightTransitionTimeoutMs` (default 2000ms) |
-| `frameworks/base/packages/SystemUI/src/com/android/systemui/lowlightclock/LowLightMonitor.kt` | SystemUI consumer that converts sensor signal to `setAmbientLightMode` |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/lowlight/AmbientLightModeMonitor.kt` | SystemUI light-sensor monitor that classifies ambient light into light/dark/undecided modes |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/lowlight/LowLightBehaviorCoreStartable.kt` | `CoreStartable` that drives low-light behavior; `lowlightclock/LowLightClockDreamAction.kt` calls `setAmbientLightMode` |
 
 ---
 
@@ -4242,8 +4249,9 @@ Launcher3 is the default home screen application in AOSP, responsible for the ex
 users see first after unlocking their device. It manages app icons on the workspace,
 the all-apps drawer, widgets, folders, drag-and-drop, the taskbar on large screens, and,
 through its Quickstep integration, the recent-apps overview. The codebase lives in
-`packages/apps/Launcher3/` and spans approximately 19 subdirectories of Java and Kotlin
-source, plus a `quickstep/` module for gesture-navigation and recents features.
+`packages/apps/Launcher3/` and is split across roughly fifteen top-level directories of
+Java and Kotlin source, plus a `quickstep/` module for gesture-navigation and recents
+features.
 
 This chapter walks through the full architecture of Launcher3, from the model layer that
 loads workspace data off a background thread, through the view hierarchy that renders
@@ -4264,17 +4272,23 @@ packages/apps/Launcher3/
   quickstep/               # Gesture nav, recents, taskbar
   src_no_quickstep/        # Stubs for builds without quickstep
   src_plugins/             # Plugin interfaces
-  src_build_config/        # Build-time configuration
-  shared/                  # Code shared across variants
+  shared/                  # Code shared across variants (e.g. TestProtocol)
   res/                     # Resources (layouts, XML configs)
   protos/                  # Protocol buffer definitions
-  compose/                 # Jetpack Compose integration
+  protos_overrides/        # Per-build proto overrides
+  modules/                 # Compose modules (e.g. modules/widgetpicker)
+  aconfig/                 # aconfig feature-flag definitions
   dagger/                  # Dagger dependency injection modules
+  go/                      # Android Go variant overrides
+  checks/                  # Lint and error-prone checks
   tests/                   # Unit and integration tests
   tools/                   # Build tooling
   AndroidManifest.xml      # Application manifest
   Android.bp               # Soong build file
 ```
+
+There is no longer a separate `compose/` directory; the Compose-based code now
+lives under `modules/` (notably `modules/widgetpicker/`).
 
 The primary source tree at `src/com/android/launcher3/` contains the following
 key subdirectories:
@@ -4303,7 +4317,7 @@ key subdirectories:
 
 ### 49.1.2 The Main Activity: Launcher
 
-The entry point is `Launcher.java`, a 3065-line class that extends `StatefulActivity<LauncherState>`:
+The entry point is `Launcher.java`, a roughly 2900-line class that extends `StatefulActivity<LauncherState>`:
 
 ```java
 // src/com/android/launcher3/Launcher.java
@@ -4524,20 +4538,26 @@ public abstract class LauncherState implements BaseState<LauncherState> {
     public static final int FLAG_RECENTS_VIEW_VISIBLE = BaseState.getFlag(6);
 ```
 
-The concrete states include:
+Each state carries an `ordinal` field, set from the matching `*_STATE_ORDINAL`
+constant in `TestProtocol` (`shared/src/com/android/launcher3/testing/shared/TestProtocol.java`)
+that the state's definition in `LauncherState.java` passes to its constructor. The
+values are not a contiguous "UI layer" order; they are the stable identifiers shared
+with the test harness:
 
 | State | Ordinal | Description |
 |---|---|---|
 | `NORMAL` | 0 | Default workspace view |
 | `SPRING_LOADED` | 1 | Workspace shrunk during drag |
-| `ALL_APPS` | 2 | All-apps drawer open |
-| `HINT_STATE` | 3 | Swipe-up hint indicator |
-| `OVERVIEW` | 4 | Recents view (Quickstep) |
-| `EDIT_MODE` | 5 | Workspace customization mode |
+| `OVERVIEW` | 2 | Recents view (Quickstep) |
+| `OVERVIEW_MODAL_TASK` | 3 | Task menu open |
+| `QUICK_SWITCH` | 4 | Quick switch gesture |
+| `ALL_APPS` | 5 | All-apps drawer open |
 | `BACKGROUND_APP` | 6 | App is in foreground |
-| `QUICK_SWITCH` | 7 | Quick switch gesture |
-| `OVERVIEW_MODAL_TASK` | 8 | Task menu open |
+| `HINT_STATE` | 7 | Swipe-up hint indicator |
+| `HINT_STATE_TWO_BUTTON` | 8 | Two-button-nav hint indicator |
 | `OVERVIEW_SPLIT_SELECT` | 9 | Split-screen selection |
+| `EDIT_MODE` | 10 | Workspace customization mode |
+| `DESKTOP_DRAG_MODE` | 11 | Drag into a desktop window |
 
 The `StateManager` drives transitions with animations:
 
@@ -4612,12 +4632,13 @@ The `itemType` field determines the concrete type:
 | Constant | Value | Meaning |
 |---|---|---|
 | `ITEM_TYPE_APPLICATION` | 0 | App shortcut |
-| `ITEM_TYPE_DEEP_SHORTCUT` | 6 | Pinned deep shortcut |
 | `ITEM_TYPE_FOLDER` | 2 | Folder container |
 | `ITEM_TYPE_APPWIDGET` | 4 | App widget |
-| `ITEM_TYPE_APP_PAIR` | 15 | App pair for split screen |
+| `ITEM_TYPE_DEEP_SHORTCUT` | 6 | Pinned deep shortcut |
 | `ITEM_TYPE_TASK` | 7 | Task (recents) |
-| `ITEM_TYPE_FILE_SYSTEM_FILE` | 8 | Home screen file |
+| `ITEM_TYPE_QSB` | 8 | Quick search bar slot |
+| `ITEM_TYPE_APP_GROUP` | 10 | App pair for split screen (its `toString` label is still `"APP_PAIR"`) |
+| `ITEM_TYPE_FILE_SYSTEM_FILE` | 12 | Home screen file |
 
 The inheritance tree:
 
@@ -4649,9 +4670,15 @@ classDiagram
         +Intent intent
     }
 
+    class CollectionInfo {
+        +add(ItemInfo)* void
+        +getContents()* List~ItemInfo~
+        +getAppContents()* List~WorkspaceItemInfo~
+    }
+
     class FolderInfo {
-        +ArrayList~ItemInfo~ contents
-        +CharSequence suggestedFolderNames
+        -ArrayList~ItemInfo~ contents
+        +FolderNameInfos suggestedFolderNames
     }
 
     class LauncherAppWidgetInfo {
@@ -4660,7 +4687,7 @@ classDiagram
     }
 
     class AppPairInfo {
-        +List~WorkspaceItemInfo~ members
+        -List~WorkspaceItemInfo~ contents
     }
 
     class PackageItemInfo {
@@ -4670,9 +4697,10 @@ classDiagram
     ItemInfo <|-- ItemInfoWithIcon
     ItemInfoWithIcon <|-- WorkspaceItemInfo
     ItemInfoWithIcon <|-- AppInfo
-    ItemInfo <|-- FolderInfo
+    ItemInfo <|-- CollectionInfo
+    CollectionInfo <|-- FolderInfo
     ItemInfo <|-- LauncherAppWidgetInfo
-    ItemInfo <|-- AppPairInfo
+    CollectionInfo <|-- AppPairInfo
     ItemInfoWithIcon <|-- PackageItemInfo
 ```
 
@@ -4771,8 +4799,9 @@ The view supports multiple display contexts via constants:
 public static final int DISPLAY_WORKSPACE = 0;
 public static final int DISPLAY_ALL_APPS = 1;
 public static final int DISPLAY_FOLDER = 2;
+public static final int DISPLAY_TASKBAR = 5;
 public static final int DISPLAY_SEARCH_RESULT = 6;
-public static final int DISPLAY_TASKBAR = 7;
+public static final int DISPLAY_SEARCH_RESULT_SMALL = 7;
 ```
 
 ### 49.2.5 Hotseat: The Bottom Row
@@ -4932,20 +4961,22 @@ graph TD
         WMH[WidgetManagerHelper]
     end
 
-    subgraph "Widget Picker"
-        WFS[WidgetsFullSheet]
-        WLA[WidgetsListAdapter]
-        WC[WidgetCell]
-        WPL[DatabaseWidgetPreviewLoader]
+    subgraph "Widget Picker (Compose)"
+        WPA[WidgetPickerActivity]
+        WPCW[WidgetPickerComposeWrapper]
+        VM["Catalog ViewModels<br/>(modules/widgetpicker)"]
+        WPDP[WidgetPickerDataProvider]
+        WPD[WidgetPickerData]
     end
 
     AWM --> WMH
     AWH_FW --> LAWH
     AWHV_FW --> LAWHV
     LWH --> LAWH
-    WFS --> WLA
-    WLA --> WC
-    WC --> WPL
+    WPA --> WPCW
+    WPCW --> VM
+    VM --> WPDP
+    WPDP --> WPD
     LAWI -->|data| LAWHV
 ```
 
@@ -5022,19 +5053,18 @@ When a user adds a widget from the widget picker, this flow executes:
 ```mermaid
 sequenceDiagram
     participant User
-    participant WFS as WidgetsFullSheet
-    participant WC as WidgetCell
+    participant WP as WidgetPreview (Compose)
+    participant DIL as WidgetPickerDragItemListener
     participant PDH as PendingItemDragHelper
     participant L as Launcher
     participant WMH as WidgetManagerHelper
     participant AWM as AppWidgetManager
     participant WS as Workspace
 
-    User->>WFS: Opens widget picker
-    WFS->>WC: Displays widget previews
-    User->>WC: Long-press widget
-    WC->>PDH: startDrag()
-    PDH->>L: beginDrag with PendingAddWidgetInfo
+    User->>WP: Opens picker, long-press widget
+    WP->>DIL: onWidgetInteraction(WidgetDragInfo)
+    DIL->>PDH: startDrag() with PendingAddWidgetInfo
+    PDH->>L: beginDrag once launcher resumes
     User->>WS: Drop on workspace
     WS->>L: onDropCompleted()
     L->>AWM: bindAppWidgetIdIfAllowed()
@@ -5050,46 +5080,80 @@ sequenceDiagram
     L->>WS: Add LauncherAppWidgetHostView
 ```
 
-### 49.3.6 Widget Picker: WidgetsFullSheet
+### 49.3.6 Widget Picker: WidgetPickerActivity (Compose)
 
-The widget picker is a bottom sheet (`WidgetsFullSheet`) that displays available widgets:
+The widget picker is no longer a `RecyclerView`-backed bottom sheet. The
+`WidgetsFullSheet` / `WidgetsListAdapter` / `WidgetCell` trio was removed and
+replaced by a standalone, Jetpack Compose activity. The host is
+`WidgetPickerActivity`:
 
-```java
-// src/com/android/launcher3/widget/picker/WidgetsFullSheet.java
-public class WidgetsFullSheet extends BaseWidgetSheet {
+```kotlin
+// src/com/android/launcher3/widgetpicker/WidgetPickerActivity.kt
+open class WidgetPickerActivity :
+    BaseActivity(), OnBackPressedDispatcherOwner, OnBackAnimationCallback, LifecycleOwner {
 ```
 
-It uses `WidgetsListAdapter` -- a `RecyclerView.Adapter` that supports two view types:
+`WidgetPickerActivity` inflates a `SimpleDragLayer` to host drags, then hands the
+actual content to `WidgetPickerComposeWrapper`. The wrapper is an interface with
+implementation `WidgetPickerComposeWrapperImpl`:
 
-1. **`WidgetsListHeader`** -- the collapsed app entry showing app name and widget count
-2. **`WidgetsListContentEntry`** -- the expanded table of widget previews
-
-```java
-// src/com/android/launcher3/widget/picker/WidgetsListAdapter.java
-public class WidgetsListAdapter extends Adapter<ViewHolder>
-        implements OnHeaderClickListener {
+```kotlin
+// src/com/android/launcher3/widgetpicker/WidgetPickerComposeWrapper.kt
+interface WidgetPickerComposeWrapper {
+    fun showAllWidgets(activity: BaseActivity, widgetPickerConfig: WidgetPickerConfig)
+    fun showWidgetsFor(packageName: String, user: UserHandle, /* ... */)
+    fun showWidgetsForPinRequest(/* ... */)
+}
 ```
 
-The adapter uses `DiffUtil` for efficient list updates and supports searching
-via `WidgetsSearchBar`.
+The implementation adds a `ComposeView`, calls `setContent { }`, builds a
+`WidgetPickerComponent` Dagger subgraph, and wires up the repositories that feed
+the catalog (`WidgetsRepository`, `WidgetUsersRepository`,
+`WidgetAppIconsRepository`). On the Quickstep side,
+`QuickstepWidgetPickerActivity`
+(`quickstep/src/com/android/launcher3/QuickstepWidgetPickerActivity.kt`) extends
+`WidgetPickerActivity` to host the picker on additional surfaces (for example a
+lock-screen widget picker), adding wallpaper blur, zoom, and gesture-blocking on
+top of the same Compose content.
 
-### 49.3.7 Widget Preview Rendering
+The composable catalogs live in the `modules/widgetpicker/` module, each driven by
+a ViewModel:
 
-`WidgetCell` displays a preview of the widget in the picker:
+| Surface | Composable | ViewModel |
+|---|---|---|
+| All widgets (landing + search) | `FullWidgetsCatalog` | `FullWidgetsCatalogViewModel` |
+| Single-app widgets | `SingleAppWidgetsCatalog` | `SingleAppWidgetsCatalogViewModel` |
+| Pin-widget request | `PinAppWidgetCatalog` | `PinAppWidgetCatalogViewModel` |
 
-```java
-// src/com/android/launcher3/widget/WidgetCell.java
-public class WidgetCell extends LinearLayout {
-    private WidgetImageView mWidgetImage;
-    private TextView mWidgetName;
-    private TextView mWidgetDims;
-    private TextView mWidgetDescription;
-    private Button mWidgetAddButton;
+The full catalog further splits into a `LandingScreen` (featured widgets, with
+single- and two-pane variants for large screens) and a `SearchScreen`, each with
+its own ViewModel under
+`modules/widgetpicker/src/com/android/launcher3/widgetpicker/ui/fullcatalog/screens/`.
+
+### 49.3.7 Widget Preview Rendering and Drag-Out
+
+There is no `WidgetCell` view and no `DatabaseWidgetPreviewLoader` in the picker
+UI anymore. A widget tile is now the `WidgetPreview` composable
+(`modules/widgetpicker/src/com/android/launcher3/widgetpicker/ui/components/WidgetPreview.kt`),
+laid out by `WidgetsGrid.kt`; the preview bitmap is supplied through the
+repositories rather than fetched by a dedicated loader class. The data the grid
+renders comes from `WidgetPickerData`, exposed by `WidgetPickerDataProvider`:
+
+```kotlin
+// src/com/android/launcher3/widget/picker/model/WidgetPickerDataProvider.kt
+// holds a WidgetPickerData, whose allWidgets is a List<WidgetsListBaseEntry>
 ```
 
-Widget previews are loaded by `DatabaseWidgetPreviewLoader`, which generates
-preview bitmaps either from the widget's own preview image or by inflating a
-dummy `RemoteViews` and rendering it to a bitmap.
+Drag-out still ends in the same model-side machinery as before. In the composable,
+a long-press is detected by `detectDragGesturesAfterLongPress`, whose `onDragStart`
+reports a `WidgetInteractionInfo.WidgetDragInfo` through the
+`WidgetPickerEventListeners` interface
+(`modules/widgetpicker/src/com/android/launcher3/widgetpicker/ui/WidgetPickerEventListeners.kt`).
+`WidgetPickerComposeWrapperImpl` turns that into a `WidgetPickerDragItemListener`
+(`src/com/android/launcher3/widgetpicker/listeners/WidgetPickerDragItemListener.kt`),
+a `BaseItemDragListener` that converts the picked widget into a
+`PendingAddWidgetInfo` and, once the launcher resumes, starts the drag through the
+unchanged `PendingItemDragHelper`.
 
 ### 49.3.8 Widget Resize
 
@@ -5110,7 +5174,7 @@ and notifies the `AppWidgetHost` accordingly, allowing the system to optimize
 resource usage for off-screen widgets:
 
 ```java
-// src/com/android/launcher3/widget/WidgetVisibilityTracker.java
+// src/com/android/launcher3/widget/WidgetVisibilityTracker.kt
 // Initialized in Launcher.onCreate():
 mWidgetVisibilityTracker = new WidgetVisibilityTracker(
     this, mAppWidgetHolder, mWorkspace, mStateManager);
@@ -5531,7 +5595,9 @@ constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0,
-) : FrameLayout(context, attrs, defStyleAttr), Reusable {
+    defStyleRes: Int = 0,
+    // ... border animators, type, and fullscreen draw params
+) : FrameLayout(context, attrs), ViewPool.Reusable {
 ```
 
 Each `TaskView` contains:
@@ -5723,9 +5789,11 @@ foldables, desktop mode). It exists as a separate window managed by
 public class TaskbarActivityContext extends BaseTaskbarContext {
 ```
 
-The taskbar window is of type `TYPE_NAVIGATION_BAR`, placing it at the same
-system UI level as the navigation bar. It uses `FLAG_NOT_FOCUSABLE` to avoid
-stealing input focus from foreground apps.
+On the primary display the taskbar window is of type `TYPE_NAVIGATION_BAR`,
+placing it at the same system UI level as the navigation bar; on a secondary
+(connected) display it uses `TYPE_NAVIGATION_BAR_PANEL` instead
+(`createAllWindowParams()` picks the type via `isPrimaryDisplay()`). It uses
+`FLAG_NOT_FOCUSABLE` to avoid stealing input focus from foreground apps.
 
 There is one `TaskbarActivityContext` per display. In Android 17 the higher-level
 lifecycle (creating and destroying taskbars as displays come and go) is owned by
@@ -6208,7 +6276,8 @@ The icon displays a preview of up to 4 items (controlled by
 ```java
 // src/com/android/launcher3/folder/ClippedFolderIconLayoutRule.java
 public static final int MAX_NUM_ITEMS_IN_PREVIEW = 4;
-public static final float ICON_OVERLAP_FACTOR = 0.23f;
+private static final float MAX_RADIUS_DILATION = 0.25f;
+public static final float ICON_OVERLAP_FACTOR = 1 + (MAX_RADIUS_DILATION / 2f); // 1.125
 ```
 
 When an item is dragged over a `FolderIcon`, spring loading causes the folder
@@ -6221,18 +6290,21 @@ to open after an 800ms delay (`ON_OPEN_DELAY`).
 ```java
 // src/com/android/launcher3/model/data/FolderInfo.java
 public class FolderInfo extends CollectionInfo {
-    public ArrayList<ItemInfo> contents;
-    public CharSequence suggestedFolderNames;
+    public FolderNameInfos suggestedFolderNames;
+    private final ArrayList<ItemInfo> contents = new ArrayList<>();
+    // ... accessed through getContents()
 ```
 
-The `willAcceptItemType` static method determines which item types can be placed
-in a folder:
+The `contents` list is private and reached through `getContents()`;
+`suggestedFolderNames` is a `FolderNameInfos` (which can hold several ranked label
+candidates), not a plain `CharSequence`. The `willAcceptItemType` static method
+determines which item types can be placed in a folder:
 
 ```java
 public static boolean willAcceptItemType(int itemType) {
-    return (itemType == ITEM_TYPE_APPLICATION ||
-            itemType == ITEM_TYPE_DEEP_SHORTCUT ||
-            itemType == ITEM_TYPE_APP_PAIR);
+    return itemType == ITEM_TYPE_APPLICATION
+            || itemType == ITEM_TYPE_DEEP_SHORTCUT
+            || itemType == ITEM_TYPE_APP_GROUP;
 }
 ```
 
@@ -6246,11 +6318,17 @@ public class Folder extends AbstractFloatingView implements
         ClipPathView, DragSource, DragListener {
 ```
 
-Folder types:
+The `Folder` view tracks its own open/close lifecycle with an `@IntDef` over three
+states (there is no notion of distinct "folder types" here):
 
 ```java
-@IntDef({NORMAL, EMPTY_FOLDER_DEFAULT, WORK_FOLDER})
-public @interface FolderType {}
+// src/com/android/launcher3/folder/Folder.java
+public static final int STATE_CLOSED = 0;
+public static final int STATE_ANIMATING = 1;
+public static final int STATE_OPEN = 2;
+
+@IntDef({STATE_CLOSED, STATE_ANIMATING, STATE_OPEN})
+public @interface FolderState {}
 ```
 
 The folder view includes:
@@ -6762,14 +6840,15 @@ This ensures smooth scaling across different screen sizes within a grid option.
 ### 49.10.9 Advanced: Adding a Two-Panel Grid
 
 For foldable devices, you can define a two-panel grid option with separate
-portrait and landscape configurations. The IDP supports four size indices:
+portrait and landscape configurations. There are four size indices, defined in
+`DeviceTypedMap` (`InvariantDeviceProfile.java` only imports them):
 
-```java
-// InvariantDeviceProfile.java
-static final int INDEX_DEFAULT = 0;         // Portrait
-static final int INDEX_LANDSCAPE = 1;       // Landscape
-static final int INDEX_TWO_PANEL_PORTRAIT = 2;  // Two-panel portrait
-static final int INDEX_TWO_PANEL_LANDSCAPE = 3; // Two-panel landscape
+```kotlin
+// src/com/android/launcher3/deviceprofile/parser/DeviceTypedMap.kt
+const val INDEX_DEFAULT: Int = 0             // Portrait
+const val INDEX_LANDSCAPE: Int = 1           // Landscape
+const val INDEX_TWO_PANEL_PORTRAIT: Int = 2  // Two-panel portrait
+const val INDEX_TWO_PANEL_LANDSCAPE: Int = 3 // Two-panel landscape
 ```
 
 Border spaces, cell heights, and other dimensions can be specified independently
@@ -6810,9 +6889,12 @@ This chapter has explored the Launcher3 codebase in AOSP, covering:
   specifications.
 
 - **Widget System** (Section 49.3): `LauncherWidgetHolder` wraps `AppWidgetHost`
-  for lifecycle-aware widget management. The widget picker (`WidgetsFullSheet` and
-  `WidgetsListAdapter`) presents available widgets, while `WidgetCell` renders
-  previews. The pinning flow involves binding, configuration, and resize.
+  for lifecycle-aware widget management. The widget picker is now a standalone
+  Jetpack Compose activity (`WidgetPickerActivity` + the `modules/widgetpicker/`
+  catalogs), backed by `WidgetPickerDataProvider`/`WidgetPickerData`, having
+  replaced the old `WidgetsFullSheet`/`WidgetsListAdapter`/`WidgetCell` views.
+  The pinning flow still runs the picked widget through `PendingItemDragHelper`,
+  binding, configuration, and resize.
 
 - **Drag and Drop** (Section 49.4): `DragController` manages the drag lifecycle
   with `DragView` as the visual feedback and `DragLayer` as the intercept layer.
@@ -6877,9 +6959,11 @@ All paths relative to `packages/apps/Launcher3/`:
 | FolderNameProvider | `src/com/android/launcher3/folder/FolderNameProvider.java` |
 | LauncherWidgetHolder | `src/com/android/launcher3/widget/LauncherWidgetHolder.java` |
 | LauncherAppWidgetHost | `src/com/android/launcher3/widget/LauncherAppWidgetHost.java` |
-| WidgetCell | `src/com/android/launcher3/widget/WidgetCell.java` |
-| WidgetsFullSheet | `src/com/android/launcher3/widget/picker/WidgetsFullSheet.java` |
-| WidgetsListAdapter | `src/com/android/launcher3/widget/picker/WidgetsListAdapter.java` |
+| WidgetPickerActivity | `src/com/android/launcher3/widgetpicker/WidgetPickerActivity.kt` |
+| WidgetPickerComposeWrapper | `src/com/android/launcher3/widgetpicker/WidgetPickerComposeWrapper.kt` |
+| QuickstepWidgetPickerActivity | `quickstep/src/com/android/launcher3/QuickstepWidgetPickerActivity.kt` |
+| Widget catalogs (Compose) | `modules/widgetpicker/src/com/android/launcher3/widgetpicker/ui/` |
+| WidgetPickerDataProvider | `src/com/android/launcher3/widget/picker/model/WidgetPickerDataProvider.kt` |
 | ThemeManager | `src/com/android/launcher3/graphics/ThemeManager.kt` |
 | AllAppsContainer | `src/com/android/launcher3/allapps/ActivityAllAppsContainerView.java` |
 | AlphabeticalAppsList | `src/com/android/launcher3/allapps/AlphabeticalAppsList.java` |
@@ -7082,7 +7166,7 @@ activity for all settings fragments.  Its key responsibilities include:
 **Fragment routing via Intent extras**:
 
 ```java
-// SettingsActivity.java, lines 101-114
+// SettingsActivity.java, lines 98-111
 public static final String EXTRA_SHOW_FRAGMENT = ":settings:show_fragment";
 public static final String EXTRA_SHOW_FRAGMENT_ARGUMENTS = ":settings:show_fragment_args";
 public static final String EXTRA_FRAGMENT_ARG_KEY = ":settings:fragment_args_key";
@@ -8399,10 +8483,12 @@ public class SuggestionService extends
 }
 ```
 
-Candidate suggestions come from `SuggestionParser`, are filtered by the six checkers
-in `suggestions/eligibility/` that `CandidateSuggestion.isEligible()` runs in order
-(provider, connectivity, feature, account, already-dismissed, automotive), and are
-ordered by `SuggestionRanker`. The ranker turns each candidate into a feature vector
+Candidate suggestions come from `SuggestionParser` and are filtered by the
+`*EligibilityChecker` classes in `suggestions/eligibility/`. `CandidateSuggestion`
+runs them in order inside `initIsEligible()` (provider, connectivity, feature,
+account, already-dismissed, automotive) and caches the result; `isEligible()`
+simply returns that cached flag. Eligible candidates are then ordered by
+`SuggestionRanker`. The ranker turns each candidate into a feature vector
 via `SuggestionFeaturizer` and scores it with a fixed-weight linear function: a
 weighted sum (dot product) of features such as whether a suggestion was shown,
 dismissed, or clicked and how long ago. The weights are constants in a `WEIGHTS` map
@@ -9076,19 +9162,14 @@ When a package is uninstalled, all settings it added are automatically deleted.
 ### 50.11.1 Architecture
 
 The `FeatureFactory` is the primary OEM extension mechanism for the Settings
-app.  It is an abstract class with factory methods for each subsystem provider:
+app.  It is an abstract Kotlin class exposing a provider for each subsystem
+(dashboard, search, metrics, security, and so on):
 
-**Source file**: `packages/apps/Settings/src/com/android/settings/overlay/FeatureFactory.java`
+**Source file**: `packages/apps/Settings/src/com/android/settings/overlay/FeatureFactory.kt`
 
-OEMs override it by specifying a custom implementation class in a resource
-overlay:
-
-```xml
-<!-- res/values/config.xml (in OEM overlay) -->
-<string name="config_featureFactory">
-    com.myoem.settings.overlay.MyFeatureFactory
-</string>
-```
+OEMs override it by subclassing the application and returning a custom
+`FeatureFactory` from `getFeatureFactory()` -- there is no resource string or
+reflection involved (see 50.11.3).
 
 ### 50.11.2 Available Providers
 
@@ -9104,19 +9185,50 @@ overlay:
 
 ### 50.11.3 How the Factory is Loaded
 
-```java
-// FeatureFactory.java
-public static FeatureFactory getFeatureFactory() {
-    if (sFactory != null) {
-        return sFactory;
+There is no reflection and no `config_featureFactory` resource. `FeatureFactory`
+is an abstract Kotlin class whose companion object holds the singleton and a
+`setFactory` setter; `SettingsApplication` installs the concrete factory in
+`attachBaseContext`:
+
+```kotlin
+// overlay/FeatureFactory.kt
+abstract class FeatureFactory {
+    // ... abstract / open provider members ...
+    companion object {
+        private var _factory: FeatureFactory? = null
+
+        @JvmStatic
+        val featureFactory: FeatureFactory
+            get() = _factory
+                ?: throw UnsupportedOperationException("No feature factory configured")
+
+        @JvmStatic
+        fun setFactory(appContext: Context, factory: FeatureFactory) {
+            _appContext = appContext
+            _factory = factory
+        }
     }
-    // Read the class name from resources
-    String clsName = context.getString(R.string.config_featureFactory);
-    // Instantiate via reflection
-    sFactory = (FeatureFactory) Class.forName(clsName).newInstance();
-    return sFactory;
 }
 ```
+
+```java
+// SettingsApplication.java
+@Override
+protected void attachBaseContext(Context base) {
+    super.attachBaseContext(base);
+    FeatureFactory.setFactory(this, getFeatureFactory());
+}
+
+@NonNull
+protected FeatureFactory getFeatureFactory() {
+    return new FeatureFactoryImpl();
+}
+```
+
+To customise Settings, an OEM subclasses `SettingsApplication` and overrides
+`getFeatureFactory()` to return its own `FeatureFactoryImpl` subclass; the
+chosen instance is what `FeatureFactory.getFeatureFactory()` returns everywhere
+else in the app.
 
 ---
 
@@ -9391,7 +9503,9 @@ private void removeControllersForHybridMode() {
 The defining 17 change is that a screen is now a *data declaration* rather than
 an XML file plus a bag of controllers.  A Catalyst screen is a Kotlin class
 annotated with `@ProvidePreferenceScreen(KEY)` that mixes in the provider
-interfaces it needs.  `DataSaverScreen` is a compact, representative example:
+interfaces it needs.  `DataSaverScreen` is a compact, representative example
+(simplified here -- the real class also overrides `purpose` and `tags(context)`,
+and gates availability through `isIndexable`):
 
 ```kotlin
 // datausage/DataSaverScreen.kt
@@ -10204,12 +10318,11 @@ PARENT_TO_CATEGORY_KEY_MAP.put(
 
 ### 50.20.12 Advanced: OEM Customisation via FeatureFactory
 
-OEMs can customise the Settings app without forking by implementing
-a custom `FeatureFactory` via the overlay system.  The factory provides
-feature-specific providers:
+OEMs can customise the Settings app without forking by supplying
+a custom `FeatureFactory`.  The factory provides feature-specific providers:
 
 ```
-packages/apps/Settings/src/com/android/settings/overlay/FeatureFactory.java
+packages/apps/Settings/src/com/android/settings/overlay/FeatureFactory.kt
 ```
 
 Key extension points include:
@@ -10223,13 +10336,17 @@ Key extension points include:
 | `SupportFeatureProvider` | Custom support/help integration |
 | `EnterprisePrivacyFeatureProvider` | MDM integration |
 
-OEMs declare their custom factory in a resource overlay:
+OEMs install their custom factory by subclassing `SettingsApplication` and
+overriding `getFeatureFactory()` to return a custom `FeatureFactoryImpl`; the
+app then calls `FeatureFactory.setFactory(this, getFeatureFactory())` during
+`attachBaseContext`:
 
-```xml
-<!-- overlay/res/values/config.xml -->
-<string name="config_featureFactory">
-    com.myoem.settings.MyFeatureFactoryImpl
-</string>
+```java
+// In an OEM SettingsApplication subclass
+@Override
+protected FeatureFactory getFeatureFactory() {
+    return new MyOemFeatureFactoryImpl();
+}
 ```
 
 ---

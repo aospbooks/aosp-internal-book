@@ -175,7 +175,7 @@ activity for all settings fragments.  Its key responsibilities include:
 **Fragment routing via Intent extras**:
 
 ```java
-// SettingsActivity.java, lines 101-114
+// SettingsActivity.java, lines 98-111
 public static final String EXTRA_SHOW_FRAGMENT = ":settings:show_fragment";
 public static final String EXTRA_SHOW_FRAGMENT_ARGUMENTS = ":settings:show_fragment_args";
 public static final String EXTRA_FRAGMENT_ARG_KEY = ":settings:fragment_args_key";
@@ -1492,10 +1492,12 @@ public class SuggestionService extends
 }
 ```
 
-Candidate suggestions come from `SuggestionParser`, are filtered by the six checkers
-in `suggestions/eligibility/` that `CandidateSuggestion.isEligible()` runs in order
-(provider, connectivity, feature, account, already-dismissed, automotive), and are
-ordered by `SuggestionRanker`. The ranker turns each candidate into a feature vector
+Candidate suggestions come from `SuggestionParser` and are filtered by the
+`*EligibilityChecker` classes in `suggestions/eligibility/`. `CandidateSuggestion`
+runs them in order inside `initIsEligible()` (provider, connectivity, feature,
+account, already-dismissed, automotive) and caches the result; `isEligible()`
+simply returns that cached flag. Eligible candidates are then ordered by
+`SuggestionRanker`. The ranker turns each candidate into a feature vector
 via `SuggestionFeaturizer` and scores it with a fixed-weight linear function: a
 weighted sum (dot product) of features such as whether a suggestion was shown,
 dismissed, or clicked and how long ago. The weights are constants in a `WEIGHTS` map
@@ -2169,19 +2171,14 @@ When a package is uninstalled, all settings it added are automatically deleted.
 ### 50.11.1 Architecture
 
 The `FeatureFactory` is the primary OEM extension mechanism for the Settings
-app.  It is an abstract class with factory methods for each subsystem provider:
+app.  It is an abstract Kotlin class exposing a provider for each subsystem
+(dashboard, search, metrics, security, and so on):
 
-**Source file**: `packages/apps/Settings/src/com/android/settings/overlay/FeatureFactory.java`
+**Source file**: `packages/apps/Settings/src/com/android/settings/overlay/FeatureFactory.kt`
 
-OEMs override it by specifying a custom implementation class in a resource
-overlay:
-
-```xml
-<!-- res/values/config.xml (in OEM overlay) -->
-<string name="config_featureFactory">
-    com.myoem.settings.overlay.MyFeatureFactory
-</string>
-```
+OEMs override it by subclassing the application and returning a custom
+`FeatureFactory` from `getFeatureFactory()` -- there is no resource string or
+reflection involved (see 50.11.3).
 
 ### 50.11.2 Available Providers
 
@@ -2197,19 +2194,50 @@ overlay:
 
 ### 50.11.3 How the Factory is Loaded
 
-```java
-// FeatureFactory.java
-public static FeatureFactory getFeatureFactory() {
-    if (sFactory != null) {
-        return sFactory;
+There is no reflection and no `config_featureFactory` resource. `FeatureFactory`
+is an abstract Kotlin class whose companion object holds the singleton and a
+`setFactory` setter; `SettingsApplication` installs the concrete factory in
+`attachBaseContext`:
+
+```kotlin
+// overlay/FeatureFactory.kt
+abstract class FeatureFactory {
+    // ... abstract / open provider members ...
+    companion object {
+        private var _factory: FeatureFactory? = null
+
+        @JvmStatic
+        val featureFactory: FeatureFactory
+            get() = _factory
+                ?: throw UnsupportedOperationException("No feature factory configured")
+
+        @JvmStatic
+        fun setFactory(appContext: Context, factory: FeatureFactory) {
+            _appContext = appContext
+            _factory = factory
+        }
     }
-    // Read the class name from resources
-    String clsName = context.getString(R.string.config_featureFactory);
-    // Instantiate via reflection
-    sFactory = (FeatureFactory) Class.forName(clsName).newInstance();
-    return sFactory;
 }
 ```
+
+```java
+// SettingsApplication.java
+@Override
+protected void attachBaseContext(Context base) {
+    super.attachBaseContext(base);
+    FeatureFactory.setFactory(this, getFeatureFactory());
+}
+
+@NonNull
+protected FeatureFactory getFeatureFactory() {
+    return new FeatureFactoryImpl();
+}
+```
+
+To customise Settings, an OEM subclasses `SettingsApplication` and overrides
+`getFeatureFactory()` to return its own `FeatureFactoryImpl` subclass; the
+chosen instance is what `FeatureFactory.getFeatureFactory()` returns everywhere
+else in the app.
 
 ---
 
@@ -2484,7 +2512,9 @@ private void removeControllersForHybridMode() {
 The defining 17 change is that a screen is now a *data declaration* rather than
 an XML file plus a bag of controllers.  A Catalyst screen is a Kotlin class
 annotated with `@ProvidePreferenceScreen(KEY)` that mixes in the provider
-interfaces it needs.  `DataSaverScreen` is a compact, representative example:
+interfaces it needs.  `DataSaverScreen` is a compact, representative example
+(simplified here -- the real class also overrides `purpose` and `tags(context)`,
+and gates availability through `isIndexable`):
 
 ```kotlin
 // datausage/DataSaverScreen.kt
@@ -3297,12 +3327,11 @@ PARENT_TO_CATEGORY_KEY_MAP.put(
 
 ### 50.20.12 Advanced: OEM Customisation via FeatureFactory
 
-OEMs can customise the Settings app without forking by implementing
-a custom `FeatureFactory` via the overlay system.  The factory provides
-feature-specific providers:
+OEMs can customise the Settings app without forking by supplying
+a custom `FeatureFactory`.  The factory provides feature-specific providers:
 
 ```
-packages/apps/Settings/src/com/android/settings/overlay/FeatureFactory.java
+packages/apps/Settings/src/com/android/settings/overlay/FeatureFactory.kt
 ```
 
 Key extension points include:
@@ -3316,13 +3345,17 @@ Key extension points include:
 | `SupportFeatureProvider` | Custom support/help integration |
 | `EnterprisePrivacyFeatureProvider` | MDM integration |
 
-OEMs declare their custom factory in a resource overlay:
+OEMs install their custom factory by subclassing `SettingsApplication` and
+overriding `getFeatureFactory()` to return a custom `FeatureFactoryImpl`; the
+app then calls `FeatureFactory.setFactory(this, getFeatureFactory())` during
+`attachBaseContext`:
 
-```xml
-<!-- overlay/res/values/config.xml -->
-<string name="config_featureFactory">
-    com.myoem.settings.MyFeatureFactoryImpl
-</string>
+```java
+// In an OEM SettingsApplication subclass
+@Override
+protected FeatureFactory getFeatureFactory() {
+    return new MyOemFeatureFactoryImpl();
+}
 ```
 
 ---

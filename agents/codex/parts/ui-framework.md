@@ -15,8 +15,9 @@ RemoteCompose engine that may eventually replace the XML-layout approach altoget
 ## 44.1 AppWidget Framework
 
 The client-side AppWidget framework is defined in
-`frameworks/base/core/java/android/appwidget/`. It consists of 10 public Java files
-that together define the contract between widget providers (apps that supply widget
+`frameworks/base/core/java/android/appwidget/`. It consists of 9 Java files (not
+all public -- `AppWidgetManagerInternal` is a system-internal interface) that
+together define the contract between widget providers (apps that supply widget
 content) and widget hosts (apps that display them).
 
 ### 44.1.1 Core Classes
@@ -1041,11 +1042,16 @@ The document lifecycle:
 ```java
 // frameworks/base/.../remotecompose/core/WireBuffer.java
 public class WireBuffer {
-    private static final int BUFFER_SIZE = 1024 * 1024; // 1 MB default
+    int mMaxSize;
     byte[] mBuffer;
     int mIndex = 0;
     int mSize = 0;
     boolean[] mValidOperations = new boolean[256];
+
+    // Default ctor allocates Limits.BUFFER_SIZE (1 MB) into mBuffer.
+    public WireBuffer() {
+        this(Limits.BUFFER_SIZE);
+    }
 
     public void start(int type) {
         if (!mValidOperations[type]) {
@@ -1737,7 +1743,7 @@ The `player/platform/` directory contains Android integration classes:
 | `FloatsToPath` | Converts float arrays to android.graphics.Path |
 | `ClickAreaView` | Transparent view overlays for click detection |
 | `RemotePreparedDocument` | Async-prepared document holder |
-| `AndroidPlatformServices` | Platform service resolution |
+| `AndroidRcPlatformServices` | Platform service resolution |
 | `AndroidComputedTextLayout` | Text measurement using Android APIs |
 | `SettingsRetriever` | System settings access |
 
@@ -2429,10 +2435,10 @@ RemoteViews views = new RemoteViews(packageName, R.layout.widget);
 views.setAppWidgetEventTag(R.id.button_1, 1001);
 views.setAppWidgetEventTag(R.id.scroll_list, 2001);
 
-// Later, query events
+// Later, query the calling package's events over a time window
 List<AppWidgetEvent> events =
         AppWidgetManager.getInstance(context)
-                .queryAppWidgetEvents(appWidgetId);
+                .queryAppWidgetEvents(beginTimeMillis, endTimeMillis);
 for (AppWidgetEvent event : events) {
     Duration visible = event.getVisibleDuration();
     int[] clicked = event.getClickedIds();
@@ -2552,7 +2558,7 @@ The key takeaways:
 | Path | Description |
 |---|---|
 | `frameworks/base/core/java/android/appwidget/AppWidgetProvider.java` | AppWidget provider base class (220 lines) |
-| `frameworks/base/core/java/android/appwidget/AppWidgetHost.java` | AppWidget host abstraction (726 lines) |
+| `frameworks/base/core/java/android/appwidget/AppWidgetHost.java` | AppWidget host abstraction (751 lines) |
 | `frameworks/base/core/java/android/appwidget/AppWidgetEvent.java` | Widget event model (401 lines) |
 | `frameworks/base/core/java/android/appwidget/AppWidgetHostView.java` | Host view that renders widgets |
 | `frameworks/base/core/java/android/appwidget/AppWidgetManager.java` | Public API entry point |
@@ -2611,7 +2617,7 @@ Android's WebView has undergone three major architectural eras:
    shell, `com.android.webview.bootstrap`, that packages the WebView provider-selection logic
    so it can ship and update as a Mainline module instead of as part of the platform image.
    The provider APK itself remains a separate updatable package; what becomes modular is the
-   `WebViewUpdateService` machinery plus its client wrappers. Section 45.10 walks through this
+   `WebViewUpdateService` machinery plus its client wrappers. Section 45.9 walks through this
    change and the other 17-specific WebView updates in detail.
 
 ### 45.1.2 High-Level Component Map
@@ -2824,7 +2830,7 @@ WebView behavior is influenced by several flag mechanisms:
    is:
    - `update_service_ipc_wrapper` (`FLAG_UPDATE_SERVICE_IPC_WRAPPER`): Gates the
      `WebViewUpdateManager` wrapper class
-   - `mainline_apis`: New APIs required by the `WebViewBootstrap` Mainline module (see 45.10)
+   - `mainline_apis`: New APIs required by the `WebViewBootstrap` Mainline module (see 45.9.1)
    - `selection_action_menu_client`: New API for OEM customization of WebView's text-selection
      menu (`SelectionActionMenuClient`, new in 17)
    - `file_system_access` (`FLAG_FILE_SYSTEM_ACCESS`): Enables File System Access API in WebView
@@ -2931,7 +2937,7 @@ sequenceDiagram
     PM-->>WVF: PackageInfo
     WVF->>WVF: verifyPackageInfo(chosen, actual)
 
-    WVF->>WVF: createApplicationContext("ai,<br/>CONTEXT_INCLUDE_CODE")
+    WVF->>WVF: createApplicationContext(ai, CONTEXT_INCLUDE_CODE + CONTEXT_IGNORE_SECURITY)
 
     WVF->>NL: loadNativeLibrary(classLoader, libName)
     NL->>NL: nativeLoadWithRelroFile(lib, relro, cl)
@@ -3271,7 +3277,7 @@ Source: frameworks/base/services/core/java/com/android/server/webkit/WebViewUpda
 
 The service delegates all platform queries through a `SystemInterface` (implemented by
 `SystemImpl`), which is what makes the update logic testable and lets it be packaged into the
-Mainline shell described in Section 45.10:
+Mainline shell described in Section 45.9.1:
 
 ```
 Source: frameworks/base/services/core/java/com/android/server/webkit/SystemInterface.java
@@ -3294,7 +3300,7 @@ flowchart TD
 
     VALIDATE -->|first valid availableByDefault| USE_DEFAULT["Use default provider"]
     VALIDATE -->|no default available| USE_FALLBACK["Use fallback provider"]
-    VALIDATE -->|nothing valid| THROW["Throw MissingWebViewPackageException"]
+    VALIDATE -->|nothing valid| THROW["Throw WebViewPackageMissingException"]
 
     USE_CHOSEN --> RELRO["Trigger RELRO creation"]
     USE_DEFAULT --> RELRO
@@ -3402,7 +3408,7 @@ Mainline-specific delivery:
 Android 17 layers a second piece of modularity on top of this. The *provider* APK stays an
 APK as before, but the *provider-selection machinery* (`WebViewUpdateService`, its
 `WebViewUpdateServiceImpl2` logic, and the `WebViewUpdateManager` client wrapper) is packaged
-into a new launched APEX, `com.android.webview.bootstrap`. Section 45.10 covers this shell and
+into a new launched APEX, `com.android.webview.bootstrap`. Section 45.9 covers this shell and
 why the framework code was restructured around a `SystemInterface` boundary to support it.
 
 ### 45.4.6 Fallback and Recovery
@@ -4428,7 +4434,7 @@ sequenceDiagram
         WV->>WV: Proceed with load
     else URL matches threat
         SB-->>WV: Threat detected
-        WV->>APP: onSafeBrowsingHit("request,<br/>threatType, callback")
+        WV->>APP: onSafeBrowsingHit(request, threatType, callback)
         alt App handles
             APP->>WV: callback.proceed(report)
             Note over WV: Load proceeds (user risk)
@@ -4857,7 +4863,7 @@ It is important to keep two things separate:
   without a full OS update.
 
 The APEX is built with the shared `v-launched-apex-module` default, marking it as a module
-that launched (became loadable) in the V (Android 16) cycle and is carried forward:
+that launched (became loadable) in the V (Android 15 / VanillaIceCream) cycle and is carried forward:
 
 ```
 Source: packages/modules/WebViewBootstrap/apex/Android.bp (apex "com.android.webview.bootstrap", defaults: ["v-launched-apex-module"])
@@ -7926,7 +7932,7 @@ ExtraRenderingInfo info = node.getExtraRenderingInfo();
 if (info != null) {
     Size textSize = info.getTextSizeInPx();
     int textSizeUnit = info.getTextSizeUnit();
-    CharSequence layoutParams = info.getLayoutSize();
+    Size layoutSize = info.getLayoutSize();
 }
 ```
 
@@ -8056,23 +8062,37 @@ installed in `AccessibilityInputFilter`:
 ```mermaid
 flowchart LR
     Input["Input Events"] --> AIF["AccessibilityInputFilter"]
-    AIF --> MK["MouseKeysInterceptor<br/>(new in 17)"]
-    MK --> MagGH["MagnificationGestureHandler"]
-    MagGH --> MEI["MotionEventInjector"]
-    MEI --> TE["TouchExplorer"]
-    TE --> AC["AutoclickController"]
+
+    subgraph Motion["Per-display motion chain (head to tail)"]
+        MEI["MotionEventInjector"] --> MagGH["MagnificationGestureHandler"]
+        MagGH --> TE["TouchExplorer"]
+        TE --> AC["AutoclickController"]
+    end
+
+    subgraph Keys["Default-display key-event handlers"]
+        MK["MouseKeysInterceptor<br/>(new in 17)"]
+        KI["KeyboardInterceptor"]
+        MKH["MagnificationKeyHandler"]
+    end
+
+    AIF --> MEI
+    AIF --> MK
     AC --> Output["Input Pipeline"]
 ```
 
 Each transformation in the chain can consume, modify, or pass through events.
-`AccessibilityInputFilter` builds the chain per display with
-`addFirstEventHandler`, prepending each enabled feature, so the head-to-tail
-order with everything on is roughly mouse keys, then magnification gesture
-detection, then motion-event injection, then touch exploration, then
-autoclick. The order matters: magnification gestures are detected before touch
-exploration, so a triple-tap for magnification is not misinterpreted as a
-touch exploration gesture. The `KeyboardInterceptor` is a special case --
-it handles only key events and does not forward them to the rest of the chain.
+`AccessibilityInputFilter` builds the per-display motion chain with
+`addFirstEventHandler` (`enableFeaturesForDisplay`), which prepends each enabled
+feature, so the order of `addFirstEventHandler` calls -- autoclick, touch
+exploration, generic-motion, magnification, then motion-event injection --
+reverses into a head-to-tail order of motion-event injection, then
+magnification gesture detection, then touch exploration, then autoclick. The
+order matters: magnification gestures are detected before touch exploration, so
+a triple-tap for magnification is not misinterpreted as a touch exploration
+gesture. Key-event handlers are installed separately on the default display by
+`enableDisplayIndependentFeatures`: `MouseKeysInterceptor` (new in 17),
+`KeyboardInterceptor`, and `MagnificationKeyHandler` each handle key events and
+do not feed into the motion chain.
 
 The chain is configured based on feature flags:
 
@@ -8241,9 +8261,10 @@ public static final int ALL_POINTER_ID_BITS = 0xFFFFFFFF;
 ```
 
 It maintains a bitmask of active pointer IDs, the last received event for each
-pointer, and timing information used for gesture detection. The 32-pointer
-limit matches the maximum pointer ID defined in the native input system
-(`MAX_POINTER_ID` in `frameworks/native/include/input/Input.h`).
+pointer, and timing information used for gesture detection. The 32-pointer limit
+covers pointer IDs 0 through `MAX_POINTER_ID` (31, defined in the native input
+system at `frameworks/native/include/input/Input.h`), i.e. `MAX_POINTER_ID + 1`
+distinct IDs.
 
 ### 46.8.13 Touch Exploration and Multi-Display
 
@@ -8834,7 +8855,7 @@ The app exposes one activity, `MainActivity`, with an intent filter for
 declared in the framework so callers do not depend on the app package directly:
 
 ```java
-// frameworks/base/core/java/android/content/Intent.java:4744
+// frameworks/base/core/java/android/content/Intent.java:4754
 // Activity Action: Launch an eye dropper. It allows the user to pick a pixel
 // on the display. The color of the selected pixel is returned to the
 // requesting activity as an activity result. Pixels from secure windows and
@@ -9591,7 +9612,7 @@ Android could not correctly sort a list of German names, break a Thai sentence
 into words, or format a Japanese date.
 
 Android 17 ships **ICU 78.3**, which implements **Unicode 17.0** and the
-**CLDR 49.2** locale dataset. The version constants are defined in
+**CLDR 48.2** locale dataset. The version constants are defined in
 `external/icu/icu4c/source/common/unicode/uvernum.h`:
 
 ```c
@@ -10413,8 +10434,8 @@ public static int getLayoutDirectionFromLocale(Locale locale) {
 
 `ULocale.isRightToLeft()` consults ICU's locale data, so a locale like
 `ar` (Arabic) or `he` (Hebrew) resolves to RTL even when no script subtag is
-present, and `sr-Latn` correctly resolves to LTR while `sr-Cyrl` resolves to
-LTR as well (Cyrillic is left-to-right). The `DisplayProperties.debug_force_rtl()`
+present, while Serbian (`sr`, whether written in Latin or Cyrillic) resolves to
+LTR because neither script is right-to-left. The `DisplayProperties.debug_force_rtl()`
 branch is what the "Force RTL layout direction" developer option flips.
 
 ### 47.4.4 Bidirectional (Bidi) Text
@@ -10981,7 +11002,9 @@ evolution clear:
 > in the system. For the device vendors: please add your font configurations to
 > the `platform/frameworks/base/data/font_fallback.xml`.
 
-The modern system uses `font_fallback.xml` and a JSON-based configuration:
+Note that the `font_fallback.xml` the comment points vendors toward is not
+actually present in the tree; the modern configuration is the trio of JSON files
+that sit alongside the legacy `fonts.xml`:
 
 ```
 frameworks/base/data/fonts/
@@ -11279,18 +11302,20 @@ plus a handful of locale-aware APIs that graduated or expanded. This section
 collects the differences that matter when porting prose or code from an earlier
 release.
 
-### 47.7.1 ICU 78 / Unicode 17.0 / CLDR 49.2
+### 47.7.1 ICU 78 / Unicode 17.0 / CLDR 48.2
 
 The headline change is the ICU uprev. Android 17 carries **ICU 78.3**
 (`external/icu/icu4c/source/common/unicode/uvernum.h`), which implements
 **Unicode 17.0** (`external/icu/icu4c/source/common/unicode/uchar.h`) and
-integrates the **CLDR 49.2** locale dataset. The integration is visible in the
-16-to-17 changeset as a run of cherry-picks against ICU `maint-78`:
+integrates the **CLDR 48.2** locale dataset. The bundled
+`external/icu/icu4c/source/data/misc/icuver.txt` records both stamps
+(`CLDRVersion{"48"}`, `DataVersion{"78.3.0.0"}`). The integration is visible
+in the 16-to-17 changeset as a run of cherry-picks against ICU `maint-78`:
 
 ```text
 ICU-23316 ICU 78.3 BRS Update version number to 78.3
-ICU-23316 Integrate CLDR 49.2 (final) to ICU maint-78
-ICU-23290 Integrate CLDR 49.1 ... to ICU maint-78
+ICU-23316 Integrate CLDR 48.2 (final) to ICU maint-78
+ICU-23290 Integrate CLDR 48.1 final1 to ICU maint-78
 ```
 
 The practical effects ripple through every section above:
@@ -11300,7 +11325,7 @@ The practical effects ripple through every section above:
 | Character properties (47.1.4) | New Unicode 17.0 code points gain general category, script, and bidi class data |
 | Collation (47.1.6) | Refreshed CLDR collation tailorings; some locales sort slightly differently |
 | Break iteration (47.1.7) | Updated dictionary/segmentation data for Thai, Khmer, Lao, CJK |
-| Formatting (47.1.8) | New/changed date, number, and currency patterns from CLDR 49.2 |
+| Formatting (47.1.8) | New/changed date, number, and currency patterns from CLDR 48.2 |
 | Plurals (47.3.4) | Plural-rule refinements for locales whose CLDR data changed |
 
 Because ICU rides in the `com.android.i18n` APEX, this entire data set can be
@@ -11312,8 +11337,9 @@ The time-zone database that ICU and `libcore` consult is updated independently
 of the ICU code, in the `system/timezone` module. Android 17's tree carries the
 IANA **2025c** release at distro format version `010`
 (`system/timezone/output_data/version/tz_version`). The 16-to-17 changeset shows
-the data rolling forward (`Update Android ICU data from 2025a to 2025b`, then the
-distro format being incremented). Like ICU, tzdata is APEX-delivered, so DST and
+the data rolling forward (`Update Android TZDB from 2025a to 2025b`, then to
+2025c), with the distro format incremented to version `010`. Like ICU, tzdata is
+APEX-delivered, so DST and
 zone-offset corrections reach devices without an OS update.
 
 ### 47.7.3 Modern ICU APIs: MessageFormat 2.0 and Segmentation
@@ -11386,7 +11412,7 @@ The phrase-based line-break controls described in 47.5.8
 `android.graphics.text.LineBreakConfig`) remain the recommended way to get
 natural Japanese and Korean wrapping. `LINE_BREAK_WORD_STYLE_PHRASE` keeps short
 phrases together; `LINE_BREAK_STYLE_STRICT`/`NORMAL`/`LOOSE` tune CJK break
-permissiveness. With the CLDR 49.2 refresh these styles draw on updated
+permissiveness. With the CLDR 48.2 refresh these styles draw on updated
 segmentation data, so existing code does not change but the resulting line
 breaks track current CLDR conventions.
 
@@ -11753,7 +11779,7 @@ Key takeaways from this chapter:
    efficient text display across languages.
 
 7. **Android 17 advances the data layer, not the architecture**: the stack moves
-   to ICU 78.3 (Unicode 17.0, CLDR 49.2) and IANA 2025c time-zone data, both
+   to ICU 78.3 (Unicode 17.0, CLDR 48.2) and IANA 2025c time-zone data, both
    APEX-delivered; MessageFormat 2.0 and the modern segmentation API arrive as
    previews; and grammatical inflection gains a system-wide "terms of address"
    path. Existing i18n code keeps working while formatting, collation, and

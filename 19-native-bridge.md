@@ -927,7 +927,7 @@ This dual-namespace design is critical.  When ART asks the bridge to create a
 namespace, Berberis creates both:
 
 ```cpp
-native_bridge_namespace_t* NdktNativeBridge::CreateNamespace(
+native_bridge_namespace_t* BerberisNativeBridge::CreateNamespace(
     const char* name, ..., native_bridge_namespace_t* parent_ns) {
   auto* host_namespace = android_create_namespace(
       name, ..., parent_ns->host_namespace);
@@ -942,7 +942,7 @@ guest loader fails (the library does not exist for the guest ISA), Berberis
 falls back to the host namespace:
 
 ```cpp
-void* NdktNativeBridge::LoadLibrary(const char* libpath, int flags,
+void* BerberisNativeBridge::LoadLibrary(const char* libpath, int flags,
     const native_bridge_namespace_t* ns) {
   void* handle = LoadGuestLibrary(libpath, flags, ns);
   if (handle != nullptr) return handle;
@@ -1889,12 +1889,15 @@ Soong's build system creates special "native bridge" variants for each
 module when building for an x86 target with ARM bridge support:
 
 ```go
-// Source: build/soong/android/arch.go:391-399
+// Illustrative pseudocode (simplified from build/soong/android/arch.go:396-405).
+// The real ArchVariation() also has an `else if target.LFI` branch and builds
+// the prefix into a local before appending the arch name.
 func (target Target) ArchVariation() string {
-    if target.NativeBridge == NativeBridgeEnabled {
-        return "native_bridge_" + target.Arch.String()
+    var variation string
+    if target.NativeBridge {
+        variation = "native_bridge_"
     }
-    return target.Arch.String()
+    return variation + target.Arch.String()
 }
 ```
 
@@ -1998,17 +2001,17 @@ The toolchain configuration for RISC-V is in
 var (
   riscv64Cflags = []string{
     "-Werror=implicit-function-declaration",
-    "-march=rv64gcv_zba_zbb_zbs",
+    "-march=rv64gcv_zba_zbb_zbs_zvbb",
     "-mno-implicit-float",
   }
   riscv64Ldflags = []string{
-    "-march=rv64gcv_zba_zbb_zbs",
+    "-march=rv64gcv_zba_zbb_zbs_zvbb",
     "-Wl,-z,max-page-size=4096",
   }
 )
 ```
 
-The `-march=rv64gcv_zba_zbb_zbs` flag specifies:
+The `-march=rv64gcv_zba_zbb_zbs_zvbb` flag specifies:
 
 | Extension | Meaning |
 |-----------|---------|
@@ -2018,6 +2021,7 @@ The `-march=rv64gcv_zba_zbb_zbs` flag specifies:
 | zba | Address generation (bit manipulation) |
 | zbb | Basic bit manipulation |
 | zbs | Single-bit operations |
+| zvbb | Vector bit manipulation |
 
 The `-mno-implicit-float` flag is a workaround:
 

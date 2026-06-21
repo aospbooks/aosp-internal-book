@@ -1695,8 +1695,6 @@ sequenceDiagram
     LC-->>App: CaptureResult (ACTIVE_PHYSICAL_ID = "4")
 ```
 
----
-
 ### 64.5.9 Camera Offline Session
 
 Android 11 introduced `CameraOfflineSession`, which allows an application

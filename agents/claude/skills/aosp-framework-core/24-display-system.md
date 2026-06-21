@@ -171,7 +171,7 @@ classDiagram
   connections via `WifiDisplayController`.
 
 - **OverlayDisplayAdapter** creates developer overlay displays parsed from
-  the `persist.sys.overlay_display` system property.
+  the `Settings.Global.OVERLAY_DISPLAY_DEVICES` setting (`overlay_display_devices`).
 
 All adapters report to `DisplayDeviceRepository`, which maintains the
 canonical list of active `DisplayDevice` objects and notifies DMS of changes.
@@ -504,7 +504,7 @@ standard feature IDs are defined in `DisplayAreaOrganizer`:
 | `FEATURE_DEFAULT_TASK_CONTAINER` | `FEATURE_SYSTEM_FIRST + 1` | 1 | Default container for Tasks |
 | `FEATURE_WINDOW_TOKENS` | `FEATURE_SYSTEM_FIRST + 2` | 2 | Container for non-Task window tokens |
 | `FEATURE_ONE_HANDED` | `FEATURE_SYSTEM_FIRST + 3` | 3 | One-handed mode scaling |
-| `FEATURE_WINDOWED_MAGNIFICATION` | `FEATURE_SYSTEM_FIRST + 4` | 4 | Windowed accessibility magnification |
+| `FEATURE_TOP_LEVEL_ZOOM` | `FEATURE_SYSTEM_FIRST + 4` | 4 | Top-level zoom layer (the AOSP feature bound here is named "WindowedMagnification") |
 | `FEATURE_FULLSCREEN_MAGNIFICATION` | `FEATURE_SYSTEM_FIRST + 5` | 5 | Fullscreen magnification |
 | `FEATURE_HIDE_DISPLAY_CUTOUT` | `FEATURE_SYSTEM_FIRST + 6` | 6 | Content below cutout |
 | `FEATURE_IME_PLACEHOLDER` | `FEATURE_SYSTEM_FIRST + 7` | 7 | IME container position |
@@ -527,7 +527,7 @@ A typical AOSP `DefaultDisplayAreaPolicy` builds this hierarchy:
 ```mermaid
 graph TD
     DC["DisplayContent<br/>(RootDisplayArea, FEATURE_ROOT)"]
-    WM["WindowedMagnification<br/>(FEATURE_WINDOWED_MAGNIFICATION)"]
+    WM["WindowedMagnification<br/>(FEATURE_TOP_LEVEL_ZOOM)"]
     BT["DisplayArea.Tokens<br/>(Wallpapers below tasks)"]
     TDA["TaskDisplayArea<br/>(FEATURE_DEFAULT_TASK_CONTAINER)"]
     ATI["DisplayArea.Tokens<br/>(Above tasks, below IME)"]
@@ -597,7 +597,7 @@ constraints on the hierarchy:
    `FEATURE_DEFAULT_TASK_CONTAINER`.
 5. **ID range limit**: No ID may exceed `FEATURE_VENDOR_LAST` (20001).
 6. **Valid windowing layer**: The root hierarchy must contain a windowing
-   layer (`FEATURE_WINDOWED_MAGNIFICATION` or `FEATURE_WINDOWING_LAYER`)
+   layer (`FEATURE_TOP_LEVEL_ZOOM` or `FEATURE_WINDOWING_LAYER`)
    at the top level. If absent, the builder automatically inserts a
    `FEATURE_WINDOWING_LAYER`.
 
@@ -620,7 +620,7 @@ that supports ranges and exceptions:
 // Example: WindowedMagnification targets everything below
 // the accessibility magnification overlay
 new Feature.Builder(wmService.mPolicy, "WindowedMagnification",
-        FEATURE_WINDOWED_MAGNIFICATION)
+        FEATURE_TOP_LEVEL_ZOOM)
     .upTo(TYPE_ACCESSIBILITY_MAGNIFICATION_OVERLAY)
     .except(TYPE_ACCESSIBILITY_MAGNIFICATION_OVERLAY)
     .setNewDisplayAreaSupplier(DisplayArea.Dimmable::new)
@@ -705,7 +705,8 @@ vanish. This is the mechanism that enables:
 
 - **One-handed mode**: Registers for `FEATURE_ONE_HANDED`, then scales and
   translates the DisplayArea.
-- **Windowed magnification**: Registers for `FEATURE_WINDOWED_MAGNIFICATION`.
+- **Windowed magnification**: Registers the "WindowedMagnification" feature,
+  which is bound to `FEATURE_TOP_LEVEL_ZOOM`.
 - **App zoom-out**: Registers for `FEATURE_APP_ZOOM_OUT`.
 
 The `DisplayAreaOrganizerController` manages the registration and dispatches
@@ -2463,18 +2464,19 @@ display surface and encoded in H.264.
 
 ### 24.9.8 OverlayDisplayAdapter for Development
 
-`OverlayDisplayAdapter` creates overlay displays from the system property:
+`OverlayDisplayAdapter` creates overlay displays from the
+`Settings.Global.OVERLAY_DISPLAY_DEVICES` setting:
 
 ```shell
-setprop persist.sys.overlay_display "1920x1080/320"
+settings put global overlay_display_devices "1920x1080/320"
 ```
 
 This creates a virtual display that appears as a window on the primary
 display. It is invaluable for multi-display development without physical
-hardware. The format supports multiple displays:
+hardware. The format supports multiple displays separated by semicolons:
 
 ```shell
-setprop persist.sys.overlay_display "1920x1080/320;1280x720/240"
+settings put global overlay_display_devices "1920x1080/320;1280x720/240"
 ```
 
 ### 24.9.9 External Display Policy
@@ -3327,8 +3329,8 @@ Suggested explorations:
    `LOGICAL_DISPLAY_EVENT_SWAPPED` transition in the DMS dump.
 
 2. **Force an overlay display.** Run
-   `adb shell setprop persist.sys.overlay_display "1920x1080/320"` and observe a
-   new logical display appear in `dumpsys display` via the
+   `adb shell settings put global overlay_display_devices "1920x1080/320"` and
+   observe a new logical display appear in `dumpsys display` via the
    `OverlayDisplayAdapter` (Section 24.9.8). This needs no external hardware.
 
 3. **Inspect the refresh-rate vote.** While scrolling a list, capture

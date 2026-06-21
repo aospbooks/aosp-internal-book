@@ -3266,7 +3266,7 @@ How small that footprint really is shows up in the 16-to-17 changeset. Across th
 gains exactly **one** new XR project: `external/openxr-sdk` (the OpenXR SDK pinned to
 `release-1.1.50`, covered in Section 62.6.2). The platform commits that mention "spatial,"
 "head-tracking," or "passthrough" in the same window are almost all about spatial *audio* -- the
-the audio `Spatializer` (`frameworks/av/services/audiopolicy`) and `frameworks/av/media/libheadtracking` (Section 62.6.8) -- not about
+audio `Spatializer` (`frameworks/av/services/audiopolicy`) and `frameworks/av/media/libheadtracking` (Section 62.6.8) -- not about
 XR. In other words, the XR *platform-code* footprint added in 17 is deliberately minimal: a vendored
 header package and a flag-gated contract, with the runtime left entirely to the vendor.
 

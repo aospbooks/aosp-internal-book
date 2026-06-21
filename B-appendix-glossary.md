@@ -60,11 +60,6 @@ throughout AOSP and this book.
   Comprises the virtualization service, pKVM hypervisor, and Microdroid
   guest OS. Introduced in Android 13.
 
-**BHB** (BufferHub)
-: A system for zero-copy buffer sharing between processes, used primarily by
-  VR and low-latency display paths. Manages buffer lifecycle and
-  synchronization.
-
 **Binder**
 : Android's primary IPC mechanism. A kernel driver (`/dev/binder`) combined
   with userspace libraries provides object-oriented, synchronous remote
@@ -76,15 +71,23 @@ throughout AOSP and this book.
   `libdl`, and the dynamic linker (`linker64`). Optimized for size, security
   (MTE support), and Android-specific features (system properties).
 
-**BLAST** (Buffer Layer Accelerated SurfaceTexture)
-: The modern buffer submission path in SurfaceFlinger that replaces the
-  legacy BufferQueue model. Bundles buffer submission with
-  SurfaceFlinger transactions for atomic, synchronized updates.
+**BLAST**
+: A SurfaceFlinger codename (the source spells it out only as the "Buffer
+  State Layer" path; there is no official acronym expansion). The modern
+  buffer submission path in SurfaceFlinger that replaces the legacy
+  BufferQueue model. Bundles buffer submission with SurfaceFlinger
+  transactions for atomic, synchronized updates, via `BLASTBufferQueue`.
 
 **Blueprint**
 : The build description language used by Soong. `Android.bp` files use a
   JSON-like declarative syntax to define modules (libraries, binaries, APKs,
   APEX packages).
+
+**BufferHub** (legacy/removed)
+: A former system for zero-copy buffer sharing between processes, associated
+  with the old VR and low-latency display paths. Effectively removed in
+  modern AOSP (no `libui` headers remain, and VR support is gone); listed
+  here only because older references still mention it.
 
 **BufferQueue**
 : A producer-consumer queue for sharing graphical buffers between processes.

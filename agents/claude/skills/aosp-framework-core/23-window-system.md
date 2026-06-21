@@ -1122,13 +1122,19 @@ The windowing mode determines a task's layout behavior:
 | FREEFORM | User-defined rect | Yes (drag edges) | Normal stacking | Desktop mode |
 | MULTI_WINDOW | Half/portion of display | Via divider | Side by side | Split screen |
 
-The `tasksAreFloating()` helper method identifies which modes produce floating windows:
+The `tasksAreFloating()` helper method identifies which modes produce floating
+windows. It delegates to `isFloating()`, which counts only freeform and PiP as
+floating; split-screen (multi-window) is tiled, not floating:
 
 ```java
 // WindowConfiguration.java
 public boolean tasksAreFloating() {
-    return mWindowingMode == WINDOWING_MODE_FREEFORM
-            || mWindowingMode == WINDOWING_MODE_MULTI_WINDOW;
+    return isFloating(mWindowingMode);
+}
+
+public static boolean isFloating(@WindowingMode int windowingMode) {
+    return windowingMode == WINDOWING_MODE_FREEFORM
+            || windowingMode == WINDOWING_MODE_PINNED;
 }
 ```
 

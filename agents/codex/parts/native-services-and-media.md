@@ -1489,7 +1489,7 @@ Key files include:
 | `Tracks.cpp` | Audio track lifecycle and mixing |
 | `Effects.h` / `.cpp` | Audio effect chain processing |
 | `PatchPanel.h` / `.cpp` | Audio routing patch management |
-| `MelReporter.h` / `.cpp` | Sound dose measurement (Media Exposure Limit) |
+| `MelReporter.h` / `.cpp` | Sound dose measurement (Momentary Exposure Level) |
 | `DeviceEffectManager.h` / `.cpp` | Per-device audio effects |
 | `Client.h` / `.cpp` | Per-client state tracking |
 
@@ -1812,8 +1812,11 @@ its own process with restricted permissions (using seccomp sandboxing).
 
 ### 12.6.1 MediaCodecService
 
-The codec service runs as `media.codec` and hosts the hardware codec HAL
-implementations. It uses seccomp-bpf sandboxing to restrict system calls:
+This is the legacy codec service. The binary is named
+`android.hardware.media.omx@1.0-service` and only renames its `argv[0]` to
+`media.codec` at startup; it is a vendor-only, 32-bit HIDL HAL that registers
+the `IOmx`/`IOmxStore` interfaces, so it has nothing to do with the modern
+Codec2 path. It uses seccomp-bpf sandboxing to restrict system calls:
 
 > `frameworks/av/services/mediacodec/main_codecservice.cpp`
 
@@ -1844,8 +1847,11 @@ Key observations:
 - Applies minijail seccomp policies from `/system/etc/seccomp_policy/`.
 - Registers the `IOmx` HAL interface for OMX-based codecs.
 
-A separate `media.swcodec` process handles software-only codecs, further
-isolating them from hardware codec drivers.
+OMX is legacy and deprecated; this service survives only for older vendor codec
+HALs. The current path is the `mediaswcodec` binary (`main_swcodecservice.cpp`,
+`argv[0]` renamed to `media.swcodec`), which calls `RegisterCodecServices()` to
+expose software codecs through the Codec2 (C2) framework described in
+Section 12.6.3, keeping them isolated from hardware codec drivers.
 
 ### 12.6.2 MediaExtractorService
 
@@ -4424,9 +4430,9 @@ roles:
 | servicemanager | `servicemanager` | `manager` | Service registry and discovery |
 | SurfaceFlinger | `surfaceflinger` | `SurfaceFlinger` | Display composition |
 | InputFlinger | (in system_server) | `inputflinger` | Input event routing |
-| AudioFlinger | `audioserver` | `audio` | Audio mixing and routing |
+| AudioFlinger | `audioserver` | `media.audio_flinger` | Audio mixing and routing |
 | CameraService | `cameraserver` | `media.camera` | Camera hardware management |
-| MediaCodecService | `media.codec` | (HIDL) | Hardware codec hosting |
+| MediaCodecService (legacy OMX) | `android.hardware.media.omx@1.0-service` (argv[0] `media.codec`) | `IOmx` (HIDL) | Legacy vendor OMX codec HAL; current path is Codec2 via `mediaswcodec` |
 | installd | `installd` | `installd` | APK installation, dexopt |
 | GpuService | `gpuservice` | `gpu` | GPU stats and driver management |
 | SensorService | `sensorservice` | `sensorservice` | Sensor access and fusion |
@@ -12214,11 +12220,14 @@ priority handling:
 | Type | Usage |
 |---|---|
 | `ANIMATION_TYPE_NONE` | No animation |
-| `ANIMATION_TYPE_APP_TRANSITION` | App open/close transition |
 | `ANIMATION_TYPE_SCREEN_ROTATION` | Screen rotation animation |
-| `ANIMATION_TYPE_RECENTS` | Recents animation |
-| `ANIMATION_TYPE_WINDOW_ANIMATION` | Window-level animation |
 | `ANIMATION_TYPE_DIMMER` | Dimmer fade in/out |
+| `ANIMATION_TYPE_RECENTS` | Recents animation |
+| `ANIMATION_TYPE_WINDOW_ANIMATION` | Window-level animation on a `WindowState` without animating the activity |
+| `ANIMATION_TYPE_INSETS_CONTROL` | Leash handed to the client to drive the inset-causing system window |
+| `ANIMATION_TYPE_TOKEN_TRANSFORM` | Animation on a non-app window token (e.g. a fixed rotation transform) |
+| `ANIMATION_TYPE_STARTING_REVEAL` | Reveal animation for a starting (splash) window |
+| `ANIMATION_TYPE_PREDICT_BACK` | Predictive-back gesture animation on a window container |
 | `ANIMATION_TYPE_ALL` | Bitmask for all types |
 
 ### 14.6.8 WM Animation Architecture
@@ -12322,8 +12331,8 @@ graph TD
     A -->|yes| B[MixedTransitionHandler]
     A -->|no| C{KeyguardTransitionHandler?}
     C -->|yes| D[KeyguardTransitionHandler]
-    C -->|no| E{PipTransitionHandler?}
-    E -->|yes| F[PipTransitionHandler]
+    C -->|no| E{PipTransition?}
+    E -->|yes| F[PipTransition]
     E -->|no| G{RemoteTransitionHandler?}
     G -->|yes| H[RemoteTransitionHandler]
     G -->|no| I[DefaultTransitionHandler]
@@ -12786,10 +12795,10 @@ and velocity against thresholds:
 
 ```
 valueThreshold  = based on the minimum visible change
-velocityThreshold = valueThreshold * VELOCITY_THRESHOLD_MULTIPLIER (64.5)
+velocityThreshold = valueThreshold * VELOCITY_THRESHOLD_MULTIPLIER (62.5)
 ```
 
-The `VELOCITY_THRESHOLD_MULTIPLIER` (1000.0 / 16.0 = 64.5) means that if
+The `VELOCITY_THRESHOLD_MULTIPLIER` (1000.0 / 16.0 = 62.5) means that if
 it would take more than one frame (16ms) to move by the value threshold at
 the current velocity, the spring is considered at rest.
 
@@ -13835,21 +13844,29 @@ displays.
 
 On devices with variable refresh rate displays, the presentation time may
 not be a fixed interval from the VSYNC.  Choreographer exposes the expected
-presentation time through `FrameData`:
+presentation time through `FrameData`, which carries the render start time
+and the set of candidate frame timelines.  The per-timeline values (VSYNC id,
+deadline, expected present time) live on the nested `FrameTimeline` class, and
+`getPreferredFrameTimeline()` returns the platform-preferred one:
 
 ```java
 public static class FrameData {
-    public long getFrameTimeNanos();
-    public long getPreferredFrameTimelineDeadlineNanos();
-    public long getPreferredFrameTimelinePresentationNanos();
-    public long getPreferredFrameTimelineVsyncId();
+    public long getFrameTimeNanos();          // when the frame started rendering
+    public FrameTimeline[] getFrameTimelines();
+    public FrameTimeline getPreferredFrameTimeline();
     ...
+}
+
+public static class FrameTimeline {
+    public long getVsyncId();
+    public long getExpectedPresentationTimeNanos();
+    public long getDeadlineNanos();
 }
 ```
 
-Animations can use the expected presentation time to pre-compute the
-value that will be visible when the frame actually appears on screen,
-rather than the value at the animation callback time.
+Animations can read the preferred timeline's expected presentation time to
+pre-compute the value that will be visible when the frame actually appears on
+screen, rather than the value at the animation callback time.
 
 ### 14.12.18 Choreographer and AnimationHandler Integration
 
@@ -13886,7 +13903,7 @@ graph TD
         TXN --> SF[SurfaceFlinger]
 
         ME --> DTH[DefaultTransitionHandler]
-        ME --> PIP[PipTransitionHandler]
+        ME --> PIP[PipTransition]
         ME --> BAC[BackAnimationController]
         ME --> UF[UnfoldTransitionHandler]
         ME --> DM[DesktopModeTransitionHandler]
@@ -16005,7 +16022,7 @@ The FastMixer is a separate high-priority thread that bypasses the normal mixer
 loop for latency-sensitive tracks. It is defined in:
 
 ```
-frameworks/av/services/audioflinger/fastpath/FastMixer.cpp (541 lines)
+frameworks/av/services/audioflinger/fastpath/FastMixer.cpp (517 lines)
 ```
 
 The FastMixer design rules are strict (from the source header comment):
@@ -16138,7 +16155,7 @@ if (fastTrack->mVolumeProvider != nullptr) {
 The PatchPanel manages audio routing patches between sources and sinks:
 
 ```
-frameworks/av/services/audioflinger/PatchPanel.cpp (1,012 lines)
+frameworks/av/services/audioflinger/PatchPanel.cpp (1,085 lines)
 ```
 
 A patch connects audio ports -- it can be device-to-device (hardware patch),
@@ -16755,7 +16772,7 @@ which output device to use, how to handle volume, and when to create or close
 audio streams. The source resides in:
 
 ```
-frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp (2,790 lines)
+frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp (2,759 lines)
 frameworks/av/services/audiopolicy/AudioPolicyInterface.h (740 lines)
 ```
 
@@ -20829,9 +20846,9 @@ A summary of the relevant source tree within `frameworks/av/`:
 frameworks/av/
   media/
     libstagefright/          # Core Stagefright library
-      MediaCodec.cpp         # 7917 lines - the MediaCodec state machine
-      ACodec.cpp             # 9459 lines - OMX codec wrapper
-      MPEG4Writer.cpp        # 6039 lines - MP4 muxer
+      MediaCodec.cpp         # 8234 lines - the MediaCodec state machine
+      ACodec.cpp             # 9458 lines - OMX codec wrapper
+      MPEG4Writer.cpp        # 6070 lines - MP4 muxer
       NuMediaExtractor.cpp   # 896 lines  - extractor wrapper
       MediaExtractorFactory.cpp  # 395 lines - extractor plugin loading
     codec2/
@@ -20840,28 +20857,28 @@ frameworks/av/
         g711/ gav1/ gsm/ hevc/ iamf/ mp3/ mpeg2/ mpeg4_h263/
         opus/ raw/ vorbis/ vpx/ xaac/
       sfplugin/              # Codec2-to-Stagefright bridge
-        CCodec.cpp           # 3827 lines
-        CCodecBufferChannel.cpp  # 3075 lines
+        CCodec.cpp           # 3849 lines
+        CCodecBufferChannel.cpp  # 3428 lines
         CCodecConfig.cpp
         Codec2Buffer.cpp
       hal/                   # Codec2 HAL implementation
         aidl/  hidl/  services/
       core/                  # Codec2 core interfaces
     libmediaplayerservice/
-      MediaPlayerService.cpp # 3111 lines
-      StagefrightRecorder.cpp # 2733 lines
+      MediaPlayerService.cpp # 3114 lines
+      StagefrightRecorder.cpp # 2759 lines
       nuplayer/
-        NuPlayer.cpp         # 3259 lines
+        NuPlayer.cpp         # 3265 lines
         NuPlayerDecoder.cpp  # 1394 lines
         NuPlayerRenderer.cpp # 2239 lines
         NuPlayerDriver.cpp   # 1240 lines
     libmedia/
-      VideoCapabilities.cpp  # 1875 lines
-      MediaProfiles.cpp      # 1512 lines
+      VideoCapabilities.cpp  # 1966 lines
+      MediaProfiles.cpp      # 1521 lines
   services/
     camera/
       libcameraservice/
-        CameraService.cpp    # 6975 lines
+        CameraService.cpp    # 7019 lines
         device3/             # Camera HAL3 device implementation
         api1/                # Legacy camera API
         api2/                # Camera2 API (CameraDeviceClient)
@@ -20873,7 +20890,7 @@ frameworks/av/
 
 ### 16.2.1 MediaCodec: The Central State Machine
 
-`MediaCodec` is the single most important class in the Android media framework. At 7917
+`MediaCodec` is the single most important class in the Android media framework. At 8234
 lines in `frameworks/av/media/libstagefright/MediaCodec.cpp`, it implements a complex
 asynchronous state machine that manages the lifecycle of every codec instance in the
 system -- audio and video, encoder and decoder, hardware and software.
@@ -21227,7 +21244,7 @@ void BufferCallback::onOutputBufferAvailable(
 ### 16.2.7 ACodec: The OMX Bridge
 
 `ACodec` in `frameworks/av/media/libstagefright/ACodec.cpp` is the legacy bridge between
-MediaCodec and OpenMAX IL (OMX) components. At 9459 lines, it is one of the largest
+MediaCodec and OpenMAX IL (OMX) components. At 9458 lines, it is one of the largest
 single source files in the media framework. While being gradually replaced by Codec2,
 ACodec remains important for backward compatibility with older vendor OMX implementations.
 
@@ -22247,7 +22264,7 @@ comprises multiple source files totaling over 8,000 lines:
 
 | File | Lines | Purpose |
 |---|---|---|
-| `NuPlayer.cpp` | 3,259 | Core player logic, action queue |
+| `NuPlayer.cpp` | 3,265 | Core player logic, action queue |
 | `NuPlayerRenderer.cpp` | 2,239 | Audio/video synchronization |
 | `NuPlayerDecoder.cpp` | 1,394 | Decoder management (wraps MediaCodec) |
 | `NuPlayerDriver.cpp` | 1,240 | MediaPlayerBase interface adapter |
@@ -22606,7 +22623,7 @@ sequenceDiagram
 ### 16.5.1 CameraService Architecture
 
 `CameraService` in `frameworks/av/services/camera/libcameraservice/CameraService.cpp`
-is the central authority for all camera operations in Android. At 6975 lines, it
+is the central authority for all camera operations in Android. At 7019 lines, it
 manages camera device discovery, client connections, security, resource allocation,
 and the interface between Java APIs and vendor camera HALs.
 
@@ -23711,7 +23728,7 @@ All metrics keys are prefixed with `android.media.mediacodec.`:
 | Error | `errstate` | string | Error state |
 | Lifecycle | `lifetimeMs` | int64 | Total lifetime (ms) |
 
-### 16.2.10 The Complete Buffer Lifecycle in Detail
+### 16.8.11 The Complete Buffer Lifecycle in Detail
 
 To fully understand MediaCodec, we must trace a buffer through every stage. The
 `queueInputBuffer` and `dequeueOutputBuffer` methods reveal the complete protocol.
@@ -23940,7 +23957,7 @@ frame pacing for smooth video playback.
 
 ---
 
-### 16.2.11 The onMessageReceived Handler
+### 16.8.12 The onMessageReceived Handler
 
 The central message dispatcher (line 4469) is the heart of MediaCodec's asynchronous
 architecture. It processes all state transitions and buffer flow:
@@ -23976,7 +23993,7 @@ triggering special recovery logic that attempts to reconnect with the codec serv
 
 ---
 
-### 16.2.12 Battery and Power Management
+### 16.8.13 Battery and Power Management
 
 MediaCodec integrates with Android's battery tracking system through `BatteryChecker`:
 
@@ -24048,7 +24065,7 @@ tone-mapping operation required for HDR-to-SDR conversion is computationally exp
 
 ---
 
-### 16.2.13 Vendor Parameter Support
+### 16.8.14 Vendor Parameter Support
 
 MediaCodec exposes vendor-specific parameters through a discovery and subscription API:
 
@@ -24081,7 +24098,7 @@ MediaCodec API.
 
 ---
 
-### 16.2.14 The Dequeue Handler: Synchronous Mode Detail
+### 16.8.15 The Dequeue Handler: Synchronous Mode Detail
 
 The internal `handleDequeueOutputBuffer` method reveals the complexity of synchronous
 buffer management:
@@ -24158,7 +24175,7 @@ The dequeue handler implements several important behaviors:
 
 ---
 
-### 16.2.15 The ReleaseSurface: Drain Without Display
+### 16.8.16 The ReleaseSurface: Drain Without Display
 
 When a codec needs to flush or release while holding buffered frames, MediaCodec
 creates a temporary `ReleaseSurface` to drain those buffers:
@@ -24200,7 +24217,7 @@ operations without requiring a real display surface.
 
 ---
 
-### 16.2.16 Format Shaping
+### 16.8.17 Format Shaping
 
 MediaCodec includes a **format shaping** feature that can modify encoder parameters
 to improve visual quality. The `FormatShaper` plugin adjusts QP (Quantization Parameter)
@@ -24226,7 +24243,7 @@ shaping is disabled, 0 or more indicates the number of adjusted fields.
 
 ---
 
-### 16.3.10 Codec2 Error Handling and Recovery
+### 16.8.18 Codec2 Error Handling and Recovery
 
 The Codec2 framework implements layered error handling:
 
@@ -24263,7 +24280,7 @@ the `UNINITIALIZED` state.
 
 ---
 
-### 16.3.11 SimpleC2Component: The Base Class Pattern
+### 16.8.19 SimpleC2Component: The Base Class Pattern
 
 All software Codec2 components extend `SimpleC2Component`, which is defined in
 `frameworks/av/media/codec2/components/base/SimpleC2Component.cpp`. This base class
@@ -24315,7 +24332,7 @@ buffer allocation, and error handling.
 
 ---
 
-### 16.4.7 StagefrightRecorder Output Format Selection
+### 16.8.20 StagefrightRecorder Output Format Selection
 
 StagefrightRecorder selects the appropriate writer based on the output format:
 
@@ -24344,7 +24361,7 @@ Each writer handles the specific container format requirements:
 
 ---
 
-### 16.4.8 MediaPlayerFactory: Player Selection
+### 16.8.21 MediaPlayerFactory: Player Selection
 
 The MediaPlayerService uses a factory pattern to select the appropriate player
 implementation. The `MediaPlayerFactory` in
@@ -24379,7 +24396,7 @@ graph TD
 
 ---
 
-### 16.4.9 NuPlayerRenderer: Frame Scheduling Detail
+### 16.8.22 NuPlayerRenderer: Frame Scheduling Detail
 
 NuPlayerRenderer implements a sophisticated frame scheduling algorithm for smooth
 video playback:
@@ -24417,7 +24434,7 @@ versa.
 
 ---
 
-### 16.5.7 Camera HAL3 Request Pipeline Detail
+### 16.8.23 Camera HAL3 Request Pipeline Detail
 
 The Camera3Device implements a sophisticated request pipeline:
 
@@ -24458,7 +24475,7 @@ idle, active, and error states.
 
 ---
 
-### 16.5.8 Stream Management and Buffer Allocation
+### 16.8.24 Stream Management and Buffer Allocation
 
 The device3 directory includes several specialized stream types:
 
@@ -24510,7 +24527,7 @@ The `Camera3BufferManager` handles buffer allocation strategies:
 
 ---
 
-### 16.5.9 Camera Torch (Flashlight) Management
+### 16.8.25 Camera Torch (Flashlight) Management
 
 CameraService also manages the device flashlight:
 
@@ -24543,7 +24560,7 @@ torch status updates are sent with the correct camera ID mapping for virtual dev
 
 ---
 
-### 16.6.4 Extractor Security Architecture
+### 16.8.26 Extractor Security Architecture
 
 The media extractor security model deserves special attention because media parsing
 is one of the most exploited attack surfaces:
@@ -24587,7 +24604,7 @@ to run extractors in-process, but this should never be done in production.
 
 ---
 
-### 16.6.5 Extractor Plugin Loading
+### 16.8.27 Extractor Plugin Loading
 
 The extractor plugin loading mechanism uses Linux dynamic linking:
 
@@ -24630,7 +24647,7 @@ an `ExtractorDef` structure containing:
 
 ---
 
-### 16.7.5 The Codec Capability Query Pipeline
+### 16.8.28 The Codec Capability Query Pipeline
 
 Applications query codec capabilities through a multi-layered process:
 
@@ -24674,7 +24691,7 @@ to answer queries about arbitrary resolution/frame-rate combinations.
 
 ---
 
-### 16.7.6 HDR Format Support
+### 16.8.29 HDR Format Support
 
 The media pipeline supports multiple HDR formats, each with different metadata and
 transfer function requirements:
@@ -24707,7 +24724,7 @@ content labeling.
 
 ---
 
-### 16.7.7 PerformancePoint: Macroblock-Based Capability Model
+### 16.8.30 PerformancePoint: Macroblock-Based Capability Model
 
 The `VideoCapabilities::PerformancePoint` class implements the macroblock-based
 performance model:
@@ -24771,7 +24788,7 @@ count, which is a reasonable approximation for most codec implementations.
 
 ---
 
-### 16.7.8 MPEG4Writer Internals: Box/Atom Structure
+### 16.8.31 MPEG4Writer Internals: Box/Atom Structure
 
 The MPEG4Writer creates the complex box hierarchy required by ISO 14496-12:
 
@@ -25251,19 +25268,19 @@ correlation of logs, metrics, and resource manager entries across the system.
 
 | File | Path | Lines |
 |---|---|---|
-| MediaCodec.cpp | `frameworks/av/media/libstagefright/MediaCodec.cpp` | 7,917 |
+| MediaCodec.cpp | `frameworks/av/media/libstagefright/MediaCodec.cpp` | 8,234 |
 | ACodec.cpp | `frameworks/av/media/libstagefright/ACodec.cpp` | 9,459 |
-| MPEG4Writer.cpp | `frameworks/av/media/libstagefright/MPEG4Writer.cpp` | 6,039 |
-| CCodec.cpp | `frameworks/av/media/codec2/sfplugin/CCodec.cpp` | 3,827 |
-| CCodecBufferChannel.cpp | `frameworks/av/media/codec2/sfplugin/CCodecBufferChannel.cpp` | 3,075 |
+| MPEG4Writer.cpp | `frameworks/av/media/libstagefright/MPEG4Writer.cpp` | 6,070 |
+| CCodec.cpp | `frameworks/av/media/codec2/sfplugin/CCodec.cpp` | 3,849 |
+| CCodecBufferChannel.cpp | `frameworks/av/media/codec2/sfplugin/CCodecBufferChannel.cpp` | 3,428 |
 | MediaPlayerService.cpp | `frameworks/av/media/libmediaplayerservice/MediaPlayerService.cpp` | 3,111 |
-| StagefrightRecorder.cpp | `frameworks/av/media/libmediaplayerservice/StagefrightRecorder.cpp` | 2,733 |
-| NuPlayer.cpp | `frameworks/av/media/libmediaplayerservice/nuplayer/NuPlayer.cpp` | 3,259 |
+| StagefrightRecorder.cpp | `frameworks/av/media/libmediaplayerservice/StagefrightRecorder.cpp` | 2,759 |
+| NuPlayer.cpp | `frameworks/av/media/libmediaplayerservice/nuplayer/NuPlayer.cpp` | 3,265 |
 | NuPlayerRenderer.cpp | `frameworks/av/media/libmediaplayerservice/nuplayer/NuPlayerRenderer.cpp` | 2,239 |
-| CameraService.cpp | `frameworks/av/services/camera/libcameraservice/CameraService.cpp` | 6,975 |
+| CameraService.cpp | `frameworks/av/services/camera/libcameraservice/CameraService.cpp` | 7,019 |
 | NuMediaExtractor.cpp | `frameworks/av/media/libstagefright/NuMediaExtractor.cpp` | 896 |
 | MediaExtractorFactory.cpp | `frameworks/av/media/libstagefright/MediaExtractorFactory.cpp` | 395 |
-| VideoCapabilities.cpp | `frameworks/av/media/libmedia/VideoCapabilities.cpp` | 1,875 |
+| VideoCapabilities.cpp | `frameworks/av/media/libmedia/VideoCapabilities.cpp` | 1,966 |
 | MediaProfiles.cpp | `frameworks/av/media/libmedia/MediaProfiles.cpp` | 1,512 |
 
 ---
@@ -25273,23 +25290,23 @@ correlation of logs, metrics, and resource manager entries across the system.
 Android's media and video pipeline is a layered architecture spanning roughly 50,000
 lines of core C++ code across five major subsystems:
 
-1. **MediaCodec** (7,917 lines) provides the central state machine and API surface,
+1. **MediaCodec** (8,234 lines) provides the central state machine and API surface,
    with sophisticated resource management, metrics collection, and retry logic.
 
-2. **ACodec** (9,459 lines) bridges to legacy OMX codecs, while **CCodec** (3,827
+2. **ACodec** (9,459 lines) bridges to legacy OMX codecs, while **CCodec** (3,849
    lines) bridges to the modern Codec2 framework with its typed parameter system,
    work-based processing model, and 23+ software codec families.
 
-3. **MediaPlayerService** (3,111 lines) and **NuPlayer** (3,259+ lines) orchestrate
+3. **MediaPlayerService** (3,111 lines) and **NuPlayer** (3,265+ lines) orchestrate
    the complete playback pipeline from extraction through decoding to synchronized
    audio/video rendering.
 
-4. **CameraService** (6,975 lines) manages camera hardware access with a
+4. **CameraService** (7,019 lines) manages camera hardware access with a
    comprehensive security model, multi-camera support, and both API1 (legacy) and
    API2 (modern) client paths.
 
 5. **Media Extractors** provide container parsing with security isolation (running in
-   a separate process), while **VideoCapabilities** (1,875 lines) and
+   a separate process), while **VideoCapabilities** (1,966 lines) and
    **MediaProfiles** (1,512 lines) describe what the hardware can do.
 
 The evolution from OMX to Codec2 represents the most significant architectural shift

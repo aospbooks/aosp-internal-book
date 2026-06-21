@@ -2372,7 +2372,7 @@ adb pull /data/misc/wmtrace/wm_trace.winscope .
 
 ```bash
 # Start the proxy
-python3 development/tools/winscope/src/trace_collection/winscope_proxy/winscope_proxy.py
+python3 development/tools/winscope/src/adb/winscope_proxy.py
 
 # Open Winscope in browser
 # Navigate to winscope.googleplex.com or a local build

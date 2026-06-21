@@ -14,8 +14,9 @@ RemoteCompose engine that may eventually replace the XML-layout approach altoget
 ## 44.1 AppWidget Framework
 
 The client-side AppWidget framework is defined in
-`frameworks/base/core/java/android/appwidget/`. It consists of 10 public Java files
-that together define the contract between widget providers (apps that supply widget
+`frameworks/base/core/java/android/appwidget/`. It consists of 9 Java files (not
+all public -- `AppWidgetManagerInternal` is a system-internal interface) that
+together define the contract between widget providers (apps that supply widget
 content) and widget hosts (apps that display them).
 
 ### 44.1.1 Core Classes
@@ -1040,11 +1041,16 @@ The document lifecycle:
 ```java
 // frameworks/base/.../remotecompose/core/WireBuffer.java
 public class WireBuffer {
-    private static final int BUFFER_SIZE = 1024 * 1024; // 1 MB default
+    int mMaxSize;
     byte[] mBuffer;
     int mIndex = 0;
     int mSize = 0;
     boolean[] mValidOperations = new boolean[256];
+
+    // Default ctor allocates Limits.BUFFER_SIZE (1 MB) into mBuffer.
+    public WireBuffer() {
+        this(Limits.BUFFER_SIZE);
+    }
 
     public void start(int type) {
         if (!mValidOperations[type]) {
@@ -1736,7 +1742,7 @@ The `player/platform/` directory contains Android integration classes:
 | `FloatsToPath` | Converts float arrays to android.graphics.Path |
 | `ClickAreaView` | Transparent view overlays for click detection |
 | `RemotePreparedDocument` | Async-prepared document holder |
-| `AndroidPlatformServices` | Platform service resolution |
+| `AndroidRcPlatformServices` | Platform service resolution |
 | `AndroidComputedTextLayout` | Text measurement using Android APIs |
 | `SettingsRetriever` | System settings access |
 
@@ -2428,10 +2434,10 @@ RemoteViews views = new RemoteViews(packageName, R.layout.widget);
 views.setAppWidgetEventTag(R.id.button_1, 1001);
 views.setAppWidgetEventTag(R.id.scroll_list, 2001);
 
-// Later, query events
+// Later, query the calling package's events over a time window
 List<AppWidgetEvent> events =
         AppWidgetManager.getInstance(context)
-                .queryAppWidgetEvents(appWidgetId);
+                .queryAppWidgetEvents(beginTimeMillis, endTimeMillis);
 for (AppWidgetEvent event : events) {
     Duration visible = event.getVisibleDuration();
     int[] clicked = event.getClickedIds();
@@ -2551,7 +2557,7 @@ The key takeaways:
 | Path | Description |
 |---|---|
 | `frameworks/base/core/java/android/appwidget/AppWidgetProvider.java` | AppWidget provider base class (220 lines) |
-| `frameworks/base/core/java/android/appwidget/AppWidgetHost.java` | AppWidget host abstraction (726 lines) |
+| `frameworks/base/core/java/android/appwidget/AppWidgetHost.java` | AppWidget host abstraction (751 lines) |
 | `frameworks/base/core/java/android/appwidget/AppWidgetEvent.java` | Widget event model (401 lines) |
 | `frameworks/base/core/java/android/appwidget/AppWidgetHostView.java` | Host view that renders widgets |
 | `frameworks/base/core/java/android/appwidget/AppWidgetManager.java` | Public API entry point |

@@ -1097,7 +1097,7 @@ sequenceDiagram
     vold->>SMS: onVolumeCreated(volId, type, diskId, partGuid)
     SMS->>SMS: Create VolumeInfo, add to mVolumes
 
-    vold->>SMS: onVolumeStateChanged(volId, state)
+    vold->>SMS: onVolumeStateChanged(volId, state, userId)
     SMS->>SMS: Update volume state
     SMS->>App: Broadcast ACTION_MEDIA_MOUNTED
     SMS->>ESS: onVolumeStateChanged(storageVolume)
@@ -1294,21 +1294,29 @@ The `MediaProvider` has an extensive permission checking system, using
 
 ```java
 // packages/providers/MediaProvider/src/com/android/providers/media/
-//     LocalCallingIdentity.java (permission constants)
-static final int PERMISSION_IS_SELF = 1 << 0;
-static final int PERMISSION_IS_SHELL = 1 << 1;
-static final int PERMISSION_IS_MANAGER = 1 << 2;
-static final int PERMISSION_IS_DELEGATOR = 1 << 3;
-static final int PERMISSION_IS_REDACTION_NEEDED = 1 << 4;
-static final int PERMISSION_IS_LEGACY_GRANTED = 1 << 5;
-static final int PERMISSION_IS_LEGACY_READ = 1 << 6;
-static final int PERMISSION_IS_LEGACY_WRITE = 1 << 7;
-static final int PERMISSION_READ_IMAGES = 1 << 8;
-static final int PERMISSION_READ_VIDEO = 1 << 9;
-static final int PERMISSION_WRITE_EXTERNAL_STORAGE = 1 << 10;
-static final int PERMISSION_IS_SYSTEM_GALLERY = 1 << 11;
-static final int PERMISSION_INSTALL_PACKAGES = 1 << 12;
-static final int PERMISSION_ACCESS_MTP = 1 << 13;
+//     LocalCallingIdentity.java (permission constants, grouped non-contiguous bits)
+public static final int PERMISSION_IS_SELF = 1 << 0;
+public static final int PERMISSION_IS_SHELL = 1 << 1;
+public static final int PERMISSION_IS_MANAGER = 1 << 2;
+public static final int PERMISSION_IS_DELEGATOR = 1 << 3;
+public static final int PERMISSION_IS_DOCUMENTS_MANAGER = 1 << 4;
+
+public static final int PERMISSION_IS_REDACTION_NEEDED = 1 << 8;
+public static final int PERMISSION_IS_LEGACY_GRANTED = 1 << 9;
+public static final int PERMISSION_IS_LEGACY_READ = 1 << 10;
+public static final int PERMISSION_IS_LEGACY_WRITE = 1 << 11;
+
+public static final int PERMISSION_READ_AUDIO = 1 << 16;
+public static final int PERMISSION_READ_VIDEO = 1 << 17;
+public static final int PERMISSION_READ_IMAGES = 1 << 18;
+public static final int PERMISSION_WRITE_AUDIO = 1 << 19;
+public static final int PERMISSION_WRITE_VIDEO = 1 << 20;
+public static final int PERMISSION_WRITE_IMAGES = 1 << 21;
+
+public static final int PERMISSION_IS_SYSTEM_GALLERY = 1 << 22;
+public static final int PERMISSION_INSTALL_PACKAGES = 1 << 23;
+public static final int PERMISSION_WRITE_EXTERNAL_STORAGE = 1 << 24;
+public static final int PERMISSION_ACCESS_MTP = 1 << 26;
 ```
 
 ### 34.4.5 Legacy Mode
@@ -1765,20 +1773,24 @@ storage.  Key permission constants used throughout MediaProvider:
 
 ```java
 // packages/providers/MediaProvider/src/com/android/providers/media/
-//     LocalCallingIdentity.java
-static final int PERMISSION_IS_SELF = 1 << 0;
-static final int PERMISSION_IS_SHELL = 1 << 1;
-static final int PERMISSION_IS_MANAGER = 1 << 2;
-static final int PERMISSION_IS_REDACTION_NEEDED = 1 << 4;
-static final int PERMISSION_IS_LEGACY_GRANTED = 1 << 5;
-static final int PERMISSION_IS_LEGACY_READ = 1 << 6;
-static final int PERMISSION_IS_LEGACY_WRITE = 1 << 7;
-static final int PERMISSION_READ_IMAGES = 1 << 8;
-static final int PERMISSION_READ_VIDEO = 1 << 9;
-static final int PERMISSION_WRITE_EXTERNAL_STORAGE = 1 << 10;
-static final int PERMISSION_IS_SYSTEM_GALLERY = 1 << 11;
-static final int PERMISSION_INSTALL_PACKAGES = 1 << 12;
-static final int PERMISSION_ACCESS_MTP = 1 << 13;
+//     LocalCallingIdentity.java (grouped non-contiguous bits)
+public static final int PERMISSION_IS_SELF = 1 << 0;
+public static final int PERMISSION_IS_SHELL = 1 << 1;
+public static final int PERMISSION_IS_MANAGER = 1 << 2;
+
+public static final int PERMISSION_IS_REDACTION_NEEDED = 1 << 8;
+public static final int PERMISSION_IS_LEGACY_GRANTED = 1 << 9;
+public static final int PERMISSION_IS_LEGACY_READ = 1 << 10;
+public static final int PERMISSION_IS_LEGACY_WRITE = 1 << 11;
+
+public static final int PERMISSION_READ_AUDIO = 1 << 16;
+public static final int PERMISSION_READ_VIDEO = 1 << 17;
+public static final int PERMISSION_READ_IMAGES = 1 << 18;
+
+public static final int PERMISSION_IS_SYSTEM_GALLERY = 1 << 22;
+public static final int PERMISSION_INSTALL_PACKAGES = 1 << 23;
+public static final int PERMISSION_WRITE_EXTERNAL_STORAGE = 1 << 24;
+public static final int PERMISSION_ACCESS_MTP = 1 << 26;
 ```
 
 ### 34.6.7 Database Backup and Recovery
@@ -3636,7 +3648,7 @@ management:
 | `AID_EVERYBODY` | 9997 | Shared by all apps |
 | `AID_MEDIA_OBB` | 1059 | OBB file access |
 | `AID_MEDIA_IMAGE` | 1057 | Image file access |
-| `AID_MEDIA_VIDEO` | 1058 | Video file access |
+| `AID_MEDIA_VIDEO` | 1056 | Video file access |
 | `AID_MEDIA_AUDIO` | 1055 | Audio file access |
 
 These GIDs are used by the permission enforcement system.  When an app has
@@ -4218,11 +4230,11 @@ modes:
 
 | Mode | Description |
 |------|-------------|
-| `REMOUNT_MODE_NONE` | No external storage access |
-| `REMOUNT_MODE_DEFAULT` | Standard scoped storage access |
-| `REMOUNT_MODE_INSTALLER` | Additional OBB write access |
-| `REMOUNT_MODE_PASS_THROUGH` | Direct lower-fs access (MediaProvider only) |
-| `REMOUNT_MODE_LEGACY` | Pre-scoped-storage full access |
+| `REMOUNT_MODE_NONE` (0) | No external storage access |
+| `REMOUNT_MODE_DEFAULT` (1) | Standard scoped storage access |
+| `REMOUNT_MODE_INSTALLER` (2) | Additional OBB write access |
+| `REMOUNT_MODE_PASS_THROUGH` (3) | Direct lower-fs access (MediaProvider only) |
+| `REMOUNT_MODE_ANDROID_WRITABLE` (4) | Writable access to `Android/` data/obb trees |
 
 The MediaProvider process itself runs with `REMOUNT_MODE_PASS_THROUGH`,
 meaning it can access the underlying filesystem directly without going
@@ -4636,7 +4648,7 @@ duration, resolution, and MIME type.
 This section provides practical exercises for exploring the Android storage
 subsystem hands-on.
 
-### Exercise 38.1: Examining Partition Layout
+### Exercise 34.1: Examining Partition Layout
 
 Connect a device via ADB and examine its partition structure:
 
@@ -4657,7 +4669,7 @@ adb shell mount | grep -E "^/dev"
 adb shell getprop ro.boot.dynamic_partitions
 ```
 
-### Exercise 38.2: Exploring vold State
+### Exercise 34.2: Exploring vold State
 
 Examine the running vold daemon and its state:
 
@@ -4682,7 +4694,7 @@ adb shell getprop ro.crypto.type
 adb shell getprop ro.crypto.metadata.enabled
 ```
 
-### Exercise 38.3: Storage Permissions Under Scoped Storage
+### Exercise 34.3: Storage Permissions Under Scoped Storage
 
 Create a test to observe scoped storage behavior:
 
@@ -4702,7 +4714,7 @@ adb shell content query --uri content://media/external/images/media/ \
     --projection _id:_display_name:_size --sort "_id DESC" --limit 5
 ```
 
-### Exercise 38.4: Observing FUSE in Action
+### Exercise 34.4: Observing FUSE in Action
 
 Monitor FUSE operations:
 
@@ -4723,7 +4735,7 @@ adb logcat | grep -i "passthrough"
 adb shell getprop ro.fuse.bpf.enabled
 ```
 
-### Exercise 38.5: Understanding FBE Key Lifecycle
+### Exercise 34.5: Understanding FBE Key Lifecycle
 
 Observe the FBE key management process:
 
@@ -4743,7 +4755,7 @@ adb shell fscrypt-policy-get /data/user/0/
 adb shell fscrypt-policy-get /data/user_de/0/
 ```
 
-### Exercise 38.6: Simulating Adoptable Storage
+### Exercise 34.6: Simulating Adoptable Storage
 
 Use the virtual disk feature in the emulator:
 
@@ -4770,7 +4782,7 @@ adb logcat -s MoveStorage:*
 adb shell sm forget <volume_uuid>
 ```
 
-### Exercise 38.7: Examining MediaProvider Database
+### Exercise 34.7: Examining MediaProvider Database
 
 Explore the MediaStore database:
 
@@ -4787,7 +4799,7 @@ SELECT volume_name, COUNT(*) FROM files GROUP BY volume_name;
 .quit
 ```
 
-### Exercise 38.8: Working with the Storage Access Framework
+### Exercise 34.8: Working with the Storage Access Framework
 
 Test SAF from the command line:
 
@@ -4805,7 +4817,7 @@ adb shell am start -a android.intent.action.OPEN_DOCUMENT \
     -t "*/*" -c android.intent.category.OPENABLE
 ```
 
-### Exercise 38.9: Monitoring Storage Health
+### Exercise 34.9: Monitoring Storage Health
 
 Check storage health metrics:
 
@@ -4827,7 +4839,7 @@ adb shell cat /sys/fs/f2fs/*/stat/written_kbytes
 adb shell cat /sys/fs/f2fs/*/segment_info
 ```
 
-### Exercise 38.10: Building and Modifying vold
+### Exercise 34.10: Building and Modifying vold
 
 Build vold from source and examine the build configuration:
 

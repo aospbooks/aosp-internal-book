@@ -725,7 +725,7 @@ The FastMixer is a separate high-priority thread that bypasses the normal mixer
 loop for latency-sensitive tracks. It is defined in:
 
 ```
-frameworks/av/services/audioflinger/fastpath/FastMixer.cpp (541 lines)
+frameworks/av/services/audioflinger/fastpath/FastMixer.cpp (517 lines)
 ```
 
 The FastMixer design rules are strict (from the source header comment):
@@ -858,7 +858,7 @@ if (fastTrack->mVolumeProvider != nullptr) {
 The PatchPanel manages audio routing patches between sources and sinks:
 
 ```
-frameworks/av/services/audioflinger/PatchPanel.cpp (1,012 lines)
+frameworks/av/services/audioflinger/PatchPanel.cpp (1,085 lines)
 ```
 
 A patch connects audio ports -- it can be device-to-device (hardware patch),
@@ -1475,7 +1475,7 @@ which output device to use, how to handle volume, and when to create or close
 audio streams. The source resides in:
 
 ```
-frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp (2,790 lines)
+frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp (2,759 lines)
 frameworks/av/services/audiopolicy/AudioPolicyInterface.h (740 lines)
 ```
 

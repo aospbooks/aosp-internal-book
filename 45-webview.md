@@ -34,7 +34,7 @@ Android's WebView has undergone three major architectural eras:
    shell, `com.android.webview.bootstrap`, that packages the WebView provider-selection logic
    so it can ship and update as a Mainline module instead of as part of the platform image.
    The provider APK itself remains a separate updatable package; what becomes modular is the
-   `WebViewUpdateService` machinery plus its client wrappers. Section 45.10 walks through this
+   `WebViewUpdateService` machinery plus its client wrappers. Section 45.9 walks through this
    change and the other 17-specific WebView updates in detail.
 
 ### 45.1.2 High-Level Component Map
@@ -247,7 +247,7 @@ WebView behavior is influenced by several flag mechanisms:
    is:
    - `update_service_ipc_wrapper` (`FLAG_UPDATE_SERVICE_IPC_WRAPPER`): Gates the
      `WebViewUpdateManager` wrapper class
-   - `mainline_apis`: New APIs required by the `WebViewBootstrap` Mainline module (see 45.10)
+   - `mainline_apis`: New APIs required by the `WebViewBootstrap` Mainline module (see 45.9.1)
    - `selection_action_menu_client`: New API for OEM customization of WebView's text-selection
      menu (`SelectionActionMenuClient`, new in 17)
    - `file_system_access` (`FLAG_FILE_SYSTEM_ACCESS`): Enables File System Access API in WebView
@@ -354,7 +354,7 @@ sequenceDiagram
     PM-->>WVF: PackageInfo
     WVF->>WVF: verifyPackageInfo(chosen, actual)
 
-    WVF->>WVF: createApplicationContext("ai,<br/>CONTEXT_INCLUDE_CODE")
+    WVF->>WVF: createApplicationContext(ai, CONTEXT_INCLUDE_CODE + CONTEXT_IGNORE_SECURITY)
 
     WVF->>NL: loadNativeLibrary(classLoader, libName)
     NL->>NL: nativeLoadWithRelroFile(lib, relro, cl)
@@ -694,7 +694,7 @@ Source: frameworks/base/services/core/java/com/android/server/webkit/WebViewUpda
 
 The service delegates all platform queries through a `SystemInterface` (implemented by
 `SystemImpl`), which is what makes the update logic testable and lets it be packaged into the
-Mainline shell described in Section 45.10:
+Mainline shell described in Section 45.9.1:
 
 ```
 Source: frameworks/base/services/core/java/com/android/server/webkit/SystemInterface.java
@@ -717,7 +717,7 @@ flowchart TD
 
     VALIDATE -->|first valid availableByDefault| USE_DEFAULT["Use default provider"]
     VALIDATE -->|no default available| USE_FALLBACK["Use fallback provider"]
-    VALIDATE -->|nothing valid| THROW["Throw MissingWebViewPackageException"]
+    VALIDATE -->|nothing valid| THROW["Throw WebViewPackageMissingException"]
 
     USE_CHOSEN --> RELRO["Trigger RELRO creation"]
     USE_DEFAULT --> RELRO
@@ -825,7 +825,7 @@ Mainline-specific delivery:
 Android 17 layers a second piece of modularity on top of this. The *provider* APK stays an
 APK as before, but the *provider-selection machinery* (`WebViewUpdateService`, its
 `WebViewUpdateServiceImpl2` logic, and the `WebViewUpdateManager` client wrapper) is packaged
-into a new launched APEX, `com.android.webview.bootstrap`. Section 45.10 covers this shell and
+into a new launched APEX, `com.android.webview.bootstrap`. Section 45.9 covers this shell and
 why the framework code was restructured around a `SystemInterface` boundary to support it.
 
 ### 45.4.6 Fallback and Recovery
@@ -1851,7 +1851,7 @@ sequenceDiagram
         WV->>WV: Proceed with load
     else URL matches threat
         SB-->>WV: Threat detected
-        WV->>APP: onSafeBrowsingHit("request,<br/>threatType, callback")
+        WV->>APP: onSafeBrowsingHit(request, threatType, callback)
         alt App handles
             APP->>WV: callback.proceed(report)
             Note over WV: Load proceeds (user risk)
@@ -2280,7 +2280,7 @@ It is important to keep two things separate:
   without a full OS update.
 
 The APEX is built with the shared `v-launched-apex-module` default, marking it as a module
-that launched (became loadable) in the V (Android 16) cycle and is carried forward:
+that launched (became loadable) in the V (Android 15 / VanillaIceCream) cycle and is carried forward:
 
 ```
 Source: packages/modules/WebViewBootstrap/apex/Android.bp (apex "com.android.webview.bootstrap", defaults: ["v-launched-apex-module"])

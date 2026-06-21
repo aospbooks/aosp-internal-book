@@ -1765,8 +1765,8 @@ Its responsibilities, ordered by lifecycle:
   surface-capture path; the trusted flag is what makes capture permissible
   without holding `READ_FRAME_BUFFER`.
 - **Application launch.** Implements `launchApplication(packageName)` after
-  checking the package against the session's allowlist; rejected launches
-  surface as `NotifyComputerControlBlockedActivity` (51.3.24).
+  checking the package against the session's allowlist; an automated launch
+  surfaces `AutomatedAppLaunchWarningActivity` (51.3.24).
 - **Stability.** Every input dispatch and app launch resets the session's
   stability state; the stability signal itself is computed agent-side by
   `ComputerControlAccessibilityProxy` (51.3.27).
@@ -1918,14 +1918,14 @@ because a Computer Control consent grant is particularly attractive to a
 tapjacking adversary: a successful grant gives the adversary's agent the
 ability to drive the user's other apps from inside a sanctioned session.
 
-When Computer Control blocks an action mid-session — for example, a `launchApplication()`
-call for a package not in the session's `targetPackageNames` — the system
-surfaces `NotifyComputerControlBlockedActivity`
-(`frameworks/base/packages/VirtualDeviceManager/src/com/android/virtualdevicemanager/NotifyComputerControlBlockedActivity.java`)
-to make the block visible to the user rather than silently dropping the
-action. Silent drops would leave the user wondering why the agent stopped
-responding; the visible block tells both user and agent which boundary was
-hit.
+When an agent automates an app launch mid-session — for example, a `launchApplication()`
+call that drives the user into a different app — the system
+surfaces `AutomatedAppLaunchWarningActivity`
+(`frameworks/base/packages/VirtualDeviceManager/src/com/android/virtualdevicemanager/AutomatedAppLaunchWarningActivity.java`)
+to make the automated launch visible to the user rather than letting it happen
+silently. A silent launch would leave the user wondering why an app appeared
+on its own; the warning tells the user which package the agent is opening and
+on whose behalf before the launch proceeds.
 
 ### 51.3.25 AppOps and Per-Session Tracking
 
@@ -1984,8 +1984,11 @@ distinct mechanism:
 
 1. **FilterTouches on consent activities.** Both
    `RequestComputerControlAccessActivity` and
-   `NotifyComputerControlBlockedActivity` apply
-   `android:filterTouchesWhenObscured="true"` so an overlay window cannot
+   `AutomatedAppLaunchWarningActivity` are declared with a FilterTouches theme
+   (`Theme.RequestComputerControlAccessActivity.FilterTouches` /
+   `Theme.AutomatedAppLaunchWarningActivity.FilterTouches` in the VDM
+   `res/values/themes.xml`, each setting `android:filterTouchesWhenObscured`),
+   so an overlay window cannot
    pass touches through to the consent buttons. This blocks the classic
    tapjacking attack against permission dialogs — the same pattern that
    surfaced through `SYSTEM_ALERT_WINDOW` abuse in earlier Android releases.
@@ -1994,9 +1997,9 @@ distinct mechanism:
    was declared in `targetPackageNames` at session creation. A Computer
    Control session that opened a messaging app cannot subsequently launch a
    banking app inside the same session.
-3. **Visible blocked-launch notice.** When a launch is blocked, the system
-   surfaces `NotifyComputerControlBlockedActivity` (51.3.24) rather than
-   silently dropping the action, making the agent's blocked intent visible at
+3. **Visible automated-launch notice.** When the agent automates an app launch,
+   the system surfaces `AutomatedAppLaunchWarningActivity` (51.3.24) rather than
+   opening the app silently, making the agent's launch visible at
    the moment it would otherwise be invisible to the user.
 4. **Binder death monitoring.** `ComputerControlSessionImpl` calls
    `Binder.linkToDeath()` on the agent's callback binder. If the agent
@@ -5820,7 +5823,7 @@ leaking it.
 
 ## 51.15 Try It
 
-### Exercise 50-1: Inspect AppFunction Metadata in AppSearch
+### Exercise 51-1: Inspect AppFunction Metadata in AppSearch
 
 Use the AppSearch shell command to dump indexed app function metadata:
 
@@ -5835,7 +5838,7 @@ adb shell cmd appsearch query \
     --schema "AppFunctionStaticMetadata"
 ```
 
-### Exercise 50-2: AppFunctionManagerService Shell Commands
+### Exercise 51-2: AppFunctionManagerService Shell Commands
 
 The `AppFunctionManagerServiceImpl` supports shell commands for testing:
 
@@ -5855,7 +5858,7 @@ adb shell cmd app_function get-access-state \
     --target com.example.target
 ```
 
-### Exercise 50-3: Implement a Minimal AppFunctionService
+### Exercise 51-3: Implement a Minimal AppFunctionService
 
 Create a service that exposes a "createNote" function:
 
@@ -5908,7 +5911,7 @@ Register in `AndroidManifest.xml`:
 </service>
 ```
 
-### Exercise 50-4: Call an AppFunction
+### Exercise 51-4: Call an AppFunction
 
 ```java
 AppFunctionManager afm = context.getSystemService(AppFunctionManager.class);
@@ -5943,7 +5946,7 @@ afm.executeAppFunction(request, executor, cancellation,
         });
 ```
 
-### Exercise 50-5: Computer Control Session
+### Exercise 51-5: Computer Control Session
 
 Request a computer control session and take a screenshot:
 
@@ -6001,7 +6004,7 @@ extensions.requestSession(params, executor,
         });
 ```
 
-### Exercise 50-6: Inspect NNAPI Devices
+### Exercise 51-6: Inspect NNAPI Devices
 
 ```bash
 # List available NNAPI accelerators
@@ -6012,7 +6015,7 @@ adb shell /data/local/tmp/NeuralNetworksTest_static \
     --gtest_filter=*TrivialModel*
 ```
 
-### Exercise 50-7: OnDeviceIntelligence Shell Commands
+### Exercise 51-7: OnDeviceIntelligence Shell Commands
 
 ```bash
 # Check OnDeviceIntelligence service status
@@ -6027,7 +6030,7 @@ adb shell cmd on_device_intelligence set-temporary-service \
     --duration 60000
 ```
 
-### Exercise 50-8: Explore Content Capture
+### Exercise 51-8: Explore Content Capture
 
 ```bash
 # Check Content Capture status
@@ -6040,7 +6043,7 @@ adb shell settings put secure content_capture_enabled 1
 adb shell dumpsys content_capture --verbose --package com.example.app
 ```
 
-### Exercise 50-9: Topics API Debugging
+### Exercise 51-9: Topics API Debugging
 
 ```bash
 # Check AdServices status
@@ -6053,7 +6056,7 @@ adb shell device_config put adservices topics_epoch_job_period_ms 60000
 adb shell cmd adservices topics list
 ```
 
-### Exercise 50-10: Build and Test AppFunctions
+### Exercise 51-10: Build and Test AppFunctions
 
 ```bash
 # Build the AppFunctions framework module
@@ -6067,7 +6070,7 @@ atest AppFunctionManagerServiceImplTest
 atest CtsAppFunctionTestCases
 ```
 
-### Exercise 50-11: Implement a ComputerControlSession Callback
+### Exercise 51-11: Implement a ComputerControlSession Callback
 
 ```java
 public class AutomationCallback implements ComputerControlSession.Callback {
@@ -6144,7 +6147,7 @@ public class AutomationCallback implements ComputerControlSession.Callback {
 }
 ```
 
-### Exercise 50-12: Query OnDeviceIntelligence Features
+### Exercise 51-12: Query OnDeviceIntelligence Features
 
 ```java
 OnDeviceIntelligenceManager odim =
@@ -6188,7 +6191,7 @@ odim.listFeatures(executor, new OutcomeReceiver<>() {
 });
 ```
 
-### Exercise 50-13: Use AppSearch for Function Discovery
+### Exercise 51-13: Use AppSearch for Function Discovery
 
 ```java
 AppSearchManager appSearchManager =
@@ -6222,7 +6225,7 @@ appSearchManager.createSearchSession(searchContext, executor, result -> {
 });
 ```
 
-### Exercise 50-14: AppFunction Access Management
+### Exercise 51-14: AppFunction Access Management
 
 ```java
 AppFunctionManager afm = context.getSystemService(AppFunctionManager.class);
@@ -6261,7 +6264,7 @@ afm.isAppFunctionEnabled("createNote", targetPackage, executor,
         });
 ```
 
-### Exercise 50-15: NNAPI Model Building (C API)
+### Exercise 51-15: NNAPI Model Building (C API)
 
 ```c
 #include <NeuralNetworks.h>
@@ -6349,7 +6352,7 @@ ANeuralNetworksCompilation_free(compilation);
 ANeuralNetworksModel_free(model);
 ```
 
-### Exercise 50-16: AppFunction Access Management via ADB
+### Exercise 51-16: AppFunction Access Management via ADB
 
 In Android 17 the AppFunctions shell command exposes the access-management
 surface directly (subcommands defined in `AppFunctionManagerServiceShellCommand`):
@@ -6386,7 +6389,7 @@ There is no longer a `Settings.Secure` allowlist string or an access-history
 content provider; agent eligibility comes from the platform `AllowlistManager`
 (51.2.16) and interactions are recorded to statsd (51.2.8).
 
-### Exercise 50-17: Implement AppFunction with Attribution
+### Exercise 51-17: Implement AppFunction with Attribution
 
 ```java
 // Caller side: include attribution in request
@@ -6445,7 +6448,7 @@ public void onExecuteFunction(
 }
 ```
 
-### Exercise 50-18: AppFunction with URI Grants
+### Exercise 51-18: AppFunction with URI Grants
 
 ```java
 // Target side: return a URI grant in the response
@@ -6477,7 +6480,7 @@ public void onExecuteFunction(
 }
 ```
 
-### Exercise 50-19: Computer Control with Mirror Display
+### Exercise 51-19: Computer Control with Mirror Display
 
 ```java
 // Create a session with a mirror for human observation
@@ -6505,7 +6508,7 @@ The Android 17 `InteractiveMirror` exposes `setInteractive`, `resize`,
 touches flow through the mirror surface when it is interactive; agent actions
 still go through `tap`/`swipe`/`insertText` on the session.
 
-### Exercise 50-20: Debugging Common AppFunction Issues
+### Exercise 51-20: Debugging Common AppFunction Issues
 
 **Problem: Function not found**
 ```bash
@@ -6561,7 +6564,7 @@ adb shell setprop log.tag.AppFunctionsServiceCall VERBOSE
 adb logcat -s AppFunctionsServiceCall
 ```
 
-### Exercise 50-21: Trace an AppFunction Execution End-to-End
+### Exercise 51-21: Trace an AppFunction Execution End-to-End
 
 Use systrace/perfetto to observe the complete flow:
 

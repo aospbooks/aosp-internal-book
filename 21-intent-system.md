@@ -2114,13 +2114,45 @@ public static final int SYSTEM_LOW_PRIORITY = -1000;
 ```
 
 Applications should never use priorities at or above `SYSTEM_HIGH_PRIORITY`. In
-practice, the system truncates application-declared priorities. For ordered broadcasts,
-priority determines delivery order. For activities, priority is used when resolving
-preferred activities.
+practice, the system truncates application-declared priorities so that ordinary apps
+cannot front-run system components when activities are resolved. Priority is also used
+when resolving preferred activities, and for ordered broadcasts it determines delivery
+order.
 
-The `LIMIT_PRIORITY_SCOPE` compatibility change in `BroadcastRecord` further restricts
-priority scope to process-level ordering, meaning priority values only influence delivery
-order within the same process for modern apps.
+The truncation happens during package scanning, not at dispatch time, and it is done by
+`ComponentResolver.adjustPriority()`
+(`frameworks/base/services/core/java/com/android/server/pm/resolution/ComponentResolver.java:493`).
+When a package's components are registered, `addAllComponents()` collects the
+package's *activity* intent filters and runs `adjustPriority()` over each one
+(`ComponentResolver.java:202`). The method only ever lowers a priority, never raises
+it: a filter that already declares `priority <= 0` is left alone, and the rules for the
+rest are:
+
+- **Non-privileged apps.** Any filter with a positive priority is clamped to `0`. An
+  ordinary app simply cannot declare a priority above zero on an activity.
+- **Privileged apps, protected actions.** For the protected actions in the resolver's
+  `PROTECTED_ACTIONS` set (`ACTION_SEND`, `ACTION_SENDTO`, `ACTION_SEND_MULTIPLE`,
+  `ACTION_VIEW`), even a privileged app's filter is capped to `0`. The one exception is
+  the setup wizard, identified by `CATEGORY_SETUP_WIZARD`, which keeps whatever priority
+  it asks for. Because the setup wizard cannot be identified until every system package
+  has been scanned, protected filters are parked in `mProtectedFilters` and re-evaluated
+  in a later pass.
+- **Privileged apps on the system image.** A privileged app that ships on the system
+  partition keeps the priority it requests for non-protected actions.
+- **Unbundled updates to privileged apps.** When a privileged system app is updated off
+  the system image, the update's filter is compared against the original system version.
+  If no equivalent filter is found, or the actions, categories, schemes, or authorities
+  don't form a subset of a system filter, the priority is clamped to `0`. Otherwise it is
+  capped to the maximum priority the matching system filter declared, so an update cannot
+  quietly escalate its own priority.
+
+Two details are worth keeping straight. First, `adjustPriority()` runs only over
+activity filters: receivers are registered with `newIntents == null`
+(`ComponentResolver.java:367`), so manifest-receiver priority is not clamped by this
+path. Second, this is unrelated to `PackageImpl.capPermissionPriorities()`
+(`frameworks/base/core/java/com/android/internal/pm/parsing/pkg/PackageImpl.java:3127`),
+which zeroes the priority of `<permission-group>` declarations and has nothing to do
+with intent-filter `mPriority`.
 
 ### 21.6.6 Auto-Verify
 

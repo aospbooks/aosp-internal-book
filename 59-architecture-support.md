@@ -67,7 +67,7 @@ func init() {
 The `registerToolchainFactory` function in `toolchain.go` stores these factories
 in a map indexed by OS type, architecture type, and a boolean that selects
 between the ordinary toolchain and the Lightweight Fault Isolation (LFI)
-toolchain (section 59.10). A parallel `registerLFIToolchainFactory` populates
+toolchain (section 59.9). A parallel `registerLFIToolchainFactory` populates
 the `true` slot:
 
 ```go
@@ -183,7 +183,7 @@ objects like `crtbegin_dynamic` and `crtend_android`.
 
 **Platform**: `Bionic()`, `Glibc()`, and `Musl()` indicate which C library the
 toolchain links against. `Lfi()` reports whether this is a Lightweight Fault
-Isolation toolchain (covered in section 59.10), and defaults to `false` for the
+Isolation toolchain (covered in section 59.9), and defaults to `false` for the
 ordinary bionic toolchains.
 
 The base types `toolchain64Bit` and `toolchain32Bit` provide the `Is64Bit()`
@@ -647,7 +647,7 @@ in big.LITTLE configurations.
 
 The factory delegates flag assembly to a helper, `arm64ToolchainFlags`, which
 returns the toolchain Cflags and toolchain Ldflags as a pair. Splitting out the
-helper lets the LFI toolchain (section 59.10) reuse the exact same flag logic:
+helper lets the LFI toolchain (section 59.9) reuse the exact same flag logic:
 
 ```go
 // build/soong/cc/config/arm64_device.go
@@ -717,7 +717,7 @@ pctx.VariableFunc("Arm64Ldflags", func(ctx android.PackageVarContext) string {
 `MaxPageSizeSupported()` is the alignment that the linker uses for ELF segment
 boundaries, and it is no longer a hardcoded 4096 on ARM64. As of Android 17 the
 build defaults it to 16384 for arm64 and x86_64 devices, so platform binaries
-are aligned to load correctly on a 16KB-page kernel. Section 59.11 traces that
+are aligned to load correctly on a 16KB-page kernel. Section 59.10 traces that
 default and the bionic-side macro changes that go with it.
 
 The base linker flags also include segment separation for security:
@@ -1242,7 +1242,7 @@ riscv64Ldflags = []string{
 
 Note the hardcoded 4KB page size, unlike ARM64 and x86_64, which take their
 maximum page size from the configurable `MaxPageSizeSupported()` (16KB by
-default in Android 17; see section 59.11). RISC-V Android currently only
+default in Android 17; see section 59.10). RISC-V Android currently only
 supports 4KB pages.
 
 ### 59.4.5 Berberis Binary Translation
@@ -2341,7 +2341,7 @@ PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true
 The `PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true` flag prevents bionic from
 exposing a fixed `PAGE_SIZE` macro, so code must read the page size at runtime
 instead of assuming 4096 at compile time. This matters because Android 17
-defaults the ARM64 and x86_64 ELF segment alignment to 16KB (section 59.11), and
+defaults the ARM64 and x86_64 ELF segment alignment to 16KB (section 59.10), and
 a binary that hardcoded `PAGE_SIZE == 4096` would misbehave on a 16KB-page
 kernel. Larger pages reduce TLB pressure and page-fault overhead at the cost of
 some memory fragmentation.

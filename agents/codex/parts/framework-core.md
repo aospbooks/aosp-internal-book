@@ -1359,7 +1359,7 @@ private Watchdog() {
 }
 ```
 
-The eight monitored threads plus the monitor thread total nine checkers.
+The seven monitored worker threads plus the monitor thread total eight checkers.
 
 ### 20.5.6 The Monitor Interface
 
@@ -2575,7 +2575,7 @@ Here is the complete mapping of APEX paths used in `SystemServer.java`:
 | `SCHEDULING_APEX_PATH` | `/apex/com.android.scheduling/javalib/service-scheduling.jar` |
 | `DEVICE_LOCK_APEX_PATH` | `/apex/com.android.devicelock/javalib/service-devicelock.jar` |
 | `PROFILING_SERVICE_JAR_PATH` | `/apex/com.android.profiling/javalib/service-profiling.jar` |
-| `UPROBESTATS_SERVICE_JAR_PATH` | `/apex/com.android.uprobestats/javalib/service-uprobestats.jar` |
+| `UPROBESTATS_BRIDGE_SERVICE_JAR_PATH` | `/apex/com.android.uprobestats/javalib/service-uprobestats-bridge.jar` |
 
 ---
 
@@ -7326,13 +7326,45 @@ public static final int SYSTEM_LOW_PRIORITY = -1000;
 ```
 
 Applications should never use priorities at or above `SYSTEM_HIGH_PRIORITY`. In
-practice, the system truncates application-declared priorities. For ordered broadcasts,
-priority determines delivery order. For activities, priority is used when resolving
-preferred activities.
+practice, the system truncates application-declared priorities so that ordinary apps
+cannot front-run system components when activities are resolved. Priority is also used
+when resolving preferred activities, and for ordered broadcasts it determines delivery
+order.
 
-The `LIMIT_PRIORITY_SCOPE` compatibility change in `BroadcastRecord` further restricts
-priority scope to process-level ordering, meaning priority values only influence delivery
-order within the same process for modern apps.
+The truncation happens during package scanning, not at dispatch time, and it is done by
+`ComponentResolver.adjustPriority()`
+(`frameworks/base/services/core/java/com/android/server/pm/resolution/ComponentResolver.java:493`).
+When a package's components are registered, `addAllComponents()` collects the
+package's *activity* intent filters and runs `adjustPriority()` over each one
+(`ComponentResolver.java:202`). The method only ever lowers a priority, never raises
+it: a filter that already declares `priority <= 0` is left alone, and the rules for the
+rest are:
+
+- **Non-privileged apps.** Any filter with a positive priority is clamped to `0`. An
+  ordinary app simply cannot declare a priority above zero on an activity.
+- **Privileged apps, protected actions.** For the protected actions in the resolver's
+  `PROTECTED_ACTIONS` set (`ACTION_SEND`, `ACTION_SENDTO`, `ACTION_SEND_MULTIPLE`,
+  `ACTION_VIEW`), even a privileged app's filter is capped to `0`. The one exception is
+  the setup wizard, identified by `CATEGORY_SETUP_WIZARD`, which keeps whatever priority
+  it asks for. Because the setup wizard cannot be identified until every system package
+  has been scanned, protected filters are parked in `mProtectedFilters` and re-evaluated
+  in a later pass.
+- **Privileged apps on the system image.** A privileged app that ships on the system
+  partition keeps the priority it requests for non-protected actions.
+- **Unbundled updates to privileged apps.** When a privileged system app is updated off
+  the system image, the update's filter is compared against the original system version.
+  If no equivalent filter is found, or the actions, categories, schemes, or authorities
+  don't form a subset of a system filter, the priority is clamped to `0`. Otherwise it is
+  capped to the maximum priority the matching system filter declared, so an update cannot
+  quietly escalate its own priority.
+
+Two details are worth keeping straight. First, `adjustPriority()` runs only over
+activity filters: receivers are registered with `newIntents == null`
+(`ComponentResolver.java:367`), so manifest-receiver priority is not clamped by this
+path. Second, this is unrelated to `PackageImpl.capPermissionPriorities()`
+(`frameworks/base/core/java/com/android/internal/pm/parsing/pkg/PackageImpl.java:3127`),
+which zeroes the priority of `<permission-group>` declarations and has nothing to do
+with intent-filter `mPriority`.
 
 ### 21.6.6 Auto-Verify
 
@@ -14498,13 +14530,19 @@ The windowing mode determines a task's layout behavior:
 | FREEFORM | User-defined rect | Yes (drag edges) | Normal stacking | Desktop mode |
 | MULTI_WINDOW | Half/portion of display | Via divider | Side by side | Split screen |
 
-The `tasksAreFloating()` helper method identifies which modes produce floating windows:
+The `tasksAreFloating()` helper method identifies which modes produce floating
+windows. It delegates to `isFloating()`, which counts only freeform and PiP as
+floating; split-screen (multi-window) is tiled, not floating:
 
 ```java
 // WindowConfiguration.java
 public boolean tasksAreFloating() {
-    return mWindowingMode == WINDOWING_MODE_FREEFORM
-            || mWindowingMode == WINDOWING_MODE_MULTI_WINDOW;
+    return isFloating(mWindowingMode);
+}
+
+public static boolean isFloating(@WindowingMode int windowingMode) {
+    return windowingMode == WINDOWING_MODE_FREEFORM
+            || windowingMode == WINDOWING_MODE_PINNED;
 }
 ```
 
@@ -16979,7 +17017,7 @@ classDiagram
   connections via `WifiDisplayController`.
 
 - **OverlayDisplayAdapter** creates developer overlay displays parsed from
-  the `persist.sys.overlay_display` system property.
+  the `Settings.Global.OVERLAY_DISPLAY_DEVICES` setting (`overlay_display_devices`).
 
 All adapters report to `DisplayDeviceRepository`, which maintains the
 canonical list of active `DisplayDevice` objects and notifies DMS of changes.
@@ -17312,7 +17350,7 @@ standard feature IDs are defined in `DisplayAreaOrganizer`:
 | `FEATURE_DEFAULT_TASK_CONTAINER` | `FEATURE_SYSTEM_FIRST + 1` | 1 | Default container for Tasks |
 | `FEATURE_WINDOW_TOKENS` | `FEATURE_SYSTEM_FIRST + 2` | 2 | Container for non-Task window tokens |
 | `FEATURE_ONE_HANDED` | `FEATURE_SYSTEM_FIRST + 3` | 3 | One-handed mode scaling |
-| `FEATURE_WINDOWED_MAGNIFICATION` | `FEATURE_SYSTEM_FIRST + 4` | 4 | Windowed accessibility magnification |
+| `FEATURE_TOP_LEVEL_ZOOM` | `FEATURE_SYSTEM_FIRST + 4` | 4 | Top-level zoom layer (the AOSP feature bound here is named "WindowedMagnification") |
 | `FEATURE_FULLSCREEN_MAGNIFICATION` | `FEATURE_SYSTEM_FIRST + 5` | 5 | Fullscreen magnification |
 | `FEATURE_HIDE_DISPLAY_CUTOUT` | `FEATURE_SYSTEM_FIRST + 6` | 6 | Content below cutout |
 | `FEATURE_IME_PLACEHOLDER` | `FEATURE_SYSTEM_FIRST + 7` | 7 | IME container position |
@@ -17335,7 +17373,7 @@ A typical AOSP `DefaultDisplayAreaPolicy` builds this hierarchy:
 ```mermaid
 graph TD
     DC["DisplayContent<br/>(RootDisplayArea, FEATURE_ROOT)"]
-    WM["WindowedMagnification<br/>(FEATURE_WINDOWED_MAGNIFICATION)"]
+    WM["WindowedMagnification<br/>(FEATURE_TOP_LEVEL_ZOOM)"]
     BT["DisplayArea.Tokens<br/>(Wallpapers below tasks)"]
     TDA["TaskDisplayArea<br/>(FEATURE_DEFAULT_TASK_CONTAINER)"]
     ATI["DisplayArea.Tokens<br/>(Above tasks, below IME)"]
@@ -17405,7 +17443,7 @@ constraints on the hierarchy:
    `FEATURE_DEFAULT_TASK_CONTAINER`.
 5. **ID range limit**: No ID may exceed `FEATURE_VENDOR_LAST` (20001).
 6. **Valid windowing layer**: The root hierarchy must contain a windowing
-   layer (`FEATURE_WINDOWED_MAGNIFICATION` or `FEATURE_WINDOWING_LAYER`)
+   layer (`FEATURE_TOP_LEVEL_ZOOM` or `FEATURE_WINDOWING_LAYER`)
    at the top level. If absent, the builder automatically inserts a
    `FEATURE_WINDOWING_LAYER`.
 
@@ -17428,7 +17466,7 @@ that supports ranges and exceptions:
 // Example: WindowedMagnification targets everything below
 // the accessibility magnification overlay
 new Feature.Builder(wmService.mPolicy, "WindowedMagnification",
-        FEATURE_WINDOWED_MAGNIFICATION)
+        FEATURE_TOP_LEVEL_ZOOM)
     .upTo(TYPE_ACCESSIBILITY_MAGNIFICATION_OVERLAY)
     .except(TYPE_ACCESSIBILITY_MAGNIFICATION_OVERLAY)
     .setNewDisplayAreaSupplier(DisplayArea.Dimmable::new)
@@ -17513,7 +17551,8 @@ vanish. This is the mechanism that enables:
 
 - **One-handed mode**: Registers for `FEATURE_ONE_HANDED`, then scales and
   translates the DisplayArea.
-- **Windowed magnification**: Registers for `FEATURE_WINDOWED_MAGNIFICATION`.
+- **Windowed magnification**: Registers the "WindowedMagnification" feature,
+  which is bound to `FEATURE_TOP_LEVEL_ZOOM`.
 - **App zoom-out**: Registers for `FEATURE_APP_ZOOM_OUT`.
 
 The `DisplayAreaOrganizerController` manages the registration and dispatches
@@ -19271,18 +19310,19 @@ display surface and encoded in H.264.
 
 ### 24.9.8 OverlayDisplayAdapter for Development
 
-`OverlayDisplayAdapter` creates overlay displays from the system property:
+`OverlayDisplayAdapter` creates overlay displays from the
+`Settings.Global.OVERLAY_DISPLAY_DEVICES` setting:
 
 ```shell
-setprop persist.sys.overlay_display "1920x1080/320"
+settings put global overlay_display_devices "1920x1080/320"
 ```
 
 This creates a virtual display that appears as a window on the primary
 display. It is invaluable for multi-display development without physical
-hardware. The format supports multiple displays:
+hardware. The format supports multiple displays separated by semicolons:
 
 ```shell
-setprop persist.sys.overlay_display "1920x1080/320;1280x720/240"
+settings put global overlay_display_devices "1920x1080/320;1280x720/240"
 ```
 
 ### 24.9.9 External Display Policy
@@ -20135,8 +20175,8 @@ Suggested explorations:
    `LOGICAL_DISPLAY_EVENT_SWAPPED` transition in the DMS dump.
 
 2. **Force an overlay display.** Run
-   `adb shell setprop persist.sys.overlay_display "1920x1080/320"` and observe a
-   new logical display appear in `dumpsys display` via the
+   `adb shell settings put global overlay_display_devices "1920x1080/320"` and
+   observe a new logical display appear in `dumpsys display` via the
    `OverlayDisplayAdapter` (Section 24.9.8). This needs no external hardware.
 
 3. **Inspect the refresh-rate vote.** While scrolling a list, capture
@@ -23683,7 +23723,7 @@ The default-on behavior is exposed to the inset-controller host through
 `usesSyncedInsetsAnimationByDefault()`:
 
 ```
-Source: frameworks/base/core/java/android/view/InsetsController.java (line 241)
+Source: frameworks/base/core/java/android/view/InsetsController.java (line 244)
 
     /**
      * @return {@code true} if the default synchronized insets animation is

@@ -169,18 +169,27 @@ sequenceDiagram
 ```
 
 The `fwmark` mechanism is central to Android's per-network routing. Each socket
-is tagged with a 32-bit mark that encodes:
+is tagged with a 32-bit mark whose bit layout is defined by the `Fwmark` union in
+`system/netd/include/Fwmark.h`:
 
 - The network ID (bits 0--15)
-- Permission bits (bits 16--17)
-- Whether the socket is explicitly bound (bit 18)
-- Whether VPN bypass is allowed (bit 19)
+- Whether the network was explicitly selected (bit 16)
+- Whether the socket is protected from the VPN (bit 17)
+- Permission bits (bits 18--19)
 
-The `FwmarkServer` in netd is responsible for applying these marks when sockets
-are created, using a BPF program attached to cgroup hooks:
+The `FwmarkServer` in netd is responsible for applying these marks. It is a
+`SocketListener` on a UNIX domain socket: clients hand it a socket file
+descriptor, and it stamps the computed mark onto that socket with
+`setsockopt(SOL_SOCKET, SO_MARK, ...)` (it is not a BPF program or a cgroup hook):
 
-```
-// Source: system/netd/server/FwmarkServer.cpp
+```cpp
+// Source: system/netd/server/FwmarkServer.cpp:314-319
+    fwmark.permission = permission;
+
+    if (setsockopt(*socketFd, SOL_SOCKET, SO_MARK, &fwmark.intValue,
+                   sizeof(fwmark.intValue)) == -1) {
+        return -errno;
+    }
 ```
 
 ---
@@ -1225,16 +1234,22 @@ The firewall supports two modes:
 - **Denylist** (default): All traffic is allowed unless explicitly denied
 - **Allowlist**: All traffic is blocked unless explicitly allowed
 
-Child chains implement specific power-saving policies:
+The interface-scoped `fw_INPUT`/`fw_OUTPUT`/`fw_FORWARD` chains above are still
+iptables chains owned by `FirewallController`. The per-policy power-saving chains,
+however, are no longer iptables child chains: as §35.2.9 describes, they were moved
+into BPF and are now enforced by `BpfNetMaps` in the Connectivity module. They are
+identified by the `FIREWALL_CHAIN_*` constants (`ConnectivityManager` /
+`packages/modules/Connectivity/.../BpfNetMapsConstants.java`) rather than by
+`FirewallController` chain names, but the names and semantics map one-to-one:
 
-| Chain | Purpose | Mode |
+| BPF firewall chain | Purpose | Mode |
 |-------|---------|------|
-| `fw_dozable` | Doze mode whitelist | Allowlist |
-| `fw_standby` | App standby denylist | Denylist |
-| `fw_powersave` | Battery saver whitelist | Allowlist |
-| `fw_restricted` | Background restriction | Denylist |
-| `fw_low_power_standby` | Low-power standby | Allowlist |
-| `fw_background` | Background network access | Mixed |
+| `FIREWALL_CHAIN_DOZABLE` | Doze mode allowlist | Allowlist |
+| `FIREWALL_CHAIN_STANDBY` | App standby denylist | Denylist |
+| `FIREWALL_CHAIN_POWERSAVE` | Battery saver allowlist | Allowlist |
+| `FIREWALL_CHAIN_RESTRICTED` | Background restriction allowlist | Allowlist |
+| `FIREWALL_CHAIN_LOW_POWER_STANDBY` | Low-power standby allowlist | Allowlist |
+| `FIREWALL_CHAIN_BACKGROUND` | Background network access allowlist | Allowlist |
 
 ### 35.4.7 RouteController
 

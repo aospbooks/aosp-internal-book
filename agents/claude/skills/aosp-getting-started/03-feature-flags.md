@@ -878,7 +878,7 @@ backend the package uses.  In Android 17 the selection logic in the
 Android 17 removed the previously separate `FeatureFlagsImpl.deviceConfig.java.template`;
 the DeviceConfig path now shares the `legacy_flag.internal` template.  The
 complete template inventory in `build/make/tools/aconfig/aconfig/templates/`
-(14 files) is:
+(13 files) is:
 
 ```
 CustomFeatureFlags.java.template

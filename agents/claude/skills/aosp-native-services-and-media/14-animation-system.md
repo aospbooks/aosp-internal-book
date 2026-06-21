@@ -2197,11 +2197,14 @@ priority handling:
 | Type | Usage |
 |---|---|
 | `ANIMATION_TYPE_NONE` | No animation |
-| `ANIMATION_TYPE_APP_TRANSITION` | App open/close transition |
 | `ANIMATION_TYPE_SCREEN_ROTATION` | Screen rotation animation |
-| `ANIMATION_TYPE_RECENTS` | Recents animation |
-| `ANIMATION_TYPE_WINDOW_ANIMATION` | Window-level animation |
 | `ANIMATION_TYPE_DIMMER` | Dimmer fade in/out |
+| `ANIMATION_TYPE_RECENTS` | Recents animation |
+| `ANIMATION_TYPE_WINDOW_ANIMATION` | Window-level animation on a `WindowState` without animating the activity |
+| `ANIMATION_TYPE_INSETS_CONTROL` | Leash handed to the client to drive the inset-causing system window |
+| `ANIMATION_TYPE_TOKEN_TRANSFORM` | Animation on a non-app window token (e.g. a fixed rotation transform) |
+| `ANIMATION_TYPE_STARTING_REVEAL` | Reveal animation for a starting (splash) window |
+| `ANIMATION_TYPE_PREDICT_BACK` | Predictive-back gesture animation on a window container |
 | `ANIMATION_TYPE_ALL` | Bitmask for all types |
 
 ### 14.6.8 WM Animation Architecture
@@ -2305,8 +2308,8 @@ graph TD
     A -->|yes| B[MixedTransitionHandler]
     A -->|no| C{KeyguardTransitionHandler?}
     C -->|yes| D[KeyguardTransitionHandler]
-    C -->|no| E{PipTransitionHandler?}
-    E -->|yes| F[PipTransitionHandler]
+    C -->|no| E{PipTransition?}
+    E -->|yes| F[PipTransition]
     E -->|no| G{RemoteTransitionHandler?}
     G -->|yes| H[RemoteTransitionHandler]
     G -->|no| I[DefaultTransitionHandler]
@@ -2769,10 +2772,10 @@ and velocity against thresholds:
 
 ```
 valueThreshold  = based on the minimum visible change
-velocityThreshold = valueThreshold * VELOCITY_THRESHOLD_MULTIPLIER (64.5)
+velocityThreshold = valueThreshold * VELOCITY_THRESHOLD_MULTIPLIER (62.5)
 ```
 
-The `VELOCITY_THRESHOLD_MULTIPLIER` (1000.0 / 16.0 = 64.5) means that if
+The `VELOCITY_THRESHOLD_MULTIPLIER` (1000.0 / 16.0 = 62.5) means that if
 it would take more than one frame (16ms) to move by the value threshold at
 the current velocity, the spring is considered at rest.
 
@@ -3818,21 +3821,29 @@ displays.
 
 On devices with variable refresh rate displays, the presentation time may
 not be a fixed interval from the VSYNC.  Choreographer exposes the expected
-presentation time through `FrameData`:
+presentation time through `FrameData`, which carries the render start time
+and the set of candidate frame timelines.  The per-timeline values (VSYNC id,
+deadline, expected present time) live on the nested `FrameTimeline` class, and
+`getPreferredFrameTimeline()` returns the platform-preferred one:
 
 ```java
 public static class FrameData {
-    public long getFrameTimeNanos();
-    public long getPreferredFrameTimelineDeadlineNanos();
-    public long getPreferredFrameTimelinePresentationNanos();
-    public long getPreferredFrameTimelineVsyncId();
+    public long getFrameTimeNanos();          // when the frame started rendering
+    public FrameTimeline[] getFrameTimelines();
+    public FrameTimeline getPreferredFrameTimeline();
     ...
+}
+
+public static class FrameTimeline {
+    public long getVsyncId();
+    public long getExpectedPresentationTimeNanos();
+    public long getDeadlineNanos();
 }
 ```
 
-Animations can use the expected presentation time to pre-compute the
-value that will be visible when the frame actually appears on screen,
-rather than the value at the animation callback time.
+Animations can read the preferred timeline's expected presentation time to
+pre-compute the value that will be visible when the frame actually appears on
+screen, rather than the value at the animation callback time.
 
 ### 14.12.18 Choreographer and AnimationHandler Integration
 
@@ -3869,7 +3880,7 @@ graph TD
         TXN --> SF[SurfaceFlinger]
 
         ME --> DTH[DefaultTransitionHandler]
-        ME --> PIP[PipTransitionHandler]
+        ME --> PIP[PipTransition]
         ME --> BAC[BackAnimationController]
         ME --> UF[UnfoldTransitionHandler]
         ME --> DM[DesktopModeTransitionHandler]

@@ -212,7 +212,7 @@ FD inheritance is now governed by explicit, dated allow-lists in each species (`
 
 **Static final fields no longer reflectively writable at SDK 37.** For apps targeting SDK 37, `ArtField::IsUnmodifiable()` (`art/runtime/art_field-inl.h`) returns true for ordinary `static final` fields, so reflective (`java_lang_reflect_Field.cc`) and JNI (`jni_internal.cc`) writes throw `IllegalAccessException` instead of silently mutating a constant.
 
-**Lock-free `MessageQueue` at SDK 37.** Android 17 adds a concurrent `MessageQueue` reimplementation selected by the `release_package_messagequeue_implementation` Soong config; the default `CombinedMessageQueue` (`frameworks/base/core/java/android/os/CombinedDeliMessageQueue/MessageQueue.java`) picks at runtime between the legacy `synchronized` queue and a `VarHandle`-CAS "DeliQueue", switching to the lock-free path for system processes and apps gated by the `USE_NEW_MESSAGEQUEUE` compat change (`@EnabledAfter(BAKLAVA)`, SDK 37+).
+**Lock-free `MessageQueue` at SDK 37.** Android 17 adds a concurrent `MessageQueue` reimplementation selected by the `release_package_messagequeue_implementation` Soong config; the default `CombinedMessageQueue` (`frameworks/base/core/java/android/os/CombinedMessageQueue/MessageQueue.java`, the config's `conditions_default`) picks at runtime between the legacy `synchronized` queue and a `VarHandle`-CAS "DeliQueue", switching to the lock-free path for system processes and apps gated by the `USE_NEW_MESSAGEQUEUE` compat change (`@EnabledAfter(BAKLAVA)`, SDK 37+).
 
 ### Notable integrations
 

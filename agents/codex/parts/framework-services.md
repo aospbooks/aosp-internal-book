@@ -18596,8 +18596,10 @@ The Android 17 source tree refines background scheduling rather than rebuilding
 it: the JobScheduler controller architecture, the AlarmManager service, and the
 foreground-service rules are all the same shapes described above. What changed is
 mostly *diagnostics*, *multi-user correctness*, and a set of feature flags that
-fine-tune batching and quotas. Every behavior in this section is gated by an
-`aconfig` flag, the AOSP mechanism for shipping a change behind a runtime toggle.
+fine-tune batching and quotas. Most of these behaviors are gated by an `aconfig`
+flag, the AOSP mechanism for shipping a change behind a runtime toggle. A few are
+not: the start-user-before-alarm feature in §30.7.8, for instance, is guarded by a
+config resource bool plus a multi-user check rather than an aconfig flag.
 
 ### 30.7.1 The aconfig Flags Behind the Scheduler
 
@@ -18742,14 +18744,16 @@ appears in the slow-response ANR message.
 ### 30.7.7 User-Initiated Job Notifications
 
 User-initiated jobs (UIJs) must show a notification while they run, similar to a
-foreground service. Android 16 introduced a centralized `JobNotificationCoordinator`
-(`JobNotificationCoordinator.java`) that maps each running UIJ to the app
-notification it is attached to, and Android 17 carries the follow-on hardening:
-the coordinator marks the notification with a user-initiated-job flag through
-`NotificationManagerInternal` and restricts the app from silently dismissing a
-UIJ's notification while the job runs, so the user always retains a visible,
-actionable indicator (and a way to stop the work). Notifications are also cleaned
-up when the owning user is stopped.
+foreground service. This is not new in Android 17. The centralized
+`JobNotificationCoordinator` (`JobNotificationCoordinator.java`, Copyright 2022)
+shipped alongside UIJs themselves in Android 14 (API 34): it maps each running UIJ
+to the app notification it is attached to, marks the notification with a
+user-initiated-job flag through `NotificationManagerInternal`, and restricts the
+app from silently dismissing a UIJ's notification while the job runs, so the user
+always retains a visible, actionable indicator (and a way to stop the work).
+Notifications are cleaned up when the owning user is stopped. Android 17 inherits
+this coordinator unchanged; it is covered here because it underpins the UIJ
+behavior the rest of this chapter relies on.
 
 **Source path**: `frameworks/base/apex/jobscheduler/service/java/com/android/server/job/JobNotificationCoordinator.java`
 
@@ -18758,11 +18762,13 @@ up when the owning user is stopped.
 On multi-user and private-space devices, an alarm scheduled by an app belonging
 to a *stopped* user could be missed because the user (and thus the app) was not
 running when the alarm time arrived. Android 17 closes this gap with the
-`UserWakeupStore` (`UserWakeupStore.java`, Copyright 2024). When
-`mStartUserBeforeScheduledAlarms` is enabled (it requires multi-user support),
-`AlarmManagerService` records, per user, the earliest time that user has an alarm
-due, persisting the set of user IDs with pending alarms to an XML file under the
-system data directory:
+`UserWakeupStore` (`UserWakeupStore.java`, Copyright 2024). The feature is not
+behind an aconfig flag: `AlarmManagerService` sets `mStartUserBeforeScheduledAlarms`
+only when `UserManager.supportsMultipleUsers()` is true *and* the config resource
+bool `config_allowAlarmsOnStoppedUsers` is set (AlarmManagerService.java:1873-1875).
+When it is enabled, `AlarmManagerService` records, per user, the earliest time that
+user has an alarm due, persisting the set of user IDs with pending alarms to an XML
+file under the system data directory:
 
 ```java
 // frameworks/base/apex/jobscheduler/service/java/com/android/server/alarm/
@@ -23085,11 +23091,17 @@ migration.
 Source: frameworks/base/services/core/java/com/android/server/accounts/AccountManagerServiceShellCommand.java
 ```
 
-```bash
-# List accounts (requires root or shell)
-adb shell cmd account list-accounts
+The shell command surface is narrow: `onCommand()` handles only
+`get-bind-instant-service-allowed` and `set-bind-instant-service-allowed` (plus
+`help`). There is no subcommand for listing accounts; use `dumpsys account` for
+that.
 
-# Dump account service state
+```bash
+# Read/write the instant-app bind policy for a user
+adb shell cmd account get-bind-instant-service-allowed --user 0
+adb shell cmd account set-bind-instant-service-allowed --user 0 true
+
+# Dump account service state (shows accounts per user)
 adb shell dumpsys account
 ```
 
@@ -29450,7 +29462,7 @@ sequenceDiagram
     vold->>SMS: onVolumeCreated(volId, type, diskId, partGuid)
     SMS->>SMS: Create VolumeInfo, add to mVolumes
 
-    vold->>SMS: onVolumeStateChanged(volId, state)
+    vold->>SMS: onVolumeStateChanged(volId, state, userId)
     SMS->>SMS: Update volume state
     SMS->>App: Broadcast ACTION_MEDIA_MOUNTED
     SMS->>ESS: onVolumeStateChanged(storageVolume)
@@ -29647,21 +29659,29 @@ The `MediaProvider` has an extensive permission checking system, using
 
 ```java
 // packages/providers/MediaProvider/src/com/android/providers/media/
-//     LocalCallingIdentity.java (permission constants)
-static final int PERMISSION_IS_SELF = 1 << 0;
-static final int PERMISSION_IS_SHELL = 1 << 1;
-static final int PERMISSION_IS_MANAGER = 1 << 2;
-static final int PERMISSION_IS_DELEGATOR = 1 << 3;
-static final int PERMISSION_IS_REDACTION_NEEDED = 1 << 4;
-static final int PERMISSION_IS_LEGACY_GRANTED = 1 << 5;
-static final int PERMISSION_IS_LEGACY_READ = 1 << 6;
-static final int PERMISSION_IS_LEGACY_WRITE = 1 << 7;
-static final int PERMISSION_READ_IMAGES = 1 << 8;
-static final int PERMISSION_READ_VIDEO = 1 << 9;
-static final int PERMISSION_WRITE_EXTERNAL_STORAGE = 1 << 10;
-static final int PERMISSION_IS_SYSTEM_GALLERY = 1 << 11;
-static final int PERMISSION_INSTALL_PACKAGES = 1 << 12;
-static final int PERMISSION_ACCESS_MTP = 1 << 13;
+//     LocalCallingIdentity.java (permission constants, grouped non-contiguous bits)
+public static final int PERMISSION_IS_SELF = 1 << 0;
+public static final int PERMISSION_IS_SHELL = 1 << 1;
+public static final int PERMISSION_IS_MANAGER = 1 << 2;
+public static final int PERMISSION_IS_DELEGATOR = 1 << 3;
+public static final int PERMISSION_IS_DOCUMENTS_MANAGER = 1 << 4;
+
+public static final int PERMISSION_IS_REDACTION_NEEDED = 1 << 8;
+public static final int PERMISSION_IS_LEGACY_GRANTED = 1 << 9;
+public static final int PERMISSION_IS_LEGACY_READ = 1 << 10;
+public static final int PERMISSION_IS_LEGACY_WRITE = 1 << 11;
+
+public static final int PERMISSION_READ_AUDIO = 1 << 16;
+public static final int PERMISSION_READ_VIDEO = 1 << 17;
+public static final int PERMISSION_READ_IMAGES = 1 << 18;
+public static final int PERMISSION_WRITE_AUDIO = 1 << 19;
+public static final int PERMISSION_WRITE_VIDEO = 1 << 20;
+public static final int PERMISSION_WRITE_IMAGES = 1 << 21;
+
+public static final int PERMISSION_IS_SYSTEM_GALLERY = 1 << 22;
+public static final int PERMISSION_INSTALL_PACKAGES = 1 << 23;
+public static final int PERMISSION_WRITE_EXTERNAL_STORAGE = 1 << 24;
+public static final int PERMISSION_ACCESS_MTP = 1 << 26;
 ```
 
 ### 34.4.5 Legacy Mode
@@ -30118,20 +30138,24 @@ storage.  Key permission constants used throughout MediaProvider:
 
 ```java
 // packages/providers/MediaProvider/src/com/android/providers/media/
-//     LocalCallingIdentity.java
-static final int PERMISSION_IS_SELF = 1 << 0;
-static final int PERMISSION_IS_SHELL = 1 << 1;
-static final int PERMISSION_IS_MANAGER = 1 << 2;
-static final int PERMISSION_IS_REDACTION_NEEDED = 1 << 4;
-static final int PERMISSION_IS_LEGACY_GRANTED = 1 << 5;
-static final int PERMISSION_IS_LEGACY_READ = 1 << 6;
-static final int PERMISSION_IS_LEGACY_WRITE = 1 << 7;
-static final int PERMISSION_READ_IMAGES = 1 << 8;
-static final int PERMISSION_READ_VIDEO = 1 << 9;
-static final int PERMISSION_WRITE_EXTERNAL_STORAGE = 1 << 10;
-static final int PERMISSION_IS_SYSTEM_GALLERY = 1 << 11;
-static final int PERMISSION_INSTALL_PACKAGES = 1 << 12;
-static final int PERMISSION_ACCESS_MTP = 1 << 13;
+//     LocalCallingIdentity.java (grouped non-contiguous bits)
+public static final int PERMISSION_IS_SELF = 1 << 0;
+public static final int PERMISSION_IS_SHELL = 1 << 1;
+public static final int PERMISSION_IS_MANAGER = 1 << 2;
+
+public static final int PERMISSION_IS_REDACTION_NEEDED = 1 << 8;
+public static final int PERMISSION_IS_LEGACY_GRANTED = 1 << 9;
+public static final int PERMISSION_IS_LEGACY_READ = 1 << 10;
+public static final int PERMISSION_IS_LEGACY_WRITE = 1 << 11;
+
+public static final int PERMISSION_READ_AUDIO = 1 << 16;
+public static final int PERMISSION_READ_VIDEO = 1 << 17;
+public static final int PERMISSION_READ_IMAGES = 1 << 18;
+
+public static final int PERMISSION_IS_SYSTEM_GALLERY = 1 << 22;
+public static final int PERMISSION_INSTALL_PACKAGES = 1 << 23;
+public static final int PERMISSION_WRITE_EXTERNAL_STORAGE = 1 << 24;
+public static final int PERMISSION_ACCESS_MTP = 1 << 26;
 ```
 
 ### 34.6.7 Database Backup and Recovery
@@ -31989,7 +32013,7 @@ management:
 | `AID_EVERYBODY` | 9997 | Shared by all apps |
 | `AID_MEDIA_OBB` | 1059 | OBB file access |
 | `AID_MEDIA_IMAGE` | 1057 | Image file access |
-| `AID_MEDIA_VIDEO` | 1058 | Video file access |
+| `AID_MEDIA_VIDEO` | 1056 | Video file access |
 | `AID_MEDIA_AUDIO` | 1055 | Audio file access |
 
 These GIDs are used by the permission enforcement system.  When an app has
@@ -32571,11 +32595,11 @@ modes:
 
 | Mode | Description |
 |------|-------------|
-| `REMOUNT_MODE_NONE` | No external storage access |
-| `REMOUNT_MODE_DEFAULT` | Standard scoped storage access |
-| `REMOUNT_MODE_INSTALLER` | Additional OBB write access |
-| `REMOUNT_MODE_PASS_THROUGH` | Direct lower-fs access (MediaProvider only) |
-| `REMOUNT_MODE_LEGACY` | Pre-scoped-storage full access |
+| `REMOUNT_MODE_NONE` (0) | No external storage access |
+| `REMOUNT_MODE_DEFAULT` (1) | Standard scoped storage access |
+| `REMOUNT_MODE_INSTALLER` (2) | Additional OBB write access |
+| `REMOUNT_MODE_PASS_THROUGH` (3) | Direct lower-fs access (MediaProvider only) |
+| `REMOUNT_MODE_ANDROID_WRITABLE` (4) | Writable access to `Android/` data/obb trees |
 
 The MediaProvider process itself runs with `REMOUNT_MODE_PASS_THROUGH`,
 meaning it can access the underlying filesystem directly without going
@@ -32989,7 +33013,7 @@ duration, resolution, and MIME type.
 This section provides practical exercises for exploring the Android storage
 subsystem hands-on.
 
-### Exercise 38.1: Examining Partition Layout
+### Exercise 34.1: Examining Partition Layout
 
 Connect a device via ADB and examine its partition structure:
 
@@ -33010,7 +33034,7 @@ adb shell mount | grep -E "^/dev"
 adb shell getprop ro.boot.dynamic_partitions
 ```
 
-### Exercise 38.2: Exploring vold State
+### Exercise 34.2: Exploring vold State
 
 Examine the running vold daemon and its state:
 
@@ -33035,7 +33059,7 @@ adb shell getprop ro.crypto.type
 adb shell getprop ro.crypto.metadata.enabled
 ```
 
-### Exercise 38.3: Storage Permissions Under Scoped Storage
+### Exercise 34.3: Storage Permissions Under Scoped Storage
 
 Create a test to observe scoped storage behavior:
 
@@ -33055,7 +33079,7 @@ adb shell content query --uri content://media/external/images/media/ \
     --projection _id:_display_name:_size --sort "_id DESC" --limit 5
 ```
 
-### Exercise 38.4: Observing FUSE in Action
+### Exercise 34.4: Observing FUSE in Action
 
 Monitor FUSE operations:
 
@@ -33076,7 +33100,7 @@ adb logcat | grep -i "passthrough"
 adb shell getprop ro.fuse.bpf.enabled
 ```
 
-### Exercise 38.5: Understanding FBE Key Lifecycle
+### Exercise 34.5: Understanding FBE Key Lifecycle
 
 Observe the FBE key management process:
 
@@ -33096,7 +33120,7 @@ adb shell fscrypt-policy-get /data/user/0/
 adb shell fscrypt-policy-get /data/user_de/0/
 ```
 
-### Exercise 38.6: Simulating Adoptable Storage
+### Exercise 34.6: Simulating Adoptable Storage
 
 Use the virtual disk feature in the emulator:
 
@@ -33123,7 +33147,7 @@ adb logcat -s MoveStorage:*
 adb shell sm forget <volume_uuid>
 ```
 
-### Exercise 38.7: Examining MediaProvider Database
+### Exercise 34.7: Examining MediaProvider Database
 
 Explore the MediaStore database:
 
@@ -33140,7 +33164,7 @@ SELECT volume_name, COUNT(*) FROM files GROUP BY volume_name;
 .quit
 ```
 
-### Exercise 38.8: Working with the Storage Access Framework
+### Exercise 34.8: Working with the Storage Access Framework
 
 Test SAF from the command line:
 
@@ -33158,7 +33182,7 @@ adb shell am start -a android.intent.action.OPEN_DOCUMENT \
     -t "*/*" -c android.intent.category.OPENABLE
 ```
 
-### Exercise 38.9: Monitoring Storage Health
+### Exercise 34.9: Monitoring Storage Health
 
 Check storage health metrics:
 
@@ -33180,7 +33204,7 @@ adb shell cat /sys/fs/f2fs/*/stat/written_kbytes
 adb shell cat /sys/fs/f2fs/*/segment_info
 ```
 
-### Exercise 38.10: Building and Modifying vold
+### Exercise 34.10: Building and Modifying vold
 
 Build vold from source and examine the build configuration:
 

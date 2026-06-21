@@ -484,11 +484,17 @@ migration.
 Source: frameworks/base/services/core/java/com/android/server/accounts/AccountManagerServiceShellCommand.java
 ```
 
-```bash
-# List accounts (requires root or shell)
-adb shell cmd account list-accounts
+The shell command surface is narrow: `onCommand()` handles only
+`get-bind-instant-service-allowed` and `set-bind-instant-service-allowed` (plus
+`help`). There is no subcommand for listing accounts; use `dumpsys account` for
+that.
 
-# Dump account service state
+```bash
+# Read/write the instant-app bind policy for a user
+adb shell cmd account get-bind-instant-service-allowed --user 0
+adb shell cmd account set-bind-instant-service-allowed --user 0 true
+
+# Dump account service state (shows accounts per user)
 adb shell dumpsys account
 ```
 

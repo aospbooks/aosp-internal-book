@@ -1735,14 +1735,17 @@ including media-size and document-type lookups read from `PrintAttributes` and
 ## 63.25 The Spooler Is No Longer Preinstalled Everywhere (Android 17)
 
 Earlier releases assumed `com.android.printspooler` was present on every user.
-Android 17 narrows the preinstall allowlist: the spooler is installed only for
-user types that need it.
+Android 17 turns the preinstall into an explicit `install-in-user-type`
+allowlist: the spooler ships only for the listed user types (full users plus the
+clone, managed, and private profiles), not unconditionally for every user.
 
 ```xml
 <!-- build/make/target/product/sysconfig/preinstalled-packages-platform-handheld-system.xml -->
 <install-in-user-type package="com.android.printspooler">
     <install-in user-type="FULL" />
     <install-in user-type="android.os.usertype.profile.CLONE" />
+    <install-in user-type="android.os.usertype.profile.MANAGED" />
+    <install-in user-type="android.os.usertype.profile.PRIVATE" />
 </install-in-user-type>
 ```
 

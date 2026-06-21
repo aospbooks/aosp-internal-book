@@ -45,13 +45,14 @@ processors and managers, each living in its own sub-package:
 | `datatransfer/contextsync/` | `CrossDeviceSyncController` | Call metadata sync                       |
 | `datatransfer/continuity/`  | `TaskContinuityManagerService` | Task handoff between devices            |
 | `datasync/`        | `DataSyncProcessor`                | Generic metadata synchronization              |
-| `actionrequest/`   | `ActionRequestProcessor`           | App-driven action requests (Android 17)       |
+| `actionrequest/`   | `ActionRequestProcessor`           | App-driven action requests                    |
 | `devicetrust/`     | `TrustedDeviceProcessor`           | Trusted-device key exchange (Android 17)      |
 | `powerexemption/`  | `CompanionExemptionProcessor`      | Power and auto-revoke exemptions (Android 17) |
 | `virtual/`         | `VirtualDeviceManagerService`      | Virtual device creation & management          |
 
-The `actionrequest/`, `devicetrust/`, and `powerexemption/` packages are new in
-Android 17 and are covered in section 52.8. `CompanionDeviceManagerService` also
+The `devicetrust/` and `powerexemption/` packages are new in
+Android 17 and are covered in section 52.7; the `actionrequest/` package
+already shipped in Android 16 and gained additional result constants in 17. `CompanionDeviceManagerService` also
 holds a top-level `BackupRestoreProcessor` that backs up and restores
 associations across device migration.
 
@@ -320,12 +321,13 @@ The full set of device profiles includes:
 - **DEVICE_PROFILE_WEARABLE_SENSING** -- wearable health/sensor devices
 - **DEVICE_PROFILE_VIRTUAL_DEVICE** -- limited virtual-device role
   (`android.app.role.COMPANION_DEVICE_VIRTUAL_DEVICE`)
-- **DEVICE_PROFILE_FITNESS_TRACKER** -- Android 17: fitness band / tracker
+- **DEVICE_PROFILE_FITNESS_TRACKER** -- fitness band / tracker
   companion (flag `FLAG_BAND_DEVICE_PROFILE`)
-- **DEVICE_PROFILE_MEDICAL** -- Android 17: medical device companion (flag
+- **DEVICE_PROFILE_MEDICAL** -- medical device companion (flag
   `FLAG_ENABLE_MEDICAL_PROFILE`)
 
-The last two are new in Android 17. Both are declared in
+The last two are flag-gated profiles present in both Android 16 and 17; they
+stay behind their aconfig flags rather than being a 17 addition. Both are declared in
 `frameworks/base/core/java/android/companion/AssociationRequest.java`,
 each guarded by a `@FlaggedApi` annotation pointing at an aconfig flag in
 `frameworks/base/core/java/android/companion/flags.aconfig`:
@@ -2421,9 +2423,12 @@ sequenceDiagram
 
 ## 52.7 New CDM Subsystems in Android 17
 
-Android 17 adds three sibling packages under
+This section walks three sibling packages under
 `frameworks/base/services/companion/java/com/android/server/companion/`, all wired
-into `CompanionDeviceManagerService` next to the existing processors. They share
+into `CompanionDeviceManagerService` next to the existing processors. The
+`devicetrust/` and `powerexemption/` packages are new in Android 17; the
+`actionrequest/` package already shipped in Android 16 and is grouped here for
+context (it picked up extra result constants in 17). They share
 the same `AssociationStore` and `CompanionTransportManager` as everything else,
 so they observe the same association set and the same transport channels.
 
@@ -3309,9 +3314,11 @@ comprehensive framework for multi-device Android experiences:
   in transit, camera injection blocks unauthorized hardware access, and window
   policies prevent sensitive activities from leaking to remote displays.
 
-- **Android 17 additions** broaden the framework: CDM gains action requests
-  (`actionrequest/`), persisted trusted-device keys (`devicetrust/`), consolidated
-  power exemptions (`powerexemption/`), and association backup/restore, while VDM
+- **Android 17 additions** broaden the framework: CDM gains persisted
+  trusted-device keys (`devicetrust/`) and consolidated
+  power exemptions (`powerexemption/`), extends the existing action-request
+  path (`actionrequest/`, carried over from Android 16) with new result
+  constants, and keeps association backup/restore, while VDM
   gains Computer Control sessions (`virtual/computercontrol/`) that let an approved
   agent automate apps on a virtual display under explicit per-agent consent.
 

@@ -18,7 +18,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `build/make/core/product_config.mk` | Product configuration loading and validation |
 | `build/make/core/board_config.mk` | Board-level hardware configuration |
 | `build/make/core/binary.mk` | Shared rules for building native binaries |
-| `build/make/core/tasks/berberis_test.mk` | Build configuration for native bridge testing |
+| `frameworks/libs/binary_translation/berberis_config.mk` | Berberis (riscv64-to-x86_64) product-package configuration for native bridge |
 | `build/make/envsetup.sh` | Shell environment setup; defines `lunch`, `m`, `mm`, `mmm` |
 | `build/soong/cmd/soong_build/main.go` | Soong build system entry point |
 | `build/soong/android/module.go` | Base module type definitions for Soong |
@@ -167,7 +167,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp` | Compositor main class |
 | `frameworks/native/services/surfaceflinger/SurfaceFlinger.h` | SurfaceFlinger declarations |
 | `frameworks/native/services/surfaceflinger/Scheduler/Scheduler.cpp` | VSYNC scheduling and frame pacing |
-| `frameworks/native/services/surfaceflinger/Scheduler/VsyncController.cpp` | VSYNC signal generation |
+| `frameworks/native/services/surfaceflinger/Scheduler/VSyncReactor.cpp` | VSYNC controller implementation (`VsyncController` interface in `VsyncController.h`) |
 | `frameworks/native/services/surfaceflinger/CompositionEngine/` | Composition strategy engine |
 | `frameworks/native/services/surfaceflinger/DisplayHardware/HWComposer.cpp` | HWC abstraction layer |
 | `frameworks/native/services/surfaceflinger/DisplayHardware/PowerAdvisor.cpp` | Power hint integration |
@@ -359,7 +359,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/base/services/core/java/com/android/server/pm/InstallPackageHelper.java` | Package installation logic |
 | `frameworks/base/services/core/java/com/android/server/pm/PackageInstallerService.java` | Installer session management |
 | `frameworks/base/services/core/java/com/android/server/pm/permission/PermissionManagerService.java` | Runtime permission management |
-| `frameworks/base/services/core/java/com/android/server/pm/pkg/parsing/ParsingPackageUtils.java` | APK manifest parsing |
+| `frameworks/base/core/java/com/android/internal/pm/pkg/parsing/ParsingPackageUtils.java` | APK manifest parsing |
 | `frameworks/base/services/core/java/com/android/server/pm/resolution/ComponentResolver.java` | Intent filter resolution |
 | `frameworks/base/services/core/java/com/android/server/pm/dex/DexManager.java` | DEX file optimization tracking |
 | `frameworks/base/core/java/android/content/pm/PackageManager.java` | Public PackageManager API |

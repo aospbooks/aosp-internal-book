@@ -3175,26 +3175,50 @@ policy)`, and DPMS records the value against a
 the engine as just another admin's value, it coexists with any DPC's MTE policy
 under the normal resolution rules instead of fighting it.
 
-The hook diagram below shows the enforcement paths for the three feature hooks
-that exist in the 17 tree (MTE goes through DPMS; USB and install-unknown-sources
-go through `UserManager` restrictions):
+Four concrete hooks (each `extends AdvancedProtectionHook`) ship in the 17 tree:
+`MemoryTaggingExtensionHook`, `DisallowInstallUnknownSourcesAdvancedProtectionHook`,
+`DisallowCellular2GAdvancedProtectionHook`, and `UsbDataAdvancedProtectionHook`.
+Three of them route through DPMS as the `system:` admin, but by two different DPM
+calls.  MTE uses `setMtePolicy(ADVANCED_PROTECTION_SYSTEM_ENTITY, ...)` as shown
+above; the install-unknown-sources and 2G hooks instead pin a *global* user
+restriction from the system entity, e.g.
+
+```java
+// DisallowInstallUnknownSourcesAdvancedProtectionHook.java
+mDevicePolicyManager.addUserRestrictionGlobally(ADVANCED_PROTECTION_SYSTEM_ENTITY,
+        UserManager.DISALLOW_INSTALL_UNKNOWN_SOURCES_GLOBALLY);
+// DisallowCellular2GAdvancedProtectionHook.java -> ...DISALLOW_CELLULAR_2G
+```
+
+`addUserRestrictionGlobally(systemEntity, ...)` still lands in DPMS (it records
+the restriction against the same system `EnforcingAdmin`), so the user-restriction
+sits in the policy engine alongside any DPC's value rather than being written
+straight into `UserManager`.  The USB hook is the odd one out: it does **not** set
+a user restriction at all.  On enable it toggles USB *data signaling* via
+`setUsbDataSignalIfPossible(...)`, gated on the keyguard state (it disables the
+data line only while the device is locked and re-enables it on unlock, by way of
+`IUsbManagerInternal.enableUsbDataSignal`).  There is no `DISALLOW_USB`
+`UserManager` constant; `FEATURE_ID_DISALLOW_USB` is only the hook's feature id.
 
 ```mermaid
 graph LR
     subgraph "AdvancedProtectionService"
         TOGGLE["AAPM toggle<br/>(Settings)"]
         MTE_HOOK["MemoryTaggingExtensionHook"]
+        UIS_HOOK["DisallowInstallUnknownSources<br/>AdvancedProtectionHook"]
+        G2_HOOK["DisallowCellular2G<br/>AdvancedProtectionHook"]
         USB_HOOK["UsbDataAdvancedProtectionHook"]
-        UIS_HOOK["DisallowInstallUnknownSourcesHook"]
     end
 
     TOGGLE --> MTE_HOOK
-    TOGGLE --> USB_HOOK
     TOGGLE --> UIS_HOOK
+    TOGGLE --> G2_HOOK
+    TOGGLE --> USB_HOOK
 
-    MTE_HOOK -- "setMtePolicy('system:...')" --> DPMS["DevicePolicyManagerService<br/>(system EnforcingAdmin)"]
-    USB_HOOK -- "DISALLOW_USB" --> UM["UserManager<br/>restrictions"]
-    UIS_HOOK -- "DISALLOW_INSTALL_UNKNOWN_SOURCES" --> UM
+    MTE_HOOK -- "setMtePolicy (system:)" --> DPMS["DevicePolicyManagerService<br/>(system EnforcingAdmin)"]
+    UIS_HOOK -- "addUserRestrictionGlobally<br/>(system:, DISALLOW_INSTALL_UNKNOWN_SOURCES_GLOBALLY)" --> DPMS
+    G2_HOOK -- "addUserRestrictionGlobally<br/>(system:, DISALLOW_CELLULAR_2G)" --> DPMS
+    USB_HOOK -- "enableUsbDataSignal<br/>(keyguard-gated)" --> USB["IUsbManagerInternal<br/>USB data signaling"]
 
     DPMS --> ENGINE["DevicePolicyEngine<br/>(MostRestrictive resolve)"]
 ```

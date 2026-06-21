@@ -455,10 +455,11 @@ const char* const kQemuSensorName[] = {
     "wrist-tilt",
     "acceleration-uncalibrated",
     "heading",
+    "low-latency-off-body-detect",
 };
 ```
 
-This gives us 19 virtual sensors including:
+This gives us 20 virtual sensors including:
 
 | Sensor | Type | Reporting Mode |
 |--------|------|---------------|

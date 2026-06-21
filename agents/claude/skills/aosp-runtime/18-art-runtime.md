@@ -1321,7 +1321,7 @@ header is defined in `art/runtime/oat/oat.h`:
 class PACKED(4) OatHeader {
  public:
   static constexpr std::array<uint8_t, 4> kOatMagic { { 'o', 'a', 't', '\n' } };
-  static constexpr std::array<uint8_t, 4> kOatVersion{{'2', '6', '5', '\0'}};
+  static constexpr std::array<uint8_t, 4> kOatVersion{{'2', '7', '5', '\0'}};
   ...
 };
 ```
@@ -1734,8 +1734,11 @@ std::deque<ArtMethod*> baseline_queue_;  // Non-optimizing baseline
 std::deque<ArtMethod*> optimized_queue_; // Full optimization
 ```
 
-The priority order is: OSR > fast > generic tasks > baseline > optimized.
-OSR has highest priority because the user is actively waiting in a hot loop.
+`TryGetTaskLocked()` drains the generic task queue first, then walks the
+per-kind compilation queues in the order OSR > fast > baseline > optimized.
+Among those per-kind queues OSR is serviced first because the user is actively
+waiting in a hot loop, but a pending generic task (for example a zygote
+verification task) always preempts even an OSR compile.
 
 Each queue also has a corresponding set to prevent duplicate enqueuing:
 

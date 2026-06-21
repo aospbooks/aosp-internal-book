@@ -1278,7 +1278,7 @@ APEX: some are APKs, some are pure code locations, and the Android 17 newcomers
 | 20 | `IntentResolver` | *(APK)* | T (13) | Chooser/intent resolution UI |
 | 21 | `Media` | `com.android.media` / `com.android.media.swcodec` | Q (10) | Media framework, software codecs |
 | 22 | `ModuleMetadata` | *(APK)* | Q (10) | Module metadata provider |
-| 23 | `NetworkStack` | `com.android.networkstack` | Q (10) | Network connectivity evaluation, DHCP client |
+| 23 | `NetworkStack` | *(updatable APK)* | Q (10) | Network connectivity evaluation, DHCP client |
 | 24 | `NeuralNetworks` | `com.android.neuralnetworks` | R (11) | NNAPI runtime and HAL |
 | 25 | `Nfc` | `com.android.nfcservices` | B (16) | NFC stack and services |
 | 26 | `NpuManager` | `com.android.npumanager` | C (17) | NPU access arbitration (flag-gated, `min_sdk 36`) |

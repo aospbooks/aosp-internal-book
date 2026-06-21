@@ -1652,8 +1652,10 @@ The Android 17 source tree refines background scheduling rather than rebuilding
 it: the JobScheduler controller architecture, the AlarmManager service, and the
 foreground-service rules are all the same shapes described above. What changed is
 mostly *diagnostics*, *multi-user correctness*, and a set of feature flags that
-fine-tune batching and quotas. Every behavior in this section is gated by an
-`aconfig` flag, the AOSP mechanism for shipping a change behind a runtime toggle.
+fine-tune batching and quotas. Most of these behaviors are gated by an `aconfig`
+flag, the AOSP mechanism for shipping a change behind a runtime toggle. A few are
+not: the start-user-before-alarm feature in §30.7.8, for instance, is guarded by a
+config resource bool plus a multi-user check rather than an aconfig flag.
 
 ### 30.7.1 The aconfig Flags Behind the Scheduler
 
@@ -1798,14 +1800,16 @@ appears in the slow-response ANR message.
 ### 30.7.7 User-Initiated Job Notifications
 
 User-initiated jobs (UIJs) must show a notification while they run, similar to a
-foreground service. Android 16 introduced a centralized `JobNotificationCoordinator`
-(`JobNotificationCoordinator.java`) that maps each running UIJ to the app
-notification it is attached to, and Android 17 carries the follow-on hardening:
-the coordinator marks the notification with a user-initiated-job flag through
-`NotificationManagerInternal` and restricts the app from silently dismissing a
-UIJ's notification while the job runs, so the user always retains a visible,
-actionable indicator (and a way to stop the work). Notifications are also cleaned
-up when the owning user is stopped.
+foreground service. This is not new in Android 17. The centralized
+`JobNotificationCoordinator` (`JobNotificationCoordinator.java`, Copyright 2022)
+shipped alongside UIJs themselves in Android 14 (API 34): it maps each running UIJ
+to the app notification it is attached to, marks the notification with a
+user-initiated-job flag through `NotificationManagerInternal`, and restricts the
+app from silently dismissing a UIJ's notification while the job runs, so the user
+always retains a visible, actionable indicator (and a way to stop the work).
+Notifications are cleaned up when the owning user is stopped. Android 17 inherits
+this coordinator unchanged; it is covered here because it underpins the UIJ
+behavior the rest of this chapter relies on.
 
 **Source path**: `frameworks/base/apex/jobscheduler/service/java/com/android/server/job/JobNotificationCoordinator.java`
 
@@ -1814,11 +1818,13 @@ up when the owning user is stopped.
 On multi-user and private-space devices, an alarm scheduled by an app belonging
 to a *stopped* user could be missed because the user (and thus the app) was not
 running when the alarm time arrived. Android 17 closes this gap with the
-`UserWakeupStore` (`UserWakeupStore.java`, Copyright 2024). When
-`mStartUserBeforeScheduledAlarms` is enabled (it requires multi-user support),
-`AlarmManagerService` records, per user, the earliest time that user has an alarm
-due, persisting the set of user IDs with pending alarms to an XML file under the
-system data directory:
+`UserWakeupStore` (`UserWakeupStore.java`, Copyright 2024). The feature is not
+behind an aconfig flag: `AlarmManagerService` sets `mStartUserBeforeScheduledAlarms`
+only when `UserManager.supportsMultipleUsers()` is true *and* the config resource
+bool `config_allowAlarmsOnStoppedUsers` is set (AlarmManagerService.java:1873-1875).
+When it is enabled, `AlarmManagerService` records, per user, the earliest time that
+user has an alarm due, persisting the set of user IDs with pending alarms to an XML
+file under the system data directory:
 
 ```java
 // frameworks/base/apex/jobscheduler/service/java/com/android/server/alarm/

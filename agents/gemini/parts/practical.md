@@ -872,13 +872,11 @@ product:
 # Source the environment
 source build/envsetup.sh
 
-# Check that our target appears
-lunch --print-all-targets 2>/dev/null | grep bookphone
-# Expected output: bookphone-trunk_staging-userdebug
-#                  bookphone-trunk_staging-eng
-#                  bookphone-trunk_staging-user
+# Check that our product appears in the list of registered products
+list_products | grep bookphone
+# Expected output: bookphone
 
-# Select our target
+# Select our target (product-release-variant triple)
 lunch bookphone-trunk_staging-userdebug
 
 # Verify the environment

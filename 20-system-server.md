@@ -1358,7 +1358,7 @@ private Watchdog() {
 }
 ```
 
-The eight monitored threads plus the monitor thread total nine checkers.
+The seven monitored worker threads plus the monitor thread total eight checkers.
 
 ### 20.5.6 The Monitor Interface
 
@@ -2574,7 +2574,7 @@ Here is the complete mapping of APEX paths used in `SystemServer.java`:
 | `SCHEDULING_APEX_PATH` | `/apex/com.android.scheduling/javalib/service-scheduling.jar` |
 | `DEVICE_LOCK_APEX_PATH` | `/apex/com.android.devicelock/javalib/service-devicelock.jar` |
 | `PROFILING_SERVICE_JAR_PATH` | `/apex/com.android.profiling/javalib/service-profiling.jar` |
-| `UPROBESTATS_SERVICE_JAR_PATH` | `/apex/com.android.uprobestats/javalib/service-uprobestats.jar` |
+| `UPROBESTATS_BRIDGE_SERVICE_JAR_PATH` | `/apex/com.android.uprobestats/javalib/service-uprobestats-bridge.jar` |
 
 ---
 

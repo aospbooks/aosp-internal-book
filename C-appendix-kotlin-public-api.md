@@ -70,7 +70,7 @@ files that metalava produces and validates against:
 
 - `frameworks/base/core/api/current.txt` — the canonical public Android SDK
   signature. The in-tree copy is ~65k lines, ~4 MB, in
-  metalava's "Signature format: 2.0".
+  metalava's "Signature format: 6.0".
 - `frameworks/base/services/api/current.txt` — the system-services API surface
   exposed to in-process callers.
 - The corresponding `system-current.txt` and `module-lib-current.txt` siblings
@@ -143,7 +143,7 @@ class members listed in `frameworks/base/core/api/current.txt` (and the adjacent
 is human-readable text. Its first lines look like:
 
 ```
-// Signature format: 2.0
+// Signature format: 6.0
 package android {
 
   public final class Manifest {
@@ -1430,7 +1430,7 @@ find frameworks/base/core -name 'Manifest.java' -path '*/java/android/*'
 head -3 frameworks/base/core/java/android/Manifest.java
 ```
 
-**What to look for**: the signature file opens with `// Signature format: 2.0`
+**What to look for**: the signature file opens with `// Signature format: 6.0`
 followed by `package android {`. Every class is described in Java-flavor syntax.
 The `Manifest.java` source file should exist at
 `frameworks/base/core/java/android/Manifest.java` and be Java, not Kotlin.

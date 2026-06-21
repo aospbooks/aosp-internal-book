@@ -1297,7 +1297,7 @@ APEX: some are APKs, some are pure code locations, and the Android 17 newcomers
 | 20 | `IntentResolver` | *(APK)* | T (13) | Chooser/intent resolution UI |
 | 21 | `Media` | `com.android.media` / `com.android.media.swcodec` | Q (10) | Media framework, software codecs |
 | 22 | `ModuleMetadata` | *(APK)* | Q (10) | Module metadata provider |
-| 23 | `NetworkStack` | `com.android.networkstack` | Q (10) | Network connectivity evaluation, DHCP client |
+| 23 | `NetworkStack` | *(updatable APK)* | Q (10) | Network connectivity evaluation, DHCP client |
 | 24 | `NeuralNetworks` | `com.android.neuralnetworks` | R (11) | NNAPI runtime and HAL |
 | 25 | `Nfc` | `com.android.nfcservices` | B (16) | NFC stack and services |
 | 26 | `NpuManager` | `com.android.npumanager` | C (17) | NPU access arbitration (flag-gated, `min_sdk 36`) |
@@ -7184,22 +7184,30 @@ respawn limit 10 20  # Max 10 restarts in 20 seconds
 exec ionice -c3 update_engine
 ```
 
-On Android, this is translated to an init `.rc` service definition:
+On Android, this is translated to an init `.rc` service definition in
+`system/update_engine/update_engine.rc`:
 
 ```
-service update_engine /system/bin/update_engine --logtostderr --foreground
+service update_engine /system/bin/update_engine --logtostderr --logtofile --foreground
     class late_start
     user root
-    group root system wakelock inet cache
-    writepid /dev/cpuset/system-background/tasks
+    group root system wakelock inet cache media_rw
+    task_profiles OtaProfiles
+    disabled
+
+on property:ro.boot.slot_suffix=*
+    enable update_engine
 ```
 
 Key service characteristics:
 
 - Runs as **root** (needs direct block device access).
-- Member of `system`, `wakelock`, `inet`, `cache` groups.
-- Placed in the **system-background** CPU set to minimize UI impact.
-- Uses **idle I/O priority** (`ionice -c3`) so updates don't cause jank.
+- Member of `system`, `wakelock`, `inet`, `cache`, `media_rw` groups.
+- Started **disabled** and only enabled once `ro.boot.slot_suffix` is set,
+  so it never runs on a non-A/B device.
+- Logs to both stderr and a file (`--logtostderr --logtofile`).
+- Applies the `OtaProfiles` task profile to keep its CPU and I/O footprint
+  out of the foreground UI's way during an update.
 
 ### 55.18.2 Persistent Preferences
 
@@ -11626,7 +11634,7 @@ in the isolated VM with near-native performance via gfxstream GPU acceleration.
 #### Secure Isolation
 
 The Linux VM runs under pKVM's Stage-2 page table protection (see section
-56.4), ensuring that a compromised guest cannot access Android's memory or
+56.2), ensuring that a compromised guest cannot access Android's memory or
 vice versa. This provides stronger isolation than containers.
 
 ---
@@ -15033,8 +15041,8 @@ Source location: `cts/`
 
 ```
 cts/
-  tests/          -- Device-side test modules (87 directories)
-  hostsidetests/  -- Host-side test modules (95 directories)
+  tests/          -- Device-side test modules (96 directories)
+  hostsidetests/  -- Host-side test modules (102 directories)
   apps/           -- Test helper apps (CtsVerifier, etc.)
   common/         -- Shared utilities
   libs/           -- Shared libraries
@@ -21374,7 +21382,7 @@ adb pull /data/misc/wmtrace/wm_trace.winscope .
 
 ```bash
 # Start the proxy
-python3 development/tools/winscope/src/trace_collection/winscope_proxy/winscope_proxy.py
+python3 development/tools/winscope/src/adb/winscope_proxy.py
 
 # Open Winscope in browser
 # Navigate to winscope.googleplex.com or a local build

@@ -3302,7 +3302,7 @@ in the isolated VM with near-native performance via gfxstream GPU acceleration.
 #### Secure Isolation
 
 The Linux VM runs under pKVM's Stage-2 page table protection (see section
-56.4), ensuring that a compromised guest cannot access Android's memory or
+56.2), ensuring that a compromised guest cannot access Android's memory or
 vice versa. This provides stronger isolation than containers.
 
 ---

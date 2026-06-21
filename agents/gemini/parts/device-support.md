@@ -68,7 +68,7 @@ func init() {
 The `registerToolchainFactory` function in `toolchain.go` stores these factories
 in a map indexed by OS type, architecture type, and a boolean that selects
 between the ordinary toolchain and the Lightweight Fault Isolation (LFI)
-toolchain (section 59.10). A parallel `registerLFIToolchainFactory` populates
+toolchain (section 59.9). A parallel `registerLFIToolchainFactory` populates
 the `true` slot:
 
 ```go
@@ -184,7 +184,7 @@ objects like `crtbegin_dynamic` and `crtend_android`.
 
 **Platform**: `Bionic()`, `Glibc()`, and `Musl()` indicate which C library the
 toolchain links against. `Lfi()` reports whether this is a Lightweight Fault
-Isolation toolchain (covered in section 59.10), and defaults to `false` for the
+Isolation toolchain (covered in section 59.9), and defaults to `false` for the
 ordinary bionic toolchains.
 
 The base types `toolchain64Bit` and `toolchain32Bit` provide the `Is64Bit()`
@@ -648,7 +648,7 @@ in big.LITTLE configurations.
 
 The factory delegates flag assembly to a helper, `arm64ToolchainFlags`, which
 returns the toolchain Cflags and toolchain Ldflags as a pair. Splitting out the
-helper lets the LFI toolchain (section 59.10) reuse the exact same flag logic:
+helper lets the LFI toolchain (section 59.9) reuse the exact same flag logic:
 
 ```go
 // build/soong/cc/config/arm64_device.go
@@ -718,7 +718,7 @@ pctx.VariableFunc("Arm64Ldflags", func(ctx android.PackageVarContext) string {
 `MaxPageSizeSupported()` is the alignment that the linker uses for ELF segment
 boundaries, and it is no longer a hardcoded 4096 on ARM64. As of Android 17 the
 build defaults it to 16384 for arm64 and x86_64 devices, so platform binaries
-are aligned to load correctly on a 16KB-page kernel. Section 59.11 traces that
+are aligned to load correctly on a 16KB-page kernel. Section 59.10 traces that
 default and the bionic-side macro changes that go with it.
 
 The base linker flags also include segment separation for security:
@@ -1243,7 +1243,7 @@ riscv64Ldflags = []string{
 
 Note the hardcoded 4KB page size, unlike ARM64 and x86_64, which take their
 maximum page size from the configurable `MaxPageSizeSupported()` (16KB by
-default in Android 17; see section 59.11). RISC-V Android currently only
+default in Android 17; see section 59.10). RISC-V Android currently only
 supports 4KB pages.
 
 ### 59.4.5 Berberis Binary Translation
@@ -2342,7 +2342,7 @@ PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true
 The `PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true` flag prevents bionic from
 exposing a fixed `PAGE_SIZE` macro, so code must read the page size at runtime
 instead of assuming 4096 at compile time. This matters because Android 17
-defaults the ARM64 and x86_64 ELF segment alignment to 16KB (section 59.11), and
+defaults the ARM64 and x86_64 ELF segment alignment to 16KB (section 59.10), and
 a binary that hardcoded `PAGE_SIZE == 4096` would misbehave on a 16KB-page
 kernel. Larger pages reduce TLB pressure and page-fault overhead at the cost of
 some memory fragmentation.
@@ -4025,10 +4025,11 @@ const char* const kQemuSensorName[] = {
     "wrist-tilt",
     "acceleration-uncalibrated",
     "heading",
+    "low-latency-off-body-detect",
 };
 ```
 
-This gives us 19 virtual sensors including:
+This gives us 20 virtual sensors including:
 
 | Sensor | Type | Reporting Mode |
 |--------|------|---------------|
@@ -10638,26 +10639,50 @@ policy)`, and DPMS records the value against a
 the engine as just another admin's value, it coexists with any DPC's MTE policy
 under the normal resolution rules instead of fighting it.
 
-The hook diagram below shows the enforcement paths for the three feature hooks
-that exist in the 17 tree (MTE goes through DPMS; USB and install-unknown-sources
-go through `UserManager` restrictions):
+Four concrete hooks (each `extends AdvancedProtectionHook`) ship in the 17 tree:
+`MemoryTaggingExtensionHook`, `DisallowInstallUnknownSourcesAdvancedProtectionHook`,
+`DisallowCellular2GAdvancedProtectionHook`, and `UsbDataAdvancedProtectionHook`.
+Three of them route through DPMS as the `system:` admin, but by two different DPM
+calls.  MTE uses `setMtePolicy(ADVANCED_PROTECTION_SYSTEM_ENTITY, ...)` as shown
+above; the install-unknown-sources and 2G hooks instead pin a *global* user
+restriction from the system entity, e.g.
+
+```java
+// DisallowInstallUnknownSourcesAdvancedProtectionHook.java
+mDevicePolicyManager.addUserRestrictionGlobally(ADVANCED_PROTECTION_SYSTEM_ENTITY,
+        UserManager.DISALLOW_INSTALL_UNKNOWN_SOURCES_GLOBALLY);
+// DisallowCellular2GAdvancedProtectionHook.java -> ...DISALLOW_CELLULAR_2G
+```
+
+`addUserRestrictionGlobally(systemEntity, ...)` still lands in DPMS (it records
+the restriction against the same system `EnforcingAdmin`), so the user-restriction
+sits in the policy engine alongside any DPC's value rather than being written
+straight into `UserManager`.  The USB hook is the odd one out: it does **not** set
+a user restriction at all.  On enable it toggles USB *data signaling* via
+`setUsbDataSignalIfPossible(...)`, gated on the keyguard state (it disables the
+data line only while the device is locked and re-enables it on unlock, by way of
+`IUsbManagerInternal.enableUsbDataSignal`).  There is no `DISALLOW_USB`
+`UserManager` constant; `FEATURE_ID_DISALLOW_USB` is only the hook's feature id.
 
 ```mermaid
 graph LR
     subgraph "AdvancedProtectionService"
         TOGGLE["AAPM toggle<br/>(Settings)"]
         MTE_HOOK["MemoryTaggingExtensionHook"]
+        UIS_HOOK["DisallowInstallUnknownSources<br/>AdvancedProtectionHook"]
+        G2_HOOK["DisallowCellular2G<br/>AdvancedProtectionHook"]
         USB_HOOK["UsbDataAdvancedProtectionHook"]
-        UIS_HOOK["DisallowInstallUnknownSourcesHook"]
     end
 
     TOGGLE --> MTE_HOOK
-    TOGGLE --> USB_HOOK
     TOGGLE --> UIS_HOOK
+    TOGGLE --> G2_HOOK
+    TOGGLE --> USB_HOOK
 
-    MTE_HOOK -- "setMtePolicy('system:...')" --> DPMS["DevicePolicyManagerService<br/>(system EnforcingAdmin)"]
-    USB_HOOK -- "DISALLOW_USB" --> UM["UserManager<br/>restrictions"]
-    UIS_HOOK -- "DISALLOW_INSTALL_UNKNOWN_SOURCES" --> UM
+    MTE_HOOK -- "setMtePolicy (system:)" --> DPMS["DevicePolicyManagerService<br/>(system EnforcingAdmin)"]
+    UIS_HOOK -- "addUserRestrictionGlobally<br/>(system:, DISALLOW_INSTALL_UNKNOWN_SOURCES_GLOBALLY)" --> DPMS
+    G2_HOOK -- "addUserRestrictionGlobally<br/>(system:, DISALLOW_CELLULAR_2G)" --> DPMS
+    USB_HOOK -- "enableUsbDataSignal<br/>(keyguard-gated)" --> USB["IUsbManagerInternal<br/>USB data signaling"]
 
     DPMS --> ENGINE["DevicePolicyEngine<br/>(MostRestrictive resolve)"]
 ```
@@ -14713,7 +14738,7 @@ How small that footprint really is shows up in the 16-to-17 changeset. Across th
 gains exactly **one** new XR project: `external/openxr-sdk` (the OpenXR SDK pinned to
 `release-1.1.50`, covered in Section 62.6.2). The platform commits that mention "spatial,"
 "head-tracking," or "passthrough" in the same window are almost all about spatial *audio* -- the
-the audio `Spatializer` (`frameworks/av/services/audiopolicy`) and `frameworks/av/media/libheadtracking` (Section 62.6.8) -- not about
+audio `Spatializer` (`frameworks/av/services/audiopolicy`) and `frameworks/av/media/libheadtracking` (Section 62.6.8) -- not about
 XR. In other words, the XR *platform-code* footprint added in 17 is deliberately minimal: a vendored
 header package and a flag-gated contract, with the runtime left entirely to the vendor.
 
@@ -18036,14 +18061,17 @@ including media-size and document-type lookups read from `PrintAttributes` and
 ## 63.25 The Spooler Is No Longer Preinstalled Everywhere (Android 17)
 
 Earlier releases assumed `com.android.printspooler` was present on every user.
-Android 17 narrows the preinstall allowlist: the spooler is installed only for
-user types that need it.
+Android 17 turns the preinstall into an explicit `install-in-user-type`
+allowlist: the spooler ships only for the listed user types (full users plus the
+clone, managed, and private profiles), not unconditionally for every user.
 
 ```xml
 <!-- build/make/target/product/sysconfig/preinstalled-packages-platform-handheld-system.xml -->
 <install-in-user-type package="com.android.printspooler">
     <install-in user-type="FULL" />
     <install-in user-type="android.os.usertype.profile.CLONE" />
+    <install-in user-type="android.os.usertype.profile.MANAGED" />
+    <install-in user-type="android.os.usertype.profile.PRIVATE" />
 </install-in-user-type>
 ```
 
@@ -19874,8 +19902,6 @@ sequenceDiagram
     PHY_T-->>LC: processCaptureResult + buffers
     LC-->>App: CaptureResult (ACTIVE_PHYSICAL_ID = "4")
 ```
-
----
 
 ### 64.5.9 Camera Offline Session
 

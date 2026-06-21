@@ -1758,8 +1758,10 @@ The `PerDisplayRepository<T>` machinery comes from the shared
 `com.android.app.displaylib` library (`frameworks/libs/systemui/displaylib`).
 Components like `SysUiState` are tracked per-display through a
 `PerDisplayInstanceRepositoryImpl`, so each connected display gets its own
-instance.  The earlier `ShadeWindowGoesAround` gating flag has been retired in
-Android 17 -- the per-display repository is now created unconditionally.
+instance. In Android 17 the per-display `SysUiState` repository is provided
+unconditionally by `PerDisplayRepositoriesModule.provideSysUiStateRepository`
+(`frameworks/base/packages/SystemUI/src/com/android/systemui/dagger/PerDisplayRepositoriesModule.kt`),
+not behind a feature flag.
 
 ### 48.10.2  Per-Display Status Bar
 
@@ -2877,7 +2879,7 @@ a small library at `frameworks/base/libs/dream/lowlight/`, packaged as
 `LowLightDreamLib` and linked into SystemUI variants that need it.
 
 This section walks through the library's surface, the state machine it
-implements, and how SystemUI's `LowLightMonitor` consumes it.
+implements, and how SystemUI consumes it from its `lowlight/` package.
 
 ### 48.14.1  What the Library Owns and What It Does Not
 
@@ -3086,20 +3088,24 @@ defines a low-light dream points the binding at e.g.
 binds `null`, and `LowLightDreamManager.setAmbientLightMode` becomes a
 no-op. The library compiles into every SystemUI flavour either way.
 
-### 48.14.5  Consumption Path: SystemUI's LowLightMonitor
+### 48.14.5  Consumption Path: SystemUI's lowlight Package
 
-The consumer of the library in upstream AOSP is
-`com.android.systemui.lowlightclock.LowLightMonitor`. The monitor
-subscribes to whatever ambient-light source the SystemUI variant
-provides (vendor sensor service, light sensor, OEM cloud signal),
-maps that signal to one of the three enum values, and calls
+The consumer of the library in upstream AOSP lives in SystemUI's
+`com.android.systemui.lowlight` package. `AmbientLightModeMonitor`
+subscribes to the device light sensor and a debounce algorithm to
+classify ambient light as `AMBIENT_LIGHT_MODE_LIGHT`,
+`AMBIENT_LIGHT_MODE_DARK`, or `AMBIENT_LIGHT_MODE_UNDECIDED`.
+`LowLightBehaviorCoreStartable` is the `CoreStartable` that ties that
+signal together with keyguard, dock, and power state; when low-light
+behavior calls for the low-light dream, `LowLightClockDreamAction`
+(in `lowlightclock/`) invokes
 `lowLightDreamManager.setAmbientLightMode(mode)`. The library handles
 the rest:
 
 ```mermaid
 flowchart LR
-    Sensor["Ambient light source<br/>(sensor / OEM service)"]
-    Monitor["LowLightMonitor<br/>(SystemUI)"]
+    Sensor["Light sensor<br/>(AmbientLightModeMonitor)"]
+    Monitor["LowLightBehaviorCoreStartable<br/>(SystemUI lowlight/)"]
     Mgr["LowLightDreamManager<br/>(LowLightDreamLib)"]
     Coord["LowLightTransitionCoordinator"]
     HostUI["Host enter/exit listener<br/>(lowlightclock UI)"]
@@ -3148,7 +3154,8 @@ For the broader screensaver / `DreamService` architecture (DreamManagerService,
 | `frameworks/base/libs/dream/lowlight/src/com/android/dream/lowlight/dagger/LowLightDreamModule.kt` | `@Provides` for timeout, main dispatcher, application coroutine scope |
 | `frameworks/base/libs/dream/lowlight/src/com/android/dream/lowlight/dagger/LowLightDreamComponent.kt` | Dagger `@Subcomponent` host wires `DreamManager` + `ComponentName?` into |
 | `frameworks/base/libs/dream/lowlight/res/values/config.xml` | `config_lowLightTransitionTimeoutMs` (default 2000ms) |
-| `frameworks/base/packages/SystemUI/src/com/android/systemui/lowlightclock/LowLightMonitor.kt` | SystemUI consumer that converts sensor signal to `setAmbientLightMode` |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/lowlight/AmbientLightModeMonitor.kt` | SystemUI light-sensor monitor that classifies ambient light into light/dark/undecided modes |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/lowlight/LowLightBehaviorCoreStartable.kt` | `CoreStartable` that drives low-light behavior; `lowlightclock/LowLightClockDreamAction.kt` calls `setAmbientLightMode` |
 
 ---
 

@@ -998,6 +998,7 @@ graph TB
         VMSTAT["/proc/vmstat"]
         ZONEINFO["/proc/zoneinfo"]
         CGROUPS["cgroups<br/>memory.pressure"]
+        VICTIM["Target process<br/>(victim)"]
     end
 
     subgraph "lmkd Daemon"
@@ -1022,7 +1023,7 @@ graph TB
     PSI_M --> POLL
     POLL --> MEM_CALC
     MEM_CALC -->|"kill decision"| KILL
-    KILL -->|"pidfd_send_signal()"| PSI_K
+    KILL -->|"pidfd_send_signal() / cgroup.kill"| VICTIM
     KILL --> STATS
 
     style PSI_K fill:#c8e6c9
@@ -3547,40 +3548,24 @@ The exercises in section 5.9 provide a starting point for hands-on kernel
 exploration using the Android emulator, which includes a fully functional GKI
 kernel with the same architecture as production devices.
 
-### Key Takeaways
+A few points are worth holding onto. The Android kernel is upstream Linux plus
+targeted extensions, and that delta keeps shrinking as former Android-only
+features are upstreamed. GKI is now mandatory: starting with Android 12 and
+kernel 5.10, every new device ships the GKI architecture behind a stable KMI,
+which is what makes independent kernel updates and reduced fragmentation
+possible. Configuration lives in fragments under `kernel/configs/` rather than
+monolithic defconfigs, validated at build, test (VTS), and boot (VINTF) time.
+Security is enforced at every layer, from dm-verity and file-based encryption
+through SELinux, seccomp, CFI, and SCS. The debugging story is rich, combining
+ftrace, Perfetto, eBPF, debuggerd, and pstore. And the goldfish emulator is a
+fully functional GKI target running the same architecture as production
+hardware, which makes it a good platform for kernel work.
 
-1. **The Android kernel is upstream Linux plus targeted extensions.** The delta
-   is intentionally minimized, and many former Android-only features have been
-   upstreamed.
-
-2. **GKI is the future.** Starting with Android 12 / kernel 5.10, all new
-   devices must use the GKI architecture with a stable KMI. This enables
-   independent kernel updates and reduces ecosystem fragmentation.
-
-3. **Configuration is managed through fragments, not monolithic defconfigs.**
-   The `kernel/configs/` repository maintains per-release, per-kernel-version
-   configuration requirements that are validated at build, test, and boot time.
-
-4. **Security is enforced at every layer.** From dm-verity (partition integrity)
-   to file-based encryption (data confidentiality) to SELinux (mandatory access
-   control) to seccomp (system call filtering) to CFI and SCS (code integrity),
-   the kernel provides defense in depth.
-
-5. **Debugging tools are rich and well-integrated.** The combination of ftrace,
-   Perfetto, eBPF, debuggerd, and pstore provides comprehensive kernel-level
-   observability.
-
-6. **The emulator is a fully functional GKI target.** The goldfish virtual device
-   uses the same GKI architecture as production devices, making it an excellent
-   platform for kernel development and testing.
-
-### Cross-References to Other Chapters
-
-- **Chapter 2 (Build System)**: Kleaf, the Bazel-based kernel build system
-- **Chapter 4 (Boot Process)**: How the kernel is loaded and init processes begin
-- **Chapter 10 (Hardware Abstraction)**: HALs that depend on kernel drivers
-- **Chapter 40 (Security)**: SELinux policy, seccomp filters, verified boot chain
-- **Chapter 58 (Debugging Tools)**: Perfetto tracing, CPU scheduling, memory tuning
+Several other chapters build on this material: Chapter 2 covers Kleaf, the
+Bazel-based kernel build system; Chapter 4 covers how the kernel is loaded and
+init begins; Chapter 10 covers HALs that depend on kernel drivers; Chapter 40
+covers SELinux policy, seccomp filters, and the verified boot chain; and Chapter
+58 covers Perfetto tracing, CPU scheduling, and memory tuning.
 
 ### Key File Reference
 
