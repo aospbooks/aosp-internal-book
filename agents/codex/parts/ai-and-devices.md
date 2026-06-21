@@ -1173,7 +1173,8 @@ allowlist is no longer primed at a boot phase; it is fetched lazily from
 
 ## 51.3 Computer Control
 
-Computer Control, introduced in Android 16, is the framework that lets AI agents
+Computer Control, which debuted (flag-gated) in Android 16 and was substantially
+expanded and reworked in Android 17, is the framework that lets AI agents
 programmatically interact with applications through a virtual display. Instead
 of requiring apps to implement specific APIs, an agent can launch any app on a
 headless virtual display, observe the screen via screenshots, inject tap/swipe
@@ -2265,6 +2266,36 @@ consumers adopting Computer Control should expect the API surface to
 remain stable along the lines described in this chapter while the policy
 layer (which flags are on by default) continues to tighten.
 
+### 51.3.33 Android 17 Security and Capability Changes
+
+Computer Control shipped (flag-gated) in Android 16, but Android 17 reworked several parts of
+it -- this is the "substantially expanded and reworked" of the section opener:
+
+- **Permission hardening.** The gating permission `ACCESS_COMPUTER_CONTROL` moved from 16's
+  `internal|knownSigner` (cert-pinned through `config_accessComputerControlKnownSigners`) to 17's
+  `internal|privileged` (`core/res/AndroidManifest.xml:9531`), backed by a
+  `privapp-permissions-platform.xml` entry -- i.e. from signer-pinning to the privileged-app
+  allowlist model. A new signature permission `MANAGE_COMPUTER_CONTROL_CONSENT`
+  (`AndroidManifest.xml:9537`) guards the consent-management surface.
+- **Per-app consent.** The consent model moved from 16's session/global `computer_control_consent`
+  flag to 17's per-target-app `computer_control_per_app_consent` (in the flag set of 51.3.30): the
+  user now grants or denies an agent's access *per target app* rather than once for a whole
+  session; the grant is recorded against the existing `OPSTR_COMPUTER_CONTROL` AppOp
+  (`"android:computer_control"`, which itself predates 17 -- the per-app gating is the 17 change).
+- **Audio capture and injection.** New server components `ComputerControlAudioCapture` and
+  `ComputerControlAudioInjector` (backed by a `VirtualAudioDevice` created in
+  `ComputerControlSessionImpl`) let a session capture and inject audio on its virtual device --
+  a capability absent in 16, extending the agent's observe/act loop past screen and input.
+- **The "observe" half made explicit.** `ComputerControlSession.getAccessibilityWindows()`
+  (`core/java/android/companion/virtual/computercontrol/ComputerControlSession.java:798`) is the
+  accessibility-window read the agent uses to *see* structured UI -- the counterpart to the
+  screenshot path -- delegating to the internal `ComputerControlAccessibilityProxy` (a
+  package-private `AccessibilityDisplayProxy` subclass, 51.3.27).
+
+The virtual-keyboard removal (text now routes through the IME path of 51.3.29) and the full
+six-flag set are covered in 51.3.29-51.3.30; the items above are the security-model and
+capability deltas layered on top in 17.
+
 ---
 
 ## 51.4 OnDeviceIntelligence
@@ -2803,6 +2834,29 @@ This design means that even if an attacker compromises the inference engine
 (e.g., through a model weight poisoning attack), they cannot exfiltrate
 data from the device.
 
+### 51.4.19 Typed Content and the Embedding / Image-Description Models (Android 17)
+
+The ODI surface described above is the generic, `Bundle`-based `processRequest` path. Android 17
+adds a *typed* layer on top, gated by the `on_device_intelligence_26q2` flag
+(`packages/modules/NeuralNetworks/flags/ondevice_intelligence.aconfig:26`), under
+`frameworks/base/packages/NeuralNetworks/framework/platform/java/android/app/ondeviceintelligence/`:
+
+- **Structured multimodal content.** `Content.java` and its `Part` carry typed pieces -- text,
+  image, and audio -- with large blobs streamed by `ParcelFileDescriptor` rather than copied
+  through a `Bundle`. A common `OnDeviceModel` base (with `MODEL_STATUS_*` states) and a
+  `ModelDownloadCallback` give models a uniform availability/download lifecycle.
+- **Two concrete typed model families.** `embedding/EmbeddingModel.java` produces vector
+  embeddings (an `EmbeddingRequest` of `Content` to an `EmbeddingResponse` of
+  `EmbeddingVector`s, with `getDimension()` / `getSupportedModalities()`), and
+  `imagedescription/ImageDescriptionModel.java` turns an image into a text description. The
+  `OnDeviceIntelligenceManager` gains matching `list…Models()` / `generate…()` entry points for
+  both, all `@FlaggedApi(FLAG_ON_DEVICE_INTELLIGENCE_26Q2)`.
+
+These extend ODI from "run an opaque generative model over a Bundle" to "call a typed embedding
+or image-description model over structured multimodal content," which is the shape agentic
+features need for retrieval (embeddings) and visual grounding (image description) -- still inside
+the same sandboxed-inference isolation of 51.4.18.
+
 ---
 
 ## 51.5 NeuralNetworks (NNAPI)
@@ -3312,6 +3366,14 @@ packages/modules/NeuralNetworks/apex/
 The OnDevicePersonalization (ODP) Mainline module provides infrastructure for
 privacy-preserving machine learning that keeps raw data on-device while
 producing useful aggregate models.
+
+> **Android 17 status: deprecation.** The ODP public API surface is now marked
+> `@Deprecated` behind the new `odp_depreciation_enabled` flag
+> (`packages/modules/OnDevicePersonalization/flags/ondevicepersonalization_flags.aconfig:78`).
+> The module and the architecture below still ship, but new code should not target the ODP
+> APIs; the agentic/on-device-inference direction the platform is investing in is the
+> OnDeviceIntelligence + ContentSafety family (51.4, 51.15). The section below documents the
+> mechanism as it stands, with that deprecation in mind.
 
 **Source tree:**
 
@@ -5504,6 +5566,52 @@ attribution to be reused by interaction surfaces beyond AppFunctions while
 keeping the same interaction-type vocabulary (`USER_QUERY`, `USER_SCHEDULED`,
 `OTHER`).
 
+### 51.12.5 Multi-Service Functions and Request/Response Logging
+
+Two further 17 changes loosen and instrument the execution path described in 51.2:
+
+- **Multiple services per package.** The single-`AppFunctionService`-per-package model of 51.2
+  is relaxed: a package may now expose functions from several `AppFunctionService` components,
+  indexed and executed together. `AppFunctionManagerServiceImpl` routes these through
+  `executeMultiServiceAppFunctionInternal(...)` (line 652, dispatched from the execute path at
+  line 532), gated by `enable_multi_service` and its `enable_multi_service_bugfix` sibling
+  (`core/java/android/app/appfunctions/flags/flags.aconfig:45`/`62`).
+- **Persistent request/response logging.** Gated by `enable_request_response_logging`
+  (flags.aconfig:38), two new components -- `AppFunctionRequestResponseLogger` and
+  `AppFunctionPersistentLogger` -- record execute requests and responses per user (to
+  `app_functions_request_response.log`), held in
+  `AppFunctionManagerServiceImpl.mRequestResponseLoggerPerUser`. This gives agent executions an
+  audit/debug trail the 16 implementation did not keep.
+
+### 51.12.6 The Allowlist Service and App-Interaction History
+
+The access-management framework of 51.12.3 gained two supporting pieces, both new in 17:
+
+- **A standalone `AllowlistService`.** Rather than storing the agent allowlist in `DeviceConfig`
+  / `Settings.Secure` as 16 did, 17 adds a dedicated system service
+  (`frameworks/base/services/allowlist/.../AllowlistService.java`) published as
+  `Context.ALLOWLIST_SERVICE` and started by `SystemServer` only when `enableAppFunctionPermissionV2()`
+  is set (`SystemServer.java:1692`). AppFunctions consumes it through an LRU-cached
+  `SystemAppFunctionAllowlistReader`, and shell tooling can add/remove/clear allowlist entries.
+- **Interaction history as a queryable provider.** The App Interaction API (51.12.4) backs its
+  history in a per-user SQLite database surfaced through a read-only ContentProvider
+  (`AppInteractionHistoryProvider`, authority `com.android.appinteraction.history`) guarded by the
+  `READ_APP_INTERACTION` permission, with a 7-day default retention. This generalizes and replaces
+  16's appfunctions-local `AppFunctionAccessHistory*` classes. The user-facing side of this is a
+  new agent-activity timeline in the Permission Mainline module's PermissionController
+  (`AgentActivityItem` under
+  `.../appinteraction/`, and `AgentUsageDetailsFragment` under `.../appfunctions/ui/handheld/`),
+  which surfaces which agents accessed data over 24-hour and
+  7-day windows.
+
+Discovery itself also grew a typed metadata hierarchy in 17 -- `AbstractAppFunctionMetadata` with
+`AppFunctionMetadata` / `AppFunctionPackageMetadata` / `AppFunctionSchemaMetadata`, plus the
+qualified-name type `AppFunctionName` -- joined from static (manifest-declared) and runtime
+(dynamically registered, 51.12.1) sources by `reader/AppFunctionMetadataReader`. In all, the 17
+AppFunctions flag set adds `enable_dynamic_app_functions`, `enable_app_interaction_api`,
+`enable_app_function_permission_v2`, `enable_request_response_logging`, and
+`enable_multi_service` (+ `_bugfix`) on top of 16's lone `enable_app_function_manager`.
+
 ---
 
 ## 51.13 AiSeal: Sealed On-Device AI Compute
@@ -5822,7 +5930,75 @@ the other direction: AiSeal seals *compute* in a VM, while PersonalContext seals
 two complementary answers to running intelligence over private data without
 leaking it.
 
-## 51.15 Try It
+## 51.15 ContentSafety: On-Device Content-Safety Inference
+
+Android 17 adds **ContentSafety**, a new platform service that lets a privileged caller ask
+an OEM-provided, on-device model whether a piece of content is sensitive or unsafe, without
+the content ever leaving the device. It is the safety-layer sibling of OnDeviceIntelligence
+(51.4): same "broker + sandboxed inference" shape, but purpose-built for content classification
+rather than general generative inference. The whole feature is gated by the `enable_contentsafety`
+flag (`frameworks/base/core/java/android/app/contentsafety/flags/contentsafety.aconfig`,
+namespace `ondevicesafety`) and only starts when an OEM ships an implementation.
+
+### 51.15.1 The Client API
+
+`ContentSafetyManager`
+(`frameworks/base/core/java/android/app/contentsafety/ContentSafetyManager.java`) is the
+`@SystemService(Context.CONTENT_SAFETY_SERVICE)` entry point, annotated
+`@FlaggedApi(FLAG_ENABLE_CONTENTSAFETY)`. A caller holding the `CHECK_CONTENT_SAFETY`
+permission submits a `requestCheckContent(...)` (the `@RequiresPermission` annotation is on every
+public method, e.g. lines 83/100/116/258), and gets back one of two success codes --
+`CONTENT_SAFETY_SUCCESS_NONE` (nothing sensitive) or `CONTENT_SAFETY_SUCCESS_SENSITIVE` (lines
+149/153) -- or an error. A companion `requestIsFeatureEnabled(...)` lets a caller probe whether a
+given safety feature/model is available before using it.
+
+### 51.15.2 The Broker and the Sandbox
+
+The work is split across two OEM-implemented services, exactly mirroring the dual-service
+isolation of 51.4.4:
+
+- **`ContentSafetyService`** (`frameworks/base/core/java/android/service/contentsafety/ContentSafetyService.java`)
+  is the *privileged* broker, bound by the system with `BIND_CONTENT_SAFETY_SERVICE`. It does no
+  inference itself; it manages the lifecycle of the sandboxed and settings services
+  (`onNotifySandboxedServiceConnected/Disconnected`, `onNotifySettingsServiceConnected/Disconnected`,
+  lines 230-244) and supplies feature/model data on demand (`onGetFeatureRequest`, line 218).
+- **`ContentSafetySandboxedService`** (`.../service/contentsafety/ContentSafetySandboxedService.java`)
+  is the *isolated* inference process, bound with `BIND_SANDBOXED_CONTENT_SAFETY_SERVICE`. Its two
+  abstract hooks are where the model actually runs: `onLoadFeatureRequest(...)` (line 241) loads a
+  model/feature, and `onCheckContentRequest(...)` (line 224) classifies the content. Running it in
+  an isolated sandbox keeps the (untrusted-input-handling) model away from the privileged broker's
+  process, the same containment principle as the ODI sandboxed inference service.
+
+A third `ContentSafetySettingsService` carries configuration. On the framework side,
+`ContentSafetyManagerService`
+(`frameworks/base/services/core/java/com/android/server/contentsafety/ContentSafetyManagerService.java`)
+is the `SystemService` that publishes the manager and *orchestrates* each check: in
+`checkContentInternal` it fetches feature/model data from the broker (`requestGetFeature`) and then
+calls the sandboxed service (`requestCheckContent`) itself, so the privileged broker never invokes
+the sandbox directly. `SystemServer` starts it only when an OEM has
+defined the implementation and the flag is on (`startContentSafetyManagerService`,
+`SystemServer.java:2126`/`3672`, which logs "ContentSafetyManagerService not defined by OEM or
+disabled by flag" otherwise). The caller permission `CHECK_CONTENT_SAFETY` and the two bind
+permissions `BIND_CONTENT_SAFETY_SERVICE` / `BIND_SANDBOXED_CONTENT_SAFETY_SERVICE` are declared
+in `core/res/AndroidManifest.xml` (lines 9784, 9795, 9805).
+
+```mermaid
+graph TD
+    APP["Caller: ContentSafetyManager.requestCheckContent()<br/>(holds CHECK_CONTENT_SAFETY)"] --> MS["ContentSafetyManagerService<br/>(system_server, orchestrates)"]
+    MS -->|"requestGetFeature"| SVC["ContentSafetyService<br/>(privileged broker, BIND_CONTENT_SAFETY_SERVICE)"]
+    SVC -->|"feature/model files"| MS
+    MS -->|"requestCheckContent"| SAND["ContentSafetySandboxedService<br/>(isolated, BIND_SANDBOXED_CONTENT_SAFETY_SERVICE)"]
+    SAND -->|"result"| RES["Result: SUCCESS_NONE or SUCCESS_SENSITIVE"]
+    RES --> APP
+    style SAND fill:#9C27B0,color:#fff
+    style RES fill:#4CAF50,color:#fff
+```
+
+In the agentic landscape this is the on-device guardrail an assistant or AppFunctions agent can
+consult before surfacing or acting on generated/processed content, with the classification model
+sandboxed and the content never leaving the device.
+
+## 51.16 Try It
 
 ### Exercise 51-1: Inspect AppFunction Metadata in AppSearch
 

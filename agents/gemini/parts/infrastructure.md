@@ -11778,6 +11778,51 @@ write /proc/sys/vm/swappiness 100
 write /proc/sys/vm/watermark_scale_factor 600
 ```
 
+### 56.17.5 Memory and Storage Ballooning: Coexisting with Android
+
+A full Debian desktop (Section 56.15) is memory- and disk-hungry, and it runs on a phone
+that also has to keep Android responsive. The technique that lets the two share a fixed
+budget is **ballooning** -- and it is worth being clear that this is a *standard
+virtualization concept*, not a new Android subsystem. A virtio **balloon** is a driver
+inside the guest that the host can *inflate* (the guest allocates pages and hands them back
+to the host, shrinking what the guest can use) or *deflate* (the host returns memory to the
+guest). crosvm implements the device in `devices/src/virtio/balloon.rs`; **storage
+ballooning** is the same idea applied to the sparse disk image. Neither is novel to Android.
+
+What Android contributes is the *policy* that drives the balloon from the app lifecycle, so
+the Linux VM gives resources back the moment it is not in use:
+
+- **`MemBalloonController`** (`android/TerminalApp/.../MemBalloonController.kt`) is a lifecycle
+  observer on the Terminal app. On `onResume` it deflates the balloon to 0 -- "give maximum
+  available memory to the virtual machine" -- so a foreground Linux desktop runs with full
+  RAM. On `onStop` (backgrounded) it progressively inflates from `INITIAL_PERCENT` toward
+  `MAX_PERCENT` in `INFLATION_STEP_PERCENT` steps via `vm.setMemoryBalloonByPercent()`,
+  handing RAM back to Android.
+- **`StorageBalloonWorker`** does the analogous job for disk, gated by the
+  `terminal_storage_balloon` flag ("Enable storage ballooning for sparse disk support"); the
+  VM config also carries `auto_memory_balloon`.
+- **`IGuestAgent.trimAsync()`** -- a method on the `IGuestAgent` interface (Section 56.30; the
+  interface moved to the `virtualizationcommon` package in 17 but `trimAsync` itself predates it)
+  -- lets the host additionally ask the guest to *trim* its own memory
+  (drop caches, reclaim) under Android memory pressure, on top of the coarse balloon.
+
+```mermaid
+graph TD
+    FG["Terminal app foreground<br/>(Linux desktop active)"] -->|"onResume"| DEFLATE["Deflate balloon to 0%<br/>(guest gets maximum RAM)"]
+    BG["Terminal app backgrounded"] -->|"onStop"| INFLATE["Inflate balloon INITIAL% -> MAX%<br/>in steps (reclaim guest RAM)"]
+    PRESSURE["Android memory pressure"] -->|"IGuestAgent.trimAsync()"| TRIM["Guest trims caches / reclaims"]
+    DEFLATE --> GUEST["Maximum memory for the guest OS"]
+    INFLATE --> HOST["Pages returned to Android"]
+    TRIM --> HOST
+    style DEFLATE fill:#4CAF50,color:#fff
+    style INFLATE fill:#FF9800,color:#fff
+    style HOST fill:#2196F3,color:#fff
+```
+
+Together with huge pages (56.17.2) and the I/O tuning above, ballooning is what makes a
+heavyweight guest OS a cooperative citizen rather than a memory hog -- the performance side
+of the pKVM-hosted OS-convergence story.
+
 ---
 
 ## 56.18 Vsock Communication

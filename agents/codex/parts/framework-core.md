@@ -16770,6 +16770,35 @@ The two-pane split from section 23.4.2 is generalizing toward flexible layouts i
 
 The new `LayoutEngine.kt` (`.../splitscreen/LayoutEngine.kt`) computes flexible-split bounds from a node tree (`calculateFlexibleSplit()`), which is the layout substrate for moving beyond a single fixed divider. This is an evolution of the `StageCoordinator` / `SplitLayout` model in section 23.4.2, not a replacement: the stage and listener structure is unchanged.
 
+### 23.12.5 SurfaceControlViewHost and Surface Mirroring
+
+Android 17 lands a cluster of changes on the cross-process view-embedding path -- `SurfaceControlViewHost` (SCVH) and its engine `WindowlessWindowManager` -- plus a new public surface-mirroring API. SCVH is the mechanism that lets one process host a `View` hierarchy inside another process's `SurfaceControl` tree (used by Bubbles in 23.10.2 and window decorations in 23.10.9); these changes refine it rather than restructure it.
+
+**A new public mirror API.** `AttachedSurfaceControl.createMirror()` (`@FlaggedApi(mirror_surface_api)`, `frameworks/base/core/java/android/view/AttachedSurfaceControl.java`; the working implementation is `ViewRootImpl.createMirror()`, line 13104) returns a new `SurfaceControl` that parents a *mirror* of the window's root surface hierarchy. Transforms applied to the returned control affect only the copy, not the original, so an app can show a live duplicate of its own content on another surface without re-rendering it. The flag description is explicit: "allows apps to get [a] mirrored surface control of [their] own window." The caller owns the returned control and must `release()` it.
+
+createMirror() parents an independent copy of the window's surface tree:
+
+```mermaid
+graph TD
+    subgraph REAL["Window root hierarchy"]
+        A["A = root SurfaceControl"] --> B["B = child"]
+    end
+    subgraph MIR["createMirror() result"]
+        SC["SC = returned parent"] --> Ap["A' = mirror of A"]
+        Ap --> Bp["B' = mirror of B"]
+    end
+    A -. "mirrored" .-> Ap
+    B -. "mirrored" .-> Bp
+```
+
+**Identifiable embedded surfaces.** `SCVH.setView` now names the backing `SurfaceControl` with the hosting package -- `setName("SurfaceControlViewHost[" + context.getPackageName() + "]")` -- and the SCVH `Builder` gained `setTitle()` / `getTitle()` (`@FlaggedApi(scvh_set_focusable_api)`), whose title is threaded into the window `LayoutParams` (`wmLayoutParams.setTitle(mTitle)`) and the windowless input-handle name. Both make embedded surfaces identifiable in `dumpsys SurfaceFlinger` and Winscope, where every SCVH surface previously shared the generic name "SurfaceControlViewHost". A new `@hide getViewRoot()` exposes the wrapped `ViewRootImpl`.
+
+**Focus and lifetime fixes.** The flag gating SCVH's focus-control API was renamed `scvh_set_focusable` -> `scvh_set_focusable_api`, and a companion bugfix flag `scvh_surface_control_lifetime_fix` ("Fix lifetime issue with SurfaceControl's created by SCVH") closes a real lifetime bug in SCVH-created surfaces (both in `frameworks/base/core/java/android/window/flags/window_surfaces.aconfig`).
+
+**Windowless input plumbing refactor.** `WindowlessWindowManager` now passes a single `WindowInputChannelParams` struct (`frameworks/base/core/java/android/view/WindowInputChannelParams.aidl`) to `grantInputChannel()` / `updateInputChannel()` instead of long positional argument lists, and it calls `dispatchStateToClients()` on state changes so embedded hosts learn about host-token and configuration updates (it forwards `onConfigurationChanged` and the host `InputTransferToken` through `onDispatchAttachedToWindow`). The dead `addToDisplayWithoutInputChannel()` override was removed.
+
+These are distinct from out-of-process rendering (Chapter 13, section 13.41). SCVH embeds a *live View hierarchy* from another process by sharing SurfaceControls and input channels, and that hierarchy still renders in the embedded process; OOPR instead ships a *recorded command buffer* for SurfaceFlinger to replay. Both cross the process boundary through SurfaceControl transactions, but they solve different problems.
+
 ---
 
 ## Try It
