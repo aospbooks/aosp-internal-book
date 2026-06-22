@@ -1,7 +1,7 @@
 # AOSP Internals book content (67 chapters + 4 appendices) packaged as 16 Part-skills.
 
 Source: https://github.com/aospbooks/aosp-internal-book
-Version: 2026.05.25
+Version: 2026.06.22
 
 ## How to use this extension
 
@@ -160,7 +160,7 @@ Computer Control flow, CompanionDeviceManager, or virtual devices
 (virtual displays/inputs/cameras for cross-device experiences), or the
 NpuManager module for on-device neural accelerators (model-load admission
 control, the NDK ANpuBuffer surface, the android.hardware.npu HAL).
-Chapters 51–51, 67.
+Chapters 51–53.
 
 ### infrastructure — Part XIII: Infrastructure
 

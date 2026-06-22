@@ -7,10 +7,10 @@ description: |
   (virtual displays/inputs/cameras for cross-device experiences), or the
   NpuManager module for on-device neural accelerators (model-load admission
   control, the NDK ANpuBuffer surface, the android.hardware.npu HAL).
-  Chapters 51–51, 67.
+  Chapters 51–53.
 metadata:
   author: 'utzcoz'
-  last-updated: '2026-06-21'
+  last-updated: '2026-06-22'
 ---
 
 # AOSP Part XII — AI & Devices

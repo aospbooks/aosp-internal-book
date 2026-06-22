@@ -11,7 +11,7 @@ description: |
   camera HAL3). Chapters 59–62.
 metadata:
   author: 'utzcoz'
-  last-updated: '2026-06-21'
+  last-updated: '2026-06-22'
 ---
 
 # AOSP Part XIV — Device Support

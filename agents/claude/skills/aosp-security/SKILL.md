@@ -11,7 +11,7 @@ description: |
   software codecs). Chapters 40–42, 68.
 metadata:
   author: 'utzcoz'
-  last-updated: '2026-06-21'
+  last-updated: '2026-06-22'
 ---
 
 # AOSP Part IX — Security

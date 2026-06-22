@@ -11,7 +11,7 @@ Computer Control flow, CompanionDeviceManager, or virtual devices
 (virtual displays/inputs/cameras for cross-device experiences), or the
 NpuManager module for on-device neural accelerators (model-load admission
 control, the NDK ANpuBuffer surface, the android.hardware.npu HAL).
-Chapters 51–51, 67.
+Chapters 51–53.
 
 ## Chapter content
 

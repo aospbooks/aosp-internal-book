@@ -4,7 +4,7 @@
 # at the repo root.
 
 name = "aosp-internals"
-version = "2026.05.25"
+version = "2026.06.22"
 repo_url = "https://github.com/aospbooks/aosp-internal-book"
 site_url = "https://aospbooks.github.io/aosp-internal-book/"
 description = "AOSP Internals book content (67 chapters + 4 appendices) packaged as 16 Part-skills."
