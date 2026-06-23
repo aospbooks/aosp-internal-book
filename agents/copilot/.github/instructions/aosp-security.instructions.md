@@ -4266,6 +4266,29 @@ would be denied. Devices must therefore enable the `memfd_class` policy
 capability and support the `memfd_file` class so the shipped policy applies as
 written.
 
+### 40.10.10  Per-App Keystore Key Limit (API 37)
+
+Android 17 caps how many Keystore keys a single app (UID) may hold, so runaway or
+abusive key creation cannot bloat the keystore database. `keystore2` enforces a
+fallback ceiling for every app plus a tighter ceiling for apps targeting API 37:
+
+```rust
+// system/security/keystore2/src/security_level.rs
+/// The fallback limit on the number of keys per app. All apps must stay within this limit.
+const DEFAULT_PER_UID_KEY_LIMIT: i32 = 200_000;   // line 79
+const API_37_PER_UID_KEY_LIMIT: i32 = 50_000;     // line 82
+```
+
+The check is gated by the `keystore2` aconfig flag `limit_keys_per_uid`
+(`security_level.rs:563`): when it is on, key generation for an app targeting
+Android 17 fails once the app's key count reaches `API_37_PER_UID_KEY_LIMIT` (the
+comparison at line 584), surfacing as a Keystore error to the caller; apps below
+the target keep the looser 200,000 fallback. `keystore2` also tracks per-UID key
+counts for diagnostics -- `dumpsys` prints the worst offenders via
+`KEYS_PER_UID_MAX_UIDS` / `KEYS_PER_UID_MIN_KEY_COUNT`
+(`system/security/keystore2/src/maintenance.rs:436`-440) -- so an OEM can spot apps
+approaching the cap before enforcement bites.
+
 ---
 
 ## 40.11  Security Posture and Version Evolution

@@ -8,7 +8,7 @@ description: |
   SettingsLib, search index, slice surface). Chapters 48–49.
 metadata:
   author: 'utzcoz'
-  last-updated: '2026-06-22'
+  last-updated: '2026-06-23'
 ---
 
 # AOSP Part XI — System Apps

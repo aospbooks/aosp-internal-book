@@ -1652,6 +1652,107 @@ boolean mIsDensityForced = false;
 float mForcedDisplayDensityRatio = 0.0f;
 ```
 
+### 23.5.9 Cross-Display Drag and Drop
+
+A drag gesture is not confined to the display it started on. When a connected-display
+setup forms a single topology (Section 23.5.6), the user can press on content on one
+display, drag the shadow across the seam, and drop it on a window on another display.
+The mechanics live entirely in WindowManager's `DragState` and `DragDropController`
+(`frameworks/base/services/core/java/com/android/server/wm/`); the one drag surface
+follows the pointer out of one display's surface hierarchy and into another's.
+
+A drag starts in `DragDropController.performDrag()` (`DragDropController.java:162`),
+which builds the drag `SurfaceControl`, parents it to the origin display's overlay
+(`reparentToOverlay`, line 301), and records both the origin and the current display on
+the `DragState`:
+
+```java
+// DragState.java
+DisplayContent mStartDragDisplayContent;    // line 139 -- where the drag began
+DisplayContent mCurrentDisplayContent;      // line 144 -- where the pointer is now
+```
+
+The drag's own input window is created `DISPLAY_TOPOLOGY_AWARE` (`DragState.java:445`),
+which is what lets the pointer -- and therefore the drag -- leave the origin display at
+all: input dispatch follows the display topology instead of clamping to one display's
+bounds.
+
+*How a drag surface follows the pointer onto another display*
+
+```mermaid
+flowchart TD
+    EV["MotionEvent during drag<br/>getDisplayId() = D2"] --> RX["DragInputEventReceiver<br/>(DragInputEventReceiver.java:66)"]
+    RX --> HM["DragDropController.handleMotionEvent(displayId=D2)<br/>(DragDropController.java:513)"]
+    HM --> UP["DragState.updateDragSurfaceLocked()<br/>(DragState.java:725)"]
+    UP --> Q{"current display != D2?"}
+    Q -->|"no, same display"| MOVE["move shadow within display<br/>setPosition"]
+    Q -->|"yes, crossed to D2"| CHK{"DisplayContent for D2 exists?"}
+    CHK -->|"no"| ENDD["endDragLocked()"]
+    CHK -->|"yes"| X["mCurrentDisplayContent = D2"]
+    X --> RE["reparent shadow to D2.getSurfaceControl()<br/>(DragState.java:762)"]
+    RE --> SC["rescale by density ratio<br/>D2 / D1 mBaseDisplayDensity"]
+    SC --> IN["inputWindowHandle.displayId = D2<br/>(DragState.java:770)"]
+    IN --> DROP["DRAG_LOCATION / DROP routed to<br/>windows on D2"]
+    MOVE --> DROP
+    style RE fill:#2196F3,color:#fff
+    style IN fill:#4CAF50,color:#fff
+```
+
+Every drag motion event carries the display the pointer is currently over.
+`DragInputEventReceiver` reads `motionEvent.getDisplayId()`
+(`DragInputEventReceiver.java:66`) and forwards it to
+`DragDropController.handleMotionEvent(keepHandling, displayId, x, y)`
+(`DragDropController.java:513`), which calls `DragState.updateDragSurfaceLocked()`
+(`DragState.java:725`). That method is where a display crossing is handled:
+
+- **Detect the crossing.** It compares the incoming `displayId` with the current one
+  (`if (mCurrentDisplayContent.mDisplayId != displayId)`, line 736); if the target
+  `DisplayContent` no longer exists the drag ends, otherwise `mCurrentDisplayContent` is
+  updated to the new display (line 745).
+- **Re-parent the drag surface.** The shadow is moved into the new display's surface
+  tree -- `mTransaction.reparent(mSurfaceControl, mCurrentDisplayContent.getSurfaceControl())`
+  (line 762). This is the literal hand-off of the surface between displays.
+- **Rescale for density.** Because two displays can differ in density, the animated
+  scale and thumbnail offsets are multiplied by the ratio of the new display's
+  `mBaseDisplayDensity` to the old one's (lines 756-761), so the shadow keeps the same
+  physical size as it crosses (a 1.0 scale onto a 420-dpi panel from a 160-dpi one
+  becomes about 2.6).
+- **Redirect input.** The drag input window's `displayId` is updated and re-applied
+  (`inputWindowHandle.displayId = displayId`, line 770) so subsequent dispatch and the
+  `ACTION_DRAG_LOCATION` / `ACTION_DROP` events route to windows on the new display.
+
+Windows learn about a drag through `broadcastDragStartedLocked()`, which walks *every*
+window on *every* display (`mService.mRoot.forAllWindows(...)`), not just the origin
+display's. One wrinkle is coordinates: `ACTION_DRAG_STARTED` carries window-relative
+*pixel* coordinates, but there is no global pixel space across displays, only global dp.
+So for a window on a different display from the drag origin, `sendDragStartedLocked()`
+deliberately sends a sentinel position
+(`new PointF(-newWin.getBounds().left - 1, -newWin.getBounds().top - 1)`,
+`DragState.java:569`) that signals "the drag is off this display" without implying a real
+distance; per-display `ACTION_DRAG_LOCATION` events, by contrast, carry valid
+display-local coordinates.
+
+Two further details complete the cross-display picture:
+
+- **Return animation.** If a drag is released without being consumed and the pointer
+  ended on a different display from where it began
+  (`mCurrentDisplayContent.getDisplayId() != mStartDragDisplayContent.getDisplayId()`,
+  `DragState.java:825`), the snap-back animation scales toward
+  `DIFFERENT_DISPLAY_RETURN_ANIMATION_SCALE = 0.75f` (line 85) instead of animating a
+  meaningless cross-display translation.
+- **Topology changes mid-drag.** If displays are added, removed, or rearranged while a
+  drag is in flight, `DragDropController.handleDisplayTopologyChange()`
+  (`DragDropController.java:493`) cancels the drag outright, because the cached
+  `DisplayContent`s could now be stale.
+
+What is *not* gated is the destination display. `isValidDropTarget()` enforces the usual
+window-level rules -- `DRAG_FLAG_GLOBAL` (cross-window), `DRAG_FLAG_GLOBAL_SAME_APPLICATION`
+(same-UID only), URI-permission grants, and cross-profile copy restrictions -- but none of
+them test whether the target window is on the *same display* as the source, so a drop is
+allowed on any eligible window regardless of which display hosts it. Cross-display drag is
+long-standing window-system behavior rather than an Android 17 addition; Android 17 leaves
+the model unchanged.
+
 ---
 
 ## 23.6 Input System Integration

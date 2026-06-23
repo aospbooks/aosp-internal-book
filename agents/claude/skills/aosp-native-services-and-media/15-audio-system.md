@@ -1943,6 +1943,38 @@ decision either way. Every decision is written to the `AUDIO_HARDENING_REPORTED`
 metrics atom with its API type, enforcement level, and exemption reason, so the
 rollout can be measured before the strict tier is enabled.
 
+### 15.3.13 Dedicated Assistant Volume Stream (Android 17)
+
+Android 17 lets an assistant's spoken audio be controlled independently of media
+volume. Two pieces make this work. The audio attribute `USAGE_ASSISTANT`
+(`frameworks/base/media/java/android/media/AudioAttributes.java:216`) already tags
+playback as assistant output; new in Android 17 is a dedicated audio mode,
+`MODE_ASSISTANT_CONVERSATION`, threaded from native `AudioSystem` up to the public
+`AudioManager`:
+
+```java
+// frameworks/base/media/java/android/media/AudioSystem.java:236
+public static final int MODE_ASSISTANT_CONVERSATION  = 7;
+
+// frameworks/base/media/java/android/media/AudioManager.java:3869
+public static final int MODE_ASSISTANT_CONVERSATION =
+        AudioSystem.MODE_ASSISTANT_CONVERSATION;
+```
+
+When an assistant app enters this mode, the policy engine gives its output a volume
+curve of its own, so the user -- or a connected Bluetooth headset's volume keys --
+can raise the assistant while media stays quiet, or mute media without silencing the
+assistant. This is the volume-side complement to the background-audio hardening of
+Section 15.3.12: hardening governs *whether* an app may play at all, while the
+assistant mode governs *which volume curve* applies once playback is allowed.
+
+A related Android 17 capture-side addition is the
+`android.permission.BYPASS_CONCURRENT_RECORD_AUDIO_RESTRICTION` permission
+(`frameworks/base/core/res/AndroidManifest.xml:7511`), which lets a privileged
+assistant or accessibility component capture audio concurrently with a phone call or
+another sensitive capture session that would otherwise hold the microphone
+exclusively.
+
 ---
 
 ## 15.4 AAudio

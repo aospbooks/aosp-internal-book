@@ -10,7 +10,7 @@ description: |
   JNI bindings, ABI compatibility). Chapters 7–11.
 metadata:
   author: 'utzcoz'
-  last-updated: '2026-06-22'
+  last-updated: '2026-06-23'
 ---
 
 # AOSP Part III — Native Foundation

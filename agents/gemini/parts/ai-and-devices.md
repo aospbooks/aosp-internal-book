@@ -8153,6 +8153,179 @@ synchronization), and `RemoteTaskInfo` (a single remote task descriptor). The
 per-association request flow is driven by `InboundHandoffRequestHandler` and
 `OutboundHandoffRequestHandler` in `handoff/`.
 
+### 52.3.9 The Handoff Activity API
+
+Section 52.3.8 covers the service that moves a task between devices; this section
+covers the surface an app actually implements. *Handoff* -- the user-facing name for
+task continuity, new in Android 17 -- is opt-in **per activity**. An activity declares
+that its state can travel to another device with `Activity.setHandoffEnabled()`, and
+supplies that state when the system asks for it through
+`onHandoffActivityDataRequested()`:
+
+```java
+// frameworks/base/core/java/android/app/Activity.java
+@FlaggedApi(android.companion.Flags.FLAG_TASK_CONTINUITY)        // line 7770
+public final boolean isHandoffEnabled() { ... }                 // line 7771
+
+@FlaggedApi(android.companion.Flags.FLAG_TASK_CONTINUITY)        // line 7788
+public final void setHandoffEnabled(                            // line 7789
+        boolean handoffEnabled, @Nullable HandoffActivityParams params) { ... }
+
+// Called by the system (never the app directly) to capture resumable state.
+public HandoffActivityData onHandoffActivityDataRequested(      // line 10240
+        @NonNull HandoffActivityDataRequestInfo requestInfo) { ... }
+```
+
+The whole API is gated by the `task_continuity` aconfig flag
+(`frameworks/base/core/java/android/companion/flags.aconfig:69`, namespace `companion`,
+exported as `android.companion.Flags.FLAG_TASK_CONTINUITY`) and by the matching
+`CompanionDeviceManager.FLAG_TASK_CONTINUITY = 1 << 1`
+(`CompanionDeviceManager.java:233`) data-sync capability that authorizes the transport
+to carry handoff payloads between two associated devices. There is no handoff without a
+CDM association first: the feature rides the same secure CDM channel described in
+Sections 52.3.1-52.3.4.
+
+Both endpoints are *real, user-owned devices* -- a phone and a tablet, or a phone and a
+Chromebook -- that were paired through CompanionDeviceManager (Section 52.2). This is
+unrelated to the virtual displays of Sections 52.4-52.6, where a single device drives a
+projected surface: in a handoff each device runs its own copy of the app, and only a
+compact descriptor crosses the link to tell the receiver how to recreate the activity
+(Section 52.3.11).
+
+`HandoffActivityDataRequestInfo.isActiveRequest()` tells the activity *why* it is being
+asked. The system issues two kinds of request (see Section 52.3.10):
+
+- a **cached** request (`isActiveRequest() == false`) taken pre-emptively when the
+  activity stops, so a snapshot is already on hand the instant a nearby device asks; and
+- an **active** request (`isActiveRequest() == true`) issued at the moment of an actual
+  handoff, to capture the freshest state.
+
+### 52.3.10 End-to-End Handoff Flow
+
+The plumbing spans the app's `ActivityThread`, WindowManager's
+`ActivityTaskManagerService`, the `TaskContinuityManagerService`, and the CDM transport
+on both devices.
+
+*Handoff data flow across two paired devices*
+
+```mermaid
+sequenceDiagram
+    participant APP as Sender activity
+    participant AT as ActivityThread
+    participant ATMS as ActivityTaskManagerService
+    participant SND as TaskContinuity sender
+    participant CDM as CDM secure transport
+    participant RCV as TaskContinuity receiver
+    participant UI as Launcher / taskbar
+
+    Note over APP: opted in via setHandoffEnabled
+    SND->>ATMS: requestHandoffTaskData
+    ATMS->>AT: REQUEST_HANDOFF_ACTIVITY_DATA
+    AT->>APP: onHandoffActivityDataRequested
+    Note over APP: cached on performStop, active on this request
+    APP-->>AT: HandoffActivityData
+    AT-->>ATMS: reportHandoffActivityData
+    ATMS-->>SND: IHandoffTaskDataReceiver callback
+    SND->>CDM: MESSAGE_ONEWAY_TASK_CONTINUITY
+    CDM->>RCV: HandoffActivityDataMessage
+    RCV->>UI: RemoteTask via listener
+    UI->>RCV: requestHandoff
+    RCV->>CDM: HandoffRequestMessage
+    CDM->>SND: deliver request
+    SND-->>RCV: latest HandoffActivityData
+    RCV->>UI: launch ComponentName or fallbackUri
+```
+
+On the **sender**, `ActivityThread` calls back into the activity from two places:
+
+- In `performStop()`, guarded by
+  `android.companion.Flags.taskContinuity() && r.activity.isHandoffEnabled()`, it
+  pre-caches a snapshot:
+  `r.handoffActivityData = r.activity.onHandoffActivityDataRequested(requestInfo)` with
+  `isActiveRequest=false` (`ActivityThread.java:6986`-6989).
+- When a live handoff is requested it handles the `REQUEST_HANDOFF_ACTIVITY_DATA`
+  message (H-message id 173, `ActivityThread.java:2683`), calls
+  `onHandoffActivityDataRequested(...)` with `isActiveRequest=true`
+  (`ActivityThread.java:4846`), and returns the result through
+  `ActivityTaskManager.reportHandoffActivityData(requestToken, data)`
+  (`ActivityThread.java:4859`).
+
+The request originates in WindowManager:
+`ActivityTaskManagerService.requestHandoffTaskData(int taskId, IHandoffTaskDataReceiver receiver)`
+(`ActivityTaskManagerService.java:3973`) fans the request to the task's top activity and
+waits -- with a timeout, see the constant at line 489 -- for the activity to report back
+through the `IHandoffTaskDataReceiver` oneway callback. The per-activity enablement bit
+itself is set through `ActivityClientController.setHandoffEnabled()`
+(`ActivityClientController.java:366`) and stored on the `ActivityRecord`.
+
+From there the `TaskContinuityManagerService` serializes the `HandoffActivityData` into a
+`HandoffActivityDataMessage` and ships it over the CDM transport as
+`MESSAGE_ONEWAY_TASK_CONTINUITY` (`0x43678884`, `CompanionDeviceManager.java:361`). On the
+**receiver**, the service rebuilds the remote task and notifies registered listeners; the
+device's launcher/taskbar surfaces it as a task available from a nearby device. When the
+user taps it, the receiver calls `requestHandoff(...)`, the sender returns its latest
+`HandoffActivityData`, and the receiver either deep-links into the same app or opens the
+web fallback (Section 52.3.11).
+
+AOSP ships the framework and the system service, but not the launcher tile that lists
+nearby-device tasks; that surface is part of the system launcher/shell, which consumes
+remote tasks through `TaskContinuityManager`'s listener API.
+
+### 52.3.11 App-to-App, App-to-Web, and the Public Manager API
+
+`HandoffActivityData` (`frameworks/base/core/java/android/app/HandoffActivityData.java:48`)
+carries everything the receiver needs and supports two delivery modes:
+
+- **App-to-app**: built from a `ComponentName` (`getComponentName()`, line 112) plus a
+  `PersistableBundle` of extras. The receiver deep-links straight into the same native app
+  when it is installed.
+- **App-to-web**: `HandoffActivityData.createWebHandoff(Uri)` (line 61) produces a data
+  object that resolves to a URL instead. Any app-to-app payload can also carry a fallback
+  URI (`setFallbackUri()`), used when the component cannot be launched on the receiver.
+
+Whether a missing app blocks the handoff is controlled by
+`HandoffActivityParams.isAllowHandoffWithoutPackageInstalled()`
+(`HandoffActivityParams.java:98`): set it and the handoff proceeds to the web fallback even
+when the target app is absent on the other device.
+
+**What data a handoff can carry.** `HandoffActivityData` is a small, fully serializable
+descriptor, not a bulk state transfer. Its entire payload is three fields
+(`HandoffActivityData.java:50`-52): an optional `ComponentName` (the activity to relaunch),
+an optional fallback `Uri`, and a `PersistableBundle` of extras (`getExtras()`, defaulting
+to empty). The extras are deliberately a `PersistableBundle` rather than a full `Bundle`,
+so only the types a `PersistableBundle` can serialize travel across the link: `boolean`,
+`int`, `long`, `double`, `String`, their arrays, and nested `PersistableBundle`s.
+Parcelables, `Binder` handles, bitmaps, and file descriptors cannot be placed in it. The
+framework also requires the extras to be device-portable -- the Builder's `setExtras()`
+javadoc (`HandoffActivityData.java:214`) warns they "must be safe to pass to another device,
+and thus should not reference any device-specific information such as file paths." Anything
+heavier than primitive state -- a half-edited document, a decoded media buffer, an
+authenticated session -- is not shipped inside the handoff; the receiving activity is
+expected to reconstruct it from the component plus extras, for example by re-fetching from
+the user's account or cloud. On the wire the descriptor is wrapped in a
+`HandoffActivityDataMessage`, which also carries the sending app's `packageSignatureDigests`
+so the receiver can confirm it is launching the same app rather than a look-alike.
+
+Apps and launchers that want to *observe and trigger* handoffs use the
+`TaskContinuityManager` system service (`@SystemService(Context.TASK_CONTINUITY_SERVICE)`,
+`TaskContinuityManager.java:46`):
+
+- `registerRemoteTaskListener(...)` / `unregisterRemoteTaskListener(...)` to receive the
+  set of `RemoteTask` descriptors advertised by paired devices. Each `RemoteTask` exposes
+  `getTaskId()`, `getCompanionDeviceAssociationId()`, `getLabel()`, `getIcon()`, and
+  `isHandoffEnabled()`.
+- `requestHandoff(...)` to pull a task onto this device.
+
+These are guarded by dedicated permissions enforced on the AIDL stub
+(`ITaskContinuityManager.aidl`): `READ_REMOTE_TASKS` (list remote tasks, line 29),
+`REQUEST_TASK_HANDOFF` (pull a task, line 35), `MODIFY_HANDOFF_SETTINGS`
+(`setHandoffForDeviceEnabled`, line 39), and `READ_HANDOFF_SETTINGS` (line 42). Results and
+availability come back through the `HANDOFF_REQUEST_RESULT_*` and
+`HANDOFF_AVAILABILITY_STATUS_*` constants on `TaskContinuityManager`
+(`TaskContinuityManager.java:59`-103) -- for example
+`HANDOFF_AVAILABILITY_STATUS_UNSUPPORTED_HARDWARE` when the device lacks the radios, or
+`HANDOFF_REQUEST_RESULT_FAILURE_TIMEOUT` when the sender never reported its data.
+
 ---
 
 ## 52.4 VirtualDeviceManager

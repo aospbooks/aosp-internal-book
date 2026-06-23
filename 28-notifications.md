@@ -2738,6 +2738,31 @@ rule that "highlights promoted notifications"; `RESERVED_ID_PRIORITY_CONVERSATIO
 `frameworks/base/core/java/android/app/NotificationRule.java` (lines 69-82) and
 tie the rich-ongoing feature into the contextual-rules engine described next.
 
+### 28.20.5 Semantic Color Annotations
+
+Live Updates can tag spans of notification text with a *meaning* rather than a raw
+color, leaving the system to choose a palette that survives theming and
+accessibility transforms. `Notification.createSemanticStyleAnnotation(int)`
+(`frameworks/base/core/java/android/app/Notification.java:1039`, gated by the
+`api_notification_semantic_style` flag) returns a text `Annotation` carrying one of
+five semantic roles:
+
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| `SEMANTIC_STYLE_UNSPECIFIED` | 0 | no semantic role |
+| `SEMANTIC_STYLE_INFO` | 1 | neutral informational (blue) |
+| `SEMANTIC_STYLE_SAFE` | 2 | safe / success (green) |
+| `SEMANTIC_STYLE_CAUTION` | 3 | caution / physical hazard (orange) |
+| `SEMANTIC_STYLE_DANGER` | 4 | danger / stop (red) |
+
+(Constants at `Notification.java:967`-1009.) An app wraps text in a
+`SpannableStringBuilder` carrying these annotations; because the app names the
+*role* and not an RGB value, the platform maps each role to a palette that stays
+legible under Material You theming, dark mode, and high-contrast accessibility
+settings. It pairs naturally with the `ProgressStyle` rich-ongoing template
+(Section 28.20.2): a navigation or safety Live Update can render "DANGER" red and
+"SAFE" green consistently across every device surface.
+
 ---
 
 ## 28.21 Notification Rules and Contextual Modes (Android 17)

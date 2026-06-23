@@ -9,7 +9,7 @@ description: |
   contexts, ro/persist/sys/build prefixes). Chapters 4–6.
 metadata:
   author: 'utzcoz'
-  last-updated: '2026-06-22'
+  last-updated: '2026-06-23'
 ---
 
 # AOSP Part II — Kernel & Boot

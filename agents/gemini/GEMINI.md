@@ -1,7 +1,7 @@
 # AOSP Internals book content (67 chapters + 4 appendices) packaged as 16 Part-skills.
 
 Source: https://github.com/aospbooks/aosp-internal-book
-Version: 2026.06.22
+Version: 2026.06.23
 
 ## How to use this extension
 

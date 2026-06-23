@@ -4906,6 +4906,45 @@ types), and it mirrors the Skia canvas API one-to-one: `TYPE_DRAWRECT`, `TYPE_DR
 `TYPE_DRAWTEXTBLOB`, `TYPE_CLIPRRECT`, `TYPE_DRAWWEBVIEW`, `TYPE_DRAWVECTORDRAWABLE`, and
 so on. A frame becomes a serialized op list, not a pile of pixels.
 
+#### Threading: OOPR reuses the existing RenderThread
+
+OOPR does not add a thread to the app process, and it does not move recording off the
+RenderThread. `SkiaIpcPipeline` is an ordinary `IRenderPipeline`, exactly like the GPU
+pipelines: `class SkiaIpcPipeline : public SkiaPipeline` (`SkiaIpcPipeline.h:45`) and
+`class SkiaPipeline : public renderthread::IRenderPipeline` (`SkiaPipeline.h:42`). The
+selection branch in `CanvasContext::create` (shown above, `CanvasContext.cpp:90`) hands
+it the *same* `RenderThread&` it would have handed a `SkiaOpenGLPipeline` or
+`SkiaVulkanPipeline`, and the base constructor stashes it
+(`SkiaPipeline.cpp:61` -- `SkiaPipeline(RenderThread& thread) : mRenderThread(thread)`).
+Frame production therefore stays on the one RenderThread the process already owns; OOPR
+swaps the *pipeline*, not the *threading model*.
+
+What changes is what that thread does on each frame. With a GPU pipeline the RenderThread
+calls `makeCurrent()` on an EGL/Vulkan context, replays the RenderNode display lists into
+that context, and submits GPU work. With OOPR the same `CanvasContext::draw()` ->
+`SkiaIpcPipeline::draw()` call (`SkiaIpcPipeline.cpp:157`) instead records the frame into
+the `IPCRecordingCanvas` and serializes it into the RenderCommandBuffer. The GPU half is
+simply absent on the client: `makeCurrent()` returns `MakeCurrentResult::AlreadyCurrent`
+and `isContextReady()` is hard-coded `true` (`SkiaIpcPipeline.cpp:148`) because there is
+no EGL surface or Vulkan device to make current. The only context-ish call that survives
+is `mRenderThread.getGrContext()` when allocating a layer's backing
+(`SkiaIpcPipeline.cpp:138`), which borrows the RenderThread's shared context for
+bookkeeping, not to draw the window.
+
+| | SkiaGL / SkiaVulkan pipeline | SkiaIpcPipeline (OOPR) |
+|---|---|---|
+| Runs on | RenderThread | RenderThread (same) |
+| `draw()` does | replay display list into a GPU context | record ops into the RenderCommandBuffer |
+| Client GPU context | EGL/Vulkan surface created and made current | none -- `makeCurrent()` returns `AlreadyCurrent` |
+| Rasterization | the RenderThread's own GPU context | SurfaceFlinger's RenderEngine (a different process) |
+| Threads added by OOPR | -- | 0 |
+
+So the RenderThread is reused unchanged as the per-process frame orchestrator; OOPR
+narrows its job from *rasterize-and-submit* to *record-and-IPC-submit*, and the pixels are
+produced later by SurfaceFlinger's RenderEngine (Section 13.41.6). This reuse is why an
+OOPR client never blocks on a GPU fence of its own, and why a frame's GPU cost leaves the
+app's RenderThread entirely (Section 13.41.9).
+
 ### 13.41.5 Sharing Resources: OoprClient and the Resource Cache
 
 A recorded op list is self-contained only for primitives. Bitmaps, hardware images, and

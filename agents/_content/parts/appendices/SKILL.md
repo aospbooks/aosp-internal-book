@@ -10,7 +10,7 @@ description: |
   path, a definition, or a changelog rather than narrative explanation.
 metadata:
   author: 'utzcoz'
-  last-updated: '2026-06-22'
+  last-updated: '2026-06-23'
 ---
 
 # AOSP Internals — Appendices
