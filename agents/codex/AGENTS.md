@@ -1,6 +1,6 @@
 # AOSP Internals book content (67 chapters + 4 appendices) packaged as 16 Part-skills.
 
-> AOSP Internals plugin, packaged version 2026.06.23.
+> AOSP Internals plugin, packaged version 2026.06.24.
 > Source: https://github.com/aospbooks/aosp-internal-book
 
 ## When to read which Part

@@ -14,7 +14,8 @@ description: |
   Chapters 20–25.
 metadata:
   author: 'utzcoz'
-  last-updated: '2026-06-23'
+  version: '2026.06.24'
+  last-updated: '2026-06-24'
 ---
 
 # AOSP Part VI — Framework Core

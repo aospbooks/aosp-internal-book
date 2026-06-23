@@ -113,6 +113,7 @@ def parse_skill(text: str) -> tuple[dict, str]:
         <indented multi-line block scalar>
       metadata:                       (optional)
         author: <string>
+        version: '<YYYY.MM.DD>'
         last-updated: '<YYYY-MM-DD>'
 
     `name` and `description` are required. `metadata` is optional; when
@@ -182,9 +183,9 @@ def serialize_skill(meta: dict, body: str) -> str:
 
     Emits frontmatter in a canonical order: `name`, `description` (block
     scalar), then a `metadata:` block if any metadata keys are set. The
-    metadata block sorts `author` and `last-updated` first (for stable
-    diffs), then any remaining keys in insertion order. Mirrors the
-    format produced by generate_claude so that source files rewritten by
+    metadata block sorts `author`, `version`, and `last-updated` first
+    (for stable diffs), then any remaining keys in insertion order. Mirrors
+    the format produced by generate_claude so that source files rewritten by
     normalization stay byte-identical to freshly generated output.
     """
     md = meta.get("metadata") or {}
@@ -198,7 +199,7 @@ def serialize_skill(meta: dict, body: str) -> str:
     if md:
         parts.append("metadata:\n")
         ordered_keys: list[str] = []
-        for k in ("author", "last-updated"):
+        for k in ("author", "version", "last-updated"):
             if k in md:
                 ordered_keys.append(k)
         for k in md:
@@ -220,6 +221,7 @@ def normalize_skill_metadata(
     meta: dict,
     part_id: str,
     normalize: bool,
+    version: str,
 ) -> tuple[dict, bool]:
     """Normalize SKILL.md frontmatter against canonical conventions.
 
@@ -229,6 +231,7 @@ def normalize_skill_metadata(
 
     When `normalize` is True (normal build):
       * fills in `metadata.author = DEFAULT_AUTHOR` (utzcoz) if missing;
+      * sets `metadata.version` to the manifest's packaged version;
       * bumps `metadata.last-updated` to today's date.
 
     When `normalize` is False (--check), metadata is passed through
@@ -247,6 +250,9 @@ def normalize_skill_metadata(
         md = dict(meta.get("metadata") or {})
         if not md.get("author"):
             md["author"] = DEFAULT_AUTHOR
+            changed = True
+        if md.get("version") != version:
+            md["version"] = version
             changed = True
         today = today_iso()
         if md.get("last-updated") != today:
@@ -277,7 +283,9 @@ def load_part_skills(
             raise FileNotFoundError(f"Missing SKILL.md for part {part.id}: {path}")
         original = path.read_text(encoding="utf-8")
         meta, body = parse_skill(original)
-        meta, changed = normalize_skill_metadata(meta, part.id, normalize=normalize)
+        meta, changed = normalize_skill_metadata(
+            meta, part.id, normalize=normalize, version=manifest.version
+        )
         if normalize and changed:
             path.write_text(serialize_skill(meta, body), encoding="utf-8")
         out[part.id] = (meta, body)

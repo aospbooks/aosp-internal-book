@@ -21,8 +21,8 @@ class TestManifestParsing(unittest.TestCase):
     def test_load_manifest_total_chapter_count(self):
         m = load_manifest()
         total = sum(len(p.chapters) for p in m.parts)
-        # 65 numbered chapters (00..64) + 3 lettered appendices (A, B, C).
-        self.assertEqual(total, 68, f"expected 68 chapter slugs, got {total}")
+        # 66 numbered chapters (01..66) + 4 lettered appendices (A, B, C, D).
+        self.assertEqual(total, 70, f"expected 70 chapter slugs, got {total}")
 
     def test_part_ids_are_kebab_case_slugs_without_numeric_prefix(self):
         m = load_manifest()
@@ -123,6 +123,10 @@ Body.
             self.assertEqual(
                 meta["metadata"].get("author"), "utzcoz",
                 f"Part {part_id} SKILL.md metadata.author should be 'utzcoz'",
+            )
+            self.assertTrue(
+                meta["metadata"].get("version"),
+                f"Part {part_id} SKILL.md missing metadata.version",
             )
             self.assertTrue(
                 meta["metadata"].get("last-updated"),

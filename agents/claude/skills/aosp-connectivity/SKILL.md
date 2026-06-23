@@ -12,7 +12,8 @@ description: |
   daemon, adb over Wi-Fi). Chapters 35–39.
 metadata:
   author: 'utzcoz'
-  last-updated: '2026-06-23'
+  version: '2026.06.24'
+  last-updated: '2026-06-24'
 ---
 
 # AOSP Part VIII — Connectivity
