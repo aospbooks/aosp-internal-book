@@ -12,11 +12,11 @@ Run after chapters reach convergence, and after any new chapter/Part. Two tiers:
    are stale. Do this even for prose/typo/Mermaid-only edits.
 2. **Mermaid gate:** every touched chapter `./serve.sh png <chapter>` →
    `errors=0` (already enforced per-wave in the loop; re-confirm here).
-3. **`mkdocs build` in Docker:**
+3. **`properdocs build` in Docker:**
    ```bash
-   docker compose run --rm --no-deps --entrypoint sh serve -c "mkdocs build"
+   docker compose run --rm --no-deps --entrypoint sh serve -c "properdocs build"
    ```
-   Local `mkdocs build` fails parsing `!!python/name:` / `!ENV` tags — that is an
+   Local `properdocs build` fails parsing `!!python/name:` / `!ENV` tags — that is an
    environmental loader issue, not your change. The Docker image (or CI) has the
    right loader. A clean "Documentation built in N seconds" = pass.
 4. **Leak sweep:** `grep -rlnE "/home/[a-z]+|~/[a-z]|/Users/[a-z]|<username>"`
@@ -39,9 +39,9 @@ regardless of which Part it joins). Then wire it everywhere:
 - **`agents/_content/manifest.toml`** — add the slug to the correct Part's
   `chapters = [...]` list. Update the top-of-file `description` count
   (`N chapters + M appendices ... K Part-skills`).
-- **`mkdocs.yml`** — add `- "N. Title": <slug>.md` under the right Part in `nav`.
+- **`properdocs.yml`** — add `- "N. Title": <slug>.md` under the right Part in `nav`.
 - **`docs/` symlink** — `ln -sf ../<slug>.md docs/<slug>.md` (docs/ is gitignored
-  and CI regenerates it, but it must exist locally for `mkdocs build`).
+  and CI regenerates it, but it must exist locally for `properdocs build`).
 - **`README.md`** — add a row to the "What This Book Covers" table; bump the
   chapter count in surrounding prose and the `./serve.sh pdf` line.
 - **`agents/README.md`** — bump the `N chapters + M appendices ... K Part-skills`
@@ -63,7 +63,7 @@ A new Part is **appended after the last numbered Part, before Appendices**
   `metadata.author`/`last-updated`), a short intro, a "Chapters in this Part"
   list, and "When to load which chapter" hints. Keep its hint lists in sync when
   you fold modules into other Parts' chapters too.
-- **`mkdocs.yml`** — add a `- "Part <roman>: Title":` nav group before
+- **`properdocs.yml`** — add a `- "Part <roman>: Title":` nav group before
   `Appendices`.
 - Update `README.md` + `agents/README.md` Part tables/counts, then regenerate
   and gate.
@@ -104,12 +104,12 @@ grep that no reference points to a number that moved.
 
 **5. Bookkeeping.** Update `manifest.toml` (chapter slugs keep their names; only
 their `NN-` filename prefixes changed — fix the slugs in the Part `chapters`
-lists), `mkdocs.yml` nav (numbers + filenames), the `docs/` symlinks (remove old,
+lists), `properdocs.yml` nav (numbers + filenames), the `docs/` symlinks (remove old,
 add new), `README.md` + `agents/README.md` (the coverage table + per-Part ranges
 + counts), and `llms.txt` (the `Chapter N` text and `<slug>` URLs). Then
 regenerate `agents/build.py` and run `--check`.
 
-**6. Gate.** `mkdocs build` in Docker; `serve.sh png errors=0` on every renamed
+**6. Gate.** `properdocs build` in Docker; `serve.sh png errors=0` on every renamed
 chapter; a book-wide grep proving no cross-reference points at a stale number;
 `build.py --check` exit 0.
 

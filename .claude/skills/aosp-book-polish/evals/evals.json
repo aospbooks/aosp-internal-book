@@ -39,7 +39,7 @@
       "id": 2,
       "name": "whole-book-update-orchestration",
       "prompt": "Android shipped a new release and I've synced my AOSP checkout to it. I want to update my entire AOSP Internals reference book (65+ chapters) to match -- accurate, current, and covering anything new. This is obviously huge. How should I drive it end to end so it's manageable, doesn't lose work if it gets interrupted, and I can trust the result? I have an agent team available.",
-      "expected_output": "A resumable, changeset-prioritized plan: prioritize chapters by the 16->17 changeset signal into a queue; durable state under .superpowers so a fresh run resumes; a per-chapter convergent loop (rewrite -> independent agent-team accuracy+Mermaid+structure review -> fix -> two clean rounds) with an agent cap (~10) and one author per file; a MANDATORY separate phase to find and place newly-added modules/projects (fold first, new chapter by threshold); bookkeeping/gates (build.py --check, mkdocs build in Docker, serve.sh png errors=0, leak sweep); and no auto-commit -- keep local, user reviews and commits.",
+      "expected_output": "A resumable, changeset-prioritized plan: prioritize chapters by the 16->17 changeset signal into a queue; durable state under .superpowers so a fresh run resumes; a per-chapter convergent loop (rewrite -> independent agent-team accuracy+Mermaid+structure review -> fix -> two clean rounds) with an agent cap (~10) and one author per file; a MANDATORY separate phase to find and place newly-added modules/projects (fold first, new chapter by threshold); bookkeeping/gates (build.py --check, properdocs build in Docker, serve.sh png errors=0, leak sweep); and no auto-commit -- keep local, user reviews and commits.",
       "files": [],
       "assertions": [
         "Changeset-prioritized queue",
@@ -47,7 +47,7 @@
         "Per-chapter convergent loop (rewrite->review->two clean rounds)",
         "MANDATORY new-module phase (fold first, threshold)",
         "Agent cap (~10) and one author per file",
-        "Gates: build.py --check, mkdocs build (Docker), serve.sh png",
+        "Gates: build.py --check, properdocs build (Docker), serve.sh png",
         "No auto-commit; keep local; user commits"
       ]
     }

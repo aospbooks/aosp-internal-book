@@ -118,17 +118,17 @@ Mermaid diagrams suitable for Apple Books, Google Play Books, and other readers.
 
 ```bash
 # Install (one-time)
-pip install mkdocs-material pymdown-extensions
+pip install properdocs mkdocs-material pymdown-extensions
 
 # Create symlinks (one-time)
 mkdir -p docs
 for f in [0-9]*.md [A-Z]-*.md index.md; do ln -sf "../$f" "docs/$f"; done
 
 # Start
-mkdocs serve                       # http://127.0.0.1:8000
+properdocs serve                   # http://127.0.0.1:8000
 
 # Build static site
-mkdocs build                       # output in site/
+properdocs build                   # output in site/
 ```
 
 Open **http://localhost:8000** — chapters in the sidebar, Mermaid renders live, hot-reload on edits.
@@ -152,7 +152,7 @@ The tool is read-only against `.repo/` — it never writes inside the AOSP check
 
 ## GitHub Actions
 
-Tests `mkdocs build` on push to `main` and PRs (~2 min).
+Tests `properdocs build` on push to `main` and PRs (~2 min).
 
 ## Project Structure
 
@@ -160,18 +160,18 @@ Tests `mkdocs build` on push to `main` and PRs (~2 min).
 [0-9]*.md                  67 chapter files
 [A-D]-appendix-*.md        4 appendix files
 index.md                   Website homepage
-mkdocs.yml                 MkDocs config (Material theme + Mermaid)
-docs/                      Symlinks for MkDocs (gitignored)
+properdocs.yml             ProperDocs config (Material theme + Mermaid)
+docs/                      Symlinks for ProperDocs (gitignored)
 mkdocs-mermaid-renderer/   Shared Mermaid SVG renderer (Playwright + cache)
 mkdocs-pdf-generate/       MkDocs plugin: PDF export
 mkdocs-epub-generate/      MkDocs plugin: EPUB export
-Dockerfile                 python:3.12-slim + Playwright + MkDocs plugins
+Dockerfile                 python:3.12-slim + Playwright + ProperDocs plugins
 docker-compose.yml         serve / build-site / build-pdf / build-epub
 tools/                     Helper scripts (manifest_snapshot.py + tests)
 manifest-snapshots/        Pinned AOSP manifests by branch/date + comparison reports
 CLAUDE.md                  Project rules for AI agents
 .claude/skills/            book-writer
-.github/workflows/         CI: mkdocs build test
+.github/workflows/         CI: properdocs build test
 ```
 
 ## License

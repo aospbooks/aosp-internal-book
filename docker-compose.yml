@@ -8,13 +8,13 @@ services:
 
   build-site:
     build: .
-    command: mkdocs build
+    command: properdocs build
     volumes:
       - .:/book
 
   build-pdf:
     build: .
-    command: mkdocs build
+    command: properdocs build
     environment:
       - MKDOCS_PDF=true
     volumes:
@@ -22,7 +22,7 @@ services:
 
   build-epub:
     build: .
-    command: mkdocs build
+    command: properdocs build
     environment:
       - MKDOCS_EPUB=true
     volumes:

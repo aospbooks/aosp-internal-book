@@ -171,11 +171,12 @@ in `references/bookkeeping.md`. Gates that must be green:
 
 - `python3 agents/build.py` regenerated and `agents/build.py --check` exits 0
   (content changes stale the Part-skills — rule 12).
-- `mkdocs build` succeeds **in the project Docker image** (local `mkdocs` fails
-  on the `!!python` tag — that's environmental, not your error).
+- `properdocs build` succeeds **in the project Docker image** (a local
+  `properdocs` fails on the `!!python` tag — that's environmental, not your
+  error).
 - Every touched chapter `./serve.sh png` reports `errors=0`.
 - No local-path/username leaks anywhere in the touched files.
-- New chapter only: `manifest.toml`, `mkdocs.yml` nav, the `docs/` symlink,
+- New chapter only: `manifest.toml`, `properdocs.yml` nav, the `docs/` symlink,
   `README.md` + `agents/README.md` counts/tables, and `llms.txt` updated; a new
   Part also needs a hand-authored `agents/_content/parts/<id>/SKILL.md` before
   `build.py` will run.
@@ -216,8 +217,8 @@ staged**, and use a plain commit (no `Co-Authored-By` trailer — CLAUDE.md rule
 - **The dup-section gate must use full tokens.** A regex like `^#{2,3} N\.[0-9]+`
   mis-flags 4-level numbers (`N.1.5.1` → "N.1.5"). Match the whole token:
   `^#{2,4} N\.[0-9]+(\.[0-9]+){0,3}` then `sort | uniq -d`.
-- **`mkdocs build` must run in Docker.** Validate with
-  `docker compose run --rm --no-deps --entrypoint sh serve -c "mkdocs build"`.
+- **`properdocs build` must run in Docker.** Validate with
+  `docker compose run --rm --no-deps --entrypoint sh serve -c "properdocs build"`.
 - **Front matter (00) and intro (01) go last** — they enumerate the book's
   structure, so update them after new chapters/Parts exist. They have no
   Try-It/Summary; do not add them.

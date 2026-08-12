@@ -3,7 +3,7 @@ FROM python:3.12-slim
 # Install Playwright + Chromium first (largest layer, changes least often)
 RUN pip install --no-cache-dir playwright && playwright install --with-deps chromium
 
-RUN pip install --no-cache-dir mkdocs-material pymdown-extensions pypdf ebooklib lxml
+RUN pip install --no-cache-dir properdocs mkdocs-material pymdown-extensions pypdf ebooklib lxml
 
 # Install shared renderer (must come before plugins that depend on it)
 COPY mkdocs-mermaid-renderer /opt/mkdocs-mermaid-renderer
@@ -18,4 +18,4 @@ WORKDIR /book
 COPY . .
 
 EXPOSE 8000
-CMD ["mkdocs", "serve", "-a", "0.0.0.0:8000"]
+CMD ["properdocs", "serve", "-a", "0.0.0.0:8000"]

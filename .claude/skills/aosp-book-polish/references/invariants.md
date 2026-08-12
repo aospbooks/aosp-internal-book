@@ -50,7 +50,7 @@ is the source of truth.
 - **No parens in `stateDiagram-v2` transition labels** — `A --> B : foo()`
   breaks parsing; drop the parens.
 - After every Mermaid edit, run `./serve.sh png <chapter>` and require
-  `errors=0`. CI's `mkdocs build` does NOT validate Mermaid (the site renders it
+  `errors=0`. CI's `properdocs build` does NOT validate Mermaid (the site renders it
   client-side), so a parse error ships silently as a "No diagram type detected"
   banner. Treat `errors=0` as a hard precondition.
 - Parse-clean is not enough: open the PNGs under `.mermaid-png/<slug>/` and

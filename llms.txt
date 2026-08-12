@@ -129,4 +129,4 @@ When using this site as background for AOSP work, prefer fetching the chapter th
 
 ## Source
 
-- [Repository on GitHub](https://github.com/aospbooks/aosp-internal-book): Markdown sources, MkDocs config, mermaid renderer, build/serve scripts. Issues and PRs welcome.
+- [Repository on GitHub](https://github.com/aospbooks/aosp-internal-book): Markdown sources, ProperDocs config, mermaid renderer, build/serve scripts. Issues and PRs welcome.

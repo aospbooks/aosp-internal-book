@@ -1,6 +1,6 @@
 ---
 name: book-writer
-description: Patterns for writing technical book chapters in Markdown with Mermaid diagrams, served via MkDocs. Use this skill whenever writing, editing, reviewing, adding, removing, or renaming book chapters, organizing multi-chapter content, fixing Mermaid rendering issues, or changing the book's structure. Also triggers when updating mkdocs.yml, docs/ symlinks, or navigation — even if the user just says "add a chapter" or "reorganize sections" without mentioning MkDocs.
+description: Patterns for writing technical book chapters in Markdown with Mermaid diagrams, served via ProperDocs (a MkDocs fork). Use this skill whenever writing, editing, reviewing, adding, removing, or renaming book chapters, organizing multi-chapter content, fixing Mermaid rendering issues, or changing the book's structure. Also triggers when updating properdocs.yml, docs/ symlinks, or navigation — even if the user just says "add a chapter" or "reorganize sections" without mentioning MkDocs.
 metadata:
   author: 'utzcoz'
   last-updated: '2026-05-25'
@@ -8,16 +8,16 @@ metadata:
 
 # Book Writer
 
-Write source-code-referenced technical books in Markdown with Mermaid diagrams, served as a MkDocs website. Covers chapter structure, content flow, diagram syntax, and keeping the MkDocs site in sync with content changes.
+Write source-code-referenced technical books in Markdown with Mermaid diagrams, served as a ProperDocs website. Covers chapter structure, content flow, diagram syntax, and keeping the ProperDocs site in sync with content changes.
 
-## MkDocs Site Maintenance
+## ProperDocs Site Maintenance
 
-The book is served via MkDocs Material. When chapter content changes, the site configuration must stay in sync. Forgetting this breaks navigation or hides new chapters from readers.
+The book is served via ProperDocs (a MkDocs fork) with the Material theme. When chapter content changes, the site configuration must stay in sync. Forgetting this breaks navigation or hides new chapters from readers.
 
 ### When you add a new chapter
 
 1. Create `NN-slug.md` with the chapter template below
-2. Add a nav entry to `mkdocs.yml` in the correct Part section:
+2. Add a nav entry to `properdocs.yml` in the correct Part section:
    ```yaml
    - "N. Chapter Title": NN-slug.md
    ```
@@ -29,28 +29,28 @@ The book is served via MkDocs Material. When chapter content changes, the site c
    ```markdown
    - [Chapter N: Title](https://aospbooks.github.io/aosp-internal-book/NN-slug/): one-line description of what the chapter covers
    ```
-5. If the chapter number changes existing chapters, renumber the affected `mkdocs.yml` entries and `llms.txt` URLs too
+5. If the chapter number changes existing chapters, renumber the affected `properdocs.yml` entries and `llms.txt` URLs too
 6. Add the new chapter slug to `agents/_content/manifest.toml` under the right Part (and create a new Part entry there + `agents/_content/parts/<slug>/SKILL.md` if the chapter belongs to a brand-new Part), then run `python3 agents/build.py` and commit the regenerated `agents/<platform>/` trees.
 
 ### When you remove a chapter
 
 1. Delete the `.md` file
-2. Remove its entry from `mkdocs.yml` nav
+2. Remove its entry from `properdocs.yml` nav
 3. Remove the symlink from `docs/`
 4. Remove the matching `llms.txt` entry
-5. Renumber subsequent chapters if needed (in filenames, `mkdocs.yml`, `llms.txt`, and section headings inside the files)
+5. Renumber subsequent chapters if needed (in filenames, `properdocs.yml`, `llms.txt`, and section headings inside the files)
 6. Remove the chapter slug from `agents/_content/manifest.toml`, then run `python3 agents/build.py` and commit the regenerated `agents/<platform>/` trees.
 
 ### When you rename or reorder chapters
 
 1. Rename the `.md` file
-2. Update the `mkdocs.yml` nav entry (both the label and the filename)
+2. Update the `properdocs.yml` nav entry (both the label and the filename)
 3. Update the `docs/` symlink
 4. Update the `llms.txt` entry (label, URL slug, and the one-line description if scope changed)
 5. Update all `## N.x` section headings inside the file to match the new chapter number
 6. Update the chapter slug in `agents/_content/manifest.toml` (and the relevant Part's `SKILL.md` description if scope shifted), then run `python3 agents/build.py` and commit the regenerated `agents/<platform>/` trees.
 
-### mkdocs.yml nav structure
+### properdocs.yml nav structure
 
 The nav groups chapters into Parts. Each Part is a collapsible section in the sidebar:
 
@@ -68,7 +68,7 @@ The label format is `"N. Short Title": NN-slug.md`. Keep labels short — they a
 
 ### docs/ symlinks
 
-MkDocs reads from `docs/` which contains symlinks to the actual chapter files in the repo root. This indirection exists because MkDocs requires `docs_dir` to be a child directory, but chapters live at the repo root for simplicity.
+ProperDocs reads from `docs/` which contains symlinks to the actual chapter files in the repo root. This indirection exists because ProperDocs requires `docs_dir` to be a child directory, but chapters live at the repo root for simplicity.
 
 When creating symlinks, always use relative paths (`../filename.md`) so they work regardless of absolute path. Also symlink any static assets the chapters reference.
 
@@ -136,7 +136,7 @@ func (c *config) UseHostMusl() bool {
 }
 ```
 
-**Use manual section numbers** matching the chapter (`## 5.1` for chapter 5). MkDocs doesn't auto-number, and if you ever generate PDF, Pandoc's auto-numbering doubles manual numbers.
+**Use manual section numbers** matching the chapter (`## 5.1` for chapter 5). ProperDocs doesn't auto-number, and if you ever generate PDF, Pandoc's auto-numbering doubles manual numbers.
 
 **Title format:** `# Chapter N: Title` with colon separator. Not `--`, not `—` (em-dash) — those slip in from autocomplete and routine editing and have to be fixed in audit passes.
 
@@ -181,7 +181,7 @@ Don't ship a chapter without re-rendering the diagrams you touched.
 
 ## Parallel Writing
 
-For 20+ chapters, launch 5 agents per batch. Review after each batch — then update `mkdocs.yml` nav and `docs/` symlinks for all new chapters before starting the next batch.
+For 20+ chapters, launch 5 agents per batch. Review after each batch — then update `properdocs.yml` nav and `docs/` symlinks for all new chapters before starting the next batch.
 
 ## Lists
 
@@ -210,8 +210,8 @@ Services are started in four phases:
 |----|-------|-----|
 | Blank line before every list | List right after text | Renders inline instead of as a list |
 | "four phases:" with 4 items | "three phases:" with 4 items | Count mismatch erodes reader trust |
-| Update `mkdocs.yml` when adding/removing chapters | Add a chapter file without a nav entry | Readers won't find it in the sidebar |
-| Create `docs/` symlink for every new chapter | Forget the symlink | MkDocs can't serve files outside `docs/` |
+| Update `properdocs.yml` when adding/removing chapters | Add a chapter file without a nav entry | Readers won't find it in the sidebar |
+| Create `docs/` symlink for every new chapter | Forget the symlink | ProperDocs can't serve files outside `docs/` |
 | `## 5.1 Title` in chapter 5 | `## 3.1 Title` (wrong chapter) | Readers use the number to locate content |
 | `# Chapter 5: Title` | `# Chapter 5 -- Title` or `# Chapter 5 — Title` | Pick `:`, stick with it (em-dash creeps in from autocomplete) |
 | Summary as the last `##` section | Any section after `## Summary` | Readers stop at Summary; trailing sections get lost |

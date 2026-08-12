@@ -122,7 +122,7 @@ The shape:
   (`book/CLAUDE.md` + `book-writer` skill): manual section numbering, a
   descriptive heading before each Mermaid block, quoted Mermaid labels, no
   epigraph, and a size ceiling. Validate diagrams with `./serve.sh png <file>`
-  (require `errors=0`) and register the file in `mkdocs.yml` nav + `llms.txt`.
+  (require `errors=0`) and register the file in `properdocs.yml` nav + `llms.txt`.
 - Persist working state (scope, candidate lists, findings, drafts) under a
   gitignored scratch dir (e.g. `.superpowers/<topic>/`) so a long run is
   resumable and the agent team's findings survive.
