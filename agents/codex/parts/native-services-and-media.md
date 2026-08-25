@@ -4610,13 +4610,14 @@ sequenceDiagram
     RT->>RT: CanvasContext.draw()
     RT->>RT: SkiaPipeline.renderFrame()
     RT->>RT: Skia → GPU commands
-    RT->>SF: eglSwapBuffers / vkQueuePresent
+    RT->>SF: eglSwapBuffers / queueBuffer
 
     SF->>SF: Acquire buffer
     SF->>SF: RenderEngine composition
     SF->>HWC: setLayerBuffer()
     HWC->>HWC: Hardware compose
-    HWC-->>SF: presentDisplay()
+    SF->>HWC: presentDisplay()
+    HWC-->>SF: present fence
 ```
 
 ### 13.1.3 Key Source Directories
@@ -4660,14 +4661,16 @@ static const char* pipelineToString() {
             return "Skia (OpenGL)";
         case RenderPipelineType::SkiaVulkan:
             return "Skia (Vulkan)";
-        case RenderPipelineType::SkiaCpu:
-            return "Skia (CPU)";
         default:
             LOG_ALWAYS_FATAL("canvas context type %d not supported",
                              (int32_t)renderType);
     }
 }
 ```
+
+Note there is deliberately no `SkiaCpu` case here -- on a device build the CPU
+pipeline is never the reported renderer, and an unexpected type hits the fatal
+default.
 
 The `CanvasContext::create()` factory in `CanvasContext.cpp` (line 88) instantiates the
 correct pipeline:
@@ -4677,8 +4680,16 @@ correct pipeline:
 CanvasContext* CanvasContext::create(RenderThread& thread, bool translucent,
                                      RenderNode* rootRenderNode,
                                      IContextFactory* contextFactory,
-                                     pid_t uiThreadId, pid_t renderThreadId) {
+                                     pid_t uiThreadId, pid_t renderThreadId,
+                                     bool useIpcCanvas) {
     auto renderType = Properties::getRenderPipelineType();
+
+#ifdef __ANDROID__
+    if (useIpcCanvas) {
+        // ... SkiaIpcPipeline-backed context
+    }
+#endif
+
     switch (renderType) {
         case RenderPipelineType::SkiaGL:
             return new CanvasContext(thread, translucent, rootRenderNode,
@@ -4690,17 +4701,24 @@ CanvasContext* CanvasContext::create(RenderThread& thread, bool translucent,
                 contextFactory,
                 std::make_unique<skiapipeline::SkiaVulkanPipeline>(thread),
                 uiThreadId, renderThreadId);
+#ifndef __ANDROID__
         case RenderPipelineType::SkiaCpu:
             return new CanvasContext(thread, translucent, rootRenderNode,
                 contextFactory,
                 std::make_unique<skiapipeline::SkiaCpuPipeline>(thread),
                 uiThreadId, renderThreadId);
+#endif
         default:
+            LOG_ALWAYS_FATAL("canvas context type %d not supported",
+                             (int32_t)renderType);
             break;
     }
     return nullptr;
 }
 ```
+
+The `SkiaCpu` case is compiled out on device builds (`#ifndef __ANDROID__`) --
+it exists for host-side and test builds only.
 
 ---
 
@@ -4738,12 +4756,17 @@ function pointers for both EGL and GLES calls:
 ```cpp
 // frameworks/native/opengl/libs/EGL/egldefs.h
 struct egl_connection_t {
-    // function tables for EGL platform calls
-    platform_impl_t platform;
-    // function tables for GL calls - one per GLES version
-    gl_hooks_t* hooks[2];
+    enum { GLESv1_INDEX = 0, GLESv2_INDEX = 1 };
     // handle to the loaded driver shared object
     void* dso;
+    // function tables for GL calls - one per GLES version
+    gl_hooks_t* hooks[2];
+    // ...
+    // the driver's EGL entry points
+    egl_t egl;
+    // function table for EGL calls implemented or redirected by platform libraries
+    platform_impl_t platform;
+    // ...
 };
 ```
 
@@ -4783,11 +4806,13 @@ static EGLBoolean egl_init_drivers_locked() {
 ```
 
 The `Loader::open()` method (in `Loader.cpp`) performs the actual `dlopen()` of the
-vendor driver. It searches for drivers using these naming conventions:
+vendor driver. It tries driver sources in this order:
 
-1. Updated driver from `GraphicsEnv` namespace (Game driver / updatable driver)
-2. Built-in vendor driver: `libEGL_<name>.so`, `libGLESv2_<name>.so`
-3. ANGLE (if selected by the system): `libEGL_angle.so`
+1. ANGLE first, if `GraphicsEnv::shouldUseAngle()`: `libEGL_angle.so`, `libGLESv2_angle.so`
+2. Updated driver from the `GraphicsEnv` namespace (Game driver / updatable driver APK)
+3. Native driver named by `ro.hardware.egl`, if `GraphicsEnv::shouldUseNativeDriver()`
+4. Finally the built-in default driver: combined `libGLES_<name>.so`, or split
+   `libEGL_<name>.so` / `libGLESv1_CM_<name>.so` / `libGLESv2_<name>.so`
 
 ### 13.2.4 EGL API Dispatch
 
@@ -4808,7 +4833,7 @@ EGLDisplay eglGetDisplay(EGLNativeDisplayType display) {
 }
 ```
 
-This pattern repeats for all 660 lines of `eglApi.cpp`. The `platform` table can point
+This pattern repeats throughout `eglApi.cpp` (~660 lines). The `platform` table can point
 either directly to the vendor driver or through optional EGL layers (used for debugging,
 validation, or ANGLE interposition).
 
@@ -4827,8 +4852,11 @@ void setGlThreadSpecific(gl_hooks_t const* value) {
 ```
 
 Each GLES function (e.g., `glDrawArrays`) is a tiny trampoline that reads the current
-hooks from TLS and jumps to the driver implementation. This is generated at build time
-from `entries.in` and `entries_gles1.in` files.
+hooks from TLS and jumps to the driver implementation. The trampolines are emitted by
+macro expansion over the checked-in `gl2_api.in` / `gl2ext_api.in` entry lists
+(included from `GLES2/gl2.cpp`; GLESv1 uses `gl_api.in` / `glext_api.in`). The
+separate `entries.in` / `entries_gles1.in` files instead declare the `gl_hooks_t`
+function-pointer table (`hooks.h`) and the GL name tables in `egl.cpp`.
 
 When no context is current, the hooks point at `gl_no_context()` (line 42), which
 logs an error:
@@ -4884,7 +4912,7 @@ with SurfaceFlinger.
 
 Shader compilation is expensive. AOSP implements a persistent shader cache via
 `MultifileBlobCache` (in `frameworks/native/opengl/libs/EGL/MultifileBlobCache.cpp`,
-1,097 lines). This cache:
+~1,050 lines). This cache:
 
 - Stores compiled shader binaries on disk across app launches
 - Uses a multi-file layout (one file per cache entry) for robustness
@@ -4919,8 +4947,9 @@ struct MultifileHotCache {
 ### 13.2.9 Java Bindings
 
 The Java-side OpenGL ES APIs (`android.opengl.GLES20`, `GLES30`, etc.) are generated
-by `frameworks/native/opengl/tools/glgen/`. This code generator reads the OpenGL ES
-specification XML and produces both the Java classes and JNI stub C++ files. The
+by `frameworks/native/opengl/tools/glgen/`. This code generator reads the `.spec`
+entry-point descriptions under `tools/glgen/specs/` (e.g. `GLES30.spec`) and
+produces both the Java classes and JNI stub C++ files. The
 generated stubs call through to the native GLES functions, which in turn dispatch
 via the TLS hooks.
 
@@ -4953,11 +4982,16 @@ graph TD
     style G fill:#F44336,color:#fff
 ```
 
-The `egl_object_t` base class in `egl_object.h` provides this reference counting:
+The `egl_object_t` base class in `egl_object.h` provides this reference counting
+for:
 
-- `egl_display_t` -- wraps `EGLDisplay`
 - `egl_context_t` -- wraps `EGLContext`, tracks GL extensions
 - `egl_surface_t` -- wraps `EGLSurface`
+
+`egl_display_t` is different: it lives in `egl_display.h`, does not derive from
+`egl_object_t` (each `egl_object_t` instead holds a pointer to its display), and
+follows its own NOT_INITIALIZED / INITIALIZED / TERMINATED lifecycle rather than
+reference counting.
 
 ### 13.2.11 Thread-Local Error Handling
 
@@ -4986,10 +5020,9 @@ sequenceDiagram
     participant Loader as Loader
     participant Driver as Vendor Driver
 
+    Note over EGL: At library load (static init):<br/>pthread_once early_egl_init fills<br/>gHooksNoContext with gl_no_context stubs
     App->>EGL: eglGetDisplay()
     EGL->>EGL: egl_init_drivers()
-    EGL->>EGL: pthread_once(early_egl_init)
-    Note over EGL: Fill gHooksNoContext<br/>with gl_no_context stubs
     EGL->>Loader: Loader::getInstance()
     EGL->>Loader: loader.open(cnx)
     Loader->>Loader: Determine driver path
@@ -5043,10 +5076,15 @@ Android adds several proprietary extensions:
 
 ### 13.2.14 BlobCache: The Single-File Cache
 
-Before the `MultifileBlobCache`, Android used a simpler `BlobCache` (and `FileBlobCache`)
-implementation. These are still present in the codebase:
+Alongside the `MultifileBlobCache`, Android carries the monolithic `BlobCache` (and
+`FileBlobCache`) implementation. The two are runtime-selected alternatives, not
+old-and-new: `egl_cache.cpp` picks multifile only when the
+`ro.egl.blobcache.multifile` property is set (default false, with
+`debug.egl.blobcache.multifile` as an override), so most devices use the
+monolithic path.
 
-- `BlobCache.cpp` -- In-memory key-value cache with LRU eviction
+- `BlobCache.cpp` -- In-memory key-value cache; when full, it evicts randomly
+  chosen entries until it is half empty (no recency tracking)
 - `FileBlobCache.cpp` -- Extends BlobCache with file-backed persistence
 - `egl_cache.cpp` -- Integrates the blob cache with the EGL driver's cache callbacks
 
@@ -5057,12 +5095,12 @@ compiled shaders through the AOSP cache infrastructure.
 ```mermaid
 graph TD
     A["GPU Driver"] -->|"set(key, value)"| B["egl_cache"]
-    B --> C["MultifileBlobCache"]
+    B -->|"ro.egl.blobcache.multifile=true"| C["MultifileBlobCache"]
+    B -->|"default"| M["BlobCache /<br/>FileBlobCache"]
     C --> D["Disk Storage"]
+    M --> D
 
     E["GPU Driver"] -->|"get(key)"| B
-    B --> C
-    C -->|"cached value"| E
 
     style A fill:#FF9800,color:#fff
     style C fill:#2196F3,color:#fff
@@ -5288,15 +5326,19 @@ const static VkColorSpaceKHR
 ```
 
 **Presentation timing** -- The `TimingInfo` class (line 240) tracks per-frame timing
-data for `VK_GOOGLE_display_timing`:
+data for `VK_GOOGLE_display_timing` and the newer `VK_EXT_present_timing`:
 
 ```cpp
 // frameworks/native/vulkan/libvulkan/swapchain.cpp, line 240
 class TimingInfo {
 public:
-    TimingInfo(const VkPresentTimeGOOGLE* qp, uint64_t nativeFrameId)
-        : vals_{qp->presentID, qp->desiredPresentTime, 0, 0, 0},
-          native_frame_id_(nativeFrameId) {}
+    TimingInfo(uint64_t presentId, uint64_t nativeFrameId,
+               uint64_t desiredPresentTime,
+               VkPresentStageFlagsEXT presentStageQueries)
+        : vals_{(uint32_t)presentId, desiredPresentTime, 0, 0, 0},
+          native_frame_id_(nativeFrameId),
+          present_id_(presentId),
+          present_stage_queries_(presentStageQueries) {}
     bool ready() const { /* check all timestamps resolved */ }
     void calculate(int64_t rdur) { /* compute actual timings */ }
 };
@@ -5349,7 +5391,7 @@ Vulkan uses a two-level dispatch table system:
 
 ```mermaid
 graph TD
-    A["vkCreateBuffer()"] --> B["Instance Dispatch<br/>(api_gen.cpp)"]
+    A["vkCreateBuffer()"] --> B["Device Dispatch<br/>(api_gen.cpp)"]
     B --> C{"Layer<br/>present?"}
     C -->|Yes| D["Layer intercept"]
     D --> E["Driver Dispatch<br/>(driver_gen.cpp)"]
@@ -5372,7 +5414,7 @@ These "proc hooks" are defined for extensions like:
 
 | Extension | Hooked Functions | Android Behavior |
 |-----------|-----------------|------------------|
-| `VK_KHR_surface` | `vkCreateAndroidSurfaceKHR` | Wraps ANativeWindow |
+| `VK_KHR_android_surface` | `vkCreateAndroidSurfaceKHR` | Wraps ANativeWindow |
 | `VK_KHR_swapchain` | `vkCreateSwapchainKHR` | Maps to BufferQueue |
 | `VK_GOOGLE_display_timing` | `vkGetPastPresentationTimingGOOGLE` | Queries frame stats |
 | `VK_EXT_debug_report` | All debug callbacks | Routes to logcat |
@@ -5391,7 +5433,7 @@ sequenceDiagram
     Note over API: Inject implicit layers<br/>from debug.vulkan.layers
 
     API->>API: OverrideExtensionNames::Parse()
-    Note over API: Add VK_EXT_debug_report<br/>if debug layer present
+    Note over API: Add VK_EXT_debug_report if the process<br/>is debuggable and debug.vulkan.enable_callback<br/>is set
 
     API->>Driver: CreateInfoWrapper::Validate()
     Note over Driver: Sanitize API version<br/>Filter extensions<br/>Clean pNext chain
@@ -5409,17 +5451,22 @@ sequenceDiagram
 
 ### 13.3.13 Physical Device Enumeration
 
-The Vulkan loader enumerates physical devices from the HAL:
+On the client side, HWUI's `VulkanManager` selects the physical device (the loader
+merely forwards `vkEnumeratePhysicalDevices` to the HAL):
 
 ```cpp
-// driver.cpp (in setupDevice, continued from line 197)
+// frameworks/base/libs/hwui/renderthread/VulkanManager.cpp, line 199
+// (in VulkanManager::setupDevice)
 uint32_t gpuCount;
-mEnumeratePhysicalDevices(mInstance, &gpuCount, nullptr);
-// Just returning the first physical device
+LOG_ALWAYS_FATAL_IF(mEnumeratePhysicalDevices(mInstance, &gpuCount, nullptr));
+// Just returning the first physical device instead of getting the whole array.
+// Since there should only be one device on android.
+gpuCount = 1;
+err = mEnumeratePhysicalDevices(mInstance, &gpuCount, &mPhysicalDevice);
 ```
 
 Android typically has a single physical device (the mobile GPU). Multi-GPU
-configurations are not common on mobile devices, so the loader simply selects
+configurations are not common on mobile devices, so VulkanManager simply selects
 the first available device.
 
 ### 13.3.14 Queue Family Selection
@@ -5469,7 +5516,8 @@ file includes `EGL/eglext_angle.h` (line 44), indicating ANGLE-specific extensio
 support. The selection happens based on:
 
 1. Per-app opt-in via the ANGLE preference UI in developer settings
-2. System-wide ANGLE enablement via `ro.hardware.egl` property
+2. System-wide ANGLE enablement via the `persist.graphics.egl` property (takes
+   precedence) or `ro.hardware.egl` set to `angle`
 3. Game driver selection through `GraphicsEnv`
 
 ### 13.4.3 Benefits of ANGLE
@@ -5481,11 +5529,12 @@ support. The selection happens based on:
 
 ### 13.4.4 ANGLE Architecture
 
-ANGLE translates at the command level, not the shader level:
+ANGLE translates both API commands and shaders:
 
 - GLES state tracking in the "front-end"
 - Vulkan command buffer recording in the "back-end"
-- SPIRV-Cross for GLSL-to-SPIR-V shader translation
+- ANGLE's own SPIR-V code generator (`src/compiler/translator/spirv/`) compiles
+  ESSL shaders to SPIR-V for the Vulkan backend
 - Efficient resource management (texture, buffer, render pass)
 
 ---
@@ -5572,6 +5621,8 @@ void RenderThread::initGrContextOptions(GrContextOptions& options) {
     if (android::base::GetBoolProperty(
             PROPERTY_REDUCE_OPS_TASK_SPLITTING, true)) {
         options.fReduceOpsTaskSplitting = GrContextOptions::Enable::kYes;
+    } else {
+        options.fReduceOpsTaskSplitting = GrContextOptions::Enable::kNo;
     }
 }
 ```
@@ -5618,9 +5669,12 @@ in `src/codec/` and integrates with Android's `ImageDecoder` API.
 Skia handles glyph rasterization using:
 
 - **FreeType**: Outline and bitmap glyph rendering
-- **HarfBuzz**: Complex text shaping (handled by minikin on Android)
 - **GPU glyph atlas**: Ganesh maintains a texture atlas for cached glyphs, with
   the atlas size configured by HWUI's `CacheManager` (see Section 13.7.7)
+
+Complex text shaping (which is a separate step from rasterization) is done on
+Android by minikin, which uses HarfBuzz -- Skia only rasterizes the glyphs that
+shaping selects.
 
 ### 13.5.8 SIMD Optimizations
 
@@ -5755,12 +5809,15 @@ contextOptions->fGlyphCacheTextureMaximumBytes =
     mMaxGpuFontAtlasBytes;
 ```
 
-The atlas size is derived from the screen area:
+The atlas size is derived from the maximum surface area:
 ```
-mMaxGpuFontAtlasBytes = nextPowerOfTwo(screenWidth * screenHeight)
+mMaxGpuFontAtlasBytes = nextPowerOfTwo(mMaxSurfaceArea)
 ```
 
-For a 1080x2400 display: `nextPowerOfTwo(2592000) = 4194304` (4 MB per atlas)
+`mMaxSurfaceArea` starts as the screen area scaled by the memory policy's
+`initialMaxSurfaceAreaScale` (1.0 by default) and grows at runtime if a larger
+frame is rendered. For a 1080x2400 display under the default policy:
+`nextPowerOfTwo(2592000) = 4194304` (4 MB per atlas)
 
 Multiple atlases may be allocated:
 
@@ -5775,16 +5832,16 @@ Multiple atlases may be allocated:
 ### 13.6.1 HWUI's Purpose
 
 HWUI (Hardware UI) is the native rendering library that bridges Android's Java View
-system with the GPU. It lives in `frameworks/base/libs/hwui/` and contains 488 files
-spanning canvas recording, display list management, render node properties, animation,
-and GPU pipeline integration.
+system with the GPU. It lives in `frameworks/base/libs/hwui/` and contains over 500
+files spanning canvas recording, display list management, render node properties,
+animation, and GPU pipeline integration.
 
 ```mermaid
 graph TD
     subgraph "HWUI Architecture"
         A["Java View System"]
         B["Canvas.h<br/>(Recording API)"]
-        C["RecordingCanvas<br/>(SkiaRecordingCanvas)"]
+        C["SkiaRecordingCanvas<br/>(wraps RecordingCanvas)"]
         D["SkiaDisplayList"]
         E["RenderNode"]
         F["RenderProperties"]
@@ -5829,7 +5886,7 @@ virtual void finishRecording(
     uirenderer::RenderNode* destination) = 0;
 ```
 
-**Drawing primitives** -- over 40 virtual methods covering:
+**Drawing primitives** -- over 30 virtual drawing methods covering:
 
 ```cpp
 // frameworks/base/libs/hwui/hwui/Canvas.h (selection)
@@ -5853,13 +5910,17 @@ virtual void drawRenderNode(
 virtual void enableZ(bool enableZ) = 0;
 virtual void drawLayer(
     uirenderer::DeferredLayerUpdater* layerHandle) = 0;
-virtual void drawWebViewFunctor(int functor) { }
+virtual void drawWebViewFunctor(int /*functor*/) {
+    LOG_ALWAYS_FATAL("Not supported");
+}
 virtual void punchHole(const SkRRect& rect, float alpha) = 0;
 ```
 
 ### 13.6.3 Canvas Op Types
 
-The canvas operations that can be recorded are enumerated in `CanvasOpTypes.h`:
+HWUI also carries an experimental typed op-buffer display-list format (the
+`CanvasOpBuffer` path described in 13.6.8, not the active recording pipeline);
+its operation set is enumerated in `CanvasOpTypes.h`:
 
 ```cpp
 // frameworks/base/libs/hwui/canvas/CanvasOpTypes.h, line 23
@@ -5885,7 +5946,7 @@ enum class CanvasOpType : int8_t {
 
 ### 13.6.4 RenderNode: The View Tree Mirror
 
-`RenderNode` (`RenderNode.h`, 452 lines) is the native counterpart of a Java `View`.
+`RenderNode` (`RenderNode.h`, ~470 lines) is the native counterpart of a Java `View`.
 Each `View` in the UI hierarchy has a corresponding `RenderNode` that stores:
 
 1. **RenderProperties** -- visual properties (position, transform, alpha, clip, etc.)
@@ -6020,7 +6081,7 @@ the display list system.
 ```mermaid
 graph TD
     A["View.draw(Canvas)"] --> B["SkiaRecordingCanvas"]
-    B --> C["SkPictureRecorder"]
+    B --> C["RecordingCanvas<br/>(DisplayListData)"]
     C --> D["SkiaDisplayList"]
     D --> E["Child RenderNodes"]
     D --> F["SkDrawable references"]
@@ -6029,7 +6090,7 @@ graph TD
     H["RenderThread sync"] --> D
     H --> I["SkiaGpuPipeline.renderFrame()"]
     I --> J["RenderNodeDrawable.draw()"]
-    J --> K["Replay SkPicture"]
+    J --> K["Replay DisplayListData"]
     J --> L["Recurse into children"]
 
     style B fill:#4CAF50,color:#fff
@@ -6175,8 +6236,9 @@ void EglManager::initialize() {
 }
 ```
 
-**Config selection** -- The EglManager loads four configurations for different pixel
-formats:
+**Config selection** -- The EglManager holds four configurations for different pixel
+formats; three are loaded up front in `loadConfigs()`, while the A8 config is created
+lazily on the first `ColorMode::A8` surface inside `createSurface()`:
 
 | Config | Pixel Format | Use Case |
 |--------|-------------|----------|
@@ -6219,12 +6281,17 @@ status_t EglManager::fenceWait(int fence) {
         eglWaitSyncKHR(mEglDisplay, sync, 0);
         eglDestroySyncKHR(mEglDisplay, sync);
     } else {
-        // Fall back to CPU-side wait
-        sync_wait(fence, -1);
+        // Block CPU on the fence.
+        status_t err = waitForeverOnFence(fence, "EglManager::fenceWait");
+        // ...
     }
     return OK;
 }
 ```
+
+The CPU fallback goes through the static helper `waitForeverOnFence()`, which
+first tries `sync_wait()` with a 3-second warning timeout and only then blocks
+indefinitely with `sync_wait(fence, -1)`.
 
 ### 13.7.6 VulkanManager
 
@@ -6244,7 +6311,9 @@ sp<VulkanManager> VulkanManager::getInstance() {
 }
 ```
 
-The VulkanManager enables 26 Vulkan extensions (line 51):
+The VulkanManager opts in to 16 Vulkan extensions (line 51; the array is declared
+with spare capacity of 26, and extensions Skia needs implicitly are added by Skia
+itself):
 
 ```cpp
 // frameworks/base/libs/hwui/renderthread/VulkanManager.cpp, line 51
@@ -6290,7 +6359,7 @@ void VulkanManager::setupDevice() {
 
 ### 13.7.7 CacheManager
 
-`CacheManager.cpp` (364 lines) manages GPU memory budgets for the Skia GrDirectContext.
+`CacheManager.cpp` (~380 lines) manages GPU memory budgets for the Skia GrDirectContext.
 It implements memory pressure responses at multiple levels:
 
 ```cpp
@@ -6446,7 +6515,7 @@ sequenceDiagram
 
     VRI->>RC: Canvas canvas = node.beginRecording()
     App->>RC: canvas.drawRect(), drawText(), ...
-    RC->>RC: Record into SkPictureRecorder
+    RC->>RC: Record into SkiaDisplayList
     VRI->>RN: node.endRecording()
     Note over RN: Staging DisplayList set
 
@@ -6470,13 +6539,14 @@ sequenceDiagram
     Skia->>GPU: GL/VK draw commands
     SP->>SP: FlushAndSubmit()
     SP->>SP: swapBuffers()
-    SP->>BQ: eglSwapBuffers / vkQueuePresent
+    SP->>BQ: eglSwapBuffers / queueBuffer
 
     BQ->>SF: Buffer available signal
     SF->>SF: Composite all layers
     SF->>HWC: setLayerBuffer()
     HWC->>HWC: Hardware composition
-    HWC-->>SF: presentDisplay()
+    SF->>HWC: presentDisplay()
+    HWC-->>SF: present fence
 ```
 
 ### 13.8.2 Phase 1: Recording (UI Thread)
@@ -6502,9 +6572,10 @@ void updateDisplayListIfDirty() {
 }
 ```
 
-The `Canvas.create_recording_canvas()` factory (in `Canvas.h`, line 94) creates a
-`SkiaRecordingCanvas` that wraps `SkPictureRecorder`. Every `canvas.drawRect()`,
-`canvas.drawText()`, etc. call is recorded into the SkPicture, not executed
+The `Canvas::create_recording_canvas()` factory (in `Canvas.h`, line 94) creates a
+`SkiaRecordingCanvas`, which records into HWUI's own `RecordingCanvas` (an
+`SkNoDrawCanvas` subclass) backed by a `SkiaDisplayList`. Every `canvas.drawRect()`,
+`canvas.drawText()`, etc. call is appended to that display list, not executed
 immediately.
 
 ### 13.8.3 Phase 2: Sync (RenderThread)
@@ -6563,18 +6634,16 @@ if (canUnblockUiThread) {
 ```cpp
 // CanvasContext.cpp (simplified)
 void CanvasContext::draw(bool solelyTextureViewUpdates) {
-    Frame frame = mRenderPipeline->getFrame();
-    SkRect dirty = computeDirtyRect(frame, ...);
+    // `dirty` comes from mDamageAccumulator.finish(&dirty)
+    Frame frame = getFrame();
+    SkRect windowDirty = computeDirtyRect(frame, &dirty);
     auto drawResult = mRenderPipeline->draw(
-        frame, screenDirty, dirty, lightGeometry,
+        frame, windowDirty, dirty, mLightGeometry,
         &mLayerUpdateQueue, mContentDrawBounds,
-        mOpaque, lightInfo, mRenderNodes, ...);
-    bool
-
-
- requireSwap;
+        mOpaque, mLightInfo, mRenderNodes, ...);
+    bool requireSwap = false;
     mRenderPipeline->swapBuffers(frame, drawResult,
-        screenDirty, currentFrameInfo, &requireSwap);
+        windowDirty, mCurrentFrameInfo, &requireSwap);
 }
 ```
 
@@ -6852,7 +6921,9 @@ can be used as a more efficient representation of parts of the layer stack." It 
 before the composition strategy is chosen -- which asks the Flattener either to replace cached
 sets with a newly available flattened one or to create a new cached set -- and updates again
 afterward. It owns two collaborators: a `Predictor`, which records observed composition results
-keyed by a layer-stack hash and predicts a DEVICE/CLIENT plan from history, and the `Flattener`.
+keyed by a layer-stack hash and predicts a DEVICE/CLIENT plan from history (gated off by
+default behind `debug.sf.enable_planner_prediction` -- only the Flattener runs in a stock
+build), and the `Flattener`.
 
 **The Flattener and CachedSets.** A `CachedSet` (`CachedSet.h`) is a group of layers composited
 together into one buffer; a single layer is a `CachedSet` of size one, and the interesting case
@@ -6863,8 +6934,10 @@ and folds them together:
   (default **150 ms**) is "inactive," and therefore a flattening candidate.
 - The Flattener groups a stable **Run** of cached sets. A Run "must contain more than 1
   CachedSet or be used for a hole punch," because flattening a single set buys nothing.
-- `flattenLayers()` hashes the stack, finds the runs, and `mergeWithCachedSets()` folds a
-  stable run into one `CachedSet`. `renderCachedSets()` then GPU-composites that group into a
+- `flattenLayers()` hashes the stack and calls `mergeWithCachedSets()` to reconcile the
+  incoming layers with the existing cached sets; `buildCachedSets()` then finds candidate
+  runs (`findCandidateRuns()` / `findBestRun()`) and folds the best stable run into one
+  `CachedSet`. `renderCachedSets()` then GPU-composites that group into a
   single buffer drawn from a reused `TexturePool`. From the next frame on, the whole group is
   one buffer -- which the hardware composer can scan out as a single **DEVICE** layer -- so the
   per-frame composite cost of that region collapses to one layer instead of many.
@@ -6954,6 +7027,7 @@ interface IAllocator {
     AllocationResult allocate2(in BufferDescriptorInfo descriptor, in int count);
     boolean isSupported(in BufferDescriptorInfo descriptor);
     String getIMapperLibrarySuffix();
+    // ... (plus isMultiViewSupported / allocateMultiView)
 }
 ```
 
@@ -6979,7 +7053,7 @@ As detailed in Section 13.3.2, the Vulkan driver is loaded via the `hwvulkan` HA
 module. The driver library is named `vulkan.<name>.so` where `<name>` comes from:
 
 ```cpp
-// frameworks/native/vulkan/libvulkan/driver.cpp, line 145
+// frameworks/native/vulkan/libvulkan/driver.cpp, line 141
 const std::array<const char*, 2> HAL_SUBNAME_KEY_PROPERTIES = {{
     "ro.hardware.vulkan",
     "ro.board.platform",
@@ -7035,18 +7109,21 @@ graph TD
 ```
 
 The current AIDL-based HWC 3 interface is defined in
-`hardware/interfaces/graphics/composer/aidl/`. Key operations:
+`hardware/interfaces/graphics/composer/aidl/`. Unlike HWC 2's per-operation
+calls, HWC 3 batches per-display and per-layer state into a command stream
+executed via `IComposerClient.executeCommands(DisplayCommand[])`. Key
+command-stream operations:
 
 | Operation | Description |
 |-----------|-------------|
-| `createDisplay` | Register a new display |
-| `setLayerBuffer` | Assign a buffer to a layer |
-| `setLayerBlendMode` | Set alpha blending mode |
-| `setLayerDataspace` | Set layer color space |
-| `setLayerTransform` | Set rotation/flip transform |
-| `validate` | Classify layers for composition |
-| `present` | Submit the final frame to display |
-| `getReleaseFences` | Get fences for released buffers |
+| `createLayer` / `createVirtualDisplay` | Interface methods to create layers / virtual displays (physical displays arrive via `IComposerCallback.onHotplug`) |
+| `LayerCommand.buffer` | Assign a buffer to a layer |
+| `LayerCommand.blendMode` | Set alpha blending mode |
+| `LayerCommand.dataspace` | Set layer color space |
+| `LayerCommand.transform` | Set rotation/flip transform |
+| `DisplayCommand.validateDisplay` | Classify layers for composition |
+| `DisplayCommand.presentDisplay` | Submit the final frame to display |
+| `ReleaseFences` (in `CommandResultPayload`) | Fences for released buffers, returned by `executeCommands()` |
 
 ### 13.10.7 Gralloc Buffer Allocation
 
@@ -7081,7 +7158,7 @@ The `BufferUsage` flags determine where the buffer can be used:
 | `COMPOSER_OVERLAY` | Can be used as HWC overlay |
 | `CPU_READ_OFTEN` | Efficient CPU read access |
 | `VIDEO_ENCODER` | Can be consumed by video encoder |
-| `CAMERA` | Can be produced by camera HAL |
+| `CAMERA_OUTPUT` / `CAMERA_INPUT` | Can be written by (or read into) the camera HAL |
 
 ### 13.10.8 Common AIDL Types
 
@@ -7142,6 +7219,7 @@ bool SkiaGpuPipeline::createOrUpdateLayer(RenderNode* node,
             surfaceWidth, surfaceHeight,
             getSurfaceColorType(), kPremul_SkAlphaType,
             getSurfaceColorSpace());
+        SkSurfaceProps props(0, kUnknown_SkPixelGeometry);
         node->setLayerSurface(SkSurfaces::RenderTarget(
             mRenderThread.getGrContext(),
             skgpu::Budgeted::kYes, info, 0,
@@ -7167,6 +7245,9 @@ void SkiaGpuPipeline::renderLayersImpl(
         }
         bool rendered = renderLayerImpl(
             layerNode, layers.entries()[i].damage);
+        if (!rendered) {
+            return;
+        }
         // Batch GPU context flushes
         GrDirectContext* currentContext = GrAsDirectContext(
             layerNode->getLayerSurface()
@@ -7188,8 +7269,12 @@ void SkiaGpuPipeline::renderLayersImpl(
 
 ### 13.11.4 Image Pinning
 
-For hardware bitmaps, `SkiaGpuPipeline` pins images as GPU textures to ensure they
-are available during rendering:
+For **mutable** bitmaps, `SkiaGpuPipeline` pins a snapshot of the pixels as a GPU
+texture during the sync phase, so the app mutating the bitmap on the UI thread
+afterwards cannot change what this frame draws. (Hardware bitmaps are already
+GPU-backed and do not go through this path; `unpinImages()` runs at the start of
+the *next* frame's `syncFrameState()`, so pinned images stay resident for the
+whole frame.)
 
 ```cpp
 // frameworks/base/libs/hwui/pipeline/skia/SkiaGpuPipeline.cpp, line 115
@@ -7210,7 +7295,8 @@ bool SkiaGpuPipeline::pinImages(
 ### 13.11.5 Hardware Buffer Rendering
 
 Both pipelines support rendering to `AHardwareBuffer` for off-screen rendering
-targets (used by `SurfaceTexture`, `ImageReader`, etc.):
+targets -- this is the path behind the public `android.graphics.HardwareBufferRenderer`
+API, typically paired with an `ImageReader`-allocated buffer:
 
 ```cpp
 // frameworks/base/libs/hwui/pipeline/skia/SkiaGpuPipeline.cpp, line 153
@@ -7319,8 +7405,10 @@ static void clipOutline(const Outline& outline,
 ### 13.12.4 Z-Order and Reordering
 
 Nodes with non-zero Z values (elevation) are drawn in a special reordering section.
-The `onDraw` method skips the draw if the node is in a reordering section but has
-zero Z:
+The `onDraw` method draws in place only when the node is outside a reordering
+section, or when it is inside one but has zero Z; a node inside a reordering
+section with non-zero Z is skipped here and drawn later, out of recording order,
+by the reorder barriers:
 
 ```cpp
 // RenderNodeDrawable.cpp, line 125
@@ -7332,9 +7420,9 @@ void RenderNodeDrawable::onDraw(SkCanvas* canvas) {
 }
 ```
 
-Nodes with positive Z get shadows rendered first, then their content. Nodes with
-negative Z are drawn before their parent's content. This creates Android's Material
-Design elevation system.
+Nodes with negative Z are drawn first within the reordering section, ahead of
+their zero-Z siblings; nodes with positive Z are drawn after, each preceded by
+its shadow. This creates Android's Material Design elevation system.
 
 ---
 
@@ -7499,19 +7587,26 @@ std::vector<Clip> mClipStack;
 RenderThread. It provides a type-safe interface for posting work:
 
 ```cpp
-// frameworks/base/libs/hwui/renderthread/RenderProxy.cpp, line 48
+// frameworks/base/libs/hwui/renderthread/RenderProxy.cpp, line 49
 RenderProxy::RenderProxy(bool translucent,
         RenderNode* rootRenderNode,
-        IContextFactory* contextFactory)
+        IContextFactory* contextFactory,
+        bool useIpcCanvas)
     : mRenderThread(RenderThread::getInstance()),
       mContext(nullptr) {
     pid_t uiThreadId = pthread_gettid_np(pthread_self());
     pid_t renderThreadId = getRenderThreadTid();
     mContext = mRenderThread.queue().runSync(
         [=, this]() -> CanvasContext* {
-            return CanvasContext::create(mRenderThread,
-                translucent, rootRenderNode, contextFactory,
-                uiThreadId, renderThreadId);
+            CanvasContext* context = CanvasContext::create(
+                mRenderThread, translucent, rootRenderNode,
+                contextFactory, uiThreadId, renderThreadId,
+                useIpcCanvas);
+            if (context != nullptr) {
+                mRenderThread.queue().post(
+                    [=] { context->startHintSession(); });
+            }
+            return context;
         });
     mDrawFrameTask.setContext(
         &mRenderThread, mContext, rootRenderNode);
@@ -7613,22 +7708,48 @@ HWUI supports multiple color modes, managed through `EglManager.createSurface()`
 
 | ColorMode | EGL Attribute | Surface Format | Use Case |
 |-----------|-------------|----------------|----------|
-| `Default` | `EGL_GL_COLORSPACE_LINEAR_KHR` | RGBA8888 | Standard sRGB |
-| `WideColorGamut` | `EGL_GL_COLORSPACE_DISPLAY_P3_PASSTHROUGH_EXT` | RGBA8888 | P3 content |
-| `Hdr` | `EGL_GL_COLORSPACE_SCRGB_EXT` | RGBA_F16 | HDR content |
-| `Hdr10` | P3 passthrough + override | RGBA_1010102 | HDR10 content |
-| `A8` | None | R8 | Alpha masks |
+| `Default` | `EGL_GL_COLORSPACE_LINEAR_KHR` | RGBA8888 | sRGB, low dynamic range (the default) |
+| `WideColorGamut` | Chosen per gamut: P3 passthrough, scRGB, or BT2020 PQ | Device wide color type (commonly RGBA8888) | Apps declaring `colorMode="wideColorGamut"` |
+| `Hdr` | `EGL_GL_COLORSPACE_SCRGB_EXT` (fp16 path) | EGL config RGBA_F16 on the fp16 path; Skia surface RGBA_10x6 or RGBA8888 (extended-range P3) | Apps declaring `colorMode="hdr"` (UI toolkit HDR) |
+| `Hdr10` | P3 passthrough + dataspace override | RGBA_1010102 | Internal comparison point for `Hdr` (`@hide`, test-only) |
+| `A8` | None | R8 | Alpha-8 windows (`@hide`) |
+
+In the `Default` row, `EGL_GL_COLORSPACE_LINEAR_KHR` does not mean linear-light
+content: it tells the GPU to store HWUI's already sRGB-encoded values untouched
+(no framebuffer encode/decode around blending), and libEGL maps it to an unknown
+dataspace that SurfaceFlinger interprets as sRGB by default
+(`dataSpaceFromEGLColorSpace()` in
+`frameworks/native/opengl/libs/EGL/egl_platform_entries.cpp`).
+
+Two of these rows are conditional. For `WideColorGamut`, `createSurface()` picks
+the EGL colorspace from the requested gamut (Display P3, sRGB/scRGB, or Rec.2020),
+while the Skia surface color type comes from `DeviceInfo::getWideColorType()` in
+`SkiaPipeline::setSurfaceColorProperties()`. For `Hdr`, the scRGB + F16 EGL config
+is used only when the device supports fp16 *and* does not support RGBA_10101010
+for HDR; otherwise the code falls through to the `Hdr10` handling, and the Skia
+surface color type is RGBA_10x6 or 8888 with an extended-range P3 color space
+(the F16 Skia branch is currently disabled in `SkiaPipeline.cpp`). And despite
+its name, `Hdr10` is not the HDR10
+(BT.2020 + PQ) standard: `ColorMode.h` defines it as extended-range Display P3 at
+10 bits per channel, marked test-only because two alpha bits are insufficient for
+shipping UI.
 
 ### 13.16.3 Wide Color Gamut in Vulkan
 
-The VulkanSurface also supports wide color gamut:
+The VulkanSurface also supports wide color gamut. Unlike a typical Vulkan
+application, HWUI does not create a `VkSwapchainKHR` — `VulkanSurface` manages
+the `ANativeWindow` buffers directly, so the color space travels as an Android
+dataspace on the window rather than as a swapchain `imageColorSpace`:
 
 ```cpp
-// VulkanSurface.cpp (in Create method)
-// Color space is set on the Vulkan swapchain through
-// VkSwapchainCreateInfoKHR::imageColorSpace
-// The actual dataspace is set via
-// ANativeWindow_setBuffersDataSpace()
+// frameworks/base/libs/hwui/renderthread/VulkanSurface.cpp (InitializeWindowInfoStruct)
+if (colorMode == ColorMode::Hdr || colorMode == ColorMode::Hdr10) {
+    outWindowInfo->dataspace = P3_XRB;
+} else {
+    outWindowInfo->dataspace = ColorSpaceToADataSpace(colorSpace.get(), colorType);
+}
+// ...later applied to the window (UpdateWindow):
+err = native_window_set_buffers_data_space(window, windowInfo.dataspace);
 ```
 
 ### 13.16.4 HDR Override Workaround
@@ -7734,7 +7855,9 @@ AnimatorManager& animators() { return mAnimatorManager; }
 
 ### 13.18.2 Frame Callbacks
 
-The RenderThread supports frame callbacks for custom rendering (e.g., `TextureView`):
+The RenderThread supports frame callbacks so a `CanvasContext` (the only
+`IFrameCallback` implementer) can schedule its own frames -- this is how
+RenderThread-driven animations keep running without involving the UI thread:
 
 ```cpp
 // RenderThread.cpp, line 385
@@ -7783,7 +7906,10 @@ void RenderThread::frameCallback(
 
 This scheduling at 25% of the deadline ensures that the RenderThread's frame work
 starts early enough to complete before the deadline, while also leaving time for
-the UI thread to process input events after the VSYNC.
+the UI thread to process input events after the VSYNC. (The 25% value is the
+default path; when the `use_prev_frame_duration_for_render_thread` aconfig flag
+is enabled, the run time is instead derived from the previous frame's measured
+callback duration.)
 
 ---
 
@@ -7797,16 +7923,23 @@ subsequent app launches:
 
 ```mermaid
 graph TD
-    A["Skia requests<br/>shader compilation"] --> B["ShaderCache::store()"]
+    A["Skia requests<br/>shader compilation"] --> P1["PersistentGraphicsCache::store()"]
+    P1 --> B["ShaderCache::store()"]
     B --> C["Write to disk<br/>(persistent)"]
 
-    D["Skia needs<br/>cached shader"] --> E["ShaderCache::load()"]
+    D["Skia needs<br/>cached shader"] --> P2["PersistentGraphicsCache::load()"]
+    P2 --> E["ShaderCache::load()"]
     E --> F["Read from disk"]
     F --> G["Return compiled<br/>binary"]
 
     style B fill:#4CAF50,color:#fff
     style E fill:#2196F3,color:#fff
 ```
+
+Skia talks to the `PersistentGraphicsCache` (registered as
+`GrContextOptions::fPersistentCache`), which delegates to the `ShaderCache`
+singleton (or to a separate pipeline cache when the `separate_pipeline_cache`
+flag is enabled).
 
 ### 13.19.2 PersistentGraphicsCache
 
@@ -7862,9 +7995,9 @@ HWUI integrates with Android's Dynamic Performance Framework (ADPF) through the
 predictions to the CPU/GPU governors:
 
 ```cpp
-// CanvasContext.cpp (constructor)
-mHintSessionWrapper = std::make_shared<HintSessionWrapper>(
-    uiThreadId, renderThreadId);
+// CanvasContext.cpp (constructor member initializer)
+, mHintSessionWrapper(std::make_shared<HintSessionWrapper>(
+      uiThreadId, renderThreadId))
 ```
 
 The hint session reports:
@@ -7907,10 +8040,10 @@ This enables the platform to:
 
 | Pitfall | Cause | Diagnosis |
 |---------|-------|-----------|
-| Jank on first frame | Shader compilation | Check for "shader compile" in Perfetto |
+| Jank on first frame | Shader compilation | Check for shader-compile slices in Perfetto |
 | High draw time | Too many draw calls | Reduce View hierarchy depth |
-| Excessive layer creation | Alpha animations on complex Views | Set `hasOverlappingRendering=false` |
-| GPU memory pressure | Too many large bitmaps | Profile with `dumpsys gfxinfo meminfo` |
+| Excessive layer creation | Alpha animations on complex Views | Call `forceHasOverlappingRendering(false)` |
+| GPU memory pressure | Too many large bitmaps | Profile with `dumpsys gfxinfo <package>` |
 | Texture upload stalls | Large images decoded on RenderThread | Use `prepareToDraw()` API |
 | VSync misses | Long UI thread work | Move work off the UI thread |
 
@@ -7929,7 +8062,7 @@ graph LR
         A2["VulkanManager"] --> B2["VkDevice"]
         B2 --> C2["GrDirectContext<br/>(Vulkan)"]
         C2 --> D2["SkSurface wrapping<br/>VkImage"]
-        D2 --> E2["vkQueuePresentKHR"]
+        D2 --> E2["ANativeWindow<br/>queueBuffer"]
     end
 
     style A1 fill:#4CAF50,color:#fff
@@ -7943,8 +8076,8 @@ graph LR
 | Shader compilation | Driver-dependent | SPIR-V (more predictable) |
 | Multi-threaded recording | Limited | Better support |
 | Memory management | Driver-managed | Explicit (via Skia) |
-| Pre-rotation | Not supported | Supported (in swapchain) |
-| Buffer age | Via EGL extension | Via VkSwapchain |
+| Pre-rotation | Not supported | Supported (auto-prerotation + preTransform matrix) |
+| Buffer age | Via EGL extension | Tracked by VulkanSurface over its buffer slots |
 
 ---
 
@@ -7960,9 +8093,9 @@ stateDiagram-v2
     [*] --> Created : CanvasContext create
     Created --> SurfaceSet : setSurface
     SurfaceSet --> Drawing : draw
-    Drawing --> Drawing : subsequent frames
-    Drawing --> Paused : pauseSurface
-    Paused --> Drawing : resumeSurface
+    Drawing --> Drawing : frames
+    Paused --> Drawing
+    Drawing --> Paused : pause
     Drawing --> Stopped : setStopped true
     Stopped --> Drawing : setStopped false
     Drawing --> SurfaceLost : surface destroyed
@@ -7971,6 +8104,10 @@ stateDiagram-v2
     SurfaceLost --> Destroyed : destroy
     Destroyed --> [*]
 ```
+
+There is no explicit resume call for a paused context -- `pauseSurface()` only
+removes the frame callback and bumps the generation id, and drawing restarts
+with the next `DrawFrameTask` (hence the unlabeled return edge).
 
 ### 13.22.2 Surface Setup
 
@@ -8002,7 +8139,7 @@ transient errors in `dequeueBuffer` and `queueBuffer`.
 ### 13.22.3 Pipeline Surface Configuration
 
 ```cpp
-// CanvasContext.cpp, line 268
+// CanvasContext.cpp, line 332
 void CanvasContext::setupPipelineSurface() {
     bool hasSurface = mRenderPipeline->setSurface(
         mNativeSurface ? mNativeSurface->getNativeWindow()
@@ -8014,15 +8151,18 @@ void CanvasContext::setupPipelineSurface() {
     }
 
     mFrameNumber = 0;
-    if (mNativeSurface != nullptr && hasSurface) {
+    if (hasSurface) {
         mHaveNewSurface = true;
         mSwapHistory.clear();
-        native_window_enable_frame_timestamps(
-            mNativeSurface->getNativeWindow(), true);
-        native_window_set_scaling_mode(
-            mNativeSurface->getNativeWindow(),
-            NATIVE_WINDOW_SCALING_MODE_FREEZE);
-    } else {
+        if (mNativeSurface != nullptr) {
+            native_window_enable_frame_timestamps(
+                mNativeSurface->getNativeWindow(), true);
+            native_window_set_scaling_mode(
+                mNativeSurface->getNativeWindow(),
+                NATIVE_WINDOW_SCALING_MODE_FREEZE);
+            // (also disables producer throttling)
+        }
+    } else if (mNativeSurface == nullptr) {
         mRenderThread.removeFrameCallback(this);
         mGenerationID++;
     }
@@ -8056,22 +8196,26 @@ being composited by SurfaceFlinger, and one being rendered to by the app.
 `prepareTree` is the critical tree-walk that syncs all RenderNode properties and
 display lists:
 
+The `TreeInfo` (`MODE_FULL`) is constructed by `DrawFrameTask::run()` before
+`CanvasContext::prepareTree()` is entered. For each node, `prepareTreeImpl()`
+then performs, in order:
+
 ```mermaid
 graph TD
-    A["CanvasContext::prepareTree()"] --> B["TreeInfo setup<br/>(MODE_FULL)"]
-    B --> C["Root RenderNode<br/>prepareTree()"]
-    C --> D["For each child node:"]
-    D --> E["pushStagingPropertiesChanges()"]
-    D --> F["pushStagingDisplayListChanges()"]
-    D --> G["prepareLayer() if needed"]
-    D --> H["Animate properties"]
-    D --> I["Recurse into children"]
+    A["DrawFrameTask::run()<br/>TreeInfo setup, MODE_FULL"] --> B["CanvasContext::prepareTree()"]
+    B --> C["Root RenderNode<br/>prepareTreeImpl()"]
+    C --> E["pushStagingPropertiesChanges()"]
+    E --> H["Animate properties"]
+    H --> G["prepareLayer() if needed"]
+    G --> F["pushStagingDisplayListChanges()"]
+    F --> I["Recurse into children"]
+    I --> M["pushLayerUpdate()"]
 
     E --> J["Copy staging props<br/>to render props"]
     F --> K["Swap staging DL<br/>to render DL"]
     G --> L["Create/resize<br/>offscreen layer"]
 
-    style A fill:#2196F3,color:#fff
+    style B fill:#2196F3,color:#fff
     style C fill:#4CAF50,color:#fff
 ```
 
@@ -8084,11 +8228,15 @@ The CanvasContext can decide to skip rendering a frame under several conditions:
 canDrawThisFrame = !info.out.skippedFrameReason.has_value();
 ```
 
-Frames are skipped when:
+`SkippedFrameReason` (`SkippedFrameInfo.h`) enumerates six reasons a frame is
+skipped:
 
-- No output target (surface lost)
-- Context is stopped (app backgrounded)
-- No content changes and no forced redraw
+- `DrawingOff` -- drawing is disabled
+- `ContextIsStopped` -- context is stopped (app backgrounded)
+- `NothingToDraw` -- the content root has no renderable content
+- `NoOutputTarget` -- no surface to draw into
+- `NoBuffer` -- reserving the next output buffer failed
+- `AlreadyDrawn` -- the last swap already covered the latest vsync (no forced redraw)
 
 When a frame is skipped, any pending texture uploads are still flushed:
 
@@ -8157,6 +8305,8 @@ bool prepareForFunctorPresence(
         CC_UNLIKELY(getRevealClip().willClip()) ||
         CC_UNLIKELY(getTransformMatrix() &&
             !getTransformMatrix()->isScaleTranslate());
+        // ... (same tests on getAnimationMatrix()
+        //      and getStaticMatrix())
     mComputedFields.mNeedLayerForFunctors =
         (willHaveFunctor && functorsNeedLayer);
     return CC_LIKELY(
@@ -8204,8 +8354,8 @@ spot shadow calculations. The light geometry is updated before each frame:
 
 ```cpp
 // SkiaOpenGLPipeline.cpp, line 163
-SkPoint lightCenter = preTransform.mapXY(
-    lightGeometry.center.x, lightGeometry.center.y);
+SkPoint lightCenter = preTransform.mapPoint(
+    {lightGeometry.center.x, lightGeometry.center.y});
 LightGeometry localGeometry = lightGeometry;
 localGeometry.center.x = lightCenter.fX;
 localGeometry.center.y = lightCenter.fY;
@@ -8261,9 +8411,12 @@ When a RenderNode property changes, the damage is propagated up through the tree
 void damageSelf(TreeInfo& info);
 ```
 
-If a node changes alpha, transform, or clip, its entire bounds are damaged. If only
-the display list content changes, only the union of old and new content bounds is
-damaged.
+If a node changes alpha, transform, or clip, its entire bounds are damaged. A
+display-list swap also damages the node's full bounds -- twice, once before and
+once after `syncDisplayList()`, so a change in `isRenderable` is caught on both
+sides (HWUI does not track finer content bounds here). When
+`getClipDamageToBounds()` is false, the damage is an effectively unbounded rect
+rather than the node bounds.
 
 ---
 
@@ -8276,17 +8429,23 @@ based on the device characteristics:
 
 ```mermaid
 graph TD
-    A["Device Boot"] --> B["loadMemoryPolicy()"]
-    B --> C{"System or<br/>Persistent?"}
-    C -->|Yes| D["Higher limits<br/>Longer retention"]
-    C -->|No| E{"Foreground<br/>Service?"}
-    E -->|Yes| F["Standard limits"]
-    E -->|No| G["Lower limits<br/>Shorter retention"]
+    A["Process start"] --> B["loadMemoryPolicy()"]
+    B --> C{"System or<br/>persistent process?"}
+    C -->|Yes| D["sPersistentOrSystemPolicy<br/>(same size limits,<br/>shorter retention)"]
+    C -->|No| E{"debug.hwui.memory_policy<br/>set?"}
+    E -->|Yes| F["Named policy:<br/>default / lowram /<br/>extremelowram"]
+    E -->|No| G{"Low-RAM<br/>device?"}
+    G -->|Yes| H["sLowRamPolicy"]
+    G -->|No| I["sDefaultMemoryPolicy"]
 
     style D fill:#4CAF50,color:#fff
     style F fill:#2196F3,color:#fff
-    style G fill:#FF9800,color:#fff
+    style I fill:#FF9800,color:#fff
 ```
+
+Only `sExtremeLowRam` actually lowers the size budget (surface-size multiplier 20
+instead of the default 48, background retention 0.2); the system/persistent policy
+keeps the default size limits but retains idle resources for a much shorter time.
 
 ### 13.26.2 Resource Budget Calculation
 
@@ -8297,10 +8456,13 @@ maxResourceBytes = screenWidth * screenHeight *
                    surfaceSizeMultiplier
 ```
 
-For a 1080x2400 display with a multiplier of 8:
+For a 1080x2400 display with the default multiplier of 48 (`12.0f * 4.0f` in
+`MemoryPolicy.h`):
 ```
-maxResourceBytes = 1080 * 2400 * 8 = 20,736,000 bytes (~20 MB)
+maxResourceBytes = 1080 * 2400 * 48 = 124,416,000 bytes (~124 MB)
 ```
+
+(The `extremelowram` policy lowers the multiplier to 20.)
 
 ### 13.26.3 Background Retention
 
@@ -8312,7 +8474,7 @@ backgroundResourceBytes = maxResourceBytes *
                           backgroundRetentionPercent
 ```
 
-Typically 50%, so the 20MB foreground budget becomes 10MB in the background.
+Typically 50%, so the ~124 MB foreground budget becomes ~62 MB in the background.
 
 ### 13.26.4 Context Destruction Timeout
 
@@ -8421,7 +8583,8 @@ status_t EglManager::fenceWait(int fence) {
         eglDestroySyncKHR(mEglDisplay, sync);
     } else {
         // CPU-side wait: blocks the calling thread
-        sync_wait(fence, -1);
+        // (3s warning timeout, then waits forever)
+        waitForeverOnFence(fence, "EglManager::fenceWait");
     }
     return OK;
 }
@@ -8437,10 +8600,12 @@ preparing the next frame while the GPU waits for the fence to signal.
 ### 13.28.1 Stretch Effect
 
 Android 12 introduced a stretch/overscroll effect that deforms the content when the
-user scrolls past the edge. This is implemented through the `StretchEffect` class:
+user scrolls past the edge. This is implemented through the `StretchEffect` class,
+accessed via members of `LayerProperties` (reached as
+`mLayerProperties.getStretchEffect()`):
 
 ```cpp
-// RenderProperties.h, line 103
+// RenderProperties.h, line 103 (in class LayerProperties)
 const StretchEffect& getStretchEffect() const {
     return mStretchEffect;
 }
@@ -8569,13 +8734,15 @@ native graphics libraries. Key build targets:
 
 - `libhwui` -- The main HWUI shared library
 - `hwui_unit_tests` -- Native unit tests
-- `hwui_static_deps` -- Static dependency libraries
+- `hwui_static_deps` -- A `cc_defaults` module carrying the (mostly shared)
+  library dependencies
 
 ### 13.31.2 Skia Build Integration
 
 Skia is built from `external/skia/` with Android-specific build configuration that:
 
-- Enables the Ganesh GPU backend (GL and Vulkan)
+- Enables the Ganesh GPU backend (GL and Vulkan) and builds the Graphite tree
+  (used by SurfaceFlinger's `GraphiteVkRenderEngine`)
 - Enables Android-specific SkSurface extensions
 - Configures SIMD optimizations for the target architecture
 - Excludes unused backends (Metal, Dawn, D3D)
@@ -8595,9 +8762,10 @@ HWUI includes several test suites:
 
 - **Unit tests** (`tests/unit/`): Test individual classes like `RenderNode`,
   `RenderProperties`, `DamageAccumulator`
-- **Rendering tests** (`tests/rendering/`): Pixel-perfect rendering comparison tests
-- **Macro benchmarks** (`tests/macrobench/`): Performance benchmarks for the full
-  rendering pipeline
+- **Micro benchmarks** (`tests/microbench/`, module `hwuimicro`): Per-operation
+  benchmarks such as `CanvasOpBench`
+- **Macro benchmarks** (`tests/macrobench/`, module `hwuimacro`): Performance
+  benchmarks for the full rendering pipeline
 
 ### 13.32.2 CTS Graphics Tests
 
@@ -8605,8 +8773,8 @@ The Compatibility Test Suite includes extensive graphics tests:
 
 - **CtsGraphicsTestCases**: Tests for `Canvas`, `Paint`, `Path`, `Bitmap`
 - **CtsUiRenderingTestCases**: Tests for hardware-accelerated rendering
-- **CtsVulkanTestCases**: Vulkan CTS (based on dEQP)
-- **CtsEglTestCases**: EGL conformance tests
+- **CtsDeqpTestCases** (`external/deqp/android/cts/`): The dEQP-derived GLES,
+  EGL, and Vulkan conformance suite
 
 ### 13.32.3 Perfetto Integration for Testing
 
@@ -8618,8 +8786,8 @@ ATRACE_FORMAT("DrawFrames %" PRId64, vsyncId);
 ```
 
 ```cpp
-// RenderThread.cpp, line 92
-ATRACE_FORMAT("queue mFrameCallbackTask to run after %.2fms",
+// RenderThread.cpp, line 109
+ATRACE_FORMAT_INSTANT("queue mFrameCallbackTask to run after %.2fms",
     toFloatMillis(runAt - SteadyClock::now()).count());
 ```
 
@@ -8650,7 +8818,7 @@ timeline
     section Android 10
         ANGLE : GL-on-Vulkan translation layer
     section Android 12
-        Vulkan default : Primary render pipeline
+        Vulkan productionized : SkiaVulkan opt-in per device
         Stretch overscroll : New visual effect
     section Android 13+
         Graphite development : Next-gen Skia backend
@@ -8679,10 +8847,12 @@ is:
 
 AOSP is moving toward a Vulkan-first strategy where:
 
-- Vulkan is the default rendering API for HWUI
+- Vulkan is the preferred HWUI pipeline where the device opts in via
+  `ro.hwui.use_vulkan` (AOSP still falls back to SkiaGL)
 - ANGLE provides GLES compatibility on top of Vulkan
 - The Vulkan driver is updatable via APEX modules
-- RenderEngine in SurfaceFlinger uses the Vulkan backend
+- RenderEngine in SurfaceFlinger can use the Vulkan backend (flag-gated;
+  the default remains GL)
 
 This simplifies the stack by having a single GPU API path while maintaining backward
 compatibility through ANGLE.
@@ -8718,10 +8888,15 @@ classDiagram
         +setSurface() bool
         +createTextureLayer() DeferredLayerUpdater*
         +onStop()
-        +onContextDestroyed()
+        +onDestroyHardwareResources()
         +isSurfaceReady() bool
         +isContextReady() bool
         +flush() unique_fd
+    }
+
+    class IGpuContextCallback {
+        <<interface>>
+        +onContextDestroyed()
     }
 
     class SkiaPipeline {
@@ -8758,6 +8933,8 @@ classDiagram
     SkiaPipeline <|-- SkiaGpuPipeline
     SkiaGpuPipeline <|-- SkiaOpenGLPipeline
     SkiaGpuPipeline <|-- SkiaVulkanPipeline
+    IGpuContextCallback <|-- SkiaOpenGLPipeline
+    IGpuContextCallback <|-- SkiaVulkanPipeline
 ```
 
 ### 13.34.2 The DrawResult Structure
@@ -8765,9 +8942,12 @@ classDiagram
 The draw result communicates timing information back to the caller:
 
 ```cpp
+// nested inside IRenderPipeline (IRenderPipeline.h)
 struct DrawResult {
-    bool success;            // Whether the draw succeeded
-    int64_t submissionTime;  // When GPU work was submitted
+    bool success = false;    // Whether the draw succeeded
+    static constexpr nsecs_t kUnknownTime = -1;
+    // When GPU command submission occurred (kUnknownTime if unknown)
+    nsecs_t commandSubmissionTime = kUnknownTime;
     android::base::unique_fd presentFence; // Fence for presentation
 };
 ```
@@ -8778,17 +8958,17 @@ struct DrawResult {
 graph TD
     A["System Property<br/>debug.hwui.renderer"] --> B{"Value?"}
     B -->|"skiavk"| C["SkiaVulkan"]
-    B -->|"skiagl"| D["SkiaGL"]
-    B -->|"not set"| E["Default Selection"]
-    E --> F{"Vulkan Driver<br/>Available?"}
-    F -->|Yes| G{"Device Config<br/>Prefers Vulkan?"}
-    G -->|Yes| C
-    G -->|No| D
-    F -->|No| D
+    B -->|"skiagl or other"| D["SkiaGL"]
+    B -->|"not set"| E{"ro.hwui.use_vulkan?"}
+    E -->|true| C
+    E -->|"false (default)"| D
 
     style C fill:#2196F3,color:#fff
     style D fill:#4CAF50,color:#fff
 ```
+
+There is no runtime Vulkan-driver-availability probe: with `debug.hwui.renderer`
+unset, the `ro.hwui.use_vulkan` sysprop alone decides, defaulting to SkiaGL.
 
 ---
 
@@ -8851,41 +9031,53 @@ graph TD
     C -->|No| E["Normal Frame"]
 
     D --> F{"Cause?"}
-    F -->|"UI thread slow"| G["JANK_UI_THREAD"]
-    F -->|"RenderThread slow"| H["JANK_RT"]
-    F -->|"GPU slow"| I["JANK_GPU"]
-    F -->|"Buffer stall"| J["JANK_DEQUEUE_BUFFER"]
-    F -->|"Swap stall"| K["JANK_SWAP_BUFFERS"]
+    F -->|"Missed the vsync"| G["kMissedVsync"]
+    F -->|"Input waited too long"| H["kHighInputLatency"]
+    F -->|"UI thread slow"| I["kSlowUI"]
+    F -->|"Sync phase slow"| J["kSlowSync"]
+    F -->|"RenderThread slow"| K["kSlowRT"]
+    F -->|"Past frame deadline"| L["kMissedDeadline"]
 
     style D fill:#F44336,color:#fff
     style E fill:#4CAF50,color:#fff
 ```
 
+These are the `JankType` buckets from `ProfileData.h` (plus a legacy
+`kMissedDeadlineLegacy` variant).
+
 ### 13.36.2 Frame Info Tracking
 
-Each frame's timing is recorded in a `FrameInfo` array with these timestamps:
+Each frame's timing is recorded in a `FrameInfo` array indexed by the 25-entry
+`FrameInfoIndex` enum (`FrameInfo.h`). Indices 0-13 are filled by the UI thread
+(`UI_THREAD_FRAME_INFO_SIZE = 14`); the rest by the RenderThread/GPU:
 
 | Index | Name | Thread | Description |
 |-------|------|--------|-------------|
-| 0 | IntendedVsync | UI | Target VSYNC time |
-| 1 | Vsync | UI | Actual VSYNC time |
-| 2 | HandleInputStart | UI | Start of input processing |
-| 3 | AnimationStart | UI | Start of animations |
-| 4 | PerformTraversalsStart | UI | Start of measure/layout |
-| 5 | DrawStart | UI | Start of draw recording |
-| 6 | SyncQueued | UI | Time sync was queued |
-| 7 | SyncStart | RT | Start of sync on RenderThread |
-| 8 | IssueDrawCommandsStart | RT | Start of GPU command issue |
-| 9 | SwapBuffers | RT | Time of buffer swap |
-| 10 | FrameCompleted | RT | Frame fully complete |
-| 11 | DequeueBufferDuration | RT | Time spent dequeuing buffer |
-| 12 | QueueBufferDuration | RT | Time spent queuing buffer |
-| 13 | GpuCompleted | GPU | GPU work completion time |
-| 14 | SwapBuffersDuration | RT | Duration of swap operation |
-| 15 | FrameDeadline | - | Deadline for this frame |
-| 16 | FrameStartTime | - | Frame start timestamp |
-| 17 | FrameInterval | - | Expected frame interval |
-| 18 | VsyncId | - | VSYNC identifier |
+| 0 | Flags | UI | Frame flags (e.g. window layout changed) |
+| 1 | FrameTimelineVsyncId | UI | VSYNC identifier for the frame timeline |
+| 2 | IntendedVsync | UI | Target VSYNC time |
+| 3 | Vsync | UI | Actual VSYNC time |
+| 4 | InputEventId | UI | Id of the driving input event |
+| 5 | HandleInputStart | UI | Start of input processing |
+| 6 | AnimationStart | UI | Start of animations |
+| 7 | PerformTraversalsStart | UI | Start of measure/layout |
+| 8 | DrawStart | UI | Start of draw recording |
+| 9 | FrameDeadline | UI | Deadline for this frame |
+| 10 | FrameStartTime | UI | Frame start timestamp |
+| 11 | FrameInterval | UI | Expected frame interval |
+| 12 | WorkloadTarget | UI | Workload target hint |
+| 13 | AnimationTime | UI | Animation timestamp |
+| 14 | SyncQueued | RT | Time sync was queued |
+| 15 | SyncStart | RT | Start of sync on RenderThread |
+| 16 | IssueDrawCommandsStart | RT | Start of GPU command issue |
+| 17 | SwapBuffers | RT | Time of buffer swap |
+| 18 | FrameCompleted | RT | Frame fully complete |
+| 19 | DequeueBufferDuration | RT | Time spent dequeuing buffer (duration) |
+| 20 | QueueBufferDuration | RT | Time spent queuing buffer (duration) |
+| 21 | GpuCompleted | GPU | GPU work completion time |
+| 22 | SwapBuffersCompleted | RT | Swap completion time |
+| 23 | DisplayPresentTime | - | Display present time |
+| 24 | CommandSubmissionCompleted | RT | GPU command submission completed |
 
 ### 13.36.3 GPU Profiling Visualization
 
@@ -8924,12 +9116,15 @@ public:
 };
 ```
 
-This pool handles:
+The actual CommonPool users in HWUI are:
 
-- Shader compilation on background threads
-- Texture upload scheduling
-- Deferred GPU resource cleanup
-- Image decoding tasks
+- Skia's background executor (via the `SkExecutor` adapter above)
+- Frame fence waits (`CanvasContext`'s `mFrameFences`)
+- ADPF hint-session creation and thread updates (`HintSessionWrapper`)
+- SKP capture file writing (`SkiaPipeline`)
+
+(Hardware bitmap texture uploads do *not* go through CommonPool -- the
+`HardwareBitmapUploader` runs its own dedicated upload thread.)
 
 ### 13.37.2 Integration with Skia
 
@@ -8940,8 +9135,9 @@ Skia uses the executor for parallelizing internal work:
 contextOptions->fExecutor = &sDefaultExecutor;
 ```
 
-This allows Ganesh to split GPU command recording work across multiple CPU threads,
-reducing the wall-clock time for complex frames.
+Ganesh uses this executor for software path rendering and clip-mask
+rasterization, and (on Vulkan) for background pipeline compilation -- not for
+GPU command recording itself.
 
 ---
 
@@ -9002,9 +9198,11 @@ hardware bitmaps. It can use either the GL or Vulkan context:
 graph TD
     A["Software Bitmap"] --> B["HardwareBitmapUploader"]
     B --> C["Allocate AHardwareBuffer"]
-    C --> D["Create VkImage from AHB"]
-    D --> E["Copy pixel data to VkImage"]
-    E --> F["Hardware Bitmap Ready"]
+    C --> D{"Pipeline?"}
+    D -->|SkiaGL| E1["EGLUploader:<br/>EGLImage + GL texture upload"]
+    D -->|SkiaVulkan| E2["VkUploader:<br/>VkImage texture upload"]
+    E1 --> F["Hardware Bitmap Ready"]
+    E2 --> F
 
     style B fill:#2196F3,color:#fff
     style F fill:#4CAF50,color:#fff
@@ -9018,50 +9216,50 @@ graph TD
 
 | File | Path | Lines | Purpose |
 |------|------|-------|---------|
-| `eglApi.cpp` | `frameworks/native/opengl/libs/EGL/` | 660 | EGL API entry points |
-| `egl.cpp` | `frameworks/native/opengl/libs/EGL/` | 224 | Driver initialization |
-| `egl_platform_entries.cpp` | `frameworks/native/opengl/libs/EGL/` | ~2,000 | Platform EGL implementation |
-| `Loader.cpp` | `frameworks/native/opengl/libs/EGL/` | ~765 | Driver loading |
-| `MultifileBlobCache.cpp` | `frameworks/native/opengl/libs/EGL/` | ~1,097 | Shader cache |
-| `egl_display.cpp` | `frameworks/native/opengl/libs/EGL/` | ~600 | Display management |
-| `egl_object.cpp` | `frameworks/native/opengl/libs/EGL/` | ~200 | Object reference counting |
-| `gl2.cpp` | `frameworks/native/opengl/libs/GLES2/` | ~50 | GLES2 trampoline |
+| `eglApi.cpp` | `frameworks/native/opengl/libs/EGL/` | ~660 | EGL API entry points |
+| `egl.cpp` | `frameworks/native/opengl/libs/EGL/` | ~220 | Driver initialization |
+| `egl_platform_entries.cpp` | `frameworks/native/opengl/libs/EGL/` | ~2,700 | Platform EGL implementation |
+| `Loader.cpp` | `frameworks/native/opengl/libs/EGL/` | ~800 | Driver loading |
+| `MultifileBlobCache.cpp` | `frameworks/native/opengl/libs/EGL/` | ~1,050 | Shader cache |
+| `egl_display.cpp` | `frameworks/native/opengl/libs/EGL/` | ~560 | Display management |
+| `egl_object.cpp` | `frameworks/native/opengl/libs/EGL/` | ~350 | Object reference counting |
+| `gl2.cpp` | `frameworks/native/opengl/libs/GLES2/` | ~300 | GLES2 trampolines |
 
 ### 13.39.2 Vulkan Stack
 
 | File | Path | Lines | Purpose |
 |------|------|-------|---------|
-| `api.cpp` | `frameworks/native/vulkan/libvulkan/` | ~1,484 | API layer / layer management |
-| `driver.cpp` | `frameworks/native/vulkan/libvulkan/` | ~1,953 | Driver loading / HAL interface |
-| `swapchain.cpp` | `frameworks/native/vulkan/libvulkan/` | ~2,000 | Swapchain ↔ ANativeWindow |
-| `layers_extensions.cpp` | `frameworks/native/vulkan/libvulkan/` | ~500 | Layer/extension discovery |
-| `api_gen.cpp` | `frameworks/native/vulkan/libvulkan/` | ~1,000 | Generated dispatch |
-| `driver_gen.cpp` | `frameworks/native/vulkan/libvulkan/` | ~800 | Generated driver dispatch |
-| `null_driver.cpp` | `frameworks/native/vulkan/nulldrv/` | ~500 | Null driver for testing |
-| `vkprofiles.cpp` | `frameworks/native/vulkan/vkprofiles/` | ~200 | Android baseline profiles |
+| `api.cpp` | `frameworks/native/vulkan/libvulkan/` | ~1,550 | API layer / layer management |
+| `driver.cpp` | `frameworks/native/vulkan/libvulkan/` | ~2,100 | Driver loading / HAL interface |
+| `swapchain.cpp` | `frameworks/native/vulkan/libvulkan/` | ~3,500 | Swapchain ↔ ANativeWindow |
+| `layers_extensions.cpp` | `frameworks/native/vulkan/libvulkan/` | ~710 | Layer/extension discovery |
+| `api_gen.cpp` | `frameworks/native/vulkan/libvulkan/` | ~3,260 | Generated dispatch |
+| `driver_gen.cpp` | `frameworks/native/vulkan/libvulkan/` | ~1,050 | Generated driver dispatch |
+| `null_driver.cpp` | `frameworks/native/vulkan/nulldrv/` | ~1,840 | Null driver for testing |
+| `vkprofiles.cpp` | `frameworks/native/vulkan/vkprofiles/` | ~225 | Android baseline profiles |
 
 ### 13.39.3 HWUI Stack
 
 | File | Path | Lines | Purpose |
 |------|------|-------|---------|
-| `RenderNode.h` | `frameworks/base/libs/hwui/` | 452 | View mirror in native |
-| `RenderProperties.h` | `frameworks/base/libs/hwui/` | 627 | Visual property storage |
-| `Canvas.h` | `frameworks/base/libs/hwui/hwui/` | 298 | Abstract drawing API |
-| `SkiaCanvas.h` | `frameworks/base/libs/hwui/` | 241 | Skia Canvas implementation |
-| `DisplayList.h` | `frameworks/base/libs/hwui/` | 342 | Command stream container |
-| `CanvasOpTypes.h` | `frameworks/base/libs/hwui/canvas/` | 75 | Operation type enum |
-| `RenderThread.cpp` | `frameworks/base/libs/hwui/renderthread/` | 486 | Singleton render thread |
-| `DrawFrameTask.cpp` | `frameworks/base/libs/hwui/renderthread/` | 227 | Frame sync + draw task |
-| `CanvasContext.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~1,000 | Window rendering coordinator |
-| `EglManager.cpp` | `frameworks/base/libs/hwui/renderthread/` | 789 | EGL context management |
-| `VulkanManager.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~1,200 | Vulkan context management |
-| `VulkanSurface.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~500 | Vulkan window surface |
-| `CacheManager.cpp` | `frameworks/base/libs/hwui/renderthread/` | 364 | GPU memory management |
-| `SkiaOpenGLPipeline.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | 306 | GL rendering pipeline |
-| `SkiaVulkanPipeline.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | 227 | Vulkan rendering pipeline |
-| `SkiaGpuPipeline.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | 195 | Common GPU pipeline |
-| `RenderNodeDrawable.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | ~400 | Node drawing logic |
-| `RenderProxy.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~300 | UI thread proxy |
+| `RenderNode.h` | `frameworks/base/libs/hwui/` | ~470 | View mirror in native |
+| `RenderProperties.h` | `frameworks/base/libs/hwui/` | ~630 | Visual property storage |
+| `Canvas.h` | `frameworks/base/libs/hwui/hwui/` | ~300 | Abstract drawing API |
+| `SkiaCanvas.h` | `frameworks/base/libs/hwui/` | ~240 | Skia Canvas implementation |
+| `DisplayList.h` | `frameworks/base/libs/hwui/` | ~345 | Command stream container |
+| `CanvasOpTypes.h` | `frameworks/base/libs/hwui/canvas/` | ~75 | Operation type enum |
+| `RenderThread.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~510 | Singleton render thread |
+| `DrawFrameTask.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~225 | Frame sync + draw task |
+| `CanvasContext.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~1,380 | Window rendering coordinator |
+| `EglManager.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~790 | EGL context management |
+| `VulkanManager.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~910 | Vulkan context management |
+| `VulkanSurface.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~570 | Vulkan window surface |
+| `CacheManager.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~380 | GPU memory management |
+| `SkiaOpenGLPipeline.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | ~305 | GL rendering pipeline |
+| `SkiaVulkanPipeline.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | ~225 | Vulkan rendering pipeline |
+| `SkiaGpuPipeline.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | ~195 | Common GPU pipeline |
+| `RenderNodeDrawable.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | ~510 | Node drawing logic |
+| `RenderProxy.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~600 | UI thread proxy |
 
 ### 13.39.4 System Properties Reference
 
@@ -9080,9 +9278,7 @@ graph TD
 | `debug.hwui.use_buffer_age` | `true` | Enable buffer age optimization |
 | `debug.hwui.trace_gpu_resources` | `false` | Trace GPU memory |
 | `debug.hwui.show_dirty_regions` | `false` | Flash dirty regions |
-| `persist.sys.gpu.context_priority` | `0` | EGL context priority |
-| `debug.hwui.disable_vsync` | `false` | Disable VSYNC synchronization |
-| `debug.hwui.wait_for_gpu_completion` | `false` | Force GPU fence before swap |
+| `ro.hwui.use_vulkan` | `false` | Select SkiaVulkan as the default pipeline |
 
 ### 13.39.5 Mermaid: Complete Data Flow
 
@@ -9104,7 +9300,7 @@ graph TD
     subgraph "HWUI Native (UI Thread)"
         B1["RenderNode.mutateStagingProperties()"]
         B2["Canvas.create_recording_canvas()"]
-        B3["SkPictureRecorder.beginRecording()"]
+        B3["RecordingCanvas reset<br/>(DisplayListData)"]
         B4["SkCanvas draw operations"]
         B5["RenderNode.setStagingDisplayList()"]
     end
@@ -9118,7 +9314,7 @@ graph TD
         C6["CanvasContext.draw()"]
         C7["SkiaPipeline.renderFrame()"]
         C8["RenderNodeDrawable.draw()"]
-        C9["SkPicture.playback()"]
+        C9["DisplayListData replay"]
     end
 
     subgraph "GPU Layer"
@@ -9131,7 +9327,7 @@ graph TD
 
     subgraph "Composition Layer"
         E1["BufferQueue.queueBuffer()"]
-        E2["SurfaceFlinger.onMessageInvalidate()"]
+        E2["SurfaceFlinger::commitTransactions()"]
         E3["HWC.validate()"]
         E4["RenderEngine (if CLIENT)"]
         E5["HWC.present()"]
@@ -9200,7 +9396,7 @@ graph TD
 | **GLES** | OpenGL for Embedded Systems |
 | **Graphite** | Skia's next-generation GPU backend |
 | **Gralloc** | Graphics memory allocator HAL |
-| **GrContext** | Skia's GPU context object |
+| **GrDirectContext** | Skia's GPU context object (formerly named GrContext) |
 | **HAL** | Hardware Abstraction Layer |
 | **HWC** | Hardware Composer |
 | **HWUI** | Hardware UI (Android's native rendering library) |
@@ -9294,17 +9490,20 @@ const bool canOffloadGpuComposition =
 ```
 
 When `canOffloadGpuComposition` holds and no main-thread client composition is required,
-SurfaceFlinger lets virtual GPU displays composite asynchronously on the RenderEngine
-thread, returning a future for the present fence rather than blocking the main thread.
+SurfaceFlinger hands the virtual display's whole composition pass to a
+`BackgroundExecutor` worker thread running a second `CompositionEngine` instance
+(which shares the one threaded RenderEngine -- that is why `isThreaded()` gates the
+feature), returning a `std::future<void>` that signals when the offloaded
+composition completes, rather than blocking the main thread.
 
 ```mermaid
 graph TD
     A["SurfaceFlinger main thread"] --> B{"offload_gpu_composition<br/>and isThreaded()?"}
     B -->|"No"| C["Composite on main thread<br/>(blocking)"]
-    B -->|"Yes (virtual display)"| D["Enqueue Work lambda"]
-    D --> E["RenderEngine thread<br/>(threadMain drains queue)"]
-    E --> F["GPU command record + submit"]
-    F --> G["Present fence future<br/>returned to main thread"]
+    B -->|"Yes (virtual display)"| D["Post to BackgroundExecutor"]
+    D --> E["BackgroundExecutor thread:<br/>mOffloadedCompositionEngine->present()"]
+    E --> F["Shared threaded RenderEngine:<br/>GPU command record + submit"]
+    F --> G["std::future&lt;void&gt; completion<br/>returned to main thread"]
 
     style A fill:#9C27B0,color:#fff
     style E fill:#2196F3,color:#fff
@@ -9355,9 +9554,12 @@ endpoints:
   and reaps them via a `DeathRecipient` when the client dies.
 
 On the compositor side a layer carries a `renderCommandBufferFrameId` through its
-`LayerFECompositionState`, and SurfaceFlinger handles
-`eRenderCommandBufferChanged` / `eRenderCommandBufferFrameIdChanged` transaction
-bits (`SurfaceFlinger.cpp`, around line 6016) to pick up the right recorded frame.
+`LayerFECompositionState`. The `eRenderCommandBufferFrameIdChanged` transaction bit
+is handled in `SurfaceFlinger.cpp` (around line 6016), while
+`eRenderCommandBufferChanged` is handled in the front end
+(`FrontEnd/RequestedLayerState.cpp`, lines 195-210) -- which is also where
+`consumerAcquire(renderCommandBufferFrameId)` and `getCurrentBuffer()` are invoked
+to pick up the right recorded frame.
 There is even a `--render-command-buffer` dumpsys hook
 (`dumpRenderCommandBuffers`, `SurfaceFlinger.cpp` line 7122) that dumps a layer's
 recorded buffer to a file. So unlike RenderEngineThreaded, this is genuinely
@@ -9468,7 +9670,8 @@ that context, and submits GPU work. With OOPR the same `CanvasContext::draw()` -
 `SkiaIpcPipeline::draw()` call (`SkiaIpcPipeline.cpp:157`) instead records the frame into
 the `IPCRecordingCanvas` and serializes it into the RenderCommandBuffer. The GPU half is
 simply absent on the client: `makeCurrent()` returns `MakeCurrentResult::AlreadyCurrent`
-and `isContextReady()` is hard-coded `true` (`SkiaIpcPipeline.cpp:148`) because there is
+(`SkiaIpcPipeline.cpp:148`) and `isContextReady()` is hard-coded `true`
+(`SkiaIpcPipeline.h:86`) because there is
 no EGL surface or Vulkan device to make current. The only context-ish call that survives
 is `mRenderThread.getGrContext()` when allocating a layer's backing
 (`SkiaIpcPipeline.cpp:138`), which borrows the RenderThread's shared context for
@@ -9504,7 +9707,8 @@ resource a frame references and uses two strategies depending on where the pixel
   `ComposerService::getComposerService()->registerGraphicBuffers(registerInfo)`. Every
   registration carries the client's `renderResourceToken` -- a `BBinder` the client owns
   -- so the server can scope the buffers to that client.
-- **Heap bitmaps** have no GraphicBuffer, so `registerBitmap()` instead emits an inline
+- **Heap bitmaps** have no GraphicBuffer, so `registerBitmap()` queues them, and the
+  same per-frame `sendPendingBitmapRegistrations()` flush emits an inline
   `UploadBitmap` op (`TYPE_UPLOADBITMAP`) into the command buffer's upload region, and
   `FreeBitmap` (`TYPE_FREEBITMAP`) when the image is dropped.
 
@@ -9646,7 +9850,7 @@ if (snapshot.renderResourceToken) {
 ```
 
 Two windows of the same app resolve to the *same* server cache; two different apps get
-two different caches. The server-side `mCaches` map (13.41.4 / `RenderResourceCache.cpp`)
+two different caches. The server-side `mCaches` map (13.41.3 / `RenderResourceCache.cpp`)
 therefore holds one `IPCServerResourceCache` per client process, and the `DeathRecipient`
 reaps an entire process's resources in one `mCaches.erase(token)` when that process dies.
 
@@ -9750,7 +9954,8 @@ moves through five stages:
        while (!mRenderRegion->mCommandBuffers.empty()) {
            uint64_t lo = mRenderRegion->mCommandBuffers.getLo();
            uint64_t hi = mRenderRegion->mCommandBuffers.getHi();
-           // stop at the requested frame OR the newest available one
+           // Skip until we get to the requested frameNumber OR
+           // the latest available frame.
            if (lo + 1 >= frameNumber || lo + 1 == hi) {
                return;
            }
@@ -9851,7 +10056,8 @@ graph TB
 single-consumer ring, neither side ever takes a cross-process lock. `consumerAcquire` bounds
 latency by skipping stale frames to the newest, so a momentarily slow compositor never stalls
 the app or accumulates a backlog -- it simply drops to the current frame -- and the four-slot
-ring caps how far ahead a fast app can record before it must wait.
+ring caps how far ahead a fast app can record: once the ring is full, `canRecord()`
+returns false and the frame is dropped rather than queued or waited on.
 
 **System-wide wins compound (13.41.7).** Collapsing every visible window onto SurfaceFlinger's
 single GPU context removes per-app GPU context-switch overhead and duplicated driver memory,
@@ -10047,8 +10253,9 @@ buffer-producing app shows its previous buffer today. The queue is a lock-free
 single-producer/single-consumer ring and `consumerAcquire(frameNumber)` never blocks: it
 advances to the requested frame or the newest available one, dropping stale frames. So one
 client's slowness cannot stall the compositor or any other client, and a *fast* client that
-runs ahead is bounded too -- the four-slot ring caps how far it can record before it must wait,
-and the consumer skips to the newest frame, so no backlog accumulates. OOPR preserves the
+runs ahead is bounded too -- once the four-slot ring is full, `canRecord()` returns false
+and the frame is dropped rather than queued, and the consumer skips to the newest
+frame, so no backlog accumulates. OOPR preserves the
 per-client frame-drop isolation of the classic buffer model rather than coupling clients
 together.
 
@@ -10193,9 +10400,11 @@ descriptor through `getLutFileDescriptor()`.
 SurfaceFlinger's composition engine tracks up to three LUT sources per output layer in
 `OutputLayerCompositionState`
 (`frameworks/native/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/OutputLayerCompositionState.h`):
-the app-supplied `luts`, HWC-supplied `appLuts`, and `generatedLuts` computed from the
-buffer's Adaptive Global Tone Map (AGTM) metadata. The generation happens in
-`OutputLayer::createLutsFromAgtm()`
+the app-supplied `appLuts`, the HWC-supplied `hwc->luts` (filled in by
+`OutputLayer::applyDeviceLayerLut()` from the HWC's command result), and
+`generatedLuts` computed from the buffer's Adaptive Global Tone Map (AGTM) metadata.
+The generation happens in the file-local `createLutsFromAgtm()` helper, called from
+`OutputLayer::updateLuts()`
 (`frameworks/native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp`,
 line 76), which parses SMPTE 2094-50 AGTM data, derives a target HDR/SDR ratio from the
 display's brightness and SDR white point, and bakes a tone-mapping LUT into an ashmem
@@ -10217,7 +10426,7 @@ mmaps the LUT file descriptor and builds one runtime shader per `LutProperties` 
 
 ```mermaid
 graph TD
-    A["HDR buffer<br/>(AGTM / SMPTE 2094-50)"] --> B["OutputLayer::createLutsFromAgtm()"]
+    A["HDR buffer<br/>(AGTM / SMPTE 2094-50)"] --> B["createLutsFromAgtm()<br/>(via OutputLayer::updateLuts)"]
     B --> C["gui::DisplayLuts<br/>(ashmem fd + LutProperties)"]
     C --> D{"Composition path"}
     D -->|"HWC (DEVICE)"| E["HWC applies LUT<br/>in display hardware"]
@@ -10258,11 +10467,15 @@ otherwise to the Ganesh engines:
 ```cpp
 // frameworks/native/libs/renderengine/RenderEngine.cpp, line 43
 if (args.skiaBackend == SkiaBackend::Graphite) {
-    // ...
-    return android::renderengine::skia::GraphiteVkRenderEngine::create(args);
+    // ... GraphiteVkRenderEngine::create(args)
 }
 // ... else GaneshVkRenderEngine::create(args) or the GL engine
 ```
+
+(The chosen backend factory is actually wrapped in a `createInstanceFactory`
+lambda -- which also initializes the Graphite disk cache -- and handed to
+`RenderEngineThreaded::create()`, which `RenderEngine::create()` always
+returns.)
 
 Supporting code lives under
 `frameworks/native/libs/renderengine/skia/compat/` (for example
@@ -10513,7 +10726,6 @@ data_sources: {
             ftrace_events: "ftrace/print"
             atrace_categories: "gfx"
             atrace_categories: "view"
-            atrace_categories: "hwui"
             atrace_categories: "input"
             atrace_apps: "com.example.myapp"
         }
@@ -10542,7 +10754,7 @@ graph LR
         A["UI Thread<br/>- Choreographer#doFrame<br/>- performTraversals<br/>- draw"]
         B["RenderThread<br/>- DrawFrames<br/>- syncFrameState<br/>- flush commands"]
         C["GPU Completion<br/>- Actual GPU work time"]
-        D["SurfaceFlinger<br/>- onMessageInvalidate<br/>- composite"]
+        D["SurfaceFlinger<br/>- commit<br/>- composite"]
         E["HWC<br/>- present"]
     end
 
@@ -10557,7 +10769,7 @@ graph LR
 | Trace Event | Source File | Meaning |
 |-------------|------------|---------|
 | `Choreographer#doFrame` | `Choreographer.java` | VSYNC-triggered frame start |
-| `Record View#draw()` | `ViewRootImpl.java` | Canvas recording phase |
+| `Record View#draw()` | `ThreadedRenderer.java` | Canvas recording phase |
 | `DrawFrames <vsyncId>` | `DrawFrameTask.cpp:91` | RenderThread frame start |
 | `syncFrameState` | `DrawFrameTask.cpp:170` | Property/DL sync |
 | `flush commands` | `SkiaOpenGLPipeline.cpp:181` | GPU command submission |
@@ -10629,13 +10841,14 @@ The on-device GPU rendering profiler visualizes frame timing as color-coded bars
 adb shell setprop debug.hwui.profile visual_bars
 ```
 
-The bars show:
+The bars show (`FrameInfoVisualizer.cpp`):
 
 - **Blue**: Draw (UI thread)
-- **Purple**: Prepare
+- **Light blue**: Prepare (sync)
 - **Red**: Process (RenderThread)
-- **Orange**: Execute (GPU + swap)
-- **Green line**: 16ms budget threshold
+- **Orange**: Execute (swap/completion)
+- **Threshold lines**: green, lime, and red horizontal lines at 80%, 100%, and
+  150% of the frame budget (the display's frame interval, not a fixed 16 ms)
 
 ### 13.46.8 ANGLE Debugging
 
@@ -10677,7 +10890,7 @@ adb shell /data/nativetest64/hwui_unit_tests/hwui_unit_tests
 
 # Run rendering tests
 adb shell am instrument -w \
-    android.uirendering.cts/androidx.test.runner.AndroidJUnitRunner
+    android.uirendering.cts/android.uirendering.cts.runner.UiRenderingRunner
 ```
 
 When modifying the Vulkan loader:
@@ -10701,15 +10914,17 @@ for offline analysis:
 # Enable SKP capture
 adb shell setprop debug.hwui.capture_skp_enabled true
 
-# Capture frames from a specific app
-adb shell setprop debug.hwui.capture_skp_filename \
-    /data/local/tmp/frame.skp
+# Optionally capture several consecutive frames into one file
+adb shell setprop debug.hwui.capture_skp_frames 1
 
-# Trigger capture (the next frame will be captured)
-adb shell kill -10 $(pidof com.example.myapp)
+# Setting (or changing) the filename property triggers the capture:
+# the app process itself writes the file, so target a path it can
+# write, e.g. its own cache directory
+adb shell setprop debug.hwui.skp_filename \
+    /data/data/com.example.myapp/cache/frame.skp
 
 # Pull the captured file
-adb pull /data/local/tmp/frame.skp
+adb pull /data/data/com.example.myapp/cache/frame.skp
 
 # Analyze with Skia's viewer tool or https://debugger.skia.org
 ```
@@ -10761,12 +10976,13 @@ For detailed GPU timing analysis:
 # Enable GPU completion fence timestamps
 adb shell setprop debug.hwui.profile true
 
-# The timing data includes:
-# - handlePlayback: Time to issue GPU commands
-# - sync: Time for frame state sync
-# - draw: Time for GPU command recording
-# - dequeueBuffer: Time to acquire a buffer
-# - queueBuffer: Time to submit a buffer
+# The recorded values are FrameInfoIndex entries (FrameInfo.h),
+# including:
+# - SyncStart: start of frame state sync
+# - IssueDrawCommandsStart: start of GPU command issue
+# - SwapBuffers / SwapBuffersCompleted: buffer swap timing
+# - DequeueBufferDuration / QueueBufferDuration: buffer acquire/submit costs
+# - GpuCompleted / CommandSubmissionCompleted: GPU completion timing
 ```
 
 ### 13.46.14 Inspecting BufferQueue State
@@ -10790,10 +11006,13 @@ adb shell dumpsys SurfaceFlinger
 ### 13.46.15 Hardware Composer Debugging
 
 ```bash
-# Dump HWC state
-adb shell dumpsys SurfaceFlinger --hwc
+# Per-layer HWC composition decisions
+adb shell dumpsys SurfaceFlinger --hwclayers
 
-# Shows for each display:
+# Display state (active config, resolution, refresh rate)
+adb shell dumpsys SurfaceFlinger --displays
+
+# Together these show:
 # - Active config (resolution, refresh rate)
 # - Layer composition decisions
 # - Hardware overlay usage
@@ -10829,7 +11048,7 @@ EOF
 # Force all rendering through GPU composition (no HWC overlays)
 adb shell service call SurfaceFlinger 1008 i32 1
 
-# Disable GPU composition (force HWC overlays only)
+# Stop forcing GPU composition (return to normal HWC decisions)
 adb shell service call SurfaceFlinger 1008 i32 0
 
 # Show surface update flashes
@@ -10862,17 +11081,19 @@ adb install renderdoc-server.apk
 # Watch for jank in real-time
 adb shell dumpsys gfxinfo com.example.myapp framestats
 
-# Output includes per-frame columns:
-# FLAGS|INTENDED_VSYNC|VSYNC|OLDEST_INPUT_EVENT|
-# NEWEST_INPUT_EVENT|HANDLE_INPUT_START|
-# ANIMATION_START|PERFORM_TRAVERSALS_START|
-# DRAW_START|SYNC_QUEUED|SYNC_START|
-# ISSUE_DRAW_COMMANDS_START|SWAP_BUFFERS|
-# FRAME_COMPLETED|DEADLINE|GPU_COMPLETED
+# Output columns follow FrameInfoNames (FrameInfo.cpp), 25 in total:
+# Flags,FrameTimelineVsyncId,IntendedVsync,Vsync,InputEventId,
+# HandleInputStart,AnimationStart,PerformTraversalsStart,DrawStart,
+# FrameDeadline,FrameStartTime,FrameInterval,WorkloadTarget,
+# AnimationTime,SyncQueued,SyncStart,IssueDrawCommandsStart,
+# SwapBuffers,FrameCompleted,DequeueBufferDuration,
+# QueueBufferDuration,GpuCompleted,SwapBuffersCompleted,
+# DisplayPresentTime,CommandSubmissionCompleted
 ```
 
-Each column is a nanosecond timestamp. The difference between consecutive columns
-reveals exactly where time was spent in each frame phase.
+Most columns are nanosecond timestamps (`DequeueBufferDuration` and
+`QueueBufferDuration` are durations). The difference between consecutive
+timestamps reveals exactly where time was spent in each frame phase.
 
 ---
 
@@ -10883,17 +11104,17 @@ hardware, examining every layer in detail:
 
 | Layer | Key Files | Lines of Code |
 |-------|-----------|---------------|
-| EGL/GLES Loader | `eglApi.cpp`, `egl.cpp`, `Loader.cpp` | ~2,500 |
+| EGL/GLES Loader | `eglApi.cpp`, `egl.cpp`, `Loader.cpp` | ~1,700 |
 | MultifileBlobCache | `MultifileBlobCache.cpp/.h` | ~1,300 |
-| Vulkan Loader | `api.cpp`, `driver.cpp`, `swapchain.cpp` | ~5,400 |
+| Vulkan Loader | `api.cpp`, `driver.cpp`, `swapchain.cpp` | ~7,200 |
 | HWUI Core | `RenderNode.h`, `RenderProperties.h`, `Canvas.h` | ~1,400 |
-| HWUI Display List | `DisplayList.h`, `CanvasOpTypes.h` | ~400 |
-| RenderThread | `RenderThread.cpp`, `DrawFrameTask.cpp` | ~710 |
-| EglManager | `EglManager.cpp` | ~789 |
-| VulkanManager | `VulkanManager.cpp` | ~1,200 |
-| CacheManager | `CacheManager.cpp` | ~364 |
-| SkiaGL Pipeline | `SkiaOpenGLPipeline.cpp` | ~306 |
-| SkiaVulkan Pipeline | `SkiaVulkanPipeline.cpp` | ~227 |
+| HWUI Display List | `DisplayList.h`, `CanvasOpTypes.h` | ~420 |
+| RenderThread | `RenderThread.cpp`, `DrawFrameTask.cpp` | ~740 |
+| EglManager | `EglManager.cpp` | ~790 |
+| VulkanManager | `VulkanManager.cpp` | ~910 |
+| CacheManager | `CacheManager.cpp` | ~380 |
+| SkiaGL Pipeline | `SkiaOpenGLPipeline.cpp` | ~305 |
+| SkiaVulkan Pipeline | `SkiaVulkanPipeline.cpp` | ~225 |
 | Skia (external) | `src/gpu/ganesh/`, `include/core/` | ~500,000+ |
 
 The architecture reflects decades of evolution:
@@ -10905,7 +11126,8 @@ The architecture reflects decades of evolution:
 5. **Android 7.0**: Vulkan 1.0 support
 6. **Android 9.0**: Skia-based pipeline (replacing legacy OpenGL display list renderer)
 7. **Android 10.0**: ANGLE integration for GL-on-Vulkan
-8. **Android 12.0**: Vulkan as default render pipeline on supported devices
+8. **Android 12.0**: SkiaVulkan pipeline productionized (opt-in per device via
+   `ro.hwui.use_vulkan`)
 9. **Android 13.0+**: Skia Graphite backend development begins
 10. **Android 17**: Graphite reaches production in SurfaceFlinger RenderEngine
     (`GraphiteVkRenderEngine`); display LUTs offload HDR tone mapping to per-layer Skia
