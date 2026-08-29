@@ -367,7 +367,7 @@ implicit-declaration check that all LP64 architectures share:
 ```go
 // build/soong/cc/config/arm64_device.go
 arm64Cflags = []string{
-    // Help catch common 32/66-bit errors.
+    // Help catch common 32/64-bit errors.
     // Common to all LP64 architectures.
     "-Werror=implicit-function-declaration",
 
@@ -617,7 +617,8 @@ LITTLE core flags (A53 or A55).
 ### 59.2.5 Cortex-A53 Erratum Workarounds
 
 The Cortex-A53, one of the most widely deployed ARM cores in history, has two
-notable hardware errata that AOSP works around at link time:
+notable hardware errata. Soong works around only one of them, erratum 843419,
+at link time:
 
 ```go
 // build/soong/cc/config/arm64_device.go
@@ -642,6 +643,13 @@ instructions appear near page boundaries. The linker flag
 insert veneer code to avoid them. Note that this fix is also applied to A72,
 A73, Kryo, and Exynos cores, because they may be paired with A53 LITTLE cores
 in big.LITTLE configurations.
+
+The other well-known A53 erratum, 835769 (a multiply-accumulate corner case),
+has no Soong-level workaround; ART tracks it separately in its
+instruction-set-feature model
+(`art/runtime/arch/arm64/instruction_set_features_arm64.h`) so the compiler can
+avoid emitting the problematic sequences -- section 59.8.8 shows the variant
+list ART consults for it.
 
 ### 59.2.6 ARM64 Toolchain Factory
 
@@ -749,8 +757,8 @@ x86/x86_64 images provide dramatically better performance during development.
 
 **Source files**:
 
-- `build/soong/cc/config/x86_device.go` (193 lines)
-- `build/soong/cc/config/x86_64_device.go` (200 lines)
+- `build/soong/cc/config/x86_device.go` (204 lines)
+- `build/soong/cc/config/x86_64_device.go` (213 lines)
 
 ### 59.3.1 x86 Architecture Variants
 
@@ -786,7 +794,9 @@ x86ArchVariantCflags = map[string][]string{
 }
 ```
 
-The x86_64 toolchain has the same set of microarchitecture variants:
+The x86_64 toolchain has nearly the same set of microarchitecture variants; it
+drops the `atom` entry and the `x86_64` alias, and its default maps to the
+baseline `-march=x86-64`:
 
 ```go
 // build/soong/cc/config/x86_64_device.go
@@ -795,7 +805,7 @@ x86_64ArchVariantCflags = map[string][]string{
     "alderlake":   []string{"-march=alderlake"},
     "broadwell":   []string{"-march=broadwell"},
     "goldmont":    []string{"-march=goldmont"},
-    // ... same variants as x86
+    // ... remaining variants as in x86 (but no "atom" or "x86_64" keys)
     "haswell":     []string{"-march=core-avx2"},
     "pantherlake": []string{"-march=pantherlake"},
     "skylake":     []string{"-march=skylake"},
@@ -861,6 +871,9 @@ x86Cflags = []string{
     // that could be called from JNI, so that movaps instruction
     // will work on assumed stack aligned local variables.
     "-mstackrealign",
+    // For stack allocations larger than a page, touch each page immediately
+    // to ensure we hit the guard page on stack overflow.
+    "-fstack-clash-protection",
 }
 ```
 
@@ -1139,7 +1152,7 @@ ISA string has grown a vector bit-manipulation extension:
 ```go
 // build/soong/cc/config/riscv64_device.go
 riscv64Cflags = []string{
-    // Help catch common 32/66-bit errors.
+    // Help catch common 32/64-bit errors.
     // Common to all LP64 architectures.
     "-Werror=implicit-function-declaration",
 
@@ -1254,18 +1267,24 @@ strategically important for RISC-V development:
 
 ```
 frameworks/libs/binary_translation/
-    assembler/        - Code generation backend
-    backend/          - Translation engine
-    decoder/          - Guest instruction decoder
-    guest_abi/        - ABI conversion layer
-    guest_loader/     - Library loading and linking
-    guest_state/      - CPU state abstraction
-    interpreter/      - Interpreted execution fallback
-    jni/              - JNI trampoline generation
-    native_bridge/    - NativeBridge interface implementation
-    android_api/      - Framework API proxies
-    lite_translator/  - Lightweight translation path
-    heavy_optimizer/  - Full optimization path
+    base/                 - Common utilities
+    cpu_emulation/        - The translation engine proper:
+        assembler/          - Code generation backend
+        backend/            - Translation engine
+        decoder/            - Guest instruction decoder
+        interpreter/        - Interpreted execution fallback
+        lite_translator/    - Lightweight translation path
+        heavy_optimizer/    - Full optimization path
+    exec_region/          - Executable code region management
+    guest_abi/            - ABI conversion layer
+    guest_loader/         - Library loading and linking
+    guest_os_primitives/  - Guest signal/thread/memory primitives
+    guest_state/          - CPU state abstraction
+    jni/                  - JNI trampoline generation
+    native_bridge/        - NativeBridge interface implementation
+    android_api/          - Framework API proxies
+    runtime/              - Translation runtime
+    tiny_loader/          - Minimal ELF loader
 ```
 
 The Berberis `enable_riscv64_to_x86_64.mk` file in the top directory reveals
@@ -1729,7 +1748,7 @@ $(TARGET_2ND_ARCH_VAR_PREFIX)TARGET_OUT_SHARED_LIBRARIES := \
 ## 59.6 Compiler Configuration
 
 The compiler configuration in AOSP is centralized in
-`build/soong/cc/config/global.go` (633 lines) and applies to all architectures.
+`build/soong/cc/config/global.go` (655 lines) and applies to all architectures.
 This file defines the common compilation flags, warning policies, debug
 settings, and Clang toolchain paths that form the baseline for every native
 build.
@@ -1840,10 +1859,12 @@ data via `--gc-sections`. This is critical for reducing binary size on mobile.
 local arrays or take the address of a local variable. The "strong" variant
 protects more functions than `-fstack-protector` but fewer than
 `-fstack-protector-all`, balancing security with performance. The companion
-flag `-fstack-clash-protection` is not in this global list because Clang does
-not support it for 32-bit (ILP32) ARM; instead the LP64 architectures (ARM64,
-RISC-V 64) add it in their per-architecture base cflags, as shown in sections
-59.2 and 59.4.1.
+flag `-fstack-clash-protection` is not in this global list -- the comment says
+it is unsupported in Clang for ILP32 -- so each of the LP64 architectures
+(ARM64, x86_64, RISC-V 64) adds it in its per-architecture base cflags, as
+shown in sections 59.2 and 59.4.1. In practice 32-bit x86 also carries the flag
+in `x86Cflags` (section 59.3.3) despite being ILP32, leaving 32-bit ARM as the
+only architecture built without it.
 
 **`-D_FORTIFY_SOURCE=3`**: The highest level of compile-time and runtime
 buffer overflow detection. Level 3 extends beyond the basic `memcpy` /
@@ -2045,7 +2066,6 @@ extraExternalCflags = []string{
     "-Wno-enum-compare",
     "-Wno-enum-compare-switch",
     "-Wno-null-pointer-arithmetic",
-    "-Wno-psabi",
     "-Wno-null-pointer-subtraction",
     "-Wno-string-concatenation",
     "-Wno-deprecated-non-prototype",
@@ -2053,7 +2073,6 @@ extraExternalCflags = []string{
     "-Wno-unused-but-set-variable",
     "-Wno-deprecated",
     "-Wno-tautological-constant-compare",
-    "-Wno-error=range-loop-construct",
 }
 ```
 
@@ -2062,7 +2081,6 @@ And the non-overridable flags for external code are even more permissive:
 ```go
 // build/soong/cc/config/global.go
 noOverrideExternalGlobalCflags = []string{
-    "-fcommon",
     "-Wno-format-insufficient-args",
     "-Wno-misleading-indentation",
     "-Wno-unused",
@@ -2077,12 +2095,16 @@ noOverrideExternalGlobalCflags = []string{
 }
 ```
 
-The `-fcommon` flag (marked with bug b/151457797) is particularly notable.
-Modern C compilers default to `-fno-common`, which makes tentative definitions
-of global variables into strong symbols. Many legacy C libraries rely on the
-old behavior where tentative definitions are "common" symbols that can be
-merged across translation units. Without `-fcommon`, these libraries fail to
-link.
+One further flag, `-fcommon`, is particularly notable. It is not a fixed entry
+in this list: the `NoOverrideExternalGlobalCflags` variable function appends it
+to the external no-override flags only when the release configuration's
+`ReleaseUseFnoCommonFor3pCode()` is false. Modern C compilers default to
+`-fno-common`, which makes tentative definitions of global variables into
+strong symbols. Many legacy C libraries rely on the old behavior where
+tentative definitions are "common" symbols that can be merged across
+translation units. Without `-fcommon`, these libraries fail to link -- so the
+release flag controls when third-party code is finally held to the stricter
+default.
 
 ### 59.6.10 Illegal Flags
 
@@ -2186,7 +2208,7 @@ device/generic/
     car/              - Android Automotive targets
     trusty/           - Trusted Execution Environment
     common/           - Shared resources
-    goldfish/         - Legacy emulator
+    goldfish/         - Android Emulator (ranchu) device tree
 ```
 
 ### 59.7.2 ARM64 Generic Device
@@ -2472,10 +2494,13 @@ DEFINE_IFUNC_FOR(strchr) {
 
 ### 59.8.3 Bionic: ARM 32-bit CPU-Variant String Functions
 
-ARM 32-bit bionic takes a different approach: instead of runtime ifunc dispatch,
-it compiles multiple CPU-variant-specific implementations and selects at build
-time based on the device's `TARGET_CPU_VARIANT`. The source tree contains
-separate directories for each CPU variant:
+ARM 32-bit bionic also uses runtime ifunc dispatch, but with a different
+selection mechanism. Every CPU-variant implementation is compiled
+unconditionally into libc -- they are all listed together under the single
+`arm:` `srcs:` block in `bionic/libc/Android.bp` -- and the resolvers in
+`bionic/libc/arch-arm/ifuncs.cpp` pick one at load time by reading the CPU name
+from `/dev/cpu_variant:arm`, rather than by consulting `HWCAP` bits as on
+ARM64. The source tree contains separate directories for each CPU variant:
 
 ```
 arch-arm/cortex-a7/string/memcpy.S    - Tuned for A7's in-order pipeline
@@ -2498,9 +2523,10 @@ the RISC-V Vector extension:
 
 ```
 bionic/libc/arch-riscv64/string/
-    memchr.S    memcmp.S    memcpy.S    memmove.S    memset.S
-    stpcpy.S    strcat.S    strchr.S    strcmp.S     strcpy.S
-    strlen.S    strncat.S   strncmp.S   strncpy.S    strnlen.S
+    memchr.S    memcmp.S    memcpy.S     memmove.S    memset.S
+    stpcpy.S    stpncpy.S   strcat.S     strchr.S     strchrnul.S
+    strcmp.S    strcpy.S    strlen.S     strncat.S    strncmp.S
+    strnlen.S   strrchr.S
 ```
 
 The copyright headers in these files attribute them to both "The Android Open
@@ -2517,7 +2543,7 @@ execution context in ways that C cannot express:
 |---|---|---|
 | `__bionic_clone.S` | `clone()` syscall wrapper | Must set up child stack and call entry point |
 | `_exit_with_stack_teardown.S` | Thread exit | Must deallocate own stack while running |
-| `setjmp.S` / `longjmp.S` | Non-local jumps | Must save/restore all callee-saved registers |
+| `setjmp.S` | Non-local jumps (defines both `setjmp` and `longjmp`) | Must save/restore all callee-saved registers |
 | `syscall.S` | Raw syscall interface | Must move args to syscall registers |
 | `vfork.S` | `vfork()` implementation | Must not clobber parent's stack frame |
 
@@ -2722,8 +2748,9 @@ walking, and exception handling.
 
 ### 59.8.10 ART: Multiple Feature Detection Strategies
 
-ART implements six different strategies for detecting CPU features, reflecting
-the reality that no single detection method is reliable across all devices:
+ART implements eight different entry points for detecting CPU features (seven
+construction methods plus `IntersectWithHwcap()`), reflecting the reality that
+no single detection method is reliable across all devices:
 
 ```cpp
 // art/runtime/arch/arm64/instruction_set_features_arm64.h (line 35-55)
@@ -3515,7 +3542,7 @@ architecture:
 |---|---|---|---|---|---|
 | Bits | 32 | 64 | 32 | 64 | 64 |
 | Clang Triple | `armv7a-linux-androideabi` | `aarch64-linux-android` | `i686-linux-android` | `x86_64-linux-android` | `riscv64-linux-android` |
-| Arch Variants | 4 | 10 | 15 | 14 | 0 |
+| Arch Variants (named) | 4 | 10 | 15 | 13 | 0 |
 | CPU Variants | 18 | 10 | 0 | 0 | 0 |
 | SIMD | NEON | NEON/SVE | SSE/AVX | SSE/AVX | RVV |
 | Default `-march=` | `armv7-a` | `armv8-a` | `prescott` | `x86-64` | `rv64gcv_zba_zbb_zbs_zvbb` |

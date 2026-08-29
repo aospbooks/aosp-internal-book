@@ -275,7 +275,7 @@ Represents a single test run.  It orchestrates the full pipeline:
 2. Prepare target devices (`ITargetPreparer`)
 3. Run tests (`IRemoteTest`)
 4. Collect results (`ITestInvocationListener`)
-5. Clean up (`ITargetCleaner`)
+5. Clean up (the preparers' own `tearDown`)
 
 **InvocationExecution** (`tools/tradefederation/core/src/com/android/tradefed/invoker/InvocationExecution.java`):
 The concrete execution logic that drives the phases above.  For sandboxed
@@ -289,7 +289,7 @@ specifies:
 
 ```xml
 <configuration description="Example test config">
-    <build_provider class="com.android.tradefed.build.DeviceBuildProvider" />
+    <build_provider class="com.android.tradefed.build.BootstrapBuildProvider" />
 
     <target_preparer class="com.android.tradefed.targetprep.DeviceSetup" />
     <target_preparer class="com.android.tradefed.targetprep.TestAppInstallSetup">
@@ -312,15 +312,24 @@ object via `OptionSetter`, which uses Java reflection and the `@Option`
 annotation:
 
 ```java
-public class AndroidJUnitTest implements IRemoteTest, IDeviceTest {
-    @Option(name = "package", description = "The test package to run.")
+// From InstrumentationTest, which AndroidJUnitTest extends
+public class InstrumentationTest
+        implements IDeviceTest, IRemoteTest, /* ... */ {
+    @Option(name = "package",
+            description = "The manifest package name of the Android test "
+                + "application to run.")
     private String mPackageName = null;
 
-    @Option(name = "runner", description = "The instrumentation runner.")
-    private String mRunnerName = "androidx.test.runner.AndroidJUnitRunner";
+    @Option(name = "runner",
+            description = "The instrumentation test runner class name to use. "
+                + "Will try to determine automatically if it is not specified.")
+    private String mRunnerName = null;
     // ...
 }
 ```
+
+Note that the runner is auto-detected from the installed test package when the
+`runner` option is left unset, rather than defaulting to a fixed class name.
 
 ### 57.2.4  Sharding
 
@@ -373,7 +382,8 @@ Key sharding-related classes:
 - `TestsPoolPoller`: Polls from a shared `ITestsPool`
 - `LocalPool`: In-process pool implementation
 - `RemoteDynamicPool`: gRPC-backed distributed pool
-- `ParentShardReplicate`: Replicates the parent invocation to each shard
+- `ParentShardReplicate`: Replicates the single-device target-preparer setup
+  across all devices that sharding will target
 
 ### 57.2.5  Retry Logic
 
@@ -432,8 +442,13 @@ public interface IRemoteTest {
 
 ### 57.2.7  Target Preparers
 
-Target preparers set up the device before tests run.  Key preparers in
-`tools/tradefederation/core/src/com/android/tradefed/targetprep/`:
+Target preparers set up the device before tests run.  Like the runners in
+57.2.6, preparers are split across two source roots: `DeviceSetup`,
+`DeviceFlashPreparer`, and `TestAppInstallSetup` live under
+`tools/tradefederation/core/src/com/android/tradefed/targetprep/`, while
+`RootTargetPreparer`, `StopServicesSetup`, and `PushFilePreparer` live under
+`tools/tradefederation/core/test_framework/com/android/tradefed/targetprep/`.
+Key preparers:
 
 | Preparer | Purpose |
 |----------|---------|
@@ -444,19 +459,22 @@ Target preparers set up the device before tests run.  Key preparers in
 | `StopServicesSetup` | Stop framework services during test |
 | `PushFilePreparer` | Push files to device |
 
-The `ITargetPreparer` interface and its counterpart `ITargetCleaner` provide
-setup/teardown semantics:
+The `ITargetPreparer` interface provides both setup and teardown semantics --
+`tearDown` is a default method on the interface itself:
 
 ```java
 public interface ITargetPreparer {
     void setUp(TestInformation testInfo) throws TargetSetupError,
         BuildError, DeviceNotAvailableException;
-}
-public interface ITargetCleaner extends ITargetPreparer {
-    void tearDown(TestInformation testInfo, Throwable e)
-        throws DeviceNotAvailableException;
+
+    default void tearDown(TestInformation testInformation, Throwable e)
+        throws DeviceNotAvailableException { /* ... */ }
 }
 ```
+
+The historical `ITargetCleaner` interface is deprecated and now an empty
+marker interface (`public interface ITargetCleaner extends ITargetPreparer {}`)
+retained only for compatibility; its `tearDown` moved to `ITargetPreparer`.
 
 ### 57.2.8  Suite Mode
 
@@ -521,7 +539,7 @@ Key details of each phase:
 
 **Build Provision** (`IBuildProvider`):
 
-- `DeviceBuildProvider`: Fetches build artifacts from a build server
+- `BootstrapBuildProvider`: Bootstraps build info by querying the test device
 - `LocalDeviceBuildProvider`: Uses locally built artifacts
 - `CommandLineBuildInfoBuilder`: Constructs build info from command-line args
 
@@ -599,7 +617,7 @@ TradeFed supports multiple result reporters simultaneously:
 | `TextResultReporter` | Plain text file |
 | `XmlResultReporter` | JUnit XML format |
 | `InvocationProtoResultReporter` | Protocol buffer format |
-| `FileInputStreamSource` | Log file attachments |
+| `SuiteResultReporter` | Suite-level result summary |
 | `LogSaverResultForwarder` | Saves logs to storage |
 
 Results include:
@@ -701,10 +719,11 @@ input into `TestInfo` objects that the runner can execute.
 
 ### 57.3.4  Test Execution and Filtering
 
-atest passes many options through to TradeFederation via extra args:
+atest passes many options through to TradeFederation via extra args, using the
+`_ARG_TO_CONST_MAP` dict defined in `tools/asuite/atest/atest_main.py`:
 
 ```python
-arg_maps = {
+_ARG_TO_CONST_MAP = {
     'all_abi': constants.ALL_ABI,
     'annotation_filter': constants.ANNOTATION_FILTER,
     'collect_tests_only': constants.COLLECT_TESTS_ONLY,
@@ -725,7 +744,7 @@ arg_maps = {
 
 Key filtering options:
 
-- `--test-filter` / `-tf`: Filter by class or method name
+- `--test-filter`: Filter by class or method name
 - `--annotation-filter`: Include/exclude by Java annotation
 - `--include-filter` / `--exclude-filter`: TradeFed-level module filtering
 - `--host`: Force host-side execution
@@ -1105,13 +1124,6 @@ arrays of test objects.
       "name": "FrameworksCoreTests_Presubmit"
     }
   ],
-  "ravenwood-presubmit": [
-    {
-      "name": "CtsUtilTestCasesRavenwood",
-      "host": true,
-      "file_patterns": ["[Rr]avenwood"]
-    }
-  ],
   "postsubmit-managedprofile-stress": [
     {
       "name": "ManagedProfileLifecycleStressTest"
@@ -1217,7 +1229,6 @@ repository root.
 # From cli_translator.py
 # Pattern used to identify comments in TEST_MAPPING.
 _COMMENTS_RE = re.compile(r'(?m)[\s\t]*(#|//).*|(\".*?\")')
-_COMMENTS = frozenset(['//', '#'])
 ```
 
 TEST_MAPPING supports comments (lines starting with `//` or `#`), which is
@@ -1813,7 +1824,7 @@ host-level orchestration, such as:
 A typical CTS device test module:
 
 ```
-cts/tests/net/
+cts/tests/tests/widget/
   Android.bp             -- Build rule (android_test)
   AndroidManifest.xml    -- Test APK manifest
   AndroidTest.xml        -- TradeFed configuration
@@ -1821,23 +1832,34 @@ cts/tests/net/
   res/                   -- Test resources (if needed)
 ```
 
-The build rule declares CTS suite membership:
+The build rule declares CTS suite membership
+(`cts/tests/tests/widget/Android.bp`):
 
 ```blueprint
 android_test {
-    name: "CtsNetTestCases",
+    name: "CtsWidgetTestCases",
     defaults: ["cts_defaults"],
-    srcs: ["src/**/*.java"],
+    static_libs: [
+        "ctstestrunner-axt",
+        "compatibility-device-util-axt",
+        // ...
+    ],
+    srcs: [
+        "src/**/*.java",
+        "src/**/*.kt",
+    ],
     test_suites: [
         "cts",
         "general-tests",
     ],
-    static_libs: [
-        "ctstestrunner-axt",
-        "compatibility-device-util-axt",
-    ],
+    // ...
 }
 ```
+
+(Note that some CTS modules live outside `cts/` -- for example
+`CtsNetTestCases` is defined in
+`packages/modules/Connectivity/tests/cts/net/Android.bp`, alongside the
+Connectivity Mainline module it tests.)
 
 ### 57.6.4  CtsVerifier
 
@@ -1912,27 +1934,34 @@ flowchart TB
 
 ### 57.6.7  CTS Defaults
 
-CTS tests use a shared `cts_defaults` to ensure consistent configuration:
+CTS tests use a shared `cts_defaults` to ensure consistent configuration.
+From `cts/Android.bp`:
 
 ```blueprint
 java_defaults {
     name: "cts_defaults",
-    platform_apis: true,
-    optimize: {
-        enabled: false,
+    defaults: ["cts_support_defaults"],
+    target: {
+        android: {
+            static_libs: ["platform-test-annotations"],
+        },
     },
-    static_libs: [
-        "ctstestrunner-axt",
-        "compatibility-device-util-axt",
-        "junit",
-        "truth",
-    ],
-    test_suites: [
-        "cts",
-        "general-tests",
-    ],
+    lint: {
+        strict_updatability_linting: false,
+        extra_check_modules: [
+            "AndroidFrameworkLintChecker",
+            "CtsLintChecker",
+        ],
+        // ...
+    },
 }
 ```
+
+The inherited `cts_support_defaults` disables dex preopt and optimization
+(`dex_preopt: {enabled: false}`, `optimize: {enabled: false}`).  Suite
+membership (`test_suites: ["cts", "general-tests"]`) and test-runner
+`static_libs` such as `ctstestrunner-axt` are declared per-module, not in
+`cts_defaults`.
 
 ### 57.6.8  CTS Sharding Across Devices
 
@@ -1948,8 +1977,12 @@ For large CTS runs (10,000+ test cases), sharding is essential.  CTS supports:
 cts-tradefed run cts --shard-count 4
 
 # Dynamic sharding with pool
-cts-tradefed run cts --enable-token-sharding
+cts-tradefed run cts --dynamic-sharding
 ```
+
+A separate option, `--enable-token-sharding`, makes sharding honor device
+tokens (for example a SIM-card capability), so that tests requiring a
+particular token only run on shards whose device provides it.
 
 ### 57.6.9  CTS Result Structure
 
@@ -1959,7 +1992,7 @@ CTS produces structured results:
 android-cts/results/
   YYYY.MM.DD_HH.MM.SS/
     test_result.xml           -- JUnit XML results
-    test_result_failures.html -- Human-readable failures
+    test_result_failures_suite.html -- Human-readable failures
     compatibility_result.xsl  -- XSL stylesheet
     result.pb                 -- Protocol buffer results
     invocation_summary.txt    -- Summary
@@ -2093,7 +2126,7 @@ vts-tradefed run vts --module VtsHalThermalV2_0TargetTest
 atest VtsHalThermalV2_0TargetTest
 
 # Kernel test
-atest vts_kernel_gki_test
+atest vts_generic_boot_image_test
 ```
 
 ### 57.7.7  VTS vs CTS: The Treble Boundary
@@ -2147,8 +2180,8 @@ vts-tradefed run vts --module VtsHalThermalTargetTest
 vts-tradefed run vts --include-filter 'VtsHal*Thermal*'
 ```
 
-VTS HAL tests use the `GTest` runner for C++ tests and `HostTest` for
-Python-based tests.  The test binaries are compiled against the HAL interface
+VTS HAL tests use the `GTest` runner for C++ target tests and
+`PythonBinaryHostTest` (or the Mobly runner) for Python-based host tests.  The test binaries are compiled against the HAL interface
 headers and linked against the HAL client libraries.
 
 ### 57.7.9  VINTF Manifest Testing
@@ -2337,24 +2370,26 @@ works but integrated more tightly with the platform build.
 
 ### 57.8.7  Manifest Properties
 
-Ravenwood generates a properties file for each test module:
+Ravenwood generates a properties file for each test module.  The contents are
+formatted as plain key=value lines and written with `android.WriteFileRule`,
+then installed as `ravenwood.properties`:
 
 ```go
-ctx.Build(pctx, android.BuildParams{
-    Rule:        genManifestProperties,
-    Description: "genManifestProperties",
-    Output:      propertiesOutputPath,
-    Args: map[string]string{
-        "targetSdkVersionInt":  strconv.Itoa(targetSdkVersionInt),
-        "targetSdkVersionRaw":  targetSdkVersion,
-        "packageName":          packageName,
-        "targetPackageName":    targetPackageName,
-        "instrumentationClass": instClassName,
-        "moduleName":           ctx.ModuleName(),
-        "resourceApk":          resApkName,
-        "targetResourceApk":    targetResApkName,
-    },
-})
+propertiesContents := fmt.Sprintf(`
+targetSdkVersionInt=%d
+targetSdkVersionRaw=%s
+packageName=%s
+targetPackageName=%s
+instrumentationClass=%s
+moduleName=%s
+resourceApk=%s
+targetResourceApk=%s
+`, targetSdkVersionInt, targetSdkVersion, packageName, targetPackageName,
+    instClassName, ctx.ModuleName(), resApkPath, targetResApkPath)
+
+propertiesContents = strings.TrimPrefix(propertiesContents, "\n")
+
+android.WriteFileRule(ctx, propertiesOutputPath, propertiesContents)
 ```
 
 ### 57.8.8  Example Ravenwood Test
@@ -2473,7 +2508,7 @@ the host by providing minimal, in-process replacements for the parts of the
 graphics stack it depends on.
 
 Source: `frameworks/base/libs/hostgraphics/` (~435 lines of C++ across five
-files, plus 12 header shims in `include/gui/` and `include/ui/`).
+files, plus 9 header shims in `include/gui/` and `include/ui/`).
 
 The library is wired in as a static dependency under the `host:` target of
 `libhwui`'s `Android.bp`:
@@ -2530,7 +2565,7 @@ shims, all of which would need their own host stubs.
 
 #### The header shims
 
-The 12 headers under `include/gui/` and `include/ui/` are the other half of
+The 9 headers under `include/gui/` and `include/ui/` are the other half of
 the trick. They are *not* the device headers — they are independent
 declarations with matching signatures (`Surface.h`, `BufferQueue.h`,
 `BufferItem.h`, `IGraphicBufferProducer.h`, `IGraphicBufferConsumer.h`,
@@ -3337,7 +3372,8 @@ LauncherInstrumentation launcher = new LauncherInstrumentation();
 Workspace workspace = launcher.getWorkspace();
 AllApps allApps = workspace.switchToAllApps();
 AppIcon calculator = allApps.getAppIcon("Calculator");
-calculator.launch();
+LaunchedAppState calculatorApp =
+    calculator.launch("com.android.calculator2");
 ```
 
 The advantage of TAPL over raw UIAutomator is that it encapsulates the UI
@@ -3369,24 +3405,36 @@ Flicker tests verify properties like:
 - No unexpected blank frames
 - Proper window animations
 
-```java
-@RunWith(FlickerTestRunner.class)
-public class OpenAppFromLauncherTest {
+Flicker tests are written in Kotlin against `FlickerBuilder`
+(`platform_testing/libraries/flicker/src/android/tools/flicker/FlickerBuilder.kt`).
+A parameterized runner (`FlickerParametersRunnerFactory`, backed by
+`FlickerJUnit4ClassRunner`) executes them; a `@FlickerBuilderProvider` method
+configures the trace via `setup {}` / `transitions {}` / `teardown {}` blocks,
+and assertions live in `@Test` methods:
+
+```kotlin
+@RunWith(Parameterized::class)
+@Parameterized.UseParametersRunnerFactory(
+    FlickerParametersRunnerFactory::class)
+class OpenAppFromLauncherTest(private val flicker: FlickerTest) {
+    private val instrumentation =
+        InstrumentationRegistry.getInstrumentation()
+    private val testApp = MessagingAppHelper(instrumentation)
+
     @FlickerBuilderProvider
-    public static FlickerBuilder buildFlicker(
-            FlickerTestParameter testSpec) {
-        return new FlickerBuilder(testSpec)
-            .withTransition(() -> {
-                testSpec.getDevice().launchApp("com.example.app");
-            })
-            .withAssertion(new WindowManagerTrace.Assertion(
-                "appWindowIsVisible") {
-                @Override
-                public void invoke(WindowManagerTrace trace) {
-                    trace.visibleWindowsShownMoreThanOneConsecutiveEntry(
-                        "com.example.app");
-                }
-            });
+    fun buildFlicker(): FlickerBuilder {
+        return FlickerBuilder(instrumentation).apply {
+            setup { device.pressHome() }
+            transitions { testApp.launchViaIntent(wmHelper) }
+            teardown { testApp.exit(wmHelper) }
+        }
+    }
+
+    @Test
+    fun appWindowIsVisible() {
+        flicker.assertWm {
+            isAppWindowVisible(testApp.componentMatcher)
+        }
     }
 }
 ```
@@ -3420,13 +3468,20 @@ The workflow:
 @Test
 public void testButtonAppearance() {
     View button = createTestButton();
-    ScreenshotTestRule.assertScreenshot(
+    Bitmap bitmap = captureToBitmap(button);
+    screenshotRule.assertBitmapAgainstGolden(
+        bitmap,
         "button_default_state",
-        button,
-        /* maxPixelDifference= */ 0.01f
+        new MSSIMMatcher()
     );
 }
 ```
+
+The `ScreenshotTestRule.assertBitmapAgainstGolden` entry point takes the
+captured bitmap, a golden identifier, and a `BitmapMatcher` (such as
+`MSSIMMatcher` for perceptual similarity or `PixelPerfectMatcher`); the
+higher-level `ViewScreenshotTestRule.screenshotTest(...)` helper wraps the
+capture-and-compare flow for a single view.
 
 Golden images are updated with `update_goldens.py` when intentional visual
 changes occur.
@@ -3672,8 +3727,9 @@ frequently declared final.
 
 ### 57.12.4  JUnit Integration
 
-AOSP includes both JUnit 4 and JUnit 5 (jupiter).  Most platform tests use
-JUnit 4 with the AndroidJUnit4 runner:
+AOSP ships JUnit 4 (`external/junit`, plus the parameterized-test extension in
+`external/junit-params`); JUnit 5 (Jupiter) is not part of the platform test
+stack.  Most platform tests use JUnit 4 with the AndroidJUnit4 runner:
 
 ```java
 @RunWith(AndroidJUnit4.class)
@@ -4104,22 +4160,23 @@ The fuzz config specifies metadata for the fuzzing infrastructure:
 type FuzzConfig struct {
     // Contacts
     Cc []string
-    // Component ID in bug tracker
-    Componentid int64
-    // Hotlist IDs
-    Hotlists []string
     // Human-readable description
     Description string
     // Attack vector
     Vector Vector
     // Service privilege level
-    ServicePrivilege string
+    Service_privilege ServicePrivilege
     // User modes affected
-    Users string
-    // Usage: shipped, internal, experimental
-    FuzzedCodeUsage string
+    Users UserData
+    // Usage: shipped, future_version, experimental
+    Fuzzed_code_usage FuzzedCodeUsage
+    // Component ID in bug tracker
+    Componentid *int64
+    // Hotlist IDs
+    Hotlists []string
     // Include in presubmit fuzzing
-    UseForPresubmit bool
+    Use_for_presubmit *bool
+    // ...
 }
 ```
 
@@ -4129,8 +4186,9 @@ The `Vector` field categorizes the attack surface:
 |--------|---------|
 | `remote` | Reachable from network (e.g., media codecs) |
 | `local_no_privileges_required` | Reachable by any app |
-| `local_privileged` | Requires special permissions |
-| `physical` | Requires physical access |
+| `local_privileges_required` | Requires a privileged/signature permission |
+| `local_with_developer_options` | Reachable only with Developer Options enabled |
+| `host_access` | Only callable on a PC host (build tooling) |
 
 ### 57.13.12  Continuous Fuzzing Infrastructure
 
@@ -4569,9 +4627,9 @@ setup and teardown of metric collection.
 
 **junit-rules/**: Custom JUnit rules for common Android test patterns:
 
-- `DeviceStateRule` -- Manage device state across tests
-- `RavenRule` -- Ravenwood-specific test rules
-- `ScreenRecordRule` -- Record screen during test
+- `ConditionalIgnore` / `ConditionalIgnoreRule` -- Skip tests when a
+  condition holds
+- `IgnoreOnPortrait` -- Skip tests on portrait-orientation devices
 
 **flag-helpers/**: Utilities for testing with Android feature flags:
 ```java
@@ -4589,10 +4647,14 @@ public void testNewFeature_disabled() {
 ```
 
 **health/**: Device health check utilities that verify device state before
-and after tests (battery level, disk space, network connectivity).
+and after tests (battery level, disk space, network connectivity).  Its
+`rules/` subdirectory also hosts general-purpose test rules such as
+`ScreenRecordRule`, which records the screen during a test.
 
-**runner/**: Custom test runner implementations that extend AndroidJUnitRunner
-with additional capabilities like test orchestration and result formatting.
+**runner/**: Parameterized JUnit runners (`ParameterizedAndroidJunit4`,
+`AndroidParameterizedRunner`, `RobolectricParameterizedRunner`, built as
+`platform-parametric-runner-lib`) that let the same parameterized test class
+run both on device and under Robolectric.
 
 **sts-common-util/**: Shared utilities for Security Test Suite tests, including
 exploit helpers and vulnerability verification tools.
@@ -4619,26 +4681,27 @@ android_test {
 ### 57.15.5  Device Collectors
 
 Device collectors (`platform_testing/libraries/device-collectors/`) gather
-metrics during test execution.  They implement the `IMetricCollector` interface
-and are configured in TradeFed XML:
+metrics during test execution.  Device-side collectors are
+`BaseMetricListener` subclasses (package `android.device.collectors`) that
+delegate the actual measurement to `ICollectorHelper` implementations in the
+`com.android.helpers` package under
+`platform_testing/libraries/collectors-helper/`.  On the TradeFed side, the
+`<metrics_collector>` XML tag names host-side `IMetricCollector`
+implementations that complement them:
 
 ```xml
 <metrics_collector
-    class="com.android.helpers.CpuUsageHelper" />
-<metrics_collector
-    class="com.android.helpers.MemoryUsageHelper" />
-<metrics_collector
-    class="com.android.helpers.PerfettoHelper">
-    <option name="pull-pattern-metric-key" value="perfetto_trace" />
+    class="com.android.tradefed.device.metric.FilePullerDeviceMetricCollector">
+    <option name="pull-pattern-keys" value="perfetto_file_path" />
 </metrics_collector>
 ```
 
-Common collectors:
+Common collector helpers (`com.android.helpers`):
 
 - **CpuUsageHelper**: Measures CPU utilization during tests
-- **MemoryUsageHelper**: Tracks memory allocation patterns
-- **BatteryStatsHelper**: Records battery consumption
-- **JankHelper**: Measures frame timing and jank
+- **DumpsysMeminfoHelper** / **FreeMemHelper**: Track memory usage patterns
+- **BatteryUsageStatsHelper**: Records battery consumption
+- **JankCollectionHelper**: Measures frame timing and jank
 - **PerfettoHelper**: Captures system-wide Perfetto traces
 - **AppStartupHelper**: Measures app cold/warm/hot start times
 
@@ -4648,7 +4711,7 @@ AUPT (`platform_testing/libraries/aupt-lib/`) provides a framework for
 long-running user-journey performance tests:
 
 ```java
-public class SettingsJourney extends AbstractAuptTestCase {
+public class SettingsJourney extends AuptTestCase {
     @Override
     protected void setUp() throws Exception {
         super.setUp();
@@ -4676,62 +4739,50 @@ The `platform_testing/libraries/annotations/` library provides custom
 annotations for Android tests:
 
 ```java
-@Retention(RetentionPolicy.RUNTIME)
-@Target({ElementType.METHOD, ElementType.TYPE})
-public @interface PlatformScenario {
-    String value() default "";
-}
-
+// HermeticTest.java: no account, network, or harness setup required
 @Retention(RetentionPolicy.RUNTIME)
 @Target({ElementType.METHOD, ElementType.TYPE})
 public @interface HermeticTest {
-    // Test does not require network or external services
-}
-
-@Retention(RetentionPolicy.RUNTIME)
-@Target({ElementType.METHOD, ElementType.TYPE})
-public @interface NonHermeticTest {
-    String reason() default "";
 }
 ```
+
+Other annotations in the same directory include `@Presubmit` and
+`@Postsubmit` (test-group scheduling), `@PlatinumTest` (high-reliability
+tests), `@AsbSecurityTest` (Android Security Bulletin tests), and
+`@RequiresFlagsEnabled` / `@RequiresFlagsDisabled` (feature-flag
+constraints).
 
 ### 57.15.8  Compatibility Common Util
 
 The `compatibility-common-util` library provides shared utilities for CTS/VTS:
 
-```java
-// Device info collection
-DeviceInfo deviceInfo = DeviceInfo.getInstance(device);
-String buildId = deviceInfo.getBuildId();
-String model = deviceInfo.getModel();
-int sdkVersion = deviceInfo.getSdkVersion();
-
-// Test filtering
-ModuleFilterHelper filter = new ModuleFilterHelper(
-    includeFilters, excludeFilters);
-boolean shouldRun = filter.shouldRunModule(moduleName);
-
-// Result aggregation
-ResultAggregator aggregator = new ResultAggregator();
-aggregator.addResult(moduleResult);
-TestResultSummary summary = aggregator.getSummary();
-```
+- `DevicePropertyInfo` -- collects `ro.*` build properties for the result
+  report's device-info section
+- `DynamicConfig` -- loads per-module dynamic configuration values pushed at
+  runtime
+- `ReportLog` / `MetricsXmlSerializer` -- structured metric logging for
+  performance results
+- `InvocationResult` / `IInvocationResult`, `ModuleResult` / `IModuleResult`,
+  `CaseResult` -- the result-object model for a suite invocation
+- `ResultHandler` -- parses and writes the `test_result.xml` result files
+- `AbiUtils` -- ABI name parsing and filtering helpers
 
 ### 57.15.9  Library Dependency Graph
 
 ```mermaid
 graph TB
     Test["Your Test Module"]
-    Test --> |"static_libs"| Runner["platform-test-runner"]
+    Test --> |"static_libs"| Runner["platform-parametric-runner-lib"]
     Test --> |"static_libs"| Annotations["platform-test-annotations"]
     Test --> |"static_libs"| Rules["platform-test-rules"]
     Test --> |"static_libs"| Collectors["collector-device-lib"]
     Test --> |"static_libs"| UIA["uiautomator-helpers"]
-    Test --> |"static_libs"| SysUI["systemui-helper-lib"]
-    Test --> |"static_libs"| Flags["flag-junit-helper"]
-    Collectors --> |"depends"| Metrics["metrics-helper"]
-    UIA --> |"depends"| TaplCommon["tapl-common"]
-    SysUI --> |"depends"| TaplCommon
+    Test --> |"static_libs"| SysUI["systemui-helper"]
+    Test --> |"static_libs"| Flags["flag-junit"]
+    Collectors --> |"depends"| Jank["jank-helper"]
+    Collectors --> |"depends"| Memory["memory-helper"]
+    Collectors --> |"depends"| Perfetto["perfetto-helper"]
+    SysUI --> |"depends"| TaplCommon["tapl-common"]
 ```
 
 ---
@@ -4751,8 +4802,9 @@ android_test {
     name: "CtsNetTestCases",
     test_suites: [
         "cts",
-        "mts-networking",
+        "mts-tethering",
         "general-tests",
+        // ...
     ],
 }
 ```
@@ -5220,49 +5272,52 @@ Write a screenshot test to catch visual regressions.
 
 **Step 1: Create the test source**
 
-```java
+```kotlin
 // packages/apps/MyApp/tests/screenshot/src/com/example/myapp/
-// ButtonScreenshotTest.java
-package com.example.myapp;
+// ButtonScreenshotTest.kt
+package com.example.myapp
 
-import android.view.View;
-import android.widget.Button;
-import androidx.test.ext.junit.runners.AndroidJUnit4;
-import platform.test.screenshot.DeviceEmulationSpec;
-import platform.test.screenshot.ScreenshotTestRule;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import android.widget.Button
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import platform.test.screenshot.DeviceEmulationSpec
+import platform.test.screenshot.Displays
+import platform.test.screenshot.GoldenPathManager
+import platform.test.screenshot.ViewScreenshotTestRule
+import platform.test.screenshot.matchers.MSSIMMatcher
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
 
-@RunWith(AndroidJUnit4.class)
-public class ButtonScreenshotTest {
+@RunWith(AndroidJUnit4::class)
+class ButtonScreenshotTest {
 
-    @Rule
-    public final ScreenshotTestRule screenshotRule =
-        new ScreenshotTestRule(DeviceEmulationSpec.PHONE);
+    @get:Rule
+    val screenshotRule = ViewScreenshotTestRule(
+        DeviceEmulationSpec.forDisplays(Displays.Phone).first(),
+        GoldenPathManager(
+            InstrumentationRegistry.getInstrumentation().context),
+        MSSIMMatcher()
+    )
 
     @Test
-    public void testPrimaryButton_defaultState() {
-        Button button = new Button(screenshotRule.getContext());
-        button.setText("Save");
-        button.setEnabled(true);
-
-        screenshotRule.assertBitmapAgainstGolden(
-            screenshotRule.render(button),
-            "primary_button_default"
-        );
+    fun testPrimaryButton_defaultState() {
+        screenshotRule.screenshotTest("primary_button_default") { activity ->
+            Button(activity).apply {
+                text = "Save"
+                isEnabled = true
+            }
+        }
     }
 
     @Test
-    public void testPrimaryButton_disabledState() {
-        Button button = new Button(screenshotRule.getContext());
-        button.setText("Save");
-        button.setEnabled(false);
-
-        screenshotRule.assertBitmapAgainstGolden(
-            screenshotRule.render(button),
-            "primary_button_disabled"
-        );
+    fun testPrimaryButton_disabledState() {
+        screenshotRule.screenshotTest("primary_button_disabled") { activity ->
+            Button(activity).apply {
+                text = "Save"
+                isEnabled = false
+            }
+        }
     }
 }
 ```
@@ -5272,7 +5327,7 @@ public class ButtonScreenshotTest {
 ```blueprint
 android_test {
     name: "MyAppScreenshotTests",
-    srcs: ["tests/screenshot/src/**/*.java"],
+    srcs: ["tests/screenshot/src/**/*.kt"],
     static_libs: [
         "platform-screenshot-diff-core",
         "androidx.test.runner",
@@ -5284,14 +5339,14 @@ android_test {
 
 **Step 3: Update golden images when designs change**
 
-```bash
-# Run tests to generate new golden images
-atest MyAppScreenshotTests -- \
-    --update-goldens
+Run the tests, pull the failure artifacts (the `.textpb` diff protos and
+actual `.png` screenshots) from the device, then point the update script at
+the directory containing them:
 
-# Or use the update script
+```bash
 python3 platform_testing/libraries/screenshot/update_goldens.py \
-    --module MyAppScreenshotTests
+    --source-directory /path/to/pulled/results \
+    --android-build-top "$ANDROID_BUILD_TOP"
 ```
 
 ### 57.17.8  Exercise 8: Robolectric with Mockito
@@ -5554,8 +5609,9 @@ updates the CL status.
 
 ### 57.17.14  Performance Optimization Tips
 
-1. **Minimize build targets**: Use `--build-output brief` with atest to reduce
-   build noise
+1. **Minimize build noise**: Use `--build-output logged` with atest to write
+   build output to a log file instead of streaming it (the only valid values
+   are `streamed` and `logged`)
 
 2. **Use --host**: Always add `--host` for host-only tests to skip device setup
 3. **Leverage caching**: atest caches test discovery results; avoid `--clear-cache`
@@ -5567,8 +5623,9 @@ updates the CL status.
 5. **Incremental testing**: Use `atest --test-mapping` to run only tests
    relevant to your change
 
-6. **Skip install**: Use `--steps test` to skip build+install when iterating on
-   test code changes (after initial build)
+6. **Skip install**: Use `atest -t <module>` to run only the test step when
+   iterating (after an initial build); the `-b`, `-i`, and `-t` flags select
+   the build, install, and test steps respectively
 
 ---
 
@@ -5649,7 +5706,7 @@ graph TB
 
     subgraph Frameworks["Test Frameworks"]
         GTest_F["GoogleTest (C++)"]
-        JUnit_F["JUnit 4/5 (Java)"]
+        JUnit_F["JUnit 4 (Java)"]
         Mockito_F["Mockito + Dexmaker"]
         Espresso_F["Espresso (UI)"]
         UIA_F["UIAutomator"]

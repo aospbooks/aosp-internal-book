@@ -198,7 +198,6 @@ graph TB
 
     CPS --> PropHal
     CPMS --> PHal
-    ICS --> CHal
     CHS --> CHal
     CEVS --> EHal
 
@@ -363,7 +362,9 @@ public abstract class VehicleStub {
 ```
 
 The concrete implementations `AidlVehicleStub` and `HidlVehicleStub` handle protocol-specific
-details. A `FakeVehicleStub` (`SimulationVehicleStub`) exists for testing without real hardware.
+details. A `FakeVehicleStub` (a `VehicleStubWrapper`) backs the fake-VHAL mode for testing
+without real hardware; a separate `SimulationVehicleStub` is created by `VehicleHal` for
+property simulation.
 
 ```mermaid
 graph LR
@@ -683,17 +684,18 @@ sequenceDiagram
     participant CNS as ClusterNavigationService
     participant ICS as InstrumentClusterService
     participant CHS as ClusterHalService
+    participant CHomeS as ClusterHomeService
     participant Renderer as Cluster Renderer (Vendor App)
     participant ClusterDisplay as Instrument Cluster Display
 
     NavApp->>CNS: sendNavigationState(bundle)
     CNS->>ICS: onNavigationStateChanged()
-    ICS->>Renderer: IInstrumentClusterNavigation.onNavigationStateChanged() (via getNavigationService())
+    ICS->>Renderer: IInstrumentClusterNavigation.onNavigationStateChanged() (via getNavigationBinder())
     Renderer->>ClusterDisplay: Render navigation turn card
 
-    Note over CHS,Renderer: Cluster state changes via VHAL
-    CHS-->>ICS: onClusterStateChanged()
-    ICS->>Renderer: Update cluster mode
+    Note over CHS,CHomeS: Cluster2 state changes via VHAL
+    CHS-->>CHomeS: onSwitchUi()
+    CHomeS-->>ClusterDisplay: onClusterStateChanged() to registered callbacks
 ```
 
 ### 62.1.6 FixedActivityService
@@ -1032,8 +1034,9 @@ can proceed with the actual shutdown or suspend.
 
 The controller coordinates with `JobScheduler` to run deferred jobs that have
 the `REQUIRE_DEVICE_IDLE` constraint. OEMs configure the maximum garage mode duration
-through the system property `android.car.garagemodeduration`. The minimum enforced duration
-is 15 minutes, ensuring enough time for critical updates.
+through the overlayable resource `maxGarageModeRunningDurationInSecs` (default 900 seconds,
+i.e. 15 minutes); the system property `android.car.garagemodeduration` is available as an
+override on top of that.
 
 Garage mode also handles edge cases:
 
@@ -1051,20 +1054,20 @@ sequenceDiagram
     participant Ignition as Vehicle Ignition
     participant VHAL as Vehicle HAL
     participant CPMS as CarPowerManagementService
-    participant GMS as GarageModeService
     participant GMC as GarageModeController
+    participant GM as GarageMode
     participant JS as JobScheduler
 
     Ignition->>VHAL: Ignition OFF
     VHAL->>CPMS: AP_POWER_STATE_REQ = SHUTDOWN_PREPARE
-    CPMS->>GMS: enterGarageMode()
-    GMS->>GMC: enterGarageMode()
-    GMC->>JS: Schedule deferred jobs
+    CPMS->>GMC: onStateChanged(STATE_SHUTDOWN_PREPARE)
+    GMC->>GM: initiateGarageMode()
+    GM->>JS: Schedule deferred jobs
 
-    Note over GMC,JS: Jobs run: app updates, data sync, optimization
+    Note over GM,JS: Jobs run: app updates, data sync, optimization
 
-    GMC-->>GMS: All jobs complete / timeout
-    GMS-->>CPMS: Garage mode finished
+    GM-->>GMC: All jobs complete / timeout
+    GMC-->>CPMS: completeHandlingPowerStateChange()
     CPMS->>VHAL: AP_POWER_STATE_REPORT = DEEP_SLEEP_ENTRY
     Note over VHAL: System enters deep sleep
 ```
@@ -1129,7 +1132,7 @@ concrete UX restrictions that apps must obey:
 graph LR
     CPS["CarPropertyService<br/>PERF_VEHICLE_SPEED<br/>GEAR_SELECTION"] --> CDSS["CarDrivingStateService<br/>PARKED / IDLING / MOVING"]
     CDSS --> CUXRS[CarUxRestrictionsService]
-    CUXRS --> UXR["UX Restrictions<br/>NO_TEXT_INPUT<br/>NO_FILTERING<br/>LIMIT_STRING_LENGTH<br/>NO_VIDEO<br/>LIMIT_CONTENT"]
+    CUXRS --> UXR["UX Restrictions<br/>NO_KEYBOARD<br/>NO_FILTERING<br/>LIMIT_STRING_LENGTH<br/>NO_VIDEO<br/>LIMIT_CONTENT"]
     UXR --> Apps["Applications<br/>must check restrictions"]
     UXR --> CPMS2["CarPackageManagerService<br/>blocks non-compliant activities"]
 ```
@@ -1146,7 +1149,7 @@ This variant replaces the status bar with a car-specific system bar, adds HVAC c
 controls tailored for multi-zone audio, and a user picker for multi-user vehicles.
 
 ```java
-// packages/apps/Car/SystemUI/src/com/android/systemui/car/systembar/CarSystemBar.java
+// packages/apps/Car/SystemUI/pods/systembar/base/controller/src/com/android/systemui/car/systembar/base/CarSystemBar.java
 
 @SysUISingleton
 public class CarSystemBar implements CoreStartable {
@@ -1206,15 +1209,18 @@ Key Car SystemUI components:
 The HVAC module demonstrates how Car SystemUI integrates with vehicle properties:
 
 ```
-packages/apps/Car/SystemUI/src/com/android/systemui/car/hvac/
-  HvacButtonController.java       -- Handles HVAC button interactions
-  HvacPanelOverlayViewMediator.java -- Manages HVAC panel visibility
-  HvacView.java                    -- Base HVAC view
-  HvacPanelView.java               -- Full HVAC panel layout
-  TemperatureControlView.java      -- Temperature adjustment widget
-  referenceui/
-    FanSpeedBar.java               -- Fan speed control
-    FanDirectionButtons.java       -- Air direction buttons
+packages/apps/Car/SystemUI/pods/hvac/
+  controller/src/com/android/systemui/car/hvac/
+    HvacController.java              -- HVAC property access and dispatch
+    HvacView.java                    -- Base HVAC view interface
+  ui/src/com/android/systemui/car/hvac/
+    HvacButtonController.java        -- Handles HVAC button interactions
+    HvacPanelOverlayViewMediator.java -- Manages HVAC panel visibility
+    HvacPanelView.java               -- Full HVAC panel layout
+    TemperatureControlView.java      -- Temperature adjustment widget
+    referenceui/
+      FanSpeedBar.java               -- Fan speed control
+      FanDirectionButtons.java       -- Air direction buttons
 ```
 
 ### 62.1.13 Car Launcher
@@ -1339,15 +1345,16 @@ Runtime Resource Overlays (RROs) customize the look and feel:
 
 ```
 packages/services/Car/car_product/rro/
-  CarSystemUIRRO/         -- SystemUI visual overrides
-  DriveModeSportRRO/      -- Sport driving mode theme
-  DriveModeEcoRRO/        -- Eco driving mode theme
+  CarSystemUIRRO/             -- SystemUI visual overrides
+  CarSystemUIPassengerRRO/    -- SystemUI overrides for passenger displays
+  PermissionControllerRRO/    -- Permission UI adjustments
+  CarResourceCommon/          -- Shared resource definitions
   overlay-config/
-    androidRRO/           -- Framework resource overrides
-    SettingsProviderRRO/  -- Default settings values
-    TelecommRRO/          -- Telecom UI adjustments
+    androidRRO/               -- Framework resource overrides
+    SettingsProviderRRO/      -- Default settings values
+    TelecommRRO/              -- Telecom UI adjustments
   oem-design-tokens/
-    OEMDesignTokenRRO/    -- OEM visual design tokens
+    OEMDesignTokenRRO/        -- OEM visual design tokens
 ```
 
 ---
@@ -1879,7 +1886,7 @@ stateDiagram-v2
 ```
 
 The controller collaborates with an extensive set of components. The constructor takes
-over 20 dependencies, demonstrating the complexity of TV PIP management:
+20 dependencies, demonstrating the complexity of TV PIP management:
 
 ```java
 // frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/pip/tv/TvPipController.java
@@ -1918,18 +1925,18 @@ TV PIP key differences from phone PIP:
 - Broadcast-based actions (`ACTION_SHOW_PIP_MENU`, `ACTION_CLOSE_PIP`) allow
   the notification system to control PIP remotely
 
-The `TvPipModule` provides Dagger dependency injection:
+The `TvPip1Module` provides Dagger dependency injection for this legacy implementation:
 
 ```java
-// frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/pip/TvPipModule.java
+// frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/pip/TvPip1Module.java
 
 @Module(includes = {
         WMShellBaseModule.class,
         Pip1SharedModule.class})
-public abstract class TvPipModule {
+public abstract class TvPip1Module {
     @WMSingleton
     @Provides
-    static Optional<Pip> providePip(
+    static Optional<TvPipController.TvPipImpl> providePip1(
             Context context,
             ShellInit shellInit,
             ShellController shellController,
@@ -1938,6 +1945,10 @@ public abstract class TvPipModule {
     ) { /* ... */ }
 }
 ```
+
+`TvPipModule` itself is a thin selector -- `@Module(includes = {TvPip1Module.class,
+TvPip2Module.class})` -- that provides `PipTransitionController` (and the active `Pip`
+implementation) based on `PipFlags.isPip2ExperimentEnabled()`.
 
 ### 62.2.9 D-pad Navigation
 
@@ -1977,7 +1988,7 @@ graph LR
 ### 62.2.10 TvSettings
 
 Android TV uses a specialized settings application rather than the standard phone Settings app.
-The TV Settings app (`packages/apps/TvSettings/` -- typically vendor-specific) provides a
+The TV Settings app (`packages/apps/TvSettings/`) provides a
 sidebar navigation pattern appropriate for D-pad control, with large text and high-contrast
 visual design.
 
@@ -2463,11 +2474,11 @@ SystemUI is the most visibly customized component. AOSP provides three variants:
 ```
 frameworks/base/packages/SystemUI/       -- Phone/tablet SystemUI (default)
 packages/apps/Car/SystemUI/              -- Automotive SystemUI
-(vendor-specific)/TvSystemUI/            -- TV SystemUI (vendor-provided)
+packages/apps/TvSystemUI/                -- TV SystemUI
 ```
 
 The phone SystemUI is the default and most feature-rich. Car SystemUI replaces it entirely
-with automotive-specific UI components. TV SystemUI is typically much simpler, focusing on
+with automotive-specific UI components. TV SystemUI is much simpler, focusing on
 a minimal notification system and settings access.
 
 The selection is made at build time through product configuration:
@@ -2561,8 +2572,9 @@ customization without source code changes. Each form factor uses RROs extensivel
 ```
 packages/services/Car/car_product/rro/
   CarSystemUIRRO/             -- SystemUI visual overrides
-  DriveModeSportRRO/          -- Sport mode visuals
-  DriveModeEcoRRO/            -- Eco mode visuals
+  CarSystemUIPassengerRRO/    -- SystemUI overrides for passenger displays
+  PermissionControllerRRO/    -- Permission UI adjustments
+  CarResourceCommon/          -- Shared resource definitions
   overlay-config/
     androidRRO/               -- Framework defaults
     SettingsProviderRRO/      -- Settings provider defaults
@@ -2590,8 +2602,8 @@ overlay package declares which target package and resources it overrides:
 <!-- Example: CarSystemUIRRO/AndroidManifest.xml -->
 <manifest>
     <overlay android:targetPackage="com.android.systemui"
-             android:isStatic="true"
-             android:priority="10" />
+             android:resourcesMap="@xml/overlays"
+             android:isStatic="true" />
 </manifest>
 ```
 
@@ -2638,9 +2650,6 @@ The `car_product/build/` directory hierarchy:
 
 ```makefile
 # (vendor-specific or device-specific makefile)
-PRODUCT_PROPERTY_OVERRIDES += \
-    ro.hardware.type=tv
-
 PRODUCT_PACKAGES += \
     TvSettings \
     TvSystemUI \
@@ -2648,20 +2657,22 @@ PRODUCT_PACKAGES += \
     TvLauncher
 ```
 
+Note that `ro.hardware.type` is an automotive-only property -- TV builds are identified
+by the PackageManager features `android.software.leanback` and
+`android.hardware.type.television`, not by a system property.
+
 **Wear product configuration** typically includes:
 
 ```makefile
 # (vendor-specific)
-PRODUCT_PROPERTY_OVERRIDES += \
-    config.override_forced_orient=true \
-    config.override_forced_orient_value=0
-
 # Watch-specific features
 PRODUCT_PACKAGES += \
     WearSettings \
     ClockworkHome \
     WearSystemUI
 ```
+
+Wear builds are likewise identified by the `android.hardware.type.watch` feature.
 
 ### 62.4.5 Feature Flags and Configuration
 
@@ -2686,10 +2697,13 @@ Beyond properties and overlays, form-factor behavior is controlled through:
    of configurable values. Form-factor overlays change these:
 
 ```xml
-<!-- Example: config_supportsPictureInPicture -->
-<!-- Phone: true, Watch: false -->
-<!-- config_hasAutomotiveDock: true for automotive -->
+<!-- Example: config_enableCarDockHomeLaunch -->
+<!-- When true, docking launches the car dock home activity -->
 ```
+
+   Note that some capabilities are expressed as PackageManager features rather than
+   config booleans -- picture-in-picture support, for instance, is the
+   `android.software.picture_in_picture` feature.
 
 3. **SELinux policies**: Each form factor has specific SELinux policies:
 
@@ -2806,7 +2820,7 @@ graph TB
         HDMI[HdmiControlService]
     end
 
-    subgraph "TV Optional Library Services<br/>(com.android.libraries.tv.tvsystem)"
+    subgraph "TV Optional Services<br/>(frameworks/opt/tv/tvsystem repo)"
         TVWS["TvWatchdogService<br/>(not started by SystemServer)"]
     end
 
@@ -3963,7 +3977,7 @@ The `system/software_defined_vehicle/platform/` tree is the native foundation th
 
 #### common
 
-The `system/software_defined_vehicle/common/` tree holds shared infrastructure. The piece worth naming is `common/lib_dump/`, a thin wrapper around `libbinder_rust` that exposes the `ISdvAgent.aidl` interface (`common/lib_dump/aidl/google/sdv/agent/ISdvAgent.aidl`) so every agent gets uniform `dumpsys` support — a single, simple interface that the registry, orchestrator, lifecycle manager, and the rest implement so an operator can dump any agent the same way. The tree also carries shared protos, vendored third-party code, and the `performance_image_generator` used to build the SDV "performance" image variants (`sdv_core_perf_cf`).
+The `system/software_defined_vehicle/common/` tree holds shared infrastructure. The piece worth naming is `common/lib_dump/`, a thin wrapper around `libbinder_rust` that exposes the `ISdvAgent.aidl` interface (`common/lib_dump/aidl/google/sdv/agent/ISdvAgent.aidl`) so every agent gets uniform `dumpsys` support — a single, simple interface that the registry, orchestrator, lifecycle manager, and the rest implement so an operator can dump any agent the same way. The tree also carries shared protos, vendored third-party code, and `common/performance_image/` (whose `generator/` subdirectory produces the SDV "performance" image variants such as `sdv_core_perf_cf`).
 
 ### 62.7.10 Display Safety: the HARry Driver-UI Runtime
 
@@ -3997,7 +4011,7 @@ Because the gateway hands ordinary Android processes the keys to the vehicle fab
 
 The concrete CarService integration is the Vehicle HAL. On the IVI VM the SDV products wire a SDV-specific VHAL — `device/google/sdv/sdv_ivi_cf/sdv_ivi_cf.mk` sets `LOCAL_VHAL_PRODUCT_PACKAGE := android.hardware.automotive.vehicle@V1-sdv-emulator-service`. That VHAL uses the gateway's **vhal_proxy** library (`system/software_defined_vehicle/sdv_gateway/vhal_proxy/libvhal_proxy`). The `VhalProxy` class reads and writes Android `VehiclePropValue`s by translating them to and from SDV proto messages and routing them over the gateway: `ReadMessages`/`WriteMessages` move properties, `Subscribe`/`Unsubscribe` register for incoming updates, and the proxy's config (a JSON of protobuf descriptors and property-to-service-unit mappings) decides which property maps to which SDV publication and whether each is an `ACTION_SUBSCRIBE` or `ACTION_PUBLISH`. CarService, sitting above the VHAL exactly as it does on a normal automotive build, is therefore unaware that the vehicle property it reads originated in a service bundle in the Core VM: the gateway and vhal_proxy make the cross-VM hop invisible.
 
-The IVI's SDV-facing services are installed by `device/google/sdv/sdv_ivi_base/sdv_packages_ivi_services.mk` (the gateway, `libvhal_proxy`, the gateway networking service, and the SDV IVI runtime) and started by `device/google/sdv/sdv_ivi_base/sdv.agents.rc`, which brings up the gateway, Service Discovery, and RPC agents in order once the SDV network is ready. The transport beneath them — RPC, Data Tunnel, SOME/IP across VMs and to external ECUs — is the subject of Section 62.8.
+The IVI's SDV-facing services are installed by `device/google/sdv/sdv_ivi_base/sdv_packages_ivi_services.mk` (the gateway, `libvhal_proxy`, the gateway networking service, and the SDV IVI runtime) and started by `device/google/sdv/sdv_ivi_base/sdv.agents.rc`, which starts the gateway on `boot` and the Service Discovery and RPC agents once `ro.sdv.ethernet.ready=true`; start order between them is explicitly unimportant, because the gateway waits for the SD and RPC agent services before fully starting. The transport beneath them — RPC, Data Tunnel, SOME/IP across VMs and to external ECUs — is the subject of Section 62.8.
 
 How a CarService VHAL read reaches a Core VM service bundle
 
@@ -4395,17 +4409,17 @@ adb shell dumpsys car_service --services
 adb shell dumpsys car_service --hal
 
 # Check occupant zone configuration:
-adb shell dumpsys car_service --occ-zone
+adb shell dumpsys car_service --services CarOccupantZoneService
 ```
 
 Examine the CarService initialization timing:
 
 ```bash
-# View initialization trace:
-adb shell dumpsys car_service --print-timing
-
-# Or look at the system property:
+# CarService boot timing is recorded in a system property:
 adb shell getprop boot.car_service_created
+
+# The full dump also includes per-service state:
+adb shell dumpsys car_service -a
 ```
 
 ### Exercise 62.2: Inspect Vehicle HAL Properties
@@ -4432,8 +4446,9 @@ adb shell cmd car_service set-property-value HVAC_TEMPERATURE_SET 49 22.5
 Use `atrace` to follow a property change through the stack:
 
 ```bash
-# Start tracing with car_service tag:
-adb shell atrace --async_start -c -b 8192 car_service
+# Start tracing; CarService spans are emitted under existing atrace
+# categories (there is no dedicated car_service tag):
+adb shell atrace --async_start -c -b 8192 aidl wm am
 
 # Trigger a property change (e.g., change gear on emulator)
 # ... interact with the emulator's vehicle controls ...
@@ -4486,9 +4501,9 @@ adb shell input keyevent KEYCODE_DPAD_RIGHT
 Determine the form factor programmatically:
 
 ```bash
-# Check hardware type:
+# Check hardware type (set only on automotive builds):
 adb shell getprop ro.hardware.type
-# Returns: "automotive", "tv", "watch", or empty (phone)
+# Returns: "automotive" on AAOS; empty on other form factors
 
 # Check UI mode:
 adb shell dumpsys uimode | grep "mCurUiMode"
@@ -4506,7 +4521,10 @@ On an automotive emulator:
 
 ```bash
 # Check current power state:
-adb shell dumpsys car_service --power
+adb shell dumpsys car_service --services CarPowerManagementService
+
+# Or query the active power policy:
+adb shell cmd car_service get-current-power-policy
 
 # Simulate garage mode:
 adb shell cmd car_service garage-mode on
@@ -4524,8 +4542,8 @@ adb shell cmd car_service power-off --skip-garagemode
 # List Car SystemUI services:
 adb shell dumpsys activity services com.android.systemui | grep car
 
-# Check system bar state:
-adb shell dumpsys car_service --act
+# Check activity/task state tracked by CarService:
+adb shell dumpsys car_service --services CarActivityService
 
 # Inspect HVAC properties used by SystemUI:
 adb shell cmd car_service get-property-value HVAC_TEMPERATURE_SET
@@ -4536,7 +4554,7 @@ adb shell cmd car_service get-property-value HVAC_FAN_SPEED
 
 ```bash
 # Dump occupant zone configuration:
-adb shell dumpsys car_service --occ-zone
+adb shell dumpsys car_service --services CarOccupantZoneService
 
 # Output shows:
 # - Zone definitions (driver, passenger, rear)
@@ -4660,7 +4678,7 @@ Study the following files to understand form-factor abstractions:
 
 6. **Car SystemUI**:
       - `packages/apps/Car/SystemUI/src/com/android/systemui/car/CarServiceProvider.java`
-      - `packages/apps/Car/SystemUI/src/com/android/systemui/car/systembar/CarSystemBar.java`
+      - `packages/apps/Car/SystemUI/pods/systembar/base/controller/src/com/android/systemui/car/systembar/base/CarSystemBar.java`
 
 7. **Occupant Zones**:
       - `packages/services/Car/service/src/com/android/car/CarOccupantZoneService.java`
@@ -4733,7 +4751,7 @@ These commands assume an SDV Core VM or a Cuttlefish SDV target (`sdv_core_cf`, 
 | **Safety restrictions** | None | UX restrictions while driving | None | None |
 | **Key HAL interfaces** | Standard | Vehicle, EVS, AudioControl | TvInput, CEC, Tuner | Sensors |
 | **Feature flag** | (default) | android.hardware.type.automotive | android.software.leanback | android.hardware.type.watch |
-| **hardware.type** | (none) | automotive | tv | watch |
+| **ro.hardware.type** | (unset) | automotive | (unset) | (unset) |
 
 ### Key Source Trees by Form Factor
 

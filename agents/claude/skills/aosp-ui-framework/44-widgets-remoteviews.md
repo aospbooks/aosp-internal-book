@@ -155,18 +155,31 @@ interface (`AppWidgetHostListener`) defines:
 - `updateAppWidgetDeferred(String, int)` -- lazy evaluation path
 - `collectWidgetEvent()` -- engagement metrics collection
 
-**Service binding** happens lazily on first construction:
+**Service binding** happens lazily through a static factory. A
+`Function<Context, IAppWidgetService>` anonymous class performs one-time
+initialization and caches the result in the static `sService` field:
 
 ```java
-private static void bindService(Context context) {
-    synchronized (sServiceLock) {
-        if (sServiceInitialized) return;
-        sServiceInitialized = true;
-        // Check for FEATURE_APP_WIDGETS
-        IBinder b = ServiceManager.getService(Context.APPWIDGET_SERVICE);
-        sService = IAppWidgetService.Stub.asInterface(b);
+private static final Function<Context, IAppWidgetService> sServiceFactory =
+        new Function<>() {
+    private final Object mServiceLock = new Object();
+    private boolean mServiceInitialized = false;
+
+    @Override
+    public IAppWidgetService apply(Context context) {
+        synchronized (mServiceLock) {
+            if (mServiceInitialized) {
+                return sService;
+            }
+            mServiceInitialized = true;
+            // ... bail out unless FEATURE_APP_WIDGETS or
+            //     config_enableAppWidgetService is present ...
+            IBinder b = ServiceManager.getService(Context.APPWIDGET_SERVICE);
+            sService = IAppWidgetService.Stub.asInterface(b);
+            return sService;
+        }
     }
-}
+};
 ```
 
 ### 44.1.4 AppWidgetProviderInfo -- Widget Metadata
@@ -397,7 +410,7 @@ is called again, all queued updates are delivered in order:
 ```java
 public void startListening() {
     List<PendingHostUpdate> updates;
-    updates = sService.startListening(mCallbacks, mContextOpPackageName,
+    updates = mService.startListening(mCallbacks, mContextOpPackageName,
             mHostId, idsToUpdate).getList();
     for (PendingHostUpdate update : updates) {
         switch (update.type) {
@@ -434,13 +447,18 @@ private void computeMaximumWidgetBitmapMemory() {
 }
 ```
 
-This limit is enforced during `RemoteViews` serialization. On a 1080x2400 display,
-the budget is approximately 15.5 MB.
+This limit is enforced by
+`AppWidgetServiceImpl.ensureWidgetViewsMemoryLimitLocked()` when the service
+stores a widget update: it sums `estimateMemoryUsage()` over the widget's stored
+`RemoteViews` and throws `IllegalArgumentException` if the budget is exceeded.
+On a 1080x2400 display, the budget is approximately 15.5 MB.
 
 ### 44.2.7 State Persistence
 
-Widget state is persisted to XML files at
-`/data/system/appwidgets.xml` (per-user variant under `/data/system_ce/<user>/`):
+Widget state is persisted per user to an XML file at
+`/data/system/users/<userId>/appwidgets.xml` (via
+`Environment.getUserSystemDirectory()`; the `/data/system_ce/<user>/appwidget/`
+directory holds only generated previews, not the state XML):
 
 ```java
 private static final String STATE_FILENAME = "appwidgets.xml";
@@ -692,12 +710,17 @@ The two core operations:
 
 **`reapply()`** -- Incremental update:
 
-1. Reuses the existing view hierarchy
-2. Only applies the new actions, using merge semantics
-3. Actions with `MERGE_REPLACE` overwrite previous actions for the same view/type
-4. Actions with `MERGE_APPEND` accumulate (e.g., adding children)
+1. Reuses the existing view hierarchy (no re-inflation)
+2. Selects the matching sized/orientation variant via `getRemoteViewsToReapply()`
+3. Re-runs that RemoteViews' full action list against the existing tree via
+   `performApply()`
 
-The merge logic in `mergeRemoteViews()`:
+The `MERGE_REPLACE` / `MERGE_APPEND` / `MERGE_IGNORE` constants on `Action` are
+not part of reapply. They drive the separate `mergeRemoteViews()` API (`@hide`),
+which combines two RemoteViews *before* application -- for example,
+`AppWidgetServiceImpl` uses it for partial widget updates. Actions with
+`MERGE_REPLACE` overwrite a previous action with the same unique key; those with
+`MERGE_APPEND` accumulate (e.g., adding children):
 
 ```java
 public void mergeRemoteViews(RemoteViews newRv) {
@@ -909,22 +932,31 @@ interface NotifRemoteViewsFactory {
 }
 ```
 
-This factory pattern allows SystemUI to substitute custom implementations for
-standard views within notifications. For example, `RemoteComposePlayer` views
-can be injected when the notification uses `DrawInstructions`.
+This factory pattern is a `LayoutInflater.Factory2`-style, name-based
+substitution: SystemUI swaps in optimized implementations for standard views
+within notifications. The in-tree implementations include
+`PrecomputedTextViewFactory`, `NotificationOptimizedLinearLayoutFactory`,
+`BigPictureLayoutInflaterFactory`, `NotificationViewFlipperFactory`, and
+`NotificationRowIconViewInflaterFactory`. Note that `DrawInstructions` content
+does not go through this hook -- it bypasses `LayoutInflater` entirely and is
+handled inside `RemoteViews.inflateView()` (see Section 44.12.4).
 
 ### 44.4.3 NotifRemoteViewCache
 
-The `NotifRemoteViewCacheImpl` caches inflated notification views to avoid
-re-inflation when a notification is rebound:
+The `NotifRemoteViewCache` interface (implemented by `NotifRemoteViewCacheImpl`)
+caches the `RemoteViews` for a notification's content views, so a rebind can
+reuse them instead of re-extracting them from the notification:
 
 ```java
-// NotifRemoteViewCacheImpl.java
+// NotifRemoteViewCache.java
 public interface NotifRemoteViewCache {
     boolean hasCachedView(NotificationEntry entry, @InflationFlag int flag);
-    View getCachedView(NotificationEntry entry, @InflationFlag int flag);
-    void putCachedView(NotificationEntry entry, @InflationFlag int flag, View v);
+    @Nullable RemoteViews getCachedView(NotificationEntry entry,
+            @InflationFlag int flag);
+    void putCachedView(NotificationEntry entry, @InflationFlag int flag,
+            RemoteViews remoteView);
     void removeCachedView(NotificationEntry entry, @InflationFlag int flag);
+    // ...
 }
 ```
 
@@ -980,7 +1012,7 @@ flowchart TB
     end
 
     subgraph "player/ (Android-specific)"
-        I[RemoteComposePlayer] --> J[RemoteComposeDocument]
+        I[RemoteComposePlayer] --> J[RemoteDocument]
         I --> K[RemoteComposeView]
         K --> L[AndroidPaintContext]
         K --> M[AndroidRemoteContext]
@@ -1097,7 +1129,8 @@ public abstract class PaintContext {
     public abstract void drawRect(float l, float t, float r, float b);
     public abstract void drawRoundRect(/*...*/);
     public abstract void drawOval(/*...*/);
-    public abstract void drawText(/*...*/);
+    public abstract void drawTextRun(/*...*/);
+    public abstract void drawComplexText(/*...*/);
     public abstract void drawTextOnPath(/*...*/);
     public abstract void drawPath(/*...*/);
     // ... matrix operations, clipping, paint state ...
@@ -1206,7 +1239,7 @@ operation has a unique opcode defined in `Operations.java`.
 | `MATRIX_ROTATE` | 129 | `MatrixRotate` |
 | `MATRIX_SAVE` | 130 | `MatrixSave` |
 | `MATRIX_RESTORE` | 131 | `MatrixRestore` |
-| `MATRIX_SET` | 132 | `MatrixConstant` |
+| `MATRIX_CONSTANT` | 186 | `MatrixConstant` |
 | `MATRIX_FROM_PATH` | 181 | `MatrixFromPath` |
 | `MATRIX_EXPRESSION` | 187 | `MatrixExpression` |
 | `MATRIX_VECTOR_MATH` | 188 | `MatrixVectorMath` |
@@ -1260,10 +1293,15 @@ literal values and variable references.
 `BitmapData` (opcode 101) loads a bitmap into the document state:
 
 ```java
-public class BitmapData extends Operation {
-    int mImageId;
-    int mWidth, mHeight;
-    byte[] mBitmapData; // Compressed bitmap bytes
+public class BitmapData extends Operation
+        implements SerializableToString, Serializable {
+    public final int mImageId;
+    int mImageWidth;
+    int mImageHeight;
+    short mType;      // Pixel format
+    short mEncoding;  // Encoding (e.g. PNG-compressed vs. raw)
+    @NonNull byte[] mBitmap; // Encoded bitmap bytes
+    // ...
 }
 ```
 
@@ -1393,15 +1431,19 @@ Each layout type has a corresponding manager class:
 core/operations/layout/managers/
     BoxLayout.java
     CanvasLayout.java
-    ColumnLayout.java
     CollapsibleColumnLayout.java
+    CollapsiblePriority.java
     CollapsibleRowLayout.java
+    ColumnLayout.java
+    CoreText.java
     FitBoxLayout.java
+    FlowLayout.java
     ImageLayout.java
     LayoutManager.java
     RowLayout.java
     StateLayout.java
     TextLayout.java
+    TextStyle.java
 ```
 
 `LayoutManager` is the base class. Each manager implements:
@@ -1498,20 +1540,23 @@ recalculates its output values.
 ```java
 // frameworks/base/.../remotecompose/core/TimeVariables.java
 public class TimeVariables {
-    public void updateTime(RemoteContext context, ZoneId zoneId,
-            LocalDateTime dateTime) {
-        context.loadFloat(RemoteContext.ID_CONTINUOUS_SEC, sec);
-        context.loadFloat(RemoteContext.ID_TIME_IN_SEC, currentSeconds);
-        context.loadFloat(RemoteContext.ID_TIME_IN_MIN, currentMinute);
-        context.loadFloat(RemoteContext.ID_TIME_IN_HR, hour);
-        context.loadFloat(RemoteContext.ID_CALENDAR_MONTH, month);
-        context.loadFloat(RemoteContext.ID_DAY_OF_MONTH, day_of_month);
-        context.loadFloat(RemoteContext.ID_WEEK_DAY, day_week);
-        context.loadFloat(RemoteContext.ID_DAY_OF_YEAR, day_of_year);
-        context.loadFloat(RemoteContext.ID_YEAR, year);
+    public void updateTime(@NonNull RemoteContext context) {
+        RemoteClock.TimeSnapshot snapshot = mClock.snapshot(null);
+
         context.loadFloat(RemoteContext.ID_OFFSET_TO_UTC,
-                offset.getTotalSeconds());
-        context.loadInteger(RemoteContext.ID_EPOCH_SECOND, (int) epochSec);
+                snapshot.getOffsetSeconds());
+        context.loadFloat(RemoteContext.ID_CONTINUOUS_SEC,
+                snapshot.getContinuousSeconds());
+        context.loadInteger(RemoteContext.ID_EPOCH_SECOND,
+                snapshot.getEpochSeconds());
+        context.loadFloat(RemoteContext.ID_TIME_IN_SEC, snapshot.getTimeInSec());
+        context.loadFloat(RemoteContext.ID_TIME_IN_MIN, snapshot.getTimeInMin());
+        context.loadFloat(RemoteContext.ID_TIME_IN_HR, snapshot.getHour());
+        context.loadFloat(RemoteContext.ID_CALENDAR_MONTH, snapshot.getMonth());
+        context.loadFloat(RemoteContext.ID_DAY_OF_MONTH, snapshot.getDayOfMonth());
+        context.loadFloat(RemoteContext.ID_WEEK_DAY, snapshot.getDayOfWeek());
+        context.loadFloat(RemoteContext.ID_DAY_OF_YEAR, snapshot.getDayOfYear());
+        context.loadFloat(RemoteContext.ID_YEAR, snapshot.getYear());
         context.loadFloat(RemoteContext.ID_API_LEVEL,
                 CoreDocument.getDocumentApiLevel() + CoreDocument.BUILD);
     }
@@ -1524,12 +1569,15 @@ Binder round-trips -- the player locally updates time variables and repaints.
 **Named Variables:**
 
 The `NamedVariable` operation (opcode 137) associates a human-readable name
-with a variable ID and type. Types include:
+with a variable ID and type. The types are:
 
-- `COLOR_TYPE`
-- `STRING_TYPE`
-- `FLOAT_TYPE`
-- `INTEGER_TYPE`
+- `STRING_TYPE` (0)
+- `FLOAT_TYPE` (1)
+- `COLOR_TYPE` (2)
+- `IMAGE_TYPE` (3)
+- `INT_TYPE` (4)
+- `LONG_TYPE` (5)
+- `FLOAT_ARRAY_TYPE` (6)
 
 This allows hosts to discover and set document variables by name.
 
@@ -1597,7 +1645,7 @@ flowchart TD
     B --> C[Serialize to byte array]
     C --> D[Embed in DrawInstructions]
     D --> E[Transport via RemoteViews/Binder]
-    E --> F[RemoteComposeDocument.new]
+    E --> F[RemoteDocument.new]
     F --> G[CoreDocument.initFromBuffer]
     G --> H[Parse operations from WireBuffer]
     H --> I[Build operation list]
@@ -1649,27 +1697,28 @@ Key capabilities:
 - **Scroll support**: `showOnScreen()`, `scrollByOffset()`, `scrollDirection()`
 - **Click handling**: `performClick()` routes to document click areas
 
-### 44.8.2 RemoteComposeDocument
+### 44.8.2 RemoteDocument
 
-`RemoteComposeDocument` (in `player/RemoteComposeDocument.java`) is the public
-API for loading documents:
+`RemoteDocument` (in `player/RemoteDocument.java`) is the public API for
+loading documents:
 
 ```java
-// frameworks/base/.../remotecompose/player/RemoteComposeDocument.java
-public class RemoteComposeDocument {
-    private CoreDocument mDocument;
+// frameworks/base/.../remotecompose/player/RemoteDocument.java
+public class RemoteDocument {
+    private @NonNull CoreDocument mDocument;
 
-    public RemoteComposeDocument(byte[] inputStream) {
-        this(new ByteArrayInputStream(inputStream), new SystemClock());
+    public RemoteDocument(@NonNull byte[] inputStream) {
+        this(new ByteArrayInputStream(inputStream), RemoteClock.SYSTEM);
     }
 
-    public RemoteComposeDocument(InputStream inputStream, Clock clock) {
+    public RemoteDocument(@NonNull InputStream inputStream,
+            @NonNull RemoteClock clock) {
         mDocument = new CoreDocument(clock);
         RemoteComposeBuffer buffer = RemoteComposeBuffer.fromInputStream(inputStream);
         mDocument.initFromBuffer(buffer);
     }
 
-    public void paint(RemoteContext context, int theme) {
+    public void paint(@NonNull RemoteContext context, int theme) {
         mDocument.paint(context, theme);
     }
 
@@ -1681,6 +1730,7 @@ public class RemoteComposeDocument {
             long capabilities) {
         return mDocument.canBeDisplayed(majorVersion, minorVersion, capabilities);
     }
+    // ...
 }
 ```
 
@@ -1690,7 +1740,7 @@ For smooth UI, documents can be prepared on a background thread:
 
 ```java
 public class RemoteComposePlayer extends FrameLayout {
-    public PreparedDocument prepareDocument(RemoteComposeDocument doc) {
+    public PreparedDocument prepareDocument(RemoteDocument doc) {
         // Parse and initialize on background thread
         // Returns PreparedDocument that can be set on UI thread
     }
@@ -1900,16 +1950,15 @@ Key features:
 
 ### 44.9.4 Widget Picker
 
-The picker (in `widget/picker/`) presents available widgets to the user:
+The picker data layer (in `widget/picker/`) supplies the model behind the
+widget-picker UI:
 
-| Class | Role |
-|---|---|
-| `WidgetsListAdapter` | RecyclerView adapter for widget list |
-| `WidgetPagedView` | Paged widget carousel |
-| `WidgetRecommendationsView` | AI/recommendation-based widget suggestions |
-| `WidgetsListHeaderViewHolderBinder` | Bind header entries (app name) |
-| `WidgetsListTableViewHolderBinder` | Bind widget preview tables |
-| `SimpleWidgetsSearchAlgorithm` | Search filtering |
+| Class | Path | Role |
+|---|---|---|
+| `WidgetPickerDataProvider` | `widget/picker/model/WidgetPickerDataProvider.kt` | Provides `WidgetPickerData` to the widget picker, app-specific picker, and widgets shortcut |
+| `WidgetPickerData` | `widget/picker/model/data/WidgetPickerData.kt` | Snapshot of the widget entries shown in the picker |
+| `WidgetPreviewContainerSize` | `widget/picker/util/WidgetPreviewContainerSize.kt` | Preview container size in grid spans |
+| `WidgetPreviewContainerSizes` | `widget/picker/util/WidgetPreviewContainerSizes.kt` | Preview container size presets per device profile |
 
 ### 44.9.5 Widget Pinning Flow
 
@@ -1959,7 +2008,7 @@ Widget resizing involves:
 | Class | Purpose |
 |---|---|
 | `WidgetSizes` | Calculate widget sizes from grid cells |
-| `WidgetsTableUtils` | Arrange widgets in preview table grid |
+| `WidgetSizeHandler` | Handle widget size option updates |
 | `WidgetDragScaleUtils` | Scale calculations during drag |
 
 ---
@@ -2143,9 +2192,11 @@ exposes its supported level through the `ID_API_LEVEL` time variable
 gates operations on it via `WireBuffer.mValidOperations[]` (Section 44.5.4). When a
 host's player advertises level 9, a document built against level 8 still loads,
 because the `canBeDisplayed()` check
-(`frameworks/base/core/java/com/android/internal/widget/remotecompose/player/RemoteComposeDocument.java`)
-compares both the major/minor version and the required-capability bitmask before
-the player attempts to paint. This forward/backward-compatibility handshake is what
+(`frameworks/base/core/java/com/android/internal/widget/remotecompose/player/RemoteDocument.java`,
+delegating to `CoreDocument`) compares the document's major/minor version
+against the player's before the player attempts to paint. (The method also takes
+a required-capability bitmask parameter, but it is currently unused -- the
+player passes `0L`.) This forward/backward-compatibility handshake is what
 lets a widget host and a provider compiled against different platform levels still
 interoperate.
 
@@ -2405,7 +2456,9 @@ public void onUpdate(Context context, AppWidgetManager manager,
         RemoteComposeBuffer buffer = new RemoteComposeBuffer();
         // ... add Header, theme, draw operations to buffer ...
 
-        byte[] documentBytes = buffer.toByteArray();
+        WireBuffer wireBuffer = buffer.getBuffer();
+        byte[] documentBytes = Arrays.copyOf(
+                wireBuffer.getBuffer(), wireBuffer.getSize());
         List<byte[]> instructions = new ArrayList<>();
         instructions.add(documentBytes);
 
@@ -2420,9 +2473,9 @@ public void onUpdate(Context context, AppWidgetManager manager,
 }
 ```
 
-When the host's `AppWidgetHostView` receives these RemoteViews, it detects
-`mHasDrawInstructions == true` and uses a `RemoteComposePlayer` instead of
-inflating an XML layout.
+When the host applies these RemoteViews, `RemoteViews.inflateView()` (called
+from `apply()`) checks `hasDrawInstructions()` and substitutes a
+`RemoteComposePlayer` for the inflated XML layout.
 
 ### 44.12.5 Engagement Metrics
 
@@ -2484,9 +2537,9 @@ adb shell dumpsys meminfo com.example.widget
    - Nesting depth exceeding `MAX_NESTED_VIEWS` (10)
    - Bitmap size exceeding `mMaxWidgetBitmapMemory`
 
-4. **RemoteCompose not rendering**: Ensure the host's `AppWidgetHostView` creates
-   a `RemoteComposePlayer` when `mHasDrawInstructions` is true. Check document
-   version compatibility with `canBeDisplayed()`.
+4. **RemoteCompose not rendering**: Verify `RemoteViews.inflateView()` is
+   substituting a `RemoteComposePlayer` (it does so when `hasDrawInstructions()`
+   is true). Check document version compatibility with `canBeDisplayed()`.
 
 5. **Engagement metrics not collecting**: Verify the `FLAG_ENGAGEMENT_METRICS`
    feature flag is enabled. Check that `setAppWidgetEventTag()` is called
@@ -2533,7 +2586,8 @@ flowchart TB
 The key takeaways:
 
 1. **RemoteViews** serializes view mutations as an ordered list of typed `Action`
-   objects (35 action types) that are applied to an inflated XML layout.
+   objects (30 action types, with tags 1-35 leaving gaps) that are applied to an
+   inflated XML layout.
 
 2. **AppWidgetService** brokers the relationship between providers and hosts,
    enforcing security policy, managing state persistence, and handling periodic
@@ -2573,7 +2627,7 @@ The key takeaways:
 | `frameworks/base/core/java/com/android/internal/widget/remotecompose/core/WireBuffer.java` | RemoteCompose wire format |
 | `frameworks/base/core/java/com/android/internal/widget/remotecompose/core/PaintContext.java` | RemoteCompose paint context |
 | `frameworks/base/core/java/com/android/internal/widget/remotecompose/player/RemoteComposePlayer.java` | RemoteCompose player |
-| `frameworks/base/core/java/com/android/internal/widget/remotecompose/player/RemoteComposeDocument.java` | RemoteCompose document loader |
+| `frameworks/base/core/java/com/android/internal/widget/remotecompose/player/RemoteDocument.java` | RemoteCompose document loader |
 | `frameworks/base/core/java/com/android/internal/widget/remotecompose/player/platform/AndroidPaintContext.java` | Android-specific paint context |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/notification/row/NotifRemoteViewsFactory.kt` | Notification RemoteViews factory |
 | `packages/apps/Launcher3/src/com/android/launcher3/widget/LauncherWidgetHolder.java` | Launcher3 widget host holder |

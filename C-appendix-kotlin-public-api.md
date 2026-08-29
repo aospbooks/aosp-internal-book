@@ -38,28 +38,29 @@ coexist across the tree, but they cluster in very different places. Running
 
 | Path | Kotlin files | Notes |
 |------|--------------|-------|
-| `frameworks/base/packages/SystemUI/` | 7,846 | The heavy adopter; system UI shell and quick settings |
-| `packages/apps/Settings/` | 1,576 | Settings app, app-layer code |
-| `cts/` | 925 | Compatibility Test Suite |
-| `packages/apps/Launcher3/` | 949 | Launcher app |
-| `frameworks/base/services/` | 237 | All in the permission subsystem |
-| `frameworks/base/core/` | 35 | The API-surface layer that apps call into |
-| `frameworks/base/` (total) | 10,461 | Sum across all subdirectories |
-| `frameworks/base/` Java total | 17,871 | Reference point for comparison |
+| `frameworks/base/packages/SystemUI/` | 8,896 | The heavy adopter; system UI shell and quick settings |
+| `packages/apps/Settings/` | 2,300 | Settings app, app-layer code |
+| `cts/` | 1,209 | Compatibility Test Suite |
+| `packages/apps/Launcher3/` | 1,326 | Launcher app |
+| `frameworks/base/services/` | 292 | Production Kotlin all in the permission subsystem; most files are tests |
+| `frameworks/base/core/` | 45 | The API-surface layer that apps call into; every file is test code |
+| `frameworks/base/` (total) | 12,058 | Sum across all subdirectories |
+| `frameworks/base/` Java total | 18,937 | Reference point for comparison |
 
 Two numbers in that table do most of the work for this appendix.
 
-The first is 35. `frameworks/base/core/` is where the `android.*` classes that
-constitute the public Android SDK live. The fact that this directory contains
-only 35 Kotlin files — against tens of thousands of Java files — is the most
-direct statement of the policy. The public API surface is overwhelmingly defined
-in Java.
+The first is 45 — or, more precisely, zero. `frameworks/base/core/` is where
+the `android.*` classes that constitute the public Android SDK live. Every one
+of the 45 Kotlin files in this directory is test code under
+`frameworks/base/core/tests/`; the API-bearing `core/java/` tree — tens of
+thousands of Java files — contains no Kotlin at all. That is the most direct
+statement of the policy. The public API surface is defined in Java.
 
-The second is 237. `frameworks/base/services/` is the home of `system_server`
-and the dozens of system services it hosts. 237 Kotlin files sounds like
-meaningful adoption until you look at where they sit. Every production
-(non-test) Kotlin file under `frameworks/base/services/` is inside the
-permission access subtree at
+The second is 292. `frameworks/base/services/` is the home of `system_server`
+and the dozens of system services it hosts. 292 Kotlin files sounds like
+meaningful adoption until you look at where they sit. The large majority are
+tests, and every production (non-test) Kotlin file under
+`frameworks/base/services/` is inside the permission access subtree at
 `frameworks/base/services/permission/java/com/android/server/permission/access/`.
 The major services — `ActivityManagerService`, `PackageManagerService`,
 `WindowManagerService`, the input pipeline, the display pipeline — are still
@@ -85,13 +86,14 @@ to produce from the two languages.
 
 A second observation worth registering before the diagram: the inventory does
 not say Kotlin is *unsafe* in `frameworks/base/`. It says Kotlin is *absent*
-from the public API surface specifically. There are 35 Kotlin files in
-`frameworks/base/core/` and 237 in `frameworks/base/services/` — those files
-compile, ship, and run. The boundary between safe and unsafe runs through
-individual classes, not through directories. A Kotlin class in
-`frameworks/base/core/` that never appears in `current.txt` is just internal
-code that happens to live in the API-bearing directory. The classification is by
-whether metalava picks the class up, not by where it lives in the source tree.
+from the public API surface specifically. There are 45 Kotlin files under
+`frameworks/base/core/` (all tests) and 292 under `frameworks/base/services/`
+(the production subset, in the permission subsystem, compiles, ships, and
+runs). The boundary between safe and unsafe runs through individual classes,
+not through directories. A Kotlin class in `frameworks/base/core/` that never
+appears in `current.txt` would be just internal code that happens to live in
+the API-bearing directory. The classification is by whether metalava picks the
+class up, not by where it lives in the source tree.
 
 A third observation: the directional asymmetry. SystemUI and the Settings app
 live "below" the framework in the dependency graph — they consume the public API
@@ -144,6 +146,7 @@ is human-readable text. Its first lines look like:
 
 ```
 // Signature format: 6.0
+// - style=java
 package android {
 
   public final class Manifest {
@@ -178,8 +181,10 @@ Several signature surfaces exist in parallel — public (`current.txt`),
 (`module-lib-current.txt`), and `@TestApi` (`test-current.txt`) — plus per-
 subsystem files such as `frameworks/base/services/api/current.txt`. They all
 share the same format. Each surface is produced by **metalava**, a Kotlin tool
-at `tools/metalava/` that reads framework source through PSI (for Kotlin) and
-Turbine (for Java) and emits the language-neutral signature text. The build
+at `tools/metalava/` that reads framework source — Java and Kotlin alike —
+through its default PSI source model (an alternative Turbine-based Java-only
+model can be selected with `--source-model-provider turbine`) and emits the
+language-neutral signature text. The build
 re-runs metalava, compares the generated snapshot against the checked-in
 `current.txt`, and fails the build on any drift; intentional additions go
 through `m update-api` plus API council review of the textual delta.
@@ -270,13 +275,17 @@ public class would silently delete several JVM methods and break any compiled
 caller. Adding a new parameter at the end (even with a default) appends new
 entries to the overload set, but reordering existing parameters renames them.
 
-The note compiled while writing this appendix confirms that the only AOSP usages
-of `@JvmOverloads` are in `frameworks/base/services/tests/displayservicetests/`
-— test utility files like `TestUtils.kt`, `PersistentDataStoreTestUtils.kt`,
-`DisplayDeviceConfigTestUtils.kt`, and `ClamperTestUtils.kt`. No production
-service uses it. The reason is straightforward: production Kotlin in AOSP only
-calls into Java, never the reverse. There is no Java caller in the platform that
-needs the synthesized overloads.
+Within `frameworks/base/services/`, every `@JvmOverloads` usage sits under
+`services/tests/` — mostly test utility files in `displayservicetests/` like
+`TestUtils.kt`, `PersistentDataStoreTestUtils.kt`,
+`DisplayDeviceConfigTestUtils.kt`, and `ClamperTestUtils.kt`, plus one fake in
+`servicestests/`. No production service uses it. (The annotation is common in
+the app layer — SystemUI and Settings use it in over a hundred files between
+them — but those are apps consuming the SDK, not API-bearing framework code.)
+The reason for its absence from production services is straightforward:
+production service Kotlin in AOSP only calls into Java, never the reverse.
+There is no Java caller in the platform services that needs the synthesized
+overloads.
 
 ### `@JvmStatic` and the `Companion.foo()` vs `Foo.foo()` choice
 
@@ -583,8 +592,10 @@ shares, and a public Kotlin API would force `kotlin-stdlib.jar` into that
 shared classloader too.
 
 The framework's public API ships as `framework.jar` (plus adjacent jars like
-`services.jar`, `framework-graphics.jar`, `framework-location.jar`, `ext.jar`,
-`telephony-common.jar`) on the device's **boot classpath**. The composition is
+`framework-graphics.jar`, `framework-location.jar`, `ext.jar`,
+`telephony-common.jar`) on the device's **boot classpath**. (`services.jar` is
+not among them: it sits on SYSTEMSERVERCLASSPATH and is loaded only by
+`system_server`.) The composition is
 configured by Soong via `PRODUCT_BOOT_JARS`, with the default set defined at
 `build/make/target/product/default_art_config.mk:38` — `framework-minus-apex`,
 `ext`, `telephony-common`, `framework-graphics`, `framework-location`, and the
@@ -625,14 +636,17 @@ those types live in `kotlin-stdlib.jar`.
 
 The verified state today: no boot classpath jar in AOSP links `kotlin-stdlib`.
 `external/kotlinc/Android.bp:59` declares `kotlin-stdlib` as a `java_import`
-of the prebuilt jar, but the modules that depend on it are non-boot — SystemUI's
-plugin and shared subprojects explicitly set `static_kotlin_stdlib: false` to
-keep their own stdlib internal to their APK rather than promoted to shared
-state. The Kotlin code that does run inside boot-classpath jars (parts of
-`system_server` and other framework services, see "Where Kotlin Already Lives
-in AOSP" below) compiles to JVM signatures that hold no Kotlin type at the
-public boundary, so no `kotlin-stdlib` reference reaches the shared
-classloader.
+of the prebuilt jar, but the modules that depend on it are non-boot. Soong's
+`static_kotlin_stdlib` property (documented in `build/soong/java/base.go` as
+"If true, package the kotlin stdlib into the jar. Defaults to true.") controls
+whether a Kotlin module bundles its own stdlib copy; SystemUI's plugin and
+shared subprojects set it to `false` so that the stdlib becomes a
+compile-time-only dependency for them and the containing APK supplies the
+single packaged copy. The platform's production Kotlin (the permission
+subsystem, see "Where Kotlin Already Lives in AOSP" below) runs inside
+`services.jar` on SYSTEMSERVERCLASSPATH — loaded only by `system_server`, not
+on the boot classpath — with its stdlib statically linked and jarjar-renamed,
+so no `kotlin-stdlib` reference reaches the shared classloader.
 
 Adding the first public Kotlin signature inverts that. The framework jar that
 exposes a `Result<T>` return type, a `suspend` parameter, or even just a public
@@ -709,21 +723,25 @@ Java-shaped toolchain. Even where individual tools happen to be written in
 Kotlin, their input and output formats are designed for the Java/JVM signature
 model.
 
-**Metalava** lives at `tools/metalava/`. It is itself a Kotlin tool — 657 `.kt`
+**Metalava** lives at `tools/metalava/`. It is itself a Kotlin tool — 784 `.kt`
 files across its sub-modules. That metalava is written in Kotlin while operating
 on a Java-shaped API is part of the constraint, not a contradiction: metalava
-can consume Kotlin source to produce signatures, but the signature *format*
-(defined in `tools/metalava/FORMAT.md`) has no syntax for Kotlin-specific
-constructs. There is no way to write `suspend`, `inline`, `value class`, or
-`data class` in `current.txt`. A Kotlin source file that uses those features is
-either flattened to its JVM-visible projection (losing the source-level
-semantics) or rejected by API lint.
+can consume Kotlin source to produce signatures, and the signature format
+(defined in `tools/metalava/FORMAT.md`) can already express Kotlin modifiers
+(`sealed`, `inline`, `value`, `suspend`, `data`, `operator`, `infix`), Kotlin
+properties, parameter names, and default values. But those extensions were
+designed for the androidx signature files, where the library source is Kotlin;
+the platform SDK surface does not use them. The `current.txt` for the
+`android.*` classes is marked `// - style=java` and contains no Kotlin
+construct. A Kotlin source file that used those features on the platform
+surface would be flattened to its JVM-visible projection (losing the
+source-level semantics) or rejected by API lint.
 
 The flattening is informative. Metalava has a unified `Item` model — a class is
 an `Item`, a method is an `Item`, a field is an `Item` — and that model is
-intentionally language-neutral. The PSI frontend (which reads Kotlin source) and
-the Turbine frontend (which reads Java source) both produce Items in the same
-shape. When metalava emits a signature, it walks the Items and writes them in
+intentionally language-neutral. The PSI frontend (the default source model,
+which reads both Java and Kotlin source) and the Turbine frontend (an
+alternative Java-only source model) both produce Items in the same shape. When metalava emits a signature, it walks the Items and writes them in
 the format spec. A Kotlin `data class Foo(val x: Int)` is read by the PSI
 frontend, then projected to the equivalent Java declarations: a class with a
 final field-style accessor `getX`, a synthesized constructor, and the
@@ -735,21 +753,23 @@ This also means that an internal Kotlin source change — refactoring a `data
 class` to add a new field, splitting a sealed hierarchy, renaming a top-level
 function — does not show up in `current.txt` as long as the Kotlin members are
 not part of the public surface. Metalava only includes members it sees as
-`public` or `protected` and that are not annotated `@hide`. The vast majority of
-the 35 Kotlin files in `frameworks/base/core/` qualify as `@hide` or as
-package-private, so they exist but are invisible to the API check.
+`public` or `protected` and that are not annotated `@hide`. The Kotlin files
+under `frameworks/base/core/` are all test code under `core/tests/`, which the
+API check never scans — the API-bearing `core/java/` tree is pure Java, so no
+Kotlin declaration even reaches metalava there.
 
 The metalava module layout shows the separation of concerns:
 
 - `tools/metalava/metalava/` — the main tool entry point.
 - `tools/metalava/metalava-model/` — abstract API model independent of any
   language frontend.
-- `tools/metalava/metalava-model-psi/` — Kotlin source frontend (using JetBrains
-  PSI).
+- `tools/metalava/metalava-model-psi/` — the default source frontend for both
+  Java and Kotlin (using JetBrains PSI).
 - `tools/metalava/metalava-model-source/` — generic source-based model.
 - `tools/metalava/metalava-model-text/` — text (signature file) frontend, used
   for round-tripping `current.txt`.
-- `tools/metalava/metalava-model-turbine/` — Turbine-based Java frontend.
+- `tools/metalava/metalava-model-turbine/` — alternative Turbine-based
+  Java-only frontend.
 - `tools/metalava/metalava-reporter/` — issue reporting subsystem.
 - `tools/metalava/metalava-testing/` — test utilities.
 - `tools/metalava/stub-annotations/` — annotation jar used in generated stubs.
@@ -758,11 +778,15 @@ The text model is the canonical one. PSI and Turbine exist to feed it. A future
 Kotlin-aware public API would need a text model that can express, and
 round-trip, every Kotlin construct it would admit on the public surface.
 
-**Documentation generation**. The platform reference documentation pipeline runs
-Doclava (the historical Javadoc-derived tool) and Dackka (the newer Kotlin-aware
-doc tool). Dackka understands Kotlin source but produces documentation pages
-that describe the Java-projection of Kotlin APIs — because that is what app
-developers see in their IDE when they call into the platform. A Kotlin `data
+**Documentation generation**. The in-tree platform reference documentation
+pipeline is metalava plus Doclava (the historical Javadoc-derived tool at
+`external/doclava/`): raw sources pass through metalava into stub sources, and
+Doclava renders the stubs into API docs (the pipeline is sketched in
+`frameworks/base/api/ApiDocs.bp`). Dackka, Google's newer Kotlin-aware doc
+tool, is used for AndroidX documentation but is not checked into AOSP. Either
+way, the published documentation describes the Java-projection of Kotlin APIs
+— because that is what app developers see in their IDE when they call into the
+platform. A Kotlin `data
 class` shows up in the docs with its synthesized `equals`, `hashCode`,
 `toString`, `copy`, and `componentN` methods listed individually, because that
 is what Java callers see. The documentation can show source-level Kotlin shape
@@ -773,15 +797,21 @@ projection.
 The blocklist is maintained in plain-text files under
 `frameworks/base/boot/hiddenapi/`:
 
-- `hiddenapi-unsupported.txt` — fully blocked APIs.
-- `hiddenapi-unsupported-packages.txt` — entire packages with the surface
-  blocked.
+- `hiddenapi-unsupported.txt` — the *unsupported* (formerly greylist) members:
+  still accessible from every target SDK, but unsupported and subject to
+  warnings.
+- `hiddenapi-unsupported-packages.txt` — whole packages placed in that same
+  unsupported category.
 - `hiddenapi-max-target-o.txt` — APIs targeted at SDK O or earlier (legacy
   block).
 - `hiddenapi-max-target-p.txt` — APIs targeted at SDK P or earlier.
 - `hiddenapi-max-target-q.txt` — APIs targeted at SDK Q or earlier.
 - `hiddenapi-max-target-r-loprio.txt` — APIs targeted at R or earlier, low
   priority.
+
+Hidden members not named in any of these files default to the `blocked`
+category — the hard-denied case — so the lists carve out exemptions rather
+than declare the blocks.
 
 A blocked Kotlin extension function appears as
 `Lcom/example/UtilsKt;->extensionMethod(Lcom/example/Receiver;)V`, not by its
@@ -797,8 +827,8 @@ The build system merges the source text files into a single generated CSV:
 - `out/soong/hiddenapi/hiddenapi-flags.csv` — the build-time artifact, ~750k
   rows. Each row is a member descriptor plus a flag list (`public-api`, `sdk`,
   `system-api`, `test-api`, `blocked`, etc.).
-- `prebuilts/runtime/appcompat/hiddenapi-flags.csv` — the prebuilt copy shipped
-  for app-compat checks (~51 MB).
+- `prebuilts/runtime/appcompat/hiddenapi-flags.csv` — the prebuilt copy bundled
+  with the host-side veridex/`appcompat.sh` APK scanner (~51 MB).
 
 Sample rows from the generated file:
 
@@ -808,7 +838,10 @@ Landroid/Manifest$permission;->ACCEPT_HANDOVER:Ljava/lang/String;,public-api,sdk
 Landroid/Manifest$permission;->ACCESSIBILITY_MOTION_EVENT_OBSERVING:Ljava/lang/String;,blocked,test-api
 ```
 
-The CSV is loaded into ART at runtime. When an app calls
+The CSV is consumed at build time by the `hiddenapi` tool
+(`art/tools/hiddenapi/hiddenapi.cc`), which stamps the flags into each dex
+file's `HiddenapiClassData` section; ART then reads those per-member dex flags
+at runtime — it never opens the CSV. When an app accesses
 `Manifest.permission.ACCESSIBILITY_MOTION_EVENT_OBSERVING`, the runtime checks
 the flags. `blocked` triggers a hard exception; the various `max-target-*` flags
 trigger softer warnings or version-gated blocks. The granularity is
@@ -819,8 +852,13 @@ fallback) would multiply the entries needed to express the same source-level
 intent in this CSV.
 
 **jarjar rules**. Several framework modules rewrite their dependency class names
-during build to avoid colliding with app-visible classes. The rules are declared
-in `.jarjar` files processed by the jarjar tool. Kotlin metadata annotations
+during build to avoid colliding with app-visible classes. The rules live in
+`jarjar-rules.txt` files wired in through Soong's `jarjar_rules:` property —
+the permission subsystem applies exactly this rewrite to its statically linked
+stdlib (`frameworks/base/services/permission/jarjar-rules.txt` renames
+`kotlin.**` to `com.android.server.permission.jarjar.kotlin.**`), viable there
+because the subsystem does not rely on Kotlin reflection over the renamed
+classes. Kotlin metadata annotations
 (`kotlin.Metadata`) embed string references to the original class names — a
 jarjar rewrite that renames `kotlin.collections.MapsKt` to
 `com.android.internal.kotlin.collections.MapsKt` would mismatch with the
@@ -837,7 +875,7 @@ annotation type and a metalava rule to project that annotation into the
 generated CSV correctly.
 
 The annotations themselves come with subtle constraints. `@SystemApi` accepts
-client-type arguments (`MODULE_LIBRARIES`, `PRIVILEGED_APPS`, `MODULE_APPS`)
+client-type arguments (`MODULE_LIBRARIES`, `PRIVILEGED_APPS`, `SYSTEM_SERVER`)
 that gate which downstream consumers see the member. Metalava reads those
 arguments and routes the member into the appropriate signature surface; an
 incorrectly routed annotation leaks into the wrong `current.txt`, and the
@@ -854,8 +892,9 @@ The `out/soong/hiddenapi/hiddenapi-flags.csv` artifact is the merge point of
 every input mentioned above: source `.txt` blocklists, `@SystemApi` membership,
 `@UnsupportedAppUsage` annotations, and public-API stub descriptors all flow
 through Soong into a single descriptor-keyed table. The same machinery feeds
-`prebuilts/runtime/appcompat/hiddenapi-flags.csv`, the prebuilt copy older
-runtimes consult during app-compat fallbacks. Any change to the descriptor
+`prebuilts/runtime/appcompat/hiddenapi-flags.csv`, the prebuilt table used by
+the host-side veridex/`appcompat.sh` APK scanner (no on-device runtime reads
+it). Any change to the descriptor
 shape, the flag vocabulary, or the way Kotlin members map to descriptors flows
 through this pipeline.
 
@@ -898,7 +937,7 @@ hard-pins a specific kotlinc version. The build's prebuilt kotlinc lives at
 `external/kotlinc/`, with version stamped in `external/kotlinc/build.txt`:
 
 ```
-2.2.0-release-294
+2.2.0-custom-branch-22
 ```
 
 The pinning is enforced in Soong's compiler-flag plumbing:
@@ -909,8 +948,10 @@ The pinning is enforced in Soong's compiler-flag plumbing:
 - `build/soong/java/config/kotlin.go` — declares the variables Soong uses to
   find kotlinc components (`external/kotlinc/bin/kotlinc`,
   `external/kotlinc/lib/kotlin-stdlib.jar`,
-  `external/kotlinc/lib/kotlin-compiler.jar`, the Compose plugin, kapt,
-  jvm-abi-gen).
+  `external/kotlinc/lib/kotlin-compiler.jar`, kapt, jvm-abi-gen). The Compose
+  compiler plugin is wired in separately, as the
+  `kotlin-compose-compiler-plugin` module referenced from
+  `build/soong/java/base.go`.
 
 The same config file forbids callers from overriding `-no-jdk`, `-no-stdlib`, or
 `-language-version`. The platform decides which Kotlin language version to
@@ -990,13 +1031,13 @@ introduced in "The Asymmetry" can be expanded with the role each location plays:
 
 | Path | Kotlin files | Role |
 |------|--------------|------|
-| `frameworks/base/packages/SystemUI/` | 7,846 | System UI shell: lock screen, notifications, quick settings, status bar, system bars, Compose for UI |
-| `packages/apps/Settings/` | 1,576 | Settings app |
-| `packages/apps/Launcher3/` | 949 | Launcher home and recents |
-| `cts/` | 925 | Compatibility Test Suite (Kotlin used freely in tests) |
-| `frameworks/base/services/` | 237 | All in `services/permission/`, plus tests; no other system service uses production Kotlin |
-| `frameworks/base/core/` | 35 | Sparse use in framework internals; not exposed on the public API surface |
-| `tools/metalava/` | 657 | The signature tool itself is Kotlin |
+| `frameworks/base/packages/SystemUI/` | 8,896 | System UI shell: lock screen, notifications, quick settings, status bar, system bars, Compose for UI |
+| `packages/apps/Settings/` | 2,300 | Settings app |
+| `packages/apps/Launcher3/` | 1,326 | Launcher home and recents |
+| `cts/` | 1,209 | Compatibility Test Suite (Kotlin used freely in tests) |
+| `frameworks/base/services/` | 292 | Production Kotlin all in `services/permission/`; the rest is tests — no other system service uses production Kotlin |
+| `frameworks/base/core/` | 45 | All test code under `core/tests/`; zero production Kotlin in `core/java/` |
+| `tools/metalava/` | 784 | The signature tool itself is Kotlin |
 
 Within `frameworks/base/services/`, the production Kotlin is concentrated in the
 permission access subsystem introduced in Android 13. Three representative files
@@ -1004,7 +1045,7 @@ illustrate the shape:
 
 **`AccessCheckingService.kt`** —
 `frameworks/base/services/permission/java/com/android/server/permission/access/AccessCheckingService.kt`,
-323 lines. This is the entry-point class for the new permission stack. It
+325 lines. This is the entry-point class for the new permission stack. It
 extends `SystemService`, registers manager interfaces with `LocalServices`, and
 exposes its state via the `getState { ... }` scope helper. The relevant
 fragment:
@@ -1063,7 +1104,7 @@ chose to keep the implementation Kotlin and the boundary Java.
 
 **`AccessPolicy.kt`** —
 `frameworks/base/services/permission/java/com/android/server/permission/access/AccessPolicy.kt`,
-527 lines. The `AccessPolicy` class indexes a map of `SchemePolicy`
+540 lines. The `AccessPolicy` class indexes a map of `SchemePolicy`
 implementations and delegates per-scheme work to subclasses. The relevant
 declaration:
 
@@ -1077,8 +1118,11 @@ private constructor(
 with an abstract `SchemePolicy` base class declared later in the file. The
 abstract-class-plus-subclasses pattern is purely internal:
 `AppIdPermissionPolicy`, `DevicePermissionPolicy`, `AppIdAppOpPolicy`,
-`PackageAppOpPolicy`, and `AppIdAppFunctionAccessPolicy` are all package-private
-to the permission subsystem and do not appear in any signature file.
+`PackageAppOpPolicy`, and `AppIdAppFunctionAccessPolicy` are all plain public
+Kotlin classes (Kotlin has no package-private visibility), but they stay
+confined to the permission subsystem by build visibility — the library's
+`Android.bp` sets `visibility: ["//frameworks/base/services"]` — and none of
+them appears in any signature file.
 
 **`Permission.kt`** —
 `frameworks/base/services/permission/java/com/android/server/permission/access/permission/Permission.kt`,
@@ -1122,7 +1166,7 @@ runner actually needs to reach into Kotlin from outside.
 
 A few additional notes on where Kotlin appears help round out the picture:
 
-**The CTS Kotlin tests.** Roughly 925 Kotlin files live under `cts/`. CTS
+**The CTS Kotlin tests.** Roughly 1,200 Kotlin files live under `cts/`. CTS
 validates that an OEM build conforms to the Android compatibility definition;
 tests in CTS are necessarily Java-callable from the test runner, but the test
 bodies themselves can be Kotlin. CTS uses Kotlin freely because the tests do not
@@ -1138,7 +1182,7 @@ Settings' internal classes are heavily Kotlin.
 
 **SystemUI's role.** SystemUI is the system_server-adjacent process that hosts
 the lock screen, notifications, quick settings, and system bars. It is the
-largest Kotlin codebase in AOSP at 7,846 files. SystemUI's interface to the rest
+largest Kotlin codebase in AOSP at 8,896 files. SystemUI's interface to the rest
 of the platform is via well-defined boundaries: AIDL for binder calls, content
 providers for shared state, intents for activity launches. None of those
 boundaries surface Kotlin types as parameters. SystemUI can refactor freely; the
@@ -1149,24 +1193,28 @@ intent contracts.
 interop pattern noted under `@JvmOverloads`, `@JvmStatic`, and "Permission
 subsystem testing" appears throughout `services/tests/`; see those subsections.
 
-**`frameworks/base/core/` Kotlin.** The 35 files here are an interesting
-outlier. They include some support utilities, occasional helper classes, and a
-small amount of newer code. None of them appears as a public-API entry in
-`current.txt` because nothing in the Kotlin source declares a `public` type that
-crosses into the `android.*` namespace and resolves through metalava as a public
-member. Kotlin source can sit in `frameworks/base/core/` as long as it stays out
-of the public API surface — and the API check is what enforces that boundary.
+**`frameworks/base/core/` Kotlin.** The 45 files here are all test code under
+`frameworks/base/core/tests/` — there is zero production Kotlin in the
+API-bearing `core/java/` tree. Nothing there can appear as a public-API entry
+in `current.txt`, because metalava reads the production source and the
+production source is pure Java. In principle, Kotlin source could sit in
+`core/java/` as long as it stayed out of the public API surface — the API
+check is what enforces that boundary — but today none does.
 
-**The kotlin-stdlib boot inclusion.** When the boot classpath is computed by
-Soong, the stdlib jars are added so that Kotlin classes in the boot image
-resolve their stdlib dependencies at runtime. This means stdlib types like
-`kotlin.collections.MapsKt`, `kotlin.coroutines.Continuation`, `kotlin.Result`,
-and `kotlin.Metadata` are all reachable from any process in the system. They do
-not appear in `current.txt` because metalava is told to exclude them, but they
-are present at runtime. A future Kotlin-on-the-public-surface story would need
-to decide whether stdlib types are part of the public API (they would be,
-transitively, through any public method that returns a stdlib type) or whether
-the public API can use only a vetted subset of stdlib.
+**The kotlin-stdlib linkage.** `kotlin-stdlib` is not on the boot classpath at
+all. The one production consumer in the platform, the permission subsystem,
+statically links the stdlib into its library
+(`frameworks/base/services/permission/Android.bp`), which lands in
+`services.jar` on SYSTEMSERVERCLASSPATH — loaded only by `system_server` — and
+jarjar-renames every stdlib class to
+`com.android.server.permission.jarjar.kotlin.**`
+(`frameworks/base/services/permission/jarjar-rules.txt`). Stdlib types like
+`kotlin.collections.MapsKt`, `kotlin.coroutines.Continuation`, and
+`kotlin.Result` are therefore not reachable from app processes. A future
+Kotlin-on-the-public-surface story would need to decide whether stdlib types
+are part of the public API (they would be, transitively, through any public
+method that returns a stdlib type) or whether the public API can use only a
+vetted subset of stdlib.
 
 ## The Kotlin Features Hardest for a Public Surface
 
@@ -1239,8 +1287,10 @@ annotations `org.jetbrains.annotations.Nullable` and `.NotNull`). For Java
 callers, these annotations are advisory — the bytecode signature is the same
 with or without them. For Kotlin callers consuming a Java API, the annotations
 matter: they determine whether Kotlin infers `T` or `T?`. Public framework Java
-uses `androidx.annotation.Nullable`/`androidx.annotation.NonNull` to express the
-same intent. Migrating to Kotlin source would either preserve those annotations
+uses the hidden platform annotations
+`android.annotation.NonNull`/`android.annotation.Nullable` to express the same
+intent, which metalava projects into androidx-flavored annotations in the
+generated stubs. Migrating to Kotlin source would either preserve those annotations
 explicitly or rely on kotlinc emitting JetBrains-flavor annotations — and the
 framework's nullability story would have to declare which annotation namespace
 is the contract. There is also a quieter concern around `platform types`: when
@@ -1302,19 +1352,23 @@ item presupposes the earlier ones.
    some bounded K" — bounded enough for Gradle-driven Kotlin projects that
    recompile frequently, but not bounded for ten years.
 
-2. **A Kotlin-aware metalava that emits `current.txt`-equivalent signatures.**
-   The signature format defined in `tools/metalava/FORMAT.md` would need to grow
-   syntax for Kotlin constructs: `suspend`, `inline`, `value class`, `data
-   class`, `sealed class`/`interface`, default arguments, nullability,
-   `companion object` shape. Each addition is an API design problem in itself —
-   the new syntax must round-trip through the text model and survive future
-   kotlinc evolution. The text model in `tools/metalava/metalava-model-text/`
-   would need extensions to parse and emit the new constructs, and the
-   comparison logic in
-   `tools/metalava/metalava/src/main/.../ComparisonVisitor.kt` would need rules
-   for which Kotlin-specific changes constitute breaking deltas. Today metalava
-   can read Kotlin source via its PSI model
-   (`tools/metalava/metalava-model-psi/`) but emits a Java-projection signature.
+2. **A Kotlin-aware metalava pipeline for the platform surface.** The
+   signature format defined in `tools/metalava/FORMAT.md` already has syntax
+   for Kotlin modifiers (`sealed`, `inline`, `value`, `suspend`, `data`,
+   `operator`, `infix`), Kotlin properties, and default arguments — built for
+   the androidx signature files, whose sources are Kotlin — and the text model
+   in `tools/metalava/metalava-model-text/` parses those tokens today. What
+   does not exist is their adoption on the platform SDK surface: the platform
+   `current.txt` is `style=java`, and each Kotlin construct admitted there is
+   an API design problem in itself — the syntax must round-trip through the
+   text model, survive future kotlinc evolution, and cover the gaps the format
+   still has (`companion object` shape, nullability as a first-class
+   contract). The comparison logic in
+   `tools/metalava/metalava/src/main/.../ComparisonVisitor.kt` would need
+   rules for which Kotlin-specific changes constitute breaking deltas. Today
+   metalava reads Kotlin source via its PSI model
+   (`tools/metalava/metalava-model-psi/`) but emits a Java-projection
+   signature for the platform.
 
 3. **Hidden API enforcement that tracks Kotlin descriptors.** The CSV at
    `out/soong/hiddenapi/hiddenapi-flags.csv` uses raw JVM descriptors. Kotlin
@@ -1327,8 +1381,9 @@ item presupposes the earlier ones.
    has no easy way to confirm that all the resulting descriptors landed in the
    right hidden API category.
 
-4. **Updated documentation tooling.** Dackka understands Kotlin source today,
-   but the reference docs would need a shared model where the Kotlin
+4. **Updated documentation tooling.** Dackka (Google's Kotlin-aware doc tool,
+   used for AndroidX and not checked into AOSP) understands Kotlin source
+   today, but the platform reference docs would need a shared model where the Kotlin
    source-level view and the Java JVM-projection view are both first-class. App
    developers using Java tooling against a Kotlin platform API must see a
    coherent Javadoc; app developers using Kotlin tooling must see source-level
@@ -1421,19 +1476,23 @@ cd $AOSP
 head -5 frameworks/base/core/api/current.txt
 
 # Find a class entry
-grep -n 'public final class Manifest ' frameworks/base/core/api/current.txt
+grep -n 'public class Activity ' frameworks/base/core/api/current.txt
 
 # Locate the Java source for that class
-find frameworks/base/core -name 'Manifest.java' -path '*/java/android/*'
+find frameworks/base/core -name 'Activity.java' -path '*/java/android/app/*'
 
 # Confirm the file is Java
-head -3 frameworks/base/core/java/android/Manifest.java
+head -3 frameworks/base/core/java/android/app/Activity.java
 ```
 
-**What to look for**: the signature file opens with `// Signature format: 6.0`
-followed by `package android {`. Every class is described in Java-flavor syntax.
-The `Manifest.java` source file should exist at
-`frameworks/base/core/java/android/Manifest.java` and be Java, not Kotlin.
+**What to look for**: the signature file opens with `// Signature format: 6.0`,
+then a `// - style=java` marker line, then `package android {`. Every class is
+described in Java-flavor syntax. The `Activity.java` source file should exist
+at `frameworks/base/core/java/android/app/Activity.java` and be Java, not
+Kotlin. (Note that `android.Manifest`, whose entry also appears near the top of
+`current.txt`, has no checked-in source file at all — aapt2 generates it at
+build time from the permission declarations in
+`frameworks/base/core/res/AndroidManifest.xml`.)
 
 ### Exercise C-3: Trace a Kotlin-implementing service across binder
 
@@ -1523,10 +1582,12 @@ ls -d tools/metalava/metalava-* | wc -l
 find tools/metalava -name '*.kt' | wc -l
 ```
 
-**What to look for**: the tool is itself Kotlin (the `.kt` count should be about
-657), but the signature format it emits (`FORMAT.md`) has no Kotlin-specific
-syntax. The compatibility policy is what gates whether a change to `current.txt`
-is allowed; it does not have a separate Kotlin track. The module list
+**What to look for**: the tool is itself Kotlin (the `.kt` count should be
+roughly 800), and `FORMAT.md` contains "Support Kotlin Modifiers" and "Support
+Default Values" sections — Kotlin-specific syntax built for the androidx
+signature files — yet the platform's `current.txt` is `style=java` and uses
+none of it. The compatibility policy is what gates whether a change to
+`current.txt` is allowed; it does not have a separate Kotlin track. The module list
 (`metalava-*` directories) shows the language frontends and the text model.
 Running metalava as a tool requires a built binary and is not part of this
 exercise.
@@ -1555,9 +1616,9 @@ compiler. Freezing the set requires freezing each piece independently. The
 multiplicity manifests; each category is independently a freezing problem.
 
 The third constraint is the toolchain. Metalava, hidden API enforcement,
-Doclava/Dackka, jarjar, and the `@SystemApi`/`@UnsupportedAppUsage` annotation
+Doclava, jarjar, and the `@SystemApi`/`@UnsupportedAppUsage` annotation
 pipeline all operate on JVM descriptors. They consume Kotlin source (metalava
-and Dackka can read it) but their output is the language-neutral, JVM-shaped
+can read it) but their output is the language-neutral, JVM-shaped
 contract — `current.txt` text, descriptor CSVs, Javadoc HTML. A Kotlin-shape
 public API would require parallel tooling that admits Kotlin constructs as
 first-class. The toolchain itself is not in opposition to Kotlin; it simply does
@@ -1574,15 +1635,16 @@ inside the APK; the only escape is WebView-style per-process zygote
 isolation, which AOSP only pays the cost of in one well-justified case today.
 
 The result is what the inventory shows. Kotlin lives in the app and UI layer,
-in test code, in metalava itself, in the permission subsystem, and in a few
-corners of `frameworks/base/core/`. It does not appear in `current.txt` because
-the cost of putting it there has not yet been paid in full.
+in test code (including everything Kotlin under `frameworks/base/core/`), in
+metalava itself, and in the permission subsystem. It does not appear in
+`current.txt` because the cost of putting it there has not yet been paid in
+full.
 
 ## Key Source Files Reference
 
 | Path | Purpose |
 |------|---------|
-| `tools/metalava/` | The signature tool. Itself Kotlin (657 .kt files); emits language-neutral signature text. |
+| `tools/metalava/` | The signature tool. Itself Kotlin (784 .kt files); emits language-neutral signature text. |
 | `tools/metalava/FORMAT.md` | Specification of the `current.txt` text format. |
 | `tools/metalava/COMPATIBILITY.md` | Compatibility policy enforced by metalava on signature drift. |
 | `tools/metalava/API-LINT.md` | API lint rule documentation. |
@@ -1591,19 +1653,19 @@ the cost of putting it there has not yet been paid in full.
 | `frameworks/base/api/` | Build logic (`api.go`, `Android.bp`, `StubLibraries.bp`, `ApiDocs.bp`) that orchestrates signature generation. |
 | `prebuilts/sdk/<N>/public/api/android.txt` | Frozen public API signature for SDK level N (e.g. `prebuilts/sdk/34/public/api/android.txt`). |
 | `prebuilts/sdk/<N>/public/android.jar` | Frozen stub jar apps compile against at SDK level N. |
-| `frameworks/base/boot/hiddenapi/hiddenapi-unsupported.txt` | Source blocklist: fully blocked APIs. |
-| `frameworks/base/boot/hiddenapi/hiddenapi-unsupported-packages.txt` | Source blocklist: entirely-blocked packages. |
+| `frameworks/base/boot/hiddenapi/hiddenapi-unsupported.txt` | Source list: unsupported (formerly greylist) members — accessible but warned. |
+| `frameworks/base/boot/hiddenapi/hiddenapi-unsupported-packages.txt` | Source list: whole packages in the unsupported category. |
 | `frameworks/base/boot/hiddenapi/hiddenapi-max-target-o.txt` | Source blocklist: legacy O-or-earlier APIs. |
 | `frameworks/base/boot/hiddenapi/hiddenapi-max-target-p.txt` | Source blocklist: P-or-earlier APIs. |
 | `frameworks/base/boot/hiddenapi/hiddenapi-max-target-q.txt` | Source blocklist: Q-or-earlier APIs. |
 | `frameworks/base/boot/hiddenapi/hiddenapi-max-target-r-loprio.txt` | Source blocklist: R-or-earlier APIs (low priority). |
 | `out/soong/hiddenapi/hiddenapi-flags.csv` | Generated descriptor enforcement table (~750k rows). |
-| `prebuilts/runtime/appcompat/hiddenapi-flags.csv` | Prebuilt descriptor table shipped for app-compat checks (~51 MB). |
+| `prebuilts/runtime/appcompat/hiddenapi-flags.csv` | Prebuilt descriptor table for the host-side veridex/`appcompat.sh` APK scanner (~51 MB). |
 | `build/soong/java/kotlin.go` | Soong kotlinc Ninja rules (compile, snapshot, incremental). |
 | `build/soong/java/kotlin_test.go` | Unit tests for the kotlinc rules. |
 | `build/soong/java/config/kotlin.go` | Soong configuration: kotlinc binary paths, plugins, forbidden flags. |
 | `external/kotlinc/` | Pinned prebuilt kotlinc. |
-| `external/kotlinc/build.txt` | Pinned kotlinc version stamp (`2.2.0-release-294`). |
+| `external/kotlinc/build.txt` | Pinned kotlinc version stamp (`2.2.0-custom-branch-22`). |
 | `external/kotlinc/bin/kotlinc` | The kotlinc binary. |
 | `external/kotlinc/lib/kotlin-stdlib.jar` | Kotlin standard library prebuilt; non-boot dependency today (no boot classpath jar links it). |
 | `external/kotlinc/Android.bp` | `kotlin-stdlib` `java_import` declaration (line 59). |
@@ -1616,8 +1678,8 @@ the cost of putting it there has not yet been paid in full.
 | `external/kotlinc/lib/compose-compiler-plugin.jar` | Compose compiler plugin. |
 | `external/kotlinc/lib/kotlin-annotation-processing.jar` | kapt (Kotlin annotation processing). |
 | `external/kotlinc/lib/jvm-abi-gen.jar` | JVM ABI generation plugin. |
-| `frameworks/base/services/permission/java/com/android/server/permission/access/AccessCheckingService.kt` | Sample production Kotlin service (323 lines); extends `SystemService`. |
-| `frameworks/base/services/permission/java/com/android/server/permission/access/AccessPolicy.kt` | Sample policy hierarchy (527 lines); abstract `SchemePolicy` plus concrete subclasses. |
+| `frameworks/base/services/permission/java/com/android/server/permission/access/AccessCheckingService.kt` | Sample production Kotlin service (325 lines); extends `SystemService`. |
+| `frameworks/base/services/permission/java/com/android/server/permission/access/AccessPolicy.kt` | Sample policy hierarchy (540 lines); abstract `SchemePolicy` plus concrete subclasses. |
 | `frameworks/base/services/permission/java/com/android/server/permission/access/permission/Permission.kt` | Sample `data class` with companion object (185 lines). |
 | `frameworks/base/services/permission/java/com/android/server/permission/access/AccessPersistence.kt` | Production `companion object` usage example. |
 | `system/apex/docs/README.md` | APEX/Mainline binary stability docs. |

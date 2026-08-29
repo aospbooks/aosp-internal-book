@@ -69,11 +69,11 @@ than months.
 | Release | Codename | Mainline Milestone |
 |---------|----------|-------------------|
 | Android 10 | Q (2019) | Initial launch with ~12 APEX modules |
-| Android 11 | R (2020) | Added `min_sdk_version` enforcement; compressed APEX (CAPEX) |
-| Android 12 | S (2021) | SDK Extensions; ART module becomes updatable |
+| Android 11 | R (2020) | SDK Extensions; `min_sdk_version` enforcement; compressed APEX (CAPEX) |
+| Android 12 | S (2021) | ART module becomes updatable; GeoTZ, Scheduling modules |
 | Android 13 | T (2022) | AdServices, AppSearch, OnDevicePersonalization modules |
 | Android 14 | U (2023) | ConfigInfrastructure, HealthFitness modules |
-| Android 15 | V (2024) | NeuralNetworks, ThreadNetwork, Profiling modules |
+| Android 15 | V (2024) | ThreadNetwork module; WebView bootstrap APEX |
 | Android 16 | B / Baklava (2025) | UprobeStats; brand-new APEX support in apexd |
 | Android 17 | C / CinnamonBun (2026) | NpuManager, WebApp; new "C" SDK-extension axis; EROFS file-backed APEX mounts |
 
@@ -394,16 +394,19 @@ The Soong build rule that invokes `apexer` is defined in
 // Source: build/soong/apex/builder.go
 
 apexRule = pctx.StaticRule("apexRule", blueprint.RuleParams{
-    Command: `rm -rf ${image_dir} && mkdir -p ${image_dir} && ` +
-        `(. ${out}.copy_commands) && ` +
-        `APEXER_TOOL_PATH=${tool_path} ` +
-        `${apexer} --force --manifest ${manifest} ` +
-        `--file_contexts ${file_contexts} ` +
-        `--canned_fs_config ${canned_fs_config} ` +
-        `--include_build_info ` +
-        `--payload_type image ` +
-        `--key ${key} ${opt_flags} ${image_dir} ${out} `,
-    ...
+    Command2: blueprint.NewCommand(
+        android.Rm, ` -rf ${image_dir} && `, android.Mkdir, ` -p ${image_dir} && `,
+        `(. ${out}.copy_commands) && `,
+        `APEXER_TOOL_PATH=${tool_path} `,
+        apexer, ` --force --manifest ${manifest} `,
+        `--file_contexts ${file_contexts} `,
+        `--canned_fs_config ${canned_fs_config} `,
+        `--include_build_info `,
+        `--payload_type image `,
+        `--key ${key} ${opt_flags} ${image_dir} ${out} && `,
+        android.SoongZip, ` -d -C ${image_dir} -D ${image_dir} -o ${image_zip}`,
+    ),
+    // ...
 })
 ```
 
@@ -529,7 +532,7 @@ service apexd /system/bin/apexd
     oneshot
     disabled
     reboot_on_failure reboot,apexd-failed
-    capabilities CHOWN DAC_OVERRIDE DAC_READ_SEARCH FOWNER SYS_ADMIN
+    capabilities CHOWN DAC_OVERRIDE DAC_READ_SEARCH FOWNER SYS_ADMIN MKNOD
 
 service apexd-bootstrap /system/bin/apexd --bootstrap
     user root
@@ -537,7 +540,7 @@ service apexd-bootstrap /system/bin/apexd --bootstrap
     oneshot
     disabled
     reboot_on_failure reboot,bootloader,bootstrap-apexd-failed
-    capabilities SYS_ADMIN
+    capabilities SYS_ADMIN MKNOD
 
 service apexd-snapshotde /system/bin/apexd --snapshotde
     user root
@@ -688,9 +691,15 @@ if (apex.GetManifest().nocode()) {
     mount_flags |= MS_NOEXEC;
 }
 
-mount(block_device.c_str(), mount_point.c_str(),
-      apex.GetFsType().value().c_str(), mount_flags, nullptr);
+if (mount(mount_device.c_str(), mount_point.c_str(), fs_type.c_str(),
+          mount_flags, mount_options.c_str()) != 0) {
+    return ErrnoError() << "Mounting failed for package " << full_path;
+}
 ```
+
+The final `mount_options` argument is how the file-backed EROFS path delivers
+its `fsoffset=` value to the kernel; for the loop-device and dm-linear paths it
+is empty.
 
 The mount flags enforce:
 
@@ -768,10 +777,10 @@ flowchart TD
     /odm/apex"]
     B --> C["Mount bootstrap APEXes
     (runtime, tzdata, i18n)"]
-    C --> D["Set apexd.status = starting"]
-    D --> E["/data becomes available"]
+    C --> E["/data becomes available"]
     E --> F["init starts apexd"]
-    F --> G["Scan /data/apex/active
+    F --> D["Set apexd.status = starting"]
+    D --> G["Scan /data/apex/active
     for updated APEXes"]
     G --> H{"Staged session
     pending?"}
@@ -818,9 +827,8 @@ int OnBootstrap() {
   std::vector<ApexFileRef> activation_list;
 
   if (IsMountBeforeDataEnabled()) {
-    // New flow: wait for coldboot, process sessions, scan data
-    base::WaitForProperty("ro.cold_boot_done", "true",
-                          std::chrono::seconds(10));
+    // New flow: wait for the /data block device, process sessions, scan data
+    OR_RETURN(GetImageManager()->WaitForDataBlockDevice());
     ProcessSessions(ctx);
     auto data_apexes = ScanDataApexFiles(GetImageManager());
     instance.AddDataApexFiles(std::move(data_apexes));
@@ -1044,20 +1052,21 @@ var (
     extractMatchingApex = pctx.StaticRule(
         "extractMatchingApex",
         blueprint.RuleParams{
-            Command: `${extract_apks} -o "${out}" ` +
-                `-allow-prereleased=${allow-prereleased} ` +
-                `-sdk-version=${sdk-version} ` +
-                `-skip-sdk-check=${skip-sdk-check} ` +
-                `-abis=${abis} ` +
-                `-screen-densities=all -extract-single ` +
+            Command2: blueprint.NewCommand(
+                android.Rm, ` -rf "$out" && `,
+                extract_apks, ` -o "${out}" -allow-prereleased=${allow-prereleased} `,
+                `-sdk-version=${sdk-version} -skip-sdk-check=${skip-sdk-check} -abis=${abis} `,
+                `-screen-densities=all -extract-single `,
                 `${in}`,
+            ),
         },
         "abis", "allow-prereleased", "sdk-version", "skip-sdk-check")
     decompressApex = pctx.StaticRule("decompressApex",
         blueprint.RuleParams{
-            Command: `${deapexer} decompress ` +
-                `--copy-if-uncompressed ` +
-                `--input ${in} --output ${out}`,
+            Command2: blueprint.NewCommand(
+                android.Rm, ` -rf $out && `,
+                deapexer, ` decompress --copy-if-uncompressed --input ${in} --output ${out}`,
+            ),
         })
 )
 ```
@@ -1248,9 +1257,11 @@ Mainline modules.  Each module typically produces one or more APEX packages.
 
 ### 54.3.1  Complete Module Inventory
 
-The following table lists every module directory in `packages/modules/` as of
-Android 17, its APEX package name(s), the Android release in which it became
-updatable, and a summary of what it provides.  Not every directory produces an
+The following table lists every module directory in `packages/modules/` that
+produces a Mainline artifact as of Android 17 (the shared `common` directory,
+which holds the build defaults and tooling used by every module, and the
+legacy `vndk` directory are omitted), its APEX package name(s), the Android
+release in which it became updatable, and a summary of what it provides.  Not every directory produces an
 APEX: some are APKs, some are pure code locations, and the Android 17 newcomers
 (`NpuManager`, `WebApp`, `WebViewBootstrap`) are gated behind release flags.
 
@@ -1264,13 +1275,13 @@ APEX: some are APKs, some are pure code locations, and the Android 17 newcomers
 | 6 | `CellBroadcastService` | `com.android.cellbroadcast` | R (11) | Emergency alert message handling (CMAS/ETWS) |
 | 7 | `ConfigInfrastructure` | `com.android.configinfrastructure` | U (14) | Device configuration framework (`DeviceConfig`) |
 | 8 | `Connectivity` | `com.android.tethering` | R (11) | Tethering, Connectivity, Cronet HTTP stack |
-| 9 | `CrashRecovery` | `com.android.crashrecovery` | V (15) | System crash detection and recovery |
+| 9 | `CrashRecovery` | `com.android.crashrecovery` | B (16) | System crash detection and recovery |
 | 10 | `DeviceLock` | `com.android.devicelock` | U (14) | Device financing/locking framework |
 | 11 | `DnsResolver` | `com.android.resolv` | Q (10) | DNS resolution (DNS-over-TLS, private DNS) |
 | 12 | `ExtServices` | `com.android.extservices` | R (11) | Extension services (notification ranking, autofill) |
 | 13 | `GenericBootstrappingArchitecture` | *(APK: `GbaService`)* | C (17) | GBA (Generic Bootstrapping Architecture) carrier auth service |
 | 14 | `GeoTZ` | `com.android.geotz` | S (12) | Geolocation-based time zone detection |
-| 15 | `Gki` | `com.android.gki.*` | S (12) | Generic Kernel Image support modules |
+| 15 | `Gki` | *(code location, no APEX)* | -- | GKI support code (`libkver`, sysprops); no longer builds an APEX in AOSP |
 | 16 | `HealthFitness` | `com.android.healthfitness` | U (14) | Health Connect: health/fitness data platform |
 | 17 | `IPsec` | `com.android.ipsec` | R (11) | IKEv2/IPsec VPN framework |
 | 18 | `ImsMedia` | *(in Telephony)* | T (13) | IMS media handling for VoLTE/VoNR |
@@ -1284,14 +1295,14 @@ APEX: some are APKs, some are pure code locations, and the Android 17 newcomers
 | 26 | `NpuManager` | `com.android.npumanager` | C (17) | NPU access arbitration (flag-gated, `min_sdk 36`) |
 | 27 | `OnDevicePersonalization` | `com.android.ondevicepersonalization` | T (13) | On-device ML personalization framework |
 | 28 | `Permission` | `com.android.permission` | R (11) | Permission controller, role manager, SafetyCenter |
-| 29 | `Profiling` | `com.android.profiling` | V (15) | System profiling infrastructure |
+| 29 | `Profiling` | `com.android.profiling` | B (16) | System profiling infrastructure |
 | 30 | `RemoteKeyProvisioning` | `com.android.rkpd` | U (14) | Remote key provisioning for KeyStore |
 | 31 | `RuntimeI18n` | `com.android.i18n` | Q (10) | ICU internationalization library |
 | 32 | `Scheduling` | `com.android.scheduling` | S (12) | Job scheduling infrastructure |
 | 33 | `SdkExtensions` | `com.android.sdkext` | R (11) | SDK extension version management |
 | 34 | `StatsD` | `com.android.os.statsd` | R (11) | Metrics collection daemon |
-| 35 | `Telecom` | `com.android.telecom` | V (15) | Telecom call management framework |
-| 36 | `Telephony` | `com.android.telephonycore` | U (14) | Telephony core (call/SMS framework, RIL bits) |
+| 35 | `Telecom` | `com.android.telecom` | B (16) | Telecom call management framework (flag-gated behind `RELEASE_TELECOM_MAINLINE_MODULE`, not yet updatable) |
+| 36 | `Telephony` | `com.android.telephonycore` | B (16) | Telephony core (call/SMS framework; flag-gated behind `RELEASE_TELEPHONY_MODULE`) |
 | 37 | `ThreadNetwork` | `com.android.threadnetwork` | V (15) | Thread / Matter smart home networking |
 | 38 | `UprobeStats` | `com.android.uprobestats` | B (16) | eBPF-based uprobe statistics collection |
 | 39 | `Uwb` | `com.android.uwb` | T (13) | Ultra-Wideband ranging framework |
@@ -1339,7 +1350,7 @@ Mainline modules can be classified by what they primarily contain:
 
 | Module | APEX Name | Key Native Components |
 |--------|-----------|----------------------|
-| DnsResolver | `com.android.resolv` | `libnetd_resolv.so` |
+| DnsResolver | `com.android.resolv` | *(empty legacy APEX; `libnetd_resolv.so` now ships in `com.android.tethering`)* |
 | NeuralNetworks | `com.android.neuralnetworks` | NNAPI runtime, HAL client |
 | adb | `com.android.adbd` | `adbd` binary |
 | RuntimeI18n | `com.android.i18n` | ICU libraries |
@@ -1359,8 +1370,8 @@ contributions):
 
 | Module | APEX Name | Key Mixed Components |
 |--------|-----------|---------------------|
-| Connectivity | `com.android.tethering` | `framework-connectivity.jar` + `libnetd_updatable.so` |
-| Media | `com.android.media` | `framework-media.jar` + media extractors (native) |
+| Connectivity | `com.android.tethering` | `framework-connectivity.jar` + `libnetd_resolv.so`, `libnetd_updatable.so` |
+| Media | `com.android.media` | `updatable-media.jar` + media extractors (native) |
 | Wifi | `com.android.wifi` | `framework-wifi.jar` + native HAL bridge |
 | Bluetooth | `com.android.bt` | `framework-bluetooth.jar` + native stack |
 | Telephony | `com.android.telephonycore` | `framework-telephony.jar` + RIL components |
@@ -1459,13 +1470,18 @@ apex {
             jni_libs: [
                 "libservice-connectivity",
                 "libservice-thread-jni",
-                ...
+                // ...
             ],
             native_shared_libs: [
-                "libcom.android.tethering.dns_helper",
-                "libcom.android.tethering.connectivity_native",
+                "libnetd_resolv",
                 "libnetd_updatable",
             ],
+        },
+        both: {
+            native_shared_libs: [
+                "libcom.android.tethering.connectivity_native",
+            ],
+            // ...
         },
     },
 }
@@ -1480,6 +1496,9 @@ Key components within this module:
 - **Cronet**: Google's HTTP stack (optionally bundled)
 - **clatd**: CLAT NAT64 translator (native binary)
 - **Thread Network**: IEEE 802.15.4 Thread support (JNI library)
+- **DNS resolver**: `libnetd_resolv` -- the DNS resolution library, which now
+  ships here rather than in the legacy `com.android.resolv` APEX (see
+  Section 54.3.8)
 
 ### 54.3.5  Deep Dive: Permission Module
 
@@ -1585,21 +1604,31 @@ The DNS resolver was one of the original Mainline modules in Android 10:
 apex {
     name: "com.android.resolv",
     manifest: "manifest.json",
-    multilib: { ... },
+    key: "com.android.resolv.key",
+    certificate: ":com.android.resolv.certificate",
+    androidManifest: "AndroidManifest.xml",
+    compressible: true,
+    defaults: ["q-launched-dcla-enabled-apex-module"],
+    // ...
 }
 ```
 
-This module contains `libnetd_resolv.so`, the native library that handles all
-DNS resolution on the device.  Key features updatable through Mainline:
+Notice what is missing: the definition declares no `native_shared_libs`,
+`binaries`, or classpath fragments at all.  `com.android.resolv` is today an
+**empty legacy container**.  `libnetd_resolv.so`, the native library that
+handles all DNS resolution on the device, ships inside the Connectivity APEX
+(`com.android.tethering`, Section 54.3.4), whose `native_shared_libs` list
+carries `libnetd_resolv` alongside `libnetd_updatable`
+(`packages/modules/Connectivity/Tethering/apex/Android.bp`).  DNS resolver
+features are therefore updated through the Connectivity module today:
 
 - DNS-over-TLS (DoT) support.
 - DNS-over-HTTPS (DoH) support.
 - Private DNS configuration.
 - Bug fixes for DNS cache poisoning vulnerabilities.
 
-Being a pure native module (no Java code), `com.android.resolv` is one of the
-simpler APEX structures -- it contains only shared libraries and no
-bootclasspath fragments.
+The empty `com.android.resolv` APEX continues to be built and shipped so that
+devices which launched with it keep a valid mount point and update path.
 
 ### 54.3.9  Deep Dive: Profiling Module
 
@@ -1685,10 +1714,10 @@ gantt
 
     section R (Android 11)
     Permission, Wifi, StatsD, IPsec, ExtServices : 2020, 1y
-    Connectivity, adb, NeuralNetworks, CellBroadcast : 2020, 1y
+    Connectivity, adb, NeuralNetworks, CellBroadcast, SdkExtensions : 2020, 1y
 
     section S (Android 12)
-    ART Runtime, GeoTZ, Scheduling, SdkExtensions : 2021, 1y
+    ART Runtime, GeoTZ, Scheduling : 2021, 1y
 
     section T (Android 13)
     AdServices, AppSearch, Uwb, OnDevicePersonalization : 2022, 1y
@@ -1696,13 +1725,14 @@ gantt
 
     section U (Android 14)
     ConfigInfrastructure, HealthFitness : 2023, 1y
-    DeviceLock, RemoteKeyProvisioning, Telephony : 2023, 1y
+    DeviceLock, RemoteKeyProvisioning : 2023, 1y
 
     section V (Android 15)
-    Telecom, ThreadNetwork, Profiling, CrashRecovery : 2024, 1y
+    ThreadNetwork, WebViewBootstrap : 2024, 1y
 
     section B (Android 16)
-    Bluetooth, Nfc, UprobeStats : 2025, 1y
+    Bluetooth, Nfc, UprobeStats, Profiling, CrashRecovery : 2025, 1y
+    Telecom, Telephony flag-gated : 2025, 1y
 
     section C (Android 17)
     NpuManager, WebApp : 2026, 1y
@@ -1731,7 +1761,10 @@ apex {
 ```
 
 - `com.android.media` -- The main media APEX containing extractors, the media
-  framework service, and `framework-media.jar`.
+  framework service, and `updatable-media.jar` on the bootclasspath (its
+  bootclasspath fragment lists `contents: ["updatable-media"]`;
+  `framework-media` is the stubs library for the APIs `updatable-media`
+  provides).
 
 - `com.android.media.swcodec` -- A separate process for software codecs
   (isolated for security via `mediaswcodec` service).
@@ -2116,8 +2149,9 @@ apex {
 It bundles:
 
 - `derive_sdk` -- The binary that computes extension versions at boot.
-- `derive_classpath` -- A binary that generates the DEX2OAT boot classpath
-  configuration based on installed modules.
+- `derive_classpath` -- A binary that generates the `BOOTCLASSPATH`,
+  `DEX2OATBOOTCLASSPATH`, and `SYSTEMSERVERCLASSPATH` environment variables
+  from the classpath fragments of installed modules.
 
 - `extensions_db` -- The protobuf database of version requirements.
 - `framework-sdkextensions.jar` -- The Java API (`SdkExtensions` class).
@@ -2261,7 +2295,7 @@ graph TB
         PUB --> SYS
         SYS --> MOD
         SYS --> TEST
-        SYS --> SS
+        PUB --> SS
         SS -.->|"can access"| MOD
     end
 ```
@@ -2459,7 +2493,7 @@ Modules can depend on each other through:
 
 ```mermaid
 graph LR
-    subgraph "com.android.tethering"
+    subgraph TETH["com.android.tethering"]
         FW_CONN["framework-connectivity.jar"]
         SVC_CONN["service-connectivity.jar"]
     end
@@ -2476,7 +2510,7 @@ graph LR
 
     FW_CONN -->|"@SystemApi(MODULE_LIBRARIES)"| FW_PERM
     SVC_CONN -->|"stable AIDL"| SVC_PERM
-    DS -->|"reads sdkinfo.pb from"| FW_CONN
+    DS -->|"reads /apex/.../etc/sdkinfo.pb"| TETH
 ```
 
 ### 54.5.9  The `apex_available` Enforcement Mechanism
@@ -2611,8 +2645,8 @@ Building a specific module:
 # Build a single APEX
 $ m com.android.tethering
 
-# Build all Mainline modules
-$ m mainline_modules
+# Build all Mainline modules (phony target in packages/modules/common/build/)
+$ m aosp_mainline_modules
 
 # Build a module and install it on a connected device
 $ m com.android.sdkext && adb install out/target/product/generic_arm64/system/apex/com.android.sdkext.apex
@@ -2745,11 +2779,14 @@ MTS is a subset of CTS designed specifically for testing Mainline module
 updates.  It can be run independently:
 
 ```bash
-# Run MTS for a specific module
-$ atest --mts com.android.sdkext.tests
+# Run the module's CTS/MTS test cases
+$ atest CtsSdkExtensionsTestCases
 
-# Or use the MTS test plan
-$ cts-tradefed run mts --module SdkExtensionsTests
+# Or target the Google-signed mainline APEX variant explicitly
+$ atest 'CtsSdkExtensionsTestCases[com.google.android.sdkext.apex]'
+
+# Host-side end-to-end tests
+$ atest sdkextensions_e2e_tests
 ```
 
 #### Unit Tests
@@ -2775,11 +2812,12 @@ pre-submit and post-submit:
 ```json
 {
     "presubmit": [
-        {"name": "SdkExtensionsTests"},
-        {"name": "derive_sdk_test"}
+        {"name": "CtsSdkExtensionsTestCases"},
+        {"name": "derive_sdk_test"},
+        {"name": "gen_sdk_test"}
     ],
-    "postsubmit": [
-        {"name": "SdkExtensionsHostTest"}
+    "presubmit-large": [
+        {"name": "sdkextensions_e2e_tests"}
     ]
 }
 ```
@@ -2799,8 +2837,14 @@ activate (unless the APEX supports rebootless update via
 
 **Revert to the pre-installed version:**
 
+There is no `cmd apexservice` subcommand for this -- the shell interface
+accepts only `help`, `getAllPackages`, `getActivePackages`, and
+`getStagedSessionInfo [sessionId]`.  Reverting goes through the binder method
+`IApexService.revertActiveSessions()`, which the platform's rollback machinery
+invokes.  From a shell, use the package manager's rollback support instead:
+
 ```bash
-$ adb shell cmd -w apexservice revertActiveSession
+$ adb shell pm rollback-app com.android.sdkext
 $ adb reboot
 ```
 
@@ -2866,8 +2910,14 @@ $ adb logcat -s apexd-bootstrap
 # List all activated APEXes
 $ adb shell cmd -w apexservice getActivePackages
 
-# Get info about a specific APEX
-$ adb shell cmd -w apexservice getApexInfo com.android.sdkext
+# List every known APEX (active and inactive)
+$ adb shell cmd -w apexservice getAllPackages
+
+# Show the state of a staged session
+$ adb shell cmd -w apexservice getStagedSessionInfo 1543
+
+# For per-APEX details, read the info list or use deapexer on the file
+$ adb shell cat /apex/apex-info-list.xml
 ```
 
 **Inspect APEX file contents from host:**
@@ -2942,17 +2992,17 @@ other system components use to manage APEX packages.  Key methods include:
 // Source: system/apex/apexd/aidl (simplified interface)
 
 interface IApexService {
-    ApexSessionInfo[] getStagedSessionInfo();
     void submitStagedSession(in ApexSessionParams params,
                              out ApexInfoList packages);
     void markStagedSessionReady(int session_id);
-    void markStagedSessionSuccessful();
+    void markStagedSessionSuccessful(int session_id);
+    ApexSessionInfo getStagedSessionInfo(int session_id);
     void markBootCompleted();
     ApexInfo[] getActivePackages();
     ApexInfo[] getAllPackages();
-    void installAndActivatePackage(String packagePath,
-                                   out ApexInfo info);
-    void revertActiveSession();
+    ApexInfo installAndActivatePackage(in @utf8InCpp String packagePath,
+                                       boolean force);
+    void revertActiveSessions();
 }
 ```
 
@@ -3108,7 +3158,7 @@ graph TB
     subgraph "framework-healthfitness (bootclasspath)"
         HCM["HealthConnectManager<br/>(android.health.connect)"]
         PERMS["HealthPermissions<br/>(per-data-type grants)"]
-        DT["Data Types<br/>(50+ Record classes)"]
+        DT["Data Types<br/>(45+ Record classes)"]
     end
 
     subgraph "service-healthfitness (system_server)"
@@ -3118,7 +3168,7 @@ graph TB
         AGG["FitnessRecordAggregateHelper"]
         BKP["BackupRestore"]
         EXP["ExportManager"]
-        PERM_H["PermissionHelper"]
+        PERM_H["HealthConnectPermissionHelper"]
     end
 
     subgraph "On-Device Storage"
@@ -3144,16 +3194,17 @@ graph TB
 
 ### 54.7.3  Data Types
 
-Health Connect defines **50+ record types** in the
-`android.health.connect.datatypes` package.  Every record class extends one of
-two base classes:
+Health Connect defines **more than 45 record types** (46 concrete classes) in
+the `android.health.connect.datatypes` package.  Every record class extends
+one of two base classes:
 
 | Base Class | Semantics | Examples |
 |------------|-----------|---------|
-| `InstantRecord` | Single point-in-time measurement | `HeartRateRecord`, `BloodPressureRecord`, `BloodGlucoseRecord`, `OxygenSaturationRecord`, `BodyTemperatureRecord` |
-| `IntervalRecord` | Measurement over a time range | `StepsRecord`, `ExerciseSessionRecord`, `SleepSessionRecord`, `NutritionRecord`, `HydrationRecord`, `DistanceRecord` |
+| `InstantRecord` | Single point-in-time measurement | `RestingHeartRateRecord`, `BloodPressureRecord`, `BloodGlucoseRecord`, `OxygenSaturationRecord`, `BodyTemperatureRecord` |
+| `IntervalRecord` | Measurement over a time range | `StepsRecord`, `HeartRateRecord` (a sample series), `ExerciseSessionRecord`, `SleepSessionRecord`, `NutritionRecord`, `HydrationRecord`, `DistanceRecord` |
 
-Data types span six categories defined by `HealthDataCategory`:
+Data types span eight categories defined by `HealthDataCategory` -- six
+stable ones plus two flag-gated additions:
 
 1. **Activity** -- Steps, distance, calories, exercise sessions, cycling
    cadence, floors climbed, elevation gained, exercise routes.
@@ -3173,6 +3224,11 @@ Data types span six categories defined by `HealthDataCategory`:
 6. **Vitals** -- Heart rate, heart rate variability (RMSSD), blood pressure,
    blood glucose, oxygen saturation, respiratory rate, body temperature.
 
+7. **Wellness** -- Mindfulness sessions (flag-gated behind
+   `FLAG_MINDFULNESS`).
+
+8. **Symptoms** -- Symptom tracking (flag-gated behind `FLAG_SYMPTOMS`).
+
 Each record carries `Metadata` (data origin, device info, client record ID,
 last-modified time) enabling deduplication and priority ordering.
 
@@ -3182,14 +3238,17 @@ A major expansion in recent versions is the **Personal Health Record** (PHR)
 API, enabling storage of clinical medical data using the **FHIR R4** standard:
 
 ```java
-// Source: framework/java/android/health/connect/datatypes/MedicalResource.java
-// Source: framework/java/android/health/connect/datatypes/MedicalDataSource.java
-// Source: framework/java/android/health/connect/datatypes/FhirResource.java
+// Source: framework/java/android/health/connect/CreateMedicalDataSourceRequest.java
+// Source: framework/java/android/health/connect/UpsertMedicalResourceRequest.java
+// (data types: framework/java/android/health/connect/datatypes/
+//  MedicalResource.java, MedicalDataSource.java, FhirResource.java)
 
 // Apps create a MedicalDataSource, then upsert FHIR resources:
 CreateMedicalDataSourceRequest request =
     new CreateMedicalDataSourceRequest.Builder(
-        "Hospital Portal", Uri.parse("https://fhir.hospital.example"))
+        Uri.parse("https://fhir.hospital.example"),
+        "Hospital Portal",
+        FhirVersion.parseFhirVersion("4.0.1"))
         .build();
 
 UpsertMedicalResourceRequest upsert =
@@ -3220,15 +3279,16 @@ android.permission.health.READ_SLEEP
 ...
 ```
 
-**System-level permissions** (signature/privileged):
+**Additional permissions** beyond the per-data-type set (levels as declared
+in `apk/HealthPermissionsManifest.xml`):
 
 | Permission | Level | Purpose |
 |-----------|-------|---------|
 | `MANAGE_HEALTH_PERMISSIONS` | signature | Grant/revoke health permissions |
-| `MANAGE_HEALTH_DATA` | privileged | Delete records, manage priorities |
+| `MANAGE_HEALTH_DATA` | signature\|privileged | Delete records, manage priorities |
 | `START_ONBOARDING` | signature | Launch client onboarding flows |
-| `READ_HEALTH_DATA_IN_BACKGROUND` | privileged | Background reads |
-| `READ_HEALTH_DATA_HISTORY` | privileged | Access historical records |
+| `READ_HEALTH_DATA_IN_BACKGROUND` | dangerous (runtime, user-granted) | Background reads |
+| `READ_HEALTH_DATA_HISTORY` | dangerous (runtime, user-granted) | Access historical records |
 | `WRITE_MEDICAL_DATA` | dangerous | Write FHIR medical resources |
 
 Apps must also declare an activity handling
@@ -3480,8 +3540,18 @@ system-level anomaly detection through pluggable `SignalCollector` components:
 //         AnomalyDetectorService.java
 
 public final class AnomalyDetectorService extends SystemService {
-    final Map<Class<? extends SignalCollectorConfig>,
-              CollectorEntry> mRegisteredCollectors;
+    private final SignalCollectorRegistry mSignalCollectorRegistry;
+    // ...
+}
+
+// Source: .../anomaly/internal/SignalCollectorRegistryImpl.java
+
+public final class SignalCollectorRegistryImpl
+        implements SignalCollectorRegistry {
+    /** Map from signal type ID to the registered collector. */
+    private final ArrayMap<SignalTypeId, SignalCollector<?, ?>>
+            mRegisteredCollectors = new ArrayMap<>();
+    // ...
 }
 ```
 
@@ -3564,7 +3634,7 @@ graph TB
 
     subgraph "UCI Layer (Rust)"
         UCI_CORE["uwb_core<br/>(state machine)"]
-        UCI_HAL["uci_hal_android<br/>(JNI bridge)"]
+        UCI_HAL["uci_hal_android<br/>(AIDL HAL client)"]
     end
 
     subgraph "Hardware"
@@ -3574,18 +3644,18 @@ graph TB
 
     APP --> UWB_MGR
     APP --> RANGING_API
-    UWB_MGR --> RS
+    UWB_MGR --> RM
+    RM --> RS
     RANGING_API --> RS
-    RS --> RM
     RM -->|Binder IPC| UWBSC
     UWBSC --> UWBSM
     UWBSC --> UWBCM
     UWBSC --> UWBCC
     UWBSM --> UWBADV
     UWBSM --> UWBMET
-    UWBSM -->|JNI| UCI_HAL
-    UCI_HAL --> UCI_CORE
-    UCI_CORE --> HAL
+    UWBSM -->|JNI| UCI_CORE
+    UCI_CORE --> UCI_HAL
+    UCI_HAL --> HAL
     HAL --> RADIO
 ```
 
@@ -3620,8 +3690,16 @@ libuwb-uci/src/rust/
             aliro_app_config_params.rs
             uci_packets.rs     UCI packet parsing
     uci_hal_android/
-        uci_hal_android.rs     JNI bridge to Java service
+        uci_hal_android.rs     UciHal impl over the AIDL HAL
 ```
+
+`uci_hal_android.rs` is the binder client that implements `uwb_core`'s
+`UciHal` trait against the `android.hardware.uwb` AIDL HAL (`IUwb` /
+`IUwbChip`) -- not a JNI bridge.  The JNI layer through which the Java
+service enters the Rust stack lives separately in
+`packages/modules/Uwb/service/uci/jni/` (entry point
+`uci_jni_android_new.rs`), which wraps `uwb_core`; `uwb_core` in turn drives
+`uci_hal_android` to talk to the hardware.
 
 UCI session states follow the standard state machine:
 
@@ -3709,7 +3787,8 @@ top of the v1 baseline:
   field to pick a "make before break" engine that brings up the next technology
   before dropping the current one. (The OOB protocol negotiates several
   technologies through the `Technology` / `TechnologySet` types: UWB, BLE
-  channel sounding, Wi-Fi NAN RTT, and BLE RSSI.)
+  channel sounding, Wi-Fi NAN RTT, BLE RSSI, and -- marked as an
+  in-development v4 addition in the PDL -- Wi-Fi PD.)
 
 - **v3 -- motion notification.** A new `MOTION_NOTIFICATION` message
   (`MessageId = 0x8`) carries a `Motion` payload reporting detected movement as
@@ -3773,7 +3852,8 @@ enforced through channel usage restrictions (`ChannelUsage`).
 | Session manager | `packages/modules/Uwb/service/java/com/android/server/uwb/UwbSessionManager.java` |
 | UCI constants | `packages/modules/Uwb/service/java/com/android/server/uwb/data/UwbUciConstants.java` |
 | Rust UCI core | `packages/modules/Uwb/libuwb-uci/src/rust/uwb_core/src/` |
-| JNI bridge | `packages/modules/Uwb/libuwb-uci/src/rust/uci_hal_android/` |
+| UCI HAL client | `packages/modules/Uwb/libuwb-uci/src/rust/uci_hal_android/` |
+| JNI bridge | `packages/modules/Uwb/service/uci/jni/` |
 | Support library | `packages/modules/Uwb/service/support_lib/` |
 | Generic Ranging API | `packages/modules/Uwb/ranging/framework/` |
 | APEX config | `packages/modules/Uwb/apex/Android.bp` |
@@ -3806,7 +3886,7 @@ mock data and glue in `vendor/google/train_build`.
 `tools/mainline/train_build/Android.bp` defines a set of `python_binary_host`
 "worker" binaries and `python_library_host` "action" libraries, each
 implementing one stage of the pipeline, plus `python_test_host` unit tests for
-every stage:
+most stages (trim, versioning, and the two orchestrators and their workers):
 
 | Stage | Action module | Responsibility |
 |-------|--------------|---------------|
@@ -3928,8 +4008,10 @@ flag {
 
 Because not every kernel supports file-backed EROFS mounts, `apexd` does not
 trust the flag blindly.  At runtime it performs a one-time **test mount** of a
-bundled empty EROFS image, and caches the result in a property so subsequent
-boots skip the probe:
+bundled empty EROFS image and caches the result in the non-persistent runtime
+property `apexd.config.runtime.erofs_file_backed_mount`, so later checks
+within the same boot skip the probe (the vendor-settable override is
+`apexd.config.erofs_file_backed_mount`):
 
 ```cpp
 // Source: system/apex/apexd/apexd_mount.cpp
@@ -3941,7 +4023,8 @@ static constexpr const char* kTestMountImage =
 // ...
 if (mount(kTestMountImage, kApexTestMountFolder, "erofs", mount_flags,
           "fsoffset=0")) {
-    LOG(ERROR)
+    android::base::SetProperty(kFileBackedMountRuntimeProp, "false");
+    PLOG(INFO)
         << "File-backed mount is disabled due to test mount failure (mount)";
     return false;
 }
@@ -4282,8 +4365,9 @@ $ adb wait-for-device
 # 5. Verify the new version is active
 $ adb shell pm list packages --apex-only --show-versioncode | grep sdkext
 
-# 6. Trigger a rollback
-$ adb shell cmd -w apexservice revertActiveSession
+# 6. Trigger a rollback through the package manager (which in turn
+#    drives apexd's IApexService.revertActiveSessions() binder method)
+$ adb shell pm rollback-app com.android.sdkext
 $ adb reboot
 $ adb wait-for-device
 
@@ -4318,7 +4402,7 @@ Run the test suite for a specific Mainline module:
 
 ```bash
 # Run SdkExtensions tests
-$ atest SdkExtensionsTests
+$ atest CtsSdkExtensionsTestCases
 
 # Run apexd unit tests
 $ atest apex_file_test apex_manifest_test apex_database_test

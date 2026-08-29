@@ -96,8 +96,8 @@ largest services in the framework. Its Javadoc explains the architecture:
 > devices currently attached, sends notifications to the system and to
 > applications when the state changes.
 
-DMS uses the `DisplayThread` (a shared `HandlerThread` at
-`THREAD_PRIORITY_DISPLAY`) for its main handler. All internal state is
+DMS uses the `DisplayThread` (a shared `HandlerThread` running at
+`THREAD_PRIORITY_DISPLAY + 1`) for its main handler. All internal state is
 protected by a single `SyncRoot` lock -- the same lock used by all display
 adapters and logical display objects:
 
@@ -125,8 +125,8 @@ classDiagram
     }
 
     class LocalDisplayAdapter {
-        -mPhysicalDisplays: SparseArray
-        +hotplugEventLocked()
+        -mDevices: LongSparseArray
+        +onHotplug()
     }
 
     class VirtualDisplayAdapter {
@@ -135,7 +135,7 @@ classDiagram
     }
 
     class WifiDisplayAdapter {
-        -mWifiDisplayController
+        -mDisplayController: WifiDisplayController
         +requestConnectLocked()
     }
 
@@ -159,9 +159,12 @@ classDiagram
 ```
 
 - **LocalDisplayAdapter** handles physical displays (built-in and external)
-  reported by SurfaceFlinger's hotplug mechanism. It receives `EVENT_ADD`,
-  `EVENT_REMOVE`, and `EVENT_CHANGE` notifications and creates
-  `LocalDisplayDevice` instances backed by a SurfaceFlinger display token.
+  reported by SurfaceFlinger's hotplug mechanism. When its display-event
+  listener receives an `onHotplug()` callback, it creates or removes
+  `LocalDisplayDevice` instances backed by a SurfaceFlinger display token
+  and emits `DISPLAY_DEVICE_EVENT_ADDED`, `DISPLAY_DEVICE_EVENT_CHANGED`,
+  and `DISPLAY_DEVICE_EVENT_REMOVED` notifications to
+  `DisplayDeviceRepository` via `sendDisplayDeviceEventLocked()`.
 
 - **VirtualDisplayAdapter** creates virtual displays on behalf of
   applications, receiving a `VirtualDisplayConfig` with dimensions, density,
@@ -205,17 +208,17 @@ classDiagram
         -mUniqueId: String
         -mCurrentLayerStack: int
         +getDisplayDeviceInfoLocked()
-        +performTraversalLocked()
+        +configureSurfaceLocked()
         +getDisplaySurfaceDefaultSizeLocked()
     }
 
     class DisplayDeviceInfo {
         +width: int
         +height: int
-        +densityDpi: float
+        +densityDpi: int
         +xDpi: float
         +yDpi: float
-        +refreshRate: float
+        +renderFrameRate: float
         +supportedModes: Display.Mode[]
         +type: int
         +flags: int
@@ -254,7 +257,7 @@ sequenceDiagram
     HW->>LDA: Hotplug callback (connected)
     LDA->>LDA: Create LocalDisplayDevice
     LDA->>DDR: sendDisplayDeviceEventLocked(device, ADDED)
-    DDR->>LDM: onDisplayDeviceAdded(device)
+    DDR->>LDM: onDisplayDeviceEventLocked(device, DISPLAY_DEVICE_EVENT_ADDED)
     LDM->>LDM: Create LogicalDisplay with assigned displayId
     LDM->>DMS: Listener.onLogicalDisplayEventLocked(ADDED)
     DMS->>DMS: sendDisplayEventLocked(EVENT_ADDED)
@@ -457,7 +460,7 @@ classDiagram
     }
 
     class TaskDisplayArea {
-        +mTasks: ArrayList
+        +getRootTaskCount()
     }
 
     class DisplayContent {
@@ -473,11 +476,11 @@ classDiagram
     }
 
     WindowContainer <|-- DisplayArea
-    DisplayArea <|-- RootDisplayArea
+    DisplayArea <|-- DisplayArea_Dimmable
+    DisplayArea_Dimmable <|-- RootDisplayArea
     DisplayArea <|-- TaskDisplayArea
     RootDisplayArea <|-- DisplayContent
     DisplayArea <|-- DisplayArea_Tokens
-    DisplayArea <|-- DisplayArea_Dimmable
 ```
 
 The Javadoc for `DisplayArea` explains the three flavours that enforce
@@ -522,7 +525,8 @@ The `DisplayAreaPolicyBuilder` constructs the hierarchy tree by taking a set
 of `Feature` definitions and building the necessary intermediate
 `DisplayArea` nodes to satisfy the Z-ordering constraints.
 
-A typical AOSP `DefaultDisplayAreaPolicy` builds this hierarchy:
+The default hierarchy, built by `DisplayAreaPolicy.DefaultProvider` (in
+`DisplayAreaPolicy.java`), looks like this:
 
 ```mermaid
 graph TD
@@ -677,15 +681,20 @@ When multiple roots exist (e.g., automotive front/rear displays), the
 
 ```java
 // frameworks/base/services/core/java/com/android/server/wm/DisplayAreaPolicyBuilder.java
-public RootDisplayArea apply(Integer windowType, Bundle options) {
+public RootDisplayArea apply(@NonNull Integer windowType, @Nullable Bundle options) {
     if (mDisplayAreaGroupRoots.isEmpty()) {
         return mDisplayRoot;
     }
-    if (options != null) {
-        final int rootId = options.getInt(KEY_ROOT_DISPLAY_AREA_ID, FEATURE_UNDEFINED);
-        if (rootId != FEATURE_UNDEFINED) {
-            for (RootDisplayArea root : mDisplayAreaGroupRoots) {
-                if (root.mFeatureId == rootId) return root;
+
+    // Select the RootDisplayArea set in options.
+    if (options != null && options.containsKey(KEY_ROOT_DISPLAY_AREA_ID)) {
+        final int rootId = options.getInt(KEY_ROOT_DISPLAY_AREA_ID);
+        if (mDisplayRoot.mFeatureId == rootId) {
+            return mDisplayRoot;
+        }
+        for (int i = mDisplayAreaGroupRoots.size() - 1; i >= 0; i--) {
+            if (mDisplayAreaGroupRoots.get(i).mFeatureId == rootId) {
+                return mDisplayAreaGroupRoots.get(i);
             }
         }
     }
@@ -762,12 +771,9 @@ graph LR
         ET_APP["EventThread<br/>(app)"]
     end
 
-    subgraph "system_server"
+    subgraph "App Process"
         CH["Choreographer"]
         VRI2["ViewRootImpl"]
-    end
-
-    subgraph "App Process"
         APP["Application<br/>onDraw()"]
     end
 
@@ -827,7 +833,9 @@ Each entry carries `ScheduleTiming` that specifies:
   up (e.g., app rendering might need 16ms)
 - **readyDuration** -- additional time needed after work completes before
   the VSYNC deadline
-- **earliestVsync** -- the earliest VSYNC this callback is interested in
+- **lastVsync** -- the VSYNC the callback was last scheduled against
+  (a `committedVsyncOpt` field additionally records the VSYNC that was
+  committed to the callback)
 
 The timer queue coalesces callbacks that are close in time (within
 `timerSlack`) into a single timer wakeup, reducing the number of context
@@ -971,11 +979,13 @@ Key concepts:
 Each configuration defines timing for three scenarios:
 
 ```cpp
-// frameworks/native/services/surfaceflinger/Scheduler/VsyncConfiguration.h
+// frameworks/native/services/surfaceflinger/Scheduler/include/scheduler/VsyncConfig.h
 struct VsyncConfigSet {
     VsyncConfig early;     // During transaction processing
     VsyncConfig earlyGpu;  // During GPU composition
     VsyncConfig late;      // Normal steady-state
+    std::chrono::nanoseconds hwcMinWorkDuration;  // Earliest-present calculation
+    // ...
 };
 ```
 
@@ -1045,7 +1055,7 @@ single physical display:
 - A `VSyncTracker` (usually `VSyncPredictor`) for timing model
 - A `VSyncDispatch` (usually `VSyncDispatchTimerQueue`) for callback
   scheduling
-- A `VSyncController` for receiving hardware VSYNC timestamps
+- A `VsyncController` for receiving hardware VSYNC timestamps
 
 In multi-display configurations, each physical display has its own
 `VsyncSchedule`. The pacesetter display's schedule drives the main
@@ -1123,7 +1133,7 @@ The rotation decision pipeline:
 
 ```mermaid
 flowchart TD
-    A["Activity requests orientation<br/>(screenOrientation attribute)"] --> B["DisplayRotation.updateOrientationFromApp()"]
+    A["Activity requests orientation<br/>(screenOrientation attribute)"] --> B["DisplayRotation.updateOrientation()"]
     B --> C{"Orientation locked<br/>by user setting?"}
     C -->|Yes| D["Use user rotation"]
     C -->|No| E["rotationForOrientation()"]
@@ -1342,7 +1352,7 @@ which then consults the `DeviceStatePolicy` to determine the appropriate
 system response. The foldable provider and policy ship in the dedicated
 `frameworks/base/services/foldables/devicestateprovider/` module
 (`FoldableDeviceStateProvider.java`, `BookStyleDeviceStatePolicy.java`), while
-the `DeviceStatePolicy` interface lives in
+the abstract `DeviceStatePolicy` base class lives in
 `frameworks/base/services/core/java/com/android/server/devicestate/`.
 
 ```mermaid
@@ -1367,10 +1377,10 @@ graph TD
     HA --> FDSP
     HE --> FDSP
     FDSP -->|"new base state"| DSMS2
-    DSMS2 --> DSP
-    DSP -->|"committed state"| DMS2
-    DSP -->|"committed state"| WMS2
-    DSP -->|"wake/sleep trigger"| PM
+    DSMS2 -->|"configureDeviceForState()"| DSP
+    DSMS2 -->|"committed state"| DMS2
+    DSMS2 -->|"committed state"| WMS2
+    DSMS2 -->|"wake/sleep trigger"| PM
 ```
 
 ### 24.5.3 LogicalDisplayMapper: Display Swapping
@@ -1435,7 +1445,7 @@ enable a `LogicalDisplay` for it.
 ### 24.5.4 BookStyleDeviceStatePolicy
 
 For book-style foldables (where the fold axis is vertical, like a book),
-`BookStyleDeviceStatePolicy` implements `DeviceStatePolicy` to manage:
+`BookStyleDeviceStatePolicy` extends `DeviceStatePolicy` to manage:
 
 - **Outer-to-inner transitions**: When unfolding, the outer display content
   is migrated to the inner display. The policy coordinates with
@@ -1529,14 +1539,18 @@ transition does not leave the system in an indeterminate state.
 
 ### 24.5.8 FoldSettingProvider
 
-`FoldSettingProvider` manages user preferences for foldable behavior:
+`FoldSettingProvider` wraps the `Settings.System.FOLD_LOCK_BEHAVIOR`
+setting, which controls what happens to the device when it is folded. It
+exposes three predicates:
 
-- Whether to mirror the default display when folded
-- Whether to include the default display in the display topology
-- Resolution mode preferences per display
+- `shouldStayAwakeOnFold()` -- the device remains awake and unlocked when
+  folded
+- `shouldSelectiveStayAwakeOnFold()` -- the device stays awake only while
+  apps hold wakelocks (the default behavior)
+- `shouldSleepOnFold()` -- the device always goes to sleep when folded
 
-These settings are read through `Settings.Secure` and influence the
-`LogicalDisplayMapper`'s layout decisions.
+`LogicalDisplayMapper` consults these predicates during a fold transition
+to decide whether folding should send the device to sleep.
 
 ---
 
@@ -1554,7 +1568,8 @@ island. It is immutable and carried through the system as part of
 public final class DisplayCutout {
     private final Rect mSafeInsets;
     private final Insets mWaterfallInsets;
-    private final Rect[] mBounds;  // One rect per side (left, top, right, bottom)
+    private final Bounds mBounds;  // Helper holding one rect per side
+                                   // (left, top, right, bottom)
     // ...
 }
 ```
@@ -1597,8 +1612,10 @@ C 0,48 24,48 24,24
 L 24,0
 C 24,0 0,0 0,0
 @dp
-@center_horizontal
 ```
+
+Horizontal centring needs no marker -- it is the default when neither
+`@left` nor `@right` is given.
 
 ### 24.6.3 Cutout Modes
 
@@ -1607,30 +1624,31 @@ Apps declare their cutout handling preference via
 
 | Mode | Constant | Behavior |
 |------|----------|----------|
-| `LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT` | 0 | Content avoids cutout in portrait, uses full screen in landscape |
+| `LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT` | 0 | Non-fullscreen window may extend into a top-edge cutout in portrait; laid out clear of the cutout when fullscreen or in landscape |
 | `LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES` | 1 | Content extends into cutout on short edges |
 | `LAYOUT_IN_DISPLAY_CUTOUT_MODE_NEVER` | 2 | Content never extends into cutout area |
 | `LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS` | 3 | Content always extends into cutout area |
 
-The window manager evaluates these modes in `DisplayPolicy` when computing
-window frames. For `ALWAYS`, the window receives the full display area;
-for `NEVER`, the window is inset by the cutout safe insets.
+The modes are evaluated in `WindowLayout.computeFrames()`
+(`frameworks/base/core/java/android/view/WindowLayout.java`), which is
+shared by the window manager and the client-side layout path. For
+`ALWAYS`, the window receives the full display area; for `NEVER`, the
+window is inset by the cutout safe insets.
 
 ### 24.6.4 WmDisplayCutout
 
 `WmDisplayCutout`
 (`frameworks/base/services/core/java/com/android/server/wm/utils/WmDisplayCutout.java`)
-is the window-manager-internal wrapper that adds rotation awareness to
-`DisplayCutout`. When the display rotates, the cutout bounds must be rotated
-accordingly. `WmDisplayCutout` caches rotated variants to avoid recomputation:
+is a small window-manager-internal wrapper that pairs a `DisplayCutout`
+with the display frame size. Because it tracks the size alongside the
+cutout, the safe insets can be (re)calculated whenever the frame changes,
+via its `computeSafeInsets()` factory:
 
 ```mermaid
 graph LR
-    DC2["DisplayCutout<br/>(from device config)"] --> WDC["WmDisplayCutout<br/>(rotation-aware)"]
-    WDC --> R0["Rotation 0<br/>(original)"]
-    WDC --> R90["Rotation 90<br/>(rotated bounds)"]
-    WDC --> R180["Rotation 180"]
-    WDC --> R270["Rotation 270"]
+    DC2["DisplayCutout<br/>(cutout bounds)"] --> WDC["WmDisplayCutout"]
+    FS["Display frame size<br/>(width x height)"] --> WDC
+    WDC --> SI["computeSafeInsets()<br/>(recalculated safe insets)"]
 ```
 
 ### 24.6.5 RoundedCorners and DisplayShape
@@ -1648,9 +1666,10 @@ Modern displays have rounded corners that must be accounted for in layout:
 - **`PrivacyIndicatorBounds`** defines the region reserved for privacy
   indicators (camera, microphone) that may overlap with the cutout area.
 
-The framework provides `DecorCaptionView` corner radius information through
-`WindowDecoration` so that window decorations (caption bars in freeform
-mode) can match the display corner radius.
+The Shell's `WindowDecoration` classes
+(`frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/`)
+receive the display corner radius so that window decorations (caption bars
+in freeform mode) can match it.
 
 ### 24.6.6 Cutout Rotation
 
@@ -1659,15 +1678,17 @@ When the display rotates, the cutout must rotate with it. The
 
 ```java
 // frameworks/base/core/java/android/view/DisplayCutout.java
-private static final class CutoutPathParserInfo {
-    final int displayWidth;
-    final int physicalDisplayHeight;
-    final int displayHeight;
-    final float density;
-    final String cutoutSpec;
-    final int rotation;
-    final float scale;
-    final float physicalPixelDisplaySizeRatio;
+public static class CutoutPathParserInfo {
+    private final int mDisplayWidth;
+    private final int mDisplayHeight;
+    private final int mPhysicalDisplayWidth;
+    private final int mPhysicalDisplayHeight;
+    private final float mDensity;
+    private final String mCutoutSpec;
+    private final @Rotation int mRotation;
+    private final float mScale;
+    private final float mPhysicalPixelDisplaySizeRatio;
+    // ...
 }
 ```
 
@@ -1714,7 +1735,7 @@ emulation overlays (tall cutout, wide cutout, corner cutout, double cutout)
 that can be enabled through:
 
 ```shell
-cmd overlay enable com.android.internal.display_cutout_emulation.tall
+cmd overlay enable com.android.internal.display.cutout.emulation.tall
 ```
 
 ---
@@ -1825,8 +1846,10 @@ The builder implements two update paths:
   inherited properties (visibility, alpha, color transform, crop) from
   parent to child.
 
-Snapshots are immutable once built, providing a consistent view of layer
-state for the composition pipeline without holding locks.
+Snapshots are rebuilt or merged in place on each commit (the fast path
+calls `snapshot->merge(...)` on existing snapshot objects); the
+composition pipeline only reads them after the front-end update completes,
+so it still sees a consistent view of layer state without holding locks.
 
 ### 24.7.4 CompositionEngine
 
@@ -1903,13 +1926,14 @@ the properties set through `SurfaceControl.Transaction`:
 ```mermaid
 classDiagram
     class RequestedLayerState {
-        +layerId: uint32_t
+        +id: uint32_t
         +name: string
         +parentId: uint32_t
         +relativeParentId: uint32_t
         +z: int32_t
-        +position: vec2
-        +bufferSize: Size
+        +x: float
+        +y: float
+        +getBufferSize() Rect
         +crop: Rect
         +alpha: float
         +color: half4
@@ -2090,7 +2114,7 @@ risks frame drops when rendering takes longer than one VSYNC period.
 
 ### 24.8.3 BLASTBufferQueue: Transaction-Based Delivery
 
-`BLASTBufferQueue` (Buffer Lifecycle And Sync Transfer) replaced the legacy
+`BLASTBufferQueue` (BLAST -- "Buffer as LayerState") replaced the legacy
 `BufferLayer` approach of having SurfaceFlinger directly acquire buffers.
 Instead, the client acquires buffers from the `BufferItemConsumer` and
 delivers them to SurfaceFlinger through `SurfaceControl.Transaction`:
@@ -2107,8 +2131,8 @@ sequenceDiagram
     BBQ2->>BBQ2: dequeueBuffer() from IGraphicBufferProducer
     App->>App: Render content
     App->>BBQ2: queueBuffer()
-    BBQ2->>BIC: onFrameAvailable()
-    BIC->>BBQ2: acquireBuffer()
+    BIC->>BBQ2: onFrameAvailable()
+    BBQ2->>BIC: acquireBuffer()
     BBQ2->>SC: Transaction.setBuffer(surfaceControl, buffer)
     BBQ2->>SC: Transaction.setBufferCrop(...)
     BBQ2->>SC: Transaction.apply()
@@ -2237,22 +2261,26 @@ BufferQueue on its own timeline. This created synchronization problems:
 
 BLAST solved all three by moving buffer acquisition to the client side
 and bundling buffer submission with geometry changes in a single
-`SurfaceControl.Transaction`. The migration was gradual, controlled by
-the `BLASTBufferQueue` flag, and is now the only supported path.
+`SurfaceControl.Transaction`. The migration was gradual -- initially gated
+by the `use_blast_adapter_sv` global setting and the
+`debug.sf.enable_blast_adapter` system property, both since removed -- and
+is now the only supported path.
 
 ### 24.8.9 SyncGroup and Cross-Surface Synchronization
 
 `BLASTBufferQueue.syncNextTransaction()` supports cross-surface
-synchronization. When `ViewRootImpl` needs to synchronize a buffer
-submission with a `WindowContainerTransaction` (e.g., during
-`relayout`), it registers a sync callback:
+synchronization. `SurfaceView` calls it directly on its own
+`BLASTBufferQueue`; `ViewRootImpl` reaches it indirectly through
+`HardwareRenderer.SyncInterface.syncNextTransaction(...)` and merges the
+captured buffer transaction into a `SurfaceSyncGroup`, which coordinates
+when the group of changes becomes visible:
 
 ```java
-// In ViewRootImpl
+// In SurfaceView
 mBlastBufferQueue.syncNextTransaction(transaction -> {
-    // Merge buffer transaction with the relayout transaction
-    mergedTransaction.merge(transaction);
-    mergedTransaction.apply();
+    // Merge the buffer transaction into the sync group
+    surfaceSyncGroup.addTransaction(transaction);
+    surfaceSyncGroup.markSyncReady();
 });
 ```
 
@@ -2282,7 +2310,7 @@ sequenceDiagram
     DM2->>DMS4: createVirtualDisplay(config, callback)
     DMS4->>DMS4: Permission checks
     DMS4->>VDA: createVirtualDisplayLocked(callback, config, ...)
-    VDA->>SF4: SurfaceControl.createDisplay(name, secure)
+    VDA->>SF4: DisplayControl.createVirtualDisplay(name, secure, ...)
     SF4-->>VDA: Display token
     VDA->>VDA: Create VirtualDisplayDevice
     VDA->>DMS4: sendDisplayDeviceEventLocked(ADDED)
@@ -2301,7 +2329,7 @@ sequenceDiagram
 | `VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY` | Never mirrors; only shows own content |
 | `VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR` | Mirrors default display when no content |
 | `VIRTUAL_DISPLAY_FLAG_OWN_DISPLAY_GROUP` | Own DisplayGroup for power management |
-| `VIRTUAL_DISPLAY_FLAG_DEVICE_DISPLAY_GROUP` | Joins the device's primary DisplayGroup |
+| `VIRTUAL_DISPLAY_FLAG_DEVICE_DISPLAY_GROUP` | Places the display in the DisplayGroup of its associated virtual device instead of the default DisplayGroup |
 | `VIRTUAL_DISPLAY_FLAG_OWN_FOCUS` | Manages its own focus chain |
 | `VIRTUAL_DISPLAY_FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS` | StatusBar, NavBar on this display |
 | `VIRTUAL_DISPLAY_FLAG_TRUSTED` | System-trusted display (requires INTERNAL_SYSTEM_WINDOW) |
@@ -2315,33 +2343,45 @@ manages a three-BufferQueue routing system within SurfaceFlinger:
 
 ```mermaid
 graph LR
-    subgraph "Producer Side"
-        SF5["SurfaceFlinger<br/>(GPU composition output)"]
+    subgraph "Producers"
+        SF5["SurfaceFlinger<br/>(GPU / client composition)"]
+        HWC5["Hardware Composer"]
     end
 
     subgraph "VirtualDisplaySurface"
-        SBQ["Source BQ<br/>(from GPU composition)"]
-        SINK["Sink BQ<br/>(to consumer)"]
+        RBQ["Render BQ<br/>(GPU composition target)"]
+        OBQ["Output BQ<br/>(HWC output buffers)"]
         VDS["Routing Logic"]
+        SINK["Sink BQ<br/>(to consumer)"]
     end
 
     subgraph "Consumer Side"
         ENC["MediaCodec / Consumer"]
     end
 
-    SF5 -->|"client composition target"| SBQ
-    SBQ --> VDS
+    SF5 -->|"client composition target"| RBQ
+    HWC5 -->|"output buffer"| OBQ
+    RBQ --> VDS
+    OBQ --> VDS
     VDS -->|"routed buffer"| SINK
     SINK --> ENC
 ```
 
-The routing logic handles three cases:
+The three queues, as named in `VirtualDisplaySurface.h`, are the **Sink BQ**
+(the surface the application provided at creation time, where composed
+buffers are ultimately delivered), the **Render BQ** (the surface handed to
+the composition engine as the GPU rendering target), and the **Output BQ**
+(which supplies buffers for HWC output). The routing logic handles three
+cases:
 
-1. **GPU composition only**: The GPU-composed output goes directly from the
-   source BQ to the sink BQ.
-2. **HWC composition only**: HWC writes directly to the sink BQ.
-3. **Mixed**: GPU composes client layers into the source BQ, then HWC
-   composites everything (including GPU output) into the sink BQ.
+1. **GPU composition only**: The GPU-composed output is taken out of the
+   render BQ and queued to the sink BQ.
+2. **HWC composition only**: HWC needs an output buffer for `advanceFrame`;
+   the surface reuses a dequeued sink buffer when possible and otherwise
+   dequeues one from the output BQ, then queues the result to the sink.
+3. **Mixed**: GPU composes client layers into the render BQ; that buffer is
+   handed to HWC as the client target, and HWC composites everything into
+   an output buffer (from the sink or output BQ) that is sent to the sink.
 
 `SinkSurfaceHelper` manages the sink-side BufferQueue, handling buffer
 allocation, format negotiation, and fence synchronization with the
@@ -2523,7 +2563,10 @@ public static final int COLOR_MODE_AUTOMATIC = 3;
 
 ### 24.10.2 TintController Hierarchy
 
-Each color transformation is implemented as a `TintController` subclass:
+Each display-wide color transformation is implemented as a
+`TintController` subclass. Per-app saturation is handled separately by
+`AppSaturationController`, a standalone collaborator of
+`ColorDisplayService` that is not part of the `TintController` hierarchy:
 
 ```mermaid
 classDiagram
@@ -2534,9 +2577,17 @@ classDiagram
         +isActivated(): boolean
     }
 
-    class ColorTemperatureTintController {
+    class NightDisplayTintController {
         -mMatrix: float[16]
         +Night Display (warm tint)
+    }
+
+    class ColorTemperatureTintController {
+        <<abstract>>
+        +getAppliedCct()
+        +setAppliedCct(int cct)
+        +computeMatrixForCct(int cct)
+        +getEvaluator(): CctEvaluator
     }
 
     class DisplayWhiteBalanceTintController {
@@ -2545,7 +2596,7 @@ classDiagram
     }
 
     class GlobalSaturationTintController {
-        -mMatrix: float[16]
+        -mMatrixGlobalSaturation: float[16]
         +Display saturation level
     }
 
@@ -2559,11 +2610,12 @@ classDiagram
         +Per-app saturation (a11y)
     }
 
+    TintController <|-- NightDisplayTintController
     TintController <|-- ColorTemperatureTintController
-    TintController <|-- DisplayWhiteBalanceTintController
+    ColorTemperatureTintController <|-- DisplayWhiteBalanceTintController
     TintController <|-- GlobalSaturationTintController
     TintController <|-- ReduceBrightColorsTintController
-    TintController <|-- AppSaturationController
+    ColorDisplayService --> AppSaturationController : drives ColorTransformController callbacks
 ```
 
 ### 24.10.3 DisplayTransformManager: The Priority Matrix
@@ -2609,8 +2661,11 @@ private static final int SURFACE_FLINGER_TRANSACTION_DISPLAY_COLOR = 1023;
 
 ### 24.10.4 Night Display
 
-Night Display (blue light filter) uses `ColorTemperatureTintController` to
-shift the display toward warmer tones. It supports three activation modes:
+Night Display (blue light filter) uses `NightDisplayTintController` (a
+private inner class of `ColorDisplayService` extending `TintController`)
+to shift the display toward warmer tones; the abstract
+`ColorTemperatureTintController` base is used by Display White Balance
+instead. Night Display supports three activation modes:
 
 | Mode | Constant | Behavior |
 |------|----------|----------|
@@ -2622,9 +2677,11 @@ The twilight mode integrates with `TwilightManager` to compute local
 sunrise and sunset times based on the device's location.
 
 The colour temperature is converted to a 4x4 matrix using a CCT (Correlated
-Colour Temperature) to RGB transform. The `CctEvaluator` class maps CCT
-values to matrix coefficients using a `Spline` interpolation of calibration
-data.
+Colour Temperature) to RGB transform. The `CctEvaluator` class is a
+`TypeEvaluator<Integer>` that animates between CCT values, stepping through
+the range using per-range step sizes; the CCT-to-matrix conversion itself
+is done by the tint controller's `computeMatrixForCct()` / `setMatrix(int
+cct)` using per-device colour-temperature coefficients.
 
 ### 24.10.5 Display White Balance
 
@@ -2673,13 +2730,14 @@ The `HdrConversionMode` controls system-wide HDR format conversion:
 
 ### 24.10.8 Per-App Color Transforms
 
-`AppSaturationController` applies per-app desaturation for accessibility.
-When an accessibility service requests reduced saturation for specific
-apps, the controller maintains a per-UID saturation level:
+`AppSaturationController` applies per-app desaturation. Privileged callers
+holding `CONTROL_DISPLAY_SATURATION` request reduced saturation for a
+specific package via `ColorDisplayManager.setAppSaturationLevel()`, and the
+controller maintains a saturation level keyed by package name and user ID:
 
 ```mermaid
 graph LR
-    A11Y["AccessibilityManager"] -->|"setAppSaturation(uid, level)"| ASC["AppSaturationController"]
+    CDM["ColorDisplayManager"] -->|"setAppSaturationLevel(packageName, level)"| ASC["AppSaturationController"]
     ASC -->|"per-layer colorTransform"| SF7["SurfaceFlinger<br/>(per-layer matrix)"]
 ```
 
@@ -2808,7 +2866,6 @@ graph TD
         USER["User Setting<br/>(brightness slider)"]
         AUTO["AutomaticBrightnessController<br/>(light sensor)"]
         CLAMP["BrightnessClamperController<br/>(thermal, power, HBM)"]
-        TEMP["DisplayWhiteBalanceController"]
     end
 
     subgraph "DisplayBrightnessController"
@@ -2825,7 +2882,6 @@ graph TD
     USER --> DBC
     AUTO --> DBC
     CLAMP --> DBC
-    TEMP --> DBC
     DBC --> STRAT
     STRAT --> ANIM
     ANIM --> DPS
@@ -2891,8 +2947,10 @@ activity resumes or pauses while the display is off.
 When `DisplayPowerController` signals screen-off, it triggers:
 
 1. `PowerManager.goToSleep()` -- Initiates the sleep sequence
-2. `ActivityTaskManagerInternal.acquireSleepToken()` -- Freezes activity
-   lifecycle for the display
+2. `PhoneWindowManager` calls `DisplayPolicy.screenTurnedOff()`, which
+   acquires the token via
+   `DisplayContent.addSleepToken(DISPLAY_OFF_SLEEP_TOKEN_TAG)` -- freezing
+   the activity lifecycle for the display
 3. Activities in the RESUMED state are paused
 4. The window manager applies the `DISPLAY_STATE_OFF` flag
 
@@ -2954,9 +3012,10 @@ The method uses a state machine for tracking screen-on/off reporting:
 
 ### 24.11.8 Brightness Ramp Animations
 
-`DisplayPowerController` uses `DualRampAnimator` (an extension of
-`RampAnimator`) to smoothly transition brightness. The dual ramp handles
-both the HDR brightness and SDR brightness simultaneously:
+`DisplayPowerController` uses `DualRampAnimator` (a nested helper class in
+`RampAnimator` that drives two `RampAnimator` instances) to smoothly
+transition brightness. The dual ramp animates the screen brightness and the
+SDR brightness simultaneously:
 
 - **Increase ramp**: Maximum time `mBrightnessRampIncreaseMaxTimeMillis`
   (e.g., 2000ms for a gentle brightening when going outdoors)
@@ -3250,8 +3309,10 @@ public static final int SAMPLING_KEY_CIE_Y = 2;
 
 A LUT is attached per layer via `SurfaceControl.Transaction.setLuts()` (passing
 `null` clears it), and an app can discover device support through
-`OverlayProperties.getLutProperties()`, which returns `null` for virtual
-displays. The entire surface is guarded by the `luts_api` flag.
+`OverlayProperties.getLutProperties()`. Only internal and external displays
+report real device capabilities -- for other display types, including virtual
+displays, `Display.getOverlaySupport()` returns the default
+`OverlayProperties`. The entire surface is guarded by the `luts_api` flag.
 
 ### 24.13.4 Picture Profiles
 
@@ -3312,7 +3373,7 @@ standard Android 17 build over `adb shell`:
 | `dumpsys SurfaceFlinger --frametimeline` | Per-frame timing (expected vs actual present) |
 | `dumpsys SurfaceFlinger --list` | List all layers |
 | `dumpsys window displays` | WindowManagerService display info |
-| `dumpsys window display-areas` | DisplayArea hierarchy (Section 24.2) |
+| `dumpsys window containers` | Window container / DisplayArea hierarchy (Section 24.2) |
 | `dumpsys color_display` | ColorDisplayService state (Section 24.10) |
 | `dumpsys device_state` | DeviceStateManagerService posture (Section 24.5) |
 | `cmd display set-brightness <0.0-1.0>` | Set display brightness |

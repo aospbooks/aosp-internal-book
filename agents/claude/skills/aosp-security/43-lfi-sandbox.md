@@ -111,7 +111,7 @@ which piece does what is the key to reading the codec integration later.
 ### 43.2.1 The external toolchain (`external/lfi`)
 
 `external/lfi` is a vendored upstream dependency. The platform integrates it; it
-does not modify its internals. There are six components, each a separate upstream
+does not modify its internals. There are seven components, each a separate upstream
 project mirrored into AOSP.
 
 **`lfi-verifier` (builds the `lfi-verifier` library and the `lfi-verify` host tool).** The verifier is the root of trust. It scans
@@ -136,9 +136,11 @@ The `LFIVOptions` struct (`lfiv.h:12-26`) selects the sandbox model. There are t
 box types (`lfiv.h:7-10`): `LFI_BOX_FULL`, which constrains both loads and stores
 (and control flow), and `LFI_BOX_STORES`, a weaker stores-only mode. It can also
 reserve a **context register** (`ctxreg`, `lfiv.h:19-22`) — `x25` on arm64,
-`r15` on x64 — that the sandbox is forbidden to modify and that holds the sandbox
-base. The verifier links against the instruction decoders below to understand the
-bytes it is checking.
+`r15` on x64 — that the sandbox is forbidden to modify and may only use for
+64-bit loads/stores from the address it holds. The sandbox base lives in a
+separate reserved register — `x27` on arm64 (`REG_BASE`,
+`external/lfi/lfi-verifier/src/arm64/verify.c:67`). The verifier links against
+the instruction decoders below to understand the bytes it is checking.
 
 **`lfi-runtime` (builds `liblfi`).** The runtime owns the sandbox at execution
 time. Per `external/lfi/lfi-runtime/README.md`, it splits into a `core` layer that
@@ -309,8 +311,9 @@ Enabling LFI on a binary then propagates down its static-dependency graph: a
 of an LFI binary, so the whole transitive closure is recompiled with the LFI
 toolchain. That is why the C library and math library need LFI builds of their
 own: `libc_lfi` (`bionic/libc/Android.bp`) and `libm_lfi`
-(`bionic/libm/Android.bp`) are arm64-only, `nocrt`, `stl: "none"`,
-`lfi_supported: true` static libraries restricted to the swcodec APEX. A sandboxed
+(`bionic/libm/Android.bp`) are arm64-only, `stl: "none"`,
+`lfi_supported: true` static libraries restricted to the swcodec APEX
+(`libc_lfi` also sets `nocrt: true`). A sandboxed
 library has no normal libc — it links these LFI-built variants instead.
 
 ### 43.3.3 `system_lfi_defaults`
@@ -360,9 +363,10 @@ flowchart TD
   SRC["libopus source"] --> CC["LFI clang toolchain<br/>(aarch64_lfi triple, rewriting pass)"]
   CC --> LFILIB["libopus.a (LFI-built) + libc_lfi / libm_lfi"]
   LFILIB --> PIE["relink as static-PIE with boxrt + relocator"]
+  PIE --> VER["lfi-verifier (LFI_BOX_FULL)"]
   PIE --> BIND["lfi-bind: generate init + trampolines"]
-  BIND --> VER["lfi-verifier (LFI_BOX_FULL)"]
-  VER -->|"errors=0"| OUT["libopus_lfi sandbox image<br/>(in com.android.media.swcodec)"]
+  VER -->|"verify stamp gates the bind step"| BIND
+  BIND --> OUT["libopus_lfi sandbox image<br/>(in com.android.media.swcodec)"]
   VER -->|"unsafe instruction"| FAIL["build/load rejected"]
 ```
 
@@ -431,9 +435,9 @@ int MediaCodecInfo::getSecurityModel() const {
 
 Second, it selects the buffer-mapping functions. When the flag is on, the codec2
 client swaps the default `::mmap`/`::munmap` for the sandbox-aware mapping
-functions so input buffers are mapped inside the box
-(`frameworks/av/media/codec2/hal/client/client.cpp:1906-1914`, and again for const
-linear blocks at `:2031-2038`):
+functions so buffers are mapped inside the box — for output blocks in
+`allocOutputBuffer` (`frameworks/av/media/codec2/hal/client/client.cpp:1906-1914`)
+and for input const linear blocks in `fillMemory` (`:2031-2038`):
 
 ```cpp
 // frameworks/av/media/codec2/hal/client/client.cpp:1906-1914
@@ -627,12 +631,15 @@ checkout.
   sed -n '16,28p' external/lfi/lfi-runtime/core/include/lfi_core.h
   ```
 
-- On a running Android 17 device, see whether a codec reports the new
-  memory-safe security model and whether the flag is set:
+- On a running Android 17 device, check whether the flag is set. (A codec's
+  security model itself is only observable through the Java API —
+  `MediaCodecInfo.getSecurityModel()` / `MediaFormat.KEY_SECURITY_MODEL` — not
+  via a shell command.) Note that aconfig flags are stored under their
+  fully-qualified package name:
 
   ```bash
-  adb shell cmd media.codec list 2>/dev/null | grep -i secur
-  adb shell device_config get codec_fwk in_process_sw_codec_lfi
+  adb shell device_config get codec_fwk android.media.codec.in_process_sw_codec_lfi
+  adb shell printflags | grep in_process_sw_codec_lfi
   ```
 
 ## Summary

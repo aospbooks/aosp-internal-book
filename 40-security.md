@@ -206,7 +206,8 @@ Android supports multiple users on a single device.  Each user gets:
   data access even within the same app.
 
 The SELinux MLS categories are assigned based on the user ID, creating
-cryptographic separation between users at the MAC level.
+kernel-enforced separation between users at the MAC level.  (Cryptographic
+separation comes from the per-user FBE keys, covered in section 40.8.)
 
 ### 40.1.9  Work Profile Security
 
@@ -238,14 +239,15 @@ policy is compiled at build time from source files under:
 system/sepolicy/
 ```
 
-The directory structure (15 subdirectories) includes:
+The directory structure (16 subdirectories) includes:
 
 | Directory | Purpose |
 |-----------|---------|
 | `public/` | Type and attribute definitions visible to vendor policy |
 | `private/` | Platform-private policy (allow, neverallow rules) |
 | `vendor/` | Vendor HAL policies |
-| `contexts/` | File, property, service contexts |
+| `contexts/` | Build glue and `file_contexts` test data (the actual context files live under `private/`; see 40.2.13) |
+| `docs/` | Policy-writing documentation (neverallows.md, style_guide.md, ...) |
 | `mac_permissions/` | MAC permissions XML for app signing |
 | `build/` | Build system integration |
 | `compat/` | Compatibility mappings between platform versions |
@@ -292,7 +294,7 @@ definitions, never `allow` or `neverallow` statements.  Those go in
 ### 40.2.3  Domains and Attributes
 
 Attributes are groups of types.  They allow writing rules that apply to many
-domains at once.  From `system/sepolicy/public/attributes` (490 lines):
+domains at once.  From `system/sepolicy/public/attributes` (506 lines):
 
 ```te
 # All types used for devices.
@@ -367,7 +369,7 @@ allow vold vold_exec:file { read getattr map execute entrypoint };
 
 ### 40.2.5  App Domain Assignment via seapp_contexts
 
-The file `system/sepolicy/private/seapp_contexts` (216 lines) maps
+The file `system/sepolicy/private/seapp_contexts` (222 lines) maps
 applications to SELinux domains based on their properties:
 
 ```
@@ -386,7 +388,7 @@ Sample mappings:
 
 | Selector | Domain |
 |----------|--------|
-| `isSystemServer=true` | `system_server` |
+| `isSystemServer=true` | `system_server_startup` |
 | `user=system seinfo=platform` | `system_app` |
 | `user=_app minTargetSdkVersion=37` | `untrusted_app` |
 | `user=_app minTargetSdkVersion=34` | `untrusted_app_34` |
@@ -581,7 +583,7 @@ use their own (`hwbinder_device`, `vndbinder_device`).
 
 ### 40.2.10  The App Domain Policy (private/app.te)
 
-The file `system/sepolicy/private/app.te` (844 lines) defines rules for all
+The file `system/sepolicy/private/app.te` (903 lines) defines rules for all
 zygote-spawned app processes.  Key categories of access:
 
 **Keystore access:**
@@ -617,7 +619,7 @@ binder_call(appdomain, appdomain)
 binder_call(appdomain, ephemeral_app)
 ```
 
-**Neverallow rules in app.te** (excerpts from the ~300 neverallow rules):
+**Neverallow rules in app.te** (excerpts from roughly 65 neverallow rules):
 
 ```te
 # Superuser capabilities.
@@ -625,7 +627,7 @@ neverallow { appdomain -bluetooth -network_stack -nfc }
     self:capability_class_set *;
 
 # Block device access.
-neverallow appdomain dev_type:blk_file { read write };
+neverallow appdomain {dev_type -apex_dm_device}:blk_file { read write };
 
 # ptrace access to non-app domains.
 neverallow appdomain { domain -appdomain }:process ptrace;
@@ -652,8 +654,9 @@ neverallow appdomain system_data_file:dir_file_class_set
     { create write setattr relabelfrom relabelto append unlink link rename };
 
 # Transition to a non-app domain (prevent domain escalation).
+# (userdebug/eng builds also exclude su from the source set.)
 neverallow { appdomain -shell }
-    { domain -appdomain -crash_dump -rs -virtualizationmanager }:process
+    { domain -appdomain -crash_dump -rs -virtualizationmanager_domain }:process
     { transition };
 
 # Sensitive app domains are not allowed to execute from /data
@@ -1011,13 +1014,16 @@ typedef enum {
 ```
 
 The implementation in `external/avb/libavb/avb_slot_verify.c` defines key
-constants:
+constants (the loaded-partition limit lives in the public header
+`external/avb/libavb/avb_slot_verify.h`):
 
 ```c
-/* Maximum number of partitions that can be loaded with avb_slot_verify(). */
-#define MAX_NUMBER_OF_LOADED_PARTITIONS 32
+/* From avb_slot_verify.h: maximum number of partitions that can be
+ * loaded with avb_slot_verify(). */
+#define AVB_MAX_NUMBER_OF_LOADED_PARTITIONS 32
 
-/* Maximum number of vbmeta images that can be loaded. */
+/* From avb_slot_verify.c: maximum number of vbmeta images that can be
+ * loaded. */
 #define MAX_NUMBER_OF_VBMETA_IMAGES 32
 
 /* Maximum size of a vbmeta image - 64 KiB. */
@@ -1329,8 +1335,8 @@ and operations.  The implementation has evolved through several generations:
 | Generation | Interface | Since |
 |-----------|-----------|-------|
 | Keymaster 0.x | C HAL | Android 4.3 |
-| Keymaster 1.0 | HIDL 1.0 | Android 6.0 |
-| Keymaster 2.0 | HIDL 2.0 | Android 7.0 |
+| Keymaster 1.0 | C HAL (`keymaster1.h`) | Android 6.0 |
+| Keymaster 2.0 | C HAL (`keymaster2.h`) | Android 7.0 |
 | Keymaster 3.0 | HIDL 3.0 | Android 8.0 |
 | Keymaster 4.0 | HIDL 4.0 | Android 9 |
 | **KeyMint 1.0** | **AIDL** | **Android 12** |
@@ -1371,6 +1377,7 @@ pub mod permission;
 pub mod raw_device;
 pub mod remote_provisioning;
 pub mod security_level;
+pub mod security_level_manager;
 pub mod service;
 pub mod shared_secret_negotiation;
 pub mod utils;
@@ -1889,8 +1896,10 @@ processor with its own:
 - Tamper-resistance mechanisms
 - Independent clock
 
-StrongBox supports a subset of KeyMint algorithms and is mandatory for
-devices launching with Android 9+ (for certain key types).
+StrongBox supports a subset of KeyMint algorithms.  It has been optional
+since its introduction in Android 9 -- the CDD strongly recommends it but
+does not require it, and devices without a secure element expose only the
+`SOFTWARE` and `TRUSTED_ENVIRONMENT` security levels.
 
 ---
 
@@ -2010,7 +2019,7 @@ transport mechanisms:
    in a separate VM.
 
 ```c
-static bool use_vsock_connection = false;
+static bool use_socket_connection = false;
 
 static int tipc_vsock_connect(const char* type_cid_port_str,
                               const char* srv_name) {
@@ -2131,9 +2140,11 @@ makefiles in `system/core/trusty/`:
 - `trusty-base.mk` -- base Trusty configuration
 - `trusty-storage-cf.mk` -- Cuttlefish (emulator) storage configuration
 - `trusty-storage.mk` -- production storage configuration
-- `trusty-keymint-apex.mk` -- APEX packaging for KeyMint
-- `trusty-keymint.mk` -- KeyMint HAL build rules
 - `trusty-test.mk` -- Test configuration
+
+The two KeyMint makefiles, `trusty-keymint.mk` (KeyMint HAL build rules)
+and `trusty-keymint-apex.mk` (APEX packaging for KeyMint), live in
+`system/core/trusty/keymint/` and are inherited by `trusty-base.mk`.
 
 ### 40.5.9  Trusty Kernel Architecture
 
@@ -2236,9 +2247,10 @@ The device configs live in `trusty/device/desktop/` (copyright 2024).  The
 common include `trusty/device/desktop/common/desktop-inc.mk` is headed
 "Configurations common to Trusty builds for Android Desktop," and two project
 trees build the targets: `trusty/device/desktop/arm64/desktop-arm64/` and
-`trusty/device/desktop/x86_64/desktop-x86_64/`, each with the base project
-makefile plus `_ext_boot`, `-test`, and `-test-debug` variants (for example
-`project/desktop-x86_64.mk` and `project/desktop-arm64_ext_boot.mk`).  The LK
+`trusty/device/desktop/x86_64/desktop-x86_64/`.  The x86_64 tree ships the
+base project makefile plus `_ext_boot` and `-test` variants (for example
+`project/desktop-x86_64.mk`), while the arm64 tree adds a `-test-debug`
+variant on top of those (plus a `qemu-` test-debug project).  The LK
 kernel platform glue for these targets is the Rust code under
 `trusty/kernel/platform/desktop/`.  The desktop Trusty image is signed and
 packaged as a Trusty VM rather than burned into a TrustZone secure world; the
@@ -2326,11 +2338,15 @@ sequenceDiagram
 
 Key security properties:
 
-- **Throttling in hardware** -- the TEE enforces exponentially increasing
-  delays after failed attempts (30s after 5 failures, with the wait time
-  doubling).  The normal world cannot bypass this.
+- **Throttling in hardware** -- the reference implementation
+  (`system/gatekeeper/gatekeeper.cpp`) enforces a fixed timeout table
+  indexed by the failure counter: no delay for the first 5 failures, then
+  1 minute, 5, 15, 30, and 90 minutes, 4, 12, and 36 hours, 4 days, and so
+  on up to years.  It is a table lookup, not a doubling backoff.  The
+  normal world cannot bypass this.
 - **Per-user isolation** -- each user has their own enrolled handle, stored
-  in `/data/system_de/<userId>/gatekeeper/`.
+  with the synthetic-password protector state in
+  `/data/system_de/<userId>/spblob/`.
 - **Challenge binding** -- the verification challenge prevents replay attacks.
 
 ### 40.6.2  Enrollment
@@ -2655,18 +2671,22 @@ Isolated processes:
   file descriptors.
 - Run as a unique UID each time (drawn from a reserved range).
 
-From `system/sepolicy/private/isolated_app.te`:
+From `system/sepolicy/private/isolated_app.te` and
+`system/sepolicy/private/isolated_app_all.te` (the latter targets the
+`isolated_app_all` attribute shared by all isolated-app domains):
 
 ```te
+# isolated_app.te:
 # Allow access to network sockets received over IPC.
 # New socket creation is not permitted.
-allow isolated_app { ephemeral_app priv_app untrusted_app_all }:{
+allow isolated_app { ephemeral_app priv_app_all untrusted_app_all }:{
     tcp_socket udp_socket
 } { rw_socket_perms_no_ioctl };
 
+# isolated_app_all.te:
 # b/32896414: Allow accessing sdcard file descriptors passed to
 # isolated_apps by other processes. Open should never be allowed.
-allow isolated_app { sdcard_type fuse media_rw_data_file }:file {
+allow isolated_app_all { sdcard_type fuse media_rw_data_file }:file {
     read write append getattr lock map
 };
 ```
@@ -2678,21 +2698,28 @@ Filter) to app processes.  This restricts which system calls an app can make,
 even before SELinux is consulted.
 
 The seccomp filter is applied by the Zygote during process specialization.
-Blocked syscalls include:
+The syscalls blocked for apps (from `bionic/libc/SECCOMP_BLOCKLIST_APP.TXT`)
+include:
 
 | Category | Examples |
 |----------|---------|
-| **Kernel module loading** | `init_module`, `finit_module`, `delete_module` |
-| **Raw I/O** | `ioperm`, `iopl` |
-| **Process tracing** | `ptrace` (unless debuggable) |
-| **Namespace manipulation** | `unshare`, `setns` |
-| **Clock manipulation** | `clock_settime`, `settimeofday` |
-| **Mount operations** | `mount`, `umount2` |
+| **UID/GID changes** | `setuid`, `setgid`, `setreuid`, `setresgid`, `setgroups`, `setfsuid` |
+| **Kernel module loading** | `init_module`, `delete_module` |
+| **Clock manipulation** | `adjtimex`, `clock_adjtime`, `clock_settime`, `settimeofday` |
+| **Mount operations** | `mount`, `umount2`, `chroot` |
 | **Swap management** | `swapon`, `swapoff` |
+| **Process accounting / logs** | `acct`, `syslog` |
+| **Host identity** | `setdomainname`, `sethostname` |
 | **Reboot** | `reboot` |
 
-A blocked syscall results in process termination (SIGKILL) or an error return,
-depending on the filter rule.
+Notably, `ptrace`, `unshare`, and `setns` are *not* blocked by the app
+seccomp filter -- they are in the generated allowlist
+(`bionic/libc/SYSCALLS.TXT`); tracing other domains is instead forbidden
+by SELinux neverallow rules (and Yama restricts same-domain tracing).
+
+A blocked syscall triggers `SECCOMP_RET_TRAP`, which delivers `SIGSYS` to
+the calling thread -- normally fatal, with the crash routed through
+debuggerd.  The generated filter never returns an errno.
 
 ### 40.7.5  Namespace Isolation
 
@@ -2718,36 +2745,48 @@ sequenceDiagram
     AM->>Zygote: Fork request (via socket)
     Zygote->>Child: fork()
     Note over Child: Child process created
-    Child->>Child: setuid(app_uid)
-    Child->>Child: setgid(app_gid)
+    Child->>Child: Drop capability bounding set
+    Child->>Child: Set up mount namespace / emulated storage
     Child->>Child: setgroups(supplementary_groups)
+    Child->>Child: setresgid(app_gid)
     Child->>Child: Apply seccomp-BPF filter
-    Child->>Child: Set SELinux context (via setcon)
-    Child->>Child: Set mount namespace
-    Child->>Child: Drop capabilities
+    Child->>Child: setresuid(app_uid)
+    Child->>Child: Set capabilities
+    Child->>Child: Set SELinux context (selinux_android_setcontext)
     Child->>Child: Close Zygote socket
     Child->>Child: Load application code
 ```
 
-During specialization:
+During specialization (in the order `SpecializeCommon` in
+`frameworks/base/core/jni/com_android_internal_os_Zygote.cpp` performs it):
 
-1. **UID/GID set** -- to the app's assigned UID.
-2. **Supplementary groups** -- set based on permissions (e.g., `inet` group
-   for INTERNET permission, `media_rw` for storage access).
-3. **seccomp filter applied** -- restricts available syscalls.
-4. **SELinux domain transition** -- from `zygote` to the appropriate app
-   domain (e.g., `untrusted_app`).
-5. **Mount namespace** -- isolated mount view created.
-6. **Capabilities dropped** -- no Linux capabilities remain.
-7. **Zygote socket closed** -- the child cannot fork more processes.
+1. **Capability bounding set dropped** and the **mount namespace** set up
+   with the app's emulated-storage view.
+2. **Supplementary groups** -- `setgroups` based on permissions (e.g.,
+   `inet` group for INTERNET permission, `media_rw` for storage access),
+   then `setresgid` to the app's GID.
+3. **seccomp filter applied** -- deliberately *before* the UID change,
+   because installing the filter requires a capability the process is
+   about to lose.
+4. **UID set** -- `setresuid` to the app's assigned UID.
+5. **Capabilities set** -- normally none remain for app processes.
+6. **SELinux domain transition** -- `selinux_android_setcontext` moves the
+   process from `zygote` to the appropriate app domain (e.g.,
+   `untrusted_app`).
+7. **Zygote server socket closed** -- the child closes the inherited
+   Zygote server socket so it cannot accept or serve further fork
+   requests.
 
 ### 40.7.7  Permission to Group Mapping
 
-The `INTERNET` permission is enforced at the kernel level through group
-membership.  When granted, the app's process gets the `inet` supplementary
-group (GID 3003), which allows it to create AF_INET/AF_INET6 sockets.  The
-kernel's `paranoid_networking` feature restricts socket creation to processes
-in specific groups:
+The `INTERNET` permission is still reflected in group membership: when
+granted, the app's process gets the `inet` supplementary group (GID 3003),
+assigned via `frameworks/base/data/etc/platform.xml`.  Enforcement, however,
+no longer relies on the old `CONFIG_ANDROID_PARANOID_NETWORK` kernel patch
+(which has been removed): the `inet_create` eBPF cgroup program in
+`packages/modules/Connectivity/bpf/progs/netd.c` decides socket creation
+from a per-appId permission map (`BPF_PERMISSION_INTERNET`).  The
+permission-related groups:
 
 | Group | GID | Permission |
 |-------|-----|-----------|
@@ -2772,10 +2811,19 @@ flowchart TD
     F --> G[Default: allow or block based on policy]
 ```
 
-The seccomp policy files are at:
+The seccomp policy definitions are the text files directly under
+`bionic/libc/`:
+
 ```
-bionic/libc/seccomp/
+bionic/libc/SYSCALLS.TXT
+bionic/libc/SECCOMP_ALLOWLIST_COMMON.TXT
+bionic/libc/SECCOMP_ALLOWLIST_APP.TXT
+bionic/libc/SECCOMP_BLOCKLIST_COMMON.TXT
+bionic/libc/SECCOMP_BLOCKLIST_APP.TXT
 ```
+
+The `bionic/libc/seccomp/` directory holds the generated filters and the
+`seccomp_policy.cpp` runtime that installs them.
 
 Example blocked syscalls and their security rationale:
 
@@ -2785,15 +2833,19 @@ Example blocked syscalls and their security rationale:
 | `delete_module` | Unloading security modules |
 | `mount` | Mounting new filesystems could bypass sandbox |
 | `umount2` | Unmounting could expose raw block devices |
-| `ptrace` | Debugging other processes leaks data |
-| `unshare` | Namespace manipulation could escape sandbox |
-| `setns` | Entering other namespaces |
+| `chroot` | Filesystem root manipulation |
 | `reboot` | Denial of service |
 | `swapon/swapoff` | System resource manipulation |
 | `settimeofday` | Clock manipulation affects auth tokens |
-| `pivot_root` | Filesystem root manipulation |
+| `setuid`/`setgid` family | Changing IDs after specialization |
 | `acct` | Process accounting control |
-| `kexec_load` | Loading a new kernel |
+| `syslog` | Reading kernel logs leaks data |
+| `kexec_load` | Loading a new kernel (absent from `SYSCALLS.TXT` entirely) |
+
+Note that `ptrace`, `unshare`, `setns`, and `pivot_root` are *not* on the
+app seccomp blocklists -- `pivot_root` is even explicitly allowlisted for
+boot -- so restrictions on those come from SELinux and other mechanisms,
+not seccomp.
 
 ### 40.7.9  Process-Level Isolation Details
 
@@ -2846,8 +2898,10 @@ Content Providers have their own access control:
 </provider>
 ```
 
-- `exported=false` (default for targetSdk >= 31): only the same app can
-  access it.
+- `exported=false` (the default for providers since targetSdk >= 17): only
+  the same app can access it.  (TargetSdk 31 is when an *explicit*
+  `android:exported` became mandatory for components with intent filters,
+  which does not change the provider default.)
 - `readPermission` / `writePermission`: separate read and write permissions.
 - `<path-permission>`: per-path permissions for fine-grained control.
 - URI grants: temporary one-time permission to specific URIs.
@@ -2858,8 +2912,11 @@ Android 13 introduced the SDK Sandbox, a separate process for running
 advertising and analytics SDKs in isolation from the host app:
 
 ```
-user=_sdksandbox domain=sdk_sandbox type=sdk_sandbox_data_file
+user=_sdksandbox domain=sdk_sandbox_34 type=sdk_sandbox_data_file levelFrom=all
 ```
+
+(`sdk_sandbox` is the attribute the versioned sandbox domains such as
+`sdk_sandbox_34` carry.)
 
 The SDK sandbox runs with its own UID and SELinux domain, preventing SDKs from
 accessing the host app's data or other sensitive system resources.
@@ -3062,7 +3119,7 @@ From `system/vold/KeyStorage.cpp`:
 ```cpp
 const KeyAuthentication kEmptyAuthentication{""};
 
-static constexpr size_t AES_KEY_BYTES = 32;
+// AES_KEY_BYTES = 32 is defined in system/vold/Keystore.h
 static constexpr size_t GCM_NONCE_BYTES = 12;
 static constexpr size_t GCM_MAC_BYTES = 16;
 static constexpr size_t SECDISCARDABLE_BYTES = 1 << 14;
@@ -3109,17 +3166,19 @@ The key installation process uses the kernel's fscrypt API:
 
 ### 40.8.6  Metadata Encryption
 
-Metadata encryption protects filesystem metadata (filenames, permissions,
-directory structure) that FBE does not cover.  The implementation is in
+Metadata encryption protects the filesystem metadata that FBE leaves in the
+clear -- directory structure, file sizes, permissions, and timestamps
+(filenames are already encrypted by fscrypt itself).  The implementation is in
 `system/vold/MetadataCrypt.cpp`:
 
 ```cpp
 // Parsed from metadata options
+// (KeyType is android::fscrypt::KeyType)
 struct CryptoOptions {
     struct CryptoType cipher = invalid_crypto_type;
     bool use_legacy_options_format = false;
     bool set_dun = true;
-    bool use_hw_wrapped_key = false;
+    KeyType key_type = KeyType::kRaw;
 };
 
 // The first entry in this table is the default crypto type.
@@ -3164,7 +3223,9 @@ can be "hardware-wrapped":
 3. The inline crypto engine unwraps the key internally during I/O.
 
 This means that even a kernel compromise cannot extract the raw encryption key.
-The `use_hw_wrapped_key` option in metadata encryption enables this feature.
+In metadata encryption this feature is selected by the `CryptoOptions::key_type`
+field being `KeyType::kHwWrapped` (or `kHwWrappedV0`), which maps to the
+dm-default-key `wrappedkey_v0` option.
 
 ### 40.8.9  The dm-default-key Implementation
 
@@ -3186,17 +3247,15 @@ static bool create_crypto_blk_dev(
     *nr_sec &= ~7;
 
     KeyBuffer module_key;
-    if (options.use_hw_wrapped_key) {
-        if (!exportWrappedStorageKey(key, &module_key)) {
-            LOG(ERROR) << "Failed to get ephemeral wrapped key";
-            return false;
-        }
-    } else {
-        module_key = key;
-    }
+    if (!prepareKeyForUse(key, options.key_type, &module_key)) return false;
     // ... set up dm-default-key target ...
 }
 ```
+
+`prepareKeyForUse` (declared in `system/vold/KeyUtil.h`) handles the
+hardware-wrapped case: when `options.key_type` is `KeyType::kHwWrapped`
+or `kHwWrappedV0`, the setup also passes the dm-default-key
+`wrappedkey_v0` option to the kernel.
 
 The metadata encryption layer sits between the filesystem and the block device:
 
@@ -3222,8 +3281,9 @@ static const char* kHashPrefix_secdiscardable =
 This 16 KiB random file is stored alongside each key.  Its hash is mixed into
 the key derivation.  When a key needs to be permanently destroyed:
 
-1. The secdiscardable file is securely erased using `BLKDISCARD` or
-   `FITRIM` ioctls.
+1. The secdiscardable file is securely erased using the `BLKSECDISCARD`
+   ioctl (with a zero-overwrite fallback), or `F2FS_IOC_SEC_TRIM_FILE`
+   on f2fs.
 2. Even if the encrypted key blob is somehow recovered, the loss of the
    secdiscardable makes it useless.
 3. On flash storage, the DISCARD command tells the flash controller to
@@ -3318,7 +3378,7 @@ shaped the way it is, and how `RecoverableKeyStoreManager` consumes it.
 `com.android.security.SecureBox` is a 461-line, dependency-free Java
 class that implements an authenticated public-key + shared-secret hybrid
 encryption scheme over the NIST P-256 elliptic curve, AES-128-GCM, and
-HKDF-SHA-256. It exposes exactly four public methods:
+HKDF-SHA-256. It exposes exactly five public methods:
 
 ```java
 // Source: frameworks/base/libs/securebox/src/com/android/security/SecureBox.java:142
@@ -3498,11 +3558,14 @@ property the recovery protocol needs.
 `com.android.settings.password.RemoteLockscreenValidationFragment`
 (in `packages/apps/Settings/`) uses the same SecureBox primitive for a
 different flow: a *remote* unlock confirmation during Find My Device
-flows. Settings generates an ephemeral P-256 key pair via
-`SecureBox.genKeyPair()`, sends the public key to the cloud service,
-and decrypts the cloud's challenge response with the private key. The
-public-key path (no shared secret) of `SecureBox.encrypt` is what the
-cloud uses on its end.
+flows. Here it is `system_server` that generates the ephemeral P-256
+key pair -- `RemoteLockscreenValidationSessionStorage` calls
+`SecureBox.genKeyPair()` and hands out the public key. Settings'
+`encryptDeviceCredentialGuess` then calls `SecureBox.decodePublicKey`
+followed by `SecureBox.encrypt` on the credential guess, using the
+public-key path with a null shared secret, and
+`RecoverableKeyStoreManager` performs the matching
+`SecureBox.decrypt` against the session's private key.
 
 This second consumer is why `SecureBox` exposes the ECDH-only mode as
 a first-class API path rather than insisting on a shared secret.
@@ -3640,17 +3703,20 @@ flowchart TD
     H -->|No| I["Connection rejected<br/>Pin mismatch"]
 ```
 
-Pin-sets have mandatory features:
+Pin-sets have strongly recommended (but not platform-enforced) features:
 
-- **Expiration date** -- pins expire so that a wrong pin does not permanently
-  brick the app's connectivity.
-- **Backup pins** -- at least two pins must be specified (one current, one
-  backup) to enable key rotation.
+- **Expiration date** -- the `expiration` attribute is optional (pins never
+  expire if it is omitted), but setting one ensures a wrong pin does not
+  permanently brick the app's connectivity.
+- **Backup pins** -- the parser imposes no minimum pin count, but
+  specifying at least two pins (one current, one backup) is strongly
+  recommended to enable key rotation.
 
 ### 40.9.5  Certificate Transparency
 
-Starting with Android 16 (Baklava), Certificate Transparency (CT) verification
-is enabled by default for apps targeting the new SDK level:
+Certificate Transparency (CT) verification is enabled by default for apps
+targeting SDK levels *after* Baklava -- that is, targetSdk 37 / Android 17,
+per the `@EnabledAfter` semantics of the compat change:
 
 ```java
 @ChangeId
@@ -3788,8 +3854,7 @@ Android has progressively tightened HTTPS requirements:
 | 9.0 | `cleartextTrafficPermitted` defaults to false for targetSdk >= 28 |
 | 10 | TLS 1.3 enabled by default |
 | 14 | System-only CA trust for targetSdk >= 34 |
-| 16 (Baklava) | Certificate Transparency enabled by default |
-| 17 (Cinnamon Bun) | `usesCleartextTraffic` manifest flag deprecated; ignored for targetSdk >= 37 (see ch35 §35.8.10) |
+| 17 (Cinnamon Bun) | Certificate Transparency enabled by default for targetSdk >= 37; `usesCleartextTraffic` manifest flag deprecated and ignored for targetSdk >= 37 (see ch35 §35.8.10) |
 
 ### 40.9.11  DNS over TLS / DNS over HTTPS
 
@@ -3817,7 +3882,10 @@ The automatic mode discovery works by:
 
 Android's VPN framework integrates with the security model:
 
-- VPN apps receive the `BIND_VPN_SERVICE` permission.
+- A VPN app's `VpnService` must declare
+  `android:permission="android.permission.BIND_VPN_SERVICE"`; this
+  signature-level permission is held by the system, ensuring only the
+  system can bind the service (the app itself does not hold it).
 - VPN traffic is routed through a TUN interface.
 - The VPN app can see all DNS queries and network traffic, but:
   - It runs in the `untrusted_app` SELinux domain.
@@ -3830,7 +3898,7 @@ Android's VPN framework integrates with the security model:
 System services have different network security properties:
 
 ```te
-# From private/app.te - apps cannot access certain network interfaces
+# From private/app_neverallows.te - apps cannot access certain network interfaces
 neverallow all_untrusted_apps domain:netlink_kobject_uevent_socket *;
 neverallow all_untrusted_apps domain:netlink_socket *;
 
@@ -4385,9 +4453,10 @@ Running the SELinux tests:
 mmm system/sepolicy/tests
 
 # Run treble sepolicy tests
-python3 system/sepolicy/tests/treble_tests.py \
-    -l system/sepolicy/prebuilts/api/<api>/ \
-    -f <compiled_policy>
+python3 system/sepolicy/tests/treble_sepolicy_tests.py \
+    -b <base_pub_policy> \
+    -o <old_pub_policy> \
+    -m <mapping_file>
 ```
 
 Running Keystore2 tests:
@@ -4822,9 +4891,6 @@ avbtool info_image --image boot.img
 ### Exercise 40.3: Explore Keystore Keys
 
 ```bash
-# List all Keystore aliases for the current user
-adb shell cmd keystore2 list
-
 # Generate a test key
 # (In an Android app)
 val keyGen = KeyPairGenerator.getInstance(
@@ -4836,8 +4902,9 @@ keyGen.initialize(
         .build())
 val keyPair = keyGen.generateKeyPair()
 
-# Check the security level of the key
-adb shell dumpsys keystore2
+# Dump keystore2 state (keystore2 has no cmd shell interface;
+# its dump is served by the maintenance service)
+adb shell dumpsys android.security.maintenance
 ```
 
 ### Exercise 40.4: Verify App Sandbox Isolation

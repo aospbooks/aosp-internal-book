@@ -107,10 +107,11 @@ Flags in aconfig have two orthogonal dimensions:
 | `READ_WRITE` | The flag can be overridden at runtime via DeviceConfig or aconfigd. |
 
 Additionally, flags may be marked as **`is_fixed_read_only`** in their
-declaration.  This is a stronger guarantee: the flag can never be changed from
-its declared default, not even by release configuration.  The build system
-uses this to enable compile-time optimizations -- the R8 optimizer can
-completely eliminate dead code branches behind fixed read-only flags.
+declaration.  This forces the flag's permission to `READ_ONLY`: it can never
+become runtime-overridable, though release configuration may still set its
+build-time state through values files.  The build system uses this to enable
+compile-time optimizations -- the R8 optimizer can completely eliminate dead
+code branches behind fixed read-only flags.
 
 Until Android 17, every flag was implicitly boolean.  Android 17 adds a
 **flag type** dimension to the declaration schema (`FLAG_TYPE_BOOLEAN` versus
@@ -251,16 +252,23 @@ flag {
   bug: "364399200"
   is_exported: true
 }
+```
+
+A bugfix flag carrying `metadata { purpose: PURPOSE_BUGFIX }`, from the
+aconfigd storage module:
+
+```protobuf
+// File: system/server_configurable_flags/aconfigd/
+//       new_aconfig_storage.aconfig
 
 flag {
-  name: "enable_immediate_clear_override_bugfix"
-  namespace: "core_experiments_team_internal"
-  description: "Bugfix flag to allow clearing a local override
-                immediately"
-  bug: "387316969"
-  metadata {
-    purpose: PURPOSE_BUGFIX
-  }
+    name: "support_clear_local_overrides_immediately"
+    namespace: "core_experiments_team_internal"
+    description: "Support ability to clear local overrides immediately."
+    bug: "360205436"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
 }
 ```
 
@@ -274,8 +282,8 @@ Each `flag_declaration` message supports these fields, as defined by the
 | `name`               | `string`    | Yes      | Snake_case identifier (e.g., `mount_before_data`)  |
 | `namespace`          | `string`    | Yes      | Organizational grouping for server-side management |
 | `description`        | `string`    | Yes      | Human-readable purpose of the flag                 |
-| `bug`                | `string`    | Yes      | Bug tracker ID (can be repeated)                   |
-| `is_fixed_read_only` | `bool`      | No       | If true, value cannot change at runtime or via release config |
+| `bug`                | `string`    | Yes      | Bug tracker ID; proto-`repeated`, but aconfig requires exactly one per flag |
+| `is_fixed_read_only` | `bool`      | No       | If true, permission is forced to `READ_ONLY`; the value can never change at runtime |
 | `is_exported`        | `bool`      | No       | If true, flag is accessible outside its container  |
 | `metadata`           | `message`   | No       | Additional metadata (purpose, storage backend)     |
 | `type`               | `flag_type` | No       | Value type; defaults to `FLAG_TYPE_UNSPECIFIED` (treated as boolean).  Added in Android 17 |
@@ -421,11 +429,14 @@ flowchart LR
 1. **Declaration default:** All flags start as `DISABLED` with `READ_WRITE`
    permission (defined in `commands.rs` line 74-75).
 2. **Values files** are applied in order.  Later values override earlier ones.
-3. **Build-time permission enforcement:** If
-   `RELEASE_ACONFIG_REQUIRE_ALL_READ_ONLY` is set, all flags are forced to
-   `READ_ONLY` regardless of their declared permission.
-4. **Fixed read-only enforcement:** Flags with `is_fixed_read_only: true`
-   cannot have their state overridden by values files.
+3. **Build-time permission enforcement:** If `RELEASE_CONFIG_FORCE_READ_ONLY`
+   is set, permissions coming from values files are silently rewritten to
+   `READ_ONLY`.  If `RELEASE_ACONFIG_REQUIRE_ALL_READ_ONLY` is set,
+   `create-cache` instead *fails the build* when any flag ends up
+   `READ_WRITE`.
+4. **Fixed read-only enforcement:** Flags with `is_fixed_read_only: true` may
+   still have their *state* set by values files, but a values file that tries
+   to give them `permission: READ_WRITE` is rejected with an error.
 
 Each value application is recorded as a **tracepoint** in the cache, allowing
 developers to trace exactly which file set each flag's final value:
@@ -617,8 +628,8 @@ implementation uses `PlatformAconfigPackageInternal`.  For non-platform
 containers (APEX modules), it uses `AconfigPackageInternal`.  Both read
 flag values from memory-mapped storage files under `/metadata/aconfig/`.
 
-The **package fingerprint** (`0xABCD1234L`) is a SipHash13 of the package name,
-used to verify that the correct storage file is being read.
+The **package fingerprint** (`0xABCD1234L`) is a SipHash13 over the package's
+sorted flag names, used to verify that the correct storage file is being read.
 
 **Legacy DeviceConfig storage** -- template
 `FeatureFlagsImpl.legacy_flag.internal.java.template`.  (Through Android 16 this
@@ -629,23 +640,18 @@ removed that file and folded the DeviceConfig runtime read into the
 ```java
 package com.example.flags;
 
-import android.os.Binder;
 import android.provider.DeviceConfig;
-import android.provider.DeviceConfig.Properties;
 
 /** @hide */
 public final class FeatureFlagsImpl implements FeatureFlags {
-    private static volatile boolean my_namespace_is_cached = false;
-    private static boolean myReadWriteFlag = false;
 
-    private void load_overrides_my_namespace() {
-        final long ident = Binder.clearCallingIdentity();
+    @Override
+    public boolean myReadWriteFlag() {
         try {
-            Properties properties =
-                DeviceConfig.getProperties("my_namespace");
-            myReadWriteFlag =
-                properties.getBoolean(
-                    Flags.FLAG_MY_READ_WRITE_FLAG, false);
+            return DeviceConfig.getBoolean(
+                "my_namespace",
+                Flags.FLAG_MY_READ_WRITE_FLAG,
+                false);
         } catch (NullPointerException e) {
             throw new RuntimeException(
                 "Cannot read value from namespace my_namespace "
@@ -654,20 +660,7 @@ public final class FeatureFlagsImpl implements FeatureFlags {
                 + "initialization. Please use fixed read-only flag "
                 + "by adding is_fixed_read_only: true in flag "
                 + "declaration.", e);
-        } catch (SecurityException e) {
-            // Skip loading for isolated processes
-        } finally {
-            Binder.restoreCallingIdentity(ident);
         }
-        my_namespace_is_cached = true;
-    }
-
-    @Override
-    public boolean myReadWriteFlag() {
-        if (!my_namespace_is_cached) {
-            load_overrides_my_namespace();
-        }
-        return myReadWriteFlag;
     }
 
     @Override
@@ -677,8 +670,10 @@ public final class FeatureFlagsImpl implements FeatureFlags {
 }
 ```
 
-The DeviceConfig-based implementation groups flag reads by namespace,
-performing a bulk `getProperties()` call to avoid per-flag IPC overhead.
+The current DeviceConfig-backed implementation reads each flag individually
+via `DeviceConfig.getBoolean()` on every call, with no caching; the older
+namespace-grouped `getProperties()` bulk-read template was removed in
+Android 17.
 
 **Test mode** -- template `FeatureFlagsImpl.test_mode.java.template`:
 
@@ -701,8 +696,10 @@ tests never accidentally depend on production flag values.
 
 ### 3.3.6  FakeFeatureFlagsImpl.java -- Test Double
 
-The `FakeFeatureFlagsImpl` is generated for non-exported libraries and
-provides a map-backed implementation for testing:
+The `FakeFeatureFlagsImpl` is generated whenever the library is not an
+exported single-file library (and the read-only Java optimization has not
+collapsed the package -- see section 3.3.9); it provides a map-backed
+implementation for testing:
 
 ```java
 package com.example.flags;
@@ -715,6 +712,8 @@ import java.util.function.Predicate;
 public class FakeFeatureFlagsImpl extends CustomFeatureFlags {
     private final Map<String, Boolean> mFlagMap = new HashMap<>();
     private final FeatureFlags mDefaults;
+    // Template literal: true when the library is exported
+    private final boolean IS_EXPORTED = false;
 
     public FakeFeatureFlagsImpl() {
         this(null);
@@ -742,7 +741,7 @@ public class FakeFeatureFlagsImpl extends CustomFeatureFlags {
     }
 
     public void setFlag(String flagName, boolean value) {
-        if (!this.mFlagMap.containsKey(flagName)) {
+        if (!this.mFlagMap.containsKey(flagName) && !IS_EXPORTED) {
             throw new IllegalArgumentException(
                 "no such flag " + flagName);
         }
@@ -796,7 +795,7 @@ public class CustomFeatureFlags implements FeatureFlags {
 
     @com.android.aconfig.annotations.AssumeTrueForR8
     private boolean isOptimizationEnabled() {
-        return false;
+        return false;  // template literal {optimize_read_only_getter}
     }
 
     protected boolean getValue(String flagName,
@@ -806,41 +805,69 @@ public class CustomFeatureFlags implements FeatureFlags {
 }
 ```
 
-The `isOptimizationEnabled()` method is marked `@AssumeTrueForR8` but returns
-`false`.  This is an intentional pattern: R8 can assume this returns `true`,
-enabling it to optimize away the `isFlagReadOnlyOptimized` checks for
-read-only flags in release builds, while the actual runtime behavior
-preserves the dynamic check.
+The body of `isOptimizationEnabled()` is the build-flag-controlled template
+literal `{optimize_read_only_getter}`: it is `false` when the read-only-getter
+optimization is off (as in this sample) and `true` when the
+`RELEASE_ACONFIG_OPTIMIZE_READ_ONLY_JAVA` build flag enables it.  The
+`@AssumeTrueForR8` annotation additionally lets R8 assume the method returns
+`true`, enabling it to optimize away the `isFlagReadOnlyOptimized` checks for
+read-only flags in release builds even when the generated body is `false`.
 
 ### 3.3.8  ExportedFlags.java -- Simplified External API
 
-For exported flag libraries (`mode: "exported"` with `single_exported_file:
-true`), the aconfig tool generates an additional `ExportedFlags.java` that
-provides a simplified API for external consumers (apps built outside the
-platform):
+For exported flag libraries (`mode: "exported"`, when Soong additionally
+passes the `--single-exported-file true` codegen argument -- as it does for
+the exported-flags library rule; this is a CLI flag of `aconfig
+create-java-lib`, not a `java_aconfig_library` property), the aconfig tool
+generates `ExportedFlags.java` *instead of*
+`CustomFeatureFlags.java` and `FakeFeatureFlagsImpl.java` -- the emitted set
+becomes `Flags.java`, `FeatureFlags.java`, `FeatureFlagsImpl.java`, and
+`ExportedFlags.java`.  It provides a simplified API for external consumers
+(apps built outside the platform):
 
 ```java
 // Generated: ExportedFlags.java
 package com.example.flags;
 
 import android.os.Build;
+import android.os.flagging.AconfigPackage;
+import android.util.Log;
 
-public class ExportedFlags {
+public final class ExportedFlags {
+
+    private static volatile boolean isCached = false;
+    private static boolean myExportedFlag = false;
+
+    private ExportedFlags() {}
+
+    private void init() {
+        // Loads the package's flags via
+        // AconfigPackage.load("com.example.flags") and
+        // reader.getBooleanFlagValue(...), then sets isCached
+        // ...
+    }
 
     public static boolean myExportedFlag() {
         if (Build.VERSION.SDK_INT >= 36) {
             return true;  // Finalized at API level 36
         }
-        return Flags.myExportedFlag();
+        if (!featureFlags.isCached) {
+            featureFlags.init();
+        }
+        return featureFlags.myExportedFlag;
     }
+
+    private static ExportedFlags featureFlags = new ExportedFlags();
 }
 ```
 
-This class provides stable flag accessors that include SDK version checks
-for finalized flags, ensuring backward compatibility when apps target
-multiple Android versions.  The `@Deprecated` annotation is applied to the
-original `Flags`, `FeatureFlags`, `CustomFeatureFlags`, and
-`FakeFeatureFlagsImpl` classes to encourage migration to `ExportedFlags`.
+This class is self-contained: it never references the `Flags` class, instead
+caching values it reads through `AconfigPackage` in a private static
+self-instance.  Its accessors include SDK version checks for finalized
+flags, ensuring backward compatibility when apps target multiple Android
+versions.  In this mode the other generated classes (`Flags`,
+`FeatureFlags`, `FeatureFlagsImpl`) are annotated `@Deprecated` to encourage
+migration to `ExportedFlags`.
 
 The SDK level baked into the check is not a constant -- it is the API level at
 which the flag was actually finalized.  The condition is produced by
@@ -870,7 +897,7 @@ backend the package uses.  In Android 17 the selection logic in the
    exported flags do not use the DeviceConfig backend.
 3. **DeviceConfig storage** (`use_device_config`, non-exported) -- uses
    `FeatureFlagsImpl.legacy_flag.internal.java.template`, which reads each flag
-   via `DeviceConfig.getProperties()` / `getBoolean()`.
+   via `DeviceConfig.getBoolean()`.
 4. **New aconfigd storage** (the default, non-exported) -- uses
    `FeatureFlagsImpl.new_storage.java.template`, which reads from memory-mapped
    files via `PlatformAconfigPackageInternal` / `AconfigPackageInternal`.
@@ -1001,9 +1028,12 @@ pub fn disabled_rw() -> bool {
 }
 ```
 
-In test mode, Rust flags use a mutable static (behind a mutex) that tests
-can set and reset.  The generated test code uses a thread-local provider
-to avoid interference between parallel tests.
+In test mode, Rust flags use a single global provider -- a `static PROVIDER:
+Mutex<FlagProvider>` holding a map of overrides -- that tests set via the
+generated `set_<flag>()` functions and clear with `reset_flags()`.  Every
+getter and setter goes through `PROVIDER.lock().unwrap()`, so the overrides
+map is shared across threads and guarded by the mutex rather than being
+per-thread.
 
 ### 3.3.12  The Code Generation Pipeline
 
@@ -1059,7 +1089,7 @@ flowchart TB
 
     subgraph "Legacy Storage (DeviceConfig)"
         B1["SettingsProvider<br/>database"] --> B2["DeviceConfig API"]
-        B2 --> B3["Generated code<br/>(DeviceConfig.getProperties)"]
+        B2 --> B3["Generated code<br/>(DeviceConfig.getBoolean)"]
     end
 
     style A4 fill:#c8e6c9
@@ -1079,8 +1109,11 @@ types, generated at build time by `aconfig create-storage`:
 | `flag_val`      | Compact array of boolean flag values                        |
 | `flag_info`     | Metadata about each flag (permissions, attributes)          |
 
-These files are defined by the `storage_file_info` proto in
-`build/make/tools/aconfig/aconfig_storage_file/protos/aconfig_storage_metadata.proto`:
+The location, container, and version of each generated storage file are
+recorded (as used in `storage_records.pb`) by the `storage_file_info` proto in
+`build/make/tools/aconfig/aconfig_storage_file/protos/aconfig_storage_metadata.proto`
+-- the binary layouts themselves are defined in the Rust modules covered in
+section 3.4.4:
 
 ```protobuf
 message storage_file_info {
@@ -1138,22 +1171,29 @@ pub const STORAGE_LOCATION: &str = "/metadata/aconfig";
 ### 3.4.3  Storage Read API
 
 The `aconfig_storage_read_api` crate provides four core functions for
-reading from the memory-mapped storage files:
+reading from the memory-mapped storage files.  The three lookup functions
+do not take a container name -- they operate on a mapped file handle first
+obtained from `get_mapped_storage_file(container, file_type)`:
 
 ```rust
+// Map a container's storage file of the given type
+pub unsafe fn get_mapped_storage_file(
+    container: &str, file_type: StorageFileType
+) -> Result<Mmap>
+
 // 1. Get package read context (package offset info)
 pub fn get_package_read_context(
-    container: &str, package: &str
+    file: &Mmap, package: &str
 ) -> Result<Option<PackageReadContext>>
 
 // 2. Get flag read context (flag offset within package)
 pub fn get_flag_read_context(
-    container: &str, package_id: u32, flag: &str
+    file: &Mmap, package_id: u32, flag: &str
 ) -> Result<Option<FlagReadContext>>
 
-// 3. Read a boolean flag value at a global offset
+// 3. Read a boolean flag value at an index
 pub fn get_boolean_flag_value(
-    container: &str, offset: u32
+    file: &[u8], index: u32
 ) -> Result<bool>
 
 // 4. Get storage file version
@@ -1200,8 +1240,12 @@ sequenceDiagram
 ### 3.4.4  Storage File Internals
 
 The four binary storage files use a versioned format with hash-table-based
-lookups.  The file format is defined in
-`build/make/tools/aconfig/aconfig_storage_file/src/lib.rs`.
+lookups.  The format is spread across the `aconfig_storage_file` crate under
+`build/make/tools/aconfig/aconfig_storage_file/`: `src/lib.rs` holds the version
+constants, the `HASH_PRIMES` table, and the `StoredFlagType` / `FlagValueType`
+enums, while each file's node layout lives beside its reader --
+`PackageTableNode` in `src/package_table.rs`, `FlagTableNode` in
+`src/flag_table.rs`, and `FlagInfoBit` in `src/flag_info.rs`.
 
 **Package Map** (`package_map`):
 
@@ -1435,12 +1479,17 @@ sequenceDiagram
     Note over Init: early-init phase
     Init->>Init: mkdir /metadata/aconfig/*
     Init->>Early: exec_start early-platform-init
-    Early->>Early: Load boot storage records
+    Early->>Early: Initialize platform<br/>storage files
+    Early->>Early: Write early_init_done marker
     Early-->>Init: Done
 
     Note over Init: post-fs phase
     Init->>AconfigD: exec_start platform-init
-    AconfigD->>AconfigD: Initialize platform<br/>storage files
+    alt early_init_done marker present
+        AconfigD->>AconfigD: Skip init, remove marker
+    else marker absent
+        AconfigD->>AconfigD: Initialize platform<br/>storage files
+    end
     AconfigD-->>Init: Done
 
     Note over Init: Later (socket service)
@@ -1448,6 +1497,14 @@ sequenceDiagram
     Socket->>Socket: Listen on<br/>aconfigd_system socket
     Socket->>Socket: Handle override requests
 ```
+
+The early-init step (guarded by the `enable_earlier_aconfigd` flag) runs the
+platform storage initialization -- `aconfigd_commands::platform_init()` -- and
+writes an `/metadata/aconfig/early_init_done` marker on success.  The post-fs
+`platform-init` command is then only a fallback: when the marker is present it
+skips initialization (and deletes the marker), re-running it only if early
+init failed, as in the first boot after a data wipe
+(`system/server_configurable_flags/aconfigd/src/main.rs`).
 
 The socket service handles runtime flag override requests.  Internally (from
 `system/server_configurable_flags/aconfigd/src/aconfigd_commands.rs`), it creates
@@ -1460,10 +1517,13 @@ const STORAGE_RECORDS: &str =
     "/metadata/aconfig/storage_records.pb";
 const PLATFORM_STORAGE_RECORDS: &str =
     "/metadata/aconfig/platform_storage_records.pb";
+const ACONFIGD_SOCKET_BACKLOG: i32 = 8;
 
 pub fn start_socket() -> Result<()> {
-    let fd = rustutils::sockets::
+    let fd = rustutils::android::sockets::
         android_get_control_socket(ACONFIGD_SOCKET)?;
+    // ... unsafe { libc::listen(fd.as_raw_fd(),
+    //              ACONFIGD_SOCKET_BACKLOG) } ...
     let listener = UnixListener::from(fd);
     // Android 17 selects the records file at runtime:
     let records = if enable_aconfigd_from_mainline() {
@@ -1479,17 +1539,25 @@ pub fn start_socket() -> Result<()> {
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
-                aconfigd.handle_socket_request_from_stream(
-                    &mut stream)?;
+                if let Err(errmsg) = aconfigd
+                    .handle_socket_request_from_stream(&mut stream)
+                {
+                    error!("failed to handle socket \
+                        request: {:?}", errmsg);
+                }
             }
             Err(errmsg) => {
-                error!("failed to listen: {:?}", errmsg);
+                error!("failed to listen for an incoming \
+                    message: {:?}", errmsg);
             }
         }
     }
     Ok(())
 }
 ```
+
+Note that a failed request is logged rather than propagated: one malformed or
+rejected override cannot take the daemon's accept loop down with it.
 
 The new `platform_storage_records.pb` (and the `enable_aconfigd_from_mainline()`
 switch that selects it) reflect Android 17's split between platform-owned storage
@@ -1519,18 +1587,19 @@ The `/metadata/aconfig/` directory structure at runtime:
         ...
 ```
 
-### 3.4.8  Legacy Storage: DeviceConfig and Settings.Global
+### 3.4.8  Legacy Storage: DeviceConfig and Settings.Config
 
 Before the aconfigd system, flags were stored in Android's DeviceConfig
-framework, which ultimately reads from the `settings_config` table in
-the Settings.Global content provider.  This approach has several limitations:
+framework, which is backed by the SettingsProvider's *config* settings
+namespace (`Settings.Config`, `SETTINGS_TYPE_CONFIG`), persisted to
+`settings_config.xml`.  This approach has several limitations:
 
 1. **Boot ordering dependency:** DeviceConfig requires SettingsProvider to be
    running.  Flags needed before SettingsProvider initialization cannot use
    this backend.
 
 2. **IPC overhead:** Each `DeviceConfig.getProperties()` call involves a
-   Binder IPC to the SettingsProvider process.
+   Binder IPC into system_server, which hosts SettingsProvider.
 
 3. **No atomic multi-flag reads:** While `getProperties()` returns all
    flags in a namespace atomically, cross-namespace reads are not atomic.
@@ -1539,14 +1608,12 @@ the Settings.Global content provider.  This approach has several limitations:
    permissions that not all processes have.
 
 The generated code for DeviceConfig storage includes explicit error
-handling for these cases:
+handling for the boot-ordering case:
 
 ```java
 try {
-    Properties properties =
-        DeviceConfig.getProperties("my_namespace");
-    myFlag = properties.getBoolean(
-        Flags.FLAG_MY_FLAG, false);
+    return DeviceConfig.getBoolean(
+        "my_namespace", Flags.FLAG_MY_FLAG, false);
 } catch (NullPointerException e) {
     throw new RuntimeException(
         "Cannot read value from namespace my_namespace "
@@ -1555,8 +1622,6 @@ try {
         + "initialization. Please use fixed read-only "
         + "flag by adding is_fixed_read_only: true in "
         + "flag declaration.", e);
-} catch (SecurityException e) {
-    // For isolated process case, skip loading
 }
 ```
 
@@ -1743,15 +1808,17 @@ are typically:
 - Cleaned up in the following release
 
 ```protobuf
+// File: system/server_configurable_flags/aconfigd/
+//       new_aconfig_storage.aconfig
+
 flag {
-  name: "enable_immediate_clear_override_bugfix"
-  namespace: "core_experiments_team_internal"
-  description: "Bugfix flag to allow clearing a local
-                override immediately"
-  bug: "387316969"
-  metadata {
-    purpose: PURPOSE_BUGFIX
-  }
+    name: "support_clear_local_overrides_immediately"
+    namespace: "core_experiments_team_internal"
+    description: "Support ability to clear local overrides immediately."
+    bug: "360205436"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
 }
 ```
 
@@ -2069,7 +2136,8 @@ cc_aconfig_library {
 }
 ```
 
-For production and exported modes, the library automatically depends on:
+For every mode except `force-read-only` (that is, production, exported, and
+test), the library automatically depends on:
 
 - `libaconfig_storage_read_api_cc` -- C++ storage read API
 - `libbase` -- Android base library
@@ -2127,16 +2195,17 @@ The `all_aconfig_declarations` singleton module collects every
 combined file.  This combined file is exported to the flag management
 server (Google's internal "Gantry" system):
 
-From `all_aconfig_declarations.go` (lines 37-43):
+From `all_aconfig_declarations.go` (lines 43-49):
 
 ```go
-// A singleton module that collects all of the aconfig flags
-// declared in the tree into a single combined file for export
-// to the external flag setting server (inside Google it's Gantry).
+// A singleton that collects all of the aconfig flags declared in the
+// tree into a single combined file for export to the external flag setting
+// server (inside Google it's Gantry).
 //
-// Note that this is ALL aconfig_declarations modules present
-// in the tree, not just ones that are relevant to the product
-// currently being built.
+// Note that this is ALL aconfig_declarations modules present in the tree,
+// not just ones that are relevant to the product currently being built,
+// so that that infra doesn't need to pull from multiple builds and merge
+// them.
 ```
 
 The singleton produces:
@@ -2151,10 +2220,16 @@ These artifacts are distributed as part of the `docs`, `droid`, `sdk`,
 In Android 17 the old `SingletonModule` was split into a plain **module**
 (`AllAconfigDeclarationsFactory`) and a **singleton**
 (`AllAconfigDeclarationsSingletonFactory`).  The singleton emits the combined
-artifacts above; the module holds the API-surface properties
+artifacts above.  The module holds the API-surface properties
 (`Api_signature_files`, `Finalized_flags_file`) and runs the metalava /
-record-finalized-flags pipeline to produce `finalized-flags.txt`, publishing it
-through `AllAconfigDeclarationsInfoProvider`.  A companion
+record-finalized-flags pipeline to produce `finalized-flags.txt`, which it
+distributes for the `sdk` goal (`ctx.DistForGoalWithFilename("sdk", ...)`) and
+hangs off the `all_aconfig_declarations` phony target.  Separately, the module
+publishes the paths of the combined artifacts -- the parsed-flags proto, the
+textproto, and the four storage files -- through
+`AllAconfigDeclarationsInfoProvider`, whose `AllAconfigDeclarationsInfo` struct
+carries no finalized-flags field
+(`build/soong/aconfig/all_aconfig_declarations.go`).  A companion
 `all_aconfig_declarations_extension` module type
 (`build/soong/aconfig/all_aconfig_declarations_extension.go`) extends a base
 `all_aconfig_declarations` to generate an alternate `finalized-flags.txt` for
@@ -2446,10 +2521,11 @@ public class MyFeatureTest {
 
 The annotations follow specific precedence rules:
 
-- Method-level annotations override class-level annotations for the same flag
+- If the same flag is set by both a class-level and a method-level annotation,
+  the two values must agree; a mismatch throws an `AssertionError` rather than
+  the method value silently overriding (the method values are merged over the
+  class values only after this consistency check)
 - A flag cannot be both enabled and disabled at the same level (this is an error)
-- If a flag is set by both the class and method annotations, the values must
-  be consistent
 
 ### 3.7.4  @RequiresFlagsEnabled and @RequiresFlagsDisabled
 
@@ -2649,15 +2725,20 @@ The distinction between `SetFlagsRule` and `CheckFlagsRule`:
 ### 3.7.10  Host-Side Flag Testing
 
 For host-side tests (running on the development machine, not on a device),
-the `HostFlagsValueProvider` reads flag values from the build configuration:
+the `HostFlagsValueProvider` resolves `READ_ONLY` flags from the static
+aconfig `parsed_flags` proto packaged with the test, and `READ_WRITE` flags
+from the connected device:
 
 ```java
 // platform_testing/libraries/flag-helpers/junit/
 //   src_host/.../host/HostFlagsValueProvider.java
 
 public class HostFlagsValueProvider implements IFlagsValueProvider {
-    // Reads flag values from the aconfig cache files
-    // generated during the build
+    // READ_ONLY flags: value from the parsed_flag proto
+    //   bundled as a test resource
+    // READ_WRITE flags: read from the connected device via
+    //   "su root aflags list" over adb (falls back to the
+    //   static value on user builds, where root is unavailable)
 }
 ```
 
@@ -2666,8 +2747,9 @@ when running tests from a host machine against a connected device.
 
 ### 3.7.11  Ravenwood Flag Support
 
-Ravenwood (Android's host-side device testing framework) runs tests on the
-host JVM without a real Android framework.  Because `SetFlagsRule` works purely
+Ravenwood, Android's lightweight host-side unit testing environment for
+platform code, runs real platform framework classes on the host JVM -- a
+subset of the framework, with no device attached.  Because `SetFlagsRule` works purely
 through reflection on the generated `Flags` / `FakeFeatureFlagsImpl` classes, the
 same rule and the same `@EnableFlags` / `@DisableFlags` annotations function
 under Ravenwood without a dedicated Ravenwood-specific flag provider.  Flag
@@ -2815,14 +2897,19 @@ DeviceConfig.addOnPropertiesChangedListener(
     });
 ```
 
-DeviceConfig was the precursor to aconfig's runtime storage and is still
-used as a backend for flags with `metadata { storage: DEVICE_CONFIG }`.
-The aconfig system generates code that reads from DeviceConfig when this
-backend is selected.
+DeviceConfig was the precursor to aconfig's runtime storage and still serves as
+the backend for flags whose parsed metadata carries the `DEVICE_CONFIG` storage
+backend.  Flag authors do not choose that: `assign_storage_backend()` in
+`build/make/tools/aconfig/aconfig/src/commands.rs:131-149` stamps
+`metadata.storage` on each `parsed_flag` during `create-cache`, picking
+`DEVICE_CONFIG` for read-write flags that fall in a Mainline Beta namespace.
+Codegen then emits a `FeatureFlagsImpl` that reads through DeviceConfig for
+those flags.
 
 **Limitations:**
 
-- Built on top of Settings.Global (same IPC overhead)
+- Built on the SettingsProvider `config` table (`Settings.Config`), so it
+  carries the same ContentProvider/IPC overhead
 - Requires SettingsProvider to be initialized
 - No compile-time dead code elimination
 - No standardized declaration format (flags are defined by convention)
@@ -2835,8 +2922,7 @@ overlaid by OEMs:
 ```xml
 <!-- frameworks/base/core/res/res/values/config.xml -->
 <resources>
-    <bool name="config_enableMultiWindow">true</bool>
-    <integer name="config_maxRunningUsers">4</integer>
+    <integer name="config_multiuserMaxRunningUsers">3</integer>
 </resources>
 ```
 
@@ -2846,7 +2932,7 @@ build-time static overlays:
 ```xml
 <!-- device/vendor/overlay/res/values/config.xml -->
 <resources>
-    <bool name="config_enableMultiWindow">false</bool>
+    <integer name="config_multiuserMaxRunningUsers">5</integer>
 </resources>
 ```
 
@@ -2967,10 +3053,15 @@ When migrating a legacy flag to aconfig:
 5. **Add tests** using `@EnableFlags` / `@DisableFlags`
 6. **Remove the legacy flag** once all consumers have migrated
 
-For flags that were previously controlled via `DeviceConfig`, the migration
-can be gradual: set `metadata { storage: DEVICE_CONFIG }` in the aconfig
-declaration to keep using the DeviceConfig backend while gaining the
-benefits of type-safe generated code and centralized declaration.
+For flags that were previously controlled via `DeviceConfig`, note that the
+declaration cannot pick a storage backend.  `verify_fields()` in
+`build/make/tools/aconfig/aconfig_protos/src/lib.rs:149-152` rejects any
+declaration whose metadata sets `storage`, so a `.aconfig` file containing
+`storage:` fails to parse.  aconfig derives the backend itself during
+`create-cache`: `READ_ONLY` flags get `NONE`, read-write flags in a Mainline
+Beta namespace get `DEVICE_CONFIG`, and everything else gets `ACONFIGD`.  A
+migrated flag therefore keeps a DeviceConfig-backed read path only by virtue of
+its namespace, not by anything the author writes in the declaration.
 
 ---
 
@@ -3091,10 +3182,12 @@ The runtime side gained several refinements:
 - `aconfigd-system` is now a pure-Rust `rust_binary`
   (`system/server_configurable_flags/aconfigd/Android.bp`); the
   `enable_full_rust_system_aconfigd` migration flag has been removed.
-- A new `early-platform-init` entry point (gated by `enable_earlier_aconfigd()`)
-  initializes platform storage earlier in boot and writes an
-  `/metadata/aconfig/early_init_done` marker
-  (`system/server_configurable_flags/aconfigd/aconfigd.rc`).
+- A new `early-platform-init` entry point initializes platform storage earlier
+  in boot.  `aconfigd.rc` declares the `early_system_aconfigd_platform_init`
+  service and runs it from the `on early-init` block; the
+  `enable_earlier_aconfigd()` gate and the
+  `/metadata/aconfig/early_init_done` marker it writes on success live in
+  `system/server_configurable_flags/aconfigd/src/main.rs`.
 - A `platform_storage_records.pb` index and an `enable_aconfigd_from_mainline()`
   switch split platform-owned records from Mainline-managed records
   (`system/server_configurable_flags/aconfigd/src/aconfigd_commands.rs`).
@@ -3474,18 +3567,18 @@ adb shell aflags list | grep "com.android.apex"
 # Check a specific flag value
 adb shell device_config get \
     core_experiments_team_internal \
-    com.android.provider.flags.dump_improvements
+    android.provider.flags.dump_improvements
 
 # Override a read-write flag
 adb shell aflags enable \
-    com.android.provider.flags.dump_improvements
+    android.provider.flags.dump_improvements
 
 # Verify the override
 adb shell aflags list | grep dump_improvements
 
 # Clear the override (the subcommand is "unset")
 adb shell aflags unset \
-    com.android.provider.flags.dump_improvements
+    android.provider.flags.dump_improvements
 
 # Inspect flag storage files
 adb shell ls -la /metadata/aconfig/
@@ -3694,7 +3787,8 @@ continuous development cadence while maintaining platform stability.
 | `build/make/tools/aconfig/aconfig_storage_file/protos/aconfig_storage_metadata.proto` | Storage metadata proto |
 | `system/server_configurable_flags/aconfigd/aconfigd.rc` | aconfigd init service definition |
 | `system/server_configurable_flags/aconfigd/src/aconfigd_commands.rs` | aconfigd command handlers |
-| `build/make/tools/aconfig/aflags/src/main.rs` | aflags device CLI tool |
+| `packages/modules/ConfigInfrastructure/aflags/src/main.rs` | Updatable aflags device CLI tool |
+| `build/make/tools/aconfig/aflags/src/main.rs` | Thin shim that execs the updatable aflags binary in the ConfigInfrastructure APEX |
 | `platform_testing/libraries/flag-helpers/junit/src_base/android/platform/test/flag/junit/SetFlagsRule.java` | Test rule for flag control |
 | `platform_testing/libraries/annotations/src/android/platform/test/annotations/EnableFlags.java` | @EnableFlags annotation |
 | `platform_testing/libraries/annotations/src/android/platform/test/annotations/DisableFlags.java` | @DisableFlags annotation |

@@ -31,11 +31,13 @@ Android's WebView has undergone three major architectural eras:
    (typically `com.google.android.webview` or `com.android.webview`).
 
 4. **APEX-shelled provider selection (Android 17)**: Android 17 introduces a launched APEX
-   shell, `com.android.webview.bootstrap`, that packages the WebView provider-selection logic
-   so it can ship and update as a Mainline module instead of as part of the platform image.
-   The provider APK itself remains a separate updatable package; what becomes modular is the
-   `WebViewUpdateService` machinery plus its client wrappers. Section 45.9 walks through this
-   change and the other 17-specific WebView updates in detail.
+   shell, `com.android.webview.bootstrap`, reserved for the WebView provider-selection logic
+   so that it can eventually ship and update as a Mainline module instead of as part of the
+   platform image. The APEX currently ships as an empty shell -- the `WebViewUpdateService`
+   machinery and its client wrappers still live in the platform (`frameworks/base`), but the
+   code has been refactored around a `SystemInterface` boundary in preparation for the move.
+   The provider APK itself remains a separate updatable package. Section 45.9 walks through
+   this change and the other 17-specific WebView updates in detail.
 
 ### 45.1.2 High-Level Component Map
 
@@ -69,9 +71,9 @@ graph TB
         COMPOSITOR["Compositor"]
     end
 
-    subgraph "GPU Process"
-        GPU_THREAD["GPU Thread"]
-        SKIA["Skia / ANGLE"]
+    subgraph "App RenderThread (in-process GPU)"
+        GPU_THREAD["RenderThread /<br/>Chromium draw functor"]
+        SKIA["Skia"]
     end
 
     subgraph "System Server"
@@ -79,7 +81,7 @@ graph TB
     end
 
     WVP -.->|"IPC (Chromium Mojo)"| BLINK
-    WVP -.->|"IPC"| GPU_THREAD
+    WVP -->|"draw functor"| GPU_THREAD
     WV -.->|"Binder"| WVUS
 
     style WV fill:#4a9eff,color:#fff
@@ -153,7 +155,8 @@ Source: frameworks/base/core/java/android/webkit/WebViewZygote.java
             TextUtils.join(",", Build.SUPPORTED_ABIS),
             null,
             Process.FIRST_ISOLATED_UID,
-            Integer.MAX_VALUE);
+            Integer.MAX_VALUE,  // TODO(b/123615476) deal with user-id ranges properly
+            sPackage.applicationInfo);
 ```
 
 Key observations:
@@ -710,18 +713,14 @@ available package:
 ```mermaid
 flowchart TD
     START([Provider Selection]) --> CHECK_USER["Check user's explicit<br/>provider choice"]
-    CHECK_USER -->|valid| USE_CHOSEN["Use chosen provider"]
-    CHECK_USER -->|invalid/none| SCAN["Scan configured providers"]
+    CHECK_USER -->|"valid AND installed+enabled<br/>for all users"| USE_CHOSEN["Use chosen provider"]
+    CHECK_USER -->|invalid/none| CHECK_DEFAULT["Validate the single<br/>configured default provider<br/>(mDefaultProvider):<br/>- Check installed?<br/>- Check signature?<br/>- Check version code?<br/>- Check WebViewLibrary metadata?"]
 
-    SCAN --> VALIDATE["For each provider:<br/>- Check installed?<br/>- Check enabled?<br/>- Check signature?<br/>- Check version code?<br/>- Check WebViewLibrary metadata?"]
-
-    VALIDATE -->|first valid availableByDefault| USE_DEFAULT["Use default provider"]
-    VALIDATE -->|no default available| USE_FALLBACK["Use fallback provider"]
-    VALIDATE -->|nothing valid| THROW["Throw WebViewPackageMissingException"]
+    CHECK_DEFAULT -->|valid| USE_DEFAULT["Use default provider"]
+    CHECK_DEFAULT -->|invalid| THROW["Throw WebViewPackageMissingException"]
 
     USE_CHOSEN --> RELRO["Trigger RELRO creation"]
     USE_DEFAULT --> RELRO
-    USE_FALLBACK --> RELRO
 
     RELRO --> NOTIFY["Notify waiting apps"]
 ```
@@ -822,11 +821,12 @@ Mainline-specific delivery:
 - The update applies to all users on the device
 - No reboot is required; apps pick up the new version on next WebView creation
 
-Android 17 layers a second piece of modularity on top of this. The *provider* APK stays an
-APK as before, but the *provider-selection machinery* (`WebViewUpdateService`, its
-`WebViewUpdateServiceImpl2` logic, and the `WebViewUpdateManager` client wrapper) is packaged
-into a new launched APEX, `com.android.webview.bootstrap`. Section 45.9 covers this shell and
-why the framework code was restructured around a `SystemInterface` boundary to support it.
+Android 17 prepares a second piece of modularity on top of this. The *provider* APK stays an
+APK as before, but a new launched APEX, `com.android.webview.bootstrap`, is reserved for the
+*provider-selection machinery* (`WebViewUpdateService`, its `WebViewUpdateServiceImpl2` logic,
+and the `WebViewUpdateManager` client wrapper). The APEX is currently an empty shell and that
+code still ships in the platform. Section 45.9 covers this shell and why the framework code
+was restructured around a `SystemInterface` boundary to support the future move.
 
 ### 45.4.6 Fallback and Recovery
 
@@ -834,7 +834,10 @@ The update service includes a repair mechanism. If the current provider becomes 
 (e.g., it is uninstalled or disabled), the service attempts to recover:
 
 1. If the current provider is the default and it becomes missing, trigger a repair
-2. The repair mechanism re-enables the fallback provider if needed
+2. The repair mechanism re-installs and re-enables the *default* provider
+   (`mDefaultProvider`) for all users via
+   `installExistingPackageForAllUsers()` and `enablePackageForAllUsers()`; there is
+   no separate fallback-provider repair path in `WebViewUpdateServiceImpl2`
 3. The `mAttemptedToRepairBefore` flag prevents infinite repair loops
 4. All processes depending on the old provider are killed so they restart with the new one
 
@@ -881,7 +884,7 @@ classDiagram
         +setWebContentsDebuggingEnabled(boolean)
         +startSafeBrowsing(Context, ValueCallback)
         +createWebMessageChannel() WebMessagePort[]
-        +postMessageToMainFrame(WebMessage, Uri)
+        +postWebMessage(WebMessage, Uri)
         +setRendererPriorityPolicy(int, boolean)
         +getWebViewRenderProcess() WebViewRenderProcess
     }
@@ -1300,8 +1303,9 @@ WebView also supports the HTML5 MessageChannel API for structured communication:
 // Create a message channel
 WebMessagePort[] ports = webView.createWebMessageChannel();
 
-// Send one port to the web page
-webView.postMessageToMainFrame(
+// Send one port to the web page (postWebMessage delegates internally to
+// WebViewProvider.postMessageToMainFrame())
+webView.postWebMessage(
     new WebMessage("init", new WebMessagePort[]{ports[1]}),
     Uri.parse("https://example.com"));
 
@@ -1510,7 +1514,7 @@ graph TB
     end
 
     subgraph "WebView"
-        AW["Android WebView<br/>(aw/ layer)"]
+        AW["Android WebView<br/>(android_webview/ layer)"]
         AW --> CONTENT
     end
 
@@ -1527,7 +1531,8 @@ graph TB
     style AW fill:#51cf66,color:#fff
 ```
 
-The `aw/` (Android WebView) layer in Chromium's source tree adapts the content API to
+The `android_webview/` layer in Chromium's source tree (the `Aw*` class prefix comes from
+its `android_webview` namespace) adapts the content API to
 Android's WebView contracts. It implements `WebViewProvider`, handles the draw functor
 integration, manages the WebView-specific compositor mode, and bridges Android's
 `WebSettings` to Chromium's internal content settings.
@@ -1548,14 +1553,15 @@ sequenceDiagram
     UI->>UI: WebView.onDraw(canvas)
     UI->>RT: Record drawWebViewFunctor(functor)
 
-    RT->>CF: AwDrawFn_OnDraw(functor, draw_params)
+    RT->>CF: AwDrawFn_DrawGL(functor, data, params)
     CF->>CF: Chromium compositor generates GL commands
     CF->>GPU: glDrawArrays(), glTexImage2D(), etc.
     GPU-->>RT: Frame complete
 ```
 
-The draw functor (`AwDrawFn_CreateFunctor` / `AwDrawFn_OnDraw`) is a native callback
-registered through `WebViewDelegate.drawWebViewFunctor()`. This avoids the overhead of
+The draw functor (`AwDrawFn_CreateFunctor` / `AwDrawFn_DrawGL`, or `AwDrawFn_DrawVk`
+on the Vulkan path; see `frameworks/base/native/webview/plat_support/draw_fn.h`) is a
+native callback registered through `WebViewDelegate.drawWebViewFunctor()`. This avoids the overhead of
 a separate GPU process and allows WebView content to be composited in the same pass as
 native Android views.
 
@@ -1566,26 +1572,33 @@ The renderer process runs in a restricted sandbox with multiple layers of isolat
 1. **UID isolation**: Each renderer gets an isolated UID from the
    `FIRST_ISOLATED_UID` range, preventing access to other apps' data.
 
-2. **SELinux policy**: The renderer runs under the `webview_zygote` SELinux context,
-   which restricts file system access, network operations, and system calls.
+2. **SELinux policy**: The renderer runs in the `isolated_app` SELinux domain, which
+   restricts file system access, network operations, and system calls. `webview_zygote`
+   is the domain of the zygote process itself; its policy only permits it to
+   dyntransition forked renderers into `isolated_app`
+   (`system/sepolicy/private/webview_zygote.te`,
+   `system/sepolicy/private/isolated_app.te`).
 
 3. **seccomp-bpf**: A BPF filter restricts the set of system calls the renderer can
    make, blocking dangerous calls like `mount`, `reboot`, `ptrace`, etc.
 
 4. **Process capabilities**: The renderer drops all Linux capabilities after startup.
 
-5. **Namespace isolation**: The renderer uses separate PID and network namespaces (on
-   supported kernels) to further restrict its view of the system.
+5. **Namespace isolation**: Like all zygote-forked processes, the renderer gets an
+   unshared mount namespace via `unshare(CLONE_NEWNS)`
+   (`frameworks/base/core/jni/com_android_internal_os_Zygote.cpp`). Android does not
+   give it separate PID or network namespaces; network isolation comes from the
+   isolated UID lacking network group membership, not from a network namespace.
 
 ```mermaid
 graph TB
     subgraph "Sandbox Layers"
         direction TB
         L1["UID Isolation<br/>(isolated_app UID)"]
-        L2["SELinux MAC<br/>(webview_zygote context)"]
+        L2["SELinux MAC<br/>(isolated_app domain)"]
         L3["seccomp-bpf<br/>(syscall filter)"]
         L4["Capability Dropping<br/>(no caps after init)"]
-        L5["Namespace Isolation<br/>(PID, network)"]
+        L5["Namespace Isolation<br/>(mount)"]
         L1 --- L2 --- L3 --- L4 --- L5
     end
 
@@ -2040,7 +2053,7 @@ Priority levels:
 
 | Priority | Constant | Behavior |
 |---|---|---|
-| Important | `RENDERER_PRIORITY_IMPORTANT` | Renderer treated like a foreground service |
+| Important | `RENDERER_PRIORITY_IMPORTANT` | Renderer bound with `Context.BIND_IMPORTANT`, same priority as the app's main process (the default policy) |
 | Bound | `RENDERER_PRIORITY_BOUND` | Renderer treated like a bound service |
 | Waived | `RENDERER_PRIORITY_WAIVED` | Renderer has low priority, easily killed |
 
@@ -2262,7 +2275,10 @@ menu. This section covers each, anchored to the 17 source.
 The headline structural change is `com.android.webview.bootstrap`, a new launched APEX defined
 under `packages/modules/WebViewBootstrap/`. It is a Mainline-style shell whose purpose is to
 let the WebView **provider-selection** logic ship and update independently of the platform
-image, the same way Tethering, ART, and other Mainline modules do.
+image, the same way Tethering, ART, and other Mainline modules do. As of the current source
+it is an empty shell: the `apex` rule declares only a manifest, key, and certificate, with
+no Java libraries or apps in its payload, and the update-service code still lives in
+`frameworks/base`.
 
 ```
 Source: packages/modules/WebViewBootstrap/apex/Android.bp
@@ -2299,8 +2315,9 @@ Source: build/release/flag_declarations/RELEASE_USE_WEBVIEW_BOOTSTRAP_MODULE.tex
 So on a default Android 17 build the update service still runs from the platform, but the
 APEX, the signing keys, and the build plumbing are all present and ready to be switched on.
 
-The following diagram shows what is in the bootstrap APEX versus what stays as a separately
-updatable provider APK:
+The following diagram shows what the bootstrap APEX is being prepared to carry versus what
+stays as a separately updatable provider APK -- today all of the APEX box's contents still
+ship in the platform:
 
 ```mermaid
 graph TB
@@ -2308,7 +2325,7 @@ graph TB
         WVF["WebViewFactory<br/>(framework proxy loader)"]
     end
 
-    subgraph APEX["WebViewBootstrap APEX (com.android.webview.bootstrap)"]
+    subgraph APEX["WebViewBootstrap APEX, planned contents<br/>(com.android.webview.bootstrap)"]
         WVUS["WebViewUpdateService<br/>+ WebViewUpdateServiceImpl2"]
         WVUM["WebViewUpdateManager<br/>(client wrapper)"]
         SI["SystemInterface / SystemImpl"]
@@ -2433,16 +2450,13 @@ or emulator.
 Query the system to see which WebView provider is currently active:
 
 ```bash
-# List all configured WebView providers
-adb shell cmd webviewupdate list-providers
-
-# Show the currently active provider
-adb shell cmd webviewupdate get-current-provider
-
-# Show detailed dump of WebView update service state
+# Show the update service state: the current provider package plus the full
+# "WebView packages:" list of configured providers
 adb shell dumpsys webviewupdate
 ```
 
+Note that `cmd webviewupdate` supports only `set-webview-implementation` (plus `help`);
+`dumpsys webviewupdate` is the way to inspect the active and available providers.
 Expected output includes the provider package name, version code, and whether it was
 chosen by default or user preference.
 
@@ -2451,8 +2465,8 @@ chosen by default or user preference.
 On devices with multiple providers (e.g., standalone WebView and Chrome):
 
 ```bash
-# List available providers
-adb shell cmd webviewupdate list-providers
+# List available providers (see the "WebView packages:" section of the dump)
+adb shell dumpsys webviewupdate
 
 # Switch to Chrome as WebView provider (if available)
 adb shell cmd webviewupdate set-webview-implementation com.android.chrome
@@ -2683,9 +2697,10 @@ from the shared file (it should appear as a file-backed mapping to
 ### Exercise 45.10: Inspect WebView Provider Package
 
 ```bash
-# Get the current provider package name
-PROVIDER=$(adb shell cmd webviewupdate get-current-provider | \
-    grep "Current" | awk '{print $NF}')
+# Get the current provider package name from the dumpsys output, which prints
+# "Current WebView package (name, version): (<package>, <version>)"
+PROVIDER=$(adb shell dumpsys webviewupdate | \
+    grep "Current WebView package" | sed 's/.*(//; s/,.*//')
 
 # Examine its APK details
 adb shell dumpsys package $PROVIDER | head -50
@@ -2794,7 +2809,7 @@ webView.loadDataWithBaseURL("https://example.com", """
     """, "text/html", "UTF-8", null);
 
 // Transfer the port to the page
-webView.postMessageToMainFrame(
+webView.postWebMessage(
     new WebMessage("init", new WebMessagePort[]{pagePort}),
     Uri.parse("https://example.com"));
 ```
@@ -2804,9 +2819,10 @@ webView.postMessageToMainFrame(
 Explore the internal structure of the WebView provider APK:
 
 ```bash
-# Find the provider APK path
-PROVIDER_PKG=$(adb shell cmd webviewupdate get-current-provider 2>/dev/null | \
-    grep "Current" | awk '{print $NF}')
+# Find the provider APK path (parse the package name out of the
+# "Current WebView package (name, version): (<package>, <version>)" line)
+PROVIDER_PKG=$(adb shell dumpsys webviewupdate 2>/dev/null | \
+    grep "Current WebView package" | sed 's/.*(//; s/,.*//')
 APK_PATH=$(adb shell pm path $PROVIDER_PKG | head -1 | sed 's/package://')
 
 echo "Provider: $PROVIDER_PKG"
@@ -2847,7 +2863,7 @@ In a second terminal, launch your WebView app and load a page. You should observ
 To see the process relationships:
 ```bash
 # Show process tree including WebView processes
-adb shell ps -A --format pid,ppid,name | grep -E "(webview|isolated|zygote)"
+adb shell ps -A -o PID,PPID,NAME | grep -E "(webview|isolated|zygote)"
 ```
 
 ### Exercise 45.16: Cookie Inspection
@@ -2924,15 +2940,13 @@ adb shell pm list packages --apex-only | grep webview.bootstrap
 # Inspect the APEX module info if present
 adb shell cmd apexservice getActivePackages | grep webview
 
-# The update service still answers regardless of where it is hosted
+# The update service still answers regardless of where it is hosted; its dump
+# shows the current package chosen by findPreferredWebViewPackage()
 adb shell dumpsys webviewupdate
-
-# Confirm the default provider selection (drives findPreferredWebViewPackage)
-adb shell cmd webviewupdate get-current-provider
 ```
 
 On a default AOSP 17 image the APEX is absent because `RELEASE_USE_WEBVIEW_BOOTSTRAP_MODULE`
-defaults to `false`; the `dumpsys webviewupdate` and `get-current-provider` output is identical
+defaults to `false`; the `dumpsys webviewupdate` output is identical
 whether the selection logic runs from the platform or from the module, which is the point of
 the `SystemInterface` boundary.
 
@@ -2970,9 +2984,10 @@ processes. The key components are:
   exclusion, signature verification, same-origin policy, Safe Browsing, and SSL/TLS
   enforcement protect both the device and the user.
 
-- **Android 17 changes**: A launched APEX shell, `com.android.webview.bootstrap`, packages the
-  provider-selection machinery so it can ship as a Mainline module (off by default behind
-  `RELEASE_USE_WEBVIEW_BOOTSTRAP_MODULE`); the second-generation `WebViewUpdateServiceImpl2` is
+- **Android 17 changes**: A launched APEX shell, `com.android.webview.bootstrap`, is reserved
+  for the provider-selection machinery so it can eventually ship as a Mainline module (currently
+  an empty shell, off by default behind `RELEASE_USE_WEBVIEW_BOOTSTRAP_MODULE`, with the
+  update-service code still in the platform); the second-generation `WebViewUpdateServiceImpl2` is
   fully rolled out and the older implementation removed; `WebView.checkThread()` now throws
   unconditionally regardless of target SDK; and `SelectionActionMenuClient` gives OEMs a hook to
   customize the text-selection menu (`packages/modules/WebViewBootstrap/apex/`,

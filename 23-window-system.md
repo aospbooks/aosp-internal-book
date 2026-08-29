@@ -26,7 +26,7 @@ graph TB
         WOC["WindowOrganizerController<br/>Organizer Dispatch"]
     end
 
-    subgraph "System Server — WM Shell"
+    subgraph "SystemUI Process — WM Shell"
         STO["ShellTaskOrganizer<br/>Task Surface Control"]
         TR["Transitions<br/>Animation Player"]
         SC["ShellController<br/>Feature Registry"]
@@ -41,8 +41,8 @@ graph TB
     WMS <-->|"Internal API"| ATMS
     ATMS --> RWC
     WMS --> TC
-    TC -->|"TransitionInfo"| TR
-    WOC -->|"TaskOrganizer<br/>callbacks"| STO
+    TC -->|"TransitionInfo<br/>(Binder)"| TR
+    WOC -->|"TaskOrganizer<br/>callbacks (Binder)"| STO
 
     WMS -->|"SurfaceControl.Transaction"| SF
     STO -->|"SurfaceControl.Transaction"| SF
@@ -89,7 +89,7 @@ static final int WINDOW_FREEZE_TIMEOUT_DURATION = 2000;        // 2 seconds
 static final int LAST_ANR_LIFETIME_DURATION_MSECS = 2 * 60 * 60 * 1000; // 2 hours
 ```
 
-(The per-animation duration cap is `TransitionAnimation.MAX_ANIMATION_DURATION`, imported and applied in `WindowState.applyAnimationLocked()` via `restrictDuration()`, rather than a WMS field.)
+(The per-animation duration cap is `TransitionAnimation.MAX_ANIMATION_DURATION`, applied in `WindowState.startAnimation()` -- called from `WindowStateAnimator.applyAnimationLocked()` -- via `restrictDuration()`, rather than a WMS field.)
 
 WMS holds references to critical subsystem controllers:
 
@@ -155,20 +155,20 @@ classDiagram
 
     class DisplayArea {
         +int mFeatureId
-        +addWindow()
-        +findAreaForWindowType()
+        +Type mType
     }
 
     class RootDisplayArea {
-        +DisplayAreaPolicy mPolicy
-        +placeWindowTokens()
+        +List~Feature~ mFeatures
+        +placeImeContainer()
+        +findAreaForTokenInLayer()
     }
 
     class DisplayContent {
         +int mDisplayId
         +InputMonitor mInputMonitor
         +InsetsStateController mInsetsStateController
-        +ImeContainer mImeWindowsContainer
+        +ImeContainer mImeContainer
         +DisplayFrames mDisplayFrames
     }
 
@@ -302,7 +302,7 @@ class DisplayContent extends RootDisplayArea
     @Nullable String mCurrentUniqueDisplayId;
     private SurfaceControl mOverlayLayer;
     private SurfaceControl mInputOverlayLayer;
-    private final ImeContainer mImeWindowsContainer;
+    private final ImeContainer mImeContainer;
     int mMinSizeOfResizeableTaskDp;
 }
 ```
@@ -343,7 +343,7 @@ sequenceDiagram
 
     WMS->>RWC: performSurfacePlacement()
     RWC->>DC: performLayout()
-    DC->>WS: computeFrames()
+    DC->>WS: layoutWindowLw() via DisplayPolicy / WindowLayout.computeFrames()
     WS-->>DC: WindowFrames updated
 
     RWC->>DC: prepareSurfaces()
@@ -385,7 +385,7 @@ final ArrayList<WindowState> mForceRemoves = new ArrayList<>();
 // Callbacks for "all windows drawn" events
 final ArrayMap<WindowContainer<?>, Message> mWaitingForDrawnCallbacks = new ArrayMap<>();
 
-// Windows that hide non-system overlay windows (FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS)
+// Windows that hide non-system overlay windows (SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS)
 private ArrayList<WindowState> mHidingNonSystemOverlayWindows = new ArrayList<>();
 
 // Key interception info for each input token
@@ -419,7 +419,7 @@ sequenceDiagram
 
     App->>VRI: WindowManager.addView()
     VRI->>WMS: openSession()
-    WMS->>Sess: new Session(callerPid, callerUid)
+    WMS->>Sess: new Session(WindowManagerService, IWindowSessionCallback)
     WMS-->>VRI: IWindowSession
 
     VRI->>Sess: addToDisplayAsUser(window, attrs, displayId)
@@ -456,7 +456,7 @@ WMS also uses several specialized mechanisms to reduce lock contention:
 
 **Source file:** `frameworks/base/services/core/java/com/android/server/wm/BLASTSyncEngine.java`
 
-`BLASTSyncEngine` is the synchronization mechanism that ensures all windows participating in a transition have redrawn their content before the transition animates. Its name comes from "Buffer Layered Ahead of SurfaceFlinger Transaction" (BLAST), the buffer delivery mechanism that replaced the legacy `BufferQueue` consumer-side model.
+`BLASTSyncEngine` is the synchronization mechanism that ensures all windows participating in a transition have redrawn their content before the transition animates. Its name comes from BLAST ("Buffer as LayerState"), the buffer delivery mechanism that replaced the legacy `BufferQueue` consumer-side model.
 
 The sync engine operates in five steps, as documented in the source:
 
@@ -546,13 +546,13 @@ The window system is split into two halves:
 | Aspect | WM Core | WM Shell |
 |--------|---------|----------|
 | **Location** | `frameworks/base/services/core/.../server/wm/` | `frameworks/base/libs/WindowManager/Shell/` |
-| **Process** | System server (main WM thread) | System server (SystemUI / Shell thread) |
+| **Process** | System server (main WM thread) | SystemUI process (Shell main thread) |
 | **Role** | Policy engine -- decides *what* happens | Presentation engine -- decides *how* it looks |
 | **API Surface** | Internal to system server | Exports via AIDL to SystemUI and Launcher |
 | **Window access** | Direct WindowState/Task manipulation | TaskOrganizer callbacks, SurfaceControl |
 | **Animation** | Triggers transitions, manages sync | Receives TransitionInfo, animates surfaces |
 
-The split was introduced to allow OEMs and system components (SystemUI, Launcher) to customize window behavior without modifying core WM policy. WM Core signals intent ("this task is entering PiP"), and Shell decides presentation ("animate with this curve to this corner").
+The split was introduced to allow OEMs and system components (SystemUI, Launcher) to customize window behavior without modifying core WM policy. WM Core signals intent ("this task is entering PiP"), and Shell decides presentation ("animate with this curve to this corner"). Note that the two halves live in different processes: WM Core runs in `system_server`, while WM Shell is a static library (`WindowManager-Shell`) linked into the SystemUI app, so every Core-Shell interaction crosses a Binder boundary via the `WindowOrganizer`/`TaskOrganizer` AIDL interfaces.
 
 ### 23.2.2 Shell Directory Structure
 
@@ -587,7 +587,7 @@ frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/
 ├── bubbles/                          — Bubble notifications
 │   ├── BubbleController.java        — Bubble lifecycle
 │   ├── BubbleStackView.java         — Bubble UI
-│   └── BubbleTransitions.java       — Bubble animations
+│   └── transitions/BubbleTransitions.java — Bubble animations
 ├── desktopmode/                      — Desktop windowing
 │   ├── DesktopTasksController.kt    — Desktop task management
 │   ├── DesktopTasksLimiter.kt       — Task count limits
@@ -607,7 +607,7 @@ frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/
 ├── common/                           — Shared utilities
 ├── sysui/                            — SystemUI integration
 ├── animation/                        — Animation utilities
-└── protolog/                         — ProtoLog configuration
+└── ProtoLogController.java           — ProtoLog configuration
 ```
 
 ### 23.2.3 ShellTaskOrganizer
@@ -624,8 +624,9 @@ TASK_LISTENER_TYPE_FULLSCREEN  → FullscreenTaskListener
 TASK_LISTENER_TYPE_MULTI_WINDOW → StageCoordinator (split-screen)
 TASK_LISTENER_TYPE_PIP         → PipTaskOrganizer
 TASK_LISTENER_TYPE_FREEFORM    → FreeformTaskListener
-TASK_LISTENER_TYPE_DESKTOP_MODE → DesktopTasksController
 ```
+
+There is no desktop-specific listener type: desktop-mode tasks use `WINDOWING_MODE_FREEFORM` and are routed through `TASK_LISTENER_TYPE_FREEFORM`.
 
 When WM Core changes a task's windowing mode, `ShellTaskOrganizer` automatically reroutes the task to the appropriate listener. This is the mechanism by which, for example, entering PiP transfers task management from the fullscreen listener to `PipTaskOrganizer`.
 
@@ -682,15 +683,25 @@ The `@WMSingleton` scope annotation ensures that components like `ShellTaskOrgan
 
 ```java
 @WMSingleton
-@Component(modules = {
-    WMShellBaseModule.class,
-    WMShellConcurrencyModule.class,
-    WMShellModule.class,          // or TvWMShellModule for TV
-    ShellBackAnimationModule.class,
-    PipModule.class,
-    PinnedLayerModule.class,
-})
+@Subcomponent(modules = {WMShellModule.class})
 public interface WMComponent { ... }
+```
+
+`WMComponent` itself names only the device-specific module; that module pulls in the shared and feature modules through its `@Module(includes = ...)` annotation:
+
+```java
+// WMShellModule.java
+@Module(
+        includes = {
+                WMShellBaseModule.class,
+                PipModule.class,
+                ShellBackAnimationModule.class,
+                LetterboxModule.class,
+                PinnedLayerModule.class,
+                DesktopModule.class,
+                // ...
+        })
+public abstract class WMShellModule { ... }
 ```
 
 Per-variant customization is achieved by swapping the device-specific module. For example, TV replaces `WMShellModule` with `TvWMShellModule`, which provides a TV-specific PIP implementation and omits Bubbles entirely.
@@ -701,21 +712,18 @@ Shell communicates with external components via multiple channels:
 
 ```mermaid
 graph TB
-    subgraph "System Server Process"
-        subgraph "WM Core"
-            WMS_["WindowManagerService"]
-            TC_["TransitionController"]
-            WOC_["WindowOrganizerController"]
-        end
+    subgraph "System Server Process — WM Core"
+        WMS_["WindowManagerService"]
+        TC_["TransitionController"]
+        WOC_["WindowOrganizerController"]
+    end
 
+    subgraph "SystemUI Process"
         subgraph "WM Shell"
             STO_["ShellTaskOrganizer"]
             TR_["Transitions"]
             SI_["ShellInterface"]
         end
-    end
-
-    subgraph "SystemUI Process"
         WMSh_["WMShell<br/>(Dagger in-process)"]
     end
 
@@ -723,8 +731,9 @@ graph TB
         QS_["Quickstep<br/>(AIDL binder)"]
     end
 
-    WOC_ -->|"TaskOrganizer callbacks<br/>(in-process)"| STO_
-    TC_ -->|"ITransitionPlayer<br/>(in-process)"| TR_
+    WOC_ -->|"ITaskOrganizer callbacks<br/>(Binder)"| STO_
+    TC_ -->|"ITransitionPlayer<br/>(Binder)"| TR_
+    STO_ -->|"WindowOrganizer AIDL<br/>(Binder)"| WOC_
 
     SI_ -->|"Dagger injection<br/>(in-process same classloader)"| WMSh_
     SI_ -->|"AIDL Binder IPC<br/>(cross-process)"| QS_
@@ -733,11 +742,11 @@ graph TB
     style TR_ fill:#f3e5f5
 ```
 
-**In-process communication (Shell to WM Core)**:
+**Cross-process communication (Shell to WM Core)**:
 
-- Shell calls WM Core APIs (e.g., `TaskOrganizer.applyTransaction()`) directly since they share the system server process
-- WM Core calls Shell via organizer callbacks (`TaskOrganizer.onTaskAppeared()`, `ITransitionPlayer.onTransitionReady()`)
-- These calls cross thread boundaries (WM thread to Shell thread) via Handler posting
+- Shell applies hierarchy changes by sending `WindowContainerTransaction`s over the `WindowOrganizer`/`ITaskOrganizerController` AIDL interfaces (e.g., `TaskOrganizer.applyTransaction()` wraps a Binder call into `WindowOrganizerController`)
+- WM Core calls Shell via organizer callbacks (`ITaskOrganizer.onTaskAppeared()`, `ITransitionPlayer.onTransitionReady()`), dispatched from a binder thread onto the Shell main thread
+- Every Core-Shell interaction therefore crosses both a process boundary (Binder) and a thread boundary (binder thread to Shell thread)
 
 **In-process communication (Shell to SystemUI)**:
 
@@ -764,8 +773,8 @@ graph LR
         SHELL["Shell Main Thread<br/>(@ShellMainThread)<br/>'wmshell.main'<br/>THREAD_PRIORITY_DISPLAY"]
         ANIM["Shell Animation Thread<br/>(@ShellAnimationThread)<br/>'wmshell.anim'<br/>THREAD_PRIORITY_DISPLAY"]
         BG["Shell Background Thread<br/>(@ShellBackgroundThread)<br/>'wmshell.background'<br/>THREAD_PRIORITY_BACKGROUND"]
-        SPLASH["Shell Splash Thread<br/>(@ShellSplashscreenThread)<br/>'wmshell.splashscreen'"]
-        DESKTOP["Shell Desktop Thread<br/>(@ShellDesktopThread)<br/>'wmshell.desktop'<br/>THREAD_PRIORITY_FOREGROUND"]
+        SPLASH["Shell Splash Thread<br/>(@ShellSplashscreenThread)<br/>'wmshell.splashscreen'<br/>THREAD_PRIORITY_TOP_APP_BOOST"]
+        DESKTOP["Shell Desktop Thread<br/>(@ShellDesktopThread)<br/>'wmshell.desktop'<br/>THREAD_PRIORITY_TOP_APP_BOOST"]
     end
 
     SYSUI -->|"ExternalThread<br/>annotations"| SHELL
@@ -773,7 +782,7 @@ graph LR
     SHELL -->|"I/O, persistence"| BG
 ```
 
-The `@ShellMainThread` is the primary execution thread for Shell components. It runs at `THREAD_PRIORITY_DISPLAY` priority, the same as the SurfaceFlinger and RenderThread, ensuring that window management operations are not preempted by lower-priority work.
+The `@ShellMainThread` is the primary execution thread for Shell components. It runs at `THREAD_PRIORITY_DISPLAY` priority, the same as RenderThread (SurfaceFlinger runs at the even higher `PRIORITY_URGENT_DISPLAY`), ensuring that window management operations are not preempted by lower-priority work.
 
 The threading model enforces a strict contract:
 
@@ -846,9 +855,11 @@ Each `Transition` instance represents a single transition from creation through 
 | `TRANSIT_TO_FRONT` | 3 | Existing task moving to front |
 | `TRANSIT_TO_BACK` | 4 | Task moving to back |
 | `TRANSIT_CHANGE` | 6 | Configuration change (rotation, bounds) |
-| `TRANSIT_PIP` | 8 | Entering Picture-in-Picture |
-| `TRANSIT_SLEEP` | 9 | Display going to sleep |
-| `TRANSIT_WAKE` | 10 | Display waking up |
+| `TRANSIT_PIP` | 10 | Entering Picture-in-Picture |
+| `TRANSIT_WAKE` | 11 | Display waking up |
+| `TRANSIT_SLEEP` | 12 | Display going to sleep |
+
+(Values 7-9 are the deprecated `TRANSIT_KEYGUARD_GOING_AWAY`, `TRANSIT_KEYGUARD_OCCLUDE`, and `TRANSIT_KEYGUARD_UNOCCLUDE` types, superseded by `TRANSIT_TO_FRONT`/`TRANSIT_TO_BACK` plus keyguard transition flags.)
 
 The `Transition` class tracks:
 
@@ -861,7 +872,7 @@ The `Transition` class tracks:
 
 **Source file:** `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java`
 
-The Shell-side `Transitions` class is the master animation orchestrator. It implements `ITransitionPlayer` and manages the lifecycle of transitions from the Shell perspective:
+The Shell-side `Transitions` class is the master animation orchestrator. It registers an inner `TransitionPlayerImpl extends ITransitionPlayer.Stub` with WM Core as the transition player and manages the lifecycle of transitions from the Shell perspective:
 
 ```
 --start--> PENDING --onTransitionReady--> READY --play--> ACTIVE --finish--> |
@@ -980,8 +991,7 @@ classDiagram
         +int type
         +int flags
         +List~Change~ changes
-        +SurfaceControl.Transaction startTransaction
-        +SurfaceControl.Transaction finishTransaction
+        +List~Root~ roots
     }
 
     class Change {
@@ -991,7 +1001,7 @@ classDiagram
         +int flags
         +Rect startAbsBounds
         +Rect endAbsBounds
-        +Rect endRelOffset
+        +Point endRelOffset
         +int startRotation
         +int endRotation
         +ActivityManager.RunningTaskInfo taskInfo
@@ -1000,6 +1010,8 @@ classDiagram
 
     TransitionInfo --> Change : contains 1..*
 ```
+
+The `startTransaction` and `finishTransaction` are not members of `TransitionInfo`; they travel as separate `SurfaceControl.Transaction` arguments of `ITransitionPlayer.onTransitionReady()` alongside the info object.
 
 Each `Change` in the `TransitionInfo` represents one participating container with:
 
@@ -1293,7 +1305,7 @@ desktopmode/
 ├── multidesks/                            — Multi-desk support (DesksController, DesksOrganizer)
 ├── homescreenpeeking/                     — Home-screen peek hot corners
 ├── desktoptaskshandlers/                  — Desk task transition handlers
-├── minimize/                              — Task minimization
+├── DesktopMinimizationTransitionHandler.kt — Task minimization
 ├── education/                             — User onboarding
 ├── animation/                             — Desktop-specific animations
 ├── data/                                  — Desktop state persistence
@@ -1528,10 +1540,10 @@ Virtual display flags control behavior:
 
 | Flag | Effect |
 |------|--------|
-| `FLAG_PRIVATE` | Content only visible to creating process |
-| `FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS` | Display gets status/navigation bars |
-| `FLAG_CAN_SHOW_WITH_INSECURE_KEYGUARD` | Can show content when keyguard is active |
-| `FLAG_ALLOWS_CONTENT_MODE_SWITCH` | Display content mode can change |
+| `VIRTUAL_DISPLAY_FLAG_PUBLIC` | Makes the display public; when absent the display is private, with content only visible to the creating process |
+| `VIRTUAL_DISPLAY_FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS` | Display gets status/navigation bars |
+| `VIRTUAL_DISPLAY_FLAG_CAN_SHOW_WITH_INSECURE_KEYGUARD` | Can show content when keyguard is active |
+| `VIRTUAL_DISPLAY_FLAG_ALLOWS_CONTENT_MODE_SWITCH` | Display content mode can change |
 
 ### 23.5.4 Cross-Display Window Movement
 
@@ -2063,11 +2075,17 @@ The shared base class holds:
 #### Sprite Lifecycle
 
 `SpriteController` is the heart of the rendering. Each `Sprite` is
-backed by a `SurfaceControl` parented under a "system sprite overlay
-layer" provided by SurfaceFlinger. The overlay layer sits at a
-z-order chosen by SurfaceFlinger to be on top of every window — that
-is what makes the cursor always visible, even over `TYPE_SYSTEM_ALERT`
-windows.
+backed by a `SurfaceControl` parented under a per-display pointer
+overlay layer that WindowManagerService itself creates and z-orders:
+`DisplayContent` builds a "Pointer Overlays" surface under its
+"Display Overlays" layer (which sits at `Integer.MAX_VALUE`) and
+assigns it the `TYPE_POINTER` policy layer. That parent surface
+reaches `SpriteController` through the `ParentSurfaceProvider`
+callback, which routes from the JNI layer up through
+`InputManagerService` to `DisplayContent.getPointerOverlayLayer()` in
+`system_server` — SurfaceFlinger neither provides the layer nor
+chooses its z-order. The WM-assigned z-order keeps the cursor above
+every window, even `TYPE_SYSTEM_ALERT` windows.
 
 ```mermaid
 sequenceDiagram
@@ -2317,7 +2335,6 @@ The `SurfaceAnimator` defines animation types that categorize different uses of 
 
 ```java
 ANIMATION_TYPE_NONE           = 0;       // No animation
-ANIMATION_TYPE_APP_TRANSITION = 1;       // App open/close/change
 ANIMATION_TYPE_SCREEN_ROTATION = 1 << 1; // Screen rotation
 ANIMATION_TYPE_DIMMER         = 1 << 2;  // Background dimming
 ANIMATION_TYPE_RECENTS        = 1 << 3;  // Recents gesture
@@ -2416,28 +2433,28 @@ interface Animatable {
 The `createAnimationLeash()` static method in `SurfaceAnimator` constructs the leash surface:
 
 ```java
-static SurfaceControl createAnimationLeash(Animatable animatable,
+private static SurfaceControl createAnimationLeash(Animatable animatable,
         SurfaceControl surface, Transaction t, @AnimationType int type,
         int width, int height, int x, int y, boolean hidden,
         Supplier<Transaction> transactionFactory) {
 
+    // The leash is parented at build time to where the surface was
     SurfaceControl leash = animatable.makeAnimationLeash()
-            .setName(surface + " - animation-leash of " + typeToString(type))
+            .setParent(animatable.getAnimationLeashParent())
+            .setName(surface + " - animation-leash of " + animationTypeToString(type))
             .setHidden(hidden)
             .setEffectLayer()
             .setCallsite("SurfaceAnimator.createAnimationLeash")
             .build();
 
-    // Reparent the leash to where the surface was
-    t.reparent(leash, animatable.getAnimationLeashParent());
-    // Reparent the surface under the leash
-    t.reparent(surface, leash);
     // Position and size the leash
-    t.setPosition(leash, x, y);
     t.setWindowCrop(leash, width, height);
-    // Transfer layer assignment
+    t.setPosition(leash, x, y);
+    t.show(leash);
     t.setAlpha(leash, hidden ? 0 : 1);
 
+    // Reparent the surface under the leash
+    t.reparent(surface, leash);
     return leash;
 }
 ```
@@ -2533,7 +2550,7 @@ Sub-windows are children of an application window in the `WindowState` hierarchy
 
 ### 23.8.4 System Window Types
 
-System windows form the largest category. They are ordered by type value, which maps to relative z-order:
+System windows form the largest category. The offsets below are just constant values within the 2000-2999 range; relative z-order is assigned separately by `WindowManagerPolicy.getWindowLayerFromTypeLw()`, an explicit switch that maps each type to an arbitrary layer index and is not monotonic in the type value (`TYPE_WALLPAPER`, for example, maps to the bottom-most layer despite its mid-range type value):
 
 | Constant | Offset | Description |
 |----------|--------|-------------|
@@ -2592,7 +2609,7 @@ int WINDOW_FREEZE_LAYER   = TYPE_LAYER_MULTIPLIER * 200;
 int SCREEN_FREEZE_LAYER_BASE = WINDOW_FREEZE_LAYER + TYPE_LAYER_MULTIPLIER;
 ```
 
-Each window type gets a base layer of `type * TYPE_LAYER_MULTIPLIER`, with `TYPE_LAYER_OFFSET` providing room for sub-windows within that type. This guarantees that system windows (type 2000+) are always above application windows (type 1-99) in the z-order.
+Each window gets a base layer of `getWindowLayerFromTypeLw(type) * TYPE_LAYER_MULTIPLIER` -- the policy-assigned layer index times the multiplier, not the raw type value -- with `TYPE_LAYER_OFFSET` providing room for sub-windows within that type. Most system window types resolve to policy layers above `APPLICATION_LAYER`, but not all: `TYPE_WALLPAPER` (2013) resolves to policy layer 1, below every application window.
 
 ### 23.8.6 DisplayArea-Based Z-Ordering
 
@@ -2670,14 +2687,14 @@ public abstract class DisplayAreaPolicy {
 The `DisplayAreaPolicyBuilder` constructs the hierarchy using a feature-based approach:
 
 ```java
-// Feature IDs from DisplayAreaOrganizer
+// Feature IDs from DisplayAreaOrganizer (relative to FEATURE_SYSTEM_FIRST = 0)
 FEATURE_DEFAULT_TASK_CONTAINER = 1;   // Where apps go
-FEATURE_WINDOWED_MAGNIFICATION = 4;   // Windowed magnification
+FEATURE_ONE_HANDED = 3;               // One-handed mode
+FEATURE_TOP_LEVEL_ZOOM = 4;           // Builds the "WindowedMagnification" DisplayArea
 FEATURE_FULLSCREEN_MAGNIFICATION = 5; // Fullscreen magnification
-FEATURE_ONE_HANDED = 6;               // One-handed mode
-FEATURE_HIDE_DISPLAY_CUTOUT = 7;      // Display cutout hiding
-FEATURE_IME_PLACEHOLDER = 8;          // IME positioning
-FEATURE_APP_ZOOM_OUT = 9;             // App zoom out
+FEATURE_HIDE_DISPLAY_CUTOUT = 6;      // Display cutout hiding
+FEATURE_IME_PLACEHOLDER = 7;          // IME positioning
+FEATURE_APP_ZOOM_OUT = 10;            // App zoom out
 ```
 
 Features are configured in the policy by specifying which window types they apply to. The builder then generates a tree of `DisplayArea` nodes that group window types under the appropriate feature nodes. This is an automatic process -- the builder determines the minimum set of `DisplayArea` nodes needed to satisfy all feature requirements.
@@ -2695,7 +2712,7 @@ classDiagram
     }
 
     class RootDisplayArea {
-        +DisplayAreaPolicy mPolicy
+        +List~Feature~ mFeatures
     }
 
     class DisplayArea_Tokens {
@@ -3007,7 +3024,7 @@ Desktop windowing is the most complex Shell feature, providing a full desktop ex
 - **Cross-display moves** (`DesktopModeMoveToDisplayTransitionHandler`, `DisplayDisconnectTransitionHandler`) for multi-display desktop
 - **Immersive mode** (`DesktopImmersiveController`) for fullscreen apps in desktop
 - **IME handling** (`DesktopImeHandler`) for keyboard layout in freeform windows
-- **Minimization** (`minimize/`) for task bar integration
+- **Minimization** (`DesktopMinimizationTransitionHandler.kt`, plus the `minimizedTasks` set in `data/Desk.kt`) for task bar integration
 
 The desktop mode directory alone contains 50+ files, reflecting the significant engineering investment in bringing desktop-class windowing to Android.
 
@@ -3023,8 +3040,8 @@ front and a `DeskSwitchTransitionHandler` animates the lateral move between two
 desks on the same display. The per-desk state -- `activeTasks`, `visibleTasks`,
 `minimizedTasks`, and the `leftTiledTaskId`/`rightTiledTaskId` snap slots -- is
 held in the `Desk` data model (`.../desktopmode/data/Desk.kt`) inside the
-per-display `DesktopRepository`, which `DesktopUserRepositories` instantiates per
-user. So multiple desks reuse the existing per-display task hierarchy and
+per-user `DesktopRepository` (which tracks per-display desk state internally),
+instantiated per user by `DesktopUserRepositories`. So multiple desks reuse the existing per-display task hierarchy and
 transition machinery rather than introducing a parallel one: a desk is a root
 task the organizer shows or hides, and switching desks is an ordinary Shell
 transition.
@@ -3140,12 +3157,12 @@ Mixed transitions arise in several scenarios:
 | Desktop task moving while split is active | Desktop + Split |
 | Recents gesture while PiP is visible | Recents + PiP |
 
-The `MixedTransitionHandler` detects these scenarios by examining the `TransitionInfo` changes and delegates sub-animations to the appropriate feature handlers while coordinating their timing.
+`MixedTransitionHandler` itself is only a marker interface extending `Transitions.TransitionHandler`; the implementation, `DefaultMixedHandler`, detects these scenarios by examining the `TransitionInfo` changes and delegates sub-animations to the appropriate feature handlers while coordinating their timing.
 
-`DefaultMixedTransition` and `RecentsMixedTransition` are specific implementations for common mixed scenarios:
+`DefaultMixedTransition` and `RecentsMixedTransition` subclass `DefaultMixedHandler.MixedTransition` for common mixed scenarios:
 
 ```
-MixedTransitionHandler
+DefaultMixedHandler.MixedTransition
 ├── DefaultMixedTransition    — General cross-feature handling
 └── RecentsMixedTransition    — Recents + other feature handling
 ```
@@ -3211,12 +3228,11 @@ The initialization order matters because features depend on infrastructure compo
 
 **Directory:** `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/crashhandling/`
 
-`ShellCrashHandler` manages what happens when a Shell component encounters an unrecoverable error. Since Shell runs in the system server process, an unhandled exception could crash the entire system. The crash handler:
+`ShellCrashHandler` is not an exception catcher. WM Shell runs inside the SystemUI process, so an unhandled Shell exception takes down SystemUI -- not the system server -- and the process is restarted. `ShellCrashHandler` registers with `ShellInit` and runs at initialization time *after* such a restart, cleaning up state left over from before the crash:
 
-1. Catches exceptions from Shell components
-2. Logs the error with full stack trace
-3. Attempts graceful degradation (e.g., exiting split screen, exiting PiP)
-4. Reports to telemetry for analysis
+1. Removes bubble overrides left on running tasks (`handleBubbleTaskCleanup()`)
+2. Cleans up leftover PiP task state (`handlePipTaskCleanup()`)
+3. Restores the home task to the top so the user lands on a sane screen
 
 ### 23.10.12 Performance Monitoring
 
@@ -3312,30 +3328,23 @@ The window system provides extensive debugging infrastructure:
 **dumpsys commands:**
 
 ```bash
-# Full WMS state dump
+# Full WMS state dump (includes transition and focus state)
 adb shell dumpsys window
 
 # Windows only
 adb shell dumpsys window windows
 
-# Display state
+# Display state (includes the DisplayArea structure)
 adb shell dumpsys window displays
 
-# Transitions
-adb shell dumpsys window transitions
-
-# Focused window
-adb shell dumpsys window focus
-
-# Window containers hierarchy
+# Window containers hierarchy (DisplayAreas, tasks, windows)
 adb shell dumpsys window containers
-
-# Display areas
-adb shell dumpsys window display-areas
 
 # Input dispatch state
 adb shell dumpsys input
 ```
+
+Note that there are no `transitions`, `focus`, or `display-areas` sub-commands -- an unrecognized argument is treated as a window-name filter (`"Bad window command, or no windows match"`). Transition and focus state come from the full `dumpsys window` (or `dumpsys window -a`) dump, and DisplayArea structure from `containers` or `displays`.
 
 **Perfetto tracing:**
 
@@ -3502,7 +3511,7 @@ Use a device or emulator running Android 17 (`android17-release`) to observe the
 
 2. **Inspect per-display insets.** With an app open, run `adb shell dumpsys window displays` and find the `InsetsState` / `InsetsSourceProvider` block (section 23.9). Show or hide the IME and re-dump to see the `ime()` source appear and disappear, and the focused window's `InsetsControlTarget` change.
 
-3. **Watch a transition.** Run `adb shell dumpsys window transitions`, then launch and close an app while re-dumping. Observe a `Transition` move through collecting/ready/playing, and note the track assignment (section 23.3.9). Capturing a Winscope trace during the launch lets you replay the leash animation (section 23.7.2) frame by frame.
+3. **Watch a transition.** Run `adb shell dumpsys window` and locate the transition/`TransitionController` state in the dump (there is no `transitions` sub-command), then launch and close an app while re-dumping. Observe a `Transition` move through collecting/ready/playing, and note the track assignment (section 23.3.9). Capturing a Winscope trace during the launch lets you replay the leash animation (section 23.7.2) frame by frame.
 
 4. **Exercise the Android 17 paths.** If the device supports connected displays or desktop windowing, enable the desktop-experience developer toggle (backed by `DesktopExperienceFlags`, section 23.12.2) and attach an external display. Move a window between displays and watch `dumpsys window displays` show the `Task` reparent to the second `DisplayContent`. Rotate the device with an app that reacts to insets to see the bundled rotation + `InsetsState` delivery (section 23.12.1).
 
@@ -3542,12 +3551,12 @@ The window system is one of the largest subsystems in AOSP:
 
 | Component | Approximate Lines | Files |
 |-----------|-------------------|-------|
-| WM Core (`server/wm/`) | 200,000+ | 250+ |
+| WM Core (`server/wm/`) | ~190,000 | 250+ |
 | WM Shell (`wm/shell/`) | 150,000+ | 400+ |
 | Window API (`view/`) | 50,000+ | 50+ |
 | Total | 400,000+ | 700+ |
 
-The five largest individual source files in the Android 17 tree -- `WindowManagerService.java` (~11,600 lines), `ActivityRecord.java` (~9,900 lines), `DisplayContent.java` (~7,700 lines), `Task.java` (~7,560 lines), and `WindowState.java` (~6,400 lines) -- together exceed 43,000 lines of Java code, reflecting the deep complexity of window management.
+Five of the largest source files in the window system -- `WindowManagerService.java` (~11,600 lines), `ActivityRecord.java` (~9,900 lines), `DisplayContent.java` (~7,700 lines), `Task.java` (~7,560 lines), and `WindowState.java` (~6,400 lines) -- together exceed 43,000 lines of Java code, reflecting the deep complexity of window management.
 
 ### Evolution Direction
 
@@ -3557,7 +3566,7 @@ The window system is evolving in several clear directions:
 
 2. **Kotlin adoption**: New Shell components (like `StageCoordinator2.kt`, `DesktopTasksController.kt`, `WindowDragTransitionHandler.kt`) are written in Kotlin, while existing Java components are maintained.
 
-3. **Parallel transitions**: The track-based parallel transition system continues to evolve with flags like `ENABLE_PARALLEL_CD_TRANSITIONS_DURING_RECENTS` for more concurrent animation support.
+3. **Parallel transitions**: The track-based parallel transition machinery in `TransitionController` (WM Core) and the Shell `Transitions` class continues to evolve toward more concurrent animation support.
 
 4. **Multi-display maturity**: Android 17 flags like `enable_connected_displays_wallpaper_presentations` and `mask_presentation_flags_on_internal_displays`, the `DesktopExperienceFlags.ENABLE_DISPLAY_CONTENT_MODE_MANAGEMENT` gate, and the cross-display desk handlers (`DesktopModeMoveToDisplayTransitionHandler`, `DisplayDisconnectTransitionHandler`) indicate deepening multi-display support beyond mirroring toward true multi-display computing (see section 23.12).
 

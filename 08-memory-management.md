@@ -230,7 +230,7 @@ Without Zygote and CoW, each of those three apps would need its own copy of the 
 tripling the memory consumption for shared code. With CoW, the physical cost is:
 
 - **Without CoW**: 3 x 150 MB = 450 MB for framework + 95 MB private = 545 MB total
-- **With CoW**: 100 MB shared + 30 MB CoW pages + 95 MB private = 225 MB total
+- **With CoW**: 100 MB shared + 30 MB CoW pages + 65 MB private = 195 MB total
 
 This difference is multiplied across the 20-40 processes typically running on an Android device.
 
@@ -242,11 +242,13 @@ The kernel employs several mechanisms to reclaim memory when pressure increases:
 flowchart TD
     Pressure["Memory Pressure<br/>Detected"] --> Watermark{"Below which<br/>watermark?"}
 
-    Watermark -->|"HIGH"| kswapd["kswapd (background)<br/>Scans inactive lists<br/>Evicts file pages<br/>Swaps anon pages"]
+    Watermark -->|"HIGH"| Watch["kswapd may<br/>start soon"]
 
-    Watermark -->|"LOW"| DirectRecl["Direct Reclaim<br/>(synchronous, blocking)<br/>Allocating process waits<br/>Scans all LRU lists"]
+    Watermark -->|"LOW"| kswapd["kswapd (background)<br/>Scans inactive lists<br/>Evicts file pages<br/>Swaps anon pages"]
 
-    Watermark -->|"MIN"| OOM["OOM Killer<br/>(last resort)<br/>Kernel selects victim<br/>Based on oom_score"]
+    Watermark -->|"MIN"| DirectRecl["Direct Reclaim<br/>(synchronous, blocking)<br/>Allocating process waits<br/>Scans all LRU lists"]
+
+    DirectRecl -->|"No progress"| OOM["OOM Killer<br/>(last resort)<br/>Kernel selects victim<br/>Based on oom_score"]
 
     kswapd --> FileEvict["File page eviction<br/>(clean: discard<br/>dirty: writeback first)"]
     kswapd --> AnonSwap["Anonymous swap<br/>(compress to zRAM)"]
@@ -318,7 +320,7 @@ state.
 
 | File | Purpose |
 |---|---|
-| `lmkd.cpp` | Main daemon implementation (~3400 lines) |
+| `lmkd.cpp` | Main daemon implementation (~4200 lines) |
 | `lmkd.rc` | Init service definition |
 | `lmkd.h` (in `include/`) | Command protocol definitions |
 | `reaper.cpp` / `reaper.h` | Asynchronous process reaping with `process_mrelease()` |
@@ -432,12 +434,15 @@ Each packet starts with an `int` command code in network byte order, followed by
 fields. For example, the `LMK_PROCPRIO` packet carries:
 
 ```c
-// system/memory/lmkd/include/lmkd.h (lines 106-113)
+// system/memory/lmkd/include/lmkd.h (lines 116-124)
 struct lmk_procprio {
     pid_t pid;
     uid_t uid;
     int oomadj;
     enum proc_type ptype;
+    // Whether this procprio is for lmkd only. If set, the procprio update will
+    // not be sent to kernel.
+    bool for_lmkd_only;
 };
 ```
 
@@ -451,7 +456,9 @@ Every process in Android has an OOM adjustment score (`oom_adj_score`) that indi
 importance. Lower scores mean higher importance. lmkd writes this value to
 `/proc/[pid]/oom_score_adj` and uses it to decide which processes to kill first.
 
-The score ranges are defined in `frameworks/base/services/core/java/com/android/server/am/ProcessList.java`:
+The score ranges are defined in
+`frameworks/base/services/core/java/com/android/server/am/psc/Constants.java`
+(`ProcessList.java` static-imports them):
 
 | Constant | Value | Process Type |
 |---|---|---|
@@ -497,6 +504,7 @@ struct proc {
     struct adjslot_list asl;
     int pid;
     int pidfd;
+    CgroupFD cgroupfd;
     uid_t uid;
     int oomadj;
     pid_t reg_pid;
@@ -533,7 +541,7 @@ full avg10=0.00 avg60=0.00 avg300=0.00 total=0
 - **`some`**: At least one task is stalled on memory.
 - **`full`**: All non-idle tasks are stalled on memory simultaneously.
 
-lmkd registers PSI monitors at three pressure levels:
+lmkd defines three pressure levels, with compile-time default thresholds:
 
 ```c
 // system/memory/lmkd/lmkd.cpp (enum vmpressure_level line 166; psi_thresholds line 231)
@@ -550,6 +558,14 @@ static struct psi_threshold psi_thresholds[VMPRESS_LEVEL_COUNT] = {
     { PSI_FULL, 70 },    /* 70ms out of 1sec for complete stall */
 };
 ```
+
+These static values are only the fallback for the legacy minfree-based strategy. In the default
+new-strategy mode (`use_new_strategy` is true whenever `ro.lmk.use_minfree_levels` is false, its
+default), `init_psi_monitors()` overwrites the table before registration: the LOW threshold is
+set to 0 -- and `init_mp_psi()` skips registration when the threshold is 0, so no LOW monitor
+exists -- while MEDIUM becomes `psi_partial_stall_ms` (`some`, 70 ms/1 s by default, 200 ms on
+low-RAM devices) and CRITICAL becomes `psi_complete_stall_ms` (`full`, 700 ms/1 s). In practice
+only two PSI monitors are registered.
 
 The PSI monitor library (`system/memory/lmkd/libpsi/psi.cpp`) registers triggers with the kernel:
 
@@ -615,7 +631,7 @@ flowchart TD
 The kill reasons are enumerated in the code:
 
 ```c
-// system/memory/lmkd/statslog.h (lines 69-85)
+// system/memory/lmkd/statslog.h (lines 71-87)
 enum kill_reasons {
     NONE = -1,
     PRESSURE_AFTER_KILL = 0,
@@ -628,6 +644,9 @@ enum kill_reasons {
     LOW_FILECACHE_AFTER_THRASHING,
     LOW_MEM,
     DIRECT_RECL_STUCK,
+    /* reserve aosp kill 0 ~ 999 */
+    VENDOR_KILL_REASON_BASE = 1000,
+    VENDOR_KILL_REASON_END = VENDOR_KILL_REASON_BASE + NUM_VENDOR_LMK_KILL_REASON - 1,
     KILL_REASON_COUNT
 };
 ```
@@ -636,7 +655,7 @@ The memory available calculation is nuanced. lmkd computes "easy available" memo
 for file cache evictability and swap compression:
 
 ```c
-// system/memory/lmkd/lmkd.cpp (calc_easy_available_memory, around line 2007)
+// system/memory/lmkd/lmkd.cpp (inside meminfo_parse, from line 1980; this block at line 2007)
 mi->field.easy_available = mi->field.nr_free_pages;
 if (relaxed_available_memory && swap_compression_ratio) {
     mi->field.easy_available += mi->field.active_file
@@ -746,23 +765,29 @@ flowchart TD
     Cond2 -->|Yes| R2["NOT_RESPONDING<br/>min_adj = 0"]
     Cond2 -->|No| Cond3{"Low swap AND<br/>thrashing > limit?"}
 
-    Cond3 -->|Yes| R3["LOW_SWAP_AND_THRASHING<br/>min_adj = 0"]
+    Cond3 -->|Yes| R3["LOW_SWAP_AND_THRASHING<br/>min_adj = PERCEPTIBLE_APP_ADJ+1<br/>(0 if below min wmark or<br/>critical thrashing)"]
     Cond3 -->|No| Cond4{"Low swap AND<br/>low watermark?"}
 
-    Cond4 -->|Yes| R4["LOW_MEM_AND_SWAP<br/>min_adj = 0"]
-    Cond4 -->|No| Cond5{"Thrashing AND<br/>low watermark?"}
+    Cond4 -->|Yes| R4["LOW_MEM_AND_SWAP<br/>min_adj = PERCEPTIBLE_APP_ADJ+1<br/>(0 if below min wmark or<br/>critical thrashing)"]
+    Cond4 -->|No| Cond5{"High swap<br/>utilization?"}
 
-    Cond5 -->|Yes| R5["LOW_MEM_AND_THRASHING<br/>min_adj = 0"]
-    Cond5 -->|No| Cond6{"Direct reclaim<br/>AND thrashing?"}
+    Cond5 -->|Yes| R5["LOW_MEM_AND_SWAP_UTIL<br/>min_adj = 0"]
+    Cond5 -->|No| Cond6{"Thrashing AND<br/>low watermark?"}
 
-    Cond6 -->|Yes| R6["DIRECT_RECL_AND_THRASHING<br/>min_adj based on swap util"]
-    Cond6 -->|No| Cond7{"High swap<br/>utilization?"}
+    Cond6 -->|Yes| R6["LOW_MEM_AND_THRASHING<br/>min_adj = PERCEPTIBLE_APP_ADJ+1<br/>unless thrashing is critical"]
+    Cond6 -->|No| Cond7{"Direct reclaim<br/>AND thrashing?"}
 
-    Cond7 -->|Yes| R7["LOW_MEM_AND_SWAP_UTIL<br/>min_adj = 0"]
+    Cond7 -->|Yes| R7["DIRECT_RECL_AND_THRASHING<br/>min_adj = PERCEPTIBLE_APP_ADJ+1<br/>unless thrashing is critical"]
     Cond7 -->|No| Cond8{"Direct reclaim<br/>stuck?"}
 
     Cond8 -->|Yes| R8["DIRECT_RECL_STUCK<br/>min_adj = 0"]
-    Cond8 -->|No| NoKill[No kill needed]
+    Cond8 -->|No| Cond9{"File cache low<br/>after thrashing?"}
+
+    Cond9 -->|Yes| R9["LOW_FILECACHE_AFTER_THRASHING<br/>min_adj = PERCEPTIBLE_APP_ADJ+1"]
+    Cond9 -->|No| Cond10{"No reason yet AND<br/>watermark below HIGH?"}
+
+    Cond10 -->|Yes| R10["LOW_MEM<br/>min_adj = lowmem_min_oom_score"]
+    Cond10 -->|No| NoKill[No kill needed]
 
     R1 --> Kill[find_and_kill_process]
     R2 --> Kill
@@ -772,6 +797,8 @@ flowchart TD
     R6 --> Kill
     R7 --> Kill
     R8 --> Kill
+    R9 --> Kill
+    R10 --> Kill
 
     style R1 fill:#cc4444,color:#fff
     style R2 fill:#cc4444,color:#fff
@@ -781,6 +808,8 @@ flowchart TD
     style R6 fill:#cc4444,color:#fff
     style R7 fill:#cc4444,color:#fff
     style R8 fill:#cc4444,color:#fff
+    style R9 fill:#cc4444,color:#fff
+    style R10 fill:#cc4444,color:#fff
     style NoKill fill:#44cc44,color:#000
     style Skip fill:#cccc44,color:#000
 ```
@@ -893,18 +922,24 @@ static int find_and_kill_process(int min_score_adj,
 
             killed_size = kill_one_process(procp, min_score_adj,
                                            ki, mi, wi, tm, pd);
-            if (killed_size >= 0) break;
+            if (killed_size >= 0) {
+                return killed_size;
+            }
         }
-        if (killed_size) break;
     }
     return killed_size;
 }
 ```
 
+The function returns as soon as `kill_one_process()` succeeds (a non-negative result); only if
+every candidate fails does the outer loop fall through and return the last failure.
+
 The dual selection strategy is important:
 
-1. **For cached/background processes** (`oom_adj > PERCEPTIBLE_APP_ADJ`): Kill the most recently
-   added process at each score level (`proc_adj_tail`). This follows an LRU-like order.
+1. **For cached/background processes** (`oom_adj > PERCEPTIBLE_APP_ADJ`): Kill the
+   least-recently-added (oldest) process at each score level. New registrations are inserted at
+   the head of each adj slot, and `proc_adj_tail` walks from the back, so the process that has
+   been registered at that score the longest dies first.
 2. **For perceptible processes** (`oom_adj <= 200`): Always kill the heaviest process
    (`proc_get_heaviest`), which reads `/proc/[pid]/statm` for each candidate. This minimizes the
    number of visible-to-user processes that must die.
@@ -987,12 +1022,12 @@ static int kill_one_process(struct proc* procp, int min_oom_score,
         return result;
     }
 
-    // Execute the kill via the reaper
+    // Execute the kill via the reaper (Reaper::kill returns true on success)
     start_wait_for_proc_kill(pidfd < 0 ? pid : pidfd);
-    kill_result = reaper.kill({ pidfd, pid, uid }, false);
-
-    if (kill_result) {
+    if (!reaper.kill({ pidfd, procp->cgroupfd, pid, uid }, false)) {
         stop_wait_for_proc_kill(false);
+        ALOGE("kill(%d): errno=%d", pid, errno);
+        // Delete the process record even on failure so we don't get stuck on it
         goto out;
     }
 
@@ -1040,8 +1075,8 @@ static void watchdog_callback() {
         }
 
         if (target.valid &&
-            reaper.kill({ target.pidfd, target.pid, target.uid },
-                        true /* synchronous */) == 0) {
+            reaper.kill({ target.pidfd, target.cgroupfd, target.pid, target.uid },
+                        true /* synchronous */)) {
             ALOGW("lmkd watchdog killed process %d, oom_score_adj %d",
                   target.pid, oom_score);
             pid_invalidate(target.pid);
@@ -1053,7 +1088,7 @@ static void watchdog_callback() {
 ```
 
 The watchdog kill is **synchronous** (note the `true` parameter to `reaper.kill()`), meaning it
-blocks until `pidfd_send_signal(SIGKILL)` completes. This is because the watchdog thread cannot
+blocks until the kill completes. This is because the watchdog thread cannot
 use the asynchronous reaper queue (the main thread that processes queue completions is hung).
 The watchdog also uses `pid_invalidate()` instead of `pid_remove()` because the latter can only
 be called from the main thread safely.
@@ -1080,13 +1115,15 @@ enum vmstat_field {
 
 A `workingset_refault` is a page that was recently evicted from the page cache and is now being
 faulted back in -- a strong signal that the system is thrashing. The thrashing percentage is
-calculated relative to page scans and compared against configurable thresholds:
+calculated as the growth in `workingset_refault_file` expressed as a percentage of the
+file-backed page cache size (`nr_inactive_file + nr_active_file`) sampled at the start of the
+window, and compared against configurable thresholds:
 
 | Property | Default | Low RAM Default |
 |---|---|---|
 | `ro.lmk.thrashing_limit` | 100 | 30 |
 | `ro.lmk.thrashing_limit_decay` | 10 | 50 |
-| `ro.lmk.thrashing_limit_critical` | (derived) | (derived) |
+| `ro.lmk.thrashing_limit_critical` | 300 | 300 |
 
 ### 8.2.13 The Reaper: Asynchronous Process Killing
 
@@ -1097,63 +1134,70 @@ from the killed process.
 The `Reaper` class (`system/memory/lmkd/reaper.h` and `reaper.cpp`) manages a thread pool:
 
 ```c
-// system/memory/lmkd/reaper.h (lines 23-60)
+// system/memory/lmkd/reaper.h (lines 37-71)
 class Reaper {
 public:
     struct target_proc {
         int pidfd;
-        int pid;
+        CgroupFD cgroupfd;
+        pid_t pid;
         uid_t uid;
     };
 private:
-    std::mutex mutex_;
-    std::condition_variable cond_;
-    std::vector<struct target_proc> queue_;
-    int active_requests_;
+    static constexpr size_t THREAD_POOL_SIZE = 2;
+    ThreadsafeQueue<target_proc> reap_queue_;
+    // write side of the pipe to communicate kill failures with the main thread
     int comm_fd_;
-    int thread_cnt_;
-    pthread_t* thread_pool_;
-    bool debug_enabled_;
+    std::vector<std::thread> thread_pool_;
+    bool debug_enabled_ = false;
+
+    ThreadsafeQueue<std::pair<uid_t, pid_t>> setprio_queue_;
+    std::thread setprio_thread_;
     // ...
 };
 ```
 
 The reaper thread's main loop:
 
-1. **Dequeue** a kill request.
-2. **Send SIGKILL** via `pidfd_send_signal()` -- uses the pidfd to avoid PID recycling races.
-3. **Adjust cgroups and priority** of the dying process to speed up memory reclamation.
+1. **Pop** a kill target from the thread-safe reap queue.
+2. **Kill the target's cgroup** -- `kill_cgroup_or_process()` writes to the cgroup's `cgroup.kill`
+   (or walks `cgroup.procs`), falling back to `pidfd_send_signal(SIGKILL)` for processes that are
+   not in their own Android-managed cgroup (e.g., children of adbd). The pidfd avoids PID
+   recycling races.
+3. **Hand off priority adjustment** -- the victim's uid/pid is pushed to a dedicated
+   `lmkd_setprio` thread, which moves the dying process into the LMKD reap-target cgroups so its
+   teardown can use the big cores.
 4. **Call `process_mrelease()`** -- a Linux syscall (number 448) that triggers synchronous memory
    reclamation from the dying process.
 
 ```c
-// system/memory/lmkd/reaper.cpp (lines 46-48, 91-137)
+// system/memory/lmkd/reaper.cpp (lines 55-57, 166-209, abbreviated)
 static int process_mrelease(int pidfd, unsigned int flags) {
     return syscall(__NR_process_mrelease, pidfd, flags);
 }
 
-static void* reaper_main(void* param) {
-    Reaper *reaper = static_cast<Reaper*>(param);
-    // ...
+void Reaper::reaper_main() {
+    // ... pin the thread to big cores, raise its priority ...
     for (;;) {
-        target = reaper->dequeue_request();
+        Reaper::target_proc target = reap_queue_.pop();
 
-        if (pidfd_send_signal(target.pidfd, SIGKILL, NULL, 0)) {
-            reaper->notify_kill_failure(target.pid);
+        if (!kill_cgroup_or_process(target)) {
+            // Inform the main thread about failure to kill
+            notify_kill_failure(target.pid);
             goto done;
         }
 
-        set_process_group_and_prio(target.uid, target.pid,
-            {"CPUSET_SP_FOREGROUND", "SCHED_SP_FOREGROUND"},
-            ANDROID_PRIORITY_NORMAL);
+        setprio_queue_.push({target.uid, target.pid});
 
         if (process_mrelease(target.pidfd, 0)) {
             ALOGE("process_mrelease %d failed: %s",
                   target.pid, strerror(errno));
+            goto done;
         }
 done:
         close(target.pidfd);
-        reaper->request_complete();
+        close(target.cgroupfd);
+        reap_queue_.request_complete();
     }
 }
 ```
@@ -1188,8 +1232,9 @@ public:
 ```
 
 The watchdog uses a `CLOCK_MONOTONIC` timer with `SIGALRM` delivery. If lmkd's main event loop
-does not disarm the watchdog within the 2-second timeout, the watchdog bites -- typically
-triggering an abort or logging diagnostic information.
+does not disarm the watchdog within the 2-second timeout, the watchdog bites -- `bite()` invokes
+`watchdog_callback()`, which performs the emergency synchronous kill described in Section 8.2.11.
+It does not abort the daemon.
 
 ### 8.2.15 Configurable Properties
 
@@ -1208,7 +1253,7 @@ Key properties:
 |---|---|---|
 | `ro.lmk.debug` | false | Enable verbose kill logging |
 | `ro.lmk.kill_heaviest_task` | false | Kill by RSS rather than oom_adj |
-| `ro.lmk.kill_timeout_ms` | 0 | Minimum time between kills |
+| `ro.lmk.kill_timeout_ms` | 100 | Minimum time between kills |
 | `ro.lmk.use_minfree_levels` | false | Use traditional minfree thresholds |
 | `ro.lmk.psi_partial_stall_ms` | 70 (200 on low-RAM) | PSI some-stall threshold |
 | `ro.lmk.psi_complete_stall_ms` | 700 | PSI full-stall threshold |
@@ -1245,9 +1290,8 @@ graph TD
             DataSock1["Data socket 1<br/>(AMS commands)"]
             DataSock2["Data socket 2<br/>(init)"]
             DataSock3["Data socket 3<br/>(tests)"]
-            PSI_Low["PSI Low<br/>(some 70ms/1s)"]
-            PSI_Med["PSI Medium<br/>(some 100ms/1s)"]
-            PSI_Crit["PSI Critical<br/>(full 70ms/1s)"]
+            PSI_Med["PSI Medium<br/>(some 70ms/1s,<br/>200ms low-RAM)"]
+            PSI_Crit["PSI Critical<br/>(full 700ms/1s)"]
             KillDone["pidfd<br/>(kill complete)"]
             KillFail["Reaper pipe<br/>(kill failure)"]
             MemEvent["memevent_listener<br/>(BPF events)"]
@@ -1258,7 +1302,6 @@ graph TD
     DataSock1 -->|EPOLLIN| EPoll
     DataSock2 -->|EPOLLIN| EPoll
     DataSock3 -->|EPOLLIN| EPoll
-    PSI_Low -->|EPOLLPRI| EPoll
     PSI_Med -->|EPOLLPRI| EPoll
     PSI_Crit -->|EPOLLPRI| EPoll
     KillDone -->|EPOLLIN| EPoll
@@ -1271,6 +1314,10 @@ graph TD
     Handler --> KillH["kill_done_handler()"]
     Handler --> FailH["kill_fail_handler()"]
 ```
+
+The epoll capacity is sized for all three pressure levels, but as Section 8.2.5 explains, the
+LOW monitor is not registered in the default new-strategy mode, so only the MEDIUM and CRITICAL
+file descriptors appear in the event loop.
 
 After receiving a PSI event, lmkd enters a polling mode where it periodically re-checks memory
 conditions at short intervals:
@@ -1370,8 +1417,11 @@ during boot by init:
 
 ### 8.3.2 Process Group Assignment
 
-When ActivityManagerService registers a process with lmkd via `LMK_PROCPRIO`, lmkd assigns the
-process to the appropriate cgroup and sets its memory soft limit:
+When ActivityManagerService registers a process with lmkd via `LMK_PROCPRIO`, lmkd writes the
+process's `/proc/[pid]/oom_score_adj` and sets a memory soft limit on the cgroup the process
+already belongs to. lmkd never moves a process between cgroups: membership is assigned by
+ActivityManagerService through libprocessgroup, and lmkd only looks up the resulting attribute
+paths.
 
 ```c
 // system/memory/lmkd/lmkd.cpp (register_oom_adj_proc, from line 1149)
@@ -1379,7 +1429,10 @@ static void register_oom_adj_proc(const struct lmk_procprio& proc,
                                    struct ucred* cred) {
     char val[20];
     int soft_limit_mult;
+    int oom_adj_score = proc.oomadj;
+    // ... other locals elided ...
 
+    /* lmkd should not change soft limits for services */
     if (proc.ptype == PROC_TYPE_APP && per_app_memcg) {
         if (proc.oomadj >= 900) {
             soft_limit_mult = 0;
@@ -1388,8 +1441,13 @@ static void register_oom_adj_proc(const struct lmk_procprio& proc,
         } else if (proc.oomadj >= 700) {
             soft_limit_mult = 0;
         } else if (proc.oomadj >= 600) {
-            // Launcher should be perceptible
+            // Launcher should be perceptible, don't kill it.
+            oom_adj_score = 200;
             soft_limit_mult = 1;
+        } else if (proc.oomadj >= 500) {
+            soft_limit_mult = 0;
+        } else if (proc.oomadj >= 400) {
+            soft_limit_mult = 0;
         } else if (proc.oomadj >= 300) {
             soft_limit_mult = 1;
         } else if (proc.oomadj >= 200) {
@@ -1421,6 +1479,8 @@ The soft limit multiplier translates to actual memory limits:
 | >= 900 (cached) | 0 | No limit |
 | >= 700 (previous) | 0 | No limit |
 | >= 600 (home) | 1 | 8 MB |
+| >= 500 (service) | 0 | No limit |
+| >= 400 (heavy-weight) | 0 | No limit |
 | >= 300 (backup) | 1 | 8 MB |
 | >= 200 (perceptible) | 8 | 64 MB |
 | >= 100 (visible) | 10 | 80 MB |
@@ -1429,7 +1489,10 @@ The soft limit multiplier translates to actual memory limits:
 
 These are **soft limits** -- the kernel will attempt to reclaim memory from processes exceeding
 their soft limit before reclaiming from processes within their limit, but a process can use more
-memory if available.
+memory if available. Note the special handling of the home/launcher range: the `>= 600` branch
+also remaps the registered `oom_adj_score` down to 200 so lmkd treats the launcher as
+perceptible rather than killing it, while the service (`>= 500`) and heavy-weight app (`>= 400`)
+ranges get no soft limit at all.
 
 ### 8.3.3 Task Profiles
 
@@ -1437,12 +1500,12 @@ Android extends cgroup management with the task profiles framework, which provid
 API for assigning processes to cgroups:
 
 ```c
-// Used in reaper.cpp (lines 56-65, 98-99)
-set_process_group_and_prio(target.uid, target.pid,
-    {"CPUSET_SP_FOREGROUND", "SCHED_SP_FOREGROUND"},
+// Used in reaper.cpp (lines 106-108, in the lmkd_setprio thread)
+set_process_group_and_prio(uid, pid,
+    {"CPUSET_LMKD_REAP_TARGET", "SCHED_LMKD_REAP_TARGET"},
     ANDROID_PRIORITY_NORMAL);
 
-// In reaper thread initialization
+// In reaper thread initialization (reaper.cpp, line 171)
 SetTaskProfiles(tid, {"CPUSET_SP_FOREGROUND"}, true);
 ```
 
@@ -1460,6 +1523,8 @@ Common task profiles used by the memory subsystem:
 | `ServiceCapacityLow` | Low CPU capacity for background services |
 | `CPUSET_SP_FOREGROUND` | Foreground CPU set (all cores) |
 | `SCHED_SP_FOREGROUND` | Foreground scheduling group |
+| `CPUSET_LMKD_REAP_TARGET` | lmkd-specific aggregate resolving to `CPUSET_SP_FOREGROUND` for reap victims |
+| `SCHED_LMKD_REAP_TARGET` | lmkd-specific aggregate resolving to `SCHED_SP_FOREGROUND` for reap victims |
 | `HighEnergySaving` | Power-efficient execution for background tasks |
 | `MaxPerformance` | Full performance for foreground apps |
 
@@ -1509,20 +1574,27 @@ graph TD
 Android 11 introduced the app freezer, which uses the cgroup freezer controller to suspend
 background apps instead of killing them. Frozen apps consume zero CPU but retain their memory:
 
+Android mounts the freezer as a cgroup v2 controller (`system/core/libprocessgroup/profiles/cgroups.json`),
+so freezing is controlled through each process's own cgroup directory rather than a separate
+v1 `freezer/` hierarchy:
+
 ```
-/sys/fs/cgroup/freezer/                    # Freezer cgroup hierarchy
-/sys/fs/cgroup/freezer/frozen/tasks        # Frozen process PIDs
-/sys/fs/cgroup/freezer/frozen/freezer.state # "FROZEN" or "THAWED"
+/sys/fs/cgroup/uid_<uid>/pid_<pid>/               # Per-process cgroup directory
+/sys/fs/cgroup/uid_<uid>/pid_<pid>/cgroup.freeze  # Write 1 to freeze, 0 to thaw
 ```
 
-The interaction between the freezer and lmkd is important:
+The `Frozen`/`Unfrozen` task profiles (`system/core/libprocessgroup/profiles/task_profiles.json`)
+write `1` or `0` to `cgroup.freeze` via the `FreezerState` attribute.
+
+The interaction between the freezer and lmkd is simple:
 
 1. When an app goes to the background, ActivityManagerService may freeze it.
 2. Frozen apps still consume memory -- their oom_adj is high, making them candidates for lmkd
    killing.
-3. Before killing a frozen app, lmkd must first thaw it (a frozen process cannot handle signals).
-4. If memory pressure is severe, lmkd may kill frozen apps before unfrozen cached apps because
-   frozen apps are definitionally not performing useful work.
+3. lmkd itself has no freezer awareness: it selects victims purely by oom_score_adj (and RSS for
+   perceptible processes), with no preference between frozen and unfrozen apps, and it needs no
+   thaw step -- the reaper's `cgroup.kill` write and `pidfd_send_signal(SIGKILL)` both terminate
+   a process frozen by the cgroup v2 freezer.
 
 ---
 
@@ -1584,7 +1656,7 @@ Historically, zRAM was configured during boot through init scripts and the `swap
 # Legacy init.rc zram configuration (pre-mmd path)
 write /sys/block/zram0/comp_algorithm lz4
 write /sys/block/zram0/disksize 2147483648   # 2 GB
-exec_start swapon_all
+swapon_all /vendor/etc/fstab.${ro.hardware}
 
 # fstab entry
 /dev/block/zram0  none  swap  defaults  zramsize=2147483648,zram_backingdev_size=512M
@@ -1833,10 +1905,12 @@ Android 17.
 
 ### 8.5.2 The ION Allocator (Legacy)
 
-ION provides heap-based memory allocation through the `/dev/ion` device:
+ION provided heap-based memory allocation through the `/dev/ion` device. As libion looked before
+Android 17 (this implementation no longer exists in the tree):
 
 ```c
-// system/memory/libion/ion.c (lines 58-63, 95-111)
+// Historical libion implementation (pre-Android-17); removed from
+// the current system/memory/libion/ion.c
 int ion_open() {
     int fd = open("/dev/ion", O_RDONLY | O_CLOEXEC);
     if (fd < 0) ALOGE("open /dev/ion failed: %s", strerror(errno));
@@ -1856,21 +1930,24 @@ int ion_alloc(int fd, size_t len, size_t align,
 }
 ```
 
-ION supports two ABI versions -- the library detects which is in use:
+ION historically supported two kernel ABI versions (a "legacy" pre-4.12 interface and a "modern"
+one), and libion used to probe which was in use. That probing is gone: in the current tree
+`system/memory/libion/ion.c` is a 66-line file of stubs in which every entry point fails
+unconditionally, and `ion_is_legacy()` is a hardcoded `return 0`:
 
 ```c
-// system/memory/libion/ion.c (lines 40-56)
-enum ion_version { ION_VERSION_UNKNOWN, ION_VERSION_MODERN, ION_VERSION_LEGACY };
+// system/memory/libion/ion.c (lines 22-30, 62-63) -- the current stubs
+int ion_open()
+{ return -1; }
 
-int ion_is_legacy(int fd) {
-    int version = atomic_load_explicit(&g_ion_version, memory_order_acquire);
-    if (version == ION_VERSION_UNKNOWN) {
-        int err = ion_free(fd, (ion_user_handle_t)0);
-        version = (err == -ENOTTY) ? ION_VERSION_MODERN : ION_VERSION_LEGACY;
-        atomic_store_explicit(&g_ion_version, version, memory_order_release);
-    }
-    return version == ION_VERSION_LEGACY;
-}
+int ion_alloc(int, size_t, size_t, unsigned int,
+              unsigned int, ion_user_handle_t *)
+{ return -1; }
+
+// ...
+
+int ion_is_legacy(int)
+{ return 0; }
 ```
 
 ION heap types:
@@ -1910,7 +1987,7 @@ int BufferAllocator::Alloc(const std::string& heap_name, size_t len, unsigned in
 The allocation through DMA-BUF heaps uses a simple ioctl:
 
 ```c
-// system/memory/libdmabufheap/BufferAllocator.cpp (lines 216-236)
+// system/memory/libdmabufheap/BufferAllocator.cpp (lines 87-107, abbreviated)
 int BufferAllocator::DmabufAlloc(const std::string& heap_name,
                                   size_t len, int fd) {
     struct dma_heap_allocation_data heap_data{
@@ -1936,7 +2013,7 @@ The Gralloc (Graphics Allocation) HAL sits above ION/DMA-BUF and provides the st
 interface for allocating graphics buffers. It has evolved through multiple versions:
 
 ```c
-// frameworks/native/libs/ui/GraphicBufferMapper.cpp (lines 60-83)
+// frameworks/native/libs/ui/GraphicBufferMapper.cpp (lines 69-93)
 GraphicBufferMapper::GraphicBufferMapper() {
     mMapper = std::make_unique<const Gralloc5Mapper>();
     if (mMapper->isLoaded()) {
@@ -1948,19 +2025,27 @@ GraphicBufferMapper::GraphicBufferMapper() {
         mMapperVersion = Version::GRALLOC_4;
         return;
     }
-    mMapper = std::make_unique<const Gralloc3Mapper>();
-    if (mMapper->isLoaded()) {
-        mMapperVersion = Version::GRALLOC_3;
-        return;
+    if (!requireMapper4()) {
+        mMapper = std::make_unique<const Gralloc3Mapper>();
+        if (mMapper->isLoaded()) {
+            mMapperVersion = Version::GRALLOC_3;
+            return;
+        }
+        mMapper = std::make_unique<const Gralloc2Mapper>();
+        if (mMapper->isLoaded()) {
+            mMapperVersion = Version::GRALLOC_2;
+            return;
+        }
     }
-    mMapper = std::make_unique<const Gralloc2Mapper>();
-    if (mMapper->isLoaded()) {
-        mMapperVersion = Version::GRALLOC_2;
-        return;
-    }
+
     LOG_ALWAYS_FATAL("gralloc-mapper is missing");
 }
 ```
+
+The `requireMapper4()` guard (`android_get_device_api_level() >= 36 &&
+flags::require_gralloc4_or_newer()`) means that on API level 36+ devices with the
+`require_gralloc4_or_newer` flag enabled, the Gralloc 2/3 fallbacks are skipped entirely --
+only Gralloc 4 and 5 are considered.
 
 The `GraphicBufferAllocator` selects the matching allocator implementation:
 
@@ -2057,19 +2142,19 @@ Key usage flags that affect allocation:
 
 | Flag | Value | Description |
 |---|---|---|
-| `AHARDWAREBUFFER_USAGE_CPU_READ` | Various | CPU needs read access |
-| `AHARDWAREBUFFER_USAGE_CPU_WRITE` | Various | CPU needs write access |
+| `AHARDWAREBUFFER_USAGE_CPU_READ_*` | NEVER/RARELY/OFTEN, mask `0xF` | How often the CPU reads the buffer |
+| `AHARDWAREBUFFER_USAGE_CPU_WRITE_*` | NEVER/RARELY/OFTEN, mask `0xF << 4` | How often the CPU writes the buffer |
 | `AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE` | | GPU texture sampling |
 | `AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT` | | GPU render target |
 | `AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY` | | Hardware composer overlay |
 | `AHARDWAREBUFFER_USAGE_VIDEO_ENCODE` | | Video encoder input |
-| `AHARDWAREBUFFER_USAGE_CAMERA_WRITE` | | Camera output buffer |
+| `AHARDWAREBUFFER_USAGE_CAMERA_WRITE` | | Camera output buffer (VNDK-only: defined in `vndk/hardware_buffer.h`, not the public NDK header) |
 | `AHARDWAREBUFFER_USAGE_PROTECTED_CONTENT` | | DRM-protected content |
 
 The DMA-BUF allocator can route allocations to different heaps based on these flags:
 
 ```c
-// system/memory/libdmabufheap/BufferAllocator.cpp (lines 288-312)
+// system/memory/libdmabufheap/BufferAllocator.cpp (lines 133-158, abbreviated)
 int BufferAllocator::AllocSystem(bool cpu_access_needed, size_t len,
                                   unsigned int heap_flags) {
     if (!cpu_access_needed) {
@@ -2095,13 +2180,9 @@ int BufferAllocator::AllocSystem(bool cpu_access_needed, size_t len,
 When the CPU and hardware accelerators share memory, cache coherency must be managed explicitly:
 
 ```c
-// system/memory/libdmabufheap/BufferAllocator.cpp (lines 369-382)
+// system/memory/libdmabufheap/BufferAllocator.cpp (lines 165-171)
 int BufferAllocator::DoSync(unsigned int dmabuf_fd, bool start,
-                            SyncType sync_type, /*...*/) {
-    if (uses_legacy_ion_iface_) {
-        return LegacyIonCpuSync(dmabuf_fd, /*...*/);
-    }
-
+                            SyncType sync_type) {
     struct dma_buf_sync sync = {
         .flags = (start ? DMA_BUF_SYNC_START : DMA_BUF_SYNC_END) |
                  static_cast<uint64_t>(sync_type),
@@ -2110,6 +2191,10 @@ int BufferAllocator::DoSync(unsigned int dmabuf_fd, bool start,
         ioctl(dmabuf_fd, DMA_BUF_IOCTL_SYNC, &sync));
 }
 ```
+
+There is no ION fallback here any more: with the ION removal (Section 8.5.9) the sync path is a
+single `DMA_BUF_IOCTL_SYNC` ioctl, and the old `CustomCpuSyncLegacyIon` overloads simply forward
+to this function.
 
 The sync protocol:
 
@@ -2175,7 +2260,7 @@ under-counts graphics-heavy apps. The gap is filled by `libmemtrack`
 (`system/memory/libmemtrack/`), a thin client of the memtrack HAL: a caller fills a
 `memtrack_proc` handle with `memtrack_proc_get(pid)` and reads back per-process graphics, GL, and
 "other" totals. Internally the library does not talk to the vendor HAL directly; it binds to the
-`memtrack.proxy` service (`MemtrackProxyService`, `frameworks/native/services/memtrackproxy/`),
+`memtrack.proxy` service (the `MemtrackProxy` class, `frameworks/native/services/memtrackproxy/`),
 which fronts the per-device memtrack HAL. This is the path -- process to `libmemtrack` to the
 memtrack proxy to the HAL -- that produces the `GL mtrack` line in the `dumpsys meminfo` output
 shown in Section 8.7.1; the JNI layer (`frameworks/base/core/jni/android_os_Debug.cpp`) calls
@@ -2213,12 +2298,18 @@ compatibility for GRF")]]`, so they occupy space in the object but are never pop
 For vendors this means a device must ship DMA-BUF heaps: each buffer pool that used to be an ION
 heap needs a matching `/dev/dma_heap/<name>` node, registered through the kernel's `dma-buf` heap
 framework (system, CMA, and vendor-specific heaps) rather than the old ION heap registration. The
-heap-name-to-properties mapping that `MapNameToIonHeap()` used to express now lives in
-`/vendor/etc/dma_heap.json` (the schema added alongside this change), which `BufferAllocator`'s
-Rust and C++ config readers consume. `system/memory/libion/` still exists as a standalone library,
-but `BufferAllocator` no longer links its allocation path, so a vendor blob that calls into
-`libion` directly is the only remaining way `/dev/ion` gets touched, and that depends on a kernel
-that still builds the ION driver. The Android 17 reference configs do not enable `CONFIG_ION`;
+heap flag and alignment properties that `MapNameToIonHeap()` used to carry have no replacement --
+they were ION-specific and are simply gone. The `/vendor/etc/dma_heap.json` file added alongside
+this change (`system/memory/libdmabufheap/configs/schema.proto`) is something different: an
+NPU/heap compatibility matrix mapping each `/dev/dma_heap/<name>` device to the NPU device
+numbers and buffer types it can serve, consumed by the separate `libdma_heap_config_rust` (Rust,
+crate `dma_heap_config`) and `libdma_heap_config_proto` (C++) libraries -- `BufferAllocator` itself
+never reads it.
+`system/memory/libion/` still ships as a shared library, but only for ABI compatibility: every
+function in it is a stub (each returns -1, and the two `ion_is_*` predicates return 0), and the
+library never opens `/dev/ion`. Calling libion therefore cannot touch the ION driver at all; a
+vendor blob would have to open `/dev/ion` itself, and that in turn depends on a kernel that still
+builds the ION driver. The Android 17 reference configs do not enable `CONFIG_ION`;
 the only `CONFIG_ION=y` lines left in the tree are the old `kernel/configs/s/` (Android 12)
 recommended configs.
 
@@ -2361,9 +2452,15 @@ The `dumpsys meminfo` output shows these distinctions for each process.
 | **Purgeable** | `ASHMEM_PIN`/`ASHMEM_UNPIN` | Not directly supported |
 | **SELinux** | Custom policy rules | Standard file descriptor policy |
 | **seccomp** | Requires ioctl allowlist | Standard syscall filtering |
-| **Availability** | All Android versions | Android 10+ (API 29+) |
-| **NDK API** | `ASharedMemory_create()` | `ASharedMemory_create()` (uses memfd internally) |
+| **Availability** | All Android versions | Vendor API level 202604+ with `memfd_class` sepolicy capability |
+| **NDK API** | `ASharedMemory_create()` | `ASharedMemory_create()` (routes to memfd only when gated in) |
 | **Binder transport** | Via `BINDER_TYPE_FD` | Via `BINDER_TYPE_FD` |
+
+The switch is gated in `system/core/libcutils/ashmem-dev.cpp`: `ASharedMemory_create()` calls
+into `ashmem_create_region()`, which picks memfd over `/dev/ashmem` only when `__use_memfd()`
+passes -- the kernel/sepolicy must support the `memfd_class` capability, the device must have
+`ro.vendor.api_level >= 202604`, and the app must target SDK 37 or higher (or memfd is forced
+via `sys.use_memfd=true`). On anything older, the call still falls back to `/dev/ashmem`.
 
 ### 8.6.8 Memory Mapping Patterns
 
@@ -2377,7 +2474,7 @@ graph TD
         end
 
         subgraph "MAP_SHARED + MAP_ANONYMOUS"
-            SA["Shared anonymous<br/>- ashmem/memfd regions<br/>- Binder shared memory<br/>- Visible in both processes"]
+            SA["Shared anonymous<br/>- fork-shared scratch regions<br/>- Inherited across fork<br/>- Visible in both processes"]
         end
 
         subgraph "MAP_PRIVATE + file-backed"
@@ -2385,7 +2482,7 @@ graph TD
         end
 
         subgraph "MAP_SHARED + file-backed"
-            SF["Shared file mapping<br/>- File I/O (mmap'd files)<br/>- Writes visible to all mappers<br/>- Changes persist to disk"]
+            SF["Shared file mapping<br/>- File I/O (mmap'd files)<br/>- ashmem/memfd regions<br/>- Binder shared memory<br/>- Writes visible to all mappers"]
         end
     end
 
@@ -2473,8 +2570,10 @@ states, enabling identification of processes that gradually increase memory usag
 
 ### 8.7.3 heapprofd (Perfetto Native Heap Profiling)
 
-`heapprofd` is a daemon-less heap profiler that captures allocation backtraces with minimal
-overhead. It integrates with Perfetto for trace collection:
+`heapprofd` is a system daemon (started by init as the `heapprofd` service running
+`/system/bin/heapprofd`; see `external/perfetto/heapprofd.rc`) that captures allocation
+backtraces with minimal overhead. The target process only hosts a small client library that
+talks to the daemon, which integrates with Perfetto for trace collection:
 
 ```shell
 # Profile a running process
@@ -2916,8 +3015,7 @@ manages memory state tracking and trim callbacks:
 
 public class AppProfiler {
     // Called periodically to update low memory state
-    void updateLowMemStateLSP(int numCached, int numEmpty,
-                               int numTrimming, long now) {
+    void updateLowMemStateLSP(int numCached, int numEmpty, long now) {
         // Determine current memory state
         // Send TRIM_MEMORY callbacks to appropriate processes
     }
@@ -2934,17 +3032,17 @@ public class AppProfiler {
 The `ProcessList` class manages the mapping between process importance and OOM scores:
 
 ```java
+// frameworks/base/services/core/java/com/android/server/am/psc/Constants.java
+// (OOM adjustment levels, lines ~77-162; ProcessList static-imports them)
+public static final int CACHED_APP_MIN_ADJ = 900;
+public static final int PERCEPTIBLE_APP_ADJ = 200;
+public static final int VISIBLE_APP_ADJ = 100;
+public static final int FOREGROUND_APP_ADJ = 0;
+
 // frameworks/base/services/core/java/com/android/server/am/ProcessList.java
-
 public final class ProcessList {
-    // OOM adjustment levels (lines 213-284)
-    public static final int CACHED_APP_MIN_ADJ = 900;
-    public static final int PERCEPTIBLE_APP_ADJ = 200;
-    public static final int VISIBLE_APP_ADJ = 100;
-    public static final int FOREGROUND_APP_ADJ = 0;
-
-    // Default minfree levels for lmkd
-    private static final int[] mOomAdj = new int[] {
+    // OOM levels reported to lmkd alongside the minfree thresholds
+    private final int[] mOomAdj = new int[] {
         FOREGROUND_APP_ADJ, VISIBLE_APP_ADJ, PERCEPTIBLE_APP_ADJ,
         PERCEPTIBLE_LOW_APP_ADJ, CACHED_APP_MIN_ADJ,
         CACHED_APP_LMK_FIRST_ADJ
@@ -3110,14 +3208,19 @@ graph TD
     end
 
     subgraph "GC Algorithms"
-        CC["Concurrent Copying (CC)<br/>Default collector<br/>Low pause, compacting"]
-        CMS["Concurrent Mark-Sweep<br/>Legacy, non-compacting"]
+        CMC["Concurrent Mark-Compact (CMC)<br/>Default collector<br/>userfaultfd-based, compacting"]
+        CC["Concurrent Copying (CC)<br/>Previous default<br/>Low pause, compacting"]
     end
 
-    Main --> CC
-    LOS --> CC
-    NonMoving --> CMS
+    Main --> CMC
+    LOS --> CMC
+    NonMoving --> CMC
 ```
+
+The default collector is selected at build time (`ART_DEFAULT_GC_TYPE`, default `CMC` in
+`art/build/art.go`). CMC compacts the main space using the kernel's `userfaultfd` mechanism and
+mark-sweeps the non-moving and large object spaces in the same collection; Concurrent Copying
+(CC) was the previous default and remains selectable.
 
 ART triggers GC based on:
 
@@ -3161,9 +3264,10 @@ graph TD
     subgraph "Shadow Values"
         V0["0x00: All 8 bytes valid"]
         V1["0x01-0x07: First N bytes valid"]
-        VN["0xFC: Free'd by kfree"]
+        VN["0xFC: Slab object redzone"]
+        VF["0xFB: Freed slab object"]
         VA["0xF1: Stack left redzone"]
-        VB["0xF8: Stack use-after-scope"]
+        VB["0xF8: Inaccessible vmalloc area"]
     end
 ```
 
@@ -3172,14 +3276,16 @@ graph TD
 ARM's Memory Tagging Extension (MTE), available from ARMv8.5, provides hardware-assisted
 memory safety. Android was the first major platform to adopt MTE system-wide.
 
-MTE assigns a 4-bit tag (0-15) to both pointers and memory allocations. The hardware
+MTE assigns a 4-bit tag (0-15) to both pointers and memory allocations. The pointer's tag rides
+in bits 59:56, inside the top byte that AArch64's Top-Byte-Ignore feature already excludes from
+address translation, so the addressable virtual address is unchanged at 56 bits. The hardware
 checks that the pointer tag matches the memory tag on every access:
 
 ```mermaid
 graph LR
     subgraph "MTE-Tagged Pointer"
-        Tag["Tag<br/>(4 bits)"]
-        Addr["Virtual Address<br/>(60 bits)"]
+        Tag["Tag<br/>(4 bits, 59:56)"]
+        Addr["Virtual Address<br/>(56 bits, 55:0)"]
     end
 
     subgraph "Physical Memory"
@@ -3215,11 +3321,17 @@ MTE modes:
 | Asymmetric | ~1-2% | Sync for reads, async for writes | Production on some devices |
 | Asynchronous | <1% | Delayed reporting via SIGSEGV | Production monitoring |
 
-### 8.9.3 GWP-ASan (Guarded With Probability - AddressSanitizer)
+### 8.9.3 GWP-ASan
 
-GWP-ASan is a probabilistic memory error detector that instruments a small fraction of
-allocations. Unlike full ASan, it has negligible runtime overhead and is enabled by default
-on production Android builds.
+GWP-ASan (upstream expands it as the recursive acronym "GWP-ASan Will Provide Allocation
+SANity") is a probabilistic memory error detector that instruments a small fraction of
+allocations. Unlike full ASan, it has negligible runtime overhead, so it can run on production
+builds. Since Android 14 ordinary apps get it by default too: system processes, system apps and
+apps left at `Mode::APP_MANIFEST_DEFAULT` all enable GWP-ASan through 1-in-128 random process
+sampling (`kDefaultProcessSampling` in `bionic/libc/bionic/gwp_asan_wrappers.cpp`). Setting
+`android:gwpAsanMode="always"` drops the process sampling so every process of the app is guarded,
+and `android:gwpAsanMode="never"` is the opt-out -- it is the only mode that leaves GWP-ASan off
+(`bionic/libc/platform/bionic/malloc.h`, the `Mode` enum).
 
 Key features:
 
@@ -3227,7 +3339,9 @@ Key features:
   after, catching overflows immediately.
 - **Delayed free**: Freed memory is quarantined and its pages are marked inaccessible, catching
   use-after-free.
-- **Probabilistic**: Only 1 in ~1000 allocations is guarded, keeping overhead near zero.
+- **Probabilistic**: Only about 1 in 2500 allocations is guarded by default
+  (`kDefaultSampleRate = 2500` in `bionic/libc/bionic/gwp_asan_wrappers.cpp`), keeping overhead
+  near zero.
 - **Crash reports**: When a bug is detected, the crash report includes the allocation and
   deallocation backtraces.
 
@@ -3246,16 +3360,23 @@ Configuration via Android manifest:
 
 ```xml
 <application android:gwpAsanMode="always">
-    <!-- Enable GWP-ASan for this app's native code -->
+    <!-- Guard every process of this app: no 1-in-128 process sampling -->
 </application>
 ```
 
-Or via system property for system processes:
+Or via the bionic system properties (`bionic/libc/bionic/gwp_asan_wrappers.cpp`):
 
 ```
-# Enable for all system processes
-persist.sys.gwp_asan.enable=true
+# 1-in-N process sampling for system processes (default 128)
+libc.debug.gwp_asan.process_sampling.system_default
+# 1-in-N allocation sampling once enabled (default 2500)
+libc.debug.gwp_asan.sample_rate.system_default
+# Per-process override by executable basename
+libc.debug.gwp_asan.sample_rate.<basename>
 ```
+
+Matching `app_default` variants and `libc.debug.gwp_asan.max_allocs.*` properties control app
+processes and the guarded-allocation pool size.
 
 ### 8.9.4 Scudo: Android's Hardened Allocator
 
@@ -3321,11 +3442,13 @@ graph TD
         Manifest["AndroidManifest.xml<br/>android:memtagMode"]
         SysProp["System property<br/>arm64.memtag.process.*"]
         BuildConfig["Build config<br/>SANITIZE_TARGET=memtag_heap"]
+        KernelConfig["Kernel config<br/>CONFIG_ARM64_MTE<br/>CONFIG_KASAN_HW_TAGS"]
     end
 
     Manifest --> Scudo_MTE
     SysProp --> Scudo_MTE
-    BuildConfig --> Kernel_MTE
+    BuildConfig --> Heap_MTE
+    KernelConfig --> Kernel_MTE
 ```
 
 Android's MTE deployment strategy:
@@ -3403,7 +3526,7 @@ centralize ZRAM configuration and to separate swap management from `system_serve
 | `aidl/android/os/IMmd.aidl` | The `IMmd` Binder interface |
 | `aidl/android/os/IMmdProcessWritebackCallback.aidl` | Per-process writeback completion callback |
 | `src/service.rs` | `MmdService` Binder implementation and the work queue |
-| `src/zram/setup.rs` | First-boot ZRAM device creation and `swapon` |
+| `src/zram/setup.rs` | Per-boot ZRAM device configuration, `mkswap`, and `swapon` |
 | `src/zram/writeback.rs` | Idle writeback policy |
 | `src/zram/recompression.rs` | Recompression policy |
 | `src/zram/idle.rs` | Idle-page age tracking |
@@ -3481,8 +3604,12 @@ if (checkStatus && !mmd.isZramMaintenanceSupported()) {
 mmd.doZramMaintenanceAsync();
 ```
 
-The `IMmd` interface is deliberately one-way and asynchronous: `mmd` treats everything passed
-from outside as a *hint* and applies its own policy, so the caller never blocks on it
+The hint and command methods of `IMmd` (`doZramMaintenanceAsync`,
+`asyncWritebackProcessZramMemory`, `asyncPrefetchProcessZramMemory`) are declared `oneway`:
+`mmd` treats everything passed from outside as a *hint* and applies its own policy, so the
+caller never blocks on them. The two capability queries (`isZramMaintenanceSupported`,
+`supportsProcessMemoryZramOps`) are ordinary blocking Binder calls, which is why
+`ZramMaintenance` invokes them from a background thread
 (`system/memory/mmd/aidl/android/os/IMmd.aidl`). When the maintenance hint arrives, `mmd` decides
 whether to write back idle pages, recompress pages with a stronger algorithm (default `zstd`), or
 do nothing, based on the `mmd.zram.writeback.*` and `mmd.zram.recompression.*` policy properties
@@ -3645,8 +3772,8 @@ A 16 KB kernel can only run apps and native libraries whose ELF segments are ali
   binary loads correctly on both 4 KB and 16 KB kernels.
 - **Linker segment extension and padding**: the bionic linker extends or pads segments to satisfy
   the larger alignment at load time, with a per-app compatibility property to opt out for legacy
-  code (Chapter 7 covers `ProtectedDataGuard`, segment extension, and the page-size compatibility
-  property in detail).
+  code (Chapter 7 covers the linker's segment extension and padding in `linker_phdr.cpp` --
+  `kPageSize`, `FixMinAlignFor16KiB()` -- and the page-size compatibility property in detail).
 - **Emulator and dev devices**: Android 17 ships 16 KB system images and emulator targets so
   developers can test before shipping hardware that boots a 16 KB kernel by default.
 
@@ -3897,8 +4024,8 @@ adb shell dumpsys meminfo --oom
 adb shell dumpsys procstats --hours 3
 
 # 5. Check Graphics buffer allocations
-adb shell dumpsys SurfaceFlinger --dispsync | head -50
-adb shell dumpsys meminfo --gpu
+adb shell dumpsys SurfaceFlinger --vsync | head -50
+adb shell dumpsys gpu
 ```
 
 ### Exercise 54.3: Profile Native Memory with heapprofd
@@ -4087,8 +4214,10 @@ adb shell am send-trim-memory com.example.memorytest RUNNING_LOW
 # 1. Check if MTE is available
 adb shell cat /proc/cpuinfo | grep -i mte
 
-# 2. Check MTE status for a process
-adb shell cat /proc/$(adb shell pidof com.android.systemui)/status | grep Tagged
+# 2. Check tagged-address use for a process (untag_mask != all-ones
+#    means tagged addresses are enabled; the per-process MTE mode is
+#    queried via PR_GET_TAGGED_ADDR_CTRL or the memtag properties)
+adb shell cat /proc/$(adb shell pidof com.android.systemui)/status | grep untag_mask
 
 # 3. Check system-wide MTE configuration
 adb shell getprop persist.arm64.memtag.default
@@ -4331,8 +4460,9 @@ adb shell logcat -b events -d | grep lowmemorykiller | tail -20
 adb shell "logcat -b main -d | grep -E 'Kill.*oom_score_adj|lowmemorykiller' | tail -20"
 
 # 3. Query lmkd kill counts via its socket interface
-# (This requires a custom tool or using ProcessList's getKillCount())
-adb shell dumpsys activity processes | grep -A5 "Kill Counts"
+# (This requires a custom tool: lmkd_get_kill_count() in
+#  system/memory/lmkd/liblmkd_utils.cpp sends the LMK_GETKILLCNT
+#  command over the lmkd control socket and returns the count)
 
 # 4. Analyze the pattern: what oom_adj levels are being killed?
 adb shell "logcat -b main -d | grep 'Kill.*oom_score_adj' | \
@@ -4419,9 +4549,10 @@ echo "=== Memory Security Audit ==="
 adb shell "cat /proc/cpuinfo | grep -c 'mte' && \
   echo 'MTE: Hardware available' || echo 'MTE: Not available'"
 
-# GWP-ASan status
-adb shell "getprop libc.debug.gwp_asan.max_allocs"
-adb shell "getprop persist.sys.gwp_asan.enable"
+# GWP-ASan status (properties always carry a scope suffix:
+# .system_default, .app_default, or .<process basename>)
+adb shell "getprop libc.debug.gwp_asan.max_allocs.system_default"
+adb shell "getprop libc.debug.gwp_asan.process_sampling.system_default"
 
 # Scudo configuration
 adb shell "cat /proc/\$(pidof com.android.systemui)/maps | \
@@ -4440,10 +4571,12 @@ adb shell "readelf -s /system/bin/surfaceflinger 2>/dev/null | \
 adb shell getenforce
 
 echo ""
-echo "=== Per-Process MTE Status ==="
+echo "=== Per-Process Tagged-Address Status ==="
+# The kernel exposes only untag_mask in /proc/<pid>/status; an untag_mask
+# with the top byte cleared means tagged addresses are in use.
 adb shell "for p in /proc/[0-9]*/status; do \
   pid=\$(echo \$p | cut -d/ -f3); \
-  tagged=\$(grep 'Tagged_addr_ctrl' \$p 2>/dev/null); \
+  tagged=\$(grep 'untag_mask' \$p 2>/dev/null); \
   if [ -n \"\$tagged\" ]; then \
     name=\$(cat /proc/\$pid/cmdline 2>/dev/null | tr '\0' ' ' | cut -c1-30); \
     echo \"PID \$pid (\$name): \$tagged\"; \

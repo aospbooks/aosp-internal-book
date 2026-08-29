@@ -53,7 +53,7 @@ graph TD
         L[Transition request] --> M[TransitionController]
         M --> N[SurfaceAnimator creates leash]
         N --> O[SurfaceAnimationRunner]
-        O --> P[ValueAnimator on AnimationThread]
+        O --> P[ValueAnimator on SurfaceAnimationThread]
         P --> Q[SurfaceControl.Transaction]
         Q --> K
     end
@@ -82,9 +82,9 @@ CALLBACK_TRAVERSAL   = 3   // View measure/layout/draw
 CALLBACK_COMMIT      = 4   // Post-draw commit; reports a corrected frame start time
 ```
 
-The `CALLBACK_COMMIT` phase runs after traversal and reports a better
-estimate of the frame's true start time so that the view hierarchy can
-correct for delays caused by heavy layout work.  Note that in Android 17 the
+The `CALLBACK_COMMIT` phase runs after traversal and is documented as
+reporting a better estimate of the frame's true start time for callers that
+need to correct for delays caused by heavy layout work.  Note that in Android 17 the
 `AnimationHandler` no longer posts per-animator commit callbacks: the
 start-time commit/jank-compensation hook that earlier releases bolted onto
 each `ValueAnimator` has been removed (see §14.3.12).
@@ -122,8 +122,8 @@ sequenceDiagram
 | `frameworks/base/libs/hwui/` (Animator*) | Native HWUI animators | ~830 |
 | `frameworks/base/core/java/android/view/Choreographer.java` | Timing pulse | 1,741 |
 | `frameworks/base/services/core/java/com/android/server/wm/` (anim) | WM animation infrastructure | ~2,400 |
-| `frameworks/base/libs/WindowManager/Shell/src/.../transition/` | Shell transitions | ~8,200 |
-| `frameworks/base/libs/WindowManager/Shell/src/.../back/` | Predictive back | ~3,200 |
+| `frameworks/base/libs/WindowManager/Shell/src/.../transition/` | Shell transitions | ~12,100 |
+| `frameworks/base/libs/WindowManager/Shell/src/.../back/` | Predictive back | ~4,500 |
 | `frameworks/base/core/java/com/android/internal/dynamicanimation/animation/` | Physics animations | ~1,750 |
 
 ### 14.1.5 Thread Model
@@ -137,6 +137,7 @@ graph TD
         VA[ValueAnimator]
         OA[ObjectAnimator]
         AS[AnimatorSet]
+        VPA[ViewPropertyAnimator]
         SA[SpringAnimation]
         FA[FlingAnimation]
         LT[LayoutTransition]
@@ -146,15 +147,14 @@ graph TD
     subgraph "RenderThread"
         HWUI[HWUI BaseRenderNodeAnimator]
         AVD[AnimatedVectorDrawable native]
-        VPA[ViewPropertyAnimator native path]
     end
 
     subgraph "AnimationThread (system_server)"
-        SAR[SurfaceAnimationRunner]
+        AT[Animation pre-processing and finish callbacks]
     end
 
     subgraph "SurfaceAnimationThread (system_server)"
-        SATH[Surface animation handler]
+        SAR[SurfaceAnimationRunner animator loop]
     end
 
     subgraph "Shell Main Thread"
@@ -164,11 +164,14 @@ graph TD
     end
 ```
 
-The key insight is that **ViewPropertyAnimator** and **AnimatedVectorDrawable**
-(API 25+) run natively on the RenderThread, making them immune to UI thread
-jank.  All other Java-based animations run on the UI thread and are
-susceptible to interruption by garbage collection, heavy layout, or other
-main-thread work.
+The key insight is that only **AnimatedVectorDrawable** (API 25+) and other
+HWUI `RenderNodeAnimator`-backed animations run natively on the RenderThread,
+making them immune to UI thread jank.  **ViewPropertyAnimator**, despite its
+name, is a convenience wrapper that drives a plain `ValueAnimator` on the UI
+thread (`frameworks/base/core/java/android/view/ViewPropertyAnimator.java`,
+line 860); it and all other Java-based animations run on the UI thread and
+are susceptible to interruption by garbage collection, heavy layout, or
+other main-thread work.
 
 ### 14.1.6 Animation Coordination Across Processes
 
@@ -432,7 +435,7 @@ protected void applyTransformation(float interpolatedTime, Transformation t) {
 
 ### 14.2.5 AnimationSet
 
-`AnimationSet` (553 lines) groups multiple animations that play together.
+`AnimationSet` (552 lines) groups multiple animations that play together.
 Its `getTransformation()` iterates children in reverse order and calls
 `compose()` to concatenate their transformations:
 
@@ -749,7 +752,9 @@ View Animations are also used internally by the Window Manager for legacy
 window transitions.  `WindowAnimationSpec` wraps a view `Animation` to
 apply it to a `SurfaceControl` instead of a View.  The animation's
 `Transformation` matrix is converted into `SurfaceControl.Transaction`
-operations (setPosition, setMatrix, setAlpha).
+operations (setMatrix, setAlpha, setWindowCrop); the animation's position
+offset is baked into the matrix via `postTranslate()` rather than applied
+with a separate `setPosition` call.
 
 ### 14.2.13 Interpolator Native Bridge
 
@@ -777,32 +782,32 @@ UI-thread and RenderThread animations.
 | File | Lines | Purpose |
 |---|---|---|
 | `Animation.java` | 1,363 | Abstract base class |
-| `AnimationSet.java` | 553 | Group of simultaneous animations |
+| `AnimationSet.java` | 552 | Group of simultaneous animations |
 | `AnimationUtils.java` | ~400 | Loading helpers, currentAnimationTimeMillis |
-| `Transformation.java` | ~220 | Matrix + alpha container |
+| `Transformation.java` | ~278 | Matrix + alpha container |
 | `AlphaAnimation.java` | 89 | Opacity animation |
 | `TranslateAnimation.java` | 241 | Position animation |
 | `RotateAnimation.java` | 183 | Rotation animation |
 | `ScaleAnimation.java` | 289 | Scale animation |
-| `ClipRectAnimation.java` | ~80 | Clip rect animation |
-| `ExtendAnimation.java` | ~60 | Edge extension animation |
-| `TranslateXAnimation.java` | ~40 | X-only translation (optimized) |
-| `TranslateYAnimation.java` | ~40 | Y-only translation (optimized) |
+| `ClipRectAnimation.java` | ~166 | Clip rect animation |
+| `ExtendAnimation.java` | ~180 | Edge extension animation |
+| `TranslateXAnimation.java` | ~55 | X-only translation (optimized) |
+| `TranslateYAnimation.java` | ~57 | Y-only translation (optimized) |
 | `PathInterpolator.java` | 245 | Bezier/path-based interpolation |
 | `AccelerateDecelerateInterpolator.java` | 48 | Default cosine ease |
-| `AccelerateInterpolator.java` | ~55 | Power-curve acceleration |
-| `DecelerateInterpolator.java` | ~55 | Power-curve deceleration |
+| `AccelerateInterpolator.java` | ~90 | Power-curve acceleration |
+| `DecelerateInterpolator.java` | ~86 | Power-curve deceleration |
 | `LinearInterpolator.java` | ~35 | Identity function |
 | `BounceInterpolator.java` | ~50 | Bounce at end |
-| `OvershootInterpolator.java` | ~60 | Cubic overshoot |
-| `AnticipateInterpolator.java` | ~55 | Wind-up before motion |
-| `AnticipateOvershootInterpolator.java` | ~70 | Combined wind-up and overshoot |
-| `CycleInterpolator.java` | ~45 | Sine cycle |
-| `BackGestureInterpolator.java` | ~60 | Back gesture curves |
+| `OvershootInterpolator.java` | ~81 | Cubic overshoot |
+| `AnticipateInterpolator.java` | ~78 | Wind-up before motion |
+| `AnticipateOvershootInterpolator.java` | ~108 | Combined wind-up and overshoot |
+| `CycleInterpolator.java` | ~70 | Sine cycle |
+| `BackGestureInterpolator.java` | ~26 | Back gesture curves |
 | `BaseInterpolator.java` | ~30 | Abstract base for interpolators |
-| `Interpolator.java` | ~10 | Interface extending TimeInterpolator |
-| `LayoutAnimationController.java` | ~350 | Staggered child animations |
-| `GridLayoutAnimationController.java` | ~200 | Grid-based staggered animations |
+| `Interpolator.java` | ~31 | Interface extending TimeInterpolator |
+| `LayoutAnimationController.java` | ~437 | Staggered child animations |
+| `GridLayoutAnimationController.java` | ~426 | Grid-based staggered animations |
 
 ---
 
@@ -917,7 +922,7 @@ public static boolean areAnimatorsEnabled() {
 |---|---|---|
 | `ofInt(int...)` | IntEvaluator | Integer range |
 | `ofFloat(float...)` | FloatEvaluator | Float range |
-| `ofArgb(int...)` | ArgbEvaluator | Color interpolation in sRGB |
+| `ofArgb(int...)` | ArgbEvaluator | Color interpolation in linear space (sRGB-to-linear round trip) |
 | `ofObject(TypeEvaluator, Object...)` | Custom | Arbitrary type |
 | `ofPropertyValuesHolder(PVH...)` | Per-holder | Multi-property |
 
@@ -958,7 +963,10 @@ sequenceDiagram
 The core timing logic in `animateBasedOnTime()` (simplified):
 
 1. Compute `currentIterationFraction = (currentTime - startTime) / duration`
-2. Handle repeat: divide by total iterations to get `overallFraction`
+2. Handle repeat: `mOverallFraction` is the raw elapsed/duration ratio
+   clamped to `[0, mRepeatCount + 1]`; `getCurrentIterationFraction()` then
+   subtracts the integer iteration index to get the fraction within the
+   current cycle
 3. For REVERSE mode, flip fraction on odd iterations
 4. Call `animateValue(fraction)` which applies the interpolator
 
@@ -1034,9 +1042,9 @@ Built-in evaluators:
 
 | Evaluator | Operation |
 |---|---|
-| `IntEvaluator` | `startValue + (int)(fraction * (endValue - startValue))` |
+| `IntEvaluator` | `(int)(startValue + fraction * (endValue - startValue))` -- the truncation applies to the whole sum, so a decreasing animation rounds toward the start value |
 | `FloatEvaluator` | `startValue + fraction * (endValue - startValue)` |
-| `ArgbEvaluator` | Per-channel interpolation in sRGB color space |
+| `ArgbEvaluator` | Converts R/G/B from sRGB to linear (gamma 2.2), lerps each channel in linear space, converts back to sRGB; alpha is lerped directly |
 | `PointFEvaluator` | Interpolates PointF x,y independently |
 | `RectEvaluator` | Interpolates Rect left/top/right/bottom |
 | `IntArrayEvaluator` | Element-wise int array interpolation |
@@ -1044,7 +1052,7 @@ Built-in evaluators:
 
 ### 14.3.8 AnimatorSet and the Dependency Graph
 
-`AnimatorSet` (2,280 lines) organizes multiple `Animator` instances into
+`AnimatorSet` (2,272 lines) organizes multiple `Animator` instances into
 a dependency graph using a node-based internal structure:
 
 ```mermaid
@@ -1185,8 +1193,11 @@ longer posts commit callbacks for its registered animators (compare the
 `doAnimationFrame()` body in §14.3.17 -- it dispatches frame callbacks and
 nothing else).  The `CALLBACK_COMMIT` phase still exists on Choreographer
 (`frameworks/base/core/java/android/view/Choreographer.java`, line 363) and is
-used by the view hierarchy itself to report a corrected frame start time after
-traversal, but the property-animation framework no longer participates in it.
+still documented as reporting a better frame-start estimate after traversal
+(lines 353-363), but in the current tree its in-platform users are Shell
+components (`PipTaskOrganizer`, `SplashScreenExitAnimationUtils`) plus
+`ActivityThread` and `AutofillManager` -- not the view hierarchy, and no
+longer the property-animation framework.
 
 `ValueAnimator` still tracks `mLastFrameTime` (line 161) for first-frame
 detection and start-delay handling; what is gone is the explicit start-time
@@ -1196,7 +1207,9 @@ fudge that the old commit callback performed.
 
 The system-wide `sDurationScale` is modified by three settings:
 
-1. **Developer Options > Animator duration scale**: 0.5x, 1x, 2x, 5x, 10x
+1. **Developer Options > Animator duration scale**: the picker offers
+   "Animation off" (0), 0.5x, 1x, 1.5x, 2x, 5x and 10x
+   (`frameworks/base/packages/SettingsLib/res/values/arrays.xml:373-392`)
 2. **Battery Saver mode**: May set scale to 0 to disable all animations
 3. **Programmatic**: `ValueAnimator.setDurationScale()` (hidden API)
 
@@ -1231,8 +1244,12 @@ anim.start();
 // will cancel the first one automatically
 ```
 
-This is the mechanism behind `ViewPropertyAnimator`'s smooth cancellation --
-each new `view.animate().alpha()` call cancels the previous alpha animation.
+`ViewPropertyAnimator` achieves a similar effect -- each new
+`view.animate().alpha()` call cancels the previous alpha animation -- but
+through its own mechanism: since it uses a bare `ValueAnimator`, autoCancel
+never applies, so `animatePropertyBy()` walks its `mAnimatorMap` of
+`PropertyBundle` entries and cancels any running animator that touches the
+same property (`ViewPropertyAnimator.java`, lines 940-962).
 
 ### 14.3.15 StateListAnimator
 
@@ -1257,27 +1274,27 @@ for Material Design elevation changes:
 
 | File | Lines | Purpose |
 |---|---|---|
-| `Animator.java` | ~850 | Abstract base for all animators |
+| `Animator.java` | ~930 | Abstract base for all animators |
 | `ValueAnimator.java` | 1,776 | Core timing engine |
 | `ObjectAnimator.java` | 1,004 | Property-targeting animator |
 | `AnimatorSet.java` | 2,272 | Multi-animator orchestration |
 | `PropertyValuesHolder.java` | 1,729 | Per-property value management |
 | `AnimationHandler.java` | 515 | Frame callback manager |
-| `Keyframe.java` | ~300 | Single time/value pair |
+| `Keyframe.java` | ~390 | Single time/value pair |
 | `KeyframeSet.java` | ~300 | Ordered keyframe collection |
 | `FloatKeyframeSet.java` | ~150 | Optimized float keyframes |
 | `IntKeyframeSet.java` | ~150 | Optimized int keyframes |
-| `PathKeyframes.java` | ~200 | Path-based keyframes |
-| `ArgbEvaluator.java` | ~90 | Color interpolation |
+| `PathKeyframes.java` | ~250 | Path-based keyframes |
+| `ArgbEvaluator.java` | ~150 | Color interpolation |
 | `FloatEvaluator.java` | ~40 | Float interpolation |
 | `IntEvaluator.java` | ~40 | Integer interpolation |
 | `PointFEvaluator.java` | ~60 | PointF interpolation |
 | `RectEvaluator.java` | ~70 | Rect interpolation |
-| `LayoutTransition.java` | ~1,000 | ViewGroup layout change animation |
-| `AnimatorInflater.java` | ~700 | XML resource loading |
+| `LayoutTransition.java` | ~1,545 | ViewGroup layout change animation |
+| `AnimatorInflater.java` | ~1,085 | XML resource loading |
 | `TimeAnimator.java` | ~100 | Raw frame timing |
 | `RevealAnimator.java` | ~60 | Circular reveal support |
-| `StateListAnimator.java` | ~250 | State-driven animations |
+| `StateListAnimator.java` | ~330 | State-driven animations |
 | `TypeConverter.java` | ~60 | Type conversion support |
 | `BidirectionalTypeConverter.java` | ~40 | Two-way conversion |
 
@@ -1483,11 +1500,11 @@ graph TD
 ### 14.4.3 Transition Base Class
 
 `Transition.java` (2,451 lines) is the abstract base.  Each subclass must
-implement three methods:
+implement two abstract methods and normally overrides a third:
 
-1. `captureStartValues(TransitionValues)` -- Record property values before the scene change
-2. `captureEndValues(TransitionValues)` -- Record property values after the scene change
-3. `createAnimator(ViewGroup, TransitionValues, TransitionValues)` -- Return an `Animator` for the detected change
+1. `captureStartValues(TransitionValues)` (abstract) -- Record property values before the scene change
+2. `captureEndValues(TransitionValues)` (abstract) -- Record property values after the scene change
+3. `createAnimator(ViewGroup, TransitionValues, TransitionValues)` -- Return an `Animator` for the detected change; this one is a concrete method whose default body returns null (line 476), so a transition that overrides nothing simply animates nothing
 
 `TransitionValues` is a simple holder:
 
@@ -1506,7 +1523,7 @@ classDiagram
         <<abstract>>
         +captureStartValues(TransitionValues)*
         +captureEndValues(TransitionValues)*
-        +createAnimator(ViewGroup, TransitionValues, TransitionValues)* Animator
+        +createAnimator(ViewGroup, TransitionValues, TransitionValues) Animator
         +setDuration(long) Transition
         +setInterpolator(TimeInterpolator) Transition
         +addTarget(View) Transition
@@ -1850,11 +1867,17 @@ graph LR
 | Animation | Default | Purpose |
 |---|---|---|
 | Exit Transition | null (no animation) | Non-shared views in calling activity |
-| Enter Transition | null | Non-shared views in called activity |
-| Shared Element Exit | `ChangeTransform` + `ChangeBounds` | Shared elements leaving |
-| Shared Element Enter | `ChangeTransform` + `ChangeBounds` | Shared elements arriving |
+| Enter Transition | `@android:transition/fade` (`Fade`) | Non-shared views in called activity |
+| Shared Element Exit | `@android:transition/move` (`ChangeBounds` + `ChangeTransform` + `ChangeClipBounds` + `ChangeImageTransform`) | Shared elements leaving |
+| Shared Element Enter | `@android:transition/move` (`ChangeBounds` + `ChangeTransform` + `ChangeClipBounds` + `ChangeImageTransform`) | Shared elements arriving |
 | Return Transition | Reverse of Enter | Going back |
 | Reenter Transition | Reverse of Exit | Returning to calling |
+
+The Material themes
+(`frameworks/base/core/res/res/values/themes_material.xml`) set
+`windowEnterTransition` to `@transition/fade` but leave
+`windowExitTransition` unset, which is why the effective defaults above
+are asymmetric.
 
 ### 14.5.3 Shared Element Coordination
 
@@ -1928,8 +1951,10 @@ shared element state before and after the fragment swap.
 
 `ActivityOptions` defines numerous animation styles through constants
 (`frameworks/base/core/java/android/app/ActivityOptions.java`, lines 506-530).
-The internal values are sparse -- several intermediate slots are now unused --
-so do not assume they are contiguous:
+The table below lists a subset; the gaps in the value column correspond to
+constants the table omits (`ANIM_DEFAULT` = 6, `ANIM_LAUNCH_TASK_BEHIND` = 7,
+`ANIM_CUSTOM_IN_PLACE` = 10, `ANIM_REMOTE_ANIMATION` = 13) -- only values
+8 and 9 are genuinely unused:
 
 | Constant | Value | Description |
 |---|---|---|
@@ -1960,19 +1985,20 @@ classDiagram
         #ArrayList~String~ mAllSharedElementNames
         #ArrayList~View~ mSharedElements
         #ArrayList~String~ mSharedElementNames
-        #ViewGroup mDecor
+        -Window mWindow
         #boolean mIsReturning
+        +getDecor() ViewGroup
         +getAcceptedNames() ArrayList
         +getMappedNames() ArrayList
     }
     class ExitTransitionCoordinator {
         +startExit()
-        +startExit(int, Intent)
-        +stop()
+        +startExit(Activity)
+        +stop(Activity)
     }
     class EnterTransitionCoordinator {
         +viewsReady(ArrayMap)
-        +onTriggerEnter()
+        +forceViewsToAppear()
     }
 
     ActivityTransitionCoordinator <|-- ExitTransitionCoordinator
@@ -2043,7 +2069,7 @@ Key source files in `frameworks/base/services/core/java/com/android/server/wm/`:
 | `WindowAnimationSpec.java` | ~300 | Wraps legacy `Animation` for surfaces |
 | `LocalAnimationAdapter.java` | ~180 | Adapter for local animations |
 | `AnimationAdapter.java` | ~100 | Interface for animation implementations |
-| `WindowStateAnimator.java` | ~800 | Per-window animation state |
+| `WindowStateAnimator.java` | ~650 | Per-window animation state |
 
 ### 14.6.2 SurfaceAnimator and the Leash Pattern
 
@@ -2215,13 +2241,14 @@ graph TD
         WMS[WindowManagerService] --> WA[WindowAnimator]
         WA --> SA[SurfaceAnimator]
         SA --> |creates leash| SAR[SurfaceAnimationRunner]
-        SAR --> |ValueAnimator on AnimationThread| AT[AnimationThread]
-        AT --> |SurfaceControl.Transaction| SF[SurfaceFlinger]
+        SAR --> |"ValueAnimator (SfValueAnimator)"| SAT[SurfaceAnimationThread]
+        SAT --> |SurfaceControl.Transaction| SF[SurfaceFlinger]
+        SAR -.-> |pre-processing, finish callbacks| AT[AnimationThread]
     end
 
     subgraph "Animation Types"
         LA[LocalAnimationAdapter] --> |WindowAnimationSpec| SAR
-        RA[RemoteAnimationAdapter] --> |cross-process| SAR
+        RA[RemoteAnimationAdapter] --> |cross-process| RP["Remote runner<br/>(app or Shell process)"]
     end
 ```
 
@@ -2252,7 +2279,7 @@ enabling more sophisticated and customizable transitions.
 
 Source directory:
 `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/`
-(19 files, ~8,200 lines)
+(33 files, ~12,100 lines, plus a `tracing/` subpackage)
 
 ### 14.7.2 Architecture
 
@@ -2428,21 +2455,21 @@ transactions tied to gesture progress.
 
 Source directory:
 `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/back/`
-(14 files, ~3,200 lines)
+(14 files, ~4,500 lines)
 
 ### 14.8.2 Architecture
 
 ```mermaid
 sequenceDiagram
     participant User as User Gesture
-    participant ISM as InputManager
+    participant EBG as SystemUI EdgeBackGestureHandler
     participant BAC as BackAnimationController
     participant Runner as BackAnimationRunner
     participant Anim as CrossActivityBackAnimation
     participant SF as SurfaceFlinger
 
-    User->>ISM: Edge swipe from left/right
-    ISM->>BAC: onBackMotionEvent(progress)
+    User->>EBG: Edge swipe from left/right
+    EBG->>BAC: onBackMotion(touchX, touchY, action, swipeEdge)
     BAC->>BAC: determine back destination
     BAC->>Runner: onBackStarted(BackEvent)
     loop gesture in progress
@@ -2503,17 +2530,20 @@ of progress, applying them through `SurfaceControl.Transaction` each frame.
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
-    Idle --> GestureStarted: onBackMotionEvent DOWN
+    Idle --> GestureStarted: onBackMotion DOWN
     GestureStarted --> Progressing: onBackProgressed
-    Progressing --> Progressing: onBackProgressed continuous
+    Progressing --> Progressing
     Progressing --> Committed: onBackInvoked
     Progressing --> Cancelled: onBackCancelled
-    Committed --> PlayingClose: play close animation
-    Cancelled --> PlayingCancel: play cancel animation
+    Committed --> PlayingClose: close anim
+    Cancelled --> PlayingCancel: cancel anim
     PlayingClose --> TransitionFinished: animation done
     PlayingCancel --> Idle: animation done
     TransitionFinished --> Idle: cleanup
 ```
+
+The self-transition on `Progressing` is the continuous stream of
+`onBackProgressed` callbacks delivered as the user drags.
 
 ### 14.8.7 Progress-to-Transform Mapping
 
@@ -2523,9 +2553,9 @@ using piecewise functions.  For the default cross-activity animation:
 | Progress | Scale | Translation X | Corner Radius |
 |---|---|---|---|
 | 0.0 | 1.0 | 0 | 0 |
-| 0.3 | 0.9 | proportional | increasing |
-| 0.6 | 0.85 | proportional | increasing |
-| 1.0 | 0.8 | max | max |
+| 0.3 | ~0.95 | proportional | increasing |
+| 0.6 | ~0.9 | proportional | increasing |
+| 1.0 | 0.85 | max | max |
 
 The animation curves are designed to:
 
@@ -2547,10 +2577,12 @@ The default cross-activity back animation applies these transforms as
 functions of gesture progress and finger position:
 
 ```
-// Simplified transform calculations
+// Simplified transform calculations, using the real constants from
+// CrossActivityBackAnimation.kt:
+//   MAX_SCALE = 0.85f, INITIAL_ENTERING_SCALE = 0.95f
 
-// Scale shrinks the departing activity
-float scale = lerp(1.0f, 0.9f, progress);
+// Scale shrinks the departing activity toward MAX_SCALE
+float scale = lerp(1.0f, MAX_SCALE /* 0.85f */, progress);
 transaction.setScale(leash, scale, scale);
 
 // Translation follows the finger horizontally
@@ -2564,8 +2596,10 @@ transaction.setPosition(leash, translationX, 0);
 float cornerRadius = lerp(0, displayCornerRadius, progress);
 transaction.setCornerRadius(leash, cornerRadius);
 
-// The entering activity peeks from behind
-float enterScale = lerp(0.85f, 1.0f, progress);
+// The entering activity peeks from behind, scaling in sync with
+// the closing target from INITIAL_ENTERING_SCALE toward MAX_SCALE
+float enterScale = lerp(INITIAL_ENTERING_SCALE /* 0.95f */,
+        MAX_SCALE /* 0.85f */, progress);
 transaction.setScale(enterLeash, enterScale, enterScale);
 ```
 
@@ -2573,7 +2607,7 @@ The visual effect is:
 
 1. The current activity shrinks slightly and slides in the swipe direction
 2. Its corners round off to match the display corners
-3. The previous activity peeks from behind, starting small and growing
+3. The previous activity peeks from behind, scaling in sync with the departing one
 
 ### 14.8.10 ProgressVelocityTracker
 
@@ -2748,12 +2782,13 @@ per-frame evaluation.  The initialization depends on the damping regime:
 **Under-damped** (damping ratio < 1):
 ```
 dampedFreq = naturalFreq * sqrt(1 - dampingRatio^2)
-gammaPlus  = -dampingRatio * naturalFreq + dampedFreq * i
-gammaMinus = -dampingRatio * naturalFreq - dampedFreq * i
 ```
 
 The position and velocity at time `t` are computed analytically using
-the exact solution to the damped harmonic oscillator differential equation.
+the exact solution to the damped harmonic oscillator differential equation;
+for the under-damped case only `dampedFreq` is pre-computed, and the
+solution uses the real-valued sin/cos form (no complex gammas appear in
+the code).
 
 **Critically damped** (damping ratio = 1):
 ```
@@ -2771,10 +2806,13 @@ The animation checks for convergence each frame by comparing both position
 and velocity against thresholds:
 
 ```
-valueThreshold  = based on the minimum visible change
+valueThreshold    = minVisibleChange * THRESHOLD_MULTIPLIER (0.75)
 velocityThreshold = valueThreshold * VELOCITY_THRESHOLD_MULTIPLIER (62.5)
 ```
 
+`DynamicAnimation.THRESHOLD_MULTIPLIER` is 0.75
+(`frameworks/base/core/java/com/android/internal/dynamicanimation/animation/DynamicAnimation.java:293`),
+so the value threshold sits a little under the minimum visible change.
 The `VELOCITY_THRESHOLD_MULTIPLIER` (1000.0 / 16.0 = 62.5) means that if
 it would take more than one frame (16ms) to move by the value threshold at
 the current velocity, the spring is considered at rest.
@@ -2821,8 +2859,16 @@ The friction coefficient determines how quickly the fling decelerates:
 | 3.0 | High friction | Quick stop |
 | 10.0 | Very high friction | Near-instant stop |
 
-The animation stops when velocity drops below the minimum visible change
-threshold (approximately 1 pixel/second for position properties).
+The animation stops when the absolute velocity falls below the velocity
+threshold.  `FlingAnimation` derives that from the value threshold that
+`DynamicAnimation` hands it -- `minVisibleChange * 0.75`
+(`THRESHOLD_MULTIPLIER`) -- and multiplies it by the
+`VELOCITY_THRESHOLD_MULTIPLIER` of 1000/16 = 62.5
+(`frameworks/base/core/java/com/android/internal/dynamicanimation/animation/FlingAnimation.java:170,199`).
+The threshold is therefore `minVisibleChange * 46.875` -- roughly 47
+pixels/second for position properties with the default 1-pixel minimum
+visible change, i.e. the velocity at which it would take more than one
+16 ms frame to cover the value threshold.
 
 FlingAnimation also supports min/max bounds.  When the value hits a bound,
 the animation stops immediately (no bounce).  To add bounce behavior,
@@ -2912,7 +2958,7 @@ The `Force` interface abstracts the physics model, enabling custom force
 implementations:
 
 ```java
-public interface Force {
+interface Force {
     /**
      * Returns the acceleration at the given position and velocity.
      * @param position current position
@@ -2931,9 +2977,11 @@ public interface Force {
 }
 ```
 
-`SpringForce` implements this interface to provide spring dynamics.
-Developers can implement custom forces (e.g., gravity, magnetic attraction)
-by implementing this interface and using it with `DynamicAnimation`.
+Note that `Force` is deliberately package-private -- its source comment
+reads "Hide this for now, in case we want to change the API"
+(`frameworks/base/core/java/com/android/internal/dynamicanimation/animation/Force.java`).
+It is therefore not an app-facing extension point: only the in-tree
+`SpringForce` and `FlingAnimation.DragForce` implement it.
 
 ### 14.9.11 Scroller and OverScroller Physics
 
@@ -2941,7 +2989,8 @@ While not part of the `DynamicAnimation` package, `Scroller` and
 `OverScroller` implement the fling physics used by all standard scrollable
 views.
 
-`OverScroller` extends `Scroller` with elastic overscroll behavior at
+`OverScroller` is a separate class (not a subclass of `Scroller`) that
+offers a Scroller-like API plus elastic overscroll behavior at
 edges.  The overscroll effect uses a spring-like model where the
 displacement is proportional to the scroll velocity at the edge:
 
@@ -2997,7 +3046,7 @@ Source files in `frameworks/base/libs/hwui/`:
 | `AnimatorManager.cpp` | ~207 | Per-RenderNode animation management |
 | `AnimatorManager.h` | ~80 | Manager declarations |
 | `Interpolator.cpp` | ~160 | Native interpolator implementations |
-| `AnimationContext.cpp` | ~100 | Frame timing context |
+| `AnimationContext.cpp` | ~140 | Frame timing context |
 | `PropertyValuesAnimatorSet.cpp` | ~200 | Multi-property animation set |
 
 ### 14.10.2 BaseRenderNodeAnimator
@@ -3119,12 +3168,20 @@ current frame.
 ### 14.10.6 Java-Side JNI Bridge
 
 On the Java side, `RenderNodeAnimator` (approximately 513 lines) wraps native
-HWUI animators.  View property animations (translationX, alpha, etc.) that
-target a `RenderNode` property use this path for maximum performance:
+HWUI animators.  Its clients are platform components that animate
+`RenderNode` properties directly -- `RippleDrawable` (via `RippleForeground`
+and `RippleAnimationSession`) and the circular-reveal `RevealAnimator` --
+not `view.animate()`, which runs a plain UI-thread `ValueAnimator` that
+calls View setters each frame.  (`AnimatedVectorDrawable` also animates on
+the RenderThread, but by a different route: its `VectorDrawableAnimatorRT`
+builds a native `PropertyValuesAnimatorSet` via `nCreateAnimatorSet()` and
+registers it on the target `RenderNode` with
+`registerVectorDrawableAnimator()`, bypassing `RenderNodeAnimator`
+entirely.)
 
 ```java
-// When you call view.animate().translationX(100):
-// 1. ViewPropertyAnimator creates a RenderNodeAnimator
+// When a ripple (or reveal) animation starts:
+// 1. The client creates a RenderNodeAnimator for a RenderNode property
 // 2. RenderNodeAnimator calls nStart() via JNI
 // 3. Native BaseRenderNodeAnimator starts on RenderThread
 // 4. Each RenderThread frame: native animate() updates RenderNode
@@ -3195,8 +3252,10 @@ The native interpolator infrastructure mirrors Java exactly.  In
 
 The `LUTInterpolator` is a special native interpolator used when a Java
 interpolator does not have a native equivalent.  The Java interpolator is
-sampled at regular intervals during `pushStaging()`, and the resulting
-lookup table is used for RenderThread animation.
+sampled on the UI thread by `FallbackLUTInterpolator.createLUT()` when the
+interpolator is applied to a `RenderNodeAnimator` (up to 300 samples, one
+per frame interval); only the resulting native lookup-table pointer is
+handed to the RenderThread.
 
 ### 14.10.10 PropertyValuesAnimatorSet (Native)
 
@@ -3215,16 +3274,19 @@ Java callbacks.
 // to calculate elapsed time and fraction
 class AnimationContext {
     nsecs_t frameTimeMs();
-    void startFrame();
+    virtual void startFrame(TreeInfo::TraversalMode mode);
     void runRemainingAnimations(TreeInfo& info);
-    ...
+    // ...
 };
 ```
 
-The frame time comes from the RenderThread's VSYNC timestamp, which may
-differ slightly from the UI thread's Choreographer timestamp.  This is
-intentional -- RenderThread processes the frame after the UI thread has
-finished, so it uses a slightly later timestamp.
+The frame time is the same VSYNC timestamp the UI thread's Choreographer
+recorded for the frame: `DrawFrameTask::syncFrameState()` reads it from
+the frame info and pushes it into the RenderThread's `TimeLord`, and
+`AnimationContext::startFrame()` reads it back via `latestVsync()`.  Only
+for RenderThread-driven frames -- when the UI thread is not producing
+frames, as with a running `RenderNodeAnimator` after the UI thread goes
+idle -- does the RenderThread feed `TimeLord` its own VSYNC timestamp.
 
 ### 14.10.12 HWUI Animation and Display Lists
 
@@ -3251,19 +3313,20 @@ graph TD
 
 Because animations modify properties but not the display list structure,
 the RenderThread can animate smoothly even if the UI thread never runs.
-This is why `view.animate().alpha(0.5f)` continues smoothly during GC
-pauses, while a custom `ValueAnimator` that calls `invalidate()` would
-stutter.
+This is why a `RippleDrawable` ripple or an `AnimatedVectorDrawable`
+(API 25+) continues smoothly during GC pauses, while a UI-thread animator
+-- including `view.animate()`, which is backed by a plain `ValueAnimator`
+-- would stutter.
 
 ### 14.10.13 HWUI vs Java Animation Performance
 
-| Aspect | Java (ValueAnimator) | Native (HWUI) |
+| Aspect | Java (ValueAnimator / ObjectAnimator) | Native (HWUI) |
 |---|---|---|
 | Thread | UI Thread | RenderThread |
 | Survives UI jank | No | Yes |
 | Property types | Any Java property | RenderNode properties only |
 | Flexibility | High (custom evaluators) | Limited (float properties) |
-| Overhead | Reflection, boxing | Direct native property set |
+| Overhead | Boxing of animated values; reflection only for name-based `ObjectAnimator` property lookup | Direct native property set |
 | Use case | Complex, multi-object | Simple view property animations |
 
 ---
@@ -3357,7 +3420,7 @@ sequenceDiagram
         AVDS->>AVDS: Compute interpolated values
         AVDS->>VD: Update path data / colors / transforms
         VD->>RN: Invalidate RenderNode
-        RN->>RT: Re-record display list
+        RN->>RT: Redraw vector tree to cache texture
         RT->>RT: Draw frame
     end
     AVDS->>AVD: Animation complete callback
@@ -3416,7 +3479,11 @@ and progress indicators.
 | Multiple AVDs | Each adds UI load | Independent of UI |
 | During GC | Stutters | Smooth |
 | During layout | Stutters | Smooth |
-| Complexity limit | ~100 path nodes | ~500 path nodes |
+
+AOSP imposes no path-node cap on either path; the RenderThread route only
+changes which thread evaluates the animators.  Heavier path data still
+costs more per frame either way, so complexity remains a budgeting concern
+rather than a hard limit.
 
 Best practices for AVD performance:
 
@@ -3459,9 +3526,12 @@ drawable with a duration in the XML:
 ### 14.11.10 AnimatedImageDrawable
 
 `AnimatedImageDrawable` (API 28+) supports animated image formats like
-GIF and WebP.  It decodes frames on a worker thread and uses Choreographer
-for frame scheduling, providing smooth playback without blocking the UI
-thread.
+GIF and WebP.  It decodes frames on a dedicated worker thread
+(`frameworks/base/libs/hwui/hwui/AnimatedImageThread.cpp`) and schedules
+the next frame via `scheduleSelf()` on its `Drawable.Callback` host rather
+than through Choreographer; when drawn hardware-accelerated, the
+RenderThread drives the animation directly.  Either way, playback stays
+smooth without blocking the UI thread.
 
 ---
 
@@ -3661,15 +3731,15 @@ sequenceDiagram
     participant FH as FrameHandler
     participant Choreo as Choreographer
 
-    DEV->>FH: MSG_DO_FRAME
+    DEV->>FH: post self as async Runnable msg
     FH->>Choreo: doFrame(frameTimeNanos)
+    Note over DEV,FH: MSG_DO_FRAME is only used on the<br/>USE_VSYNC=false fallback path
     Note over Choreo: Check for skipped frames
     Note over Choreo: Log warning if > 30 frames skipped
     Choreo->>Choreo: mFrameInfo.markInputHandlingStart()
     Choreo->>Choreo: doCallbacks(CALLBACK_INPUT)
     Choreo->>Choreo: mFrameInfo.markAnimationsStart()
     Choreo->>Choreo: doCallbacks(CALLBACK_ANIMATION)
-    Choreo->>Choreo: mFrameInfo.markInsetAnimationsStart()
     Choreo->>Choreo: doCallbacks(CALLBACK_INSETS_ANIMATION)
     Choreo->>Choreo: mFrameInfo.markPerformTraversalsStart()
     Choreo->>Choreo: doCallbacks(CALLBACK_TRAVERSAL)
@@ -3883,7 +3953,7 @@ graph TD
         ME --> PIP[PipTransition]
         ME --> BAC[BackAnimationController]
         ME --> UF[UnfoldTransitionHandler]
-        ME --> DM[DesktopModeTransitionHandler]
+        ME --> DM[DesktopMixedTransitionHandler]
     end
 
     subgraph "Common Utilities"
@@ -3957,20 +4027,26 @@ dividers).
 ### 14.13.7 Split-Screen Divider Animations
 
 When entering or exiting split-screen mode, the divider bar animates
-between its hidden and visible states.  The animation uses spring physics
-for the divider position and smooth alpha transitions for visibility.
+between its hidden and visible states.  The show animation is a
+`ValueAnimator` alpha fade applied to the divider leash in
+`StageCoordinator.applyDividerVisibility()`
+(`frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/splitscreen/StageCoordinator.java`);
+hiding is applied immediately with no animation.  Spring physics does
+appear in the split package, but only for magnetic snapping while the
+divider is *dragged* (`common/split/MagneticDividerUtils.kt`), not for
+the enter/exit visibility animation.
 
 ### 14.13.8 Letterbox Animation Details
 
-Letterbox animations handle the transition between different letterbox
-states:
-
-| State Transition | Animation |
-|---|---|
-| No letterbox -> Letterboxed | Bars slide in from edges |
-| Letterboxed -> No letterbox | Bars slide out to edges |
-| Letterbox position change | Smooth bounds transition |
-| Orientation change with letterbox | Crossfade with new configuration |
+Only one letterbox state change has a dedicated animation: reachability
+moves (the user double-taps to shift a letterboxed app toward one edge).
+These run as a `TRANSIT_MOVE_LETTERBOX_REACHABILITY` transition handled
+by `LetterboxAnimationHandler`
+(`frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/compatui/letterbox/animations/LetterboxAnimationHandler.kt`),
+which interpolates the letterbox surface bounds with a `RectEvaluator`
+over a 500 ms duration.  Other letterbox state changes -- entering or
+leaving letterbox, position changes, orientation changes -- are applied
+without a dedicated letterbox animation.
 
 ### 14.13.9 App Launch Animation
 
@@ -4054,8 +4130,9 @@ operations used:
 | `reparent(newParent)` | Move in the surface hierarchy |
 | `show()` / `hide()` | Visibility |
 
-Transactions can be applied synchronously (`apply()`) or deferred to the
-next VSYNC (`setDesiredPresentTime()`) for smoother timing.
+Transactions are applied with `apply()`; a transaction can also request
+presentation at (or after) a specific timestamp via
+`setDesiredPresentTimeNanos(long)` for smoother timing.
 
 ---
 
@@ -4378,7 +4455,6 @@ data_sources: {
             atrace_categories: "view"
             atrace_categories: "am"
             atrace_categories: "wm"
-            atrace_categories: "anim"
             atrace_categories: "gfx"
             atrace_categories: "input"
             atrace_apps: "your.app.package"
@@ -4388,6 +4464,10 @@ data_sources: {
 duration_ms: 10000
 EOF
 ```
+
+There is no dedicated `anim` atrace category -- Choreographer's `animation`
+slice and ObjectAnimator's `animator:<property>` slice are both emitted
+under the `view` category.
 
 Key Perfetto tracks to examine:
 
@@ -4536,14 +4616,14 @@ animator.start();
 The WindowManager dumpsys provides animation state information:
 
 ```bash
-# Dump all animation state
-adb shell dumpsys window animations
+# Dump WindowAnimator / animation state
+adb shell dumpsys window animator
 
-# Dump surface animator state
-adb shell dumpsys window surfaces
+# Dump all window state (includes surfaces and containers)
+adb shell dumpsys window -a
 
-# Dump transition state
-adb shell dumpsys window transitions
+# Dump per-display container state
+adb shell dumpsys window displays
 
 # Shell transition state
 adb shell dumpsys activity service SystemUIService WMShell
@@ -4551,15 +4631,16 @@ adb shell dumpsys activity service SystemUIService WMShell
 
 Key fields to examine:
 
-- `mAnimationLayer` -- The Z-order of the animation leash
 - `mLeash` -- The SurfaceControl used for animation
 - `mAnimation` -- The active AnimationAdapter
 - `mPendingAnimations` / `mRunningAnimations` -- In SurfaceAnimationRunner
 
 ### 14.15.12 Animation Performance Best Practices
 
-1. **Prefer `ViewPropertyAnimator` and RenderNode properties** for simple
-   view animations -- they run on RenderThread and survive UI thread jank.
+1. **Prefer `ViewPropertyAnimator`** for simple view animations -- one
+   animator batches all requested properties and applies them through
+   direct setters with no reflection, giving the lowest per-frame overhead
+   of the Java animators (it still runs on the UI thread, though).
 
 2. **Avoid allocations in update listeners**.  `AnimatorUpdateListener` runs
    every frame; allocating objects there triggers GC pauses.
@@ -4600,9 +4681,10 @@ view.animate()
     .start();
 ```
 
-Under the hood, `ViewPropertyAnimator` creates `RenderNodeAnimator` instances
-that run on the RenderThread, providing the best possible performance for
-view property animations.
+Under the hood, `ViewPropertyAnimator` drives a single `ValueAnimator` on
+the UI thread that batches all the requested properties into one animator
+(avoiding one animator per property), which keeps per-frame overhead low
+for view property animations.
 
 ### 14.15.14 Gesture-Driven Animation with SpringAnimation
 
@@ -4942,7 +5024,7 @@ timeline
         2014 : Material transitions, shared elements, PathInterpolator
         2014 : HWUI RenderThread animations
     section API 21-30
-        2015 : AnimatedVectorDrawable on RenderThread
+        2016 : AnimatedVectorDrawable on RenderThread API 25
         2016 : Physics-based animations SpringAnimation, FlingAnimation
         2017 : SurfaceAnimator leash pattern in WM
         2019 : WindowInsetsAnimation
@@ -4971,7 +5053,7 @@ flowchart TD
     C -->|Simple: alpha, translate, scale| J[ViewPropertyAnimator]
     C -->|Complex: multiple properties, timing| K[AnimatorSet]
 
-    J --> L[Runs on RenderThread - best perf]
+    J --> L[Runs on UI thread - lowest per-frame overhead]
     D --> M[Runs on UI thread]
     E --> N[Runs on RenderThread API 25+]
     F --> O[Automatic diffing]
@@ -5025,7 +5107,7 @@ The animation system has specific threading requirements:
 | ObjectAnimator | Same as ValueAnimator; setter called on same thread |
 | ViewPropertyAnimator | Must be called on UI thread |
 | RenderThread animations | Initiated from UI thread, run on RenderThread |
-| SurfaceAnimationRunner | Runs on AnimationThread |
+| SurfaceAnimationRunner | Runs on SurfaceAnimationThread (the `android.anim.lf` thread) |
 | Shell transitions | Runs on Shell main thread |
 | SpringAnimation | Must be called on a Looper thread |
 
@@ -5062,13 +5144,19 @@ The animation system provides several testing hooks:
 // Speed up all animations for faster test execution
 ValueAnimator.setDurationScale(0f);  // Instant completion
 
-// Use custom AnimationHandler for deterministic timing
+// Use custom AnimationHandler for deterministic timing.
+// MyTestFrameCallbackProvider is your own implementation of the
+// AnimationHandler.AnimationFrameCallbackProvider interface, which
+// captures each posted Choreographer.FrameCallback instead of
+// forwarding it to the real Choreographer.
 AnimationHandler testHandler = new AnimationHandler();
-testHandler.setProvider(new TestAnimationFrameCallbackProvider());
+testHandler.setProvider(new MyTestFrameCallbackProvider());
 AnimationHandler.setTestHandler(testHandler);
 
-// Advance animation to specific time
-testHandler.doAnimationFrame(targetTimeMs);
+// Advance animations by invoking the captured frame callback with the
+// desired frame time (AnimationHandler.doAnimationFrame() is private,
+// so frames can only be driven through the provider):
+capturedFrameCallback.doFrame(targetTimeNanos);
 ```
 
 For Espresso UI tests:

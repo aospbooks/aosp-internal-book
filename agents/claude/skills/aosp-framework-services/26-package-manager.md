@@ -5,8 +5,8 @@ lifecycle management in Android. It is responsible for discovering, parsing, ver
 installing, updating, and removing every APK on the device. It maintains the authoritative
 database of installed packages, enforces permission policy, resolves intents to the
 correct component, orchestrates the overlay system, and provides the backbone of the
-entire app ecosystem. At over 6,000 source files in its module tree, PMS is arguably the
-most complex subsystem in the entire Android framework.
+entire app ecosystem. At roughly 280 source files and well over 100,000 lines in its
+module tree, PMS is arguably the most complex subsystem in the entire Android framework.
 
 This chapter dissects PMS from the ground up: starting with the structure of an APK
 itself, then moving through the service architecture, boot-time scanning, the installation
@@ -247,8 +247,11 @@ graph TD
 ```
 
 PMS uses `ApkSignatureVerifier` to verify signatures during installation. The verifier
-tries the newest scheme first and falls back to older schemes. All schemes present in
-the APK must verify successfully -- you cannot strip a v2 signature and rely on v1 alone.
+tries the newest scheme first and falls back to older schemes: verification stops at the
+highest signature scheme actually present in the APK, and lower schemes are only
+consulted when a newer block is absent. Protection against stripping a newer signature
+comes not from re-verifying every scheme but from the stripping-protection attributes
+`apksigner` inserts into the older signatures, which record that a newer scheme exists.
 
 ### 26.1.7 APK Alignment
 
@@ -263,10 +266,13 @@ From `ScanPackageUtils.java`:
 public static final int PAGE_SIZE_16KB = 16384;
 ```
 
-The alignment requirement is enforced during both build time (by `zipalign`) and at
-installation time by PMS. Misaligned APKs will either fail to install or suffer
-performance degradation because the system must extract resources to a separate
-file rather than mapping them directly from the APK.
+Alignment is enforced by build-time tooling (`zipalign`, and Play's publishing
+requirements) rather than by PMS: the install path does not reject misaligned APKs.
+On 16 KB page-size devices, PMS checks native-library alignment during package scan
+(`ScanPackageUtils` calls `checkPackageAlignment()`) and records the result as
+page-size app-compat flags on the `PackageSetting`, so a misaligned app can be run
+in compatibility mode. Misaligned resources still carry a cost: the system must
+extract them to a separate file rather than mapping them directly from the APK.
 
 ### 26.1.8 The APK Build Pipeline
 
@@ -380,9 +386,9 @@ of helper classes with a snapshot-based concurrency model.
 ### 26.2.1 Service Registration and Entry Point
 
 PMS is started during the boot sequence by `SystemServer`. It is registered as the
-`"package"` service in `ServiceManager`, making it accessible to all processes
-via `Context.getSystemService(Context.PACKAGE_SERVICE)` or
-`PackageManager.getPackageManager()`.
+`"package"` service in `ServiceManager`. Apps reach it through
+`Context.getPackageManager()`, which returns an `ApplicationPackageManager`
+wrapping the `IPackageManager` binder proxy.
 
 The class hierarchy looks like this:
 
@@ -394,7 +400,8 @@ classDiagram
         +getApplicationInfo()
         +resolveIntent()
         +queryIntentActivities()
-        +installPackage()
+        +getPackageInstaller()
+        +deletePackageVersioned()
     }
 
     class PackageManagerService {
@@ -405,8 +412,8 @@ classDiagram
         -mPackages: WatchedArrayMap
         -mLiveComputer: ComputerLocked
         +snapshotComputer(): Computer
-        +installPackage()
-        +deletePackage()
+        +installPackagesTraced()
+        +deletePackageVersioned()
     }
 
     class Computer {
@@ -689,7 +696,7 @@ private final FreeStorageHelper mFreeStorageHelper;
 
 This decomposition serves multiple purposes:
 
-1. **Readability** -- Each helper file is 500-2000 lines instead of one 15,000-line monolith
+1. **Readability** -- Helpers range from a few hundred to ~5,000 lines (`InstallPackageHelper` is the largest at ~5,300), though `PackageManagerService.java` itself still weighs in at ~8,800 lines
 2. **Testability** -- Helpers can be unit-tested in isolation
 3. **Lock discipline** -- Each helper clearly documents which locks it requires
 4. **Ownership** -- OWNERS files can assign different teams to different helpers
@@ -1257,9 +1264,11 @@ public void initNonSystemApps(PackageParser2 packageParser,
 }
 ```
 
-The `SCAN_REQUIRE_KNOWN` flag means only packages already registered in
-`packages.xml` will be accepted. Unknown packages in `/data/app` are treated
-as suspicious and may be removed.
+The `SCAN_REQUIRE_KNOWN` flag enforces an expectation about *known* packages:
+if a package is already registered in `packages.xml`, the scanned APK must
+still live at the code path recorded there, otherwise the scan fails with
+`INSTALL_FAILED_PACKAGE_CHANGED`. Previously unknown packages in `/data/app`
+are still picked up normally -- they are not rejected or removed.
 
 ### 26.3.10 Boot Performance Metrics
 
@@ -1457,6 +1466,7 @@ sequenceDiagram
     participant PIS as PackageInstallerService
     participant Session as InstallerSession
     participant Verify as VerifyingSession
+    participant IS as InstallingSession
     participant IPH as InstallPackageHelper
     participant Dex as DexOptHelper
     participant PMS as PackageManagerService
@@ -1477,7 +1487,8 @@ sequenceDiagram
     Verify->>Verify: Wait for verifier response
     Verify->>Verify: Check integrity rules
 
-    Verify->>IPH: processInstallRequests()
+    Verify->>IS: processInstallRequests()
+    IS->>IPH: installPackagesTraced()
 
     Note over IPH: Installation
     IPH->>IPH: Validate package
@@ -1487,7 +1498,7 @@ sequenceDiagram
     IPH->>IPH: Copy APK to final location
     IPH->>IPH: Extract native libraries
 
-    IPH->>Dex: performDexopt()
+    IPH->>Dex: performDexoptIfNeededAsync()
 
     Note over Dex: DEX Optimization
     Dex->>Dex: Compile with ART
@@ -1601,10 +1612,13 @@ public final class DexOptHelper {
 The `DexOptHelper` delegates to `ArtManagerLocal` (the ART service) which performs
 the actual compilation. Compilation strategies include:
 
-- **verify** -- Only verify the DEX file
-- **quicken** -- Quick optimizations
+- **assume-verified** -- Skip verification entirely
+- **verify** -- Only verify the DEX file (`quicken` survives as an obsolete alias for this)
+- **space-profile** / **space** -- Optimize for storage space
 - **speed-profile** -- Compile hot methods based on profile data
-- **speed** -- Compile everything (used for system apps at boot)
+- **speed** -- Maximize runtime performance by compiling all normally-compilable
+  methods (a separate `everything` / `everything-profile` filter exists for
+  compiling everything capable of being compiled)
 
 ### 26.4.8 Stage 5: Commit
 
@@ -1796,7 +1810,7 @@ void scheduleDeferredNoKillInstallObserver(InstallRequest request) {
 
 ### 26.4.14 Package Archival
 
-Android 14+ introduces package archival, which allows uninstalling the APK while
+Android 15+ introduces package archival, which allows uninstalling the APK while
 preserving the user's data and a minimal launcher entry:
 
 ```java
@@ -1837,7 +1851,7 @@ The extended delay (up to 1 day) allows rollback if the new version causes issue
 
 ### 26.4.16 Incremental Installation
 
-Android 12+ supports incremental installation via the Incremental File System (IncFS).
+Android 11+ supports incremental installation via the Incremental File System (IncFS).
 This allows streaming installation where the APK becomes available before it is fully
 downloaded:
 
@@ -1970,9 +1984,12 @@ Runtime permissions are organized into **permission groups**:
 | `LOCATION` | `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, `ACCESS_BACKGROUND_LOCATION` |
 | `CAMERA` | `CAMERA` |
 | `MICROPHONE` | `RECORD_AUDIO` |
-| `STORAGE` | `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_AUDIO` |
+| `STORAGE` | `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE` |
+| `READ_MEDIA_VISUAL` | `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO` |
+| `READ_MEDIA_AURAL` | `READ_MEDIA_AUDIO` |
 | `CONTACTS` | `READ_CONTACTS`, `WRITE_CONTACTS`, `GET_ACCOUNTS` |
-| `PHONE` | `READ_PHONE_STATE`, `CALL_PHONE`, `READ_CALL_LOG`, `WRITE_CALL_LOG` |
+| `PHONE` | `READ_PHONE_STATE`, `CALL_PHONE` |
+| `CALL_LOG` | `READ_CALL_LOG`, `WRITE_CALL_LOG` |
 | `SMS` | `SEND_SMS`, `RECEIVE_SMS`, `READ_SMS`, `RECEIVE_MMS` |
 | `CALENDAR` | `READ_CALENDAR`, `WRITE_CALENDAR` |
 | `SENSORS` | `BODY_SENSORS`, `BODY_SENSORS_BACKGROUND` |
@@ -2227,10 +2244,12 @@ required permission, preventing privilege escalation through intermediary apps.
 
 ### 26.5.17 Permission Persistence
 
-Permission state is persisted in two places:
+Permission data is persisted in two places:
 
-1. **Install-time permissions** -- Stored in `/data/system/packages.xml`
-2. **Runtime permissions** -- Stored per-user in
+1. **Permission definitions** -- Declared `<permission>` entries and permission
+   trees are written into `/data/system/packages.xml`
+2. **Grant state** -- Both install-time and runtime permission grants are
+   stored per-user in
    `/data/misc_de/<userId>/apexdata/com.android.permission/runtime-permissions.xml`
 
 The `RuntimePermissionsPersistence` class handles serialization:
@@ -2448,7 +2467,9 @@ record. The `PreferredActivityHelper` manages these records:
 private final PreferredActivityHelper mPreferredActivityHelper;
 ```
 
-Preferred activities are stored per-user in `preferred-activities.xml`.
+Preferred activities are persisted per user in
+`/data/system/users/<userId>/package-restrictions.xml`, under a
+`<preferred-activities>` element.
 
 ### 26.6.6 App Links and Domain Verification
 
@@ -2498,9 +2519,10 @@ static {
 }
 ```
 
-When a non-system app declares an intent filter with a priority higher than 0 for
-a protected action, the priority is silently capped to 0. This ensures system apps
-always win priority ties for these critical actions.
+Non-privileged apps have their filter priorities silently capped to 0 for *every*
+action. For the protected actions, the cap to 0 applies even to privileged system
+apps -- the only exception is the setup wizard package, which may keep a high
+priority on these actions.
 
 ### 26.6.9 Instant App Resolution
 
@@ -2765,11 +2787,16 @@ This implementation:
 
 ### 26.7.4 Split Installation
 
-Split APKs are installed using `MODE_INHERIT_EXISTING` sessions:
+Split APKs are installed using `MODE_INHERIT_EXISTING` sessions. The constant is
+declared in `android.content.pm.PackageInstaller.SessionParams`:
 
 ```java
-static final int MODE_INHERIT_EXISTING = PackageInstaller.SessionParams.MODE_INHERIT_EXISTING;
+// frameworks/base/core/java/android/content/pm/PackageInstaller.java
+public static final int MODE_INHERIT_EXISTING = 2;
 ```
+
+`InstallingSession` static-imports the constant and records the mode as
+`mIsInherit = sessionParams.mode == MODE_INHERIT_EXISTING`.
 
 When inheriting, the new session:
 
@@ -2862,8 +2889,8 @@ Each split gets its own ClassLoader entry, but they share a parent chain:
 graph TD
     Boot["Boot ClassLoader<br/>(java.lang, android.*)"]
     Base["PathClassLoader<br/>base.apk"]
-    F1["DelegateLastClassLoader<br/>split_feature_camera.apk"]
-    F2["DelegateLastClassLoader<br/>split_feature_ar.apk"]
+    F1["PathClassLoader (default)<br/>split_feature_camera.apk"]
+    F2["PathClassLoader (default)<br/>split_feature_ar.apk"]
 
     Boot --> Base
     Base --> F1
@@ -2878,8 +2905,11 @@ graph TD
     Base -.-> C2
 ```
 
-Feature splits use `DelegateLastClassLoader` to allow the feature's classes to
-override the base's classes, enabling true modularity.
+Feature splits get a `PathClassLoader` by default, chained to the parent split's
+loader. A split may opt into `DelegateLastClassLoader` by declaring
+`android:classLoader="dalvik.system.DelegateLastClassLoader"` in its manifest,
+but this is not the default, and a feature does not normally override the base's
+classes.
 
 ### 26.7.8 Resource Merging for Splits
 
@@ -3168,10 +3198,10 @@ Overlays are organized by categories that define their purpose:
 | `android.theme.customization.system_palette` | System color palette |
 | `android.theme.customization.theme_style` | Overall theme style |
 | `android.theme.customization.font` | System font |
-| `android.theme.customization.icon_shape` | App icon mask shape |
-| `android.theme.customization.signal_icon` | Signal strength icon |
-| `android.theme.customization.wifi_icon` | WiFi icon |
-| `android.theme.customization.navbar` | Navigation bar style |
+| `android.theme.customization.adaptive_icon_shape` | App icon mask shape |
+| `android.theme.customization.icon_pack` | Themed icon pack |
+| `android.theme.customization.color_source` | Where the theme color comes from |
+| `android.theme.customization.dynamic_color` | Dynamic (Material You) color |
 
 Categories help the system organize overlays and prevent conflicts. Within a
 category, overlays are ordered by priority, and only one overlay can be active
@@ -3190,7 +3220,7 @@ Overlay security is enforced at multiple levels:
 ```xml
 <!-- In the target package's res/values/overlayable.xml -->
 <resources>
-    <overlayable name="ThemeColors" actor="overlay://theme">
+    <overlayable name="ThemeColors" actor="overlay://theme/customizer">
         <policy type="public">
             <item type="color" name="accent_device_default_light" />
             <item type="color" name="accent_device_default_dark" />
@@ -3573,8 +3603,8 @@ graph TD
     AHS -->|"StorageStats queries"| SSM["StorageStatsManager"]
     AHS -->|"persist state"| Disk["HibernationStateDiskStore"]
     AHS -->|"StatsLog"| Stats["FrameworkStatsLog"]
-    AHS -->|"internal API"| AHMI["AppHibernationManagerInternal"]
-    AHMI --> PMS
+    AHS -->|"publishes local service"| AHMI["AppHibernationManagerInternal"]
+    PMS -->|"AppHibernationManagerInternal"| AHMI
 
     style AHS fill:#f9f,stroke:#333
     style PC fill:#bbf,stroke:#333
@@ -3761,14 +3791,11 @@ The service registers a broadcast receiver for `ACTION_PACKAGE_ADDED` and
 ### 26.9.9 Debugging App Hibernation
 
 ```bash
-# Check if a package is hibernated
-adb shell cmd app_hibernation is-hibernating <package> --user 0
+# Check if a package is hibernated (add --global for global state)
+adb shell cmd app_hibernation get-state --user 0 <package>
 
 # Manually hibernate a package
-adb shell cmd app_hibernation set-hibernating <package> --user 0 true
-
-# Get hibernation stats (saved bytes)
-adb shell cmd app_hibernation get-hibernation-stats --user 0
+adb shell cmd app_hibernation set-state --user 0 <package> true
 
 # Check DeviceConfig flag
 adb shell device_config get app_hibernation app_hibernation_enabled
@@ -4105,14 +4132,10 @@ $ aapt2 dump resources /system/app/Calculator/Calculator.apk | head -50
 # Check which signature schemes are present
 $ apksigner verify --verbose --print-certs /data/app/~~*/com.example.app*/base.apk
 
-# Check v1 (JAR) signature
-$ apksigner verify -v1-scheme-only /path/to/app.apk
-
-# Check v2 signature
-$ apksigner verify -v2-scheme-only /path/to/app.apk
-
-# Check v3 signature
-$ apksigner verify -v3-scheme-only /path/to/app.apk
+# The verbose output reports which of the v1/v2/v3/v4 schemes verified.
+# To constrain which schemes are checked, narrow the SDK range instead:
+$ apksigner verify --verbose --min-sdk-version 23 --max-sdk-version 23 \
+    /path/to/app.apk
 ```
 
 ### 26.11.2 Querying Package Information
@@ -4218,8 +4241,8 @@ $ adb shell dumpsys package com.example.app | grep "CAMERA"
 # List all dangerous permissions
 $ adb shell pm list permissions -d -g
 
-# Reset all runtime permissions for an app
-$ adb shell pm reset-permissions com.example.app
+# Reset runtime permissions (takes no arguments; resets all packages)
+$ adb shell pm reset-permissions
 ```
 
 ### 26.11.5 Intent Resolution Inspection
@@ -4236,13 +4259,13 @@ $ adb shell pm query-activities --brief "android.intent.action.SEND" \
     -t "text/plain"
 
 # List preferred activities (defaults)
-$ adb shell dumpsys package preferred-activities
+$ adb shell dumpsys package preferred
 
-# Set a default app for a MIME type
+# Set the default home activity (launcher)
 $ adb shell pm set-home-activity com.example.launcher/.LauncherActivity
 
-# Clear defaults for a package
-$ adb shell pm clear-default-browser-status
+# Clear preferred-activity defaults for a package
+$ adb shell pm clear-package-preferred-activities com.example.app
 ```
 
 ### 26.11.6 Working with Overlays
@@ -4259,9 +4282,9 @@ $ adb shell cmd overlay enable com.example.overlay
 # Disable an overlay
 $ adb shell cmd overlay disable com.example.overlay
 
-# Set overlay priority
-$ adb shell cmd overlay set-priority com.example.overlay \
-    --highest com.android.systemui
+# Set overlay priority (the third argument is a parent overlay package,
+# or the bare keyword lowest/highest)
+$ adb shell cmd overlay set-priority com.example.overlay highest
 
 # Show overlay info
 $ adb shell cmd overlay dump
@@ -4365,8 +4388,9 @@ $ adb shell dumpsys package com.example.app | grep -A 20 "splits="
 **Exercise 14: Install a feature split dynamically**
 
 ```bash
-# Create a session in inherit mode
-$ adb shell pm install-create --inherit -p com.example.app
+# Create a session in inherit mode (-p INHERIT_PACKAGE selects
+# MODE_INHERIT_EXISTING)
+$ adb shell pm install-create -p com.example.app
 # Returns: Success: created install session [1234]
 
 # Write the new feature split
@@ -4445,8 +4469,8 @@ $ adb logcat -d | grep -E "Finished scanning|BOOT_PROGRESS"
 # Use dumpsys to get snapshot statistics
 $ adb shell dumpsys package snapshot
 
-# Check how long specific operations take
-$ adb shell dumpsys package checkin
+# Emit machine-readable checkin output
+$ adb shell dumpsys package --checkin
 ```
 
 **Exercise 18: Profile intent resolution**
@@ -4489,10 +4513,10 @@ import static android.os.Trace.TRACE_TAG_PACKAGE_MANAGER;
 Key trace sections to look for:
 
 - `scanApexPackages` -- APEX package scanning time
-- `scanSystemDirs` -- System partition scanning time
+- `parallelScanDir` / `scanPackage` -- Directory and per-package scanning time
 - `resolveIntent` -- Intent resolution time
 - `queryIntentActivities` -- Activity query time
-- `installPackage` -- Full installation time
+- `installPackages` -- Full installation time
 
 ### 26.11.12 Advanced: Building and Testing PMS Changes
 
@@ -4512,7 +4536,7 @@ $ m FrameworksServicesTests
 $ atest FrameworksServicesTests:com.android.server.pm
 
 # Run a specific test class
-$ atest FrameworksServicesTests:com.android.server.pm.PackageManagerServiceTest
+$ atest PackageManagerServiceServerTests:com.android.server.pm.PackageManagerServiceTest
 
 # Run CTS package manager tests
 $ atest CtsPackageInstallTestCases
@@ -4530,7 +4554,7 @@ $ adb forward tcp:8700 jdwp:$(adb shell pidof system_server)
 
 # Set breakpoints in:
 # - PackageManagerService.snapshotComputer()
-# - InstallPackageHelper.processInstallRequests()
+# - InstallingSession.processInstallRequests()
 # - ResolveIntentHelper.resolveIntentInternal()
 # - PermissionManagerService.checkPermission()
 
@@ -4544,7 +4568,9 @@ $ adb forward tcp:8700 jdwp:$(adb shell pidof system_server)
 ```bash
 # Step 1: Identify target resources
 $ adb shell cmd overlay dump com.android.systemui
-# Lists all overlayable resources in SystemUI
+# Prints overlay manager state for the SystemUI target; use
+# "cmd overlay lookup" (or idmap2 lookup) to inspect overlayable
+# resource values
 
 # Step 2: Create overlay project structure
 $ mkdir -p my-overlay/res/values
@@ -4627,8 +4653,8 @@ $ adb shell pm list permissions -g | grep PERMISSION_NAME
 # Check AppOps override state
 $ adb shell appops get com.example.app
 
-# Reset all permissions for debugging
-$ adb shell pm reset-permissions -p com.example.app
+# Reset runtime permissions for debugging (no arguments; affects all packages)
+$ adb shell pm reset-permissions
 
 # Check the permission controller UI
 $ adb shell am start -a android.intent.action.MANAGE_APP_PERMISSIONS \

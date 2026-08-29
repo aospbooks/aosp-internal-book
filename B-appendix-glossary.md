@@ -18,7 +18,7 @@ throughout AOSP and this book.
 **AIDL** (Android Interface Definition Language)
 : An interface description language used to define IPC contracts between
   processes. Modern AIDL replaces HIDL for HAL interfaces starting with
-  Android 12+ and supports both Java and C++ backends.
+  Android 12+ and supports Java, C++, NDK, and Rust backends.
 
 **AMS** (ActivityManagerService)
 : The system service responsible for managing application processes, enforcing
@@ -27,7 +27,8 @@ throughout AOSP and this book.
 
 **ANR** (Application Not Responding)
 : A system dialog triggered when an application's main thread is blocked for
-  too long (5 seconds for input events, 10 seconds for broadcast receivers).
+  too long (5 seconds for input events, 10 seconds for foreground broadcast
+  receivers, 60 seconds for background ones).
   AMS monitors and enforces ANR timeouts.
 
 **AOT** (Ahead-Of-Time compilation)
@@ -190,9 +191,11 @@ throughout AOSP and this book.
   `InputMethodManagerService`.
 
 **InputFlinger**
-: The native service responsible for reading input events from the kernel
-  (`/dev/input/`), processing them, and dispatching them to the correct
-  window via `InputDispatcher`.
+: The native input stack (`libinputflinger`) responsible for reading input
+  events from the kernel (`/dev/input/`), processing them, and dispatching
+  them to the correct window via `InputDispatcher`. Unlike SurfaceFlinger it
+  is not a standalone daemon; it is hosted inside `system_server` by
+  `InputManagerService`.
 
 **Intent**
 : Android's message-passing object for requesting actions from components.
@@ -267,13 +270,16 @@ throughout AOSP and this book.
 
 **OAT**
 : The file format produced by `dex2oat` containing AOT-compiled native
-  code alongside the original DEX bytecode. An OAT file is an ELF
+  code plus metadata (`OatDexFile` headers, class offsets, vmap tables)
+  that references the DEX bytecode, which since Android O lives in the
+  companion VDEX file rather than inside the OAT. An OAT file is an ELF
   binary loaded by ART at runtime.
 
 **OTA** (Over-The-Air update)
 : The mechanism for delivering system updates wirelessly. Android
-  supports A/B (seamless) and Virtual A/B update strategies with
-  dm-snapshot compression.
+  supports A/B (seamless) and Virtual A/B update strategies; Virtual A/B
+  builds on dm-snapshot, and Virtual A/B Compression (VABC) is served by
+  the userspace `snapuserd` daemon over dm-user.
 
 **Parcel**
 : The serialization container used by Binder to marshal data across
@@ -319,8 +325,8 @@ throughout AOSP and this book.
 **Skia**
 : The 2D graphics library used throughout Android. Provides `Canvas`
   drawing operations, text rendering, image decoding, and PDF
-  generation. Backends include OpenGL, Vulkan (Ganesh), and the
-  next-generation Graphite.
+  generation. The legacy Ganesh GPU backend supports both OpenGL and
+  Vulkan, with Graphite as its next-generation replacement.
 
 **Soong**
 : Android's build system that processes `Android.bp` files (Blueprint

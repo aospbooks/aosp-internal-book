@@ -28,11 +28,15 @@ requirements:
 | RAM | 32 GB | 64 GB+ |
 | CPU | 4 cores | 16+ cores (build is highly parallel) |
 | OS | Ubuntu 22.04+ / macOS (Intel or Apple Silicon) | Ubuntu 24.04 LTS |
-| File system | Case-sensitive (ext4 on Linux) | ext4 or APFS (macOS) |
+| File system | Case-sensitive (ext4 on Linux) | ext4 (Linux) or case-sensitive APFS volume (macOS) |
 
-The build system requires a case-sensitive file system. On macOS, APFS is
-case-sensitive by default on separate volumes; on Linux ext4 is case-sensitive
-natively. Using NTFS or HFS+ (case-insensitive) will cause subtle failures.
+The build system requires a case-sensitive file system. On Linux ext4 is
+case-sensitive natively. On macOS, however, APFS volumes are case-*insensitive*
+by default, so you must explicitly create a separate volume (or disk image)
+formatted as "APFS (Case-sensitive)" for the checkout. The build guards
+against this: `checkCaseSensitivity()` in `build/soong/ui/build/build.go`
+warns when the tree sits on a case-insensitive file system. Using NTFS,
+HFS+, or default APFS (all case-insensitive) will cause subtle failures.
 
 You will also need the following packages on a Debian/Ubuntu host:
 
@@ -147,7 +151,7 @@ aosp/
       default.xml       <-- The primary manifest file
       GLOBAL-PREUPLOAD.cfg
     manifests.git/      <-- Bare clone of the manifest repo
-    manifest.xml        <-- Symlink to the active manifest
+    manifest.xml        <-- Generated file that <include>s the active manifest
     repo/               <-- The repo tool's own source code
     project.list        <-- Cached list of project paths
     project-objects/    <-- Shared bare Git repos (if using --reference)
@@ -343,7 +347,7 @@ Key flags for `repo sync`:
 | `--no-tags` | Skip fetching tags (saves time/space) |
 | `--optimized-fetch` | Only fetch projects that changed |
 | `--prune` | Remove stale branches |
-| `-f` | Continue even if a project fails |
+| `--fail-fast` | Stop syncing after the first error; by default repo keeps going, so the old `-f`/`--force-broken` flag is now the default behaviour and a no-op |
 
 ### 2.1.6 Partial Sync and Groups
 
@@ -381,8 +385,11 @@ repo init ... -g default,-device
 # Sync only PDK and tradefed groups
 repo init ... -g pdk,tradefed
 
-# List all projects and their groups
-repo list -g
+# List only the projects in a given group
+repo list -g pdk
+
+# List all projects regardless of manifest groups
+repo list -g all
 ```
 
 The group system works with both inclusion and exclusion. The special group
@@ -445,8 +452,8 @@ aosp/
   dalvik/              <-- Dalvik (historical, mostly superseded by ART)
   development/         <-- Developer tools and samples
   device/              <-- Device-specific configuration
-    generic/           <-- Emulator targets (goldfish, cuttlefish)
-    google/            <-- Pixel and Google devices
+    generic/           <-- Emulator/reference targets (goldfish, arm64, x86_64, ...)
+    google/            <-- Pixel and Google devices (incl. cuttlefish)
   external/            <-- Third-party open-source projects
   frameworks/          <-- Android framework
     base/              <-- Core framework (Java + native)
@@ -802,14 +809,14 @@ dependents can then read. This is more structured than Make's global variables:
 var CcObjectInfoProvider = blueprint.NewProvider[CcObjectInfo]()
 
 // Setting a provider (in the generating module)
-ctx.SetProvider(CcObjectInfoProvider, CcObjectInfo{
+android.SetProvider(ctx, CcObjectInfoProvider, CcObjectInfo{
     ObjFiles:   objFiles,
     TidyFiles:  tidyFiles,
     KytheFiles: kytheFiles,
 })
 
 // Reading a provider (in a dependent module)
-if info, ok := ctx.OtherModuleProvider(dep, CcObjectInfoProvider); ok {
+if info, ok := android.OtherModuleProvider(ctx, dep, CcObjectInfoProvider); ok {
     // Use info.ObjFiles, etc.
 }
 ```
@@ -863,11 +870,11 @@ Key subdirectories of `build/soong/`:
 | `cmd/` | Command-line entry points | `soong_build/`, `soong_ui/` |
 | `bpf/` | BPF program compilation | `bpf.go` |
 | `sdk/` | SDK snapshot generation | `sdk.go` |
-| `snapshot/` | Vendor snapshot management | `snapshot.go` |
+| `snapshot/` | Vendor snapshot management | `snapshot_base.go` |
 | `linkerconfig/` | Linker namespace configuration | `linkerconfig.go` |
-| `aconfig/` | Build flags (aconfig) integration | `aconfig.go` |
+| `aconfig/` | Build flags (aconfig) integration | `aconfig_declarations.go`, `all_aconfig_declarations.go` |
 | `bin/` | Shell scripts for `m`, `mm`, `mmm`, etc. | `m`, `mm`, `mmm` |
-| `kernel/` | Kernel-related build logic | `kernel.go` |
+| `kernel/` | Kernel-related build logic | `prebuilt_kernel_modules.go` |
 
 #### Inside the Go Code: Module Registration
 
@@ -909,14 +916,14 @@ aspect of C/C++ compilation:
 | File | Purpose | Lines |
 |------|---------|-------|
 | `cc.go` | Core module types and properties | 4,885 |
-| `builder.go` | Ninja rule generation | ~2,000 |
-| `binary.go` | `cc_binary` implementation | ~500 |
-| `library.go` | `cc_library` implementation | ~2,000 |
-| `sanitize.go` | ASan/TSan/UBSan integration | ~1,500 |
-| `ndk_sysroot.go` | NDK sysroot management | ~400 |
-| `stl.go` | C++ STL selection | ~300 |
-| `cmake_snapshot.go` | CMake project generation | ~400 |
-| `check.go` | Build consistency checks | ~200 |
+| `builder.go` | Ninja rule generation | ~1,400 |
+| `binary.go` | `cc_binary` implementation | ~600 |
+| `library.go` | `cc_library` implementation | ~2,700 |
+| `sanitize.go` | ASan/TSan/UBSan integration | ~2,000 |
+| `ndk_sysroot.go` | NDK sysroot management | ~300 |
+| `stl.go` | C++ STL selection | ~250 |
+| `cmake_snapshot.go` | CMake project generation | ~600 |
+| `check.go` | Build consistency checks | ~170 |
 
 **Java modules** (`build/soong/java/java.go`, 4,176 lines):
 
@@ -1002,7 +1009,7 @@ graph TB
         SB7[Run post-deps mutators]
         SB8[Run final-deps mutators]
         SB9["Call GenerateAndroidBuildActions<br/>on every module"]
-        SB10[Write out/soong/build.ninja]
+        SB10["Write out/soong/<br/>build.&lt;product&gt;.ninja"]
 
         SB1 --> SB2 --> SB3 --> SB4 --> SB5 --> SB6 --> SB7 --> SB8 --> SB9 --> SB10
     end
@@ -1101,7 +1108,7 @@ sequenceDiagram
     BP-->>SB: Module definitions
     SB->>SB: Run mutators
     SB->>SB: Generate build rules
-    SB-->>UI: out/soong/build.ninja
+    SB-->>UI: out/soong/build.<product>.ninja
 
     UI->>Kati: Run Make phase
     Kati->>Kati: Parse Android.mk files
@@ -1324,9 +1331,6 @@ Here are the most important ones:
 | `lunch` | Select build target (product, release, variant) |
 | `tapas` | Configure unbundled app build |
 | `banchan` | Configure unbundled APEX build |
-| `m` | Build from the top of the tree (delegates to `soong_ui.bash`) |
-| `mm` | Build modules in the current directory |
-| `mmm` | Build modules in specified directories |
 | `croot` | `cd` to the top of the tree |
 | `gomod` | `cd` to a specific module's directory |
 | `godir` | `cd` to a directory matching a pattern |
@@ -1335,6 +1339,11 @@ Here are the most important ones:
 | `make` | Redirects to `soong_ui.bash --make-mode` |
 | `printconfig` | Display current build configuration |
 | `leftovers` | Restore previous lunch selection |
+
+Note that `m`, `mm`, and `mmm` are *not* shell functions defined by
+`envsetup.sh`. They are standalone scripts in `build/soong/bin/` that become
+available because `set_global_paths()` prepends that directory to `PATH`
+(see section 2.5.1).
 
 The `make` function is notable -- it intercepts the system `make` command:
 
@@ -1559,8 +1568,11 @@ BUILD_SYSTEM_COMMON :=$= build/make/common
 **Source:** `build/make/core/config.mk`, lines 1-22
 
 The `ifndef KATI` guard tells us an important detail: the Make-based build does
-not use standard GNU Make. It uses **Kati**, a Make implementation written in
-Go that is faster and more compatible with Android's build patterns.
+not use standard GNU Make. It uses **Kati**, a Make-compatible tool that is
+faster and more compatible with Android's build patterns. Kati was originally
+prototyped in Go, but the production implementation shipped in the tree
+(`ckati`) is written in C++, with a newer Rust implementation (`rkati`) also
+available in `prebuilts/build-tools/`.
 
 ### 2.3.6 Kati: The Make Replacement
 
@@ -1583,8 +1595,9 @@ In the AOSP build, Kati handles:
 - Remaining `Android.mk` modules
 
 The output of Kati is `out/build-<TARGET_PRODUCT>.ninja`, which is combined
-with Soong's `out/soong/build.ninja` into a single `out/combined-<TARGET_PRODUCT>.ninja`
-that Ninja executes.
+with Soong's `out/soong/build.<TARGET_PRODUCT>.ninja` (the plain
+`out/soong/build.ninja` name is only a fallback when no product is set) into a
+single `out/combined-<TARGET_PRODUCT>.ninja` that Ninja executes.
 
 ### 2.3.7 How Build Variables Flow
 
@@ -2072,7 +2085,11 @@ Key observations:
   source into shards of 50 files each.
 - **`static_libs`** lists compile-time dependencies that are bundled into the
   output.
-- **`use_resource_processor`** enables Android resource processing.
+- **`use_resource_processor`** makes the module generate its `R.class` files
+  with the ResourceProcessorBusyBox tool instead of aapt2. The resource
+  processor emits smaller `R` classes that list only the resources of the
+  package that provided them, which speeds up builds
+  (`build/soong/java/aar.go`).
 
 ### 2.4.9 Walkthrough: An APEX Module
 
@@ -2369,7 +2386,7 @@ graph TB
     subgraph "Phase 2: Soong"
         C --> D["Parse all Android.bp<br/>files in tree"]
         D --> E["Run mutators<br/>arch, apex, etc."]
-        E --> F["Generate<br/>out/soong/build.ninja"]
+        E --> F["Generate<br/>out/soong/build.&lt;product&gt;.ninja"]
     end
 
     subgraph "Phase 3: Kati"
@@ -2494,7 +2511,7 @@ out/
   .module_paths/              <-- Module path cache
   soong/
     .intermediates/           <-- Soong intermediate outputs
-    build.ninja               <-- Soong-generated ninja file
+    build.<product>.ninja     <-- Soong-generated ninja file
     docs/                     <-- Generated documentation
   target/
     product/
@@ -2554,7 +2571,7 @@ module's path in the source tree:
 
 ```
 out/soong/.intermediates/
-  frameworks/base/core/java/
+  frameworks/base/
     framework-minus-apex/
       android_common/
         javac/          <-- Java compilation outputs
@@ -2776,8 +2793,6 @@ graph TB
         BASE --> BSE
         BASE --> BV
         BASE --> BP
-        C64 --> AOSP
-        GS --> AOSP
     end
 
     subgraph "Device-specific (device/)"
@@ -2835,6 +2850,9 @@ graph BT
     gsys["generic_system.mk<br/>GSI config"]
     handheld["handheld_system.mk<br/>Phone/tablet features"]
     tele["telephony_system.mk<br/>Telephony support"]
+    msext["media_system_ext.mk"]
+    hsext["handheld_system_ext.mk"]
+    tsext["telephony_system_ext.mk"]
     aosp["aosp_arm64.mk<br/>Final product"]
 
     base --> sys
@@ -2842,18 +2860,29 @@ graph BT
     base --> vend
     base --> prod
     sys --> gsys
-    sext --> gsys
     handheld --> gsys
     tele --> gsys
+    sext --> msext
+    msext --> hsext
+    hsext --> aosp
+    tsext --> aosp
     gsys --> aosp
     core64 --> aosp
-    vend --> aosp
     prod --> aosp
 
     style aosp fill:#50b848,color:#fff
     style base fill:#4a90d9,color:#fff
     style gsys fill:#e8a838,color:#fff
 ```
+
+Note that `base_system_ext.mk` reaches the product only through
+`handheld_system_ext.mk`, which inherits it indirectly via
+`media_system_ext.mk`. `aosp_arm64.mk` also inherits
+`telephony_system_ext.mk` directly, but that file inherits nothing itself --
+it only appends to `PRODUCT_PACKAGES`. `generic_system.mk` pulls in
+only the system-partition makefiles. `base_vendor.mk` is not in
+`aosp_arm64.mk`'s inheritance chain at all; vendor content comes from the
+device makefile instead.
 
 ### 2.6.3 Product Makefiles in `build/make/target/product/`
 
@@ -2917,8 +2946,8 @@ PRODUCT_PACKAGES += \
     com.android.media.swcodec \
     com.android.wifi \
     ...
-    framework \
     framework-graphics \
+    framework-minus-apex \
     ...
 ```
 
@@ -3114,7 +3143,7 @@ values:
 | `flag_values/<release>/` | Per-release overrides of those flags |
 | `aconfig/` | aconfig value sets wired into release configs |
 | `build_config/*.scl` | Starlark build-config snapshots (e.g. finalized API levels) |
-| `release_config_map.textproto` | Maps release names to their config sources |
+| `release_config_map.textproto` | Declares release-config aliases (e.g. `aosp_current` -> `cp2a`) and the default aconfig containers for this directory |
 
 The release configuration is parsed by a dedicated Go tool,
 `release_config`, which `soong_ui.bash` bootstraps alongside `soong_ui`:
@@ -3126,9 +3155,10 @@ soong_build_go release-config android/soong/cmd/release_config/release_config
 **Source:** `build/soong/soong_ui.bash`
 
 Its source lives in `build/soong/cmd/release_config/`, which also ships the
-`build_flag` command for querying and editing flag values and
+`build_flag` command for querying and editing flag values. The
 `finalize-platform`/`finalize-release-configs` helpers used when a release is
-finalized (the codename flips to `REL` and the SDK number is locked).
+finalized (the codename flips to `REL` and the SDK number is locked) live
+separately, under `build/make/tools/finalization/finalize-platform/`.
 
 **Source:** `build/soong/cmd/release_config/release_config/main.go`
 
@@ -3283,7 +3313,7 @@ graph TB
     PM --> IP3["inherit-product:<br/>aosp_product.mk"]
     PM --> IP4["inherit-product:<br/>device.mk"]
 
-    IP1 --> ARCH["Set TARGET_ARCH=arm64<br/>and multilib config"]
+    IP1 --> ARCH["Set TARGET_SUPPORTS_64_BIT_APPS<br/>and 64-bit zygote"]
     IP2 --> SYS["Set base system<br/>PRODUCT_PACKAGES"]
     IP3 --> PRD["Set product-specific<br/>packages"]
     IP4 --> DEV[Load device config]
@@ -3351,12 +3381,10 @@ graph TB
     end
 
     subgraph "On Device"
-        STORE[/apex/com.android.wifi/]
-        CURR[current/ -> v340000000]
-        V1["v340000000/<br/>lib64/<br/>bin/<br/>app/<br/>etc/"]
+        V1["/apex/com.android.wifi@340000000/<br/>lib64/<br/>bin/<br/>app/<br/>etc/"]
+        STORE["/apex/com.android.wifi/<br/>bind mount of the active version"]
 
-        STORE --> CURR
-        CURR --> V1
+        V1 --> STORE
     end
 
     style M fill:#4a90d9,color:#fff
@@ -3377,7 +3405,7 @@ graph TB
         C["apexd scans /system/apex/<br/>and /data/apex/"]
         D["For each APEX:<br/>verify signature"]
         E["Mount apex_payload.img<br/>as loop device"]
-        F["Bind-mount to<br/>/apex/{name}/current/"]
+        F["Bind-mount to<br/>/apex/{name}"]
         G["Update linker<br/>configuration"]
         H["System uses libraries<br/>from /apex/{name}/"]
 
@@ -3401,7 +3429,8 @@ graph TB
 1. At boot, `apexd` (the APEX daemon) scans for APEX files.
 2. Each APEX file's signature is verified using the pre-installed public key.
 3. The `apex_payload.img` inside each APEX is mounted as a loop device.
-4. The mounted filesystem is bind-mounted to `/apex/<name>/current/`.
+4. The payload is mounted at `/apex/<name>@<version>`, and the active
+   version is bind-mounted to `/apex/<name>`.
 5. Libraries and binaries from the APEX are made available to the system
    through the linker configuration.
 
@@ -3474,13 +3503,10 @@ type apexBundleProperties struct {
     Java_libs []string
 
     // List of sh binaries
-    Sh_binaries []string
+    Sh_binaries proptools.Configurable[[]string]
 
     // List of platform_compat_config files
-    Compat_configs []string
-
-    // List of filesystem images
-    Filesystems []string
+    Compat_configs proptools.Configurable[[]string]
     ...
 }
 ```
@@ -3618,8 +3644,10 @@ isolated per-APEX.
 
 ### 2.7.7 Key APEX Modules in AOSP
 
-As seen in `base_system.mk`, many core Android components are delivered as
-APEX modules:
+Many core Android components are delivered as APEX modules. Most of them are
+listed in `base_system.mk`; the ART APEX is pulled in separately by
+`runtime_libart.mk`, which picks either `com.android.art` or
+`com.android.art.debug` depending on the build variant:
 
 | APEX Name | Component |
 |-----------|-----------|
@@ -3732,7 +3760,7 @@ source build/make/rbesetup.sh
 
 # Set RBE-specific environment variables
 export USE_RBE=1
-export RBE_SERVICE=...  # Your RBE endpoint
+export RBE_service=...  # Your RBE endpoint (the key is case-sensitive)
 export RBE_DIR=...      # RBE client directory
 
 # Build with RBE
@@ -4181,7 +4209,7 @@ For the `aosp_cf_x86_64_phone` lunch combo above, the file is
     "DeviceArchVariant": "armv8-a",
     "DeviceCpuVariant": "generic",
     "DeviceSecondaryArch": "",
-    "Aml_abis": ["arm64-v8a"],
+    "Aml_abis": true,
     "Eng": true,
     "Debuggable": true,
     ...
@@ -4208,23 +4236,18 @@ stability** through several mechanisms:
   replaced by AIDL).
 - **System SDK:** Stable Java APIs for vendor applications.
 
-The build system tracks which modules are part of the VNDK and enforces
-dependency rules:
+The VNDK itself is deprecated in current AOSP: the `vndk` module property can
+no longer be set on a platform `cc_library`, and it survives only on the
+autogenerated `vndk_prebuilt_shared` modules that make up the frozen VNDK
+snapshots under `prebuilts/vndk/` (see `VndkProperties` in
+`build/soong/cc/vndk.go`, embedded only by `vndk_prebuilt_shared` in
+`build/soong/cc/vndk_prebuilt.go`). Those snapshots keep older vendor images
+working against newer system images.
 
-```
-// Module that is part of the VNDK
-cc_library {
-    name: "libcutils",
-    vndk: {
-        enabled: true,
-    },
-    ...
-}
-```
-
-Vendor modules can only depend on VNDK libraries and their own private
-libraries. The build system rejects dependencies that would cross the
-system/vendor boundary through non-stable interfaces.
+The dependency rules remain: vendor modules can only depend on stable
+interfaces and their own private libraries. The build system rejects
+dependencies that would cross the system/vendor boundary through non-stable
+interfaces.
 
 ### 2.10.3 Build Flags and Feature Gates
 
@@ -4242,10 +4265,17 @@ flag {
 }
 ```
 
-Feature flags are resolved at build time based on the release configuration:
+aconfig flags are read at *runtime* through generated flag accessors; their
+values are configured by `aconfig_value_sets` wired into the release
+configuration.
+
+A separate, build-time mechanism exists for **release build flags**: `RELEASE_*`
+flags declared under `build/release/flag_declarations/` and valued under
+`build/release/flag_values/`. Android.bp modules can select on these with
+`release_flag`:
 
 ```
-// Using a flag in Android.bp
+// Selecting on a release build flag in Android.bp
 cc_library {
     name: "libwifi_settings",
     srcs: select(release_flag("RELEASE_NEW_WIFI_PAGE"), {
@@ -4263,10 +4293,11 @@ depending on the release configuration, without requiring separate branches.
 The AOSP build system collects detailed metrics about build performance:
 
 ```bash
-# Build with metrics collection
-m --build-event-log=build_event.log
+# Metrics are collected automatically on every build
+m
 
-# View build metrics
+# View build metrics (protobuf files under out/)
+ls out/soong_metrics out/soong_build_metrics.pb
 cat out/soong_build_metrics.pb | protoc --decode=...
 ```
 
@@ -4535,7 +4566,7 @@ development.
 
 | Variable | Set By | Purpose |
 |----------|--------|---------|
-| `TOP` | envsetup.sh | Root of the source tree |
+| `ANDROID_BUILD_TOP` | envsetup.sh | Root of the source tree |
 | `TARGET_PRODUCT` | lunch | Product name (e.g., `aosp_arm64`) |
 | `TARGET_BUILD_VARIANT` | lunch | Build variant (`eng`/`userdebug`/`user`) |
 | `TARGET_RELEASE` | lunch | Release configuration |
@@ -4543,7 +4574,7 @@ development.
 | `TARGET_BUILD_APPS` | tapas/banchan | Unbundled app/APEX names |
 | `ANDROID_PRODUCT_OUT` | lunch | Path to device output directory |
 | `ANDROID_HOST_OUT` | lunch | Path to host tools output |
-| `ANDROID_BUILD_TOP` | envsetup.sh | Same as TOP (deprecated) |
+| `TOP` | User (optional) | Tree-root override consumed by `gettop`/`require_top` |
 | `ANDROID_JAVA_HOME` | lunch | Path to JDK |
 | `OUT_DIR` | User (optional) | Override output directory (default: `out`) |
 | `USE_CCACHE` | User (optional) | Enable ccache (`1` to enable) |
@@ -4595,7 +4626,11 @@ development.
 | `nocrt` | bool | Don't link C runtime startup |
 | `no_libcrt` | bool | Don't link compiler runtime |
 | `stubs` | map | Generate stubs for versioning |
-| `vndk` | map | VNDK configuration |
+
+The `vndk` property is not in this list: it lives on `VndkProperties`
+(`build/soong/cc/vndk.go`), which is embedded only by `vndk_prebuilt_shared`
+(`build/soong/cc/vndk_prebuilt.go`), so it can no longer be set on a platform
+`cc_library`.
 
 ### 2.11.4 Common Android.bp Properties for android_app
 
@@ -4648,7 +4683,7 @@ development.
 | `device/` | Device configurations |
 | `device/generic/goldfish/` | Emulator (Goldfish) device |
 | `device/google/cuttlefish/` | Virtual device (Cuttlefish) |
-| `external/` | Third-party projects (700+ repos) |
+| `external/` | Third-party projects (~550 repos) |
 | `frameworks/base/` | Core Android framework |
 | `frameworks/native/` | Native framework (SurfaceFlinger, Binder) |
 | `frameworks/av/` | Audio/Video framework |
@@ -4660,7 +4695,7 @@ development.
 | `packages/providers/` | Content providers |
 | `packages/services/` | System services |
 | `prebuilts/` | Prebuilt tools (Clang, JDK, SDK, etc.) |
-| `system/core/` | Core system utilities (init, adb, logcat) |
+| `system/core/` | Core system utilities (init, debuggerd, fastboot, libcutils, healthd); adb now lives in `packages/modules/adb`, logcat in `system/logging/logcat` |
 | `system/extras/` | Additional system utilities |
 | `system/sepolicy/` | SELinux policy |
 | `tools/` | Development tools |
@@ -4771,7 +4806,7 @@ m soong_docs
 
 # Module dependency graph (JSON)
 m json-module-graph
-# Output: out/soong/module_graph.json
+# Output: out/soong/module-graph.json
 
 # Module info database
 m module-info
@@ -4859,13 +4894,10 @@ repo sync -c -j$(nproc) --no-tags
 source build/envsetup.sh
 ```
 
-You will see output like:
-
-```
-including device/generic/goldfish/vendorsetup.sh
-including device/google/cuttlefish/vendorsetup.sh
-...
-```
+In a plain AOSP checkout this prints nothing -- envsetup.sh searches
+`device/`, `vendor/`, and `product/` for `vendorsetup.sh` hooks and prints an
+`including ...` line for each one it finds, but AOSP no longer ships any. The
+shell functions (`lunch`, `m`, `mm`, and friends) are defined either way.
 
 **Step 6: Select a build target with `lunch`.**
 
@@ -4887,8 +4919,7 @@ The output will show the build configuration:
 ```
 ============================================
 PLATFORM_VERSION_CODENAME=Baklava
-PLATFORM_VERSION=17
-PRODUCT_SOONG_NAMESPACES=...
+PLATFORM_VERSION=Baklava
 TARGET_PRODUCT=aosp_arm64
 TARGET_BUILD_VARIANT=eng
 TARGET_ARCH=arm64
@@ -4896,10 +4927,13 @@ TARGET_ARCH_VARIANT=armv8-a
 TARGET_CPU_VARIANT=generic
 HOST_OS=linux
 HOST_OS_EXTRA=...
-HOST_ARCH=x86_64
+BUILD_ID=...
 OUT_DIR=out
 ============================================
 ```
+
+Note that `PLATFORM_VERSION` shows the codename, not a number: it only
+becomes `17` after release finalization, when the codename flips to `REL`.
 
 ### 2.14.4 Building
 
@@ -4920,7 +4954,7 @@ much faster (minutes for small changes).
 **Build progress** is displayed in a compact format:
 
 ```
-[  1% 245/24532] //frameworks/base/core/java:framework-minus-apex
+[  1% 245/24532] //frameworks/base:framework-minus-apex
 [  2% 489/24532] //external/protobuf:libprotobuf-java-nano
 ...
 [ 99% 24500/24532] //build/make/target/product:system_image
@@ -5016,7 +5050,7 @@ vi packages/apps/Settings/src/com/android/settings/Settings.java
 m Settings
 
 # Push the rebuilt APK to a running emulator
-adb install -r out/target/product/generic_arm64/system/priv-app/Settings/Settings.apk
+adb install -r out/target/product/generic_arm64/system_ext/priv-app/Settings/Settings.apk
 
 # Or reboot the emulator to pick up all changes
 adb reboot
@@ -5074,9 +5108,6 @@ If Ninja gets killed by the OOM killer, reduce parallelism:
 ```bash
 # Limit to 8 parallel jobs (instead of auto-detecting CPU count)
 m -j8
-
-# Or set a memory limit per job
-export NINJA_STATUS="[%f/%t %r] "
 ```
 
 **Stale build outputs:**
@@ -5085,7 +5116,7 @@ If you suspect the build cache is corrupted:
 
 ```bash
 # Delete Soong intermediates for a specific module
-rm -rf out/soong/.intermediates/frameworks/base/core/java/framework-minus-apex/
+rm -rf out/soong/.intermediates/frameworks/base/framework-minus-apex/
 
 # Or delete all intermediates (forces full rebuild)
 m clean
@@ -5233,7 +5264,10 @@ aninja                  # Run Ninja directly with arguments
    needs rebuilding.
 
 7. **Use `mm` for focused development.** When working on a single module,
-   `mm` is much faster than `m` because it skips the Kati phase.
+   `mm` is much faster than `m` because it asks Ninja to build only the
+   `MODULES-IN-<dir>` target -- the modules in the current directory and
+   their dependencies -- instead of `droid`. The Soong and Kati
+   configuration phases still run exactly as with `m`.
 
 ### 2.14.12 Incremental Development Workflow
 
@@ -5288,8 +5322,8 @@ atest SettingsTests:com.android.settings.wifi.WifiSettingsTest
 # Run tests with verbose output
 atest -v FrameworksCoreTests
 
-# List available tests
-atest --list-modules
+# List the testable modules of a given suite
+atest --list-modules cts
 ```
 
 **Pushing individual files:**
@@ -5302,7 +5336,7 @@ without rebuilding:
 adb push out/target/product/generic_arm64/system/lib64/libfoo.so /system/lib64/
 
 # Push a rebuilt app
-adb install -r out/target/product/generic_arm64/system/app/Settings/Settings.apk
+adb install -r out/target/product/generic_arm64/system_ext/priv-app/Settings/Settings.apk
 
 # Restart the system server to pick up framework changes
 adb shell stop && adb shell start
@@ -5320,14 +5354,14 @@ During a build, Soong prints progress in a compact format. Understanding
 these messages helps diagnose where the build spends its time:
 
 ```
-[ 47% 11523/24532] //frameworks/base/core/java:framework-minus-apex metalava ...
+[ 47% 11523/24532] //frameworks/base:framework-minus-apex metalava ...
 ```
 
 The fields are:
 
 - `47%` -- Percentage of build edges completed
 - `11523/24532` -- Completed edges / total edges
-- `//frameworks/base/core/java:framework-minus-apex` -- The module being built
+- `//frameworks/base:framework-minus-apex` -- The module being built
 - `metalava` -- The tool being run (metalava is the API documentation tool)
 
 If the build appears stuck at a particular percentage, it is likely waiting
@@ -5338,8 +5372,10 @@ for a long-running action to complete. Common bottlenecks include:
 - **Linking large binaries:** Especially the framework JAR
 - **Image building:** Creating filesystem images
 
-You can see which actions are currently running by pressing any key during
-the build (Ninja will print the active actions).
+To see what a build spent its time on, inspect the logs the build writes
+under `out/` -- `out/verbose.log.gz` records every command, and
+`out/build.trace.gz` is a Chrome-tracing timeline of build actions you can
+open in a trace viewer.
 
 ### 2.14.14 Parallel Build Configuration
 

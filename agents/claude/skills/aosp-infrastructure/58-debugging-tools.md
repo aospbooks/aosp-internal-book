@@ -123,7 +123,7 @@ flowchart TD
     START --> Q1{"App crash?"}
     Q1 -- "Native crash" --> TOMB["Read tombstone"]
     Q1 -- "Java crash" --> LOGCAT1["logcat: search for FATAL EXCEPTION"]
-    Q1 -- "ANR" --> ANR["Read /data/anr/traces.txt"]
+    Q1 -- "ANR" --> ANR["Read /data/anr/anr_* dump files"]
 
     START --> Q2{"Performance issue?"}
     Q2 -- "CPU bound" --> SIMPLEPERF["simpleperf record + report"]
@@ -178,7 +178,7 @@ graph LR
 
     subgraph "Transport"
         LOGDW["/dev/socket/logdw<br/>(write socket)"]
-        KMSG["/dev/kmsg"]
+        KMSG["/proc/kmsg"]
     end
 
     subgraph "logd Daemon"
@@ -379,7 +379,8 @@ The `ProcessBuffer()` method extracts the sender's credentials (`uid`, `gid`,
 log messages cannot be spoofed.
 
 **LogKlog** (`system/logging/logd/LogKlog.h`) reads kernel messages from
-`/dev/kmsg` and injects them into the `LOG_ID_KERNEL` buffer.  It also
+`/proc/kmsg` (it opens `/dev/kmsg` only write-only, for logd's own dmesg
+output) and injects them into the `LOG_ID_KERNEL` buffer.  It also
 handles monotonic-to-realtime clock conversion:
 
 ```cpp
@@ -697,8 +698,8 @@ class LogTags {
 Tag sources include:
 
 - **System tags**: `/system/etc/event-log-tags` (built from source)
-- **Dynamic tags**: `/data/misc/logd/event-log-tags` (runtime-registered)
-- **Debug tags**: `/data/misc/logd/debug-event-log-tags` (userdebug/eng only)
+- **Dynamic tags**: `/dev/event-log-tags` (runtime-registered)
+- **Debug tags**: `/data/misc/logd/event-log-tags` (userdebug/eng only)
 
 The per-UID cap of 256 tags prevents any single application from exhausting
 the tag namespace.
@@ -714,7 +715,7 @@ Android defines the following log levels, in order of increasing severity:
 | Info | 4 | `ALOGI` | `Log.INFO` |
 | Warn | 5 | `ALOGW` | `Log.WARN` |
 | Error | 6 | `ALOGE` | `Log.ERROR` |
-| Fatal | 7 | `ALOGF` (assert) | `Log.ASSERT` |
+| Fatal | 7 | `LOG_ALWAYS_FATAL` / `ALOG_ASSERT` | `Log.ASSERT` |
 
 In production builds, `ALOGV` calls are compiled out entirely (they expand
 to `if (false)` blocks), so there is zero cost for verbose logging in release
@@ -761,10 +762,15 @@ as binary data rather than text strings:
 #   2: long
 #   3: string
 #   4: list
-42    answer     (to_life|1)
-2718  e          (euler|1|5)
-2747  contacts   (contact_count|1|1),(lookup_count|1|1)
+1003  auditd     (avc|3)
+1004  chatty     (dropped|3)
+1005  tag_def    (tag|1),(name|3),(format|3)
 ```
+
+(These three entries are the complete contents of logd's own
+`event.logtags`; the framework contributes many more tags through
+`frameworks/base/services/core/java/com/android/server/EventLogTags.logtags`
+and similar per-module files.)
 
 Advantages of structured logging:
 
@@ -921,9 +927,12 @@ The service runs as a persistent daemon, started by init:
 service traced /system/bin/traced
     class late_start
     disabled
+    socket traced_consumer stream 0666 root root
+    socket traced_producer stream 0666 root root
     user nobody
     group nobody
-    writepid /dev/cpuset/system-background/tasks
+    task_profiles ProcessCapacityHigh
+    capabilities SYS_NICE
 ```
 
 ### 58.3.3 Data Sources
@@ -941,7 +950,10 @@ source is a plugin that produces trace packets in protobuf format.
 | `linux.system_info` | System | CPU info, kernel version |
 | `android.packages_list` | Android | Installed packages mapping |
 | `android.log` | Android | Logcat integration |
-| `android.gpu.memory` | GPU | GPU memory tracking |
+
+(GPU memory tracking is available as the `android.gpu.memory` data source,
+but it is registered by gpuservice's `GpuMemTracer` as an independent
+Perfetto producer, not by `traced_probes`.)
 
 **Framework data sources** (atrace-integrated):
 
@@ -1223,16 +1235,14 @@ Perfetto ships with pre-built metrics that can be computed on a trace
 without writing SQL:
 
 ```bash
-# List available metrics
-trace_processor_shell --list-metrics trace.perfetto-trace
-
 # Compute a specific metric
 trace_processor_shell --run-metrics android_startup \
     trace.perfetto-trace
 
-# Compute all Android metrics
+# Compute several Android metrics at once, as JSON
 trace_processor_shell --run-metrics android_mem,android_startup,\
-android_binder,android_blocking_calls trace.perfetto-trace
+android_binder,android_blocking_calls_cuj_metric \
+    --metrics-output=json trace.perfetto-trace
 ```
 
 Available Android-specific metrics:
@@ -1242,11 +1252,11 @@ Available Android-specific metrics:
 | `android_startup` | App cold/warm/hot startup time breakdown |
 | `android_binder` | Binder transaction latency statistics |
 | `android_mem` | Memory usage over time |
-| `android_blocking_calls` | Calls that block the main thread |
+| `android_blocking_calls_cuj_metric` | Calls that block the main thread during CUJs |
 | `android_camera` | Camera pipeline latency |
 | `android_cpu` | CPU usage and scheduling metrics |
 | `android_gpu` | GPU utilization metrics |
-| `android_jank` | Frame jank detection and classification |
+| `android_jank_cuj` | Frame jank detection and classification |
 | `android_lmk` | Low memory killer events |
 | `android_ion` | ION/DMA-BUF memory allocation |
 
@@ -1517,7 +1527,7 @@ python simpleperf/scripts/report_html.py -i perf.data -o report.html
 simpleperf/scripts/inferno.sh -i perf.data -o flame.html
 
 # Generate FlameGraph-compatible folded stacks
-simpleperf report -i perf.data -g --print-callgraph > stacks.txt
+python3 simpleperf/scripts/stackcollapse.py -i perf.data > stacks.txt
 ```
 
 ```mermaid
@@ -1631,7 +1641,10 @@ python3 report_html.py -i perf.data -o report.html
 
 ### 58.4.10 Call Graph Methods Comparison
 
-simpleperf supports multiple methods for capturing call stacks:
+simpleperf supports two methods for capturing call stacks (`--call-graph
+fp` and `--call-graph dwarf`); with neither, it records flat samples only.
+(LBR-style hardware branch recording is an x86 perf feature that simpleperf
+does not implement.)
 
 ```mermaid
 graph TD
@@ -1648,20 +1661,12 @@ graph TD
         F3["Not always available in release builds"]
         F4["Smaller perf.data files"]
     end
-
-    subgraph "LBR (Last Branch Record)"
-        L1["Hardware-based"]
-        L2["Very low overhead"]
-        L3["Limited depth (~8-32 entries)"]
-        L4["Not available on all CPUs"]
-    end
 ```
 
 | Method | Flag | Accuracy | Overhead | Stack Depth |
 |--------|------|----------|----------|-------------|
 | DWARF | `--call-graph dwarf` | Excellent | Medium-High | Unlimited |
 | Frame Pointer | `--call-graph fp` | Good | Low | Unlimited (if FP set) |
-| LBR | (automatic on supported HW) | Good | Very Low | 8-32 entries |
 | None | (default) | Flat only | Minimal | 0 |
 
 ### 58.4.11 JIT Debug Support
@@ -1810,14 +1815,16 @@ native heap dumps that use heapprofd under the hood.
 ### 58.5.5 Analysis with trace_processor
 
 ```sql
--- Find the largest allocation call stacks
+-- Find the allocation sites with the most bytes
+-- (allocations reference a callsite, whose leaf frame carries the symbol)
 SELECT
-    SUM(size) as total_bytes,
+    SUM(hpa.size) as total_bytes,
     COUNT(*) as alloc_count,
-    GROUP_CONCAT(frame_name, ' <- ') as callstack
-FROM heap_profile_allocation
-JOIN stack_profile_frame ON frame_id = stack_profile_frame.id
-GROUP BY callstack_id
+    spf.name as leaf_frame
+FROM heap_profile_allocation hpa
+JOIN stack_profile_callsite spc ON hpa.callsite_id = spc.id
+JOIN stack_profile_frame spf ON spc.frame_id = spf.id
+GROUP BY hpa.callsite_id
 ORDER BY total_bytes DESC
 LIMIT 20;
 
@@ -2159,12 +2166,15 @@ adb shell dumpsys SurfaceFlinger
 adb shell dumpsys SurfaceFlinger --list
 
 # Display state
+adb shell dumpsys SurfaceFlinger --displays
+
+# Display identification data (EDID blob)
 adb shell dumpsys SurfaceFlinger --display-id
 
 # Frame statistics
 adb shell dumpsys SurfaceFlinger --latency <window_name>
 
-# GPU composition statistics
+# Frame-timing statistics (TimeStats)
 adb shell dumpsys SurfaceFlinger --timestats
 ```
 
@@ -2337,35 +2347,48 @@ graph TB
 
 **SurfaceFlinger traces:**
 
+The old binder-code trigger (`service call SurfaceFlinger 1025`) is
+deprecated and now returns `NAME_NOT_FOUND`; layer traces are captured
+through Perfetto as the `android.surfaceflinger.layers` data source:
+
 ```bash
-# Start SurfaceFlinger layer trace
-adb shell su root service call SurfaceFlinger 1025 i32 1
+# Record a SurfaceFlinger layer trace via Perfetto
+adb shell perfetto -o /data/misc/perfetto-traces/layers.perfetto-trace -c - <<EOF
+buffers { size_kb: 63488 }
+data_sources {
+  config {
+    name: "android.surfaceflinger.layers"
+  }
+}
+duration_ms: 10000
+EOF
+adb pull /data/misc/perfetto-traces/layers.perfetto-trace .
 
-# Stop SurfaceFlinger layer trace
-adb shell su root service call SurfaceFlinger 1025 i32 0
-
-# Pull the trace
-adb pull /data/misc/wmtrace/layers_trace.winscope .
-
-# Start transaction trace
-adb shell su root service call SurfaceFlinger 1041 i32 1
-
-# Stop transaction trace
-adb shell su root service call SurfaceFlinger 1041 i32 0
+# Transaction traces still use binder code 1041
+adb shell su root service call SurfaceFlinger 1041 i32 1   # start
+adb shell su root service call SurfaceFlinger 1041 i32 0   # stop
 adb pull /data/misc/wmtrace/transactions_trace.winscope .
 ```
 
 **WindowManager traces:**
 
+`adb shell wm tracing start/stop` is likewise rejected on current builds
+("Shell commands are ignored. Any type of action should be performed
+through perfetto."); WindowManager tracing is the `android.windowmanager`
+Perfetto data source:
+
 ```bash
-# Start WM trace
-adb shell wm tracing start
-
-# Stop WM trace
-adb shell wm tracing stop
-
-# Pull the trace
-adb pull /data/misc/wmtrace/wm_trace.winscope .
+# Record a WindowManager trace via Perfetto
+adb shell perfetto -o /data/misc/perfetto-traces/wm.perfetto-trace -c - <<EOF
+buffers { size_kb: 63488 }
+data_sources {
+  config {
+    name: "android.windowmanager"
+  }
+}
+duration_ms: 10000
+EOF
+adb pull /data/misc/perfetto-traces/wm.perfetto-trace .
 ```
 
 **Using the Winscope proxy (recommended):**
@@ -2529,7 +2552,7 @@ graph TB
 
 | Tool | Source | Output | Use case |
 |------|--------|--------|----------|
-| `bugreport` | `frameworks/native/cmds/bugreport/bugreport.cpp` | Text to stdout | Legacy, simple |
+| `bugreport` | `frameworks/native/cmds/bugreport/bugreport.cpp` | Deprecation warning only | Stub -- prints a redirect to `bugreportz` |
 | `bugreportz` | `frameworks/native/cmds/bugreportz/bugreportz.cpp` | Zip file path | Modern, comprehensive |
 | `adb bugreport` | adb client | Downloads zip | Recommended method |
 
@@ -2651,15 +2674,21 @@ graph TB
     QN --> ZIP_O
 ```
 
-**HAL integration**: dumpstate calls into the vendor HAL
-(`IDumpstateDevice`) to include hardware-specific diagnostic data:
+**HAL integration**: dumpstate calls into the vendor HAL (the AIDL
+`android.hardware.dumpstate.IDumpstateDevice`) to include
+hardware-specific diagnostic data:
 
 ```cpp
 // Simplified from dumpstate.cpp
-void Dumpstate::DumpstateBoard() {
-    auto dumpstate_device = IDumpstateDevice::getService();
-    if (dumpstate_device != nullptr) {
-        dumpstate_device->dumpstateBoard(handle, mode, deadline);
+void Dumpstate::DumpstateBoard(int out_fd) {
+    // Looks up "android.hardware.dumpstate.IDumpstateDevice/default"
+    // via the service manager and wraps it with
+    // IDumpstateDevice::fromBinder(...)
+    auto dumpstate_hal = GetDumpstateBoardAidlService();
+    if (dumpstate_hal != nullptr) {
+        // ... open the dumpstate_board.txt/.bin output fds ...
+        dumpstate_hal->dumpstateBoard(dumpstate_fds, dumpstate_hal_mode,
+                                      timeout_sec);
     }
 }
 ```
@@ -2969,7 +2998,7 @@ records.  It can be rendered to the classic text layout shown above:
 
 ```bash
 # View proto tombstone as text
-adb shell tombstone_symbolize /data/tombstones/tombstone_00.pb
+adb shell pbtombstone /data/tombstones/tombstone_00.pb
 
 # Or pull and process locally
 adb pull /data/tombstones/tombstone_00.pb
@@ -3273,9 +3302,10 @@ For profiling release builds:
 
 ```xml
 <!-- AndroidManifest.xml -->
-<application
-    android:profileableByShell="true"
-    ...>
+<application ...>
+    <profileable android:shell="true" />
+    <!-- ... -->
+</application>
 ```
 
 This allows simpleperf and heapprofd to attach without requiring
@@ -3477,7 +3507,7 @@ graph TB
 
     subgraph "Native Memory"
         HEAPPROFD_M["heapprofd"]
-        MALLOC_DEBUG["malloc debug (libc_debug_malloc)"]
+        MALLOC_DEBUG["malloc debug (libc_malloc_debug)"]
         ASAN["AddressSanitizer (ASan)"]
         HWASAN["HWAddressSanitizer (HWASan)"]
         GWP_ASAN["GWP-ASan (sampling)"]
@@ -3507,12 +3537,16 @@ enabled at runtime:
 ```bash
 # Enable malloc debug for a specific app
 adb shell setprop libc.debug.malloc.options "backtrace guard"
-adb shell am restart com.example.myapp
+adb shell am force-stop com.example.myapp   # then relaunch the app
 
 # Available options:
-# backtrace        - Record allocation backtraces
-# backtrace_size=N - Maximum frames to record (default: 16)
-# guard            - Add guard pages around allocations
+# backtrace[=MAX_FRAMES] - Record allocation backtraces
+#                          (default 16 frames, max 256)
+# backtrace_size=N       - Only record backtraces for allocations of
+#                          exactly N bytes (backtrace_min_size /
+#                          backtrace_max_size set a range)
+# guard[=SIZE_BYTES]     - Add front (0xaa) and rear (0xbb) guard bytes
+#                          to every allocation, verified on free
 # fill_on_alloc    - Fill allocated memory with 0xEB
 # fill_on_free     - Fill freed memory with 0xEF
 # leak_track       - Track all allocations for leak detection
@@ -3563,11 +3597,9 @@ Android includes a built-in leak detector that can scan the heap for
 unreachable allocations:
 
 ```bash
-# Trigger leak detection for a process
-adb shell kill -47 <pid>  # SIGRTMIN+13
-
-# Results appear in logcat
-adb logcat -s memunreachable
+# Trigger leak detection for a process (libmemunreachable is loaded
+# by zygote); the report is printed in the dumpsys output
+adb shell dumpsys -t 600 meminfo --unreachable <process>
 ```
 
 ---
@@ -3589,7 +3621,7 @@ flowchart TD
     C -- No --> E["InputDispatcher triggers ANR"]
     E --> F["ActivityManager notifies"]
     F --> G["Dump thread stacks"]
-    G --> H["Write to /data/anr/traces.txt"]
+    G --> H["Write to /data/anr/trace_NN<br/>(via tombstoned)"]
     F --> I["Show 'App not responding' dialog"]
 ```
 
@@ -3598,8 +3630,9 @@ flowchart TD
 ANR traces are stored in multiple locations:
 
 ```bash
-# Current ANR traces
-adb pull /data/anr/traces.txt
+# Current ANR traces (one trace_NN file per incident, written by tombstoned)
+adb shell ls /data/anr/
+adb pull /data/anr/ .
 
 # In a bugreport, search for:
 # 1. The ANR section
@@ -3664,14 +3697,17 @@ Build fingerprint: 'google/crosshatch/crosshatch:14/...'
 ### 58.13.5 Preventing ANRs
 
 ```bash
-# Enable strict mode to catch I/O on main thread during development
-adb shell settings put global strict_mode_visual_indicator true
+# Flash the screen when StrictMode violations occur (the Developer-options
+# "Strict mode enabled" toggle); the policies themselves are set in app
+# code via StrictMode.setThreadPolicy()
+adb shell setprop persist.sys.strictmode.visual true
 
 # Monitor ANR frequency with dumpsys
 adb shell dumpsys activity processes | grep -A 5 "ANR"
 
-# Get detailed ANR history
-adb shell dumpsys activity anr-history
+# Get details on the last ANR (and its captured trace file)
+adb shell dumpsys activity lastanr
+adb shell dumpsys activity lastanr-traces
 ```
 
 ---
@@ -3994,7 +4030,8 @@ trace_processor_shell trace.perfetto-trace
 ```bash
 # Process is hung - get Java traces
 adb shell kill -3 <pid>
-adb pull /data/anr/traces.txt
+adb shell ls /data/anr/       # then pull the newest trace_NN file
+adb pull /data/anr/ .
 
 # Process is hung - get native backtrace
 adb shell debuggerd -b <pid>
@@ -4123,10 +4160,11 @@ When `ProfilingService` receives a `requestProfiling()` call, the flow is:
    machine:
 
    ```
-   REQUESTED -> PROFILING_STARTED -> PROFILING_FINISHED ->
-   REDACTING -> REDACTION_FINISHED -> FILE_TRANSFER ->
-   NOTIFIED_REQUESTER -> CLEANUP_COMPLETE
+   REQUESTED -> APPROVED -> PROFILING_STARTED -> PROFILING_FINISHED ->
+   REDACTED -> COPIED_FILE -> NOTIFIED_REQUESTER -> CLEANED_UP
    ```
+
+   with `ERROR_OCCURRED` as the failure state.
 
    The service periodically checks if the Perfetto process has finished
    (every `PROFILING_DEFAULT_RECHECK_DELAY_MS` = 5 seconds).
@@ -4187,13 +4225,26 @@ heapprofd.setBlockClient(false);
 ```java
 DataSourceConfig.Builder perfDs = DataSourceConfig.newBuilder();
 perfDs.setName("linux.perf");
-PerfEventConfig.Builder perf = PerfEventConfig.newBuilder();
-perf.setFrequency(frequencyHz);           // e.g. 100 Hz
-perf.addTargetCmdline(packageName);
-perf.setCallstackTimed(
-    PerfEvents.Timebase.newBuilder()
-        .setFrequency(frequencyHz)
-        .build());
+
+// Timebase: what to sample, and how often
+PerfEvents.Timebase timebase = PerfEvents.Timebase.newBuilder()
+    .setCounter(PerfEvents.Counter.SW_CPU_CLOCK)
+    .setFrequency(frequencyHz)            // e.g. 100 Hz
+    .setTimestampClock(PerfEvents.PerfClock.PERF_CLOCK_MONOTONIC)
+    .build();
+
+// Scope the callstack sampling to the target package
+PerfEventConfig.Scope scope = PerfEventConfig.Scope.newBuilder()
+    .addTargetCmdline(packageName)
+    .build();
+PerfEventConfig.CallstackSampling callstackSampling =
+    PerfEventConfig.CallstackSampling.newBuilder()
+        .setScope(scope)
+        .build();
+
+PerfEventConfig.Builder perf = PerfEventConfig.newBuilder()
+    .setTimebase(timebase)
+    .setCallstackSampling(callstackSampling);
 ```
 
 **Java Heap Dump** (wraps ART hprof):
@@ -4281,8 +4332,10 @@ App-initiated:       10 units
 System-triggered:     5 units
 ```
 
-Rate limiter state is persisted to disk (every 30 minutes) and survives
-reboots.  For local testing, disable with:
+Rate limiter state is persisted to disk on each update by default
+(`DEFAULT_PERSIST_TO_DISK_FREQUENCY_MS = 0`, with an optional
+DeviceConfig-controlled throttling interval) and survives reboots.  For
+local testing, disable with:
 
 ```bash
 # Disable rate limiting
@@ -4560,7 +4613,7 @@ app polling, attaching a profiler, or knowing which app would misbehave.
 ### 58.19.5 Inspecting the Detector
 
 The service ships a shell command handler
-(`.../anomaly/service/java/.../AnomalyDetectorShellCommandHandler.java`) and a
+(`packages/modules/Profiling/anomaly-detector/service/java/com/android/os/profiling/anomaly/AnomalyDetectorShellCommandHandler.java`) and a
 dumpsys hook for inspecting the currently active rules, which is the fastest
 way to confirm a controller's rules took effect:
 
@@ -4660,8 +4713,11 @@ its current API surface:
   `dynamic_instrumentation` system service and a `@SystemApi`
   `DynamicInstrumentationEventService`
   (`packages/modules/UprobeStats/framework/java/android/service/uprobestats/DynamicInstrumentationEventService.java`)
-  that privileged apps extend to receive `DynamicInstrumentationEvent`s,
-  guarded by the `DYNAMIC_INSTRUMENTATION` permission.  Events are delivered
+  that privileged apps extend to receive `DynamicInstrumentationEvent`s.
+  Event delivery into the service is guarded by the
+  `SEND_DYNAMIC_INSTRUMENTATION_EVENTS` permission, while registering and
+  configuring instrumentation via `UprobeStatsBridgeService` requires
+  `DYNAMIC_INSTRUMENTATION`.  Events are delivered
   through a renamed bridge service,
   `UprobeStatsBridgeService`/`UprobeStatsBridgeServiceImpl`
   (formerly "uprobestats_service"), which batches events and only operates at
@@ -5033,13 +5089,14 @@ Analyze with trace_processor:
 
 ```sql
 SELECT
-    SUM(size) as total_bytes,
+    SUM(hpa.size) as total_bytes,
     COUNT(*) as alloc_count,
-    frame_name
-FROM heap_profile_allocation
-JOIN stack_profile_frame ON frame_id = stack_profile_frame.id
-WHERE size > 0
-GROUP BY frame_name
+    spf.name as frame_name
+FROM heap_profile_allocation hpa
+JOIN stack_profile_callsite spc ON hpa.callsite_id = spc.id
+JOIN stack_profile_frame spf ON spc.frame_id = spf.id
+WHERE hpa.size > 0
+GROUP BY spf.name
 ORDER BY total_bytes DESC
 LIMIT 10;
 ```

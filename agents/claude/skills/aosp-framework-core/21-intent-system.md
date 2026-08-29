@@ -232,8 +232,12 @@ is a common source of bugs, documented explicitly in the PendingIntent Javadoc.
 ### 21.1.5 Intent Flags
 
 The Intent class defines flags in two categories, both encoded as bitmasks in `mFlags`.
+Activity and receiver flags share the same high bits of `mFlags` -- they are
+disambiguated by how the Intent is dispatched, not by disjoint bit ranges. For example,
+`0x40000000` means `FLAG_ACTIVITY_NO_HISTORY` when the Intent starts an activity, but
+`FLAG_RECEIVER_REGISTERED_ONLY` when it is broadcast.
 
-**Activity flags** (bits 0-25, roughly) control launch behavior:
+**Activity flags** control launch behavior:
 
 | Flag | Value | Effect |
 |------|-------|--------|
@@ -246,7 +250,7 @@ The Intent class defines flags in two categories, both encoded as bitmasks in `m
 | `FLAG_ACTIVITY_FORWARD_RESULT` | `0x02000000` | Relay result to original caller |
 | `FLAG_ACTIVITY_LAUNCH_ADJACENT` | `0x00001000` | Multi-window adjacent launch |
 
-**Receiver flags** (bits 26-31, roughly) control broadcast behavior:
+**Receiver flags** control broadcast behavior:
 
 | Flag | Value | Effect |
 |------|-------|--------|
@@ -257,7 +261,7 @@ The Intent class defines flags in two categories, both encoded as bitmasks in `m
 | `FLAG_RECEIVER_INCLUDE_BACKGROUND` | `0x01000000` | Include stopped/background apps |
 | `FLAG_RECEIVER_EXCLUDE_BACKGROUND` | `0x00800000` | Exclude background apps |
 
-**URI permission flags** (bits 0-2) grant temporary access:
+**URI permission flags** (bits 0, 1, 6, and 7) grant temporary access:
 
 | Flag | Value | Effect |
 |------|-------|--------|
@@ -368,12 +372,12 @@ avoiding task confusion if the user has previously launched the browser normally
 
 ### 21.1.8 ClipData and URI Permission Grants
 
-The `mClipData` field (line 8025) serves a dual purpose: carrying rich content and
+The `mClipData` field (line 8144) serves a dual purpose: carrying rich content and
 enabling URI permission grants on multiple URIs. When `FLAG_GRANT_READ_URI_PERMISSION`
 or `FLAG_GRANT_WRITE_URI_PERMISSION` is set, the grant applies to both the main `mData`
 URI and all URIs in the ClipData items.
 
-From the source documentation (line ~10633):
+From the `setClipData()` javadoc (line ~10758):
 
 > "The main feature of using this over the extras for data is that
 > FLAG_GRANT_READ_URI_PERMISSION and FLAG_GRANT_WRITE_URI_PERMISSION will operate on
@@ -585,7 +589,8 @@ flowchart TD
 **Test 1: Action Match** (`matchAction()`):
 
 The Intent's action must be listed in the filter's action set. If the filter specifies
-no actions, the match always fails. If the Intent's action is null, modern Android
+no actions, it only matches Intents that carry no action -- the action test in `match()`
+is skipped entirely when the Intent's action is null. If the Intent's action is null, modern Android
 (targeting V+) blocks the match via the `BLOCK_NULL_ACTION_INTENTS` compatibility change
 (change ID `293560872`, declared at `IntentFilter.java` line 202). The server-side hook
 that applies this is in `SaferIntentUtils` (Section 21.10).
@@ -697,7 +702,8 @@ public final String matchCategories(Set<String> categories) {
 
 The critical implication: any activity that wants to be reachable via `startActivity()`
 with an implicit Intent must declare `CATEGORY_DEFAULT` in its filter, because
-`startActivity()` always adds `CATEGORY_DEFAULT` to the Intent.
+`startActivity()` resolves with `PackageManager.MATCH_DEFAULT_ONLY`, which makes the
+resolver keep only filters that declare `CATEGORY_DEFAULT`.
 
 ### 21.2.4 ResolveInfo: The Resolution Result
 
@@ -853,10 +859,12 @@ The system also considers:
 The `CATEGORY_DEFAULT` requirement is one of the most important and most frequently
 misunderstood aspects of intent resolution. Here is the exact behavior:
 
-1. `Context.startActivity()` adds `CATEGORY_DEFAULT` to the Intent automatically
-2. `PackageManager.queryIntentActivities()` does NOT add it automatically
-3. `Context.sendBroadcast()` does NOT add it
-4. `Context.startService()` does NOT add it
+1. `Context.startActivity()` resolves with `PackageManager.MATCH_DEFAULT_ONLY`, so only
+   filters declaring `CATEGORY_DEFAULT` are considered (the Intent itself is never mutated)
+2. `PackageManager.queryIntentActivities()` does NOT apply `MATCH_DEFAULT_ONLY` unless
+   the caller passes it
+3. `Context.sendBroadcast()` does NOT require it
+4. `Context.startService()` does NOT require it
 
 This means:
 
@@ -886,17 +894,26 @@ This means:
 ### 21.2.9 The Chooser
 
 When multiple activities match an implicit Intent and no default is set, the system
-presents a Chooser dialog. Applications can also explicitly invoke the Chooser:
+presents a disambiguation dialog. That dialog is itself an Activity --
+`com.android.internal.app.ResolverActivity` -- which `PackageManagerService` returns
+as its built-in resolve activity (`mResolveActivity`) whenever resolution is ambiguous.
+
+Applications can also explicitly invoke the share-sheet Chooser:
 
 ```java
 Intent chooser = Intent.createChooser(targetIntent, "Share via");
 startActivity(chooser);
 ```
 
-The `ACTION_CHOOSER` wraps the original intent in `EXTRA_INTENT` and optionally adds
-`EXTRA_INITIAL_INTENTS` for additional options. The Chooser is itself an Activity
-(`com.android.internal.app.ChooserActivity`) that queries the PackageManager and
-presents the results.
+The `ACTION_CHOOSER` intent wraps the original intent in `EXTRA_INTENT` and optionally
+adds `EXTRA_INITIAL_INTENTS` for additional options. It is handled by
+`com.android.intentresolver.ChooserActivity` in the unbundled IntentResolver module
+(`packages/modules/IntentResolver`), registered for `ACTION_CHOOSER` via the
+`.ChooserActivityLauncher` activity-alias in the module's manifest. The legacy
+`com.android.internal.app.ChooserActivity` (a `ResolverActivity` subclass) still exists
+in `frameworks/base` but no longer carries the `ACTION_CHOOSER` filter. Either way, this
+path serves only the explicit `Intent.createChooser()` / `ACTION_CHOOSER` case, not
+ordinary multi-match disambiguation.
 
 ```mermaid
 sequenceDiagram
@@ -906,7 +923,7 @@ sequenceDiagram
     participant ATS as ActivityTaskSupervisor
     participant PMS as PackageManagerService
     participant CR as ComponentResolver
-    participant Chooser as ChooserActivity
+    participant Resolver as ResolverActivity
 
     App->>ATMS: startActivity(implicit intent)
     ATMS->>AS: execute()
@@ -919,10 +936,11 @@ sequenceDiagram
     alt Single match
         AS->>App: Launch matched activity
     else Multiple matches, no default
-        AS->>Chooser: Launch with EXTRA_INTENT
-        Chooser->>PMS: queryIntentActivities()
-        PMS-->>Chooser: Full list
-        Chooser->>App: User picks, launches selected
+        Note over PMS: PMS returns ResolverActivity as the resolve activity
+        AS->>Resolver: Launch ResolverActivity
+        Resolver->>PMS: queryIntentActivities()
+        PMS-->>Resolver: Full list
+        Resolver->>App: User picks, launches selected
     end
 ```
 
@@ -941,7 +959,8 @@ allows MIME-type-only filters to work with ContentProviders. From `matchData()`:
     // content provider, which is done by type...
     if (scheme != null && !"".equals(scheme)
             && !"content".equals(scheme)
-            && !"file".equals(scheme)) {
+            && !"file".equals(scheme)
+            && !(wildcardSupported && WILDCARD.equals(scheme))) {
         return NO_MATCH_DATA;
     }
 }
@@ -981,8 +1000,8 @@ The actual pending intent state is maintained on the server side in
 
 ### 21.3.2 Creation Methods
 
-PendingIntents are created through four static factory methods, corresponding to the
-four types of operations:
+PendingIntents are created through five static factory methods, corresponding to the
+types of operations:
 
 ```java
 PendingIntent.getActivity(context, requestCode, intent, flags)
@@ -992,16 +1011,18 @@ PendingIntent.getService(context, requestCode, intent, flags)
 PendingIntent.getForegroundService(context, requestCode, intent, flags)
 ```
 
-Each method calls through to `ActivityManagerService`, which creates an
-`PendingIntentRecord` stored in a process-independent map. The `requestCode` parameter
+Each method calls through to `ActivityManagerService`, which delegates to
+`PendingIntentController` to create a `PendingIntentRecord` stored in a
+process-independent map. The `requestCode` parameter
 is used to distinguish PendingIntents that would otherwise be considered equivalent
 via `filterEquals()`.
 
 ```mermaid
 flowchart TD
     A[App calls PendingIntent.getActivity] --> B[checkPendingIntent: validate flags]
-    B --> C[ActivityManager.getService.getIntentSender]
-    C --> D[AMS.getIntentSenderLocked]
+    B --> C["ActivityManager.getService().getIntentSenderWithFeature"]
+    C --> C2[AMS.getIntentSenderWithFeature]
+    C2 --> D[PendingIntentController.getIntentSender]
     D --> E{Existing PI with same filterEquals + requestCode?}
     E -->|Yes + FLAG_NO_CREATE| F[Return existing]
     E -->|Yes + FLAG_CANCEL_CURRENT| G[Cancel old, create new]
@@ -1009,7 +1030,7 @@ flowchart TD
     E -->|Yes + no special flag| I[Return existing as-is]
     E -->|No + FLAG_NO_CREATE| J[Return null]
     E -->|No| K[Create PendingIntentRecord]
-    K --> L[Store in mIntentSenderRecords]
+    K --> L[Store in PendingIntentController.mIntentSenderRecords]
     L --> M[Return PendingIntent token]
     F --> M
     G --> M
@@ -1065,13 +1086,14 @@ Intent is blocked via `BLOCK_MUTABLE_IMPLICIT_PENDING_INTENT` (change ID `236704
 public static boolean isNewMutableDisallowedImplicitPendingIntent(int flags,
         @NonNull Intent intent, boolean isActivityResultType) {
     if (isActivityResultType) return false;
+    boolean isFlagNoCreateSet = (flags & PendingIntent.FLAG_NO_CREATE) != 0;
     boolean isFlagMutableSet = (flags & PendingIntent.FLAG_MUTABLE) != 0;
     boolean isImplicit = (intent.getComponent() == null)
                       && (intent.getPackage() == null);
-    boolean isFlagAllowUnsafe =
+    boolean isFlagAllowUnsafeImplicitIntentSet =
             (flags & PendingIntent.FLAG_ALLOW_UNSAFE_IMPLICIT_INTENT) != 0;
     return !isFlagNoCreateSet && isFlagMutableSet && isImplicit
-            && !isFlagAllowUnsafe;
+            && !isFlagAllowUnsafeImplicitIntentSet;
 }
 ```
 
@@ -1526,7 +1548,9 @@ broadcast delivery without IPC overhead. It was implemented as a simple observer
 with no involvement of `ActivityManagerService`.
 
 The modern replacement is to use `LiveData`, `Flow`, or other reactive patterns for
-in-process communication. The system never used `LocalBroadcastManager` internally.
+in-process communication. The framework's broadcast machinery (`ActivityManagerService`,
+`BroadcastQueue`) has no knowledge of `LocalBroadcastManager` -- though platform code such
+as SettingsLib and bundled apps (Stk, Contacts) do use the library themselves.
 
 ### 21.4.9 Broadcast Delivery Prioritization
 
@@ -1541,9 +1565,17 @@ final boolean urgent;             // classified as urgent
 final boolean deferUntilActive;   // BROADCAST_TYPE_DEFERRABLE_UNTIL_ACTIVE
 ```
 
-The `BroadcastProcessQueue` uses these to determine delivery urgency and scheduling.
-Interactive broadcasts (triggered by user action) get priority over alarm broadcasts,
-which get priority over background broadcasts.
+`BroadcastProcessQueue` uses these to pick which of its three pending deques a record
+lands in. `getQueueForBroadcast()`
+(`frameworks/base/services/core/java/com/android/server/am/BroadcastProcessQueue.java:269-277`)
+routes urgent records to `mPendingUrgent`, offload records to `mPendingOffload`, and
+everything else to the normal `mPending`. The urgent bit itself comes from
+`BroadcastRecord.calculateUrgent()`
+(`frameworks/base/services/core/java/com/android/server/am/BroadcastRecord.java:867-882`),
+which returns true when the intent carries `FLAG_RECEIVER_FOREGROUND`, or when
+`BroadcastOptions.isInteractive()` or `BroadcastOptions.isAlarmBroadcast()` is set. So
+interactive and alarm broadcasts share the same urgent tier -- they are not ranked
+against each other -- and the third tier is offload, not "background".
 
 ### 21.4.10 Broadcast ANR
 
@@ -1568,8 +1600,8 @@ sequenceDiagram
         Proc->>BQ: finishReceiver(resultCode)
         BQ->>BQ: Cancel ANR timer
     else Timeout
-        BQ->>AMS: broadcastTimeoutLocked()
-        AMS->>AMS: appNotResponding(process)
+        BQ->>BQ: deliveryTimeoutLocked()
+        BQ->>AMS: appNotResponding(process)
         Note over AMS: Show ANR dialog
     end
 ```
@@ -1674,7 +1706,6 @@ Android versions:
 |----------------|-----|--------|
 | 7.0 (Nougat) | 24 | `ACTION_NEW_PICTURE` and `ACTION_NEW_VIDEO` removed |
 | 8.0 (Oreo) | 26 | Most implicit broadcasts blocked for manifest receivers |
-| 9.0 (Pie) | 28 | `ACTION_BATTERY_CHANGED` no longer delivered to manifest receivers |
 | 10 (Q) | 29 | No new restrictions |
 | 11 (R) | 30 | Package visibility affects broadcast resolution |
 | 12 (S) | 31 | Exported attribute required for components with filters |
@@ -1875,8 +1906,11 @@ The verification has several important timing characteristics:
 2. **Network required**: Verification requires network access to fetch assetlinks.json
 3. **Retry behavior**: If verification fails due to network issues, the system may
    retry at a later time
-4. **Multi-domain handling**: If an app declares multiple domains, ALL domains must
-   verify successfully for automatic linking to work for any of them
+4. **Multi-domain handling**: Under the modern `DomainVerificationManager` (Android 12+),
+   each declared domain is verified and approved independently -- links for a domain that
+   verified successfully open directly in the app even when other declared domains failed
+   verification. (The old all-or-nothing behavior applied only to the legacy pre-S
+   `IntentFilterVerifier`.)
 5. **Re-verification**: When an app is updated, verification may be re-triggered if
    the intent filters changed
 
@@ -1898,7 +1932,7 @@ sequenceDiagram
             DV->>DV: Mark as pending, schedule retry
         else Invalid JSON
             Net-->>DV: Missing/invalid assetlinks
-            DV->>DV: Mark domain as denied
+            DV->>DV: Mark domain as failed with agent-defined error code
         end
     end
     DV->>PM: Update verification state
@@ -1934,15 +1968,24 @@ https://digitalassetlinks.googleapis.com/v1/statements:list?source.web.site=http
 
 ### 21.5.8 Verification State Management
 
-Domain verification state is per-user and per-package. The possible states are:
+The verification state itself (the `STATE_*` values below) is kept per package and per
+domain and is user-independent; only the user's link-handling selections (which hosts
+are enabled, whether link handling is allowed at all) are stored per user. The most
+common states are:
 
 | State | Meaning |
 |-------|---------|
 | `STATE_NO_RESPONSE` | Verification not yet attempted or no response |
 | `STATE_SUCCESS` | Domain verified successfully |
-| `STATE_DENIED` | Verification failed (domain does not match) |
+| `STATE_APPROVED` | System/administrative override that forces the domain to be treated as verified |
+| `STATE_DENIED` | System/administrative override that forces the domain to be treated as unverified (the verification agent cannot change it) |
 | `STATE_MIGRATED` | State migrated from legacy system |
 | `STATE_RESTORED` | State restored from backup |
+
+`DomainVerificationState` also defines `STATE_LEGACY_FAILURE` (a failure carried over
+from the legacy verifier), `STATE_SYS_CONFIG` (approval granted by system config), and
+`STATE_PRE_VERIFIED` (verified ahead of install); values at or above
+`STATE_FIRST_VERIFIER_DEFINED` (`0b10000000000`) are agent-defined error codes.
 
 Users can also manually manage App Link settings through Settings, which can override
 the automatic verification state.
@@ -1995,12 +2038,6 @@ flowchart TD
         A2 -->|No| A4[Action FAIL]
     end
 
-    subgraph "Category Match"
-        C1[Intent.categories] --> C2{ALL in filter.mCategories?}
-        C2 -->|Yes| C3[Category PASS]
-        C2 -->|No| C4[Category FAIL]
-    end
-
     subgraph "Data Match"
         D1[Intent data + type] --> D2{Filter has schemes?}
         D2 -->|Yes| D3{Scheme matches?}
@@ -2017,9 +2054,19 @@ flowchart TD
         D9 -->|No| D10[Type FAIL]
     end
 
-    A3 --> C1
-    C3 --> D1
+    subgraph "Category Match"
+        C1[Intent.categories] --> C2{ALL in filter.mCategories?}
+        C2 -->|Yes| C3[Category PASS]
+        C2 -->|No| C4[Category FAIL]
+    end
+
+    A3 --> D1
+    D6 --> C1
 ```
+
+This is the order `IntentFilter.match()` actually applies: `matchAction()` first, then
+`matchData()`, then `matchCategories()`, with a trailing `matchExtras()` check after the
+categories pass.
 
 **Key rules from the source Javadoc:**
 
@@ -2071,7 +2118,7 @@ When multiple filters match, the one with the highest match quality wins.
 The `AuthorityEntry` inner class handles host and port matching:
 
 ```java
-// IntentFilter.java, line ~1120 (approximate)
+// IntentFilter.java, line ~1176; match(Uri, boolean) at ~1264
 public static final class AuthorityEntry {
     private final String mOrigHost;
     private final String mHost;
@@ -2319,16 +2366,28 @@ The `PatternMatcher` class (used for path and SSP matching) supports five patter
 |------|----------|----------|
 | Literal | `PATTERN_LITERAL` | Exact string match |
 | Prefix | `PATTERN_PREFIX` | Matches if string starts with pattern |
-| Simple glob | `PATTERN_SIMPLE_GLOB` | `*` matches any sequence, `.` is literal |
+| Simple glob | `PATTERN_SIMPLE_GLOB` | `*` matches zero or more of the preceding character; an unescaped `.` matches any single character (`.*` = any sequence); `\\` escapes |
 | Advanced glob | `PATTERN_ADVANCED_GLOB` | Full glob with `[`, `]`, `{`, `}` |
 | Suffix | `PATTERN_SUFFIX` | Matches if string ends with pattern |
 
-The `PATTERN_SIMPLE_GLOB` is the most commonly used. Unlike regex, `.` is a literal
-character, not a wildcard. The `*` wildcard matches zero or more characters. Examples:
+The `PATTERN_SIMPLE_GLOB` is the most commonly used. Unlike regex, `*` does not mean
+"any sequence" -- it means zero or more repetitions of the character immediately before
+it. An unescaped `.` is a single-character wildcard on its own, whether or not a `*`
+follows it (`matchGlobPattern()` skips the literal comparison for any unescaped `.`,
+`frameworks/base/core/java/android/os/PatternMatcher.java:303-304`); only an escaped
+`\\.` matches a literal dot. Combining the two, `.*` is the way to match an arbitrary
+sequence. Examples:
 
-- `"/products/*"` matches `/products/` and `/products/123` and `/products/123/details`
+- `"/products/.*"` matches `/products/`, `/products/123`, and `/products/123/details`,
+  while `"/products/*"` matches `/products/`, `/products//`, ... but *not* `/products`:
+  a trailing `X*` still requires the match string not to be exhausted, and the
+  end-of-pattern fallback at `PatternMatcher.java:316-319` tolerates only a leftover
+  `.*`
 - `"/items/.*\\.json"` matches `/items/data.json` and `/items/list.json`
-- `"*.pdf"` as a suffix matches any string ending in `.pdf`
+- As a `PATTERN_SUFFIX`, the pattern is a plain `String.endsWith()` check with no glob
+  interpretation (`PatternMatcher.java:236-237`), so the suffix that matches any string
+  ending in `.pdf` is `".pdf"` -- writing `"*.pdf"` would only match strings that
+  literally end in the five characters `*.pdf`
 
 ---
 
@@ -2442,8 +2501,10 @@ These classes implement the algorithm for:
 
 ## 21.8 Protected Broadcasts
 
-Protected broadcasts are actions that only the system (UID 1000 / system_server) can
-send. They are a security mechanism to prevent apps from spoofing critical system events.
+Protected broadcasts are actions that only system-side callers can send -- root, system,
+phone, bluetooth, NFC, secure element and network-stack UIDs, plus any caller whose
+process is persistent. They are a security mechanism to prevent apps from spoofing
+critical system events.
 
 ### 21.8.1 Declaration
 
@@ -2476,7 +2537,7 @@ During package scanning, each `<protected-broadcast>` declaration is added to
 flowchart TD
     A[App sends broadcast with action X] --> B{Is X a protected broadcast?}
     B -->|No| C[Allow: normal broadcast delivery]
-    B -->|Yes| D{Is caller system UID or root?}
+    B -->|Yes| D{Is caller a system-side UID or persistent process?}
     D -->|Yes| E[Allow: system can send protected broadcasts]
     D -->|No| F[Reject: SecurityException]
     F --> G[Log warning: non-system sender of protected broadcast]
@@ -2648,7 +2709,9 @@ These grants are:
 
 - Temporary (revoked when the receiving task is finished, unless persistable)
 - Scoped to the specific URI (or URI prefix with `FLAG_GRANT_PREFIX_URI_PERMISSION`)
-- Tracked by `ActivityManagerService` per process
+- Tracked by `UriGrantsManagerService`
+  (`frameworks/base/services/core/java/com/android/server/uri/`) as `UriPermission`
+  records keyed by target UID/package and `GrantUri`
 
 The `FLAG_GRANT_PERSISTABLE_URI_PERMISSION` flag allows the receiver to persist the
 grant across reboots using `ContentResolver.takePersistableUriPermission()`.
@@ -2684,9 +2747,11 @@ flowchart TD
 
 ### 21.9.7 The CATEGORY_DEFAULT Requirement
 
-A frequently misunderstood security-relevant behavior: `Context.startActivity()` always
-adds `CATEGORY_DEFAULT` to implicit Intents. This means any activity that wants to be
-discoverable via implicit intents must include `CATEGORY_DEFAULT` in its filter.
+A frequently misunderstood security-relevant behavior: `Context.startActivity()` resolves
+implicit Intents with `PackageManager.MATCH_DEFAULT_ONLY`, which makes the resolver keep
+only filters that declare `CATEGORY_DEFAULT` -- the category is a filter-side requirement,
+not something added to the Intent. Any activity that wants to be discoverable via
+implicit intents must therefore include `CATEGORY_DEFAULT` in its filter.
 
 This is documented in the Intent class (line ~406):
 
@@ -2695,8 +2760,8 @@ This is documented in the Intent class (line ~406):
 > explicitly specified."
 
 The practical implication: if you omit `CATEGORY_DEFAULT`, your activity can still
-be found via `PackageManager.queryIntentActivities()` (which does not add the default
-category) but cannot be launched via `startActivity()` with an implicit intent. This
+be found via `PackageManager.queryIntentActivities()` (when called without
+`MATCH_DEFAULT_ONLY`) but cannot be launched via `startActivity()` with an implicit intent. This
 provides a mechanism for "queryable but not directly launchable" activities.
 
 ### 21.9.8 Intent Validation at Process Boundaries
@@ -2734,9 +2799,17 @@ final @Nullable String[] excludedPermissions;  // receivers must NOT hold these
 final @Nullable String[] excludedPackages;     // these packages are excluded
 ```
 
-`excludedPermissions` is used for privacy-sensitive broadcasts where holders of certain
-permissions should not receive the broadcast (for example, excluding apps with
-`INTERACT_ACROSS_USERS` from receiving user-specific broadcasts).
+`excludedPermissions` (set through `BroadcastOptions.setRequireNoneOfPermissions()`,
+`frameworks/base/core/java/android/app/BroadcastOptions.java:637`) lets a sender keep a
+broadcast away from receivers holding a particular permission. The in-tree use is
+Wi-Fi P2P, which fans one event out over several sends and uses exclusions to stop any
+app from receiving it twice. `sendBroadcastWithExcludedPermissions()`
+(`packages/modules/Wifi/service/java/com/android/server/wifi/p2p/WifiP2pServiceImpl.java:6163-6199`)
+first sends the legacy location-gated copy, then sends a second copy to holders of the
+newer `NEARBY_WIFI_DEVICES` permission with `ACCESS_FINE_LOCATION` excluded, so apps
+already served by the first send are skipped. Callers layer on their own exclusions the
+same way: `sendP2pConnectionChangedBroadcast()` delivers directly to the
+`MAINLINE_NETWORK_STACK` holders, then excludes that permission from the general send.
 
 `excludedPackages` allows the sender to explicitly block specific packages from
 receiving the broadcast.
@@ -2808,7 +2881,8 @@ This is mitigated by protected broadcasts for system actions, but custom actions
 remain vulnerable.
 
 Mitigation: Use permission-protected receivers. Validate the sender's identity using
-`BroadcastReceiver.getSenderApplication()` or permission checks.
+`BroadcastReceiver.getSentFromUid()` / `getSentFromPackage()` (API 34+, requires the
+sender to opt in via `setShareIdentityEnabled()`) or permission checks.
 
 **4. PendingIntent Hijacking**
 
@@ -3135,7 +3209,7 @@ adb shell pm resolve-activity -a android.intent.action.VIEW \
 adb shell dumpsys package com.android.settings | grep -A 20 "intent-filter"
 
 # Check preferred activities (default apps)
-adb shell dumpsys preferred-activities
+adb shell dumpsys package preferred
 ```
 
 ### Exercise 21.3: Examine Broadcast Queue State
@@ -3223,11 +3297,10 @@ adb shell dumpsys activity processes | grep -A 5 "PendingIntent"
 ### Exercise 21.7: Cross-Profile Intent Forwarding
 
 ```bash
-# List cross-profile intent filters (requires root or work profile)
-adb shell dumpsys package cross-profile-intent-filters
-
-# Check which intents forward between profiles
-adb shell pm list-cross-profile-intent-filters --user 0
+# Cross-profile intent filters are not printed by dumpsys at all -- there is
+# no dump path for them. They are only persisted, per user, into the
+# <crossProfile-intent-filters> element of that user's package-restrictions.xml
+adb shell su 0 cat /data/system/users/10/package-restrictions.xml
 
 # On a device with work profile (user 10):
 adb shell am start --user 10 \
@@ -3375,7 +3448,10 @@ Write a test that demonstrates the match quality hierarchy:
 ```java
 // Create filters of increasing specificity
 IntentFilter emptyFilter = new IntentFilter(Intent.ACTION_VIEW);
-// Match: MATCH_CATEGORY_EMPTY + MATCH_ADJUSTMENT_NORMAL
+// Match: MATCH_CATEGORY_EMPTY + MATCH_ADJUSTMENT_NORMAL, but only against an
+// Intent that carries neither a data URI nor a type -- matchData() returns
+// NO_MATCH_DATA for a data-carrying Intent when the filter declares no
+// schemes and no types (IntentFilter.java:1750-1753)
 
 IntentFilter schemeFilter = new IntentFilter(Intent.ACTION_VIEW);
 schemeFilter.addDataScheme("https");
@@ -3397,8 +3473,12 @@ IntentFilter typeFilter = IntentFilter.create(Intent.ACTION_VIEW, "text/html");
 
 // Test each filter against the same intent
 Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com/products/1"));
-// Expected order from lowest to highest match:
-// emptyFilter < schemeFilter < hostFilter < pathFilter
+// Because this Intent has a data URI, emptyFilter returns NO_MATCH_DATA
+// rather than MATCH_CATEGORY_EMPTY. Expected order from lowest to highest
+// match among the filters that do match:
+// schemeFilter < hostFilter < pathFilter
+// (re-run emptyFilter against `new Intent(Intent.ACTION_VIEW)` to see
+// MATCH_CATEGORY_EMPTY)
 ```
 
 ### Exercise 21.13: Debugging PendingIntent Equivalence
@@ -3601,16 +3681,16 @@ flowchart TD
 
     A1 --> B1 --> C1
     A2 --> B1 --> C2
-    A3 --> B1 --> C1
-    A4 --> B1 --> C3
+    A3 --> B1 --> C2
+    A4 -->|"by authority, no Intent"| C3
 
     C1 --> C3
     C2 --> C3
     C3 --> D1
+    C3 --> D5
     D1 --> D2
     D1 --> D3
     D1 --> D4
-    D1 --> D5
 
     B2 --> C2
     B3 --> D1
@@ -3629,7 +3709,7 @@ Key source files examined:
 
 | File | Purpose |
 |------|---------|
-| `frameworks/base/core/java/android/content/Intent.java` | Intent class (~12K lines) |
+| `frameworks/base/core/java/android/content/Intent.java` | Intent class (~13.8K lines) |
 | `frameworks/base/core/java/android/content/IntentFilter.java` | Filter matching |
 | `frameworks/base/core/java/android/app/PendingIntent.java` | Deferred intent tokens |
 | `frameworks/base/core/java/android/content/pm/ResolveInfo.java` | Resolution results |
@@ -3660,7 +3740,7 @@ relaunched.
 |----------------|-----|---------------------|
 | 1.0 | 1 | Original Intent system |
 | 3.0 (Honeycomb) | 11 | Fragment arguments via Intents |
-| 4.1 (Jelly Bean) | 16 | Intent.setSelector() |
+| 4.0.3 (ICS MR1) | 15 | Intent.setSelector() |
 | 5.0 (Lollipop) | 21 | Sticky broadcasts deprecated |
 | 6.0 (Marshmallow) | 23 | App Links (autoVerify), runtime permissions |
 | 7.0 (Nougat) | 24 | FileUriExposedException, some implicit broadcasts removed |
@@ -3670,8 +3750,7 @@ relaunched.
 | 12 (S) | 31 | PendingIntent mutability required, exported required |
 | 13 (T) | 33 | Type-safe getParcelableExtra, registered receiver export flag |
 | 14 (U) | 34 | Mutable implicit PendingIntent blocked |
-| 15 (V) | 35 | Null action intent blocking, `ENFORCE_INTENTS_TO_MATCH_INTENT_FILTERS` (AppCompat generation) |
-| 16 | 36 | UriRelativeFilterGroup query/fragment matching API |
+| 15 (V) | 35 | Null action intent blocking, `ENFORCE_INTENTS_TO_MATCH_INTENT_FILTERS` (AppCompat generation), UriRelativeFilterGroup query/fragment matching API |
 | 17 | 37 | `intentMatchingFlags` manifest attribute, IntentMatchingFlags enforcement generation, creator-token intent-redirect hardening, Intent Firewall component-class and extra-key/value filters |
 
 ### Design Principles

@@ -48,8 +48,9 @@ Starting with Android 8.0, apps targeting API 26+ are subject to:
    an `IllegalStateException`.
 
 2. **Allowed alternatives**:
-   - `startForegroundService()` -- starts a service that must post a
-     notification within 5 seconds
+   - `startForegroundService()` -- starts a service that must promptly call
+     `startForeground()` and post a notification (the platform enforces a
+     30 second default timeout; see §30.5.7)
    - `JobScheduler.schedule()` -- schedules constraint-aware work
    - `WorkManager.enqueue()` -- schedules deferrable work (AndroidX)
 
@@ -58,7 +59,7 @@ flowchart TD
     A["App wants to do<br/>background work"] --> B{"Is app in<br/>foreground?"}
     B -->|Yes| C["startService() OK"]
     B -->|No| D{"What kind<br/>of work?"}
-    D -->|"Time-sensitive,<br/>user-visible"| E["startForegroundService()<br/>+ notification within 5s"]
+    D -->|"Time-sensitive,<br/>user-visible"| E["startForegroundService()<br/>+ prompt startForeground()"]
     D -->|"Deferrable,<br/>constraint-dependent"| F["JobScheduler.schedule()"]
     D -->|"Deferrable,<br/>needs guarantees"| G["WorkManager.enqueue()"]
     D -->|"Exact time<br/>needed"| H["AlarmManager<br/>(with restrictions)"]
@@ -179,7 +180,7 @@ further restrictions:
 | 13 (T) | 33 | Per-app language, refined runtime permissions |
 | 14 (U) | 34 | Foreground service types enforced, SCHEDULE_EXACT_ALARM restricted |
 | 15 (V) | 35 | `dataSync` foreground service 6 hour timeout |
-| 16 | 36 | User-initiated job (UIJ) notifications centralized, UIJ notification dismissal restricted |
+| 16 | 36 | `setImportantWhileForeground()` job flag ignored for all apps regardless of target SDK |
 | 17 | 37 | New `getPendingJobReasons*()` diagnostics, abandoned-job detection, per-network connectivity batching, Perfetto job tracing, start-user-before-alarm |
 
 ---
@@ -622,7 +623,8 @@ package com.android.server.job;
 
 // Manages a pool of JobServiceContext objects (execution slots)
 // Balances reserved slots across the WORK_TYPE_* categories
-// Total concurrent slots depend on device memory and CPU
+// Total concurrent slots depend on device RAM: low-RAM devices get 8;
+// otherwise 16/20/32/40 by total memory (DEFAULT_CONCURRENCY_LIMIT)
 ```
 
 The manager categorizes running jobs into the `WORK_TYPE_*` bitset and reserves
@@ -997,7 +999,7 @@ they only work while the app's process is alive.
 | Time precision | High (exact/window) | Low (deferred to optimal time) |
 | Constraint support | None (time only) | Rich (network, charging, idle, ...) |
 | Batching | System-managed for inexact | System-managed always |
-| Persistence | Not across reboots (except `setAlarmClock`) | `setPersisted(true)` |
+| Persistence | Not across reboots (all alarms, including `setAlarmClock`, are lost; apps must reschedule on `ACTION_BOOT_COMPLETED`) | `setPersisted(true)` |
 | Power efficiency | Lower (wake-ups) | Higher (batched, deferred) |
 | Use case | Calendar events, alarms | Sync, upload, maintenance |
 | API level | 1+ | 21+ |
@@ -1020,7 +1022,7 @@ adb shell appops get com.example.myapp SCHEDULE_EXACT_ALARM
 # View alarm statistics
 adb shell dumpsys alarm | grep -A 20 "Alarm Stats"
 
-# Force all pending alarms to fire (testing only)
+# Set the system wall clock (RTC alarms scheduled before this time will then be due)
 adb shell cmd alarm set-time <epoch_millis>
 ```
 
@@ -1301,7 +1303,8 @@ public class MusicService extends Service {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build();
 
-        // Must call within 5 seconds of startForegroundService()
+        // Must call promptly after startForegroundService()
+        // (30-second platform default timeout; see 30.5.7)
         startForeground(NOTIFICATION_ID, notification,
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
 
@@ -1369,11 +1372,11 @@ sequenceDiagram
 
     App->>AMS: startForegroundService(intent)
     AMS->>AMS: Create/start service
-    AMS->>AMS: Start 5-second timeout
+    AMS->>AMS: Arm startForeground timeout (30s default)
     AMS->>FGS: onStartCommand()
 
     FGS->>AMS: startForeground(id, notification, type)
-    AMS->>AMS: Cancel 5-second timeout
+    AMS->>AMS: Cancel startForeground timeout
     AMS->>NMS: Post foreground notification
     NMS->>NMS: Show persistent notification
 
@@ -1455,18 +1458,26 @@ are meant to be measured in minutes rather than hours.
 
 ### 30.5.7 Foreground Service ANR
 
-If a foreground service does not call `startForeground()` within 5 seconds of
+If a foreground service does not call `startForeground()` in time after
 `startForegroundService()`, the system generates a
-`ForegroundServiceDidNotStartInTimeException` crash. On API 31+, this is a
+`ForegroundServiceDidNotStartInTimeException` crash. Developer guidance is to
+call `startForeground()` within a few seconds, but the platform-enforced window
+is longer: the AOSP default is 30 seconds
+(`DEFAULT_SERVICE_START_FOREGROUND_TIMEOUT_MS` in
+`frameworks/base/services/core/java/com/android/server/am/ActivityManagerConstants.java`,
+tunable via `DeviceConfig` as `mServiceStartForegroundTimeoutMs`), plus an
+additional 10 second ANR delay
+(`DEFAULT_SERVICE_START_FOREGROUND_ANR_DELAY_MS`) before `ActiveServices`
+actually throws. On API 31+, this is a
 `ForegroundServiceStartNotAllowedException` if the app attempts to start from
 the background without an exemption.
 
 ```mermaid
 flowchart TD
-    A["startForegroundService()"] --> B["5-second timer starts"]
+    A["startForegroundService()"] --> B["startForeground timeout armed<br/>(30s AOSP default)"]
     B --> C{"startForeground()<br/>called in time?"}
     C -->|Yes| D["Service runs normally"]
-    C -->|No| E["ANR / crash:<br/>ForegroundServiceDidNotStartInTimeException"]
+    C -->|No| E["After extra 10s ANR delay:<br/>ForegroundServiceDidNotStartInTimeException"]
 ```
 
 ### 30.5.8 Notification Requirements
@@ -1500,9 +1511,12 @@ know which app is consuming resources and can stop it.
 
 ### 30.5.9 User-Visible Foreground Service Notifications
 
-Starting with Android 13 (API 33), users can long-press the foreground service
-notification to stop the service directly. This gives users control over
-misbehaving apps without needing to navigate to Settings.
+Starting with Android 13 (API 33), the Foreground Services Task Manager
+(`FgsManagerController` in SystemUI, at
+`frameworks/base/packages/SystemUI/src/com/android/systemui/qs/FgsManagerController.kt`)
+adds an "Active apps" affordance to the notification shade that lists the apps
+currently running foreground services, each with a Stop button. This gives users
+control over misbehaving apps without needing to navigate to Settings.
 
 ---
 
@@ -1677,8 +1691,9 @@ gate new public APIs; the service-side flags gate internal behavior.
 
 Historically the only way to ask why a job had not run was
 `JobScheduler.getPendingJobReason(int jobId)`, which returns a single reason even
-when several constraints are unmet. Android 17 deprecates it and adds three
-richer APIs, declared in
+when several constraints are unmet. Android 17 supersedes it -- the method is not
+formally `@Deprecated`, but an `@apiNote` now steers callers to
+`getPendingJobReasons(int)` -- and adds three richer APIs, declared in
 `frameworks/base/apex/jobscheduler/framework/java/android/app/job/JobScheduler.java`:
 
 ```java
@@ -1807,7 +1822,9 @@ to the app notification it is attached to, marks the notification with a
 user-initiated-job flag through `NotificationManagerInternal`, and restricts the
 app from silently dismissing a UIJ's notification while the job runs, so the user
 always retains a visible, actionable indicator (and a way to stop the work).
-Notifications are cleaned up when the owning user is stopped. Android 17 inherits
+The association -- and, where appropriate, the notification itself -- is torn
+down when the job stops or completes, via `removeNotificationAssociation()`
+called from `JobServiceContext`. Android 17 inherits
 this coordinator unchanged; it is covered here because it underpins the UIJ
 behavior the rest of this chapter relies on.
 
@@ -1915,7 +1932,7 @@ adb shell dumpsys jobscheduler | grep -B 2 -A 20 "com.google.android.gms"
 adb shell dumpsys usagestats | grep -A 2 "bucket"
 
 # View job execution timeline
-adb shell dumpsys jobscheduler | grep "Job history"
+adb shell dumpsys jobscheduler | grep -A 20 "Recently completed jobs"
 ```
 
 ### 30.8.2 Exercise: Schedule and Monitor a Job
@@ -2118,7 +2135,8 @@ WorkManager.getInstance(context)
 ### 30.8.5 Exercise: Test Doze Mode
 
 ```bash
-# Put device into Doze mode (screen must be off)
+# Re-enable device idle mode (if previously disabled); the force-idle
+# commands below are what actually put the device into Doze
 adb shell dumpsys deviceidle enable
 
 # Force device into light Doze
@@ -2161,8 +2179,10 @@ adb shell am set-standby-bucket com.example.myapp restricted
 # Observe the effect on your scheduled jobs
 adb shell dumpsys jobscheduler | grep -A 10 "com.example.myapp"
 
-# Reset to automatic bucket assignment
-adb shell am reset-standby-bucket com.example.myapp
+# Restore automatic bucket assignment: set the bucket back to active;
+# the system then re-ages it based on real usage (there is no dedicated
+# reset command -- only set-standby-bucket and get-standby-bucket exist)
+adb shell am set-standby-bucket com.example.myapp active
 ```
 
 ### 30.8.7 Exercise: Test Background Restrictions
@@ -2262,8 +2282,9 @@ adb shell dumpsys activity services | grep "isForeground=true"
 # Detailed service info
 adb shell dumpsys activity services com.example.myapp
 
-# Check foreground service types in use
-adb shell dumpsys activity services | grep "foregroundServiceType"
+# Check foreground service types in use (the FGS type bitmask is printed
+# as types=0x... on the same line as isForeground=)
+adb shell dumpsys activity services | grep "types=0x"
 ```
 
 ### 30.8.9 Exercise: Observe Broadcast Restrictions

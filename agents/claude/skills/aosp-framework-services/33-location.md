@@ -156,8 +156,6 @@ frameworks/base/
     location/java/android/location/
         LocationManager.java          -- Public SDK API
         Geocoder.java                 -- Forward/reverse geocoding API
-        Geofence.java                 -- Geofence definition
-        Location.java                 -- Position data object
         LocationRequest.java          -- Request parameters
         GnssStatus.java              -- Satellite status
         GnssMeasurement.java          -- Raw measurement (framework side)
@@ -166,6 +164,10 @@ frameworks/base/
         GnssAntennaInfo.java         -- Antenna phase center data
         Criteria.java                -- Legacy provider selection criteria
         Address.java                 -- Geocoded address
+
+    core/java/android/location/      -- the android.location package is split
+        Location.java                 -- Position data object
+        Geofence.java                 -- Geofence definition (@hide)
 
     services/core/java/com/android/server/location/
         LocationManagerService.java   -- Core system service
@@ -289,7 +291,7 @@ classDiagram
     }
 
     class PassiveLocationProvider {
-        +reportLocationToPassive(LocationResult)
+        +updateLocation(LocationResult)
     }
 
     class DelegateLocationProvider {
@@ -305,7 +307,7 @@ classDiagram
     }
 
     class MockLocationProvider {
-        +setLocation(Location)
+        +setProviderLocation(Location)
     }
 
     AbstractLocationProvider <|-- GnssLocationProvider
@@ -406,25 +408,28 @@ void addLocationProviderManager(
         manager.startManager(this);
 
         if (realProvider != null) {
-            int defaultStationaryThrottlingSetting =
-                    mContext.getPackageManager().hasSystemFeature(
-                        PackageManager.FEATURE_WATCH) ? 0 : 1;
-            boolean enableStationaryThrottling = Settings.Global.getInt(
-                    mContext.getContentResolver(),
-                    Settings.Global.LOCATION_ENABLE_STATIONARY_THROTTLE,
-                    defaultStationaryThrottlingSetting) != 0;
-            // In Android 17 throttling is only ever applied to the GPS provider,
-            // and only when the keep_gnss_stationary_throttling flag is on.
-            if (!(Flags.keepGnssStationaryThrottling() && enableStationaryThrottling
-                    && GPS_PROVIDER.equals(manager.getName()))) {
-                enableStationaryThrottling = false;
+            // custom logic wrapping all non-passive providers
+            if (manager != mPassiveManager) {
+                int defaultStationaryThrottlingSetting =
+                        mContext.getPackageManager().hasSystemFeature(
+                            PackageManager.FEATURE_WATCH) ? 0 : 1;
+                boolean enableStationaryThrottling = Settings.Global.getInt(
+                        mContext.getContentResolver(),
+                        Settings.Global.LOCATION_ENABLE_STATIONARY_THROTTLE,
+                        defaultStationaryThrottlingSetting) != 0;
+                // In Android 17 throttling is only ever applied to the GPS
+                // provider, and only when keep_gnss_stationary_throttling is on.
+                if (!(Flags.keepGnssStationaryThrottling() && enableStationaryThrottling
+                        && GPS_PROVIDER.equals(manager.getName()))) {
+                    enableStationaryThrottling = false;
+                }
+                if (enableStationaryThrottling) {
+                    realProvider = new StationaryThrottlingLocationProvider(
+                        manager.getName(), mInjector, realProvider);
+                }
             }
-            if (enableStationaryThrottling) {
-                realProvider = new StationaryThrottlingLocationProvider(
-                    manager.getName(), mInjector, realProvider);
-            }
+            manager.setRealProvider(realProvider);
         }
-        manager.setRealProvider(realProvider);
         mProviderManagers.add(manager);
     }
 }
@@ -586,7 +591,7 @@ These constants are unchanged in Android 17, and were re-verified against
 ### 33.2.10  LPM Power Save Modes
 
 `LocationProviderManager` integrates with Android's battery-saver through
-the `LocationPowerSaveModeHelper`.  Four modes are defined:
+the `LocationPowerSaveModeHelper`.  Five modes are defined:
 
 | Mode | Constant | Behavior |
 |------|----------|----------|
@@ -670,23 +675,24 @@ display elevation.
 When delivering to coarse-permission clients, `LocationFudger` obfuscates
 the true position.  The algorithm:
 
-1. Snaps the true coordinates to a grid whose cell width is `mAccuracyM`.
+1. Adds a slowly-drifting random offset to the true coordinates.  The offset
+   is seeded from a `SecureRandom` at construction (effectively per-boot) and
+   is nudged by `CHANGE_PER_INTERVAL` (3%) every `OFFSET_UPDATE_INTERVAL_MS`
+   (1 hour) so that the fudged position is not perfectly static yet does not
+   reveal movement faster than the grid resolution.
+2. Snaps the offset coordinates to a grid whose cell width is `mAccuracyM`.
    That width comes from `Settings.Secure` via
    `SettingsHelper.getCoarseLocationAccuracyM()` and defaults to
    `DEFAULT_COARSE_LOCATION_ACCURACY_M = 2000.0f` (2 km), floored at
    `MIN_ACCURACY_M = 200.0f`.
-2. Adds a slowly-drifting random offset.  The offset is seeded from a
-   `SecureRandom` at construction (effectively per-boot) and is nudged by
-   `CHANGE_PER_INTERVAL` (3%) every `OFFSET_UPDATE_INTERVAL_MS` (1 hour) so
-   that the fudged position is not perfectly static yet does not reveal
-   movement faster than the grid resolution.
-3. The reported location is the grid-snapped position plus the offset, with
-   the reported accuracy set to `mAccuracyM`.
+3. The reported location is that grid-snapped position, with the reported
+   accuracy set to `Math.max(mAccuracyM, originalAccuracy)` -- the fudged
+   accuracy never shrinks below what the provider originally reported.
 
 **Source:** `frameworks/base/services/core/java/com/android/server/location/fudger/LocationFudger.java`
 and `injector/SystemSettingsHelper.java`.
 
-Since Android 14, `LocationFudger` can instead use the S2-cell density path,
+Since Android 16, `LocationFudger` can instead use the S2-cell density path,
 where `LocationFudgerCache` consults `ProxyPopulationDensityProvider` to pick a
 coarsening level per S2 cell.  In dense urban areas the cells are smaller
 (higher precision); in rural areas they are larger (stronger privacy
@@ -698,7 +704,9 @@ algorithm otherwise.
 
 ### 33.2.14  Event Logging
 
-LPM logs significant events to `LocationEventLog`:
+Significant events are logged to `LocationEventLog`.  For example,
+`LocationManagerService` records settings changes in
+`onLocationModeChanged()` and `onLocationUserSettingsChanged()`:
 
 ```java
 EVENT_LOG.logLocationEnabled(userId, enabled);
@@ -736,10 +744,12 @@ to propagate locations from all other managers.
 `LocationManagerService` exposes `addTestProvider()` and
 `setTestProviderLocation()` for instrumentation and development.  Under the
 hood these install a `MockLocationProvider` that replaces the real provider
-until `removeTestProvider()` is called.  Mock providers require the
-`android.permission.ACCESS_MOCK_LOCATION` permission, which is only
-grantable on debug builds or to the selected mock-location app in Developer
-Settings.
+until `removeTestProvider()` is called.  Mock providers are gated by the
+`OP_MOCK_LOCATION` app-op -- each entry point calls
+`mInjector.getAppOpsHelper().noteOp(AppOpsManager.OP_MOCK_LOCATION, identity)`
+-- and that op is granted to the app the user selects as the mock-location
+app in Developer Options.  (The old `ACCESS_MOCK_LOCATION` permission has
+not been used for this since API 23.)
 
 ---
 
@@ -1014,9 +1024,14 @@ a Java class with native method bindings via JNI.
 graph LR
     GnssLocationProvider -->|calls| GnssNative
     GnssManagerService -->|calls| GnssNative
-    GnssNative -->|JNI| libgnss_jni.so
-    libgnss_jni.so -->|Binder| IGnss_HAL[IGnss HAL Process]
+    GnssNative -->|JNI| GnssJni["libservices.core-gnss<br>in libandroid_servers.so"]
+    GnssJni -->|Binder| IGnss_HAL[IGnss HAL Process]
 ```
+
+The native side is the `libservices.core-gnss` static library (sources under
+`frameworks/base/services/core/jni/gnss/`), which is linked into
+`libservices.core` and shipped inside `libandroid_servers.so` -- there is no
+standalone GNSS JNI shared library.
 
 **Source:** `frameworks/base/services/core/java/com/android/server/location/gnss/hal/GnssNative.java`
 (1762 lines in Android 17).
@@ -1200,24 +1215,38 @@ sequenceDiagram
     GLP->>GLP: Release mDownloadPsdsWakeLock
 ```
 
-PSDS server URLs are configured in `gps_debug.conf`:
+PSDS server URLs are read from the GNSS configuration properties:
 
 ```
 LONGTERM_PSDS_SERVER_1=https://...
 LONGTERM_PSDS_SERVER_2=https://...
+LONGTERM_PSDS_SERVER_3=https://...
 NORMAL_PSDS_SERVER=https://...
 REALTIME_PSDS_SERVER=https://...
 ```
 
-**Source:** `frameworks/base/services/core/java/com/android/server/location/gnss/gps_debug.conf`
+These keys are defined as `CONFIG_LONGTERM_PSDS_SERVER_1..3`,
+`CONFIG_NORMAL_PSDS_SERVER`, and `CONFIG_REALTIME_PSDS_SERVER` in
+`GnssConfiguration.java` (lines 84-88) and consumed by `GnssPsdsDownloader`.
+On production devices they are normally set through `config.xml` resource
+overlays; `gps_debug.conf` serves only as a debug override (the sample
+`gps_debug.conf` in the tree contains no PSDS entries).
+
+**Source:** `frameworks/base/services/core/java/com/android/server/location/gnss/GnssConfiguration.java`
+and `GnssPsdsDownloader.java`.
 
 #### Carrier Configuration Integration
 
-`GnssConfiguration` loads properties from multiple sources in priority order:
+`GnssConfiguration.reloadGpsProperties()` loads properties from multiple
+sources, each later load overwriting keys from earlier ones -- so the last
+source loaded has the highest precedence:
 
-1. `/vendor/etc/gps_debug.conf` -- vendor-specific GNSS configuration.
-2. `/etc/gps_debug.conf` -- system default.
-3. Carrier configuration via `CarrierConfigManager`.
+1. `/etc/gps_debug.conf` -- system debug override (highest precedence,
+   loaded last).
+2. `/vendor/etc/gps_debug.conf` -- vendor-specific GNSS configuration.
+3. Resource overlays (`config.xml`).
+4. Carrier configuration via `CarrierConfigManager` (lowest precedence,
+   loaded first).
 
 Key configuration properties:
 
@@ -1437,7 +1466,9 @@ ProxyLocationProvider fusedProvider = ProxyLocationProvider.create(
 ```
 
 The `ProxyLocationProvider` discovers the service by intent action
-`com.android.location.service.FusedProvider`.  The framework requires a
+`com.android.location.service.FusedLocationProvider` (the network provider's
+action is `com.android.location.service.v3.NetworkLocationProvider`).  The
+framework requires a
 direct-boot-aware fused provider to be present:
 
 ```java
@@ -1692,7 +1723,7 @@ fudging, same interval enforcement.
 
 ### 33.5.8  Population Density Provider
 
-Android 14 introduced the `ProxyPopulationDensityProvider`, bound via:
+Android 16 introduced the `ProxyPopulationDensityProvider`, bound via:
 
 ```java
 setProxyPopulationDensityProvider(
@@ -1922,11 +1953,15 @@ sequenceDiagram
     Geocoder->>LMS: reverseGeocode(ReverseGeocodeRequest, IGeocodeCallback)
     LMS->>PGP: reverseGeocode(request, callback)
     PGP->>GMS: IPC to bound service
-    GMS-->>PGP: List<Address>
-    PGP-->>LMS: IGeocodeCallback.onResult()
-    LMS-->>Geocoder: results
+    GMS-->>Geocoder: IGeocodeCallback.onResults(addresses)
     Geocoder-->>App: List<Address>
 ```
+
+Note the return path: the `IGeocodeCallback` that `Geocoder` passes in is an
+`IGeocodeCallback.Stub` living in the *app* process, and LMS forwards that
+binder straight through `ProxyGeocodeProvider` to the bound geocode service.
+The service therefore calls `onResults()` directly on the app's callback --
+neither LMS nor `ProxyGeocodeProvider` sees or relays the results.
 
 **Source:** `frameworks/base/services/core/java/com/android/server/location/provider/proxy/ProxyGeocodeProvider.java`
 
@@ -1997,9 +2032,9 @@ improving relevance for ambiguous address queries.
 The `IGeocodeCallback` interface reports results or errors:
 
 ```java
-interface IGeocodeCallback {
-    void onResults(String errorMessage, in List<Address> addresses);
-    void onError(String errorMessage);
+oneway interface IGeocodeCallback {
+    void onError(String error);
+    void onResults(in List<Address> results);
 }
 ```
 
@@ -2094,13 +2129,12 @@ public static int getPermissionLevel(Context context, int uid, int pid) {
 | GNSS raw data | Yes | No |
 
 When an app holds only `ACCESS_COARSE_LOCATION`, `LocationProviderManager`
-applies `LocationFudger` to obfuscate the exact position.  The fudging snaps
-coordinates to a grid whose cell width defaults to 2 km
-(`DEFAULT_COARSE_LOCATION_ACCURACY_M`, floored at 200 m) and adds a
-slowly-drifting random offset, so the fudged location stays stable for small
-movements (§33.2.13).
+applies `LocationFudger` to obfuscate the exact position.  The fudging adds a
+slowly-drifting random offset and then snaps the result to a grid whose cell
+width defaults to 2 km (`DEFAULT_COARSE_LOCATION_ACCURACY_M`, floored at
+200 m), so the fudged location stays stable for small movements (§33.2.13).
 
-Since Android 14, a population-density-based fudging mode is available.  A
+Since Android 16, a population-density-based fudging mode is available.  A
 `ProxyPopulationDensityProvider` supplies density data, and the
 `LocationFudgerCache` picks the S2-cell coarsening level by density -- larger
 cells in rural areas and smaller cells in dense urban areas.  As of Android 17
@@ -2212,9 +2246,11 @@ graph TB
 
 ### 33.8.9  Foreground Service Requirement
 
-Starting with Android 12, apps that need continuous background location
-must use a foreground service of type `location`.  LMS tracks foreground
-service API usage:
+Starting with Android 10 (API 29), apps that need continuous background
+location must use a foreground service of type `location`
+(`FOREGROUND_SERVICE_TYPE_LOCATION`); Android 12 then added restrictions on
+starting such services from the background.  LMS tracks foreground service
+API usage:
 
 ```java
 ActivityManagerInternal managerInternal =
@@ -2256,7 +2292,8 @@ location.  The `AppOpsManager` tracks location operations and the
 SystemUI displays a green dot or status-bar icon when any app holds an
 active location note.
 
-The `AppOpsHelper` in the location service coordinates with `AppOpsManager`:
+`LocationManagerService.onSystemReady()` registers a watcher with
+`AppOpsManager`:
 
 ```java
 // Track OP_FINE_LOCATION and OP_COARSE_LOCATION
@@ -2334,7 +2371,7 @@ packages/modules/GeoTZ/
 
 ```mermaid
 graph LR
-    TZBB["timezone-boundary-builder<br>GeoJSON boundaries"] --> DP["data_pipeline<br>run-data-pipeline.sh"]
+    TZBB["timezone-boundary-builder<br>GeoJSON boundaries"] --> DP["data_pipeline steps<br>driven by run-data-pipeline.sh"]
     DP --> S2[S2 Cell Indexing]
     S2 --> TZS2["tzs2.dat<br>Binary lookup file"]
     TZS2 --> DEV["Packaged on device<br>in APEX"]
@@ -2597,15 +2634,20 @@ The APEX contains:
 
 | Component | Path | Purpose |
 |-----------|------|---------|
-| `tzs2.dat` | `etc/tzs2.dat` | Time-zone boundary data |
-| Provider APK | `app/` | The `OfflineLocationTimeZoneProviderService` |
-| Libraries | `lib/` | `geotz_lookup` and `s2storage` shared libraries |
+| `tzs2.dat` | `etc/tzs2.dat` | Time-zone boundary data (a `prebuilt_etc`) |
+| `geotz.jar` | `javalib/` | The provider as a system-server-classpath jar |
 | License files | `etc/` | Attribution for timezone-boundary-builder data |
+
+There is no `app/` APK and no native `lib/` directory in this APEX: the
+provider ships as the `geotz` Java library, delivered through a
+`systemserverclasspath_fragment`, and the `geotz_lookup` and `s2storage`
+libraries are Java libraries statically linked into that jar.
 
 When a time-zone boundary change occurs (e.g., a country changes its
 time zone), Google can push an updated APEX containing a new `tzs2.dat`
-file.  The provider automatically picks up the new data on the next
-lookup without requiring any service restart.
+file.  Because a staged APEX update only becomes active after the
+activation reboot -- which also restarts the system server hosting the
+provider -- the new data takes effect from the next boot onward.
 
 ---
 
@@ -2989,14 +3031,18 @@ Create a geofence around your current location and observe transitions:
 ```java
 LocationManager lm = (LocationManager) getSystemService(LOCATION_SERVICE);
 
-Geofence fence = Geofence.createCircle(lat, lng, 100f); // 100m radius
-
 Intent intent = new Intent("com.example.GEOFENCE_TRANSITION");
 PendingIntent pi = PendingIntent.getBroadcast(
     this, 0, intent, PendingIntent.FLAG_MUTABLE);
 
-lm.addGeofence(fence, pi);
+// 100 m radius, no expiration
+lm.addProximityAlert(lat, lng, 100f, -1, pi);
 ```
+
+`addProximityAlert()` is the public entry point for software geofences;
+internally it builds an `android.location.Geofence` (an `@hide` class whose
+factory is `Geofence.createCircle(lat, lng, radius, expirationMs)`) and hands
+it to `GeofenceManager`.
 
 Register a `BroadcastReceiver` that checks `KEY_PROXIMITY_ENTERING`:
 

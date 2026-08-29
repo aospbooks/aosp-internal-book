@@ -225,7 +225,8 @@ Android supports multiple users on a single device.  Each user gets:
   data access even within the same app.
 
 The SELinux MLS categories are assigned based on the user ID, creating
-cryptographic separation between users at the MAC level.
+kernel-enforced separation between users at the MAC level.  (Cryptographic
+separation comes from the per-user FBE keys, covered in section 40.8.)
 
 ### 40.1.9  Work Profile Security
 
@@ -257,14 +258,15 @@ policy is compiled at build time from source files under:
 system/sepolicy/
 ```
 
-The directory structure (15 subdirectories) includes:
+The directory structure (16 subdirectories) includes:
 
 | Directory | Purpose |
 |-----------|---------|
 | `public/` | Type and attribute definitions visible to vendor policy |
 | `private/` | Platform-private policy (allow, neverallow rules) |
 | `vendor/` | Vendor HAL policies |
-| `contexts/` | File, property, service contexts |
+| `contexts/` | Build glue and `file_contexts` test data (the actual context files live under `private/`; see 40.2.13) |
+| `docs/` | Policy-writing documentation (neverallows.md, style_guide.md, ...) |
 | `mac_permissions/` | MAC permissions XML for app signing |
 | `build/` | Build system integration |
 | `compat/` | Compatibility mappings between platform versions |
@@ -311,7 +313,7 @@ definitions, never `allow` or `neverallow` statements.  Those go in
 ### 40.2.3  Domains and Attributes
 
 Attributes are groups of types.  They allow writing rules that apply to many
-domains at once.  From `system/sepolicy/public/attributes` (490 lines):
+domains at once.  From `system/sepolicy/public/attributes` (506 lines):
 
 ```te
 # All types used for devices.
@@ -386,7 +388,7 @@ allow vold vold_exec:file { read getattr map execute entrypoint };
 
 ### 40.2.5  App Domain Assignment via seapp_contexts
 
-The file `system/sepolicy/private/seapp_contexts` (216 lines) maps
+The file `system/sepolicy/private/seapp_contexts` (222 lines) maps
 applications to SELinux domains based on their properties:
 
 ```
@@ -405,7 +407,7 @@ Sample mappings:
 
 | Selector | Domain |
 |----------|--------|
-| `isSystemServer=true` | `system_server` |
+| `isSystemServer=true` | `system_server_startup` |
 | `user=system seinfo=platform` | `system_app` |
 | `user=_app minTargetSdkVersion=37` | `untrusted_app` |
 | `user=_app minTargetSdkVersion=34` | `untrusted_app_34` |
@@ -600,7 +602,7 @@ use their own (`hwbinder_device`, `vndbinder_device`).
 
 ### 40.2.10  The App Domain Policy (private/app.te)
 
-The file `system/sepolicy/private/app.te` (844 lines) defines rules for all
+The file `system/sepolicy/private/app.te` (903 lines) defines rules for all
 zygote-spawned app processes.  Key categories of access:
 
 **Keystore access:**
@@ -636,7 +638,7 @@ binder_call(appdomain, appdomain)
 binder_call(appdomain, ephemeral_app)
 ```
 
-**Neverallow rules in app.te** (excerpts from the ~300 neverallow rules):
+**Neverallow rules in app.te** (excerpts from roughly 65 neverallow rules):
 
 ```te
 # Superuser capabilities.
@@ -644,7 +646,7 @@ neverallow { appdomain -bluetooth -network_stack -nfc }
     self:capability_class_set *;
 
 # Block device access.
-neverallow appdomain dev_type:blk_file { read write };
+neverallow appdomain {dev_type -apex_dm_device}:blk_file { read write };
 
 # ptrace access to non-app domains.
 neverallow appdomain { domain -appdomain }:process ptrace;
@@ -671,8 +673,9 @@ neverallow appdomain system_data_file:dir_file_class_set
     { create write setattr relabelfrom relabelto append unlink link rename };
 
 # Transition to a non-app domain (prevent domain escalation).
+# (userdebug/eng builds also exclude su from the source set.)
 neverallow { appdomain -shell }
-    { domain -appdomain -crash_dump -rs -virtualizationmanager }:process
+    { domain -appdomain -crash_dump -rs -virtualizationmanager_domain }:process
     { transition };
 
 # Sensitive app domains are not allowed to execute from /data
@@ -1030,13 +1033,16 @@ typedef enum {
 ```
 
 The implementation in `external/avb/libavb/avb_slot_verify.c` defines key
-constants:
+constants (the loaded-partition limit lives in the public header
+`external/avb/libavb/avb_slot_verify.h`):
 
 ```c
-/* Maximum number of partitions that can be loaded with avb_slot_verify(). */
-#define MAX_NUMBER_OF_LOADED_PARTITIONS 32
+/* From avb_slot_verify.h: maximum number of partitions that can be
+ * loaded with avb_slot_verify(). */
+#define AVB_MAX_NUMBER_OF_LOADED_PARTITIONS 32
 
-/* Maximum number of vbmeta images that can be loaded. */
+/* From avb_slot_verify.c: maximum number of vbmeta images that can be
+ * loaded. */
 #define MAX_NUMBER_OF_VBMETA_IMAGES 32
 
 /* Maximum size of a vbmeta image - 64 KiB. */
@@ -1348,8 +1354,8 @@ and operations.  The implementation has evolved through several generations:
 | Generation | Interface | Since |
 |-----------|-----------|-------|
 | Keymaster 0.x | C HAL | Android 4.3 |
-| Keymaster 1.0 | HIDL 1.0 | Android 6.0 |
-| Keymaster 2.0 | HIDL 2.0 | Android 7.0 |
+| Keymaster 1.0 | C HAL (`keymaster1.h`) | Android 6.0 |
+| Keymaster 2.0 | C HAL (`keymaster2.h`) | Android 7.0 |
 | Keymaster 3.0 | HIDL 3.0 | Android 8.0 |
 | Keymaster 4.0 | HIDL 4.0 | Android 9 |
 | **KeyMint 1.0** | **AIDL** | **Android 12** |
@@ -1390,6 +1396,7 @@ pub mod permission;
 pub mod raw_device;
 pub mod remote_provisioning;
 pub mod security_level;
+pub mod security_level_manager;
 pub mod service;
 pub mod shared_secret_negotiation;
 pub mod utils;
@@ -1908,8 +1915,10 @@ processor with its own:
 - Tamper-resistance mechanisms
 - Independent clock
 
-StrongBox supports a subset of KeyMint algorithms and is mandatory for
-devices launching with Android 9+ (for certain key types).
+StrongBox supports a subset of KeyMint algorithms.  It has been optional
+since its introduction in Android 9 -- the CDD strongly recommends it but
+does not require it, and devices without a secure element expose only the
+`SOFTWARE` and `TRUSTED_ENVIRONMENT` security levels.
 
 ---
 
@@ -2029,7 +2038,7 @@ transport mechanisms:
    in a separate VM.
 
 ```c
-static bool use_vsock_connection = false;
+static bool use_socket_connection = false;
 
 static int tipc_vsock_connect(const char* type_cid_port_str,
                               const char* srv_name) {
@@ -2150,9 +2159,11 @@ makefiles in `system/core/trusty/`:
 - `trusty-base.mk` -- base Trusty configuration
 - `trusty-storage-cf.mk` -- Cuttlefish (emulator) storage configuration
 - `trusty-storage.mk` -- production storage configuration
-- `trusty-keymint-apex.mk` -- APEX packaging for KeyMint
-- `trusty-keymint.mk` -- KeyMint HAL build rules
 - `trusty-test.mk` -- Test configuration
+
+The two KeyMint makefiles, `trusty-keymint.mk` (KeyMint HAL build rules)
+and `trusty-keymint-apex.mk` (APEX packaging for KeyMint), live in
+`system/core/trusty/keymint/` and are inherited by `trusty-base.mk`.
 
 ### 40.5.9  Trusty Kernel Architecture
 
@@ -2255,9 +2266,10 @@ The device configs live in `trusty/device/desktop/` (copyright 2024).  The
 common include `trusty/device/desktop/common/desktop-inc.mk` is headed
 "Configurations common to Trusty builds for Android Desktop," and two project
 trees build the targets: `trusty/device/desktop/arm64/desktop-arm64/` and
-`trusty/device/desktop/x86_64/desktop-x86_64/`, each with the base project
-makefile plus `_ext_boot`, `-test`, and `-test-debug` variants (for example
-`project/desktop-x86_64.mk` and `project/desktop-arm64_ext_boot.mk`).  The LK
+`trusty/device/desktop/x86_64/desktop-x86_64/`.  The x86_64 tree ships the
+base project makefile plus `_ext_boot` and `-test` variants (for example
+`project/desktop-x86_64.mk`), while the arm64 tree adds a `-test-debug`
+variant on top of those (plus a `qemu-` test-debug project).  The LK
 kernel platform glue for these targets is the Rust code under
 `trusty/kernel/platform/desktop/`.  The desktop Trusty image is signed and
 packaged as a Trusty VM rather than burned into a TrustZone secure world; the
@@ -2345,11 +2357,15 @@ sequenceDiagram
 
 Key security properties:
 
-- **Throttling in hardware** -- the TEE enforces exponentially increasing
-  delays after failed attempts (30s after 5 failures, with the wait time
-  doubling).  The normal world cannot bypass this.
+- **Throttling in hardware** -- the reference implementation
+  (`system/gatekeeper/gatekeeper.cpp`) enforces a fixed timeout table
+  indexed by the failure counter: no delay for the first 5 failures, then
+  1 minute, 5, 15, 30, and 90 minutes, 4, 12, and 36 hours, 4 days, and so
+  on up to years.  It is a table lookup, not a doubling backoff.  The
+  normal world cannot bypass this.
 - **Per-user isolation** -- each user has their own enrolled handle, stored
-  in `/data/system_de/<userId>/gatekeeper/`.
+  with the synthetic-password protector state in
+  `/data/system_de/<userId>/spblob/`.
 - **Challenge binding** -- the verification challenge prevents replay attacks.
 
 ### 40.6.2  Enrollment
@@ -2674,18 +2690,22 @@ Isolated processes:
   file descriptors.
 - Run as a unique UID each time (drawn from a reserved range).
 
-From `system/sepolicy/private/isolated_app.te`:
+From `system/sepolicy/private/isolated_app.te` and
+`system/sepolicy/private/isolated_app_all.te` (the latter targets the
+`isolated_app_all` attribute shared by all isolated-app domains):
 
 ```te
+# isolated_app.te:
 # Allow access to network sockets received over IPC.
 # New socket creation is not permitted.
-allow isolated_app { ephemeral_app priv_app untrusted_app_all }:{
+allow isolated_app { ephemeral_app priv_app_all untrusted_app_all }:{
     tcp_socket udp_socket
 } { rw_socket_perms_no_ioctl };
 
+# isolated_app_all.te:
 # b/32896414: Allow accessing sdcard file descriptors passed to
 # isolated_apps by other processes. Open should never be allowed.
-allow isolated_app { sdcard_type fuse media_rw_data_file }:file {
+allow isolated_app_all { sdcard_type fuse media_rw_data_file }:file {
     read write append getattr lock map
 };
 ```
@@ -2697,21 +2717,28 @@ Filter) to app processes.  This restricts which system calls an app can make,
 even before SELinux is consulted.
 
 The seccomp filter is applied by the Zygote during process specialization.
-Blocked syscalls include:
+The syscalls blocked for apps (from `bionic/libc/SECCOMP_BLOCKLIST_APP.TXT`)
+include:
 
 | Category | Examples |
 |----------|---------|
-| **Kernel module loading** | `init_module`, `finit_module`, `delete_module` |
-| **Raw I/O** | `ioperm`, `iopl` |
-| **Process tracing** | `ptrace` (unless debuggable) |
-| **Namespace manipulation** | `unshare`, `setns` |
-| **Clock manipulation** | `clock_settime`, `settimeofday` |
-| **Mount operations** | `mount`, `umount2` |
+| **UID/GID changes** | `setuid`, `setgid`, `setreuid`, `setresgid`, `setgroups`, `setfsuid` |
+| **Kernel module loading** | `init_module`, `delete_module` |
+| **Clock manipulation** | `adjtimex`, `clock_adjtime`, `clock_settime`, `settimeofday` |
+| **Mount operations** | `mount`, `umount2`, `chroot` |
 | **Swap management** | `swapon`, `swapoff` |
+| **Process accounting / logs** | `acct`, `syslog` |
+| **Host identity** | `setdomainname`, `sethostname` |
 | **Reboot** | `reboot` |
 
-A blocked syscall results in process termination (SIGKILL) or an error return,
-depending on the filter rule.
+Notably, `ptrace`, `unshare`, and `setns` are *not* blocked by the app
+seccomp filter -- they are in the generated allowlist
+(`bionic/libc/SYSCALLS.TXT`); tracing other domains is instead forbidden
+by SELinux neverallow rules (and Yama restricts same-domain tracing).
+
+A blocked syscall triggers `SECCOMP_RET_TRAP`, which delivers `SIGSYS` to
+the calling thread -- normally fatal, with the crash routed through
+debuggerd.  The generated filter never returns an errno.
 
 ### 40.7.5  Namespace Isolation
 
@@ -2737,36 +2764,48 @@ sequenceDiagram
     AM->>Zygote: Fork request (via socket)
     Zygote->>Child: fork()
     Note over Child: Child process created
-    Child->>Child: setuid(app_uid)
-    Child->>Child: setgid(app_gid)
+    Child->>Child: Drop capability bounding set
+    Child->>Child: Set up mount namespace / emulated storage
     Child->>Child: setgroups(supplementary_groups)
+    Child->>Child: setresgid(app_gid)
     Child->>Child: Apply seccomp-BPF filter
-    Child->>Child: Set SELinux context (via setcon)
-    Child->>Child: Set mount namespace
-    Child->>Child: Drop capabilities
+    Child->>Child: setresuid(app_uid)
+    Child->>Child: Set capabilities
+    Child->>Child: Set SELinux context (selinux_android_setcontext)
     Child->>Child: Close Zygote socket
     Child->>Child: Load application code
 ```
 
-During specialization:
+During specialization (in the order `SpecializeCommon` in
+`frameworks/base/core/jni/com_android_internal_os_Zygote.cpp` performs it):
 
-1. **UID/GID set** -- to the app's assigned UID.
-2. **Supplementary groups** -- set based on permissions (e.g., `inet` group
-   for INTERNET permission, `media_rw` for storage access).
-3. **seccomp filter applied** -- restricts available syscalls.
-4. **SELinux domain transition** -- from `zygote` to the appropriate app
-   domain (e.g., `untrusted_app`).
-5. **Mount namespace** -- isolated mount view created.
-6. **Capabilities dropped** -- no Linux capabilities remain.
-7. **Zygote socket closed** -- the child cannot fork more processes.
+1. **Capability bounding set dropped** and the **mount namespace** set up
+   with the app's emulated-storage view.
+2. **Supplementary groups** -- `setgroups` based on permissions (e.g.,
+   `inet` group for INTERNET permission, `media_rw` for storage access),
+   then `setresgid` to the app's GID.
+3. **seccomp filter applied** -- deliberately *before* the UID change,
+   because installing the filter requires a capability the process is
+   about to lose.
+4. **UID set** -- `setresuid` to the app's assigned UID.
+5. **Capabilities set** -- normally none remain for app processes.
+6. **SELinux domain transition** -- `selinux_android_setcontext` moves the
+   process from `zygote` to the appropriate app domain (e.g.,
+   `untrusted_app`).
+7. **Zygote server socket closed** -- the child closes the inherited
+   Zygote server socket so it cannot accept or serve further fork
+   requests.
 
 ### 40.7.7  Permission to Group Mapping
 
-The `INTERNET` permission is enforced at the kernel level through group
-membership.  When granted, the app's process gets the `inet` supplementary
-group (GID 3003), which allows it to create AF_INET/AF_INET6 sockets.  The
-kernel's `paranoid_networking` feature restricts socket creation to processes
-in specific groups:
+The `INTERNET` permission is still reflected in group membership: when
+granted, the app's process gets the `inet` supplementary group (GID 3003),
+assigned via `frameworks/base/data/etc/platform.xml`.  Enforcement, however,
+no longer relies on the old `CONFIG_ANDROID_PARANOID_NETWORK` kernel patch
+(which has been removed): the `inet_create` eBPF cgroup program in
+`packages/modules/Connectivity/bpf/progs/netd.c` decides socket creation
+from a per-appId permission map (`BPF_PERMISSION_INTERNET`).  The
+permission-related groups:
 
 | Group | GID | Permission |
 |-------|-----|-----------|
@@ -2791,10 +2830,19 @@ flowchart TD
     F --> G[Default: allow or block based on policy]
 ```
 
-The seccomp policy files are at:
+The seccomp policy definitions are the text files directly under
+`bionic/libc/`:
+
 ```
-bionic/libc/seccomp/
+bionic/libc/SYSCALLS.TXT
+bionic/libc/SECCOMP_ALLOWLIST_COMMON.TXT
+bionic/libc/SECCOMP_ALLOWLIST_APP.TXT
+bionic/libc/SECCOMP_BLOCKLIST_COMMON.TXT
+bionic/libc/SECCOMP_BLOCKLIST_APP.TXT
 ```
+
+The `bionic/libc/seccomp/` directory holds the generated filters and the
+`seccomp_policy.cpp` runtime that installs them.
 
 Example blocked syscalls and their security rationale:
 
@@ -2804,15 +2852,19 @@ Example blocked syscalls and their security rationale:
 | `delete_module` | Unloading security modules |
 | `mount` | Mounting new filesystems could bypass sandbox |
 | `umount2` | Unmounting could expose raw block devices |
-| `ptrace` | Debugging other processes leaks data |
-| `unshare` | Namespace manipulation could escape sandbox |
-| `setns` | Entering other namespaces |
+| `chroot` | Filesystem root manipulation |
 | `reboot` | Denial of service |
 | `swapon/swapoff` | System resource manipulation |
 | `settimeofday` | Clock manipulation affects auth tokens |
-| `pivot_root` | Filesystem root manipulation |
+| `setuid`/`setgid` family | Changing IDs after specialization |
 | `acct` | Process accounting control |
-| `kexec_load` | Loading a new kernel |
+| `syslog` | Reading kernel logs leaks data |
+| `kexec_load` | Loading a new kernel (absent from `SYSCALLS.TXT` entirely) |
+
+Note that `ptrace`, `unshare`, `setns`, and `pivot_root` are *not* on the
+app seccomp blocklists -- `pivot_root` is even explicitly allowlisted for
+boot -- so restrictions on those come from SELinux and other mechanisms,
+not seccomp.
 
 ### 40.7.9  Process-Level Isolation Details
 
@@ -2865,8 +2917,10 @@ Content Providers have their own access control:
 </provider>
 ```
 
-- `exported=false` (default for targetSdk >= 31): only the same app can
-  access it.
+- `exported=false` (the default for providers since targetSdk >= 17): only
+  the same app can access it.  (TargetSdk 31 is when an *explicit*
+  `android:exported` became mandatory for components with intent filters,
+  which does not change the provider default.)
 - `readPermission` / `writePermission`: separate read and write permissions.
 - `<path-permission>`: per-path permissions for fine-grained control.
 - URI grants: temporary one-time permission to specific URIs.
@@ -2877,8 +2931,11 @@ Android 13 introduced the SDK Sandbox, a separate process for running
 advertising and analytics SDKs in isolation from the host app:
 
 ```
-user=_sdksandbox domain=sdk_sandbox type=sdk_sandbox_data_file
+user=_sdksandbox domain=sdk_sandbox_34 type=sdk_sandbox_data_file levelFrom=all
 ```
+
+(`sdk_sandbox` is the attribute the versioned sandbox domains such as
+`sdk_sandbox_34` carry.)
 
 The SDK sandbox runs with its own UID and SELinux domain, preventing SDKs from
 accessing the host app's data or other sensitive system resources.
@@ -3081,7 +3138,7 @@ From `system/vold/KeyStorage.cpp`:
 ```cpp
 const KeyAuthentication kEmptyAuthentication{""};
 
-static constexpr size_t AES_KEY_BYTES = 32;
+// AES_KEY_BYTES = 32 is defined in system/vold/Keystore.h
 static constexpr size_t GCM_NONCE_BYTES = 12;
 static constexpr size_t GCM_MAC_BYTES = 16;
 static constexpr size_t SECDISCARDABLE_BYTES = 1 << 14;
@@ -3128,17 +3185,19 @@ The key installation process uses the kernel's fscrypt API:
 
 ### 40.8.6  Metadata Encryption
 
-Metadata encryption protects filesystem metadata (filenames, permissions,
-directory structure) that FBE does not cover.  The implementation is in
+Metadata encryption protects the filesystem metadata that FBE leaves in the
+clear -- directory structure, file sizes, permissions, and timestamps
+(filenames are already encrypted by fscrypt itself).  The implementation is in
 `system/vold/MetadataCrypt.cpp`:
 
 ```cpp
 // Parsed from metadata options
+// (KeyType is android::fscrypt::KeyType)
 struct CryptoOptions {
     struct CryptoType cipher = invalid_crypto_type;
     bool use_legacy_options_format = false;
     bool set_dun = true;
-    bool use_hw_wrapped_key = false;
+    KeyType key_type = KeyType::kRaw;
 };
 
 // The first entry in this table is the default crypto type.
@@ -3183,7 +3242,9 @@ can be "hardware-wrapped":
 3. The inline crypto engine unwraps the key internally during I/O.
 
 This means that even a kernel compromise cannot extract the raw encryption key.
-The `use_hw_wrapped_key` option in metadata encryption enables this feature.
+In metadata encryption this feature is selected by the `CryptoOptions::key_type`
+field being `KeyType::kHwWrapped` (or `kHwWrappedV0`), which maps to the
+dm-default-key `wrappedkey_v0` option.
 
 ### 40.8.9  The dm-default-key Implementation
 
@@ -3205,17 +3266,15 @@ static bool create_crypto_blk_dev(
     *nr_sec &= ~7;
 
     KeyBuffer module_key;
-    if (options.use_hw_wrapped_key) {
-        if (!exportWrappedStorageKey(key, &module_key)) {
-            LOG(ERROR) << "Failed to get ephemeral wrapped key";
-            return false;
-        }
-    } else {
-        module_key = key;
-    }
+    if (!prepareKeyForUse(key, options.key_type, &module_key)) return false;
     // ... set up dm-default-key target ...
 }
 ```
+
+`prepareKeyForUse` (declared in `system/vold/KeyUtil.h`) handles the
+hardware-wrapped case: when `options.key_type` is `KeyType::kHwWrapped`
+or `kHwWrappedV0`, the setup also passes the dm-default-key
+`wrappedkey_v0` option to the kernel.
 
 The metadata encryption layer sits between the filesystem and the block device:
 
@@ -3241,8 +3300,9 @@ static const char* kHashPrefix_secdiscardable =
 This 16 KiB random file is stored alongside each key.  Its hash is mixed into
 the key derivation.  When a key needs to be permanently destroyed:
 
-1. The secdiscardable file is securely erased using `BLKDISCARD` or
-   `FITRIM` ioctls.
+1. The secdiscardable file is securely erased using the `BLKSECDISCARD`
+   ioctl (with a zero-overwrite fallback), or `F2FS_IOC_SEC_TRIM_FILE`
+   on f2fs.
 2. Even if the encrypted key blob is somehow recovered, the loss of the
    secdiscardable makes it useless.
 3. On flash storage, the DISCARD command tells the flash controller to
@@ -3337,7 +3397,7 @@ shaped the way it is, and how `RecoverableKeyStoreManager` consumes it.
 `com.android.security.SecureBox` is a 461-line, dependency-free Java
 class that implements an authenticated public-key + shared-secret hybrid
 encryption scheme over the NIST P-256 elliptic curve, AES-128-GCM, and
-HKDF-SHA-256. It exposes exactly four public methods:
+HKDF-SHA-256. It exposes exactly five public methods:
 
 ```java
 // Source: frameworks/base/libs/securebox/src/com/android/security/SecureBox.java:142
@@ -3517,11 +3577,14 @@ property the recovery protocol needs.
 `com.android.settings.password.RemoteLockscreenValidationFragment`
 (in `packages/apps/Settings/`) uses the same SecureBox primitive for a
 different flow: a *remote* unlock confirmation during Find My Device
-flows. Settings generates an ephemeral P-256 key pair via
-`SecureBox.genKeyPair()`, sends the public key to the cloud service,
-and decrypts the cloud's challenge response with the private key. The
-public-key path (no shared secret) of `SecureBox.encrypt` is what the
-cloud uses on its end.
+flows. Here it is `system_server` that generates the ephemeral P-256
+key pair -- `RemoteLockscreenValidationSessionStorage` calls
+`SecureBox.genKeyPair()` and hands out the public key. Settings'
+`encryptDeviceCredentialGuess` then calls `SecureBox.decodePublicKey`
+followed by `SecureBox.encrypt` on the credential guess, using the
+public-key path with a null shared secret, and
+`RecoverableKeyStoreManager` performs the matching
+`SecureBox.decrypt` against the session's private key.
 
 This second consumer is why `SecureBox` exposes the ECDH-only mode as
 a first-class API path rather than insisting on a shared secret.
@@ -3659,17 +3722,20 @@ flowchart TD
     H -->|No| I["Connection rejected<br/>Pin mismatch"]
 ```
 
-Pin-sets have mandatory features:
+Pin-sets have strongly recommended (but not platform-enforced) features:
 
-- **Expiration date** -- pins expire so that a wrong pin does not permanently
-  brick the app's connectivity.
-- **Backup pins** -- at least two pins must be specified (one current, one
-  backup) to enable key rotation.
+- **Expiration date** -- the `expiration` attribute is optional (pins never
+  expire if it is omitted), but setting one ensures a wrong pin does not
+  permanently brick the app's connectivity.
+- **Backup pins** -- the parser imposes no minimum pin count, but
+  specifying at least two pins (one current, one backup) is strongly
+  recommended to enable key rotation.
 
 ### 40.9.5  Certificate Transparency
 
-Starting with Android 16 (Baklava), Certificate Transparency (CT) verification
-is enabled by default for apps targeting the new SDK level:
+Certificate Transparency (CT) verification is enabled by default for apps
+targeting SDK levels *after* Baklava -- that is, targetSdk 37 / Android 17,
+per the `@EnabledAfter` semantics of the compat change:
 
 ```java
 @ChangeId
@@ -3807,8 +3873,7 @@ Android has progressively tightened HTTPS requirements:
 | 9.0 | `cleartextTrafficPermitted` defaults to false for targetSdk >= 28 |
 | 10 | TLS 1.3 enabled by default |
 | 14 | System-only CA trust for targetSdk >= 34 |
-| 16 (Baklava) | Certificate Transparency enabled by default |
-| 17 (Cinnamon Bun) | `usesCleartextTraffic` manifest flag deprecated; ignored for targetSdk >= 37 (see ch35 §35.8.10) |
+| 17 (Cinnamon Bun) | Certificate Transparency enabled by default for targetSdk >= 37; `usesCleartextTraffic` manifest flag deprecated and ignored for targetSdk >= 37 (see ch35 §35.8.10) |
 
 ### 40.9.11  DNS over TLS / DNS over HTTPS
 
@@ -3836,7 +3901,10 @@ The automatic mode discovery works by:
 
 Android's VPN framework integrates with the security model:
 
-- VPN apps receive the `BIND_VPN_SERVICE` permission.
+- A VPN app's `VpnService` must declare
+  `android:permission="android.permission.BIND_VPN_SERVICE"`; this
+  signature-level permission is held by the system, ensuring only the
+  system can bind the service (the app itself does not hold it).
 - VPN traffic is routed through a TUN interface.
 - The VPN app can see all DNS queries and network traffic, but:
   - It runs in the `untrusted_app` SELinux domain.
@@ -3849,7 +3917,7 @@ Android's VPN framework integrates with the security model:
 System services have different network security properties:
 
 ```te
-# From private/app.te - apps cannot access certain network interfaces
+# From private/app_neverallows.te - apps cannot access certain network interfaces
 neverallow all_untrusted_apps domain:netlink_kobject_uevent_socket *;
 neverallow all_untrusted_apps domain:netlink_socket *;
 
@@ -4404,9 +4472,10 @@ Running the SELinux tests:
 mmm system/sepolicy/tests
 
 # Run treble sepolicy tests
-python3 system/sepolicy/tests/treble_tests.py \
-    -l system/sepolicy/prebuilts/api/<api>/ \
-    -f <compiled_policy>
+python3 system/sepolicy/tests/treble_sepolicy_tests.py \
+    -b <base_pub_policy> \
+    -o <old_pub_policy> \
+    -m <mapping_file>
 ```
 
 Running Keystore2 tests:
@@ -4841,9 +4910,6 @@ avbtool info_image --image boot.img
 ### Exercise 40.3: Explore Keystore Keys
 
 ```bash
-# List all Keystore aliases for the current user
-adb shell cmd keystore2 list
-
 # Generate a test key
 # (In an Android app)
 val keyGen = KeyPairGenerator.getInstance(
@@ -4855,8 +4921,9 @@ keyGen.initialize(
         .build())
 val keyPair = keyGen.generateKeyPair()
 
-# Check the security level of the key
-adb shell dumpsys keystore2
+# Dump keystore2 state (keystore2 has no cmd shell interface;
+# its dump is served by the maintenance service)
+adb shell dumpsys android.security.maintenance
 ```
 
 ### Exercise 40.4: Verify App Sandbox Isolation
@@ -5572,15 +5639,25 @@ request sessions (identified by `IBinder` tokens). Sessions are added when a
 request begins and removed when they complete or are cancelled:
 
 ```java
-private void addSessionLocked(int userId, RequestSession session) {
+private void addSessionLocked(@UserIdInt int userId,
+        RequestSession requestSession) {
     synchronized (mLock) {
-        Map<IBinder, RequestSession> sessions = mRequestSessions.get(userId);
-        if (sessions == null) {
-            sessions = new HashMap<>();
-            mRequestSessions.put(userId, sessions);
-        }
-        sessions.put(session.mRequestId, session);
+        mSessionManager.addSession(userId, requestSession.mRequestId, requestSession);
     }
+}
+```
+
+The one-liner delegates to the inner `SessionManager`, whose `addSession()` does
+the actual map insertion (creating the per-user map on first use):
+
+```java
+// CredentialManagerService.SessionManager.addSession()
+@GuardedBy("mLock")
+public void addSession(int userId, IBinder token, RequestSession requestSession) {
+    if (mRequestSessions.get(userId) == null) {
+        mRequestSessions.put(userId, new HashMap<>());
+    }
+    mRequestSessions.get(userId).put(token, requestSession);
 }
 ```
 
@@ -5758,11 +5835,13 @@ protected void handlePackageRemovedMultiModeLocked(String packageName, int userI
 }
 ```
 
-The `userId` argument matters: in Android 17, `updateProvidersWhenPackageRemoved()`
-writes the `CREDENTIAL_SERVICE` and `CREDENTIAL_SERVICE_PRIMARY` settings *for that
-user* when the `multi_user_fix_enabled` flag is set, rather than for
-`UserHandle.myUserId()` as the legacy path did. This is the multi-user correctness fix
-discussed in section 41.8.2. For package updates,
+The `userId` argument matters: `updateProvidersWhenPackageRemoved()` writes the
+`CREDENTIAL_SERVICE` and `CREDENTIAL_SERVICE_PRIMARY` settings unconditionally *for
+that user*. The sibling path, `updateProvidersWhenServiceRemoved()` (reached from
+`handleServiceRemovedMultiModeLocked()`), is where Android 17 gates the choice on the
+`multi_user_fix_enabled` flag: with the flag set it writes for the affected `userId`,
+rather than for `UserHandle.myUserId()` as the legacy path did. This is the multi-user
+correctness fix discussed in section 41.8.2. For package updates,
 `CredentialManagerServiceImpl.handlePackageUpdateLocked()` re-validates the provider's
 manifest and capabilities.
 
@@ -5899,17 +5978,15 @@ classDiagram
         -remoteEntry : RemoteEntry
     }
     class CredentialEntry {
-        -key : String
-        -subkey : String
-        -pendingIntent : PendingIntent
+        -beginGetCredentialOptionId : String
+        -type : String
         -slice : Slice
     }
     class Action {
-        -title : CharSequence
-        -pendingIntent : PendingIntent
+        -slice : Slice
     }
     class RemoteEntry {
-        -pendingIntent : PendingIntent
+        -slice : Slice
     }
 
     BeginGetCredentialResponse --> "*" CredentialEntry
@@ -5918,8 +5995,9 @@ classDiagram
 ```
 
 **CredentialEntry** -- Represents a single available credential (e.g., "user@example.com
-password" or "Passkey for example.com"). Contains a `PendingIntent` that fires when
-selected.
+password" or "Passkey for example.com"). The `PendingIntent` that fires when it is
+selected is not a separate field — it is embedded in the entry's `Slice` as a
+`SliceAction`, which is also how `Action` and `RemoteEntry` carry theirs.
 
 **Action** -- A generic action the provider wants to show (e.g., "Manage passwords").
 
@@ -6236,8 +6314,12 @@ bundle contains:
 
 | Key | Type | Description |
 |---|---|---|
-| `android.credentials.BUNDLE_KEY_ID` | String | Username/identifier |
-| `android.credentials.BUNDLE_KEY_PASSWORD` | String | Password value |
+| `androidx.credentials.BUNDLE_KEY_ID` | String | Username/identifier |
+| `androidx.credentials.BUNDLE_KEY_PASSWORD` | String | Password value |
+
+Note the `androidx.` prefix: these keys are Jetpack `androidx.credentials`
+conventions, not framework constants — the framework treats the bundle as opaque
+and only the Jetpack library on each end interprets the keys.
 
 A password-focused `BeginGetCredentialResponse` returns `CredentialEntry` items,
 one for each stored password matching the calling app.
@@ -6500,9 +6582,9 @@ The UI status tracking prevents duplicate operations:
 ```java
 // From CredentialManagerUi.java
 enum UiStatus {
-    IN_PROGRESS,       // Waiting for provider responses
+    IN_PROGRESS,       // Initial state; waiting for provider responses
     USER_INTERACTION,  // UI is displayed, user interacting
-    NOT_STARTED,       // Initial state
+    NOT_STARTED,
     TERMINATED         // UI dismissed or failed
 }
 ```
@@ -6752,12 +6834,12 @@ and queried at the call sites that still branch on a flag:
 // Referenced throughout the codebase:
 import android.credentials.flags.Flags;
 
-// RequestSession.finalizeAndEmitFinalPhaseMetric():
+// RequestSession.logTrackOneCandidatesAndPrepareFinalPhaseLogs():
 if (Flags.metricBugfixesContinued()) {
     mRequestSessionMetric.captureMissingLogMetadata();
 }
 
-// CredentialManagerService.removeProvidersFromSettings(): per-user settings writes
+// CredentialManagerService.updateProvidersWhenServiceRemoved(): per-user settings writes
 if (Flags.multiUserFixEnabled()) {
     // write CREDENTIAL_SERVICE / CREDENTIAL_SERVICE_PRIMARY for the affected userId
     // (legacy path used UserHandle.myUserId())
@@ -6993,14 +7075,14 @@ When the selector UI is shown, it may include information about disabled provide
 // The UI may include a "More options" or "Enable provider" action
 ```
 
-The `DisabledProviderData` class carries:
+The `DisabledProviderData` class is minimal: it carries only the provider's
+flattened `ComponentName` string, inherited from its `ProviderData` base class.
+It holds no display name, no settings intent, and no list of supported
+credential types — the selector UI resolves the provider's label and icon
+itself from the component name via `PackageManager`.
 
-- Provider package name and display name
-- An action intent to navigate to provider settings
-- The credential types the provider supports
-
-This helps users discover and enable credential providers they have installed but
-not yet activated.
+This still helps users discover and enable credential providers they have
+installed but not yet activated.
 
 ### 41.7.19 Integration with WebView and Browsers
 
@@ -7115,7 +7197,7 @@ device with multiple users or a work profile, removing a provider for one user c
 read or write another user's `CREDENTIAL_SERVICE` value.
 
 ```java
-// From CredentialManagerService.removeProvidersFromSettings(), Android 17
+// From CredentialManagerService.updateProvidersWhenServiceRemoved(), Android 17
 if (Flags.multiUserFixEnabled()) {
     settingsWrapper.putStringForUser(
             Settings.Secure.CREDENTIAL_SERVICE_PRIMARY,
@@ -7132,8 +7214,9 @@ if (Flags.multiUserFixEnabled()) {
 ```
 
 The same `userId`-versus-`myUserId()` branch appears for the `CREDENTIAL_SERVICE`
-(secondary) key. The fix is reached from `handlePackageRemovedMultiModeLocked()` (section
-41.2.9), which now threads the `userId` all the way down.
+(secondary) key. The fix is reached from `handleServiceRemovedMultiModeLocked()`
+(the service-removal counterpart of the package-removal path in section 41.2.9),
+which threads the `userId` all the way down.
 
 **Source:** `frameworks/base/services/credentials/java/com/android/server/credentials/CredentialManagerService.java`
 
@@ -7170,10 +7253,11 @@ they make the selector robust for password managers that hold hundreds of entrie
 
 Two fixes harden the boundaries the service depends on:
 
-- **`cpif_exc_fix_enabled`** wraps the provider-discovery path so that an exception
-  thrown while `CredentialProviderInfoFactory` parses a malformed provider manifest no
-  longer takes down the enumeration. A single broken provider package can no longer
-  prevent the rest of the device's providers from being listed.
+- **`cpif_exc_fix_enabled`** is intended to catch exceptions thrown while
+  `CredentialProviderInfoFactory` parses a malformed provider manifest, so that a
+  single broken provider package cannot take down the whole enumeration. As of this
+  tree, though, the flag is only *declared* in `flags.aconfig` — no code reads it
+  yet, so the guarded fix has not landed at any call site.
 
 - **`safeguard_candidate_credentials_api_caller`** (now graduated to unconditional)
   enforces that only the OEM-configured credential-autofill component, named by
@@ -7184,7 +7268,7 @@ Two fixes harden the boundaries the service depends on:
   arbitrary app could have harvested credential candidates intended only for the
   autofill surface.
 
-**Source:** `frameworks/base/services/credentials/java/com/android/server/credentials/CredentialManagerService.java`
+**Source:** `frameworks/base/core/java/android/credentials/flags.aconfig` (flag declarations); `frameworks/base/services/credentials/java/com/android/server/credentials/CredentialManagerService.java` (the `getCandidateCredentials()` caller check)
 
 ### 41.8.5 Identity Credential API Deprecation
 
@@ -7212,18 +7296,12 @@ adb shell settings get --user 0 secure credential_service
 adb shell settings get --user 0 secure credential_service_primary
 ```
 
-**Dump CredentialManagerService state:**
-
-```bash
-adb shell dumpsys credential
-```
-
-This shows:
-
-- Active provider services (user-configurable and system)
-- Ongoing request sessions
-- Provider capability information
-- Service binding states
+**A note on `dumpsys`:** unlike most system services, `CredentialManagerService`
+implements no dump handler — its published `credential` binder falls back to
+`Binder`'s no-op `dump()`, so `adb shell dumpsys credential` prints nothing
+useful. To inspect state, rely on the `Settings.Secure` keys above and on logcat
+(the service logs provider construction, session lifecycle, and status changes
+under the `CredentialManager` tag; see section 41.9.8).
 
 ### 41.9.2 Enabling a Provider
 
@@ -7267,12 +7345,18 @@ A basic password provider demonstrates the two-phase protocol.
 </credential-provider>
 ```
 
-**3. Service implementation:**
+**3. Service implementation.** Note that the framework entry classes
+(`android.service.credentials.CredentialEntry`, `CreateEntry`) have no builders —
+their only constructors take a pre-built `Slice`. In practice providers extend the
+Jetpack `androidx.credentials.provider.CredentialProviderService`, whose typed entry
+builders (`PasswordCredentialEntry.Builder`, `CreateEntry.Builder`, ...) construct
+those Slices under the hood:
 
 ```kotlin
+// Uses androidx.credentials.provider.* (Jetpack), not the raw framework classes
 class DemoCredentialProvider : CredentialProviderService() {
 
-    override fun onBeginGetCredential(
+    override fun onBeginGetCredentialRequest(
         request: BeginGetCredentialRequest,
         cancellationSignal: CancellationSignal,
         callback: OutcomeReceiver<BeginGetCredentialResponse,
@@ -7281,14 +7365,16 @@ class DemoCredentialProvider : CredentialProviderService() {
         val entries = mutableListOf<CredentialEntry>()
 
         for (option in request.beginGetCredentialOptions) {
-            if (option.type == Credential.TYPE_PASSWORD_CREDENTIAL) {
+            if (option is BeginGetPasswordOption) {
                 // Look up stored credentials for the calling app
-                val stored = lookupPasswords(request.callingAppInfo.packageName)
+                val stored = lookupPasswords(request.callingAppInfo?.packageName)
                 for (cred in stored) {
                     entries.add(
-                        CredentialEntry.Builder(
-                            option.id,
-                            createPendingIntent(cred.id)
+                        PasswordCredentialEntry.Builder(
+                            this,
+                            cred.username,
+                            createPendingIntent(cred.id),
+                            option
                         )
                         .build()
                     )
@@ -7303,7 +7389,7 @@ class DemoCredentialProvider : CredentialProviderService() {
         )
     }
 
-    override fun onBeginCreateCredential(
+    override fun onBeginCreateCredentialRequest(
         request: BeginCreateCredentialRequest,
         cancellationSignal: CancellationSignal,
         callback: OutcomeReceiver<BeginCreateCredentialResponse,
@@ -7319,10 +7405,10 @@ class DemoCredentialProvider : CredentialProviderService() {
         )
     }
 
-    override fun onClearCredentialState(
-        request: ClearCredentialStateRequest,
+    override fun onClearCredentialStateRequest(
+        request: ProviderClearCredentialStateRequest,
         cancellationSignal: CancellationSignal,
-        callback: OutcomeReceiver<Void, ClearCredentialStateException>
+        callback: OutcomeReceiver<Void?, ClearCredentialException>
     ) {
         // Clear any cached credential state
         callback.onResult(null)
@@ -7386,13 +7472,13 @@ adb logcat | grep "Remote provider response timed"
 **Check if the description API is enabled:**
 
 ```bash
-adb shell device_config get credential enable_credential_description_api
+adb shell device_config get credential_manager enable_credential_description_api
 ```
 
 **Enable it for testing:**
 
 ```bash
-adb shell device_config put credential enable_credential_description_api true
+adb shell device_config put credential_manager enable_credential_description_api true
 ```
 
 ### 41.9.6 Testing Passkey Flows
@@ -7427,15 +7513,15 @@ The Credential Manager respects several `DeviceConfig` flags:
 
 | Flag | Namespace | Purpose |
 |---|---|---|
-| `enable_credential_manager` | `credential` | Master enable/disable |
-| `enable_credential_description_api` | `credential` | Enable registry-based matching |
+| `enable_credential_manager` | `credential_manager` | Master enable/disable |
+| `enable_credential_description_api` | `credential_manager` | Enable registry-based matching |
 
 ```bash
 # Check if Credential Manager is enabled
-adb shell device_config get credential enable_credential_manager
+adb shell device_config get credential_manager enable_credential_manager
 
 # Disable for testing
-adb shell device_config put credential enable_credential_manager false
+adb shell device_config put credential_manager enable_credential_manager false
 ```
 
 ### 41.9.8 Sequence of Key Log Messages
@@ -7516,7 +7602,8 @@ developers.
 
 ### 42.1.2 Core Components
 
-The DRM subsystem comprises four principal components that span three process boundaries:
+The DRM subsystem comprises four principal components spanning the app process, the
+vendor HAL process, and the trusted execution environment:
 
 1. **MediaDrm** -- The Java API that applications use to negotiate licenses and manage
    sessions. Lives in the app process.
@@ -7524,9 +7611,11 @@ The DRM subsystem comprises four principal components that span three process bo
 2. **MediaCrypto** -- A companion Java API that bridges the DRM session to the codec.
    Also lives in the app process but delegates all cryptographic work across Binder.
 
-3. **DRM Framework (libmediadrm)** -- The native C++ layer in `mediaserver` /
-   `mediadrmserver` that routes calls to the appropriate HAL backend, manages sessions via
-   the `DrmSessionManager`, and collects metrics.
+3. **DRM Framework (libmediadrm)** -- The native C++ layer, loaded into the client
+   process itself via `libmedia_jni`, that routes calls to the appropriate HAL backend
+   over Binder, manages sessions via the `DrmSessionManager`, and collects metrics.
+   (Older releases hosted this layer in a separate `mediadrmserver` process; that
+   process no longer exists.)
 
 4. **DRM HAL Plugin** -- A vendor-supplied AIDL service (or legacy HIDL service) that
    implements the actual cryptographic operations. Runs in its own process.
@@ -7553,7 +7642,7 @@ graph TB
         EXT[MediaExtractor]
     end
 
-    subgraph "mediaserver / mediadrmserver"
+    subgraph "App Process - libmediadrm"
         DH["DrmHal<br/>libmediadrm"]
         CH["CryptoHal<br/>libmediadrm"]
         DSM[DrmSessionManager]
@@ -7575,8 +7664,8 @@ graph TB
     APP --> CODEC
     APP --> EXT
 
-    MD -->|Binder| DH
-    MC -->|Binder| CH
+    MD -->|JNI| DH
+    MC -->|JNI| CH
     CODEC -->|secure buffer| CH
 
     DH --> DSM
@@ -8147,8 +8236,8 @@ The DRM HAL has gone through significant evolution:
 | 1.0 | HIDL | hwbinder | Initial DRM HAL |
 | 1.1 | HIDL | hwbinder | Added metrics (DrmMetricGroup) |
 | 1.2 | HIDL | hwbinder | Added offline license management |
-| 1.3 | HIDL | hwbinder | Added log messages |
-| 1.4 | HIDL | hwbinder | Added requiresSecureDecoder with level |
+| 1.3 | HIDL | hwbinder | Added `IDrmFactory::getSupportedCryptoSchemes()` |
+| 1.4 | HIDL | hwbinder | Added `requiresSecureDecoder` with security level, `setPlaybackId`, and `getLogMessages` |
 | AIDL V1 | AIDL | binder | Unified interface, stable AIDL (frozen) |
 | AIDL V2 (current in 17) | AIDL | binder | Frozen; adds `ICryptoPlugin::getKeyHandle()` and the `KeyHandleResult` parcelable |
 
@@ -8311,6 +8400,7 @@ Standard property names include:
 | `setMacAlgorithm` | `void setMacAlgorithm(in byte[] sessionId, in String algorithm)` |
 | `getHdcpLevels` | `HdcpLevels getHdcpLevels()` |
 | `requiresSecureDecoder` | `boolean requiresSecureDecoder(in String mime, in SecurityLevel level)` |
+| `setPlaybackId` | `void setPlaybackId(in byte[] sessionId, in String playbackId)` |
 
 **Metrics and Logging:**
 
@@ -8487,6 +8577,7 @@ classDiagram
         +int bufferId
         +long offset
         +long size
+        +NativeHandle handle
     }
 
     class KeyRequest {
@@ -9054,8 +9145,8 @@ classDiagram
         -keyMap: KeyMap
         -mockError: CdmResponseType
         +decrypt(keyId, iv, src, dst, clear, enc, out) CdmResponseType
-        +getKeyRequest(initData, mimeType) Status
-        +provideKeyResponse(response) Status
+        +getKeyRequest(initData, mimeType) CdmResponseType
+        +provideKeyResponse(response) CdmResponseType
     }
 
     class AesCtrDecryptor {
@@ -9086,10 +9177,14 @@ The VINTF manifest declaration:
 <manifest version="1.0" type="device">
     <hal format="aidl">
         <name>android.hardware.drm</name>
+        <version>2</version>
         <fqname>IDrmFactory/clearkey</fqname>
     </hal>
 </manifest>
 ```
+
+The `<version>2</version>` element declares ClearKey as a V2 AIDL DRM HAL -- the
+version that adds `getKeyHandle()`, covered in Section 42.8.
 
 ### 42.5.11 ClearKey vs. Production DRM
 
@@ -9233,9 +9328,10 @@ HAL plugin for decryption:
 ```
 // Source: hardware/interfaces/drm/aidl/android/hardware/drm/SharedBuffer.aidl
 parcelable SharedBuffer {
-    int bufferId;    // Identifies which shared memory region
-    long offset;     // Offset within the region
-    long size;       // Size of data
+    int bufferId;        // Identifies which shared memory region
+    long offset;         // Offset within the region
+    long size;           // Size of data
+    NativeHandle handle; // Handle to the shared memory itself
 }
 ```
 
@@ -9793,12 +9889,26 @@ keyHandle = toVector(result.keyHandle);
 ### 42.8.4 Caller and ClearKey Behavior
 
 The handle path is driven from the codec buffer channel. `CCodecBufferChannel` calls
-`mCrypto->getKeyHandle()` in its encrypted-buffer attach path, falling back to the normal
-`decrypt()` flow when the HAL does not provide a handle:
+`mCrypto->getKeyHandle()` in its encrypted-buffer paths only when its
+`mSendEncryptionKeyHandle` flag is set -- a static, configure-time decision: the flag is
+set when the Codec2 component advertises the `C2StreamEncryptionKeyInfo::input` parameter
+and the `com.android.media.codec.flags.decrypt_and_decode_in_hal` aconfig flag is enabled.
+If `getKeyHandle()` fails, the buffer channel logs the error and propagates the status to
+its caller; there is no fallback to the per-sample `decrypt()` flow:
 
-```
+```cpp
 // Source: frameworks/av/media/codec2/sfplugin/CCodecBufferChannel.cpp
-const DrmStatus drmStatus = mCrypto->getKeyHandle(key, mode, size, offset, subSamples, ...);
+if (mSendEncryptionKeyHandle) {
+    // ...
+    const DrmStatus drmStatus = mCrypto->getKeyHandle(key, mode, size, offset, subSamples,
+                                                      numSubSamples, keyHandle);
+    const status_t status = drmStatus;
+    if (status != OK) {
+        ALOGE(/* ... */);   // error is returned to the caller -- no decrypt() fallback
+        return status;
+    }
+    // ... wrap keyHandle in a C2StreamEncryptionKeyInfo::input param for the component
+}
 ```
 
 ```mermaid
@@ -9812,7 +9922,7 @@ sequenceDiagram
     CH->>CHA: getKeyHandle (AIDL backend active)
     CHA->>CP: getInterfaceVersion()
     alt version is less than 2
-        CHA-->>CC: ERROR_UNSUPPORTED (fall back to decrypt)
+        CHA-->>CC: ERROR_UNSUPPORTED (error propagated to caller)
     else version is 2 or higher
         CHA->>CP: getKeyHandle(keyId, mode)
         CP-->>CHA: KeyHandleResult{keyHandle}
@@ -9832,11 +9942,15 @@ software-only plugin with no fused secure decode-decrypt block, it simply declin
 }
 ```
 
-So even on a device whose HAL advertises V2, a scheme without a hardware key-handle path
-(ClearKey, or any L3-only plugin) returns `ERROR_DRM_CANNOT_HANDLE`, and the codec channel
-transparently uses the per-sample `decrypt()` path. The key-handle fast path is an
-opportunistic optimization for hardware-backed schemes (Widevine L1), not a new requirement
-for every plugin.
+In practice a scheme like ClearKey never reaches this stub through the codec path: the
+key-handle route is selected up front from the codec component's advertised parameters
+(`mSendEncryptionKeyHandle`), and the software decoders used with an L3-only scheme do
+not advertise `C2StreamEncryptionKeyInfo::input`, so the buffer channel uses the per-sample
+`decrypt()` path from the start. And if the key-handle path *is* entered and
+`getKeyHandle()` fails -- as it would with ClearKey's `ERROR_DRM_CANNOT_HANDLE` -- the
+buffer channel returns the error to its caller rather than silently retrying with
+`decrypt()`. The key-handle fast path is an opt-in for fused hardware decrypt-decode
+stacks (Widevine L1 class hardware), not a new requirement for every plugin.
 
 ---
 
@@ -10016,8 +10130,8 @@ adb shell dumpsys media.metrics | grep -i drm
 # List VINTF HAL declarations
 adb shell lshal | grep drm
 
-# Check service manager for DRM services
-adb shell cmd drm_manager list
+# Inspect the legacy DRM manager service (registered as drm.drmManager)
+adb shell dumpsys drm.drmManager
 ```
 
 ### 42.9.5 Exercise 5: Trace DRM Operations
@@ -10025,8 +10139,9 @@ adb shell cmd drm_manager list
 Use `atrace` and `systrace` to observe DRM operations during playback:
 
 ```bash
-# Enable DRM-related trace tags
-adb shell atrace --async_start -c drm video
+# Enable trace tags that cover DRM HAL activity (there is no dedicated
+# "drm" atrace category -- DRM shows up under hal/binder_driver/video)
+adb shell atrace --async_start video hal binder_driver
 
 # Play DRM content, then stop tracing
 adb shell atrace --async_stop > /tmp/drm_trace.txt
@@ -10052,12 +10167,14 @@ m android.hardware.drm-service.clearkey
 # out/target/product/*/vendor/bin/hw/
 #     android.hardware.drm-service.clearkey
 
-# Build the ClearKey VTS tests
-m VtsHalDrmTargetTest
+# Build the AIDL DRM VTS tests
+m VtsAidlHalDrmTargetTest
 
-# Run VTS tests against ClearKey
-adb shell /data/nativetest64/VtsHalDrmTargetTest/VtsHalDrmTargetTest \
-    --hal_service_instance=android.hardware.drm.IDrmFactory/clearkey
+# Push and run the VTS tests; restrict to the ClearKey instance with a
+# gtest filter (the test enumerates all registered IDrmFactory instances)
+adb push $ANDROID_PRODUCT_OUT/data/nativetest64/VtsAidlHalDrmTargetTest/VtsAidlHalDrmTargetTest \
+    /data/local/tmp/VtsAidlHalDrmTargetTest
+adb shell /data/local/tmp/VtsAidlHalDrmTargetTest --gtest_filter='*clearkey*'
 ```
 
 ### 42.9.7 Exercise 7: Monitor DRM Session Lifecycle
@@ -10327,7 +10444,7 @@ which piece does what is the key to reading the codec integration later.
 ### 43.2.1 The external toolchain (`external/lfi`)
 
 `external/lfi` is a vendored upstream dependency. The platform integrates it; it
-does not modify its internals. There are six components, each a separate upstream
+does not modify its internals. There are seven components, each a separate upstream
 project mirrored into AOSP.
 
 **`lfi-verifier` (builds the `lfi-verifier` library and the `lfi-verify` host tool).** The verifier is the root of trust. It scans
@@ -10352,9 +10469,11 @@ The `LFIVOptions` struct (`lfiv.h:12-26`) selects the sandbox model. There are t
 box types (`lfiv.h:7-10`): `LFI_BOX_FULL`, which constrains both loads and stores
 (and control flow), and `LFI_BOX_STORES`, a weaker stores-only mode. It can also
 reserve a **context register** (`ctxreg`, `lfiv.h:19-22`) — `x25` on arm64,
-`r15` on x64 — that the sandbox is forbidden to modify and that holds the sandbox
-base. The verifier links against the instruction decoders below to understand the
-bytes it is checking.
+`r15` on x64 — that the sandbox is forbidden to modify and may only use for
+64-bit loads/stores from the address it holds. The sandbox base lives in a
+separate reserved register — `x27` on arm64 (`REG_BASE`,
+`external/lfi/lfi-verifier/src/arm64/verify.c:67`). The verifier links against
+the instruction decoders below to understand the bytes it is checking.
 
 **`lfi-runtime` (builds `liblfi`).** The runtime owns the sandbox at execution
 time. Per `external/lfi/lfi-runtime/README.md`, it splits into a `core` layer that
@@ -10525,8 +10644,9 @@ Enabling LFI on a binary then propagates down its static-dependency graph: a
 of an LFI binary, so the whole transitive closure is recompiled with the LFI
 toolchain. That is why the C library and math library need LFI builds of their
 own: `libc_lfi` (`bionic/libc/Android.bp`) and `libm_lfi`
-(`bionic/libm/Android.bp`) are arm64-only, `nocrt`, `stl: "none"`,
-`lfi_supported: true` static libraries restricted to the swcodec APEX. A sandboxed
+(`bionic/libm/Android.bp`) are arm64-only, `stl: "none"`,
+`lfi_supported: true` static libraries restricted to the swcodec APEX
+(`libc_lfi` also sets `nocrt: true`). A sandboxed
 library has no normal libc — it links these LFI-built variants instead.
 
 ### 43.3.3 `system_lfi_defaults`
@@ -10576,9 +10696,10 @@ flowchart TD
   SRC["libopus source"] --> CC["LFI clang toolchain<br/>(aarch64_lfi triple, rewriting pass)"]
   CC --> LFILIB["libopus.a (LFI-built) + libc_lfi / libm_lfi"]
   LFILIB --> PIE["relink as static-PIE with boxrt + relocator"]
+  PIE --> VER["lfi-verifier (LFI_BOX_FULL)"]
   PIE --> BIND["lfi-bind: generate init + trampolines"]
-  BIND --> VER["lfi-verifier (LFI_BOX_FULL)"]
-  VER -->|"errors=0"| OUT["libopus_lfi sandbox image<br/>(in com.android.media.swcodec)"]
+  VER -->|"verify stamp gates the bind step"| BIND
+  BIND --> OUT["libopus_lfi sandbox image<br/>(in com.android.media.swcodec)"]
   VER -->|"unsafe instruction"| FAIL["build/load rejected"]
 ```
 
@@ -10647,9 +10768,9 @@ int MediaCodecInfo::getSecurityModel() const {
 
 Second, it selects the buffer-mapping functions. When the flag is on, the codec2
 client swaps the default `::mmap`/`::munmap` for the sandbox-aware mapping
-functions so input buffers are mapped inside the box
-(`frameworks/av/media/codec2/hal/client/client.cpp:1906-1914`, and again for const
-linear blocks at `:2031-2038`):
+functions so buffers are mapped inside the box — for output blocks in
+`allocOutputBuffer` (`frameworks/av/media/codec2/hal/client/client.cpp:1906-1914`)
+and for input const linear blocks in `fillMemory` (`:2031-2038`):
 
 ```cpp
 // frameworks/av/media/codec2/hal/client/client.cpp:1906-1914
@@ -10843,12 +10964,15 @@ checkout.
   sed -n '16,28p' external/lfi/lfi-runtime/core/include/lfi_core.h
   ```
 
-- On a running Android 17 device, see whether a codec reports the new
-  memory-safe security model and whether the flag is set:
+- On a running Android 17 device, check whether the flag is set. (A codec's
+  security model itself is only observable through the Java API —
+  `MediaCodecInfo.getSecurityModel()` / `MediaFormat.KEY_SECURITY_MODEL` — not
+  via a shell command.) Note that aconfig flags are stored under their
+  fully-qualified package name:
 
   ```bash
-  adb shell cmd media.codec list 2>/dev/null | grep -i secur
-  adb shell device_config get codec_fwk in_process_sw_codec_lfi
+  adb shell device_config get codec_fwk android.media.codec.in_process_sw_codec_lfi
+  adb shell printflags | grep in_process_sw_codec_lfi
   ```
 
 ## Summary

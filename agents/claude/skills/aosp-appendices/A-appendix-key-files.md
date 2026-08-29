@@ -19,10 +19,10 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `build/make/core/board_config.mk` | Board-level hardware configuration |
 | `build/make/core/binary.mk` | Shared rules for building native binaries |
 | `frameworks/libs/binary_translation/berberis_config.mk` | Berberis (riscv64-to-x86_64) product-package configuration for native bridge |
-| `build/make/envsetup.sh` | Shell environment setup; defines `lunch`, `m`, `mm`, `mmm` |
+| `build/make/envsetup.sh` | Shell environment setup; defines `lunch` (plus `tapas`, `banchan`, `croot`) and puts `build/soong/bin` -- home of the standalone `m`, `mm`, `mmm` scripts -- on PATH |
 | `build/soong/cmd/soong_build/main.go` | Soong build system entry point |
 | `build/soong/android/module.go` | Base module type definitions for Soong |
-| `build/soong/android/androidmk.go` | Android.mk to Soong conversion logic |
+| `build/soong/android/androidmk.go` | Emits Android.mk entries for Soong modules so Kati can consume them (Make-Soong interoperability) |
 | `build/soong/cc/cc.go` | C/C++ module build rules for Soong |
 | `build/soong/cc/library.go` | Shared/static library build rules |
 | `build/soong/cc/binary.go` | Native binary build rules |
@@ -57,19 +57,24 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 
 ## Kernel (Chapter 5)
 
+Unlike the rest of this appendix, these paths are relative to a separate Android
+Common Kernel checkout (its own `repo init`), where the kernel source tree is
+`common/` and the build tooling is `build/`. The platform checkout's `kernel/`
+directory holds only configs, prebuilts, and tests.
+
 | File Path | Purpose |
 |-----------|---------|
-| `kernel/common/Makefile` | Top-level kernel Makefile |
-| `kernel/common/arch/arm64/configs/gki_defconfig` | GKI default kernel configuration |
-| `kernel/common/drivers/android/binder.c` | Binder kernel driver implementation |
-| `kernel/common/drivers/android/binder_alloc.c` | Binder memory allocation |
-| `kernel/common/drivers/staging/android/ion/` | ION memory allocator (legacy) |
-| `kernel/common/drivers/dma-buf/` | DMA-BUF framework for buffer sharing |
-| `kernel/common/drivers/gpu/drm/` | DRM/KMS graphics driver framework |
-| `kernel/common/include/uapi/linux/android/binder.h` | Binder UAPI header |
-| `kernel/common/fs/fuse/dev.c` | FUSE device implementation (for scoped storage) |
-| `kernel/build/build.sh` | Kernel build wrapper script |
-| `kernel/build/kleaf/` | Kleaf (Bazel-based) kernel build system |
+| `common/Makefile` | Top-level kernel Makefile |
+| `common/arch/arm64/configs/gki_defconfig` | GKI default kernel configuration |
+| `common/drivers/android/binder.c` | Binder kernel driver implementation |
+| `common/drivers/android/binder_alloc.c` | Binder memory allocation |
+| `common/drivers/staging/android/ion/` | ION memory allocator (legacy) |
+| `common/drivers/dma-buf/` | DMA-BUF framework for buffer sharing |
+| `common/drivers/gpu/drm/` | DRM/KMS graphics driver framework |
+| `common/include/uapi/linux/android/binder.h` | Binder UAPI header |
+| `common/fs/fuse/dev.c` | FUSE device implementation (for scoped storage) |
+| `build/build.sh` | Kernel build wrapper script (legacy) |
+| `build/kleaf/` | Kleaf (Bazel-based) kernel build system |
 
 ## Bionic and the Dynamic Linker (Chapter 7)
 
@@ -149,8 +154,8 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 
 | File Path | Purpose |
 |-----------|---------|
-| `frameworks/native/services/inputflinger/InputDispatcher.cpp` | Input event dispatch to windows |
-| `frameworks/native/services/inputflinger/InputReader.cpp` | Input device event reading |
+| `frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp` | Input event dispatch to windows |
+| `frameworks/native/services/inputflinger/reader/InputReader.cpp` | Input device event reading |
 | `frameworks/native/services/inputflinger/InputManager.cpp` | Input subsystem coordinator |
 | `frameworks/native/services/sensorservice/SensorService.cpp` | Sensor event multiplexing |
 | `frameworks/native/services/surfaceflinger/main_surfaceflinger.cpp` | SurfaceFlinger process entry point |
@@ -170,9 +175,9 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/native/services/surfaceflinger/Scheduler/VSyncReactor.cpp` | VSYNC controller implementation (`VsyncController` interface in `VsyncController.h`) |
 | `frameworks/native/services/surfaceflinger/CompositionEngine/` | Composition strategy engine |
 | `frameworks/native/services/surfaceflinger/DisplayHardware/HWComposer.cpp` | HWC abstraction layer |
-| `frameworks/native/services/surfaceflinger/DisplayHardware/PowerAdvisor.cpp` | Power hint integration |
+| `frameworks/native/services/surfaceflinger/PowerAdvisor/PowerAdvisor.cpp` | Power hint integration |
 | `frameworks/native/services/surfaceflinger/Layer.cpp` | Individual surface/layer management |
-| `frameworks/native/services/surfaceflinger/BufferLayer.cpp` | Buffer-backed layer implementation |
+| `frameworks/native/services/surfaceflinger/FrontEnd/LayerSnapshot.cpp` | Buffer-backed layer state snapshot (frontend) |
 | `frameworks/native/services/surfaceflinger/FrontEnd/LayerLifecycleManager.cpp` | Layer lifecycle tracking |
 | `frameworks/native/services/surfaceflinger/Tracing/TransactionTracing.cpp` | Transaction trace capture |
 | `frameworks/native/libs/gui/Surface.cpp` | Client-side Surface implementation |
@@ -224,7 +229,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/av/services/audioflinger/Tracks.cpp` | Audio track management |
 | `frameworks/av/services/audioflinger/Effects.cpp` | Audio effects chain processing |
 | `frameworks/av/services/audiopolicy/managerdefault/AudioPolicyManager.cpp` | Audio routing policy |
-| `frameworks/av/services/audiopolicy/common/managerdefinitions/src/AudioPort.cpp` | Audio port abstraction |
+| `frameworks/av/services/audiopolicy/common/managerdefinitions/src/PolicyAudioPort.cpp` | Audio port abstraction |
 | `frameworks/av/media/libaudioclient/AudioTrack.cpp` | Client-side audio playback |
 | `frameworks/av/media/libaudioclient/AudioRecord.cpp` | Client-side audio recording |
 | `frameworks/av/media/libaudioclient/AudioSystem.cpp` | Audio system client interface |
@@ -242,7 +247,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/av/media/codec2/components/` | Software codec implementations |
 | `frameworks/av/media/libstagefright/MediaCodec.cpp` | MediaCodec native implementation |
 | `frameworks/av/media/libstagefright/ACodec.cpp` | Legacy OMX codec adapter |
-| `frameworks/av/media/libstagefright/NuPlayer/NuPlayer.cpp` | Media playback engine |
+| `frameworks/av/media/libmediaplayerservice/nuplayer/NuPlayer.cpp` | Media playback engine |
 | `frameworks/av/media/module/extractors/` | Media file format extractors (MP4, MKV, etc.) |
 | `frameworks/av/services/camera/libcameraservice/CameraService.cpp` | Camera service daemon |
 | `frameworks/av/drm/mediadrm/plugins/clearkey/` | ClearKey DRM reference implementation |
@@ -282,10 +287,10 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/libs/binary_translation/guest_abi/` | ABI conversion between host and guest |
 | `frameworks/libs/binary_translation/guest_state/` | Guest CPU state abstraction |
 | `frameworks/libs/binary_translation/jni/` | JNI trampoline generation |
-| `frameworks/libs/binary_translation/interpreter/` | Guest instruction interpreter |
-| `frameworks/libs/binary_translation/decoder/` | Guest instruction decoder |
-| `frameworks/libs/binary_translation/backend/` | Host code generation backend |
-| `frameworks/libs/binary_translation/assembler/` | Host instruction assembler |
+| `frameworks/libs/binary_translation/cpu_emulation/interpreter/` | Guest instruction interpreter |
+| `frameworks/libs/binary_translation/cpu_emulation/decoder/` | Guest instruction decoder |
+| `frameworks/libs/binary_translation/cpu_emulation/backend/` | Host code generation backend |
+| `frameworks/libs/binary_translation/cpu_emulation/assembler/` | Host instruction assembler |
 | `frameworks/libs/binary_translation/android_api/` | Android framework proxy stubs |
 | `frameworks/libs/native_bridge_support/native_bridge_support.mk` | Build synchronization for bridge support |
 | `art/libnativebridge/native_bridge.cc` | System-side native bridge loading |
@@ -329,7 +334,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/base/services/core/java/com/android/server/wm/WindowState.java` | Per-window server state |
 | `frameworks/base/services/core/java/com/android/server/wm/WindowToken.java` | Window grouping token |
 | `frameworks/base/services/core/java/com/android/server/wm/Session.java` | Per-app WMS session |
-| `frameworks/base/services/core/java/com/android/server/wm/WindowSurfaceController.java` | Window-to-Surface bridge |
+| `frameworks/base/services/core/java/com/android/server/wm/WindowStateAnimator.java` | Window-to-Surface bridge; creates and manages the window's SurfaceControl |
 | `frameworks/base/services/core/java/com/android/server/wm/WindowAnimator.java` | Window animation coordinator |
 | `frameworks/base/services/core/java/com/android/server/wm/InsetsStateController.java` | System insets management |
 | `frameworks/base/services/core/java/com/android/server/wm/InsetsPolicy.java` | Insets visibility policy |
@@ -361,7 +366,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/base/services/core/java/com/android/server/pm/permission/PermissionManagerService.java` | Runtime permission management |
 | `frameworks/base/core/java/com/android/internal/pm/pkg/parsing/ParsingPackageUtils.java` | APK manifest parsing |
 | `frameworks/base/services/core/java/com/android/server/pm/resolution/ComponentResolver.java` | Intent filter resolution |
-| `frameworks/base/services/core/java/com/android/server/pm/dex/DexManager.java` | DEX file optimization tracking |
+| `frameworks/base/services/core/java/com/android/server/pm/dex/ArtManagerService.java` | ART profile and DEX optimization service |
 | `frameworks/base/core/java/android/content/pm/PackageManager.java` | Public PackageManager API |
 
 ## Security (Chapter 40)
@@ -375,7 +380,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `system/security/identity/` | Identity credential service |
 | `external/selinux/` | SELinux userspace tools |
 | `system/extras/verity/` | dm-verity tools |
-| `system/core/fs_mgr/libfs_avb/` | AVB (Android Verified Boot) integration |
+| `system/fs/fs_mgr/libfs_avb/` | AVB (Android Verified Boot) integration |
 | `frameworks/base/services/core/java/com/android/server/biometrics/` | Biometric authentication |
 | `frameworks/base/keystore/java/android/security/keystore2/` | Keystore Java API |
 
@@ -383,12 +388,12 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 
 | File Path | Purpose |
 |-----------|---------|
-| `frameworks/base/packages/SystemUI/src/com/android/systemui/SystemUIApplication.java` | SystemUI application entry |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/application/SystemUIApplication.kt` | SystemUI application entry |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/CentralSurfacesImpl.java` | Status bar + notification shade |
-| `frameworks/base/packages/SystemUI/src/com/android/systemui/qs/QSPanelController.java` | Quick Settings panel controller |
-| `frameworks/base/packages/SystemUI/src/com/android/systemui/recents/OverviewProxyService.java` | Recents/overview proxy to Launcher |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/qs/panels/domain/startable/QSPanelsCoreStartable.kt` | Quick Settings panels startup coordinator |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/recents/OverviewProxyRecentsImpl.java` | Recents/overview proxy to Launcher |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewMediator.java` | Lock screen coordinator |
-| `frameworks/base/packages/SystemUI/src/com/android/systemui/navigationbar/NavigationBar.java` | Navigation bar |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/navigationbar/views/NavigationBar.java` | Navigation bar |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/volume/VolumeDialogControllerImpl.java` | Volume dialog logic |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/shade/NotificationPanelViewController.java` | Notification panel controller |
 
@@ -398,11 +403,11 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 |-----------|---------|
 | `packages/apps/Launcher3/src/com/android/launcher3/Launcher.java` | Main Launcher activity |
 | `packages/apps/Launcher3/src/com/android/launcher3/Workspace.java` | Home screen workspace |
-| `packages/apps/Launcher3/src/com/android/launcher3/allapps/AllAppsContainerView.java` | All-apps drawer |
+| `packages/apps/Launcher3/src/com/android/launcher3/allapps/ActivityAllAppsContainerView.java` | All-apps drawer |
 | `packages/apps/Launcher3/src/com/android/launcher3/model/LoaderTask.java` | App list loading |
 | `packages/apps/Launcher3/src/com/android/launcher3/dragndrop/DragController.java` | Drag-and-drop coordinator |
 | `packages/apps/Launcher3/quickstep/src/com/android/quickstep/RecentsActivity.java` | Recents (overview) activity |
-| `packages/apps/Launcher3/quickstep/src/com/android/quickstep/TouchInteractionService.java` | Gesture navigation service |
+| `packages/apps/Launcher3/quickstep/src/com/android/quickstep/TouchInteractionService.kt` | Gesture navigation service |
 
 ## Settings App (Chapter 50)
 
@@ -428,7 +433,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `packages/modules/Bluetooth/` | Bluetooth Mainline module |
 | `packages/modules/NetworkStack/` | Network stack Mainline module |
 | `packages/modules/Permission/` | Permission controller module |
-| `packages/modules/MediaProvider/` | Media storage provider module |
+| `packages/providers/MediaProvider/` | Media storage provider module |
 | `packages/modules/adb/` | ADB Mainline module |
 | `packages/modules/common/` | Shared Mainline module infrastructure |
 | `system/apex/apexd/` | APEX daemon (module installer) |
@@ -471,7 +476,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `build/soong/cc/config/bionic.go` | Bionic CRT objects and default shared libraries |
 | `build/soong/cc/config/clang.go` | Clang unknown-flags filter |
 | `build/soong/android/arch.go` | Arch struct, ArchType, multilib decode logic |
-| `bionic/libc/arch-arm64/ifuncs.cpp` | ARM64 ifunc dispatchers (MTE, SVE selection) |
+| `bionic/libc/arch-arm64/ifuncs.cpp` | ARM64 ifunc dispatchers (MTE variant selection; SVE variants present but not yet enabled) |
 | `art/runtime/arch/riscv64/instruction_set_features_riscv64.h` | ART RISC-V feature detection |
 | `art/runtime/arch/arm64/instruction_set_features_arm64.h` | ART ARM64 feature bitmap and errata |
 
@@ -479,7 +484,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 
 | File Path | Purpose |
 |-----------|---------|
-| `external/qemu/android/emulation/` | Emulator core emulation logic |
+| `external/qemu/android-qemu2-glue/emulation/` | Glue between QEMU and the android-emu emulation layer |
 | `external/qemu/android/android-emu/android/emulation/` | Emulator hardware emulation |
 | `device/generic/goldfish/` | Goldfish virtual device definitions |
 | `device/google/cuttlefish/` | Cuttlefish virtual device definitions |

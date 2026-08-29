@@ -30,8 +30,8 @@ lifecycle management in Android. It is responsible for discovering, parsing, ver
 installing, updating, and removing every APK on the device. It maintains the authoritative
 database of installed packages, enforces permission policy, resolves intents to the
 correct component, orchestrates the overlay system, and provides the backbone of the
-entire app ecosystem. At over 6,000 source files in its module tree, PMS is arguably the
-most complex subsystem in the entire Android framework.
+entire app ecosystem. At roughly 280 source files and well over 100,000 lines in its
+module tree, PMS is arguably the most complex subsystem in the entire Android framework.
 
 This chapter dissects PMS from the ground up: starting with the structure of an APK
 itself, then moving through the service architecture, boot-time scanning, the installation
@@ -272,8 +272,11 @@ graph TD
 ```
 
 PMS uses `ApkSignatureVerifier` to verify signatures during installation. The verifier
-tries the newest scheme first and falls back to older schemes. All schemes present in
-the APK must verify successfully -- you cannot strip a v2 signature and rely on v1 alone.
+tries the newest scheme first and falls back to older schemes: verification stops at the
+highest signature scheme actually present in the APK, and lower schemes are only
+consulted when a newer block is absent. Protection against stripping a newer signature
+comes not from re-verifying every scheme but from the stripping-protection attributes
+`apksigner` inserts into the older signatures, which record that a newer scheme exists.
 
 ### 26.1.7 APK Alignment
 
@@ -288,10 +291,13 @@ From `ScanPackageUtils.java`:
 public static final int PAGE_SIZE_16KB = 16384;
 ```
 
-The alignment requirement is enforced during both build time (by `zipalign`) and at
-installation time by PMS. Misaligned APKs will either fail to install or suffer
-performance degradation because the system must extract resources to a separate
-file rather than mapping them directly from the APK.
+Alignment is enforced by build-time tooling (`zipalign`, and Play's publishing
+requirements) rather than by PMS: the install path does not reject misaligned APKs.
+On 16 KB page-size devices, PMS checks native-library alignment during package scan
+(`ScanPackageUtils` calls `checkPackageAlignment()`) and records the result as
+page-size app-compat flags on the `PackageSetting`, so a misaligned app can be run
+in compatibility mode. Misaligned resources still carry a cost: the system must
+extract them to a separate file rather than mapping them directly from the APK.
 
 ### 26.1.8 The APK Build Pipeline
 
@@ -405,9 +411,9 @@ of helper classes with a snapshot-based concurrency model.
 ### 26.2.1 Service Registration and Entry Point
 
 PMS is started during the boot sequence by `SystemServer`. It is registered as the
-`"package"` service in `ServiceManager`, making it accessible to all processes
-via `Context.getSystemService(Context.PACKAGE_SERVICE)` or
-`PackageManager.getPackageManager()`.
+`"package"` service in `ServiceManager`. Apps reach it through
+`Context.getPackageManager()`, which returns an `ApplicationPackageManager`
+wrapping the `IPackageManager` binder proxy.
 
 The class hierarchy looks like this:
 
@@ -419,7 +425,8 @@ classDiagram
         +getApplicationInfo()
         +resolveIntent()
         +queryIntentActivities()
-        +installPackage()
+        +getPackageInstaller()
+        +deletePackageVersioned()
     }
 
     class PackageManagerService {
@@ -430,8 +437,8 @@ classDiagram
         -mPackages: WatchedArrayMap
         -mLiveComputer: ComputerLocked
         +snapshotComputer(): Computer
-        +installPackage()
-        +deletePackage()
+        +installPackagesTraced()
+        +deletePackageVersioned()
     }
 
     class Computer {
@@ -714,7 +721,7 @@ private final FreeStorageHelper mFreeStorageHelper;
 
 This decomposition serves multiple purposes:
 
-1. **Readability** -- Each helper file is 500-2000 lines instead of one 15,000-line monolith
+1. **Readability** -- Helpers range from a few hundred to ~5,000 lines (`InstallPackageHelper` is the largest at ~5,300), though `PackageManagerService.java` itself still weighs in at ~8,800 lines
 2. **Testability** -- Helpers can be unit-tested in isolation
 3. **Lock discipline** -- Each helper clearly documents which locks it requires
 4. **Ownership** -- OWNERS files can assign different teams to different helpers
@@ -1282,9 +1289,11 @@ public void initNonSystemApps(PackageParser2 packageParser,
 }
 ```
 
-The `SCAN_REQUIRE_KNOWN` flag means only packages already registered in
-`packages.xml` will be accepted. Unknown packages in `/data/app` are treated
-as suspicious and may be removed.
+The `SCAN_REQUIRE_KNOWN` flag enforces an expectation about *known* packages:
+if a package is already registered in `packages.xml`, the scanned APK must
+still live at the code path recorded there, otherwise the scan fails with
+`INSTALL_FAILED_PACKAGE_CHANGED`. Previously unknown packages in `/data/app`
+are still picked up normally -- they are not rejected or removed.
 
 ### 26.3.10 Boot Performance Metrics
 
@@ -1482,6 +1491,7 @@ sequenceDiagram
     participant PIS as PackageInstallerService
     participant Session as InstallerSession
     participant Verify as VerifyingSession
+    participant IS as InstallingSession
     participant IPH as InstallPackageHelper
     participant Dex as DexOptHelper
     participant PMS as PackageManagerService
@@ -1502,7 +1512,8 @@ sequenceDiagram
     Verify->>Verify: Wait for verifier response
     Verify->>Verify: Check integrity rules
 
-    Verify->>IPH: processInstallRequests()
+    Verify->>IS: processInstallRequests()
+    IS->>IPH: installPackagesTraced()
 
     Note over IPH: Installation
     IPH->>IPH: Validate package
@@ -1512,7 +1523,7 @@ sequenceDiagram
     IPH->>IPH: Copy APK to final location
     IPH->>IPH: Extract native libraries
 
-    IPH->>Dex: performDexopt()
+    IPH->>Dex: performDexoptIfNeededAsync()
 
     Note over Dex: DEX Optimization
     Dex->>Dex: Compile with ART
@@ -1626,10 +1637,13 @@ public final class DexOptHelper {
 The `DexOptHelper` delegates to `ArtManagerLocal` (the ART service) which performs
 the actual compilation. Compilation strategies include:
 
-- **verify** -- Only verify the DEX file
-- **quicken** -- Quick optimizations
+- **assume-verified** -- Skip verification entirely
+- **verify** -- Only verify the DEX file (`quicken` survives as an obsolete alias for this)
+- **space-profile** / **space** -- Optimize for storage space
 - **speed-profile** -- Compile hot methods based on profile data
-- **speed** -- Compile everything (used for system apps at boot)
+- **speed** -- Maximize runtime performance by compiling all normally-compilable
+  methods (a separate `everything` / `everything-profile` filter exists for
+  compiling everything capable of being compiled)
 
 ### 26.4.8 Stage 5: Commit
 
@@ -1821,7 +1835,7 @@ void scheduleDeferredNoKillInstallObserver(InstallRequest request) {
 
 ### 26.4.14 Package Archival
 
-Android 14+ introduces package archival, which allows uninstalling the APK while
+Android 15+ introduces package archival, which allows uninstalling the APK while
 preserving the user's data and a minimal launcher entry:
 
 ```java
@@ -1862,7 +1876,7 @@ The extended delay (up to 1 day) allows rollback if the new version causes issue
 
 ### 26.4.16 Incremental Installation
 
-Android 12+ supports incremental installation via the Incremental File System (IncFS).
+Android 11+ supports incremental installation via the Incremental File System (IncFS).
 This allows streaming installation where the APK becomes available before it is fully
 downloaded:
 
@@ -1995,9 +2009,12 @@ Runtime permissions are organized into **permission groups**:
 | `LOCATION` | `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, `ACCESS_BACKGROUND_LOCATION` |
 | `CAMERA` | `CAMERA` |
 | `MICROPHONE` | `RECORD_AUDIO` |
-| `STORAGE` | `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_AUDIO` |
+| `STORAGE` | `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE` |
+| `READ_MEDIA_VISUAL` | `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO` |
+| `READ_MEDIA_AURAL` | `READ_MEDIA_AUDIO` |
 | `CONTACTS` | `READ_CONTACTS`, `WRITE_CONTACTS`, `GET_ACCOUNTS` |
-| `PHONE` | `READ_PHONE_STATE`, `CALL_PHONE`, `READ_CALL_LOG`, `WRITE_CALL_LOG` |
+| `PHONE` | `READ_PHONE_STATE`, `CALL_PHONE` |
+| `CALL_LOG` | `READ_CALL_LOG`, `WRITE_CALL_LOG` |
 | `SMS` | `SEND_SMS`, `RECEIVE_SMS`, `READ_SMS`, `RECEIVE_MMS` |
 | `CALENDAR` | `READ_CALENDAR`, `WRITE_CALENDAR` |
 | `SENSORS` | `BODY_SENSORS`, `BODY_SENSORS_BACKGROUND` |
@@ -2252,10 +2269,12 @@ required permission, preventing privilege escalation through intermediary apps.
 
 ### 26.5.17 Permission Persistence
 
-Permission state is persisted in two places:
+Permission data is persisted in two places:
 
-1. **Install-time permissions** -- Stored in `/data/system/packages.xml`
-2. **Runtime permissions** -- Stored per-user in
+1. **Permission definitions** -- Declared `<permission>` entries and permission
+   trees are written into `/data/system/packages.xml`
+2. **Grant state** -- Both install-time and runtime permission grants are
+   stored per-user in
    `/data/misc_de/<userId>/apexdata/com.android.permission/runtime-permissions.xml`
 
 The `RuntimePermissionsPersistence` class handles serialization:
@@ -2473,7 +2492,9 @@ record. The `PreferredActivityHelper` manages these records:
 private final PreferredActivityHelper mPreferredActivityHelper;
 ```
 
-Preferred activities are stored per-user in `preferred-activities.xml`.
+Preferred activities are persisted per user in
+`/data/system/users/<userId>/package-restrictions.xml`, under a
+`<preferred-activities>` element.
 
 ### 26.6.6 App Links and Domain Verification
 
@@ -2523,9 +2544,10 @@ static {
 }
 ```
 
-When a non-system app declares an intent filter with a priority higher than 0 for
-a protected action, the priority is silently capped to 0. This ensures system apps
-always win priority ties for these critical actions.
+Non-privileged apps have their filter priorities silently capped to 0 for *every*
+action. For the protected actions, the cap to 0 applies even to privileged system
+apps -- the only exception is the setup wizard package, which may keep a high
+priority on these actions.
 
 ### 26.6.9 Instant App Resolution
 
@@ -2790,11 +2812,16 @@ This implementation:
 
 ### 26.7.4 Split Installation
 
-Split APKs are installed using `MODE_INHERIT_EXISTING` sessions:
+Split APKs are installed using `MODE_INHERIT_EXISTING` sessions. The constant is
+declared in `android.content.pm.PackageInstaller.SessionParams`:
 
 ```java
-static final int MODE_INHERIT_EXISTING = PackageInstaller.SessionParams.MODE_INHERIT_EXISTING;
+// frameworks/base/core/java/android/content/pm/PackageInstaller.java
+public static final int MODE_INHERIT_EXISTING = 2;
 ```
+
+`InstallingSession` static-imports the constant and records the mode as
+`mIsInherit = sessionParams.mode == MODE_INHERIT_EXISTING`.
 
 When inheriting, the new session:
 
@@ -2887,8 +2914,8 @@ Each split gets its own ClassLoader entry, but they share a parent chain:
 graph TD
     Boot["Boot ClassLoader<br/>(java.lang, android.*)"]
     Base["PathClassLoader<br/>base.apk"]
-    F1["DelegateLastClassLoader<br/>split_feature_camera.apk"]
-    F2["DelegateLastClassLoader<br/>split_feature_ar.apk"]
+    F1["PathClassLoader (default)<br/>split_feature_camera.apk"]
+    F2["PathClassLoader (default)<br/>split_feature_ar.apk"]
 
     Boot --> Base
     Base --> F1
@@ -2903,8 +2930,11 @@ graph TD
     Base -.-> C2
 ```
 
-Feature splits use `DelegateLastClassLoader` to allow the feature's classes to
-override the base's classes, enabling true modularity.
+Feature splits get a `PathClassLoader` by default, chained to the parent split's
+loader. A split may opt into `DelegateLastClassLoader` by declaring
+`android:classLoader="dalvik.system.DelegateLastClassLoader"` in its manifest,
+but this is not the default, and a feature does not normally override the base's
+classes.
 
 ### 26.7.8 Resource Merging for Splits
 
@@ -3193,10 +3223,10 @@ Overlays are organized by categories that define their purpose:
 | `android.theme.customization.system_palette` | System color palette |
 | `android.theme.customization.theme_style` | Overall theme style |
 | `android.theme.customization.font` | System font |
-| `android.theme.customization.icon_shape` | App icon mask shape |
-| `android.theme.customization.signal_icon` | Signal strength icon |
-| `android.theme.customization.wifi_icon` | WiFi icon |
-| `android.theme.customization.navbar` | Navigation bar style |
+| `android.theme.customization.adaptive_icon_shape` | App icon mask shape |
+| `android.theme.customization.icon_pack` | Themed icon pack |
+| `android.theme.customization.color_source` | Where the theme color comes from |
+| `android.theme.customization.dynamic_color` | Dynamic (Material You) color |
 
 Categories help the system organize overlays and prevent conflicts. Within a
 category, overlays are ordered by priority, and only one overlay can be active
@@ -3215,7 +3245,7 @@ Overlay security is enforced at multiple levels:
 ```xml
 <!-- In the target package's res/values/overlayable.xml -->
 <resources>
-    <overlayable name="ThemeColors" actor="overlay://theme">
+    <overlayable name="ThemeColors" actor="overlay://theme/customizer">
         <policy type="public">
             <item type="color" name="accent_device_default_light" />
             <item type="color" name="accent_device_default_dark" />
@@ -3598,8 +3628,8 @@ graph TD
     AHS -->|"StorageStats queries"| SSM["StorageStatsManager"]
     AHS -->|"persist state"| Disk["HibernationStateDiskStore"]
     AHS -->|"StatsLog"| Stats["FrameworkStatsLog"]
-    AHS -->|"internal API"| AHMI["AppHibernationManagerInternal"]
-    AHMI --> PMS
+    AHS -->|"publishes local service"| AHMI["AppHibernationManagerInternal"]
+    PMS -->|"AppHibernationManagerInternal"| AHMI
 
     style AHS fill:#f9f,stroke:#333
     style PC fill:#bbf,stroke:#333
@@ -3786,14 +3816,11 @@ The service registers a broadcast receiver for `ACTION_PACKAGE_ADDED` and
 ### 26.9.9 Debugging App Hibernation
 
 ```bash
-# Check if a package is hibernated
-adb shell cmd app_hibernation is-hibernating <package> --user 0
+# Check if a package is hibernated (add --global for global state)
+adb shell cmd app_hibernation get-state --user 0 <package>
 
 # Manually hibernate a package
-adb shell cmd app_hibernation set-hibernating <package> --user 0 true
-
-# Get hibernation stats (saved bytes)
-adb shell cmd app_hibernation get-hibernation-stats --user 0
+adb shell cmd app_hibernation set-state --user 0 <package> true
 
 # Check DeviceConfig flag
 adb shell device_config get app_hibernation app_hibernation_enabled
@@ -4130,14 +4157,10 @@ $ aapt2 dump resources /system/app/Calculator/Calculator.apk | head -50
 # Check which signature schemes are present
 $ apksigner verify --verbose --print-certs /data/app/~~*/com.example.app*/base.apk
 
-# Check v1 (JAR) signature
-$ apksigner verify -v1-scheme-only /path/to/app.apk
-
-# Check v2 signature
-$ apksigner verify -v2-scheme-only /path/to/app.apk
-
-# Check v3 signature
-$ apksigner verify -v3-scheme-only /path/to/app.apk
+# The verbose output reports which of the v1/v2/v3/v4 schemes verified.
+# To constrain which schemes are checked, narrow the SDK range instead:
+$ apksigner verify --verbose --min-sdk-version 23 --max-sdk-version 23 \
+    /path/to/app.apk
 ```
 
 ### 26.11.2 Querying Package Information
@@ -4243,8 +4266,8 @@ $ adb shell dumpsys package com.example.app | grep "CAMERA"
 # List all dangerous permissions
 $ adb shell pm list permissions -d -g
 
-# Reset all runtime permissions for an app
-$ adb shell pm reset-permissions com.example.app
+# Reset runtime permissions (takes no arguments; resets all packages)
+$ adb shell pm reset-permissions
 ```
 
 ### 26.11.5 Intent Resolution Inspection
@@ -4261,13 +4284,13 @@ $ adb shell pm query-activities --brief "android.intent.action.SEND" \
     -t "text/plain"
 
 # List preferred activities (defaults)
-$ adb shell dumpsys package preferred-activities
+$ adb shell dumpsys package preferred
 
-# Set a default app for a MIME type
+# Set the default home activity (launcher)
 $ adb shell pm set-home-activity com.example.launcher/.LauncherActivity
 
-# Clear defaults for a package
-$ adb shell pm clear-default-browser-status
+# Clear preferred-activity defaults for a package
+$ adb shell pm clear-package-preferred-activities com.example.app
 ```
 
 ### 26.11.6 Working with Overlays
@@ -4284,9 +4307,9 @@ $ adb shell cmd overlay enable com.example.overlay
 # Disable an overlay
 $ adb shell cmd overlay disable com.example.overlay
 
-# Set overlay priority
-$ adb shell cmd overlay set-priority com.example.overlay \
-    --highest com.android.systemui
+# Set overlay priority (the third argument is a parent overlay package,
+# or the bare keyword lowest/highest)
+$ adb shell cmd overlay set-priority com.example.overlay highest
 
 # Show overlay info
 $ adb shell cmd overlay dump
@@ -4390,8 +4413,9 @@ $ adb shell dumpsys package com.example.app | grep -A 20 "splits="
 **Exercise 14: Install a feature split dynamically**
 
 ```bash
-# Create a session in inherit mode
-$ adb shell pm install-create --inherit -p com.example.app
+# Create a session in inherit mode (-p INHERIT_PACKAGE selects
+# MODE_INHERIT_EXISTING)
+$ adb shell pm install-create -p com.example.app
 # Returns: Success: created install session [1234]
 
 # Write the new feature split
@@ -4470,8 +4494,8 @@ $ adb logcat -d | grep -E "Finished scanning|BOOT_PROGRESS"
 # Use dumpsys to get snapshot statistics
 $ adb shell dumpsys package snapshot
 
-# Check how long specific operations take
-$ adb shell dumpsys package checkin
+# Emit machine-readable checkin output
+$ adb shell dumpsys package --checkin
 ```
 
 **Exercise 18: Profile intent resolution**
@@ -4514,10 +4538,10 @@ import static android.os.Trace.TRACE_TAG_PACKAGE_MANAGER;
 Key trace sections to look for:
 
 - `scanApexPackages` -- APEX package scanning time
-- `scanSystemDirs` -- System partition scanning time
+- `parallelScanDir` / `scanPackage` -- Directory and per-package scanning time
 - `resolveIntent` -- Intent resolution time
 - `queryIntentActivities` -- Activity query time
-- `installPackage` -- Full installation time
+- `installPackages` -- Full installation time
 
 ### 26.11.12 Advanced: Building and Testing PMS Changes
 
@@ -4537,7 +4561,7 @@ $ m FrameworksServicesTests
 $ atest FrameworksServicesTests:com.android.server.pm
 
 # Run a specific test class
-$ atest FrameworksServicesTests:com.android.server.pm.PackageManagerServiceTest
+$ atest PackageManagerServiceServerTests:com.android.server.pm.PackageManagerServiceTest
 
 # Run CTS package manager tests
 $ atest CtsPackageInstallTestCases
@@ -4555,7 +4579,7 @@ $ adb forward tcp:8700 jdwp:$(adb shell pidof system_server)
 
 # Set breakpoints in:
 # - PackageManagerService.snapshotComputer()
-# - InstallPackageHelper.processInstallRequests()
+# - InstallingSession.processInstallRequests()
 # - ResolveIntentHelper.resolveIntentInternal()
 # - PermissionManagerService.checkPermission()
 
@@ -4569,7 +4593,9 @@ $ adb forward tcp:8700 jdwp:$(adb shell pidof system_server)
 ```bash
 # Step 1: Identify target resources
 $ adb shell cmd overlay dump com.android.systemui
-# Lists all overlayable resources in SystemUI
+# Prints overlay manager state for the SystemUI target; use
+# "cmd overlay lookup" (or idmap2 lookup) to inspect overlayable
+# resource values
 
 # Step 2: Create overlay project structure
 $ mkdir -p my-overlay/res/values
@@ -4652,8 +4678,8 @@ $ adb shell pm list permissions -g | grep PERMISSION_NAME
 # Check AppOps override state
 $ adb shell appops get com.example.app
 
-# Reset all permissions for debugging
-$ adb shell pm reset-permissions -p com.example.app
+# Reset runtime permissions for debugging (no arguments; affects all packages)
+$ adb shell pm reset-permissions
 
 # Check the permission controller UI
 $ adb shell am start -a android.intent.action.MANAGE_APP_PERMISSIONS \
@@ -4961,12 +4987,15 @@ graph LR
         B --> C["ContentProviderProxy<br/>(Binder proxy)"]
     end
 
-    subgraph "Binder Driver"
-        C -- "IPC" --> D["ContentProviderNative<br/>(Binder stub)"]
+    subgraph "Binder Driver (kernel)"
+        K["binder transaction"]
     end
 
+    C -- "IPC" --> K
+    K --> D
+
     subgraph "Provider Process"
-        D --> E["Transport<br/>(inner class)"]
+        D["ContentProviderNative<br/>(Binder stub)"] --> E["Transport<br/>(inner class)"]
         E --> F["ContentProvider<br/>(your subclass)"]
         F --> G["SQLiteDatabase /<br/>File / Network"]
     end
@@ -4980,7 +5009,7 @@ The critical classes in this path are:
 | Class | Role | Source |
 |-------|------|--------|
 | `ContentResolver` | Client-side facade; resolves authorities, acquires providers | `frameworks/base/core/java/android/content/ContentResolver.java` |
-| `ContentProviderProxy` | Auto-generated Binder proxy inside `ContentProviderNative` | `frameworks/base/core/java/android/content/ContentProviderNative.java` |
+| `ContentProviderProxy` | Hand-written Binder proxy inside `ContentProviderNative` | `frameworks/base/core/java/android/content/ContentProviderNative.java` |
 | `ContentProviderNative` | Binder stub that dispatches incoming Parcel transactions | Same file |
 | `ContentProvider.Transport` | Inner class extending `ContentProviderNative`; enforces permissions before delegating | `frameworks/base/core/java/android/content/ContentProvider.java` |
 | `ContentProvider` | The abstract base class that provider authors subclass | Same file |
@@ -5079,9 +5108,10 @@ mPublic.addURI(authority, "*/images/media/#",  IMAGES_MEDIA_ID);
 mPublic.addURI(authority, "*/audio/media",     AUDIO_MEDIA);
 ```
 
-At query time, `matchUri()` returns the appropriate integer constant, and a
-large `switch` statement in `MediaProvider.query()` dispatches to the correct
-query logic.
+At query time, `MediaProvider.queryInternal()` computes the match code via
+`matchUri()` and passes it down to `getQueryBuilder()` /
+`getQueryBuilderInternal()`, whose large `switch (match)` statement selects
+the backing table and projection map for the query.
 
 ### 27.1.5 CRUD Operations
 
@@ -5167,8 +5197,12 @@ class Transport extends ContentProviderNative {
 
 Key points about the transport:
 
-1. **URI validation** -- `validateIncomingUri()` strips user IDs from cross-user
-   URIs unless the caller has `INTERACT_ACROSS_USERS`.
+1. **URI validation** -- `validateIncomingUri()` verifies the authority belongs
+   to this provider, throws a `SecurityException` for URIs carrying another
+   user's ID when cross-user redirection is not permitted, and normalizes
+   empty path segments.  A separate `maybeGetUriWithoutUserId()` call then
+   strips the embedded user ID; the `INTERACT_ACROSS_USERS` /
+   `INTERACT_ACROSS_USERS_FULL` check lives in `ContentProvider.checkUser()`.
 2. **Permission enforcement** -- `enforceReadPermission()` and
    `enforceWritePermission()` check the provider's declared read/write
    permissions, path-level permissions, and AppOps.
@@ -5250,6 +5284,12 @@ single IPC call, which the provider can execute inside a transaction:
 ```java
 // frameworks/base/core/java/android/content/ContentProvider.java (line 2717)
 public @NonNull ContentProviderResult[] applyBatch(@NonNull String authority,
+        @NonNull ArrayList<ContentProviderOperation> operations)
+        throws OperationApplicationException {
+    return applyBatch(operations);
+}
+
+public @NonNull ContentProviderResult[] applyBatch(
         @NonNull ArrayList<ContentProviderOperation> operations)
         throws OperationApplicationException {
     final int numOperations = operations.size();
@@ -5599,8 +5639,10 @@ field are maintained for performance.
 Two special flags in `ProviderInfo` control multi-user behavior:
 
 - `FLAG_SINGLE_USER` -- The provider runs in user 0's process and serves all
-  users.  MediaProvider uses this pattern: there is one process, but it
-  handles URIs that embed a user ID.
+  users.  TelephonyProvider uses this pattern (its providers declare
+  `android:singleUser="true"`): there is one process, but it handles URIs
+  that embed a user ID.  (MediaProvider, by contrast, runs one instance per
+  user.)
 - `FLAG_SYSTEM_USER_ONLY` -- The provider is only available to the system user
   (user 0).
 
@@ -5671,7 +5713,7 @@ read-only providers or those backed by in-memory data.
 
 MediaProvider is the most complex content provider in AOSP.  It manages every
 image, video, audio file, and download on the device.  The provider is
-delivered as a Mainline module (`com.google.android.providers.media.module`),
+delivered as a Mainline module (`com.android.providers.media.module`),
 meaning it can be updated independently of the base system.
 
 ```
@@ -5727,29 +5769,32 @@ public final class MediaVolume implements Parcelable {
 }
 ```
 
-MediaProvider maintains separate SQLite databases per volume:
+MediaProvider maintains exactly two SQLite databases: `internal.db` for
+system media and `external.db` for everything else.  All external volumes --
+the primary emulated storage *and* removable cards -- share `external.db`,
+with rows distinguished by the `volume_name` column.  (Per-volume
+`external-<uuid>.db` files are a legacy layout; `isMediaDatabaseName()` still
+recognizes the pattern only so stale files can be cleaned up.)
 
 ```mermaid
 graph TD
     subgraph "MediaProvider Databases"
         A["internal.db<br/>(system media)"]
-        B["external.db<br/>(primary external storage)"]
-        C["{volume_uuid}.db<br/>(removable volume)"]
+        B["external.db<br/>(all external volumes,<br/>rows keyed by volume_name)"]
     end
 
     subgraph "Storage Volumes"
         D["/system/media"] --> A
         E["/storage/emulated/0"] --> B
-        F["/storage/1234-ABCD"] --> C
+        F["/storage/1234-ABCD"] --> B
     end
 
     style A fill:#4da6e8,stroke:#333,color:#000
     style B fill:#4de84d,stroke:#333,color:#000
-    style C fill:#e8d44d,stroke:#333,color:#000
 ```
 
-The `VolumeCache` class tracks mounted volumes and maps volume names to
-their paths and databases.
+The `VolumeCache` class tracks the volumes that are available and maps volume
+names to their mount and scan paths; it has no knowledge of the databases.
 
 ### 27.3.4 Database Schema
 
@@ -5814,15 +5859,20 @@ graph TD
     style I fill:#4de84d,stroke:#333,color:#000
 ```
 
-Scan reasons are encoded as integer constants:
+Scan reasons are encoded as integer constants, declared as bare interface
+fields initialized from the statsd logging symbols:
 
 ```java
-// MediaScanner.java
-public static final int REASON_UNKNOWN = 0;
-public static final int REASON_MOUNTED = 1;
-public static final int REASON_DEMAND  = 2;   // explicit scan request
-public static final int REASON_IDLE    = 3;   // idle maintenance
+// packages/providers/MediaProvider/src/com/android/providers/media/scan/MediaScanner.java
+int REASON_UNKNOWN = MEDIA_PROVIDER_SCAN_OCCURRED__REASON__UNKNOWN;
+int REASON_MOUNTED = MEDIA_PROVIDER_SCAN_OCCURRED__REASON__MOUNTED;
+int REASON_DEMAND = MEDIA_PROVIDER_SCAN_OCCURRED__REASON__DEMAND;   // explicit scan request
+int REASON_IDLE = MEDIA_PROVIDER_SCAN_OCCURRED__REASON__IDLE;       // idle maintenance
 ```
+
+The underlying values (0 through 3) come from the
+`MediaProviderScanOccurred.Reason` enum in the statsd atom definitions
+(`frameworks/proto_logging/stats/atoms.proto`).
 
 The batch size for operations is 32 items:
 
@@ -5973,8 +6023,9 @@ that could be interrupted.
 
 ### 27.3.12 The DatabaseHelper
 
-`DatabaseHelper` extends `SQLiteOpenHelper` and manages schema creation,
-upgrades, and per-volume database instances:
+`DatabaseHelper` extends `SQLiteOpenHelper` and manages schema creation and
+upgrades for the two database instances MediaProvider creates: one for
+`internal.db` and one for `external.db`:
 
 ```java
 // packages/providers/MediaProvider/.../DatabaseHelper.java (line 107)
@@ -5988,15 +6039,20 @@ static final String INTERNAL_DATABASE_NAME = "internal.db";
 static final String EXTERNAL_DATABASE_NAME = "external.db";
 ```
 
-The helper implements `OnFilesChangeListener` and `OnLegacyMigrationListener`
-interfaces to coordinate with the provider during schema changes and data
-migrations from older Android versions.
+The helper defines the `OnFilesChangeListener` and `OnLegacyMigrationListener`
+callback interfaces and holds listener instances supplied by `MediaProvider`
+as anonymous implementations (`mFilesListener` and `MIGRATION_LISTENER`,
+passed to the `DatabaseHelper` constructors), coordinating with the provider
+during schema changes and data migrations from older Android versions.
 
 ### 27.3.13 Backup and Recovery
 
-MediaProvider includes a database backup and recovery mechanism that uses
-extended attributes (xattrs) on the filesystem to store row ID mappings.  This
-ensures that stable URIs survive database recreation after a factory reset or
+MediaProvider includes a database backup and recovery mechanism that stores
+file-path-to-`BackupIdRow` mappings in per-volume LevelDB tables under
+`/data/media/<user>/.transforms/recovery/`; filesystem extended attributes
+(xattrs) are used only for a few scalar counters (the next owner ID, the last
+backed-up generation, and the public-volume recovery flag).  This ensures
+that stable URIs survive database recreation after a factory reset or
 device migration:
 
 ```
@@ -6008,7 +6064,8 @@ packages/providers/MediaProvider/src/com/android/providers/media/stableuris/dao/
 
 Historically, apps could read the `_data` column to get the absolute filesystem
 path of a media file.  Starting with Android 11 (API 30), this column returns
-a fake path that the system intercepts via FUSE:
+a fake path under `/mnt/content/` that the framework intercepts in-process
+and converts back into a `content://` open (see Section 27.9.14):
 
 ```java
 // ContentResolver.java (line 132 and line 145)
@@ -6218,8 +6275,9 @@ private static final String READ_PERMISSION = "android.permission.READ_CONTACTS"
 private static final String WRITE_PERMISSION = "android.permission.WRITE_CONTACTS";
 ```
 
-Additionally, `MANAGE_SIM_ACCOUNTS` and `SET_DEFAULT_ACCOUNT` permissions
-control SIM contact management and default account configuration.
+Additionally, the `android.contacts.permission.MANAGE_SIM_ACCOUNTS` and
+`android.permission.SET_DEFAULT_ACCOUNT_FOR_CONTACTS` permissions control
+SIM contact management and default account configuration.
 
 ### 27.4.9 The ContactsDatabaseHelper
 
@@ -6276,9 +6334,11 @@ user input.
 ### 27.4.11 Directory Support
 
 Contacts directories represent remote contact sources, such as a corporate
-Global Address List (GAL).  When an app queries `Contacts.CONTENT_FILTER_URI`,
-the provider can fan out the query to all registered directories and merge
-results:
+Global Address List (GAL).  A client enumerates the registered directories
+from `Directory.CONTENT_URI` and issues one query per directory (for example
+against `Contacts.CONTENT_FILTER_URI` with `?directory=<id>` appended); the
+provider forwards each such query to the single directory provider named by
+that parameter and returns its cursor unmerged:
 
 ```java
 // ContactsProvider2.java
@@ -6295,7 +6355,10 @@ Contacts sync, Exchange ActiveSync) write to `RawContacts` and `Data` tables
 with special permissions.  The `CALLER_IS_SYNCADAPTER` query parameter
 modifies behavior:
 
-- When set, the provider skips aggregation (the sync adapter manages it)
+- When set, new raw contacts skip the automatic group bookkeeping: the
+  auto-add group membership and the favorites-group update on insert are not
+  applied.  (Aggregation itself still runs -- it is controlled by
+  `RawContacts.AGGREGATION_MODE`, not by this flag.)
 - When set, deletes are hard deletes instead of soft deletes
 - The `dirty` flag is not automatically set on mutations
 
@@ -6562,7 +6625,7 @@ packages/providers/CalendarProvider/src/com/android/providers/calendar/CalendarD
 | `ExtendedProperties` | Sync adapter extensions |
 | `EventsRawTimes` | Raw time values for events |
 | `CalendarCache` | Cached timezone data |
-| `SyncState` | Sync adapter state |
+| `_sync_state` | Sync adapter state (with `_sync_state_metadata` as companion) |
 
 Views provide pre-joined data:
 
@@ -6621,22 +6684,23 @@ private static final long MINIMUM_EXPANSION_SPAN =
 their match codes:
 
 ```java
-private static final int CALENDARS                    = 1;
-private static final int CALENDARS_ID                 = 2;
+// CalendarProvider2.java (line 4880)
+private static final int EVENTS                       = 1;
+private static final int EVENTS_ID                    = 2;
 private static final int INSTANCES                    = 3;
-private static final int INSTANCES_BY_DAY             = 4;
-private static final int EVENTS                       = 7;
-private static final int EVENTS_ID                    = 8;
-private static final int ATTENDEES                    = 9;
-private static final int ATTENDEES_ID                 = 10;
-private static final int REMINDERS                    = 15;
-private static final int REMINDERS_ID                 = 16;
-private static final int CALENDAR_ALERTS              = 17;
-private static final int CALENDAR_ALERTS_ID           = 18;
-private static final int CALENDARS_ID_EVENTS          = 21;
-private static final int EVENTS_ID_EXCEPTIONS         = 23;
-private static final int COLORS                       = 25;
-private static final int SYNCSTATE                    = 28;
+private static final int CALENDARS                    = 4;
+private static final int CALENDARS_ID                 = 5;
+private static final int ATTENDEES                    = 6;
+private static final int ATTENDEES_ID                 = 7;
+private static final int REMINDERS                    = 8;
+private static final int REMINDERS_ID                 = 9;
+private static final int EXTENDED_PROPERTIES          = 10;
+private static final int CALENDAR_ALERTS              = 12;
+private static final int CALENDAR_ALERTS_ID           = 13;
+private static final int INSTANCES_BY_DAY             = 15;
+private static final int SYNCSTATE                    = 16;
+// ...
+private static final int COLORS                       = 32;
 ```
 
 ### 27.5.11 Event Mutation Tracking
@@ -6825,9 +6889,10 @@ transparently redirects to the correct one.
 
 ### 27.6.6 Validation
 
-Apps targeting API 22 and above cannot add arbitrary keys to the System
-namespace.  The provider validates values against a set of registered
-validators:
+Apps targeting API 23 (Marshmallow) and above cannot add arbitrary keys to
+the System namespace -- the provider throws `IllegalArgumentException`; apps
+targeting API 22 or lower only get a logged warning.  The provider also
+validates values against a set of registered validators:
 
 ```
 frameworks/base/packages/SettingsProvider/src/android/provider/settings/validators/
@@ -6902,7 +6967,7 @@ frameworks/base/packages/SettingsProvider/src/com/android/providers/settings/Set
 public class SettingsState {
 ```
 
-`SettingsState` stores settings as a `HashMap<String, Setting>` in memory.
+`SettingsState` stores settings in an `ArrayMap<String, Setting>` (`mSettings`) in memory.
 Each `Setting` encapsulates the name, value, default value, package name, tag,
 and whether it is preserved during restore.
 
@@ -6929,13 +6994,16 @@ Settings are identified by a composite key that includes the settings type,
 user ID, and device ID:
 
 ```java
-// SettingsState.java
-public static int makeKey(int type, int userId, int deviceId) { ... }
-public static boolean isGlobalSettingsKey(int key) { ... }
-public static boolean isSecureSettingsKey(int key) { ... }
-public static boolean isSystemSettingsKey(int key) { ... }
-public static boolean isConfigSettingsKey(int key) { ... }
+// SettingsState.java (line 284)
+public static long makeKey(int type, int userId, int deviceId) { ... }
+public static boolean isGlobalSettingsKey(long key) { ... }
+public static boolean isSecureSettingsKey(long key) { ... }
+public static boolean isSystemSettingsKey(long key) { ... }
+public static boolean isConfigSettingsKey(long key) { ... }
 ```
+
+The composite key is a `long` because it packs the settings type, user ID,
+and device ID into a single value.
 
 This allows the same `SettingsRegistry` to manage settings for all users and
 virtual devices through a unified key space.
@@ -7053,11 +7121,11 @@ private void registerAuthority(String authority) {
     mMatcher.addURI(mAuthority, "root/*",                  MATCH_ROOT);
     mMatcher.addURI(mAuthority, "root/*/recent",           MATCH_RECENT);
     mMatcher.addURI(mAuthority, "root/*/search",           MATCH_SEARCH);
+    mMatcher.addURI(mAuthority, "root/*/trash",            MATCH_TRASH);
     mMatcher.addURI(mAuthority, "document/*",              MATCH_DOCUMENT);
     mMatcher.addURI(mAuthority, "document/*/children",     MATCH_CHILDREN);
     mMatcher.addURI(mAuthority, "tree/*/document/*",       MATCH_DOCUMENT_TREE);
     mMatcher.addURI(mAuthority, "tree/*/document/*/children", MATCH_CHILDREN_TREE);
-    mMatcher.addURI(mAuthority, "trash",                   MATCH_TRASH);
 }
 ```
 
@@ -7138,7 +7206,7 @@ tree grant are actually descendants of the granted tree root.
 
 ### 27.7.6 Abstract Methods
 
-Subclasses of `DocumentsProvider` must implement:
+Subclasses of `DocumentsProvider` must implement the four abstract methods:
 
 | Method | Purpose |
 |--------|---------|
@@ -7146,12 +7214,11 @@ Subclasses of `DocumentsProvider` must implement:
 | `queryDocument()` | Return metadata for a single document |
 | `queryChildDocuments()` | List children of a directory |
 | `openDocument()` | Return a `ParcelFileDescriptor` for reading/writing |
-| `createDocument()` | Create a new document in a directory |
-| `deleteDocument()` | Remove a document |
-| `renameDocument()` | Rename a document |
 
-Newer optional methods include `trashDocument()`, `restoreDocumentFromTrash()`,
-and `findDocumentPath()`.
+Optional methods -- concrete in the base class, throwing
+`UnsupportedOperationException` by default -- include `createDocument()`,
+`deleteDocument()`, `renameDocument()`, `trashDocument()`,
+`restoreDocumentFromTrash()`, and `findDocumentPath()`.
 
 ### 27.7.7 Built-in DocumentsProviders
 
@@ -7203,24 +7270,24 @@ public static final int FLAG_SUPPORTS_DELETE        = 1 << 2;
 public static final int FLAG_DIR_SUPPORTS_CREATE    = 1 << 3;
 public static final int FLAG_DIR_PREFERS_GRID       = 1 << 4;
 public static final int FLAG_DIR_PREFERS_LAST_MODIFIED = 1 << 5;
+public static final int FLAG_SUPPORTS_RENAME        = 1 << 6;
+public static final int FLAG_SUPPORTS_COPY          = 1 << 7;
+public static final int FLAG_SUPPORTS_MOVE          = 1 << 8;
 public static final int FLAG_VIRTUAL_DOCUMENT       = 1 << 9;
-public static final int FLAG_SUPPORTS_COPY          = 1 << 10;
-public static final int FLAG_SUPPORTS_MOVE          = 1 << 11;
-public static final int FLAG_SUPPORTS_REMOVE        = 1 << 12;
-public static final int FLAG_SUPPORTS_RENAME        = 1 << 13;
-public static final int FLAG_SUPPORTS_SETTINGS      = 1 << 17;
+public static final int FLAG_SUPPORTS_REMOVE        = 1 << 10;
+public static final int FLAG_SUPPORTS_SETTINGS      = 1 << 11;
 ```
 
 Root capabilities use their own set of flags:
 
 ```java
 // DocumentsContract.Root
-public static final int FLAG_LOCAL_ONLY     = 1 << 1;
-public static final int FLAG_SUPPORTS_CREATE = 1 << 2;
-public static final int FLAG_SUPPORTS_RECENTS = 1 << 3;
-public static final int FLAG_SUPPORTS_SEARCH  = 1 << 4;
-public static final int FLAG_SUPPORTS_IS_CHILD = 1 << 5;
-public static final int FLAG_SUPPORTS_EJECT   = 1 << 6;
+public static final int FLAG_SUPPORTS_CREATE  = 1;
+public static final int FLAG_LOCAL_ONLY       = 1 << 1;
+public static final int FLAG_SUPPORTS_RECENTS = 1 << 2;
+public static final int FLAG_SUPPORTS_SEARCH  = 1 << 3;
+public static final int FLAG_SUPPORTS_IS_CHILD = 1 << 4;
+public static final int FLAG_SUPPORTS_EJECT   = 1 << 5;
 ```
 
 ### 27.7.9 Virtual Documents
@@ -7596,10 +7663,10 @@ Content providers use a layered permission model:
 ```mermaid
 graph TD
     A["Incoming Request"] --> B{Provider exported?}
-    B -- No --> C["Deny (unless same UID)"]
+    B -- No --> F{"Check URI<br/>permissions"}
     B -- Yes --> D{"Check read/write<br/>permission"}
     D -- Denied --> E{"Check path<br/>permissions"}
-    E -- Denied --> F{"Check URI<br/>permissions"}
+    E -- Denied --> F
     F -- Denied --> G["Return empty cursor<br/>or throw SecurityException"]
     D -- Granted --> H["Allow"]
     E -- Granted --> H
@@ -7796,31 +7863,40 @@ follows this decision tree:
 
 ```mermaid
 flowchart TD
-    A["Incoming Request"] --> B{Is testing mode?}
-    B -- Yes --> Z["Allow (no checks)"]
-    B -- No --> C{"Same UID<br/>as provider?"}
-    C -- Yes --> Z
-    C -- No --> D{Provider exported?}
-    D -- No --> E["SecurityException"]
+    A["Incoming Request"] --> C{"Same UID<br/>as provider?"}
+    C -- Yes --> Z["Allowed"]
+    C -- No --> D{"Provider exported<br/>and user allowed?"}
     D -- Yes --> F{"Check provider-level<br/>permission"}
-    F -- Granted --> Z
+    D -- No --> H{"Check URI<br/>permission grants"}
+    F -- Granted --> I{"Check AppOps<br/>(read/write op)"}
     F -- Not Granted --> G{"Check path-level<br/>permissions"}
-    G -- Granted --> Z
-    G -- Not Granted --> H{"Check URI<br/>permission grants"}
-    H -- Granted --> Z
-    H -- Not Granted --> I{Check AppOps}
+    G -- Granted --> I
+    G -- Not Granted --> H
+    H -- Granted --> I
+    H -- Not Granted --> J["For query: return empty cursor<br/>For others: SecurityException"]
     I -- Allowed --> Z
-    I -- Denied --> J["For query: return empty cursor<br/>For others: SecurityException"]
+    I -- Denied --> J
 
     style Z fill:#4de84d,stroke:#333,color:#000
-    style E fill:#e87d4d,stroke:#333,color:#000
     style J fill:#e87d4d,stroke:#333,color:#000
 ```
 
-For `query()` operations, permission denial does not throw an exception.
-Instead, an empty cursor is returned with the correct column names.  This
-preserves API compatibility and prevents apps from crashing when permissions
-are revoked at runtime.
+Note two subtleties of this flow.  A non-exported provider is not an
+immediate denial: the component and path permission checks are skipped, but
+the URI-permission-grant check still runs -- this is exactly how non-exported
+`FileProvider`s hand out access via `grantUriPermission()`.  And AppOps is an
+extra gate applied *after* a successful permission or grant check
+(`enforceReadPermission()` only consults the AppOp once
+`enforceReadPermissionInner()` returns granted); AppOps can turn an allow
+into a denial, never the reverse.  (The testing flag set by
+`attachInfo(..., testing=true)` is not a permission bypass -- it only
+suppresses AppOps registration in `setAppOps()`.)
+
+For `query()` operations, a hard permission denial still throws a
+`SecurityException`.  It is a *soft* denial -- an AppOps "ignored" outcome,
+as when a runtime permission has been revoked -- that instead returns an
+empty cursor with the correct column names.  This preserves API compatibility
+and prevents apps from crashing when permissions are revoked at runtime.
 
 For `insert()`, `update()`, and `delete()`, permission denial throws a
 `SecurityException`.
@@ -7856,7 +7932,9 @@ The system limits the number of persisted URI permissions per app (typically
 
 When `grantUriPermission()` is called, the following validation occurs:
 
-1. The calling UID must own the URI or have `GRANT_URI_PERMISSION` permission
+1. The calling UID must itself hold read/write access to the URI -- either
+   via the provider's declared permissions and path permissions, or via an
+   existing URI grant strong enough to re-grant
 2. The provider must have `grantUriPermissions="true"` or a matching
    `<grant-uri-permission>` element
 3. The target package must exist
@@ -7867,14 +7945,14 @@ sequenceDiagram
     participant App as Source App
     participant AMS as ActivityManagerService
     participant UGM as UriGrantsManagerService
-    participant CP as ContentProvider
+    participant PMS as PackageManagerService
 
     App->>AMS: grantUriPermission(targetPkg, uri, flags)
-    AMS->>CP: checkGrantUriPermission()
-    CP->>CP: Does provider allow URI grants?
-    CP->>CP: Does URI match grant patterns?
-    CP-->>AMS: Permission check result
-    AMS->>UGM: grantUriPermissionUnchecked()
+    AMS->>UGM: grantUriPermission(...)
+    UGM->>PMS: getProviderInfo(authority)
+    PMS-->>UGM: ProviderInfo
+    UGM->>UGM: checkGrantUriPermission() against ProviderInfo
+    UGM->>UGM: Allows grants? Patterns match? Caller holds access?
     UGM->>UGM: Record: {sourceUid, targetUid, uri, flags}
     UGM->>UGM: If persistent: write to XML
 ```
@@ -7882,10 +7960,12 @@ sequenceDiagram
 ### 27.9.13 ContentProviderOperation Security
 
 Batch operations via `applyBatch()` inherit the same permission model as
-individual calls.  Each operation in the batch is checked independently.
-However, since the entire batch goes through a single IPC call, the permission
-check happens once for the outer `applyBatch()` call, and individual operations
-within the batch are trusted.
+individual calls.  Although the entire batch arrives in a single IPC call,
+`Transport.applyBatch()` walks the operation list up front and enforces read
+or write permission for each operation's URI before delegating to the
+provider; a denial aborts the batch with an `OperationApplicationException`.
+The results are cached per URI (in `ArraySet`s of already-checked read and
+write URIs), so a URI that repeats across operations is only checked once.
 
 This means that if an app has permission to write to the provider, it can
 perform any mix of inserts, updates, and deletes in a single batch.
@@ -7902,10 +7982,14 @@ public static final String DEPRECATE_DATA_PREFIX = "/mnt/content/";
 ```
 
 When an app reads the `_data` column from MediaStore and gets a path like
-`/mnt/content/0@media/external/images/media/42`, the FUSE layer intercepts
-any attempt to open this path and redirects it to
-`ContentResolver.openFileDescriptor()`, which performs proper permission
-checking.
+`/mnt/content/0@media/external/images/media/42`, the interception happens
+inside the app's own process, not in FUSE: `AndroidForwardingOs` (the libcore
+`Os` forwarding shim installed in every app process, at
+`frameworks/base/core/java/android/app/AndroidForwardingOs.java`) checks
+calls like `open()`, `access()`, `stat()`, and `unlink()` for the
+`/mnt/content/` prefix, converts the path back into a `content://` URI, and
+routes the operation through `ContentResolver`, which performs proper
+permission checking.
 
 This migration path allows legacy apps that relied on file paths to continue
 working while still enforcing scoped storage permissions.
@@ -7979,7 +8063,7 @@ It configures two independent timeouts:
 
 | Parameter | Applies to | Clock starts |
 |-----------|-----------|--------------|
-| `timeoutFixedMillis` | All calls (including ones without a `CancellationSignal`) | When the call is made |
+| `timeoutFixedMillis` | Calls without a `CancellationSignal`, plus cancellable calls when `timeoutOnCancelMillis` is 0 | When the call is made |
 | `timeoutOnCancelMillis` | Only calls that take a `CancellationSignal` | When the cancellation signal is fired |
 
 For a cancellable call, the watchdog therefore measures how long the provider
@@ -8022,14 +8106,20 @@ themselves are ephemeral, and the mechanism is restricted to the `Secure` and
 
 ## 27.11 CallLogProvider: A Concrete Provider Example
 
-The system call-log database lives behind a content provider in
-`packages/providers/CallLogProvider/`. It is a useful concrete example because
-it pairs a real-world `ContentProvider` (the call-log store, exposed through the
-`android.provider.CallLog` URIs) with a `BackupAgent` that ships in the same
-package. The backup half is implemented by
+The system call-log database lives behind the `CallLogProvider` content
+provider (authority `call_log`), exposed through the
+`android.provider.CallLog` URIs. Despite the name, the provider itself is not
+in `packages/providers/CallLogProvider/` -- it is implemented at
+`packages/providers/ContactsProvider/src/com/android/providers/contacts/CallLogProvider.java`
+and declared in the ContactsProvider manifest. The
+`packages/providers/CallLogProvider/` package ships only the backup half: the
+`CallLogBackupAgent` and `CallLogChangeReceiver` that back the log up. It is
+a useful concrete example because it pairs a real-world `ContentProvider`
+(the call-log store) with a `BackupAgent` in a companion package. The backup
+half is implemented by
 `packages/providers/CallLogProvider/src/com/android/calllogbackup/CallLogBackupAgent.java`,
 which extends `android.app.backup.BackupAgent` and reads and writes call rows
-through the same provider during backup and restore.
+through the provider during backup and restore.
 
 Three details are worth calling out:
 
@@ -8094,12 +8184,14 @@ It is useful here for two reasons. First, it is read-only: `query()` is
 implemented, but `insert()`, `update()`, and `delete()` all throw
 `UnsupportedOperationException`. A provider does not have to back every CRUD
 verb, and one that only exposes data declares that by refusing the mutating
-calls. Second, the data does not come from a SQLite database at all. The
-provider reads its rows from its own resources, the string-array `bookmarks`
-(alternating title and URL entries) and the `bookmark_preloads` icon array in
-`res/values/`, and serves them back through a `MatrixCursor`. An OEM customizes
-the shipped bookmarks by overlaying those resources rather than by writing to
-the provider.
+calls. Second, it shows how a provider can seed a real SQLite database from
+its own resources. The provider builds its database (rebuilding it whenever
+the MCC/MNC or locale configuration changes) from the string-array
+`bookmarks` (alternating title and URL entries) and the `bookmark_preloads`
+icon array in `res/values/`, and serves queries with a `SQLiteQueryBuilder`
+over that database; only the partner-folder-ID URI is answered directly with
+a `MatrixCursor`. An OEM customizes the shipped bookmarks by overlaying those
+resources rather than by writing to the provider.
 
 The contract exposes one table, `bookmarks`, addressed at
 `content://com.android.partnerbookmarks/bookmarks`, whose rows are either a
@@ -8131,7 +8223,10 @@ adb shell content query --uri content://media/external/images/media/42
 adb shell content query --uri content://media/external/audio/media \
     --projection _id:title:artist:album:duration
 
-# List mounted volumes
+# List attached volumes
+adb shell content query --uri content://media/
+
+# Query the legacy FAT volume ID (a one-row "fsid" cursor, hard-coded to -1)
 adb shell content query --uri content://media/external/fs_id
 ```
 
@@ -8204,17 +8299,33 @@ adb shell content delete --uri content://com.android.contacts/raw_contacts/1
 
 ### 27.14.6 Observing Content Changes
 
-```bash
-# Watch for changes to the media database
-# (This starts a persistent process that logs changes)
-adb shell content observe --uri content://media/external
+The `content` shell tool has no `observe` subcommand (its subcommands are
+`insert`, `update`, `delete`, `query`, `call`, `read`, `write`, and
+`gettype`), so watching change notifications requires registering a
+`ContentObserver` from code, for example in a small test app:
 
-# In another terminal, take a screenshot to trigger a media scan:
+```java
+getContentResolver().registerContentObserver(
+        MediaStore.Files.getContentUri("external"),
+        /* notifyForDescendants= */ true,
+        new ContentObserver(new Handler(Looper.getMainLooper())) {
+            @Override
+            public void onChange(boolean selfChange, Uri uri) {
+                Log.d("ObserverDemo", "Changed: " + uri);
+            }
+        });
+```
+
+Then trigger a change from the shell and watch the log:
+
+```bash
+# Take a screenshot to create a new media file and trigger a scan:
 adb shell screencap /sdcard/Pictures/test_observe.png
 adb shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE \
     -d file:///sdcard/Pictures/test_observe.png
 
-# The first terminal should show a notification
+# The observer's onChange() logs the changed URI:
+adb logcat -s ObserverDemo
 ```
 
 ### 27.14.7 Dumping Provider State
@@ -8837,8 +8948,14 @@ The `fixNotification()` method sanitizes the notification by:
 
 - Stripping invalid actions.
 - Enforcing maximum text lengths.
-- Setting the `FLAG_NO_CLEAR` flag for foreground service notifications.
+- Stripping `FLAG_AUTO_CANCEL` from foreground-service and user-initiated-job
+  notifications.
+- Setting `FLAG_NO_CLEAR` on MediaStyle notifications for apps targeting
+  Android V+ (`ENFORCE_NO_CLEAR_FLAG_ON_MEDIA_NOTIFICATION`).
 - Ensuring the notification has a valid channel ID.
+
+(The `FLAG_NO_CLEAR` flag for foreground-service notifications is set later,
+in `PostNotificationRunnable`, not here.)
 
 **Step 6 -- Channel lookup:**
 ```java
@@ -8862,24 +8979,37 @@ r.setPkgAllowedAsConvo(mMsgPkgsAllowedAsConvos.contains(pkg));
 
 **Step 8 -- FGS importance floor:**
 If the notification belongs to a foreground service or user-initiated job and
-the channel importance is MIN or NONE, it is elevated to LOW:
+the channel importance is MIN or NONE, it is elevated to LOW -- but only when
+the user has not already locked the channel's importance after an FGS/UIJ has
+been shown on that channel:
 
 ```java
 if (notification.isFgsOrUij()) {
-    if (r.getImportance() == IMPORTANCE_MIN || r.getImportance() == IMPORTANCE_NONE) {
+    if (((channel.getUserLockedFields() & NotificationChannel.USER_LOCKED_IMPORTANCE) == 0
+                || !channel.isUserVisibleTaskShown())
+            && (r.getImportance() == IMPORTANCE_MIN
+                    || r.getImportance() == IMPORTANCE_NONE)) {
         channel.setImportance(IMPORTANCE_LOW);
         r.setSystemImportance(IMPORTANCE_LOW);
+        // ... unlock USER_LOCKED_IMPORTANCE, mark task shown, persist channel
     }
 }
 ```
 
-**Step 9 -- Acquire wake lock and schedule EnqueueNotificationRunnable:**
+**Step 9 -- Schedule EnqueueNotificationRunnable** on the handler thread,
+carrying the `PostNotificationTracker` along.
+
+Note that the post wake lock is acquired *before* any of these steps run: the
+public overload of `enqueueNotificationInternal()` (lines 9294-9312) calls
+
 ```java
 PostNotificationTracker tracker = acquireWakeLockForPost(pkg, callingUid);
 ```
 
-The wake lock timeout is 30 seconds (`POST_WAKE_LOCK_TIMEOUT`), ensuring the
-device stays awake long enough to complete posting.
+first, then hands the tracker to the private overload (line 9346) that performs
+the validation, channel lookup, and record creation described above. The wake
+lock timeout is 30 seconds (`POST_WAKE_LOCK_TIMEOUT`), ensuring the device
+stays awake long enough to complete posting.
 
 ### 28.2.3 The EnqueueNotificationRunnable
 
@@ -9057,11 +9187,14 @@ Cancellation can originate from many sources:
 lines 234-291. See the full table in section 28.17.)
 
 The cancel path runs on the handler thread inside `CancelNotificationRunnable`
-(line 10530), which is scheduled from the various `cancelNotification()` entry
-points. A representative one is the public Binder method:
+(line 10530), which is scheduled from the various cancel entry points. The
+app-facing Binder entry point is `INotificationManager.Stub.cancelNotificationWithTag()`
+(line 4624); system-server components use the in-process
+`NotificationManagerInternal` local service instead:
 
 ```java
-// NotificationManagerService.java (line 8890)
+// NotificationManagerService.java (line 8890) -- NotificationManagerInternalImpl,
+// the private API only accessible to the system process (not a Binder method)
 public void cancelNotification(String pkg, String opPkg, int callingUid,
         int callingPid, String tag, int id, int userId) {
     // ... cancelNotificationLocked(...) under mNotificationLock
@@ -9148,7 +9281,8 @@ private static final MultiRateLimiter.RateLimit[] TOAST_RATE_LIMITS = {
 
 ```mermaid
 flowchart TD
-    A[App calls notify] --> B[enqueueNotificationInternal]
+    A[App calls notify] --> A2[Acquire wake lock]
+    A2 --> B[enqueueNotificationInternal]
     B --> C{pkg == null?}
     C -->|Yes| D[throw IllegalArgumentException]
     C -->|No| E[Resolve userId and UID]
@@ -9158,8 +9292,7 @@ flowchart TD
     H --> I{Channel found?}
     I -->|No| J[Show developer warning toast, return]
     I -->|Yes| K[Create NotificationRecord]
-    K --> L[Acquire wake lock]
-    L --> M[Post EnqueueNotificationRunnable]
+    K --> M[Post EnqueueNotificationRunnable]
     M --> N{Snoozed?}
     N -->|Yes| O[Re-snooze, return]
     N -->|No| P[Copy ranking from old record]
@@ -9316,8 +9449,9 @@ public static final String RECS_ID = "android.app.recs";
 
 When the Notification Assistant Service classifies a notification with the
 `Adjustment.KEY_TYPE` adjustment (for example as news or promotions), the system
-maps that type onto one of these reserved channels (see `getClassificationType()`
-in `NotificationChannel.java`, around lines 1614-1618) for more consistent user
+maps that type onto one of these reserved channels (see
+`getChannelIdForBundleType(int type)` in `NotificationChannel.java`, around
+lines 1611-1620) for more consistent user
 control. Apps cannot create channels with these IDs, so the classification
 bundles always belong to the system. Android 17 also adds the inverse
 `Adjustment.KEY_UNCLASSIFY` key so the assistant can pull a notification back out
@@ -9401,8 +9535,8 @@ public void sort(ArrayList<NotificationRecord> notificationList) {
         // Nominate group proxies (prefer children over summaries)
     }
 
-    // Global sort key format:
-    //   is_recently_intrusive:group_rank:is_group_summary:group_sort_key:rank
+    // Global sort key format (formatSimple string):
+    //   crtcl=...:intrsv=...:grnk=...:gsmry=...:<group_sort_key>:rnk=...
 }
 ```
 
@@ -9424,18 +9558,25 @@ public class NotificationTimeComparator implements Comparator<NotificationRecord
 ### 28.4.4 Global Sort Key
 
 After preliminary sorting, `RankingHelper.sort()` assigns a global sort key to
-each notification. The key encodes multiple dimensions:
+each notification. The emitted key (RankingHelper.java, lines 158-168) encodes
+multiple dimensions:
 
 ```
-is_recently_intrusive : group_rank : is_group_summary : group_sort_key : rank
+crtcl=<criticality> : intrsv=<char> : grnk=<group_rank> : gsmry=<is_group_summary> : <group_sort_key> : rnk=<rank>
 ```
 
 This multi-level key ensures:
 
-- Recently-interrupted notifications appear at the top.
+- Critical notifications (marked by `CriticalNotificationExtractor`) appear at
+  the top -- criticality is the leading discriminator.
 - Grouped notifications stay together.
 - Within a group, the summary appears before children.
 - Within children, the developer-provided sort key is honored.
+
+The `intrsv=` component is a vestige: the source hardcodes
+`char intrusiveRank = '2';` for every record, so intrusiveness no longer
+affects the ordering (the old `is_recently_intrusive` name survives only in a
+source comment).
 
 ### 28.4.5 The Extractors in Detail
 
@@ -9469,8 +9610,8 @@ static final String[] DEFAULT_ALLOWED_ADJUSTMENTS = new String[] {
 
 The full set of adjustment keys the assistant may emit is declared in
 `frameworks/base/core/java/android/service/notification/Adjustment.java`. Android
-17 expands it well beyond the defaults above: `KEY_GROUP_KEY` (reassign a
-notification's group), `KEY_UNCLASSIFY` (undo a classification), `KEY_DYNAMIC_BUNDLE`
+17 expands it well beyond the defaults above: `KEY_UNCLASSIFY` (undo a
+classification), `KEY_DYNAMIC_BUNDLE`
 (place a notification into a dynamic bundle), and the contextual-mode keys
 `KEY_NOTIFICATION_RULES`, `KEY_SOUND`, `KEY_LIGHT`, `KEY_HIGHLIGHT`,
 `KEY_MODE_BREAKTHROUGH_LIST`, and `KEY_BREAKTHROUGH_ALL_MODES`. The contextual
@@ -9684,17 +9825,19 @@ Apps can register their own `ConditionProviderService` to create custom rules
 `ZenPolicy` (API 29+) gives fine-grained control per rule:
 
 ```java
-// android.service.notification.ZenPolicy
+// frameworks/base/core/java/android/service/notification/ZenPolicy.java
+//   (fields at lines 157-163)
 public final class ZenPolicy {
-    // People categories
-    int mPriorityCategories;     // calls, messages, conversations, etc.
-    int mPriorityCallSenders;    // anyone, contacts, starred, none
-    int mPriorityMessageSenders;
-    int mConversationSenders;
+    // Per-category state lists (not bitmasks): one entry per category
+    private List<Integer> mPriorityCategories;  // calls, messages, conversations, etc.
+    private List<Integer> mVisualEffects;       // full-screen intents, lights, peek,
+                                                // status bar, badge, ambient, notification list
 
-    // Visual effects
-    int mVisualEffects;          // full-screen intents, lights, peek,
-                                 // status bar, badge, ambient, notification list
+    // Sender filters: anyone, contacts, starred, none
+    private @PeopleType int mPriorityMessages = PEOPLE_TYPE_UNSET;
+    private @PeopleType int mPriorityCalls = PEOPLE_TYPE_UNSET;
+    private @ConversationSenders int mConversationSenders = CONVERSATION_SENDERS_UNSET;
+    // ...
 }
 ```
 
@@ -9760,7 +9903,21 @@ Device effects include:
 - Dim wallpaper.
 - Night mode override.
 
-These are applied through a `DeviceEffectsApplier`, which is set by SystemUI:
+These are applied through a `DeviceEffectsApplier`. NotificationManagerService
+installs the default applier itself during boot:
+
+```java
+// NotificationManagerService.java (lines 3739-3743)
+if (!mZenModeHelper.hasDeviceEffectsApplier()) {
+    // Cannot be done earlier, as some services aren't ready until this point.
+    mZenModeHelper.setDeviceEffectsApplier(
+            new DefaultDeviceEffectsApplier(getContext()));
+}
+```
+
+Another `system_server` component can override the default before that point
+via the internal hook `NotificationManagerInternal.setDeviceEffectsApplier()`,
+which forwards to `ZenModeHelper.setDeviceEffectsApplier()` (line 347):
 
 ```java
 // ZenModeHelper.java (line 347)
@@ -9910,15 +10067,21 @@ static final int FLAG_FILTER_TYPE_ONGOING = 8;
 
 ### 28.6.6 Trim Levels
 
-To reduce IPC overhead, listeners can request trimmed notification data:
+Privileged listeners can request trimmed notification data:
 
 ```java
-static final int TRIM_FULL = 0;   // all data
-static final int TRIM_LIGHT = 1;  // no extras, no large icon
+public static final int TRIM_FULL = 0;   // all data
+public static final int TRIM_LIGHT = 1;  // no ticker/content/bigContent/headsUp
+        // views, no large icon, and drops the EXTRA_LARGE_ICON,
+        // EXTRA_LARGE_ICON_BIG, EXTRA_PICTURE, EXTRA_BIG_TEXT extras
+        // (the rest of the extras Bundle is retained)
 ```
 
-SystemUI uses `TRIM_FULL` because it needs all notification content for rendering.
-Third-party listeners typically use `TRIM_LIGHT`.
+The trim API is a hidden/system API (both constants and
+`setOnNotificationPostedTrim()` are annotated `@hide @removed @SystemApi`), so
+ordinary third-party listeners cannot call it. Every listener starts at
+`TRIM_FULL` by default; only system or privileged listeners can request
+`TRIM_LIGHT` to reduce IPC overhead.
 
 ### 28.6.7 Trusted vs. Untrusted Listeners
 
@@ -9932,8 +10095,14 @@ private final ArraySet<Integer> mTrustedListenerUids = new ArraySet<>();
 ```
 
 When the `redactSensitiveNotificationsFromUntrustedListeners` flag is enabled,
-listeners not in the trusted set receive redacted notification content. SystemUI
-is always trusted due to its `STATUS_BAR_SERVICE` permission.
+listeners not in the trusted set receive redacted notification content. A
+listener is trusted (`isAppTrustedNotificationListenerService()`,
+`NotificationManagerService.java` lines 15303-15330) when it holds the
+`RECEIVE_SENSITIVE_NOTIFICATIONS` permission, is platform-signed, is allowed
+the `OP_RECEIVE_SENSITIVE_NOTIFICATIONS` app-op, or has a
+`CompanionDeviceManager` association. SystemUI qualifies because it is
+platform-signed, not because of its `STATUS_BAR_SERVICE` permission (that
+permission is checked separately, only to mark a listener as `isSystemUi`).
 
 ### 28.6.8 The Notification Assistant Service (NAS)
 
@@ -9972,7 +10141,7 @@ Supported adjustment keys:
 | `KEY_NOT_CONVERSATION` | Override conversation detection |
 | `KEY_TYPE` | Classify (news, promotions, recommendations) |
 | `KEY_SUMMARIZATION` | AI-generated summary |
-| `KEY_GROUP_KEY` | Reassign the notification's group (Android 17) |
+| `KEY_GROUP_KEY` | Reassign the notification's group (since Android 8) |
 | `KEY_UNCLASSIFY` | Undo a previous classification (Android 17) |
 | `KEY_NOTIFICATION_RULES` | Rule IDs the notification matches (Android 17) |
 | `KEY_DYNAMIC_BUNDLE` | Place into a dynamic bundle (Android 17) |
@@ -10126,9 +10295,9 @@ In SystemUI, the notification shade divides notifications into sections:
 graph TD
     A[Notification Shade] --> B[Incoming / Heads-Up]
     A --> C[Priority Conversations]
-    A --> D[Alerting Notifications]
-    A --> E[Silent Notifications]
-    A --> F[Minimized / Ambient]
+    A --> D[Other Conversations]
+    A --> E[Alerting Notifications]
+    A --> F[Silent Notifications]
 ```
 
 Priority conversations (those the user has marked as "priority" in settings)
@@ -10219,7 +10388,7 @@ Key classes:
 | `BubblePositioner.java` | Position calculations |
 | `BubbleDataRepository.kt` | Persistence |
 | `BubbleStackViewManager.kt` | Stack UI management |
-| `BubbleBarLayerView.java` | Bubble bar for launcher integration |
+| `bar/BubbleBarLayerView.java` | Bubble bar for launcher integration (in the `bar/` subpackage) |
 
 ### 28.8.5 Bubble Lifecycle
 
@@ -10241,15 +10410,16 @@ stateDiagram-v2
 
 ### 28.8.6 Bubble-to-Task Mapping
 
-Each expanded bubble hosts an embedded `Activity` in a task. The `BubbleTaskView`
-creates a virtual display or uses task embedding to render the activity within
-the bubble's expanded view:
+Each expanded bubble hosts an embedded `Activity` in a task. `BubbleTaskView`
+is a wrapper around the WM Shell `TaskView`
+(`com.android.wm.shell.taskview.TaskView`), which hosts the bubble's activity
+as a normal task whose `SurfaceControl` is reparented into the expanded view's
+surface hierarchy by `ShellTaskOrganizer` -- no virtual display is involved:
 
 ```java
 // BubbleExpandedView.java
-// Creates a TaskView that hosts the bubble's activity
-// The activity is launched with ActivityOptions specifying the
-// bubble display.
+// Creates a TaskView that hosts the bubble's activity as a real task;
+// ShellTaskOrganizer reparents the task surface into the expanded view.
 ```
 
 The bubble activity must:
@@ -10312,18 +10482,26 @@ frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/notificatio
 ### 28.9.2 The Notification Pipeline in SystemUI
 
 SystemUI uses a modern notification pipeline (sometimes called "new pipeline"
-or "notif pipeline") for processing notifications. The pipeline stages are:
+or "notif pipeline") for processing notifications. Notifications flow from the
+`NotificationListener` into `NotifCollection`, and `ShadeListBuilder.buildList()`
+(`frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/notification/collection/ShadeListBuilder.java`,
+lines 432-517) is the stage that runs the filtering, grouping, sorting, and
+section-assignment steps in order -- coordinators plug their filters, promoters,
+and comparators into it -- before dispatching the finished list to the view layer:
 
 ```mermaid
 graph TD
-    A[NotificationListener] -->|StatusBarNotification| B[Collection]
-    B --> C[Coordinators & Promoters]
-    C --> D[GroupManager]
-    D --> E[SectionsManager]
-    E --> F[Filtering]
-    F --> G[Sorting]
-    G --> H[ShadeListBuilder]
-    H --> I[NotificationStackScrollLayout]
+    A[NotificationListener] -->|StatusBarNotification| B[NotifCollection]
+    B --> C[ShadeListBuilder.buildList]
+    subgraph SLB["ShadeListBuilder stages (coordinators plug in)"]
+        C --> D[Pre-group filtering]
+        D --> E["Grouping & bundling"]
+        E --> F[Promoting]
+        F --> G["Section assignment + sorting"]
+        G --> H[Finalize filtering]
+    end
+    H --> I[onRenderList]
+    I --> J[NotificationStackScrollLayout]
 ```
 
 ### 28.9.3 NotificationStackScrollLayout
@@ -10378,13 +10556,20 @@ Notifications are divided into sections (priority buckets):
 //   notification/stack/NotificationPriorityBucket.kt
 ```
 
-The sections in order from top to bottom:
+The buckets, in `PriorityBucket.getAllInOrder()` order from top to bottom:
 
-1. **Heads-Up / Incoming** -- currently alerting notifications.
-2. **People (Priority Conversations)** -- conversations marked as priority.
-3. **Alerting** -- importance HIGH and DEFAULT.
-4. **Silent** -- importance LOW and MIN.
-5. **Minimized** -- rarely shown.
+1. **Media controls** -- active media sessions.
+2. **Top ongoing** -- prominent ongoing notifications.
+3. **Heads-up** -- currently alerting notifications.
+4. **Top unseen** -- important not-yet-seen notifications.
+5. **Foreground service** -- ongoing FGS notifications.
+6. **Highlights** -- rule-highlighted notifications.
+7. **Priority people** -- conversations marked as priority.
+8. **People** -- other conversations.
+9. **Alerting** -- importance HIGH and DEFAULT.
+10. **News / Social / Recs / Promo** -- the classification bundles.
+11. **Silent** -- importance LOW and MIN.
+12. **Dynamic bundle** -- assistant-created dynamic bundles.
 
 ### 28.9.6 Notification Row Views
 
@@ -10519,7 +10704,7 @@ graph TB
         ENR[ExpandableNotificationRow]
         NCV[NotificationContentView]
         HU[HeadsUpManager]
-        BM[BubbleManager]
+        BM[BubblesManager]
     end
 
     subgraph "system_server"
@@ -10535,7 +10720,7 @@ graph TB
     NSSL --> ENR
     ENR --> NCV
     NSSL --> HU
-    NLS --> BM
+    PIPELINE -->|BubbleCoordinator| BM
 ```
 
 ---
@@ -10712,7 +10897,8 @@ if (reason != REASON_CHANNEL_REMOVED) {
 ### 28.11.2 NotificationHistoryManager
 
 Beyond the in-memory archive, `NotificationHistoryManager` provides persistent
-history using a SQLite database:
+history stored as per-day Protocol Buffer files on disk, written via
+`AtomicFile` by `NotificationHistoryDatabase`:
 
 ```java
 // frameworks/base/services/core/java/com/android/server/notification/
@@ -10757,8 +10943,10 @@ The file is loaded during boot:
 // NotificationManagerService.java (line 1420)
 protected void loadPolicyFile() {
     synchronized (mPolicyFile) {
-        InputStream infile = mPolicyFile.openRead();
-        readPolicyXml(infile, false /*forRestore*/, USER_ALL, null);
+        // ... error handling elided
+        infile = mPolicyFile.openRead();
+        final TypedXmlPullParser parser = Xml.resolvePullParser(infile);
+        readPolicyXml(parser, false /*forRestore*/, USER_ALL, null);
     }
 }
 ```
@@ -10815,7 +11003,7 @@ There are two types of snooze:
 When a notification is enqueued, the system checks if it was previously snoozed:
 
 ```java
-// EnqueueNotificationRunnable (line 10093)
+// EnqueueNotificationRunnable.enqueueNotification (line 10757)
 final long snoozeAt = mSnoozeHelper.getSnoozeTimeForUnpostedNotification(
         r.getUser().getIdentifier(),
         r.getSbn().getPackageName(), r.getSbn().getKey());
@@ -10858,8 +11046,10 @@ Auto-grouping triggers when a package has more than `AUTOGROUP_AT_COUNT_DEFAULT`
 
 ### 28.13.2 Force Grouping (Android 16+)
 
-Force grouping is a newer mechanism (behind the `notificationForceGrouping` flag)
-that aggressively bundles notifications:
+Force grouping is a newer mechanism that aggressively bundles notifications.
+It originally shipped behind the `notification_force_grouping` aconfig flag,
+but the flag has since been removed and the behavior is now unconditional
+(only a legacy log string in `GroupHelper` still mentions it):
 
 ```java
 // GroupHelper.java (line 87)
@@ -10930,7 +11120,7 @@ flowchart TD
 ### 28.14.1 Core Collections in NMS
 
 ```java
-// NotificationManagerService.java (lines 731-746)
+// NotificationManagerService.java (lines 793-806)
 
 // The definitive list of all active notifications, sorted by rank
 final ArrayList<NotificationRecord> mNotificationList;
@@ -10963,12 +11153,15 @@ For example: `0|com.example.app|1|null|10088`
 The group key uniquely identifies a notification group:
 
 ```
-<userId>|<packageName>|<groupId>
+<userId>|<packageName>|g:<group>
 ```
 
-If the notification has an explicit group set via `setGroup()`, `groupId` is that
-string. Otherwise, it is the notification key itself (each notification is its
-own group of one).
+If the notification has an explicit group set via `setGroup()`, the last
+segment is `g:<group>`; if only a sort key was set, it is `c:<channelId>`
+instead. When neither a group nor a sort key is present, the group key is the
+notification key itself (each notification is its own group of one). An
+`overrideGroupKey` -- for example an autogroup key -- takes precedence over
+all of these.
 
 ### 28.14.4 The NotificationRecord Field Map
 
@@ -11205,8 +11398,10 @@ public boolean hasPromotableCharacteristics() {
 ```
 
 A notification therefore qualifies for promotion only if it requested it, is an
-ongoing event, has a title, uses a promotable style (`BigTextStyle`,
-`CallStyle`, `ProgressStyle`, or `MetricStyle`), is not a group summary, has no
+ongoing event, has a title, uses a promotable style (no style at all, or
+`BigTextStyle`, `CallStyle`, `ProgressStyle`, or `MetricStyle` --
+`hasPromotableStyle()` also returns true when `getNotificationStyle()` is
+null), is not a group summary, has no
 custom `RemoteViews`, and is not colorized. Even when these hold, user and
 channel preferences can still deny promotion, which is why
 `hasPromotableCharacteristics()` is documented as necessary but not sufficient.
@@ -11404,11 +11599,14 @@ strategy is selected at construction time based on device configuration.
 
 ### 28.22.3 Graduation in Android 17
 
-Polite notifications shipped behind several flags that Android 17 removed,
-graduating the feature to always-on. The 16-to-17 changeset removes
+Polite notifications shipped behind several flags, and Android 17 removed most
+of them. The 16-to-17 changeset removes the sub-flags
 `polite_notifications_attn_update` and `cross_app_polite_notifications` and drops
-the test-only disabling of `FLAG_POLITE_NOTIFICATIONS`, confirming the feature is
-now the default behavior rather than an experiment.
+the test-only disabling of `FLAG_POLITE_NOTIFICATIONS`. The feature as a whole,
+however, is still gated by the top-level `polite_notifications` aconfig flag:
+`NotificationAttentionHelper` only creates a politeness strategy when
+`Flags.politeNotifications()` is true (line 276), leaving `mStrategy` null
+otherwise.
 
 ---
 
@@ -11492,14 +11690,17 @@ adb shell dumpsys notification --noredact | grep -A 5 "NotificationRecord"
 
 ### 28.24.2 Dumping Notification Channels
 
+Channels appear in the full notification dump (there is no `channels`
+subcommand -- unrecognized arguments are silently ignored):
+
 ```bash
-adb shell dumpsys notification channels
+adb shell dumpsys notification
 ```
 
-Or for a specific package:
+Or filter to a specific package:
 
 ```bash
-adb shell dumpsys notification channels com.example.myapp
+adb shell dumpsys notification --package com.example.myapp
 ```
 
 ### 28.24.3 Inspecting Do Not Disturb State
@@ -11520,9 +11721,6 @@ adb shell settings get global zen_mode
 NMS includes a shell command interface:
 
 ```bash
-# List all notification channels for a package
-adb shell cmd notification list_channels com.example.myapp 0
-
 # Post a test notification
 adb shell cmd notification post -t "Test" "tag" "Hello from shell"
 
@@ -11706,10 +11904,11 @@ adb logcat -s NotificationService NotificationRecord ZenModeHelper \
 
 ### 28.24.11 Inspecting Notification History
 
-Android 11+ stores notification history:
+Android 11+ stores notification history. It appears in the standard dump
+(there is no `history` argument):
 
 ```bash
-adb shell dumpsys notification history
+adb shell dumpsys notification
 ```
 
 Or via the Settings UI: **Settings > Notifications > Notification history**.
@@ -11720,15 +11919,16 @@ Or via the Settings UI: **Settings > Notifications > Notification history**.
 # Snooze a notification for 60 seconds
 adb shell cmd notification snooze --for 60000 "0|com.example.app|1|null|10088"
 
-# List snoozed notifications
-adb shell dumpsys notification snoozed
+# List snoozed notifications (a cmd subcommand, not a dumpsys argument)
+adb shell cmd notification snoozed
 ```
 
 ### 28.24.13 Debugging Bubble Issues
 
 ```bash
-# Check if bubbles are enabled globally
-adb shell settings get global notification_bubbles
+# Check if bubbles are enabled (the global key is deprecated;
+# the setting moved to secure settings)
+adb shell settings get secure notification_bubbles
 
 # Check per-app bubble preference
 adb shell dumpsys notification | grep -A 3 "bubble"
@@ -11787,7 +11987,7 @@ echo "files in the notification server package"
 | `NotificationAttentionHelper.java` | ~2,000 | Sound, vibration, LED, polite strategy |
 | `GroupHelper.java` | ~2,100 | Auto-grouping / force-grouping logic |
 | `SnoozeHelper.java` | ~630 | Snooze state management |
-| `ShortcutHelper.java` | ~350 | Conversation shortcut queries |
+| `ShortcutHelper.java` | ~280 | Conversation shortcut queries |
 | `ManagedServices.java` | ~2,500 | Listener/assistant lifecycle |
 | `ValidateNotificationPeople.java` | ~720 | Contact resolution |
 | `BubbleExtractor.java` | ~230 | Bubble eligibility |
@@ -11817,15 +12017,14 @@ active).
 
 ### 28.24.18 Verifying Channel Configuration
 
-To verify that your app's notification channels are correctly configured, use
-the Settings shell command:
+To verify that your app's notification channels are correctly configured,
+inspect the per-package section of the notification dump (there is no
+`cmd notification list_channels` subcommand):
 
 ```bash
-# List all channels for a package and user
-adb shell cmd notification list_channels <package_name> <user_id>
-
-# Example
-adb shell cmd notification list_channels com.google.android.gm 0
+# Dump notification state filtered to a package; channels appear
+# in the PreferencesHelper section
+adb shell dumpsys notification --package com.google.android.gm
 ```
 
 You can also check channel importance directly:
@@ -11863,11 +12062,15 @@ adb shell dumpsys notification | grep "FLAG_FOREGROUND_SERVICE"
 
 Key behaviors:
 
-- FGS notifications cannot be dismissed by the user (they get `FLAG_NO_CLEAR`).
-- If the channel importance is MIN or NONE, it is elevated to LOW.
+- FGS notifications get `FLAG_NO_CLEAR` (set in `PostNotificationRunnable`,
+  NotificationManagerService.java lines 11020-11021), so "Clear all" skips
+  them and they cannot be swiped away on the lock screen -- but the user can
+  still dismiss them individually when the device is unlocked. Only
+  `FLAG_NO_DISMISS` makes a notification truly undismissable.
+- If the channel importance is MIN or NONE, it is silently elevated to LOW
+  (unless the user has locked the channel's importance), so the notification
+  is always at least visible; the FGS start itself is not rejected.
 - FGS notifications cannot be cancelled by the app while the service runs.
-- Starting from Android 14, the system enforces that FGS notifications must
-  be visible (importance > NONE) or the FGS start is rejected.
 
 ### 28.24.21 Notification Permission (Android 13+)
 
@@ -11875,8 +12078,9 @@ Since Android 13 (API 33), posting notifications requires the
 `POST_NOTIFICATIONS` runtime permission. The `PermissionHelper` tracks this:
 
 ```bash
-# Check if a package has notification permission
-adb shell dumpsys notification permissions | grep "com.your.package"
+# Check if a package has notification permission (the permission table
+# is part of the standard dump; there is no "permissions" argument)
+adb shell dumpsys notification | grep -A 2 "com.your.package"
 ```
 
 Apps targeting API 33+ must request this permission at runtime. Pre-existing
@@ -11934,8 +12138,8 @@ user experience. The key architectural insights from this chapter:
     `FLAG_ONLY_ALERT_ONCE` flag.
 
 11. **Notification history** is maintained at two levels: an in-memory ring
-    buffer archive for `getHistoricalNotifications()` and a persistent SQLite
-    database for the Settings notification history UI.
+    buffer archive for `getHistoricalNotifications()` and persistent per-day
+    Protocol Buffer files for the Settings notification history UI.
 
 12. **Android 17 adds four new surfaces.** Rich ongoing notifications
     (`Notification.ProgressStyle` and the system-set `FLAG_PROMOTED_ONGOING`)
@@ -11987,7 +12191,7 @@ frameworks/base/services/core/java/com/android/server/notification/
     GlobalSortKeyComparator.java          -- Final sort by global key
     NotificationShellCmd.java             -- ADB shell interface
     NotificationHistoryManager.java       -- Persistent history
-    NotificationHistoryDatabase.java      -- SQLite history storage
+    NotificationHistoryDatabase.java      -- proto-file history storage
     NotificationUsageStats.java           -- Usage statistics
     NotificationBackupHelper.java         -- Backup/restore
     PermissionHelper.java                 -- POST_NOTIFICATIONS permission
@@ -12202,7 +12406,7 @@ The core of `PowerManagerService` is the `updatePowerStateLocked()` method. It r
 in a multi-phase loop each time any power-related state changes:
 
 ```java
-// PowerManagerService.java, line 2689
+// PowerManagerService.java, line 2799
 private void updatePowerStateLocked() {
     if (!mSystemReady || mDirty == 0 || mUpdatePowerStateInProgress) {
         return;
@@ -12323,7 +12527,7 @@ The `goToSleepInternal()` method iterates through power groups in reverse order
 so that non-default groups transition before the default group:
 
 ```java
-// PowerManagerService.java, line 7561
+// PowerManagerService.java, line 7805
 private void goToSleepInternal(IntArray groupIds, long eventTime,
         int reason, int flags) {
     // ...
@@ -12359,7 +12563,7 @@ Each `PowerGroup` implements the actual wakefulness state transitions. The
 `wakePowerGroupLocked()` method handles waking:
 
 ```java
-// PowerManagerService.java, line 2315
+// PowerManagerService.java, line 2412
 private void wakePowerGroupLocked(final PowerGroup powerGroup, long eventTime,
         @WakeReason int reason, String details, int uid,
         String opPackageName, int opUid) {
@@ -12378,7 +12582,7 @@ the default group has adjacent display groups that are still interactive,
 the default group sleeps instead of dozing:
 
 ```java
-// PowerManagerService.java, line 2363
+// PowerManagerService.java, line 2471
 private boolean dozePowerGroupLocked(final PowerGroup powerGroup,
         long eventTime, @GoToSleepReason int reason, int uid,
         boolean allowSleepToDozeTransition) {
@@ -12389,7 +12593,8 @@ private boolean dozePowerGroupLocked(final PowerGroup powerGroup,
     // the default group sleeps instead of dozing
     if (com.android.server.display.feature.flags.Flags.separateTimeouts()) {
         boolean shouldSleep =
-            (isDefaultAdjacentGroupInteractiveLocked())
+            (isDefaultAdjacentGroupInteractiveLocked()
+                && !com.android.server.power.feature.flags.Flags.tapToWakeCd())
             || (powerGroup.getWakefulnessLocked() == WAKEFULNESS_ASLEEP
                 && !doAnyAdjacentGroupsExistLocked());
         if (shouldSleep && powerGroup.isDefaultOrAdjacentGroup()) {
@@ -12636,11 +12841,14 @@ to trigger another round of power state evaluation.
 ### 29.2.7 The Notifier
 
 The `Notifier` class handles broadcasting power state changes to the rest of the
-system. It sends broadcasts like:
+system. It sends the `ACTION_SCREEN_ON` / `ACTION_SCREEN_OFF` broadcasts and
+delivers wakefulness and wake lock notifications to `BatteryStats` and the
+window manager policy. Two related broadcasts come from elsewhere --
+`PowerManagerService` only listens for them:
 
-- `ACTION_SCREEN_ON` / `ACTION_SCREEN_OFF`
-- `ACTION_DREAMING_STARTED` / `ACTION_DREAMING_STOPPED`
-- `ACTION_DEVICE_IDLE_MODE_CHANGED`
+- `ACTION_DREAMING_STARTED` / `ACTION_DREAMING_STOPPED` are sent by
+  `DreamController` (`frameworks/base/services/core/java/com/android/server/dreams/DreamController.java`)
+- `ACTION_DEVICE_IDLE_MODE_CHANGED` is sent by `DeviceIdleController`
 
 The Notifier runs on the main looper (not the power manager handler thread) to
 avoid interference with critical power management timing:
@@ -12784,21 +12992,32 @@ to detect when the device is placed face-down. When detected, the screen
 timeout is shortened:
 
 ```java
-// PowerManagerService.java, line 1333
+// PowerManagerService.java, line 1374
 private void onFlip(boolean isFaceDown) {
+    long millisUntilNormalTimeout = 0;
+    final long currentTime = mClock.uptimeMillis();
     synchronized (mLock) {
+        // ...
         mIsFaceDown = isFaceDown;
         if (isFaceDown) {
-            final long currentTime = mClock.uptimeMillis();
             mLastFlipTime = currentTime;
-            // Trigger user activity to start the shorter timeout
-            userActivityInternal(Display.DEFAULT_DISPLAY, currentTime,
-                    PowerManager.USER_ACTIVITY_EVENT_FACE_DOWN,
-                    PowerManager.USER_ACTIVITY_FLAG_NO_CHANGE_LIGHTS,
-                    Process.SYSTEM_UID);
+            final long sleepTimeout =
+                    mScreenTimeoutConstants.getSleepTimeoutLocked(-1);
+            final long screenOffTimeout =
+                    getScreenOffTimeoutLocked(sleepTimeout, -1L);
+            final PowerGroup powerGroup =
+                    mPowerGroups.get(Display.DEFAULT_DISPLAY_GROUP);
+            millisUntilNormalTimeout =
+                    powerGroup.getLastUserActivityTimeLocked()
+                    + screenOffTimeout - currentTime;
         }
     }
     if (isFaceDown) {
+        // Trigger user activity to start the shorter timeout
+        userActivityInternal(Display.DEFAULT_DISPLAY, currentTime,
+                PowerManager.USER_ACTIVITY_EVENT_FACE_DOWN,
+                PowerManager.USER_ACTIVITY_FLAG_NO_CHANGE_LIGHTS,
+                Process.SYSTEM_UID);
         mFaceDownDetector.setMillisSaved(millisUntilNormalTimeout);
     }
 }
@@ -12882,7 +13101,11 @@ public static final int ON_AFTER_RELEASE = 0x20000000;
 ```
 
 - **`ACQUIRE_CAUSES_WAKEUP`** -- Acquiring the wake lock also turns on the screen.
-  Apps targeting Android V+ must hold the `TURN_SCREEN_ON` permission.
+  A `TURN_SCREEN_ON` permission requirement is gated behind the
+  `REQUIRE_TURN_SCREEN_ON_PERMISSION` compat change, currently marked
+  `@EnabledSince(CUR_DEVELOPMENT)`, so it applies to apps targeting the
+  in-development SDK (and can be waived per form factor via the
+  `waive_target_sdk_check_for_turn_screen_on()` power property).
 - **`ON_AFTER_RELEASE`** -- When the wake lock is released, poke user activity to
   keep the screen on a bit longer.
 
@@ -12892,7 +13115,7 @@ Inside `PowerManagerService`, each acquired wake lock is tracked by a `WakeLock`
 object:
 
 ```java
-// PowerManagerService.java, line 5704
+// PowerManagerService.java, line 5937
 /* package */ final class WakeLock implements IBinder.DeathRecipient,
         IBinder.FrozenStateChangeCallback {
     public final IBinder mLock;
@@ -12967,7 +13190,7 @@ sequenceDiagram
 The internal acquisition in `PowerManagerService`:
 
 ```java
-// PowerManagerService.java, line 1676
+// PowerManagerService.java, line 1740
 private void acquireWakeLockInternal(IBinder lock, int displayId, int flags,
         String tag, String packageName, WorkSource ws, String historyTag,
         int uid, int pid, @Nullable IWakeLockCallback callback) {
@@ -13016,8 +13239,10 @@ Key points:
 - Wake locks are identified by their `IBinder` token, not by tag
 - If a wake lock with the same token already exists, its properties are updated
 - `UidState` tracks per-UID wake lock counts
-- `setWakeLockDisabledStateLocked()` may disable the lock if the UID is in
-  device idle whitelist, low power standby, or the process is cached
+- `setWakeLockDisabledStateLocked()` may disable the lock if the device is
+  idling and the UID is *not* on the device idle whitelist or temp whitelist,
+  if low power standby is active and the UID is *not* on the low power standby
+  allowlist, or if the process is cached or frozen
 
 ### 29.3.5 Wake Lock Disabling
 
@@ -13082,7 +13307,7 @@ Optimizations include:
 the display:
 
 ```java
-// PowerManagerService.java, line 1748
+// PowerManagerService.java, line 1819
 public static boolean isScreenLock(int flags) {
     switch (flags & PowerManager.WAKE_LOCK_LEVEL_MASK) {
         case PowerManager.FULL_WAKE_LOCK:
@@ -13273,24 +13498,27 @@ stateDiagram-v2
     STATE_INACTIVE --> STATE_QUICK_DOZE_DELAY : Quick Doze enabled
 
     STATE_IDLE_PENDING --> STATE_SENSING : Timer expires
-    STATE_IDLE_PENDING --> STATE_ACTIVE : Motion detected
+    STATE_IDLE_PENDING --> STATE_ACTIVE
 
     STATE_SENSING --> STATE_LOCATING : No motion detected
-    STATE_SENSING --> STATE_ACTIVE : Motion detected
-    STATE_SENSING --> STATE_IDLE : No location providers
+    STATE_SENSING --> STATE_ACTIVE
 
     STATE_LOCATING --> STATE_IDLE : Location obtained or timeout
-    STATE_LOCATING --> STATE_ACTIVE : Motion detected
+    STATE_LOCATING --> STATE_ACTIVE
 
     STATE_QUICK_DOZE_DELAY --> STATE_IDLE : Timer expires
-    STATE_QUICK_DOZE_DELAY --> STATE_ACTIVE : Motion detected
+    STATE_QUICK_DOZE_DELAY --> STATE_ACTIVE
 
     STATE_IDLE --> STATE_IDLE_MAINTENANCE : Maintenance window
-    STATE_IDLE --> STATE_ACTIVE : Motion detected
+    STATE_IDLE --> STATE_ACTIVE
 
     STATE_IDLE_MAINTENANCE --> STATE_IDLE : Maintenance complete
-    STATE_IDLE_MAINTENANCE --> STATE_ACTIVE : Motion detected
+    STATE_IDLE_MAINTENANCE --> STATE_ACTIVE
 ```
+
+Every unlabeled edge back to `STATE_ACTIVE` is significant motion detected;
+that check applies from each state past `INACTIVE`. `STATE_LOCATING` also
+falls through to `STATE_IDLE` when no location provider is available.
 
 The progression is:
 
@@ -13380,7 +13608,7 @@ The `stepIdleStateLocked()` method is the core of the deep doze state machine.
 It advances the state one step at a time:
 
 ```java
-// DeviceIdleController.java, line 3894
+// DeviceIdleController.java, line 3957
 void stepIdleStateLocked(String reason) {
     // Safety: abort if in emergency call
     if (mEmergencyCallListener.isEmergencyCallActive()) {
@@ -13603,8 +13831,10 @@ during TV input sessions:
 ```
 frameworks/base/apex/jobscheduler/service/java/com/android/server/deviceidle/
     TvConstraintController.java
-    ConstraintController.java
     DeviceIdleConstraintTracker.java
+    BluetoothConstraint.java
+frameworks/base/apex/jobscheduler/framework/java/com/android/server/deviceidle/
+    ConstraintController.java
     IDeviceIdleConstraint.java
 ```
 
@@ -13648,7 +13878,7 @@ Both `AlarmManager` and `JobScheduler` listen for doze state changes:
 
 ```mermaid
 flowchart TD
-    DIC["DeviceIdleController\nenterStateIdleLocked()"] --> AM["AlarmManagerInternal\nsetDeviceIdleMode(true)"]
+    DIC["DeviceIdleController\nstepIdleStateLocked()"] --> AM["AlarmManagerService\nidle-until alarm via setIdleUntil()"]
     DIC --> JS["JobSchedulerService\nDeviceIdleJobsController"]
     DIC --> NP["NetworkPolicyManager\nblock background network"]
 
@@ -13883,16 +14113,22 @@ sequenceDiagram
 ### 29.5.12 Timeout-Based Demotion
 
 When an app has not been used for a configurable duration, it is demoted to the
-next lower bucket. The typical timeout schedule:
+next lower bucket. The default thresholds
+(`DEFAULT_ELAPSED_TIME_THRESHOLDS` in `AppStandbyController.java`) are
+measured as elapsed time since the app was last used, not as per-hop
+increments:
 
-| From Bucket | Timeout to Next | Demoted To |
-|-------------|----------------|------------|
+| From Bucket | Elapsed Time Since Last Use | Demoted To |
+|-------------|----------------------------|------------|
 | ACTIVE | 12 hours | WORKING_SET |
-| WORKING_SET | 2 days | FREQUENT |
-| FREQUENT | 8 days | RARE |
-| RARE | 30 days | RESTRICTED |
+| WORKING_SET | 24 hours | FREQUENT |
+| FREQUENT | 48 hours | RARE |
+| RARE | 8 days | RESTRICTED |
 
-These timeouts are configurable via `DeviceConfig` and may vary by device.
+A parallel set of screen-on-time thresholds
+(`DEFAULT_SCREEN_TIME_THRESHOLDS`: 1, 2, and 6 hours) must also be met
+before demotion. These timeouts are configurable via `DeviceConfig` and may
+vary by device.
 
 ### 29.5.13 Cross-Profile Support
 
@@ -14086,9 +14322,11 @@ flowchart TD
 ### 29.6.6 Energy Consumers
 
 Modern devices provide hardware-level energy consumption data through the
-`IEnergyConsumer` HAL interface. This provides ground-truth millijoule
-measurements from fuel gauge hardware, rather than estimates based on
-the power profile.
+`IPowerStats` HAL interface
+(`hardware/interfaces/power/stats/aidl/android/hardware/power/stats/IPowerStats.aidl`).
+Its `getEnergyConsumed()` method returns `EnergyConsumerResult` entries
+carrying cumulative energy in microwatt-seconds (`energyUWs`) from on-device
+power rail monitors, rather than estimates based on the power profile.
 
 The `EnergyConsumerPowerStatsCollector` reads these measurements and
 attributes them to UIDs using activity data (CPU time, sensor usage, etc.)
@@ -14194,7 +14432,9 @@ patterns across the device fleet.
 
 Key atoms include:
 
-- `BatteryUsageStatsPerApp` -- Per-app energy consumption
+- `BatteryUsageStatsSinceReset` / `BatteryUsageStatsBeforeReset` -- Per-app
+  energy consumption (carried as `BatteryUsageStatsAtomsProto`, with per-UID
+  entries)
 - `WakelockStateChanged` -- Wake lock acquire/release events
 - `ScreenStateChanged` -- Screen on/off transitions
 - `DeviceIdleModeStateChanged` -- Doze state transitions
@@ -14476,20 +14716,17 @@ private static final String REASON_BATTERY_THERMAL_STATE = "shutdown,thermal,bat
 
 ### 29.7.11 Framework Thermal Actions
 
-When thermal throttling reaches certain severity levels, the framework takes
-automatic actions:
+The framework's own reaction to rising severity is deliberately narrow:
 
 | Severity | Framework Action |
 |----------|-----------------|
-| LIGHT | Log event, notify listeners |
-| MODERATE | Reduce background work, log warning |
-| SEVERE | Reduce screen brightness, limit CPU-intensive operations |
-| CRITICAL | Aggressive throttling, kill background processes |
-| EMERGENCY | Force-stop non-essential services |
-| SHUTDOWN | Initiate device shutdown |
+| LIGHT through EMERGENCY | Dispatch status and headroom callbacks to registered listeners; the display stack may clamp screen brightness |
+| SHUTDOWN | `ThermalManagerService.shutdownIfNeeded()` calls `PowerManager.shutdown()` for an orderly device shutdown |
 
-These actions are coordinated between `ThermalManagerService`,
-`PowerManagerService`, and `ActivityManagerService`.
+`ThermalManagerService` itself only notifies listeners and, at
+`THROTTLING_SHUTDOWN`, shuts the device down. All other mitigation --
+CPU/GPU frequency capping, camera or modem limits, and similar throttling --
+happens on the vendor side, below the Thermal HAL (see section 29.7.15).
 
 ### 29.7.12 Thermal HAL Versions
 
@@ -14725,25 +14962,27 @@ The session lifecycle:
 sequenceDiagram
     participant App as Game/Media App
     participant PM as PerformanceHintManager
-    participant PMS as PowerManagerService
+    participant HMS as HintManagerService
     participant HAL as IPower HAL
     participant SCHED as CPU Scheduler
 
     App->>PM: createHintSession(threadIds, targetDuration)
-    PM->>PMS: Forward to HAL
-    PMS->>HAL: createHintSession(tgid, uid, threadIds, duration)
-    HAL-->>App: IPowerHintSession
+    PM->>HMS: Forward to HintManagerService
+    HMS->>HAL: createHintSession(tgid, uid, threadIds, duration)
+    HMS-->>App: IHintSession
 
     loop Every frame
         App->>App: Do work
         App->>PM: reportActualWorkDuration(duration)
-        PM->>HAL: reportActualWorkDuration(durations[])
+        PM->>HMS: reportActualWorkDuration(durations[])
+        HMS->>HAL: reportActualWorkDuration(durations[])
         HAL->>SCHED: Adjust frequency/placement
         Note over HAL,SCHED: If actual > target: boost<br/>If actual < target: reduce
     end
 
     App->>PM: close()
-    PM->>HAL: close()
+    PM->>HMS: close()
+    HMS->>HAL: close()
 ```
 
 #### Session Hints
@@ -14818,6 +15057,7 @@ enum SessionTag {
     HWUI,
     GAME,
     APP,
+    SYSUI,
 }
 ```
 
@@ -14826,7 +15066,11 @@ Sessions can also have modes set that modify their behavior:
 ```java
 // SessionMode.aidl
 enum SessionMode {
-    POWER_EFFICIENCY,  // Prefer efficiency over performance
+    POWER_EFFICIENCY,   // Prefer efficiency over performance
+    GRAPHICS_PIPELINE,  // Session covers the graphics pipeline
+    AUTO_CPU,           // HAL auto-manages CPU resources
+    AUTO_GPU,           // HAL auto-manages GPU resources
+    AUDIO_PERFORMANCE,  // Session backs latency-sensitive audio work
 }
 ```
 
@@ -14846,6 +15090,7 @@ parcelable WorkDuration {
     long workPeriodStartTimestampNanos;  // When the work period started
     long cpuDurationNanos;     // CPU time consumed
     long gpuDurationNanos;     // GPU time consumed
+    long intendedPresentTimestampNanos;  // When the frame was meant to present
 }
 ```
 
@@ -14897,11 +15142,16 @@ CpuHeadroomResult getCpuHeadroom(in CpuHeadroomParams params);
 GpuHeadroomResult getGpuHeadroom(in GpuHeadroomParams params);
 ```
 
-Headroom is expressed as a value where:
+Headroom is a float in the range [0, 100], or NaN when the result is
+temporarily unavailable:
 
-- **1.0** means the hardware is at full capacity (no headroom)
-- **< 1.0** means there is room for more work
-- **> 1.0** means the hardware is overloaded
+- **0** means no resources were left during the calculation interval (no
+  headroom)
+- **100** means the hardware capacity is fully available
+- **NaN** means the caller should not act on the value yet (e.g. not enough
+  utilization data to compute it)
+
+The value never exceeds 100.
 
 Apps can use these values to dynamically adjust their quality settings:
 
@@ -14918,11 +15168,12 @@ The Power HAL has evolved significantly:
 | `1.0` (HIDL) | Basic `setInteractive()` and `powerHint()` |
 | `1.1` (HIDL) | Added `getSubsystemLowPowerStats()` |
 | `1.2` (HIDL) | Added `powerHintAsync_1_2()` |
-| `1.3` (HIDL) | Added `setMode()` and `setBoost()` |
-| AIDL v1 | Migrated to AIDL, added `createHintSession()` |
-| AIDL v2 | Added `SessionHint`, `SessionMode` |
-| AIDL v3 | Added FMQ channels, `createHintSessionWithConfig()` |
-| AIDL v4 | Added headroom APIs, composition data |
+| `1.3` (HIDL) | Added `powerHintAsync_1_3()` and extended the `PowerHint` enum |
+| AIDL v1 | Migrated to AIDL: `setMode()`, `setBoost()` |
+| AIDL v2 | Added `createHintSession()` / `IPowerHintSession` |
+| AIDL v4 | Added `SessionHint` |
+| AIDL v5 | Added FMQ channels, `createHintSessionWithConfig()`, `SessionMode`, `SessionTag` |
+| AIDL v6 | Added `getSupportInfo()`, headroom APIs, composition data |
 
 ```
 hardware/interfaces/power/
@@ -15273,8 +15524,11 @@ public void nativeReleaseSuspendBlocker(String name) {
 }
 ```
 
-These JNI methods write to `/sys/power/wake_lock` and `/sys/power/wake_unlock`
-in the kernel, or use the `wakeup_count` mechanism on modern kernels.
+These JNI methods call libhardware_legacy's `acquire_wake_lock()` and
+`release_wake_lock()` (`hardware/libhardware_legacy/power.cpp`), which go over
+binder to the `android.system.suspend.ISystemSuspend` AIDL service -- the
+system_suspend daemon. That daemon, not the JNI layer, drives the kernel's
+`/sys/power/wakeup_count` and `/sys/power/state` interfaces.
 
 ### 29.10.4 The Suspend Decision
 
@@ -15283,13 +15537,15 @@ power state update). The logic is:
 
 ```
 Need WakeLock suspend blocker if:
-    - Any PARTIAL_WAKE_LOCK is active AND not disabled
-    - OR mForceDisableWakelocks is false and any CPU wake lock is held
+    - mWakeLockSummary has WAKE_LOCK_CPU set
+      (any enabled CPU-holding wake lock is active)
 
-Need Display suspend blocker if:
-    - Any display group is powered on
-    - OR display state is transitioning
-    - OR there are pending brightness changes
+Need Display suspend blocker if (needSuspendBlockerLocked):
+    - Not all power groups are ready
+    - OR screen brightness boost is in progress
+    - OR wakefulness is DOZING and doze start is still in progress
+    - OR any PowerGroup needs its suspend blocker
+      (e.g. its screen is on or turning on)
 ```
 
 If neither suspend blocker is needed, both are released, and the kernel is
@@ -15517,9 +15773,9 @@ app the user will launch next.
 
 ```mermaid
 graph TD
-    AMS["ActivityManagerService"] -->|"reportUsageEvent()"| USS["UsageStatsService"]
+    AMS["ActivityManagerService"] -->|"reportEvent()"| USS["UsageStatsService"]
     NMS["NotificationManagerService"] -->|"NOTIFICATION_INTERRUPTION"| USS
-    WMS["WindowManagerService"] -->|"CONFIGURATION_CHANGE"| USS
+    ATMS["ActivityTaskManagerService"] -->|"CONFIGURATION_CHANGE"| USS
 
     USS --> UUSS["UserUsageStatsService<br/>(per-user)"]
     USS --> ASI["AppStandbyInternal<br/>(standby buckets)"]
@@ -15631,8 +15887,10 @@ import static android.app.usage.UsageStatsManager.USAGE_SOURCE_TASK_ROOT_ACTIVIT
   that started the task. If app A launches app B's activity, usage is still
   attributed to A because A is the task root.
 
-The default is `USAGE_SOURCE_CURRENT_ACTIVITY`. The choice affects which
-apps accumulate screen time in Digital Wellbeing.
+The default is `USAGE_SOURCE_TASK_ROOT_ACTIVITY` -- the fallback value
+`readUsageSourceSetting()` passes to `Settings.Global.getInt()` for
+`app_time_limit_usage_source`. The choice affects which apps accumulate
+screen time in Digital Wellbeing.
 
 ### 29.11.5 Per-User Usage Data Storage
 
@@ -16245,9 +16503,12 @@ increased, `handle_memory_high_event()` runs a two-stage decision (defined in
    process is killed immediately (kill reason `AnonMemoryBreach`).
 3. **Reclaim wait.** Otherwise pmgd sleeps for `reclaim_wait_time_secs` to give
    the kernel a chance to reclaim, then re-reads `memory.current` and
-   `memory.high`. If `memory.current >= memory.high` after the grace period (and
-   again after a second wait), the process is killed with reason
-   `TotalMemcgMemoryBreach`. If reclaim brought it back under the ceiling, pmgd
+   `memory.high`. If `memory.current >= memory.high` right after this first
+   grace period, the process is killed and the kill is logged with reason
+   `AnonMemoryBreach`. Only when the process has dropped back under the
+   ceiling does pmgd wait a second `reclaim_wait_time_secs` period; a breach
+   detected after that second wait is killed with reason
+   `TotalMemcgMemoryBreach`. If the process stays under the ceiling, pmgd
    returns `ReclaimSuccessful` and throttles itself for five minutes
    (`HOLD_BACK_AFTER_SUCCESSFUL_RECLAIM_IN_SECONDS = 300`) before re-arming.
 
@@ -16260,8 +16521,11 @@ flowchart TD
     ANON -->|yes| KILLA["Kill: AnonMemoryBreach"]
     ANON -->|no| WAIT["Sleep reclaim_wait_time_secs"]
     WAIT --> CMP{"memory.current &gt;= memory.high?"}
-    CMP -->|no| OK["ReclaimSuccessful<br/>(throttle 300s)"]
-    CMP -->|yes| KILLT["Kill: TotalMemcgMemoryBreach"]
+    CMP -->|yes| KILLA2["Kill: AnonMemoryBreach"]
+    CMP -->|no| WAIT2["Sleep reclaim_wait_time_secs again"]
+    WAIT2 --> CMP2{"memory.current &gt;= memory.high?"}
+    CMP2 -->|yes| KILLT["Kill: TotalMemcgMemoryBreach"]
+    CMP2 -->|no| OK["ReclaimSuccessful<br/>(throttle 300s)"]
 ```
 
 Killing is gated by the `process_kill_enabled` flag; when it is off,
@@ -16330,9 +16594,12 @@ Two attribution refinements are worth noting:
   `WakelockPowerStatsCollector` now attribute "per-client component" usage to the
   *defining* app's UID rather than to the proxy UID, so battery cost lands on the
   app that owns the work.
-- **Charging policy.** `BatteryManager` exposes a `BatteryChargingPolicyEnum`
-  (for adaptive and longevity charging modes), and Android 17 fixed
-  `getChargingPolicy()` so callers read the correct current policy.
+- **Charging policy.** `BatteryManager` defines the `@BatteryChargingPolicy`
+  IntDef (`CHARGING_POLICY_ADAPTIVE_AON`, `_ADAPTIVE_AC`,
+  `_ADAPTIVE_LONGLIFE`, and so on, for adaptive and longevity charging modes);
+  the corresponding statsd proto enum is `BatteryChargingPolicyEnum`. The
+  `getChargingPolicy()` accessor lives on `BatteryManagerInternal`, and
+  Android 17 fixed it so callers read the correct current policy.
 
 None of these changes alter the `dumpsys batterystats` checkin format used by
 Battery Historian (section 29.6.7 and 29.6.13); they are internal structure and
@@ -16458,7 +16725,8 @@ PowerManager pm = getSystemService(PowerManager.class);
 // Get current status
 int status = pm.getCurrentThermalStatus();
 
-// Get headroom (0.0 = max throttling, 1.0 = no margin)
+// Get headroom (0.0 = no throttling, max margin;
+// 1.0 = SEVERE throttling threshold; values above 1.0 are possible)
 float headroom = pm.getThermalHeadroom(10); // 10-second forecast
 
 // Register listener
@@ -17041,8 +17309,9 @@ Starting with Android 8.0, apps targeting API 26+ are subject to:
    an `IllegalStateException`.
 
 2. **Allowed alternatives**:
-   - `startForegroundService()` -- starts a service that must post a
-     notification within 5 seconds
+   - `startForegroundService()` -- starts a service that must promptly call
+     `startForeground()` and post a notification (the platform enforces a
+     30 second default timeout; see §30.5.7)
    - `JobScheduler.schedule()` -- schedules constraint-aware work
    - `WorkManager.enqueue()` -- schedules deferrable work (AndroidX)
 
@@ -17051,7 +17320,7 @@ flowchart TD
     A["App wants to do<br/>background work"] --> B{"Is app in<br/>foreground?"}
     B -->|Yes| C["startService() OK"]
     B -->|No| D{"What kind<br/>of work?"}
-    D -->|"Time-sensitive,<br/>user-visible"| E["startForegroundService()<br/>+ notification within 5s"]
+    D -->|"Time-sensitive,<br/>user-visible"| E["startForegroundService()<br/>+ prompt startForeground()"]
     D -->|"Deferrable,<br/>constraint-dependent"| F["JobScheduler.schedule()"]
     D -->|"Deferrable,<br/>needs guarantees"| G["WorkManager.enqueue()"]
     D -->|"Exact time<br/>needed"| H["AlarmManager<br/>(with restrictions)"]
@@ -17172,7 +17441,7 @@ further restrictions:
 | 13 (T) | 33 | Per-app language, refined runtime permissions |
 | 14 (U) | 34 | Foreground service types enforced, SCHEDULE_EXACT_ALARM restricted |
 | 15 (V) | 35 | `dataSync` foreground service 6 hour timeout |
-| 16 | 36 | User-initiated job (UIJ) notifications centralized, UIJ notification dismissal restricted |
+| 16 | 36 | `setImportantWhileForeground()` job flag ignored for all apps regardless of target SDK |
 | 17 | 37 | New `getPendingJobReasons*()` diagnostics, abandoned-job detection, per-network connectivity batching, Perfetto job tracing, start-user-before-alarm |
 
 ---
@@ -17615,7 +17884,8 @@ package com.android.server.job;
 
 // Manages a pool of JobServiceContext objects (execution slots)
 // Balances reserved slots across the WORK_TYPE_* categories
-// Total concurrent slots depend on device memory and CPU
+// Total concurrent slots depend on device RAM: low-RAM devices get 8;
+// otherwise 16/20/32/40 by total memory (DEFAULT_CONCURRENCY_LIMIT)
 ```
 
 The manager categorizes running jobs into the `WORK_TYPE_*` bitset and reserves
@@ -17990,7 +18260,7 @@ they only work while the app's process is alive.
 | Time precision | High (exact/window) | Low (deferred to optimal time) |
 | Constraint support | None (time only) | Rich (network, charging, idle, ...) |
 | Batching | System-managed for inexact | System-managed always |
-| Persistence | Not across reboots (except `setAlarmClock`) | `setPersisted(true)` |
+| Persistence | Not across reboots (all alarms, including `setAlarmClock`, are lost; apps must reschedule on `ACTION_BOOT_COMPLETED`) | `setPersisted(true)` |
 | Power efficiency | Lower (wake-ups) | Higher (batched, deferred) |
 | Use case | Calendar events, alarms | Sync, upload, maintenance |
 | API level | 1+ | 21+ |
@@ -18013,7 +18283,7 @@ adb shell appops get com.example.myapp SCHEDULE_EXACT_ALARM
 # View alarm statistics
 adb shell dumpsys alarm | grep -A 20 "Alarm Stats"
 
-# Force all pending alarms to fire (testing only)
+# Set the system wall clock (RTC alarms scheduled before this time will then be due)
 adb shell cmd alarm set-time <epoch_millis>
 ```
 
@@ -18294,7 +18564,8 @@ public class MusicService extends Service {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build();
 
-        // Must call within 5 seconds of startForegroundService()
+        // Must call promptly after startForegroundService()
+        // (30-second platform default timeout; see 30.5.7)
         startForeground(NOTIFICATION_ID, notification,
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
 
@@ -18362,11 +18633,11 @@ sequenceDiagram
 
     App->>AMS: startForegroundService(intent)
     AMS->>AMS: Create/start service
-    AMS->>AMS: Start 5-second timeout
+    AMS->>AMS: Arm startForeground timeout (30s default)
     AMS->>FGS: onStartCommand()
 
     FGS->>AMS: startForeground(id, notification, type)
-    AMS->>AMS: Cancel 5-second timeout
+    AMS->>AMS: Cancel startForeground timeout
     AMS->>NMS: Post foreground notification
     NMS->>NMS: Show persistent notification
 
@@ -18448,18 +18719,26 @@ are meant to be measured in minutes rather than hours.
 
 ### 30.5.7 Foreground Service ANR
 
-If a foreground service does not call `startForeground()` within 5 seconds of
+If a foreground service does not call `startForeground()` in time after
 `startForegroundService()`, the system generates a
-`ForegroundServiceDidNotStartInTimeException` crash. On API 31+, this is a
+`ForegroundServiceDidNotStartInTimeException` crash. Developer guidance is to
+call `startForeground()` within a few seconds, but the platform-enforced window
+is longer: the AOSP default is 30 seconds
+(`DEFAULT_SERVICE_START_FOREGROUND_TIMEOUT_MS` in
+`frameworks/base/services/core/java/com/android/server/am/ActivityManagerConstants.java`,
+tunable via `DeviceConfig` as `mServiceStartForegroundTimeoutMs`), plus an
+additional 10 second ANR delay
+(`DEFAULT_SERVICE_START_FOREGROUND_ANR_DELAY_MS`) before `ActiveServices`
+actually throws. On API 31+, this is a
 `ForegroundServiceStartNotAllowedException` if the app attempts to start from
 the background without an exemption.
 
 ```mermaid
 flowchart TD
-    A["startForegroundService()"] --> B["5-second timer starts"]
+    A["startForegroundService()"] --> B["startForeground timeout armed<br/>(30s AOSP default)"]
     B --> C{"startForeground()<br/>called in time?"}
     C -->|Yes| D["Service runs normally"]
-    C -->|No| E["ANR / crash:<br/>ForegroundServiceDidNotStartInTimeException"]
+    C -->|No| E["After extra 10s ANR delay:<br/>ForegroundServiceDidNotStartInTimeException"]
 ```
 
 ### 30.5.8 Notification Requirements
@@ -18493,9 +18772,12 @@ know which app is consuming resources and can stop it.
 
 ### 30.5.9 User-Visible Foreground Service Notifications
 
-Starting with Android 13 (API 33), users can long-press the foreground service
-notification to stop the service directly. This gives users control over
-misbehaving apps without needing to navigate to Settings.
+Starting with Android 13 (API 33), the Foreground Services Task Manager
+(`FgsManagerController` in SystemUI, at
+`frameworks/base/packages/SystemUI/src/com/android/systemui/qs/FgsManagerController.kt`)
+adds an "Active apps" affordance to the notification shade that lists the apps
+currently running foreground services, each with a Stop button. This gives users
+control over misbehaving apps without needing to navigate to Settings.
 
 ---
 
@@ -18670,8 +18952,9 @@ gate new public APIs; the service-side flags gate internal behavior.
 
 Historically the only way to ask why a job had not run was
 `JobScheduler.getPendingJobReason(int jobId)`, which returns a single reason even
-when several constraints are unmet. Android 17 deprecates it and adds three
-richer APIs, declared in
+when several constraints are unmet. Android 17 supersedes it -- the method is not
+formally `@Deprecated`, but an `@apiNote` now steers callers to
+`getPendingJobReasons(int)` -- and adds three richer APIs, declared in
 `frameworks/base/apex/jobscheduler/framework/java/android/app/job/JobScheduler.java`:
 
 ```java
@@ -18800,7 +19083,9 @@ to the app notification it is attached to, marks the notification with a
 user-initiated-job flag through `NotificationManagerInternal`, and restricts the
 app from silently dismissing a UIJ's notification while the job runs, so the user
 always retains a visible, actionable indicator (and a way to stop the work).
-Notifications are cleaned up when the owning user is stopped. Android 17 inherits
+The association -- and, where appropriate, the notification itself -- is torn
+down when the job stops or completes, via `removeNotificationAssociation()`
+called from `JobServiceContext`. Android 17 inherits
 this coordinator unchanged; it is covered here because it underpins the UIJ
 behavior the rest of this chapter relies on.
 
@@ -18908,7 +19193,7 @@ adb shell dumpsys jobscheduler | grep -B 2 -A 20 "com.google.android.gms"
 adb shell dumpsys usagestats | grep -A 2 "bucket"
 
 # View job execution timeline
-adb shell dumpsys jobscheduler | grep "Job history"
+adb shell dumpsys jobscheduler | grep -A 20 "Recently completed jobs"
 ```
 
 ### 30.8.2 Exercise: Schedule and Monitor a Job
@@ -19111,7 +19396,8 @@ WorkManager.getInstance(context)
 ### 30.8.5 Exercise: Test Doze Mode
 
 ```bash
-# Put device into Doze mode (screen must be off)
+# Re-enable device idle mode (if previously disabled); the force-idle
+# commands below are what actually put the device into Doze
 adb shell dumpsys deviceidle enable
 
 # Force device into light Doze
@@ -19154,8 +19440,10 @@ adb shell am set-standby-bucket com.example.myapp restricted
 # Observe the effect on your scheduled jobs
 adb shell dumpsys jobscheduler | grep -A 10 "com.example.myapp"
 
-# Reset to automatic bucket assignment
-adb shell am reset-standby-bucket com.example.myapp
+# Restore automatic bucket assignment: set the bucket back to active;
+# the system then re-ages it based on real usage (there is no dedicated
+# reset command -- only set-standby-bucket and get-standby-bucket exist)
+adb shell am set-standby-bucket com.example.myapp active
 ```
 
 ### 30.8.7 Exercise: Test Background Restrictions
@@ -19255,8 +19543,9 @@ adb shell dumpsys activity services | grep "isForeground=true"
 # Detailed service info
 adb shell dumpsys activity services com.example.myapp
 
-# Check foreground service types in use
-adb shell dumpsys activity services | grep "foregroundServiceType"
+# Check foreground service types in use (the FGS type bitmask is printed
+# as types=0x... on the same line as isForeground=)
+adb shell dumpsys activity services | grep "types=0x"
 ```
 
 ### 30.8.9 Exercise: Observe Broadcast Restrictions
@@ -19681,15 +19970,15 @@ User metadata is stored on disk in `/data/system/users/`:
 ```
 /data/system/users/
     userlist.xml          # List of all users and next serial number
-    user.list             # Performance-optimized user list
-    0/                    # System user (user 0)
-        0.xml             # UserInfo for user 0
+    user.list             # Perfetto user list (plain-text user ids/types for tracing)
+    0.xml                 # UserInfo for user 0
+    10.xml                # UserInfo for user 10
+    11.xml                # UserInfo for user 11
+    0/                    # System user (user 0) per-user files
         photo.png         # User avatar
-        res_*.xml         # User restrictions
+        res_*.xml         # Per-package application restrictions (res_<packageName>.xml)
     10/                   # Secondary user (user 10)
-        10.xml
     11/                   # Work profile (user 11)
-        11.xml
 ```
 
 The `userlist.xml` format:
@@ -19746,7 +20035,7 @@ User IDs are allocated sequentially starting from `MIN_USER_ID` (10):
 static final int MIN_USER_ID = UserHandle.MIN_SECONDARY_USER_ID;  // 10
 
 @VisibleForTesting
-static final int MAX_USER_ID = UserHandle.MAX_SECONDARY_USER_ID;  // Integer.MAX_VALUE / 100000
+static final int MAX_USER_ID = UserHandle.MAX_SECONDARY_USER_ID;  // Integer.MAX_VALUE / 100000 - 1
 ```
 
 User 0 is always the system user. IDs 1-9 are reserved. Newly created users
@@ -20092,7 +20381,7 @@ sequenceDiagram
     UMS->>UMS: Create UserInfo, write to disk
     UMS->>UDP: prepareUserData(userInfo, flags)
     UDP->>SM: Create CE/DE directories
-    UMS->>PM: installPackagesForNewUser(userId)
+    UMS->>PM: createNewUser(userId, installablePackages, disallowedPackages)
     UMS->>LL: onUserCreated(userInfo)
     UMS-->>Caller: UserInfo
 ```
@@ -20127,7 +20416,7 @@ The creation method performs extensive validation:
     final UserData userData = new UserData();
     userData.info = userInfo;
     userData.userProperties = new UserProperties(
-            userTypeDetails.getDefaultUserProperties());
+            userTypeDetails.getDefaultUserPropertiesReference());
 
     // 8. Store in memory and write to disk
     synchronized (mUsersLock) {
@@ -20139,8 +20428,10 @@ The creation method performs extensive validation:
     // 9. Prepare storage
     mUserDataPreparer.prepareUserData(userInfo, storageFlags);
 
-    // 10. Install system packages
-    mPm.installPackagesFromSystemImageForUser(userId, ...);
+    // 10. Install the system packages appropriate for this user type
+    mPm.createNewUser(userId,
+            mSystemPackageInstaller.getInstallablePackagesForUserType(userType),
+            disallowedPackages);
 
     // 11. Notify listeners
     for (UserLifecycleListener listener : mUserLifecycleListeners) {
@@ -20156,19 +20447,21 @@ The creation method performs extensive validation:
 New user IDs are assigned by finding the next unused ID:
 
 ```java
+// Simplified from getNextAvailableId() / scanNextAvailableIdLU()
 private int getNextAvailableId() {
     synchronized (mUsersLock) {
-        // Find the smallest ID >= MIN_USER_ID that is not currently in use
-        // and not in the recently-removed list
-        int nextId = MIN_USER_ID;  // 10
-        while (mUsers.get(nextId) != null
-                || mRecentlyRemovedIds.contains(nextId)) {
-            nextId++;
-            if (nextId > MAX_USER_ID) {
-                throw new IllegalStateException("Cannot add user. Maximum reached.");
+        // Scan for the smallest ID >= MIN_USER_ID that is neither in mUsers
+        // nor in mRemovingUserIds (every id removed since boot)
+        for (int i = MIN_USER_ID /* 10 */; i < MAX_USER_ID; i++) {
+            if (mUsers.indexOfKey(i) < 0 && !mRemovingUserIds.get(i)) {
+                return i;
             }
         }
-        return nextId;
+        // All ids exhausted: recycle removed ids, keeping only
+        // mRecentlyRemovedIds (an LRU list of the most recently removed
+        // ids, capped at MAX_RECENTLY_REMOVED_IDS_SIZE) off-limits,
+        // then rescan. If even that fails:
+        throw new IllegalStateException("No user id available!");
     }
 }
 ```
@@ -20179,7 +20472,7 @@ For faster user creation (e.g., quick guest setup), Android supports pre-creatin
 users in advance:
 
 ```java
-// From UserInfo
+// From UserManagerService.java
 private static final String ATTR_PRE_CREATED = "preCreated";
 private static final String ATTR_CONVERTED_FROM_PRE_CREATED = "convertedFromPreCreated";
 ```
@@ -20425,26 +20718,26 @@ graph LR
 
 Work profiles support "quiet mode" -- a paused state where work apps are suspended:
 
+The public entry point `requestQuietModeEnabled()` validates the caller and
+flags, then delegates to `setQuietModeEnabled()`, which toggles
+`FLAG_QUIET_MODE` on the profile's `UserInfo` and stops or starts the profile:
+
 ```java
-// From UserManagerService.java
-public boolean requestQuietModeEnabled(
-        @NonNull String callingPackage,
-        boolean enableQuietMode,
-        @UserIdInt int userId,
-        @Nullable IntentSender target,
-        @QuietModeFlag int flags) {
-    // ...
+// From UserManagerService.java (simplified)
+private void setQuietModeEnabled(@UserIdInt int userId, boolean enableQuietMode,
+        IntentSender target, @Nullable String callingPackage) {
+    // ... verify userId is a profile and quiet mode actually changes
+    profile.flags ^= UserInfo.FLAG_QUIET_MODE;  // toggle the flag
+    writeUserLP(profileUserData);               // persist to <id>.xml
+
     if (enableQuietMode) {
-        // Set profile as disabled, stop running apps
-        setUserInfoFlags(userInfo, UserInfo.FLAG_DISABLED);
+        stopUserForQuietMode(userId);           // stop the profile's apps
         // Apps will show as "paused" in launcher
     } else {
-        // May require authentication to re-enable
-        if (profile.isManagedProfile()) {
-            // Check if work challenge is needed
-        }
-        removeUserInfoFlags(info, UserInfo.FLAG_DISABLED);
+        // Restart the profile; `target` is fired once it is unlocked
+        ActivityManager.getService().startProfileWithListener(userId, callback);
     }
+    // ... broadcast profile availability changes
 }
 ```
 
@@ -20480,7 +20773,9 @@ profiles on debug builds.
 
 ### 31.4.7 Work Profile Creation via DevicePolicyManager
 
-While `UserManagerService.createProfileForUser()` is the low-level mechanism,
+While `UserManagerService.createProfileForUserWithThrow()` (and its
+`createProfileForUserEvenWhenDisallowedWithThrow()` variant, which is what DPMS
+actually invokes) is the low-level mechanism,
 work profiles are typically created through the **Device Policy Manager**
 provisioning flow. This is what enterprise MDM solutions and the Setup Wizard
 invoke:
@@ -20497,11 +20792,11 @@ sequenceDiagram
 
     MDM->>DPM: createManagedProfile(admin, name)
     DPM->>DPM: Log ACTION_PROVISION_MANAGED_PROFILE
-    DPM->>UMS: createProfileForUserWithThrow(name, type, parentId)
+    DPM->>UMS: createProfileForUserEvenWhenDisallowedWithThrow(name, type, parentId)
     UMS->>UMS: Allocate user ID via getNextAvailableId()
     UMS->>UMS: Create UserInfo with profileGroupId = parentId
     UMS->>UMS: Write /data/system/users/N.xml
-    UMS->>PM: installPackagesFromSystemImageForUser(userId)
+    UMS->>PM: createNewUser(userId, installablePackages, disallowedPackages)
     PM-->>UMS: Packages installed
     UMS-->>DPM: Return UserHandle
     DPM->>DPM: Set admin DPC as profile owner
@@ -20512,23 +20807,30 @@ sequenceDiagram
 ```java
 // Source: frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyManagerService.java:21426
 public UserHandle createManagedProfile(
-        ComponentName admin, String name, boolean useManagedProfilePlaceholder) {
-    // Delegates to createManagedProfileInternal()
+        @NonNull ManagedProfileProvisioningParams provisioningParams,
+        @NonNull String callerPackage) {
+    // The admin component comes from
+    // provisioningParams.getProfileAdminComponentName();
+    // delegates to createManagedProfileInternal()
 }
 
 // Line 21440
 private UserHandle createManagedProfileInternal(
-        ProvisioningParams provisioningParams, Caller caller) {
+        @NonNull ManagedProfileProvisioningParams provisioningParams,
+        @NonNull CallerIdentity caller) {
     // 1. Log provisioning action
-    // 2. Call UserManager.createProfileForUserWithThrow()
+    // 2. Call UserManager.createProfileForUserEvenWhenDisallowedWithThrow()
     // 3. Set up admin DPC as profile owner
     // 4. Store seed account if provided
 }
 ```
 
-The `createAndManageUser()` method (line 12166) provides a combined operation
-that creates the profile and installs the Device Policy Controller (DPC) app
-in a single call, used by programmatic enterprise enrollment.
+The separate `createAndManageUser()` method (line 12166) does *not* create a
+work profile: it is a device-owner-only operation that creates a new full
+secondary user (`USER_TYPE_FULL_SECONDARY`, or `USER_TYPE_FULL_DEMO` in demo
+mode) via `UserManagerInternal.createUserEvenWhenDisallowed()` and sets the
+caller's component as that user's profile owner. It is blocked in headless
+single-user mode.
 
 ### 31.4.8 Work Profile Lifecycle Management
 
@@ -20655,9 +20957,10 @@ boundaries:
 ```java
 // Source: frameworks/base/services/core/java/com/android/server/pm/CrossProfileIntentFilter.java:42
 class CrossProfileIntentFilter extends WatchedIntentFilter {
-    int mTargetUserId;          // Which user can receive
-    int mFlags;                 // Behavior flags
-    AccessControlLevel mAccessControlLevel;  // Who can modify
+    final int mTargetUserId;        // Which user can receive
+    final String mOwnerPackage;     // Package that created the filter
+    final int mFlags;               // Behavior flags
+    final int mAccessControlLevel;  // Who can modify (@AccessControlLevel)
 }
 ```
 
@@ -20679,8 +20982,8 @@ The system pre-configures several cross-profile intent filters during profile
 creation. These allow essential functionality to work across profiles:
 
 - **Web browsing** — `ACTION_VIEW` with `http/https` schemes
-- **Phone calls** — `ACTION_DIAL`, `ACTION_CALL`
-- **Settings** — `ACTION_SETTINGS`
+- **Phone calls** — `ACTION_DIAL`, `ACTION_CALL_EMERGENCY`, `ACTION_CALL_PRIVILEGED`
+- **Settings** — `ACTION_DATA_ROAMING_SETTINGS`, `ACTION_NETWORK_OPERATOR_SETTINGS`
 - **Camera capture** — `ACTION_IMAGE_CAPTURE`, `ACTION_VIDEO_CAPTURE`
 - **File picking** — `ACTION_GET_CONTENT`, `ACTION_OPEN_DOCUMENT`
 
@@ -20696,7 +20999,8 @@ restrictions that apply only within the work profile:
 #### Profile-Scoped Restrictions
 
 ```java
-// Source: frameworks/base/services/core/java/com/android/server/pm/UserManagerService.java:2251
+// Source: frameworks/base/services/core/java/com/android/server/pm/UserManagerService.java:4053
+// (updateUserRestrictionsInternalLR)
 // Restrictions are merged from three sources:
 // BASE    → mBaseUserRestrictions (per-user defaults)
 // DPL     → Device Policy Local (profile-owner restrictions)
@@ -20927,8 +21231,8 @@ Android maintains separate storage areas for each user:
         0/                 # User 0 metadata
         10/                # User 10 metadata
 
-    user/                  # Symlink to user/0 for user 0
-    user/0/                # CE storage for user 0
+    user/                  # Per-user CE app data roots
+    user/0/                # CE storage for user 0 (/data/data is bind-mounted here)
         com.example.app/   # App data
     user/10/               # CE storage for user 10
         com.example.app/   # Separate app data instance
@@ -21011,15 +21315,16 @@ controls which packages are available per user type:
 
 ```java
 // From UserSystemPackageInstaller.java
-// Packages can be configured via:
-// 1. config_systemUserAllowlistedPackages (for system user)
-// 2. config_userTypePackageWhitelist (per user type)
-// 3. Package manifest install-in/exclude-from declarations
+// The per-user-type allowlist/denylist comes from SystemConfig's
+// <install-in-user-type> entries in /etc/sysconfig XML, read via
+// SystemConfig.getAndClearPackageToUserTypeAllowlist().
+// The enforcement mode is the integer resource
+// config_userTypePackageWhitelistMode (bit values 1/2/4/8).
 ```
 
-The installer reads allowlists and blocklists from device overlay configurations,
-ensuring (for example) that enterprise management apps are only installed in work
-profiles and consumer apps are not installed in restricted profiles.
+The installer reads the allowlists and denylists from the device's sysconfig
+XML, ensuring (for example) that enterprise management apps are only installed
+in work profiles and consumer apps are not installed in restricted profiles.
 
 ### 31.6.5 External Storage per User
 
@@ -21057,8 +21362,9 @@ sequenceDiagram
     AM->>UMS: Check switchability
     UMS-->>AM: SWITCHABILITY_STATUS_OK
 
-    AM->>WM: freezeDisplay()
-    Note over WM: Show transition animation
+    AM->>WM: setSwitchingUser(true)
+    AM->>WM: startUserSwitchTransition(oldUserId, newUserId)
+    Note over WM: Show user-switching dialog
 
     AM->>AM: Stop foreground user's activities
     AM->>APPS: Send USER_BACKGROUND broadcast
@@ -21070,8 +21376,8 @@ sequenceDiagram
 
     AM->>APPS: Send USER_FOREGROUND broadcast
     AM->>APPS: Send USER_SWITCHED broadcast
-    AM->>WM: unfreezeDisplay()
-    Note over WM: Show new user's desktop
+    AM->>WM: setSwitchingUser(false)
+    Note over WM: Dismiss dialog, show new user's desktop
 ```
 
 ### 31.7.2 Switchability Checks
@@ -21161,16 +21467,19 @@ graph TB
 
 When switching users, the system manages processes carefully:
 
-1. **Freeze:** The display is frozen to show a transition animation
+1. **Transition start:** `WindowManagerService.setSwitchingUser(true)` and
+   `startUserSwitchTransition()` put up the user-switching dialog
 2. **Background current user:** The current user's activities are paused/stopped
 3. **Start target user:** The target user's system services and critical apps start
 4. **Unlock if needed:** If the user has a lock screen, wait for unlock
 5. **Foreground target user:** Start the user's launcher and restore activities
-6. **Unfreeze:** The display unfreezes, showing the new user's UI
+6. **Transition end:** `setSwitchingUser(false)` dismisses the dialog, showing
+   the new user's UI
 
-Profiles of the previous user are stopped (unless they have
-`allowStoppingUserWithDelayedLocking`). Profiles of the new user are started
-(if `startWithParent=true`).
+Profiles of the previous user are stopped; those whose `UserProperties` set
+`allowStoppingUserWithDelayedLocking` are stopped with *delayed locking*, so
+their CE storage stays unlocked while the profile is stopped. Profiles of the
+new user are started (if `startWithParent=true`).
 
 ### 31.7.5 Boot User Selection
 
@@ -21208,8 +21517,9 @@ The user switcher appears in multiple places:
 3. **Settings > Users** -- Full user management interface
 
 `SystemUI` reads the user list from `UserManagerService` and presents switching
-controls. The `UserSwitcherController` in SystemUI subscribes to user change
-broadcasts to keep the UI synchronized.
+controls. The `UserSwitcherInteractor` in SystemUI subscribes to user change
+broadcasts to keep the UI synchronized (the older `UserSwitcherController` is
+a deprecated facade that delegates to it).
 
 ### 31.7.7 Broadcasts During User Lifecycle
 
@@ -21218,7 +21528,7 @@ graph LR
     subgraph "User Start"
         A1["ACTION_USER_STARTING<br/>System only"]
         A2["ACTION_LOCKED_BOOT_COMPLETED<br/>Direct boot apps"]
-        A3["ACTION_USER_UNLOCKED<br/>System only"]
+        A3["ACTION_USER_UNLOCKED<br/>Registered receivers only"]
         A4["ACTION_BOOT_COMPLETED<br/>All apps"]
     end
 
@@ -21246,7 +21556,7 @@ graph LR
 |---|---|---|
 | `ACTION_USER_STARTING` | System services | User process beginning to start |
 | `ACTION_LOCKED_BOOT_COMPLETED` | Direct-boot aware apps | DE storage available |
-| `ACTION_USER_UNLOCKED` | System services | CE storage available |
+| `ACTION_USER_UNLOCKED` | Any app's *registered* receivers (not manifest receivers) | CE storage available |
 | `ACTION_BOOT_COMPLETED` | All apps in user | Full storage available |
 | `ACTION_USER_BACKGROUND` | System services | User moving to background |
 | `ACTION_USER_FOREGROUND` | System services | User moving to foreground |
@@ -21287,28 +21597,31 @@ public static final int FLAG_EPHEMERAL_ON_CREATE = 0x00002000;
 public static final int FLAG_MAIN      = 0x00004000;
 public static final int FLAG_FOR_TESTING = 0x00008000;
 
-// Convenience checks
-public boolean isGuest()   { return (flags & FLAG_GUEST) != 0; }
-public boolean isAdmin()   { return (flags & FLAG_ADMIN) != 0; }
+// Convenience checks — some test flag bits, others resolve the userType string
+public boolean isAdmin()   { return (flags & FLAG_ADMIN) == FLAG_ADMIN; }
 public boolean isProfile() { return (flags & FLAG_PROFILE) != 0; }
 public boolean isFull()    { return (flags & FLAG_FULL) != 0; }
-public boolean isMain()    { return (flags & FLAG_MAIN) != 0; }
-public boolean isManagedProfile() { return (flags & FLAG_MANAGED_PROFILE) != 0; }
-public boolean isCommunalProfile() { ... }   // checks userType, not flags
-public boolean isPrivateProfile()  { ... }   // checks userType, not flags
+public boolean isGuest()   { return UserManager.isUserTypeGuest(userType); }
+public boolean isManagedProfile() {
+    return UserManager.isUserTypeManagedProfile(userType);
+}
+public boolean isCommunalProfile() { ... }   // checks userType
+public boolean isPrivateProfile()  { ... }   // checks userType
 ```
 
 `FLAG_EPHEMERAL_ON_CREATE` (`0x00002000`) is distinct from `FLAG_EPHEMERAL`: it
 marks a user that was *requested* ephemeral at creation time, even if the user
-ends up persistent. `isPrivateProfile()` and `isCommunalProfile()` resolve
-against the stored `userType` string rather than a bit, since those profile
-types do not carry a dedicated `UserInfo` flag.
+ends up persistent. Only checks like `isAdmin()`, `isProfile()`, and `isFull()`
+are pure bit tests; `isGuest()`, `isManagedProfile()`, `isPrivateProfile()`,
+and `isCommunalProfile()` resolve against the stored `userType` string instead
+(and `isMain()` tests `FLAG_MAIN` via `isMainUnlogged()` after logging a static
+deprecation warning).
 
 Common flag combinations:
 
 | User Type | Flags | Hex |
 |---|---|---|
-| System user (non-HSUM) | SYSTEM, FULL, PRIMARY, ADMIN, MAIN | `0x00004C13` |
+| System user (non-HSUM) | SYSTEM, FULL, PRIMARY, ADMIN, INITIALIZED, MAIN | `0x00004C13` |
 | Secondary user | FULL | `0x00000400` |
 | Guest (ephemeral) | FULL, GUEST, EPHEMERAL | `0x00000504` |
 | Work profile | PROFILE, MANAGED_PROFILE | `0x00001020` |
@@ -21357,8 +21670,9 @@ set of restrictions is defined in `UserManager`:
 | `DISALLOW_USER_SWITCH` | Cannot switch users |
 
 The restriction enforcement is distributed -- each system service checks relevant
-restrictions for the calling user. For example, `TelephonyManager` checks
-`DISALLOW_OUTGOING_CALLS` before allowing a call.
+restrictions for the calling user. For example, Telecom
+(`com.android.server.telecom.UserUtil`) checks `DISALLOW_OUTGOING_CALLS` before
+allowing a call.
 
 ### 31.8.3 UserSystemPackageInstaller Details
 
@@ -21382,10 +21696,12 @@ graph TB
     end
 ```
 
-OEMs configure per-type allowlists in:
+OEMs configure per-type allowlists in SystemConfig XML (under `/etc/sysconfig`):
 
-- `config_userTypePackageWhitelist` (XML overlay)
-- Package manifest `install-in` and `exclude-from` directives
+- `<install-in-user-type package="...">` entries, with `<install-in user-type="..."/>`
+  and `<do-not-install-in user-type="..."/>` children
+- The enforcement mode comes from the `config_userTypePackageWhitelistMode`
+  integer resource (bit values 1/2/4/8)
 
 This ensures that:
 
@@ -21399,13 +21715,13 @@ This ensures that:
 `UserManagerService` uses `UserFilter` for efficiently querying subsets of users:
 
 ```java
-// From UserFilter.java (conceptual)
-// Filters can include:
-// - excludePartial: Skip users being created/removed
-// - excludeDying: Skip users being removed
-// - excludePreCreated: Skip pre-created users
-// - matchType: Only specific user types
-// - matchParent: Only profiles of a specific parent
+// From UserFilter.java
+// The filter knobs (set through UserFilter.Builder) are:
+// - includePartial (withPartialUsers): include users being created/removed
+// - includeDying (withDyingUsers): include users in the middle of removal
+// - requiredFlags (setRequiredFlags): only users with these UserInfo flags
+// - excludedIds (excludeUserId): skip specific user ids
+// By default, partial and dying users are excluded.
 ```
 
 The filter system avoids creating intermediate lists by applying predicates directly
@@ -21434,9 +21750,10 @@ sequenceDiagram
 Each `DefaultCrossProfileIntentFilter` specifies:
 
 - An `IntentFilter` pattern to match
-- Source user type (which profile the intent originates from)
-- Target user type (which profile to forward to)
-- Whether to skip the current profile's resolution
+- A forwarding `direction` — `TO_PARENT` or `TO_PROFILE`
+- Forwarding `flags` such as `SKIP_CURRENT_PROFILE` or `ONLY_IF_NO_MATCH_FOUND`
+- `letsPersonalDataIntoProfile`, which is suppressed when
+  `DISALLOW_SHARE_INTO_MANAGED_PROFILE` is set
 
 The resolution strategy is controlled by `crossProfileIntentResolutionStrategy`:
 
@@ -21455,7 +21772,7 @@ graph TD
     B2 --> CRED[User Enters Credential]
     CRED --> CE[CE Storage Unlocked]
     CE --> B3["ACTION_USER_UNLOCKING<br/>System only"]
-    B3 --> B4["ACTION_USER_UNLOCKED<br/>System only"]
+    B3 --> B4["ACTION_USER_UNLOCKED<br/>Registered receivers only"]
     B4 --> B5["ACTION_BOOT_COMPLETED<br/>All apps in user"]
 ```
 
@@ -21546,7 +21863,7 @@ The `UserVisibilityMediator` tracks user-to-display assignments:
 ```java
 // From UserVisibilityMediator.java
 // MUMD mode maintains:
-// - mUsersAssignedToDisplays: SparseIntArray (userId -> displayId)
+// - mUsersAssignedToDisplayOnStart: SparseIntArray (userId -> displayId)
 // - mExtraDisplaysAssignedToUsers: reverse mapping
 // - Visibility queries check both foreground user and display assignments
 ```
@@ -21667,7 +21984,8 @@ public static final int USER_JOURNEY_DEMOTE_MAIN_USER = ...;
 public static final int USER_JOURNEY_USER_LOGOUT = ...;
 
 // Error codes
-public static final int ERROR_CODE_UNSPECIFIED = 0;
+public static final int ERROR_CODE_INVALID_SESSION_ID = 0;
+public static final int ERROR_CODE_UNSPECIFIED = -1;
 public static final int ERROR_CODE_INCOMPLETE_OR_TIMEOUT = 2;
 public static final int ERROR_CODE_ABORTED = 3;
 public static final int ERROR_CODE_NULL_USER_INFO = 4;
@@ -21823,12 +22141,15 @@ profile per parent, only 1 work profile per parent (production builds, via
 
 ### 31.8.18 User Switcher Controller in SystemUI
 
-SystemUI implements the user switcher through `UserSwitcherController`:
+SystemUI implements the user switcher through `UserSwitcherInteractor` (in
+`packages/SystemUI/src/com/android/systemui/user/domain/interactor/`); the
+older `UserSwitcherController` remains only as a deprecated facade that
+delegates to it:
 
 ```mermaid
 graph TB
     subgraph "SystemUI User Switcher"
-        USC[UserSwitcherController]
+        USC[UserSwitcherInteractor]
         USC --> USERS["User Records<br/>from UserManager"]
         USC --> QS[Quick Settings Tile]
         USC --> LS[Lock Screen Selector]
@@ -21840,7 +22161,7 @@ graph TB
     USC --> AM
 ```
 
-The controller listens for:
+The interactor's broadcast receiver listens for:
 
 - `ACTION_USER_ADDED` / `ACTION_USER_REMOVED`: Update user list
 - `ACTION_USER_SWITCHED`: Update current user indicator
@@ -21932,7 +22253,7 @@ device-wide:
 /data/system/users/0/settings_secure.xml    # User 0 secure settings
 /data/system/users/10/settings_secure.xml   # User 10 secure settings
 /data/system/users/0/settings_system.xml    # User 0 system settings
-/data/system/settings_global.xml            # Global settings (all users)
+/data/system/users/0/settings_global.xml    # Global settings (stored under the system user)
 ```
 
 When code calls `Settings.Secure.getString()`, the system automatically resolves
@@ -22050,9 +22371,8 @@ Process priority considerations:
 - Background user's processes are deprioritized (higher OOM score)
 - Profile processes share priority with their parent user
 - When memory is low, background user processes are killed first
-- On user switch, the previous user's processes may be force-stopped
-  (configurable via `config_freeformWindowStopsProcessOnSwitch` or
-  similar settings)
+- On user switch, background users may be stopped, governed by
+  `config_multiuserMaxRunningUsers` and `config_multiuserDelayUserDataLocking`
 
 ### 31.8.27 Multi-User Boot Sequence
 
@@ -22129,11 +22449,14 @@ public void testCrossProfileAccess() {
 ```
 
 **CTS Tests:**
-The `android.multiuser.cts` package contains comprehensive tests:
+The `android.multiuser.cts` package (test APK `CtsMultiUserTestCases`) contains
+comprehensive tests:
 
 - `UserVisibilityTest` -- Tests for all visibility modes
 - `UserManagerTest` -- Core user management operations
-- `CrossProfileTest` -- Cross-profile communication
+
+Cross-profile communication is covered separately by the host-side devicepolicy
+suite (`com.android.cts.managedprofile.CrossProfileTest`).
 
 **Manual Testing:**
 ```bash
@@ -22143,8 +22466,8 @@ adb shell pm create-user --profileOf 0 --managed "Work"
 
 # Run a test scenario
 adb shell am instrument -w -e class \
-    com.android.cts.multiuser.UserManagerTest \
-    com.android.cts.multiuser/androidx.test.runner.AndroidJUnitRunner
+    android.multiuser.cts.UserManagerTest \
+    android.multiuser.cts/androidx.test.runner.AndroidJUnitRunner
 
 # Clean up
 adb shell pm list users | grep -o "UserInfo{[0-9]*" | \
@@ -22375,13 +22698,13 @@ Users:
     Type: android.os.usertype.full.SYSTEM
     Flags: 0x00004c13 (ADMIN|PRIMARY|FULL|SYSTEM|MAIN)
     State: RUNNING_UNLOCKED
-  UserInfo{10:Guest:4804} running
+  UserInfo{10:Guest:504} running
     Type: android.os.usertype.full.GUEST
-    Flags: 0x00004804 (GUEST|FULL|EPHEMERAL)
+    Flags: 0x00000504 (GUEST|FULL|EPHEMERAL)
     State: -
-  UserInfo{11:Work profile:4030} running
+  UserInfo{11:Work profile:1030} running
     Type: android.os.usertype.profile.MANAGED
-    Flags: 0x00004030 (MANAGED_PROFILE|PROFILE)
+    Flags: 0x00001030 (MANAGED_PROFILE|INITIALIZED|PROFILE)
     profileGroupId: 0
     State: RUNNING_UNLOCKED
 ```
@@ -22399,10 +22722,8 @@ adb shell pm create-user --guest "Guest"
 adb shell pm create-user --profileOf 0 --managed "Work"
 
 # Create a private profile
-adb shell cmd user create-profile-for --user-type android.os.usertype.profile.PRIVATE 0
-
-# List available user types
-adb shell cmd user list-user-types
+adb shell pm create-user --profileOf 0 \
+    --user-type android.os.usertype.profile.PRIVATE "Private"
 ```
 
 ### 31.10.3 Switching Users
@@ -22414,18 +22735,17 @@ adb shell am switch-user 10
 # Check current foreground user
 adb shell am get-current-user
 
-# Check user switchability
-adb shell cmd user report-user-switchability
+# Switchability is computed by UserManager.getUserSwitchability();
+# inspect the relevant state in the service dump
+adb shell dumpsys user
 ```
 
 ### 31.10.4 Managing Profiles
 
 ```bash
-# Enable quiet mode for a managed profile (user 11)
-adb shell cmd user set-quiet-mode --enable 11
-
-# Disable quiet mode (unlock)
-adb shell cmd user set-quiet-mode --disable 11
+# Quiet mode has no `cmd user` shell command; it is toggled
+# programmatically via UserManager.requestQuietModeEnabled()
+# (e.g. from Settings or the launcher's work-apps toggle)
 
 # Check if a user is a profile
 adb shell cmd user is-profile 11
@@ -22505,31 +22825,29 @@ adb logcat | grep -E "onUserStart|onUserStop|switchUser|UserState"
 ### 31.10.9 Checking User Visibility
 
 ```bash
-# List visible users
-adb shell cmd user get-visible-users
-
 # Check if a specific user is visible
-adb shell cmd user is-visible 10
+adb shell cmd user is-user-visible 10
 
-# Check what display a user is assigned to
-adb shell cmd user get-main-display-for-user 10
+# Check visibility on a specific display
+adb shell cmd user is-user-visible --display 2 10
+
+# Visible users and display assignments appear in the service dump
+adb shell dumpsys user
 ```
 
 ### 31.10.10 Private Space Operations
 
 ```bash
 # Create Private Space profile
-adb shell cmd user create-profile-for \
-    --user-type android.os.usertype.profile.PRIVATE 0
+adb shell pm create-user --profileOf 0 \
+    --user-type android.os.usertype.profile.PRIVATE "Private"
 
-# Lock private space (enable quiet mode)
-adb shell cmd user set-quiet-mode --enable <private_user_id>
+# Locking/unlocking Private Space is quiet mode, toggled via
+# UserManager.requestQuietModeEnabled() — there is no
+# `cmd user` shell equivalent
 
-# Unlock private space
-adb shell cmd user set-quiet-mode --disable <private_user_id>
-
-# Check if Private Space is enabled on this device
-adb shell getprop persist.sys.user.private_profile
+# Check whether the private profile type is available on this device
+adb shell pm get-max-users --user-type android.os.usertype.profile.PRIVATE
 ```
 
 ### 31.10.11 Headless System User Mode Testing
@@ -22538,9 +22856,10 @@ adb shell getprop persist.sys.user.private_profile
 # Check if device is in headless system user mode
 adb shell getprop ro.fw.mu.headless_system_user
 
-# Emulate headless system user mode (requires reboot)
-adb shell setprop persist.debug.fw.headless_system_user 1
-adb reboot
+# Emulate headless system user mode (sets
+# persist.debug.user_mode_emulation=headless and reboots;
+# never set the property directly)
+adb shell cmd user set-system-user-mode-emulation --reboot headless
 
 # Check boot strategy
 adb shell getprop persist.user.hsum_boot_strategy
@@ -22549,14 +22868,11 @@ adb shell getprop persist.user.hsum_boot_strategy
 ### 31.10.12 User Type Inspection
 
 ```bash
-# List all registered user types
-adb shell cmd user list-user-types
-
-# Check a user's type
-adb shell cmd user get-user-type 11
+# Each user's type is printed in the service dump ("Type: ...")
+adb shell dumpsys user | grep -E "UserInfo|Type:"
 
 # Inspect user properties
-adb shell dumpsys user | grep -A 30 "User properties"
+adb shell dumpsys user | grep -A 30 "UserProperties"
 ```
 
 ### 31.10.13 Performance Monitoring
@@ -22569,7 +22885,7 @@ adb shell cmd user create-user --timed "Performance Test"
 adb logcat -s SystemServerTiming | grep -i user
 
 # Check user start/unlock timing
-adb shell dumpsys user | grep -E "startRealtime|unlockRealtime"
+adb shell dumpsys user | grep -E "Start time|Unlock time"
 ```
 
 ### 31.10.14 Multi-User Debugging Checklist
@@ -22579,7 +22895,7 @@ When investigating multi-user issues, check these in order:
 1. **User exists and is correct type:**
    ```bash
    adb shell pm list users
-   adb shell cmd user get-user-type <userId>
+   adb shell dumpsys user | grep -E "UserInfo|Type:"
    ```
 
 2. **User is running and unlocked:**
@@ -22589,7 +22905,7 @@ When investigating multi-user issues, check these in order:
 
 3. **Profile group is correct:**
    ```bash
-   adb shell dumpsys user | grep profileGroupId
+   adb shell dumpsys user | grep -E "UserInfo|parentId"
    ```
 
 4. **Storage is prepared:**
@@ -22610,7 +22926,8 @@ When investigating multi-user issues, check these in order:
 
 7. **Cross-profile intent filters are configured:**
    ```bash
-   adb shell dumpsys package intent-filter-verifiers
+   # See the "Cross-profile intent filters" section of the package dump
+   adb shell dumpsys package
    ```
 
 ---
@@ -22798,7 +23115,8 @@ applications can see which accounts.  This replaced the blanket
 | Visibility Level | Constant | Meaning |
 |------------------|----------|---------|
 | Not visible | `VISIBILITY_NOT_VISIBLE` | App cannot see this account |
-| User-managed | `VISIBILITY_USER_MANAGED_VISIBLE` | Visible if user grants access |
+| User-managed visible | `VISIBILITY_USER_MANAGED_VISIBLE` | Visible to this app, but the user can revoke visibility |
+| User-managed not visible | `VISIBILITY_USER_MANAGED_NOT_VISIBLE` | Not visible, but the user can reveal it (e.g., via `newChooseAccountIntent`) |
 | Visible | `VISIBILITY_VISIBLE` | Always visible to this app |
 | Undefined | `VISIBILITY_UNDEFINED` | Falls back to authenticator default |
 
@@ -22899,9 +23217,14 @@ accountManager.addOnAccountsUpdatedListener(
 );
 ```
 
-Internally, `AccountManagerService` maintains a
-`RemoteCallbackList<IAccountManagerResponse>` for each user and delivers
-updates when accounts change.
+Internally, the listener machinery lives on the client side:
+`AccountManagerService` simply broadcasts
+`AccountManager.LOGIN_ACCOUNTS_CHANGED_ACTION` to the user when accounts
+change, and `AccountManager` (in the app process) keeps the registered
+listeners in its `mAccountsUpdatedListeners` map.  A `BroadcastReceiver`
+registered by `AccountManager` receives the broadcast, re-queries the
+account list, and fans the result out to each registered
+`OnAccountsUpdateListener` on its handler.
 
 ### 32.1.8 Account Intent Broadcast
 
@@ -22943,13 +23266,13 @@ public final class AccountManagerService extends IAccountManager.Stub
 
         @Override
         public void onStart() {
-            mService = new AccountManagerService(getContext());
+            mService = new AccountManagerService(new Injector(getContext()));
             publishBinderService(Context.ACCOUNT_SERVICE, mService);
         }
 
         @Override
         public void onUserUnlocking(TargetUser user) {
-            mService.onUserUnlocked(user);
+            mService.onUnlockUser(user.getUserIdentifier());
         }
     }
 }
@@ -23002,7 +23325,7 @@ Source: frameworks/base/services/core/java/com/android/server/accounts/AccountsD
 
 | Table | Columns | Purpose |
 |-------|---------|---------|
-| `accounts` | `_id`, `name`, `type`, `password`, `previous_name`, `last_password_entry_time_millis_epoch` | Core account storage |
+| `accounts` | `_id`, `name`, `type`, `password` | Core account storage |
 | `authtokens` | `_id`, `accounts_id`, `type`, `authtoken` | Cached authentication tokens |
 | `extras` | `_id`, `accounts_id`, `key`, `value` | Per-account key-value user data |
 
@@ -23010,7 +23333,7 @@ Source: frameworks/base/services/core/java/com/android/server/accounts/AccountsD
 
 | Table | Columns | Purpose |
 |-------|---------|---------|
-| `accounts` | `_id`, `name`, `type` | Account listing (no credentials) |
+| `accounts` | `_id`, `name`, `type`, `previous_name`, `last_password_entry_time_millis_epoch` | Account listing (no credentials) |
 | `grants` | `accounts_id`, `auth_token_type`, `uid` | Token access grants per UID |
 | `visibility` | `accounts_id`, `_package`, `value` | Per-package account visibility |
 | `shared_accounts` | `_id`, `name`, `type` | Accounts shared across profiles |
@@ -23031,7 +23354,7 @@ static class UserAccounts {
         credentialsPermissionNotificationIds;  // Pending permission notifications
     final HashMap<Account, HashMap<String, String>> userDataCache;  // In-memory cache
     final HashMap<Account, HashMap<String, String>> authTokenCache; // In-memory cache
-    final TokenCache tokenCache;       // LRU token cache
+    final TokenCache accountTokenCaches;  // LRU token cache
     final Object cacheLock;            // Synchronization
     final Object dbLock;               // Database lock
 }
@@ -23103,20 +23426,20 @@ service and communicates via the `IAccountAuthenticator` AIDL interface:
 sequenceDiagram
     participant AMS as AccountManagerService
     participant AAC as AccountAuthenticatorCache
-    participant SM as ServiceManager
+    participant AM as ActivityManagerService
     participant AUTH as Authenticator Service
     participant AAB as AbstractAccountAuthenticator
 
     AMS->>AAC: getServiceInfo(accountType)
     AAC-->>AMS: ComponentName of authenticator
-    AMS->>SM: bindService(componentName, BIND_AUTO_CREATE)
-    SM-->>AUTH: Start service
+    AMS->>AM: bindServiceAsUser(intent, BIND_AUTO_CREATE)
+    AM-->>AUTH: Start service
     AUTH->>AAB: onBind() returns getIBinder()
     AUTH-->>AMS: IAccountAuthenticator binder
     AMS->>AAB: getAuthToken(response, account, tokenType, options)
     AAB->>AAB: Validate credentials, contact server
     AAB-->>AMS: Bundle with KEY_AUTHTOKEN
-    AMS->>AMS: Cache token in TokenCache + AccountsDb
+    AMS->>AMS: Store token (AccountsDb, or TokenCache for custom-token authenticators)
 ```
 
 ### 32.2.7 CryptoHelper -- Secure Session Storage
@@ -23128,9 +23451,12 @@ session bundles for the session-based account addition flow:
 Source: frameworks/base/services/core/java/com/android/server/accounts/CryptoHelper.java
 ```
 
-It uses a per-device key stored in the Android Keystore to protect
-session data that may be transferred between devices during account
-migration.
+It generates an ephemeral in-memory AES key (plus a separate HMAC-SHA256
+key for integrity) via `KeyGenerator` the first time it is used.  The keys
+are not backed by the Android Keystore and never leave `system_server`
+memory, so a session bundle encrypted by `CryptoHelper` can only be
+decrypted by the same running `system_server` instance -- it cannot be
+transferred to another device, and it does not survive a reboot.
 
 ### 32.2.8 AccountManagerService Shell Command
 
@@ -23171,7 +23497,7 @@ sequenceDiagram
     AUTH-->>AMS: Bundle with encrypted session data
     AMS-->>App: Session Bundle
 
-    Note over App: App can transfer session to another device/context
+    Note over App: App can hold the opaque session bundle and finish it later on this device
 
     App->>AMS: finishSession(sessionBundle, ...)
     AMS->>AUTH: finishSession(response, sessionBundle)
@@ -23263,35 +23589,49 @@ sequenceDiagram
     App->>AM: getAuthToken(account, tokenType, options, activity, callback)
 
     AM->>AMS: getAuthToken(response, account, tokenType, ...)
-    AMS->>TC: get(account, tokenType, callerPkg, sigDigest)
 
-    alt Token in cache and not expired
-        TC-->>AMS: cached token
-        AMS-->>AM: Bundle(KEY_AUTHTOKEN = token)
-        AM-->>App: callback.run(future)
-    else Token not cached
-        AMS->>DB: findAuthTokenByAccount(account, tokenType)
+    alt Standard authenticator with permission granted
+        AMS->>DB: readAuthTokenInternal(account, tokenType)
         alt Token in database
             DB-->>AMS: stored token
-            AMS->>TC: put(key, token, expiry)
             AMS-->>AM: Bundle(KEY_AUTHTOKEN = token)
+            AM-->>App: callback.run(future)
         else No stored token
             AMS->>AUTH: getAuthToken(response, account, tokenType, options)
-            alt Authenticator returns token directly
-                AUTH-->>AMS: Bundle(KEY_AUTHTOKEN = newToken)
-                AMS->>DB: insertAuthToken(account, tokenType, newToken)
-                AMS->>TC: put(key, newToken, expiry)
-                AMS-->>AM: Bundle(KEY_AUTHTOKEN = newToken)
-            else Authenticator requires user interaction
-                AUTH-->>AMS: Bundle(KEY_INTENT = loginIntent)
-                AMS-->>AM: Bundle(KEY_INTENT = loginIntent)
-                AM->>AM: Launch loginIntent via Activity
-                Note over AM: User enters credentials
-                AM-->>App: callback.run(future) with token
-            end
+        end
+    else Custom-token authenticator
+        AMS->>TC: readCachedTokenInternal(account, tokenType, callerPkg, sigDigest)
+        alt Token in cache and not expired
+            TC-->>AMS: cached token
+            AMS-->>AM: Bundle(KEY_AUTHTOKEN = token)
+            AM-->>App: callback.run(future)
+        else Cache miss
+            AMS->>AUTH: getAuthToken(response, account, tokenType, options)
         end
     end
+
+    alt Authenticator returns token directly
+        AUTH-->>AMS: Bundle(KEY_AUTHTOKEN = newToken)
+        AMS->>DB: insertAuthToken -- standard authenticators
+        AMS->>TC: saveCachedToken -- custom-token authenticators
+        AMS-->>AM: Bundle(KEY_AUTHTOKEN = newToken)
+    else Authenticator requires user interaction
+        AUTH-->>AMS: Bundle(KEY_INTENT = loginIntent)
+        AMS-->>AM: Bundle(KEY_INTENT = loginIntent)
+        AM->>AM: Launch loginIntent via Activity
+        Note over AM: User enters credentials
+        AM-->>App: callback.run(future) with token
+    end
 ```
+
+Which store the service consults depends on the authenticator type: a
+standard authenticator's tokens are persisted in the `authtokens` table
+and read back with `readAuthTokenInternal()` -- the in-memory `TokenCache`
+is never used for them.  A custom-token authenticator (one that declares
+`customTokens=true`) skips the database entirely; its tokens live only in
+the `TokenCache`, and a cache miss goes straight to the authenticator,
+whose result is cached with `saveCachedToken()`.  The two lookups are
+mutually exclusive.
 
 ### 32.3.3 Token Invalidation
 
@@ -23335,12 +23675,12 @@ The `TokenCache` checks expiry before returning cached tokens:
 
 ```java
 // Simplified from TokenCache logic in AccountManagerService
-TokenCache.Value tokenValue = accounts.tokenCache.get(cacheKey);
+TokenCache.Value tokenValue = accounts.accountTokenCaches.get(cacheKey);
 if (tokenValue != null) {
     if (tokenValue.expiryEpochMillis > System.currentTimeMillis()) {
         return tokenValue.token;  // Valid cached token
     } else {
-        accounts.tokenCache.remove(cacheKey);  // Expired
+        accounts.accountTokenCaches.remove(cacheKey);  // Expired
     }
 }
 ```
@@ -23510,7 +23850,7 @@ graph TD
     end
 
     subgraph AccountManagerService
-        AMS[accountCloneToProfile / accountMovedToProfile]
+        AMS["copyAccountToUser / addSharedAccountAsUser"]
     end
 
     PA -->|DPC copies account| AMS
@@ -23618,7 +23958,7 @@ sequenceDiagram
     SM->>SAC: new SyncAdaptersCache(context)
     SAC->>SAC: Scan for registered sync adapters
     SM->>SM: Register BroadcastReceiver for:
-    Note over SM: BOOT_COMPLETED, connectivity,<br/>account changes, package changes
+    Note over SM: connectivity, shutdown, time changed,<br/>user removed/unlocked/stopped,<br/>package changes, LOGIN_ACCOUNTS_CHANGED
     SM->>JS: Connect to JobScheduler
     SM->>SM: Schedule initial sync check
 ```
@@ -23676,7 +24016,7 @@ sequenceDiagram
     SM->>SO: Create SyncOperation
     SM->>SM: scheduleSyncOperationH(op, delay)
     SM->>SM: Convert to JobInfo:
-    Note over SM: jobId = unique per operation<br/>setExtras(op.toJobExtras())<br/>setRequiredNetworkType(CONNECTED)<br/>setBackoffCriteria(initialBackoff, LINEAR)<br/>setPeriodic(periodMs, flexMs) [if periodic]<br/>setDeadline(deadline) [if expedited]
+    Note over SM: jobId = unique per operation<br/>setExtras(op.toJobInfoExtras())<br/>setRequiredNetworkType(ANY or UNMETERED)<br/>setRequiresStorageNotLow(true), setPersisted(true)<br/>setBias(bias), setFlags(EXEMPT_FROM_APP_STANDBY if exempted)<br/>setPeriodic(periodMillis, flexMillis) [if periodic]<br/>else setMinimumLatency(minDelay)<br/>setExpedited(true) [if scheduled as expedited job]
     SM->>JS: schedule(jobInfo)
     JS-->>SM: JobScheduler.RESULT_SUCCESS
 
@@ -23684,6 +24024,11 @@ sequenceDiagram
     JS->>SJS: onStartJob(params)
     SJS->>SM: Dispatch sync execution
 ```
+
+Note that retry backoff is not delegated to JobScheduler: there is no
+`setBackoffCriteria()` call.  SyncManager implements backoff itself via
+`increaseBackoffSetting()` and reschedules failed syncs as new one-off
+jobs with the computed delay.
 
 The `SyncJobService` is the bridge between JobScheduler and SyncManager:
 
@@ -23939,7 +24284,7 @@ It stores:
 |------|-------------|-------------|
 | Authority info | XML file | Per-authority sync settings (syncable, backoff, delay) |
 | Sync status | Proto file | Sync history (last success, last failure, stats) |
-| Pending operations | Proto file | Operations awaiting execution |
+| Pending flag | Proto file | Per-authority boolean (`SyncStatusInfo.pending`); the queued operations themselves live as JobScheduler jobs |
 | Master sync auto | XML attr | Global auto-sync toggle |
 | Per-authority auto-sync | XML attr | Per-account/authority auto-sync toggle |
 
@@ -23957,7 +24302,10 @@ public static class AuthorityInfo {
     public final EndPoint target;
     public final int ident;         // Unique authority ID
     public boolean enabled;         // Auto-sync enabled
-    public int syncable;            // -1 unknown, 0 not syncable, 1 syncable
+    public int syncable;            // -2 UNDEFINED, -1 NOT_INITIALIZED,
+                                    // 0 NOT_SYNCABLE, 1 SYNCABLE,
+                                    // 2 SYNCABLE_NOT_INITIALIZED,
+                                    // 3 SYNCABLE_NO_ACCOUNT_ACCESS
     public long backoffTime;
     public long backoffDelay;
     public long delayUntil;
@@ -24062,12 +24410,13 @@ boolean syncing = ContentResolver.isSyncActive(account, authority);
 // Check if a sync is pending
 boolean pending = ContentResolver.isSyncPending(account, authority);
 
-// Get sync status
+// Get sync status (getSyncStatus() and SyncStatusInfo are @hide APIs,
+// available only to system/privileged code)
 SyncStatusInfo status = ContentResolver.getSyncStatus(account, authority);
 if (status != null) {
     long lastSuccess = status.lastSuccessTime;
     long lastFailure = status.lastFailureTime;
-    int numSyncs = status.numSyncs;
+    int numSyncs = status.totalStats.numSyncs;
     String lastFailureMesg = status.lastFailureMesg;
 }
 
@@ -24343,7 +24692,7 @@ SyncManager:
 
 ```java
 public final class SyncResult implements Parcelable {
-    // Set true to trigger soft error retry with backoff
+    // Hard-error flags (see hasHardError)
     public boolean tooManyRetries;
     public boolean tooManyDeletions;
     public boolean databaseError;
@@ -24351,7 +24700,8 @@ public final class SyncResult implements Parcelable {
     public boolean partialSyncUnavailable;
     public boolean moreRecordsToGet;
 
-    // Delay before retry (seconds)
+    // Absolute time (seconds since epoch) until which further syncs
+    // for this account/authority are delayed
     public long delayUntil;
 
     // Statistics
@@ -24375,11 +24725,11 @@ SyncManager interprets the result:
 
 | Condition | Action |
 |-----------|--------|
-| `numAuthExceptions > 0` | Soft error -- retry with backoff |
+| `numAuthExceptions > 0` | Hard error -- sync is recorded as failed and is NOT rescheduled |
 | `numIoExceptions > 0` | Soft error -- retry with backoff |
 | `tooManyDeletions` | Show notification to user, pause sync |
 | `fullSyncRequested` | Schedule a full sync (not incremental) |
-| `delayUntil > 0` | Delay next sync by specified amount |
+| `delayUntil > 0` | Delay further syncs until the given absolute time (seconds since epoch) |
 | No errors | Clear backoff, update last success time |
 
 ---
@@ -24416,10 +24766,14 @@ Source: frameworks/base/services/core/java/com/android/server/accounts/AccountsD
 
 This work was developed behind the `com.android.server.accounts.detach_de_ce`
 aconfig flag and then promoted to the default behavior in 17 when the flag was
-removed, so the decoupled path is the only path on a 17 device. The `attachCeDatabase()`
-method still exists for first-boot migration of a pre-N (Nougat) database into
-the split layout, but steady-state reads and writes go through the two
-independent helpers.
+removed, so the decoupled path is the only path on a 17 device. The
+`attachCeDatabase()` method remains the normal entry point for opening a
+user's CE database at unlock: despite its name it no longer performs a
+SQLite `ATTACH`, but simply constructs the `CeDatabaseHelper` and flips
+the "CE available" flag on the DE helper. The pre-N (Nougat) migration
+into the split layout survives only as a conditional branch inside
+`CeDatabaseHelper.create()`, taken when an old single-database file exists
+and the CE database does not.
 
 ```mermaid
 graph TD
@@ -24513,11 +24867,12 @@ strings) are unaffected, while pathological payloads are rejected at the door.
 
 ### 32.6.4 SyncManager Receivers Off the Main Thread
 
-`SyncManager` registers broadcast receivers for connectivity changes, account
-changes, package changes, and boot completion. Earlier releases dispatched these
-on the main thread, where the handler could block on locks held by other system
-services. Android 17 runs `SyncManager`'s receivers and scheduling work on its
-own dedicated handler thread instead:
+`SyncManager` registers broadcast receivers for connectivity changes, shutdown,
+time changes, user lifecycle events, package changes, and account changes.
+Earlier releases dispatched these on the main thread, where the handler could
+block on locks held by other system services. Android 17 moves the hot
+receivers and the scheduling work onto `SyncManager`'s own dedicated handler
+thread instead:
 
 ```
 Source: frameworks/base/services/core/java/com/android/server/content/SyncManager.java
@@ -24530,9 +24885,12 @@ mThread.start();
 mSyncHandler = new SyncHandler(mThread.getLooper());
 ```
 
-Receivers are registered against `mSyncHandler` rather than the default main
-`Looper`, so a slow lock acquisition during sync scheduling no longer stalls the
-`system_server` main thread. The same change also stops repeatedly taking a lock
+The connectivity and user-lifecycle receivers are registered against
+`mSyncHandler` rather than the default main `Looper`, so a slow lock
+acquisition during sync scheduling no longer stalls the `system_server` main
+thread. (The shutdown, time-changed, and accounts-updated receivers are still
+registered with a null handler and run on the main `Looper`.) The same change
+also stops repeatedly taking a lock
 just to check whether `JobScheduler` is connected. This was gated by the
 `com.android.server.am.syncmanager_off_main_thread` flag, later cleaned up so the
 off-main-thread behavior is the default.
@@ -24906,9 +25264,11 @@ adb shell dumpsys content
 # - Backoff state
 # - Periodic sync schedule
 
-# Force a sync via adb
-adb shell content sync --account demo@example.com \
-    --authority com.example.demo.provider
+# Note: there is no "content sync" shell subcommand -- the content tool only
+# supports insert/update/delete/query/call/read/write/gettype. To trigger a
+# sync, call ContentResolver.requestSync() from an app; to fire a scheduled
+# sync job from the shell, find its job ID in dumpsys and run:
+adb shell cmd jobscheduler run -f android <sync-job-id>
 
 # List sync adapters
 adb shell dumpsys content | grep -A2 "Sync Adapters"
@@ -25175,8 +25535,6 @@ frameworks/base/
     location/java/android/location/
         LocationManager.java          -- Public SDK API
         Geocoder.java                 -- Forward/reverse geocoding API
-        Geofence.java                 -- Geofence definition
-        Location.java                 -- Position data object
         LocationRequest.java          -- Request parameters
         GnssStatus.java              -- Satellite status
         GnssMeasurement.java          -- Raw measurement (framework side)
@@ -25185,6 +25543,10 @@ frameworks/base/
         GnssAntennaInfo.java         -- Antenna phase center data
         Criteria.java                -- Legacy provider selection criteria
         Address.java                 -- Geocoded address
+
+    core/java/android/location/      -- the android.location package is split
+        Location.java                 -- Position data object
+        Geofence.java                 -- Geofence definition (@hide)
 
     services/core/java/com/android/server/location/
         LocationManagerService.java   -- Core system service
@@ -25308,7 +25670,7 @@ classDiagram
     }
 
     class PassiveLocationProvider {
-        +reportLocationToPassive(LocationResult)
+        +updateLocation(LocationResult)
     }
 
     class DelegateLocationProvider {
@@ -25324,7 +25686,7 @@ classDiagram
     }
 
     class MockLocationProvider {
-        +setLocation(Location)
+        +setProviderLocation(Location)
     }
 
     AbstractLocationProvider <|-- GnssLocationProvider
@@ -25425,25 +25787,28 @@ void addLocationProviderManager(
         manager.startManager(this);
 
         if (realProvider != null) {
-            int defaultStationaryThrottlingSetting =
-                    mContext.getPackageManager().hasSystemFeature(
-                        PackageManager.FEATURE_WATCH) ? 0 : 1;
-            boolean enableStationaryThrottling = Settings.Global.getInt(
-                    mContext.getContentResolver(),
-                    Settings.Global.LOCATION_ENABLE_STATIONARY_THROTTLE,
-                    defaultStationaryThrottlingSetting) != 0;
-            // In Android 17 throttling is only ever applied to the GPS provider,
-            // and only when the keep_gnss_stationary_throttling flag is on.
-            if (!(Flags.keepGnssStationaryThrottling() && enableStationaryThrottling
-                    && GPS_PROVIDER.equals(manager.getName()))) {
-                enableStationaryThrottling = false;
+            // custom logic wrapping all non-passive providers
+            if (manager != mPassiveManager) {
+                int defaultStationaryThrottlingSetting =
+                        mContext.getPackageManager().hasSystemFeature(
+                            PackageManager.FEATURE_WATCH) ? 0 : 1;
+                boolean enableStationaryThrottling = Settings.Global.getInt(
+                        mContext.getContentResolver(),
+                        Settings.Global.LOCATION_ENABLE_STATIONARY_THROTTLE,
+                        defaultStationaryThrottlingSetting) != 0;
+                // In Android 17 throttling is only ever applied to the GPS
+                // provider, and only when keep_gnss_stationary_throttling is on.
+                if (!(Flags.keepGnssStationaryThrottling() && enableStationaryThrottling
+                        && GPS_PROVIDER.equals(manager.getName()))) {
+                    enableStationaryThrottling = false;
+                }
+                if (enableStationaryThrottling) {
+                    realProvider = new StationaryThrottlingLocationProvider(
+                        manager.getName(), mInjector, realProvider);
+                }
             }
-            if (enableStationaryThrottling) {
-                realProvider = new StationaryThrottlingLocationProvider(
-                    manager.getName(), mInjector, realProvider);
-            }
+            manager.setRealProvider(realProvider);
         }
-        manager.setRealProvider(realProvider);
         mProviderManagers.add(manager);
     }
 }
@@ -25605,7 +25970,7 @@ These constants are unchanged in Android 17, and were re-verified against
 ### 33.2.10  LPM Power Save Modes
 
 `LocationProviderManager` integrates with Android's battery-saver through
-the `LocationPowerSaveModeHelper`.  Four modes are defined:
+the `LocationPowerSaveModeHelper`.  Five modes are defined:
 
 | Mode | Constant | Behavior |
 |------|----------|----------|
@@ -25689,23 +26054,24 @@ display elevation.
 When delivering to coarse-permission clients, `LocationFudger` obfuscates
 the true position.  The algorithm:
 
-1. Snaps the true coordinates to a grid whose cell width is `mAccuracyM`.
+1. Adds a slowly-drifting random offset to the true coordinates.  The offset
+   is seeded from a `SecureRandom` at construction (effectively per-boot) and
+   is nudged by `CHANGE_PER_INTERVAL` (3%) every `OFFSET_UPDATE_INTERVAL_MS`
+   (1 hour) so that the fudged position is not perfectly static yet does not
+   reveal movement faster than the grid resolution.
+2. Snaps the offset coordinates to a grid whose cell width is `mAccuracyM`.
    That width comes from `Settings.Secure` via
    `SettingsHelper.getCoarseLocationAccuracyM()` and defaults to
    `DEFAULT_COARSE_LOCATION_ACCURACY_M = 2000.0f` (2 km), floored at
    `MIN_ACCURACY_M = 200.0f`.
-2. Adds a slowly-drifting random offset.  The offset is seeded from a
-   `SecureRandom` at construction (effectively per-boot) and is nudged by
-   `CHANGE_PER_INTERVAL` (3%) every `OFFSET_UPDATE_INTERVAL_MS` (1 hour) so
-   that the fudged position is not perfectly static yet does not reveal
-   movement faster than the grid resolution.
-3. The reported location is the grid-snapped position plus the offset, with
-   the reported accuracy set to `mAccuracyM`.
+3. The reported location is that grid-snapped position, with the reported
+   accuracy set to `Math.max(mAccuracyM, originalAccuracy)` -- the fudged
+   accuracy never shrinks below what the provider originally reported.
 
 **Source:** `frameworks/base/services/core/java/com/android/server/location/fudger/LocationFudger.java`
 and `injector/SystemSettingsHelper.java`.
 
-Since Android 14, `LocationFudger` can instead use the S2-cell density path,
+Since Android 16, `LocationFudger` can instead use the S2-cell density path,
 where `LocationFudgerCache` consults `ProxyPopulationDensityProvider` to pick a
 coarsening level per S2 cell.  In dense urban areas the cells are smaller
 (higher precision); in rural areas they are larger (stronger privacy
@@ -25717,7 +26083,9 @@ algorithm otherwise.
 
 ### 33.2.14  Event Logging
 
-LPM logs significant events to `LocationEventLog`:
+Significant events are logged to `LocationEventLog`.  For example,
+`LocationManagerService` records settings changes in
+`onLocationModeChanged()` and `onLocationUserSettingsChanged()`:
 
 ```java
 EVENT_LOG.logLocationEnabled(userId, enabled);
@@ -25755,10 +26123,12 @@ to propagate locations from all other managers.
 `LocationManagerService` exposes `addTestProvider()` and
 `setTestProviderLocation()` for instrumentation and development.  Under the
 hood these install a `MockLocationProvider` that replaces the real provider
-until `removeTestProvider()` is called.  Mock providers require the
-`android.permission.ACCESS_MOCK_LOCATION` permission, which is only
-grantable on debug builds or to the selected mock-location app in Developer
-Settings.
+until `removeTestProvider()` is called.  Mock providers are gated by the
+`OP_MOCK_LOCATION` app-op -- each entry point calls
+`mInjector.getAppOpsHelper().noteOp(AppOpsManager.OP_MOCK_LOCATION, identity)`
+-- and that op is granted to the app the user selects as the mock-location
+app in Developer Options.  (The old `ACCESS_MOCK_LOCATION` permission has
+not been used for this since API 23.)
 
 ---
 
@@ -26033,9 +26403,14 @@ a Java class with native method bindings via JNI.
 graph LR
     GnssLocationProvider -->|calls| GnssNative
     GnssManagerService -->|calls| GnssNative
-    GnssNative -->|JNI| libgnss_jni.so
-    libgnss_jni.so -->|Binder| IGnss_HAL[IGnss HAL Process]
+    GnssNative -->|JNI| GnssJni["libservices.core-gnss<br>in libandroid_servers.so"]
+    GnssJni -->|Binder| IGnss_HAL[IGnss HAL Process]
 ```
+
+The native side is the `libservices.core-gnss` static library (sources under
+`frameworks/base/services/core/jni/gnss/`), which is linked into
+`libservices.core` and shipped inside `libandroid_servers.so` -- there is no
+standalone GNSS JNI shared library.
 
 **Source:** `frameworks/base/services/core/java/com/android/server/location/gnss/hal/GnssNative.java`
 (1762 lines in Android 17).
@@ -26219,24 +26594,38 @@ sequenceDiagram
     GLP->>GLP: Release mDownloadPsdsWakeLock
 ```
 
-PSDS server URLs are configured in `gps_debug.conf`:
+PSDS server URLs are read from the GNSS configuration properties:
 
 ```
 LONGTERM_PSDS_SERVER_1=https://...
 LONGTERM_PSDS_SERVER_2=https://...
+LONGTERM_PSDS_SERVER_3=https://...
 NORMAL_PSDS_SERVER=https://...
 REALTIME_PSDS_SERVER=https://...
 ```
 
-**Source:** `frameworks/base/services/core/java/com/android/server/location/gnss/gps_debug.conf`
+These keys are defined as `CONFIG_LONGTERM_PSDS_SERVER_1..3`,
+`CONFIG_NORMAL_PSDS_SERVER`, and `CONFIG_REALTIME_PSDS_SERVER` in
+`GnssConfiguration.java` (lines 84-88) and consumed by `GnssPsdsDownloader`.
+On production devices they are normally set through `config.xml` resource
+overlays; `gps_debug.conf` serves only as a debug override (the sample
+`gps_debug.conf` in the tree contains no PSDS entries).
+
+**Source:** `frameworks/base/services/core/java/com/android/server/location/gnss/GnssConfiguration.java`
+and `GnssPsdsDownloader.java`.
 
 #### Carrier Configuration Integration
 
-`GnssConfiguration` loads properties from multiple sources in priority order:
+`GnssConfiguration.reloadGpsProperties()` loads properties from multiple
+sources, each later load overwriting keys from earlier ones -- so the last
+source loaded has the highest precedence:
 
-1. `/vendor/etc/gps_debug.conf` -- vendor-specific GNSS configuration.
-2. `/etc/gps_debug.conf` -- system default.
-3. Carrier configuration via `CarrierConfigManager`.
+1. `/etc/gps_debug.conf` -- system debug override (highest precedence,
+   loaded last).
+2. `/vendor/etc/gps_debug.conf` -- vendor-specific GNSS configuration.
+3. Resource overlays (`config.xml`).
+4. Carrier configuration via `CarrierConfigManager` (lowest precedence,
+   loaded first).
 
 Key configuration properties:
 
@@ -26456,7 +26845,9 @@ ProxyLocationProvider fusedProvider = ProxyLocationProvider.create(
 ```
 
 The `ProxyLocationProvider` discovers the service by intent action
-`com.android.location.service.FusedProvider`.  The framework requires a
+`com.android.location.service.FusedLocationProvider` (the network provider's
+action is `com.android.location.service.v3.NetworkLocationProvider`).  The
+framework requires a
 direct-boot-aware fused provider to be present:
 
 ```java
@@ -26711,7 +27102,7 @@ fudging, same interval enforcement.
 
 ### 33.5.8  Population Density Provider
 
-Android 14 introduced the `ProxyPopulationDensityProvider`, bound via:
+Android 16 introduced the `ProxyPopulationDensityProvider`, bound via:
 
 ```java
 setProxyPopulationDensityProvider(
@@ -26941,11 +27332,15 @@ sequenceDiagram
     Geocoder->>LMS: reverseGeocode(ReverseGeocodeRequest, IGeocodeCallback)
     LMS->>PGP: reverseGeocode(request, callback)
     PGP->>GMS: IPC to bound service
-    GMS-->>PGP: List<Address>
-    PGP-->>LMS: IGeocodeCallback.onResult()
-    LMS-->>Geocoder: results
+    GMS-->>Geocoder: IGeocodeCallback.onResults(addresses)
     Geocoder-->>App: List<Address>
 ```
+
+Note the return path: the `IGeocodeCallback` that `Geocoder` passes in is an
+`IGeocodeCallback.Stub` living in the *app* process, and LMS forwards that
+binder straight through `ProxyGeocodeProvider` to the bound geocode service.
+The service therefore calls `onResults()` directly on the app's callback --
+neither LMS nor `ProxyGeocodeProvider` sees or relays the results.
 
 **Source:** `frameworks/base/services/core/java/com/android/server/location/provider/proxy/ProxyGeocodeProvider.java`
 
@@ -27016,9 +27411,9 @@ improving relevance for ambiguous address queries.
 The `IGeocodeCallback` interface reports results or errors:
 
 ```java
-interface IGeocodeCallback {
-    void onResults(String errorMessage, in List<Address> addresses);
-    void onError(String errorMessage);
+oneway interface IGeocodeCallback {
+    void onError(String error);
+    void onResults(in List<Address> results);
 }
 ```
 
@@ -27113,13 +27508,12 @@ public static int getPermissionLevel(Context context, int uid, int pid) {
 | GNSS raw data | Yes | No |
 
 When an app holds only `ACCESS_COARSE_LOCATION`, `LocationProviderManager`
-applies `LocationFudger` to obfuscate the exact position.  The fudging snaps
-coordinates to a grid whose cell width defaults to 2 km
-(`DEFAULT_COARSE_LOCATION_ACCURACY_M`, floored at 200 m) and adds a
-slowly-drifting random offset, so the fudged location stays stable for small
-movements (§33.2.13).
+applies `LocationFudger` to obfuscate the exact position.  The fudging adds a
+slowly-drifting random offset and then snaps the result to a grid whose cell
+width defaults to 2 km (`DEFAULT_COARSE_LOCATION_ACCURACY_M`, floored at
+200 m), so the fudged location stays stable for small movements (§33.2.13).
 
-Since Android 14, a population-density-based fudging mode is available.  A
+Since Android 16, a population-density-based fudging mode is available.  A
 `ProxyPopulationDensityProvider` supplies density data, and the
 `LocationFudgerCache` picks the S2-cell coarsening level by density -- larger
 cells in rural areas and smaller cells in dense urban areas.  As of Android 17
@@ -27231,9 +27625,11 @@ graph TB
 
 ### 33.8.9  Foreground Service Requirement
 
-Starting with Android 12, apps that need continuous background location
-must use a foreground service of type `location`.  LMS tracks foreground
-service API usage:
+Starting with Android 10 (API 29), apps that need continuous background
+location must use a foreground service of type `location`
+(`FOREGROUND_SERVICE_TYPE_LOCATION`); Android 12 then added restrictions on
+starting such services from the background.  LMS tracks foreground service
+API usage:
 
 ```java
 ActivityManagerInternal managerInternal =
@@ -27275,7 +27671,8 @@ location.  The `AppOpsManager` tracks location operations and the
 SystemUI displays a green dot or status-bar icon when any app holds an
 active location note.
 
-The `AppOpsHelper` in the location service coordinates with `AppOpsManager`:
+`LocationManagerService.onSystemReady()` registers a watcher with
+`AppOpsManager`:
 
 ```java
 // Track OP_FINE_LOCATION and OP_COARSE_LOCATION
@@ -27353,7 +27750,7 @@ packages/modules/GeoTZ/
 
 ```mermaid
 graph LR
-    TZBB["timezone-boundary-builder<br>GeoJSON boundaries"] --> DP["data_pipeline<br>run-data-pipeline.sh"]
+    TZBB["timezone-boundary-builder<br>GeoJSON boundaries"] --> DP["data_pipeline steps<br>driven by run-data-pipeline.sh"]
     DP --> S2[S2 Cell Indexing]
     S2 --> TZS2["tzs2.dat<br>Binary lookup file"]
     TZS2 --> DEV["Packaged on device<br>in APEX"]
@@ -27616,15 +28013,20 @@ The APEX contains:
 
 | Component | Path | Purpose |
 |-----------|------|---------|
-| `tzs2.dat` | `etc/tzs2.dat` | Time-zone boundary data |
-| Provider APK | `app/` | The `OfflineLocationTimeZoneProviderService` |
-| Libraries | `lib/` | `geotz_lookup` and `s2storage` shared libraries |
+| `tzs2.dat` | `etc/tzs2.dat` | Time-zone boundary data (a `prebuilt_etc`) |
+| `geotz.jar` | `javalib/` | The provider as a system-server-classpath jar |
 | License files | `etc/` | Attribution for timezone-boundary-builder data |
+
+There is no `app/` APK and no native `lib/` directory in this APEX: the
+provider ships as the `geotz` Java library, delivered through a
+`systemserverclasspath_fragment`, and the `geotz_lookup` and `s2storage`
+libraries are Java libraries statically linked into that jar.
 
 When a time-zone boundary change occurs (e.g., a country changes its
 time zone), Google can push an updated APEX containing a new `tzs2.dat`
-file.  The provider automatically picks up the new data on the next
-lookup without requiring any service restart.
+file.  Because a staged APEX update only becomes active after the
+activation reboot -- which also restarts the system server hosting the
+provider -- the new data takes effect from the next boot onward.
 
 ---
 
@@ -28008,14 +28410,18 @@ Create a geofence around your current location and observe transitions:
 ```java
 LocationManager lm = (LocationManager) getSystemService(LOCATION_SERVICE);
 
-Geofence fence = Geofence.createCircle(lat, lng, 100f); // 100m radius
-
 Intent intent = new Intent("com.example.GEOFENCE_TRANSITION");
 PendingIntent pi = PendingIntent.getBroadcast(
     this, 0, intent, PendingIntent.FLAG_MUTABLE);
 
-lm.addGeofence(fence, pi);
+// 100 m radius, no expiration
+lm.addProximityAlert(lat, lng, 100f, -1, pi);
 ```
+
+`addProximityAlert()` is the public entry point for software geofences;
+internally it builds an `android.location.Geofence` (an `@hide` class whose
+factory is `Geofence.createCircle(lat, lng, radius, expirationMs)`) and hands
+it to `GeofenceManager`.
 
 Register a `BroadcastReceiver` that checks `KEY_PROXIMITY_ENTERING`:
 
@@ -28549,8 +28955,8 @@ The `/data` directory structure follows a well-defined layout:
 
 ```
 /data/
-  data/              -> App private data (symlink to user/0)
-  user/0/            -> CE (Credential Encrypted) storage for user 0
+  data/              -> App private CE data for user 0 (the real directory)
+  user/0/            -> Bind mount of /data/data (a symlink in older releases)
   user_de/0/         -> DE (Device Encrypted) storage for user 0
   media/             -> Shared media (backing for /storage/emulated)
   media/0/           -> User 0's emulated external storage
@@ -29646,7 +30052,7 @@ graph TD
         B -->|Own app directory| C["No permission needed"]
         B -->|Photos/Videos| D["READ_MEDIA_IMAGES<br/>READ_MEDIA_VIDEO"]
         B -->|Audio| E["READ_MEDIA_AUDIO"]
-        B -->|All media| F["READ_MEDIA_VISUAL_USER_SELECTED<br/>(Android 14+)"]
+        B -->|User-selected media| F["READ_MEDIA_VISUAL_USER_SELECTED<br/>(Android 14+)"]
         B -->|Non-media files| G["Storage Access Framework<br/>ACTION_OPEN_DOCUMENT"]
         B -->|All files| H["MANAGE_EXTERNAL_STORAGE"]
     end
@@ -30099,12 +30505,12 @@ The primary table is `files`, which stores metadata for all indexed files:
 | `title` | TEXT | Title (from metadata) |
 | `date_added` | INTEGER | When file was added (epoch seconds) |
 | `date_modified` | INTEGER | Last modification time |
-| `date_taken` | INTEGER | When photo/video was taken |
+| `datetaken` | INTEGER | When photo/video was taken (`MediaColumns.DATE_TAKEN`) |
 | `duration` | INTEGER | Duration in ms (audio/video) |
 | `width` | INTEGER | Image/video width |
 | `height` | INTEGER | Image/video height |
 | `orientation` | INTEGER | EXIF orientation |
-| `bucket_id` | INTEGER | Hash of parent directory |
+| `bucket_id` | TEXT | Hash of parent directory |
 | `bucket_display_name` | TEXT | Parent directory name |
 | `volume_name` | TEXT | Storage volume name |
 | `owner_package_name` | TEXT | Package that created the file |
@@ -30214,7 +30620,7 @@ database corruption, managed through the FUSE daemon:
 
 ```java
 // packages/providers/MediaProvider/src/com/android/providers/media/
-//     fuse/FuseDaemon.java (lines 216-270)
+//     fuse/FuseDaemon.java (lines 231-340)
 public void setupVolumeDbBackup() throws IOException { ... }
 public void setupPublicVolumeDbBackup(String volumeName) throws IOException { ... }
 public void backupVolumeDbData(String volumeName, String key,
@@ -30364,9 +30770,11 @@ Google Sheets document does not have a native file representation but can be
 opened as a CSV or PDF:
 
 ```java
-// Document flags indicating virtual file support
+// Document flag indicating virtual file support
 Document.FLAG_VIRTUAL_DOCUMENT  // Document has no direct byte representation
-Document.FLAG_SUPPORTS_TYPED_DOCUMENT  // Can convert to other MIME types
+
+// A provider advertises the convertible MIME types by overriding
+// DocumentsProvider.getDocumentStreamTypes() and openTypedDocument()
 
 // Client code for opening a virtual document
 String[] mimeTypes = getContentResolver().getStreamTypes(uri, "*/*");
@@ -30855,7 +31263,7 @@ sequenceDiagram
     Note over Disk: Zap existing partitions
     Disk->>Disk: Generate partition GUID
     Disk->>Disk: Generate encryption key
-    Disk->>Disk: Persist key to /data/misc/vold/expand_<guid>
+    Disk->>Disk: Persist key to /data/misc/vold/expand_<guid>.key
     Note over Disk: Create GPT with android_meta + android_expand
     Disk->>Disk: readPartitions()
     Disk->>Disk: createPrivateVolume(device, partGuid)
@@ -31067,7 +31475,7 @@ static status_t execCp(const std::string& fromPath,
 When adopted storage is ejected, all apps that were installed on it become
 unavailable.  The framework tracks which apps reside on which volume through
 the `PackageManager`.  If the device is re-inserted, the encryption key
-(stored in `/data/misc/vold/expand_<guid>`) is used to decrypt and remount
+(stored in `/data/misc/vold/expand_<guid>.key`) is used to decrypt and remount
 the volume.
 
 ### 34.9.7 Forgetting Adopted Storage
@@ -31195,10 +31603,14 @@ Android supports six journal modes:
 | `DELETE` | Delete journal after commit | Traditional mode |
 | `OFF` | No journal | Maximum risk, maximum speed |
 
-**Compatibility WAL** is a special Android mode that enables WAL with a
-restricted configuration: maximum WAL file size of 512KB and auto-
-checkpoint after each transaction. This provides WAL's concurrency benefits
-while limiting the disk space overhead, making it safe as a default.
+**Compatibility WAL** is Android's way of turning on WAL journaling for
+databases whose owners never explicitly set a journal or sync mode, using
+a configurable sync mode (`SQLiteCompatibilityWalFlags.getWALSyncMode()`,
+default `NORMAL`). The disk overhead is bounded by two global resources:
+`db_journal_size_limit` caps the journal/WAL at 512KB, and
+`db_wal_autocheckpoint` checkpoints the WAL every 100 pages -- not after
+every transaction. This provides WAL's concurrency benefits while limiting
+the disk space overhead, making it safe as a default.
 
 ```mermaid
 graph LR
@@ -31602,9 +32014,12 @@ key improvements are:
 | Migration | N/A | `SharedPreferencesMigration` helper |
 
 Despite DataStore being the recommended path, SharedPreferences remains
-heavily used in AOSP itself -- `Settings.Secure`, `Settings.Global`, and
-hundreds of system services store configuration in SharedPreferences files
-under `/data/data/<package>/shared_prefs/`.
+heavily used -- countless apps and many system components still persist
+configuration as SharedPreferences XML files under
+`/data/data/<package>/shared_prefs/`.  (The `Settings.Secure` and
+`Settings.Global` namespaces are not among them: SettingsProvider persists
+those via `SettingsState` into
+`/data/system/users/<userId>/settings_{global,secure,system}.xml`.)
 
 ---
 
@@ -31697,7 +32112,8 @@ android::binder::Status cp_restoreCheckpoint(
     const std::string& mountPoint, int count = 0);
 android::binder::Status cp_markBootAttempt();
 
-void cp_resetCheckpoint();
+android::binder::Status cp_resetCheckpoint();
+// ... cp_registerCheckpointListener() omitted
 }  // namespace vold
 }  // namespace android
 ```
@@ -31706,10 +32122,12 @@ Android 17 tightened the concurrency model around this state: `cp_isCheckpointin
 returns a `binder::Status`, and the underlying `isCheckpointing` flag is now
 `GUARDED_BY(isCheckpointingLock)` with Clang thread-safety annotations so the
 compiler enforces that callers hold the lock before reading it
-(`system/vold/Checkpoint.cpp`).  The same release records how long enabling a
-checkpoint took into the `vold.udc.enable_checkpoint.latency.ms` system property,
-and mounts f2fs userdata with `,discard,checkpoint=enable` so background discard
-runs while a checkpoint is active.
+(`system/vold/Checkpoint.cpp`).  The same release records, in the
+`vold.udc.enable_checkpoint.latency.ms` system property, how long the
+commit-time remount took: when `cp_commitChanges()` ends the checkpoint
+window, it remounts each f2fs userdata mount with its original options plus
+`,discard,checkpoint=enable` to re-enable normal f2fs checkpointing, and
+times that remount.
 
 Two checkpoint mechanisms are supported:
 
@@ -32110,8 +32528,8 @@ adb logcat -s FsCrypt:* MetadataCrypt:* KeyStorage:*
 ### 34.18.3 Analyzing Storage Performance
 
 ```bash
-# Run vold's built-in benchmark
-adb shell sm benchmark private
+# Run vold's built-in benchmark (volume id from `sm list-volumes all`)
+adb shell sm benchmark <volume_id>
 
 # Monitor I/O patterns
 adb shell cat /proc/diskstats
@@ -32146,15 +32564,18 @@ diff /tmp/init_mounts.txt /tmp/app_mounts.txt
 ### 34.18.5 Recovering from Storage Issues
 
 ```bash
-# Force unmount all volumes (emergency)
-adb shell sm unmount all
+# Force unmount a volume (emergency) -- ids from `sm list-volumes all`;
+# only `sm forget` accepts the literal "all"
+adb shell sm unmount <volume_id>
 
-# Reset vold state
-adb shell sm reset
+# Re-run vold's volume discovery: restart the daemon (debug builds),
+# or unmount/mount individual volumes
+adb shell stop vold
+adb shell start vold
 
-# Force filesystem check on next boot
-adb shell setprop persist.sys.dalvik.vm.lib.2 ""
-adb reboot
+# There is no property that forces an fsck on next boot: fs_mgr runs
+# e2fsck/fsck.f2fs during fs_mgr_do_mount when the filesystem is marked
+# dirty (system/fs/fs_mgr/fs_mgr.cpp)
 
 # Clear media store cache (requires root)
 adb root
@@ -32255,8 +32676,9 @@ create encryption keys and prepare storage directories:
 
 ```
 1. UserManagerService creates user
-2. StorageManagerService.onUserAdded(userId, userSerial, cloneParentId)
+2. StorageManagerService's broadcast receiver handles ACTION_USER_ADDED
 3. vold.onUserAdded(userId, userSerial, sharesStorageWithUserId)
+   (the third argument is the profile group id for clone profiles, -1 otherwise)
 4. fscrypt_create_user_keys(userId, ephemeral):
    a. Generate DE key, store on disk, install to kernel
    b. Generate CE key, store on disk (encrypted with default secret)
@@ -32297,8 +32719,8 @@ physical storage medium.
 | 10 | Scoped Storage introduced (opt-in), metadata encryption |
 | 11 | Scoped Storage enforced, FUSE replaces sdcardfs |
 | 12 | FUSE passthrough, improved performance |
-| 13 | Per-app media permissions (READ_MEDIA_IMAGES, etc.) |
-| 14 | Photo Picker, READ_MEDIA_VISUAL_USER_SELECTED |
+| 13 | Photo Picker, per-app media permissions (READ_MEDIA_IMAGES, etc.) |
+| 14 | READ_MEDIA_VISUAL_USER_SELECTED (partial media access) |
 | 15 | FUSE BPF, further performance improvements |
 | 16 | f2fs uses kernel page size for block size; project-quota tolerance on legacy userdata |
 | 17 | `system/fs` repo split (fs_mgr/liblp/libdm carved out of `system/core`); casefolding migration of `/data/media` via the `casefolding_remover` Rust service; `KeyType` enum unifies raw and hardware-wrapped key handling; `wrappedkey` (v2) metadata-encryption option; `vold` adds `syncStorage()` and `setMaxLockElapsedTime()` |
@@ -33163,10 +33585,9 @@ adb logcat -s vold:* FsCrypt:*
 # Check which users have CE storage unlocked
 adb shell dumpsys mount | grep -A5 "CE unlocked"
 
-# Observe directory encryption policies (requires root)
-adb root
-adb shell fscrypt-policy-get /data/user/0/
-adb shell fscrypt-policy-get /data/user_de/0/
+# AOSP ships no CLI for reading fscrypt policies (system/extras only has
+# the libfscrypt library); observe them indirectly via vold/FsCrypt logs
+# and `dumpsys mount`, or sideload the upstream fscryptctl tool
 ```
 
 ### Exercise 34.6: Simulating Adoptable Storage
@@ -33186,8 +33607,8 @@ adb shell sm partition <disk_id> private
 # Check the new volume
 adb shell sm list-volumes all
 
-# Migrate data to the adopted volume
-adb shell sm move-primary-storage <volume_uuid>
+# Migrate data to the adopted volume (a PackageManager command, not sm)
+adb shell pm move-primary-storage <volume_uuid>
 
 # Monitor the migration progress
 adb logcat -s MoveStorage:*
@@ -33236,8 +33657,9 @@ adb shell am start -a android.intent.action.OPEN_DOCUMENT \
 Check storage health metrics:
 
 ```bash
-# Get storage lifetime estimate
-adb shell sm get-storage-lifetime
+# Storage lifetime estimates are not exposed as an `sm` subcommand; the
+# value is surfaced to StorageManagerService via the IVold.getStorageLifeTime()
+# binder call
 
 # Run a storage benchmark
 adb shell sm benchmark <volume_id>

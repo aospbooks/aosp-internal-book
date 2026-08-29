@@ -25,12 +25,12 @@ subdirectories:
 | Directory | Purpose |
 |-----------|---------|
 | `runtime/` | Core runtime: class linker, GC, JIT, JNI, threads |
-| `compiler/` | Optimizing compiler back-end (13 subdirectories) |
-| `dex2oat/` | Ahead-of-time compiler driver (7 subdirectories) |
+| `compiler/` | Optimizing compiler back-end (11 subdirectories) |
+| `dex2oat/` | Ahead-of-time compiler driver (5 subdirectories) |
 | `libdexfile/` | DEX file parsing and validation library |
 | `libartbase/` | Base utilities shared across ART components |
 | `libartpalette/` | Platform abstraction layer |
-| `libartservice/` | ART system service (artd) |
+| `libartservice/` | Java-side ART Service (`com.android.server.art`) |
 | `libarttools/` | Command-line tool utilities |
 | `libprofile/` | Profile data reading and writing |
 | `libnativebridge/` | NativeBridge interface for ISA translation |
@@ -55,7 +55,7 @@ subdirectories:
 ### 18.1.2 The Runtime Singleton
 
 The `Runtime` class is the central singleton that owns every major subsystem.
-It is declared in `art/runtime/runtime.h` and implemented across roughly 3,000
+It is declared in `art/runtime/runtime.h` and implemented across roughly 3,700
 lines in `art/runtime/runtime.cc`.
 
 ```
@@ -242,8 +242,9 @@ enum class CompilationKind {
 
 ### 18.1.8 Nterp: The Fast Interpreter
 
-Nterp (Next-generation TeRP, pronounced "en-terp") is ART's primary
-interpreter. Unlike a traditional C++ switch-based interpreter, Nterp is
+Nterp is ART's primary interpreter -- the assembly successor to the older
+mterp interpreter, which is why its sources still live under the `mterp/`
+directory. Unlike a traditional C++ switch-based interpreter, Nterp is
 written in hand-crafted assembly for each supported architecture. This
 eliminates the overhead of C++ function calls and enables register-to-register
 DEX bytecode execution.
@@ -258,12 +259,12 @@ Key Nterp features:
 2. **Register mapping** -- DEX virtual registers are mapped to a contiguous
    memory region on the stack, with commonly-accessed registers kept in
    machine registers.
-3. **Inline caching** -- Nterp records receiver type information at virtual
-   call sites for use by the JIT inliner.
-4. **Hotness counting** -- Each method invocation and backward branch
+3. **Hotness counting** -- Each method invocation and backward branch
    decrements a hotness counter. When the counter reaches zero, the JIT
-   is notified.
-5. **GC cooperation** -- Nterp includes safepoint checks at backward
+   is notified. (Receiver-type inline caches, by contrast, are not filled
+   by Nterp -- they are recorded by baseline-JIT-compiled code through the
+   `art_quick_update_inline_cache` entrypoint.)
+4. **GC cooperation** -- Nterp includes safepoint checks at backward
    branches and method entries for GC suspension.
 
 Nterp provides a good balance between startup latency (zero compilation time)
@@ -284,7 +285,8 @@ Each `Thread` object contains:
 - **TLAB** -- Thread-Local Allocation Buffer for fast object allocation
 - **Mark stack** -- Thread-local mark stack for concurrent GC
 - **Exception** -- Current pending exception
-- **Class table** -- For fast class lookup during the transaction
+- **Interpreter cache** -- Per-thread cache of resolved DEX items used by
+  the interpreter
 
 Thread states control GC cooperation:
 
@@ -319,11 +321,11 @@ Key locks (in acquisition order):
    threads (readers) from GC (exclusive writer). Most runtime operations
    hold this lock in shared mode.
 2. **heap_bitmap_lock_** -- Protects GC bitmaps during marking and sweeping.
-3. **classlinker_classes_lock_** -- Protects class tables during class
+3. **thread_list_lock_** -- Protects the global thread list.
+4. **classlinker_classes_lock_** -- Protects class tables during class
    loading.
-4. **dex_lock_** -- Protects the list of registered DEX files.
-5. **jni_libraries_lock_** -- Protects the native library table.
-6. **thread_list_lock_** -- Protects the global thread list.
+5. **dex_lock_** -- Protects the list of registered DEX files.
+6. **jni_libraries_lock_** -- Protects the native library table.
 
 ### 18.1.11 Signal Chain Library
 
@@ -366,14 +368,15 @@ functions for common exceptions:
 
 ```
 // art/runtime/common_throws.h (selected)
-void ThrowNullPointerExceptionForFieldAccess(ArtField*, bool is_read);
+void ThrowNullPointerExceptionForFieldAccess(ArtField*, ArtMethod*, bool is_read);
 void ThrowNullPointerExceptionForMethodAccess(uint32_t method_idx, InvokeType);
 void ThrowArrayIndexOutOfBoundsException(int index, int length);
-void ThrowClassCastException(ObjPtr<mirror::Class> actual, ObjPtr<mirror::Class> expected);
+void ThrowClassCastException(ObjPtr<mirror::Class> dest_type, ObjPtr<mirror::Class> src_type);
 void ThrowArithmeticExceptionDivideByZero();
 void ThrowStackOverflowError(Thread* self);
 void ThrowNoSuchMethodError(InvokeType, mirror::Class*, std::string_view, Signature);
-void ThrowNoSuchFieldError(std::string_view scope, mirror::Class*, std::string_view);
+void ThrowNoSuchFieldError(std::string_view scope, ObjPtr<mirror::Class> c,
+                           std::string_view type, std::string_view name);
 ```
 
 ### 18.1.13 Monitor and Synchronization
@@ -386,14 +389,17 @@ implemented through the monitor system (`art/runtime/monitor.h`).
 ART uses a two-tier locking scheme:
 
 1. **Thin lock** -- For uncontended synchronization, a thin lock is stored
-   directly in the object's lock word (the first word of every object).
-   Thin lock acquisition is a single CAS (compare-and-swap) operation:
+   directly in the object's lock word (the second word of every object,
+   after the class pointer). Thin lock acquisition is a single CAS
+   (compare-and-swap) operation:
 
       ```
       Lock Word layout (32 bits):
-      [31:30] State (00=unlocked, 01=thin, 10=fat, 11=hash)
-      [29:16] Lock count (recursion depth for thin locks)
-      [15:0]  Thread ID (for thin locks)
+      [31:30] State (00=thin/unlocked, 01=fat, 10=hash, 11=forwarding address)
+      [29]    Mark bit (GC)
+      [28]    Read barrier state
+      [27:16] Lock count (recursion depth for thin locks, 12 bits)
+      [15:0]  Owner thread ID (for thin locks)
       ```
 
 2. **Fat lock** -- When contention is detected (another thread tries to
@@ -457,10 +463,10 @@ designed for performance:
 
 Every Java object begins with a two-word header:
 
-1. **Lock word** (32 bits) -- Monitor state, hash code, or GC forwarding
-   pointer.
-2. **Class pointer** (32 bits, compressed) -- Reference to the
-   `mirror::Class` object.
+1. **Class pointer** (`klass_`, 32 bits, compressed reference at offset 0)
+   -- Reference to the `mirror::Class` object.
+2. **Lock word** (`monitor_`, 32 bits at offset 4) -- Monitor state, hash
+   code, or GC forwarding pointer.
 
 Instance fields follow the header, ordered to minimize padding:
 
@@ -529,21 +535,31 @@ a resolution trampoline (for unresolved methods).
 ArtMethod provides rich query methods for checking method properties:
 
 ```
-// art/runtime/art_method.h, lines 168-234 (selected)
-bool IsPublic() const { return (GetAccessFlags() & kAccPublic) != 0; }
-bool IsPrivate() const { return (GetAccessFlags() & kAccPrivate) != 0; }
-bool IsStatic() const { return (GetAccessFlags() & kAccStatic) != 0; }
-bool IsConstructor() const { return (GetAccessFlags() & kAccConstructor) != 0; }
-bool IsDirect() const {
-  constexpr uint32_t direct = kAccStatic | kAccPrivate | kAccConstructor;
-  return (GetAccessFlags() & direct) != 0;
+// art/runtime/art_method.h, lines 168-258 (selected)
+// Each predicate is an instance/static pair: the instance method reads
+// the access flags and delegates to a static overload.
+bool IsPublic() const { return IsPublic(GetAccessFlags()); }
+static bool IsPublic(uint32_t access_flags) {
+  return (access_flags & kAccPublic) != 0;
 }
-bool IsSynchronized() const {
-  constexpr uint32_t synchonized = kAccSynchronized | kAccDeclaredSynchronized;
-  return (GetAccessFlags() & synchonized) != 0;
+
+bool IsPrivate() const { return IsPrivate(GetAccessFlags()); }
+static bool IsPrivate(uint32_t access_flags) {
+  return (access_flags & kAccPrivate) != 0;
 }
-bool IsFinal() const { return (GetAccessFlags() & kAccFinal) != 0; }
-bool IsIntrinsic() const { return (GetAccessFlags() & kAccIntrinsic) != 0; }
+
+bool IsStatic() const { return IsStatic(GetAccessFlags()); }
+static bool IsStatic(uint32_t access_flags) {
+  return (access_flags & kAccStatic) != 0;
+}
+
+// ... IsConstructor(), IsDirect(), IsSynchronized(), IsFinal() follow
+// the same pattern ...
+
+bool IsIntrinsic() const { return IsIntrinsic(GetAccessFlags()); }
+static bool IsIntrinsic(uint32_t access_flags) {
+  return (access_flags & kAccIntrinsic) != 0;
+}
 ```
 
 The distinction between "direct" and "virtual" methods is critical for dispatch:
@@ -688,11 +704,14 @@ struct HeaderV41 : public Header {
 container holding a single DEX), and `GetDexContainerRange()` reconstructs the
 whole container span by walking back `header_offset_` bytes from `Begin()` and
 spanning `container_size_` bytes (`art/libdexfile/dex/dex_file.h`, lines
-291-303). The loader keys multi-entry handling off this: in
-`art/libdexfile/dex/dex_file_loader.h` (line 113) every non-primary DEX whose
-version is `>= kDexContainerVersion` is opened as a container entry, and the
-loader asserts `IsDexContainerLastEntry()` once the final entry has been
-consumed (line 213). Two Android 17 hardening fixes tightened this path: the
+291-303). The loader keys multi-entry handling off this: container entries are
+opened one at a time via `DexFileLoader::OpenOne(header_offset, ...)`, walking
+forward through the container by header offset, and the single-file `Open()`
+helper asserts `IsDexContainerLastEntry()` once the final entry has been
+consumed (line 213). Multi-dex checksum computation is container-aware too: in
+`DexFileLoader::GetMultiDexChecksum()` (`art/libdexfile/dex/dex_file_loader.h`,
+line 113), a non-primary V41 entry whose location checksum matches the previous
+entry's is counted only once. Two Android 17 hardening fixes tightened this path: the
 verifier now rejects a header whose claimed `container_size_` exceeds the actual
 mapped size ("[V41] Check that the claimed size is LE than the actual size"),
 and the loader ignores any superfluous bytes trailing a container so a plain
@@ -865,8 +884,8 @@ DEX type descriptors follow the JNI convention:
 Since Android P, the DEX format includes a `HiddenapiClassData` section
 (`art/libdexfile/dex/dex_file_structs.h`, line 274) that tags each
 field and method with hidden API restriction flags. This supports the
-"greylist" and "blacklist" enforcement that prevents apps from accessing
-internal platform APIs.
+"unsupported" and "blocked" enforcement levels (see Section 18.10.15) that
+prevent apps from accessing internal platform APIs.
 
 ### 18.2.9 Method Handle and Call Site Items
 
@@ -1200,7 +1219,7 @@ Key operations:
 into native machine code. It runs at app install time, during background
 optimization ("bg-dexopt"), and at boot time to compile the boot classpath.
 
-Source: `art/dex2oat/` (7 subdirectories) with the main entry in
+Source: `art/dex2oat/` (5 subdirectories) with the main entry in
 `art/dex2oat/dex2oat.cc`.
 
 ### 18.3.1 Architecture
@@ -1218,7 +1237,7 @@ flowchart TD
     I --> J[".oat file"]
     B --> K["VerifierDeps"]
     K --> L[".vdex file"]
-    B --> M["ImageWriter\n(boot image only)"]
+    B --> M["ImageWriter\n(boot image / app image)"]
     M --> N[".art file"]
 ```
 
@@ -1417,7 +1436,7 @@ the compilation of all methods in the input DEX files. It manages:
 
 #### CompilerOptions
 
-The `CompilerOptions` (`art/dex2oat/driver/compiler_options.h`) configure
+The `CompilerOptions` (`art/compiler/driver/compiler_options.h`) configure
 the compilation behavior:
 
 - **Instruction set** -- Target ISA (ARM, ARM64, x86, x86-64, RISC-V 64)
@@ -1564,8 +1583,8 @@ important ones include:
 | `--image=<path>` | Output image file (for boot image) |
 | `--app-image-file=<path>` | Output app image |
 | `--class-loader-context=<context>` | Class loader hierarchy |
-| `--compiler-backend=<backend>` | Compiler backend (Optimizing) |
-| `--threads=<n>` | Number of compilation threads |
+| `--compiler-backend` | Deprecated no-op, explicitly ignored (Optimizing is the only backend) |
+| `-j<n>` | Number of compilation threads |
 | `--cpu-set=<cpus>` | CPU affinity for compilation |
 | `--swap-file=<path>` | Swap file for low-memory devices |
 | `--runtime-arg <arg>` | Pass argument to the runtime |
@@ -1590,7 +1609,7 @@ block-beta
     F[".text section\n(Compiled code for all methods)"]
     G[".text section (cont.)\n(Trampoline stubs)"]
     H[".bss section\n(Lazily-resolved references)"]
-    I[".data.bimg.rel.ro section\n(Boot image relocations)"]
+    I[".data.img.rel.ro section\n(Boot image relocations)"]
     J["Symbol Table"]
     K["Section Headers"]
 ```
@@ -1600,14 +1619,15 @@ Each compiled method has:
 
 - A `OatQuickMethodHeader` preceding the code
 - The native code itself
-- Stack maps appended after the code (for GC and deoptimization)
+- Stack maps (CodeInfo) stored immediately before the header and code,
+  reached by subtracting `code_info_offset_` from the code pointer (used
+  for GC and deoptimization)
 
-The `OatQuickMethodHeader` contains:
-
-- Code size
-- Frame size
-- Core and FP register spill masks
-- VMAP table offset (for stack walking)
+The `OatQuickMethodHeader` itself is minimal: a single `code_info_offset_`
+field followed by the code (`art/runtime/oat/oat_quick_method_header.h`).
+Code size, frame size, and the core/FP register spill masks are not stored
+in the header -- they are decoded on demand from the CodeInfo blob via
+`CodeInfo::DecodeCodeSize()` and `CodeInfo::DecodeFrameInfo()`.
 
 ### 18.3.17 Multi-Image Compilation
 
@@ -1675,11 +1695,11 @@ flowchart TD
 
 ### 18.4.2 The Jit Class
 
-The `Jit` class (`art/runtime/jit/jit.h`, line 189) manages the JIT
+The `Jit` class (`art/runtime/jit/jit.h`, line 197) manages the JIT
 subsystem:
 
 ```
-// art/runtime/jit/jit.h, lines 189-197
+// art/runtime/jit/jit.h, lines 197-212
 class Jit {
  public:
   static constexpr int16_t kJitRecheckOSRThreshold = 101;
@@ -1687,8 +1707,12 @@ class Jit {
   virtual ~Jit();
   static std::unique_ptr<Jit> Create(JitCodeCache* code_cache, JitOptions* options);
 
-  bool CompileMethod(ArtMethod* method, Thread* self,
-                     CompilationKind compilation_kind, bool prejit);
+  EXPORT bool CompileMethod(ArtMethod* method,
+                            Thread* self,
+                            CompilationKind compilation_kind,
+                            bool prejit,
+                            bool dynamic_instrumentation = false)
+      REQUIRES_SHARED(Locks::mutator_lock_);
   ...
 };
 ```
@@ -1716,10 +1740,10 @@ ALWAYS_INLINE void AddSamples(Thread* self, ArtMethod* method)
 Special constants control JIT behavior:
 
 ```
-// art/runtime/jit/jit.h, lines 63-68
+// art/runtime/jit/jit.h, lines 66-68
 static constexpr int16_t kJitCheckForOSR = -1;
 static constexpr int16_t kJitHotnessDisabled = -2;
-static constexpr int16_t kFastCompilerFrequencyCheck = 1024;
+static constexpr uint16_t kIndividualSharedMethodHotnessThreshold = 0x3f;
 ```
 
 ### 18.4.4 JIT Thread Pool
@@ -1754,16 +1778,19 @@ std::set<ArtMethod*> optimized_enqueued_methods_;
 ### 18.4.5 JIT Compiler Interface
 
 The JIT front-end talks to the compiler through the `JitCompilerInterface`
-abstract class (`art/runtime/jit/jit.h`, line 72):
+abstract class (`art/runtime/jit/jit.h`, line 71):
 
 ```
-// art/runtime/jit/jit.h, lines 72-90
+// art/runtime/jit/jit.h, lines 71-86
 class JitCompilerInterface {
  public:
   virtual ~JitCompilerInterface() {}
-  virtual bool CompileMethod(
-      Thread* self, JitMemoryRegion* region, ArtMethod* method,
-      CompilationKind compilation_kind) = 0;
+  virtual bool CompileMethod(Thread* self,
+                             JitMemoryRegion* region,
+                             ArtMethod* method,
+                             CompilationKind compilation_kind,
+                             bool dynamic_instrumentation = false)
+      REQUIRES_SHARED(Locks::mutator_lock_) = 0;
   virtual void TypesLoaded(mirror::Class**, size_t count) = 0;
   virtual bool GenerateDebugInfo() = 0;
   virtual void ParseCompilerOptions() = 0;
@@ -1780,11 +1807,12 @@ When a method becomes hot, `Jit::CompileMethodInternal()` is called
 (`art/runtime/jit/jit.cc`, line 157):
 
 ```
-// art/runtime/jit/jit.cc, lines 157-161
+// art/runtime/jit/jit.cc, lines 157-163
 bool Jit::CompileMethodInternal(ArtMethod* method,
                                 Thread* self,
                                 CompilationKind compilation_kind,
-                                bool prejit) {
+                                bool prejit,
+                                bool dynamic_instrumentation) {
   DCHECK(Runtime::Current()->UseJitCompilation());
   DCHECK(!method->IsRuntimeMethod());
   ...
@@ -2038,14 +2066,14 @@ for operations it cannot handle inline.
 
 Key entrypoint categories:
 
-#### Quick Entrypoints (`quick_entrypoints.h`)
+#### Quick Entrypoints (`runtime_entrypoints_list.h`)
 
 ```
-// art/runtime/entrypoints/quick/quick_entrypoints.h (selected)
+// art/runtime/entrypoints/quick/runtime_entrypoints_list.h (selected)
 // Allocation entrypoints
 void* artAllocObjectFromCodeResolved(mirror::Class*, Thread*);
 void* artAllocObjectFromCodeInitialized(mirror::Class*, Thread*);
-void* artAllocArrayResolved(mirror::Class*, int32_t, Thread*);
+void* artAllocArrayFromCodeResolved(mirror::Class*, int32_t, Thread*);
 
 // Type check entrypoints
 void artThrowClassCastExceptionForObject(mirror::Object*, mirror::Class*, Thread*);
@@ -2055,9 +2083,9 @@ uint32_t artInstanceOfFromCode(mirror::Object*, mirror::Class*);
 void artLockObjectFromCode(mirror::Object*, Thread*);
 void artUnlockObjectFromCode(mirror::Object*, Thread*);
 
-// Field access entrypoints (for unresolved fields)
-uint32_t artGetFieldFromCode(uint32_t, mirror::Object*, ArtMethod*, Thread*);
-void artPutFieldFromCode(uint32_t, mirror::Object*, uint32_t, ArtMethod*, Thread*);
+// Field access entrypoints (per kind: Get/Set x Static/Instance)
+mirror::Object* artGetObjInstanceFromCode(uint32_t, mirror::Object*, ArtMethod*, Thread*);
+int artSet32StaticFromCode(uint32_t, int32_t, ArtMethod*, Thread*);
 
 // Exception entrypoints
 void artThrowNullPointerExceptionFromCode(Thread*);
@@ -2091,7 +2119,7 @@ implementation of these assembly stubs in
 ### 18.4.15 Inline Caches
 
 Inline caches are a profiling mechanism that records the concrete types
-observed at virtual call sites. When Nterp or baseline-JIT code executes a
+observed at virtual call sites. When baseline-JIT-compiled code executes a
 virtual call, the inline cache is updated with the receiver's class.
 
 Types of inline cache:
@@ -2167,7 +2195,7 @@ During a code GC sweep:
 3. Mark all referenced code entries as live.
 4. Free unmarked code entries.
 
-Code GC can be disabled by setting `GarbageCollectCode(false)`, which is
+Code GC can be disabled by setting `SetGarbageCollectCode(false)`, which is
 done when:
 
 - Debug info generation is enabled (need stable code addresses)
@@ -2255,11 +2283,12 @@ flowchart TD
     A --> D["Accounting"]
     A --> E["Reference\nProcessor"]
 
-    B --> B1["RegionSpace\n(main allocation)"]
-    B --> B2["LargeObjectSpace\n(>12KB objects)"]
-    B --> B3["NonMovingSpace\n(class objects, etc.)"]
-    B --> B4["ImageSpace\n(boot image)"]
-    B --> B5["ZygoteSpace\n(pre-fork objects)"]
+    B --> B1["BumpPointerSpace\n(main allocation, CMC)"]
+    B --> B2["RegionSpace\n(main allocation, CC)"]
+    B --> B3["LargeObjectSpace\n(>12KB objects)"]
+    B --> B4["NonMovingSpace\n(class objects, etc.)"]
+    B --> B5["ImageSpace\n(boot image)"]
+    B --> B6["ZygoteSpace\n(pre-fork objects)"]
 
     C --> C1["ConcurrentCopying\n(CC)"]
     C --> C2["MarkCompact\n(CMC)"]
@@ -2282,11 +2311,11 @@ enum CollectorType {
   kCollectorTypeNone,
   kCollectorTypeMS,           // Non-concurrent mark-sweep
   kCollectorTypeCMS,          // Concurrent mark-sweep
-  kCollectorTypeCMC,          // Concurrent mark-compact
+  kCollectorTypeCMC,          // Concurrent mark-compact (default)
   kCollectorTypeCMCBackground,
   kCollectorTypeSS,           // Semi-space
   kCollectorTypeHeapTrim,
-  kCollectorTypeCC,           // Concurrent copying (default)
+  kCollectorTypeCC,           // Concurrent copying
   kCollectorTypeCCBackground,
   ...
 };
@@ -2311,9 +2340,10 @@ static constexpr CollectorType kCollectorTypeDefault =
     ;
 ```
 
-On modern Android devices, the **Concurrent Copying** (CC) collector is
-the standard. Newer devices may use the **Concurrent Mark-Compact** (CMC)
-collector with userfaultfd support.
+The userfaultfd-based **Concurrent Mark-Compact** (CMC) collector is the
+AOSP build default: the `ART_DEFAULT_GC_TYPE` build variable defaults to
+`CMC` in `art/build/art.go`. The **Concurrent Copying** (CC) collector is
+the older collector, still used on some configurations and devices.
 
 ### 18.5.3 Allocator Types
 
@@ -2322,7 +2352,9 @@ ART supports multiple allocator types for different heap spaces:
 ```
 // art/runtime/gc/allocator_type.h
 enum AllocatorType {
-  kAllocatorTypeBumpPointer,     // Bump pointer for region space
+  kAllocatorTypeBumpPointer,     // Global CAS-based bump-pointer allocator
+                                 // (BumpPointer spaces are used only for
+                                 // ZygoteSpace construction)
   kAllocatorTypeTLAB,            // Thread-local allocation buffer
   kAllocatorTypeRosAlloc,        // Runs-of-Slots allocator
   kAllocatorTypeDlMalloc,        // Doug Lea's malloc
@@ -2337,8 +2369,10 @@ The default allocator for the CC collector is `kAllocatorTypeRegionTLAB`:
 each thread gets a TLAB within the region space for fast, lock-free
 allocation.
 
-For the non-moving space, `kAllocatorTypeRosAlloc` is preferred
-(`art/runtime/gc/allocator/rosalloc.h`). RosAlloc (Runs of Slots Allocator)
+For the non-moving space, `kAllocatorTypeNonMoving` is used; the space
+itself is backed by a RosAllocSpace
+(`art/runtime/gc/allocator/rosalloc.h`) when `kUseRosAlloc` is set.
+RosAlloc (Runs of Slots Allocator)
 is a thread-aware, size-class-based allocator that provides:
 
 - Per-thread free lists for common size classes
@@ -2353,7 +2387,8 @@ data structures needed for tracking live objects and dirty regions:
 
 #### Card Table (`card_table.h`)
 
-The card table divides the heap into fixed-size cards (128 bytes each).
+The card table divides the heap into fixed-size cards (1024 bytes each,
+`kCardShift = 10` in `art/runtime/gc/accounting/card_table.h`).
 Each card has a single byte indicating its state:
 
 - **Clean** -- No references in this region have been modified
@@ -2389,9 +2424,12 @@ to to-space.
 
 ### 18.5.5 Concurrent Copying Collector
 
-The CC collector (`art/runtime/gc/collector/concurrent_copying.h`) is ART's
-primary garbage collector. It uses a region-based copying algorithm that can
-run mostly concurrently with application (mutator) threads.
+The CC collector (`art/runtime/gc/collector/concurrent_copying.h`) was ART's
+long-standing default and still runs on configurations built without
+userfaultfd support; CMC is the collector AOSP builds select today
+(`ART_DEFAULT_GC_TYPE` defaults to `CMC` in `art/build/art.go`, line 50). CC
+uses a region-based copying algorithm that runs mostly concurrently with
+application (mutator) threads.
 
 ```
 // art/runtime/gc/collector/concurrent_copying.h, lines 59-76
@@ -2658,7 +2696,7 @@ and app images.
 ### 18.5.8 GC Triggers
 
 GC can be triggered by various causes, enumerated in
-`art/runtime/gc/gc_cause.h` (lines 28-69):
+`art/runtime/gc/gc_cause.h` (lines 28-71):
 
 ```
 enum GcCause {
@@ -2681,6 +2719,7 @@ enum GcCause {
   kGcCauseGetObjectsAllocated,
   kGcCauseProfileSaver,            // Profile saver
   kGcCauseDeletingDexCacheArrays,  // Startup optimization
+  kGcCauseClampGrowthLimit,        // Clamping heap to growth-limit
 };
 ```
 
@@ -2885,7 +2924,8 @@ thrashing between allocation and trimming.
 The mark-compact collector (`art/runtime/gc/collector/mark_compact.h`) is a
 newer alternative to CC that compacts the heap in-place using Linux's
 userfaultfd mechanism. This avoids the need for a separate to-space, reducing
-memory overhead. CMC is becoming the default on newer devices.
+memory overhead. CMC is the default collector in AOSP builds (the
+`ART_DEFAULT_GC_TYPE` build variable defaults to `CMC`).
 
 CMC operates in two main phases:
 
@@ -2930,7 +2970,7 @@ The class linker is responsible for loading, verifying, resolving, and
 initializing Java classes. It is one of the most complex components in ART,
 implemented across over 11,700 lines in `art/runtime/class_linker.cc`.
 
-Source: `art/runtime/class_linker.h`, `art/runtime/class_linker.cc` (522 KB).
+Source: `art/runtime/class_linker.h`, `art/runtime/class_linker.cc` (~514 KiB).
 
 ### 18.6.1 Class Loading Pipeline
 
@@ -3080,8 +3120,8 @@ The class status progresses through these states (defined in
 | Status | Meaning |
 |--------|---------|
 | `kNotReady` | Class is not yet loaded |
-| `kIdx` | Loaded: indices resolved within DEX file |
-| `kLoaded` | Fields and methods loaded, but not linked |
+| `kIdx` | Loaded; superclass/interfaces still held as DEX type indices |
+| `kLoaded` | DEX index values resolved (fields and methods loaded, not yet linked) |
 | `kResolving` | Currently being resolved |
 | `kResolved` | Superclass and interfaces resolved |
 | `kVerifying` | Currently being verified |
@@ -3093,8 +3133,10 @@ The class status progresses through these states (defined in
 ### 18.6.8 Interface Method Table (IMT)
 
 The IMT is a hash-based dispatch table that provides fast interface method
-calls. Each class has a fixed-size IMT (typically 43 entries). Interface
-method indices are hashed into IMT slots:
+calls. Each class has a fixed-size IMT (typically 43 entries). The slot for
+an interface method is derived from a hash mixing its declaring class,
+name, and signature (`art/runtime/imtable-inl.h`); default methods instead
+mask their method index with `kSizeTruncToPowerOfTwo - 1` (31):
 
 - **Single entry** -- If only one interface method maps to a slot, the
   slot contains a direct pointer to the `ArtMethod`.
@@ -3104,7 +3146,7 @@ method indices are hashed into IMT slots:
 
 ```mermaid
 flowchart TD
-    A["invokeinterface\nmethod_idx"] --> B["Hash into IMT\n(method_idx % 43)"]
+    A["invokeinterface\nmethod_idx"] --> B["Hash class+name+signature\n(mixed_hash % 43)"]
     B --> C{"IMT slot\ntype?"}
     C -->|"Single method"| D["Direct dispatch"]
     C -->|"Conflict table"| E["Linear search\nin conflict table"]
@@ -3332,18 +3374,19 @@ This enables speculative devirtualization: the JIT can inline virtual method
 calls when only one implementation is known, but must be prepared to
 deoptimize if the assumption is broken by dynamic class loading.
 
-### 18.6.16 AddImageSpaces
+### 18.6.16 AddImageSpace
 
-For boot images and app images, `AddImageSpaces()` maps precompiled `.art`
-files into the heap and registers their classes with the class linker:
+For boot images and app images, `AddImageSpace()` registers a precompiled
+`.art` image space (already mapped and added to the heap) with the class
+linker, making its classes available:
 
 ```
-// art/runtime/class_linker.h, lines 198-203
-bool AddImageSpaces(ArrayRef<gc::space::ImageSpace*> spaces,
-                    Handle<mirror::ClassLoader> class_loader,
-                    ClassLoaderContext* context,
-                    std::vector<std::unique_ptr<const DexFile>>* dex_files,
-                    std::string* error_msg);
+// art/runtime/class_linker.h, lines 196-201
+bool AddImageSpace(gc::space::ImageSpace* space,
+                   Handle<mirror::ClassLoader> class_loader,
+                   ClassLoaderContext* context,
+                   const std::vector<std::unique_ptr<const DexFile>>& dex_files,
+                   std::string* error_msg);
 ```
 
 This is the primary mechanism by which boot image classes become available
@@ -3506,15 +3549,26 @@ uint64_t GetCriticalStartUs() const { return critical_start_us_; }
 ### 18.7.9 Indirect Reference Tables
 
 JNI object references (`jobject`, `jclass`, `jstring`, etc.) are not direct
-pointers to managed objects. Instead, they are indices into indirect reference
-tables (`art/runtime/jni/indirect_reference_table.h`). This indirection
-allows the GC to move objects without invalidating JNI references.
+pointers to managed objects. Instead, they are opaque handles that index into
+reference tables, and that indirection is what lets the GC move objects without
+invalidating JNI references.
 
-There are three types of reference tables:
+There are three kinds of reference table:
 
-- **Local reference table** -- per-JNIEnv, bounded lifetime
-- **Global reference table** -- process-wide, explicit deletion required
-- **Weak global reference table** -- process-wide, cleared by GC
+- **Local reference table** -- per-JNIEnv, bounded lifetime. Stored as
+  `jni::LocalReferenceTable locals_` in `JNIEnvExt`
+  (`art/runtime/jni/jni_env_ext.h`, line 171) and implemented in
+  `art/runtime/jni/local_reference_table.h`.
+- **Global reference table** -- process-wide, explicit deletion required.
+- **Weak global reference table** -- process-wide, cleared by GC.
+
+`IndirectReferenceTable` (`art/runtime/jni/indirect_reference_table.h`) backs
+only the last two: its header describes itself as being "used for global and
+weak global JNI references". Local references get their own table type because
+they need different encoding and much cheaper push/pop behavior. All three
+share the `IndirectRefKind` tag stored in the two low bits of the handle
+(`kJniTransition`, `kLocal`, `kGlobal`, `kWeakGlobal`), which is how
+`GetObjectRefType()` and the reference-decoding fast paths tell them apart.
 
 ### 18.7.10 JNI Trampoline Types
 
@@ -3555,10 +3609,11 @@ ART supports two Android-specific JNI optimizations:
 **@FastNative** -- Methods annotated with `@FastNative` use an optimized
 calling convention that:
 
-- Skips the `JNIEnv*` stack allocation overhead
-- Keeps the thread in `kRunnable` state (not `kNative`)
-- Does not handle exceptions automatically
-- Is faster for methods that do not need full JNI services
+- Skips the Runnable-to-Native and Native-to-Runnable thread-state
+  transitions; the thread stays in `kRunnable` state for the whole call
+- Still receives `JNIEnv*` and a JNI local reference frame, and pending
+  exceptions are delivered on return just as with normal JNI
+- Is faster for short-running methods that do not block
 
 **@CriticalNative** -- Methods annotated with `@CriticalNative` use an even
 more streamlined convention:
@@ -3613,8 +3668,9 @@ server artifacts may be stale because:
 
 ```mermaid
 flowchart TD
-    A["Device Boot"] --> B["init triggers\nodrefresh"]
-    B --> C["CheckArtifactsAreUpToDate()"]
+    A["Device Boot"] --> B["init starts odsign"]
+    B --> B2["odsign runs\nodrefresh --check / --compile"]
+    B2 --> C["CheckArtifactsAreUpToDate()"]
     C --> D{"Artifacts\nup to date?"}
     D -->|Yes| E["Exit: kOkay"]
     D -->|No| F["Determine what\nneeds compilation"]
@@ -3987,17 +4043,19 @@ available to the namespace configuration.
 
 When running under a native bridge (e.g., for ISA translation like ARM-on-x86),
 `libnativeloader` creates "bridged" namespaces that route library loading
-through the native bridge:
+through the native bridge. Every namespace lookup carries an `is_bridged`
+parameter that selects between the native bridge and the direct linker.
+The APEX lookup path shows the parameter in use -- here it is hard-coded to
+`false`, because as the source comment above this call notes, native bridge
+is never used for APEXes:
 
 ```
-// art/libnativeloader/native_loader.cpp, line 89
+// art/libnativeloader/native_loader.cpp, lines 87-89
+// Native Bridge is never used for APEXes.
 Result<NativeLoaderNamespace> ns =
     NativeLoaderNamespace::GetExportedNamespace(
         name.value(), /*is_bridged=*/false);
 ```
-
-The `is_bridged` parameter controls whether the namespace uses the native
-bridge or the direct linker.
 
 ### 18.9.10 Library Loading Flow
 
@@ -4054,7 +4112,8 @@ Debugging tips:
 
 - Check `adb logcat -s linker` for detailed linker errors
 - Check `adb logcat -s nativeloader` for namespace resolution
-- Use `adb shell linkerconfig --dump` to see namespace configuration
+- Read the generated config with `adb shell cat /linkerconfig/ld.config.txt`
+  to see the namespace configuration
 
 ### 18.9.12 Namespace Linking
 
@@ -4186,7 +4245,7 @@ implementation is organized into capability-specific files:
 | `ti_search.h/cc` | Class search path manipulation |
 | `ti_properties.h/cc` | System property access |
 | `ti_timers.h/cc` | Timer information |
-| `ti_dump.h/cc` | Heap dump support |
+| `ti_dump.h/cc` | VM internal state dump (DataDumpRequest / DumpInternalState) |
 | `ti_allocator.h/cc` | JVMTI memory allocation |
 | `ti_extension.h/cc` | ART-specific JVMTI extensions |
 | `ti_logging.h/cc` | Logging control |
@@ -4219,10 +4278,16 @@ Breakpoints work by:
 
 ### 18.10.5 Class Redefinition
 
-ART supports structural class redefinition (hot-swap) through the JVMTI
-`RedefineClasses` function (`art/openjdkjvmti/ti_redefine.h`). This allows
-Android Studio's "Apply Changes" feature to modify classes without restarting
-the app.
+ART supports class redefinition (hot-swap) through two entry points in
+`art/openjdkjvmti/ti_redefine.h`. The standard JVMTI `RedefineClasses`
+function (line 89) performs non-structural redefinition -- method bodies may
+change, but the shape of the class may not. Structural redefinition is an
+ART-specific JVMTI extension, `com.android.art.class.structurally_redefine_classes`,
+registered in `art/openjdkjvmti/ti_extension.cc` (lines 420-423) and backed by
+`Redefiner::StructurallyRedefineClasses` (line 92); it accepts additive changes
+-- new methods and fields -- but still forbids removals or changes to
+supertypes and implemented interfaces. Together these back Android Studio's
+"Apply Changes" feature, which modifies classes without restarting the app.
 
 The redefinition process:
 
@@ -4313,7 +4378,8 @@ Sending SIGQUIT (signal 3) to a process triggers a full thread dump:
 
 ```bash
 adb shell kill -3 <pid>
-# Output written to /data/anr/traces.txt or logcat
+# tombstoned writes the dump to /data/anr/trace_<NN> (and a copy to logcat)
+adb shell ls -t /data/anr/
 ```
 
 The dump includes:
@@ -4349,15 +4415,15 @@ Shows ART-specific memory breakdown:
 |----------|--------|
 | `dalvik.vm.heapsize` | Maximum heap size |
 | `dalvik.vm.heapgrowthlimit` | Default heap growth limit |
-| `dalvik.vm.heapmaxfree` | Maximum free bytes before GC |
-| `dalvik.vm.heapminfree` | Minimum free bytes after GC |
+| `dalvik.vm.heapmaxfree` | Upper bound on free bytes retained after a GC (heap is shrunk past it) |
+| `dalvik.vm.heapminfree` | Lower bound on free bytes retained after a GC (floor on heap growth) |
 | `dalvik.vm.heaptargetutilization` | GC target utilization |
 | `dalvik.vm.usejit` | Enable/disable JIT |
-| `dalvik.vm.usejitprofiles` | Enable profile saving |
+| `dalvik.vm.profilebootclasspath` | Profile the boot classpath |
 | `dalvik.vm.jitthreshold` | JIT compilation threshold |
 | `dalvik.vm.dex2oat-threads` | dex2oat thread count |
 | `dalvik.vm.image-dex2oat-threads` | Boot image compilation threads |
-| `dalvik.vm.check-jni` | Enable CheckJNI |
+| `dalvik.vm.checkjni` | Enable CheckJNI |
 | `dalvik.vm.extra-opts` | Additional VM options |
 | `persist.device_config.runtime_native.usap_pool_enabled` | USAP pool |
 
@@ -4389,7 +4455,7 @@ The `DeoptimizationKind` enum (`art/runtime/deoptimization_kind.h`) defines
 why deoptimization occurred:
 
 - `kFullFrame` -- Full frame deoptimization
-- `kOsr` -- OSR-related deoptimization
+- `kCHA` -- Class hierarchy analysis assumption invalidated
 - `kJitSameTarget` -- JIT compiled code needs updating
 - And several others for specific scenarios
 
@@ -4399,10 +4465,14 @@ ART enforces restrictions on access to non-SDK (hidden) APIs. When an app
 attempts to use a hidden API (via reflection or JNI), ART checks the API's
 restriction level:
 
-- **Whitelist** -- Always accessible
-- **Light greylist** -- Accessible but generates a log warning
-- **Dark greylist** -- Accessible only for apps targeting older SDK versions
-- **Blacklist** -- Always blocked, throws an exception
+- **`sdk`** -- Always accessible
+- **`unsupported`** -- `@UnsupportedAppUsage`; accessible but generates a
+  log warning
+- **`max-target-O/P/Q/R/S`** -- Accessible only to apps targeting that SDK
+  version or older
+- **`blocked`** -- Always denied, throws an exception
+
+(defined in `art/libartbase/base/hiddenapi_flags.h`)
 
 The hidden API data is stored in the DEX file's `HiddenapiClassData` section
 (see Section 18.2.8) and checked during reflection and JNI method resolution.
@@ -4424,18 +4494,21 @@ a Java component and a native (C++) component.
 
 ### 18.10.17 ART Daemon (artd)
 
-The `artd` service (`art/artd/`) is a system service that manages
-dex optimization operations on behalf of the package manager. It provides
-a binder interface for:
+The `artd` service (`art/artd/`) is the privileged shim component of ART
+Service: it performs tasks that require elevated permissions not available
+to `system_server`, such as manipulating the file system and invoking
+`dex2oat`. Its binder interface (`IArtd`) is internal to ART Service's
+Java code and covers:
 
-- Triggering dex optimization for specific packages
-- Querying the optimization status of packages
-- Managing profiles (merge, delete, snapshot)
-- Performing background dex optimization (bg-dexopt)
+- Performing dex optimization (`dexopt()`) and checking whether it is
+  needed (`getDexoptNeeded()`, `getDexoptStatus()`)
+- Managing profiles (merge, delete, cleanup)
 
-`artd` replaces the older in-process dex optimization logic that was
-embedded in the package manager, providing better isolation and
-testability.
+Background dex optimization (bg-dexopt) is scheduled by ART Service's Java
+code running in `system_server`, which then calls into `artd` to do the
+privileged work. ART Service as a whole replaces the older in-process dex
+optimization logic that was embedded in the package manager, providing
+better isolation and testability.
 
 ### 18.10.18 dexoptanalyzer
 
@@ -4502,8 +4575,9 @@ test `X86FeaturesFromPantherlakeVariant`
 (`art/runtime/arch/x86/instruction_set_features_x86_test.cc`) asserts that exact
 result for both the 32-bit `kX86` and 64-bit `kX86_64` instruction sets. This
 puts `pantherlake` alongside `kabylake` and `alderlake` as the only three
-variants ART recognizes at the AVX2 tier; the older Atom, Silvermont, Goldmont,
-and Tremont families it knows about stop at SSE4.2 with no AVX or AVX2.
+variants ART recognizes at the AVX2 tier; the older Silvermont, Goldmont, and
+Tremont families it knows about stop at SSE4.2/POPCNT with no AVX or AVX2,
+while Atom stops even earlier at SSSE3.
 The AVX2 bit lives at position 4 of the feature bitmap
 (`kAvx2Bitfield = 1 << 4`, `art/runtime/arch/x86/instruction_set_features_x86.h`,
 line 141); an Android 17 fix corrected that bit position so the bitmap encoding
@@ -4677,7 +4751,7 @@ changing its overall structure:
   and the profiles it reads use the flattened-index profile keys for container
   entries.
 - Record and value class flags are set during class linking
-  (`ClassLinker::VerifyClass` -> `VerifyRecordClass` / `VerifyValueClass`), so
+  (`ClassLinker::LinkSuperClass` -> `VerifyRecordClass` / `VerifyValueClass`), so
   AOT-compiled images built by `dex2oat` carry the same `class_flags` the
   runtime would compute.
 
@@ -4727,8 +4801,10 @@ The flag itself is fixed read-only (`art/build/flags/art-flags.aconfig`, the
 `use_generational_cmc` entry, namespace `art_performance`). When generational
 CMC is on, `MarkCompact` keeps `use_generational_` set and flips `young_gen_`
 for each minor collection (`art/runtime/gc/collector/mark_compact.cc`, lines
-508-511, 524-525); `GetGcType()` already reports `kGcTypeSticky` for the
-collector (`art/runtime/gc/collector/mark_compact.h`, line 69).
+508-511, 524-525); the new `YoungMarkCompact` wrapper class reports
+`kGcTypeSticky` from its `GetGcType()`
+(`art/runtime/gc/collector/mark_compact.h`, line 69), while
+`MarkCompact::GetGcType()` returns `kGcTypePartial` (line 148).
 
 Unlike the two-generation CC scheme, generational CMC tracks three generations
 and promotes by age rather than after a single survival:
@@ -4753,9 +4829,10 @@ heap.
 Before Android 17, an app could overwrite a `static final` field through
 reflection (`Field.setAccessible(true)` followed by `Field.set(...)`) or JNI
 (`SetStatic<Type>Field`). For apps targeting SDK 37 (`SdkVersion::kC`,
-`art/libartbase/base/sdk_version.h` line 44), ART now rejects those writes with
-an `IllegalAccessException`. The gate is the target SDK version, so existing
-binaries keep working until they recompile against the new target.
+`art/libartbase/base/sdk_version.h` line 44), ART now rejects those writes --
+the reflection path throws an `IllegalAccessException`, and the JNI path is
+fatal (see below). The gate is the target SDK version, so existing binaries
+keep working until they recompile against the new target.
 
 The decision lives in `ArtField::IsUnmodifiable()`, which short-circuits for
 apps targeting Android B (SDK 36) or older:
@@ -4792,10 +4869,13 @@ ALWAYS_INLINE inline static bool ThrowIAEIfFieldIsNotOverwritable(
 }
 ```
 
-The JNI path enforces the same rule. `JNI::SetStaticField` runs through
-`EnsureModifiable()`, which calls `RecordModificationAttempt()` and then aborts
-the write when `IsUnmodifiable()` holds (`art/runtime/jni/jni_internal.cc`,
-lines 1653-1683). Two carve-outs survive: the write-protected
+The JNI path enforces the same rule, but far more harshly. Each
+`SetStatic<Type>Field` implementation runs through `EnsureModifiable()`, which
+calls `RecordModificationAttempt()` and then, when `IsUnmodifiable()` holds,
+executes a `LOG(FATAL) << "Cannot set ..."` that aborts the whole process
+(`art/runtime/jni/jni_internal.cc`, lines 1666-1688). No exception is thrown
+there -- `IllegalAccessException` is the reflection behavior only. Two
+carve-outs survive: the write-protected
 `System.in`/`out`/`err` fields (mutable only through `System.setIn/setOut/setErr`),
 and class redefinition under a Java-debuggable runtime, which Android Studio
 relies on for hot-swapping fields. Apps targeting SDK 37 and higher also lose
@@ -4938,7 +5018,8 @@ builds the FlatBuffer (`CreateSpawnParcel`) and writes it to the socket; the
 note in that file that `RESPONSE_DATA_BUF_SIZE` must stay in sync with
 `MESSAGE_BUFFER_SIZE` in `system/zygote/zygote-messages/src/lib.rs` shows the
 two sides share one schema. The server's `epoll` loop dispatches each decoded
-`Message` (`Server::run` in `system/zygote/zygote/src/server.rs`): an
+`Message` (`Server::serve` in `system/zygote/zygote/src/server.rs`, line
+1156): an
 `IdentityQuery` is answered, a `Spawn`/`SpawnSubspecies` triggers a `fork()`
 followed by `child_process::re_initialize` and either `Species::gestate` (for an
 app) or `re_initialize_as_subspecies` (for a subspecies server).
@@ -5106,8 +5187,8 @@ ART has evolved significantly over Android releases:
 | Android Version | ART Changes |
 |----------------|------------|
 | 5.0 (Lollipop) | ART becomes default runtime, replaces Dalvik |
-| 6.0 (Marshmallow) | Profile-guided compilation, improved GC |
-| 7.0 (Nougat) | JIT compiler added, hybrid AOT+JIT model |
+| 6.0 (Marshmallow) | Improved GC and compiler |
+| 7.0 (Nougat) | JIT compiler added, hybrid AOT+JIT model, profile-guided compilation |
 | 8.0 (Oreo) | Concurrent Copying collector, faster boot |
 | 9.0 (Pie) | Hidden API restrictions, compact DEX |
 | 10 | Generational CC, improved startup |
@@ -5138,7 +5219,7 @@ Key source files for further exploration:
 | Class flags | `art/runtime/mirror/class_flags.h` |
 | x86 ISA features | `art/runtime/arch/x86/instruction_set_features_x86.cc` |
 | x86-64 SIMD width | `art/compiler/optimizing/code_generator_x86_64.h` |
-| Class linker | `art/runtime/class_linker.cc` (11,710 lines) |
+| Class linker | `art/runtime/class_linker.cc` (~11,800 lines) |
 | JNI VM | `art/runtime/jni/java_vm_ext.h` |
 | JNI env | `art/runtime/jni/jni_env_ext.h` |
 | OAT header | `art/runtime/oat/oat.h` |
@@ -5274,8 +5355,11 @@ adb shell cat /system/etc/public.libraries.txt
 # Check vendor public libraries
 adb shell cat /vendor/etc/public.libraries.txt 2>/dev/null
 
-# See the linker namespace configuration for an app process
-adb shell cat /proc/<pid>/maps | grep -i "linker_namespaces"
+# See the linker namespace configuration generated by linkerconfig
+adb shell cat /linkerconfig/ld.config.txt
+
+# Watch libnativeloader resolve namespaces as apps start
+adb logcat -s nativeloader
 ```
 
 ### Exercise 18.8 -- Use JVMTI for Debugging
@@ -5321,8 +5405,9 @@ Collect GC metrics for a running app:
 # Dump ART runtime info
 adb shell kill -3 <pid>  # SIGQUIT
 
-# Read the trace file
-adb shell cat /data/anr/traces.txt | head -100
+# Read the newest trace file (dumps land as /data/anr/trace_<NN>)
+adb shell ls -t /data/anr/
+adb shell cat /data/anr/trace_00 | head -100
 ```
 
 Look for the "Cumulative GC" section showing:
@@ -5345,7 +5430,7 @@ Invoke dex2oat manually to understand its command-line interface:
     --compiler-filter=speed-profile \
     --profile-file=/path/to/primary.prof \
     --instruction-set=arm64 \
-    --verbose-methods=* \
+    --verbose-methods=toString,hashCode \
     2>&1 | head -100
 ```
 
@@ -5386,12 +5471,13 @@ Use `adb` to dump method information for a running process:
 
 ```bash
 # Dump all methods of a specific class
-adb shell cmd activity dump-heap <pid> /data/local/tmp/heap.hprof
+adb shell cmd activity dumpheap <process-name> /data/local/tmp/heap.hprof
 # Then analyze with Android Studio's heap profiler
 
 # Alternatively, use SIGQUIT to see method info in the trace
 adb shell kill -3 <pid>
-adb shell cat /data/anr/traces.txt | grep -A5 "ArtMethod"
+adb shell ls -t /data/anr/
+adb shell cat /data/anr/trace_00 | grep -A5 "ArtMethod"
 ```
 
 ### Exercise 18.14 -- Compare Compiler Filters
@@ -5444,10 +5530,10 @@ adb shell ls -la /system/framework/arm64/boot*.oat
 adb shell ls -la /system/framework/arm64/boot*.vdex
 
 # Dump boot image info
-oatdump --image=/system/framework/arm64/boot.art --dump:art
+oatdump --image=/system/framework/arm64/boot.art
 
 # Count classes in the boot image
-oatdump --image=/system/framework/arm64/boot.art --dump:art | \
+oatdump --image=/system/framework/arm64/boot.art | \
     grep "class_def" | wc -l
 ```
 
@@ -5479,8 +5565,9 @@ Dump the heap space layout for a running process:
 # Trigger heap dump via SIGQUIT
 adb shell kill -3 <pid>
 
-# Look for space information in the trace
-adb shell cat /data/anr/traces.txt | grep -A20 "Heap:"
+# Look for space information in the trace (files are /data/anr/trace_<NN>)
+adb shell ls -t /data/anr/
+adb shell cat /data/anr/trace_00 | grep -A20 "Heap:"
 ```
 
 You should see:
@@ -5499,11 +5586,10 @@ Examine the contents of a VDEX file:
 # Find the VDEX file for an app
 adb shell find /data/dalvik-cache -name "*.vdex" | head -5
 
-# Use oatdump to examine the VDEX
-oatdump --vdex-file=/path/to/file.vdex --dump:vdex-sections
-
-# Check verifier dependencies
-oatdump --vdex-file=/path/to/file.vdex --dump:verifier-deps
+# oatdump has no standalone VDEX mode; pass the corresponding OAT/ODEX
+# file and the VDEX header and verifier dependencies are printed as part
+# of that output
+oatdump --oat-file=/path/to/file.odex
 ```
 
 ### Exercise 18.20 -- Understand ArtMethod Entry Points
@@ -5587,7 +5673,7 @@ Perform a complete profile-guided compilation cycle:
 adb shell dumpsys package com.example.app | grep "status"
 
 # 2. Clear existing profiles
-adb shell cmd package clear-profiles com.example.app
+adb shell pm art clear-app-profiles com.example.app
 
 # 3. Use the app normally for 5 minutes to generate profile data
 
@@ -5938,12 +6024,13 @@ sequenceDiagram
     NB->>NB: state = kOpened
 
     ART->>NB: PreInitializeNativeBridge(app_data_dir, isa)
-    NB->>NB: Create code_cache dir
+    NB->>NB: Build code_cache path
     NB->>NB: state = kPreInitialized
 
     Note over ART: Zygote forks app process
 
     ART->>NB: InitializeNativeBridge(env, isa)
+    NB->>NB: mkdir code_cache dir
     NB->>Bridge: callbacks->initialize(runtime_cbs, code_cache, isa)
     NB->>NB: SetupEnvironment() -- set os.arch
     NB->>NB: state = kInitialized
@@ -5985,8 +6072,11 @@ Key observations:
    allowed, and the first character must be alphabetic (line 175).
 2. `OpenSystemLibrary` uses `android_dlopen_ext` to open from the system
    namespace on device, or plain `dlopen` on host (lines 41-61).
-3. Compatibility is checked against `NAMESPACE_VERSION` (3) -- ancient v1/v2
-   bridges are rejected in modern AOSP.
+3. The compatibility check (`isCompatibleWith(NAMESPACE_VERSION)`) rejects
+   outright only a bridge that reports version 0.  A v1 bridge is always
+   treated as compatible (the check falls through to `return true`), and a
+   v2+ bridge decides for itself via its own `isCompatibleWith()` callback
+   whether it supports `NAMESPACE_VERSION` (3).
 
 ### 19.1.8  NeedsNativeBridge -- The ISA Check
 
@@ -6658,6 +6748,11 @@ void* BerberisNativeBridge::LoadLibrary(const char* libpath, int flags,
   void* handle = LoadGuestLibrary(libpath, flags, ns);
   if (handle != nullptr) return handle;
 
+  // http://b/206676167: Do not fallback to host for libRS.so
+  if (berberis::Basename(libpath) == "libRS.so") return handle;
+
+  // ... (fill extinfo with ns->host_namespace when ns != nullptr)
+
   // Try falling back to host loader.
   handle = android_dlopen_ext(libpath, flags, extinfo);
   if (handle != nullptr) {
@@ -6667,9 +6762,16 @@ void* BerberisNativeBridge::LoadLibrary(const char* libpath, int flags,
 }
 ```
 
-This fallback is essential: many apps ship native libraries for only one ISA,
-but some system libraries (like Chromium's webview support) may only be
-available as host binaries.
+The in-source rationale for this fallback (see the `CreateNamespace` comment at
+`frameworks/libs/binary_translation/native_bridge/native_bridge.cc:243-253` and
+bug b/308371292) is twofold.  Android SDK libraries have no good mechanism for
+shipping JNI libraries, so such a library often lives in the system search path
+and is only resolvable through the host system linker namespace — which is also
+why the guest search path is preserved for the host namespace.  And apps
+sometimes drop libraries of one architecture into the folder of another (x86_64
+binaries under an `arm64` directory, say); those load fine when the architecture
+happens to match the host.  One library is explicitly excluded from the
+fallback: `libRS.so` never resolves to a host binary (b/206676167).
 
 ```mermaid
 graph TB
@@ -6784,14 +6886,15 @@ When a guest library is loaded, the bridge needs to intercept `JNI_OnLoad` to
 convert the `JavaVM*` parameter:
 
 ```cpp
+template <typename FnT>
+void ConvertJavaVMToGuest(GuestArgumentBuffer* buf) {
+  auto host_java_vm = HostArgumentsValues<FnT>(buf).template get<0>();
+  auto&& guest_java_vm = GuestArgumentsReferences<FnT>(buf).template get<0>();
+  guest_java_vm = ToGuestJavaVM(host_java_vm);
+}
+
 void RunGuestJNIOnLoad(GuestAddr pc, GuestArgumentBuffer* buf) {
-  auto [host_java_vm, reserved] =
-      HostArgumentsValues<decltype(JNI_OnLoad)>(buf);
-  {
-    auto&& [guest_java_vm, reserved] =
-        GuestArgumentsReferences<decltype(JNI_OnLoad)>(buf);
-    guest_java_vm = ToGuestJavaVM(host_java_vm);
-  }
+  ConvertJavaVMToGuest<decltype(JNI_OnLoad)>(buf);
   RunGuestCall(pc, buf);
 }
 
@@ -6907,8 +7010,10 @@ The `static bool` trick ensures thread-safe one-time initialization (C++11
 guarantees).  `InitTranslator()` is the call that brings up the three-tier
 engine; in the Android 17 tree it lives in the consolidated translator module
 (section 19.8), not in `runtime/`.  The same file also exposes
-`PreZygoteForkUnsafe()`, which clears the translation cache before the Zygote
-forks an app process so that no stale compiled code survives the fork.
+`PreZygoteForkUnsafe()`, which forwards to the translation cache's
+`PreZygoteForkUnsafe()`.  That call does not flush translated code -- it
+closes the cache's `memfd` file descriptor, because the Zygote's fork does
+not allow unrecognized open file descriptors to survive into the child.
 
 When guest code is overwritten (for example a self-modifying JIT inside the
 guest, or `dlclose`), the runtime invalidates the affected compiled regions.
@@ -7046,7 +7151,7 @@ frameworks/libs/native_bridge_support/
         linker/
         vdso/
         libEGL/  libGLESv1_CM/  libGLESv2/  libGLESv3/
-        ... (26+ subdirectories)
+        ... (24 subdirectories)
     guest_state/                # Guest CPU state definitions
     guest_state_accessor/       # State accessor utilities
     tools/
@@ -7518,31 +7623,33 @@ a full ARM system image.
 
 ### 19.6.1  Board Configuration
 
-The emulator defines ARM as a native bridge architecture in its BoardConfig:
+The Goldfish board that pairs x86_64 with translated ARM declares ARM64 as its
+native bridge architecture:
 
 ```makefile
-# Source: build/make/target/board/generic_x86_64_arm64/BoardConfig.mk:16-32
-# Primary architecture: x86_64
+# Source: device/generic/goldfish/board/emu64xa/BoardConfig.mk:16-25
+# x86_64 emulator specific definitions
 TARGET_CPU_ABI := x86_64
 TARGET_ARCH := x86_64
+TARGET_ARCH_VARIANT := x86_64
+TARGET_2ND_ARCH_VARIANT := x86_64
 
-# Secondary architecture: x86 (32-bit compat)
-TARGET_2ND_CPU_ABI := x86
-TARGET_2ND_ARCH := x86
-
-# Native bridge: ARM64 (translated)
 TARGET_NATIVE_BRIDGE_ARCH := arm64
 TARGET_NATIVE_BRIDGE_ARCH_VARIANT := armv8-a
+TARGET_NATIVE_BRIDGE_CPU_VARIANT := generic
 TARGET_NATIVE_BRIDGE_ABI := arm64-v8a
-
-# Native bridge secondary: ARM (32-bit translated)
-TARGET_NATIVE_BRIDGE_2ND_ARCH := arm
-TARGET_NATIVE_BRIDGE_2ND_ARCH_VARIANT := armv7-a-neon
-TARGET_NATIVE_BRIDGE_2ND_ABI := armeabi-v7a armeabi
 ```
 
-This produces a device that natively runs x86/x86_64 code and can translate
-ARM/ARM64 code through the native bridge.
+This produces a 64-bit-only device that natively runs x86_64 code and can
+translate ARM64 code through the native bridge.  The RISC-V counterpart,
+`device/generic/goldfish/board/emu64xr/BoardConfig.mk:22-25`, is the same board
+shape with `TARGET_NATIVE_BRIDGE_ARCH := riscv64` and
+`TARGET_NATIVE_BRIDGE_ABI := riscv64`; it backs the `sdk_phone64_x86_64_riscv64`
+product through `PRODUCT_DEVICE := emu64xr`
+(`device/generic/goldfish/64bitonly/product/sdk_phone64_x86_64_riscv64.mk:26`).
+Neither of these boards carries `TARGET_2ND_CPU_ABI` or
+`TARGET_NATIVE_BRIDGE_2ND_*`: the modern emulator images are 64-bit only, so
+there is no 32-bit x86 or `armeabi-v7a` slot to fill.
 
 ### 19.6.2  ABI List Construction
 
@@ -7550,15 +7657,20 @@ The build system constructs the device's ABI list by placing native ABIs
 first, then appending native bridge ABIs as fallbacks:
 
 ```makefile
-# Source: build/make/core/board_config.mk:387-395
-# Final ABI list = native ABIs + bridge ABIs
-TARGET_CPU_ABI_LIST := x86_64,x86,arm64-v8a,armeabi-v7a,armeabi
-#                      ^^^^^^^^^^^^^^ native  ^^^^^^^^^^^^^^^^^^^^^^^^ bridge
+# Source: build/make/core/board_config.mk:387-399
+# Add NATIVE_BRIDGE_ABIs at the end to keep order of preference.
+TARGET_CPU_ABI_LIST := $(TARGET_CPU_ABI_LIST_64_BIT) $(TARGET_CPU_ABI_LIST_32_BIT) \
+                       $(_target_native_bridge_abi_list_64_bit) \
+                       $(_target_native_bridge_abi_list_32_bit)
+
+# For the 64-bit-only emu64xa board this collapses to:
+TARGET_CPU_ABI_LIST := x86_64,arm64-v8a
+#                      ^^^^^^ native  ^^^^^^^^^^ bridge
 ```
 
 The **ordering matters**: the package manager prefers native x86_64 libraries
 when available and only falls back to ARM through the bridge when an APK
-contains no x86 code. This is why most apps run at full native speed on the
+contains no x86_64 code. This is why most apps run at full native speed on the
 emulator — only apps with ARM-only native libraries go through translation.
 
 ### 19.6.3  NDK Translation Package
@@ -7583,8 +7695,11 @@ type ndkTranslationPackageProperties struct {
 }
 ```
 
-At build time, this module collects ARM-compiled libraries and packages them
-into the system image at paths like:
+At build time, this module collects the native-bridge and native variants of
+its dependencies and zips them (under `system/...` entries, together with a
+generated `Android.bp` and `product.mk`) into a distributable
+`ndk_translation_package.zip` -- there is no direct system-image install
+rule.  A product that consumes the package then places the ARM libraries at:
 
 ```
 /system/lib/arm/           # 32-bit ARM libraries
@@ -7624,21 +7739,35 @@ compiled twice:
 
 ### 19.6.5  Graphics and Vulkan Bridge Support
 
-The native bridge integrates with the graphics stack to support ARM apps
-that use OpenGL ES or Vulkan:
+Both graphics loaders link against `libnativebridge_lazy`:
 
 ```
 // Source: frameworks/native/opengl/libs/Android.bp:193
-// EGL loader depends on libnativebridge_lazy for bridge-aware GL dispatch
+"libnativebridge_lazy",   // in the libEGL shared_libs list
 
-// Source: frameworks/native/vulkan/libvulkan/Android.bp:147
-// Vulkan loader integrates with native bridge for cross-architecture dispatch
+// Source: frameworks/native/vulkan/libvulkan/Android.bp:152
+"libnativebridge_lazy",   // in the libvulkan shared_libs list
 ```
 
-When an ARM app calls OpenGL ES or Vulkan functions, the native bridge
-must translate the calling convention and redirect to the host GPU driver.
-This is handled through the same trampoline mechanism used for JNI calls
-(see section 19.2.10).
+It is worth being precise about what this dependency buys, because it is
+narrower than it looks.  The loaders use libnativebridge only to load GPU
+*debug layer* libraries that were built for the guest ISA: `egl_layers.h:77`
+resolves layer entry points with
+`android::NativeBridgeGetTrampoline(dlhandle_, name, nullptr, 0)`, and
+`frameworks/native/vulkan/libvulkan/layers_extensions.cpp:129-134` does the same
+for Vulkan layers.  No ordinary GL or Vulkan entry point taken by the app itself
+is dispatched through libnativebridge.
+
+An app's everyday GLES and Vulkan calls travel a different road.  The guest
+process links against guest-ISA stub libraries built from
+`frameworks/libs/native_bridge_support/android_api/libEGL` and
+`.../libvulkan`; calls into those stubs are intercepted and handed to host-side
+proxy libraries — `libberberis_proxy_libEGL` and `libberberis_proxy_libvulkan`
+(`frameworks/libs/binary_translation/berberis_config.mk:27,46`) — which
+`proxy_loader/proxy_loader.cc:63-78` loads on first use and which forward to the
+real host GPU driver.  The trampoline machinery of section 19.2.10 is what
+bridges the two ISAs in both paths, but only the layer-loading path goes through
+libnativebridge's public API.
 
 ### 19.6.6  Emulator vs. Device Bridge Comparison
 
@@ -7656,9 +7785,9 @@ graph TB
         D_ENGINE["libhoudini.so<br/>(proprietary binary)"]
     end
 
-    subgraph Device_RISCV["RISC-V Device"]
-        R_NATIVE["RISC-V apps<br/>Direct execution"]
-        R_BRIDGE["x86_64 apps<br/>Berberis"]
+    subgraph Device_RISCV["x86_64 Device / Emulator with Berberis"]
+        R_NATIVE["x86_64 apps<br/>Direct execution"]
+        R_BRIDGE["RISC-V apps<br/>Berberis"]
         R_ENGINE["libberberis_riscv64.so<br/>(AOSP open source)"]
     end
 
@@ -7673,8 +7802,8 @@ graph TB
 | **Guest** | ARM / ARM64 | ARM / ARM64 | RISC-V 64 | ARM64 |
 | **Source** | AOSP build system | Intel proprietary | AOSP open source | Berberis-based fork (open) |
 | **Config file** | `BoardConfig.mk` | System property | `berberis_config.mk` | `BoardConfig.mk` (forked) + manifest |
-| **Library path** | `system/lib/arm/` | `system/lib/arm/` | `system/lib/riscv64/` | `system/lib64/arm64/` |
-| **Primary use** | Developer testing | Production devices | Future RISC-V devices | Open ARM64 to x86_64 emulator builds |
+| **Library path** | `system/lib/arm/` | `system/lib/arm/` | `system/lib64/riscv64/` | `system/lib64/arm64/` |
+| **Primary use** | Developer testing | Production devices | RISC-V app ecosystem bring-up | Open ARM64 to x86_64 emulator builds |
 
 ### 19.6.7  The Translation Ecosystem
 
@@ -7881,8 +8010,9 @@ frameworks/libs/binary_translation/guest_abi/arm64/
 There is also a RISC-V-on-ARM64-*host* path, where the host machine is ARM64
 and the guest is still RISC-V.  Section 19.9 covers both ARM64 directions in
 detail.  The short version: ARM64 work is scaffolding, not production -- the
-ARM64-host translator only interprets, and the ARM64-guest syscall bridge is a
-stub.
+ARM64-host translator only interprets, and its syscall bridge is an `-ENOSYS`
+stub (the ARM64-*guest* path, by contrast, has implemented syscall emulation
+but no translator tiers yet).
 
 ```mermaid
 graph TD
@@ -8022,7 +8152,9 @@ The injected counter increments every time the region executes.  When it crosses
 a threshold the region is re-entered at the second gear, which acquires the cache
 slot with `LockForGearUpTranslation` (line 165) and runs `HeavyOptimizeRegion`.
 Each tier reports back the kind of code it produced, and the result is committed
-to the translation cache with `SetTranslatedAndUnlock` (line 228):
+to the translation cache with `SetTranslatedAndUnlock` (line 228).  The kinds
+themselves are aliases declared near the top of the same file
+(`translator_x86_64.cc`, lines 45-48):
 
 ```cpp
 GuestCodeEntry::Kind kInterpreted = GuestCodeEntry::Kind::kInterpreted;
@@ -8042,14 +8174,22 @@ The lifecycle of a single guest region under the default two-gear policy:
 ```mermaid
 stateDiagram-v2
     [*] --> NotTranslated
-    NotTranslated --> Interpreted : non-executable or single insn
-    NotTranslated --> LiteTranslated : first gear lite-translate
-    NotTranslated --> Interpreted : lite and heavy both fail
-    LiteTranslated --> HeavyOptimized : counter crosses threshold, second gear
-    LiteTranslated --> NotTranslated : InvalidateGuestRange
-    HeavyOptimized --> NotTranslated : InvalidateGuestRange
-    Interpreted --> NotTranslated : InvalidateGuestRange
+    NotTranslated --> SpecialHandler : non-exec
+    NotTranslated --> Interpreted : interpret-only
+    NotTranslated --> LiteTranslated : first gear
+    NotTranslated --> Interpreted : both gears fail
+    SpecialHandler --> NotTranslated
+    LiteTranslated --> HeavyOptimized : second gear
+    LiteTranslated --> NotTranslated
+    HeavyOptimized --> NotTranslated
+    Interpreted --> NotTranslated
 ```
+
+Every unlabeled edge back to `NotTranslated` is a call to
+`InvalidateGuestRange`, which drops the region to that state from whichever
+tier it had reached. The
+`second gear` promotion fires once the region's execution counter crosses
+the heavy-optimization threshold.
 
 ### 19.8.5  Where Each Tier Lives Now
 
@@ -8150,10 +8290,16 @@ There is a runtime direction directory
 plumbing in `frameworks/libs/binary_translation/runtime/arm64/`
 (`init_guest_arch.cc`, `init_kernel_args.cc`, `run_guest_call.cc`).
 
-The syscall layer, however, is explicitly unfinished.  The ARM64-guest syscall
-bridge in
+The syscall layer for the ARM64 guest is also real, not a placeholder:
+`frameworks/libs/binary_translation/kernel_api/arm64/` carries implemented
+emulation (`syscall_emulation.cc`, `syscall_emulation_arch.cc`,
+`open_emulation.cc`, `epoll_emulation.cc`), built into the arm/arm64-guest
+kernel-API library.  The unfinished syscall bridge in the tree belongs to the
+*other* direction:
 `frameworks/libs/binary_translation/kernel_api/runtime_bridge_riscv64_to_arm64.cc`
-is a stub that returns `-ENOSYS` and traces the call:
+is compiled only for the ARM64 *host* (a RISC-V guest on an ARM64 machine,
+section 19.9.2), and every entry point in it is a stub that returns `-ENOSYS`
+and traces the call:
 
 ```cpp
 long RunGuestSyscall___NR_rt_sigaction(long sig_num_arg,
@@ -8167,17 +8313,19 @@ long RunGuestSyscall___NR_rt_sigaction(long sig_num_arg,
 }
 ```
 
-The generated syscall-number tables for the direction do exist
-(`frameworks/libs/binary_translation/kernel_api/arm64/gen_syscall_emulation_arm64_to_x86_64-inl.h`),
-so the wiring is in place even though the implementations are not.
+The generated syscall-number tables for the ARM64-guest direction
+(`frameworks/libs/binary_translation/kernel_api/arm64/gen_syscall_emulation_arm64_to_x86_64-inl.h`)
+are included by that `syscall_emulation.cc`, so the guest-side dispatch is
+wired end to end.
 
 ### 19.9.4  What This Means for the Roadmap
 
 The takeaway: in Android 17 Berberis is a production RISC-V-to-x86_64
 translator with ARM64 build-out underway on two fronts.  The ARM64-host path can
-interpret RISC-V but has no JIT; the ARM64-guest path has its state, ABI, and
-code-generation directories and its instruction tests, but its syscall emulation
-is stubbed.  Neither ARM64 direction is a substitute for Houdini or IBT
+interpret RISC-V but has no JIT, and its syscall bridge is the `-ENOSYS` stub;
+the ARM64-guest path has its state, ABI, and code-generation directories, its
+instruction tests, and an implemented syscall-emulation layer, but no
+translator tiers yet.  Neither ARM64 direction is a substitute for Houdini or IBT
 (section 19.4) yet.  The community DigitalisX64 distribution (section 19.5)
 takes the ARM64-guest engine and packages it for the x86_64 emulator, which is
 the most complete ARM64 path that ships from a public source today.
@@ -8257,32 +8405,50 @@ out/host/linux-x86/bin/berberis_program_runner_riscv64 \
 
 ### Exercise 19.5: Trace a Bridge Load
 
-Enable native bridge tracing and watch a library load:
+The per-callback messages in Berberis's native bridge shim are not logcat
+messages.  Each one is a `LOG_NB(...)` call, and
+`frameworks/libs/binary_translation/native_bridge/native_bridge.cc:50` defines
+`LOG_NB` as `TRACE` — Berberis's own tracing macro, gated on `Tracing::IsOn()`
+and written to a file or a socket rather than to the log buffer.  (Raising
+`log.tag.nativebridge` does nothing here: `art/libnativebridge/native_bridge.cc`
+sets `LOG_TAG "nativebridge"` but contains no `ALOGV` calls at all, only
+warnings and errors.)  So the way to watch a load is to turn Berberis tracing
+on:
 
 ```bash
-# Enable verbose NB logging
-adb shell setprop log.tag.nativebridge VERBOSE
+# Destination is a file path, ":<port>" for localhost, or "1"/"2" for stdout/stderr.
+# A relative path lands in the app's private directory; prefix "<package>=" to
+# trace only one app.
+adb shell setprop berberis.tracing com.example.game=berberis.trace
 
-# Install and launch a RISC-V app, then check logs
-adb logcat -s nativebridge:* berberis:*
+# Launch the app, then collect the trace from its data directory
+adb shell run-as com.example.game cat berberis.trace
 ```
 
-You should see messages like:
+The same destination can be supplied through the `BERBERIS_TRACING` environment
+variable for host runs (`base/config_globals.cc:226-229`,
+`base/tracing.cc:119-141`).  In the resulting trace you should see lines like:
 
 ```
 native_bridge_initialize(runtime_callbacks=0x..., private_dir='...', app_isa='riscv64')
-Initialized Berberis (riscv64)
 native_bridge_loadLibraryExt(path=libgame.so)
 native_bridge_getTrampolineWithJNICallType(handle=0x..., name='nativeInit', shorty='VL', ...)
 ```
+
+Only a couple of messages reach logcat as well, because they use
+`TRACE_AND_ALOGI` under `LOG_TAG "berberis"` — the startup banner
+`Initialized Berberis (riscv64)` (`native_bridge.cc:414-416`) and the notice
+that a library fell back to the host platform (`native_bridge.cc:187`).  Those
+you can watch with `adb logcat -s berberis:*`.
 
 ### Exercise 19.6: Read the NativeBridgeCallbacks Header
 
 Open `art/libnativebridge/include/nativebridge/native_bridge.h` and:
 
 1. Count the total number of function pointer fields in `NativeBridgeCallbacks`.
-   Answer: 20 (1 uint32_t version + 19 function pointers plus
-   `isNativeBridgeFunctionPointer` = 20 function pointers total).
+   Answer: 20 function pointers, from `initialize` through
+   `isNativeBridgeFunctionPointer` -- 21 fields in all once the leading
+   `uint32_t version` is included.
 
 2. Identify which version introduced namespace support.
    Answer: Version 3 -- the `createNamespace`, `linkNamespaces`, and
@@ -8385,8 +8551,9 @@ assembler, the intrinsics, and the tier dispatcher were consolidated under a new
 of `runtime/`.
 
 The `native_bridge_support` libraries provide the guest-side runtime
-environment -- 26+ proxy libraries, a guest linker, a guest VDSO, and a guest
-app_process.  Together with the bridge implementation, they form a complete
+environment -- 21 guest-side API libraries, a guest linker, a guest VDSO, and a
+guest app_process (the matching host-side `libberberis_proxy_*` proxies are
+built from `frameworks/libs/binary_translation/android_api/`).  Together with the bridge implementation, they form a complete
 execution environment for foreign-ISA applications.
 
 The RISC-V focus positions Berberis as a strategic investment in Android's
@@ -8394,9 +8561,9 @@ future.  The comments in `riscv64_device.go` explicitly position it as a QEMU
 successor, and the comprehensive vector extension support and CTS compatibility
 demonstrate production-grade ambition.  Alongside the production
 RISC-V-to-x86_64 path, the 17 tree carries ARM64 scaffolding in two directions
--- an interpreter-only RISC-V-on-ARM64 host path and an ARM64-guest path whose
-state, ABI, and code-generation directories exist but whose syscall emulation is
-still stubbed.
+-- an interpreter-only RISC-V-on-ARM64 host path whose runtime syscall bridge
+is an `-ENOSYS` stub, and an ARM64-guest path whose syscall emulation is
+implemented but which has no translator tiers yet.
 
 ### Key source files
 

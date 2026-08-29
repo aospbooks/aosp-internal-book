@@ -370,9 +370,10 @@ wm.computeWindowsForAccessibility(displayId);
 ```
 
 **Step 5: Dispatch to services.** The actual dispatch calls
-`notifyAccessibilityServicesDelayedLocked()` twice -- once for services that
-requested the event types synchronously (interactive), once for those that
-requested them asynchronously (observational):
+`notifyAccessibilityServicesDelayedLocked()` twice -- the boolean parameter
+is `isDefault`, so the first call notifies non-default services and the
+second notifies default services (those declaring `flagDefault` in their
+`AccessibilityServiceInfo`):
 
 ```java
 // AccessibilityManagerService.java, line 1716
@@ -420,8 +421,8 @@ flowchart TD
     L --> N{Window available?}
     N -->|No| O["Postpone event<br/>500ms timeout"]
     N -->|Yes| M
-    M --> P["notifyServicesDelayed<br/>non-interactive"]
-    M --> Q["notifyServicesDelayed<br/>interactive"]
+    M --> P["notifyServicesDelayed<br/>non-default"]
+    M --> Q["notifyServicesDelayed<br/>default"]
     M --> R[UiAutomation.sendEvent]
     D --> S{InputFilter installed?}
     S -->|Yes| T[Forward to InputFilter]
@@ -678,7 +679,7 @@ classDiagram
 
     IAccessibilityServiceConnection <|-- AbstractAccessibilityServiceConnection
     AbstractAccessibilityServiceConnection <|-- AccessibilityServiceConnection
-    AbstractAccessibilityServiceConnection <|-- ProxyAccessibilityServiceConnection
+    AccessibilityServiceConnection <|-- ProxyAccessibilityServiceConnection
 ```
 
 The connection holds a weak reference to `AccessibilityUserState` to avoid
@@ -770,7 +771,7 @@ debugging and testing:
 
 ```bash
 # List enabled accessibility services
-adb shell cmd accessibility get-enabled-services
+adb shell settings get secure enabled_accessibility_services
 
 # Enable an accessibility service
 adb shell settings put secure enabled_accessibility_services \
@@ -1022,7 +1023,8 @@ stateDiagram-v2
    - `contentDescription` (always preferred for custom views)
    - `text` (for `TextView`-derived widgets)
    - `hintText` (for empty input fields)
-   - `roleDescription` (for custom semantics)
+   - `roleDescription` (for custom semantics -- an extras-bundle key
+     written by AndroidX, not a first-class platform node property)
    - Collection and range information
    - State descriptions (`stateDescription`)
 
@@ -1054,8 +1056,9 @@ public abstract class AccessibilityService extends Service {
     // Called when the system wants to interrupt the service's feedback
     public abstract void onInterrupt();
 
-    // Called when a gesture is detected (if service requests gestures)
-    protected boolean onGesture(AccessibilityGestureEvent gestureEvent) {
+    // Called when a gesture is detected (if service requests gestures);
+    // the deprecated onGesture(int gestureId) overload is protected
+    public boolean onGesture(AccessibilityGestureEvent gestureEvent) {
         return false;
     }
 
@@ -1128,7 +1131,6 @@ screen, it traverses the accessibility tree starting from the root:
 AccessibilityNodeInfo root = getRootInActiveWindow();
 if (root != null) {
     traverseTree(root);
-    root.recycle();
 }
 
 void traverseTree(AccessibilityNodeInfo node) {
@@ -1140,7 +1142,6 @@ void traverseTree(AccessibilityNodeInfo node) {
         AccessibilityNodeInfo child = node.getChild(i);
         if (child != null) {
             traverseTree(child);
-            child.recycle();
         }
     }
 }
@@ -1293,10 +1294,13 @@ sequenceDiagram
 Accessibility services can create overlay windows using
 `TYPE_ACCESSIBILITY_OVERLAY`. These windows:
 
-- Are drawn above all other windows except the system alert window
+- Sit at window layer 31 -- above system alert, drag, and navigation-bar
+  windows, but below the accessibility magnification overlay, secure system
+  overlay, boot progress, and pointer layers
 - Are created through the service's `WindowManager`
 - Are automatically removed when the service disconnects
-- Are invisible to other accessibility services (to prevent infinite loops)
+- Are reported to accessibility services in the window list as
+  `AccessibilityWindowInfo` entries of type `TYPE_ACCESSIBILITY_OVERLAY`
 
 Switch Access uses overlays to draw highlight borders, action menus, and the
 scanning cursor. This is a privileged capability -- only services with
@@ -1313,7 +1317,8 @@ frameworks/base/services/accessibility/java/com/android/server/accessibility/
     autoclick/AutoclickController.java
 ```
 
-The controller supports multiple click types:
+The click-type constants live in `AutoclickTypePanel` (in the same
+`autoclick/` package), which `AutoclickController` static-imports:
 
 | Type | Description |
 |------|-------------|
@@ -1325,12 +1330,15 @@ The controller supports multiple click types:
 | `AUTOCLICK_TYPE_SCROLL` | Scroll |
 
 The autoclick delay is configurable and defaults to a value that balances
-responsiveness with accidental activation:
+responsiveness with accidental activation. The defaults the controller
+static-imports from `AccessibilityManager` are:
 
 ```java
 // AutoclickController imports
-AccessibilityManager.AUTOCLICK_DELAY_DEFAULT
-AccessibilityManager.AUTOCLICK_DELAY_WITH_INDICATOR_DEFAULT
+AccessibilityManager.AUTOCLICK_DELAY_WITH_INDICATOR_DEFAULT  // 1000 ms
+AccessibilityManager.AUTOCLICK_CURSOR_AREA_SIZE_DEFAULT
+AccessibilityManager.AUTOCLICK_IGNORE_MINOR_CURSOR_MOVEMENT_DEFAULT
+AccessibilityManager.AUTOCLICK_REVERT_TO_LEFT_CLICK_DEFAULT
 ```
 
 Movement detection includes jitter tolerance to handle involuntary cursor
@@ -1466,7 +1474,7 @@ Key source files:
 | `MagnificationController.java` | ~1500 | Orchestrates mode transitions and UI |
 | `FullScreenMagnificationController.java` | ~2600 | Full-screen zoom via MagnificationSpec |
 | `MagnificationConnectionManager.java` | ~1400 | Window magnification via SystemUI |
-| `FullScreenMagnificationGestureHandler.java` | ~2100 | Triple-tap and pinch gesture detection |
+| `FullScreenMagnificationGestureHandler.java` | ~1900 | Triple-tap and pinch gesture detection |
 | `WindowMagnificationGestureHandler.java` | ~600 | Window magnification gesture handling |
 | `MagnificationKeyHandler.java` | ~170 | Keyboard shortcut handling |
 | `MagnificationScaleProvider.java` | ~140 | Scale bounds and persistence |
@@ -1644,8 +1652,9 @@ frameworks/base/services/accessibility/java/com/android/server/accessibility/
     magnification/MagnificationKeyHandler.java
 ```
 
-Key gestures include Ctrl+= to zoom in, Ctrl+- to zoom out, and arrow keys
-to pan while magnified. The handler implements repeat key behavior with a
+The shortcuts require Alt+Meta held together (and explicitly neither Ctrl
+nor Shift): Alt+Meta+`=` zooms in, Alt+Meta+`-` zooms out, and
+Alt+Meta+arrow keys pan while magnified. The handler implements repeat key behavior with a
 configurable initial delay and a repeat interval of 60ms:
 
 ```java
@@ -1667,18 +1676,19 @@ connected displays.
 
 ### 46.5.8 Always-On Magnification
 
-The `AlwaysOnMagnificationFeatureFlag` controls a feature where magnification
-remains active at 1.0x scale, ready to zoom in without the activation gesture.
-This reduces interaction latency for frequent magnification users:
+Always-on magnification keeps magnification active at 1.0x scale, ready to
+zoom in without the activation gesture. This reduces interaction latency for
+frequent magnification users. The feature is controlled by the
+`Settings.Secure.ACCESSIBILITY_MAGNIFICATION_ALWAYS_ON_ENABLED` secure
+setting, read by `AccessibilityManagerService.readAlwaysOnMagnificationLocked()`
+and gated on the
+`com.android.internal.R.bool.config_magnification_always_on_enabled` config
+resource.
 
-```
-frameworks/base/services/accessibility/java/com/android/server/accessibility/
-    magnification/AlwaysOnMagnificationFeatureFlag.java
-```
-
-When enabled, the `FullScreenMagnificationController` keeps a 1.0x
-magnification spec applied, which can be immediately adjusted without the
-triple-tap activation gesture.
+When enabled, `FullScreenMagnificationController.setAlwaysOnMagnificationEnabled()`
+records the state, and on user context changes (`onUserContextChanged()`) the
+controller zooms back to 100% instead of resetting magnification entirely, so
+it can be immediately re-adjusted without the triple-tap activation gesture.
 
 ### 46.5.9 Magnification and Window Manager Integration
 
@@ -1737,9 +1747,10 @@ private boolean mMagnificationFollowKeyboardEnabled = false;
 When `mMagnificationFollowTypingEnabled` is true and the user is typing in a
 text field, the magnification viewport automatically pans to keep the cursor
 visible. The companion `mMagnificationFollowKeyboardEnabled` flag controls
-whether the viewport also follows keyboard focus changes; in Android 17 the
-default value persisted in settings for this mode was flipped on, so on a fresh
-device magnification now follows keyboard focus by default. The cursor
+whether the viewport also follows keyboard focus changes; its settings
+default is conditional -- follow-keyboard defaults on only when the
+`enable_magnification_viewport_prioritization` aconfig flag is enabled (to
+avoid viewport jitter), and off otherwise. The cursor
 following mode is configured through:
 
 ```java
@@ -1804,10 +1815,11 @@ frameworks/base/services/accessibility/java/com/android/server/accessibility/
     magnification/FullScreenMagnificationVibrationHelper.java
 ```
 
-Vibration is triggered when magnification activates, deactivates, or reaches
-scale boundaries. This provides non-visual confirmation of magnification
-state changes for users who may not be able to perceive the visual zoom
-animation clearly.
+Vibration fires when the magnified viewport reaches the screen's left or
+right edge while panning, and only when the
+`ACCESSIBILITY_DISPLAY_MAGNIFICATION_EDGE_HAPTIC_ENABLED` secure setting is
+on. This gives non-visual confirmation that the viewport has hit the edge of
+the screen for users who may not perceive it visually.
 
 ---
 
@@ -1922,14 +1934,15 @@ Each parent in the chain has the opportunity to modify the event via
 `onRequestSendAccessibilityEvent()`. This is how, for example, a `RecyclerView`
 adds scroll position information to events from its children.
 
-### 46.6.5 Window State Changed Sub-Types
+### 46.6.5 Windows Changed Sub-Types
 
-`TYPE_WINDOW_STATE_CHANGED` carries additional information through
-`contentChangeTypes`:
+`TYPE_WINDOWS_CHANGED` carries additional information through the
+`WINDOWS_CHANGE_*` sub-types, exposed via
+`AccessibilityEvent.getWindowChanges()`:
 
 ```java
 // AccessibilityEvent.java
-// Change type for TYPE_WINDOW_STATE_CHANGED:
+// Change type for TYPE_WINDOWS_CHANGED:
 public static final int WINDOWS_CHANGE_ADDED    = 1;       // Window appeared
 public static final int WINDOWS_CHANGE_REMOVED  = 1 << 1;  // Window disappeared
 public static final int WINDOWS_CHANGE_TITLE    = 1 << 2;  // Title changed
@@ -1937,7 +1950,9 @@ public static final int WINDOWS_CHANGE_FOCUSED  = 1 << 6;  // Focus changed
 ```
 
 These sub-types allow services to react differently to window additions versus
-title changes versus focus transitions.
+title changes versus focus transitions. The separate
+`TYPE_WINDOW_STATE_CHANGED` event uses the `CONTENT_CHANGE_TYPE_*` constants
+instead, read via `getContentChangeTypes()`.
 
 ### 46.6.6 Event Throttling and Coalescing
 
@@ -1961,11 +1976,13 @@ view.setAccessibilityDataSensitive(
     View.ACCESSIBILITY_DATA_SENSITIVE_YES);
 ```
 
-When a view is marked sensitive, events fired from higher in the view
-hierarchy will not populate all properties when the event source is the
-sensitive view. This protects sensitive data (such as password field content)
-from being leaked to accessibility services that observe events from ancestor
-views.
+Marking a view accessibility-data-sensitive restricts the view and all of its
+descendants to accessibility services whose
+`AccessibilityServiceInfo.isAccessibilityTool` is true; non-tool services see
+neither its nodes nor its events. The flag propagates down the hierarchy and
+is also inferred from `filterTouchesWhenObscured`. This keeps sensitive data
+(such as password field content) away from services that are not declared
+accessibility tools.
 
 ### 46.6.8 The AccessibilityRecord Base Class
 
@@ -2004,26 +2021,26 @@ multiple changed children might produce a single event with multiple
 
 ### 46.6.9 Event Recycling and Pooling
 
-`AccessibilityEvent` objects are pooled to reduce garbage collection
-pressure. Events obtained through `AccessibilityEvent.obtain()` come from
-a pool and must be recycled after use:
+`AccessibilityEvent` objects were historically pooled to reduce garbage
+collection pressure, but object pooling has been discontinued:
+`AccessibilityEvent.obtain()` is deprecated and now simply allocates a new
+instance, and `recycle()` is a deprecated no-op (the same is true of
+`AccessibilityNodeInfo`):
 
 ```java
-// In application code
-AccessibilityEvent event = AccessibilityEvent.obtain(eventType);
-// ... populate event ...
-parent.requestSendAccessibilityEvent(child, event);
-// Framework recycles the event after dispatch
-
-// In AMS (after Binder delivery)
-if (OWN_PROCESS_ID != Binder.getCallingPid()) {
-    event.recycle();  // Recycle cross-process events
+// AccessibilityEvent.java (pooling discontinued)
+@Deprecated
+public static AccessibilityEvent obtain() {
+    return new AccessibilityEvent();
 }
+
+@Deprecated
+public void recycle() {}
 ```
 
-This pooling pattern is especially important for high-frequency events like
-`TYPE_VIEW_SCROLLED`, which can fire dozens of times per second during a
-fling gesture.
+Calls like `event.recycle()` that remain in AMS are vestigial -- they compile
+and run but do nothing. New code should construct events directly with
+`new AccessibilityEvent(eventType)`.
 
 ### 46.6.10 Event Dispatch Timing
 
@@ -2053,7 +2070,7 @@ The timing guarantees of the accessibility event system are:
 For debugging, each event type has a string representation:
 
 ```java
-// AccessibilityEvent.java, line 1881
+// AccessibilityEvent.java, singleEventTypeToString(), line ~1970
 case TYPE_VIEW_CLICKED:    return "TYPE_VIEW_CLICKED";
 case TYPE_VIEW_FOCUSED:    return "TYPE_VIEW_FOCUSED";
 case TYPE_VIEW_TEXT_CHANGED: return "TYPE_VIEW_TEXT_CHANGED";
@@ -2122,7 +2139,7 @@ graph TB
     Text --> T3["hintText"]
     Text --> T4["tooltipText"]
     Text --> T5["stateDescription"]
-    Text --> T6["roleDescription"]
+    Text --> T6["roleDescription<br/>(extras-bundle key)"]
     Text --> T7["error"]
 
     Node --> State["State Properties"]
@@ -2169,10 +2186,14 @@ state.
 
 `roleDescription` overrides the default role announced by screen readers.
 A button might have `className = "android.widget.Button"`, which TalkBack
-announces as "button". Setting `roleDescription` to "link" changes this to:
+announces as "button". It is not a first-class `AccessibilityNodeInfo`
+property -- there is no `setRoleDescription()` on the platform class.
+Instead it travels as an extras-bundle key, which AndroidX's
+`AccessibilityNodeInfoCompat.setRoleDescription()` writes for you:
 
 ```java
-node.setRoleDescription("link");
+node.getExtras().putCharSequence(
+    "AccessibilityNodeInfo.roleDescription", "link");
 ```
 
 Use this sparingly -- overuse confuses users who expect standard role names.
@@ -2299,7 +2320,10 @@ View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS // Excluded with children
 ```
 
 The `AUTO` mode (default) uses heuristics: a View is considered important if
-it is focusable, clickable, long-clickable, or has a content description. The
+it is actionable (clickable, long-clickable, or focusable), has input
+listeners or a touch delegate, has an `AccessibilityNodeProvider` or
+`AccessibilityDelegate`, is a live region, is an accessibility pane, or is a
+heading. A content description alone does not make a View important. The
 `NO_HIDE_DESCENDANTS` option is useful for container views that should be
 treated as a single accessible unit -- for example, a card view where the
 entire card is clickable and individual children should not be independently
@@ -2360,7 +2384,7 @@ additional rendering details:
 ```java
 ExtraRenderingInfo info = node.getExtraRenderingInfo();
 if (info != null) {
-    Size textSize = info.getTextSizeInPx();
+    float textSize = info.getTextSizeInPx();
     int textSizeUnit = info.getTextSizeUnit();
     Size layoutSize = info.getLayoutSize();
 }
@@ -2451,7 +2475,7 @@ as follows:
 | Finger up | `ACTION_UP` | `ACTION_HOVER_EXIT` |
 | Double tap | Two `ACTION_DOWN`/`ACTION_UP` pairs | `ACTION_CLICK` on focused node |
 | Double tap and hold | `ACTION_DOWN`/hold | `ACTION_LONG_CLICK` on focused node |
-| Two-finger drag | Two-pointer `ACTION_MOVE` | `ACTION_SCROLL` on scrollable parent |
+| Two-finger drag | Two-pointer `ACTION_MOVE` | Single-pointer `ACTION_MOVE` injected into the view hierarchy (the app scrolls normally) |
 | Swipe gesture | Fast `ACTION_MOVE` | Gesture event to service |
 
 This transformation is the key insight: touch events are converted to hover
@@ -2460,10 +2484,14 @@ without activating it.
 
 ### 46.8.4 Hover Events and Accessibility Focus
 
-When the system sends `ACTION_HOVER_ENTER` to a View, the View gains
-**accessibility focus** (distinct from input focus). The currently
-accessibility-focused view is highlighted with a green rectangle (by default)
-and its content is spoken by the screen reader.
+When the system sends `ACTION_HOVER_ENTER` to a View, the View does not
+itself take focus -- it sends a `TYPE_VIEW_HOVER_ENTER` accessibility event
+to the service. The service (TalkBack) then performs
+`ACTION_ACCESSIBILITY_FOCUS` on the node, and that action is what actually
+moves **accessibility focus** (distinct from input focus) and produces
+`TYPE_VIEW_ACCESSIBILITY_FOCUSED`. The currently accessibility-focused view
+is highlighted with a green rectangle (by default) and its content is spoken
+by the screen reader.
 
 ```mermaid
 sequenceDiagram
@@ -2476,7 +2504,8 @@ sequenceDiagram
     User->>TE: ACTION_DOWN (touch)
     TE->>WM: ACTION_HOVER_ENTER
     WM->>View: onHoverEvent(ENTER)
-    View->>View: requestAccessibilityFocus()
+    View-->>TB: TYPE_VIEW_HOVER_ENTER
+    TB->>View: ACTION_ACCESSIBILITY_FOCUS
     View-->>TB: TYPE_VIEW_ACCESSIBILITY_FOCUSED
     TB->>TB: Speak content description
     Note over User: User hears description
@@ -2499,14 +2528,13 @@ flowchart LR
         TE --> AC["AutoclickController"]
     end
 
-    subgraph Keys["Default-display key-event handlers"]
-        MK["MouseKeysInterceptor<br/>(new in 17)"]
-        KI["KeyboardInterceptor"]
-        MKH["MagnificationKeyHandler"]
+    subgraph Keys["Default-display key-event handlers (head of same chain)"]
+        MKH["MagnificationKeyHandler"] --> MK["MouseKeysInterceptor<br/>(new in 17)"]
+        MK --> KI["KeyboardInterceptor"]
     end
 
-    AIF --> MEI
-    AIF --> MK
+    AIF --> MKH
+    KI --> MEI
     AC --> Output["Input Pipeline"]
 ```
 
@@ -2519,10 +2547,13 @@ reverses into a head-to-tail order of motion-event injection, then
 magnification gesture detection, then touch exploration, then autoclick. The
 order matters: magnification gestures are detected before touch exploration, so
 a triple-tap for magnification is not misinterpreted as a touch exploration
-gesture. Key-event handlers are installed separately on the default display by
-`enableDisplayIndependentFeatures`: `MouseKeysInterceptor` (new in 17),
-`KeyboardInterceptor`, and `MagnificationKeyHandler` each handle key events and
-do not feed into the motion chain.
+gesture. Key-event handlers are installed by `enableDisplayIndependentFeatures`
+with the same `addFirstEventHandler` method, which prepends them to the front
+of the *same* default-display chain, ahead of `MotionEventInjector`:
+`MagnificationKeyHandler`, `MouseKeysInterceptor` (new in 17), and
+`KeyboardInterceptor` all extend `BaseEventStreamTransformation`, so they
+handle key events and simply pass motion events through into the motion chain
+behind them.
 
 The chain is configured based on feature flags:
 
@@ -2648,6 +2679,7 @@ Touch exploration generates a specific sequence of accessibility events:
 ```mermaid
 sequenceDiagram
     participant TE as TouchExplorer
+    participant View as View in app process
     participant AMS as AccessibilityManagerService
     participant TB as TalkBack
 
@@ -2655,8 +2687,9 @@ sequenceDiagram
     TE->>AMS: TYPE_TOUCH_INTERACTION_START
     TE->>AMS: TYPE_TOUCH_EXPLORATION_GESTURE_START
     Note over TE: User explores (finger moves)
-    TE->>AMS: TYPE_VIEW_HOVER_ENTER (for each view)
-    TE->>AMS: TYPE_VIEW_HOVER_EXIT (leaving previous)
+    TE->>View: ACTION_HOVER_ENTER / ACTION_HOVER_EXIT motion events
+    View->>AMS: TYPE_VIEW_HOVER_ENTER (for each view)
+    View->>AMS: TYPE_VIEW_HOVER_EXIT (leaving previous)
     Note over TE: User lifts finger
     TE->>AMS: TYPE_TOUCH_EXPLORATION_GESTURE_END
     TE->>AMS: TYPE_TOUCH_INTERACTION_END
@@ -2777,7 +2810,10 @@ Settings.Secure.ACCESSIBILITY_SHORTCUT_TARGET_SERVICE
 
 The shortcut is handled in the input pipeline by
 `AccessibilityShortcutController`, which registers a `ContentObserver` on the
-settings value to track the assigned target service.
+settings value to track the assigned target service. On first use, the
+controller raises a warning dialog (`createShortcutWarningDialog()`) shown
+with the `TYPE_KEYGUARD_DIALOG` window type so it appears even over the
+keyguard.
 
 ### 46.9.3 The Software Shortcut (Accessibility Button)
 
@@ -2838,7 +2874,7 @@ public static final ComponentName COLOR_INVERSION_TILE_COMPONENT_NAME =
     new ComponentName("com.android.server.accessibility", "ColorInversionTile");
 public static final ComponentName DALTONIZER_TILE_COMPONENT_NAME =
     new ComponentName("com.android.server.accessibility", "ColorCorrectionTile");
-public static final ComponentName HEARING_AIDS_TILE_COMPONENT_NAME =
+public static final ComponentName ACCESSIBILITY_HEARING_AIDS_TILE_COMPONENT_NAME =
     new ComponentName("com.android.server.accessibility", "HearingDevicesTile");
 ```
 
@@ -2875,13 +2911,17 @@ to match the new shortcut types:
 ```
 Settings.Secure.ACCESSIBILITY_BUTTON_TARGETS          // Software shortcut
 Settings.Secure.ACCESSIBILITY_SHORTCUT_TARGET_SERVICE // Hardware shortcut
-Settings.Secure.ACCESSIBILITY_DISPLAY_MAGNIFICATION_ENABLED // Triple-tap
 Settings.Secure.ACCESSIBILITY_QS_TARGETS              // Quick Settings
 Settings.Secure.ACCESSIBILITY_GESTURE_TARGETS         // Gesture
 Settings.Secure.ACCESSIBILITY_TOP_ROW_KEY_TARGETS     // Top-row key (new in 17)
 Settings.Secure.ACCESSIBILITY_QUICK_ACCESS_TARGETS    // Quick access (new in 17)
 Settings.Secure.ACCESSIBILITY_KEY_GESTURE_TARGETS     // Key gesture (new in 17)
 ```
+
+The triple-tap magnification key,
+`Settings.Secure.ACCESSIBILITY_DISPLAY_MAGNIFICATION_ENABLED`, is not part of
+`GENERAL_SHORTCUT_SETTINGS`; it lives in the separate
+`MAGNIFICATION_SHORTCUT_SETTINGS` list.
 
 The `AccessibilityUserState` class tracks the complete mapping of shortcut
 types to target services per user, and `ShortcutUtils` provides helper
@@ -2897,7 +2937,7 @@ flowchart TD
     B -->|Hardware| C[Volume keys held 3s]
     B -->|Software| D[Nav bar / FAB tapped]
     B -->|Triple-tap| E["Triple-tap detected<br/>by MagnificationGestureHandler"]
-    B -->|Gesture| F["Two-finger triple-tap<br/>by TouchExplorer"]
+    B -->|Gesture| F["Two-finger swipe up from bottom,<br/>detected by SystemUI navigation bar"]
     B -->|Quick Settings| G[QS tile tapped]
     B -->|Keyboard| H["Key gesture detected<br/>by InputManager"]
 
@@ -2928,9 +2968,12 @@ com.android.internal.accessibility.dialog.AccessibilityShortcutChooserActivity
 ```
 
 The chooser displays all assigned targets with their icons and labels. It also
-provides an "Edit shortcuts" option that links directly to the accessibility
-shortcut settings. The dialog is shown as a `TYPE_KEYGUARD_DIALOG` window
-type, ensuring it appears above other content but below system dialogs.
+provides an "Edit shortcuts" button that switches the same dialog into an
+in-place edit mode where targets can be checked and unchecked, with a "Done"
+button to return -- it does not link out to Settings. (The
+`TYPE_KEYGUARD_DIALOG` window type is used elsewhere, by the hardware
+shortcut's first-use warning dialog raised by `AccessibilityShortcutController`
+-- see section 46.9.2.)
 
 ### 46.9.10 Shortcut State Logging
 
@@ -2946,7 +2989,7 @@ static final String METRIC_ID_QS_SHORTCUT_REMOVE =
 
 The `AccessibilityStatsLogUtils.logAccessibilityShortcutActivated()` method
 records each shortcut activation with the shortcut type, target service, and
-timestamp. This data helps the Android team understand which shortcuts are
+the resulting enabled/disabled service status. This data helps the Android team understand which shortcuts are
 most used and guide future UX improvements.
 
 ### 46.9.11 Hearing Aids Integration

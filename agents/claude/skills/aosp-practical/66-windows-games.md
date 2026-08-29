@@ -134,24 +134,30 @@ introduced in earlier chapters.
 
 **Linker namespaces (Chapter 7).** An app's native libraries are loaded in an
 isolated linker namespace so they cannot see arbitrary system libraries. The
-public `android_dlopen_ext` flags that govern this live in
+`android_dlopen_ext` flags that govern this live in
 `bionic/libc/include/android/dlext.h`; `ANDROID_DLEXT_USE_NAMESPACE`
 (`bionic/libc/include/android/dlext.h:115`) lets a caller pick the namespace a
-library loads into, and `ANDROID_DLEXT_USE_LIBRARY_FD`
+library loads into — the header marks it internal-use-only, since there is no
+NDK API for namespaces — while the public `ANDROID_DLEXT_USE_LIBRARY_FD`
 (`bionic/libc/include/android/dlext.h:80`) lets it load a library straight from
 a file descriptor, for example a `.so` stored uncompressed inside the APK. The
 Vulkan loader itself uses the namespace flag when it opens the device driver, as
 we will see in 66.7.4.
 
 **W^X enforcement (Chapter 7).** A JIT must write machine code and then execute
-it. Since API 26 the dynamic linker refuses to load any ELF segment that is
-simultaneously writable and executable; `bionic/linker/linker_phdr.cpp:1057`
-emits the `"has load segments that are both writable and executable"` diagnostic
-and `bionic/linker/linker_phdr.cpp:1061` records the `W+E load segments` warning. A translator
-like FEX or Box64 therefore cannot keep a page mapped `PROT_WRITE | PROT_EXEC`;
-it must map JIT pages writable, fill them, then flip them to executable with
-`mprotect`, respecting the write-xor-execute rule the platform enforces on app
-processes.
+it. For apps targeting API 26 and later, the dynamic linker refuses to load any
+ELF *load segment* that is simultaneously writable and executable;
+`bionic/linker/linker_phdr.cpp:1057` emits the
+`"has load segments that are both writable and executable"` diagnostic and
+`bionic/linker/linker_phdr.cpp:1061` records the `W+E load segments` warning. A
+translator like FEX or Box64 therefore cannot ship prebuilt `.so` files with RWX
+segments. That check only covers ELF files the linker maps, though: anonymous
+JIT mappings are untouched by it, and SELinux even grants app processes
+`execmem` (`system/sepolicy/private/app.te:213`), so an app may map anonymous
+`PROT_WRITE | PROT_EXEC` memory. The translators nevertheless follow the
+hardening convention of mapping JIT pages writable, filling them, then flipping
+them to executable with `mprotect`, keeping every page write-xor-execute at any
+instant.
 
 **App-data execution limits.** On recent Android, executing binaries from an
 app's writable data directory is increasingly restricted. The translation stack
@@ -432,9 +438,11 @@ sockets), or abandon glibc and run Wine directly on `bionic` (the newer forks).
 The cleanest concrete example of a bionic redirection is System V shared memory.
 X11, DXVK, and other components use `shmget`/`shmat` to share large buffers
 between processes. Android's kernel restricts the System V SHM API. Winlator's
-glibc rootfs therefore carries a **patched glibc** whose `shmget`/`shmat`/`shmdt`
-family is reimplemented on top of Android's anonymous shared memory, brokered by
-a small server on the Android side (`com.winlator.sysvshm`).
+glibc rootfs therefore ships a small **shim library**, `libandroid-sysvshm.so`,
+which the launcher components inject into guest processes with `LD_PRELOAD`. It
+interposes the `shmget`/`shmat`/`shmdt` family and reimplements it on top of
+Android's anonymous shared memory, brokered by a small server on the Android
+side (`com.winlator.sysvshm`).
 
 On the Android side, the natural primitive is `ASharedMemory_create`
 (`frameworks/native/include/android/sharedmem.h:78`), the NDK entry point that
@@ -495,13 +503,14 @@ straight from a file descriptor.
 
 ### 66.4.3 W^X and the JIT
 
-The translators are JITs, and a JIT must respect the write-xor-execute rule the
-platform enforces (66.1.4). The pattern every translator on Android follows is:
-map a code buffer `PROT_READ | PROT_WRITE`, emit AArch64 instructions into it,
-clear the instruction cache for that range, then `mprotect` it to
-`PROT_READ | PROT_EXEC` before jumping in. A page is never both writable and
-executable at once, satisfying the linker's W+E rejection
-(`bionic/linker/linker_phdr.cpp:1057`). On devices and Android versions that
+The translators are JITs, and the JIT discipline from 66.1.4 applies. The
+pattern every translator on Android follows is: map a code buffer
+`PROT_READ | PROT_WRITE`, emit AArch64 instructions into it, clear the
+instruction cache for that range, then `mprotect` it to `PROT_READ | PROT_EXEC`
+before jumping in. A page is never both writable and executable at once. That is
+the translator's own hardening pattern, not compliance with the linker's W+E
+rejection (`bionic/linker/linker_phdr.cpp:1057`), which applies to ELF load
+segments and never sees these anonymous code buffers. On devices and Android versions that
 further restrict executing memory from app data, the translator must allocate
 its code pages as anonymous memory it owns rather than mapping a file from the
 data directory.
@@ -1065,10 +1074,13 @@ Whichever guest path is used, the bottom of the chain is the same AOSP Vulkan
 loader from Chapter 13. The loader discovers and loads the device's Vulkan driver
 in `frameworks/native/vulkan/libvulkan/driver.cpp`; the `LoadDriver` routine
 (`frameworks/native/vulkan/libvulkan/driver.cpp:153`) opens the HAL driver
-(`vulkan.<board>.so`) with `android_dlopen_ext`
-(`frameworks/native/vulkan/libvulkan/driver.cpp:171`) using
-the namespace flag from 66.4.2, because the driver lives in a restricted linker
-namespace. A native renderer such as Vortek's server, or a thunked Turnip, is in
+(`vulkan.<board>.so`) through one of two branches. When a driver namespace is
+supplied — the updatable, Play-delivered driver path — it uses
+`android_dlopen_ext` with `ANDROID_DLEXT_USE_NAMESPACE`
+(`frameworks/native/vulkan/libvulkan/driver.cpp:171`), the namespace flag from
+66.4.2; the ordinary built-in driver is instead opened with
+`android_load_sphal_library`
+(`frameworks/native/vulkan/libvulkan/driver.cpp:178`) from the sphal namespace. A native renderer such as Vortek's server, or a thunked Turnip, is in
 the end just another client of this loader and this driver, which is why the
 whole edifice works without any platform modification: the GPU is reached through
 the same public Vulkan interface any Android game uses.
@@ -1116,8 +1128,12 @@ A Windows game emits audio through one of several front-end APIs (the modern
 WASAPI via `mmdevapi`, legacy DirectSound, or the old `winmm`/`waveOut`). Wine
 layers all of them onto a single backend driver chosen at runtime. The backend
 that matters here is `winepulse.drv`, which targets **PulseAudio**; the
-alternatives are `winealsa.drv` (ALSA) and `wineoss.drv` (OSS). Each backend is a
-PE driver DLL paired with a Unix `.so` that calls the host audio client library.
+alternatives are `winealsa.drv` (ALSA) and `wineoss.drv` (OSS). In modern Wine
+each backend is a Unix-only library — `winepulse.so`, built from
+`dlls/winepulse.drv/pulse.c`, calls the host PulseAudio client library — while
+the PE half lives in `mmdevapi` itself, which loads the backend with
+`__wine_load_unix_lib` and calls into it through `__wine_unix_call`
+(`dlls/mmdevapi/main.c`).
 In the ARM64EC configuration the backend and its client library are native ARM64,
 so audio mixing and transport are not emulated; only the game's calls into the
 front-end API cross the emulator.
@@ -1206,11 +1222,14 @@ graph TD
 
 2. **A `CreateFile` call.** The game asks to open a file. This is a Windows API
    call that becomes an NT system call, funnelled through Wine's
-   `__wine_syscall_dispatcher` into `ntdll.so`, which asks wineserver to
-   translate the Windows path and hand back a real Linux file descriptor over the
-   socket. PRoot or `libredirect` then remaps the path into the rootfs, and the
-   Linux `openat` finally lands in the app's private storage. No GPU, no audio,
-   entirely different machinery from path 1.
+   `__wine_syscall_dispatcher` into `ntdll.so`, which itself translates the NT
+   path to a Unix path (`nt_to_unix_file_name`, `dlls/ntdll/unix/file.c`) and
+   sends that Unix path to wineserver in a `create_file` request; the server
+   opens the file and returns a Windows `HANDLE`, and the underlying Linux fd is
+   fetched from the server over `SCM_RIGHTS` when needed. PRoot or `libredirect`
+   remaps the path into the rootfs along the way, and the Linux `openat` finally
+   lands in the app's private storage. No GPU, no audio, entirely different
+   machinery from path 1.
 
 3. **An audio buffer write.** The game's WASAPI write enters `winepulse.drv`
    (native on ARM64EC), which ships the PCM over the PulseAudio socket to the
@@ -1237,8 +1256,10 @@ window APIs (`frameworks/native/libs/nativewindow/include/android/native_window.
 `AHardwareBuffer`, AAudio
 (`frameworks/av/media/libaaudio/include/aaudio/AAudio.h`), `ASharedMemory`
 (`frameworks/native/include/android/sharedmem.h`), the `android_dlopen_ext`
-namespace flags (`bionic/libc/include/android/dlext.h`), and the linker's W^X
-rule (`bionic/linker/linker_phdr.cpp`). In Android 17 all of these are present
+extension flags (`bionic/libc/include/android/dlext.h` — stable in practice,
+though the namespace flag itself is documented as internal-use-only), and the
+linker's W^X rule (`bionic/linker/linker_phdr.cpp`). In Android 17 all of these
+are present
 with the same contracts the earlier sections rely on, which is exactly why a
 Winlator-class app keeps working across releases without a platform patch: the
 stack invents nothing at the bottom, so it inherits whatever the release's public
@@ -1321,9 +1342,10 @@ game you own.
 
 7. **Confirm the AOSP touchpoints.** In an AOSP checkout, open
    `frameworks/native/vulkan/libvulkan/driver.cpp` at the `LoadDriver` function
-   (line 153) and confirm the driver is opened through `android_dlopen_ext` with
-   a namespace; this is the public interface the whole graphics stack ultimately
-   funnels into.
+   (line 153) and find both of its branches: `android_dlopen_ext` with
+   `ANDROID_DLEXT_USE_NAMESPACE` for an updated driver, and
+   `android_load_sphal_library` for the built-in one. This is the loader the
+   whole graphics stack ultimately funnels into.
 
 ---
 

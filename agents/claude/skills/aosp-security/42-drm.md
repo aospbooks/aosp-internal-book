@@ -35,7 +35,8 @@ developers.
 
 ### 42.1.2 Core Components
 
-The DRM subsystem comprises four principal components that span three process boundaries:
+The DRM subsystem comprises four principal components spanning the app process, the
+vendor HAL process, and the trusted execution environment:
 
 1. **MediaDrm** -- The Java API that applications use to negotiate licenses and manage
    sessions. Lives in the app process.
@@ -43,9 +44,11 @@ The DRM subsystem comprises four principal components that span three process bo
 2. **MediaCrypto** -- A companion Java API that bridges the DRM session to the codec.
    Also lives in the app process but delegates all cryptographic work across Binder.
 
-3. **DRM Framework (libmediadrm)** -- The native C++ layer in `mediaserver` /
-   `mediadrmserver` that routes calls to the appropriate HAL backend, manages sessions via
-   the `DrmSessionManager`, and collects metrics.
+3. **DRM Framework (libmediadrm)** -- The native C++ layer, loaded into the client
+   process itself via `libmedia_jni`, that routes calls to the appropriate HAL backend
+   over Binder, manages sessions via the `DrmSessionManager`, and collects metrics.
+   (Older releases hosted this layer in a separate `mediadrmserver` process; that
+   process no longer exists.)
 
 4. **DRM HAL Plugin** -- A vendor-supplied AIDL service (or legacy HIDL service) that
    implements the actual cryptographic operations. Runs in its own process.
@@ -72,7 +75,7 @@ graph TB
         EXT[MediaExtractor]
     end
 
-    subgraph "mediaserver / mediadrmserver"
+    subgraph "App Process - libmediadrm"
         DH["DrmHal<br/>libmediadrm"]
         CH["CryptoHal<br/>libmediadrm"]
         DSM[DrmSessionManager]
@@ -94,8 +97,8 @@ graph TB
     APP --> CODEC
     APP --> EXT
 
-    MD -->|Binder| DH
-    MC -->|Binder| CH
+    MD -->|JNI| DH
+    MC -->|JNI| CH
     CODEC -->|secure buffer| CH
 
     DH --> DSM
@@ -666,8 +669,8 @@ The DRM HAL has gone through significant evolution:
 | 1.0 | HIDL | hwbinder | Initial DRM HAL |
 | 1.1 | HIDL | hwbinder | Added metrics (DrmMetricGroup) |
 | 1.2 | HIDL | hwbinder | Added offline license management |
-| 1.3 | HIDL | hwbinder | Added log messages |
-| 1.4 | HIDL | hwbinder | Added requiresSecureDecoder with level |
+| 1.3 | HIDL | hwbinder | Added `IDrmFactory::getSupportedCryptoSchemes()` |
+| 1.4 | HIDL | hwbinder | Added `requiresSecureDecoder` with security level, `setPlaybackId`, and `getLogMessages` |
 | AIDL V1 | AIDL | binder | Unified interface, stable AIDL (frozen) |
 | AIDL V2 (current in 17) | AIDL | binder | Frozen; adds `ICryptoPlugin::getKeyHandle()` and the `KeyHandleResult` parcelable |
 
@@ -830,6 +833,7 @@ Standard property names include:
 | `setMacAlgorithm` | `void setMacAlgorithm(in byte[] sessionId, in String algorithm)` |
 | `getHdcpLevels` | `HdcpLevels getHdcpLevels()` |
 | `requiresSecureDecoder` | `boolean requiresSecureDecoder(in String mime, in SecurityLevel level)` |
+| `setPlaybackId` | `void setPlaybackId(in byte[] sessionId, in String playbackId)` |
 
 **Metrics and Logging:**
 
@@ -1006,6 +1010,7 @@ classDiagram
         +int bufferId
         +long offset
         +long size
+        +NativeHandle handle
     }
 
     class KeyRequest {
@@ -1573,8 +1578,8 @@ classDiagram
         -keyMap: KeyMap
         -mockError: CdmResponseType
         +decrypt(keyId, iv, src, dst, clear, enc, out) CdmResponseType
-        +getKeyRequest(initData, mimeType) Status
-        +provideKeyResponse(response) Status
+        +getKeyRequest(initData, mimeType) CdmResponseType
+        +provideKeyResponse(response) CdmResponseType
     }
 
     class AesCtrDecryptor {
@@ -1605,10 +1610,14 @@ The VINTF manifest declaration:
 <manifest version="1.0" type="device">
     <hal format="aidl">
         <name>android.hardware.drm</name>
+        <version>2</version>
         <fqname>IDrmFactory/clearkey</fqname>
     </hal>
 </manifest>
 ```
+
+The `<version>2</version>` element declares ClearKey as a V2 AIDL DRM HAL -- the
+version that adds `getKeyHandle()`, covered in Section 42.8.
 
 ### 42.5.11 ClearKey vs. Production DRM
 
@@ -1752,9 +1761,10 @@ HAL plugin for decryption:
 ```
 // Source: hardware/interfaces/drm/aidl/android/hardware/drm/SharedBuffer.aidl
 parcelable SharedBuffer {
-    int bufferId;    // Identifies which shared memory region
-    long offset;     // Offset within the region
-    long size;       // Size of data
+    int bufferId;        // Identifies which shared memory region
+    long offset;         // Offset within the region
+    long size;           // Size of data
+    NativeHandle handle; // Handle to the shared memory itself
 }
 ```
 
@@ -2312,12 +2322,26 @@ keyHandle = toVector(result.keyHandle);
 ### 42.8.4 Caller and ClearKey Behavior
 
 The handle path is driven from the codec buffer channel. `CCodecBufferChannel` calls
-`mCrypto->getKeyHandle()` in its encrypted-buffer attach path, falling back to the normal
-`decrypt()` flow when the HAL does not provide a handle:
+`mCrypto->getKeyHandle()` in its encrypted-buffer paths only when its
+`mSendEncryptionKeyHandle` flag is set -- a static, configure-time decision: the flag is
+set when the Codec2 component advertises the `C2StreamEncryptionKeyInfo::input` parameter
+and the `com.android.media.codec.flags.decrypt_and_decode_in_hal` aconfig flag is enabled.
+If `getKeyHandle()` fails, the buffer channel logs the error and propagates the status to
+its caller; there is no fallback to the per-sample `decrypt()` flow:
 
-```
+```cpp
 // Source: frameworks/av/media/codec2/sfplugin/CCodecBufferChannel.cpp
-const DrmStatus drmStatus = mCrypto->getKeyHandle(key, mode, size, offset, subSamples, ...);
+if (mSendEncryptionKeyHandle) {
+    // ...
+    const DrmStatus drmStatus = mCrypto->getKeyHandle(key, mode, size, offset, subSamples,
+                                                      numSubSamples, keyHandle);
+    const status_t status = drmStatus;
+    if (status != OK) {
+        ALOGE(/* ... */);   // error is returned to the caller -- no decrypt() fallback
+        return status;
+    }
+    // ... wrap keyHandle in a C2StreamEncryptionKeyInfo::input param for the component
+}
 ```
 
 ```mermaid
@@ -2331,7 +2355,7 @@ sequenceDiagram
     CH->>CHA: getKeyHandle (AIDL backend active)
     CHA->>CP: getInterfaceVersion()
     alt version is less than 2
-        CHA-->>CC: ERROR_UNSUPPORTED (fall back to decrypt)
+        CHA-->>CC: ERROR_UNSUPPORTED (error propagated to caller)
     else version is 2 or higher
         CHA->>CP: getKeyHandle(keyId, mode)
         CP-->>CHA: KeyHandleResult{keyHandle}
@@ -2351,11 +2375,15 @@ software-only plugin with no fused secure decode-decrypt block, it simply declin
 }
 ```
 
-So even on a device whose HAL advertises V2, a scheme without a hardware key-handle path
-(ClearKey, or any L3-only plugin) returns `ERROR_DRM_CANNOT_HANDLE`, and the codec channel
-transparently uses the per-sample `decrypt()` path. The key-handle fast path is an
-opportunistic optimization for hardware-backed schemes (Widevine L1), not a new requirement
-for every plugin.
+In practice a scheme like ClearKey never reaches this stub through the codec path: the
+key-handle route is selected up front from the codec component's advertised parameters
+(`mSendEncryptionKeyHandle`), and the software decoders used with an L3-only scheme do
+not advertise `C2StreamEncryptionKeyInfo::input`, so the buffer channel uses the per-sample
+`decrypt()` path from the start. And if the key-handle path *is* entered and
+`getKeyHandle()` fails -- as it would with ClearKey's `ERROR_DRM_CANNOT_HANDLE` -- the
+buffer channel returns the error to its caller rather than silently retrying with
+`decrypt()`. The key-handle fast path is an opt-in for fused hardware decrypt-decode
+stacks (Widevine L1 class hardware), not a new requirement for every plugin.
 
 ---
 
@@ -2535,8 +2563,8 @@ adb shell dumpsys media.metrics | grep -i drm
 # List VINTF HAL declarations
 adb shell lshal | grep drm
 
-# Check service manager for DRM services
-adb shell cmd drm_manager list
+# Inspect the legacy DRM manager service (registered as drm.drmManager)
+adb shell dumpsys drm.drmManager
 ```
 
 ### 42.9.5 Exercise 5: Trace DRM Operations
@@ -2544,8 +2572,9 @@ adb shell cmd drm_manager list
 Use `atrace` and `systrace` to observe DRM operations during playback:
 
 ```bash
-# Enable DRM-related trace tags
-adb shell atrace --async_start -c drm video
+# Enable trace tags that cover DRM HAL activity (there is no dedicated
+# "drm" atrace category -- DRM shows up under hal/binder_driver/video)
+adb shell atrace --async_start video hal binder_driver
 
 # Play DRM content, then stop tracing
 adb shell atrace --async_stop > /tmp/drm_trace.txt
@@ -2571,12 +2600,14 @@ m android.hardware.drm-service.clearkey
 # out/target/product/*/vendor/bin/hw/
 #     android.hardware.drm-service.clearkey
 
-# Build the ClearKey VTS tests
-m VtsHalDrmTargetTest
+# Build the AIDL DRM VTS tests
+m VtsAidlHalDrmTargetTest
 
-# Run VTS tests against ClearKey
-adb shell /data/nativetest64/VtsHalDrmTargetTest/VtsHalDrmTargetTest \
-    --hal_service_instance=android.hardware.drm.IDrmFactory/clearkey
+# Push and run the VTS tests; restrict to the ClearKey instance with a
+# gtest filter (the test enumerates all registered IDrmFactory instances)
+adb push $ANDROID_PRODUCT_OUT/data/nativetest64/VtsAidlHalDrmTargetTest/VtsAidlHalDrmTargetTest \
+    /data/local/tmp/VtsAidlHalDrmTargetTest
+adb shell /data/local/tmp/VtsAidlHalDrmTargetTest --gtest_filter='*clearkey*'
 ```
 
 ### 42.9.7 Exercise 7: Monitor DRM Session Lifecycle

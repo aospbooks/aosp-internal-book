@@ -94,7 +94,6 @@ classDiagram
         -View mView
         -Choreographer mChoreographer
         -Surface mSurface
-        -ThreadedRenderer mThreadedRenderer
         +setView(View, LayoutParams)
         +scheduleTraversals()
         +performTraversals()
@@ -545,8 +544,8 @@ The spec-combination table:
 | AT_MOST | match_parent | AT_MOST | parent size - padding |
 | AT_MOST | wrap_content | AT_MOST | parent size - padding |
 | UNSPECIFIED | exact dp | EXACTLY | child size |
-| UNSPECIFIED | match_parent | UNSPECIFIED | 0 |
-| UNSPECIFIED | wrap_content | UNSPECIFIED | 0 |
+| UNSPECIFIED | match_parent | UNSPECIFIED | parent size - padding |
+| UNSPECIFIED | wrap_content | UNSPECIFIED | parent size - padding |
 
 ### 25.2.6 View.layout() -- Positioning
 
@@ -654,7 +653,7 @@ framework sets `PFLAG_SKIP_DRAW`, and `updateDisplayListIfDirty()` bypasses
 `draw()` entirely, calling `dispatchDraw()` directly:
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 24771)
+Source: frameworks/base/core/java/android/view/View.java (line 24358, in updateDisplayListIfDirty())
 
     if ((mPrivateFlags & PFLAG_SKIP_DRAW) == PFLAG_SKIP_DRAW) {
         dispatchDraw(canvas);
@@ -801,10 +800,12 @@ Source: frameworks/base/core/java/android/view/ViewRootImpl.java
 ```
 
 The critical subtlety is that `performTraversals()` may call
-`measureHierarchy()` *twice* -- once before relayout and once after -- if
-the window size changed as a result of measurement.  This two-pass behavior
-ensures that views see the final window dimensions during their last
-measurement.
+`measureHierarchy()` *twice*, both times before relayout -- once for the
+pending layout request, and once more after `dispatchApplyInsets()` when
+fitting system windows triggered a fresh layout request.  After
+`relayoutWindow()` returns, any re-measurement is done directly through
+`performMeasure()`, which ensures that views see the final window
+dimensions during their last measurement.
 
 ### 25.2.11 performMeasure, performLayout, and draw
 
@@ -937,11 +938,11 @@ Source: frameworks/base/core/java/android/view/ViewConfiguration.java (line 50)
 | `TAP_TIMEOUT` | 100 ms | Delay before confirming a tap (vs. scroll) |
 | `DOUBLE_TAP_TIMEOUT` | 300 ms | Max interval between double-tap events |
 | `DOUBLE_TAP_MIN_TIME` | 40 ms | Min interval (filter accidental double-taps) |
-| `LONG_PRESS_TIMEOUT` | 400 ms | Duration before long-press fires |
+| `DEFAULT_LONG_PRESS_TIMEOUT` | 400 ms | Duration before long-press fires |
 | `PRESSED_STATE_DURATION` | 64 ms | Duration of pressed visual feedback |
-| `MULTI_PRESS_TIMEOUT` | 300 ms | Interval for multi-press detection |
-| `KEY_REPEAT_TIMEOUT` | 400 ms | Delay before key repeat starts |
-| `KEY_REPEAT_DELAY` | 50 ms | Interval between key repeats |
+| `DEFAULT_MULTI_PRESS_TIMEOUT` | 300 ms | Interval for multi-press detection |
+| `DEFAULT_KEY_REPEAT_TIMEOUT_MS` | 400 ms | Delay before key repeat starts |
+| `DEFAULT_KEY_REPEAT_DELAY_MS` | 50 ms | Interval between key repeats |
 | `SCROLL_BAR_FADE_DURATION` | 250 ms | Scrollbar fade-out animation time |
 | `SCROLL_BAR_DEFAULT_DELAY` | 300 ms | Delay before scrollbar fades |
 
@@ -1216,7 +1217,8 @@ Source: frameworks/base/core/java/android/view/ViewGroup.java (line 3421)
         if (ev.isFromSource(InputDevice.SOURCE_MOUSE)
                 && ev.getAction() == MotionEvent.ACTION_DOWN
                 && ev.isButtonPressed(MotionEvent.BUTTON_PRIMARY)
-                && isOnScrollbarThumb(ev.getX(), ev.getY())) {
+                && isOnScrollbarThumb(ev.getXDispatchLocation(0),
+                        ev.getYDispatchLocation(0))) {
             return true;
         }
         return false;
@@ -1271,10 +1273,11 @@ Source: frameworks/base/core/java/android/view/View.java
                         mPrivateFlags |= PFLAG_PREPRESSED;
                         // Delayed pressed feedback
                         postDelayed(mPendingCheckForTap,
-                            ViewConfiguration.getTapTimeout());
+                            getTapTimeoutMillis());
                     } else {
                         setPressed(true, x, y);
-                        checkForLongClick(0, x, y, ...);
+                        checkForLongClick(getLongPressTimeoutMillis(),
+                            x, y, ...);
                     }
                     break;
 
@@ -1391,10 +1394,10 @@ Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 3307)
         checkThreadCompat();
         if (!mTraversalScheduled) {
             mTraversalScheduled = true;
-            mTraversalBarrier = mQueue.postSyncBarrier();
-            mChoreographer.postCallback(
-                    Choreographer.CALLBACK_TRAVERSAL,
-                    mTraversalRunnable, null);
+            // ...
+            postTraversalBarrier();
+            mChoreographer.postVsyncCallback(
+                    Choreographer.CALLBACK_TRAVERSAL, mTraversalCallback);
             notifyRendererOfFramePending();
             pokeDrawLockIfNeeded();
         }
@@ -1403,7 +1406,8 @@ Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 3307)
 
 Three critical actions happen here:
 
-1. **Sync barrier** -- `mQueue.postSyncBarrier()` inserts a barrier into the
+1. **Sync barrier** -- `postTraversalBarrier()` (line 3355) calls
+   `mQueue.postSyncBarrier()` to insert a barrier into the
    `MessageQueue`, preventing synchronous messages from running.  Only
    asynchronous messages (like VSYNC callbacks) can proceed.  This ensures
    traversals happen before any other handler messages.
@@ -1459,7 +1463,7 @@ reflect the latest user interaction.
 ### 25.4.4 The doTraversal() Bridge
 
 When the Choreographer fires `CALLBACK_TRAVERSAL`, it invokes
-`mTraversalRunnable`:
+`mTraversalCallback`:
 
 ```
 Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 3347)
@@ -1467,7 +1471,7 @@ Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 3347)
     void doTraversal(long frameTimeNanos) {
         if (mTraversalScheduled) {
             mTraversalScheduled = false;
-            mQueue.removeSyncBarrier(mTraversalBarrier);
+            removeTraversalBarrier();
             performTraversals(frameTimeNanos);
         }
     }
@@ -1564,10 +1568,12 @@ For touch events, `ViewPostImeInputStage` is the critical stage.  Its
 `processPointerEvent()` method calls:
 
 1. `mView.dispatchPointerEvent(event)` -- dispatches to the view hierarchy.
-2. If the event is a `DOWN`, it schedules a check for potential pointer
-   capture.
-3. If hardware acceleration is enabled and the event involves drawing, it
-   uses `mAttachInfo.mThreadedRenderer` to signal the render thread.
+2. `maybeUpdatePointerIcon()` and `maybeUpdateTooltip()` -- refreshes the
+   mouse pointer icon and any hover tooltip for the new pointer position.
+3. If a view requested unbuffered input during dispatch
+   (`mAttachInfo.mUnbufferedDispatchRequested`), it switches to unbuffered
+   input dispatch via `scheduleConsumeBatchedInputImmediately()`, and it
+   applies variable-refresh-rate touch boosting for handled events.
 
 For key events, the pipeline allows the IME to consume keys before the view
 hierarchy sees them.  This is why typing in an `EditText` does not trigger
@@ -1588,14 +1594,14 @@ sequenceDiagram
     App->>App: textView.setText("Hello")
     App->>VRI: requestLayout() -> scheduleTraversals()
     VRI->>MQ: postSyncBarrier() [barrier token]
-    VRI->>Choreo: postCallback(CALLBACK_TRAVERSAL, mTraversalRunnable)
+    VRI->>Choreo: postVsyncCallback(CALLBACK_TRAVERSAL, mTraversalCallback)
     App->>MQ: handler.post(checkWidth)
 
     Note over MQ: Barrier blocks checkWidth (synchronous)
     Note over MQ: VSYNC arrives (asynchronous)
 
-    Choreo->>VRI: mTraversalRunnable.run()
-    VRI->>MQ: removeSyncBarrier(token)
+    Choreo->>VRI: mTraversalCallback -> doTraversal()
+    VRI->>MQ: removeTraversalBarrier()
     VRI->>VRI: performTraversals()
     Note over VRI: setText triggers re-measure, text has new width
     VRI->>VRI: Traversal complete
@@ -1838,7 +1844,7 @@ Source: frameworks/base/core/java/android/view/ViewRootImpl.java
     private boolean draw(boolean fullRedrawNeeded,
             @Nullable SurfaceSyncGroup activeSyncGroup, ...) {
         Surface surface = mSurface;
-        if (!surface.isValid()) return false;
+        if (!mRenderTargetIsValid) return false;
         ...
         if (!dirty.isEmpty() || mIsAnimating || accessibilityFocusDirty) {
             if (isHardwareEnabled()) {
@@ -2225,40 +2231,43 @@ Source: frameworks/base/core/java/android/view/ViewGroup.java (line 3446)
 
 | Strategy | Behavior |
 |----------|----------|
-| `FOCUS_BEFORE_DESCENDANTS` | Parent tries to take focus before children |
-| `FOCUS_AFTER_DESCENDANTS` | Children are offered focus first (default) |
+| `FOCUS_BEFORE_DESCENDANTS` | Parent tries to take focus before children (default) |
+| `FOCUS_AFTER_DESCENDANTS` | Children are offered focus first |
 | `FOCUS_BLOCK_DESCENDANTS` | Children never get focus |
 
 ### 25.7.5 Keyboard Navigation Clusters
 
 API 26 introduced **keyboard navigation clusters** for grouping related
-views.  When the user presses Tab, focus moves between clusters.  Within a
-cluster, arrow keys navigate between individual views:
+views.  Plain Tab / Shift+Tab moves focus in tab order and stays confined
+within the current cluster; Ctrl+Tab (Ctrl+Shift+Tab for backward) jumps
+between clusters via `ViewRootImpl.performKeyboardGroupNavigation()`.
+Arrow keys perform ordinary directional focus search:
 
 ```mermaid
 graph LR
-    subgraph "Cluster A (Toolbar)"
+    subgraph ClusterA["Cluster A (Toolbar)"]
         Back["Back"]
         Title["Title"]
         Menu["Menu"]
     end
 
-    subgraph "Cluster B (Content)"
+    subgraph ClusterB["Cluster B (Content)"]
         Item1["Item 1"]
         Item2["Item 2"]
         Item3["Item 3"]
     end
 
-    subgraph "Cluster C (FAB)"
+    subgraph ClusterC["Cluster C (FAB)"]
         FAB["FAB Button"]
     end
 
-    ClusterA -->|Tab| ClusterB
-    ClusterB -->|Tab| ClusterC
-    ClusterC -->|Tab| ClusterA
+    ClusterA -->|Ctrl+Tab| ClusterB
+    ClusterB -->|Ctrl+Tab| ClusterC
+    ClusterC -->|Ctrl+Tab| ClusterA
 ```
 
-A `ViewGroup` becomes a cluster by setting
+Ctrl+Shift+Tab moves between clusters in the reverse direction.  A
+`ViewGroup` becomes a cluster by setting
 `android:keyboardNavigationCluster="true"`.
 
 ### 25.7.6 Default Focus
@@ -2606,10 +2615,10 @@ flowchart TD
     Start["rInflateChildren(parser, parent, attrs)"] --> Loop{"More XML elements?"}
     Loop -->|Yes| ReadTag["Read tag name"]
     ReadTag --> IsRequestFocus{Is requestFocus?}
-    IsRequestFocus -->|Yes| RF["parent.restoreDefaultFocus()"]
+    IsRequestFocus -->|Yes| RF["Set pendingRequestFocus = true,<br/>consume child elements"]
     RF --> Loop
     IsRequestFocus -->|No| IsTag{Is tag?}
-    IsTag -->|Yes| ParseTag["parseViewTag(parent, child, attrs)"]
+    IsTag -->|Yes| ParseTag["parseViewTag(parser, parent, attrs)"]
     ParseTag --> Loop
     IsTag -->|No| IsInclude{Is include?}
     IsInclude -->|Yes| ProcessInclude["parseInclude(parser, context, parent, attrs)"]
@@ -2621,7 +2630,10 @@ flowchart TD
     GenParams --> Recurse["rInflateChildren(parser, child, attrs)"]
     Recurse --> AddChild["parent.addView(child, params)"]
     AddChild --> Loop
-    Loop -->|No| Done["return"]
+    Loop -->|No| PRF{"pendingRequestFocus?"}
+    PRF -->|Yes| RDF["parent.restoreDefaultFocus()"]
+    RDF --> Done["return"]
+    PRF -->|No| Done
 ```
 
 Each child element triggers recursive descent.  The `XmlPullParser` tracks
@@ -2708,7 +2720,7 @@ parsing if it was unavailable.
 
 That feature never became broadly useful and has since been **removed** from
 the platform.  The vestige in the current source is a comment on the
-`@hide` `createView(Context, String, String, AttributeSet)` overload in
+`@hide` `tryCreateView(View, String, Context, AttributeSet)` method in
 `frameworks/base/core/java/android/view/LayoutInflater.java` (around line
 930), which notes it was "originally for internal use by precompiled layouts,
 which have since been removed."  In Android 17 every inflation therefore goes
@@ -3357,7 +3369,7 @@ How the per-frame decision flows:
 ```mermaid
 graph TD
     Vote["View votes:<br/>setRequestedFrameRate() /<br/>setFrameContentVelocity()"] --> Agg["ViewRootImpl aggregates<br/>(mPreferredFrameRateCategory,<br/>mPreferredFrameRate)"]
-    Agg --> Resolve["Resolve to Surface<br/>FRAME_RATE_CATEGORY_* (1-5)"]
+    Agg --> Resolve["Resolve to Surface<br/>FRAME_RATE_CATEGORY_* (0-5)"]
     Resolve --> SF["Report to SurfaceFlinger<br/>during traversal"]
     SF --> Panel["Display driver picks<br/>refresh rate"]
 ```
@@ -3407,8 +3419,10 @@ remotely (in SurfaceFlinger) rather than on the app's own render thread.  The
 goal is better isolation and the ability to composite app-recorded display
 lists without round-tripping every layer through the app.
 
-This work is staged behind HWUI aconfig flags in
-`frameworks/base/libs/hwui/aconfig/hwui_flags.aconfig` and touches the
+This work is staged behind the libgui aconfig flag
+`out_of_process_rendering`, declared in
+`frameworks/native/libs/gui/libgui_flags.aconfig` and consumed by
+`frameworks/base/libs/hwui/hwui/OutOfProcessRendering.cpp`, and touches the
 `CanvasContext` / render-pipeline abstractions (for example, allowing drawing
 without a `Surface` and plumbing a separate rendering size through to HWUI).
 For app developers the surface stays the same: you still record display lists
@@ -3805,8 +3819,8 @@ Record a Perfetto trace while scrolling a `RecyclerView`:
 ```bash
 # Record a 5-second trace with view-related categories
 adb shell perfetto -o /data/misc/perfetto-traces/view_trace.perfetto-trace \
-    -t 5s \
-    --txt <<EOF
+    --txt -c - <<EOF
+duration_ms: 5000
 buffers: { size_kb: 65536 }
 data_sources: {
     config {
@@ -3944,10 +3958,11 @@ Android provides several developer options for debugging the view system:
 
 2. **Profile GPU rendering** (`Developer Options > Profile GPU rendering`):
    Shows a bar chart overlay with per-frame timing broken into:
+   - **Green**: Input handling
    - **Blue**: Draw (recording display lists)
-   - **Green**: Sync & upload (syncing display lists to render thread)
-   - **Red**: Execute (GPU execution)
-   - **Orange**: Process (swap buffers)
+   - **Light blue**: Sync & upload (syncing display lists to render thread)
+   - **Red**: Command issue (issuing draw commands to the GPU)
+   - **Orange**: Swap buffers
 
 3. **Debug GPU overdraw** (`Developer Options > Debug GPU overdraw`):
    Colors pixels by how many times they are drawn:

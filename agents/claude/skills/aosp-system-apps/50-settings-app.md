@@ -294,7 +294,7 @@ Controllers can be declared in XML with the `settings:controller` attribute:
 <SwitchPreferenceCompat
     android:key="wifi_calling"
     android:title="@string/wifi_calling_title"
-    settings:controller="com.android.settings.wifi.calling.WifiCallingPreferenceController"/>
+    settings:controller="com.android.settings.network.telephony.WifiCallingPreferenceController"/>
 ```
 
 At fragment creation time, `PreferenceControllerListHelper.getPreferenceControllersFromXml()`
@@ -715,9 +715,7 @@ implements a long list of dialog host interfaces:
 public class DevelopmentSettingsDashboardFragment extends RestrictedDashboardFragment
         implements OnCheckedChangeListener, OemUnlockDialogHost, AdbDialogHost,
         AdbClearKeysDialogHost, LogPersistDialogHost,
-        BluetoothRebootDialog.OnRebootDialogListener,
-        AbstractBluetoothPreferenceController.Callback,
-        NfcRebootDialog.OnNfcRebootDialogConfirmedListener, BluetoothSnoopLogHost {
+        NfcRebootDialog.OnNfcRebootDialogConfirmedListener {
 ```
 
 The fragment manages a primary **master switch** (`SettingsMainSwitchBar`) at the
@@ -791,14 +789,14 @@ These three settings write to `Settings.Global.WINDOW_ANIMATION_SCALE`,
 | `LocalTerminalPreferenceController` | Linux terminal | Enables embedded terminal |
 | `KeepActivitiesPreferenceController` | Don't keep activities | Destroys every activity on leave |
 | `BackgroundProcessLimitPreferenceController` | Background process limit | 0-4 or standard limit |
-| `LogdSizePreferenceController` | Logger buffer sizes | 64K - 16M |
+| `LogdSizePreferenceController` | Logger buffer sizes | Off, 64K, 256K, 1M, 4M, or 8M per log buffer |
 
 #### Bluetooth
 
 | Controller | Setting | Effect |
 |-----------|---------|--------|
 | `BluetoothCodecListPreferenceController` | Bluetooth audio codec | SBC, AAC, aptX, LDAC |
-| `BluetoothSampleRateDialogPreferenceController` | Sample rate | 45.1 / 48 / 88.2 / 96 kHz |
+| `BluetoothSampleRateDialogPreferenceController` | Sample rate | 44.1 / 48 / 88.2 / 96 kHz |
 | `BluetoothBitPerSampleDialogPreferenceController` | Bits per sample | 16 / 24 / 32 |
 | `BluetoothA2dpHwOffloadPreferenceController` | Disable BT A2DP HW offload | Force software encoding |
 | `BluetoothLeAudioHwOffloadPreferenceController` | Disable BT LE audio HW offload | Force software for LE audio |
@@ -927,7 +925,7 @@ controls and scoping:
 
 | Namespace | Class | Scope | Permission | Examples |
 |-----------|-------|-------|------------|----------|
-| **System** | `Settings.System` | Per-user, per-device | `WRITE_SETTINGS` (dangerous) | Ring volume, screen brightness, font size |
+| **System** | `Settings.System` | Per-user, per-device | `WRITE_SETTINGS` (app-op special access) | Ring volume, screen brightness, font size |
 | **Secure** | `Settings.Secure` | Per-user, per-device | Signature-level | Location mode, accessibility services, default input method |
 | **Global** | `Settings.Global` | All users, device-wide | Signature-level | Airplane mode, development settings enabled, ADB enabled |
 
@@ -1567,10 +1565,10 @@ title when scrolled to the top and collapses into the action bar on scroll.
 The toolbar implementation lives in `settingslib`:
 
 ```
-frameworks/libs/settingslib/CollapsingToolbarBaseActivity/
+frameworks/base/packages/SettingsLib/CollapsingToolbarBaseActivity/
     src/com/android/settingslib/collapsingtoolbar/
         CollapsingToolbarDelegate.java
-        FloatingToolbarHandler.java
+        FloatingToolbarHandler.kt
 ```
 
 The `SettingsBaseActivity` initialises the toolbar delegate in `onCreate()`:
@@ -1897,9 +1895,11 @@ or an empty state message instead of the preference list.
 
 The `buildPreferenceControllers()` method in
 `DevelopmentSettingsDashboardFragment` creates over 100 controller instances.
-Here is the complete categorised list as found in the source:
+Here is a representative categorised sample of the controllers registered in
+the source (a handful of niche entries, such as `HdcpCheckingPreferenceController`
+and several `DefaultLaunchPreferenceController` instances, are omitted):
 
-**Source file**: `packages/apps/Settings/src/com/android/settings/development/DevelopmentSettingsDashboardFragment.java` (lines 706-849)
+**Source file**: `packages/apps/Settings/src/com/android/settings/development/DevelopmentSettingsDashboardFragment.java` (lines 508-625)
 
 #### Memory and Diagnostics
 - `MemoryUsagePreferenceController` -- Shows RAM usage
@@ -1962,7 +1962,6 @@ Here is the complete categorised list as found in the source:
 - `DebugGpuOverdrawPreferenceController` -- Colour-code overdraw regions
 - `DebugNonRectClipOperationsPreferenceController` -- Non-rect clip debugging
 - `ForceDarkPreferenceController` -- Force dark mode on all apps
-- `EnableBlursPreferenceController` -- Window blur effects
 - `ForceMSAAPreferenceController` -- Force 4x MSAA anti-aliasing
 - `HardwareOverlaysPreferenceController` -- Disable HW overlays
 - `SimulateColorSpacePreferenceController` -- Colour blindness simulation
@@ -1979,11 +1978,19 @@ Here is the complete categorised list as found in the source:
 - `IngressRateLimitPreferenceController` -- Network ingress rate limiting
 
 #### Bluetooth
+
+Unlike the groups above, the Bluetooth developer controllers are *not* built by
+`DevelopmentSettingsDashboardFragment` -- its only Bluetooth entry is a
+`DefaultLaunchPreferenceController` for the key `bluetooth_development_settings`,
+which launches a dedicated sub-page.  That sub-page's fragment,
+`BluetoothDevelopmentSettingsFragment`
+(`packages/apps/Settings/src/com/android/settings/development/bluetooth/BluetoothDevelopmentSettingsFragment.kt`),
+has its own `buildPreferenceControllers()` that registers the following:
+
 - `BluetoothDeviceNoNamePreferenceController` -- Show nameless devices
 - `BluetoothAbsoluteVolumePreferenceController` -- Disable absolute volume
 - `BluetoothAvrcpVersionPreferenceController` -- AVRCP version
 - `BluetoothMapVersionPreferenceController` -- MAP version
-- `BluetoothLeAudioPreferenceController` -- LE Audio feature toggle
 - `BluetoothLeAudioModePreferenceController` -- LE Audio mode
 - `BluetoothLeAudioDeviceDetailsPreferenceController` -- LE device info
 - `BluetoothLeAudioAllowListPreferenceController` -- LE allowlist
@@ -2020,7 +2027,7 @@ Here is the complete categorised list as found in the source:
 - `PhantomProcessPreferenceController` -- Phantom process monitoring
 
 #### Logging
-- `LogdSizePreferenceController` -- Logger buffer sizes (64K - 16M)
+- `LogdSizePreferenceController` -- Logger buffer sizes (64K - 8M)
 - `LogPersistPreferenceController` -- Persist logs across reboot
 - `EnableVerboseVendorLoggingPreferenceController` -- Vendor verbose logging
 - `PrintVerboseLoggingController` -- Print service verbose logging
@@ -2099,7 +2106,8 @@ Key characteristics:
 - Settings are stored as an `ArrayMap<String, Setting>` for fast key lookup
 - Writes are batched and persisted asynchronously via a `Handler` message
 - The XML file uses a versioned format with support for default values
-- A fallback copy mechanism creates `.bak` files for crash recovery
+- A fallback copy mechanism creates `.fallback` files for crash recovery
+  (`FALLBACK_FILE_SUFFIX = ".fallback"`)
 
 ### 50.10.2 Setting Keys and Types
 
@@ -2112,14 +2120,16 @@ Each setting entry internally contains:
 | `defaultValue` | The default value (used for reset operations) |
 | `packageName` | The package that last wrote this setting |
 | `tag` | Optional tag for selective reset |
-| `defaultSystemSet` | Whether this was set by the system (not user-modified) |
+| `defaultFromSystem` | Whether the setting's default value was set by the system |
 | `id` | Auto-incrementing generation ID for change tracking |
 
 ### 50.10.3 Generation Tracking
 
 The SettingsProvider uses a generation-tracking mechanism for efficient
-change detection.  Each `SettingsState` maintains a `currentGeneration` counter
-that increments on every write.  Clients can pass a generation number with their
+change detection.  The counters live in `GenerationRegistry`
+(`frameworks/base/packages/SettingsProvider/src/com/android/providers/settings/GenerationRegistry.java`),
+which the provider bumps via `incrementGeneration()` on each mutation.
+Clients can pass a generation number with their
 read request, and the provider returns whether the data has changed:
 
 ```java
@@ -2142,7 +2152,7 @@ broadcasts.  For example, changing `AIRPLANE_MODE_ON` triggers an
 
 | Namespace | Read | Write |
 |-----------|------|-------|
-| `Settings.System` | All apps | `WRITE_SETTINGS` (dangerous permission, requires user grant) |
+| `Settings.System` | All apps | `WRITE_SETTINGS` (app-op "special app access", granted via Settings > Modify system settings) |
 | `Settings.Secure` | All apps (public keys only) | Signature-level or `WRITE_SECURE_SETTINGS` |
 | `Settings.Global` | All apps (public keys only) | Signature-level or `WRITE_SECURE_SETTINGS` |
 | `DeviceConfig` | System apps | `WRITE_DEVICE_CONFIG` (signature) |
@@ -2186,7 +2196,7 @@ reflection involved (see 50.11.3).
 |-------------------|----------------------|-------------------|
 | `DashboardFeatureProvider` | `DashboardFeatureProviderImpl` | Tile binding, icon styling |
 | `SearchFeatureProvider` | `SearchFeatureProviderImpl` | Search intelligence integration |
-| `MetricsFeatureProvider` | `MetricsFeatureProviderImpl` | Analytics/logging backend |
+| `MetricsFeatureProvider` | `SettingsMetricsFeatureProvider` | Analytics/logging backend |
 | `SupportFeatureProvider` | (null) | Help & feedback integration |
 | `SecurityFeatureProvider` | `SecurityFeatureProviderImpl` | Security settings customisation |
 | `EnterprisePrivacyFeatureProvider` | `EnterprisePrivacyFeatureProviderImpl` | MDM controls |
@@ -2314,7 +2324,6 @@ It declares an extensive set of permissions including:
 <uses-permission android:name="android.permission.MASTER_CLEAR" />
 <uses-permission android:name="android.permission.READ_PRIVILEGED_PHONE_STATE" />
 <uses-permission android:name="android.permission.MANAGE_USB" />
-<uses-permission android:name="android.permission.SET_TIME" />
 <uses-permission android:name="android.permission.MANAGE_USERS" />
 ```
 
@@ -2352,18 +2361,25 @@ This pattern means that:
 
 ### 50.13.3 Tile Injection in Manifest
 
-The Settings app also injects its own tiles into dashboard categories:
+The Settings app's own top-level rows do *not* come from manifest tile
+injection -- they are declared statically in `res/xml/top_level_settings.xml`.
+The manifest-based tile mechanism is primarily how *other* apps inject entries,
+but Settings does use it for one of its own screens: the backup settings
+activity marks itself as a dynamic tile with the `IA_SETTINGS` action:
 
 ```xml
-<activity
-    android:name=".Settings$WifiSettingsActivity"
+<activity android:name=".backup.UserBackupSettingsActivity"
     ...>
+    <!-- Mark the activity as a dynamic setting -->
     <intent-filter>
-        <action android:name="com.android.settings.action.EXTRA_SETTINGS"/>
-        <category android:name="com.android.settings.category.ia.homepage"/>
+        <action android:name="com.android.settings.action.IA_SETTINGS" />
     </intent-filter>
-    <meta-data android:name="com.android.settings.order" android:value="-20"/>
-    <meta-data android:name="com.android.settings.icon_tintable" android:value="true"/>
+    <!-- Tell Settings app which category it belongs to -->
+    <meta-data android:name="com.android.settings.category"
+               android:value="com.android.settings.category.ia.system" />
+    <meta-data android:name="com.android.settings.icon"
+               android:resource="@drawable/ic_settings_backup" />
+    <meta-data android:name="com.android.settings.order" android:value="-60"/>
 </activity>
 ```
 
@@ -2652,8 +2668,9 @@ is flag-gated: the activity in `AndroidManifest.xml` carries
 and the screen branches on `Flags.enableSupervisionSettingsUiUpdates()` to choose
 between the older main-switch layout and the newer set-up-PIN flow.  This screen
 is a good template for how a brand-new dashboard is built in the Catalyst era:
-no preference XML, no `DashboardFragment` subclass, just a declarative `Screen`
-class plus a manifest activity that extends `CatalystSettingsActivity`.
+no preference XML and no bespoke controller stack -- just a declarative `Screen`
+class plus a thin `CatalystFragment` subclass (`SupervisionDashboardFragment`)
+and a `CatalystSettingsActivity` in the manifest.
 
 ### 50.14.8 API-First: Exposing Settings to On-Device Agents
 
@@ -2741,7 +2758,7 @@ The search system can be validated by checking that:
 ```bash
 # Verify search indexing via adb
 adb shell content query \
-    --uri content://com.android.settings/indexables_xml_res \
+    --uri content://com.android.settings/settings/indexables_xml_res \
     --projection xmlResId,className
 ```
 
@@ -2990,20 +3007,26 @@ adb shell pm query-activities -a com.android.settings.action.EXTRA_SETTINGS
 adb shell pm clear com.android.settings.intelligence
 adb shell am start -a com.android.settings.action.SETTINGS_SEARCH
 
-# Query the search provider directly
+# Query the search-indexables provider directly (requires the
+# READ_SEARCH_INDEXABLES permission, so run as root)
 adb shell content query \
-    --uri content://com.android.settings.intelligence.search.indexables/resource
+    --uri content://com.android.settings/settings/indexables_xml_res
 ```
 
 ### 50.18.5 Monitoring Settings Changes
 
-```bash
-# Watch for settings changes in real-time
-adb shell settings monitor
-```
+The `settings` shell tool supports only `get`, `put`, `delete`, `list`, and
+`reset` -- there is no real-time monitor verb.  To observe changes, either
+register a `ContentObserver` from a test app, or diff snapshots of the
+provider state:
 
-This command prints all settings changes as they happen, showing the
-namespace, key, value, and calling package.
+```bash
+# Snapshot the full SettingsProvider state, change something, diff again
+adb shell dumpsys settings > before.txt
+# ... make a change in the Settings UI ...
+adb shell dumpsys settings > after.txt
+diff before.txt after.txt
+```
 
 ### 50.18.6 SettingsProvider Dump
 
@@ -3039,7 +3062,7 @@ discussed in this chapter:
 | `packages/apps/Settings/src/com/android/settings/homepage/SettingsHomepageActivity.java` | Homepage activity with two-pane support |
 | `packages/apps/Settings/src/com/android/settings/homepage/TopLevelSettings.java` | Homepage dashboard fragment |
 | `packages/apps/Settings/src/com/android/settings/development/DevelopmentSettingsDashboardFragment.java` | Developer options page |
-| `packages/apps/Settings/src/com/android/settings/development/BuildNumberPreferenceController.java` | 7-tap easter egg controller |
+| `packages/apps/Settings/src/com/android/settings/deviceinfo/BuildNumberPreferenceController.java` | 7-tap easter egg controller |
 | `packages/apps/Settings/src/com/android/settings/search/BaseSearchIndexProvider.java` | Search index data provider base |
 | `packages/apps/Settings/src/com/android/settings/search/SettingsSearchIndexablesProvider.java` | ContentProvider for search indexing |
 | `packages/apps/Settings/src/com/android/settings/search/SearchFeatureProvider.java` | Search feature abstraction |
@@ -3251,7 +3274,7 @@ To verify, you can query the index:
 
 ```bash
 adb shell content query \
-  --uri content://com.android.settings.intelligence.search.indexables/resource \
+  --uri content://com.android.settings/settings/indexables_xml_res \
   | grep custom_lab
 ```
 
@@ -3285,7 +3308,7 @@ Run the Settings app on an emulator:
 ```bash
 # Build and flash
 m Settings -j$(nproc)
-adb install -r $OUT/system/priv-app/Settings/Settings.apk
+adb install -r $OUT/system_ext/priv-app/Settings/Settings.apk
 
 # Launch the custom page directly
 adb shell am start -n com.android.settings/.Settings\$CustomLabActivity

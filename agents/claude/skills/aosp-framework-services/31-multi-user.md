@@ -153,15 +153,15 @@ User metadata is stored on disk in `/data/system/users/`:
 ```
 /data/system/users/
     userlist.xml          # List of all users and next serial number
-    user.list             # Performance-optimized user list
-    0/                    # System user (user 0)
-        0.xml             # UserInfo for user 0
+    user.list             # Perfetto user list (plain-text user ids/types for tracing)
+    0.xml                 # UserInfo for user 0
+    10.xml                # UserInfo for user 10
+    11.xml                # UserInfo for user 11
+    0/                    # System user (user 0) per-user files
         photo.png         # User avatar
-        res_*.xml         # User restrictions
+        res_*.xml         # Per-package application restrictions (res_<packageName>.xml)
     10/                   # Secondary user (user 10)
-        10.xml
     11/                   # Work profile (user 11)
-        11.xml
 ```
 
 The `userlist.xml` format:
@@ -218,7 +218,7 @@ User IDs are allocated sequentially starting from `MIN_USER_ID` (10):
 static final int MIN_USER_ID = UserHandle.MIN_SECONDARY_USER_ID;  // 10
 
 @VisibleForTesting
-static final int MAX_USER_ID = UserHandle.MAX_SECONDARY_USER_ID;  // Integer.MAX_VALUE / 100000
+static final int MAX_USER_ID = UserHandle.MAX_SECONDARY_USER_ID;  // Integer.MAX_VALUE / 100000 - 1
 ```
 
 User 0 is always the system user. IDs 1-9 are reserved. Newly created users
@@ -564,7 +564,7 @@ sequenceDiagram
     UMS->>UMS: Create UserInfo, write to disk
     UMS->>UDP: prepareUserData(userInfo, flags)
     UDP->>SM: Create CE/DE directories
-    UMS->>PM: installPackagesForNewUser(userId)
+    UMS->>PM: createNewUser(userId, installablePackages, disallowedPackages)
     UMS->>LL: onUserCreated(userInfo)
     UMS-->>Caller: UserInfo
 ```
@@ -599,7 +599,7 @@ The creation method performs extensive validation:
     final UserData userData = new UserData();
     userData.info = userInfo;
     userData.userProperties = new UserProperties(
-            userTypeDetails.getDefaultUserProperties());
+            userTypeDetails.getDefaultUserPropertiesReference());
 
     // 8. Store in memory and write to disk
     synchronized (mUsersLock) {
@@ -611,8 +611,10 @@ The creation method performs extensive validation:
     // 9. Prepare storage
     mUserDataPreparer.prepareUserData(userInfo, storageFlags);
 
-    // 10. Install system packages
-    mPm.installPackagesFromSystemImageForUser(userId, ...);
+    // 10. Install the system packages appropriate for this user type
+    mPm.createNewUser(userId,
+            mSystemPackageInstaller.getInstallablePackagesForUserType(userType),
+            disallowedPackages);
 
     // 11. Notify listeners
     for (UserLifecycleListener listener : mUserLifecycleListeners) {
@@ -628,19 +630,21 @@ The creation method performs extensive validation:
 New user IDs are assigned by finding the next unused ID:
 
 ```java
+// Simplified from getNextAvailableId() / scanNextAvailableIdLU()
 private int getNextAvailableId() {
     synchronized (mUsersLock) {
-        // Find the smallest ID >= MIN_USER_ID that is not currently in use
-        // and not in the recently-removed list
-        int nextId = MIN_USER_ID;  // 10
-        while (mUsers.get(nextId) != null
-                || mRecentlyRemovedIds.contains(nextId)) {
-            nextId++;
-            if (nextId > MAX_USER_ID) {
-                throw new IllegalStateException("Cannot add user. Maximum reached.");
+        // Scan for the smallest ID >= MIN_USER_ID that is neither in mUsers
+        // nor in mRemovingUserIds (every id removed since boot)
+        for (int i = MIN_USER_ID /* 10 */; i < MAX_USER_ID; i++) {
+            if (mUsers.indexOfKey(i) < 0 && !mRemovingUserIds.get(i)) {
+                return i;
             }
         }
-        return nextId;
+        // All ids exhausted: recycle removed ids, keeping only
+        // mRecentlyRemovedIds (an LRU list of the most recently removed
+        // ids, capped at MAX_RECENTLY_REMOVED_IDS_SIZE) off-limits,
+        // then rescan. If even that fails:
+        throw new IllegalStateException("No user id available!");
     }
 }
 ```
@@ -651,7 +655,7 @@ For faster user creation (e.g., quick guest setup), Android supports pre-creatin
 users in advance:
 
 ```java
-// From UserInfo
+// From UserManagerService.java
 private static final String ATTR_PRE_CREATED = "preCreated";
 private static final String ATTR_CONVERTED_FROM_PRE_CREATED = "convertedFromPreCreated";
 ```
@@ -897,26 +901,26 @@ graph LR
 
 Work profiles support "quiet mode" -- a paused state where work apps are suspended:
 
+The public entry point `requestQuietModeEnabled()` validates the caller and
+flags, then delegates to `setQuietModeEnabled()`, which toggles
+`FLAG_QUIET_MODE` on the profile's `UserInfo` and stops or starts the profile:
+
 ```java
-// From UserManagerService.java
-public boolean requestQuietModeEnabled(
-        @NonNull String callingPackage,
-        boolean enableQuietMode,
-        @UserIdInt int userId,
-        @Nullable IntentSender target,
-        @QuietModeFlag int flags) {
-    // ...
+// From UserManagerService.java (simplified)
+private void setQuietModeEnabled(@UserIdInt int userId, boolean enableQuietMode,
+        IntentSender target, @Nullable String callingPackage) {
+    // ... verify userId is a profile and quiet mode actually changes
+    profile.flags ^= UserInfo.FLAG_QUIET_MODE;  // toggle the flag
+    writeUserLP(profileUserData);               // persist to <id>.xml
+
     if (enableQuietMode) {
-        // Set profile as disabled, stop running apps
-        setUserInfoFlags(userInfo, UserInfo.FLAG_DISABLED);
+        stopUserForQuietMode(userId);           // stop the profile's apps
         // Apps will show as "paused" in launcher
     } else {
-        // May require authentication to re-enable
-        if (profile.isManagedProfile()) {
-            // Check if work challenge is needed
-        }
-        removeUserInfoFlags(info, UserInfo.FLAG_DISABLED);
+        // Restart the profile; `target` is fired once it is unlocked
+        ActivityManager.getService().startProfileWithListener(userId, callback);
     }
+    // ... broadcast profile availability changes
 }
 ```
 
@@ -952,7 +956,9 @@ profiles on debug builds.
 
 ### 31.4.7 Work Profile Creation via DevicePolicyManager
 
-While `UserManagerService.createProfileForUser()` is the low-level mechanism,
+While `UserManagerService.createProfileForUserWithThrow()` (and its
+`createProfileForUserEvenWhenDisallowedWithThrow()` variant, which is what DPMS
+actually invokes) is the low-level mechanism,
 work profiles are typically created through the **Device Policy Manager**
 provisioning flow. This is what enterprise MDM solutions and the Setup Wizard
 invoke:
@@ -969,11 +975,11 @@ sequenceDiagram
 
     MDM->>DPM: createManagedProfile(admin, name)
     DPM->>DPM: Log ACTION_PROVISION_MANAGED_PROFILE
-    DPM->>UMS: createProfileForUserWithThrow(name, type, parentId)
+    DPM->>UMS: createProfileForUserEvenWhenDisallowedWithThrow(name, type, parentId)
     UMS->>UMS: Allocate user ID via getNextAvailableId()
     UMS->>UMS: Create UserInfo with profileGroupId = parentId
     UMS->>UMS: Write /data/system/users/N.xml
-    UMS->>PM: installPackagesFromSystemImageForUser(userId)
+    UMS->>PM: createNewUser(userId, installablePackages, disallowedPackages)
     PM-->>UMS: Packages installed
     UMS-->>DPM: Return UserHandle
     DPM->>DPM: Set admin DPC as profile owner
@@ -984,23 +990,30 @@ sequenceDiagram
 ```java
 // Source: frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyManagerService.java:21426
 public UserHandle createManagedProfile(
-        ComponentName admin, String name, boolean useManagedProfilePlaceholder) {
-    // Delegates to createManagedProfileInternal()
+        @NonNull ManagedProfileProvisioningParams provisioningParams,
+        @NonNull String callerPackage) {
+    // The admin component comes from
+    // provisioningParams.getProfileAdminComponentName();
+    // delegates to createManagedProfileInternal()
 }
 
 // Line 21440
 private UserHandle createManagedProfileInternal(
-        ProvisioningParams provisioningParams, Caller caller) {
+        @NonNull ManagedProfileProvisioningParams provisioningParams,
+        @NonNull CallerIdentity caller) {
     // 1. Log provisioning action
-    // 2. Call UserManager.createProfileForUserWithThrow()
+    // 2. Call UserManager.createProfileForUserEvenWhenDisallowedWithThrow()
     // 3. Set up admin DPC as profile owner
     // 4. Store seed account if provided
 }
 ```
 
-The `createAndManageUser()` method (line 12166) provides a combined operation
-that creates the profile and installs the Device Policy Controller (DPC) app
-in a single call, used by programmatic enterprise enrollment.
+The separate `createAndManageUser()` method (line 12166) does *not* create a
+work profile: it is a device-owner-only operation that creates a new full
+secondary user (`USER_TYPE_FULL_SECONDARY`, or `USER_TYPE_FULL_DEMO` in demo
+mode) via `UserManagerInternal.createUserEvenWhenDisallowed()` and sets the
+caller's component as that user's profile owner. It is blocked in headless
+single-user mode.
 
 ### 31.4.8 Work Profile Lifecycle Management
 
@@ -1127,9 +1140,10 @@ boundaries:
 ```java
 // Source: frameworks/base/services/core/java/com/android/server/pm/CrossProfileIntentFilter.java:42
 class CrossProfileIntentFilter extends WatchedIntentFilter {
-    int mTargetUserId;          // Which user can receive
-    int mFlags;                 // Behavior flags
-    AccessControlLevel mAccessControlLevel;  // Who can modify
+    final int mTargetUserId;        // Which user can receive
+    final String mOwnerPackage;     // Package that created the filter
+    final int mFlags;               // Behavior flags
+    final int mAccessControlLevel;  // Who can modify (@AccessControlLevel)
 }
 ```
 
@@ -1151,8 +1165,8 @@ The system pre-configures several cross-profile intent filters during profile
 creation. These allow essential functionality to work across profiles:
 
 - **Web browsing** — `ACTION_VIEW` with `http/https` schemes
-- **Phone calls** — `ACTION_DIAL`, `ACTION_CALL`
-- **Settings** — `ACTION_SETTINGS`
+- **Phone calls** — `ACTION_DIAL`, `ACTION_CALL_EMERGENCY`, `ACTION_CALL_PRIVILEGED`
+- **Settings** — `ACTION_DATA_ROAMING_SETTINGS`, `ACTION_NETWORK_OPERATOR_SETTINGS`
 - **Camera capture** — `ACTION_IMAGE_CAPTURE`, `ACTION_VIDEO_CAPTURE`
 - **File picking** — `ACTION_GET_CONTENT`, `ACTION_OPEN_DOCUMENT`
 
@@ -1168,7 +1182,8 @@ restrictions that apply only within the work profile:
 #### Profile-Scoped Restrictions
 
 ```java
-// Source: frameworks/base/services/core/java/com/android/server/pm/UserManagerService.java:2251
+// Source: frameworks/base/services/core/java/com/android/server/pm/UserManagerService.java:4053
+// (updateUserRestrictionsInternalLR)
 // Restrictions are merged from three sources:
 // BASE    → mBaseUserRestrictions (per-user defaults)
 // DPL     → Device Policy Local (profile-owner restrictions)
@@ -1399,8 +1414,8 @@ Android maintains separate storage areas for each user:
         0/                 # User 0 metadata
         10/                # User 10 metadata
 
-    user/                  # Symlink to user/0 for user 0
-    user/0/                # CE storage for user 0
+    user/                  # Per-user CE app data roots
+    user/0/                # CE storage for user 0 (/data/data is bind-mounted here)
         com.example.app/   # App data
     user/10/               # CE storage for user 10
         com.example.app/   # Separate app data instance
@@ -1483,15 +1498,16 @@ controls which packages are available per user type:
 
 ```java
 // From UserSystemPackageInstaller.java
-// Packages can be configured via:
-// 1. config_systemUserAllowlistedPackages (for system user)
-// 2. config_userTypePackageWhitelist (per user type)
-// 3. Package manifest install-in/exclude-from declarations
+// The per-user-type allowlist/denylist comes from SystemConfig's
+// <install-in-user-type> entries in /etc/sysconfig XML, read via
+// SystemConfig.getAndClearPackageToUserTypeAllowlist().
+// The enforcement mode is the integer resource
+// config_userTypePackageWhitelistMode (bit values 1/2/4/8).
 ```
 
-The installer reads allowlists and blocklists from device overlay configurations,
-ensuring (for example) that enterprise management apps are only installed in work
-profiles and consumer apps are not installed in restricted profiles.
+The installer reads the allowlists and denylists from the device's sysconfig
+XML, ensuring (for example) that enterprise management apps are only installed
+in work profiles and consumer apps are not installed in restricted profiles.
 
 ### 31.6.5 External Storage per User
 
@@ -1529,8 +1545,9 @@ sequenceDiagram
     AM->>UMS: Check switchability
     UMS-->>AM: SWITCHABILITY_STATUS_OK
 
-    AM->>WM: freezeDisplay()
-    Note over WM: Show transition animation
+    AM->>WM: setSwitchingUser(true)
+    AM->>WM: startUserSwitchTransition(oldUserId, newUserId)
+    Note over WM: Show user-switching dialog
 
     AM->>AM: Stop foreground user's activities
     AM->>APPS: Send USER_BACKGROUND broadcast
@@ -1542,8 +1559,8 @@ sequenceDiagram
 
     AM->>APPS: Send USER_FOREGROUND broadcast
     AM->>APPS: Send USER_SWITCHED broadcast
-    AM->>WM: unfreezeDisplay()
-    Note over WM: Show new user's desktop
+    AM->>WM: setSwitchingUser(false)
+    Note over WM: Dismiss dialog, show new user's desktop
 ```
 
 ### 31.7.2 Switchability Checks
@@ -1633,16 +1650,19 @@ graph TB
 
 When switching users, the system manages processes carefully:
 
-1. **Freeze:** The display is frozen to show a transition animation
+1. **Transition start:** `WindowManagerService.setSwitchingUser(true)` and
+   `startUserSwitchTransition()` put up the user-switching dialog
 2. **Background current user:** The current user's activities are paused/stopped
 3. **Start target user:** The target user's system services and critical apps start
 4. **Unlock if needed:** If the user has a lock screen, wait for unlock
 5. **Foreground target user:** Start the user's launcher and restore activities
-6. **Unfreeze:** The display unfreezes, showing the new user's UI
+6. **Transition end:** `setSwitchingUser(false)` dismisses the dialog, showing
+   the new user's UI
 
-Profiles of the previous user are stopped (unless they have
-`allowStoppingUserWithDelayedLocking`). Profiles of the new user are started
-(if `startWithParent=true`).
+Profiles of the previous user are stopped; those whose `UserProperties` set
+`allowStoppingUserWithDelayedLocking` are stopped with *delayed locking*, so
+their CE storage stays unlocked while the profile is stopped. Profiles of the
+new user are started (if `startWithParent=true`).
 
 ### 31.7.5 Boot User Selection
 
@@ -1680,8 +1700,9 @@ The user switcher appears in multiple places:
 3. **Settings > Users** -- Full user management interface
 
 `SystemUI` reads the user list from `UserManagerService` and presents switching
-controls. The `UserSwitcherController` in SystemUI subscribes to user change
-broadcasts to keep the UI synchronized.
+controls. The `UserSwitcherInteractor` in SystemUI subscribes to user change
+broadcasts to keep the UI synchronized (the older `UserSwitcherController` is
+a deprecated facade that delegates to it).
 
 ### 31.7.7 Broadcasts During User Lifecycle
 
@@ -1690,7 +1711,7 @@ graph LR
     subgraph "User Start"
         A1["ACTION_USER_STARTING<br/>System only"]
         A2["ACTION_LOCKED_BOOT_COMPLETED<br/>Direct boot apps"]
-        A3["ACTION_USER_UNLOCKED<br/>System only"]
+        A3["ACTION_USER_UNLOCKED<br/>Registered receivers only"]
         A4["ACTION_BOOT_COMPLETED<br/>All apps"]
     end
 
@@ -1718,7 +1739,7 @@ graph LR
 |---|---|---|
 | `ACTION_USER_STARTING` | System services | User process beginning to start |
 | `ACTION_LOCKED_BOOT_COMPLETED` | Direct-boot aware apps | DE storage available |
-| `ACTION_USER_UNLOCKED` | System services | CE storage available |
+| `ACTION_USER_UNLOCKED` | Any app's *registered* receivers (not manifest receivers) | CE storage available |
 | `ACTION_BOOT_COMPLETED` | All apps in user | Full storage available |
 | `ACTION_USER_BACKGROUND` | System services | User moving to background |
 | `ACTION_USER_FOREGROUND` | System services | User moving to foreground |
@@ -1759,28 +1780,31 @@ public static final int FLAG_EPHEMERAL_ON_CREATE = 0x00002000;
 public static final int FLAG_MAIN      = 0x00004000;
 public static final int FLAG_FOR_TESTING = 0x00008000;
 
-// Convenience checks
-public boolean isGuest()   { return (flags & FLAG_GUEST) != 0; }
-public boolean isAdmin()   { return (flags & FLAG_ADMIN) != 0; }
+// Convenience checks — some test flag bits, others resolve the userType string
+public boolean isAdmin()   { return (flags & FLAG_ADMIN) == FLAG_ADMIN; }
 public boolean isProfile() { return (flags & FLAG_PROFILE) != 0; }
 public boolean isFull()    { return (flags & FLAG_FULL) != 0; }
-public boolean isMain()    { return (flags & FLAG_MAIN) != 0; }
-public boolean isManagedProfile() { return (flags & FLAG_MANAGED_PROFILE) != 0; }
-public boolean isCommunalProfile() { ... }   // checks userType, not flags
-public boolean isPrivateProfile()  { ... }   // checks userType, not flags
+public boolean isGuest()   { return UserManager.isUserTypeGuest(userType); }
+public boolean isManagedProfile() {
+    return UserManager.isUserTypeManagedProfile(userType);
+}
+public boolean isCommunalProfile() { ... }   // checks userType
+public boolean isPrivateProfile()  { ... }   // checks userType
 ```
 
 `FLAG_EPHEMERAL_ON_CREATE` (`0x00002000`) is distinct from `FLAG_EPHEMERAL`: it
 marks a user that was *requested* ephemeral at creation time, even if the user
-ends up persistent. `isPrivateProfile()` and `isCommunalProfile()` resolve
-against the stored `userType` string rather than a bit, since those profile
-types do not carry a dedicated `UserInfo` flag.
+ends up persistent. Only checks like `isAdmin()`, `isProfile()`, and `isFull()`
+are pure bit tests; `isGuest()`, `isManagedProfile()`, `isPrivateProfile()`,
+and `isCommunalProfile()` resolve against the stored `userType` string instead
+(and `isMain()` tests `FLAG_MAIN` via `isMainUnlogged()` after logging a static
+deprecation warning).
 
 Common flag combinations:
 
 | User Type | Flags | Hex |
 |---|---|---|
-| System user (non-HSUM) | SYSTEM, FULL, PRIMARY, ADMIN, MAIN | `0x00004C13` |
+| System user (non-HSUM) | SYSTEM, FULL, PRIMARY, ADMIN, INITIALIZED, MAIN | `0x00004C13` |
 | Secondary user | FULL | `0x00000400` |
 | Guest (ephemeral) | FULL, GUEST, EPHEMERAL | `0x00000504` |
 | Work profile | PROFILE, MANAGED_PROFILE | `0x00001020` |
@@ -1829,8 +1853,9 @@ set of restrictions is defined in `UserManager`:
 | `DISALLOW_USER_SWITCH` | Cannot switch users |
 
 The restriction enforcement is distributed -- each system service checks relevant
-restrictions for the calling user. For example, `TelephonyManager` checks
-`DISALLOW_OUTGOING_CALLS` before allowing a call.
+restrictions for the calling user. For example, Telecom
+(`com.android.server.telecom.UserUtil`) checks `DISALLOW_OUTGOING_CALLS` before
+allowing a call.
 
 ### 31.8.3 UserSystemPackageInstaller Details
 
@@ -1854,10 +1879,12 @@ graph TB
     end
 ```
 
-OEMs configure per-type allowlists in:
+OEMs configure per-type allowlists in SystemConfig XML (under `/etc/sysconfig`):
 
-- `config_userTypePackageWhitelist` (XML overlay)
-- Package manifest `install-in` and `exclude-from` directives
+- `<install-in-user-type package="...">` entries, with `<install-in user-type="..."/>`
+  and `<do-not-install-in user-type="..."/>` children
+- The enforcement mode comes from the `config_userTypePackageWhitelistMode`
+  integer resource (bit values 1/2/4/8)
 
 This ensures that:
 
@@ -1871,13 +1898,13 @@ This ensures that:
 `UserManagerService` uses `UserFilter` for efficiently querying subsets of users:
 
 ```java
-// From UserFilter.java (conceptual)
-// Filters can include:
-// - excludePartial: Skip users being created/removed
-// - excludeDying: Skip users being removed
-// - excludePreCreated: Skip pre-created users
-// - matchType: Only specific user types
-// - matchParent: Only profiles of a specific parent
+// From UserFilter.java
+// The filter knobs (set through UserFilter.Builder) are:
+// - includePartial (withPartialUsers): include users being created/removed
+// - includeDying (withDyingUsers): include users in the middle of removal
+// - requiredFlags (setRequiredFlags): only users with these UserInfo flags
+// - excludedIds (excludeUserId): skip specific user ids
+// By default, partial and dying users are excluded.
 ```
 
 The filter system avoids creating intermediate lists by applying predicates directly
@@ -1906,9 +1933,10 @@ sequenceDiagram
 Each `DefaultCrossProfileIntentFilter` specifies:
 
 - An `IntentFilter` pattern to match
-- Source user type (which profile the intent originates from)
-- Target user type (which profile to forward to)
-- Whether to skip the current profile's resolution
+- A forwarding `direction` — `TO_PARENT` or `TO_PROFILE`
+- Forwarding `flags` such as `SKIP_CURRENT_PROFILE` or `ONLY_IF_NO_MATCH_FOUND`
+- `letsPersonalDataIntoProfile`, which is suppressed when
+  `DISALLOW_SHARE_INTO_MANAGED_PROFILE` is set
 
 The resolution strategy is controlled by `crossProfileIntentResolutionStrategy`:
 
@@ -1927,7 +1955,7 @@ graph TD
     B2 --> CRED[User Enters Credential]
     CRED --> CE[CE Storage Unlocked]
     CE --> B3["ACTION_USER_UNLOCKING<br/>System only"]
-    B3 --> B4["ACTION_USER_UNLOCKED<br/>System only"]
+    B3 --> B4["ACTION_USER_UNLOCKED<br/>Registered receivers only"]
     B4 --> B5["ACTION_BOOT_COMPLETED<br/>All apps in user"]
 ```
 
@@ -2018,7 +2046,7 @@ The `UserVisibilityMediator` tracks user-to-display assignments:
 ```java
 // From UserVisibilityMediator.java
 // MUMD mode maintains:
-// - mUsersAssignedToDisplays: SparseIntArray (userId -> displayId)
+// - mUsersAssignedToDisplayOnStart: SparseIntArray (userId -> displayId)
 // - mExtraDisplaysAssignedToUsers: reverse mapping
 // - Visibility queries check both foreground user and display assignments
 ```
@@ -2139,7 +2167,8 @@ public static final int USER_JOURNEY_DEMOTE_MAIN_USER = ...;
 public static final int USER_JOURNEY_USER_LOGOUT = ...;
 
 // Error codes
-public static final int ERROR_CODE_UNSPECIFIED = 0;
+public static final int ERROR_CODE_INVALID_SESSION_ID = 0;
+public static final int ERROR_CODE_UNSPECIFIED = -1;
 public static final int ERROR_CODE_INCOMPLETE_OR_TIMEOUT = 2;
 public static final int ERROR_CODE_ABORTED = 3;
 public static final int ERROR_CODE_NULL_USER_INFO = 4;
@@ -2295,12 +2324,15 @@ profile per parent, only 1 work profile per parent (production builds, via
 
 ### 31.8.18 User Switcher Controller in SystemUI
 
-SystemUI implements the user switcher through `UserSwitcherController`:
+SystemUI implements the user switcher through `UserSwitcherInteractor` (in
+`packages/SystemUI/src/com/android/systemui/user/domain/interactor/`); the
+older `UserSwitcherController` remains only as a deprecated facade that
+delegates to it:
 
 ```mermaid
 graph TB
     subgraph "SystemUI User Switcher"
-        USC[UserSwitcherController]
+        USC[UserSwitcherInteractor]
         USC --> USERS["User Records<br/>from UserManager"]
         USC --> QS[Quick Settings Tile]
         USC --> LS[Lock Screen Selector]
@@ -2312,7 +2344,7 @@ graph TB
     USC --> AM
 ```
 
-The controller listens for:
+The interactor's broadcast receiver listens for:
 
 - `ACTION_USER_ADDED` / `ACTION_USER_REMOVED`: Update user list
 - `ACTION_USER_SWITCHED`: Update current user indicator
@@ -2404,7 +2436,7 @@ device-wide:
 /data/system/users/0/settings_secure.xml    # User 0 secure settings
 /data/system/users/10/settings_secure.xml   # User 10 secure settings
 /data/system/users/0/settings_system.xml    # User 0 system settings
-/data/system/settings_global.xml            # Global settings (all users)
+/data/system/users/0/settings_global.xml    # Global settings (stored under the system user)
 ```
 
 When code calls `Settings.Secure.getString()`, the system automatically resolves
@@ -2522,9 +2554,8 @@ Process priority considerations:
 - Background user's processes are deprioritized (higher OOM score)
 - Profile processes share priority with their parent user
 - When memory is low, background user processes are killed first
-- On user switch, the previous user's processes may be force-stopped
-  (configurable via `config_freeformWindowStopsProcessOnSwitch` or
-  similar settings)
+- On user switch, background users may be stopped, governed by
+  `config_multiuserMaxRunningUsers` and `config_multiuserDelayUserDataLocking`
 
 ### 31.8.27 Multi-User Boot Sequence
 
@@ -2601,11 +2632,14 @@ public void testCrossProfileAccess() {
 ```
 
 **CTS Tests:**
-The `android.multiuser.cts` package contains comprehensive tests:
+The `android.multiuser.cts` package (test APK `CtsMultiUserTestCases`) contains
+comprehensive tests:
 
 - `UserVisibilityTest` -- Tests for all visibility modes
 - `UserManagerTest` -- Core user management operations
-- `CrossProfileTest` -- Cross-profile communication
+
+Cross-profile communication is covered separately by the host-side devicepolicy
+suite (`com.android.cts.managedprofile.CrossProfileTest`).
 
 **Manual Testing:**
 ```bash
@@ -2615,8 +2649,8 @@ adb shell pm create-user --profileOf 0 --managed "Work"
 
 # Run a test scenario
 adb shell am instrument -w -e class \
-    com.android.cts.multiuser.UserManagerTest \
-    com.android.cts.multiuser/androidx.test.runner.AndroidJUnitRunner
+    android.multiuser.cts.UserManagerTest \
+    android.multiuser.cts/androidx.test.runner.AndroidJUnitRunner
 
 # Clean up
 adb shell pm list users | grep -o "UserInfo{[0-9]*" | \
@@ -2847,13 +2881,13 @@ Users:
     Type: android.os.usertype.full.SYSTEM
     Flags: 0x00004c13 (ADMIN|PRIMARY|FULL|SYSTEM|MAIN)
     State: RUNNING_UNLOCKED
-  UserInfo{10:Guest:4804} running
+  UserInfo{10:Guest:504} running
     Type: android.os.usertype.full.GUEST
-    Flags: 0x00004804 (GUEST|FULL|EPHEMERAL)
+    Flags: 0x00000504 (GUEST|FULL|EPHEMERAL)
     State: -
-  UserInfo{11:Work profile:4030} running
+  UserInfo{11:Work profile:1030} running
     Type: android.os.usertype.profile.MANAGED
-    Flags: 0x00004030 (MANAGED_PROFILE|PROFILE)
+    Flags: 0x00001030 (MANAGED_PROFILE|INITIALIZED|PROFILE)
     profileGroupId: 0
     State: RUNNING_UNLOCKED
 ```
@@ -2871,10 +2905,8 @@ adb shell pm create-user --guest "Guest"
 adb shell pm create-user --profileOf 0 --managed "Work"
 
 # Create a private profile
-adb shell cmd user create-profile-for --user-type android.os.usertype.profile.PRIVATE 0
-
-# List available user types
-adb shell cmd user list-user-types
+adb shell pm create-user --profileOf 0 \
+    --user-type android.os.usertype.profile.PRIVATE "Private"
 ```
 
 ### 31.10.3 Switching Users
@@ -2886,18 +2918,17 @@ adb shell am switch-user 10
 # Check current foreground user
 adb shell am get-current-user
 
-# Check user switchability
-adb shell cmd user report-user-switchability
+# Switchability is computed by UserManager.getUserSwitchability();
+# inspect the relevant state in the service dump
+adb shell dumpsys user
 ```
 
 ### 31.10.4 Managing Profiles
 
 ```bash
-# Enable quiet mode for a managed profile (user 11)
-adb shell cmd user set-quiet-mode --enable 11
-
-# Disable quiet mode (unlock)
-adb shell cmd user set-quiet-mode --disable 11
+# Quiet mode has no `cmd user` shell command; it is toggled
+# programmatically via UserManager.requestQuietModeEnabled()
+# (e.g. from Settings or the launcher's work-apps toggle)
 
 # Check if a user is a profile
 adb shell cmd user is-profile 11
@@ -2977,31 +3008,29 @@ adb logcat | grep -E "onUserStart|onUserStop|switchUser|UserState"
 ### 31.10.9 Checking User Visibility
 
 ```bash
-# List visible users
-adb shell cmd user get-visible-users
-
 # Check if a specific user is visible
-adb shell cmd user is-visible 10
+adb shell cmd user is-user-visible 10
 
-# Check what display a user is assigned to
-adb shell cmd user get-main-display-for-user 10
+# Check visibility on a specific display
+adb shell cmd user is-user-visible --display 2 10
+
+# Visible users and display assignments appear in the service dump
+adb shell dumpsys user
 ```
 
 ### 31.10.10 Private Space Operations
 
 ```bash
 # Create Private Space profile
-adb shell cmd user create-profile-for \
-    --user-type android.os.usertype.profile.PRIVATE 0
+adb shell pm create-user --profileOf 0 \
+    --user-type android.os.usertype.profile.PRIVATE "Private"
 
-# Lock private space (enable quiet mode)
-adb shell cmd user set-quiet-mode --enable <private_user_id>
+# Locking/unlocking Private Space is quiet mode, toggled via
+# UserManager.requestQuietModeEnabled() — there is no
+# `cmd user` shell equivalent
 
-# Unlock private space
-adb shell cmd user set-quiet-mode --disable <private_user_id>
-
-# Check if Private Space is enabled on this device
-adb shell getprop persist.sys.user.private_profile
+# Check whether the private profile type is available on this device
+adb shell pm get-max-users --user-type android.os.usertype.profile.PRIVATE
 ```
 
 ### 31.10.11 Headless System User Mode Testing
@@ -3010,9 +3039,10 @@ adb shell getprop persist.sys.user.private_profile
 # Check if device is in headless system user mode
 adb shell getprop ro.fw.mu.headless_system_user
 
-# Emulate headless system user mode (requires reboot)
-adb shell setprop persist.debug.fw.headless_system_user 1
-adb reboot
+# Emulate headless system user mode (sets
+# persist.debug.user_mode_emulation=headless and reboots;
+# never set the property directly)
+adb shell cmd user set-system-user-mode-emulation --reboot headless
 
 # Check boot strategy
 adb shell getprop persist.user.hsum_boot_strategy
@@ -3021,14 +3051,11 @@ adb shell getprop persist.user.hsum_boot_strategy
 ### 31.10.12 User Type Inspection
 
 ```bash
-# List all registered user types
-adb shell cmd user list-user-types
-
-# Check a user's type
-adb shell cmd user get-user-type 11
+# Each user's type is printed in the service dump ("Type: ...")
+adb shell dumpsys user | grep -E "UserInfo|Type:"
 
 # Inspect user properties
-adb shell dumpsys user | grep -A 30 "User properties"
+adb shell dumpsys user | grep -A 30 "UserProperties"
 ```
 
 ### 31.10.13 Performance Monitoring
@@ -3041,7 +3068,7 @@ adb shell cmd user create-user --timed "Performance Test"
 adb logcat -s SystemServerTiming | grep -i user
 
 # Check user start/unlock timing
-adb shell dumpsys user | grep -E "startRealtime|unlockRealtime"
+adb shell dumpsys user | grep -E "Start time|Unlock time"
 ```
 
 ### 31.10.14 Multi-User Debugging Checklist
@@ -3051,7 +3078,7 @@ When investigating multi-user issues, check these in order:
 1. **User exists and is correct type:**
    ```bash
    adb shell pm list users
-   adb shell cmd user get-user-type <userId>
+   adb shell dumpsys user | grep -E "UserInfo|Type:"
    ```
 
 2. **User is running and unlocked:**
@@ -3061,7 +3088,7 @@ When investigating multi-user issues, check these in order:
 
 3. **Profile group is correct:**
    ```bash
-   adb shell dumpsys user | grep profileGroupId
+   adb shell dumpsys user | grep -E "UserInfo|parentId"
    ```
 
 4. **Storage is prepared:**
@@ -3082,7 +3109,8 @@ When investigating multi-user issues, check these in order:
 
 7. **Cross-profile intent filters are configured:**
    ```bash
-   adb shell dumpsys package intent-filter-verifiers
+   # See the "Cross-profile intent filters" section of the package dump
+   adb shell dumpsys package
    ```
 
 ---

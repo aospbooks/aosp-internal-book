@@ -88,7 +88,8 @@ important are:
 | `portable-simd/` | Architecture-portable SIMD string routines (see Section 7.1.7) |
 
 The `bionic/libc/portable-simd/` directory is a recent addition: a set of SIMD
-string functions (`strlen`, `memchr`, `strspn`, `strcspn`) written once as
+string functions (`strlen`, `strnlen`, `memchr`, `memrchr`, `strspn`,
+`strcspn`, `wcslen`, `wmemchr`) written once as
 templates over a `VectorTraits` interface and instantiated per vector type
 (SSE, AVX2, and so on). It is examined in Section 7.1.7.
 
@@ -136,8 +137,11 @@ This dispatch pattern is fundamental to Bionic's memory allocation architecture.
 The `GetDispatchTable()` call checks whether a debug malloc or profiling malloc
 has been installed. If so, the call is redirected. Otherwise, it falls through
 to Scudo (the default allocator) via the `Malloc()` macro. The
-`MaybeTagPointer()` call implements MTE (Memory Tagging Extension) pointer
-tagging on hardware that supports it.
+`MaybeTagPointer()` call implements Bionic's software tagged-pointer scheme:
+on AArch64, when the heap tagging level is TBI, it ORs the fixed `0xB4` heap
+tag into the pointer's top byte, relying on the CPU's Top-Byte-Ignore feature
+(see "Tagged pointers" in Section 7.1.10). Real MTE memory tagging, on
+hardware that supports it, is performed inside Scudo, not by this call.
 
 Every allocator entry point routes through the same pattern. `reallocarray`
 (historically a thin wrapper) is now a full dispatch-table member alongside
@@ -159,14 +163,14 @@ extern "C" void* reallocarray(void* old_mem, size_t item_count, size_t item_size
 The same `dispatch_table` indirection also backs the `mallopt()` tuning knobs
 declared in `bionic/libc/include/malloc.h`, including the purge family used by
 memory-pressure responders: `M_PURGE` (return idle memory to the kernel,
-API 31), `M_PURGE_ALL` (return everything, API 34), and `M_PURGE_FAST` (a
+API 28), `M_PURGE_ALL` (return everything, API 34), and `M_PURGE_FAST` (a
 fast, non-blocking partial purge meant to be called frequently, added in
 API 37 for Android 17).
 
 **System call wrappers:**
 
 - `clone.cpp`, `exec.cpp`, `fork.cpp` -- Process management
-- `socket.cpp`, `accept.cpp` -- Network I/O
+- `socketpair.cpp`, `accept.cpp` -- Network I/O
 
 **String and memory operations:**
 
@@ -175,15 +179,18 @@ API 37 for Android 17).
 **Dynamic library support:**
 
 - `dl_iterate_phdr_static.cpp` -- `dl_iterate_phdr` for static executables
-- `dlfcn.cpp` -- `dlopen`/`dlsym`/`dlclose` wrappers
+- `bionic/libdl/libdl.cpp` -- libc-side `dlopen`/`dlsym`/`dlclose` stubs that
+  forward to the linker's `__loader_*` entry points (the real implementation
+  is `bionic/linker/dlfcn.cpp`)
 
 ### 7.1.4 Process Initialization
 
 When a dynamically-linked executable starts, the kernel maps the executable and
 the dynamic linker (see Section 7.3). The linker performs relocation, then
-calls libc's `.preinit_array` entry `__libc_preinit`. This function, defined in
-`bionic/libc/bionic/libc_init_dynamic.cpp`, runs before any other shared
-library initializer:
+runs constructors; `__libc_preinit` is registered as a priority-1 constructor
+in libc.so's `.init_array`, so it runs first among all initializers. This
+function, defined in `bionic/libc/bionic/libc_init_dynamic.cpp`, therefore
+runs before any other shared library initializer:
 
 From `bionic/libc/bionic/libc_init_dynamic.cpp` (lines 29-42):
 
@@ -230,11 +237,14 @@ The `__libc_preinit_impl` function performs these critical steps:
 2. **Global variable initialization** -- Sets up `__libc_globals`, a
    write-protected structure containing the allocator dispatch table.
 3. **Common initialization** -- Calls `__libc_init_common()` which initializes
-   the system properties client, sets up the `environ` pointer, and configures
-   the heap allocator.
+   the system properties client, sets up the `environ` pointer, and
+   initializes fdsan and fdtrack. (Allocator setup happens separately in
+   `__libc_preinit_impl`, via `__libc_init_scudo()` and
+   `__libc_globals.mutate(__libc_init_malloc)`.)
 4. **Netd client initialization** -- Registers DNS resolution hooks.
 5. **Callback registration** -- Provides the linker with callbacks for HWASan
-   library load/unload events and MTE stack remapping.
+   library load/unload events. (The MTE stack-remapping callback,
+   `memtag_stack_dlopen_callback`, is registered later, in `__libc_init`.)
 
 From `bionic/libc/bionic/libc_init_common.cpp` (lines 58-61):
 
@@ -245,9 +255,12 @@ __LIBC_HIDDEN__ constinit bool __libc_memtag_stack_abi;
 ```
 
 The `WriteProtected<>` template maps the globals structure into memory that is
-normally read-only. Modifications require explicitly acquiring a
-`ProtectedDataGuard`, which temporarily remaps the page as writable. This
-defends against corruption of critical data like the allocator dispatch table.
+normally read-only. Modifications go through `WriteProtected<>::mutate()`,
+which `mprotect()`s the page writable for the duration of the mutator callback
+and then re-protects it (e.g. `__libc_globals.mutate(__libc_init_malloc)`).
+This defends against corruption of critical data like the allocator dispatch
+table. (The linker guards its own internal data with a separate mechanism,
+`ProtectedDataGuard`; see Section 7.3.13.)
 
 ### 7.1.5 Thread-Local Storage and the Bionic TCB
 
@@ -282,7 +295,7 @@ Key TLS slots include:
 | `TLS_SLOT_STACK_GUARD` | Stack canary for `-fstack-protector` |
 | `TLS_SLOT_BIONIC_TLS` | Pointer to the full `bionic_tls` structure |
 | `TLS_SLOT_DTV` | Dynamic Thread Vector for ELF TLS |
-| `TLS_SLOT_ART` | Reserved for the Android Runtime |
+| `TLS_SLOT_ART_THREAD_SELF` | Fast storage for `Thread::Current()` in ART |
 
 This fixed layout means that accessing thread-local state requires no function
 calls or hash table lookups -- just a register read and a constant offset. The
@@ -356,13 +369,15 @@ DEFINE_IFUNC_FOR(memchr) {
 }
 ```
 
-The MTE-aware variant must handle the possibility that pointer tags in the
-search buffer do not match, requiring tag-stripped comparisons. Several
-resolvers in this file (for `memcpy`, `strlen`, `strcmp`, and others) carry an
-explicit `// TODO: enable the SVE version.` comment: the SVE-optimized routines
-exist upstream but are gated off until the relevant HWCAP detection is wired up,
-so on current silicon the dispatch falls through to the MOPS, Oryon, or ASIMD
-path.
+The MTE-aware variant is written so that it never reads past the end of the
+buffer's current 16-byte tag granule -- an over-read that the plain SIMD
+routine performs freely but that would fault under MTE. Six resolvers
+in this file (`memcmp`, `stpcpy`, `strcmp`, `strcpy`, `strncmp`, and `strnlen`)
+carry an explicit `// TODO: enable the SVE version.` comment: the SVE-optimized
+routines exist upstream but are gated off until the relevant HWCAP detection is
+wired up, so those resolvers fall through to the generic `__*_aarch64` routine.
+(`memcpy` and `strlen` are not among them -- `memcpy` dispatches on MOPS, Oryon,
+or ASIMD, and `strlen` on MTE.)
 
 The hand-tuned AArch64 implementations these resolvers select between are not
 maintained inside Bionic. They come from Arm's `arm-optimized-routines` project,
@@ -381,7 +396,8 @@ critical paths:
 | `arch-arm64/bionic/` | `syscall.S`, `setjmp.S`, `vfork.S`, `__bionic_clone.S` |
 | `arch-arm64/string/` | `__memcpy_chk.S`, `__memset_chk.S` |
 | `arch-arm64/oryon/` | `memcpy-nt.S`, `memset-nt.S` |
-| `arch-arm/bionic/` | Cortex-A53/A55/A7/A9/A15/Krait/Kryo-specific routines |
+| `arch-arm/bionic/` | `syscall.S`, `setjmp.S`, `vfork.S`, `__bionic_clone.S` |
+| `arch-arm/cortex-*/`, `arch-arm/krait/`, `arch-arm/kryo/` | Cortex-A53/A55/A7/A9/A15/Krait/Kryo-specific routines |
 | `arch-x86_64/bionic/` | `syscall.S`, `setjmp.S` |
 | `arch-x86_64/string/` | SSE/AVX-optimized string operations |
 | `arch-riscv64/bionic/` | `syscall.S`, `setjmp.S` |
@@ -389,17 +405,25 @@ critical paths:
 
 The ARM 32-bit tree is particularly rich, with CPU-specific subdirectories for
 Cortex-A53, Cortex-A55, Cortex-A7, Cortex-A9, Cortex-A15, Krait (Qualcomm),
-and Kryo (Qualcomm). The IFUNC resolver on ARM selects among these at runtime
-based on `/proc/cpuinfo` or HWCAP values.
+and Kryo (Qualcomm). The IFUNC resolver on ARM
+(`bionic/libc/arch-arm/ifuncs.cpp`) selects among these at runtime by reading
+the CPU variant name from the `/dev/cpu_variant:arm` device node -- using raw
+`openat`/`read` syscalls, since libc is not yet initialized when IFUNC
+resolvers run -- and matching it against a table of known variant names,
+falling back to the generic implementation when the node is absent.
 
 ### 7.1.7 Upstream Code and the BSD Heritage
 
 Bionic does not implement everything from scratch. It imports code from three
 BSD operating systems:
 
-- **OpenBSD**: Provides `strlcpy`, `strlcat`, `arc4random`, `reallocarray`,
-  and much of the standard string library. OpenBSD's focus on security makes
-  it a natural source for hardened implementations.
+- **OpenBSD**: Provides `arc4random`, the substring-search functions
+  (`memmem`, `strstr`, `strcasestr`), and much of stdio and stdlib.
+  OpenBSD's focus on security makes it a natural source for hardened
+  implementations. Some functions historically associated with OpenBSD have
+  since been rewritten in-tree: `strlcpy`/`strlcat` are now Android-written
+  code in `bionic/libc/bionic/string.cpp`, and `reallocarray` lives in
+  `bionic/libc/bionic/malloc_common.cpp`.
 
 - **FreeBSD**: Contributes parts of the math library (`libm`), locale support,
   and some string functions.
@@ -409,9 +433,11 @@ BSD operating systems:
 
 Imports are kept in separate directories (`upstream-openbsd/`, `upstream-freebsd/`,
 `upstream-netbsd/`) and are periodically updated to incorporate upstream bug
-fixes and security patches. On x86-64, several string functions were switched
-to FreeBSD's optimized implementations (`memchr`, `memrchr`, `strrchr`,
-`strchrnul`, `memccpy`), and `strtok`/`strtok_r`/`strpbrk`/`strsep` were
+fixes and security patches. On x86-64, a few string functions were switched
+to FreeBSD's optimized implementations (`strrchr`, `strchrnul` -- the latter
+defined in `strchr.S` -- and `memccpy`), while `memchr` and `memrchr` are now
+served by the portable-simd routines described below, and
+`strtok`/`strtok_r`/`strpbrk`/`strsep` were
 rewritten in terms of Bionic's own `strcspn`/`strspn` (`bionic/libc/bionic/string.cpp`).
 
 **The portable-SIMD experiment:**
@@ -429,14 +455,19 @@ From `bionic/libc/portable-simd/portable_simd_detail.h` (lines 88-92):
 #include <hwy/highway.h>
 
 // Convenience shortcut for "the highway namespace that's been selected through
-// the dynamic dispatch mechanism".
+// PSIMD_TARGET_*."
 namespace hn = hwy::HWY_NAMESPACE;
 ```
 
-A single `strlen.cpp` is built once per target (SSE, AVX2, and so on), and
-Highway selects the right vector width at runtime. Functions are exported to the
-rest of libc through `portable_simd_exports.h`; `strlen`, `memchr`, `strspn`,
-and `strcspn` are the first to migrate. The directory's `README.md` is explicit
+Highway's own runtime dispatch is disabled (`HWY_COMPILE_ONLY_STATIC 1`): a
+single source file like `strlen.cpp` is compiled statically once per target
+variant (SSE, AVX2, and so on), selected by the `PSIMD_TARGET_*` define in the
+corresponding Soong variant, and Bionic's own IFUNC resolvers (e.g.
+`bionic/libc/arch-x86_64/ifuncs.cpp`) pick the right variant at runtime.
+Functions are exported to the
+rest of libc through `portable_simd_exports.h`; `strlen`, `strnlen`, `memchr`,
+`memrchr`, `strspn`, `strcspn`, `wcslen`, and `wmemchr` are the first to
+migrate. The directory's `README.md` is explicit
 that the goal is "80%+ of the benefit of carefully-written assembly with a
 fraction of the effort," not to beat the best hand-tuned routines.
 
@@ -508,10 +539,10 @@ Even without MTE hardware, Bionic can tag the top byte of heap pointers
 graph TD
     A[malloc call] --> B{Dispatch Table?}
     B -->|Debug malloc| C[Debug Allocator]
-    B -->|Normal| D[Scudo Allocator]
-    D --> E{GWP-ASan Sample?}
+    B -->|GWP-ASan installed| E{GWP-ASan Sample?}
+    B -->|Normal| G["Scudo Allocation"]
     E -->|Yes| F[GWP-ASan Guard Page Allocation]
-    E -->|No| G[Scudo Normal Allocation]
+    E -->|"No, fall through"| G
     G --> H{MTE Enabled?}
     H -->|Yes| I[Tag Memory with Random Tag]
     H -->|No| J{TBI Tagging?}
@@ -644,52 +675,65 @@ SupportedArchitectures = [ "arm", "arm64", "riscv64", "x86", "x86_64" ]
 ENTRY(%(func)s)
     mov     ip, r7
     .cfi_register r7, ip
-    ldr     r7, =%(NR_name)s
+    ldr     r7, =%(__NR_name)s
     swi     #0
     mov     r7, ip
     .cfi_restore r7
-    cmn     r0, #(MAX_ERRNO + 1)
-    bxls    lr
-    neg     r0, r0
-    b       __set_errno_internal
+    DO_SYSCALL_RETURN
 END(%(func)s)
 ```
 
 On ARM, the system call number goes in register r7, and the SWI (Software
 Interrupt) instruction traps into the kernel. The stub saves and restores r7
 (which is the frame pointer in Thumb mode) to avoid corrupting the call stack.
+The `DO_SYSCALL_RETURN` macro (`bionic/libc/private/bionic_asm_arm.h`) expands
+to:
+
+```asm
+    cmn     r0, #(MAX_ERRNO + 1)
+    bxls    lr
+    b       __set_errno_internal
+```
+
+If the return value is not in the errno range, `bxls lr` returns directly;
+otherwise `__set_errno_internal` negates the value and stores it in `errno`.
 
 **AArch64 syscall function:**
 
-From `bionic/libc/arch-arm64/bionic/syscall.S` (lines 31-49):
+From `bionic/libc/arch-arm64/bionic/syscall.S` (lines 31-46):
 
 ```asm
 ENTRY(syscall)
-    /* Move syscall No. from x0 to x8 */
-    mov     x8, x0
-    /* Move syscall parameters from x1 thru x6 to x0 thru x5 */
-    mov     x0, x1
-    mov     x1, x2
-    mov     x2, x3
-    mov     x3, x4
-    mov     x4, x5
-    mov     x5, x6
-    svc     #0
+    // Move the syscall number up.
+    mov x8, x0
 
-    /* check if syscall returned successfully */
-    cmn     x0, #(MAX_ERRNO + 1)
-    cneg    x0, x0, hi
-    b.hi    __set_errno_internal
+    // Shuffle the arguments down.
+    mov x0, x1
+    mov x1, x2
+    mov x2, x3
+    mov x3, x4
+    mov x4, x5
+    mov x5, x6
 
-    ret
+    // Make the system call.
+    svc #0
+    DO_SYSCALL_RETURN
 END(syscall)
 ```
 
 This is the generic `syscall()` function for AArch64. The system call number
 goes in x8, and up to six arguments go in x0-x5. The `SVC #0` instruction
-enters the kernel. On return, if x0 contains a value in the range
-[-MAX_ERRNO, -1], the error is negated and stored in `errno` via
-`__set_errno_internal`.
+enters the kernel. The `DO_SYSCALL_RETURN` macro, defined in
+`bionic/libc/private/bionic_asm_arm64.h`, expands to:
+
+```asm
+cmp     x0, #-MAX_ERRNO
+b.hs    __set_errno_internal
+ret
+```
+
+If x0 contains a value in the range [-MAX_ERRNO, -1], control branches to
+`__set_errno_internal`, which negates the error and stores it in `errno`.
 
 ### 7.2.4 The System Call Catalog
 
@@ -776,7 +820,7 @@ graph LR
         A2["getuid:getuid32()"]
         A3["lseek() + __llseek()"]
         A4["__mmap2:mmap2()"]
-        A5["fstat64()"]
+        A5["fstat64|fstat:fstat64()"]
         A6["prlimit64()"]
         A7["*_time64() variants"]
     end
@@ -786,7 +830,7 @@ graph LR
         B2["getuid()"]
         B3["lseek|lseek64()"]
         B4["mmap|mmap64()"]
-        B5["fstat64|fstat()"]
+        B5["fstat64|fstat:fstat()"]
         B6["prlimit64|prlimit()"]
         B7["Standard time calls"]
     end
@@ -809,7 +853,8 @@ clock_settime64(clockid_t, const timespec64*) lp32
 futex_time64(int*, int, int, const timespec64*, int*, int) lp32
 ```
 
-These were added for the Y2038 problem: 32-bit `time_t` overflows in January
+These were added for the Y2038 problem: a signed 32-bit `time_t` overflows on
+19 January 2038.
 
 > The `*_time64` system calls use 64-bit time structures even on 32-bit platforms.
 
@@ -920,8 +965,12 @@ call.
 
 ### 7.2.7 Seccomp Policy Installation
 
-The seccomp filter is installed by the Zygote process before it forks
-application processes. The implementation is in
+The seccomp filter is installed in the forked child process during Zygote
+specialization: `SpecializeCommon()` in
+`frameworks/base/core/jni/com_android_internal_os_Zygote.cpp` calls
+`SetUpSeccompFilter()`, which picks `set_app_seccomp_filter()`,
+`set_app_zygote_seccomp_filter()`, or `set_system_seccomp_filter()` based on
+the uid. Those filter-installation functions are implemented in
 `bionic/libc/seccomp/seccomp_policy.cpp`.
 
 From `bionic/libc/seccomp/seccomp_policy.cpp` (lines 33-94):
@@ -1062,6 +1111,8 @@ VDSO-accelerated calls in Bionic:
 - `clock_gettime()` -- The single most frequently called time function
 - `clock_getres()` -- Clock resolution query
 - `gettimeofday()` -- Legacy time-of-day query
+- `time()` -- On x86/x86_64 only, via `__vdso_time`
+- `__riscv_hwprobe()` -- On riscv64 only, via `__vdso_riscv_hwprobe`
 
 ---
 
@@ -1075,8 +1126,9 @@ shared library on Android. It is the first user-space code to execute after the
 kernel maps a new process, and its correct operation is essential for every
 native binary on the system.
 
-The linker source lives in `bionic/linker/` and comprises approximately 50
-source files totaling over 7,000 lines of C++. The key files are:
+The linker source lives in `bionic/linker/` and comprises 42 `.cpp` files
+(about 70 files including headers) totaling around 14,000 lines of C++. The
+key files are:
 
 | File | Lines | Purpose |
 |------|-------|---------|
@@ -1458,12 +1510,13 @@ static int GetTargetElfMachine() {
 
 Note that the linker requires `e_type == ET_DYN`. This means Android only loads
 Position-Independent Executables (PIE). Non-PIE support was dropped in API level
-21 for security (ASLR effectiveness):
+21 for security (ASLR effectiveness). For the main executable, the check lives
+in `bionic/linker/linker_main.cpp` (around line 424):
 
 ```cpp
 if (elf_hdr->e_type != ET_DYN) {
-    __linker_error("error: Android only supports position-independent "
-                   "executables (-fPIE)");
+    __linker_error("error: %s: Android only supports position-independent "
+                   "executables (-fPIE)", exe_info.path.c_str());
 }
 ```
 
@@ -1482,11 +1535,11 @@ bool ElfReader::Load(address_space_params* address_space) {
       FindGnuPropertySection()) {
     did_load_ = true;
 #if defined(__aarch64__)
-    if (note_gnu_property_.IsBTICompatible()) {
+    if (note_gnu_property_->IsBTICompatible()) {
       did_load_ =
           (phdr_table_protect_segments(phdr_table_, phdr_num_, load_bias_,
                should_pad_segments_, should_use_16kib_app_compat_,
-               &note_gnu_property_) == 0);
+               note_gnu_property_.get()) == 0);
     }
 #endif
   }
@@ -1539,11 +1592,13 @@ This code implements an ASLR enhancement: when a library's mapping crosses a
 2MB (PMD-sized) boundary, the linker inserts a random number of inaccessible
 2MB pages before the library. This makes it harder for attackers to locate
 library code by probing for readable memory mappings. The gap size is random
-(1 to 32 units of 2MB) and varies per library load. Note the use of
-`__libc_arc4random_uniform_or_zero`: this helper folds in the first-stage-init
-special case (where `arc4random` is unavailable because `/dev/urandom` is not
-yet mounted) by returning zero instead of crashing, so the same code path works
-during early boot and at runtime.
+(1 to 31 units of 2MB -- `kMaxGapUnits` is 32, but the uniform draw is over
+`kMaxGapUnits - 1` and then incremented) and varies per library load. Note the
+use of `__libc_arc4random_uniform_or_zero`: this helper folds in the
+first-stage-init special case (where `getrandom(GRND_NONBLOCK)` still fails
+because the kernel entropy pool is not yet initialized) by returning zero
+instead of crashing, so the same code path works during early boot and at
+runtime.
 
 ### 7.3.6 The Load Bias and Virtual Address Calculation
 
@@ -2040,12 +2095,17 @@ static bool walk_dependencies_tree(soinfo* root_soinfo, F action) {
 }
 ```
 
-This BFS walker is used for:
+This BFS walker has exactly two users:
 
-- Loading dependencies (`find_libraries`)
-- `dlsym(RTLD_DEFAULT)` global symbol lookup
-- `dlsym(handle)` handle-based symbol lookup
-- Constructor invocation ordering
+- `dlsym(handle)` handle-based symbol lookup (`dlsym_handle_lookup_impl`)
+- Collecting each local group during `find_libraries` (step 6, linking
+  local groups)
+
+Two related operations that might be expected to use it do not:
+`dlsym(RTLD_DEFAULT)` goes through `dlsym_linear_lookup`, a linear scan of the
+namespace's soinfo list, and constructor ordering is handled by
+`soinfo::call_constructors`, which recurses depth-first over each soinfo's
+children.
 
 The three possible action results (`kWalkStop`, `kWalkContinue`, `kWalkSkip`)
 allow the walker to be used for both search (stop when found) and traversal
@@ -2088,8 +2148,11 @@ void* __loader_dlsym(
 int __loader_dlclose(void* handle) __LINKER_PUBLIC__;
 ```
 
-All functions take a `caller_addr` parameter, which the linker uses to
-determine the namespace context. By examining which `soinfo` contains the
+Most of the loading and lookup entry points -- `__loader_dlopen`,
+`__loader_android_dlopen_ext`, `__loader_dlsym`, `__loader_dlvsym`, and
+`__loader_android_create_namespace` -- take a `caller_addr` parameter, which
+the linker uses to determine the namespace context (`__loader_dlclose` and a
+few others do not need one). By examining which `soinfo` contains the
 caller's address, the linker determines which namespace the caller belongs to,
 and searches that namespace for the requested library.
 
@@ -2442,6 +2505,7 @@ From `system/linkerconfig/main.cc` (lines 33-43):
 #include "linkerconfig/configparser.h"
 #include "linkerconfig/context.h"
 #include "linkerconfig/environment.h"
+#include "linkerconfig/log.h"
 #include "linkerconfig/namespacebuilder.h"
 #include "linkerconfig/recovery.h"
 #include "linkerconfig/variableloader.h"
@@ -2743,7 +2807,10 @@ appropriate isolation. Each app gets its own namespace that can see:
 
 - The app's own native libraries (from the APK)
 - LL-NDK libraries (via link to system namespace)
-- VNDK libraries (if the app uses the NDK)
+- VNDK-SP libraries, but only for unbundled *vendor* apps (linked to the `vndk`
+  namespace) and unbundled *product* apps (linked to `vndk_product`); an
+  ordinary app gets no VNDK link at all
+  (`art/libnativeloader/library_namespaces.cpp`)
 - Libraries listed in the app's `uses-native-library` manifest entries
 
 ### 7.4.14 Default Library Paths
@@ -2893,13 +2960,13 @@ graph TD
     B -->|Yes| C["Open directly at path"]
     B -->|No| D["Search LD_LIBRARY_PATH"]
     D --> E{Found?}
-    E -->|Yes| F["Check namespace accessibility"]
+    E -->|Yes| K
     E -->|No| G["Search DT_RUNPATH"]
     G --> H{Found?}
-    H -->|Yes| F
+    H -->|Yes| F["Check namespace accessibility"]
     H -->|No| I["Search namespace default paths"]
     I --> J{Found?}
-    J -->|Yes| K["No accessibility check needed<br/>(default paths are always accessible)"]
+    J -->|Yes| K["No accessibility check needed<br/>(namespace path lists are always accessible)"]
     J -->|No| L["Search linked namespaces"]
     L --> M{Found in linked ns?}
     M -->|Yes| N{In shared_lib_sonames?}
@@ -3037,9 +3104,13 @@ bool ElfReader::MapSegment(size_t seg_idx, size_t len) {
 }
 ```
 
-Note the transparent huge page support: executable segments aligned to PMD
-size (2MB) receive `MADV_HUGEPAGE`, which tells the kernel to use huge pages
-for these mappings. This reduces TLB misses for large code sections.
+Note the transparent huge page support: executable segments whose alignment
+equals the PMD size receive `MADV_HUGEPAGE`, which tells the kernel to use huge
+pages for these mappings. This reduces TLB misses for large code sections. The
+PMD size is not a fixed constant -- `bionic/linker/linker_phdr.cpp` defines it
+as `kPmdSize = (kPageSize / sizeof(uint64_t)) * kPageSize`, the span covered by
+one page of 8-byte page table entries, which works out to 2MB on a 4KiB-page
+device but 32MB on a 16KiB-page one.
 
 **W+E segment rejection:**
 
@@ -3185,14 +3256,12 @@ graph TD
 After all LoadTasks have been created but before they are loaded, the linker
 shuffles the load order:
 
-From `bionic/linker/linker.cpp` (lines 1532-1543):
+From `bionic/linker/linker.cpp` (lines 1535-1543):
 
 ```cpp
 static void shuffle(std::vector<LoadTask*>* v) {
-  if (is_first_stage_init()) {
-    // arc4random* is not available in first stage init
-    return;
-  }
+  if (!__libc_arc4random_ready()) return;
+
   for (size_t i = 0, size = v->size(); i < size; ++i) {
     size_t n = size - i;
     size_t r = arc4random_uniform(n);
@@ -3204,6 +3273,9 @@ static void shuffle(std::vector<LoadTask*>* v) {
 This randomizes the order in which libraries are mapped into memory,
 complementing the per-library ASLR from `ReserveWithAlignmentPadding`. Even if
 an attacker knows which libraries a process loads, the order is unpredictable.
+The `__libc_arc4random_ready()` guard skips shuffling when arc4random cannot
+produce real randomness yet -- notably in first-stage init, before `/dev/urandom`
+and the `getentropy` machinery are usable.
 
 ### 7.4.20 Duplicate Detection and the Soname Contract
 
@@ -3258,7 +3330,12 @@ static bool find_loaded_library_by_realpath(android_namespace_t* ns,
 The inode-based check handles symlinks and hard links correctly: if
 `/system/lib64/libfoo.so` and `/system/lib64/libfoo_v2.so` are hard links
 to the same file, inode detection ensures only one copy is loaded. The
-realpath check handles the case where proc is not mounted (early boot).
+realpath-based lookup serves the ASan/HWASan dlopen path translation: before
+translating an absolute path to its sanitized counterpart, the linker checks
+whether a library is already loaded under the untranslated path. Separately,
+when `/proc` is not mounted (early boot), `realpath_fd()` cannot resolve a
+canonical path and the linker falls back to using the given path as the
+library's realpath (`bionic/linker/linker.cpp`, lines 988 and 1023).
 
 ### 7.4.21 DT_NEEDED Processing and DT_RUNPATH
 
@@ -3470,11 +3547,19 @@ list of categories:
 
 | Value | What it logs |
 |-------|-------------|
-| `any` | All debug output |
+| `all` | All debug output |
+| `calls` | Constructor, destructor, and ifunc calls |
+| `cfi` | CFI (Control Flow Integrity) setup |
+| `dynamic` | Dynamic section processing |
 | `lookup` | Symbol lookup results |
+| `props` | ELF property processing |
 | `reloc` | Relocation processing |
 | `timing` | Total link time in microseconds |
 | `statistics` | Relocation counts (absolute, relative, symbol, cached) |
+
+Any other token (including `any`, which is only an internal flag name in
+`linker_debug.cpp`) makes the linker abort with a usage error listing the
+accepted values.
 
 **LD_SHOW_AUXV:**
 
@@ -3585,7 +3670,7 @@ Musl lives at `external/musl/` in the AOSP tree:
 
 ```
 external/musl/
-├── Android.bp              # Build rules (622 lines)
+├── Android.bp              # Build rules (823 lines)
 ├── sources.bp              # Generated source file lists
 ├── README                  # Upstream v1.2.5
 ├── METADATA                # Version and license info
@@ -3634,7 +3719,7 @@ flowchart LR
 ```
 
 ```go
-// Source: build/soong/android/config.go:2402
+// Source: build/soong/android/config.go:2523
 func (c *config) UseHostMusl() bool {
     return Bool(c.productVariables.HostMusl)
 }
@@ -3703,10 +3788,11 @@ library. All host tools link against it instead.
 ### 7.5.5 Prebuilt Musl Toolchain
 
 The prebuilt Clang toolchain includes musl runtime libraries for all supported
-architectures:
+architectures (under the current default toolchain directory,
+`clang-<version>`):
 
 ```
-prebuilts/clang/host/linux-x86/clang-r563880c/musl/
+prebuilts/clang/host/linux-x86/clang-r584948/musl/
 ├── lib/
 │   ├── x86_64-unknown-linux-musl/     # x86_64 runtime
 │   ├── aarch64-unknown-linux-musl/    # ARM64 runtime
@@ -3721,7 +3807,7 @@ Interestingly, musl reuses some headers from Bionic's kernel UAPI layer. The
 build system generates a musl sysroot that includes Bionic's kernel headers:
 
 ```java
-// Source: bionic/libc/Android.bp:2703
+// Source: bionic/libc/Android.bp:2973
 cc_genrule {
     name: "libc_musl_sysroot_bionic_headers",
     // Copies bionic's kernel UAPI headers for musl's use
@@ -4142,16 +4228,17 @@ sequenceDiagram
     L->>L: CFIShadow::InitialLinkDone()
 
     Note over L: Phase 8: Initialization
-    L->>LC: Call __libc_preinit() [.preinit_array]
-    LC->>LC: Init TLS, globals, properties
-    LC->>LC: Init Scudo allocator
-    LC->>LC: Init netd client
-
     L->>L: somain->call_pre_init_constructors()
 
     loop For each library (dependency order)
         L->>L: si->call_constructors()
     end
+
+    Note over L,LC: When the loop reaches libc.so, its .init_array runs __libc_preinit [priority-1 constructor]
+    L->>LC: libc.so ctor __libc_preinit() [.init_array, priority 1]
+    LC->>LC: Init TLS, globals, properties
+    LC->>LC: Init Scudo allocator
+    LC->>LC: Init netd client
 
     Note over L: Phase 9: Handoff
     L->>L: purge_unused_memory()
@@ -4181,9 +4268,11 @@ these messages is essential for debugging native library issues:
 | `has load segments that are both writable and executable` | W+E segment (API >= 26) | Fix linker script, use separate segments |
 | `program alignment cannot be smaller than system page size` | 4KiB library on 16KiB system | Rebuild with 16KiB alignment or enable compat |
 
-Each error message is carefully crafted to include the library name, the
-namespace context, and (where applicable) a reference to the Android bug
-tracker entry that motivated the error or exception.
+Each error message is carefully crafted to include the library name and,
+where applicable, the namespace context. The Android bug tracker entries that
+motivated many of these errors and exceptions appear as `http://b/NNNNN`
+references in the surrounding source comments in `bionic/linker/linker.cpp`,
+not in the runtime error text itself.
 
 ### 7.6.8 Performance Considerations
 
@@ -4337,7 +4426,7 @@ From `bionic/libc/include/malloc.h` (lines 240-248):
 #define M_PURGE_FAST (-105)
 ```
 
-`M_PURGE_FAST` complements the existing `M_PURGE` (API 31) and `M_PURGE_ALL`
+`M_PURGE_FAST` complements the existing `M_PURGE` (API 28) and `M_PURGE_ALL`
 (API 34): a daemon that wants to trim heaps on every memory-pressure signal can
 call it without risking a long stall.
 
@@ -4374,9 +4463,10 @@ Three linker-side hardening changes are worth calling out:
   tail of `bionic/libc/arch-arm64/oryon/memcpy-nt.S`), so BTI-enforced code can
   call into these routines without faulting.
 
-- **Tagged-address discipline.** The linker now calls `get_tagged_address` only
-  on readable sections and only on data symbols, and the readable-section check
-  was moved after the MTE check. These avoid applying a memory tag to addresses
+- **Tagged-address discipline.** The linker now calls `get_tagged_address`
+  only when MTE is enabled and the symbol's section is readable (with TLS
+  symbols taking a separate path), and the readable-section check was moved
+  after the MTE check. These avoid applying a memory tag to addresses
   the process is not allowed to dereference, which previously could turn a
   benign relocation into a fault on MTE hardware.
 
@@ -4443,7 +4533,7 @@ of system call conventions across all five architectures supported by Bionic:
 |-------------|---------------|-------|-------|-------|-------|-------|-------|-------------|--------|
 | arm | r7 | r0 | r1 | r2 | r3 | r4 | r5 | `swi #0` | r0 |
 | arm64 | x8 | x0 | x1 | x2 | x3 | x4 | x5 | `svc #0` | x0 |
-| x86 | eax | ebx | ecx | edx | esi | edi | ebp | `int $0x80` | eax |
+| x86 | eax | ebx | ecx | edx | esi | edi | ebp | `call __kernel_syscall` | eax |
 | x86_64 | rax | rdi | rsi | rdx | r10 | r8 | r9 | `syscall` | rax |
 | riscv64 | a7 | a0 | a1 | a2 | a3 | a4 | a5 | `ecall` | a0 |
 
@@ -4451,10 +4541,15 @@ On error, the return value is in the range [-4095, -1] (or [-MAX_ERRNO, -1]
 in Bionic terms). Bionic stubs negate this value and store it in `errno` via
 `__set_errno_internal`.
 
-Note the x86 peculiarity: 32-bit x86 has only six registers available for
-system call arguments, and socket operations are multiplexed through the
-`socketcall` system call with a sub-command number. This multiplexing is
-absent on all other architectures.
+Note the x86 peculiarities. First, the entry instruction is indirect: the
+generated stubs call `__kernel_syscall`, which resolves to the vDSO entry point
+published by the kernel through `AT_SYSINFO` (typically `sysenter`; see
+`bionic/libc/arch-x86/bionic/__libc_init_sysinfo.cpp`), falling back to a
+plain `int $0x80` (`bionic/libc/arch-x86/bionic/__libc_int0x80.S`) only when
+no vDSO entry is available. Second, 32-bit x86 has only six registers
+available for system call arguments, and socket operations are multiplexed
+through the `socketcall` system call with a sub-command number. This
+multiplexing is absent on all other architectures.
 
 ### 7.8.2 Linker Configuration File Format
 
@@ -4487,8 +4582,11 @@ additional.namespaces = <comma-separated-ns-names>
 ```
 
 The `${LIB}` placeholder in paths is expanded to `lib` on 32-bit systems and
-`lib64` on 64-bit systems. The `$ORIGIN` placeholder is expanded to the
-directory containing the requesting library.
+`lib64` on 64-bit systems; `ld.config.txt` paths also support `${SDK_VER}`,
+`${VNDK_VER}`, and `${VNDK_APEX_VER}` (`bionic/linker/linker_config.cpp`).
+Note that `$ORIGIN` (the directory containing the requesting library) is *not*
+an `ld.config.txt` placeholder -- it is substituted only when expanding
+`DT_RUNPATH` entries.
 
 ### 7.8.3 Glossary of Key Terms
 
@@ -4507,7 +4605,7 @@ directory containing the requesting library.
 | **Load Bias** | Offset between ELF virtual address and actual memory address |
 | **MTE** | Memory Tagging Extension; ARM memory safety feature |
 | **PLT** | Procedure Linkage Table; enables lazy symbol resolution |
-| **PMD** | Page Middle Directory; 2MB page table entry |
+| **PMD** | Page Middle Directory; the span one page of page table entries covers -- 2MB with 4KiB pages, 32MB with 16KiB pages |
 | **RELRO** | Relocation Read-Only; security hardening for GOT |
 | **Seccomp-BPF** | Secure Computing with Berkeley Packet Filter |
 | **SME** | Scalable Matrix Extension; ARM matrix-math feature with private ZA state |
@@ -4562,16 +4660,19 @@ or emulator (via `adb shell`) plus a host NDK toolchain.
    observe the relocation statistics and timing:
 
    ```bash
-   adb shell setenforce 0   # only on a debug build, to allow the env var
    adb shell 'LD_DEBUG=statistics,timing /system/bin/app_process64 / com.android.commands.am.Am 2>&1' | head
    ```
+
+   (LD_DEBUG is honored here because the shell is not an AT_SECURE process;
+   the linker strips such environment variables only for setuid/AT_SECURE
+   binaries.)
 
    Look for the `RELO STATS` line (absolute/relative/symbol counts and cache
    hits, from `print_linker_stats` in `bionic/linker/linker_relocate.cpp`) and
    the `LINKER TIME` line.
 
 2. **List a binary's dependencies with the built-in ldd.** The linker doubles
-   as an `ldd` (Section 7.6.6):
+   as an `ldd` (Section 7.4.27):
 
    ```bash
    adb shell linker64 --list /system/bin/surfaceflinger

@@ -69,10 +69,10 @@ graph TB
         PAYLOAD["VM Payload"]
     end
 
-    APP -->|"Java/AIDL API"| VS
-    VM_CLI -->|"Binder"| VS
-    COMPOSD -->|"Binder"| VS
-    VS --> VIRTMGR
+    APP -->|"spawns, RpcBinder"| VIRTMGR
+    VM_CLI -->|"spawns, RpcBinder"| VIRTMGR
+    COMPOSD -->|"spawns, RpcBinder"| VIRTMGR
+    VIRTMGR -->|"Binder (IVirtualizationServiceInternal)"| VS
     VIRTMGR --> CROSVM
     CROSVM -->|"KVM ioctls"| PKVM
     PKVM -->|"loads"| PVMFW
@@ -88,10 +88,14 @@ independently of the main Android platform. The APEX contains:
 - The `vm` command-line tool
 - The `VirtualizationService` and `virtmgr` daemons
 - The Microdroid kernel and system images
-- The `pvmfw.bin` firmware binary
 - The `crosvm` binary
 - Java and native client libraries
-- The `composd` compilation orchestration daemon
+
+Two closely related components live outside this APEX: the `composd`
+compilation orchestration daemon ships in the separate `com.android.compos`
+APEX, and `pvmfw.bin` is a standalone firmware image (installed at
+`system/etc/pvmfw.bin` in the product output) that the bootloader loads
+rather than anything unpacked from the APEX.
 
 To install the APEX from source:
 
@@ -246,7 +250,8 @@ extension (`1.3.6.1.4.1.11129.2.1.29.1`) that describes the VM payload:
 AttestationExtension ::= SEQUENCE {
     attestationChallenge       OCTET_STRING,
     isVmSecure                 BOOLEAN,
-    vmComponents               SEQUENCE OF VmComponent,
+    vmPayloadComponents        SEQUENCE OF VmComponent,
+    vmTenantComponents         SEQUENCE OF VmComponent,
 }
 ```
 
@@ -818,14 +823,13 @@ external/crosvm/
     cros_async/           # Async runtime (io_uring + epoll)
     devices/              # Virtual device implementations
     disk/                 # Disk image manipulation (raw, qcow)
-    hypervisor/           # Hypervisor abstraction layer
+    hypervisor/           # Hypervisor abstraction layer (KVM wrapper in src/kvm/)
     jail/                 # Minijail sandboxing helpers
     jail/seccomp/         # Per-architecture seccomp policies
     kernel_loader/        # Kernel image loading
     kvm_sys/              # KVM ioctl structures
-    kvm/                  # KVM wrapper
     net_util/             # TUN/TAP device creation
-    sync/                 # Custom Mutex/Condvar
+    common/sync/          # Custom Mutex/Condvar
     vfio_sys/             # VFIO structures for device passthrough
     vhost/                # Vhost device wrappers
     virtio_sys/           # Virtio kernel interface
@@ -1212,16 +1216,17 @@ fn main<'a>(
     untrusted_fdt: &mut Fdt,
     signed_kernel: &[u8],
     ramdisk: Option<&[u8]>,
-    current_dice_handover: Option<&[u8]>,
-    mut debug_policy: Option<&[u8]>,
-    vm_dtbo: Option<&mut [u8]>,
-    vm_ref_dt: Option<&[u8]>,
-    reserved_mem: Option<&[u8]>,
+    config: &mut Entries,
 ) -> Result<(&'a [u8], bool), RebootReason> {
     info!("pVM firmware");
     // ...
 }
 ```
+
+The individual configuration blobs -- the current DICE handover, debug policy,
+VM DTBO, VM reference DT, and reserved memory -- are no longer separate
+parameters; they are reached through the `config: &mut Entries` argument, the
+parsed set of pvmfw configuration-data entries (see section 56.9).
 
 ### 56.5.5 Verified Boot
 
@@ -1235,14 +1240,19 @@ const PUBLIC_KEY: &[u8] = include_bytes!(
 );
 ```
 
+The embedded `PUBLIC_KEY` is only the first entry in the slice of trusted
+keys: `main()` extends it with any additional keys carried in the
+`TrustedKeys` configuration entry before verification.
+
 The verified boot process:
 
 ```rust
 fn perform_verified_boot<'a>(
     signed_kernel: &[u8],
     ramdisk: Option<&[u8]>,
+    trusted_keys: &'a [&'a [u8]],
 ) -> Result<(VerifiedBootData<'a>, bool, usize), RebootReason> {
-    let verified_boot_data = verify_payload(signed_kernel, ramdisk, PUBLIC_KEY)
+    let verified_boot_data = verify_payload(signed_kernel, ramdisk, trusted_keys)
         .map_err(|e| {
             error!("Failed to verify the payload: {e}");
             RebootReason::PayloadVerificationError
@@ -1311,10 +1321,10 @@ fn salt_from_instance_id(fdt: &Fdt) -> Result<Option<Hidden>, RebootReason> {
     else {
         return Ok(None);
     };
-    let salt = Digester::sha512()
-        .digest(&[&b"InstanceId:"[..], id].concat())
-        // ...
-    Ok(Some(salt))
+    let mut ctx = Sha512::new();  // bssl_crypto::digest::Sha512
+    ctx.update(b"InstanceId:");
+    ctx.update(id);
+    Ok(Some(ctx.digest()))
 }
 ```
 
@@ -1533,13 +1543,13 @@ graph TB
         CAPS["IVmCapabilitiesService"]
     end
 
-    APP -->|"Java API"| VS
-    VM_CLI -->|"Binder"| VS
-    COMPOSD -->|"Binder"| VS
-    VS -->|"spawn"| VIRTMGR
+    APP -->|"spawn + RpcBinder"| VIRTMGR
+    VM_CLI -->|"spawn + RpcBinder"| VIRTMGR
+    COMPOSD -->|"spawn + RpcBinder"| VIRTMGR
+    VIRTMGR -->|"Binder (internal)"| VS
     VIRTMGR -->|"fork+exec"| CROSVM
-    VIRTMGR -->|"spawn"| FD_SERVER
-    VS -->|"Binder"| CAPS
+    COMPOSD -->|"spawn"| FD_SERVER
+    VIRTMGR -->|"Binder"| CAPS
     VS --> MAINT
     VS --> RPC
 ```
@@ -1685,9 +1695,10 @@ sequenceDiagram
     participant pKVM as pKVM
     participant Guest as Microdroid
 
-    App->>VS: createVm(VirtualMachineConfig)
+    App->>VM: Spawn virtmgr (libvmclient)
+    App->>VM: createVm(VirtualMachineConfig)
+    VM->>VS: IVirtualizationServiceInternal
     VS->>VS: Allocate CID, create temp directory
-    VS->>VM: Spawn virtmgr process
 
     App->>VM: start()
     VM->>VM: Prepare disk images
@@ -2003,7 +2014,8 @@ As described in `hardware/interfaces/virtualization/capabilities_service/README.
 
 ### 56.7.2 Implementation Structure
 
-The HAL has three implementations:
+The HAL has two implementations (default and noop), alongside the `aidl/`
+interface definition and `vts/` tests:
 
 ```
 hardware/interfaces/virtualization/capabilities_service/
@@ -2087,20 +2099,20 @@ Monitor Call) instructions to communicate with trusted execution environments:
 ```mermaid
 sequenceDiagram
     participant App as Android App
-    participant VS as VirtualizationService
+    participant VM as virtmgr
     participant CAPS as IVmCapabilitiesService
     participant pKVM as pKVM
     participant TEE as Vendor TEE
 
-    App->>VS: createVm(config with tee_services)
-    VS->>VS: Create VM, get vm_fd
+    App->>VM: createVm(config with tee_services)
+    VM->>VM: Create VM, get vm_fd
 
-    VS->>CAPS: grantAccessToVendorTeeServices(vm_fd, services)
+    VM->>CAPS: grantAccessToVendorTeeServices(vm_fd, services)
     CAPS->>pKVM: Configure SMC filtering for VM
 
     Note over App,TEE: VM is now running
 
-    App->>VS: (VM makes SMC call)
+    App->>VM: (VM makes SMC call)
     pKVM->>pKVM: Check SMC filter
     alt Allowed
         pKVM->>TEE: Forward SMC
@@ -2179,14 +2191,18 @@ VM type and platform capabilities.
 From `packages/modules/Virtualization/guest/pvmfw/src/rollback.rs`:
 
 ```rust
-pub fn perform_rollback_protection(
+pub fn perform_rollback_protection<'a>(
     fdt: &Fdt,
     verified_boot_data: &VerifiedBootData,
     dice_inputs: &PartialInputs,
     cdi_seal: &[u8],
+    rollback_config: Option<&RollbackConfig<'a>>,
+    extra_keys: &[&'a [u8]],
 ) -> Result<(bool, Hidden, bool), RebootReason> {
     let instance_hash = dice_inputs.instance_hash;
-    if let Some(fixed) = get_fixed_rollback_protection(verified_boot_data) {
+    if let Some(fixed) =
+        get_fixed_rollback_protection(verified_boot_data, rollback_config, extra_keys)
+    {
         perform_fixed_rollback_protection(verified_boot_data, fixed)?;
         Ok((false, instance_hash.unwrap(), false))
     } else if (should_defer_rollback_protection(fdt)?
@@ -2224,13 +2240,13 @@ graph TB
 **Fixed Rollback Protection** -- For well-known system VMs with specific identity:
 
 ```rust
-enum FixedRollbackCriterion {
-    /// Image must match the exact kernel hash.
-    KernelHash { digest: Digest },
+pub(crate) enum FixedRollbackCriterion<'a> {
+    /// Image must match one of the allowed kernel hashes.
+    KernelHash { digests: &'a [Digest] },
     /// Image must match the exact rollback index and public key.
-    RollbackIndexPublicKey { index: u64, public_key: &'static [u8] },
+    RollbackIndexPublicKey { index: u64, public_key: &'a [u8] },
     /// Reserved name not supported on this platform.
-    Reserved { name: &'static str },
+    Reserved { name: &'a str },
 }
 ```
 
@@ -2240,7 +2256,7 @@ The RKP VM uses rollback index + public key verification:
 match verified_boot_data.name.as_deref()? {
     VerifiedBootData::RKP_VM_NAME =>
         Some(FixedRollbackCriterion::RollbackIndexPublicKey {
-            index: service_vm_version::VERSION,
+            index: platform_security_patch_timestamp::TIMESTAMP,
             public_key: PUBLIC_KEY,
         }),
     VerifiedBootData::DESKTOP_TRUSTY_VM_NAME => {
@@ -2345,6 +2361,8 @@ pub struct Entries<'a> {
     pub vm_dtbo: Option<&'a mut [u8]>,         // Mutable: DTBO processing
     pub vm_ref_dt: Option<&'a [u8]>,           // Read-only
     pub reserved_mem: Option<&'a mut [u8]>,    // Mutable: will be zeroized
+    pub trusted_keys: Option<&'a [u8]>,        // Read-only
+    pub extra_rollback: Option<&'a [u8]>,      // Read-only
 }
 ```
 
@@ -2533,7 +2551,9 @@ vmbase provides:
 ### 56.11.3 Source Organization
 
 ```
-packages/modules/Virtualization/libs/libvmbase/
+packages/modules/Virtualization/libs/libvmbase/src/
+    acpi/              # ACPI table support
+    acpi.rs            # ACPI utilities
     arch/              # Architecture-specific code
     arch.rs            # Architecture abstraction
     bionic.rs          # Bionic compatibility shims
@@ -2566,16 +2586,20 @@ A minimal vmbase binary requires:
 #![no_main]
 #![no_std]
 
-use vmbase::{logger, main};
+use vmbase::main;
 use log::{info, LevelFilter};
 
 main!(main);
 
-pub fn main(arg0: u64, arg1: u64, arg2: u64, arg3: u64) {
-    logger::init(LevelFilter::Info).unwrap();
+pub fn main(argv: &[usize]) {
+    log::set_max_level(LevelFilter::Info);
     info!("Hello world");
 }
 ```
+
+The `main!` macro expects a function taking `argv: &[usize]`; vmbase's own
+entry code initialises the logger before `main` runs, so the application only
+adjusts the log level with `log::set_max_level()`.
 
 The build system uses a combination of `rust_ffi_static` and `cc_binary` rules
 with custom linker scripts:
@@ -2642,8 +2666,10 @@ fn map_data_slice<'a>(addr: usize, size: usize)
 }
 ```
 
-This separation ensures that code regions (kernel image) are mapped read-only
-while data regions (FDT, ramdisk) are mapped read-write as needed.
+This separation ensures that the kernel image and the ramdisk are mapped
+read-only via `map_data_slice()` (backed by `map_rodata`), while only the
+regions pvmfw must modify -- the FDT, and on x86_64 the boot params and setup
+data -- are mapped read-write via `map_data_slice_mut()`.
 
 ---
 
@@ -2976,7 +3002,7 @@ sequenceDiagram
     VMS->>VMM: create("debian", config)
     VMM->>CV: Launch crosvm with virtio devices
     CV-->>VMS: VM running
-    VMS->>TA: VM_LAUNCHER_SERVICE_READY
+    VMS->>TA: VmLauncherServiceCallback.onVmStart
     TA->>TA: Start DisplayActivity
     TA->>VMS: Connect display surface
     Note over TA,CV: Display output flows<br/>Guest → virtio-gpu → crosvm → Android Surface
@@ -2993,7 +3019,7 @@ sequenceDiagram
 The VM display adapts to the Android device's screen:
 
 ```kotlin
-// Source: packages/modules/Virtualization/android/TerminalApp/java/.../VmLauncherService.kt:622
+// Source: packages/modules/Virtualization/android/TerminalApp/java/.../VmLauncherService.kt:541
 data class DisplayInfo(
     val width: Int,      // Device display width
     val height: Int,     // Device display height
@@ -3018,14 +3044,19 @@ Vulkan commands from the guest to the host GPU:
 
 ```kotlin
 // Source: packages/modules/Virtualization/android/TerminalApp/java/.../VmLauncherService.kt:355
-if (isGfxstreamEnabled()) {
+if (GraphicsManager.getInstance(this).isGfxstreamEnabled()) {
     builder.setGpuConfig(
         GpuConfig.Builder()
             .setBackend("gfxstream")
+            .setRendererUseEgl(false)
+            .setRendererUseGles(false)
+            .setRendererUseGlx(false)
             .setRendererUseSurfaceless(true)
             .setRendererUseVulkan(true)
             .setContextTypes(arrayOf("gfxstream-vulkan", "gfxstream-composer"))
-            .setRendererFeatures("VulkanDisableCoherentMemoryAndEmulate:enabled")
+            .setRendererFeatures(
+                "VulkanDisableCoherentMemoryAndEmulate:enabled;VulkanAllocateHostVisibleAsUdmabuf:enabled;ExternalBlob:enabled"
+            )
             .build()
     )
 }
@@ -3034,12 +3065,13 @@ if (isGfxstreamEnabled()) {
 The GPU configuration supports these parameters:
 
 ```java
-// Source: packages/modules/Virtualization/.../VirtualMachineCustomImageConfig.java:911
+// Source: packages/modules/Virtualization/.../VirtualMachineCustomImageConfig.java:1040
 class GpuConfig {
     String backend;           // "gfxstream" or "2d"
     String[] contextTypes;    // ["gfxstream-vulkan", "gfxstream-composer"]
     boolean rendererUseEgl;
     boolean rendererUseGles;
+    boolean rendererUseGlx;
     boolean rendererUseSurfaceless;
     boolean rendererUseVulkan;
     String rendererFeatures;  // Feature flags
@@ -3106,10 +3138,8 @@ The crosvm GPU backend communicates with Android through a Binder interface:
 //         android/crosvm/ICrosvmAndroidDisplayService.aidl
 interface ICrosvmAndroidDisplayService {
     void setSurface(in Surface surface, boolean forCursor);
-    void removeSurface(boolean forCursor);
     void setCursorStream(in ParcelFileDescriptor stream);
-    void saveFrameForSurface(boolean forCursor);
-    void drawSavedFrameForSurface(boolean forCursor);
+    void removeSurface(boolean forCursor);
 }
 ```
 
@@ -3161,8 +3191,9 @@ The `InputForwarder` automatically adapts to the input device:
 
 ```kotlin
 // Source: packages/modules/Virtualization/android/TerminalApp/java/
-//         .../InputForwarder.kt:111-137
-// Detects physical keyboard → enables mouse pointer capture
+//         .../InputForwarder.kt:115-142
+// Detects physical keyboard presence → switches guest between tablet and
+//   desktop mode via sendTabletModeEvent()
 // Touch-only → touch events scaled to VM display dimensions
 // Trackpad → separate mouse input path
 ```
@@ -3184,22 +3215,21 @@ Linux VMs are configured via a JSON file that maps to
     "disks": [
         { "image": "$PAYLOAD_DIR/root_part", "writable": true, "partitions": [...] }
     ],
+    "params": "root=/dev/vda1 ds=nocloud arm64.nompam 8250.nr_uarts=4 console=ttyS0",
     "cpu_topology": "match_host",
     "memory_mib": 4096,
+    "hugepages": true,
     "network": true,
     "auto_memory_balloon": true,
     "gpu": { "backend": "2d" },
     "protected": false,
-    "debuggable": true,
-    "input": {
-        "keyboard": true,
-        "mouse": true,
-        "multi_touch": true,
-        "trackpad": true,
-        "switches": true
-    }
+    "debuggable": true
 }
 ```
+
+`VirtualMachineCustomImageConfig` also understands an `input` section (with
+`keyboard`, `mouse`, `multi_touch`, `trackpad`, and `switches` keys), though
+the shipped Debian config does not set it.
 
 #### Debian Image Building
 
@@ -3207,16 +3237,17 @@ The build system creates Debian VM images from scratch:
 
 ```
 packages/modules/Virtualization/build/debian/
-├── build.sh                 # Main build script
-├── build_custom_kernel.sh   # Custom kernel build
-├── fai/                     # FAI (Fully Automatic Installation) configs
-│   └── config/              # Debian Bookworm/Trixie profiles
-├── localdebs/               # Custom .deb packages
-├── ttyd/                    # Terminal-over-web support
-└── vm_config.json           # VM configuration template
+├── build.sh                   # Main build script (Docker wrapper)
+├── build_internal.sh          # Build steps run inside the container
+├── build_rootfs_in_chroot.sh  # Debian rootfs construction in a chroot
+├── build_cidata.sh            # cloud-init cidata ISO generation
+├── cloud-init_config/         # cloud-init configuration
+├── localdebs/                 # Custom .deb packages
+├── ttyd/                      # Terminal-over-web support
+└── vm_config.json             # VM configuration template
 ```
 
-Supported architectures: **amd64**, **arm64**, **ppc64el**, **riscv64**
+Supported architectures: **aarch64 (arm64)** and **x86_64**
 
 The resulting image includes a Linux kernel, initrd, and a writable root
 partition with Debian userspace. The VM uses `cpu_topology: "match_host"`
@@ -3227,25 +3258,30 @@ to expose the device's actual CPU topology to the guest.
 Linux VM GUI support is gated behind aconfig feature flags:
 
 ```
-// Source: packages/modules/Virtualization/build/avf_flags.aconfig:14-18
+// Source: packages/modules/Virtualization/build/avf_flags.aconfig:13-19
 flag {
     name: "terminal_gui_support"
+    is_exported: true
     namespace: "virtualization"
-    description: "Enable GUI display feature in terminal app"
+    description: "Flag for GUI support in terminal"
+    bug: "386296118"
 }
 ```
 
 ```
-// Source: packages/modules/Virtualization/build/avf_flags.aconfig:22-27
+// Source: packages/modules/Virtualization/build/avf_flags.aconfig:27-33
 flag {
     name: "terminal_storage_balloon"
+    is_exported: true
     namespace: "virtualization"
-    description: "Enable storage ballooning for sparse disk support"
+    description: "Flag for storage ballooning support in terminal"
+    bug: "382174138"
 }
 ```
 
-When `terminal_gui_support` is disabled, the TerminalApp falls back to a
-text-only terminal (ttyd over WebView) instead of the full graphical display.
+Note that `terminal_gui_support` is declared in `avf_flags.aconfig` but is not
+currently consulted anywhere in the TerminalApp code -- it gates no behavior
+yet.
 
 ### 56.15.8 Virtio GPU Capabilities
 
@@ -3411,7 +3447,7 @@ Trusted HAL authentication to fail.
 Each VM requires:
 
 - **Microdroid base** -- ~256 MiB minimum (configurable)
-- **pvmfw** -- ~256 KiB heap + 48 KiB stack
+- **pvmfw** -- ~640 KiB heap + 48 KiB stack
 - **crosvm overhead** -- Per-device process memory
 - **Page tables** -- Stage-2 tables for the guest
 
@@ -3485,7 +3521,7 @@ the Linux VM gives resources back the moment it is not in use:
   `MAX_PERCENT` in `INFLATION_STEP_PERCENT` steps via `vm.setMemoryBalloonByPercent()`,
   handing RAM back to Android.
 - **`StorageBalloonWorker`** does the analogous job for disk, gated by the
-  `terminal_storage_balloon` flag ("Enable storage ballooning for sparse disk support"); the
+  `terminal_storage_balloon` flag ("Flag for storage ballooning support in terminal"); the
   VM config also carries `auto_memory_balloon`.
 - **`IGuestAgent.trimAsync()`** -- a method on the `IGuestAgent` interface (Section 56.30; the
   interface moved to the `virtualizationcommon` package in 17 but `trimAsync` itself predates it)
@@ -3566,12 +3602,13 @@ graph LR
 The VM Payload API allows hosting Binder RPC servers over vsock:
 
 ```c
-// Host a Binder server in the VM, accessible from the host
-void AVmPayload_runVsockRpcServer(
-    AIBinder* service,
-    unsigned int port,
-    AVmPayload_VsockRpcServerCallback onReady,
-    void* param);
+// Host a Binder server in the VM, accessible from the host.
+// Never returns; on_ready is invoked once the server is up.
+__attribute__((noreturn)) void AVmPayload_runVsockRpcServer(
+    AIBinder* _Nonnull service,
+    uint32_t port,
+    void (*_Nullable on_ready)(void* _Nullable param),
+    void* _Nullable param);
 ```
 
 This enables structured RPC communication between the host app and VM payload
@@ -3923,7 +3960,7 @@ atest MicrodroidTests#protectedVmHasValidDiceChain
 atest MicrodroidHostTestCases -v
 
 # Run VTS tests for capabilities HAL
-atest VtsHalVirtualizationCapabilitiesTargetTest
+atest VtsVmCapabilitiesServiceTest
 ```
 
 ### 56.23.4 Test VM Configuration
@@ -4057,8 +4094,7 @@ vendor: Option<PathBuf>,
 #[arg(long)]
 devices: Vec<PathBuf>,
 
-// TEE services allowlist
-#[cfg(tee_services_allowlist)]
+// Secure services this VM wants to access (always compiled in)
 #[arg(long)]
 tee_services: Vec<String>,
 
@@ -4117,13 +4153,13 @@ use disk::create_composite_disk;
 use disk::QcowFile;
 
 #[cfg(feature = "gpu")]
-use devices::virtio::vhost::user::device::run_gpu_device;
+use devices::virtio::vhost_user_backend::run_gpu_device;
 
 #[cfg(feature = "net")]
-use devices::virtio::vhost::user::device::run_net_device;
+use devices::virtio::vhost_user_backend::run_net_device;
 
 #[cfg(feature = "audio")]
-use devices::virtio::vhost::user::device::run_snd_device;
+use devices::virtio::vhost_user_backend::run_snd_device;
 
 #[cfg(feature = "balloon")]
 use vm_control::BalloonControlCommand;
@@ -4841,10 +4877,10 @@ adb shell getprop ro.boot.hypervisor.vm.supported
 adb shell getprop ro.boot.hypervisor.protected_vm.supported
 adb shell getprop ro.boot.hypervisor.version
 
-# Check AVF features
-adb shell /apex/com.android.virt/bin/vm check-feature-enabled remote_attestation
-adb shell /apex/com.android.virt/bin/vm check-feature-enabled vendor_modules
-adb shell /apex/com.android.virt/bin/vm check-feature-enabled device_assignment
+# Check AVF features (names from IVirtualizationService.aidl)
+adb shell /apex/com.android.virt/bin/vm check-feature-enabled com.android.kvm.VENDOR_MODULES
+adb shell /apex/com.android.virt/bin/vm check-feature-enabled com.android.kvm.NETWORK
+adb shell /apex/com.android.virt/bin/vm check-feature-enabled com.android.kvm.LLPVM_CHANGES
 ```
 
 ### 56.31.9 Building AVF from Source

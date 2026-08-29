@@ -238,7 +238,7 @@ graph TB
         IMS_FW["InputMethod<br/>ManagerService"]
         NMS["Notification<br/>ManagerService"]
         CMS["ConnectivityService"]
-        TMS["TelephonyService"]
+        TMS["TelephonyRegistry"]
         Others["60+ more<br/>services"]
     end
 
@@ -754,7 +754,7 @@ graph TB
         subgraph Input_UI["Input & UI Services"]
             IMMS["InputMethodManagerService<br/><i>(inputmethod/) - Keyboard<br/>management</i>"]
             INPUT["InputManagerService<br/><i>(input/) - Input dispatch policy</i>"]
-            ACC["AccessibilityManagerService<br/><i>(accessibility/) - Screen readers,<br/>a11y overlays</i>"]
+            ACC["AccessibilityManagerService<br/><i>(services/accessibility/) - Screen readers,<br/>a11y overlays</i>"]
             NOTIF["NotificationManagerService<br/><i>(notification/) - Notification<br/>management and policies</i>"]
             WALL["WallpaperManagerService<br/><i>(wallpaper/) - Wallpaper<br/>rendering</i>"]
         end
@@ -763,15 +763,15 @@ graph TB
             ALARM["AlarmManagerService<br/><i>(Alarm scheduling)</i>"]
             JOB["JobSchedulerService<br/><i>(Background job management)</i>"]
             BATTERY["BatteryService<br/><i>(Battery monitoring)</i>"]
-            STORAGE["StorageManagerService<br/><i>(storage/) - Volume management,<br/>encryption</i>"]
+            STORAGE["StorageManagerService<br/><i>(server root) - Volume management,<br/>encryption</i>"]
             DEVICE["DevicePolicyManagerService<br/><i>(devicepolicy/) - Enterprise<br/>management, MDM</i>"]
         end
 
         subgraph Connectivity["Connectivity Services"]
-            CONN["ConnectivityService<br/><i>(connectivity/) - Network<br/>management</i>"]
+            CONN["ConnectivityService<br/><i>(Connectivity Mainline module) -<br/>Network management</i>"]
             WIFI["WifiService<br/><i>(Mainline module)</i>"]
             BT["BluetoothService<br/><i>(Mainline module)</i>"]
-            TELE["TelephonyService<br/><i>(telecom/) - Call management</i>"]
+            TELE["TelephonyRegistry<br/><i>(server root) - Telephony<br/>state broadcast</i>"]
             LOC["LocationManagerService<br/><i>(location/) - GPS, network<br/>location providers</i>"]
         end
 
@@ -798,7 +798,7 @@ Here is a more complete listing of the service subdirectories found in
 | Directory | Service | Responsibility |
 |---|---|---|
 | `am/` | ActivityManagerService | Process lifecycle, activity stacks, tasks, recent apps, broadcasts, content providers, OOM adjustment |
-| `wm/` | WindowManagerService | Window hierarchy, z-ordering, input focus, display layout, transitions, rotations |
+| `wm/` | WindowManagerService, ActivityTaskManagerService | Window hierarchy, z-ordering, input focus, display layout, transitions, rotations; task and activity management (ATMS, split from AMS, lives here alongside WMS) |
 | `pm/` | PackageManagerService | APK installation, uninstallation, package resolution, permission management, intent resolution |
 | `power/` | PowerManagerService | Wake locks, screen on/off, doze/idle mode, battery saver, suspend |
 | `display/` | DisplayManagerService | Display lifecycle, brightness, color mode, display policies |
@@ -806,35 +806,34 @@ Here is a more complete listing of the service subdirectories found in
 | `inputmethod/` | InputMethodManagerService | Soft keyboard management, IME switching |
 | `notification/` | NotificationManagerService | Notification posting, ranking, policies, DND |
 | `audio/` | AudioService | Volume control, audio routing, audio focus, sound effects |
-| `connectivity/` | ConnectivityService | Network management, default network selection, VPN |
+| `connectivity/` | Vpn, PacProxyService | VPN implementation (`Vpn.java`), PAC proxy, connectivity metrics; ConnectivityService itself ships from the Connectivity Mainline module (`packages/modules/Connectivity/service/src/com/android/server/ConnectivityService.java`) |
 | `location/` | LocationManagerService | Location providers, geofencing, GNSS management |
-| `telecom/` | TelecomService | Call management, call routing, in-call UI |
 | `camera/` | CameraServiceProxy | Camera access policies, multi-camera coordination |
-| `storage/` | StorageManagerService | Volume management, encryption, adoption |
+| `storage/` | DeviceStorageMonitorService, DiskStatsLoggingService | Low-storage monitoring, disk-stats logging, storage session helpers; StorageManagerService (volume management, encryption, adoption) sits at the server package root, not in this subdirectory |
 | `content/` | ContentService | Content observer notifications, sync management |
 | `accounts/` | AccountManagerService | Account management, authentication tokens |
 | `clipboard/` | ClipboardService | System clipboard |
-| `accessibility/` | AccessibilityManagerService | Accessibility event dispatch, a11y services |
-| `app/` | ActivityTaskManagerService | Task and activity management (split from AMS) |
-| `backup/` | BackupManagerService | Application backup and restore |
+| `accessibility/` | AccessibilityManagerService | Accessibility event dispatch, a11y services; the service itself lives in `frameworks/base/services/accessibility/`, this subdirectory holds only small helpers |
+| `app/` | GameManagerService | Game mode selection, game service providers, game sessions |
+| `backup/` | SystemBackupAgent | System backup agent and per-subsystem backup helpers; BackupManagerService itself (application backup and restore) lives in `frameworks/base/services/backup/` |
 | `biometrics/` | BiometricService | Fingerprint, face, iris authentication |
-| `companion/` | CompanionDeviceManagerService | Paired device management (watches, etc.) |
+| `companion/` | VirtualDeviceManagerInternal | Virtual-device companion internals only; CompanionDeviceManagerService itself (paired device management -- watches, etc.) lives in `frameworks/base/services/companion/` |
 | `dreams/` | DreamManagerService | Screen saver (Daydream) management |
 | `hdmi/` | HdmiControlService | HDMI-CEC control |
-| `incident/` | IncidentManager | Bug report / incident management |
+| `incident/` | IncidentCompanionService | User approval flow for incident reports produced by the native `incidentd` daemon |
 | `integrity/` | AppIntegrityManagerService | APK integrity verification |
 | `lights/` | LightsService | LED and backlight control |
 | `locksettings/` | LockSettingsService | PIN, pattern, password management |
 | `media/` | MediaSessionService | Media session management, transport controls |
 | `net/` | NetworkManagementService | Low-level network configuration (iptables, routing) |
 | `om/` | OverlayManagerService | Runtime Resource Overlays (theming) |
-| `people/` | PeopleService | Conversations, shortcuts, people-related features |
-| `permission/` | PermissionManagerService | Runtime permission grants and policies |
+| `people/` | PeopleServiceInternal | Declares only the local `PeopleServiceInternal` interface; PeopleService itself (conversations, shortcuts, people-related features) lives in `frameworks/base/services/people/` |
+| `permission/` | PermissionManagerLocal | Local and BPF permission helpers; PermissionManagerService itself (runtime permission grants and policies) lives under `pm/permission/` |
 | `policy/` | PhoneWindowManager | Hardware key handling, system gesture policy |
-| `role/` | RoleManagerService | Default app roles (browser, dialer, SMS) |
+| `role/` | RoleServicePlatformHelper | Platform helper for default app roles (browser, dialer, SMS); the actual RoleService ships from the Permission Mainline module (`packages/modules/Permission/service/java/com/android/role/RoleService.java`) |
 | `search/` | SearchManagerService | Search framework |
-| `security/` | SecurityStateManager | Security patch level tracking |
-| `selinux/` | SELinuxService | SELinux policy management |
+| `security/` | AttestationVerificationManagerService, FileIntegrityService, KeyChainSystemService | Key attestation verification, file integrity, KeyChain, remote key provisioning (SecurityStateManagerService sits at the server package root) |
+| `selinux/` | SelinuxAuditLogsService | Rate-limited collection and reporting of SELinux audit logs (the policy itself lives in `system/sepolicy/`) |
 | `slice/` | SliceManagerService | Slice content (app content previews) |
 | `statusbar/` | StatusBarManagerService | Status bar icon and notification shade coordination |
 | `trust/` | TrustManagerService | Trust agents (Smart Lock) |
@@ -846,7 +845,10 @@ Here is a more complete listing of the service subdirectories found in
 
 And this is not exhaustive -- there are over 100 subdirectories in total. Each
 service communicates with applications and other services via Binder IPC,
-exposing its functionality through AIDL-defined interfaces.
+exposing its functionality through AIDL-defined interfaces. Not every system
+service lives under this tree, either: TelecomService, for example, ships from
+`packages/services/Telecomm/`, with only a thin build shim under
+`frameworks/base/services/telecom/`.
 
 #### system_server Startup
 
@@ -860,7 +862,7 @@ sequenceDiagram
     participant SS as SystemServer
     participant SM as ServiceManager
 
-    Z->>SS: fork() + exec
+    Z->>SS: fork() + specialize
     SS->>SS: startBootstrapServices()
     Note over SS: Installer<br/>DeviceIdentifiersPolicyService<br/>UriGrantsManagerService<br/>ActivityManagerService<br/>PowerManagerService<br/>RecoverySystemService<br/>PackageManagerService<br/>UserManagerService<br/>OverlayManagerService<br/>SensorPrivacyService
 
@@ -982,7 +984,7 @@ AOSP also ships system content providers in `packages/providers/`:
 | `CalendarProvider` | Calendar events and reminders |
 | `TelephonyProvider` | SMS/MMS messages, carrier configuration |
 | `DownloadProvider` | System download manager |
-| `SettingsProvider` | System, secure, and global settings |
+| `SettingsProvider` | System, secure, and global settings (actually lives in `frameworks/base/packages/SettingsProvider/`, not `packages/providers/`) |
 | `BlockedNumberProvider` | Blocked phone numbers |
 | `UserDictionaryProvider` | Custom keyboard dictionary |
 | `BookmarkProvider` | Browser bookmarks (legacy) |
@@ -1081,7 +1083,7 @@ art/
     libnativebridge/  -- Native bridge (for ISA translation, e.g., ARM on x86)
     libnativeloader/  -- Library loading with namespace isolation
     odrefresh/        -- On-device refresh of boot image artifacts
-    openjdkjvm/       -- JVM TI and JNI interface implementation
+    openjdkjvm/       -- OpenJDK JVM_* interface implementation (used by libcore)
     openjdkjvmti/     -- JVMTI implementation (for debuggers/profilers)
     profman/          -- Profile manager (processes JIT profiles for PGO)
     imgdiag/          -- Boot image diagnostics
@@ -1118,12 +1120,15 @@ bionic/
         dns/          --   DNS resolver
         include/      --   C library headers
         kernel/       --   Kernel header wrappers (auto-generated from kernel)
-        malloc_debug/ --   Memory debugging tools
+        memory/       --   malloc_debug, malloc_hooks, and allocator tooling
         stdio/        --   Standard I/O implementation
-        stdlib/       --   Standard library (qsort, bsearch, etc.)
-        string/       --   String operations
         system_properties/ -- Android property system client
         upstream-*    --   Code imported from OpenBSD, FreeBSD, NetBSD
+                      --   (e.g. getopt_long, glob, drand48, regex, gdtoa;
+                      --   generic routines such as qsort/bsearch now come
+                      --   from external/llvm-libc, and optimized
+                      --   string/memory routines are per-architecture
+                      --   under arch-*/string/)
     libm/             -- Math library (sin, cos, sqrt, etc.)
     libdl/            -- Dynamic loading library (dlopen, dlsym)
     libstdc++/        -- Minimal C++ standard library (full C++ is libc++)
@@ -1206,7 +1211,7 @@ components.
 
 ```
 frameworks/
-    base/                 -- The core framework (MASSIVE: ~30M+ lines)
+    base/                 -- The core framework (MASSIVE: ~15M lines, ~10M of Java/Kotlin/C++)
         core/             --   Core API classes (android.* packages)
             java/         --     Java source for framework APIs
             jni/          --     JNI bridge implementations
@@ -1241,7 +1246,6 @@ frameworks/
             CompanionDeviceManager/ -- Companion device pairing
             FusedLocation/ --    Fused location provider
             PrintSpooler/ --     Print spooler service
-            Tethering/    --     Tethering/hotspot
             MtpDocumentsProvider/ -- MTP file access
             CredentialManager/ -- Credential management UI
         graphics/         --   Graphics classes (Canvas, Paint, etc.)
@@ -1274,12 +1278,13 @@ frameworks/
             surfaceflinger/  -- Display compositor
             inputflinger/    -- Input event processing
             sensorservice/   -- Sensor event processing
-            audiomanager/    -- Audio policy bridge
+            audiomanager/    -- Native IAudioManager binder client (for the Java AudioService)
             gpuservice/      -- GPU management
             batteryservice/  -- Battery state
-            displayservice/  -- Display service bridge
+            powermanager/    -- Power HAL client
             vibratorservice/ -- Vibrator service
-            stats/           -- StatsD
+            stats/           -- android.frameworks.stats (IStats) AIDL service
+                             --   (statsd itself is the packages/modules/StatsD module)
         libs/
             binder/          -- libbinder (Binder IPC client library)
             gui/             -- libgui (Surface, BufferQueue)
@@ -1314,7 +1319,8 @@ frameworks/
             audioflinger/  --   Audio mixer and router
             audiopolicy/   --   Audio routing policy
             mediametrics/  --   Media metrics
-            mediadrm/      --   DRM service
+        drm/              --   DRM framework and drmserver
+                          --   (libmediadrm, mediadrm)
 
     hardware/             -- Hardware abstraction framework layer
     compile/              -- Compilation tools
@@ -1368,7 +1374,7 @@ packages/
     modules/              -- Mainline modules (40+)
         Bluetooth/        --   Bluetooth stack
         Wifi/             --   WiFi stack
-        Connectivity/     --   Network connectivity
+        Connectivity/     --   Network connectivity (includes Tethering)
         Telephony/        --   Telephony
         Telecom/          --   Telecom service
         Media/            --   Media framework components
@@ -1456,12 +1462,20 @@ break.
 
 ```
 toolchain/
-    pgo-profiles/     -- Profile-Guided Optimization profiles for the toolchain
+    pgo-profiles/     -- AFDO/PGO sampling profiles for platform binaries
+        sampling/     --   Per-binary AFDO profiles (keystore2, libart, ...)
+        kernel/       --   Kernel AFDO profiles
+        scripts/      --   Profile-maintenance scripts
 ```
 
-The actual compiler binaries (Clang/LLVM, Rust) are in `prebuilts/`. This
-directory contains toolchain configuration and PGO profiles used to optimize
-the compiler's output.
+The actual compiler binaries (Clang/LLVM, Rust) are in `prebuilts/`. What this
+directory holds is profile *data*, not toolchain configuration: AFDO (AutoFDO)
+sampling profiles collected from AOSP platform components -- `sampling/keystore2.afdo`,
+`sampling/libart_arm64.afdo`, and dozens more -- plus profiles for the kernel.
+The build feeds these to Clang so that hot paths in those binaries are optimized
+against real-world execution data. `AFDO_SUMMARY.txt` lists the top functions in
+each profile, which is a quick way to see what the platform actually spends its
+time in.
 
 #### `prebuilts/` -- Prebuilt Binaries
 
@@ -1505,11 +1519,9 @@ system/
         init/             --   init process (PID 1, first userspace process)
         rootdir/          --   Root filesystem init.rc files
         fastboot/         --   Fastboot protocol implementation
-        adb/              --   Android Debug Bridge daemon (in Mainline now)
         debuggerd/        --   Crash handler (generates tombstones)
         libcutils/        --   C utility library (properties, threads, etc.)
         libutils/         --   C++ utility library (RefBase, String, Vector)
-        liblog/           --   Android logging library
         libsparse/        --   Sparse image handling
         healthd/          --   Battery health daemon
         bootstat/         --   Boot statistics
@@ -1541,7 +1553,7 @@ system/
     memory/               -- Memory management:
         lmkd/             --   Low-memory killer daemon (PSI-driven)
         libmeminfo/       --   Memory accounting library
-        mmd/              --   Memory Management Daemon (compaction/reclaim policy)
+        mmd/              --   Memory Management Daemon (ZRAM/swap configuration)
         guardian/         --   pmgd Process Memory Guardian (heap-dump triggering)
     fs/                   -- Filesystem stack (split out of system/core in 17):
         fs_mgr/           --   Filesystem manager (mount, verity, overlayfs)
@@ -1554,21 +1566,24 @@ system/
     netd/                 -- Network daemon
     vold/                 -- Volume daemon (disk encryption, mounting)
     update_engine/        -- OTA update engine
-    hardware/             -- Hardware service manager
+    hardware/             -- Stable AIDL interfaces shared between framework and
+                          --   hardware (interfaces/: keystore2, media, net, ...)
+    hwservicemanager/     -- HIDL hardware service manager
     libhidl/              -- HIDL runtime library
     libhwbinder/          -- Hardware binder library
     libvintf/             -- VINTF (Vendor Interface) manifest library
     linkerconfig/         -- Linker namespace configuration
-    logging/              -- Logd (centralized log daemon)
+    logging/              -- logd (centralized log daemon) and liblog
     extras/               -- Additional system tools
-    zygote/               -- Zygote configuration
+    zygote/               -- Rust implementation of the Zygote daemon
     ...
 ```
 
 The `system/` tree gained several top-level trees in Android 17. **`fs_mgr` moved
 out of `system/core`** into the new `system/fs/` tree. The memory-management story
-expanded with **`mmd`** (the Memory Management Daemon, which centralizes
-compaction and reclaim policy) and **`guardian`** (the `pmgd` Process Memory
+expanded with **`mmd`** (the Memory Management Daemon, which centralizes ZRAM
+and swap configuration and maintenance, moving swap management out of
+`system_server`) and **`guardian`** (the `pmgd` Process Memory
 Guardian that triggers heap dumps on memory anomalies), both alongside the
 existing `lmkd`. Android 17 also added **`system/lfi/`**, the runtime support for
 Lightweight Fault Isolation (an in-process software sandbox; see Chapter 43), and
@@ -1631,11 +1646,12 @@ device/
     generic/          -- Generic device configurations
         goldfish/     --   Emulator (QEMU-based)
         car/          --   Android Automotive emulator
-        tv/           --   Android TV emulator
+        trusty/       --   Trusty TEE emulator device config
         common/       --   Common configuration shared across generics
     google/           -- Google devices (Pixel)
         sdv/          --   Software Defined Vehicle products (added in 17;
-                      --   sdv_base, sdv_cf, sdv_core_*, sdv_ivi_arm64, etc.)
+                      --   sdv_core_arm64, sdv_core_cf, sdv_ivi_arm64,
+                      --   sdv_ivi_cf, sdv_media_arm64, sdv_media_cf, etc.)
     google_car/       -- Google Automotive
     amlogic/          -- Amlogic SoC devices
     linaro/           -- Linaro reference boards
@@ -1643,9 +1659,10 @@ device/
 ```
 
 Android 17 introduced **`device/google/sdv/`**, the set of product
-configurations (Cuttlefish-based `sdv_cf`, `arm64` variants, and the lighter
-`sdv_core_*` tiers) for the Software Defined Vehicle platform. See Chapter 62
-(Device Form Factors).
+configurations for the Software Defined Vehicle platform: the Cuttlefish-based
+`*_cf` products (`sdv_core_cf`, `sdv_ivi_cf`, `sdv_media_cf`), the `arm64`
+variants, and the lighter `sdv_core_*` tiers. See Chapter 62 (Device Form
+Factors).
 
 A device configuration directory typically contains:
 
@@ -1746,7 +1763,8 @@ test/
     vts/              -- Vendor Test Suite (tests HAL implementations)
     mlts/             -- Machine Learning Test Suite
     catbox/           -- Test suite for automotive
-    mts/              -- Mainline Test Suite
+    cts-root/         -- CTS tests requiring root
+    suite_harness/    -- Shared test-suite harness
     ...
 ```
 
@@ -1760,7 +1778,7 @@ specifications.
 platform_testing/
     tests/            -- Platform integration tests
     libraries/        -- Test utility libraries
-    build/            -- Test build configuration
+    host_runners/     -- Host-side test runners
 ```
 
 Platform-level tests that go beyond CTS, testing internal platform behavior
@@ -1830,7 +1848,8 @@ collection, and reporting.
 
 ```
 sdk/
-    build_tools/      -- SDK build tools configuration
+    apkbuilder/       -- APK packaging tool
+    templates/        -- SDK project templates
     emulator/         -- Emulator configuration
     ...
 ```
@@ -1861,23 +1880,25 @@ platform:
 
 | Category | Examples |
 |---|---|
-| **Compression** | zlib, zstd, brotli, lz4, xz |
+| **Compression** | zlib, zstd, brotli, lz4, xz-embedded |
 | **Cryptography** | boringssl (OpenSSL fork by Google), conscrypt |
 | **Database** | sqlite |
 | **Graphics** | skia (2D rendering engine), vulkan-*, angle, mesa3d |
-| **Media** | libvpx, libaom, opus, flac, tremolo, libmpeg2 |
+| **Media** | libvpx, libaom, libopus, flac, tremolo, libmpeg2 |
 | **Networking** | curl, okhttp, grpc, protobuf |
 | **Fonts** | noto-fonts, roboto-fonts |
 | **Text/Unicode** | icu, harfbuzz_ng, libxml2, expat |
-| **Languages** | kotlin-*, python3, lua |
+| **Languages** | kotlin-*, python, lua |
 | **Testing** | googletest, junit, mockito, robolectric |
-| **ML/AI** | tensorflow-lite, XNNPACK, flatbuffers |
-| **Build** | cmake, ninja, gyp |
-| **Debugging** | lldb, valgrind, strace, elfutils |
+| **ML/AI** | tensorflow (includes TFLite), XNNPACK, flatbuffers |
+| **Debugging** | strace, elfutils |
 | **Security** | selinux, pcre, libcap |
 | **Bluetooth** | aac (for A2DP), libldac |
-| **Automotive** | android_onboarding |
 | **Misc** | libjpeg-turbo, libpng, giflib, webp, freetype |
+
+Build tools like `ninja` and `cmake` are notably absent -- they ship as host
+prebuilts (`ninja` under `prebuilts/build-tools/`, `cmake` under
+`prebuilts/cmake/`) rather than as `external/` projects.
 
 Each subdirectory in `external/` has its own upstream project, license, and
 update cadence. The `tools/external_updater/` tool helps maintain these
@@ -2053,7 +2074,8 @@ infrastructure. Google's specific responsibilities include:
 **Reference Hardware:**
 
 - Pixel devices serve as the reference implementation
-- The Android Emulator (Goldfish/Cuttlefish) provides a software reference
+- The Android Emulator (goldfish/ranchu, `device/generic/goldfish`) and
+  Cuttlefish (`device/google/cuttlefish`) provide software reference devices
 - Google Tensor chips allow Google to optimize the full stack
 
 **Security:**
@@ -2208,15 +2230,15 @@ documents every major release, from Android 1.0 to Android 17.
 | **4.0** | 14 | **Ice Cream Sandwich** | Oct 2011 | Unified phone/tablet experience. Face Unlock, data usage monitoring, Android Beam (NFC sharing), new Holo theme. |
 | **4.0.3** | 15 | Ice Cream Sandwich MR1 | Dec 2011 | Social stream API, calendar provider improvements. |
 | **4.1** | 16 | **Jelly Bean** | Jul 2012 | Project Butter (triple buffering, VSYNC choreography, 60fps), expandable notifications, Google Now. |
-| **4.2** | 17 | Jelly Bean MR1 | Nov 2012 | Multi-user support (tablets), Daydream screen savers, SELinux (permissive). |
-| **4.3** | 18 | Jelly Bean MR2 | Jul 2013 | Bluetooth Low Energy, restricted profiles, OpenGL ES 3.0, SELinux (enforcing). |
-| **4.4** | 19 | **KitKat** | Oct 2013 | Project Svelte (low-memory optimization, 512MB devices), storage access framework, printing framework, ART introduced as developer option. |
-| **5.0** | 21 | **Lollipop** | Nov 2014 | **ART replaces Dalvik** (AOT compilation). Material Design. 64-bit ABI support. Project Volta (JobScheduler, battery historian). Multi-networking API. |
+| **4.2** | 17 | Jelly Bean MR1 | Nov 2012 | Multi-user support (tablets), Daydream screen savers, app verification, premium-SMS confirmation. |
+| **4.3** | 18 | Jelly Bean MR2 | Jul 2013 | Bluetooth Low Energy, restricted profiles, OpenGL ES 3.0, SELinux introduced (permissive mode). |
+| **4.4** | 19 | **KitKat** | Oct 2013 | Project Svelte (low-memory optimization, 512MB devices), storage access framework, printing framework, ART introduced as developer option, SELinux enforcing for a handful of core domains (installd, netd, vold, zygote). |
+| **5.0** | 21 | **Lollipop** | Nov 2014 | **ART replaces Dalvik** (AOT compilation). Material Design. 64-bit ABI support. Project Volta (JobScheduler, battery historian). Multi-networking API. SELinux enforcing for all domains. |
 | **5.1** | 22 | Lollipop MR1 | Mar 2015 | Multi-SIM, device protection (Factory Reset Protection), HD voice calling. |
 | **6.0** | 23 | **Marshmallow** | Oct 2015 | **Runtime permissions** (replaces install-time-only model). Doze (deep sleep), App Standby, fingerprint API, USB-C, adoptable storage. |
 | **7.0** | 24 | **Nougat** | Aug 2016 | Multi-window (split screen), direct reply notifications, Vulkan API, **JIT compiler** (ART now uses JIT+AOT hybrid). File-based encryption, seamless A/B updates. |
 | **7.1** | 25 | Nougat MR1 | Oct 2016 | App shortcuts, image keyboard, enhanced live wallpapers, Daydream VR. |
-| **8.0** | 26 | **Oreo** | Aug 2017 | **Project Treble** (framework/vendor split). Notification channels, autofill framework, PIP (Picture-in-Picture), adaptive icons, neural networks API (NNAPI). |
+| **8.0** | 26 | **Oreo** | Aug 2017 | **Project Treble** (framework/vendor split). Notification channels, autofill framework, PIP (Picture-in-Picture), adaptive icons. |
 | **8.1** | 27 | Oreo MR1 | Dec 2017 | Android Go (low-memory devices), Neural Networks API 1.0. |
 | **9** | 28 | **Pie** | Aug 2018 | Gesture navigation, adaptive battery/brightness (ML-based), display cutout API, indoor positioning (WiFi RTT). Biometric API. DNS over TLS. |
 | **10** | 29 | **Android 10** | Sep 2019 | First version with no dessert name (public). Dark theme, **scoped storage**, gesture navigation, foldable device support, 5G APIs, **Project Mainline** (APEX modules), bubbles API. |
@@ -2244,9 +2266,10 @@ timeline
         2012 (4.1)       : Project Butter
                           : VSYNC + triple buffering
                           : Choreographer framework
-        2013 (4.3)       : SELinux enforcing mode
+        2013 (4.3)       : SELinux permissive mode
                           : BLE support
         2013 (4.4)       : ART introduced (opt-in)
+                          : SELinux enforcing (partial)
                           : Project Svelte (memory)
     section Modern Era
         2014 (5.0)       : ART replaces Dalvik (AOT)
@@ -2462,7 +2485,7 @@ sequenceDiagram
         Target->>AMS: attachApplication()
     end
 
-    ATMS->>Target: scheduleLaunchActivity()
+    ATMS->>Target: scheduleTransaction()<br/>(LaunchActivityItem)
     Target->>Target: handleLaunchActivity()
     Target->>Target: Activity.onCreate()
     Target->>Target: Activity.onStart()
@@ -2607,9 +2630,9 @@ interface IActivityManager {
                       in IBinder resultTo,
                       in String resultWho,
                       int requestCode,
-                      int startFlags,
+                      int flags,
                       in ProfilerInfo profilerInfo,
-                      in Bundle bOptions);
+                      in Bundle options);
     // ... many more methods
 }
 ```
@@ -2668,7 +2691,7 @@ Play Store.
 ```mermaid
 graph TB
     subgraph APEX_Package["APEX Package (.apex)"]
-        Manifest["apex_manifest.json"]
+        Manifest["apex_manifest.pb"]
         Payload["Payload Image<br/>(ext4 filesystem)"]
         PubKey["Public Key"]
     end
@@ -2751,7 +2774,7 @@ As of Android 17, Mainline modules include:
 | **Bluetooth** | APEX | Bluetooth stack |
 | **Connectivity** | APEX | Network connectivity |
 | **Telephony** | APEX | Telephony framework |
-| **Permission Controller** | APK | Permission UI |
+| **Permission** | APEX | Runtime-permission logic and UI (ships the PermissionController and SafetyCenter apps) |
 | **Neural Networks** | APEX | NNAPI runtime |
 | **NPU Manager** | APEX | NPU/AI-accelerator management (new in 17, Chapter 53) |
 | **StatsD** | APEX | Metrics collection |
@@ -2760,7 +2783,7 @@ As of Android 17, Mainline modules include:
 | **AdServices** | APEX | Privacy-preserving advertising |
 | **UWB** | APEX | Ultra-Wideband |
 | **ADB** | APEX | Android Debug Bridge |
-| **Health Connect** | APK | Health and fitness data |
+| **Health Connect** | APEX | Health and fitness data |
 | **Scheduling** | APEX | Task scheduling |
 | **Profiling** | APEX | Performance profiling |
 | **On-Device Personalization** | APEX | ML personalization |
@@ -2781,7 +2804,9 @@ Android. It replaced Dalvik in Android 5.0.
 - Executes DEX bytecode (Dalvik Executable format)
 - Multi-tier execution: interpreter, JIT compiler, AOT compiler (`dex2oat`)
 - Profile-Guided Optimization: JIT profiles guide AOT compilation
-- Concurrent, generational garbage collector (CC: Concurrent Copying)
+- Concurrent, compacting garbage collector (CMC: Concurrent Mark-Compact, the
+  default since Android 14; it replaced the older CC / Concurrent Copying
+  collector)
 - Supports 32-bit and 64-bit architectures (ARM, ARM64, x86, x86_64, RISC-V)
 - Itself is a Mainline module (updatable via Play Store)
 
@@ -2797,7 +2822,8 @@ and `system_server` are forked.
 **Key characteristics:**
 
 - Started by `init` early in boot
-- Preloads common classes (~6,000+) and resources
+- Preloads common classes (roughly 18,000, listed in
+  `frameworks/base/config/preloaded-classes`) and resources
 - Listens on a Unix domain socket for fork requests
 - Uses `fork()` for fast process creation via copy-on-write
 - Two instances on 64-bit: `zygote64` (primary) and `zygote` (32-bit for
@@ -2807,7 +2833,8 @@ and `system_server` are forked.
 
 - Entry point: `frameworks/base/cmds/app_process/`
 - Java: `frameworks/base/core/java/com/android/internal/os/ZygoteInit.java`
-- Configuration: `system/zygote/`
+- Rust implementation of the Zygote daemon: `system/zygote/` (crates
+  `zygote-sys`, `zygote-messages`, `zygote-core`, `zygote`)
 
 ### 1.8.9 system_server
 
@@ -2969,7 +2996,7 @@ essential tools you will use daily when working with AOSP.
 | **wm** | `adb shell wm size` | Window manager commands |
 | **settings** | `adb shell settings get system font_scale` | Read/write system settings |
 | **cmd** | `adb shell cmd package list packages` | Generic service command interface |
-| **Perfetto** | `perfetto -c config.pbtxt` | System-wide tracing |
+| **Perfetto** | `perfetto --txt -c config.pbtxt -o trace` | System-wide tracing (`--txt` is required for a pbtxt config) |
 | **systrace** | `systrace.py --time=5 gfx view` | Legacy system tracing |
 | **simpleperf** | `simpleperf record -p <pid>` | CPU profiling |
 | **LLDB** | `lldb` | Native code debugger |
@@ -2981,7 +3008,7 @@ essential tools you will use daily when working with AOSP.
 |---|---|---|
 | **fastboot** | `fastboot flash system system.img` | Flash partition images |
 | **adb sideload** | `adb sideload update.zip` | Install OTA from recovery |
-| **make snod** | `make snod` | Rebuild system image without full build |
+| **m snod** | `m snod` | Rebuild system image from already-built packages |
 | **emulator** | `emulator` | QEMU-based Android Emulator |
 | **launch_cvd** | `launch_cvd` | Cuttlefish virtual device |
 | **lshal** | `adb shell lshal` | List HAL services |

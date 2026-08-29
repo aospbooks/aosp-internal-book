@@ -85,8 +85,12 @@ The architecture guarantees that:
   before allowing `addService()` or `getService()` calls.
 - **Discovery is centralized**: All services are findable through a single
   well-known Binder context.
-- **Death notifications propagate**: When a service dies, `servicemanager`
-  notifies all registered callbacks.
+- **Death is detected centrally**: When a service dies, `servicemanager`
+  removes it from the registry so subsequent lookups fail. Clients detect
+  the death through their own `IBinder::DeathRecipient` linked to the
+  service binder; the registration callback
+  (`IServiceCallback::onRegistration()`) fires only when a service
+  (re-)registers.
 
 ### 12.1.3 The Standard Service Lifecycle
 
@@ -196,7 +200,7 @@ Here are the thread pool configurations from actual source code:
 | Service | Max Threads | Rationale |
 |---------|-------------|-----------|
 | `servicemanager` | 0 (Looper-based) | Single-threaded to avoid deadlocks |
-| `surfaceflinger` | Varies (usually 4) | VSYNC-driven, limited concurrency |
+| `surfaceflinger` | 4 | VSYNC-driven, limited concurrency |
 | `gpuservice` | 4 | Moderate concurrency for stats/queries |
 | `media.codec` | 64 | Many parallel codec sessions |
 | `installd` | Default (~15) | Multiple concurrent package operations |
@@ -224,14 +228,19 @@ sequenceDiagram
     Note over Dead: Kernel closes all file descriptors
     Dead->>SM: Binder death notification (binderDied)
     SM->>SM: Remove from mNameToService
-    SM->>Clients: IServiceCallback::onServiceDeath()
+    Dead->>Clients: DeathRecipient::binderDied (per-client link)
     Init->>Init: Detect service death (waitpid)
     Init->>Init: Execute onrestart triggers
     Init->>Dead: Restart service process
     Dead->>SM: addService() (re-registration)
-    SM->>Clients: IServiceCallback::onServiceRegistration()
+    SM->>Clients: IServiceCallback::onRegistration(name, binder)
     Clients->>Dead: Re-acquire service handle
 ```
+
+Note that `servicemanager` does not push a death notification to clients --
+its `binderDied()` only erases the dead service from `mNameToService` (and
+drops that process's callbacks). Each client learns of the death through
+its own `IBinder::DeathRecipient` linked directly to the service binder.
 
 The `onrestart` directive in `.rc` files triggers cascading restarts. For
 example, when SurfaceFlinger crashes:
@@ -281,7 +290,6 @@ graph TB
     subgraph "Native Services (Standalone Processes)"
         SM[servicemanager]
         SF[SurfaceFlinger]
-        IF[InputFlinger]
         AF[AudioFlinger]
         CS[CameraService]
         MS[MediaCodecService]
@@ -300,6 +308,7 @@ graph TB
     subgraph "Framework"
         WMS[WindowManagerService]
         IMS[InputManagerService]
+        IF["InputFlinger<br/>(in system_server)"]
         PMS[PackageManagerService]
         SysSrv[system_server]
     end
@@ -319,13 +328,16 @@ graph TB
     SS --> SensorHAL
 
     WMS --> SF
-    IMS --> IF
+    IMS -->|JNI, in-process| IF
     PMS --> ID
     SysSrv --> AF
     SysSrv --> CS
 ```
 
-Each arrow represents a Binder connection. The native services sit between the
+Each arrow represents a Binder connection, with one exception: InputFlinger
+is not a standalone process but a set of native threads inside
+`system_server`, and InputManagerService reaches it through JNI in-process
+calls rather than Binder (see 12.3). The native services sit between the
 Java framework above and the HAL implementations below, translating high-level
 API calls into hardware operations.
 
@@ -342,7 +354,8 @@ synchronized to the vertical sync (VSYNC) signal.
 ### 12.2.1 Source Layout
 
 The SurfaceFlinger source tree at `frameworks/native/services/surfaceflinger/`
-is massive -- approximately 546 files organized into the following structure:
+is massive -- roughly 650 files (about 340 excluding tests and fuzzers)
+organized into the following structure:
 
 | Directory | Purpose |
 |-----------|---------|
@@ -353,7 +366,7 @@ is massive -- approximately 546 files organized into the following structure:
 | `FrameTracer/` | Per-frame performance tracing |
 | `FrontEnd/` | Layer lifecycle, snapshot building, transaction handling |
 | `Jank/` | Jank detection and reporting |
-| `PowerAdvisor/` | ADPF power hints to the kernel |
+| `PowerAdvisor/` | ADPF power hints to the Power HAL |
 | `Scheduler/` | VSYNC prediction, frame scheduling, refresh rate selection |
 | `TimeStats/` | Frame timing statistics |
 | `Tracing/` | Perfetto integration for layer and transaction tracing |
@@ -376,8 +389,13 @@ class SurfaceFlinger : public BnSurfaceComposer,
 
 SurfaceFlinger inherits from:
 
-- **`BnSurfaceComposer`**: The Binder native implementation of
-  `ISurfaceComposer`, the AIDL interface that clients use.
+- **`BnSurfaceComposer`**: The Binder native side of the legacy hand-written
+  C++ `ISurfaceComposer` interface
+  (`frameworks/native/libs/gui/include/gui/ISurfaceComposer.h`), still used
+  for hot paths such as `setTransactionState()` and buffer registration. The
+  AIDL interface `android.gui.ISurfaceComposer` is served by a separate
+  `SurfaceComposerAIDL` class (declared near the end of `SurfaceFlinger.h`)
+  that forwards its calls to SurfaceFlinger.
 - **`PriorityDumper`**: Supports `dumpsys SurfaceFlinger` with priority-based
   dump sections.
 - **`HWC2::ComposerCallback`**: Receives callbacks from the Hardware Composer
@@ -457,9 +475,14 @@ blending modes, too many layers, color space conversion).
 A **Layer** represents a rectangular region of graphical content.
 Each layer has:
 
-- A **BufferQueue** for receiving graphic buffers from the producer.
-- A **drawing state** and **current state** (double-buffered to allow
-  concurrent updates).
+- A **buffer delivered by transaction**: since the BLAST rework, the client
+  attaches each graphic buffer with `Transaction::setBuffer()`, and the layer
+  stores it in its drawing state (`mDrawingState.buffer`). The
+  producer/consumer `BufferQueue` pair lives in the app's `BLASTBufferQueue`,
+  not inside SurfaceFlinger.
+- A single **drawing state** (`mDrawingState`); pending client state is held
+  as `RequestedLayerState` in the FrontEnd, which builds immutable
+  `LayerSnapshot`s for composition.
 - Geometric properties: position, size, crop, transform, z-order.
 - Visual properties: alpha, color, blend mode, color space.
 
@@ -562,7 +585,7 @@ The critical HAL operations are:
 
 | HAL Method | Purpose |
 |-----------|---------|
-| `createLayer()` | Allocate a hardware overlay plane |
+| `createLayer()` | Create a HWC layer handle for the display (overlay-plane assignment is decided later, at `validateDisplay()` time) |
 | `setLayerBuffer()` | Assign a graphic buffer to a layer |
 | `setLayerCompositionType()` | Mark as DEVICE (overlay) or CLIENT (GPU) |
 | `validateDisplay()` | Ask HWC to evaluate the layer stack |
@@ -671,8 +694,9 @@ The `TransactionHandler` manages a queue of pending transactions. Transactions
 can be:
 
 - **Immediate**: Applied at the next VSYNC.
-- **Deferred**: Applied at a future frame number or when a barrier fence
-  signals.
+- **Deferred**: Held back until the requested `setDesiredPresentTime()`
+  is reached, or until unsignaled acquire fences and apply-token ordering
+  allow the transaction to latch.
 - **Synchronized**: Multiple transactions applied atomically across different
   surfaces.
 
@@ -745,8 +769,9 @@ interface. Key method categories include:
 
 **Layer Operations**:
 
-- `setTransactionState()` (the primary channel for all layer changes)
-- `setFrameRate()` (per-surface frame rate preference)
+- `setTransactionState()` (the primary channel for all layer changes;
+  per-surface properties such as the `Transaction::setFrameRate()` frame rate
+  preference travel inside it rather than as standalone interface methods)
 - `setGameModeFrameRateOverride()` (game-specific overrides)
 
 **Screen Capture**:
@@ -791,27 +816,46 @@ The `VsyncSchedule` class manages VRR-aware scheduling:
 - When content is actively updating, VSYNC runs at the content's frame rate.
 - When no new content arrives, the display enters idle mode and
   `onComposerHalVsyncIdle()` is called.
-- The `vrrDisplayIdle()` callback informs the scheduler to stop unnecessary
-  wakeups.
-- The `KernelIdleTimerController` manages the display's idle timer in the
-  kernel, which can put the display panel into a low-power self-refresh mode.
+- The Scheduler's own VRR idle timer notifies SurfaceFlinger through
+  `ISchedulerCallback::vrrDisplayIdle()`
+  (`frameworks/native/services/surfaceflinger/Scheduler/ISchedulerCallback.h:35`,
+  fired from `Scheduler.cpp:176`/`180`). SurfaceFlinger's override
+  (`SurfaceFlinger.cpp:8022`) forwards the state to the display's
+  refresh-rate overlay via `onVrrIdle()`; suppressing the unnecessary
+  wakeups happens inside the Scheduler's timer itself, not in this
+  callback.
+- The `KernelIdleTimerController` enum (in `RefreshRateSelector`) selects how
+  the kernel's display idle timer is driven -- via a sysprop (`Sysprop`) or
+  the HWC API (`HwcApi`) -- with `RefreshRateSelector`/SurfaceFlinger applying
+  the timeout through the chosen mechanism.
 
-The `VsyncModulator` adjusts VSYNC offsets based on workload:
+The `VsyncModulator` adjusts VSYNC offsets based on workload. It holds a
+`VsyncConfigSet` containing the three possible configurations and tracks
+which one is currently active:
 
 ```cpp
+// Scheduler/include/scheduler/VsyncConfig.h
+struct VsyncConfigSet {
+    VsyncConfig early;    // Used for early transactions, and during refresh rate change.
+    VsyncConfig earlyGpu; // Used during GPU composition.
+    VsyncConfig late;     // Default.
+    // ...
+};
+
+// Scheduler/VsyncModulator.h
 class VsyncModulator {
-    // Early offset: Used when SurfaceFlinger needs to wake up earlier
-    // (e.g., when a touch event arrives and we expect new frames)
-    VsyncConfig mEarlyConfig;
-
-    // Late offset: Used during normal operation when the workload
-    // is predictable
-    VsyncConfig mLateConfig;
-
-    // Early for GPU composition: Used when we expect GPU fallback
-    VsyncConfig mEarlyGpuConfig;
+    enum class VsyncConfigType { Early, EarlyGpu, Late };
+    // ...
+    VsyncConfigSet mVsyncConfigSet;
+    VsyncConfig mVsyncConfig{mVsyncConfigSet.late};
+    // ...
 };
 ```
+
+The `early` configuration wakes SurfaceFlinger up earlier (for example when
+a touch event arrives and new frames are expected, or during a refresh-rate
+change), `earlyGpu` applies while frames fall back to GPU composition, and
+`late` is the default for predictable workloads.
 
 ### 12.2.13 Latch Unsignaled
 
@@ -948,6 +992,23 @@ The comment in `InputManager.cpp` describes the complete pipeline:
  */
 ```
 
+This comment is stale with respect to the code just below it, though: the
+constructor builds the listener chain bottom-up, each stage wrapping the one
+constructed before it, and it places `InputFilter` after the
+`InputDeviceMetricsCollector`, not right after the
+`UnwantedInteractionBlocker`. The wiring that actually results is:
+
+```
+InputReader
+  -> UnwantedInteractionBlocker
+  -> PointerChoreographer
+  -> InputProcessor
+  -> InputDeviceMetricsCollector
+  -> InputFilter
+  -> InteractionReporter
+  -> InputDispatcher
+```
+
 The `InteractionReporter` stage (in
 `frameworks/native/services/inputflinger/InteractionReporter.cpp`, at the
 inputflinger root) is the second-to-last listener before the dispatcher. It
@@ -968,10 +1029,10 @@ graph LR
         EH[EventHub]
         IR[InputReader]
         UIB["UnwantedInteraction<br/>Blocker"]
-        IF[InputFilter]
         PC[PointerChoreographer]
         IP[InputProcessor]
         MC[MetricsCollector]
+        IF[InputFilter]
         REP[InteractionReporter]
         ID[InputDispatcher]
     end
@@ -984,11 +1045,11 @@ graph LR
     DEV --> EH
     EH --> IR
     IR --> UIB
-    UIB --> IF
-    IF --> PC
+    UIB --> PC
     PC --> IP
     IP --> MC
-    MC --> REP
+    MC --> IF
+    IF --> REP
     REP --> ID
     ID --> W1
     ID --> W2
@@ -1102,18 +1163,6 @@ Removes unintentional touches, particularly palm touches on touchscreens.
 When a large contact area is detected at the edge of the screen, the blocker
 either removes individual pointers or suppresses the entire touch sequence.
 
-**InputFilter**
-
-Applies filtering rules defined by the system. This is used for accessibility
-features (e.g., slow keys, sticky keys) and for the `InputFilter` AIDL
-interface that allows the Rust component to apply additional filtering logic:
-
-```cpp
-mInputFilter = std::make_unique<InputFilter>(
-    *mTracingStages.back(), *mInputFlingerRust,
-    inputFilterPolicy, env);
-```
-
 **PointerChoreographer**
 
 Manages pointer icons and their positions. For touchpad and mouse input, it
@@ -1131,6 +1180,18 @@ a touch gesture as a palm rejection candidate.
 Gathers usage statistics per input device: how often each device is used,
 latency measurements, and interaction patterns. This data feeds into the
 system's telemetry pipeline.
+
+**InputFilter**
+
+Applies filtering rules defined by the system. This is used for accessibility
+features (e.g., slow keys, sticky keys) and for the `InputFilter` AIDL
+interface that allows the Rust component to apply additional filtering logic:
+
+```cpp
+mInputFilter = std::make_unique<InputFilter>(
+    *mTracingStages.back(), *mInputFlingerRust,
+    inputFilterPolicy, vm);
+```
 
 ### 12.3.6 InputDispatcher: Routing to Windows
 
@@ -1171,25 +1232,26 @@ The dispatcher maintains several key data structures:
 
 ```mermaid
 sequenceDiagram
+    participant WMS as WindowManagerService
+    participant SF as SurfaceFlinger
     participant IR as InputReader
     participant ID as InputDispatcher
-    participant FR as FocusResolver
-    participant TS as TouchState
-    participant WMS as WindowManagerService
+    participant IMS as InputManagerService policy
     participant App as Application Window
 
+    WMS->>SF: Window info inside transactions
+    SF->>ID: onWindowInfosChanged(WindowInfosUpdate)
+    Note over ID: Window handles cached in DispatcherWindowInfo
     IR->>ID: notifyMotion(MotionArgs)
     ID->>ID: Enqueue in mInboundQueue
     ID->>ID: dispatchOnce() loop wakes
-    ID->>TS: findTouchedWindow(x, y)
-    TS->>WMS: Query WindowInfo hierarchy
-    TS-->>ID: Target window(s)
+    ID->>ID: findTouchedWindowAt(displayId, x, y)
     ID->>App: Send via InputChannel (socket pair)
     App-->>ID: Finished signal
     ID->>ID: Dequeue, process next
 
     Note over ID,App: If no response within 5s
-    ID->>WMS: notifyAnr(application, window)
+    ID->>IMS: notifyWindowUnresponsive(token, pid, reason)
 ```
 
 ### 12.3.7 Dispatcher Event Types
@@ -1235,7 +1297,7 @@ Key specializations include:
 - **`KeyEntry`**: Contains `deviceId`, `source`, `displayId`, `action`,
   `keyCode`, `scanCode`, `metaState`, `repeatCount`, and `flags`.
 - **`MotionEntry`**: Contains pointer data arrays (`PointerProperties`,
-  `PointerCoords`), `action`, `actionButton`, `edgeFlags`, `xPrecision`,
+  `PointerCoords`), `action`, `actionButton`, `buttonState`, `xPrecision`,
   `yPrecision`, and `classification` (e.g., palm, ambiguous).
 
 ### 12.3.8 Focus Management
@@ -1537,11 +1599,17 @@ graph TB
     AT1 -->|Shared memory| PT
     AT2 -->|Shared memory| PT
     PT --> EF
-    EF --> PP
-    PP --> AHAL
-    AHAL --> AR
-    AR -->|Shared memory| RT
+    EF --> AHAL
+    PP -.->|"Configures routing (patches)"| PT
+    PP -.->|"Configures routing (patches)"| RT
+    AHAL --> RT
+    RT -->|Shared memory| AR
 ```
+
+Note that the `PatchPanel` sits on the control path, not the data path: it
+creates and tears down audio patches that decide which HAL device each
+thread is connected to, while the mixed PCM data is written by the playback
+thread directly to its HAL output stream.
 
 AudioFlinger uses shared memory (ashmem/memfd) buffers for zero-copy audio
 data transfer between applications and the mixer threads. This is critical
@@ -1586,12 +1654,12 @@ graph TB
         EC["Effect Chains<br/>Per-thread"]
     end
 
-    MT1 --> PP
-    MT2 --> PP
-    DOT --> PP
-    OT --> PP
-    RT1 --> PP
-    RT2 --> PP
+    PP -.->|routes| MT1
+    PP -.->|routes| MT2
+    PP -.->|routes| DOT
+    PP -.->|routes| OT
+    PP -.->|routes| RT1
+    PP -.->|routes| RT2
     EC -.->|attached to| MT1
     EC -.->|attached to| MT2
 ```
@@ -1729,8 +1797,10 @@ graph TB
 
 CameraService enforces strict resource arbitration:
 
-- Only one client can use a camera device at a time (with priority-based
-  eviction for foreground vs. background apps).
+- By default only one client can use a camera device at a time (with
+  priority-based eviction for foreground vs. background apps), though
+  CameraService also supports a shared mode (the `sharedMode` flag on
+  connect) in which several clients share one camera device.
 - The `CameraServiceWatchdog` monitors HAL responses and triggers recovery
   if the HAL becomes unresponsive.
 - Camera access is subject to `android.permission.CAMERA` and AppOps checks.
@@ -1744,18 +1814,27 @@ the lower-priority client is evicted:
 ```mermaid
 graph TD
     subgraph "Priority Levels (highest to lowest)"
-        FG[Foreground Activity]
+        PERS["Persistent / System UI Process"]
+        TOP["Top Activity<br/>foreground, focused"]
+        BTOP[Bound-Top Process]
         FGS[Foreground Service]
-        TOP["Top Activity<br/>visible but not focused"]
         BG[Background Process]
         IDLE[Cached/Idle Process]
     end
 
-    FG --> FGS
-    FGS --> TOP
-    TOP --> BG
+    PERS --> TOP
+    TOP --> BTOP
+    BTOP --> FGS
+    FGS --> BG
     BG --> IDLE
 ```
+
+These levels are not a hand-rolled ladder inside CameraService: each
+client's priority is the pair `(oom priority score, process state)`
+obtained from ActivityManager via `ProcessInfoService`, where a lower
+process-state value wins. `PROCESS_STATE_TOP` and
+`PROCESS_STATE_BOUND_TOP` outrank `PROCESS_STATE_FOREGROUND_SERVICE`, and
+the persistent states outrank all of them.
 
 The eviction algorithm:
 
@@ -1779,17 +1858,22 @@ complex camera hardware:
 
 ```cpp
 class CameraServiceWatchdog {
-    // Monitors camera operations and triggers recovery if they exceed
-    // the configured timeout (typically 10-30 seconds)
+    // Monitors camera operations and aborts the process if they exceed
+    // the default timeout of 65 seconds
+    // (kMaxCycles = 650 cycles of kCycleLengthMs = 100 ms)
 };
 ```
 
 When a HAL operation takes too long:
 
-1. The watchdog logs a detailed diagnostic dump.
-2. It may trigger a camera HAL restart.
-3. All connected clients are notified of the disconnection.
-4. The HAL re-initializes and clients can reconnect.
+1. The watchdog sets an abort message naming the stuck function
+   (`android_set_abort_message()`).
+2. It sends `SIGABRT` to the camera HAL provider processes and calls
+   `abort()` on cameraserver itself, so tombstones are produced for
+   debugging.
+3. `init` restarts cameraserver, and connected clients observe binder
+   death.
+4. The HAL is re-opened when clients reconnect.
 
 ### 12.5.5 Virtual Camera
 
@@ -1964,21 +2048,29 @@ The seccomp policy files restrict system calls to the minimum set needed:
 
 ### 12.6.5 Codec2 Component Lifecycle
 
-A Codec2 component goes through a well-defined lifecycle:
+A Codec2 component goes through a well-defined lifecycle. The states
+documented in `frameworks/av/media/codec2/core/include/C2Component.h` are
+**released**, **stopped**, and **running**, with **tripped** and **error**
+as sub-states of running:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> UNLOADED
-    UNLOADED --> LOADED: create
-    LOADED --> RUNNING: start
-    RUNNING --> LOADED: stop
-    RUNNING --> RUNNING: process
-    RUNNING --> FLUSHING: flush
-    FLUSHING --> RUNNING: flush complete
-    LOADED --> UNLOADED: destroy
-    RUNNING --> ERROR: error
-    ERROR --> LOADED: reset
+    [*] --> released
+    released --> stopped: create
+    stopped --> running: start
+    running --> running
+    running --> stopped: stop
+    running --> tripped: limit tripped
+    running --> error: fatal error
+    tripped --> stopped: reset
+    error --> stopped: reset
+    stopped --> released: release
+    released --> [*]
 ```
+
+The self-transition on running is where the component does its work: it
+processes queued work items there, and there is no separate flushing state
+because `flush()` is invoked while the component stays in the running state.
 
 The component processes work items from an input queue:
 
@@ -2268,10 +2360,12 @@ The compiler filter determines the optimization level:
 | Filter | Behavior | Use Case |
 |--------|----------|----------|
 | `verify` | Only verify DEX, no compilation | First install (minimal delay) |
-| `quicken` | Verify + optimize bytecode | Quick install optimization |
 | `speed` | Full AOT compilation | Background optimization |
 | `speed-profile` | AOT only hot methods from profile | Best balance of size/speed |
 | `everything` | Compile all methods | Testing/benchmarking |
+
+(The old `quicken` filter is obsolete: ART now maps it to `verify` with a
+deprecation warning, and it performs no bytecode optimization.)
 
 The `dex2oat` process runs as a child of `installd`. It inherits restricted
 capabilities and is subject to resource limits (CPU, memory). When running
@@ -2325,16 +2419,44 @@ graph TB
     CE_APP --> SP
 ```
 
-The `freeCache()` method is called when disk space runs low. It walks
-through app cache directories and removes the least-recently-used cache
-files until the target free space is achieved. The `CacheTracker` uses
-file modification timestamps to prioritize which caches to clear first.
+The `freeCache()` method is called when disk space runs low, and it picks
+its victims per-UID rather than globally by age
+(`frameworks/native/cmds/installd/InstalldNativeService.cpp:2439`). It
+builds one `CacheTracker` per known UID, loads each tracker's stats, and
+pushes them into a priority queue ordered by `getCacheRatio()` -- how far
+that UID is over its allocated cache quota. It then bounces across the
+queue, purging items from whichever UID is currently the most over quota
+and re-checking after each step, until the target free space is reached.
+Unless the caller passes `FLAG_FREE_CACHE_V2_DEFY_QUOTA`, the loop stops
+as soon as the active tracker's ratio drops below quota, so apps living
+within their allowance are left alone. Modification timestamps still
+matter, but only *inside* a tracker: `CacheTracker::loadItems()` sorts
+that UID's items newest-first so the oldest ones are deleted first. The
+old non-quota code path is gone -- without `FLAG_FREE_CACHE_V2` the call
+now returns `"Legacy cache logic no longer supported"`.
 
-Disk quotas are managed through the `QuotaUtils` module, which interfaces
-with the Linux filesystem quota system (when supported by the filesystem):
+Disk quotas are managed through the `QuotaUtils` module
+(`frameworks/native/cmds/installd/QuotaUtils.h`), a set of free helper
+functions over the Linux filesystem quota system (when supported by the
+filesystem):
 
 ```cpp
-// From QuotaUtils.h/cpp
+// From QuotaUtils.h
+// Whether quota is supported in the device with the given uuid
+bool IsQuotaSupported(const std::string& uuid);
+
+// Get the current occupied space in bytes for a uid or -1 if fails
+int64_t GetOccupiedSpaceForUid(const std::string& uuid, uid_t uid);
+
+// Ensure a hard-limit inode quota to protect against abusive apps
+bool PrepareAppInodeQuota(const std::string& uuid, uid_t uid);
+```
+
+`InstalldNativeService` calls these helpers, exposes the capability check
+over Binder, and tracks the per-UID cache quotas itself:
+
+```cpp
+// From InstalldNativeService.h
 // Check if the given UUID volume supports disk quotas
 binder::Status isQuotaSupported(const std::optional<std::string>& volumeUuid,
         bool* _aidl_return);
@@ -2581,7 +2703,7 @@ graph TB
     subgraph "Kernel Space"
         TP[gpu_mem tracepoint]
         BPF_PROG["eBPF Program:<br/>gpu_mem_total"]
-        BPF_MAP["eBPF Map:<br/>gpu_mem_total_map<br/>key: pid<br/>value: bytes"]
+        BPF_MAP["eBPF Map:<br/>gpu_mem_total_map<br/>key: (gpu_id << 32) | pid<br/>value: bytes"]
     end
 
     subgraph "User Space"
@@ -2592,14 +2714,16 @@ graph TB
 
     TP -->|triggers| BPF_PROG
     BPF_PROG -->|updates| BPF_MAP
-    GM -->|loads program| BPF_PROG
+    GM -->|attaches program| BPF_PROG
     READ -->|reads| BPF_MAP
     READ --> DUMP
 ```
 
-The `GpuMem::initialize()` method loads the eBPF program and sets up the
-map. The `GpuMemTracer` periodically reads the map and exports the data
-to Perfetto for visualization in trace files.
+The `GpuMem::initialize()` method retrieves the eBPF program already
+pinned under `/sys/fs/bpf/`, attaches it to the `gpu_mem/gpu_mem_total`
+tracepoint, and opens the pinned map read-only (`BpfMapRO`). The
+`GpuMemTracer` registers a Perfetto data source and dumps the map's
+counters into the trace when a tracing session starts.
 
 **GPU Work Tracking (GpuWork)**:
 
@@ -2616,8 +2740,11 @@ This data is used for:
 - Performance analysis: Identifying apps with excessive GPU usage.
 - Debugging: Understanding GPU scheduling behavior.
 
-Both eBPF programs are compiled from restricted C and loaded into the
-kernel at service startup. They run with minimal overhead because they
+Both eBPF programs are compiled from restricted C and loaded and pinned
+into the kernel by `bpfloader` at boot; at service startup GpuService
+merely waits for the programs to be loaded (`waitForProgsLoaded()`),
+retrieves the pinned program from `/sys/fs/bpf/`, and attaches it to its
+tracepoint. They run with minimal overhead because they
 execute directly in kernel context, avoiding context switches.
 
 ### 12.8.5 Asynchronous Initialization
@@ -2876,10 +3003,10 @@ Each client that registers for sensor events gets a `SensorEventConnection`:
 
 ```cpp
 SensorService::SensorEventConnection::SensorEventConnection(
-        const sp<SensorService>& service, uid_t uid, String8 packageName,
-        bool isDataInjectionMode, const String16& opPackageName,
-        const String16& attributionTag)
-    : mService(service), mUid(uid), mWakeLockRefCount(0),
+        const sp<SensorService>& service, uid_t uid, pid_t pid,
+        String8 packageName, bool isDataInjectionMode,
+        const String16& opPackageName, const String16& attributionTag)
+    : mService(service), mUid(uid), mPid(pid), mWakeLockRefCount(0),
       mHasLooperCallbacks(false), mDead(false),
       mDataInjectionMode(isDataInjectionMode), mEventCache(nullptr),
       mCacheSize(0), mMaxCacheSize(0), /* ... */ {
@@ -3019,8 +3146,9 @@ latency for applications like VR that need immediate sensor data.
 
 ### 12.10.1 servicemanager: The Foundation
 
-`servicemanager` is the first native service to start (after `init` itself)
-and is the cornerstone of Android's service infrastructure. Every other
+`servicemanager` is among the first services `init` starts in the `core`
+class (after early services such as `ueventd` and `logd`) and is the
+cornerstone of Android's service infrastructure. Every other
 service -- both native and Java -- depends on it for registration and
 discovery.
 
@@ -3241,8 +3369,9 @@ binder::Status ServiceManager::addService(
     auto status = canAddService(ctx, name, &accessor);
     if (!status.isOk()) return status;
 
-    // 2. Check Binder stability
-    // Only stable services can be registered
+    // 2. VINTF declaration check (meetsDeclarationRequirements):
+    // binders marked as requiring VINTF stability must be declared
+    // in the VINTF manifest
 
     // 3. Store in the service map
     mNameToService[name] = Service {
@@ -3272,14 +3401,15 @@ binder::Status ServiceManager::addService(
 When a client calls `sm->getService("SurfaceFlinger")`:
 
 ```cpp
+// ServiceManager.cpp (simplified)
 binder::Status ServiceManager::getService(
         const std::string& name, sp<IBinder>* outBinder) {
-    *outBinder = tryGetService(name, true /* startIfNotFound */).binder;
+    *outBinder = tryGetBinder(name, true /* startIfNotFound */).service;
     return Status::ok();
 }
 
-Service ServiceManager::tryGetService(const std::string& name,
-                                       bool startIfNotFound) {
+os::ServiceWithMetadata ServiceManager::tryGetBinder(
+        const std::string& name, bool startIfNotFound) {
     auto ctx = mAccess->getCallingContext();
 
     // 1. SELinux permission check
@@ -3389,12 +3519,11 @@ binder::Status getServiceDebugInfo(
     std::vector<ServiceDebugInfo>* outReturn);
 ```
 
-Each `ServiceDebugInfo` entry includes:
+Each `ServiceDebugInfo` entry includes exactly two fields:
 
 - Service name
-- PID of the hosting process
-- Whether the service is alive
-- Whether the service has clients
+- `debugPid` -- the PID of the hosting process at the time of
+  registration (which may no longer be valid)
 
 This information is used by system monitoring tools and `bugreport` to
 provide a snapshot of the service ecosystem.
@@ -3494,8 +3623,14 @@ the service's process and could potentially hang:
 
 ```cpp
 status_t Dumpsys::startDumpThread(int dumpTypeFlags,
-        const String16& serviceName, const Vector<String16>& args) {
-    sp<IBinder> service = sm_->checkService(serviceName);
+        const String16& serviceName, const Vector<String16>& args,
+        ServiceBehavior serviceBehavior) {
+    sp<IBinder> service;
+    if (serviceBehavior == ServiceBehavior::WAIT_UNTIL_STARTED) {
+        service = sm_->waitForService(serviceName);  // the -w flag (12.11.5)
+    } else {
+        service = sm_->checkService(serviceName);
+    }
     if (service == nullptr) {
         std::cerr << "Can't find service: " << serviceName << std::endl;
         return NAME_NOT_FOUND;
@@ -3508,12 +3643,13 @@ status_t Dumpsys::startDumpThread(int dumpTypeFlags,
     unique_fd remote_end(sfd[1]);
 
     // dump blocks until completion, so spawn a thread..
-    activeThread_ = std::thread([=, remote_end{std::move(remote_end)}]() {
+    activeThread_ = std::thread([=, remote_end{std::move(remote_end)}]() mutable {
+        // ... other dump types (PID, stability, threads, clients) run
+        // first, acting as a header for the main dump output
         if (dumpTypeFlags & TYPE_DUMP) {
             status_t err = service->dump(remote_end.get(), args);
             reportDumpError(serviceName, err, "dumping");
         }
-        // ... other dump types
     });
     return OK;
 }
@@ -3644,7 +3780,11 @@ static status_t dumpClientsToFd(const sp<IBinder>& service,
 
 ### 12.10.17 Service Name Conventions
 
-Service names follow specific conventions validated by `NameUtil.h`:
+General service-name validation is done by `isValidServiceName()` in
+`ServiceManager.cpp`. Separately, `NameUtil.h` provides a `NativeName`
+parser for *native* (non-AIDL) VINTF instance names of the form
+`{package}/{instance}` -- with no dots allowed in the package part -- used
+for the `hasNativeInstance()` VINTF lookups:
 
 > `frameworks/native/cmds/servicemanager/NameUtil.h`
 
@@ -3667,9 +3807,11 @@ struct NativeName {
 };
 ```
 
-AIDL HAL services use the `{package}/{instance}` format (e.g.,
-`android.hardware.sensors.ISensors/default`), while framework services
-use simple names (e.g., `SurfaceFlinger`, `installd`, `gpu`).
+A native HAL instance name like `mapper/default` parses as `NativeName`
+(note that a dotted AIDL-style name such as
+`android.hardware.sensors.ISensors/default` is explicitly rejected by the
+`rfind('.', slash)` check above). Framework services use simple names
+(e.g., `SurfaceFlinger`, `installd`, `gpu`).
 
 ---
 
@@ -3700,14 +3842,15 @@ constexpr const char* kPccDataSuffix = "-pcc";
 
 So a package `com.example.app` gets PCC directories such as
 `/data/user/{userId}/com.example.app-pcc/` (CE) and
-`/data/user_de/{userId}/com.example.app-pcc/` (DE), owned by a separate PCC UID
-that `PackageManagerService` supplies. The PCC directories follow the same
+`/data/user_de/{userId}/com.example.app-pcc/` (DE), owned by a separate PCC
+UID derived from the PCC app id that `PackageManagerService` supplies. The
+PCC directories follow the same
 CE/DE split as ordinary app data (12.7.5), so privacy-sensitive state can be
 device-encrypted (available at Direct Boot) or credential-encrypted as needed.
 
 The `IInstalld` AIDL surface was extended to carry the PCC identity. The
-create/clear/destroy operations now thread a PCC UID and inode through their
-arguments:
+create/clear/destroy operations now thread a PCC app id and inode through
+their arguments:
 
 > `frameworks/native/cmds/installd/binder/android/os/CreateAppDataArgs.aidl`
 
@@ -3732,9 +3875,11 @@ binder::Status destroyPccData(const std::optional<std::string>& uuid,
 
 The behavior, from the implementation in `InstalldNativeService.cpp`:
 
-- **`createAppData`** creates the `{pkg}-pcc` CE and DE directories when a valid
-  PCC UID is supplied in `CreateAppDataArgs`; if the PCC UID is invalid (the
-  package no longer needs PCC), any existing `{pkg}-pcc` directories are removed.
+- **`createAppData`** creates the `{pkg}-pcc` CE and DE directories when a
+  valid PCC app id (`pccId`) is supplied in `CreateAppDataArgs` -- installd
+  derives the owning UID via `multiuser_get_uid(userId, pccId)`; if the PCC
+  app id is invalid (the package no longer needs PCC), any existing
+  `{pkg}-pcc` directories are removed.
 - **`clearAppData`** clears the contents of the `{pkg}-pcc` directories.
 - **`destroyAppData`** (and the dedicated `destroyPccData`) deletes them.
 
@@ -3775,17 +3920,18 @@ fixes to the quota and ownership handling described in 12.7.9, not new APIs.
 
 ### 12.11.2 InputFlinger: the InteractionReporter Stage
 
-The input pipeline (12.3.2) gained a new listener stage between the metrics
-collector and the dispatcher. As of 17 the `InputListener` flow in
-`frameworks/native/services/inputflinger/InputManager.cpp` reads:
+The input pipeline (12.3.2) gained a new listener stage between the
+`InputFilter` and the dispatcher. As of 17 the `InputListener` chain wired up
+by the constructor in
+`frameworks/native/services/inputflinger/InputManager.cpp` is:
 
 ```
 InputReader
   -> UnwantedInteractionBlocker
-  -> InputFilter
   -> PointerChoreographer
   -> InputProcessor
   -> InputDeviceMetricsCollector
+  -> InputFilter
   -> InteractionReporter
   -> InputDispatcher
 ```
@@ -3896,8 +4042,10 @@ rejected `registerForNotifications()` from isolated app processes outright with
 clients (such as AICore) trying to reach a lazy service. In 17,
 `servicemanager` allows isolated apps to register for notifications and instead
 defers the security decision to registration time. A new `RegistrationCallback`
-struct records the waiting client's UID, and both `tryStartService()` and
-`addService()` consult the service's `allowIsolated` flag before firing any
+struct records the waiting client's UID, and the `allowIsolated` checks live in
+the service-lookup path (`tryGetBinder()`, used by `getService()` and
+`checkService()`) and in `dispatchRegistrationCallbacks()`, which both
+`addService()` and `registerForNotifications()` go through before firing any
 callback. If a service registered with `allowIsolated=false`, notifications are
 silently dropped for isolated clients, so no restricted service is exposed. The
 net effect: an isolated client can now successfully wait for and connect to a
@@ -4068,16 +4216,22 @@ In the output, identify:
 
 ### Exercise 7: servicemanager Internals
 
+Note that `dumpsys manager` prints nothing: `ServiceManager` never
+overrides `dump()`, so it inherits `BBinder::dump()`
+(`frameworks/native/libs/binder/Binder.cpp:608`), which writes no output
+and returns `NO_ERROR`. Inspect the registry through the service list
+instead.
+
 ```bash
-# Dump servicemanager state
-adb shell dumpsys -t 5 manager
+# List every service name the registry knows about
+adb shell dumpsys -l
 
 # Check if a specific service is registered
 adb shell service check SurfaceFlinger
 adb shell service check installd
 
-# View service debug info
-adb shell cmd -w servicemanager getServiceDebugInfo
+# List all registered services
+adb shell service list
 ```
 
 ### Exercise 8: Trace a Binder Call End-to-End
@@ -4236,8 +4390,10 @@ adb shell ps -A | grep -E "surface|sensor|audio|camera|install|gpu"
 # Check the capabilities of a service process (requires root)
 adb shell su -c "cat /proc/$(pidof surfaceflinger)/status | grep Cap"
 
-# Decode the capabilities
-adb shell su -c "capsh --decode=$(cat /proc/$(pidof surfaceflinger)/status | grep CapEff | awk '{print $2}')"
+# Decode the capabilities on your workstation -- AOSP ships only
+# getcap/setcap (no capsh on the device), so pull the CapEff hex mask
+# and decode it host-side
+capsh --decode=$(adb shell su -c "grep CapEff /proc/\$(pidof surfaceflinger)/status" | awk '{print $2}')
 
 # Check SELinux context of a service
 adb shell ps -Z | grep -E "surfaceflinger|installd|sensorservice"
@@ -4388,13 +4544,13 @@ This is the capstone exercise. Trace a touch event from the kernel through
 the entire native service stack:
 
 ```bash
-# Step 1: Start tracing
-adb shell atrace -c input view gfx -b 65536 -t 10 &
+# Step 1: Start tracing (atrace writes the trace to stdout,
+# which we redirect into a file on the host)
+adb shell atrace -c input view gfx -b 65536 -t 10 > trace.txt &
 
 # Step 2: Touch the screen and interact with an app
 
-# Step 3: Pull the trace
-adb pull /sdcard/trace.html
+# Step 3: When atrace finishes, the trace is in trace.txt
 
 # Or use Perfetto for a more detailed trace:
 cat > /tmp/e2e_config.pbtx << 'EOF'
@@ -4424,8 +4580,9 @@ In the trace, follow a single touch event through:
 1. **Kernel** (`input_event`): The touchscreen driver generates the raw event.
 2. **EventHub** (`input_reader` thread): Reads from `/dev/input/eventN`.
 3. **InputReader**: Converts raw events to `NotifyMotionArgs`.
-4. **Pipeline stages**: `UnwantedInteractionBlocker` -> `InputFilter` ->
-   `PointerChoreographer` -> `InputProcessor` -> `MetricsCollector`.
+4. **Pipeline stages**: `UnwantedInteractionBlocker` ->
+   `PointerChoreographer` -> `InputProcessor` -> `MetricsCollector` ->
+   `InputFilter`.
 5. **InputDispatcher** (`input_dispatcher` thread): Routes to the target window.
 6. **Application** (`main` thread): Receives via `InputChannel` socket.
 7. **Application rendering**: The app processes the event and renders a frame.
@@ -4520,7 +4677,8 @@ daemon is repeated throughout Android:
 
 - `installd` handles filesystem operations for `PackageManagerService`.
 - `vold` handles volume mounting for `StorageManagerService`.
-- `keystore2` handles key operations for `KeychainService`.
+- `keystore2` handles key storage and cryptographic operations for the
+  framework's Keystore/KeyMint APIs, used by system services and apps alike.
 
 This minimizes the privilege of the Java system services, which are more
 complex and thus more likely to have vulnerabilities.
@@ -11215,7 +11373,7 @@ graph TD
         L[Transition request] --> M[TransitionController]
         M --> N[SurfaceAnimator creates leash]
         N --> O[SurfaceAnimationRunner]
-        O --> P[ValueAnimator on AnimationThread]
+        O --> P[ValueAnimator on SurfaceAnimationThread]
         P --> Q[SurfaceControl.Transaction]
         Q --> K
     end
@@ -11244,9 +11402,9 @@ CALLBACK_TRAVERSAL   = 3   // View measure/layout/draw
 CALLBACK_COMMIT      = 4   // Post-draw commit; reports a corrected frame start time
 ```
 
-The `CALLBACK_COMMIT` phase runs after traversal and reports a better
-estimate of the frame's true start time so that the view hierarchy can
-correct for delays caused by heavy layout work.  Note that in Android 17 the
+The `CALLBACK_COMMIT` phase runs after traversal and is documented as
+reporting a better estimate of the frame's true start time for callers that
+need to correct for delays caused by heavy layout work.  Note that in Android 17 the
 `AnimationHandler` no longer posts per-animator commit callbacks: the
 start-time commit/jank-compensation hook that earlier releases bolted onto
 each `ValueAnimator` has been removed (see §14.3.12).
@@ -11284,8 +11442,8 @@ sequenceDiagram
 | `frameworks/base/libs/hwui/` (Animator*) | Native HWUI animators | ~830 |
 | `frameworks/base/core/java/android/view/Choreographer.java` | Timing pulse | 1,741 |
 | `frameworks/base/services/core/java/com/android/server/wm/` (anim) | WM animation infrastructure | ~2,400 |
-| `frameworks/base/libs/WindowManager/Shell/src/.../transition/` | Shell transitions | ~8,200 |
-| `frameworks/base/libs/WindowManager/Shell/src/.../back/` | Predictive back | ~3,200 |
+| `frameworks/base/libs/WindowManager/Shell/src/.../transition/` | Shell transitions | ~12,100 |
+| `frameworks/base/libs/WindowManager/Shell/src/.../back/` | Predictive back | ~4,500 |
 | `frameworks/base/core/java/com/android/internal/dynamicanimation/animation/` | Physics animations | ~1,750 |
 
 ### 14.1.5 Thread Model
@@ -11299,6 +11457,7 @@ graph TD
         VA[ValueAnimator]
         OA[ObjectAnimator]
         AS[AnimatorSet]
+        VPA[ViewPropertyAnimator]
         SA[SpringAnimation]
         FA[FlingAnimation]
         LT[LayoutTransition]
@@ -11308,15 +11467,14 @@ graph TD
     subgraph "RenderThread"
         HWUI[HWUI BaseRenderNodeAnimator]
         AVD[AnimatedVectorDrawable native]
-        VPA[ViewPropertyAnimator native path]
     end
 
     subgraph "AnimationThread (system_server)"
-        SAR[SurfaceAnimationRunner]
+        AT[Animation pre-processing and finish callbacks]
     end
 
     subgraph "SurfaceAnimationThread (system_server)"
-        SATH[Surface animation handler]
+        SAR[SurfaceAnimationRunner animator loop]
     end
 
     subgraph "Shell Main Thread"
@@ -11326,11 +11484,14 @@ graph TD
     end
 ```
 
-The key insight is that **ViewPropertyAnimator** and **AnimatedVectorDrawable**
-(API 25+) run natively on the RenderThread, making them immune to UI thread
-jank.  All other Java-based animations run on the UI thread and are
-susceptible to interruption by garbage collection, heavy layout, or other
-main-thread work.
+The key insight is that only **AnimatedVectorDrawable** (API 25+) and other
+HWUI `RenderNodeAnimator`-backed animations run natively on the RenderThread,
+making them immune to UI thread jank.  **ViewPropertyAnimator**, despite its
+name, is a convenience wrapper that drives a plain `ValueAnimator` on the UI
+thread (`frameworks/base/core/java/android/view/ViewPropertyAnimator.java`,
+line 860); it and all other Java-based animations run on the UI thread and
+are susceptible to interruption by garbage collection, heavy layout, or
+other main-thread work.
 
 ### 14.1.6 Animation Coordination Across Processes
 
@@ -11594,7 +11755,7 @@ protected void applyTransformation(float interpolatedTime, Transformation t) {
 
 ### 14.2.5 AnimationSet
 
-`AnimationSet` (553 lines) groups multiple animations that play together.
+`AnimationSet` (552 lines) groups multiple animations that play together.
 Its `getTransformation()` iterates children in reverse order and calls
 `compose()` to concatenate their transformations:
 
@@ -11911,7 +12072,9 @@ View Animations are also used internally by the Window Manager for legacy
 window transitions.  `WindowAnimationSpec` wraps a view `Animation` to
 apply it to a `SurfaceControl` instead of a View.  The animation's
 `Transformation` matrix is converted into `SurfaceControl.Transaction`
-operations (setPosition, setMatrix, setAlpha).
+operations (setMatrix, setAlpha, setWindowCrop); the animation's position
+offset is baked into the matrix via `postTranslate()` rather than applied
+with a separate `setPosition` call.
 
 ### 14.2.13 Interpolator Native Bridge
 
@@ -11939,32 +12102,32 @@ UI-thread and RenderThread animations.
 | File | Lines | Purpose |
 |---|---|---|
 | `Animation.java` | 1,363 | Abstract base class |
-| `AnimationSet.java` | 553 | Group of simultaneous animations |
+| `AnimationSet.java` | 552 | Group of simultaneous animations |
 | `AnimationUtils.java` | ~400 | Loading helpers, currentAnimationTimeMillis |
-| `Transformation.java` | ~220 | Matrix + alpha container |
+| `Transformation.java` | ~278 | Matrix + alpha container |
 | `AlphaAnimation.java` | 89 | Opacity animation |
 | `TranslateAnimation.java` | 241 | Position animation |
 | `RotateAnimation.java` | 183 | Rotation animation |
 | `ScaleAnimation.java` | 289 | Scale animation |
-| `ClipRectAnimation.java` | ~80 | Clip rect animation |
-| `ExtendAnimation.java` | ~60 | Edge extension animation |
-| `TranslateXAnimation.java` | ~40 | X-only translation (optimized) |
-| `TranslateYAnimation.java` | ~40 | Y-only translation (optimized) |
+| `ClipRectAnimation.java` | ~166 | Clip rect animation |
+| `ExtendAnimation.java` | ~180 | Edge extension animation |
+| `TranslateXAnimation.java` | ~55 | X-only translation (optimized) |
+| `TranslateYAnimation.java` | ~57 | Y-only translation (optimized) |
 | `PathInterpolator.java` | 245 | Bezier/path-based interpolation |
 | `AccelerateDecelerateInterpolator.java` | 48 | Default cosine ease |
-| `AccelerateInterpolator.java` | ~55 | Power-curve acceleration |
-| `DecelerateInterpolator.java` | ~55 | Power-curve deceleration |
+| `AccelerateInterpolator.java` | ~90 | Power-curve acceleration |
+| `DecelerateInterpolator.java` | ~86 | Power-curve deceleration |
 | `LinearInterpolator.java` | ~35 | Identity function |
 | `BounceInterpolator.java` | ~50 | Bounce at end |
-| `OvershootInterpolator.java` | ~60 | Cubic overshoot |
-| `AnticipateInterpolator.java` | ~55 | Wind-up before motion |
-| `AnticipateOvershootInterpolator.java` | ~70 | Combined wind-up and overshoot |
-| `CycleInterpolator.java` | ~45 | Sine cycle |
-| `BackGestureInterpolator.java` | ~60 | Back gesture curves |
+| `OvershootInterpolator.java` | ~81 | Cubic overshoot |
+| `AnticipateInterpolator.java` | ~78 | Wind-up before motion |
+| `AnticipateOvershootInterpolator.java` | ~108 | Combined wind-up and overshoot |
+| `CycleInterpolator.java` | ~70 | Sine cycle |
+| `BackGestureInterpolator.java` | ~26 | Back gesture curves |
 | `BaseInterpolator.java` | ~30 | Abstract base for interpolators |
-| `Interpolator.java` | ~10 | Interface extending TimeInterpolator |
-| `LayoutAnimationController.java` | ~350 | Staggered child animations |
-| `GridLayoutAnimationController.java` | ~200 | Grid-based staggered animations |
+| `Interpolator.java` | ~31 | Interface extending TimeInterpolator |
+| `LayoutAnimationController.java` | ~437 | Staggered child animations |
+| `GridLayoutAnimationController.java` | ~426 | Grid-based staggered animations |
 
 ---
 
@@ -12079,7 +12242,7 @@ public static boolean areAnimatorsEnabled() {
 |---|---|---|
 | `ofInt(int...)` | IntEvaluator | Integer range |
 | `ofFloat(float...)` | FloatEvaluator | Float range |
-| `ofArgb(int...)` | ArgbEvaluator | Color interpolation in sRGB |
+| `ofArgb(int...)` | ArgbEvaluator | Color interpolation in linear space (sRGB-to-linear round trip) |
 | `ofObject(TypeEvaluator, Object...)` | Custom | Arbitrary type |
 | `ofPropertyValuesHolder(PVH...)` | Per-holder | Multi-property |
 
@@ -12120,7 +12283,10 @@ sequenceDiagram
 The core timing logic in `animateBasedOnTime()` (simplified):
 
 1. Compute `currentIterationFraction = (currentTime - startTime) / duration`
-2. Handle repeat: divide by total iterations to get `overallFraction`
+2. Handle repeat: `mOverallFraction` is the raw elapsed/duration ratio
+   clamped to `[0, mRepeatCount + 1]`; `getCurrentIterationFraction()` then
+   subtracts the integer iteration index to get the fraction within the
+   current cycle
 3. For REVERSE mode, flip fraction on odd iterations
 4. Call `animateValue(fraction)` which applies the interpolator
 
@@ -12196,9 +12362,9 @@ Built-in evaluators:
 
 | Evaluator | Operation |
 |---|---|
-| `IntEvaluator` | `startValue + (int)(fraction * (endValue - startValue))` |
+| `IntEvaluator` | `(int)(startValue + fraction * (endValue - startValue))` -- the truncation applies to the whole sum, so a decreasing animation rounds toward the start value |
 | `FloatEvaluator` | `startValue + fraction * (endValue - startValue)` |
-| `ArgbEvaluator` | Per-channel interpolation in sRGB color space |
+| `ArgbEvaluator` | Converts R/G/B from sRGB to linear (gamma 2.2), lerps each channel in linear space, converts back to sRGB; alpha is lerped directly |
 | `PointFEvaluator` | Interpolates PointF x,y independently |
 | `RectEvaluator` | Interpolates Rect left/top/right/bottom |
 | `IntArrayEvaluator` | Element-wise int array interpolation |
@@ -12206,7 +12372,7 @@ Built-in evaluators:
 
 ### 14.3.8 AnimatorSet and the Dependency Graph
 
-`AnimatorSet` (2,280 lines) organizes multiple `Animator` instances into
+`AnimatorSet` (2,272 lines) organizes multiple `Animator` instances into
 a dependency graph using a node-based internal structure:
 
 ```mermaid
@@ -12347,8 +12513,11 @@ longer posts commit callbacks for its registered animators (compare the
 `doAnimationFrame()` body in §14.3.17 -- it dispatches frame callbacks and
 nothing else).  The `CALLBACK_COMMIT` phase still exists on Choreographer
 (`frameworks/base/core/java/android/view/Choreographer.java`, line 363) and is
-used by the view hierarchy itself to report a corrected frame start time after
-traversal, but the property-animation framework no longer participates in it.
+still documented as reporting a better frame-start estimate after traversal
+(lines 353-363), but in the current tree its in-platform users are Shell
+components (`PipTaskOrganizer`, `SplashScreenExitAnimationUtils`) plus
+`ActivityThread` and `AutofillManager` -- not the view hierarchy, and no
+longer the property-animation framework.
 
 `ValueAnimator` still tracks `mLastFrameTime` (line 161) for first-frame
 detection and start-delay handling; what is gone is the explicit start-time
@@ -12358,7 +12527,9 @@ fudge that the old commit callback performed.
 
 The system-wide `sDurationScale` is modified by three settings:
 
-1. **Developer Options > Animator duration scale**: 0.5x, 1x, 2x, 5x, 10x
+1. **Developer Options > Animator duration scale**: the picker offers
+   "Animation off" (0), 0.5x, 1x, 1.5x, 2x, 5x and 10x
+   (`frameworks/base/packages/SettingsLib/res/values/arrays.xml:373-392`)
 2. **Battery Saver mode**: May set scale to 0 to disable all animations
 3. **Programmatic**: `ValueAnimator.setDurationScale()` (hidden API)
 
@@ -12393,8 +12564,12 @@ anim.start();
 // will cancel the first one automatically
 ```
 
-This is the mechanism behind `ViewPropertyAnimator`'s smooth cancellation --
-each new `view.animate().alpha()` call cancels the previous alpha animation.
+`ViewPropertyAnimator` achieves a similar effect -- each new
+`view.animate().alpha()` call cancels the previous alpha animation -- but
+through its own mechanism: since it uses a bare `ValueAnimator`, autoCancel
+never applies, so `animatePropertyBy()` walks its `mAnimatorMap` of
+`PropertyBundle` entries and cancels any running animator that touches the
+same property (`ViewPropertyAnimator.java`, lines 940-962).
 
 ### 14.3.15 StateListAnimator
 
@@ -12419,27 +12594,27 @@ for Material Design elevation changes:
 
 | File | Lines | Purpose |
 |---|---|---|
-| `Animator.java` | ~850 | Abstract base for all animators |
+| `Animator.java` | ~930 | Abstract base for all animators |
 | `ValueAnimator.java` | 1,776 | Core timing engine |
 | `ObjectAnimator.java` | 1,004 | Property-targeting animator |
 | `AnimatorSet.java` | 2,272 | Multi-animator orchestration |
 | `PropertyValuesHolder.java` | 1,729 | Per-property value management |
 | `AnimationHandler.java` | 515 | Frame callback manager |
-| `Keyframe.java` | ~300 | Single time/value pair |
+| `Keyframe.java` | ~390 | Single time/value pair |
 | `KeyframeSet.java` | ~300 | Ordered keyframe collection |
 | `FloatKeyframeSet.java` | ~150 | Optimized float keyframes |
 | `IntKeyframeSet.java` | ~150 | Optimized int keyframes |
-| `PathKeyframes.java` | ~200 | Path-based keyframes |
-| `ArgbEvaluator.java` | ~90 | Color interpolation |
+| `PathKeyframes.java` | ~250 | Path-based keyframes |
+| `ArgbEvaluator.java` | ~150 | Color interpolation |
 | `FloatEvaluator.java` | ~40 | Float interpolation |
 | `IntEvaluator.java` | ~40 | Integer interpolation |
 | `PointFEvaluator.java` | ~60 | PointF interpolation |
 | `RectEvaluator.java` | ~70 | Rect interpolation |
-| `LayoutTransition.java` | ~1,000 | ViewGroup layout change animation |
-| `AnimatorInflater.java` | ~700 | XML resource loading |
+| `LayoutTransition.java` | ~1,545 | ViewGroup layout change animation |
+| `AnimatorInflater.java` | ~1,085 | XML resource loading |
 | `TimeAnimator.java` | ~100 | Raw frame timing |
 | `RevealAnimator.java` | ~60 | Circular reveal support |
-| `StateListAnimator.java` | ~250 | State-driven animations |
+| `StateListAnimator.java` | ~330 | State-driven animations |
 | `TypeConverter.java` | ~60 | Type conversion support |
 | `BidirectionalTypeConverter.java` | ~40 | Two-way conversion |
 
@@ -12645,11 +12820,11 @@ graph TD
 ### 14.4.3 Transition Base Class
 
 `Transition.java` (2,451 lines) is the abstract base.  Each subclass must
-implement three methods:
+implement two abstract methods and normally overrides a third:
 
-1. `captureStartValues(TransitionValues)` -- Record property values before the scene change
-2. `captureEndValues(TransitionValues)` -- Record property values after the scene change
-3. `createAnimator(ViewGroup, TransitionValues, TransitionValues)` -- Return an `Animator` for the detected change
+1. `captureStartValues(TransitionValues)` (abstract) -- Record property values before the scene change
+2. `captureEndValues(TransitionValues)` (abstract) -- Record property values after the scene change
+3. `createAnimator(ViewGroup, TransitionValues, TransitionValues)` -- Return an `Animator` for the detected change; this one is a concrete method whose default body returns null (line 476), so a transition that overrides nothing simply animates nothing
 
 `TransitionValues` is a simple holder:
 
@@ -12668,7 +12843,7 @@ classDiagram
         <<abstract>>
         +captureStartValues(TransitionValues)*
         +captureEndValues(TransitionValues)*
-        +createAnimator(ViewGroup, TransitionValues, TransitionValues)* Animator
+        +createAnimator(ViewGroup, TransitionValues, TransitionValues) Animator
         +setDuration(long) Transition
         +setInterpolator(TimeInterpolator) Transition
         +addTarget(View) Transition
@@ -13012,11 +13187,17 @@ graph LR
 | Animation | Default | Purpose |
 |---|---|---|
 | Exit Transition | null (no animation) | Non-shared views in calling activity |
-| Enter Transition | null | Non-shared views in called activity |
-| Shared Element Exit | `ChangeTransform` + `ChangeBounds` | Shared elements leaving |
-| Shared Element Enter | `ChangeTransform` + `ChangeBounds` | Shared elements arriving |
+| Enter Transition | `@android:transition/fade` (`Fade`) | Non-shared views in called activity |
+| Shared Element Exit | `@android:transition/move` (`ChangeBounds` + `ChangeTransform` + `ChangeClipBounds` + `ChangeImageTransform`) | Shared elements leaving |
+| Shared Element Enter | `@android:transition/move` (`ChangeBounds` + `ChangeTransform` + `ChangeClipBounds` + `ChangeImageTransform`) | Shared elements arriving |
 | Return Transition | Reverse of Enter | Going back |
 | Reenter Transition | Reverse of Exit | Returning to calling |
+
+The Material themes
+(`frameworks/base/core/res/res/values/themes_material.xml`) set
+`windowEnterTransition` to `@transition/fade` but leave
+`windowExitTransition` unset, which is why the effective defaults above
+are asymmetric.
 
 ### 14.5.3 Shared Element Coordination
 
@@ -13090,8 +13271,10 @@ shared element state before and after the fragment swap.
 
 `ActivityOptions` defines numerous animation styles through constants
 (`frameworks/base/core/java/android/app/ActivityOptions.java`, lines 506-530).
-The internal values are sparse -- several intermediate slots are now unused --
-so do not assume they are contiguous:
+The table below lists a subset; the gaps in the value column correspond to
+constants the table omits (`ANIM_DEFAULT` = 6, `ANIM_LAUNCH_TASK_BEHIND` = 7,
+`ANIM_CUSTOM_IN_PLACE` = 10, `ANIM_REMOTE_ANIMATION` = 13) -- only values
+8 and 9 are genuinely unused:
 
 | Constant | Value | Description |
 |---|---|---|
@@ -13122,19 +13305,20 @@ classDiagram
         #ArrayList~String~ mAllSharedElementNames
         #ArrayList~View~ mSharedElements
         #ArrayList~String~ mSharedElementNames
-        #ViewGroup mDecor
+        -Window mWindow
         #boolean mIsReturning
+        +getDecor() ViewGroup
         +getAcceptedNames() ArrayList
         +getMappedNames() ArrayList
     }
     class ExitTransitionCoordinator {
         +startExit()
-        +startExit(int, Intent)
-        +stop()
+        +startExit(Activity)
+        +stop(Activity)
     }
     class EnterTransitionCoordinator {
         +viewsReady(ArrayMap)
-        +onTriggerEnter()
+        +forceViewsToAppear()
     }
 
     ActivityTransitionCoordinator <|-- ExitTransitionCoordinator
@@ -13205,7 +13389,7 @@ Key source files in `frameworks/base/services/core/java/com/android/server/wm/`:
 | `WindowAnimationSpec.java` | ~300 | Wraps legacy `Animation` for surfaces |
 | `LocalAnimationAdapter.java` | ~180 | Adapter for local animations |
 | `AnimationAdapter.java` | ~100 | Interface for animation implementations |
-| `WindowStateAnimator.java` | ~800 | Per-window animation state |
+| `WindowStateAnimator.java` | ~650 | Per-window animation state |
 
 ### 14.6.2 SurfaceAnimator and the Leash Pattern
 
@@ -13377,13 +13561,14 @@ graph TD
         WMS[WindowManagerService] --> WA[WindowAnimator]
         WA --> SA[SurfaceAnimator]
         SA --> |creates leash| SAR[SurfaceAnimationRunner]
-        SAR --> |ValueAnimator on AnimationThread| AT[AnimationThread]
-        AT --> |SurfaceControl.Transaction| SF[SurfaceFlinger]
+        SAR --> |"ValueAnimator (SfValueAnimator)"| SAT[SurfaceAnimationThread]
+        SAT --> |SurfaceControl.Transaction| SF[SurfaceFlinger]
+        SAR -.-> |pre-processing, finish callbacks| AT[AnimationThread]
     end
 
     subgraph "Animation Types"
         LA[LocalAnimationAdapter] --> |WindowAnimationSpec| SAR
-        RA[RemoteAnimationAdapter] --> |cross-process| SAR
+        RA[RemoteAnimationAdapter] --> |cross-process| RP["Remote runner<br/>(app or Shell process)"]
     end
 ```
 
@@ -13414,7 +13599,7 @@ enabling more sophisticated and customizable transitions.
 
 Source directory:
 `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/`
-(19 files, ~8,200 lines)
+(33 files, ~12,100 lines, plus a `tracing/` subpackage)
 
 ### 14.7.2 Architecture
 
@@ -13590,21 +13775,21 @@ transactions tied to gesture progress.
 
 Source directory:
 `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/back/`
-(14 files, ~3,200 lines)
+(14 files, ~4,500 lines)
 
 ### 14.8.2 Architecture
 
 ```mermaid
 sequenceDiagram
     participant User as User Gesture
-    participant ISM as InputManager
+    participant EBG as SystemUI EdgeBackGestureHandler
     participant BAC as BackAnimationController
     participant Runner as BackAnimationRunner
     participant Anim as CrossActivityBackAnimation
     participant SF as SurfaceFlinger
 
-    User->>ISM: Edge swipe from left/right
-    ISM->>BAC: onBackMotionEvent(progress)
+    User->>EBG: Edge swipe from left/right
+    EBG->>BAC: onBackMotion(touchX, touchY, action, swipeEdge)
     BAC->>BAC: determine back destination
     BAC->>Runner: onBackStarted(BackEvent)
     loop gesture in progress
@@ -13665,17 +13850,20 @@ of progress, applying them through `SurfaceControl.Transaction` each frame.
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
-    Idle --> GestureStarted: onBackMotionEvent DOWN
+    Idle --> GestureStarted: onBackMotion DOWN
     GestureStarted --> Progressing: onBackProgressed
-    Progressing --> Progressing: onBackProgressed continuous
+    Progressing --> Progressing
     Progressing --> Committed: onBackInvoked
     Progressing --> Cancelled: onBackCancelled
-    Committed --> PlayingClose: play close animation
-    Cancelled --> PlayingCancel: play cancel animation
+    Committed --> PlayingClose: close anim
+    Cancelled --> PlayingCancel: cancel anim
     PlayingClose --> TransitionFinished: animation done
     PlayingCancel --> Idle: animation done
     TransitionFinished --> Idle: cleanup
 ```
+
+The self-transition on `Progressing` is the continuous stream of
+`onBackProgressed` callbacks delivered as the user drags.
 
 ### 14.8.7 Progress-to-Transform Mapping
 
@@ -13685,9 +13873,9 @@ using piecewise functions.  For the default cross-activity animation:
 | Progress | Scale | Translation X | Corner Radius |
 |---|---|---|---|
 | 0.0 | 1.0 | 0 | 0 |
-| 0.3 | 0.9 | proportional | increasing |
-| 0.6 | 0.85 | proportional | increasing |
-| 1.0 | 0.8 | max | max |
+| 0.3 | ~0.95 | proportional | increasing |
+| 0.6 | ~0.9 | proportional | increasing |
+| 1.0 | 0.85 | max | max |
 
 The animation curves are designed to:
 
@@ -13709,10 +13897,12 @@ The default cross-activity back animation applies these transforms as
 functions of gesture progress and finger position:
 
 ```
-// Simplified transform calculations
+// Simplified transform calculations, using the real constants from
+// CrossActivityBackAnimation.kt:
+//   MAX_SCALE = 0.85f, INITIAL_ENTERING_SCALE = 0.95f
 
-// Scale shrinks the departing activity
-float scale = lerp(1.0f, 0.9f, progress);
+// Scale shrinks the departing activity toward MAX_SCALE
+float scale = lerp(1.0f, MAX_SCALE /* 0.85f */, progress);
 transaction.setScale(leash, scale, scale);
 
 // Translation follows the finger horizontally
@@ -13726,8 +13916,10 @@ transaction.setPosition(leash, translationX, 0);
 float cornerRadius = lerp(0, displayCornerRadius, progress);
 transaction.setCornerRadius(leash, cornerRadius);
 
-// The entering activity peeks from behind
-float enterScale = lerp(0.85f, 1.0f, progress);
+// The entering activity peeks from behind, scaling in sync with
+// the closing target from INITIAL_ENTERING_SCALE toward MAX_SCALE
+float enterScale = lerp(INITIAL_ENTERING_SCALE /* 0.95f */,
+        MAX_SCALE /* 0.85f */, progress);
 transaction.setScale(enterLeash, enterScale, enterScale);
 ```
 
@@ -13735,7 +13927,7 @@ The visual effect is:
 
 1. The current activity shrinks slightly and slides in the swipe direction
 2. Its corners round off to match the display corners
-3. The previous activity peeks from behind, starting small and growing
+3. The previous activity peeks from behind, scaling in sync with the departing one
 
 ### 14.8.10 ProgressVelocityTracker
 
@@ -13910,12 +14102,13 @@ per-frame evaluation.  The initialization depends on the damping regime:
 **Under-damped** (damping ratio < 1):
 ```
 dampedFreq = naturalFreq * sqrt(1 - dampingRatio^2)
-gammaPlus  = -dampingRatio * naturalFreq + dampedFreq * i
-gammaMinus = -dampingRatio * naturalFreq - dampedFreq * i
 ```
 
 The position and velocity at time `t` are computed analytically using
-the exact solution to the damped harmonic oscillator differential equation.
+the exact solution to the damped harmonic oscillator differential equation;
+for the under-damped case only `dampedFreq` is pre-computed, and the
+solution uses the real-valued sin/cos form (no complex gammas appear in
+the code).
 
 **Critically damped** (damping ratio = 1):
 ```
@@ -13933,10 +14126,13 @@ The animation checks for convergence each frame by comparing both position
 and velocity against thresholds:
 
 ```
-valueThreshold  = based on the minimum visible change
+valueThreshold    = minVisibleChange * THRESHOLD_MULTIPLIER (0.75)
 velocityThreshold = valueThreshold * VELOCITY_THRESHOLD_MULTIPLIER (62.5)
 ```
 
+`DynamicAnimation.THRESHOLD_MULTIPLIER` is 0.75
+(`frameworks/base/core/java/com/android/internal/dynamicanimation/animation/DynamicAnimation.java:293`),
+so the value threshold sits a little under the minimum visible change.
 The `VELOCITY_THRESHOLD_MULTIPLIER` (1000.0 / 16.0 = 62.5) means that if
 it would take more than one frame (16ms) to move by the value threshold at
 the current velocity, the spring is considered at rest.
@@ -13983,8 +14179,16 @@ The friction coefficient determines how quickly the fling decelerates:
 | 3.0 | High friction | Quick stop |
 | 10.0 | Very high friction | Near-instant stop |
 
-The animation stops when velocity drops below the minimum visible change
-threshold (approximately 1 pixel/second for position properties).
+The animation stops when the absolute velocity falls below the velocity
+threshold.  `FlingAnimation` derives that from the value threshold that
+`DynamicAnimation` hands it -- `minVisibleChange * 0.75`
+(`THRESHOLD_MULTIPLIER`) -- and multiplies it by the
+`VELOCITY_THRESHOLD_MULTIPLIER` of 1000/16 = 62.5
+(`frameworks/base/core/java/com/android/internal/dynamicanimation/animation/FlingAnimation.java:170,199`).
+The threshold is therefore `minVisibleChange * 46.875` -- roughly 47
+pixels/second for position properties with the default 1-pixel minimum
+visible change, i.e. the velocity at which it would take more than one
+16 ms frame to cover the value threshold.
 
 FlingAnimation also supports min/max bounds.  When the value hits a bound,
 the animation stops immediately (no bounce).  To add bounce behavior,
@@ -14074,7 +14278,7 @@ The `Force` interface abstracts the physics model, enabling custom force
 implementations:
 
 ```java
-public interface Force {
+interface Force {
     /**
      * Returns the acceleration at the given position and velocity.
      * @param position current position
@@ -14093,9 +14297,11 @@ public interface Force {
 }
 ```
 
-`SpringForce` implements this interface to provide spring dynamics.
-Developers can implement custom forces (e.g., gravity, magnetic attraction)
-by implementing this interface and using it with `DynamicAnimation`.
+Note that `Force` is deliberately package-private -- its source comment
+reads "Hide this for now, in case we want to change the API"
+(`frameworks/base/core/java/com/android/internal/dynamicanimation/animation/Force.java`).
+It is therefore not an app-facing extension point: only the in-tree
+`SpringForce` and `FlingAnimation.DragForce` implement it.
 
 ### 14.9.11 Scroller and OverScroller Physics
 
@@ -14103,7 +14309,8 @@ While not part of the `DynamicAnimation` package, `Scroller` and
 `OverScroller` implement the fling physics used by all standard scrollable
 views.
 
-`OverScroller` extends `Scroller` with elastic overscroll behavior at
+`OverScroller` is a separate class (not a subclass of `Scroller`) that
+offers a Scroller-like API plus elastic overscroll behavior at
 edges.  The overscroll effect uses a spring-like model where the
 displacement is proportional to the scroll velocity at the edge:
 
@@ -14159,7 +14366,7 @@ Source files in `frameworks/base/libs/hwui/`:
 | `AnimatorManager.cpp` | ~207 | Per-RenderNode animation management |
 | `AnimatorManager.h` | ~80 | Manager declarations |
 | `Interpolator.cpp` | ~160 | Native interpolator implementations |
-| `AnimationContext.cpp` | ~100 | Frame timing context |
+| `AnimationContext.cpp` | ~140 | Frame timing context |
 | `PropertyValuesAnimatorSet.cpp` | ~200 | Multi-property animation set |
 
 ### 14.10.2 BaseRenderNodeAnimator
@@ -14281,12 +14488,20 @@ current frame.
 ### 14.10.6 Java-Side JNI Bridge
 
 On the Java side, `RenderNodeAnimator` (approximately 513 lines) wraps native
-HWUI animators.  View property animations (translationX, alpha, etc.) that
-target a `RenderNode` property use this path for maximum performance:
+HWUI animators.  Its clients are platform components that animate
+`RenderNode` properties directly -- `RippleDrawable` (via `RippleForeground`
+and `RippleAnimationSession`) and the circular-reveal `RevealAnimator` --
+not `view.animate()`, which runs a plain UI-thread `ValueAnimator` that
+calls View setters each frame.  (`AnimatedVectorDrawable` also animates on
+the RenderThread, but by a different route: its `VectorDrawableAnimatorRT`
+builds a native `PropertyValuesAnimatorSet` via `nCreateAnimatorSet()` and
+registers it on the target `RenderNode` with
+`registerVectorDrawableAnimator()`, bypassing `RenderNodeAnimator`
+entirely.)
 
 ```java
-// When you call view.animate().translationX(100):
-// 1. ViewPropertyAnimator creates a RenderNodeAnimator
+// When a ripple (or reveal) animation starts:
+// 1. The client creates a RenderNodeAnimator for a RenderNode property
 // 2. RenderNodeAnimator calls nStart() via JNI
 // 3. Native BaseRenderNodeAnimator starts on RenderThread
 // 4. Each RenderThread frame: native animate() updates RenderNode
@@ -14357,8 +14572,10 @@ The native interpolator infrastructure mirrors Java exactly.  In
 
 The `LUTInterpolator` is a special native interpolator used when a Java
 interpolator does not have a native equivalent.  The Java interpolator is
-sampled at regular intervals during `pushStaging()`, and the resulting
-lookup table is used for RenderThread animation.
+sampled on the UI thread by `FallbackLUTInterpolator.createLUT()` when the
+interpolator is applied to a `RenderNodeAnimator` (up to 300 samples, one
+per frame interval); only the resulting native lookup-table pointer is
+handed to the RenderThread.
 
 ### 14.10.10 PropertyValuesAnimatorSet (Native)
 
@@ -14377,16 +14594,19 @@ Java callbacks.
 // to calculate elapsed time and fraction
 class AnimationContext {
     nsecs_t frameTimeMs();
-    void startFrame();
+    virtual void startFrame(TreeInfo::TraversalMode mode);
     void runRemainingAnimations(TreeInfo& info);
-    ...
+    // ...
 };
 ```
 
-The frame time comes from the RenderThread's VSYNC timestamp, which may
-differ slightly from the UI thread's Choreographer timestamp.  This is
-intentional -- RenderThread processes the frame after the UI thread has
-finished, so it uses a slightly later timestamp.
+The frame time is the same VSYNC timestamp the UI thread's Choreographer
+recorded for the frame: `DrawFrameTask::syncFrameState()` reads it from
+the frame info and pushes it into the RenderThread's `TimeLord`, and
+`AnimationContext::startFrame()` reads it back via `latestVsync()`.  Only
+for RenderThread-driven frames -- when the UI thread is not producing
+frames, as with a running `RenderNodeAnimator` after the UI thread goes
+idle -- does the RenderThread feed `TimeLord` its own VSYNC timestamp.
 
 ### 14.10.12 HWUI Animation and Display Lists
 
@@ -14413,19 +14633,20 @@ graph TD
 
 Because animations modify properties but not the display list structure,
 the RenderThread can animate smoothly even if the UI thread never runs.
-This is why `view.animate().alpha(0.5f)` continues smoothly during GC
-pauses, while a custom `ValueAnimator` that calls `invalidate()` would
-stutter.
+This is why a `RippleDrawable` ripple or an `AnimatedVectorDrawable`
+(API 25+) continues smoothly during GC pauses, while a UI-thread animator
+-- including `view.animate()`, which is backed by a plain `ValueAnimator`
+-- would stutter.
 
 ### 14.10.13 HWUI vs Java Animation Performance
 
-| Aspect | Java (ValueAnimator) | Native (HWUI) |
+| Aspect | Java (ValueAnimator / ObjectAnimator) | Native (HWUI) |
 |---|---|---|
 | Thread | UI Thread | RenderThread |
 | Survives UI jank | No | Yes |
 | Property types | Any Java property | RenderNode properties only |
 | Flexibility | High (custom evaluators) | Limited (float properties) |
-| Overhead | Reflection, boxing | Direct native property set |
+| Overhead | Boxing of animated values; reflection only for name-based `ObjectAnimator` property lookup | Direct native property set |
 | Use case | Complex, multi-object | Simple view property animations |
 
 ---
@@ -14519,7 +14740,7 @@ sequenceDiagram
         AVDS->>AVDS: Compute interpolated values
         AVDS->>VD: Update path data / colors / transforms
         VD->>RN: Invalidate RenderNode
-        RN->>RT: Re-record display list
+        RN->>RT: Redraw vector tree to cache texture
         RT->>RT: Draw frame
     end
     AVDS->>AVD: Animation complete callback
@@ -14578,7 +14799,11 @@ and progress indicators.
 | Multiple AVDs | Each adds UI load | Independent of UI |
 | During GC | Stutters | Smooth |
 | During layout | Stutters | Smooth |
-| Complexity limit | ~100 path nodes | ~500 path nodes |
+
+AOSP imposes no path-node cap on either path; the RenderThread route only
+changes which thread evaluates the animators.  Heavier path data still
+costs more per frame either way, so complexity remains a budgeting concern
+rather than a hard limit.
 
 Best practices for AVD performance:
 
@@ -14621,9 +14846,12 @@ drawable with a duration in the XML:
 ### 14.11.10 AnimatedImageDrawable
 
 `AnimatedImageDrawable` (API 28+) supports animated image formats like
-GIF and WebP.  It decodes frames on a worker thread and uses Choreographer
-for frame scheduling, providing smooth playback without blocking the UI
-thread.
+GIF and WebP.  It decodes frames on a dedicated worker thread
+(`frameworks/base/libs/hwui/hwui/AnimatedImageThread.cpp`) and schedules
+the next frame via `scheduleSelf()` on its `Drawable.Callback` host rather
+than through Choreographer; when drawn hardware-accelerated, the
+RenderThread drives the animation directly.  Either way, playback stays
+smooth without blocking the UI thread.
 
 ---
 
@@ -14823,15 +15051,15 @@ sequenceDiagram
     participant FH as FrameHandler
     participant Choreo as Choreographer
 
-    DEV->>FH: MSG_DO_FRAME
+    DEV->>FH: post self as async Runnable msg
     FH->>Choreo: doFrame(frameTimeNanos)
+    Note over DEV,FH: MSG_DO_FRAME is only used on the<br/>USE_VSYNC=false fallback path
     Note over Choreo: Check for skipped frames
     Note over Choreo: Log warning if > 30 frames skipped
     Choreo->>Choreo: mFrameInfo.markInputHandlingStart()
     Choreo->>Choreo: doCallbacks(CALLBACK_INPUT)
     Choreo->>Choreo: mFrameInfo.markAnimationsStart()
     Choreo->>Choreo: doCallbacks(CALLBACK_ANIMATION)
-    Choreo->>Choreo: mFrameInfo.markInsetAnimationsStart()
     Choreo->>Choreo: doCallbacks(CALLBACK_INSETS_ANIMATION)
     Choreo->>Choreo: mFrameInfo.markPerformTraversalsStart()
     Choreo->>Choreo: doCallbacks(CALLBACK_TRAVERSAL)
@@ -15045,7 +15273,7 @@ graph TD
         ME --> PIP[PipTransition]
         ME --> BAC[BackAnimationController]
         ME --> UF[UnfoldTransitionHandler]
-        ME --> DM[DesktopModeTransitionHandler]
+        ME --> DM[DesktopMixedTransitionHandler]
     end
 
     subgraph "Common Utilities"
@@ -15119,20 +15347,26 @@ dividers).
 ### 14.13.7 Split-Screen Divider Animations
 
 When entering or exiting split-screen mode, the divider bar animates
-between its hidden and visible states.  The animation uses spring physics
-for the divider position and smooth alpha transitions for visibility.
+between its hidden and visible states.  The show animation is a
+`ValueAnimator` alpha fade applied to the divider leash in
+`StageCoordinator.applyDividerVisibility()`
+(`frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/splitscreen/StageCoordinator.java`);
+hiding is applied immediately with no animation.  Spring physics does
+appear in the split package, but only for magnetic snapping while the
+divider is *dragged* (`common/split/MagneticDividerUtils.kt`), not for
+the enter/exit visibility animation.
 
 ### 14.13.8 Letterbox Animation Details
 
-Letterbox animations handle the transition between different letterbox
-states:
-
-| State Transition | Animation |
-|---|---|
-| No letterbox -> Letterboxed | Bars slide in from edges |
-| Letterboxed -> No letterbox | Bars slide out to edges |
-| Letterbox position change | Smooth bounds transition |
-| Orientation change with letterbox | Crossfade with new configuration |
+Only one letterbox state change has a dedicated animation: reachability
+moves (the user double-taps to shift a letterboxed app toward one edge).
+These run as a `TRANSIT_MOVE_LETTERBOX_REACHABILITY` transition handled
+by `LetterboxAnimationHandler`
+(`frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/compatui/letterbox/animations/LetterboxAnimationHandler.kt`),
+which interpolates the letterbox surface bounds with a `RectEvaluator`
+over a 500 ms duration.  Other letterbox state changes -- entering or
+leaving letterbox, position changes, orientation changes -- are applied
+without a dedicated letterbox animation.
 
 ### 14.13.9 App Launch Animation
 
@@ -15216,8 +15450,9 @@ operations used:
 | `reparent(newParent)` | Move in the surface hierarchy |
 | `show()` / `hide()` | Visibility |
 
-Transactions can be applied synchronously (`apply()`) or deferred to the
-next VSYNC (`setDesiredPresentTime()`) for smoother timing.
+Transactions are applied with `apply()`; a transaction can also request
+presentation at (or after) a specific timestamp via
+`setDesiredPresentTimeNanos(long)` for smoother timing.
 
 ---
 
@@ -15540,7 +15775,6 @@ data_sources: {
             atrace_categories: "view"
             atrace_categories: "am"
             atrace_categories: "wm"
-            atrace_categories: "anim"
             atrace_categories: "gfx"
             atrace_categories: "input"
             atrace_apps: "your.app.package"
@@ -15550,6 +15784,10 @@ data_sources: {
 duration_ms: 10000
 EOF
 ```
+
+There is no dedicated `anim` atrace category -- Choreographer's `animation`
+slice and ObjectAnimator's `animator:<property>` slice are both emitted
+under the `view` category.
 
 Key Perfetto tracks to examine:
 
@@ -15698,14 +15936,14 @@ animator.start();
 The WindowManager dumpsys provides animation state information:
 
 ```bash
-# Dump all animation state
-adb shell dumpsys window animations
+# Dump WindowAnimator / animation state
+adb shell dumpsys window animator
 
-# Dump surface animator state
-adb shell dumpsys window surfaces
+# Dump all window state (includes surfaces and containers)
+adb shell dumpsys window -a
 
-# Dump transition state
-adb shell dumpsys window transitions
+# Dump per-display container state
+adb shell dumpsys window displays
 
 # Shell transition state
 adb shell dumpsys activity service SystemUIService WMShell
@@ -15713,15 +15951,16 @@ adb shell dumpsys activity service SystemUIService WMShell
 
 Key fields to examine:
 
-- `mAnimationLayer` -- The Z-order of the animation leash
 - `mLeash` -- The SurfaceControl used for animation
 - `mAnimation` -- The active AnimationAdapter
 - `mPendingAnimations` / `mRunningAnimations` -- In SurfaceAnimationRunner
 
 ### 14.15.12 Animation Performance Best Practices
 
-1. **Prefer `ViewPropertyAnimator` and RenderNode properties** for simple
-   view animations -- they run on RenderThread and survive UI thread jank.
+1. **Prefer `ViewPropertyAnimator`** for simple view animations -- one
+   animator batches all requested properties and applies them through
+   direct setters with no reflection, giving the lowest per-frame overhead
+   of the Java animators (it still runs on the UI thread, though).
 
 2. **Avoid allocations in update listeners**.  `AnimatorUpdateListener` runs
    every frame; allocating objects there triggers GC pauses.
@@ -15762,9 +16001,10 @@ view.animate()
     .start();
 ```
 
-Under the hood, `ViewPropertyAnimator` creates `RenderNodeAnimator` instances
-that run on the RenderThread, providing the best possible performance for
-view property animations.
+Under the hood, `ViewPropertyAnimator` drives a single `ValueAnimator` on
+the UI thread that batches all the requested properties into one animator
+(avoiding one animator per property), which keeps per-frame overhead low
+for view property animations.
 
 ### 14.15.14 Gesture-Driven Animation with SpringAnimation
 
@@ -16104,7 +16344,7 @@ timeline
         2014 : Material transitions, shared elements, PathInterpolator
         2014 : HWUI RenderThread animations
     section API 21-30
-        2015 : AnimatedVectorDrawable on RenderThread
+        2016 : AnimatedVectorDrawable on RenderThread API 25
         2016 : Physics-based animations SpringAnimation, FlingAnimation
         2017 : SurfaceAnimator leash pattern in WM
         2019 : WindowInsetsAnimation
@@ -16133,7 +16373,7 @@ flowchart TD
     C -->|Simple: alpha, translate, scale| J[ViewPropertyAnimator]
     C -->|Complex: multiple properties, timing| K[AnimatorSet]
 
-    J --> L[Runs on RenderThread - best perf]
+    J --> L[Runs on UI thread - lowest per-frame overhead]
     D --> M[Runs on UI thread]
     E --> N[Runs on RenderThread API 25+]
     F --> O[Automatic diffing]
@@ -16187,7 +16427,7 @@ The animation system has specific threading requirements:
 | ObjectAnimator | Same as ValueAnimator; setter called on same thread |
 | ViewPropertyAnimator | Must be called on UI thread |
 | RenderThread animations | Initiated from UI thread, run on RenderThread |
-| SurfaceAnimationRunner | Runs on AnimationThread |
+| SurfaceAnimationRunner | Runs on SurfaceAnimationThread (the `android.anim.lf` thread) |
 | Shell transitions | Runs on Shell main thread |
 | SpringAnimation | Must be called on a Looper thread |
 
@@ -16224,13 +16464,19 @@ The animation system provides several testing hooks:
 // Speed up all animations for faster test execution
 ValueAnimator.setDurationScale(0f);  // Instant completion
 
-// Use custom AnimationHandler for deterministic timing
+// Use custom AnimationHandler for deterministic timing.
+// MyTestFrameCallbackProvider is your own implementation of the
+// AnimationHandler.AnimationFrameCallbackProvider interface, which
+// captures each posted Choreographer.FrameCallback instead of
+// forwarding it to the real Choreographer.
 AnimationHandler testHandler = new AnimationHandler();
-testHandler.setProvider(new TestAnimationFrameCallbackProvider());
+testHandler.setProvider(new MyTestFrameCallbackProvider());
 AnimationHandler.setTestHandler(testHandler);
 
-// Advance animation to specific time
-testHandler.doAnimationFrame(targetTimeMs);
+// Advance animations by invoking the captured frame callback with the
+// desired frame time (AnimationHandler.doAnimationFrame() is private,
+// so frames can only be driven through the provider):
+capturedFrameCallback.doFrame(targetTimeNanos);
 ```
 
 For Espresso UI tests:
@@ -16449,8 +16695,10 @@ The core audio services live under `frameworks/av/` and consist of roughly
 the Audio Policy engine, AAudio/Oboe service, effects library, and head
 tracking pipeline. We will read key data structures, follow the mixing thread
 loop line by line, and explain every optimization -- from the FastMixer that
-runs at SCHED_FIFO priority 3, to the MMAP zero-copy path that bypasses
-AudioFlinger entirely.
+runs at SCHED_FIFO priority 3, to the MMAP zero-copy path whose data flows
+through a HAL buffer mapped directly into the client, bypassing AudioFlinger's
+mixer (AudioFlinger still opens the stream and runs the MmapThread that
+handles control and routing).
 
 ---
 
@@ -16603,9 +16851,15 @@ This control block contains:
 - Volume and mute state
 - A futex-based signaling mechanism for low-latency wake-up
 
-The actual audio buffers sit in a separate shared memory region mapped into both
-the client and server address spaces. This eliminates all data copies for the
-transfer between processes.
+For the default streaming track (`ALLOC_CBLK`), the audio buffer lives in the
+same shared memory block, laid out immediately after the `audio_track_cblk_t`
+control block (`frameworks/av/services/audioflinger/Tracks.cpp` allocates
+`sizeof(audio_track_cblk_t) + bufferSize` in one block and points `mBuffer`
+just past the cblk). Only the read-only
+fast-capture case (`ALLOC_READONLY`), the pipe case (`ALLOC_PIPE`), and
+client-supplied static buffers use a separate memory region. Either way, the
+memory is mapped into both the client and server address spaces, eliminating
+data copies for the transfer between processes.
 
 ### 15.1.6 The audioserver Process
 
@@ -16681,7 +16935,7 @@ AudioFlinger creates different thread types depending on the output:
 
 | Thread Type | Class | Purpose | Source location |
 |------------|-------|---------|----------------|
-| Mixer | `MixerThread` | Mix multiple PCM tracks | `Threads.cpp` line ~3700+ |
+| Mixer | `MixerThread` | Mix multiple PCM tracks | `Threads.cpp` line ~5159+ |
 | Direct | `DirectOutputThread` | Single PCM or compressed track | `Threads.cpp` |
 | Offload | `OffloadThread` | Hardware-compressed playback | `Threads.cpp` |
 | Duplicating | `DuplicatingThread` | Mirror to multiple outputs | `Threads.cpp` |
@@ -16702,7 +16956,7 @@ Android supports a wide range of audio formats:
 | Compressed lossy | MP3, AAC, AAC-LC, HE-AAC, Vorbis, Opus |
 | Compressed lossless | FLAC, ALAC |
 | Spatial | Dolby Atmos, DTS:X (passthrough) |
-| Voice | AMR-NB, AMR-WB, EVS |
+| Voice | AMR-NB, AMR-WB, AMR-WB+, EVRC |
 
 PCM formats flow through the mixer and effects chain. Compressed formats
 may be decoded in software (via MediaCodec) before reaching AudioTrack,
@@ -16714,7 +16968,7 @@ or sent directly to the HAL for hardware decode (offload path).
 
 AudioFlinger is the central mixing engine of Android audio. It is the single
 most complex component in the audio stack, with the core implementation spread
-across six source files totaling over 27,000 lines:
+across six source files totaling nearly 27,000 lines:
 
 | File | Lines | Purpose |
 |------|-------|---------|
@@ -16855,7 +17109,10 @@ classDiagram
     }
 
     class MmapThread {
-        -mMmapStream : sp~MmapStreamInterface~
+        -mHalStream : sp~StreamHalInterface~
+        +createMmapBuffer() status_t
+        +startTrack() status_t
+        +stopTrack() status_t
     }
 
     AudioFlinger --> IAfThreadBase : manages
@@ -16948,7 +17205,7 @@ flowchart TB
     Lock --> Mix{mMixerStatus?}
     Mix -->|TRACKS_READY| DoMix["threadLoop_mix<br/>AudioMixer::process"]
     Mix -->|underrun| Sleep["threadLoop_sleepTime<br/>insert silence"]
-    DoMix --> Effects[processEffects_l]
+    DoMix --> Effects["effect chains<br/>process_l on each"]
     Effects --> Write["threadLoop_write<br/>send to HAL"]
     Write --> Unlock[unlockEffectChains]
     Unlock --> Remove[threadLoop_removeTracks]
@@ -16969,10 +17226,16 @@ static const int32_t kMaxTrackRetriesDirectMs = 200;
 // Threads.cpp, line 169
 static const uint32_t kMinThreadSleepTimeUs = 5000;
 
-// Threads.cpp, line 175-177
-static const uint32_t kMinNormalSinkBufferSizeMs = 20;
-static const uint32_t kMaxNormalSinkBufferSizeMs = 24;
+// Threads.cpp, line 181-182
+static const uint32_t kNormalPlaybackPeriodMs =
+        property_get_int32("persist.audio.normal_playback_period_ms", 20);
+
+// Threads.cpp, line 189
+static constexpr uint32_t kMaxNormalPlaybackPeriodMs = 24;
 ```
+
+The minimum normal playback period defaults to 20ms but can be overridden
+per device via the `persist.audio.normal_playback_period_ms` property.
 
 The mixer loop runs on a ~20ms cycle. Each cycle:
 
@@ -16980,18 +17243,19 @@ The mixer loop runs on a ~20ms cycle. Each cycle:
    sets up the AudioMixer for each active track (sample rate, volume, format).
 2. **`threadLoop_mix()`** -- Calls `AudioMixer::process()` which reads from all
    active track buffers and mixes into `mMixerBuffer`.
-3. **`processEffects_l()`** -- Runs the effect chain on the mixed audio.
+3. **Effect processing** -- The thread loop iterates the locked effect chains
+   and calls `IAfEffectChain::process_l()` on each, running the effects on the
+   mixed audio.
 4. **`threadLoop_write()`** -- Writes the final buffer to the HAL.
 
 ### 15.2.7 The threadLoop_write() Method
 
-The write path has two branches (from `Threads.cpp` line 3557-3616):
+The write path has two branches (from `Threads.cpp` line 3660-3726):
 
 ```cpp
-// Threads.cpp, line 3557-3626
+// Threads.cpp, line 3660-3726
 ssize_t PlaybackThread::threadLoop_write()
 {
-    LOG_HIST_TS();
     mInWrite = true;
     ssize_t bytesWritten;
     const size_t offset = mCurrentWriteLength - mBytesRemaining;
@@ -17025,14 +17289,17 @@ ssize_t PlaybackThread::threadLoop_write()
 }
 ```
 
-For mixer threads, the write goes through an NBAIO (Non-Blocking Audio I/O)
-`MonoPipe` to the FastMixer. For direct and offload threads, it writes directly
-to the HAL stream.
+For mixer threads that have initialized a FastMixer, the write goes through an
+NBAIO (Non-Blocking Audio I/O) `MonoPipe` (`mPipeSink`) to the FastMixer; a
+mixer thread without a FastMixer uses `mOutputSink`, an NBAIO sink over the
+HAL stream directly. Direct and offload threads have no NBAIO sink and write
+straight to the HAL stream.
 
-The screen state optimization is notable: when the screen is on, the pipe's
-average frame setpoint is raised to 7/8 of maximum, reducing the chance of
-underruns during UI activity. When the screen is off, it drops to 2x the
-normal frame count to save power.
+The screen state optimization is notable: when the screen is off, the pipe's
+average frame setpoint is raised to 7/8 of maximum -- a deeper buffer means
+fewer wakeups and lower power. When the screen is on, it is set to 2x the
+normal frame count, a shallower buffer that keeps latency low during UI
+activity.
 
 ### 15.2.8 Standby Management
 
@@ -17086,7 +17353,8 @@ TrackBase::TrackBase(
             const alloc_type alloc,
             track_type type,
             audio_port_handle_t portId,
-            std::string metricsId)
+            std::string metricsId,
+            const std::string& codecProvenance)
     : mThread(thread),
       mAllocType(alloc),
       mClient(client),
@@ -17099,6 +17367,7 @@ TrackBase::TrackBase(
       mChannelCount(isOut ?
               audio_channel_count_from_out_mask(channelMask) :
               audio_channel_count_from_in_mask(channelMask)),
+      mCodecProvenance(codecProvenance),
       mFrameSize(audio_bytes_per_frame(mChannelCount, format)),
       mFrameCount(frameCount),
       mSessionId(sessionId),
@@ -17547,7 +17816,7 @@ The effects processing stage in the mixer thread loop deserves detailed
 attention. After mixing, the effect chains are processed:
 
 ```cpp
-// Threads.cpp, line 4322-4348
+// Threads.cpp, line 4419-4445
         if (mSleepTimeUs == 0 && mType != OFFLOAD) {
             for (size_t i = 0; i < effectChains.size(); i++) {
                 effectChains[i]->process_l();
@@ -17586,7 +17855,7 @@ processed by subsequent effects in the chain.
 For offloaded tracks, effects are still processed even without audio data:
 
 ```cpp
-// Threads.cpp, line 4350-4358
+// Threads.cpp, line 4451-4455
         if (mType == OFFLOAD) {
             for (size_t i = 0; i < effectChains.size(); i++) {
                 effectChains[i]->process_l();
@@ -17598,7 +17867,7 @@ After effects processing, the effect buffer is copied to the sink buffer
 with PCM float clamping for HAL safety:
 
 ```cpp
-// Threads.cpp, line 4398-4405
+// Threads.cpp, line 4496-4503
                 static constexpr float HAL_FLOAT_SAMPLE_LIMIT = 2.0f;
                 memcpy_to_float_from_float_with_clamping(
                         static_cast<float*>(mSinkBuffer),
@@ -17615,7 +17884,7 @@ extremely large float values.
 After writing to the HAL, the thread loop tracks timing jitter:
 
 ```cpp
-// Threads.cpp, line 4436-4476
+// Threads.cpp, line 4533-4580
                     const int64_t lastIoBeginNs = systemTime();
                     ret = threadLoop_write();
                     const int64_t lastIoEndNs = systemTime();
@@ -17663,7 +17932,7 @@ statistics and MonoPipe depth are available in the dumpsys output.
 The `SpatializerThread` is a specialized `MixerThread` for spatial audio:
 
 ```cpp
-// Threads.cpp, line 8006-8022
+// Threads.cpp, line 8130-8146
 sp<IAfPlaybackThread> IAfPlaybackThread::createSpatializerThread(
         const sp<IAfThreadCallback>& afThreadCallback,
         AudioStreamOut* output,
@@ -17690,7 +17959,7 @@ SpatializerThread::SpatializerThread(
 It manages HAL latency modes for low-latency head tracking:
 
 ```cpp
-// Threads.cpp, line 8024-8061
+// Threads.cpp, line 8148-8185
 void SpatializerThread::setHalLatencyMode_l() {
     if (mSupportedLatencyModes.empty()) {
         return;
@@ -17724,7 +17993,7 @@ void SpatializerThread::setHalLatencyMode_l() {
 It also manages the spatializer effect and a fallback downmixer:
 
 ```cpp
-// Threads.cpp, line 8072-8123
+// Threads.cpp, line 8196-8247
 void SpatializerThread::checkOutputStageEffects()
 {
     bool hasVirtualizer = false;
@@ -17767,7 +18036,7 @@ being sent directly to stereo outputs.
 The RecordThread handles audio capture and is created with input flags:
 
 ```cpp
-// Threads.cpp, line 8139-8147
+// Threads.cpp, line 8263-8271
 sp<IAfRecordThread> IAfRecordThread::create(
         const sp<IAfThreadCallback>& afThreadCallback,
         AudioStreamIn* input,
@@ -17785,7 +18054,7 @@ sp<IAfRecordThread> IAfRecordThread::create(
 The RecordThread constructor sets up NBAIO source and read-only heap:
 
 ```cpp
-// Threads.cpp, line 8149-8195
+// Threads.cpp, line 8273-8320
 RecordThread::RecordThread(/* ... */)
     : ThreadBase(afThreadCallback, id, type, systemReady,
             false /* isOut */, input, nullptr /* output */),
@@ -17817,7 +18086,7 @@ When a thread is suspended (e.g., during BT SCO phone call), it simulates
 writing to the HAL:
 
 ```cpp
-// Threads.cpp, line 4312-4320
+// Threads.cpp, line 4409-4417
             if (isSuspended()) {
                 mSleepTimeUs = suspendSleepTimeUs();
                 const size_t framesRemaining =
@@ -17834,7 +18103,7 @@ accurate timestamps even while suspended.
 
 ### 15.2.20 MelReporter -- Sound Dose Monitoring
 
-AudioFlinger includes a MEL (Measured Exposure Level) reporter for hearing
+AudioFlinger includes a MEL (Momentary Exposure Level) reporter for hearing
 protection compliance. It is initialized alongside the PatchPanel:
 
 ```cpp
@@ -17912,7 +18181,7 @@ audio streams. The source resides in:
 
 ```
 frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp (2,759 lines)
-frameworks/av/services/audiopolicy/AudioPolicyInterface.h (740 lines)
+frameworks/av/services/audiopolicy/AudioPolicyInterface.h (782 lines)
 ```
 
 ### 15.3.1 Architecture
@@ -18039,7 +18308,7 @@ static const char kAudioPolicyManagerCustomPath[] =
 
 ### 15.3.4 The AudioPolicyInterface
 
-The `AudioPolicyInterface` (740 lines) defines the contract between the
+The `AudioPolicyInterface` (782 lines) defines the contract between the
 AudioPolicyService and the AudioPolicyManager. Key categories:
 
 ```cpp
@@ -18262,7 +18531,7 @@ The `AudioPolicyInterface` defines volume control at multiple levels:
             int index, bool muted,
             audio_devices_t device) = 0;
     virtual status_t setVolumeIndexForGroup(
-            volume_group_t groupId, int index,
+            volume_group_t groupId, uid_t uid, int index,
             bool muted, audio_devices_t device) = 0;
 ```
 
@@ -18539,12 +18808,20 @@ graph TB
     AAS --> SSShared
     SSMMAP --> EPMMAP
     SSShared --> EPShared
-    EPShared --> AF
+    EPShared -->|"AudioStreamInternal (in-service, EXCLUSIVE)"| AAS
     EPMMAP -->|"MmapStreamInterface / IMmapStream"| MMAPT
     MMAPT -->|HAL| HAL[Audio HAL]
     ASI <-->|shared memory| FIFO
     FG --> FIFO
 ```
+
+Note the loop back into `AAudioService`: `AAudioServiceEndpointShared` does not
+talk to AudioFlinger itself. It mixes its client streams into a single
+`AudioStreamInternal` that it opens against the service in
+`AAUDIO_SHARING_MODE_EXCLUSIVE`
+(`frameworks/av/services/oboeservice/AAudioServiceEndpointShared.cpp`), so the
+mixed result reaches AudioFlinger's `MmapThread` through
+`AAudioServiceEndpointMMAP` like any exclusive stream.
 
 ### 15.4.3 MMAP Mode
 
@@ -18850,7 +19127,7 @@ The AAudioService runs inside the `audioserver` process and manages server-side
 AAudio streams. It is defined across roughly 40 files in:
 
 ```
-frameworks/av/services/oboeservice/ (41 files)
+frameworks/av/services/oboeservice/ (43 files)
 ```
 
 ### 15.5.1 Service Architecture
@@ -18978,8 +19255,8 @@ The open process tries up to 10 times with different configurations:
 ```
 
 ```cpp
-// AAudioServiceEndpointMMAP.cpp, line 137
-while (numberOfAttempts < maxOpenAttempts) {
+// AAudioServiceEndpointMMAP.cpp, line 133
+while (numberOfAttempts < AAUDIO_MAX_OPEN_ATTEMPTS) {
     if (configsTried.find(config) != configsTried.end()) {
         break;
     }
@@ -19256,6 +19533,8 @@ non-destroyed handle is the "control" handle:
 // Effects.cpp, line 205-241
 status_t EffectBase::addHandle(IAfEffectHandle *handle)
 {
+    status_t status;
+
     audio_utils::lock_guard _l(mutex());
     int priority = handle->priority();
     size_t size = mHandles.size();
@@ -19275,17 +19554,27 @@ status_t EffectBase::addHandle(IAfEffectHandle *handle)
     }
     if (i == 0) {
         // inserted in first place, take control
+        bool enabled = false;
         if (controlHandle != NULL) {
             enabled = controlHandle->enabled();
             controlHandle->setControl(false, true, enabled);
         }
         handle->setControl(true, false, enabled);
         status = NO_ERROR;
+    } else {
+        status = ALREADY_EXISTS;
     }
+    // ... ALOGV trace elided
     mHandles.insert(mHandles.begin() + i, handle);
     return status;
 }
 ```
+
+The handle is inserted at position `i` either way -- the return status is what
+differs. Only a handle that lands in first place takes control and returns
+`NO_ERROR`; a lower-priority handle is still registered but reports
+`ALREADY_EXISTS`, telling the caller that another handle already owns control of
+the effect.
 
 ### 15.6.4 Policy Registration
 
@@ -19310,9 +19599,10 @@ status_t EffectBase::updatePolicyState()
 }
 ```
 
-### 15.6.5 LVM (Listener Volume Manager)
+### 15.6.5 LVM (LifeVibes Modules)
 
-The LVM bundle provides four effects in one library:
+LVM is the NXP "LifeVibes" audio module library. Its Music bundle provides
+four effects in one library:
 
 ```
 frameworks/av/media/libeffects/lvm/
@@ -19323,9 +19613,13 @@ frameworks/av/media/libeffects/lvm/
 | BassBoost | Low-frequency enhancement |
 | Equalizer | 5-band parametric EQ |
 | Virtualizer | Stereo widening |
-| Reverb | Environmental and preset reverb |
+| Volume | Master volume / gain control |
 
-The AIDL wrapper is in:
+Reverb (PresetReverb and EnvironmentalReverb) is a separate LVM library,
+built from `frameworks/av/media/libeffects/lvm/wrapper/Reverb/` as
+`libreverbwrapper` / `libreverbaidl`, not part of the bundle.
+
+The bundle's AIDL wrapper is in:
 ```
 frameworks/av/media/libeffects/lvm/wrapper/Aidl/
   - BundleContext.cpp
@@ -19364,7 +19658,7 @@ frameworks/av/media/libeffects/hapticgenerator/
 The AudioFlinger integrates haptic generation at the thread level:
 
 ```cpp
-// Threads.cpp, line 4211-4228
+// Threads.cpp, line 4308-4325
 if (mHapticChannelCount > 0) {
     for (const auto& track : mActivePlaybackTracksView) {
         sp<IAfEffectChain> effectChain =
@@ -19559,7 +19853,7 @@ In the mixer thread loop, effects are processed after mixing but before writing
 to the HAL:
 
 ```cpp
-// Threads.cpp, line 4271-4298
+// Threads.cpp, line 4368-4395
 uint32_t mixerChannelCount = mEffectBufferValid ?
     audio_channel_count_from_out_mask(mMixerChannelMask)
     : mChannelCount;
@@ -19588,8 +19882,12 @@ if (mMixerBufferValid &&
 }
 ```
 
-The data flow is: `mMixerBuffer` -> (mono blend, balance) -> `mEffectBuffer`
--> (effects processing) -> `mSinkBuffer` -> HAL.
+The data flow depends on whether an effect buffer is in use. When
+`mEffectBuffer` is valid, `mMixerBuffer` is copied to `mEffectBuffer` first,
+effects are processed, and mono blend and balance are applied afterwards on
+the way to `mSinkBuffer`. When there is no effect buffer, mono blend and
+balance are applied to `mMixerBuffer` directly and the result is copied
+straight to `mSinkBuffer`, which feeds the HAL.
 
 ---
 
@@ -19640,9 +19938,9 @@ graph TB
         IMU[IMU/Gyroscope]
     end
 
-    SJ --> SH
-    SH --> AS
-    AS -->|Binder| SP
+    SJ -->|Binder| AS
+    AS --> SH
+    SH -->|Binder| SP
     SP --> HTP
     SP --> SPP
     SPP --> IMU
@@ -19831,7 +20129,7 @@ class SensorEnableGuard {
 
 ### 15.7.7 Spatializer (Native)
 
-The Spatializer class (1,314 lines) ties everything together:
+The Spatializer class (1,339 lines) ties everything together:
 
 ```cpp
 // Spatializer.cpp, line 46-58
@@ -19975,7 +20273,8 @@ flowchart LR
 
 The spatializer effect receives:
 
-1. Multichannel audio input (up to 24 channels)
+1. Multichannel audio input, capped at `FCC_LIMIT` channels (12 by default
+   in AOSP)
 2. Head-to-stage pose from the head tracking processor
 3. Configuration parameters (level, mode)
 
@@ -20087,7 +20386,7 @@ Key AIDL files in `hardware/interfaces/audio/aidl/android/hardware/audio/core/`:
 | `IBluetoothA2dp.aidl` | Bluetooth A2DP control |
 | `IBluetoothLe.aidl` | Bluetooth LE Audio control |
 | `ITelephony.aidl` | Telephony audio control |
-| `ISoundDose.aidl` | Sound dose monitoring |
+| `sounddose/ISoundDose.aidl` | Sound dose monitoring |
 
 ### 15.8.4 Stream Descriptor and Shared Memory
 
@@ -20249,7 +20548,7 @@ The HAL includes sound dose monitoring for hearing protection:
 hardware/interfaces/audio/aidl/android/hardware/audio/core/sounddose/ISoundDose.aidl
 ```
 
-This interface allows the HAL to report MEL (Measured Exposure Level) data
+This interface allows the HAL to report MEL (Momentary Exposure Level) data
 directly from the hardware DSP, which can be more accurate than the software
 MEL computation in AudioFlinger's MelReporter.
 
@@ -20370,7 +20669,7 @@ because the time stretcher's pitch setting was not working correctly.
 
 | Method | Description |
 |--------|-------------|
-| `set()` / `create()` | Configure the track with format, rate, channel mask |
+| `set()` | Configure the track with format, rate, channel mask |
 | `start()` | Begin playback |
 | `stop()` | Stop playback |
 | `pause()` | Pause playback |
@@ -20378,7 +20677,7 @@ because the time stretcher's pitch setting was not working correctly.
 | `write()` | Write audio data (blocking or non-blocking) |
 | `obtainBuffer()` / `releaseBuffer()` | Direct buffer access |
 | `setVolume()` | Set left/right volume |
-| `setRate()` | Set playback speed |
+| `setPlaybackRate()` / `setSampleRate()` | Set playback speed/pitch or sample rate |
 | `getTimestamp()` | Get presentation timestamp |
 
 ### 15.9.2 AudioRecord (Native C++)
@@ -20505,12 +20804,12 @@ sequenceDiagram
     Java->>JNI: native_setup()
     JNI->>Native: new AudioTrack()
     Native->>Native: set()
-    Native->>AS: getOutputForAttr()
+    Native->>AF: createTrack() [Binder]
+    AF->>AS: getOutputForAttr()
     AS->>APS: getOutputForAttr() [Binder]
     APS->>APS: Select output device and stream
     APS-->>AS: output handle + stream type
-    AS-->>Native: output handle
-    Native->>AF: createTrack() [Binder]
+    AS-->>AF: output handle + stream type
     AF->>AF: Find/create playback thread
     AF->>AF: Allocate shared memory
     AF->>AF: Create Track object
@@ -20521,6 +20820,15 @@ sequenceDiagram
     JNI-->>Java: native handle
     Java-->>App: AudioTrack instance
 ```
+
+The routing decision happens on the server side, not in the client: the native
+`AudioTrack` makes exactly one server call, `audioFlinger->createTrack()`
+(`frameworks/av/media/libaudioclient/AudioTrack.cpp:1906`), and it is
+`AudioFlinger::createTrack()` that calls
+`AudioSystem::getOutputForAttr()` into the audio policy service to pick the
+output and stream type
+(`frameworks/av/services/audioflinger/AudioFlinger.cpp:1092`) before locating
+the playback thread.
 
 ### 15.9.6 AudioRecord Construction Flow
 
@@ -20536,18 +20844,25 @@ sequenceDiagram
 
     App->>Native: new AudioRecord()
     Native->>Native: set()
-    Native->>AS: getInputForAttr()
+    Native->>AF: createRecord() [Binder]
+    AF->>AS: getInputForAttr()
     AS->>APS: getInputForAttr() [Binder]
     APS->>APS: Select input device
     APS-->>AS: input handle + device
-    AS-->>Native: input handle
-    Native->>AF: createRecord() [Binder]
+    AS-->>AF: input handle + device
     AF->>AF: Find RecordThread
     AF->>AF: Allocate shared memory
     AF->>AF: Create RecordTrack
     AF-->>Native: RecordTrack handle + shared memory FD
     Native->>Native: Map shared memory
 ```
+
+The same server-side split applies on capture: the client's only server call is
+`audioFlinger->createRecord()`
+(`frameworks/av/media/libaudioclient/AudioRecord.cpp:906`), and
+`AudioFlinger::createRecord()` calls `AudioSystem::getInputForAttr()`
+(`frameworks/av/services/audioflinger/AudioFlinger.cpp:2432`) to have the policy
+service select the input before the RecordThread and RecordTrack are set up.
 
 The minimum frame count for recording uses "ping pong" doubling:
 
@@ -20567,7 +20882,11 @@ status_t AudioRecord::getMinFrameCount(
     const auto frameSize = audio_bytes_per_frame(
             audio_channel_count_from_in_mask(channelMask),
             format);
-    *frameCount = (size * 2) / frameSize;
+    if (frameSize == 0 ||
+            ((*frameCount = (size * 2) / frameSize) == 0)) {
+        ALOGE(...);  // unsupported configuration
+        return BAD_VALUE;
+    }
     return NO_ERROR;
 }
 ```
@@ -20681,19 +21000,28 @@ sequenceDiagram
 
     App->>AT: write(buffer, size)
     AT->>Cblk: Copy data to shared buffer
-    AT->>Cblk: Update write position
-    AT->>Cblk: futex wake (if needed)
+    AT->>Cblk: Release-store new write position (mRear)
 
     Note over AF: Thread loop running
     AF->>Cblk: Read write position
     AF->>Cblk: Copy data from shared buffer
     AF->>Cblk: Update read position
+    AF->>Cblk: futex wake (if client blocked)
     AF->>AF: Mix with other tracks
     AF->>AF: Write to HAL
 ```
 
-The futex wake is used only when necessary (the server was waiting for data),
-making the normal-case data transfer completely lock-free.
+The futex traffic runs server-to-client, not the other way round. On playback
+the client never wakes the mixer thread: `ClientProxy::releaseBuffer()` only
+does an atomic release-store of `mRear`
+(`frameworks/av/media/libaudioclient/AudioTrackShared.cpp:407`), with no syscall
+at all. It is `ServerProxy::releaseBuffer()` (line 968) and
+`ServerProxy::flushBufferIfNeeded()` (line 799) that set `CBLK_FUTEX_WAKE` and
+issue `FUTEX_WAKE` to release a client parked in `ClientProxy::obtainBuffer()`
+(line 342) waiting for buffer space. The client's own futex wakes are reserved
+for the error paths, `binderDied()` and `interrupt()`. Because the wake happens
+only when a waiter is actually parked, the normal-case data transfer stays
+lock-free and syscall-free.
 
 ### 15.9.12 Volume and Gain Management
 
@@ -20725,8 +21053,8 @@ Key system properties that control audio behavior:
 |----------|---------|-------------|
 | `ro.audio.flinger_standbytime_ms` | 3000 | Standby delay |
 | `af.fast_track_multiplier` | 2 | Fast track buffer multiplier |
-| `aaudio.mmap_policy` | 2 | MMAP usage policy |
-| `aaudio.mmap_exclusive_policy` | 2 | Exclusive MMAP policy |
+| `aaudio.mmap_policy` | 1 (NEVER) | MMAP usage policy; devices override to 2 (AUTO) to enable MMAP |
+| `aaudio.mmap_exclusive_policy` | 0 (UNSPECIFIED) | Exclusive MMAP policy; devices override to 2 (AUTO) |
 | `aaudio.hw_burst_min_usec` | varies | Min HAL burst size |
 | `audio.timestamp.corrected_input_device` | NONE | Timestamp correction |
 
@@ -20744,10 +21072,12 @@ Every audio operation logs metrics through the MediaMetrics system:
 
 Query metrics:
 ```bash
-adb shell dumpsys media.metrics --since 60
+adb shell dumpsys media.metrics --since -60
 ```
 
-This shows all audio events from the last 60 seconds, including:
+This shows all audio events from the last 60 seconds (a negative argument
+means "seconds in the past"; a positive value is interpreted as an absolute
+time in seconds since the Unix epoch), including:
 
 - Track creation/destruction
 - Stream opens/closes
@@ -20769,7 +21099,10 @@ Key trace points:
 - `AudioFlinger::createTrack` -- Track creation latency
 - `write` -- HAL write duration
 - `underrun` -- Underrun detection
-- `AudioTrack::write` -- Client-side write timing
+
+The client library (`libaudioclient`) contains no atrace instrumentation of
+its own, so client-side `AudioTrack::write()` calls do not appear as trace
+slices -- only the server-side activity is visible.
 
 ### 15.10.4 Mutex Statistics
 
@@ -20838,7 +21171,9 @@ The power manager tracks:
 
 - Wake lock acquisitions and releases per thread
 - Audio activity duration for battery attribution
-- CPU frequency requests for real-time threads
+- Per-client and per-track power and health statistics (power-rail energy,
+  battery voltage and charge counters)
+- App freeze state, via `setFrozen()` / `isFrozen()`
 - Device power state transitions
 
 ### 15.10.8 TimeCheck Watchdog
@@ -20851,9 +21186,14 @@ AudioFlinger uses TimeCheck as a watchdog for HAL calls:
     writeStr(fd, mediautils::TimeCheck::toString());
 ```
 
-TimeCheck monitors binder calls to the HAL. If a HAL call takes longer
-than the configured timeout, it logs a warning and may trigger a HAL
-restart to prevent the entire audio system from hanging.
+TimeCheck monitors binder calls to the HAL. The per-HAL-call `TIME_CHECK()`
+macro is created with a zero timeout and `crashOnTimeout=false`, so it only
+records call statistics -- it never fires. TimeCheck instances created with
+an explicit timeout are far more drastic on expiry: `onTimeout()` signals the
+audio HAL processes to produce tombstones, emits a FATAL log with the timeout
+analysis, and aborts the stuck thread (falling back to aborting the whole
+audioserver process). The resulting crash and restart is what prevents the
+entire audio system from hanging indefinitely.
 
 ### 15.10.9 Deadlock Detection
 
@@ -20916,17 +21256,21 @@ adb shell dumpsys media.audio_flinger --memory
 
 ### 15.10.11 Battery Attribution
 
-AudioFlinger tracks battery usage per client UID:
+AudioFlinger's own contribution to battery accounting is minimal: at startup
+it resets the global audio battery state -- there is no per-UID attribution
+in this call:
 
 ```cpp
 // AudioFlinger.cpp, line 333
     BatteryNotifier::getInstance().noteResetAudio();
 ```
 
-When a track starts or stops, battery attribution is updated:
+A legacy hook exists for updating battery data when a track starts or stops,
+but it is compiled out by default -- `Configuration.h` ships with
+`//#define ADD_BATTERY_DATA` commented out:
 
 ```cpp
-// Threads.cpp, line 3546-3553
+// Threads.cpp, line 3649-3656
 #ifdef ADD_BATTERY_DATA
     for (const auto& track : tracksToRemove) {
         if (track->isExternalTrack()) {
@@ -20937,8 +21281,8 @@ When a track starts or stops, battery attribution is updated:
 #endif
 ```
 
-This allows the system to accurately report how much battery each
-application is consuming through audio playback.
+In stock AOSP builds this block never runs, so per-application audio battery
+attribution is not performed by this code.
 
 ---
 
@@ -21337,11 +21681,15 @@ adb shell atrace --async_start -c -b 65536 audio
 adb shell atrace --async_stop -c -b 65536 audio > /tmp/audio_trace.txt
 ```
 
-4. Open in Perfetto or systrace. Look for:
-   - `AudioTrack::write` -- client-side writes
-   - `MixerThread::threadLoop` -- mixer cycle
-   - `FastMixer::onWork` -- fast mixer cycle
-   - `write` ATRACE in `threadLoop_write` -- HAL writes
+4. Open in Perfetto or systrace. Look for these slice names on the
+   audioserver threads (the client library emits no atrace events of its
+   own):
+   - `createTrack` -- ATRACE_CALL in `AudioFlinger::createTrack`
+   - `write` -- HAL writes in `threadLoop_write` (and the FastMixer)
+   - `read` -- capture thread HAL reads
+   - `sleep` -- mixer thread idle time between cycles
+   - `underrun` -- underrun events
+   - `cycle_ms` / `load_us` counters -- FastMixer cycle time and CPU load
 
 ### Exercise 3: Observe the FastMixer
 
@@ -21396,7 +21744,7 @@ Values:
 adb shell dumpsys media.audio_flinger | grep -A 3 "Effect"
 
 # List effects on a specific session
-adb shell dumpsys media.audio_flinger | grep -B 2 -A 10 "EffectChain"
+adb shell dumpsys media.audio_flinger | grep -B 2 -A 10 "Effect Chain"
 ```
 
 ### Exercise 7: Build and Run AAudio CTS Tests
@@ -21408,14 +21756,14 @@ m cts -j$(nproc)
 
 # Run AAudio tests
 adb shell am instrument -w \
-    android.media.aaudio.cts/android.support.test.runner.AndroidJUnitRunner
+    android.nativemedia.aaudio/androidx.test.runner.AndroidJUnitRunner
 ```
 
 ### Exercise 8: Monitor Sound Dose
 
 ```bash
-# Check MEL (Measured Exposure Level) reporting
-adb shell dumpsys media.audio_flinger | grep -A 10 "MelReporter"
+# Check MEL (Momentary Exposure Level) reporting
+adb shell dumpsys media.audio_flinger | grep -A 10 "Sound Dose"
 ```
 
 The MelReporter tracks cumulative sound exposure across all output streams.
@@ -21573,7 +21921,7 @@ int main() {
 ```bash
 # Watch effect chains in real-time
 watch -n 1 'adb shell dumpsys media.audio_flinger \
-    | grep -A 5 "EffectChain"'
+    | grep -A 5 "Effect Chain"'
 ```
 
 Play music and observe:
@@ -21635,10 +21983,16 @@ adb shell cat /proc/$(adb shell pidof audioserver)/task/*/sched | head -60
 
 Audio threads typically run at:
 
-- MixerThread: SCHED_FIFO priority 2
+- MixerThread: CFS at `ANDROID_PRIORITY_URGENT_AUDIO` by default, but boosted
+  to SCHED_FIFO 1 whenever its normal buffer period is shorter than
+  `persist.audio.normal_priority_playback_period_ms` (default 20 ms) -- the
+  common case on devices with short mixer buffers -- as well as in special
+  cases such as ARC, the `af.watch.thread.priority` override on watches, or
+  the spatializer thread boost
 - FastMixer: SCHED_FIFO priority 3
 - FastCapture: SCHED_FIFO priority 3
-- AAudioService threads: SCHED_FIFO priority 2
+- Registered client app audio threads: SCHED_FIFO priority 2
+  (`kPriorityAudioApp`)
 
 ### Exercise 17: Inspect AIDL Audio HAL
 
@@ -21776,7 +22130,7 @@ with their locations and sizes:
 | AudioTrack.java | `frameworks/base/media/java/android/media/AudioTrack.java` | 4,971 |
 | Spatializer.java | `frameworks/base/media/java/android/media/Spatializer.java` | 1,121 |
 | SpatializerHelper.java | `frameworks/base/services/core/java/com/android/server/audio/SpatializerHelper.java` | 1,807 |
-| IModule.aidl | `hardware/interfaces/audio/aidl/android/hardware/audio/core/IModule.aidl` | ~600 |
+| IModule.aidl | `hardware/interfaces/audio/aidl/android/hardware/audio/core/IModule.aidl` | 979 |
 
 ### Key Concepts Glossary
 
@@ -21794,7 +22148,7 @@ with their locations and sizes:
 | **Direct** | Single-stream path to HAL without software mixing |
 | **Burst** | The number of frames processed per HAL read/write cycle |
 | **Standby** | Power-saving state where the HAL stream is released |
-| **MEL** | Measured Exposure Level -- Cumulative sound dose for hearing protection |
+| **MEL** | Momentary Exposure Level -- Sound dose measurement for hearing protection |
 | **Spatializer** | 3D audio renderer that converts multichannel to binaural with head tracking |
 | **Head-to-Stage Pose** | The 3D rotation/translation from listener's head to the virtual speaker stage |
 | **FMQ** | Fast Message Queue -- Shared memory queue used in AIDL HAL for zero-copy data transfer |
@@ -21805,7 +22159,7 @@ with their locations and sizes:
 |----------|-----------|-----------|
 | Shared memory for data | Zero-copy, lowest latency | Complexity of cblk synchronization |
 | FastMixer at SCHED_FIFO 3 | Guaranteed low-latency mixing | Higher priority than most apps |
-| MMAP bypass of AudioFlinger | Sub-2ms latency possible | No software mixing or effects |
+| MMAP bypass of AudioFlinger's mixer | Sub-2ms latency possible | No software mixing or effects |
 | Dual engine (default/configurable) | Simple default, flexible for OEMs | Two code paths to maintain |
 | AIDL HAL migration | Type safety, versioning | Transition period with HIDL support |
 | Head tracking in separate library | Reusable, testable | Additional IPC for pose data |
@@ -21853,7 +22207,6 @@ hardware/interfaces/audio/effect/        -- Effect HAL types
 ```
 frameworks/av/services/audioflinger/TEST_MAPPING
 frameworks/av/media/libaaudio/tests/
-frameworks/av/services/oboeservice/TEST_MAPPING
 cts/tests/tests/media/audio/
 ```
 
@@ -21955,8 +22308,10 @@ graph TD
 ```
 
 The diagram above captures the central insight of Android's media architecture: there are
-two parallel paths through the codec layer. The **legacy OMX path** (ACodec) dates back to
-Android 1.0 and wraps OpenMAX IL components. The **modern Codec2 path** (CCodec) was
+two parallel paths through the codec layer. The **legacy OMX path** (ACodec) wraps
+OpenMAX IL components; it dates back to the Stagefright rework of the media stack in
+Android 2.2/2.3, with ACodec itself arriving alongside MediaCodec in the Android 4.1
+era. The **modern Codec2 path** (CCodec) was
 introduced in Android 10 and is now the primary path for all Google-provided software codecs
 and most vendor hardware codecs. Both paths are abstracted behind the `MediaCodec` API, so
 applications need not know which is in use.
@@ -21967,8 +22322,9 @@ The media framework runs across several system processes:
 
 | Process | Service(s) | Binary |
 |---|---|---|
-| `mediaserver` | MediaPlayerService, MediaRecorderService | `/system/bin/mediaserver` |
-| `media.codec` | Codec2 component service | `/vendor/bin/hw/android.hardware.media.c2-service` |
+| `mediaserver` | MediaPlayerService (which also vends MediaRecorderClient), ResourceManagerService | `/system/bin/mediaserver` |
+| `android-hardware-media-c2-hal` | Codec2 component service (vendor) | `/vendor/bin/hw/android.hardware.media.c2-default-service` |
+| `media.swcodec` | Google software Codec2 components | `/apex/com.android.media.swcodec/bin/mediaswcodec` |
 | `media.extractor` | MediaExtractorService | `/system/bin/mediaextractor` |
 | `cameraserver` | CameraService | `/system/bin/cameraserver` |
 | `media.resource_manager` | ResourceManagerService | Part of mediaserver |
@@ -21994,7 +22350,7 @@ sequenceDiagram
     App->>MC: dequeueInputBuffer()
     MC-->>App: buffer index
     App->>MC: queueInputBuffer(index, data)
-    MC->>CC: onInputBufferFilled()
+    MC->>CC: queueInputBuffer() via CCodecBufferChannel
     CC->>HAL: queue(C2Work)
     HAL->>HW: Submit compressed frame
     HW-->>HAL: Decoded YUV frame
@@ -22023,10 +22379,10 @@ frameworks/av/
       NuMediaExtractor.cpp   # 896 lines  - extractor wrapper
       MediaExtractorFactory.cpp  # 395 lines - extractor plugin loading
     codec2/
-      components/            # 23+ software codec families
+      components/            # 21 software codec families (plus base/, cmds/, tests/)
         aac/  amr_nb_wb/  aom/  apv/  avc/  base/  dav1d/  flac/
         g711/ gav1/ gsm/ hevc/ iamf/ mp3/ mpeg2/ mpeg4_h263/
-        opus/ raw/ vorbis/ vpx/ xaac/
+        opus/ raw/ vorbis/ vpx/ xaac/ xhe_aac/
       sfplugin/              # Codec2-to-Stagefright bridge
         CCodec.cpp           # 3849 lines
         CCodecBufferChannel.cpp  # 3428 lines
@@ -22069,7 +22425,7 @@ system -- audio and video, encoder and decoder, hardware and software.
 The class is defined with the following factory methods:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 1214
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 1293
 // static
 sp<MediaCodec> MediaCodec::CreateByType(
         const sp<ALooper> &looper, const AString &mime, bool encoder,
@@ -22145,11 +22501,11 @@ stateDiagram-v2
     end note
 ```
 
-The state transitions are driven by internal message codes defined at line 862 of
+The state transitions are driven by internal message codes defined at line 912 of
 `MediaCodec.cpp`:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 862
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 912
 enum {
     kWhatFillThisBuffer      = 'fill',
     kWhatDrainThisBuffer     = 'drai',
@@ -22180,12 +22536,12 @@ of the Stagefright framework. These codes make debug logs human-readable: when y
 
 ### 16.2.2 MediaCodec Initialization
 
-The `init()` method (line 2531) performs the crucial step of selecting and instantiating
+The `init()` method (line 2606) performs the crucial step of selecting and instantiating
 the underlying codec implementation. It bridges between the abstract `MediaCodec` API
 and concrete codec backends:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 2531
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 2606
 status_t MediaCodec::init(const AString &name) {
     ScopedTrace trace(ATRACE_TAG, "MediaCodec::Init#native");
     status_t err = mResourceManagerProxy->init();
@@ -22247,11 +22603,11 @@ There are several important details here:
 
 ### 16.2.3 Configuration and Resource Management
 
-The `configure()` method (line 2856) sets up the codec with format parameters and an
+The `configure()` method (line 2997) sets up the codec with format parameters and an
 output surface:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 2856
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 2997
 status_t MediaCodec::configure(
         const sp<AMessage> &format,
         const sp<Surface> &surface,
@@ -22345,8 +22701,8 @@ application's visibility and importance to the user.
 
 ### 16.2.5 MediaCodec Metrics and Telemetry
 
-MediaCodec implements extensive telemetry, as evidenced by the approximately 100 metric
-key constants at the top of the file (lines 111-287). These metrics cover:
+MediaCodec implements extensive telemetry, as evidenced by the roughly 140 metric
+key constants at the top of the file (lines 111-286). These metrics cover:
 
 - **Codec identity**: name, MIME type, mode (audio/video/image), encoder/decoder,
   hardware/software, secure, tunneled
@@ -22388,11 +22744,11 @@ graph LR
     RO -->|"return to pool"| DTB
 ```
 
-The `BufferCallback` class (line 968) translates between the codec's internal buffer
+The `BufferCallback` class (line 1047) translates between the codec's internal buffer
 notifications and the `AMessage` events that drive MediaCodec's state machine:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 984
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 1063
 void BufferCallback::onInputBufferAvailable(
         size_t index, const sp<MediaCodecBuffer> &buffer) {
     sp<AMessage> notify(mNotify->dup());
@@ -22605,7 +22961,7 @@ Throughout the media framework, communication between components uses the `AMess
 This pattern appears in nearly every method of MediaCodec. For example, `start()`:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3552
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3683
 status_t MediaCodec::start() {
     ScopedTrace trace(ATRACE_TAG, "MediaCodec::start#native");
     sp<AMessage> msg = new AMessage(kWhatStart, this);
@@ -22630,8 +22986,8 @@ on the looper thread, ensuring thread-safe access to MediaCodec's state.
 ### 16.3.1 Architecture and Design Philosophy
 
 Codec2 (often abbreviated C2) is Android's modern codec framework, designed to replace
-the aging OMX IL interface. Located in `frameworks/av/media/codec2/`, it comprises 11
-subdirectories encompassing the core API, 23+ software codec families, a HAL layer, and
+the aging OMX IL interface. Located in `frameworks/av/media/codec2/`, it comprises 10
+subdirectories encompassing the core API, 21 software codec families, a HAL layer, and
 the `sfplugin` bridge to the Stagefright framework.
 
 ```mermaid
@@ -22656,7 +23012,7 @@ graph TD
     end
 
     subgraph "Software Components (components/)"
-        K["23+ codec families"]
+        K["21 codec families"]
     end
 
     A --> B
@@ -22780,20 +23136,23 @@ static uint32_t convertFlags(uint32_t flags, bool toC2) {
 }
 ```
 
-The `SurfaceCallbackHandler` (line 121) manages asynchronous surface buffer events:
+The `SurfaceCallbackHandler` (line 203) manages asynchronous surface buffer events:
 
 ```cpp
-// frameworks/av/media/codec2/sfplugin/CCodecBufferChannel.cpp, line 121
+// frameworks/av/media/codec2/sfplugin/CCodecBufferChannel.cpp, line 203
 class SurfaceCallbackHandler {
 public:
     enum callback_type_t {
         ON_BUFFER_RELEASED = 0,
-        ON_BUFFER_ATTACHED
+        ON_BUFFER_ATTACHED,
+        ON_BUFFER_DETACHED,
+        ON_BUFFERS_REMOVED,
     };
 
     void post(callback_type_t callback,
             std::shared_ptr<Codec2Client::Component> component,
-            uint32_t generation) {
+            uint32_t generation,
+            const std::vector<uint64_t>& removedBufferIds = {}) {
         // ...post callback to handler thread...
     }
 };
@@ -22807,8 +23166,10 @@ constexpr size_t kSmoothnessFactor = 4;
 const static size_t kDequeueTimeoutNs = 0;
 ```
 
-The `kSmoothnessFactor` of 4 means the buffer channel allocates 4x the minimum number
-of buffers needed, providing headroom for smooth operation under varying decode latencies.
+The `kSmoothnessFactor` of 4 is additive headroom: the buffer channel sizes its slot
+counts as the codec's declared input, pipeline, and output delays plus 4 extra slots
+(e.g. `numInputSlots = inputDelayValue + pipelineDelayValue + kSmoothnessFactor`),
+providing headroom for smooth operation under varying decode latencies.
 
 ### 16.3.4 The C2InputSurface Wrapper
 
@@ -22846,13 +23207,14 @@ then connects it directly to the Codec2 component. This enables zero-copy encodi
 paths where camera or GPU output is fed directly into the encoder without CPU-side
 buffer copies.
 
-### 16.3.5 Software Codec Components (23+ Families)
+### 16.3.5 Software Codec Components (21 Families)
 
 The `frameworks/av/media/codec2/components/` directory contains Google's software codec
 implementations, organized by codec family. Each component follows the naming convention
 `c2.android.<codec>.<encoder|decoder>`.
 
-The full set of 23+ component families:
+The full set of 21 component families, plus the shared `base/` classes they all build on
+(the directory also holds `cmds/` and `tests/`, which contain tooling rather than codecs):
 
 | Directory | Codec(s) | Type | Source Files |
 |---|---|---|---|
@@ -22876,6 +23238,7 @@ The full set of 23+ component families:
 | `vorbis/` | Vorbis | Audio Dec | `C2SoftVorbisDec.cpp` |
 | `vpx/` | VP8, VP9 | Video Dec+Enc | `C2SoftVpxDec.cpp`, `C2SoftVp8Enc.cpp`, `C2SoftVp9Enc.cpp` |
 | `xaac/` | xHE-AAC | Audio Dec | `C2SoftXaacDec.cpp` |
+| `xhe_aac/` | xHE-AAC | Audio Enc | `C2SoftXheAacEnc.cpp` |
 | `base/` | (Base classes) | Utility | `SimpleC2Component.cpp`, `SimpleC2Interface.cpp` |
 
 Notable observations:
@@ -23015,7 +23378,7 @@ graph TD
     C2SP --> Ex2["C2StreamFrameRateInfo"]
     C2SP --> Ex3["C2StreamProfileLevelInfo"]
     C2PP --> Ex4["C2PortActualDelayTuning"]
-    C2PP --> Ex5["C2PortBlockSizeTuning"]
+    C2PP --> Ex5["C2PortRequestedDelayTuning"]
     C2GP --> Ex6["C2ComponentNameSetting"]
 ```
 
@@ -23048,8 +23411,8 @@ The fundamental unit of processing in Codec2 is the `C2Work` structure:
 ```mermaid
 graph TD
     W["C2Work"]
-    W --> WI["C2WorkInput<br/>- ordinal (timestamp, frameIndex)<br/>- buffers (input data)<br/>- flags"]
-    W --> WL["C2WorkletList"]
+    W --> WI["C2FrameData input<br/>- ordinal (timestamp, frameIndex)<br/>- buffers (input data)<br/>- flags"]
+    W --> WL["std::list&lt;C2Worklet&gt; worklets"]
     WL --> WK["C2Worklet<br/>- output (C2FrameData)<br/>- failures"]
     WK --> FD["C2FrameData<br/>- ordinal<br/>- buffers (output data)<br/>- configUpdate"]
 ```
@@ -23062,9 +23425,9 @@ buffer-matching logic required by OMX.
 
 ### 16.3.12 APV: The Advanced Professional Video Codec
 
-Android 17 adds a software codec for APV (Advanced Professional Video), the intra-only
-mezzanine codec that Samsung contributed and that the Alliance for Open Media has since
-adopted. APV targets professional capture and editing workflows where every frame is a
+Android 16 (Baklava, API 36) added a software codec for APV (Advanced Professional
+Video), the intra-only mezzanine codec that Samsung contributed and that the Alliance for
+Open Media has since adopted; the 17 cycle has continued to extend it. APV targets professional capture and editing workflows where every frame is a
 keyframe: there is no inter-frame prediction, so each picture is independently decodable,
 which makes scrubbing, trimming, and frame-accurate editing cheap at the cost of a much
 higher bitrate. The Codec2 component lives in `frameworks/av/media/codec2/components/apv/`
@@ -23085,9 +23448,10 @@ constexpr uint32_t kDefaultOutputDelay = 8;
 constexpr char COMPONENT_NAME[] = "c2.android.apv.encoder";
 ```
 
-The decoder declares a single supported profile, the 4:2:2 10-bit profile
+The encoder declares a single supported profile, the 4:2:2 10-bit profile
 (`C2Config::PROFILE_APV_422_10`), reflecting APV's positioning as a high-fidelity capture
-format rather than a delivery format:
+format rather than a delivery format (the decoder makes the matching declaration as a
+`C2StreamProfileLevelInfo::input` parameter in `C2SoftApvDec.cpp`, lines 88-92):
 
 ```cpp
 // frameworks/av/media/codec2/components/apv/C2SoftApvEnc.cpp, line 119
@@ -23138,13 +23502,18 @@ Two things stand out in that declaration. The `enabled="false"` default means a 
 ships APV support only if its codec list overlay turns it on; APV is opt-in rather than
 universal. And the `variant="!slow-cpu"` attribute excludes low-end CPUs, because
 software-decoding a 10-bit 4:2:2 intra-only stream at the bitrates APV uses (up to
-240 Mbit/s in the limit above) is expensive. The `apv_software_codec_cq` flag adds a
-constant-quality rate-control mode for the encoder.
+240 Mbit/s in the limit above) is expensive. The `minsdk="36"` attribute is the clearest
+marker of when the codec arrived: APV shipped with Android 16, not with 17. What the 17
+cycle adds is the `apv_software_codec_cq` flag, a constant-quality rate-control mode for
+the encoder, which is why the encoder's codec-list entry now carries a
+`<Limit name="quality" range="0-100" default="90" />` where Android 16 declared only
+VBR bitrate modes.
 
 ### 16.3.13 IAMF: Immersive Audio Decoding
 
-The second new Codec2 family in Android 17 is a decoder for IAMF, the Alliance for Open
-Media's Immersive Audio Model and Formats standard. IAMF describes scene-based and
+The other recently added Codec2 family, also introduced in Android 16 (API 36), is a
+decoder for IAMF, the Alliance for Open Media's Immersive Audio Model and Formats
+standard. IAMF describes scene-based and
 channel-based immersive audio (think Dolby-Atmos-style object/bed mixes, but royalty
 free) as a tree of "audio elements" and "mix presentations" carried in OBUs (Open
 Bitstream Units, the same container concept AV1 uses). The component lives in
@@ -23205,6 +23574,11 @@ support and IAMF profile limits inline:
 </MediaCodec>
 ```
 
+The `minsdk="36"` again dates the component to Android 16. The visible 17-cycle change
+here is the dropped `variant="!slow-cpu"` attribute: Android 16 excluded low-end CPUs
+from the IAMF decoder, and the entry no longer does, so the decoder is now offered on
+every device that enables it.
+
 The XML comments track real implementation limits: at this stage the decoder handles
 the Opus and PCM substream codecs, and the `iamf_aac_flac` flag in
 `swcodec_flags.aconfig` is the gate for extending it to AAC and FLAC substreams. The
@@ -23238,8 +23612,13 @@ The module lives in `frameworks/av/media/module/libapexcodecs/`, and its public 
 As the comment says, the `ApexCodec_*` types deliberately mirror the Codec2 vocabulary
 (`ApexCodec_Status`, `ApexCodec_Configurable`, linear/graphic buffers, supported-values
 queries), so the same parameter and buffer model carries over without a HAL hop. The
-codec implementations are thin C2-to-ApexCodec adapters: `C2ApexAacDec` and
-`C2ApexOpusDec` in the same directory wrap the existing AAC and Opus software decoders.
+codec implementations are thin C2-to-ApexCodec adapters, but the two that ship wrap very
+different back ends. `C2ApexOpusDec` wraps the existing libopus decoder, built for this
+path as `libopus_lfi` (`external/libopus/Android.bp`, line 426). `C2ApexAacDec` instead
+wraps a *new* Rust AAC decoder: `frameworks/av/media/module/libapexcodecs/Android.bp`
+(lines 108-113) statically links `libaac` and `libaac_ffi`, and `external/aac/rust/Android.bp`
+defines `libaac` as a `rust_ffi_static` crate. That is why its gating flag is named
+`rust_aac_software_decoder` rather than something codec-generic.
 
 Which codecs are eligible is decided at runtime in `ApexCodecsStoreImpl.cpp`, gated by
 flags and platform constraints:
@@ -23272,8 +23651,10 @@ The gating is conservative: the in-process Opus decoder is admitted only on 64-b
 `frameworks/av/media/aconfig/codec_fwk.aconfig`) control whether `MediaCodecList` and the
 Codec2 client (`frameworks/av/media/codec2/hal/client/client.cpp`) advertise and route to
 the in-process variant at all. `frameworks/av/media/libstagefright/MediaCodecList.cpp` and
-`frameworks/av/media/libmedia/MediaCodecInfo.cpp` carry the `in_process_sw_audio_codec_support()`
-checks that decide which list a given component lands in.
+`frameworks/av/media/codec2/hal/client/client.cpp` carry the `in_process_sw_audio_codec_support()`
+checks that decide which list a given component lands in
+(`frameworks/av/media/libmedia/MediaCodecInfo.cpp` checks the related
+`in_process_sw_codec_lfi()` flag instead).
 
 Running a codec inside the client process re-opens the security question that the HAL
 process was originally meant to answer, so Android 17 pairs the in-process path with a
@@ -23429,9 +23810,12 @@ for (const sp<Client> &c : clients) {
 
 ### 16.4.2 NuPlayer: The Default Media Player
 
-NuPlayer is the default `MediaPlayerBase` implementation used for all local and streaming
-media playback. Located in `frameworks/av/media/libmediaplayerservice/nuplayer/`, it
-comprises multiple source files totaling over 8,000 lines:
+NuPlayer is the engine behind the default player used for all local and streaming
+media playback. The `MediaPlayerBase`/`MediaPlayerInterface` implementation that
+MediaPlayerService actually instantiates is `NuPlayerDriver`; NuPlayer itself is an
+`AHandler` driven by it. Located in
+`frameworks/av/media/libmediaplayerservice/nuplayer/`, the player comprises multiple
+source files totaling over 8,000 lines:
 
 | File | Lines | Purpose |
 |---|---|---|
@@ -23816,8 +24200,7 @@ CameraService::CameraService(
         mNumberOfCameras(0),
         mNumberOfCamerasWithoutSystemCamera(0),
         mSoundRef(0), mInitialized(false),
-        mAudioRestriction(
-            hardware::camera2::ICameraDeviceUser::AUDIO_RESTRICTION_NONE) {
+        mAudioRestriction(ICameraDeviceUser::AudioRestriction::NONE) {
     ALOGI("CameraService started (pid=%d)", getpid());
 }
 ```
@@ -24038,19 +24421,19 @@ auto [deviceId, mappedCameraId] =
 ### 16.5.6 Camera NDK
 
 The Camera NDK (Native Development Kit) provides C APIs for camera access from native
-code, used by game engines and cross-platform frameworks. It wraps the Camera2 API
-through JNI:
+code, used by game engines and cross-platform frameworks. It is not a JNI wrapper
+around the Java Camera2 API: `libcamera2ndk` (`frameworks/av/camera/ndk/`) is a native
+client that obtains the `hardware::ICameraService` binder interface directly (the same
+interface the Java API uses) and talks to CameraService over Binder:
 
 ```mermaid
 graph LR
     NDK["NDK Camera API<br/>(ACameraManager, ACaptureRequest)"]
-    JNI["JNI Bridge"]
-    Java["Camera2 Java API"]
+    ICS["hardware::ICameraService<br/>(Binder)"]
     CS["CameraService"]
 
-    NDK --> JNI
-    JNI --> Java
-    Java --> CS
+    NDK --> ICS
+    ICS --> CS
 ```
 
 The NDK camera APIs include:
@@ -24514,7 +24897,7 @@ graph TD
     MCL --> MCI
     MCI --> VC
     MCI --> AC
-    MP --> MCL
+    MP --> SR["StagefrightRecorder<br/>(recording configuration)"]
     MCL --> FMC
     FMC --> Rank
 ```
@@ -24538,7 +24921,7 @@ The codec capability system supports feature flags that indicate optional capabi
 | `multiple-frames` | Supports batching multiple frames per buffer |
 | `partial-frame` | Supports partial frame input |
 | `frame-parsing` | Supports frame boundary detection |
-| `dynamic-timestamp` | Supports changing timestamps during encoding |
+| `dynamic-timestamp` | Output buffer timestamps derive from the input buffer that produced them, not from the first input buffer |
 
 These features are declared in `media_codecs.xml` and queried through
 `MediaCodecInfo.CodecCapabilities.isFeatureSupported()`.
@@ -24572,7 +24955,7 @@ graph LR
     end
 
     subgraph "ALooper Thread"
-        Q["Message Queue<br/>(priority-ordered)"]
+        Q["Message Queue<br/>(time-ordered by whenUs)"]
         DISP["Dispatch Loop"]
         H1["Handler A<br/>onMessageReceived()"]
         H2["Handler B<br/>onMessageReceived()"]
@@ -24635,13 +25018,15 @@ MediaCodec classifies codecs into three domains, each with different behavior:
 | Domain | Looper | CPU Boost | Battery | Resource Type |
 |---|---|---|---|---|
 | `DOMAIN_VIDEO` | Dedicated `CodecLooper` | HDR at 1080p+ | Tracked | HW/SW Video Codec |
-| `DOMAIN_AUDIO` | Shared main looper | Never | Tracked | HW/SW Audio Codec |
+| `DOMAIN_AUDIO` | Shared main looper | Never | Not tracked | HW/SW Audio Codec |
 | `DOMAIN_IMAGE` | Shared main looper | Never | Not tracked | HW/SW Image Codec |
 
 Video codecs get a dedicated looper thread because video processing is latency-
 sensitive: a stall in the codec's message processing would directly cause frame
 drops. Audio and image codecs share the main looper because their timing
-requirements are less stringent.
+requirements are less stringent. Battery tracking is likewise video-only: the
+`BatteryChecker` is instantiated only when `mDomain == DOMAIN_VIDEO`, and every
+call site is null-guarded, so audio and image codecs never report battery activity.
 
 ### 16.8.3 Secure Codec Path (DRM)
 
@@ -24732,7 +25117,7 @@ internal buffering:
 ```
 kCodecNumLowLatencyModeOn    - Times low-latency was enabled
 kCodecNumLowLatencyModeOff   - Times low-latency was disabled
-kCodecFirstFrameIndexLowLatencyOn - Frame index when first enabled
+kCodecFirstFrameIndexLowLatencyModeOn - Frame index when first enabled
 ```
 
 When low-latency mode is active:
@@ -24794,12 +25179,12 @@ graph TD
 
     subgraph "mediaserver"
         MPS["MediaPlayerService"]
-        MRS["MediaRecorderService"]
+        MRS["MediaRecorderClient /<br/>StagefrightRecorder"]
         RMS["ResourceManagerService"]
         NP2["NuPlayer"]
     end
 
-    subgraph "media.codec (vendor)"
+    subgraph "vendor codec service"
         C2HAL["Codec2 AIDL HAL"]
         VENDOR["Vendor Codec Plugins"]
     end
@@ -24811,6 +25196,9 @@ graph TD
 
     subgraph "cameraserver"
         CAMSVC["CameraService"]
+    end
+
+    subgraph "camera provider (vendor)"
         CAMHAL["Camera HAL"]
     end
 
@@ -24825,6 +25213,7 @@ graph TD
     JNI -->|"AIDL"| C2HAL
 
     MPS --> NP2
+    MPS --> MRS
     NP2 -->|"Binder"| EXTSVC
     NP2 -->|"AIDL"| C2HAL
 
@@ -24842,7 +25231,7 @@ graph TD
 Each process boundary represents a security isolation boundary:
 
 - **App to mediaserver**: Binder IPC with UID/PID verification
-- **mediaserver to media.codec**: AIDL HAL with SELinux policy
+- **mediaserver to the vendor codec service**: AIDL HAL with SELinux policy
 - **mediaserver to media.extractor**: Binder IPC, sandboxed process
 - **App to cameraserver**: Binder IPC with camera permission check
 - **cameraserver to Camera HAL**: AIDL/HIDL with vendor isolation
@@ -24878,19 +25267,19 @@ All metrics keys are prefixed with `android.media.mediacodec.`:
 | Identity | `tunneled` | int32 | 0=normal, 1=tunneled |
 | Resolution | `width` | int32 | Video width |
 | Resolution | `height` | int32 | Video height |
-| Resolution | `rotation` | int32 | 0/90/180/270 |
-| Performance | `frame-rate` | int32 | Frame rate |
-| Performance | `operating-rate` | int32 | Operating rate |
+| Resolution | `rotation-degrees` | int32 | 0/90/180/270 |
+| Performance | `frame-rate` | double | Frame rate |
+| Performance | `operating-rate` | double | Operating rate |
 | Performance | `bitrate` | int32 | Bitrate |
 | Performance | `bitrate_mode` | string | CQ/VBR/CBR |
 | Latency | `latency.max` | int64 | Max latency (us) |
 | Latency | `latency.min` | int64 | Min latency (us) |
 | Latency | `latency.avg` | int64 | Avg latency (us) |
-| Latency | `latency.n` | int32 | Sample count |
-| Quality | `freeze-count` | int32 | Freeze events |
-| Quality | `freeze-score` | double | Freeze severity |
-| Quality | `judder-count` | int32 | Judder events |
-| Quality | `judder-score` | double | Judder severity |
+| Latency | `latency.n` | int64 | Sample count |
+| Quality | `freeze-count` | int64 | Freeze events |
+| Quality | `freeze-score` | int64 | Freeze severity |
+| Quality | `judder-count` | int64 | Judder events |
+| Quality | `judder-score` | int64 | Judder severity |
 | Render | `frames-released` | int64 | Total released |
 | Render | `frames-rendered` | int64 | Actually displayed |
 | Render | `frames-dropped` | int64 | Dropped (late) |
@@ -24907,7 +25296,7 @@ To fully understand MediaCodec, we must trace a buffer through every stage. The
 #### Input Buffer Queuing
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3690
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3831
 status_t MediaCodec::queueInputBuffer(
         size_t index,
         size_t offset,
@@ -24938,8 +25327,10 @@ The parameters are:
 - **offset**: Byte offset within the buffer where valid data starts
 - **size**: Number of valid data bytes
 - **presentationTimeUs**: The presentation timestamp in microseconds
-- **flags**: Bitfield including `BUFFER_FLAG_CODEC_CONFIG`, `BUFFER_FLAG_END_OF_STREAM`,
-  `BUFFER_FLAG_KEY_FRAME`, `BUFFER_FLAG_DECODE_ONLY`
+- **flags**: Bitfield including `BUFFER_FLAG_CODECCONFIG`, `BUFFER_FLAG_EOS`,
+  `BUFFER_FLAG_SYNCFRAME`, `BUFFER_FLAG_DECODE_ONLY` (the Java API exposes the
+  same bits under longer names such as `BUFFER_FLAG_CODEC_CONFIG` and
+  `BUFFER_FLAG_END_OF_STREAM`)
 
 #### Large Frame Audio (Multi-Access-Unit Buffers)
 
@@ -24947,7 +25338,7 @@ A newer API supports queuing multiple access units in a single buffer, which is
 particularly important for large-frame audio codecs:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3713
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3854
 status_t MediaCodec::queueInputBuffers(
         size_t index,
         size_t offset,
@@ -24989,7 +25380,7 @@ ANY access unit has them (via the OR operation). The expression
 For DRM-protected content, the secure queuing path includes encryption metadata:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3757
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3898
 status_t MediaCodec::queueSecureInputBuffer(
         size_t index,
         size_t offset,
@@ -25022,7 +25413,7 @@ encrypted and clear blocks.
 For Codec2 components, there is a direct path that avoids legacy buffer conversion:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3847
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3988
 status_t MediaCodec::queueBuffer(
         size_t index,
         const std::shared_ptr<C2Buffer> &buffer,
@@ -25051,7 +25442,7 @@ can change encoder parameters (like bitrate) on a per-frame basis.
 The `dequeueOutputBuffer` method returns decoded data:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3939
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4080
 status_t MediaCodec::dequeueOutputBuffer(
         size_t *index,
         size_t *offset,
@@ -25092,7 +25483,7 @@ The output returns five pieces of information:
 Decoded buffers can be rendered to a surface or simply released:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3965
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4106
 status_t MediaCodec::renderOutputBufferAndRelease(size_t index) {
     ScopedTrace(ATRACE_TAG, "MediaCodec::renderOutputBufferAndRelease#native");
     sp<AMessage> msg = new AMessage(kWhatReleaseOutputBuffer, this);
@@ -25130,11 +25521,11 @@ frame pacing for smooth video playback.
 
 ### 16.8.12 The onMessageReceived Handler
 
-The central message dispatcher (line 4469) is the heart of MediaCodec's asynchronous
+The central message dispatcher (line 4610) is the heart of MediaCodec's asynchronous
 architecture. It processes all state transitions and buffer flow:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4469
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4610
 void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
     switch (msg->what()) {
         case kWhatCodecNotify:
@@ -25169,7 +25560,7 @@ triggering special recovery logic that attempts to reconnect with the codec serv
 MediaCodec integrates with Android's battery tracking system through `BatteryChecker`:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4256
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4397
 BatteryChecker::BatteryChecker(const sp<AMessage> &msg, int64_t timeoutUs)
     : mTimeoutUs(timeoutUs)
     , mLastActivityTimeUs(-1ll)
@@ -25203,7 +25594,7 @@ by codecs that are configured but not actively processing data.
 Additionally, HDR content at high resolutions triggers a CPU boost request:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4230
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4371
 void MediaCodec::requestCpuBoostIfNeeded() {
     if (mCpuBoostRequested) {
         return;
@@ -25241,7 +25632,7 @@ tone-mapping operation required for HDR-to-SDR conversion is computationally exp
 MediaCodec exposes vendor-specific parameters through a discovery and subscription API:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4208
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4349
 status_t MediaCodec::querySupportedVendorParameters(
         std::vector<std::string> *names) {
     return mCodec->querySupportedParameters(names);
@@ -25275,7 +25666,7 @@ The internal `handleDequeueOutputBuffer` method reveals the complexity of synchr
 buffer management:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4371
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4512
 MediaCodec::DequeueOutputResult MediaCodec::handleDequeueOutputBuffer(
         const sp<AReplyToken> &replyID, bool newRequest) {
     if (!isExecuting()) {
@@ -25352,7 +25743,7 @@ When a codec needs to flush or release while holding buffered frames, MediaCodec
 creates a temporary `ReleaseSurface` to drain those buffers:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 784
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 834
 class MediaCodec::ReleaseSurface {
     public:
         explicit ReleaseSurface(uint64_t usage) {
@@ -25459,7 +25850,7 @@ provides:
 
 1. **Thread management**: A work processing thread that dequeues `C2Work` items
 2. **Buffer pool management**: Integration with the Codec2 buffer allocator system
-3. **Standard lifecycle**: `start()`, `stop()`, `flush()`, `reset()`, `release()`
+3. **Standard lifecycle**: `start()`, `stop()`, `flush_sm()`, `reset()`, `release()`
 4. **Error propagation**: Mapping from codec-specific errors to `c2_status_t`
 
 The `SimpleInterface` companion class provides the `IntfImpl` pattern for parameter
@@ -25468,12 +25859,12 @@ declaration:
 ```mermaid
 classDiagram
     class SimpleC2Component {
-        #process(C2Work*, FlushedWork*)
-        #drain(drain_mode_t, C2Work*)
+        #process(C2Work, C2BlockPool)
+        #drain(drainMode, C2BlockPool)
         +start()
         +stop()
-        +flush()
-        +queue(C2WorkList*)
+        +flush_sm()
+        +queue_nb(list~C2Work~)
     }
 
     class SimpleInterface {
@@ -25483,13 +25874,13 @@ classDiagram
 
     class C2SoftAvcDec {
         -IntfImpl mIntf
-        #process(C2Work*, FlushedWork*)
-        #drain(drain_mode_t, C2Work*)
+        #process(C2Work, C2BlockPool)
+        #drain(drainMode, C2BlockPool)
     }
 
     class C2SoftHevcDec {
         -IntfImpl mIntf
-        #process(C2Work*, FlushedWork*)
+        #process(C2Work, C2BlockPool)
     }
 
     SimpleC2Component <|-- C2SoftAvcDec
@@ -25653,8 +26044,8 @@ The device3 directory includes several specialized stream types:
 ```mermaid
 classDiagram
     class Camera3Stream {
-        +start()
-        +stop()
+        +startConfiguration()
+        +finishConfiguration()
         +getBuffer()
         +returnBuffer()
     }
@@ -25670,9 +26061,10 @@ classDiagram
     }
 
     class Camera3SharedOutputStream {
-        -Vector~sp~Surface~~ mSurfaces
-        +attachSurface()
-        +detachSurface()
+        -array~SurfaceHolderUniqueId~ mSurfaceUniqueIds
+        +setConsumers()
+        +updateStream()
+        +getSurfaceId()
     }
 
     Camera3Stream <|-- Camera3OutputStream
@@ -25740,26 +26132,34 @@ is one of the most exploited attack surfaces:
 graph TD
     subgraph "App Process"
         MP["MediaPlayer"]
-        MR["MediaRecorder"]
+        NME["NuMediaExtractor<br/>(NDK/Java MediaExtractor)"]
     end
 
     subgraph "MediaServer Process"
-        NP["NuPlayer"]
-        NME["NuMediaExtractor"]
+        NP["NuPlayer<br/>(GenericSource)"]
     end
 
     subgraph "Extractor Process (sandboxed)"
-        MEF["MediaExtractorFactory"]
+        MEF["IMediaExtractorService /<br/>MediaExtractorFactory"]
         EP["Extractor Plugins<br/>(loaded as .so)"]
     end
 
     MP --> NP
-    NP --> NME
+    NP -->|"Binder IPC"| MEF
     NME -->|"Binder IPC"| MEF
     MEF --> EP
 
     style EP fill:#ffcdd2
 ```
+
+NuPlayer's `GenericSource` reaches the sandboxed extractor process directly: it
+obtains the `media.extractor` binder service, casts it to `IMediaExtractorService`,
+and calls `makeIDataSource()`
+(`frameworks/av/media/libmediaplayerservice/nuplayer/GenericSource.cpp`), while
+`MediaExtractorFactory` calls `makeExtractor()` over the same interface. The
+`NuMediaExtractor` class is not part of NuPlayer's pipeline; it backs the NDK and
+Java `MediaExtractor` APIs in the application process and crosses the same Binder
+boundary to the extractor service.
 
 The extractor process has:
 
@@ -25787,8 +26187,10 @@ sequenceDiagram
     participant DL as dlopen/dlsym
 
     Boot->>MES: Start extractor service
-    MES->>MEF: RegisterDefaultPlugins()
+    MES->>MEF: LoadExtractors()
+    MEF->>DL: Scan /apex/com.android.media/lib64/extractors/
     MEF->>DL: Scan /system/lib64/extractors/
+    MEF->>DL: Scan /system_ext/lib64/extractors/
     DL-->>MEF: libmp4extractor.so
     DL-->>MEF: libmkvextractor.so
     DL-->>MEF: libmp3extractor.so
@@ -25808,6 +26210,10 @@ sequenceDiagram
     MEF->>MEF: Register in plugin list
 ```
 
+`MediaExtractorFactory::LoadExtractors()` calls the internal `RegisterExtractors()`
+once per plugin directory, scanning the media APEX path first (inside the
+`com_android_media` linker namespace) and then the `/system` and `/system_ext`
+locations — on current builds the extractors ship in the `com.android.media` APEX.
 Each extractor shared library exports a single symbol `GETEXTRACTORDEF` that returns
 an `ExtractorDef` structure containing:
 
@@ -26076,14 +26482,17 @@ The dump output categorizes codecs by media type. For example, under
 ```
   Decoder "c2.android.avc.decoder" supports
     aliases: []
-    attributes: 0x0
+    attributes: 0x4
       encoder: 0, vendor: 0, software-only: 1, hw-accelerated: 0
     owner: "codec2::software"
     rank: 512
 ```
 
 The rank value determines codec priority: lower rank means higher priority. Hardware
-codecs typically have rank 0-256, while software codecs have rank 512+.
+codec ranks come from the device's `media_codecs.xml`; the platform's software
+codecs default to rank 512 for video and image components but rank 8 for audio
+components (`frameworks/av/media/codec2/vndk/C2Store.cpp`), so software audio
+codecs often outrank hardware alternatives.
 
 ### 16.9.2 Trace a Video Decode Session
 
@@ -26192,7 +26601,7 @@ for (MediaCodecInfo info : codecList.getCodecInfos()) {
 
                 // Check if 4K@60fps is supported
                 boolean supports4K60 =
-                    vcaps.areSizeAndRateSupported(3840, 2160, 62.0);
+                    vcaps.areSizeAndRateSupported(3840, 2160, 60.0);
 
                 Log.d("Codec", info.getName() + ": " + type
                     + " widths=" + widths + " heights=" + heights
@@ -26220,16 +26629,19 @@ mm
 ### 16.9.8 Examine Codec HAL Services
 
 ```bash
-# List running Codec2 HAL services
-adb shell lshal | grep c2
+# List running Codec2 HAL services (AIDL)
+adb shell dumpsys -l | grep c2
 
 # Typical output:
-# android.hardware.media.c2@1.0::IComponentStore/software
-# android.hardware.media.c2@1.0::IComponentStore/default
+# android.hardware.media.c2.IComponentStore/software
+# android.hardware.media.c2.IComponentStore/default
 ```
 
 The "software" store provides Google's software codecs, while "default" is typically the
-vendor's hardware codec store.
+vendor's hardware codec store. On current builds the stores are registered as AIDL
+services (the software store's HIDL wrapper is deprecated and skipped unless declared
+in the VINTF manifest), so `adb shell lshal | grep c2` shows a
+`android.hardware.media.c2@1.x::IComponentStore` entry only on legacy HIDL devices.
 
 ### 16.9.9 Trigger Codec Reclamation
 
@@ -26376,7 +26788,7 @@ In the resulting trace, key spans to look for:
 | `MediaCodec::start#native` | MediaCodec | Start latency |
 | `MediaCodec::queueInputBuffer#native` | MediaCodec | Input queue time |
 | `MediaCodec::dequeueOutputBuffer#native` | MediaCodec | Output dequeue time |
-| `CCodec::onWorkDone` | CCodec | HAL processing complete |
+| `CCodec::msg-onWorkDone` | CCodec | HAL processing complete |
 | `queueBuffer` | SurfaceFlinger | Frame submitted to compositor |
 | `onMessageReceived` | NuPlayer | Player message processing |
 
@@ -26440,11 +26852,11 @@ correlation of logs, metrics, and resource manager entries across the system.
 | File | Path | Lines |
 |---|---|---|
 | MediaCodec.cpp | `frameworks/av/media/libstagefright/MediaCodec.cpp` | 8,234 |
-| ACodec.cpp | `frameworks/av/media/libstagefright/ACodec.cpp` | 9,459 |
+| ACodec.cpp | `frameworks/av/media/libstagefright/ACodec.cpp` | 9,458 |
 | MPEG4Writer.cpp | `frameworks/av/media/libstagefright/MPEG4Writer.cpp` | 6,070 |
 | CCodec.cpp | `frameworks/av/media/codec2/sfplugin/CCodec.cpp` | 3,849 |
 | CCodecBufferChannel.cpp | `frameworks/av/media/codec2/sfplugin/CCodecBufferChannel.cpp` | 3,428 |
-| MediaPlayerService.cpp | `frameworks/av/media/libmediaplayerservice/MediaPlayerService.cpp` | 3,111 |
+| MediaPlayerService.cpp | `frameworks/av/media/libmediaplayerservice/MediaPlayerService.cpp` | 3,114 |
 | StagefrightRecorder.cpp | `frameworks/av/media/libmediaplayerservice/StagefrightRecorder.cpp` | 2,759 |
 | NuPlayer.cpp | `frameworks/av/media/libmediaplayerservice/nuplayer/NuPlayer.cpp` | 3,265 |
 | NuPlayerRenderer.cpp | `frameworks/av/media/libmediaplayerservice/nuplayer/NuPlayerRenderer.cpp` | 2,239 |
@@ -26452,7 +26864,7 @@ correlation of logs, metrics, and resource manager entries across the system.
 | NuMediaExtractor.cpp | `frameworks/av/media/libstagefright/NuMediaExtractor.cpp` | 896 |
 | MediaExtractorFactory.cpp | `frameworks/av/media/libstagefright/MediaExtractorFactory.cpp` | 395 |
 | VideoCapabilities.cpp | `frameworks/av/media/libmedia/VideoCapabilities.cpp` | 1,966 |
-| MediaProfiles.cpp | `frameworks/av/media/libmedia/MediaProfiles.cpp` | 1,512 |
+| MediaProfiles.cpp | `frameworks/av/media/libmedia/MediaProfiles.cpp` | 1,521 |
 
 ---
 
@@ -26464,11 +26876,11 @@ lines of core C++ code across five major subsystems:
 1. **MediaCodec** (8,234 lines) provides the central state machine and API surface,
    with sophisticated resource management, metrics collection, and retry logic.
 
-2. **ACodec** (9,459 lines) bridges to legacy OMX codecs, while **CCodec** (3,849
+2. **ACodec** (9,458 lines) bridges to legacy OMX codecs, while **CCodec** (3,849
    lines) bridges to the modern Codec2 framework with its typed parameter system,
-   work-based processing model, and 23+ software codec families.
+   work-based processing model, and 21 software codec families.
 
-3. **MediaPlayerService** (3,111 lines) and **NuPlayer** (3,265+ lines) orchestrate
+3. **MediaPlayerService** (3,114 lines) and **NuPlayer** (3,265+ lines) orchestrate
    the complete playback pipeline from extraction through decoding to synchronized
    audio/video rendering.
 
@@ -26478,7 +26890,7 @@ lines of core C++ code across five major subsystems:
 
 5. **Media Extractors** provide container parsing with security isolation (running in
    a separate process), while **VideoCapabilities** (1,966 lines) and
-   **MediaProfiles** (1,512 lines) describe what the hardware can do.
+   **MediaProfiles** (1,521 lines) describe what the hardware can do.
 
 The evolution from OMX to Codec2 represents the most significant architectural shift
 in Android media in the past decade, bringing type safety, better buffer management,
@@ -26650,21 +27062,21 @@ flowchart TD
     E -->|GYROSCOPE| G[hasGyro = true]
     E -->|MAGNETIC_FIELD| H[hasMag = true]
     E -->|PROXIMITY| I[registerSensor as ProximitySensor]
-    E -->|GRAVITY / ROTATION_VECTOR etc.| J[Mark in virtualSensorsNeeds bitmask]
+    E -->|GRAVITY / ROTATION_VECTOR etc.| J["Clear bit in virtualSensorsNeeds<br/>HAL provides this composite type"]
     E -->|Other| K[registerSensor as HardwareSensor]
     F --> L[SensorFusion::getInstance]
     G --> L
     H --> L
-    L --> M{hasGyro && hasAccel && hasMag?}
+    L --> M{"(hasGyro or hasGyroUncalibrated)<br/>&& hasAccel && hasMag?"}
     M -->|Yes| N["Register RotationVectorSensor<br/>OrientationSensor<br/>CorrectedGyroSensor<br/>GyroDriftSensor"]
-    M -->|No| O{hasAccel && hasGyro?}
+    M -->|No| O
+    N --> O{"hasAccel &&<br/>(hasGyro or hasGyroUncalibrated)?"}
     O -->|Yes| P["Register GravitySensor<br/>LinearAccelerationSensor<br/>GameRotationVectorSensor"]
-    O -->|No| Q{hasAccel && hasMag?}
+    O -->|No| Q
+    P --> Q{"hasAccel && hasMag?"}
     Q -->|Yes| R[Register GeoMagRotationVectorSensor]
-    N --> S["Check batching support<br/>set mSocketBufferSize"]
-    P --> S
-    Q --> S
-    R --> S
+    Q -->|No| S
+    R --> S["Check batching support<br/>set mSocketBufferSize"]
     S --> T[Create Looper, event buffers]
     T --> U[Start SensorEventAckReceiver thread]
     U --> V[Start SensorService thread loop]
@@ -26705,10 +27117,27 @@ bool SensorService::registerSensor(std::shared_ptr<SensorInterface> s,
 ```
 
 **Virtual Sensor Gating.** The `virtualSensorsNeeds` bitmask tracks which
-composite sensor types the HAL already provides.  If the HAL supplies
-`SENSOR_TYPE_GRAVITY` natively (e.g. via a sensor hub), `SensorService` skips
-registering its own `GravitySensor`.  The `IGNORE_HARDWARE_FUSION` compile-time
-flag (default `false`) can force software fusion for all composite types.
+composite sensor types the framework still has to synthesise in software.  It
+starts out with every composite bit set (gravity, linear acceleration, rotation
+vector, geomagnetic rotation vector, game rotation vector), and the enumeration
+loop *clears* a bit when the HAL reports that type natively:
+`virtualSensorsNeeds &= ~(1<<list[i].type);`.  Registration then reads the bit
+back.  If the HAL supplies `SENSOR_TYPE_GRAVITY` natively (e.g. via a sensor
+hub), `SensorService` still constructs and registers its own `GravitySensor`,
+but passes `isDebug = true` so the software copy stays out of the normal sensor
+list and only the HAL's sensor is user-visible:
+
+```cpp
+// SensorService.cpp onFirstRef(), line ~390
+bool needGravitySensor = (virtualSensorsNeeds & (1<<SENSOR_TYPE_GRAVITY)) != 0;
+registerVirtualSensor(std::make_shared<GravitySensor>(list, count),
+                      /* isDebug= */ !needGravitySensor);
+```
+
+The same pattern covers rotation vector/orientation, linear acceleration, game
+rotation vector, and geomagnetic rotation vector.  The `IGNORE_HARDWARE_FUSION`
+compile-time flag (default `false`) can force software fusion for all composite
+types.
 
 **Socket Buffer Sizing.** If any sensor reports a non-zero `fifoMaxEventCount`,
 the socket buffer is enlarged to `MAX_SOCKET_BUFFER_SIZE_BATCHED` (100 KB),
@@ -26721,7 +27150,7 @@ clamped to the kernel's `wmem_max`.
 data path.  It runs at `SCHED_FIFO` priority 10 to minimise jitter.
 
 ```
-Source: SensorService.cpp, line ~1125
+Source: SensorService.cpp, line ~1174
 ```
 
 The loop structure is:
@@ -26767,7 +27196,7 @@ the `Looper` prevents permanent wake-lock leaks.
 ### 17.2.3 Event Dispatch: `sendEventsToAllClients()`
 
 ```cpp
-// SensorService.cpp, line ~1063
+// SensorService.cpp, line ~1112
 void SensorService::sendEventsToAllClients(
     const std::vector<sp<SensorEventConnection>>& activeConnections,
     ssize_t count) {
@@ -26804,7 +27233,7 @@ Key fields:
 | Field | Purpose |
 |-------|---------|
 | `mChannel` (`BitTube`) | Unix socket pair for event delivery |
-| `mSensorInfo` | Map of sensor handle to `FlushInfo` |
+| `mSensorInfo` | Map of sensor handle to `SensorConnectionRecord` (pending flush events, first-flush flag, usage stats) |
 | `mEventCache` | Buffer for events when socket is full |
 | `mWakeLockRefCount` | Number of unacknowledged wake-up events |
 | `mUid` | UID of the owning application |
@@ -27074,8 +27503,10 @@ The AIDL wrapper (`AidlSensorHalWrapper`) uses FMQ for event transport.
 Its `pollFmq()` method blocks on the `EventFlag` until the HAL signals
 new data, then copies events from the FMQ into the caller's buffer.
 
-The HIDL wrapper uses the legacy `poll()` mechanism with a blocking HAL
-call.
+The HIDL wrapper uses the legacy blocking `poll()` HAL call only for
+HIDL 1.0 HALs.  For HIDL 2.0/2.1 it too uses FMQ transport via its own
+`pollFmq()`, choosing between the two paths with
+`supportsMessageQueues()`.
 
 ```
 Source: frameworks/native/services/sensorservice/AidlSensorHalWrapper.h
@@ -27130,7 +27561,12 @@ Handle must be unique until reboot
 ### 17.3.7 Direct Channels
 
 Direct channels provide the lowest-latency path for sensor data by
-bypassing `SensorService`'s event loop entirely.
+bypassing `SensorService`'s event loop entirely.  Only the event data
+path bypasses `SensorService`, though -- channel setup and rate
+configuration still go through it: the app's `SensorDirectChannel` calls
+into `SensorService`, whose `SensorDirectConnection` invokes
+`registerDirectChannel` / `configDirectReport` on the HAL via
+`SensorDevice`.
 
 ```mermaid
 graph TB
@@ -27142,14 +27578,19 @@ graph TB
         ISH[ISensors HAL]
     end
 
+    subgraph "SensorService"
+        SS["SensorDirectConnection<br/>+ SensorDevice"]
+    end
+
     subgraph "Application"
         DC[SensorDirectChannel]
         POLL["Poll atomic counter<br/>read 104-byte events"]
     end
 
+    DC -->|"createSensorDirectConnection /<br/>configureChannel"| SS
+    SS -->|"registerDirectChannel"| ISH
+    SS -->|"configDirectReport"| ISH
     ISH -->|"Write 104-byte events"| SM
-    DC -->|"registerDirectChannel"| ISH
-    DC -->|"configDirectReport"| ISH
     POLL -->|"mmap + read"| SM
 ```
 
@@ -27312,7 +27753,8 @@ Safety guards:
 - **Magnetic field validation**: Updates are rejected when the field
   magnitude is outside [10, 100] uT, indicating local magnetic disturbance.
 - **Gyro rate estimation**: A low-pass filter (`alpha = 1 / (1 + dT)`)
-  tracks the actual gyro sampling rate for diagnostics.
+  in `SensorFusion::process()` (SensorFusion.cpp, ~line 93) tracks the
+  actual gyro sampling rate for diagnostics.
 
 ### 17.4.3 Virtual Sensor Implementations
 
@@ -27609,12 +28051,16 @@ sensorManager.registerListener(this, accelerometer,
 The `samplingPeriodUs` parameter accepts predefined constants or a custom
 microsecond value:
 
-| Constant | Value | Approximate Rate |
-|----------|-------|-----------------|
-| `SENSOR_DELAY_FASTEST` | 0 | Maximum HW rate |
-| `SENSOR_DELAY_GAME` | 20,000 us | 50 Hz |
-| `SENSOR_DELAY_UI` | 60,000 us | 16 Hz |
-| `SENSOR_DELAY_NORMAL` | 200,000 us | 5 Hz |
+| Constant | Value | Effective Period | Approximate Rate |
+|----------|-------|-----------------|------------------|
+| `SENSOR_DELAY_FASTEST` | 0 | 0 us | Maximum HW rate |
+| `SENSOR_DELAY_GAME` | 1 | 20,000 us | 50 Hz |
+| `SENSOR_DELAY_UI` | 2 | 66,667 us | ~15 Hz |
+| `SENSOR_DELAY_NORMAL` | 3 | 200,000 us | 5 Hz |
+
+The constants themselves are the small integers 0--3;
+`SensorManager.getDelay()` maps them to the microsecond periods shown
+before the request reaches `SensorService`.
 
 The overload with `maxReportLatencyUs` enables batching:
 
@@ -27647,8 +28093,12 @@ sequenceDiagram
 
 On the Java side, `SystemSensorManager` creates a `SensorEventQueue`
 (not to be confused with the HAL-side FMQ) for each registered listener.
-This queue is backed by a `BitTube` file descriptor that is registered
-with the app's `Looper` via `MessageQueue.addOnFileDescriptorEventListener`.
+This queue is backed by a `BitTube` file descriptor that native code adds
+to the target thread's `Looper`: the `Receiver` in
+`frameworks/base/core/jni/android_hardware_SensorManager.cpp` obtains the
+native `MessageQueue` via `android_os_MessageQueue_getMessageQueue()` and
+calls `Looper::addFd()` on the BitTube fd -- the Java
+`MessageQueue.addOnFileDescriptorEventListener` API is not involved.
 When events arrive, the Looper wakes the thread and delivers them.
 
 ### 17.6.4 Batching and FIFO
@@ -27797,12 +28247,27 @@ a wake-up sensor fires until the application has read the event:
 6. When all connections' ref counts reach zero, `SensorService` releases
    its wake lock.
 
-A 5-second timeout prevents wake-lock leaks if the app fails to read events:
+A 5-second timeout prevents wake-lock leaks if the app fails to read events.
+`setWakeLockAcquiredLocked()` itself only acquires or releases the kernel wake
+lock and wakes the Looper; the timeout lives in the ack-receiver thread, which
+polls with a 5000 ms deadline whenever the wake lock is held and drops every
+connection's ref count if nothing acknowledges in time:
 
 ```cpp
-// SensorService.h
-void setWakeLockAcquiredLocked(bool acquire);
-// Sets a 5-second timeout on the Looper
+// SensorService.cpp, line ~1420
+bool SensorService::SensorEventAckReceiver::threadLoop() {
+    sp<Looper> looper = mService->getLooper();
+    do {
+        bool wakeLockAcquired = mService->isWakeLockAcquired();
+        int timeout = -1;
+        if (wakeLockAcquired) timeout = 5000;
+        int ret = looper->pollOnce(timeout);
+        if (ret == ALOOPER_POLL_TIMEOUT) {
+           mService->resetAllWakeLockRefCounts();
+        }
+    } while(!Thread::exitPending());
+    // ...
+}
 ```
 
 The HAL has its own 1-second timeout:
@@ -27949,16 +28414,26 @@ Head tracking feeds into the spatial audio pipeline described in
 sequenceDiagram
     participant HT as HEAD_TRACKER Sensor (Bluetooth HID)
     participant SS as SensorService
-    participant AS as AudioService
+    participant SPP as SensorPoseProvider (audioserver)
+    participant SPC as SpatializerPoseController
     participant SP as Spatializer
     participant OUT as Audio Output (headphones)
 
     HT->>SS: Head orientation events
-    SS->>AS: SensorEventConnection
-    AS->>SP: HeadTrackingProcessor<br/>update pose
+    SS->>SPP: SensorEventConnection
+    SPP->>SPC: Pose samples
+    SPC->>SP: HeadTrackingProcessor<br/>computed head pose
     SP->>SP: Apply rotation to audio scene
     SP->>OUT: Spatialised audio stream
 ```
+
+The event stream is consumed inside **audioserver**, not system_server:
+`SensorPoseProvider` (`frameworks/av/media/libheadtracking`) subscribes to
+the head tracker over a `SensorEventConnection` and feeds
+`SpatializerPoseController`
+(`frameworks/av/services/audiopolicy/service`), which drives the
+`HeadTrackingProcessor`.  `AudioService` in system_server only selects and
+enables the head-tracking sensor; it does not carry the events.
 
 When a head tracker sensor is exposed as a **dynamic sensor** through
 Bluetooth HID, the `DynamicSensorInfo::uuid` field is set to the HID
@@ -27972,20 +28447,21 @@ the user's physical movements.  `SensorService` restricts access:
 
 - By default, `mHtRestricted = true` limits head tracker access to system
   processes (UID = system or audioserver).
-- For testing, the restriction can be lifted via shell command:
+- For testing, the restriction can be lifted via `SensorService`'s shell
+  command interface (handled in `SensorService::shellCommand()`, which
+  requires the `MANAGE_SENSORS` permission -- note `cmd`, not `dumpsys`):
 
 ```shell
-adb shell dumpsys sensorservice unrestrict-ht
+adb shell cmd sensorservice unrestrict-ht
 # To re-restrict:
-adb shell dumpsys sensorservice restrict-ht
+adb shell cmd sensorservice restrict-ht
 ```
 
 ### 17.8.5 Runtime Sensors
 
-The head tracker is often implemented as a **runtime sensor** --
-a sensor that is registered programmatically rather than being discovered
-from the HAL at boot time.  Runtime sensors use handle values in the
-dedicated range:
+A related mechanism is the **runtime sensor** -- a sensor that is
+registered programmatically rather than being discovered from the HAL at
+boot time.  Runtime sensors use handle values in the dedicated range:
 
 ```aidl
 // ISensors.aidl
@@ -27994,8 +28470,14 @@ const int RUNTIME_SENSORS_HANDLE_END  = 0x5FFFFFFF;
 ```
 
 The `RuntimeSensor` class forwards `activate()` and `batch()` calls to
-a `RuntimeSensorCallback`, which is typically implemented by the Bluetooth
-stack or input subsystem:
+a `RuntimeSensorCallback`.  Runtime sensors are registered only from
+`system_server`, on behalf of **VirtualDeviceManager**: the sole
+implementer of `SensorManagerInternal.RuntimeSensorCallback` is the
+`RuntimeSensorCallbackWrapper` in
+`frameworks/base/services/companion/java/com/android/server/companion/virtual/SensorController.java`,
+which backs the sensors of a virtual device.  Bluetooth and USB head
+trackers are *not* runtime sensors -- they are exposed as **dynamic
+sensors** over HID (Section 17.3.6):
 
 ```cpp
 // SensorInterface.h
@@ -28092,9 +28574,13 @@ wake-up sensor.
 Detects whether a wearable device is on the user's body.  Must detect
 on-to-off transitions within 1 second and off-to-on within 3 seconds.
 
-**Heart Rate** (`HEART_RATE`, ID 21): Returns beats per minute.  Requires
-`SENSOR_PERMISSION_BODY_SENSORS` permission.  The framework automatically
-sets the required permission based on platform SDK version.
+**Heart Rate** (`HEART_RATE`, ID 21): Returns beats per minute.  `Sensor::Sensor()`
+sets the required permission unconditionally to `SENSOR_PERMISSION_READ_HEART_RATE`
+(`"android.permission.health.READ_HEART_RATE"`) for this type, and looks up the
+matching app-op through `AppOpsManager::permissionToOpCode()`.  The older
+`SENSOR_PERMISSION_BODY_SENSORS` (`"android.permission.BODY_SENSORS"`) is
+deprecated: a HAL sensor that still declares it is accepted, but logs
+`"Sensor %s using deprecated Body Sensor permission"`.
 
 ### 17.9.4 Wearable Fusion Rate Tuning
 
@@ -28378,7 +28864,7 @@ typedef struct sensors_event_t {
         float light;                 // TYPE_LIGHT
         float pressure;              // TYPE_PRESSURE
         float relative_humidity;     // TYPE_RELATIVE_HUMIDITY
-        sensors_meta_data_event_t meta_data;
+        meta_data_event_t meta_data;
         dynamic_sensor_meta_event_t dynamic_sensor_meta;
         additional_info_event_t additional_info;
         heart_rate_event_t heart_rate;
@@ -28516,7 +29002,7 @@ listener binder with the service the first time it is constructed:
 
 ```
 Source: frameworks/base/core/java/android/hardware/SystemSensorManager.java (line ~153)
-        frameworks/base/core/java/android/hardware/sensor/ISensorClientListener.aidl
+        frameworks/native/libs/sensor/include/android/hardware/sensor/ISensorClientListener.aidl
 ```
 
 `ISensorClientListener` is deliberately an **empty interface** -- it defines no
@@ -28709,7 +29195,7 @@ base, never raw pointers:
 graph TB
     subgraph "SharedDataRegion (mmaped FD)"
         META["DataFlowMetadata<br/>version, elementConfig,<br/>blockListEpoch"]
-        SRC["DataFlowSourceMetadata<br/>writeIndex, tailBlockOffset"]
+        SRC["DataFlowSourceMetadata<br/>writeIndex, tailBlockOffsetBytes"]
         SNKM["DataFlowSinkMetadata<br/>readIndex, sourceFlags/sinkFlags"]
         BLK["DataFlowBlockHeader + data<br/>(linked block list)"]
     end
@@ -28766,8 +29252,9 @@ Using `sensorservice` directly:
 # List all sensors
 adb shell dumpsys sensorservice
 
-# Watch accelerometer events (requires root or debug build)
-adb shell sensorservice_test -s accelerometer
+# Exercise the sensor stack with the native test binary
+# (userdebug/eng builds; registers for accelerometer events, takes no arguments)
+adb shell test-sensorservice
 ```
 
 Or using a simple app:
@@ -28838,7 +29325,9 @@ adb shell dumpsys sensorservice data_injection com.example.test
 ```
 
 ```java
-// In test code (requires DATA_INJECTION permission)
+// In test code: the app's package must match the one passed to
+// "dumpsys sensorservice data_injection", and sm.initDataInjection(true)
+// must have succeeded first (there is no dedicated permission)
 sm.registerListener(listener, accel, SensorManager.SENSOR_DELAY_FASTEST);
 
 SensorEvent fakeEvent = ... ; // construct with desired values
@@ -28849,8 +29338,9 @@ sm.injectSensorData(accel, fakeEvent.values, fakeEvent.accuracy,
 ### 17.16.6 Trace Sensor Performance
 
 ```shell
-# Enable sensor atrace category
-adb shell atrace --async_start -c sensors
+# Sensor event tracing is emitted under ATRACE_TAG_SYSTEM_SERVER
+# (see SensorEventQueue.cpp), so enable the "ss" category
+adb shell atrace --async_start -b 8000 ss binder_driver power
 
 # ... exercise sensors ...
 

@@ -143,7 +143,6 @@ ro.build.ab_update=true         # A/B capable
 
 # Virtual A/B detection
 ro.virtual_ab.enabled=true      # Virtual A/B enabled
-ro.virtual_ab.retrofit=true     # Retrofitted (vs. launch)
 
 # Virtual A/B Compression
 ro.virtual_ab.compression.enabled=true
@@ -177,8 +176,8 @@ FeatureFlag GetVirtualAbCompressionFeatureFlag() override;
 FeatureFlag GetVirtualAbCompressionXorFeatureFlag() override;
 ```
 
-Each `FeatureFlag` can be `NONE`, `RETROFIT`, or `LAUNCH`, distinguishing
-devices that were upgraded to a feature from those that shipped with it.
+Each `FeatureFlag` is either `NONE` or `LAUNCH`, queried through its
+`IsEnabled()` and `IsLaunch()` helpers.
 
 ### 55.1.5 Source Tree Map
 
@@ -336,18 +335,24 @@ The `ActionProcessor` runs one action at a time. When an action completes
 // action_processor.cc
 void ActionProcessor::ActionComplete(AbstractAction* actionptr,
                                      ErrorCode code) {
-  // ... notify delegate ...
-  if (code != ErrorCode::kSuccess) {
-    // Pipeline failed
+  // ... notify delegate, run current_action_->ActionCompleted(code) ...
+  current_action_.reset();
+  if (!actions_.empty() && code != ErrorCode::kSuccess) {
+    // Pipeline failed: drop the remaining actions
     actions_.clear();
-    // ... error handling ...
-  } else {
-    // Advance to next action
-    actions_.erase(actions_.begin());
-    if (!actions_.empty()) {
-      actions_.front()->PerformAction();
-    }
   }
+  // ... suspend handling ...
+  StartNextActionOrFinish(code);
+}
+
+void ActionProcessor::StartNextActionOrFinish(ErrorCode code) {
+  if (actions_.empty()) {
+    // ... notify delegate that processing is done ...
+    return;
+  }
+  current_action_ = std::move(actions_.front());
+  actions_.pop_front();
+  current_action_->PerformAction();
 }
 ```
 
@@ -373,6 +378,7 @@ Key responsibilities:
 
 ```cpp
 // The update status state machine
+// (system/update_engine/client_library/include/update_engine/update_status.h)
 enum class UpdateStatus {
   IDLE,
   CHECKING_FOR_UPDATE,
@@ -384,7 +390,9 @@ enum class UpdateStatus {
   REPORTING_ERROR_EVENT,
   ATTEMPTING_ROLLBACK,
   DISABLED,
+  NEED_PERMISSION_TO_UPDATE,
   CLEANUP_PREVIOUS_UPDATE,
+  // ...
 };
 ```
 
@@ -471,8 +479,8 @@ The `applyPayload` headers are key-value pairs that control behavior:
 ```
 METADATA_HASH=<base64>     -- Expected hash of payload metadata
 METADATA_SIZE=<bytes>      -- Size of payload metadata
-PAYLOAD_HASH=<base64>      -- Expected hash of entire payload
-PAYLOAD_SIZE=<bytes>       -- Size of entire payload
+FILE_HASH=<base64>         -- Expected hash of entire payload
+FILE_SIZE=<bytes>          -- Size of entire payload
 SWITCH_SLOT_ON_REBOOT=1    -- Whether to switch slots (default: 1)
 RUN_POST_INSTALL=1         -- Whether to run postinstall (default: 1)
 NETWORK_ID=<id>            -- Network to use for download
@@ -590,9 +598,9 @@ message DeltaArchiveManifest {
 
 message PartitionUpdate {
   string partition_name = 1;
-  repeated InstallOperation operations = 7;
-  PartitionInfo old_partition_info = 10;
-  PartitionInfo new_partition_info = 11;
+  PartitionInfo old_partition_info = 6;
+  PartitionInfo new_partition_info = 7;
+  repeated InstallOperation operations = 8;
   // Verity/FEC fields ...
   repeated CowMergeOperation merge_operations = 18;
 }
@@ -614,12 +622,12 @@ message InstallOperation {
     REPLACE_ZSTD = 14;  // Android 17: write zstd-decompressed data
   }
   Type type = 1;
-  repeated Extent src_extents = 6;
-  repeated Extent dst_extents = 8;
-  uint64 data_offset = 4;
-  uint64 data_length = 5;
+  uint64 data_offset = 2;
+  uint64 data_length = 3;
+  repeated Extent src_extents = 4;
+  repeated Extent dst_extents = 6;
+  bytes data_sha256_hash = 8;
   bytes src_sha256_hash = 9;
-  bytes data_sha256_hash = 10;
 }
 ```
 
@@ -799,26 +807,28 @@ Once the manifest is parsed and partitions are prepared, each operation is
 dispatched based on its type:
 
 ```cpp
-bool DeltaPerformer::PerformInstallOperation(
-    const InstallOperation& operation) {
-  switch (operation.type()) {
+bool DeltaPerformer::ProcessOperation(const InstallOperation* op,
+                                      ErrorCode* error) {
+  // ...
+  switch (op->type()) {
     case InstallOperation::REPLACE:
     case InstallOperation::REPLACE_BZ:
     case InstallOperation::REPLACE_XZ:
     case InstallOperation::REPLACE_ZSTD:   // Android 17
-      return PerformReplaceOperation(operation);
+      return PerformReplaceOperation(*op);
     case InstallOperation::ZERO:
     case InstallOperation::DISCARD:
-      return PerformZeroOrDiscardOperation(operation);
+      return PerformZeroOrDiscardOperation(*op);
     case InstallOperation::SOURCE_COPY:
-      return PerformSourceCopyOperation(operation, &error);
+      return PerformSourceCopyOperation(*op, error);
     case InstallOperation::SOURCE_BSDIFF:
     case InstallOperation::BROTLI_BSDIFF:
     case InstallOperation::PUFFDIFF:
     case InstallOperation::ZUCCHINI:
     case InstallOperation::LZ4DIFF_BSDIFF:
     case InstallOperation::LZ4DIFF_PUFFDIFF:
-      return PerformDiffOperation(operation, &error);
+      return PerformDiffOperation(*op, error);
+    // ...
   }
 }
 ```
@@ -902,13 +912,23 @@ The VABC partition writer translates OTA operations into COW operations:
 
 ```cpp
 bool DeltaPerformer::CheckpointUpdateProgress(bool force) {
-  // Save: current operation number, manifest metadata hash,
-  // partition states, etc.
-  Checkpoint();
-  // On resume, CanResumeUpdate() checks the stored hash against
-  // the new payload's hash to determine if resume is possible.
+  // ...
+  // Saves the running payload hash contexts, the next data offset/length,
+  // and the signature blob into persistent prefs
+  // (kPrefsUpdateStateSHA256Context, kPrefsUpdateStateNextDataOffset, ...),
+  // then lets the partition writer checkpoint its own progress:
+  if (partition_writer_) {
+    partition_writer_->CheckpointUpdateProgress(GetPartitionOperationNum());
+  }
+  // ...
+  TEST_AND_RETURN_FALSE(
+      prefs_->SetInt64(kPrefsUpdateStateNextOperation, next_operation_num_));
+  // ...
 }
 ```
+
+On resume, `CanResumeUpdate()` checks the stored payload hash against the new
+payload's hash to determine whether the checkpoint is still valid.
 
 When the device reboots mid-update (power loss, crash), the next `ApplyPayload`
 call detects the stored checkpoint and resumes from where it left off, skipping
@@ -2026,8 +2046,9 @@ Source: frameworks/base/core/java/android/os/UpdateEngineStable.java
 ```
 
 This binds to a "stable" AIDL interface rather than the versioned one, providing
-forward/backward compatibility for the core `applyPayload` / `bind` / `cancel`
-operations.
+forward/backward compatibility for the core `applyPayloadFd` / `bind` / `unbind`
+operations. Unlike `UpdateEngine`, the stable variant takes the payload as a
+`ParcelFileDescriptor` rather than a URL and exposes no `cancel` method.
 
 ### 55.10.5 The Updater Sample App
 
@@ -2121,10 +2142,11 @@ The postinstall configuration is embedded in the OTA package manifest:
 
 ```protobuf
 message PartitionUpdate {
-  bool run_postinstall = 13;
-  string postinstall_path = 14;      // e.g., "bin/postinstall"
-  string filesystem_type = 15;       // e.g., "ext4"
-  bool postinstall_optional = 16;    // OK to skip if it fails
+  // ...
+  optional bool run_postinstall = 2;
+  optional string postinstall_path = 3;   // e.g., "bin/postinstall"
+  optional string filesystem_type = 4;    // e.g., "ext4"
+  optional bool postinstall_optional = 9; // OK to skip if it fails
 }
 ```
 
@@ -2146,9 +2168,10 @@ flowchart TD
 
 The postinstall script runs in a restricted environment:
 
-- The target partition is mounted at a temporary path.
-- The script inherits `update_engine`'s UID/GID.
-- SELinux context is `update_engine`.
+- On Android, the target partition is mounted at the fixed `/postinstall`
+  mount point.
+- The script runs in the dedicated `postinstall` SELinux domain; files under
+  the mount point are labeled `postinstall_file`.
 - Progress is communicated back through a progress pipe.
 
 ### 55.11.4 Triggering Postinstall Separately
@@ -2301,15 +2324,17 @@ the persisted merge report instead.
 ### 55.14.2 Debugging update_engine
 
 ```bash
-# Enable verbose logging
-adb shell setprop persist.update_engine.log_level DEBUG
-
-# Force a log dump
-adb shell kill -SIGUSR1 $(adb shell pidof update_engine)
+# Read the persisted daemon logs (--logtofile in update_engine.rc)
+adb shell ls -t /data/misc/update_engine_log/
+adb shell cat /data/misc/update_engine_log/update_engine.<timestamp>  # newest file
 
 # Examine persistent preferences
 adb shell ls /data/misc/update_engine/prefs/
 ```
+
+There is no runtime log-level system property; `update_engine`'s verbosity is
+set by the `--logtostderr --logtofile` flags on its command line in
+`system/update_engine/update_engine.rc`.
 
 ### 55.14.3 Debugging snapuserd
 
@@ -2518,8 +2543,11 @@ block_image_update("/dev/block/.../system",
     "system.patch.dat");
 ```
 
-The `update-binary` (typically `update_engine_sideload` on newer builds)
-interprets these scripts to apply block-level patches.
+The `update-binary` extracted from the package is `updater`
+(`bootable/deprecated-ota/updater`), which interprets the edify
+`updater-script` to apply block-level patches. (`update_engine_sideload` is
+the separate A/B sideload path: it applies a `payload.bin` and never runs
+edify.)
 
 ### 55.16.6 Two-Step Updates
 
@@ -2657,13 +2685,13 @@ Key preference files:
 
 | Preference | Purpose |
 |-----------|---------|
-| `update-state-initialized` | Whether state was initialized |
+| `update-state-sha-256-context` | Running payload hash context |
 | `update-state-next-operation` | Resume point (operation index) |
 | `update-state-next-data-offset` | Resume point (data offset) |
 | `update-state-next-data-length` | Expected data length |
 | `update-state-payload-index` | Current payload in multi-payload |
-| `update-state-manifest-metadata-size` | Cached manifest size |
-| `update-state-manifest-signature-size` | Cached signature size |
+| `manifest-metadata-size` | Cached manifest size |
+| `manifest-signature-size` | Cached signature size |
 | `update-completed-on-boot-id` | Boot ID when update completed |
 | `previous-version` | Pre-update build fingerprint |
 | `boot-id` | Current boot ID for tracking reboots |
@@ -2681,9 +2709,13 @@ Source: system/update_engine/common/cpu_limiter.h
         system/update_engine/common/cpu_limiter.cc
 ```
 
-The `CPULimiter` class monitors system load and throttles the update process
-when the CPU is under heavy use. This is especially important during the
-compute-intensive phases of applying diff operations (bsdiff, puffdiff,
+The `CPULimiter` class does not monitor system load; it simply lowers the
+process's cgroup `cpu.shares` to a low value for a bounded window, then
+restores the normal value when a timeout fires. On Android it is not actually
+wired up -- no production code instantiates it -- and the update process's CPU
+and I/O footprint is instead managed by the `OtaProfiles` task profile applied
+in `system/update_engine/update_engine.rc`. Keeping the update cheap matters
+most during the compute-intensive diff operations (bsdiff, puffdiff,
 zucchini).
 
 ---
@@ -2823,8 +2855,10 @@ const double kBroadcastThresholdProgress = 0.01;  // 1%
 const int kBroadcastThresholdSeconds = 10;
 ```
 
-The `UpdateAttempterAndroid::BytesReceived` callback computes overall progress
-as a weighted combination of download progress and operation progress:
+The `UpdateAttempterAndroid::BytesReceived` callback itself only computes
+`bytes_received / total` and throttles the Binder broadcast. The weighted
+combination of download progress and operation progress happens earlier, in
+`DeltaPerformer::UpdateOverallProgress`:
 
 ```cpp
 // DeltaPerformer weights (from delta_performer.h)
@@ -2835,11 +2869,13 @@ static const unsigned kProgressOperationsWeight;   // Apply contribution
 
 ### 55.20.3 The MultiRangeHttpFetcher
 
-For multi-payload updates, the `MultiRangeHttpFetcher` handles:
-
-- Sequential downloading of multiple payloads.
-- Byte range requests for each payload (allowing resume at payload boundaries).
-- Delegation of received bytes to the appropriate `DeltaPerformer`.
+The `MultiRangeHttpFetcher` is a simple wrapper around a base `HttpFetcher`:
+the client hands it a list of byte ranges, and it fetches each range in turn
+through the same underlying fetcher. `update_engine` uses it mainly to fetch
+the payload starting at an offset (for example when resuming). Sequencing
+payloads and forwarding the received bytes to the `DeltaPerformer` is the job
+of `DownloadAction`, which constructs the fetcher and feeds the performer from
+its `ReceivedBytes` callback.
 
 ---
 
@@ -2876,20 +2912,21 @@ tree and FEC (Forward Error Correction) data as part of the update:
 
 ```protobuf
 message PartitionUpdate {
-  uint64 hash_tree_data_offset = 19;
-  uint64 hash_tree_data_size = 20;
-  uint64 hash_tree_offset = 21;
-  uint64 hash_tree_size = 22;
-  string hash_tree_algorithm = 23;   // "sha256"
-  bytes hash_tree_salt = 24;
+  // ...
+  optional Extent hash_tree_data_extent = 10;  // Source data covered by the tree
+  optional Extent hash_tree_extent = 11;       // Where the tree is written
+  optional string hash_tree_algorithm = 12;    // "sha256"
+  optional bytes hash_tree_salt = 13;
 
-  uint64 fec_data_offset = 25;
-  uint64 fec_data_size = 26;
-  uint64 fec_offset = 27;
-  uint64 fec_size = 28;
-  uint32 fec_roots = 29;             // Typically 2
+  optional Extent fec_data_extent = 14;        // Data covered by FEC
+  optional Extent fec_extent = 15;             // Where the FEC data is written
+  optional uint32 fec_roots = 16 [default = 2];
 }
 ```
+
+(`InstallPlan::Partition` in
+`system/update_engine/payload_consumer/install_plan.h` carries the same
+information flattened into scalar offset/size fields.)
 
 When `write_verity` is true in the `InstallPlan`, the performer computes
 hash trees and FEC codes on-device after writing partition data, rather than
@@ -3348,7 +3385,7 @@ image, all without flashing and all reversible.
 DSU reuses the same dynamic-partition and image-mapping machinery this chapter
 already covered for Virtual A/B (`libfiemap`'s `ImageManager`, `liblp` metadata,
 device-mapper). The piece unique to DSU is a small system daemon, **`gsid`**
-(roughly 3.8K lines of C++ in `system/gsid/`), that stages the image into those
+(roughly 3.3K lines of C++ in `system/gsid/`), that stages the image into those
 dynamic image files and arms the one-shot boot.
 
 ### 55.27.1 The gsid daemon and IGsiService
@@ -3595,11 +3632,11 @@ adb shell bootctl is-slot-marked-successful 1
 # After rebooting into new slot, watch the merge
 adb logcat -s snapuserd
 
-# Check snapshot status
+# Check snapshot status and merge progress
 adb shell snapshotctl dump
 
-# Monitor merge progress
-adb shell snapshotctl map-snapshots
+# Or query the merge status through the boot control HAL
+adb shell bootctl get-snapshot-merge-status
 ```
 
 ### 55.28.7 Simulating an Update on Cuttlefish
@@ -3638,9 +3675,9 @@ adb pull /cache/recovery/last_kmsg
 # Generate OTA with specific VABC options
 python3 build/make/tools/releasetools/ota_from_target_files.py \
     --vabc_compression_param=zstd,9 \
-    --enable_vabc_xor \
-    --enable_zucchini \
-    --enable_lz4diff \
+    --enable_vabc_xor=true \
+    --enable_zucchini=true \
+    --enable_lz4diff=true \
     --compression_factor=64k \
     --max_threads=8 \
     -i source_tf.zip \

@@ -37,10 +37,10 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `build/make/core/board_config.mk` | Board-level hardware configuration |
 | `build/make/core/binary.mk` | Shared rules for building native binaries |
 | `frameworks/libs/binary_translation/berberis_config.mk` | Berberis (riscv64-to-x86_64) product-package configuration for native bridge |
-| `build/make/envsetup.sh` | Shell environment setup; defines `lunch`, `m`, `mm`, `mmm` |
+| `build/make/envsetup.sh` | Shell environment setup; defines `lunch` (plus `tapas`, `banchan`, `croot`) and puts `build/soong/bin` -- home of the standalone `m`, `mm`, `mmm` scripts -- on PATH |
 | `build/soong/cmd/soong_build/main.go` | Soong build system entry point |
 | `build/soong/android/module.go` | Base module type definitions for Soong |
-| `build/soong/android/androidmk.go` | Android.mk to Soong conversion logic |
+| `build/soong/android/androidmk.go` | Emits Android.mk entries for Soong modules so Kati can consume them (Make-Soong interoperability) |
 | `build/soong/cc/cc.go` | C/C++ module build rules for Soong |
 | `build/soong/cc/library.go` | Shared/static library build rules |
 | `build/soong/cc/binary.go` | Native binary build rules |
@@ -75,19 +75,24 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 
 ## Kernel (Chapter 5)
 
+Unlike the rest of this appendix, these paths are relative to a separate Android
+Common Kernel checkout (its own `repo init`), where the kernel source tree is
+`common/` and the build tooling is `build/`. The platform checkout's `kernel/`
+directory holds only configs, prebuilts, and tests.
+
 | File Path | Purpose |
 |-----------|---------|
-| `kernel/common/Makefile` | Top-level kernel Makefile |
-| `kernel/common/arch/arm64/configs/gki_defconfig` | GKI default kernel configuration |
-| `kernel/common/drivers/android/binder.c` | Binder kernel driver implementation |
-| `kernel/common/drivers/android/binder_alloc.c` | Binder memory allocation |
-| `kernel/common/drivers/staging/android/ion/` | ION memory allocator (legacy) |
-| `kernel/common/drivers/dma-buf/` | DMA-BUF framework for buffer sharing |
-| `kernel/common/drivers/gpu/drm/` | DRM/KMS graphics driver framework |
-| `kernel/common/include/uapi/linux/android/binder.h` | Binder UAPI header |
-| `kernel/common/fs/fuse/dev.c` | FUSE device implementation (for scoped storage) |
-| `kernel/build/build.sh` | Kernel build wrapper script |
-| `kernel/build/kleaf/` | Kleaf (Bazel-based) kernel build system |
+| `common/Makefile` | Top-level kernel Makefile |
+| `common/arch/arm64/configs/gki_defconfig` | GKI default kernel configuration |
+| `common/drivers/android/binder.c` | Binder kernel driver implementation |
+| `common/drivers/android/binder_alloc.c` | Binder memory allocation |
+| `common/drivers/staging/android/ion/` | ION memory allocator (legacy) |
+| `common/drivers/dma-buf/` | DMA-BUF framework for buffer sharing |
+| `common/drivers/gpu/drm/` | DRM/KMS graphics driver framework |
+| `common/include/uapi/linux/android/binder.h` | Binder UAPI header |
+| `common/fs/fuse/dev.c` | FUSE device implementation (for scoped storage) |
+| `build/build.sh` | Kernel build wrapper script (legacy) |
+| `build/kleaf/` | Kleaf (Bazel-based) kernel build system |
 
 ## Bionic and the Dynamic Linker (Chapter 7)
 
@@ -167,8 +172,8 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 
 | File Path | Purpose |
 |-----------|---------|
-| `frameworks/native/services/inputflinger/InputDispatcher.cpp` | Input event dispatch to windows |
-| `frameworks/native/services/inputflinger/InputReader.cpp` | Input device event reading |
+| `frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp` | Input event dispatch to windows |
+| `frameworks/native/services/inputflinger/reader/InputReader.cpp` | Input device event reading |
 | `frameworks/native/services/inputflinger/InputManager.cpp` | Input subsystem coordinator |
 | `frameworks/native/services/sensorservice/SensorService.cpp` | Sensor event multiplexing |
 | `frameworks/native/services/surfaceflinger/main_surfaceflinger.cpp` | SurfaceFlinger process entry point |
@@ -188,9 +193,9 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/native/services/surfaceflinger/Scheduler/VSyncReactor.cpp` | VSYNC controller implementation (`VsyncController` interface in `VsyncController.h`) |
 | `frameworks/native/services/surfaceflinger/CompositionEngine/` | Composition strategy engine |
 | `frameworks/native/services/surfaceflinger/DisplayHardware/HWComposer.cpp` | HWC abstraction layer |
-| `frameworks/native/services/surfaceflinger/DisplayHardware/PowerAdvisor.cpp` | Power hint integration |
+| `frameworks/native/services/surfaceflinger/PowerAdvisor/PowerAdvisor.cpp` | Power hint integration |
 | `frameworks/native/services/surfaceflinger/Layer.cpp` | Individual surface/layer management |
-| `frameworks/native/services/surfaceflinger/BufferLayer.cpp` | Buffer-backed layer implementation |
+| `frameworks/native/services/surfaceflinger/FrontEnd/LayerSnapshot.cpp` | Buffer-backed layer state snapshot (frontend) |
 | `frameworks/native/services/surfaceflinger/FrontEnd/LayerLifecycleManager.cpp` | Layer lifecycle tracking |
 | `frameworks/native/services/surfaceflinger/Tracing/TransactionTracing.cpp` | Transaction trace capture |
 | `frameworks/native/libs/gui/Surface.cpp` | Client-side Surface implementation |
@@ -242,7 +247,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/av/services/audioflinger/Tracks.cpp` | Audio track management |
 | `frameworks/av/services/audioflinger/Effects.cpp` | Audio effects chain processing |
 | `frameworks/av/services/audiopolicy/managerdefault/AudioPolicyManager.cpp` | Audio routing policy |
-| `frameworks/av/services/audiopolicy/common/managerdefinitions/src/AudioPort.cpp` | Audio port abstraction |
+| `frameworks/av/services/audiopolicy/common/managerdefinitions/src/PolicyAudioPort.cpp` | Audio port abstraction |
 | `frameworks/av/media/libaudioclient/AudioTrack.cpp` | Client-side audio playback |
 | `frameworks/av/media/libaudioclient/AudioRecord.cpp` | Client-side audio recording |
 | `frameworks/av/media/libaudioclient/AudioSystem.cpp` | Audio system client interface |
@@ -260,7 +265,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/av/media/codec2/components/` | Software codec implementations |
 | `frameworks/av/media/libstagefright/MediaCodec.cpp` | MediaCodec native implementation |
 | `frameworks/av/media/libstagefright/ACodec.cpp` | Legacy OMX codec adapter |
-| `frameworks/av/media/libstagefright/NuPlayer/NuPlayer.cpp` | Media playback engine |
+| `frameworks/av/media/libmediaplayerservice/nuplayer/NuPlayer.cpp` | Media playback engine |
 | `frameworks/av/media/module/extractors/` | Media file format extractors (MP4, MKV, etc.) |
 | `frameworks/av/services/camera/libcameraservice/CameraService.cpp` | Camera service daemon |
 | `frameworks/av/drm/mediadrm/plugins/clearkey/` | ClearKey DRM reference implementation |
@@ -300,10 +305,10 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/libs/binary_translation/guest_abi/` | ABI conversion between host and guest |
 | `frameworks/libs/binary_translation/guest_state/` | Guest CPU state abstraction |
 | `frameworks/libs/binary_translation/jni/` | JNI trampoline generation |
-| `frameworks/libs/binary_translation/interpreter/` | Guest instruction interpreter |
-| `frameworks/libs/binary_translation/decoder/` | Guest instruction decoder |
-| `frameworks/libs/binary_translation/backend/` | Host code generation backend |
-| `frameworks/libs/binary_translation/assembler/` | Host instruction assembler |
+| `frameworks/libs/binary_translation/cpu_emulation/interpreter/` | Guest instruction interpreter |
+| `frameworks/libs/binary_translation/cpu_emulation/decoder/` | Guest instruction decoder |
+| `frameworks/libs/binary_translation/cpu_emulation/backend/` | Host code generation backend |
+| `frameworks/libs/binary_translation/cpu_emulation/assembler/` | Host instruction assembler |
 | `frameworks/libs/binary_translation/android_api/` | Android framework proxy stubs |
 | `frameworks/libs/native_bridge_support/native_bridge_support.mk` | Build synchronization for bridge support |
 | `art/libnativebridge/native_bridge.cc` | System-side native bridge loading |
@@ -347,7 +352,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/base/services/core/java/com/android/server/wm/WindowState.java` | Per-window server state |
 | `frameworks/base/services/core/java/com/android/server/wm/WindowToken.java` | Window grouping token |
 | `frameworks/base/services/core/java/com/android/server/wm/Session.java` | Per-app WMS session |
-| `frameworks/base/services/core/java/com/android/server/wm/WindowSurfaceController.java` | Window-to-Surface bridge |
+| `frameworks/base/services/core/java/com/android/server/wm/WindowStateAnimator.java` | Window-to-Surface bridge; creates and manages the window's SurfaceControl |
 | `frameworks/base/services/core/java/com/android/server/wm/WindowAnimator.java` | Window animation coordinator |
 | `frameworks/base/services/core/java/com/android/server/wm/InsetsStateController.java` | System insets management |
 | `frameworks/base/services/core/java/com/android/server/wm/InsetsPolicy.java` | Insets visibility policy |
@@ -379,7 +384,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `frameworks/base/services/core/java/com/android/server/pm/permission/PermissionManagerService.java` | Runtime permission management |
 | `frameworks/base/core/java/com/android/internal/pm/pkg/parsing/ParsingPackageUtils.java` | APK manifest parsing |
 | `frameworks/base/services/core/java/com/android/server/pm/resolution/ComponentResolver.java` | Intent filter resolution |
-| `frameworks/base/services/core/java/com/android/server/pm/dex/DexManager.java` | DEX file optimization tracking |
+| `frameworks/base/services/core/java/com/android/server/pm/dex/ArtManagerService.java` | ART profile and DEX optimization service |
 | `frameworks/base/core/java/android/content/pm/PackageManager.java` | Public PackageManager API |
 
 ## Security (Chapter 40)
@@ -393,7 +398,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `system/security/identity/` | Identity credential service |
 | `external/selinux/` | SELinux userspace tools |
 | `system/extras/verity/` | dm-verity tools |
-| `system/core/fs_mgr/libfs_avb/` | AVB (Android Verified Boot) integration |
+| `system/fs/fs_mgr/libfs_avb/` | AVB (Android Verified Boot) integration |
 | `frameworks/base/services/core/java/com/android/server/biometrics/` | Biometric authentication |
 | `frameworks/base/keystore/java/android/security/keystore2/` | Keystore Java API |
 
@@ -401,12 +406,12 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 
 | File Path | Purpose |
 |-----------|---------|
-| `frameworks/base/packages/SystemUI/src/com/android/systemui/SystemUIApplication.java` | SystemUI application entry |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/application/SystemUIApplication.kt` | SystemUI application entry |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/CentralSurfacesImpl.java` | Status bar + notification shade |
-| `frameworks/base/packages/SystemUI/src/com/android/systemui/qs/QSPanelController.java` | Quick Settings panel controller |
-| `frameworks/base/packages/SystemUI/src/com/android/systemui/recents/OverviewProxyService.java` | Recents/overview proxy to Launcher |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/qs/panels/domain/startable/QSPanelsCoreStartable.kt` | Quick Settings panels startup coordinator |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/recents/OverviewProxyRecentsImpl.java` | Recents/overview proxy to Launcher |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewMediator.java` | Lock screen coordinator |
-| `frameworks/base/packages/SystemUI/src/com/android/systemui/navigationbar/NavigationBar.java` | Navigation bar |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/navigationbar/views/NavigationBar.java` | Navigation bar |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/volume/VolumeDialogControllerImpl.java` | Volume dialog logic |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/shade/NotificationPanelViewController.java` | Notification panel controller |
 
@@ -416,11 +421,11 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 |-----------|---------|
 | `packages/apps/Launcher3/src/com/android/launcher3/Launcher.java` | Main Launcher activity |
 | `packages/apps/Launcher3/src/com/android/launcher3/Workspace.java` | Home screen workspace |
-| `packages/apps/Launcher3/src/com/android/launcher3/allapps/AllAppsContainerView.java` | All-apps drawer |
+| `packages/apps/Launcher3/src/com/android/launcher3/allapps/ActivityAllAppsContainerView.java` | All-apps drawer |
 | `packages/apps/Launcher3/src/com/android/launcher3/model/LoaderTask.java` | App list loading |
 | `packages/apps/Launcher3/src/com/android/launcher3/dragndrop/DragController.java` | Drag-and-drop coordinator |
 | `packages/apps/Launcher3/quickstep/src/com/android/quickstep/RecentsActivity.java` | Recents (overview) activity |
-| `packages/apps/Launcher3/quickstep/src/com/android/quickstep/TouchInteractionService.java` | Gesture navigation service |
+| `packages/apps/Launcher3/quickstep/src/com/android/quickstep/TouchInteractionService.kt` | Gesture navigation service |
 
 ## Settings App (Chapter 50)
 
@@ -446,7 +451,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `packages/modules/Bluetooth/` | Bluetooth Mainline module |
 | `packages/modules/NetworkStack/` | Network stack Mainline module |
 | `packages/modules/Permission/` | Permission controller module |
-| `packages/modules/MediaProvider/` | Media storage provider module |
+| `packages/providers/MediaProvider/` | Media storage provider module |
 | `packages/modules/adb/` | ADB Mainline module |
 | `packages/modules/common/` | Shared Mainline module infrastructure |
 | `system/apex/apexd/` | APEX daemon (module installer) |
@@ -489,7 +494,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 | `build/soong/cc/config/bionic.go` | Bionic CRT objects and default shared libraries |
 | `build/soong/cc/config/clang.go` | Clang unknown-flags filter |
 | `build/soong/android/arch.go` | Arch struct, ArchType, multilib decode logic |
-| `bionic/libc/arch-arm64/ifuncs.cpp` | ARM64 ifunc dispatchers (MTE, SVE selection) |
+| `bionic/libc/arch-arm64/ifuncs.cpp` | ARM64 ifunc dispatchers (MTE variant selection; SVE variants present but not yet enabled) |
 | `art/runtime/arch/riscv64/instruction_set_features_riscv64.h` | ART RISC-V feature detection |
 | `art/runtime/arch/arm64/instruction_set_features_arm64.h` | ART ARM64 feature bitmap and errata |
 
@@ -497,7 +502,7 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 
 | File Path | Purpose |
 |-----------|---------|
-| `external/qemu/android/emulation/` | Emulator core emulation logic |
+| `external/qemu/android-qemu2-glue/emulation/` | Glue between QEMU and the android-emu emulation layer |
 | `external/qemu/android/android-emu/android/emulation/` | Emulator hardware emulation |
 | `device/generic/goldfish/` | Goldfish virtual device definitions |
 | `device/google/cuttlefish/` | Cuttlefish virtual device definitions |
@@ -543,7 +548,7 @@ throughout AOSP and this book.
 **AIDL** (Android Interface Definition Language)
 : An interface description language used to define IPC contracts between
   processes. Modern AIDL replaces HIDL for HAL interfaces starting with
-  Android 12+ and supports both Java and C++ backends.
+  Android 12+ and supports Java, C++, NDK, and Rust backends.
 
 **AMS** (ActivityManagerService)
 : The system service responsible for managing application processes, enforcing
@@ -552,7 +557,8 @@ throughout AOSP and this book.
 
 **ANR** (Application Not Responding)
 : A system dialog triggered when an application's main thread is blocked for
-  too long (5 seconds for input events, 10 seconds for broadcast receivers).
+  too long (5 seconds for input events, 10 seconds for foreground broadcast
+  receivers, 60 seconds for background ones).
   AMS monitors and enforces ANR timeouts.
 
 **AOT** (Ahead-Of-Time compilation)
@@ -715,9 +721,11 @@ throughout AOSP and this book.
   `InputMethodManagerService`.
 
 **InputFlinger**
-: The native service responsible for reading input events from the kernel
-  (`/dev/input/`), processing them, and dispatching them to the correct
-  window via `InputDispatcher`.
+: The native input stack (`libinputflinger`) responsible for reading input
+  events from the kernel (`/dev/input/`), processing them, and dispatching
+  them to the correct window via `InputDispatcher`. Unlike SurfaceFlinger it
+  is not a standalone daemon; it is hosted inside `system_server` by
+  `InputManagerService`.
 
 **Intent**
 : Android's message-passing object for requesting actions from components.
@@ -792,13 +800,16 @@ throughout AOSP and this book.
 
 **OAT**
 : The file format produced by `dex2oat` containing AOT-compiled native
-  code alongside the original DEX bytecode. An OAT file is an ELF
+  code plus metadata (`OatDexFile` headers, class offsets, vmap tables)
+  that references the DEX bytecode, which since Android O lives in the
+  companion VDEX file rather than inside the OAT. An OAT file is an ELF
   binary loaded by ART at runtime.
 
 **OTA** (Over-The-Air update)
 : The mechanism for delivering system updates wirelessly. Android
-  supports A/B (seamless) and Virtual A/B update strategies with
-  dm-snapshot compression.
+  supports A/B (seamless) and Virtual A/B update strategies; Virtual A/B
+  builds on dm-snapshot, and Virtual A/B Compression (VABC) is served by
+  the userspace `snapuserd` daemon over dm-user.
 
 **Parcel**
 : The serialization container used by Binder to marshal data across
@@ -844,8 +855,8 @@ throughout AOSP and this book.
 **Skia**
 : The 2D graphics library used throughout Android. Provides `Canvas`
   drawing operations, text rendering, image decoding, and PDF
-  generation. Backends include OpenGL, Vulkan (Ganesh), and the
-  next-generation Graphite.
+  generation. The legacy Ganesh GPU backend supports both OpenGL and
+  Vulkan, with Graphite as its next-generation replacement.
 
 **Soong**
 : Android's build system that processes `Android.bp` files (Blueprint
@@ -979,28 +990,29 @@ coexist across the tree, but they cluster in very different places. Running
 
 | Path | Kotlin files | Notes |
 |------|--------------|-------|
-| `frameworks/base/packages/SystemUI/` | 7,846 | The heavy adopter; system UI shell and quick settings |
-| `packages/apps/Settings/` | 1,576 | Settings app, app-layer code |
-| `cts/` | 925 | Compatibility Test Suite |
-| `packages/apps/Launcher3/` | 949 | Launcher app |
-| `frameworks/base/services/` | 237 | All in the permission subsystem |
-| `frameworks/base/core/` | 35 | The API-surface layer that apps call into |
-| `frameworks/base/` (total) | 10,461 | Sum across all subdirectories |
-| `frameworks/base/` Java total | 17,871 | Reference point for comparison |
+| `frameworks/base/packages/SystemUI/` | 8,896 | The heavy adopter; system UI shell and quick settings |
+| `packages/apps/Settings/` | 2,300 | Settings app, app-layer code |
+| `cts/` | 1,209 | Compatibility Test Suite |
+| `packages/apps/Launcher3/` | 1,326 | Launcher app |
+| `frameworks/base/services/` | 292 | Production Kotlin all in the permission subsystem; most files are tests |
+| `frameworks/base/core/` | 45 | The API-surface layer that apps call into; every file is test code |
+| `frameworks/base/` (total) | 12,058 | Sum across all subdirectories |
+| `frameworks/base/` Java total | 18,937 | Reference point for comparison |
 
 Two numbers in that table do most of the work for this appendix.
 
-The first is 35. `frameworks/base/core/` is where the `android.*` classes that
-constitute the public Android SDK live. The fact that this directory contains
-only 35 Kotlin files — against tens of thousands of Java files — is the most
-direct statement of the policy. The public API surface is overwhelmingly defined
-in Java.
+The first is 45 — or, more precisely, zero. `frameworks/base/core/` is where
+the `android.*` classes that constitute the public Android SDK live. Every one
+of the 45 Kotlin files in this directory is test code under
+`frameworks/base/core/tests/`; the API-bearing `core/java/` tree — tens of
+thousands of Java files — contains no Kotlin at all. That is the most direct
+statement of the policy. The public API surface is defined in Java.
 
-The second is 237. `frameworks/base/services/` is the home of `system_server`
-and the dozens of system services it hosts. 237 Kotlin files sounds like
-meaningful adoption until you look at where they sit. Every production
-(non-test) Kotlin file under `frameworks/base/services/` is inside the
-permission access subtree at
+The second is 292. `frameworks/base/services/` is the home of `system_server`
+and the dozens of system services it hosts. 292 Kotlin files sounds like
+meaningful adoption until you look at where they sit. The large majority are
+tests, and every production (non-test) Kotlin file under
+`frameworks/base/services/` is inside the permission access subtree at
 `frameworks/base/services/permission/java/com/android/server/permission/access/`.
 The major services — `ActivityManagerService`, `PackageManagerService`,
 `WindowManagerService`, the input pipeline, the display pipeline — are still
@@ -1026,13 +1038,14 @@ to produce from the two languages.
 
 A second observation worth registering before the diagram: the inventory does
 not say Kotlin is *unsafe* in `frameworks/base/`. It says Kotlin is *absent*
-from the public API surface specifically. There are 35 Kotlin files in
-`frameworks/base/core/` and 237 in `frameworks/base/services/` — those files
-compile, ship, and run. The boundary between safe and unsafe runs through
-individual classes, not through directories. A Kotlin class in
-`frameworks/base/core/` that never appears in `current.txt` is just internal
-code that happens to live in the API-bearing directory. The classification is by
-whether metalava picks the class up, not by where it lives in the source tree.
+from the public API surface specifically. There are 45 Kotlin files under
+`frameworks/base/core/` (all tests) and 292 under `frameworks/base/services/`
+(the production subset, in the permission subsystem, compiles, ships, and
+runs). The boundary between safe and unsafe runs through individual classes,
+not through directories. A Kotlin class in `frameworks/base/core/` that never
+appears in `current.txt` would be just internal code that happens to live in
+the API-bearing directory. The classification is by whether metalava picks the
+class up, not by where it lives in the source tree.
 
 A third observation: the directional asymmetry. SystemUI and the Settings app
 live "below" the framework in the dependency graph — they consume the public API
@@ -1085,6 +1098,7 @@ is human-readable text. Its first lines look like:
 
 ```
 // Signature format: 6.0
+// - style=java
 package android {
 
   public final class Manifest {
@@ -1119,8 +1133,10 @@ Several signature surfaces exist in parallel — public (`current.txt`),
 (`module-lib-current.txt`), and `@TestApi` (`test-current.txt`) — plus per-
 subsystem files such as `frameworks/base/services/api/current.txt`. They all
 share the same format. Each surface is produced by **metalava**, a Kotlin tool
-at `tools/metalava/` that reads framework source through PSI (for Kotlin) and
-Turbine (for Java) and emits the language-neutral signature text. The build
+at `tools/metalava/` that reads framework source — Java and Kotlin alike —
+through its default PSI source model (an alternative Turbine-based Java-only
+model can be selected with `--source-model-provider turbine`) and emits the
+language-neutral signature text. The build
 re-runs metalava, compares the generated snapshot against the checked-in
 `current.txt`, and fails the build on any drift; intentional additions go
 through `m update-api` plus API council review of the textual delta.
@@ -1211,13 +1227,17 @@ public class would silently delete several JVM methods and break any compiled
 caller. Adding a new parameter at the end (even with a default) appends new
 entries to the overload set, but reordering existing parameters renames them.
 
-The note compiled while writing this appendix confirms that the only AOSP usages
-of `@JvmOverloads` are in `frameworks/base/services/tests/displayservicetests/`
-— test utility files like `TestUtils.kt`, `PersistentDataStoreTestUtils.kt`,
-`DisplayDeviceConfigTestUtils.kt`, and `ClamperTestUtils.kt`. No production
-service uses it. The reason is straightforward: production Kotlin in AOSP only
-calls into Java, never the reverse. There is no Java caller in the platform that
-needs the synthesized overloads.
+Within `frameworks/base/services/`, every `@JvmOverloads` usage sits under
+`services/tests/` — mostly test utility files in `displayservicetests/` like
+`TestUtils.kt`, `PersistentDataStoreTestUtils.kt`,
+`DisplayDeviceConfigTestUtils.kt`, and `ClamperTestUtils.kt`, plus one fake in
+`servicestests/`. No production service uses it. (The annotation is common in
+the app layer — SystemUI and Settings use it in over a hundred files between
+them — but those are apps consuming the SDK, not API-bearing framework code.)
+The reason for its absence from production services is straightforward:
+production service Kotlin in AOSP only calls into Java, never the reverse.
+There is no Java caller in the platform services that needs the synthesized
+overloads.
 
 ### `@JvmStatic` and the `Companion.foo()` vs `Foo.foo()` choice
 
@@ -1524,8 +1544,10 @@ shares, and a public Kotlin API would force `kotlin-stdlib.jar` into that
 shared classloader too.
 
 The framework's public API ships as `framework.jar` (plus adjacent jars like
-`services.jar`, `framework-graphics.jar`, `framework-location.jar`, `ext.jar`,
-`telephony-common.jar`) on the device's **boot classpath**. The composition is
+`framework-graphics.jar`, `framework-location.jar`, `ext.jar`,
+`telephony-common.jar`) on the device's **boot classpath**. (`services.jar` is
+not among them: it sits on SYSTEMSERVERCLASSPATH and is loaded only by
+`system_server`.) The composition is
 configured by Soong via `PRODUCT_BOOT_JARS`, with the default set defined at
 `build/make/target/product/default_art_config.mk:38` — `framework-minus-apex`,
 `ext`, `telephony-common`, `framework-graphics`, `framework-location`, and the
@@ -1566,14 +1588,17 @@ those types live in `kotlin-stdlib.jar`.
 
 The verified state today: no boot classpath jar in AOSP links `kotlin-stdlib`.
 `external/kotlinc/Android.bp:59` declares `kotlin-stdlib` as a `java_import`
-of the prebuilt jar, but the modules that depend on it are non-boot — SystemUI's
-plugin and shared subprojects explicitly set `static_kotlin_stdlib: false` to
-keep their own stdlib internal to their APK rather than promoted to shared
-state. The Kotlin code that does run inside boot-classpath jars (parts of
-`system_server` and other framework services, see "Where Kotlin Already Lives
-in AOSP" below) compiles to JVM signatures that hold no Kotlin type at the
-public boundary, so no `kotlin-stdlib` reference reaches the shared
-classloader.
+of the prebuilt jar, but the modules that depend on it are non-boot. Soong's
+`static_kotlin_stdlib` property (documented in `build/soong/java/base.go` as
+"If true, package the kotlin stdlib into the jar. Defaults to true.") controls
+whether a Kotlin module bundles its own stdlib copy; SystemUI's plugin and
+shared subprojects set it to `false` so that the stdlib becomes a
+compile-time-only dependency for them and the containing APK supplies the
+single packaged copy. The platform's production Kotlin (the permission
+subsystem, see "Where Kotlin Already Lives in AOSP" below) runs inside
+`services.jar` on SYSTEMSERVERCLASSPATH — loaded only by `system_server`, not
+on the boot classpath — with its stdlib statically linked and jarjar-renamed,
+so no `kotlin-stdlib` reference reaches the shared classloader.
 
 Adding the first public Kotlin signature inverts that. The framework jar that
 exposes a `Result<T>` return type, a `suspend` parameter, or even just a public
@@ -1650,21 +1675,25 @@ Java-shaped toolchain. Even where individual tools happen to be written in
 Kotlin, their input and output formats are designed for the Java/JVM signature
 model.
 
-**Metalava** lives at `tools/metalava/`. It is itself a Kotlin tool — 657 `.kt`
+**Metalava** lives at `tools/metalava/`. It is itself a Kotlin tool — 784 `.kt`
 files across its sub-modules. That metalava is written in Kotlin while operating
 on a Java-shaped API is part of the constraint, not a contradiction: metalava
-can consume Kotlin source to produce signatures, but the signature *format*
-(defined in `tools/metalava/FORMAT.md`) has no syntax for Kotlin-specific
-constructs. There is no way to write `suspend`, `inline`, `value class`, or
-`data class` in `current.txt`. A Kotlin source file that uses those features is
-either flattened to its JVM-visible projection (losing the source-level
-semantics) or rejected by API lint.
+can consume Kotlin source to produce signatures, and the signature format
+(defined in `tools/metalava/FORMAT.md`) can already express Kotlin modifiers
+(`sealed`, `inline`, `value`, `suspend`, `data`, `operator`, `infix`), Kotlin
+properties, parameter names, and default values. But those extensions were
+designed for the androidx signature files, where the library source is Kotlin;
+the platform SDK surface does not use them. The `current.txt` for the
+`android.*` classes is marked `// - style=java` and contains no Kotlin
+construct. A Kotlin source file that used those features on the platform
+surface would be flattened to its JVM-visible projection (losing the
+source-level semantics) or rejected by API lint.
 
 The flattening is informative. Metalava has a unified `Item` model — a class is
 an `Item`, a method is an `Item`, a field is an `Item` — and that model is
-intentionally language-neutral. The PSI frontend (which reads Kotlin source) and
-the Turbine frontend (which reads Java source) both produce Items in the same
-shape. When metalava emits a signature, it walks the Items and writes them in
+intentionally language-neutral. The PSI frontend (the default source model,
+which reads both Java and Kotlin source) and the Turbine frontend (an
+alternative Java-only source model) both produce Items in the same shape. When metalava emits a signature, it walks the Items and writes them in
 the format spec. A Kotlin `data class Foo(val x: Int)` is read by the PSI
 frontend, then projected to the equivalent Java declarations: a class with a
 final field-style accessor `getX`, a synthesized constructor, and the
@@ -1676,21 +1705,23 @@ This also means that an internal Kotlin source change — refactoring a `data
 class` to add a new field, splitting a sealed hierarchy, renaming a top-level
 function — does not show up in `current.txt` as long as the Kotlin members are
 not part of the public surface. Metalava only includes members it sees as
-`public` or `protected` and that are not annotated `@hide`. The vast majority of
-the 35 Kotlin files in `frameworks/base/core/` qualify as `@hide` or as
-package-private, so they exist but are invisible to the API check.
+`public` or `protected` and that are not annotated `@hide`. The Kotlin files
+under `frameworks/base/core/` are all test code under `core/tests/`, which the
+API check never scans — the API-bearing `core/java/` tree is pure Java, so no
+Kotlin declaration even reaches metalava there.
 
 The metalava module layout shows the separation of concerns:
 
 - `tools/metalava/metalava/` — the main tool entry point.
 - `tools/metalava/metalava-model/` — abstract API model independent of any
   language frontend.
-- `tools/metalava/metalava-model-psi/` — Kotlin source frontend (using JetBrains
-  PSI).
+- `tools/metalava/metalava-model-psi/` — the default source frontend for both
+  Java and Kotlin (using JetBrains PSI).
 - `tools/metalava/metalava-model-source/` — generic source-based model.
 - `tools/metalava/metalava-model-text/` — text (signature file) frontend, used
   for round-tripping `current.txt`.
-- `tools/metalava/metalava-model-turbine/` — Turbine-based Java frontend.
+- `tools/metalava/metalava-model-turbine/` — alternative Turbine-based
+  Java-only frontend.
 - `tools/metalava/metalava-reporter/` — issue reporting subsystem.
 - `tools/metalava/metalava-testing/` — test utilities.
 - `tools/metalava/stub-annotations/` — annotation jar used in generated stubs.
@@ -1699,11 +1730,15 @@ The text model is the canonical one. PSI and Turbine exist to feed it. A future
 Kotlin-aware public API would need a text model that can express, and
 round-trip, every Kotlin construct it would admit on the public surface.
 
-**Documentation generation**. The platform reference documentation pipeline runs
-Doclava (the historical Javadoc-derived tool) and Dackka (the newer Kotlin-aware
-doc tool). Dackka understands Kotlin source but produces documentation pages
-that describe the Java-projection of Kotlin APIs — because that is what app
-developers see in their IDE when they call into the platform. A Kotlin `data
+**Documentation generation**. The in-tree platform reference documentation
+pipeline is metalava plus Doclava (the historical Javadoc-derived tool at
+`external/doclava/`): raw sources pass through metalava into stub sources, and
+Doclava renders the stubs into API docs (the pipeline is sketched in
+`frameworks/base/api/ApiDocs.bp`). Dackka, Google's newer Kotlin-aware doc
+tool, is used for AndroidX documentation but is not checked into AOSP. Either
+way, the published documentation describes the Java-projection of Kotlin APIs
+— because that is what app developers see in their IDE when they call into the
+platform. A Kotlin `data
 class` shows up in the docs with its synthesized `equals`, `hashCode`,
 `toString`, `copy`, and `componentN` methods listed individually, because that
 is what Java callers see. The documentation can show source-level Kotlin shape
@@ -1714,15 +1749,21 @@ projection.
 The blocklist is maintained in plain-text files under
 `frameworks/base/boot/hiddenapi/`:
 
-- `hiddenapi-unsupported.txt` — fully blocked APIs.
-- `hiddenapi-unsupported-packages.txt` — entire packages with the surface
-  blocked.
+- `hiddenapi-unsupported.txt` — the *unsupported* (formerly greylist) members:
+  still accessible from every target SDK, but unsupported and subject to
+  warnings.
+- `hiddenapi-unsupported-packages.txt` — whole packages placed in that same
+  unsupported category.
 - `hiddenapi-max-target-o.txt` — APIs targeted at SDK O or earlier (legacy
   block).
 - `hiddenapi-max-target-p.txt` — APIs targeted at SDK P or earlier.
 - `hiddenapi-max-target-q.txt` — APIs targeted at SDK Q or earlier.
 - `hiddenapi-max-target-r-loprio.txt` — APIs targeted at R or earlier, low
   priority.
+
+Hidden members not named in any of these files default to the `blocked`
+category — the hard-denied case — so the lists carve out exemptions rather
+than declare the blocks.
 
 A blocked Kotlin extension function appears as
 `Lcom/example/UtilsKt;->extensionMethod(Lcom/example/Receiver;)V`, not by its
@@ -1738,8 +1779,8 @@ The build system merges the source text files into a single generated CSV:
 - `out/soong/hiddenapi/hiddenapi-flags.csv` — the build-time artifact, ~750k
   rows. Each row is a member descriptor plus a flag list (`public-api`, `sdk`,
   `system-api`, `test-api`, `blocked`, etc.).
-- `prebuilts/runtime/appcompat/hiddenapi-flags.csv` — the prebuilt copy shipped
-  for app-compat checks (~51 MB).
+- `prebuilts/runtime/appcompat/hiddenapi-flags.csv` — the prebuilt copy bundled
+  with the host-side veridex/`appcompat.sh` APK scanner (~51 MB).
 
 Sample rows from the generated file:
 
@@ -1749,7 +1790,10 @@ Landroid/Manifest$permission;->ACCEPT_HANDOVER:Ljava/lang/String;,public-api,sdk
 Landroid/Manifest$permission;->ACCESSIBILITY_MOTION_EVENT_OBSERVING:Ljava/lang/String;,blocked,test-api
 ```
 
-The CSV is loaded into ART at runtime. When an app calls
+The CSV is consumed at build time by the `hiddenapi` tool
+(`art/tools/hiddenapi/hiddenapi.cc`), which stamps the flags into each dex
+file's `HiddenapiClassData` section; ART then reads those per-member dex flags
+at runtime — it never opens the CSV. When an app accesses
 `Manifest.permission.ACCESSIBILITY_MOTION_EVENT_OBSERVING`, the runtime checks
 the flags. `blocked` triggers a hard exception; the various `max-target-*` flags
 trigger softer warnings or version-gated blocks. The granularity is
@@ -1760,8 +1804,13 @@ fallback) would multiply the entries needed to express the same source-level
 intent in this CSV.
 
 **jarjar rules**. Several framework modules rewrite their dependency class names
-during build to avoid colliding with app-visible classes. The rules are declared
-in `.jarjar` files processed by the jarjar tool. Kotlin metadata annotations
+during build to avoid colliding with app-visible classes. The rules live in
+`jarjar-rules.txt` files wired in through Soong's `jarjar_rules:` property —
+the permission subsystem applies exactly this rewrite to its statically linked
+stdlib (`frameworks/base/services/permission/jarjar-rules.txt` renames
+`kotlin.**` to `com.android.server.permission.jarjar.kotlin.**`), viable there
+because the subsystem does not rely on Kotlin reflection over the renamed
+classes. Kotlin metadata annotations
 (`kotlin.Metadata`) embed string references to the original class names — a
 jarjar rewrite that renames `kotlin.collections.MapsKt` to
 `com.android.internal.kotlin.collections.MapsKt` would mismatch with the
@@ -1778,7 +1827,7 @@ annotation type and a metalava rule to project that annotation into the
 generated CSV correctly.
 
 The annotations themselves come with subtle constraints. `@SystemApi` accepts
-client-type arguments (`MODULE_LIBRARIES`, `PRIVILEGED_APPS`, `MODULE_APPS`)
+client-type arguments (`MODULE_LIBRARIES`, `PRIVILEGED_APPS`, `SYSTEM_SERVER`)
 that gate which downstream consumers see the member. Metalava reads those
 arguments and routes the member into the appropriate signature surface; an
 incorrectly routed annotation leaks into the wrong `current.txt`, and the
@@ -1795,8 +1844,9 @@ The `out/soong/hiddenapi/hiddenapi-flags.csv` artifact is the merge point of
 every input mentioned above: source `.txt` blocklists, `@SystemApi` membership,
 `@UnsupportedAppUsage` annotations, and public-API stub descriptors all flow
 through Soong into a single descriptor-keyed table. The same machinery feeds
-`prebuilts/runtime/appcompat/hiddenapi-flags.csv`, the prebuilt copy older
-runtimes consult during app-compat fallbacks. Any change to the descriptor
+`prebuilts/runtime/appcompat/hiddenapi-flags.csv`, the prebuilt table used by
+the host-side veridex/`appcompat.sh` APK scanner (no on-device runtime reads
+it). Any change to the descriptor
 shape, the flag vocabulary, or the way Kotlin members map to descriptors flows
 through this pipeline.
 
@@ -1839,7 +1889,7 @@ hard-pins a specific kotlinc version. The build's prebuilt kotlinc lives at
 `external/kotlinc/`, with version stamped in `external/kotlinc/build.txt`:
 
 ```
-2.2.0-release-294
+2.2.0-custom-branch-22
 ```
 
 The pinning is enforced in Soong's compiler-flag plumbing:
@@ -1850,8 +1900,10 @@ The pinning is enforced in Soong's compiler-flag plumbing:
 - `build/soong/java/config/kotlin.go` — declares the variables Soong uses to
   find kotlinc components (`external/kotlinc/bin/kotlinc`,
   `external/kotlinc/lib/kotlin-stdlib.jar`,
-  `external/kotlinc/lib/kotlin-compiler.jar`, the Compose plugin, kapt,
-  jvm-abi-gen).
+  `external/kotlinc/lib/kotlin-compiler.jar`, kapt, jvm-abi-gen). The Compose
+  compiler plugin is wired in separately, as the
+  `kotlin-compose-compiler-plugin` module referenced from
+  `build/soong/java/base.go`.
 
 The same config file forbids callers from overriding `-no-jdk`, `-no-stdlib`, or
 `-language-version`. The platform decides which Kotlin language version to
@@ -1931,13 +1983,13 @@ introduced in "The Asymmetry" can be expanded with the role each location plays:
 
 | Path | Kotlin files | Role |
 |------|--------------|------|
-| `frameworks/base/packages/SystemUI/` | 7,846 | System UI shell: lock screen, notifications, quick settings, status bar, system bars, Compose for UI |
-| `packages/apps/Settings/` | 1,576 | Settings app |
-| `packages/apps/Launcher3/` | 949 | Launcher home and recents |
-| `cts/` | 925 | Compatibility Test Suite (Kotlin used freely in tests) |
-| `frameworks/base/services/` | 237 | All in `services/permission/`, plus tests; no other system service uses production Kotlin |
-| `frameworks/base/core/` | 35 | Sparse use in framework internals; not exposed on the public API surface |
-| `tools/metalava/` | 657 | The signature tool itself is Kotlin |
+| `frameworks/base/packages/SystemUI/` | 8,896 | System UI shell: lock screen, notifications, quick settings, status bar, system bars, Compose for UI |
+| `packages/apps/Settings/` | 2,300 | Settings app |
+| `packages/apps/Launcher3/` | 1,326 | Launcher home and recents |
+| `cts/` | 1,209 | Compatibility Test Suite (Kotlin used freely in tests) |
+| `frameworks/base/services/` | 292 | Production Kotlin all in `services/permission/`; the rest is tests — no other system service uses production Kotlin |
+| `frameworks/base/core/` | 45 | All test code under `core/tests/`; zero production Kotlin in `core/java/` |
+| `tools/metalava/` | 784 | The signature tool itself is Kotlin |
 
 Within `frameworks/base/services/`, the production Kotlin is concentrated in the
 permission access subsystem introduced in Android 13. Three representative files
@@ -1945,7 +1997,7 @@ illustrate the shape:
 
 **`AccessCheckingService.kt`** —
 `frameworks/base/services/permission/java/com/android/server/permission/access/AccessCheckingService.kt`,
-323 lines. This is the entry-point class for the new permission stack. It
+325 lines. This is the entry-point class for the new permission stack. It
 extends `SystemService`, registers manager interfaces with `LocalServices`, and
 exposes its state via the `getState { ... }` scope helper. The relevant
 fragment:
@@ -2004,7 +2056,7 @@ chose to keep the implementation Kotlin and the boundary Java.
 
 **`AccessPolicy.kt`** —
 `frameworks/base/services/permission/java/com/android/server/permission/access/AccessPolicy.kt`,
-527 lines. The `AccessPolicy` class indexes a map of `SchemePolicy`
+540 lines. The `AccessPolicy` class indexes a map of `SchemePolicy`
 implementations and delegates per-scheme work to subclasses. The relevant
 declaration:
 
@@ -2018,8 +2070,11 @@ private constructor(
 with an abstract `SchemePolicy` base class declared later in the file. The
 abstract-class-plus-subclasses pattern is purely internal:
 `AppIdPermissionPolicy`, `DevicePermissionPolicy`, `AppIdAppOpPolicy`,
-`PackageAppOpPolicy`, and `AppIdAppFunctionAccessPolicy` are all package-private
-to the permission subsystem and do not appear in any signature file.
+`PackageAppOpPolicy`, and `AppIdAppFunctionAccessPolicy` are all plain public
+Kotlin classes (Kotlin has no package-private visibility), but they stay
+confined to the permission subsystem by build visibility — the library's
+`Android.bp` sets `visibility: ["//frameworks/base/services"]` — and none of
+them appears in any signature file.
 
 **`Permission.kt`** —
 `frameworks/base/services/permission/java/com/android/server/permission/access/permission/Permission.kt`,
@@ -2063,7 +2118,7 @@ runner actually needs to reach into Kotlin from outside.
 
 A few additional notes on where Kotlin appears help round out the picture:
 
-**The CTS Kotlin tests.** Roughly 925 Kotlin files live under `cts/`. CTS
+**The CTS Kotlin tests.** Roughly 1,200 Kotlin files live under `cts/`. CTS
 validates that an OEM build conforms to the Android compatibility definition;
 tests in CTS are necessarily Java-callable from the test runner, but the test
 bodies themselves can be Kotlin. CTS uses Kotlin freely because the tests do not
@@ -2079,7 +2134,7 @@ Settings' internal classes are heavily Kotlin.
 
 **SystemUI's role.** SystemUI is the system_server-adjacent process that hosts
 the lock screen, notifications, quick settings, and system bars. It is the
-largest Kotlin codebase in AOSP at 7,846 files. SystemUI's interface to the rest
+largest Kotlin codebase in AOSP at 8,896 files. SystemUI's interface to the rest
 of the platform is via well-defined boundaries: AIDL for binder calls, content
 providers for shared state, intents for activity launches. None of those
 boundaries surface Kotlin types as parameters. SystemUI can refactor freely; the
@@ -2090,24 +2145,28 @@ intent contracts.
 interop pattern noted under `@JvmOverloads`, `@JvmStatic`, and "Permission
 subsystem testing" appears throughout `services/tests/`; see those subsections.
 
-**`frameworks/base/core/` Kotlin.** The 35 files here are an interesting
-outlier. They include some support utilities, occasional helper classes, and a
-small amount of newer code. None of them appears as a public-API entry in
-`current.txt` because nothing in the Kotlin source declares a `public` type that
-crosses into the `android.*` namespace and resolves through metalava as a public
-member. Kotlin source can sit in `frameworks/base/core/` as long as it stays out
-of the public API surface — and the API check is what enforces that boundary.
+**`frameworks/base/core/` Kotlin.** The 45 files here are all test code under
+`frameworks/base/core/tests/` — there is zero production Kotlin in the
+API-bearing `core/java/` tree. Nothing there can appear as a public-API entry
+in `current.txt`, because metalava reads the production source and the
+production source is pure Java. In principle, Kotlin source could sit in
+`core/java/` as long as it stayed out of the public API surface — the API
+check is what enforces that boundary — but today none does.
 
-**The kotlin-stdlib boot inclusion.** When the boot classpath is computed by
-Soong, the stdlib jars are added so that Kotlin classes in the boot image
-resolve their stdlib dependencies at runtime. This means stdlib types like
-`kotlin.collections.MapsKt`, `kotlin.coroutines.Continuation`, `kotlin.Result`,
-and `kotlin.Metadata` are all reachable from any process in the system. They do
-not appear in `current.txt` because metalava is told to exclude them, but they
-are present at runtime. A future Kotlin-on-the-public-surface story would need
-to decide whether stdlib types are part of the public API (they would be,
-transitively, through any public method that returns a stdlib type) or whether
-the public API can use only a vetted subset of stdlib.
+**The kotlin-stdlib linkage.** `kotlin-stdlib` is not on the boot classpath at
+all. The one production consumer in the platform, the permission subsystem,
+statically links the stdlib into its library
+(`frameworks/base/services/permission/Android.bp`), which lands in
+`services.jar` on SYSTEMSERVERCLASSPATH — loaded only by `system_server` — and
+jarjar-renames every stdlib class to
+`com.android.server.permission.jarjar.kotlin.**`
+(`frameworks/base/services/permission/jarjar-rules.txt`). Stdlib types like
+`kotlin.collections.MapsKt`, `kotlin.coroutines.Continuation`, and
+`kotlin.Result` are therefore not reachable from app processes. A future
+Kotlin-on-the-public-surface story would need to decide whether stdlib types
+are part of the public API (they would be, transitively, through any public
+method that returns a stdlib type) or whether the public API can use only a
+vetted subset of stdlib.
 
 ## The Kotlin Features Hardest for a Public Surface
 
@@ -2180,8 +2239,10 @@ annotations `org.jetbrains.annotations.Nullable` and `.NotNull`). For Java
 callers, these annotations are advisory — the bytecode signature is the same
 with or without them. For Kotlin callers consuming a Java API, the annotations
 matter: they determine whether Kotlin infers `T` or `T?`. Public framework Java
-uses `androidx.annotation.Nullable`/`androidx.annotation.NonNull` to express the
-same intent. Migrating to Kotlin source would either preserve those annotations
+uses the hidden platform annotations
+`android.annotation.NonNull`/`android.annotation.Nullable` to express the same
+intent, which metalava projects into androidx-flavored annotations in the
+generated stubs. Migrating to Kotlin source would either preserve those annotations
 explicitly or rely on kotlinc emitting JetBrains-flavor annotations — and the
 framework's nullability story would have to declare which annotation namespace
 is the contract. There is also a quieter concern around `platform types`: when
@@ -2243,19 +2304,23 @@ item presupposes the earlier ones.
    some bounded K" — bounded enough for Gradle-driven Kotlin projects that
    recompile frequently, but not bounded for ten years.
 
-2. **A Kotlin-aware metalava that emits `current.txt`-equivalent signatures.**
-   The signature format defined in `tools/metalava/FORMAT.md` would need to grow
-   syntax for Kotlin constructs: `suspend`, `inline`, `value class`, `data
-   class`, `sealed class`/`interface`, default arguments, nullability,
-   `companion object` shape. Each addition is an API design problem in itself —
-   the new syntax must round-trip through the text model and survive future
-   kotlinc evolution. The text model in `tools/metalava/metalava-model-text/`
-   would need extensions to parse and emit the new constructs, and the
-   comparison logic in
-   `tools/metalava/metalava/src/main/.../ComparisonVisitor.kt` would need rules
-   for which Kotlin-specific changes constitute breaking deltas. Today metalava
-   can read Kotlin source via its PSI model
-   (`tools/metalava/metalava-model-psi/`) but emits a Java-projection signature.
+2. **A Kotlin-aware metalava pipeline for the platform surface.** The
+   signature format defined in `tools/metalava/FORMAT.md` already has syntax
+   for Kotlin modifiers (`sealed`, `inline`, `value`, `suspend`, `data`,
+   `operator`, `infix`), Kotlin properties, and default arguments — built for
+   the androidx signature files, whose sources are Kotlin — and the text model
+   in `tools/metalava/metalava-model-text/` parses those tokens today. What
+   does not exist is their adoption on the platform SDK surface: the platform
+   `current.txt` is `style=java`, and each Kotlin construct admitted there is
+   an API design problem in itself — the syntax must round-trip through the
+   text model, survive future kotlinc evolution, and cover the gaps the format
+   still has (`companion object` shape, nullability as a first-class
+   contract). The comparison logic in
+   `tools/metalava/metalava/src/main/.../ComparisonVisitor.kt` would need
+   rules for which Kotlin-specific changes constitute breaking deltas. Today
+   metalava reads Kotlin source via its PSI model
+   (`tools/metalava/metalava-model-psi/`) but emits a Java-projection
+   signature for the platform.
 
 3. **Hidden API enforcement that tracks Kotlin descriptors.** The CSV at
    `out/soong/hiddenapi/hiddenapi-flags.csv` uses raw JVM descriptors. Kotlin
@@ -2268,8 +2333,9 @@ item presupposes the earlier ones.
    has no easy way to confirm that all the resulting descriptors landed in the
    right hidden API category.
 
-4. **Updated documentation tooling.** Dackka understands Kotlin source today,
-   but the reference docs would need a shared model where the Kotlin
+4. **Updated documentation tooling.** Dackka (Google's Kotlin-aware doc tool,
+   used for AndroidX and not checked into AOSP) understands Kotlin source
+   today, but the platform reference docs would need a shared model where the Kotlin
    source-level view and the Java JVM-projection view are both first-class. App
    developers using Java tooling against a Kotlin platform API must see a
    coherent Javadoc; app developers using Kotlin tooling must see source-level
@@ -2362,19 +2428,23 @@ cd $AOSP
 head -5 frameworks/base/core/api/current.txt
 
 # Find a class entry
-grep -n 'public final class Manifest ' frameworks/base/core/api/current.txt
+grep -n 'public class Activity ' frameworks/base/core/api/current.txt
 
 # Locate the Java source for that class
-find frameworks/base/core -name 'Manifest.java' -path '*/java/android/*'
+find frameworks/base/core -name 'Activity.java' -path '*/java/android/app/*'
 
 # Confirm the file is Java
-head -3 frameworks/base/core/java/android/Manifest.java
+head -3 frameworks/base/core/java/android/app/Activity.java
 ```
 
-**What to look for**: the signature file opens with `// Signature format: 6.0`
-followed by `package android {`. Every class is described in Java-flavor syntax.
-The `Manifest.java` source file should exist at
-`frameworks/base/core/java/android/Manifest.java` and be Java, not Kotlin.
+**What to look for**: the signature file opens with `// Signature format: 6.0`,
+then a `// - style=java` marker line, then `package android {`. Every class is
+described in Java-flavor syntax. The `Activity.java` source file should exist
+at `frameworks/base/core/java/android/app/Activity.java` and be Java, not
+Kotlin. (Note that `android.Manifest`, whose entry also appears near the top of
+`current.txt`, has no checked-in source file at all — aapt2 generates it at
+build time from the permission declarations in
+`frameworks/base/core/res/AndroidManifest.xml`.)
 
 ### Exercise C-3: Trace a Kotlin-implementing service across binder
 
@@ -2464,10 +2534,12 @@ ls -d tools/metalava/metalava-* | wc -l
 find tools/metalava -name '*.kt' | wc -l
 ```
 
-**What to look for**: the tool is itself Kotlin (the `.kt` count should be about
-657), but the signature format it emits (`FORMAT.md`) has no Kotlin-specific
-syntax. The compatibility policy is what gates whether a change to `current.txt`
-is allowed; it does not have a separate Kotlin track. The module list
+**What to look for**: the tool is itself Kotlin (the `.kt` count should be
+roughly 800), and `FORMAT.md` contains "Support Kotlin Modifiers" and "Support
+Default Values" sections — Kotlin-specific syntax built for the androidx
+signature files — yet the platform's `current.txt` is `style=java` and uses
+none of it. The compatibility policy is what gates whether a change to
+`current.txt` is allowed; it does not have a separate Kotlin track. The module list
 (`metalava-*` directories) shows the language frontends and the text model.
 Running metalava as a tool requires a built binary and is not part of this
 exercise.
@@ -2496,9 +2568,9 @@ compiler. Freezing the set requires freezing each piece independently. The
 multiplicity manifests; each category is independently a freezing problem.
 
 The third constraint is the toolchain. Metalava, hidden API enforcement,
-Doclava/Dackka, jarjar, and the `@SystemApi`/`@UnsupportedAppUsage` annotation
+Doclava, jarjar, and the `@SystemApi`/`@UnsupportedAppUsage` annotation
 pipeline all operate on JVM descriptors. They consume Kotlin source (metalava
-and Dackka can read it) but their output is the language-neutral, JVM-shaped
+can read it) but their output is the language-neutral, JVM-shaped
 contract — `current.txt` text, descriptor CSVs, Javadoc HTML. A Kotlin-shape
 public API would require parallel tooling that admits Kotlin constructs as
 first-class. The toolchain itself is not in opposition to Kotlin; it simply does
@@ -2515,15 +2587,16 @@ inside the APK; the only escape is WebView-style per-process zygote
 isolation, which AOSP only pays the cost of in one well-justified case today.
 
 The result is what the inventory shows. Kotlin lives in the app and UI layer,
-in test code, in metalava itself, in the permission subsystem, and in a few
-corners of `frameworks/base/core/`. It does not appear in `current.txt` because
-the cost of putting it there has not yet been paid in full.
+in test code (including everything Kotlin under `frameworks/base/core/`), in
+metalava itself, and in the permission subsystem. It does not appear in
+`current.txt` because the cost of putting it there has not yet been paid in
+full.
 
 ## Key Source Files Reference
 
 | Path | Purpose |
 |------|---------|
-| `tools/metalava/` | The signature tool. Itself Kotlin (657 .kt files); emits language-neutral signature text. |
+| `tools/metalava/` | The signature tool. Itself Kotlin (784 .kt files); emits language-neutral signature text. |
 | `tools/metalava/FORMAT.md` | Specification of the `current.txt` text format. |
 | `tools/metalava/COMPATIBILITY.md` | Compatibility policy enforced by metalava on signature drift. |
 | `tools/metalava/API-LINT.md` | API lint rule documentation. |
@@ -2532,19 +2605,19 @@ the cost of putting it there has not yet been paid in full.
 | `frameworks/base/api/` | Build logic (`api.go`, `Android.bp`, `StubLibraries.bp`, `ApiDocs.bp`) that orchestrates signature generation. |
 | `prebuilts/sdk/<N>/public/api/android.txt` | Frozen public API signature for SDK level N (e.g. `prebuilts/sdk/34/public/api/android.txt`). |
 | `prebuilts/sdk/<N>/public/android.jar` | Frozen stub jar apps compile against at SDK level N. |
-| `frameworks/base/boot/hiddenapi/hiddenapi-unsupported.txt` | Source blocklist: fully blocked APIs. |
-| `frameworks/base/boot/hiddenapi/hiddenapi-unsupported-packages.txt` | Source blocklist: entirely-blocked packages. |
+| `frameworks/base/boot/hiddenapi/hiddenapi-unsupported.txt` | Source list: unsupported (formerly greylist) members — accessible but warned. |
+| `frameworks/base/boot/hiddenapi/hiddenapi-unsupported-packages.txt` | Source list: whole packages in the unsupported category. |
 | `frameworks/base/boot/hiddenapi/hiddenapi-max-target-o.txt` | Source blocklist: legacy O-or-earlier APIs. |
 | `frameworks/base/boot/hiddenapi/hiddenapi-max-target-p.txt` | Source blocklist: P-or-earlier APIs. |
 | `frameworks/base/boot/hiddenapi/hiddenapi-max-target-q.txt` | Source blocklist: Q-or-earlier APIs. |
 | `frameworks/base/boot/hiddenapi/hiddenapi-max-target-r-loprio.txt` | Source blocklist: R-or-earlier APIs (low priority). |
 | `out/soong/hiddenapi/hiddenapi-flags.csv` | Generated descriptor enforcement table (~750k rows). |
-| `prebuilts/runtime/appcompat/hiddenapi-flags.csv` | Prebuilt descriptor table shipped for app-compat checks (~51 MB). |
+| `prebuilts/runtime/appcompat/hiddenapi-flags.csv` | Prebuilt descriptor table for the host-side veridex/`appcompat.sh` APK scanner (~51 MB). |
 | `build/soong/java/kotlin.go` | Soong kotlinc Ninja rules (compile, snapshot, incremental). |
 | `build/soong/java/kotlin_test.go` | Unit tests for the kotlinc rules. |
 | `build/soong/java/config/kotlin.go` | Soong configuration: kotlinc binary paths, plugins, forbidden flags. |
 | `external/kotlinc/` | Pinned prebuilt kotlinc. |
-| `external/kotlinc/build.txt` | Pinned kotlinc version stamp (`2.2.0-release-294`). |
+| `external/kotlinc/build.txt` | Pinned kotlinc version stamp (`2.2.0-custom-branch-22`). |
 | `external/kotlinc/bin/kotlinc` | The kotlinc binary. |
 | `external/kotlinc/lib/kotlin-stdlib.jar` | Kotlin standard library prebuilt; non-boot dependency today (no boot classpath jar links it). |
 | `external/kotlinc/Android.bp` | `kotlin-stdlib` `java_import` declaration (line 59). |
@@ -2557,8 +2630,8 @@ the cost of putting it there has not yet been paid in full.
 | `external/kotlinc/lib/compose-compiler-plugin.jar` | Compose compiler plugin. |
 | `external/kotlinc/lib/kotlin-annotation-processing.jar` | kapt (Kotlin annotation processing). |
 | `external/kotlinc/lib/jvm-abi-gen.jar` | JVM ABI generation plugin. |
-| `frameworks/base/services/permission/java/com/android/server/permission/access/AccessCheckingService.kt` | Sample production Kotlin service (323 lines); extends `SystemService`. |
-| `frameworks/base/services/permission/java/com/android/server/permission/access/AccessPolicy.kt` | Sample policy hierarchy (527 lines); abstract `SchemePolicy` plus concrete subclasses. |
+| `frameworks/base/services/permission/java/com/android/server/permission/access/AccessCheckingService.kt` | Sample production Kotlin service (325 lines); extends `SystemService`. |
+| `frameworks/base/services/permission/java/com/android/server/permission/access/AccessPolicy.kt` | Sample policy hierarchy (540 lines); abstract `SchemePolicy` plus concrete subclasses. |
 | `frameworks/base/services/permission/java/com/android/server/permission/access/permission/Permission.kt` | Sample `data class` with companion object (185 lines). |
 | `frameworks/base/services/permission/java/com/android/server/permission/access/AccessPersistence.kt` | Production `companion object` usage example. |
 | `system/apex/docs/README.md` | APEX/Mainline binary stability docs. |
@@ -2606,7 +2679,7 @@ flowchart TD
 
 ### Architecture changes
 
-**OTA snapshots move to a UBLK backend (`system/core` + `system/update_engine`).** Virtual A/B snapshot merges, previously served by `snapuserd` through the kernel `dm-user` device, can now run over **UBLK** (userspace block driver). First-stage init selects the mode at boot: `system/core/init/first_stage_mount_android.cpp` calls `sm->UpdateUsesUblk()`, then `LaunchFirstStageSnapuserd(use_ublk)` and initializes `/dev/block/ublkb*` / `/dev/ublk*` misc devices. A new manifest field `disable_ublk` (`system/update_engine/update_metadata.proto:385-387`) lets OEMs force dm-user even on UBLK-configured devices. The legacy `system snapuserd` codepath and `ro.virtual_ab.userspace.snapshots.enabled`-style props are removed on both sides.
+**OTA snapshots move to a UBLK backend (`system/core` + `system/update_engine`).** Virtual A/B snapshot merges, previously served by `snapuserd` through the kernel `dm-user` device, can now run over **UBLK** (userspace block driver). First-stage init selects the mode at boot: `system/core/init/first_stage_mount_android.cpp` calls `sm->UpdateUsesUblk()`, then `LaunchFirstStageSnapuserd(use_ublk)` and initializes `/dev/block/ublkb*` / `/dev/ublk*` misc devices. A new manifest field `disable_ublk` (`system/update_engine/update_metadata.proto:385-387`) lets OEMs force dm-user even on UBLK-configured devices. The legacy `system snapuserd` codepath and `ro.virtual_ab.userspace.snapshots.enabled`-style props are removed on the snapuserd/first-stage side (`system/core`); update_engine's `payload_consumer/vabc_partition_writer.cc` still reads `ro.virtual_ab.userspace.snapshots.enabled`.
 
 **update_engine COW/compression updates.** Android 17 adds **zstd compression for REPLACE ops** (plus a `zstd_extent_writer` unittest) and a flag to disable REPLACE compression. It also **removes squashfs support** and retrofit-dynamic-partition logic, drops `SnapshotMergeStats`, and stops saving manifest bytes / frees manifest partition memory after use to cut peak RAM. Large patches are now written to a file and applied via fd rather than held in memory.
 
@@ -2811,7 +2884,7 @@ The 17 public API surface is `core/api/current.txt` (~65k lines); new feature ar
 
 - System service: `frameworks/base/services/core/java/com/android/server/security/advancedprotection/AdvancedProtectionService.java`, registered in `services/java/com/android/server/SystemServer.java:1868`.
 - Public/system API: `frameworks/base/core/java/android/security/advancedprotection/AdvancedProtectionManager.java`, reachable via `Context.ADVANCED_PROTECTION_SERVICE = "advanced_protection"` (`Context.java:6873`); `isAdvancedProtectionEnabled()` plus register/unregister callbacks are public (`core/api/current.txt:42225`).
-- Feature hooks under `.../advancedprotection/features/`: `DisallowCellular2GAdvancedProtectionHook`, `DisallowInstallUnknownSourcesAdvancedProtectionHook`, `UsbDataAdvancedProtectionHook`, `MemoryTaggingExtensionHook` (MTE). The `@SystemApi` feature IDs in `AdvancedProtectionManager` (DISALLOW_CELLULAR_2G=0 … DISALLOW_USB=2, DISALLOW_WEP=3, ENABLE_MTE=4, plus insecure-Wi-Fi-autojoin and a11y-restriction) map one-to-one to those hooks.
+- Feature hooks under `.../advancedprotection/features/`: `DisallowCellular2GAdvancedProtectionHook`, `DisallowInstallUnknownSourcesAdvancedProtectionHook`, `UsbDataAdvancedProtectionHook`, `MemoryTaggingExtensionHook` (MTE). `AdvancedProtectionManager` declares seven `@SystemApi` feature IDs, but only four (DISALLOW_CELLULAR_2G=0, DISALLOW_INSTALL_UNKNOWN_SOURCES=1, DISALLOW_USB=2, ENABLE_MTE=4) have matching hook classes registered by `AdvancedProtectionService`; DISALLOW_WEP=3, DISALLOW_INSECURE_WIFI_AUTOJOIN=5, and RESTRICT_NON_TOOL_A11Y_SERVICES=6 are enforced elsewhere (e.g. via `WifiManagerFeatureProvider`) rather than by hooks in `.../advancedprotection/features/`.
 
 **SupervisionService** — a first-class supervision (parental-controls) framework, splitting supervision out from DevicePolicy.
 
@@ -2848,7 +2921,7 @@ flowchart TD
 
 **Large-screen orientation/resizability opt-out removed at SDK 37.** For apps targeting SDK 37, the window manager stops honoring `resizeableActivity` and the restricted-resizability property on large screens (>600dp), forcing universal resizability; the SDK gate is `DISABLE_OPT_OUT_UNIVERSAL_RESIZABLE_BY_DEFAULT` (`frameworks/base/services/core/java/com/android/server/wm/AppCompatResizeOverrides.java`).
 
-**Reduced activity relaunch on config changes.** At SDK 37 a set of config changes (keyboard, keyboard-hidden, navigation, touchscreen, color-mode) no longer recreates the activity by default; the masked set is `RECREATE_ON_CONFIG_CHANGES_MASK` (`frameworks/base/core/java/android/internal/pm/pkg/component/ParsedActivityUtils.java`) and an app opts a change back into relaunch via the `android:recreateOnConfigChanges` manifest attribute, enforced by `AppCompatRecreateOnConfigChangePolicy`.
+**Reduced activity relaunch on config changes.** At SDK 37 a set of config changes (keyboard, keyboard-hidden, navigation, touchscreen, color-mode) no longer recreates the activity by default; the masked set is `RECREATE_ON_CONFIG_CHANGES_MASK` (`frameworks/base/core/java/com/android/internal/pm/pkg/component/ParsedActivityUtils.java`) and an app opts a change back into relaunch via the `android:recreateOnConfigChanges` manifest attribute, enforced by `AppCompatRecreateOnConfigChangePolicy`.
 
 **Custom notification view memory cap.** SystemUI now verifies that a notification's custom `RemoteViews` stay under a memory limit (`config_notificationStripRemoteViewSizeBytes`, ~5 MB) via `NotificationCustomContentMemoryVerifier` (`frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/notification/row/NotificationCustomContentMemoryVerifier.kt`); for SDK 37 apps an oversized view drops the notification rather than only logging a warning.
 
@@ -2979,7 +3052,7 @@ graph TD
 
 **Connectivity (Tethering/NetworkStack).** The 877-commit Connectivity delta is mostly incremental hardening of Tethering, NetworkStack and ConnectivityService; the notable new-capability item is the device-to-device path under `nearby/` gated by `enable_d2d_connectivity_service` (`packages/modules/Connectivity/nearby/flags/d2d_connectivity.aconfig`).
 
-**`usesCleartextTraffic` deprecation.** Apps targeting SDK 37 no longer have the `android:usesCleartextTraffic` manifest flag honored; the compat change `DEPRECATE_USES_CLEARTEXT_TRAFFIC` (`frameworks/base/packages/NetworkSecurityConfig/.../NetworkSecurityConfig.java`) routes cleartext policy entirely through Network Security Config XML so per-domain rules apply instead of a single global toggle.
+**`usesCleartextTraffic` deprecation.** Apps targeting SDK 37 no longer have the `android:usesCleartextTraffic` manifest flag honored; the compat change `DEPRECATE_USES_CLEARTEXT_TRAFFIC` (`frameworks/base/packages/NetworkSecurityConfig/platform/src/android/security/net/config/ManifestConfigSource.java`) routes cleartext policy entirely through Network Security Config XML so per-domain rules apply instead of a single global toggle.
 
 **Wi-Fi RTT 802.11az secure ranging.** Wi-Fi RTT gains 802.11az secure ranging behind the `secure_ranging` flag: `SecureRangingConfig` and `PasnConfig` (`packages/modules/Wifi/framework/java/android/net/wifi/rtt/`) negotiate PASN (Pre-Association Security Negotiation) to authenticate and protect FTM frames, with open/opportunistic/authenticated modes and `RangingResult.isRangingAuthenticated()`/`isRangingFrameProtected()` status.
 
@@ -3261,13 +3334,13 @@ Android 17's marquee device-support change is the **Software Defined Vehicle (SD
 
 ### New modules
 
-From `device/google/sdv/sdv_core_base/sdv_packages_core_services.mk`, an SDV Core VM installs these agents and APEXes:
+From `device/google/sdv/sdv_core_base/sdv_packages_core_services.mk`, an SDV Core VM installs these agents and APEXes (the per-device makefile `device/google/sdv/sdv_core_arm64/sdv_core_arm64.mk` supplies the SOME/IP stack, diagnostics, and power-state modules through the `SDV_SOMEIP_AGENT_MODULES` / `SDV_DIAGNOSTICS_AGENT_MODULE` / `SDV_VEHICLE_POWER_STATE_MANAGER_MODULE` variables that `sdv_packages_core_services.mk` consumes):
 
 - **Communication stack** (`middleware/`): `sdv_sd_agent` (Service Discovery), `dt_agent` (Data Tunnel pub/sub, `com.android.sdv.dt`), `rpcagent` (`middleware/rpc_agent`); shared client library `libsdv_comms` (`middleware/sdv_comms`) over `wire_format` and `transport` (Rust).
 - **Lifecycle & orchestration**: `sdv_lifecycle_agent`, `lifecycle_service_bundle_runner`, `sdv_orchestration_agent` (`com.android.sdv.orchestrator`), `sdv_service_bundles_registry_agent` — the orchestrator drives bundle lifecycle from `orch_config.textproto`.
 - **VSIDL toolchain** (host): `vsidlc`, `vsidl_rc_generator`, `someip_translation_generator`; on-device `sdv_vsidl_provider_agent`.
-- **SOME/IP**: `sdv_someip_stack_agent` + `vsomeip_config.json`, `sdv_someip_broker_agent_comms`.
-- **Platform/ops**: `sdv_health_monitor`, `sdv_update_manager_agent`, `sdv_diagnostics_agent`, `vepsm` (vehicle power-state manager).
+- **SOME/IP**: `sdv_someip_stack_agent` + `vsomeip_config.json` (from the per-device makefile), `sdv_someip_broker_agent_comms`.
+- **Platform/ops**: `sdv_health_monitor`, `sdv_update_manager_agent`, `sdv_diagnostics_agent` and `vepsm` (vehicle power-state manager; both from the per-device makefile).
 
 `hardware/sdv/interfaces` defines the stable AIDL surface: `ISdvGateway`/`ISdvGatewaySession` (`sdv_gateway/google/sdv/gateway/`), `IRpcAgent` (`middleware/rpc/`), `IRegistry` (`service_bundles_registry/`, API v3 under `aidl_api/`), lifecycle `IService`/`IServiceManager`, the vehicle-power-manager AIDL, and privileged Service-Discovery / identity agents.
 

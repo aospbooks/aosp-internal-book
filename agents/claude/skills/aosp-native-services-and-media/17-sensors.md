@@ -161,21 +161,21 @@ flowchart TD
     E -->|GYROSCOPE| G[hasGyro = true]
     E -->|MAGNETIC_FIELD| H[hasMag = true]
     E -->|PROXIMITY| I[registerSensor as ProximitySensor]
-    E -->|GRAVITY / ROTATION_VECTOR etc.| J[Mark in virtualSensorsNeeds bitmask]
+    E -->|GRAVITY / ROTATION_VECTOR etc.| J["Clear bit in virtualSensorsNeeds<br/>HAL provides this composite type"]
     E -->|Other| K[registerSensor as HardwareSensor]
     F --> L[SensorFusion::getInstance]
     G --> L
     H --> L
-    L --> M{hasGyro && hasAccel && hasMag?}
+    L --> M{"(hasGyro or hasGyroUncalibrated)<br/>&& hasAccel && hasMag?"}
     M -->|Yes| N["Register RotationVectorSensor<br/>OrientationSensor<br/>CorrectedGyroSensor<br/>GyroDriftSensor"]
-    M -->|No| O{hasAccel && hasGyro?}
+    M -->|No| O
+    N --> O{"hasAccel &&<br/>(hasGyro or hasGyroUncalibrated)?"}
     O -->|Yes| P["Register GravitySensor<br/>LinearAccelerationSensor<br/>GameRotationVectorSensor"]
-    O -->|No| Q{hasAccel && hasMag?}
+    O -->|No| Q
+    P --> Q{"hasAccel && hasMag?"}
     Q -->|Yes| R[Register GeoMagRotationVectorSensor]
-    N --> S["Check batching support<br/>set mSocketBufferSize"]
-    P --> S
-    Q --> S
-    R --> S
+    Q -->|No| S
+    R --> S["Check batching support<br/>set mSocketBufferSize"]
     S --> T[Create Looper, event buffers]
     T --> U[Start SensorEventAckReceiver thread]
     U --> V[Start SensorService thread loop]
@@ -216,10 +216,27 @@ bool SensorService::registerSensor(std::shared_ptr<SensorInterface> s,
 ```
 
 **Virtual Sensor Gating.** The `virtualSensorsNeeds` bitmask tracks which
-composite sensor types the HAL already provides.  If the HAL supplies
-`SENSOR_TYPE_GRAVITY` natively (e.g. via a sensor hub), `SensorService` skips
-registering its own `GravitySensor`.  The `IGNORE_HARDWARE_FUSION` compile-time
-flag (default `false`) can force software fusion for all composite types.
+composite sensor types the framework still has to synthesise in software.  It
+starts out with every composite bit set (gravity, linear acceleration, rotation
+vector, geomagnetic rotation vector, game rotation vector), and the enumeration
+loop *clears* a bit when the HAL reports that type natively:
+`virtualSensorsNeeds &= ~(1<<list[i].type);`.  Registration then reads the bit
+back.  If the HAL supplies `SENSOR_TYPE_GRAVITY` natively (e.g. via a sensor
+hub), `SensorService` still constructs and registers its own `GravitySensor`,
+but passes `isDebug = true` so the software copy stays out of the normal sensor
+list and only the HAL's sensor is user-visible:
+
+```cpp
+// SensorService.cpp onFirstRef(), line ~390
+bool needGravitySensor = (virtualSensorsNeeds & (1<<SENSOR_TYPE_GRAVITY)) != 0;
+registerVirtualSensor(std::make_shared<GravitySensor>(list, count),
+                      /* isDebug= */ !needGravitySensor);
+```
+
+The same pattern covers rotation vector/orientation, linear acceleration, game
+rotation vector, and geomagnetic rotation vector.  The `IGNORE_HARDWARE_FUSION`
+compile-time flag (default `false`) can force software fusion for all composite
+types.
 
 **Socket Buffer Sizing.** If any sensor reports a non-zero `fifoMaxEventCount`,
 the socket buffer is enlarged to `MAX_SOCKET_BUFFER_SIZE_BATCHED` (100 KB),
@@ -232,7 +249,7 @@ clamped to the kernel's `wmem_max`.
 data path.  It runs at `SCHED_FIFO` priority 10 to minimise jitter.
 
 ```
-Source: SensorService.cpp, line ~1125
+Source: SensorService.cpp, line ~1174
 ```
 
 The loop structure is:
@@ -278,7 +295,7 @@ the `Looper` prevents permanent wake-lock leaks.
 ### 17.2.3 Event Dispatch: `sendEventsToAllClients()`
 
 ```cpp
-// SensorService.cpp, line ~1063
+// SensorService.cpp, line ~1112
 void SensorService::sendEventsToAllClients(
     const std::vector<sp<SensorEventConnection>>& activeConnections,
     ssize_t count) {
@@ -315,7 +332,7 @@ Key fields:
 | Field | Purpose |
 |-------|---------|
 | `mChannel` (`BitTube`) | Unix socket pair for event delivery |
-| `mSensorInfo` | Map of sensor handle to `FlushInfo` |
+| `mSensorInfo` | Map of sensor handle to `SensorConnectionRecord` (pending flush events, first-flush flag, usage stats) |
 | `mEventCache` | Buffer for events when socket is full |
 | `mWakeLockRefCount` | Number of unacknowledged wake-up events |
 | `mUid` | UID of the owning application |
@@ -585,8 +602,10 @@ The AIDL wrapper (`AidlSensorHalWrapper`) uses FMQ for event transport.
 Its `pollFmq()` method blocks on the `EventFlag` until the HAL signals
 new data, then copies events from the FMQ into the caller's buffer.
 
-The HIDL wrapper uses the legacy `poll()` mechanism with a blocking HAL
-call.
+The HIDL wrapper uses the legacy blocking `poll()` HAL call only for
+HIDL 1.0 HALs.  For HIDL 2.0/2.1 it too uses FMQ transport via its own
+`pollFmq()`, choosing between the two paths with
+`supportsMessageQueues()`.
 
 ```
 Source: frameworks/native/services/sensorservice/AidlSensorHalWrapper.h
@@ -641,7 +660,12 @@ Handle must be unique until reboot
 ### 17.3.7 Direct Channels
 
 Direct channels provide the lowest-latency path for sensor data by
-bypassing `SensorService`'s event loop entirely.
+bypassing `SensorService`'s event loop entirely.  Only the event data
+path bypasses `SensorService`, though -- channel setup and rate
+configuration still go through it: the app's `SensorDirectChannel` calls
+into `SensorService`, whose `SensorDirectConnection` invokes
+`registerDirectChannel` / `configDirectReport` on the HAL via
+`SensorDevice`.
 
 ```mermaid
 graph TB
@@ -653,14 +677,19 @@ graph TB
         ISH[ISensors HAL]
     end
 
+    subgraph "SensorService"
+        SS["SensorDirectConnection<br/>+ SensorDevice"]
+    end
+
     subgraph "Application"
         DC[SensorDirectChannel]
         POLL["Poll atomic counter<br/>read 104-byte events"]
     end
 
+    DC -->|"createSensorDirectConnection /<br/>configureChannel"| SS
+    SS -->|"registerDirectChannel"| ISH
+    SS -->|"configDirectReport"| ISH
     ISH -->|"Write 104-byte events"| SM
-    DC -->|"registerDirectChannel"| ISH
-    DC -->|"configDirectReport"| ISH
     POLL -->|"mmap + read"| SM
 ```
 
@@ -823,7 +852,8 @@ Safety guards:
 - **Magnetic field validation**: Updates are rejected when the field
   magnitude is outside [10, 100] uT, indicating local magnetic disturbance.
 - **Gyro rate estimation**: A low-pass filter (`alpha = 1 / (1 + dT)`)
-  tracks the actual gyro sampling rate for diagnostics.
+  in `SensorFusion::process()` (SensorFusion.cpp, ~line 93) tracks the
+  actual gyro sampling rate for diagnostics.
 
 ### 17.4.3 Virtual Sensor Implementations
 
@@ -1120,12 +1150,16 @@ sensorManager.registerListener(this, accelerometer,
 The `samplingPeriodUs` parameter accepts predefined constants or a custom
 microsecond value:
 
-| Constant | Value | Approximate Rate |
-|----------|-------|-----------------|
-| `SENSOR_DELAY_FASTEST` | 0 | Maximum HW rate |
-| `SENSOR_DELAY_GAME` | 20,000 us | 50 Hz |
-| `SENSOR_DELAY_UI` | 60,000 us | 16 Hz |
-| `SENSOR_DELAY_NORMAL` | 200,000 us | 5 Hz |
+| Constant | Value | Effective Period | Approximate Rate |
+|----------|-------|-----------------|------------------|
+| `SENSOR_DELAY_FASTEST` | 0 | 0 us | Maximum HW rate |
+| `SENSOR_DELAY_GAME` | 1 | 20,000 us | 50 Hz |
+| `SENSOR_DELAY_UI` | 2 | 66,667 us | ~15 Hz |
+| `SENSOR_DELAY_NORMAL` | 3 | 200,000 us | 5 Hz |
+
+The constants themselves are the small integers 0--3;
+`SensorManager.getDelay()` maps them to the microsecond periods shown
+before the request reaches `SensorService`.
 
 The overload with `maxReportLatencyUs` enables batching:
 
@@ -1158,8 +1192,12 @@ sequenceDiagram
 
 On the Java side, `SystemSensorManager` creates a `SensorEventQueue`
 (not to be confused with the HAL-side FMQ) for each registered listener.
-This queue is backed by a `BitTube` file descriptor that is registered
-with the app's `Looper` via `MessageQueue.addOnFileDescriptorEventListener`.
+This queue is backed by a `BitTube` file descriptor that native code adds
+to the target thread's `Looper`: the `Receiver` in
+`frameworks/base/core/jni/android_hardware_SensorManager.cpp` obtains the
+native `MessageQueue` via `android_os_MessageQueue_getMessageQueue()` and
+calls `Looper::addFd()` on the BitTube fd -- the Java
+`MessageQueue.addOnFileDescriptorEventListener` API is not involved.
 When events arrive, the Looper wakes the thread and delivers them.
 
 ### 17.6.4 Batching and FIFO
@@ -1308,12 +1346,27 @@ a wake-up sensor fires until the application has read the event:
 6. When all connections' ref counts reach zero, `SensorService` releases
    its wake lock.
 
-A 5-second timeout prevents wake-lock leaks if the app fails to read events:
+A 5-second timeout prevents wake-lock leaks if the app fails to read events.
+`setWakeLockAcquiredLocked()` itself only acquires or releases the kernel wake
+lock and wakes the Looper; the timeout lives in the ack-receiver thread, which
+polls with a 5000 ms deadline whenever the wake lock is held and drops every
+connection's ref count if nothing acknowledges in time:
 
 ```cpp
-// SensorService.h
-void setWakeLockAcquiredLocked(bool acquire);
-// Sets a 5-second timeout on the Looper
+// SensorService.cpp, line ~1420
+bool SensorService::SensorEventAckReceiver::threadLoop() {
+    sp<Looper> looper = mService->getLooper();
+    do {
+        bool wakeLockAcquired = mService->isWakeLockAcquired();
+        int timeout = -1;
+        if (wakeLockAcquired) timeout = 5000;
+        int ret = looper->pollOnce(timeout);
+        if (ret == ALOOPER_POLL_TIMEOUT) {
+           mService->resetAllWakeLockRefCounts();
+        }
+    } while(!Thread::exitPending());
+    // ...
+}
 ```
 
 The HAL has its own 1-second timeout:
@@ -1460,16 +1513,26 @@ Head tracking feeds into the spatial audio pipeline described in
 sequenceDiagram
     participant HT as HEAD_TRACKER Sensor (Bluetooth HID)
     participant SS as SensorService
-    participant AS as AudioService
+    participant SPP as SensorPoseProvider (audioserver)
+    participant SPC as SpatializerPoseController
     participant SP as Spatializer
     participant OUT as Audio Output (headphones)
 
     HT->>SS: Head orientation events
-    SS->>AS: SensorEventConnection
-    AS->>SP: HeadTrackingProcessor<br/>update pose
+    SS->>SPP: SensorEventConnection
+    SPP->>SPC: Pose samples
+    SPC->>SP: HeadTrackingProcessor<br/>computed head pose
     SP->>SP: Apply rotation to audio scene
     SP->>OUT: Spatialised audio stream
 ```
+
+The event stream is consumed inside **audioserver**, not system_server:
+`SensorPoseProvider` (`frameworks/av/media/libheadtracking`) subscribes to
+the head tracker over a `SensorEventConnection` and feeds
+`SpatializerPoseController`
+(`frameworks/av/services/audiopolicy/service`), which drives the
+`HeadTrackingProcessor`.  `AudioService` in system_server only selects and
+enables the head-tracking sensor; it does not carry the events.
 
 When a head tracker sensor is exposed as a **dynamic sensor** through
 Bluetooth HID, the `DynamicSensorInfo::uuid` field is set to the HID
@@ -1483,20 +1546,21 @@ the user's physical movements.  `SensorService` restricts access:
 
 - By default, `mHtRestricted = true` limits head tracker access to system
   processes (UID = system or audioserver).
-- For testing, the restriction can be lifted via shell command:
+- For testing, the restriction can be lifted via `SensorService`'s shell
+  command interface (handled in `SensorService::shellCommand()`, which
+  requires the `MANAGE_SENSORS` permission -- note `cmd`, not `dumpsys`):
 
 ```shell
-adb shell dumpsys sensorservice unrestrict-ht
+adb shell cmd sensorservice unrestrict-ht
 # To re-restrict:
-adb shell dumpsys sensorservice restrict-ht
+adb shell cmd sensorservice restrict-ht
 ```
 
 ### 17.8.5 Runtime Sensors
 
-The head tracker is often implemented as a **runtime sensor** --
-a sensor that is registered programmatically rather than being discovered
-from the HAL at boot time.  Runtime sensors use handle values in the
-dedicated range:
+A related mechanism is the **runtime sensor** -- a sensor that is
+registered programmatically rather than being discovered from the HAL at
+boot time.  Runtime sensors use handle values in the dedicated range:
 
 ```aidl
 // ISensors.aidl
@@ -1505,8 +1569,14 @@ const int RUNTIME_SENSORS_HANDLE_END  = 0x5FFFFFFF;
 ```
 
 The `RuntimeSensor` class forwards `activate()` and `batch()` calls to
-a `RuntimeSensorCallback`, which is typically implemented by the Bluetooth
-stack or input subsystem:
+a `RuntimeSensorCallback`.  Runtime sensors are registered only from
+`system_server`, on behalf of **VirtualDeviceManager**: the sole
+implementer of `SensorManagerInternal.RuntimeSensorCallback` is the
+`RuntimeSensorCallbackWrapper` in
+`frameworks/base/services/companion/java/com/android/server/companion/virtual/SensorController.java`,
+which backs the sensors of a virtual device.  Bluetooth and USB head
+trackers are *not* runtime sensors -- they are exposed as **dynamic
+sensors** over HID (Section 17.3.6):
 
 ```cpp
 // SensorInterface.h
@@ -1603,9 +1673,13 @@ wake-up sensor.
 Detects whether a wearable device is on the user's body.  Must detect
 on-to-off transitions within 1 second and off-to-on within 3 seconds.
 
-**Heart Rate** (`HEART_RATE`, ID 21): Returns beats per minute.  Requires
-`SENSOR_PERMISSION_BODY_SENSORS` permission.  The framework automatically
-sets the required permission based on platform SDK version.
+**Heart Rate** (`HEART_RATE`, ID 21): Returns beats per minute.  `Sensor::Sensor()`
+sets the required permission unconditionally to `SENSOR_PERMISSION_READ_HEART_RATE`
+(`"android.permission.health.READ_HEART_RATE"`) for this type, and looks up the
+matching app-op through `AppOpsManager::permissionToOpCode()`.  The older
+`SENSOR_PERMISSION_BODY_SENSORS` (`"android.permission.BODY_SENSORS"`) is
+deprecated: a HAL sensor that still declares it is accepted, but logs
+`"Sensor %s using deprecated Body Sensor permission"`.
 
 ### 17.9.4 Wearable Fusion Rate Tuning
 
@@ -1889,7 +1963,7 @@ typedef struct sensors_event_t {
         float light;                 // TYPE_LIGHT
         float pressure;              // TYPE_PRESSURE
         float relative_humidity;     // TYPE_RELATIVE_HUMIDITY
-        sensors_meta_data_event_t meta_data;
+        meta_data_event_t meta_data;
         dynamic_sensor_meta_event_t dynamic_sensor_meta;
         additional_info_event_t additional_info;
         heart_rate_event_t heart_rate;
@@ -2027,7 +2101,7 @@ listener binder with the service the first time it is constructed:
 
 ```
 Source: frameworks/base/core/java/android/hardware/SystemSensorManager.java (line ~153)
-        frameworks/base/core/java/android/hardware/sensor/ISensorClientListener.aidl
+        frameworks/native/libs/sensor/include/android/hardware/sensor/ISensorClientListener.aidl
 ```
 
 `ISensorClientListener` is deliberately an **empty interface** -- it defines no
@@ -2220,7 +2294,7 @@ base, never raw pointers:
 graph TB
     subgraph "SharedDataRegion (mmaped FD)"
         META["DataFlowMetadata<br/>version, elementConfig,<br/>blockListEpoch"]
-        SRC["DataFlowSourceMetadata<br/>writeIndex, tailBlockOffset"]
+        SRC["DataFlowSourceMetadata<br/>writeIndex, tailBlockOffsetBytes"]
         SNKM["DataFlowSinkMetadata<br/>readIndex, sourceFlags/sinkFlags"]
         BLK["DataFlowBlockHeader + data<br/>(linked block list)"]
     end
@@ -2277,8 +2351,9 @@ Using `sensorservice` directly:
 # List all sensors
 adb shell dumpsys sensorservice
 
-# Watch accelerometer events (requires root or debug build)
-adb shell sensorservice_test -s accelerometer
+# Exercise the sensor stack with the native test binary
+# (userdebug/eng builds; registers for accelerometer events, takes no arguments)
+adb shell test-sensorservice
 ```
 
 Or using a simple app:
@@ -2349,7 +2424,9 @@ adb shell dumpsys sensorservice data_injection com.example.test
 ```
 
 ```java
-// In test code (requires DATA_INJECTION permission)
+// In test code: the app's package must match the one passed to
+// "dumpsys sensorservice data_injection", and sm.initDataInjection(true)
+// must have succeeded first (there is no dedicated permission)
 sm.registerListener(listener, accel, SensorManager.SENSOR_DELAY_FASTEST);
 
 SensorEvent fakeEvent = ... ; // construct with desired values
@@ -2360,8 +2437,9 @@ sm.injectSensorData(accel, fakeEvent.values, fakeEvent.accuracy,
 ### 17.16.6 Trace Sensor Performance
 
 ```shell
-# Enable sensor atrace category
-adb shell atrace --async_start -c sensors
+# Sensor event tracing is emitted under ATRACE_TAG_SYSTEM_SERVER
+# (see SensorEventQueue.cpp), so enable the "ss" category
+adb shell atrace --async_start -b 8000 ss binder_driver power
 
 # ... exercise sensors ...
 

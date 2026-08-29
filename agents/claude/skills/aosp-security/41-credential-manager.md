@@ -319,15 +319,25 @@ request sessions (identified by `IBinder` tokens). Sessions are added when a
 request begins and removed when they complete or are cancelled:
 
 ```java
-private void addSessionLocked(int userId, RequestSession session) {
+private void addSessionLocked(@UserIdInt int userId,
+        RequestSession requestSession) {
     synchronized (mLock) {
-        Map<IBinder, RequestSession> sessions = mRequestSessions.get(userId);
-        if (sessions == null) {
-            sessions = new HashMap<>();
-            mRequestSessions.put(userId, sessions);
-        }
-        sessions.put(session.mRequestId, session);
+        mSessionManager.addSession(userId, requestSession.mRequestId, requestSession);
     }
+}
+```
+
+The one-liner delegates to the inner `SessionManager`, whose `addSession()` does
+the actual map insertion (creating the per-user map on first use):
+
+```java
+// CredentialManagerService.SessionManager.addSession()
+@GuardedBy("mLock")
+public void addSession(int userId, IBinder token, RequestSession requestSession) {
+    if (mRequestSessions.get(userId) == null) {
+        mRequestSessions.put(userId, new HashMap<>());
+    }
+    mRequestSessions.get(userId).put(token, requestSession);
 }
 ```
 
@@ -505,11 +515,13 @@ protected void handlePackageRemovedMultiModeLocked(String packageName, int userI
 }
 ```
 
-The `userId` argument matters: in Android 17, `updateProvidersWhenPackageRemoved()`
-writes the `CREDENTIAL_SERVICE` and `CREDENTIAL_SERVICE_PRIMARY` settings *for that
-user* when the `multi_user_fix_enabled` flag is set, rather than for
-`UserHandle.myUserId()` as the legacy path did. This is the multi-user correctness fix
-discussed in section 41.8.2. For package updates,
+The `userId` argument matters: `updateProvidersWhenPackageRemoved()` writes the
+`CREDENTIAL_SERVICE` and `CREDENTIAL_SERVICE_PRIMARY` settings unconditionally *for
+that user*. The sibling path, `updateProvidersWhenServiceRemoved()` (reached from
+`handleServiceRemovedMultiModeLocked()`), is where Android 17 gates the choice on the
+`multi_user_fix_enabled` flag: with the flag set it writes for the affected `userId`,
+rather than for `UserHandle.myUserId()` as the legacy path did. This is the multi-user
+correctness fix discussed in section 41.8.2. For package updates,
 `CredentialManagerServiceImpl.handlePackageUpdateLocked()` re-validates the provider's
 manifest and capabilities.
 
@@ -646,17 +658,15 @@ classDiagram
         -remoteEntry : RemoteEntry
     }
     class CredentialEntry {
-        -key : String
-        -subkey : String
-        -pendingIntent : PendingIntent
+        -beginGetCredentialOptionId : String
+        -type : String
         -slice : Slice
     }
     class Action {
-        -title : CharSequence
-        -pendingIntent : PendingIntent
+        -slice : Slice
     }
     class RemoteEntry {
-        -pendingIntent : PendingIntent
+        -slice : Slice
     }
 
     BeginGetCredentialResponse --> "*" CredentialEntry
@@ -665,8 +675,9 @@ classDiagram
 ```
 
 **CredentialEntry** -- Represents a single available credential (e.g., "user@example.com
-password" or "Passkey for example.com"). Contains a `PendingIntent` that fires when
-selected.
+password" or "Passkey for example.com"). The `PendingIntent` that fires when it is
+selected is not a separate field — it is embedded in the entry's `Slice` as a
+`SliceAction`, which is also how `Action` and `RemoteEntry` carry theirs.
 
 **Action** -- A generic action the provider wants to show (e.g., "Manage passwords").
 
@@ -983,8 +994,12 @@ bundle contains:
 
 | Key | Type | Description |
 |---|---|---|
-| `android.credentials.BUNDLE_KEY_ID` | String | Username/identifier |
-| `android.credentials.BUNDLE_KEY_PASSWORD` | String | Password value |
+| `androidx.credentials.BUNDLE_KEY_ID` | String | Username/identifier |
+| `androidx.credentials.BUNDLE_KEY_PASSWORD` | String | Password value |
+
+Note the `androidx.` prefix: these keys are Jetpack `androidx.credentials`
+conventions, not framework constants — the framework treats the bundle as opaque
+and only the Jetpack library on each end interprets the keys.
 
 A password-focused `BeginGetCredentialResponse` returns `CredentialEntry` items,
 one for each stored password matching the calling app.
@@ -1247,9 +1262,9 @@ The UI status tracking prevents duplicate operations:
 ```java
 // From CredentialManagerUi.java
 enum UiStatus {
-    IN_PROGRESS,       // Waiting for provider responses
+    IN_PROGRESS,       // Initial state; waiting for provider responses
     USER_INTERACTION,  // UI is displayed, user interacting
-    NOT_STARTED,       // Initial state
+    NOT_STARTED,
     TERMINATED         // UI dismissed or failed
 }
 ```
@@ -1499,12 +1514,12 @@ and queried at the call sites that still branch on a flag:
 // Referenced throughout the codebase:
 import android.credentials.flags.Flags;
 
-// RequestSession.finalizeAndEmitFinalPhaseMetric():
+// RequestSession.logTrackOneCandidatesAndPrepareFinalPhaseLogs():
 if (Flags.metricBugfixesContinued()) {
     mRequestSessionMetric.captureMissingLogMetadata();
 }
 
-// CredentialManagerService.removeProvidersFromSettings(): per-user settings writes
+// CredentialManagerService.updateProvidersWhenServiceRemoved(): per-user settings writes
 if (Flags.multiUserFixEnabled()) {
     // write CREDENTIAL_SERVICE / CREDENTIAL_SERVICE_PRIMARY for the affected userId
     // (legacy path used UserHandle.myUserId())
@@ -1740,14 +1755,14 @@ When the selector UI is shown, it may include information about disabled provide
 // The UI may include a "More options" or "Enable provider" action
 ```
 
-The `DisabledProviderData` class carries:
+The `DisabledProviderData` class is minimal: it carries only the provider's
+flattened `ComponentName` string, inherited from its `ProviderData` base class.
+It holds no display name, no settings intent, and no list of supported
+credential types — the selector UI resolves the provider's label and icon
+itself from the component name via `PackageManager`.
 
-- Provider package name and display name
-- An action intent to navigate to provider settings
-- The credential types the provider supports
-
-This helps users discover and enable credential providers they have installed but
-not yet activated.
+This still helps users discover and enable credential providers they have
+installed but not yet activated.
 
 ### 41.7.19 Integration with WebView and Browsers
 
@@ -1862,7 +1877,7 @@ device with multiple users or a work profile, removing a provider for one user c
 read or write another user's `CREDENTIAL_SERVICE` value.
 
 ```java
-// From CredentialManagerService.removeProvidersFromSettings(), Android 17
+// From CredentialManagerService.updateProvidersWhenServiceRemoved(), Android 17
 if (Flags.multiUserFixEnabled()) {
     settingsWrapper.putStringForUser(
             Settings.Secure.CREDENTIAL_SERVICE_PRIMARY,
@@ -1879,8 +1894,9 @@ if (Flags.multiUserFixEnabled()) {
 ```
 
 The same `userId`-versus-`myUserId()` branch appears for the `CREDENTIAL_SERVICE`
-(secondary) key. The fix is reached from `handlePackageRemovedMultiModeLocked()` (section
-41.2.9), which now threads the `userId` all the way down.
+(secondary) key. The fix is reached from `handleServiceRemovedMultiModeLocked()`
+(the service-removal counterpart of the package-removal path in section 41.2.9),
+which threads the `userId` all the way down.
 
 **Source:** `frameworks/base/services/credentials/java/com/android/server/credentials/CredentialManagerService.java`
 
@@ -1917,10 +1933,11 @@ they make the selector robust for password managers that hold hundreds of entrie
 
 Two fixes harden the boundaries the service depends on:
 
-- **`cpif_exc_fix_enabled`** wraps the provider-discovery path so that an exception
-  thrown while `CredentialProviderInfoFactory` parses a malformed provider manifest no
-  longer takes down the enumeration. A single broken provider package can no longer
-  prevent the rest of the device's providers from being listed.
+- **`cpif_exc_fix_enabled`** is intended to catch exceptions thrown while
+  `CredentialProviderInfoFactory` parses a malformed provider manifest, so that a
+  single broken provider package cannot take down the whole enumeration. As of this
+  tree, though, the flag is only *declared* in `flags.aconfig` — no code reads it
+  yet, so the guarded fix has not landed at any call site.
 
 - **`safeguard_candidate_credentials_api_caller`** (now graduated to unconditional)
   enforces that only the OEM-configured credential-autofill component, named by
@@ -1931,7 +1948,7 @@ Two fixes harden the boundaries the service depends on:
   arbitrary app could have harvested credential candidates intended only for the
   autofill surface.
 
-**Source:** `frameworks/base/services/credentials/java/com/android/server/credentials/CredentialManagerService.java`
+**Source:** `frameworks/base/core/java/android/credentials/flags.aconfig` (flag declarations); `frameworks/base/services/credentials/java/com/android/server/credentials/CredentialManagerService.java` (the `getCandidateCredentials()` caller check)
 
 ### 41.8.5 Identity Credential API Deprecation
 
@@ -1959,18 +1976,12 @@ adb shell settings get --user 0 secure credential_service
 adb shell settings get --user 0 secure credential_service_primary
 ```
 
-**Dump CredentialManagerService state:**
-
-```bash
-adb shell dumpsys credential
-```
-
-This shows:
-
-- Active provider services (user-configurable and system)
-- Ongoing request sessions
-- Provider capability information
-- Service binding states
+**A note on `dumpsys`:** unlike most system services, `CredentialManagerService`
+implements no dump handler — its published `credential` binder falls back to
+`Binder`'s no-op `dump()`, so `adb shell dumpsys credential` prints nothing
+useful. To inspect state, rely on the `Settings.Secure` keys above and on logcat
+(the service logs provider construction, session lifecycle, and status changes
+under the `CredentialManager` tag; see section 41.9.8).
 
 ### 41.9.2 Enabling a Provider
 
@@ -2014,12 +2025,18 @@ A basic password provider demonstrates the two-phase protocol.
 </credential-provider>
 ```
 
-**3. Service implementation:**
+**3. Service implementation.** Note that the framework entry classes
+(`android.service.credentials.CredentialEntry`, `CreateEntry`) have no builders —
+their only constructors take a pre-built `Slice`. In practice providers extend the
+Jetpack `androidx.credentials.provider.CredentialProviderService`, whose typed entry
+builders (`PasswordCredentialEntry.Builder`, `CreateEntry.Builder`, ...) construct
+those Slices under the hood:
 
 ```kotlin
+// Uses androidx.credentials.provider.* (Jetpack), not the raw framework classes
 class DemoCredentialProvider : CredentialProviderService() {
 
-    override fun onBeginGetCredential(
+    override fun onBeginGetCredentialRequest(
         request: BeginGetCredentialRequest,
         cancellationSignal: CancellationSignal,
         callback: OutcomeReceiver<BeginGetCredentialResponse,
@@ -2028,14 +2045,16 @@ class DemoCredentialProvider : CredentialProviderService() {
         val entries = mutableListOf<CredentialEntry>()
 
         for (option in request.beginGetCredentialOptions) {
-            if (option.type == Credential.TYPE_PASSWORD_CREDENTIAL) {
+            if (option is BeginGetPasswordOption) {
                 // Look up stored credentials for the calling app
-                val stored = lookupPasswords(request.callingAppInfo.packageName)
+                val stored = lookupPasswords(request.callingAppInfo?.packageName)
                 for (cred in stored) {
                     entries.add(
-                        CredentialEntry.Builder(
-                            option.id,
-                            createPendingIntent(cred.id)
+                        PasswordCredentialEntry.Builder(
+                            this,
+                            cred.username,
+                            createPendingIntent(cred.id),
+                            option
                         )
                         .build()
                     )
@@ -2050,7 +2069,7 @@ class DemoCredentialProvider : CredentialProviderService() {
         )
     }
 
-    override fun onBeginCreateCredential(
+    override fun onBeginCreateCredentialRequest(
         request: BeginCreateCredentialRequest,
         cancellationSignal: CancellationSignal,
         callback: OutcomeReceiver<BeginCreateCredentialResponse,
@@ -2066,10 +2085,10 @@ class DemoCredentialProvider : CredentialProviderService() {
         )
     }
 
-    override fun onClearCredentialState(
-        request: ClearCredentialStateRequest,
+    override fun onClearCredentialStateRequest(
+        request: ProviderClearCredentialStateRequest,
         cancellationSignal: CancellationSignal,
-        callback: OutcomeReceiver<Void, ClearCredentialStateException>
+        callback: OutcomeReceiver<Void?, ClearCredentialException>
     ) {
         // Clear any cached credential state
         callback.onResult(null)
@@ -2133,13 +2152,13 @@ adb logcat | grep "Remote provider response timed"
 **Check if the description API is enabled:**
 
 ```bash
-adb shell device_config get credential enable_credential_description_api
+adb shell device_config get credential_manager enable_credential_description_api
 ```
 
 **Enable it for testing:**
 
 ```bash
-adb shell device_config put credential enable_credential_description_api true
+adb shell device_config put credential_manager enable_credential_description_api true
 ```
 
 ### 41.9.6 Testing Passkey Flows
@@ -2174,15 +2193,15 @@ The Credential Manager respects several `DeviceConfig` flags:
 
 | Flag | Namespace | Purpose |
 |---|---|---|
-| `enable_credential_manager` | `credential` | Master enable/disable |
-| `enable_credential_description_api` | `credential` | Enable registry-based matching |
+| `enable_credential_manager` | `credential_manager` | Master enable/disable |
+| `enable_credential_description_api` | `credential_manager` | Enable registry-based matching |
 
 ```bash
 # Check if Credential Manager is enabled
-adb shell device_config get credential enable_credential_manager
+adb shell device_config get credential_manager enable_credential_manager
 
 # Disable for testing
-adb shell device_config put credential enable_credential_manager false
+adb shell device_config put credential_manager enable_credential_manager false
 ```
 
 ### 41.9.8 Sequence of Key Log Messages

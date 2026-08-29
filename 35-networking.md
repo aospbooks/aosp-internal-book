@@ -160,10 +160,10 @@ sequenceDiagram
     Socket->>Kernel: Socket marked with fwmark (netId + permission)
     Kernel->>BPF: Evaluate cgroup/eBPF programs
     Note over BPF: UID-based traffic accounting<br/>Bandwidth metering<br/>Firewall rules
-    BPF->>NF: Pass to iptables chains
+    BPF->>Kernel: Route lookup via fwmark ip rules<br/>and netId routing table
+    Kernel->>NF: Traverse iptables OUTPUT chains
     Note over NF: bw_OUTPUT (bandwidth)<br/>fw_OUTPUT (firewall)<br/>NAT (tethering)
-    NF->>Kernel: Route lookup via netId routing table
-    Kernel->>Driver: Transmit packet
+    NF->>Driver: POSTROUTING, then transmit packet
     Driver-->>App: (async) Completion
 ```
 
@@ -402,7 +402,7 @@ objects, which wrap `NetworkCapabilities` constraints.
 A `NetworkRequest` specifies:
 
 - **Required capabilities**: What the network must provide (e.g., `NET_CAPABILITY_INTERNET`)
-- **Forbidden capabilities**: What the network must not have (e.g., `NET_CAPABILITY_NOT_METERED` forbidden means metered is OK)
+- **Forbidden capabilities**: What the network must not have (e.g., forbidding `NET_CAPABILITY_NOT_METERED` means only metered networks can satisfy the request)
 - **Transport types**: Which bearers are acceptable (Wi-Fi, cellular, etc.)
 - **Network specifier**: For targeting specific networks (e.g., a particular Wi-Fi SSID)
 
@@ -439,7 +439,7 @@ Transport types include:
 | `TRANSPORT_ETHERNET` | Wired Ethernet |
 | `TRANSPORT_VPN` | Virtual Private Network |
 | `TRANSPORT_WIFI_AWARE` | Wi-Fi Aware (NAN) |
-| `TRANSPORT_LOWPAN` | Low-power WAN (LoWPAN) |
+| `TRANSPORT_LOWPAN` | Low-power Wireless Personal Area Network (6LoWPAN / 802.15.4) |
 | `TRANSPORT_TEST` | Test networks |
 | `TRANSPORT_SATELLITE` | Satellite connectivity |
 | `TRANSPORT_THREAD` | Thread mesh networking |
@@ -600,7 +600,7 @@ These BPF programs provide:
 
 - **UID-based accounting**: Track bytes sent/received per UID
 - **Firewall enforcement**: Block/allow traffic per UID and chain
-- **Socket marking**: Apply fwmarks at socket creation time
+- **Socket-creation permission checks**: The `cgroup/sock_create` program enforces the per-UID INTERNET permission and records the UID and socket cookie in socket storage (fwmarks themselves are applied by netd's `FwmarkServer`)
 - **Data saver**: Restrict background data for metered networks
 - **Bandwidth control**: Enforce per-interface quotas
 
@@ -633,7 +633,7 @@ app has an accurate view of the current network state.
 
 The Wi-Fi framework in AOSP is a complex subsystem that manages Wi-Fi radio
 operations, network scanning, connection management, SoftAP (hotspot), Wi-Fi
-Direct (P2P), and Wi-Fi Aware (NAN). Since Android 12, the entire Wi-Fi stack
+Direct (P2P), and Wi-Fi Aware (NAN). Since Android 11, the entire Wi-Fi stack
 ships as a Mainline module.
 
 **Module root:** `packages/modules/Wifi/`
@@ -754,28 +754,25 @@ The state machine contains the following key states:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> DefaultState
-    DefaultState --> ConnectableState: Wi-Fi enabled
+    [*] --> ConnectableState
 
     state ConnectableState {
         [*] --> DisconnectedState
-        DisconnectedState --> L2ConnectingState: Connect command
-        L2ConnectingState --> L2ConnectedState: Association success
-        L2ConnectingState --> DisconnectedState: Association failure
+        DisconnectedState --> ConnectingOrConnectedState: Connect command
 
-        state L2ConnectedState {
-            [*] --> WaitBeforeL3ProvisioningState
-            WaitBeforeL3ProvisioningState --> L3ProvisioningState: Ready
-            L3ProvisioningState --> L3ConnectedState: DHCP success
-            L3ProvisioningState --> DisconnectedState: DHCP failure
+        state ConnectingOrConnectedState {
+            [*] --> L2ConnectingState
+            L2ConnectingState --> L2ConnectedState: Association success
 
-            state L3ConnectedState {
-                [*] --> ConnectedState
-                ConnectedState --> RoamingState: Roaming
-                RoamingState --> ConnectedState: Roam complete
+            state L2ConnectedState {
+                [*] --> WaitBeforeL3ProvisioningState
+                WaitBeforeL3ProvisioningState --> L3ProvisioningState: Ready
+                L3ProvisioningState --> L3ConnectedState: DHCP success
+                L3ConnectedState --> RoamingState: Roaming
+                RoamingState --> L3ConnectedState: Roam complete
             }
         }
-        L2ConnectedState --> DisconnectedState: Disconnect
+        ConnectingOrConnectedState --> DisconnectedState: Disconnect or failure
     }
 ```
 
@@ -783,15 +780,14 @@ stateDiagram-v2
 
 | State | Description |
 |-------|-------------|
-| `DefaultState` | Wi-Fi is off or initializing |
-| `ConnectableState` | Wi-Fi is on and ready to connect |
+| `ConnectableState` | Root state, entered when Wi-Fi is enabled |
+| `ConnectingOrConnectedState` | Parent state covering association through full connectivity |
 | `DisconnectedState` | Not associated with any AP |
 | `L2ConnectingState` | Attempting 802.11 association |
 | `L2ConnectedState` | Associated at L2, waiting for L3 |
 | `WaitBeforeL3ProvisioningState` | Brief pause before IP provisioning |
 | `L3ProvisioningState` | Running DHCP or static IP config |
 | `L3ConnectedState` | Full IP connectivity established |
-| `ConnectedState` | Stable connected state |
 | `RoamingState` | Transitioning between APs |
 
 ### 35.3.4 WifiNative: The HAL Bridge
@@ -978,7 +974,6 @@ graph TD
 
     subgraph "Kernel"
         IPTABLES["iptables / ip6tables"]
-        NFTABLES["nftables"]
         NETLINK_K["Netlink Socket"]
         XFRM["IPsec / XFRM"]
         ROUTING["Routing Tables"]
@@ -1002,7 +997,6 @@ graph TD
     FC --> IPTABLES
     RC --> NETLINK_K
     TC_CTRL --> IPTABLES
-    TC_CTRL --> NFTABLES
     IC --> NETLINK_K
     XC --> XFRM
 ```
@@ -1369,19 +1363,17 @@ bool resolv_init(const ResolverNetdCallbacks* callbacks) {
         ? DOH_LOG_LEVEL_INFO
         : DOH_LOG_LEVEL_WARN);
 
-    using android::net::gApiLevel;
-    gApiLevel = getApiLevel();
     using android::net::gResNetdCallbacks;
+    // all current fields are guaranteed present on R
+    // and we only support S+
     gResNetdCallbacks.check_calling_permission =
         callbacks->check_calling_permission;
     gResNetdCallbacks.get_network_context =
         callbacks->get_network_context;
     gResNetdCallbacks.log = callbacks->log;
-    if (gApiLevel >= 30) {
-        gResNetdCallbacks.tagSocket = callbacks->tagSocket;
-        gResNetdCallbacks.evaluate_domain_name =
-            callbacks->evaluate_domain_name;
-    }
+    gResNetdCallbacks.tagSocket = callbacks->tagSocket;
+    gResNetdCallbacks.evaluate_domain_name =
+        callbacks->evaluate_domain_name;
     android::net::gDnsResolv = android::net::DnsResolver::getInstance();
     return android::net::gDnsResolv->start();
 }
@@ -1470,10 +1462,10 @@ namespace {
 // "<random>-dnsotls-ds.metric.gstatic.com".
 // This is used for DoT validation probing.
 std::vector<uint8_t> makeDnsQuery() {
-    static const char kDnsSafeChars[] =
-            "abcdefhijklmnopqrstuvwxyz"
-            "ABCDEFHIJKLMNOPQRSTUVWXYZ"
-            "0123456789";
+    static constexpr char kDnsSafeChars[] =
+            "0123456789"
+            "abcdefghijklmnopqrstuvwxyz"
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     // ... builds a DNS query with random prefix for validation
 }
 }  // namespace
@@ -1929,21 +1921,25 @@ own state machine.
 ```mermaid
 stateDiagram-v2
     [*] --> InitialState
-    InitialState --> LocalHotspotState: LOCAL_ONLY request
-    InitialState --> TetheredState: TETHERING request
+    InitialState --> LocalHotspotState: LOCAL_ONLY
+    InitialState --> TetheredState: TETHERING
     LocalHotspotState --> InitialState: Stop
     TetheredState --> InitialState: Stop
-    TetheredState --> TetheredState: Upstream change
-
-    state TetheredState {
-        [*] --> ConfigureInterface
-        ConfigureInterface --> RunDHCP: Start DHCP server
-        RunDHCP --> SetupNAT: Configure NAT rules
-        SetupNAT --> Active: Ready
-        Active --> UpdateUpstream: Upstream changes
-        UpdateUpstream --> Active: Reconfigure
-    }
+    TetheredState --> TetheredState
+    TetheredState --> WaitingForRestartState: Interface down
+    WaitingForRestartState --> TetheredState: Interface up
+    InitialState --> UnavailableState: Interface removed
 ```
+
+The `LOCAL_ONLY` and `TETHERING` edges are the two request types that start
+serving; the self-transition on `TetheredState` is an upstream change, which
+reconfigures forwarding without leaving the state.
+
+Both serving states (`LocalHotspotState` and `TetheredState`) derive from the
+abstract `BaseServingState`, whose entry code configures the interface address,
+starts the DHCP server, and brings up IPv6 tethering; `TetheredState`
+additionally sets up forwarding and NAT toward the current upstream and
+reconfigures them when the upstream changes.
 
 ### 35.7.5 BPF Offload
 
@@ -2037,12 +2033,13 @@ The `UpstreamNetworkMonitor` tracks available upstream networks and selects
 the best one for providing Internet to tethered clients. It registers
 network callbacks with ConnectivityService and responds to network changes.
 
-Selection priority (typical):
-
-1. DUN (Dedicated Upstream Network) capable cellular
-2. Wi-Fi
-3. Regular cellular
-4. Ethernet
+By default (`config_tether_upstream_automatic` is true), the upstream simply
+follows the device's current default Internet network, with a DUN (Dedicated
+Upstream Network) cellular connection substituted when the carrier requires
+DUN for tethering. When a device instead ships the legacy ordered list
+(`config_tether_upstream_types`), `TetheringConfiguration` always prepends
+Ethernet to the list, so Ethernet has the highest priority, followed by the
+configured entries (typically DUN or regular cellular and Wi-Fi).
 
 ### 35.7.9 NAT Configuration
 
@@ -2217,8 +2214,8 @@ sequenceDiagram
 
 ### 35.8.8 Certificate Transparency
 
-Starting with Android 16, Certificate Transparency (CT) verification is
-enabled by default for apps targeting the latest SDK:
+Certificate Transparency (CT) verification is enabled by default for apps
+targeting SDK 37 (`CINNAMON_BUN`) and above:
 
 ```java
 // Source: NetworkSecurityConfig.java
@@ -2226,6 +2223,10 @@ enabled by default for apps targeting the latest SDK:
 @EnabledAfter(targetSdkVersion = Build.VERSION_CODES.BAKLAVA)
 static final long DEFAULT_ENABLE_CERTIFICATE_TRANSPARENCY = 407952621L;
 ```
+
+Note that `@EnabledAfter` enables the change only for apps whose target SDK is
+*greater than* the named version, so targeting `BAKLAVA` (36) itself does not
+yet opt an app into CT by default.
 
 The `CertificateTransparencyService` in the Connectivity module manages
 CT log list updates and verification:
@@ -2245,7 +2246,13 @@ CT log list updates and verification:
 ### 35.8.9 Cleartext Traffic Restrictions
 
 By default, Android blocks cleartext (non-HTTPS) traffic for apps targeting
-Android 9+. The `StrictController` in netd enforces this at the network level:
+Android 9+. That target-SDK default comes from the Network Security Config
+machinery and is enforced in the app's own process by `NetworkSecurityPolicy`
+and `NetworkSecurityConfig`, not by netd. What netd's `StrictController`
+implements is a different, opt-in mechanism: StrictMode's per-UID
+cleartext-detection penalty (`detectCleartextNetwork()`), configured through
+netd's `strictUidCleartextPenalty()` and realized as the `st_OUTPUT`,
+`st_clear_detect`, `st_penalty_log`, and `st_penalty_reject` iptables chains:
 
 ```
 // Source: system/netd/server/Controllers.cpp
@@ -2253,7 +2260,7 @@ Android 9+. The `StrictController` in netd enforces this at the network level:
 static const std::vector<const char*> FILTER_OUTPUT = {
     OEM_IPTABLES_FILTER_OUTPUT,
     FirewallController::LOCAL_OUTPUT,
-    StrictController::LOCAL_OUTPUT,    // <-- cleartext enforcement
+    StrictController::LOCAL_OUTPUT,    // <-- StrictMode cleartext penalty
     BandwidthController::LOCAL_OUTPUT,
 };
 ```
@@ -2309,8 +2316,8 @@ config.
 | < 24 (Android 7) | Allowed | Trusted | No |
 | 24-27 | Allowed | Not trusted | No |
 | 28+ (Android 9) | Blocked | Not trusted | No |
-| 36+ (BAKLAVA) | Blocked | Not trusted | Yes (default) |
-| 37+ (CINNAMON_BUN) | Blocked | Not trusted | Yes; `usesCleartextTraffic` manifest flag ignored |
+| 36 (BAKLAVA) | Blocked | Not trusted | No |
+| 37+ (CINNAMON_BUN) | Blocked | Not trusted | Yes (default); `usesCleartextTraffic` manifest flag ignored |
 
 ---
 
@@ -2389,24 +2396,25 @@ stateDiagram-v2
 
     state DefaultState {
         [*] --> MaybeNotifyState
-        MaybeNotifyState --> EvaluatingState: Start validation
-        EvaluatingState --> ValidatedState: All probes pass
-        EvaluatingState --> CaptivePortalState: Portal detected
-        EvaluatingState --> WaitingForNextProbeState: Probe failed
-        WaitingForNextProbeState --> EvaluatingState: Retry timer
-        CaptivePortalState --> EvaluatingState: User dismissed portal
-        ValidatedState --> EvaluatingState: Re-validation needed
-    }
 
-    state EvaluatingState {
-        [*] --> ProbeHTTPS
-        ProbeHTTPS --> ProbeHTTP: In parallel
-        ProbeHTTPS --> ProbeDNS: In parallel
-        ProbeDNS --> CheckResults
-        ProbeHTTP --> CheckResults
-        ProbeHTTPS --> CheckResults
+        state MaybeNotifyState {
+            state EvaluatingState {
+                [*] --> ProbingState
+                ProbingState --> WaitingForNextProbeState: Probe failed
+                WaitingForNextProbeState --> ProbingState: Retry timer
+            }
+            EvaluatingState --> CaptivePortalState: Portal detected
+            CaptivePortalState --> EvaluatingState: User dismissed portal
+        }
+
+        MaybeNotifyState --> ValidatedState: All probes pass
+        ValidatedState --> MaybeNotifyState: Re-validation needed
     }
 ```
+
+The parallel HTTP, HTTPS, and fallback probes are not separate states; they
+run as threads inside `ProbingState`. `EvaluatingPrivateDnsState` and
+`EvaluatingBandwidthState` (not shown) are further children of `DefaultState`.
 
 ### 35.9.3 Validation Probes
 
@@ -2949,13 +2957,13 @@ sequenceDiagram
 
 | Class | Path | Lines |
 |-------|------|-------|
-| VcnManagementService | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/VcnManagementService.java` | 1,551 |
+| VcnManagementService | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/VcnManagementService.java` | 1,549 |
 | Vcn | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/Vcn.java` | 791 |
-| VcnGatewayConnection | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/VcnGatewayConnection.java` | 3,122 |
-| VcnNetworkProvider | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/VcnNetworkProvider.java` | ~200 |
-| UnderlyingNetworkController | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/routeselection/UnderlyingNetworkController.java` | ~400 |
-| TelephonySubscriptionTracker | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/TelephonySubscriptionTracker.java` | ~350 |
-| NetworkPriorityClassifier | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/routeselection/NetworkPriorityClassifier.java` | ~300 |
+| VcnGatewayConnection | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/VcnGatewayConnection.java` | 3,238 |
+| VcnNetworkProvider | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/VcnNetworkProvider.java` | ~230 |
+| UnderlyingNetworkController | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/routeselection/UnderlyingNetworkController.java` | ~780 |
+| TelephonySubscriptionTracker | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/TelephonySubscriptionTracker.java` | ~600 |
+| NetworkPriorityClassifier | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/routeselection/NetworkPriorityClassifier.java` | ~370 |
 
 ---
 
@@ -3017,7 +3025,7 @@ graph TD
     subgraph "Native Layer"
         OTD["ot-daemon<br/>(OpenThread daemon)"]
         OT["OpenThread Stack"]
-        TUN["TUN Interface<br/>(thread-wpan0)"]
+        TUN["TUN Interface<br/>(thread-wpan)"]
         IEEE["IEEE 802.15.4 Radio"]
     end
 
@@ -3178,14 +3186,28 @@ The native Thread protocol implementation is based on
 
 ```
 # packages/modules/Connectivity/thread/apex/ot-daemon.34rc
-service ot-daemon /apex/com.android.tethering/bin/ot-daemon
+service ot-daemon /apex/com.android.tethering/bin/ot-daemon -I thread-wpan --auto-attach=0 threadnetwork_hal://binder?none
+    interface aidl ot_daemon
+    disabled
+    oneshot
+    updatable
+    class main
+    user thread_network
+    group thread_network inet system
+    seclabel u:r:ot_daemon:s0
+    socket ot-daemon/thread-wpan.sock stream 0660 thread_network thread_network
+    override
 ```
+
+The `-I thread-wpan` argument is what names the daemon's TUN interface, and
+the daemon runs as the dedicated `thread_network` user, started on demand
+(`disabled oneshot updatable`).
 
 `ot-daemon` manages:
 
 - The IEEE 802.15.4 radio driver (via the Thread Radio Co-Processor interface)
 - The Thread mesh protocol stack (MLE, routing, 6LoWPAN)
-- A TUN interface (`thread-wpan0`) for passing IPv6 traffic between the
+- A TUN interface (`thread-wpan`) for passing IPv6 traffic between the
   Thread mesh and the Android networking stack
 - Service Registration Protocol (SRP) for mDNS service discovery
 
@@ -3199,7 +3221,7 @@ Thread interface and registers multicast routing rules:
 sequenceDiagram
     participant TNCS as ThreadNetworkControllerService
     participant OTD as ot-daemon
-    participant TUN as thread-wpan0 TUN
+    participant TUN as thread-wpan TUN
     participant NA as NetworkAgent
     participant CS as ConnectivityService
     participant UP as Upstream Network (Wi-Fi)
@@ -3467,8 +3489,7 @@ sequenceDiagram
     Note over CS: New best network found
     CS->>NETD: networkSetDefault(newNetId)
     NETD->>KERNEL: Update default routing rules
-    CS->>DNSR: setDefaultNetwork(newNetId)
-    DNSR->>DNSR: Switch DNS cache to new network
+    Note over DNSR: DNS caches are per-network<br/>queries now resolve on the new netId
     CS->>APPS: onAvailable(newNetwork)
     CS->>APPS: onLosing(oldNetwork, lingerMs)
     Note over CS: After linger timeout
@@ -3488,8 +3509,6 @@ public final class ConnectivityFlags {
     public static final String NAMESPACE_TETHERING_BOOT = "tethering_boot";
 
     // Feature flags
-    public static final String REQUEST_RESTRICTED_WIFI =
-            "request_restricted_wifi";
     public static final String INGRESS_TO_VPN_ADDRESS_FILTERING =
             "ingress_to_vpn_address_filtering";
     public static final String BACKGROUND_FIREWALL_CHAIN =
@@ -3523,7 +3542,12 @@ Notable feature flags:
 | `CELLULAR_DATA_INACTIVITY_TIMEOUT` | Cellular idle timeout |
 | `WIFI_DATA_INACTIVITY_TIMEOUT` | Wi-Fi idle timeout |
 | `INGRESS_TO_VPN_ADDRESS_FILTERING` | Filter ingress to VPN addresses |
-| `REQUEST_RESTRICTED_WIFI` | Allow restricted Wi-Fi requests |
+
+A related but separate mechanism is the aconfig flag
+`com.android.net.flags.request_restricted_wifi`, referenced as
+`@FlaggedApi(Flags.FLAG_REQUEST_RESTRICTED_WIFI)` in `NetworkCapabilities` and
+`NetworkRequest` to gate restricted Wi-Fi requests; it is not a
+`ConnectivityFlags` entry.
 
 ### 35.12.6 DNS Resolver Unsolicited Events
 
@@ -3614,7 +3638,7 @@ graph TD
 Each ClientModeManager operates in a specific role:
 
 ```java
-// Source: packages/modules/Wifi/service/java/com/android/server/wifi/ClientModeImpl.java
+// Source: packages/modules/Wifi/service/java/com/android/server/wifi/ActiveModeManager.java
 // ROLE_CLIENT_PRIMARY - the main STA interface (handles default connection)
 // ROLE_CLIENT_LOCAL_ONLY - local-only connection (P2P, local hotspot)
 // ROLE_CLIENT_SECONDARY_LONG_LIVED - persistent secondary (dual-STA)
@@ -3645,7 +3669,7 @@ graph TD
 
     subgraph "Scan Coordination"
         PROXY["ScanRequestProxy"]
-        SCHED["WifiScanningScheduler"]
+        SCHED["WifiConnectivityManager"]
     end
 
     subgraph "Execution"
@@ -3815,10 +3839,10 @@ and resource overlays:
 | HTTP probe URL | `connectivitycheck.gstatic.com/generate_204` | Primary portal detection |
 | HTTPS probe URL | `www.google.com/generate_204` | TLS verification |
 | Probe timeout | 10 seconds | Maximum wait per probe |
-| DNS timeout | 5 seconds | DNS resolution timeout |
+| DNS probe timeout | 12.5 seconds | DNS resolution timeout, enough for 3 queries 5 seconds apart |
 | Evaluation interval | Variable | Time between validation attempts |
 | Data stall DNS threshold | 5 consecutive | DNS timeout threshold |
-| Data stall TCP interval | 2 seconds | TCP metrics polling interval |
+| Data stall TCP interval | 20 seconds | TCP metrics polling interval |
 
 ### 35.15.2 Multi-URL Probing
 
@@ -3925,7 +3949,7 @@ graph LR
     end
 
     subgraph "CLAT (clatd)"
-        CLAT_IN["clat4 interface<br/>(192.0.0.4)"]
+        CLAT_IN["v4-wlan0 interface<br/>(192.0.0.4)"]
         XLAT["IPv4 -> IPv6<br/>Translation"]
     end
 
@@ -3945,7 +3969,7 @@ graph LR
 CLAT provides:
 
 - Transparent IPv4 connectivity over IPv6-only networks
-- Per-process CLAT interface (v4-wlan0, v4-rmnet0)
+- Per-interface CLAT device (v4-wlan0, v4-rmnet0)
 - BPF-accelerated translation for performance
 - Automatic configuration via DNS64 prefix discovery
 
@@ -4109,7 +4133,8 @@ designed for IoT devices:
 // Source: ConnectivityService.java imports
 import static android.net.NetworkCapabilities.TRANSPORT_THREAD;
 
-// Source: ConnectivityFlags.java imports
+// Source: ConnectivityService.java imports
+// (the constant itself is declared in ConnectivityFlags.java)
 import static com.android.server.connectivity.ConnectivityFlags.SATISFIED_BY_LOCAL_NETWORK_METRICS;
 ```
 
@@ -4163,10 +4188,11 @@ graph TD
 ### 35.21.2 INTERNET Permission Enforcement
 
 The `INTERNET` permission is unique in Android: it is enforced at the kernel
-level through the `inet` supplementary group (GID 3003). When an app has the
-permission, its process is given this group at fork time. The kernel's paranoid
-network security (configured via `/proc/sys/net/`) restricts socket creation
-to processes with the appropriate GID.
+level. On modern Android this is done by the `cgroupsock/inet_create` eBPF
+program in `packages/modules/Connectivity/bpf/progs/netd.c`, which runs on
+every AF_INET/AF_INET6 socket creation and checks the per-UID
+`BPF_PERMISSION_INTERNET` bit in a BPF map. The map is populated through
+netd's `trafficSetNetPermForUids()`:
 
 ```
 // From system/netd/server/NetdNativeService.h
@@ -4175,8 +4201,10 @@ binder::Status trafficSetNetPermForUids(
     const std::vector<int32_t>& uids) override;
 ```
 
-Apps without `INTERNET` permission literally cannot create AF_INET or AF_INET6
-sockets -- the `socket()` system call returns `EACCES`.
+Membership in the `inet` group (AID_INET, GID 3003), granted to permitted
+apps at fork time, is the legacy pre-BPF mechanism. Apps without `INTERNET`
+permission literally cannot create AF_INET or AF_INET6 sockets -- the
+`socket()` system call returns `EPERM`.
 
 ### 35.21.3 Location Permission for Wi-Fi Scans
 
@@ -4346,13 +4374,14 @@ QoS callbacks provide:
 | Wi-Fi | wlan0, wlan1 | `WifiNetworkAgent` (in ClientModeImpl) | Wi-Fi AIDL HAL |
 | Cellular | rmnet0, rmnet1 | `TelephonyNetworkAgent` (in TelephonyNetworkFactory) | Radio AIDL HAL |
 | Ethernet | eth0 | `EthernetNetworkAgent` | None (kernel driver) |
-| Bluetooth | bt-pan | `BluetoothNetworkAgent` (in BluetoothPan) | Bluetooth AIDL HAL |
+| Bluetooth | bt-pan | Agent in the Bluetooth PAN service | Bluetooth AIDL HAL |
 | VPN | tun0, ipsec0 | Vpn-internal agent | None (kernel TUN) |
 | Wi-Fi Aware | aware0 | `WifiAwareNetworkAgent` | Wi-Fi AIDL HAL |
-| LoWPAN | lowpan0 | `LowpanNetworkAgent` | LoWPAN HAL |
-| Thread | thread0 | `ThreadNetworkAgent` | Thread HAL |
-| Satellite | sat0 | `SatelliteNetworkAgent` | Satellite HAL |
+| Thread | thread-wpan | Plain `NetworkAgent` in `ThreadNetworkControllerService` | threadnetwork HAL (via ot-daemon) |
 | Test | test0 | `TestNetworkAgent` | None |
+
+Satellite connectivity has no dedicated agent class: it is reported as
+`TRANSPORT_SATELLITE` on the telephony network agents.
 
 ### 35.25.2 Network Lifecycle Complete Flow
 
@@ -4524,12 +4553,15 @@ mProxyTracker = multiProxyEnabled
 `isMultiProxyEnabled()` returns `com.android.tethering.flags.Flags.enableMultiProxySystem()`,
 so both an aconfig flag and a resource overlay (`config_enable_multi_proxy_system`)
 must be set before the multi-proxy path is used; otherwise ConnectivityService
-falls back to the classic single `ProxyTracker`. `MultiProxyTracker` is the
-`IProxyTracker` whose `updateNetworkProxy(network, newProxy, oldProxy)` and
-`updateDefaultNetworkState(...)` callbacks are what ultimately drive
-`PacCoordinator.startServingPacScript()` per network. It also serves as the
-`MultiPacProxyInstalledListener` that `PacCoordinator` notifies once a proxy
-server is running and its PAC script is loaded.
+falls back to the classic single `ProxyTracker`. `MultiProxyTracker` declares
+the `updateNetworkProxy(network, newProxy, oldProxy)` and
+`updateDefaultNetworkState(...)` callbacks that are intended to drive
+`PacCoordinator.startServingPacScript()` per network. `PacCoordinator` also
+takes a `MultiPacProxyInstalledListener` in its constructor, to be notified
+once a proxy server is running and its PAC script is loaded — but in the
+Android 17 tree `MultiProxyTracker` does not yet implement that listener, and
+its `updateNetworkProxy`/`updateDefaultNetworkState` overrides are still empty
+`// TODO: Implement` stubs.
 
 ---
 
@@ -4599,7 +4631,9 @@ interface IMainlineSupplicant {
 - `getVendorSupplicant()` returns the standard vendor `ISupplicant` root —
   this is how STA and P2P operations get routed back to the vendor supplicant.
 - `addNanInterface()` / `removeNanInterface()` register and tear down a Wi-Fi
-  Aware (NAN) interface (e.g. `aware0`), returning the vendor NAN iface object.
+  Aware (NAN) interface (e.g. `aware0`), returning a mainline
+  `android.system.wifi.mainline_supplicant.ISupplicantNanIface` — the NAN
+  surface owned by the mainline supplicant itself, not the vendor NAN iface.
 - `setCurrentUserIdentity()` tells the supplicant which user is in the
   foreground so it can load that user's credential-encrypted (CE) configuration.
 
@@ -5228,9 +5262,10 @@ NetworkRequest [ REQUEST id=1, [ Capabilities: INTERNET&NOT_RESTRICTED
 # Full Wi-Fi dump
 adb shell dumpsys wifi
 
-# Specific sections
-adb shell dumpsys wifi scan    # Scan results
-adb shell dumpsys wifi config  # Saved networks
+# Specific sections (unrecognized args fall through to the full dump)
+adb shell dumpsys wifi wifiScoreCard                 # Per-network scoring history
+adb shell dumpsys wifi ipclient                      # IpClient state
+adb shell dumpsys wifi WifiNetworkSuggestionsManager # Network suggestions
 ```
 
 Key information in the Wi-Fi dump:
@@ -5349,8 +5384,9 @@ adb shell svc wifi disable
 adb shell svc data enable
 adb shell svc data disable
 
-# Set network speed limit (emulator only)
-adb shell cmd connectivity set-bandwidth-limit <interface> <kbps>
+# Toggle airplane mode from the shell
+adb shell cmd connectivity airplane-mode enable
+adb shell cmd connectivity airplane-mode disable
 
 # Simulate captive portal
 adb shell settings put global captive_portal_mode 0  # Disable detection
@@ -5428,7 +5464,7 @@ adb shell dumpsys wifi | grep "Link speed"
 adb shell dumpsys connectivity --diag | grep "DataStall"
 
 # 4. Check for channel congestion
-adb shell dumpsys wifi scan | grep "freq"
+adb shell dumpsys wifi | grep "freq"
 
 # 5. Check bandwidth estimates
 adb shell dumpsys connectivity | grep "Bandwidth"

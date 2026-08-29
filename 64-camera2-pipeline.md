@@ -49,7 +49,7 @@ graph TD
         IR[ImageReader / SurfaceTexture]
     end
 
-    subgraph "system_server / cameraserver Process"
+    subgraph "cameraserver Process"
         CS["CameraService<br/>media.camera Binder"]
         CDC["CameraDeviceClient<br/>api2/"]
         C3D["Camera3Device<br/>device3/"]
@@ -190,7 +190,7 @@ Key internal components:
 
 | Component | Purpose |
 |-----------|---------|
-| `ICameraDeviceUser mRemoteDevice` | Binder proxy to CameraDeviceClient |
+| `ICameraDeviceUserWrapper mRemoteDevice` | Wraps the `ICameraDeviceUser` Binder proxy to CameraDeviceClient, converting `ServiceSpecificException` into `CameraAccessException` |
 | `FrameNumberTracker mFrameNumberTracker` | Orders result delivery |
 | `SparseArray<CaptureCallbackHolder> mCaptureCallbackMap` | Maps sequence IDs to callbacks |
 | `RequestLastFrameNumbersHolder` | Tracks last frame number per request type |
@@ -206,7 +206,7 @@ methods on this callback object:
 public class CameraDeviceCallbacks extends ICameraDeviceCallbacks.Stub {
 
     @Override
-    public void onResultReceived(CameraMetadataNative result,
+    public void onResultReceived(CameraMetadataInfo resultInfo,
             CaptureResultExtras resultExtras,
             PhysicalCaptureResultInfo[] physicalResults) {
         // Match result to pending request using frame number
@@ -293,9 +293,10 @@ stateDiagram-v2
 
 ### 64.1.8 Session Configuration via OutputConfiguration
 
-Starting with API 24, sessions are configured using `SessionConfiguration`
-and `OutputConfiguration` objects that provide more control over how output
-streams are set up:
+`OutputConfiguration` (and `createCaptureSessionByOutputConfigurations()`)
+arrived in API 24; the `SessionConfiguration` wrapper and the
+`createCaptureSession(SessionConfiguration)` overload followed in API 28.
+Together they provide more control over how output streams are set up:
 
 ```
 Source: frameworks/base/core/java/android/hardware/camera2/params/OutputConfiguration.java
@@ -331,13 +332,15 @@ cameraDevice.createCaptureSession(config);
 
 ### 64.1.9 Updating Output Surfaces Without Reconfiguring (Android 17)
 
-Before Android 17 the only way to change which `Surface` an output stream wrote
-to was `finalizeOutputConfigurations()`, and that only filled in a deferred
-surface once. Replacing a surface that already had one, or swapping surfaces to
-move between two preview targets, meant tearing the session down and building a
-new one, which drops frames during the gap. Android 17 adds
-`updateOutputConfigurations()` on `CameraCaptureSession` for in-place surface
-changes:
+Before Android 17 the options for changing which `Surface` an output stream
+wrote to were limited: `finalizeOutputConfigurations()` only filled in a
+deferred surface once, and `updateOutputConfiguration()` (single
+`OutputConfiguration`, API 26) could add or remove surfaces only on an output
+created with `enableSurfaceSharing()`. Swapping the surface of an ordinary,
+non-sharing output meant tearing the session down and building a new one,
+which drops frames during the gap. Android 17 adds
+`updateOutputConfigurations()` (note the plural) on `CameraCaptureSession`,
+which replaces the surfaces of every configured output wholesale in one call:
 
 ```
 Source: frameworks/base/core/java/android/hardware/camera2/CameraCaptureSession.java, line 1072
@@ -586,14 +589,21 @@ It has two transport-specific subclasses:
 
 ### 64.2.6 Camera3Device Internal Threads
 
-Camera3Device operates several internal threads:
+Camera3Device owns two internal threads, `RequestThread` and
+`StatusTracker`.  A third thread, `FrameProcessorBase`, is owned by
+`CameraDeviceClient` rather than Camera3Device: it polls the Camera3Device
+(through the `FrameProducer` interface) for new result metadata and
+dispatches it to registered listeners:
 
 ```mermaid
 graph LR
     subgraph C3T["Camera3Device Threads"]
         RT["RequestThread<br/>Submits requests to HAL"]
-        FP["FrameProcessorBase<br/>Processes result metadata"]
         ST["StatusTracker<br/>Tracks component readiness"]
+    end
+
+    subgraph CDCT["CameraDeviceClient Thread"]
+        FP["FrameProcessorBase<br/>Polls result metadata"]
     end
 
     subgraph C3S["Camera3Device State"]
@@ -604,9 +614,9 @@ graph LR
 
     RT -->|dequeue| SQ
     RT -->|processCaptureRequest| HAL[Camera HAL]
-    HAL -->|processCaptureResult| FP
-    FP -->|update| IFR
-    FP -->|notify callback| CDC[CameraDeviceClient]
+    HAL -->|processCaptureResult| IFR
+    FP -->|"poll new frames (FrameProducer)"| IFR
+    FP -->|dispatch to listeners| CDC[CameraDeviceClient]
     ST -->|track| STREAMS
 ```
 
@@ -620,12 +630,15 @@ graph LR
 4. Calls `processCaptureRequest()` on the HAL interface
 5. Tracks the request in the `InFlightRequest` map
 
-**FrameProcessorBase** runs in a separate thread and processes results
-returned by the HAL:
+**FrameProcessorBase** (`api2/FrameProcessorBase.cpp`) is an output-frame
+metadata processing thread owned by `CameraDeviceClient`, not Camera3Device:
 
-1. Receives partial and final `CaptureResult` metadata
-2. Matches results to in-flight requests using frame numbers
-3. Delivers results to `CameraDeviceClient` which forwards them to Java
+1. Waits for new result frames from its frame producer (the Camera3Device,
+   held as a `wp<FrameProducer>`)
+
+2. Retrieves partial and final `CaptureResult` metadata as it becomes ready
+3. Dispatches the metadata to the registered `FilteredListener`s, which
+   forward it to Java
 
 **StatusTracker** monitors the readiness of all streams and the HAL.  It
 coalesces status updates to avoid thrashing the "idle" / "active" state.
@@ -976,16 +989,28 @@ have been received:
 The camera HAL must satisfy a strict ordering contract:
 
 1. **Shutter notifications** must arrive in frame-number order
-2. **Result metadata** can arrive in any order (partial results may arrive
-   before or after the shutter notification)
+2. **Result metadata** must be returned in frame-number order: the metadata
+   for request 5 must be returned before the metadata for request 6
+   (within a single request, partial results may still arrive before or
+   after the shutter notification)
 
-3. **Output buffers** may arrive in any order, but the HAL should prioritize
-   returning preview buffers to minimize display latency
+3. **Output buffers for a given stream** must be returned in FIFO order --
+   the buffer for request 5 on stream A must precede the buffer for
+   request 6 on stream A -- but different streams are independent of each
+   other, so the buffer for request 5 on stream A may legally arrive after
+   the buffer for request 6 on stream B
 
-4. The HAL must return all outputs for frame N before accepting frame N + `maxPipelineDepth`
+4. Only failed buffers (`BufferStatus.ERROR`) are exempt from the strict
+   per-stream ordering
+
+5. `REQUEST_PIPELINE_MAX_DEPTH` reports the maximum number of pipeline
+   stages a frame traverses from exposure to result availability; the
+   framework uses it to bound how many requests it keeps in flight, and
+   `processCaptureRequest()` may block when the pipeline is full
 
 ```
-Source: hardware/interfaces/camera/device/aidl/android/hardware/camera/device/ICameraDeviceSession.aidl
+Source: hardware/interfaces/camera/device/aidl/android/hardware/camera/device/ICameraDeviceCallback.aidl
+        hardware/interfaces/camera/device/aidl/android/hardware/camera/device/ICameraDeviceSession.aidl
 ```
 
 ### 64.3.8 Reprocessing
@@ -1151,17 +1176,18 @@ classDiagram
         #mHandoutOutputBufferCount: size_t
     }
     class Camera3OutputStream {
-        -mConsumer: IGraphicBufferProducer
+        -mConsumer: sp~Surface~
         +returnBufferLocked()
         +queueBufferToConsumer()
     }
     class Camera3InputStream {
-        -mProducer: IGraphicBufferConsumer
+        -mConsumer: sp~BufferItemConsumer~
+        -mSurface: sp~Surface~
         +getInputBufferLocked()
         +returnInputBufferLocked()
     }
     class Camera3SharedOutputStream {
-        -mSurfaces: vector~IGraphicBufferProducer~
+        -mSurfaceUniqueIds: array~SurfaceHolderUniqueId~
         +updateStream()
     }
 
@@ -1362,23 +1388,32 @@ optimize stream configuration:
 
 ### 64.4.7 Buffer Management
 
-Camera3Device includes a `Camera3BufferManager` that provides two buffer
-management strategies:
+Two separate mechanisms fall under "buffer management" in the camera
+service.  The first is `Camera3BufferManager`, a service-side graphic-buffer
+pool: it allocates and hands out Gralloc buffers to output streams that
+belong to the same stream set, and can dynamically deallocate buffers so
+that streams sharing the set do not all hold their worst-case buffer count
+at once:
 
 ```
 Source: frameworks/av/services/camera/libcameraservice/device3/Camera3BufferManager.h
         frameworks/av/services/camera/libcameraservice/device3/Camera3BufferManager.cpp
 ```
 
+The second, independent distinction is whether the framework or the HAL
+drives buffer delivery, a Camera3Device mode negotiated with the HAL:
+
 **Framework-managed buffers** (traditional):
 
-- The camera service allocates buffers and provides them to the HAL
+- The camera service dequeues buffers and attaches them to each request
 - `Camera3OutputStream.getBufferLocked()` dequeues from the consumer
 - The service controls buffer allocation timing
 
-**HAL-managed buffers** (modern):
+**HAL-managed buffers** (session HAL buffer management):
 
-- The HAL requests buffers on demand via `requestStreamBuffers()`
+- The HAL requests buffers on demand via the `requestStreamBuffers()`
+  callback on `ICameraDeviceCallback`
+
 - Reduces buffer allocation overhead
 - Allows the HAL to optimize buffer usage across streams
 
@@ -1643,7 +1678,7 @@ multi-camera framework provides precise geometric calibration data:
 | `LENS_POSE_TRANSLATION` | float[3] | Translation in meters |
 | `LENS_POSE_REFERENCE` | int | PRIMARY_CAMERA, GYROSCOPE, or UNDEFINED |
 | `LENS_INTRINSIC_CALIBRATION` | float[5] | fx, fy, cx, cy, s (focal, principal, skew) |
-| `LENS_DISTORTION` | float[6] | Radial k1-k3 and tangential p1-p2 + k4 |
+| `LENS_DISTORTION` | float[5] | Radial k1, k2, k3 and tangential p1, p2 |
 | `LENS_RADIAL_DISTORTION` | float[6] | Deprecated -- use LENS_DISTORTION |
 
 These values enable applications to:
@@ -1952,7 +1987,14 @@ in the corresponding capture result.
 ### 64.6.9 Extension Postview
 
 Postview provides a quick, lower-resolution preview image while the
-extension processes the full-resolution output:
+extension processes the full-resolution output.  The application checks
+`CameraExtensionCharacteristics.isPostviewAvailable()`, picks a size from
+`getPostviewSupportedSizes()`, and registers a dedicated postview output
+surface through
+`ExtensionSessionConfiguration.setPostviewOutputConfiguration()`; the quick
+image is then delivered to that surface, while
+`onCaptureProcessProgressed()` separately reports incremental
+post-processing progress from 0 to 100:
 
 ```mermaid
 sequenceDiagram
@@ -1962,10 +2004,10 @@ sequenceDiagram
 
     App->>EXT: capture(request)
     EXT->>HAL: Begin multi-frame capture
-    HAL-->>EXT: Postview image (quick, lower quality)
-    EXT-->>App: onCaptureProcessProgressed(100%)
+    HAL-->>App: Postview image on postview output surface
     Note over App: Display postview as thumbnail
     HAL->>HAL: Full post-processing...
+    EXT-->>App: onCaptureProcessProgressed(25%) ... (75%)
     HAL-->>EXT: Final high-quality image
     EXT-->>App: onCaptureResultAvailable()
     Note over App: Replace postview with final image
@@ -2177,13 +2219,14 @@ ACameraMetadata_const_entry physicalCameraIds;
 ACameraMetadata_getConstEntry(chars,
     ACAMERA_LOGICAL_MULTI_CAMERA_PHYSICAL_IDS, &physicalCameraIds);
 
-// Create a physical-camera-aware capture request: the trailing array
-// lists the physical IDs whose per-camera settings the request may carry.
+// Create a physical-camera-aware capture request: the ACameraIdList
+// names the physical IDs whose per-camera settings the request may carry.
 ACaptureRequest* request = NULL;
-const char* physicalIds[] = {"2", "4"};
+const char* ids[] = {"2", "4"};
+ACameraIdList physicalIdList = { 2, ids };  // numCameras, cameraIds
 ACameraDevice_createCaptureRequest_withPhysicalIds(
     device, TEMPLATE_PREVIEW,
-    2, physicalIds,
+    &physicalIdList,
     &request);
 
 // Per-physical-camera settings are written with the
@@ -2194,9 +2237,12 @@ ACaptureRequest_setEntry_physicalCamera_u8(
 ```
 
 The chapter's earlier Java example used `OutputConfiguration.setPhysicalCameraId()`
-to bind a whole stream to a sensor; at the NDK level the same routing is done
-by adding the output target normally and supplying per-physical settings
-through the `_physicalCamera_*` setters.
+to bind a whole stream to a sensor; the direct NDK equivalent is
+`ACaptureSessionPhysicalOutput_create(window, physicalId, &output)`, which
+creates a session output routed to one physical camera.  The
+`ACaptureRequest_setEntry_physicalCamera_*` setters shown above are a
+separate mechanism: they carry per-physical-camera request settings, not
+stream routing.
 
 ### 64.7.8 NDK Metadata Access
 
@@ -3118,11 +3164,12 @@ adb shell dumpsys media.camera
 # 5. Last few capture requests/results
 # 6. Error events
 
-# Watch for specific tags during capture
-adb shell dumpsys media.camera --watch \
-    android.control.aeState \
-    android.control.afState \
-    android.sensor.exposureTime
+# Watch for specific tags during capture (shell command, not dumpsys)
+adb shell cmd media.camera watch start \
+    -m android.control.aeState,android.control.afState,android.sensor.exposureTime
+# ... perform camera operations ...
+adb shell cmd media.camera watch dump   # or "watch live" for continuous output
+adb shell cmd media.camera watch stop
 
 # Trace camera HAL calls
 adb shell atrace --async_start -c camera
@@ -3160,7 +3207,7 @@ wc -l frameworks/av/services/camera/libcameraservice/device3/Camera3Device.cpp
 grep -r "public static final Key" \
     frameworks/base/core/java/android/hardware/camera2/CaptureRequest.java \
     | wc -l
-# Over 100 controllable parameters per frame
+# Roughly 80 controllable parameters per frame
 
 # See all stream types
 ls frameworks/av/services/camera/libcameraservice/device3/Camera3*Stream*
@@ -3193,8 +3240,9 @@ key architectural insights from this chapter:
    `cameraserver` to camera HAL (AIDL/HIDL), HAL to hardware.
 
 3. **Camera3Device is the engine** -- It manages the HAL lifecycle,
-   request queuing, result routing, and stream management through dedicated
-   threads (RequestThread, FrameProcessor, StatusTracker).
+   request queuing, result routing, and stream management through its
+   RequestThread and StatusTracker threads, with CameraDeviceClient's
+   FrameProcessorBase thread polling it for result metadata.
 
 4. **Streams are BufferQueues** -- Every output surface maps to a
    Camera3OutputStream backed by a producer-consumer buffer queue.

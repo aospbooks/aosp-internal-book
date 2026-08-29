@@ -49,7 +49,7 @@ and the Unicode version is pinned in
 ```
 
 This is a significant uprev over the prior release (which carried ICU 77).
-Section 47.8 details what the bump brings: new Unicode 17.0 code points and
+Section 47.7 details what the bump brings: new Unicode 17.0 code points and
 emoji, refreshed CLDR collation and formatting data, and updated time-zone
 rules. Because ICU rides in the i18n APEX (see 47.1.3), the new data can reach
 devices through a Mainline update rather than a full platform OTA.
@@ -461,7 +461,7 @@ Supporting files in the same package
 
 - `LocaleManagerBackupHelper.java` -- Backup agent integration
 - `LocaleManagerServicePackageMonitor.java` -- Tracks package changes
-- `LocaleManagerShellCommand.java` -- `cmd locale_manager` shell interface
+- `LocaleManagerShellCommand.java` -- `cmd locale` shell interface
 - `LocaleManagerInternal.java` -- Internal API for system services
 - `SystemAppUpdateTracker.java` -- Re-applies stored locales after a system-app update
 - `AppLocaleChangedAtomRecord.java` / `AppSupportedLocalesChangedAtomRecord.java` --
@@ -983,7 +983,7 @@ screen has passed through this entire pipeline.
 ```mermaid
 flowchart TD
     A["Java: TextView.setText('Hello مرحبا')"] --> B["Framework: StaticLayout / BoringLayout"]
-    B --> C["JNI: nComputeLayout()"]
+    B --> C["JNI: nAddStyleRun() / nComputeLineBreaks()"]
     C --> D["Minikin: Layout::doLayout()"]
 
     D --> D1["1. BiDi Analysis<br/>(ICU ubidi)"]
@@ -1419,8 +1419,11 @@ evolution clear:
 > the `platform/frameworks/base/data/font_fallback.xml`.
 
 Note that the `font_fallback.xml` the comment points vendors toward is not
-actually present in the tree; the modern configuration is the trio of JSON files
-that sit alongside the legacy `fonts.xml`:
+checked in as a source file: the build generates it from `alias.json` and
+`fallback_order.json` (the `generate_font_fallback` genrule in
+`frameworks/base/data/fonts/Android.bp`) and installs the result as a
+`prebuilt_etc` module listed in `fonts.mk`. The hand-edited configuration is
+the trio of JSON files that sit alongside the legacy `fonts.xml`:
 
 ```
 frameworks/base/data/fonts/
@@ -1590,7 +1593,7 @@ sequenceDiagram
     participant App as Application
     participant FContract as FontsContract
     participant Provider as Font Provider (e.g. GMS Fonts)
-    participant Cache as Font Cache (/data/fonts/)
+    participant Cache as Font Cache (provider/app-side)
 
     App->>FContract: requestFont("Lobster")
     FContract->>Cache: Check local cache
@@ -1619,7 +1622,7 @@ Set<Font> fonts = SystemFonts.getAvailableFonts();
 for (Font font : fonts) {
     File file = font.getFile();           // /system/fonts/NotoSansCJK-Regular.ttc
     FontStyle style = font.getStyle();    // weight=400, slant=UPRIGHT
-    String psName = font.getPostScriptName(); // "NotoSansCJK-Regular"
+    LocaleList locales = font.getLocaleList(); // Locales the font targets
     int index = font.getTtcIndex();       // Index in TTC (TrueType Collection)
 }
 ```
@@ -1857,19 +1860,19 @@ adb shell ls -la /apex/com.android.i18n/etc/icu/
 
 ```bash
 # List the device's supported locales
-adb shell cmd locale_manager list-device-locales
+adb shell cmd locale list-device-locales
 
 # Get / set the system (device) locale
-adb shell cmd locale_manager get-device-locale
+adb shell cmd locale get-device-locale
 
 # Set a per-app locale (requires adb root or appropriate shell permissions)
-adb shell cmd locale_manager set-app-locales com.example.myapp --locales ja-JP
+adb shell cmd locale set-app-locales com.example.myapp --locales ja-JP
 
 # Verify the per-app locale
-adb shell cmd locale_manager get-app-locales com.example.myapp
+adb shell cmd locale get-app-locales com.example.myapp
 
 # Inspect an app's resolved LocaleConfig (declared + any override)
-adb shell cmd locale_manager get-app-localeconfig com.example.myapp
+adb shell cmd locale get-app-localeconfig com.example.myapp
 ```
 
 ### 47.8.3 Exercise: Enable Pseudo-Locales

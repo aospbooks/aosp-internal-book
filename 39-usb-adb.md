@@ -118,18 +118,20 @@ with USB. It provides:
 ```java
 // From UsbManager.java -- function bitmask values
 public static final long FUNCTION_NONE = 0;
-public static final long FUNCTION_MTP = GadgetFunction.MTP;       // 1 << 2
-public static final long FUNCTION_PTP = GadgetFunction.PTP;       // 1 << 4
-public static final long FUNCTION_RNDIS = GadgetFunction.RNDIS;   // 1 << 5
-public static final long FUNCTION_MIDI = GadgetFunction.MIDI;     // 1 << 3
-public static final long FUNCTION_ACCESSORY = GadgetFunction.ACCESSORY; // 1 << 1
-public static final long FUNCTION_AUDIO_SOURCE = GadgetFunction.AUDIO_SOURCE; // 1 << 6
-public static final long FUNCTION_ADB = GadgetFunction.ADB;       // 1
-public static final long FUNCTION_NCM = GadgetFunction.NCM;       // 1 << 10
-public static final long FUNCTION_UVC = GadgetFunction.UVC;       // 1 << 7
+public static final long FUNCTION_ADB = 1;
+public static final long FUNCTION_ACCESSORY = 1 << 1;
+public static final long FUNCTION_MTP = 1 << 2;
+public static final long FUNCTION_MIDI = 1 << 3;
+public static final long FUNCTION_PTP = 1 << 4;
+public static final long FUNCTION_RNDIS = 1 << 5;
+public static final long FUNCTION_AUDIO_SOURCE = 1 << 6;
+public static final long FUNCTION_UVC = 1 << 7;
+public static final long FUNCTION_NCM = 1 << 10;
 ```
 
-These constants map directly to the `GadgetFunction` AIDL parcelable defined at
+The values are plain literals, but each constant's javadoc requires it to be
+equal to the corresponding constant in the `GadgetFunction` AIDL parcelable
+defined at
 `hardware/interfaces/usb/gadget/aidl/android/hardware/usb/gadget/GadgetFunction.aidl`.
 
 ### 39.1.5 UsbService -- The Central Coordinator
@@ -396,8 +398,14 @@ locked. `UsbDeviceManager` coordinates with the keyguard:
 
 ### 39.2.9 Interface Deny List
 
-For security, certain USB interface classes are always denied from application
-access when the device acts as a host:
+`UsbDeviceManager` keeps a static set of USB interface classes used to decide
+whether a connected host-mode device is likely a dock or self-contained
+accessory. When a host-mode device exposes one of these interface classes, the
+`MSG_UPDATE_HOST_STATE` handler sets `mHideUsbNotification`, suppressing the
+"charging this device via USB" notification. This set does not deny
+application access to those interfaces -- host-device access is gated by
+`UsbUserPermissionManager` and `UsbProfileGroupSettingsManager`
+(Section 39.8.6):
 
 ```java
 // From UsbDeviceManager static initializer
@@ -643,7 +651,7 @@ oneway interface IUsb {
     void switchRole(in String portName, in PortRole role, long transactionId);
     void limitPowerTransfer(in String portName, boolean limit, long transactionId);
     void resetUsbPort(in String portName, long transactionId);
-    void queryStaticPortInformation(long transactionId);
+    void queryStaticPortInformation(in String portName, long transactionId);
 }
 ```
 
@@ -743,11 +751,12 @@ timeline
         1.0 : Basic port status and role switching
         1.1 : Extended port status
         1.2 : Contaminant detection, USB speed
-        1.3 : Compliance warnings
+        1.3 : USB data signaling enable/disable
     section AIDL Era
-        AIDL v1 : Migration to AIDL, all HIDL features
-        AIDL v2 : Power brick, DisplayPort Alt Mode
-        AIDL v3 : Plug orientation, compliance enhancements
+        AIDL v1 : Migration to AIDL, power brick status
+        AIDL v2 : Compliance warnings, plug orientation, Alt Mode data
+        AIDL v3 : Extended ComplianceWarning enum
+        AIDL v4 : Static port info, partner status, power profiles, cable status
 ```
 
 Source directories:
@@ -874,7 +883,7 @@ Source: `packages/modules/adb/daemon/main.cpp`
 
 ### 39.4.3 ADB Protocol
 
-The ADB protocol is a simple message-based protocol with six core message
+The ADB protocol is a simple message-based protocol with eight message
 types, defined in `packages/modules/adb/adb.h`:
 
 ```c
@@ -1139,7 +1148,7 @@ Source: `packages/modules/adb/daemon/auth.cpp`
 
 ADB authentication uses RSA-2048 key pairs:
 
-1. The server generates a 20-byte random token.
+1. The daemon (adbd) generates a 20-byte random token.
 2. The daemon sends the token to the server.
 3. The server signs the token with its private key.
 4. The daemon verifies the signature against known public keys.
@@ -1230,7 +1239,7 @@ connection banner. Key features defined in `transport.h`:
 | `sendrecv_v2_zstd` | Zstd compression for sync v2 |
 | `sendrecv_v2_dry_run_send` | Dry-run send mode |
 | `delayed_ack` | Delayed acknowledgment for throughput |
-| `dev-raw` | Raw device access service |
+| `devraw` | Raw device access service |
 
 ### 39.4.11 WiFi ADB
 
@@ -1462,7 +1471,9 @@ on demand, dramatically reducing install times for large apps.
 
 `adb logcat` opens a `shell:logcat` service on the device. The output is
 streamed back in real time using the shell protocol. The logcat binary on the
-device reads from the kernel's log buffers via `/dev/log/` or the logd socket.
+device reads from the userspace `logd` daemon's ring buffers over the `logdr`
+socket via liblog; kernel messages live in a separate `kernel` buffer that
+logd itself proxies.
 
 ### 39.5.6 Port Forwarding (`adb forward` / `adb reverse`)
 
@@ -1507,11 +1518,15 @@ std::unordered_map<std::string, std::string> reverse_forwards_;
 Source: `packages/modules/adb/daemon/abb.cpp`, `packages/modules/adb/daemon/abb_service.cpp`
 
 ABB provides a direct Binder IPC path from `adb` commands to system services,
-bypassing the shell. Commands like `adb shell cmd package list packages`
-internally use ABB when the feature is supported:
+bypassing the shell. It is reached through the explicit `adb abb` command
+(gated on the `abb` feature in `packages/modules/adb/client/commandline.cpp`)
+and, internally, by `adb install`, which sends `abb_exec:package ...` instead
+of `exec:cmd package` when the device supports `abb_exec`. A plain
+`adb shell cmd <service>` still goes through the shell service and the `cmd`
+binary:
 
 ```
-adb shell cmd <service> <arguments>
+adb abb <service> <arguments>
      |
      v
   abb_exec:<service> <arguments>
@@ -1599,7 +1614,8 @@ The MTP implementation spans three layers:
 **MTP Service** (`packages/services/Mtp/`):
 
 - `MtpService.java`: Android Service that manages the MTP server lifecycle
-- `MtpDatabase.java`: Bridge between MTP operations and MediaStore
+- `MtpDatabase.java`: Host-side local SQLite cache of MTP object metadata
+  (Section 39.6.11)
 - `MtpDocumentsProvider.java`: Storage Access Framework integration
 - `MtpReceiver.java`: Broadcast receiver for USB state changes
 - `MtpManager.java`: Host-side MTP device management
@@ -1607,7 +1623,10 @@ The MTP implementation spans three layers:
 **Framework Integration** (`frameworks/base/`):
 
 - `UsbDeviceManager` binds to `MtpService` when MTP function is active
-- `MediaProvider` supplies file metadata to `MtpDatabase`
+- `android.mtp.MtpDatabase`
+  (`frameworks/base/media/java/android/mtp/MtpDatabase.java`) -- a different
+  class than the one in `packages/services/Mtp/` -- is the bridge between MTP
+  operations and MediaStore; `MediaProvider` supplies file metadata to it
 
 ### 39.6.3 MTP Server Initialization and Run Loop
 
@@ -2297,14 +2316,20 @@ returns a `ParcelFileDescriptor` to the USB device node (e.g.,
 
 ### 39.8.7.1 USB Transfer Types
 
-The `UsbDeviceConnection` class supports all four USB transfer types:
+The `UsbDeviceConnection` class supports control, bulk, and interrupt
+transfers:
 
 | Transfer Type | Method | Max Size | Use Case |
 |--------------|--------|----------|----------|
 | Control | `controlTransfer()` | 4KB per setup | Device configuration, vendor commands |
 | Bulk | `bulkTransfer()` | Variable | Data-heavy transfers (storage, printers) |
 | Interrupt | `bulkTransfer()` on interrupt EP | 64B (FS) / 1024B (HS) | HID events, status polling |
-| Isochronous | `UsbRequest` (async) | 1023B (FS) / 1024B (HS) | Audio/video streaming |
+
+Isochronous endpoints are not supported: `usb_request_new()` in
+`system/core/libusbhost/usbhost.c` accepts only bulk and interrupt endpoints
+and returns NULL for anything else, so `UsbRequest.initialize()` fails on an
+isochronous endpoint. Isochronous audio/video streaming instead goes through
+the ALSA USB-audio path (Section 39.8.8).
 
 For asynchronous transfers, applications use `UsbRequest`:
 
@@ -2380,7 +2405,7 @@ graph LR
     USB_AUDIO["USB Audio Device"] --> UHM2["UsbHostManager"]
     UHM2 --> UALSA2["UsbAlsaManager"]
     UALSA2 --> ALSA["ALSA Subsystem"]
-    UALSA2 --> MIDI2["UsbDirectMidiDevice"]
+    UALSA2 --> MIDI2["UsbAlsaMidiDevice"]
     ALSA --> AUDIO_HAL["Audio HAL"]
     AUDIO_HAL --> AUDIOFLINGER["AudioFlinger"]
 ```
@@ -2521,8 +2546,8 @@ implement USB functions:
 
 /dev/usb-ffs/mtp/
     ep0       # Control endpoint
-    ep1       # Bulk OUT
-    ep2       # Bulk IN
+    ep1       # Bulk IN (device to host)
+    ep2       # Bulk OUT (host to device)
     ep3       # Interrupt IN (events)
 ```
 
@@ -2545,12 +2570,12 @@ USB Device Descriptor:
     idProduct:  0x4EE2 (MTP + ADB)
 
 USB Configuration Descriptor:
-    bNumInterfaces: 3
+    bNumInterfaces: 2
 
     Interface 0: MTP
-        bInterfaceClass:    0xFF (Vendor Specific)
-        bInterfaceSubClass: 0xFF
-        bInterfaceProtocol: 0x00
+        bInterfaceClass:    0x06 (Still Image)
+        bInterfaceSubClass: 0x01
+        bInterfaceProtocol: 0x01
         Endpoint: Bulk IN
         Endpoint: Bulk OUT
         Endpoint: Interrupt IN
@@ -2577,22 +2602,29 @@ The VID:PID pair changes based on the active function combination:
 | Accessory + ADB | `0x2D01` | AOA with debugging |
 | MIDI | `0x4EE8` | MIDI only |
 | MIDI + ADB | `0x4EE9` | MIDI with debugging |
-| Charging | `0x4EE0` | No data function |
+| ADB only | `0x4EE7` | Debugging only |
 
 ### 39.9.5 USB Speed Negotiation
 
 The USB connection speed is determined during physical layer negotiation and
-reported through the `IUsbGadget` HAL:
+reported through the `IUsbGadget` HAL
+(`hardware/interfaces/usb/gadget/aidl/android/hardware/usb/gadget/UsbSpeed.aidl`):
 
 ```
 @VintfStability
-parcelable UsbSpeed {
-    const int UNKNOWN = -1;
-    const int USB20 = 0;      // 480 Mbps
-    const int USB30 = 1;      // 5 Gbps
-    const int USB31 = 2;      // 10 Gbps
-    const int USB32 = 3;      // 20 Gbps
-    const int USB40 = 4;      // 40 Gbps
+@Backing(type="int")
+enum UsbSpeed {
+    UNKNOWN = -1,
+    LOWSPEED = 0,          // USB 1.0, 1.5 Mbps
+    FULLSPEED = 1,         // USB 1.1, 12 Mbps
+    HIGHSPEED = 2,         // USB 2.0, 480 Mbps
+    SUPERSPEED = 3,        // USB 3.0, 5 Gbps
+    SUPERSPEED_10Gb = 4,   // USB 3.1 Gen 2, 10 Gbps
+    SUPERSPEED_20Gb = 5,   // USB 3.2 Gen 2x2, 20 Gbps
+    USB4_GEN2_10Gb = 6,
+    USB4_GEN2_20Gb = 7,
+    USB4_GEN3_20Gb = 8,
+    USB4_GEN3_40Gb = 9,
 }
 ```
 
@@ -3102,8 +3134,11 @@ adb shell ls -la /data/misc/adb/
 adb tcpip 5555
 adb connect <device-ip>:5555
 
-# Check ADB transport speed
+# Check which UDC the gadget is bound to
 adb shell cat /config/usb_gadget/g1/UDC
+
+# Check the negotiated USB speed
+adb shell cat /sys/class/udc/*/current_speed
 ```
 
 ### 39.13.5 Test File Transfer Performance
@@ -3129,11 +3164,8 @@ time adb pull /data/local/tmp/testfile /tmp/pulled_file
 # Check MTP server status
 adb shell dumpsys usb | grep -i mtp
 
-# Monitor MTP operations
+# Monitor MTP operations (storage adds/removes appear here too)
 adb logcat -s MtpServer:* MtpService:*
-
-# List MTP storage IDs
-adb shell dumpsys media.mtp
 
 # Check FunctionFS endpoints for MTP
 adb shell ls -la /dev/usb-ffs/mtp/
@@ -3155,7 +3187,7 @@ adb shell dumpsys usb | grep -A 5 "deny"
 adb logcat -s UsbHostManager:*
 
 # Examine USB descriptors of connected device
-adb shell "dumpsys usb -dump-raw"
+adb shell dumpsys usb dump-descriptors
 ```
 
 ### 39.13.8 Build and Test USB HAL Changes
@@ -3167,14 +3199,14 @@ source build/envsetup.sh
 lunch <target>
 
 # Build USB HAL
-m android.hardware.usb-service
+m android.hardware.usb-service.example
 
 # Build USB Gadget HAL
-m android.hardware.usb.gadget-service
+m android.hardware.usb.gadget-service.example
 
 # Run USB VTS tests
 atest VtsHalUsbV1_0TargetTest
-atest VtsHalUsbGadgetV1_0TargetTest
+atest VtsHalUsbGadgetV2_0HostTest
 ```
 
 ### 39.13.9 ADB Over WiFi Pairing
@@ -3214,8 +3246,8 @@ adb reverse --remove-all
 ### 39.13.11 Investigate USB Accessory Mode
 
 ```bash
-# Check accessory support
-adb shell getprop ro.usb.ffs.ready
+# Check FunctionFS readiness
+adb shell getprop sys.usb.ffs.ready
 adb shell ls -la /dev/usb_accessory 2>/dev/null
 
 # Monitor accessory events
@@ -3250,8 +3282,9 @@ export ADB_TRACE=all  # or: usb, transport, adb, packets
 # Run adb with tracing enabled
 ADB_TRACE=packets adb shell echo hello
 
-# On device, enable adbd tracing
-adb shell setprop persist.adb.trace_mask 0xffff
+# On device, enable adbd tracing (named tags, not a hex mask)
+adb shell setprop persist.adb.trace_mask all
+# ... or a tag list, e.g. "usb,transport,packets"
 adb shell stop adbd && adb shell start adbd
 ```
 
@@ -3348,9 +3381,9 @@ cat ~/.android/adbkey.pub
 openssl rsa -in ~/.android/adbkey -pubout 2>/dev/null | \
     openssl md5 -c
 
-# Revoke all USB debugging authorizations (on device)
-adb shell settings put global development_settings_enabled 0
-# Or via Settings > Developer Options > Revoke USB debugging authorizations
+# Revoke all USB debugging authorizations (on device):
+# Settings > Developer Options > Revoke USB debugging authorizations
+# (clears /data/misc/adb/adb_keys)
 ```
 
 ### 39.13.18 Write a Simple USB Host Application

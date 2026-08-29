@@ -386,7 +386,7 @@ implicit-declaration check that all LP64 architectures share:
 ```go
 // build/soong/cc/config/arm64_device.go
 arm64Cflags = []string{
-    // Help catch common 32/66-bit errors.
+    // Help catch common 32/64-bit errors.
     // Common to all LP64 architectures.
     "-Werror=implicit-function-declaration",
 
@@ -636,7 +636,8 @@ LITTLE core flags (A53 or A55).
 ### 59.2.5 Cortex-A53 Erratum Workarounds
 
 The Cortex-A53, one of the most widely deployed ARM cores in history, has two
-notable hardware errata that AOSP works around at link time:
+notable hardware errata. Soong works around only one of them, erratum 843419,
+at link time:
 
 ```go
 // build/soong/cc/config/arm64_device.go
@@ -661,6 +662,13 @@ instructions appear near page boundaries. The linker flag
 insert veneer code to avoid them. Note that this fix is also applied to A72,
 A73, Kryo, and Exynos cores, because they may be paired with A53 LITTLE cores
 in big.LITTLE configurations.
+
+The other well-known A53 erratum, 835769 (a multiply-accumulate corner case),
+has no Soong-level workaround; ART tracks it separately in its
+instruction-set-feature model
+(`art/runtime/arch/arm64/instruction_set_features_arm64.h`) so the compiler can
+avoid emitting the problematic sequences -- section 59.8.8 shows the variant
+list ART consults for it.
 
 ### 59.2.6 ARM64 Toolchain Factory
 
@@ -768,8 +776,8 @@ x86/x86_64 images provide dramatically better performance during development.
 
 **Source files**:
 
-- `build/soong/cc/config/x86_device.go` (193 lines)
-- `build/soong/cc/config/x86_64_device.go` (200 lines)
+- `build/soong/cc/config/x86_device.go` (204 lines)
+- `build/soong/cc/config/x86_64_device.go` (213 lines)
 
 ### 59.3.1 x86 Architecture Variants
 
@@ -805,7 +813,9 @@ x86ArchVariantCflags = map[string][]string{
 }
 ```
 
-The x86_64 toolchain has the same set of microarchitecture variants:
+The x86_64 toolchain has nearly the same set of microarchitecture variants; it
+drops the `atom` entry and the `x86_64` alias, and its default maps to the
+baseline `-march=x86-64`:
 
 ```go
 // build/soong/cc/config/x86_64_device.go
@@ -814,7 +824,7 @@ x86_64ArchVariantCflags = map[string][]string{
     "alderlake":   []string{"-march=alderlake"},
     "broadwell":   []string{"-march=broadwell"},
     "goldmont":    []string{"-march=goldmont"},
-    // ... same variants as x86
+    // ... remaining variants as in x86 (but no "atom" or "x86_64" keys)
     "haswell":     []string{"-march=core-avx2"},
     "pantherlake": []string{"-march=pantherlake"},
     "skylake":     []string{"-march=skylake"},
@@ -880,6 +890,9 @@ x86Cflags = []string{
     // that could be called from JNI, so that movaps instruction
     // will work on assumed stack aligned local variables.
     "-mstackrealign",
+    // For stack allocations larger than a page, touch each page immediately
+    // to ensure we hit the guard page on stack overflow.
+    "-fstack-clash-protection",
 }
 ```
 
@@ -1158,7 +1171,7 @@ ISA string has grown a vector bit-manipulation extension:
 ```go
 // build/soong/cc/config/riscv64_device.go
 riscv64Cflags = []string{
-    // Help catch common 32/66-bit errors.
+    // Help catch common 32/64-bit errors.
     // Common to all LP64 architectures.
     "-Werror=implicit-function-declaration",
 
@@ -1273,18 +1286,24 @@ strategically important for RISC-V development:
 
 ```
 frameworks/libs/binary_translation/
-    assembler/        - Code generation backend
-    backend/          - Translation engine
-    decoder/          - Guest instruction decoder
-    guest_abi/        - ABI conversion layer
-    guest_loader/     - Library loading and linking
-    guest_state/      - CPU state abstraction
-    interpreter/      - Interpreted execution fallback
-    jni/              - JNI trampoline generation
-    native_bridge/    - NativeBridge interface implementation
-    android_api/      - Framework API proxies
-    lite_translator/  - Lightweight translation path
-    heavy_optimizer/  - Full optimization path
+    base/                 - Common utilities
+    cpu_emulation/        - The translation engine proper:
+        assembler/          - Code generation backend
+        backend/            - Translation engine
+        decoder/            - Guest instruction decoder
+        interpreter/        - Interpreted execution fallback
+        lite_translator/    - Lightweight translation path
+        heavy_optimizer/    - Full optimization path
+    exec_region/          - Executable code region management
+    guest_abi/            - ABI conversion layer
+    guest_loader/         - Library loading and linking
+    guest_os_primitives/  - Guest signal/thread/memory primitives
+    guest_state/          - CPU state abstraction
+    jni/                  - JNI trampoline generation
+    native_bridge/        - NativeBridge interface implementation
+    android_api/          - Framework API proxies
+    runtime/              - Translation runtime
+    tiny_loader/          - Minimal ELF loader
 ```
 
 The Berberis `enable_riscv64_to_x86_64.mk` file in the top directory reveals
@@ -1748,7 +1767,7 @@ $(TARGET_2ND_ARCH_VAR_PREFIX)TARGET_OUT_SHARED_LIBRARIES := \
 ## 59.6 Compiler Configuration
 
 The compiler configuration in AOSP is centralized in
-`build/soong/cc/config/global.go` (633 lines) and applies to all architectures.
+`build/soong/cc/config/global.go` (655 lines) and applies to all architectures.
 This file defines the common compilation flags, warning policies, debug
 settings, and Clang toolchain paths that form the baseline for every native
 build.
@@ -1859,10 +1878,12 @@ data via `--gc-sections`. This is critical for reducing binary size on mobile.
 local arrays or take the address of a local variable. The "strong" variant
 protects more functions than `-fstack-protector` but fewer than
 `-fstack-protector-all`, balancing security with performance. The companion
-flag `-fstack-clash-protection` is not in this global list because Clang does
-not support it for 32-bit (ILP32) ARM; instead the LP64 architectures (ARM64,
-RISC-V 64) add it in their per-architecture base cflags, as shown in sections
-59.2 and 59.4.1.
+flag `-fstack-clash-protection` is not in this global list -- the comment says
+it is unsupported in Clang for ILP32 -- so each of the LP64 architectures
+(ARM64, x86_64, RISC-V 64) adds it in its per-architecture base cflags, as
+shown in sections 59.2 and 59.4.1. In practice 32-bit x86 also carries the flag
+in `x86Cflags` (section 59.3.3) despite being ILP32, leaving 32-bit ARM as the
+only architecture built without it.
 
 **`-D_FORTIFY_SOURCE=3`**: The highest level of compile-time and runtime
 buffer overflow detection. Level 3 extends beyond the basic `memcpy` /
@@ -2064,7 +2085,6 @@ extraExternalCflags = []string{
     "-Wno-enum-compare",
     "-Wno-enum-compare-switch",
     "-Wno-null-pointer-arithmetic",
-    "-Wno-psabi",
     "-Wno-null-pointer-subtraction",
     "-Wno-string-concatenation",
     "-Wno-deprecated-non-prototype",
@@ -2072,7 +2092,6 @@ extraExternalCflags = []string{
     "-Wno-unused-but-set-variable",
     "-Wno-deprecated",
     "-Wno-tautological-constant-compare",
-    "-Wno-error=range-loop-construct",
 }
 ```
 
@@ -2081,7 +2100,6 @@ And the non-overridable flags for external code are even more permissive:
 ```go
 // build/soong/cc/config/global.go
 noOverrideExternalGlobalCflags = []string{
-    "-fcommon",
     "-Wno-format-insufficient-args",
     "-Wno-misleading-indentation",
     "-Wno-unused",
@@ -2096,12 +2114,16 @@ noOverrideExternalGlobalCflags = []string{
 }
 ```
 
-The `-fcommon` flag (marked with bug b/151457797) is particularly notable.
-Modern C compilers default to `-fno-common`, which makes tentative definitions
-of global variables into strong symbols. Many legacy C libraries rely on the
-old behavior where tentative definitions are "common" symbols that can be
-merged across translation units. Without `-fcommon`, these libraries fail to
-link.
+One further flag, `-fcommon`, is particularly notable. It is not a fixed entry
+in this list: the `NoOverrideExternalGlobalCflags` variable function appends it
+to the external no-override flags only when the release configuration's
+`ReleaseUseFnoCommonFor3pCode()` is false. Modern C compilers default to
+`-fno-common`, which makes tentative definitions of global variables into
+strong symbols. Many legacy C libraries rely on the old behavior where
+tentative definitions are "common" symbols that can be merged across
+translation units. Without `-fcommon`, these libraries fail to link -- so the
+release flag controls when third-party code is finally held to the stricter
+default.
 
 ### 59.6.10 Illegal Flags
 
@@ -2205,7 +2227,7 @@ device/generic/
     car/              - Android Automotive targets
     trusty/           - Trusted Execution Environment
     common/           - Shared resources
-    goldfish/         - Legacy emulator
+    goldfish/         - Android Emulator (ranchu) device tree
 ```
 
 ### 59.7.2 ARM64 Generic Device
@@ -2491,10 +2513,13 @@ DEFINE_IFUNC_FOR(strchr) {
 
 ### 59.8.3 Bionic: ARM 32-bit CPU-Variant String Functions
 
-ARM 32-bit bionic takes a different approach: instead of runtime ifunc dispatch,
-it compiles multiple CPU-variant-specific implementations and selects at build
-time based on the device's `TARGET_CPU_VARIANT`. The source tree contains
-separate directories for each CPU variant:
+ARM 32-bit bionic also uses runtime ifunc dispatch, but with a different
+selection mechanism. Every CPU-variant implementation is compiled
+unconditionally into libc -- they are all listed together under the single
+`arm:` `srcs:` block in `bionic/libc/Android.bp` -- and the resolvers in
+`bionic/libc/arch-arm/ifuncs.cpp` pick one at load time by reading the CPU name
+from `/dev/cpu_variant:arm`, rather than by consulting `HWCAP` bits as on
+ARM64. The source tree contains separate directories for each CPU variant:
 
 ```
 arch-arm/cortex-a7/string/memcpy.S    - Tuned for A7's in-order pipeline
@@ -2517,9 +2542,10 @@ the RISC-V Vector extension:
 
 ```
 bionic/libc/arch-riscv64/string/
-    memchr.S    memcmp.S    memcpy.S    memmove.S    memset.S
-    stpcpy.S    strcat.S    strchr.S    strcmp.S     strcpy.S
-    strlen.S    strncat.S   strncmp.S   strncpy.S    strnlen.S
+    memchr.S    memcmp.S    memcpy.S     memmove.S    memset.S
+    stpcpy.S    stpncpy.S   strcat.S     strchr.S     strchrnul.S
+    strcmp.S    strcpy.S    strlen.S     strncat.S    strncmp.S
+    strnlen.S   strrchr.S
 ```
 
 The copyright headers in these files attribute them to both "The Android Open
@@ -2536,7 +2562,7 @@ execution context in ways that C cannot express:
 |---|---|---|
 | `__bionic_clone.S` | `clone()` syscall wrapper | Must set up child stack and call entry point |
 | `_exit_with_stack_teardown.S` | Thread exit | Must deallocate own stack while running |
-| `setjmp.S` / `longjmp.S` | Non-local jumps | Must save/restore all callee-saved registers |
+| `setjmp.S` | Non-local jumps (defines both `setjmp` and `longjmp`) | Must save/restore all callee-saved registers |
 | `syscall.S` | Raw syscall interface | Must move args to syscall registers |
 | `vfork.S` | `vfork()` implementation | Must not clobber parent's stack frame |
 
@@ -2741,8 +2767,9 @@ walking, and exception handling.
 
 ### 59.8.10 ART: Multiple Feature Detection Strategies
 
-ART implements six different strategies for detecting CPU features, reflecting
-the reality that no single detection method is reliable across all devices:
+ART implements eight different entry points for detecting CPU features (seven
+construction methods plus `IntersectWithHwcap()`), reflecting the reality that
+no single detection method is reliable across all devices:
 
 ```cpp
 // art/runtime/arch/arm64/instruction_set_features_arm64.h (line 35-55)
@@ -3534,7 +3561,7 @@ architecture:
 |---|---|---|---|---|---|
 | Bits | 32 | 64 | 32 | 64 | 64 |
 | Clang Triple | `armv7a-linux-androideabi` | `aarch64-linux-android` | `i686-linux-android` | `x86_64-linux-android` | `riscv64-linux-android` |
-| Arch Variants | 4 | 10 | 15 | 14 | 0 |
+| Arch Variants (named) | 4 | 10 | 15 | 13 | 0 |
 | CPU Variants | 18 | 10 | 0 | 0 | 0 |
 | SIMD | NEON | NEON/SVE | SSE/AVX | SSE/AVX | RVV |
 | Default `-march=` | `armv7-a` | `armv8-a` | `prescott` | `x86-64` | `rv64gcv_zba_zbb_zbs_zvbb` |
@@ -3763,9 +3790,11 @@ graph TD
     HANDHELD --> GENERIC_SYSTEM["generic_system.mk"]
     HANDHELD --> HANDHELD_SYSTEM_EXT["handheld_system_ext.mk"]
     HANDHELD --> AOSP_PRODUCT["aosp_product.mk"]
-    BASE_HANDHELD --> GENERIC["generic.mk"]
+    BASE_HANDHELD --> MULTIDISPLAY["multidisplay.mk"]
+    BASE_PHONE --> GENERIC["generic.mk"]
     GENERIC --> VERSIONS["versions.mk"]
     TABLET["tablet.mk"] --> HANDHELD
+    TABLET --> GENERIC
     SLIM["slim_handheld.mk"] --> GENERIC
 
     style PHONE fill:#ffecb3
@@ -4080,7 +4109,7 @@ bool MultihalSensors::setSensorsReportingImpl(SensorsTransport& st,
                        getQemuSensorNameByHandle(sensorHandle),
                        (enabled ? 1 : 0));
 
-    if (st.Send(buffer, len) < 0) {
+    if (st.Send(CONTROL, buffer, len) < 0) {
         ALOGE("%s:%d: send for %s failed", __func__, __LINE__, st.Name());
         return false;
     } else {
@@ -4104,7 +4133,7 @@ text messages like `acceleration:9.8:0.0:0.1`. The parsing is done in
 // Source: device/generic/goldfish/hals/sensors/multihal_sensors_qemu.cpp
 void MultihalSensors::parseQemuSensorEventLocked(QemuSensorsProtocolState* state) {
     char buf[256];
-    const int len = m_sensorsTransport->Receive(buf, sizeof(buf) - 1);
+    const int len = m_sensorsTransport->Receive(DATA, buf, sizeof(buf) - 1);
     // ...
     if (const char* values = testPrefix(buf, end, "acceleration", ':')) {
         if (sscanf(values, "%f:%f:%f",
@@ -4279,17 +4308,17 @@ PRODUCT_VENDOR_PROPERTIES += ro.telephony.default_network=33
 **Location:** `device/generic/goldfish/hals/fingerprint/`
 
 The fingerprint HAL is a relatively simple implementation that provides
-AIDL `IFingerprint` service. From `device/generic/goldfish/hals/fingerprint/hal.cpp`:
+AIDL `IFingerprint` service. From `device/generic/goldfish/hals/fingerprint/fingerprint_hal.cpp`:
 
 ```cpp
-// Source: device/generic/goldfish/hals/fingerprint/hal.cpp
+// Source: device/generic/goldfish/hals/fingerprint/fingerprint_hal.cpp
 constexpr char HW_COMPONENT_ID[] = "FingerprintSensor";
 constexpr char XW_VERSION[] = "ranchu/fingerprint/aidl";
 constexpr char FW_VERSION[] = "1";
 constexpr char SERIAL_NUMBER[] = "00000001";
 constexpr char SW_COMPONENT_ID[] = "matchingAlgorithm";
 
-ndk::ScopedAStatus Hal::getSensorProps(std::vector<SensorProps>* out) {
+ndk::ScopedAStatus FingerprintHal::getSensorProps(std::vector<SensorProps>* out) {
     // ...
     SensorProps props;
     props.commonProps.sensorId = 0;
@@ -4311,7 +4340,10 @@ scanner that triggers authentication events through this HAL.
 **Location:** `device/generic/goldfish/hals/hwc3/`
 
 The hardware composer HAL has the richest implementation of all the
-emulator HALs. It supports two composition modes:
+emulator HALs. It supports four composition backends, selected in
+`Device::getComposer` (`device/generic/goldfish/hals/hwc3/Device.cpp`):
+HostFrameComposer, GuestFrameComposer, ClientFrameComposer, and
+NoOpFrameComposer. The two main ones are:
 
 1. **HostFrameComposer** -- delegates composition to the host GPU, achieving
    hardware-accelerated rendering.
@@ -4359,7 +4391,7 @@ std::array<std::int8_t, 16> ToLibyuvColorMatrix(
             int indexIn = (4 * r) + c;
             int indexOut = (4 * c) + r;
             float clampedValue = std::max(-128.0f,
-                std::min(127.0f, in[indexIn] * 66.0f + 0.5f));
+                std::min(127.0f, in[indexIn] * 64.0f + 0.5f));
             out[indexOut] = static_cast<std::int8_t>(clampedValue);
         }
     }
@@ -4598,16 +4630,16 @@ These libraries work in pairs:
 ```makefile
 # Source: device/generic/goldfish/product/generic.mk
 PRODUCT_PACKAGES += \
-    android.hardware.media.c2@1.0-service-goldfish \
-    libcodec2_goldfish_vp8dec \
-    libcodec2_goldfish_vp9dec \
-    libcodec2_goldfish_avcdec \
-    libcodec2_goldfish_hevcdec
+    android.hardware.media.c2-service-goldfish
 ```
 
 The goldfish media codecs use the Codec2 framework and delegate video
 decoding to the host through QEMU, enabling hardware-accelerated video
-playback even inside the emulator.
+playback even inside the emulator. The service statically links the
+decoder libraries declared in
+`device/generic/goldfish/codecs/c2/Android.bp` --
+`libcodec2_goldfish_common`, `libcodec2_goldfish_avcdec`,
+`libcodec2_goldfish_hevcdec`, and `libcodec2_goldfish_vpxdec`.
 
 **Compliance HALs ("Hello, world!" implementations):**
 
@@ -4664,7 +4696,7 @@ byte-stream interface, similar to a Unix pipe but crossing the VM boundary.
 graph LR
     subgraph "Guest (Android)"
         GHAL["HAL Implementation"]
-        GLIB["libqemu_pipe"]
+        GLIB["libqemupipe.ranchu"]
         KPIPE["goldfish-pipe<br/>kernel driver"]
     end
 
@@ -4674,7 +4706,7 @@ graph LR
     end
 
     GHAL -->|"qemu_pipe_open_ns()"| GLIB
-    GLIB -->|"open /dev/goldfish_pipe"| KPIPE
+    GLIB -->|"open vsock, or<br/>/dev/goldfish_pipe_dprctd<br/>for graphics pipes"| KPIPE
     KPIPE -->|"MMIO / PIO"| HPIPE
     HPIPE -->|"service dispatch"| HSVC
 
@@ -4682,14 +4714,19 @@ graph LR
     style HPIPE fill:#fff3e0
 ```
 
-**Guest-side API:** The pipe is accessed through the `libqemu_pipe` library,
-which provides functions like:
+**Guest-side API:** The pipe is accessed through the `libqemupipe.ranchu`
+library (source at `hardware/google/gfxstream/guest/qemupipe/`), which
+provides functions like:
 
 - `qemu_pipe_open_ns(namespace, name, flags)` -- opens a named pipe to a
   specific host service
 
 - `qemu_pipe_write_fully(fd, data, size)` -- writes data to the pipe
 - `qemu_pipe_read_fully(fd, data, size)` -- reads data from the pipe
+
+Under the hood, non-graphics pipes now travel over a vsock socket; only
+graphics pipes still fall back to the deprecated character device, whose
+node is `/dev/goldfish_pipe_dprctd`.
 
 The `qemud` layer adds multiplexing on top of the raw pipe. Multiple logical
 channels can be opened through a single pipe connection. From
@@ -5184,16 +5221,20 @@ The camera subsystem supports multiple virtual camera backends:
    `FakeRotatingCamera` in `device/generic/goldfish/hals/camera/`).
 
 Camera data transfer uses the same qemud protocol, with a query-response
-pattern:
+pattern. The camera is selected when its channel is opened -- the guest opens
+a qemud channel named `camera:name=<camera>` -- and the subsequent queries
+carry no arguments:
 
 ```
-Guest -> Host: "list"          (list available cameras)
+Guest -> Host: "list"       (on the "camera" factory channel)
 Host -> Guest: "ok:<camera_list>"
-Guest -> Host: "connect:<id>"  (connect to a specific camera)
+Guest opens qemud channel "camera:name=<camera>"
+Guest -> Host: "connect"    (connect to the camera)
 Host -> Guest: "ok"
-Guest -> Host: "start:<params>" (start capture)
+Guest -> Host: "start"      (start capture)
 Host -> Guest: "ok"
-Host -> Guest: <frame_data>    (raw frame data)
+Host -> Guest: <frame_data> (raw frame data)
+Guest -> Host: "stop", then "disconnect" when done
 ```
 
 ### 60.3.10 Virtual Telephony
@@ -5524,9 +5565,14 @@ host services.
 
 ### 60.5.3 Kernel Module Configuration
 
-The modern Ranchu kernel uses loadable kernel modules for VirtIO devices. The
-Cuttlefish board configuration (which uses the same kernel) shows the required
-ramdisk modules:
+The modern Ranchu kernel uses loadable kernel modules for VirtIO devices.
+Goldfish keeps its own kernel board config with a short first-stage list
+(`device/generic/goldfish/board/kernel/arm64.mk` names just
+`virtio_dma_buf.ko`, `virtio_mmio.ko`, and `virtio-rng.ko`, plus a
+`RAMDISK_SYSTEM_KERNEL_MODULES` set, sourced from `prebuilts/qemu-kernel/`).
+The Cuttlefish board configuration -- which uses a separate prebuilt kernel
+tree under `kernel/prebuilts/` -- shows a fuller set of required ramdisk
+modules:
 
 ```makefile
 # Source: device/google/cuttlefish/shared/BoardConfig.mk
@@ -5586,7 +5632,10 @@ to long-term kernels (Wear OS on 6.6, the clockwork emulator and x86 TV on 6.1).
 The most interesting case is the **desktop** target: it reads its version and
 directory from `RELEASE_KERNEL_CUTTLEFISH_*` release-config variables and then
 sources its kernel and modules from a separate desktop-specific tree rather
-than the shared prebuilts:
+than the shared prebuilts. Note that the `filter` guards below match the
+non-AOSP product names `cf_x86_64_desktop` / `cf_arm64_desktop` exactly, so
+the AOSP `aosp_cf_x86_64_desktop` product falls through to the shared
+`kernel/prebuilts/` branch:
 
 ```makefile
 # Source: device/google/cuttlefish/shared/BoardConfig.mk
@@ -5708,6 +5757,7 @@ the Android 17 tree are:
 | `vsoc_arm64_pgagnostic/` | ARM64, page-size agnostic |
 | `vsoc_arm64_minidroid/` | Minimal ARM64 |
 | `vsoc_arm/` and `vsoc_arm_minidroid/` | 32-bit ARM |
+| `vsoc_x86/` | 32-bit x86 (go / TV / Wear products) |
 | `vsoc_riscv64/` | RISC-V 64-bit |
 | `vsoc_riscv64_minidroid/` | Minimal RISC-V |
 
@@ -5749,9 +5799,11 @@ AL_BINARY_TRANSLATION_MODE := ndk_translation_only
 UNCOMPRESS_CHROME_WEBVIEW = true
 ```
 
-The desktop target also pulls its kernel from a separate location rather than
-the shared `kernel/prebuilts/` tree (see section 60.5.4), reflecting that the
-desktop Android effort ships its own kernel branch.
+The kernel override in `shared/BoardConfig.mk` (see section 60.5.4) applies
+to the non-AOSP `cf_x86_64_desktop` / `cf_arm64_desktop` product names, which
+the desktop Android effort pairs with its own kernel branch; the AOSP
+`aosp_cf_x86_64_desktop` product does not match that filter and still uses
+the shared `kernel/prebuilts/` path.
 
 ### 60.6.4 Host Tooling
 
@@ -5767,7 +5819,7 @@ Cuttlefish includes an extensive suite of host-side tools under
 | `assemble_cvd/` | Assemble disk images and generate the VMM configuration |
 | `status/` and `restart_cvd/` | Query and restart a running instance |
 | `cvd_env/` | gRPC environment management |
-| `process_sandboxer/` | Wrap host daemons in seccomp sandboxes (new in Android 17) |
+| `process_sandboxer/` | Wrap host daemons in seccomp sandboxes |
 | `console_forwarder/` | Serial console forwarding |
 | `kernel_log_monitor/` | Kernel log monitoring |
 | `log_tee/` | Log tee-ing and forwarding |
@@ -5803,9 +5855,11 @@ For all host tools development please refer to
 https://github.com/google/android-cuttlefish/blob/main/docs/HostToolsMigration.md
 ```
 
-The older `acloud` launcher that earlier guides referenced is not part of this
-tree at all in Android 17 — local launches go directly through `launch_cvd`
-(from the host package) or through `cvd` from the external repository.
+The older `acloud` launcher that earlier guides referenced is no longer part
+of the `device/google/cuttlefish` tree (it lives separately under
+`tools/acloud/` and is not the recommended local-launch path) — local launches
+go directly through `launch_cvd` (from the host package) or through `cvd` from
+the external repository.
 
 ### 60.6.5 Board Configuration Differences
 
@@ -5922,7 +5976,8 @@ These modules must be available in first-stage init because:
 - `virtio-gpu.ko` -- required for display output
 - `virtio_net.ko` -- required for network access during provisioning
 - `virtio_input.ko` -- required for input events
-- `nd_virtio.ko` -- VirtIO NUMA distance support
+- `nd_virtio.ko` -- libnvdimm/virtio-pmem support (persistent-memory device
+  backing, paired with `virtio_pmem.ko`)
 - `virtio-rng.ko` -- random number generation (required for crypto init)
 
 **Transport modules:**
@@ -5980,10 +6035,10 @@ graph TB
         CF_GUEST2["Guest Android"]
 
         CF_LAUNCH --> CF_CVD
-        CF_LAUNCH --> CF_WEBRTC
-        CF_LAUNCH --> CF_MODEM
-        CF_LAUNCH --> CF_GNSS
-        CF_LAUNCH --> CF_LOG
+        CF_CVD --> CF_WEBRTC
+        CF_CVD --> CF_MODEM
+        CF_CVD --> CF_GNSS
+        CF_CVD --> CF_LOG
         CF_CVD --> CF_GUEST2
     end
 
@@ -6021,7 +6076,7 @@ GUI features of the Android Studio emulator.
 
 Cuttlefish's default VMM is **crosvm** (Chrome OS Virtual Machine monitor),
 a Rust-based VMM originally developed for Chrome OS. The VM manager code at
-`device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp` (1076 lines)
+`device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp` (1093 lines)
 constructs the crosvm command line with all virtio device parameters.
 
 #### Virtio Device Map
@@ -6038,7 +6093,7 @@ graph TB
         K --> VB["virtio-blk.ko"]
         K --> VS["vsock.ko"]
         K --> VR["virtio-rng.ko"]
-        K --> VC["virtio-console.ko<br/>18 HVC ports"]
+        K --> VC["virtio-console.ko<br/>20 HVC ports"]
     end
 
     subgraph Host["Cuttlefish Host"]
@@ -6077,7 +6132,7 @@ Network interfaces are assigned sub-addresses on PCI slot 1:
 |---|---|---|---|
 | Mobile | 00:01.1 | `cvd-mtap-NN` | Cellular data simulation |
 | Ethernet | 00:01.2 | `cvd-etap-NN` | Wired network |
-| WiFi | 00:01.3 | `cvd-wtap-NN` | Wireless (optional) |
+| WiFi | auto-assigned | `cvd-wtap-NN` | Wireless (only when `mac80211_hwsim` is disabled) |
 
 ### 60.6.11 Vhost-User Device Model
 
@@ -6109,9 +6164,9 @@ Supported vhost-user device types:
 
 | Type | Backend Process | Socket Path | Purpose |
 |---|---|---|---|
-| `gpu` | vhost-user-gpu | `gpu_socket_path()` | Graphics rendering |
+| `gpu` | vhost-user-gpu | `PerInstanceInternalUdsPath("vhost-user-gpu-socket")` | Graphics rendering |
 | `input` | vhost_user_input (Rust) | `keyboard_socket_path()` etc. | Input events |
-| `vsock` | vhost-device-vsock | `vhost_user_vsock_path()` | Host-guest communication |
+| `vsock` | vhost-device-vsock | `$TMPDIR/vsock_<cid>_<uid>/vhost.socket` | Host-guest communication |
 | `block` | vhost-user-block | disk socket | Storage (disk 2 only) |
 | `mac80211-hwsim` | WiFi simulator | hwsim socket | WiFi radio simulation |
 
@@ -6240,7 +6295,7 @@ graph LR
     subgraph Guest["Guest VM"]
         RMIL["RIL<br/>Mobile Data"] --> VN1["virtio-net<br/>00:01.1"]
         ETH["EthernetManager"] --> VN2["virtio-net<br/>00:01.2"]
-        WIFI["WiFi<br/>mac80211_hwsim"] --> VN3["virtio-net<br/>00:01.3"]
+        WIFI["WiFi<br/>TAP mode"] --> VN3["virtio-net<br/>auto PCI"]
     end
 
     subgraph Host["Host"]
@@ -6317,11 +6372,14 @@ device/google/cuttlefish/guest/hals/
 └── vulkan/          # Graphics support
 ```
 
-Two earlier entries are gone: there is no longer a dedicated `ril/` HAL
-directory (telephony goes through the host `modem_simulator` over an HVC port)
-nor a `sensors/` directory here (the sensors bridge is driven from the host
+One entry is newly gone in this release: the dedicated `ril/` HAL directory
+was removed when Cuttlefish switched to goldfish's shared radio HAL, which
+reaches the host `modem_simulator` over the TCP/vsock ports advertised in
+`ro.boot.modem_simulator_ports`. There is also no `sensors/` directory here,
+but that is much older news -- the Cuttlefish guest sensors HAL was deleted
+back in 2019, and the sensors bridge is driven from the host
 `sensors_simulator` over the `/dev/hvc18` and `/dev/hvc19` ports described
-above). The Android 17 additions of note are the **`npu/`** scheduling HAL
+above. The Android 17 additions of note are the **`npu/`** scheduling HAL
 and the **`virtio_media/`** provider.
 
 Each guest HAL typically reads/writes a virtio-console device (`/dev/hvcN`)
@@ -6477,7 +6535,7 @@ graph LR
         VM_STATE["VM State<br/>(CPU, Memory)"]
         DISK_STATE["Disk State<br/>(system, data)"]
         DEV_STATE["Device State<br/>(GPU, audio)"]
-        SNAP_FILE["snapshot.pb<br/>+ ram.bin<br/>+ textures/"]
+        SNAP_FILE["snapshot.pb<br/>+ ram.bin<br/>+ textures.bin"]
     end
 
     VM_STATE --> SNAP_FILE
@@ -6485,7 +6543,7 @@ graph LR
     DEV_STATE --> SNAP_FILE
 
     subgraph "Snapshot Load"
-        SNAP_FILE2["snapshot.pb<br/>+ ram.bin<br/>+ textures/"]
+        SNAP_FILE2["snapshot.pb<br/>+ ram.bin<br/>+ textures.bin"]
         RESTORED["Restored VM"]
     end
 
@@ -6512,7 +6570,7 @@ typically at `~/.android/avd/<name>.avd/snapshots/`.
 
 - `snapshot.pb` -- Protobuf metadata (machine configuration, timestamp)
 - `ram.bin` -- Complete guest RAM contents
-- `textures/` -- GPU texture and buffer data
+- `textures.bin` -- GPU texture and buffer data
 - `<disk>-snapshot.img` -- Copy-on-write disk overlays
 
 ### 60.7.2 Screen Recording
@@ -6790,10 +6848,12 @@ the host launcher tooling out of the AOSP tree.
 
 ### 60.8.1 The Desktop Product Target
 
-Android 17 adds `aosp_cf_x86_64_desktop` (and an ARM64 sibling) to the
-Cuttlefish product catalog. Unlike the handheld targets, the desktop product
-inherits a desktop-specific vendor stack and pulls its kernel from a separate
-tree (covered in sections 60.5.4 and 60.6.3). It is the virtual reference for
+Android 17 adds `aosp_cf_x86_64_desktop` to the Cuttlefish product catalog
+(the board config also carries a kernel branch for a non-AOSP
+`cf_arm64_desktop` product name, but no ARM64 desktop product exists in
+AOSP). Unlike the handheld targets, the desktop product inherits a
+desktop-specific vendor stack (covered in sections 60.5.4 and 60.6.3). It is
+the virtual reference for
 the desktop Android form factor, exercising large-screen window management,
 binary translation in `ndk_translation_only` mode, and an uncompressed Chrome
 WebView. The product is registered in `device/google/cuttlefish/AndroidProducts.mk`
@@ -6869,10 +6929,11 @@ sequenceDiagram
 
 A recurring concern with Cuttlefish is that the host runs a fleet of helper
 daemons (the VMM, modem simulator, GNSS proxy, secure_env, and so on) with
-broad host privileges. Android 17 introduces
-`device/google/cuttlefish/host/commands/process_sandboxer/`, which wraps those
-host processes in seccomp-based sandboxes built on Google's sandboxed-api /
-sandbox2 library.
+broad host privileges. The answer is
+`device/google/cuttlefish/host/commands/process_sandboxer/` (introduced in
+early 2024, with per-executable policy coverage expanded since), which wraps
+those host processes in seccomp-based sandboxes built on Google's
+sandboxed-api / sandbox2 library.
 
 ```cpp
 // Source: device/google/cuttlefish/host/commands/process_sandboxer/main.cpp
@@ -6940,8 +7001,9 @@ HOME=$PWD ./bin/stop_cvd
 
 The richer `cvd` lifecycle manager and the installable Debian packages
 (`cuttlefish-base`, `cuttlefish-user`) come from the external repository. The
-older `acloud` launcher referenced by pre-17 guides is not present in this tree
-at all.
+older `acloud` launcher referenced by pre-17 guides no longer lives in the
+`device/google/cuttlefish` tree; it survives separately under `tools/acloud/`
+but is not the recommended local-launch path.
 
 ---
 
@@ -7205,12 +7267,13 @@ sdk_phone64_x86_64.mk
   -> phone.mk
        -> handheld.mk
             -> base_handheld.mk
-                 -> generic.mk
-                      -> versions.mk
+                 -> multidisplay.mk
             -> generic_system.mk
             -> handheld_system_ext.mk
             -> aosp_product.mk
        -> base_phone.mk
+            -> generic.mk
+                 -> versions.mk
             -> phone_overlays.mk
 ```
 
@@ -7332,8 +7395,9 @@ m -j$(nproc)
 ```
 
 The slim variant (`device/generic/goldfish/product/slim_handheld.mk`)
-inherits from `generic.mk` directly without the full handheld product
-stack, resulting in a smaller system image that boots faster.
+inherits `base_handheld.mk` plus `generic.mk` but skips `handheld.mk`'s
+`handheld_system_ext.mk` and `aosp_product.mk` layers, resulting in a
+smaller system image that boots faster.
 
 ### 60.9.13 Running CTS on the Emulator
 
@@ -7432,8 +7496,8 @@ architecture:
    rich console commands.
 
 8. **Android 17 Cuttlefish changes** -- A new `aosp_cf_x86_64_desktop` product,
-   the guest-side `vkms_controller` display utility, host daemons wrapped in
-   per-process seccomp sandboxes via `process_sandboxer`, a new Rust NPU
+   the guest-side `vkms_controller` display utility, expanded per-executable
+   seccomp sandboxing of host daemons via `process_sandboxer`, a new Rust NPU
    scheduling HAL, a 20-port HVC map (sensors split into control/data), and the
    migration of the `cvd` launcher and Debian packaging to the external
    `github.com/google/android-cuttlefish` repository.
@@ -7460,7 +7524,7 @@ physical device or in the emulator.
 | `device/generic/goldfish/hals/camera/qemu_channel.cpp` | Camera QEMU pipe communication |
 | `device/generic/goldfish/hals/gnss/GnssHwConn.cpp` | GNSS hardware connection |
 | `device/generic/goldfish/hals/radio/RadioModem.cpp` | Radio modem HAL |
-| `device/generic/goldfish/hals/fingerprint/hal.cpp` | Fingerprint HAL |
+| `device/generic/goldfish/hals/fingerprint/fingerprint_hal.cpp` | Fingerprint HAL |
 | `device/generic/goldfish/hals/hwc3/HostFrameComposer.cpp` | Host GPU composition |
 | `device/generic/goldfish/hals/hwc3/GuestFrameComposer.cpp` | Guest DRM composition |
 | `device/generic/goldfish/hals/gralloc/allocator.cpp` | Graphics buffer allocator |
@@ -7473,7 +7537,7 @@ physical device or in the emulator.
 | `device/google/cuttlefish/AndroidProducts.mk` | Cuttlefish product catalog (incl. desktop) |
 | `device/google/cuttlefish/vsoc_x86_64_only/desktop/aosp_cf.mk` | Desktop product (new in 17) |
 | `device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp` | crosvm command-line construction, HVC map |
-| `device/google/cuttlefish/host/commands/process_sandboxer/main.cpp` | Host process sandboxer (new in 17) |
+| `device/google/cuttlefish/host/commands/process_sandboxer/main.cpp` | Host process sandboxer |
 | `device/google/cuttlefish/guest/commands/vkms_controller/main.cpp` | Guest VKMS display controller (new in 17) |
 | `device/google/cuttlefish/guest/hals/npu/main.rs` | Guest NPU scheduling HAL (new in 17) |
 | `device/google/cuttlefish/shared/device.mk` | Shared device config (installs vkms_controller) |
@@ -7490,7 +7554,7 @@ Framework** -- a system-server subsystem centered on `DevicePolicyManagerService
 PIN", "block the camera in the work profile") into concrete, enforced changes
 across the Android stack.  This chapter traces every major path through the real
 AOSP source code, from the XML metadata that declares an admin component, through
-the 25,000-line DPMS implementation, into the policy-engine resolution layer and
+the roughly 24,000-line DPMS implementation, into the policy-engine resolution layer and
 out to the individual subsystem enforcers that make each policy stick.
 
 ---
@@ -7545,13 +7609,11 @@ graph TB
     end
 
     subgraph "COPE"
-        COPE_DO[Device Owner DPC]
         COPE_PERSONAL["Personal Profile<br/>User 0"]
         COPE_WORK["Work Profile<br/>User 10"]
-        COPE_PO[Profile Owner DPC]
-        COPE_DO --> COPE_PERSONAL
+        COPE_PO["Profile Owner DPC<br/>(org-owned)"]
         COPE_PO --> COPE_WORK
-        COPE_DO -. "org-owned<br/>restrictions" .-> COPE_PERSONAL
+        COPE_PO -. "org-owned<br/>restrictions" .-> COPE_PERSONAL
     end
 ```
 
@@ -7601,11 +7663,11 @@ import static com.android.server.devicepolicy.DevicePolicyStatsLog
 
 A Profile Owner manages a single Android user (typically a managed profile).
 Unlike a Device Owner, multiple Profile Owners can coexist on a device (one
-per user).  The `Owners` class stores them in a `SparseArray`:
+per user).  The `Owners` class stores them in an `ArrayMap` keyed by userId:
 
 ```
-// Owners.java (within OwnersData)
-// mData.mProfileOwners is SparseArray<OwnerInfo> keyed by userId
+// OwnersData.java
+// mData.mProfileOwners is ArrayMap<Integer, OwnerInfo> keyed by userId
 ```
 
 When the `Owners` class loads configuration from disk, it pushes owner
@@ -7628,10 +7690,13 @@ void load() {
 
 ### 61.1.5  COPE (Corporate-Owned, Personally-Enabled)
 
-COPE is a hybrid mode introduced in Android 11.  The device is corporate-owned
-(a Device Owner exists), but the user also has a personal profile.  A Profile
-Owner runs in the work profile, and the Device Owner can impose certain
-restrictions on the personal side.
+COPE is a hybrid mode introduced in Android 11.  The device is corporate-owned,
+but there is **no Device Owner**: a Profile Owner runs in the work profile and
+is marked as the "profile owner on an organization-owned device".  That marking
+is what grants it a limited set of powers over the personal side (DPMS reports
+the COPE management mode only when no Device Owner exists and
+`isProfileOwnerOfOrganizationOwnedDevice()` is true for the work profile's
+owner).
 
 The COPE relationship is encoded in the provisioning parameters:
 
@@ -7674,7 +7739,7 @@ flowchart TD
     Q1 -- "Organization" --> Q2
     Q1 -- "Employee" --> Q3
 
-    Q2 -- "Yes" --> COPE["COPE Mode<br/>DO + PO in work profile"]
+    Q2 -- "Yes" --> COPE["COPE Mode<br/>Org-owned PO in work profile"]
     Q2 -- "No" --> FULLY["Fully Managed<br/>Device Owner only"]
 
     Q3 -- "Yes" --> BYOD["Work Profile / BYOD<br/>PO in managed profile"]
@@ -7725,8 +7790,8 @@ Android Version | Key Enterprise Features
 7.0 (Nougat)    | Network logging, security logging, DPC transfer
 8.0 (Oreo)      | Ephemeral users, mandatory backup, companion DPC
 9.0 (Pie)       | Compliance, QR provisioning improvements
-10              | COPE (organization-owned managed profile)
-11              | Personal app suspension, enhanced COPE
+10              | Work profile provisioning improvements, manual system update installation
+11              | COPE (organization-owned managed profile), personal app suspension
 12              | Compliance acknowledgement, privacy dashboard
 13              | Role-based management, fine-grained permissions
 14              | DevicePolicyEngine, multi-admin resolution
@@ -7787,14 +7852,19 @@ classDiagram
     }
 
     class DevicePolicyManagerService {
-        -Owners mOwners
+        -DeviceAdmins mDeviceAdmins
         -DevicePolicyEngine mDevicePolicyEngine
-        -SparseArray~DevicePolicyData~ mUserData
         -SecurityLogMonitor mSecurityLogMonitor
         -NetworkLogger mNetworkLogger
         -CertificateMonitor mCertificateMonitor
         +systemReady()
-        +onBootPhase()
+    }
+
+    class DeviceAdmins {
+        -Owners mOwners
+        -SparseArray~DevicePolicyData~ mUserData
+        +getOwners()
+        +getUserData()
     }
 
     class DevicePolicyManager {
@@ -7821,7 +7891,7 @@ classDiagram
 
     class ActiveAdmin {
         +DeviceAdminInfo info
-        +PasswordPolicy passwordPolicy
+        +PasswordPolicy mPasswordPolicy
         +boolean disableCamera
         +boolean disableScreenCapture
         +int disabledKeyguardFeatures
@@ -7830,7 +7900,8 @@ classDiagram
     IDevicePolicyManager <|.. DevicePolicyManagerService
     DevicePolicyManager --> IDevicePolicyManager : Binder proxy
     DevicePolicyManagerService --> DevicePolicyEngine
-    DevicePolicyManagerService --> Owners
+    DevicePolicyManagerService --> DeviceAdmins
+    DeviceAdmins --> Owners
     DevicePolicyManagerService --> ActiveAdmin
 ```
 
@@ -7854,7 +7925,7 @@ and how they relate:
 ```mermaid
 graph TB
     subgraph "DevicePolicyManagerService"
-        CORE["Core DPMS Logic<br/>25,000+ lines"]
+        CORE["Core DPMS Logic<br/>~24,000 lines"]
 
         subgraph "State Management"
             OWNERS["Owners<br/>DO/PO tracking"]
@@ -7864,7 +7935,7 @@ graph TB
 
         subgraph "Policy Engine"
             ENGINE[DevicePolicyEngine]
-            PDEF["PolicyDefinition<br/>250+ policies"]
+            PDEF["PolicyDefinition<br/>~34 policies + user restrictions"]
             RESOLVE["Resolution Mechanisms<br/>MostRestrictive / TopPriority"]
             ENFORCE["PolicyEnforcerCallbacks<br/>subsystem enforcement"]
         end
@@ -7921,13 +7992,16 @@ sequenceDiagram
     SS->>DPMS: new DevicePolicyManagerService(context)
     DPMS->>Owners: new Owners(...)
     DPMS->>Engine: new DevicePolicyEngine(...)
+    DPMS->>DPMS: loadOwners()
+    Note over DPMS: Constructor also registers the broadcast receivers
 
     SS->>DPMS: onBootPhase(PHASE_LOCK_SETTINGS_READY)
-    DPMS->>DPMS: loadOwners()
+    Note over DPMS: systemReady(phase) dispatches every phase
+    DPMS->>DPMS: onLockSettingsReady() + loadAdminDataAsync()
 
     SS->>DPMS: onBootPhase(PHASE_ACTIVITY_MANAGER_READY)
-    DPMS->>DPMS: systemReady()
-    Note over DPMS: Register broadcast receivers, load policies for all users
+    DPMS->>Engine: reapplyAllPoliciesOnBootLocked()
+    DPMS->>DPMS: migrate pre-engine policies if needed
 
     SS->>DPMS: onBootPhase(PHASE_BOOT_COMPLETED)
     DPMS->>DPMS: factoryResetIfDelayedEarlier()
@@ -7938,7 +8012,7 @@ Upon `PHASE_BOOT_COMPLETED`, the service handles any delayed factory resets
 and ensures the Device Owner user is started:
 
 ```java
-// DevicePolicyManagerService.java, onBootPhase()
+// DevicePolicyManagerService.java, systemReady(int phase)
 case SystemService.PHASE_BOOT_COMPLETED:
     // Ideally it should be done earlier, but currently it relies on
     // RecoverySystem, which would hang on earlier phases
@@ -8010,10 +8084,10 @@ policy state for that admin:
 // frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/ActiveAdmin.java
 class ActiveAdmin {
     DeviceAdminInfo info;
-    PasswordPolicy passwordPolicy;
+    PasswordPolicy mPasswordPolicy;
     boolean disableCamera;
     boolean disableScreenCapture;
-    boolean disableCallerIdAccess;
+    boolean disableCallerId;
     boolean disableContactsSearch;
     boolean disableBluetoothContactSharing;
     int disabledKeyguardFeatures;
@@ -8137,19 +8211,20 @@ conflicting values from multiple admins are reconciled:
 ```java
 // frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/
 //   PolicyDefinition.java
-private static final MostRestrictive<Boolean> FALSE_MORE_RESTRICTIVE =
+public static final MostRestrictive<Boolean> FALSE_MORE_RESTRICTIVE =
     new MostRestrictive<>(
         List.of(new BooleanPolicyValue(false), new BooleanPolicyValue(true)));
 
-private static final MostRestrictive<Boolean> TRUE_MORE_RESTRICTIVE =
+static final MostRestrictive<Boolean> TRUE_MORE_RESTRICTIVE =
     new MostRestrictive<>(
         List.of(new BooleanPolicyValue(true), new BooleanPolicyValue(false)));
 ```
 
 Every resolution mechanism subclasses the abstract `ResolutionMechanism<V>`.
-The Android 17 tree ships seven concrete mechanisms (all in the
-`com.android.server.devicepolicy` package), with `LeastRecent` and `ListUnion`
-added in this release:
+The Android 17 tree ships eight subclasses (all in the
+`com.android.server.devicepolicy` package) -- seven concrete plus the abstract
+`ListUnion<T>`, which is instantiated through its STRING and PACKAGE variants --
+with `LeastRecent` and `ListUnion` added in this release:
 
 | Mechanism | Source file | Description | Example Policy |
 |-----------|-------------|-------------|----------------|
@@ -8158,8 +8233,9 @@ added in this release:
 | `MostRecent<V>` | `MostRecent.java` | The most recently set value wins | Per-admin settings without a strict ordering |
 | `LeastRecent<V>` | `LeastRecent.java` | The earliest set value wins (new in 17) | First-writer-wins policies |
 | `PackageSetUnion` | `PackageSetUnion.java` | Union of all admins' package sets | User-control disabled packages |
-| `ListUnion<T>` | `ListUnion.java` | Union of all admins' list values (new in 17) | Permitted-input-method style lists |
+| `ListUnion<T>` | `ListUnion.java` | Union of all admins' list values (abstract, new in 17) | Permitted-input-method style lists |
 | `FlagUnion` | `FlagUnion.java` | Bitwise OR of all admins' integer flags | Keyguard feature disable flags |
+| `StringSetIntersection` | `StringSetIntersection.java` | Intersection of all admins' string sets | Cross-profile widget providers |
 
 Example: Security logging is resolved with `TRUE_MORE_RESTRICTIVE`, meaning
 if any admin enables security logging, it stays enabled:
@@ -8180,11 +8256,11 @@ Each `PolicyDefinition` carries flags that control its scope and behavior:
 
 ```java
 // PolicyDefinition.java
-private static final int POLICY_FLAG_NONE = 0;
-private static final int POLICY_FLAG_GLOBAL_ONLY_POLICY = 1;
-private static final int POLICY_FLAG_LOCAL_ONLY_POLICY = 1 << 1;
-private static final int POLICY_FLAG_INHERITABLE = 1 << 2;
-private static final int POLICY_FLAG_NON_COEXISTABLE_POLICY = 1 << 3;
+static final int POLICY_FLAG_NONE = 0;
+public static final int POLICY_FLAG_GLOBAL_ONLY_POLICY = 1;
+public static final int POLICY_FLAG_LOCAL_ONLY_POLICY = 1 << 1;
+static final int POLICY_FLAG_INHERITABLE = 1 << 2;
+static final int POLICY_FLAG_NON_COEXISTABLE_POLICY = 1 << 3;
 static final int POLICY_FLAG_USER_RESTRICTION_POLICY = 1 << 4;
 static final int POLICY_FLAG_SKIP_ENFORCEMENT_IF_UNCHANGED = 1 << 5;
 private static final int POLICY_FLAG_PACKAGE_POLICY = 1 << 6;
@@ -8197,8 +8273,9 @@ private static final int POLICY_FLAG_PACKAGE_POLICY = 1 << 6;
 - **USER_RESTRICTION**: marks user-restriction policies for special handling.
 - **SKIP_ENFORCEMENT_IF_UNCHANGED**: skips the enforcer callback when the
   resolved value did not change, avoiding redundant downstream work.
-- **PACKAGE_POLICY**: marks policies keyed by a package identifier so the
-  engine can clean them up when the package is removed.
+- **PACKAGE_POLICY**: marks package-scoped policies whose enforcement callback
+  only takes effect on installed packages; the callback is re-applied when the
+  package is (re)installed.
 
 ### 61.2.10  EnforcingAdmin: Admin Identity in the Policy Engine
 
@@ -8475,7 +8552,9 @@ in-process cache for common queries:
 ```java
 // frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/
 //   DevicePolicyCacheImpl.java
-// Caches: screen capture disabled, camera disabled, password complexity, etc.
+// Caches: screen-capture-disallowed users, password quality, permission
+// policy, launcher shortcut overrides, sensors-permission grant, and
+// content protection policy
 ```
 
 When ownership changes, the cache is explicitly invalidated:
@@ -8613,13 +8692,14 @@ status codes reveal what can go wrong:
 ```java
 // DevicePolicyManager.java
 public static final int STATUS_OK = 0;
-public static final int STATUS_ACCOUNTS_NOT_EMPTY = 3;
-public static final int STATUS_CANNOT_ADD_MANAGED_PROFILE = 7;
 public static final int STATUS_HAS_DEVICE_OWNER = 1;
 public static final int STATUS_USER_HAS_PROFILE_OWNER = 2;
+public static final int STATUS_USER_NOT_RUNNING = 3;
 public static final int STATUS_USER_SETUP_COMPLETED = 4;
-public static final int STATUS_MANAGED_USERS_NOT_SUPPORTED = 8;
-public static final int STATUS_NOT_SYSTEM_USER = 9;
+public static final int STATUS_ACCOUNTS_NOT_EMPTY = 6;
+public static final int STATUS_NOT_SYSTEM_USER = 7;
+public static final int STATUS_MANAGED_USERS_NOT_SUPPORTED = 9;
+public static final int STATUS_CANNOT_ADD_MANAGED_PROFILE = 11;
 // ... and more
 ```
 
@@ -8654,8 +8734,8 @@ graph LR
     end
 
     subgraph "Cross-Profile Filter"
-        F1["ACTION_DIAL<br/>FLAG_PARENT_CAN_ACCESS_MANAGED"]
-        F2["ACTION_VIEW (http)<br/>FLAG_MANAGED_CAN_ACCESS_PARENT"]
+        F1["ACTION_DIAL<br/>FLAG_MANAGED_CAN_ACCESS_PARENT"]
+        F2["ACTION_VIEW (http)<br/>FLAG_PARENT_CAN_ACCESS_MANAGED"]
     end
 
     subgraph "Work Profile"
@@ -8959,14 +9039,18 @@ The complexity bands map to concrete requirements:
 | Complexity | PIN | Pattern | Password |
 |-----------|-----|---------|----------|
 | LOW | 4+ digits | any | 4+ chars |
-| MEDIUM | 4+ digits, no repeating/ordered | any | 4+ chars |
-| HIGH | 8+ digits, no repeating/ordered | N/A | 6+ chars with letter+digit |
+| MEDIUM | 4+ digits, no repeating/ordered | N/A | 4+ chars |
+| HIGH | 8+ digits, no repeating/ordered | N/A | 6+ chars incl. a non-numeric char |
+
+A pattern only ever satisfies LOW (`PasswordMetrics` allows the pattern
+credential type in the LOW and NONE buckets only), and the HIGH minimum length
+is 6 when the credential contains any non-numeric character, 8 otherwise.
 
 The `ActiveAdmin` class stores the password policy in a dedicated object:
 
 ```java
 // ActiveAdmin.java
-PasswordPolicy passwordPolicy = new PasswordPolicy();
+PasswordPolicy mPasswordPolicy = new PasswordPolicy();
 // Fields include: quality, length, uppercase, lowercase,
 // letters, numeric, symbols, nonletter, history length
 ```
@@ -9062,8 +9146,8 @@ graph TD
     A1[Admin A: camera=disabled] --> ENGINE["Policy Engine<br/>MostRestrictive"]
     A2[Admin B: camera=enabled] --> ENGINE
     ENGINE --> RESULT[Resolved: camera=DISABLED]
-    RESULT --> CACHE[DevicePolicyCache]
-    CACHE --> CAMERA[CameraService checks cache]
+    RESULT --> RESTR["Applied as UserManager.DISALLOW_CAMERA<br/>via PolicyEnforcerCallbacks.setUserRestriction"]
+    RESTR --> CAMERA["Camera stack queries DPMS<br/>getCameraDisabled()"]
 ```
 
 ### 61.4.9  Screen Capture Disable
@@ -9116,8 +9200,12 @@ public static final int WIPE_SILENTLY = 0x0008;
 The DPMS implementation delegates to a `FactoryResetter`:
 
 ```java
-// DevicePolicyManagerService.java (Injector inner class)
-.build().factoryReset();
+// DevicePolicyManagerService.java, factoryResetIfDelayedEarlier()
+FactoryResetter factoryResetter = FactoryResetter.newBuilder(mContext)
+        .setReason(policy.mFactoryResetReason).setForce(true)
+        // ... wipe flags from the persisted DevicePolicyData
+        .build();
+factoryResetter.factoryReset();
 ```
 
 Factory reset can be delayed if the system is not fully booted:
@@ -9309,7 +9397,7 @@ The policy engine handles user restrictions specially:
 
 ```java
 // PolicyDefinition.java
-private static final int POLICY_FLAG_USER_RESTRICTION_POLICY = 1 << 4;
+static final int POLICY_FLAG_USER_RESTRICTION_POLICY = 1 << 4;
 // "Add this flag to any policy that is a user restriction, the reason for
 //  this is that there are some special APIs to handle user restriction
 //  policies and this is the way we can identify them."
@@ -9563,15 +9651,23 @@ graph TB
 
     subgraph "DevicePolicyManagerService"
         DPMS_PROV["provisionFullyManagedDevice()"]
+        DPMS_SHELL["setActiveAdmin() +<br/>setDeviceOwner()"]
     end
 
     QR --> MP
     NFC --> MP
     ZTE --> MP
-    ADB --> DPMS_PROV
+    ADB --> DPMS_SHELL
     CLOUD --> MP
     MP --> DPMS_PROV
 ```
+
+The `dpm set-device-owner` shell command does not go through
+`provisionFullyManagedDevice()` -- its handler in
+`DevicePolicyManagerServiceShellCommand.runSetDeviceOwner()` calls
+`setActiveAdmin()` followed by `setDeviceOwner()` directly.
+`provisionFullyManagedDevice()` is the entry point used by the
+ManagedProvisioning system app.
 
 The provisioning intents:
 
@@ -9602,9 +9698,10 @@ A Device Owner has the broadest set of capabilities:
 
 ### 61.6.4  COPE Architecture
 
-COPE combines Device Owner authority on the personal side with Profile Owner
-authority in the work profile.  The key distinction is the
-`mOrganizationOwnedProvisioning` flag:
+COPE has no Device Owner.  Instead, the work-profile Profile Owner is flagged
+as the profile owner of an organization-owned device, which grants it a limited
+set of device-wide powers over the personal side.  The key distinction at
+provisioning time is the `mOrganizationOwnedProvisioning` flag:
 
 ```java
 // ManagedProfileProvisioningParams.java
@@ -9693,9 +9790,10 @@ Four update strategies:
 - **Freeze periods** -- block updates entirely during specified date ranges.
 
 ```java
-// DevicePolicyManager.java
-// FreezePeriod allows blocking updates (e.g., during holiday sales)
-import android.app.admin.FreezePeriod;
+// frameworks/base/core/java/android/app/admin/FreezePeriod.java
+// A FreezePeriod is a repeating date range during which updates are
+// blocked (e.g., during holiday sales); the admin installs them via
+// SystemUpdatePolicy.setFreezePeriods(List<FreezePeriod>)
 ```
 
 ### 61.6.8  Always-On VPN
@@ -9768,10 +9866,10 @@ The flags control direction:
 ```java
 // DevicePolicyManager.java
 public static final int FLAG_PARENT_CAN_ACCESS_MANAGED = 0x0001;
-// Personal apps can resolve intents to work apps
+// Intents sent from the work profile can resolve to personal (parent) apps
 
 public static final int FLAG_MANAGED_CAN_ACCESS_PARENT = 0x0002;
-// Work apps can resolve intents to personal apps
+// Intents sent from the personal (parent) profile can resolve to work apps
 ```
 
 ### 61.7.3  Default Cross-Profile Intent Filters
@@ -9848,7 +9946,7 @@ graph LR
     end
 
     subgraph "Policy Controls"
-        CID["disableCallerIdAccess<br/>(per admin)"]
+        CID["disableCallerId<br/>(per admin)"]
         CS["disableContactsSearch<br/>(per admin)"]
         BCS["disableBluetoothContactSharing<br/>(per admin)"]
     end
@@ -9993,17 +10091,19 @@ sequenceDiagram
     participant DPMS as DevicePolicyManagerService
     participant WA as Work App
 
+    Note over DPMS,PMS: At policy-set time
+    DPMS->>PMS: addCrossProfileIntentFilter(filter,<br/>sourceUser, targetUser)
+    PMS->>PMS: Store in per-user<br/>CrossProfileIntentResolver
+
+    Note over PA,PMS: At startActivity time -- PMS never calls DPMS
     PA->>AMS: startActivity(intent)
     AMS->>PMS: resolveActivity(intent, userId=0)
 
     PMS->>PMS: Check local resolvers<br/>(personal profile)
 
-    PMS->>DPMS: getCrossProfileIntentFilters()
-    DPMS-->>PMS: List of IntentFilters
+    PMS->>PMS: CrossProfileIntentResolverEngine<br/>matches stored filters
 
-    PMS->>PMS: Match intent against<br/>cross-profile filters
-
-    alt Match found with FLAG_MANAGED_CAN_ACCESS_PARENT
+    alt Filter added with FLAG_MANAGED_CAN_ACCESS_PARENT
         PMS->>PMS: Resolve in work profile (userId=10)
         PMS-->>AMS: ResolveInfo (work app)
         AMS->>WA: Start activity in work profile
@@ -10458,7 +10558,8 @@ public static final int PRIVATE_DNS_MODE_PROVIDER_HOSTNAME = 3;
 public static final int PRIVATE_DNS_MODE_UNKNOWN = 0;
 
 public static final int PRIVATE_DNS_SET_NO_ERROR = 0;
-public static final int PRIVATE_DNS_SET_ERROR_FAILURE_SETTING = 1;
+public static final int PRIVATE_DNS_SET_ERROR_HOST_NOT_SERVING = 1;
+public static final int PRIVATE_DNS_SET_ERROR_FAILURE_SETTING = 2;
 ```
 
 ### 61.8.19  Preferential Network Service
@@ -10702,7 +10803,7 @@ graph LR
     G2_HOOK -- "addUserRestrictionGlobally<br/>(system:, DISALLOW_CELLULAR_2G)" --> DPMS
     USB_HOOK -- "enableUsbDataSignal<br/>(keyguard-gated)" --> USB["IUsbManagerInternal<br/>USB data signaling"]
 
-    DPMS --> ENGINE["DevicePolicyEngine<br/>(MostRestrictive resolve)"]
+    DPMS --> ENGINE["DevicePolicyEngine<br/>MostRestrictive for user restrictions<br/>TopPriority for MEMORY_TAGGING"]
 ```
 
 A subtle but important rule: a DPC cannot silently undo AAPM.  Because the user
@@ -11006,18 +11107,25 @@ adb shell cat /data/system/users/10/device_policies.xml
 # List packages in the work profile
 adb shell pm list packages --user 10
 
-# Check cross-profile intent filters
-adb shell dumpsys package intent-filter-verifications
+# Check cross-profile intent filters (search the full package dump;
+# there is no dedicated dumpsys argument for them)
+adb shell dumpsys package | grep -A 5 "CrossProfileIntentFilter"
 
-# Toggle work mode
-adb shell am broadcast -a android.intent.action.MANAGED_PROFILE_UNAVAILABLE \
-    --user 0
+# Toggle work mode: quiet mode is requested through
+# UserManager.requestQuietModeEnabled() (normally by the launcher).
+# ACTION_MANAGED_PROFILE_UNAVAILABLE is a protected broadcast the system
+# sends AFTER quiet mode changes -- adb cannot broadcast it. From the
+# shell, stopping/starting the profile user has a similar effect:
+adb shell am stop-user 10
+adb shell am start-user 10
 ```
 
 ### 61.9.6  Exercise 6: Explore Managed Configurations
 
 ```bash
-# Set app restrictions for a package in the work profile
+# Query the Settings.System device_provisioned flag
+# (app restrictions themselves can only be set through
+#  DevicePolicyManager.setApplicationRestrictions from a DPC)
 adb shell content call \
     --uri content://com.android.providers.settings \
     --method GET_system \
@@ -11285,11 +11393,11 @@ filter.addDataScheme("https");
 
 // Allow personal apps to open links in work browser
 dpm.addCrossProfileIntentFilter(admin, filter,
-    DevicePolicyManager.FLAG_PARENT_CAN_ACCESS_MANAGED);
+    DevicePolicyManager.FLAG_MANAGED_CAN_ACCESS_PARENT);
 
 // Allow work apps to open links in personal browser
 dpm.addCrossProfileIntentFilter(admin, filter,
-    DevicePolicyManager.FLAG_MANAGED_CAN_ACCESS_PARENT);
+    DevicePolicyManager.FLAG_PARENT_CAN_ACCESS_MANAGED);
 ```
 
 ### 61.9.14  Exercise 14: Implement Password Complexity Enforcement
@@ -11429,7 +11537,7 @@ For further exploration, here are the critical source files:
 | `frameworks/base/core/java/android/app/admin/DeviceAdminReceiver.java` | Admin callback interface |
 | `frameworks/base/core/java/android/app/admin/DeviceAdminInfo.java` | Admin metadata parsing |
 | `frameworks/base/core/java/android/app/admin/IDevicePolicyManager.aidl` | Binder interface |
-| `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyManagerService.java` | Service implementation (25,000+ lines) |
+| `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyManagerService.java` | Service implementation (~24,000 lines) |
 | `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyEngine.java` | Multi-admin policy resolution |
 | `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/PolicyDefinition.java` | Policy definitions and resolution mechanisms |
 | `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/ActiveAdmin.java` | Per-admin policy state |
@@ -11465,9 +11573,10 @@ Here are the key architectural insights:
    subsystems of policy changes.
 
 3. **The DevicePolicyEngine** (introduced in Android 14) brings formal
-   multi-admin policy resolution.  Android 17 ships seven resolution strategies
+   multi-admin policy resolution.  Android 17 ships eight resolution strategies
    -- `MostRestrictive`, `TopPriority`, `MostRecent`, `LeastRecent`,
-   `PackageSetUnion`, `ListUnion`, and `FlagUnion` -- and four admin authority
+   `PackageSetUnion`, `ListUnion`, `FlagUnion`, and `StringSetIntersection` --
+   and four admin authority
    kinds (`enterprise`, `device_admin`, `role:`, and the newer `system:`).  This
    lets DPC admins, role-based admins, legacy device admins, and trusted system
    services such as Advanced Protection Mode coexist on the same policies.
@@ -11688,7 +11797,6 @@ graph TB
 
     CPS --> PropHal
     CPMS --> PHal
-    ICS --> CHal
     CHS --> CHal
     CEVS --> EHal
 
@@ -11853,7 +11961,9 @@ public abstract class VehicleStub {
 ```
 
 The concrete implementations `AidlVehicleStub` and `HidlVehicleStub` handle protocol-specific
-details. A `FakeVehicleStub` (`SimulationVehicleStub`) exists for testing without real hardware.
+details. A `FakeVehicleStub` (a `VehicleStubWrapper`) backs the fake-VHAL mode for testing
+without real hardware; a separate `SimulationVehicleStub` is created by `VehicleHal` for
+property simulation.
 
 ```mermaid
 graph LR
@@ -12173,17 +12283,18 @@ sequenceDiagram
     participant CNS as ClusterNavigationService
     participant ICS as InstrumentClusterService
     participant CHS as ClusterHalService
+    participant CHomeS as ClusterHomeService
     participant Renderer as Cluster Renderer (Vendor App)
     participant ClusterDisplay as Instrument Cluster Display
 
     NavApp->>CNS: sendNavigationState(bundle)
     CNS->>ICS: onNavigationStateChanged()
-    ICS->>Renderer: IInstrumentClusterNavigation.onNavigationStateChanged() (via getNavigationService())
+    ICS->>Renderer: IInstrumentClusterNavigation.onNavigationStateChanged() (via getNavigationBinder())
     Renderer->>ClusterDisplay: Render navigation turn card
 
-    Note over CHS,Renderer: Cluster state changes via VHAL
-    CHS-->>ICS: onClusterStateChanged()
-    ICS->>Renderer: Update cluster mode
+    Note over CHS,CHomeS: Cluster2 state changes via VHAL
+    CHS-->>CHomeS: onSwitchUi()
+    CHomeS-->>ClusterDisplay: onClusterStateChanged() to registered callbacks
 ```
 
 ### 62.1.6 FixedActivityService
@@ -12522,8 +12633,9 @@ can proceed with the actual shutdown or suspend.
 
 The controller coordinates with `JobScheduler` to run deferred jobs that have
 the `REQUIRE_DEVICE_IDLE` constraint. OEMs configure the maximum garage mode duration
-through the system property `android.car.garagemodeduration`. The minimum enforced duration
-is 15 minutes, ensuring enough time for critical updates.
+through the overlayable resource `maxGarageModeRunningDurationInSecs` (default 900 seconds,
+i.e. 15 minutes); the system property `android.car.garagemodeduration` is available as an
+override on top of that.
 
 Garage mode also handles edge cases:
 
@@ -12541,20 +12653,20 @@ sequenceDiagram
     participant Ignition as Vehicle Ignition
     participant VHAL as Vehicle HAL
     participant CPMS as CarPowerManagementService
-    participant GMS as GarageModeService
     participant GMC as GarageModeController
+    participant GM as GarageMode
     participant JS as JobScheduler
 
     Ignition->>VHAL: Ignition OFF
     VHAL->>CPMS: AP_POWER_STATE_REQ = SHUTDOWN_PREPARE
-    CPMS->>GMS: enterGarageMode()
-    GMS->>GMC: enterGarageMode()
-    GMC->>JS: Schedule deferred jobs
+    CPMS->>GMC: onStateChanged(STATE_SHUTDOWN_PREPARE)
+    GMC->>GM: initiateGarageMode()
+    GM->>JS: Schedule deferred jobs
 
-    Note over GMC,JS: Jobs run: app updates, data sync, optimization
+    Note over GM,JS: Jobs run: app updates, data sync, optimization
 
-    GMC-->>GMS: All jobs complete / timeout
-    GMS-->>CPMS: Garage mode finished
+    GM-->>GMC: All jobs complete / timeout
+    GMC-->>CPMS: completeHandlingPowerStateChange()
     CPMS->>VHAL: AP_POWER_STATE_REPORT = DEEP_SLEEP_ENTRY
     Note over VHAL: System enters deep sleep
 ```
@@ -12619,7 +12731,7 @@ concrete UX restrictions that apps must obey:
 graph LR
     CPS["CarPropertyService<br/>PERF_VEHICLE_SPEED<br/>GEAR_SELECTION"] --> CDSS["CarDrivingStateService<br/>PARKED / IDLING / MOVING"]
     CDSS --> CUXRS[CarUxRestrictionsService]
-    CUXRS --> UXR["UX Restrictions<br/>NO_TEXT_INPUT<br/>NO_FILTERING<br/>LIMIT_STRING_LENGTH<br/>NO_VIDEO<br/>LIMIT_CONTENT"]
+    CUXRS --> UXR["UX Restrictions<br/>NO_KEYBOARD<br/>NO_FILTERING<br/>LIMIT_STRING_LENGTH<br/>NO_VIDEO<br/>LIMIT_CONTENT"]
     UXR --> Apps["Applications<br/>must check restrictions"]
     UXR --> CPMS2["CarPackageManagerService<br/>blocks non-compliant activities"]
 ```
@@ -12636,7 +12748,7 @@ This variant replaces the status bar with a car-specific system bar, adds HVAC c
 controls tailored for multi-zone audio, and a user picker for multi-user vehicles.
 
 ```java
-// packages/apps/Car/SystemUI/src/com/android/systemui/car/systembar/CarSystemBar.java
+// packages/apps/Car/SystemUI/pods/systembar/base/controller/src/com/android/systemui/car/systembar/base/CarSystemBar.java
 
 @SysUISingleton
 public class CarSystemBar implements CoreStartable {
@@ -12696,15 +12808,18 @@ Key Car SystemUI components:
 The HVAC module demonstrates how Car SystemUI integrates with vehicle properties:
 
 ```
-packages/apps/Car/SystemUI/src/com/android/systemui/car/hvac/
-  HvacButtonController.java       -- Handles HVAC button interactions
-  HvacPanelOverlayViewMediator.java -- Manages HVAC panel visibility
-  HvacView.java                    -- Base HVAC view
-  HvacPanelView.java               -- Full HVAC panel layout
-  TemperatureControlView.java      -- Temperature adjustment widget
-  referenceui/
-    FanSpeedBar.java               -- Fan speed control
-    FanDirectionButtons.java       -- Air direction buttons
+packages/apps/Car/SystemUI/pods/hvac/
+  controller/src/com/android/systemui/car/hvac/
+    HvacController.java              -- HVAC property access and dispatch
+    HvacView.java                    -- Base HVAC view interface
+  ui/src/com/android/systemui/car/hvac/
+    HvacButtonController.java        -- Handles HVAC button interactions
+    HvacPanelOverlayViewMediator.java -- Manages HVAC panel visibility
+    HvacPanelView.java               -- Full HVAC panel layout
+    TemperatureControlView.java      -- Temperature adjustment widget
+    referenceui/
+      FanSpeedBar.java               -- Fan speed control
+      FanDirectionButtons.java       -- Air direction buttons
 ```
 
 ### 62.1.13 Car Launcher
@@ -12829,15 +12944,16 @@ Runtime Resource Overlays (RROs) customize the look and feel:
 
 ```
 packages/services/Car/car_product/rro/
-  CarSystemUIRRO/         -- SystemUI visual overrides
-  DriveModeSportRRO/      -- Sport driving mode theme
-  DriveModeEcoRRO/        -- Eco driving mode theme
+  CarSystemUIRRO/             -- SystemUI visual overrides
+  CarSystemUIPassengerRRO/    -- SystemUI overrides for passenger displays
+  PermissionControllerRRO/    -- Permission UI adjustments
+  CarResourceCommon/          -- Shared resource definitions
   overlay-config/
-    androidRRO/           -- Framework resource overrides
-    SettingsProviderRRO/  -- Default settings values
-    TelecommRRO/          -- Telecom UI adjustments
+    androidRRO/               -- Framework resource overrides
+    SettingsProviderRRO/      -- Default settings values
+    TelecommRRO/              -- Telecom UI adjustments
   oem-design-tokens/
-    OEMDesignTokenRRO/    -- OEM visual design tokens
+    OEMDesignTokenRRO/        -- OEM visual design tokens
 ```
 
 ---
@@ -13369,7 +13485,7 @@ stateDiagram-v2
 ```
 
 The controller collaborates with an extensive set of components. The constructor takes
-over 20 dependencies, demonstrating the complexity of TV PIP management:
+20 dependencies, demonstrating the complexity of TV PIP management:
 
 ```java
 // frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/pip/tv/TvPipController.java
@@ -13408,18 +13524,18 @@ TV PIP key differences from phone PIP:
 - Broadcast-based actions (`ACTION_SHOW_PIP_MENU`, `ACTION_CLOSE_PIP`) allow
   the notification system to control PIP remotely
 
-The `TvPipModule` provides Dagger dependency injection:
+The `TvPip1Module` provides Dagger dependency injection for this legacy implementation:
 
 ```java
-// frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/pip/TvPipModule.java
+// frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/pip/TvPip1Module.java
 
 @Module(includes = {
         WMShellBaseModule.class,
         Pip1SharedModule.class})
-public abstract class TvPipModule {
+public abstract class TvPip1Module {
     @WMSingleton
     @Provides
-    static Optional<Pip> providePip(
+    static Optional<TvPipController.TvPipImpl> providePip1(
             Context context,
             ShellInit shellInit,
             ShellController shellController,
@@ -13428,6 +13544,10 @@ public abstract class TvPipModule {
     ) { /* ... */ }
 }
 ```
+
+`TvPipModule` itself is a thin selector -- `@Module(includes = {TvPip1Module.class,
+TvPip2Module.class})` -- that provides `PipTransitionController` (and the active `Pip`
+implementation) based on `PipFlags.isPip2ExperimentEnabled()`.
 
 ### 62.2.9 D-pad Navigation
 
@@ -13467,7 +13587,7 @@ graph LR
 ### 62.2.10 TvSettings
 
 Android TV uses a specialized settings application rather than the standard phone Settings app.
-The TV Settings app (`packages/apps/TvSettings/` -- typically vendor-specific) provides a
+The TV Settings app (`packages/apps/TvSettings/`) provides a
 sidebar navigation pattern appropriate for D-pad control, with large text and high-contrast
 visual design.
 
@@ -13953,11 +14073,11 @@ SystemUI is the most visibly customized component. AOSP provides three variants:
 ```
 frameworks/base/packages/SystemUI/       -- Phone/tablet SystemUI (default)
 packages/apps/Car/SystemUI/              -- Automotive SystemUI
-(vendor-specific)/TvSystemUI/            -- TV SystemUI (vendor-provided)
+packages/apps/TvSystemUI/                -- TV SystemUI
 ```
 
 The phone SystemUI is the default and most feature-rich. Car SystemUI replaces it entirely
-with automotive-specific UI components. TV SystemUI is typically much simpler, focusing on
+with automotive-specific UI components. TV SystemUI is much simpler, focusing on
 a minimal notification system and settings access.
 
 The selection is made at build time through product configuration:
@@ -14051,8 +14171,9 @@ customization without source code changes. Each form factor uses RROs extensivel
 ```
 packages/services/Car/car_product/rro/
   CarSystemUIRRO/             -- SystemUI visual overrides
-  DriveModeSportRRO/          -- Sport mode visuals
-  DriveModeEcoRRO/            -- Eco mode visuals
+  CarSystemUIPassengerRRO/    -- SystemUI overrides for passenger displays
+  PermissionControllerRRO/    -- Permission UI adjustments
+  CarResourceCommon/          -- Shared resource definitions
   overlay-config/
     androidRRO/               -- Framework defaults
     SettingsProviderRRO/      -- Settings provider defaults
@@ -14080,8 +14201,8 @@ overlay package declares which target package and resources it overrides:
 <!-- Example: CarSystemUIRRO/AndroidManifest.xml -->
 <manifest>
     <overlay android:targetPackage="com.android.systemui"
-             android:isStatic="true"
-             android:priority="10" />
+             android:resourcesMap="@xml/overlays"
+             android:isStatic="true" />
 </manifest>
 ```
 
@@ -14128,9 +14249,6 @@ The `car_product/build/` directory hierarchy:
 
 ```makefile
 # (vendor-specific or device-specific makefile)
-PRODUCT_PROPERTY_OVERRIDES += \
-    ro.hardware.type=tv
-
 PRODUCT_PACKAGES += \
     TvSettings \
     TvSystemUI \
@@ -14138,20 +14256,22 @@ PRODUCT_PACKAGES += \
     TvLauncher
 ```
 
+Note that `ro.hardware.type` is an automotive-only property -- TV builds are identified
+by the PackageManager features `android.software.leanback` and
+`android.hardware.type.television`, not by a system property.
+
 **Wear product configuration** typically includes:
 
 ```makefile
 # (vendor-specific)
-PRODUCT_PROPERTY_OVERRIDES += \
-    config.override_forced_orient=true \
-    config.override_forced_orient_value=0
-
 # Watch-specific features
 PRODUCT_PACKAGES += \
     WearSettings \
     ClockworkHome \
     WearSystemUI
 ```
+
+Wear builds are likewise identified by the `android.hardware.type.watch` feature.
 
 ### 62.4.5 Feature Flags and Configuration
 
@@ -14176,10 +14296,13 @@ Beyond properties and overlays, form-factor behavior is controlled through:
    of configurable values. Form-factor overlays change these:
 
 ```xml
-<!-- Example: config_supportsPictureInPicture -->
-<!-- Phone: true, Watch: false -->
-<!-- config_hasAutomotiveDock: true for automotive -->
+<!-- Example: config_enableCarDockHomeLaunch -->
+<!-- When true, docking launches the car dock home activity -->
 ```
+
+   Note that some capabilities are expressed as PackageManager features rather than
+   config booleans -- picture-in-picture support, for instance, is the
+   `android.software.picture_in_picture` feature.
 
 3. **SELinux policies**: Each form factor has specific SELinux policies:
 
@@ -14296,7 +14419,7 @@ graph TB
         HDMI[HdmiControlService]
     end
 
-    subgraph "TV Optional Library Services<br/>(com.android.libraries.tv.tvsystem)"
+    subgraph "TV Optional Services<br/>(frameworks/opt/tv/tvsystem repo)"
         TVWS["TvWatchdogService<br/>(not started by SystemServer)"]
     end
 
@@ -15453,7 +15576,7 @@ The `system/software_defined_vehicle/platform/` tree is the native foundation th
 
 #### common
 
-The `system/software_defined_vehicle/common/` tree holds shared infrastructure. The piece worth naming is `common/lib_dump/`, a thin wrapper around `libbinder_rust` that exposes the `ISdvAgent.aidl` interface (`common/lib_dump/aidl/google/sdv/agent/ISdvAgent.aidl`) so every agent gets uniform `dumpsys` support — a single, simple interface that the registry, orchestrator, lifecycle manager, and the rest implement so an operator can dump any agent the same way. The tree also carries shared protos, vendored third-party code, and the `performance_image_generator` used to build the SDV "performance" image variants (`sdv_core_perf_cf`).
+The `system/software_defined_vehicle/common/` tree holds shared infrastructure. The piece worth naming is `common/lib_dump/`, a thin wrapper around `libbinder_rust` that exposes the `ISdvAgent.aidl` interface (`common/lib_dump/aidl/google/sdv/agent/ISdvAgent.aidl`) so every agent gets uniform `dumpsys` support — a single, simple interface that the registry, orchestrator, lifecycle manager, and the rest implement so an operator can dump any agent the same way. The tree also carries shared protos, vendored third-party code, and `common/performance_image/` (whose `generator/` subdirectory produces the SDV "performance" image variants such as `sdv_core_perf_cf`).
 
 ### 62.7.10 Display Safety: the HARry Driver-UI Runtime
 
@@ -15487,7 +15610,7 @@ Because the gateway hands ordinary Android processes the keys to the vehicle fab
 
 The concrete CarService integration is the Vehicle HAL. On the IVI VM the SDV products wire a SDV-specific VHAL — `device/google/sdv/sdv_ivi_cf/sdv_ivi_cf.mk` sets `LOCAL_VHAL_PRODUCT_PACKAGE := android.hardware.automotive.vehicle@V1-sdv-emulator-service`. That VHAL uses the gateway's **vhal_proxy** library (`system/software_defined_vehicle/sdv_gateway/vhal_proxy/libvhal_proxy`). The `VhalProxy` class reads and writes Android `VehiclePropValue`s by translating them to and from SDV proto messages and routing them over the gateway: `ReadMessages`/`WriteMessages` move properties, `Subscribe`/`Unsubscribe` register for incoming updates, and the proxy's config (a JSON of protobuf descriptors and property-to-service-unit mappings) decides which property maps to which SDV publication and whether each is an `ACTION_SUBSCRIBE` or `ACTION_PUBLISH`. CarService, sitting above the VHAL exactly as it does on a normal automotive build, is therefore unaware that the vehicle property it reads originated in a service bundle in the Core VM: the gateway and vhal_proxy make the cross-VM hop invisible.
 
-The IVI's SDV-facing services are installed by `device/google/sdv/sdv_ivi_base/sdv_packages_ivi_services.mk` (the gateway, `libvhal_proxy`, the gateway networking service, and the SDV IVI runtime) and started by `device/google/sdv/sdv_ivi_base/sdv.agents.rc`, which brings up the gateway, Service Discovery, and RPC agents in order once the SDV network is ready. The transport beneath them — RPC, Data Tunnel, SOME/IP across VMs and to external ECUs — is the subject of Section 62.8.
+The IVI's SDV-facing services are installed by `device/google/sdv/sdv_ivi_base/sdv_packages_ivi_services.mk` (the gateway, `libvhal_proxy`, the gateway networking service, and the SDV IVI runtime) and started by `device/google/sdv/sdv_ivi_base/sdv.agents.rc`, which starts the gateway on `boot` and the Service Discovery and RPC agents once `ro.sdv.ethernet.ready=true`; start order between them is explicitly unimportant, because the gateway waits for the SD and RPC agent services before fully starting. The transport beneath them — RPC, Data Tunnel, SOME/IP across VMs and to external ECUs — is the subject of Section 62.8.
 
 How a CarService VHAL read reaches a Core VM service bundle
 
@@ -15885,17 +16008,17 @@ adb shell dumpsys car_service --services
 adb shell dumpsys car_service --hal
 
 # Check occupant zone configuration:
-adb shell dumpsys car_service --occ-zone
+adb shell dumpsys car_service --services CarOccupantZoneService
 ```
 
 Examine the CarService initialization timing:
 
 ```bash
-# View initialization trace:
-adb shell dumpsys car_service --print-timing
-
-# Or look at the system property:
+# CarService boot timing is recorded in a system property:
 adb shell getprop boot.car_service_created
+
+# The full dump also includes per-service state:
+adb shell dumpsys car_service -a
 ```
 
 ### Exercise 62.2: Inspect Vehicle HAL Properties
@@ -15922,8 +16045,9 @@ adb shell cmd car_service set-property-value HVAC_TEMPERATURE_SET 49 22.5
 Use `atrace` to follow a property change through the stack:
 
 ```bash
-# Start tracing with car_service tag:
-adb shell atrace --async_start -c -b 8192 car_service
+# Start tracing; CarService spans are emitted under existing atrace
+# categories (there is no dedicated car_service tag):
+adb shell atrace --async_start -c -b 8192 aidl wm am
 
 # Trigger a property change (e.g., change gear on emulator)
 # ... interact with the emulator's vehicle controls ...
@@ -15976,9 +16100,9 @@ adb shell input keyevent KEYCODE_DPAD_RIGHT
 Determine the form factor programmatically:
 
 ```bash
-# Check hardware type:
+# Check hardware type (set only on automotive builds):
 adb shell getprop ro.hardware.type
-# Returns: "automotive", "tv", "watch", or empty (phone)
+# Returns: "automotive" on AAOS; empty on other form factors
 
 # Check UI mode:
 adb shell dumpsys uimode | grep "mCurUiMode"
@@ -15996,7 +16120,10 @@ On an automotive emulator:
 
 ```bash
 # Check current power state:
-adb shell dumpsys car_service --power
+adb shell dumpsys car_service --services CarPowerManagementService
+
+# Or query the active power policy:
+adb shell cmd car_service get-current-power-policy
 
 # Simulate garage mode:
 adb shell cmd car_service garage-mode on
@@ -16014,8 +16141,8 @@ adb shell cmd car_service power-off --skip-garagemode
 # List Car SystemUI services:
 adb shell dumpsys activity services com.android.systemui | grep car
 
-# Check system bar state:
-adb shell dumpsys car_service --act
+# Check activity/task state tracked by CarService:
+adb shell dumpsys car_service --services CarActivityService
 
 # Inspect HVAC properties used by SystemUI:
 adb shell cmd car_service get-property-value HVAC_TEMPERATURE_SET
@@ -16026,7 +16153,7 @@ adb shell cmd car_service get-property-value HVAC_FAN_SPEED
 
 ```bash
 # Dump occupant zone configuration:
-adb shell dumpsys car_service --occ-zone
+adb shell dumpsys car_service --services CarOccupantZoneService
 
 # Output shows:
 # - Zone definitions (driver, passenger, rear)
@@ -16150,7 +16277,7 @@ Study the following files to understand form-factor abstractions:
 
 6. **Car SystemUI**:
       - `packages/apps/Car/SystemUI/src/com/android/systemui/car/CarServiceProvider.java`
-      - `packages/apps/Car/SystemUI/src/com/android/systemui/car/systembar/CarSystemBar.java`
+      - `packages/apps/Car/SystemUI/pods/systembar/base/controller/src/com/android/systemui/car/systembar/base/CarSystemBar.java`
 
 7. **Occupant Zones**:
       - `packages/services/Car/service/src/com/android/car/CarOccupantZoneService.java`
@@ -16223,7 +16350,7 @@ These commands assume an SDV Core VM or a Cuttlefish SDV target (`sdv_core_cf`, 
 | **Safety restrictions** | None | UX restrictions while driving | None | None |
 | **Key HAL interfaces** | Standard | Vehicle, EVS, AudioControl | TvInput, CEC, Tuner | Sensors |
 | **Feature flag** | (default) | android.hardware.type.automotive | android.software.leanback | android.hardware.type.watch |
-| **hardware.type** | (none) | automotive | tv | watch |
+| **ro.hardware.type** | (unset) | automotive | (unset) | (unset) |
 
 ### Key Source Trees by Form Factor
 
@@ -16679,7 +16806,7 @@ stateDiagram-v2
     BLOCKED --> FAILED: Unrecoverable
     BLOCKED --> CANCELED: User cancels
 
-    FAILED --> STARTED: User restarts
+    FAILED --> QUEUED: Restart
     FAILED --> CANCELED: User cancels
 
     COMPLETED --> [*]
@@ -16693,9 +16820,16 @@ The system uses aggregate state constants for filtering:
 | Constant | States Included | Purpose |
 |----------|----------------|---------|
 | `STATE_ANY` | All states | No filtering |
-| `STATE_ANY_VISIBLE_TO_CLIENTS` | All except `CREATED` | Visible to the creating app |
+| `STATE_ANY_VISIBLE_TO_CLIENTS` | In practice only `BLOCKED` (see below) | Visible to the creating app |
 | `STATE_ANY_ACTIVE` | `CREATED`, `QUEUED`, `STARTED`, `BLOCKED` | Non-terminal states |
 | `STATE_ANY_SCHEDULED` | `QUEUED`, `STARTED`, `BLOCKED` | Delivered to print service |
+
+The `STATE_ANY_VISIBLE_TO_CLIENTS` filter is consumed in a single place,
+`PrintSpoolerService.isStateVisibleToUser()`, which requires
+`isActiveState(state)` (`CREATED`, `QUEUED`, `STARTED`, or `BLOCKED`) *and* one
+of `FAILED`, `COMPLETED`, `CANCELED`, or `BLOCKED`. The intersection of those
+two conditions is just `STATE_BLOCKED` -- not "all states except `CREATED`" as
+the name might suggest.
 
 ### 63.4.4 PrintJob Wrapper
 
@@ -17270,7 +17404,9 @@ final class RemotePrintSpooler {
 
 ### 63.11.2 Timed Remote Calls
 
-All calls to the spooler use `TimedRemoteCaller` to enforce timeouts:
+Spooler calls that need a return value -- getting or setting print job info,
+state, and tags, plus the custom printer icon operations -- go through
+`TimedRemoteCaller` instances to enforce timeouts:
 
 ```java
 // Individual timed callers for each operation
@@ -17279,6 +17415,10 @@ private final GetPrintJobInfoCaller mGetPrintJobInfoCaller;
 private final SetPrintJobStateCaller mSetPrintJobStatusCaller;
 private final SetPrintJobTagCaller mSetPrintJobTagCaller;
 ```
+
+Fire-and-forget operations such as `createPrintJob()`, `writePrintJobData()`,
+and `setStatus()` skip the timed callers and invoke the remote `IPrintSpooler`
+instance directly.
 
 The binding timeout is 10 seconds on production builds, 120 seconds on
 engineering builds (to accommodate debugger attachment).
@@ -17304,7 +17444,7 @@ sequenceDiagram
     SP-->>RPS: results
     RPS-->>US: results
 
-    Note over RPS: After idle period
+    Note over RPS: Spooler reports all print jobs handled
     RPS->>SP: unbindService()
 ```
 
@@ -17411,8 +17551,9 @@ sequenceDiagram
     App->>PM: print("doc", adapter, attrs)
     PM->>PMS: Binder: print()
     PMS->>US: print()
-    US->>SP: createPrintJob()
-    SP->>PUI: Launch print UI
+    US-->>PMS: IntentSender (EXTRA_PRINT_DIALOG_INTENT)
+    PMS-->>PM: Bundle result
+    PM->>PUI: startIntentSender (launch print dialog)
 
     PUI->>PUI: Show printer selection
 
@@ -17435,6 +17576,7 @@ sequenceDiagram
     User->>PUI: Press "Print" button
 
     Note over SP,Printer: Print Execution
+    PUI->>SP: createPrintJob()
     SP->>SP: Spool PDF document
     SP->>PMS: Job state = QUEUED
     PMS->>US: onPrintJobQueued()
@@ -17687,10 +17829,10 @@ communication:
 |-----------|-----------|---------|
 | `IPrintManager` | App -> System | Print job creation, query, cancel |
 | `IPrintDocumentAdapter` | System -> App | Layout and write callbacks |
-| `IPrintDocumentAdapterObserver` | System -> App | Adapter lifecycle notifications |
+| `IPrintDocumentAdapterObserver` | App -> System | Adapter destruction notification (the app's adapter delegate tells the spooler its activity was destroyed) |
 | `IPrintSpooler` | System -> Spooler | Job management in spooler |
 | `IPrintSpoolerCallbacks` | Spooler -> System | Job state change callbacks |
-| `IPrintSpoolerClient` | System -> Spooler | Client registration |
+| `IPrintSpoolerClient` | Spooler -> System | Job-queued / all-jobs-handled callbacks (registered by the system via `IPrintSpooler.setClient()`) |
 | `IPrintService` | System -> Service | Print service control |
 | `IPrintServiceClient` | Service -> System | Printer and job updates |
 | `IPrintJobStateChangeListener` | System -> App | Job state notifications |
@@ -17797,7 +17939,7 @@ The print framework uses careful threading to avoid blocking the UI:
 | `PrintDocumentAdapter.onWrite()` | Main thread | App-driven rendering |
 | `PrintManagerImpl` operations | Binder thread | Service request handling |
 | `RemotePrintSpooler` calls | Background thread | Spooler IPC (may block) |
-| `RemotePrintService` binding | Background thread | Service binding |
+| `RemotePrintService` operations | system_server main thread (`Handler.getMain()`) | Service binding and command dispatch |
 | `UserState` state management | Synchronized on `mLock` | Thread-safe state access |
 
 The documentation explicitly warns:
@@ -17835,7 +17977,7 @@ private final PrintJobForAppCache mPrintJobForAppCache = new PrintJobForAppCache
 Enterprise management disables printing by setting the
 `UserManager.DISALLOW_PRINTING` user restriction. `isPrintingEnabled()` checks
 that restriction for the calling user; when it is set, `print()` and
-`createPrintJob()` refuse to create a job, and `print()` surfaces the admin's
+`restartPrintJob()` refuse to proceed, and `print()` surfaces the admin's
 reason string via `DevicePolicyManagerInternal`:
 
 ```java
@@ -17889,15 +18031,22 @@ the per-user `UserState` list under `mLock`, then renders it through a
 
 ### 63.21.2 Logging
 
-Enable verbose logging for print components:
+The print framework classes do not consult `Log.isLoggable()`, so the usual
+`adb shell setprop log.tag.<TAG> VERBOSE` recipe has no effect on them. Their
+verbose output is gated on compile-time constants instead: `PrintManager`,
+`RemotePrintSpooler`, `RemotePrintService`, and `UserState` each declare a
+`DEBUG` flag that ships as `false`, and `PrintManagerService` has no debug gate
+at all:
 
-```bash
-$ adb shell setprop log.tag.PrintManager VERBOSE
-$ adb shell setprop log.tag.PrintManagerService VERBOSE
-$ adb shell setprop log.tag.RemotePrintSpooler VERBOSE
-$ adb shell setprop log.tag.RemotePrintService VERBOSE
-$ adb shell setprop log.tag.UserState VERBOSE
+```java
+// frameworks/base/core/java/android/print/PrintManager.java
+private static final boolean DEBUG = false;
 ```
+
+Getting the extra logging therefore requires rebuilding the framework with
+`DEBUG = true` in the classes of interest. On a production build, the practical
+alternatives are `dumpsys print` (Section 63.21.1) and filtering logcat for the
+messages the framework emits unconditionally (errors and warnings).
 
 ### 63.21.3 Proto Dump
 
@@ -17996,6 +18145,7 @@ flowchart TB
     NEEDS{"needsSetup printer<br/>(flag on AND<br/>setupIntent != null)?"}
     LAUNCH["startIntentSenderForResult<br/>(printer setup activity)"]
     DONE{"Setup result OK?"}
+    UPDATE["onSetupActivityResult:<br/>adopt returned printer,<br/>return to dialog"]
     CONFIRM["confirmPrint<br/>(spool job, STATE_QUEUED)"]
     STAY["Stay on print dialog"]
 
@@ -18003,12 +18153,16 @@ flowchart TB
     NEEDS -->|"No"| CONFIRM
     NEEDS -->|"Yes"| LAUNCH
     LAUNCH --> DONE
-    DONE -->|"Yes"| CONFIRM
+    DONE -->|"Yes"| UPDATE
     DONE -->|"No"| STAY
 ```
 
-The setup activity may also return an alternate printer, in case the user picks
-a different one during setup.
+A successful setup result does not spool the job directly. `onSetupActivityResult()`
+only adopts the printer the setup activity returns -- which may be an alternate
+printer, in case the user picks a different one during setup -- updates the
+print attributes from its capabilities, and returns to the dialog. The user then
+presses Print again, and with the printer no longer needing setup, the spooler
+falls through to `confirmPrint()`.
 
 ---
 
@@ -18044,7 +18198,7 @@ FrameworkAdvancedOptionsUiLaunched (1074) - advanced options opened
 color mode, media size, horizontal/vertical DPI, orientation, duplex mode,
 document type, whether the output was saved to PDF, page count, and the print
 service UID. `FrameworkPrinterDiscovery` records the discovering service UID and
-the printer's supported color modes, media sizes, and duplex modes. Two
+the printer's supported color modes, media sizes, and duplex modes. Four
 additional `Bips*` atoms (1075-1078) come from the built-in print service
 (`builtinprintservice`) rather than the spooler.
 
@@ -18159,21 +18313,32 @@ action.
    Disable a service in Settings and observe the `ComponentName` appear in the
    colon-separated list; the *enabled* setting stays empty (Section 63.8.2).
 
-3. **Trace a print job's lifecycle.** Enable verbose logging and follow a job
-   from `STATE_CREATED` through `STATE_QUEUED` to a terminal state:
+3. **Trace a print job's lifecycle.** Follow a job from `STATE_CREATED` through
+   `STATE_QUEUED` to a terminal state. The framework classes gate verbose
+   logging on compile-time `DEBUG = false` constants (Section 63.21.2), so
+   `setprop log.tag.*` does not help; instead poll `dumpsys print` while the
+   job progresses and watch the cached job's state field change, alongside the
+   messages that reach logcat unconditionally:
 
    ```bash
-   adb shell setprop log.tag.PrintManager VERBOSE
-   adb shell setprop log.tag.RemotePrintSpooler VERBOSE
+   adb shell dumpsys print | grep -A3 "print jobs"
    adb logcat | grep -i print
    ```
+
+   On a self-built image, flip `DEBUG` to `true` in `UserState.java` and
+   `RemotePrintSpooler.java` to log every state transition.
 
 4. **Toggle the new flags.** Inspect the Android 17 print flags and their state:
 
    ```bash
-   adb shell device_config get printing enable_setup_activity
-   adb shell device_config get printing printing_telemetry
+   adb shell device_config get printing android.print.flags.enable_setup_activity
+   adb shell device_config get printing com.android.printspooler.flags.printing_telemetry
    ```
+
+   The `DeviceConfig` keys for aconfig flags are qualified by their aconfig
+   package (`android.print.flags` and `com.android.printspooler.flags`); on
+   recent builds `adb shell aflags list | grep printing` shows both flags with
+   their current state.
 
    With `printing_telemetry` on, complete a print and confirm a `FrameworkPrintJob`
    atom is logged (Section 63.24).
@@ -18275,7 +18440,7 @@ graph TD
         IR[ImageReader / SurfaceTexture]
     end
 
-    subgraph "system_server / cameraserver Process"
+    subgraph "cameraserver Process"
         CS["CameraService<br/>media.camera Binder"]
         CDC["CameraDeviceClient<br/>api2/"]
         C3D["Camera3Device<br/>device3/"]
@@ -18416,7 +18581,7 @@ Key internal components:
 
 | Component | Purpose |
 |-----------|---------|
-| `ICameraDeviceUser mRemoteDevice` | Binder proxy to CameraDeviceClient |
+| `ICameraDeviceUserWrapper mRemoteDevice` | Wraps the `ICameraDeviceUser` Binder proxy to CameraDeviceClient, converting `ServiceSpecificException` into `CameraAccessException` |
 | `FrameNumberTracker mFrameNumberTracker` | Orders result delivery |
 | `SparseArray<CaptureCallbackHolder> mCaptureCallbackMap` | Maps sequence IDs to callbacks |
 | `RequestLastFrameNumbersHolder` | Tracks last frame number per request type |
@@ -18432,7 +18597,7 @@ methods on this callback object:
 public class CameraDeviceCallbacks extends ICameraDeviceCallbacks.Stub {
 
     @Override
-    public void onResultReceived(CameraMetadataNative result,
+    public void onResultReceived(CameraMetadataInfo resultInfo,
             CaptureResultExtras resultExtras,
             PhysicalCaptureResultInfo[] physicalResults) {
         // Match result to pending request using frame number
@@ -18519,9 +18684,10 @@ stateDiagram-v2
 
 ### 64.1.8 Session Configuration via OutputConfiguration
 
-Starting with API 24, sessions are configured using `SessionConfiguration`
-and `OutputConfiguration` objects that provide more control over how output
-streams are set up:
+`OutputConfiguration` (and `createCaptureSessionByOutputConfigurations()`)
+arrived in API 24; the `SessionConfiguration` wrapper and the
+`createCaptureSession(SessionConfiguration)` overload followed in API 28.
+Together they provide more control over how output streams are set up:
 
 ```
 Source: frameworks/base/core/java/android/hardware/camera2/params/OutputConfiguration.java
@@ -18557,13 +18723,15 @@ cameraDevice.createCaptureSession(config);
 
 ### 64.1.9 Updating Output Surfaces Without Reconfiguring (Android 17)
 
-Before Android 17 the only way to change which `Surface` an output stream wrote
-to was `finalizeOutputConfigurations()`, and that only filled in a deferred
-surface once. Replacing a surface that already had one, or swapping surfaces to
-move between two preview targets, meant tearing the session down and building a
-new one, which drops frames during the gap. Android 17 adds
-`updateOutputConfigurations()` on `CameraCaptureSession` for in-place surface
-changes:
+Before Android 17 the options for changing which `Surface` an output stream
+wrote to were limited: `finalizeOutputConfigurations()` only filled in a
+deferred surface once, and `updateOutputConfiguration()` (single
+`OutputConfiguration`, API 26) could add or remove surfaces only on an output
+created with `enableSurfaceSharing()`. Swapping the surface of an ordinary,
+non-sharing output meant tearing the session down and building a new one,
+which drops frames during the gap. Android 17 adds
+`updateOutputConfigurations()` (note the plural) on `CameraCaptureSession`,
+which replaces the surfaces of every configured output wholesale in one call:
 
 ```
 Source: frameworks/base/core/java/android/hardware/camera2/CameraCaptureSession.java, line 1072
@@ -18812,14 +18980,21 @@ It has two transport-specific subclasses:
 
 ### 64.2.6 Camera3Device Internal Threads
 
-Camera3Device operates several internal threads:
+Camera3Device owns two internal threads, `RequestThread` and
+`StatusTracker`.  A third thread, `FrameProcessorBase`, is owned by
+`CameraDeviceClient` rather than Camera3Device: it polls the Camera3Device
+(through the `FrameProducer` interface) for new result metadata and
+dispatches it to registered listeners:
 
 ```mermaid
 graph LR
     subgraph C3T["Camera3Device Threads"]
         RT["RequestThread<br/>Submits requests to HAL"]
-        FP["FrameProcessorBase<br/>Processes result metadata"]
         ST["StatusTracker<br/>Tracks component readiness"]
+    end
+
+    subgraph CDCT["CameraDeviceClient Thread"]
+        FP["FrameProcessorBase<br/>Polls result metadata"]
     end
 
     subgraph C3S["Camera3Device State"]
@@ -18830,9 +19005,9 @@ graph LR
 
     RT -->|dequeue| SQ
     RT -->|processCaptureRequest| HAL[Camera HAL]
-    HAL -->|processCaptureResult| FP
-    FP -->|update| IFR
-    FP -->|notify callback| CDC[CameraDeviceClient]
+    HAL -->|processCaptureResult| IFR
+    FP -->|"poll new frames (FrameProducer)"| IFR
+    FP -->|dispatch to listeners| CDC[CameraDeviceClient]
     ST -->|track| STREAMS
 ```
 
@@ -18846,12 +19021,15 @@ graph LR
 4. Calls `processCaptureRequest()` on the HAL interface
 5. Tracks the request in the `InFlightRequest` map
 
-**FrameProcessorBase** runs in a separate thread and processes results
-returned by the HAL:
+**FrameProcessorBase** (`api2/FrameProcessorBase.cpp`) is an output-frame
+metadata processing thread owned by `CameraDeviceClient`, not Camera3Device:
 
-1. Receives partial and final `CaptureResult` metadata
-2. Matches results to in-flight requests using frame numbers
-3. Delivers results to `CameraDeviceClient` which forwards them to Java
+1. Waits for new result frames from its frame producer (the Camera3Device,
+   held as a `wp<FrameProducer>`)
+
+2. Retrieves partial and final `CaptureResult` metadata as it becomes ready
+3. Dispatches the metadata to the registered `FilteredListener`s, which
+   forward it to Java
 
 **StatusTracker** monitors the readiness of all streams and the HAL.  It
 coalesces status updates to avoid thrashing the "idle" / "active" state.
@@ -19202,16 +19380,28 @@ have been received:
 The camera HAL must satisfy a strict ordering contract:
 
 1. **Shutter notifications** must arrive in frame-number order
-2. **Result metadata** can arrive in any order (partial results may arrive
-   before or after the shutter notification)
+2. **Result metadata** must be returned in frame-number order: the metadata
+   for request 5 must be returned before the metadata for request 6
+   (within a single request, partial results may still arrive before or
+   after the shutter notification)
 
-3. **Output buffers** may arrive in any order, but the HAL should prioritize
-   returning preview buffers to minimize display latency
+3. **Output buffers for a given stream** must be returned in FIFO order --
+   the buffer for request 5 on stream A must precede the buffer for
+   request 6 on stream A -- but different streams are independent of each
+   other, so the buffer for request 5 on stream A may legally arrive after
+   the buffer for request 6 on stream B
 
-4. The HAL must return all outputs for frame N before accepting frame N + `maxPipelineDepth`
+4. Only failed buffers (`BufferStatus.ERROR`) are exempt from the strict
+   per-stream ordering
+
+5. `REQUEST_PIPELINE_MAX_DEPTH` reports the maximum number of pipeline
+   stages a frame traverses from exposure to result availability; the
+   framework uses it to bound how many requests it keeps in flight, and
+   `processCaptureRequest()` may block when the pipeline is full
 
 ```
-Source: hardware/interfaces/camera/device/aidl/android/hardware/camera/device/ICameraDeviceSession.aidl
+Source: hardware/interfaces/camera/device/aidl/android/hardware/camera/device/ICameraDeviceCallback.aidl
+        hardware/interfaces/camera/device/aidl/android/hardware/camera/device/ICameraDeviceSession.aidl
 ```
 
 ### 64.3.8 Reprocessing
@@ -19377,17 +19567,18 @@ classDiagram
         #mHandoutOutputBufferCount: size_t
     }
     class Camera3OutputStream {
-        -mConsumer: IGraphicBufferProducer
+        -mConsumer: sp~Surface~
         +returnBufferLocked()
         +queueBufferToConsumer()
     }
     class Camera3InputStream {
-        -mProducer: IGraphicBufferConsumer
+        -mConsumer: sp~BufferItemConsumer~
+        -mSurface: sp~Surface~
         +getInputBufferLocked()
         +returnInputBufferLocked()
     }
     class Camera3SharedOutputStream {
-        -mSurfaces: vector~IGraphicBufferProducer~
+        -mSurfaceUniqueIds: array~SurfaceHolderUniqueId~
         +updateStream()
     }
 
@@ -19588,23 +19779,32 @@ optimize stream configuration:
 
 ### 64.4.7 Buffer Management
 
-Camera3Device includes a `Camera3BufferManager` that provides two buffer
-management strategies:
+Two separate mechanisms fall under "buffer management" in the camera
+service.  The first is `Camera3BufferManager`, a service-side graphic-buffer
+pool: it allocates and hands out Gralloc buffers to output streams that
+belong to the same stream set, and can dynamically deallocate buffers so
+that streams sharing the set do not all hold their worst-case buffer count
+at once:
 
 ```
 Source: frameworks/av/services/camera/libcameraservice/device3/Camera3BufferManager.h
         frameworks/av/services/camera/libcameraservice/device3/Camera3BufferManager.cpp
 ```
 
+The second, independent distinction is whether the framework or the HAL
+drives buffer delivery, a Camera3Device mode negotiated with the HAL:
+
 **Framework-managed buffers** (traditional):
 
-- The camera service allocates buffers and provides them to the HAL
+- The camera service dequeues buffers and attaches them to each request
 - `Camera3OutputStream.getBufferLocked()` dequeues from the consumer
 - The service controls buffer allocation timing
 
-**HAL-managed buffers** (modern):
+**HAL-managed buffers** (session HAL buffer management):
 
-- The HAL requests buffers on demand via `requestStreamBuffers()`
+- The HAL requests buffers on demand via the `requestStreamBuffers()`
+  callback on `ICameraDeviceCallback`
+
 - Reduces buffer allocation overhead
 - Allows the HAL to optimize buffer usage across streams
 
@@ -19869,7 +20069,7 @@ multi-camera framework provides precise geometric calibration data:
 | `LENS_POSE_TRANSLATION` | float[3] | Translation in meters |
 | `LENS_POSE_REFERENCE` | int | PRIMARY_CAMERA, GYROSCOPE, or UNDEFINED |
 | `LENS_INTRINSIC_CALIBRATION` | float[5] | fx, fy, cx, cy, s (focal, principal, skew) |
-| `LENS_DISTORTION` | float[6] | Radial k1-k3 and tangential p1-p2 + k4 |
+| `LENS_DISTORTION` | float[5] | Radial k1, k2, k3 and tangential p1, p2 |
 | `LENS_RADIAL_DISTORTION` | float[6] | Deprecated -- use LENS_DISTORTION |
 
 These values enable applications to:
@@ -20178,7 +20378,14 @@ in the corresponding capture result.
 ### 64.6.9 Extension Postview
 
 Postview provides a quick, lower-resolution preview image while the
-extension processes the full-resolution output:
+extension processes the full-resolution output.  The application checks
+`CameraExtensionCharacteristics.isPostviewAvailable()`, picks a size from
+`getPostviewSupportedSizes()`, and registers a dedicated postview output
+surface through
+`ExtensionSessionConfiguration.setPostviewOutputConfiguration()`; the quick
+image is then delivered to that surface, while
+`onCaptureProcessProgressed()` separately reports incremental
+post-processing progress from 0 to 100:
 
 ```mermaid
 sequenceDiagram
@@ -20188,10 +20395,10 @@ sequenceDiagram
 
     App->>EXT: capture(request)
     EXT->>HAL: Begin multi-frame capture
-    HAL-->>EXT: Postview image (quick, lower quality)
-    EXT-->>App: onCaptureProcessProgressed(100%)
+    HAL-->>App: Postview image on postview output surface
     Note over App: Display postview as thumbnail
     HAL->>HAL: Full post-processing...
+    EXT-->>App: onCaptureProcessProgressed(25%) ... (75%)
     HAL-->>EXT: Final high-quality image
     EXT-->>App: onCaptureResultAvailable()
     Note over App: Replace postview with final image
@@ -20403,13 +20610,14 @@ ACameraMetadata_const_entry physicalCameraIds;
 ACameraMetadata_getConstEntry(chars,
     ACAMERA_LOGICAL_MULTI_CAMERA_PHYSICAL_IDS, &physicalCameraIds);
 
-// Create a physical-camera-aware capture request: the trailing array
-// lists the physical IDs whose per-camera settings the request may carry.
+// Create a physical-camera-aware capture request: the ACameraIdList
+// names the physical IDs whose per-camera settings the request may carry.
 ACaptureRequest* request = NULL;
-const char* physicalIds[] = {"2", "4"};
+const char* ids[] = {"2", "4"};
+ACameraIdList physicalIdList = { 2, ids };  // numCameras, cameraIds
 ACameraDevice_createCaptureRequest_withPhysicalIds(
     device, TEMPLATE_PREVIEW,
-    2, physicalIds,
+    &physicalIdList,
     &request);
 
 // Per-physical-camera settings are written with the
@@ -20420,9 +20628,12 @@ ACaptureRequest_setEntry_physicalCamera_u8(
 ```
 
 The chapter's earlier Java example used `OutputConfiguration.setPhysicalCameraId()`
-to bind a whole stream to a sensor; at the NDK level the same routing is done
-by adding the output target normally and supplying per-physical settings
-through the `_physicalCamera_*` setters.
+to bind a whole stream to a sensor; the direct NDK equivalent is
+`ACaptureSessionPhysicalOutput_create(window, physicalId, &output)`, which
+creates a session output routed to one physical camera.  The
+`ACaptureRequest_setEntry_physicalCamera_*` setters shown above are a
+separate mechanism: they carry per-physical-camera request settings, not
+stream routing.
 
 ### 64.7.8 NDK Metadata Access
 
@@ -21344,11 +21555,12 @@ adb shell dumpsys media.camera
 # 5. Last few capture requests/results
 # 6. Error events
 
-# Watch for specific tags during capture
-adb shell dumpsys media.camera --watch \
-    android.control.aeState \
-    android.control.afState \
-    android.sensor.exposureTime
+# Watch for specific tags during capture (shell command, not dumpsys)
+adb shell cmd media.camera watch start \
+    -m android.control.aeState,android.control.afState,android.sensor.exposureTime
+# ... perform camera operations ...
+adb shell cmd media.camera watch dump   # or "watch live" for continuous output
+adb shell cmd media.camera watch stop
 
 # Trace camera HAL calls
 adb shell atrace --async_start -c camera
@@ -21386,7 +21598,7 @@ wc -l frameworks/av/services/camera/libcameraservice/device3/Camera3Device.cpp
 grep -r "public static final Key" \
     frameworks/base/core/java/android/hardware/camera2/CaptureRequest.java \
     | wc -l
-# Over 100 controllable parameters per frame
+# Roughly 80 controllable parameters per frame
 
 # See all stream types
 ls frameworks/av/services/camera/libcameraservice/device3/Camera3*Stream*
@@ -21419,8 +21631,9 @@ key architectural insights from this chapter:
    `cameraserver` to camera HAL (AIDL/HIDL), HAL to hardware.
 
 3. **Camera3Device is the engine** -- It manages the HAL lifecycle,
-   request queuing, result routing, and stream management through dedicated
-   threads (RequestThread, FrameProcessor, StatusTracker).
+   request queuing, result routing, and stream management through its
+   RequestThread and StatusTracker threads, with CameraDeviceClient's
+   FrameProcessorBase thread polling it for result metadata.
 
 4. **Streams are BufferQueues** -- Every output surface maps to a
    Camera3OutputStream backed by a producer-consumer buffer queue.

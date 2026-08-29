@@ -109,7 +109,7 @@ public final class BluetoothManager {
 
 ### 37.1.3 BluetoothAdapter
 
-`BluetoothAdapter` (5,500+ lines) is the central API class for all Bluetooth
+`BluetoothAdapter` (5,400+ lines) is the central API class for all Bluetooth
 operations. It represents the local Bluetooth radio and is the starting point
 for discovery, bonding, profile connections, and BLE operations.
 
@@ -592,8 +592,12 @@ mod opcode_types;
 mod server;
 ```
 
-The `arbiter` decides which side (C++ or Rust) handles each incoming ATT PDU
-by inspecting its handle range, the `mtu` module implements ATT MTU exchange,
+The `arbiter` decides per connection which side (C++ or Rust) handles incoming
+ATT traffic: the `IsolationManager` maps the advertising set (and hence the
+transport) a connection arrived on to a Rust server, and on those connections
+only server-side ATT opcodes (commands, requests, and confirmations, excluding
+Exchange MTU Request) are intercepted -- everything else is forwarded to the
+C++ stack. The `mtu` module implements ATT MTU exchange,
 and `ffi` provides the C++ interop bindings (`stack/arbiter/acl_arbiter.h` on
 the C++ side).
 
@@ -684,7 +688,7 @@ sequenceDiagram
 
     App->>BMS: enable()
     BMS->>AS: bind to AdapterService
-    AS->>SM: start_up_stack_async()
+    AS->>SM: stack_init() / stack_enable()
     SM->>BTIF: btif_init_bluetooth()
     BTIF->>GD: Initialize GD modules
     GD->>HAL: initialize(callback)
@@ -882,7 +886,7 @@ Source: `packages/modules/Bluetooth/android/app/src/com/android/bluetooth/a2dp/A
 final class A2dpStateMachine extends StateMachine {
     static final int MESSAGE_CONNECT = 1;
     static final int MESSAGE_DISCONNECT = 2;
-    static final int MESSAGE_STACK_EVENT = 101;
+    static final int MESSAGE_CONNECTION_STATE_CHANGED = 101;
     private static final int MESSAGE_CONNECT_TIMEOUT = 201;
 
     @VisibleForTesting static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(30);
@@ -1129,11 +1133,18 @@ Source: `packages/modules/Bluetooth/system/btif/src/stack_manager.cc`
 
 ```cpp
 static_assert(BTA_PAN_INCLUDED,
-    "Pan profile is always included in the bluetooth stack");
+              "#define BTA_PAN_INCLUDED preprocessor compilation flag is unsupported"
+              "  Pan profile is always included in the bluetooth stack"
+              "*** Conditional Compilation Directive error");
 static_assert(PAN_SUPPORTS_ROLE_NAP,
-    "Pan profile always supports network access point");
+              "#define PAN_SUPPORTS_ROLE_NAP preprocessor compilation flag is unsupported"
+              "  Pan profile always supports network access point in the bluetooth stack"
+              "*** Conditional Compilation Directive error");
 static_assert(PAN_SUPPORTS_ROLE_PANU,
-    "Pan profile always supports user as a client");
+              "#define PAN_SUPPORTS_ROLE_PANU preprocessor compilation flag is "
+              "unsupported"
+              "  Pan profile always supports user as a client in the bluetooth stack"
+              "*** Conditional Compilation Directive error");
 ```
 
 #### PAN Protocol Stack
@@ -1189,7 +1200,10 @@ Key L2CAP PSM assignments:
 | 0x0019 | AVDTP (A2DP) |
 | 0x001B | AVCTP Browse |
 | 0x001F | ATT (GATT/BLE) |
-| 0x0025 | LE L2CAP CoC |
+| 0x0027 | EATT (`BT_PSM_EATT`) |
+
+LE credit-based connection-oriented channels (LE CoC) have no fixed PSM here;
+they use dynamically allocated LE PSMs.
 
 #### RFCOMM
 
@@ -1217,12 +1231,16 @@ Source: `packages/modules/Bluetooth/android/app/src/com/android/bluetooth/gatt/G
 public class GattService extends ProfileService {
     // Manages GATT client connections
     // Handles GATT server registrations
-    // Coordinates BLE scanning and advertising
+    // Coordinates BLE advertising (AdvertiseManager)
     // Provides distance measurement
 }
 ```
 
-GATT is covered in detail in Section 37.4 (BLE).
+BLE scanning is not part of `GattService`: it is owned by `ScanController` in
+the `le_scan` package
+(`android/app/src/com/android/bluetooth/le_scan/ScanController.java`), which
+`AdapterService` starts directly. GATT is covered in detail in Section 37.4
+(BLE).
 
 ### 37.3.10 MAP -- Message Access Profile
 
@@ -1477,6 +1495,7 @@ graph TB
     subgraph "Bluetooth Service"
         GATT_SVC["GattService"]
         ADV_MGR["AdvertiseManager"]
+        SCAN_CTRL["ScanController<br/>(le_scan)"]
     end
 
     subgraph "Native Stack"
@@ -1489,12 +1508,13 @@ graph TB
     end
 
     APP_ADV --> BLE_ADV --> GATT_SVC
-    APP_SCAN --> BLE_SCAN --> GATT_SVC
+    APP_SCAN --> BLE_SCAN --> SCAN_CTRL
     APP_GATT_C --> GATT_C --> GATT_SVC
     APP_GATT_S --> GATT_S --> GATT_SVC
     GATT_SVC --> ADV_MGR
     GATT_SVC --> BTIF_GATT
     ADV_MGR --> BTIF_GATT
+    SCAN_CTRL --> BTIF_GATT
     BTIF_GATT --> GD_ADV
     BTIF_GATT --> GD_SCAN
     BTIF_GATT --> STACK_GATT
@@ -1506,8 +1526,9 @@ graph TB
 ### 37.4.2 BLE Advertising
 
 BLE advertising makes a device discoverable to nearby scanners. AOSP supports
-both legacy advertising (31-byte PDU) and extended advertising (up to 255 bytes
-per fragment, multiple advertising sets).
+both legacy advertising (31-byte PDU) and extended advertising (fragments of up
+to 251 bytes -- `kLeMaximumFragmentLength` -- toward a maximum GAP data length
+of 255 bytes, `kLeMaximumGapDataLength`, across multiple advertising sets).
 
 Source: `packages/modules/Bluetooth/system/gd/hci/le_advertising_manager_impl.h`
 
@@ -1791,11 +1812,11 @@ void btm_ble_init(void);
 void btm_ble_free();
 void btm_ble_connected(const RawAddress& bda, uint16_t handle,
                        uint8_t enc_mode, uint8_t role,
-                       tBLE_ADDR_TYPE addr_type, bool addr_matched,
+                       tBLE_ADDR_TYPE addr_type,
                        bool can_read_discoverable_characteristics);
-tBTM_SEC_DEV_REC* btm_ble_resolve_random_addr(const RawAddress& random_bda);
-void btm_ble_scanner_init(void);
-void btm_ble_scanner_cleanup(void);
+BtmDevice* btm_ble_resolve_random_addr(const RawAddress& random_bda);
+void btm_ble_batchscan_init(void);
+void btm_ble_adv_filter_init(void);
 ```
 
 ### 37.4.8 BLE Framework API Classes
@@ -1817,7 +1838,9 @@ Source: `packages/modules/Bluetooth/framework/java/android/bluetooth/le/`
 | `AdvertisingSetParameters` | Configure extended advertising parameters |
 | `AdvertiseData` | Advertising payload data |
 | `AdvertiseCallback` | Callback for advertising events |
-| `PeriodicAdvertisingManager` | Periodic advertising sync |
+| `PeriodicAdvertisingParameters` | Configure periodic advertising |
+| `PeriodicAdvertisingCallback` | Callback for periodic advertising sync |
+| `PeriodicAdvertisingReport` | Data received from a periodic advertising sync |
 | `DistanceMeasurementManager` | Channel sounding / ranging |
 | `ChannelSoundingParams` | Parameters for distance measurement |
 
@@ -2125,11 +2148,12 @@ Source: `packages/modules/Bluetooth/system/gd/hal/snoop_logger.h`
 
 Snoop logging modes (configured via developer options):
 
-| Mode | Constant | Description |
-|------|----------|-------------|
-| Disabled | `BT_SNOOP_LOG_MODE_DISABLED` | No logging |
-| Filtered | `BT_SNOOP_LOG_MODE_FILTERED` | Log headers only, strip data |
-| Full | `BT_SNOOP_LOG_MODE_FULL` | Complete packet capture |
+| Mode | Constant (string value) | Description |
+|------|-------------------------|-------------|
+| Disabled | `SnoopLogger::kBtSnoopLogModeDisabled` ("disabled") | No logging |
+| Filtered | `SnoopLogger::kBtSnoopLogModeFiltered` ("filtered") | Log headers only, strip data |
+| Full | `SnoopLogger::kBtSnoopLogModeFull` ("full") | Complete packet capture |
+| Kernel | `SnoopLogger::kBtSnoopLogModeKernel` ("kernel") | Capture via the kernel monitor |
 
 The snoop log is written in BTSnoop format, compatible with Wireshark for
 analysis.
@@ -2171,6 +2195,7 @@ typedef enum : uint8_t {
   SMP_MODEL_SEC_CONN_PASSKEY_ENT = 6,   /* Passkey Entry (SC) */
   SMP_MODEL_SEC_CONN_PASSKEY_DISP = 7,  /* Passkey Display (SC) */
   SMP_MODEL_SEC_CONN_OOB = 8,           /* OOB (SC) */
+  SMP_MODEL_OUT_OF_RANGE = 9,
 } tSMP_ASSO_MODEL;
 ```
 
@@ -2384,7 +2409,7 @@ The storage module manages:
 
 Key storage uses the `BluetoothKeystoreService` for secure key management:
 
-Source: `packages/modules/Bluetooth/android/app/src/com/android/bluetooth/btservice/bluetoothkeystore/BluetoothKeystoreService.java`
+Source: `packages/modules/Bluetooth/android/app/src/com/android/bluetooth/btservice/bluetoothKeystore/BluetoothKeystoreService.java`
 
 The storage keys are defined in a centralized header:
 
@@ -2505,18 +2530,20 @@ Source: `packages/modules/Bluetooth/system/stack/a2dp/a2dp_codec_config.cc`
 The codec framework supports both standard and vendor-specific codecs:
 
 ```cpp
-#include "a2dp_aac.h"
-#include "a2dp_sbc.h"
-#include "a2dp_vendor.h"
-#include "a2dp_vendor_aptx_constants.h"
-#include "a2dp_vendor_aptx_hd_constants.h"
-#include "a2dp_vendor_ldac_constants.h"
+#include "stack/include/a2dp_aac.h"
+#include "stack/include/a2dp_sbc.h"
+#include "stack/include/a2dp_vendor.h"
+#include "stack/include/a2dp_vendor_aptx_constants.h"
+#include "stack/include/a2dp_vendor_aptx_hd_constants.h"
+#include "stack/include/a2dp_vendor_ldac_constants.h"
+// ...
 
 #if !defined(EXCLUDE_NONSTANDARD_CODECS)
-#include "a2dp_vendor_aptx.h"
-#include "a2dp_vendor_aptx_hd.h"
-#include "a2dp_vendor_ldac.h"
-#include "a2dp_vendor_opus.h"
+#include "stack/include/a2dp_vendor_aptx.h"
+#include "stack/include/a2dp_vendor_aptx_hd.h"
+#include "stack/include/a2dp_vendor_ldac.h"
+#include "stack/include/a2dp_vendor_lhdcv5.h"
+#include "stack/include/a2dp_vendor_opus.h"
 #endif
 ```
 
@@ -2613,7 +2640,8 @@ std::optional<a2dp_configuration> get_a2dp_configuration(
     RawAddress peer_address,
     std::vector<a2dp_remote_capabilities> const& remote_seps,
     btav_a2dp_codec_config_t const& user_preferences,
-    ::bluetooth::a2dp::CodecId user_preferred_codec_id);
+    std::optional<::bluetooth::a2dp::CodecId> user_preferred_codec_id,
+    bool is_source);
 
 // Query the codec parameters from the audio HAL.
 tA2DP_STATUS parse_a2dp_configuration(
@@ -2826,6 +2854,8 @@ Typical latency ranges:
 The Dynamic Audio Buffer feature (DAB) allows runtime adjustment of buffer
 sizes:
 
+Source: `packages/modules/Bluetooth/system/gd/hci/controller_impl.h`
+
 ```cpp
 virtual uint32_t GetDabSupportedCodecs() const override;
 virtual const std::array<DynamicAudioBufferCodecCapability, 32>&
@@ -2877,8 +2907,8 @@ Enable full HCI snoop logging for analysis:
 adb shell setprop persist.bluetooth.btsnooplogmode full
 
 # Restart Bluetooth to apply
-adb shell svc bluetooth disable
-adb shell svc bluetooth enable
+adb shell cmd bluetooth_manager disable
+adb shell cmd bluetooth_manager enable
 
 # Pull the snoop log
 adb pull /data/misc/bluetooth/logs/btsnoop_hci.log
@@ -2930,14 +2960,12 @@ adb shell dumpsys bluetooth_manager GattService
 
 ### 37.8.5 BLE Scanning from the Command Line
 
-Use the `btmgmt` or `bluetoothctl` tools (available in AOSP eng builds) for
-low-level BLE operations:
+AOSP does not ship the BlueZ command-line tools (`btmgmt`, `bluetoothctl`);
+inspect BLE scanning through `cmd bluetooth_manager` and logcat instead:
 
 ```bash
-# Using Android's internal BLE scanning (requires root)
-adb root
-adb shell cmd bluetooth_manager le-scan start
-# Observe logcat for scan results:
+# Start a scan from an app (e.g. via BluetoothLeScanner), then
+# observe logcat for scan activity:
 adb logcat -s BtGatt.ScanManager
 ```
 
@@ -2972,7 +3000,7 @@ m com.android.bt
 m libbt-stack
 
 # Build and run Bluetooth unit tests
-atest --host bluetooth_test_gd
+atest --host bluetooth_test_gd_unit
 atest BluetoothInstrumentationTests
 ```
 
@@ -2987,7 +3015,7 @@ adb shell cmd bluetooth_manager
 # Example commands:
 adb shell cmd bluetooth_manager enable
 adb shell cmd bluetooth_manager disable
-adb shell cmd bluetooth_manager get-state
+adb shell cmd bluetooth_manager wait-for-state:STATE_ON
 ```
 
 ### 37.8.9 Analyzing A2DP Codec Configuration
@@ -3103,7 +3131,8 @@ public class GattServerActivity extends Activity {
 AOSP includes the Pandora Bluetooth testing framework, which provides a gRPC-
 based interface for automated Bluetooth testing:
 
-Directory: `packages/modules/Bluetooth/pandora/`
+Directory: `packages/modules/Bluetooth/tests/pandora/` (shared protos in
+`external/pandora/`)
 
 Pandora enables programmatic control of Bluetooth operations for conformance
 testing, including pairing, profile connections, and data transfer.
@@ -3259,8 +3288,8 @@ The GD HAL has a specific Rootcanal backend:
 Source: `packages/modules/Bluetooth/system/gd/hal/hci_hal_impl_host_rootcanal.cc`
 
 ```bash
-# Run tests with Rootcanal
-atest --host bluetooth_test_gd -- --rootcanal
+# Run the host unit tests (the host build links the Rootcanal HAL backend)
+atest --host bluetooth_test_gd_unit
 ```
 
 ---
@@ -3340,7 +3369,7 @@ framework.
 | Bluetooth Audio HAL | `hardware/interfaces/bluetooth/audio/aidl/` |
 | APEX Configuration | `packages/modules/Bluetooth/apex/` |
 | Floss (Linux) | `packages/modules/Bluetooth/floss/` |
-| Pandora Testing | `packages/modules/Bluetooth/pandora/` |
+| Pandora Testing | `packages/modules/Bluetooth/tests/pandora/` |
 
 ### Further Reading
 

@@ -161,10 +161,10 @@ sequenceDiagram
     Socket->>Kernel: Socket marked with fwmark (netId + permission)
     Kernel->>BPF: Evaluate cgroup/eBPF programs
     Note over BPF: UID-based traffic accounting<br/>Bandwidth metering<br/>Firewall rules
-    BPF->>NF: Pass to iptables chains
+    BPF->>Kernel: Route lookup via fwmark ip rules<br/>and netId routing table
+    Kernel->>NF: Traverse iptables OUTPUT chains
     Note over NF: bw_OUTPUT (bandwidth)<br/>fw_OUTPUT (firewall)<br/>NAT (tethering)
-    NF->>Kernel: Route lookup via netId routing table
-    Kernel->>Driver: Transmit packet
+    NF->>Driver: POSTROUTING, then transmit packet
     Driver-->>App: (async) Completion
 ```
 
@@ -403,7 +403,7 @@ objects, which wrap `NetworkCapabilities` constraints.
 A `NetworkRequest` specifies:
 
 - **Required capabilities**: What the network must provide (e.g., `NET_CAPABILITY_INTERNET`)
-- **Forbidden capabilities**: What the network must not have (e.g., `NET_CAPABILITY_NOT_METERED` forbidden means metered is OK)
+- **Forbidden capabilities**: What the network must not have (e.g., forbidding `NET_CAPABILITY_NOT_METERED` means only metered networks can satisfy the request)
 - **Transport types**: Which bearers are acceptable (Wi-Fi, cellular, etc.)
 - **Network specifier**: For targeting specific networks (e.g., a particular Wi-Fi SSID)
 
@@ -440,7 +440,7 @@ Transport types include:
 | `TRANSPORT_ETHERNET` | Wired Ethernet |
 | `TRANSPORT_VPN` | Virtual Private Network |
 | `TRANSPORT_WIFI_AWARE` | Wi-Fi Aware (NAN) |
-| `TRANSPORT_LOWPAN` | Low-power WAN (LoWPAN) |
+| `TRANSPORT_LOWPAN` | Low-power Wireless Personal Area Network (6LoWPAN / 802.15.4) |
 | `TRANSPORT_TEST` | Test networks |
 | `TRANSPORT_SATELLITE` | Satellite connectivity |
 | `TRANSPORT_THREAD` | Thread mesh networking |
@@ -601,7 +601,7 @@ These BPF programs provide:
 
 - **UID-based accounting**: Track bytes sent/received per UID
 - **Firewall enforcement**: Block/allow traffic per UID and chain
-- **Socket marking**: Apply fwmarks at socket creation time
+- **Socket-creation permission checks**: The `cgroup/sock_create` program enforces the per-UID INTERNET permission and records the UID and socket cookie in socket storage (fwmarks themselves are applied by netd's `FwmarkServer`)
 - **Data saver**: Restrict background data for metered networks
 - **Bandwidth control**: Enforce per-interface quotas
 
@@ -634,7 +634,7 @@ app has an accurate view of the current network state.
 
 The Wi-Fi framework in AOSP is a complex subsystem that manages Wi-Fi radio
 operations, network scanning, connection management, SoftAP (hotspot), Wi-Fi
-Direct (P2P), and Wi-Fi Aware (NAN). Since Android 12, the entire Wi-Fi stack
+Direct (P2P), and Wi-Fi Aware (NAN). Since Android 11, the entire Wi-Fi stack
 ships as a Mainline module.
 
 **Module root:** `packages/modules/Wifi/`
@@ -755,28 +755,25 @@ The state machine contains the following key states:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> DefaultState
-    DefaultState --> ConnectableState: Wi-Fi enabled
+    [*] --> ConnectableState
 
     state ConnectableState {
         [*] --> DisconnectedState
-        DisconnectedState --> L2ConnectingState: Connect command
-        L2ConnectingState --> L2ConnectedState: Association success
-        L2ConnectingState --> DisconnectedState: Association failure
+        DisconnectedState --> ConnectingOrConnectedState: Connect command
 
-        state L2ConnectedState {
-            [*] --> WaitBeforeL3ProvisioningState
-            WaitBeforeL3ProvisioningState --> L3ProvisioningState: Ready
-            L3ProvisioningState --> L3ConnectedState: DHCP success
-            L3ProvisioningState --> DisconnectedState: DHCP failure
+        state ConnectingOrConnectedState {
+            [*] --> L2ConnectingState
+            L2ConnectingState --> L2ConnectedState: Association success
 
-            state L3ConnectedState {
-                [*] --> ConnectedState
-                ConnectedState --> RoamingState: Roaming
-                RoamingState --> ConnectedState: Roam complete
+            state L2ConnectedState {
+                [*] --> WaitBeforeL3ProvisioningState
+                WaitBeforeL3ProvisioningState --> L3ProvisioningState: Ready
+                L3ProvisioningState --> L3ConnectedState: DHCP success
+                L3ConnectedState --> RoamingState: Roaming
+                RoamingState --> L3ConnectedState: Roam complete
             }
         }
-        L2ConnectedState --> DisconnectedState: Disconnect
+        ConnectingOrConnectedState --> DisconnectedState: Disconnect or failure
     }
 ```
 
@@ -784,15 +781,14 @@ stateDiagram-v2
 
 | State | Description |
 |-------|-------------|
-| `DefaultState` | Wi-Fi is off or initializing |
-| `ConnectableState` | Wi-Fi is on and ready to connect |
+| `ConnectableState` | Root state, entered when Wi-Fi is enabled |
+| `ConnectingOrConnectedState` | Parent state covering association through full connectivity |
 | `DisconnectedState` | Not associated with any AP |
 | `L2ConnectingState` | Attempting 802.11 association |
 | `L2ConnectedState` | Associated at L2, waiting for L3 |
 | `WaitBeforeL3ProvisioningState` | Brief pause before IP provisioning |
 | `L3ProvisioningState` | Running DHCP or static IP config |
 | `L3ConnectedState` | Full IP connectivity established |
-| `ConnectedState` | Stable connected state |
 | `RoamingState` | Transitioning between APs |
 
 ### 35.3.4 WifiNative: The HAL Bridge
@@ -979,7 +975,6 @@ graph TD
 
     subgraph "Kernel"
         IPTABLES["iptables / ip6tables"]
-        NFTABLES["nftables"]
         NETLINK_K["Netlink Socket"]
         XFRM["IPsec / XFRM"]
         ROUTING["Routing Tables"]
@@ -1003,7 +998,6 @@ graph TD
     FC --> IPTABLES
     RC --> NETLINK_K
     TC_CTRL --> IPTABLES
-    TC_CTRL --> NFTABLES
     IC --> NETLINK_K
     XC --> XFRM
 ```
@@ -1370,19 +1364,17 @@ bool resolv_init(const ResolverNetdCallbacks* callbacks) {
         ? DOH_LOG_LEVEL_INFO
         : DOH_LOG_LEVEL_WARN);
 
-    using android::net::gApiLevel;
-    gApiLevel = getApiLevel();
     using android::net::gResNetdCallbacks;
+    // all current fields are guaranteed present on R
+    // and we only support S+
     gResNetdCallbacks.check_calling_permission =
         callbacks->check_calling_permission;
     gResNetdCallbacks.get_network_context =
         callbacks->get_network_context;
     gResNetdCallbacks.log = callbacks->log;
-    if (gApiLevel >= 30) {
-        gResNetdCallbacks.tagSocket = callbacks->tagSocket;
-        gResNetdCallbacks.evaluate_domain_name =
-            callbacks->evaluate_domain_name;
-    }
+    gResNetdCallbacks.tagSocket = callbacks->tagSocket;
+    gResNetdCallbacks.evaluate_domain_name =
+        callbacks->evaluate_domain_name;
     android::net::gDnsResolv = android::net::DnsResolver::getInstance();
     return android::net::gDnsResolv->start();
 }
@@ -1471,10 +1463,10 @@ namespace {
 // "<random>-dnsotls-ds.metric.gstatic.com".
 // This is used for DoT validation probing.
 std::vector<uint8_t> makeDnsQuery() {
-    static const char kDnsSafeChars[] =
-            "abcdefhijklmnopqrstuvwxyz"
-            "ABCDEFHIJKLMNOPQRSTUVWXYZ"
-            "0123456789";
+    static constexpr char kDnsSafeChars[] =
+            "0123456789"
+            "abcdefghijklmnopqrstuvwxyz"
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     // ... builds a DNS query with random prefix for validation
 }
 }  // namespace
@@ -1930,21 +1922,25 @@ own state machine.
 ```mermaid
 stateDiagram-v2
     [*] --> InitialState
-    InitialState --> LocalHotspotState: LOCAL_ONLY request
-    InitialState --> TetheredState: TETHERING request
+    InitialState --> LocalHotspotState: LOCAL_ONLY
+    InitialState --> TetheredState: TETHERING
     LocalHotspotState --> InitialState: Stop
     TetheredState --> InitialState: Stop
-    TetheredState --> TetheredState: Upstream change
-
-    state TetheredState {
-        [*] --> ConfigureInterface
-        ConfigureInterface --> RunDHCP: Start DHCP server
-        RunDHCP --> SetupNAT: Configure NAT rules
-        SetupNAT --> Active: Ready
-        Active --> UpdateUpstream: Upstream changes
-        UpdateUpstream --> Active: Reconfigure
-    }
+    TetheredState --> TetheredState
+    TetheredState --> WaitingForRestartState: Interface down
+    WaitingForRestartState --> TetheredState: Interface up
+    InitialState --> UnavailableState: Interface removed
 ```
+
+The `LOCAL_ONLY` and `TETHERING` edges are the two request types that start
+serving; the self-transition on `TetheredState` is an upstream change, which
+reconfigures forwarding without leaving the state.
+
+Both serving states (`LocalHotspotState` and `TetheredState`) derive from the
+abstract `BaseServingState`, whose entry code configures the interface address,
+starts the DHCP server, and brings up IPv6 tethering; `TetheredState`
+additionally sets up forwarding and NAT toward the current upstream and
+reconfigures them when the upstream changes.
 
 ### 35.7.5 BPF Offload
 
@@ -2038,12 +2034,13 @@ The `UpstreamNetworkMonitor` tracks available upstream networks and selects
 the best one for providing Internet to tethered clients. It registers
 network callbacks with ConnectivityService and responds to network changes.
 
-Selection priority (typical):
-
-1. DUN (Dedicated Upstream Network) capable cellular
-2. Wi-Fi
-3. Regular cellular
-4. Ethernet
+By default (`config_tether_upstream_automatic` is true), the upstream simply
+follows the device's current default Internet network, with a DUN (Dedicated
+Upstream Network) cellular connection substituted when the carrier requires
+DUN for tethering. When a device instead ships the legacy ordered list
+(`config_tether_upstream_types`), `TetheringConfiguration` always prepends
+Ethernet to the list, so Ethernet has the highest priority, followed by the
+configured entries (typically DUN or regular cellular and Wi-Fi).
 
 ### 35.7.9 NAT Configuration
 
@@ -2218,8 +2215,8 @@ sequenceDiagram
 
 ### 35.8.8 Certificate Transparency
 
-Starting with Android 16, Certificate Transparency (CT) verification is
-enabled by default for apps targeting the latest SDK:
+Certificate Transparency (CT) verification is enabled by default for apps
+targeting SDK 37 (`CINNAMON_BUN`) and above:
 
 ```java
 // Source: NetworkSecurityConfig.java
@@ -2227,6 +2224,10 @@ enabled by default for apps targeting the latest SDK:
 @EnabledAfter(targetSdkVersion = Build.VERSION_CODES.BAKLAVA)
 static final long DEFAULT_ENABLE_CERTIFICATE_TRANSPARENCY = 407952621L;
 ```
+
+Note that `@EnabledAfter` enables the change only for apps whose target SDK is
+*greater than* the named version, so targeting `BAKLAVA` (36) itself does not
+yet opt an app into CT by default.
 
 The `CertificateTransparencyService` in the Connectivity module manages
 CT log list updates and verification:
@@ -2246,7 +2247,13 @@ CT log list updates and verification:
 ### 35.8.9 Cleartext Traffic Restrictions
 
 By default, Android blocks cleartext (non-HTTPS) traffic for apps targeting
-Android 9+. The `StrictController` in netd enforces this at the network level:
+Android 9+. That target-SDK default comes from the Network Security Config
+machinery and is enforced in the app's own process by `NetworkSecurityPolicy`
+and `NetworkSecurityConfig`, not by netd. What netd's `StrictController`
+implements is a different, opt-in mechanism: StrictMode's per-UID
+cleartext-detection penalty (`detectCleartextNetwork()`), configured through
+netd's `strictUidCleartextPenalty()` and realized as the `st_OUTPUT`,
+`st_clear_detect`, `st_penalty_log`, and `st_penalty_reject` iptables chains:
 
 ```
 // Source: system/netd/server/Controllers.cpp
@@ -2254,7 +2261,7 @@ Android 9+. The `StrictController` in netd enforces this at the network level:
 static const std::vector<const char*> FILTER_OUTPUT = {
     OEM_IPTABLES_FILTER_OUTPUT,
     FirewallController::LOCAL_OUTPUT,
-    StrictController::LOCAL_OUTPUT,    // <-- cleartext enforcement
+    StrictController::LOCAL_OUTPUT,    // <-- StrictMode cleartext penalty
     BandwidthController::LOCAL_OUTPUT,
 };
 ```
@@ -2310,8 +2317,8 @@ config.
 | < 24 (Android 7) | Allowed | Trusted | No |
 | 24-27 | Allowed | Not trusted | No |
 | 28+ (Android 9) | Blocked | Not trusted | No |
-| 36+ (BAKLAVA) | Blocked | Not trusted | Yes (default) |
-| 37+ (CINNAMON_BUN) | Blocked | Not trusted | Yes; `usesCleartextTraffic` manifest flag ignored |
+| 36 (BAKLAVA) | Blocked | Not trusted | No |
+| 37+ (CINNAMON_BUN) | Blocked | Not trusted | Yes (default); `usesCleartextTraffic` manifest flag ignored |
 
 ---
 
@@ -2390,24 +2397,25 @@ stateDiagram-v2
 
     state DefaultState {
         [*] --> MaybeNotifyState
-        MaybeNotifyState --> EvaluatingState: Start validation
-        EvaluatingState --> ValidatedState: All probes pass
-        EvaluatingState --> CaptivePortalState: Portal detected
-        EvaluatingState --> WaitingForNextProbeState: Probe failed
-        WaitingForNextProbeState --> EvaluatingState: Retry timer
-        CaptivePortalState --> EvaluatingState: User dismissed portal
-        ValidatedState --> EvaluatingState: Re-validation needed
-    }
 
-    state EvaluatingState {
-        [*] --> ProbeHTTPS
-        ProbeHTTPS --> ProbeHTTP: In parallel
-        ProbeHTTPS --> ProbeDNS: In parallel
-        ProbeDNS --> CheckResults
-        ProbeHTTP --> CheckResults
-        ProbeHTTPS --> CheckResults
+        state MaybeNotifyState {
+            state EvaluatingState {
+                [*] --> ProbingState
+                ProbingState --> WaitingForNextProbeState: Probe failed
+                WaitingForNextProbeState --> ProbingState: Retry timer
+            }
+            EvaluatingState --> CaptivePortalState: Portal detected
+            CaptivePortalState --> EvaluatingState: User dismissed portal
+        }
+
+        MaybeNotifyState --> ValidatedState: All probes pass
+        ValidatedState --> MaybeNotifyState: Re-validation needed
     }
 ```
+
+The parallel HTTP, HTTPS, and fallback probes are not separate states; they
+run as threads inside `ProbingState`. `EvaluatingPrivateDnsState` and
+`EvaluatingBandwidthState` (not shown) are further children of `DefaultState`.
 
 ### 35.9.3 Validation Probes
 
@@ -2950,13 +2958,13 @@ sequenceDiagram
 
 | Class | Path | Lines |
 |-------|------|-------|
-| VcnManagementService | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/VcnManagementService.java` | 1,551 |
+| VcnManagementService | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/VcnManagementService.java` | 1,549 |
 | Vcn | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/Vcn.java` | 791 |
-| VcnGatewayConnection | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/VcnGatewayConnection.java` | 3,122 |
-| VcnNetworkProvider | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/VcnNetworkProvider.java` | ~200 |
-| UnderlyingNetworkController | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/routeselection/UnderlyingNetworkController.java` | ~400 |
-| TelephonySubscriptionTracker | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/TelephonySubscriptionTracker.java` | ~350 |
-| NetworkPriorityClassifier | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/routeselection/NetworkPriorityClassifier.java` | ~300 |
+| VcnGatewayConnection | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/VcnGatewayConnection.java` | 3,238 |
+| VcnNetworkProvider | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/VcnNetworkProvider.java` | ~230 |
+| UnderlyingNetworkController | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/routeselection/UnderlyingNetworkController.java` | ~780 |
+| TelephonySubscriptionTracker | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/TelephonySubscriptionTracker.java` | ~600 |
+| NetworkPriorityClassifier | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/routeselection/NetworkPriorityClassifier.java` | ~370 |
 
 ---
 
@@ -3018,7 +3026,7 @@ graph TD
     subgraph "Native Layer"
         OTD["ot-daemon<br/>(OpenThread daemon)"]
         OT["OpenThread Stack"]
-        TUN["TUN Interface<br/>(thread-wpan0)"]
+        TUN["TUN Interface<br/>(thread-wpan)"]
         IEEE["IEEE 802.15.4 Radio"]
     end
 
@@ -3179,14 +3187,28 @@ The native Thread protocol implementation is based on
 
 ```
 # packages/modules/Connectivity/thread/apex/ot-daemon.34rc
-service ot-daemon /apex/com.android.tethering/bin/ot-daemon
+service ot-daemon /apex/com.android.tethering/bin/ot-daemon -I thread-wpan --auto-attach=0 threadnetwork_hal://binder?none
+    interface aidl ot_daemon
+    disabled
+    oneshot
+    updatable
+    class main
+    user thread_network
+    group thread_network inet system
+    seclabel u:r:ot_daemon:s0
+    socket ot-daemon/thread-wpan.sock stream 0660 thread_network thread_network
+    override
 ```
+
+The `-I thread-wpan` argument is what names the daemon's TUN interface, and
+the daemon runs as the dedicated `thread_network` user, started on demand
+(`disabled oneshot updatable`).
 
 `ot-daemon` manages:
 
 - The IEEE 802.15.4 radio driver (via the Thread Radio Co-Processor interface)
 - The Thread mesh protocol stack (MLE, routing, 6LoWPAN)
-- A TUN interface (`thread-wpan0`) for passing IPv6 traffic between the
+- A TUN interface (`thread-wpan`) for passing IPv6 traffic between the
   Thread mesh and the Android networking stack
 - Service Registration Protocol (SRP) for mDNS service discovery
 
@@ -3200,7 +3222,7 @@ Thread interface and registers multicast routing rules:
 sequenceDiagram
     participant TNCS as ThreadNetworkControllerService
     participant OTD as ot-daemon
-    participant TUN as thread-wpan0 TUN
+    participant TUN as thread-wpan TUN
     participant NA as NetworkAgent
     participant CS as ConnectivityService
     participant UP as Upstream Network (Wi-Fi)
@@ -3468,8 +3490,7 @@ sequenceDiagram
     Note over CS: New best network found
     CS->>NETD: networkSetDefault(newNetId)
     NETD->>KERNEL: Update default routing rules
-    CS->>DNSR: setDefaultNetwork(newNetId)
-    DNSR->>DNSR: Switch DNS cache to new network
+    Note over DNSR: DNS caches are per-network<br/>queries now resolve on the new netId
     CS->>APPS: onAvailable(newNetwork)
     CS->>APPS: onLosing(oldNetwork, lingerMs)
     Note over CS: After linger timeout
@@ -3489,8 +3510,6 @@ public final class ConnectivityFlags {
     public static final String NAMESPACE_TETHERING_BOOT = "tethering_boot";
 
     // Feature flags
-    public static final String REQUEST_RESTRICTED_WIFI =
-            "request_restricted_wifi";
     public static final String INGRESS_TO_VPN_ADDRESS_FILTERING =
             "ingress_to_vpn_address_filtering";
     public static final String BACKGROUND_FIREWALL_CHAIN =
@@ -3524,7 +3543,12 @@ Notable feature flags:
 | `CELLULAR_DATA_INACTIVITY_TIMEOUT` | Cellular idle timeout |
 | `WIFI_DATA_INACTIVITY_TIMEOUT` | Wi-Fi idle timeout |
 | `INGRESS_TO_VPN_ADDRESS_FILTERING` | Filter ingress to VPN addresses |
-| `REQUEST_RESTRICTED_WIFI` | Allow restricted Wi-Fi requests |
+
+A related but separate mechanism is the aconfig flag
+`com.android.net.flags.request_restricted_wifi`, referenced as
+`@FlaggedApi(Flags.FLAG_REQUEST_RESTRICTED_WIFI)` in `NetworkCapabilities` and
+`NetworkRequest` to gate restricted Wi-Fi requests; it is not a
+`ConnectivityFlags` entry.
 
 ### 35.12.6 DNS Resolver Unsolicited Events
 
@@ -3615,7 +3639,7 @@ graph TD
 Each ClientModeManager operates in a specific role:
 
 ```java
-// Source: packages/modules/Wifi/service/java/com/android/server/wifi/ClientModeImpl.java
+// Source: packages/modules/Wifi/service/java/com/android/server/wifi/ActiveModeManager.java
 // ROLE_CLIENT_PRIMARY - the main STA interface (handles default connection)
 // ROLE_CLIENT_LOCAL_ONLY - local-only connection (P2P, local hotspot)
 // ROLE_CLIENT_SECONDARY_LONG_LIVED - persistent secondary (dual-STA)
@@ -3646,7 +3670,7 @@ graph TD
 
     subgraph "Scan Coordination"
         PROXY["ScanRequestProxy"]
-        SCHED["WifiScanningScheduler"]
+        SCHED["WifiConnectivityManager"]
     end
 
     subgraph "Execution"
@@ -3816,10 +3840,10 @@ and resource overlays:
 | HTTP probe URL | `connectivitycheck.gstatic.com/generate_204` | Primary portal detection |
 | HTTPS probe URL | `www.google.com/generate_204` | TLS verification |
 | Probe timeout | 10 seconds | Maximum wait per probe |
-| DNS timeout | 5 seconds | DNS resolution timeout |
+| DNS probe timeout | 12.5 seconds | DNS resolution timeout, enough for 3 queries 5 seconds apart |
 | Evaluation interval | Variable | Time between validation attempts |
 | Data stall DNS threshold | 5 consecutive | DNS timeout threshold |
-| Data stall TCP interval | 2 seconds | TCP metrics polling interval |
+| Data stall TCP interval | 20 seconds | TCP metrics polling interval |
 
 ### 35.15.2 Multi-URL Probing
 
@@ -3926,7 +3950,7 @@ graph LR
     end
 
     subgraph "CLAT (clatd)"
-        CLAT_IN["clat4 interface<br/>(192.0.0.4)"]
+        CLAT_IN["v4-wlan0 interface<br/>(192.0.0.4)"]
         XLAT["IPv4 -> IPv6<br/>Translation"]
     end
 
@@ -3946,7 +3970,7 @@ graph LR
 CLAT provides:
 
 - Transparent IPv4 connectivity over IPv6-only networks
-- Per-process CLAT interface (v4-wlan0, v4-rmnet0)
+- Per-interface CLAT device (v4-wlan0, v4-rmnet0)
 - BPF-accelerated translation for performance
 - Automatic configuration via DNS64 prefix discovery
 
@@ -4110,7 +4134,8 @@ designed for IoT devices:
 // Source: ConnectivityService.java imports
 import static android.net.NetworkCapabilities.TRANSPORT_THREAD;
 
-// Source: ConnectivityFlags.java imports
+// Source: ConnectivityService.java imports
+// (the constant itself is declared in ConnectivityFlags.java)
 import static com.android.server.connectivity.ConnectivityFlags.SATISFIED_BY_LOCAL_NETWORK_METRICS;
 ```
 
@@ -4164,10 +4189,11 @@ graph TD
 ### 35.21.2 INTERNET Permission Enforcement
 
 The `INTERNET` permission is unique in Android: it is enforced at the kernel
-level through the `inet` supplementary group (GID 3003). When an app has the
-permission, its process is given this group at fork time. The kernel's paranoid
-network security (configured via `/proc/sys/net/`) restricts socket creation
-to processes with the appropriate GID.
+level. On modern Android this is done by the `cgroupsock/inet_create` eBPF
+program in `packages/modules/Connectivity/bpf/progs/netd.c`, which runs on
+every AF_INET/AF_INET6 socket creation and checks the per-UID
+`BPF_PERMISSION_INTERNET` bit in a BPF map. The map is populated through
+netd's `trafficSetNetPermForUids()`:
 
 ```
 // From system/netd/server/NetdNativeService.h
@@ -4176,8 +4202,10 @@ binder::Status trafficSetNetPermForUids(
     const std::vector<int32_t>& uids) override;
 ```
 
-Apps without `INTERNET` permission literally cannot create AF_INET or AF_INET6
-sockets -- the `socket()` system call returns `EACCES`.
+Membership in the `inet` group (AID_INET, GID 3003), granted to permitted
+apps at fork time, is the legacy pre-BPF mechanism. Apps without `INTERNET`
+permission literally cannot create AF_INET or AF_INET6 sockets -- the
+`socket()` system call returns `EPERM`.
 
 ### 35.21.3 Location Permission for Wi-Fi Scans
 
@@ -4347,13 +4375,14 @@ QoS callbacks provide:
 | Wi-Fi | wlan0, wlan1 | `WifiNetworkAgent` (in ClientModeImpl) | Wi-Fi AIDL HAL |
 | Cellular | rmnet0, rmnet1 | `TelephonyNetworkAgent` (in TelephonyNetworkFactory) | Radio AIDL HAL |
 | Ethernet | eth0 | `EthernetNetworkAgent` | None (kernel driver) |
-| Bluetooth | bt-pan | `BluetoothNetworkAgent` (in BluetoothPan) | Bluetooth AIDL HAL |
+| Bluetooth | bt-pan | Agent in the Bluetooth PAN service | Bluetooth AIDL HAL |
 | VPN | tun0, ipsec0 | Vpn-internal agent | None (kernel TUN) |
 | Wi-Fi Aware | aware0 | `WifiAwareNetworkAgent` | Wi-Fi AIDL HAL |
-| LoWPAN | lowpan0 | `LowpanNetworkAgent` | LoWPAN HAL |
-| Thread | thread0 | `ThreadNetworkAgent` | Thread HAL |
-| Satellite | sat0 | `SatelliteNetworkAgent` | Satellite HAL |
+| Thread | thread-wpan | Plain `NetworkAgent` in `ThreadNetworkControllerService` | threadnetwork HAL (via ot-daemon) |
 | Test | test0 | `TestNetworkAgent` | None |
+
+Satellite connectivity has no dedicated agent class: it is reported as
+`TRANSPORT_SATELLITE` on the telephony network agents.
 
 ### 35.25.2 Network Lifecycle Complete Flow
 
@@ -4525,12 +4554,15 @@ mProxyTracker = multiProxyEnabled
 `isMultiProxyEnabled()` returns `com.android.tethering.flags.Flags.enableMultiProxySystem()`,
 so both an aconfig flag and a resource overlay (`config_enable_multi_proxy_system`)
 must be set before the multi-proxy path is used; otherwise ConnectivityService
-falls back to the classic single `ProxyTracker`. `MultiProxyTracker` is the
-`IProxyTracker` whose `updateNetworkProxy(network, newProxy, oldProxy)` and
-`updateDefaultNetworkState(...)` callbacks are what ultimately drive
-`PacCoordinator.startServingPacScript()` per network. It also serves as the
-`MultiPacProxyInstalledListener` that `PacCoordinator` notifies once a proxy
-server is running and its PAC script is loaded.
+falls back to the classic single `ProxyTracker`. `MultiProxyTracker` declares
+the `updateNetworkProxy(network, newProxy, oldProxy)` and
+`updateDefaultNetworkState(...)` callbacks that are intended to drive
+`PacCoordinator.startServingPacScript()` per network. `PacCoordinator` also
+takes a `MultiPacProxyInstalledListener` in its constructor, to be notified
+once a proxy server is running and its PAC script is loaded — but in the
+Android 17 tree `MultiProxyTracker` does not yet implement that listener, and
+its `updateNetworkProxy`/`updateDefaultNetworkState` overrides are still empty
+`// TODO: Implement` stubs.
 
 ---
 
@@ -4600,7 +4632,9 @@ interface IMainlineSupplicant {
 - `getVendorSupplicant()` returns the standard vendor `ISupplicant` root —
   this is how STA and P2P operations get routed back to the vendor supplicant.
 - `addNanInterface()` / `removeNanInterface()` register and tear down a Wi-Fi
-  Aware (NAN) interface (e.g. `aware0`), returning the vendor NAN iface object.
+  Aware (NAN) interface (e.g. `aware0`), returning a mainline
+  `android.system.wifi.mainline_supplicant.ISupplicantNanIface` — the NAN
+  surface owned by the mainline supplicant itself, not the vendor NAN iface.
 - `setCurrentUserIdentity()` tells the supplicant which user is in the
   foreground so it can load that user's credential-encrypted (CE) configuration.
 
@@ -5229,9 +5263,10 @@ NetworkRequest [ REQUEST id=1, [ Capabilities: INTERNET&NOT_RESTRICTED
 # Full Wi-Fi dump
 adb shell dumpsys wifi
 
-# Specific sections
-adb shell dumpsys wifi scan    # Scan results
-adb shell dumpsys wifi config  # Saved networks
+# Specific sections (unrecognized args fall through to the full dump)
+adb shell dumpsys wifi wifiScoreCard                 # Per-network scoring history
+adb shell dumpsys wifi ipclient                      # IpClient state
+adb shell dumpsys wifi WifiNetworkSuggestionsManager # Network suggestions
 ```
 
 Key information in the Wi-Fi dump:
@@ -5350,8 +5385,9 @@ adb shell svc wifi disable
 adb shell svc data enable
 adb shell svc data disable
 
-# Set network speed limit (emulator only)
-adb shell cmd connectivity set-bandwidth-limit <interface> <kbps>
+# Toggle airplane mode from the shell
+adb shell cmd connectivity airplane-mode enable
+adb shell cmd connectivity airplane-mode disable
 
 # Simulate captive portal
 adb shell settings put global captive_portal_mode 0  # Disable detection
@@ -5429,7 +5465,7 @@ adb shell dumpsys wifi | grep "Link speed"
 adb shell dumpsys connectivity --diag | grep "DataStall"
 
 # 4. Check for channel congestion
-adb shell dumpsys wifi scan | grep "freq"
+adb shell dumpsys wifi | grep "freq"
 
 # 5. Check bandwidth estimates
 adb shell dumpsys connectivity | grep "Bandwidth"
@@ -5674,9 +5710,9 @@ AOSP tree.  The key source locations are:
 
 | Layer | Path | Description |
 |-------|------|-------------|
-| Public API | `frameworks/base/telephony/java/android/telephony/` | `TelephonyManager` (19 705 lines), `SubscriptionManager`, `SmsManager`, `CarrierConfigManager` |
-| Internal framework | `frameworks/opt/telephony/src/java/com/android/internal/telephony/` | `Phone` (5 408 lines), `GsmCdmaPhone` (4 333 lines), `RIL` (6 017 lines), `ServiceStateTracker`, `CommandsInterface` |
-| Phone process | `packages/services/Telephony/src/com/android/phone/` | `PhoneInterfaceManager` (14 737 lines), `PhoneGlobals`, `CarrierConfigLoader` |
+| Public API | `frameworks/base/telephony/java/android/telephony/` | `TelephonyManager` (~20 200 lines), `SubscriptionManager`, `SmsManager`, `CarrierConfigManager` |
+| Internal framework | `frameworks/opt/telephony/src/java/com/android/internal/telephony/` | `Phone` (~5 550 lines), `GsmCdmaPhone` (~4 500 lines), `RIL` (~6 135 lines), `ServiceStateTracker`, `CommandsInterface` |
+| Phone process | `packages/services/Telephony/src/com/android/phone/` | `PhoneInterfaceManager` (~15 470 lines), `PhoneGlobals`, `CarrierConfigLoader` |
 | Telephony module | `packages/modules/Telephony/` | Mainline-modularised telephony code (apex, framework, libs) |
 | Radio HAL | `hardware/interfaces/radio/aidl/` | AIDL-based HAL interfaces: modem, sim, network, data, voice, messaging, ims |
 | Telecom | `packages/services/Telecomm/` | `CallsManager`, call routing, `InCallService` binding |
@@ -5701,11 +5737,14 @@ public class TelephonyManager {
 ```
 
 Applications obtain it via `Context.getSystemService(TelephonyManager.class)`.
-Internally, every method on `TelephonyManager` forwards to
+Internally, most methods on `TelephonyManager` forward to
 `ITelephony.Stub.Proxy` over Binder IPC, which resolves to
-`PhoneInterfaceManager` in the phone process.
+`PhoneInterfaceManager` in the phone process.  (A few simple getters skip the
+Binder hop entirely: `getNetworkOperatorName()`, for example, just reads the
+`TelephonyProperties.operator_alpha()` system property that
+`ServiceStateTracker` keeps up to date.)
 
-A simplified view of a `getNetworkOperatorName()` call:
+A simplified view of a `getServiceState()` call:
 
 ```mermaid
 sequenceDiagram
@@ -5716,16 +5755,16 @@ sequenceDiagram
     participant Phone as GsmCdmaPhone
     participant SST as ServiceStateTracker
 
-    App->>TM: getNetworkOperatorName()
-    TM->>Binder: ITelephony.getNetworkOperatorNameForPhone(phoneId)
-    Binder->>PIM: getNetworkOperatorNameForPhone(phoneId)
+    App->>TM: getServiceState()
+    TM->>Binder: ITelephony.getServiceStateForSlot(slotIndex, ...)
+    Binder->>PIM: getServiceStateForSlot(slotIndex, ...)
     PIM->>Phone: getServiceState()
     Phone->>SST: getServiceState()
     SST-->>Phone: ServiceState
     Phone-->>PIM: ServiceState
-    PIM-->>Binder: operatorAlphaLong
-    Binder-->>TM: operatorAlphaLong
-    TM-->>App: "T-Mobile"
+    PIM-->>Binder: ServiceState
+    Binder-->>TM: ServiceState
+    TM-->>App: ServiceState
 ```
 
 Key public API groupings on `TelephonyManager`:
@@ -5741,8 +5780,9 @@ Key public API groupings on `TelephonyManager`:
 ### 36.1.3 PhoneInterfaceManager -- the Binder Gateway
 
 `PhoneInterfaceManager` lives in `packages/services/Telephony/` and extends
-`ITelephony.Stub`.  At 14 737 lines it is the single largest class in the
-telephony stack.  It performs three critical functions:
+`ITelephony.Stub`.  At roughly 15 500 lines it is one of the largest classes
+in the telephony stack (only `TelephonyManager` itself, at about 20 200 lines,
+is bigger).  It performs three critical functions:
 
 1. **Permission enforcement** -- every method checks the caller's UID against
    required permissions (`READ_PHONE_STATE`, `MODIFY_PHONE_STATE`,
@@ -5758,9 +5798,23 @@ Example permission check pattern:
 // packages/services/Telephony/src/com/android/phone/PhoneInterfaceManager.java
 public String getImeiForSlot(int slotIndex, String callingPackage,
         String callingFeatureId) {
-    enforceReadPrivilegedPermission("getImeiForSlot");
     Phone phone = PhoneFactory.getPhone(slotIndex);
-    return phone != null ? phone.getImei() : null;
+    if (phone == null) {
+        return null;
+    }
+    int subId = phone.getSubId();
+    enforceCallingPackage(callingPackage, Binder.getCallingUid(), "getImeiForSlot");
+    if (!TelephonyPermissions.checkCallingOrSelfReadDeviceIdentifiers(mApp, subId,
+            callingPackage, callingFeatureId, "getImeiForSlot")) {
+        return null;
+    }
+
+    final long identity = Binder.clearCallingIdentity();
+    try {
+        return phone.getImei();
+    } finally {
+        Binder.restoreCallingIdentity(identity);
+    }
 }
 ```
 
@@ -5840,10 +5894,10 @@ which:
 
 1. Creates `CommandsInterface[]` (one RIL per modem).
 2. Creates `UiccController` (the UICC/SIM manager singleton).
-3. Creates `GsmCdmaPhone[]` (one per SIM slot).
-4. Creates `PhoneSwitcher` (for multi-SIM data switching).
-5. Creates `SubscriptionManagerService`.
-6. Creates `EuiccController` (for eSIM management).
+3. Creates `SubscriptionManagerService`.
+4. Creates `EuiccController` (for eSIM management).
+5. Creates `GsmCdmaPhone[]` (one per SIM slot).
+6. Creates `PhoneSwitcher` (for multi-SIM data switching), last.
 
 ```java
 // frameworks/opt/telephony/src/java/com/android/internal/telephony/PhoneFactory.java
@@ -5872,10 +5926,10 @@ sequenceDiagram
     PG->>PF: makeDefaultPhones(context)
     PF->>RIL: new RIL(context, slot0)
     PF->>RIL: new RIL(context, slot1)
-    PF->>UiccC: make(context, ci[])
+    PF->>UiccC: make(context, featureFlags)
+    PF->>SubMgr: init(context)
     PF->>Phone: new GsmCdmaPhone(context, ci[0], slot0)
     PF->>Phone: new GsmCdmaPhone(context, ci[1], slot1)
-    PF->>SubMgr: init(context)
     PG->>PG: Create PhoneInterfaceManager
     PG->>PG: Register with ServiceManager
 ```
@@ -5915,10 +5969,10 @@ protected static final int EVENT_LINK_CAPACITY_CHANGED       = 59;
 protected static final int EVENT_SUBSCRIPTIONS_CHANGED       = 62;
 protected static final int EVENT_CELL_IDENTIFIER_DISCLOSURE  = 72;
 protected static final int EVENT_SECURITY_ALGORITHM_UPDATE   = 74;
-protected static final int EVENT_LAST = EVENT_SET_SECURITY_ALGORITHMS_UPDATED_ENABLED_DONE;
+protected static final int EVENT_LAST = EVENT_SET_ALLOWED_NETWORK_TYPES_FOR_2G_DISABLED_DONE;
 ```
 
-The event numbering extends to 75 as of the current codebase, reflecting
+The event numbering extends to 77 as of the current codebase, reflecting
 decades of accumulation from the original GSM-only phone through CDMA support,
 IMS integration, security notifications, and 5G NR capabilities.
 
@@ -6057,8 +6111,10 @@ packages/modules/Telephony/
 ```
 
 This allows Google to deliver telephony updates via the Play Store without a
-full OS upgrade.  The APEX contains the `com.android.telephony` module,
-packaging framework components and optionally the telephony service.
+full OS upgrade.  The APEX module itself is named `com.android.telephonycore`
+(its bootclasspath and systemserverclasspath fragments carry
+`com.android.telephony-*` names), packaging framework components and
+optionally the telephony service.
 
 ### 36.1.11 Security Considerations
 
@@ -6147,7 +6203,7 @@ graph LR
 ### 36.2.2 RIL.java -- the Java Side
 
 `RIL.java` implements the `CommandsInterface` that every `Phone` object
-programs against.  It is 6 017 lines of asynchronous request/response
+programs against.  It is roughly 6 100 lines of asynchronous request/response
 plumbing:
 
 ```java
@@ -6349,7 +6405,7 @@ Common unsolicited indications include:
 - `callStateChanged` -- active calls changed
 - `dataCallListChanged` -- data bearer state changed
 - `simStatusChanged` -- SIM card inserted / removed
-- `signalStrengthUpdate` -- signal bars changed
+- `currentSignalStrength` -- signal strength update
 
 ### 36.2.7 Wake Lock Management
 
@@ -6573,8 +6629,10 @@ public static List<TelephonyHistogram> getTelephonyRILTimingHistograms() {
 }
 ```
 
-These histograms are accessible via `TelephonyManager.requestModemActivityInfo()`
-and are used for power attribution and performance monitoring.
+These histograms are exposed via `TelephonyManager.getTelephonyHistograms()`
+(backed by `RIL.getTelephonyRILTimingHistograms()`) and are used for
+performance monitoring.  The separate `requestModemActivityInfo()` API returns
+modem power and activity counters used for power attribution.
 
 ### 36.2.14 Mock Modem for Testing
 
@@ -6668,12 +6726,12 @@ graph TD
     UC["UiccController<br/>(singleton)"]
     UC --> US1["UiccSlot[0]"]
     UC --> US2["UiccSlot[1]"]
-    US1 --> UP1["UiccPort[0]"]
-    US2 --> UP2["UiccPort[0]"]
-    UP1 --> UCard1["UiccCard"]
-    UP2 --> UCard2["UiccCard"]
-    UCard1 --> UProf1["UiccProfile"]
-    UCard2 --> UProf2["UiccProfile"]
+    US1 --> UCard1["UiccCard"]
+    US2 --> UCard2["UiccCard"]
+    UCard1 --> UP1["UiccPort[0]"]
+    UCard2 --> UP2["UiccPort[0]"]
+    UP1 --> UProf1["UiccProfile"]
+    UP2 --> UProf2["UiccProfile"]
     UProf1 --> App1["UiccCardApplication<br/>(SIM/USIM)"]
     UProf2 --> App2["UiccCardApplication<br/>(SIM/USIM)"]
     App1 --> Rec1["SIMRecords / IsimRecords"]
@@ -6704,7 +6762,7 @@ The key UICC classes and their files:
 |-------|------|------|
 | `UiccController` | `uicc/UiccController.java` | Singleton; manages all slots and cards |
 | `UiccSlot` | `uicc/UiccSlot.java` | Physical card slot (can be physical or eSIM) |
-| `UiccPort` | `uicc/UiccPort.java` | Logical port on a slot (for MEP -- Multiple Enabled Profiles) |
+| `UiccPort` | `uicc/UiccPort.java` | Logical port on the UiccCard (for MEP -- Multiple Enabled Profiles) |
 | `UiccCard` | `uicc/UiccCard.java` | Represents the smart card itself |
 | `UiccProfile` | `uicc/UiccProfile.java` | Represents a carrier profile on the card |
 | `UiccCardApplication` | `uicc/UiccCardApplication.java` | SIM/USIM/ISIM application on the card |
@@ -6780,10 +6838,10 @@ Key SIM HAL operations:
 | `supplyIccPinForApp` | Enter SIM PIN |
 | `supplyIccPukForApp` | Enter PUK code |
 | `changeIccPinForApp` | Change SIM PIN |
-| `iccIOForApp` | Raw ICC I/O (read/write SIM files) |
+| `iccIoForApp` | Raw ICC I/O (read/write SIM files) |
 | `iccOpenLogicalChannel` | Open logical channel for APDU |
 | `iccTransmitApduLogicalChannel` | Send APDU to SIM |
-| `setCarrierRestrictions` | Carrier lock (SIM lock) |
+| `setAllowedCarriers` | Carrier lock (SIM lock) |
 | `getSimPhonebookRecords` | Read SIM phonebook |
 
 ### 36.3.4 SubscriptionManager and SubscriptionManagerService
@@ -6928,9 +6986,9 @@ public class SubscriptionInfo implements Parcelable {
     private CharSequence mDisplayName;
     // Carrier name
     private CharSequence mCarrierName;
-    // MCC + MNC
-    private int mMcc;
-    private int mMnc;
+    // MCC + MNC (stored as strings)
+    private final String mMcc;
+    private final String mMnc;
     // Country ISO
     private String mCountryIso;
     // Is embedded (eSIM)?
@@ -6945,6 +7003,9 @@ public class SubscriptionInfo implements Parcelable {
     private ParcelUuid mGroupUuid;
 }
 ```
+
+(In the real source every field is declared `final`; the class is immutable
+and built through `SubscriptionInfo.Builder`.)
 
 The internal `SubscriptionInfoInternal` adds additional fields not exposed to
 the public API:
@@ -7086,10 +7147,10 @@ intervention.  This is critical for devices that receive OTA updates overnight.
 The `IRadioSim` HAL supports carrier restrictions (SIM locking):
 
 ```
-void setCarrierRestrictions(in int serial,
+void setAllowedCarriers(in int serial,
         in CarrierRestrictions carriers,
         in SimLockMultiSimPolicy multiSimPolicy);
-void getCarrierRestrictions(in int serial);
+void getAllowedCarriers(in int serial);
 ```
 
 This allows carriers and device manufacturers to restrict which SIM cards can
@@ -7107,7 +7168,8 @@ carrier services, and the modem:
 
 ```mermaid
 graph TD
-    App["App<br/>(SmsManager)"] -->|Binder| SMS_IF["IccSmsInterfaceManager"]
+    App["App<br/>(SmsManager)"] -->|Binder| SC["SmsController<br/>(ISms.Stub)"]
+    SC --> SMS_IF["IccSmsInterfaceManager"]
     SMS_IF --> SDC["SmsDispatchersController"]
     SDC --> GsmD["GsmSMSDispatcher"]
     SDC --> CdmaD["CdmaSMSDispatcher"]
@@ -7133,6 +7195,7 @@ When an application sends an SMS via `SmsManager.sendTextMessage()`:
 sequenceDiagram
     participant App
     participant SM as SmsManager
+    participant SC as SmsController
     participant ISIM as IccSmsInterfaceManager
     participant SDC as SmsDispatchersController
     participant Disp as GsmSMSDispatcher
@@ -7141,7 +7204,8 @@ sequenceDiagram
     participant Modem
 
     App->>SM: sendTextMessage(dest, text, sentPI, deliveryPI)
-    SM->>ISIM: sendText(dest, scAddr, text, sentPI, deliveryPI)
+    SM->>SC: sendTextForSubscriber(subId, dest, scAddr, text, ...)
+    SC->>ISIM: sendText(dest, scAddr, text, sentPI, deliveryPI)
     ISIM->>SDC: sendText(dest, scAddr, text, ...)
     SDC->>SDC: Select dispatcher (GSM/CDMA/IMS)
     SDC->>Disp: sendSms(tracker)
@@ -7375,7 +7439,7 @@ public final class SmsManager {
     public void sendDataMessage(String destAddress, String scAddress,
             short destPort, byte[] data, PendingIntent sentIntent,
             PendingIntent deliveryIntent)
-    public ArrayList<SmsMessage> divideMessage(String text)
+    public ArrayList<String> divideMessage(String text)
 }
 ```
 
@@ -7549,7 +7613,7 @@ public static final int REGISTRATION_TECH_CROSS_SIM = 2;
 public static final int REGISTRATION_TECH_NR    = 3;
 ```
 
-When registered over IWLAN (IP Wireless Access Network), the device can
+When registered over IWLAN (Interworking Wireless LAN), the device can
 make and receive calls through Wi-Fi.
 
 ### 36.5.6 IRadioIms HAL
@@ -7639,16 +7703,19 @@ It handles:
 - Feature removal on unbind
 - Crash recovery (rebinding after unexpected death)
 
-The ImsServiceController maintains a state machine for each feature:
+Each feature moves through the `ImsFeature.STATE_*` lifecycle
+(`STATE_UNAVAILABLE`, `STATE_INITIALIZING`, `STATE_READY`, defined in
+`frameworks/base/telephony/java/android/telephony/ims/feature/ImsFeature.java`),
+which ImsServiceController drives:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> NOT_AVAILABLE
-    NOT_AVAILABLE --> INITIALIZING : bind
+    [*] --> UNAVAILABLE
+    UNAVAILABLE --> INITIALIZING : bind
     INITIALIZING --> READY : Feature connected
-    READY --> NOT_AVAILABLE : unbind
-    READY --> NOT_AVAILABLE : ImsService died
-    NOT_AVAILABLE --> INITIALIZING : rebind after crash
+    READY --> UNAVAILABLE : unbind
+    READY --> UNAVAILABLE : service died
+    UNAVAILABLE --> INITIALIZING : rebind after crash
 ```
 
 ### 36.5.10 RCS (Rich Communication Services)
@@ -7805,12 +7872,12 @@ the major categories:
 **IMS**:
 
 - `KEY_IMS_CONFERENCE_SIZE_LIMIT_INT` -- max conference size
-- `KEY_CARRIER_IMS_PACKAGE_OVERRIDE_STRING` -- custom IMS package
+- `KEY_CONFIG_IMS_PACKAGE_OVERRIDE_STRING` -- custom IMS package
 - `KEY_CARRIER_RCS_PROVISIONING_REQUIRED_BOOL` -- RCS provisioning
 
 **Network**:
 
-- `KEY_PREFERRED_NETWORK_TYPE_BOOL` -- preferred RAT
+- `KEY_HIDE_PREFERRED_NETWORK_TYPE_BOOL` -- hide the preferred network type setting in the UI
 - `KEY_HIDE_ENHANCED_4G_LTE_BOOL` -- UI toggle visibility
 - `KEY_CARRIER_NR_AVAILABILITIES_INT_ARRAY` -- 5G NR config
 
@@ -7914,19 +7981,20 @@ the relevant config values and re-reading them on `EVENT_CARRIER_CONFIG_CHANGED`
 The `TelephonyShellCommand` provides a comprehensive carrier config CLI:
 
 ```bash
-# Get a specific value
-adb shell cmd phone cc get-value -s <subId> <key>
+# Get a specific value (-s takes a SIM slot ID)
+adb shell cmd phone cc get-value -s <slotId> <key>
 
-# Get all values
-adb shell cmd phone cc get-all-values -s <subId>
+# Get all values (omit the key)
+adb shell cmd phone cc get-value -s <slotId>
 
-# Override a value (test builds only)
-adb shell cmd phone cc set-value -s <subId> -b <key> <value>  # boolean
-adb shell cmd phone cc set-value -s <subId> -i <key> <value>  # int
-adb shell cmd phone cc set-value -s <subId> -s <key> <value>  # string
+# Override a value (the value type is inferred; -p persists across reboots)
+adb shell cmd phone cc set-value [-s <slotId>] [-p] <key> <value>
+
+# Load a whole set of overrides from an XML file
+adb shell cmd phone cc set-values-from-xml
 
 # Clear overrides
-adb shell cmd phone cc clear-values -s <subId>
+adb shell cmd phone cc clear-values -s <slotId>
 ```
 
 ### 36.6.9 Carrier Privileges
@@ -7954,17 +8022,17 @@ sequenceDiagram
     participant App as Carrier App
     participant PIM as PhoneInterfaceManager
     participant CPT as CarrierPrivilegesTracker
-    participant UiccP as UiccProfile
+    participant UiccP as UiccPort / UiccProfile
     participant SIM as SIM Card (ARA-M)
 
     App->>PIM: Privileged telephony API call
-    PIM->>CPT: hasCarrierPrivilegeForPackage(package)
-    CPT->>UiccP: getCarrierPrivilegeStatusForPackage(package)
+    PIM->>CPT: getCarrierPrivilegeStatusForPackage(package)
+    CPT->>UiccP: getSimRules - read UiccAccessRules
     UiccP->>SIM: Read ARA-M access rules
     SIM-->>UiccP: Certificate hashes
-    UiccP->>UiccP: Compare app signing cert with ARA-M certs
-    UiccP-->>CPT: CARRIER_PRIVILEGE_STATUS_HAS_ACCESS
-    CPT-->>PIM: Privilege granted
+    UiccP-->>CPT: UiccAccessRule list
+    CPT->>CPT: Compare app signing cert with ARA-M certs
+    CPT-->>PIM: CARRIER_PRIVILEGE_STATUS_HAS_ACCESS
     PIM-->>App: API response
 ```
 
@@ -8048,7 +8116,7 @@ graph TD
 `TelecomManager` is the public API for call management.  Key operations:
 
 ```java
-// frameworks/base/telecomm/java/android/telecom/TelecomManager.java
+// frameworks/base/telecomm/framework/java/android/telecom/TelecomManager.java
 public class TelecomManager {
     public void placeCall(Uri address, Bundle extras)
     public boolean endCall()
@@ -8192,7 +8260,7 @@ Emergency calls receive special treatment throughout the stack:
     // hardware/interfaces/radio/aidl/android/hardware/radio/voice/EmergencyCallRouting.aidl
     // UNKNOWN -- Let the modem decide
     // EMERGENCY -- Use emergency routing
-    // NORMAL -- Try normal routing first, then emergency
+    // NORMAL -- The implementation must handle the call through normal call routing
     ```
 
 ### 36.7.7 InCallService -- the UI Connection
@@ -8201,7 +8269,7 @@ The dialer app implements `InCallService` to receive call state updates and
 display the in-call UI:
 
 ```java
-// frameworks/base/telecomm/java/android/telecom/InCallService.java
+// frameworks/base/telecomm/framework/java/android/telecom/InCallService.java
 public abstract class InCallService extends Service {
     public void onCallAdded(Call call) { }
     public void onCallRemoved(Call call) { }
@@ -8307,7 +8375,7 @@ A `PhoneAccount` represents a source of phone calls.  In a multi-SIM device,
 there is one PhoneAccount per SIM:
 
 ```java
-// frameworks/base/telecomm/java/android/telecom/PhoneAccount.java
+// frameworks/base/telecomm/framework/java/android/telecom/PhoneAccount.java
 ```
 
 Telecom uses PhoneAccounts to route outgoing calls to the correct SIM / call
@@ -8443,7 +8511,7 @@ Key companion classes in `frameworks/opt/telephony/src/java/com/android/internal
 
 | Class | File | Responsibility |
 |-------|------|----------------|
-| `DataNetworkController` | `DataNetworkController.java` | Central orchestrator (4 575 lines) |
+| `DataNetworkController` | `DataNetworkController.java` | Central orchestrator (~4 720 lines) |
 | `DataNetwork` | `DataNetwork.java` | Individual data bearer, state machine |
 | `DataProfileManager` | `DataProfileManager.java` | APN/data profile management |
 | `DataConfigManager` | `DataConfigManager.java` | Carrier config for data |
@@ -8533,9 +8601,9 @@ oneway interface IRadioData {
     void releasePduSessionId(in int serial, in int id);
     void setDataAllowed(in int serial, in boolean allow);
     void setDataProfile(in int serial, in DataProfileInfo[] profiles);
-    void setDataThrottling(in int serial, in DataThrottlingAction action,
-            in long completionDuration);
-    void setupDataCall(in int serial, in int accessNetwork,
+    void setDataThrottling(in int serial, in DataThrottlingAction dataThrottlingAction,
+            in long completionDurationMillis);
+    void setupDataCall(in int serial, in AccessNetwork accessNetwork,
             in DataProfileInfo dataProfileInfo, in boolean roamingAllowed,
             in DataRequestReason reason, ...);
     void startHandover(in int serial, in int callId);
@@ -8634,12 +8702,12 @@ Disallowed reasons include:
 | `DATA_DISABLED` | User turned off mobile data |
 | `ROAMING_DISABLED` | Data roaming is off and device is roaming |
 | `NOT_IN_SERVICE` | No network registration |
-| `EMERGENCY_CALL` | Emergency call in progress |
+| `CDMA_EMERGENCY_CALLBACK_MODE` | Device is in CDMA emergency callback mode |
 | `SIM_NOT_READY` | SIM not loaded |
 | `RADIO_POWER_OFF` | Radio is off |
-| `CONCURRENT_VOICE_NOT_ALLOWED` | Voice call blocks data (DSDS) |
+| `CONCURRENT_VOICE_DATA_NOT_ALLOWED` | Voice call blocks data (DSDS) |
 | `DATA_THROTTLED` | Carrier throttling active |
-| `CARRIER_ACTION_DISABLED` | Carrier signaled data off |
+| `RADIO_DISABLED_BY_CARRIER` | Carrier signaled data off |
 
 ### 36.8.8 DataNetworkController Internal State
 
@@ -9008,8 +9076,10 @@ The ImsMedia module provides the real-time media transport layer for IMS voice
 and video calls. Where the IMS framework (Section 36.5) handles call signalling
 via SIP, ImsMedia handles the actual audio and video data -- encoding,
 packetisation into RTP, quality monitoring via RTCP, and DTMF tone generation.
-It runs as a separate Mainline module, communicating with vendor-provided
-RTP stack hardware through an AIDL HAL interface.
+It ships as a separate system app (`ImsMediaService`, added to the build via
+`PRODUCT_PACKAGES` from `packages/modules/ImsMedia/imsmedia.mk`) that runs in
+its own process -- not as an updatable APEX -- communicating with
+vendor-provided RTP stack hardware through an AIDL HAL interface.
 
 ### 36.9.1 Architecture Overview
 
@@ -9313,13 +9383,14 @@ public final class MediaQualityThreshold implements Parcelable {
 }
 ```
 
-Quality events are reported through `AudioSessionCallback`:
+Quality events are reported through `AudioSessionCallback` (media inactivity
+has no audio callback; `notifyMediaInactivity()` exists on the text and video
+session callbacks):
 
 | Callback | Trigger |
 |----------|---------|
-| `onMediaQualityStatusChanged()` | Packet loss or jitter crosses threshold |
-| `onMediaInactivityChanged()` | RTP/RTCP inactivity timer expired |
-| `onRtpReceptionStats()` | Periodic reception statistics |
+| `notifyMediaQualityStatus()` | Packet loss or jitter crosses threshold |
+| `notifyRtpReceptionStats()` | Periodic reception statistics |
 | `onCallQualityChanged()` | Aggregated quality score changed |
 
 ### 36.9.9 Audio Session Capabilities
@@ -9337,7 +9408,7 @@ public class ImsAudioSession implements ImsMediaSession {
     void sendDtmf(char digit, int duration);     // Fixed-duration DTMF
     void startDtmf(char digit);                  // Start continuous DTMF
     void stopDtmf();                             // Stop continuous DTMF
-    void sendRtpHeaderExtension(List<RtpHeaderExtension>); // Custom headers
+    void sendHeaderExtension(List<RtpHeaderExtension>);  // Custom headers
 }
 ```
 
@@ -9765,10 +9836,10 @@ sequenceDiagram
 
 | File | Path | Lines |
 |------|------|-------|
-| WapPushOverSms | `frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushOverSms.java` | 505 |
+| WapPushOverSms | `frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushOverSms.java` | 504 |
 | WapPushManagerParams | `frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushManagerParams.java` | 70 |
 | WapPushCache | `frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushCache.java` | 172 |
-| InboundSmsHandler | `frameworks/opt/telephony/src/java/com/android/internal/telephony/InboundSmsHandler.java` | ~2,000 |
+| InboundSmsHandler | `frameworks/opt/telephony/src/java/com/android/internal/telephony/InboundSmsHandler.java` | ~2,660 |
 | MmsWapPushDeliverReceiver | `packages/apps/Messaging/src/com/android/messaging/receiver/MmsWapPushDeliverReceiver.java` | ~50 |
 
 ---
@@ -9947,7 +10018,7 @@ sequenceDiagram
     participant Modem as "SatelliteService HAL"
 
     App->>SM: sendDatagram(SOS)
-    SM->>SC: sendSatelliteDatagram()
+    SM->>SC: sendDatagram()
     SC->>DC: sendDatagram(type=SOS)
     DC->>DD: enqueue + send
     DD->>Modem: sendDatagram (AIDL)
@@ -10001,8 +10072,10 @@ Apps reach all of this through `SatelliteManager`, whose entry points are
 enforced and dispatched by `PhoneInterfaceManager`
 (`packages/services/Telephony/src/com/android/phone/PhoneInterfaceManager.java`)
 behind the `SATELLITE_COMMUNICATION` permission — for example
-`requestSatelliteEnabled`, `provisionSatelliteService`, `sendSatelliteDatagram`,
-`pollPendingSatelliteDatagrams`, and the registration calls. Android 17 adds the
+`requestSatelliteEnabled`, `provisionSatelliteService`, `sendDatagram`,
+`pollPendingDatagrams`, and the registration calls.  (The similarly named
+`sendSatelliteDatagram` / `pollPendingSatelliteDatagrams` belong to the
+vendor-facing `ISatellite` HAL, not to the manager surface.) Android 17 adds the
 carrier-enablement entry points (`requestEnableSatelliteForCarrier`, automatic
 carrier mode, and `getManualConnectSatellitePlmnsForCarrier`) plus a richer
 metrics surface (`ControllerMetricsStats`, `CarrierRoamingSatelliteSessionStats`,
@@ -10025,7 +10098,9 @@ open source.
 ### 36.12.1 Packaging: a Privileged system_ext App with a Native SIP Engine
 
 The module builds the `ImsStack` APK as a privileged, platform-signed,
-`system_ext` app that bundles the native engine as a JNI library
+`system_ext` app that declares the native engine as a `required` install
+dependency, so `libimsstack` is installed alongside the APK rather than being
+bundled into it via `jni_libs`
 (`packages/modules/ImsStack/java/Android.bp`):
 
 ```
@@ -10034,8 +10109,12 @@ android_app {
     privileged: true,
     certificate: "platform",
     system_ext_specific: true,
-    jni_libs: [ "libimsstack", ... ],
-    required: [ "privapp_permissions_com.android.imsstack", ... ],
+    // ...
+    required: [
+        "libimsstack",
+        "privapp_permissions_com.android.imsstack",
+        "sysconfig_com.android.imsstack",
+    ],
 }
 ```
 
@@ -10130,7 +10209,7 @@ important subtrees are:
   an SDP model (`SdpDescription`, `SdpMediaDescription`, `SdpAvCodec`), and a DOM
   XML parser used for IMS XML bodies
   (`packages/modules/ImsStack/native/libimsstack/protocol/sip/`,
-  `.../protocol/SipStackManager.cpp`).
+  `.../protocol/sip/SipStackManager.cpp`).
 - **engine** — the SIP transaction and dialog state machines that turn those
   messages into call/registration logic: `SipStack`, `SipStackTransaction`,
   `SipForkedTransactionManager`, plus the `CoreService`/`Connection` call model
@@ -10557,7 +10636,7 @@ Write a simple ADB shell command to explore telephony state:
 
 ```bash
 # Get IMEI
-adb shell service call phone 1 | grep -oP "'.*?'"
+adb shell cmd phone get-imei
 
 # Using the telephony shell command
 adb shell cmd phone
@@ -10569,7 +10648,7 @@ adb shell cmd phone help
 adb shell cmd phone cc get-value -s 1 carrier_volte_available_bool
 
 # Get IMS registration state
-adb shell cmd phone ims get-registration
+adb shell dumpsys telephony.registry | grep -A5 ImsRegistration
 ```
 
 ### Exercise 36-4: Examine SIM Card Status
@@ -10640,8 +10719,8 @@ adb logcat -b radio -s InboundSmsHandler:V GsmInboundSmsHandler:V
 ### Exercise 36-8: Inspect Carrier Configuration
 
 ```bash
-# Dump carrier config for slot 0
-adb shell cmd phone cc get-all-values -s 1
+# Dump carrier config for slot 1 (omit the key to print all values)
+adb shell cmd phone cc get-value -s 1
 
 # Check specific IMS-related config
 adb shell cmd phone cc get-value -s 1 carrier_volte_available_bool
@@ -10653,7 +10732,7 @@ adb shell cmd phone cc get-value -s 1 carrier_supports_ss_over_ut_bool
 
 ```bash
 # IMS registration state
-adb shell cmd phone ims get-registration
+adb shell dumpsys telephony.registry | grep -A5 ImsRegistration
 
 # Watch IMS-related logs
 adb logcat -s ImsPhone:V ImsPhoneCallTracker:V ImsResolver:V ImsManager:V
@@ -10735,7 +10814,7 @@ adb shell dumpsys phone | grep -A 30 "DataProfileManager"
 
 ```bash
 # List all emergency numbers
-adb shell cmd phone emergency-number-list
+adb shell dumpsys phone | grep -A 20 EmergencyNumberTracker
 
 # The output shows emergency numbers from multiple sources:
 #   [Phone0][DB    ] 112 GSM(DEFAULT POLICE AMBULANCE FIRE_BRIGADE)
@@ -10747,11 +10826,10 @@ adb shell cmd phone emergency-number-list
 ### Exercise 36-14: Explore Multi-SIM Configuration
 
 ```bash
-# Check phone count and active subscriptions
-adb shell cmd phone get-phone-count
-adb shell cmd phone get-active-subs
+# Check the logical-to-physical SIM slot mapping
+adb shell cmd phone get-sim-slots-mapping
 
-# List all subscriptions
+# List all subscriptions (active and inactive)
 adb shell content query --uri content://telephony/siminfo
 
 # Check default subscription settings
@@ -10771,14 +10849,14 @@ adb logcat -b radio -s ImsResolver:V ImsServiceController:V \
     ImsPhone:V ImsPhoneCallTracker:V ImsManager:V
 
 # Check IMS feature status
-adb shell cmd phone ims get-registration
+adb shell dumpsys telephony.registry | grep -A5 ImsRegistration
 
-# Check IMS provisioning
-adb shell cmd phone ims get-provisioning -s 1
+# Check IMS provisioning state
+adb shell dumpsys phone | grep -A20 ImsPhone
 
 # Toggle IMS features via carrier config
-adb shell cmd phone cc set-value -s 1 -b carrier_volte_available_bool true
-adb shell cmd phone cc set-value -s 1 -b carrier_wfc_ims_available_bool true
+adb shell cmd phone cc set-value -s 1 carrier_volte_available_bool true
+adb shell cmd phone cc set-value -s 1 carrier_wfc_ims_available_bool true
 ```
 
 ### Exercise 36-16: Analyze Signal Strength
@@ -10800,8 +10878,8 @@ adb logcat -b radio -s SignalStrengthController:V
 ### Exercise 36-17: Examine Carrier Config Keys
 
 ```bash
-# List all known carrier config keys
-adb shell cmd phone cc get-all-values -s 1 | head -100
+# List all known carrier config keys (get-value with no key prints everything)
+adb shell cmd phone cc get-value -s 1 | head -100
 
 # Check specific categories
 adb shell cmd phone cc get-value -s 1 carrier_volte_available_bool
@@ -10811,7 +10889,7 @@ adb shell cmd phone cc get-value -s 1 carrier_nr_availabilities_int_array
 adb shell cmd phone cc get-value -s 1 carrier_metered_apn_types_strings
 
 # Override a config value (requires root or test build)
-adb shell cmd phone cc set-value -s 1 -b carrier_volte_available_bool false
+adb shell cmd phone cc set-value -s 1 carrier_volte_available_bool false
 # Reset to default
 adb shell cmd phone cc clear-values -s 1
 ```
@@ -10878,16 +10956,16 @@ The Android Emulator provides console commands for network simulation:
 telnet localhost 5554
 
 # Change network speed
-network speed gsm      # GSM (9.6 kbps)
-network speed edge     # EDGE (236.8 kbps)
+network speed gsm      # GSM (14.4 kbps)
+network speed edge     # EDGE (473.6 kbps)
 network speed umts     # UMTS (384 kbps)
-network speed hsdpa    # HSDPA (14.4 Mbps)
-network speed lte      # LTE (100 Mbps)
+network speed hsdpa    # HSDPA (5.8 Mbps up / 14 Mbps down)
+network speed lte      # LTE (58 Mbps up / 173 Mbps down)
 network speed full     # Full speed
 
 # Simulate network latency
 network delay none     # No delay
-network delay gprs     # GPRS delay (150-550ms)
+network delay gprs     # GPRS delay (35-200ms)
 network delay edge     # EDGE delay (80-400ms)
 network delay umts     # UMTS delay (35-200ms)
 
@@ -10977,8 +11055,11 @@ DataNetworkController: Creating DataNetwork for INTERNET
 The telephony stack has an extensive unit test suite:
 
 ```bash
-# Run all telephony unit tests
+# Run all frameworks/opt/telephony unit tests
 cd frameworks/opt/telephony
+atest FrameworksTelephonyTests
+
+# The phone-app (packages/services/Telephony) tests are a separate module
 atest TeleServiceTests
 
 # Run specific test classes
@@ -10987,7 +11068,7 @@ atest com.android.internal.telephony.GsmCdmaPhoneTest
 atest com.android.internal.telephony.data.DataNetworkControllerTest
 
 # Run with verbose output
-atest --verbose TeleServiceTests
+atest --verbose FrameworksTelephonyTests
 
 # The tests use MockModem and Mockito extensively to simulate
 # modem behavior without real hardware.
@@ -11005,13 +11086,13 @@ adb shell cmd phone help
 adb shell cmd phone ims               # IMS commands
 adb shell cmd phone cc                 # Carrier config commands
 adb shell cmd phone data              # Data commands
-adb shell cmd phone emergency-number-list  # Emergency numbers
+adb shell cmd phone emergency-number-test-mode  # Emergency number test mode
 adb shell cmd phone src set-test-enabled true/false  # Test mode
 
 # IMS subcommands
 adb shell cmd phone ims help
-adb shell cmd phone ims get-registration  # IMS registration state
-adb shell cmd phone ims get-provisioning -s 1  # IMS provisioning
+adb shell cmd phone ims get-ims-service -s 1 -c  # Carrier ImsService for slot 1
+adb shell cmd phone ims enable -s 1              # Enable IMS for slot 1
 
 # Data subcommands
 adb shell cmd phone data help
@@ -11075,8 +11156,9 @@ graph TD
     S --> T["20. Telecom notifies InCallService (Dialer UI)"]
 ```
 
-This 20-step path spans five processes (dialer app, Telecom, phone service,
-RIL Java, vendor HAL) and four Binder boundaries, yet completes in under 200ms
+This 20-step path spans four processes (the dialer app, Telecom in
+system_server, the phone process hosting both Telephony and RIL Java, and the
+vendor HAL) and multiple Binder boundaries, yet completes in under 200ms
 on modern hardware.
 
 ### Design Principles
@@ -11096,8 +11178,9 @@ The telephony stack embodies several design principles worth noting:
    uses wake locks, serial numbers, and callback messages).  This prevents
    any single slow modem response from blocking the entire telephony stack.
 
-4. **Feature Flags**: The `FeatureFlags` interface
-   (`frameworks/opt/telephony/src/java/com/android/internal/telephony/flags/FeatureFlags.java`)
+4. **Feature Flags**: The `FeatureFlags` interface (package
+   `com.android.internal.telephony.flags`, generated at build time by aconfig
+   from the flag declarations in `frameworks/opt/telephony/flags/*.aconfig`)
    allows individual telephony features to be enabled/disabled per build, which
    is essential for the incremental rollout of complex telephony changes.
 
@@ -11114,12 +11197,12 @@ The telephony stack embodies several design principles worth noting:
 
 | File | Path | Lines |
 |------|------|-------|
-| `TelephonyManager.java` | `frameworks/base/telephony/java/android/telephony/TelephonyManager.java` | 19 705 |
-| `PhoneInterfaceManager.java` | `packages/services/Telephony/src/com/android/phone/PhoneInterfaceManager.java` | 14 737 |
-| `RIL.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/RIL.java` | 6 017 |
-| `Phone.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/Phone.java` | 5 408 |
-| `DataNetworkController.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/data/DataNetworkController.java` | 4 575 |
-| `GsmCdmaPhone.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/GsmCdmaPhone.java` | 4 333 |
+| `TelephonyManager.java` | `frameworks/base/telephony/java/android/telephony/TelephonyManager.java` | ~20 215 |
+| `PhoneInterfaceManager.java` | `packages/services/Telephony/src/com/android/phone/PhoneInterfaceManager.java` | ~15 469 |
+| `RIL.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/RIL.java` | ~6 135 |
+| `Phone.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/Phone.java` | ~5 550 |
+| `DataNetworkController.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/data/DataNetworkController.java` | ~4 717 |
+| `GsmCdmaPhone.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/GsmCdmaPhone.java` | ~4 500 |
 | `IRadioModem.aidl` | `hardware/interfaces/radio/aidl/android/hardware/radio/modem/IRadioModem.aidl` | |
 | `IRadioSim.aidl` | `hardware/interfaces/radio/aidl/android/hardware/radio/sim/IRadioSim.aidl` | |
 | `IRadioNetwork.aidl` | `hardware/interfaces/radio/aidl/android/hardware/radio/network/IRadioNetwork.aidl` | |
@@ -11167,14 +11250,15 @@ frameworks/
       ApnSetting.java              -- APN data model
       DataProfile.java             -- Data connection profile
     ims/
-      ImsManager.java              -- IMS management API
+      ImsMmTelManager.java         -- Public MMTel/IMS management API
+      ImsRcsManager.java           -- Public RCS management API
       ImsService.java              -- Vendor IMS service base
       feature/
         MmTelFeature.java          -- MM telephony feature
         RcsFeature.java            -- RCS feature
     emergency/
       EmergencyNumber.java         -- Emergency number definition
-  base/telecomm/java/android/telecom/
+  base/telecomm/framework/java/android/telecom/
     TelecomManager.java            -- Call management API
     ConnectionService.java         -- Call provider abstraction
     InCallService.java             -- In-call UI binding
@@ -11243,7 +11327,7 @@ hardware/
 | ICCID | Integrated Circuit Card Identifier | Unique SIM card serial number |
 | IMS | IP Multimedia Subsystem | IP-based voice/video/messaging |
 | IMSI | International Mobile Subscriber Identity | Unique subscriber identity on SIM |
-| IWLAN | IP Wireless Local Area Network | WiFi-based IMS transport |
+| IWLAN | Interworking Wireless LAN | WiFi-based IMS transport |
 | MEP | Multiple Enabled Profiles | Multiple active eSIM profiles on one eUICC |
 | MMS | Multimedia Messaging Service | Rich messaging over data |
 | MMSC | Multimedia Messaging Service Center | MMS server |
@@ -11284,12 +11368,12 @@ recommended starting points, listed by topic:
 **Understanding data connections:**
 
 - `DataNetworkController.onAddNetworkRequest()` -- how a new data request flows
-- `DataNetwork.setupDataCall()` -- the actual data call setup
+- `DataServiceManager.setupDataCall()` -- the actual data call setup, invoked from `DataNetwork`'s connecting and handover paths
 - `DataEvaluation.java` -- the data allow/disallow decision tree
 
 **Understanding IMS:**
 
-- `ImsResolver.queryServiceInfo()` -- how ImsServices are discovered
+- `ImsResolver.scheduleQueryForFeatures()` / `startDynamicQuery()` -- how ImsServices are discovered
 - `ImsPhoneCallTracker.dial()` -- how an IMS call is placed
 - `ImsRegistrationCallbackHelper.java` -- IMS registration state tracking
 
@@ -11411,7 +11495,7 @@ public final class BluetoothManager {
 
 ### 37.1.3 BluetoothAdapter
 
-`BluetoothAdapter` (5,500+ lines) is the central API class for all Bluetooth
+`BluetoothAdapter` (5,400+ lines) is the central API class for all Bluetooth
 operations. It represents the local Bluetooth radio and is the starting point
 for discovery, bonding, profile connections, and BLE operations.
 
@@ -11894,8 +11978,12 @@ mod opcode_types;
 mod server;
 ```
 
-The `arbiter` decides which side (C++ or Rust) handles each incoming ATT PDU
-by inspecting its handle range, the `mtu` module implements ATT MTU exchange,
+The `arbiter` decides per connection which side (C++ or Rust) handles incoming
+ATT traffic: the `IsolationManager` maps the advertising set (and hence the
+transport) a connection arrived on to a Rust server, and on those connections
+only server-side ATT opcodes (commands, requests, and confirmations, excluding
+Exchange MTU Request) are intercepted -- everything else is forwarded to the
+C++ stack. The `mtu` module implements ATT MTU exchange,
 and `ffi` provides the C++ interop bindings (`stack/arbiter/acl_arbiter.h` on
 the C++ side).
 
@@ -11986,7 +12074,7 @@ sequenceDiagram
 
     App->>BMS: enable()
     BMS->>AS: bind to AdapterService
-    AS->>SM: start_up_stack_async()
+    AS->>SM: stack_init() / stack_enable()
     SM->>BTIF: btif_init_bluetooth()
     BTIF->>GD: Initialize GD modules
     GD->>HAL: initialize(callback)
@@ -12184,7 +12272,7 @@ Source: `packages/modules/Bluetooth/android/app/src/com/android/bluetooth/a2dp/A
 final class A2dpStateMachine extends StateMachine {
     static final int MESSAGE_CONNECT = 1;
     static final int MESSAGE_DISCONNECT = 2;
-    static final int MESSAGE_STACK_EVENT = 101;
+    static final int MESSAGE_CONNECTION_STATE_CHANGED = 101;
     private static final int MESSAGE_CONNECT_TIMEOUT = 201;
 
     @VisibleForTesting static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(30);
@@ -12431,11 +12519,18 @@ Source: `packages/modules/Bluetooth/system/btif/src/stack_manager.cc`
 
 ```cpp
 static_assert(BTA_PAN_INCLUDED,
-    "Pan profile is always included in the bluetooth stack");
+              "#define BTA_PAN_INCLUDED preprocessor compilation flag is unsupported"
+              "  Pan profile is always included in the bluetooth stack"
+              "*** Conditional Compilation Directive error");
 static_assert(PAN_SUPPORTS_ROLE_NAP,
-    "Pan profile always supports network access point");
+              "#define PAN_SUPPORTS_ROLE_NAP preprocessor compilation flag is unsupported"
+              "  Pan profile always supports network access point in the bluetooth stack"
+              "*** Conditional Compilation Directive error");
 static_assert(PAN_SUPPORTS_ROLE_PANU,
-    "Pan profile always supports user as a client");
+              "#define PAN_SUPPORTS_ROLE_PANU preprocessor compilation flag is "
+              "unsupported"
+              "  Pan profile always supports user as a client in the bluetooth stack"
+              "*** Conditional Compilation Directive error");
 ```
 
 #### PAN Protocol Stack
@@ -12491,7 +12586,10 @@ Key L2CAP PSM assignments:
 | 0x0019 | AVDTP (A2DP) |
 | 0x001B | AVCTP Browse |
 | 0x001F | ATT (GATT/BLE) |
-| 0x0025 | LE L2CAP CoC |
+| 0x0027 | EATT (`BT_PSM_EATT`) |
+
+LE credit-based connection-oriented channels (LE CoC) have no fixed PSM here;
+they use dynamically allocated LE PSMs.
 
 #### RFCOMM
 
@@ -12519,12 +12617,16 @@ Source: `packages/modules/Bluetooth/android/app/src/com/android/bluetooth/gatt/G
 public class GattService extends ProfileService {
     // Manages GATT client connections
     // Handles GATT server registrations
-    // Coordinates BLE scanning and advertising
+    // Coordinates BLE advertising (AdvertiseManager)
     // Provides distance measurement
 }
 ```
 
-GATT is covered in detail in Section 37.4 (BLE).
+BLE scanning is not part of `GattService`: it is owned by `ScanController` in
+the `le_scan` package
+(`android/app/src/com/android/bluetooth/le_scan/ScanController.java`), which
+`AdapterService` starts directly. GATT is covered in detail in Section 37.4
+(BLE).
 
 ### 37.3.10 MAP -- Message Access Profile
 
@@ -12779,6 +12881,7 @@ graph TB
     subgraph "Bluetooth Service"
         GATT_SVC["GattService"]
         ADV_MGR["AdvertiseManager"]
+        SCAN_CTRL["ScanController<br/>(le_scan)"]
     end
 
     subgraph "Native Stack"
@@ -12791,12 +12894,13 @@ graph TB
     end
 
     APP_ADV --> BLE_ADV --> GATT_SVC
-    APP_SCAN --> BLE_SCAN --> GATT_SVC
+    APP_SCAN --> BLE_SCAN --> SCAN_CTRL
     APP_GATT_C --> GATT_C --> GATT_SVC
     APP_GATT_S --> GATT_S --> GATT_SVC
     GATT_SVC --> ADV_MGR
     GATT_SVC --> BTIF_GATT
     ADV_MGR --> BTIF_GATT
+    SCAN_CTRL --> BTIF_GATT
     BTIF_GATT --> GD_ADV
     BTIF_GATT --> GD_SCAN
     BTIF_GATT --> STACK_GATT
@@ -12808,8 +12912,9 @@ graph TB
 ### 37.4.2 BLE Advertising
 
 BLE advertising makes a device discoverable to nearby scanners. AOSP supports
-both legacy advertising (31-byte PDU) and extended advertising (up to 255 bytes
-per fragment, multiple advertising sets).
+both legacy advertising (31-byte PDU) and extended advertising (fragments of up
+to 251 bytes -- `kLeMaximumFragmentLength` -- toward a maximum GAP data length
+of 255 bytes, `kLeMaximumGapDataLength`, across multiple advertising sets).
 
 Source: `packages/modules/Bluetooth/system/gd/hci/le_advertising_manager_impl.h`
 
@@ -13093,11 +13198,11 @@ void btm_ble_init(void);
 void btm_ble_free();
 void btm_ble_connected(const RawAddress& bda, uint16_t handle,
                        uint8_t enc_mode, uint8_t role,
-                       tBLE_ADDR_TYPE addr_type, bool addr_matched,
+                       tBLE_ADDR_TYPE addr_type,
                        bool can_read_discoverable_characteristics);
-tBTM_SEC_DEV_REC* btm_ble_resolve_random_addr(const RawAddress& random_bda);
-void btm_ble_scanner_init(void);
-void btm_ble_scanner_cleanup(void);
+BtmDevice* btm_ble_resolve_random_addr(const RawAddress& random_bda);
+void btm_ble_batchscan_init(void);
+void btm_ble_adv_filter_init(void);
 ```
 
 ### 37.4.8 BLE Framework API Classes
@@ -13119,7 +13224,9 @@ Source: `packages/modules/Bluetooth/framework/java/android/bluetooth/le/`
 | `AdvertisingSetParameters` | Configure extended advertising parameters |
 | `AdvertiseData` | Advertising payload data |
 | `AdvertiseCallback` | Callback for advertising events |
-| `PeriodicAdvertisingManager` | Periodic advertising sync |
+| `PeriodicAdvertisingParameters` | Configure periodic advertising |
+| `PeriodicAdvertisingCallback` | Callback for periodic advertising sync |
+| `PeriodicAdvertisingReport` | Data received from a periodic advertising sync |
 | `DistanceMeasurementManager` | Channel sounding / ranging |
 | `ChannelSoundingParams` | Parameters for distance measurement |
 
@@ -13427,11 +13534,12 @@ Source: `packages/modules/Bluetooth/system/gd/hal/snoop_logger.h`
 
 Snoop logging modes (configured via developer options):
 
-| Mode | Constant | Description |
-|------|----------|-------------|
-| Disabled | `BT_SNOOP_LOG_MODE_DISABLED` | No logging |
-| Filtered | `BT_SNOOP_LOG_MODE_FILTERED` | Log headers only, strip data |
-| Full | `BT_SNOOP_LOG_MODE_FULL` | Complete packet capture |
+| Mode | Constant (string value) | Description |
+|------|-------------------------|-------------|
+| Disabled | `SnoopLogger::kBtSnoopLogModeDisabled` ("disabled") | No logging |
+| Filtered | `SnoopLogger::kBtSnoopLogModeFiltered` ("filtered") | Log headers only, strip data |
+| Full | `SnoopLogger::kBtSnoopLogModeFull` ("full") | Complete packet capture |
+| Kernel | `SnoopLogger::kBtSnoopLogModeKernel` ("kernel") | Capture via the kernel monitor |
 
 The snoop log is written in BTSnoop format, compatible with Wireshark for
 analysis.
@@ -13473,6 +13581,7 @@ typedef enum : uint8_t {
   SMP_MODEL_SEC_CONN_PASSKEY_ENT = 6,   /* Passkey Entry (SC) */
   SMP_MODEL_SEC_CONN_PASSKEY_DISP = 7,  /* Passkey Display (SC) */
   SMP_MODEL_SEC_CONN_OOB = 8,           /* OOB (SC) */
+  SMP_MODEL_OUT_OF_RANGE = 9,
 } tSMP_ASSO_MODEL;
 ```
 
@@ -13686,7 +13795,7 @@ The storage module manages:
 
 Key storage uses the `BluetoothKeystoreService` for secure key management:
 
-Source: `packages/modules/Bluetooth/android/app/src/com/android/bluetooth/btservice/bluetoothkeystore/BluetoothKeystoreService.java`
+Source: `packages/modules/Bluetooth/android/app/src/com/android/bluetooth/btservice/bluetoothKeystore/BluetoothKeystoreService.java`
 
 The storage keys are defined in a centralized header:
 
@@ -13807,18 +13916,20 @@ Source: `packages/modules/Bluetooth/system/stack/a2dp/a2dp_codec_config.cc`
 The codec framework supports both standard and vendor-specific codecs:
 
 ```cpp
-#include "a2dp_aac.h"
-#include "a2dp_sbc.h"
-#include "a2dp_vendor.h"
-#include "a2dp_vendor_aptx_constants.h"
-#include "a2dp_vendor_aptx_hd_constants.h"
-#include "a2dp_vendor_ldac_constants.h"
+#include "stack/include/a2dp_aac.h"
+#include "stack/include/a2dp_sbc.h"
+#include "stack/include/a2dp_vendor.h"
+#include "stack/include/a2dp_vendor_aptx_constants.h"
+#include "stack/include/a2dp_vendor_aptx_hd_constants.h"
+#include "stack/include/a2dp_vendor_ldac_constants.h"
+// ...
 
 #if !defined(EXCLUDE_NONSTANDARD_CODECS)
-#include "a2dp_vendor_aptx.h"
-#include "a2dp_vendor_aptx_hd.h"
-#include "a2dp_vendor_ldac.h"
-#include "a2dp_vendor_opus.h"
+#include "stack/include/a2dp_vendor_aptx.h"
+#include "stack/include/a2dp_vendor_aptx_hd.h"
+#include "stack/include/a2dp_vendor_ldac.h"
+#include "stack/include/a2dp_vendor_lhdcv5.h"
+#include "stack/include/a2dp_vendor_opus.h"
 #endif
 ```
 
@@ -13915,7 +14026,8 @@ std::optional<a2dp_configuration> get_a2dp_configuration(
     RawAddress peer_address,
     std::vector<a2dp_remote_capabilities> const& remote_seps,
     btav_a2dp_codec_config_t const& user_preferences,
-    ::bluetooth::a2dp::CodecId user_preferred_codec_id);
+    std::optional<::bluetooth::a2dp::CodecId> user_preferred_codec_id,
+    bool is_source);
 
 // Query the codec parameters from the audio HAL.
 tA2DP_STATUS parse_a2dp_configuration(
@@ -14128,6 +14240,8 @@ Typical latency ranges:
 The Dynamic Audio Buffer feature (DAB) allows runtime adjustment of buffer
 sizes:
 
+Source: `packages/modules/Bluetooth/system/gd/hci/controller_impl.h`
+
 ```cpp
 virtual uint32_t GetDabSupportedCodecs() const override;
 virtual const std::array<DynamicAudioBufferCodecCapability, 32>&
@@ -14179,8 +14293,8 @@ Enable full HCI snoop logging for analysis:
 adb shell setprop persist.bluetooth.btsnooplogmode full
 
 # Restart Bluetooth to apply
-adb shell svc bluetooth disable
-adb shell svc bluetooth enable
+adb shell cmd bluetooth_manager disable
+adb shell cmd bluetooth_manager enable
 
 # Pull the snoop log
 adb pull /data/misc/bluetooth/logs/btsnoop_hci.log
@@ -14232,14 +14346,12 @@ adb shell dumpsys bluetooth_manager GattService
 
 ### 37.8.5 BLE Scanning from the Command Line
 
-Use the `btmgmt` or `bluetoothctl` tools (available in AOSP eng builds) for
-low-level BLE operations:
+AOSP does not ship the BlueZ command-line tools (`btmgmt`, `bluetoothctl`);
+inspect BLE scanning through `cmd bluetooth_manager` and logcat instead:
 
 ```bash
-# Using Android's internal BLE scanning (requires root)
-adb root
-adb shell cmd bluetooth_manager le-scan start
-# Observe logcat for scan results:
+# Start a scan from an app (e.g. via BluetoothLeScanner), then
+# observe logcat for scan activity:
 adb logcat -s BtGatt.ScanManager
 ```
 
@@ -14274,7 +14386,7 @@ m com.android.bt
 m libbt-stack
 
 # Build and run Bluetooth unit tests
-atest --host bluetooth_test_gd
+atest --host bluetooth_test_gd_unit
 atest BluetoothInstrumentationTests
 ```
 
@@ -14289,7 +14401,7 @@ adb shell cmd bluetooth_manager
 # Example commands:
 adb shell cmd bluetooth_manager enable
 adb shell cmd bluetooth_manager disable
-adb shell cmd bluetooth_manager get-state
+adb shell cmd bluetooth_manager wait-for-state:STATE_ON
 ```
 
 ### 37.8.9 Analyzing A2DP Codec Configuration
@@ -14405,7 +14517,8 @@ public class GattServerActivity extends Activity {
 AOSP includes the Pandora Bluetooth testing framework, which provides a gRPC-
 based interface for automated Bluetooth testing:
 
-Directory: `packages/modules/Bluetooth/pandora/`
+Directory: `packages/modules/Bluetooth/tests/pandora/` (shared protos in
+`external/pandora/`)
 
 Pandora enables programmatic control of Bluetooth operations for conformance
 testing, including pairing, profile connections, and data transfer.
@@ -14561,8 +14674,8 @@ The GD HAL has a specific Rootcanal backend:
 Source: `packages/modules/Bluetooth/system/gd/hal/hci_hal_impl_host_rootcanal.cc`
 
 ```bash
-# Run tests with Rootcanal
-atest --host bluetooth_test_gd -- --rootcanal
+# Run the host unit tests (the host build links the Rootcanal HAL backend)
+atest --host bluetooth_test_gd_unit
 ```
 
 ---
@@ -14642,7 +14755,7 @@ framework.
 | Bluetooth Audio HAL | `hardware/interfaces/bluetooth/audio/aidl/` |
 | APEX Configuration | `packages/modules/Bluetooth/apex/` |
 | Floss (Linux) | `packages/modules/Bluetooth/floss/` |
-| Pandora Testing | `packages/modules/Bluetooth/pandora/` |
+| Pandora Testing | `packages/modules/Bluetooth/tests/pandora/` |
 
 ### Further Reading
 
@@ -14833,7 +14946,7 @@ The adapter communicates with `NfcService` through a Binder interface
 
 ### 38.1.5 NfcService: The System Server Component
 
-`NfcService` is the central daemon.  At 6,666+ lines it is one of the larger
+`NfcService` is the central daemon.  At roughly 7,200 lines it is one of the larger
 system services.  It runs in the `com.android.nfc` process with the shared UID
 `android.uid.nfc` (see `NfcNci/AndroidManifest.xml`).  It is **not** part of
 `system_server` -- it runs in its own process:
@@ -14951,7 +15064,7 @@ sequenceDiagram
     NNM->>SVC: onRemoteEndpointDiscovered(TagEndpoint)
     SVC->>SVC: sendMessage(MSG_NDEF_TAG, tag)
     SVC->>SVC: Read NDEF data from tag
-    SVC->>DSP: dispatchTag(tag, ndefMessage)
+    SVC->>DSP: dispatchTag(tag)
     DSP->>DSP: Build Intent with TAG, ID, NDEF extras
     DSP->>DSP: Try ACTION_NDEF_DISCOVERED
     DSP->>DSP: Try ACTION_TECH_DISCOVERED
@@ -15562,7 +15675,7 @@ libnfc-nci/
     nfc/          # Core NFC logic
     nfa/          # NFA (NFC Adaptation) layer
     gki/          # Generic Kernel Interface (threading)
-    hal/          # HAL adaptation layer
+    adaptation/   # HAL adaptation layer
     include/      # Headers
   conf/           # Configuration files
 ```
@@ -15738,8 +15851,9 @@ payload is a prefix index:
 | 0x20 | `urn:epc:pat:` | 0x21 | `urn:epc:raw:` |
 | 0x22 | `urn:epc:` | 0x23 | `urn:nfc:` |
 
-For example, `https://android.com` is encoded as `0x04` + `android.com` (9
-bytes instead of 22).  The `createUri()` factory method handles this
+For example, `https://android.com` is encoded as `0x04` + `android.com` (12
+bytes instead of the 20 an uncompressed `0x00` + `https://android.com` payload
+would take).  The `createUri()` factory method handles this
 automatically.
 
 ### 38.4.7 Text Record Encoding
@@ -16045,11 +16159,14 @@ class NfcDispatcher {
 The dispatch flow:
 
 1. Check foreground dispatch override (`mOverrideIntent`)
-2. Try `ACTION_NDEF_DISCOVERED` with URI or MIME type
-3. Try `ACTION_VIEW` with URI (for web URLs)
-4. Try `ACTION_TECH_DISCOVERED` with technology matching
-5. Try `ACTION_TAG_DISCOVERED` as final fallback
-6. Return `DISPATCH_FAIL` if nothing matches
+2. Inside `tryNdef()`: build the `ACTION_NDEF_DISCOVERED` intent (URI or MIME
+   type), then try AAR/OEM package targets
+3. If the NDEF URI is an http(s) web link, switch the intent to `ACTION_VIEW`
+   and prompt the user (returning immediately when a receiver exists)
+4. Otherwise resolve activities for `ACTION_NDEF_DISCOVERED`
+5. Try `ACTION_TECH_DISCOVERED` with technology matching
+6. Try `ACTION_TAG_DISCOVERED` as final fallback
+7. Return `DISPATCH_FAIL` if nothing matches
 
 ### 38.5.6 DispatchInfo: Building the Intent
 
@@ -16431,7 +16548,8 @@ public class CardEmulationManager implements
 }
 ```
 
-It manages six subsystems:
+It manages eight subsystems (the ninth node, `AidRoutingManager`, is owned by
+`RegisteredAidCache` rather than by `CardEmulationManager` directly):
 
 ```mermaid
 graph TD
@@ -16444,7 +16562,7 @@ graph TD
     CEM --> HNFEM["HostNfcFEmulationManager\n(NFC-F processing)"]
     CEM --> PS["PreferredServices\n(default payment)"]
     CEM --> WRO["WalletRoleObserver\n(wallet role)"]
-    CEM --> ARM["AidRoutingManager\n(NFCC routing)"]
+    RAC --> ARM["AidRoutingManager\n(NFCC routing)"]
 ```
 
 ### 38.6.4 AID Registration and Routing
@@ -16570,8 +16688,8 @@ When a SELECT APDU arrives:
 
 ### 38.6.8 RegisteredAidCache: AID Resolution
 
-The `RegisteredAidCache` maintains a `TreeMap` of AIDs to services, supporting
-three matching modes:
+The `RegisteredAidCache` maintains a `TreeMap` of AIDs to services.  It
+defines only the route qualifiers:
 
 ```java
 // Source: packages/modules/Nfc/NfcNci/src/com/android/nfc/cardemulation/
@@ -16580,7 +16698,9 @@ static final int AID_ROUTE_QUAL_SUBSET = 0x20;
 static final int AID_ROUTE_QUAL_PREFIX = 0x10;
 ```
 
-AID matching modes:
+The four AID matching-support levels themselves are `AID_MATCHING_*` constants
+in `AidRoutingManager.java`, queried via
+`RoutingOptionManager.getAidMatchingSupport()`:
 
 | Mode | Constant | Behavior |
 |------|----------|----------|
@@ -16689,11 +16809,20 @@ This enables:
 @Override
 public void onPollingLoopDetected(List<PollingFrame> frames) {
     if (mCardEmulationManager != null) {
-        mCardEmulationManager.onPollingLoopDetected(
-                new ArrayList<>(frames));
+        synchronized (mPollingLoopsDetectedRunnable) {
+            mPollingFramesToBeSent.addAll(frames);
+            if (!mHandler.hasCallbacks(mPollingLoopsDetectedRunnable)) {
+                mHandler.post(mPollingLoopsDetectedRunnable);
+            }
+        }
     }
 }
 ```
+
+The callback does not forward frames inline: it batches them into
+`mPollingFramesToBeSent` and posts `mPollingLoopsDetectedRunnable` to
+`mHandler`, which later drains the list and calls
+`mCardEmulationManager.onPollingLoopDetected()` on the handler thread.
 
 The firmware can autonomously enable or disable observe mode:
 
@@ -17294,7 +17423,8 @@ public final class NfcF extends BasicTagTechnology {
     // Get the system code (2 bytes)
     public byte[] getSystemCode() { return mSystemCode; }
 
-    // Get the manufacturer bytes (IDm, 8 bytes)
+    // Get the PMm (Manufacture Parameter) bytes captured at discovery;
+    // the IDm/NFCID2 is the tag's getId(), not this getter
     public byte[] getManufacturer() { return mManufacturer; }
 
     // Send raw NFC-F commands and receive response
@@ -17313,10 +17443,11 @@ NfcF nfcF = NfcF.get(tag);
 if (nfcF != null) {
     nfcF.connect();
     byte[] systemCode = nfcF.getSystemCode();
-    byte[] manufacturer = nfcF.getManufacturer();
+    byte[] pmm = nfcF.getManufacturer();  // PMm (Manufacture Parameter)
+    byte[] idm = tag.getId();             // IDm / NFCID2
 
-    // FeliCa Read Without Encryption command
-    byte[] readCmd = buildFeliCaReadCommand(manufacturer, serviceCode, blockList);
+    // FeliCa Read Without Encryption command (addressed by IDm)
+    byte[] readCmd = buildFeliCaReadCommand(idm, serviceCode, blockList);
     byte[] response = nfcF.transceive(readCmd);
 
     nfcF.close();
@@ -17479,7 +17610,7 @@ The full set of tag technology classes in `android.nfc.tech`:
 | `IsoDep` | ISO 14443-4 | `getHistoricalBytes()`, `getHiLayerResponse()`, `transceive()` |
 | `Ndef` | NDEF formatted | `getNdefMessage()`, `writeNdefMessage()`, `makeReadOnly()` |
 | `NdefFormatable` | Can be formatted | `format()`, `formatReadOnly()` |
-| `MifareClassic` | NXP MIFARE Classic | `authenticate()`, `readBlock()`, `writeBlock()` |
+| `MifareClassic` | NXP MIFARE Classic | `authenticateSectorWithKeyA()`, `authenticateSectorWithKeyB()`, `readBlock()`, `writeBlock()` |
 | `MifareUltralight` | NXP MIFARE Ultralight | `readPages()`, `writePage()` |
 | `NfcBarcode` | Kovio barcode | `getType()`, `getBarcode()` |
 
@@ -17801,7 +17932,7 @@ module flag set `packages/modules/Nfc/flags/flags.aconfig` (container
 
 | Module flag | Gates |
 |------|-------|
-| `tap_to_x` | The Tap to X / gesture-exchange API (Section 38.10) and the observe-mode-always-on feature it depends on |
+| `tap_to_x` | The Tap to X / gesture-exchange API (Section 38.10), plus `ReaderCallback.onTagLost()` and activity-less reader-mode registration |
 | `nfcstack_26q2_updates` | NCI-stack updates, including `NfcAdapter.allowOneTransaction()` (Section 38.6.11) and the V2 tag-app preference store |
 | `screen_state_attribute_toggle` | Runtime toggling of `requireDeviceUnlock` / `requireDeviceScreenOn` on an HCE service |
 | `get_polling_loop_filters` | API to fetch the polling-loop filters a service registered |
@@ -17846,13 +17977,16 @@ OMAPI is split across three layers, each in a different part of the tree:
 | Service | `packages/apps/SecureElement/` | `SecureElementService` + `Terminal` -- the binder implementation |
 | HAL | `hardware/interfaces/secure_element/aidl/` | `ISecureElement` -- the vendor driver for each physical SE |
 
-The client `SEService` is a thin wrapper.  When an app constructs one, it binds
-to the `SecureElement` app's exported service and caches the binder:
+The client `SEService` is a thin wrapper.  When an app constructs one, it
+first asks `ServiceManager` for the registered binder and only falls back to
+binding the `SecureElement` app's exported service:
 
 ```java
 // Source: frameworks/base/omapi/java/android/se/omapi/SEService.java
 private static final String SERVICE_NAME = "android.se.omapi.ISecureElementService/default";
 ...
+IBinder seService = ServiceManager.checkService(SERVICE_NAME);
+// if found, use it directly; otherwise fall back to binding:
 Intent intent = new Intent(ISecureElementService.class.getName());
 mContext.bindService(intent, mConnection, Context.BIND_AUTO_CREATE);
 ...
@@ -17920,9 +18054,12 @@ mSecureElementServiceBinder.forceDowngradeToSystemStability();
 ServiceManager.addService(Context.SECURE_ELEMENT_SERVICE, mSecureElementServiceBinder);
 ```
 
-The VINTF-stable name (`/default`) is what vendor processes look up; the
-downgraded-to-system-stability binder under `Context.SECURE_ELEMENT_SERVICE` is
-what the in-system client `SEService` reaches via the bind above.
+The VINTF-stable name (`/default`) is also what the client `SEService` looks
+up first via `ServiceManager.checkService()`; only when that lookup fails does
+it fall back to `bindService()`, which hands it the binder returned by
+`SecureElementService.onBind()`.  The
+`Context.SECURE_ELEMENT_SERVICE` (`"secure_element"`) registration is a
+separate, system-stability publication that the client never looks up.
 
 ### 38.13.3 Terminal: One Object per Secure Element
 
@@ -18456,7 +18593,7 @@ public class DemoPaymentService extends HostApduService {
     private static byte[] buildSelectResponse() {
         // Minimal FCI template
         return new byte[] {
-            0x6F, 0x0A,                 // FCI Template
+            0x6F, 0x0B,                 // FCI Template
             (byte) 0x84, 0x07,          // DF Name (AID)
             (byte) 0xA0, 0x00, 0x00,    // Visa AID
             0x00, 0x04, 0x10, 0x10,
@@ -18699,9 +18836,12 @@ adb shell dumpsys nfc
 # Look for lines like:
 #   mState=ON
 #   mScreenState=ON_UNLOCKED
-#   AID Routing Table:
-#     A0000000041010 -> Route: 0x00 (Host)
-#     A0000000031010 -> Route: 0x02 (eSE)
+#   Routing table:
+#       Default route: host
+#       Routed to 0x0:
+#           "A0000000041010"
+#       Routed to 0x2:
+#           "A0000000031010"
 ```
 
 To inspect the NFC HAL:
@@ -18750,7 +18890,7 @@ diff $ANDROID_BUILD_TOP/hardware/interfaces/nfc/aidl/\
     aidl_api/android.hardware.nfc/2/android/hardware/nfc/INfc.aidl
 
 # Run VTS tests against the HAL
-atest VtsHalNfcTargetTest
+atest VtsAidlHalNfcTargetTest
 ```
 
 **Questions to explore**:
@@ -18829,8 +18969,8 @@ public class DemoFeliCaService extends HostNfcFService {
 ```xml
 <host-nfcf-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/demo_felica_description">
-    <system-code-filter android:name="4000"
-                        android:nfcid2="02FE010203040506" />
+    <system-code-filter android:name="4000" />
+    <nfcid2-filter android:name="02FE010203040506" />
 </host-nfcf-service>
 ```
 
@@ -18863,7 +19003,7 @@ the application-facing APIs:
 `NfcAdapter` API.  The entire stack ships as a Mainline APEX module
 (`com.android.nfcservices`).
 
-**NfcService** -- the 6,666+ line central coordinator manages NFC hardware
+**NfcService** -- the roughly 7,200-line central coordinator manages NFC hardware
 lifecycle, screen-state-dependent polling, the message handler loop, tag
 discovery, card emulation, and routing table updates.
 
@@ -19041,18 +19181,20 @@ with USB. It provides:
 ```java
 // From UsbManager.java -- function bitmask values
 public static final long FUNCTION_NONE = 0;
-public static final long FUNCTION_MTP = GadgetFunction.MTP;       // 1 << 2
-public static final long FUNCTION_PTP = GadgetFunction.PTP;       // 1 << 4
-public static final long FUNCTION_RNDIS = GadgetFunction.RNDIS;   // 1 << 5
-public static final long FUNCTION_MIDI = GadgetFunction.MIDI;     // 1 << 3
-public static final long FUNCTION_ACCESSORY = GadgetFunction.ACCESSORY; // 1 << 1
-public static final long FUNCTION_AUDIO_SOURCE = GadgetFunction.AUDIO_SOURCE; // 1 << 6
-public static final long FUNCTION_ADB = GadgetFunction.ADB;       // 1
-public static final long FUNCTION_NCM = GadgetFunction.NCM;       // 1 << 10
-public static final long FUNCTION_UVC = GadgetFunction.UVC;       // 1 << 7
+public static final long FUNCTION_ADB = 1;
+public static final long FUNCTION_ACCESSORY = 1 << 1;
+public static final long FUNCTION_MTP = 1 << 2;
+public static final long FUNCTION_MIDI = 1 << 3;
+public static final long FUNCTION_PTP = 1 << 4;
+public static final long FUNCTION_RNDIS = 1 << 5;
+public static final long FUNCTION_AUDIO_SOURCE = 1 << 6;
+public static final long FUNCTION_UVC = 1 << 7;
+public static final long FUNCTION_NCM = 1 << 10;
 ```
 
-These constants map directly to the `GadgetFunction` AIDL parcelable defined at
+The values are plain literals, but each constant's javadoc requires it to be
+equal to the corresponding constant in the `GadgetFunction` AIDL parcelable
+defined at
 `hardware/interfaces/usb/gadget/aidl/android/hardware/usb/gadget/GadgetFunction.aidl`.
 
 ### 39.1.5 UsbService -- The Central Coordinator
@@ -19319,8 +19461,14 @@ locked. `UsbDeviceManager` coordinates with the keyguard:
 
 ### 39.2.9 Interface Deny List
 
-For security, certain USB interface classes are always denied from application
-access when the device acts as a host:
+`UsbDeviceManager` keeps a static set of USB interface classes used to decide
+whether a connected host-mode device is likely a dock or self-contained
+accessory. When a host-mode device exposes one of these interface classes, the
+`MSG_UPDATE_HOST_STATE` handler sets `mHideUsbNotification`, suppressing the
+"charging this device via USB" notification. This set does not deny
+application access to those interfaces -- host-device access is gated by
+`UsbUserPermissionManager` and `UsbProfileGroupSettingsManager`
+(Section 39.8.6):
 
 ```java
 // From UsbDeviceManager static initializer
@@ -19566,7 +19714,7 @@ oneway interface IUsb {
     void switchRole(in String portName, in PortRole role, long transactionId);
     void limitPowerTransfer(in String portName, boolean limit, long transactionId);
     void resetUsbPort(in String portName, long transactionId);
-    void queryStaticPortInformation(long transactionId);
+    void queryStaticPortInformation(in String portName, long transactionId);
 }
 ```
 
@@ -19666,11 +19814,12 @@ timeline
         1.0 : Basic port status and role switching
         1.1 : Extended port status
         1.2 : Contaminant detection, USB speed
-        1.3 : Compliance warnings
+        1.3 : USB data signaling enable/disable
     section AIDL Era
-        AIDL v1 : Migration to AIDL, all HIDL features
-        AIDL v2 : Power brick, DisplayPort Alt Mode
-        AIDL v3 : Plug orientation, compliance enhancements
+        AIDL v1 : Migration to AIDL, power brick status
+        AIDL v2 : Compliance warnings, plug orientation, Alt Mode data
+        AIDL v3 : Extended ComplianceWarning enum
+        AIDL v4 : Static port info, partner status, power profiles, cable status
 ```
 
 Source directories:
@@ -19797,7 +19946,7 @@ Source: `packages/modules/adb/daemon/main.cpp`
 
 ### 39.4.3 ADB Protocol
 
-The ADB protocol is a simple message-based protocol with six core message
+The ADB protocol is a simple message-based protocol with eight message
 types, defined in `packages/modules/adb/adb.h`:
 
 ```c
@@ -20062,7 +20211,7 @@ Source: `packages/modules/adb/daemon/auth.cpp`
 
 ADB authentication uses RSA-2048 key pairs:
 
-1. The server generates a 20-byte random token.
+1. The daemon (adbd) generates a 20-byte random token.
 2. The daemon sends the token to the server.
 3. The server signs the token with its private key.
 4. The daemon verifies the signature against known public keys.
@@ -20153,7 +20302,7 @@ connection banner. Key features defined in `transport.h`:
 | `sendrecv_v2_zstd` | Zstd compression for sync v2 |
 | `sendrecv_v2_dry_run_send` | Dry-run send mode |
 | `delayed_ack` | Delayed acknowledgment for throughput |
-| `dev-raw` | Raw device access service |
+| `devraw` | Raw device access service |
 
 ### 39.4.11 WiFi ADB
 
@@ -20385,7 +20534,9 @@ on demand, dramatically reducing install times for large apps.
 
 `adb logcat` opens a `shell:logcat` service on the device. The output is
 streamed back in real time using the shell protocol. The logcat binary on the
-device reads from the kernel's log buffers via `/dev/log/` or the logd socket.
+device reads from the userspace `logd` daemon's ring buffers over the `logdr`
+socket via liblog; kernel messages live in a separate `kernel` buffer that
+logd itself proxies.
 
 ### 39.5.6 Port Forwarding (`adb forward` / `adb reverse`)
 
@@ -20430,11 +20581,15 @@ std::unordered_map<std::string, std::string> reverse_forwards_;
 Source: `packages/modules/adb/daemon/abb.cpp`, `packages/modules/adb/daemon/abb_service.cpp`
 
 ABB provides a direct Binder IPC path from `adb` commands to system services,
-bypassing the shell. Commands like `adb shell cmd package list packages`
-internally use ABB when the feature is supported:
+bypassing the shell. It is reached through the explicit `adb abb` command
+(gated on the `abb` feature in `packages/modules/adb/client/commandline.cpp`)
+and, internally, by `adb install`, which sends `abb_exec:package ...` instead
+of `exec:cmd package` when the device supports `abb_exec`. A plain
+`adb shell cmd <service>` still goes through the shell service and the `cmd`
+binary:
 
 ```
-adb shell cmd <service> <arguments>
+adb abb <service> <arguments>
      |
      v
   abb_exec:<service> <arguments>
@@ -20522,7 +20677,8 @@ The MTP implementation spans three layers:
 **MTP Service** (`packages/services/Mtp/`):
 
 - `MtpService.java`: Android Service that manages the MTP server lifecycle
-- `MtpDatabase.java`: Bridge between MTP operations and MediaStore
+- `MtpDatabase.java`: Host-side local SQLite cache of MTP object metadata
+  (Section 39.6.11)
 - `MtpDocumentsProvider.java`: Storage Access Framework integration
 - `MtpReceiver.java`: Broadcast receiver for USB state changes
 - `MtpManager.java`: Host-side MTP device management
@@ -20530,7 +20686,10 @@ The MTP implementation spans three layers:
 **Framework Integration** (`frameworks/base/`):
 
 - `UsbDeviceManager` binds to `MtpService` when MTP function is active
-- `MediaProvider` supplies file metadata to `MtpDatabase`
+- `android.mtp.MtpDatabase`
+  (`frameworks/base/media/java/android/mtp/MtpDatabase.java`) -- a different
+  class than the one in `packages/services/Mtp/` -- is the bridge between MTP
+  operations and MediaStore; `MediaProvider` supplies file metadata to it
 
 ### 39.6.3 MTP Server Initialization and Run Loop
 
@@ -21220,14 +21379,20 @@ returns a `ParcelFileDescriptor` to the USB device node (e.g.,
 
 ### 39.8.7.1 USB Transfer Types
 
-The `UsbDeviceConnection` class supports all four USB transfer types:
+The `UsbDeviceConnection` class supports control, bulk, and interrupt
+transfers:
 
 | Transfer Type | Method | Max Size | Use Case |
 |--------------|--------|----------|----------|
 | Control | `controlTransfer()` | 4KB per setup | Device configuration, vendor commands |
 | Bulk | `bulkTransfer()` | Variable | Data-heavy transfers (storage, printers) |
 | Interrupt | `bulkTransfer()` on interrupt EP | 64B (FS) / 1024B (HS) | HID events, status polling |
-| Isochronous | `UsbRequest` (async) | 1023B (FS) / 1024B (HS) | Audio/video streaming |
+
+Isochronous endpoints are not supported: `usb_request_new()` in
+`system/core/libusbhost/usbhost.c` accepts only bulk and interrupt endpoints
+and returns NULL for anything else, so `UsbRequest.initialize()` fails on an
+isochronous endpoint. Isochronous audio/video streaming instead goes through
+the ALSA USB-audio path (Section 39.8.8).
 
 For asynchronous transfers, applications use `UsbRequest`:
 
@@ -21303,7 +21468,7 @@ graph LR
     USB_AUDIO["USB Audio Device"] --> UHM2["UsbHostManager"]
     UHM2 --> UALSA2["UsbAlsaManager"]
     UALSA2 --> ALSA["ALSA Subsystem"]
-    UALSA2 --> MIDI2["UsbDirectMidiDevice"]
+    UALSA2 --> MIDI2["UsbAlsaMidiDevice"]
     ALSA --> AUDIO_HAL["Audio HAL"]
     AUDIO_HAL --> AUDIOFLINGER["AudioFlinger"]
 ```
@@ -21444,8 +21609,8 @@ implement USB functions:
 
 /dev/usb-ffs/mtp/
     ep0       # Control endpoint
-    ep1       # Bulk OUT
-    ep2       # Bulk IN
+    ep1       # Bulk IN (device to host)
+    ep2       # Bulk OUT (host to device)
     ep3       # Interrupt IN (events)
 ```
 
@@ -21468,12 +21633,12 @@ USB Device Descriptor:
     idProduct:  0x4EE2 (MTP + ADB)
 
 USB Configuration Descriptor:
-    bNumInterfaces: 3
+    bNumInterfaces: 2
 
     Interface 0: MTP
-        bInterfaceClass:    0xFF (Vendor Specific)
-        bInterfaceSubClass: 0xFF
-        bInterfaceProtocol: 0x00
+        bInterfaceClass:    0x06 (Still Image)
+        bInterfaceSubClass: 0x01
+        bInterfaceProtocol: 0x01
         Endpoint: Bulk IN
         Endpoint: Bulk OUT
         Endpoint: Interrupt IN
@@ -21500,22 +21665,29 @@ The VID:PID pair changes based on the active function combination:
 | Accessory + ADB | `0x2D01` | AOA with debugging |
 | MIDI | `0x4EE8` | MIDI only |
 | MIDI + ADB | `0x4EE9` | MIDI with debugging |
-| Charging | `0x4EE0` | No data function |
+| ADB only | `0x4EE7` | Debugging only |
 
 ### 39.9.5 USB Speed Negotiation
 
 The USB connection speed is determined during physical layer negotiation and
-reported through the `IUsbGadget` HAL:
+reported through the `IUsbGadget` HAL
+(`hardware/interfaces/usb/gadget/aidl/android/hardware/usb/gadget/UsbSpeed.aidl`):
 
 ```
 @VintfStability
-parcelable UsbSpeed {
-    const int UNKNOWN = -1;
-    const int USB20 = 0;      // 480 Mbps
-    const int USB30 = 1;      // 5 Gbps
-    const int USB31 = 2;      // 10 Gbps
-    const int USB32 = 3;      // 20 Gbps
-    const int USB40 = 4;      // 40 Gbps
+@Backing(type="int")
+enum UsbSpeed {
+    UNKNOWN = -1,
+    LOWSPEED = 0,          // USB 1.0, 1.5 Mbps
+    FULLSPEED = 1,         // USB 1.1, 12 Mbps
+    HIGHSPEED = 2,         // USB 2.0, 480 Mbps
+    SUPERSPEED = 3,        // USB 3.0, 5 Gbps
+    SUPERSPEED_10Gb = 4,   // USB 3.1 Gen 2, 10 Gbps
+    SUPERSPEED_20Gb = 5,   // USB 3.2 Gen 2x2, 20 Gbps
+    USB4_GEN2_10Gb = 6,
+    USB4_GEN2_20Gb = 7,
+    USB4_GEN3_20Gb = 8,
+    USB4_GEN3_40Gb = 9,
 }
 ```
 
@@ -22025,8 +22197,11 @@ adb shell ls -la /data/misc/adb/
 adb tcpip 5555
 adb connect <device-ip>:5555
 
-# Check ADB transport speed
+# Check which UDC the gadget is bound to
 adb shell cat /config/usb_gadget/g1/UDC
+
+# Check the negotiated USB speed
+adb shell cat /sys/class/udc/*/current_speed
 ```
 
 ### 39.13.5 Test File Transfer Performance
@@ -22052,11 +22227,8 @@ time adb pull /data/local/tmp/testfile /tmp/pulled_file
 # Check MTP server status
 adb shell dumpsys usb | grep -i mtp
 
-# Monitor MTP operations
+# Monitor MTP operations (storage adds/removes appear here too)
 adb logcat -s MtpServer:* MtpService:*
-
-# List MTP storage IDs
-adb shell dumpsys media.mtp
 
 # Check FunctionFS endpoints for MTP
 adb shell ls -la /dev/usb-ffs/mtp/
@@ -22078,7 +22250,7 @@ adb shell dumpsys usb | grep -A 5 "deny"
 adb logcat -s UsbHostManager:*
 
 # Examine USB descriptors of connected device
-adb shell "dumpsys usb -dump-raw"
+adb shell dumpsys usb dump-descriptors
 ```
 
 ### 39.13.8 Build and Test USB HAL Changes
@@ -22090,14 +22262,14 @@ source build/envsetup.sh
 lunch <target>
 
 # Build USB HAL
-m android.hardware.usb-service
+m android.hardware.usb-service.example
 
 # Build USB Gadget HAL
-m android.hardware.usb.gadget-service
+m android.hardware.usb.gadget-service.example
 
 # Run USB VTS tests
 atest VtsHalUsbV1_0TargetTest
-atest VtsHalUsbGadgetV1_0TargetTest
+atest VtsHalUsbGadgetV2_0HostTest
 ```
 
 ### 39.13.9 ADB Over WiFi Pairing
@@ -22137,8 +22309,8 @@ adb reverse --remove-all
 ### 39.13.11 Investigate USB Accessory Mode
 
 ```bash
-# Check accessory support
-adb shell getprop ro.usb.ffs.ready
+# Check FunctionFS readiness
+adb shell getprop sys.usb.ffs.ready
 adb shell ls -la /dev/usb_accessory 2>/dev/null
 
 # Monitor accessory events
@@ -22173,8 +22345,9 @@ export ADB_TRACE=all  # or: usb, transport, adb, packets
 # Run adb with tracing enabled
 ADB_TRACE=packets adb shell echo hello
 
-# On device, enable adbd tracing
-adb shell setprop persist.adb.trace_mask 0xffff
+# On device, enable adbd tracing (named tags, not a hex mask)
+adb shell setprop persist.adb.trace_mask all
+# ... or a tag list, e.g. "usb,transport,packets"
 adb shell stop adbd && adb shell start adbd
 ```
 
@@ -22271,9 +22444,9 @@ cat ~/.android/adbkey.pub
 openssl rsa -in ~/.android/adbkey -pubout 2>/dev/null | \
     openssl md5 -c
 
-# Revoke all USB debugging authorizations (on device)
-adb shell settings put global development_settings_enabled 0
-# Or via Settings > Developer Options > Revoke USB debugging authorizations
+# Revoke all USB debugging authorizations (on device):
+# Settings > Developer Options > Revoke USB debugging authorizations
+# (clears /data/misc/adb/adb_keys)
 ```
 
 ### 39.13.18 Write a Simple USB Host Application

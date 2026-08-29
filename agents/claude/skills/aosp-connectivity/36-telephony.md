@@ -52,9 +52,9 @@ AOSP tree.  The key source locations are:
 
 | Layer | Path | Description |
 |-------|------|-------------|
-| Public API | `frameworks/base/telephony/java/android/telephony/` | `TelephonyManager` (19 705 lines), `SubscriptionManager`, `SmsManager`, `CarrierConfigManager` |
-| Internal framework | `frameworks/opt/telephony/src/java/com/android/internal/telephony/` | `Phone` (5 408 lines), `GsmCdmaPhone` (4 333 lines), `RIL` (6 017 lines), `ServiceStateTracker`, `CommandsInterface` |
-| Phone process | `packages/services/Telephony/src/com/android/phone/` | `PhoneInterfaceManager` (14 737 lines), `PhoneGlobals`, `CarrierConfigLoader` |
+| Public API | `frameworks/base/telephony/java/android/telephony/` | `TelephonyManager` (~20 200 lines), `SubscriptionManager`, `SmsManager`, `CarrierConfigManager` |
+| Internal framework | `frameworks/opt/telephony/src/java/com/android/internal/telephony/` | `Phone` (~5 550 lines), `GsmCdmaPhone` (~4 500 lines), `RIL` (~6 135 lines), `ServiceStateTracker`, `CommandsInterface` |
+| Phone process | `packages/services/Telephony/src/com/android/phone/` | `PhoneInterfaceManager` (~15 470 lines), `PhoneGlobals`, `CarrierConfigLoader` |
 | Telephony module | `packages/modules/Telephony/` | Mainline-modularised telephony code (apex, framework, libs) |
 | Radio HAL | `hardware/interfaces/radio/aidl/` | AIDL-based HAL interfaces: modem, sim, network, data, voice, messaging, ims |
 | Telecom | `packages/services/Telecomm/` | `CallsManager`, call routing, `InCallService` binding |
@@ -79,11 +79,14 @@ public class TelephonyManager {
 ```
 
 Applications obtain it via `Context.getSystemService(TelephonyManager.class)`.
-Internally, every method on `TelephonyManager` forwards to
+Internally, most methods on `TelephonyManager` forward to
 `ITelephony.Stub.Proxy` over Binder IPC, which resolves to
-`PhoneInterfaceManager` in the phone process.
+`PhoneInterfaceManager` in the phone process.  (A few simple getters skip the
+Binder hop entirely: `getNetworkOperatorName()`, for example, just reads the
+`TelephonyProperties.operator_alpha()` system property that
+`ServiceStateTracker` keeps up to date.)
 
-A simplified view of a `getNetworkOperatorName()` call:
+A simplified view of a `getServiceState()` call:
 
 ```mermaid
 sequenceDiagram
@@ -94,16 +97,16 @@ sequenceDiagram
     participant Phone as GsmCdmaPhone
     participant SST as ServiceStateTracker
 
-    App->>TM: getNetworkOperatorName()
-    TM->>Binder: ITelephony.getNetworkOperatorNameForPhone(phoneId)
-    Binder->>PIM: getNetworkOperatorNameForPhone(phoneId)
+    App->>TM: getServiceState()
+    TM->>Binder: ITelephony.getServiceStateForSlot(slotIndex, ...)
+    Binder->>PIM: getServiceStateForSlot(slotIndex, ...)
     PIM->>Phone: getServiceState()
     Phone->>SST: getServiceState()
     SST-->>Phone: ServiceState
     Phone-->>PIM: ServiceState
-    PIM-->>Binder: operatorAlphaLong
-    Binder-->>TM: operatorAlphaLong
-    TM-->>App: "T-Mobile"
+    PIM-->>Binder: ServiceState
+    Binder-->>TM: ServiceState
+    TM-->>App: ServiceState
 ```
 
 Key public API groupings on `TelephonyManager`:
@@ -119,8 +122,9 @@ Key public API groupings on `TelephonyManager`:
 ### 36.1.3 PhoneInterfaceManager -- the Binder Gateway
 
 `PhoneInterfaceManager` lives in `packages/services/Telephony/` and extends
-`ITelephony.Stub`.  At 14 737 lines it is the single largest class in the
-telephony stack.  It performs three critical functions:
+`ITelephony.Stub`.  At roughly 15 500 lines it is one of the largest classes
+in the telephony stack (only `TelephonyManager` itself, at about 20 200 lines,
+is bigger).  It performs three critical functions:
 
 1. **Permission enforcement** -- every method checks the caller's UID against
    required permissions (`READ_PHONE_STATE`, `MODIFY_PHONE_STATE`,
@@ -136,9 +140,23 @@ Example permission check pattern:
 // packages/services/Telephony/src/com/android/phone/PhoneInterfaceManager.java
 public String getImeiForSlot(int slotIndex, String callingPackage,
         String callingFeatureId) {
-    enforceReadPrivilegedPermission("getImeiForSlot");
     Phone phone = PhoneFactory.getPhone(slotIndex);
-    return phone != null ? phone.getImei() : null;
+    if (phone == null) {
+        return null;
+    }
+    int subId = phone.getSubId();
+    enforceCallingPackage(callingPackage, Binder.getCallingUid(), "getImeiForSlot");
+    if (!TelephonyPermissions.checkCallingOrSelfReadDeviceIdentifiers(mApp, subId,
+            callingPackage, callingFeatureId, "getImeiForSlot")) {
+        return null;
+    }
+
+    final long identity = Binder.clearCallingIdentity();
+    try {
+        return phone.getImei();
+    } finally {
+        Binder.restoreCallingIdentity(identity);
+    }
 }
 ```
 
@@ -218,10 +236,10 @@ which:
 
 1. Creates `CommandsInterface[]` (one RIL per modem).
 2. Creates `UiccController` (the UICC/SIM manager singleton).
-3. Creates `GsmCdmaPhone[]` (one per SIM slot).
-4. Creates `PhoneSwitcher` (for multi-SIM data switching).
-5. Creates `SubscriptionManagerService`.
-6. Creates `EuiccController` (for eSIM management).
+3. Creates `SubscriptionManagerService`.
+4. Creates `EuiccController` (for eSIM management).
+5. Creates `GsmCdmaPhone[]` (one per SIM slot).
+6. Creates `PhoneSwitcher` (for multi-SIM data switching), last.
 
 ```java
 // frameworks/opt/telephony/src/java/com/android/internal/telephony/PhoneFactory.java
@@ -250,10 +268,10 @@ sequenceDiagram
     PG->>PF: makeDefaultPhones(context)
     PF->>RIL: new RIL(context, slot0)
     PF->>RIL: new RIL(context, slot1)
-    PF->>UiccC: make(context, ci[])
+    PF->>UiccC: make(context, featureFlags)
+    PF->>SubMgr: init(context)
     PF->>Phone: new GsmCdmaPhone(context, ci[0], slot0)
     PF->>Phone: new GsmCdmaPhone(context, ci[1], slot1)
-    PF->>SubMgr: init(context)
     PG->>PG: Create PhoneInterfaceManager
     PG->>PG: Register with ServiceManager
 ```
@@ -293,10 +311,10 @@ protected static final int EVENT_LINK_CAPACITY_CHANGED       = 59;
 protected static final int EVENT_SUBSCRIPTIONS_CHANGED       = 62;
 protected static final int EVENT_CELL_IDENTIFIER_DISCLOSURE  = 72;
 protected static final int EVENT_SECURITY_ALGORITHM_UPDATE   = 74;
-protected static final int EVENT_LAST = EVENT_SET_SECURITY_ALGORITHMS_UPDATED_ENABLED_DONE;
+protected static final int EVENT_LAST = EVENT_SET_ALLOWED_NETWORK_TYPES_FOR_2G_DISABLED_DONE;
 ```
 
-The event numbering extends to 75 as of the current codebase, reflecting
+The event numbering extends to 77 as of the current codebase, reflecting
 decades of accumulation from the original GSM-only phone through CDMA support,
 IMS integration, security notifications, and 5G NR capabilities.
 
@@ -435,8 +453,10 @@ packages/modules/Telephony/
 ```
 
 This allows Google to deliver telephony updates via the Play Store without a
-full OS upgrade.  The APEX contains the `com.android.telephony` module,
-packaging framework components and optionally the telephony service.
+full OS upgrade.  The APEX module itself is named `com.android.telephonycore`
+(its bootclasspath and systemserverclasspath fragments carry
+`com.android.telephony-*` names), packaging framework components and
+optionally the telephony service.
 
 ### 36.1.11 Security Considerations
 
@@ -525,7 +545,7 @@ graph LR
 ### 36.2.2 RIL.java -- the Java Side
 
 `RIL.java` implements the `CommandsInterface` that every `Phone` object
-programs against.  It is 6 017 lines of asynchronous request/response
+programs against.  It is roughly 6 100 lines of asynchronous request/response
 plumbing:
 
 ```java
@@ -727,7 +747,7 @@ Common unsolicited indications include:
 - `callStateChanged` -- active calls changed
 - `dataCallListChanged` -- data bearer state changed
 - `simStatusChanged` -- SIM card inserted / removed
-- `signalStrengthUpdate` -- signal bars changed
+- `currentSignalStrength` -- signal strength update
 
 ### 36.2.7 Wake Lock Management
 
@@ -951,8 +971,10 @@ public static List<TelephonyHistogram> getTelephonyRILTimingHistograms() {
 }
 ```
 
-These histograms are accessible via `TelephonyManager.requestModemActivityInfo()`
-and are used for power attribution and performance monitoring.
+These histograms are exposed via `TelephonyManager.getTelephonyHistograms()`
+(backed by `RIL.getTelephonyRILTimingHistograms()`) and are used for
+performance monitoring.  The separate `requestModemActivityInfo()` API returns
+modem power and activity counters used for power attribution.
 
 ### 36.2.14 Mock Modem for Testing
 
@@ -1046,12 +1068,12 @@ graph TD
     UC["UiccController<br/>(singleton)"]
     UC --> US1["UiccSlot[0]"]
     UC --> US2["UiccSlot[1]"]
-    US1 --> UP1["UiccPort[0]"]
-    US2 --> UP2["UiccPort[0]"]
-    UP1 --> UCard1["UiccCard"]
-    UP2 --> UCard2["UiccCard"]
-    UCard1 --> UProf1["UiccProfile"]
-    UCard2 --> UProf2["UiccProfile"]
+    US1 --> UCard1["UiccCard"]
+    US2 --> UCard2["UiccCard"]
+    UCard1 --> UP1["UiccPort[0]"]
+    UCard2 --> UP2["UiccPort[0]"]
+    UP1 --> UProf1["UiccProfile"]
+    UP2 --> UProf2["UiccProfile"]
     UProf1 --> App1["UiccCardApplication<br/>(SIM/USIM)"]
     UProf2 --> App2["UiccCardApplication<br/>(SIM/USIM)"]
     App1 --> Rec1["SIMRecords / IsimRecords"]
@@ -1082,7 +1104,7 @@ The key UICC classes and their files:
 |-------|------|------|
 | `UiccController` | `uicc/UiccController.java` | Singleton; manages all slots and cards |
 | `UiccSlot` | `uicc/UiccSlot.java` | Physical card slot (can be physical or eSIM) |
-| `UiccPort` | `uicc/UiccPort.java` | Logical port on a slot (for MEP -- Multiple Enabled Profiles) |
+| `UiccPort` | `uicc/UiccPort.java` | Logical port on the UiccCard (for MEP -- Multiple Enabled Profiles) |
 | `UiccCard` | `uicc/UiccCard.java` | Represents the smart card itself |
 | `UiccProfile` | `uicc/UiccProfile.java` | Represents a carrier profile on the card |
 | `UiccCardApplication` | `uicc/UiccCardApplication.java` | SIM/USIM/ISIM application on the card |
@@ -1158,10 +1180,10 @@ Key SIM HAL operations:
 | `supplyIccPinForApp` | Enter SIM PIN |
 | `supplyIccPukForApp` | Enter PUK code |
 | `changeIccPinForApp` | Change SIM PIN |
-| `iccIOForApp` | Raw ICC I/O (read/write SIM files) |
+| `iccIoForApp` | Raw ICC I/O (read/write SIM files) |
 | `iccOpenLogicalChannel` | Open logical channel for APDU |
 | `iccTransmitApduLogicalChannel` | Send APDU to SIM |
-| `setCarrierRestrictions` | Carrier lock (SIM lock) |
+| `setAllowedCarriers` | Carrier lock (SIM lock) |
 | `getSimPhonebookRecords` | Read SIM phonebook |
 
 ### 36.3.4 SubscriptionManager and SubscriptionManagerService
@@ -1306,9 +1328,9 @@ public class SubscriptionInfo implements Parcelable {
     private CharSequence mDisplayName;
     // Carrier name
     private CharSequence mCarrierName;
-    // MCC + MNC
-    private int mMcc;
-    private int mMnc;
+    // MCC + MNC (stored as strings)
+    private final String mMcc;
+    private final String mMnc;
     // Country ISO
     private String mCountryIso;
     // Is embedded (eSIM)?
@@ -1323,6 +1345,9 @@ public class SubscriptionInfo implements Parcelable {
     private ParcelUuid mGroupUuid;
 }
 ```
+
+(In the real source every field is declared `final`; the class is immutable
+and built through `SubscriptionInfo.Builder`.)
 
 The internal `SubscriptionInfoInternal` adds additional fields not exposed to
 the public API:
@@ -1464,10 +1489,10 @@ intervention.  This is critical for devices that receive OTA updates overnight.
 The `IRadioSim` HAL supports carrier restrictions (SIM locking):
 
 ```
-void setCarrierRestrictions(in int serial,
+void setAllowedCarriers(in int serial,
         in CarrierRestrictions carriers,
         in SimLockMultiSimPolicy multiSimPolicy);
-void getCarrierRestrictions(in int serial);
+void getAllowedCarriers(in int serial);
 ```
 
 This allows carriers and device manufacturers to restrict which SIM cards can
@@ -1485,7 +1510,8 @@ carrier services, and the modem:
 
 ```mermaid
 graph TD
-    App["App<br/>(SmsManager)"] -->|Binder| SMS_IF["IccSmsInterfaceManager"]
+    App["App<br/>(SmsManager)"] -->|Binder| SC["SmsController<br/>(ISms.Stub)"]
+    SC --> SMS_IF["IccSmsInterfaceManager"]
     SMS_IF --> SDC["SmsDispatchersController"]
     SDC --> GsmD["GsmSMSDispatcher"]
     SDC --> CdmaD["CdmaSMSDispatcher"]
@@ -1511,6 +1537,7 @@ When an application sends an SMS via `SmsManager.sendTextMessage()`:
 sequenceDiagram
     participant App
     participant SM as SmsManager
+    participant SC as SmsController
     participant ISIM as IccSmsInterfaceManager
     participant SDC as SmsDispatchersController
     participant Disp as GsmSMSDispatcher
@@ -1519,7 +1546,8 @@ sequenceDiagram
     participant Modem
 
     App->>SM: sendTextMessage(dest, text, sentPI, deliveryPI)
-    SM->>ISIM: sendText(dest, scAddr, text, sentPI, deliveryPI)
+    SM->>SC: sendTextForSubscriber(subId, dest, scAddr, text, ...)
+    SC->>ISIM: sendText(dest, scAddr, text, sentPI, deliveryPI)
     ISIM->>SDC: sendText(dest, scAddr, text, ...)
     SDC->>SDC: Select dispatcher (GSM/CDMA/IMS)
     SDC->>Disp: sendSms(tracker)
@@ -1753,7 +1781,7 @@ public final class SmsManager {
     public void sendDataMessage(String destAddress, String scAddress,
             short destPort, byte[] data, PendingIntent sentIntent,
             PendingIntent deliveryIntent)
-    public ArrayList<SmsMessage> divideMessage(String text)
+    public ArrayList<String> divideMessage(String text)
 }
 ```
 
@@ -1927,7 +1955,7 @@ public static final int REGISTRATION_TECH_CROSS_SIM = 2;
 public static final int REGISTRATION_TECH_NR    = 3;
 ```
 
-When registered over IWLAN (IP Wireless Access Network), the device can
+When registered over IWLAN (Interworking Wireless LAN), the device can
 make and receive calls through Wi-Fi.
 
 ### 36.5.6 IRadioIms HAL
@@ -2017,16 +2045,19 @@ It handles:
 - Feature removal on unbind
 - Crash recovery (rebinding after unexpected death)
 
-The ImsServiceController maintains a state machine for each feature:
+Each feature moves through the `ImsFeature.STATE_*` lifecycle
+(`STATE_UNAVAILABLE`, `STATE_INITIALIZING`, `STATE_READY`, defined in
+`frameworks/base/telephony/java/android/telephony/ims/feature/ImsFeature.java`),
+which ImsServiceController drives:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> NOT_AVAILABLE
-    NOT_AVAILABLE --> INITIALIZING : bind
+    [*] --> UNAVAILABLE
+    UNAVAILABLE --> INITIALIZING : bind
     INITIALIZING --> READY : Feature connected
-    READY --> NOT_AVAILABLE : unbind
-    READY --> NOT_AVAILABLE : ImsService died
-    NOT_AVAILABLE --> INITIALIZING : rebind after crash
+    READY --> UNAVAILABLE : unbind
+    READY --> UNAVAILABLE : service died
+    UNAVAILABLE --> INITIALIZING : rebind after crash
 ```
 
 ### 36.5.10 RCS (Rich Communication Services)
@@ -2183,12 +2214,12 @@ the major categories:
 **IMS**:
 
 - `KEY_IMS_CONFERENCE_SIZE_LIMIT_INT` -- max conference size
-- `KEY_CARRIER_IMS_PACKAGE_OVERRIDE_STRING` -- custom IMS package
+- `KEY_CONFIG_IMS_PACKAGE_OVERRIDE_STRING` -- custom IMS package
 - `KEY_CARRIER_RCS_PROVISIONING_REQUIRED_BOOL` -- RCS provisioning
 
 **Network**:
 
-- `KEY_PREFERRED_NETWORK_TYPE_BOOL` -- preferred RAT
+- `KEY_HIDE_PREFERRED_NETWORK_TYPE_BOOL` -- hide the preferred network type setting in the UI
 - `KEY_HIDE_ENHANCED_4G_LTE_BOOL` -- UI toggle visibility
 - `KEY_CARRIER_NR_AVAILABILITIES_INT_ARRAY` -- 5G NR config
 
@@ -2292,19 +2323,20 @@ the relevant config values and re-reading them on `EVENT_CARRIER_CONFIG_CHANGED`
 The `TelephonyShellCommand` provides a comprehensive carrier config CLI:
 
 ```bash
-# Get a specific value
-adb shell cmd phone cc get-value -s <subId> <key>
+# Get a specific value (-s takes a SIM slot ID)
+adb shell cmd phone cc get-value -s <slotId> <key>
 
-# Get all values
-adb shell cmd phone cc get-all-values -s <subId>
+# Get all values (omit the key)
+adb shell cmd phone cc get-value -s <slotId>
 
-# Override a value (test builds only)
-adb shell cmd phone cc set-value -s <subId> -b <key> <value>  # boolean
-adb shell cmd phone cc set-value -s <subId> -i <key> <value>  # int
-adb shell cmd phone cc set-value -s <subId> -s <key> <value>  # string
+# Override a value (the value type is inferred; -p persists across reboots)
+adb shell cmd phone cc set-value [-s <slotId>] [-p] <key> <value>
+
+# Load a whole set of overrides from an XML file
+adb shell cmd phone cc set-values-from-xml
 
 # Clear overrides
-adb shell cmd phone cc clear-values -s <subId>
+adb shell cmd phone cc clear-values -s <slotId>
 ```
 
 ### 36.6.9 Carrier Privileges
@@ -2332,17 +2364,17 @@ sequenceDiagram
     participant App as Carrier App
     participant PIM as PhoneInterfaceManager
     participant CPT as CarrierPrivilegesTracker
-    participant UiccP as UiccProfile
+    participant UiccP as UiccPort / UiccProfile
     participant SIM as SIM Card (ARA-M)
 
     App->>PIM: Privileged telephony API call
-    PIM->>CPT: hasCarrierPrivilegeForPackage(package)
-    CPT->>UiccP: getCarrierPrivilegeStatusForPackage(package)
+    PIM->>CPT: getCarrierPrivilegeStatusForPackage(package)
+    CPT->>UiccP: getSimRules - read UiccAccessRules
     UiccP->>SIM: Read ARA-M access rules
     SIM-->>UiccP: Certificate hashes
-    UiccP->>UiccP: Compare app signing cert with ARA-M certs
-    UiccP-->>CPT: CARRIER_PRIVILEGE_STATUS_HAS_ACCESS
-    CPT-->>PIM: Privilege granted
+    UiccP-->>CPT: UiccAccessRule list
+    CPT->>CPT: Compare app signing cert with ARA-M certs
+    CPT-->>PIM: CARRIER_PRIVILEGE_STATUS_HAS_ACCESS
     PIM-->>App: API response
 ```
 
@@ -2426,7 +2458,7 @@ graph TD
 `TelecomManager` is the public API for call management.  Key operations:
 
 ```java
-// frameworks/base/telecomm/java/android/telecom/TelecomManager.java
+// frameworks/base/telecomm/framework/java/android/telecom/TelecomManager.java
 public class TelecomManager {
     public void placeCall(Uri address, Bundle extras)
     public boolean endCall()
@@ -2570,7 +2602,7 @@ Emergency calls receive special treatment throughout the stack:
     // hardware/interfaces/radio/aidl/android/hardware/radio/voice/EmergencyCallRouting.aidl
     // UNKNOWN -- Let the modem decide
     // EMERGENCY -- Use emergency routing
-    // NORMAL -- Try normal routing first, then emergency
+    // NORMAL -- The implementation must handle the call through normal call routing
     ```
 
 ### 36.7.7 InCallService -- the UI Connection
@@ -2579,7 +2611,7 @@ The dialer app implements `InCallService` to receive call state updates and
 display the in-call UI:
 
 ```java
-// frameworks/base/telecomm/java/android/telecom/InCallService.java
+// frameworks/base/telecomm/framework/java/android/telecom/InCallService.java
 public abstract class InCallService extends Service {
     public void onCallAdded(Call call) { }
     public void onCallRemoved(Call call) { }
@@ -2685,7 +2717,7 @@ A `PhoneAccount` represents a source of phone calls.  In a multi-SIM device,
 there is one PhoneAccount per SIM:
 
 ```java
-// frameworks/base/telecomm/java/android/telecom/PhoneAccount.java
+// frameworks/base/telecomm/framework/java/android/telecom/PhoneAccount.java
 ```
 
 Telecom uses PhoneAccounts to route outgoing calls to the correct SIM / call
@@ -2821,7 +2853,7 @@ Key companion classes in `frameworks/opt/telephony/src/java/com/android/internal
 
 | Class | File | Responsibility |
 |-------|------|----------------|
-| `DataNetworkController` | `DataNetworkController.java` | Central orchestrator (4 575 lines) |
+| `DataNetworkController` | `DataNetworkController.java` | Central orchestrator (~4 720 lines) |
 | `DataNetwork` | `DataNetwork.java` | Individual data bearer, state machine |
 | `DataProfileManager` | `DataProfileManager.java` | APN/data profile management |
 | `DataConfigManager` | `DataConfigManager.java` | Carrier config for data |
@@ -2911,9 +2943,9 @@ oneway interface IRadioData {
     void releasePduSessionId(in int serial, in int id);
     void setDataAllowed(in int serial, in boolean allow);
     void setDataProfile(in int serial, in DataProfileInfo[] profiles);
-    void setDataThrottling(in int serial, in DataThrottlingAction action,
-            in long completionDuration);
-    void setupDataCall(in int serial, in int accessNetwork,
+    void setDataThrottling(in int serial, in DataThrottlingAction dataThrottlingAction,
+            in long completionDurationMillis);
+    void setupDataCall(in int serial, in AccessNetwork accessNetwork,
             in DataProfileInfo dataProfileInfo, in boolean roamingAllowed,
             in DataRequestReason reason, ...);
     void startHandover(in int serial, in int callId);
@@ -3012,12 +3044,12 @@ Disallowed reasons include:
 | `DATA_DISABLED` | User turned off mobile data |
 | `ROAMING_DISABLED` | Data roaming is off and device is roaming |
 | `NOT_IN_SERVICE` | No network registration |
-| `EMERGENCY_CALL` | Emergency call in progress |
+| `CDMA_EMERGENCY_CALLBACK_MODE` | Device is in CDMA emergency callback mode |
 | `SIM_NOT_READY` | SIM not loaded |
 | `RADIO_POWER_OFF` | Radio is off |
-| `CONCURRENT_VOICE_NOT_ALLOWED` | Voice call blocks data (DSDS) |
+| `CONCURRENT_VOICE_DATA_NOT_ALLOWED` | Voice call blocks data (DSDS) |
 | `DATA_THROTTLED` | Carrier throttling active |
-| `CARRIER_ACTION_DISABLED` | Carrier signaled data off |
+| `RADIO_DISABLED_BY_CARRIER` | Carrier signaled data off |
 
 ### 36.8.8 DataNetworkController Internal State
 
@@ -3386,8 +3418,10 @@ The ImsMedia module provides the real-time media transport layer for IMS voice
 and video calls. Where the IMS framework (Section 36.5) handles call signalling
 via SIP, ImsMedia handles the actual audio and video data -- encoding,
 packetisation into RTP, quality monitoring via RTCP, and DTMF tone generation.
-It runs as a separate Mainline module, communicating with vendor-provided
-RTP stack hardware through an AIDL HAL interface.
+It ships as a separate system app (`ImsMediaService`, added to the build via
+`PRODUCT_PACKAGES` from `packages/modules/ImsMedia/imsmedia.mk`) that runs in
+its own process -- not as an updatable APEX -- communicating with
+vendor-provided RTP stack hardware through an AIDL HAL interface.
 
 ### 36.9.1 Architecture Overview
 
@@ -3691,13 +3725,14 @@ public final class MediaQualityThreshold implements Parcelable {
 }
 ```
 
-Quality events are reported through `AudioSessionCallback`:
+Quality events are reported through `AudioSessionCallback` (media inactivity
+has no audio callback; `notifyMediaInactivity()` exists on the text and video
+session callbacks):
 
 | Callback | Trigger |
 |----------|---------|
-| `onMediaQualityStatusChanged()` | Packet loss or jitter crosses threshold |
-| `onMediaInactivityChanged()` | RTP/RTCP inactivity timer expired |
-| `onRtpReceptionStats()` | Periodic reception statistics |
+| `notifyMediaQualityStatus()` | Packet loss or jitter crosses threshold |
+| `notifyRtpReceptionStats()` | Periodic reception statistics |
 | `onCallQualityChanged()` | Aggregated quality score changed |
 
 ### 36.9.9 Audio Session Capabilities
@@ -3715,7 +3750,7 @@ public class ImsAudioSession implements ImsMediaSession {
     void sendDtmf(char digit, int duration);     // Fixed-duration DTMF
     void startDtmf(char digit);                  // Start continuous DTMF
     void stopDtmf();                             // Stop continuous DTMF
-    void sendRtpHeaderExtension(List<RtpHeaderExtension>); // Custom headers
+    void sendHeaderExtension(List<RtpHeaderExtension>);  // Custom headers
 }
 ```
 
@@ -4143,10 +4178,10 @@ sequenceDiagram
 
 | File | Path | Lines |
 |------|------|-------|
-| WapPushOverSms | `frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushOverSms.java` | 505 |
+| WapPushOverSms | `frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushOverSms.java` | 504 |
 | WapPushManagerParams | `frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushManagerParams.java` | 70 |
 | WapPushCache | `frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushCache.java` | 172 |
-| InboundSmsHandler | `frameworks/opt/telephony/src/java/com/android/internal/telephony/InboundSmsHandler.java` | ~2,000 |
+| InboundSmsHandler | `frameworks/opt/telephony/src/java/com/android/internal/telephony/InboundSmsHandler.java` | ~2,660 |
 | MmsWapPushDeliverReceiver | `packages/apps/Messaging/src/com/android/messaging/receiver/MmsWapPushDeliverReceiver.java` | ~50 |
 
 ---
@@ -4325,7 +4360,7 @@ sequenceDiagram
     participant Modem as "SatelliteService HAL"
 
     App->>SM: sendDatagram(SOS)
-    SM->>SC: sendSatelliteDatagram()
+    SM->>SC: sendDatagram()
     SC->>DC: sendDatagram(type=SOS)
     DC->>DD: enqueue + send
     DD->>Modem: sendDatagram (AIDL)
@@ -4379,8 +4414,10 @@ Apps reach all of this through `SatelliteManager`, whose entry points are
 enforced and dispatched by `PhoneInterfaceManager`
 (`packages/services/Telephony/src/com/android/phone/PhoneInterfaceManager.java`)
 behind the `SATELLITE_COMMUNICATION` permission — for example
-`requestSatelliteEnabled`, `provisionSatelliteService`, `sendSatelliteDatagram`,
-`pollPendingSatelliteDatagrams`, and the registration calls. Android 17 adds the
+`requestSatelliteEnabled`, `provisionSatelliteService`, `sendDatagram`,
+`pollPendingDatagrams`, and the registration calls.  (The similarly named
+`sendSatelliteDatagram` / `pollPendingSatelliteDatagrams` belong to the
+vendor-facing `ISatellite` HAL, not to the manager surface.) Android 17 adds the
 carrier-enablement entry points (`requestEnableSatelliteForCarrier`, automatic
 carrier mode, and `getManualConnectSatellitePlmnsForCarrier`) plus a richer
 metrics surface (`ControllerMetricsStats`, `CarrierRoamingSatelliteSessionStats`,
@@ -4403,7 +4440,9 @@ open source.
 ### 36.12.1 Packaging: a Privileged system_ext App with a Native SIP Engine
 
 The module builds the `ImsStack` APK as a privileged, platform-signed,
-`system_ext` app that bundles the native engine as a JNI library
+`system_ext` app that declares the native engine as a `required` install
+dependency, so `libimsstack` is installed alongside the APK rather than being
+bundled into it via `jni_libs`
 (`packages/modules/ImsStack/java/Android.bp`):
 
 ```
@@ -4412,8 +4451,12 @@ android_app {
     privileged: true,
     certificate: "platform",
     system_ext_specific: true,
-    jni_libs: [ "libimsstack", ... ],
-    required: [ "privapp_permissions_com.android.imsstack", ... ],
+    // ...
+    required: [
+        "libimsstack",
+        "privapp_permissions_com.android.imsstack",
+        "sysconfig_com.android.imsstack",
+    ],
 }
 ```
 
@@ -4508,7 +4551,7 @@ important subtrees are:
   an SDP model (`SdpDescription`, `SdpMediaDescription`, `SdpAvCodec`), and a DOM
   XML parser used for IMS XML bodies
   (`packages/modules/ImsStack/native/libimsstack/protocol/sip/`,
-  `.../protocol/SipStackManager.cpp`).
+  `.../protocol/sip/SipStackManager.cpp`).
 - **engine** — the SIP transaction and dialog state machines that turn those
   messages into call/registration logic: `SipStack`, `SipStackTransaction`,
   `SipForkedTransactionManager`, plus the `CoreService`/`Connection` call model
@@ -4935,7 +4978,7 @@ Write a simple ADB shell command to explore telephony state:
 
 ```bash
 # Get IMEI
-adb shell service call phone 1 | grep -oP "'.*?'"
+adb shell cmd phone get-imei
 
 # Using the telephony shell command
 adb shell cmd phone
@@ -4947,7 +4990,7 @@ adb shell cmd phone help
 adb shell cmd phone cc get-value -s 1 carrier_volte_available_bool
 
 # Get IMS registration state
-adb shell cmd phone ims get-registration
+adb shell dumpsys telephony.registry | grep -A5 ImsRegistration
 ```
 
 ### Exercise 36-4: Examine SIM Card Status
@@ -5018,8 +5061,8 @@ adb logcat -b radio -s InboundSmsHandler:V GsmInboundSmsHandler:V
 ### Exercise 36-8: Inspect Carrier Configuration
 
 ```bash
-# Dump carrier config for slot 0
-adb shell cmd phone cc get-all-values -s 1
+# Dump carrier config for slot 1 (omit the key to print all values)
+adb shell cmd phone cc get-value -s 1
 
 # Check specific IMS-related config
 adb shell cmd phone cc get-value -s 1 carrier_volte_available_bool
@@ -5031,7 +5074,7 @@ adb shell cmd phone cc get-value -s 1 carrier_supports_ss_over_ut_bool
 
 ```bash
 # IMS registration state
-adb shell cmd phone ims get-registration
+adb shell dumpsys telephony.registry | grep -A5 ImsRegistration
 
 # Watch IMS-related logs
 adb logcat -s ImsPhone:V ImsPhoneCallTracker:V ImsResolver:V ImsManager:V
@@ -5113,7 +5156,7 @@ adb shell dumpsys phone | grep -A 30 "DataProfileManager"
 
 ```bash
 # List all emergency numbers
-adb shell cmd phone emergency-number-list
+adb shell dumpsys phone | grep -A 20 EmergencyNumberTracker
 
 # The output shows emergency numbers from multiple sources:
 #   [Phone0][DB    ] 112 GSM(DEFAULT POLICE AMBULANCE FIRE_BRIGADE)
@@ -5125,11 +5168,10 @@ adb shell cmd phone emergency-number-list
 ### Exercise 36-14: Explore Multi-SIM Configuration
 
 ```bash
-# Check phone count and active subscriptions
-adb shell cmd phone get-phone-count
-adb shell cmd phone get-active-subs
+# Check the logical-to-physical SIM slot mapping
+adb shell cmd phone get-sim-slots-mapping
 
-# List all subscriptions
+# List all subscriptions (active and inactive)
 adb shell content query --uri content://telephony/siminfo
 
 # Check default subscription settings
@@ -5149,14 +5191,14 @@ adb logcat -b radio -s ImsResolver:V ImsServiceController:V \
     ImsPhone:V ImsPhoneCallTracker:V ImsManager:V
 
 # Check IMS feature status
-adb shell cmd phone ims get-registration
+adb shell dumpsys telephony.registry | grep -A5 ImsRegistration
 
-# Check IMS provisioning
-adb shell cmd phone ims get-provisioning -s 1
+# Check IMS provisioning state
+adb shell dumpsys phone | grep -A20 ImsPhone
 
 # Toggle IMS features via carrier config
-adb shell cmd phone cc set-value -s 1 -b carrier_volte_available_bool true
-adb shell cmd phone cc set-value -s 1 -b carrier_wfc_ims_available_bool true
+adb shell cmd phone cc set-value -s 1 carrier_volte_available_bool true
+adb shell cmd phone cc set-value -s 1 carrier_wfc_ims_available_bool true
 ```
 
 ### Exercise 36-16: Analyze Signal Strength
@@ -5178,8 +5220,8 @@ adb logcat -b radio -s SignalStrengthController:V
 ### Exercise 36-17: Examine Carrier Config Keys
 
 ```bash
-# List all known carrier config keys
-adb shell cmd phone cc get-all-values -s 1 | head -100
+# List all known carrier config keys (get-value with no key prints everything)
+adb shell cmd phone cc get-value -s 1 | head -100
 
 # Check specific categories
 adb shell cmd phone cc get-value -s 1 carrier_volte_available_bool
@@ -5189,7 +5231,7 @@ adb shell cmd phone cc get-value -s 1 carrier_nr_availabilities_int_array
 adb shell cmd phone cc get-value -s 1 carrier_metered_apn_types_strings
 
 # Override a config value (requires root or test build)
-adb shell cmd phone cc set-value -s 1 -b carrier_volte_available_bool false
+adb shell cmd phone cc set-value -s 1 carrier_volte_available_bool false
 # Reset to default
 adb shell cmd phone cc clear-values -s 1
 ```
@@ -5256,16 +5298,16 @@ The Android Emulator provides console commands for network simulation:
 telnet localhost 5554
 
 # Change network speed
-network speed gsm      # GSM (9.6 kbps)
-network speed edge     # EDGE (236.8 kbps)
+network speed gsm      # GSM (14.4 kbps)
+network speed edge     # EDGE (473.6 kbps)
 network speed umts     # UMTS (384 kbps)
-network speed hsdpa    # HSDPA (14.4 Mbps)
-network speed lte      # LTE (100 Mbps)
+network speed hsdpa    # HSDPA (5.8 Mbps up / 14 Mbps down)
+network speed lte      # LTE (58 Mbps up / 173 Mbps down)
 network speed full     # Full speed
 
 # Simulate network latency
 network delay none     # No delay
-network delay gprs     # GPRS delay (150-550ms)
+network delay gprs     # GPRS delay (35-200ms)
 network delay edge     # EDGE delay (80-400ms)
 network delay umts     # UMTS delay (35-200ms)
 
@@ -5355,8 +5397,11 @@ DataNetworkController: Creating DataNetwork for INTERNET
 The telephony stack has an extensive unit test suite:
 
 ```bash
-# Run all telephony unit tests
+# Run all frameworks/opt/telephony unit tests
 cd frameworks/opt/telephony
+atest FrameworksTelephonyTests
+
+# The phone-app (packages/services/Telephony) tests are a separate module
 atest TeleServiceTests
 
 # Run specific test classes
@@ -5365,7 +5410,7 @@ atest com.android.internal.telephony.GsmCdmaPhoneTest
 atest com.android.internal.telephony.data.DataNetworkControllerTest
 
 # Run with verbose output
-atest --verbose TeleServiceTests
+atest --verbose FrameworksTelephonyTests
 
 # The tests use MockModem and Mockito extensively to simulate
 # modem behavior without real hardware.
@@ -5383,13 +5428,13 @@ adb shell cmd phone help
 adb shell cmd phone ims               # IMS commands
 adb shell cmd phone cc                 # Carrier config commands
 adb shell cmd phone data              # Data commands
-adb shell cmd phone emergency-number-list  # Emergency numbers
+adb shell cmd phone emergency-number-test-mode  # Emergency number test mode
 adb shell cmd phone src set-test-enabled true/false  # Test mode
 
 # IMS subcommands
 adb shell cmd phone ims help
-adb shell cmd phone ims get-registration  # IMS registration state
-adb shell cmd phone ims get-provisioning -s 1  # IMS provisioning
+adb shell cmd phone ims get-ims-service -s 1 -c  # Carrier ImsService for slot 1
+adb shell cmd phone ims enable -s 1              # Enable IMS for slot 1
 
 # Data subcommands
 adb shell cmd phone data help
@@ -5453,8 +5498,9 @@ graph TD
     S --> T["20. Telecom notifies InCallService (Dialer UI)"]
 ```
 
-This 20-step path spans five processes (dialer app, Telecom, phone service,
-RIL Java, vendor HAL) and four Binder boundaries, yet completes in under 200ms
+This 20-step path spans four processes (the dialer app, Telecom in
+system_server, the phone process hosting both Telephony and RIL Java, and the
+vendor HAL) and multiple Binder boundaries, yet completes in under 200ms
 on modern hardware.
 
 ### Design Principles
@@ -5474,8 +5520,9 @@ The telephony stack embodies several design principles worth noting:
    uses wake locks, serial numbers, and callback messages).  This prevents
    any single slow modem response from blocking the entire telephony stack.
 
-4. **Feature Flags**: The `FeatureFlags` interface
-   (`frameworks/opt/telephony/src/java/com/android/internal/telephony/flags/FeatureFlags.java`)
+4. **Feature Flags**: The `FeatureFlags` interface (package
+   `com.android.internal.telephony.flags`, generated at build time by aconfig
+   from the flag declarations in `frameworks/opt/telephony/flags/*.aconfig`)
    allows individual telephony features to be enabled/disabled per build, which
    is essential for the incremental rollout of complex telephony changes.
 
@@ -5492,12 +5539,12 @@ The telephony stack embodies several design principles worth noting:
 
 | File | Path | Lines |
 |------|------|-------|
-| `TelephonyManager.java` | `frameworks/base/telephony/java/android/telephony/TelephonyManager.java` | 19 705 |
-| `PhoneInterfaceManager.java` | `packages/services/Telephony/src/com/android/phone/PhoneInterfaceManager.java` | 14 737 |
-| `RIL.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/RIL.java` | 6 017 |
-| `Phone.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/Phone.java` | 5 408 |
-| `DataNetworkController.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/data/DataNetworkController.java` | 4 575 |
-| `GsmCdmaPhone.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/GsmCdmaPhone.java` | 4 333 |
+| `TelephonyManager.java` | `frameworks/base/telephony/java/android/telephony/TelephonyManager.java` | ~20 215 |
+| `PhoneInterfaceManager.java` | `packages/services/Telephony/src/com/android/phone/PhoneInterfaceManager.java` | ~15 469 |
+| `RIL.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/RIL.java` | ~6 135 |
+| `Phone.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/Phone.java` | ~5 550 |
+| `DataNetworkController.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/data/DataNetworkController.java` | ~4 717 |
+| `GsmCdmaPhone.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/GsmCdmaPhone.java` | ~4 500 |
 | `IRadioModem.aidl` | `hardware/interfaces/radio/aidl/android/hardware/radio/modem/IRadioModem.aidl` | |
 | `IRadioSim.aidl` | `hardware/interfaces/radio/aidl/android/hardware/radio/sim/IRadioSim.aidl` | |
 | `IRadioNetwork.aidl` | `hardware/interfaces/radio/aidl/android/hardware/radio/network/IRadioNetwork.aidl` | |
@@ -5545,14 +5592,15 @@ frameworks/
       ApnSetting.java              -- APN data model
       DataProfile.java             -- Data connection profile
     ims/
-      ImsManager.java              -- IMS management API
+      ImsMmTelManager.java         -- Public MMTel/IMS management API
+      ImsRcsManager.java           -- Public RCS management API
       ImsService.java              -- Vendor IMS service base
       feature/
         MmTelFeature.java          -- MM telephony feature
         RcsFeature.java            -- RCS feature
     emergency/
       EmergencyNumber.java         -- Emergency number definition
-  base/telecomm/java/android/telecom/
+  base/telecomm/framework/java/android/telecom/
     TelecomManager.java            -- Call management API
     ConnectionService.java         -- Call provider abstraction
     InCallService.java             -- In-call UI binding
@@ -5621,7 +5669,7 @@ hardware/
 | ICCID | Integrated Circuit Card Identifier | Unique SIM card serial number |
 | IMS | IP Multimedia Subsystem | IP-based voice/video/messaging |
 | IMSI | International Mobile Subscriber Identity | Unique subscriber identity on SIM |
-| IWLAN | IP Wireless Local Area Network | WiFi-based IMS transport |
+| IWLAN | Interworking Wireless LAN | WiFi-based IMS transport |
 | MEP | Multiple Enabled Profiles | Multiple active eSIM profiles on one eUICC |
 | MMS | Multimedia Messaging Service | Rich messaging over data |
 | MMSC | Multimedia Messaging Service Center | MMS server |
@@ -5662,12 +5710,12 @@ recommended starting points, listed by topic:
 **Understanding data connections:**
 
 - `DataNetworkController.onAddNetworkRequest()` -- how a new data request flows
-- `DataNetwork.setupDataCall()` -- the actual data call setup
+- `DataServiceManager.setupDataCall()` -- the actual data call setup, invoked from `DataNetwork`'s connecting and handover paths
 - `DataEvaluation.java` -- the data allow/disallow decision tree
 
 **Understanding IMS:**
 
-- `ImsResolver.queryServiceInfo()` -- how ImsServices are discovered
+- `ImsResolver.scheduleQueryForFeatures()` / `startDynamicQuery()` -- how ImsServices are discovered
 - `ImsPhoneCallTracker.dial()` -- how an IMS call is placed
 - `ImsRegistrationCallbackHelper.java` -- IMS registration state tracking
 

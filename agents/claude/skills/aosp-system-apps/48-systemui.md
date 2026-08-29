@@ -53,9 +53,13 @@ and `coreApp="true"`:
     coreApp="true">
 ```
 
-The process starts when `system_server` calls
-`IStatusBarService.registerStatusBar()`.  The entry point is
-`SystemUIService`, a plain Android `Service`:
+The process starts when `system_server` calls `SystemServer.startSystemUi()`,
+which builds an `Intent` for the SystemUI service component and calls
+`startServiceAsUser()` on it as the system user.  (The
+`IStatusBarService.registerStatusBar()` call runs in the opposite direction:
+it is what SystemUI later invokes *into* `system_server` to register its
+`IStatusBar` callback.)  The entry point is `SystemUIService`, a plain
+Android `Service`:
 
 ```java
 // frameworks/base/packages/SystemUI/src/com/android/systemui/SystemUIService.java
@@ -477,7 +481,7 @@ Key aspects of the status bar window:
 | Pixel format | `PixelFormat.TRANSLUCENT` |
 | Cutout mode | `LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS` |
 | Gravity | `Gravity.TOP` |
-| Flags | `FLAG_NOT_FOCUSABLE`, `FLAG_TOUCHABLE_WHEN_WAKING` |
+| Flags | `FLAG_NOT_FOCUSABLE`, `FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS` |
 
 The controller handles display cutouts (notches, punch-holes) and configures
 `InsetsFrameProvider` so that the status bar participates in the inset system.
@@ -548,9 +552,10 @@ public class PhoneStatusBarView extends FrameLayout {
 
 The view controller (`PhoneStatusBarViewController`, now Kotlin) coordinates
 touch handling and drives the `HomeStatusBarViewBinder` (section 48.2.3).
-Dark/light icon tinting is computed by `LightBarController` using region
-sampling to determine whether the wallpaper or app content below the status bar
-is light or dark.
+Dark/light icon tinting is applied by `LightBarController` from the per-stack
+`AppearanceRegion` / `APPEARANCE_LIGHT_STATUS_BARS` appearance that
+WindowManager pushes to SystemUI through `CommandQueue` -- the controller does
+not sample screen content itself.
 
 ### 48.2.5  Status Bar Icon Pipeline
 
@@ -567,9 +572,9 @@ graph LR
 
 The `StatusBarIconController` maintains the list of icons and their visibility.
 `DarkIconManager` applies tinting: white icons over dark backgrounds, dark
-icons over light backgrounds.  The tinting boundary is computed by
-`LightBarController` using the `Drawable` content of the window behind the
-status bar.
+icons over light backgrounds.  The tinting boundary comes from the
+`AppearanceRegion` list (window bounds plus the
+`APPEARANCE_LIGHT_STATUS_BARS` bit) that WindowManager reports to SystemUI.
 
 ### 48.2.6  Status Bar States
 
@@ -822,15 +827,17 @@ a second pull expands to the full QS panel.
 graph TD
     subgraph "Quick Settings"
         QSHost["QSHost<br/>(tile management)"]
-        QSPanel["QSPanel<br/>(full tile grid)"]
-        QuickQS["QuickQSPanel<br/>(collapsed strip)"]
+        QSContent["QuickSettingsContent<br/>(Compose full panel)"]
+        QuickQS["Quick QS strip<br/>(Compose, pods/qs/panels)"]
         QSTileImpl["QSTileImpl<br/>(base tile class)"]
         CustomTile["CustomTile<br/>(third-party tiles)"]
+        QSVM["QSTileViewModel<br/>(tile view-model)"]
     end
     QSHost --> QSTileImpl
     QSHost --> CustomTile
-    QSTileImpl --> QSPanel
-    QSTileImpl --> QuickQS
+    QSTileImpl --> QSVM
+    QSVM --> QSContent
+    QSVM --> QuickQS
 ```
 
 ### 48.4.2  QSHost -- Tile Management
@@ -930,7 +937,7 @@ sequenceDiagram
     participant System as System Event
     participant Tile as QSTileImpl
     participant Handler as Background Handler
-    participant View as QSTileView
+    participant View as QSTileViewModelAdapter
 
     System->>Tile: Callback (e.g., WiFi state changed)
     Tile->>Tile: refreshState()
@@ -938,7 +945,7 @@ sequenceDiagram
     Handler->>Tile: handleRefreshState()
     Tile->>Tile: handleUpdateState(state, arg)
     Tile->>View: handleStateChanged(state)
-    View->>View: Update icon, label, colours
+    View->>View: Update Compose tile state (icon, label, colours)
 ```
 
 ### 48.4.5  Built-in Tiles
@@ -1075,18 +1082,20 @@ frameworks/base/packages/SystemUI/src/com/android/systemui/qs/pipeline/
 
 ### 48.4.8  QSPanel Layout
 
-The legacy full QS panel uses `QSPanel` with `TileLayout` (or `PagedTileLayout`
-for pagination).  The Quick QS strip uses `QuickQSPanel` with `QuickTileLayout`.
-Both are managed by their respective controllers (`QSPanelController`,
-`QuickQSPanelController`).
+Earlier releases rendered the full QS panel with a `QSPanel` View (using
+`TileLayout` or `PagedTileLayout`) and the Quick QS strip with `QuickQSPanel`,
+each managed by its own controller.  That entire legacy View hierarchy has been
+removed in Android 17 -- none of those classes exist in the tree any more, and
+QS is Compose-only.
 
-Android 17 has replaced the old `QSFragment` (and its `QSImpl` host) with a
-single Compose-backed entry point, `QSFragmentCompose`
+The old `QSFragment` (and its `QSImpl` host) is replaced by a single
+Compose-backed entry point, `QSFragmentCompose`
 (`qs/composefragment/QSFragmentCompose.kt`), driven by
-`QSFragmentComposeViewModel`.  The Compose tile grid lives under
-`qs/panels/ui/compose/` and `compose/features/.../qs/ui/composable/`, with the
-panel composables further extracted into the `pods/qs/` module.  The legacy View
-hierarchy remains as the fallback when the Compose QS flag is off.
+`QSFragmentComposeViewModel`.  The panel content composable is
+`QuickSettingsContent`
+(`compose/features/src/com/android/systemui/qs/ui/composable/QuickSettingsContent.kt`),
+and the tile grid lives in the `pods/qs/panels/` module.  There is no View
+fallback.
 
 ```mermaid
 graph TD
@@ -1098,20 +1107,6 @@ graph TD
     QSGrid --> Tile1["TileUiState (tile view-model)"]
     QSGrid --> Tile2["TileUiState (tile view-model)"]
     QSGrid --> TileN["..."]
-```
-
-Legacy fallback path (Compose QS flag off):
-
-```mermaid
-graph TD
-    QSContainerImpl["QSContainerImpl"]
-    QSContainerImpl --> QuickStatusBarHeader["QuickStatusBarHeader"]
-    QSContainerImpl --> QSPanel["QSPanel"]
-    QuickStatusBarHeader --> QuickQSPanel["QuickQSPanel"]
-    QSPanel --> TileLayout["TileLayout / PagedTileLayout"]
-    TileLayout --> TileView1["QSTileView"]
-    TileLayout --> TileView2["QSTileView"]
-    TileLayout --> TileViewN["..."]
 ```
 
 ---
@@ -1176,7 +1171,10 @@ alternate bouncer (biometric prompt), and the keyguard-to-shade transitions:
 // frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/
 //   StatusBarKeyguardViewManager.java
 @SysUISingleton
-public class StatusBarKeyguardViewManager implements Dumpable {
+public class StatusBarKeyguardViewManager implements RemoteInputController.Callback,
+        StatusBarStateController.StateListener, ConfigurationController.ConfigurationListener,
+        ShadeExpansionListener, NavigationModeController.ModeChangedListener,
+        KeyguardViewController, FoldAodAnimationController.FoldAodAnimationStatus {
     // Manages bouncer visibility, predictive back animation,
     // alternate bouncer, global actions visibility
 }
@@ -1419,8 +1417,8 @@ Key features:
 |---|---|
 | Auto-dismiss | Timeout handler (default 3 seconds) |
 | Live feedback | Updates as system volume changes |
-| CSD warning | `CsdWarningDialog` for hearing safety |
-| Safety warning | `SafetyWarningDialog` for media volume |
+| CSD warning | `CsdWarningDialogDelegate` for hearing safety |
+| Safety warning | `SafetyWarningDialogDelegate` for media volume |
 | Captions toggle | `CaptionsToggleImageButton` |
 | Posture-aware | Dismiss on foldable posture change |
 
@@ -1451,14 +1449,17 @@ The `Events` class defines all volume-related telemetry events:
 ```java
 // frameworks/base/packages/SystemUI/src/com/android/systemui/volume/Events.java
 public class Events {
-    public static final int EVENT_SHOW_DIALOG = 0;
-    public static final int EVENT_DISMISS_DIALOG = 1;
+    @Deprecated public static final int EVENT_SHOW_DIALOG = 0;
+    @Deprecated public static final int EVENT_DISMISS_DIALOG = 1;
     public static final int EVENT_ACTIVE_STREAM_CHANGED = 2;
-    public static final int EVENT_LEVEL_CHANGED = 3;
-    public static final int EVENT_RINGER_TOGGLE = 4;
     // ...
-    public static final int DISMISS_REASON_SETTINGS_CLICKED = 7;
-    public static final int DISMISS_REASON_POSTURE_CHANGED = 12;
+    public static final int EVENT_LEVEL_CHANGED = 10;
+    // ...
+    @Deprecated public static final int EVENT_RINGER_TOGGLE = 18;
+    // ...
+    public static final int DISMISS_REASON_SETTINGS_CLICKED = 5;
+    // ...
+    public static final int DISMISS_REASON_POSTURE_CHANGED = 11;
 }
 ```
 
@@ -1497,8 +1498,13 @@ public class GlobalActionsComponent
 
     @Override
     public void handleShowGlobalActionsMenu() {
-        mStatusBarKeyguardViewManager.setGlobalActionsVisible(true);
         mExtension.get().showGlobalActions(this);
+    }
+
+    @Override
+    public void onGlobalActionsShown() {
+        mStatusBarKeyguardViewManager.setGlobalActionsVisible(true);
+        mBarService.onGlobalActionsShown();  // ... RemoteException handling elided
     }
 
     @Override
@@ -1525,7 +1531,7 @@ public class GlobalActionsImpl implements GlobalActions, CommandQueue.Callbacks 
     @Override
     public void showGlobalActions(GlobalActionsManager manager) {
         if (mDisabled) return;
-        mGlobalActionsDialog.showOrHideDialog(
+        mGlobalActionsDialog.showDialog(
                 mKeyguardStateController.isShowing(),
                 mDeviceProvisionedController.isDeviceProvisioned(),
                 null /* view */,
@@ -1840,11 +1846,13 @@ graph TD
 
 ### 48.10.5  Connected Displays
 
-The `StatusBarConnectedDisplays` flag gates the expansion of status bar
-functionality to connected displays.  When enabled, a `HomeStatusBarComponent`
-(and its bound `PhoneStatusBarView` plus `HomeStatusBarViewModel`, section
-48.2.3) is created per-display, each with its own icon pipeline and visibility
-management.  The flag is read in `PhoneStatusBarViewController`.
+Status bar functionality now extends to connected displays unconditionally: a
+`HomeStatusBarComponent` (and its bound `PhoneStatusBarView` plus
+`HomeStatusBarViewModel`, section 48.2.3) is created per-display, each with its
+own icon pipeline and visibility management.  (The `StatusBarConnectedDisplays`
+flag that once gated this has been removed and survives only in TODO comments;
+the connected-display *chip* is still gated by the real aconfig flag
+`status_bar_is_connected_display_chip_controlled_by_config`.)
 
 Around this sits a small connected-display UI stack.  `ConnectedDisplayInteractor`
 (`src/com/android/systemui/display/domain/interactor/ConnectedDisplayInteractor.kt`)
@@ -1931,16 +1939,22 @@ graph TD
 The button layout is defined by a string spec that
 `NavigationBarInflaterView` parses:
 
-```
-// Default 3-button layout spec:
-"back[1.0];home;recent[1.0]"
+```xml
+<!-- frameworks/base/packages/SystemUI/res/values/config.xml -->
+<!-- Default 3-button layout (config_navBarLayout): -->
+<string name="config_navBarLayout" translatable="false">left[.5W],back[1WC];home;recent[1WC],right[.5W]</string>
 
-// 2-button layout spec:
-"back[1.0];home;contextual[1.0]"
+<!-- 2-button / quickstep layout (config_navBarLayoutQuickstep): -->
+<string name="config_navBarLayoutQuickstep" translatable="false">back[1.7WC];home;contextual[1.7WC]</string>
 
-// Gestural layout (minimal):
-"home_handle"
+<!-- Gestural layout (config_navBarLayoutHandle): -->
+<string name="config_navBarLayoutHandle" translatable="false">back[70AC];home_handle;ime_switcher[70AC]</string>
 ```
+
+The bracketed size suffixes use `W` (weighted width), `WC` (weighted, centred)
+and `AC` (absolute dp, centred); `NavigationBarInflaterView` picks the spec
+matching the current navigation mode.  Note that even the gestural spec still
+declares `back` and `ime_switcher` slots around the `home_handle`.
 
 This allows OEMs to customise button order and sizes through overlays.
 
@@ -1952,8 +1966,7 @@ handle.  Navigation gestures are handled by `EdgeBackGestureHandler`:
 ```java
 // frameworks/base/packages/SystemUI/src/com/android/systemui/navigationbar/
 //   gestural/EdgeBackGestureHandler.java
-public class EdgeBackGestureHandler implements DisplayManager.DisplayListener,
-        NavigationModeController.ModeChangedListener {
+public class EdgeBackGestureHandler {
     // Handles edge swipe gestures for back navigation
     // Manages gesture exclusion zones
     // Integrates with predictive back animation
@@ -2000,12 +2013,15 @@ gesture handling:
 bar between modes:
 
 ```
-// Transition modes:
-MODE_OPAQUE         -- Solid background (default)
-MODE_SEMI_TRANSPARENT  -- Partially transparent
-MODE_TRANSLUCENT    -- Fully transparent with scrim
-MODE_LIGHTS_OUT     -- Dimmed (immersive mode)
-MODE_TRANSPARENT    -- Fully transparent
+// Transition modes (shared/.../statusbar/phone/BarTransitions.java):
+MODE_TRANSPARENT           -- Fully transparent
+MODE_SEMI_TRANSPARENT      -- Partially transparent
+MODE_TRANSLUCENT           -- Translucent with scrim
+MODE_LIGHTS_OUT            -- Dimmed (immersive mode)
+MODE_OPAQUE_DARK           -- Solid dark background
+MODE_WARNING               -- Warning background
+MODE_LIGHTS_OUT_TRANSPARENT -- Dimmed and transparent
+MODE_OPAQUE_LIGHT          -- Solid light background
 ```
 
 ### 48.11.7  Taskbar Integration
@@ -2092,7 +2108,8 @@ data), it:
 1. **Builds a hue histogram** -- 360 slots, each accumulating the proportion
    of colours with that hue.
 2. **Scores each colour** by a weighted combination of hue proportion (70%)
-   and chroma distance from the 49.0 target (30%).
+   and chroma distance from the 48.0 target (`ACCENT1_CHROMA`) -- the chroma
+   term is weighted 0.3 above the target but only 0.1 below it.
 3. **Filters low-chroma colours** (chroma < 5) which would produce grey
    themes.
 4. **Selects hue-distinct seeds** -- iteratively reduces the minimum hue
@@ -2226,7 +2243,7 @@ sequenceDiagram
         TOC->>TOC: reevaluateSystemTheme()
     end
 
-    KTI-->>TOC: isFinishedIn(DOZING) = true
+    KTI-->>TOC: device asleep - isFinishedInStateWhereWithScene = true
     TOC->>TOC: Process deferred colours
     TOC->>TOC: createOverlays(seedColor)
     TOC->>OMS: applyCurrentUserOverlays()
@@ -2242,24 +2259,24 @@ The `createOverlays()` method produces three fabricated overlays:
 
 ```java
 private void createOverlays(int color) {
-    mDarkColorScheme = new ColorScheme(color, true, mThemeStyle, mContrast);
-    mLightColorScheme = new ColorScheme(color, false, mThemeStyle, mContrast);
+    mDarkColorScheme = new ColorScheme(color, true /* isDark */, mThemeStyle, mContrast);
+    mLightColorScheme = new ColorScheme(color, false /* isDark */, mThemeStyle, mContrast);
+    mColorScheme = isNightMode() ? mDarkColorScheme : mLightColorScheme;
 
     mAccentOverlay = newFabricatedOverlay("accent");
-    assignColorsToOverlay(mAccentOverlay, DynamicColors.getAllAccentPalette(), false);
+    assignColorsToOverlay(mAccentOverlay, DynamicColors.getAllAccentPalette());
 
     mNeutralOverlay = newFabricatedOverlay("neutral");
-    assignColorsToOverlay(mNeutralOverlay, DynamicColors.getAllNeutralPalette(), false);
+    assignColorsToOverlay(mNeutralOverlay, DynamicColors.getAllNeutralPalette());
 
     mDynamicOverlay = newFabricatedOverlay("dynamic");
-    assignColorsToOverlay(mDynamicOverlay, DynamicColors.getAllDynamicColorsMapped(), false);
-    assignColorsToOverlay(mDynamicOverlay, DynamicColors.getFixedColorsMapped(), true);
-    assignColorsToOverlay(mDynamicOverlay, DynamicColors.getCustomColorsMapped(), false);
+    assignColorsToOverlay(mDynamicOverlay, DynamicColors.getAllDynamicColorsMapped());
+    assignColorsToOverlay(mDynamicOverlay, DynamicColors.getFixedColorsMapped());
+    assignColorsToOverlay(mDynamicOverlay, DynamicColors.getCustomColorsMapped());
 }
 ```
 
-For themed (non-fixed) colours, each resource has `_light` and `_dark`
-variants:
+Every colour token gets `_light` and `_dark` resource variants:
 
 ```java
 overlay.setResourceValue(prefix + "_light", TYPE_INT_COLOR_ARGB8,
@@ -2268,8 +2285,9 @@ overlay.setResourceValue(prefix + "_dark", TYPE_INT_COLOR_ARGB8,
     p.second.getArgb(mDarkColorScheme.getMaterialScheme()), null);
 ```
 
-Fixed colours (e.g. `primaryFixed`) are not dark/light variant and use the
-light scheme only.
+This applies to every token list, including the fixed colours
+(e.g. `primaryFixed`): they go through the same code path and get both
+variants -- fixed colours simply resolve to the same value in both schemes.
 
 ### 48.12.8  DynamicColors Token Mapping
 
@@ -2659,9 +2677,9 @@ following table maps the visible features to their source locations:
 | `activityembedding/` | Jetpack ActivityEmbedding host-side support. |
 | `keyguard/` | `KeyguardTransitions` — Shell's slice of keyguard show/hide animations. |
 | `apptoweb/` | Web-link launch helpers for embedded browsing. |
-| `appzoomout/` | Zoomed-out app overview used by Recents. |
+| `appzoomout/` | The squeeze / pushback zoom-out effect applied to the top-level display area, driven by SystemUI's top-window effects. |
 | `hidedisplaycutout/` | Lets apps opt the cutout into a black bar. |
-| `crashhandling/` | Surface-level crash overlay during AppCrash. |
+| `crashhandling/` | Post-crash window-state recovery when the Shell restarts: restores the home task to top and cleans up orphaned bubble/PIP tasks. |
 
 Each subpackage owns its model, its UI (often a Compose or View tree
 that renders inside a Shell-owned window), and its public interface in
@@ -2676,9 +2694,11 @@ inside the library too.
 The same `WMComponent` interface is satisfied by different Dagger
 modules depending on the build target. The largest module is
 `WMShellModule` (~phone/tablet/foldable behaviour); TV builds substitute
-`TvWMShellModule`, which binds TV-specific PIP, TV-style transitions,
-and disables features that do not apply (split-screen, freeform). The
-TV variant is selected through `TvWMComponent`:
+`TvWMShellModule`, which includes `TvPipModule` (TV-specific PIP) and
+overrides two providers with TV implementations: the starting-window type
+algorithm (`TvStartingWindowTypeAlgorithm`) and the split-screen controller
+(`TvSplitScreenController`) -- it substitutes TV variants rather than
+disabling features. The TV variant is selected through `TvWMComponent`:
 
 ```blueprint
 // Conceptually:
@@ -2694,7 +2714,8 @@ variant still benefits from upstream feature work going into the base
 `WMShellModule`.
 
 The base module `WMShellBaseModule` is shared across variants and runs
-to ~1200 lines: it binds the transports (`ShellExecutor`,
+to ~1,400 lines (the phone/tablet `WMShellModule`, at ~2,400 lines, is
+larger still): it binds the transports (`ShellExecutor`,
 `HandlerThread`, `Choreographer`), the cross-cutting services
 (`ShellInit`, `ShellController`, `ShellCommandHandler`,
 `ProtoLogController`, `ShellTaskOrganizer`, `Transitions`,
@@ -2711,9 +2732,11 @@ implementation* into Shell, while `system_server` still owns the
 *decision* to start an animation. The plumbing lives in
 `com.android.wm.shell.transition.Transitions`:
 
-- `system_server` calls `IShellTransitions#onTransitionReady(...)` over
-  Binder, handing the Shell a `TransitionInfo` that lists the windows
-  appearing / disappearing / changing.
+- `system_server` calls `ITransitionPlayer#onTransitionReady(...)` over
+  Binder -- the player interface that Shell's `Transitions` registers with
+  `WindowOrganizer` -- handing the Shell a `TransitionInfo` that lists the
+  windows appearing / disappearing / changing.  (`IShellTransitions` is the
+  separate interface Shell *exports* for registering remote transitions.)
 - `Transitions` matches the info against registered `TransitionHandler`s
   in priority order. The first handler that accepts becomes the animator
   for that transition.
@@ -2758,7 +2781,7 @@ compact binary form. The rewrite is driven by `ShellProtoLogGroup` and
 the `wm_shell_protolog-groups` Java library.
 
 ```blueprint
-// Source: frameworks/base/libs/WindowManager/Shell/Android.bp:65
+// Source: frameworks/base/libs/WindowManager/Shell/Android.bp:54
 java_genrule {
     name: "wm_shell_protolog_src",
     srcs: [
@@ -2766,11 +2789,15 @@ java_genrule {
         ":wm_shell-sources",
         ":wm_shell_protolog-groups",
     ],
-    tools: ["protologtool"],
+    tools: [
+        "protologtool",
+        "soong_javac_wrapper",
+    ],
     cmd: "$(location protologtool) transform-protolog-calls " +
         "--protolog-class com.android.internal.protolog.ProtoLog " +
         "--loggroups-class com.android.wm.shell.protolog.ShellProtoLogGroup " +
         "--loggroups-jar $(location :wm_shell_protolog-groups) " +
+        "--javac-wrapper-path $(location soong_javac_wrapper) " +
         "--viewer-config-file-path /system_ext/etc/wmshell.protolog.pb " +
         "--output-srcjar $(out) " +
         "$(locations :wm_shell-sources)",
@@ -2853,7 +2880,7 @@ change into the corresponding `ShellInterface` / per-feature method
 |------|---------|
 | `frameworks/base/libs/WindowManager/Shell/Android.bp` | Module definitions, ProtoLog genrules, form-factor variants |
 | `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/WMComponent.java` | Dagger subcomponent — Shell's public surface |
-| `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/WMShellBaseModule.java` | Cross-form-factor base bindings (~1200 lines) |
+| `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/WMShellBaseModule.java` | Cross-form-factor base bindings (~1,400 lines) |
 | `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/WMShellModule.java` | Phone/tablet form-factor bindings |
 | `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/TvWMShellModule.java` | TV form-factor bindings |
 | `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/sysui/ShellInterface.java` | Lifecycle facade SysUI calls into |
@@ -2861,7 +2888,7 @@ change into the corresponding `ShellInterface` / per-feature method
 | `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/sysui/ShellInit.java` | Ordered init callback registry |
 | `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/ShellTaskOrganizer.java` | Single `TaskOrganizer` registration; per-feature listeners |
 | `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java` | Transition handler registry and dispatch |
-| `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/protolog/ShellProtoLogGroup.java` | ProtoLog group enum, transformed at build time |
+| `frameworks/base/libs/WindowManager/Shell/protolog/src/com/android/wm/shell/protolog/ShellProtoLogGroup.java` | ProtoLog group enum, transformed at build time |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/wmshell/WMShell.java` | SysUI-side adapter `CoreStartable` |
 | `frameworks/base/libs/WindowManager/Jetpack/src/androidx/window/extensions/` | Jetpack window extensions APK (separate from Shell) |
 
@@ -2901,7 +2928,7 @@ It does **not** own:
   per-user `Settings.Secure.SCREENSAVER_COMPONENTS` list — the library
   only overrides via `setSystemDreamComponent`.
 
-Source layout (~5 source files, ~250 lines):
+Source layout (~8 source files, ~450 lines):
 
 ```
 frameworks/base/libs/dream/lowlight/
@@ -3418,8 +3445,12 @@ frameworks/base/packages/SystemUI/src/com/android/systemui/bouncer/
   domain/startable/
     BouncerStartable.kt               -- CoreStartable wiring
   ui/
-    BouncerView.kt                    -- Compose UI
+    BouncerView.kt                    -- UI-layer abstraction / delegate holder
 ```
+
+The Compose bouncer UI itself lives under
+`compose/features/src/com/android/systemui/bouncer/ui/composable/`
+(`BouncerContent.kt`, `PinBouncer.kt`, ...).
 
 **Primary Bouncer Lifecycle:**
 
@@ -3430,7 +3461,8 @@ sequenceDiagram
     participant PBI as PrimaryBouncerInteractor
     participant KBR as KeyguardBouncerRepository
     participant BV as BouncerView
-    participant LPU as LockPatternUtils
+    participant BI as BouncerInteractor
+    participant AI as AuthenticationInteractor
 
     User->>KTI: Swipe up on lockscreen
     KTI->>KTI: startTransition(LOCKSCREEN -> PRIMARY_BOUNCER)
@@ -3440,16 +3472,17 @@ sequenceDiagram
     BV->>BV: Inflate PIN/Pattern/Password input
 
     User->>BV: Enter PIN "1234"
-    BV->>PBI: onAuthenticate(pin)
-    PBI->>LPU: checkCredential(pin, userId)
+    BV->>BI: authenticate(pin)
+    BI->>AI: authenticate(pin)
+    Note over AI: checkCredential via<br/>LockPatternUtils / LockPatternChecker
 
     alt Correct
-        LPU-->>PBI: Success
+        AI-->>BI: Success
         PBI->>KBR: setPrimaryShow(false)
         PBI->>KTI: startTransition(PRIMARY_BOUNCER -> GONE)
     else Wrong
-        LPU-->>PBI: Failure
-        PBI->>BV: showError("Wrong PIN")
+        AI-->>BI: Failure
+        BI->>BV: showError("Wrong PIN")
         Note over BV: Lockout after N failures
     end
 ```
@@ -3528,7 +3561,10 @@ Key flows exposed by `KeyguardRepository`:
 - `biometricUnlockState: StateFlow<BiometricUnlockModel>`
 - `isDozing: StateFlow<Boolean>`
 - `isDreaming: StateFlow<Boolean>`
-- `wakefulness: StateFlow<WakefulnessModel>`
+
+(Wakefulness is not part of this repository: the
+`wakefulness: StateFlow<WakefulnessModel>` flow is exposed by
+`PowerRepository` / `PowerInteractor` in the `power/` package.)
 
 ### 48.15.10  Scene Container Migration
 
@@ -3599,7 +3635,7 @@ The `SceneContainerFlag` controls whether the new path is active, with
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/domain/interactor/From*TransitionInteractor.kt` | Per-state transition drivers |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/domain/interactor/TrustInteractor.kt` | Smart Lock interactor |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/domain/interactor/DozeInteractor.kt` | Doze management |
-| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/ui/KeyguardViewConfigurator.kt` | View setup |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewConfigurator.kt` | View setup |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/bouncer/data/repository/KeyguardBouncerRepository.kt` | Bouncer repository |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/bouncer/domain/interactor/PrimaryBouncerInteractor.kt` | Primary bouncer interactor |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/bouncer/domain/interactor/AlternateBouncerInteractor.kt` | Alternate bouncer interactor |
@@ -3755,7 +3791,10 @@ and the live transition state:
 @SysUISingleton
 class SceneInteractor @Inject constructor(/* ... */) {
     val currentScene: StateFlow<SceneKey>
-    val transitionState: StateFlow<ObservableTransitionState>
+    val transitionState: TransitionState  // Compose snapshot state
+
+    @Deprecated("Prefer the more performant non-Flow version.")
+    val transitionStateFlow: StateFlow<ObservableTransitionState>
 
     fun changeScene(toScene: SceneKey, loggingReason: String, /* ... */)
     fun snapToScene(toScene: SceneKey, loggingReason: String)
@@ -3765,11 +3804,12 @@ class SceneInteractor @Inject constructor(/* ... */) {
 ```
 
 `changeScene` requests an *animated* transition; `snapToScene` jumps instantly.
-The `transitionState` flow exposes an `ObservableTransitionState` that is either
-`Idle(scene)` or `Transition(fromScene, toScene, progress)` -- the same shape the
-`compose/scene` library consumes to drive its animations.  Reads of the current
-scene as a Compose `State` (`currentSceneAsState`) let composables recompose as
-the scene changes.
+`transitionState` is a Compose snapshot-state `TransitionState`; the deprecated
+`transitionStateFlow` companion exposes an `ObservableTransitionState` that is
+either `Idle(scene)` or `Transition(fromScene, toScene, progress)` -- the same
+shape the `compose/scene` library consumes to drive its animations.  Reads of
+the current scene as a Compose `State` (`currentSceneAsState`) let composables
+recompose as the scene changes.
 
 ### 48.16.5  SceneContainerStartable: Bridging Legacy State
 
@@ -4085,8 +4125,8 @@ graph TD
     subgraph "QS Framework"
         QSH["QSHost"]
         QSF["QSFactory"]
-        QSP["QSPanel"]
-        QTV["QSTileView"]
+        QSP["Compose QS panel<br/>(pods/qs/panels)"]
+        QTV["QSTileViewModelAdapter"]
     end
     subgraph "Dagger"
         MOD["Dagger Module<br/>@IntoMap @StringKey"]
@@ -4165,7 +4205,7 @@ every system-level UI surface on Android.  This chapter covered:
 | Architecture | `SystemUIApplicationImpl`, `GlobalRootComponent`, `SysUIComponent`, `CoreStartable` | ~500 |
 | Status Bar | `CentralSurfacesImpl`, `StatusBarWindowControllerImpl`, `HomeStatusBarViewModel` | ~2,800 |
 | Notification Shade | `NotificationPanelViewController`, `ShadeController`, `NotificationStackScrollLayout` | ~4,300 |
-| Quick Settings | `QSHost`, `QSTileImpl`, `QSPanel`, `CustomTile` | ~2,000 |
+| Quick Settings | `QSHost`, `QSTileImpl`, `QSFragmentCompose`, `CustomTile` | ~2,000 |
 | Lock Screen | `KeyguardViewMediator`, `StatusBarKeyguardViewManager`, Bouncer | ~4,600 |
 | Recent Apps | `OverviewProxyRecentsImpl`, `LauncherProxyService` | ~110 |
 | Volume Dialog | `VolumeDialogControllerImpl`, `VolumeDialog` (`volume/dialog/`) | ~2,900 |
@@ -4192,7 +4232,7 @@ Compose.  Key modernisation efforts in Android 17 include:
 - **Dual shade** -- separate notifications and quick-settings shades
   (`NotificationsShade` / `QuickSettingsShade` overlays, `DualShadeFlag`)
 - **Predictive Back** -- back gesture with animation preview
-- **StatusBarConnectedDisplays** -- status bar on external displays
+- **Connected-display status bar** -- per-display status bar on external displays
 
 ### Key Source Paths
 
@@ -4217,7 +4257,7 @@ Compose.  Key modernisation efforts in Android 17 include:
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/shade/ShadeController.java` | Shade abstraction |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/shade/NotificationShadeWindowControllerImpl.java` | Shade window |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/qs/QSHost.java` | QS tile management |
-| `frameworks/base/packages/SystemUI/src/com/android/systemui/qs/QSPanel.java` | QS tile grid |
+| `frameworks/base/packages/SystemUI/pods/qs/panels/` | QS tile grid (Compose) |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/qs/tileimpl/QSTileImpl.java` | Base tile |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/qs/tiles/` | Built-in tiles |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/qs/external/CustomTile.java` | Third-party tiles |

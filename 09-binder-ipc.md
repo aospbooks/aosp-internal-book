@@ -204,9 +204,18 @@ graph TB
 | HAL | `/dev/hwbinder` | `hwservicemanager` | HIDL | **Deprecated** (Android 13+) |
 | Vendor | `/dev/vndbinder` | `vndservicemanager` | AIDL | Active |
 
-SELinux policy enforces the boundaries: a vendor process cannot open
-`/dev/binder`, and a framework process should not open `/dev/vndbinder`. The
-default device for a process depends on the build variant:
+SELinux enforces these boundaries asymmetrically. Opening `/dev/binder`
+itself is *not* restricted — `system/sepolicy/private/domain.te` grants
+read/write on `binder_device` to every domain except `hwservicemanager` and
+`vndservicemanager`, which are carved out of the `allow` rule and additionally
+barred by `neverallow` lines. What actually keeps vendor code out of
+the framework domain is the *service* level: SELinux `service_manager`
+add/find checks against `service_contexts` decide which domains may register
+or look up each named service, and the `__ANDROID_VNDK__` build flag makes
+vendor libraries default to `/dev/vndbinder` in the first place. The reverse
+direction is stricter: on full-Treble devices a `neverallow` bars framework
+(`coredomain`) processes from `/dev/vndbinder` entirely. The default device
+for a process depends on the build variant:
 
 ```cpp
 // frameworks/native/libs/binder/ProcessState.cpp
@@ -529,8 +538,12 @@ status_t IPCThreadState::requestDeathNotification(int32_t handle, BpBinder* prox
 
 ### 9.2.9 Frozen Process Notifications
 
-Android 14+ added process freezing support. When a process is frozen (e.g., a
-cached app in the freezer cgroup), the driver can notify clients:
+Cached-app freezing itself (the freezer cgroup) predates this API. What is
+recent is the binder freeze-notification protocol
+(`BC_REQUEST_FREEZE_NOTIFICATION` / `BR_FROZEN_BINDER` /
+`FrozenStateChangeCallback`), whose availability is probed at runtime via
+`ProcessState::DriverFeature::FREEZE_NOTIFICATION`. When a process is frozen
+(e.g., a cached app in the freezer cgroup), the driver can notify clients:
 
 ```cpp
 // frameworks/native/libs/binder/IPCThreadState.cpp (line ~1066)
@@ -927,7 +940,7 @@ Parcel                    mIn;     // incoming data from driver
 Parcel                    mOut;    // outgoing data to driver
 pid_t                     mCallingPid;
 const char*               mCallingSid;
-uid_t                     mCallingUid;
+std::optional<uid_t>      mCallingUid;
 int32_t                   mWorkSource;
 ```
 
@@ -1031,8 +1044,10 @@ identity to perform privileged operations on behalf of a caller:
 // frameworks/native/libs/binder/IPCThreadState.cpp (line ~562)
 int64_t IPCThreadState::clearCallingIdentity()
 {
+    // ignore mCallingSid for legacy reasons
+    uid_t callingUid = mCallingUid.has_value() ? mCallingUid.value() : getuid();
     int64_t token = packCallingIdentity(mHasExplicitIdentity,
-                                        mCallingUid, mCallingPid);
+                                        callingUid, mCallingPid);
     clearCaller();
     mHasExplicitIdentity = true;
     return token;
@@ -1217,7 +1232,8 @@ The AIDL compiler is a single binary that handles all backend targets:
 
 ```
 system/tools/aidl/
-├── aidl.cpp                 # Main entry point
+├── main.cpp                 # Main entry point
+├── aidl.cpp                 # Compiler driver / compilation logic
 ├── aidl_language.h          # AST definitions
 ├── aidl_language_l.ll       # Lexer (flex)
 ├── aidl_language_y.yy       # Parser (bison)
@@ -1265,7 +1281,8 @@ package android.os;
 import android.os.IServiceCallback;
 
 interface IServiceManager {
-    // Get a binder by name, blocking if not found
+    // Get a binder by name; returns immediately
+    // (deprecated, prefer getService2/waitForService)
     IBinder getService(String name);
 
     // Check without blocking
@@ -1302,11 +1319,15 @@ AIDL types map to different target types per backend:
 | `double` | `double` | `double` | `f64` |
 | `String` | `String` | `String16` | `String` |
 | `IBinder` | `IBinder` | `sp<IBinder>` | `SpIBinder` |
-| `FileDescriptor` | `FileDescriptor` | `unique_fd` | `OwnedFd` |
+| `FileDescriptor` | `FileDescriptor` | `unique_fd` | -- (not supported; use `ParcelFileDescriptor`) |
 | `ParcelFileDescriptor` | `ParcelFileDescriptor` | `ParcelFileDescriptor` | `ParcelFileDescriptor` |
 | `T[]` | `T[]` | `vector<T>` | `Vec<T>` |
 | `List<T>` | `List<T>` | `vector<T>` | `Vec<T>` |
 | `Map` | `Map` | -- (not supported) | -- |
+
+The NDK backend also rejects `FileDescriptor` — both it and the Rust backend
+error out with "Prefer ParcelFileDescriptor"
+(`system/tools/aidl/aidl_language.cpp:1604`).
 
 The C++ backend helpers are defined in:
 
@@ -1613,13 +1634,12 @@ AIDL supports several annotations that affect code generation:
 | `@utf8InCpp` | String types | Use `std::string` instead of `String16` |
 | `@Backing(type=T)` | Enum | Specifies backing integer type |
 | `@VintfStability` | Interface, parcelable | Marks as VINTF-stable |
-| `@Hide` | Methods, fields | Hidden from SDK |
 | `@JavaPassthrough` | Any | Pass annotation through to Java |
-| `@Enforce("perm")` | Methods | Generate permission check |
-| `@PropagateAllowBlocking` | Methods | Allow blocking from oneway callers |
+| `@EnforcePermission(value=/anyOf=/allOf=)` | Interfaces, methods | Generate permission check |
+| `@PropagateAllowBlocking` | Methods | Propagates the caller's allow-blocking-calls property to binder objects returned in the reply parcel (`Parcel.setPropagateAllowBlocking()`) |
 | `@SuppressWarnings` | Any | Suppress AIDL warnings |
 | `@JavaOnlyStableParcelable` | Parcelable | Java-only stable parcelable |
-| `@JavaDefault` | Interface | Generate default implementation |
+| `@JavaDelegator` | Interface | Generate a delegator implementation |
 | `@Descriptor` | Interface | Override interface descriptor |
 
 ### 9.4.15 API Versioning and Stability
@@ -1695,7 +1715,9 @@ flowchart TD
 
 Source directory: `frameworks/native/cmds/servicemanager/`
 
-The `servicemanager` is the first service that starts in Android. It is the
+The `servicemanager` is the first service in the binder stack and one of the
+earliest services init starts (in `on init`, after `logd` and `lmkd` --
+`system/core/rootdir/init.rc:464`). It is the
 name-server for all Binder services: processes register services by name, and
 clients look them up by name.
 
@@ -2032,7 +2054,8 @@ os::Service ServiceManager::tryGetService(const std::string& name,
 }
 ```
 
-The `os::Service` tagged union is how Android 17 lets the service manager hand
+The `os::Service` tagged union, introduced in Android 16 along with the
+`getService2` / `checkService2` variants, is how the service manager hands
 back *either* a normal local binder *or* an RPC Accessor that the client uses to
 establish a socket connection to a service running where kernel binder is
 unavailable (inside a protected VM, for example). The Accessor path is covered
@@ -2143,7 +2166,7 @@ adb shell dumpsys activity
 
 This:
 
-1. Calls `servicemanager.getService("activity")` to get the ActivityManager binder
+1. Calls `servicemanager.checkService("activity")` to get the ActivityManager binder
 2. Calls `IBinder::DUMP_TRANSACTION` on that binder
 3. The service writes its state to the provided file descriptor
 
@@ -2346,8 +2369,15 @@ service hwservicemanager /system/system_ext/bin/hwservicemanager
     shutdown critical
 ```
 
-Note the `disabled` keyword -- on newer devices that have migrated all HALs to
-AIDL, `hwservicemanager` is not started at all.
+Note the `disabled` keyword -- it only means the service is not auto-started
+with its `animation` class; `init.rc` starts it explicitly with
+`start hwservicemanager`. Even on devices that have migrated all HALs to AIDL,
+`hwservicemanager` *does* start: its `main()`
+(`system/hwservicemanager/service.cpp`) discovers via VINTF that its own
+transport is `EMPTY`, logs that HIDL is not supported, sets the
+`hwservicemanager.disabled=true` property, and sleeps — the
+`on property:hwservicemanager.disabled=true` trigger in `hwservicemanager.rc`
+then stops the process.
 
 The `hwservicemanager` uses the HIDL `IServiceManager` interface:
 
@@ -2508,7 +2538,7 @@ case BR_TRANSACTION:
         // Save and set the caller identity
         const pid_t origPid = mCallingPid;
         const char* origSid = mCallingSid;
-        const uid_t origUid = mCallingUid;
+        const auto origUid = mCallingUid;  // std::optional<uid_t>
 
         mCallingPid = tr.sender_pid;
         mCallingSid = reinterpret_cast<const char*>(tr_secctx.secctx);
@@ -2551,9 +2581,10 @@ Key observations:
    attempts to promote a weak reference to a strong reference. This handles the
    race where the BBinder might be in the process of being destroyed.
 
-3. **Buffer management:** The reply buffer is cleared (`buffer.setDataSize(0)`)
-   before sending the reply to avoid a race condition where the client receives
-   the reply and sends another transaction before the original buffer is freed.
+3. **Buffer management:** The incoming transaction's buffer is released
+   (`buffer.setDataSize(0)`) before the reply is sent, to avoid a race where
+   the client receives the reply and sends another transaction before the
+   space used by the original transaction is freed for it.
 
 4. **Context manager dispatch:** When `tr.target.ptr` is null, the transaction
    is directed to the context manager (`the_context_object`), which is the
@@ -2620,27 +2651,23 @@ status_t BBinder::transact(uint32_t code, const Parcel& data,
         case PING_TRANSACTION:
             err = pingBinder();
             break;
+        case START_RECORDING_TRANSACTION:
+            err = startRecordingTransactions(data);
+            break;
+        case STOP_RECORDING_TRANSACTION:
+            err = stopRecordingTransactions();
+            break;
         case EXTENSION_TRANSACTION:
-            CHECK(googReply != nullptr);
+            LOG_ALWAYS_FATAL_IF(reply == nullptr, "reply == nullptr");
             err = reply->writeStrongBinder(getExtension());
             break;
         case DEBUG_PID_TRANSACTION:
+            LOG_ALWAYS_FATAL_IF(reply == nullptr, "reply == nullptr");
             err = reply->writeInt32(getDebugPid());
             break;
-        case INTERFACE_TRANSACTION:
-            reply->writeString16(getInterfaceDescriptor());
-            err = NO_ERROR;
+        case SET_RPC_CLIENT_TRANSACTION:
+            err = setRpcClientDebug(data);
             break;
-        case DUMP_TRANSACTION: {
-            int fd = data.readFileDescriptor();
-            // ...read args...
-            err = dump(fd, args);
-            break;
-        }
-        case SHELL_COMMAND_TRANSACTION: {
-            // ...handle shell command...
-            break;
-        }
         default:
             err = onTransact(code, data, reply, flags);
             break;
@@ -2648,13 +2675,18 @@ status_t BBinder::transact(uint32_t code, const Parcel& data,
 
     if (reply != nullptr) {
         reply->setDataPosition(0);
-        if (reply->dataSize() > LOG_SIZE) {
+        if (reply->dataSize() > binder::kLogTransactionsOverBytes) {
             // ...log warning about large replies...
         }
     }
     return err;
 }
 ```
+
+The remaining meta-transactions — `INTERFACE_TRANSACTION`, `DUMP_TRANSACTION`,
+and `SHELL_COMMAND_TRANSACTION` — are handled by the base-class
+`BBinder::onTransact()` (`frameworks/native/libs/binder/Binder.cpp:1102-1140`),
+which subclasses fall through to for codes they do not recognize.
 
 The AIDL-generated `BnFoo::onTransact()` is what dispatches to your specific
 interface methods.
@@ -2693,7 +2725,7 @@ custom scheduling, or recording.
 After sending a transaction, the thread enters a loop waiting for the reply:
 
 ```cpp
-// frameworks/native/libs/binder/IPCThreadState.cpp (line ~1163)
+// frameworks/native/libs/binder/IPCThreadState.cpp (line ~1153)
 status_t IPCThreadState::waitForResponse(Parcel *reply,
                                          status_t *acquireResult)
 {
@@ -2725,25 +2757,24 @@ status_t IPCThreadState::waitForResponse(Parcel *reply,
             err = enableFrozenObjectErrorCode() ? FROZEN_OBJECT : FAILED_TRANSACTION;
             goto finish;
 
-        case BR_REPLY: {
+        case BR_REPLY:
+            LOG_ALWAYS_FATAL_IF(reply == NULL, "Unexpected BR_REPLY");
             binder_transaction_data tr;
             err = mIn.read(&tr, sizeof(tr));
-            if (reply) {
-                if ((tr.flags & TF_STATUS_CODE) == 0) {
-                    reply->ipcSetDataReference(
-                        reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer),
-                        tr.data_size,
-                        reinterpret_cast<const binder_size_t*>(tr.data.ptr.offsets),
-                        tr.offsets_size/sizeof(binder_size_t),
-                        freeBuffer);
-                } else {
-                    err = *reinterpret_cast<const status_t*>(
-                        tr.data.ptr.buffer);
-                    freeBuffer(/*...*/);
-                }
+            ALOG_ASSERT(err == NO_ERROR, "Not enough command data for brREPLY");
+            if (err != NO_ERROR) goto finish;
+            if ((tr.flags & TF_STATUS_CODE) == 0) {
+                reply->ipcSetDataReference(
+                    reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer),
+                    tr.data_size,
+                    reinterpret_cast<const binder_size_t*>(tr.data.ptr.offsets),
+                    tr.offsets_size/sizeof(binder_size_t),
+                    freeBuffer);
+            } else {
+                err = *reinterpret_cast<const status_t*>(tr.data.ptr.buffer);
+                freeBuffer(/* ... */);
             }
             goto finish;
-        }
 
         default:
             err = executeCommand(cmd);
@@ -2847,7 +2878,7 @@ incompatible domains:
 ```cpp
 // frameworks/native/libs/binder/include/binder/Stability.h
 class Stability {
-    enum Level : int32_t {
+    enum Level : int16_t {
         UNDECLARED = 0,     // Within a compilation unit
         VENDOR = 0b000011,  // Vendor stability
         SYSTEM = 0b001100,  // System stability
@@ -2903,17 +2934,22 @@ ProcessState::ProcessState(const char* driver)
     , mForked(false)
     , mThreadPoolStarted(false)
     , mThreadPoolSeq(1)
+    , mIsOutgoingTransactionsAuditable(false)
     , mCallRestriction(CallRestriction::NONE)
 {
-    base_fd fd(open(driver, O_RDWR | O_CLOEXEC));
-    if (fd.ok()) {
+    String8 error;
+    unique_fd opened = open_driver(driver, &error);
+    if (opened.ok()) {
         // ...
         mVMStart = mmap(nullptr, BINDER_VM_SIZE,
                         PROT_READ,
                         MAP_PRIVATE | MAP_NORESERVE,
-                        fd.get(), 0);
+                        opened.get(), 0);
         // ...
-        mDriverFD = fd.release();
+    }
+    // ...
+    if (opened.ok()) {
+        mDriverFD = opened.release();
     }
 }
 ```
@@ -2967,32 +3003,25 @@ The `defaultServiceManager()` function returns a cached reference to the
 service manager:
 
 ```cpp
-// From IServiceManager.cpp
+// frameworks/native/libs/binder/IServiceManager.cpp:333
 sp<IServiceManager> defaultServiceManager()
 {
     std::call_once(gSmOnce, []() {
-        sp<AidlServiceManager> sm = nullptr;
-        while (sm == nullptr) {
-            sm = interface_cast<AidlServiceManager>(
-                ProcessState::self()->getContextObject(nullptr));
-            if (sm == nullptr) {
-                ALOGE("Waiting 1s on context object on %s.",
-                      ProcessState::self()->getDriverName().c_str());
-                sleep(1);
-            }
-        }
-
-        gDefaultServiceManager = sp<CppBackendShim>::make(
-            sp<BackendUnifiedServiceManager>::make(sm));
+        gDefaultServiceManager =
+            sp<CppBackendShim>::make(getBackendUnifiedServiceManager());
     });
 
     return gDefaultServiceManager;
 }
 ```
 
-This blocks until the service manager is available, with a 1-second retry loop.
-This is why it is safe to call `defaultServiceManager()` very early in boot --
-it will wait for servicemanager to start.
+The waiting happens inside `getBackendUnifiedServiceManager()`
+(`frameworks/native/libs/binder/BackendUnifiedServiceManager.cpp:510`): it
+first waits for the `servicemanager.ready` system property, then retries
+`interface_cast` on the context object with a 1-second sleep until the
+context object appears. This is why it is safe to call
+`defaultServiceManager()` very early in boot -- it will wait for
+servicemanager to start.
 
 ### 9.7.13 Flat Binder Objects
 
@@ -3073,7 +3102,8 @@ provides telemetry for binder transactions:
 
 ```cpp
 // frameworks/native/libs/binder/include/binder/ProcessState.h
-#if defined(LIBBINDER_BINDER_OBSERVER) && defined(BINDER_WITH_KERNEL_IPC)
+#if defined(LIBBINDER_BINDER_OBSERVER) && defined(BINDER_WITH_KERNEL_IPC) && \
+        !defined(__ANDROID_VENDOR__)
 #define BINDER_WITH_OBSERVERS
 #endif
 ```
@@ -3106,8 +3136,11 @@ servicemanager, a blocking call from servicemanager could deadlock the system).
 
 ### 9.8.3 Background Scheduling
 
-When a binder call arrives, the kernel may move the receiving thread to the
-background scheduling group to prevent priority inversion. This can be disabled:
+When a call arrives from a process in the background scheduling group, the
+receiving thread is switched into that group too, so the work runs at the
+caller's priority. A server that holds locks in its services does not want to
+be demoted this way while other threads wait on those locks, so it can disable
+the behavior:
 
 ```cpp
 // frameworks/native/libs/binder/IPCThreadState.cpp
@@ -3299,7 +3332,7 @@ kernel binder proxy.
 threads. It supports multiple transport setup methods:
 
 ```cpp
-// Source: frameworks/native/libs/binder/include/binder/RpcServer.h:57-104
+// Source: frameworks/native/libs/binder/include/binder/RpcServer.h:57-190
 sp<RpcServer> server = RpcServer::make();
 
 // Choose ONE transport:
@@ -3456,7 +3489,7 @@ status_t RpcServer::setupVsockServer(unsigned bindCid, unsigned port,
 ```
 
 ```rust
-// Source: packages/modules/Virtualization/android/virtmgr/src/virtualmachine.rs:1503
+// Source: packages/modules/Virtualization/android/virtmgr/src/virtualmachine.rs:1662
 let (vm_server, _) = RpcServer::new_vsock(service, cid, port)
     .context(format!("Could not start RpcServer on port {port}"))?;
 ```
@@ -3493,8 +3526,8 @@ definitions they use for regular binder calls.
 RPC Binder supports TLS encryption for transports that cross trust boundaries:
 
 ```cpp
-// Create server with TLS
-auto tlsFactory = RpcTransportCtxFactoryTls::make(authInfo);
+// Create server with TLS (verifier: RpcCertificateVerifier, auth: RpcAuth)
+auto tlsFactory = RpcTransportCtxFactoryTls::make(verifier, std::move(auth));
 sp<RpcServer> server = RpcServer::make(std::move(tlsFactory));
 ```
 
@@ -3572,7 +3605,7 @@ The `rpcbinder` crate provides Rust bindings for RPC Binder:
 // Source: packages/modules/Virtualization/android/virtmgr/src/main.rs:35
 use rpcbinder::{FileDescriptorTransportMode, RpcServer};
 
-// Source: packages/modules/Virtualization/android/virtmgr/src/virtualmachine.rs:1503
+// Source: packages/modules/Virtualization/android/virtmgr/src/virtualmachine.rs:1662
 let (vm_server, _) = RpcServer::new_vsock(service, cid, port)?;
 ```
 
@@ -3589,7 +3622,7 @@ The NDK provides a C API for RPC Binder, currently marked as unstable
 (platform-only):
 
 ```cpp
-// Source: frameworks/native/libs/binder/ndk/include_platform/android/binder_rpc.h
+// Source: frameworks/native/libs/binder/include_rpc_unstable/binder_rpc_unstable.hpp
 ARpcSession* ARpcSession_new();
 void ARpcSession_free(ARpcSession* session);
 AIBinder* ARpcSession_setupUnixDomainBootstrapClient(
@@ -3629,15 +3662,18 @@ host goes through RPC Binder over vsock. The `virtmgr` daemon creates an
 a curated set of host services.
 
 ```rust
-// Source: packages/modules/Virtualization/android/virtmgr/src/virtualmachine.rs:1503
+// Source: packages/modules/Virtualization/android/virtmgr/src/virtualmachine.rs:1662
 let (vm_server, _) = RpcServer::new_vsock(service, cid, port)
     .context(format!("Could not start RpcServer on port {port}"))?;
 ```
 
-The NDK demo (`vm_demo_native`) shows the client side in the guest VM:
+The NDK demo (`vm_demo_native`) runs on the Android host: it uses a
+Unix-domain-socket bootstrap `RpcSession` to reach `virtmgr`'s
+`IVirtualizationService`, then starts and drives the VM:
 
 ```cpp
 // Source: packages/modules/Virtualization/android/vm_demo_native/main.cpp:126-132
+// (declarations in frameworks/native/libs/binder/include_rpc_unstable/binder_rpc_unstable.hpp)
 std::unique_ptr<ARpcSession, decltype(&ARpcSession_free)>
     session(ARpcSession_new(), &ARpcSession_free);
 ARpcSession_setFileDescriptorTransportMode(session.get(),
@@ -3677,7 +3713,7 @@ graph LR
 The hardest part of running binder clients inside a VM is not the transport but
 *discovery*: code written against `defaultServiceManager()` expects to look a
 service up by name and get a binder back, but a guest VM has no kernel
-`servicemanager` and no `/dev/binder`. Android 17 closes this gap with the RPC
+`servicemanager` and no `/dev/binder`. Android 16 closed this gap with the RPC
 **Accessor** API, which lets a process register a callback that produces a
 connection to the real service on demand. Existing `IServiceManager`-style
 lookups then transparently route through RPC Binder.
@@ -3774,9 +3810,7 @@ The binder driver exposes debug information via debugfs:
 ├── stats                   # Global statistics
 ├── transaction_log         # Recent transaction log
 └── proc/                   # Per-process information
-    ├── <pid>/
-    │   ├── state
-    │   └── stats
+    ├── <pid>                # one file per process, named by decimal PID
     └── ...
 ```
 
@@ -3787,7 +3821,7 @@ adb shell cat /sys/kernel/debug/binder/state
 
 **Example: view transactions for a specific process:**
 ```bash
-adb shell cat /sys/kernel/debug/binder/proc/<pid>/state
+adb shell cat /sys/kernel/debug/binder/proc/<pid>
 ```
 
 ### 9.10.2 Perfetto Tracing
@@ -3842,7 +3876,7 @@ To diagnose:
 
 ```bash
 # Check buffer allocation for a specific process
-adb shell cat /sys/kernel/debug/binder/proc/<pid>/state
+adb shell cat /sys/kernel/debug/binder/proc/<pid>
 
 # Look for "allocated" and "free" buffer sizes
 # A process with many pending incoming transactions will show high allocation
@@ -3871,19 +3905,26 @@ adb shell atrace --async_stop > trace.txt
 ### 9.10.7 Monitoring Binder Proxy Counts
 
 ```bash
-# Check per-UID proxy counts
+# Check per-UID and per-process BinderProxy counts
 adb shell dumpsys activity binder-proxies
-
-# Check total proxy count for a process
-adb shell cat /proc/<pid>/fd | wc -l  # rough approximation
 ```
 
-The proxy throttle watermarks (2000 low / 2250 warning / 2500 high) are
-configurable via system properties on debug builds.
+Note that binder proxies are handles in the process's kernel binder handle
+table, not file descriptors, so counting entries under `/proc/<pid>/fd` says
+nothing about proxy counts.
 
-### 9.10.8 Using binder_exception_to_string
+The libbinder default watermarks are 2000 low / 2250 warning / 2500 high
+(`frameworks/native/libs/binder/BpBinder.cpp:71-76`). They are overridden
+programmatically via `BpBinder::setBinderProxyCountWatermarks()` (exposed to
+Java as `BinderInternal.nSetBinderProxyCountWatermarks`); on a real device
+system_server raises them to 5500 low / 5750 warning / 6000 high.
 
-When debugging AIDL binder exceptions, the status code can be decoded:
+### 9.10.8 Using binder::Status::exceptionToString
+
+When debugging AIDL binder exceptions, the status code can be decoded with
+`binder::Status::exceptionToString()`
+(`frameworks/native/libs/binder/include/binder/Status.h:109`,
+`frameworks/native/libs/binder/Status.cpp:67`):
 
 | Exception Code | Name | Meaning |
 |----------------|------|---------|
@@ -3896,7 +3937,7 @@ When debugging AIDL binder exceptions, the status code can be decoded:
 | -7 | `EX_UNSUPPORTED_OPERATION` | Unsupported operation |
 | -8 | `EX_SERVICE_SPECIFIC` | Service-specific error (with detail code) |
 | -9 | `EX_PARCELABLE` | Custom parcelable exception |
-| -128 | `EX_TRANSACTION_FAILED` | Transaction failure |
+| -129 | `EX_TRANSACTION_FAILED` | Transaction failure |
 
 These are the AIDL `binder::Status` exception codes, distinct from the kernel-
 level `status_t` return codes.
@@ -3929,7 +3970,9 @@ the transaction's context:
 Because each report names both endpoints and the binder context, a daemon can
 build a system-wide picture of *who* is hitting `FAILED_TRANSACTION`,
 buffer-full, or frozen-target errors without scraping per-process debugfs.
-`getStatistics()` exposes counters for received and dropped reports. The feature
+`getStatistics()` exposes error counters for netlink messages that could not be
+decoded -- `mUnknownCommand` (unexpected command type) and `mUnknownAttribute`
+(unexpected netlink attribute type). The feature
 depends on a matching kernel uapi header
 (`<linux/android/binder_netlink.h>`); when that header is absent the file
 compiles a vendored copy of the attribute definitions so the build still works
@@ -3983,10 +4026,11 @@ failures system-wide.
 
 The optional `BinderObserver` infrastructure introduced in 9.8.1 grew a richer
 statistics pipeline this cycle, under
-`frameworks/native/libs/binder/observer/`. `IPCThreadState::executeCommand()`
-now brackets each served transaction with
+`frameworks/native/libs/binder/observer/`. `IPCThreadState::doTransactBinder()`
+— which `executeCommand()` calls on the `BR_TRANSACTION` path — now brackets
+each served transaction with
 `BinderObserver::onBeginTransaction()` / `onEndTransaction()`
-(`frameworks/native/libs/binder/IPCThreadState.cpp:1752`), recording the calling
+(`frameworks/native/libs/binder/IPCThreadState.cpp:1748`), recording the calling
 UID, interface, and method. A `HistogramScale`
 (`frameworks/native/libs/binder/observer/HistogramScale.h`) buckets transaction
 latency on an exponential scale (factor 1.2), and `BinderStatsPusher`
@@ -3998,18 +4042,18 @@ that never opt in pay nothing. Two read-only flags in
 `binder_stats_v3` (latency histogram, main-thread detection, proc-state
 detection) and `enable_frozen_object_error` from 9.11.1.
 
-### 9.11.4 Cached Process Identity
+### 9.11.4 Lazy Process Identity
 
-`getCallingUid()` and `clearCallingIdentity()` previously fell back to a
-`getuid()` / `getpid()` syscall when there was no active transaction identity.
-Profiling showed this costing a measurable fraction of cycles in `system_server`
-(it sits on the hot `clearCallingIdentity()` path). Android 17 memoizes the
-process UID and PID on first use in `IPCThreadState`
-(`frameworks/native/libs/binder/IPCThreadState.cpp:463`, where
-`getCallingUid()` returns `mCallingUid.value()` or the cached `getuid()`),
-avoiding repeated syscalls. This is safe under the existing rule that a process
-must not use binder after `fork()` (9.3.4), so the cached identity can never go
-stale.
+`clearCaller()` previously did an eager `getuid()` syscall on every identity
+clear — a measurable cost in `system_server`, since it sits on the hot
+`clearCallingIdentity()` path. Android 17 makes `mCallingUid` a
+`std::optional<uid_t>` (`frameworks/native/libs/binder/include/binder/IPCThreadState.h:259`)
+so `clearCaller()` merely does `mCallingUid.reset()` and the `getuid()`
+syscall is deferred until a caller actually asks for the UID with no
+transaction identity in scope: `getCallingUid()`
+(`frameworks/native/libs/binder/IPCThreadState.cpp:463`) returns
+`mCallingUid.has_value() ? mCallingUid.value() : getuid()`. The PID is not
+affected — `clearCaller()` still calls `getpid()` each time.
 
 ### 9.11.5 RPC Binder Accessors Reach the LLNDK
 
@@ -4035,12 +4079,14 @@ opt-in outgoing-transaction auditing in `libbinder`. When the framework flag
 `android.app.privatecompute.flags.enablePccFrameworkSupport` is on,
 `ProcessState::isOutgoingTransactionsAuditable()` is set for PCC/PCS UIDs, and
 `IPCThreadState::logPccTransaction()`
-(`frameworks/native/libs/binder/IPCThreadState.cpp:1698`) records the interface
-and method name of each non-PCC-to-PCC outgoing call into a
+(`frameworks/native/libs/binder/IPCThreadState.cpp:1698`) — called from the
+`BR_TRANSACTION` serving path — records the interface and method name of each
+inbound transaction served by the PCC/PCS process whose caller is outside the
+PCC UID range (`AID_PCC_COMPONENT_PROCESS_START`..`END`) into a
 `PersistableBundle` and forwards it to the `pcc_sandbox_native` service's audit
 log. The lookup is rate-limited so a missing audit service cannot spam the log.
-This gives the PCC sandbox an authoritative record of which framework surfaces a
-sandboxed component reaches over binder.
+This gives the PCC sandbox an authoritative record of which non-PCC callers
+reach into the sandbox over binder.
 
 ---
 
@@ -4653,7 +4699,8 @@ graph TB
 9. **Android 17 sharpened binder's edges** rather than reshaping it: a distinct
    `FROZEN_OBJECT` error for frozen targets, a generic-netlink push channel for
    driver-side error reports, latency-histogram statistics in the binder
-   observer, cached process identity on the hot `clearCallingIdentity()` path,
+   observer, a lazily-fetched process UID on the hot `clearCallingIdentity()`
+   path,
    and RPC Binder Accessors promoted to the LLNDK so binder clients can run
    inside VMs with no kernel binder at all.
 

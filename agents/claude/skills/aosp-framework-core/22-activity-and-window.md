@@ -53,7 +53,7 @@ share the same lock and reduce cross-lock contention.
 // frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java, line 602
 public class ActivityManagerService extends IActivityManager.Stub
         implements Watchdog.Monitor, BatteryStatsImpl.BatteryCallback,
-                   ActivityManagerGlobalLock {
+                   ActivityManagerGlobalLock, OomAdjuster.HostingTypeProvider {
 ```
 
 ```java
@@ -63,8 +63,9 @@ public class ActivityTaskManagerService extends IActivityTaskManager.Stub {
 
 Both extend their respective AIDL Stub classes, meaning they handle Binder IPC
 calls from client apps. AMS additionally implements `Watchdog.Monitor` (to
-detect system hangs) and `BatteryStatsImpl.BatteryCallback` (for power
-tracking).
+detect system hangs), `BatteryStatsImpl.BatteryCallback` (for power
+tracking), and `OomAdjuster.HostingTypeProvider` (supplying hosting-type
+strings to the OOM adjuster).
 
 ### 22.1.3 The Two-Lock Architecture
 
@@ -152,7 +153,7 @@ WindowManagerService mWindowManager;                 // line 430
 
 // Process tracking
 final ProcessMap<WindowProcessController> mProcessNames = new ProcessMap<>();
-final WindowProcessControllerMap mProcessMap = new WindowProcessControllerMap<>();
+final WindowProcessControllerMap mProcessMap = new WindowProcessControllerMap();
 volatile WindowProcessController mHomeProcess;
 volatile WindowProcessController mTopApp;
 ```
@@ -192,19 +193,19 @@ graph TB
             Starter["ActivityStarter"]
             RWC["RootWindowContainer"]
             RecentT["RecentTasks"]
+            TransCtrl["TransitionController<br/>(via WindowOrganizerController)"]
             ATMS --> Supervisor
             ATMS --> StartController
             StartController --> Starter
             ATMS --> RWC
             ATMS --> RecentT
+            ATMS --> TransCtrl
         end
 
         subgraph "WindowManagerService (wm package)"
             WMS["WMS<br/>IWindowManager.Stub"]
             SurfacePlacer["WindowSurfacePlacer"]
-            TransCtrl["TransitionController"]
             WMS --> SurfacePlacer
-            WMS --> TransCtrl
         end
 
         AMS -.->|"mActivityTaskManager"| ATMS
@@ -382,7 +383,7 @@ sequenceDiagram
     participant ASC as ActivityStartController
     participant AS as ActivityStarter
     participant RWC as RootWindowContainer
-    participant ATS as ActivityTaskSupervisor
+    participant Task
     participant WMS as WindowManagerService
 
     App->>Inst: startActivity(intent)
@@ -405,15 +406,15 @@ sequenceDiagram
         AS->>AS: recycleTask() or<br/>addOrReparentStartingActivity()
     end
     AS->>RWC: resumeFocusedTasksTopActivities()
-    RWC->>ATS: resumeTopActivityUncheckedLocked()
-    ATS->>ATS: Pause current activity
-    ATS->>App: schedulePauseActivity() [via ClientTransaction]
-    App-->>ATS: activityPaused()
-    ATS->>ATS: resumeTopActivityInnerLocked()
+    RWC->>Task: resumeTopActivityUncheckedLocked()
+    Task->>Task: Pause current activity
+    Task->>App: schedulePauseActivity() [via ClientTransaction]
+    App-->>Task: activityPaused()
+    Task->>Task: resumeTopActivityInnerLocked()
     alt Process exists
-        ATS->>App: scheduleTransaction(LaunchActivityItem)
+        Task->>App: scheduleTransaction(LaunchActivityItem)
     else Process not started
-        ATS->>ATMS: startProcessAsync()
+        Task->>ATMS: startProcessAsync()
         Note over ATMS: Fork via Zygote<br/>(see Section 22.7)
     end
     App->>App: handleLaunchActivity()
@@ -566,15 +567,14 @@ sequenceDiagram
     participant AH as ActivityThread.H (Handler)
 
     ATMS->>CLM: scheduleTransaction()
-    CLM->>CT: new ClientTransaction(client, activityToken)
-    CLM->>CT: addCallback(LaunchActivityItem)
-    CLM->>CT: setLifecycleStateRequest(ResumeActivityItem)
+    CLM->>CT: new ClientTransaction(client)
+    CLM->>CT: addTransactionItem(LaunchActivityItem)
+    CLM->>CT: addTransactionItem(ResumeActivityItem)
     CT->>AT: schedule() [Binder oneway]
     AT->>AH: sendMessage(EXECUTE_TRANSACTION)
     AH->>AH: handleMessage()
     Note over AH: TransactionExecutor.execute()
-    AH->>AH: executeCallbacks()
-    AH->>AH: executeLifecycleState()
+    AH->>AH: executeTransactionItems()
     Note over AH: calls Activity.onCreate,<br/>onStart, onResume
 ```
 
@@ -596,7 +596,7 @@ understanding how the system manages windows, tasks, and displays.
 ```java
 // frameworks/base/services/core/java/com/android/server/wm/WindowContainer.java, line 117
 class WindowContainer<E extends WindowContainer> extends ConfigurationContainer<E>
-        implements Comparable<WindowContainer>, Animatable {
+        implements Comparable<WindowContainer>, Animatable, Identifiable {
 ```
 
 `WindowContainer` provides:
@@ -629,9 +629,9 @@ classDiagram
 
     class DisplayContent {
         +DisplayInfo mDisplayInfo
-        +TaskDisplayArea mDefaultTaskDisplayArea
         +DisplayPolicy mDisplayPolicy
         +InputMonitor mInputMonitor
+        +getDefaultTaskDisplayArea()
     }
 
     class DisplayArea~T~ {
@@ -648,7 +648,7 @@ classDiagram
     class Task {
         +int mTaskId
         +String affinity
-        +Intent baseIntent
+        +Intent intent
         +ActivityRecord[] activities
         +getRootActivity()
         +getTopNonFinishingActivity()
@@ -677,12 +677,12 @@ classDiagram
         +IWindow mClient
         +WindowManager.LayoutParams mAttrs
         +SurfaceControl mSurfaceControl
-        +Rect mFrame
+        +WindowFrames mWindowFrames
     }
 
     WindowContainer <|-- RootWindowContainer
-    WindowContainer <|-- DisplayContent
     WindowContainer <|-- DisplayArea
+    DisplayArea <|-- DisplayContent
     DisplayArea <|-- TaskDisplayArea
     WindowContainer <|-- TaskFragment
     TaskFragment <|-- Task
@@ -774,10 +774,9 @@ Key Task attributes:
 | `mTaskId` | Unique identifier for the task |
 | `affinity` | Task affinity from AndroidManifest |
 | `rootAffinity` | The affinity of the root activity at creation |
-| `baseIntent` | The intent that started the root activity |
+| `intent` | The original intent that started the task (read via `getBaseIntent()`) |
 | `mCallingUid` | UID that created this task |
 | `mResizeMode` | How this task can be resized |
-| `mConfigWillChange` | Set when configuration update is pending |
 
 Tasks also have a reparenting system with three modes:
 
@@ -827,7 +826,8 @@ Key fields of `WindowState`:
 - `mActivityRecord` -- The activity this window is part of (may be null for
   system windows)
 - `mSurfaceControl` -- The SurfaceFlinger surface for rendering
-- `mFrame` -- The computed screen-coordinate rectangle
+- `mWindowFrames` -- A `WindowFrames` holding the computed screen-coordinate
+  rectangles (`mFrame`, `mCompatFrame`, `mRelFrame`), read via `getFrame()`
 - `mSession` -- The `Session` (per-process connection to WMS)
 - `mWinAnimator` -- The animation controller for this window
 
@@ -933,7 +933,7 @@ sequenceDiagram
     WMG->>VRI: new ViewRootImpl(context, display)
     WMG->>VRI: setView(view, params, panelParentView)
     Note over VRI: Measure and layout view tree
-    VRI->>Session: addToDisplay("window, attrs,<br/>viewVisibility, displayId, ...")
+    VRI->>Session: addToDisplayAsUser("window, attrs,<br/>viewVisibility, displayId, userId, ...")
     Note over Session: This is a Binder IPC call<br/>to system_server
     Session->>WMS: addWindow(session, client, attrs, ...)
     Note over WMS: Validate, create WindowState,<br/>assign to token, set up surface
@@ -1181,7 +1181,6 @@ final ArrayList<WindowState> mFrameChangingWindows = new ArrayList<>(); // line 
 ```java
 // Policy and layout
 WindowManagerPolicy mPolicy;                          // line 614
-final WindowManagerFlags mFlags;
 final WindowSurfacePlacer mWindowPlacerLocked;        // line 549
 final StartingSurfaceController mStartingSurfaceController; // line 526
 
@@ -1210,7 +1209,6 @@ static final int UPDATE_FOCUS_WILL_PLACE_SURFACES = 3;
 static final int UPDATE_FOCUS_REMOVING_FOCUS = 4;
 
 // Timing constants
-static final int MAX_ANIMATION_DURATION = 10 * 1000;
 static final int WINDOW_FREEZE_TIMEOUT_DURATION = 2000;       // line 420
 static final int LAST_ANR_LIFETIME_DURATION_MSECS = 2 * 60 * 60 * 1000;
 
@@ -1232,7 +1230,7 @@ graph LR
         Main["main thread<br/>(Looper.getMainLooper)"]
         Display["android.display thread<br/>(WMS Handler H)"]
         Anim["android.anim thread<br/>(animation)"]
-        AnimThread2["android.anim.lf thread<br/>(low-fidelity anim)"]
+        AnimThread2["android.anim.lf thread<br/>(SurfaceAnimationThread, does not hold the WM lock)"]
         UI["android.ui thread"]
     end
 
@@ -1283,7 +1281,7 @@ keyboard input. Focus updates happen through `updateFocusedWindowLocked()`:
 ```mermaid
 flowchart TD
     Change["Window added/removed/<br/>visibility changed"] --> UpdateFocus["updateFocusedWindowLocked()"]
-    UpdateFocus --> Compute["computeFocusedWindow()<br/>Walk hierarchy top-down"]
+    UpdateFocus --> Compute["findFocusedWindow()<br/>(DisplayContent)<br/>Walk hierarchy top-down"]
     Compute --> Changed{"Focus changed?"}
     Changed -->|No| Done["No-op"]
     Changed -->|Yes| NotifyOld["Notify old focus:<br/>window losing focus"]
@@ -1414,7 +1412,14 @@ static class DefaultFactory implements Factory {
     public ActivityStarter obtain() {
         ActivityStarter starter = mStarterPool.acquire();
         if (starter == null) {
-            starter = new ActivityStarter(mController, mService, mSupervisor, mInterceptor);
+            if (mService.mRootWindowContainer == null) {
+                throw new IllegalStateException("Too early to start activity.");
+            }
+            UserHelper userHelper = android.multiuser.Flags.hsuAllowlistActivities()
+                    ? new UserHelper(mService.getUserManagerInternal())
+                    : null;
+            starter = new ActivityStarter(mController, mService, mSupervisor, mInterceptor,
+                    userHelper);
         }
         return starter;
     }
@@ -1692,7 +1697,10 @@ frameworks/base/services/core/java/com/android/server/am/psc/
     OomAdjusterImpl.java          -- graph-based implementation (line 125)
     Constants.java                -- OOM adj + scheduling-group constants
     ProcessNode.java              -- a process in the importance graph
-    ProcessEdge.java / GraphEdge  -- service/provider binding edges
+    GraphEdge.java                -- abstract directional edge base class
+    ProcessEdge.java              -- intrinsic per-process edge (system -> process)
+    ServiceBindingEdge.java       -- service binding edge (client -> service host)
+    ProviderBindingEdge.java      -- provider binding edge (client -> provider host)
     CapabilityController.java     -- propagates capabilities across edges
     ProcessRecordInternal.java    -- per-process state owned by psc
     ...
@@ -1907,15 +1915,15 @@ sequenceDiagram
 
 ### 22.7.6 Zygote Policy Flags
 
-The `startProcessLocked()` method uses policy flags to hint to the Zygote
-about process priority:
+The `startProcessLocked()` method uses policy flags, defined in
+`android.os.Process`, to hint to the Zygote about process priority:
 
 ```java
-// Referenced from ActivityManagerService.java imports
-static final int ZYGOTE_POLICY_FLAG_EMPTY = 0;
-static final int ZYGOTE_POLICY_FLAG_LATENCY_SENSITIVE = 1;   // Top app
-static final int ZYGOTE_POLICY_FLAG_SYSTEM_PROCESS = 2;      // System server
-static final int ZYGOTE_POLICY_FLAG_BATCH_LAUNCH = 4;        // Boot-time batch
+// frameworks/base/core/java/android/os/Process.java, lines 669-694
+public static final int ZYGOTE_POLICY_FLAG_EMPTY = 0;
+public static final int ZYGOTE_POLICY_FLAG_LATENCY_SENSITIVE = 1 << 0; // Top app
+public static final int ZYGOTE_POLICY_FLAG_BATCH_LAUNCH = 1 << 1;      // Boot-time batch
+public static final int ZYGOTE_POLICY_FLAG_SYSTEM_PROCESS = 1 << 2;    // System server
 ```
 
 When launching the top app's process, `ZYGOTE_POLICY_FLAG_LATENCY_SENSITIVE`
@@ -1961,8 +1969,10 @@ public class OomAdjusterImpl extends OomAdjuster {
 
 The implementation models the system as an **importance graph**: each process
 is a `ProcessNode` (embedded in its `ProcessRecordInternal`), and service or
-provider bindings are `ProcessEdge` objects connecting a client node to a
-server node. A `CapabilityController` walks these edges to propagate
+provider bindings are `ServiceBindingEdge` / `ProviderBindingEdge` objects
+(subclasses of the abstract `GraphEdge`) connecting a client node to a server
+node, while `ProcessEdge` is the intrinsic system-to-process edge derived from
+the process's own attributes. A `CapabilityController` walks these edges to propagate
 capabilities and importance from clients to the processes they bind. The core
 per-process computation is `OomAdjusterImpl.computeOomAdjLSP()`, reached from
 `performUpdateOomAdjLSP()`.
@@ -2174,11 +2184,11 @@ graph TD
     subgraph "Transition Triggers"
         T1["INITIALIZING -> STARTED<br/>Trigger: realStartActivityLocked()"]
         T2["STARTED -> RESUMED<br/>Trigger: completeResumeLocked()"]
-        T3["RESUMED -> PAUSING<br/>Trigger: startPausingLocked()"]
-        T4["PAUSING -> PAUSED<br/>Trigger: completePauseLocked()"]
+        T3["RESUMED -> PAUSING<br/>Trigger: TaskFragment.startPausing()"]
+        T4["PAUSING -> PAUSED<br/>Trigger: completePause()"]
         T5["PAUSED -> STOPPING<br/>Trigger: stopIfPossible()"]
         T6["STOPPING -> STOPPED<br/>Trigger: activityStopped()"]
-        T7["* -> FINISHING<br/>Trigger: finishActivityLocked()"]
+        T7["* -> FINISHING<br/>Trigger: finishIfPossible()"]
         T8["FINISHING -> DESTROYING<br/>Trigger: destroyIfPossible()"]
         T9["DESTROYING -> DESTROYED<br/>Trigger: destroyed()"]
     end
@@ -2228,6 +2238,7 @@ sequenceDiagram
     participant LeafTask as Task (leaf)
     participant TF as TaskFragment
     participant AR as ActivityRecord
+    participant ATS as ActivityTaskSupervisor
 
     RWC->>DC: resumeFocusedTasksTopActivities()
     DC->>TDA: getFocusedRootTask()
@@ -2243,10 +2254,10 @@ sequenceDiagram
         TF->>AR: Check if process exists
         alt Process alive
             TF->>AR: makeActiveIfNeeded()
-            TF->>AR: scheduleResumeTransaction()
+            Note over TF: scheduleTransactionItem(ResumeActivityItem)<br/>via ClientLifecycleManager
         else Process dead
-            TF->>RWC: startSpecificActivity(r, ...)
-            Note over RWC: Will fork via Zygote
+            TF->>ATS: startSpecificActivity(r, ...)
+            Note over ATS: Will fork via Zygote
         end
     end
 ```
@@ -2262,14 +2273,16 @@ sequenceDiagram
     participant OldApp as Old Activity (App Process A)
     participant NewApp as New Activity (App Process B)
 
-    Framework->>OldApp: schedulePauseActivity(token, finishing, ...)
+    Framework->>Framework: "TaskFragment.schedulePauseActivity(prev, userLeaving, ...)"
+    Framework->>OldApp: "scheduleTransactionItem(PauseActivityItem)<br/>via ClientLifecycleManager"
     Note over OldApp: Activity.onPause() executes
     OldApp->>Framework: activityPaused(token)
-    Note over Framework: completePauseLocked()<br/>Old activity now PAUSED
+    Note over Framework: TaskFragment.completePause()<br/>Old activity now PAUSED
 
     Framework->>Framework: resumeTopActivityInnerLocked()
     alt New process exists
-        Framework->>NewApp: scheduleResumeActivity(token, ...)
+        Framework->>NewApp: scheduleTransactionItem(ResumeActivityItem)
+        Note over Framework: via ClientLifecycleManager
         Note over NewApp: Activity.onResume() executes
         NewApp->>Framework: activityResumed(token)
     else New process needs start
@@ -2547,13 +2560,14 @@ sequenceDiagram
 
     AS->>AR: showStartingWindow(taskSwitch)
     AR->>AR: Decide: snapshot or splash?
-    AR->>SSC: createStartingSurface(activityRecord)
 
     alt Snapshot available
+        AR->>SSC: createTaskSnapshotSurface(activityRecord, snapshot)
         SSC->>Shell: Request snapshot window
         Shell->>WMS: addWindow(TYPE_APPLICATION_STARTING)
         WMS->>WMS: activity.attachStartingWindow(win)
     else Splash screen
+        AR->>SSC: createSplashScreenStartingSurface(activityRecord, theme)
         SSC->>Shell: Request splash screen
         Shell->>Shell: Inflate themed splash layout
         Shell->>WMS: addWindow(TYPE_APPLICATION_STARTING)
@@ -2561,8 +2575,8 @@ sequenceDiagram
 
     Note over AR: App process starts, draws first frame
     AR->>AR: onFirstWindowDrawn()
-    AR->>SSC: removeStartingWindow()
-    SSC->>WMS: Remove starting window
+    AR->>AR: removeStartingWindow()
+    AR->>WMS: Remove starting window
 ```
 
 ### 22.12.3 Starting Window in addWindowInner()
@@ -2616,9 +2630,12 @@ flowchart TD
     Done --> EndTrace["End trace"]
 ```
 
-The loop repeats up to `LAYOUT_REPEAT_THRESHOLD` (4) times to handle
-cascading layout changes, where updating one window's layout triggers changes
-in another.
+To handle cascading layout changes, where updating one window's layout
+triggers changes in another, the traversal is re-requested up to 6 times
+(`++mLayoutRepeatCount < 6`) before WMS gives up and logs "Performed 6
+layouts in a row. Skipping". `LAYOUT_REPEAT_THRESHOLD` (4) never bounds the
+loop; it is only the debug-logging threshold at which `debugLayoutRepeats()`
+starts emitting "Layouts looping" log lines.
 
 ### 22.13.2 Display Policy
 
@@ -2676,14 +2693,15 @@ propagates top-down through the hierarchy:
 
 ```mermaid
 sequenceDiagram
-    participant WMS
+    participant ATMS
     participant RWC as RootWindowContainer
     participant DC as DisplayContent
     participant Task
     participant AR as ActivityRecord
     participant App as App Process
 
-    WMS->>RWC: updateConfiguration(newConfig)
+    Note over ATMS: updateConfigurationLocked(newConfig)
+    ATMS->>RWC: onConfigurationChanged(newConfig)
     RWC->>DC: onConfigurationChanged()
     DC->>Task: onConfigurationChanged()
     Task->>AR: onConfigurationChanged()
@@ -2734,9 +2752,9 @@ If the activity declared `android:configChanges` in its manifest for the
 changed configuration fields, it receives `onConfigurationChanged()` instead
 of being destroyed and recreated.
 
-**Android 17: fewer default relaunches.** For apps targeting SDK 37
-(`Build.VERSION_CODES.CINNAMON_BUN`), the system stops recreating an activity by
-default for a set of low-impact configuration changes:
+**Android 17: fewer default relaunches.** Once the
+`enable_less_activity_recreation_on_config_change` flag is on, the system stops
+recreating an activity by default for a set of low-impact configuration changes:
 `CONFIG_KEYBOARD`, `CONFIG_KEYBOARD_HIDDEN`, `CONFIG_NAVIGATION`,
 `CONFIG_TOUCHSCREEN`, and `CONFIG_COLOR_MODE`. Before this change an app
 had to list each of these in `android:configChanges` to avoid a relaunch; now
@@ -2760,8 +2778,13 @@ public static final int RECREATE_ON_CONFIG_CHANGES_MASK =
 `shouldSkipActivityRecreationOnConfigChange()` gates the new bits on two things:
 the window flag `enable_less_activity_recreation_on_config_change` and the
 compat change `ActivityInfo.SKIP_ACTIVITY_RECREATION_ON_CONFIG_CHANGE`
-(`454795633L`, declared `@Overridable`). The `CONFIG_MCC`/`CONFIG_MNC` defaults
-predate this and apply regardless.
+(`454795633L`). The compat change carries no `@EnabledAfter`/`@EnabledSince`
+annotation, so it is *not* target-SDK gated: with the flag on, the new
+no-relaunch default applies to all apps regardless of target SDK. It is,
+however, declared `@Overridable`, so it can be disabled per app -- unlike the
+SDK-37-gated `DISABLE_OPT_OUT_UNIVERSAL_RESIZABLE_BY_DEFAULT` described in
+22.32.5. The `CONFIG_MCC`/`CONFIG_MNC` defaults predate this and apply
+regardless.
 
 `CONFIG_UI_MODE` is deliberately *not* in this mask. Desk docking is handled by
 a separate runtime path on the client. When a configuration change arrives,
@@ -2814,14 +2837,14 @@ private static final int STOP_TIMEOUT = 11 * 1000;  // ms
 private static final int DESTROY_TIMEOUT = 10 * 1000; // ms
 
 // ActivityManagerService.java
-static final int PROC_START_TIMEOUT = 10 * 1000;    // ms
-static final int BIND_APPLICATION_TIMEOUT = 15 * 1000; // ms
+static final int PROC_START_TIMEOUT = 10 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
+static final int BIND_APPLICATION_TIMEOUT = 15 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
 
 // ActivityTaskManagerService.java
 static final long INSTRUMENTATION_KEY_DISPATCHING_TIMEOUT_MILLIS = 60 * 1000;
 
 // ActivityTaskSupervisor.java
-private static final int IDLE_TIMEOUT = 10 * 1000;  // ms
+private static final int IDLE_TIMEOUT = 10 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
 ```
 
 ### 22.15.2 Input ANR Flow
@@ -2841,7 +2864,8 @@ sequenceDiagram
         App->>Input: finishInputEvent()
         Note over Input: Cancel timer
     else Timeout (5s)
-        Input->>WMS: notifyANR(windowToken)
+        Input->>WMS: notifyWindowUnresponsive(token, pid, timeoutRecord)
+        Note over WMS: InputManagerCallback -> AnrController
         WMS->>AMS: inputDispatchingTimedOut()
         AMS->>AMS: Collect stack traces
         AMS->>AMS: Show ANR dialog
@@ -2851,7 +2875,7 @@ sequenceDiagram
 
 ### 22.15.3 The AnrController
 
-ATMS uses `AnrController` objects to manage ANR handling:
+ATMS keeps a list of registered `android.app.AnrController` objects:
 
 ```java
 // ActivityTaskManagerService.java, line 587
@@ -2859,9 +2883,15 @@ ATMS uses `AnrController` objects to manage ANR handling:
 private final List<AnrController> mAnrController = new ArrayList<>();
 ```
 
-Multiple controllers can be registered, allowing different parts of the
-system to customize ANR behavior (e.g., the instrumentation framework
-extends timeouts during testing).
+`android.app.AnrController` is an interface for delaying or suppressing the
+ANR dialog for a package (`getAnrDelayMillis()`, `onAnrDelayStarted()`,
+`onAnrDelayCompleted()`), registered via
+`ActivityManagerInternal.registerAnrController()`. The in-tree example is
+`StorageManagerService`'s `ExternalStorageServiceAnrController`, which holds
+off the dialog while an external-storage session is unresponsive. Do not
+confuse it with the identically named `com.android.server.wm.AnrController`
+(WMS's `mAnrController` field), a separate class that routes input-dispatch
+timeouts as shown in the diagram above.
 
 ---
 
@@ -2933,8 +2963,10 @@ Recents (Overview) screen. It handles:
 
 ### 22.17.2 Task Persistence
 
-Tasks with `FLAG_ACTIVITY_RETAIN_IN_RECENTS` are persisted to disk as XML
-in `/data/system_ce/<userId>/recent_tasks/`. The persistence format includes:
+Tasks whose root activity declares `android:persistableMode` of
+`persistRootOnly` or `persistAcrossReboots` (and whose intent does not carry
+`FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS`) are persisted to disk as XML in
+`/data/system_ce/<userId>/recent_tasks/`. The persistence format includes:
 
 ```xml
 <task
@@ -3040,8 +3072,8 @@ minimize contention:
 2. **Batch surface transactions** -- Submit multiple changes in a single
    `SurfaceControl.Transaction`
 3. **Defer layout** -- The `WindowSurfacePlacer` batches layout requests
-4. **Lock-free reads** -- Some fields (like `mCurrentFocus`) use volatile
-   for lock-free reads in common cases
+4. **Lock-free reads** -- A few fields (like `mDisplayImePolicyCache` in
+   WMS) are volatile so hot paths can read them without taking the lock
 
 ### 22.19.2 Process Start Optimization
 
@@ -3080,13 +3112,14 @@ The AIDL interface for activity and task operations:
 |--------|---------|
 | `startActivity()` | Start an activity |
 | `startActivities()` | Start multiple activities |
-| `finishActivity()` | Finish an activity |
 | `moveTaskToFront()` | Bring a task to front |
 | `removeTask()` | Remove a task |
 | `getRecentTasks()` | Get recent tasks list |
-| `setLockTaskMode()` | Enable lock task mode |
-| `enterPictureInPictureMode()` | Enter PiP |
-| `requestStartTransition()` | Start window transition |
+| `startSystemLockTaskMode()` | Enter lock task mode for a task |
+
+Per-activity operations such as `finishActivity()` and
+`enterPictureInPictureMode()` live on the separate
+`IActivityClientController` interface (see Section 22.23.1).
 
 ### 22.20.3 IWindowManager
 
@@ -3096,12 +3129,11 @@ The AIDL interface for window management:
 |--------|---------|
 | `openSession()` | Create a new Session |
 | `addWindow()` | (via Session) Add a window |
-| `removeWindow()` | (via Session) Remove a window |
+| `remove()` | (via Session) Remove a window |
 | `relayoutWindow()` | (via Session) Update window layout |
-| `setFocusedApp()` | Set the focused app |
-| `screenshotDisplay()` | Capture display screenshot |
+| `captureDisplay()` | Capture display screenshot |
 | `freezeRotation()` | Lock screen rotation |
-| `setScreenCaptureDisabled()` | Disable screen capture |
+| `refreshScreenCaptureDisabled()` | Re-apply the DPM screen-capture policy |
 
 ### 22.20.4 IApplicationThread
 
@@ -3166,8 +3198,9 @@ The `addWindow()` return codes indicate what went wrong:
 # Check current activity state
 adb shell dumpsys activity activities | grep -E "state=|State="
 
-# Look for stuck transitions
-adb shell dumpsys activity transitions
+# Look for stuck transitions (container hierarchy + window state)
+adb shell dumpsys activity containers
+adb shell dumpsys window
 
 # Check for pending operations
 adb shell dumpsys activity starter
@@ -3282,8 +3315,8 @@ TRANSIT_CLOSE = 2;         // Activity/task closing
 TRANSIT_TO_FRONT = 3;      // Existing task coming to front
 TRANSIT_TO_BACK = 4;       // Task going to back
 TRANSIT_CHANGE = 6;        // Config change (rotation, bounds)
-TRANSIT_PIP = 8;           // PiP transition
-TRANSIT_START_LOCK_TASK_MODE = 14; // Entering lock task mode
+TRANSIT_PIP = 10;          // PiP transition
+TRANSIT_START_LOCK_TASK_MODE = 15; // Entering lock task mode
 ```
 
 ### 22.22.4 Animation Controllers
@@ -3297,8 +3330,8 @@ graph TB
 
     Type -->|"Open/Close"| Default["DefaultTransitionHandler<br/>Fade + scale animations"]
     Type -->|"Task Switch"| Recents["RecentsTransitionHandler<br/>Recents animation"]
-    Type -->|"PiP"| PiP["PipTransitionHandler<br/>Shrink/grow to PiP window"]
-    Type -->|"Split"| Split["SplitTransitionHandler<br/>Split-screen animations"]
+    Type -->|"PiP"| PiP["PipTransition<br/>Shrink/grow to PiP window"]
+    Type -->|"Split"| Split["SplitScreenTransitions<br/>Split-screen animations"]
     Type -->|"Keyguard"| KG["KeyguardTransitionHandler<br/>Lock/unlock animations"]
     Type -->|"Unfold"| Unfold["UnfoldTransitionHandler<br/>Foldable unfold animation"]
 ```
@@ -3323,6 +3356,7 @@ This controller handles operations like:
 - `activityStopped()` -- Client reports stop completion
 - `activityDestroyed()` -- Client reports destroy completion
 - `activityResumed()` -- Client reports resume completion
+- `finishActivity()` -- Client asks to finish an activity
 - `reportSizeConfigurations()` -- Client reports supported size ranges
 - `setRequestedOrientation()` -- Client requests orientation lock
 - `convertToTranslucent()` -- Client becomes translucent
@@ -3336,14 +3370,14 @@ sequenceDiagram
     participant App as App Process
     participant ACC as ActivityClientController (system_server)
     participant AR as ActivityRecord
-    participant ATMS
+    participant TF as TaskFragment
 
     Note over App: Activity.onPause() completes
     App->>ACC: activityPaused(token)
     ACC->>AR: activityPaused(false /* timeout */)
-    AR->>AR: setState(PAUSED, "activityPaused")
-    AR->>ATMS: completePauseLocked(...)
-    ATMS->>ATMS: resumeTopActivity(...)
+    AR->>TF: completePause(resumeNext=true, null)
+    TF->>AR: setState(PAUSED, "completePausedLocked")
+    TF->>TF: resumeTopActivity(...)
 ```
 
 This shows how the client-driven lifecycle callbacks feed back into the
@@ -3495,12 +3529,12 @@ class DisplayContent extends RootDisplayArea
 | Field | Purpose |
 |-------|---------|
 | `mDisplayInfo` | Physical display properties (size, density, refresh rate) |
-| `mDefaultTaskDisplayArea` | The primary area for app tasks |
+| `getDefaultTaskDisplayArea()` | Accessor for the primary area for app tasks |
 | `mDisplayPolicy` | Platform-specific layout policy |
 | `mInputMonitor` | Manages input window list for InputDispatcher |
 | `mCurrentFocus` | Currently focused WindowState |
 | `mWallpaperController` | Wallpaper positioning and animation |
-| `mImeWindowsContainer` | IME (keyboard) window management |
+| `mImeContainer` | IME (keyboard) window management |
 | `mPinnedTaskController` | PiP window management |
 | `mWinAddedSinceNullFocus` | Windows added when no focus existed |
 
@@ -3724,10 +3758,13 @@ map of the key directories and their contents.
 
 ```
 frameworks/base/services/core/java/com/android/server/am/
-    ActivityManagerService.java    -- Main AMS class (~19,921 lines)
+    ActivityManagerService.java    -- Main AMS class (~21,200 lines)
     ProcessList.java               -- Process management + OOM adj values
     ProcessRecord.java             -- Per-process bookkeeping
-    OomAdjuster.java               -- OOM adjustment computation (abstract)
+    psc/OomAdjuster.java           -- OOM adjustment computation (abstract)
+    psc/OomAdjusterImpl.java       -- OOM adjustment implementation
+    psc/ProcessStateController.java -- Process state coordination
+    psc/Constants.java             -- Process state controller constants
     CachedAppOptimizer.java        -- Freezer + compaction
     ActiveServices.java            -- Service lifecycle management
     BroadcastQueue.java            -- Broadcast dispatch
@@ -3744,8 +3781,8 @@ frameworks/base/services/core/java/com/android/server/am/
 
 ```
 frameworks/base/services/core/java/com/android/server/wm/
-    ActivityTaskManagerService.java  -- Main ATMS class (~8,130 lines)
-    WindowManagerService.java        -- Main WMS class (~10,983 lines)
+    ActivityTaskManagerService.java  -- Main ATMS class (~8,450 lines)
+    WindowManagerService.java        -- Main WMS class (~11,600 lines)
     ActivityStarter.java             -- Activity launch pipeline
     ActivityRecord.java              -- Per-activity state
     Task.java                        -- Task (back stack)
@@ -3878,7 +3915,7 @@ coupling explicit and avoids unnecessary cross-package dependencies.
 ### Q: What happens if an activity does not respond to `onPause()`?
 
 **A**: The `PAUSE_TIMEOUT` (500ms) fires. The framework calls
-`completePauseLocked()` with `resumeNext=true`, which forcibly considers
+`TaskFragment.completePause()` with `resumeNext=true`, which forcibly considers
 the pause complete and proceeds to resume the next activity. The slow app
 may later receive an ANR if it is also not responding to input events.
 
@@ -3946,7 +3983,7 @@ Device eligibility combines several config resources and developer options:
 | `canInternalDisplayHostDesktops()` | `R.bool.config_canInternalDisplayHostDesktops` |
 | `isDesktopModeSupportedOnInternalDisplay()` | restrictions off, or internal display can host |
 | `isDeviceEligibleForDesktopMode()` | supported, or enabled via dev option |
-| `shouldEnforceDeviceRestrictions()` | the `ENFORCE_DEVICE_RESTRICTIONS` build flag |
+| `shouldEnforceDeviceRestrictions()` | the `ENFORCE_DEVICE_RESTRICTIONS` constant, read from the system property `persist.wm.debug.desktop_mode_enforce_device_restrictions` (default `true`) |
 
 The feature flags themselves are modeled as enums rather than raw booleans:
 
@@ -4312,7 +4349,7 @@ adb shell am start --task <taskId> -n com.android.settings/.Settings
 adb shell am task focus <taskId>
 
 # Remove a task
-adb shell am task remove <taskId>
+adb shell am stack remove <taskId>
 ```
 
 ### 22.33.6 Exercise 6: Window Inspector with wm Commands
@@ -4382,7 +4419,7 @@ adb shell dumpsys activity activities | grep -E "mode=|windowingMode"
 
 # Force a task into freeform (on a device that supports desktop mode)
 adb shell am stack list
-adb shell wm set-multi-window-config   # inspect current multi-window config
+adb shell wm get-multi-window-config   # inspect current multi-window config
 
 # Process priorities now reported via the Process State Controller
 adb shell dumpsys activity oom

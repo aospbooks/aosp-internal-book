@@ -8,7 +8,7 @@ Framework** -- a system-server subsystem centered on `DevicePolicyManagerService
 PIN", "block the camera in the work profile") into concrete, enforced changes
 across the Android stack.  This chapter traces every major path through the real
 AOSP source code, from the XML metadata that declares an admin component, through
-the 25,000-line DPMS implementation, into the policy-engine resolution layer and
+the roughly 24,000-line DPMS implementation, into the policy-engine resolution layer and
 out to the individual subsystem enforcers that make each policy stick.
 
 ---
@@ -63,13 +63,11 @@ graph TB
     end
 
     subgraph "COPE"
-        COPE_DO[Device Owner DPC]
         COPE_PERSONAL["Personal Profile<br/>User 0"]
         COPE_WORK["Work Profile<br/>User 10"]
-        COPE_PO[Profile Owner DPC]
-        COPE_DO --> COPE_PERSONAL
+        COPE_PO["Profile Owner DPC<br/>(org-owned)"]
         COPE_PO --> COPE_WORK
-        COPE_DO -. "org-owned<br/>restrictions" .-> COPE_PERSONAL
+        COPE_PO -. "org-owned<br/>restrictions" .-> COPE_PERSONAL
     end
 ```
 
@@ -119,11 +117,11 @@ import static com.android.server.devicepolicy.DevicePolicyStatsLog
 
 A Profile Owner manages a single Android user (typically a managed profile).
 Unlike a Device Owner, multiple Profile Owners can coexist on a device (one
-per user).  The `Owners` class stores them in a `SparseArray`:
+per user).  The `Owners` class stores them in an `ArrayMap` keyed by userId:
 
 ```
-// Owners.java (within OwnersData)
-// mData.mProfileOwners is SparseArray<OwnerInfo> keyed by userId
+// OwnersData.java
+// mData.mProfileOwners is ArrayMap<Integer, OwnerInfo> keyed by userId
 ```
 
 When the `Owners` class loads configuration from disk, it pushes owner
@@ -146,10 +144,13 @@ void load() {
 
 ### 61.1.5  COPE (Corporate-Owned, Personally-Enabled)
 
-COPE is a hybrid mode introduced in Android 11.  The device is corporate-owned
-(a Device Owner exists), but the user also has a personal profile.  A Profile
-Owner runs in the work profile, and the Device Owner can impose certain
-restrictions on the personal side.
+COPE is a hybrid mode introduced in Android 11.  The device is corporate-owned,
+but there is **no Device Owner**: a Profile Owner runs in the work profile and
+is marked as the "profile owner on an organization-owned device".  That marking
+is what grants it a limited set of powers over the personal side (DPMS reports
+the COPE management mode only when no Device Owner exists and
+`isProfileOwnerOfOrganizationOwnedDevice()` is true for the work profile's
+owner).
 
 The COPE relationship is encoded in the provisioning parameters:
 
@@ -192,7 +193,7 @@ flowchart TD
     Q1 -- "Organization" --> Q2
     Q1 -- "Employee" --> Q3
 
-    Q2 -- "Yes" --> COPE["COPE Mode<br/>DO + PO in work profile"]
+    Q2 -- "Yes" --> COPE["COPE Mode<br/>Org-owned PO in work profile"]
     Q2 -- "No" --> FULLY["Fully Managed<br/>Device Owner only"]
 
     Q3 -- "Yes" --> BYOD["Work Profile / BYOD<br/>PO in managed profile"]
@@ -243,8 +244,8 @@ Android Version | Key Enterprise Features
 7.0 (Nougat)    | Network logging, security logging, DPC transfer
 8.0 (Oreo)      | Ephemeral users, mandatory backup, companion DPC
 9.0 (Pie)       | Compliance, QR provisioning improvements
-10              | COPE (organization-owned managed profile)
-11              | Personal app suspension, enhanced COPE
+10              | Work profile provisioning improvements, manual system update installation
+11              | COPE (organization-owned managed profile), personal app suspension
 12              | Compliance acknowledgement, privacy dashboard
 13              | Role-based management, fine-grained permissions
 14              | DevicePolicyEngine, multi-admin resolution
@@ -305,14 +306,19 @@ classDiagram
     }
 
     class DevicePolicyManagerService {
-        -Owners mOwners
+        -DeviceAdmins mDeviceAdmins
         -DevicePolicyEngine mDevicePolicyEngine
-        -SparseArray~DevicePolicyData~ mUserData
         -SecurityLogMonitor mSecurityLogMonitor
         -NetworkLogger mNetworkLogger
         -CertificateMonitor mCertificateMonitor
         +systemReady()
-        +onBootPhase()
+    }
+
+    class DeviceAdmins {
+        -Owners mOwners
+        -SparseArray~DevicePolicyData~ mUserData
+        +getOwners()
+        +getUserData()
     }
 
     class DevicePolicyManager {
@@ -339,7 +345,7 @@ classDiagram
 
     class ActiveAdmin {
         +DeviceAdminInfo info
-        +PasswordPolicy passwordPolicy
+        +PasswordPolicy mPasswordPolicy
         +boolean disableCamera
         +boolean disableScreenCapture
         +int disabledKeyguardFeatures
@@ -348,7 +354,8 @@ classDiagram
     IDevicePolicyManager <|.. DevicePolicyManagerService
     DevicePolicyManager --> IDevicePolicyManager : Binder proxy
     DevicePolicyManagerService --> DevicePolicyEngine
-    DevicePolicyManagerService --> Owners
+    DevicePolicyManagerService --> DeviceAdmins
+    DeviceAdmins --> Owners
     DevicePolicyManagerService --> ActiveAdmin
 ```
 
@@ -372,7 +379,7 @@ and how they relate:
 ```mermaid
 graph TB
     subgraph "DevicePolicyManagerService"
-        CORE["Core DPMS Logic<br/>25,000+ lines"]
+        CORE["Core DPMS Logic<br/>~24,000 lines"]
 
         subgraph "State Management"
             OWNERS["Owners<br/>DO/PO tracking"]
@@ -382,7 +389,7 @@ graph TB
 
         subgraph "Policy Engine"
             ENGINE[DevicePolicyEngine]
-            PDEF["PolicyDefinition<br/>250+ policies"]
+            PDEF["PolicyDefinition<br/>~34 policies + user restrictions"]
             RESOLVE["Resolution Mechanisms<br/>MostRestrictive / TopPriority"]
             ENFORCE["PolicyEnforcerCallbacks<br/>subsystem enforcement"]
         end
@@ -439,13 +446,16 @@ sequenceDiagram
     SS->>DPMS: new DevicePolicyManagerService(context)
     DPMS->>Owners: new Owners(...)
     DPMS->>Engine: new DevicePolicyEngine(...)
+    DPMS->>DPMS: loadOwners()
+    Note over DPMS: Constructor also registers the broadcast receivers
 
     SS->>DPMS: onBootPhase(PHASE_LOCK_SETTINGS_READY)
-    DPMS->>DPMS: loadOwners()
+    Note over DPMS: systemReady(phase) dispatches every phase
+    DPMS->>DPMS: onLockSettingsReady() + loadAdminDataAsync()
 
     SS->>DPMS: onBootPhase(PHASE_ACTIVITY_MANAGER_READY)
-    DPMS->>DPMS: systemReady()
-    Note over DPMS: Register broadcast receivers, load policies for all users
+    DPMS->>Engine: reapplyAllPoliciesOnBootLocked()
+    DPMS->>DPMS: migrate pre-engine policies if needed
 
     SS->>DPMS: onBootPhase(PHASE_BOOT_COMPLETED)
     DPMS->>DPMS: factoryResetIfDelayedEarlier()
@@ -456,7 +466,7 @@ Upon `PHASE_BOOT_COMPLETED`, the service handles any delayed factory resets
 and ensures the Device Owner user is started:
 
 ```java
-// DevicePolicyManagerService.java, onBootPhase()
+// DevicePolicyManagerService.java, systemReady(int phase)
 case SystemService.PHASE_BOOT_COMPLETED:
     // Ideally it should be done earlier, but currently it relies on
     // RecoverySystem, which would hang on earlier phases
@@ -528,10 +538,10 @@ policy state for that admin:
 // frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/ActiveAdmin.java
 class ActiveAdmin {
     DeviceAdminInfo info;
-    PasswordPolicy passwordPolicy;
+    PasswordPolicy mPasswordPolicy;
     boolean disableCamera;
     boolean disableScreenCapture;
-    boolean disableCallerIdAccess;
+    boolean disableCallerId;
     boolean disableContactsSearch;
     boolean disableBluetoothContactSharing;
     int disabledKeyguardFeatures;
@@ -655,19 +665,20 @@ conflicting values from multiple admins are reconciled:
 ```java
 // frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/
 //   PolicyDefinition.java
-private static final MostRestrictive<Boolean> FALSE_MORE_RESTRICTIVE =
+public static final MostRestrictive<Boolean> FALSE_MORE_RESTRICTIVE =
     new MostRestrictive<>(
         List.of(new BooleanPolicyValue(false), new BooleanPolicyValue(true)));
 
-private static final MostRestrictive<Boolean> TRUE_MORE_RESTRICTIVE =
+static final MostRestrictive<Boolean> TRUE_MORE_RESTRICTIVE =
     new MostRestrictive<>(
         List.of(new BooleanPolicyValue(true), new BooleanPolicyValue(false)));
 ```
 
 Every resolution mechanism subclasses the abstract `ResolutionMechanism<V>`.
-The Android 17 tree ships seven concrete mechanisms (all in the
-`com.android.server.devicepolicy` package), with `LeastRecent` and `ListUnion`
-added in this release:
+The Android 17 tree ships eight subclasses (all in the
+`com.android.server.devicepolicy` package) -- seven concrete plus the abstract
+`ListUnion<T>`, which is instantiated through its STRING and PACKAGE variants --
+with `LeastRecent` and `ListUnion` added in this release:
 
 | Mechanism | Source file | Description | Example Policy |
 |-----------|-------------|-------------|----------------|
@@ -676,8 +687,9 @@ added in this release:
 | `MostRecent<V>` | `MostRecent.java` | The most recently set value wins | Per-admin settings without a strict ordering |
 | `LeastRecent<V>` | `LeastRecent.java` | The earliest set value wins (new in 17) | First-writer-wins policies |
 | `PackageSetUnion` | `PackageSetUnion.java` | Union of all admins' package sets | User-control disabled packages |
-| `ListUnion<T>` | `ListUnion.java` | Union of all admins' list values (new in 17) | Permitted-input-method style lists |
+| `ListUnion<T>` | `ListUnion.java` | Union of all admins' list values (abstract, new in 17) | Permitted-input-method style lists |
 | `FlagUnion` | `FlagUnion.java` | Bitwise OR of all admins' integer flags | Keyguard feature disable flags |
+| `StringSetIntersection` | `StringSetIntersection.java` | Intersection of all admins' string sets | Cross-profile widget providers |
 
 Example: Security logging is resolved with `TRUE_MORE_RESTRICTIVE`, meaning
 if any admin enables security logging, it stays enabled:
@@ -698,11 +710,11 @@ Each `PolicyDefinition` carries flags that control its scope and behavior:
 
 ```java
 // PolicyDefinition.java
-private static final int POLICY_FLAG_NONE = 0;
-private static final int POLICY_FLAG_GLOBAL_ONLY_POLICY = 1;
-private static final int POLICY_FLAG_LOCAL_ONLY_POLICY = 1 << 1;
-private static final int POLICY_FLAG_INHERITABLE = 1 << 2;
-private static final int POLICY_FLAG_NON_COEXISTABLE_POLICY = 1 << 3;
+static final int POLICY_FLAG_NONE = 0;
+public static final int POLICY_FLAG_GLOBAL_ONLY_POLICY = 1;
+public static final int POLICY_FLAG_LOCAL_ONLY_POLICY = 1 << 1;
+static final int POLICY_FLAG_INHERITABLE = 1 << 2;
+static final int POLICY_FLAG_NON_COEXISTABLE_POLICY = 1 << 3;
 static final int POLICY_FLAG_USER_RESTRICTION_POLICY = 1 << 4;
 static final int POLICY_FLAG_SKIP_ENFORCEMENT_IF_UNCHANGED = 1 << 5;
 private static final int POLICY_FLAG_PACKAGE_POLICY = 1 << 6;
@@ -715,8 +727,9 @@ private static final int POLICY_FLAG_PACKAGE_POLICY = 1 << 6;
 - **USER_RESTRICTION**: marks user-restriction policies for special handling.
 - **SKIP_ENFORCEMENT_IF_UNCHANGED**: skips the enforcer callback when the
   resolved value did not change, avoiding redundant downstream work.
-- **PACKAGE_POLICY**: marks policies keyed by a package identifier so the
-  engine can clean them up when the package is removed.
+- **PACKAGE_POLICY**: marks package-scoped policies whose enforcement callback
+  only takes effect on installed packages; the callback is re-applied when the
+  package is (re)installed.
 
 ### 61.2.10  EnforcingAdmin: Admin Identity in the Policy Engine
 
@@ -993,7 +1006,9 @@ in-process cache for common queries:
 ```java
 // frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/
 //   DevicePolicyCacheImpl.java
-// Caches: screen capture disabled, camera disabled, password complexity, etc.
+// Caches: screen-capture-disallowed users, password quality, permission
+// policy, launcher shortcut overrides, sensors-permission grant, and
+// content protection policy
 ```
 
 When ownership changes, the cache is explicitly invalidated:
@@ -1131,13 +1146,14 @@ status codes reveal what can go wrong:
 ```java
 // DevicePolicyManager.java
 public static final int STATUS_OK = 0;
-public static final int STATUS_ACCOUNTS_NOT_EMPTY = 3;
-public static final int STATUS_CANNOT_ADD_MANAGED_PROFILE = 7;
 public static final int STATUS_HAS_DEVICE_OWNER = 1;
 public static final int STATUS_USER_HAS_PROFILE_OWNER = 2;
+public static final int STATUS_USER_NOT_RUNNING = 3;
 public static final int STATUS_USER_SETUP_COMPLETED = 4;
-public static final int STATUS_MANAGED_USERS_NOT_SUPPORTED = 8;
-public static final int STATUS_NOT_SYSTEM_USER = 9;
+public static final int STATUS_ACCOUNTS_NOT_EMPTY = 6;
+public static final int STATUS_NOT_SYSTEM_USER = 7;
+public static final int STATUS_MANAGED_USERS_NOT_SUPPORTED = 9;
+public static final int STATUS_CANNOT_ADD_MANAGED_PROFILE = 11;
 // ... and more
 ```
 
@@ -1172,8 +1188,8 @@ graph LR
     end
 
     subgraph "Cross-Profile Filter"
-        F1["ACTION_DIAL<br/>FLAG_PARENT_CAN_ACCESS_MANAGED"]
-        F2["ACTION_VIEW (http)<br/>FLAG_MANAGED_CAN_ACCESS_PARENT"]
+        F1["ACTION_DIAL<br/>FLAG_MANAGED_CAN_ACCESS_PARENT"]
+        F2["ACTION_VIEW (http)<br/>FLAG_PARENT_CAN_ACCESS_MANAGED"]
     end
 
     subgraph "Work Profile"
@@ -1477,14 +1493,18 @@ The complexity bands map to concrete requirements:
 | Complexity | PIN | Pattern | Password |
 |-----------|-----|---------|----------|
 | LOW | 4+ digits | any | 4+ chars |
-| MEDIUM | 4+ digits, no repeating/ordered | any | 4+ chars |
-| HIGH | 8+ digits, no repeating/ordered | N/A | 6+ chars with letter+digit |
+| MEDIUM | 4+ digits, no repeating/ordered | N/A | 4+ chars |
+| HIGH | 8+ digits, no repeating/ordered | N/A | 6+ chars incl. a non-numeric char |
+
+A pattern only ever satisfies LOW (`PasswordMetrics` allows the pattern
+credential type in the LOW and NONE buckets only), and the HIGH minimum length
+is 6 when the credential contains any non-numeric character, 8 otherwise.
 
 The `ActiveAdmin` class stores the password policy in a dedicated object:
 
 ```java
 // ActiveAdmin.java
-PasswordPolicy passwordPolicy = new PasswordPolicy();
+PasswordPolicy mPasswordPolicy = new PasswordPolicy();
 // Fields include: quality, length, uppercase, lowercase,
 // letters, numeric, symbols, nonletter, history length
 ```
@@ -1580,8 +1600,8 @@ graph TD
     A1[Admin A: camera=disabled] --> ENGINE["Policy Engine<br/>MostRestrictive"]
     A2[Admin B: camera=enabled] --> ENGINE
     ENGINE --> RESULT[Resolved: camera=DISABLED]
-    RESULT --> CACHE[DevicePolicyCache]
-    CACHE --> CAMERA[CameraService checks cache]
+    RESULT --> RESTR["Applied as UserManager.DISALLOW_CAMERA<br/>via PolicyEnforcerCallbacks.setUserRestriction"]
+    RESTR --> CAMERA["Camera stack queries DPMS<br/>getCameraDisabled()"]
 ```
 
 ### 61.4.9  Screen Capture Disable
@@ -1634,8 +1654,12 @@ public static final int WIPE_SILENTLY = 0x0008;
 The DPMS implementation delegates to a `FactoryResetter`:
 
 ```java
-// DevicePolicyManagerService.java (Injector inner class)
-.build().factoryReset();
+// DevicePolicyManagerService.java, factoryResetIfDelayedEarlier()
+FactoryResetter factoryResetter = FactoryResetter.newBuilder(mContext)
+        .setReason(policy.mFactoryResetReason).setForce(true)
+        // ... wipe flags from the persisted DevicePolicyData
+        .build();
+factoryResetter.factoryReset();
 ```
 
 Factory reset can be delayed if the system is not fully booted:
@@ -1827,7 +1851,7 @@ The policy engine handles user restrictions specially:
 
 ```java
 // PolicyDefinition.java
-private static final int POLICY_FLAG_USER_RESTRICTION_POLICY = 1 << 4;
+static final int POLICY_FLAG_USER_RESTRICTION_POLICY = 1 << 4;
 // "Add this flag to any policy that is a user restriction, the reason for
 //  this is that there are some special APIs to handle user restriction
 //  policies and this is the way we can identify them."
@@ -2081,15 +2105,23 @@ graph TB
 
     subgraph "DevicePolicyManagerService"
         DPMS_PROV["provisionFullyManagedDevice()"]
+        DPMS_SHELL["setActiveAdmin() +<br/>setDeviceOwner()"]
     end
 
     QR --> MP
     NFC --> MP
     ZTE --> MP
-    ADB --> DPMS_PROV
+    ADB --> DPMS_SHELL
     CLOUD --> MP
     MP --> DPMS_PROV
 ```
+
+The `dpm set-device-owner` shell command does not go through
+`provisionFullyManagedDevice()` -- its handler in
+`DevicePolicyManagerServiceShellCommand.runSetDeviceOwner()` calls
+`setActiveAdmin()` followed by `setDeviceOwner()` directly.
+`provisionFullyManagedDevice()` is the entry point used by the
+ManagedProvisioning system app.
 
 The provisioning intents:
 
@@ -2120,9 +2152,10 @@ A Device Owner has the broadest set of capabilities:
 
 ### 61.6.4  COPE Architecture
 
-COPE combines Device Owner authority on the personal side with Profile Owner
-authority in the work profile.  The key distinction is the
-`mOrganizationOwnedProvisioning` flag:
+COPE has no Device Owner.  Instead, the work-profile Profile Owner is flagged
+as the profile owner of an organization-owned device, which grants it a limited
+set of device-wide powers over the personal side.  The key distinction at
+provisioning time is the `mOrganizationOwnedProvisioning` flag:
 
 ```java
 // ManagedProfileProvisioningParams.java
@@ -2211,9 +2244,10 @@ Four update strategies:
 - **Freeze periods** -- block updates entirely during specified date ranges.
 
 ```java
-// DevicePolicyManager.java
-// FreezePeriod allows blocking updates (e.g., during holiday sales)
-import android.app.admin.FreezePeriod;
+// frameworks/base/core/java/android/app/admin/FreezePeriod.java
+// A FreezePeriod is a repeating date range during which updates are
+// blocked (e.g., during holiday sales); the admin installs them via
+// SystemUpdatePolicy.setFreezePeriods(List<FreezePeriod>)
 ```
 
 ### 61.6.8  Always-On VPN
@@ -2286,10 +2320,10 @@ The flags control direction:
 ```java
 // DevicePolicyManager.java
 public static final int FLAG_PARENT_CAN_ACCESS_MANAGED = 0x0001;
-// Personal apps can resolve intents to work apps
+// Intents sent from the work profile can resolve to personal (parent) apps
 
 public static final int FLAG_MANAGED_CAN_ACCESS_PARENT = 0x0002;
-// Work apps can resolve intents to personal apps
+// Intents sent from the personal (parent) profile can resolve to work apps
 ```
 
 ### 61.7.3  Default Cross-Profile Intent Filters
@@ -2366,7 +2400,7 @@ graph LR
     end
 
     subgraph "Policy Controls"
-        CID["disableCallerIdAccess<br/>(per admin)"]
+        CID["disableCallerId<br/>(per admin)"]
         CS["disableContactsSearch<br/>(per admin)"]
         BCS["disableBluetoothContactSharing<br/>(per admin)"]
     end
@@ -2511,17 +2545,19 @@ sequenceDiagram
     participant DPMS as DevicePolicyManagerService
     participant WA as Work App
 
+    Note over DPMS,PMS: At policy-set time
+    DPMS->>PMS: addCrossProfileIntentFilter(filter,<br/>sourceUser, targetUser)
+    PMS->>PMS: Store in per-user<br/>CrossProfileIntentResolver
+
+    Note over PA,PMS: At startActivity time -- PMS never calls DPMS
     PA->>AMS: startActivity(intent)
     AMS->>PMS: resolveActivity(intent, userId=0)
 
     PMS->>PMS: Check local resolvers<br/>(personal profile)
 
-    PMS->>DPMS: getCrossProfileIntentFilters()
-    DPMS-->>PMS: List of IntentFilters
+    PMS->>PMS: CrossProfileIntentResolverEngine<br/>matches stored filters
 
-    PMS->>PMS: Match intent against<br/>cross-profile filters
-
-    alt Match found with FLAG_MANAGED_CAN_ACCESS_PARENT
+    alt Filter added with FLAG_MANAGED_CAN_ACCESS_PARENT
         PMS->>PMS: Resolve in work profile (userId=10)
         PMS-->>AMS: ResolveInfo (work app)
         AMS->>WA: Start activity in work profile
@@ -2976,7 +3012,8 @@ public static final int PRIVATE_DNS_MODE_PROVIDER_HOSTNAME = 3;
 public static final int PRIVATE_DNS_MODE_UNKNOWN = 0;
 
 public static final int PRIVATE_DNS_SET_NO_ERROR = 0;
-public static final int PRIVATE_DNS_SET_ERROR_FAILURE_SETTING = 1;
+public static final int PRIVATE_DNS_SET_ERROR_HOST_NOT_SERVING = 1;
+public static final int PRIVATE_DNS_SET_ERROR_FAILURE_SETTING = 2;
 ```
 
 ### 61.8.19  Preferential Network Service
@@ -3220,7 +3257,7 @@ graph LR
     G2_HOOK -- "addUserRestrictionGlobally<br/>(system:, DISALLOW_CELLULAR_2G)" --> DPMS
     USB_HOOK -- "enableUsbDataSignal<br/>(keyguard-gated)" --> USB["IUsbManagerInternal<br/>USB data signaling"]
 
-    DPMS --> ENGINE["DevicePolicyEngine<br/>(MostRestrictive resolve)"]
+    DPMS --> ENGINE["DevicePolicyEngine<br/>MostRestrictive for user restrictions<br/>TopPriority for MEMORY_TAGGING"]
 ```
 
 A subtle but important rule: a DPC cannot silently undo AAPM.  Because the user
@@ -3524,18 +3561,25 @@ adb shell cat /data/system/users/10/device_policies.xml
 # List packages in the work profile
 adb shell pm list packages --user 10
 
-# Check cross-profile intent filters
-adb shell dumpsys package intent-filter-verifications
+# Check cross-profile intent filters (search the full package dump;
+# there is no dedicated dumpsys argument for them)
+adb shell dumpsys package | grep -A 5 "CrossProfileIntentFilter"
 
-# Toggle work mode
-adb shell am broadcast -a android.intent.action.MANAGED_PROFILE_UNAVAILABLE \
-    --user 0
+# Toggle work mode: quiet mode is requested through
+# UserManager.requestQuietModeEnabled() (normally by the launcher).
+# ACTION_MANAGED_PROFILE_UNAVAILABLE is a protected broadcast the system
+# sends AFTER quiet mode changes -- adb cannot broadcast it. From the
+# shell, stopping/starting the profile user has a similar effect:
+adb shell am stop-user 10
+adb shell am start-user 10
 ```
 
 ### 61.9.6  Exercise 6: Explore Managed Configurations
 
 ```bash
-# Set app restrictions for a package in the work profile
+# Query the Settings.System device_provisioned flag
+# (app restrictions themselves can only be set through
+#  DevicePolicyManager.setApplicationRestrictions from a DPC)
 adb shell content call \
     --uri content://com.android.providers.settings \
     --method GET_system \
@@ -3803,11 +3847,11 @@ filter.addDataScheme("https");
 
 // Allow personal apps to open links in work browser
 dpm.addCrossProfileIntentFilter(admin, filter,
-    DevicePolicyManager.FLAG_PARENT_CAN_ACCESS_MANAGED);
+    DevicePolicyManager.FLAG_MANAGED_CAN_ACCESS_PARENT);
 
 // Allow work apps to open links in personal browser
 dpm.addCrossProfileIntentFilter(admin, filter,
-    DevicePolicyManager.FLAG_MANAGED_CAN_ACCESS_PARENT);
+    DevicePolicyManager.FLAG_PARENT_CAN_ACCESS_MANAGED);
 ```
 
 ### 61.9.14  Exercise 14: Implement Password Complexity Enforcement
@@ -3947,7 +3991,7 @@ For further exploration, here are the critical source files:
 | `frameworks/base/core/java/android/app/admin/DeviceAdminReceiver.java` | Admin callback interface |
 | `frameworks/base/core/java/android/app/admin/DeviceAdminInfo.java` | Admin metadata parsing |
 | `frameworks/base/core/java/android/app/admin/IDevicePolicyManager.aidl` | Binder interface |
-| `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyManagerService.java` | Service implementation (25,000+ lines) |
+| `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyManagerService.java` | Service implementation (~24,000 lines) |
 | `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyEngine.java` | Multi-admin policy resolution |
 | `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/PolicyDefinition.java` | Policy definitions and resolution mechanisms |
 | `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/ActiveAdmin.java` | Per-admin policy state |
@@ -3983,9 +4027,10 @@ Here are the key architectural insights:
    subsystems of policy changes.
 
 3. **The DevicePolicyEngine** (introduced in Android 14) brings formal
-   multi-admin policy resolution.  Android 17 ships seven resolution strategies
+   multi-admin policy resolution.  Android 17 ships eight resolution strategies
    -- `MostRestrictive`, `TopPriority`, `MostRecent`, `LeastRecent`,
-   `PackageSetUnion`, `ListUnion`, and `FlagUnion` -- and four admin authority
+   `PackageSetUnion`, `ListUnion`, `FlagUnion`, and `StringSetIntersection` --
+   and four admin authority
    kinds (`enterprise`, `device_admin`, `role:`, and the newer `system:`).  This
    lets DPC admins, role-based admins, legacy device admins, and trusted system
    services such as Advanced Protection Mode coexist on the same policies.

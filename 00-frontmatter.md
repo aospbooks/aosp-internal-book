@@ -550,7 +550,7 @@ notation `(simplified)`:
 private void handleBindApplication(AppBindData data) {
     Application app = data.info.makeApplicationInner(data.restrictedBackupMode, null);
     mInitialApplication = app;
-    app.onCreate();
+    mInstrumentation.callApplicationOnCreate(app);
 }
 ```
 
@@ -562,8 +562,8 @@ They are formatted as inline code when referenced in running text:
 
 When a specific line number is relevant, it is appended after a colon:
 
-> See `frameworks/base/services/core/java/com/android/server/wm/WindowState.java:1247`
-> for the frame computation logic.
+> See `frameworks/base/services/core/java/com/android/server/wm/DisplayPolicy.java:1490`
+> for the `layoutWindowLw()` frame computation logic.
 
 Line numbers correspond to the source tree baseline stated in the copyright
 section. They are included only when the specific line is important for
@@ -592,18 +592,20 @@ the order of operations across components:
 ```mermaid
 sequenceDiagram
     participant App
-    participant AMS as ActivityManagerService
     participant ATMS as ActivityTaskManagerService
     participant AS as ActivityStarter
     participant ATS as ActivityTaskSupervisor
+    participant AMS as ActivityManagerService
     participant Zygote
 
-    App->>AMS: startActivity()
-    AMS->>ATMS: startActivityAsUser()
+    App->>ATMS: startActivity()
+    ATMS->>ATMS: startActivityAsUser()
     ATMS->>AS: obtainStarter().execute()
     AS->>ATS: resolveIntent()
-    ATMS->>Zygote: fork new process
-    Zygote-->>ATMS: process started
+    ATS->>ATMS: startProcessAsync()
+    ATMS->>AMS: startProcess()
+    AMS->>Zygote: fork new process
+    Zygote-->>AMS: process started
     ATMS-->>App: result
 ```
 
@@ -689,7 +691,7 @@ referenced components:
 | **BQ** | `BufferQueue` |
 | **DMS** | `DisplayManagerService` |
 | **IMS** | `InputManagerService` |
-| **NBS** | `NativeBridgeService` |
+| **NBS** | `native_bridge_support` (the `frameworks/libs/native_bridge_support` project) |
 
 ### Admonitions
 
@@ -721,7 +723,7 @@ root commands. Output is shown without a prompt:
 ```bash
 $ adb shell dumpsys window displays
 Display: mDisplayId=0
-  init=1080x2400 base=1080x2400 cur=1080x2400 app=1080x2244 rng=1080x1017-2400x2337
+  init=1080x2400 420dpi mMinSizeOfResizeableTaskDp=220 cur=1080x2400 app=1080x2244 rng=1080x1017-2400x2337
 ```
 
 Multi-line commands use backslash continuation:
@@ -742,7 +744,7 @@ $ lunch aosp_cf_x86_64_phone-trunk_staging-userdebug
 ```
 
 When architecture-specific behavior is discussed (particularly in Chapters
-19, 54, and 57), the relevant target is stated explicitly. The three primary
+19, 59, and 60), the relevant target is stated explicitly. The three primary
 architecture targets referenced are:
 
 - `aosp_cf_x86_64_phone-trunk_staging-userdebug` -- x86_64, primary development target
@@ -761,13 +763,13 @@ manageable:
 | `frameworks/base/` | Core framework: services, core libraries, UI toolkit |
 | `frameworks/native/` | Native framework: Binder, SurfaceFlinger, sensor service |
 | `frameworks/libs/` | Framework libraries: binary translation, native bridge support |
-| `system/core/` | Core system: init, adb, logd, libcutils |
+| `system/core/` | Core system: init, property service, libcutils, libutils, debuggerd |
 | `art/` | Android Runtime: compiler, garbage collector, interpreter |
 | `bionic/` | C library, dynamic linker, math library |
-| `packages/` | System applications: Settings, SystemUI, Launcher3 |
+| `packages/` | System applications: Settings, Launcher3, Contacts; Mainline modules under `packages/modules/` |
 | `hardware/interfaces/` | AIDL/HIDL HAL interface definitions |
 | `build/` | Build system: Soong, Make, Kati integration |
-| `kernel/` | Kernel sources and prebuilts |
+| `kernel/` | Kernel prebuilts, configs, and tests (kernel sources live in a separate manifest) |
 | `external/` | Third-party libraries and tools |
 
 **Use Android Code Search.** The online tool at `cs.android.com` provides

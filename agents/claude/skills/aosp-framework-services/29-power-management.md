@@ -151,7 +151,7 @@ The core of `PowerManagerService` is the `updatePowerStateLocked()` method. It r
 in a multi-phase loop each time any power-related state changes:
 
 ```java
-// PowerManagerService.java, line 2689
+// PowerManagerService.java, line 2799
 private void updatePowerStateLocked() {
     if (!mSystemReady || mDirty == 0 || mUpdatePowerStateInProgress) {
         return;
@@ -272,7 +272,7 @@ The `goToSleepInternal()` method iterates through power groups in reverse order
 so that non-default groups transition before the default group:
 
 ```java
-// PowerManagerService.java, line 7561
+// PowerManagerService.java, line 7805
 private void goToSleepInternal(IntArray groupIds, long eventTime,
         int reason, int flags) {
     // ...
@@ -308,7 +308,7 @@ Each `PowerGroup` implements the actual wakefulness state transitions. The
 `wakePowerGroupLocked()` method handles waking:
 
 ```java
-// PowerManagerService.java, line 2315
+// PowerManagerService.java, line 2412
 private void wakePowerGroupLocked(final PowerGroup powerGroup, long eventTime,
         @WakeReason int reason, String details, int uid,
         String opPackageName, int opUid) {
@@ -327,7 +327,7 @@ the default group has adjacent display groups that are still interactive,
 the default group sleeps instead of dozing:
 
 ```java
-// PowerManagerService.java, line 2363
+// PowerManagerService.java, line 2471
 private boolean dozePowerGroupLocked(final PowerGroup powerGroup,
         long eventTime, @GoToSleepReason int reason, int uid,
         boolean allowSleepToDozeTransition) {
@@ -338,7 +338,8 @@ private boolean dozePowerGroupLocked(final PowerGroup powerGroup,
     // the default group sleeps instead of dozing
     if (com.android.server.display.feature.flags.Flags.separateTimeouts()) {
         boolean shouldSleep =
-            (isDefaultAdjacentGroupInteractiveLocked())
+            (isDefaultAdjacentGroupInteractiveLocked()
+                && !com.android.server.power.feature.flags.Flags.tapToWakeCd())
             || (powerGroup.getWakefulnessLocked() == WAKEFULNESS_ASLEEP
                 && !doAnyAdjacentGroupsExistLocked());
         if (shouldSleep && powerGroup.isDefaultOrAdjacentGroup()) {
@@ -585,11 +586,14 @@ to trigger another round of power state evaluation.
 ### 29.2.7 The Notifier
 
 The `Notifier` class handles broadcasting power state changes to the rest of the
-system. It sends broadcasts like:
+system. It sends the `ACTION_SCREEN_ON` / `ACTION_SCREEN_OFF` broadcasts and
+delivers wakefulness and wake lock notifications to `BatteryStats` and the
+window manager policy. Two related broadcasts come from elsewhere --
+`PowerManagerService` only listens for them:
 
-- `ACTION_SCREEN_ON` / `ACTION_SCREEN_OFF`
-- `ACTION_DREAMING_STARTED` / `ACTION_DREAMING_STOPPED`
-- `ACTION_DEVICE_IDLE_MODE_CHANGED`
+- `ACTION_DREAMING_STARTED` / `ACTION_DREAMING_STOPPED` are sent by
+  `DreamController` (`frameworks/base/services/core/java/com/android/server/dreams/DreamController.java`)
+- `ACTION_DEVICE_IDLE_MODE_CHANGED` is sent by `DeviceIdleController`
 
 The Notifier runs on the main looper (not the power manager handler thread) to
 avoid interference with critical power management timing:
@@ -733,21 +737,32 @@ to detect when the device is placed face-down. When detected, the screen
 timeout is shortened:
 
 ```java
-// PowerManagerService.java, line 1333
+// PowerManagerService.java, line 1374
 private void onFlip(boolean isFaceDown) {
+    long millisUntilNormalTimeout = 0;
+    final long currentTime = mClock.uptimeMillis();
     synchronized (mLock) {
+        // ...
         mIsFaceDown = isFaceDown;
         if (isFaceDown) {
-            final long currentTime = mClock.uptimeMillis();
             mLastFlipTime = currentTime;
-            // Trigger user activity to start the shorter timeout
-            userActivityInternal(Display.DEFAULT_DISPLAY, currentTime,
-                    PowerManager.USER_ACTIVITY_EVENT_FACE_DOWN,
-                    PowerManager.USER_ACTIVITY_FLAG_NO_CHANGE_LIGHTS,
-                    Process.SYSTEM_UID);
+            final long sleepTimeout =
+                    mScreenTimeoutConstants.getSleepTimeoutLocked(-1);
+            final long screenOffTimeout =
+                    getScreenOffTimeoutLocked(sleepTimeout, -1L);
+            final PowerGroup powerGroup =
+                    mPowerGroups.get(Display.DEFAULT_DISPLAY_GROUP);
+            millisUntilNormalTimeout =
+                    powerGroup.getLastUserActivityTimeLocked()
+                    + screenOffTimeout - currentTime;
         }
     }
     if (isFaceDown) {
+        // Trigger user activity to start the shorter timeout
+        userActivityInternal(Display.DEFAULT_DISPLAY, currentTime,
+                PowerManager.USER_ACTIVITY_EVENT_FACE_DOWN,
+                PowerManager.USER_ACTIVITY_FLAG_NO_CHANGE_LIGHTS,
+                Process.SYSTEM_UID);
         mFaceDownDetector.setMillisSaved(millisUntilNormalTimeout);
     }
 }
@@ -831,7 +846,11 @@ public static final int ON_AFTER_RELEASE = 0x20000000;
 ```
 
 - **`ACQUIRE_CAUSES_WAKEUP`** -- Acquiring the wake lock also turns on the screen.
-  Apps targeting Android V+ must hold the `TURN_SCREEN_ON` permission.
+  A `TURN_SCREEN_ON` permission requirement is gated behind the
+  `REQUIRE_TURN_SCREEN_ON_PERMISSION` compat change, currently marked
+  `@EnabledSince(CUR_DEVELOPMENT)`, so it applies to apps targeting the
+  in-development SDK (and can be waived per form factor via the
+  `waive_target_sdk_check_for_turn_screen_on()` power property).
 - **`ON_AFTER_RELEASE`** -- When the wake lock is released, poke user activity to
   keep the screen on a bit longer.
 
@@ -841,7 +860,7 @@ Inside `PowerManagerService`, each acquired wake lock is tracked by a `WakeLock`
 object:
 
 ```java
-// PowerManagerService.java, line 5704
+// PowerManagerService.java, line 5937
 /* package */ final class WakeLock implements IBinder.DeathRecipient,
         IBinder.FrozenStateChangeCallback {
     public final IBinder mLock;
@@ -916,7 +935,7 @@ sequenceDiagram
 The internal acquisition in `PowerManagerService`:
 
 ```java
-// PowerManagerService.java, line 1676
+// PowerManagerService.java, line 1740
 private void acquireWakeLockInternal(IBinder lock, int displayId, int flags,
         String tag, String packageName, WorkSource ws, String historyTag,
         int uid, int pid, @Nullable IWakeLockCallback callback) {
@@ -965,8 +984,10 @@ Key points:
 - Wake locks are identified by their `IBinder` token, not by tag
 - If a wake lock with the same token already exists, its properties are updated
 - `UidState` tracks per-UID wake lock counts
-- `setWakeLockDisabledStateLocked()` may disable the lock if the UID is in
-  device idle whitelist, low power standby, or the process is cached
+- `setWakeLockDisabledStateLocked()` may disable the lock if the device is
+  idling and the UID is *not* on the device idle whitelist or temp whitelist,
+  if low power standby is active and the UID is *not* on the low power standby
+  allowlist, or if the process is cached or frozen
 
 ### 29.3.5 Wake Lock Disabling
 
@@ -1031,7 +1052,7 @@ Optimizations include:
 the display:
 
 ```java
-// PowerManagerService.java, line 1748
+// PowerManagerService.java, line 1819
 public static boolean isScreenLock(int flags) {
     switch (flags & PowerManager.WAKE_LOCK_LEVEL_MASK) {
         case PowerManager.FULL_WAKE_LOCK:
@@ -1222,24 +1243,27 @@ stateDiagram-v2
     STATE_INACTIVE --> STATE_QUICK_DOZE_DELAY : Quick Doze enabled
 
     STATE_IDLE_PENDING --> STATE_SENSING : Timer expires
-    STATE_IDLE_PENDING --> STATE_ACTIVE : Motion detected
+    STATE_IDLE_PENDING --> STATE_ACTIVE
 
     STATE_SENSING --> STATE_LOCATING : No motion detected
-    STATE_SENSING --> STATE_ACTIVE : Motion detected
-    STATE_SENSING --> STATE_IDLE : No location providers
+    STATE_SENSING --> STATE_ACTIVE
 
     STATE_LOCATING --> STATE_IDLE : Location obtained or timeout
-    STATE_LOCATING --> STATE_ACTIVE : Motion detected
+    STATE_LOCATING --> STATE_ACTIVE
 
     STATE_QUICK_DOZE_DELAY --> STATE_IDLE : Timer expires
-    STATE_QUICK_DOZE_DELAY --> STATE_ACTIVE : Motion detected
+    STATE_QUICK_DOZE_DELAY --> STATE_ACTIVE
 
     STATE_IDLE --> STATE_IDLE_MAINTENANCE : Maintenance window
-    STATE_IDLE --> STATE_ACTIVE : Motion detected
+    STATE_IDLE --> STATE_ACTIVE
 
     STATE_IDLE_MAINTENANCE --> STATE_IDLE : Maintenance complete
-    STATE_IDLE_MAINTENANCE --> STATE_ACTIVE : Motion detected
+    STATE_IDLE_MAINTENANCE --> STATE_ACTIVE
 ```
+
+Every unlabeled edge back to `STATE_ACTIVE` is significant motion detected;
+that check applies from each state past `INACTIVE`. `STATE_LOCATING` also
+falls through to `STATE_IDLE` when no location provider is available.
 
 The progression is:
 
@@ -1329,7 +1353,7 @@ The `stepIdleStateLocked()` method is the core of the deep doze state machine.
 It advances the state one step at a time:
 
 ```java
-// DeviceIdleController.java, line 3894
+// DeviceIdleController.java, line 3957
 void stepIdleStateLocked(String reason) {
     // Safety: abort if in emergency call
     if (mEmergencyCallListener.isEmergencyCallActive()) {
@@ -1552,8 +1576,10 @@ during TV input sessions:
 ```
 frameworks/base/apex/jobscheduler/service/java/com/android/server/deviceidle/
     TvConstraintController.java
-    ConstraintController.java
     DeviceIdleConstraintTracker.java
+    BluetoothConstraint.java
+frameworks/base/apex/jobscheduler/framework/java/com/android/server/deviceidle/
+    ConstraintController.java
     IDeviceIdleConstraint.java
 ```
 
@@ -1597,7 +1623,7 @@ Both `AlarmManager` and `JobScheduler` listen for doze state changes:
 
 ```mermaid
 flowchart TD
-    DIC["DeviceIdleController\nenterStateIdleLocked()"] --> AM["AlarmManagerInternal\nsetDeviceIdleMode(true)"]
+    DIC["DeviceIdleController\nstepIdleStateLocked()"] --> AM["AlarmManagerService\nidle-until alarm via setIdleUntil()"]
     DIC --> JS["JobSchedulerService\nDeviceIdleJobsController"]
     DIC --> NP["NetworkPolicyManager\nblock background network"]
 
@@ -1832,16 +1858,22 @@ sequenceDiagram
 ### 29.5.12 Timeout-Based Demotion
 
 When an app has not been used for a configurable duration, it is demoted to the
-next lower bucket. The typical timeout schedule:
+next lower bucket. The default thresholds
+(`DEFAULT_ELAPSED_TIME_THRESHOLDS` in `AppStandbyController.java`) are
+measured as elapsed time since the app was last used, not as per-hop
+increments:
 
-| From Bucket | Timeout to Next | Demoted To |
-|-------------|----------------|------------|
+| From Bucket | Elapsed Time Since Last Use | Demoted To |
+|-------------|----------------------------|------------|
 | ACTIVE | 12 hours | WORKING_SET |
-| WORKING_SET | 2 days | FREQUENT |
-| FREQUENT | 8 days | RARE |
-| RARE | 30 days | RESTRICTED |
+| WORKING_SET | 24 hours | FREQUENT |
+| FREQUENT | 48 hours | RARE |
+| RARE | 8 days | RESTRICTED |
 
-These timeouts are configurable via `DeviceConfig` and may vary by device.
+A parallel set of screen-on-time thresholds
+(`DEFAULT_SCREEN_TIME_THRESHOLDS`: 1, 2, and 6 hours) must also be met
+before demotion. These timeouts are configurable via `DeviceConfig` and may
+vary by device.
 
 ### 29.5.13 Cross-Profile Support
 
@@ -2035,9 +2067,11 @@ flowchart TD
 ### 29.6.6 Energy Consumers
 
 Modern devices provide hardware-level energy consumption data through the
-`IEnergyConsumer` HAL interface. This provides ground-truth millijoule
-measurements from fuel gauge hardware, rather than estimates based on
-the power profile.
+`IPowerStats` HAL interface
+(`hardware/interfaces/power/stats/aidl/android/hardware/power/stats/IPowerStats.aidl`).
+Its `getEnergyConsumed()` method returns `EnergyConsumerResult` entries
+carrying cumulative energy in microwatt-seconds (`energyUWs`) from on-device
+power rail monitors, rather than estimates based on the power profile.
 
 The `EnergyConsumerPowerStatsCollector` reads these measurements and
 attributes them to UIDs using activity data (CPU time, sensor usage, etc.)
@@ -2143,7 +2177,9 @@ patterns across the device fleet.
 
 Key atoms include:
 
-- `BatteryUsageStatsPerApp` -- Per-app energy consumption
+- `BatteryUsageStatsSinceReset` / `BatteryUsageStatsBeforeReset` -- Per-app
+  energy consumption (carried as `BatteryUsageStatsAtomsProto`, with per-UID
+  entries)
 - `WakelockStateChanged` -- Wake lock acquire/release events
 - `ScreenStateChanged` -- Screen on/off transitions
 - `DeviceIdleModeStateChanged` -- Doze state transitions
@@ -2425,20 +2461,17 @@ private static final String REASON_BATTERY_THERMAL_STATE = "shutdown,thermal,bat
 
 ### 29.7.11 Framework Thermal Actions
 
-When thermal throttling reaches certain severity levels, the framework takes
-automatic actions:
+The framework's own reaction to rising severity is deliberately narrow:
 
 | Severity | Framework Action |
 |----------|-----------------|
-| LIGHT | Log event, notify listeners |
-| MODERATE | Reduce background work, log warning |
-| SEVERE | Reduce screen brightness, limit CPU-intensive operations |
-| CRITICAL | Aggressive throttling, kill background processes |
-| EMERGENCY | Force-stop non-essential services |
-| SHUTDOWN | Initiate device shutdown |
+| LIGHT through EMERGENCY | Dispatch status and headroom callbacks to registered listeners; the display stack may clamp screen brightness |
+| SHUTDOWN | `ThermalManagerService.shutdownIfNeeded()` calls `PowerManager.shutdown()` for an orderly device shutdown |
 
-These actions are coordinated between `ThermalManagerService`,
-`PowerManagerService`, and `ActivityManagerService`.
+`ThermalManagerService` itself only notifies listeners and, at
+`THROTTLING_SHUTDOWN`, shuts the device down. All other mitigation --
+CPU/GPU frequency capping, camera or modem limits, and similar throttling --
+happens on the vendor side, below the Thermal HAL (see section 29.7.15).
 
 ### 29.7.12 Thermal HAL Versions
 
@@ -2674,25 +2707,27 @@ The session lifecycle:
 sequenceDiagram
     participant App as Game/Media App
     participant PM as PerformanceHintManager
-    participant PMS as PowerManagerService
+    participant HMS as HintManagerService
     participant HAL as IPower HAL
     participant SCHED as CPU Scheduler
 
     App->>PM: createHintSession(threadIds, targetDuration)
-    PM->>PMS: Forward to HAL
-    PMS->>HAL: createHintSession(tgid, uid, threadIds, duration)
-    HAL-->>App: IPowerHintSession
+    PM->>HMS: Forward to HintManagerService
+    HMS->>HAL: createHintSession(tgid, uid, threadIds, duration)
+    HMS-->>App: IHintSession
 
     loop Every frame
         App->>App: Do work
         App->>PM: reportActualWorkDuration(duration)
-        PM->>HAL: reportActualWorkDuration(durations[])
+        PM->>HMS: reportActualWorkDuration(durations[])
+        HMS->>HAL: reportActualWorkDuration(durations[])
         HAL->>SCHED: Adjust frequency/placement
         Note over HAL,SCHED: If actual > target: boost<br/>If actual < target: reduce
     end
 
     App->>PM: close()
-    PM->>HAL: close()
+    PM->>HMS: close()
+    HMS->>HAL: close()
 ```
 
 #### Session Hints
@@ -2767,6 +2802,7 @@ enum SessionTag {
     HWUI,
     GAME,
     APP,
+    SYSUI,
 }
 ```
 
@@ -2775,7 +2811,11 @@ Sessions can also have modes set that modify their behavior:
 ```java
 // SessionMode.aidl
 enum SessionMode {
-    POWER_EFFICIENCY,  // Prefer efficiency over performance
+    POWER_EFFICIENCY,   // Prefer efficiency over performance
+    GRAPHICS_PIPELINE,  // Session covers the graphics pipeline
+    AUTO_CPU,           // HAL auto-manages CPU resources
+    AUTO_GPU,           // HAL auto-manages GPU resources
+    AUDIO_PERFORMANCE,  // Session backs latency-sensitive audio work
 }
 ```
 
@@ -2795,6 +2835,7 @@ parcelable WorkDuration {
     long workPeriodStartTimestampNanos;  // When the work period started
     long cpuDurationNanos;     // CPU time consumed
     long gpuDurationNanos;     // GPU time consumed
+    long intendedPresentTimestampNanos;  // When the frame was meant to present
 }
 ```
 
@@ -2846,11 +2887,16 @@ CpuHeadroomResult getCpuHeadroom(in CpuHeadroomParams params);
 GpuHeadroomResult getGpuHeadroom(in GpuHeadroomParams params);
 ```
 
-Headroom is expressed as a value where:
+Headroom is a float in the range [0, 100], or NaN when the result is
+temporarily unavailable:
 
-- **1.0** means the hardware is at full capacity (no headroom)
-- **< 1.0** means there is room for more work
-- **> 1.0** means the hardware is overloaded
+- **0** means no resources were left during the calculation interval (no
+  headroom)
+- **100** means the hardware capacity is fully available
+- **NaN** means the caller should not act on the value yet (e.g. not enough
+  utilization data to compute it)
+
+The value never exceeds 100.
 
 Apps can use these values to dynamically adjust their quality settings:
 
@@ -2867,11 +2913,12 @@ The Power HAL has evolved significantly:
 | `1.0` (HIDL) | Basic `setInteractive()` and `powerHint()` |
 | `1.1` (HIDL) | Added `getSubsystemLowPowerStats()` |
 | `1.2` (HIDL) | Added `powerHintAsync_1_2()` |
-| `1.3` (HIDL) | Added `setMode()` and `setBoost()` |
-| AIDL v1 | Migrated to AIDL, added `createHintSession()` |
-| AIDL v2 | Added `SessionHint`, `SessionMode` |
-| AIDL v3 | Added FMQ channels, `createHintSessionWithConfig()` |
-| AIDL v4 | Added headroom APIs, composition data |
+| `1.3` (HIDL) | Added `powerHintAsync_1_3()` and extended the `PowerHint` enum |
+| AIDL v1 | Migrated to AIDL: `setMode()`, `setBoost()` |
+| AIDL v2 | Added `createHintSession()` / `IPowerHintSession` |
+| AIDL v4 | Added `SessionHint` |
+| AIDL v5 | Added FMQ channels, `createHintSessionWithConfig()`, `SessionMode`, `SessionTag` |
+| AIDL v6 | Added `getSupportInfo()`, headroom APIs, composition data |
 
 ```
 hardware/interfaces/power/
@@ -3222,8 +3269,11 @@ public void nativeReleaseSuspendBlocker(String name) {
 }
 ```
 
-These JNI methods write to `/sys/power/wake_lock` and `/sys/power/wake_unlock`
-in the kernel, or use the `wakeup_count` mechanism on modern kernels.
+These JNI methods call libhardware_legacy's `acquire_wake_lock()` and
+`release_wake_lock()` (`hardware/libhardware_legacy/power.cpp`), which go over
+binder to the `android.system.suspend.ISystemSuspend` AIDL service -- the
+system_suspend daemon. That daemon, not the JNI layer, drives the kernel's
+`/sys/power/wakeup_count` and `/sys/power/state` interfaces.
 
 ### 29.10.4 The Suspend Decision
 
@@ -3232,13 +3282,15 @@ power state update). The logic is:
 
 ```
 Need WakeLock suspend blocker if:
-    - Any PARTIAL_WAKE_LOCK is active AND not disabled
-    - OR mForceDisableWakelocks is false and any CPU wake lock is held
+    - mWakeLockSummary has WAKE_LOCK_CPU set
+      (any enabled CPU-holding wake lock is active)
 
-Need Display suspend blocker if:
-    - Any display group is powered on
-    - OR display state is transitioning
-    - OR there are pending brightness changes
+Need Display suspend blocker if (needSuspendBlockerLocked):
+    - Not all power groups are ready
+    - OR screen brightness boost is in progress
+    - OR wakefulness is DOZING and doze start is still in progress
+    - OR any PowerGroup needs its suspend blocker
+      (e.g. its screen is on or turning on)
 ```
 
 If neither suspend blocker is needed, both are released, and the kernel is
@@ -3466,9 +3518,9 @@ app the user will launch next.
 
 ```mermaid
 graph TD
-    AMS["ActivityManagerService"] -->|"reportUsageEvent()"| USS["UsageStatsService"]
+    AMS["ActivityManagerService"] -->|"reportEvent()"| USS["UsageStatsService"]
     NMS["NotificationManagerService"] -->|"NOTIFICATION_INTERRUPTION"| USS
-    WMS["WindowManagerService"] -->|"CONFIGURATION_CHANGE"| USS
+    ATMS["ActivityTaskManagerService"] -->|"CONFIGURATION_CHANGE"| USS
 
     USS --> UUSS["UserUsageStatsService<br/>(per-user)"]
     USS --> ASI["AppStandbyInternal<br/>(standby buckets)"]
@@ -3580,8 +3632,10 @@ import static android.app.usage.UsageStatsManager.USAGE_SOURCE_TASK_ROOT_ACTIVIT
   that started the task. If app A launches app B's activity, usage is still
   attributed to A because A is the task root.
 
-The default is `USAGE_SOURCE_CURRENT_ACTIVITY`. The choice affects which
-apps accumulate screen time in Digital Wellbeing.
+The default is `USAGE_SOURCE_TASK_ROOT_ACTIVITY` -- the fallback value
+`readUsageSourceSetting()` passes to `Settings.Global.getInt()` for
+`app_time_limit_usage_source`. The choice affects which apps accumulate
+screen time in Digital Wellbeing.
 
 ### 29.11.5 Per-User Usage Data Storage
 
@@ -4194,9 +4248,12 @@ increased, `handle_memory_high_event()` runs a two-stage decision (defined in
    process is killed immediately (kill reason `AnonMemoryBreach`).
 3. **Reclaim wait.** Otherwise pmgd sleeps for `reclaim_wait_time_secs` to give
    the kernel a chance to reclaim, then re-reads `memory.current` and
-   `memory.high`. If `memory.current >= memory.high` after the grace period (and
-   again after a second wait), the process is killed with reason
-   `TotalMemcgMemoryBreach`. If reclaim brought it back under the ceiling, pmgd
+   `memory.high`. If `memory.current >= memory.high` right after this first
+   grace period, the process is killed and the kill is logged with reason
+   `AnonMemoryBreach`. Only when the process has dropped back under the
+   ceiling does pmgd wait a second `reclaim_wait_time_secs` period; a breach
+   detected after that second wait is killed with reason
+   `TotalMemcgMemoryBreach`. If the process stays under the ceiling, pmgd
    returns `ReclaimSuccessful` and throttles itself for five minutes
    (`HOLD_BACK_AFTER_SUCCESSFUL_RECLAIM_IN_SECONDS = 300`) before re-arming.
 
@@ -4209,8 +4266,11 @@ flowchart TD
     ANON -->|yes| KILLA["Kill: AnonMemoryBreach"]
     ANON -->|no| WAIT["Sleep reclaim_wait_time_secs"]
     WAIT --> CMP{"memory.current &gt;= memory.high?"}
-    CMP -->|no| OK["ReclaimSuccessful<br/>(throttle 300s)"]
-    CMP -->|yes| KILLT["Kill: TotalMemcgMemoryBreach"]
+    CMP -->|yes| KILLA2["Kill: AnonMemoryBreach"]
+    CMP -->|no| WAIT2["Sleep reclaim_wait_time_secs again"]
+    WAIT2 --> CMP2{"memory.current &gt;= memory.high?"}
+    CMP2 -->|yes| KILLT["Kill: TotalMemcgMemoryBreach"]
+    CMP2 -->|no| OK["ReclaimSuccessful<br/>(throttle 300s)"]
 ```
 
 Killing is gated by the `process_kill_enabled` flag; when it is off,
@@ -4279,9 +4339,12 @@ Two attribution refinements are worth noting:
   `WakelockPowerStatsCollector` now attribute "per-client component" usage to the
   *defining* app's UID rather than to the proxy UID, so battery cost lands on the
   app that owns the work.
-- **Charging policy.** `BatteryManager` exposes a `BatteryChargingPolicyEnum`
-  (for adaptive and longevity charging modes), and Android 17 fixed
-  `getChargingPolicy()` so callers read the correct current policy.
+- **Charging policy.** `BatteryManager` defines the `@BatteryChargingPolicy`
+  IntDef (`CHARGING_POLICY_ADAPTIVE_AON`, `_ADAPTIVE_AC`,
+  `_ADAPTIVE_LONGLIFE`, and so on, for adaptive and longevity charging modes);
+  the corresponding statsd proto enum is `BatteryChargingPolicyEnum`. The
+  `getChargingPolicy()` accessor lives on `BatteryManagerInternal`, and
+  Android 17 fixed it so callers read the correct current policy.
 
 None of these changes alter the `dumpsys batterystats` checkin format used by
 Battery Historian (section 29.6.7 and 29.6.13); they are internal structure and
@@ -4407,7 +4470,8 @@ PowerManager pm = getSystemService(PowerManager.class);
 // Get current status
 int status = pm.getCurrentThermalStatus();
 
-// Get headroom (0.0 = max throttling, 1.0 = no margin)
+// Get headroom (0.0 = no throttling, max margin;
+// 1.0 = SEVERE throttling threshold; values above 1.0 are possible)
 float headroom = pm.getThermalHeadroom(10); // 10-second forecast
 
 // Register listener

@@ -335,7 +335,7 @@ stateDiagram-v2
     BLOCKED --> FAILED: Unrecoverable
     BLOCKED --> CANCELED: User cancels
 
-    FAILED --> STARTED: User restarts
+    FAILED --> QUEUED: Restart
     FAILED --> CANCELED: User cancels
 
     COMPLETED --> [*]
@@ -349,9 +349,16 @@ The system uses aggregate state constants for filtering:
 | Constant | States Included | Purpose |
 |----------|----------------|---------|
 | `STATE_ANY` | All states | No filtering |
-| `STATE_ANY_VISIBLE_TO_CLIENTS` | All except `CREATED` | Visible to the creating app |
+| `STATE_ANY_VISIBLE_TO_CLIENTS` | In practice only `BLOCKED` (see below) | Visible to the creating app |
 | `STATE_ANY_ACTIVE` | `CREATED`, `QUEUED`, `STARTED`, `BLOCKED` | Non-terminal states |
 | `STATE_ANY_SCHEDULED` | `QUEUED`, `STARTED`, `BLOCKED` | Delivered to print service |
+
+The `STATE_ANY_VISIBLE_TO_CLIENTS` filter is consumed in a single place,
+`PrintSpoolerService.isStateVisibleToUser()`, which requires
+`isActiveState(state)` (`CREATED`, `QUEUED`, `STARTED`, or `BLOCKED`) *and* one
+of `FAILED`, `COMPLETED`, `CANCELED`, or `BLOCKED`. The intersection of those
+two conditions is just `STATE_BLOCKED` -- not "all states except `CREATED`" as
+the name might suggest.
 
 ### 63.4.4 PrintJob Wrapper
 
@@ -926,7 +933,9 @@ final class RemotePrintSpooler {
 
 ### 63.11.2 Timed Remote Calls
 
-All calls to the spooler use `TimedRemoteCaller` to enforce timeouts:
+Spooler calls that need a return value -- getting or setting print job info,
+state, and tags, plus the custom printer icon operations -- go through
+`TimedRemoteCaller` instances to enforce timeouts:
 
 ```java
 // Individual timed callers for each operation
@@ -935,6 +944,10 @@ private final GetPrintJobInfoCaller mGetPrintJobInfoCaller;
 private final SetPrintJobStateCaller mSetPrintJobStatusCaller;
 private final SetPrintJobTagCaller mSetPrintJobTagCaller;
 ```
+
+Fire-and-forget operations such as `createPrintJob()`, `writePrintJobData()`,
+and `setStatus()` skip the timed callers and invoke the remote `IPrintSpooler`
+instance directly.
 
 The binding timeout is 10 seconds on production builds, 120 seconds on
 engineering builds (to accommodate debugger attachment).
@@ -960,7 +973,7 @@ sequenceDiagram
     SP-->>RPS: results
     RPS-->>US: results
 
-    Note over RPS: After idle period
+    Note over RPS: Spooler reports all print jobs handled
     RPS->>SP: unbindService()
 ```
 
@@ -1067,8 +1080,9 @@ sequenceDiagram
     App->>PM: print("doc", adapter, attrs)
     PM->>PMS: Binder: print()
     PMS->>US: print()
-    US->>SP: createPrintJob()
-    SP->>PUI: Launch print UI
+    US-->>PMS: IntentSender (EXTRA_PRINT_DIALOG_INTENT)
+    PMS-->>PM: Bundle result
+    PM->>PUI: startIntentSender (launch print dialog)
 
     PUI->>PUI: Show printer selection
 
@@ -1091,6 +1105,7 @@ sequenceDiagram
     User->>PUI: Press "Print" button
 
     Note over SP,Printer: Print Execution
+    PUI->>SP: createPrintJob()
     SP->>SP: Spool PDF document
     SP->>PMS: Job state = QUEUED
     PMS->>US: onPrintJobQueued()
@@ -1343,10 +1358,10 @@ communication:
 |-----------|-----------|---------|
 | `IPrintManager` | App -> System | Print job creation, query, cancel |
 | `IPrintDocumentAdapter` | System -> App | Layout and write callbacks |
-| `IPrintDocumentAdapterObserver` | System -> App | Adapter lifecycle notifications |
+| `IPrintDocumentAdapterObserver` | App -> System | Adapter destruction notification (the app's adapter delegate tells the spooler its activity was destroyed) |
 | `IPrintSpooler` | System -> Spooler | Job management in spooler |
 | `IPrintSpoolerCallbacks` | Spooler -> System | Job state change callbacks |
-| `IPrintSpoolerClient` | System -> Spooler | Client registration |
+| `IPrintSpoolerClient` | Spooler -> System | Job-queued / all-jobs-handled callbacks (registered by the system via `IPrintSpooler.setClient()`) |
 | `IPrintService` | System -> Service | Print service control |
 | `IPrintServiceClient` | Service -> System | Printer and job updates |
 | `IPrintJobStateChangeListener` | System -> App | Job state notifications |
@@ -1453,7 +1468,7 @@ The print framework uses careful threading to avoid blocking the UI:
 | `PrintDocumentAdapter.onWrite()` | Main thread | App-driven rendering |
 | `PrintManagerImpl` operations | Binder thread | Service request handling |
 | `RemotePrintSpooler` calls | Background thread | Spooler IPC (may block) |
-| `RemotePrintService` binding | Background thread | Service binding |
+| `RemotePrintService` operations | system_server main thread (`Handler.getMain()`) | Service binding and command dispatch |
 | `UserState` state management | Synchronized on `mLock` | Thread-safe state access |
 
 The documentation explicitly warns:
@@ -1491,7 +1506,7 @@ private final PrintJobForAppCache mPrintJobForAppCache = new PrintJobForAppCache
 Enterprise management disables printing by setting the
 `UserManager.DISALLOW_PRINTING` user restriction. `isPrintingEnabled()` checks
 that restriction for the calling user; when it is set, `print()` and
-`createPrintJob()` refuse to create a job, and `print()` surfaces the admin's
+`restartPrintJob()` refuse to proceed, and `print()` surfaces the admin's
 reason string via `DevicePolicyManagerInternal`:
 
 ```java
@@ -1545,15 +1560,22 @@ the per-user `UserState` list under `mLock`, then renders it through a
 
 ### 63.21.2 Logging
 
-Enable verbose logging for print components:
+The print framework classes do not consult `Log.isLoggable()`, so the usual
+`adb shell setprop log.tag.<TAG> VERBOSE` recipe has no effect on them. Their
+verbose output is gated on compile-time constants instead: `PrintManager`,
+`RemotePrintSpooler`, `RemotePrintService`, and `UserState` each declare a
+`DEBUG` flag that ships as `false`, and `PrintManagerService` has no debug gate
+at all:
 
-```bash
-$ adb shell setprop log.tag.PrintManager VERBOSE
-$ adb shell setprop log.tag.PrintManagerService VERBOSE
-$ adb shell setprop log.tag.RemotePrintSpooler VERBOSE
-$ adb shell setprop log.tag.RemotePrintService VERBOSE
-$ adb shell setprop log.tag.UserState VERBOSE
+```java
+// frameworks/base/core/java/android/print/PrintManager.java
+private static final boolean DEBUG = false;
 ```
+
+Getting the extra logging therefore requires rebuilding the framework with
+`DEBUG = true` in the classes of interest. On a production build, the practical
+alternatives are `dumpsys print` (Section 63.21.1) and filtering logcat for the
+messages the framework emits unconditionally (errors and warnings).
 
 ### 63.21.3 Proto Dump
 
@@ -1652,6 +1674,7 @@ flowchart TB
     NEEDS{"needsSetup printer<br/>(flag on AND<br/>setupIntent != null)?"}
     LAUNCH["startIntentSenderForResult<br/>(printer setup activity)"]
     DONE{"Setup result OK?"}
+    UPDATE["onSetupActivityResult:<br/>adopt returned printer,<br/>return to dialog"]
     CONFIRM["confirmPrint<br/>(spool job, STATE_QUEUED)"]
     STAY["Stay on print dialog"]
 
@@ -1659,12 +1682,16 @@ flowchart TB
     NEEDS -->|"No"| CONFIRM
     NEEDS -->|"Yes"| LAUNCH
     LAUNCH --> DONE
-    DONE -->|"Yes"| CONFIRM
+    DONE -->|"Yes"| UPDATE
     DONE -->|"No"| STAY
 ```
 
-The setup activity may also return an alternate printer, in case the user picks
-a different one during setup.
+A successful setup result does not spool the job directly. `onSetupActivityResult()`
+only adopts the printer the setup activity returns -- which may be an alternate
+printer, in case the user picks a different one during setup -- updates the
+print attributes from its capabilities, and returns to the dialog. The user then
+presses Print again, and with the printer no longer needing setup, the spooler
+falls through to `confirmPrint()`.
 
 ---
 
@@ -1700,7 +1727,7 @@ FrameworkAdvancedOptionsUiLaunched (1074) - advanced options opened
 color mode, media size, horizontal/vertical DPI, orientation, duplex mode,
 document type, whether the output was saved to PDF, page count, and the print
 service UID. `FrameworkPrinterDiscovery` records the discovering service UID and
-the printer's supported color modes, media sizes, and duplex modes. Two
+the printer's supported color modes, media sizes, and duplex modes. Four
 additional `Bips*` atoms (1075-1078) come from the built-in print service
 (`builtinprintservice`) rather than the spooler.
 
@@ -1815,21 +1842,32 @@ action.
    Disable a service in Settings and observe the `ComponentName` appear in the
    colon-separated list; the *enabled* setting stays empty (Section 63.8.2).
 
-3. **Trace a print job's lifecycle.** Enable verbose logging and follow a job
-   from `STATE_CREATED` through `STATE_QUEUED` to a terminal state:
+3. **Trace a print job's lifecycle.** Follow a job from `STATE_CREATED` through
+   `STATE_QUEUED` to a terminal state. The framework classes gate verbose
+   logging on compile-time `DEBUG = false` constants (Section 63.21.2), so
+   `setprop log.tag.*` does not help; instead poll `dumpsys print` while the
+   job progresses and watch the cached job's state field change, alongside the
+   messages that reach logcat unconditionally:
 
    ```bash
-   adb shell setprop log.tag.PrintManager VERBOSE
-   adb shell setprop log.tag.RemotePrintSpooler VERBOSE
+   adb shell dumpsys print | grep -A3 "print jobs"
    adb logcat | grep -i print
    ```
+
+   On a self-built image, flip `DEBUG` to `true` in `UserState.java` and
+   `RemotePrintSpooler.java` to log every state transition.
 
 4. **Toggle the new flags.** Inspect the Android 17 print flags and their state:
 
    ```bash
-   adb shell device_config get printing enable_setup_activity
-   adb shell device_config get printing printing_telemetry
+   adb shell device_config get printing android.print.flags.enable_setup_activity
+   adb shell device_config get printing com.android.printspooler.flags.printing_telemetry
    ```
+
+   The `DeviceConfig` keys for aconfig flags are qualified by their aconfig
+   package (`android.print.flags` and `com.android.printspooler.flags`); on
+   recent builds `adb shell aflags list | grep printing` shows both flags with
+   their current state.
 
    With `printing_telemetry` on, complete a print and confirm a `FrameworkPrintJob`
    atom is logged (Section 63.24).

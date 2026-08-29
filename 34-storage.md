@@ -135,8 +135,8 @@ The `/data` directory structure follows a well-defined layout:
 
 ```
 /data/
-  data/              -> App private data (symlink to user/0)
-  user/0/            -> CE (Credential Encrypted) storage for user 0
+  data/              -> App private CE data for user 0 (the real directory)
+  user/0/            -> Bind mount of /data/data (a symlink in older releases)
   user_de/0/         -> DE (Device Encrypted) storage for user 0
   media/             -> Shared media (backing for /storage/emulated)
   media/0/           -> User 0's emulated external storage
@@ -1232,7 +1232,7 @@ graph TD
         B -->|Own app directory| C["No permission needed"]
         B -->|Photos/Videos| D["READ_MEDIA_IMAGES<br/>READ_MEDIA_VIDEO"]
         B -->|Audio| E["READ_MEDIA_AUDIO"]
-        B -->|All media| F["READ_MEDIA_VISUAL_USER_SELECTED<br/>(Android 14+)"]
+        B -->|User-selected media| F["READ_MEDIA_VISUAL_USER_SELECTED<br/>(Android 14+)"]
         B -->|Non-media files| G["Storage Access Framework<br/>ACTION_OPEN_DOCUMENT"]
         B -->|All files| H["MANAGE_EXTERNAL_STORAGE"]
     end
@@ -1685,12 +1685,12 @@ The primary table is `files`, which stores metadata for all indexed files:
 | `title` | TEXT | Title (from metadata) |
 | `date_added` | INTEGER | When file was added (epoch seconds) |
 | `date_modified` | INTEGER | Last modification time |
-| `date_taken` | INTEGER | When photo/video was taken |
+| `datetaken` | INTEGER | When photo/video was taken (`MediaColumns.DATE_TAKEN`) |
 | `duration` | INTEGER | Duration in ms (audio/video) |
 | `width` | INTEGER | Image/video width |
 | `height` | INTEGER | Image/video height |
 | `orientation` | INTEGER | EXIF orientation |
-| `bucket_id` | INTEGER | Hash of parent directory |
+| `bucket_id` | TEXT | Hash of parent directory |
 | `bucket_display_name` | TEXT | Parent directory name |
 | `volume_name` | TEXT | Storage volume name |
 | `owner_package_name` | TEXT | Package that created the file |
@@ -1800,7 +1800,7 @@ database corruption, managed through the FUSE daemon:
 
 ```java
 // packages/providers/MediaProvider/src/com/android/providers/media/
-//     fuse/FuseDaemon.java (lines 216-270)
+//     fuse/FuseDaemon.java (lines 231-340)
 public void setupVolumeDbBackup() throws IOException { ... }
 public void setupPublicVolumeDbBackup(String volumeName) throws IOException { ... }
 public void backupVolumeDbData(String volumeName, String key,
@@ -1950,9 +1950,11 @@ Google Sheets document does not have a native file representation but can be
 opened as a CSV or PDF:
 
 ```java
-// Document flags indicating virtual file support
+// Document flag indicating virtual file support
 Document.FLAG_VIRTUAL_DOCUMENT  // Document has no direct byte representation
-Document.FLAG_SUPPORTS_TYPED_DOCUMENT  // Can convert to other MIME types
+
+// A provider advertises the convertible MIME types by overriding
+// DocumentsProvider.getDocumentStreamTypes() and openTypedDocument()
 
 // Client code for opening a virtual document
 String[] mimeTypes = getContentResolver().getStreamTypes(uri, "*/*");
@@ -2441,7 +2443,7 @@ sequenceDiagram
     Note over Disk: Zap existing partitions
     Disk->>Disk: Generate partition GUID
     Disk->>Disk: Generate encryption key
-    Disk->>Disk: Persist key to /data/misc/vold/expand_<guid>
+    Disk->>Disk: Persist key to /data/misc/vold/expand_<guid>.key
     Note over Disk: Create GPT with android_meta + android_expand
     Disk->>Disk: readPartitions()
     Disk->>Disk: createPrivateVolume(device, partGuid)
@@ -2653,7 +2655,7 @@ static status_t execCp(const std::string& fromPath,
 When adopted storage is ejected, all apps that were installed on it become
 unavailable.  The framework tracks which apps reside on which volume through
 the `PackageManager`.  If the device is re-inserted, the encryption key
-(stored in `/data/misc/vold/expand_<guid>`) is used to decrypt and remount
+(stored in `/data/misc/vold/expand_<guid>.key`) is used to decrypt and remount
 the volume.
 
 ### 34.9.7 Forgetting Adopted Storage
@@ -2781,10 +2783,14 @@ Android supports six journal modes:
 | `DELETE` | Delete journal after commit | Traditional mode |
 | `OFF` | No journal | Maximum risk, maximum speed |
 
-**Compatibility WAL** is a special Android mode that enables WAL with a
-restricted configuration: maximum WAL file size of 512KB and auto-
-checkpoint after each transaction. This provides WAL's concurrency benefits
-while limiting the disk space overhead, making it safe as a default.
+**Compatibility WAL** is Android's way of turning on WAL journaling for
+databases whose owners never explicitly set a journal or sync mode, using
+a configurable sync mode (`SQLiteCompatibilityWalFlags.getWALSyncMode()`,
+default `NORMAL`). The disk overhead is bounded by two global resources:
+`db_journal_size_limit` caps the journal/WAL at 512KB, and
+`db_wal_autocheckpoint` checkpoints the WAL every 100 pages -- not after
+every transaction. This provides WAL's concurrency benefits while limiting
+the disk space overhead, making it safe as a default.
 
 ```mermaid
 graph LR
@@ -3188,9 +3194,12 @@ key improvements are:
 | Migration | N/A | `SharedPreferencesMigration` helper |
 
 Despite DataStore being the recommended path, SharedPreferences remains
-heavily used in AOSP itself -- `Settings.Secure`, `Settings.Global`, and
-hundreds of system services store configuration in SharedPreferences files
-under `/data/data/<package>/shared_prefs/`.
+heavily used -- countless apps and many system components still persist
+configuration as SharedPreferences XML files under
+`/data/data/<package>/shared_prefs/`.  (The `Settings.Secure` and
+`Settings.Global` namespaces are not among them: SettingsProvider persists
+those via `SettingsState` into
+`/data/system/users/<userId>/settings_{global,secure,system}.xml`.)
 
 ---
 
@@ -3283,7 +3292,8 @@ android::binder::Status cp_restoreCheckpoint(
     const std::string& mountPoint, int count = 0);
 android::binder::Status cp_markBootAttempt();
 
-void cp_resetCheckpoint();
+android::binder::Status cp_resetCheckpoint();
+// ... cp_registerCheckpointListener() omitted
 }  // namespace vold
 }  // namespace android
 ```
@@ -3292,10 +3302,12 @@ Android 17 tightened the concurrency model around this state: `cp_isCheckpointin
 returns a `binder::Status`, and the underlying `isCheckpointing` flag is now
 `GUARDED_BY(isCheckpointingLock)` with Clang thread-safety annotations so the
 compiler enforces that callers hold the lock before reading it
-(`system/vold/Checkpoint.cpp`).  The same release records how long enabling a
-checkpoint took into the `vold.udc.enable_checkpoint.latency.ms` system property,
-and mounts f2fs userdata with `,discard,checkpoint=enable` so background discard
-runs while a checkpoint is active.
+(`system/vold/Checkpoint.cpp`).  The same release records, in the
+`vold.udc.enable_checkpoint.latency.ms` system property, how long the
+commit-time remount took: when `cp_commitChanges()` ends the checkpoint
+window, it remounts each f2fs userdata mount with its original options plus
+`,discard,checkpoint=enable` to re-enable normal f2fs checkpointing, and
+times that remount.
 
 Two checkpoint mechanisms are supported:
 
@@ -3696,8 +3708,8 @@ adb logcat -s FsCrypt:* MetadataCrypt:* KeyStorage:*
 ### 34.18.3 Analyzing Storage Performance
 
 ```bash
-# Run vold's built-in benchmark
-adb shell sm benchmark private
+# Run vold's built-in benchmark (volume id from `sm list-volumes all`)
+adb shell sm benchmark <volume_id>
 
 # Monitor I/O patterns
 adb shell cat /proc/diskstats
@@ -3732,15 +3744,18 @@ diff /tmp/init_mounts.txt /tmp/app_mounts.txt
 ### 34.18.5 Recovering from Storage Issues
 
 ```bash
-# Force unmount all volumes (emergency)
-adb shell sm unmount all
+# Force unmount a volume (emergency) -- ids from `sm list-volumes all`;
+# only `sm forget` accepts the literal "all"
+adb shell sm unmount <volume_id>
 
-# Reset vold state
-adb shell sm reset
+# Re-run vold's volume discovery: restart the daemon (debug builds),
+# or unmount/mount individual volumes
+adb shell stop vold
+adb shell start vold
 
-# Force filesystem check on next boot
-adb shell setprop persist.sys.dalvik.vm.lib.2 ""
-adb reboot
+# There is no property that forces an fsck on next boot: fs_mgr runs
+# e2fsck/fsck.f2fs during fs_mgr_do_mount when the filesystem is marked
+# dirty (system/fs/fs_mgr/fs_mgr.cpp)
 
 # Clear media store cache (requires root)
 adb root
@@ -3841,8 +3856,9 @@ create encryption keys and prepare storage directories:
 
 ```
 1. UserManagerService creates user
-2. StorageManagerService.onUserAdded(userId, userSerial, cloneParentId)
+2. StorageManagerService's broadcast receiver handles ACTION_USER_ADDED
 3. vold.onUserAdded(userId, userSerial, sharesStorageWithUserId)
+   (the third argument is the profile group id for clone profiles, -1 otherwise)
 4. fscrypt_create_user_keys(userId, ephemeral):
    a. Generate DE key, store on disk, install to kernel
    b. Generate CE key, store on disk (encrypted with default secret)
@@ -3883,8 +3899,8 @@ physical storage medium.
 | 10 | Scoped Storage introduced (opt-in), metadata encryption |
 | 11 | Scoped Storage enforced, FUSE replaces sdcardfs |
 | 12 | FUSE passthrough, improved performance |
-| 13 | Per-app media permissions (READ_MEDIA_IMAGES, etc.) |
-| 14 | Photo Picker, READ_MEDIA_VISUAL_USER_SELECTED |
+| 13 | Photo Picker, per-app media permissions (READ_MEDIA_IMAGES, etc.) |
+| 14 | READ_MEDIA_VISUAL_USER_SELECTED (partial media access) |
 | 15 | FUSE BPF, further performance improvements |
 | 16 | f2fs uses kernel page size for block size; project-quota tolerance on legacy userdata |
 | 17 | `system/fs` repo split (fs_mgr/liblp/libdm carved out of `system/core`); casefolding migration of `/data/media` via the `casefolding_remover` Rust service; `KeyType` enum unifies raw and hardware-wrapped key handling; `wrappedkey` (v2) metadata-encryption option; `vold` adds `syncStorage()` and `setMaxLockElapsedTime()` |
@@ -4749,10 +4765,9 @@ adb logcat -s vold:* FsCrypt:*
 # Check which users have CE storage unlocked
 adb shell dumpsys mount | grep -A5 "CE unlocked"
 
-# Observe directory encryption policies (requires root)
-adb root
-adb shell fscrypt-policy-get /data/user/0/
-adb shell fscrypt-policy-get /data/user_de/0/
+# AOSP ships no CLI for reading fscrypt policies (system/extras only has
+# the libfscrypt library); observe them indirectly via vold/FsCrypt logs
+# and `dumpsys mount`, or sideload the upstream fscryptctl tool
 ```
 
 ### Exercise 34.6: Simulating Adoptable Storage
@@ -4772,8 +4787,8 @@ adb shell sm partition <disk_id> private
 # Check the new volume
 adb shell sm list-volumes all
 
-# Migrate data to the adopted volume
-adb shell sm move-primary-storage <volume_uuid>
+# Migrate data to the adopted volume (a PackageManager command, not sm)
+adb shell pm move-primary-storage <volume_uuid>
 
 # Monitor the migration progress
 adb logcat -s MoveStorage:*
@@ -4822,8 +4837,9 @@ adb shell am start -a android.intent.action.OPEN_DOCUMENT \
 Check storage health metrics:
 
 ```bash
-# Get storage lifetime estimate
-adb shell sm get-storage-lifetime
+# Storage lifetime estimates are not exposed as an `sm` subcommand; the
+# value is surfaced to StorageManagerService via the IVold.getStorageLifeTime()
+# binder call
 
 # Run a storage benchmark
 adb shell sm benchmark <volume_id>

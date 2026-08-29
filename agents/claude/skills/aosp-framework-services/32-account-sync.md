@@ -142,7 +142,8 @@ applications can see which accounts.  This replaced the blanket
 | Visibility Level | Constant | Meaning |
 |------------------|----------|---------|
 | Not visible | `VISIBILITY_NOT_VISIBLE` | App cannot see this account |
-| User-managed | `VISIBILITY_USER_MANAGED_VISIBLE` | Visible if user grants access |
+| User-managed visible | `VISIBILITY_USER_MANAGED_VISIBLE` | Visible to this app, but the user can revoke visibility |
+| User-managed not visible | `VISIBILITY_USER_MANAGED_NOT_VISIBLE` | Not visible, but the user can reveal it (e.g., via `newChooseAccountIntent`) |
 | Visible | `VISIBILITY_VISIBLE` | Always visible to this app |
 | Undefined | `VISIBILITY_UNDEFINED` | Falls back to authenticator default |
 
@@ -243,9 +244,14 @@ accountManager.addOnAccountsUpdatedListener(
 );
 ```
 
-Internally, `AccountManagerService` maintains a
-`RemoteCallbackList<IAccountManagerResponse>` for each user and delivers
-updates when accounts change.
+Internally, the listener machinery lives on the client side:
+`AccountManagerService` simply broadcasts
+`AccountManager.LOGIN_ACCOUNTS_CHANGED_ACTION` to the user when accounts
+change, and `AccountManager` (in the app process) keeps the registered
+listeners in its `mAccountsUpdatedListeners` map.  A `BroadcastReceiver`
+registered by `AccountManager` receives the broadcast, re-queries the
+account list, and fans the result out to each registered
+`OnAccountsUpdateListener` on its handler.
 
 ### 32.1.8 Account Intent Broadcast
 
@@ -287,13 +293,13 @@ public final class AccountManagerService extends IAccountManager.Stub
 
         @Override
         public void onStart() {
-            mService = new AccountManagerService(getContext());
+            mService = new AccountManagerService(new Injector(getContext()));
             publishBinderService(Context.ACCOUNT_SERVICE, mService);
         }
 
         @Override
         public void onUserUnlocking(TargetUser user) {
-            mService.onUserUnlocked(user);
+            mService.onUnlockUser(user.getUserIdentifier());
         }
     }
 }
@@ -346,7 +352,7 @@ Source: frameworks/base/services/core/java/com/android/server/accounts/AccountsD
 
 | Table | Columns | Purpose |
 |-------|---------|---------|
-| `accounts` | `_id`, `name`, `type`, `password`, `previous_name`, `last_password_entry_time_millis_epoch` | Core account storage |
+| `accounts` | `_id`, `name`, `type`, `password` | Core account storage |
 | `authtokens` | `_id`, `accounts_id`, `type`, `authtoken` | Cached authentication tokens |
 | `extras` | `_id`, `accounts_id`, `key`, `value` | Per-account key-value user data |
 
@@ -354,7 +360,7 @@ Source: frameworks/base/services/core/java/com/android/server/accounts/AccountsD
 
 | Table | Columns | Purpose |
 |-------|---------|---------|
-| `accounts` | `_id`, `name`, `type` | Account listing (no credentials) |
+| `accounts` | `_id`, `name`, `type`, `previous_name`, `last_password_entry_time_millis_epoch` | Account listing (no credentials) |
 | `grants` | `accounts_id`, `auth_token_type`, `uid` | Token access grants per UID |
 | `visibility` | `accounts_id`, `_package`, `value` | Per-package account visibility |
 | `shared_accounts` | `_id`, `name`, `type` | Accounts shared across profiles |
@@ -375,7 +381,7 @@ static class UserAccounts {
         credentialsPermissionNotificationIds;  // Pending permission notifications
     final HashMap<Account, HashMap<String, String>> userDataCache;  // In-memory cache
     final HashMap<Account, HashMap<String, String>> authTokenCache; // In-memory cache
-    final TokenCache tokenCache;       // LRU token cache
+    final TokenCache accountTokenCaches;  // LRU token cache
     final Object cacheLock;            // Synchronization
     final Object dbLock;               // Database lock
 }
@@ -447,20 +453,20 @@ service and communicates via the `IAccountAuthenticator` AIDL interface:
 sequenceDiagram
     participant AMS as AccountManagerService
     participant AAC as AccountAuthenticatorCache
-    participant SM as ServiceManager
+    participant AM as ActivityManagerService
     participant AUTH as Authenticator Service
     participant AAB as AbstractAccountAuthenticator
 
     AMS->>AAC: getServiceInfo(accountType)
     AAC-->>AMS: ComponentName of authenticator
-    AMS->>SM: bindService(componentName, BIND_AUTO_CREATE)
-    SM-->>AUTH: Start service
+    AMS->>AM: bindServiceAsUser(intent, BIND_AUTO_CREATE)
+    AM-->>AUTH: Start service
     AUTH->>AAB: onBind() returns getIBinder()
     AUTH-->>AMS: IAccountAuthenticator binder
     AMS->>AAB: getAuthToken(response, account, tokenType, options)
     AAB->>AAB: Validate credentials, contact server
     AAB-->>AMS: Bundle with KEY_AUTHTOKEN
-    AMS->>AMS: Cache token in TokenCache + AccountsDb
+    AMS->>AMS: Store token (AccountsDb, or TokenCache for custom-token authenticators)
 ```
 
 ### 32.2.7 CryptoHelper -- Secure Session Storage
@@ -472,9 +478,12 @@ session bundles for the session-based account addition flow:
 Source: frameworks/base/services/core/java/com/android/server/accounts/CryptoHelper.java
 ```
 
-It uses a per-device key stored in the Android Keystore to protect
-session data that may be transferred between devices during account
-migration.
+It generates an ephemeral in-memory AES key (plus a separate HMAC-SHA256
+key for integrity) via `KeyGenerator` the first time it is used.  The keys
+are not backed by the Android Keystore and never leave `system_server`
+memory, so a session bundle encrypted by `CryptoHelper` can only be
+decrypted by the same running `system_server` instance -- it cannot be
+transferred to another device, and it does not survive a reboot.
 
 ### 32.2.8 AccountManagerService Shell Command
 
@@ -515,7 +524,7 @@ sequenceDiagram
     AUTH-->>AMS: Bundle with encrypted session data
     AMS-->>App: Session Bundle
 
-    Note over App: App can transfer session to another device/context
+    Note over App: App can hold the opaque session bundle and finish it later on this device
 
     App->>AMS: finishSession(sessionBundle, ...)
     AMS->>AUTH: finishSession(response, sessionBundle)
@@ -607,35 +616,49 @@ sequenceDiagram
     App->>AM: getAuthToken(account, tokenType, options, activity, callback)
 
     AM->>AMS: getAuthToken(response, account, tokenType, ...)
-    AMS->>TC: get(account, tokenType, callerPkg, sigDigest)
 
-    alt Token in cache and not expired
-        TC-->>AMS: cached token
-        AMS-->>AM: Bundle(KEY_AUTHTOKEN = token)
-        AM-->>App: callback.run(future)
-    else Token not cached
-        AMS->>DB: findAuthTokenByAccount(account, tokenType)
+    alt Standard authenticator with permission granted
+        AMS->>DB: readAuthTokenInternal(account, tokenType)
         alt Token in database
             DB-->>AMS: stored token
-            AMS->>TC: put(key, token, expiry)
             AMS-->>AM: Bundle(KEY_AUTHTOKEN = token)
+            AM-->>App: callback.run(future)
         else No stored token
             AMS->>AUTH: getAuthToken(response, account, tokenType, options)
-            alt Authenticator returns token directly
-                AUTH-->>AMS: Bundle(KEY_AUTHTOKEN = newToken)
-                AMS->>DB: insertAuthToken(account, tokenType, newToken)
-                AMS->>TC: put(key, newToken, expiry)
-                AMS-->>AM: Bundle(KEY_AUTHTOKEN = newToken)
-            else Authenticator requires user interaction
-                AUTH-->>AMS: Bundle(KEY_INTENT = loginIntent)
-                AMS-->>AM: Bundle(KEY_INTENT = loginIntent)
-                AM->>AM: Launch loginIntent via Activity
-                Note over AM: User enters credentials
-                AM-->>App: callback.run(future) with token
-            end
+        end
+    else Custom-token authenticator
+        AMS->>TC: readCachedTokenInternal(account, tokenType, callerPkg, sigDigest)
+        alt Token in cache and not expired
+            TC-->>AMS: cached token
+            AMS-->>AM: Bundle(KEY_AUTHTOKEN = token)
+            AM-->>App: callback.run(future)
+        else Cache miss
+            AMS->>AUTH: getAuthToken(response, account, tokenType, options)
         end
     end
+
+    alt Authenticator returns token directly
+        AUTH-->>AMS: Bundle(KEY_AUTHTOKEN = newToken)
+        AMS->>DB: insertAuthToken -- standard authenticators
+        AMS->>TC: saveCachedToken -- custom-token authenticators
+        AMS-->>AM: Bundle(KEY_AUTHTOKEN = newToken)
+    else Authenticator requires user interaction
+        AUTH-->>AMS: Bundle(KEY_INTENT = loginIntent)
+        AMS-->>AM: Bundle(KEY_INTENT = loginIntent)
+        AM->>AM: Launch loginIntent via Activity
+        Note over AM: User enters credentials
+        AM-->>App: callback.run(future) with token
+    end
 ```
+
+Which store the service consults depends on the authenticator type: a
+standard authenticator's tokens are persisted in the `authtokens` table
+and read back with `readAuthTokenInternal()` -- the in-memory `TokenCache`
+is never used for them.  A custom-token authenticator (one that declares
+`customTokens=true`) skips the database entirely; its tokens live only in
+the `TokenCache`, and a cache miss goes straight to the authenticator,
+whose result is cached with `saveCachedToken()`.  The two lookups are
+mutually exclusive.
 
 ### 32.3.3 Token Invalidation
 
@@ -679,12 +702,12 @@ The `TokenCache` checks expiry before returning cached tokens:
 
 ```java
 // Simplified from TokenCache logic in AccountManagerService
-TokenCache.Value tokenValue = accounts.tokenCache.get(cacheKey);
+TokenCache.Value tokenValue = accounts.accountTokenCaches.get(cacheKey);
 if (tokenValue != null) {
     if (tokenValue.expiryEpochMillis > System.currentTimeMillis()) {
         return tokenValue.token;  // Valid cached token
     } else {
-        accounts.tokenCache.remove(cacheKey);  // Expired
+        accounts.accountTokenCaches.remove(cacheKey);  // Expired
     }
 }
 ```
@@ -854,7 +877,7 @@ graph TD
     end
 
     subgraph AccountManagerService
-        AMS[accountCloneToProfile / accountMovedToProfile]
+        AMS["copyAccountToUser / addSharedAccountAsUser"]
     end
 
     PA -->|DPC copies account| AMS
@@ -962,7 +985,7 @@ sequenceDiagram
     SM->>SAC: new SyncAdaptersCache(context)
     SAC->>SAC: Scan for registered sync adapters
     SM->>SM: Register BroadcastReceiver for:
-    Note over SM: BOOT_COMPLETED, connectivity,<br/>account changes, package changes
+    Note over SM: connectivity, shutdown, time changed,<br/>user removed/unlocked/stopped,<br/>package changes, LOGIN_ACCOUNTS_CHANGED
     SM->>JS: Connect to JobScheduler
     SM->>SM: Schedule initial sync check
 ```
@@ -1020,7 +1043,7 @@ sequenceDiagram
     SM->>SO: Create SyncOperation
     SM->>SM: scheduleSyncOperationH(op, delay)
     SM->>SM: Convert to JobInfo:
-    Note over SM: jobId = unique per operation<br/>setExtras(op.toJobExtras())<br/>setRequiredNetworkType(CONNECTED)<br/>setBackoffCriteria(initialBackoff, LINEAR)<br/>setPeriodic(periodMs, flexMs) [if periodic]<br/>setDeadline(deadline) [if expedited]
+    Note over SM: jobId = unique per operation<br/>setExtras(op.toJobInfoExtras())<br/>setRequiredNetworkType(ANY or UNMETERED)<br/>setRequiresStorageNotLow(true), setPersisted(true)<br/>setBias(bias), setFlags(EXEMPT_FROM_APP_STANDBY if exempted)<br/>setPeriodic(periodMillis, flexMillis) [if periodic]<br/>else setMinimumLatency(minDelay)<br/>setExpedited(true) [if scheduled as expedited job]
     SM->>JS: schedule(jobInfo)
     JS-->>SM: JobScheduler.RESULT_SUCCESS
 
@@ -1028,6 +1051,11 @@ sequenceDiagram
     JS->>SJS: onStartJob(params)
     SJS->>SM: Dispatch sync execution
 ```
+
+Note that retry backoff is not delegated to JobScheduler: there is no
+`setBackoffCriteria()` call.  SyncManager implements backoff itself via
+`increaseBackoffSetting()` and reschedules failed syncs as new one-off
+jobs with the computed delay.
 
 The `SyncJobService` is the bridge between JobScheduler and SyncManager:
 
@@ -1283,7 +1311,7 @@ It stores:
 |------|-------------|-------------|
 | Authority info | XML file | Per-authority sync settings (syncable, backoff, delay) |
 | Sync status | Proto file | Sync history (last success, last failure, stats) |
-| Pending operations | Proto file | Operations awaiting execution |
+| Pending flag | Proto file | Per-authority boolean (`SyncStatusInfo.pending`); the queued operations themselves live as JobScheduler jobs |
 | Master sync auto | XML attr | Global auto-sync toggle |
 | Per-authority auto-sync | XML attr | Per-account/authority auto-sync toggle |
 
@@ -1301,7 +1329,10 @@ public static class AuthorityInfo {
     public final EndPoint target;
     public final int ident;         // Unique authority ID
     public boolean enabled;         // Auto-sync enabled
-    public int syncable;            // -1 unknown, 0 not syncable, 1 syncable
+    public int syncable;            // -2 UNDEFINED, -1 NOT_INITIALIZED,
+                                    // 0 NOT_SYNCABLE, 1 SYNCABLE,
+                                    // 2 SYNCABLE_NOT_INITIALIZED,
+                                    // 3 SYNCABLE_NO_ACCOUNT_ACCESS
     public long backoffTime;
     public long backoffDelay;
     public long delayUntil;
@@ -1406,12 +1437,13 @@ boolean syncing = ContentResolver.isSyncActive(account, authority);
 // Check if a sync is pending
 boolean pending = ContentResolver.isSyncPending(account, authority);
 
-// Get sync status
+// Get sync status (getSyncStatus() and SyncStatusInfo are @hide APIs,
+// available only to system/privileged code)
 SyncStatusInfo status = ContentResolver.getSyncStatus(account, authority);
 if (status != null) {
     long lastSuccess = status.lastSuccessTime;
     long lastFailure = status.lastFailureTime;
-    int numSyncs = status.numSyncs;
+    int numSyncs = status.totalStats.numSyncs;
     String lastFailureMesg = status.lastFailureMesg;
 }
 
@@ -1687,7 +1719,7 @@ SyncManager:
 
 ```java
 public final class SyncResult implements Parcelable {
-    // Set true to trigger soft error retry with backoff
+    // Hard-error flags (see hasHardError)
     public boolean tooManyRetries;
     public boolean tooManyDeletions;
     public boolean databaseError;
@@ -1695,7 +1727,8 @@ public final class SyncResult implements Parcelable {
     public boolean partialSyncUnavailable;
     public boolean moreRecordsToGet;
 
-    // Delay before retry (seconds)
+    // Absolute time (seconds since epoch) until which further syncs
+    // for this account/authority are delayed
     public long delayUntil;
 
     // Statistics
@@ -1719,11 +1752,11 @@ SyncManager interprets the result:
 
 | Condition | Action |
 |-----------|--------|
-| `numAuthExceptions > 0` | Soft error -- retry with backoff |
+| `numAuthExceptions > 0` | Hard error -- sync is recorded as failed and is NOT rescheduled |
 | `numIoExceptions > 0` | Soft error -- retry with backoff |
 | `tooManyDeletions` | Show notification to user, pause sync |
 | `fullSyncRequested` | Schedule a full sync (not incremental) |
-| `delayUntil > 0` | Delay next sync by specified amount |
+| `delayUntil > 0` | Delay further syncs until the given absolute time (seconds since epoch) |
 | No errors | Clear backoff, update last success time |
 
 ---
@@ -1760,10 +1793,14 @@ Source: frameworks/base/services/core/java/com/android/server/accounts/AccountsD
 
 This work was developed behind the `com.android.server.accounts.detach_de_ce`
 aconfig flag and then promoted to the default behavior in 17 when the flag was
-removed, so the decoupled path is the only path on a 17 device. The `attachCeDatabase()`
-method still exists for first-boot migration of a pre-N (Nougat) database into
-the split layout, but steady-state reads and writes go through the two
-independent helpers.
+removed, so the decoupled path is the only path on a 17 device. The
+`attachCeDatabase()` method remains the normal entry point for opening a
+user's CE database at unlock: despite its name it no longer performs a
+SQLite `ATTACH`, but simply constructs the `CeDatabaseHelper` and flips
+the "CE available" flag on the DE helper. The pre-N (Nougat) migration
+into the split layout survives only as a conditional branch inside
+`CeDatabaseHelper.create()`, taken when an old single-database file exists
+and the CE database does not.
 
 ```mermaid
 graph TD
@@ -1857,11 +1894,12 @@ strings) are unaffected, while pathological payloads are rejected at the door.
 
 ### 32.6.4 SyncManager Receivers Off the Main Thread
 
-`SyncManager` registers broadcast receivers for connectivity changes, account
-changes, package changes, and boot completion. Earlier releases dispatched these
-on the main thread, where the handler could block on locks held by other system
-services. Android 17 runs `SyncManager`'s receivers and scheduling work on its
-own dedicated handler thread instead:
+`SyncManager` registers broadcast receivers for connectivity changes, shutdown,
+time changes, user lifecycle events, package changes, and account changes.
+Earlier releases dispatched these on the main thread, where the handler could
+block on locks held by other system services. Android 17 moves the hot
+receivers and the scheduling work onto `SyncManager`'s own dedicated handler
+thread instead:
 
 ```
 Source: frameworks/base/services/core/java/com/android/server/content/SyncManager.java
@@ -1874,9 +1912,12 @@ mThread.start();
 mSyncHandler = new SyncHandler(mThread.getLooper());
 ```
 
-Receivers are registered against `mSyncHandler` rather than the default main
-`Looper`, so a slow lock acquisition during sync scheduling no longer stalls the
-`system_server` main thread. The same change also stops repeatedly taking a lock
+The connectivity and user-lifecycle receivers are registered against
+`mSyncHandler` rather than the default main `Looper`, so a slow lock
+acquisition during sync scheduling no longer stalls the `system_server` main
+thread. (The shutdown, time-changed, and accounts-updated receivers are still
+registered with a null handler and run on the main `Looper`.) The same change
+also stops repeatedly taking a lock
 just to check whether `JobScheduler` is connected. This was gated by the
 `com.android.server.am.syncmanager_off_main_thread` flag, later cleaned up so the
 off-main-thread behavior is the default.
@@ -2250,9 +2291,11 @@ adb shell dumpsys content
 # - Backoff state
 # - Periodic sync schedule
 
-# Force a sync via adb
-adb shell content sync --account demo@example.com \
-    --authority com.example.demo.provider
+# Note: there is no "content sync" shell subcommand -- the content tool only
+# supports insert/update/delete/query/call/read/write/gettype. To trigger a
+# sync, call ContentResolver.requestSync() from an app; to fire a scheduled
+# sync job from the shell, find its job ID in dumpsys and run:
+adb shell cmd jobscheduler run -f android <sync-job-id>
 
 # List sync adapters
 adb shell dumpsys content | grep -A2 "Sync Adapters"

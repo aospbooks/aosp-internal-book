@@ -24,10 +24,14 @@ separate process) that can be distributed as a closed-source binary.  The
 framework talks to the HAL through a well-defined contract, never linking
 directly against GPL kernel code.
 
-This is not merely a policy choice -- it is enforced in the build system.  Since
-Android 8.0 (Project Treble), the Vendor Native Development Kit (VNDK) and
-linker namespace isolation ensure that framework code cannot load vendor
-libraries and vice versa, except through approved HAL interfaces.
+This is not merely a policy choice -- it is enforced by the platform.  Since
+Android 8.0 (Project Treble), linker namespace isolation has ensured that
+framework code cannot load vendor libraries and vice versa, except through
+approved HAL interfaces.  From Android 8 through 14 this was backed by the
+Vendor Native Development Kit (VNDK), a versioned set of system libraries
+vendor code could link against; VNDK was deprecated in Android 15, and the
+current tree forces `BOARD_VNDK_VERSION` empty in `build/make/core/config.mk`,
+leaving linker namespaces, SELinux, and VINTF as the enforcement mechanisms.
 
 ### 10.1.2 The Four-Layer Stack
 
@@ -184,10 +188,15 @@ The key enforcement mechanisms are:
 
 1. **Linker namespace isolation.**  The dynamic linker enforces that system
    libraries cannot load vendor libraries and vice versa, except through
-   explicitly allowed interfaces (VNDK libraries and HAL interfaces).
+   explicitly allowed interfaces -- for example, the framework loads
+   same-process HALs from the vendor partition only through the dedicated
+   SP-HAL namespace via `android_load_sphal_library()`.
 
-2. **VNDK (Vendor NDK).**  A curated set of system libraries that vendor code
-   is permitted to link against.  These libraries have stable ABIs.
+2. **VNDK (Vendor NDK).**  Historically (Android 8 through 14), a curated set
+   of system libraries with stable ABIs that vendor code was permitted to
+   link against.  VNDK was deprecated in Android 15 and is disabled in the
+   current tree, where `build/make/core/config.mk` unconditionally clears
+   `BOARD_VNDK_VERSION`; no VNDK snapshot is built or installed anymore.
 
 3. **VINTF.**  The formal declaration system (described in Section 10.5) that
    records which HALs each side provides and requires.
@@ -205,7 +214,7 @@ On a Treble-compliant device, the storage is partitioned as follows:
 
 | Partition | Contains | Updated By |
 |-----------|----------|-----------|
-| `/system` | Android framework, system apps, VNDK | Google (system OTA) |
+| `/system` | Android framework, system apps | Google (system OTA) |
 | `/system_ext` | OEM framework extensions | OEM (OTA) |
 | `/vendor` | Vendor HAL implementations, firmware | SoC vendor (vendor OTA) |
 | `/odm` | ODM-specific customizations | Device manufacturer |
@@ -746,7 +755,7 @@ sequenceDiagram
 ### 10.2.6 All Legacy HAL Modules
 
 The directory `hardware/libhardware/modules/` contains reference implementations
-for 22 legacy HAL modules:
+for 20 legacy HAL modules:
 
 | Module | Directory | Purpose |
 |--------|-----------|---------|
@@ -770,12 +779,16 @@ for 22 legacy HAL modules:
 | usbaudio | `modules/usbaudio` | USB audio |
 | usbcamera | `modules/usbcamera` | USB camera |
 | vibrator | `modules/vibrator` | Vibrator motor |
-| vr | `modules/vr` | Virtual reality mode |
 
 The header directory `hardware/libhardware/include/hardware/` contains the
-interface definitions for all of these, plus additional ones like `camera2.h`,
+interface definitions for most of these, plus additional ones like `camera2.h`,
 `camera3.h`, `gralloc1.h`, `hwcomposer2.h`, and `keymaster2.h` that represent
-evolved versions of the same interfaces.
+evolved versions of the same interfaces.  A few of the modules keep their
+headers elsewhere: `consumerir.h`, `radio.h`, `thermal.h`, and
+`local_time_hal.h` live in `hardware/libhardware/include_vendor/hardware/`
+instead, and `usbaudio`, `usbcamera`, and `audio_remote_submix` have no
+dedicated header at all -- they implement the generic `audio.h`/`camera3.h`
+contracts.
 
 ### 10.2.6.1 Legacy HAL Header Contracts
 
@@ -794,10 +807,13 @@ extension and module ID.  The full set of headers includes:
 | `power.h` | `POWER_HARDWARE_MODULE_ID` | `power_module_t` |
 | `fingerprint.h` | `FINGERPRINT_HARDWARE_MODULE_ID` | `fingerprint_module_t`, `fingerprint_device_t` |
 | `gps.h` | `GPS_HARDWARE_MODULE_ID` | `gps_device_t` |
-| `bluetooth.h` | `BT_HARDWARE_MODULE_ID` | `bluetooth_module_t`, `bluetooth_device_t` |
 | `vibrator.h` | `VIBRATOR_HARDWARE_MODULE_ID` | `vibrator_device_t` |
-| `thermal.h` | `THERMAL_HARDWARE_MODULE_ID` | `thermal_module_t` |
-| `memtrack.h` | `MEMTRACK_MODULE_API_VERSION_0_1` | `memtrack_module_t` |
+| `memtrack.h` | `MEMTRACK_HARDWARE_MODULE_ID` | `memtrack_module_t` |
+
+(`bluetooth.h` is the odd one out: it defines no `hw_module_t`/`hw_device_t`
+subtypes at all, instead exporting a flat `bt_interface_t` function table under
+the string `BLUETOOTH_INTERFACE_STRING` -- it is not a `hw_module_t`-style
+legacy HAL.)
 
 Each header follows the same pattern:
 
@@ -1043,19 +1059,15 @@ The hwservicemanager performs two critical functions:
    `IFoo::getService("instance_name")`.  The HIDL runtime contacts
    hwservicemanager, which returns the HwBinder proxy.
 
-The hwservicemanager also enforces VINTF manifest compliance -- it checks that
-any HAL being registered is declared in the device's VINTF manifest (when
-`ENFORCE_VINTF_MANIFEST` is defined):
-
-```c++
-// system/libhidl/transport/ServiceManagement.cpp, lines 148-151
-
-#ifdef ENFORCE_VINTF_MANIFEST
-static constexpr bool kEnforceVintfManifest = true;
-#else
-static constexpr bool kEnforceVintfManifest = false;
-#endif
-```
+Notably, hwservicemanager does *not* require every registered HAL to appear in
+the device's VINTF manifest.  A comment in
+`system/hwservicemanager/ServiceManager.cpp` (lines 401-407) explains why:
+requiring manifest entries for every registration would prevent tests from
+registering their own services, so for HIDL the platform relies on VTS to catch
+undeclared HALs.  The one check hwservicemanager does enforce is consistency
+within an inheritance chain: if a HAL *is* declared in the manifest but one of
+its superclasses in the `interfaceChain()` is not, registration is refused
+(`ServiceManager.cpp`, lines 417-432).
 
 With HIDL now deprecated, newer devices may not ship hwservicemanager at all.
 The `NoHwServiceManager` class in `ServiceManagement.cpp` (lines 213-348) acts
@@ -1126,6 +1138,7 @@ service implements.  For example, calling `interfaceChain()` on a
 
 ```
 ["android.hardware.camera.provider@2.6::ICameraProvider",
+ "android.hardware.camera.provider@2.5::ICameraProvider",
  "android.hardware.camera.provider@2.4::ICameraProvider",
  "android.hidl.base@1.0::IBase"]
 ```
@@ -1310,11 +1323,19 @@ sp<IServiceManager1_0> defaultServiceManager() {
 }
 ```
 
-**4. hwservicemanager validates against VINTF:**
+**4. The client library validates against VINTF:**
 
-The service manager checks the device's VINTF manifest to verify the HAL is
-declared.  The `Vintf.cpp` file in `system/hwservicemanager/` performs this
-check.
+The manifest check happens on the *client* side, not inside hwservicemanager.
+`registerAsServiceInternal()` (`system/libhidl/transport/ServiceManagement.cpp`,
+lines 981-1008) queries hwservicemanager for the HAL's declared transport via
+`getTransport()` -- a lookup served by `system/hwservicemanager/Vintf.cpp` from
+the VINTF manifests -- and refuses to register unless the transport is
+`HWBINDER`, logging "must be in VINTF manifest in order to register/get".
+hwservicemanager's own `add()` deliberately does not require a manifest entry
+(a comment in `system/hwservicemanager/ServiceManager.cpp` explains that doing
+so would prevent tests from running, so HIDL relies on VTS for full
+enforcement); it only rejects a registration when a declared HAL's superclasses
+in the interface chain are missing from the manifest.
 
 **5. hwservicemanager stores the service:**
 
@@ -1707,10 +1728,13 @@ frame rate) before mutating any light, so an ill-formed request throws
 ```
 
 The fragment still declares `<version>2</version>` even though the interface is
-frozen at version 3 and the implementation links the V3 library.  A manifest
-fragment advertises the *minimum* interface version the service guarantees, and
-a client asking for V2 is satisfied by a V3 implementation (AIDL HAL versions
-are additive), so the reference fragment was never bumped.
+frozen at version 3 and the implementation links the V3 library.  The manifest
+`<version>` is the *highest* interface version the service provides: libvintf's
+`VersionRange::supportedBy()` (`system/libvintf/include/vintf/VersionRange.h`,
+lines 54-61) accepts a manifest version against any matrix requirement at or
+below it.  Declaring 2 while shipping V3 code is therefore simply a stale,
+under-declared reference fragment -- it works because the framework matrix
+still accepts version 2, not because of any "minimum version" convention.
 
 **init.rc service definition** (`lights-default.rc`):
 
@@ -1908,8 +1932,8 @@ The interface uses nested parcelable types for complex arguments:
 ```
 
 The default implementation in `hardware/interfaces/audio/aidl/default/Module.cpp`
-demonstrates the scale of a production HAL.  The file begins with 66 lines of
-just `using` declarations:
+demonstrates the scale of a production HAL.  The file begins with 31 lines of
+just `using` declarations (lines 37-67):
 
 ```c++
 // hardware/interfaces/audio/aidl/default/Module.cpp (lines 37-67, excerpt)
@@ -1953,7 +1977,7 @@ The Audio HAL VINTF manifest fragment from
   </hal>
   <hal format="aidl">
     <name>android.hardware.audio.effect</name>
-    <version>3</version>
+    <version>4</version>
     <fqname>IFactory/default</fqname>
   </hal>
 </manifest>
@@ -2328,8 +2352,11 @@ very different contracts:
   succeed, overwriting the oldest unread data if the buffer is full.  Each
   reader keeps its own read counter, and a reader that has been lapped detects
   the overwrite and resets its counter (the queue logs and the read returns the
-  loss).  This flavor needs the extra `WRITEREGIONENDPTRPOS` grantor (which
-  aliases `READPTRPOS`) so that an in-progress write region can be published.
+  loss).  Because those read counters live in each reader's own process memory,
+  the shared read-counter slot is free, and this flavor reuses grantor slot 0
+  (`WRITEREGIONENDPTRPOS`, defined as the same index as `READPTRPOS`) to
+  publish the end of an in-progress write region -- the grantor count is
+  unchanged, not increased.
   libfmq even warns at runtime if an unsynchronized writer tries to overwrite
   the entire buffer in a single call, because that defeats the overflow
   detection.
@@ -2432,6 +2459,10 @@ aidl_interface {
             version: "2",
             imports: [],
         },
+        {
+            version: "3",
+            imports: [],
+        },
     ],
 }
 ```
@@ -2489,9 +2520,10 @@ The build system enforces this:
 
 1. During development, changes can be made to the `.aidl` files in the main
    source directory.
-2. When a version is ready to ship, it is "frozen" by running
-   `m <name>-update-api`, which copies the current files to a new numbered
-   directory.
+2. `m <name>-update-api` refreshes the `current/` snapshot from the sources.
+   When a version is ready to ship, it is "frozen" by running
+   `m <name>-freeze-api`, which copies the current sources into a new numbered
+   directory (`system/tools/aidl/build/aidl_api.go`, lines 686-689).
 3. The `frozen: true` flag in `Android.bp` tells the build system to verify
    that the current sources match the latest frozen version.
 
@@ -2533,9 +2565,9 @@ definitions.  In the Android 17 tree it holds 51 hardware interface directories
 `scripts`, `staging`, and `tests`).  Most carry an `aidl/` package, and the
 HIDL-only `configstore` interface that earlier releases shipped is gone.  But
 the `.hal`/`hidl/` subtrees have *not* all been pruned: roughly 726 `.hal` files
-still ship, and about a dozen of these directories (`audio`, `camera`,
-`biometrics`, `tv`, `automotive`, `graphics`, `input`, `media`, `security`,
-`renderscript`, `virtualization`, `atrace`, `apexkey`) have no top-level `aidl/`
+still ship, and exactly twelve of these directories (`apexkey`, `atrace`,
+`automotive`, `biometrics`, `camera`, `graphics`, `input`, `media`,
+`renderscript`, `security`, `tv`, `virtualization`) have no top-level `aidl/`
 of their own -- their interfaces are either still frozen HIDL `.hal`
 definitions, nested AIDL packages one level down, or non-HAL build artifacts:
 
@@ -2818,47 +2850,54 @@ framework can work with any vendor providing version 1, 2, or 3 of the audio
 core HAL.  This range is critical for compatibility -- it allows older vendor
 images to work with newer framework images.
 
-HALs that are not listed in the compatibility matrix (or are listed without
-a `<version>` range) are optional.  Only HALs with explicit version
-requirements are mandatory for a device at that FCM level.
+HALs that are absent from the compatibility matrix are simply not required.
+For entries that are present, optionality is expressed by the
+`optional="true"` attribute (e.g. `android.hardware.security.timestamp` in the
+202604 matrix); an AIDL entry that omits `<version>` is *not* thereby optional
+-- libvintf treats a missing AIDL version as the default version 1
+(`system/libvintf/constants-private.h`).
 
 ### 10.5.4 The Compatibility Check Algorithm
 
-The compatibility check verifies that:
+The compatibility promise is enforced in two places, and it is worth being
+precise about which check runs where.
 
-1. For every **required** HAL in the framework compatibility matrix, the device
-   manifest provides an implementation at a compatible version.
+The runtime entry point, `VintfObject::checkCompatibility()`
+(`system/libvintf/VintfObject.cpp`, lines 696-745), first null-checks the four
+VINTF documents (device manifest, framework manifest, device matrix, framework
+matrix), then calls `HalManifest::checkCompatibility()` in both directions plus
+`RuntimeInfo::checkCompatibility()`.  Those calls
+(`system/libvintf/HalManifest.cpp`, lines 474-523) verify:
 
-2. For every HAL in the device manifest, the version is within the range
-   accepted by the framework compatibility matrix.
+1. Schema/type consistency between each manifest and the opposing matrix.
 
-3. Kernel requirements (config options, version) are satisfied.
+2. On the device side: the sepolicy version and kernel requirements declared
+   in the framework matrix.
 
-4. SELinux policy version requirements are met.
+3. On the framework side: VNDK and System SDK versions required by the device
+   matrix.
+
+4. Runtime info (kernel version, kernel configs, loaded SELinux policy)
+   against the framework matrix.
+
+What this runtime check does *not* do is iterate the matrix's HAL entries:
+HAL presence, version-range, and instance matching against the FCM are
+enforced by the build-time `check_vintf` tooling and by the VTS VINTF tests
+(`test/vts-testcase/hal/treble/vintf/`), not by
+`VintfObject::checkCompatibility()`.
 
 ```mermaid
 flowchart TD
-    A["VintfObject::checkCompatibility()"] --> B["Load device manifest"]
-    A --> C["Load framework compatibility matrix"]
-    B --> D["For each required HAL in matrix"]
-    C --> D
-    D --> E{"Device manifest<br/>provides HAL?"}
-    E -->|No| F{"HAL is<br/>optional?"}
-    F -->|Yes| D
-    F -->|No| G["FAIL: Missing required HAL"]
-    E -->|Yes| H{"Version in<br/>acceptable range?"}
-    H -->|No| I["FAIL: Version mismatch"]
-    H -->|Yes| J{"All instances<br/>declared?"}
-    J -->|No| K["FAIL: Missing instance"]
-    J -->|Yes| D
-    D -->|"All HALs<br/>checked"| L["Check kernel requirements"]
-    L --> M["Check SELinux requirements"]
-    M --> N["PASS: Compatible"]
+    A["VintfObject::checkCompatibility()"] --> B{"All four VINTF<br/>documents present?"}
+    B -->|No| C["FAIL: NO_INIT"]
+    B -->|Yes| D["Device manifest vs framework matrix:<br/>sepolicy version, kernel requirements"]
+    D --> E["Framework manifest vs device matrix:<br/>VNDK / System SDK versions"]
+    E --> F["Runtime info vs framework matrix:<br/>kernel version, configs, SELinux policy"]
+    F --> G["PASS: Compatible"]
+    H["HAL presence / version / instance<br/>vs FCM"] -.->|"enforced by build-time check_vintf<br/>and VTS VINTF tests"| A
 
-    style G fill:#fce4ec
-    style I fill:#fce4ec
-    style K fill:#fce4ec
-    style N fill:#e8f5e9
+    style C fill:#fce4ec
+    style G fill:#e8f5e9
 ```
 
 ### 10.5.4.1 Detailed Compatibility Matrix Analysis
@@ -2878,7 +2917,7 @@ from the Android 17 matrix):
 | `android.hardware.audio.effect` | 1-4 | default |
 | `android.hardware.biometrics.face` | 3-5 | default, virtual |
 | `android.hardware.biometrics.fingerprint` | 3-5 | default, virtual |
-| `android.hardware.bluetooth` | (latest) | default |
+| `android.hardware.bluetooth` | 1 (no `<version>` element; AIDL default) | default, regex: `hci[1-9][0-9]*` |
 | `android.hardware.bluetooth.audio` | 3-6 | default |
 | `android.hardware.camera.provider` | 1-4 | regex: `[^/]+/[0-9]+` |
 | `android.hardware.gnss` | 2-7 | default |
@@ -2886,11 +2925,11 @@ from the Android 17 matrix):
 | `android.hardware.graphics.composer3` | 4-5 | default |
 | `android.hardware.health` | 3-5 | default |
 | `android.hardware.identity` | 1-5 | default |
-| `android.hardware.power` | (latest) | default |
-| `android.hardware.sensors` | (latest) | default |
+| `android.hardware.power` | 5-7 | default |
+| `android.hardware.sensors` | 2-3 | default |
 | `android.hardware.security.secretkeeper` | 1-2 | default, nonsecure |
-| `android.hardware.thermal` | (latest) | default |
-| `android.hardware.vibrator` | (latest) | default |
+| `android.hardware.thermal` | 3 | default |
+| `android.hardware.vibrator` | 1-4 | default (IVibrator and IVibratorManager) |
 
 Some entries use `<regex-instance>` for dynamic naming:
 
@@ -2898,7 +2937,7 @@ Some entries use `<regex-instance>` for dynamic naming:
 <!-- Camera provider uses regex to allow provider/id naming -->
 <hal format="aidl" updatable-via-apex="true">
     <name>android.hardware.camera.provider</name>
-    <version>1-3</version>
+    <version>1-4</version>
     <interface>
         <name>ICameraProvider</name>
         <regex-instance>[^/]+/[0-9]+</regex-instance>
@@ -2930,15 +2969,15 @@ over time:
 - When an old version is deprecated (all devices using it are past end-of-life),
   the lower bound increases.
 
-For example, the GNSS HAL version range `2-6` tells us:
+For example, the GNSS HAL version range `2-7` tells us:
 
 - Version 1 has been deprecated (no supported devices still use it).
-- Versions 2 through 6 are all supported by the current framework.
+- Versions 2 through 7 are all supported by the current framework.
 - The framework's GNSS code has backward-compatibility logic for each version.
 
 This version range mechanism is the key to Treble's compatibility promise:
 a vendor shipping version 2 of the GNSS HAL can receive framework updates
-that add support for version 6 without needing to update their HAL.
+that add support for version 7 without needing to update their HAL.
 
 ### 10.5.5 FCM Levels and Timeline
 
@@ -3130,8 +3169,11 @@ static bool forEachManifest(
 This code shows that `servicemanager` loads both the device manifest and
 framework manifest at startup, and uses them to validate every HAL
 registration request.  The `isAllowedToUseLibvintf()` function in
-`VintfObject.cpp` (lines 82-100) restricts which processes can query VINTF
-information to prevent unnecessary memory usage:
+`VintfObject.cpp` (lines 82-100) is a usage-policy check: when a binary
+outside the allowlist pulls in libvintf, `GetInstance()` logs a
+`libvintf-usage-violation` error to discourage the extra memory cost, but
+then builds and returns the object anyway -- it does not actually block those
+processes from querying VINTF data:
 
 ```c++
 // system/libvintf/VintfObject.cpp (lines 82-100)
@@ -3210,14 +3252,17 @@ well-formedness and internal consistency.
 
 **check_vintf** (`system/libvintf/check_vintf.cpp`):
 Verifies that a device image's manifests and matrices are mutually compatible.
-This tool is run as part of `make check-vintf` and during VTS testing.
+This tool is run as part of `make check-vintf-all` and during VTS testing.
 
 ```bash
-# Build-time check (run automatically during make)
-check_vintf \
-    --check-compat \
-    --device-manifest /vendor/etc/vintf/manifest.xml \
-    --framework-matrix /system/etc/vintf/compatibility_matrix.xml
+# Check a tree of VINTF metadata pulled from a device or a build output
+# (from the tool's own usage text in system/libvintf/check_vintf.cpp)
+check_vintf --check-compat --rootdir=$ROOTDIR \
+    --property ro.product.first_api_level=... \
+    --property ro.boot.product.hardware.sku=...
+# Alternatively map partitions individually instead of --rootdir:
+#   check_vintf --check-compat --dirmap /system:$SYSTEM_DIR --dirmap /vendor:$VENDOR_DIR
+# Add --kernel <version:path/to/config> to also check kernel requirements.
 ```
 
 If the check fails, the build stops with a clear error message indicating
@@ -3442,7 +3487,7 @@ graph TD
 | Source | `frameworks/native/cmds/servicemanager/` | `system/hwservicemanager/` |
 | IPC | Standard Binder | HwBinder |
 | Used by | AIDL HALs + framework services | HIDL HALs only |
-| VINTF | Checks both device and framework manifests | Checks device manifest |
+| VINTF | Checks both device and framework manifests | Also consults both (framework manifest first, then device) to resolve a HIDL transport |
 | Status | **Active** | Deprecated (may be absent on new devices) |
 | Naming | `<package>.<interface>/<instance>` | `<package>@<version>::<interface>/<instance>` |
 
@@ -3457,19 +3502,23 @@ tries to register, `servicemanager` calls `forEachManifest()` to verify the
 HAL is declared:
 
 ```c++
-// frameworks/native/cmds/servicemanager/ServiceManager.cpp (lines 113-115)
+// frameworks/native/cmds/servicemanager/ServiceManager.cpp (lines 140-142)
 
-static std::string getNativeInstanceName(
+static std::string getAidlInstanceName(
     const vintf::ManifestInstance& instance) {
-    return instance.package() + "/" + instance.instance();
+    return instance.package() + "." + instance.interface() + "/" + instance.instance();
 }
 ```
 
 The service name format for AIDL HALs in `servicemanager` is:
 
 ```
-<package>/<instance>
+<package>.<Interface>/<instance>
 ```
+
+(A sibling helper, `getNativeInstanceName()` at lines 113-115, builds the
+simpler `<package>/<instance>` names used for `format="native"` manifest
+entries.)
 
 For example:
 
@@ -3538,9 +3587,11 @@ Return<void> ClientCounterCallback::onClients(
         if (registered.clients) numWithClients++;
     }
 
-    LOG(INFO) << "Process has " << numWithClients << " (of "
-              << mRegisteredServices.size() << " available) client(s)";
+    LOG(INFO) << "Process has " << numWithClients << " (of " << mRegisteredServices.size()
+              << " available) client(s) in use after notification " << getDescriptor(service.get())
+              << "/" << registered.name << " has clients: " << clients;
 
+    // ... (active-services callback handling elided)
     // If no clients for any service, try to shut down
     if (!handledInCallback && numWithClients == 0) {
         tryShutdownLocked();
@@ -3556,7 +3607,7 @@ services and exits:
 // system/libhidl/transport/HidlLazyUtils.cpp (lines 231-243)
 
 void ClientCounterCallback::tryShutdownLocked() {
-    LOG(INFO) << "Trying to exit HAL. No clients in use for any service.";
+    LOG(INFO) << "Trying to exit HAL. No clients in use for any service in process.";
 
     if (tryUnregisterLocked()) {
         LOG(INFO) << "Unregistered all clients and exiting";
@@ -3581,7 +3632,7 @@ sequenceDiagram
     participant HAL as HAL Process
     participant Client as Framework Client
 
-    Note over Init: init knows HAL is "lazy"<br/>(interface_start in AIDL manifest)
+    Note over Init: init knows HAL is "lazy"<br/>("interface aidl" line in init.rc)
 
     Client->>SM: getService("android.hardware.foo.IFoo/default")
     SM->>SM: Service not registered
@@ -3608,26 +3659,36 @@ sequenceDiagram
 
 ### 10.6.3.1 Lazy HALs for AIDL
 
-For AIDL HALs, the lazy registration pattern is simpler.  The framework's
-`libbinder` provides `LazyServiceRegistrar`:
+For AIDL HALs, the lazy registration pattern is simpler.  An NDK-backend HAL
+uses `AServiceManager_registerLazyService()` from `libbinder_ndk`
+(`frameworks/native/libs/binder/ndk/include_platform/android/binder_manager.h`,
+lines 160-161), the same call real in-tree lazy HALs make (for example
+`hardware/interfaces/health/storage/aidl/default/main.cpp`):
 
 ```c++
-#include <binder/LazyServiceRegistrar.h>
+#include <android/binder_manager.h>
+#include <android/binder_process.h>
 
 int main() {
     ABinderProcess_setThreadPoolMaxThreadCount(0);
 
     auto greeting = ndk::SharedRefBase::make<Greeting>();
 
-    auto lazyRegistrar = android::binder::LazyServiceRegistrar::getInstance();
-    lazyRegistrar.registerService(
+    binder_status_t status = AServiceManager_registerLazyService(
         greeting->asBinder().get(),
         "android.hardware.greeting.IGreeting/default");
+    CHECK_EQ(status, STATUS_OK);
 
     ABinderProcess_joinThreadPool();
     return EXIT_FAILURE;
 }
 ```
+
+(The `android::binder::LazyServiceRegistrar` class in
+`frameworks/native/libs/binder/include/binder/LazyServiceRegistrar.h` serves
+the same purpose for services written against `libbinder` proper -- its
+`registerService()` takes a `sp<IBinder>`, not the `AIBinder*` an NDK-backend
+service holds.)
 
 The init.rc for a lazy HAL uses `interface` declarations to tell init which
 service names to watch for:
@@ -3914,12 +3975,16 @@ service is not currently registered.
 The client registers for notifications when a service becomes available.
 
 ```c++
-AServiceManager_registerForServiceNotifications(
-    "android.hardware.foo.IFoo/default",
-    [](const char* instance, AIBinder* binder) {
-        auto service = IFoo::fromBinder(ndk::SpAIBinder(binder));
-        // Service is now available, begin using it
-    });
+AServiceManager_NotificationRegistration* reg =
+    AServiceManager_registerForServiceNotifications(
+        "android.hardware.foo.IFoo/default",
+        [](const char* instance, AIBinder* binder, void* cookie) {
+            auto service = IFoo::fromBinder(ndk::SpAIBinder(binder));
+            // Service is now available, begin using it
+        },
+        nullptr /* cookie */);
+// Deleting the returned registration token later unregisters the callback:
+//   AServiceManager_NotificationRegistration_delete(reg);
 ```
 
 ---
@@ -3930,10 +3995,15 @@ Every release adds a handful of HAL packages, and Android 17's additions are
 worth a section of their own because they show where the platform is heading:
 on-device motion intelligence, a first-class NPU contract, and a family of
 "Trusted HALs" that live inside a TEE and are reachable only from protected
-virtual machines.  All of them are AIDL `@VintfStability` interfaces -- there is
-no HIDL in this story at all -- and all of them are listed (as optional) in the
-Android 17 framework compatibility matrix
-`hardware/interfaces/compatibility_matrices/compatibility_matrix.202604.xml`.
+virtual machines.  All of them are AIDL interfaces -- all `@VintfStability`
+except `ITrustedHalExt`, which is deliberately left unannotated -- and there is
+no HIDL in this story at all.  Most also appear in the Android 17 framework
+compatibility matrix
+(`hardware/interfaces/compatibility_matrices/compatibility_matrix.202604.xml`):
+`motioncontext`, `npu`, and the `security.see` hwcrypto/devicestate/storage/
+authmgr entries are all present, while `security.see.hdcp` and
+`security.see.ext` have no matrix entry at all (`ext` is deliberately not
+VINTF-stable).
 
 ### 10.7.1 The Motion Context HAL
 
@@ -3978,7 +4048,7 @@ service vendor.motioncontext-default /vendor/bin/hw/android.hardware.motionconte
 
 The interface is frozen at version 1
 (`hardware/interfaces/motioncontext/aidl/aidl_api/android.hardware.motioncontext/1/`).
-In the Android 17 matrix it appears as an optional `aidl` HAL pinned to
+In the Android 17 matrix it appears as an `aidl` entry pinned to
 `<version>1</version>` with a single `default` instance.
 
 ### 10.7.2 The NPU HAL
@@ -4015,16 +4085,20 @@ Java and NDK backends `apex_available` for both `//apex_available:platform` and
 `com.android.npumanager`, with `min_sdk_version: "36"`.  In other words the NPU
 HAL contract is packaged for the NPU Manager APEX -- a Mainline-style updatable
 module -- rather than being baked permanently into the system image.  The HAL is
-listed in the Android 17 matrix as an optional `aidl` HAL at `<version>1</version>`
+listed in the Android 17 matrix as an `aidl` entry at `<version>1</version>`
 with a `default` instance.
 
 ### 10.7.3 The Trusted HAL family: security/see
 
-The largest new cluster is `hardware/interfaces/security/see/` -- "see" for
-*Secure Embedded Environment*.  These are **Trusted HALs**: AIDL interfaces whose
+The fastest-growing cluster is `hardware/interfaces/security/see/` -- "see" for
+*Secure Execution Environment* (the term used in
+`hardware/interfaces/security/README.md`).  These are **Trusted HALs**: AIDL interfaces whose
 implementations live inside a TEE (a Trusted Execution Environment), and which
-are made available to Android **protected VMs**.  The directory's own README
-states the rule plainly:
+are made available to Android **protected VMs**.  The family is not brand-new:
+`hwcrypto`, `storage`, and `authmgr` already appear in the Android 16 matrix
+(`compatibility_matrix.202504.xml`).  What Android 17 adds is the
+`security.see.devicestate` matrix entry plus in-tree growth of the family
+(`hdcp` and `ext`).  The directory's own README states the rule plainly:
 
 > This directory contains the AIDL interface definitions for services
 > implemented in a TEE and made available to Android protected VMs.
@@ -4037,7 +4111,7 @@ The family contains several independent HALs:
 | `android.hardware.security.see.hwcrypto` | `IHwCryptoKey` | DICE-bound key derivation and a batched crypto command list, all inside the secure environment |
 | `android.hardware.security.see.storage` | `ISecureStorage` | Tamper-evident, rollback-protected filesystem for trusted services |
 | `android.hardware.security.see.authmgr` | `IAuthMgrAuthorization` | Authenticates a pVM's AuthMgr frontend to the TEE-side backend before clients reach trusted services |
-| `android.hardware.security.see.devicestate` | `IDeviceState` | Exposes secure device-state (e.g. boot/lock state) to trusted code |
+| `android.hardware.security.see.devicestate` | `IDeviceState` | Reports whether the device is still in the factory manufacturing phase where provisioning of sensitive data is permitted (single method `provisioningAllowed()`) |
 | `android.hardware.security.see.hdcp` | `IHdcpAuthControl` | HDCP authentication control for protected media paths |
 | `android.hardware.security.see.ext` | `ITrustedHalExt` | A required, *non*-VINTF-stable extension on every Trusted HAL's root binder |
 
@@ -4291,7 +4365,7 @@ aidl_interface {
     },
     versions_with_info: [
         // Initially empty; will contain frozen versions after
-        // running `m android.hardware.greeting-update-api`
+        // running `m android.hardware.greeting-freeze-api`
     ],
 }
 ```
@@ -4813,7 +4887,7 @@ snapshot:
 
 ```bash
 # Generate the frozen version snapshot
-m android.hardware.greeting-update-api
+m android.hardware.greeting-freeze-api
 ```
 
 This copies the current `.aidl` files to
@@ -4829,6 +4903,13 @@ versions_with_info: [
 ],
 ```
 
+Note the distinction from the related `-update-api` target:
+`m android.hardware.greeting-update-api` only refreshes the
+`aidl_api/android.hardware.greeting/current/` dump and sets `frozen: false`;
+it never creates a numbered snapshot.  Only `-freeze-api` copies the dump into
+a numbered directory and appends the version (see the `updateApiScript` vs
+`freezeApiScript` split in `system/tools/aidl/build/aidl_api.go`).
+
 After freezing, set `frozen: true` in `Android.bp`.  The build system will
 now verify that the current source files match the frozen snapshot.  Any
 changes require a new version (2).
@@ -4839,7 +4920,7 @@ To add new methods in a future version:
 2. Add new methods to the `.aidl` files (without removing or changing
    existing methods).
 3. Test thoroughly.
-4. Run `m android.hardware.greeting-update-api` to create version 2.
+4. Run `m android.hardware.greeting-freeze-api` to create version 2.
 5. Re-add `frozen: true`.
 
 ### 10.8.9.1 Understanding API Evolution
@@ -4898,7 +4979,7 @@ as null/default.
 **Step 3: Freeze version 2:**
 
 ```bash
-m android.hardware.greeting-update-api
+m android.hardware.greeting-freeze-api
 ```
 
 **Step 4: Update Android.bp:**
@@ -4971,14 +5052,19 @@ adb shell dumpsys -l
 adb shell service check android.hardware.greeting.IGreeting/default
 ```
 
-**lshal -- list HAL services (HIDL and AIDL):**
+**lshal -- list HAL services (HIDL only):**
+
+`lshal` covers only HIDL HALs -- its own usage text says "List and debug HIDL
+HALs. (for AIDL HALs, see `dumpsys`)"
+(frameworks/native/cmds/lshal/Lshal.cpp).  For an AIDL HAL like the Greeting
+service, use `dumpsys` and `service check` as shown above.
 
 ```bash
-# List all HAL services with their transport and status
+# List all HIDL HAL services with their transport and status
 adb shell lshal
 
-# Show detailed info for a specific HAL
-adb shell lshal debug android.hardware.greeting.IGreeting/default
+# Show detailed info for a specific HIDL HAL
+adb shell lshal debug android.hardware.foo@1.0::IFoo/default
 ```
 
 **logcat -- HAL service logs:**
@@ -4997,12 +5083,19 @@ adb logcat -s servicemanager:*
 # Dump the device's VINTF manifest
 adb shell cat /vendor/etc/vintf/manifest.xml
 
-# Dump the merged device manifest
-adb shell dumpsys DumpVintf
+# Dump the merged device manifest (see targets in system/libvintf/main.cpp)
+adb shell vintf dm
 
-# Check compatibility
-adb shell /system/bin/vintf --check-compat
+# Dump the merged framework manifest
+adb shell vintf fm
 ```
+
+(The on-device `vintf` binary dumps VINTF metadata -- its targets are
+`legacy`, `dm`, `fm`, `dcm`, `fcm`, and `ri` -- and in its default `legacy`
+mode it also runs and prints on-device manifest-vs-matrix compatibility
+results.  Checking a full image tree, as the build and OTA flows require, is
+the job of the host-side `check_vintf --check-compat --rootdir=...` flow shown
+in Section 10.5.7.2.)
 
 **Binder debugging:**
 
@@ -5097,7 +5190,7 @@ graph TD
 
 | Metric | Legacy HAL | HIDL | AIDL HAL |
 |--------|-----------|------|----------|
-| Source files (interface definitions) | ~30 headers | ~200 .hal files | ~400 .aidl files |
+| Source files (interface definitions) | ~30 headers | ~700 .hal files | ~2,200 current .aidl files (excluding frozen `aidl_api/` snapshots) |
 | Process isolation | No | Yes | Yes |
 | IPC overhead per call | None (in-process) | ~2-5 us (HwBinder) | ~2-5 us (Binder) |
 | Language support | C only | C++, Java | C++, Java, Rust, NDK |
@@ -5146,7 +5239,7 @@ and the `hwservicemanager` at `system/hwservicemanager/`.  HIDL is now
 deprecated but remains in the codebase for backward compatibility.
 
 **AIDL HALs** are the current standard, unifying HAL interfaces with the
-existing AIDL ecosystem.  The 55 interface directories under
+existing AIDL ecosystem.  The roughly 50 interface directories under
 `hardware/interfaces/` define every hardware interface in Android, from audio
 to vibrators.  AIDL's multi-language support (C++, Java, Rust, NDK) and its
 integration with the standard `servicemanager` at
@@ -5165,19 +5258,19 @@ The key files for further exploration:
 |------|-------|---------|
 | `hardware/libhardware/hardware.c` | 279 | Legacy HAL module loading |
 | `hardware/libhardware/include/hardware/hardware.h` | 245 | Core HAL data structures |
-| `system/libhidl/transport/ServiceManagement.cpp` | ~500 | HIDL service discovery |
+| `system/libhidl/transport/ServiceManagement.cpp` | ~1030 | HIDL service discovery |
 | `system/libhidl/transport/HidlLazyUtils.cpp` | 309 | Lazy HAL support |
 | `system/libhidl/transport/base/1.0/IBase.hal` | 141 | HIDL root interface |
 | `system/libhidl/transport/manager/1.0/IServiceManager.hal` | 165 | HIDL service manager interface |
-| `hardware/interfaces/light/aidl/android/hardware/light/ILights.aidl` | 47 | Simple AIDL HAL example |
+| `hardware/interfaces/light/aidl/android/hardware/light/ILights.aidl` | 62 | Simple AIDL HAL example |
 | `hardware/interfaces/light/aidl/default/main.rs` | 46 | Rust HAL service example |
-| `hardware/interfaces/light/aidl/default/lights.rs` | 80 | Rust HAL implementation |
+| `hardware/interfaces/light/aidl/default/lights.rs` | 168 | Rust HAL implementation |
 | `hardware/interfaces/vibrator/aidl/default/main.cpp` | 45 | NDK C++ HAL service example |
 | `hardware/interfaces/audio/aidl/default/Module.cpp` | ~2000 | Complex production HAL |
 | `hardware/interfaces/power/aidl/android/hardware/power/IPower.aidl` | 200 | Advanced AIDL features |
-| `system/libvintf/include/vintf/VintfObject.h` | ~200 | VINTF compatibility checking API |
-| `system/libvintf/include/vintf/HalManifest.h` | ~100 | VINTF manifest data model |
-| `frameworks/native/cmds/servicemanager/ServiceManager.cpp` | ~120 | Service manager VINTF integration |
+| `system/libvintf/include/vintf/VintfObject.h` | ~430 | VINTF compatibility checking API |
+| `system/libvintf/include/vintf/HalManifest.h` | ~270 | VINTF manifest data model |
+| `frameworks/native/cmds/servicemanager/ServiceManager.cpp` | ~1250 | Service manager (VINTF integration is the first ~200 lines) |
 | `hardware/interfaces/compatibility_matrices/compatibility_matrix.202504.xml` | 736 | Framework compatibility matrix |
 
 ### 10.9.5 What Happens When You Press the Power Button: A HAL Trace

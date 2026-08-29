@@ -36,12 +36,15 @@ graph LR
         B --> C["ContentProviderProxy<br/>(Binder proxy)"]
     end
 
-    subgraph "Binder Driver"
-        C -- "IPC" --> D["ContentProviderNative<br/>(Binder stub)"]
+    subgraph "Binder Driver (kernel)"
+        K["binder transaction"]
     end
 
+    C -- "IPC" --> K
+    K --> D
+
     subgraph "Provider Process"
-        D --> E["Transport<br/>(inner class)"]
+        D["ContentProviderNative<br/>(Binder stub)"] --> E["Transport<br/>(inner class)"]
         E --> F["ContentProvider<br/>(your subclass)"]
         F --> G["SQLiteDatabase /<br/>File / Network"]
     end
@@ -55,7 +58,7 @@ The critical classes in this path are:
 | Class | Role | Source |
 |-------|------|--------|
 | `ContentResolver` | Client-side facade; resolves authorities, acquires providers | `frameworks/base/core/java/android/content/ContentResolver.java` |
-| `ContentProviderProxy` | Auto-generated Binder proxy inside `ContentProviderNative` | `frameworks/base/core/java/android/content/ContentProviderNative.java` |
+| `ContentProviderProxy` | Hand-written Binder proxy inside `ContentProviderNative` | `frameworks/base/core/java/android/content/ContentProviderNative.java` |
 | `ContentProviderNative` | Binder stub that dispatches incoming Parcel transactions | Same file |
 | `ContentProvider.Transport` | Inner class extending `ContentProviderNative`; enforces permissions before delegating | `frameworks/base/core/java/android/content/ContentProvider.java` |
 | `ContentProvider` | The abstract base class that provider authors subclass | Same file |
@@ -154,9 +157,10 @@ mPublic.addURI(authority, "*/images/media/#",  IMAGES_MEDIA_ID);
 mPublic.addURI(authority, "*/audio/media",     AUDIO_MEDIA);
 ```
 
-At query time, `matchUri()` returns the appropriate integer constant, and a
-large `switch` statement in `MediaProvider.query()` dispatches to the correct
-query logic.
+At query time, `MediaProvider.queryInternal()` computes the match code via
+`matchUri()` and passes it down to `getQueryBuilder()` /
+`getQueryBuilderInternal()`, whose large `switch (match)` statement selects
+the backing table and projection map for the query.
 
 ### 27.1.5 CRUD Operations
 
@@ -242,8 +246,12 @@ class Transport extends ContentProviderNative {
 
 Key points about the transport:
 
-1. **URI validation** -- `validateIncomingUri()` strips user IDs from cross-user
-   URIs unless the caller has `INTERACT_ACROSS_USERS`.
+1. **URI validation** -- `validateIncomingUri()` verifies the authority belongs
+   to this provider, throws a `SecurityException` for URIs carrying another
+   user's ID when cross-user redirection is not permitted, and normalizes
+   empty path segments.  A separate `maybeGetUriWithoutUserId()` call then
+   strips the embedded user ID; the `INTERACT_ACROSS_USERS` /
+   `INTERACT_ACROSS_USERS_FULL` check lives in `ContentProvider.checkUser()`.
 2. **Permission enforcement** -- `enforceReadPermission()` and
    `enforceWritePermission()` check the provider's declared read/write
    permissions, path-level permissions, and AppOps.
@@ -325,6 +333,12 @@ single IPC call, which the provider can execute inside a transaction:
 ```java
 // frameworks/base/core/java/android/content/ContentProvider.java (line 2717)
 public @NonNull ContentProviderResult[] applyBatch(@NonNull String authority,
+        @NonNull ArrayList<ContentProviderOperation> operations)
+        throws OperationApplicationException {
+    return applyBatch(operations);
+}
+
+public @NonNull ContentProviderResult[] applyBatch(
         @NonNull ArrayList<ContentProviderOperation> operations)
         throws OperationApplicationException {
     final int numOperations = operations.size();
@@ -674,8 +688,10 @@ field are maintained for performance.
 Two special flags in `ProviderInfo` control multi-user behavior:
 
 - `FLAG_SINGLE_USER` -- The provider runs in user 0's process and serves all
-  users.  MediaProvider uses this pattern: there is one process, but it
-  handles URIs that embed a user ID.
+  users.  TelephonyProvider uses this pattern (its providers declare
+  `android:singleUser="true"`): there is one process, but it handles URIs
+  that embed a user ID.  (MediaProvider, by contrast, runs one instance per
+  user.)
 - `FLAG_SYSTEM_USER_ONLY` -- The provider is only available to the system user
   (user 0).
 
@@ -746,7 +762,7 @@ read-only providers or those backed by in-memory data.
 
 MediaProvider is the most complex content provider in AOSP.  It manages every
 image, video, audio file, and download on the device.  The provider is
-delivered as a Mainline module (`com.google.android.providers.media.module`),
+delivered as a Mainline module (`com.android.providers.media.module`),
 meaning it can be updated independently of the base system.
 
 ```
@@ -802,29 +818,32 @@ public final class MediaVolume implements Parcelable {
 }
 ```
 
-MediaProvider maintains separate SQLite databases per volume:
+MediaProvider maintains exactly two SQLite databases: `internal.db` for
+system media and `external.db` for everything else.  All external volumes --
+the primary emulated storage *and* removable cards -- share `external.db`,
+with rows distinguished by the `volume_name` column.  (Per-volume
+`external-<uuid>.db` files are a legacy layout; `isMediaDatabaseName()` still
+recognizes the pattern only so stale files can be cleaned up.)
 
 ```mermaid
 graph TD
     subgraph "MediaProvider Databases"
         A["internal.db<br/>(system media)"]
-        B["external.db<br/>(primary external storage)"]
-        C["{volume_uuid}.db<br/>(removable volume)"]
+        B["external.db<br/>(all external volumes,<br/>rows keyed by volume_name)"]
     end
 
     subgraph "Storage Volumes"
         D["/system/media"] --> A
         E["/storage/emulated/0"] --> B
-        F["/storage/1234-ABCD"] --> C
+        F["/storage/1234-ABCD"] --> B
     end
 
     style A fill:#4da6e8,stroke:#333,color:#000
     style B fill:#4de84d,stroke:#333,color:#000
-    style C fill:#e8d44d,stroke:#333,color:#000
 ```
 
-The `VolumeCache` class tracks mounted volumes and maps volume names to
-their paths and databases.
+The `VolumeCache` class tracks the volumes that are available and maps volume
+names to their mount and scan paths; it has no knowledge of the databases.
 
 ### 27.3.4 Database Schema
 
@@ -889,15 +908,20 @@ graph TD
     style I fill:#4de84d,stroke:#333,color:#000
 ```
 
-Scan reasons are encoded as integer constants:
+Scan reasons are encoded as integer constants, declared as bare interface
+fields initialized from the statsd logging symbols:
 
 ```java
-// MediaScanner.java
-public static final int REASON_UNKNOWN = 0;
-public static final int REASON_MOUNTED = 1;
-public static final int REASON_DEMAND  = 2;   // explicit scan request
-public static final int REASON_IDLE    = 3;   // idle maintenance
+// packages/providers/MediaProvider/src/com/android/providers/media/scan/MediaScanner.java
+int REASON_UNKNOWN = MEDIA_PROVIDER_SCAN_OCCURRED__REASON__UNKNOWN;
+int REASON_MOUNTED = MEDIA_PROVIDER_SCAN_OCCURRED__REASON__MOUNTED;
+int REASON_DEMAND = MEDIA_PROVIDER_SCAN_OCCURRED__REASON__DEMAND;   // explicit scan request
+int REASON_IDLE = MEDIA_PROVIDER_SCAN_OCCURRED__REASON__IDLE;       // idle maintenance
 ```
+
+The underlying values (0 through 3) come from the
+`MediaProviderScanOccurred.Reason` enum in the statsd atom definitions
+(`frameworks/proto_logging/stats/atoms.proto`).
 
 The batch size for operations is 32 items:
 
@@ -1048,8 +1072,9 @@ that could be interrupted.
 
 ### 27.3.12 The DatabaseHelper
 
-`DatabaseHelper` extends `SQLiteOpenHelper` and manages schema creation,
-upgrades, and per-volume database instances:
+`DatabaseHelper` extends `SQLiteOpenHelper` and manages schema creation and
+upgrades for the two database instances MediaProvider creates: one for
+`internal.db` and one for `external.db`:
 
 ```java
 // packages/providers/MediaProvider/.../DatabaseHelper.java (line 107)
@@ -1063,15 +1088,20 @@ static final String INTERNAL_DATABASE_NAME = "internal.db";
 static final String EXTERNAL_DATABASE_NAME = "external.db";
 ```
 
-The helper implements `OnFilesChangeListener` and `OnLegacyMigrationListener`
-interfaces to coordinate with the provider during schema changes and data
-migrations from older Android versions.
+The helper defines the `OnFilesChangeListener` and `OnLegacyMigrationListener`
+callback interfaces and holds listener instances supplied by `MediaProvider`
+as anonymous implementations (`mFilesListener` and `MIGRATION_LISTENER`,
+passed to the `DatabaseHelper` constructors), coordinating with the provider
+during schema changes and data migrations from older Android versions.
 
 ### 27.3.13 Backup and Recovery
 
-MediaProvider includes a database backup and recovery mechanism that uses
-extended attributes (xattrs) on the filesystem to store row ID mappings.  This
-ensures that stable URIs survive database recreation after a factory reset or
+MediaProvider includes a database backup and recovery mechanism that stores
+file-path-to-`BackupIdRow` mappings in per-volume LevelDB tables under
+`/data/media/<user>/.transforms/recovery/`; filesystem extended attributes
+(xattrs) are used only for a few scalar counters (the next owner ID, the last
+backed-up generation, and the public-volume recovery flag).  This ensures
+that stable URIs survive database recreation after a factory reset or
 device migration:
 
 ```
@@ -1083,7 +1113,8 @@ packages/providers/MediaProvider/src/com/android/providers/media/stableuris/dao/
 
 Historically, apps could read the `_data` column to get the absolute filesystem
 path of a media file.  Starting with Android 11 (API 30), this column returns
-a fake path that the system intercepts via FUSE:
+a fake path under `/mnt/content/` that the framework intercepts in-process
+and converts back into a `content://` open (see Section 27.9.14):
 
 ```java
 // ContentResolver.java (line 132 and line 145)
@@ -1293,8 +1324,9 @@ private static final String READ_PERMISSION = "android.permission.READ_CONTACTS"
 private static final String WRITE_PERMISSION = "android.permission.WRITE_CONTACTS";
 ```
 
-Additionally, `MANAGE_SIM_ACCOUNTS` and `SET_DEFAULT_ACCOUNT` permissions
-control SIM contact management and default account configuration.
+Additionally, the `android.contacts.permission.MANAGE_SIM_ACCOUNTS` and
+`android.permission.SET_DEFAULT_ACCOUNT_FOR_CONTACTS` permissions control
+SIM contact management and default account configuration.
 
 ### 27.4.9 The ContactsDatabaseHelper
 
@@ -1351,9 +1383,11 @@ user input.
 ### 27.4.11 Directory Support
 
 Contacts directories represent remote contact sources, such as a corporate
-Global Address List (GAL).  When an app queries `Contacts.CONTENT_FILTER_URI`,
-the provider can fan out the query to all registered directories and merge
-results:
+Global Address List (GAL).  A client enumerates the registered directories
+from `Directory.CONTENT_URI` and issues one query per directory (for example
+against `Contacts.CONTENT_FILTER_URI` with `?directory=<id>` appended); the
+provider forwards each such query to the single directory provider named by
+that parameter and returns its cursor unmerged:
 
 ```java
 // ContactsProvider2.java
@@ -1370,7 +1404,10 @@ Contacts sync, Exchange ActiveSync) write to `RawContacts` and `Data` tables
 with special permissions.  The `CALLER_IS_SYNCADAPTER` query parameter
 modifies behavior:
 
-- When set, the provider skips aggregation (the sync adapter manages it)
+- When set, new raw contacts skip the automatic group bookkeeping: the
+  auto-add group membership and the favorites-group update on insert are not
+  applied.  (Aggregation itself still runs -- it is controlled by
+  `RawContacts.AGGREGATION_MODE`, not by this flag.)
 - When set, deletes are hard deletes instead of soft deletes
 - The `dirty` flag is not automatically set on mutations
 
@@ -1637,7 +1674,7 @@ packages/providers/CalendarProvider/src/com/android/providers/calendar/CalendarD
 | `ExtendedProperties` | Sync adapter extensions |
 | `EventsRawTimes` | Raw time values for events |
 | `CalendarCache` | Cached timezone data |
-| `SyncState` | Sync adapter state |
+| `_sync_state` | Sync adapter state (with `_sync_state_metadata` as companion) |
 
 Views provide pre-joined data:
 
@@ -1696,22 +1733,23 @@ private static final long MINIMUM_EXPANSION_SPAN =
 their match codes:
 
 ```java
-private static final int CALENDARS                    = 1;
-private static final int CALENDARS_ID                 = 2;
+// CalendarProvider2.java (line 4880)
+private static final int EVENTS                       = 1;
+private static final int EVENTS_ID                    = 2;
 private static final int INSTANCES                    = 3;
-private static final int INSTANCES_BY_DAY             = 4;
-private static final int EVENTS                       = 7;
-private static final int EVENTS_ID                    = 8;
-private static final int ATTENDEES                    = 9;
-private static final int ATTENDEES_ID                 = 10;
-private static final int REMINDERS                    = 15;
-private static final int REMINDERS_ID                 = 16;
-private static final int CALENDAR_ALERTS              = 17;
-private static final int CALENDAR_ALERTS_ID           = 18;
-private static final int CALENDARS_ID_EVENTS          = 21;
-private static final int EVENTS_ID_EXCEPTIONS         = 23;
-private static final int COLORS                       = 25;
-private static final int SYNCSTATE                    = 28;
+private static final int CALENDARS                    = 4;
+private static final int CALENDARS_ID                 = 5;
+private static final int ATTENDEES                    = 6;
+private static final int ATTENDEES_ID                 = 7;
+private static final int REMINDERS                    = 8;
+private static final int REMINDERS_ID                 = 9;
+private static final int EXTENDED_PROPERTIES          = 10;
+private static final int CALENDAR_ALERTS              = 12;
+private static final int CALENDAR_ALERTS_ID           = 13;
+private static final int INSTANCES_BY_DAY             = 15;
+private static final int SYNCSTATE                    = 16;
+// ...
+private static final int COLORS                       = 32;
 ```
 
 ### 27.5.11 Event Mutation Tracking
@@ -1900,9 +1938,10 @@ transparently redirects to the correct one.
 
 ### 27.6.6 Validation
 
-Apps targeting API 22 and above cannot add arbitrary keys to the System
-namespace.  The provider validates values against a set of registered
-validators:
+Apps targeting API 23 (Marshmallow) and above cannot add arbitrary keys to
+the System namespace -- the provider throws `IllegalArgumentException`; apps
+targeting API 22 or lower only get a logged warning.  The provider also
+validates values against a set of registered validators:
 
 ```
 frameworks/base/packages/SettingsProvider/src/android/provider/settings/validators/
@@ -1977,7 +2016,7 @@ frameworks/base/packages/SettingsProvider/src/com/android/providers/settings/Set
 public class SettingsState {
 ```
 
-`SettingsState` stores settings as a `HashMap<String, Setting>` in memory.
+`SettingsState` stores settings in an `ArrayMap<String, Setting>` (`mSettings`) in memory.
 Each `Setting` encapsulates the name, value, default value, package name, tag,
 and whether it is preserved during restore.
 
@@ -2004,13 +2043,16 @@ Settings are identified by a composite key that includes the settings type,
 user ID, and device ID:
 
 ```java
-// SettingsState.java
-public static int makeKey(int type, int userId, int deviceId) { ... }
-public static boolean isGlobalSettingsKey(int key) { ... }
-public static boolean isSecureSettingsKey(int key) { ... }
-public static boolean isSystemSettingsKey(int key) { ... }
-public static boolean isConfigSettingsKey(int key) { ... }
+// SettingsState.java (line 284)
+public static long makeKey(int type, int userId, int deviceId) { ... }
+public static boolean isGlobalSettingsKey(long key) { ... }
+public static boolean isSecureSettingsKey(long key) { ... }
+public static boolean isSystemSettingsKey(long key) { ... }
+public static boolean isConfigSettingsKey(long key) { ... }
 ```
+
+The composite key is a `long` because it packs the settings type, user ID,
+and device ID into a single value.
 
 This allows the same `SettingsRegistry` to manage settings for all users and
 virtual devices through a unified key space.
@@ -2128,11 +2170,11 @@ private void registerAuthority(String authority) {
     mMatcher.addURI(mAuthority, "root/*",                  MATCH_ROOT);
     mMatcher.addURI(mAuthority, "root/*/recent",           MATCH_RECENT);
     mMatcher.addURI(mAuthority, "root/*/search",           MATCH_SEARCH);
+    mMatcher.addURI(mAuthority, "root/*/trash",            MATCH_TRASH);
     mMatcher.addURI(mAuthority, "document/*",              MATCH_DOCUMENT);
     mMatcher.addURI(mAuthority, "document/*/children",     MATCH_CHILDREN);
     mMatcher.addURI(mAuthority, "tree/*/document/*",       MATCH_DOCUMENT_TREE);
     mMatcher.addURI(mAuthority, "tree/*/document/*/children", MATCH_CHILDREN_TREE);
-    mMatcher.addURI(mAuthority, "trash",                   MATCH_TRASH);
 }
 ```
 
@@ -2213,7 +2255,7 @@ tree grant are actually descendants of the granted tree root.
 
 ### 27.7.6 Abstract Methods
 
-Subclasses of `DocumentsProvider` must implement:
+Subclasses of `DocumentsProvider` must implement the four abstract methods:
 
 | Method | Purpose |
 |--------|---------|
@@ -2221,12 +2263,11 @@ Subclasses of `DocumentsProvider` must implement:
 | `queryDocument()` | Return metadata for a single document |
 | `queryChildDocuments()` | List children of a directory |
 | `openDocument()` | Return a `ParcelFileDescriptor` for reading/writing |
-| `createDocument()` | Create a new document in a directory |
-| `deleteDocument()` | Remove a document |
-| `renameDocument()` | Rename a document |
 
-Newer optional methods include `trashDocument()`, `restoreDocumentFromTrash()`,
-and `findDocumentPath()`.
+Optional methods -- concrete in the base class, throwing
+`UnsupportedOperationException` by default -- include `createDocument()`,
+`deleteDocument()`, `renameDocument()`, `trashDocument()`,
+`restoreDocumentFromTrash()`, and `findDocumentPath()`.
 
 ### 27.7.7 Built-in DocumentsProviders
 
@@ -2278,24 +2319,24 @@ public static final int FLAG_SUPPORTS_DELETE        = 1 << 2;
 public static final int FLAG_DIR_SUPPORTS_CREATE    = 1 << 3;
 public static final int FLAG_DIR_PREFERS_GRID       = 1 << 4;
 public static final int FLAG_DIR_PREFERS_LAST_MODIFIED = 1 << 5;
+public static final int FLAG_SUPPORTS_RENAME        = 1 << 6;
+public static final int FLAG_SUPPORTS_COPY          = 1 << 7;
+public static final int FLAG_SUPPORTS_MOVE          = 1 << 8;
 public static final int FLAG_VIRTUAL_DOCUMENT       = 1 << 9;
-public static final int FLAG_SUPPORTS_COPY          = 1 << 10;
-public static final int FLAG_SUPPORTS_MOVE          = 1 << 11;
-public static final int FLAG_SUPPORTS_REMOVE        = 1 << 12;
-public static final int FLAG_SUPPORTS_RENAME        = 1 << 13;
-public static final int FLAG_SUPPORTS_SETTINGS      = 1 << 17;
+public static final int FLAG_SUPPORTS_REMOVE        = 1 << 10;
+public static final int FLAG_SUPPORTS_SETTINGS      = 1 << 11;
 ```
 
 Root capabilities use their own set of flags:
 
 ```java
 // DocumentsContract.Root
-public static final int FLAG_LOCAL_ONLY     = 1 << 1;
-public static final int FLAG_SUPPORTS_CREATE = 1 << 2;
-public static final int FLAG_SUPPORTS_RECENTS = 1 << 3;
-public static final int FLAG_SUPPORTS_SEARCH  = 1 << 4;
-public static final int FLAG_SUPPORTS_IS_CHILD = 1 << 5;
-public static final int FLAG_SUPPORTS_EJECT   = 1 << 6;
+public static final int FLAG_SUPPORTS_CREATE  = 1;
+public static final int FLAG_LOCAL_ONLY       = 1 << 1;
+public static final int FLAG_SUPPORTS_RECENTS = 1 << 2;
+public static final int FLAG_SUPPORTS_SEARCH  = 1 << 3;
+public static final int FLAG_SUPPORTS_IS_CHILD = 1 << 4;
+public static final int FLAG_SUPPORTS_EJECT   = 1 << 5;
 ```
 
 ### 27.7.9 Virtual Documents
@@ -2671,10 +2712,10 @@ Content providers use a layered permission model:
 ```mermaid
 graph TD
     A["Incoming Request"] --> B{Provider exported?}
-    B -- No --> C["Deny (unless same UID)"]
+    B -- No --> F{"Check URI<br/>permissions"}
     B -- Yes --> D{"Check read/write<br/>permission"}
     D -- Denied --> E{"Check path<br/>permissions"}
-    E -- Denied --> F{"Check URI<br/>permissions"}
+    E -- Denied --> F
     F -- Denied --> G["Return empty cursor<br/>or throw SecurityException"]
     D -- Granted --> H["Allow"]
     E -- Granted --> H
@@ -2871,31 +2912,40 @@ follows this decision tree:
 
 ```mermaid
 flowchart TD
-    A["Incoming Request"] --> B{Is testing mode?}
-    B -- Yes --> Z["Allow (no checks)"]
-    B -- No --> C{"Same UID<br/>as provider?"}
-    C -- Yes --> Z
-    C -- No --> D{Provider exported?}
-    D -- No --> E["SecurityException"]
+    A["Incoming Request"] --> C{"Same UID<br/>as provider?"}
+    C -- Yes --> Z["Allowed"]
+    C -- No --> D{"Provider exported<br/>and user allowed?"}
     D -- Yes --> F{"Check provider-level<br/>permission"}
-    F -- Granted --> Z
+    D -- No --> H{"Check URI<br/>permission grants"}
+    F -- Granted --> I{"Check AppOps<br/>(read/write op)"}
     F -- Not Granted --> G{"Check path-level<br/>permissions"}
-    G -- Granted --> Z
-    G -- Not Granted --> H{"Check URI<br/>permission grants"}
-    H -- Granted --> Z
-    H -- Not Granted --> I{Check AppOps}
+    G -- Granted --> I
+    G -- Not Granted --> H
+    H -- Granted --> I
+    H -- Not Granted --> J["For query: return empty cursor<br/>For others: SecurityException"]
     I -- Allowed --> Z
-    I -- Denied --> J["For query: return empty cursor<br/>For others: SecurityException"]
+    I -- Denied --> J
 
     style Z fill:#4de84d,stroke:#333,color:#000
-    style E fill:#e87d4d,stroke:#333,color:#000
     style J fill:#e87d4d,stroke:#333,color:#000
 ```
 
-For `query()` operations, permission denial does not throw an exception.
-Instead, an empty cursor is returned with the correct column names.  This
-preserves API compatibility and prevents apps from crashing when permissions
-are revoked at runtime.
+Note two subtleties of this flow.  A non-exported provider is not an
+immediate denial: the component and path permission checks are skipped, but
+the URI-permission-grant check still runs -- this is exactly how non-exported
+`FileProvider`s hand out access via `grantUriPermission()`.  And AppOps is an
+extra gate applied *after* a successful permission or grant check
+(`enforceReadPermission()` only consults the AppOp once
+`enforceReadPermissionInner()` returns granted); AppOps can turn an allow
+into a denial, never the reverse.  (The testing flag set by
+`attachInfo(..., testing=true)` is not a permission bypass -- it only
+suppresses AppOps registration in `setAppOps()`.)
+
+For `query()` operations, a hard permission denial still throws a
+`SecurityException`.  It is a *soft* denial -- an AppOps "ignored" outcome,
+as when a runtime permission has been revoked -- that instead returns an
+empty cursor with the correct column names.  This preserves API compatibility
+and prevents apps from crashing when permissions are revoked at runtime.
 
 For `insert()`, `update()`, and `delete()`, permission denial throws a
 `SecurityException`.
@@ -2931,7 +2981,9 @@ The system limits the number of persisted URI permissions per app (typically
 
 When `grantUriPermission()` is called, the following validation occurs:
 
-1. The calling UID must own the URI or have `GRANT_URI_PERMISSION` permission
+1. The calling UID must itself hold read/write access to the URI -- either
+   via the provider's declared permissions and path permissions, or via an
+   existing URI grant strong enough to re-grant
 2. The provider must have `grantUriPermissions="true"` or a matching
    `<grant-uri-permission>` element
 3. The target package must exist
@@ -2942,14 +2994,14 @@ sequenceDiagram
     participant App as Source App
     participant AMS as ActivityManagerService
     participant UGM as UriGrantsManagerService
-    participant CP as ContentProvider
+    participant PMS as PackageManagerService
 
     App->>AMS: grantUriPermission(targetPkg, uri, flags)
-    AMS->>CP: checkGrantUriPermission()
-    CP->>CP: Does provider allow URI grants?
-    CP->>CP: Does URI match grant patterns?
-    CP-->>AMS: Permission check result
-    AMS->>UGM: grantUriPermissionUnchecked()
+    AMS->>UGM: grantUriPermission(...)
+    UGM->>PMS: getProviderInfo(authority)
+    PMS-->>UGM: ProviderInfo
+    UGM->>UGM: checkGrantUriPermission() against ProviderInfo
+    UGM->>UGM: Allows grants? Patterns match? Caller holds access?
     UGM->>UGM: Record: {sourceUid, targetUid, uri, flags}
     UGM->>UGM: If persistent: write to XML
 ```
@@ -2957,10 +3009,12 @@ sequenceDiagram
 ### 27.9.13 ContentProviderOperation Security
 
 Batch operations via `applyBatch()` inherit the same permission model as
-individual calls.  Each operation in the batch is checked independently.
-However, since the entire batch goes through a single IPC call, the permission
-check happens once for the outer `applyBatch()` call, and individual operations
-within the batch are trusted.
+individual calls.  Although the entire batch arrives in a single IPC call,
+`Transport.applyBatch()` walks the operation list up front and enforces read
+or write permission for each operation's URI before delegating to the
+provider; a denial aborts the batch with an `OperationApplicationException`.
+The results are cached per URI (in `ArraySet`s of already-checked read and
+write URIs), so a URI that repeats across operations is only checked once.
 
 This means that if an app has permission to write to the provider, it can
 perform any mix of inserts, updates, and deletes in a single batch.
@@ -2977,10 +3031,14 @@ public static final String DEPRECATE_DATA_PREFIX = "/mnt/content/";
 ```
 
 When an app reads the `_data` column from MediaStore and gets a path like
-`/mnt/content/0@media/external/images/media/42`, the FUSE layer intercepts
-any attempt to open this path and redirects it to
-`ContentResolver.openFileDescriptor()`, which performs proper permission
-checking.
+`/mnt/content/0@media/external/images/media/42`, the interception happens
+inside the app's own process, not in FUSE: `AndroidForwardingOs` (the libcore
+`Os` forwarding shim installed in every app process, at
+`frameworks/base/core/java/android/app/AndroidForwardingOs.java`) checks
+calls like `open()`, `access()`, `stat()`, and `unlink()` for the
+`/mnt/content/` prefix, converts the path back into a `content://` URI, and
+routes the operation through `ContentResolver`, which performs proper
+permission checking.
 
 This migration path allows legacy apps that relied on file paths to continue
 working while still enforcing scoped storage permissions.
@@ -3054,7 +3112,7 @@ It configures two independent timeouts:
 
 | Parameter | Applies to | Clock starts |
 |-----------|-----------|--------------|
-| `timeoutFixedMillis` | All calls (including ones without a `CancellationSignal`) | When the call is made |
+| `timeoutFixedMillis` | Calls without a `CancellationSignal`, plus cancellable calls when `timeoutOnCancelMillis` is 0 | When the call is made |
 | `timeoutOnCancelMillis` | Only calls that take a `CancellationSignal` | When the cancellation signal is fired |
 
 For a cancellable call, the watchdog therefore measures how long the provider
@@ -3097,14 +3155,20 @@ themselves are ephemeral, and the mechanism is restricted to the `Secure` and
 
 ## 27.11 CallLogProvider: A Concrete Provider Example
 
-The system call-log database lives behind a content provider in
-`packages/providers/CallLogProvider/`. It is a useful concrete example because
-it pairs a real-world `ContentProvider` (the call-log store, exposed through the
-`android.provider.CallLog` URIs) with a `BackupAgent` that ships in the same
-package. The backup half is implemented by
+The system call-log database lives behind the `CallLogProvider` content
+provider (authority `call_log`), exposed through the
+`android.provider.CallLog` URIs. Despite the name, the provider itself is not
+in `packages/providers/CallLogProvider/` -- it is implemented at
+`packages/providers/ContactsProvider/src/com/android/providers/contacts/CallLogProvider.java`
+and declared in the ContactsProvider manifest. The
+`packages/providers/CallLogProvider/` package ships only the backup half: the
+`CallLogBackupAgent` and `CallLogChangeReceiver` that back the log up. It is
+a useful concrete example because it pairs a real-world `ContentProvider`
+(the call-log store) with a `BackupAgent` in a companion package. The backup
+half is implemented by
 `packages/providers/CallLogProvider/src/com/android/calllogbackup/CallLogBackupAgent.java`,
 which extends `android.app.backup.BackupAgent` and reads and writes call rows
-through the same provider during backup and restore.
+through the provider during backup and restore.
 
 Three details are worth calling out:
 
@@ -3169,12 +3233,14 @@ It is useful here for two reasons. First, it is read-only: `query()` is
 implemented, but `insert()`, `update()`, and `delete()` all throw
 `UnsupportedOperationException`. A provider does not have to back every CRUD
 verb, and one that only exposes data declares that by refusing the mutating
-calls. Second, the data does not come from a SQLite database at all. The
-provider reads its rows from its own resources, the string-array `bookmarks`
-(alternating title and URL entries) and the `bookmark_preloads` icon array in
-`res/values/`, and serves them back through a `MatrixCursor`. An OEM customizes
-the shipped bookmarks by overlaying those resources rather than by writing to
-the provider.
+calls. Second, it shows how a provider can seed a real SQLite database from
+its own resources. The provider builds its database (rebuilding it whenever
+the MCC/MNC or locale configuration changes) from the string-array
+`bookmarks` (alternating title and URL entries) and the `bookmark_preloads`
+icon array in `res/values/`, and serves queries with a `SQLiteQueryBuilder`
+over that database; only the partner-folder-ID URI is answered directly with
+a `MatrixCursor`. An OEM customizes the shipped bookmarks by overlaying those
+resources rather than by writing to the provider.
 
 The contract exposes one table, `bookmarks`, addressed at
 `content://com.android.partnerbookmarks/bookmarks`, whose rows are either a
@@ -3206,7 +3272,10 @@ adb shell content query --uri content://media/external/images/media/42
 adb shell content query --uri content://media/external/audio/media \
     --projection _id:title:artist:album:duration
 
-# List mounted volumes
+# List attached volumes
+adb shell content query --uri content://media/
+
+# Query the legacy FAT volume ID (a one-row "fsid" cursor, hard-coded to -1)
 adb shell content query --uri content://media/external/fs_id
 ```
 
@@ -3279,17 +3348,33 @@ adb shell content delete --uri content://com.android.contacts/raw_contacts/1
 
 ### 27.14.6 Observing Content Changes
 
-```bash
-# Watch for changes to the media database
-# (This starts a persistent process that logs changes)
-adb shell content observe --uri content://media/external
+The `content` shell tool has no `observe` subcommand (its subcommands are
+`insert`, `update`, `delete`, `query`, `call`, `read`, `write`, and
+`gettype`), so watching change notifications requires registering a
+`ContentObserver` from code, for example in a small test app:
 
-# In another terminal, take a screenshot to trigger a media scan:
+```java
+getContentResolver().registerContentObserver(
+        MediaStore.Files.getContentUri("external"),
+        /* notifyForDescendants= */ true,
+        new ContentObserver(new Handler(Looper.getMainLooper())) {
+            @Override
+            public void onChange(boolean selfChange, Uri uri) {
+                Log.d("ObserverDemo", "Changed: " + uri);
+            }
+        });
+```
+
+Then trigger a change from the shell and watch the log:
+
+```bash
+# Take a screenshot to create a new media file and trigger a scan:
 adb shell screencap /sdcard/Pictures/test_observe.png
 adb shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE \
     -d file:///sdcard/Pictures/test_observe.png
 
-# The first terminal should show a notification
+# The observer's onChange() logs the changed URI:
+adb logcat -s ObserverDemo
 ```
 
 ### 27.14.7 Dumping Provider State

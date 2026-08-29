@@ -36,7 +36,7 @@ flowchart TD
 
 ### Architecture changes
 
-**OTA snapshots move to a UBLK backend (`system/core` + `system/update_engine`).** Virtual A/B snapshot merges, previously served by `snapuserd` through the kernel `dm-user` device, can now run over **UBLK** (userspace block driver). First-stage init selects the mode at boot: `system/core/init/first_stage_mount_android.cpp` calls `sm->UpdateUsesUblk()`, then `LaunchFirstStageSnapuserd(use_ublk)` and initializes `/dev/block/ublkb*` / `/dev/ublk*` misc devices. A new manifest field `disable_ublk` (`system/update_engine/update_metadata.proto:385-387`) lets OEMs force dm-user even on UBLK-configured devices. The legacy `system snapuserd` codepath and `ro.virtual_ab.userspace.snapshots.enabled`-style props are removed on both sides.
+**OTA snapshots move to a UBLK backend (`system/core` + `system/update_engine`).** Virtual A/B snapshot merges, previously served by `snapuserd` through the kernel `dm-user` device, can now run over **UBLK** (userspace block driver). First-stage init selects the mode at boot: `system/core/init/first_stage_mount_android.cpp` calls `sm->UpdateUsesUblk()`, then `LaunchFirstStageSnapuserd(use_ublk)` and initializes `/dev/block/ublkb*` / `/dev/ublk*` misc devices. A new manifest field `disable_ublk` (`system/update_engine/update_metadata.proto:385-387`) lets OEMs force dm-user even on UBLK-configured devices. The legacy `system snapuserd` codepath and `ro.virtual_ab.userspace.snapshots.enabled`-style props are removed on the snapuserd/first-stage side (`system/core`); update_engine's `payload_consumer/vabc_partition_writer.cc` still reads `ro.virtual_ab.userspace.snapshots.enabled`.
 
 **update_engine COW/compression updates.** Android 17 adds **zstd compression for REPLACE ops** (plus a `zstd_extent_writer` unittest) and a flag to disable REPLACE compression. It also **removes squashfs support** and retrofit-dynamic-partition logic, drops `SnapshotMergeStats`, and stops saving manifest bytes / frees manifest partition memory after use to cut peak RAM. Large patches are now written to a file and applied via fd rather than held in memory.
 
@@ -241,7 +241,7 @@ The 17 public API surface is `core/api/current.txt` (~65k lines); new feature ar
 
 - System service: `frameworks/base/services/core/java/com/android/server/security/advancedprotection/AdvancedProtectionService.java`, registered in `services/java/com/android/server/SystemServer.java:1868`.
 - Public/system API: `frameworks/base/core/java/android/security/advancedprotection/AdvancedProtectionManager.java`, reachable via `Context.ADVANCED_PROTECTION_SERVICE = "advanced_protection"` (`Context.java:6873`); `isAdvancedProtectionEnabled()` plus register/unregister callbacks are public (`core/api/current.txt:42225`).
-- Feature hooks under `.../advancedprotection/features/`: `DisallowCellular2GAdvancedProtectionHook`, `DisallowInstallUnknownSourcesAdvancedProtectionHook`, `UsbDataAdvancedProtectionHook`, `MemoryTaggingExtensionHook` (MTE). The `@SystemApi` feature IDs in `AdvancedProtectionManager` (DISALLOW_CELLULAR_2G=0 … DISALLOW_USB=2, DISALLOW_WEP=3, ENABLE_MTE=4, plus insecure-Wi-Fi-autojoin and a11y-restriction) map one-to-one to those hooks.
+- Feature hooks under `.../advancedprotection/features/`: `DisallowCellular2GAdvancedProtectionHook`, `DisallowInstallUnknownSourcesAdvancedProtectionHook`, `UsbDataAdvancedProtectionHook`, `MemoryTaggingExtensionHook` (MTE). `AdvancedProtectionManager` declares seven `@SystemApi` feature IDs, but only four (DISALLOW_CELLULAR_2G=0, DISALLOW_INSTALL_UNKNOWN_SOURCES=1, DISALLOW_USB=2, ENABLE_MTE=4) have matching hook classes registered by `AdvancedProtectionService`; DISALLOW_WEP=3, DISALLOW_INSECURE_WIFI_AUTOJOIN=5, and RESTRICT_NON_TOOL_A11Y_SERVICES=6 are enforced elsewhere (e.g. via `WifiManagerFeatureProvider`) rather than by hooks in `.../advancedprotection/features/`.
 
 **SupervisionService** — a first-class supervision (parental-controls) framework, splitting supervision out from DevicePolicy.
 
@@ -278,7 +278,7 @@ flowchart TD
 
 **Large-screen orientation/resizability opt-out removed at SDK 37.** For apps targeting SDK 37, the window manager stops honoring `resizeableActivity` and the restricted-resizability property on large screens (>600dp), forcing universal resizability; the SDK gate is `DISABLE_OPT_OUT_UNIVERSAL_RESIZABLE_BY_DEFAULT` (`frameworks/base/services/core/java/com/android/server/wm/AppCompatResizeOverrides.java`).
 
-**Reduced activity relaunch on config changes.** At SDK 37 a set of config changes (keyboard, keyboard-hidden, navigation, touchscreen, color-mode) no longer recreates the activity by default; the masked set is `RECREATE_ON_CONFIG_CHANGES_MASK` (`frameworks/base/core/java/android/internal/pm/pkg/component/ParsedActivityUtils.java`) and an app opts a change back into relaunch via the `android:recreateOnConfigChanges` manifest attribute, enforced by `AppCompatRecreateOnConfigChangePolicy`.
+**Reduced activity relaunch on config changes.** At SDK 37 a set of config changes (keyboard, keyboard-hidden, navigation, touchscreen, color-mode) no longer recreates the activity by default; the masked set is `RECREATE_ON_CONFIG_CHANGES_MASK` (`frameworks/base/core/java/com/android/internal/pm/pkg/component/ParsedActivityUtils.java`) and an app opts a change back into relaunch via the `android:recreateOnConfigChanges` manifest attribute, enforced by `AppCompatRecreateOnConfigChangePolicy`.
 
 **Custom notification view memory cap.** SystemUI now verifies that a notification's custom `RemoteViews` stay under a memory limit (`config_notificationStripRemoteViewSizeBytes`, ~5 MB) via `NotificationCustomContentMemoryVerifier` (`frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/notification/row/NotificationCustomContentMemoryVerifier.kt`); for SDK 37 apps an oversized view drops the notification rather than only logging a warning.
 
@@ -409,7 +409,7 @@ graph TD
 
 **Connectivity (Tethering/NetworkStack).** The 877-commit Connectivity delta is mostly incremental hardening of Tethering, NetworkStack and ConnectivityService; the notable new-capability item is the device-to-device path under `nearby/` gated by `enable_d2d_connectivity_service` (`packages/modules/Connectivity/nearby/flags/d2d_connectivity.aconfig`).
 
-**`usesCleartextTraffic` deprecation.** Apps targeting SDK 37 no longer have the `android:usesCleartextTraffic` manifest flag honored; the compat change `DEPRECATE_USES_CLEARTEXT_TRAFFIC` (`frameworks/base/packages/NetworkSecurityConfig/.../NetworkSecurityConfig.java`) routes cleartext policy entirely through Network Security Config XML so per-domain rules apply instead of a single global toggle.
+**`usesCleartextTraffic` deprecation.** Apps targeting SDK 37 no longer have the `android:usesCleartextTraffic` manifest flag honored; the compat change `DEPRECATE_USES_CLEARTEXT_TRAFFIC` (`frameworks/base/packages/NetworkSecurityConfig/platform/src/android/security/net/config/ManifestConfigSource.java`) routes cleartext policy entirely through Network Security Config XML so per-domain rules apply instead of a single global toggle.
 
 **Wi-Fi RTT 802.11az secure ranging.** Wi-Fi RTT gains 802.11az secure ranging behind the `secure_ranging` flag: `SecureRangingConfig` and `PasnConfig` (`packages/modules/Wifi/framework/java/android/net/wifi/rtt/`) negotiate PASN (Pre-Association Security Negotiation) to authenticate and protect FTM frames, with open/opportunistic/authenticated modes and `RangingResult.isRangingAuthenticated()`/`isRangingFrameProtected()` status.
 
@@ -691,13 +691,13 @@ Android 17's marquee device-support change is the **Software Defined Vehicle (SD
 
 ### New modules
 
-From `device/google/sdv/sdv_core_base/sdv_packages_core_services.mk`, an SDV Core VM installs these agents and APEXes:
+From `device/google/sdv/sdv_core_base/sdv_packages_core_services.mk`, an SDV Core VM installs these agents and APEXes (the per-device makefile `device/google/sdv/sdv_core_arm64/sdv_core_arm64.mk` supplies the SOME/IP stack, diagnostics, and power-state modules through the `SDV_SOMEIP_AGENT_MODULES` / `SDV_DIAGNOSTICS_AGENT_MODULE` / `SDV_VEHICLE_POWER_STATE_MANAGER_MODULE` variables that `sdv_packages_core_services.mk` consumes):
 
 - **Communication stack** (`middleware/`): `sdv_sd_agent` (Service Discovery), `dt_agent` (Data Tunnel pub/sub, `com.android.sdv.dt`), `rpcagent` (`middleware/rpc_agent`); shared client library `libsdv_comms` (`middleware/sdv_comms`) over `wire_format` and `transport` (Rust).
 - **Lifecycle & orchestration**: `sdv_lifecycle_agent`, `lifecycle_service_bundle_runner`, `sdv_orchestration_agent` (`com.android.sdv.orchestrator`), `sdv_service_bundles_registry_agent` — the orchestrator drives bundle lifecycle from `orch_config.textproto`.
 - **VSIDL toolchain** (host): `vsidlc`, `vsidl_rc_generator`, `someip_translation_generator`; on-device `sdv_vsidl_provider_agent`.
-- **SOME/IP**: `sdv_someip_stack_agent` + `vsomeip_config.json`, `sdv_someip_broker_agent_comms`.
-- **Platform/ops**: `sdv_health_monitor`, `sdv_update_manager_agent`, `sdv_diagnostics_agent`, `vepsm` (vehicle power-state manager).
+- **SOME/IP**: `sdv_someip_stack_agent` + `vsomeip_config.json` (from the per-device makefile), `sdv_someip_broker_agent_comms`.
+- **Platform/ops**: `sdv_health_monitor`, `sdv_update_manager_agent`, `sdv_diagnostics_agent` and `vepsm` (vehicle power-state manager; both from the per-device makefile).
 
 `hardware/sdv/interfaces` defines the stable AIDL surface: `ISdvGateway`/`ISdvGatewaySession` (`sdv_gateway/google/sdv/gateway/`), `IRpcAgent` (`middleware/rpc/`), `IRegistry` (`service_bundles_registry/`, API v3 under `aidl_api/`), lifecycle `IService`/`IServiceManager`, the vehicle-power-manager AIDL, and privileged Service-Discovery / identity agents.
 

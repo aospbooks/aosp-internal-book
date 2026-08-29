@@ -20,7 +20,7 @@ when each component starts.
 
 ### 4.1.1 The Complete Boot Flow
 
-The Android boot sequence consists of seven major stages. Each stage hands off
+The Android boot sequence consists of eight major stages. Each stage hands off
 control to the next in a carefully defined order, with strict dependencies that
 determine what can happen when.
 
@@ -82,9 +82,10 @@ command line parameters passed from the bootloader and the Device Tree.
 **Stage 4: init (First Stage)**
 
 The init process executes in two stages. First-stage init runs from the ramdisk with
-a minimal environment. Its job is to mount essential partitions (`/system`, `/vendor`,
-`/product`), load kernel modules, set up SELinux policy, and then `exec()` itself
-into second-stage init. This two-stage design exists because first-stage init needs
+a minimal environment. Its job is to load kernel modules, mount essential partitions
+(`/system`, `/vendor`, `/product`), and then `exec()` itself as `init selinux_setup`,
+a distinct phase that loads SELinux policy before exec'ing into second-stage init.
+This two-stage design exists because first-stage init needs
 to run before SELinux policy is loaded, while second-stage init runs under full
 SELinux enforcement.
 
@@ -370,11 +371,17 @@ typedef enum {
 } AvbHashtreeErrorMode;
 ```
 
-In production (`RESTART_AND_INVALIDATE`), if dm-verity detects corruption, the device
-restarts and the current slot is marked as invalid, triggering a fallback to the
-other A/B slot. The `LOGGING` mode is available only when verification errors are
-explicitly allowed (unlocked devices) and is used purely for development and
-debugging.
+Modern production devices use `MANAGED_RESTART_AND_EIO`: the device restarts by
+default when dm-verity detects corruption, but once a restart is reported as having
+been caused by hashtree corruption, the mode transitions to `EIO` (returning I/O
+errors to applications instead of rebooting again). This state machine is tracked
+via the persistent value `avb.managed_verity_mode`, and the device transitions back
+to restart mode when a new OS is detected. `RESTART_AND_INVALIDATE` -- which
+invalidates the current slot on corruption, requiring `CONFIG_DM_VERITY_AVB` in the
+kernel -- is a legacy mode kept for Android Things devices and is not recommended
+for other form factors. The `LOGGING` mode is available only when verification
+errors are explicitly allowed (unlocked devices) and is used purely for development
+and debugging.
 
 #### Rollback Protection
 
@@ -460,7 +467,7 @@ The entry point is `system/core/init/main.cpp`. This single main() function acts
 a dispatch point for all init's execution modes:
 
 ```cpp
-// system/core/init/main.cpp, lines 53-83
+// system/core/init/main.cpp, lines 53-87
 int main(int argc, char** argv) {
 #if __has_feature(address_sanitizer)
     __asan_set_error_report_callback(AsanReportCallback);
@@ -490,20 +497,30 @@ int main(int argc, char** argv) {
         }
     }
 
+#if defined(FIRST_STAGE_INIT) || defined(RECOVERY)
     return FirstStageMain(argc, argv);
+#else
+    LOG(FATAL) << "Second-stage init requires an argument to main()";
+#endif
 }
 ```
 
-This reveals that the `/system/bin/init` binary actually serves five different roles
-depending on how it is invoked:
+This reveals that the same `main()` serves five different roles depending on how it
+is invoked:
 
 | Invocation | Function | Purpose |
 |---|---|---|
-| `init` (no args) | `FirstStageMain()` | First-stage initialization |
+| `init` (no args) | `FirstStageMain()` | First-stage initialization (first-stage/recovery builds only) |
 | `init selinux_setup` | `SetupSelinux()` | Load SELinux policy |
 | `init second_stage` | `SecondStageMain()` | Main init loop |
 | `init subcontext` | `SubcontextMain()` | SELinux subcontext worker |
 | `ueventd` (symlink) | `ueventd_main()` | Device node manager |
+
+Note the preprocessor guard around the fall-through case: the no-argument path to
+`FirstStageMain()` exists only when `main.cpp` is compiled with `FIRST_STAGE_INIT`
+or `RECOVERY` defined. The `/system/bin/init` binary (built as `init_second_stage`
+in `system/core/init/Android.bp` without those defines) instead aborts with
+`LOG(FATAL)` if invoked without an argument.
 
 Note line 60: the process priority is immediately boosted to -20 (highest priority)
 to ensure init gets as much CPU time as possible during boot. This priority is
@@ -1003,9 +1020,8 @@ After all scripts are loaded, init queues the trigger sequence that drives the
 entire boot:
 
 ```cpp
-// system/core/init/init.cpp, lines 1238-1282
+// system/core/init/init.cpp, lines 1238-1286
 am.QueueBuiltinAction(SetupCgroupsAction, "SetupCgroups");
-am.QueueBuiltinAction(TestPerfEventSelinuxAction, "TestPerfEventSelinux");
 am.QueueEventTrigger("early-init");
 am.QueueBuiltinAction(ConnectEarlyStageSnapuserdAction, "ConnectEarlyStageSnapuserd");
 
@@ -1021,8 +1037,8 @@ am.QueueBuiltinAction(SetMmapRndBitsAction, "SetMmapRndBits");
 am.QueueEventTrigger("init");
 
 // Don't mount filesystems or start core system services in charger mode.
-std::string bootmode = GetProperty("ro.bootmode", "");
-if (bootmode == "charger") {
+// (bootmode was computed earlier: BootMode bootmode = GetBootMode(); -- line 1180)
+if (bootmode == BootMode::CHARGER_MODE) {
     am.QueueEventTrigger("charger");
 } else {
     am.QueueEventTrigger("late-init");
@@ -1079,7 +1095,7 @@ while (true) {
     }
     if (!IsShuttingDown()) {
         HandleControlMessages();
-        SetUsbController();
+        SetUsbController(false);
     }
 }
 ```
@@ -1206,8 +1222,10 @@ on <trigger>
 The `early-init` trigger runs first and sets up basic kernel parameters:
 
 ```
-# system/core/rootdir/init.rc, lines 15-46
+# system/core/rootdir/init.rc, lines 15-40
 on early-init
+    # ... (bootchart setup elided)
+
     # Disable sysrq from keyboard
     write /proc/sys/kernel/sysrq 0
 
@@ -1390,7 +1408,11 @@ Let us break down each directive:
 | `critical window=...` | If Zygote crashes too frequently, reboot the device |
 
 The `critical` directive is a safety net: if Zygote crashes repeatedly within the
-specified window, init will reboot the device to recovery to prevent a crash loop.
+specified window, init aborts and reboots the device into the target named by the
+`target=` option -- `zygote-fatal` here, defaulting to `bootloader` when no target
+is given -- to prevent a crash loop (`Service::Reap()` in
+`system/core/init/service.cpp` and `SetFatalRebootTarget()` in
+`system/core/init/reboot_utils.cpp`).
 
 For devices that support both 64-bit and 32-bit apps, the file
 `init.zygote64_32.rc` is used:
@@ -1459,7 +1481,7 @@ The following table lists the most commonly used init.rc commands:
 | `exec` | `exec -- /system/bin/vdc ...` | Fork+exec and wait for completion |
 | `exec_start` | `exec_start apexd-bootstrap` | Start a service and wait |
 | `wait` | `wait /dev/block/sda1 5` | Wait for a file to appear (timeout) |
-| `wait_for_prop` | `wait_for_prop sys.odsign.status done` | Wait for property value |
+| `wait_for_prop` | `wait_for_prop odsign.verification.done 1` | Wait for property value |
 | `symlink` | `symlink ../tun /dev/net/tun` | Create a symbolic link |
 | `restorecon` | `restorecon /dev` | Restore SELinux context |
 | `installkey` | `installkey /data` | Install encryption key |
@@ -1467,7 +1489,19 @@ The following table lists the most commonly used init.rc commands:
 | `class_stop` | `class_stop late_start` | Stop all services in a class |
 | `enable` | `enable some_service` | Enable a disabled service |
 | `setrlimit` | `setrlimit nice 40 40` | Set resource limits |
-| `import` | `import /init.${ro.hardware}.rc` | Import another rc file |
+
+Note that `import` does not appear in this table. Although it looks like a
+command, it is a *section keyword* rather than a builtin: it is absent from
+`GetBuiltinFunctionMap()` in `system/core/init/builtins.cpp` and is instead
+registered as a section parser in `system/core/init/init.cpp`:
+
+```cpp
+parser.AddSectionParser("import", std::make_unique<ImportParser>(&parser));
+```
+
+Because `ImportParser` runs at parse time rather than as an action command,
+`import` may only appear at the top level of an rc file, never inside an `on`
+block or a service definition.
 
 ---
 
@@ -1679,7 +1713,7 @@ static void preload(TimingsTraceLog bootTimingsTraceLog) {
 
 The preloading sequence:
 
-1. **`preloadClasses()`**: Loads ~15,000+ classes from `/system/etc/preloaded-classes`
+1. **`preloadClasses()`**: Loads ~19,000 classes from `/system/etc/preloaded-classes`
    (the path is defined at line 111 as `PRELOADED_CLASSES`). Each line in the file is
    a fully qualified class name that is loaded via `Class.forName()`.
 
@@ -1841,7 +1875,7 @@ flowchart TD
     JE["ZygoteInit.main()<br/>Disable thread creation"]
 
     subgraph "Preloading"
-        PC["preloadClasses()<br/>~15,000 classes from<br/>/system/etc/preloaded-classes"]
+        PC["preloadClasses()<br/>~19,000 classes from<br/>/system/etc/preloaded-classes"]
         PR["preloadResources()<br/>System drawables, layouts"]
         PH["preloadAppProcessHALs()"]
         PG["preloadGraphicsDriver()"]
@@ -1851,7 +1885,7 @@ flowchart TD
     end
 
     GC["gcAndFinalize()<br/>Clean up before forking"]
-    NS["initNativeState()<br/>Enable thread creation"]
+    NS["initNativeState()<br/>stopZygoteNoThreadCreation()<br/>Re-enable thread creation"]
     SS["Create ZygoteServer<br/>Listen on /dev/socket/zygote"]
 
     FS["forkSystemServer()<br/>fork() → system_server (PID ~500)"]
@@ -2147,18 +2181,51 @@ flowchart LR
 | `PHASE_THIRD_PARTY_APPS_CAN_START` | 600 | Third-party applications may be started |
 | `PHASE_BOOT_COMPLETED` | 1000 | Boot is complete, all services running |
 
-When `PHASE_BOOT_COMPLETED` is reached, the system property `sys.boot_completed` is
-set to `1`, the boot animation is dismissed, and the home screen (launcher) activity
-is started. This is the signal to all system components that the device is fully
-operational.
+`ActivityManagerService.finishBooting()` drives the final phase: it calls
+`startBootPhase(t, SystemService.PHASE_BOOT_COMPLETED)`
+(`frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java`,
+line 5967) and afterwards sets the system properties `sys.boot_completed=1` and
+`dev.bootcomplete=1` (lines 5991-5992). This is the signal to all system components
+that the device is fully operational. Note that the boot animation dismissal and
+the launcher start are not consequences of this phase -- both happen earlier in the
+boot sequence (see the next section).
 
 ### 4.5.8 The Boot Animation Lifecycle
 
-The boot animation process (`bootanim`) is started as a service by init.rc and
-runs a loop displaying either a default Android logo or a custom manufacturer
-animation. It continues running until system_server signals completion by setting
-the `service.bootanim.exit` property to `1`, which happens as part of reaching
-`PHASE_BOOT_COMPLETED`.
+The boot animation process (`bootanim`) is declared as an init service, but not
+in `init.rc`. Its definition lives in
+`frameworks/base/cmds/bootanimation/bootanim.rc`:
+
+```
+service bootanim /system/bin/bootanimation
+    class core animation
+    user graphics
+    group graphics audio
+    disabled
+    oneshot
+    ioprio rt 0
+    task_profiles MaxPerformance
+```
+
+The `disabled` keyword means `class_start core` will not launch it -- something
+has to start it explicitly. That something is SurfaceFlinger: once the display
+is ready it clears the exit and progress properties and requests the service
+through init's control property
+(`frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp`, line 1132):
+
+```cpp
+property_set("service.bootanim.exit", "0");
+property_set("service.bootanim.progress", "0");
+property_set("ctl.start", "bootanim");
+```
+
+Once running, `bootanimation` loops displaying either a default Android logo or
+a custom manufacturer animation. It continues until
+`WindowManagerService.performEnableScreen()`
+sets the `service.bootanim.exit` property to `1`
+(`frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java`,
+line 4388), which happens once all system-decor windows have been drawn -- before
+`PHASE_BOOT_COMPLETED` is reached, not as part of it.
 
 ### 4.5.9 Full system_server Boot Timeline
 
@@ -2212,10 +2279,10 @@ sequenceDiagram
         SS->>SM: Start APEX-delivered services
     end
 
-    SM-->>SS: PHASE_BOOT_COMPLETED (1000)
-    SS->>AMS: sys.boot_completed=1
-    AMS->>WMS: Dismiss boot animation
     AMS->>AMS: Start Home/Launcher activity
+    WMS->>AMS: Boot animation stopped (service.bootanim.exit=1)
+    SM-->>SS: PHASE_BOOT_COMPLETED (1000)
+    AMS->>AMS: sys.boot_completed=1
 
     SS->>SS: Looper.loop() [forever]
 ```
@@ -2285,9 +2352,8 @@ Init supports several trigger types:
 on property:ro.debuggable=1
     start adbd
 
-on property:vold.decrypt=trigger_restart_framework
-    start surfaceflinger
-    start zygote
+on property:sys.boot_completed=1
+    bootchart stop
 ```
 
 **Compound triggers** combine boot and property triggers:
@@ -2341,7 +2407,7 @@ than background processes.
 
 ### 4.6.4 Service Options Reference
 
-The complete set of service options available in init.rc:
+The most commonly used service options available in init.rc:
 
 | Option | Example | Description |
 |---|---|---|
@@ -2371,6 +2437,13 @@ The complete set of service options available in init.rc:
 | `updatable` | | Service can be overridden by APEX |
 | `sigstop` | | Send SIGSTOP after fork (for debugger attach) |
 
+The full keyword map in `ServiceParser::GetParserMap()`
+(`system/core/init/service_parser.cpp`) registers additional options not shown
+above: `console`, `ioprio`, `keycodes`, `memcg.limit_in_bytes`,
+`memcg.limit_percent`, `memcg.limit_property`, `memcg.soft_limit_in_bytes`,
+`memcg.swappiness`, `override`, `reboot_on_failure`, `rlimit`, `setenv`, and
+`shared_kallsyms`.
+
 ### 4.6.5 Service Classes
 
 Services are grouped into classes, allowing init to start or stop groups of services
@@ -2378,11 +2451,16 @@ at once. The standard classes are:
 
 | Class | Purpose | Started by |
 |---|---|---|
-| `core` | Core services needed before zygote | `on post-fs-data` / `class_start core` |
-| `main` | Main services including Zygote | `on zygote-start` / `class_start main` |
-| `late_start` | Services that start after boot | `on boot` / `class_start late_start` |
-| `hal` | Hardware abstraction layer services | Device-specific triggers |
-| `early_hal` | HAL services needed early | Before `late-init` |
+| `core` | Core services needed before zygote | `on boot` / `class_start core` |
+| `main` | Main services | `on nonencrypted` / `class_start main` |
+| `late_start` | Services that start after boot | `on nonencrypted` / `class_start late_start` |
+| `hal` | Hardware abstraction layer services | `on boot` / `class_start hal` |
+| `early_hal` | HAL services needed early (e.g. before FBE unlock) | `on late-fs` / `class_start early_hal` |
+
+(Zygote is in `class main`, but it is not normally *started* by `class_start main`
+-- `on zygote-start`, which fires earlier, already started it explicitly with
+`start zygote` / `start zygote_secondary`, so the later `class_start main` is a
+no-op for it.)
 
 When `class_start main` is executed, all services with `class main` that are not
 `disabled` will be started. Similarly, `class_stop main` stops all services in that
@@ -2426,13 +2504,18 @@ Understanding the processing order of init.rc files is critical for debugging bo
 issues. The complete order is:
 
 1. `/system/etc/init/hw/init.rc` is parsed first
-2. All `import` statements in `init.rc` are collected (but not processed yet)
+2. At the end of that file's parse, its `import` statements are processed
+   recursively (`ImportParser::EndFile()` in `system/core/init/import_parser.cpp`
+   fires at each file's EOF, so an imported file's own imports resolve the same way)
 3. Files in `/system/etc/init/` are parsed (alphabetical order)
 4. Files in `/system_ext/etc/init/` are parsed
 5. Files in `/vendor/etc/init/` are parsed
 6. Files in `/odm/etc/init/` are parsed
 7. Files in `/product/etc/init/` are parsed
-8. All collected `import` statements are processed (recursively)
+
+The only genuinely deferred work is `late_import_paths`: directories that could
+not be read at first parse (e.g. `/vendor/etc/init` before its partition is
+mounted) are recorded and re-parsed later during `mount_all`.
 
 Within each directory, `.rc` files are processed in alphabetical order. This means
 that naming your rc file with a numeric prefix (e.g., `01-myservice.rc`) can
@@ -2695,8 +2778,10 @@ demonstrating how modular system services have become.
 
 ### 4.8.2 APEX-Delivered Services
 
-Modern Android delivers many system services through APEX packages. The
-`startApexServices()` method starts services that come from updatable APEX modules:
+Modern Android delivers many system services through APEX packages. Most of them
+are started explicitly from `startOtherServices()` with
+`mSystemServiceManager.startServiceFromJar(<class>, <apex jar path>)`, which loads
+the service class from a JAR inside the APEX mount:
 
 | APEX Module | Service Class | Purpose |
 |---|---|---|
@@ -2719,6 +2804,15 @@ private static final String WIFI_APEX_SERVICE_JAR_PATH =
 private static final String WIFI_SERVICE_CLASS =
         "com.android.server.wifi.WifiService";
 ```
+
+The separate `startApexServices()` method, which runs last (no other service may
+start after it), covers only services an APEX declares via an
+`<apex-system-service>` tag in its manifest. It discovers them through
+`ApexManager.getInstance().getApexSystemServices()` and starts each one -- from
+its declared JAR path when one is given. In the current tree only a couple of
+modules use this mechanism, such as `com.android.scheduling`
+(`RebootReadinessManagerService`) and `com.android.virt`
+(`VirtualizationSystemService`).
 
 ### 4.8.3 Safe Mode Detection
 
@@ -2796,7 +2890,10 @@ Init records timing information in system properties:
 | `ro.boottime.init.modules` | Duration of kernel module loading |
 | `ro.boottime.init.cold_boot_wait` | Time init waited for ueventd |
 
-These are set in `RecordStageBoottimes()` (init.cpp lines 904-931):
+The first four are set in `RecordStageBoottimes()` (init.cpp lines 904-931);
+`ro.boottime.init.cold_boot_wait` is set separately in
+`PropWaiterState::CheckAndResetWait()` (init.cpp line 203) when the
+cold-boot-done property arrives from ueventd:
 
 ```cpp
 // system/core/init/init.cpp, lines 904-931
@@ -2924,9 +3021,12 @@ static void SecondStageBootMonitor(int timeout_sec) {
 Note the Android 17 addition of the `IsRecoveryMode()` early return: `sys.boot_completed`
 is never set during a recovery boot, so the monitor would always fire there; it is now
 skipped. This safety net is invaluable during development: if a code change causes an
-infinite boot loop, the device will eventually panic and (on devices with
-`REBOOT_BOOTLOADER_ON_PANIC` enabled) reboot into the bootloader, allowing the
-developer to flash a fixed image.
+infinite boot loop, the device will eventually panic; what happens after the
+sysrq-triggered kernel panic is up to the kernel and bootloader configuration (for
+example, capturing a ramdump or rebooting), giving the developer a chance to flash a
+fixed image. (`REBOOT_BOOTLOADER_ON_PANIC` is a separate mechanism: it installs
+signal handlers so that when *init itself* crashes, `InitFatalReboot()` reboots the
+device into the bootloader.)
 
 ### 4.9.5 Common Boot Optimization Techniques
 
@@ -3018,8 +3118,11 @@ SELinux policy failed to load during the selinux_setup phase. Common causes:
 
 **"Zygote: Unable to determine ABI list"**
 
-The `ro.product.cpu.abilist` property is not set. This typically indicates a
-problem with property loading or a missing `build.prop` file.
+The `ro.product.cpu.abilist64` (or `ro.product.cpu.abilist32`, depending on the
+`app_process` bitness) property is not set -- the fatal message actually comes from
+`app_process` (`frameworks/base/cmds/app_process/app_main.cpp`), not from zygote
+proper. This typically indicates a problem with property loading or a missing
+`build.prop` file.
 
 **Service crashes in a loop**
 
@@ -3053,11 +3156,17 @@ adb shell getprop | grep init.svc
 # Check if a specific trigger has fired (via property)
 adb shell getprop sys.boot_completed
 
-# Dump init's internal state
-adb shell kill -3 1  # Send SIGQUIT to init (PID 1)
-# State will be dumped to the kernel log
-adb shell dmesg | tail -100
+# Follow init's own log messages in the kernel log
+adb shell dmesg | grep init:
+
+# After logd is up, init messages also appear in logcat
+adb logcat -s init
 ```
+
+Note that init has no signal-triggered state dump: it installs handlers only for
+SIGCHLD (and SIGTERM in containers), so sending SIGQUIT to PID 1 is a no-op. The
+observable service state lives entirely in the `init.svc.<name>` properties and
+in init's log lines.
 
 ---
 
@@ -3122,8 +3231,9 @@ Key design decisions:
 
 ### 4.11.2 SIGTERM: Container Shutdown
 
-In container environments (where init is not running as the root PID namespace),
-SIGTERM is used to request graceful shutdown. From lines 713-721:
+When init lacks the `CAP_SYS_BOOT` capability (i.e. `IsRebootCapable()` returns
+false, as in containerized Android), the SIGTERM signalfd is registered and SIGTERM
+is used to request graceful shutdown. From lines 713-721:
 
 ```cpp
 // system/core/init/init.cpp, lines 713-721
@@ -3408,8 +3518,12 @@ Three types of file descriptors are registered with epoll:
    are converted to file descriptor events via `signalfd()`. This avoids the
    inherent races of traditional signal handlers.
 
-2. **The wake eventfd**: A non-blocking eventfd used to wake the main loop when
-   property changes or control messages arrive from other threads.
+2. **The wake eventfd**: An eventfd, created with `EFD_CLOEXEC` alone, used to wake
+   the main loop when property changes or control messages arrive from other
+   threads. Its counter semantics are what matter here -- init does not care how
+   many times `WakeMainInitThread()` was called, only that the epoll wakes -- and
+   the handler's `read()` is safe because epoll has already reported the
+   descriptor readable.
 
 3. **Mount event handler**: Watches for filesystem mount/unmount events and updates
    properties accordingly.
@@ -3722,17 +3836,17 @@ flowchart TD
     subgraph "Zygote"
         AP["app_process64 --zygote"]
         ART["Start ART VM"]
-        PRE["Preload ~15K classes<br/>+ resources + drivers"]
+        PRE["Preload ~19K classes<br/>+ resources + drivers"]
         FSS["Fork system_server"]
         SSL["Enter select loop<br/>(wait for fork requests)"]
     end
 
     subgraph "system_server"
         SM["SystemServer.main()"]
-        BS["startBootstrapServices()<br/>AMS, PMS, WMS, DisplayManager"]
+        BS["startBootstrapServices()<br/>AMS, PMS, PowerManager, DisplayManager"]
         CS["startCoreServices()<br/>Battery, Usage, WebView"]
         OS["startOtherServices()<br/>70+ framework services"]
-        AS["startApexServices()<br/>WiFi, BT, Connectivity"]
+        AS["startApexServices()<br/>APEX-declared services"]
         P100["PHASE 100: Default Display"]
         P500["PHASE 500: System Services Ready"]
         P600["PHASE 600: Apps Can Start"]
@@ -4014,8 +4128,9 @@ After flashing the image or booting the emulator:
 adb shell getprop init.svc.mybootdaemon
 # Expected: "running" (after boot completes)
 
-# Check the service status
-adb shell service list | grep mybootdaemon
+# Check that the daemon process is alive (it registers no binder
+# service, so it will not appear in `service list`)
+adb shell ps -A | grep mybootdaemon
 
 # View the daemon's log output
 adb shell dmesg | grep mybootdaemon
@@ -4091,24 +4206,25 @@ is critical for debugging service startup issues:
 | State | Property Value | Meaning |
 |---|---|---|
 | `stopped` | `init.svc.<name>=stopped` | Service is not running |
-| `starting` | `init.svc.<name>=starting` | Service is being started |
 | `running` | `init.svc.<name>=running` | Service is running |
 | `stopping` | `init.svc.<name>=stopping` | Service is being stopped |
 | `restarting` | `init.svc.<name>=restarting` | Service will restart after a delay |
+
+There is no `starting` value: the fork happens synchronously inside
+`Service::Start()`, so the property moves directly from `stopped` (or
+`restarting`) to `running`; a failed fork leaves it at its previous value.
 
 The state machine:
 
 ```mermaid
 stateDiagram-v2
     [*] --> stopped
-    stopped --> starting : start command
-    starting --> running : process forked successfully
-    starting --> stopped : fork failed
-    running --> stopping : stop command / SIGTERM
-    running --> restarting : process exited not oneshot
-    running --> stopped : process exited oneshot
-    stopping --> stopped : process exited
-    restarting --> starting : restart delay elapsed
+    stopped --> running : start, fork ok
+    running --> stopping : stop / SIGTERM
+    running --> restarting : exited, not oneshot
+    running --> stopped : exited, oneshot
+    stopping --> stopped : exited
+    restarting --> running : delay elapsed
     stopped --> [*]
 ```
 

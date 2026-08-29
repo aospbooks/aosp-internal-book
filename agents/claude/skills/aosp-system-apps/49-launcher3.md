@@ -77,14 +77,16 @@ The entry point is `Launcher.java`, a roughly 2900-line class that extends `Stat
 ```java
 // src/com/android/launcher3/Launcher.java
 public class Launcher extends StatefulActivity<LauncherState>
-        implements Callbacks, InvariantDeviceProfile.OnIDPChangeListener,
-        PluginListener<LauncherOverlayPlugin> {
+        implements InvariantDeviceProfile.OnIDPChangeListener {
 ```
 
 `StatefulActivity` is a generic base class that integrates with the `StateManager`
 to handle transitions between launcher states (NORMAL, ALL_APPS, SPRING_LOADED,
-EDIT_MODE, and others). The `Callbacks` interface is defined in `BgDataModel` and
-provides the contract through which the model layer delivers loaded data to the UI.
+EDIT_MODE, and others). The `Callbacks` interface defined in `BgDataModel`
+provides the contract through which the model layer delivers loaded data to the
+UI; `Launcher` does not implement it itself but owns the implementer,
+`ModelCallbacks` (`src/com/android/launcher3/ModelCallbacks.kt`), as its
+`modelCallbacks` field.
 
 The key member variables of `Launcher` establish the view hierarchy:
 
@@ -137,9 +139,18 @@ protected void onCreate(Bundle savedInstanceState) {
     mAppWidgetHolder.startListening();
 
     // 8. Start model loading
-    mModel.addCallbacksAndLoad(this);
+    if (useModelRepositoryBinding()) {
+        mModel.activate();
+    } else {
+        mModel.addCallbacksAndLoad(modelCallbacks);
+    }
+    modelCallbacks.bindWorkspaceDataModel();
 }
 ```
+
+Note that `Launcher` registers its `modelCallbacks` field -- not itself -- as the
+model callback (or, on the new repository-binding path, simply activates the
+model).
 
 The flow can be visualized:
 
@@ -204,7 +215,6 @@ constructor(
     @ApplicationContext private val context: Context,
     private val taskControllerProvider: Provider<ModelTaskController>,
     private val iconCache: IconCache,
-    private val prefs: LauncherPrefs,
     private val installQueue: ItemInstallQueue,
     @Named("ICONS_DB") dbFileName: String?,
     initializer: ModelInitializer,
@@ -215,6 +225,7 @@ constructor(
     private val loaderFactory: LoaderTaskFactory,
     private val binderFactory: BaseLauncherBinderFactory,
     val modelDbController: ModelDbController,
+    private val modelWriterFactory: ModelWriterFactory,
     dumpManager: DumpManager,
 ) : LauncherDumpable {
 ```
@@ -265,12 +276,15 @@ graph TD
     L -->|displays| WP
 ```
 
-The `Callbacks` interface (implemented by `Launcher`) defines the binding contract:
+The `Callbacks` interface -- implemented by `ModelCallbacks`
+(`src/com/android/launcher3/ModelCallbacks.kt`), which `Launcher` owns as its
+`modelCallbacks` field and which forwards bound data into the launcher view
+hierarchy -- defines the binding contract:
 
-- `bindItems()` -- delivers workspace items (icons, shortcuts)
-- `bindAppWidgets()` -- delivers widget instances
+- `bindCompleteModel()` -- delivers the full workspace model in one rebind
+- `bindItemsAdded()` / `bindItemsUpdated()` -- deliver workspace item deltas
 - `bindAllApplications()` -- delivers the full app list
-- `bindWidgetsModel()` -- delivers widget catalog for the picker
+- `bindAllWidgets()` -- delivers the widget catalog for the picker
 
 Model writes go through `ModelWriter`, obtained via `LauncherModel.getWriter()`.
 All database mutations happen on the model thread, ensuring consistency.
@@ -488,9 +502,9 @@ Each `CellLayout` maintains a `GridOccupancy` that tracks which cells are occupi
 ```java
 // src/com/android/launcher3/util/GridOccupancy.java
 public class GridOccupancy {
-    boolean[][] cells;
-    int countX;
-    int countY;
+    private final int mCountX;
+    private final int mCountY;
+    public final boolean[][] cells;
 ```
 
 Items are positioned using `CellLayoutLayoutParams`:
@@ -498,13 +512,17 @@ Items are positioned using `CellLayoutLayoutParams`:
 ```java
 // src/com/android/launcher3/celllayout/CellLayoutLayoutParams.java
 public class CellLayoutLayoutParams extends MarginLayoutParams {
-    public int cellX;
-    public int cellY;
+    private int mCellX;
+    private int mCellY;
+    private int mTmpCellX;
+    private int mTmpCellY;
+    public boolean useTmpCoords;
     public int cellHSpan;
     public int cellVSpan;
-    public int tmpCellX;
-    public int tmpCellY;
 ```
+
+The cell coordinates are private and reached through getter/setter accessors;
+only the span fields are public.
 
 The `CellLayout` uses a child container called `ShortcutAndWidgetContainer` that
 performs the actual layout of children. This separation allows `CellLayout` to
@@ -593,11 +611,11 @@ Launcher3 adapts its grid to different screen sizes through a two-tier system:
     launcher:numExtendedHotseatIcons="6"
     launcher:dbFile="launcher_4_by_4.db"
     launcher:defaultLayoutId="@xml/default_workspace_4x4"
-    launcher:deviceCategory="phone" >
+    launcher:deviceCategory="phone|multi_display" >
 ```
 
-The IDP supports multiple grid sizes (`3_by_3`, `4_by_4`, `5_by_5`, `6_by_5`)
-plus a `fixed_landscape_mode` profile. Each grid definition includes display
+The IDP supports multiple grid sizes (`3_by_3`, `4_by_4`, `5_by_5`, `6_by_5`,
+`desktop_6_by_5`) plus a `fixed_landscape_mode` profile. Each grid definition includes display
 options that specify icon sizes, text sizes, and border spacing for different
 screen dimensions.
 
@@ -608,11 +626,13 @@ configuration. It incorporates responsive specifications:
 // src/com/android/launcher3/DeviceProfile.java
 public class DeviceProfile {
     public final InvariantDeviceProfile inv;
-    public final boolean isQsbInline;
-    public final boolean isLeftRightSplit;
     private final boolean mIsScalableGrid;
     private final boolean mIsResponsiveGrid;
 ```
+
+Flags that used to be plain fields, such as the inline-QSB and left/right-split
+booleans, are now read from sub-profiles via accessors
+(`mHotseatProfile.isQsbInline()`, `mSysuiProfile.isLeftRightSplit()`).
 
 The device profile delegates layout calculations to sub-profiles:
 
@@ -812,6 +832,7 @@ sequenceDiagram
     participant DIL as WidgetPickerDragItemListener
     participant PDH as PendingItemDragHelper
     participant L as Launcher
+    participant LWH as LauncherWidgetHolder
     participant WMH as WidgetManagerHelper
     participant AWM as AppWidgetManager
     participant WS as Workspace
@@ -828,8 +849,8 @@ sequenceDiagram
         L->>L: completeAddAppWidget()
     else Needs permission
         AWM-->>L: false
-        L->>AWM: createBindConfirmation()
-        AWM-->>User: Permission dialog
+        L->>LWH: startBindFlow()
+        LWH-->>User: ACTION_APPWIDGET_BIND permission dialog
     end
     L->>WMH: Configure if needed
     L->>WS: Add LauncherAppWidgetHostView
@@ -887,11 +908,14 @@ its own ViewModel under
 
 ### 49.3.7 Widget Preview Rendering and Drag-Out
 
-There is no `WidgetCell` view and no `DatabaseWidgetPreviewLoader` in the picker
-UI anymore. A widget tile is now the `WidgetPreview` composable
+There is no `WidgetCell` view in the picker UI anymore. A widget tile is now the
+`WidgetPreview` composable
 (`modules/widgetpicker/src/com/android/launcher3/widgetpicker/ui/components/WidgetPreview.kt`),
-laid out by `WidgetsGrid.kt`; the preview bitmap is supplied through the
-repositories rather than fetched by a dedicated loader class. The data the grid
+laid out by `WidgetsGrid.kt`. `DatabaseWidgetPreviewLoader`
+(`src/com/android/launcher3/widget/DatabaseWidgetPreviewLoader.java`) still
+exists, though: it is injected into `WidgetsRepositoryImpl`
+(`src/com/android/launcher3/widgetpicker/repository/WidgetsRepositoryImpl.kt`),
+which uses it to produce the preview bitmaps the composable renders. The data the grid
 renders comes from `WidgetPickerData`, exposed by `WidgetPickerDataProvider`:
 
 ```kotlin
@@ -919,8 +943,10 @@ src/com/android/launcher3/AppWidgetResizeFrame.kt
 ```
 
 The resize frame draws handles on the widget edges and updates the cell span
-as the user drags. Minimum span constraints (`minSpanX`, `minSpanY`) and maximum
-span constraints (from `AppWidgetProviderInfo.minResizeWidth/Height`) are enforced.
+as the user drags. Minimum span constraints (`minSpanX`/`minSpanY`, derived from
+`AppWidgetProviderInfo.minResizeWidth/Height`) and maximum span constraints
+(`maxSpanX`/`maxSpanY`, derived from
+`AppWidgetProviderInfo.maxResizeWidth/maxResizeHeight`) are enforced.
 
 ### 49.3.9 Widget Visibility Tracking
 
@@ -991,16 +1017,16 @@ graph TD
 
 ### 49.4.2 DragController
 
-`DragController` is the abstract base that manages the drag lifecycle:
+`DragController` is the concrete base class (extended by
+`LauncherDragController`) that manages the drag lifecycle:
 
 ```java
 // src/com/android/launcher3/dragndrop/DragController.java
-public abstract class DragController<T extends ActivityContext>
-        implements DragDriver.EventListener, TouchController {
+public class DragController implements DragDriver.EventListener, TouchController {
 
     private static final int DEEP_PRESS_DISTANCE_FACTOR = 3;
 
-    protected final T mActivity;
+    private final ActivityContext mActivity;
     protected DragDriver mDragDriver = null;
     public DragOptions mOptions;
     protected final Point mMotionDown = new Point();
@@ -1047,8 +1073,7 @@ It coordinates:
 
 ```java
 // src/com/android/launcher3/dragndrop/DragView.java
-public abstract class DragView<T extends Context & ActivityContext>
-        extends FrameLayout {
+public class DragView extends FrameLayout {
 
     public static final int VIEW_ZOOM_DURATION = 150;
 
@@ -1196,7 +1221,7 @@ During drag, when items need to shift to make room, `CellLayout` shows reorder
 preview animations:
 
 ```java
-// src/com/android/launcher3/celllayout/ReorderPreviewAnimation.java
+// src/com/android/launcher3/celllayout/ReorderPreviewAnimation.kt
 // src/com/android/launcher3/celllayout/ReorderAlgorithm.java
 ```
 
@@ -1285,10 +1310,11 @@ constructor(
 
 In Android 17 the helper is a plain `@Inject` Dagger type rather than the
 assisted-injected one of earlier releases: instead of receiving a
-`TouchInteractionService` and `SystemUiProxy` directly it pulls a
+`TouchInteractionService` directly it pulls a
 `Provider<TouchInteractionHandler>`, a `PerDisplayRepository<TaskAnimationManager>`,
 and a `DisplayRepository`, all of which are display-aware so a single helper
-can drive overview on whichever display the gesture happened. The command
+can drive overview on whichever display the gesture happened (the
+`SystemUiProxy` is still a direct constructor parameter). The command
 types are:
 
 ```kotlin
@@ -1317,10 +1343,17 @@ overview is now reached through `TOGGLE_WITH_FOCUS`.
 
 ```java
 // quickstep/src/com/android/quickstep/views/RecentsView.java
-public abstract class RecentsView<ACTIVITY_TYPE extends StatefulActivity<STATE_TYPE>,
-        STATE_TYPE extends BaseState<STATE_TYPE>>
-        extends PagedView<PageIndicator> {
+public abstract class RecentsView<
+        CONTAINER_TYPE extends Context & RecentsViewContainer & StatefulContainer<STATE_TYPE>,
+        STATE_TYPE extends BaseState<STATE_TYPE>> extends PagedView implements Insettable,
+        HighResLoadingState.HighResLoadingStateChangedCallback,
+        TaskVisualsChangeListener {
 ```
+
+The container type parameter is a `Context` that implements
+`RecentsViewContainer` and `StatefulContainer` -- not necessarily an
+`Activity` -- which is exactly what lets the window-hosted
+`RecentsWindowManager` of section 49.5.8 reuse `RecentsView`.
 
 Key features of `RecentsView`:
 
@@ -1572,7 +1605,6 @@ graph TD
     TC --> TASC[TaskbarAutohideSuspendController]
     TC --> LTUC[LauncherTaskbarUIController]
     TC --> TDMC[TaskbarDesktopModeController]
-    TC --> THTTC[TaskbarHoverToolTipController]
 ```
 
 Key controllers:
@@ -1599,7 +1631,8 @@ public class StashedHandleViewController
     public static final int ALPHA_INDEX_HIDDEN_WHILE_DREAMING = 3;
     public static final int ALPHA_INDEX_NUDGED = 4;
     public static final int ALPHA_INDEX_ALL_SET_TRANSITION = 5;
-    private static final int NUM_ALPHA_CHANNELS = 6;
+    public static final int ALPHA_INDEX_CUEBAR_HIDDEN = 6;
+    private static final int NUM_ALPHA_CHANNELS = 7;
 ```
 
 The stashed handle has multiple alpha channels that control its visibility
@@ -2136,11 +2169,11 @@ public class FolderGridOrganizer {
     }
 ```
 
-The organizer dynamically adjusts the grid size based on content count:
-
-- 1 item: 1x1 grid
-- 2-3 items: 2x2 grid
-- 4+ items: full grid dimensions
+The organizer dynamically adjusts the grid size based on content count. The grid
+grows as roughly `countX = ceil(sqrt(count))` with `countY <= countX` (1 item:
+1x1, 2 items: 2x1, 3-4 items: 2x2, and so on), and the full
+`mMaxCountX x mMaxCountY` grid is used only once the item count reaches
+`mMaxItemsPerPage`.
 
 ### 49.8.7 Auto-Organize and Folder Naming
 
@@ -2230,12 +2263,12 @@ class ThemeManager
 @Inject
 constructor(
     @ApplicationContext private val context: Context,
-    @Ui private val uiExecutor: LooperExecutor,
     private val prefs: LauncherPrefs,
     private val themePreference: ThemePreference,
     @Named(ICON_FACTORY_DAGGER_KEY)
     private val iconThemeFactories: Map<String, IconThemeFactory>,
     @Ui mainExecutor: LooperExecutor,
+    overlayChangeHandler: OverlayChangeHandler,
     lifecycle: DaggerSingletonTracker,
 ) {
     private val _iconShapeData = MutableListenableRef(IconShape.EMPTY)
@@ -2402,12 +2435,12 @@ The XML defines grid options like this:
     launcher:numHotseatIcons="4"
     launcher:dbFile="launcher_4_by_4.db"
     launcher:defaultLayoutId="@xml/default_workspace_4x4"
-    launcher:deviceCategory="phone" >
+    launcher:deviceCategory="phone|multi_display" >
 
     <display-option
-        launcher:name="Super Short Stubby"
-        launcher:minWidthDps="255"
-        launcher:minHeightDps="300"
+        launcher:name="Short Stubby"
+        launcher:minWidthDps="275"
+        launcher:minHeightDps="420"
         launcher:iconImageSize="48"
         launcher:iconTextSize="13.0"
         launcher:allAppsBorderSpace="16"
@@ -2523,24 +2556,33 @@ LauncherPrefs.getPrefs(context)
 For the denser grid, create or modify responsive spec XML files. The workspace
 cell spec controls how much space each cell gets:
 
-Create `res/xml/spec_workspace_6_by_5_custom.xml`:
+Create `res/xml/spec_workspace_6_by_5_custom.xml`, following the schema of the
+real spec files (e.g. `res/xml/spec_handheld_workspace_cell_3_row.xml`): a
+`<cellSpecs>` root containing `<specs>` groups keyed by aspect ratio, each with
+`<cellSpec>` entries whose children set the individual dimensions:
 
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
-<responsive-specs>
-    <workspace-spec>
-        <cell-size
-            launcher:maxAvailableSize="600"
-            launcher:iconSize="40dp"
-            launcher:iconTextSize="11sp"
-            launcher:iconDrawablePadding="4dp" />
-        <cell-size
-            launcher:maxAvailableSize="1200"
-            launcher:iconSize="44dp"
-            launcher:iconTextSize="12sp"
-            launcher:iconDrawablePadding="5dp" />
-    </workspace-spec>
-</responsive-specs>
+<cellSpecs xmlns:launcher="http://schemas.android.com/apk/res-auto">
+    <specs launcher:maxAspectRatio="@dimen/aspect_ratio_portrait">
+        <cellSpec
+            launcher:dimensionType="height"
+            launcher:maxAvailableSize="9999dp">
+            <iconSize launcher:fixedSize="40dp" />
+            <iconTextSize launcher:fixedSize="11sp" />
+            <iconDrawablePadding launcher:fixedSize="4dp" />
+        </cellSpec>
+    </specs>
+    <specs launcher:maxAspectRatio="@dimen/aspect_ratio_landscape">
+        <cellSpec
+            launcher:dimensionType="height"
+            launcher:maxAvailableSize="9999dp">
+            <iconSize launcher:fixedSize="44dp" />
+            <iconTextSize launcher:fixedSize="12sp" />
+            <iconDrawablePadding launcher:fixedSize="5dp" />
+        </cellSpec>
+    </specs>
+</cellSpecs>
 ```
 
 ### 49.10.6 Step 5: Build and Test

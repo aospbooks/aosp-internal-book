@@ -437,8 +437,9 @@ list_variants   # user, userdebug, eng
 lunch sdk_phone64_x86_64-trunk_staging-userdebug
 ```
 
-`list_products`, `list_releases`, and `list_variants` are defined in
-`build/make/envsetup.sh`; `lunch` itself accepts a fully spelled
+`list_products`, `list_releases`, and `list_variants` are standalone scripts
+under `build/soong/bin/` that `build/make/envsetup.sh` puts on your `PATH`
+(via its `set_global_paths` helper); `lunch` itself accepts a fully spelled
 `<product>-<release>-<variant>` string or, with no argument, prints a menu.
 
 A lunch target has the form `<product>-<release>-<variant>`:
@@ -776,11 +777,6 @@ PRODUCT_PRODUCT_PROPERTIES += \
     ro.aospbook.features.custom_qs=true
 
 # ============================================================
-# SELinux policy
-# ============================================================
-BOARD_VENDOR_SEPOLICY_DIRS += device/AospBook/bookphone/sepolicy/vendor
-
-# ============================================================
 # Soong namespace (allows our modules to be found)
 # ============================================================
 PRODUCT_SOONG_NAMESPACES += device/AospBook/bookphone
@@ -1040,7 +1036,7 @@ android_app_import {
     // Install to the /product partition (not /system)
     product_specific: true,
 
-    // Allow the app to be updated from the Play Store
+    // Other modules this APK replaces (removed from PRODUCT_PACKAGES)
     overrides: [],
 
     // Signature: presigned means keep the APK's existing signature
@@ -1274,24 +1270,36 @@ public class MainActivity extends Activity {
 
 ### 65.4.4 Removing Default Apps
 
-To remove default AOSP apps you do not want, use `PRODUCT_PACKAGES_REMOVE`:
+AOSP itself has no "remove this package" product variable (the
+`PRODUCT_PACKAGES_REMOVE` you may see in LineageOS trees is a vendor
+extension — `build/make/core/product.mk` declares only `PRODUCT_PACKAGES`
+and its `_DEBUG`/`_ENG`/`_TESTS` variants). In stock AOSP there are two
+ways to drop a default app:
 
-```makefile
-# In device.mk
-PRODUCT_PACKAGES_REMOVE += \
-    Browser2 \
-    Calendar \
-    DeskClock \
-    Gallery2 \
-    Music
+1. **Do not inherit the makefile that adds it** — most default apps enter
+   `PRODUCT_PACKAGES` through the `$(call inherit-product, ...)` chain, so
+   choosing a slimmer parent makefile keeps them out entirely.
+2. **Override it with a replacement module** — a module that declares
+   `overrides: ["Browser2"]` in Soong (or `LOCAL_OVERRIDES_PACKAGES` in
+   Make) removes the named module from `PRODUCT_PACKAGES` when both would
+   be installed:
+
+```json
+// In your replacement app's Android.bp
+android_app {
+    name: "BookBrowser",
+    // Removes Browser2 from PRODUCT_PACKAGES when both would be installed
+    overrides: ["Browser2"],
+    // ...
+}
 ```
 
-This removes these apps from the set inherited from parent makefiles. The apps
-are still built (they may be dependencies of other modules), but they are not
-installed into the image.
+With `overrides`, the replaced app is still built (it may be a dependency
+of other modules), but it is not installed into the image.
 
-Alternatively, you can exclude entire AOSP app categories by not inheriting
-certain makefiles. For example, if you do not want telephony apps:
+The first approach — excluding entire AOSP app categories by not inheriting
+certain makefiles — looks like this. For example, if you do not want
+telephony apps:
 
 ```makefile
 # Instead of inheriting full_base_telephony.mk, inherit full_base.mk
@@ -1380,8 +1388,8 @@ The framework's configurable behavior is defined in:
 frameworks/base/core/res/res/values/config.xml
 ```
 
-This file (7,759 lines) contains hundreds of configuration values. RROs can
-override any of them.
+This file (roughly 8,000 lines) contains hundreds of configuration values.
+RROs can override any of them.
 
 **How RROs work:**
 
@@ -1393,16 +1401,24 @@ sequenceDiagram
     participant Target as Target Package (e.g., framework-res)
     participant App as Application
 
+    participant AM as AssetManager (in app process)
+
     PMS->>OMS: Register overlay APK
     OMS->>RRO: Parse AndroidManifest.xml
     OMS->>OMS: Match targetPackage to installed package
-    OMS->>OMS: Enable overlay (if static or user-enabled)
+    OMS->>OMS: Enable overlay, generate idmap
+    OMS->>AM: Overlay ApkAssets + idmap added at load time
 
-    App->>Target: getResources().getBoolean(R.bool.config_foo)
-    Target->>OMS: Check for overlaid value
-    OMS->>RRO: Read overlaid resource
+    App->>AM: getResources().getBoolean(R.bool.config_foo)
+    AM->>RRO: Resolve resource via idmap
     RRO-->>App: Return overridden value
 ```
+
+Note that `OverlayManagerService` is only involved at install/enable time:
+it drives idmap generation and tells the app's `ResourcesManager` which
+overlay `ApkAssets` to load. The per-resource lookup happens entirely inside
+the app process in `AssetManager` (`frameworks/base/libs/androidfw/`), with
+no IPC to system_server on the resource-read path.
 
 **Creating a Framework RRO:**
 
@@ -1471,7 +1487,7 @@ Key manifest attributes:
 <resources>
     <!-- Enable dark mode by default -->
     <integer name="config_defaultNightMode">2</integer>
-    <!-- 0=MODE_NIGHT_NO, 1=MODE_NIGHT_YES, 2=MODE_NIGHT_AUTO -->
+    <!-- 0=MODE_NIGHT_AUTO, 1=MODE_NIGHT_NO, 2=MODE_NIGHT_YES, 3=MODE_NIGHT_CUSTOM -->
 
     <!-- Default wallpaper component -->
     <string name="default_wallpaper_component" translatable="false">
@@ -1488,7 +1504,7 @@ Key manifest attributes:
     <!-- Lock screen: allow rotation -->
     <bool name="config_enableLockScreenRotation">true</bool>
 
-    <!-- Power button behavior: long press = power menu -->
+    <!-- Power button behavior: long press = global actions (power) menu -->
     <integer name="config_longPressOnPowerBehavior">1</integer>
 
     <!-- Show battery percentage in status bar by default -->
@@ -1509,8 +1525,8 @@ Some commonly overridden values for custom ROMs:
 
 | Resource | Type | Default | Description |
 |----------|------|---------|-------------|
-| `config_defaultNightMode` | integer | 0 | Default UI mode (dark/light) |
-| `config_longPressOnPowerBehavior` | integer | 1 | Power button long-press |
+| `config_defaultNightMode` | integer | 1 (MODE_NIGHT_NO) | Default UI mode (dark/light) |
+| `config_longPressOnPowerBehavior` | integer | 5 (assistant; 1 = power menu) | Power button long-press |
 | `config_dozeAlwaysOnDisplayAvailable` | bool | false | Always-on display |
 | `config_enableLockScreenRotation` | bool | false | Lock screen rotation |
 | `config_screenBrightnessSettingDefault` | integer | varies | Default brightness |
@@ -1806,17 +1822,18 @@ all system services are started. To add our service, we modify the
 
 ```java
 // In frameworks/base/services/java/com/android/server/SystemServer.java
-// Add to the startOtherServices() method, near the end:
+// Add to the startOtherServices(TimingsTraceAndSlog t) method, near the end.
+// `t` is the TimingsTraceAndSlog parameter every startup step uses:
 
 // AospBook custom service
-traceBeginAndSlog("StartBookService");
+t.traceBegin("StartBookService");
 try {
     ServiceManager.addService("aospbook",
         new com.aospbook.service.BookService(mSystemContext));
 } catch (Throwable e) {
     reportWtf("starting BookService", e);
 }
-traceEnd();
+t.traceEnd();
 ```
 
 Alternatively, for a less invasive approach, you can use a `SystemService`
@@ -2001,7 +2018,7 @@ Add file contexts:
 
 ```
 # device/AospBook/bookphone/sepolicy/vendor/file_contexts
-/product/lib/BookService\.jar                u:object_r:system_file:s0
+/product/framework/BookService\.jar          u:object_r:system_file:s0
 ```
 
 ### 65.5.6 System Service Lifecycle
@@ -2032,13 +2049,17 @@ graph TD
 ### 65.6.1 Boot Animation Format
 
 The boot animation is stored as a ZIP file at one of these locations
-(checked in order):
+(checked in order by `frameworks/base/cmds/bootanimation/BootAnimation.cpp`):
 
-1. `/system/media/bootanimation.zip`
-2. `/product/media/bootanimation.zip`
+1. `/apex/com.android.bootanimation/etc/bootanimation.zip`
+2. `/product/media/bootanimation.zip` (file name overridable via the
+   `ro.product.bootanim.file` property)
 3. `/oem/media/bootanimation.zip`
+4. `/system/media/bootanimation.zip`
 
-The format is defined in detail in `frameworks/base/cmds/bootanimation/FORMAT.md`.
+The format is defined in detail in `frameworks/base/cmds/bootanimation/FORMAT.md`
+(note its older two-entry location list is stale; the search order above is
+what the code implements).
 
 The ZIP contains:
 
@@ -2353,18 +2374,6 @@ runtime_resource_overlay {
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Quick Settings: number of columns -->
-    <integer name="quick_settings_num_columns">4</integer>
-
-    <!-- Quick Settings: maximum number of rows -->
-    <integer name="quick_settings_max_rows">3</integer>
-
-    <!-- Quick QS Panel: max tiles shown when collapsed -->
-    <integer name="quick_qs_panel_max_tiles">6</integer>
-
-    <!-- Quick QS Panel: max rows when collapsed -->
-    <integer name="quick_qs_panel_max_rows">2</integer>
-
     <!-- Navigation bar: enable dead zone -->
     <bool name="config_useDeadZone">false</bool>
 
@@ -2408,13 +2417,19 @@ runtime_resource_overlay {
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Status bar icon tint in light mode -->
-    <color name="light_mode_icon_color_single_tone">#FF212121</color>
+    <!-- Light (white-ish) icon tone, used on dark backgrounds -->
+    <color name="light_mode_icon_color_single_tone">#FFFAFAFA</color>
 
-    <!-- Status bar icon tint in dark mode -->
-    <color name="dark_mode_icon_color_single_tone">#FFFAFAFA</color>
+    <!-- Dark icon tone, used on light backgrounds -->
+    <color name="dark_mode_icon_color_single_tone">#FF212121</color>
 </resources>
 ```
+
+The names describe the icon tone, not the UI mode: these two resources are
+defined in `frameworks/base/packages/SettingsLib/res/values/colors.xml`
+(SettingsLib is statically linked into SystemUI), where
+`light_mode_icon_color_single_tone` is the light tint and
+`dark_mode_icon_color_single_tone` is the dark one.
 
 ### 65.7.3 Customizing the Status Bar Layout
 
@@ -2466,13 +2481,21 @@ import android.content.Intent;
 import android.os.Handler;
 import android.os.Looper;
 import android.service.quicksettings.Tile;
-import android.view.View;
+
+import androidx.annotation.Nullable;
 
 import com.android.internal.logging.MetricsLogger;
+import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
+import com.android.systemui.animation.Expandable;
 import com.android.systemui.dagger.qualifiers.Background;
 import com.android.systemui.dagger.qualifiers.Main;
+import com.android.systemui.plugins.ActivityStarter;
+import com.android.systemui.plugins.FalsingManager;
 import com.android.systemui.plugins.qs.QSTile;
+import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.qs.QSHost;
+import com.android.systemui.qs.QsEventLogger;
+import com.android.systemui.qs.logging.QSLogger;
 import com.android.systemui.qs.tileimpl.QSTileImpl;
 import com.android.systemui.res.R;
 
@@ -2486,12 +2509,22 @@ import javax.inject.Inject;
 public class BookModeTile extends QSTileImpl<QSTile.BooleanState> {
     private boolean mEnabled = false;
 
+    // QSTileImpl's constructor takes the full set of SystemUI collaborators;
+    // Dagger injects all of them.
     @Inject
     public BookModeTile(
             QSHost host,
+            QsEventLogger uiEventLogger,
             @Background Looper backgroundLooper,
-            @Main Handler mainHandler) {
-        super(host, backgroundLooper, mainHandler);
+            @Main Handler mainHandler,
+            FalsingManager falsingManager,
+            MetricsLogger metricsLogger,
+            StatusBarStateController statusBarStateController,
+            ActivityStarter activityStarter,
+            QSLogger qsLogger) {
+        super(host, uiEventLogger, backgroundLooper, mainHandler,
+                falsingManager, metricsLogger, statusBarStateController,
+                activityStarter, qsLogger);
     }
 
     @Override
@@ -2500,7 +2533,7 @@ public class BookModeTile extends QSTileImpl<QSTile.BooleanState> {
     }
 
     @Override
-    protected void handleClick(View view) {
+    protected void handleClick(@Nullable Expandable expandable) {
         mEnabled = !mEnabled;
         refreshState();
     }
@@ -2518,7 +2551,7 @@ public class BookModeTile extends QSTileImpl<QSTile.BooleanState> {
 
     @Override
     public int getMetricsCategory() {
-        return MetricsLogger.QS_CUSTOM;
+        return MetricsEvent.QS_CUSTOM;
     }
 
     @Override
@@ -2542,10 +2575,15 @@ uses Dagger `@IntoMap` annotations.
 ### 65.7.5 Theme Overlays for SystemUI
 
 Material You (Android 12+) uses dynamic color extraction. To set a default
-color scheme for your ROM, use a theme overlay:
+color scheme for your ROM, use a theme overlay. The `system_accent*` palette
+is defined in framework resources
+(`frameworks/base/core/res/res/values/colors_dynamic.xml`, package
+`android`), so these overrides belong in the framework RRO
+(`BookFrameworkOverlay`, with `android:targetPackage="android"`) -- an
+overlay targeting `com.android.systemui` cannot override them:
 
 ```xml
-<!-- device/AospBook/bookphone/overlay/BookSystemUIOverlay/res/values/styles.xml -->
+<!-- device/AospBook/bookphone/overlay/BookFrameworkOverlay/res/values/colors.xml -->
 <resources>
     <!-- Override the default accent color seed -->
     <!-- This affects Material You theming when no wallpaper-extracted color is available -->
@@ -2862,8 +2900,13 @@ m
 emulator
 # On the device, confirm the live page size:
 adb shell getconf PAGE_SIZE        # prints 16384 on a 16 KB build
-adb shell getprop ro.product.build.16k_page.enabled
 ```
+
+Use `getconf PAGE_SIZE` alone for this check. The related property
+`ro.product.build.16k_page.enabled` only reflects whether the product set
+`PRODUCT_16K_DEVELOPER_OPTION` (the dual-boot developer toggle), not whether
+the image is 16 KB aligned -- on `sdk_phone16k_x86_64`, which does not set
+that option, it reads `false` even though the build is a true 16 KB build.
 
 If a prebuilt fails to load on the 16 KB target, rebuild it from source (which
 picks up the 16 KB alignment automatically) or re-link it with a 16 KB
@@ -3015,25 +3058,33 @@ adb pull /data/misc/perfetto-traces/trace.perfetto-trace .
 Winscope captures window manager and surface flinger state transitions,
 essential for debugging UI layout issues:
 
+Both traces are now captured through Perfetto data sources. The old
+interfaces are gone: `cmd window tracing` only prints "Shell commands are
+ignored. Any type of action should be performed through perfetto."
+(`frameworks/base/services/core/java/com/android/server/wm/WindowTracingPerfetto.java`),
+and the SurfaceFlinger `service call SurfaceFlinger 1025` layer-trace toggle
+returns `NAME_NOT_FOUND` (`frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp`).
+
 ```bash
-# Start window trace
-adb shell cmd window tracing start
+# Write a Perfetto config enabling the WM and SF data sources:
+cat > winscope.cfg <<'EOF'
+buffers { size_kb: 65536 fill_policy: RING_BUFFER }
+data_sources { config { name: "android.windowmanager" } }
+data_sources { config { name: "android.surfaceflinger.layers" } }
+data_sources { config { name: "android.surfaceflinger.transactions" } }
+duration_ms: 30000
+EOF
 
-# ... reproduce the issue ...
+# Capture (reproduce the issue while it runs):
+adb push winscope.cfg /data/misc/perfetto-configs/winscope.cfg
+adb shell perfetto --txt -c /data/misc/perfetto-configs/winscope.cfg \
+    -o /data/misc/perfetto-traces/winscope.perfetto-trace
 
-# Stop and collect trace
-adb shell cmd window tracing stop
-adb pull /data/misc/wmtrace/wm_trace.winscope .
+# Collect the trace
+adb pull /data/misc/perfetto-traces/winscope.perfetto-trace .
 
-# Start layer trace (SurfaceFlinger)
-adb shell su -c 'service call SurfaceFlinger 1025 i32 1'
-
-# Stop layer trace
-adb shell su -c 'service call SurfaceFlinger 1025 i32 0'
-adb pull /data/misc/wmtrace/layers_trace.winscope .
-
-# Open traces in Winscope:
-# https://winscope.googleplex.com/ (internal)
+# Open the .perfetto-trace in the Winscope / Perfetto UI:
+# https://ui.perfetto.dev/
 # Or use the local Winscope included in the AOSP tree:
 # development/tools/winscope/
 ```
@@ -3056,7 +3107,7 @@ flowchart TD
 
     E --> E1["adb logcat -b all | grep -E 'FATAL|Crash|E System'"]
     E --> E2["Check SELinux: adb shell getenforce"]
-    E --> E3["Try: adb shell setprop persist.sys.rescue_level 1"]
+    E --> E3["Try: adb shell setprop persist.sys.enable_rescue 1"]
 
     F --> F1["adb logcat -s ActivityManager"]
     F --> F2["adb shell dumpsys activity"]
@@ -3131,8 +3182,9 @@ adb logcat | grep "avc: denied"
 #   tcontext=u:object_r:default_android_service:s0
 #   tclass=service_manager
 
-# Generate policy from denials using audit2allow:
-adb logcat -d | grep "avc: denied" | audit2allow -p out/target/product/bookdevice/vendor/etc/selinux/
+# Generate policy from denials using audit2allow
+# (-p takes a single policy file, not a directory):
+adb logcat -d | grep "avc: denied" | audit2allow -p out/target/product/bookdevice/vendor/etc/selinux/precompiled_sepolicy
 
 # This outputs allow rules you can add to your .te files
 ```
@@ -3469,12 +3521,14 @@ PRODUCT_PROPERTY_OVERRIDES += \
     ro.build.display.id=AospBook-1.0-$(shell date +%Y%m%d) \
     ro.build.version.incremental=$(shell date +%Y%m%d%H%M%S) \
     ro.aospbook.version=1.0.0
-
-# Build description (shown in Settings > About phone > Build number)
-PRODUCT_BUILD_PROP_OVERRIDES += \
-    BUILD_DISPLAY_ID=AospBook-1.0-$(shell date +%Y%m%d) \
-    BUILD_VERSION_TAGS=release-keys
 ```
+
+(There is no `PRODUCT_BUILD_PROP_OVERRIDES` variable in current AOSP -- set
+build.prop values through `PRODUCT_SYSTEM_PROPERTIES` /
+`PRODUCT_PRODUCT_PROPERTIES` / `PRODUCT_PROPERTY_OVERRIDES` as above. The
+`release-keys`/`test-keys` tag comes from the `BUILD_VERSION_TAGS` make
+variable, consumed in `build/make/core/sysprop.mk`, which is set by the
+build environment rather than a product makefile.)
 
 ### 65.10.9 Distribution Checklist
 
@@ -3719,8 +3773,8 @@ into the kernel. For the emulator:
 # View current kernel config on a running device
 adb shell cat /proc/config.gz | gunzip > current_config.txt
 
-# Or from the kernel build:
-cat out/android-mainline/.config
+# Or from the kernel build, in the Kleaf dist dir you passed:
+cat out/x86_64/dist/.config
 ```
 
 Common kernel configuration tweaks for custom ROMs:
@@ -4216,8 +4270,11 @@ PRODUCT_PACKAGES += \
 adb shell ps -A | grep booklight
 # Expected: vendor.booklight-default
 
-# Check the VINTF manifest:
-adb shell cat /vendor/etc/vintf/manifest.xml | grep booklight
+# Check the VINTF manifest fragment (fragments install under
+# /vendor/etc/vintf/manifest/, they are not merged into manifest.xml):
+adb shell cat /vendor/etc/vintf/manifest/booklight-default.xml
+# Or search all of them:
+adb shell grep -r booklight /vendor/etc/vintf/
 
 # Test the HAL service using the AIDL test client or via a framework service
 # that calls the HAL.
@@ -4258,16 +4315,21 @@ constexpr SensorInfo kCustomSensors[] = {
         .name = "AospBook Reading Posture Sensor",
         .vendor = "AospBook",
         .version = 1,
-        .type = SensorType::ADDITIONAL_INFO,
+        // OEM-defined sensors must use a type at or above
+        // SensorType::DEVICE_PRIVATE_BASE (0x10000); ADDITIONAL_INFO
+        // and the other named types are reserved by the framework.
+        .type = static_cast<SensorType>(
+            static_cast<int32_t>(SensorType::DEVICE_PRIVATE_BASE) + 1),
         .typeAsString = "com.aospbook.sensor.reading_posture",
         .maxRange = 1.0f,
         .resolution = 0.1f,
         .power = 0.001f,  // mA
+        // Designated initializers must follow SensorInfo's declaration order
         .minDelay = 100000,  // microseconds (10 Hz)
-        .maxDelay = 1000000,
         .fifoReservedEventCount = 0,
         .fifoMaxEventCount = 0,
         .requiredPermission = "",
+        .maxDelay = 1000000,
         .flags = SensorFlagBits::ON_CHANGE_MODE,
     },
 };
@@ -5437,8 +5499,9 @@ image, so the early ones are prerequisites for the later ones.
 
 4. **Build a 16 KB page-size image.** Build
    `sdk_phone16k_x86_64-trunk_staging-userdebug`, launch the emulator, and run
-   `adb shell getconf PAGE_SIZE` (expect `16384`) and
-   `getprop ro.product.build.16k_page.enabled`. Then add a 4 KB-aligned prebuilt
+   `adb shell getconf PAGE_SIZE` (expect `16384`; note that
+   `ro.product.build.16k_page.enabled` reads `false` here because this product
+   does not set `PRODUCT_16K_DEVELOPER_OPTION`). Then add a 4 KB-aligned prebuilt
    `.so` and observe it fail to load on the 16 KB target; rebuild it from source
    and watch it succeed.
 
@@ -5669,24 +5732,30 @@ introduced in earlier chapters.
 
 **Linker namespaces (Chapter 7).** An app's native libraries are loaded in an
 isolated linker namespace so they cannot see arbitrary system libraries. The
-public `android_dlopen_ext` flags that govern this live in
+`android_dlopen_ext` flags that govern this live in
 `bionic/libc/include/android/dlext.h`; `ANDROID_DLEXT_USE_NAMESPACE`
 (`bionic/libc/include/android/dlext.h:115`) lets a caller pick the namespace a
-library loads into, and `ANDROID_DLEXT_USE_LIBRARY_FD`
+library loads into — the header marks it internal-use-only, since there is no
+NDK API for namespaces — while the public `ANDROID_DLEXT_USE_LIBRARY_FD`
 (`bionic/libc/include/android/dlext.h:80`) lets it load a library straight from
 a file descriptor, for example a `.so` stored uncompressed inside the APK. The
 Vulkan loader itself uses the namespace flag when it opens the device driver, as
 we will see in 66.7.4.
 
 **W^X enforcement (Chapter 7).** A JIT must write machine code and then execute
-it. Since API 26 the dynamic linker refuses to load any ELF segment that is
-simultaneously writable and executable; `bionic/linker/linker_phdr.cpp:1057`
-emits the `"has load segments that are both writable and executable"` diagnostic
-and `bionic/linker/linker_phdr.cpp:1061` records the `W+E load segments` warning. A translator
-like FEX or Box64 therefore cannot keep a page mapped `PROT_WRITE | PROT_EXEC`;
-it must map JIT pages writable, fill them, then flip them to executable with
-`mprotect`, respecting the write-xor-execute rule the platform enforces on app
-processes.
+it. For apps targeting API 26 and later, the dynamic linker refuses to load any
+ELF *load segment* that is simultaneously writable and executable;
+`bionic/linker/linker_phdr.cpp:1057` emits the
+`"has load segments that are both writable and executable"` diagnostic and
+`bionic/linker/linker_phdr.cpp:1061` records the `W+E load segments` warning. A
+translator like FEX or Box64 therefore cannot ship prebuilt `.so` files with RWX
+segments. That check only covers ELF files the linker maps, though: anonymous
+JIT mappings are untouched by it, and SELinux even grants app processes
+`execmem` (`system/sepolicy/private/app.te:213`), so an app may map anonymous
+`PROT_WRITE | PROT_EXEC` memory. The translators nevertheless follow the
+hardening convention of mapping JIT pages writable, filling them, then flipping
+them to executable with `mprotect`, keeping every page write-xor-execute at any
+instant.
 
 **App-data execution limits.** On recent Android, executing binaries from an
 app's writable data directory is increasingly restricted. The translation stack
@@ -5967,9 +6036,11 @@ sockets), or abandon glibc and run Wine directly on `bionic` (the newer forks).
 The cleanest concrete example of a bionic redirection is System V shared memory.
 X11, DXVK, and other components use `shmget`/`shmat` to share large buffers
 between processes. Android's kernel restricts the System V SHM API. Winlator's
-glibc rootfs therefore carries a **patched glibc** whose `shmget`/`shmat`/`shmdt`
-family is reimplemented on top of Android's anonymous shared memory, brokered by
-a small server on the Android side (`com.winlator.sysvshm`).
+glibc rootfs therefore ships a small **shim library**, `libandroid-sysvshm.so`,
+which the launcher components inject into guest processes with `LD_PRELOAD`. It
+interposes the `shmget`/`shmat`/`shmdt` family and reimplements it on top of
+Android's anonymous shared memory, brokered by a small server on the Android
+side (`com.winlator.sysvshm`).
 
 On the Android side, the natural primitive is `ASharedMemory_create`
 (`frameworks/native/include/android/sharedmem.h:78`), the NDK entry point that
@@ -6030,13 +6101,14 @@ straight from a file descriptor.
 
 ### 66.4.3 W^X and the JIT
 
-The translators are JITs, and a JIT must respect the write-xor-execute rule the
-platform enforces (66.1.4). The pattern every translator on Android follows is:
-map a code buffer `PROT_READ | PROT_WRITE`, emit AArch64 instructions into it,
-clear the instruction cache for that range, then `mprotect` it to
-`PROT_READ | PROT_EXEC` before jumping in. A page is never both writable and
-executable at once, satisfying the linker's W+E rejection
-(`bionic/linker/linker_phdr.cpp:1057`). On devices and Android versions that
+The translators are JITs, and the JIT discipline from 66.1.4 applies. The
+pattern every translator on Android follows is: map a code buffer
+`PROT_READ | PROT_WRITE`, emit AArch64 instructions into it, clear the
+instruction cache for that range, then `mprotect` it to `PROT_READ | PROT_EXEC`
+before jumping in. A page is never both writable and executable at once. That is
+the translator's own hardening pattern, not compliance with the linker's W+E
+rejection (`bionic/linker/linker_phdr.cpp:1057`), which applies to ELF load
+segments and never sees these anonymous code buffers. On devices and Android versions that
 further restrict executing memory from app data, the translator must allocate
 its code pages as anonymous memory it owns rather than mapping a file from the
 data directory.
@@ -6600,10 +6672,13 @@ Whichever guest path is used, the bottom of the chain is the same AOSP Vulkan
 loader from Chapter 13. The loader discovers and loads the device's Vulkan driver
 in `frameworks/native/vulkan/libvulkan/driver.cpp`; the `LoadDriver` routine
 (`frameworks/native/vulkan/libvulkan/driver.cpp:153`) opens the HAL driver
-(`vulkan.<board>.so`) with `android_dlopen_ext`
-(`frameworks/native/vulkan/libvulkan/driver.cpp:171`) using
-the namespace flag from 66.4.2, because the driver lives in a restricted linker
-namespace. A native renderer such as Vortek's server, or a thunked Turnip, is in
+(`vulkan.<board>.so`) through one of two branches. When a driver namespace is
+supplied — the updatable, Play-delivered driver path — it uses
+`android_dlopen_ext` with `ANDROID_DLEXT_USE_NAMESPACE`
+(`frameworks/native/vulkan/libvulkan/driver.cpp:171`), the namespace flag from
+66.4.2; the ordinary built-in driver is instead opened with
+`android_load_sphal_library`
+(`frameworks/native/vulkan/libvulkan/driver.cpp:178`) from the sphal namespace. A native renderer such as Vortek's server, or a thunked Turnip, is in
 the end just another client of this loader and this driver, which is why the
 whole edifice works without any platform modification: the GPU is reached through
 the same public Vulkan interface any Android game uses.
@@ -6651,8 +6726,12 @@ A Windows game emits audio through one of several front-end APIs (the modern
 WASAPI via `mmdevapi`, legacy DirectSound, or the old `winmm`/`waveOut`). Wine
 layers all of them onto a single backend driver chosen at runtime. The backend
 that matters here is `winepulse.drv`, which targets **PulseAudio**; the
-alternatives are `winealsa.drv` (ALSA) and `wineoss.drv` (OSS). Each backend is a
-PE driver DLL paired with a Unix `.so` that calls the host audio client library.
+alternatives are `winealsa.drv` (ALSA) and `wineoss.drv` (OSS). In modern Wine
+each backend is a Unix-only library — `winepulse.so`, built from
+`dlls/winepulse.drv/pulse.c`, calls the host PulseAudio client library — while
+the PE half lives in `mmdevapi` itself, which loads the backend with
+`__wine_load_unix_lib` and calls into it through `__wine_unix_call`
+(`dlls/mmdevapi/main.c`).
 In the ARM64EC configuration the backend and its client library are native ARM64,
 so audio mixing and transport are not emulated; only the game's calls into the
 front-end API cross the emulator.
@@ -6741,11 +6820,14 @@ graph TD
 
 2. **A `CreateFile` call.** The game asks to open a file. This is a Windows API
    call that becomes an NT system call, funnelled through Wine's
-   `__wine_syscall_dispatcher` into `ntdll.so`, which asks wineserver to
-   translate the Windows path and hand back a real Linux file descriptor over the
-   socket. PRoot or `libredirect` then remaps the path into the rootfs, and the
-   Linux `openat` finally lands in the app's private storage. No GPU, no audio,
-   entirely different machinery from path 1.
+   `__wine_syscall_dispatcher` into `ntdll.so`, which itself translates the NT
+   path to a Unix path (`nt_to_unix_file_name`, `dlls/ntdll/unix/file.c`) and
+   sends that Unix path to wineserver in a `create_file` request; the server
+   opens the file and returns a Windows `HANDLE`, and the underlying Linux fd is
+   fetched from the server over `SCM_RIGHTS` when needed. PRoot or `libredirect`
+   remaps the path into the rootfs along the way, and the Linux `openat` finally
+   lands in the app's private storage. No GPU, no audio, entirely different
+   machinery from path 1.
 
 3. **An audio buffer write.** The game's WASAPI write enters `winepulse.drv`
    (native on ARM64EC), which ships the PCM over the PulseAudio socket to the
@@ -6772,8 +6854,10 @@ window APIs (`frameworks/native/libs/nativewindow/include/android/native_window.
 `AHardwareBuffer`, AAudio
 (`frameworks/av/media/libaaudio/include/aaudio/AAudio.h`), `ASharedMemory`
 (`frameworks/native/include/android/sharedmem.h`), the `android_dlopen_ext`
-namespace flags (`bionic/libc/include/android/dlext.h`), and the linker's W^X
-rule (`bionic/linker/linker_phdr.cpp`). In Android 17 all of these are present
+extension flags (`bionic/libc/include/android/dlext.h` — stable in practice,
+though the namespace flag itself is documented as internal-use-only), and the
+linker's W^X rule (`bionic/linker/linker_phdr.cpp`). In Android 17 all of these
+are present
 with the same contracts the earlier sections rely on, which is exactly why a
 Winlator-class app keeps working across releases without a platform patch: the
 stack invents nothing at the bottom, so it inherits whatever the release's public
@@ -6856,9 +6940,10 @@ game you own.
 
 7. **Confirm the AOSP touchpoints.** In an AOSP checkout, open
    `frameworks/native/vulkan/libvulkan/driver.cpp` at the `LoadDriver` function
-   (line 153) and confirm the driver is opened through `android_dlopen_ext` with
-   a namespace; this is the public interface the whole graphics stack ultimately
-   funnels into.
+   (line 153) and find both of its branches: `android_dlopen_ext` with
+   `ANDROID_DLEXT_USE_NAMESPACE` for an updated driver, and
+   `android_load_sphal_library` for the built-in one. This is the loader the
+   whole graphics stack ultimately funnels into.
 
 ---
 

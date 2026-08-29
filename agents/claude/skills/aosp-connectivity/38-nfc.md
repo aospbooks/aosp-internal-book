@@ -162,7 +162,7 @@ The adapter communicates with `NfcService` through a Binder interface
 
 ### 38.1.5 NfcService: The System Server Component
 
-`NfcService` is the central daemon.  At 6,666+ lines it is one of the larger
+`NfcService` is the central daemon.  At roughly 7,200 lines it is one of the larger
 system services.  It runs in the `com.android.nfc` process with the shared UID
 `android.uid.nfc` (see `NfcNci/AndroidManifest.xml`).  It is **not** part of
 `system_server` -- it runs in its own process:
@@ -280,7 +280,7 @@ sequenceDiagram
     NNM->>SVC: onRemoteEndpointDiscovered(TagEndpoint)
     SVC->>SVC: sendMessage(MSG_NDEF_TAG, tag)
     SVC->>SVC: Read NDEF data from tag
-    SVC->>DSP: dispatchTag(tag, ndefMessage)
+    SVC->>DSP: dispatchTag(tag)
     DSP->>DSP: Build Intent with TAG, ID, NDEF extras
     DSP->>DSP: Try ACTION_NDEF_DISCOVERED
     DSP->>DSP: Try ACTION_TECH_DISCOVERED
@@ -891,7 +891,7 @@ libnfc-nci/
     nfc/          # Core NFC logic
     nfa/          # NFA (NFC Adaptation) layer
     gki/          # Generic Kernel Interface (threading)
-    hal/          # HAL adaptation layer
+    adaptation/   # HAL adaptation layer
     include/      # Headers
   conf/           # Configuration files
 ```
@@ -1067,8 +1067,9 @@ payload is a prefix index:
 | 0x20 | `urn:epc:pat:` | 0x21 | `urn:epc:raw:` |
 | 0x22 | `urn:epc:` | 0x23 | `urn:nfc:` |
 
-For example, `https://android.com` is encoded as `0x04` + `android.com` (9
-bytes instead of 22).  The `createUri()` factory method handles this
+For example, `https://android.com` is encoded as `0x04` + `android.com` (12
+bytes instead of the 20 an uncompressed `0x00` + `https://android.com` payload
+would take).  The `createUri()` factory method handles this
 automatically.
 
 ### 38.4.7 Text Record Encoding
@@ -1374,11 +1375,14 @@ class NfcDispatcher {
 The dispatch flow:
 
 1. Check foreground dispatch override (`mOverrideIntent`)
-2. Try `ACTION_NDEF_DISCOVERED` with URI or MIME type
-3. Try `ACTION_VIEW` with URI (for web URLs)
-4. Try `ACTION_TECH_DISCOVERED` with technology matching
-5. Try `ACTION_TAG_DISCOVERED` as final fallback
-6. Return `DISPATCH_FAIL` if nothing matches
+2. Inside `tryNdef()`: build the `ACTION_NDEF_DISCOVERED` intent (URI or MIME
+   type), then try AAR/OEM package targets
+3. If the NDEF URI is an http(s) web link, switch the intent to `ACTION_VIEW`
+   and prompt the user (returning immediately when a receiver exists)
+4. Otherwise resolve activities for `ACTION_NDEF_DISCOVERED`
+5. Try `ACTION_TECH_DISCOVERED` with technology matching
+6. Try `ACTION_TAG_DISCOVERED` as final fallback
+7. Return `DISPATCH_FAIL` if nothing matches
 
 ### 38.5.6 DispatchInfo: Building the Intent
 
@@ -1760,7 +1764,8 @@ public class CardEmulationManager implements
 }
 ```
 
-It manages six subsystems:
+It manages eight subsystems (the ninth node, `AidRoutingManager`, is owned by
+`RegisteredAidCache` rather than by `CardEmulationManager` directly):
 
 ```mermaid
 graph TD
@@ -1773,7 +1778,7 @@ graph TD
     CEM --> HNFEM["HostNfcFEmulationManager\n(NFC-F processing)"]
     CEM --> PS["PreferredServices\n(default payment)"]
     CEM --> WRO["WalletRoleObserver\n(wallet role)"]
-    CEM --> ARM["AidRoutingManager\n(NFCC routing)"]
+    RAC --> ARM["AidRoutingManager\n(NFCC routing)"]
 ```
 
 ### 38.6.4 AID Registration and Routing
@@ -1899,8 +1904,8 @@ When a SELECT APDU arrives:
 
 ### 38.6.8 RegisteredAidCache: AID Resolution
 
-The `RegisteredAidCache` maintains a `TreeMap` of AIDs to services, supporting
-three matching modes:
+The `RegisteredAidCache` maintains a `TreeMap` of AIDs to services.  It
+defines only the route qualifiers:
 
 ```java
 // Source: packages/modules/Nfc/NfcNci/src/com/android/nfc/cardemulation/
@@ -1909,7 +1914,9 @@ static final int AID_ROUTE_QUAL_SUBSET = 0x20;
 static final int AID_ROUTE_QUAL_PREFIX = 0x10;
 ```
 
-AID matching modes:
+The four AID matching-support levels themselves are `AID_MATCHING_*` constants
+in `AidRoutingManager.java`, queried via
+`RoutingOptionManager.getAidMatchingSupport()`:
 
 | Mode | Constant | Behavior |
 |------|----------|----------|
@@ -2018,11 +2025,20 @@ This enables:
 @Override
 public void onPollingLoopDetected(List<PollingFrame> frames) {
     if (mCardEmulationManager != null) {
-        mCardEmulationManager.onPollingLoopDetected(
-                new ArrayList<>(frames));
+        synchronized (mPollingLoopsDetectedRunnable) {
+            mPollingFramesToBeSent.addAll(frames);
+            if (!mHandler.hasCallbacks(mPollingLoopsDetectedRunnable)) {
+                mHandler.post(mPollingLoopsDetectedRunnable);
+            }
+        }
     }
 }
 ```
+
+The callback does not forward frames inline: it batches them into
+`mPollingFramesToBeSent` and posts `mPollingLoopsDetectedRunnable` to
+`mHandler`, which later drains the list and calls
+`mCardEmulationManager.onPollingLoopDetected()` on the handler thread.
 
 The firmware can autonomously enable or disable observe mode:
 
@@ -2623,7 +2639,8 @@ public final class NfcF extends BasicTagTechnology {
     // Get the system code (2 bytes)
     public byte[] getSystemCode() { return mSystemCode; }
 
-    // Get the manufacturer bytes (IDm, 8 bytes)
+    // Get the PMm (Manufacture Parameter) bytes captured at discovery;
+    // the IDm/NFCID2 is the tag's getId(), not this getter
     public byte[] getManufacturer() { return mManufacturer; }
 
     // Send raw NFC-F commands and receive response
@@ -2642,10 +2659,11 @@ NfcF nfcF = NfcF.get(tag);
 if (nfcF != null) {
     nfcF.connect();
     byte[] systemCode = nfcF.getSystemCode();
-    byte[] manufacturer = nfcF.getManufacturer();
+    byte[] pmm = nfcF.getManufacturer();  // PMm (Manufacture Parameter)
+    byte[] idm = tag.getId();             // IDm / NFCID2
 
-    // FeliCa Read Without Encryption command
-    byte[] readCmd = buildFeliCaReadCommand(manufacturer, serviceCode, blockList);
+    // FeliCa Read Without Encryption command (addressed by IDm)
+    byte[] readCmd = buildFeliCaReadCommand(idm, serviceCode, blockList);
     byte[] response = nfcF.transceive(readCmd);
 
     nfcF.close();
@@ -2808,7 +2826,7 @@ The full set of tag technology classes in `android.nfc.tech`:
 | `IsoDep` | ISO 14443-4 | `getHistoricalBytes()`, `getHiLayerResponse()`, `transceive()` |
 | `Ndef` | NDEF formatted | `getNdefMessage()`, `writeNdefMessage()`, `makeReadOnly()` |
 | `NdefFormatable` | Can be formatted | `format()`, `formatReadOnly()` |
-| `MifareClassic` | NXP MIFARE Classic | `authenticate()`, `readBlock()`, `writeBlock()` |
+| `MifareClassic` | NXP MIFARE Classic | `authenticateSectorWithKeyA()`, `authenticateSectorWithKeyB()`, `readBlock()`, `writeBlock()` |
 | `MifareUltralight` | NXP MIFARE Ultralight | `readPages()`, `writePage()` |
 | `NfcBarcode` | Kovio barcode | `getType()`, `getBarcode()` |
 
@@ -3130,7 +3148,7 @@ module flag set `packages/modules/Nfc/flags/flags.aconfig` (container
 
 | Module flag | Gates |
 |------|-------|
-| `tap_to_x` | The Tap to X / gesture-exchange API (Section 38.10) and the observe-mode-always-on feature it depends on |
+| `tap_to_x` | The Tap to X / gesture-exchange API (Section 38.10), plus `ReaderCallback.onTagLost()` and activity-less reader-mode registration |
 | `nfcstack_26q2_updates` | NCI-stack updates, including `NfcAdapter.allowOneTransaction()` (Section 38.6.11) and the V2 tag-app preference store |
 | `screen_state_attribute_toggle` | Runtime toggling of `requireDeviceUnlock` / `requireDeviceScreenOn` on an HCE service |
 | `get_polling_loop_filters` | API to fetch the polling-loop filters a service registered |
@@ -3175,13 +3193,16 @@ OMAPI is split across three layers, each in a different part of the tree:
 | Service | `packages/apps/SecureElement/` | `SecureElementService` + `Terminal` -- the binder implementation |
 | HAL | `hardware/interfaces/secure_element/aidl/` | `ISecureElement` -- the vendor driver for each physical SE |
 
-The client `SEService` is a thin wrapper.  When an app constructs one, it binds
-to the `SecureElement` app's exported service and caches the binder:
+The client `SEService` is a thin wrapper.  When an app constructs one, it
+first asks `ServiceManager` for the registered binder and only falls back to
+binding the `SecureElement` app's exported service:
 
 ```java
 // Source: frameworks/base/omapi/java/android/se/omapi/SEService.java
 private static final String SERVICE_NAME = "android.se.omapi.ISecureElementService/default";
 ...
+IBinder seService = ServiceManager.checkService(SERVICE_NAME);
+// if found, use it directly; otherwise fall back to binding:
 Intent intent = new Intent(ISecureElementService.class.getName());
 mContext.bindService(intent, mConnection, Context.BIND_AUTO_CREATE);
 ...
@@ -3249,9 +3270,12 @@ mSecureElementServiceBinder.forceDowngradeToSystemStability();
 ServiceManager.addService(Context.SECURE_ELEMENT_SERVICE, mSecureElementServiceBinder);
 ```
 
-The VINTF-stable name (`/default`) is what vendor processes look up; the
-downgraded-to-system-stability binder under `Context.SECURE_ELEMENT_SERVICE` is
-what the in-system client `SEService` reaches via the bind above.
+The VINTF-stable name (`/default`) is also what the client `SEService` looks
+up first via `ServiceManager.checkService()`; only when that lookup fails does
+it fall back to `bindService()`, which hands it the binder returned by
+`SecureElementService.onBind()`.  The
+`Context.SECURE_ELEMENT_SERVICE` (`"secure_element"`) registration is a
+separate, system-stability publication that the client never looks up.
 
 ### 38.13.3 Terminal: One Object per Secure Element
 
@@ -3785,7 +3809,7 @@ public class DemoPaymentService extends HostApduService {
     private static byte[] buildSelectResponse() {
         // Minimal FCI template
         return new byte[] {
-            0x6F, 0x0A,                 // FCI Template
+            0x6F, 0x0B,                 // FCI Template
             (byte) 0x84, 0x07,          // DF Name (AID)
             (byte) 0xA0, 0x00, 0x00,    // Visa AID
             0x00, 0x04, 0x10, 0x10,
@@ -4028,9 +4052,12 @@ adb shell dumpsys nfc
 # Look for lines like:
 #   mState=ON
 #   mScreenState=ON_UNLOCKED
-#   AID Routing Table:
-#     A0000000041010 -> Route: 0x00 (Host)
-#     A0000000031010 -> Route: 0x02 (eSE)
+#   Routing table:
+#       Default route: host
+#       Routed to 0x0:
+#           "A0000000041010"
+#       Routed to 0x2:
+#           "A0000000031010"
 ```
 
 To inspect the NFC HAL:
@@ -4079,7 +4106,7 @@ diff $ANDROID_BUILD_TOP/hardware/interfaces/nfc/aidl/\
     aidl_api/android.hardware.nfc/2/android/hardware/nfc/INfc.aidl
 
 # Run VTS tests against the HAL
-atest VtsHalNfcTargetTest
+atest VtsAidlHalNfcTargetTest
 ```
 
 **Questions to explore**:
@@ -4158,8 +4185,8 @@ public class DemoFeliCaService extends HostNfcFService {
 ```xml
 <host-nfcf-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/demo_felica_description">
-    <system-code-filter android:name="4000"
-                        android:nfcid2="02FE010203040506" />
+    <system-code-filter android:name="4000" />
+    <nfcid2-filter android:name="02FE010203040506" />
 </host-nfcf-service>
 ```
 
@@ -4192,7 +4219,7 @@ the application-facing APIs:
 `NfcAdapter` API.  The entire stack ships as a Mainline APEX module
 (`com.android.nfcservices`).
 
-**NfcService** -- the 6,666+ line central coordinator manages NFC hardware
+**NfcService** -- the roughly 7,200-line central coordinator manages NFC hardware
 lifecycle, screen-state-dependent polling, the message handler loop, tag
 discovery, card emulation, and routing table updates.
 

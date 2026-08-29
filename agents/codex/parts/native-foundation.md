@@ -89,7 +89,8 @@ important are:
 | `portable-simd/` | Architecture-portable SIMD string routines (see Section 7.1.7) |
 
 The `bionic/libc/portable-simd/` directory is a recent addition: a set of SIMD
-string functions (`strlen`, `memchr`, `strspn`, `strcspn`) written once as
+string functions (`strlen`, `strnlen`, `memchr`, `memrchr`, `strspn`,
+`strcspn`, `wcslen`, `wmemchr`) written once as
 templates over a `VectorTraits` interface and instantiated per vector type
 (SSE, AVX2, and so on). It is examined in Section 7.1.7.
 
@@ -137,8 +138,11 @@ This dispatch pattern is fundamental to Bionic's memory allocation architecture.
 The `GetDispatchTable()` call checks whether a debug malloc or profiling malloc
 has been installed. If so, the call is redirected. Otherwise, it falls through
 to Scudo (the default allocator) via the `Malloc()` macro. The
-`MaybeTagPointer()` call implements MTE (Memory Tagging Extension) pointer
-tagging on hardware that supports it.
+`MaybeTagPointer()` call implements Bionic's software tagged-pointer scheme:
+on AArch64, when the heap tagging level is TBI, it ORs the fixed `0xB4` heap
+tag into the pointer's top byte, relying on the CPU's Top-Byte-Ignore feature
+(see "Tagged pointers" in Section 7.1.10). Real MTE memory tagging, on
+hardware that supports it, is performed inside Scudo, not by this call.
 
 Every allocator entry point routes through the same pattern. `reallocarray`
 (historically a thin wrapper) is now a full dispatch-table member alongside
@@ -160,14 +164,14 @@ extern "C" void* reallocarray(void* old_mem, size_t item_count, size_t item_size
 The same `dispatch_table` indirection also backs the `mallopt()` tuning knobs
 declared in `bionic/libc/include/malloc.h`, including the purge family used by
 memory-pressure responders: `M_PURGE` (return idle memory to the kernel,
-API 31), `M_PURGE_ALL` (return everything, API 34), and `M_PURGE_FAST` (a
+API 28), `M_PURGE_ALL` (return everything, API 34), and `M_PURGE_FAST` (a
 fast, non-blocking partial purge meant to be called frequently, added in
 API 37 for Android 17).
 
 **System call wrappers:**
 
 - `clone.cpp`, `exec.cpp`, `fork.cpp` -- Process management
-- `socket.cpp`, `accept.cpp` -- Network I/O
+- `socketpair.cpp`, `accept.cpp` -- Network I/O
 
 **String and memory operations:**
 
@@ -176,15 +180,18 @@ API 37 for Android 17).
 **Dynamic library support:**
 
 - `dl_iterate_phdr_static.cpp` -- `dl_iterate_phdr` for static executables
-- `dlfcn.cpp` -- `dlopen`/`dlsym`/`dlclose` wrappers
+- `bionic/libdl/libdl.cpp` -- libc-side `dlopen`/`dlsym`/`dlclose` stubs that
+  forward to the linker's `__loader_*` entry points (the real implementation
+  is `bionic/linker/dlfcn.cpp`)
 
 ### 7.1.4 Process Initialization
 
 When a dynamically-linked executable starts, the kernel maps the executable and
 the dynamic linker (see Section 7.3). The linker performs relocation, then
-calls libc's `.preinit_array` entry `__libc_preinit`. This function, defined in
-`bionic/libc/bionic/libc_init_dynamic.cpp`, runs before any other shared
-library initializer:
+runs constructors; `__libc_preinit` is registered as a priority-1 constructor
+in libc.so's `.init_array`, so it runs first among all initializers. This
+function, defined in `bionic/libc/bionic/libc_init_dynamic.cpp`, therefore
+runs before any other shared library initializer:
 
 From `bionic/libc/bionic/libc_init_dynamic.cpp` (lines 29-42):
 
@@ -231,11 +238,14 @@ The `__libc_preinit_impl` function performs these critical steps:
 2. **Global variable initialization** -- Sets up `__libc_globals`, a
    write-protected structure containing the allocator dispatch table.
 3. **Common initialization** -- Calls `__libc_init_common()` which initializes
-   the system properties client, sets up the `environ` pointer, and configures
-   the heap allocator.
+   the system properties client, sets up the `environ` pointer, and
+   initializes fdsan and fdtrack. (Allocator setup happens separately in
+   `__libc_preinit_impl`, via `__libc_init_scudo()` and
+   `__libc_globals.mutate(__libc_init_malloc)`.)
 4. **Netd client initialization** -- Registers DNS resolution hooks.
 5. **Callback registration** -- Provides the linker with callbacks for HWASan
-   library load/unload events and MTE stack remapping.
+   library load/unload events. (The MTE stack-remapping callback,
+   `memtag_stack_dlopen_callback`, is registered later, in `__libc_init`.)
 
 From `bionic/libc/bionic/libc_init_common.cpp` (lines 58-61):
 
@@ -246,9 +256,12 @@ __LIBC_HIDDEN__ constinit bool __libc_memtag_stack_abi;
 ```
 
 The `WriteProtected<>` template maps the globals structure into memory that is
-normally read-only. Modifications require explicitly acquiring a
-`ProtectedDataGuard`, which temporarily remaps the page as writable. This
-defends against corruption of critical data like the allocator dispatch table.
+normally read-only. Modifications go through `WriteProtected<>::mutate()`,
+which `mprotect()`s the page writable for the duration of the mutator callback
+and then re-protects it (e.g. `__libc_globals.mutate(__libc_init_malloc)`).
+This defends against corruption of critical data like the allocator dispatch
+table. (The linker guards its own internal data with a separate mechanism,
+`ProtectedDataGuard`; see Section 7.3.13.)
 
 ### 7.1.5 Thread-Local Storage and the Bionic TCB
 
@@ -283,7 +296,7 @@ Key TLS slots include:
 | `TLS_SLOT_STACK_GUARD` | Stack canary for `-fstack-protector` |
 | `TLS_SLOT_BIONIC_TLS` | Pointer to the full `bionic_tls` structure |
 | `TLS_SLOT_DTV` | Dynamic Thread Vector for ELF TLS |
-| `TLS_SLOT_ART` | Reserved for the Android Runtime |
+| `TLS_SLOT_ART_THREAD_SELF` | Fast storage for `Thread::Current()` in ART |
 
 This fixed layout means that accessing thread-local state requires no function
 calls or hash table lookups -- just a register read and a constant offset. The
@@ -357,13 +370,15 @@ DEFINE_IFUNC_FOR(memchr) {
 }
 ```
 
-The MTE-aware variant must handle the possibility that pointer tags in the
-search buffer do not match, requiring tag-stripped comparisons. Several
-resolvers in this file (for `memcpy`, `strlen`, `strcmp`, and others) carry an
-explicit `// TODO: enable the SVE version.` comment: the SVE-optimized routines
-exist upstream but are gated off until the relevant HWCAP detection is wired up,
-so on current silicon the dispatch falls through to the MOPS, Oryon, or ASIMD
-path.
+The MTE-aware variant is written so that it never reads past the end of the
+buffer's current 16-byte tag granule -- an over-read that the plain SIMD
+routine performs freely but that would fault under MTE. Six resolvers
+in this file (`memcmp`, `stpcpy`, `strcmp`, `strcpy`, `strncmp`, and `strnlen`)
+carry an explicit `// TODO: enable the SVE version.` comment: the SVE-optimized
+routines exist upstream but are gated off until the relevant HWCAP detection is
+wired up, so those resolvers fall through to the generic `__*_aarch64` routine.
+(`memcpy` and `strlen` are not among them -- `memcpy` dispatches on MOPS, Oryon,
+or ASIMD, and `strlen` on MTE.)
 
 The hand-tuned AArch64 implementations these resolvers select between are not
 maintained inside Bionic. They come from Arm's `arm-optimized-routines` project,
@@ -382,7 +397,8 @@ critical paths:
 | `arch-arm64/bionic/` | `syscall.S`, `setjmp.S`, `vfork.S`, `__bionic_clone.S` |
 | `arch-arm64/string/` | `__memcpy_chk.S`, `__memset_chk.S` |
 | `arch-arm64/oryon/` | `memcpy-nt.S`, `memset-nt.S` |
-| `arch-arm/bionic/` | Cortex-A53/A55/A7/A9/A15/Krait/Kryo-specific routines |
+| `arch-arm/bionic/` | `syscall.S`, `setjmp.S`, `vfork.S`, `__bionic_clone.S` |
+| `arch-arm/cortex-*/`, `arch-arm/krait/`, `arch-arm/kryo/` | Cortex-A53/A55/A7/A9/A15/Krait/Kryo-specific routines |
 | `arch-x86_64/bionic/` | `syscall.S`, `setjmp.S` |
 | `arch-x86_64/string/` | SSE/AVX-optimized string operations |
 | `arch-riscv64/bionic/` | `syscall.S`, `setjmp.S` |
@@ -390,17 +406,25 @@ critical paths:
 
 The ARM 32-bit tree is particularly rich, with CPU-specific subdirectories for
 Cortex-A53, Cortex-A55, Cortex-A7, Cortex-A9, Cortex-A15, Krait (Qualcomm),
-and Kryo (Qualcomm). The IFUNC resolver on ARM selects among these at runtime
-based on `/proc/cpuinfo` or HWCAP values.
+and Kryo (Qualcomm). The IFUNC resolver on ARM
+(`bionic/libc/arch-arm/ifuncs.cpp`) selects among these at runtime by reading
+the CPU variant name from the `/dev/cpu_variant:arm` device node -- using raw
+`openat`/`read` syscalls, since libc is not yet initialized when IFUNC
+resolvers run -- and matching it against a table of known variant names,
+falling back to the generic implementation when the node is absent.
 
 ### 7.1.7 Upstream Code and the BSD Heritage
 
 Bionic does not implement everything from scratch. It imports code from three
 BSD operating systems:
 
-- **OpenBSD**: Provides `strlcpy`, `strlcat`, `arc4random`, `reallocarray`,
-  and much of the standard string library. OpenBSD's focus on security makes
-  it a natural source for hardened implementations.
+- **OpenBSD**: Provides `arc4random`, the substring-search functions
+  (`memmem`, `strstr`, `strcasestr`), and much of stdio and stdlib.
+  OpenBSD's focus on security makes it a natural source for hardened
+  implementations. Some functions historically associated with OpenBSD have
+  since been rewritten in-tree: `strlcpy`/`strlcat` are now Android-written
+  code in `bionic/libc/bionic/string.cpp`, and `reallocarray` lives in
+  `bionic/libc/bionic/malloc_common.cpp`.
 
 - **FreeBSD**: Contributes parts of the math library (`libm`), locale support,
   and some string functions.
@@ -410,9 +434,11 @@ BSD operating systems:
 
 Imports are kept in separate directories (`upstream-openbsd/`, `upstream-freebsd/`,
 `upstream-netbsd/`) and are periodically updated to incorporate upstream bug
-fixes and security patches. On x86-64, several string functions were switched
-to FreeBSD's optimized implementations (`memchr`, `memrchr`, `strrchr`,
-`strchrnul`, `memccpy`), and `strtok`/`strtok_r`/`strpbrk`/`strsep` were
+fixes and security patches. On x86-64, a few string functions were switched
+to FreeBSD's optimized implementations (`strrchr`, `strchrnul` -- the latter
+defined in `strchr.S` -- and `memccpy`), while `memchr` and `memrchr` are now
+served by the portable-simd routines described below, and
+`strtok`/`strtok_r`/`strpbrk`/`strsep` were
 rewritten in terms of Bionic's own `strcspn`/`strspn` (`bionic/libc/bionic/string.cpp`).
 
 **The portable-SIMD experiment:**
@@ -430,14 +456,19 @@ From `bionic/libc/portable-simd/portable_simd_detail.h` (lines 88-92):
 #include <hwy/highway.h>
 
 // Convenience shortcut for "the highway namespace that's been selected through
-// the dynamic dispatch mechanism".
+// PSIMD_TARGET_*."
 namespace hn = hwy::HWY_NAMESPACE;
 ```
 
-A single `strlen.cpp` is built once per target (SSE, AVX2, and so on), and
-Highway selects the right vector width at runtime. Functions are exported to the
-rest of libc through `portable_simd_exports.h`; `strlen`, `memchr`, `strspn`,
-and `strcspn` are the first to migrate. The directory's `README.md` is explicit
+Highway's own runtime dispatch is disabled (`HWY_COMPILE_ONLY_STATIC 1`): a
+single source file like `strlen.cpp` is compiled statically once per target
+variant (SSE, AVX2, and so on), selected by the `PSIMD_TARGET_*` define in the
+corresponding Soong variant, and Bionic's own IFUNC resolvers (e.g.
+`bionic/libc/arch-x86_64/ifuncs.cpp`) pick the right variant at runtime.
+Functions are exported to the
+rest of libc through `portable_simd_exports.h`; `strlen`, `strnlen`, `memchr`,
+`memrchr`, `strspn`, `strcspn`, `wcslen`, and `wmemchr` are the first to
+migrate. The directory's `README.md` is explicit
 that the goal is "80%+ of the benefit of carefully-written assembly with a
 fraction of the effort," not to beat the best hand-tuned routines.
 
@@ -509,10 +540,10 @@ Even without MTE hardware, Bionic can tag the top byte of heap pointers
 graph TD
     A[malloc call] --> B{Dispatch Table?}
     B -->|Debug malloc| C[Debug Allocator]
-    B -->|Normal| D[Scudo Allocator]
-    D --> E{GWP-ASan Sample?}
+    B -->|GWP-ASan installed| E{GWP-ASan Sample?}
+    B -->|Normal| G["Scudo Allocation"]
     E -->|Yes| F[GWP-ASan Guard Page Allocation]
-    E -->|No| G[Scudo Normal Allocation]
+    E -->|"No, fall through"| G
     G --> H{MTE Enabled?}
     H -->|Yes| I[Tag Memory with Random Tag]
     H -->|No| J{TBI Tagging?}
@@ -645,52 +676,65 @@ SupportedArchitectures = [ "arm", "arm64", "riscv64", "x86", "x86_64" ]
 ENTRY(%(func)s)
     mov     ip, r7
     .cfi_register r7, ip
-    ldr     r7, =%(NR_name)s
+    ldr     r7, =%(__NR_name)s
     swi     #0
     mov     r7, ip
     .cfi_restore r7
-    cmn     r0, #(MAX_ERRNO + 1)
-    bxls    lr
-    neg     r0, r0
-    b       __set_errno_internal
+    DO_SYSCALL_RETURN
 END(%(func)s)
 ```
 
 On ARM, the system call number goes in register r7, and the SWI (Software
 Interrupt) instruction traps into the kernel. The stub saves and restores r7
 (which is the frame pointer in Thumb mode) to avoid corrupting the call stack.
+The `DO_SYSCALL_RETURN` macro (`bionic/libc/private/bionic_asm_arm.h`) expands
+to:
+
+```asm
+    cmn     r0, #(MAX_ERRNO + 1)
+    bxls    lr
+    b       __set_errno_internal
+```
+
+If the return value is not in the errno range, `bxls lr` returns directly;
+otherwise `__set_errno_internal` negates the value and stores it in `errno`.
 
 **AArch64 syscall function:**
 
-From `bionic/libc/arch-arm64/bionic/syscall.S` (lines 31-49):
+From `bionic/libc/arch-arm64/bionic/syscall.S` (lines 31-46):
 
 ```asm
 ENTRY(syscall)
-    /* Move syscall No. from x0 to x8 */
-    mov     x8, x0
-    /* Move syscall parameters from x1 thru x6 to x0 thru x5 */
-    mov     x0, x1
-    mov     x1, x2
-    mov     x2, x3
-    mov     x3, x4
-    mov     x4, x5
-    mov     x5, x6
-    svc     #0
+    // Move the syscall number up.
+    mov x8, x0
 
-    /* check if syscall returned successfully */
-    cmn     x0, #(MAX_ERRNO + 1)
-    cneg    x0, x0, hi
-    b.hi    __set_errno_internal
+    // Shuffle the arguments down.
+    mov x0, x1
+    mov x1, x2
+    mov x2, x3
+    mov x3, x4
+    mov x4, x5
+    mov x5, x6
 
-    ret
+    // Make the system call.
+    svc #0
+    DO_SYSCALL_RETURN
 END(syscall)
 ```
 
 This is the generic `syscall()` function for AArch64. The system call number
 goes in x8, and up to six arguments go in x0-x5. The `SVC #0` instruction
-enters the kernel. On return, if x0 contains a value in the range
-[-MAX_ERRNO, -1], the error is negated and stored in `errno` via
-`__set_errno_internal`.
+enters the kernel. The `DO_SYSCALL_RETURN` macro, defined in
+`bionic/libc/private/bionic_asm_arm64.h`, expands to:
+
+```asm
+cmp     x0, #-MAX_ERRNO
+b.hs    __set_errno_internal
+ret
+```
+
+If x0 contains a value in the range [-MAX_ERRNO, -1], control branches to
+`__set_errno_internal`, which negates the error and stores it in `errno`.
 
 ### 7.2.4 The System Call Catalog
 
@@ -777,7 +821,7 @@ graph LR
         A2["getuid:getuid32()"]
         A3["lseek() + __llseek()"]
         A4["__mmap2:mmap2()"]
-        A5["fstat64()"]
+        A5["fstat64|fstat:fstat64()"]
         A6["prlimit64()"]
         A7["*_time64() variants"]
     end
@@ -787,7 +831,7 @@ graph LR
         B2["getuid()"]
         B3["lseek|lseek64()"]
         B4["mmap|mmap64()"]
-        B5["fstat64|fstat()"]
+        B5["fstat64|fstat:fstat()"]
         B6["prlimit64|prlimit()"]
         B7["Standard time calls"]
     end
@@ -810,7 +854,8 @@ clock_settime64(clockid_t, const timespec64*) lp32
 futex_time64(int*, int, int, const timespec64*, int*, int) lp32
 ```
 
-These were added for the Y2038 problem: 32-bit `time_t` overflows in January
+These were added for the Y2038 problem: a signed 32-bit `time_t` overflows on
+19 January 2038.
 
 > The `*_time64` system calls use 64-bit time structures even on 32-bit platforms.
 
@@ -921,8 +966,12 @@ call.
 
 ### 7.2.7 Seccomp Policy Installation
 
-The seccomp filter is installed by the Zygote process before it forks
-application processes. The implementation is in
+The seccomp filter is installed in the forked child process during Zygote
+specialization: `SpecializeCommon()` in
+`frameworks/base/core/jni/com_android_internal_os_Zygote.cpp` calls
+`SetUpSeccompFilter()`, which picks `set_app_seccomp_filter()`,
+`set_app_zygote_seccomp_filter()`, or `set_system_seccomp_filter()` based on
+the uid. Those filter-installation functions are implemented in
 `bionic/libc/seccomp/seccomp_policy.cpp`.
 
 From `bionic/libc/seccomp/seccomp_policy.cpp` (lines 33-94):
@@ -1063,6 +1112,8 @@ VDSO-accelerated calls in Bionic:
 - `clock_gettime()` -- The single most frequently called time function
 - `clock_getres()` -- Clock resolution query
 - `gettimeofday()` -- Legacy time-of-day query
+- `time()` -- On x86/x86_64 only, via `__vdso_time`
+- `__riscv_hwprobe()` -- On riscv64 only, via `__vdso_riscv_hwprobe`
 
 ---
 
@@ -1076,8 +1127,9 @@ shared library on Android. It is the first user-space code to execute after the
 kernel maps a new process, and its correct operation is essential for every
 native binary on the system.
 
-The linker source lives in `bionic/linker/` and comprises approximately 50
-source files totaling over 7,000 lines of C++. The key files are:
+The linker source lives in `bionic/linker/` and comprises 42 `.cpp` files
+(about 70 files including headers) totaling around 14,000 lines of C++. The
+key files are:
 
 | File | Lines | Purpose |
 |------|-------|---------|
@@ -1459,12 +1511,13 @@ static int GetTargetElfMachine() {
 
 Note that the linker requires `e_type == ET_DYN`. This means Android only loads
 Position-Independent Executables (PIE). Non-PIE support was dropped in API level
-21 for security (ASLR effectiveness):
+21 for security (ASLR effectiveness). For the main executable, the check lives
+in `bionic/linker/linker_main.cpp` (around line 424):
 
 ```cpp
 if (elf_hdr->e_type != ET_DYN) {
-    __linker_error("error: Android only supports position-independent "
-                   "executables (-fPIE)");
+    __linker_error("error: %s: Android only supports position-independent "
+                   "executables (-fPIE)", exe_info.path.c_str());
 }
 ```
 
@@ -1483,11 +1536,11 @@ bool ElfReader::Load(address_space_params* address_space) {
       FindGnuPropertySection()) {
     did_load_ = true;
 #if defined(__aarch64__)
-    if (note_gnu_property_.IsBTICompatible()) {
+    if (note_gnu_property_->IsBTICompatible()) {
       did_load_ =
           (phdr_table_protect_segments(phdr_table_, phdr_num_, load_bias_,
                should_pad_segments_, should_use_16kib_app_compat_,
-               &note_gnu_property_) == 0);
+               note_gnu_property_.get()) == 0);
     }
 #endif
   }
@@ -1540,11 +1593,13 @@ This code implements an ASLR enhancement: when a library's mapping crosses a
 2MB (PMD-sized) boundary, the linker inserts a random number of inaccessible
 2MB pages before the library. This makes it harder for attackers to locate
 library code by probing for readable memory mappings. The gap size is random
-(1 to 32 units of 2MB) and varies per library load. Note the use of
-`__libc_arc4random_uniform_or_zero`: this helper folds in the first-stage-init
-special case (where `arc4random` is unavailable because `/dev/urandom` is not
-yet mounted) by returning zero instead of crashing, so the same code path works
-during early boot and at runtime.
+(1 to 31 units of 2MB -- `kMaxGapUnits` is 32, but the uniform draw is over
+`kMaxGapUnits - 1` and then incremented) and varies per library load. Note the
+use of `__libc_arc4random_uniform_or_zero`: this helper folds in the
+first-stage-init special case (where `getrandom(GRND_NONBLOCK)` still fails
+because the kernel entropy pool is not yet initialized) by returning zero
+instead of crashing, so the same code path works during early boot and at
+runtime.
 
 ### 7.3.6 The Load Bias and Virtual Address Calculation
 
@@ -2041,12 +2096,17 @@ static bool walk_dependencies_tree(soinfo* root_soinfo, F action) {
 }
 ```
 
-This BFS walker is used for:
+This BFS walker has exactly two users:
 
-- Loading dependencies (`find_libraries`)
-- `dlsym(RTLD_DEFAULT)` global symbol lookup
-- `dlsym(handle)` handle-based symbol lookup
-- Constructor invocation ordering
+- `dlsym(handle)` handle-based symbol lookup (`dlsym_handle_lookup_impl`)
+- Collecting each local group during `find_libraries` (step 6, linking
+  local groups)
+
+Two related operations that might be expected to use it do not:
+`dlsym(RTLD_DEFAULT)` goes through `dlsym_linear_lookup`, a linear scan of the
+namespace's soinfo list, and constructor ordering is handled by
+`soinfo::call_constructors`, which recurses depth-first over each soinfo's
+children.
 
 The three possible action results (`kWalkStop`, `kWalkContinue`, `kWalkSkip`)
 allow the walker to be used for both search (stop when found) and traversal
@@ -2089,8 +2149,11 @@ void* __loader_dlsym(
 int __loader_dlclose(void* handle) __LINKER_PUBLIC__;
 ```
 
-All functions take a `caller_addr` parameter, which the linker uses to
-determine the namespace context. By examining which `soinfo` contains the
+Most of the loading and lookup entry points -- `__loader_dlopen`,
+`__loader_android_dlopen_ext`, `__loader_dlsym`, `__loader_dlvsym`, and
+`__loader_android_create_namespace` -- take a `caller_addr` parameter, which
+the linker uses to determine the namespace context (`__loader_dlclose` and a
+few others do not need one). By examining which `soinfo` contains the
 caller's address, the linker determines which namespace the caller belongs to,
 and searches that namespace for the requested library.
 
@@ -2443,6 +2506,7 @@ From `system/linkerconfig/main.cc` (lines 33-43):
 #include "linkerconfig/configparser.h"
 #include "linkerconfig/context.h"
 #include "linkerconfig/environment.h"
+#include "linkerconfig/log.h"
 #include "linkerconfig/namespacebuilder.h"
 #include "linkerconfig/recovery.h"
 #include "linkerconfig/variableloader.h"
@@ -2744,7 +2808,10 @@ appropriate isolation. Each app gets its own namespace that can see:
 
 - The app's own native libraries (from the APK)
 - LL-NDK libraries (via link to system namespace)
-- VNDK libraries (if the app uses the NDK)
+- VNDK-SP libraries, but only for unbundled *vendor* apps (linked to the `vndk`
+  namespace) and unbundled *product* apps (linked to `vndk_product`); an
+  ordinary app gets no VNDK link at all
+  (`art/libnativeloader/library_namespaces.cpp`)
 - Libraries listed in the app's `uses-native-library` manifest entries
 
 ### 7.4.14 Default Library Paths
@@ -2894,13 +2961,13 @@ graph TD
     B -->|Yes| C["Open directly at path"]
     B -->|No| D["Search LD_LIBRARY_PATH"]
     D --> E{Found?}
-    E -->|Yes| F["Check namespace accessibility"]
+    E -->|Yes| K
     E -->|No| G["Search DT_RUNPATH"]
     G --> H{Found?}
-    H -->|Yes| F
+    H -->|Yes| F["Check namespace accessibility"]
     H -->|No| I["Search namespace default paths"]
     I --> J{Found?}
-    J -->|Yes| K["No accessibility check needed<br/>(default paths are always accessible)"]
+    J -->|Yes| K["No accessibility check needed<br/>(namespace path lists are always accessible)"]
     J -->|No| L["Search linked namespaces"]
     L --> M{Found in linked ns?}
     M -->|Yes| N{In shared_lib_sonames?}
@@ -3038,9 +3105,13 @@ bool ElfReader::MapSegment(size_t seg_idx, size_t len) {
 }
 ```
 
-Note the transparent huge page support: executable segments aligned to PMD
-size (2MB) receive `MADV_HUGEPAGE`, which tells the kernel to use huge pages
-for these mappings. This reduces TLB misses for large code sections.
+Note the transparent huge page support: executable segments whose alignment
+equals the PMD size receive `MADV_HUGEPAGE`, which tells the kernel to use huge
+pages for these mappings. This reduces TLB misses for large code sections. The
+PMD size is not a fixed constant -- `bionic/linker/linker_phdr.cpp` defines it
+as `kPmdSize = (kPageSize / sizeof(uint64_t)) * kPageSize`, the span covered by
+one page of 8-byte page table entries, which works out to 2MB on a 4KiB-page
+device but 32MB on a 16KiB-page one.
 
 **W+E segment rejection:**
 
@@ -3186,14 +3257,12 @@ graph TD
 After all LoadTasks have been created but before they are loaded, the linker
 shuffles the load order:
 
-From `bionic/linker/linker.cpp` (lines 1532-1543):
+From `bionic/linker/linker.cpp` (lines 1535-1543):
 
 ```cpp
 static void shuffle(std::vector<LoadTask*>* v) {
-  if (is_first_stage_init()) {
-    // arc4random* is not available in first stage init
-    return;
-  }
+  if (!__libc_arc4random_ready()) return;
+
   for (size_t i = 0, size = v->size(); i < size; ++i) {
     size_t n = size - i;
     size_t r = arc4random_uniform(n);
@@ -3205,6 +3274,9 @@ static void shuffle(std::vector<LoadTask*>* v) {
 This randomizes the order in which libraries are mapped into memory,
 complementing the per-library ASLR from `ReserveWithAlignmentPadding`. Even if
 an attacker knows which libraries a process loads, the order is unpredictable.
+The `__libc_arc4random_ready()` guard skips shuffling when arc4random cannot
+produce real randomness yet -- notably in first-stage init, before `/dev/urandom`
+and the `getentropy` machinery are usable.
 
 ### 7.4.20 Duplicate Detection and the Soname Contract
 
@@ -3259,7 +3331,12 @@ static bool find_loaded_library_by_realpath(android_namespace_t* ns,
 The inode-based check handles symlinks and hard links correctly: if
 `/system/lib64/libfoo.so` and `/system/lib64/libfoo_v2.so` are hard links
 to the same file, inode detection ensures only one copy is loaded. The
-realpath check handles the case where proc is not mounted (early boot).
+realpath-based lookup serves the ASan/HWASan dlopen path translation: before
+translating an absolute path to its sanitized counterpart, the linker checks
+whether a library is already loaded under the untranslated path. Separately,
+when `/proc` is not mounted (early boot), `realpath_fd()` cannot resolve a
+canonical path and the linker falls back to using the given path as the
+library's realpath (`bionic/linker/linker.cpp`, lines 988 and 1023).
 
 ### 7.4.21 DT_NEEDED Processing and DT_RUNPATH
 
@@ -3471,11 +3548,19 @@ list of categories:
 
 | Value | What it logs |
 |-------|-------------|
-| `any` | All debug output |
+| `all` | All debug output |
+| `calls` | Constructor, destructor, and ifunc calls |
+| `cfi` | CFI (Control Flow Integrity) setup |
+| `dynamic` | Dynamic section processing |
 | `lookup` | Symbol lookup results |
+| `props` | ELF property processing |
 | `reloc` | Relocation processing |
 | `timing` | Total link time in microseconds |
 | `statistics` | Relocation counts (absolute, relative, symbol, cached) |
+
+Any other token (including `any`, which is only an internal flag name in
+`linker_debug.cpp`) makes the linker abort with a usage error listing the
+accepted values.
 
 **LD_SHOW_AUXV:**
 
@@ -3586,7 +3671,7 @@ Musl lives at `external/musl/` in the AOSP tree:
 
 ```
 external/musl/
-├── Android.bp              # Build rules (622 lines)
+├── Android.bp              # Build rules (823 lines)
 ├── sources.bp              # Generated source file lists
 ├── README                  # Upstream v1.2.5
 ├── METADATA                # Version and license info
@@ -3635,7 +3720,7 @@ flowchart LR
 ```
 
 ```go
-// Source: build/soong/android/config.go:2402
+// Source: build/soong/android/config.go:2523
 func (c *config) UseHostMusl() bool {
     return Bool(c.productVariables.HostMusl)
 }
@@ -3704,10 +3789,11 @@ library. All host tools link against it instead.
 ### 7.5.5 Prebuilt Musl Toolchain
 
 The prebuilt Clang toolchain includes musl runtime libraries for all supported
-architectures:
+architectures (under the current default toolchain directory,
+`clang-<version>`):
 
 ```
-prebuilts/clang/host/linux-x86/clang-r563880c/musl/
+prebuilts/clang/host/linux-x86/clang-r584948/musl/
 ├── lib/
 │   ├── x86_64-unknown-linux-musl/     # x86_64 runtime
 │   ├── aarch64-unknown-linux-musl/    # ARM64 runtime
@@ -3722,7 +3808,7 @@ Interestingly, musl reuses some headers from Bionic's kernel UAPI layer. The
 build system generates a musl sysroot that includes Bionic's kernel headers:
 
 ```java
-// Source: bionic/libc/Android.bp:2703
+// Source: bionic/libc/Android.bp:2973
 cc_genrule {
     name: "libc_musl_sysroot_bionic_headers",
     // Copies bionic's kernel UAPI headers for musl's use
@@ -4143,16 +4229,17 @@ sequenceDiagram
     L->>L: CFIShadow::InitialLinkDone()
 
     Note over L: Phase 8: Initialization
-    L->>LC: Call __libc_preinit() [.preinit_array]
-    LC->>LC: Init TLS, globals, properties
-    LC->>LC: Init Scudo allocator
-    LC->>LC: Init netd client
-
     L->>L: somain->call_pre_init_constructors()
 
     loop For each library (dependency order)
         L->>L: si->call_constructors()
     end
+
+    Note over L,LC: When the loop reaches libc.so, its .init_array runs __libc_preinit [priority-1 constructor]
+    L->>LC: libc.so ctor __libc_preinit() [.init_array, priority 1]
+    LC->>LC: Init TLS, globals, properties
+    LC->>LC: Init Scudo allocator
+    LC->>LC: Init netd client
 
     Note over L: Phase 9: Handoff
     L->>L: purge_unused_memory()
@@ -4182,9 +4269,11 @@ these messages is essential for debugging native library issues:
 | `has load segments that are both writable and executable` | W+E segment (API >= 26) | Fix linker script, use separate segments |
 | `program alignment cannot be smaller than system page size` | 4KiB library on 16KiB system | Rebuild with 16KiB alignment or enable compat |
 
-Each error message is carefully crafted to include the library name, the
-namespace context, and (where applicable) a reference to the Android bug
-tracker entry that motivated the error or exception.
+Each error message is carefully crafted to include the library name and,
+where applicable, the namespace context. The Android bug tracker entries that
+motivated many of these errors and exceptions appear as `http://b/NNNNN`
+references in the surrounding source comments in `bionic/linker/linker.cpp`,
+not in the runtime error text itself.
 
 ### 7.6.8 Performance Considerations
 
@@ -4338,7 +4427,7 @@ From `bionic/libc/include/malloc.h` (lines 240-248):
 #define M_PURGE_FAST (-105)
 ```
 
-`M_PURGE_FAST` complements the existing `M_PURGE` (API 31) and `M_PURGE_ALL`
+`M_PURGE_FAST` complements the existing `M_PURGE` (API 28) and `M_PURGE_ALL`
 (API 34): a daemon that wants to trim heaps on every memory-pressure signal can
 call it without risking a long stall.
 
@@ -4375,9 +4464,10 @@ Three linker-side hardening changes are worth calling out:
   tail of `bionic/libc/arch-arm64/oryon/memcpy-nt.S`), so BTI-enforced code can
   call into these routines without faulting.
 
-- **Tagged-address discipline.** The linker now calls `get_tagged_address` only
-  on readable sections and only on data symbols, and the readable-section check
-  was moved after the MTE check. These avoid applying a memory tag to addresses
+- **Tagged-address discipline.** The linker now calls `get_tagged_address`
+  only when MTE is enabled and the symbol's section is readable (with TLS
+  symbols taking a separate path), and the readable-section check was moved
+  after the MTE check. These avoid applying a memory tag to addresses
   the process is not allowed to dereference, which previously could turn a
   benign relocation into a fault on MTE hardware.
 
@@ -4444,7 +4534,7 @@ of system call conventions across all five architectures supported by Bionic:
 |-------------|---------------|-------|-------|-------|-------|-------|-------|-------------|--------|
 | arm | r7 | r0 | r1 | r2 | r3 | r4 | r5 | `swi #0` | r0 |
 | arm64 | x8 | x0 | x1 | x2 | x3 | x4 | x5 | `svc #0` | x0 |
-| x86 | eax | ebx | ecx | edx | esi | edi | ebp | `int $0x80` | eax |
+| x86 | eax | ebx | ecx | edx | esi | edi | ebp | `call __kernel_syscall` | eax |
 | x86_64 | rax | rdi | rsi | rdx | r10 | r8 | r9 | `syscall` | rax |
 | riscv64 | a7 | a0 | a1 | a2 | a3 | a4 | a5 | `ecall` | a0 |
 
@@ -4452,10 +4542,15 @@ On error, the return value is in the range [-4095, -1] (or [-MAX_ERRNO, -1]
 in Bionic terms). Bionic stubs negate this value and store it in `errno` via
 `__set_errno_internal`.
 
-Note the x86 peculiarity: 32-bit x86 has only six registers available for
-system call arguments, and socket operations are multiplexed through the
-`socketcall` system call with a sub-command number. This multiplexing is
-absent on all other architectures.
+Note the x86 peculiarities. First, the entry instruction is indirect: the
+generated stubs call `__kernel_syscall`, which resolves to the vDSO entry point
+published by the kernel through `AT_SYSINFO` (typically `sysenter`; see
+`bionic/libc/arch-x86/bionic/__libc_init_sysinfo.cpp`), falling back to a
+plain `int $0x80` (`bionic/libc/arch-x86/bionic/__libc_int0x80.S`) only when
+no vDSO entry is available. Second, 32-bit x86 has only six registers
+available for system call arguments, and socket operations are multiplexed
+through the `socketcall` system call with a sub-command number. This
+multiplexing is absent on all other architectures.
 
 ### 7.8.2 Linker Configuration File Format
 
@@ -4488,8 +4583,11 @@ additional.namespaces = <comma-separated-ns-names>
 ```
 
 The `${LIB}` placeholder in paths is expanded to `lib` on 32-bit systems and
-`lib64` on 64-bit systems. The `$ORIGIN` placeholder is expanded to the
-directory containing the requesting library.
+`lib64` on 64-bit systems; `ld.config.txt` paths also support `${SDK_VER}`,
+`${VNDK_VER}`, and `${VNDK_APEX_VER}` (`bionic/linker/linker_config.cpp`).
+Note that `$ORIGIN` (the directory containing the requesting library) is *not*
+an `ld.config.txt` placeholder -- it is substituted only when expanding
+`DT_RUNPATH` entries.
 
 ### 7.8.3 Glossary of Key Terms
 
@@ -4508,7 +4606,7 @@ directory containing the requesting library.
 | **Load Bias** | Offset between ELF virtual address and actual memory address |
 | **MTE** | Memory Tagging Extension; ARM memory safety feature |
 | **PLT** | Procedure Linkage Table; enables lazy symbol resolution |
-| **PMD** | Page Middle Directory; 2MB page table entry |
+| **PMD** | Page Middle Directory; the span one page of page table entries covers -- 2MB with 4KiB pages, 32MB with 16KiB pages |
 | **RELRO** | Relocation Read-Only; security hardening for GOT |
 | **Seccomp-BPF** | Secure Computing with Berkeley Packet Filter |
 | **SME** | Scalable Matrix Extension; ARM matrix-math feature with private ZA state |
@@ -4563,16 +4661,19 @@ or emulator (via `adb shell`) plus a host NDK toolchain.
    observe the relocation statistics and timing:
 
    ```bash
-   adb shell setenforce 0   # only on a debug build, to allow the env var
    adb shell 'LD_DEBUG=statistics,timing /system/bin/app_process64 / com.android.commands.am.Am 2>&1' | head
    ```
+
+   (LD_DEBUG is honored here because the shell is not an AT_SECURE process;
+   the linker strips such environment variables only for setuid/AT_SECURE
+   binaries.)
 
    Look for the `RELO STATS` line (absolute/relative/symbol counts and cache
    hits, from `print_linker_stats` in `bionic/linker/linker_relocate.cpp`) and
    the `LINKER TIME` line.
 
 2. **List a binary's dependencies with the built-in ldd.** The linker doubles
-   as an `ldd` (Section 7.6.6):
+   as an `ldd` (Section 7.4.27):
 
    ```bash
    adb shell linker64 --list /system/bin/surfaceflinger
@@ -4935,7 +5036,7 @@ Without Zygote and CoW, each of those three apps would need its own copy of the 
 tripling the memory consumption for shared code. With CoW, the physical cost is:
 
 - **Without CoW**: 3 x 150 MB = 450 MB for framework + 95 MB private = 545 MB total
-- **With CoW**: 100 MB shared + 30 MB CoW pages + 95 MB private = 225 MB total
+- **With CoW**: 100 MB shared + 30 MB CoW pages + 65 MB private = 195 MB total
 
 This difference is multiplied across the 20-40 processes typically running on an Android device.
 
@@ -4947,11 +5048,13 @@ The kernel employs several mechanisms to reclaim memory when pressure increases:
 flowchart TD
     Pressure["Memory Pressure<br/>Detected"] --> Watermark{"Below which<br/>watermark?"}
 
-    Watermark -->|"HIGH"| kswapd["kswapd (background)<br/>Scans inactive lists<br/>Evicts file pages<br/>Swaps anon pages"]
+    Watermark -->|"HIGH"| Watch["kswapd may<br/>start soon"]
 
-    Watermark -->|"LOW"| DirectRecl["Direct Reclaim<br/>(synchronous, blocking)<br/>Allocating process waits<br/>Scans all LRU lists"]
+    Watermark -->|"LOW"| kswapd["kswapd (background)<br/>Scans inactive lists<br/>Evicts file pages<br/>Swaps anon pages"]
 
-    Watermark -->|"MIN"| OOM["OOM Killer<br/>(last resort)<br/>Kernel selects victim<br/>Based on oom_score"]
+    Watermark -->|"MIN"| DirectRecl["Direct Reclaim<br/>(synchronous, blocking)<br/>Allocating process waits<br/>Scans all LRU lists"]
+
+    DirectRecl -->|"No progress"| OOM["OOM Killer<br/>(last resort)<br/>Kernel selects victim<br/>Based on oom_score"]
 
     kswapd --> FileEvict["File page eviction<br/>(clean: discard<br/>dirty: writeback first)"]
     kswapd --> AnonSwap["Anonymous swap<br/>(compress to zRAM)"]
@@ -5023,7 +5126,7 @@ state.
 
 | File | Purpose |
 |---|---|
-| `lmkd.cpp` | Main daemon implementation (~3400 lines) |
+| `lmkd.cpp` | Main daemon implementation (~4200 lines) |
 | `lmkd.rc` | Init service definition |
 | `lmkd.h` (in `include/`) | Command protocol definitions |
 | `reaper.cpp` / `reaper.h` | Asynchronous process reaping with `process_mrelease()` |
@@ -5137,12 +5240,15 @@ Each packet starts with an `int` command code in network byte order, followed by
 fields. For example, the `LMK_PROCPRIO` packet carries:
 
 ```c
-// system/memory/lmkd/include/lmkd.h (lines 106-113)
+// system/memory/lmkd/include/lmkd.h (lines 116-124)
 struct lmk_procprio {
     pid_t pid;
     uid_t uid;
     int oomadj;
     enum proc_type ptype;
+    // Whether this procprio is for lmkd only. If set, the procprio update will
+    // not be sent to kernel.
+    bool for_lmkd_only;
 };
 ```
 
@@ -5156,7 +5262,9 @@ Every process in Android has an OOM adjustment score (`oom_adj_score`) that indi
 importance. Lower scores mean higher importance. lmkd writes this value to
 `/proc/[pid]/oom_score_adj` and uses it to decide which processes to kill first.
 
-The score ranges are defined in `frameworks/base/services/core/java/com/android/server/am/ProcessList.java`:
+The score ranges are defined in
+`frameworks/base/services/core/java/com/android/server/am/psc/Constants.java`
+(`ProcessList.java` static-imports them):
 
 | Constant | Value | Process Type |
 |---|---|---|
@@ -5202,6 +5310,7 @@ struct proc {
     struct adjslot_list asl;
     int pid;
     int pidfd;
+    CgroupFD cgroupfd;
     uid_t uid;
     int oomadj;
     pid_t reg_pid;
@@ -5238,7 +5347,7 @@ full avg10=0.00 avg60=0.00 avg300=0.00 total=0
 - **`some`**: At least one task is stalled on memory.
 - **`full`**: All non-idle tasks are stalled on memory simultaneously.
 
-lmkd registers PSI monitors at three pressure levels:
+lmkd defines three pressure levels, with compile-time default thresholds:
 
 ```c
 // system/memory/lmkd/lmkd.cpp (enum vmpressure_level line 166; psi_thresholds line 231)
@@ -5255,6 +5364,14 @@ static struct psi_threshold psi_thresholds[VMPRESS_LEVEL_COUNT] = {
     { PSI_FULL, 70 },    /* 70ms out of 1sec for complete stall */
 };
 ```
+
+These static values are only the fallback for the legacy minfree-based strategy. In the default
+new-strategy mode (`use_new_strategy` is true whenever `ro.lmk.use_minfree_levels` is false, its
+default), `init_psi_monitors()` overwrites the table before registration: the LOW threshold is
+set to 0 -- and `init_mp_psi()` skips registration when the threshold is 0, so no LOW monitor
+exists -- while MEDIUM becomes `psi_partial_stall_ms` (`some`, 70 ms/1 s by default, 200 ms on
+low-RAM devices) and CRITICAL becomes `psi_complete_stall_ms` (`full`, 700 ms/1 s). In practice
+only two PSI monitors are registered.
 
 The PSI monitor library (`system/memory/lmkd/libpsi/psi.cpp`) registers triggers with the kernel:
 
@@ -5320,7 +5437,7 @@ flowchart TD
 The kill reasons are enumerated in the code:
 
 ```c
-// system/memory/lmkd/statslog.h (lines 69-85)
+// system/memory/lmkd/statslog.h (lines 71-87)
 enum kill_reasons {
     NONE = -1,
     PRESSURE_AFTER_KILL = 0,
@@ -5333,6 +5450,9 @@ enum kill_reasons {
     LOW_FILECACHE_AFTER_THRASHING,
     LOW_MEM,
     DIRECT_RECL_STUCK,
+    /* reserve aosp kill 0 ~ 999 */
+    VENDOR_KILL_REASON_BASE = 1000,
+    VENDOR_KILL_REASON_END = VENDOR_KILL_REASON_BASE + NUM_VENDOR_LMK_KILL_REASON - 1,
     KILL_REASON_COUNT
 };
 ```
@@ -5341,7 +5461,7 @@ The memory available calculation is nuanced. lmkd computes "easy available" memo
 for file cache evictability and swap compression:
 
 ```c
-// system/memory/lmkd/lmkd.cpp (calc_easy_available_memory, around line 2007)
+// system/memory/lmkd/lmkd.cpp (inside meminfo_parse, from line 1980; this block at line 2007)
 mi->field.easy_available = mi->field.nr_free_pages;
 if (relaxed_available_memory && swap_compression_ratio) {
     mi->field.easy_available += mi->field.active_file
@@ -5451,23 +5571,29 @@ flowchart TD
     Cond2 -->|Yes| R2["NOT_RESPONDING<br/>min_adj = 0"]
     Cond2 -->|No| Cond3{"Low swap AND<br/>thrashing > limit?"}
 
-    Cond3 -->|Yes| R3["LOW_SWAP_AND_THRASHING<br/>min_adj = 0"]
+    Cond3 -->|Yes| R3["LOW_SWAP_AND_THRASHING<br/>min_adj = PERCEPTIBLE_APP_ADJ+1<br/>(0 if below min wmark or<br/>critical thrashing)"]
     Cond3 -->|No| Cond4{"Low swap AND<br/>low watermark?"}
 
-    Cond4 -->|Yes| R4["LOW_MEM_AND_SWAP<br/>min_adj = 0"]
-    Cond4 -->|No| Cond5{"Thrashing AND<br/>low watermark?"}
+    Cond4 -->|Yes| R4["LOW_MEM_AND_SWAP<br/>min_adj = PERCEPTIBLE_APP_ADJ+1<br/>(0 if below min wmark or<br/>critical thrashing)"]
+    Cond4 -->|No| Cond5{"High swap<br/>utilization?"}
 
-    Cond5 -->|Yes| R5["LOW_MEM_AND_THRASHING<br/>min_adj = 0"]
-    Cond5 -->|No| Cond6{"Direct reclaim<br/>AND thrashing?"}
+    Cond5 -->|Yes| R5["LOW_MEM_AND_SWAP_UTIL<br/>min_adj = 0"]
+    Cond5 -->|No| Cond6{"Thrashing AND<br/>low watermark?"}
 
-    Cond6 -->|Yes| R6["DIRECT_RECL_AND_THRASHING<br/>min_adj based on swap util"]
-    Cond6 -->|No| Cond7{"High swap<br/>utilization?"}
+    Cond6 -->|Yes| R6["LOW_MEM_AND_THRASHING<br/>min_adj = PERCEPTIBLE_APP_ADJ+1<br/>unless thrashing is critical"]
+    Cond6 -->|No| Cond7{"Direct reclaim<br/>AND thrashing?"}
 
-    Cond7 -->|Yes| R7["LOW_MEM_AND_SWAP_UTIL<br/>min_adj = 0"]
+    Cond7 -->|Yes| R7["DIRECT_RECL_AND_THRASHING<br/>min_adj = PERCEPTIBLE_APP_ADJ+1<br/>unless thrashing is critical"]
     Cond7 -->|No| Cond8{"Direct reclaim<br/>stuck?"}
 
     Cond8 -->|Yes| R8["DIRECT_RECL_STUCK<br/>min_adj = 0"]
-    Cond8 -->|No| NoKill[No kill needed]
+    Cond8 -->|No| Cond9{"File cache low<br/>after thrashing?"}
+
+    Cond9 -->|Yes| R9["LOW_FILECACHE_AFTER_THRASHING<br/>min_adj = PERCEPTIBLE_APP_ADJ+1"]
+    Cond9 -->|No| Cond10{"No reason yet AND<br/>watermark below HIGH?"}
+
+    Cond10 -->|Yes| R10["LOW_MEM<br/>min_adj = lowmem_min_oom_score"]
+    Cond10 -->|No| NoKill[No kill needed]
 
     R1 --> Kill[find_and_kill_process]
     R2 --> Kill
@@ -5477,6 +5603,8 @@ flowchart TD
     R6 --> Kill
     R7 --> Kill
     R8 --> Kill
+    R9 --> Kill
+    R10 --> Kill
 
     style R1 fill:#cc4444,color:#fff
     style R2 fill:#cc4444,color:#fff
@@ -5486,6 +5614,8 @@ flowchart TD
     style R6 fill:#cc4444,color:#fff
     style R7 fill:#cc4444,color:#fff
     style R8 fill:#cc4444,color:#fff
+    style R9 fill:#cc4444,color:#fff
+    style R10 fill:#cc4444,color:#fff
     style NoKill fill:#44cc44,color:#000
     style Skip fill:#cccc44,color:#000
 ```
@@ -5598,18 +5728,24 @@ static int find_and_kill_process(int min_score_adj,
 
             killed_size = kill_one_process(procp, min_score_adj,
                                            ki, mi, wi, tm, pd);
-            if (killed_size >= 0) break;
+            if (killed_size >= 0) {
+                return killed_size;
+            }
         }
-        if (killed_size) break;
     }
     return killed_size;
 }
 ```
 
+The function returns as soon as `kill_one_process()` succeeds (a non-negative result); only if
+every candidate fails does the outer loop fall through and return the last failure.
+
 The dual selection strategy is important:
 
-1. **For cached/background processes** (`oom_adj > PERCEPTIBLE_APP_ADJ`): Kill the most recently
-   added process at each score level (`proc_adj_tail`). This follows an LRU-like order.
+1. **For cached/background processes** (`oom_adj > PERCEPTIBLE_APP_ADJ`): Kill the
+   least-recently-added (oldest) process at each score level. New registrations are inserted at
+   the head of each adj slot, and `proc_adj_tail` walks from the back, so the process that has
+   been registered at that score the longest dies first.
 2. **For perceptible processes** (`oom_adj <= 200`): Always kill the heaviest process
    (`proc_get_heaviest`), which reads `/proc/[pid]/statm` for each candidate. This minimizes the
    number of visible-to-user processes that must die.
@@ -5692,12 +5828,12 @@ static int kill_one_process(struct proc* procp, int min_oom_score,
         return result;
     }
 
-    // Execute the kill via the reaper
+    // Execute the kill via the reaper (Reaper::kill returns true on success)
     start_wait_for_proc_kill(pidfd < 0 ? pid : pidfd);
-    kill_result = reaper.kill({ pidfd, pid, uid }, false);
-
-    if (kill_result) {
+    if (!reaper.kill({ pidfd, procp->cgroupfd, pid, uid }, false)) {
         stop_wait_for_proc_kill(false);
+        ALOGE("kill(%d): errno=%d", pid, errno);
+        // Delete the process record even on failure so we don't get stuck on it
         goto out;
     }
 
@@ -5745,8 +5881,8 @@ static void watchdog_callback() {
         }
 
         if (target.valid &&
-            reaper.kill({ target.pidfd, target.pid, target.uid },
-                        true /* synchronous */) == 0) {
+            reaper.kill({ target.pidfd, target.cgroupfd, target.pid, target.uid },
+                        true /* synchronous */)) {
             ALOGW("lmkd watchdog killed process %d, oom_score_adj %d",
                   target.pid, oom_score);
             pid_invalidate(target.pid);
@@ -5758,7 +5894,7 @@ static void watchdog_callback() {
 ```
 
 The watchdog kill is **synchronous** (note the `true` parameter to `reaper.kill()`), meaning it
-blocks until `pidfd_send_signal(SIGKILL)` completes. This is because the watchdog thread cannot
+blocks until the kill completes. This is because the watchdog thread cannot
 use the asynchronous reaper queue (the main thread that processes queue completions is hung).
 The watchdog also uses `pid_invalidate()` instead of `pid_remove()` because the latter can only
 be called from the main thread safely.
@@ -5785,13 +5921,15 @@ enum vmstat_field {
 
 A `workingset_refault` is a page that was recently evicted from the page cache and is now being
 faulted back in -- a strong signal that the system is thrashing. The thrashing percentage is
-calculated relative to page scans and compared against configurable thresholds:
+calculated as the growth in `workingset_refault_file` expressed as a percentage of the
+file-backed page cache size (`nr_inactive_file + nr_active_file`) sampled at the start of the
+window, and compared against configurable thresholds:
 
 | Property | Default | Low RAM Default |
 |---|---|---|
 | `ro.lmk.thrashing_limit` | 100 | 30 |
 | `ro.lmk.thrashing_limit_decay` | 10 | 50 |
-| `ro.lmk.thrashing_limit_critical` | (derived) | (derived) |
+| `ro.lmk.thrashing_limit_critical` | 300 | 300 |
 
 ### 8.2.13 The Reaper: Asynchronous Process Killing
 
@@ -5802,63 +5940,70 @@ from the killed process.
 The `Reaper` class (`system/memory/lmkd/reaper.h` and `reaper.cpp`) manages a thread pool:
 
 ```c
-// system/memory/lmkd/reaper.h (lines 23-60)
+// system/memory/lmkd/reaper.h (lines 37-71)
 class Reaper {
 public:
     struct target_proc {
         int pidfd;
-        int pid;
+        CgroupFD cgroupfd;
+        pid_t pid;
         uid_t uid;
     };
 private:
-    std::mutex mutex_;
-    std::condition_variable cond_;
-    std::vector<struct target_proc> queue_;
-    int active_requests_;
+    static constexpr size_t THREAD_POOL_SIZE = 2;
+    ThreadsafeQueue<target_proc> reap_queue_;
+    // write side of the pipe to communicate kill failures with the main thread
     int comm_fd_;
-    int thread_cnt_;
-    pthread_t* thread_pool_;
-    bool debug_enabled_;
+    std::vector<std::thread> thread_pool_;
+    bool debug_enabled_ = false;
+
+    ThreadsafeQueue<std::pair<uid_t, pid_t>> setprio_queue_;
+    std::thread setprio_thread_;
     // ...
 };
 ```
 
 The reaper thread's main loop:
 
-1. **Dequeue** a kill request.
-2. **Send SIGKILL** via `pidfd_send_signal()` -- uses the pidfd to avoid PID recycling races.
-3. **Adjust cgroups and priority** of the dying process to speed up memory reclamation.
+1. **Pop** a kill target from the thread-safe reap queue.
+2. **Kill the target's cgroup** -- `kill_cgroup_or_process()` writes to the cgroup's `cgroup.kill`
+   (or walks `cgroup.procs`), falling back to `pidfd_send_signal(SIGKILL)` for processes that are
+   not in their own Android-managed cgroup (e.g., children of adbd). The pidfd avoids PID
+   recycling races.
+3. **Hand off priority adjustment** -- the victim's uid/pid is pushed to a dedicated
+   `lmkd_setprio` thread, which moves the dying process into the LMKD reap-target cgroups so its
+   teardown can use the big cores.
 4. **Call `process_mrelease()`** -- a Linux syscall (number 448) that triggers synchronous memory
    reclamation from the dying process.
 
 ```c
-// system/memory/lmkd/reaper.cpp (lines 46-48, 91-137)
+// system/memory/lmkd/reaper.cpp (lines 55-57, 166-209, abbreviated)
 static int process_mrelease(int pidfd, unsigned int flags) {
     return syscall(__NR_process_mrelease, pidfd, flags);
 }
 
-static void* reaper_main(void* param) {
-    Reaper *reaper = static_cast<Reaper*>(param);
-    // ...
+void Reaper::reaper_main() {
+    // ... pin the thread to big cores, raise its priority ...
     for (;;) {
-        target = reaper->dequeue_request();
+        Reaper::target_proc target = reap_queue_.pop();
 
-        if (pidfd_send_signal(target.pidfd, SIGKILL, NULL, 0)) {
-            reaper->notify_kill_failure(target.pid);
+        if (!kill_cgroup_or_process(target)) {
+            // Inform the main thread about failure to kill
+            notify_kill_failure(target.pid);
             goto done;
         }
 
-        set_process_group_and_prio(target.uid, target.pid,
-            {"CPUSET_SP_FOREGROUND", "SCHED_SP_FOREGROUND"},
-            ANDROID_PRIORITY_NORMAL);
+        setprio_queue_.push({target.uid, target.pid});
 
         if (process_mrelease(target.pidfd, 0)) {
             ALOGE("process_mrelease %d failed: %s",
                   target.pid, strerror(errno));
+            goto done;
         }
 done:
         close(target.pidfd);
-        reaper->request_complete();
+        close(target.cgroupfd);
+        reap_queue_.request_complete();
     }
 }
 ```
@@ -5893,8 +6038,9 @@ public:
 ```
 
 The watchdog uses a `CLOCK_MONOTONIC` timer with `SIGALRM` delivery. If lmkd's main event loop
-does not disarm the watchdog within the 2-second timeout, the watchdog bites -- typically
-triggering an abort or logging diagnostic information.
+does not disarm the watchdog within the 2-second timeout, the watchdog bites -- `bite()` invokes
+`watchdog_callback()`, which performs the emergency synchronous kill described in Section 8.2.11.
+It does not abort the daemon.
 
 ### 8.2.15 Configurable Properties
 
@@ -5913,7 +6059,7 @@ Key properties:
 |---|---|---|
 | `ro.lmk.debug` | false | Enable verbose kill logging |
 | `ro.lmk.kill_heaviest_task` | false | Kill by RSS rather than oom_adj |
-| `ro.lmk.kill_timeout_ms` | 0 | Minimum time between kills |
+| `ro.lmk.kill_timeout_ms` | 100 | Minimum time between kills |
 | `ro.lmk.use_minfree_levels` | false | Use traditional minfree thresholds |
 | `ro.lmk.psi_partial_stall_ms` | 70 (200 on low-RAM) | PSI some-stall threshold |
 | `ro.lmk.psi_complete_stall_ms` | 700 | PSI full-stall threshold |
@@ -5950,9 +6096,8 @@ graph TD
             DataSock1["Data socket 1<br/>(AMS commands)"]
             DataSock2["Data socket 2<br/>(init)"]
             DataSock3["Data socket 3<br/>(tests)"]
-            PSI_Low["PSI Low<br/>(some 70ms/1s)"]
-            PSI_Med["PSI Medium<br/>(some 100ms/1s)"]
-            PSI_Crit["PSI Critical<br/>(full 70ms/1s)"]
+            PSI_Med["PSI Medium<br/>(some 70ms/1s,<br/>200ms low-RAM)"]
+            PSI_Crit["PSI Critical<br/>(full 700ms/1s)"]
             KillDone["pidfd<br/>(kill complete)"]
             KillFail["Reaper pipe<br/>(kill failure)"]
             MemEvent["memevent_listener<br/>(BPF events)"]
@@ -5963,7 +6108,6 @@ graph TD
     DataSock1 -->|EPOLLIN| EPoll
     DataSock2 -->|EPOLLIN| EPoll
     DataSock3 -->|EPOLLIN| EPoll
-    PSI_Low -->|EPOLLPRI| EPoll
     PSI_Med -->|EPOLLPRI| EPoll
     PSI_Crit -->|EPOLLPRI| EPoll
     KillDone -->|EPOLLIN| EPoll
@@ -5976,6 +6120,10 @@ graph TD
     Handler --> KillH["kill_done_handler()"]
     Handler --> FailH["kill_fail_handler()"]
 ```
+
+The epoll capacity is sized for all three pressure levels, but as Section 8.2.5 explains, the
+LOW monitor is not registered in the default new-strategy mode, so only the MEDIUM and CRITICAL
+file descriptors appear in the event loop.
 
 After receiving a PSI event, lmkd enters a polling mode where it periodically re-checks memory
 conditions at short intervals:
@@ -6075,8 +6223,11 @@ during boot by init:
 
 ### 8.3.2 Process Group Assignment
 
-When ActivityManagerService registers a process with lmkd via `LMK_PROCPRIO`, lmkd assigns the
-process to the appropriate cgroup and sets its memory soft limit:
+When ActivityManagerService registers a process with lmkd via `LMK_PROCPRIO`, lmkd writes the
+process's `/proc/[pid]/oom_score_adj` and sets a memory soft limit on the cgroup the process
+already belongs to. lmkd never moves a process between cgroups: membership is assigned by
+ActivityManagerService through libprocessgroup, and lmkd only looks up the resulting attribute
+paths.
 
 ```c
 // system/memory/lmkd/lmkd.cpp (register_oom_adj_proc, from line 1149)
@@ -6084,7 +6235,10 @@ static void register_oom_adj_proc(const struct lmk_procprio& proc,
                                    struct ucred* cred) {
     char val[20];
     int soft_limit_mult;
+    int oom_adj_score = proc.oomadj;
+    // ... other locals elided ...
 
+    /* lmkd should not change soft limits for services */
     if (proc.ptype == PROC_TYPE_APP && per_app_memcg) {
         if (proc.oomadj >= 900) {
             soft_limit_mult = 0;
@@ -6093,8 +6247,13 @@ static void register_oom_adj_proc(const struct lmk_procprio& proc,
         } else if (proc.oomadj >= 700) {
             soft_limit_mult = 0;
         } else if (proc.oomadj >= 600) {
-            // Launcher should be perceptible
+            // Launcher should be perceptible, don't kill it.
+            oom_adj_score = 200;
             soft_limit_mult = 1;
+        } else if (proc.oomadj >= 500) {
+            soft_limit_mult = 0;
+        } else if (proc.oomadj >= 400) {
+            soft_limit_mult = 0;
         } else if (proc.oomadj >= 300) {
             soft_limit_mult = 1;
         } else if (proc.oomadj >= 200) {
@@ -6126,6 +6285,8 @@ The soft limit multiplier translates to actual memory limits:
 | >= 900 (cached) | 0 | No limit |
 | >= 700 (previous) | 0 | No limit |
 | >= 600 (home) | 1 | 8 MB |
+| >= 500 (service) | 0 | No limit |
+| >= 400 (heavy-weight) | 0 | No limit |
 | >= 300 (backup) | 1 | 8 MB |
 | >= 200 (perceptible) | 8 | 64 MB |
 | >= 100 (visible) | 10 | 80 MB |
@@ -6134,7 +6295,10 @@ The soft limit multiplier translates to actual memory limits:
 
 These are **soft limits** -- the kernel will attempt to reclaim memory from processes exceeding
 their soft limit before reclaiming from processes within their limit, but a process can use more
-memory if available.
+memory if available. Note the special handling of the home/launcher range: the `>= 600` branch
+also remaps the registered `oom_adj_score` down to 200 so lmkd treats the launcher as
+perceptible rather than killing it, while the service (`>= 500`) and heavy-weight app (`>= 400`)
+ranges get no soft limit at all.
 
 ### 8.3.3 Task Profiles
 
@@ -6142,12 +6306,12 @@ Android extends cgroup management with the task profiles framework, which provid
 API for assigning processes to cgroups:
 
 ```c
-// Used in reaper.cpp (lines 56-65, 98-99)
-set_process_group_and_prio(target.uid, target.pid,
-    {"CPUSET_SP_FOREGROUND", "SCHED_SP_FOREGROUND"},
+// Used in reaper.cpp (lines 106-108, in the lmkd_setprio thread)
+set_process_group_and_prio(uid, pid,
+    {"CPUSET_LMKD_REAP_TARGET", "SCHED_LMKD_REAP_TARGET"},
     ANDROID_PRIORITY_NORMAL);
 
-// In reaper thread initialization
+// In reaper thread initialization (reaper.cpp, line 171)
 SetTaskProfiles(tid, {"CPUSET_SP_FOREGROUND"}, true);
 ```
 
@@ -6165,6 +6329,8 @@ Common task profiles used by the memory subsystem:
 | `ServiceCapacityLow` | Low CPU capacity for background services |
 | `CPUSET_SP_FOREGROUND` | Foreground CPU set (all cores) |
 | `SCHED_SP_FOREGROUND` | Foreground scheduling group |
+| `CPUSET_LMKD_REAP_TARGET` | lmkd-specific aggregate resolving to `CPUSET_SP_FOREGROUND` for reap victims |
+| `SCHED_LMKD_REAP_TARGET` | lmkd-specific aggregate resolving to `SCHED_SP_FOREGROUND` for reap victims |
 | `HighEnergySaving` | Power-efficient execution for background tasks |
 | `MaxPerformance` | Full performance for foreground apps |
 
@@ -6214,20 +6380,27 @@ graph TD
 Android 11 introduced the app freezer, which uses the cgroup freezer controller to suspend
 background apps instead of killing them. Frozen apps consume zero CPU but retain their memory:
 
+Android mounts the freezer as a cgroup v2 controller (`system/core/libprocessgroup/profiles/cgroups.json`),
+so freezing is controlled through each process's own cgroup directory rather than a separate
+v1 `freezer/` hierarchy:
+
 ```
-/sys/fs/cgroup/freezer/                    # Freezer cgroup hierarchy
-/sys/fs/cgroup/freezer/frozen/tasks        # Frozen process PIDs
-/sys/fs/cgroup/freezer/frozen/freezer.state # "FROZEN" or "THAWED"
+/sys/fs/cgroup/uid_<uid>/pid_<pid>/               # Per-process cgroup directory
+/sys/fs/cgroup/uid_<uid>/pid_<pid>/cgroup.freeze  # Write 1 to freeze, 0 to thaw
 ```
 
-The interaction between the freezer and lmkd is important:
+The `Frozen`/`Unfrozen` task profiles (`system/core/libprocessgroup/profiles/task_profiles.json`)
+write `1` or `0` to `cgroup.freeze` via the `FreezerState` attribute.
+
+The interaction between the freezer and lmkd is simple:
 
 1. When an app goes to the background, ActivityManagerService may freeze it.
 2. Frozen apps still consume memory -- their oom_adj is high, making them candidates for lmkd
    killing.
-3. Before killing a frozen app, lmkd must first thaw it (a frozen process cannot handle signals).
-4. If memory pressure is severe, lmkd may kill frozen apps before unfrozen cached apps because
-   frozen apps are definitionally not performing useful work.
+3. lmkd itself has no freezer awareness: it selects victims purely by oom_score_adj (and RSS for
+   perceptible processes), with no preference between frozen and unfrozen apps, and it needs no
+   thaw step -- the reaper's `cgroup.kill` write and `pidfd_send_signal(SIGKILL)` both terminate
+   a process frozen by the cgroup v2 freezer.
 
 ---
 
@@ -6289,7 +6462,7 @@ Historically, zRAM was configured during boot through init scripts and the `swap
 # Legacy init.rc zram configuration (pre-mmd path)
 write /sys/block/zram0/comp_algorithm lz4
 write /sys/block/zram0/disksize 2147483648   # 2 GB
-exec_start swapon_all
+swapon_all /vendor/etc/fstab.${ro.hardware}
 
 # fstab entry
 /dev/block/zram0  none  swap  defaults  zramsize=2147483648,zram_backingdev_size=512M
@@ -6538,10 +6711,12 @@ Android 17.
 
 ### 8.5.2 The ION Allocator (Legacy)
 
-ION provides heap-based memory allocation through the `/dev/ion` device:
+ION provided heap-based memory allocation through the `/dev/ion` device. As libion looked before
+Android 17 (this implementation no longer exists in the tree):
 
 ```c
-// system/memory/libion/ion.c (lines 58-63, 95-111)
+// Historical libion implementation (pre-Android-17); removed from
+// the current system/memory/libion/ion.c
 int ion_open() {
     int fd = open("/dev/ion", O_RDONLY | O_CLOEXEC);
     if (fd < 0) ALOGE("open /dev/ion failed: %s", strerror(errno));
@@ -6561,21 +6736,24 @@ int ion_alloc(int fd, size_t len, size_t align,
 }
 ```
 
-ION supports two ABI versions -- the library detects which is in use:
+ION historically supported two kernel ABI versions (a "legacy" pre-4.12 interface and a "modern"
+one), and libion used to probe which was in use. That probing is gone: in the current tree
+`system/memory/libion/ion.c` is a 66-line file of stubs in which every entry point fails
+unconditionally, and `ion_is_legacy()` is a hardcoded `return 0`:
 
 ```c
-// system/memory/libion/ion.c (lines 40-56)
-enum ion_version { ION_VERSION_UNKNOWN, ION_VERSION_MODERN, ION_VERSION_LEGACY };
+// system/memory/libion/ion.c (lines 22-30, 62-63) -- the current stubs
+int ion_open()
+{ return -1; }
 
-int ion_is_legacy(int fd) {
-    int version = atomic_load_explicit(&g_ion_version, memory_order_acquire);
-    if (version == ION_VERSION_UNKNOWN) {
-        int err = ion_free(fd, (ion_user_handle_t)0);
-        version = (err == -ENOTTY) ? ION_VERSION_MODERN : ION_VERSION_LEGACY;
-        atomic_store_explicit(&g_ion_version, version, memory_order_release);
-    }
-    return version == ION_VERSION_LEGACY;
-}
+int ion_alloc(int, size_t, size_t, unsigned int,
+              unsigned int, ion_user_handle_t *)
+{ return -1; }
+
+// ...
+
+int ion_is_legacy(int)
+{ return 0; }
 ```
 
 ION heap types:
@@ -6615,7 +6793,7 @@ int BufferAllocator::Alloc(const std::string& heap_name, size_t len, unsigned in
 The allocation through DMA-BUF heaps uses a simple ioctl:
 
 ```c
-// system/memory/libdmabufheap/BufferAllocator.cpp (lines 216-236)
+// system/memory/libdmabufheap/BufferAllocator.cpp (lines 87-107, abbreviated)
 int BufferAllocator::DmabufAlloc(const std::string& heap_name,
                                   size_t len, int fd) {
     struct dma_heap_allocation_data heap_data{
@@ -6641,7 +6819,7 @@ The Gralloc (Graphics Allocation) HAL sits above ION/DMA-BUF and provides the st
 interface for allocating graphics buffers. It has evolved through multiple versions:
 
 ```c
-// frameworks/native/libs/ui/GraphicBufferMapper.cpp (lines 60-83)
+// frameworks/native/libs/ui/GraphicBufferMapper.cpp (lines 69-93)
 GraphicBufferMapper::GraphicBufferMapper() {
     mMapper = std::make_unique<const Gralloc5Mapper>();
     if (mMapper->isLoaded()) {
@@ -6653,19 +6831,27 @@ GraphicBufferMapper::GraphicBufferMapper() {
         mMapperVersion = Version::GRALLOC_4;
         return;
     }
-    mMapper = std::make_unique<const Gralloc3Mapper>();
-    if (mMapper->isLoaded()) {
-        mMapperVersion = Version::GRALLOC_3;
-        return;
+    if (!requireMapper4()) {
+        mMapper = std::make_unique<const Gralloc3Mapper>();
+        if (mMapper->isLoaded()) {
+            mMapperVersion = Version::GRALLOC_3;
+            return;
+        }
+        mMapper = std::make_unique<const Gralloc2Mapper>();
+        if (mMapper->isLoaded()) {
+            mMapperVersion = Version::GRALLOC_2;
+            return;
+        }
     }
-    mMapper = std::make_unique<const Gralloc2Mapper>();
-    if (mMapper->isLoaded()) {
-        mMapperVersion = Version::GRALLOC_2;
-        return;
-    }
+
     LOG_ALWAYS_FATAL("gralloc-mapper is missing");
 }
 ```
+
+The `requireMapper4()` guard (`android_get_device_api_level() >= 36 &&
+flags::require_gralloc4_or_newer()`) means that on API level 36+ devices with the
+`require_gralloc4_or_newer` flag enabled, the Gralloc 2/3 fallbacks are skipped entirely --
+only Gralloc 4 and 5 are considered.
 
 The `GraphicBufferAllocator` selects the matching allocator implementation:
 
@@ -6762,19 +6948,19 @@ Key usage flags that affect allocation:
 
 | Flag | Value | Description |
 |---|---|---|
-| `AHARDWAREBUFFER_USAGE_CPU_READ` | Various | CPU needs read access |
-| `AHARDWAREBUFFER_USAGE_CPU_WRITE` | Various | CPU needs write access |
+| `AHARDWAREBUFFER_USAGE_CPU_READ_*` | NEVER/RARELY/OFTEN, mask `0xF` | How often the CPU reads the buffer |
+| `AHARDWAREBUFFER_USAGE_CPU_WRITE_*` | NEVER/RARELY/OFTEN, mask `0xF << 4` | How often the CPU writes the buffer |
 | `AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE` | | GPU texture sampling |
 | `AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT` | | GPU render target |
 | `AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY` | | Hardware composer overlay |
 | `AHARDWAREBUFFER_USAGE_VIDEO_ENCODE` | | Video encoder input |
-| `AHARDWAREBUFFER_USAGE_CAMERA_WRITE` | | Camera output buffer |
+| `AHARDWAREBUFFER_USAGE_CAMERA_WRITE` | | Camera output buffer (VNDK-only: defined in `vndk/hardware_buffer.h`, not the public NDK header) |
 | `AHARDWAREBUFFER_USAGE_PROTECTED_CONTENT` | | DRM-protected content |
 
 The DMA-BUF allocator can route allocations to different heaps based on these flags:
 
 ```c
-// system/memory/libdmabufheap/BufferAllocator.cpp (lines 288-312)
+// system/memory/libdmabufheap/BufferAllocator.cpp (lines 133-158, abbreviated)
 int BufferAllocator::AllocSystem(bool cpu_access_needed, size_t len,
                                   unsigned int heap_flags) {
     if (!cpu_access_needed) {
@@ -6800,13 +6986,9 @@ int BufferAllocator::AllocSystem(bool cpu_access_needed, size_t len,
 When the CPU and hardware accelerators share memory, cache coherency must be managed explicitly:
 
 ```c
-// system/memory/libdmabufheap/BufferAllocator.cpp (lines 369-382)
+// system/memory/libdmabufheap/BufferAllocator.cpp (lines 165-171)
 int BufferAllocator::DoSync(unsigned int dmabuf_fd, bool start,
-                            SyncType sync_type, /*...*/) {
-    if (uses_legacy_ion_iface_) {
-        return LegacyIonCpuSync(dmabuf_fd, /*...*/);
-    }
-
+                            SyncType sync_type) {
     struct dma_buf_sync sync = {
         .flags = (start ? DMA_BUF_SYNC_START : DMA_BUF_SYNC_END) |
                  static_cast<uint64_t>(sync_type),
@@ -6815,6 +6997,10 @@ int BufferAllocator::DoSync(unsigned int dmabuf_fd, bool start,
         ioctl(dmabuf_fd, DMA_BUF_IOCTL_SYNC, &sync));
 }
 ```
+
+There is no ION fallback here any more: with the ION removal (Section 8.5.9) the sync path is a
+single `DMA_BUF_IOCTL_SYNC` ioctl, and the old `CustomCpuSyncLegacyIon` overloads simply forward
+to this function.
 
 The sync protocol:
 
@@ -6880,7 +7066,7 @@ under-counts graphics-heavy apps. The gap is filled by `libmemtrack`
 (`system/memory/libmemtrack/`), a thin client of the memtrack HAL: a caller fills a
 `memtrack_proc` handle with `memtrack_proc_get(pid)` and reads back per-process graphics, GL, and
 "other" totals. Internally the library does not talk to the vendor HAL directly; it binds to the
-`memtrack.proxy` service (`MemtrackProxyService`, `frameworks/native/services/memtrackproxy/`),
+`memtrack.proxy` service (the `MemtrackProxy` class, `frameworks/native/services/memtrackproxy/`),
 which fronts the per-device memtrack HAL. This is the path -- process to `libmemtrack` to the
 memtrack proxy to the HAL -- that produces the `GL mtrack` line in the `dumpsys meminfo` output
 shown in Section 8.7.1; the JNI layer (`frameworks/base/core/jni/android_os_Debug.cpp`) calls
@@ -6918,12 +7104,18 @@ compatibility for GRF")]]`, so they occupy space in the object but are never pop
 For vendors this means a device must ship DMA-BUF heaps: each buffer pool that used to be an ION
 heap needs a matching `/dev/dma_heap/<name>` node, registered through the kernel's `dma-buf` heap
 framework (system, CMA, and vendor-specific heaps) rather than the old ION heap registration. The
-heap-name-to-properties mapping that `MapNameToIonHeap()` used to express now lives in
-`/vendor/etc/dma_heap.json` (the schema added alongside this change), which `BufferAllocator`'s
-Rust and C++ config readers consume. `system/memory/libion/` still exists as a standalone library,
-but `BufferAllocator` no longer links its allocation path, so a vendor blob that calls into
-`libion` directly is the only remaining way `/dev/ion` gets touched, and that depends on a kernel
-that still builds the ION driver. The Android 17 reference configs do not enable `CONFIG_ION`;
+heap flag and alignment properties that `MapNameToIonHeap()` used to carry have no replacement --
+they were ION-specific and are simply gone. The `/vendor/etc/dma_heap.json` file added alongside
+this change (`system/memory/libdmabufheap/configs/schema.proto`) is something different: an
+NPU/heap compatibility matrix mapping each `/dev/dma_heap/<name>` device to the NPU device
+numbers and buffer types it can serve, consumed by the separate `libdma_heap_config_rust` (Rust,
+crate `dma_heap_config`) and `libdma_heap_config_proto` (C++) libraries -- `BufferAllocator` itself
+never reads it.
+`system/memory/libion/` still ships as a shared library, but only for ABI compatibility: every
+function in it is a stub (each returns -1, and the two `ion_is_*` predicates return 0), and the
+library never opens `/dev/ion`. Calling libion therefore cannot touch the ION driver at all; a
+vendor blob would have to open `/dev/ion` itself, and that in turn depends on a kernel that still
+builds the ION driver. The Android 17 reference configs do not enable `CONFIG_ION`;
 the only `CONFIG_ION=y` lines left in the tree are the old `kernel/configs/s/` (Android 12)
 recommended configs.
 
@@ -7066,9 +7258,15 @@ The `dumpsys meminfo` output shows these distinctions for each process.
 | **Purgeable** | `ASHMEM_PIN`/`ASHMEM_UNPIN` | Not directly supported |
 | **SELinux** | Custom policy rules | Standard file descriptor policy |
 | **seccomp** | Requires ioctl allowlist | Standard syscall filtering |
-| **Availability** | All Android versions | Android 10+ (API 29+) |
-| **NDK API** | `ASharedMemory_create()` | `ASharedMemory_create()` (uses memfd internally) |
+| **Availability** | All Android versions | Vendor API level 202604+ with `memfd_class` sepolicy capability |
+| **NDK API** | `ASharedMemory_create()` | `ASharedMemory_create()` (routes to memfd only when gated in) |
 | **Binder transport** | Via `BINDER_TYPE_FD` | Via `BINDER_TYPE_FD` |
+
+The switch is gated in `system/core/libcutils/ashmem-dev.cpp`: `ASharedMemory_create()` calls
+into `ashmem_create_region()`, which picks memfd over `/dev/ashmem` only when `__use_memfd()`
+passes -- the kernel/sepolicy must support the `memfd_class` capability, the device must have
+`ro.vendor.api_level >= 202604`, and the app must target SDK 37 or higher (or memfd is forced
+via `sys.use_memfd=true`). On anything older, the call still falls back to `/dev/ashmem`.
 
 ### 8.6.8 Memory Mapping Patterns
 
@@ -7082,7 +7280,7 @@ graph TD
         end
 
         subgraph "MAP_SHARED + MAP_ANONYMOUS"
-            SA["Shared anonymous<br/>- ashmem/memfd regions<br/>- Binder shared memory<br/>- Visible in both processes"]
+            SA["Shared anonymous<br/>- fork-shared scratch regions<br/>- Inherited across fork<br/>- Visible in both processes"]
         end
 
         subgraph "MAP_PRIVATE + file-backed"
@@ -7090,7 +7288,7 @@ graph TD
         end
 
         subgraph "MAP_SHARED + file-backed"
-            SF["Shared file mapping<br/>- File I/O (mmap'd files)<br/>- Writes visible to all mappers<br/>- Changes persist to disk"]
+            SF["Shared file mapping<br/>- File I/O (mmap'd files)<br/>- ashmem/memfd regions<br/>- Binder shared memory<br/>- Writes visible to all mappers"]
         end
     end
 
@@ -7178,8 +7376,10 @@ states, enabling identification of processes that gradually increase memory usag
 
 ### 8.7.3 heapprofd (Perfetto Native Heap Profiling)
 
-`heapprofd` is a daemon-less heap profiler that captures allocation backtraces with minimal
-overhead. It integrates with Perfetto for trace collection:
+`heapprofd` is a system daemon (started by init as the `heapprofd` service running
+`/system/bin/heapprofd`; see `external/perfetto/heapprofd.rc`) that captures allocation
+backtraces with minimal overhead. The target process only hosts a small client library that
+talks to the daemon, which integrates with Perfetto for trace collection:
 
 ```shell
 # Profile a running process
@@ -7621,8 +7821,7 @@ manages memory state tracking and trim callbacks:
 
 public class AppProfiler {
     // Called periodically to update low memory state
-    void updateLowMemStateLSP(int numCached, int numEmpty,
-                               int numTrimming, long now) {
+    void updateLowMemStateLSP(int numCached, int numEmpty, long now) {
         // Determine current memory state
         // Send TRIM_MEMORY callbacks to appropriate processes
     }
@@ -7639,17 +7838,17 @@ public class AppProfiler {
 The `ProcessList` class manages the mapping between process importance and OOM scores:
 
 ```java
+// frameworks/base/services/core/java/com/android/server/am/psc/Constants.java
+// (OOM adjustment levels, lines ~77-162; ProcessList static-imports them)
+public static final int CACHED_APP_MIN_ADJ = 900;
+public static final int PERCEPTIBLE_APP_ADJ = 200;
+public static final int VISIBLE_APP_ADJ = 100;
+public static final int FOREGROUND_APP_ADJ = 0;
+
 // frameworks/base/services/core/java/com/android/server/am/ProcessList.java
-
 public final class ProcessList {
-    // OOM adjustment levels (lines 213-284)
-    public static final int CACHED_APP_MIN_ADJ = 900;
-    public static final int PERCEPTIBLE_APP_ADJ = 200;
-    public static final int VISIBLE_APP_ADJ = 100;
-    public static final int FOREGROUND_APP_ADJ = 0;
-
-    // Default minfree levels for lmkd
-    private static final int[] mOomAdj = new int[] {
+    // OOM levels reported to lmkd alongside the minfree thresholds
+    private final int[] mOomAdj = new int[] {
         FOREGROUND_APP_ADJ, VISIBLE_APP_ADJ, PERCEPTIBLE_APP_ADJ,
         PERCEPTIBLE_LOW_APP_ADJ, CACHED_APP_MIN_ADJ,
         CACHED_APP_LMK_FIRST_ADJ
@@ -7815,14 +8014,19 @@ graph TD
     end
 
     subgraph "GC Algorithms"
-        CC["Concurrent Copying (CC)<br/>Default collector<br/>Low pause, compacting"]
-        CMS["Concurrent Mark-Sweep<br/>Legacy, non-compacting"]
+        CMC["Concurrent Mark-Compact (CMC)<br/>Default collector<br/>userfaultfd-based, compacting"]
+        CC["Concurrent Copying (CC)<br/>Previous default<br/>Low pause, compacting"]
     end
 
-    Main --> CC
-    LOS --> CC
-    NonMoving --> CMS
+    Main --> CMC
+    LOS --> CMC
+    NonMoving --> CMC
 ```
+
+The default collector is selected at build time (`ART_DEFAULT_GC_TYPE`, default `CMC` in
+`art/build/art.go`). CMC compacts the main space using the kernel's `userfaultfd` mechanism and
+mark-sweeps the non-moving and large object spaces in the same collection; Concurrent Copying
+(CC) was the previous default and remains selectable.
 
 ART triggers GC based on:
 
@@ -7866,9 +8070,10 @@ graph TD
     subgraph "Shadow Values"
         V0["0x00: All 8 bytes valid"]
         V1["0x01-0x07: First N bytes valid"]
-        VN["0xFC: Free'd by kfree"]
+        VN["0xFC: Slab object redzone"]
+        VF["0xFB: Freed slab object"]
         VA["0xF1: Stack left redzone"]
-        VB["0xF8: Stack use-after-scope"]
+        VB["0xF8: Inaccessible vmalloc area"]
     end
 ```
 
@@ -7877,14 +8082,16 @@ graph TD
 ARM's Memory Tagging Extension (MTE), available from ARMv8.5, provides hardware-assisted
 memory safety. Android was the first major platform to adopt MTE system-wide.
 
-MTE assigns a 4-bit tag (0-15) to both pointers and memory allocations. The hardware
+MTE assigns a 4-bit tag (0-15) to both pointers and memory allocations. The pointer's tag rides
+in bits 59:56, inside the top byte that AArch64's Top-Byte-Ignore feature already excludes from
+address translation, so the addressable virtual address is unchanged at 56 bits. The hardware
 checks that the pointer tag matches the memory tag on every access:
 
 ```mermaid
 graph LR
     subgraph "MTE-Tagged Pointer"
-        Tag["Tag<br/>(4 bits)"]
-        Addr["Virtual Address<br/>(60 bits)"]
+        Tag["Tag<br/>(4 bits, 59:56)"]
+        Addr["Virtual Address<br/>(56 bits, 55:0)"]
     end
 
     subgraph "Physical Memory"
@@ -7920,11 +8127,17 @@ MTE modes:
 | Asymmetric | ~1-2% | Sync for reads, async for writes | Production on some devices |
 | Asynchronous | <1% | Delayed reporting via SIGSEGV | Production monitoring |
 
-### 8.9.3 GWP-ASan (Guarded With Probability - AddressSanitizer)
+### 8.9.3 GWP-ASan
 
-GWP-ASan is a probabilistic memory error detector that instruments a small fraction of
-allocations. Unlike full ASan, it has negligible runtime overhead and is enabled by default
-on production Android builds.
+GWP-ASan (upstream expands it as the recursive acronym "GWP-ASan Will Provide Allocation
+SANity") is a probabilistic memory error detector that instruments a small fraction of
+allocations. Unlike full ASan, it has negligible runtime overhead, so it can run on production
+builds. Since Android 14 ordinary apps get it by default too: system processes, system apps and
+apps left at `Mode::APP_MANIFEST_DEFAULT` all enable GWP-ASan through 1-in-128 random process
+sampling (`kDefaultProcessSampling` in `bionic/libc/bionic/gwp_asan_wrappers.cpp`). Setting
+`android:gwpAsanMode="always"` drops the process sampling so every process of the app is guarded,
+and `android:gwpAsanMode="never"` is the opt-out -- it is the only mode that leaves GWP-ASan off
+(`bionic/libc/platform/bionic/malloc.h`, the `Mode` enum).
 
 Key features:
 
@@ -7932,7 +8145,9 @@ Key features:
   after, catching overflows immediately.
 - **Delayed free**: Freed memory is quarantined and its pages are marked inaccessible, catching
   use-after-free.
-- **Probabilistic**: Only 1 in ~1000 allocations is guarded, keeping overhead near zero.
+- **Probabilistic**: Only about 1 in 2500 allocations is guarded by default
+  (`kDefaultSampleRate = 2500` in `bionic/libc/bionic/gwp_asan_wrappers.cpp`), keeping overhead
+  near zero.
 - **Crash reports**: When a bug is detected, the crash report includes the allocation and
   deallocation backtraces.
 
@@ -7951,16 +8166,23 @@ Configuration via Android manifest:
 
 ```xml
 <application android:gwpAsanMode="always">
-    <!-- Enable GWP-ASan for this app's native code -->
+    <!-- Guard every process of this app: no 1-in-128 process sampling -->
 </application>
 ```
 
-Or via system property for system processes:
+Or via the bionic system properties (`bionic/libc/bionic/gwp_asan_wrappers.cpp`):
 
 ```
-# Enable for all system processes
-persist.sys.gwp_asan.enable=true
+# 1-in-N process sampling for system processes (default 128)
+libc.debug.gwp_asan.process_sampling.system_default
+# 1-in-N allocation sampling once enabled (default 2500)
+libc.debug.gwp_asan.sample_rate.system_default
+# Per-process override by executable basename
+libc.debug.gwp_asan.sample_rate.<basename>
 ```
+
+Matching `app_default` variants and `libc.debug.gwp_asan.max_allocs.*` properties control app
+processes and the guarded-allocation pool size.
 
 ### 8.9.4 Scudo: Android's Hardened Allocator
 
@@ -8026,11 +8248,13 @@ graph TD
         Manifest["AndroidManifest.xml<br/>android:memtagMode"]
         SysProp["System property<br/>arm64.memtag.process.*"]
         BuildConfig["Build config<br/>SANITIZE_TARGET=memtag_heap"]
+        KernelConfig["Kernel config<br/>CONFIG_ARM64_MTE<br/>CONFIG_KASAN_HW_TAGS"]
     end
 
     Manifest --> Scudo_MTE
     SysProp --> Scudo_MTE
-    BuildConfig --> Kernel_MTE
+    BuildConfig --> Heap_MTE
+    KernelConfig --> Kernel_MTE
 ```
 
 Android's MTE deployment strategy:
@@ -8108,7 +8332,7 @@ centralize ZRAM configuration and to separate swap management from `system_serve
 | `aidl/android/os/IMmd.aidl` | The `IMmd` Binder interface |
 | `aidl/android/os/IMmdProcessWritebackCallback.aidl` | Per-process writeback completion callback |
 | `src/service.rs` | `MmdService` Binder implementation and the work queue |
-| `src/zram/setup.rs` | First-boot ZRAM device creation and `swapon` |
+| `src/zram/setup.rs` | Per-boot ZRAM device configuration, `mkswap`, and `swapon` |
 | `src/zram/writeback.rs` | Idle writeback policy |
 | `src/zram/recompression.rs` | Recompression policy |
 | `src/zram/idle.rs` | Idle-page age tracking |
@@ -8186,8 +8410,12 @@ if (checkStatus && !mmd.isZramMaintenanceSupported()) {
 mmd.doZramMaintenanceAsync();
 ```
 
-The `IMmd` interface is deliberately one-way and asynchronous: `mmd` treats everything passed
-from outside as a *hint* and applies its own policy, so the caller never blocks on it
+The hint and command methods of `IMmd` (`doZramMaintenanceAsync`,
+`asyncWritebackProcessZramMemory`, `asyncPrefetchProcessZramMemory`) are declared `oneway`:
+`mmd` treats everything passed from outside as a *hint* and applies its own policy, so the
+caller never blocks on them. The two capability queries (`isZramMaintenanceSupported`,
+`supportsProcessMemoryZramOps`) are ordinary blocking Binder calls, which is why
+`ZramMaintenance` invokes them from a background thread
 (`system/memory/mmd/aidl/android/os/IMmd.aidl`). When the maintenance hint arrives, `mmd` decides
 whether to write back idle pages, recompress pages with a stronger algorithm (default `zstd`), or
 do nothing, based on the `mmd.zram.writeback.*` and `mmd.zram.recompression.*` policy properties
@@ -8350,8 +8578,8 @@ A 16 KB kernel can only run apps and native libraries whose ELF segments are ali
   binary loads correctly on both 4 KB and 16 KB kernels.
 - **Linker segment extension and padding**: the bionic linker extends or pads segments to satisfy
   the larger alignment at load time, with a per-app compatibility property to opt out for legacy
-  code (Chapter 7 covers `ProtectedDataGuard`, segment extension, and the page-size compatibility
-  property in detail).
+  code (Chapter 7 covers the linker's segment extension and padding in `linker_phdr.cpp` --
+  `kPageSize`, `FixMinAlignFor16KiB()` -- and the page-size compatibility property in detail).
 - **Emulator and dev devices**: Android 17 ships 16 KB system images and emulator targets so
   developers can test before shipping hardware that boots a 16 KB kernel by default.
 
@@ -8602,8 +8830,8 @@ adb shell dumpsys meminfo --oom
 adb shell dumpsys procstats --hours 3
 
 # 5. Check Graphics buffer allocations
-adb shell dumpsys SurfaceFlinger --dispsync | head -50
-adb shell dumpsys meminfo --gpu
+adb shell dumpsys SurfaceFlinger --vsync | head -50
+adb shell dumpsys gpu
 ```
 
 ### Exercise 54.3: Profile Native Memory with heapprofd
@@ -8792,8 +9020,10 @@ adb shell am send-trim-memory com.example.memorytest RUNNING_LOW
 # 1. Check if MTE is available
 adb shell cat /proc/cpuinfo | grep -i mte
 
-# 2. Check MTE status for a process
-adb shell cat /proc/$(adb shell pidof com.android.systemui)/status | grep Tagged
+# 2. Check tagged-address use for a process (untag_mask != all-ones
+#    means tagged addresses are enabled; the per-process MTE mode is
+#    queried via PR_GET_TAGGED_ADDR_CTRL or the memtag properties)
+adb shell cat /proc/$(adb shell pidof com.android.systemui)/status | grep untag_mask
 
 # 3. Check system-wide MTE configuration
 adb shell getprop persist.arm64.memtag.default
@@ -9036,8 +9266,9 @@ adb shell logcat -b events -d | grep lowmemorykiller | tail -20
 adb shell "logcat -b main -d | grep -E 'Kill.*oom_score_adj|lowmemorykiller' | tail -20"
 
 # 3. Query lmkd kill counts via its socket interface
-# (This requires a custom tool or using ProcessList's getKillCount())
-adb shell dumpsys activity processes | grep -A5 "Kill Counts"
+# (This requires a custom tool: lmkd_get_kill_count() in
+#  system/memory/lmkd/liblmkd_utils.cpp sends the LMK_GETKILLCNT
+#  command over the lmkd control socket and returns the count)
 
 # 4. Analyze the pattern: what oom_adj levels are being killed?
 adb shell "logcat -b main -d | grep 'Kill.*oom_score_adj' | \
@@ -9124,9 +9355,10 @@ echo "=== Memory Security Audit ==="
 adb shell "cat /proc/cpuinfo | grep -c 'mte' && \
   echo 'MTE: Hardware available' || echo 'MTE: Not available'"
 
-# GWP-ASan status
-adb shell "getprop libc.debug.gwp_asan.max_allocs"
-adb shell "getprop persist.sys.gwp_asan.enable"
+# GWP-ASan status (properties always carry a scope suffix:
+# .system_default, .app_default, or .<process basename>)
+adb shell "getprop libc.debug.gwp_asan.max_allocs.system_default"
+adb shell "getprop libc.debug.gwp_asan.process_sampling.system_default"
 
 # Scudo configuration
 adb shell "cat /proc/\$(pidof com.android.systemui)/maps | \
@@ -9145,10 +9377,12 @@ adb shell "readelf -s /system/bin/surfaceflinger 2>/dev/null | \
 adb shell getenforce
 
 echo ""
-echo "=== Per-Process MTE Status ==="
+echo "=== Per-Process Tagged-Address Status ==="
+# The kernel exposes only untag_mask in /proc/<pid>/status; an untag_mask
+# with the top byte cleared means tagged addresses are in use.
 adb shell "for p in /proc/[0-9]*/status; do \
   pid=\$(echo \$p | cut -d/ -f3); \
-  tagged=\$(grep 'Tagged_addr_ctrl' \$p 2>/dev/null); \
+  tagged=\$(grep 'untag_mask' \$p 2>/dev/null); \
   if [ -n \"\$tagged\" ]; then \
     name=\$(cat /proc/\$pid/cmdline 2>/dev/null | tr '\0' ' ' | cut -c1-30); \
     echo \"PID \$pid (\$name): \$tagged\"; \
@@ -9497,9 +9731,18 @@ graph TB
 | HAL | `/dev/hwbinder` | `hwservicemanager` | HIDL | **Deprecated** (Android 13+) |
 | Vendor | `/dev/vndbinder` | `vndservicemanager` | AIDL | Active |
 
-SELinux policy enforces the boundaries: a vendor process cannot open
-`/dev/binder`, and a framework process should not open `/dev/vndbinder`. The
-default device for a process depends on the build variant:
+SELinux enforces these boundaries asymmetrically. Opening `/dev/binder`
+itself is *not* restricted — `system/sepolicy/private/domain.te` grants
+read/write on `binder_device` to every domain except `hwservicemanager` and
+`vndservicemanager`, which are carved out of the `allow` rule and additionally
+barred by `neverallow` lines. What actually keeps vendor code out of
+the framework domain is the *service* level: SELinux `service_manager`
+add/find checks against `service_contexts` decide which domains may register
+or look up each named service, and the `__ANDROID_VNDK__` build flag makes
+vendor libraries default to `/dev/vndbinder` in the first place. The reverse
+direction is stricter: on full-Treble devices a `neverallow` bars framework
+(`coredomain`) processes from `/dev/vndbinder` entirely. The default device
+for a process depends on the build variant:
 
 ```cpp
 // frameworks/native/libs/binder/ProcessState.cpp
@@ -9822,8 +10065,12 @@ status_t IPCThreadState::requestDeathNotification(int32_t handle, BpBinder* prox
 
 ### 9.2.9 Frozen Process Notifications
 
-Android 14+ added process freezing support. When a process is frozen (e.g., a
-cached app in the freezer cgroup), the driver can notify clients:
+Cached-app freezing itself (the freezer cgroup) predates this API. What is
+recent is the binder freeze-notification protocol
+(`BC_REQUEST_FREEZE_NOTIFICATION` / `BR_FROZEN_BINDER` /
+`FrozenStateChangeCallback`), whose availability is probed at runtime via
+`ProcessState::DriverFeature::FREEZE_NOTIFICATION`. When a process is frozen
+(e.g., a cached app in the freezer cgroup), the driver can notify clients:
 
 ```cpp
 // frameworks/native/libs/binder/IPCThreadState.cpp (line ~1066)
@@ -10220,7 +10467,7 @@ Parcel                    mIn;     // incoming data from driver
 Parcel                    mOut;    // outgoing data to driver
 pid_t                     mCallingPid;
 const char*               mCallingSid;
-uid_t                     mCallingUid;
+std::optional<uid_t>      mCallingUid;
 int32_t                   mWorkSource;
 ```
 
@@ -10324,8 +10571,10 @@ identity to perform privileged operations on behalf of a caller:
 // frameworks/native/libs/binder/IPCThreadState.cpp (line ~562)
 int64_t IPCThreadState::clearCallingIdentity()
 {
+    // ignore mCallingSid for legacy reasons
+    uid_t callingUid = mCallingUid.has_value() ? mCallingUid.value() : getuid();
     int64_t token = packCallingIdentity(mHasExplicitIdentity,
-                                        mCallingUid, mCallingPid);
+                                        callingUid, mCallingPid);
     clearCaller();
     mHasExplicitIdentity = true;
     return token;
@@ -10510,7 +10759,8 @@ The AIDL compiler is a single binary that handles all backend targets:
 
 ```
 system/tools/aidl/
-├── aidl.cpp                 # Main entry point
+├── main.cpp                 # Main entry point
+├── aidl.cpp                 # Compiler driver / compilation logic
 ├── aidl_language.h          # AST definitions
 ├── aidl_language_l.ll       # Lexer (flex)
 ├── aidl_language_y.yy       # Parser (bison)
@@ -10558,7 +10808,8 @@ package android.os;
 import android.os.IServiceCallback;
 
 interface IServiceManager {
-    // Get a binder by name, blocking if not found
+    // Get a binder by name; returns immediately
+    // (deprecated, prefer getService2/waitForService)
     IBinder getService(String name);
 
     // Check without blocking
@@ -10595,11 +10846,15 @@ AIDL types map to different target types per backend:
 | `double` | `double` | `double` | `f64` |
 | `String` | `String` | `String16` | `String` |
 | `IBinder` | `IBinder` | `sp<IBinder>` | `SpIBinder` |
-| `FileDescriptor` | `FileDescriptor` | `unique_fd` | `OwnedFd` |
+| `FileDescriptor` | `FileDescriptor` | `unique_fd` | -- (not supported; use `ParcelFileDescriptor`) |
 | `ParcelFileDescriptor` | `ParcelFileDescriptor` | `ParcelFileDescriptor` | `ParcelFileDescriptor` |
 | `T[]` | `T[]` | `vector<T>` | `Vec<T>` |
 | `List<T>` | `List<T>` | `vector<T>` | `Vec<T>` |
 | `Map` | `Map` | -- (not supported) | -- |
+
+The NDK backend also rejects `FileDescriptor` — both it and the Rust backend
+error out with "Prefer ParcelFileDescriptor"
+(`system/tools/aidl/aidl_language.cpp:1604`).
 
 The C++ backend helpers are defined in:
 
@@ -10906,13 +11161,12 @@ AIDL supports several annotations that affect code generation:
 | `@utf8InCpp` | String types | Use `std::string` instead of `String16` |
 | `@Backing(type=T)` | Enum | Specifies backing integer type |
 | `@VintfStability` | Interface, parcelable | Marks as VINTF-stable |
-| `@Hide` | Methods, fields | Hidden from SDK |
 | `@JavaPassthrough` | Any | Pass annotation through to Java |
-| `@Enforce("perm")` | Methods | Generate permission check |
-| `@PropagateAllowBlocking` | Methods | Allow blocking from oneway callers |
+| `@EnforcePermission(value=/anyOf=/allOf=)` | Interfaces, methods | Generate permission check |
+| `@PropagateAllowBlocking` | Methods | Propagates the caller's allow-blocking-calls property to binder objects returned in the reply parcel (`Parcel.setPropagateAllowBlocking()`) |
 | `@SuppressWarnings` | Any | Suppress AIDL warnings |
 | `@JavaOnlyStableParcelable` | Parcelable | Java-only stable parcelable |
-| `@JavaDefault` | Interface | Generate default implementation |
+| `@JavaDelegator` | Interface | Generate a delegator implementation |
 | `@Descriptor` | Interface | Override interface descriptor |
 
 ### 9.4.15 API Versioning and Stability
@@ -10988,7 +11242,9 @@ flowchart TD
 
 Source directory: `frameworks/native/cmds/servicemanager/`
 
-The `servicemanager` is the first service that starts in Android. It is the
+The `servicemanager` is the first service in the binder stack and one of the
+earliest services init starts (in `on init`, after `logd` and `lmkd` --
+`system/core/rootdir/init.rc:464`). It is the
 name-server for all Binder services: processes register services by name, and
 clients look them up by name.
 
@@ -11325,7 +11581,8 @@ os::Service ServiceManager::tryGetService(const std::string& name,
 }
 ```
 
-The `os::Service` tagged union is how Android 17 lets the service manager hand
+The `os::Service` tagged union, introduced in Android 16 along with the
+`getService2` / `checkService2` variants, is how the service manager hands
 back *either* a normal local binder *or* an RPC Accessor that the client uses to
 establish a socket connection to a service running where kernel binder is
 unavailable (inside a protected VM, for example). The Accessor path is covered
@@ -11436,7 +11693,7 @@ adb shell dumpsys activity
 
 This:
 
-1. Calls `servicemanager.getService("activity")` to get the ActivityManager binder
+1. Calls `servicemanager.checkService("activity")` to get the ActivityManager binder
 2. Calls `IBinder::DUMP_TRANSACTION` on that binder
 3. The service writes its state to the provided file descriptor
 
@@ -11639,8 +11896,15 @@ service hwservicemanager /system/system_ext/bin/hwservicemanager
     shutdown critical
 ```
 
-Note the `disabled` keyword -- on newer devices that have migrated all HALs to
-AIDL, `hwservicemanager` is not started at all.
+Note the `disabled` keyword -- it only means the service is not auto-started
+with its `animation` class; `init.rc` starts it explicitly with
+`start hwservicemanager`. Even on devices that have migrated all HALs to AIDL,
+`hwservicemanager` *does* start: its `main()`
+(`system/hwservicemanager/service.cpp`) discovers via VINTF that its own
+transport is `EMPTY`, logs that HIDL is not supported, sets the
+`hwservicemanager.disabled=true` property, and sleeps — the
+`on property:hwservicemanager.disabled=true` trigger in `hwservicemanager.rc`
+then stops the process.
 
 The `hwservicemanager` uses the HIDL `IServiceManager` interface:
 
@@ -11801,7 +12065,7 @@ case BR_TRANSACTION:
         // Save and set the caller identity
         const pid_t origPid = mCallingPid;
         const char* origSid = mCallingSid;
-        const uid_t origUid = mCallingUid;
+        const auto origUid = mCallingUid;  // std::optional<uid_t>
 
         mCallingPid = tr.sender_pid;
         mCallingSid = reinterpret_cast<const char*>(tr_secctx.secctx);
@@ -11844,9 +12108,10 @@ Key observations:
    attempts to promote a weak reference to a strong reference. This handles the
    race where the BBinder might be in the process of being destroyed.
 
-3. **Buffer management:** The reply buffer is cleared (`buffer.setDataSize(0)`)
-   before sending the reply to avoid a race condition where the client receives
-   the reply and sends another transaction before the original buffer is freed.
+3. **Buffer management:** The incoming transaction's buffer is released
+   (`buffer.setDataSize(0)`) before the reply is sent, to avoid a race where
+   the client receives the reply and sends another transaction before the
+   space used by the original transaction is freed for it.
 
 4. **Context manager dispatch:** When `tr.target.ptr` is null, the transaction
    is directed to the context manager (`the_context_object`), which is the
@@ -11913,27 +12178,23 @@ status_t BBinder::transact(uint32_t code, const Parcel& data,
         case PING_TRANSACTION:
             err = pingBinder();
             break;
+        case START_RECORDING_TRANSACTION:
+            err = startRecordingTransactions(data);
+            break;
+        case STOP_RECORDING_TRANSACTION:
+            err = stopRecordingTransactions();
+            break;
         case EXTENSION_TRANSACTION:
-            CHECK(googReply != nullptr);
+            LOG_ALWAYS_FATAL_IF(reply == nullptr, "reply == nullptr");
             err = reply->writeStrongBinder(getExtension());
             break;
         case DEBUG_PID_TRANSACTION:
+            LOG_ALWAYS_FATAL_IF(reply == nullptr, "reply == nullptr");
             err = reply->writeInt32(getDebugPid());
             break;
-        case INTERFACE_TRANSACTION:
-            reply->writeString16(getInterfaceDescriptor());
-            err = NO_ERROR;
+        case SET_RPC_CLIENT_TRANSACTION:
+            err = setRpcClientDebug(data);
             break;
-        case DUMP_TRANSACTION: {
-            int fd = data.readFileDescriptor();
-            // ...read args...
-            err = dump(fd, args);
-            break;
-        }
-        case SHELL_COMMAND_TRANSACTION: {
-            // ...handle shell command...
-            break;
-        }
         default:
             err = onTransact(code, data, reply, flags);
             break;
@@ -11941,13 +12202,18 @@ status_t BBinder::transact(uint32_t code, const Parcel& data,
 
     if (reply != nullptr) {
         reply->setDataPosition(0);
-        if (reply->dataSize() > LOG_SIZE) {
+        if (reply->dataSize() > binder::kLogTransactionsOverBytes) {
             // ...log warning about large replies...
         }
     }
     return err;
 }
 ```
+
+The remaining meta-transactions — `INTERFACE_TRANSACTION`, `DUMP_TRANSACTION`,
+and `SHELL_COMMAND_TRANSACTION` — are handled by the base-class
+`BBinder::onTransact()` (`frameworks/native/libs/binder/Binder.cpp:1102-1140`),
+which subclasses fall through to for codes they do not recognize.
 
 The AIDL-generated `BnFoo::onTransact()` is what dispatches to your specific
 interface methods.
@@ -11986,7 +12252,7 @@ custom scheduling, or recording.
 After sending a transaction, the thread enters a loop waiting for the reply:
 
 ```cpp
-// frameworks/native/libs/binder/IPCThreadState.cpp (line ~1163)
+// frameworks/native/libs/binder/IPCThreadState.cpp (line ~1153)
 status_t IPCThreadState::waitForResponse(Parcel *reply,
                                          status_t *acquireResult)
 {
@@ -12018,25 +12284,24 @@ status_t IPCThreadState::waitForResponse(Parcel *reply,
             err = enableFrozenObjectErrorCode() ? FROZEN_OBJECT : FAILED_TRANSACTION;
             goto finish;
 
-        case BR_REPLY: {
+        case BR_REPLY:
+            LOG_ALWAYS_FATAL_IF(reply == NULL, "Unexpected BR_REPLY");
             binder_transaction_data tr;
             err = mIn.read(&tr, sizeof(tr));
-            if (reply) {
-                if ((tr.flags & TF_STATUS_CODE) == 0) {
-                    reply->ipcSetDataReference(
-                        reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer),
-                        tr.data_size,
-                        reinterpret_cast<const binder_size_t*>(tr.data.ptr.offsets),
-                        tr.offsets_size/sizeof(binder_size_t),
-                        freeBuffer);
-                } else {
-                    err = *reinterpret_cast<const status_t*>(
-                        tr.data.ptr.buffer);
-                    freeBuffer(/*...*/);
-                }
+            ALOG_ASSERT(err == NO_ERROR, "Not enough command data for brREPLY");
+            if (err != NO_ERROR) goto finish;
+            if ((tr.flags & TF_STATUS_CODE) == 0) {
+                reply->ipcSetDataReference(
+                    reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer),
+                    tr.data_size,
+                    reinterpret_cast<const binder_size_t*>(tr.data.ptr.offsets),
+                    tr.offsets_size/sizeof(binder_size_t),
+                    freeBuffer);
+            } else {
+                err = *reinterpret_cast<const status_t*>(tr.data.ptr.buffer);
+                freeBuffer(/* ... */);
             }
             goto finish;
-        }
 
         default:
             err = executeCommand(cmd);
@@ -12140,7 +12405,7 @@ incompatible domains:
 ```cpp
 // frameworks/native/libs/binder/include/binder/Stability.h
 class Stability {
-    enum Level : int32_t {
+    enum Level : int16_t {
         UNDECLARED = 0,     // Within a compilation unit
         VENDOR = 0b000011,  // Vendor stability
         SYSTEM = 0b001100,  // System stability
@@ -12196,17 +12461,22 @@ ProcessState::ProcessState(const char* driver)
     , mForked(false)
     , mThreadPoolStarted(false)
     , mThreadPoolSeq(1)
+    , mIsOutgoingTransactionsAuditable(false)
     , mCallRestriction(CallRestriction::NONE)
 {
-    base_fd fd(open(driver, O_RDWR | O_CLOEXEC));
-    if (fd.ok()) {
+    String8 error;
+    unique_fd opened = open_driver(driver, &error);
+    if (opened.ok()) {
         // ...
         mVMStart = mmap(nullptr, BINDER_VM_SIZE,
                         PROT_READ,
                         MAP_PRIVATE | MAP_NORESERVE,
-                        fd.get(), 0);
+                        opened.get(), 0);
         // ...
-        mDriverFD = fd.release();
+    }
+    // ...
+    if (opened.ok()) {
+        mDriverFD = opened.release();
     }
 }
 ```
@@ -12260,32 +12530,25 @@ The `defaultServiceManager()` function returns a cached reference to the
 service manager:
 
 ```cpp
-// From IServiceManager.cpp
+// frameworks/native/libs/binder/IServiceManager.cpp:333
 sp<IServiceManager> defaultServiceManager()
 {
     std::call_once(gSmOnce, []() {
-        sp<AidlServiceManager> sm = nullptr;
-        while (sm == nullptr) {
-            sm = interface_cast<AidlServiceManager>(
-                ProcessState::self()->getContextObject(nullptr));
-            if (sm == nullptr) {
-                ALOGE("Waiting 1s on context object on %s.",
-                      ProcessState::self()->getDriverName().c_str());
-                sleep(1);
-            }
-        }
-
-        gDefaultServiceManager = sp<CppBackendShim>::make(
-            sp<BackendUnifiedServiceManager>::make(sm));
+        gDefaultServiceManager =
+            sp<CppBackendShim>::make(getBackendUnifiedServiceManager());
     });
 
     return gDefaultServiceManager;
 }
 ```
 
-This blocks until the service manager is available, with a 1-second retry loop.
-This is why it is safe to call `defaultServiceManager()` very early in boot --
-it will wait for servicemanager to start.
+The waiting happens inside `getBackendUnifiedServiceManager()`
+(`frameworks/native/libs/binder/BackendUnifiedServiceManager.cpp:510`): it
+first waits for the `servicemanager.ready` system property, then retries
+`interface_cast` on the context object with a 1-second sleep until the
+context object appears. This is why it is safe to call
+`defaultServiceManager()` very early in boot -- it will wait for
+servicemanager to start.
 
 ### 9.7.13 Flat Binder Objects
 
@@ -12366,7 +12629,8 @@ provides telemetry for binder transactions:
 
 ```cpp
 // frameworks/native/libs/binder/include/binder/ProcessState.h
-#if defined(LIBBINDER_BINDER_OBSERVER) && defined(BINDER_WITH_KERNEL_IPC)
+#if defined(LIBBINDER_BINDER_OBSERVER) && defined(BINDER_WITH_KERNEL_IPC) && \
+        !defined(__ANDROID_VENDOR__)
 #define BINDER_WITH_OBSERVERS
 #endif
 ```
@@ -12399,8 +12663,11 @@ servicemanager, a blocking call from servicemanager could deadlock the system).
 
 ### 9.8.3 Background Scheduling
 
-When a binder call arrives, the kernel may move the receiving thread to the
-background scheduling group to prevent priority inversion. This can be disabled:
+When a call arrives from a process in the background scheduling group, the
+receiving thread is switched into that group too, so the work runs at the
+caller's priority. A server that holds locks in its services does not want to
+be demoted this way while other threads wait on those locks, so it can disable
+the behavior:
 
 ```cpp
 // frameworks/native/libs/binder/IPCThreadState.cpp
@@ -12592,7 +12859,7 @@ kernel binder proxy.
 threads. It supports multiple transport setup methods:
 
 ```cpp
-// Source: frameworks/native/libs/binder/include/binder/RpcServer.h:57-104
+// Source: frameworks/native/libs/binder/include/binder/RpcServer.h:57-190
 sp<RpcServer> server = RpcServer::make();
 
 // Choose ONE transport:
@@ -12749,7 +13016,7 @@ status_t RpcServer::setupVsockServer(unsigned bindCid, unsigned port,
 ```
 
 ```rust
-// Source: packages/modules/Virtualization/android/virtmgr/src/virtualmachine.rs:1503
+// Source: packages/modules/Virtualization/android/virtmgr/src/virtualmachine.rs:1662
 let (vm_server, _) = RpcServer::new_vsock(service, cid, port)
     .context(format!("Could not start RpcServer on port {port}"))?;
 ```
@@ -12786,8 +13053,8 @@ definitions they use for regular binder calls.
 RPC Binder supports TLS encryption for transports that cross trust boundaries:
 
 ```cpp
-// Create server with TLS
-auto tlsFactory = RpcTransportCtxFactoryTls::make(authInfo);
+// Create server with TLS (verifier: RpcCertificateVerifier, auth: RpcAuth)
+auto tlsFactory = RpcTransportCtxFactoryTls::make(verifier, std::move(auth));
 sp<RpcServer> server = RpcServer::make(std::move(tlsFactory));
 ```
 
@@ -12865,7 +13132,7 @@ The `rpcbinder` crate provides Rust bindings for RPC Binder:
 // Source: packages/modules/Virtualization/android/virtmgr/src/main.rs:35
 use rpcbinder::{FileDescriptorTransportMode, RpcServer};
 
-// Source: packages/modules/Virtualization/android/virtmgr/src/virtualmachine.rs:1503
+// Source: packages/modules/Virtualization/android/virtmgr/src/virtualmachine.rs:1662
 let (vm_server, _) = RpcServer::new_vsock(service, cid, port)?;
 ```
 
@@ -12882,7 +13149,7 @@ The NDK provides a C API for RPC Binder, currently marked as unstable
 (platform-only):
 
 ```cpp
-// Source: frameworks/native/libs/binder/ndk/include_platform/android/binder_rpc.h
+// Source: frameworks/native/libs/binder/include_rpc_unstable/binder_rpc_unstable.hpp
 ARpcSession* ARpcSession_new();
 void ARpcSession_free(ARpcSession* session);
 AIBinder* ARpcSession_setupUnixDomainBootstrapClient(
@@ -12922,15 +13189,18 @@ host goes through RPC Binder over vsock. The `virtmgr` daemon creates an
 a curated set of host services.
 
 ```rust
-// Source: packages/modules/Virtualization/android/virtmgr/src/virtualmachine.rs:1503
+// Source: packages/modules/Virtualization/android/virtmgr/src/virtualmachine.rs:1662
 let (vm_server, _) = RpcServer::new_vsock(service, cid, port)
     .context(format!("Could not start RpcServer on port {port}"))?;
 ```
 
-The NDK demo (`vm_demo_native`) shows the client side in the guest VM:
+The NDK demo (`vm_demo_native`) runs on the Android host: it uses a
+Unix-domain-socket bootstrap `RpcSession` to reach `virtmgr`'s
+`IVirtualizationService`, then starts and drives the VM:
 
 ```cpp
 // Source: packages/modules/Virtualization/android/vm_demo_native/main.cpp:126-132
+// (declarations in frameworks/native/libs/binder/include_rpc_unstable/binder_rpc_unstable.hpp)
 std::unique_ptr<ARpcSession, decltype(&ARpcSession_free)>
     session(ARpcSession_new(), &ARpcSession_free);
 ARpcSession_setFileDescriptorTransportMode(session.get(),
@@ -12970,7 +13240,7 @@ graph LR
 The hardest part of running binder clients inside a VM is not the transport but
 *discovery*: code written against `defaultServiceManager()` expects to look a
 service up by name and get a binder back, but a guest VM has no kernel
-`servicemanager` and no `/dev/binder`. Android 17 closes this gap with the RPC
+`servicemanager` and no `/dev/binder`. Android 16 closed this gap with the RPC
 **Accessor** API, which lets a process register a callback that produces a
 connection to the real service on demand. Existing `IServiceManager`-style
 lookups then transparently route through RPC Binder.
@@ -13067,9 +13337,7 @@ The binder driver exposes debug information via debugfs:
 ├── stats                   # Global statistics
 ├── transaction_log         # Recent transaction log
 └── proc/                   # Per-process information
-    ├── <pid>/
-    │   ├── state
-    │   └── stats
+    ├── <pid>                # one file per process, named by decimal PID
     └── ...
 ```
 
@@ -13080,7 +13348,7 @@ adb shell cat /sys/kernel/debug/binder/state
 
 **Example: view transactions for a specific process:**
 ```bash
-adb shell cat /sys/kernel/debug/binder/proc/<pid>/state
+adb shell cat /sys/kernel/debug/binder/proc/<pid>
 ```
 
 ### 9.10.2 Perfetto Tracing
@@ -13135,7 +13403,7 @@ To diagnose:
 
 ```bash
 # Check buffer allocation for a specific process
-adb shell cat /sys/kernel/debug/binder/proc/<pid>/state
+adb shell cat /sys/kernel/debug/binder/proc/<pid>
 
 # Look for "allocated" and "free" buffer sizes
 # A process with many pending incoming transactions will show high allocation
@@ -13164,19 +13432,26 @@ adb shell atrace --async_stop > trace.txt
 ### 9.10.7 Monitoring Binder Proxy Counts
 
 ```bash
-# Check per-UID proxy counts
+# Check per-UID and per-process BinderProxy counts
 adb shell dumpsys activity binder-proxies
-
-# Check total proxy count for a process
-adb shell cat /proc/<pid>/fd | wc -l  # rough approximation
 ```
 
-The proxy throttle watermarks (2000 low / 2250 warning / 2500 high) are
-configurable via system properties on debug builds.
+Note that binder proxies are handles in the process's kernel binder handle
+table, not file descriptors, so counting entries under `/proc/<pid>/fd` says
+nothing about proxy counts.
 
-### 9.10.8 Using binder_exception_to_string
+The libbinder default watermarks are 2000 low / 2250 warning / 2500 high
+(`frameworks/native/libs/binder/BpBinder.cpp:71-76`). They are overridden
+programmatically via `BpBinder::setBinderProxyCountWatermarks()` (exposed to
+Java as `BinderInternal.nSetBinderProxyCountWatermarks`); on a real device
+system_server raises them to 5500 low / 5750 warning / 6000 high.
 
-When debugging AIDL binder exceptions, the status code can be decoded:
+### 9.10.8 Using binder::Status::exceptionToString
+
+When debugging AIDL binder exceptions, the status code can be decoded with
+`binder::Status::exceptionToString()`
+(`frameworks/native/libs/binder/include/binder/Status.h:109`,
+`frameworks/native/libs/binder/Status.cpp:67`):
 
 | Exception Code | Name | Meaning |
 |----------------|------|---------|
@@ -13189,7 +13464,7 @@ When debugging AIDL binder exceptions, the status code can be decoded:
 | -7 | `EX_UNSUPPORTED_OPERATION` | Unsupported operation |
 | -8 | `EX_SERVICE_SPECIFIC` | Service-specific error (with detail code) |
 | -9 | `EX_PARCELABLE` | Custom parcelable exception |
-| -128 | `EX_TRANSACTION_FAILED` | Transaction failure |
+| -129 | `EX_TRANSACTION_FAILED` | Transaction failure |
 
 These are the AIDL `binder::Status` exception codes, distinct from the kernel-
 level `status_t` return codes.
@@ -13222,7 +13497,9 @@ the transaction's context:
 Because each report names both endpoints and the binder context, a daemon can
 build a system-wide picture of *who* is hitting `FAILED_TRANSACTION`,
 buffer-full, or frozen-target errors without scraping per-process debugfs.
-`getStatistics()` exposes counters for received and dropped reports. The feature
+`getStatistics()` exposes error counters for netlink messages that could not be
+decoded -- `mUnknownCommand` (unexpected command type) and `mUnknownAttribute`
+(unexpected netlink attribute type). The feature
 depends on a matching kernel uapi header
 (`<linux/android/binder_netlink.h>`); when that header is absent the file
 compiles a vendored copy of the attribute definitions so the build still works
@@ -13276,10 +13553,11 @@ failures system-wide.
 
 The optional `BinderObserver` infrastructure introduced in 9.8.1 grew a richer
 statistics pipeline this cycle, under
-`frameworks/native/libs/binder/observer/`. `IPCThreadState::executeCommand()`
-now brackets each served transaction with
+`frameworks/native/libs/binder/observer/`. `IPCThreadState::doTransactBinder()`
+— which `executeCommand()` calls on the `BR_TRANSACTION` path — now brackets
+each served transaction with
 `BinderObserver::onBeginTransaction()` / `onEndTransaction()`
-(`frameworks/native/libs/binder/IPCThreadState.cpp:1752`), recording the calling
+(`frameworks/native/libs/binder/IPCThreadState.cpp:1748`), recording the calling
 UID, interface, and method. A `HistogramScale`
 (`frameworks/native/libs/binder/observer/HistogramScale.h`) buckets transaction
 latency on an exponential scale (factor 1.2), and `BinderStatsPusher`
@@ -13291,18 +13569,18 @@ that never opt in pay nothing. Two read-only flags in
 `binder_stats_v3` (latency histogram, main-thread detection, proc-state
 detection) and `enable_frozen_object_error` from 9.11.1.
 
-### 9.11.4 Cached Process Identity
+### 9.11.4 Lazy Process Identity
 
-`getCallingUid()` and `clearCallingIdentity()` previously fell back to a
-`getuid()` / `getpid()` syscall when there was no active transaction identity.
-Profiling showed this costing a measurable fraction of cycles in `system_server`
-(it sits on the hot `clearCallingIdentity()` path). Android 17 memoizes the
-process UID and PID on first use in `IPCThreadState`
-(`frameworks/native/libs/binder/IPCThreadState.cpp:463`, where
-`getCallingUid()` returns `mCallingUid.value()` or the cached `getuid()`),
-avoiding repeated syscalls. This is safe under the existing rule that a process
-must not use binder after `fork()` (9.3.4), so the cached identity can never go
-stale.
+`clearCaller()` previously did an eager `getuid()` syscall on every identity
+clear — a measurable cost in `system_server`, since it sits on the hot
+`clearCallingIdentity()` path. Android 17 makes `mCallingUid` a
+`std::optional<uid_t>` (`frameworks/native/libs/binder/include/binder/IPCThreadState.h:259`)
+so `clearCaller()` merely does `mCallingUid.reset()` and the `getuid()`
+syscall is deferred until a caller actually asks for the UID with no
+transaction identity in scope: `getCallingUid()`
+(`frameworks/native/libs/binder/IPCThreadState.cpp:463`) returns
+`mCallingUid.has_value() ? mCallingUid.value() : getuid()`. The PID is not
+affected — `clearCaller()` still calls `getpid()` each time.
 
 ### 9.11.5 RPC Binder Accessors Reach the LLNDK
 
@@ -13328,12 +13606,14 @@ opt-in outgoing-transaction auditing in `libbinder`. When the framework flag
 `android.app.privatecompute.flags.enablePccFrameworkSupport` is on,
 `ProcessState::isOutgoingTransactionsAuditable()` is set for PCC/PCS UIDs, and
 `IPCThreadState::logPccTransaction()`
-(`frameworks/native/libs/binder/IPCThreadState.cpp:1698`) records the interface
-and method name of each non-PCC-to-PCC outgoing call into a
+(`frameworks/native/libs/binder/IPCThreadState.cpp:1698`) — called from the
+`BR_TRANSACTION` serving path — records the interface and method name of each
+inbound transaction served by the PCC/PCS process whose caller is outside the
+PCC UID range (`AID_PCC_COMPONENT_PROCESS_START`..`END`) into a
 `PersistableBundle` and forwards it to the `pcc_sandbox_native` service's audit
 log. The lookup is rate-limited so a missing audit service cannot spam the log.
-This gives the PCC sandbox an authoritative record of which framework surfaces a
-sandboxed component reaches over binder.
+This gives the PCC sandbox an authoritative record of which non-PCC callers
+reach into the sandbox over binder.
 
 ---
 
@@ -13946,7 +14226,8 @@ graph TB
 9. **Android 17 sharpened binder's edges** rather than reshaping it: a distinct
    `FROZEN_OBJECT` error for frozen targets, a generic-netlink push channel for
    driver-side error reports, latency-histogram statistics in the binder
-   observer, cached process identity on the hot `clearCallingIdentity()` path,
+   observer, a lazily-fetched process UID on the hot `clearCallingIdentity()`
+   path,
    and RPC Binder Accessors promoted to the LLNDK so binder clients can run
    inside VMs with no kernel binder at all.
 
@@ -13982,10 +14263,14 @@ separate process) that can be distributed as a closed-source binary.  The
 framework talks to the HAL through a well-defined contract, never linking
 directly against GPL kernel code.
 
-This is not merely a policy choice -- it is enforced in the build system.  Since
-Android 8.0 (Project Treble), the Vendor Native Development Kit (VNDK) and
-linker namespace isolation ensure that framework code cannot load vendor
-libraries and vice versa, except through approved HAL interfaces.
+This is not merely a policy choice -- it is enforced by the platform.  Since
+Android 8.0 (Project Treble), linker namespace isolation has ensured that
+framework code cannot load vendor libraries and vice versa, except through
+approved HAL interfaces.  From Android 8 through 14 this was backed by the
+Vendor Native Development Kit (VNDK), a versioned set of system libraries
+vendor code could link against; VNDK was deprecated in Android 15, and the
+current tree forces `BOARD_VNDK_VERSION` empty in `build/make/core/config.mk`,
+leaving linker namespaces, SELinux, and VINTF as the enforcement mechanisms.
 
 ### 10.1.2 The Four-Layer Stack
 
@@ -14142,10 +14427,15 @@ The key enforcement mechanisms are:
 
 1. **Linker namespace isolation.**  The dynamic linker enforces that system
    libraries cannot load vendor libraries and vice versa, except through
-   explicitly allowed interfaces (VNDK libraries and HAL interfaces).
+   explicitly allowed interfaces -- for example, the framework loads
+   same-process HALs from the vendor partition only through the dedicated
+   SP-HAL namespace via `android_load_sphal_library()`.
 
-2. **VNDK (Vendor NDK).**  A curated set of system libraries that vendor code
-   is permitted to link against.  These libraries have stable ABIs.
+2. **VNDK (Vendor NDK).**  Historically (Android 8 through 14), a curated set
+   of system libraries with stable ABIs that vendor code was permitted to
+   link against.  VNDK was deprecated in Android 15 and is disabled in the
+   current tree, where `build/make/core/config.mk` unconditionally clears
+   `BOARD_VNDK_VERSION`; no VNDK snapshot is built or installed anymore.
 
 3. **VINTF.**  The formal declaration system (described in Section 10.5) that
    records which HALs each side provides and requires.
@@ -14163,7 +14453,7 @@ On a Treble-compliant device, the storage is partitioned as follows:
 
 | Partition | Contains | Updated By |
 |-----------|----------|-----------|
-| `/system` | Android framework, system apps, VNDK | Google (system OTA) |
+| `/system` | Android framework, system apps | Google (system OTA) |
 | `/system_ext` | OEM framework extensions | OEM (OTA) |
 | `/vendor` | Vendor HAL implementations, firmware | SoC vendor (vendor OTA) |
 | `/odm` | ODM-specific customizations | Device manufacturer |
@@ -14704,7 +14994,7 @@ sequenceDiagram
 ### 10.2.6 All Legacy HAL Modules
 
 The directory `hardware/libhardware/modules/` contains reference implementations
-for 22 legacy HAL modules:
+for 20 legacy HAL modules:
 
 | Module | Directory | Purpose |
 |--------|-----------|---------|
@@ -14728,12 +15018,16 @@ for 22 legacy HAL modules:
 | usbaudio | `modules/usbaudio` | USB audio |
 | usbcamera | `modules/usbcamera` | USB camera |
 | vibrator | `modules/vibrator` | Vibrator motor |
-| vr | `modules/vr` | Virtual reality mode |
 
 The header directory `hardware/libhardware/include/hardware/` contains the
-interface definitions for all of these, plus additional ones like `camera2.h`,
+interface definitions for most of these, plus additional ones like `camera2.h`,
 `camera3.h`, `gralloc1.h`, `hwcomposer2.h`, and `keymaster2.h` that represent
-evolved versions of the same interfaces.
+evolved versions of the same interfaces.  A few of the modules keep their
+headers elsewhere: `consumerir.h`, `radio.h`, `thermal.h`, and
+`local_time_hal.h` live in `hardware/libhardware/include_vendor/hardware/`
+instead, and `usbaudio`, `usbcamera`, and `audio_remote_submix` have no
+dedicated header at all -- they implement the generic `audio.h`/`camera3.h`
+contracts.
 
 ### 10.2.6.1 Legacy HAL Header Contracts
 
@@ -14752,10 +15046,13 @@ extension and module ID.  The full set of headers includes:
 | `power.h` | `POWER_HARDWARE_MODULE_ID` | `power_module_t` |
 | `fingerprint.h` | `FINGERPRINT_HARDWARE_MODULE_ID` | `fingerprint_module_t`, `fingerprint_device_t` |
 | `gps.h` | `GPS_HARDWARE_MODULE_ID` | `gps_device_t` |
-| `bluetooth.h` | `BT_HARDWARE_MODULE_ID` | `bluetooth_module_t`, `bluetooth_device_t` |
 | `vibrator.h` | `VIBRATOR_HARDWARE_MODULE_ID` | `vibrator_device_t` |
-| `thermal.h` | `THERMAL_HARDWARE_MODULE_ID` | `thermal_module_t` |
-| `memtrack.h` | `MEMTRACK_MODULE_API_VERSION_0_1` | `memtrack_module_t` |
+| `memtrack.h` | `MEMTRACK_HARDWARE_MODULE_ID` | `memtrack_module_t` |
+
+(`bluetooth.h` is the odd one out: it defines no `hw_module_t`/`hw_device_t`
+subtypes at all, instead exporting a flat `bt_interface_t` function table under
+the string `BLUETOOTH_INTERFACE_STRING` -- it is not a `hw_module_t`-style
+legacy HAL.)
 
 Each header follows the same pattern:
 
@@ -15001,19 +15298,15 @@ The hwservicemanager performs two critical functions:
    `IFoo::getService("instance_name")`.  The HIDL runtime contacts
    hwservicemanager, which returns the HwBinder proxy.
 
-The hwservicemanager also enforces VINTF manifest compliance -- it checks that
-any HAL being registered is declared in the device's VINTF manifest (when
-`ENFORCE_VINTF_MANIFEST` is defined):
-
-```c++
-// system/libhidl/transport/ServiceManagement.cpp, lines 148-151
-
-#ifdef ENFORCE_VINTF_MANIFEST
-static constexpr bool kEnforceVintfManifest = true;
-#else
-static constexpr bool kEnforceVintfManifest = false;
-#endif
-```
+Notably, hwservicemanager does *not* require every registered HAL to appear in
+the device's VINTF manifest.  A comment in
+`system/hwservicemanager/ServiceManager.cpp` (lines 401-407) explains why:
+requiring manifest entries for every registration would prevent tests from
+registering their own services, so for HIDL the platform relies on VTS to catch
+undeclared HALs.  The one check hwservicemanager does enforce is consistency
+within an inheritance chain: if a HAL *is* declared in the manifest but one of
+its superclasses in the `interfaceChain()` is not, registration is refused
+(`ServiceManager.cpp`, lines 417-432).
 
 With HIDL now deprecated, newer devices may not ship hwservicemanager at all.
 The `NoHwServiceManager` class in `ServiceManagement.cpp` (lines 213-348) acts
@@ -15084,6 +15377,7 @@ service implements.  For example, calling `interfaceChain()` on a
 
 ```
 ["android.hardware.camera.provider@2.6::ICameraProvider",
+ "android.hardware.camera.provider@2.5::ICameraProvider",
  "android.hardware.camera.provider@2.4::ICameraProvider",
  "android.hidl.base@1.0::IBase"]
 ```
@@ -15268,11 +15562,19 @@ sp<IServiceManager1_0> defaultServiceManager() {
 }
 ```
 
-**4. hwservicemanager validates against VINTF:**
+**4. The client library validates against VINTF:**
 
-The service manager checks the device's VINTF manifest to verify the HAL is
-declared.  The `Vintf.cpp` file in `system/hwservicemanager/` performs this
-check.
+The manifest check happens on the *client* side, not inside hwservicemanager.
+`registerAsServiceInternal()` (`system/libhidl/transport/ServiceManagement.cpp`,
+lines 981-1008) queries hwservicemanager for the HAL's declared transport via
+`getTransport()` -- a lookup served by `system/hwservicemanager/Vintf.cpp` from
+the VINTF manifests -- and refuses to register unless the transport is
+`HWBINDER`, logging "must be in VINTF manifest in order to register/get".
+hwservicemanager's own `add()` deliberately does not require a manifest entry
+(a comment in `system/hwservicemanager/ServiceManager.cpp` explains that doing
+so would prevent tests from running, so HIDL relies on VTS for full
+enforcement); it only rejects a registration when a declared HAL's superclasses
+in the interface chain are missing from the manifest.
 
 **5. hwservicemanager stores the service:**
 
@@ -15665,10 +15967,13 @@ frame rate) before mutating any light, so an ill-formed request throws
 ```
 
 The fragment still declares `<version>2</version>` even though the interface is
-frozen at version 3 and the implementation links the V3 library.  A manifest
-fragment advertises the *minimum* interface version the service guarantees, and
-a client asking for V2 is satisfied by a V3 implementation (AIDL HAL versions
-are additive), so the reference fragment was never bumped.
+frozen at version 3 and the implementation links the V3 library.  The manifest
+`<version>` is the *highest* interface version the service provides: libvintf's
+`VersionRange::supportedBy()` (`system/libvintf/include/vintf/VersionRange.h`,
+lines 54-61) accepts a manifest version against any matrix requirement at or
+below it.  Declaring 2 while shipping V3 code is therefore simply a stale,
+under-declared reference fragment -- it works because the framework matrix
+still accepts version 2, not because of any "minimum version" convention.
 
 **init.rc service definition** (`lights-default.rc`):
 
@@ -15866,8 +16171,8 @@ The interface uses nested parcelable types for complex arguments:
 ```
 
 The default implementation in `hardware/interfaces/audio/aidl/default/Module.cpp`
-demonstrates the scale of a production HAL.  The file begins with 66 lines of
-just `using` declarations:
+demonstrates the scale of a production HAL.  The file begins with 31 lines of
+just `using` declarations (lines 37-67):
 
 ```c++
 // hardware/interfaces/audio/aidl/default/Module.cpp (lines 37-67, excerpt)
@@ -15911,7 +16216,7 @@ The Audio HAL VINTF manifest fragment from
   </hal>
   <hal format="aidl">
     <name>android.hardware.audio.effect</name>
-    <version>3</version>
+    <version>4</version>
     <fqname>IFactory/default</fqname>
   </hal>
 </manifest>
@@ -16286,8 +16591,11 @@ very different contracts:
   succeed, overwriting the oldest unread data if the buffer is full.  Each
   reader keeps its own read counter, and a reader that has been lapped detects
   the overwrite and resets its counter (the queue logs and the read returns the
-  loss).  This flavor needs the extra `WRITEREGIONENDPTRPOS` grantor (which
-  aliases `READPTRPOS`) so that an in-progress write region can be published.
+  loss).  Because those read counters live in each reader's own process memory,
+  the shared read-counter slot is free, and this flavor reuses grantor slot 0
+  (`WRITEREGIONENDPTRPOS`, defined as the same index as `READPTRPOS`) to
+  publish the end of an in-progress write region -- the grantor count is
+  unchanged, not increased.
   libfmq even warns at runtime if an unsynchronized writer tries to overwrite
   the entire buffer in a single call, because that defeats the overflow
   detection.
@@ -16390,6 +16698,10 @@ aidl_interface {
             version: "2",
             imports: [],
         },
+        {
+            version: "3",
+            imports: [],
+        },
     ],
 }
 ```
@@ -16447,9 +16759,10 @@ The build system enforces this:
 
 1. During development, changes can be made to the `.aidl` files in the main
    source directory.
-2. When a version is ready to ship, it is "frozen" by running
-   `m <name>-update-api`, which copies the current files to a new numbered
-   directory.
+2. `m <name>-update-api` refreshes the `current/` snapshot from the sources.
+   When a version is ready to ship, it is "frozen" by running
+   `m <name>-freeze-api`, which copies the current sources into a new numbered
+   directory (`system/tools/aidl/build/aidl_api.go`, lines 686-689).
 3. The `frozen: true` flag in `Android.bp` tells the build system to verify
    that the current sources match the latest frozen version.
 
@@ -16491,9 +16804,9 @@ definitions.  In the Android 17 tree it holds 51 hardware interface directories
 `scripts`, `staging`, and `tests`).  Most carry an `aidl/` package, and the
 HIDL-only `configstore` interface that earlier releases shipped is gone.  But
 the `.hal`/`hidl/` subtrees have *not* all been pruned: roughly 726 `.hal` files
-still ship, and about a dozen of these directories (`audio`, `camera`,
-`biometrics`, `tv`, `automotive`, `graphics`, `input`, `media`, `security`,
-`renderscript`, `virtualization`, `atrace`, `apexkey`) have no top-level `aidl/`
+still ship, and exactly twelve of these directories (`apexkey`, `atrace`,
+`automotive`, `biometrics`, `camera`, `graphics`, `input`, `media`,
+`renderscript`, `security`, `tv`, `virtualization`) have no top-level `aidl/`
 of their own -- their interfaces are either still frozen HIDL `.hal`
 definitions, nested AIDL packages one level down, or non-HAL build artifacts:
 
@@ -16776,47 +17089,54 @@ framework can work with any vendor providing version 1, 2, or 3 of the audio
 core HAL.  This range is critical for compatibility -- it allows older vendor
 images to work with newer framework images.
 
-HALs that are not listed in the compatibility matrix (or are listed without
-a `<version>` range) are optional.  Only HALs with explicit version
-requirements are mandatory for a device at that FCM level.
+HALs that are absent from the compatibility matrix are simply not required.
+For entries that are present, optionality is expressed by the
+`optional="true"` attribute (e.g. `android.hardware.security.timestamp` in the
+202604 matrix); an AIDL entry that omits `<version>` is *not* thereby optional
+-- libvintf treats a missing AIDL version as the default version 1
+(`system/libvintf/constants-private.h`).
 
 ### 10.5.4 The Compatibility Check Algorithm
 
-The compatibility check verifies that:
+The compatibility promise is enforced in two places, and it is worth being
+precise about which check runs where.
 
-1. For every **required** HAL in the framework compatibility matrix, the device
-   manifest provides an implementation at a compatible version.
+The runtime entry point, `VintfObject::checkCompatibility()`
+(`system/libvintf/VintfObject.cpp`, lines 696-745), first null-checks the four
+VINTF documents (device manifest, framework manifest, device matrix, framework
+matrix), then calls `HalManifest::checkCompatibility()` in both directions plus
+`RuntimeInfo::checkCompatibility()`.  Those calls
+(`system/libvintf/HalManifest.cpp`, lines 474-523) verify:
 
-2. For every HAL in the device manifest, the version is within the range
-   accepted by the framework compatibility matrix.
+1. Schema/type consistency between each manifest and the opposing matrix.
 
-3. Kernel requirements (config options, version) are satisfied.
+2. On the device side: the sepolicy version and kernel requirements declared
+   in the framework matrix.
 
-4. SELinux policy version requirements are met.
+3. On the framework side: VNDK and System SDK versions required by the device
+   matrix.
+
+4. Runtime info (kernel version, kernel configs, loaded SELinux policy)
+   against the framework matrix.
+
+What this runtime check does *not* do is iterate the matrix's HAL entries:
+HAL presence, version-range, and instance matching against the FCM are
+enforced by the build-time `check_vintf` tooling and by the VTS VINTF tests
+(`test/vts-testcase/hal/treble/vintf/`), not by
+`VintfObject::checkCompatibility()`.
 
 ```mermaid
 flowchart TD
-    A["VintfObject::checkCompatibility()"] --> B["Load device manifest"]
-    A --> C["Load framework compatibility matrix"]
-    B --> D["For each required HAL in matrix"]
-    C --> D
-    D --> E{"Device manifest<br/>provides HAL?"}
-    E -->|No| F{"HAL is<br/>optional?"}
-    F -->|Yes| D
-    F -->|No| G["FAIL: Missing required HAL"]
-    E -->|Yes| H{"Version in<br/>acceptable range?"}
-    H -->|No| I["FAIL: Version mismatch"]
-    H -->|Yes| J{"All instances<br/>declared?"}
-    J -->|No| K["FAIL: Missing instance"]
-    J -->|Yes| D
-    D -->|"All HALs<br/>checked"| L["Check kernel requirements"]
-    L --> M["Check SELinux requirements"]
-    M --> N["PASS: Compatible"]
+    A["VintfObject::checkCompatibility()"] --> B{"All four VINTF<br/>documents present?"}
+    B -->|No| C["FAIL: NO_INIT"]
+    B -->|Yes| D["Device manifest vs framework matrix:<br/>sepolicy version, kernel requirements"]
+    D --> E["Framework manifest vs device matrix:<br/>VNDK / System SDK versions"]
+    E --> F["Runtime info vs framework matrix:<br/>kernel version, configs, SELinux policy"]
+    F --> G["PASS: Compatible"]
+    H["HAL presence / version / instance<br/>vs FCM"] -.->|"enforced by build-time check_vintf<br/>and VTS VINTF tests"| A
 
-    style G fill:#fce4ec
-    style I fill:#fce4ec
-    style K fill:#fce4ec
-    style N fill:#e8f5e9
+    style C fill:#fce4ec
+    style G fill:#e8f5e9
 ```
 
 ### 10.5.4.1 Detailed Compatibility Matrix Analysis
@@ -16836,7 +17156,7 @@ from the Android 17 matrix):
 | `android.hardware.audio.effect` | 1-4 | default |
 | `android.hardware.biometrics.face` | 3-5 | default, virtual |
 | `android.hardware.biometrics.fingerprint` | 3-5 | default, virtual |
-| `android.hardware.bluetooth` | (latest) | default |
+| `android.hardware.bluetooth` | 1 (no `<version>` element; AIDL default) | default, regex: `hci[1-9][0-9]*` |
 | `android.hardware.bluetooth.audio` | 3-6 | default |
 | `android.hardware.camera.provider` | 1-4 | regex: `[^/]+/[0-9]+` |
 | `android.hardware.gnss` | 2-7 | default |
@@ -16844,11 +17164,11 @@ from the Android 17 matrix):
 | `android.hardware.graphics.composer3` | 4-5 | default |
 | `android.hardware.health` | 3-5 | default |
 | `android.hardware.identity` | 1-5 | default |
-| `android.hardware.power` | (latest) | default |
-| `android.hardware.sensors` | (latest) | default |
+| `android.hardware.power` | 5-7 | default |
+| `android.hardware.sensors` | 2-3 | default |
 | `android.hardware.security.secretkeeper` | 1-2 | default, nonsecure |
-| `android.hardware.thermal` | (latest) | default |
-| `android.hardware.vibrator` | (latest) | default |
+| `android.hardware.thermal` | 3 | default |
+| `android.hardware.vibrator` | 1-4 | default (IVibrator and IVibratorManager) |
 
 Some entries use `<regex-instance>` for dynamic naming:
 
@@ -16856,7 +17176,7 @@ Some entries use `<regex-instance>` for dynamic naming:
 <!-- Camera provider uses regex to allow provider/id naming -->
 <hal format="aidl" updatable-via-apex="true">
     <name>android.hardware.camera.provider</name>
-    <version>1-3</version>
+    <version>1-4</version>
     <interface>
         <name>ICameraProvider</name>
         <regex-instance>[^/]+/[0-9]+</regex-instance>
@@ -16888,15 +17208,15 @@ over time:
 - When an old version is deprecated (all devices using it are past end-of-life),
   the lower bound increases.
 
-For example, the GNSS HAL version range `2-6` tells us:
+For example, the GNSS HAL version range `2-7` tells us:
 
 - Version 1 has been deprecated (no supported devices still use it).
-- Versions 2 through 6 are all supported by the current framework.
+- Versions 2 through 7 are all supported by the current framework.
 - The framework's GNSS code has backward-compatibility logic for each version.
 
 This version range mechanism is the key to Treble's compatibility promise:
 a vendor shipping version 2 of the GNSS HAL can receive framework updates
-that add support for version 6 without needing to update their HAL.
+that add support for version 7 without needing to update their HAL.
 
 ### 10.5.5 FCM Levels and Timeline
 
@@ -17088,8 +17408,11 @@ static bool forEachManifest(
 This code shows that `servicemanager` loads both the device manifest and
 framework manifest at startup, and uses them to validate every HAL
 registration request.  The `isAllowedToUseLibvintf()` function in
-`VintfObject.cpp` (lines 82-100) restricts which processes can query VINTF
-information to prevent unnecessary memory usage:
+`VintfObject.cpp` (lines 82-100) is a usage-policy check: when a binary
+outside the allowlist pulls in libvintf, `GetInstance()` logs a
+`libvintf-usage-violation` error to discourage the extra memory cost, but
+then builds and returns the object anyway -- it does not actually block those
+processes from querying VINTF data:
 
 ```c++
 // system/libvintf/VintfObject.cpp (lines 82-100)
@@ -17168,14 +17491,17 @@ well-formedness and internal consistency.
 
 **check_vintf** (`system/libvintf/check_vintf.cpp`):
 Verifies that a device image's manifests and matrices are mutually compatible.
-This tool is run as part of `make check-vintf` and during VTS testing.
+This tool is run as part of `make check-vintf-all` and during VTS testing.
 
 ```bash
-# Build-time check (run automatically during make)
-check_vintf \
-    --check-compat \
-    --device-manifest /vendor/etc/vintf/manifest.xml \
-    --framework-matrix /system/etc/vintf/compatibility_matrix.xml
+# Check a tree of VINTF metadata pulled from a device or a build output
+# (from the tool's own usage text in system/libvintf/check_vintf.cpp)
+check_vintf --check-compat --rootdir=$ROOTDIR \
+    --property ro.product.first_api_level=... \
+    --property ro.boot.product.hardware.sku=...
+# Alternatively map partitions individually instead of --rootdir:
+#   check_vintf --check-compat --dirmap /system:$SYSTEM_DIR --dirmap /vendor:$VENDOR_DIR
+# Add --kernel <version:path/to/config> to also check kernel requirements.
 ```
 
 If the check fails, the build stops with a clear error message indicating
@@ -17400,7 +17726,7 @@ graph TD
 | Source | `frameworks/native/cmds/servicemanager/` | `system/hwservicemanager/` |
 | IPC | Standard Binder | HwBinder |
 | Used by | AIDL HALs + framework services | HIDL HALs only |
-| VINTF | Checks both device and framework manifests | Checks device manifest |
+| VINTF | Checks both device and framework manifests | Also consults both (framework manifest first, then device) to resolve a HIDL transport |
 | Status | **Active** | Deprecated (may be absent on new devices) |
 | Naming | `<package>.<interface>/<instance>` | `<package>@<version>::<interface>/<instance>` |
 
@@ -17415,19 +17741,23 @@ tries to register, `servicemanager` calls `forEachManifest()` to verify the
 HAL is declared:
 
 ```c++
-// frameworks/native/cmds/servicemanager/ServiceManager.cpp (lines 113-115)
+// frameworks/native/cmds/servicemanager/ServiceManager.cpp (lines 140-142)
 
-static std::string getNativeInstanceName(
+static std::string getAidlInstanceName(
     const vintf::ManifestInstance& instance) {
-    return instance.package() + "/" + instance.instance();
+    return instance.package() + "." + instance.interface() + "/" + instance.instance();
 }
 ```
 
 The service name format for AIDL HALs in `servicemanager` is:
 
 ```
-<package>/<instance>
+<package>.<Interface>/<instance>
 ```
+
+(A sibling helper, `getNativeInstanceName()` at lines 113-115, builds the
+simpler `<package>/<instance>` names used for `format="native"` manifest
+entries.)
 
 For example:
 
@@ -17496,9 +17826,11 @@ Return<void> ClientCounterCallback::onClients(
         if (registered.clients) numWithClients++;
     }
 
-    LOG(INFO) << "Process has " << numWithClients << " (of "
-              << mRegisteredServices.size() << " available) client(s)";
+    LOG(INFO) << "Process has " << numWithClients << " (of " << mRegisteredServices.size()
+              << " available) client(s) in use after notification " << getDescriptor(service.get())
+              << "/" << registered.name << " has clients: " << clients;
 
+    // ... (active-services callback handling elided)
     // If no clients for any service, try to shut down
     if (!handledInCallback && numWithClients == 0) {
         tryShutdownLocked();
@@ -17514,7 +17846,7 @@ services and exits:
 // system/libhidl/transport/HidlLazyUtils.cpp (lines 231-243)
 
 void ClientCounterCallback::tryShutdownLocked() {
-    LOG(INFO) << "Trying to exit HAL. No clients in use for any service.";
+    LOG(INFO) << "Trying to exit HAL. No clients in use for any service in process.";
 
     if (tryUnregisterLocked()) {
         LOG(INFO) << "Unregistered all clients and exiting";
@@ -17539,7 +17871,7 @@ sequenceDiagram
     participant HAL as HAL Process
     participant Client as Framework Client
 
-    Note over Init: init knows HAL is "lazy"<br/>(interface_start in AIDL manifest)
+    Note over Init: init knows HAL is "lazy"<br/>("interface aidl" line in init.rc)
 
     Client->>SM: getService("android.hardware.foo.IFoo/default")
     SM->>SM: Service not registered
@@ -17566,26 +17898,36 @@ sequenceDiagram
 
 ### 10.6.3.1 Lazy HALs for AIDL
 
-For AIDL HALs, the lazy registration pattern is simpler.  The framework's
-`libbinder` provides `LazyServiceRegistrar`:
+For AIDL HALs, the lazy registration pattern is simpler.  An NDK-backend HAL
+uses `AServiceManager_registerLazyService()` from `libbinder_ndk`
+(`frameworks/native/libs/binder/ndk/include_platform/android/binder_manager.h`,
+lines 160-161), the same call real in-tree lazy HALs make (for example
+`hardware/interfaces/health/storage/aidl/default/main.cpp`):
 
 ```c++
-#include <binder/LazyServiceRegistrar.h>
+#include <android/binder_manager.h>
+#include <android/binder_process.h>
 
 int main() {
     ABinderProcess_setThreadPoolMaxThreadCount(0);
 
     auto greeting = ndk::SharedRefBase::make<Greeting>();
 
-    auto lazyRegistrar = android::binder::LazyServiceRegistrar::getInstance();
-    lazyRegistrar.registerService(
+    binder_status_t status = AServiceManager_registerLazyService(
         greeting->asBinder().get(),
         "android.hardware.greeting.IGreeting/default");
+    CHECK_EQ(status, STATUS_OK);
 
     ABinderProcess_joinThreadPool();
     return EXIT_FAILURE;
 }
 ```
+
+(The `android::binder::LazyServiceRegistrar` class in
+`frameworks/native/libs/binder/include/binder/LazyServiceRegistrar.h` serves
+the same purpose for services written against `libbinder` proper -- its
+`registerService()` takes a `sp<IBinder>`, not the `AIBinder*` an NDK-backend
+service holds.)
 
 The init.rc for a lazy HAL uses `interface` declarations to tell init which
 service names to watch for:
@@ -17872,12 +18214,16 @@ service is not currently registered.
 The client registers for notifications when a service becomes available.
 
 ```c++
-AServiceManager_registerForServiceNotifications(
-    "android.hardware.foo.IFoo/default",
-    [](const char* instance, AIBinder* binder) {
-        auto service = IFoo::fromBinder(ndk::SpAIBinder(binder));
-        // Service is now available, begin using it
-    });
+AServiceManager_NotificationRegistration* reg =
+    AServiceManager_registerForServiceNotifications(
+        "android.hardware.foo.IFoo/default",
+        [](const char* instance, AIBinder* binder, void* cookie) {
+            auto service = IFoo::fromBinder(ndk::SpAIBinder(binder));
+            // Service is now available, begin using it
+        },
+        nullptr /* cookie */);
+// Deleting the returned registration token later unregisters the callback:
+//   AServiceManager_NotificationRegistration_delete(reg);
 ```
 
 ---
@@ -17888,10 +18234,15 @@ Every release adds a handful of HAL packages, and Android 17's additions are
 worth a section of their own because they show where the platform is heading:
 on-device motion intelligence, a first-class NPU contract, and a family of
 "Trusted HALs" that live inside a TEE and are reachable only from protected
-virtual machines.  All of them are AIDL `@VintfStability` interfaces -- there is
-no HIDL in this story at all -- and all of them are listed (as optional) in the
-Android 17 framework compatibility matrix
-`hardware/interfaces/compatibility_matrices/compatibility_matrix.202604.xml`.
+virtual machines.  All of them are AIDL interfaces -- all `@VintfStability`
+except `ITrustedHalExt`, which is deliberately left unannotated -- and there is
+no HIDL in this story at all.  Most also appear in the Android 17 framework
+compatibility matrix
+(`hardware/interfaces/compatibility_matrices/compatibility_matrix.202604.xml`):
+`motioncontext`, `npu`, and the `security.see` hwcrypto/devicestate/storage/
+authmgr entries are all present, while `security.see.hdcp` and
+`security.see.ext` have no matrix entry at all (`ext` is deliberately not
+VINTF-stable).
 
 ### 10.7.1 The Motion Context HAL
 
@@ -17936,7 +18287,7 @@ service vendor.motioncontext-default /vendor/bin/hw/android.hardware.motionconte
 
 The interface is frozen at version 1
 (`hardware/interfaces/motioncontext/aidl/aidl_api/android.hardware.motioncontext/1/`).
-In the Android 17 matrix it appears as an optional `aidl` HAL pinned to
+In the Android 17 matrix it appears as an `aidl` entry pinned to
 `<version>1</version>` with a single `default` instance.
 
 ### 10.7.2 The NPU HAL
@@ -17973,16 +18324,20 @@ Java and NDK backends `apex_available` for both `//apex_available:platform` and
 `com.android.npumanager`, with `min_sdk_version: "36"`.  In other words the NPU
 HAL contract is packaged for the NPU Manager APEX -- a Mainline-style updatable
 module -- rather than being baked permanently into the system image.  The HAL is
-listed in the Android 17 matrix as an optional `aidl` HAL at `<version>1</version>`
+listed in the Android 17 matrix as an `aidl` entry at `<version>1</version>`
 with a `default` instance.
 
 ### 10.7.3 The Trusted HAL family: security/see
 
-The largest new cluster is `hardware/interfaces/security/see/` -- "see" for
-*Secure Embedded Environment*.  These are **Trusted HALs**: AIDL interfaces whose
+The fastest-growing cluster is `hardware/interfaces/security/see/` -- "see" for
+*Secure Execution Environment* (the term used in
+`hardware/interfaces/security/README.md`).  These are **Trusted HALs**: AIDL interfaces whose
 implementations live inside a TEE (a Trusted Execution Environment), and which
-are made available to Android **protected VMs**.  The directory's own README
-states the rule plainly:
+are made available to Android **protected VMs**.  The family is not brand-new:
+`hwcrypto`, `storage`, and `authmgr` already appear in the Android 16 matrix
+(`compatibility_matrix.202504.xml`).  What Android 17 adds is the
+`security.see.devicestate` matrix entry plus in-tree growth of the family
+(`hdcp` and `ext`).  The directory's own README states the rule plainly:
 
 > This directory contains the AIDL interface definitions for services
 > implemented in a TEE and made available to Android protected VMs.
@@ -17995,7 +18350,7 @@ The family contains several independent HALs:
 | `android.hardware.security.see.hwcrypto` | `IHwCryptoKey` | DICE-bound key derivation and a batched crypto command list, all inside the secure environment |
 | `android.hardware.security.see.storage` | `ISecureStorage` | Tamper-evident, rollback-protected filesystem for trusted services |
 | `android.hardware.security.see.authmgr` | `IAuthMgrAuthorization` | Authenticates a pVM's AuthMgr frontend to the TEE-side backend before clients reach trusted services |
-| `android.hardware.security.see.devicestate` | `IDeviceState` | Exposes secure device-state (e.g. boot/lock state) to trusted code |
+| `android.hardware.security.see.devicestate` | `IDeviceState` | Reports whether the device is still in the factory manufacturing phase where provisioning of sensitive data is permitted (single method `provisioningAllowed()`) |
 | `android.hardware.security.see.hdcp` | `IHdcpAuthControl` | HDCP authentication control for protected media paths |
 | `android.hardware.security.see.ext` | `ITrustedHalExt` | A required, *non*-VINTF-stable extension on every Trusted HAL's root binder |
 
@@ -18249,7 +18604,7 @@ aidl_interface {
     },
     versions_with_info: [
         // Initially empty; will contain frozen versions after
-        // running `m android.hardware.greeting-update-api`
+        // running `m android.hardware.greeting-freeze-api`
     ],
 }
 ```
@@ -18771,7 +19126,7 @@ snapshot:
 
 ```bash
 # Generate the frozen version snapshot
-m android.hardware.greeting-update-api
+m android.hardware.greeting-freeze-api
 ```
 
 This copies the current `.aidl` files to
@@ -18787,6 +19142,13 @@ versions_with_info: [
 ],
 ```
 
+Note the distinction from the related `-update-api` target:
+`m android.hardware.greeting-update-api` only refreshes the
+`aidl_api/android.hardware.greeting/current/` dump and sets `frozen: false`;
+it never creates a numbered snapshot.  Only `-freeze-api` copies the dump into
+a numbered directory and appends the version (see the `updateApiScript` vs
+`freezeApiScript` split in `system/tools/aidl/build/aidl_api.go`).
+
 After freezing, set `frozen: true` in `Android.bp`.  The build system will
 now verify that the current source files match the frozen snapshot.  Any
 changes require a new version (2).
@@ -18797,7 +19159,7 @@ To add new methods in a future version:
 2. Add new methods to the `.aidl` files (without removing or changing
    existing methods).
 3. Test thoroughly.
-4. Run `m android.hardware.greeting-update-api` to create version 2.
+4. Run `m android.hardware.greeting-freeze-api` to create version 2.
 5. Re-add `frozen: true`.
 
 ### 10.8.9.1 Understanding API Evolution
@@ -18856,7 +19218,7 @@ as null/default.
 **Step 3: Freeze version 2:**
 
 ```bash
-m android.hardware.greeting-update-api
+m android.hardware.greeting-freeze-api
 ```
 
 **Step 4: Update Android.bp:**
@@ -18929,14 +19291,19 @@ adb shell dumpsys -l
 adb shell service check android.hardware.greeting.IGreeting/default
 ```
 
-**lshal -- list HAL services (HIDL and AIDL):**
+**lshal -- list HAL services (HIDL only):**
+
+`lshal` covers only HIDL HALs -- its own usage text says "List and debug HIDL
+HALs. (for AIDL HALs, see `dumpsys`)"
+(frameworks/native/cmds/lshal/Lshal.cpp).  For an AIDL HAL like the Greeting
+service, use `dumpsys` and `service check` as shown above.
 
 ```bash
-# List all HAL services with their transport and status
+# List all HIDL HAL services with their transport and status
 adb shell lshal
 
-# Show detailed info for a specific HAL
-adb shell lshal debug android.hardware.greeting.IGreeting/default
+# Show detailed info for a specific HIDL HAL
+adb shell lshal debug android.hardware.foo@1.0::IFoo/default
 ```
 
 **logcat -- HAL service logs:**
@@ -18955,12 +19322,19 @@ adb logcat -s servicemanager:*
 # Dump the device's VINTF manifest
 adb shell cat /vendor/etc/vintf/manifest.xml
 
-# Dump the merged device manifest
-adb shell dumpsys DumpVintf
+# Dump the merged device manifest (see targets in system/libvintf/main.cpp)
+adb shell vintf dm
 
-# Check compatibility
-adb shell /system/bin/vintf --check-compat
+# Dump the merged framework manifest
+adb shell vintf fm
 ```
+
+(The on-device `vintf` binary dumps VINTF metadata -- its targets are
+`legacy`, `dm`, `fm`, `dcm`, `fcm`, and `ri` -- and in its default `legacy`
+mode it also runs and prints on-device manifest-vs-matrix compatibility
+results.  Checking a full image tree, as the build and OTA flows require, is
+the job of the host-side `check_vintf --check-compat --rootdir=...` flow shown
+in Section 10.5.7.2.)
 
 **Binder debugging:**
 
@@ -19055,7 +19429,7 @@ graph TD
 
 | Metric | Legacy HAL | HIDL | AIDL HAL |
 |--------|-----------|------|----------|
-| Source files (interface definitions) | ~30 headers | ~200 .hal files | ~400 .aidl files |
+| Source files (interface definitions) | ~30 headers | ~700 .hal files | ~2,200 current .aidl files (excluding frozen `aidl_api/` snapshots) |
 | Process isolation | No | Yes | Yes |
 | IPC overhead per call | None (in-process) | ~2-5 us (HwBinder) | ~2-5 us (Binder) |
 | Language support | C only | C++, Java | C++, Java, Rust, NDK |
@@ -19104,7 +19478,7 @@ and the `hwservicemanager` at `system/hwservicemanager/`.  HIDL is now
 deprecated but remains in the codebase for backward compatibility.
 
 **AIDL HALs** are the current standard, unifying HAL interfaces with the
-existing AIDL ecosystem.  The 55 interface directories under
+existing AIDL ecosystem.  The roughly 50 interface directories under
 `hardware/interfaces/` define every hardware interface in Android, from audio
 to vibrators.  AIDL's multi-language support (C++, Java, Rust, NDK) and its
 integration with the standard `servicemanager` at
@@ -19123,19 +19497,19 @@ The key files for further exploration:
 |------|-------|---------|
 | `hardware/libhardware/hardware.c` | 279 | Legacy HAL module loading |
 | `hardware/libhardware/include/hardware/hardware.h` | 245 | Core HAL data structures |
-| `system/libhidl/transport/ServiceManagement.cpp` | ~500 | HIDL service discovery |
+| `system/libhidl/transport/ServiceManagement.cpp` | ~1030 | HIDL service discovery |
 | `system/libhidl/transport/HidlLazyUtils.cpp` | 309 | Lazy HAL support |
 | `system/libhidl/transport/base/1.0/IBase.hal` | 141 | HIDL root interface |
 | `system/libhidl/transport/manager/1.0/IServiceManager.hal` | 165 | HIDL service manager interface |
-| `hardware/interfaces/light/aidl/android/hardware/light/ILights.aidl` | 47 | Simple AIDL HAL example |
+| `hardware/interfaces/light/aidl/android/hardware/light/ILights.aidl` | 62 | Simple AIDL HAL example |
 | `hardware/interfaces/light/aidl/default/main.rs` | 46 | Rust HAL service example |
-| `hardware/interfaces/light/aidl/default/lights.rs` | 80 | Rust HAL implementation |
+| `hardware/interfaces/light/aidl/default/lights.rs` | 168 | Rust HAL implementation |
 | `hardware/interfaces/vibrator/aidl/default/main.cpp` | 45 | NDK C++ HAL service example |
 | `hardware/interfaces/audio/aidl/default/Module.cpp` | ~2000 | Complex production HAL |
 | `hardware/interfaces/power/aidl/android/hardware/power/IPower.aidl` | 200 | Advanced AIDL features |
-| `system/libvintf/include/vintf/VintfObject.h` | ~200 | VINTF compatibility checking API |
-| `system/libvintf/include/vintf/HalManifest.h` | ~100 | VINTF manifest data model |
-| `frameworks/native/cmds/servicemanager/ServiceManager.cpp` | ~120 | Service manager VINTF integration |
+| `system/libvintf/include/vintf/VintfObject.h` | ~430 | VINTF compatibility checking API |
+| `system/libvintf/include/vintf/HalManifest.h` | ~270 | VINTF manifest data model |
+| `frameworks/native/cmds/servicemanager/ServiceManager.cpp` | ~1250 | Service manager (VINTF integration is the first ~200 lines) |
 | `hardware/interfaces/compatibility_matrices/compatibility_matrix.202504.xml` | 736 | Framework compatibility matrix |
 
 ### 10.9.5 What Happens When You Press the Power Button: A HAL Trace
@@ -19298,8 +19672,8 @@ platform guarantees that the APIs it calls will work identically on any device
 running the same or higher API level.
 
 **Framework native code** -- the `SurfaceFlinger` compositor links against
-`libgui.so`, `libui.so`, `libsync.so`, `libhwbinder.so`, and dozens of other
-internal libraries. None of these carry an NDK stability guarantee. A device
+`libgui.so`, `libui.so`, `libbinder.so`, `libhidlbase.so`, and dozens of
+other internal libraries. None of these carry an NDK stability guarantee. A device
 manufacturer can (and must) rebuild `SurfaceFlinger` against the exact platform
 tree.
 
@@ -19311,16 +19685,21 @@ module tries to use a non-NDK symbol, linking fails at build time.
 ### 11.1.4 Sysroot Generation Flow
 
 The NDK sysroot is not a hand-curated directory of headers and libraries. It is
-an output of the AOSP build. The build system assembles it from three components
-registered as Soong module types in
-`build/soong/cc/ndk_sysroot.go`:
+an output of the AOSP build. The build system assembles it from three
+categories of artifacts, orchestrated by `build/soong/cc/ndk_sysroot.go`. Two
+of them have dedicated Soong module types -- `ndk_headers` (with
+`preprocessed_ndk_headers`) and `ndk_library` -- while the bionic static
+libraries come from ordinary `cc_library` modules: the `ndk` singleton
+registered in the same file collects their sysroot-installed outputs (the file
+even carries a `TODO(danalbert): Write ndk_static_library rule.` comment noting
+the missing module type):
 
 ```mermaid
 graph LR
-    subgraph "Soong Module Types"
+    subgraph "Sysroot Inputs"
         NH["ndk_headers<br/>(headers)"]
         NL["ndk_library<br/>(stub .so)"]
-        BS["Bionic static libs<br/>(libc.a, libm.a)"]
+        BS["Bionic static libs from<br/>regular cc modules<br/>(libc.a, libm.a)"]
     end
 
     subgraph "NDK Sysroot"
@@ -19333,9 +19712,9 @@ graph LR
     NL --> LIB
     BS --> STA
 
-    TS["ndk.timestamp"] --> INC
-    TS --> LIB
-    TS --> STA
+    INC --> TS["ndk.timestamp"]
+    LIB --> TS
+    STA --> TS
 
     style NH fill:#4a90d9,color:white
     style NL fill:#ff8c00,color:white
@@ -19366,12 +19745,18 @@ func RegisterNdkModuleTypes(ctx android.RegistrationContext) {
 ```
 
 The `NdkSingleton` walks every module in the tree, collecting headers, stub
-libraries, and static libraries. It writes three timestamp files that the
-top-level Makefile depends on:
+libraries, and static libraries. It writes three timestamp files that stage the
+sysroot at different levels of completeness:
 
-- `ndk_headers.timestamp` -- depends only on headers (used by `.tidy` checks)
-- `ndk_base.timestamp` -- depends on headers + stub shared libraries
-- `ndk.timestamp` -- depends on the base + static libraries
+- `ndk_headers.timestamp` -- depends only on headers; it is consumed inside
+  Soong, as an implicit dependency of the C-compatibility header check
+  (`build/soong/cc/ndk_sysroot.go:141`) and of every compile in a module with
+  `sdk_version` set (`build/soong/cc/compiler.go:815`)
+- `ndk_base.timestamp` -- depends on headers + stub shared libraries; this is
+  the one the Make side pulls in, as an extra dependency of SDK-variant
+  binaries (`build/make/core/binary.mk:215`)
+- `ndk.timestamp` -- depends on the base + static libraries; it backs the
+  phony `ndk` goal (`build/make/core/main.mk:1648`)
 
 Building with `m ndk` triggers generation of all sysroot artifacts.
 
@@ -19390,6 +19775,7 @@ for `ndk_library {` reveals the complete list:
 | `libc` | 9 | `bionic/libc/Android.bp` |
 | `libm` | 9 | `bionic/libm/Android.bp` |
 | `libdl` | 9 | `bionic/libdl/Android.bp` |
+| `libstdc++` | 9 | `bionic/libc/Android.bp` |
 | `liblog` | 9 | `system/logging/liblog/Android.bp` |
 | `libz` | 9 | `external/zlib/Android.bp` |
 | `libandroid` | 9 | `frameworks/base/native/android/Android.bp` |
@@ -19397,12 +19783,16 @@ for `ndk_library {` reveals the complete list:
 | `libGLESv1_CM` | 9 | `frameworks/native/opengl/libs/Android.bp` |
 | `libGLESv2` | 9 | `frameworks/native/opengl/libs/Android.bp` |
 | `libGLESv3` | 18 | `frameworks/native/opengl/libs/Android.bp` |
+| `libjnigraphics` | 9 | `frameworks/base/native/graphics/jni/Android.bp` |
+| `libOpenSLES` | 9 | `frameworks/wilhelm/Android.bp` |
+| `libOpenMAXAL` | 14 | `frameworks/wilhelm/Android.bp` |
 | `libmediandk` | 21 | `frameworks/av/media/ndk/Android.bp` |
 | `libcamera2ndk` | 24 | `frameworks/av/camera/ndk/Android.bp` |
 | `libnativewindow` | 26 | `frameworks/native/libs/nativewindow/Android.bp` |
 | `libaaudio` | 26 | `frameworks/av/media/libaaudio/Android.bp` |
 | `libvulkan` | 24 | `frameworks/native/vulkan/libvulkan/Android.bp` |
 | `libbinder_ndk` | 29 | `frameworks/native/libs/binder/ndk/Android.bp` |
+| `libamidi` | 29 | `frameworks/base/media/native/midi/Android.bp` |
 | `libsync` | 26 | `system/core/libsync/Android.bp` |
 | `libneuralnetworks` | 27 | `packages/modules/NeuralNetworks/runtime/Android.bp` |
 | `libicu` | 31 | `external/icu/libicu/Android.bp` |
@@ -19481,7 +19871,7 @@ software rendering). Available since API 9 through `libandroid`:
 AAudio (Android Audio) replaced OpenSL ES as the recommended low-latency audio
 API starting with API 26. Defined in `libaaudio`:
 
-- `AAudioStreamBuilder_create()` -- create a stream builder
+- `AAudio_createStreamBuilder()` -- create a stream builder
 - `AAudioStreamBuilder_setPerformanceMode()` -- request low latency
 - `AAudioStream_requestStart()` / `AAudioStream_requestStop()` -- control
   playback
@@ -19654,13 +20044,14 @@ The bionic C library contributes the largest collection of NDK headers. In
 `bionic/libc/Android.bp`, there are multiple `ndk_headers` modules:
 
 ```
-// bionic/libc/Android.bp (lines 2084-2089)
+// bionic/libc/Android.bp (lines 2348-2359)
 ndk_headers {
     name: "common_libc",
     from: "include",
     to: "",
     srcs: ["include/**/*.h"],
     license: "NOTICE",
+    // ...
 }
 ```
 
@@ -19668,7 +20059,7 @@ Additional header modules cover kernel UAPI headers, architecture-specific
 headers, and more:
 
 ```
-// bionic/libc/Android.bp (lines 2097-2106)
+// bionic/libc/Android.bp (lines 2361-2379)
 ndk_headers {
     name: "libc_uapi",
     from: "kernel/uapi",
@@ -19839,8 +20230,8 @@ function in the Camera NDK and the API level at which it became available.
 
 The `first_version` property specifies the earliest API level for which stubs
 should be generated. The build system generates a separate stub library for
-every API level from `first_version` through the current level plus a "future"
-level.
+every finalized API level from `first_version` onward, plus one extra
+unreleased level named "current" (called `FutureApiLevel` in Soong).
 
 #### Stub Generation Process
 
@@ -19975,7 +20366,8 @@ func ndkLibraryVersions(ctx android.BaseModuleContext,
 ```
 
 This means that `libcamera2ndk` with `first_version: "24"` generates stubs for
-API 24, 25, 26, ..., current, and "future". Each versioned stub exports only
+API 24, 25, 26, ..., and "current" (the string `FutureApiLevel` renders to).
+Each versioned stub exports only
 the symbols that were available at that API level.
 
 #### Stub Installation
@@ -20302,7 +20694,7 @@ sequenceDiagram
     participant ABI as prebuilts/abi-dumps/
 
     BP->>SOONG: ndk_library "libcamera2ndk"<br/>first_version: "24"
-    SOONG->>SOONG: Generate versions [24, 25, ..., current, future]
+    SOONG->>SOONG: Generate versions [24, 25, ..., current]
     loop For each API level
         SOONG->>STUBGEN: libcamera2ndk.map.txt + api level
         STUBGEN-->>SOONG: stub.c + stub.map + symbol_list.txt
@@ -20340,7 +20732,7 @@ everything depends on:
 | `libm.so` | Math library |
 | `libdl.so` | Dynamic linker interface |
 | `liblog.so` | Android logging |
-| `libz.so` | zlib compression |
+| `libvndksupport.so` | Vendor namespace support |
 | `libnativewindow.so` | Window/buffer management |
 | `libsync.so` | Fence synchronization |
 | `libvulkan.so` | Vulkan graphics API |
@@ -20484,16 +20876,17 @@ func shouldSkipLlndkMutator(mctx android.BottomUpMutatorContext,
 
 ### 11.4.5 LLNDK Libraries List Generation
 
-The `llndk_libraries_txt` singleton module generates a text file listing all
+The `llndk_libraries_txt` module generates a text file listing all
 LL-NDK libraries. This file is used by Make and by the linker configuration
-generator:
+generator. The module type is registered alongside a companion singleton
+(`llndkLibrariesTxtSingletonFactory`) that collects the library names:
 
 ```go
 // build/soong/cc/llndk_library.go (lines 127-138)
 // llndk_libraries_txt is a singleton module whose content is a list
 // of LLNDK libraries generated by Soong but can be referenced by
 // other modules.
-func llndkLibrariesTxtFactory() android.SingletonModule {
+func llndkLibrariesTxtModuleFactory() android.Module {
     m := &llndkLibrariesTxtModule{}
     android.InitAndroidArchModule(m, android.DeviceSupported,
         android.MultilibCommon)
@@ -20501,11 +20894,12 @@ func llndkLibrariesTxtFactory() android.SingletonModule {
 }
 ```
 
-The Make variable `LLNDK_LIBRARIES` is set from this module:
+The Make variable `LLNDK_LIBRARIES` is set by the singleton, which holds the
+collected module names:
 
 ```go
-// build/soong/cc/llndk_library.go (lines 210-212)
-func (txt *llndkLibrariesTxtModule) MakeVars(
+// build/soong/cc/llndk_library.go (lines 218-220)
+func (txt *llndkLibrariesTxtSingleton) MakeVars(
         ctx android.MakeVarsContext) {
     ctx.Strict("LLNDK_LIBRARIES",
         strings.Join(txt.moduleNames, " "))
@@ -20602,8 +20996,8 @@ graph TD
     subgraph "System Partition (/system)"
         SYSLIBS["System-only Libraries<br/>(libgui, libui, libsurfaceflinger, ...)"]
         LLNDK["LL-NDK Libraries<br/>(libc, libm, libdl, liblog, ...)"]
-        VNDK_CORE["VNDK-Core Libraries<br/>(libcutils, libutils, libbase, ...)"]
-        VNDK_SP["VNDK-SP Libraries<br/>(Same-Process HALs:<br/>libhardware, libc++, ...)"]
+        VNDK_CORE["VNDK-Core Libraries<br/>(libbinder, libcamera_metadata,<br/>libcrypto, ...)"]
+        VNDK_SP["VNDK-SP Libraries<br/>(Same-Process HALs:<br/>libcutils, libutils, libbase,<br/>libhardware, libc++, ...)"]
     end
 
     subgraph "Vendor Partition (/vendor)"
@@ -20626,8 +21020,8 @@ The VNDK is divided into several categories:
 
 | Category | Description | Example |
 |----------|-------------|---------|
-| VNDK-Core | Standard VNDK libraries | `libcutils`, `libutils`, `libbase` |
-| VNDK-SP | Same-Process VNDK libraries (can be loaded into vendor processes alongside vendor libs) | `libhardware`, `libc++`, `libhidlbase` |
+| VNDK-Core | Standard VNDK libraries | `libbinder`, `libcamera_metadata`, `libcrypto`, `libjpeg` |
+| VNDK-SP | Same-Process VNDK libraries (can be loaded into vendor processes alongside vendor libs) | `libcutils`, `libutils`, `libbase`, `libhardware`, `libc++`, `libhidlbase` |
 | VNDK-Private | VNDK libraries not directly usable by vendor code | Internal dependencies of VNDK |
 | LL-NDK | Lowest-level NDK (cross-partition) | `libc`, `libm`, `liblog` |
 
@@ -20662,7 +21056,7 @@ A typical VNDK declaration looks like:
 
 ```
 cc_library_shared {
-    name: "libcutils",
+    name: "libbinder",
     vendor_available: true,
     vndk: {
         enabled: true,
@@ -20671,11 +21065,11 @@ cc_library_shared {
 }
 ```
 
-For VNDK-SP (Same-Process) libraries:
+For VNDK-SP (Same-Process) libraries, such as `libcutils`:
 
 ```
 cc_library_shared {
-    name: "libhardware",
+    name: "libcutils",
     vendor_available: true,
     vndk: {
         enabled: true,
@@ -20702,8 +21096,8 @@ These rules create a strict hierarchy:
 ```mermaid
 graph BT
     LLNDK_LAYER["LL-NDK<br/>(libc, libm, liblog, ...)"]
-    VNDKSP_LAYER["VNDK-SP<br/>(libc++, libhardware, ...)"]
-    VNDKCORE_LAYER["VNDK-Core<br/>(libcutils, libutils, ...)"]
+    VNDKSP_LAYER["VNDK-SP<br/>(libcutils, libutils,<br/>libc++, libhardware, ...)"]
+    VNDKCORE_LAYER["VNDK-Core<br/>(libbinder, libcrypto, ...)"]
     VENDOR_LAYER["Vendor Libraries"]
 
     VENDOR_LAYER --> VNDKCORE_LAYER
@@ -20924,7 +21318,7 @@ generator rather than a dedicated VNDK directory.
 The clearest evidence is in the tree itself: in the Android 17 source there is
 **no `vndk: {}` block left in any `frameworks/`, `system/`, or `hardware/`
 module**. Libraries like `libcutils` and `libutils` that the earlier sections
-of this chapter listed as VNDK-Core no longer carry the `vndk:` property at
+of this chapter listed as VNDK-SP no longer carry the `vndk:` property at
 all -- they are plain `cc_library` modules with `vendor_available: true` where
 vendor access is still needed. The VNDK only survives as **frozen prebuilt
 snapshots** under `prebuilts/vndk/` (`v31` through `v34`), shipped so that an
@@ -21073,9 +21467,15 @@ namespace flags = com::android::internal::camera::flags;
 #endif
 ```
 
-The vendor variant (`libcamera2ndk_vendor`) uses the AIDL camera service HAL
-interface instead, allowing vendor code to access the camera without going
-through the system camera service.
+The vendor variant (`libcamera2ndk_vendor`) is built with `-D__ANDROID_VNDK__`
+and talks to the *vendor-stable* `android.frameworks.cameraservice.{common,
+device,service}` AIDL interfaces instead of the framework-internal
+`android.hardware.ICameraService` binder interface. Requests still go through
+the same cameraserver process: the camera service registers this AIDL front-end
+via `AidlCameraService::registerService()`
+(`frameworks/av/services/camera/libcameraservice/aidl/AidlCameraService.cpp`),
+so vendor code gets a stable interface to the system camera service rather than
+a way around it.
 
 #### Camera NDK Call Flow
 
@@ -21092,10 +21492,9 @@ sequenceDiagram
 
     App->>CNDK: ACameraManager_getCameraIdList()
     CNDK->>Impl: getCameraIdList()
-    Impl->>CS: getCameraIdList() [Binder IPC]
-    CS->>HAL: Query available cameras
-    HAL-->>CS: Camera ID list
-    CS-->>Impl: Camera ID list
+    Impl->>CS: addListener(listener) [Binder IPC, first connect only]
+    CS-->>Impl: CameraStatus[] (cached in mDeviceStatusMap)
+    Impl->>Impl: read cached mDeviceStatusMap
     Impl-->>CNDK: ACameraIdList*
     CNDK-->>App: camera_status_t
 
@@ -21204,7 +21603,8 @@ frameworks/native/libs/binder/ndk/
     Android.bp                 # Build rules
     ibinder.cpp               # AIBinder implementation
     ibinder_jni.cpp           # JNI integration
-    libbinder.cpp             # AServiceManager, etc.
+    libbinder.cpp             # Platform interop (AIBinder_to/fromPlatformBinder,
+                              #   AParcel_viewPlatformParcel)
     parcel.cpp                # AParcel data marshaling
     parcel_jni.cpp            # Parcel JNI bridge
     persistable_bundle.cpp    # PersistableBundle support
@@ -21318,13 +21718,14 @@ sequenceDiagram
     participant BNDK as libbinder_ndk.so
     participant Binder as libbinder.so
     participant Driver as /dev/binder
+    participant SM as servicemanager
     participant Server as Server Process
 
     Client->>BNDK: AServiceManager_getService("foo")
     BNDK->>Binder: ServiceManager::getService()
     Binder->>Driver: ioctl(BINDER_WRITE_READ)
-    Driver->>Server: Deliver transaction
-    Server-->>Driver: Reply
+    Driver->>SM: Deliver transaction
+    SM-->>Driver: Reply with handle to "foo"
     Driver-->>Binder: Reply data
     Binder-->>BNDK: sp<IBinder>
     BNDK-->>Client: AIBinder*
@@ -21361,7 +21762,7 @@ graph TD
 
     subgraph "Service Layer (Binder IPC)"
         CAMERA_SVC["CameraService"]
-        MEDIA_SVC["MediaCodecService<br/>MediaDrmService"]
+        MEDIA_SVC["mediaserver / Codec2 HAL (media.c2)<br/>IDrmFactory HAL"]
         SM["ServiceManager"]
     end
 
@@ -21381,13 +21782,18 @@ graph TD
     style BINDER_IMPL fill:#4a90d9,color:white
 ```
 
-The pattern is always:
+The common pattern is:
 
 1. **C header** (`NdkFoo.h`) -- defines the public API with opaque pointer types
 2. **C source** (`NdkFoo.cpp`) -- thin wrappers marked with `EXPORT`
 3. **C++ implementation** (`impl/AFoo.cpp`) -- actual logic using framework APIs
 4. **Symbol map** (`libfoo.map.txt`) -- controls which symbols are exported
-5. **Visibility control** -- `-fvisibility=hidden` + `EXPORT` macro
+5. **Visibility control** -- varies per library: the Camera NDK compiles with
+   `-fvisibility=hidden` and marks public entry points with the `EXPORT` macro;
+   `libmediandk` uses the `EXPORT` macro plus its version script but no
+   `-fvisibility=hidden`; `libbinder_ndk` uses neither macro nor flag and
+   relies on its version script alone (it also has no `NdkFoo.cpp` /
+   `impl/AFoo.cpp` split)
 
 ### 11.6.5 Native Activity Thread (Rust) -- Pure-Native Service Processes
 
@@ -21405,7 +21811,9 @@ how Android can host application code.
 #### The ANativeService Contract
 
 The public C surface is in `frameworks/native/include/android/native_service.h`,
-and every symbol in it is annotated `__INTRODUCED_IN(37)`. The service handle
+and every function in it is annotated `__INTRODUCED_IN(37)` -- the typedefs, the
+trim-memory enum, and the `ANativeService_onCreate` extern declaration record
+API 37 only in their doc comments. The service handle
 is opaque, the entry point is a free function the loader resolves by name, and
 the lifecycle callbacks are *registered* through setter functions rather than
 filled into a struct:
@@ -21483,13 +21891,14 @@ activity thread carves out *the whole process*.
 
 #### Crate Layout
 
-The crate is about 2,200 lines of Rust across eight source files plus a single
-bindgen wrapper:
+The crate is about 3,000 lines of Rust: eight top-level source files (about
+2,200 lines), a `library_loader/` submodule directory, and a single bindgen
+wrapper:
 
 | File | Role |
 |------|------|
 | `src/lib.rs` | Entry point `run_native_activity_thread(start_seq)`. Starts the binder thread pool, looks up `IActivityManagerStructured`, attaches as `INativeApplicationThread`, runs the looper. |
-| `src/native_activity_thread.rs` | Per-process state -- service map, namespace factory, process-state cache. Implements `HandlerCallback<NativeApplicationThreadRequest>`. |
+| `src/native_activity_thread.rs` | Per-process state -- service map, process-state cache. Implements `HandlerCallback<NativeApplicationThreadRequest>`. |
 | `src/native_application_thread.rs` | Binder server side that implements `INativeApplicationThread`. Marshals each scheduled method into a typed `NativeApplicationThreadRequest` and sends it to the main thread. |
 | `src/task.rs` | Rust-friendly `Handler` over the C `ALooper` API. Uses an `eventfd` + `mpsc::channel` to wake the main thread when work arrives from a binder thread. |
 | `src/library_loader.rs` | `NamespaceFactory`, `LinkerNamespace`, and `LoadedLibrary` -- per-service isolated linker namespaces built on `android_create_namespace` + `android_dlopen_ext`. |
@@ -21555,8 +21964,12 @@ sequenceDiagram
 Two design choices deserve attention:
 
 - **Single main thread, single state.** `NativeActivityThread` owns the
-  service map and the namespace factory; binder threads never touch
-  application state directly. Every request is serialized through the
+  service map and the cached process state; binder threads never touch
+  application state directly. (The namespace factory is not a field of
+  this struct -- it is a process-global
+  `OnceLock<Mutex<NamespaceFactory>>` in `library_loader.rs` whose only
+  job is handing out serial numbers for namespace names.) Every request
+  is serialized through the
   mpsc channel, woken via the eventfd registered with the looper. This
   mirrors the Java `ActivityThread`'s `H` handler exactly, but using
   Rust's `mpsc` and an explicit eventfd instead of `Looper` /
@@ -21838,8 +22251,9 @@ func (n *ndkTranslationPackage) GenerateAndroidBuildActions(
 
     ctx.VisitDirectDepsProxy(func(child android.ModuleProxy) {
         tag := ctx.OtherModuleDependencyTag(child)
-        info := android.OtherModuleProviderOrDefault(ctx, child,
-            android.InstallFilesProvider)
+        commonInfo := android.OtherModulePointerProviderOrDefault(ctx, child,
+            android.CommonModuleInfoProvider)
+        info := android.GetInstallFilesCommon(commonInfo)
         // ... categorize files by architecture
         files = append(files, info.PackagingSpecs...)
     })
@@ -21889,11 +22303,12 @@ func (n *ndkTranslationPackage) genAndroidBp(
     genDir := android.PathForModuleOut(ctx, "android_bp_dir")
     generator := android.PathForModuleSrc(ctx,
         proptools.String(n.properties.Android_bp_gen_path))
-    builder := android.NewRuleBuilder(pctx, ctx).Sbox(
-        genDir,
-        android.PathForModuleOut(ctx,
-            "Android.bp.sbox.textproto"),
-    )
+    builder := android.NewRuleBuilder(pctx, ctx).
+        SandboxDisabled().Sbox(
+            genDir,
+            android.PathForModuleOut(ctx,
+                "Android.bp.sbox.textproto"),
+        )
     outBp := genDir.Join(ctx, "Android.bp")
     builder.Command().
         Input(generator).
@@ -21977,9 +22392,11 @@ graph TD
 ### 11.7.9 Connection to NativeBridge
 
 The NDK translation package is the packaging layer for NativeBridge
-implementations. The NativeBridge interface itself is defined in
-`frameworks/libs/binary_translation/native_bridge/` and provides the
-`NativeBridgeCallbacks` structure that translation engines implement. The
+implementations. The NativeBridge interface itself -- the
+`NativeBridgeCallbacks` structure that translation engines implement -- is
+defined in `art/libnativebridge/include/nativebridge/native_bridge.h`;
+`frameworks/libs/binary_translation/native_bridge/` contains one such
+implementation (berberis), which fills in that structure. The
 translation package bundles all the shared libraries, configuration files, and
 host-side tools that a NativeBridge implementation needs to run on the device.
 
@@ -22013,24 +22430,26 @@ addition that came with them: the *artless* denylist.
 
 ### 11.8.1 New APIs by Library
 
-The API-37 additions span seven NDK libraries. Each row below is verified
-against both the public header (`__INTRODUCED_IN(37)`) and the library's symbol
-map (`# introduced=37`):
+The API-37 additions span at least seven NDK libraries. Each row below is checked
+against the public header (`__INTRODUCED_IN(37)`) and, where noted, the
+library's symbol map (`# introduced=37`):
 
 | Library | New API (selected) | Source header |
 |---------|--------------------|---------------|
 | `libnativewindow` | `ANativeWindow_setProducerThrottlingEnabled`, `ANativeWindow_isProducerThrottlingEnabled` | `frameworks/native/libs/nativewindow/include/android/native_window.h` |
 | `libbinder_ndk` | `AIBinder_addFrozenStateChangeCallback`, `AIBinder_removeFrozenStateChangeCallback`, `AIBinder_FrozenStateChangeCallback_new`/`_delete`, `AParcel_getDataCapacity`, `AParcel_setDataCapacity`, `APersistableBundle_putByteVector`/`getByteVector`/`getByteVectorKeys` | `frameworks/native/libs/binder/ndk/include_ndk/android/binder_ibinder.h`, `binder_parcel.h`, `persistable_bundle.h` |
 | `libaaudio` | `AAudioStream_setPlaybackParameters`/`getPlaybackParameters`, `AAudioStream_flushFromFrame`, `AAudio_getFlushFromFrameSupport`, `AAudioStreamBuilder_setPartialDataCallback`/`setRoutingChangedCallback` | `frameworks/av/media/libaaudio/include/aaudio/AAudio.h` |
-| `libmediandk` | `AImageReader_setDefaultBufferSize`/`setDefaultBufferDataSpace`/`setDefaultAHardwareBufferFormat`, `AImage_getTransform`, `ACodecEncoderCapabilities_getSupportedLayeringSchemas`, and new `AMEDIAFORMAT_KEY_*` keys (`HORIZONTAL_FLIP`, `VIDEO_BITRATE_LAYERING`, `CSD_VVC`, `HDR_ST2094_50_INFO`) | `frameworks/av/media/ndk/include/media/NdkImageReader.h`, `NdkImage.h`, `NdkMediaCodecInfo.h`, `NdkMediaFormat.h` |
+| `libmediandk` | `AImageReader_setDefaultBufferSize`/`setDefaultBufferDataSpace`/`setDefaultAHardwareBufferFormat`, `AImage_getTransform`, `ACodecEncoderCapabilities_getSupportedLayeringSchemas`, and new `AMEDIAFORMAT_KEY_*` keys (`HORIZONTAL_FLIP`, `CSD_VVC`, `HDR_ST2094_50_INFO`; `VIDEO_BITRATE_LAYERING` is declared in the header at API 37 but not yet listed in `libmediandk.map.txt`) | `frameworks/av/media/ndk/include/media/NdkImageReader.h`, `NdkImage.h`, `NdkMediaCodecInfo.h`, `NdkMediaFormat.h` |
 | `libc` (bionic) | `free_sized`, `free_aligned_sized`, `sched_setattr`, `sched_getattr` | `bionic/libc/include/stdlib.h`, `bionic/libc/include/sched.h` |
 | `libandroid` | `android_getnetworkblockedreason` (multinetwork) | `frameworks/native/include/android/multinetwork.h` |
+| `liblog` | `__android_log_logd_logger_with_timestamp` | `system/logging/liblog/include/android/log.h` |
 
 A few of these are worth a closer look.
 
-**Producer throttling on `ANativeWindow`.** When the CPU produces frames faster
-than the GPU consumes them, the buffer queue applies natural back-pressure. The
-two new accessors let an app turn that CPU-side throttling on or off explicitly:
+**Producer throttling on `ANativeWindow`.** By default, a Vulkan or EGL producer
+is CPU-throttled at queue time: `eglSwapBuffers()` or `vkPresentKHR()` stalls the
+CPU while the consumer is still processing the previous buffer. The two new
+accessors turn that queue-time stall on or off:
 
 ```c
 // frameworks/native/libs/nativewindow/include/android/native_window.h:414
@@ -22040,7 +22459,12 @@ int32_t ANativeWindow_isProducerThrottlingEnabled(
         ANativeWindow* _Nonnull window, bool* _Nonnull outEnabled) __INTRODUCED_IN(37);
 ```
 
-The setter has no effect in asynchronous mode, where throttling is always on.
+Disabling it does not remove all back-pressure: a CPU that outruns the GPU still
+blocks later, at dequeue time, according to the depth of the buffer queue --
+that path is unaffected by these accessors. The setter also has no effect in
+asynchronous mode, where throttling is always on. The header recommends
+disabling the queue-time stall and doing proper synchronization explicitly; the
+default only survives because some Vulkan apps inadvertently rely on it.
 
 **Binder freeze-state callbacks.** App-standby and cached-process freezing mean
 a remote binder's process can be frozen out from under a caller. The new
@@ -22053,6 +22477,7 @@ node in the symbol map:
 // frameworks/native/libs/binder/ndk/libbinder_ndk.map.txt:225
 LIBBINDER_NDK37 { # introduced=37
   global:
+    ABinderProcess_disableBackgroundScheduling; # systemapi llndk
     AServiceManager_checkServiceAccess; # systemapi llndk
     AIBinder_setMinRpcThreads; # systemapi
     AServiceManager_registerLazyServiceWithFlags; # systemapi llndk
@@ -22060,6 +22485,9 @@ LIBBINDER_NDK37 { # introduced=37
     AIBinder_FrozenStateChangeCallback_delete;
     AIBinder_addFrozenStateChangeCallback;
     AIBinder_removeFrozenStateChangeCallback;
+    AIBinder_requiresVintfDeclaration; # systemapi llndk
+    AIBinder_isVendorStable; # systemapi llndk
+    AIBinder_isSystemStable; # systemapi llndk
     APersistableBundle_putByteVector;
     APersistableBundle_getByteVector;
     APersistableBundle_getByteVectorKeys;
@@ -22092,9 +22520,11 @@ attribute syscalls to native code.
 
 Section 11.3.1 introduced the new `bypass_artless_denylist` property on
 `ndk_library`. The machinery behind it lives in a build file added this cycle,
-`build/soong/cc/artless_denylist.go` (Copyright 2026). It exists to enforce, at
-build time, which NDK symbols are safe to call from the native-only application
-processes of Section 11.6.5 -- processes with no Android Runtime ("artless").
+`build/soong/cc/artless_denylist.go` (Copyright 2026). It builds the runtime
+enforcement layer that determines which NDK symbols are safe to call from the
+native-only application processes of Section 11.6.5 -- processes with no
+Android Runtime ("artless"). The build generates the abort stubs and a
+blocked-symbol list; the actual rejection happens at runtime.
 
 The file registers two singleton module types and a build rule that runs
 `ndkstubgen` in a new mode:
@@ -22116,10 +22546,15 @@ var genNativeStubSrc = pctx.AndroidStaticRule("genNativeStubSrc",
 ```
 
 The `--artless-denylist` flag is the new `ndkstubgen` switch. Fed a library's
-`.map.txt`, it emits a *denylist* stub static library that resolves the symbols
-which are **not** safe in a JVM-less process, so that linking such a process
-against those symbols fails. The symbol-map parser learned a matching `artless`
-tag for opting individual symbols back in:
+`.map.txt`, it emits a stub source defining each symbol that is **not** safe in
+a JVM-less process as a function whose body calls `LOG_ALWAYS_FATAL`. The
+per-library `<name>_denylist` stubs are whole-static-linked into a single
+shared library, `libandroid_native_denylist.so`, built with `-Wl,-z,global`;
+the native process preloads it with `RTLD_GLOBAL | RTLD_NOW`
+(`frameworks/base/libs/native_activity_thread/src/library_loader.rs`), so ELF
+symbol interposition makes any call to a blocked NDK API abort at runtime --
+linking itself does not fail. The symbol-map parser learned a matching
+`artless` tag for opting individual symbols back in:
 
 ```python
 # build/soong/cc/symbolfile/__init__.py (line 58, 116)
@@ -22180,7 +22615,7 @@ graph TD
 ```
 
 Taken together, API 37's theme is incremental surface growth (audio, imaging,
-window back-pressure, C23 allocator helpers) plus one genuinely new
+window producer throttling, C23 allocator helpers) plus one genuinely new
 build-system concept: the artless denylist, which is the toolchain half of the
 native-only process story whose runtime half is the Rust crate of
 Section 11.6.5.
@@ -22259,7 +22694,7 @@ cc_library_shared {
         "libnativewindow",
     ],
     static_libs: [
-        "libandroid_native_app_glue",
+        "android_native_app_glue",
     ],
     sdk_version: "current",
     stl: "c++_shared",
@@ -22538,9 +22973,12 @@ void android_main(struct android_app* app) {
 #### Entry Point and Threading Model
 
 The native app glue library spawns a new thread and calls `android_main()` on
-it. The main UI thread is handled by the glue's internal `android_app_entry()`
-function, which forwards lifecycle callbacks from the `NativeActivity` to the
-application thread via a pipe.
+it. The glue's internal `android_app_entry()` function is the entry point of
+that spawned application thread: it prepares the thread's `ALooper` and then
+calls `android_main()`. The main UI thread, meanwhile, runs
+`ANativeActivity_onCreate` and the `ANativeActivity` lifecycle callbacks
+(`onStart`, `onPause`, `onNativeWindowCreated`, and so on), which forward
+commands to the application thread over a pipe via `android_app_write_cmd()`.
 
 The `ALooper_pollOnce()` call is the heart of the event loop. It waits for
 events from three sources:
@@ -22634,7 +23072,7 @@ cmake --build .
 adb install native-demo.apk
 
 # Launch
-adb shell am start -n com.example.nativedemo/.NativeActivity
+adb shell am start -n com.example.nativedemo/android.app.NativeActivity
 
 # Watch logs
 adb logcat -s NativeDemo:V
@@ -22727,14 +23165,14 @@ For debugging native crashes:
 
 ```bash
 # Start the app in debug mode
-adb shell am start -D -n com.example.nativedemo/.NativeActivity
+adb shell am start -D -n com.example.nativedemo/android.app.NativeActivity
 
 # Attach lldb-server
 adb forward tcp:1234 tcp:1234
 lldb
 (lldb) platform select remote-android
 (lldb) platform connect connect://localhost:1234
-(lldb) process attach --name native-demo
+(lldb) process attach --name com.example.nativedemo
 ```
 
 #### Simpleperf Profiling
@@ -22810,8 +23248,9 @@ The build system enforces stability through:
 
 The framework bindings for Camera, Media, and Binder demonstrate the standard
 pattern for exposing complex C++ services through stable C APIs: opaque pointer
-types, `EXPORT`-marked wrapper functions, `fvisibility=hidden`, and version
-scripts.
+types and version scripts throughout, with `EXPORT`-marked wrapper functions in
+the Camera and Media NDKs and `-fvisibility=hidden` in the Camera NDK;
+`libbinder_ndk` relies on its version script alone.
 
 Key source files for further exploration:
 

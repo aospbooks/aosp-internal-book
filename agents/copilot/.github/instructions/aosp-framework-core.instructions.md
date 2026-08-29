@@ -211,7 +211,7 @@ frameworks/base/services/
   +-- flags/             # FeatureFlagsService
   +-- midi/              # MidiService
   +-- musicrecognition/  # MusicRecognitionManagerService
-  +-- net/               # NetworkManagementService
+  +-- net/               # NetworkStackClient / ConnectivityModuleConnector helpers
   +-- people/            # PeopleService
   +-- permission/        # AccessCheckingService
   +-- print/             # PrintManagerService
@@ -367,16 +367,16 @@ must be dispatched to background threads.
 `SystemService` provides three mechanisms for publishing interfaces:
 
 **1. Binder service** -- accessible by other processes via `ServiceManager`
-(line 578-608):
+(line 633-663):
 
 ```java
-// frameworks/base/services/core/java/com/android/server/SystemService.java, line 578
+// frameworks/base/services/core/java/com/android/server/SystemService.java, line 633
 protected final void publishBinderService(@NonNull String name,
         @NonNull IBinder service) {
     publishBinderService(name, service, false);
 }
 
-// line 606
+// line 661
 protected final void publishBinderService(String name, IBinder service,
         boolean allowIsolated, int dumpPriority) {
     ServiceManager.addService(name, service, allowIsolated, dumpPriority);
@@ -384,10 +384,10 @@ protected final void publishBinderService(String name, IBinder service,
 ```
 
 **2. Local service** -- accessible only within `system_server` via
-`LocalServices` (line 625-627):
+`LocalServices` (line 680-682):
 
 ```java
-// frameworks/base/services/core/java/com/android/server/SystemService.java, line 625
+// frameworks/base/services/core/java/com/android/server/SystemService.java, line 680
 protected final <T> void publishLocalService(Class<T> type, T service) {
     LocalServices.addService(type, service);
 }
@@ -463,7 +463,7 @@ public static final class TargetUser {
 }
 ```
 
-Services can override `isUserSupported(TargetUser)` (line 428) to opt out of
+Services can override `isUserSupported(TargetUser)` (line 483) to opt out of
 lifecycle callbacks for specific user types. For example, a service that
 only works for full users (not profiles) can return `false` for profile
 users, avoiding unnecessary per-user initialization.
@@ -638,7 +638,7 @@ area:
 | Service | Class | Source Package | Purpose |
 |---------|-------|---------------|---------|
 | HintManagerService | `HintManagerService` | `power/hint/` | Performance hints to HAL |
-| DeviceIdleController | `DeviceIdleController` | core | Doze mode management |
+| DeviceIdleController | `DeviceIdleController` | `apex/jobscheduler/` | Doze mode management (same module as `alarm/` and `job/`) |
 | DreamManagerService | `DreamManagerService` | `dreams/` | Screen savers and doze UI |
 | TwilightService | `TwilightService` | `twilight/` | Sunrise/sunset tracking |
 
@@ -779,7 +779,7 @@ area:
 | TracingServiceProxy | `TracingServiceProxy` | `tracing/` | Perfetto trace coordination |
 | LogcatManagerService | `LogcatManagerService` | `logcat/` | Logcat access management |
 | CoverageService | `CoverageService` | `coverage/` | Code coverage (debug builds) |
-| GraphicsStatsService | `GraphicsStatsService` | graphics | Frame timing statistics |
+| GraphicsStatsService | `android.graphics.GraphicsStatsService` | `frameworks/base/graphics/` | Frame timing statistics (registered directly with `ServiceManager.addService`) |
 
 ### 20.3.4 Mainline Module Services (APEX-delivered)
 
@@ -800,8 +800,9 @@ standalone JAR files:
 ### 20.3.5 Core Server Package Structure
 
 The `frameworks/base/services/core/java/com/android/server/` directory
-contains 102 sub-packages and 74 top-level Java files. Here is the complete
-sub-package listing organized by functional domain:
+contains 107 sub-packages and 75 top-level Java files. Here is the complete
+sub-package listing organized by functional domain (a few closely related
+packages that live outside `core/` are noted where they appear):
 
 #### Process and Activity Management
 - `am/` -- ActivityManagerService, process management, broadcast dispatch
@@ -820,7 +821,7 @@ sub-package listing organized by functional domain:
 #### Security
 - `biometrics/` -- BiometricService, FaceService, FingerprintService
 - `locksettings/` -- LockSettingsService
-- `permission/` -- AccessCheckingService, permission grants
+- `permission/` -- PermissionManagerLocal, PermissionBpfMap (AccessCheckingService lives in the separate `services/permission/` module)
 - `security/` -- KeyChain, attestation, advanced protection
 - `trust/` -- TrustManagerService
 - `sensorprivacy/` -- SensorPrivacyService
@@ -848,18 +849,18 @@ sub-package listing organized by functional domain:
 #### Audio and Media
 - `audio/` -- AudioService
 - `media/` -- MediaSessionService, MediaRouterService, MediaProjection
-- `soundtrigger/` -- SoundTriggerService
-- `soundtrigger_middleware/` -- SoundTriggerMiddlewareService
+- `soundtrigger/` -- SoundTriggerService (lives under `services/voiceinteraction`, not in core)
+- `soundtrigger_middleware/` -- SoundTriggerMiddlewareService (lives under `services/voiceinteraction`, not in core)
 - `broadcastradio/` -- BroadcastRadioService
 - `camera/` -- CameraServiceProxy
 
 #### Communication
-- `telecom/` -- TelecomLoaderService
+- `telecom/` -- TelecomLoaderService (lives under `services/telecom`, not in core)
 - `companion/` -- CompanionDeviceManagerService
 
 #### Storage
 - `storage/` -- DeviceStorageMonitorService
-- `blob/` -- BlobStoreManagerService
+- `blob/` -- BlobStoreManagerService (lives under `apex/blobstore`, not in core)
 - `pdb/` -- PersistentDataBlockService
 
 #### Time and Location
@@ -881,18 +882,18 @@ sub-package listing organized by functional domain:
 - `slice/` -- SliceManagerService
 
 #### Device Management
-- `devicepolicy/` -- DevicePolicyManagerService
+- `devicepolicy/` -- DevicePolicyManagerService (lives under `services/devicepolicy`, not in core)
 - `devicestate/` -- DeviceStateManagerService
 
 #### System Services
-- `flags/` -- FeatureFlagsService
+- `flags/` -- aconfig flag declarations only (FeatureFlagsService lives in the separate `services/flags/` module)
 - `compat/` -- PlatformCompat
 - `crashrecovery/` -- CrashRecoveryHelper (the engine now lives in the `packages/modules/CrashRecovery/` module)
 - `criticalevents/` -- CriticalEventLog
 - `cpu/` -- CpuMonitorService
 - `gpu/` -- GpuService
 - `incident/` -- IncidentCompanionService
-- `stats/` -- StatsCompanion
+- `stats/` -- StatsPullAtomService, StatsBootstrapAtomService (StatsCompanion itself ships in the statsd APEX)
 - `tracing/` -- TracingServiceProxy
 - `logcat/` -- LogcatManagerService
 - `os/` -- BugreportManagerService, SchedulingPolicyService
@@ -927,7 +928,7 @@ sub-package listing organized by functional domain:
 
 #### Miscellaneous
 - `infra/` -- Infrastructure base classes
-- `feature/` -- Feature detection
+- `feature/` -- aconfig flag declarations only (dropbox_flags.aconfig)
 - `firewall/` -- Intent firewall
 - `health/` -- Health HAL integration
 - `locales/` -- LocaleManagerService
@@ -1227,8 +1228,10 @@ public static Watchdog getInstance() {
 
 ### 20.5.2 Default Timeout
 
-The default timeout is 60 seconds in production, or 10 seconds in debug
-builds (line 101):
+The default timeout is 60 seconds. A 10-second alternative exists, but it
+is selected only by manually flipping the hard-coded `DB` constant in the
+source (which is `false` in the tree) -- it is not tied to
+debuggable/userdebug builds (line 101):
 
 ```java
 // frameworks/base/services/core/java/com/android/server/Watchdog.java, line 101
@@ -1322,10 +1325,12 @@ public void run() {
 }
 ```
 
-There is an important optimization (line 311-321): if the target looper
-is currently polling (idle), the HandlerChecker skips posting. An idle
-looper means the thread is not blocked -- no need to waste time with a
-context switch.
+There is an important optimization (line 311-321): if the checker has no
+registered monitors *and* the target looper is currently polling (idle)
+-- or the checker is paused -- the HandlerChecker skips posting. An idle
+looper means the thread is not blocked, so there is no need to waste time
+with a context switch; but if monitors are registered, the post happens
+anyway, because the monitors themselves still need to run.
 
 ### 20.5.5 Monitored Threads
 
@@ -1479,11 +1484,13 @@ When the Watchdog detects an OVERDUE state:
 3. **Process kill**: Calls `Process.killProcess(Process.myPid())` to
    terminate system_server.
 
-4. **Runtime restart**: The init process detects that system_server has
-   died and triggers a full runtime restart (all Java processes are
-   killed and respawned from Zygote).
+4. **Runtime restart**: Zygote (which forked system_server and reaps it
+   via its SIGCHLD handler) detects the death and SIGKILLs itself
+   (`frameworks/base/core/jni/com_android_internal_os_Zygote.cpp`);
+   init then restarts the zygote service, and that restart tears down
+   and respawns the entire Java runtime.
 
-The native processes of interest (line 126-149):
+The native processes of interest (lines 126-148):
 
 ```java
 // frameworks/base/services/core/java/com/android/server/Watchdog.java, line 126
@@ -1491,9 +1498,11 @@ public static final String[] NATIVE_STACKS_OF_INTEREST = new String[] {
     "/system/bin/audioserver",
     "/system/bin/cameraserver",
     "/system/bin/drmserver",
-    "/system/bin/keystore2",
+    "/system/bin/idmap2d",
+    "/system/bin/mediadrmserver",
     "/system/bin/mediaserver",
     "/system/bin/netd",
+    "/system/bin/sdcard",
     "/system/bin/servicemanager",
     "/system/bin/surfaceflinger",
     "/system/bin/vold",
@@ -1504,9 +1513,9 @@ public static final String[] NATIVE_STACKS_OF_INTEREST = new String[] {
     "media.transcoding",
     "com.android.bluetooth",
     "/apex/com.android.art/bin/artd",
+    "/apex/com.android.compos/bin/composd",
     "/apex/com.android.os.statsd/bin/statsd",
     "/apex/com.android.virt/bin/virtualizationservice",
-    // ...
 };
 ```
 
@@ -1592,24 +1601,26 @@ graph TB
         WD["Watchdog Thread<br/>watchdog"]
     end
 
-    ML -.->|"Lifecycle callbacks"| DT
-    DT -.->|"Display updates"| AT
-    AT -.->|"Animation"| SAT
-    UT -.->|"System dialogs"| FT
-    FT -.->|"Foreground ops"| IT
-    IT -.->|"Disk/Network IO"| BT
-
     style ML fill:#f99,stroke:#333
     style DT fill:#f9f,stroke:#333
     style AT fill:#f9f,stroke:#333
     style BT fill:#9cf,stroke:#333
 ```
 
+These threads are independent, parallel loopers, not stages of a pipeline.
+Nothing forwards work from one to the next in a fixed order: each service
+picks the thread whose priority matches the work it is posting, so the same
+service may post a display update to `DisplayThread`, a disk write to
+`IoThread`, and a periodic cleanup to `BackgroundThread` without any of those
+threads talking to each other.
+
 ### 20.6.2 ServiceThread Base Class
 
-All system server threads extend `ServiceThread` (defined in
+Most system server threads extend `ServiceThread` (defined in
 `frameworks/base/core/java/com/android/server/ServiceThread.java`),
-which itself extends `HandlerThread`:
+which itself extends `HandlerThread`. The exception is `BackgroundThread`,
+which extends `HandlerThread` directly and therefore has no
+`allowIo`/StrictMode parameter:
 
 ```java
 // frameworks/base/core/java/com/android/server/ServiceThread.java, line 30
@@ -1762,7 +1773,9 @@ From the source comment (line 27-35):
 - **Thread name**: `android.bg`
 - **Priority**: `THREAD_PRIORITY_BACKGROUND` (10)
 - **Purpose**: Background operations across the system. Shares a singleton
-  across the entire process. Has very generous slow thresholds:
+  across the entire process. Unlike the others, it extends `HandlerThread`
+  directly rather than `ServiceThread`, so it has no `allowIo` parameter.
+  Has very generous slow thresholds:
   - Slow dispatch: 10,000ms (10 seconds!)
   - Slow delivery: 30,000ms (30 seconds!)
 
@@ -1790,7 +1803,7 @@ to be slower and are not on the critical path for user experience.
 | FgThread | `android.fg` | DEFAULT | 0 | Yes | Not enforced |
 | IoThread | `android.io` | DEFAULT | 0 | Yes | Not enforced |
 | PermissionThread | `android.perm` | DEFAULT | 0 | Yes | Not enforced |
-| BackgroundThread | `android.bg` | BACKGROUND | 10 | Yes | Not enforced |
+| BackgroundThread | `android.bg` | BACKGROUND | 10 | N/A (plain HandlerThread) | Not enforced |
 
 ### 20.6.5 Handler, Looper, and MessageQueue
 
@@ -1823,18 +1836,21 @@ Key patterns used in system_server:
 to system_server, so its full treatment belongs in the core threading layer.
 The piece that matters here: Android 17 adds a lock-free reimplementation,
 selected at build time by the `release_package_messagequeue_implementation`
-Soong config. The default `CombinedMessageQueue` variant picks the
-implementation at runtime, falling back to the legacy `synchronized`-guarded
-queue and switching to the concurrent "DeliQueue" (a Treiber stack plus a
-per-looper min-heap, coordinated with `VarHandle` CAS instead of a monitor lock)
-for processes that qualify. Qualification is gated by the compat change
-`USE_NEW_MESSAGEQUEUE` (`@EnabledAfter(targetSdkVersion = BAKLAVA)`, i.e. apps
-targeting SDK 37+) and the `use_concurrent_message_queue_in_apps` aconfig flag,
-and the concurrent path is allowed for system (core-UID) processes such as
-system_server. The source lives in
-`frameworks/base/core/java/android/os/CombinedDeliMessageQueue/MessageQueue.java`
-and `frameworks/base/core/java/android/os/MessageStack.java`, with the legacy
-variant under `frameworks/base/core/java/android/os/LegacyMessageQueue/`.
+Soong config. The default `CombinedMessageQueue` variant
+(`frameworks/base/core/java/android/os/CombinedMessageQueue/MessageQueue.java`)
+picks the implementation at runtime, falling back to the legacy
+`synchronized`-guarded queue and switching to its concurrent
+"ConcurrentMessageQueue" path for processes that qualify. Qualification is
+gated by the compat change `USE_NEW_MESSAGEQUEUE` (`@EnabledAfter(targetSdkVersion
+= BAKLAVA)`, i.e. apps targeting SDK 37+) and the
+`use_concurrent_message_queue_in_apps` aconfig flag, and the concurrent path
+is allowed for system (core-UID) processes such as system_server. A separate
+build-selectable variant, "DeliQueue" (a Treiber stack plus a per-looper
+min-heap, coordinated with `VarHandle` CAS instead of a monitor lock), lives
+in `frameworks/base/core/java/android/os/CombinedDeliMessageQueue/MessageQueue.java`
+together with `frameworks/base/core/java/android/os/MessageStack.java`; the
+legacy variant sits under
+`frameworks/base/core/java/android/os/LegacyMessageQueue/`.
 
 ### 20.6.6 Binder Threads
 
@@ -1884,7 +1900,7 @@ concurrently, reducing boot time. Examples include:
 - Secondary Zygote preloading (line 1581)
 - Sensor manager service startup (line 1743)
 - HIDL services startup (line 1750)
-- WebView preparation (line 3363)
+- WebView preparation (line 3420)
 
 The pool is shut down after initialization completes and is not used
 during normal operation.
@@ -2292,10 +2308,10 @@ Before AMS is fully initialized, WTFs cannot be immediately processed
 RuntimeInit.setDefaultApplicationWtfHandler(SystemServer::handleEarlySystemWtf);
 ```
 
-Later, after AMS is ready, pending WTFs are flushed (lines 3174-3179):
+Later, after AMS is ready, pending WTFs are flushed (lines 3224-3230):
 
 ```java
-// line 3174
+// line 3225
 synchronized (SystemService.class) {
     if (sPendingWtfs != null) {
         mActivityManagerService.schedulePendingSystemServerWtfs(sPendingWtfs);
@@ -2513,10 +2529,10 @@ identifying jank-causing operations.
 
 The definitions:
 
-- **Dispatch threshold**: How long it takes to start processing a message
-  after it is dequeued
-- **Delivery threshold**: How long between when a message is posted and
-  when processing begins (includes time waiting in the queue)
+- **Dispatch threshold**: How long the message handler ran -- the duration
+  of `Handler.dispatchMessage()` itself (dispatch end minus dispatch start)
+- **Delivery threshold**: How long between the message's scheduled time
+  (`msg.when`) and the start of dispatch (time spent late in the queue)
 
 ---
 
@@ -2566,7 +2582,7 @@ mechanism.
 Example from WiFi:
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, line 2205
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 2256
 t.traceBegin("StartWifi");
 mSystemServiceManager.startServiceFromJar(
         WIFI_SERVICE_CLASS, WIFI_APEX_SERVICE_JAR_PATH);
@@ -2597,6 +2613,7 @@ Here is the complete mapping of APEX paths used in `SystemServer.java`:
 | `DEVICE_LOCK_APEX_PATH` | `/apex/com.android.devicelock/javalib/service-devicelock.jar` |
 | `PROFILING_SERVICE_JAR_PATH` | `/apex/com.android.profiling/javalib/service-profiling.jar` |
 | `UPROBESTATS_BRIDGE_SERVICE_JAR_PATH` | `/apex/com.android.uprobestats/javalib/service-uprobestats-bridge.jar` |
+| `DEVICE_TO_DEVICE_APEX_SERVICE_JAR_PATH` | `/apex/com.android.bettertogether/javalib/service-device-to-device.jar` |
 
 ---
 
@@ -2642,7 +2659,7 @@ Wear OS devices start several additional services:
 | WearTimeService | `WEAR_TIME_SERVICE_CLASS` |
 | WearSettingsService | `WEAR_SETTINGS_SERVICE_CLASS` |
 | WearModeService | `WEAR_MODE_SERVICE_CLASS` |
-| WristOrientationService | `WRIST_ORIENTATION_SERVICE_CLASS` (conditional) |
+| WristOrientationService | `WRIST_ORIENTATION_SERVICE_CLASS` (constant declared but currently never started by SystemServer.java) |
 | WearGestureService | `WEAR_GESTURE_SERVICE_CLASS` (conditional) |
 | WearInputService | `WEAR_INPUT_SERVICE_CLASS` (conditional) |
 | DisplayOffloadService | `WEAR_DISPLAYOFFLOAD_SERVICE_CLASS` |
@@ -2655,7 +2672,7 @@ the `PRODUCT_SYSTEM_SERVER_JARS` classpath.
 Automotive (Android Automotive OS) devices start:
 
 ```java
-// line 3374
+// line 3432
 t.traceBegin("StartCarServiceHelperService");
 final SystemService cshs = mSystemServiceManager
         .startService(CAR_SERVICE_HELPER_SERVICE_CLASS);
@@ -2696,12 +2713,13 @@ if (RoSystemFeatures.hasFeatureEmbedded(context)) {
 
 ### 20.13.1 The Final Step
 
-After all services are running and all boot phases have completed, the
-very last step before entering the main loop is launching SystemUI
-(lines 3594-3599):
+After all services are running (the boot phases up to
+`PHASE_THIRD_PARTY_APPS_CAN_START` have run at this point), the very
+last step of `startOtherServices()` before entering the main loop is
+launching SystemUI (lines 3655-3661):
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, line 3594
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 3655
 t.traceBegin("StartSystemUI");
 try {
     startSystemUi(context, windowManagerF);
@@ -2717,9 +2735,14 @@ UI elements.
 
 ### 20.13.2 The Boot Completed Phase
 
-After SystemUI starts, the final boot phase is dispatched:
+The final boot phase is not dispatched by `SystemServer` itself. It is
+dispatched much later, by `ActivityManagerService.finishBooting()` once
+the boot has actually completed
+(`frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java`,
+line 5967):
 
 ```java
+// frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java, line 5967
 mSystemServiceManager.startBootPhase(t, SystemService.PHASE_BOOT_COMPLETED);
 ```
 
@@ -2794,7 +2817,9 @@ issues:
 # Method 1: SIGQUIT (generates ANR trace)
 adb shell kill -3 $(adb shell pidof system_server)
 sleep 2
-adb pull /data/anr/traces.txt
+# Traces are written as timestamped anr_<timestamp> files
+adb shell ls /data/anr/
+adb pull /data/anr/anr_<timestamp>
 
 # Method 2: debuggerd (native + Java stacks)
 adb shell debuggerd $(adb shell pidof system_server)
@@ -2843,7 +2868,7 @@ logcat and DropBox:
 
 ```bash
 # Check DropBox for Watchdog entries
-adb shell dumpsys dropbox --print | grep -A 100 "SYSTEM_SERVER_WATCHDOG"
+adb shell dumpsys dropbox --print | grep -A 100 "system_server_watchdog"
 
 # Check kernel log for the kill
 adb shell dmesg | grep system_server
@@ -2868,8 +2893,7 @@ adb pull /data/local/tmp/perf.data
 simpleperf report -i perf.data
 
 # Java method tracing (debug builds)
-adb shell am profile start system $(adb shell pidof system_server) \
-    /data/local/tmp/system_server.trace
+adb shell am profile start system /data/local/tmp/system_server.trace
 sleep 5
 adb shell am profile stop system
 adb pull /data/local/tmp/system_server.trace
@@ -2990,12 +3014,16 @@ environment.
 
 After `startOtherServices()` completes, `SystemServer` enters the fourth
 and final startup method: `startApexServices()`. This phase handles
-services that are defined in APEX modules and registered via
-`SystemServiceRegistry` rather than being hardcoded in `SystemServer.java`.
+services that are defined in APEX modules: the list is discovered via
+`ApexManager.getInstance().getApexSystemServices()` (populated from APEX
+manifests) and each entry is started through
+`mSystemServiceManager.startService(name)` when the manifest entry has no
+jar path, or `mSystemServiceManager.startServiceFromJar(name, jarPath)`
+when it does.
 
-The key difference from `startServiceFromJar()` calls in
-`startOtherServices()` is that APEX services discovered here are
-declared by the APEX manifest and registered dynamically. This allows
+The key difference from the `startServiceFromJar()` calls in
+`startOtherServices()` is that the name/jar pair here comes from the APEX
+manifest rather than being hardcoded in `SystemServer.java`. This allows
 APEX modules to add system services without modifying `SystemServer.java`
 at all.
 
@@ -3232,7 +3260,7 @@ mZygotePreload = SystemServerInitThreadPool.submit(() -> {
     String[] abis32 = Build.SUPPORTED_32_BIT_ABIS;
     if (abis32.length > 0
             && !Process.ZYGOTE_PROCESS.preloadDefault(abis32[0])) {
-        Slog.e(TAG, "Unable to preload default resources");
+        Slog.e(TAG, "Unable to preload default resources for secondary");
     }
 }, "SecondaryZygotePreload");
 
@@ -3246,7 +3274,7 @@ SystemServerInitThreadPool.submit(() -> {
     startHidlServices();
 }, "StartHidlServices");
 
-// WebView preparation - line 3363
+// WebView preparation - line 3420
 webviewPrep = SystemServerInitThreadPool.submit(() -> {
     ConcurrentUtils.waitForFutureNoInterrupt(
             mZygotePreload, "Zygote preload");
@@ -3515,10 +3543,11 @@ The `system_server` architecture has evolved significantly:
 - `startServiceFromJar()` mechanism added
 - `SystemServerClassLoaderFactory` for APEX class loading
 - Connectivity, WiFi, Bluetooth services modularized
+- `ActivityTaskManagerService` split from `ActivityManagerService`, moving
+  activity and task management into `com.android.server.wm`
 
 **Android 12+**:
 
-- ActivityTaskManagerService split from ActivityManagerService
 - PermissionThread added
 - Enhanced Watchdog with pre-watchdog timeout
 - Feature flag gating of service starts
@@ -3574,8 +3603,8 @@ updatable, but it all runs in the same process.
 |-----------|-------|---------|
 | `frameworks/base/services/java/com/android/server/SystemServer.java` | ~3860 | Entry point, startup orchestration |
 | `frameworks/base/services/core/java/com/android/server/SystemService.java` | ~700 | Service base class, boot phase constants |
-| `frameworks/base/services/core/java/com/android/server/SystemServiceManager.java` | ~500 | Service lifecycle management |
-| `frameworks/base/services/core/java/com/android/server/Watchdog.java` | ~1100 | Deadlock detection, thread monitoring |
+| `frameworks/base/services/core/java/com/android/server/SystemServiceManager.java` | ~840 | Service lifecycle management |
+| `frameworks/base/services/core/java/com/android/server/Watchdog.java` | ~1200 | Deadlock detection, thread monitoring |
 | `frameworks/base/core/java/com/android/server/ServiceThread.java` | 52 | Handler thread base class |
 | `frameworks/base/services/core/java/com/android/server/DisplayThread.java` | 79 | Display operations thread |
 | `frameworks/base/services/core/java/com/android/server/AnimationThread.java` | 76 | Window animation thread |
@@ -3585,7 +3614,7 @@ updatable, but it all runs in the same process.
 | `frameworks/base/services/core/java/com/android/server/IoThread.java` | 59 | I/O operations thread |
 | `frameworks/base/core/java/com/android/internal/os/BackgroundThread.java` | 104 | Background operations thread |
 | `frameworks/base/services/core/java/com/android/server/PermissionThread.java` | 72 | Permission operations thread |
-| `frameworks/base/services/core/java/com/android/server/SystemServerInitThreadPool.java` | ~100 | Boot-time parallel init pool |
+| `frameworks/base/services/core/java/com/android/server/SystemServerInitThreadPool.java` | ~240 | Boot-time parallel init pool |
 
 ### 20.24.2 Boot Phase Quick Reference
 
@@ -3927,7 +3956,7 @@ restore can run at a time per user:
 private boolean mIsRestoreInProgress;
 
 @GuardedBy("mPendingRestores")
-private final Queue<PerformUnifiedRestoreTask> mPendingRestores = new ArrayDeque<>();
+private final Queue<BackupRestoreTask> mPendingRestores = new ArrayDeque<>();
 ```
 
 ### 20.25.8 Cloud vs. Local Backup
@@ -3936,7 +3965,7 @@ The transport architecture allows seamless switching between backup destinations
 
 | Aspect | Cloud Backup (Google) | Local Backup (adb) |
 |--------|----------------------|-------------------|
-| Transport | `com.google.android.gms` | `com.android.internal.backup.LocalTransport` |
+| Transport | `com.google.android.gms` | `com.android.localtransport/.LocalTransportService` (class `com.android.localtransport.LocalTransport`) |
 | Trigger | JobScheduler (automatic) | `adb backup` command (manual) |
 | Encryption | TLS + server-side encryption | Optional user-set password |
 | Format | Transport-specific (protobuf) | Tar archive with optional encryption |
@@ -4035,7 +4064,7 @@ graph TB
     subgraph "Failure Sources"
         APP_CRASH["App Crash<br/>(ActivityManagerService)"]
         ANR["App Not Responding<br/>(ActivityManagerService)"]
-        NATIVE["Native Crash<br/>(tombstone polling)"]
+        NATIVE["Native Crash<br/>(sys.init.updatable_crashing polling)"]
         HEALTH["Explicit Health Check<br/>(system packages)"]
         BOOT["Boot Loop<br/>(boot count tracking)"]
     end
@@ -4103,7 +4132,7 @@ When `notifyPackageFailure()` is called, the watchdog:
 ```java
 // Each observer registers with PackageWatchdog
 PackageWatchdog.getInstance(context).registerHealthObserver(
-        null, RescuePartyObserver.getInstance(context));
+        context.getMainExecutor(), RescuePartyObserver.getInstance(context));
 ```
 
 When multiple observers are registered (e.g., RescueParty and RollbackManager),
@@ -4125,35 +4154,28 @@ aggressive level:
 
 ```mermaid
 flowchart TB
-    subgraph "Legacy Escalation (pre-flag)"
-        L1["Level 1: Reset untrusted<br/>settings to defaults"]
-        L2["Level 2: Reset untrusted<br/>settings changes"]
-        L3["Level 3: Reset trusted<br/>settings to defaults"]
-        L4["Level 4: Warm reboot"]
-        L5["Level 5: Factory reset"]
+    subgraph "Normal Failures"
+        F1["1st mitigation:<br/>Warm reboot"]
+        F2["2nd+ mitigation:<br/>Factory reset"]
 
-        L1 --> L2 --> L3 --> L4 --> L5
+        F1 --> F2
     end
 
-    subgraph "New Escalation (recoverabilityDetection flag)"
-        N1["Level 1: Scoped DeviceConfig<br/>reset (per-package)"]
-        N2["Level 2: All DeviceConfig<br/>reset"]
-        N3["Level 3: Warm reboot"]
-        N4["Level 4: Reset untrusted<br/>settings defaults"]
-        N5["Level 5: Reset untrusted<br/>settings changes"]
-        N6["Level 6: Reset trusted<br/>settings defaults"]
-        N7["Level 7: Factory reset"]
+    subgraph "Boot Loops (flag_reset_enabled on, flag_reset_disabled off)"
+        B1["1st mitigation:<br/>All DeviceConfig reset"]
+        B2["2nd mitigation:<br/>Warm reboot"]
+        B3["3rd+ mitigation:<br/>Factory reset"]
 
-        N1 --> N2 --> N3 --> N4 --> N5 --> N6 --> N7
-    end
-
-    subgraph "Simplified Escalation (deprecateFlagsAndSettingsResets flag)"
-        S1["Level 1: Warm reboot"]
-        S2["Level 2: Factory reset"]
-
-        S1 --> S2
+        B1 --> B2 --> B3
     end
 ```
+
+Normal failures escalate directly from a warm reboot (first mitigation)
+to a factory reset (second and later mitigations). Boot loops get one
+extra step: when the CrashRecovery module's `flag_reset_enabled` flag is
+on (and `flag_reset_disabled` is off), the first mitigation resets all
+DeviceConfig flags before escalating to warm reboot and then factory
+reset; otherwise boot loops follow the normal path.
 
 The escalation constants:
 
@@ -4169,25 +4191,31 @@ static final int RESCUE_LEVEL_RESET_SETTINGS_TRUSTED_DEFAULTS = 6;
 static final int RESCUE_LEVEL_FACTORY_RESET = 7;
 ```
 
+Note that the `RESCUE_LEVEL_RESET_SETTINGS_*` and
+`RESCUE_LEVEL_SCOPED_DEVICE_CONFIG_RESET` constants still exist but are
+no-ops today -- `executeRescueLevelInternal()` handles them with empty
+`// do nothing` cases.
+
 ### 20.26.4 RescueParty Disable Conditions
 
 RescueParty is deliberately disabled in several scenarios to avoid interfering
 with development and testing:
 
 - **Engineering builds** (`Build.TYPE.equals("eng")`) -- Always disabled
-- **USB-connected userdebug** -- Disabled when USB is active on userdebug
-  builds, indicating active debugging
+- **userdebug builds** -- Always disabled on userdebug builds, a decent
+  signal that someone is actively debugging the device or that it is in
+  a lab environment
 - **DeviceConfig flag** -- `persist.device_config.configuration.disable_rescue_party`
 - **Manual property** -- `persist.sys.disable_rescue` for emergency override
 - **Explicit enable** -- `persist.sys.enable_rescue` overrides all disable checks
 
 ```java
 // packages/modules/CrashRecovery/service/java/com/android/server/RescueParty.java
-// We're disabled on userdebug devices connected over USB, since that's
-// a decent signal that someone is actively trying to debug the device,
-// or that it's in a lab environment.
-if (Build.TYPE.equals("userdebug") && isUsbActive()) {
-    Slog.v(TAG, "Disabled because of active USB connection");
+// We're disabled on all userdebug builds, as this is a decent signal
+// that someone is actively trying to debug the device, or that it's
+// in a lab environment.
+if (Build.TYPE.equals("userdebug")) {
+    Slog.v(TAG, "Disabled because of userdebug build");
     return true;
 }
 ```
@@ -4205,9 +4233,16 @@ Boot loop detection:
     (no package to blame → go straight to global mitigations)
 ```
 
-When a boot loop is detected without a specific failing package, the
-mitigation count offset shifts by 1 because scoped DeviceConfig reset
-is meaningless without a target package.
+Because there is no package to blame, boot loops run a separate escalation
+ladder in RescueParty: `getRescueLevelForBootLoop()` (RescueParty.java, lines
+274-285) inserts an extra all-DeviceConfig-reset step ahead of the warm
+reboot, so attempt 1 resets every DeviceConfig namespace, attempt 2 warm
+reboots, and attempt 3 or later factory resets. That extra step only applies
+when the flag-reset feature is enabled; otherwise the boot-loop path falls
+back to the ordinary `getRescueLevel()` ladder (warm reboot, then factory
+reset). The mitigation count itself is passed through unchanged -- there is
+no offset -- and the scoped DeviceConfig reset level, which would need a
+target package, is never returned by either function.
 
 ### 20.26.6 Factory Reset Throttling
 
@@ -4266,12 +4301,18 @@ sequenceDiagram
     AMS->>PW: notifyPackageFailure(modulePackage, APP_CRASH)
     PW->>PW: Count failures (5 in 1 min?)
 
+    PW->>RM: onHealthCheckFailed(modulePackage, reason, count)
+    RM-->>PW: PackageHealthObserverImpact
+    PW->>RP: onHealthCheckFailed(modulePackage, reason, count)
+    RP-->>PW: PackageHealthObserverImpact
+    PW->>PW: Pick the observer reporting least user impact
+
     alt Rollback available
-        PW->>RM: onHealthCheckFailed(modulePackage)
+        PW->>RM: onExecuteHealthCheckMitigation(modulePackage, reason, count)
         RM->>RM: Rollback APEX/APK update
         Note over RM: Lower user impact than RescueParty
     else No rollback available
-        PW->>RP: execute(modulePackage, mitigationCount)
+        PW->>RP: onExecuteHealthCheckMitigation(modulePackage, reason, count)
         RP->>RP: Escalate through rescue levels
     end
 ```
@@ -4405,14 +4446,17 @@ app reads the clipboard. This is the "Pasted from <app>" message users see:
 private static final long ACCESS_NOTIFICATION_SUPPRESSION_TIMEOUT_MILLIS = 1000L;
 ```
 
-The notification is suppressed for 1 second after a previous notification for
-the same UID, preventing toast spam when apps read the clipboard multiple
-times rapidly. The feature is controlled by a per-user setting
+This constant is the window (1 second) during which access notifications are
+suppressed for a UID after a trusted component calls
+`ClipboardManagerInternal.notifyUserAuthorizedClipAccess()` -- meaning the
+user has already explicitly authorized the paste, so there is no need to
+toast about it. It is not a debounce against repeated toasts for the same
+UID. The feature is controlled by a per-user setting
 (`CLIPBOARD_SHOW_ACCESS_NOTIFICATIONS`) and a server-side `DeviceConfig` flag.
 
-The `showAccessNotificationLocked()` method also sends the clipboard content
-to the `TextClassifier` for content-type logging via
-`notifyTextClassifierLocked()`, which classifies up to
+Right after calling `showAccessNotificationLocked()`, `getPrimaryClip()`
+also sends the clipboard content to the `TextClassifier` for content-type
+logging via `notifyTextClassifierLocked()`, which classifies up to
 `mMaxClassificationLength` (default 400) characters.
 
 ### 20.27.5 Automatic Clipboard Clearing
@@ -4523,7 +4567,6 @@ graph TD
     DT -->|"HTTP request"| Net["Network"]
     DT -->|"progress updates"| DP
     DT -->|"notifications"| DN["DownloadNotifier"]
-    DT -->|"media scanning"| DS["DownloadScanner"]
     DP -->|"SQLite"| DB["downloads.db"]
 
     style DP fill:#f9f,stroke:#333
@@ -4539,15 +4582,18 @@ The key components are:
 | `DownloadThread` | `DownloadThread.java` | Performs the actual HTTP download on a background thread |
 | `DownloadNotifier` | `DownloadNotifier.java` | Manages download progress/completion notifications |
 | `DownloadInfo` | `DownloadInfo.java` | In-memory representation of a download's state |
-| `DownloadScanner` | `DownloadScanner.java` | Triggers MediaStore scanning for completed downloads |
+| `DownloadScanner` | `DownloadScanner.java` | Legacy MediaScanner bridge; nothing in the provider calls it any more -- MediaStore entries now come from `MediaStoreDownloadsHelper` and `DownloadStorageProvider` |
 | `Constants` | `Constants.java` | Retry limits, timeout values, other constants |
 
 ### 20.28.2 The Download Database
 
-DownloadProvider uses a SQLite database (`downloads.db`, version 114) with a
-single `downloads` table. The database tracks every download's URI, file
-path, status, bytes downloaded, MIME type, notification visibility, retry
-count, ETag, and more.
+DownloadProvider uses a SQLite database (`downloads.db`, version 114). The
+schema has two tables, both created in `onCreate()`: the main `downloads`
+table (`createDownloadsTable()`, line 528), which tracks every download's
+URI, file path, status, bytes downloaded, MIME type, notification
+visibility, retry count, ETag, and more; and `request_headers`
+(`createHeadersTable()`, line 568), which stores the extra HTTP request
+headers a caller attached to a download.
 
 ```java
 // DownloadProvider.java, line 97-101
@@ -5114,24 +5160,35 @@ On userdebug/eng builds, you can test the Watchdog by inducing a deadlock.
 
 ```bash
 # Reduce watchdog timeout (settings must be available)
-adb shell settings put global watchdog_timeout_millis 10000
-
-# Or use the debug property
-adb shell setprop persist.sys.debug.watchdog_timeout 10
+adb shell settings put global system_server_watchdog_timeout_ms 10000
 ```
 
 ### 20.31.12 Tracing Service Startup with Perfetto
 
 ```bash
-# Record a boot trace
-adb shell setprop persist.debug.atrace.boottrace 1
+# Push the trace config init will hand to perfetto on the next boot
+adb push boottrace.pbtxt /data/misc/perfetto-configs/boottrace.pbtxt
+
+# Arm the boot trace
 adb shell setprop persist.traced.enable 1
+adb shell setprop persist.debug.perfetto.boottrace 1
 
 # After reboot, pull the trace
 adb pull /data/misc/perfetto-traces/boottrace.perfetto-trace
 
 # Open in ui.perfetto.dev
 ```
+
+The `perfetto_trace_on_boot` service in `external/perfetto/perfetto.rc`
+(lines 124-132) is what reacts to `persist.debug.perfetto.boottrace=1`: it
+runs `/system/bin/perfetto` against
+`/data/misc/perfetto-configs/boottrace.pbtxt` and writes the result to
+`/data/misc/perfetto-traces/boottrace.perfetto-trace`. Init clears the
+property once the trace starts, so it must be re-set before each boot you
+want captured. (The older `persist.debug.atrace.boottrace` property is a
+different, legacy mechanism -- `frameworks/native/cmds/atrace/atrace.rc`
+starts an `atrace --async_start` service that writes under
+`/data/misc/boottrace` instead.)
 
 The trace will show all the `TimingsTraceAndSlog` spans from SystemServer,
 including every service start and boot phase transition, with precise
@@ -5465,8 +5522,12 @@ is a common source of bugs, documented explicitly in the PendingIntent Javadoc.
 ### 21.1.5 Intent Flags
 
 The Intent class defines flags in two categories, both encoded as bitmasks in `mFlags`.
+Activity and receiver flags share the same high bits of `mFlags` -- they are
+disambiguated by how the Intent is dispatched, not by disjoint bit ranges. For example,
+`0x40000000` means `FLAG_ACTIVITY_NO_HISTORY` when the Intent starts an activity, but
+`FLAG_RECEIVER_REGISTERED_ONLY` when it is broadcast.
 
-**Activity flags** (bits 0-25, roughly) control launch behavior:
+**Activity flags** control launch behavior:
 
 | Flag | Value | Effect |
 |------|-------|--------|
@@ -5479,7 +5540,7 @@ The Intent class defines flags in two categories, both encoded as bitmasks in `m
 | `FLAG_ACTIVITY_FORWARD_RESULT` | `0x02000000` | Relay result to original caller |
 | `FLAG_ACTIVITY_LAUNCH_ADJACENT` | `0x00001000` | Multi-window adjacent launch |
 
-**Receiver flags** (bits 26-31, roughly) control broadcast behavior:
+**Receiver flags** control broadcast behavior:
 
 | Flag | Value | Effect |
 |------|-------|--------|
@@ -5490,7 +5551,7 @@ The Intent class defines flags in two categories, both encoded as bitmasks in `m
 | `FLAG_RECEIVER_INCLUDE_BACKGROUND` | `0x01000000` | Include stopped/background apps |
 | `FLAG_RECEIVER_EXCLUDE_BACKGROUND` | `0x00800000` | Exclude background apps |
 
-**URI permission flags** (bits 0-2) grant temporary access:
+**URI permission flags** (bits 0, 1, 6, and 7) grant temporary access:
 
 | Flag | Value | Effect |
 |------|-------|--------|
@@ -5601,12 +5662,12 @@ avoiding task confusion if the user has previously launched the browser normally
 
 ### 21.1.8 ClipData and URI Permission Grants
 
-The `mClipData` field (line 8025) serves a dual purpose: carrying rich content and
+The `mClipData` field (line 8144) serves a dual purpose: carrying rich content and
 enabling URI permission grants on multiple URIs. When `FLAG_GRANT_READ_URI_PERMISSION`
 or `FLAG_GRANT_WRITE_URI_PERMISSION` is set, the grant applies to both the main `mData`
 URI and all URIs in the ClipData items.
 
-From the source documentation (line ~10633):
+From the `setClipData()` javadoc (line ~10758):
 
 > "The main feature of using this over the extras for data is that
 > FLAG_GRANT_READ_URI_PERMISSION and FLAG_GRANT_WRITE_URI_PERMISSION will operate on
@@ -5818,7 +5879,8 @@ flowchart TD
 **Test 1: Action Match** (`matchAction()`):
 
 The Intent's action must be listed in the filter's action set. If the filter specifies
-no actions, the match always fails. If the Intent's action is null, modern Android
+no actions, it only matches Intents that carry no action -- the action test in `match()`
+is skipped entirely when the Intent's action is null. If the Intent's action is null, modern Android
 (targeting V+) blocks the match via the `BLOCK_NULL_ACTION_INTENTS` compatibility change
 (change ID `293560872`, declared at `IntentFilter.java` line 202). The server-side hook
 that applies this is in `SaferIntentUtils` (Section 21.10).
@@ -5930,7 +5992,8 @@ public final String matchCategories(Set<String> categories) {
 
 The critical implication: any activity that wants to be reachable via `startActivity()`
 with an implicit Intent must declare `CATEGORY_DEFAULT` in its filter, because
-`startActivity()` always adds `CATEGORY_DEFAULT` to the Intent.
+`startActivity()` resolves with `PackageManager.MATCH_DEFAULT_ONLY`, which makes the
+resolver keep only filters that declare `CATEGORY_DEFAULT`.
 
 ### 21.2.4 ResolveInfo: The Resolution Result
 
@@ -6086,10 +6149,12 @@ The system also considers:
 The `CATEGORY_DEFAULT` requirement is one of the most important and most frequently
 misunderstood aspects of intent resolution. Here is the exact behavior:
 
-1. `Context.startActivity()` adds `CATEGORY_DEFAULT` to the Intent automatically
-2. `PackageManager.queryIntentActivities()` does NOT add it automatically
-3. `Context.sendBroadcast()` does NOT add it
-4. `Context.startService()` does NOT add it
+1. `Context.startActivity()` resolves with `PackageManager.MATCH_DEFAULT_ONLY`, so only
+   filters declaring `CATEGORY_DEFAULT` are considered (the Intent itself is never mutated)
+2. `PackageManager.queryIntentActivities()` does NOT apply `MATCH_DEFAULT_ONLY` unless
+   the caller passes it
+3. `Context.sendBroadcast()` does NOT require it
+4. `Context.startService()` does NOT require it
 
 This means:
 
@@ -6119,17 +6184,26 @@ This means:
 ### 21.2.9 The Chooser
 
 When multiple activities match an implicit Intent and no default is set, the system
-presents a Chooser dialog. Applications can also explicitly invoke the Chooser:
+presents a disambiguation dialog. That dialog is itself an Activity --
+`com.android.internal.app.ResolverActivity` -- which `PackageManagerService` returns
+as its built-in resolve activity (`mResolveActivity`) whenever resolution is ambiguous.
+
+Applications can also explicitly invoke the share-sheet Chooser:
 
 ```java
 Intent chooser = Intent.createChooser(targetIntent, "Share via");
 startActivity(chooser);
 ```
 
-The `ACTION_CHOOSER` wraps the original intent in `EXTRA_INTENT` and optionally adds
-`EXTRA_INITIAL_INTENTS` for additional options. The Chooser is itself an Activity
-(`com.android.internal.app.ChooserActivity`) that queries the PackageManager and
-presents the results.
+The `ACTION_CHOOSER` intent wraps the original intent in `EXTRA_INTENT` and optionally
+adds `EXTRA_INITIAL_INTENTS` for additional options. It is handled by
+`com.android.intentresolver.ChooserActivity` in the unbundled IntentResolver module
+(`packages/modules/IntentResolver`), registered for `ACTION_CHOOSER` via the
+`.ChooserActivityLauncher` activity-alias in the module's manifest. The legacy
+`com.android.internal.app.ChooserActivity` (a `ResolverActivity` subclass) still exists
+in `frameworks/base` but no longer carries the `ACTION_CHOOSER` filter. Either way, this
+path serves only the explicit `Intent.createChooser()` / `ACTION_CHOOSER` case, not
+ordinary multi-match disambiguation.
 
 ```mermaid
 sequenceDiagram
@@ -6139,7 +6213,7 @@ sequenceDiagram
     participant ATS as ActivityTaskSupervisor
     participant PMS as PackageManagerService
     participant CR as ComponentResolver
-    participant Chooser as ChooserActivity
+    participant Resolver as ResolverActivity
 
     App->>ATMS: startActivity(implicit intent)
     ATMS->>AS: execute()
@@ -6152,10 +6226,11 @@ sequenceDiagram
     alt Single match
         AS->>App: Launch matched activity
     else Multiple matches, no default
-        AS->>Chooser: Launch with EXTRA_INTENT
-        Chooser->>PMS: queryIntentActivities()
-        PMS-->>Chooser: Full list
-        Chooser->>App: User picks, launches selected
+        Note over PMS: PMS returns ResolverActivity as the resolve activity
+        AS->>Resolver: Launch ResolverActivity
+        Resolver->>PMS: queryIntentActivities()
+        PMS-->>Resolver: Full list
+        Resolver->>App: User picks, launches selected
     end
 ```
 
@@ -6174,7 +6249,8 @@ allows MIME-type-only filters to work with ContentProviders. From `matchData()`:
     // content provider, which is done by type...
     if (scheme != null && !"".equals(scheme)
             && !"content".equals(scheme)
-            && !"file".equals(scheme)) {
+            && !"file".equals(scheme)
+            && !(wildcardSupported && WILDCARD.equals(scheme))) {
         return NO_MATCH_DATA;
     }
 }
@@ -6214,8 +6290,8 @@ The actual pending intent state is maintained on the server side in
 
 ### 21.3.2 Creation Methods
 
-PendingIntents are created through four static factory methods, corresponding to the
-four types of operations:
+PendingIntents are created through five static factory methods, corresponding to the
+types of operations:
 
 ```java
 PendingIntent.getActivity(context, requestCode, intent, flags)
@@ -6225,16 +6301,18 @@ PendingIntent.getService(context, requestCode, intent, flags)
 PendingIntent.getForegroundService(context, requestCode, intent, flags)
 ```
 
-Each method calls through to `ActivityManagerService`, which creates an
-`PendingIntentRecord` stored in a process-independent map. The `requestCode` parameter
+Each method calls through to `ActivityManagerService`, which delegates to
+`PendingIntentController` to create a `PendingIntentRecord` stored in a
+process-independent map. The `requestCode` parameter
 is used to distinguish PendingIntents that would otherwise be considered equivalent
 via `filterEquals()`.
 
 ```mermaid
 flowchart TD
     A[App calls PendingIntent.getActivity] --> B[checkPendingIntent: validate flags]
-    B --> C[ActivityManager.getService.getIntentSender]
-    C --> D[AMS.getIntentSenderLocked]
+    B --> C["ActivityManager.getService().getIntentSenderWithFeature"]
+    C --> C2[AMS.getIntentSenderWithFeature]
+    C2 --> D[PendingIntentController.getIntentSender]
     D --> E{Existing PI with same filterEquals + requestCode?}
     E -->|Yes + FLAG_NO_CREATE| F[Return existing]
     E -->|Yes + FLAG_CANCEL_CURRENT| G[Cancel old, create new]
@@ -6242,7 +6320,7 @@ flowchart TD
     E -->|Yes + no special flag| I[Return existing as-is]
     E -->|No + FLAG_NO_CREATE| J[Return null]
     E -->|No| K[Create PendingIntentRecord]
-    K --> L[Store in mIntentSenderRecords]
+    K --> L[Store in PendingIntentController.mIntentSenderRecords]
     L --> M[Return PendingIntent token]
     F --> M
     G --> M
@@ -6298,13 +6376,14 @@ Intent is blocked via `BLOCK_MUTABLE_IMPLICIT_PENDING_INTENT` (change ID `236704
 public static boolean isNewMutableDisallowedImplicitPendingIntent(int flags,
         @NonNull Intent intent, boolean isActivityResultType) {
     if (isActivityResultType) return false;
+    boolean isFlagNoCreateSet = (flags & PendingIntent.FLAG_NO_CREATE) != 0;
     boolean isFlagMutableSet = (flags & PendingIntent.FLAG_MUTABLE) != 0;
     boolean isImplicit = (intent.getComponent() == null)
                       && (intent.getPackage() == null);
-    boolean isFlagAllowUnsafe =
+    boolean isFlagAllowUnsafeImplicitIntentSet =
             (flags & PendingIntent.FLAG_ALLOW_UNSAFE_IMPLICIT_INTENT) != 0;
     return !isFlagNoCreateSet && isFlagMutableSet && isImplicit
-            && !isFlagAllowUnsafe;
+            && !isFlagAllowUnsafeImplicitIntentSet;
 }
 ```
 
@@ -6759,7 +6838,9 @@ broadcast delivery without IPC overhead. It was implemented as a simple observer
 with no involvement of `ActivityManagerService`.
 
 The modern replacement is to use `LiveData`, `Flow`, or other reactive patterns for
-in-process communication. The system never used `LocalBroadcastManager` internally.
+in-process communication. The framework's broadcast machinery (`ActivityManagerService`,
+`BroadcastQueue`) has no knowledge of `LocalBroadcastManager` -- though platform code such
+as SettingsLib and bundled apps (Stk, Contacts) do use the library themselves.
 
 ### 21.4.9 Broadcast Delivery Prioritization
 
@@ -6774,9 +6855,17 @@ final boolean urgent;             // classified as urgent
 final boolean deferUntilActive;   // BROADCAST_TYPE_DEFERRABLE_UNTIL_ACTIVE
 ```
 
-The `BroadcastProcessQueue` uses these to determine delivery urgency and scheduling.
-Interactive broadcasts (triggered by user action) get priority over alarm broadcasts,
-which get priority over background broadcasts.
+`BroadcastProcessQueue` uses these to pick which of its three pending deques a record
+lands in. `getQueueForBroadcast()`
+(`frameworks/base/services/core/java/com/android/server/am/BroadcastProcessQueue.java:269-277`)
+routes urgent records to `mPendingUrgent`, offload records to `mPendingOffload`, and
+everything else to the normal `mPending`. The urgent bit itself comes from
+`BroadcastRecord.calculateUrgent()`
+(`frameworks/base/services/core/java/com/android/server/am/BroadcastRecord.java:867-882`),
+which returns true when the intent carries `FLAG_RECEIVER_FOREGROUND`, or when
+`BroadcastOptions.isInteractive()` or `BroadcastOptions.isAlarmBroadcast()` is set. So
+interactive and alarm broadcasts share the same urgent tier -- they are not ranked
+against each other -- and the third tier is offload, not "background".
 
 ### 21.4.10 Broadcast ANR
 
@@ -6801,8 +6890,8 @@ sequenceDiagram
         Proc->>BQ: finishReceiver(resultCode)
         BQ->>BQ: Cancel ANR timer
     else Timeout
-        BQ->>AMS: broadcastTimeoutLocked()
-        AMS->>AMS: appNotResponding(process)
+        BQ->>BQ: deliveryTimeoutLocked()
+        BQ->>AMS: appNotResponding(process)
         Note over AMS: Show ANR dialog
     end
 ```
@@ -6907,7 +6996,6 @@ Android versions:
 |----------------|-----|--------|
 | 7.0 (Nougat) | 24 | `ACTION_NEW_PICTURE` and `ACTION_NEW_VIDEO` removed |
 | 8.0 (Oreo) | 26 | Most implicit broadcasts blocked for manifest receivers |
-| 9.0 (Pie) | 28 | `ACTION_BATTERY_CHANGED` no longer delivered to manifest receivers |
 | 10 (Q) | 29 | No new restrictions |
 | 11 (R) | 30 | Package visibility affects broadcast resolution |
 | 12 (S) | 31 | Exported attribute required for components with filters |
@@ -7108,8 +7196,11 @@ The verification has several important timing characteristics:
 2. **Network required**: Verification requires network access to fetch assetlinks.json
 3. **Retry behavior**: If verification fails due to network issues, the system may
    retry at a later time
-4. **Multi-domain handling**: If an app declares multiple domains, ALL domains must
-   verify successfully for automatic linking to work for any of them
+4. **Multi-domain handling**: Under the modern `DomainVerificationManager` (Android 12+),
+   each declared domain is verified and approved independently -- links for a domain that
+   verified successfully open directly in the app even when other declared domains failed
+   verification. (The old all-or-nothing behavior applied only to the legacy pre-S
+   `IntentFilterVerifier`.)
 5. **Re-verification**: When an app is updated, verification may be re-triggered if
    the intent filters changed
 
@@ -7131,7 +7222,7 @@ sequenceDiagram
             DV->>DV: Mark as pending, schedule retry
         else Invalid JSON
             Net-->>DV: Missing/invalid assetlinks
-            DV->>DV: Mark domain as denied
+            DV->>DV: Mark domain as failed with agent-defined error code
         end
     end
     DV->>PM: Update verification state
@@ -7167,15 +7258,24 @@ https://digitalassetlinks.googleapis.com/v1/statements:list?source.web.site=http
 
 ### 21.5.8 Verification State Management
 
-Domain verification state is per-user and per-package. The possible states are:
+The verification state itself (the `STATE_*` values below) is kept per package and per
+domain and is user-independent; only the user's link-handling selections (which hosts
+are enabled, whether link handling is allowed at all) are stored per user. The most
+common states are:
 
 | State | Meaning |
 |-------|---------|
 | `STATE_NO_RESPONSE` | Verification not yet attempted or no response |
 | `STATE_SUCCESS` | Domain verified successfully |
-| `STATE_DENIED` | Verification failed (domain does not match) |
+| `STATE_APPROVED` | System/administrative override that forces the domain to be treated as verified |
+| `STATE_DENIED` | System/administrative override that forces the domain to be treated as unverified (the verification agent cannot change it) |
 | `STATE_MIGRATED` | State migrated from legacy system |
 | `STATE_RESTORED` | State restored from backup |
+
+`DomainVerificationState` also defines `STATE_LEGACY_FAILURE` (a failure carried over
+from the legacy verifier), `STATE_SYS_CONFIG` (approval granted by system config), and
+`STATE_PRE_VERIFIED` (verified ahead of install); values at or above
+`STATE_FIRST_VERIFIER_DEFINED` (`0b10000000000`) are agent-defined error codes.
 
 Users can also manually manage App Link settings through Settings, which can override
 the automatic verification state.
@@ -7228,12 +7328,6 @@ flowchart TD
         A2 -->|No| A4[Action FAIL]
     end
 
-    subgraph "Category Match"
-        C1[Intent.categories] --> C2{ALL in filter.mCategories?}
-        C2 -->|Yes| C3[Category PASS]
-        C2 -->|No| C4[Category FAIL]
-    end
-
     subgraph "Data Match"
         D1[Intent data + type] --> D2{Filter has schemes?}
         D2 -->|Yes| D3{Scheme matches?}
@@ -7250,9 +7344,19 @@ flowchart TD
         D9 -->|No| D10[Type FAIL]
     end
 
-    A3 --> C1
-    C3 --> D1
+    subgraph "Category Match"
+        C1[Intent.categories] --> C2{ALL in filter.mCategories?}
+        C2 -->|Yes| C3[Category PASS]
+        C2 -->|No| C4[Category FAIL]
+    end
+
+    A3 --> D1
+    D6 --> C1
 ```
+
+This is the order `IntentFilter.match()` actually applies: `matchAction()` first, then
+`matchData()`, then `matchCategories()`, with a trailing `matchExtras()` check after the
+categories pass.
 
 **Key rules from the source Javadoc:**
 
@@ -7304,7 +7408,7 @@ When multiple filters match, the one with the highest match quality wins.
 The `AuthorityEntry` inner class handles host and port matching:
 
 ```java
-// IntentFilter.java, line ~1120 (approximate)
+// IntentFilter.java, line ~1176; match(Uri, boolean) at ~1264
 public static final class AuthorityEntry {
     private final String mOrigHost;
     private final String mHost;
@@ -7552,16 +7656,28 @@ The `PatternMatcher` class (used for path and SSP matching) supports five patter
 |------|----------|----------|
 | Literal | `PATTERN_LITERAL` | Exact string match |
 | Prefix | `PATTERN_PREFIX` | Matches if string starts with pattern |
-| Simple glob | `PATTERN_SIMPLE_GLOB` | `*` matches any sequence, `.` is literal |
+| Simple glob | `PATTERN_SIMPLE_GLOB` | `*` matches zero or more of the preceding character; an unescaped `.` matches any single character (`.*` = any sequence); `\\` escapes |
 | Advanced glob | `PATTERN_ADVANCED_GLOB` | Full glob with `[`, `]`, `{`, `}` |
 | Suffix | `PATTERN_SUFFIX` | Matches if string ends with pattern |
 
-The `PATTERN_SIMPLE_GLOB` is the most commonly used. Unlike regex, `.` is a literal
-character, not a wildcard. The `*` wildcard matches zero or more characters. Examples:
+The `PATTERN_SIMPLE_GLOB` is the most commonly used. Unlike regex, `*` does not mean
+"any sequence" -- it means zero or more repetitions of the character immediately before
+it. An unescaped `.` is a single-character wildcard on its own, whether or not a `*`
+follows it (`matchGlobPattern()` skips the literal comparison for any unescaped `.`,
+`frameworks/base/core/java/android/os/PatternMatcher.java:303-304`); only an escaped
+`\\.` matches a literal dot. Combining the two, `.*` is the way to match an arbitrary
+sequence. Examples:
 
-- `"/products/*"` matches `/products/` and `/products/123` and `/products/123/details`
+- `"/products/.*"` matches `/products/`, `/products/123`, and `/products/123/details`,
+  while `"/products/*"` matches `/products/`, `/products//`, ... but *not* `/products`:
+  a trailing `X*` still requires the match string not to be exhausted, and the
+  end-of-pattern fallback at `PatternMatcher.java:316-319` tolerates only a leftover
+  `.*`
 - `"/items/.*\\.json"` matches `/items/data.json` and `/items/list.json`
-- `"*.pdf"` as a suffix matches any string ending in `.pdf`
+- As a `PATTERN_SUFFIX`, the pattern is a plain `String.endsWith()` check with no glob
+  interpretation (`PatternMatcher.java:236-237`), so the suffix that matches any string
+  ending in `.pdf` is `".pdf"` -- writing `"*.pdf"` would only match strings that
+  literally end in the five characters `*.pdf`
 
 ---
 
@@ -7675,8 +7791,10 @@ These classes implement the algorithm for:
 
 ## 21.8 Protected Broadcasts
 
-Protected broadcasts are actions that only the system (UID 1000 / system_server) can
-send. They are a security mechanism to prevent apps from spoofing critical system events.
+Protected broadcasts are actions that only system-side callers can send -- root, system,
+phone, bluetooth, NFC, secure element and network-stack UIDs, plus any caller whose
+process is persistent. They are a security mechanism to prevent apps from spoofing
+critical system events.
 
 ### 21.8.1 Declaration
 
@@ -7709,7 +7827,7 @@ During package scanning, each `<protected-broadcast>` declaration is added to
 flowchart TD
     A[App sends broadcast with action X] --> B{Is X a protected broadcast?}
     B -->|No| C[Allow: normal broadcast delivery]
-    B -->|Yes| D{Is caller system UID or root?}
+    B -->|Yes| D{Is caller a system-side UID or persistent process?}
     D -->|Yes| E[Allow: system can send protected broadcasts]
     D -->|No| F[Reject: SecurityException]
     F --> G[Log warning: non-system sender of protected broadcast]
@@ -7881,7 +7999,9 @@ These grants are:
 
 - Temporary (revoked when the receiving task is finished, unless persistable)
 - Scoped to the specific URI (or URI prefix with `FLAG_GRANT_PREFIX_URI_PERMISSION`)
-- Tracked by `ActivityManagerService` per process
+- Tracked by `UriGrantsManagerService`
+  (`frameworks/base/services/core/java/com/android/server/uri/`) as `UriPermission`
+  records keyed by target UID/package and `GrantUri`
 
 The `FLAG_GRANT_PERSISTABLE_URI_PERMISSION` flag allows the receiver to persist the
 grant across reboots using `ContentResolver.takePersistableUriPermission()`.
@@ -7917,9 +8037,11 @@ flowchart TD
 
 ### 21.9.7 The CATEGORY_DEFAULT Requirement
 
-A frequently misunderstood security-relevant behavior: `Context.startActivity()` always
-adds `CATEGORY_DEFAULT` to implicit Intents. This means any activity that wants to be
-discoverable via implicit intents must include `CATEGORY_DEFAULT` in its filter.
+A frequently misunderstood security-relevant behavior: `Context.startActivity()` resolves
+implicit Intents with `PackageManager.MATCH_DEFAULT_ONLY`, which makes the resolver keep
+only filters that declare `CATEGORY_DEFAULT` -- the category is a filter-side requirement,
+not something added to the Intent. Any activity that wants to be discoverable via
+implicit intents must therefore include `CATEGORY_DEFAULT` in its filter.
 
 This is documented in the Intent class (line ~406):
 
@@ -7928,8 +8050,8 @@ This is documented in the Intent class (line ~406):
 > explicitly specified."
 
 The practical implication: if you omit `CATEGORY_DEFAULT`, your activity can still
-be found via `PackageManager.queryIntentActivities()` (which does not add the default
-category) but cannot be launched via `startActivity()` with an implicit intent. This
+be found via `PackageManager.queryIntentActivities()` (when called without
+`MATCH_DEFAULT_ONLY`) but cannot be launched via `startActivity()` with an implicit intent. This
 provides a mechanism for "queryable but not directly launchable" activities.
 
 ### 21.9.8 Intent Validation at Process Boundaries
@@ -7967,9 +8089,17 @@ final @Nullable String[] excludedPermissions;  // receivers must NOT hold these
 final @Nullable String[] excludedPackages;     // these packages are excluded
 ```
 
-`excludedPermissions` is used for privacy-sensitive broadcasts where holders of certain
-permissions should not receive the broadcast (for example, excluding apps with
-`INTERACT_ACROSS_USERS` from receiving user-specific broadcasts).
+`excludedPermissions` (set through `BroadcastOptions.setRequireNoneOfPermissions()`,
+`frameworks/base/core/java/android/app/BroadcastOptions.java:637`) lets a sender keep a
+broadcast away from receivers holding a particular permission. The in-tree use is
+Wi-Fi P2P, which fans one event out over several sends and uses exclusions to stop any
+app from receiving it twice. `sendBroadcastWithExcludedPermissions()`
+(`packages/modules/Wifi/service/java/com/android/server/wifi/p2p/WifiP2pServiceImpl.java:6163-6199`)
+first sends the legacy location-gated copy, then sends a second copy to holders of the
+newer `NEARBY_WIFI_DEVICES` permission with `ACCESS_FINE_LOCATION` excluded, so apps
+already served by the first send are skipped. Callers layer on their own exclusions the
+same way: `sendP2pConnectionChangedBroadcast()` delivers directly to the
+`MAINLINE_NETWORK_STACK` holders, then excludes that permission from the general send.
 
 `excludedPackages` allows the sender to explicitly block specific packages from
 receiving the broadcast.
@@ -8041,7 +8171,8 @@ This is mitigated by protected broadcasts for system actions, but custom actions
 remain vulnerable.
 
 Mitigation: Use permission-protected receivers. Validate the sender's identity using
-`BroadcastReceiver.getSenderApplication()` or permission checks.
+`BroadcastReceiver.getSentFromUid()` / `getSentFromPackage()` (API 34+, requires the
+sender to opt in via `setShareIdentityEnabled()`) or permission checks.
 
 **4. PendingIntent Hijacking**
 
@@ -8368,7 +8499,7 @@ adb shell pm resolve-activity -a android.intent.action.VIEW \
 adb shell dumpsys package com.android.settings | grep -A 20 "intent-filter"
 
 # Check preferred activities (default apps)
-adb shell dumpsys preferred-activities
+adb shell dumpsys package preferred
 ```
 
 ### Exercise 21.3: Examine Broadcast Queue State
@@ -8456,11 +8587,10 @@ adb shell dumpsys activity processes | grep -A 5 "PendingIntent"
 ### Exercise 21.7: Cross-Profile Intent Forwarding
 
 ```bash
-# List cross-profile intent filters (requires root or work profile)
-adb shell dumpsys package cross-profile-intent-filters
-
-# Check which intents forward between profiles
-adb shell pm list-cross-profile-intent-filters --user 0
+# Cross-profile intent filters are not printed by dumpsys at all -- there is
+# no dump path for them. They are only persisted, per user, into the
+# <crossProfile-intent-filters> element of that user's package-restrictions.xml
+adb shell su 0 cat /data/system/users/10/package-restrictions.xml
 
 # On a device with work profile (user 10):
 adb shell am start --user 10 \
@@ -8608,7 +8738,10 @@ Write a test that demonstrates the match quality hierarchy:
 ```java
 // Create filters of increasing specificity
 IntentFilter emptyFilter = new IntentFilter(Intent.ACTION_VIEW);
-// Match: MATCH_CATEGORY_EMPTY + MATCH_ADJUSTMENT_NORMAL
+// Match: MATCH_CATEGORY_EMPTY + MATCH_ADJUSTMENT_NORMAL, but only against an
+// Intent that carries neither a data URI nor a type -- matchData() returns
+// NO_MATCH_DATA for a data-carrying Intent when the filter declares no
+// schemes and no types (IntentFilter.java:1750-1753)
 
 IntentFilter schemeFilter = new IntentFilter(Intent.ACTION_VIEW);
 schemeFilter.addDataScheme("https");
@@ -8630,8 +8763,12 @@ IntentFilter typeFilter = IntentFilter.create(Intent.ACTION_VIEW, "text/html");
 
 // Test each filter against the same intent
 Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com/products/1"));
-// Expected order from lowest to highest match:
-// emptyFilter < schemeFilter < hostFilter < pathFilter
+// Because this Intent has a data URI, emptyFilter returns NO_MATCH_DATA
+// rather than MATCH_CATEGORY_EMPTY. Expected order from lowest to highest
+// match among the filters that do match:
+// schemeFilter < hostFilter < pathFilter
+// (re-run emptyFilter against `new Intent(Intent.ACTION_VIEW)` to see
+// MATCH_CATEGORY_EMPTY)
 ```
 
 ### Exercise 21.13: Debugging PendingIntent Equivalence
@@ -8834,16 +8971,16 @@ flowchart TD
 
     A1 --> B1 --> C1
     A2 --> B1 --> C2
-    A3 --> B1 --> C1
-    A4 --> B1 --> C3
+    A3 --> B1 --> C2
+    A4 -->|"by authority, no Intent"| C3
 
     C1 --> C3
     C2 --> C3
     C3 --> D1
+    C3 --> D5
     D1 --> D2
     D1 --> D3
     D1 --> D4
-    D1 --> D5
 
     B2 --> C2
     B3 --> D1
@@ -8862,7 +8999,7 @@ Key source files examined:
 
 | File | Purpose |
 |------|---------|
-| `frameworks/base/core/java/android/content/Intent.java` | Intent class (~12K lines) |
+| `frameworks/base/core/java/android/content/Intent.java` | Intent class (~13.8K lines) |
 | `frameworks/base/core/java/android/content/IntentFilter.java` | Filter matching |
 | `frameworks/base/core/java/android/app/PendingIntent.java` | Deferred intent tokens |
 | `frameworks/base/core/java/android/content/pm/ResolveInfo.java` | Resolution results |
@@ -8893,7 +9030,7 @@ relaunched.
 |----------------|-----|---------------------|
 | 1.0 | 1 | Original Intent system |
 | 3.0 (Honeycomb) | 11 | Fragment arguments via Intents |
-| 4.1 (Jelly Bean) | 16 | Intent.setSelector() |
+| 4.0.3 (ICS MR1) | 15 | Intent.setSelector() |
 | 5.0 (Lollipop) | 21 | Sticky broadcasts deprecated |
 | 6.0 (Marshmallow) | 23 | App Links (autoVerify), runtime permissions |
 | 7.0 (Nougat) | 24 | FileUriExposedException, some implicit broadcasts removed |
@@ -8903,8 +9040,7 @@ relaunched.
 | 12 (S) | 31 | PendingIntent mutability required, exported required |
 | 13 (T) | 33 | Type-safe getParcelableExtra, registered receiver export flag |
 | 14 (U) | 34 | Mutable implicit PendingIntent blocked |
-| 15 (V) | 35 | Null action intent blocking, `ENFORCE_INTENTS_TO_MATCH_INTENT_FILTERS` (AppCompat generation) |
-| 16 | 36 | UriRelativeFilterGroup query/fragment matching API |
+| 15 (V) | 35 | Null action intent blocking, `ENFORCE_INTENTS_TO_MATCH_INTENT_FILTERS` (AppCompat generation), UriRelativeFilterGroup query/fragment matching API |
 | 17 | 37 | `intentMatchingFlags` manifest attribute, IntentMatchingFlags enforcement generation, creator-token intent-redirect hardening, Intent Firewall component-class and extra-key/value filters |
 
 ### Design Principles
@@ -8990,7 +9126,7 @@ share the same lock and reduce cross-lock contention.
 // frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java, line 602
 public class ActivityManagerService extends IActivityManager.Stub
         implements Watchdog.Monitor, BatteryStatsImpl.BatteryCallback,
-                   ActivityManagerGlobalLock {
+                   ActivityManagerGlobalLock, OomAdjuster.HostingTypeProvider {
 ```
 
 ```java
@@ -9000,8 +9136,9 @@ public class ActivityTaskManagerService extends IActivityTaskManager.Stub {
 
 Both extend their respective AIDL Stub classes, meaning they handle Binder IPC
 calls from client apps. AMS additionally implements `Watchdog.Monitor` (to
-detect system hangs) and `BatteryStatsImpl.BatteryCallback` (for power
-tracking).
+detect system hangs), `BatteryStatsImpl.BatteryCallback` (for power
+tracking), and `OomAdjuster.HostingTypeProvider` (supplying hosting-type
+strings to the OOM adjuster).
 
 ### 22.1.3 The Two-Lock Architecture
 
@@ -9089,7 +9226,7 @@ WindowManagerService mWindowManager;                 // line 430
 
 // Process tracking
 final ProcessMap<WindowProcessController> mProcessNames = new ProcessMap<>();
-final WindowProcessControllerMap mProcessMap = new WindowProcessControllerMap<>();
+final WindowProcessControllerMap mProcessMap = new WindowProcessControllerMap();
 volatile WindowProcessController mHomeProcess;
 volatile WindowProcessController mTopApp;
 ```
@@ -9129,19 +9266,19 @@ graph TB
             Starter["ActivityStarter"]
             RWC["RootWindowContainer"]
             RecentT["RecentTasks"]
+            TransCtrl["TransitionController<br/>(via WindowOrganizerController)"]
             ATMS --> Supervisor
             ATMS --> StartController
             StartController --> Starter
             ATMS --> RWC
             ATMS --> RecentT
+            ATMS --> TransCtrl
         end
 
         subgraph "WindowManagerService (wm package)"
             WMS["WMS<br/>IWindowManager.Stub"]
             SurfacePlacer["WindowSurfacePlacer"]
-            TransCtrl["TransitionController"]
             WMS --> SurfacePlacer
-            WMS --> TransCtrl
         end
 
         AMS -.->|"mActivityTaskManager"| ATMS
@@ -9319,7 +9456,7 @@ sequenceDiagram
     participant ASC as ActivityStartController
     participant AS as ActivityStarter
     participant RWC as RootWindowContainer
-    participant ATS as ActivityTaskSupervisor
+    participant Task
     participant WMS as WindowManagerService
 
     App->>Inst: startActivity(intent)
@@ -9342,15 +9479,15 @@ sequenceDiagram
         AS->>AS: recycleTask() or<br/>addOrReparentStartingActivity()
     end
     AS->>RWC: resumeFocusedTasksTopActivities()
-    RWC->>ATS: resumeTopActivityUncheckedLocked()
-    ATS->>ATS: Pause current activity
-    ATS->>App: schedulePauseActivity() [via ClientTransaction]
-    App-->>ATS: activityPaused()
-    ATS->>ATS: resumeTopActivityInnerLocked()
+    RWC->>Task: resumeTopActivityUncheckedLocked()
+    Task->>Task: Pause current activity
+    Task->>App: schedulePauseActivity() [via ClientTransaction]
+    App-->>Task: activityPaused()
+    Task->>Task: resumeTopActivityInnerLocked()
     alt Process exists
-        ATS->>App: scheduleTransaction(LaunchActivityItem)
+        Task->>App: scheduleTransaction(LaunchActivityItem)
     else Process not started
-        ATS->>ATMS: startProcessAsync()
+        Task->>ATMS: startProcessAsync()
         Note over ATMS: Fork via Zygote<br/>(see Section 22.7)
     end
     App->>App: handleLaunchActivity()
@@ -9503,15 +9640,14 @@ sequenceDiagram
     participant AH as ActivityThread.H (Handler)
 
     ATMS->>CLM: scheduleTransaction()
-    CLM->>CT: new ClientTransaction(client, activityToken)
-    CLM->>CT: addCallback(LaunchActivityItem)
-    CLM->>CT: setLifecycleStateRequest(ResumeActivityItem)
+    CLM->>CT: new ClientTransaction(client)
+    CLM->>CT: addTransactionItem(LaunchActivityItem)
+    CLM->>CT: addTransactionItem(ResumeActivityItem)
     CT->>AT: schedule() [Binder oneway]
     AT->>AH: sendMessage(EXECUTE_TRANSACTION)
     AH->>AH: handleMessage()
     Note over AH: TransactionExecutor.execute()
-    AH->>AH: executeCallbacks()
-    AH->>AH: executeLifecycleState()
+    AH->>AH: executeTransactionItems()
     Note over AH: calls Activity.onCreate,<br/>onStart, onResume
 ```
 
@@ -9533,7 +9669,7 @@ understanding how the system manages windows, tasks, and displays.
 ```java
 // frameworks/base/services/core/java/com/android/server/wm/WindowContainer.java, line 117
 class WindowContainer<E extends WindowContainer> extends ConfigurationContainer<E>
-        implements Comparable<WindowContainer>, Animatable {
+        implements Comparable<WindowContainer>, Animatable, Identifiable {
 ```
 
 `WindowContainer` provides:
@@ -9566,9 +9702,9 @@ classDiagram
 
     class DisplayContent {
         +DisplayInfo mDisplayInfo
-        +TaskDisplayArea mDefaultTaskDisplayArea
         +DisplayPolicy mDisplayPolicy
         +InputMonitor mInputMonitor
+        +getDefaultTaskDisplayArea()
     }
 
     class DisplayArea~T~ {
@@ -9585,7 +9721,7 @@ classDiagram
     class Task {
         +int mTaskId
         +String affinity
-        +Intent baseIntent
+        +Intent intent
         +ActivityRecord[] activities
         +getRootActivity()
         +getTopNonFinishingActivity()
@@ -9614,12 +9750,12 @@ classDiagram
         +IWindow mClient
         +WindowManager.LayoutParams mAttrs
         +SurfaceControl mSurfaceControl
-        +Rect mFrame
+        +WindowFrames mWindowFrames
     }
 
     WindowContainer <|-- RootWindowContainer
-    WindowContainer <|-- DisplayContent
     WindowContainer <|-- DisplayArea
+    DisplayArea <|-- DisplayContent
     DisplayArea <|-- TaskDisplayArea
     WindowContainer <|-- TaskFragment
     TaskFragment <|-- Task
@@ -9711,10 +9847,9 @@ Key Task attributes:
 | `mTaskId` | Unique identifier for the task |
 | `affinity` | Task affinity from AndroidManifest |
 | `rootAffinity` | The affinity of the root activity at creation |
-| `baseIntent` | The intent that started the root activity |
+| `intent` | The original intent that started the task (read via `getBaseIntent()`) |
 | `mCallingUid` | UID that created this task |
 | `mResizeMode` | How this task can be resized |
-| `mConfigWillChange` | Set when configuration update is pending |
 
 Tasks also have a reparenting system with three modes:
 
@@ -9764,7 +9899,8 @@ Key fields of `WindowState`:
 - `mActivityRecord` -- The activity this window is part of (may be null for
   system windows)
 - `mSurfaceControl` -- The SurfaceFlinger surface for rendering
-- `mFrame` -- The computed screen-coordinate rectangle
+- `mWindowFrames` -- A `WindowFrames` holding the computed screen-coordinate
+  rectangles (`mFrame`, `mCompatFrame`, `mRelFrame`), read via `getFrame()`
 - `mSession` -- The `Session` (per-process connection to WMS)
 - `mWinAnimator` -- The animation controller for this window
 
@@ -9870,7 +10006,7 @@ sequenceDiagram
     WMG->>VRI: new ViewRootImpl(context, display)
     WMG->>VRI: setView(view, params, panelParentView)
     Note over VRI: Measure and layout view tree
-    VRI->>Session: addToDisplay("window, attrs,<br/>viewVisibility, displayId, ...")
+    VRI->>Session: addToDisplayAsUser("window, attrs,<br/>viewVisibility, displayId, userId, ...")
     Note over Session: This is a Binder IPC call<br/>to system_server
     Session->>WMS: addWindow(session, client, attrs, ...)
     Note over WMS: Validate, create WindowState,<br/>assign to token, set up surface
@@ -10118,7 +10254,6 @@ final ArrayList<WindowState> mFrameChangingWindows = new ArrayList<>(); // line 
 ```java
 // Policy and layout
 WindowManagerPolicy mPolicy;                          // line 614
-final WindowManagerFlags mFlags;
 final WindowSurfacePlacer mWindowPlacerLocked;        // line 549
 final StartingSurfaceController mStartingSurfaceController; // line 526
 
@@ -10147,7 +10282,6 @@ static final int UPDATE_FOCUS_WILL_PLACE_SURFACES = 3;
 static final int UPDATE_FOCUS_REMOVING_FOCUS = 4;
 
 // Timing constants
-static final int MAX_ANIMATION_DURATION = 10 * 1000;
 static final int WINDOW_FREEZE_TIMEOUT_DURATION = 2000;       // line 420
 static final int LAST_ANR_LIFETIME_DURATION_MSECS = 2 * 60 * 60 * 1000;
 
@@ -10169,7 +10303,7 @@ graph LR
         Main["main thread<br/>(Looper.getMainLooper)"]
         Display["android.display thread<br/>(WMS Handler H)"]
         Anim["android.anim thread<br/>(animation)"]
-        AnimThread2["android.anim.lf thread<br/>(low-fidelity anim)"]
+        AnimThread2["android.anim.lf thread<br/>(SurfaceAnimationThread, does not hold the WM lock)"]
         UI["android.ui thread"]
     end
 
@@ -10220,7 +10354,7 @@ keyboard input. Focus updates happen through `updateFocusedWindowLocked()`:
 ```mermaid
 flowchart TD
     Change["Window added/removed/<br/>visibility changed"] --> UpdateFocus["updateFocusedWindowLocked()"]
-    UpdateFocus --> Compute["computeFocusedWindow()<br/>Walk hierarchy top-down"]
+    UpdateFocus --> Compute["findFocusedWindow()<br/>(DisplayContent)<br/>Walk hierarchy top-down"]
     Compute --> Changed{"Focus changed?"}
     Changed -->|No| Done["No-op"]
     Changed -->|Yes| NotifyOld["Notify old focus:<br/>window losing focus"]
@@ -10351,7 +10485,14 @@ static class DefaultFactory implements Factory {
     public ActivityStarter obtain() {
         ActivityStarter starter = mStarterPool.acquire();
         if (starter == null) {
-            starter = new ActivityStarter(mController, mService, mSupervisor, mInterceptor);
+            if (mService.mRootWindowContainer == null) {
+                throw new IllegalStateException("Too early to start activity.");
+            }
+            UserHelper userHelper = android.multiuser.Flags.hsuAllowlistActivities()
+                    ? new UserHelper(mService.getUserManagerInternal())
+                    : null;
+            starter = new ActivityStarter(mController, mService, mSupervisor, mInterceptor,
+                    userHelper);
         }
         return starter;
     }
@@ -10629,7 +10770,10 @@ frameworks/base/services/core/java/com/android/server/am/psc/
     OomAdjusterImpl.java          -- graph-based implementation (line 125)
     Constants.java                -- OOM adj + scheduling-group constants
     ProcessNode.java              -- a process in the importance graph
-    ProcessEdge.java / GraphEdge  -- service/provider binding edges
+    GraphEdge.java                -- abstract directional edge base class
+    ProcessEdge.java              -- intrinsic per-process edge (system -> process)
+    ServiceBindingEdge.java       -- service binding edge (client -> service host)
+    ProviderBindingEdge.java      -- provider binding edge (client -> provider host)
     CapabilityController.java     -- propagates capabilities across edges
     ProcessRecordInternal.java    -- per-process state owned by psc
     ...
@@ -10844,15 +10988,15 @@ sequenceDiagram
 
 ### 22.7.6 Zygote Policy Flags
 
-The `startProcessLocked()` method uses policy flags to hint to the Zygote
-about process priority:
+The `startProcessLocked()` method uses policy flags, defined in
+`android.os.Process`, to hint to the Zygote about process priority:
 
 ```java
-// Referenced from ActivityManagerService.java imports
-static final int ZYGOTE_POLICY_FLAG_EMPTY = 0;
-static final int ZYGOTE_POLICY_FLAG_LATENCY_SENSITIVE = 1;   // Top app
-static final int ZYGOTE_POLICY_FLAG_SYSTEM_PROCESS = 2;      // System server
-static final int ZYGOTE_POLICY_FLAG_BATCH_LAUNCH = 4;        // Boot-time batch
+// frameworks/base/core/java/android/os/Process.java, lines 669-694
+public static final int ZYGOTE_POLICY_FLAG_EMPTY = 0;
+public static final int ZYGOTE_POLICY_FLAG_LATENCY_SENSITIVE = 1 << 0; // Top app
+public static final int ZYGOTE_POLICY_FLAG_BATCH_LAUNCH = 1 << 1;      // Boot-time batch
+public static final int ZYGOTE_POLICY_FLAG_SYSTEM_PROCESS = 1 << 2;    // System server
 ```
 
 When launching the top app's process, `ZYGOTE_POLICY_FLAG_LATENCY_SENSITIVE`
@@ -10898,8 +11042,10 @@ public class OomAdjusterImpl extends OomAdjuster {
 
 The implementation models the system as an **importance graph**: each process
 is a `ProcessNode` (embedded in its `ProcessRecordInternal`), and service or
-provider bindings are `ProcessEdge` objects connecting a client node to a
-server node. A `CapabilityController` walks these edges to propagate
+provider bindings are `ServiceBindingEdge` / `ProviderBindingEdge` objects
+(subclasses of the abstract `GraphEdge`) connecting a client node to a server
+node, while `ProcessEdge` is the intrinsic system-to-process edge derived from
+the process's own attributes. A `CapabilityController` walks these edges to propagate
 capabilities and importance from clients to the processes they bind. The core
 per-process computation is `OomAdjusterImpl.computeOomAdjLSP()`, reached from
 `performUpdateOomAdjLSP()`.
@@ -11111,11 +11257,11 @@ graph TD
     subgraph "Transition Triggers"
         T1["INITIALIZING -> STARTED<br/>Trigger: realStartActivityLocked()"]
         T2["STARTED -> RESUMED<br/>Trigger: completeResumeLocked()"]
-        T3["RESUMED -> PAUSING<br/>Trigger: startPausingLocked()"]
-        T4["PAUSING -> PAUSED<br/>Trigger: completePauseLocked()"]
+        T3["RESUMED -> PAUSING<br/>Trigger: TaskFragment.startPausing()"]
+        T4["PAUSING -> PAUSED<br/>Trigger: completePause()"]
         T5["PAUSED -> STOPPING<br/>Trigger: stopIfPossible()"]
         T6["STOPPING -> STOPPED<br/>Trigger: activityStopped()"]
-        T7["* -> FINISHING<br/>Trigger: finishActivityLocked()"]
+        T7["* -> FINISHING<br/>Trigger: finishIfPossible()"]
         T8["FINISHING -> DESTROYING<br/>Trigger: destroyIfPossible()"]
         T9["DESTROYING -> DESTROYED<br/>Trigger: destroyed()"]
     end
@@ -11165,6 +11311,7 @@ sequenceDiagram
     participant LeafTask as Task (leaf)
     participant TF as TaskFragment
     participant AR as ActivityRecord
+    participant ATS as ActivityTaskSupervisor
 
     RWC->>DC: resumeFocusedTasksTopActivities()
     DC->>TDA: getFocusedRootTask()
@@ -11180,10 +11327,10 @@ sequenceDiagram
         TF->>AR: Check if process exists
         alt Process alive
             TF->>AR: makeActiveIfNeeded()
-            TF->>AR: scheduleResumeTransaction()
+            Note over TF: scheduleTransactionItem(ResumeActivityItem)<br/>via ClientLifecycleManager
         else Process dead
-            TF->>RWC: startSpecificActivity(r, ...)
-            Note over RWC: Will fork via Zygote
+            TF->>ATS: startSpecificActivity(r, ...)
+            Note over ATS: Will fork via Zygote
         end
     end
 ```
@@ -11199,14 +11346,16 @@ sequenceDiagram
     participant OldApp as Old Activity (App Process A)
     participant NewApp as New Activity (App Process B)
 
-    Framework->>OldApp: schedulePauseActivity(token, finishing, ...)
+    Framework->>Framework: "TaskFragment.schedulePauseActivity(prev, userLeaving, ...)"
+    Framework->>OldApp: "scheduleTransactionItem(PauseActivityItem)<br/>via ClientLifecycleManager"
     Note over OldApp: Activity.onPause() executes
     OldApp->>Framework: activityPaused(token)
-    Note over Framework: completePauseLocked()<br/>Old activity now PAUSED
+    Note over Framework: TaskFragment.completePause()<br/>Old activity now PAUSED
 
     Framework->>Framework: resumeTopActivityInnerLocked()
     alt New process exists
-        Framework->>NewApp: scheduleResumeActivity(token, ...)
+        Framework->>NewApp: scheduleTransactionItem(ResumeActivityItem)
+        Note over Framework: via ClientLifecycleManager
         Note over NewApp: Activity.onResume() executes
         NewApp->>Framework: activityResumed(token)
     else New process needs start
@@ -11484,13 +11633,14 @@ sequenceDiagram
 
     AS->>AR: showStartingWindow(taskSwitch)
     AR->>AR: Decide: snapshot or splash?
-    AR->>SSC: createStartingSurface(activityRecord)
 
     alt Snapshot available
+        AR->>SSC: createTaskSnapshotSurface(activityRecord, snapshot)
         SSC->>Shell: Request snapshot window
         Shell->>WMS: addWindow(TYPE_APPLICATION_STARTING)
         WMS->>WMS: activity.attachStartingWindow(win)
     else Splash screen
+        AR->>SSC: createSplashScreenStartingSurface(activityRecord, theme)
         SSC->>Shell: Request splash screen
         Shell->>Shell: Inflate themed splash layout
         Shell->>WMS: addWindow(TYPE_APPLICATION_STARTING)
@@ -11498,8 +11648,8 @@ sequenceDiagram
 
     Note over AR: App process starts, draws first frame
     AR->>AR: onFirstWindowDrawn()
-    AR->>SSC: removeStartingWindow()
-    SSC->>WMS: Remove starting window
+    AR->>AR: removeStartingWindow()
+    AR->>WMS: Remove starting window
 ```
 
 ### 22.12.3 Starting Window in addWindowInner()
@@ -11553,9 +11703,12 @@ flowchart TD
     Done --> EndTrace["End trace"]
 ```
 
-The loop repeats up to `LAYOUT_REPEAT_THRESHOLD` (4) times to handle
-cascading layout changes, where updating one window's layout triggers changes
-in another.
+To handle cascading layout changes, where updating one window's layout
+triggers changes in another, the traversal is re-requested up to 6 times
+(`++mLayoutRepeatCount < 6`) before WMS gives up and logs "Performed 6
+layouts in a row. Skipping". `LAYOUT_REPEAT_THRESHOLD` (4) never bounds the
+loop; it is only the debug-logging threshold at which `debugLayoutRepeats()`
+starts emitting "Layouts looping" log lines.
 
 ### 22.13.2 Display Policy
 
@@ -11613,14 +11766,15 @@ propagates top-down through the hierarchy:
 
 ```mermaid
 sequenceDiagram
-    participant WMS
+    participant ATMS
     participant RWC as RootWindowContainer
     participant DC as DisplayContent
     participant Task
     participant AR as ActivityRecord
     participant App as App Process
 
-    WMS->>RWC: updateConfiguration(newConfig)
+    Note over ATMS: updateConfigurationLocked(newConfig)
+    ATMS->>RWC: onConfigurationChanged(newConfig)
     RWC->>DC: onConfigurationChanged()
     DC->>Task: onConfigurationChanged()
     Task->>AR: onConfigurationChanged()
@@ -11671,9 +11825,9 @@ If the activity declared `android:configChanges` in its manifest for the
 changed configuration fields, it receives `onConfigurationChanged()` instead
 of being destroyed and recreated.
 
-**Android 17: fewer default relaunches.** For apps targeting SDK 37
-(`Build.VERSION_CODES.CINNAMON_BUN`), the system stops recreating an activity by
-default for a set of low-impact configuration changes:
+**Android 17: fewer default relaunches.** Once the
+`enable_less_activity_recreation_on_config_change` flag is on, the system stops
+recreating an activity by default for a set of low-impact configuration changes:
 `CONFIG_KEYBOARD`, `CONFIG_KEYBOARD_HIDDEN`, `CONFIG_NAVIGATION`,
 `CONFIG_TOUCHSCREEN`, and `CONFIG_COLOR_MODE`. Before this change an app
 had to list each of these in `android:configChanges` to avoid a relaunch; now
@@ -11697,8 +11851,13 @@ public static final int RECREATE_ON_CONFIG_CHANGES_MASK =
 `shouldSkipActivityRecreationOnConfigChange()` gates the new bits on two things:
 the window flag `enable_less_activity_recreation_on_config_change` and the
 compat change `ActivityInfo.SKIP_ACTIVITY_RECREATION_ON_CONFIG_CHANGE`
-(`454795633L`, declared `@Overridable`). The `CONFIG_MCC`/`CONFIG_MNC` defaults
-predate this and apply regardless.
+(`454795633L`). The compat change carries no `@EnabledAfter`/`@EnabledSince`
+annotation, so it is *not* target-SDK gated: with the flag on, the new
+no-relaunch default applies to all apps regardless of target SDK. It is,
+however, declared `@Overridable`, so it can be disabled per app -- unlike the
+SDK-37-gated `DISABLE_OPT_OUT_UNIVERSAL_RESIZABLE_BY_DEFAULT` described in
+22.32.5. The `CONFIG_MCC`/`CONFIG_MNC` defaults predate this and apply
+regardless.
 
 `CONFIG_UI_MODE` is deliberately *not* in this mask. Desk docking is handled by
 a separate runtime path on the client. When a configuration change arrives,
@@ -11751,14 +11910,14 @@ private static final int STOP_TIMEOUT = 11 * 1000;  // ms
 private static final int DESTROY_TIMEOUT = 10 * 1000; // ms
 
 // ActivityManagerService.java
-static final int PROC_START_TIMEOUT = 10 * 1000;    // ms
-static final int BIND_APPLICATION_TIMEOUT = 15 * 1000; // ms
+static final int PROC_START_TIMEOUT = 10 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
+static final int BIND_APPLICATION_TIMEOUT = 15 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
 
 // ActivityTaskManagerService.java
 static final long INSTRUMENTATION_KEY_DISPATCHING_TIMEOUT_MILLIS = 60 * 1000;
 
 // ActivityTaskSupervisor.java
-private static final int IDLE_TIMEOUT = 10 * 1000;  // ms
+private static final int IDLE_TIMEOUT = 10 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
 ```
 
 ### 22.15.2 Input ANR Flow
@@ -11778,7 +11937,8 @@ sequenceDiagram
         App->>Input: finishInputEvent()
         Note over Input: Cancel timer
     else Timeout (5s)
-        Input->>WMS: notifyANR(windowToken)
+        Input->>WMS: notifyWindowUnresponsive(token, pid, timeoutRecord)
+        Note over WMS: InputManagerCallback -> AnrController
         WMS->>AMS: inputDispatchingTimedOut()
         AMS->>AMS: Collect stack traces
         AMS->>AMS: Show ANR dialog
@@ -11788,7 +11948,7 @@ sequenceDiagram
 
 ### 22.15.3 The AnrController
 
-ATMS uses `AnrController` objects to manage ANR handling:
+ATMS keeps a list of registered `android.app.AnrController` objects:
 
 ```java
 // ActivityTaskManagerService.java, line 587
@@ -11796,9 +11956,15 @@ ATMS uses `AnrController` objects to manage ANR handling:
 private final List<AnrController> mAnrController = new ArrayList<>();
 ```
 
-Multiple controllers can be registered, allowing different parts of the
-system to customize ANR behavior (e.g., the instrumentation framework
-extends timeouts during testing).
+`android.app.AnrController` is an interface for delaying or suppressing the
+ANR dialog for a package (`getAnrDelayMillis()`, `onAnrDelayStarted()`,
+`onAnrDelayCompleted()`), registered via
+`ActivityManagerInternal.registerAnrController()`. The in-tree example is
+`StorageManagerService`'s `ExternalStorageServiceAnrController`, which holds
+off the dialog while an external-storage session is unresponsive. Do not
+confuse it with the identically named `com.android.server.wm.AnrController`
+(WMS's `mAnrController` field), a separate class that routes input-dispatch
+timeouts as shown in the diagram above.
 
 ---
 
@@ -11870,8 +12036,10 @@ Recents (Overview) screen. It handles:
 
 ### 22.17.2 Task Persistence
 
-Tasks with `FLAG_ACTIVITY_RETAIN_IN_RECENTS` are persisted to disk as XML
-in `/data/system_ce/<userId>/recent_tasks/`. The persistence format includes:
+Tasks whose root activity declares `android:persistableMode` of
+`persistRootOnly` or `persistAcrossReboots` (and whose intent does not carry
+`FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS`) are persisted to disk as XML in
+`/data/system_ce/<userId>/recent_tasks/`. The persistence format includes:
 
 ```xml
 <task
@@ -11977,8 +12145,8 @@ minimize contention:
 2. **Batch surface transactions** -- Submit multiple changes in a single
    `SurfaceControl.Transaction`
 3. **Defer layout** -- The `WindowSurfacePlacer` batches layout requests
-4. **Lock-free reads** -- Some fields (like `mCurrentFocus`) use volatile
-   for lock-free reads in common cases
+4. **Lock-free reads** -- A few fields (like `mDisplayImePolicyCache` in
+   WMS) are volatile so hot paths can read them without taking the lock
 
 ### 22.19.2 Process Start Optimization
 
@@ -12017,13 +12185,14 @@ The AIDL interface for activity and task operations:
 |--------|---------|
 | `startActivity()` | Start an activity |
 | `startActivities()` | Start multiple activities |
-| `finishActivity()` | Finish an activity |
 | `moveTaskToFront()` | Bring a task to front |
 | `removeTask()` | Remove a task |
 | `getRecentTasks()` | Get recent tasks list |
-| `setLockTaskMode()` | Enable lock task mode |
-| `enterPictureInPictureMode()` | Enter PiP |
-| `requestStartTransition()` | Start window transition |
+| `startSystemLockTaskMode()` | Enter lock task mode for a task |
+
+Per-activity operations such as `finishActivity()` and
+`enterPictureInPictureMode()` live on the separate
+`IActivityClientController` interface (see Section 22.23.1).
 
 ### 22.20.3 IWindowManager
 
@@ -12033,12 +12202,11 @@ The AIDL interface for window management:
 |--------|---------|
 | `openSession()` | Create a new Session |
 | `addWindow()` | (via Session) Add a window |
-| `removeWindow()` | (via Session) Remove a window |
+| `remove()` | (via Session) Remove a window |
 | `relayoutWindow()` | (via Session) Update window layout |
-| `setFocusedApp()` | Set the focused app |
-| `screenshotDisplay()` | Capture display screenshot |
+| `captureDisplay()` | Capture display screenshot |
 | `freezeRotation()` | Lock screen rotation |
-| `setScreenCaptureDisabled()` | Disable screen capture |
+| `refreshScreenCaptureDisabled()` | Re-apply the DPM screen-capture policy |
 
 ### 22.20.4 IApplicationThread
 
@@ -12103,8 +12271,9 @@ The `addWindow()` return codes indicate what went wrong:
 # Check current activity state
 adb shell dumpsys activity activities | grep -E "state=|State="
 
-# Look for stuck transitions
-adb shell dumpsys activity transitions
+# Look for stuck transitions (container hierarchy + window state)
+adb shell dumpsys activity containers
+adb shell dumpsys window
 
 # Check for pending operations
 adb shell dumpsys activity starter
@@ -12219,8 +12388,8 @@ TRANSIT_CLOSE = 2;         // Activity/task closing
 TRANSIT_TO_FRONT = 3;      // Existing task coming to front
 TRANSIT_TO_BACK = 4;       // Task going to back
 TRANSIT_CHANGE = 6;        // Config change (rotation, bounds)
-TRANSIT_PIP = 8;           // PiP transition
-TRANSIT_START_LOCK_TASK_MODE = 14; // Entering lock task mode
+TRANSIT_PIP = 10;          // PiP transition
+TRANSIT_START_LOCK_TASK_MODE = 15; // Entering lock task mode
 ```
 
 ### 22.22.4 Animation Controllers
@@ -12234,8 +12403,8 @@ graph TB
 
     Type -->|"Open/Close"| Default["DefaultTransitionHandler<br/>Fade + scale animations"]
     Type -->|"Task Switch"| Recents["RecentsTransitionHandler<br/>Recents animation"]
-    Type -->|"PiP"| PiP["PipTransitionHandler<br/>Shrink/grow to PiP window"]
-    Type -->|"Split"| Split["SplitTransitionHandler<br/>Split-screen animations"]
+    Type -->|"PiP"| PiP["PipTransition<br/>Shrink/grow to PiP window"]
+    Type -->|"Split"| Split["SplitScreenTransitions<br/>Split-screen animations"]
     Type -->|"Keyguard"| KG["KeyguardTransitionHandler<br/>Lock/unlock animations"]
     Type -->|"Unfold"| Unfold["UnfoldTransitionHandler<br/>Foldable unfold animation"]
 ```
@@ -12260,6 +12429,7 @@ This controller handles operations like:
 - `activityStopped()` -- Client reports stop completion
 - `activityDestroyed()` -- Client reports destroy completion
 - `activityResumed()` -- Client reports resume completion
+- `finishActivity()` -- Client asks to finish an activity
 - `reportSizeConfigurations()` -- Client reports supported size ranges
 - `setRequestedOrientation()` -- Client requests orientation lock
 - `convertToTranslucent()` -- Client becomes translucent
@@ -12273,14 +12443,14 @@ sequenceDiagram
     participant App as App Process
     participant ACC as ActivityClientController (system_server)
     participant AR as ActivityRecord
-    participant ATMS
+    participant TF as TaskFragment
 
     Note over App: Activity.onPause() completes
     App->>ACC: activityPaused(token)
     ACC->>AR: activityPaused(false /* timeout */)
-    AR->>AR: setState(PAUSED, "activityPaused")
-    AR->>ATMS: completePauseLocked(...)
-    ATMS->>ATMS: resumeTopActivity(...)
+    AR->>TF: completePause(resumeNext=true, null)
+    TF->>AR: setState(PAUSED, "completePausedLocked")
+    TF->>TF: resumeTopActivity(...)
 ```
 
 This shows how the client-driven lifecycle callbacks feed back into the
@@ -12432,12 +12602,12 @@ class DisplayContent extends RootDisplayArea
 | Field | Purpose |
 |-------|---------|
 | `mDisplayInfo` | Physical display properties (size, density, refresh rate) |
-| `mDefaultTaskDisplayArea` | The primary area for app tasks |
+| `getDefaultTaskDisplayArea()` | Accessor for the primary area for app tasks |
 | `mDisplayPolicy` | Platform-specific layout policy |
 | `mInputMonitor` | Manages input window list for InputDispatcher |
 | `mCurrentFocus` | Currently focused WindowState |
 | `mWallpaperController` | Wallpaper positioning and animation |
-| `mImeWindowsContainer` | IME (keyboard) window management |
+| `mImeContainer` | IME (keyboard) window management |
 | `mPinnedTaskController` | PiP window management |
 | `mWinAddedSinceNullFocus` | Windows added when no focus existed |
 
@@ -12661,10 +12831,13 @@ map of the key directories and their contents.
 
 ```
 frameworks/base/services/core/java/com/android/server/am/
-    ActivityManagerService.java    -- Main AMS class (~19,921 lines)
+    ActivityManagerService.java    -- Main AMS class (~21,200 lines)
     ProcessList.java               -- Process management + OOM adj values
     ProcessRecord.java             -- Per-process bookkeeping
-    OomAdjuster.java               -- OOM adjustment computation (abstract)
+    psc/OomAdjuster.java           -- OOM adjustment computation (abstract)
+    psc/OomAdjusterImpl.java       -- OOM adjustment implementation
+    psc/ProcessStateController.java -- Process state coordination
+    psc/Constants.java             -- Process state controller constants
     CachedAppOptimizer.java        -- Freezer + compaction
     ActiveServices.java            -- Service lifecycle management
     BroadcastQueue.java            -- Broadcast dispatch
@@ -12681,8 +12854,8 @@ frameworks/base/services/core/java/com/android/server/am/
 
 ```
 frameworks/base/services/core/java/com/android/server/wm/
-    ActivityTaskManagerService.java  -- Main ATMS class (~8,130 lines)
-    WindowManagerService.java        -- Main WMS class (~10,983 lines)
+    ActivityTaskManagerService.java  -- Main ATMS class (~8,450 lines)
+    WindowManagerService.java        -- Main WMS class (~11,600 lines)
     ActivityStarter.java             -- Activity launch pipeline
     ActivityRecord.java              -- Per-activity state
     Task.java                        -- Task (back stack)
@@ -12815,7 +12988,7 @@ coupling explicit and avoids unnecessary cross-package dependencies.
 ### Q: What happens if an activity does not respond to `onPause()`?
 
 **A**: The `PAUSE_TIMEOUT` (500ms) fires. The framework calls
-`completePauseLocked()` with `resumeNext=true`, which forcibly considers
+`TaskFragment.completePause()` with `resumeNext=true`, which forcibly considers
 the pause complete and proceeds to resume the next activity. The slow app
 may later receive an ANR if it is also not responding to input events.
 
@@ -12883,7 +13056,7 @@ Device eligibility combines several config resources and developer options:
 | `canInternalDisplayHostDesktops()` | `R.bool.config_canInternalDisplayHostDesktops` |
 | `isDesktopModeSupportedOnInternalDisplay()` | restrictions off, or internal display can host |
 | `isDeviceEligibleForDesktopMode()` | supported, or enabled via dev option |
-| `shouldEnforceDeviceRestrictions()` | the `ENFORCE_DEVICE_RESTRICTIONS` build flag |
+| `shouldEnforceDeviceRestrictions()` | the `ENFORCE_DEVICE_RESTRICTIONS` constant, read from the system property `persist.wm.debug.desktop_mode_enforce_device_restrictions` (default `true`) |
 
 The feature flags themselves are modeled as enums rather than raw booleans:
 
@@ -13249,7 +13422,7 @@ adb shell am start --task <taskId> -n com.android.settings/.Settings
 adb shell am task focus <taskId>
 
 # Remove a task
-adb shell am task remove <taskId>
+adb shell am stack remove <taskId>
 ```
 
 ### 22.33.6 Exercise 6: Window Inspector with wm Commands
@@ -13319,7 +13492,7 @@ adb shell dumpsys activity activities | grep -E "mode=|windowingMode"
 
 # Force a task into freeform (on a device that supports desktop mode)
 adb shell am stack list
-adb shell wm set-multi-window-config   # inspect current multi-window config
+adb shell wm get-multi-window-config   # inspect current multi-window config
 
 # Process priorities now reported via the Process State Controller
 adb shell dumpsys activity oom
@@ -13455,7 +13628,7 @@ graph TB
         WOC["WindowOrganizerController<br/>Organizer Dispatch"]
     end
 
-    subgraph "System Server — WM Shell"
+    subgraph "SystemUI Process — WM Shell"
         STO["ShellTaskOrganizer<br/>Task Surface Control"]
         TR["Transitions<br/>Animation Player"]
         SC["ShellController<br/>Feature Registry"]
@@ -13470,8 +13643,8 @@ graph TB
     WMS <-->|"Internal API"| ATMS
     ATMS --> RWC
     WMS --> TC
-    TC -->|"TransitionInfo"| TR
-    WOC -->|"TaskOrganizer<br/>callbacks"| STO
+    TC -->|"TransitionInfo<br/>(Binder)"| TR
+    WOC -->|"TaskOrganizer<br/>callbacks (Binder)"| STO
 
     WMS -->|"SurfaceControl.Transaction"| SF
     STO -->|"SurfaceControl.Transaction"| SF
@@ -13518,7 +13691,7 @@ static final int WINDOW_FREEZE_TIMEOUT_DURATION = 2000;        // 2 seconds
 static final int LAST_ANR_LIFETIME_DURATION_MSECS = 2 * 60 * 60 * 1000; // 2 hours
 ```
 
-(The per-animation duration cap is `TransitionAnimation.MAX_ANIMATION_DURATION`, imported and applied in `WindowState.applyAnimationLocked()` via `restrictDuration()`, rather than a WMS field.)
+(The per-animation duration cap is `TransitionAnimation.MAX_ANIMATION_DURATION`, applied in `WindowState.startAnimation()` -- called from `WindowStateAnimator.applyAnimationLocked()` -- via `restrictDuration()`, rather than a WMS field.)
 
 WMS holds references to critical subsystem controllers:
 
@@ -13584,20 +13757,20 @@ classDiagram
 
     class DisplayArea {
         +int mFeatureId
-        +addWindow()
-        +findAreaForWindowType()
+        +Type mType
     }
 
     class RootDisplayArea {
-        +DisplayAreaPolicy mPolicy
-        +placeWindowTokens()
+        +List~Feature~ mFeatures
+        +placeImeContainer()
+        +findAreaForTokenInLayer()
     }
 
     class DisplayContent {
         +int mDisplayId
         +InputMonitor mInputMonitor
         +InsetsStateController mInsetsStateController
-        +ImeContainer mImeWindowsContainer
+        +ImeContainer mImeContainer
         +DisplayFrames mDisplayFrames
     }
 
@@ -13731,7 +13904,7 @@ class DisplayContent extends RootDisplayArea
     @Nullable String mCurrentUniqueDisplayId;
     private SurfaceControl mOverlayLayer;
     private SurfaceControl mInputOverlayLayer;
-    private final ImeContainer mImeWindowsContainer;
+    private final ImeContainer mImeContainer;
     int mMinSizeOfResizeableTaskDp;
 }
 ```
@@ -13772,7 +13945,7 @@ sequenceDiagram
 
     WMS->>RWC: performSurfacePlacement()
     RWC->>DC: performLayout()
-    DC->>WS: computeFrames()
+    DC->>WS: layoutWindowLw() via DisplayPolicy / WindowLayout.computeFrames()
     WS-->>DC: WindowFrames updated
 
     RWC->>DC: prepareSurfaces()
@@ -13814,7 +13987,7 @@ final ArrayList<WindowState> mForceRemoves = new ArrayList<>();
 // Callbacks for "all windows drawn" events
 final ArrayMap<WindowContainer<?>, Message> mWaitingForDrawnCallbacks = new ArrayMap<>();
 
-// Windows that hide non-system overlay windows (FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS)
+// Windows that hide non-system overlay windows (SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS)
 private ArrayList<WindowState> mHidingNonSystemOverlayWindows = new ArrayList<>();
 
 // Key interception info for each input token
@@ -13848,7 +14021,7 @@ sequenceDiagram
 
     App->>VRI: WindowManager.addView()
     VRI->>WMS: openSession()
-    WMS->>Sess: new Session(callerPid, callerUid)
+    WMS->>Sess: new Session(WindowManagerService, IWindowSessionCallback)
     WMS-->>VRI: IWindowSession
 
     VRI->>Sess: addToDisplayAsUser(window, attrs, displayId)
@@ -13885,7 +14058,7 @@ WMS also uses several specialized mechanisms to reduce lock contention:
 
 **Source file:** `frameworks/base/services/core/java/com/android/server/wm/BLASTSyncEngine.java`
 
-`BLASTSyncEngine` is the synchronization mechanism that ensures all windows participating in a transition have redrawn their content before the transition animates. Its name comes from "Buffer Layered Ahead of SurfaceFlinger Transaction" (BLAST), the buffer delivery mechanism that replaced the legacy `BufferQueue` consumer-side model.
+`BLASTSyncEngine` is the synchronization mechanism that ensures all windows participating in a transition have redrawn their content before the transition animates. Its name comes from BLAST ("Buffer as LayerState"), the buffer delivery mechanism that replaced the legacy `BufferQueue` consumer-side model.
 
 The sync engine operates in five steps, as documented in the source:
 
@@ -13975,13 +14148,13 @@ The window system is split into two halves:
 | Aspect | WM Core | WM Shell |
 |--------|---------|----------|
 | **Location** | `frameworks/base/services/core/.../server/wm/` | `frameworks/base/libs/WindowManager/Shell/` |
-| **Process** | System server (main WM thread) | System server (SystemUI / Shell thread) |
+| **Process** | System server (main WM thread) | SystemUI process (Shell main thread) |
 | **Role** | Policy engine -- decides *what* happens | Presentation engine -- decides *how* it looks |
 | **API Surface** | Internal to system server | Exports via AIDL to SystemUI and Launcher |
 | **Window access** | Direct WindowState/Task manipulation | TaskOrganizer callbacks, SurfaceControl |
 | **Animation** | Triggers transitions, manages sync | Receives TransitionInfo, animates surfaces |
 
-The split was introduced to allow OEMs and system components (SystemUI, Launcher) to customize window behavior without modifying core WM policy. WM Core signals intent ("this task is entering PiP"), and Shell decides presentation ("animate with this curve to this corner").
+The split was introduced to allow OEMs and system components (SystemUI, Launcher) to customize window behavior without modifying core WM policy. WM Core signals intent ("this task is entering PiP"), and Shell decides presentation ("animate with this curve to this corner"). Note that the two halves live in different processes: WM Core runs in `system_server`, while WM Shell is a static library (`WindowManager-Shell`) linked into the SystemUI app, so every Core-Shell interaction crosses a Binder boundary via the `WindowOrganizer`/`TaskOrganizer` AIDL interfaces.
 
 ### 23.2.2 Shell Directory Structure
 
@@ -14016,7 +14189,7 @@ frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/
 ├── bubbles/                          — Bubble notifications
 │   ├── BubbleController.java        — Bubble lifecycle
 │   ├── BubbleStackView.java         — Bubble UI
-│   └── BubbleTransitions.java       — Bubble animations
+│   └── transitions/BubbleTransitions.java — Bubble animations
 ├── desktopmode/                      — Desktop windowing
 │   ├── DesktopTasksController.kt    — Desktop task management
 │   ├── DesktopTasksLimiter.kt       — Task count limits
@@ -14036,7 +14209,7 @@ frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/
 ├── common/                           — Shared utilities
 ├── sysui/                            — SystemUI integration
 ├── animation/                        — Animation utilities
-└── protolog/                         — ProtoLog configuration
+└── ProtoLogController.java           — ProtoLog configuration
 ```
 
 ### 23.2.3 ShellTaskOrganizer
@@ -14053,8 +14226,9 @@ TASK_LISTENER_TYPE_FULLSCREEN  → FullscreenTaskListener
 TASK_LISTENER_TYPE_MULTI_WINDOW → StageCoordinator (split-screen)
 TASK_LISTENER_TYPE_PIP         → PipTaskOrganizer
 TASK_LISTENER_TYPE_FREEFORM    → FreeformTaskListener
-TASK_LISTENER_TYPE_DESKTOP_MODE → DesktopTasksController
 ```
+
+There is no desktop-specific listener type: desktop-mode tasks use `WINDOWING_MODE_FREEFORM` and are routed through `TASK_LISTENER_TYPE_FREEFORM`.
 
 When WM Core changes a task's windowing mode, `ShellTaskOrganizer` automatically reroutes the task to the appropriate listener. This is the mechanism by which, for example, entering PiP transfers task management from the fullscreen listener to `PipTaskOrganizer`.
 
@@ -14111,15 +14285,25 @@ The `@WMSingleton` scope annotation ensures that components like `ShellTaskOrgan
 
 ```java
 @WMSingleton
-@Component(modules = {
-    WMShellBaseModule.class,
-    WMShellConcurrencyModule.class,
-    WMShellModule.class,          // or TvWMShellModule for TV
-    ShellBackAnimationModule.class,
-    PipModule.class,
-    PinnedLayerModule.class,
-})
+@Subcomponent(modules = {WMShellModule.class})
 public interface WMComponent { ... }
+```
+
+`WMComponent` itself names only the device-specific module; that module pulls in the shared and feature modules through its `@Module(includes = ...)` annotation:
+
+```java
+// WMShellModule.java
+@Module(
+        includes = {
+                WMShellBaseModule.class,
+                PipModule.class,
+                ShellBackAnimationModule.class,
+                LetterboxModule.class,
+                PinnedLayerModule.class,
+                DesktopModule.class,
+                // ...
+        })
+public abstract class WMShellModule { ... }
 ```
 
 Per-variant customization is achieved by swapping the device-specific module. For example, TV replaces `WMShellModule` with `TvWMShellModule`, which provides a TV-specific PIP implementation and omits Bubbles entirely.
@@ -14130,21 +14314,18 @@ Shell communicates with external components via multiple channels:
 
 ```mermaid
 graph TB
-    subgraph "System Server Process"
-        subgraph "WM Core"
-            WMS_["WindowManagerService"]
-            TC_["TransitionController"]
-            WOC_["WindowOrganizerController"]
-        end
+    subgraph "System Server Process — WM Core"
+        WMS_["WindowManagerService"]
+        TC_["TransitionController"]
+        WOC_["WindowOrganizerController"]
+    end
 
+    subgraph "SystemUI Process"
         subgraph "WM Shell"
             STO_["ShellTaskOrganizer"]
             TR_["Transitions"]
             SI_["ShellInterface"]
         end
-    end
-
-    subgraph "SystemUI Process"
         WMSh_["WMShell<br/>(Dagger in-process)"]
     end
 
@@ -14152,8 +14333,9 @@ graph TB
         QS_["Quickstep<br/>(AIDL binder)"]
     end
 
-    WOC_ -->|"TaskOrganizer callbacks<br/>(in-process)"| STO_
-    TC_ -->|"ITransitionPlayer<br/>(in-process)"| TR_
+    WOC_ -->|"ITaskOrganizer callbacks<br/>(Binder)"| STO_
+    TC_ -->|"ITransitionPlayer<br/>(Binder)"| TR_
+    STO_ -->|"WindowOrganizer AIDL<br/>(Binder)"| WOC_
 
     SI_ -->|"Dagger injection<br/>(in-process same classloader)"| WMSh_
     SI_ -->|"AIDL Binder IPC<br/>(cross-process)"| QS_
@@ -14162,11 +14344,11 @@ graph TB
     style TR_ fill:#f3e5f5
 ```
 
-**In-process communication (Shell to WM Core)**:
+**Cross-process communication (Shell to WM Core)**:
 
-- Shell calls WM Core APIs (e.g., `TaskOrganizer.applyTransaction()`) directly since they share the system server process
-- WM Core calls Shell via organizer callbacks (`TaskOrganizer.onTaskAppeared()`, `ITransitionPlayer.onTransitionReady()`)
-- These calls cross thread boundaries (WM thread to Shell thread) via Handler posting
+- Shell applies hierarchy changes by sending `WindowContainerTransaction`s over the `WindowOrganizer`/`ITaskOrganizerController` AIDL interfaces (e.g., `TaskOrganizer.applyTransaction()` wraps a Binder call into `WindowOrganizerController`)
+- WM Core calls Shell via organizer callbacks (`ITaskOrganizer.onTaskAppeared()`, `ITransitionPlayer.onTransitionReady()`), dispatched from a binder thread onto the Shell main thread
+- Every Core-Shell interaction therefore crosses both a process boundary (Binder) and a thread boundary (binder thread to Shell thread)
 
 **In-process communication (Shell to SystemUI)**:
 
@@ -14193,8 +14375,8 @@ graph LR
         SHELL["Shell Main Thread<br/>(@ShellMainThread)<br/>'wmshell.main'<br/>THREAD_PRIORITY_DISPLAY"]
         ANIM["Shell Animation Thread<br/>(@ShellAnimationThread)<br/>'wmshell.anim'<br/>THREAD_PRIORITY_DISPLAY"]
         BG["Shell Background Thread<br/>(@ShellBackgroundThread)<br/>'wmshell.background'<br/>THREAD_PRIORITY_BACKGROUND"]
-        SPLASH["Shell Splash Thread<br/>(@ShellSplashscreenThread)<br/>'wmshell.splashscreen'"]
-        DESKTOP["Shell Desktop Thread<br/>(@ShellDesktopThread)<br/>'wmshell.desktop'<br/>THREAD_PRIORITY_FOREGROUND"]
+        SPLASH["Shell Splash Thread<br/>(@ShellSplashscreenThread)<br/>'wmshell.splashscreen'<br/>THREAD_PRIORITY_TOP_APP_BOOST"]
+        DESKTOP["Shell Desktop Thread<br/>(@ShellDesktopThread)<br/>'wmshell.desktop'<br/>THREAD_PRIORITY_TOP_APP_BOOST"]
     end
 
     SYSUI -->|"ExternalThread<br/>annotations"| SHELL
@@ -14202,7 +14384,7 @@ graph LR
     SHELL -->|"I/O, persistence"| BG
 ```
 
-The `@ShellMainThread` is the primary execution thread for Shell components. It runs at `THREAD_PRIORITY_DISPLAY` priority, the same as the SurfaceFlinger and RenderThread, ensuring that window management operations are not preempted by lower-priority work.
+The `@ShellMainThread` is the primary execution thread for Shell components. It runs at `THREAD_PRIORITY_DISPLAY` priority, the same as RenderThread (SurfaceFlinger runs at the even higher `PRIORITY_URGENT_DISPLAY`), ensuring that window management operations are not preempted by lower-priority work.
 
 The threading model enforces a strict contract:
 
@@ -14275,9 +14457,11 @@ Each `Transition` instance represents a single transition from creation through 
 | `TRANSIT_TO_FRONT` | 3 | Existing task moving to front |
 | `TRANSIT_TO_BACK` | 4 | Task moving to back |
 | `TRANSIT_CHANGE` | 6 | Configuration change (rotation, bounds) |
-| `TRANSIT_PIP` | 8 | Entering Picture-in-Picture |
-| `TRANSIT_SLEEP` | 9 | Display going to sleep |
-| `TRANSIT_WAKE` | 10 | Display waking up |
+| `TRANSIT_PIP` | 10 | Entering Picture-in-Picture |
+| `TRANSIT_WAKE` | 11 | Display waking up |
+| `TRANSIT_SLEEP` | 12 | Display going to sleep |
+
+(Values 7-9 are the deprecated `TRANSIT_KEYGUARD_GOING_AWAY`, `TRANSIT_KEYGUARD_OCCLUDE`, and `TRANSIT_KEYGUARD_UNOCCLUDE` types, superseded by `TRANSIT_TO_FRONT`/`TRANSIT_TO_BACK` plus keyguard transition flags.)
 
 The `Transition` class tracks:
 
@@ -14290,7 +14474,7 @@ The `Transition` class tracks:
 
 **Source file:** `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java`
 
-The Shell-side `Transitions` class is the master animation orchestrator. It implements `ITransitionPlayer` and manages the lifecycle of transitions from the Shell perspective:
+The Shell-side `Transitions` class is the master animation orchestrator. It registers an inner `TransitionPlayerImpl extends ITransitionPlayer.Stub` with WM Core as the transition player and manages the lifecycle of transitions from the Shell perspective:
 
 ```
 --start--> PENDING --onTransitionReady--> READY --play--> ACTIVE --finish--> |
@@ -14409,8 +14593,7 @@ classDiagram
         +int type
         +int flags
         +List~Change~ changes
-        +SurfaceControl.Transaction startTransaction
-        +SurfaceControl.Transaction finishTransaction
+        +List~Root~ roots
     }
 
     class Change {
@@ -14420,7 +14603,7 @@ classDiagram
         +int flags
         +Rect startAbsBounds
         +Rect endAbsBounds
-        +Rect endRelOffset
+        +Point endRelOffset
         +int startRotation
         +int endRotation
         +ActivityManager.RunningTaskInfo taskInfo
@@ -14429,6 +14612,8 @@ classDiagram
 
     TransitionInfo --> Change : contains 1..*
 ```
+
+The `startTransaction` and `finishTransaction` are not members of `TransitionInfo`; they travel as separate `SurfaceControl.Transaction` arguments of `ITransitionPlayer.onTransitionReady()` alongside the info object.
 
 Each `Change` in the `TransitionInfo` represents one participating container with:
 
@@ -14722,7 +14907,7 @@ desktopmode/
 ├── multidesks/                            — Multi-desk support (DesksController, DesksOrganizer)
 ├── homescreenpeeking/                     — Home-screen peek hot corners
 ├── desktoptaskshandlers/                  — Desk task transition handlers
-├── minimize/                              — Task minimization
+├── DesktopMinimizationTransitionHandler.kt — Task minimization
 ├── education/                             — User onboarding
 ├── animation/                             — Desktop-specific animations
 ├── data/                                  — Desktop state persistence
@@ -14957,10 +15142,10 @@ Virtual display flags control behavior:
 
 | Flag | Effect |
 |------|--------|
-| `FLAG_PRIVATE` | Content only visible to creating process |
-| `FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS` | Display gets status/navigation bars |
-| `FLAG_CAN_SHOW_WITH_INSECURE_KEYGUARD` | Can show content when keyguard is active |
-| `FLAG_ALLOWS_CONTENT_MODE_SWITCH` | Display content mode can change |
+| `VIRTUAL_DISPLAY_FLAG_PUBLIC` | Makes the display public; when absent the display is private, with content only visible to the creating process |
+| `VIRTUAL_DISPLAY_FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS` | Display gets status/navigation bars |
+| `VIRTUAL_DISPLAY_FLAG_CAN_SHOW_WITH_INSECURE_KEYGUARD` | Can show content when keyguard is active |
+| `VIRTUAL_DISPLAY_FLAG_ALLOWS_CONTENT_MODE_SWITCH` | Display content mode can change |
 
 ### 23.5.4 Cross-Display Window Movement
 
@@ -15492,11 +15677,17 @@ The shared base class holds:
 #### Sprite Lifecycle
 
 `SpriteController` is the heart of the rendering. Each `Sprite` is
-backed by a `SurfaceControl` parented under a "system sprite overlay
-layer" provided by SurfaceFlinger. The overlay layer sits at a
-z-order chosen by SurfaceFlinger to be on top of every window — that
-is what makes the cursor always visible, even over `TYPE_SYSTEM_ALERT`
-windows.
+backed by a `SurfaceControl` parented under a per-display pointer
+overlay layer that WindowManagerService itself creates and z-orders:
+`DisplayContent` builds a "Pointer Overlays" surface under its
+"Display Overlays" layer (which sits at `Integer.MAX_VALUE`) and
+assigns it the `TYPE_POINTER` policy layer. That parent surface
+reaches `SpriteController` through the `ParentSurfaceProvider`
+callback, which routes from the JNI layer up through
+`InputManagerService` to `DisplayContent.getPointerOverlayLayer()` in
+`system_server` — SurfaceFlinger neither provides the layer nor
+chooses its z-order. The WM-assigned z-order keeps the cursor above
+every window, even `TYPE_SYSTEM_ALERT` windows.
 
 ```mermaid
 sequenceDiagram
@@ -15746,7 +15937,6 @@ The `SurfaceAnimator` defines animation types that categorize different uses of 
 
 ```java
 ANIMATION_TYPE_NONE           = 0;       // No animation
-ANIMATION_TYPE_APP_TRANSITION = 1;       // App open/close/change
 ANIMATION_TYPE_SCREEN_ROTATION = 1 << 1; // Screen rotation
 ANIMATION_TYPE_DIMMER         = 1 << 2;  // Background dimming
 ANIMATION_TYPE_RECENTS        = 1 << 3;  // Recents gesture
@@ -15845,28 +16035,28 @@ interface Animatable {
 The `createAnimationLeash()` static method in `SurfaceAnimator` constructs the leash surface:
 
 ```java
-static SurfaceControl createAnimationLeash(Animatable animatable,
+private static SurfaceControl createAnimationLeash(Animatable animatable,
         SurfaceControl surface, Transaction t, @AnimationType int type,
         int width, int height, int x, int y, boolean hidden,
         Supplier<Transaction> transactionFactory) {
 
+    // The leash is parented at build time to where the surface was
     SurfaceControl leash = animatable.makeAnimationLeash()
-            .setName(surface + " - animation-leash of " + typeToString(type))
+            .setParent(animatable.getAnimationLeashParent())
+            .setName(surface + " - animation-leash of " + animationTypeToString(type))
             .setHidden(hidden)
             .setEffectLayer()
             .setCallsite("SurfaceAnimator.createAnimationLeash")
             .build();
 
-    // Reparent the leash to where the surface was
-    t.reparent(leash, animatable.getAnimationLeashParent());
-    // Reparent the surface under the leash
-    t.reparent(surface, leash);
     // Position and size the leash
-    t.setPosition(leash, x, y);
     t.setWindowCrop(leash, width, height);
-    // Transfer layer assignment
+    t.setPosition(leash, x, y);
+    t.show(leash);
     t.setAlpha(leash, hidden ? 0 : 1);
 
+    // Reparent the surface under the leash
+    t.reparent(surface, leash);
     return leash;
 }
 ```
@@ -15962,7 +16152,7 @@ Sub-windows are children of an application window in the `WindowState` hierarchy
 
 ### 23.8.4 System Window Types
 
-System windows form the largest category. They are ordered by type value, which maps to relative z-order:
+System windows form the largest category. The offsets below are just constant values within the 2000-2999 range; relative z-order is assigned separately by `WindowManagerPolicy.getWindowLayerFromTypeLw()`, an explicit switch that maps each type to an arbitrary layer index and is not monotonic in the type value (`TYPE_WALLPAPER`, for example, maps to the bottom-most layer despite its mid-range type value):
 
 | Constant | Offset | Description |
 |----------|--------|-------------|
@@ -16021,7 +16211,7 @@ int WINDOW_FREEZE_LAYER   = TYPE_LAYER_MULTIPLIER * 200;
 int SCREEN_FREEZE_LAYER_BASE = WINDOW_FREEZE_LAYER + TYPE_LAYER_MULTIPLIER;
 ```
 
-Each window type gets a base layer of `type * TYPE_LAYER_MULTIPLIER`, with `TYPE_LAYER_OFFSET` providing room for sub-windows within that type. This guarantees that system windows (type 2000+) are always above application windows (type 1-99) in the z-order.
+Each window gets a base layer of `getWindowLayerFromTypeLw(type) * TYPE_LAYER_MULTIPLIER` -- the policy-assigned layer index times the multiplier, not the raw type value -- with `TYPE_LAYER_OFFSET` providing room for sub-windows within that type. Most system window types resolve to policy layers above `APPLICATION_LAYER`, but not all: `TYPE_WALLPAPER` (2013) resolves to policy layer 1, below every application window.
 
 ### 23.8.6 DisplayArea-Based Z-Ordering
 
@@ -16099,14 +16289,14 @@ public abstract class DisplayAreaPolicy {
 The `DisplayAreaPolicyBuilder` constructs the hierarchy using a feature-based approach:
 
 ```java
-// Feature IDs from DisplayAreaOrganizer
+// Feature IDs from DisplayAreaOrganizer (relative to FEATURE_SYSTEM_FIRST = 0)
 FEATURE_DEFAULT_TASK_CONTAINER = 1;   // Where apps go
-FEATURE_WINDOWED_MAGNIFICATION = 4;   // Windowed magnification
+FEATURE_ONE_HANDED = 3;               // One-handed mode
+FEATURE_TOP_LEVEL_ZOOM = 4;           // Builds the "WindowedMagnification" DisplayArea
 FEATURE_FULLSCREEN_MAGNIFICATION = 5; // Fullscreen magnification
-FEATURE_ONE_HANDED = 6;               // One-handed mode
-FEATURE_HIDE_DISPLAY_CUTOUT = 7;      // Display cutout hiding
-FEATURE_IME_PLACEHOLDER = 8;          // IME positioning
-FEATURE_APP_ZOOM_OUT = 9;             // App zoom out
+FEATURE_HIDE_DISPLAY_CUTOUT = 6;      // Display cutout hiding
+FEATURE_IME_PLACEHOLDER = 7;          // IME positioning
+FEATURE_APP_ZOOM_OUT = 10;            // App zoom out
 ```
 
 Features are configured in the policy by specifying which window types they apply to. The builder then generates a tree of `DisplayArea` nodes that group window types under the appropriate feature nodes. This is an automatic process -- the builder determines the minimum set of `DisplayArea` nodes needed to satisfy all feature requirements.
@@ -16124,7 +16314,7 @@ classDiagram
     }
 
     class RootDisplayArea {
-        +DisplayAreaPolicy mPolicy
+        +List~Feature~ mFeatures
     }
 
     class DisplayArea_Tokens {
@@ -16436,7 +16626,7 @@ Desktop windowing is the most complex Shell feature, providing a full desktop ex
 - **Cross-display moves** (`DesktopModeMoveToDisplayTransitionHandler`, `DisplayDisconnectTransitionHandler`) for multi-display desktop
 - **Immersive mode** (`DesktopImmersiveController`) for fullscreen apps in desktop
 - **IME handling** (`DesktopImeHandler`) for keyboard layout in freeform windows
-- **Minimization** (`minimize/`) for task bar integration
+- **Minimization** (`DesktopMinimizationTransitionHandler.kt`, plus the `minimizedTasks` set in `data/Desk.kt`) for task bar integration
 
 The desktop mode directory alone contains 50+ files, reflecting the significant engineering investment in bringing desktop-class windowing to Android.
 
@@ -16452,8 +16642,8 @@ front and a `DeskSwitchTransitionHandler` animates the lateral move between two
 desks on the same display. The per-desk state -- `activeTasks`, `visibleTasks`,
 `minimizedTasks`, and the `leftTiledTaskId`/`rightTiledTaskId` snap slots -- is
 held in the `Desk` data model (`.../desktopmode/data/Desk.kt`) inside the
-per-display `DesktopRepository`, which `DesktopUserRepositories` instantiates per
-user. So multiple desks reuse the existing per-display task hierarchy and
+per-user `DesktopRepository` (which tracks per-display desk state internally),
+instantiated per user by `DesktopUserRepositories`. So multiple desks reuse the existing per-display task hierarchy and
 transition machinery rather than introducing a parallel one: a desk is a root
 task the organizer shows or hides, and switching desks is an ordinary Shell
 transition.
@@ -16569,12 +16759,12 @@ Mixed transitions arise in several scenarios:
 | Desktop task moving while split is active | Desktop + Split |
 | Recents gesture while PiP is visible | Recents + PiP |
 
-The `MixedTransitionHandler` detects these scenarios by examining the `TransitionInfo` changes and delegates sub-animations to the appropriate feature handlers while coordinating their timing.
+`MixedTransitionHandler` itself is only a marker interface extending `Transitions.TransitionHandler`; the implementation, `DefaultMixedHandler`, detects these scenarios by examining the `TransitionInfo` changes and delegates sub-animations to the appropriate feature handlers while coordinating their timing.
 
-`DefaultMixedTransition` and `RecentsMixedTransition` are specific implementations for common mixed scenarios:
+`DefaultMixedTransition` and `RecentsMixedTransition` subclass `DefaultMixedHandler.MixedTransition` for common mixed scenarios:
 
 ```
-MixedTransitionHandler
+DefaultMixedHandler.MixedTransition
 ├── DefaultMixedTransition    — General cross-feature handling
 └── RecentsMixedTransition    — Recents + other feature handling
 ```
@@ -16640,12 +16830,11 @@ The initialization order matters because features depend on infrastructure compo
 
 **Directory:** `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/crashhandling/`
 
-`ShellCrashHandler` manages what happens when a Shell component encounters an unrecoverable error. Since Shell runs in the system server process, an unhandled exception could crash the entire system. The crash handler:
+`ShellCrashHandler` is not an exception catcher. WM Shell runs inside the SystemUI process, so an unhandled Shell exception takes down SystemUI -- not the system server -- and the process is restarted. `ShellCrashHandler` registers with `ShellInit` and runs at initialization time *after* such a restart, cleaning up state left over from before the crash:
 
-1. Catches exceptions from Shell components
-2. Logs the error with full stack trace
-3. Attempts graceful degradation (e.g., exiting split screen, exiting PiP)
-4. Reports to telemetry for analysis
+1. Removes bubble overrides left on running tasks (`handleBubbleTaskCleanup()`)
+2. Cleans up leftover PiP task state (`handlePipTaskCleanup()`)
+3. Restores the home task to the top so the user lands on a sane screen
 
 ### 23.10.12 Performance Monitoring
 
@@ -16741,30 +16930,23 @@ The window system provides extensive debugging infrastructure:
 **dumpsys commands:**
 
 ```bash
-# Full WMS state dump
+# Full WMS state dump (includes transition and focus state)
 adb shell dumpsys window
 
 # Windows only
 adb shell dumpsys window windows
 
-# Display state
+# Display state (includes the DisplayArea structure)
 adb shell dumpsys window displays
 
-# Transitions
-adb shell dumpsys window transitions
-
-# Focused window
-adb shell dumpsys window focus
-
-# Window containers hierarchy
+# Window containers hierarchy (DisplayAreas, tasks, windows)
 adb shell dumpsys window containers
-
-# Display areas
-adb shell dumpsys window display-areas
 
 # Input dispatch state
 adb shell dumpsys input
 ```
+
+Note that there are no `transitions`, `focus`, or `display-areas` sub-commands -- an unrecognized argument is treated as a window-name filter (`"Bad window command, or no windows match"`). Transition and focus state come from the full `dumpsys window` (or `dumpsys window -a`) dump, and DisplayArea structure from `containers` or `displays`.
 
 **Perfetto tracing:**
 
@@ -16931,7 +17113,7 @@ Use a device or emulator running Android 17 (`android17-release`) to observe the
 
 2. **Inspect per-display insets.** With an app open, run `adb shell dumpsys window displays` and find the `InsetsState` / `InsetsSourceProvider` block (section 23.9). Show or hide the IME and re-dump to see the `ime()` source appear and disappear, and the focused window's `InsetsControlTarget` change.
 
-3. **Watch a transition.** Run `adb shell dumpsys window transitions`, then launch and close an app while re-dumping. Observe a `Transition` move through collecting/ready/playing, and note the track assignment (section 23.3.9). Capturing a Winscope trace during the launch lets you replay the leash animation (section 23.7.2) frame by frame.
+3. **Watch a transition.** Run `adb shell dumpsys window` and locate the transition/`TransitionController` state in the dump (there is no `transitions` sub-command), then launch and close an app while re-dumping. Observe a `Transition` move through collecting/ready/playing, and note the track assignment (section 23.3.9). Capturing a Winscope trace during the launch lets you replay the leash animation (section 23.7.2) frame by frame.
 
 4. **Exercise the Android 17 paths.** If the device supports connected displays or desktop windowing, enable the desktop-experience developer toggle (backed by `DesktopExperienceFlags`, section 23.12.2) and attach an external display. Move a window between displays and watch `dumpsys window displays` show the `Task` reparent to the second `DisplayContent`. Rotate the device with an app that reacts to insets to see the bundled rotation + `InsetsState` delivery (section 23.12.1).
 
@@ -16971,12 +17153,12 @@ The window system is one of the largest subsystems in AOSP:
 
 | Component | Approximate Lines | Files |
 |-----------|-------------------|-------|
-| WM Core (`server/wm/`) | 200,000+ | 250+ |
+| WM Core (`server/wm/`) | ~190,000 | 250+ |
 | WM Shell (`wm/shell/`) | 150,000+ | 400+ |
 | Window API (`view/`) | 50,000+ | 50+ |
 | Total | 400,000+ | 700+ |
 
-The five largest individual source files in the Android 17 tree -- `WindowManagerService.java` (~11,600 lines), `ActivityRecord.java` (~9,900 lines), `DisplayContent.java` (~7,700 lines), `Task.java` (~7,560 lines), and `WindowState.java` (~6,400 lines) -- together exceed 43,000 lines of Java code, reflecting the deep complexity of window management.
+Five of the largest source files in the window system -- `WindowManagerService.java` (~11,600 lines), `ActivityRecord.java` (~9,900 lines), `DisplayContent.java` (~7,700 lines), `Task.java` (~7,560 lines), and `WindowState.java` (~6,400 lines) -- together exceed 43,000 lines of Java code, reflecting the deep complexity of window management.
 
 ### Evolution Direction
 
@@ -16986,7 +17168,7 @@ The window system is evolving in several clear directions:
 
 2. **Kotlin adoption**: New Shell components (like `StageCoordinator2.kt`, `DesktopTasksController.kt`, `WindowDragTransitionHandler.kt`) are written in Kotlin, while existing Java components are maintained.
 
-3. **Parallel transitions**: The track-based parallel transition system continues to evolve with flags like `ENABLE_PARALLEL_CD_TRANSITIONS_DURING_RECENTS` for more concurrent animation support.
+3. **Parallel transitions**: The track-based parallel transition machinery in `TransitionController` (WM Core) and the Shell `Transitions` class continues to evolve toward more concurrent animation support.
 
 4. **Multi-display maturity**: Android 17 flags like `enable_connected_displays_wallpaper_presentations` and `mask_presentation_flags_on_internal_displays`, the `DesktopExperienceFlags.ENABLE_DISPLAY_CONTENT_MODE_MANAGEMENT` gate, and the cross-display desk handlers (`DesktopModeMoveToDisplayTransitionHandler`, `DisplayDisconnectTransitionHandler`) indicate deepening multi-display support beyond mirroring toward true multi-display computing (see section 23.12).
 
@@ -17093,8 +17275,8 @@ largest services in the framework. Its Javadoc explains the architecture:
 > devices currently attached, sends notifications to the system and to
 > applications when the state changes.
 
-DMS uses the `DisplayThread` (a shared `HandlerThread` at
-`THREAD_PRIORITY_DISPLAY`) for its main handler. All internal state is
+DMS uses the `DisplayThread` (a shared `HandlerThread` running at
+`THREAD_PRIORITY_DISPLAY + 1`) for its main handler. All internal state is
 protected by a single `SyncRoot` lock -- the same lock used by all display
 adapters and logical display objects:
 
@@ -17122,8 +17304,8 @@ classDiagram
     }
 
     class LocalDisplayAdapter {
-        -mPhysicalDisplays: SparseArray
-        +hotplugEventLocked()
+        -mDevices: LongSparseArray
+        +onHotplug()
     }
 
     class VirtualDisplayAdapter {
@@ -17132,7 +17314,7 @@ classDiagram
     }
 
     class WifiDisplayAdapter {
-        -mWifiDisplayController
+        -mDisplayController: WifiDisplayController
         +requestConnectLocked()
     }
 
@@ -17156,9 +17338,12 @@ classDiagram
 ```
 
 - **LocalDisplayAdapter** handles physical displays (built-in and external)
-  reported by SurfaceFlinger's hotplug mechanism. It receives `EVENT_ADD`,
-  `EVENT_REMOVE`, and `EVENT_CHANGE` notifications and creates
-  `LocalDisplayDevice` instances backed by a SurfaceFlinger display token.
+  reported by SurfaceFlinger's hotplug mechanism. When its display-event
+  listener receives an `onHotplug()` callback, it creates or removes
+  `LocalDisplayDevice` instances backed by a SurfaceFlinger display token
+  and emits `DISPLAY_DEVICE_EVENT_ADDED`, `DISPLAY_DEVICE_EVENT_CHANGED`,
+  and `DISPLAY_DEVICE_EVENT_REMOVED` notifications to
+  `DisplayDeviceRepository` via `sendDisplayDeviceEventLocked()`.
 
 - **VirtualDisplayAdapter** creates virtual displays on behalf of
   applications, receiving a `VirtualDisplayConfig` with dimensions, density,
@@ -17202,17 +17387,17 @@ classDiagram
         -mUniqueId: String
         -mCurrentLayerStack: int
         +getDisplayDeviceInfoLocked()
-        +performTraversalLocked()
+        +configureSurfaceLocked()
         +getDisplaySurfaceDefaultSizeLocked()
     }
 
     class DisplayDeviceInfo {
         +width: int
         +height: int
-        +densityDpi: float
+        +densityDpi: int
         +xDpi: float
         +yDpi: float
-        +refreshRate: float
+        +renderFrameRate: float
         +supportedModes: Display.Mode[]
         +type: int
         +flags: int
@@ -17251,7 +17436,7 @@ sequenceDiagram
     HW->>LDA: Hotplug callback (connected)
     LDA->>LDA: Create LocalDisplayDevice
     LDA->>DDR: sendDisplayDeviceEventLocked(device, ADDED)
-    DDR->>LDM: onDisplayDeviceAdded(device)
+    DDR->>LDM: onDisplayDeviceEventLocked(device, DISPLAY_DEVICE_EVENT_ADDED)
     LDM->>LDM: Create LogicalDisplay with assigned displayId
     LDM->>DMS: Listener.onLogicalDisplayEventLocked(ADDED)
     DMS->>DMS: sendDisplayEventLocked(EVENT_ADDED)
@@ -17454,7 +17639,7 @@ classDiagram
     }
 
     class TaskDisplayArea {
-        +mTasks: ArrayList
+        +getRootTaskCount()
     }
 
     class DisplayContent {
@@ -17470,11 +17655,11 @@ classDiagram
     }
 
     WindowContainer <|-- DisplayArea
-    DisplayArea <|-- RootDisplayArea
+    DisplayArea <|-- DisplayArea_Dimmable
+    DisplayArea_Dimmable <|-- RootDisplayArea
     DisplayArea <|-- TaskDisplayArea
     RootDisplayArea <|-- DisplayContent
     DisplayArea <|-- DisplayArea_Tokens
-    DisplayArea <|-- DisplayArea_Dimmable
 ```
 
 The Javadoc for `DisplayArea` explains the three flavours that enforce
@@ -17519,7 +17704,8 @@ The `DisplayAreaPolicyBuilder` constructs the hierarchy tree by taking a set
 of `Feature` definitions and building the necessary intermediate
 `DisplayArea` nodes to satisfy the Z-ordering constraints.
 
-A typical AOSP `DefaultDisplayAreaPolicy` builds this hierarchy:
+The default hierarchy, built by `DisplayAreaPolicy.DefaultProvider` (in
+`DisplayAreaPolicy.java`), looks like this:
 
 ```mermaid
 graph TD
@@ -17674,15 +17860,20 @@ When multiple roots exist (e.g., automotive front/rear displays), the
 
 ```java
 // frameworks/base/services/core/java/com/android/server/wm/DisplayAreaPolicyBuilder.java
-public RootDisplayArea apply(Integer windowType, Bundle options) {
+public RootDisplayArea apply(@NonNull Integer windowType, @Nullable Bundle options) {
     if (mDisplayAreaGroupRoots.isEmpty()) {
         return mDisplayRoot;
     }
-    if (options != null) {
-        final int rootId = options.getInt(KEY_ROOT_DISPLAY_AREA_ID, FEATURE_UNDEFINED);
-        if (rootId != FEATURE_UNDEFINED) {
-            for (RootDisplayArea root : mDisplayAreaGroupRoots) {
-                if (root.mFeatureId == rootId) return root;
+
+    // Select the RootDisplayArea set in options.
+    if (options != null && options.containsKey(KEY_ROOT_DISPLAY_AREA_ID)) {
+        final int rootId = options.getInt(KEY_ROOT_DISPLAY_AREA_ID);
+        if (mDisplayRoot.mFeatureId == rootId) {
+            return mDisplayRoot;
+        }
+        for (int i = mDisplayAreaGroupRoots.size() - 1; i >= 0; i--) {
+            if (mDisplayAreaGroupRoots.get(i).mFeatureId == rootId) {
+                return mDisplayAreaGroupRoots.get(i);
             }
         }
     }
@@ -17759,12 +17950,9 @@ graph LR
         ET_APP["EventThread<br/>(app)"]
     end
 
-    subgraph "system_server"
+    subgraph "App Process"
         CH["Choreographer"]
         VRI2["ViewRootImpl"]
-    end
-
-    subgraph "App Process"
         APP["Application<br/>onDraw()"]
     end
 
@@ -17824,7 +18012,9 @@ Each entry carries `ScheduleTiming` that specifies:
   up (e.g., app rendering might need 16ms)
 - **readyDuration** -- additional time needed after work completes before
   the VSYNC deadline
-- **earliestVsync** -- the earliest VSYNC this callback is interested in
+- **lastVsync** -- the VSYNC the callback was last scheduled against
+  (a `committedVsyncOpt` field additionally records the VSYNC that was
+  committed to the callback)
 
 The timer queue coalesces callbacks that are close in time (within
 `timerSlack`) into a single timer wakeup, reducing the number of context
@@ -17968,11 +18158,13 @@ Key concepts:
 Each configuration defines timing for three scenarios:
 
 ```cpp
-// frameworks/native/services/surfaceflinger/Scheduler/VsyncConfiguration.h
+// frameworks/native/services/surfaceflinger/Scheduler/include/scheduler/VsyncConfig.h
 struct VsyncConfigSet {
     VsyncConfig early;     // During transaction processing
     VsyncConfig earlyGpu;  // During GPU composition
     VsyncConfig late;      // Normal steady-state
+    std::chrono::nanoseconds hwcMinWorkDuration;  // Earliest-present calculation
+    // ...
 };
 ```
 
@@ -18042,7 +18234,7 @@ single physical display:
 - A `VSyncTracker` (usually `VSyncPredictor`) for timing model
 - A `VSyncDispatch` (usually `VSyncDispatchTimerQueue`) for callback
   scheduling
-- A `VSyncController` for receiving hardware VSYNC timestamps
+- A `VsyncController` for receiving hardware VSYNC timestamps
 
 In multi-display configurations, each physical display has its own
 `VsyncSchedule`. The pacesetter display's schedule drives the main
@@ -18120,7 +18312,7 @@ The rotation decision pipeline:
 
 ```mermaid
 flowchart TD
-    A["Activity requests orientation<br/>(screenOrientation attribute)"] --> B["DisplayRotation.updateOrientationFromApp()"]
+    A["Activity requests orientation<br/>(screenOrientation attribute)"] --> B["DisplayRotation.updateOrientation()"]
     B --> C{"Orientation locked<br/>by user setting?"}
     C -->|Yes| D["Use user rotation"]
     C -->|No| E["rotationForOrientation()"]
@@ -18339,7 +18531,7 @@ which then consults the `DeviceStatePolicy` to determine the appropriate
 system response. The foldable provider and policy ship in the dedicated
 `frameworks/base/services/foldables/devicestateprovider/` module
 (`FoldableDeviceStateProvider.java`, `BookStyleDeviceStatePolicy.java`), while
-the `DeviceStatePolicy` interface lives in
+the abstract `DeviceStatePolicy` base class lives in
 `frameworks/base/services/core/java/com/android/server/devicestate/`.
 
 ```mermaid
@@ -18364,10 +18556,10 @@ graph TD
     HA --> FDSP
     HE --> FDSP
     FDSP -->|"new base state"| DSMS2
-    DSMS2 --> DSP
-    DSP -->|"committed state"| DMS2
-    DSP -->|"committed state"| WMS2
-    DSP -->|"wake/sleep trigger"| PM
+    DSMS2 -->|"configureDeviceForState()"| DSP
+    DSMS2 -->|"committed state"| DMS2
+    DSMS2 -->|"committed state"| WMS2
+    DSMS2 -->|"wake/sleep trigger"| PM
 ```
 
 ### 24.5.3 LogicalDisplayMapper: Display Swapping
@@ -18432,7 +18624,7 @@ enable a `LogicalDisplay` for it.
 ### 24.5.4 BookStyleDeviceStatePolicy
 
 For book-style foldables (where the fold axis is vertical, like a book),
-`BookStyleDeviceStatePolicy` implements `DeviceStatePolicy` to manage:
+`BookStyleDeviceStatePolicy` extends `DeviceStatePolicy` to manage:
 
 - **Outer-to-inner transitions**: When unfolding, the outer display content
   is migrated to the inner display. The policy coordinates with
@@ -18526,14 +18718,18 @@ transition does not leave the system in an indeterminate state.
 
 ### 24.5.8 FoldSettingProvider
 
-`FoldSettingProvider` manages user preferences for foldable behavior:
+`FoldSettingProvider` wraps the `Settings.System.FOLD_LOCK_BEHAVIOR`
+setting, which controls what happens to the device when it is folded. It
+exposes three predicates:
 
-- Whether to mirror the default display when folded
-- Whether to include the default display in the display topology
-- Resolution mode preferences per display
+- `shouldStayAwakeOnFold()` -- the device remains awake and unlocked when
+  folded
+- `shouldSelectiveStayAwakeOnFold()` -- the device stays awake only while
+  apps hold wakelocks (the default behavior)
+- `shouldSleepOnFold()` -- the device always goes to sleep when folded
 
-These settings are read through `Settings.Secure` and influence the
-`LogicalDisplayMapper`'s layout decisions.
+`LogicalDisplayMapper` consults these predicates during a fold transition
+to decide whether folding should send the device to sleep.
 
 ---
 
@@ -18551,7 +18747,8 @@ island. It is immutable and carried through the system as part of
 public final class DisplayCutout {
     private final Rect mSafeInsets;
     private final Insets mWaterfallInsets;
-    private final Rect[] mBounds;  // One rect per side (left, top, right, bottom)
+    private final Bounds mBounds;  // Helper holding one rect per side
+                                   // (left, top, right, bottom)
     // ...
 }
 ```
@@ -18594,8 +18791,10 @@ C 0,48 24,48 24,24
 L 24,0
 C 24,0 0,0 0,0
 @dp
-@center_horizontal
 ```
+
+Horizontal centring needs no marker -- it is the default when neither
+`@left` nor `@right` is given.
 
 ### 24.6.3 Cutout Modes
 
@@ -18604,30 +18803,31 @@ Apps declare their cutout handling preference via
 
 | Mode | Constant | Behavior |
 |------|----------|----------|
-| `LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT` | 0 | Content avoids cutout in portrait, uses full screen in landscape |
+| `LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT` | 0 | Non-fullscreen window may extend into a top-edge cutout in portrait; laid out clear of the cutout when fullscreen or in landscape |
 | `LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES` | 1 | Content extends into cutout on short edges |
 | `LAYOUT_IN_DISPLAY_CUTOUT_MODE_NEVER` | 2 | Content never extends into cutout area |
 | `LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS` | 3 | Content always extends into cutout area |
 
-The window manager evaluates these modes in `DisplayPolicy` when computing
-window frames. For `ALWAYS`, the window receives the full display area;
-for `NEVER`, the window is inset by the cutout safe insets.
+The modes are evaluated in `WindowLayout.computeFrames()`
+(`frameworks/base/core/java/android/view/WindowLayout.java`), which is
+shared by the window manager and the client-side layout path. For
+`ALWAYS`, the window receives the full display area; for `NEVER`, the
+window is inset by the cutout safe insets.
 
 ### 24.6.4 WmDisplayCutout
 
 `WmDisplayCutout`
 (`frameworks/base/services/core/java/com/android/server/wm/utils/WmDisplayCutout.java`)
-is the window-manager-internal wrapper that adds rotation awareness to
-`DisplayCutout`. When the display rotates, the cutout bounds must be rotated
-accordingly. `WmDisplayCutout` caches rotated variants to avoid recomputation:
+is a small window-manager-internal wrapper that pairs a `DisplayCutout`
+with the display frame size. Because it tracks the size alongside the
+cutout, the safe insets can be (re)calculated whenever the frame changes,
+via its `computeSafeInsets()` factory:
 
 ```mermaid
 graph LR
-    DC2["DisplayCutout<br/>(from device config)"] --> WDC["WmDisplayCutout<br/>(rotation-aware)"]
-    WDC --> R0["Rotation 0<br/>(original)"]
-    WDC --> R90["Rotation 90<br/>(rotated bounds)"]
-    WDC --> R180["Rotation 180"]
-    WDC --> R270["Rotation 270"]
+    DC2["DisplayCutout<br/>(cutout bounds)"] --> WDC["WmDisplayCutout"]
+    FS["Display frame size<br/>(width x height)"] --> WDC
+    WDC --> SI["computeSafeInsets()<br/>(recalculated safe insets)"]
 ```
 
 ### 24.6.5 RoundedCorners and DisplayShape
@@ -18645,9 +18845,10 @@ Modern displays have rounded corners that must be accounted for in layout:
 - **`PrivacyIndicatorBounds`** defines the region reserved for privacy
   indicators (camera, microphone) that may overlap with the cutout area.
 
-The framework provides `DecorCaptionView` corner radius information through
-`WindowDecoration` so that window decorations (caption bars in freeform
-mode) can match the display corner radius.
+The Shell's `WindowDecoration` classes
+(`frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/`)
+receive the display corner radius so that window decorations (caption bars
+in freeform mode) can match it.
 
 ### 24.6.6 Cutout Rotation
 
@@ -18656,15 +18857,17 @@ When the display rotates, the cutout must rotate with it. The
 
 ```java
 // frameworks/base/core/java/android/view/DisplayCutout.java
-private static final class CutoutPathParserInfo {
-    final int displayWidth;
-    final int physicalDisplayHeight;
-    final int displayHeight;
-    final float density;
-    final String cutoutSpec;
-    final int rotation;
-    final float scale;
-    final float physicalPixelDisplaySizeRatio;
+public static class CutoutPathParserInfo {
+    private final int mDisplayWidth;
+    private final int mDisplayHeight;
+    private final int mPhysicalDisplayWidth;
+    private final int mPhysicalDisplayHeight;
+    private final float mDensity;
+    private final String mCutoutSpec;
+    private final @Rotation int mRotation;
+    private final float mScale;
+    private final float mPhysicalPixelDisplaySizeRatio;
+    // ...
 }
 ```
 
@@ -18711,7 +18914,7 @@ emulation overlays (tall cutout, wide cutout, corner cutout, double cutout)
 that can be enabled through:
 
 ```shell
-cmd overlay enable com.android.internal.display_cutout_emulation.tall
+cmd overlay enable com.android.internal.display.cutout.emulation.tall
 ```
 
 ---
@@ -18822,8 +19025,10 @@ The builder implements two update paths:
   inherited properties (visibility, alpha, color transform, crop) from
   parent to child.
 
-Snapshots are immutable once built, providing a consistent view of layer
-state for the composition pipeline without holding locks.
+Snapshots are rebuilt or merged in place on each commit (the fast path
+calls `snapshot->merge(...)` on existing snapshot objects); the
+composition pipeline only reads them after the front-end update completes,
+so it still sees a consistent view of layer state without holding locks.
 
 ### 24.7.4 CompositionEngine
 
@@ -18900,13 +19105,14 @@ the properties set through `SurfaceControl.Transaction`:
 ```mermaid
 classDiagram
     class RequestedLayerState {
-        +layerId: uint32_t
+        +id: uint32_t
         +name: string
         +parentId: uint32_t
         +relativeParentId: uint32_t
         +z: int32_t
-        +position: vec2
-        +bufferSize: Size
+        +x: float
+        +y: float
+        +getBufferSize() Rect
         +crop: Rect
         +alpha: float
         +color: half4
@@ -19087,7 +19293,7 @@ risks frame drops when rendering takes longer than one VSYNC period.
 
 ### 24.8.3 BLASTBufferQueue: Transaction-Based Delivery
 
-`BLASTBufferQueue` (Buffer Lifecycle And Sync Transfer) replaced the legacy
+`BLASTBufferQueue` (BLAST -- "Buffer as LayerState") replaced the legacy
 `BufferLayer` approach of having SurfaceFlinger directly acquire buffers.
 Instead, the client acquires buffers from the `BufferItemConsumer` and
 delivers them to SurfaceFlinger through `SurfaceControl.Transaction`:
@@ -19104,8 +19310,8 @@ sequenceDiagram
     BBQ2->>BBQ2: dequeueBuffer() from IGraphicBufferProducer
     App->>App: Render content
     App->>BBQ2: queueBuffer()
-    BBQ2->>BIC: onFrameAvailable()
-    BIC->>BBQ2: acquireBuffer()
+    BIC->>BBQ2: onFrameAvailable()
+    BBQ2->>BIC: acquireBuffer()
     BBQ2->>SC: Transaction.setBuffer(surfaceControl, buffer)
     BBQ2->>SC: Transaction.setBufferCrop(...)
     BBQ2->>SC: Transaction.apply()
@@ -19234,22 +19440,26 @@ BufferQueue on its own timeline. This created synchronization problems:
 
 BLAST solved all three by moving buffer acquisition to the client side
 and bundling buffer submission with geometry changes in a single
-`SurfaceControl.Transaction`. The migration was gradual, controlled by
-the `BLASTBufferQueue` flag, and is now the only supported path.
+`SurfaceControl.Transaction`. The migration was gradual -- initially gated
+by the `use_blast_adapter_sv` global setting and the
+`debug.sf.enable_blast_adapter` system property, both since removed -- and
+is now the only supported path.
 
 ### 24.8.9 SyncGroup and Cross-Surface Synchronization
 
 `BLASTBufferQueue.syncNextTransaction()` supports cross-surface
-synchronization. When `ViewRootImpl` needs to synchronize a buffer
-submission with a `WindowContainerTransaction` (e.g., during
-`relayout`), it registers a sync callback:
+synchronization. `SurfaceView` calls it directly on its own
+`BLASTBufferQueue`; `ViewRootImpl` reaches it indirectly through
+`HardwareRenderer.SyncInterface.syncNextTransaction(...)` and merges the
+captured buffer transaction into a `SurfaceSyncGroup`, which coordinates
+when the group of changes becomes visible:
 
 ```java
-// In ViewRootImpl
+// In SurfaceView
 mBlastBufferQueue.syncNextTransaction(transaction -> {
-    // Merge buffer transaction with the relayout transaction
-    mergedTransaction.merge(transaction);
-    mergedTransaction.apply();
+    // Merge the buffer transaction into the sync group
+    surfaceSyncGroup.addTransaction(transaction);
+    surfaceSyncGroup.markSyncReady();
 });
 ```
 
@@ -19279,7 +19489,7 @@ sequenceDiagram
     DM2->>DMS4: createVirtualDisplay(config, callback)
     DMS4->>DMS4: Permission checks
     DMS4->>VDA: createVirtualDisplayLocked(callback, config, ...)
-    VDA->>SF4: SurfaceControl.createDisplay(name, secure)
+    VDA->>SF4: DisplayControl.createVirtualDisplay(name, secure, ...)
     SF4-->>VDA: Display token
     VDA->>VDA: Create VirtualDisplayDevice
     VDA->>DMS4: sendDisplayDeviceEventLocked(ADDED)
@@ -19298,7 +19508,7 @@ sequenceDiagram
 | `VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY` | Never mirrors; only shows own content |
 | `VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR` | Mirrors default display when no content |
 | `VIRTUAL_DISPLAY_FLAG_OWN_DISPLAY_GROUP` | Own DisplayGroup for power management |
-| `VIRTUAL_DISPLAY_FLAG_DEVICE_DISPLAY_GROUP` | Joins the device's primary DisplayGroup |
+| `VIRTUAL_DISPLAY_FLAG_DEVICE_DISPLAY_GROUP` | Places the display in the DisplayGroup of its associated virtual device instead of the default DisplayGroup |
 | `VIRTUAL_DISPLAY_FLAG_OWN_FOCUS` | Manages its own focus chain |
 | `VIRTUAL_DISPLAY_FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS` | StatusBar, NavBar on this display |
 | `VIRTUAL_DISPLAY_FLAG_TRUSTED` | System-trusted display (requires INTERNAL_SYSTEM_WINDOW) |
@@ -19312,33 +19522,45 @@ manages a three-BufferQueue routing system within SurfaceFlinger:
 
 ```mermaid
 graph LR
-    subgraph "Producer Side"
-        SF5["SurfaceFlinger<br/>(GPU composition output)"]
+    subgraph "Producers"
+        SF5["SurfaceFlinger<br/>(GPU / client composition)"]
+        HWC5["Hardware Composer"]
     end
 
     subgraph "VirtualDisplaySurface"
-        SBQ["Source BQ<br/>(from GPU composition)"]
-        SINK["Sink BQ<br/>(to consumer)"]
+        RBQ["Render BQ<br/>(GPU composition target)"]
+        OBQ["Output BQ<br/>(HWC output buffers)"]
         VDS["Routing Logic"]
+        SINK["Sink BQ<br/>(to consumer)"]
     end
 
     subgraph "Consumer Side"
         ENC["MediaCodec / Consumer"]
     end
 
-    SF5 -->|"client composition target"| SBQ
-    SBQ --> VDS
+    SF5 -->|"client composition target"| RBQ
+    HWC5 -->|"output buffer"| OBQ
+    RBQ --> VDS
+    OBQ --> VDS
     VDS -->|"routed buffer"| SINK
     SINK --> ENC
 ```
 
-The routing logic handles three cases:
+The three queues, as named in `VirtualDisplaySurface.h`, are the **Sink BQ**
+(the surface the application provided at creation time, where composed
+buffers are ultimately delivered), the **Render BQ** (the surface handed to
+the composition engine as the GPU rendering target), and the **Output BQ**
+(which supplies buffers for HWC output). The routing logic handles three
+cases:
 
-1. **GPU composition only**: The GPU-composed output goes directly from the
-   source BQ to the sink BQ.
-2. **HWC composition only**: HWC writes directly to the sink BQ.
-3. **Mixed**: GPU composes client layers into the source BQ, then HWC
-   composites everything (including GPU output) into the sink BQ.
+1. **GPU composition only**: The GPU-composed output is taken out of the
+   render BQ and queued to the sink BQ.
+2. **HWC composition only**: HWC needs an output buffer for `advanceFrame`;
+   the surface reuses a dequeued sink buffer when possible and otherwise
+   dequeues one from the output BQ, then queues the result to the sink.
+3. **Mixed**: GPU composes client layers into the render BQ; that buffer is
+   handed to HWC as the client target, and HWC composites everything into
+   an output buffer (from the sink or output BQ) that is sent to the sink.
 
 `SinkSurfaceHelper` manages the sink-side BufferQueue, handling buffer
 allocation, format negotiation, and fence synchronization with the
@@ -19520,7 +19742,10 @@ public static final int COLOR_MODE_AUTOMATIC = 3;
 
 ### 24.10.2 TintController Hierarchy
 
-Each color transformation is implemented as a `TintController` subclass:
+Each display-wide color transformation is implemented as a
+`TintController` subclass. Per-app saturation is handled separately by
+`AppSaturationController`, a standalone collaborator of
+`ColorDisplayService` that is not part of the `TintController` hierarchy:
 
 ```mermaid
 classDiagram
@@ -19531,9 +19756,17 @@ classDiagram
         +isActivated(): boolean
     }
 
-    class ColorTemperatureTintController {
+    class NightDisplayTintController {
         -mMatrix: float[16]
         +Night Display (warm tint)
+    }
+
+    class ColorTemperatureTintController {
+        <<abstract>>
+        +getAppliedCct()
+        +setAppliedCct(int cct)
+        +computeMatrixForCct(int cct)
+        +getEvaluator(): CctEvaluator
     }
 
     class DisplayWhiteBalanceTintController {
@@ -19542,7 +19775,7 @@ classDiagram
     }
 
     class GlobalSaturationTintController {
-        -mMatrix: float[16]
+        -mMatrixGlobalSaturation: float[16]
         +Display saturation level
     }
 
@@ -19556,11 +19789,12 @@ classDiagram
         +Per-app saturation (a11y)
     }
 
+    TintController <|-- NightDisplayTintController
     TintController <|-- ColorTemperatureTintController
-    TintController <|-- DisplayWhiteBalanceTintController
+    ColorTemperatureTintController <|-- DisplayWhiteBalanceTintController
     TintController <|-- GlobalSaturationTintController
     TintController <|-- ReduceBrightColorsTintController
-    TintController <|-- AppSaturationController
+    ColorDisplayService --> AppSaturationController : drives ColorTransformController callbacks
 ```
 
 ### 24.10.3 DisplayTransformManager: The Priority Matrix
@@ -19606,8 +19840,11 @@ private static final int SURFACE_FLINGER_TRANSACTION_DISPLAY_COLOR = 1023;
 
 ### 24.10.4 Night Display
 
-Night Display (blue light filter) uses `ColorTemperatureTintController` to
-shift the display toward warmer tones. It supports three activation modes:
+Night Display (blue light filter) uses `NightDisplayTintController` (a
+private inner class of `ColorDisplayService` extending `TintController`)
+to shift the display toward warmer tones; the abstract
+`ColorTemperatureTintController` base is used by Display White Balance
+instead. Night Display supports three activation modes:
 
 | Mode | Constant | Behavior |
 |------|----------|----------|
@@ -19619,9 +19856,11 @@ The twilight mode integrates with `TwilightManager` to compute local
 sunrise and sunset times based on the device's location.
 
 The colour temperature is converted to a 4x4 matrix using a CCT (Correlated
-Colour Temperature) to RGB transform. The `CctEvaluator` class maps CCT
-values to matrix coefficients using a `Spline` interpolation of calibration
-data.
+Colour Temperature) to RGB transform. The `CctEvaluator` class is a
+`TypeEvaluator<Integer>` that animates between CCT values, stepping through
+the range using per-range step sizes; the CCT-to-matrix conversion itself
+is done by the tint controller's `computeMatrixForCct()` / `setMatrix(int
+cct)` using per-device colour-temperature coefficients.
 
 ### 24.10.5 Display White Balance
 
@@ -19670,13 +19909,14 @@ The `HdrConversionMode` controls system-wide HDR format conversion:
 
 ### 24.10.8 Per-App Color Transforms
 
-`AppSaturationController` applies per-app desaturation for accessibility.
-When an accessibility service requests reduced saturation for specific
-apps, the controller maintains a per-UID saturation level:
+`AppSaturationController` applies per-app desaturation. Privileged callers
+holding `CONTROL_DISPLAY_SATURATION` request reduced saturation for a
+specific package via `ColorDisplayManager.setAppSaturationLevel()`, and the
+controller maintains a saturation level keyed by package name and user ID:
 
 ```mermaid
 graph LR
-    A11Y["AccessibilityManager"] -->|"setAppSaturation(uid, level)"| ASC["AppSaturationController"]
+    CDM["ColorDisplayManager"] -->|"setAppSaturationLevel(packageName, level)"| ASC["AppSaturationController"]
     ASC -->|"per-layer colorTransform"| SF7["SurfaceFlinger<br/>(per-layer matrix)"]
 ```
 
@@ -19805,7 +20045,6 @@ graph TD
         USER["User Setting<br/>(brightness slider)"]
         AUTO["AutomaticBrightnessController<br/>(light sensor)"]
         CLAMP["BrightnessClamperController<br/>(thermal, power, HBM)"]
-        TEMP["DisplayWhiteBalanceController"]
     end
 
     subgraph "DisplayBrightnessController"
@@ -19822,7 +20061,6 @@ graph TD
     USER --> DBC
     AUTO --> DBC
     CLAMP --> DBC
-    TEMP --> DBC
     DBC --> STRAT
     STRAT --> ANIM
     ANIM --> DPS
@@ -19888,8 +20126,10 @@ activity resumes or pauses while the display is off.
 When `DisplayPowerController` signals screen-off, it triggers:
 
 1. `PowerManager.goToSleep()` -- Initiates the sleep sequence
-2. `ActivityTaskManagerInternal.acquireSleepToken()` -- Freezes activity
-   lifecycle for the display
+2. `PhoneWindowManager` calls `DisplayPolicy.screenTurnedOff()`, which
+   acquires the token via
+   `DisplayContent.addSleepToken(DISPLAY_OFF_SLEEP_TOKEN_TAG)` -- freezing
+   the activity lifecycle for the display
 3. Activities in the RESUMED state are paused
 4. The window manager applies the `DISPLAY_STATE_OFF` flag
 
@@ -19951,9 +20191,10 @@ The method uses a state machine for tracking screen-on/off reporting:
 
 ### 24.11.8 Brightness Ramp Animations
 
-`DisplayPowerController` uses `DualRampAnimator` (an extension of
-`RampAnimator`) to smoothly transition brightness. The dual ramp handles
-both the HDR brightness and SDR brightness simultaneously:
+`DisplayPowerController` uses `DualRampAnimator` (a nested helper class in
+`RampAnimator` that drives two `RampAnimator` instances) to smoothly
+transition brightness. The dual ramp animates the screen brightness and the
+SDR brightness simultaneously:
 
 - **Increase ramp**: Maximum time `mBrightnessRampIncreaseMaxTimeMillis`
   (e.g., 2000ms for a gentle brightening when going outdoors)
@@ -20247,8 +20488,10 @@ public static final int SAMPLING_KEY_CIE_Y = 2;
 
 A LUT is attached per layer via `SurfaceControl.Transaction.setLuts()` (passing
 `null` clears it), and an app can discover device support through
-`OverlayProperties.getLutProperties()`, which returns `null` for virtual
-displays. The entire surface is guarded by the `luts_api` flag.
+`OverlayProperties.getLutProperties()`. Only internal and external displays
+report real device capabilities -- for other display types, including virtual
+displays, `Display.getOverlaySupport()` returns the default
+`OverlayProperties`. The entire surface is guarded by the `luts_api` flag.
 
 ### 24.13.4 Picture Profiles
 
@@ -20309,7 +20552,7 @@ standard Android 17 build over `adb shell`:
 | `dumpsys SurfaceFlinger --frametimeline` | Per-frame timing (expected vs actual present) |
 | `dumpsys SurfaceFlinger --list` | List all layers |
 | `dumpsys window displays` | WindowManagerService display info |
-| `dumpsys window display-areas` | DisplayArea hierarchy (Section 24.2) |
+| `dumpsys window containers` | Window container / DisplayArea hierarchy (Section 24.2) |
 | `dumpsys color_display` | ColorDisplayService state (Section 24.10) |
 | `dumpsys device_state` | DeviceStateManagerService posture (Section 24.5) |
 | `cmd display set-brightness <0.0-1.0>` | Set display brightness |
@@ -20589,7 +20832,6 @@ classDiagram
         -View mView
         -Choreographer mChoreographer
         -Surface mSurface
-        -ThreadedRenderer mThreadedRenderer
         +setView(View, LayoutParams)
         +scheduleTraversals()
         +performTraversals()
@@ -21040,8 +21282,8 @@ The spec-combination table:
 | AT_MOST | match_parent | AT_MOST | parent size - padding |
 | AT_MOST | wrap_content | AT_MOST | parent size - padding |
 | UNSPECIFIED | exact dp | EXACTLY | child size |
-| UNSPECIFIED | match_parent | UNSPECIFIED | 0 |
-| UNSPECIFIED | wrap_content | UNSPECIFIED | 0 |
+| UNSPECIFIED | match_parent | UNSPECIFIED | parent size - padding |
+| UNSPECIFIED | wrap_content | UNSPECIFIED | parent size - padding |
 
 ### 25.2.6 View.layout() -- Positioning
 
@@ -21149,7 +21391,7 @@ framework sets `PFLAG_SKIP_DRAW`, and `updateDisplayListIfDirty()` bypasses
 `draw()` entirely, calling `dispatchDraw()` directly:
 
 ```
-Source: frameworks/base/core/java/android/view/View.java (line 24771)
+Source: frameworks/base/core/java/android/view/View.java (line 24358, in updateDisplayListIfDirty())
 
     if ((mPrivateFlags & PFLAG_SKIP_DRAW) == PFLAG_SKIP_DRAW) {
         dispatchDraw(canvas);
@@ -21296,10 +21538,12 @@ Source: frameworks/base/core/java/android/view/ViewRootImpl.java
 ```
 
 The critical subtlety is that `performTraversals()` may call
-`measureHierarchy()` *twice* -- once before relayout and once after -- if
-the window size changed as a result of measurement.  This two-pass behavior
-ensures that views see the final window dimensions during their last
-measurement.
+`measureHierarchy()` *twice*, both times before relayout -- once for the
+pending layout request, and once more after `dispatchApplyInsets()` when
+fitting system windows triggered a fresh layout request.  After
+`relayoutWindow()` returns, any re-measurement is done directly through
+`performMeasure()`, which ensures that views see the final window
+dimensions during their last measurement.
 
 ### 25.2.11 performMeasure, performLayout, and draw
 
@@ -21432,11 +21676,11 @@ Source: frameworks/base/core/java/android/view/ViewConfiguration.java (line 50)
 | `TAP_TIMEOUT` | 100 ms | Delay before confirming a tap (vs. scroll) |
 | `DOUBLE_TAP_TIMEOUT` | 300 ms | Max interval between double-tap events |
 | `DOUBLE_TAP_MIN_TIME` | 40 ms | Min interval (filter accidental double-taps) |
-| `LONG_PRESS_TIMEOUT` | 400 ms | Duration before long-press fires |
+| `DEFAULT_LONG_PRESS_TIMEOUT` | 400 ms | Duration before long-press fires |
 | `PRESSED_STATE_DURATION` | 64 ms | Duration of pressed visual feedback |
-| `MULTI_PRESS_TIMEOUT` | 300 ms | Interval for multi-press detection |
-| `KEY_REPEAT_TIMEOUT` | 400 ms | Delay before key repeat starts |
-| `KEY_REPEAT_DELAY` | 50 ms | Interval between key repeats |
+| `DEFAULT_MULTI_PRESS_TIMEOUT` | 300 ms | Interval for multi-press detection |
+| `DEFAULT_KEY_REPEAT_TIMEOUT_MS` | 400 ms | Delay before key repeat starts |
+| `DEFAULT_KEY_REPEAT_DELAY_MS` | 50 ms | Interval between key repeats |
 | `SCROLL_BAR_FADE_DURATION` | 250 ms | Scrollbar fade-out animation time |
 | `SCROLL_BAR_DEFAULT_DELAY` | 300 ms | Delay before scrollbar fades |
 
@@ -21711,7 +21955,8 @@ Source: frameworks/base/core/java/android/view/ViewGroup.java (line 3421)
         if (ev.isFromSource(InputDevice.SOURCE_MOUSE)
                 && ev.getAction() == MotionEvent.ACTION_DOWN
                 && ev.isButtonPressed(MotionEvent.BUTTON_PRIMARY)
-                && isOnScrollbarThumb(ev.getX(), ev.getY())) {
+                && isOnScrollbarThumb(ev.getXDispatchLocation(0),
+                        ev.getYDispatchLocation(0))) {
             return true;
         }
         return false;
@@ -21766,10 +22011,11 @@ Source: frameworks/base/core/java/android/view/View.java
                         mPrivateFlags |= PFLAG_PREPRESSED;
                         // Delayed pressed feedback
                         postDelayed(mPendingCheckForTap,
-                            ViewConfiguration.getTapTimeout());
+                            getTapTimeoutMillis());
                     } else {
                         setPressed(true, x, y);
-                        checkForLongClick(0, x, y, ...);
+                        checkForLongClick(getLongPressTimeoutMillis(),
+                            x, y, ...);
                     }
                     break;
 
@@ -21886,10 +22132,10 @@ Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 3307)
         checkThreadCompat();
         if (!mTraversalScheduled) {
             mTraversalScheduled = true;
-            mTraversalBarrier = mQueue.postSyncBarrier();
-            mChoreographer.postCallback(
-                    Choreographer.CALLBACK_TRAVERSAL,
-                    mTraversalRunnable, null);
+            // ...
+            postTraversalBarrier();
+            mChoreographer.postVsyncCallback(
+                    Choreographer.CALLBACK_TRAVERSAL, mTraversalCallback);
             notifyRendererOfFramePending();
             pokeDrawLockIfNeeded();
         }
@@ -21898,7 +22144,8 @@ Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 3307)
 
 Three critical actions happen here:
 
-1. **Sync barrier** -- `mQueue.postSyncBarrier()` inserts a barrier into the
+1. **Sync barrier** -- `postTraversalBarrier()` (line 3355) calls
+   `mQueue.postSyncBarrier()` to insert a barrier into the
    `MessageQueue`, preventing synchronous messages from running.  Only
    asynchronous messages (like VSYNC callbacks) can proceed.  This ensures
    traversals happen before any other handler messages.
@@ -21954,7 +22201,7 @@ reflect the latest user interaction.
 ### 25.4.4 The doTraversal() Bridge
 
 When the Choreographer fires `CALLBACK_TRAVERSAL`, it invokes
-`mTraversalRunnable`:
+`mTraversalCallback`:
 
 ```
 Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 3347)
@@ -21962,7 +22209,7 @@ Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 3347)
     void doTraversal(long frameTimeNanos) {
         if (mTraversalScheduled) {
             mTraversalScheduled = false;
-            mQueue.removeSyncBarrier(mTraversalBarrier);
+            removeTraversalBarrier();
             performTraversals(frameTimeNanos);
         }
     }
@@ -22059,10 +22306,12 @@ For touch events, `ViewPostImeInputStage` is the critical stage.  Its
 `processPointerEvent()` method calls:
 
 1. `mView.dispatchPointerEvent(event)` -- dispatches to the view hierarchy.
-2. If the event is a `DOWN`, it schedules a check for potential pointer
-   capture.
-3. If hardware acceleration is enabled and the event involves drawing, it
-   uses `mAttachInfo.mThreadedRenderer` to signal the render thread.
+2. `maybeUpdatePointerIcon()` and `maybeUpdateTooltip()` -- refreshes the
+   mouse pointer icon and any hover tooltip for the new pointer position.
+3. If a view requested unbuffered input during dispatch
+   (`mAttachInfo.mUnbufferedDispatchRequested`), it switches to unbuffered
+   input dispatch via `scheduleConsumeBatchedInputImmediately()`, and it
+   applies variable-refresh-rate touch boosting for handled events.
 
 For key events, the pipeline allows the IME to consume keys before the view
 hierarchy sees them.  This is why typing in an `EditText` does not trigger
@@ -22083,14 +22332,14 @@ sequenceDiagram
     App->>App: textView.setText("Hello")
     App->>VRI: requestLayout() -> scheduleTraversals()
     VRI->>MQ: postSyncBarrier() [barrier token]
-    VRI->>Choreo: postCallback(CALLBACK_TRAVERSAL, mTraversalRunnable)
+    VRI->>Choreo: postVsyncCallback(CALLBACK_TRAVERSAL, mTraversalCallback)
     App->>MQ: handler.post(checkWidth)
 
     Note over MQ: Barrier blocks checkWidth (synchronous)
     Note over MQ: VSYNC arrives (asynchronous)
 
-    Choreo->>VRI: mTraversalRunnable.run()
-    VRI->>MQ: removeSyncBarrier(token)
+    Choreo->>VRI: mTraversalCallback -> doTraversal()
+    VRI->>MQ: removeTraversalBarrier()
     VRI->>VRI: performTraversals()
     Note over VRI: setText triggers re-measure, text has new width
     VRI->>VRI: Traversal complete
@@ -22333,7 +22582,7 @@ Source: frameworks/base/core/java/android/view/ViewRootImpl.java
     private boolean draw(boolean fullRedrawNeeded,
             @Nullable SurfaceSyncGroup activeSyncGroup, ...) {
         Surface surface = mSurface;
-        if (!surface.isValid()) return false;
+        if (!mRenderTargetIsValid) return false;
         ...
         if (!dirty.isEmpty() || mIsAnimating || accessibilityFocusDirty) {
             if (isHardwareEnabled()) {
@@ -22720,40 +22969,43 @@ Source: frameworks/base/core/java/android/view/ViewGroup.java (line 3446)
 
 | Strategy | Behavior |
 |----------|----------|
-| `FOCUS_BEFORE_DESCENDANTS` | Parent tries to take focus before children |
-| `FOCUS_AFTER_DESCENDANTS` | Children are offered focus first (default) |
+| `FOCUS_BEFORE_DESCENDANTS` | Parent tries to take focus before children (default) |
+| `FOCUS_AFTER_DESCENDANTS` | Children are offered focus first |
 | `FOCUS_BLOCK_DESCENDANTS` | Children never get focus |
 
 ### 25.7.5 Keyboard Navigation Clusters
 
 API 26 introduced **keyboard navigation clusters** for grouping related
-views.  When the user presses Tab, focus moves between clusters.  Within a
-cluster, arrow keys navigate between individual views:
+views.  Plain Tab / Shift+Tab moves focus in tab order and stays confined
+within the current cluster; Ctrl+Tab (Ctrl+Shift+Tab for backward) jumps
+between clusters via `ViewRootImpl.performKeyboardGroupNavigation()`.
+Arrow keys perform ordinary directional focus search:
 
 ```mermaid
 graph LR
-    subgraph "Cluster A (Toolbar)"
+    subgraph ClusterA["Cluster A (Toolbar)"]
         Back["Back"]
         Title["Title"]
         Menu["Menu"]
     end
 
-    subgraph "Cluster B (Content)"
+    subgraph ClusterB["Cluster B (Content)"]
         Item1["Item 1"]
         Item2["Item 2"]
         Item3["Item 3"]
     end
 
-    subgraph "Cluster C (FAB)"
+    subgraph ClusterC["Cluster C (FAB)"]
         FAB["FAB Button"]
     end
 
-    ClusterA -->|Tab| ClusterB
-    ClusterB -->|Tab| ClusterC
-    ClusterC -->|Tab| ClusterA
+    ClusterA -->|Ctrl+Tab| ClusterB
+    ClusterB -->|Ctrl+Tab| ClusterC
+    ClusterC -->|Ctrl+Tab| ClusterA
 ```
 
-A `ViewGroup` becomes a cluster by setting
+Ctrl+Shift+Tab moves between clusters in the reverse direction.  A
+`ViewGroup` becomes a cluster by setting
 `android:keyboardNavigationCluster="true"`.
 
 ### 25.7.6 Default Focus
@@ -23101,10 +23353,10 @@ flowchart TD
     Start["rInflateChildren(parser, parent, attrs)"] --> Loop{"More XML elements?"}
     Loop -->|Yes| ReadTag["Read tag name"]
     ReadTag --> IsRequestFocus{Is requestFocus?}
-    IsRequestFocus -->|Yes| RF["parent.restoreDefaultFocus()"]
+    IsRequestFocus -->|Yes| RF["Set pendingRequestFocus = true,<br/>consume child elements"]
     RF --> Loop
     IsRequestFocus -->|No| IsTag{Is tag?}
-    IsTag -->|Yes| ParseTag["parseViewTag(parent, child, attrs)"]
+    IsTag -->|Yes| ParseTag["parseViewTag(parser, parent, attrs)"]
     ParseTag --> Loop
     IsTag -->|No| IsInclude{Is include?}
     IsInclude -->|Yes| ProcessInclude["parseInclude(parser, context, parent, attrs)"]
@@ -23116,7 +23368,10 @@ flowchart TD
     GenParams --> Recurse["rInflateChildren(parser, child, attrs)"]
     Recurse --> AddChild["parent.addView(child, params)"]
     AddChild --> Loop
-    Loop -->|No| Done["return"]
+    Loop -->|No| PRF{"pendingRequestFocus?"}
+    PRF -->|Yes| RDF["parent.restoreDefaultFocus()"]
+    RDF --> Done["return"]
+    PRF -->|No| Done
 ```
 
 Each child element triggers recursive descent.  The `XmlPullParser` tracks
@@ -23203,7 +23458,7 @@ parsing if it was unavailable.
 
 That feature never became broadly useful and has since been **removed** from
 the platform.  The vestige in the current source is a comment on the
-`@hide` `createView(Context, String, String, AttributeSet)` overload in
+`@hide` `tryCreateView(View, String, Context, AttributeSet)` method in
 `frameworks/base/core/java/android/view/LayoutInflater.java` (around line
 930), which notes it was "originally for internal use by precompiled layouts,
 which have since been removed."  In Android 17 every inflation therefore goes
@@ -23852,7 +24107,7 @@ How the per-frame decision flows:
 ```mermaid
 graph TD
     Vote["View votes:<br/>setRequestedFrameRate() /<br/>setFrameContentVelocity()"] --> Agg["ViewRootImpl aggregates<br/>(mPreferredFrameRateCategory,<br/>mPreferredFrameRate)"]
-    Agg --> Resolve["Resolve to Surface<br/>FRAME_RATE_CATEGORY_* (1-5)"]
+    Agg --> Resolve["Resolve to Surface<br/>FRAME_RATE_CATEGORY_* (0-5)"]
     Resolve --> SF["Report to SurfaceFlinger<br/>during traversal"]
     SF --> Panel["Display driver picks<br/>refresh rate"]
 ```
@@ -23902,8 +24157,10 @@ remotely (in SurfaceFlinger) rather than on the app's own render thread.  The
 goal is better isolation and the ability to composite app-recorded display
 lists without round-tripping every layer through the app.
 
-This work is staged behind HWUI aconfig flags in
-`frameworks/base/libs/hwui/aconfig/hwui_flags.aconfig` and touches the
+This work is staged behind the libgui aconfig flag
+`out_of_process_rendering`, declared in
+`frameworks/native/libs/gui/libgui_flags.aconfig` and consumed by
+`frameworks/base/libs/hwui/hwui/OutOfProcessRendering.cpp`, and touches the
 `CanvasContext` / render-pipeline abstractions (for example, allowing drawing
 without a `Surface` and plumbing a separate rendering size through to HWUI).
 For app developers the surface stays the same: you still record display lists
@@ -24300,8 +24557,8 @@ Record a Perfetto trace while scrolling a `RecyclerView`:
 ```bash
 # Record a 5-second trace with view-related categories
 adb shell perfetto -o /data/misc/perfetto-traces/view_trace.perfetto-trace \
-    -t 5s \
-    --txt <<EOF
+    --txt -c - <<EOF
+duration_ms: 5000
 buffers: { size_kb: 65536 }
 data_sources: {
     config {
@@ -24439,10 +24696,11 @@ Android provides several developer options for debugging the view system:
 
 2. **Profile GPU rendering** (`Developer Options > Profile GPU rendering`):
    Shows a bar chart overlay with per-frame timing broken into:
+   - **Green**: Input handling
    - **Blue**: Draw (recording display lists)
-   - **Green**: Sync & upload (syncing display lists to render thread)
-   - **Red**: Execute (GPU execution)
-   - **Orange**: Process (swap buffers)
+   - **Light blue**: Sync & upload (syncing display lists to render thread)
+   - **Red**: Command issue (issuing draw commands to the GPU)
+   - **Orange**: Swap buffers
 
 3. **Debug GPU overdraw** (`Developer Options > Debug GPU overdraw`):
    Colors pixels by how many times they are drawn:

@@ -175,9 +175,11 @@ graph TD
     HANDHELD --> GENERIC_SYSTEM["generic_system.mk"]
     HANDHELD --> HANDHELD_SYSTEM_EXT["handheld_system_ext.mk"]
     HANDHELD --> AOSP_PRODUCT["aosp_product.mk"]
-    BASE_HANDHELD --> GENERIC["generic.mk"]
+    BASE_HANDHELD --> MULTIDISPLAY["multidisplay.mk"]
+    BASE_PHONE --> GENERIC["generic.mk"]
     GENERIC --> VERSIONS["versions.mk"]
     TABLET["tablet.mk"] --> HANDHELD
+    TABLET --> GENERIC
     SLIM["slim_handheld.mk"] --> GENERIC
 
     style PHONE fill:#ffecb3
@@ -492,7 +494,7 @@ bool MultihalSensors::setSensorsReportingImpl(SensorsTransport& st,
                        getQemuSensorNameByHandle(sensorHandle),
                        (enabled ? 1 : 0));
 
-    if (st.Send(buffer, len) < 0) {
+    if (st.Send(CONTROL, buffer, len) < 0) {
         ALOGE("%s:%d: send for %s failed", __func__, __LINE__, st.Name());
         return false;
     } else {
@@ -516,7 +518,7 @@ text messages like `acceleration:9.8:0.0:0.1`. The parsing is done in
 // Source: device/generic/goldfish/hals/sensors/multihal_sensors_qemu.cpp
 void MultihalSensors::parseQemuSensorEventLocked(QemuSensorsProtocolState* state) {
     char buf[256];
-    const int len = m_sensorsTransport->Receive(buf, sizeof(buf) - 1);
+    const int len = m_sensorsTransport->Receive(DATA, buf, sizeof(buf) - 1);
     // ...
     if (const char* values = testPrefix(buf, end, "acceleration", ':')) {
         if (sscanf(values, "%f:%f:%f",
@@ -691,17 +693,17 @@ PRODUCT_VENDOR_PROPERTIES += ro.telephony.default_network=33
 **Location:** `device/generic/goldfish/hals/fingerprint/`
 
 The fingerprint HAL is a relatively simple implementation that provides
-AIDL `IFingerprint` service. From `device/generic/goldfish/hals/fingerprint/hal.cpp`:
+AIDL `IFingerprint` service. From `device/generic/goldfish/hals/fingerprint/fingerprint_hal.cpp`:
 
 ```cpp
-// Source: device/generic/goldfish/hals/fingerprint/hal.cpp
+// Source: device/generic/goldfish/hals/fingerprint/fingerprint_hal.cpp
 constexpr char HW_COMPONENT_ID[] = "FingerprintSensor";
 constexpr char XW_VERSION[] = "ranchu/fingerprint/aidl";
 constexpr char FW_VERSION[] = "1";
 constexpr char SERIAL_NUMBER[] = "00000001";
 constexpr char SW_COMPONENT_ID[] = "matchingAlgorithm";
 
-ndk::ScopedAStatus Hal::getSensorProps(std::vector<SensorProps>* out) {
+ndk::ScopedAStatus FingerprintHal::getSensorProps(std::vector<SensorProps>* out) {
     // ...
     SensorProps props;
     props.commonProps.sensorId = 0;
@@ -723,7 +725,10 @@ scanner that triggers authentication events through this HAL.
 **Location:** `device/generic/goldfish/hals/hwc3/`
 
 The hardware composer HAL has the richest implementation of all the
-emulator HALs. It supports two composition modes:
+emulator HALs. It supports four composition backends, selected in
+`Device::getComposer` (`device/generic/goldfish/hals/hwc3/Device.cpp`):
+HostFrameComposer, GuestFrameComposer, ClientFrameComposer, and
+NoOpFrameComposer. The two main ones are:
 
 1. **HostFrameComposer** -- delegates composition to the host GPU, achieving
    hardware-accelerated rendering.
@@ -771,7 +776,7 @@ std::array<std::int8_t, 16> ToLibyuvColorMatrix(
             int indexIn = (4 * r) + c;
             int indexOut = (4 * c) + r;
             float clampedValue = std::max(-128.0f,
-                std::min(127.0f, in[indexIn] * 66.0f + 0.5f));
+                std::min(127.0f, in[indexIn] * 64.0f + 0.5f));
             out[indexOut] = static_cast<std::int8_t>(clampedValue);
         }
     }
@@ -1010,16 +1015,16 @@ These libraries work in pairs:
 ```makefile
 # Source: device/generic/goldfish/product/generic.mk
 PRODUCT_PACKAGES += \
-    android.hardware.media.c2@1.0-service-goldfish \
-    libcodec2_goldfish_vp8dec \
-    libcodec2_goldfish_vp9dec \
-    libcodec2_goldfish_avcdec \
-    libcodec2_goldfish_hevcdec
+    android.hardware.media.c2-service-goldfish
 ```
 
 The goldfish media codecs use the Codec2 framework and delegate video
 decoding to the host through QEMU, enabling hardware-accelerated video
-playback even inside the emulator.
+playback even inside the emulator. The service statically links the
+decoder libraries declared in
+`device/generic/goldfish/codecs/c2/Android.bp` --
+`libcodec2_goldfish_common`, `libcodec2_goldfish_avcdec`,
+`libcodec2_goldfish_hevcdec`, and `libcodec2_goldfish_vpxdec`.
 
 **Compliance HALs ("Hello, world!" implementations):**
 
@@ -1076,7 +1081,7 @@ byte-stream interface, similar to a Unix pipe but crossing the VM boundary.
 graph LR
     subgraph "Guest (Android)"
         GHAL["HAL Implementation"]
-        GLIB["libqemu_pipe"]
+        GLIB["libqemupipe.ranchu"]
         KPIPE["goldfish-pipe<br/>kernel driver"]
     end
 
@@ -1086,7 +1091,7 @@ graph LR
     end
 
     GHAL -->|"qemu_pipe_open_ns()"| GLIB
-    GLIB -->|"open /dev/goldfish_pipe"| KPIPE
+    GLIB -->|"open vsock, or<br/>/dev/goldfish_pipe_dprctd<br/>for graphics pipes"| KPIPE
     KPIPE -->|"MMIO / PIO"| HPIPE
     HPIPE -->|"service dispatch"| HSVC
 
@@ -1094,14 +1099,19 @@ graph LR
     style HPIPE fill:#fff3e0
 ```
 
-**Guest-side API:** The pipe is accessed through the `libqemu_pipe` library,
-which provides functions like:
+**Guest-side API:** The pipe is accessed through the `libqemupipe.ranchu`
+library (source at `hardware/google/gfxstream/guest/qemupipe/`), which
+provides functions like:
 
 - `qemu_pipe_open_ns(namespace, name, flags)` -- opens a named pipe to a
   specific host service
 
 - `qemu_pipe_write_fully(fd, data, size)` -- writes data to the pipe
 - `qemu_pipe_read_fully(fd, data, size)` -- reads data from the pipe
+
+Under the hood, non-graphics pipes now travel over a vsock socket; only
+graphics pipes still fall back to the deprecated character device, whose
+node is `/dev/goldfish_pipe_dprctd`.
 
 The `qemud` layer adds multiplexing on top of the raw pipe. Multiple logical
 channels can be opened through a single pipe connection. From
@@ -1596,16 +1606,20 @@ The camera subsystem supports multiple virtual camera backends:
    `FakeRotatingCamera` in `device/generic/goldfish/hals/camera/`).
 
 Camera data transfer uses the same qemud protocol, with a query-response
-pattern:
+pattern. The camera is selected when its channel is opened -- the guest opens
+a qemud channel named `camera:name=<camera>` -- and the subsequent queries
+carry no arguments:
 
 ```
-Guest -> Host: "list"          (list available cameras)
+Guest -> Host: "list"       (on the "camera" factory channel)
 Host -> Guest: "ok:<camera_list>"
-Guest -> Host: "connect:<id>"  (connect to a specific camera)
+Guest opens qemud channel "camera:name=<camera>"
+Guest -> Host: "connect"    (connect to the camera)
 Host -> Guest: "ok"
-Guest -> Host: "start:<params>" (start capture)
+Guest -> Host: "start"      (start capture)
 Host -> Guest: "ok"
-Host -> Guest: <frame_data>    (raw frame data)
+Host -> Guest: <frame_data> (raw frame data)
+Guest -> Host: "stop", then "disconnect" when done
 ```
 
 ### 60.3.10 Virtual Telephony
@@ -1936,9 +1950,14 @@ host services.
 
 ### 60.5.3 Kernel Module Configuration
 
-The modern Ranchu kernel uses loadable kernel modules for VirtIO devices. The
-Cuttlefish board configuration (which uses the same kernel) shows the required
-ramdisk modules:
+The modern Ranchu kernel uses loadable kernel modules for VirtIO devices.
+Goldfish keeps its own kernel board config with a short first-stage list
+(`device/generic/goldfish/board/kernel/arm64.mk` names just
+`virtio_dma_buf.ko`, `virtio_mmio.ko`, and `virtio-rng.ko`, plus a
+`RAMDISK_SYSTEM_KERNEL_MODULES` set, sourced from `prebuilts/qemu-kernel/`).
+The Cuttlefish board configuration -- which uses a separate prebuilt kernel
+tree under `kernel/prebuilts/` -- shows a fuller set of required ramdisk
+modules:
 
 ```makefile
 # Source: device/google/cuttlefish/shared/BoardConfig.mk
@@ -1998,7 +2017,10 @@ to long-term kernels (Wear OS on 6.6, the clockwork emulator and x86 TV on 6.1).
 The most interesting case is the **desktop** target: it reads its version and
 directory from `RELEASE_KERNEL_CUTTLEFISH_*` release-config variables and then
 sources its kernel and modules from a separate desktop-specific tree rather
-than the shared prebuilts:
+than the shared prebuilts. Note that the `filter` guards below match the
+non-AOSP product names `cf_x86_64_desktop` / `cf_arm64_desktop` exactly, so
+the AOSP `aosp_cf_x86_64_desktop` product falls through to the shared
+`kernel/prebuilts/` branch:
 
 ```makefile
 # Source: device/google/cuttlefish/shared/BoardConfig.mk
@@ -2120,6 +2142,7 @@ the Android 17 tree are:
 | `vsoc_arm64_pgagnostic/` | ARM64, page-size agnostic |
 | `vsoc_arm64_minidroid/` | Minimal ARM64 |
 | `vsoc_arm/` and `vsoc_arm_minidroid/` | 32-bit ARM |
+| `vsoc_x86/` | 32-bit x86 (go / TV / Wear products) |
 | `vsoc_riscv64/` | RISC-V 64-bit |
 | `vsoc_riscv64_minidroid/` | Minimal RISC-V |
 
@@ -2161,9 +2184,11 @@ AL_BINARY_TRANSLATION_MODE := ndk_translation_only
 UNCOMPRESS_CHROME_WEBVIEW = true
 ```
 
-The desktop target also pulls its kernel from a separate location rather than
-the shared `kernel/prebuilts/` tree (see section 60.5.4), reflecting that the
-desktop Android effort ships its own kernel branch.
+The kernel override in `shared/BoardConfig.mk` (see section 60.5.4) applies
+to the non-AOSP `cf_x86_64_desktop` / `cf_arm64_desktop` product names, which
+the desktop Android effort pairs with its own kernel branch; the AOSP
+`aosp_cf_x86_64_desktop` product does not match that filter and still uses
+the shared `kernel/prebuilts/` path.
 
 ### 60.6.4 Host Tooling
 
@@ -2179,7 +2204,7 @@ Cuttlefish includes an extensive suite of host-side tools under
 | `assemble_cvd/` | Assemble disk images and generate the VMM configuration |
 | `status/` and `restart_cvd/` | Query and restart a running instance |
 | `cvd_env/` | gRPC environment management |
-| `process_sandboxer/` | Wrap host daemons in seccomp sandboxes (new in Android 17) |
+| `process_sandboxer/` | Wrap host daemons in seccomp sandboxes |
 | `console_forwarder/` | Serial console forwarding |
 | `kernel_log_monitor/` | Kernel log monitoring |
 | `log_tee/` | Log tee-ing and forwarding |
@@ -2215,9 +2240,11 @@ For all host tools development please refer to
 https://github.com/google/android-cuttlefish/blob/main/docs/HostToolsMigration.md
 ```
 
-The older `acloud` launcher that earlier guides referenced is not part of this
-tree at all in Android 17 — local launches go directly through `launch_cvd`
-(from the host package) or through `cvd` from the external repository.
+The older `acloud` launcher that earlier guides referenced is no longer part
+of the `device/google/cuttlefish` tree (it lives separately under
+`tools/acloud/` and is not the recommended local-launch path) — local launches
+go directly through `launch_cvd` (from the host package) or through `cvd` from
+the external repository.
 
 ### 60.6.5 Board Configuration Differences
 
@@ -2334,7 +2361,8 @@ These modules must be available in first-stage init because:
 - `virtio-gpu.ko` -- required for display output
 - `virtio_net.ko` -- required for network access during provisioning
 - `virtio_input.ko` -- required for input events
-- `nd_virtio.ko` -- VirtIO NUMA distance support
+- `nd_virtio.ko` -- libnvdimm/virtio-pmem support (persistent-memory device
+  backing, paired with `virtio_pmem.ko`)
 - `virtio-rng.ko` -- random number generation (required for crypto init)
 
 **Transport modules:**
@@ -2392,10 +2420,10 @@ graph TB
         CF_GUEST2["Guest Android"]
 
         CF_LAUNCH --> CF_CVD
-        CF_LAUNCH --> CF_WEBRTC
-        CF_LAUNCH --> CF_MODEM
-        CF_LAUNCH --> CF_GNSS
-        CF_LAUNCH --> CF_LOG
+        CF_CVD --> CF_WEBRTC
+        CF_CVD --> CF_MODEM
+        CF_CVD --> CF_GNSS
+        CF_CVD --> CF_LOG
         CF_CVD --> CF_GUEST2
     end
 
@@ -2433,7 +2461,7 @@ GUI features of the Android Studio emulator.
 
 Cuttlefish's default VMM is **crosvm** (Chrome OS Virtual Machine monitor),
 a Rust-based VMM originally developed for Chrome OS. The VM manager code at
-`device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp` (1076 lines)
+`device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp` (1093 lines)
 constructs the crosvm command line with all virtio device parameters.
 
 #### Virtio Device Map
@@ -2450,7 +2478,7 @@ graph TB
         K --> VB["virtio-blk.ko"]
         K --> VS["vsock.ko"]
         K --> VR["virtio-rng.ko"]
-        K --> VC["virtio-console.ko<br/>18 HVC ports"]
+        K --> VC["virtio-console.ko<br/>20 HVC ports"]
     end
 
     subgraph Host["Cuttlefish Host"]
@@ -2489,7 +2517,7 @@ Network interfaces are assigned sub-addresses on PCI slot 1:
 |---|---|---|---|
 | Mobile | 00:01.1 | `cvd-mtap-NN` | Cellular data simulation |
 | Ethernet | 00:01.2 | `cvd-etap-NN` | Wired network |
-| WiFi | 00:01.3 | `cvd-wtap-NN` | Wireless (optional) |
+| WiFi | auto-assigned | `cvd-wtap-NN` | Wireless (only when `mac80211_hwsim` is disabled) |
 
 ### 60.6.11 Vhost-User Device Model
 
@@ -2521,9 +2549,9 @@ Supported vhost-user device types:
 
 | Type | Backend Process | Socket Path | Purpose |
 |---|---|---|---|
-| `gpu` | vhost-user-gpu | `gpu_socket_path()` | Graphics rendering |
+| `gpu` | vhost-user-gpu | `PerInstanceInternalUdsPath("vhost-user-gpu-socket")` | Graphics rendering |
 | `input` | vhost_user_input (Rust) | `keyboard_socket_path()` etc. | Input events |
-| `vsock` | vhost-device-vsock | `vhost_user_vsock_path()` | Host-guest communication |
+| `vsock` | vhost-device-vsock | `$TMPDIR/vsock_<cid>_<uid>/vhost.socket` | Host-guest communication |
 | `block` | vhost-user-block | disk socket | Storage (disk 2 only) |
 | `mac80211-hwsim` | WiFi simulator | hwsim socket | WiFi radio simulation |
 
@@ -2652,7 +2680,7 @@ graph LR
     subgraph Guest["Guest VM"]
         RMIL["RIL<br/>Mobile Data"] --> VN1["virtio-net<br/>00:01.1"]
         ETH["EthernetManager"] --> VN2["virtio-net<br/>00:01.2"]
-        WIFI["WiFi<br/>mac80211_hwsim"] --> VN3["virtio-net<br/>00:01.3"]
+        WIFI["WiFi<br/>TAP mode"] --> VN3["virtio-net<br/>auto PCI"]
     end
 
     subgraph Host["Host"]
@@ -2729,11 +2757,14 @@ device/google/cuttlefish/guest/hals/
 └── vulkan/          # Graphics support
 ```
 
-Two earlier entries are gone: there is no longer a dedicated `ril/` HAL
-directory (telephony goes through the host `modem_simulator` over an HVC port)
-nor a `sensors/` directory here (the sensors bridge is driven from the host
+One entry is newly gone in this release: the dedicated `ril/` HAL directory
+was removed when Cuttlefish switched to goldfish's shared radio HAL, which
+reaches the host `modem_simulator` over the TCP/vsock ports advertised in
+`ro.boot.modem_simulator_ports`. There is also no `sensors/` directory here,
+but that is much older news -- the Cuttlefish guest sensors HAL was deleted
+back in 2019, and the sensors bridge is driven from the host
 `sensors_simulator` over the `/dev/hvc18` and `/dev/hvc19` ports described
-above). The Android 17 additions of note are the **`npu/`** scheduling HAL
+above. The Android 17 additions of note are the **`npu/`** scheduling HAL
 and the **`virtio_media/`** provider.
 
 Each guest HAL typically reads/writes a virtio-console device (`/dev/hvcN`)
@@ -2889,7 +2920,7 @@ graph LR
         VM_STATE["VM State<br/>(CPU, Memory)"]
         DISK_STATE["Disk State<br/>(system, data)"]
         DEV_STATE["Device State<br/>(GPU, audio)"]
-        SNAP_FILE["snapshot.pb<br/>+ ram.bin<br/>+ textures/"]
+        SNAP_FILE["snapshot.pb<br/>+ ram.bin<br/>+ textures.bin"]
     end
 
     VM_STATE --> SNAP_FILE
@@ -2897,7 +2928,7 @@ graph LR
     DEV_STATE --> SNAP_FILE
 
     subgraph "Snapshot Load"
-        SNAP_FILE2["snapshot.pb<br/>+ ram.bin<br/>+ textures/"]
+        SNAP_FILE2["snapshot.pb<br/>+ ram.bin<br/>+ textures.bin"]
         RESTORED["Restored VM"]
     end
 
@@ -2924,7 +2955,7 @@ typically at `~/.android/avd/<name>.avd/snapshots/`.
 
 - `snapshot.pb` -- Protobuf metadata (machine configuration, timestamp)
 - `ram.bin` -- Complete guest RAM contents
-- `textures/` -- GPU texture and buffer data
+- `textures.bin` -- GPU texture and buffer data
 - `<disk>-snapshot.img` -- Copy-on-write disk overlays
 
 ### 60.7.2 Screen Recording
@@ -3202,10 +3233,12 @@ the host launcher tooling out of the AOSP tree.
 
 ### 60.8.1 The Desktop Product Target
 
-Android 17 adds `aosp_cf_x86_64_desktop` (and an ARM64 sibling) to the
-Cuttlefish product catalog. Unlike the handheld targets, the desktop product
-inherits a desktop-specific vendor stack and pulls its kernel from a separate
-tree (covered in sections 60.5.4 and 60.6.3). It is the virtual reference for
+Android 17 adds `aosp_cf_x86_64_desktop` to the Cuttlefish product catalog
+(the board config also carries a kernel branch for a non-AOSP
+`cf_arm64_desktop` product name, but no ARM64 desktop product exists in
+AOSP). Unlike the handheld targets, the desktop product inherits a
+desktop-specific vendor stack (covered in sections 60.5.4 and 60.6.3). It is
+the virtual reference for
 the desktop Android form factor, exercising large-screen window management,
 binary translation in `ndk_translation_only` mode, and an uncompressed Chrome
 WebView. The product is registered in `device/google/cuttlefish/AndroidProducts.mk`
@@ -3281,10 +3314,11 @@ sequenceDiagram
 
 A recurring concern with Cuttlefish is that the host runs a fleet of helper
 daemons (the VMM, modem simulator, GNSS proxy, secure_env, and so on) with
-broad host privileges. Android 17 introduces
-`device/google/cuttlefish/host/commands/process_sandboxer/`, which wraps those
-host processes in seccomp-based sandboxes built on Google's sandboxed-api /
-sandbox2 library.
+broad host privileges. The answer is
+`device/google/cuttlefish/host/commands/process_sandboxer/` (introduced in
+early 2024, with per-executable policy coverage expanded since), which wraps
+those host processes in seccomp-based sandboxes built on Google's
+sandboxed-api / sandbox2 library.
 
 ```cpp
 // Source: device/google/cuttlefish/host/commands/process_sandboxer/main.cpp
@@ -3352,8 +3386,9 @@ HOME=$PWD ./bin/stop_cvd
 
 The richer `cvd` lifecycle manager and the installable Debian packages
 (`cuttlefish-base`, `cuttlefish-user`) come from the external repository. The
-older `acloud` launcher referenced by pre-17 guides is not present in this tree
-at all.
+older `acloud` launcher referenced by pre-17 guides no longer lives in the
+`device/google/cuttlefish` tree; it survives separately under `tools/acloud/`
+but is not the recommended local-launch path.
 
 ---
 
@@ -3617,12 +3652,13 @@ sdk_phone64_x86_64.mk
   -> phone.mk
        -> handheld.mk
             -> base_handheld.mk
-                 -> generic.mk
-                      -> versions.mk
+                 -> multidisplay.mk
             -> generic_system.mk
             -> handheld_system_ext.mk
             -> aosp_product.mk
        -> base_phone.mk
+            -> generic.mk
+                 -> versions.mk
             -> phone_overlays.mk
 ```
 
@@ -3744,8 +3780,9 @@ m -j$(nproc)
 ```
 
 The slim variant (`device/generic/goldfish/product/slim_handheld.mk`)
-inherits from `generic.mk` directly without the full handheld product
-stack, resulting in a smaller system image that boots faster.
+inherits `base_handheld.mk` plus `generic.mk` but skips `handheld.mk`'s
+`handheld_system_ext.mk` and `aosp_product.mk` layers, resulting in a
+smaller system image that boots faster.
 
 ### 60.9.13 Running CTS on the Emulator
 
@@ -3844,8 +3881,8 @@ architecture:
    rich console commands.
 
 8. **Android 17 Cuttlefish changes** -- A new `aosp_cf_x86_64_desktop` product,
-   the guest-side `vkms_controller` display utility, host daemons wrapped in
-   per-process seccomp sandboxes via `process_sandboxer`, a new Rust NPU
+   the guest-side `vkms_controller` display utility, expanded per-executable
+   seccomp sandboxing of host daemons via `process_sandboxer`, a new Rust NPU
    scheduling HAL, a 20-port HVC map (sensors split into control/data), and the
    migration of the `cvd` launcher and Debian packaging to the external
    `github.com/google/android-cuttlefish` repository.
@@ -3872,7 +3909,7 @@ physical device or in the emulator.
 | `device/generic/goldfish/hals/camera/qemu_channel.cpp` | Camera QEMU pipe communication |
 | `device/generic/goldfish/hals/gnss/GnssHwConn.cpp` | GNSS hardware connection |
 | `device/generic/goldfish/hals/radio/RadioModem.cpp` | Radio modem HAL |
-| `device/generic/goldfish/hals/fingerprint/hal.cpp` | Fingerprint HAL |
+| `device/generic/goldfish/hals/fingerprint/fingerprint_hal.cpp` | Fingerprint HAL |
 | `device/generic/goldfish/hals/hwc3/HostFrameComposer.cpp` | Host GPU composition |
 | `device/generic/goldfish/hals/hwc3/GuestFrameComposer.cpp` | Guest DRM composition |
 | `device/generic/goldfish/hals/gralloc/allocator.cpp` | Graphics buffer allocator |
@@ -3885,7 +3922,7 @@ physical device or in the emulator.
 | `device/google/cuttlefish/AndroidProducts.mk` | Cuttlefish product catalog (incl. desktop) |
 | `device/google/cuttlefish/vsoc_x86_64_only/desktop/aosp_cf.mk` | Desktop product (new in 17) |
 | `device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp` | crosvm command-line construction, HVC map |
-| `device/google/cuttlefish/host/commands/process_sandboxer/main.cpp` | Host process sandboxer (new in 17) |
+| `device/google/cuttlefish/host/commands/process_sandboxer/main.cpp` | Host process sandboxer |
 | `device/google/cuttlefish/guest/commands/vkms_controller/main.cpp` | Guest VKMS display controller (new in 17) |
 | `device/google/cuttlefish/guest/hals/npu/main.rs` | Guest NPU scheduling HAL (new in 17) |
 | `device/google/cuttlefish/shared/device.mk` | Shared device config (installs vkms_controller) |

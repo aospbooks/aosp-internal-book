@@ -100,8 +100,8 @@ classDiagram
 
     class DevicePresenceProcessor {
         +onBleCompanionDeviceFound()
-        +onBtCompanionDeviceConnected()
-        +onSelfManagedDeviceConnected()
+        +onBluetoothCompanionDeviceConnected()
+        +processSelfManagedDevicePresenceEvent()
     }
 
     CompanionDeviceManagerService --> AssociationStore
@@ -170,15 +170,22 @@ These map to distinct capabilities:
 ### 52.1.3 Boot Sequence
 
 `CompanionDeviceManagerService` is a `SystemService` that participates in the
-standard server boot lifecycle. During `onBootPhase()`, the service:
+standard server boot lifecycle. The `CompanionTransportManager`,
+`SystemDataTransferProcessor`, and the other processors are constructed in the
+service constructor. During `onStart()`, the service:
 
-1. Reads persisted association data from disk via `AssociationStore.refreshCache()`.
-2. Initializes the `DevicePresenceProcessor` to start monitoring BLE/BT
-   connections.
+1. Reads persisted association data from disk via `AssociationStore.refreshCache()`
+   and drops any revoked associations.
+2. Reads the UUID-observation store and publishes the binder and local services.
 
-3. Registers with `CompanionTransportManager` for transport lifecycle events.
-4. Sets up the `CrossDeviceSyncController` for call metadata sync.
-5. Initializes the `SystemDataTransferProcessor` for permission sync.
+`onBootPhase()` then does the phase-dependent work:
+
+1. At `PHASE_SYSTEM_SERVICES_READY`, registers the `PackageMonitor` that tracks
+   package removals and changes.
+2. At `PHASE_BOOT_COMPLETED`, initializes the `DevicePresenceProcessor` to start
+   monitoring BLE/BT connections, schedules the
+   `InactiveAssociationsRemovalService`, and calls
+   `CrossDeviceSyncController.onBootCompleted()` for call metadata sync.
 
 The association data is stored in Device Encrypted (DE) storage, so it is
 available before the user unlocks the device. This is explicit in the
@@ -228,9 +235,10 @@ This enables operations like:
 
 ```bash
 adb shell cmd companiondevice list 0
-adb shell cmd companiondevice associate --userId 0 --package com.example.app \
-    --mac AA:BB:CC:DD:EE:FF
-adb shell cmd companiondevice disassociate 0 com.example.app AA:BB:CC:DD:EE:FF
+adb shell cmd companiondevice associate 0 com.example.app \
+    --mac-address AA:BB:CC:DD:EE:FF
+adb shell cmd companiondevice disassociate 0 com.example.app \
+    --mac-address AA:BB:CC:DD:EE:FF
 ```
 
 ---
@@ -445,8 +453,8 @@ private static final long ASSOCIATE_WITHOUT_PROMPT_WINDOW_MS = 60 * 60 * 1000; /
 ```
 
 The `mayAssociateWithoutPrompt()` method checks how many associations the
-package has created within the last 60 minutes. If the count exceeds 5,
-the prompt is enforced:
+package has created within the last 60 minutes. Once the count reaches 5
+(the check is `>=`), the prompt is enforced:
 
 ```java
 if (++recent >= ASSOCIATE_WITHOUT_PROMPT_MAX_PER_TIME_WINDOW) {
@@ -560,14 +568,22 @@ Source:
 A critical design aspect: if the companion app process is in the foreground
 when disassociation is triggered, the actual removal is deferred. The
 association is marked as "revoked" and an `OnUidImportanceListener` is
-registered. When the process moves to the background, the cleanup completes:
+registered. When the process moves to the background, the cleanup completes.
+Deferral applies both when the association holds a device profile whose role is
+not in use by other associations and when a profile-less association carries
+extra permissions:
 
 ```java
-if (packageProcessImportance <= IMPORTANCE_FOREGROUND && deviceProfile != null
-        && !isRoleInUseByOtherAssociations) {
-    AssociationInfo revokedAssociation = (new AssociationInfo.Builder(
-            association)).setRevoked(true).build();
-    mAssociationStore.updateAssociation(revokedAssociation);
+if (packageProcessImportance <= IMPORTANCE_FOREGROUND
+        && ((deviceProfile != null && !isRoleInUseByOtherAssociations)
+                || (deviceProfile == null
+                    && !CollectionUtils.isEmpty(association.getExtraPermissions())))) {
+    // Need to remove the app from the list of role holders, but the process is
+    // visible to the user at the moment, so we'll need to do it later.
+    // ... (log elided)
+    mAssociationStore.updateAssociation(id, a -> (new AssociationInfo.Builder(a))
+            .setRevoked(true)
+            .build());
     startListening();
     return;
 }
@@ -633,9 +649,9 @@ stateDiagram-v2
     BT_Connected --> Present : onDevicePresent
     Present --> AppBound : bindCompanionApp
     AppBound --> Present : App process dies
-    Present --> Disconnected : BLE/BT disappeared
-    AppBound --> Disconnected : BLE/BT disappeared
-    Disconnected --> SelfManaged_Appeared : reportSelfManagedAppeared
+    Present --> Disconnected : disappeared
+    AppBound --> Disconnected : disappeared
+    Disconnected --> SelfManaged_Appeared : processSelfManagedDevicePresenceEvent
     SelfManaged_Appeared --> Present : onDevicePresent
 ```
 
@@ -1293,7 +1309,7 @@ sequenceDiagram
     SND->>ATMS: requestHandoffTaskData
     ATMS->>AT: REQUEST_HANDOFF_ACTIVITY_DATA
     AT->>APP: onHandoffActivityDataRequested
-    Note over APP: cached on performStop, active on this request
+    Note over APP: cached on stop path, active on this request
     APP-->>AT: HandoffActivityData
     AT-->>ATMS: reportHandoffActivityData
     ATMS-->>SND: IHandoffTaskDataReceiver callback
@@ -1309,11 +1325,14 @@ sequenceDiagram
 
 On the **sender**, `ActivityThread` calls back into the activity from two places:
 
-- In `performStop()`, guarded by
+- In `callActivityOnSaveInstanceState()` (invoked from `performStopActivityInner()`
+  on the stop path), guarded by
   `android.companion.Flags.taskContinuity() && r.activity.isHandoffEnabled()`, it
   pre-caches a snapshot:
   `r.handoffActivityData = r.activity.onHandoffActivityDataRequested(requestInfo)` with
-  `isActiveRequest=false` (`ActivityThread.java:6986`-6989).
+  `isActiveRequest=false` (`ActivityThread.java:6982`-6990); the cached data is
+  attached to the `StopInfo` via `setHandoffActivityData()` at
+  `ActivityThread.java:6437`.
 - When a live handoff is requested it handles the `REQUEST_HANDOFF_ACTIVITY_DATA`
   message (H-message id 173, `ActivityThread.java:2683`), calls
   `onHandoffActivityDataRequested(...)` with `isActiveRequest=true`
@@ -1852,8 +1871,10 @@ Android 17 ships a concrete consumer of this virtual-input machinery as a
 platform app. `packages/apps/VirtualGamepad/` is a platform-signed Jetpack
 Compose app that draws an on-screen gamepad and synthesizes gamepad input for a
 game running on the same display. Rather than going through a `VirtualDevice`,
-it talks to the input stack directly via the public
-`InputManager.createVirtualGamepad(VirtualGamepadConfig)` entry point (declared
+it talks to the input stack directly via the hidden
+`InputManager.createVirtualGamepad(VirtualGamepadConfig)` entry point -- an
+`@hide` platform API guarded by `INJECT_EVENTS`, available only to
+platform-signed apps (declared
 in `frameworks/base/core/java/android/hardware/input/InputManager.java`), which
 backs onto the same `createVirtual*` device family this section describes. Its
 `LocalGamepadBackend` builds the `VirtualGamepadConfig` with the activity's
@@ -2058,9 +2079,7 @@ public void onCameraOpened(@NonNull String cameraId, @NonNull String packageName
             return;
         }
         // Track for future blocking if app moves to virtual display
-        OpenCameraInfo openCameraInfo = new OpenCameraInfo();
-        openCameraInfo.packageName = packageName;
-        openCameraInfo.packageUids = packageUids;
+        OpenCameraInfo openCameraInfo = new OpenCameraInfo(packageName, packageUids);
         mAppsToBlockOnVirtualDevice.put(cameraId, openCameraInfo);
     }
 }
@@ -2417,9 +2436,11 @@ secure-window bookkeeping into a per-component `mWindowFlagsTracker` and a
 `ALLOW_SECURE_ACTIVITY_DISPLAY_ON_REMOTE_DEVICE` compatibility change is declared
 at line 126.
 
-For apps targeting Tiramisu or later, the `FLAG_SECURE` check can be opted
-into via the `ALLOW_SECURE_ACTIVITY_DISPLAY_ON_REMOTE_DEVICE` compatibility
-change (ID `201712607`).
+The `ALLOW_SECURE_ACTIVITY_DISPLAY_ON_REMOTE_DEVICE` compatibility change
+(ID `201712607`) is `@EnabledSince` Tiramisu: for apps targeting Tiramisu or
+later it is on by default, so their `FLAG_SECURE` windows are *allowed* on
+virtual displays. Apps targeting below T have the change disabled and hit the
+blocking branch above, which rejects their secure windows.
 
 ### 52.6.4 Display Categories
 
@@ -2601,9 +2622,12 @@ This section walks three sibling packages under
 into `CompanionDeviceManagerService` next to the existing processors. The
 `devicetrust/` and `powerexemption/` packages are new in Android 17; the
 `actionrequest/` package already shipped in Android 16 and is grouped here for
-context (it picked up extra result constants in 17). They share
-the same `AssociationStore` and `CompanionTransportManager` as everything else,
-so they observe the same association set and the same transport channels.
+context (it picked up extra result constants in 17). All three share the same
+`AssociationStore`, so they observe the same association set, but only
+`devicetrust/` also hooks into `CompanionTransportManager`; `actionrequest/`
+works through `CompanionAppBinder` and `DevicePresenceProcessor`, and
+`powerexemption/` through `PowerExemptionManager` and
+`ActivityTaskManagerInternal`.
 
 ### 52.7.1 Action Requests
 
@@ -2695,8 +2719,9 @@ Source:
 
 Keys are derived with HKDF (`hkdfExtract`/`hkdfExpand` from the new `utils/`
 `CryptoUtils`). The set of available keys is supplied by pluggable `PskProvider`
-implementations, each identified by a `NAME`: `BluetoothPasskeyProvider`
-(`"BT_PASSKEY"`) and `RandomKeyProvider` (`"RANDOM_KEY"`). `CompanionDeviceManagerService`
+implementations, each identified by its `getProviderName()` string:
+`BluetoothPasskeyProvider` (`"BT_PASSKEY"`) and `RandomKeyProvider`
+(`"RANDOM_KEY"`). `CompanionDeviceManagerService`
 registers and removes providers dynamically:
 
 ```java
@@ -2707,8 +2732,10 @@ mTrustedDeviceProcessor.removePskProvider(RandomKeyProvider.NAME);
 
 Source:
 `CompanionDeviceManagerService.java`, lines 718-720. The `PskProvider` interface
-exposes a single `byte[] getKey(int userId, int associationId)` method
-(`PskProvider.java`, lines 27-43), and `loadKeysForUser()` snapshots the available
+exposes three members: `String getProviderName()` -- the identity that
+`removePskProvider()` matches on -- `byte[] getKey(int userId, int associationId)`,
+and a default `void load(int userId)` hook
+(`PskProvider.java`, lines 27-50), and `loadKeysForUser()` snapshots the available
 keys when a user is unlocked (`TrustedDeviceProcessor.java`, line 111).
 
 ### 52.7.3 Power Exemptions
@@ -3211,55 +3238,75 @@ List all associations for user 0:
 adb shell cmd companiondevice list 0
 ```
 
-Sample output:
+The command prints a leading `Max ID:` line followed by each association's
+`AssociationInfo.toString()`, which uses the `m`-prefixed field names and
+`Date`-formatted timestamps. Sample output (a single association, wrapped here
+for readability):
 
 ```
-Association{id=1,
-  userId=0,
-  packageName=com.google.android.gms,
-  deviceMacAddress=AA:BB:CC:DD:EE:FF,
-  displayName=Pixel Watch,
-  deviceProfile=android.app.role.COMPANION_DEVICE_WATCH,
-  selfManaged=false,
-  notifyOnDeviceNearby=true,
-  revoked=false,
-  pending=false,
-  timeApproved=1710000000000,
-  lastTimeConnected=1710100000000}
+Max ID: 1
+Association{mId=1,
+  mUserId=0,
+  mPackageName='com.google.android.gms',
+  mDeviceMacAddress=aa:bb:cc:dd:ee:ff,
+  mDisplayName='Pixel Watch',
+  mDeviceProfile='android.app.role.COMPANION_DEVICE_WATCH',
+  mSelfManaged=false,
+  mAssociatedDevice=null,
+  mNotifyOnDeviceNearby=true,
+  mRevoked=false,
+  mPending=false,
+  mTrusted=false,
+  mTimeApprovedMs=Sat Mar 09 16:40:00 GMT 2024,
+  mLastTimeConnectedMs=Sun Mar 10 20:26:40 GMT 2024,
+  mSystemDataSyncFlags=0,
+  mTransportFlags=0,
+  mDeviceId=null,
+  mPackagesToNotify=[],
+  mMetadata=PersistableBundle[{}],
+  mTimeMetadataSentMs=Thu Jan 01 00:00:00 GMT 1970,
+  mExtraPermissions=null,
+  mRemoteAiAgentSupported=false}
 ```
 
 ### 52.10.2 Create a Test Association via Shell
 
-Create a self-managed association for testing:
+Create a self-managed association for testing. The user ID and package name are
+positional arguments, and each option takes an explicit value:
 
 ```bash
-adb shell cmd companiondevice associate \
-    --userId 0 \
-    --package com.example.myapp \
-    --self-managed \
-    --display-name "Test Device"
+adb shell cmd companiondevice associate 0 com.example.myapp \
+    --self-managed true \
+    --profile android.app.role.COMPANION_DEVICE_APP_STREAMING
 ```
+
+There is no display-name option; the shell command hardcodes the display name
+(`"fakeDisplayName"` in `CompanionDeviceShellCommand.java`).
 
 ### 52.10.3 Inspect Virtual Devices
 
-Dump the state of all virtual devices:
+CDM and VDM are two separate dumpable services. For CDM state, use the
+`companiondevice` service (the name `CompanionDeviceManagerService` publishes
+via `Context.COMPANION_DEVICE_SERVICE`):
 
 ```bash
-adb shell dumpsys companion_device_manager
+adb shell dumpsys companiondevice
 ```
 
-This outputs the full state including:
+This outputs the CDM state:
 
-- Active associations
-- Active transports
-- Virtual devices and their displays
-- Input devices per virtual device
-- Sensor controllers
+- Associations (`AssociationStore`)
+- Device presence (`DevicePresenceProcessor`)
+- Companion app bindings (`CompanionAppBinder`)
+- Active transports (`CompanionTransportManager`)
+- System data transfer requests (`SystemDataTransferRequestStore`)
 
-For virtual device-specific information:
+Virtual devices, their displays, input devices, and sensor controllers are
+dumped by `VirtualDeviceManagerService` under the `virtualdevice` service
+name (`Context.VIRTUAL_DEVICE_SERVICE`):
 
 ```bash
-adb shell dumpsys companion_device_manager virtual_devices
+adb shell dumpsys virtualdevice
 ```
 
 ### 52.10.4 Using the VirtualDeviceManager API
@@ -3267,7 +3314,9 @@ adb shell dumpsys companion_device_manager virtual_devices
 To create a virtual device programmatically, an app needs:
 
 1. A CDM association with an appropriate device profile.
-2. The `CREATE_VIRTUAL_DEVICE` permission (normal permission).
+2. The `CREATE_VIRTUAL_DEVICE` permission -- declared with
+   `protectionLevel="internal|role"` in the core manifest, so it is granted
+   only to holders of the relevant role, not requestable by ordinary apps.
 3. For certain features, additional permissions:
    - `ADD_TRUSTED_DISPLAY` for clipboard policy customization.
    - `ADD_ALWAYS_UNLOCKED_DISPLAY` for always-unlocked displays.
@@ -3295,11 +3344,11 @@ VirtualDeviceParams params = new VirtualDeviceParams.Builder()
         .build();
 VirtualDevice device = vdm.createVirtualDevice(associationInfo.getId(), params);
 
-// Step 3: Create a virtual display
+// Step 3: Create a virtual display (an Executor, then a VirtualDisplay.Callback)
 VirtualDisplay display = device.createVirtualDisplay(
         new VirtualDisplayConfig.Builder("MyDisplay", 1920, 1080, 240)
                 .build(),
-        callback, handler);
+        executor, displayCallback);
 
 // Step 4: Create input devices
 VirtualTouchscreenConfig touchConfig = new VirtualTouchscreenConfig.Builder(1920, 1080)
@@ -3310,24 +3359,18 @@ device.createVirtualTouchscreen(touchConfig);
 
 ### 52.10.5 Debugging Transport Issues
 
-To inspect active transports:
+To inspect active transports, run the unfiltered CDM dump -- the transport
+manager's state is one of its sections (the dump takes no sub-arguments):
 
 ```bash
-adb shell dumpsys companion_device_manager transports
+adb shell dumpsys companiondevice
 ```
 
-To override the transport type for testing:
-
-```bash
-# Force raw (unencrypted) transport
-adb shell cmd companiondevice override-transport-type 1
-
-# Force secure transport
-adb shell cmd companiondevice override-transport-type 2
-
-# Reset to default
-adb shell cmd companiondevice override-transport-type 0
-```
+There is no shell command to override the transport type. For tests, the
+`@TestApi` method `CompanionDeviceManager.overrideTransportType(int)`
+(`CompanionDeviceManager.java`, line 2310) forces the type for subsequently
+attached transports: `0` for default, `1` for raw (unencrypted), `2` for
+secure. It requires the `MANAGE_COMPANION_DEVICES` permission.
 
 ### 52.10.6 Inspecting Window Policy
 

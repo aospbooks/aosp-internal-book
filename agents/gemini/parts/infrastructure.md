@@ -70,11 +70,11 @@ than months.
 | Release | Codename | Mainline Milestone |
 |---------|----------|-------------------|
 | Android 10 | Q (2019) | Initial launch with ~12 APEX modules |
-| Android 11 | R (2020) | Added `min_sdk_version` enforcement; compressed APEX (CAPEX) |
-| Android 12 | S (2021) | SDK Extensions; ART module becomes updatable |
+| Android 11 | R (2020) | SDK Extensions; `min_sdk_version` enforcement; compressed APEX (CAPEX) |
+| Android 12 | S (2021) | ART module becomes updatable; GeoTZ, Scheduling modules |
 | Android 13 | T (2022) | AdServices, AppSearch, OnDevicePersonalization modules |
 | Android 14 | U (2023) | ConfigInfrastructure, HealthFitness modules |
-| Android 15 | V (2024) | NeuralNetworks, ThreadNetwork, Profiling modules |
+| Android 15 | V (2024) | ThreadNetwork module; WebView bootstrap APEX |
 | Android 16 | B / Baklava (2025) | UprobeStats; brand-new APEX support in apexd |
 | Android 17 | C / CinnamonBun (2026) | NpuManager, WebApp; new "C" SDK-extension axis; EROFS file-backed APEX mounts |
 
@@ -395,16 +395,19 @@ The Soong build rule that invokes `apexer` is defined in
 // Source: build/soong/apex/builder.go
 
 apexRule = pctx.StaticRule("apexRule", blueprint.RuleParams{
-    Command: `rm -rf ${image_dir} && mkdir -p ${image_dir} && ` +
-        `(. ${out}.copy_commands) && ` +
-        `APEXER_TOOL_PATH=${tool_path} ` +
-        `${apexer} --force --manifest ${manifest} ` +
-        `--file_contexts ${file_contexts} ` +
-        `--canned_fs_config ${canned_fs_config} ` +
-        `--include_build_info ` +
-        `--payload_type image ` +
-        `--key ${key} ${opt_flags} ${image_dir} ${out} `,
-    ...
+    Command2: blueprint.NewCommand(
+        android.Rm, ` -rf ${image_dir} && `, android.Mkdir, ` -p ${image_dir} && `,
+        `(. ${out}.copy_commands) && `,
+        `APEXER_TOOL_PATH=${tool_path} `,
+        apexer, ` --force --manifest ${manifest} `,
+        `--file_contexts ${file_contexts} `,
+        `--canned_fs_config ${canned_fs_config} `,
+        `--include_build_info `,
+        `--payload_type image `,
+        `--key ${key} ${opt_flags} ${image_dir} ${out} && `,
+        android.SoongZip, ` -d -C ${image_dir} -D ${image_dir} -o ${image_zip}`,
+    ),
+    // ...
 })
 ```
 
@@ -530,7 +533,7 @@ service apexd /system/bin/apexd
     oneshot
     disabled
     reboot_on_failure reboot,apexd-failed
-    capabilities CHOWN DAC_OVERRIDE DAC_READ_SEARCH FOWNER SYS_ADMIN
+    capabilities CHOWN DAC_OVERRIDE DAC_READ_SEARCH FOWNER SYS_ADMIN MKNOD
 
 service apexd-bootstrap /system/bin/apexd --bootstrap
     user root
@@ -538,7 +541,7 @@ service apexd-bootstrap /system/bin/apexd --bootstrap
     oneshot
     disabled
     reboot_on_failure reboot,bootloader,bootstrap-apexd-failed
-    capabilities SYS_ADMIN
+    capabilities SYS_ADMIN MKNOD
 
 service apexd-snapshotde /system/bin/apexd --snapshotde
     user root
@@ -689,9 +692,15 @@ if (apex.GetManifest().nocode()) {
     mount_flags |= MS_NOEXEC;
 }
 
-mount(block_device.c_str(), mount_point.c_str(),
-      apex.GetFsType().value().c_str(), mount_flags, nullptr);
+if (mount(mount_device.c_str(), mount_point.c_str(), fs_type.c_str(),
+          mount_flags, mount_options.c_str()) != 0) {
+    return ErrnoError() << "Mounting failed for package " << full_path;
+}
 ```
+
+The final `mount_options` argument is how the file-backed EROFS path delivers
+its `fsoffset=` value to the kernel; for the loop-device and dm-linear paths it
+is empty.
 
 The mount flags enforce:
 
@@ -769,10 +778,10 @@ flowchart TD
     /odm/apex"]
     B --> C["Mount bootstrap APEXes
     (runtime, tzdata, i18n)"]
-    C --> D["Set apexd.status = starting"]
-    D --> E["/data becomes available"]
+    C --> E["/data becomes available"]
     E --> F["init starts apexd"]
-    F --> G["Scan /data/apex/active
+    F --> D["Set apexd.status = starting"]
+    D --> G["Scan /data/apex/active
     for updated APEXes"]
     G --> H{"Staged session
     pending?"}
@@ -819,9 +828,8 @@ int OnBootstrap() {
   std::vector<ApexFileRef> activation_list;
 
   if (IsMountBeforeDataEnabled()) {
-    // New flow: wait for coldboot, process sessions, scan data
-    base::WaitForProperty("ro.cold_boot_done", "true",
-                          std::chrono::seconds(10));
+    // New flow: wait for the /data block device, process sessions, scan data
+    OR_RETURN(GetImageManager()->WaitForDataBlockDevice());
     ProcessSessions(ctx);
     auto data_apexes = ScanDataApexFiles(GetImageManager());
     instance.AddDataApexFiles(std::move(data_apexes));
@@ -1045,20 +1053,21 @@ var (
     extractMatchingApex = pctx.StaticRule(
         "extractMatchingApex",
         blueprint.RuleParams{
-            Command: `${extract_apks} -o "${out}" ` +
-                `-allow-prereleased=${allow-prereleased} ` +
-                `-sdk-version=${sdk-version} ` +
-                `-skip-sdk-check=${skip-sdk-check} ` +
-                `-abis=${abis} ` +
-                `-screen-densities=all -extract-single ` +
+            Command2: blueprint.NewCommand(
+                android.Rm, ` -rf "$out" && `,
+                extract_apks, ` -o "${out}" -allow-prereleased=${allow-prereleased} `,
+                `-sdk-version=${sdk-version} -skip-sdk-check=${skip-sdk-check} -abis=${abis} `,
+                `-screen-densities=all -extract-single `,
                 `${in}`,
+            ),
         },
         "abis", "allow-prereleased", "sdk-version", "skip-sdk-check")
     decompressApex = pctx.StaticRule("decompressApex",
         blueprint.RuleParams{
-            Command: `${deapexer} decompress ` +
-                `--copy-if-uncompressed ` +
-                `--input ${in} --output ${out}`,
+            Command2: blueprint.NewCommand(
+                android.Rm, ` -rf $out && `,
+                deapexer, ` decompress --copy-if-uncompressed --input ${in} --output ${out}`,
+            ),
         })
 )
 ```
@@ -1249,9 +1258,11 @@ Mainline modules.  Each module typically produces one or more APEX packages.
 
 ### 54.3.1  Complete Module Inventory
 
-The following table lists every module directory in `packages/modules/` as of
-Android 17, its APEX package name(s), the Android release in which it became
-updatable, and a summary of what it provides.  Not every directory produces an
+The following table lists every module directory in `packages/modules/` that
+produces a Mainline artifact as of Android 17 (the shared `common` directory,
+which holds the build defaults and tooling used by every module, and the
+legacy `vndk` directory are omitted), its APEX package name(s), the Android
+release in which it became updatable, and a summary of what it provides.  Not every directory produces an
 APEX: some are APKs, some are pure code locations, and the Android 17 newcomers
 (`NpuManager`, `WebApp`, `WebViewBootstrap`) are gated behind release flags.
 
@@ -1265,13 +1276,13 @@ APEX: some are APKs, some are pure code locations, and the Android 17 newcomers
 | 6 | `CellBroadcastService` | `com.android.cellbroadcast` | R (11) | Emergency alert message handling (CMAS/ETWS) |
 | 7 | `ConfigInfrastructure` | `com.android.configinfrastructure` | U (14) | Device configuration framework (`DeviceConfig`) |
 | 8 | `Connectivity` | `com.android.tethering` | R (11) | Tethering, Connectivity, Cronet HTTP stack |
-| 9 | `CrashRecovery` | `com.android.crashrecovery` | V (15) | System crash detection and recovery |
+| 9 | `CrashRecovery` | `com.android.crashrecovery` | B (16) | System crash detection and recovery |
 | 10 | `DeviceLock` | `com.android.devicelock` | U (14) | Device financing/locking framework |
 | 11 | `DnsResolver` | `com.android.resolv` | Q (10) | DNS resolution (DNS-over-TLS, private DNS) |
 | 12 | `ExtServices` | `com.android.extservices` | R (11) | Extension services (notification ranking, autofill) |
 | 13 | `GenericBootstrappingArchitecture` | *(APK: `GbaService`)* | C (17) | GBA (Generic Bootstrapping Architecture) carrier auth service |
 | 14 | `GeoTZ` | `com.android.geotz` | S (12) | Geolocation-based time zone detection |
-| 15 | `Gki` | `com.android.gki.*` | S (12) | Generic Kernel Image support modules |
+| 15 | `Gki` | *(code location, no APEX)* | -- | GKI support code (`libkver`, sysprops); no longer builds an APEX in AOSP |
 | 16 | `HealthFitness` | `com.android.healthfitness` | U (14) | Health Connect: health/fitness data platform |
 | 17 | `IPsec` | `com.android.ipsec` | R (11) | IKEv2/IPsec VPN framework |
 | 18 | `ImsMedia` | *(in Telephony)* | T (13) | IMS media handling for VoLTE/VoNR |
@@ -1285,14 +1296,14 @@ APEX: some are APKs, some are pure code locations, and the Android 17 newcomers
 | 26 | `NpuManager` | `com.android.npumanager` | C (17) | NPU access arbitration (flag-gated, `min_sdk 36`) |
 | 27 | `OnDevicePersonalization` | `com.android.ondevicepersonalization` | T (13) | On-device ML personalization framework |
 | 28 | `Permission` | `com.android.permission` | R (11) | Permission controller, role manager, SafetyCenter |
-| 29 | `Profiling` | `com.android.profiling` | V (15) | System profiling infrastructure |
+| 29 | `Profiling` | `com.android.profiling` | B (16) | System profiling infrastructure |
 | 30 | `RemoteKeyProvisioning` | `com.android.rkpd` | U (14) | Remote key provisioning for KeyStore |
 | 31 | `RuntimeI18n` | `com.android.i18n` | Q (10) | ICU internationalization library |
 | 32 | `Scheduling` | `com.android.scheduling` | S (12) | Job scheduling infrastructure |
 | 33 | `SdkExtensions` | `com.android.sdkext` | R (11) | SDK extension version management |
 | 34 | `StatsD` | `com.android.os.statsd` | R (11) | Metrics collection daemon |
-| 35 | `Telecom` | `com.android.telecom` | V (15) | Telecom call management framework |
-| 36 | `Telephony` | `com.android.telephonycore` | U (14) | Telephony core (call/SMS framework, RIL bits) |
+| 35 | `Telecom` | `com.android.telecom` | B (16) | Telecom call management framework (flag-gated behind `RELEASE_TELECOM_MAINLINE_MODULE`, not yet updatable) |
+| 36 | `Telephony` | `com.android.telephonycore` | B (16) | Telephony core (call/SMS framework; flag-gated behind `RELEASE_TELEPHONY_MODULE`) |
 | 37 | `ThreadNetwork` | `com.android.threadnetwork` | V (15) | Thread / Matter smart home networking |
 | 38 | `UprobeStats` | `com.android.uprobestats` | B (16) | eBPF-based uprobe statistics collection |
 | 39 | `Uwb` | `com.android.uwb` | T (13) | Ultra-Wideband ranging framework |
@@ -1340,7 +1351,7 @@ Mainline modules can be classified by what they primarily contain:
 
 | Module | APEX Name | Key Native Components |
 |--------|-----------|----------------------|
-| DnsResolver | `com.android.resolv` | `libnetd_resolv.so` |
+| DnsResolver | `com.android.resolv` | *(empty legacy APEX; `libnetd_resolv.so` now ships in `com.android.tethering`)* |
 | NeuralNetworks | `com.android.neuralnetworks` | NNAPI runtime, HAL client |
 | adb | `com.android.adbd` | `adbd` binary |
 | RuntimeI18n | `com.android.i18n` | ICU libraries |
@@ -1360,8 +1371,8 @@ contributions):
 
 | Module | APEX Name | Key Mixed Components |
 |--------|-----------|---------------------|
-| Connectivity | `com.android.tethering` | `framework-connectivity.jar` + `libnetd_updatable.so` |
-| Media | `com.android.media` | `framework-media.jar` + media extractors (native) |
+| Connectivity | `com.android.tethering` | `framework-connectivity.jar` + `libnetd_resolv.so`, `libnetd_updatable.so` |
+| Media | `com.android.media` | `updatable-media.jar` + media extractors (native) |
 | Wifi | `com.android.wifi` | `framework-wifi.jar` + native HAL bridge |
 | Bluetooth | `com.android.bt` | `framework-bluetooth.jar` + native stack |
 | Telephony | `com.android.telephonycore` | `framework-telephony.jar` + RIL components |
@@ -1460,13 +1471,18 @@ apex {
             jni_libs: [
                 "libservice-connectivity",
                 "libservice-thread-jni",
-                ...
+                // ...
             ],
             native_shared_libs: [
-                "libcom.android.tethering.dns_helper",
-                "libcom.android.tethering.connectivity_native",
+                "libnetd_resolv",
                 "libnetd_updatable",
             ],
+        },
+        both: {
+            native_shared_libs: [
+                "libcom.android.tethering.connectivity_native",
+            ],
+            // ...
         },
     },
 }
@@ -1481,6 +1497,9 @@ Key components within this module:
 - **Cronet**: Google's HTTP stack (optionally bundled)
 - **clatd**: CLAT NAT64 translator (native binary)
 - **Thread Network**: IEEE 802.15.4 Thread support (JNI library)
+- **DNS resolver**: `libnetd_resolv` -- the DNS resolution library, which now
+  ships here rather than in the legacy `com.android.resolv` APEX (see
+  Section 54.3.8)
 
 ### 54.3.5  Deep Dive: Permission Module
 
@@ -1586,21 +1605,31 @@ The DNS resolver was one of the original Mainline modules in Android 10:
 apex {
     name: "com.android.resolv",
     manifest: "manifest.json",
-    multilib: { ... },
+    key: "com.android.resolv.key",
+    certificate: ":com.android.resolv.certificate",
+    androidManifest: "AndroidManifest.xml",
+    compressible: true,
+    defaults: ["q-launched-dcla-enabled-apex-module"],
+    // ...
 }
 ```
 
-This module contains `libnetd_resolv.so`, the native library that handles all
-DNS resolution on the device.  Key features updatable through Mainline:
+Notice what is missing: the definition declares no `native_shared_libs`,
+`binaries`, or classpath fragments at all.  `com.android.resolv` is today an
+**empty legacy container**.  `libnetd_resolv.so`, the native library that
+handles all DNS resolution on the device, ships inside the Connectivity APEX
+(`com.android.tethering`, Section 54.3.4), whose `native_shared_libs` list
+carries `libnetd_resolv` alongside `libnetd_updatable`
+(`packages/modules/Connectivity/Tethering/apex/Android.bp`).  DNS resolver
+features are therefore updated through the Connectivity module today:
 
 - DNS-over-TLS (DoT) support.
 - DNS-over-HTTPS (DoH) support.
 - Private DNS configuration.
 - Bug fixes for DNS cache poisoning vulnerabilities.
 
-Being a pure native module (no Java code), `com.android.resolv` is one of the
-simpler APEX structures -- it contains only shared libraries and no
-bootclasspath fragments.
+The empty `com.android.resolv` APEX continues to be built and shipped so that
+devices which launched with it keep a valid mount point and update path.
 
 ### 54.3.9  Deep Dive: Profiling Module
 
@@ -1686,10 +1715,10 @@ gantt
 
     section R (Android 11)
     Permission, Wifi, StatsD, IPsec, ExtServices : 2020, 1y
-    Connectivity, adb, NeuralNetworks, CellBroadcast : 2020, 1y
+    Connectivity, adb, NeuralNetworks, CellBroadcast, SdkExtensions : 2020, 1y
 
     section S (Android 12)
-    ART Runtime, GeoTZ, Scheduling, SdkExtensions : 2021, 1y
+    ART Runtime, GeoTZ, Scheduling : 2021, 1y
 
     section T (Android 13)
     AdServices, AppSearch, Uwb, OnDevicePersonalization : 2022, 1y
@@ -1697,13 +1726,14 @@ gantt
 
     section U (Android 14)
     ConfigInfrastructure, HealthFitness : 2023, 1y
-    DeviceLock, RemoteKeyProvisioning, Telephony : 2023, 1y
+    DeviceLock, RemoteKeyProvisioning : 2023, 1y
 
     section V (Android 15)
-    Telecom, ThreadNetwork, Profiling, CrashRecovery : 2024, 1y
+    ThreadNetwork, WebViewBootstrap : 2024, 1y
 
     section B (Android 16)
-    Bluetooth, Nfc, UprobeStats : 2025, 1y
+    Bluetooth, Nfc, UprobeStats, Profiling, CrashRecovery : 2025, 1y
+    Telecom, Telephony flag-gated : 2025, 1y
 
     section C (Android 17)
     NpuManager, WebApp : 2026, 1y
@@ -1732,7 +1762,10 @@ apex {
 ```
 
 - `com.android.media` -- The main media APEX containing extractors, the media
-  framework service, and `framework-media.jar`.
+  framework service, and `updatable-media.jar` on the bootclasspath (its
+  bootclasspath fragment lists `contents: ["updatable-media"]`;
+  `framework-media` is the stubs library for the APIs `updatable-media`
+  provides).
 
 - `com.android.media.swcodec` -- A separate process for software codecs
   (isolated for security via `mediaswcodec` service).
@@ -2117,8 +2150,9 @@ apex {
 It bundles:
 
 - `derive_sdk` -- The binary that computes extension versions at boot.
-- `derive_classpath` -- A binary that generates the DEX2OAT boot classpath
-  configuration based on installed modules.
+- `derive_classpath` -- A binary that generates the `BOOTCLASSPATH`,
+  `DEX2OATBOOTCLASSPATH`, and `SYSTEMSERVERCLASSPATH` environment variables
+  from the classpath fragments of installed modules.
 
 - `extensions_db` -- The protobuf database of version requirements.
 - `framework-sdkextensions.jar` -- The Java API (`SdkExtensions` class).
@@ -2262,7 +2296,7 @@ graph TB
         PUB --> SYS
         SYS --> MOD
         SYS --> TEST
-        SYS --> SS
+        PUB --> SS
         SS -.->|"can access"| MOD
     end
 ```
@@ -2460,7 +2494,7 @@ Modules can depend on each other through:
 
 ```mermaid
 graph LR
-    subgraph "com.android.tethering"
+    subgraph TETH["com.android.tethering"]
         FW_CONN["framework-connectivity.jar"]
         SVC_CONN["service-connectivity.jar"]
     end
@@ -2477,7 +2511,7 @@ graph LR
 
     FW_CONN -->|"@SystemApi(MODULE_LIBRARIES)"| FW_PERM
     SVC_CONN -->|"stable AIDL"| SVC_PERM
-    DS -->|"reads sdkinfo.pb from"| FW_CONN
+    DS -->|"reads /apex/.../etc/sdkinfo.pb"| TETH
 ```
 
 ### 54.5.9  The `apex_available` Enforcement Mechanism
@@ -2612,8 +2646,8 @@ Building a specific module:
 # Build a single APEX
 $ m com.android.tethering
 
-# Build all Mainline modules
-$ m mainline_modules
+# Build all Mainline modules (phony target in packages/modules/common/build/)
+$ m aosp_mainline_modules
 
 # Build a module and install it on a connected device
 $ m com.android.sdkext && adb install out/target/product/generic_arm64/system/apex/com.android.sdkext.apex
@@ -2746,11 +2780,14 @@ MTS is a subset of CTS designed specifically for testing Mainline module
 updates.  It can be run independently:
 
 ```bash
-# Run MTS for a specific module
-$ atest --mts com.android.sdkext.tests
+# Run the module's CTS/MTS test cases
+$ atest CtsSdkExtensionsTestCases
 
-# Or use the MTS test plan
-$ cts-tradefed run mts --module SdkExtensionsTests
+# Or target the Google-signed mainline APEX variant explicitly
+$ atest 'CtsSdkExtensionsTestCases[com.google.android.sdkext.apex]'
+
+# Host-side end-to-end tests
+$ atest sdkextensions_e2e_tests
 ```
 
 #### Unit Tests
@@ -2776,11 +2813,12 @@ pre-submit and post-submit:
 ```json
 {
     "presubmit": [
-        {"name": "SdkExtensionsTests"},
-        {"name": "derive_sdk_test"}
+        {"name": "CtsSdkExtensionsTestCases"},
+        {"name": "derive_sdk_test"},
+        {"name": "gen_sdk_test"}
     ],
-    "postsubmit": [
-        {"name": "SdkExtensionsHostTest"}
+    "presubmit-large": [
+        {"name": "sdkextensions_e2e_tests"}
     ]
 }
 ```
@@ -2800,8 +2838,14 @@ activate (unless the APEX supports rebootless update via
 
 **Revert to the pre-installed version:**
 
+There is no `cmd apexservice` subcommand for this -- the shell interface
+accepts only `help`, `getAllPackages`, `getActivePackages`, and
+`getStagedSessionInfo [sessionId]`.  Reverting goes through the binder method
+`IApexService.revertActiveSessions()`, which the platform's rollback machinery
+invokes.  From a shell, use the package manager's rollback support instead:
+
 ```bash
-$ adb shell cmd -w apexservice revertActiveSession
+$ adb shell pm rollback-app com.android.sdkext
 $ adb reboot
 ```
 
@@ -2867,8 +2911,14 @@ $ adb logcat -s apexd-bootstrap
 # List all activated APEXes
 $ adb shell cmd -w apexservice getActivePackages
 
-# Get info about a specific APEX
-$ adb shell cmd -w apexservice getApexInfo com.android.sdkext
+# List every known APEX (active and inactive)
+$ adb shell cmd -w apexservice getAllPackages
+
+# Show the state of a staged session
+$ adb shell cmd -w apexservice getStagedSessionInfo 1543
+
+# For per-APEX details, read the info list or use deapexer on the file
+$ adb shell cat /apex/apex-info-list.xml
 ```
 
 **Inspect APEX file contents from host:**
@@ -2943,17 +2993,17 @@ other system components use to manage APEX packages.  Key methods include:
 // Source: system/apex/apexd/aidl (simplified interface)
 
 interface IApexService {
-    ApexSessionInfo[] getStagedSessionInfo();
     void submitStagedSession(in ApexSessionParams params,
                              out ApexInfoList packages);
     void markStagedSessionReady(int session_id);
-    void markStagedSessionSuccessful();
+    void markStagedSessionSuccessful(int session_id);
+    ApexSessionInfo getStagedSessionInfo(int session_id);
     void markBootCompleted();
     ApexInfo[] getActivePackages();
     ApexInfo[] getAllPackages();
-    void installAndActivatePackage(String packagePath,
-                                   out ApexInfo info);
-    void revertActiveSession();
+    ApexInfo installAndActivatePackage(in @utf8InCpp String packagePath,
+                                       boolean force);
+    void revertActiveSessions();
 }
 ```
 
@@ -3109,7 +3159,7 @@ graph TB
     subgraph "framework-healthfitness (bootclasspath)"
         HCM["HealthConnectManager<br/>(android.health.connect)"]
         PERMS["HealthPermissions<br/>(per-data-type grants)"]
-        DT["Data Types<br/>(50+ Record classes)"]
+        DT["Data Types<br/>(45+ Record classes)"]
     end
 
     subgraph "service-healthfitness (system_server)"
@@ -3119,7 +3169,7 @@ graph TB
         AGG["FitnessRecordAggregateHelper"]
         BKP["BackupRestore"]
         EXP["ExportManager"]
-        PERM_H["PermissionHelper"]
+        PERM_H["HealthConnectPermissionHelper"]
     end
 
     subgraph "On-Device Storage"
@@ -3145,16 +3195,17 @@ graph TB
 
 ### 54.7.3  Data Types
 
-Health Connect defines **50+ record types** in the
-`android.health.connect.datatypes` package.  Every record class extends one of
-two base classes:
+Health Connect defines **more than 45 record types** (46 concrete classes) in
+the `android.health.connect.datatypes` package.  Every record class extends
+one of two base classes:
 
 | Base Class | Semantics | Examples |
 |------------|-----------|---------|
-| `InstantRecord` | Single point-in-time measurement | `HeartRateRecord`, `BloodPressureRecord`, `BloodGlucoseRecord`, `OxygenSaturationRecord`, `BodyTemperatureRecord` |
-| `IntervalRecord` | Measurement over a time range | `StepsRecord`, `ExerciseSessionRecord`, `SleepSessionRecord`, `NutritionRecord`, `HydrationRecord`, `DistanceRecord` |
+| `InstantRecord` | Single point-in-time measurement | `RestingHeartRateRecord`, `BloodPressureRecord`, `BloodGlucoseRecord`, `OxygenSaturationRecord`, `BodyTemperatureRecord` |
+| `IntervalRecord` | Measurement over a time range | `StepsRecord`, `HeartRateRecord` (a sample series), `ExerciseSessionRecord`, `SleepSessionRecord`, `NutritionRecord`, `HydrationRecord`, `DistanceRecord` |
 
-Data types span six categories defined by `HealthDataCategory`:
+Data types span eight categories defined by `HealthDataCategory` -- six
+stable ones plus two flag-gated additions:
 
 1. **Activity** -- Steps, distance, calories, exercise sessions, cycling
    cadence, floors climbed, elevation gained, exercise routes.
@@ -3174,6 +3225,11 @@ Data types span six categories defined by `HealthDataCategory`:
 6. **Vitals** -- Heart rate, heart rate variability (RMSSD), blood pressure,
    blood glucose, oxygen saturation, respiratory rate, body temperature.
 
+7. **Wellness** -- Mindfulness sessions (flag-gated behind
+   `FLAG_MINDFULNESS`).
+
+8. **Symptoms** -- Symptom tracking (flag-gated behind `FLAG_SYMPTOMS`).
+
 Each record carries `Metadata` (data origin, device info, client record ID,
 last-modified time) enabling deduplication and priority ordering.
 
@@ -3183,14 +3239,17 @@ A major expansion in recent versions is the **Personal Health Record** (PHR)
 API, enabling storage of clinical medical data using the **FHIR R4** standard:
 
 ```java
-// Source: framework/java/android/health/connect/datatypes/MedicalResource.java
-// Source: framework/java/android/health/connect/datatypes/MedicalDataSource.java
-// Source: framework/java/android/health/connect/datatypes/FhirResource.java
+// Source: framework/java/android/health/connect/CreateMedicalDataSourceRequest.java
+// Source: framework/java/android/health/connect/UpsertMedicalResourceRequest.java
+// (data types: framework/java/android/health/connect/datatypes/
+//  MedicalResource.java, MedicalDataSource.java, FhirResource.java)
 
 // Apps create a MedicalDataSource, then upsert FHIR resources:
 CreateMedicalDataSourceRequest request =
     new CreateMedicalDataSourceRequest.Builder(
-        "Hospital Portal", Uri.parse("https://fhir.hospital.example"))
+        Uri.parse("https://fhir.hospital.example"),
+        "Hospital Portal",
+        FhirVersion.parseFhirVersion("4.0.1"))
         .build();
 
 UpsertMedicalResourceRequest upsert =
@@ -3221,15 +3280,16 @@ android.permission.health.READ_SLEEP
 ...
 ```
 
-**System-level permissions** (signature/privileged):
+**Additional permissions** beyond the per-data-type set (levels as declared
+in `apk/HealthPermissionsManifest.xml`):
 
 | Permission | Level | Purpose |
 |-----------|-------|---------|
 | `MANAGE_HEALTH_PERMISSIONS` | signature | Grant/revoke health permissions |
-| `MANAGE_HEALTH_DATA` | privileged | Delete records, manage priorities |
+| `MANAGE_HEALTH_DATA` | signature\|privileged | Delete records, manage priorities |
 | `START_ONBOARDING` | signature | Launch client onboarding flows |
-| `READ_HEALTH_DATA_IN_BACKGROUND` | privileged | Background reads |
-| `READ_HEALTH_DATA_HISTORY` | privileged | Access historical records |
+| `READ_HEALTH_DATA_IN_BACKGROUND` | dangerous (runtime, user-granted) | Background reads |
+| `READ_HEALTH_DATA_HISTORY` | dangerous (runtime, user-granted) | Access historical records |
 | `WRITE_MEDICAL_DATA` | dangerous | Write FHIR medical resources |
 
 Apps must also declare an activity handling
@@ -3481,8 +3541,18 @@ system-level anomaly detection through pluggable `SignalCollector` components:
 //         AnomalyDetectorService.java
 
 public final class AnomalyDetectorService extends SystemService {
-    final Map<Class<? extends SignalCollectorConfig>,
-              CollectorEntry> mRegisteredCollectors;
+    private final SignalCollectorRegistry mSignalCollectorRegistry;
+    // ...
+}
+
+// Source: .../anomaly/internal/SignalCollectorRegistryImpl.java
+
+public final class SignalCollectorRegistryImpl
+        implements SignalCollectorRegistry {
+    /** Map from signal type ID to the registered collector. */
+    private final ArrayMap<SignalTypeId, SignalCollector<?, ?>>
+            mRegisteredCollectors = new ArrayMap<>();
+    // ...
 }
 ```
 
@@ -3565,7 +3635,7 @@ graph TB
 
     subgraph "UCI Layer (Rust)"
         UCI_CORE["uwb_core<br/>(state machine)"]
-        UCI_HAL["uci_hal_android<br/>(JNI bridge)"]
+        UCI_HAL["uci_hal_android<br/>(AIDL HAL client)"]
     end
 
     subgraph "Hardware"
@@ -3575,18 +3645,18 @@ graph TB
 
     APP --> UWB_MGR
     APP --> RANGING_API
-    UWB_MGR --> RS
+    UWB_MGR --> RM
+    RM --> RS
     RANGING_API --> RS
-    RS --> RM
     RM -->|Binder IPC| UWBSC
     UWBSC --> UWBSM
     UWBSC --> UWBCM
     UWBSC --> UWBCC
     UWBSM --> UWBADV
     UWBSM --> UWBMET
-    UWBSM -->|JNI| UCI_HAL
-    UCI_HAL --> UCI_CORE
-    UCI_CORE --> HAL
+    UWBSM -->|JNI| UCI_CORE
+    UCI_CORE --> UCI_HAL
+    UCI_HAL --> HAL
     HAL --> RADIO
 ```
 
@@ -3621,8 +3691,16 @@ libuwb-uci/src/rust/
             aliro_app_config_params.rs
             uci_packets.rs     UCI packet parsing
     uci_hal_android/
-        uci_hal_android.rs     JNI bridge to Java service
+        uci_hal_android.rs     UciHal impl over the AIDL HAL
 ```
+
+`uci_hal_android.rs` is the binder client that implements `uwb_core`'s
+`UciHal` trait against the `android.hardware.uwb` AIDL HAL (`IUwb` /
+`IUwbChip`) -- not a JNI bridge.  The JNI layer through which the Java
+service enters the Rust stack lives separately in
+`packages/modules/Uwb/service/uci/jni/` (entry point
+`uci_jni_android_new.rs`), which wraps `uwb_core`; `uwb_core` in turn drives
+`uci_hal_android` to talk to the hardware.
 
 UCI session states follow the standard state machine:
 
@@ -3710,7 +3788,8 @@ top of the v1 baseline:
   field to pick a "make before break" engine that brings up the next technology
   before dropping the current one. (The OOB protocol negotiates several
   technologies through the `Technology` / `TechnologySet` types: UWB, BLE
-  channel sounding, Wi-Fi NAN RTT, and BLE RSSI.)
+  channel sounding, Wi-Fi NAN RTT, BLE RSSI, and -- marked as an
+  in-development v4 addition in the PDL -- Wi-Fi PD.)
 
 - **v3 -- motion notification.** A new `MOTION_NOTIFICATION` message
   (`MessageId = 0x8`) carries a `Motion` payload reporting detected movement as
@@ -3774,7 +3853,8 @@ enforced through channel usage restrictions (`ChannelUsage`).
 | Session manager | `packages/modules/Uwb/service/java/com/android/server/uwb/UwbSessionManager.java` |
 | UCI constants | `packages/modules/Uwb/service/java/com/android/server/uwb/data/UwbUciConstants.java` |
 | Rust UCI core | `packages/modules/Uwb/libuwb-uci/src/rust/uwb_core/src/` |
-| JNI bridge | `packages/modules/Uwb/libuwb-uci/src/rust/uci_hal_android/` |
+| UCI HAL client | `packages/modules/Uwb/libuwb-uci/src/rust/uci_hal_android/` |
+| JNI bridge | `packages/modules/Uwb/service/uci/jni/` |
 | Support library | `packages/modules/Uwb/service/support_lib/` |
 | Generic Ranging API | `packages/modules/Uwb/ranging/framework/` |
 | APEX config | `packages/modules/Uwb/apex/Android.bp` |
@@ -3807,7 +3887,7 @@ mock data and glue in `vendor/google/train_build`.
 `tools/mainline/train_build/Android.bp` defines a set of `python_binary_host`
 "worker" binaries and `python_library_host` "action" libraries, each
 implementing one stage of the pipeline, plus `python_test_host` unit tests for
-every stage:
+most stages (trim, versioning, and the two orchestrators and their workers):
 
 | Stage | Action module | Responsibility |
 |-------|--------------|---------------|
@@ -3929,8 +4009,10 @@ flag {
 
 Because not every kernel supports file-backed EROFS mounts, `apexd` does not
 trust the flag blindly.  At runtime it performs a one-time **test mount** of a
-bundled empty EROFS image, and caches the result in a property so subsequent
-boots skip the probe:
+bundled empty EROFS image and caches the result in the non-persistent runtime
+property `apexd.config.runtime.erofs_file_backed_mount`, so later checks
+within the same boot skip the probe (the vendor-settable override is
+`apexd.config.erofs_file_backed_mount`):
 
 ```cpp
 // Source: system/apex/apexd/apexd_mount.cpp
@@ -3942,7 +4024,8 @@ static constexpr const char* kTestMountImage =
 // ...
 if (mount(kTestMountImage, kApexTestMountFolder, "erofs", mount_flags,
           "fsoffset=0")) {
-    LOG(ERROR)
+    android::base::SetProperty(kFileBackedMountRuntimeProp, "false");
+    PLOG(INFO)
         << "File-backed mount is disabled due to test mount failure (mount)";
     return false;
 }
@@ -4283,8 +4366,9 @@ $ adb wait-for-device
 # 5. Verify the new version is active
 $ adb shell pm list packages --apex-only --show-versioncode | grep sdkext
 
-# 6. Trigger a rollback
-$ adb shell cmd -w apexservice revertActiveSession
+# 6. Trigger a rollback through the package manager (which in turn
+#    drives apexd's IApexService.revertActiveSessions() binder method)
+$ adb shell pm rollback-app com.android.sdkext
 $ adb reboot
 $ adb wait-for-device
 
@@ -4319,7 +4403,7 @@ Run the test suite for a specific Mainline module:
 
 ```bash
 # Run SdkExtensions tests
-$ atest SdkExtensionsTests
+$ atest CtsSdkExtensionsTestCases
 
 # Run apexd unit tests
 $ atest apex_file_test apex_manifest_test apex_database_test
@@ -4689,7 +4773,6 @@ ro.build.ab_update=true         # A/B capable
 
 # Virtual A/B detection
 ro.virtual_ab.enabled=true      # Virtual A/B enabled
-ro.virtual_ab.retrofit=true     # Retrofitted (vs. launch)
 
 # Virtual A/B Compression
 ro.virtual_ab.compression.enabled=true
@@ -4723,8 +4806,8 @@ FeatureFlag GetVirtualAbCompressionFeatureFlag() override;
 FeatureFlag GetVirtualAbCompressionXorFeatureFlag() override;
 ```
 
-Each `FeatureFlag` can be `NONE`, `RETROFIT`, or `LAUNCH`, distinguishing
-devices that were upgraded to a feature from those that shipped with it.
+Each `FeatureFlag` is either `NONE` or `LAUNCH`, queried through its
+`IsEnabled()` and `IsLaunch()` helpers.
 
 ### 55.1.5 Source Tree Map
 
@@ -4882,18 +4965,24 @@ The `ActionProcessor` runs one action at a time. When an action completes
 // action_processor.cc
 void ActionProcessor::ActionComplete(AbstractAction* actionptr,
                                      ErrorCode code) {
-  // ... notify delegate ...
-  if (code != ErrorCode::kSuccess) {
-    // Pipeline failed
+  // ... notify delegate, run current_action_->ActionCompleted(code) ...
+  current_action_.reset();
+  if (!actions_.empty() && code != ErrorCode::kSuccess) {
+    // Pipeline failed: drop the remaining actions
     actions_.clear();
-    // ... error handling ...
-  } else {
-    // Advance to next action
-    actions_.erase(actions_.begin());
-    if (!actions_.empty()) {
-      actions_.front()->PerformAction();
-    }
   }
+  // ... suspend handling ...
+  StartNextActionOrFinish(code);
+}
+
+void ActionProcessor::StartNextActionOrFinish(ErrorCode code) {
+  if (actions_.empty()) {
+    // ... notify delegate that processing is done ...
+    return;
+  }
+  current_action_ = std::move(actions_.front());
+  actions_.pop_front();
+  current_action_->PerformAction();
 }
 ```
 
@@ -4919,6 +5008,7 @@ Key responsibilities:
 
 ```cpp
 // The update status state machine
+// (system/update_engine/client_library/include/update_engine/update_status.h)
 enum class UpdateStatus {
   IDLE,
   CHECKING_FOR_UPDATE,
@@ -4930,7 +5020,9 @@ enum class UpdateStatus {
   REPORTING_ERROR_EVENT,
   ATTEMPTING_ROLLBACK,
   DISABLED,
+  NEED_PERMISSION_TO_UPDATE,
   CLEANUP_PREVIOUS_UPDATE,
+  // ...
 };
 ```
 
@@ -5017,8 +5109,8 @@ The `applyPayload` headers are key-value pairs that control behavior:
 ```
 METADATA_HASH=<base64>     -- Expected hash of payload metadata
 METADATA_SIZE=<bytes>      -- Size of payload metadata
-PAYLOAD_HASH=<base64>      -- Expected hash of entire payload
-PAYLOAD_SIZE=<bytes>       -- Size of entire payload
+FILE_HASH=<base64>         -- Expected hash of entire payload
+FILE_SIZE=<bytes>          -- Size of entire payload
 SWITCH_SLOT_ON_REBOOT=1    -- Whether to switch slots (default: 1)
 RUN_POST_INSTALL=1         -- Whether to run postinstall (default: 1)
 NETWORK_ID=<id>            -- Network to use for download
@@ -5136,9 +5228,9 @@ message DeltaArchiveManifest {
 
 message PartitionUpdate {
   string partition_name = 1;
-  repeated InstallOperation operations = 7;
-  PartitionInfo old_partition_info = 10;
-  PartitionInfo new_partition_info = 11;
+  PartitionInfo old_partition_info = 6;
+  PartitionInfo new_partition_info = 7;
+  repeated InstallOperation operations = 8;
   // Verity/FEC fields ...
   repeated CowMergeOperation merge_operations = 18;
 }
@@ -5160,12 +5252,12 @@ message InstallOperation {
     REPLACE_ZSTD = 14;  // Android 17: write zstd-decompressed data
   }
   Type type = 1;
-  repeated Extent src_extents = 6;
-  repeated Extent dst_extents = 8;
-  uint64 data_offset = 4;
-  uint64 data_length = 5;
+  uint64 data_offset = 2;
+  uint64 data_length = 3;
+  repeated Extent src_extents = 4;
+  repeated Extent dst_extents = 6;
+  bytes data_sha256_hash = 8;
   bytes src_sha256_hash = 9;
-  bytes data_sha256_hash = 10;
 }
 ```
 
@@ -5345,26 +5437,28 @@ Once the manifest is parsed and partitions are prepared, each operation is
 dispatched based on its type:
 
 ```cpp
-bool DeltaPerformer::PerformInstallOperation(
-    const InstallOperation& operation) {
-  switch (operation.type()) {
+bool DeltaPerformer::ProcessOperation(const InstallOperation* op,
+                                      ErrorCode* error) {
+  // ...
+  switch (op->type()) {
     case InstallOperation::REPLACE:
     case InstallOperation::REPLACE_BZ:
     case InstallOperation::REPLACE_XZ:
     case InstallOperation::REPLACE_ZSTD:   // Android 17
-      return PerformReplaceOperation(operation);
+      return PerformReplaceOperation(*op);
     case InstallOperation::ZERO:
     case InstallOperation::DISCARD:
-      return PerformZeroOrDiscardOperation(operation);
+      return PerformZeroOrDiscardOperation(*op);
     case InstallOperation::SOURCE_COPY:
-      return PerformSourceCopyOperation(operation, &error);
+      return PerformSourceCopyOperation(*op, error);
     case InstallOperation::SOURCE_BSDIFF:
     case InstallOperation::BROTLI_BSDIFF:
     case InstallOperation::PUFFDIFF:
     case InstallOperation::ZUCCHINI:
     case InstallOperation::LZ4DIFF_BSDIFF:
     case InstallOperation::LZ4DIFF_PUFFDIFF:
-      return PerformDiffOperation(operation, &error);
+      return PerformDiffOperation(*op, error);
+    // ...
   }
 }
 ```
@@ -5448,13 +5542,23 @@ The VABC partition writer translates OTA operations into COW operations:
 
 ```cpp
 bool DeltaPerformer::CheckpointUpdateProgress(bool force) {
-  // Save: current operation number, manifest metadata hash,
-  // partition states, etc.
-  Checkpoint();
-  // On resume, CanResumeUpdate() checks the stored hash against
-  // the new payload's hash to determine if resume is possible.
+  // ...
+  // Saves the running payload hash contexts, the next data offset/length,
+  // and the signature blob into persistent prefs
+  // (kPrefsUpdateStateSHA256Context, kPrefsUpdateStateNextDataOffset, ...),
+  // then lets the partition writer checkpoint its own progress:
+  if (partition_writer_) {
+    partition_writer_->CheckpointUpdateProgress(GetPartitionOperationNum());
+  }
+  // ...
+  TEST_AND_RETURN_FALSE(
+      prefs_->SetInt64(kPrefsUpdateStateNextOperation, next_operation_num_));
+  // ...
 }
 ```
+
+On resume, `CanResumeUpdate()` checks the stored payload hash against the new
+payload's hash to determine whether the checkpoint is still valid.
 
 When the device reboots mid-update (power loss, crash), the next `ApplyPayload`
 call detects the stored checkpoint and resumes from where it left off, skipping
@@ -6572,8 +6676,9 @@ Source: frameworks/base/core/java/android/os/UpdateEngineStable.java
 ```
 
 This binds to a "stable" AIDL interface rather than the versioned one, providing
-forward/backward compatibility for the core `applyPayload` / `bind` / `cancel`
-operations.
+forward/backward compatibility for the core `applyPayloadFd` / `bind` / `unbind`
+operations. Unlike `UpdateEngine`, the stable variant takes the payload as a
+`ParcelFileDescriptor` rather than a URL and exposes no `cancel` method.
 
 ### 55.10.5 The Updater Sample App
 
@@ -6667,10 +6772,11 @@ The postinstall configuration is embedded in the OTA package manifest:
 
 ```protobuf
 message PartitionUpdate {
-  bool run_postinstall = 13;
-  string postinstall_path = 14;      // e.g., "bin/postinstall"
-  string filesystem_type = 15;       // e.g., "ext4"
-  bool postinstall_optional = 16;    // OK to skip if it fails
+  // ...
+  optional bool run_postinstall = 2;
+  optional string postinstall_path = 3;   // e.g., "bin/postinstall"
+  optional string filesystem_type = 4;    // e.g., "ext4"
+  optional bool postinstall_optional = 9; // OK to skip if it fails
 }
 ```
 
@@ -6692,9 +6798,10 @@ flowchart TD
 
 The postinstall script runs in a restricted environment:
 
-- The target partition is mounted at a temporary path.
-- The script inherits `update_engine`'s UID/GID.
-- SELinux context is `update_engine`.
+- On Android, the target partition is mounted at the fixed `/postinstall`
+  mount point.
+- The script runs in the dedicated `postinstall` SELinux domain; files under
+  the mount point are labeled `postinstall_file`.
 - Progress is communicated back through a progress pipe.
 
 ### 55.11.4 Triggering Postinstall Separately
@@ -6847,15 +6954,17 @@ the persisted merge report instead.
 ### 55.14.2 Debugging update_engine
 
 ```bash
-# Enable verbose logging
-adb shell setprop persist.update_engine.log_level DEBUG
-
-# Force a log dump
-adb shell kill -SIGUSR1 $(adb shell pidof update_engine)
+# Read the persisted daemon logs (--logtofile in update_engine.rc)
+adb shell ls -t /data/misc/update_engine_log/
+adb shell cat /data/misc/update_engine_log/update_engine.<timestamp>  # newest file
 
 # Examine persistent preferences
 adb shell ls /data/misc/update_engine/prefs/
 ```
+
+There is no runtime log-level system property; `update_engine`'s verbosity is
+set by the `--logtostderr --logtofile` flags on its command line in
+`system/update_engine/update_engine.rc`.
 
 ### 55.14.3 Debugging snapuserd
 
@@ -7064,8 +7173,11 @@ block_image_update("/dev/block/.../system",
     "system.patch.dat");
 ```
 
-The `update-binary` (typically `update_engine_sideload` on newer builds)
-interprets these scripts to apply block-level patches.
+The `update-binary` extracted from the package is `updater`
+(`bootable/deprecated-ota/updater`), which interprets the edify
+`updater-script` to apply block-level patches. (`update_engine_sideload` is
+the separate A/B sideload path: it applies a `payload.bin` and never runs
+edify.)
 
 ### 55.16.6 Two-Step Updates
 
@@ -7203,13 +7315,13 @@ Key preference files:
 
 | Preference | Purpose |
 |-----------|---------|
-| `update-state-initialized` | Whether state was initialized |
+| `update-state-sha-256-context` | Running payload hash context |
 | `update-state-next-operation` | Resume point (operation index) |
 | `update-state-next-data-offset` | Resume point (data offset) |
 | `update-state-next-data-length` | Expected data length |
 | `update-state-payload-index` | Current payload in multi-payload |
-| `update-state-manifest-metadata-size` | Cached manifest size |
-| `update-state-manifest-signature-size` | Cached signature size |
+| `manifest-metadata-size` | Cached manifest size |
+| `manifest-signature-size` | Cached signature size |
 | `update-completed-on-boot-id` | Boot ID when update completed |
 | `previous-version` | Pre-update build fingerprint |
 | `boot-id` | Current boot ID for tracking reboots |
@@ -7227,9 +7339,13 @@ Source: system/update_engine/common/cpu_limiter.h
         system/update_engine/common/cpu_limiter.cc
 ```
 
-The `CPULimiter` class monitors system load and throttles the update process
-when the CPU is under heavy use. This is especially important during the
-compute-intensive phases of applying diff operations (bsdiff, puffdiff,
+The `CPULimiter` class does not monitor system load; it simply lowers the
+process's cgroup `cpu.shares` to a low value for a bounded window, then
+restores the normal value when a timeout fires. On Android it is not actually
+wired up -- no production code instantiates it -- and the update process's CPU
+and I/O footprint is instead managed by the `OtaProfiles` task profile applied
+in `system/update_engine/update_engine.rc`. Keeping the update cheap matters
+most during the compute-intensive diff operations (bsdiff, puffdiff,
 zucchini).
 
 ---
@@ -7369,8 +7485,10 @@ const double kBroadcastThresholdProgress = 0.01;  // 1%
 const int kBroadcastThresholdSeconds = 10;
 ```
 
-The `UpdateAttempterAndroid::BytesReceived` callback computes overall progress
-as a weighted combination of download progress and operation progress:
+The `UpdateAttempterAndroid::BytesReceived` callback itself only computes
+`bytes_received / total` and throttles the Binder broadcast. The weighted
+combination of download progress and operation progress happens earlier, in
+`DeltaPerformer::UpdateOverallProgress`:
 
 ```cpp
 // DeltaPerformer weights (from delta_performer.h)
@@ -7381,11 +7499,13 @@ static const unsigned kProgressOperationsWeight;   // Apply contribution
 
 ### 55.20.3 The MultiRangeHttpFetcher
 
-For multi-payload updates, the `MultiRangeHttpFetcher` handles:
-
-- Sequential downloading of multiple payloads.
-- Byte range requests for each payload (allowing resume at payload boundaries).
-- Delegation of received bytes to the appropriate `DeltaPerformer`.
+The `MultiRangeHttpFetcher` is a simple wrapper around a base `HttpFetcher`:
+the client hands it a list of byte ranges, and it fetches each range in turn
+through the same underlying fetcher. `update_engine` uses it mainly to fetch
+the payload starting at an offset (for example when resuming). Sequencing
+payloads and forwarding the received bytes to the `DeltaPerformer` is the job
+of `DownloadAction`, which constructs the fetcher and feeds the performer from
+its `ReceivedBytes` callback.
 
 ---
 
@@ -7422,20 +7542,21 @@ tree and FEC (Forward Error Correction) data as part of the update:
 
 ```protobuf
 message PartitionUpdate {
-  uint64 hash_tree_data_offset = 19;
-  uint64 hash_tree_data_size = 20;
-  uint64 hash_tree_offset = 21;
-  uint64 hash_tree_size = 22;
-  string hash_tree_algorithm = 23;   // "sha256"
-  bytes hash_tree_salt = 24;
+  // ...
+  optional Extent hash_tree_data_extent = 10;  // Source data covered by the tree
+  optional Extent hash_tree_extent = 11;       // Where the tree is written
+  optional string hash_tree_algorithm = 12;    // "sha256"
+  optional bytes hash_tree_salt = 13;
 
-  uint64 fec_data_offset = 25;
-  uint64 fec_data_size = 26;
-  uint64 fec_offset = 27;
-  uint64 fec_size = 28;
-  uint32 fec_roots = 29;             // Typically 2
+  optional Extent fec_data_extent = 14;        // Data covered by FEC
+  optional Extent fec_extent = 15;             // Where the FEC data is written
+  optional uint32 fec_roots = 16 [default = 2];
 }
 ```
+
+(`InstallPlan::Partition` in
+`system/update_engine/payload_consumer/install_plan.h` carries the same
+information flattened into scalar offset/size fields.)
 
 When `write_verity` is true in the `InstallPlan`, the performer computes
 hash trees and FEC codes on-device after writing partition data, rather than
@@ -7894,7 +8015,7 @@ image, all without flashing and all reversible.
 DSU reuses the same dynamic-partition and image-mapping machinery this chapter
 already covered for Virtual A/B (`libfiemap`'s `ImageManager`, `liblp` metadata,
 device-mapper). The piece unique to DSU is a small system daemon, **`gsid`**
-(roughly 3.8K lines of C++ in `system/gsid/`), that stages the image into those
+(roughly 3.3K lines of C++ in `system/gsid/`), that stages the image into those
 dynamic image files and arms the one-shot boot.
 
 ### 55.27.1 The gsid daemon and IGsiService
@@ -8141,11 +8262,11 @@ adb shell bootctl is-slot-marked-successful 1
 # After rebooting into new slot, watch the merge
 adb logcat -s snapuserd
 
-# Check snapshot status
+# Check snapshot status and merge progress
 adb shell snapshotctl dump
 
-# Monitor merge progress
-adb shell snapshotctl map-snapshots
+# Or query the merge status through the boot control HAL
+adb shell bootctl get-snapshot-merge-status
 ```
 
 ### 55.28.7 Simulating an Update on Cuttlefish
@@ -8184,9 +8305,9 @@ adb pull /cache/recovery/last_kmsg
 # Generate OTA with specific VABC options
 python3 build/make/tools/releasetools/ota_from_target_files.py \
     --vabc_compression_param=zstd,9 \
-    --enable_vabc_xor \
-    --enable_zucchini \
-    --enable_lz4diff \
+    --enable_vabc_xor=true \
+    --enable_zucchini=true \
+    --enable_lz4diff=true \
     --compression_factor=64k \
     --max_threads=8 \
     -i source_tf.zip \
@@ -8383,10 +8504,10 @@ graph TB
         PAYLOAD["VM Payload"]
     end
 
-    APP -->|"Java/AIDL API"| VS
-    VM_CLI -->|"Binder"| VS
-    COMPOSD -->|"Binder"| VS
-    VS --> VIRTMGR
+    APP -->|"spawns, RpcBinder"| VIRTMGR
+    VM_CLI -->|"spawns, RpcBinder"| VIRTMGR
+    COMPOSD -->|"spawns, RpcBinder"| VIRTMGR
+    VIRTMGR -->|"Binder (IVirtualizationServiceInternal)"| VS
     VIRTMGR --> CROSVM
     CROSVM -->|"KVM ioctls"| PKVM
     PKVM -->|"loads"| PVMFW
@@ -8402,10 +8523,14 @@ independently of the main Android platform. The APEX contains:
 - The `vm` command-line tool
 - The `VirtualizationService` and `virtmgr` daemons
 - The Microdroid kernel and system images
-- The `pvmfw.bin` firmware binary
 - The `crosvm` binary
 - Java and native client libraries
-- The `composd` compilation orchestration daemon
+
+Two closely related components live outside this APEX: the `composd`
+compilation orchestration daemon ships in the separate `com.android.compos`
+APEX, and `pvmfw.bin` is a standalone firmware image (installed at
+`system/etc/pvmfw.bin` in the product output) that the bootloader loads
+rather than anything unpacked from the APEX.
 
 To install the APEX from source:
 
@@ -8560,7 +8685,8 @@ extension (`1.3.6.1.4.1.11129.2.1.29.1`) that describes the VM payload:
 AttestationExtension ::= SEQUENCE {
     attestationChallenge       OCTET_STRING,
     isVmSecure                 BOOLEAN,
-    vmComponents               SEQUENCE OF VmComponent,
+    vmPayloadComponents        SEQUENCE OF VmComponent,
+    vmTenantComponents         SEQUENCE OF VmComponent,
 }
 ```
 
@@ -9132,14 +9258,13 @@ external/crosvm/
     cros_async/           # Async runtime (io_uring + epoll)
     devices/              # Virtual device implementations
     disk/                 # Disk image manipulation (raw, qcow)
-    hypervisor/           # Hypervisor abstraction layer
+    hypervisor/           # Hypervisor abstraction layer (KVM wrapper in src/kvm/)
     jail/                 # Minijail sandboxing helpers
     jail/seccomp/         # Per-architecture seccomp policies
     kernel_loader/        # Kernel image loading
     kvm_sys/              # KVM ioctl structures
-    kvm/                  # KVM wrapper
     net_util/             # TUN/TAP device creation
-    sync/                 # Custom Mutex/Condvar
+    common/sync/          # Custom Mutex/Condvar
     vfio_sys/             # VFIO structures for device passthrough
     vhost/                # Vhost device wrappers
     virtio_sys/           # Virtio kernel interface
@@ -9526,16 +9651,17 @@ fn main<'a>(
     untrusted_fdt: &mut Fdt,
     signed_kernel: &[u8],
     ramdisk: Option<&[u8]>,
-    current_dice_handover: Option<&[u8]>,
-    mut debug_policy: Option<&[u8]>,
-    vm_dtbo: Option<&mut [u8]>,
-    vm_ref_dt: Option<&[u8]>,
-    reserved_mem: Option<&[u8]>,
+    config: &mut Entries,
 ) -> Result<(&'a [u8], bool), RebootReason> {
     info!("pVM firmware");
     // ...
 }
 ```
+
+The individual configuration blobs -- the current DICE handover, debug policy,
+VM DTBO, VM reference DT, and reserved memory -- are no longer separate
+parameters; they are reached through the `config: &mut Entries` argument, the
+parsed set of pvmfw configuration-data entries (see section 56.9).
 
 ### 56.5.5 Verified Boot
 
@@ -9549,14 +9675,19 @@ const PUBLIC_KEY: &[u8] = include_bytes!(
 );
 ```
 
+The embedded `PUBLIC_KEY` is only the first entry in the slice of trusted
+keys: `main()` extends it with any additional keys carried in the
+`TrustedKeys` configuration entry before verification.
+
 The verified boot process:
 
 ```rust
 fn perform_verified_boot<'a>(
     signed_kernel: &[u8],
     ramdisk: Option<&[u8]>,
+    trusted_keys: &'a [&'a [u8]],
 ) -> Result<(VerifiedBootData<'a>, bool, usize), RebootReason> {
-    let verified_boot_data = verify_payload(signed_kernel, ramdisk, PUBLIC_KEY)
+    let verified_boot_data = verify_payload(signed_kernel, ramdisk, trusted_keys)
         .map_err(|e| {
             error!("Failed to verify the payload: {e}");
             RebootReason::PayloadVerificationError
@@ -9625,10 +9756,10 @@ fn salt_from_instance_id(fdt: &Fdt) -> Result<Option<Hidden>, RebootReason> {
     else {
         return Ok(None);
     };
-    let salt = Digester::sha512()
-        .digest(&[&b"InstanceId:"[..], id].concat())
-        // ...
-    Ok(Some(salt))
+    let mut ctx = Sha512::new();  // bssl_crypto::digest::Sha512
+    ctx.update(b"InstanceId:");
+    ctx.update(id);
+    Ok(Some(ctx.digest()))
 }
 ```
 
@@ -9847,13 +9978,13 @@ graph TB
         CAPS["IVmCapabilitiesService"]
     end
 
-    APP -->|"Java API"| VS
-    VM_CLI -->|"Binder"| VS
-    COMPOSD -->|"Binder"| VS
-    VS -->|"spawn"| VIRTMGR
+    APP -->|"spawn + RpcBinder"| VIRTMGR
+    VM_CLI -->|"spawn + RpcBinder"| VIRTMGR
+    COMPOSD -->|"spawn + RpcBinder"| VIRTMGR
+    VIRTMGR -->|"Binder (internal)"| VS
     VIRTMGR -->|"fork+exec"| CROSVM
-    VIRTMGR -->|"spawn"| FD_SERVER
-    VS -->|"Binder"| CAPS
+    COMPOSD -->|"spawn"| FD_SERVER
+    VIRTMGR -->|"Binder"| CAPS
     VS --> MAINT
     VS --> RPC
 ```
@@ -9999,9 +10130,10 @@ sequenceDiagram
     participant pKVM as pKVM
     participant Guest as Microdroid
 
-    App->>VS: createVm(VirtualMachineConfig)
+    App->>VM: Spawn virtmgr (libvmclient)
+    App->>VM: createVm(VirtualMachineConfig)
+    VM->>VS: IVirtualizationServiceInternal
     VS->>VS: Allocate CID, create temp directory
-    VS->>VM: Spawn virtmgr process
 
     App->>VM: start()
     VM->>VM: Prepare disk images
@@ -10317,7 +10449,8 @@ As described in `hardware/interfaces/virtualization/capabilities_service/README.
 
 ### 56.7.2 Implementation Structure
 
-The HAL has three implementations:
+The HAL has two implementations (default and noop), alongside the `aidl/`
+interface definition and `vts/` tests:
 
 ```
 hardware/interfaces/virtualization/capabilities_service/
@@ -10401,20 +10534,20 @@ Monitor Call) instructions to communicate with trusted execution environments:
 ```mermaid
 sequenceDiagram
     participant App as Android App
-    participant VS as VirtualizationService
+    participant VM as virtmgr
     participant CAPS as IVmCapabilitiesService
     participant pKVM as pKVM
     participant TEE as Vendor TEE
 
-    App->>VS: createVm(config with tee_services)
-    VS->>VS: Create VM, get vm_fd
+    App->>VM: createVm(config with tee_services)
+    VM->>VM: Create VM, get vm_fd
 
-    VS->>CAPS: grantAccessToVendorTeeServices(vm_fd, services)
+    VM->>CAPS: grantAccessToVendorTeeServices(vm_fd, services)
     CAPS->>pKVM: Configure SMC filtering for VM
 
     Note over App,TEE: VM is now running
 
-    App->>VS: (VM makes SMC call)
+    App->>VM: (VM makes SMC call)
     pKVM->>pKVM: Check SMC filter
     alt Allowed
         pKVM->>TEE: Forward SMC
@@ -10493,14 +10626,18 @@ VM type and platform capabilities.
 From `packages/modules/Virtualization/guest/pvmfw/src/rollback.rs`:
 
 ```rust
-pub fn perform_rollback_protection(
+pub fn perform_rollback_protection<'a>(
     fdt: &Fdt,
     verified_boot_data: &VerifiedBootData,
     dice_inputs: &PartialInputs,
     cdi_seal: &[u8],
+    rollback_config: Option<&RollbackConfig<'a>>,
+    extra_keys: &[&'a [u8]],
 ) -> Result<(bool, Hidden, bool), RebootReason> {
     let instance_hash = dice_inputs.instance_hash;
-    if let Some(fixed) = get_fixed_rollback_protection(verified_boot_data) {
+    if let Some(fixed) =
+        get_fixed_rollback_protection(verified_boot_data, rollback_config, extra_keys)
+    {
         perform_fixed_rollback_protection(verified_boot_data, fixed)?;
         Ok((false, instance_hash.unwrap(), false))
     } else if (should_defer_rollback_protection(fdt)?
@@ -10538,13 +10675,13 @@ graph TB
 **Fixed Rollback Protection** -- For well-known system VMs with specific identity:
 
 ```rust
-enum FixedRollbackCriterion {
-    /// Image must match the exact kernel hash.
-    KernelHash { digest: Digest },
+pub(crate) enum FixedRollbackCriterion<'a> {
+    /// Image must match one of the allowed kernel hashes.
+    KernelHash { digests: &'a [Digest] },
     /// Image must match the exact rollback index and public key.
-    RollbackIndexPublicKey { index: u64, public_key: &'static [u8] },
+    RollbackIndexPublicKey { index: u64, public_key: &'a [u8] },
     /// Reserved name not supported on this platform.
-    Reserved { name: &'static str },
+    Reserved { name: &'a str },
 }
 ```
 
@@ -10554,7 +10691,7 @@ The RKP VM uses rollback index + public key verification:
 match verified_boot_data.name.as_deref()? {
     VerifiedBootData::RKP_VM_NAME =>
         Some(FixedRollbackCriterion::RollbackIndexPublicKey {
-            index: service_vm_version::VERSION,
+            index: platform_security_patch_timestamp::TIMESTAMP,
             public_key: PUBLIC_KEY,
         }),
     VerifiedBootData::DESKTOP_TRUSTY_VM_NAME => {
@@ -10659,6 +10796,8 @@ pub struct Entries<'a> {
     pub vm_dtbo: Option<&'a mut [u8]>,         // Mutable: DTBO processing
     pub vm_ref_dt: Option<&'a [u8]>,           // Read-only
     pub reserved_mem: Option<&'a mut [u8]>,    // Mutable: will be zeroized
+    pub trusted_keys: Option<&'a [u8]>,        // Read-only
+    pub extra_rollback: Option<&'a [u8]>,      // Read-only
 }
 ```
 
@@ -10847,7 +10986,9 @@ vmbase provides:
 ### 56.11.3 Source Organization
 
 ```
-packages/modules/Virtualization/libs/libvmbase/
+packages/modules/Virtualization/libs/libvmbase/src/
+    acpi/              # ACPI table support
+    acpi.rs            # ACPI utilities
     arch/              # Architecture-specific code
     arch.rs            # Architecture abstraction
     bionic.rs          # Bionic compatibility shims
@@ -10880,16 +11021,20 @@ A minimal vmbase binary requires:
 #![no_main]
 #![no_std]
 
-use vmbase::{logger, main};
+use vmbase::main;
 use log::{info, LevelFilter};
 
 main!(main);
 
-pub fn main(arg0: u64, arg1: u64, arg2: u64, arg3: u64) {
-    logger::init(LevelFilter::Info).unwrap();
+pub fn main(argv: &[usize]) {
+    log::set_max_level(LevelFilter::Info);
     info!("Hello world");
 }
 ```
+
+The `main!` macro expects a function taking `argv: &[usize]`; vmbase's own
+entry code initialises the logger before `main` runs, so the application only
+adjusts the log level with `log::set_max_level()`.
 
 The build system uses a combination of `rust_ffi_static` and `cc_binary` rules
 with custom linker scripts:
@@ -10956,8 +11101,10 @@ fn map_data_slice<'a>(addr: usize, size: usize)
 }
 ```
 
-This separation ensures that code regions (kernel image) are mapped read-only
-while data regions (FDT, ramdisk) are mapped read-write as needed.
+This separation ensures that the kernel image and the ramdisk are mapped
+read-only via `map_data_slice()` (backed by `map_rodata`), while only the
+regions pvmfw must modify -- the FDT, and on x86_64 the boot params and setup
+data -- are mapped read-write via `map_data_slice_mut()`.
 
 ---
 
@@ -11290,7 +11437,7 @@ sequenceDiagram
     VMS->>VMM: create("debian", config)
     VMM->>CV: Launch crosvm with virtio devices
     CV-->>VMS: VM running
-    VMS->>TA: VM_LAUNCHER_SERVICE_READY
+    VMS->>TA: VmLauncherServiceCallback.onVmStart
     TA->>TA: Start DisplayActivity
     TA->>VMS: Connect display surface
     Note over TA,CV: Display output flows<br/>Guest → virtio-gpu → crosvm → Android Surface
@@ -11307,7 +11454,7 @@ sequenceDiagram
 The VM display adapts to the Android device's screen:
 
 ```kotlin
-// Source: packages/modules/Virtualization/android/TerminalApp/java/.../VmLauncherService.kt:622
+// Source: packages/modules/Virtualization/android/TerminalApp/java/.../VmLauncherService.kt:541
 data class DisplayInfo(
     val width: Int,      // Device display width
     val height: Int,     // Device display height
@@ -11332,14 +11479,19 @@ Vulkan commands from the guest to the host GPU:
 
 ```kotlin
 // Source: packages/modules/Virtualization/android/TerminalApp/java/.../VmLauncherService.kt:355
-if (isGfxstreamEnabled()) {
+if (GraphicsManager.getInstance(this).isGfxstreamEnabled()) {
     builder.setGpuConfig(
         GpuConfig.Builder()
             .setBackend("gfxstream")
+            .setRendererUseEgl(false)
+            .setRendererUseGles(false)
+            .setRendererUseGlx(false)
             .setRendererUseSurfaceless(true)
             .setRendererUseVulkan(true)
             .setContextTypes(arrayOf("gfxstream-vulkan", "gfxstream-composer"))
-            .setRendererFeatures("VulkanDisableCoherentMemoryAndEmulate:enabled")
+            .setRendererFeatures(
+                "VulkanDisableCoherentMemoryAndEmulate:enabled;VulkanAllocateHostVisibleAsUdmabuf:enabled;ExternalBlob:enabled"
+            )
             .build()
     )
 }
@@ -11348,12 +11500,13 @@ if (isGfxstreamEnabled()) {
 The GPU configuration supports these parameters:
 
 ```java
-// Source: packages/modules/Virtualization/.../VirtualMachineCustomImageConfig.java:911
+// Source: packages/modules/Virtualization/.../VirtualMachineCustomImageConfig.java:1040
 class GpuConfig {
     String backend;           // "gfxstream" or "2d"
     String[] contextTypes;    // ["gfxstream-vulkan", "gfxstream-composer"]
     boolean rendererUseEgl;
     boolean rendererUseGles;
+    boolean rendererUseGlx;
     boolean rendererUseSurfaceless;
     boolean rendererUseVulkan;
     String rendererFeatures;  // Feature flags
@@ -11420,10 +11573,8 @@ The crosvm GPU backend communicates with Android through a Binder interface:
 //         android/crosvm/ICrosvmAndroidDisplayService.aidl
 interface ICrosvmAndroidDisplayService {
     void setSurface(in Surface surface, boolean forCursor);
-    void removeSurface(boolean forCursor);
     void setCursorStream(in ParcelFileDescriptor stream);
-    void saveFrameForSurface(boolean forCursor);
-    void drawSavedFrameForSurface(boolean forCursor);
+    void removeSurface(boolean forCursor);
 }
 ```
 
@@ -11475,8 +11626,9 @@ The `InputForwarder` automatically adapts to the input device:
 
 ```kotlin
 // Source: packages/modules/Virtualization/android/TerminalApp/java/
-//         .../InputForwarder.kt:111-137
-// Detects physical keyboard → enables mouse pointer capture
+//         .../InputForwarder.kt:115-142
+// Detects physical keyboard presence → switches guest between tablet and
+//   desktop mode via sendTabletModeEvent()
 // Touch-only → touch events scaled to VM display dimensions
 // Trackpad → separate mouse input path
 ```
@@ -11498,22 +11650,21 @@ Linux VMs are configured via a JSON file that maps to
     "disks": [
         { "image": "$PAYLOAD_DIR/root_part", "writable": true, "partitions": [...] }
     ],
+    "params": "root=/dev/vda1 ds=nocloud arm64.nompam 8250.nr_uarts=4 console=ttyS0",
     "cpu_topology": "match_host",
     "memory_mib": 4096,
+    "hugepages": true,
     "network": true,
     "auto_memory_balloon": true,
     "gpu": { "backend": "2d" },
     "protected": false,
-    "debuggable": true,
-    "input": {
-        "keyboard": true,
-        "mouse": true,
-        "multi_touch": true,
-        "trackpad": true,
-        "switches": true
-    }
+    "debuggable": true
 }
 ```
+
+`VirtualMachineCustomImageConfig` also understands an `input` section (with
+`keyboard`, `mouse`, `multi_touch`, `trackpad`, and `switches` keys), though
+the shipped Debian config does not set it.
 
 #### Debian Image Building
 
@@ -11521,16 +11672,17 @@ The build system creates Debian VM images from scratch:
 
 ```
 packages/modules/Virtualization/build/debian/
-├── build.sh                 # Main build script
-├── build_custom_kernel.sh   # Custom kernel build
-├── fai/                     # FAI (Fully Automatic Installation) configs
-│   └── config/              # Debian Bookworm/Trixie profiles
-├── localdebs/               # Custom .deb packages
-├── ttyd/                    # Terminal-over-web support
-└── vm_config.json           # VM configuration template
+├── build.sh                   # Main build script (Docker wrapper)
+├── build_internal.sh          # Build steps run inside the container
+├── build_rootfs_in_chroot.sh  # Debian rootfs construction in a chroot
+├── build_cidata.sh            # cloud-init cidata ISO generation
+├── cloud-init_config/         # cloud-init configuration
+├── localdebs/                 # Custom .deb packages
+├── ttyd/                      # Terminal-over-web support
+└── vm_config.json             # VM configuration template
 ```
 
-Supported architectures: **amd64**, **arm64**, **ppc64el**, **riscv64**
+Supported architectures: **aarch64 (arm64)** and **x86_64**
 
 The resulting image includes a Linux kernel, initrd, and a writable root
 partition with Debian userspace. The VM uses `cpu_topology: "match_host"`
@@ -11541,25 +11693,30 @@ to expose the device's actual CPU topology to the guest.
 Linux VM GUI support is gated behind aconfig feature flags:
 
 ```
-// Source: packages/modules/Virtualization/build/avf_flags.aconfig:14-18
+// Source: packages/modules/Virtualization/build/avf_flags.aconfig:13-19
 flag {
     name: "terminal_gui_support"
+    is_exported: true
     namespace: "virtualization"
-    description: "Enable GUI display feature in terminal app"
+    description: "Flag for GUI support in terminal"
+    bug: "386296118"
 }
 ```
 
 ```
-// Source: packages/modules/Virtualization/build/avf_flags.aconfig:22-27
+// Source: packages/modules/Virtualization/build/avf_flags.aconfig:27-33
 flag {
     name: "terminal_storage_balloon"
+    is_exported: true
     namespace: "virtualization"
-    description: "Enable storage ballooning for sparse disk support"
+    description: "Flag for storage ballooning support in terminal"
+    bug: "382174138"
 }
 ```
 
-When `terminal_gui_support` is disabled, the TerminalApp falls back to a
-text-only terminal (ttyd over WebView) instead of the full graphical display.
+Note that `terminal_gui_support` is declared in `avf_flags.aconfig` but is not
+currently consulted anywhere in the TerminalApp code -- it gates no behavior
+yet.
 
 ### 56.15.8 Virtio GPU Capabilities
 
@@ -11725,7 +11882,7 @@ Trusted HAL authentication to fail.
 Each VM requires:
 
 - **Microdroid base** -- ~256 MiB minimum (configurable)
-- **pvmfw** -- ~256 KiB heap + 48 KiB stack
+- **pvmfw** -- ~640 KiB heap + 48 KiB stack
 - **crosvm overhead** -- Per-device process memory
 - **Page tables** -- Stage-2 tables for the guest
 
@@ -11799,7 +11956,7 @@ the Linux VM gives resources back the moment it is not in use:
   `MAX_PERCENT` in `INFLATION_STEP_PERCENT` steps via `vm.setMemoryBalloonByPercent()`,
   handing RAM back to Android.
 - **`StorageBalloonWorker`** does the analogous job for disk, gated by the
-  `terminal_storage_balloon` flag ("Enable storage ballooning for sparse disk support"); the
+  `terminal_storage_balloon` flag ("Flag for storage ballooning support in terminal"); the
   VM config also carries `auto_memory_balloon`.
 - **`IGuestAgent.trimAsync()`** -- a method on the `IGuestAgent` interface (Section 56.30; the
   interface moved to the `virtualizationcommon` package in 17 but `trimAsync` itself predates it)
@@ -11880,12 +12037,13 @@ graph LR
 The VM Payload API allows hosting Binder RPC servers over vsock:
 
 ```c
-// Host a Binder server in the VM, accessible from the host
-void AVmPayload_runVsockRpcServer(
-    AIBinder* service,
-    unsigned int port,
-    AVmPayload_VsockRpcServerCallback onReady,
-    void* param);
+// Host a Binder server in the VM, accessible from the host.
+// Never returns; on_ready is invoked once the server is up.
+__attribute__((noreturn)) void AVmPayload_runVsockRpcServer(
+    AIBinder* _Nonnull service,
+    uint32_t port,
+    void (*_Nullable on_ready)(void* _Nullable param),
+    void* _Nullable param);
 ```
 
 This enables structured RPC communication between the host app and VM payload
@@ -12237,7 +12395,7 @@ atest MicrodroidTests#protectedVmHasValidDiceChain
 atest MicrodroidHostTestCases -v
 
 # Run VTS tests for capabilities HAL
-atest VtsHalVirtualizationCapabilitiesTargetTest
+atest VtsVmCapabilitiesServiceTest
 ```
 
 ### 56.23.4 Test VM Configuration
@@ -12371,8 +12529,7 @@ vendor: Option<PathBuf>,
 #[arg(long)]
 devices: Vec<PathBuf>,
 
-// TEE services allowlist
-#[cfg(tee_services_allowlist)]
+// Secure services this VM wants to access (always compiled in)
 #[arg(long)]
 tee_services: Vec<String>,
 
@@ -12431,13 +12588,13 @@ use disk::create_composite_disk;
 use disk::QcowFile;
 
 #[cfg(feature = "gpu")]
-use devices::virtio::vhost::user::device::run_gpu_device;
+use devices::virtio::vhost_user_backend::run_gpu_device;
 
 #[cfg(feature = "net")]
-use devices::virtio::vhost::user::device::run_net_device;
+use devices::virtio::vhost_user_backend::run_net_device;
 
 #[cfg(feature = "audio")]
-use devices::virtio::vhost::user::device::run_snd_device;
+use devices::virtio::vhost_user_backend::run_snd_device;
 
 #[cfg(feature = "balloon")]
 use vm_control::BalloonControlCommand;
@@ -13155,10 +13312,10 @@ adb shell getprop ro.boot.hypervisor.vm.supported
 adb shell getprop ro.boot.hypervisor.protected_vm.supported
 adb shell getprop ro.boot.hypervisor.version
 
-# Check AVF features
-adb shell /apex/com.android.virt/bin/vm check-feature-enabled remote_attestation
-adb shell /apex/com.android.virt/bin/vm check-feature-enabled vendor_modules
-adb shell /apex/com.android.virt/bin/vm check-feature-enabled device_assignment
+# Check AVF features (names from IVirtualizationService.aidl)
+adb shell /apex/com.android.virt/bin/vm check-feature-enabled com.android.kvm.VENDOR_MODULES
+adb shell /apex/com.android.virt/bin/vm check-feature-enabled com.android.kvm.NETWORK
+adb shell /apex/com.android.virt/bin/vm check-feature-enabled com.android.kvm.LLPVM_CHANGES
 ```
 
 ### 56.31.9 Building AVF from Source
@@ -13576,7 +13733,7 @@ Represents a single test run.  It orchestrates the full pipeline:
 2. Prepare target devices (`ITargetPreparer`)
 3. Run tests (`IRemoteTest`)
 4. Collect results (`ITestInvocationListener`)
-5. Clean up (`ITargetCleaner`)
+5. Clean up (the preparers' own `tearDown`)
 
 **InvocationExecution** (`tools/tradefederation/core/src/com/android/tradefed/invoker/InvocationExecution.java`):
 The concrete execution logic that drives the phases above.  For sandboxed
@@ -13590,7 +13747,7 @@ specifies:
 
 ```xml
 <configuration description="Example test config">
-    <build_provider class="com.android.tradefed.build.DeviceBuildProvider" />
+    <build_provider class="com.android.tradefed.build.BootstrapBuildProvider" />
 
     <target_preparer class="com.android.tradefed.targetprep.DeviceSetup" />
     <target_preparer class="com.android.tradefed.targetprep.TestAppInstallSetup">
@@ -13613,15 +13770,24 @@ object via `OptionSetter`, which uses Java reflection and the `@Option`
 annotation:
 
 ```java
-public class AndroidJUnitTest implements IRemoteTest, IDeviceTest {
-    @Option(name = "package", description = "The test package to run.")
+// From InstrumentationTest, which AndroidJUnitTest extends
+public class InstrumentationTest
+        implements IDeviceTest, IRemoteTest, /* ... */ {
+    @Option(name = "package",
+            description = "The manifest package name of the Android test "
+                + "application to run.")
     private String mPackageName = null;
 
-    @Option(name = "runner", description = "The instrumentation runner.")
-    private String mRunnerName = "androidx.test.runner.AndroidJUnitRunner";
+    @Option(name = "runner",
+            description = "The instrumentation test runner class name to use. "
+                + "Will try to determine automatically if it is not specified.")
+    private String mRunnerName = null;
     // ...
 }
 ```
+
+Note that the runner is auto-detected from the installed test package when the
+`runner` option is left unset, rather than defaulting to a fixed class name.
 
 ### 57.2.4  Sharding
 
@@ -13674,7 +13840,8 @@ Key sharding-related classes:
 - `TestsPoolPoller`: Polls from a shared `ITestsPool`
 - `LocalPool`: In-process pool implementation
 - `RemoteDynamicPool`: gRPC-backed distributed pool
-- `ParentShardReplicate`: Replicates the parent invocation to each shard
+- `ParentShardReplicate`: Replicates the single-device target-preparer setup
+  across all devices that sharding will target
 
 ### 57.2.5  Retry Logic
 
@@ -13733,8 +13900,13 @@ public interface IRemoteTest {
 
 ### 57.2.7  Target Preparers
 
-Target preparers set up the device before tests run.  Key preparers in
-`tools/tradefederation/core/src/com/android/tradefed/targetprep/`:
+Target preparers set up the device before tests run.  Like the runners in
+57.2.6, preparers are split across two source roots: `DeviceSetup`,
+`DeviceFlashPreparer`, and `TestAppInstallSetup` live under
+`tools/tradefederation/core/src/com/android/tradefed/targetprep/`, while
+`RootTargetPreparer`, `StopServicesSetup`, and `PushFilePreparer` live under
+`tools/tradefederation/core/test_framework/com/android/tradefed/targetprep/`.
+Key preparers:
 
 | Preparer | Purpose |
 |----------|---------|
@@ -13745,19 +13917,22 @@ Target preparers set up the device before tests run.  Key preparers in
 | `StopServicesSetup` | Stop framework services during test |
 | `PushFilePreparer` | Push files to device |
 
-The `ITargetPreparer` interface and its counterpart `ITargetCleaner` provide
-setup/teardown semantics:
+The `ITargetPreparer` interface provides both setup and teardown semantics --
+`tearDown` is a default method on the interface itself:
 
 ```java
 public interface ITargetPreparer {
     void setUp(TestInformation testInfo) throws TargetSetupError,
         BuildError, DeviceNotAvailableException;
-}
-public interface ITargetCleaner extends ITargetPreparer {
-    void tearDown(TestInformation testInfo, Throwable e)
-        throws DeviceNotAvailableException;
+
+    default void tearDown(TestInformation testInformation, Throwable e)
+        throws DeviceNotAvailableException { /* ... */ }
 }
 ```
+
+The historical `ITargetCleaner` interface is deprecated and now an empty
+marker interface (`public interface ITargetCleaner extends ITargetPreparer {}`)
+retained only for compatibility; its `tearDown` moved to `ITargetPreparer`.
 
 ### 57.2.8  Suite Mode
 
@@ -13822,7 +13997,7 @@ Key details of each phase:
 
 **Build Provision** (`IBuildProvider`):
 
-- `DeviceBuildProvider`: Fetches build artifacts from a build server
+- `BootstrapBuildProvider`: Bootstraps build info by querying the test device
 - `LocalDeviceBuildProvider`: Uses locally built artifacts
 - `CommandLineBuildInfoBuilder`: Constructs build info from command-line args
 
@@ -13900,7 +14075,7 @@ TradeFed supports multiple result reporters simultaneously:
 | `TextResultReporter` | Plain text file |
 | `XmlResultReporter` | JUnit XML format |
 | `InvocationProtoResultReporter` | Protocol buffer format |
-| `FileInputStreamSource` | Log file attachments |
+| `SuiteResultReporter` | Suite-level result summary |
 | `LogSaverResultForwarder` | Saves logs to storage |
 
 Results include:
@@ -14002,10 +14177,11 @@ input into `TestInfo` objects that the runner can execute.
 
 ### 57.3.4  Test Execution and Filtering
 
-atest passes many options through to TradeFederation via extra args:
+atest passes many options through to TradeFederation via extra args, using the
+`_ARG_TO_CONST_MAP` dict defined in `tools/asuite/atest/atest_main.py`:
 
 ```python
-arg_maps = {
+_ARG_TO_CONST_MAP = {
     'all_abi': constants.ALL_ABI,
     'annotation_filter': constants.ANNOTATION_FILTER,
     'collect_tests_only': constants.COLLECT_TESTS_ONLY,
@@ -14026,7 +14202,7 @@ arg_maps = {
 
 Key filtering options:
 
-- `--test-filter` / `-tf`: Filter by class or method name
+- `--test-filter`: Filter by class or method name
 - `--annotation-filter`: Include/exclude by Java annotation
 - `--include-filter` / `--exclude-filter`: TradeFed-level module filtering
 - `--host`: Force host-side execution
@@ -14406,13 +14582,6 @@ arrays of test objects.
       "name": "FrameworksCoreTests_Presubmit"
     }
   ],
-  "ravenwood-presubmit": [
-    {
-      "name": "CtsUtilTestCasesRavenwood",
-      "host": true,
-      "file_patterns": ["[Rr]avenwood"]
-    }
-  ],
   "postsubmit-managedprofile-stress": [
     {
       "name": "ManagedProfileLifecycleStressTest"
@@ -14518,7 +14687,6 @@ repository root.
 # From cli_translator.py
 # Pattern used to identify comments in TEST_MAPPING.
 _COMMENTS_RE = re.compile(r'(?m)[\s\t]*(#|//).*|(\".*?\")')
-_COMMENTS = frozenset(['//', '#'])
 ```
 
 TEST_MAPPING supports comments (lines starting with `//` or `#`), which is
@@ -15114,7 +15282,7 @@ host-level orchestration, such as:
 A typical CTS device test module:
 
 ```
-cts/tests/net/
+cts/tests/tests/widget/
   Android.bp             -- Build rule (android_test)
   AndroidManifest.xml    -- Test APK manifest
   AndroidTest.xml        -- TradeFed configuration
@@ -15122,23 +15290,34 @@ cts/tests/net/
   res/                   -- Test resources (if needed)
 ```
 
-The build rule declares CTS suite membership:
+The build rule declares CTS suite membership
+(`cts/tests/tests/widget/Android.bp`):
 
 ```blueprint
 android_test {
-    name: "CtsNetTestCases",
+    name: "CtsWidgetTestCases",
     defaults: ["cts_defaults"],
-    srcs: ["src/**/*.java"],
+    static_libs: [
+        "ctstestrunner-axt",
+        "compatibility-device-util-axt",
+        // ...
+    ],
+    srcs: [
+        "src/**/*.java",
+        "src/**/*.kt",
+    ],
     test_suites: [
         "cts",
         "general-tests",
     ],
-    static_libs: [
-        "ctstestrunner-axt",
-        "compatibility-device-util-axt",
-    ],
+    // ...
 }
 ```
+
+(Note that some CTS modules live outside `cts/` -- for example
+`CtsNetTestCases` is defined in
+`packages/modules/Connectivity/tests/cts/net/Android.bp`, alongside the
+Connectivity Mainline module it tests.)
 
 ### 57.6.4  CtsVerifier
 
@@ -15213,27 +15392,34 @@ flowchart TB
 
 ### 57.6.7  CTS Defaults
 
-CTS tests use a shared `cts_defaults` to ensure consistent configuration:
+CTS tests use a shared `cts_defaults` to ensure consistent configuration.
+From `cts/Android.bp`:
 
 ```blueprint
 java_defaults {
     name: "cts_defaults",
-    platform_apis: true,
-    optimize: {
-        enabled: false,
+    defaults: ["cts_support_defaults"],
+    target: {
+        android: {
+            static_libs: ["platform-test-annotations"],
+        },
     },
-    static_libs: [
-        "ctstestrunner-axt",
-        "compatibility-device-util-axt",
-        "junit",
-        "truth",
-    ],
-    test_suites: [
-        "cts",
-        "general-tests",
-    ],
+    lint: {
+        strict_updatability_linting: false,
+        extra_check_modules: [
+            "AndroidFrameworkLintChecker",
+            "CtsLintChecker",
+        ],
+        // ...
+    },
 }
 ```
+
+The inherited `cts_support_defaults` disables dex preopt and optimization
+(`dex_preopt: {enabled: false}`, `optimize: {enabled: false}`).  Suite
+membership (`test_suites: ["cts", "general-tests"]`) and test-runner
+`static_libs` such as `ctstestrunner-axt` are declared per-module, not in
+`cts_defaults`.
 
 ### 57.6.8  CTS Sharding Across Devices
 
@@ -15249,8 +15435,12 @@ For large CTS runs (10,000+ test cases), sharding is essential.  CTS supports:
 cts-tradefed run cts --shard-count 4
 
 # Dynamic sharding with pool
-cts-tradefed run cts --enable-token-sharding
+cts-tradefed run cts --dynamic-sharding
 ```
+
+A separate option, `--enable-token-sharding`, makes sharding honor device
+tokens (for example a SIM-card capability), so that tests requiring a
+particular token only run on shards whose device provides it.
 
 ### 57.6.9  CTS Result Structure
 
@@ -15260,7 +15450,7 @@ CTS produces structured results:
 android-cts/results/
   YYYY.MM.DD_HH.MM.SS/
     test_result.xml           -- JUnit XML results
-    test_result_failures.html -- Human-readable failures
+    test_result_failures_suite.html -- Human-readable failures
     compatibility_result.xsl  -- XSL stylesheet
     result.pb                 -- Protocol buffer results
     invocation_summary.txt    -- Summary
@@ -15394,7 +15584,7 @@ vts-tradefed run vts --module VtsHalThermalV2_0TargetTest
 atest VtsHalThermalV2_0TargetTest
 
 # Kernel test
-atest vts_kernel_gki_test
+atest vts_generic_boot_image_test
 ```
 
 ### 57.7.7  VTS vs CTS: The Treble Boundary
@@ -15448,8 +15638,8 @@ vts-tradefed run vts --module VtsHalThermalTargetTest
 vts-tradefed run vts --include-filter 'VtsHal*Thermal*'
 ```
 
-VTS HAL tests use the `GTest` runner for C++ tests and `HostTest` for
-Python-based tests.  The test binaries are compiled against the HAL interface
+VTS HAL tests use the `GTest` runner for C++ target tests and
+`PythonBinaryHostTest` (or the Mobly runner) for Python-based host tests.  The test binaries are compiled against the HAL interface
 headers and linked against the HAL client libraries.
 
 ### 57.7.9  VINTF Manifest Testing
@@ -15638,24 +15828,26 @@ works but integrated more tightly with the platform build.
 
 ### 57.8.7  Manifest Properties
 
-Ravenwood generates a properties file for each test module:
+Ravenwood generates a properties file for each test module.  The contents are
+formatted as plain key=value lines and written with `android.WriteFileRule`,
+then installed as `ravenwood.properties`:
 
 ```go
-ctx.Build(pctx, android.BuildParams{
-    Rule:        genManifestProperties,
-    Description: "genManifestProperties",
-    Output:      propertiesOutputPath,
-    Args: map[string]string{
-        "targetSdkVersionInt":  strconv.Itoa(targetSdkVersionInt),
-        "targetSdkVersionRaw":  targetSdkVersion,
-        "packageName":          packageName,
-        "targetPackageName":    targetPackageName,
-        "instrumentationClass": instClassName,
-        "moduleName":           ctx.ModuleName(),
-        "resourceApk":          resApkName,
-        "targetResourceApk":    targetResApkName,
-    },
-})
+propertiesContents := fmt.Sprintf(`
+targetSdkVersionInt=%d
+targetSdkVersionRaw=%s
+packageName=%s
+targetPackageName=%s
+instrumentationClass=%s
+moduleName=%s
+resourceApk=%s
+targetResourceApk=%s
+`, targetSdkVersionInt, targetSdkVersion, packageName, targetPackageName,
+    instClassName, ctx.ModuleName(), resApkPath, targetResApkPath)
+
+propertiesContents = strings.TrimPrefix(propertiesContents, "\n")
+
+android.WriteFileRule(ctx, propertiesOutputPath, propertiesContents)
 ```
 
 ### 57.8.8  Example Ravenwood Test
@@ -15774,7 +15966,7 @@ the host by providing minimal, in-process replacements for the parts of the
 graphics stack it depends on.
 
 Source: `frameworks/base/libs/hostgraphics/` (~435 lines of C++ across five
-files, plus 12 header shims in `include/gui/` and `include/ui/`).
+files, plus 9 header shims in `include/gui/` and `include/ui/`).
 
 The library is wired in as a static dependency under the `host:` target of
 `libhwui`'s `Android.bp`:
@@ -15831,7 +16023,7 @@ shims, all of which would need their own host stubs.
 
 #### The header shims
 
-The 12 headers under `include/gui/` and `include/ui/` are the other half of
+The 9 headers under `include/gui/` and `include/ui/` are the other half of
 the trick. They are *not* the device headers — they are independent
 declarations with matching signatures (`Surface.h`, `BufferQueue.h`,
 `BufferItem.h`, `IGraphicBufferProducer.h`, `IGraphicBufferConsumer.h`,
@@ -16638,7 +16830,8 @@ LauncherInstrumentation launcher = new LauncherInstrumentation();
 Workspace workspace = launcher.getWorkspace();
 AllApps allApps = workspace.switchToAllApps();
 AppIcon calculator = allApps.getAppIcon("Calculator");
-calculator.launch();
+LaunchedAppState calculatorApp =
+    calculator.launch("com.android.calculator2");
 ```
 
 The advantage of TAPL over raw UIAutomator is that it encapsulates the UI
@@ -16670,24 +16863,36 @@ Flicker tests verify properties like:
 - No unexpected blank frames
 - Proper window animations
 
-```java
-@RunWith(FlickerTestRunner.class)
-public class OpenAppFromLauncherTest {
+Flicker tests are written in Kotlin against `FlickerBuilder`
+(`platform_testing/libraries/flicker/src/android/tools/flicker/FlickerBuilder.kt`).
+A parameterized runner (`FlickerParametersRunnerFactory`, backed by
+`FlickerJUnit4ClassRunner`) executes them; a `@FlickerBuilderProvider` method
+configures the trace via `setup {}` / `transitions {}` / `teardown {}` blocks,
+and assertions live in `@Test` methods:
+
+```kotlin
+@RunWith(Parameterized::class)
+@Parameterized.UseParametersRunnerFactory(
+    FlickerParametersRunnerFactory::class)
+class OpenAppFromLauncherTest(private val flicker: FlickerTest) {
+    private val instrumentation =
+        InstrumentationRegistry.getInstrumentation()
+    private val testApp = MessagingAppHelper(instrumentation)
+
     @FlickerBuilderProvider
-    public static FlickerBuilder buildFlicker(
-            FlickerTestParameter testSpec) {
-        return new FlickerBuilder(testSpec)
-            .withTransition(() -> {
-                testSpec.getDevice().launchApp("com.example.app");
-            })
-            .withAssertion(new WindowManagerTrace.Assertion(
-                "appWindowIsVisible") {
-                @Override
-                public void invoke(WindowManagerTrace trace) {
-                    trace.visibleWindowsShownMoreThanOneConsecutiveEntry(
-                        "com.example.app");
-                }
-            });
+    fun buildFlicker(): FlickerBuilder {
+        return FlickerBuilder(instrumentation).apply {
+            setup { device.pressHome() }
+            transitions { testApp.launchViaIntent(wmHelper) }
+            teardown { testApp.exit(wmHelper) }
+        }
+    }
+
+    @Test
+    fun appWindowIsVisible() {
+        flicker.assertWm {
+            isAppWindowVisible(testApp.componentMatcher)
+        }
     }
 }
 ```
@@ -16721,13 +16926,20 @@ The workflow:
 @Test
 public void testButtonAppearance() {
     View button = createTestButton();
-    ScreenshotTestRule.assertScreenshot(
+    Bitmap bitmap = captureToBitmap(button);
+    screenshotRule.assertBitmapAgainstGolden(
+        bitmap,
         "button_default_state",
-        button,
-        /* maxPixelDifference= */ 0.01f
+        new MSSIMMatcher()
     );
 }
 ```
+
+The `ScreenshotTestRule.assertBitmapAgainstGolden` entry point takes the
+captured bitmap, a golden identifier, and a `BitmapMatcher` (such as
+`MSSIMMatcher` for perceptual similarity or `PixelPerfectMatcher`); the
+higher-level `ViewScreenshotTestRule.screenshotTest(...)` helper wraps the
+capture-and-compare flow for a single view.
 
 Golden images are updated with `update_goldens.py` when intentional visual
 changes occur.
@@ -16973,8 +17185,9 @@ frequently declared final.
 
 ### 57.12.4  JUnit Integration
 
-AOSP includes both JUnit 4 and JUnit 5 (jupiter).  Most platform tests use
-JUnit 4 with the AndroidJUnit4 runner:
+AOSP ships JUnit 4 (`external/junit`, plus the parameterized-test extension in
+`external/junit-params`); JUnit 5 (Jupiter) is not part of the platform test
+stack.  Most platform tests use JUnit 4 with the AndroidJUnit4 runner:
 
 ```java
 @RunWith(AndroidJUnit4.class)
@@ -17405,22 +17618,23 @@ The fuzz config specifies metadata for the fuzzing infrastructure:
 type FuzzConfig struct {
     // Contacts
     Cc []string
-    // Component ID in bug tracker
-    Componentid int64
-    // Hotlist IDs
-    Hotlists []string
     // Human-readable description
     Description string
     // Attack vector
     Vector Vector
     // Service privilege level
-    ServicePrivilege string
+    Service_privilege ServicePrivilege
     // User modes affected
-    Users string
-    // Usage: shipped, internal, experimental
-    FuzzedCodeUsage string
+    Users UserData
+    // Usage: shipped, future_version, experimental
+    Fuzzed_code_usage FuzzedCodeUsage
+    // Component ID in bug tracker
+    Componentid *int64
+    // Hotlist IDs
+    Hotlists []string
     // Include in presubmit fuzzing
-    UseForPresubmit bool
+    Use_for_presubmit *bool
+    // ...
 }
 ```
 
@@ -17430,8 +17644,9 @@ The `Vector` field categorizes the attack surface:
 |--------|---------|
 | `remote` | Reachable from network (e.g., media codecs) |
 | `local_no_privileges_required` | Reachable by any app |
-| `local_privileged` | Requires special permissions |
-| `physical` | Requires physical access |
+| `local_privileges_required` | Requires a privileged/signature permission |
+| `local_with_developer_options` | Reachable only with Developer Options enabled |
+| `host_access` | Only callable on a PC host (build tooling) |
 
 ### 57.13.12  Continuous Fuzzing Infrastructure
 
@@ -17870,9 +18085,9 @@ setup and teardown of metric collection.
 
 **junit-rules/**: Custom JUnit rules for common Android test patterns:
 
-- `DeviceStateRule` -- Manage device state across tests
-- `RavenRule` -- Ravenwood-specific test rules
-- `ScreenRecordRule` -- Record screen during test
+- `ConditionalIgnore` / `ConditionalIgnoreRule` -- Skip tests when a
+  condition holds
+- `IgnoreOnPortrait` -- Skip tests on portrait-orientation devices
 
 **flag-helpers/**: Utilities for testing with Android feature flags:
 ```java
@@ -17890,10 +18105,14 @@ public void testNewFeature_disabled() {
 ```
 
 **health/**: Device health check utilities that verify device state before
-and after tests (battery level, disk space, network connectivity).
+and after tests (battery level, disk space, network connectivity).  Its
+`rules/` subdirectory also hosts general-purpose test rules such as
+`ScreenRecordRule`, which records the screen during a test.
 
-**runner/**: Custom test runner implementations that extend AndroidJUnitRunner
-with additional capabilities like test orchestration and result formatting.
+**runner/**: Parameterized JUnit runners (`ParameterizedAndroidJunit4`,
+`AndroidParameterizedRunner`, `RobolectricParameterizedRunner`, built as
+`platform-parametric-runner-lib`) that let the same parameterized test class
+run both on device and under Robolectric.
 
 **sts-common-util/**: Shared utilities for Security Test Suite tests, including
 exploit helpers and vulnerability verification tools.
@@ -17920,26 +18139,27 @@ android_test {
 ### 57.15.5  Device Collectors
 
 Device collectors (`platform_testing/libraries/device-collectors/`) gather
-metrics during test execution.  They implement the `IMetricCollector` interface
-and are configured in TradeFed XML:
+metrics during test execution.  Device-side collectors are
+`BaseMetricListener` subclasses (package `android.device.collectors`) that
+delegate the actual measurement to `ICollectorHelper` implementations in the
+`com.android.helpers` package under
+`platform_testing/libraries/collectors-helper/`.  On the TradeFed side, the
+`<metrics_collector>` XML tag names host-side `IMetricCollector`
+implementations that complement them:
 
 ```xml
 <metrics_collector
-    class="com.android.helpers.CpuUsageHelper" />
-<metrics_collector
-    class="com.android.helpers.MemoryUsageHelper" />
-<metrics_collector
-    class="com.android.helpers.PerfettoHelper">
-    <option name="pull-pattern-metric-key" value="perfetto_trace" />
+    class="com.android.tradefed.device.metric.FilePullerDeviceMetricCollector">
+    <option name="pull-pattern-keys" value="perfetto_file_path" />
 </metrics_collector>
 ```
 
-Common collectors:
+Common collector helpers (`com.android.helpers`):
 
 - **CpuUsageHelper**: Measures CPU utilization during tests
-- **MemoryUsageHelper**: Tracks memory allocation patterns
-- **BatteryStatsHelper**: Records battery consumption
-- **JankHelper**: Measures frame timing and jank
+- **DumpsysMeminfoHelper** / **FreeMemHelper**: Track memory usage patterns
+- **BatteryUsageStatsHelper**: Records battery consumption
+- **JankCollectionHelper**: Measures frame timing and jank
 - **PerfettoHelper**: Captures system-wide Perfetto traces
 - **AppStartupHelper**: Measures app cold/warm/hot start times
 
@@ -17949,7 +18169,7 @@ AUPT (`platform_testing/libraries/aupt-lib/`) provides a framework for
 long-running user-journey performance tests:
 
 ```java
-public class SettingsJourney extends AbstractAuptTestCase {
+public class SettingsJourney extends AuptTestCase {
     @Override
     protected void setUp() throws Exception {
         super.setUp();
@@ -17977,62 +18197,50 @@ The `platform_testing/libraries/annotations/` library provides custom
 annotations for Android tests:
 
 ```java
-@Retention(RetentionPolicy.RUNTIME)
-@Target({ElementType.METHOD, ElementType.TYPE})
-public @interface PlatformScenario {
-    String value() default "";
-}
-
+// HermeticTest.java: no account, network, or harness setup required
 @Retention(RetentionPolicy.RUNTIME)
 @Target({ElementType.METHOD, ElementType.TYPE})
 public @interface HermeticTest {
-    // Test does not require network or external services
-}
-
-@Retention(RetentionPolicy.RUNTIME)
-@Target({ElementType.METHOD, ElementType.TYPE})
-public @interface NonHermeticTest {
-    String reason() default "";
 }
 ```
+
+Other annotations in the same directory include `@Presubmit` and
+`@Postsubmit` (test-group scheduling), `@PlatinumTest` (high-reliability
+tests), `@AsbSecurityTest` (Android Security Bulletin tests), and
+`@RequiresFlagsEnabled` / `@RequiresFlagsDisabled` (feature-flag
+constraints).
 
 ### 57.15.8  Compatibility Common Util
 
 The `compatibility-common-util` library provides shared utilities for CTS/VTS:
 
-```java
-// Device info collection
-DeviceInfo deviceInfo = DeviceInfo.getInstance(device);
-String buildId = deviceInfo.getBuildId();
-String model = deviceInfo.getModel();
-int sdkVersion = deviceInfo.getSdkVersion();
-
-// Test filtering
-ModuleFilterHelper filter = new ModuleFilterHelper(
-    includeFilters, excludeFilters);
-boolean shouldRun = filter.shouldRunModule(moduleName);
-
-// Result aggregation
-ResultAggregator aggregator = new ResultAggregator();
-aggregator.addResult(moduleResult);
-TestResultSummary summary = aggregator.getSummary();
-```
+- `DevicePropertyInfo` -- collects `ro.*` build properties for the result
+  report's device-info section
+- `DynamicConfig` -- loads per-module dynamic configuration values pushed at
+  runtime
+- `ReportLog` / `MetricsXmlSerializer` -- structured metric logging for
+  performance results
+- `InvocationResult` / `IInvocationResult`, `ModuleResult` / `IModuleResult`,
+  `CaseResult` -- the result-object model for a suite invocation
+- `ResultHandler` -- parses and writes the `test_result.xml` result files
+- `AbiUtils` -- ABI name parsing and filtering helpers
 
 ### 57.15.9  Library Dependency Graph
 
 ```mermaid
 graph TB
     Test["Your Test Module"]
-    Test --> |"static_libs"| Runner["platform-test-runner"]
+    Test --> |"static_libs"| Runner["platform-parametric-runner-lib"]
     Test --> |"static_libs"| Annotations["platform-test-annotations"]
     Test --> |"static_libs"| Rules["platform-test-rules"]
     Test --> |"static_libs"| Collectors["collector-device-lib"]
     Test --> |"static_libs"| UIA["uiautomator-helpers"]
-    Test --> |"static_libs"| SysUI["systemui-helper-lib"]
-    Test --> |"static_libs"| Flags["flag-junit-helper"]
-    Collectors --> |"depends"| Metrics["metrics-helper"]
-    UIA --> |"depends"| TaplCommon["tapl-common"]
-    SysUI --> |"depends"| TaplCommon
+    Test --> |"static_libs"| SysUI["systemui-helper"]
+    Test --> |"static_libs"| Flags["flag-junit"]
+    Collectors --> |"depends"| Jank["jank-helper"]
+    Collectors --> |"depends"| Memory["memory-helper"]
+    Collectors --> |"depends"| Perfetto["perfetto-helper"]
+    SysUI --> |"depends"| TaplCommon["tapl-common"]
 ```
 
 ---
@@ -18052,8 +18260,9 @@ android_test {
     name: "CtsNetTestCases",
     test_suites: [
         "cts",
-        "mts-networking",
+        "mts-tethering",
         "general-tests",
+        // ...
     ],
 }
 ```
@@ -18521,49 +18730,52 @@ Write a screenshot test to catch visual regressions.
 
 **Step 1: Create the test source**
 
-```java
+```kotlin
 // packages/apps/MyApp/tests/screenshot/src/com/example/myapp/
-// ButtonScreenshotTest.java
-package com.example.myapp;
+// ButtonScreenshotTest.kt
+package com.example.myapp
 
-import android.view.View;
-import android.widget.Button;
-import androidx.test.ext.junit.runners.AndroidJUnit4;
-import platform.test.screenshot.DeviceEmulationSpec;
-import platform.test.screenshot.ScreenshotTestRule;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import android.widget.Button
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import platform.test.screenshot.DeviceEmulationSpec
+import platform.test.screenshot.Displays
+import platform.test.screenshot.GoldenPathManager
+import platform.test.screenshot.ViewScreenshotTestRule
+import platform.test.screenshot.matchers.MSSIMMatcher
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
 
-@RunWith(AndroidJUnit4.class)
-public class ButtonScreenshotTest {
+@RunWith(AndroidJUnit4::class)
+class ButtonScreenshotTest {
 
-    @Rule
-    public final ScreenshotTestRule screenshotRule =
-        new ScreenshotTestRule(DeviceEmulationSpec.PHONE);
+    @get:Rule
+    val screenshotRule = ViewScreenshotTestRule(
+        DeviceEmulationSpec.forDisplays(Displays.Phone).first(),
+        GoldenPathManager(
+            InstrumentationRegistry.getInstrumentation().context),
+        MSSIMMatcher()
+    )
 
     @Test
-    public void testPrimaryButton_defaultState() {
-        Button button = new Button(screenshotRule.getContext());
-        button.setText("Save");
-        button.setEnabled(true);
-
-        screenshotRule.assertBitmapAgainstGolden(
-            screenshotRule.render(button),
-            "primary_button_default"
-        );
+    fun testPrimaryButton_defaultState() {
+        screenshotRule.screenshotTest("primary_button_default") { activity ->
+            Button(activity).apply {
+                text = "Save"
+                isEnabled = true
+            }
+        }
     }
 
     @Test
-    public void testPrimaryButton_disabledState() {
-        Button button = new Button(screenshotRule.getContext());
-        button.setText("Save");
-        button.setEnabled(false);
-
-        screenshotRule.assertBitmapAgainstGolden(
-            screenshotRule.render(button),
-            "primary_button_disabled"
-        );
+    fun testPrimaryButton_disabledState() {
+        screenshotRule.screenshotTest("primary_button_disabled") { activity ->
+            Button(activity).apply {
+                text = "Save"
+                isEnabled = false
+            }
+        }
     }
 }
 ```
@@ -18573,7 +18785,7 @@ public class ButtonScreenshotTest {
 ```blueprint
 android_test {
     name: "MyAppScreenshotTests",
-    srcs: ["tests/screenshot/src/**/*.java"],
+    srcs: ["tests/screenshot/src/**/*.kt"],
     static_libs: [
         "platform-screenshot-diff-core",
         "androidx.test.runner",
@@ -18585,14 +18797,14 @@ android_test {
 
 **Step 3: Update golden images when designs change**
 
-```bash
-# Run tests to generate new golden images
-atest MyAppScreenshotTests -- \
-    --update-goldens
+Run the tests, pull the failure artifacts (the `.textpb` diff protos and
+actual `.png` screenshots) from the device, then point the update script at
+the directory containing them:
 
-# Or use the update script
+```bash
 python3 platform_testing/libraries/screenshot/update_goldens.py \
-    --module MyAppScreenshotTests
+    --source-directory /path/to/pulled/results \
+    --android-build-top "$ANDROID_BUILD_TOP"
 ```
 
 ### 57.17.8  Exercise 8: Robolectric with Mockito
@@ -18855,8 +19067,9 @@ updates the CL status.
 
 ### 57.17.14  Performance Optimization Tips
 
-1. **Minimize build targets**: Use `--build-output brief` with atest to reduce
-   build noise
+1. **Minimize build noise**: Use `--build-output logged` with atest to write
+   build output to a log file instead of streaming it (the only valid values
+   are `streamed` and `logged`)
 
 2. **Use --host**: Always add `--host` for host-only tests to skip device setup
 3. **Leverage caching**: atest caches test discovery results; avoid `--clear-cache`
@@ -18868,8 +19081,9 @@ updates the CL status.
 5. **Incremental testing**: Use `atest --test-mapping` to run only tests
    relevant to your change
 
-6. **Skip install**: Use `--steps test` to skip build+install when iterating on
-   test code changes (after initial build)
+6. **Skip install**: Use `atest -t <module>` to run only the test step when
+   iterating (after an initial build); the `-b`, `-i`, and `-t` flags select
+   the build, install, and test steps respectively
 
 ---
 
@@ -18950,7 +19164,7 @@ graph TB
 
     subgraph Frameworks["Test Frameworks"]
         GTest_F["GoogleTest (C++)"]
-        JUnit_F["JUnit 4/5 (Java)"]
+        JUnit_F["JUnit 4 (Java)"]
         Mockito_F["Mockito + Dexmaker"]
         Espresso_F["Espresso (UI)"]
         UIA_F["UIAutomator"]
@@ -19160,7 +19374,7 @@ flowchart TD
     START --> Q1{"App crash?"}
     Q1 -- "Native crash" --> TOMB["Read tombstone"]
     Q1 -- "Java crash" --> LOGCAT1["logcat: search for FATAL EXCEPTION"]
-    Q1 -- "ANR" --> ANR["Read /data/anr/traces.txt"]
+    Q1 -- "ANR" --> ANR["Read /data/anr/anr_* dump files"]
 
     START --> Q2{"Performance issue?"}
     Q2 -- "CPU bound" --> SIMPLEPERF["simpleperf record + report"]
@@ -19215,7 +19429,7 @@ graph LR
 
     subgraph "Transport"
         LOGDW["/dev/socket/logdw<br/>(write socket)"]
-        KMSG["/dev/kmsg"]
+        KMSG["/proc/kmsg"]
     end
 
     subgraph "logd Daemon"
@@ -19416,7 +19630,8 @@ The `ProcessBuffer()` method extracts the sender's credentials (`uid`, `gid`,
 log messages cannot be spoofed.
 
 **LogKlog** (`system/logging/logd/LogKlog.h`) reads kernel messages from
-`/dev/kmsg` and injects them into the `LOG_ID_KERNEL` buffer.  It also
+`/proc/kmsg` (it opens `/dev/kmsg` only write-only, for logd's own dmesg
+output) and injects them into the `LOG_ID_KERNEL` buffer.  It also
 handles monotonic-to-realtime clock conversion:
 
 ```cpp
@@ -19734,8 +19949,8 @@ class LogTags {
 Tag sources include:
 
 - **System tags**: `/system/etc/event-log-tags` (built from source)
-- **Dynamic tags**: `/data/misc/logd/event-log-tags` (runtime-registered)
-- **Debug tags**: `/data/misc/logd/debug-event-log-tags` (userdebug/eng only)
+- **Dynamic tags**: `/dev/event-log-tags` (runtime-registered)
+- **Debug tags**: `/data/misc/logd/event-log-tags` (userdebug/eng only)
 
 The per-UID cap of 256 tags prevents any single application from exhausting
 the tag namespace.
@@ -19751,7 +19966,7 @@ Android defines the following log levels, in order of increasing severity:
 | Info | 4 | `ALOGI` | `Log.INFO` |
 | Warn | 5 | `ALOGW` | `Log.WARN` |
 | Error | 6 | `ALOGE` | `Log.ERROR` |
-| Fatal | 7 | `ALOGF` (assert) | `Log.ASSERT` |
+| Fatal | 7 | `LOG_ALWAYS_FATAL` / `ALOG_ASSERT` | `Log.ASSERT` |
 
 In production builds, `ALOGV` calls are compiled out entirely (they expand
 to `if (false)` blocks), so there is zero cost for verbose logging in release
@@ -19798,10 +20013,15 @@ as binary data rather than text strings:
 #   2: long
 #   3: string
 #   4: list
-42    answer     (to_life|1)
-2718  e          (euler|1|5)
-2747  contacts   (contact_count|1|1),(lookup_count|1|1)
+1003  auditd     (avc|3)
+1004  chatty     (dropped|3)
+1005  tag_def    (tag|1),(name|3),(format|3)
 ```
+
+(These three entries are the complete contents of logd's own
+`event.logtags`; the framework contributes many more tags through
+`frameworks/base/services/core/java/com/android/server/EventLogTags.logtags`
+and similar per-module files.)
 
 Advantages of structured logging:
 
@@ -19958,9 +20178,12 @@ The service runs as a persistent daemon, started by init:
 service traced /system/bin/traced
     class late_start
     disabled
+    socket traced_consumer stream 0666 root root
+    socket traced_producer stream 0666 root root
     user nobody
     group nobody
-    writepid /dev/cpuset/system-background/tasks
+    task_profiles ProcessCapacityHigh
+    capabilities SYS_NICE
 ```
 
 ### 58.3.3 Data Sources
@@ -19978,7 +20201,10 @@ source is a plugin that produces trace packets in protobuf format.
 | `linux.system_info` | System | CPU info, kernel version |
 | `android.packages_list` | Android | Installed packages mapping |
 | `android.log` | Android | Logcat integration |
-| `android.gpu.memory` | GPU | GPU memory tracking |
+
+(GPU memory tracking is available as the `android.gpu.memory` data source,
+but it is registered by gpuservice's `GpuMemTracer` as an independent
+Perfetto producer, not by `traced_probes`.)
 
 **Framework data sources** (atrace-integrated):
 
@@ -20260,16 +20486,14 @@ Perfetto ships with pre-built metrics that can be computed on a trace
 without writing SQL:
 
 ```bash
-# List available metrics
-trace_processor_shell --list-metrics trace.perfetto-trace
-
 # Compute a specific metric
 trace_processor_shell --run-metrics android_startup \
     trace.perfetto-trace
 
-# Compute all Android metrics
+# Compute several Android metrics at once, as JSON
 trace_processor_shell --run-metrics android_mem,android_startup,\
-android_binder,android_blocking_calls trace.perfetto-trace
+android_binder,android_blocking_calls_cuj_metric \
+    --metrics-output=json trace.perfetto-trace
 ```
 
 Available Android-specific metrics:
@@ -20279,11 +20503,11 @@ Available Android-specific metrics:
 | `android_startup` | App cold/warm/hot startup time breakdown |
 | `android_binder` | Binder transaction latency statistics |
 | `android_mem` | Memory usage over time |
-| `android_blocking_calls` | Calls that block the main thread |
+| `android_blocking_calls_cuj_metric` | Calls that block the main thread during CUJs |
 | `android_camera` | Camera pipeline latency |
 | `android_cpu` | CPU usage and scheduling metrics |
 | `android_gpu` | GPU utilization metrics |
-| `android_jank` | Frame jank detection and classification |
+| `android_jank_cuj` | Frame jank detection and classification |
 | `android_lmk` | Low memory killer events |
 | `android_ion` | ION/DMA-BUF memory allocation |
 
@@ -20554,7 +20778,7 @@ python simpleperf/scripts/report_html.py -i perf.data -o report.html
 simpleperf/scripts/inferno.sh -i perf.data -o flame.html
 
 # Generate FlameGraph-compatible folded stacks
-simpleperf report -i perf.data -g --print-callgraph > stacks.txt
+python3 simpleperf/scripts/stackcollapse.py -i perf.data > stacks.txt
 ```
 
 ```mermaid
@@ -20668,7 +20892,10 @@ python3 report_html.py -i perf.data -o report.html
 
 ### 58.4.10 Call Graph Methods Comparison
 
-simpleperf supports multiple methods for capturing call stacks:
+simpleperf supports two methods for capturing call stacks (`--call-graph
+fp` and `--call-graph dwarf`); with neither, it records flat samples only.
+(LBR-style hardware branch recording is an x86 perf feature that simpleperf
+does not implement.)
 
 ```mermaid
 graph TD
@@ -20685,20 +20912,12 @@ graph TD
         F3["Not always available in release builds"]
         F4["Smaller perf.data files"]
     end
-
-    subgraph "LBR (Last Branch Record)"
-        L1["Hardware-based"]
-        L2["Very low overhead"]
-        L3["Limited depth (~8-32 entries)"]
-        L4["Not available on all CPUs"]
-    end
 ```
 
 | Method | Flag | Accuracy | Overhead | Stack Depth |
 |--------|------|----------|----------|-------------|
 | DWARF | `--call-graph dwarf` | Excellent | Medium-High | Unlimited |
 | Frame Pointer | `--call-graph fp` | Good | Low | Unlimited (if FP set) |
-| LBR | (automatic on supported HW) | Good | Very Low | 8-32 entries |
 | None | (default) | Flat only | Minimal | 0 |
 
 ### 58.4.11 JIT Debug Support
@@ -20847,14 +21066,16 @@ native heap dumps that use heapprofd under the hood.
 ### 58.5.5 Analysis with trace_processor
 
 ```sql
--- Find the largest allocation call stacks
+-- Find the allocation sites with the most bytes
+-- (allocations reference a callsite, whose leaf frame carries the symbol)
 SELECT
-    SUM(size) as total_bytes,
+    SUM(hpa.size) as total_bytes,
     COUNT(*) as alloc_count,
-    GROUP_CONCAT(frame_name, ' <- ') as callstack
-FROM heap_profile_allocation
-JOIN stack_profile_frame ON frame_id = stack_profile_frame.id
-GROUP BY callstack_id
+    spf.name as leaf_frame
+FROM heap_profile_allocation hpa
+JOIN stack_profile_callsite spc ON hpa.callsite_id = spc.id
+JOIN stack_profile_frame spf ON spc.frame_id = spf.id
+GROUP BY hpa.callsite_id
 ORDER BY total_bytes DESC
 LIMIT 20;
 
@@ -21196,12 +21417,15 @@ adb shell dumpsys SurfaceFlinger
 adb shell dumpsys SurfaceFlinger --list
 
 # Display state
+adb shell dumpsys SurfaceFlinger --displays
+
+# Display identification data (EDID blob)
 adb shell dumpsys SurfaceFlinger --display-id
 
 # Frame statistics
 adb shell dumpsys SurfaceFlinger --latency <window_name>
 
-# GPU composition statistics
+# Frame-timing statistics (TimeStats)
 adb shell dumpsys SurfaceFlinger --timestats
 ```
 
@@ -21374,35 +21598,48 @@ graph TB
 
 **SurfaceFlinger traces:**
 
+The old binder-code trigger (`service call SurfaceFlinger 1025`) is
+deprecated and now returns `NAME_NOT_FOUND`; layer traces are captured
+through Perfetto as the `android.surfaceflinger.layers` data source:
+
 ```bash
-# Start SurfaceFlinger layer trace
-adb shell su root service call SurfaceFlinger 1025 i32 1
+# Record a SurfaceFlinger layer trace via Perfetto
+adb shell perfetto -o /data/misc/perfetto-traces/layers.perfetto-trace -c - <<EOF
+buffers { size_kb: 63488 }
+data_sources {
+  config {
+    name: "android.surfaceflinger.layers"
+  }
+}
+duration_ms: 10000
+EOF
+adb pull /data/misc/perfetto-traces/layers.perfetto-trace .
 
-# Stop SurfaceFlinger layer trace
-adb shell su root service call SurfaceFlinger 1025 i32 0
-
-# Pull the trace
-adb pull /data/misc/wmtrace/layers_trace.winscope .
-
-# Start transaction trace
-adb shell su root service call SurfaceFlinger 1041 i32 1
-
-# Stop transaction trace
-adb shell su root service call SurfaceFlinger 1041 i32 0
+# Transaction traces still use binder code 1041
+adb shell su root service call SurfaceFlinger 1041 i32 1   # start
+adb shell su root service call SurfaceFlinger 1041 i32 0   # stop
 adb pull /data/misc/wmtrace/transactions_trace.winscope .
 ```
 
 **WindowManager traces:**
 
+`adb shell wm tracing start/stop` is likewise rejected on current builds
+("Shell commands are ignored. Any type of action should be performed
+through perfetto."); WindowManager tracing is the `android.windowmanager`
+Perfetto data source:
+
 ```bash
-# Start WM trace
-adb shell wm tracing start
-
-# Stop WM trace
-adb shell wm tracing stop
-
-# Pull the trace
-adb pull /data/misc/wmtrace/wm_trace.winscope .
+# Record a WindowManager trace via Perfetto
+adb shell perfetto -o /data/misc/perfetto-traces/wm.perfetto-trace -c - <<EOF
+buffers { size_kb: 63488 }
+data_sources {
+  config {
+    name: "android.windowmanager"
+  }
+}
+duration_ms: 10000
+EOF
+adb pull /data/misc/perfetto-traces/wm.perfetto-trace .
 ```
 
 **Using the Winscope proxy (recommended):**
@@ -21566,7 +21803,7 @@ graph TB
 
 | Tool | Source | Output | Use case |
 |------|--------|--------|----------|
-| `bugreport` | `frameworks/native/cmds/bugreport/bugreport.cpp` | Text to stdout | Legacy, simple |
+| `bugreport` | `frameworks/native/cmds/bugreport/bugreport.cpp` | Deprecation warning only | Stub -- prints a redirect to `bugreportz` |
 | `bugreportz` | `frameworks/native/cmds/bugreportz/bugreportz.cpp` | Zip file path | Modern, comprehensive |
 | `adb bugreport` | adb client | Downloads zip | Recommended method |
 
@@ -21688,15 +21925,21 @@ graph TB
     QN --> ZIP_O
 ```
 
-**HAL integration**: dumpstate calls into the vendor HAL
-(`IDumpstateDevice`) to include hardware-specific diagnostic data:
+**HAL integration**: dumpstate calls into the vendor HAL (the AIDL
+`android.hardware.dumpstate.IDumpstateDevice`) to include
+hardware-specific diagnostic data:
 
 ```cpp
 // Simplified from dumpstate.cpp
-void Dumpstate::DumpstateBoard() {
-    auto dumpstate_device = IDumpstateDevice::getService();
-    if (dumpstate_device != nullptr) {
-        dumpstate_device->dumpstateBoard(handle, mode, deadline);
+void Dumpstate::DumpstateBoard(int out_fd) {
+    // Looks up "android.hardware.dumpstate.IDumpstateDevice/default"
+    // via the service manager and wraps it with
+    // IDumpstateDevice::fromBinder(...)
+    auto dumpstate_hal = GetDumpstateBoardAidlService();
+    if (dumpstate_hal != nullptr) {
+        // ... open the dumpstate_board.txt/.bin output fds ...
+        dumpstate_hal->dumpstateBoard(dumpstate_fds, dumpstate_hal_mode,
+                                      timeout_sec);
     }
 }
 ```
@@ -22006,7 +22249,7 @@ records.  It can be rendered to the classic text layout shown above:
 
 ```bash
 # View proto tombstone as text
-adb shell tombstone_symbolize /data/tombstones/tombstone_00.pb
+adb shell pbtombstone /data/tombstones/tombstone_00.pb
 
 # Or pull and process locally
 adb pull /data/tombstones/tombstone_00.pb
@@ -22310,9 +22553,10 @@ For profiling release builds:
 
 ```xml
 <!-- AndroidManifest.xml -->
-<application
-    android:profileableByShell="true"
-    ...>
+<application ...>
+    <profileable android:shell="true" />
+    <!-- ... -->
+</application>
 ```
 
 This allows simpleperf and heapprofd to attach without requiring
@@ -22514,7 +22758,7 @@ graph TB
 
     subgraph "Native Memory"
         HEAPPROFD_M["heapprofd"]
-        MALLOC_DEBUG["malloc debug (libc_debug_malloc)"]
+        MALLOC_DEBUG["malloc debug (libc_malloc_debug)"]
         ASAN["AddressSanitizer (ASan)"]
         HWASAN["HWAddressSanitizer (HWASan)"]
         GWP_ASAN["GWP-ASan (sampling)"]
@@ -22544,12 +22788,16 @@ enabled at runtime:
 ```bash
 # Enable malloc debug for a specific app
 adb shell setprop libc.debug.malloc.options "backtrace guard"
-adb shell am restart com.example.myapp
+adb shell am force-stop com.example.myapp   # then relaunch the app
 
 # Available options:
-# backtrace        - Record allocation backtraces
-# backtrace_size=N - Maximum frames to record (default: 16)
-# guard            - Add guard pages around allocations
+# backtrace[=MAX_FRAMES] - Record allocation backtraces
+#                          (default 16 frames, max 256)
+# backtrace_size=N       - Only record backtraces for allocations of
+#                          exactly N bytes (backtrace_min_size /
+#                          backtrace_max_size set a range)
+# guard[=SIZE_BYTES]     - Add front (0xaa) and rear (0xbb) guard bytes
+#                          to every allocation, verified on free
 # fill_on_alloc    - Fill allocated memory with 0xEB
 # fill_on_free     - Fill freed memory with 0xEF
 # leak_track       - Track all allocations for leak detection
@@ -22600,11 +22848,9 @@ Android includes a built-in leak detector that can scan the heap for
 unreachable allocations:
 
 ```bash
-# Trigger leak detection for a process
-adb shell kill -47 <pid>  # SIGRTMIN+13
-
-# Results appear in logcat
-adb logcat -s memunreachable
+# Trigger leak detection for a process (libmemunreachable is loaded
+# by zygote); the report is printed in the dumpsys output
+adb shell dumpsys -t 600 meminfo --unreachable <process>
 ```
 
 ---
@@ -22626,7 +22872,7 @@ flowchart TD
     C -- No --> E["InputDispatcher triggers ANR"]
     E --> F["ActivityManager notifies"]
     F --> G["Dump thread stacks"]
-    G --> H["Write to /data/anr/traces.txt"]
+    G --> H["Write to /data/anr/trace_NN<br/>(via tombstoned)"]
     F --> I["Show 'App not responding' dialog"]
 ```
 
@@ -22635,8 +22881,9 @@ flowchart TD
 ANR traces are stored in multiple locations:
 
 ```bash
-# Current ANR traces
-adb pull /data/anr/traces.txt
+# Current ANR traces (one trace_NN file per incident, written by tombstoned)
+adb shell ls /data/anr/
+adb pull /data/anr/ .
 
 # In a bugreport, search for:
 # 1. The ANR section
@@ -22701,14 +22948,17 @@ Build fingerprint: 'google/crosshatch/crosshatch:14/...'
 ### 58.13.5 Preventing ANRs
 
 ```bash
-# Enable strict mode to catch I/O on main thread during development
-adb shell settings put global strict_mode_visual_indicator true
+# Flash the screen when StrictMode violations occur (the Developer-options
+# "Strict mode enabled" toggle); the policies themselves are set in app
+# code via StrictMode.setThreadPolicy()
+adb shell setprop persist.sys.strictmode.visual true
 
 # Monitor ANR frequency with dumpsys
 adb shell dumpsys activity processes | grep -A 5 "ANR"
 
-# Get detailed ANR history
-adb shell dumpsys activity anr-history
+# Get details on the last ANR (and its captured trace file)
+adb shell dumpsys activity lastanr
+adb shell dumpsys activity lastanr-traces
 ```
 
 ---
@@ -23031,7 +23281,8 @@ trace_processor_shell trace.perfetto-trace
 ```bash
 # Process is hung - get Java traces
 adb shell kill -3 <pid>
-adb pull /data/anr/traces.txt
+adb shell ls /data/anr/       # then pull the newest trace_NN file
+adb pull /data/anr/ .
 
 # Process is hung - get native backtrace
 adb shell debuggerd -b <pid>
@@ -23160,10 +23411,11 @@ When `ProfilingService` receives a `requestProfiling()` call, the flow is:
    machine:
 
    ```
-   REQUESTED -> PROFILING_STARTED -> PROFILING_FINISHED ->
-   REDACTING -> REDACTION_FINISHED -> FILE_TRANSFER ->
-   NOTIFIED_REQUESTER -> CLEANUP_COMPLETE
+   REQUESTED -> APPROVED -> PROFILING_STARTED -> PROFILING_FINISHED ->
+   REDACTED -> COPIED_FILE -> NOTIFIED_REQUESTER -> CLEANED_UP
    ```
+
+   with `ERROR_OCCURRED` as the failure state.
 
    The service periodically checks if the Perfetto process has finished
    (every `PROFILING_DEFAULT_RECHECK_DELAY_MS` = 5 seconds).
@@ -23224,13 +23476,26 @@ heapprofd.setBlockClient(false);
 ```java
 DataSourceConfig.Builder perfDs = DataSourceConfig.newBuilder();
 perfDs.setName("linux.perf");
-PerfEventConfig.Builder perf = PerfEventConfig.newBuilder();
-perf.setFrequency(frequencyHz);           // e.g. 100 Hz
-perf.addTargetCmdline(packageName);
-perf.setCallstackTimed(
-    PerfEvents.Timebase.newBuilder()
-        .setFrequency(frequencyHz)
-        .build());
+
+// Timebase: what to sample, and how often
+PerfEvents.Timebase timebase = PerfEvents.Timebase.newBuilder()
+    .setCounter(PerfEvents.Counter.SW_CPU_CLOCK)
+    .setFrequency(frequencyHz)            // e.g. 100 Hz
+    .setTimestampClock(PerfEvents.PerfClock.PERF_CLOCK_MONOTONIC)
+    .build();
+
+// Scope the callstack sampling to the target package
+PerfEventConfig.Scope scope = PerfEventConfig.Scope.newBuilder()
+    .addTargetCmdline(packageName)
+    .build();
+PerfEventConfig.CallstackSampling callstackSampling =
+    PerfEventConfig.CallstackSampling.newBuilder()
+        .setScope(scope)
+        .build();
+
+PerfEventConfig.Builder perf = PerfEventConfig.newBuilder()
+    .setTimebase(timebase)
+    .setCallstackSampling(callstackSampling);
 ```
 
 **Java Heap Dump** (wraps ART hprof):
@@ -23318,8 +23583,10 @@ App-initiated:       10 units
 System-triggered:     5 units
 ```
 
-Rate limiter state is persisted to disk (every 30 minutes) and survives
-reboots.  For local testing, disable with:
+Rate limiter state is persisted to disk on each update by default
+(`DEFAULT_PERSIST_TO_DISK_FREQUENCY_MS = 0`, with an optional
+DeviceConfig-controlled throttling interval) and survives reboots.  For
+local testing, disable with:
 
 ```bash
 # Disable rate limiting
@@ -23597,7 +23864,7 @@ app polling, attaching a profiler, or knowing which app would misbehave.
 ### 58.19.5 Inspecting the Detector
 
 The service ships a shell command handler
-(`.../anomaly/service/java/.../AnomalyDetectorShellCommandHandler.java`) and a
+(`packages/modules/Profiling/anomaly-detector/service/java/com/android/os/profiling/anomaly/AnomalyDetectorShellCommandHandler.java`) and a
 dumpsys hook for inspecting the currently active rules, which is the fastest
 way to confirm a controller's rules took effect:
 
@@ -23697,8 +23964,11 @@ its current API surface:
   `dynamic_instrumentation` system service and a `@SystemApi`
   `DynamicInstrumentationEventService`
   (`packages/modules/UprobeStats/framework/java/android/service/uprobestats/DynamicInstrumentationEventService.java`)
-  that privileged apps extend to receive `DynamicInstrumentationEvent`s,
-  guarded by the `DYNAMIC_INSTRUMENTATION` permission.  Events are delivered
+  that privileged apps extend to receive `DynamicInstrumentationEvent`s.
+  Event delivery into the service is guarded by the
+  `SEND_DYNAMIC_INSTRUMENTATION_EVENTS` permission, while registering and
+  configuring instrumentation via `UprobeStatsBridgeService` requires
+  `DYNAMIC_INSTRUMENTATION`.  Events are delivered
   through a renamed bridge service,
   `UprobeStatsBridgeService`/`UprobeStatsBridgeServiceImpl`
   (formerly "uprobestats_service"), which batches events and only operates at
@@ -24070,13 +24340,14 @@ Analyze with trace_processor:
 
 ```sql
 SELECT
-    SUM(size) as total_bytes,
+    SUM(hpa.size) as total_bytes,
     COUNT(*) as alloc_count,
-    frame_name
-FROM heap_profile_allocation
-JOIN stack_profile_frame ON frame_id = stack_profile_frame.id
-WHERE size > 0
-GROUP BY frame_name
+    spf.name as frame_name
+FROM heap_profile_allocation hpa
+JOIN stack_profile_callsite spc ON hpa.callsite_id = spc.id
+JOIN stack_profile_frame spf ON spc.frame_id = spf.id
+WHERE hpa.size > 0
+GROUP BY spf.name
 ORDER BY total_bytes DESC
 LIMIT 10;
 ```

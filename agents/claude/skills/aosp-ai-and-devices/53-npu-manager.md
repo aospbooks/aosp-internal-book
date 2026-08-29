@@ -164,8 +164,12 @@ Three of these are *admission control* (`canLoadModel`, `cancelModelLoad`,
 `setPolicy`), two are *honesty* notifications the app must send back
 (`notifyModelLoaded`, `notifyModelUnloaded`), and one returns the *memory
 management* allocator (`createAllocator`). The model-management calls require the
-`android.Manifest.permission.ACCESS_NPU_MODEL_MANAGER_API` permission, enforced
-manually in `NpuManagerServiceImpl`.
+`android.Manifest.permission.ACCESS_NPU_MODEL_MANAGER_API` permission: the
+framework-side `NpuManager` methods are annotated
+`@RequiresPermission(ACCESS_NPU_MODEL_MANAGER_API)`, and on the service side
+`NpuManagerServiceImpl.enforceModelManagerPermissions()` is currently invoked
+only from `setPolicy()` — the other entry points are marked
+`@PermissionManuallyEnforced` but perform no check of their own yet.
 
 ### 53.2.2 The request, sizes, and priorities
 
@@ -238,7 +242,7 @@ concrete implementations.
 `StatusQuoModelLoadingPolicy`
 (`service/java/com/android/server/npumanager/StatusQuoModelLoadingPolicy.java`) is
 the default and "mimics the behavior prior to the introduction of the
-NpuManager." Its `canLoadModel()` immediately answers `CAN_LOAD_NOW` for everyone
+NpuModelManager." Its `canLoadModel()` immediately answers `CAN_LOAD_NOW` for everyone
 and tracks callbacks only so it can fire `onModelLoadRequestComplete()` on
 cancel/unload. It is the bypass that preserves pre-17 behaviour when the policy
 has not been changed.
@@ -383,7 +387,9 @@ priority, ranging up to `MAX_PRIORITY * 2`).
 In `NpuManagerServiceImpl`, `onWorkRequested` flows into
 `PriorityManager.handleWorkRequested()` (so newly seen UIDs get prioritized), and
 `onWorkEnded` flows into the active policy's `handleWorkEnded()` (so the budget
-policy can update fairness timestamps and re-evaluate). The connection is
+policy can stamp its fairness timestamps and, when a peer of equal priority is
+waiting, ask the completed UID to unload; the actual re-evaluation happens later,
+when the unload lands via `notifyModelUnloaded`). The connection is
 self-healing: the service `linkToDeath`s the HAL binder and reconnects in
 `ensureHalService()` if the vendor process dies.
 
@@ -404,7 +410,7 @@ sequenceDiagram
     HAL-->>CB: onWorkStarted(WorkInfo, INITIAL)
     HAL-->>CB: onWorkEnded(WorkInfo, COMPLETED)
     CB->>Pol: handleWorkEnded(WorkInfo, COMPLETED)
-    Pol->>Pol: evaluateAndLoadHighestPriorityModels()
+    Pol->>Pol: stamp mTimeUidLastCompleted,<br/>maybe requestUnloadModel()
 ```
 
 ## 53.5 The Rust NDK and ANpuBuffer
@@ -476,9 +482,10 @@ Underneath the C API, the Rust client talks to the service through
 `INpuAllocator` (`framework/java/android/npumanager/INpuAllocator.aidl`), obtained
 from `INpuManagerService.createAllocator()`. The client side
 (`ndk/npu_allocator_client.rs`) batches requests into `getBuffers()`, checks
-`isSupported()`, returns buffers with `putBuffers()`, adjusts a buffer's
-priority with `setPriority()`, and streams data with
-`loadFileSegmentToBuffer()`. Replies come back asynchronously on
+`isSupported()`, and returns buffers with `putBuffers()`; a buffer's priority is
+adjusted with `setPriority()` from `ndk/npu_manager_delegate.rs`, and data is
+streamed with `loadFileSegmentToBuffer()` from `ndk/npu_buffer_impl.rs` (reached
+via `NpuAllocatorClient::load_async`). Replies come back asynchronously on
 `INpuAllocatorCallback` (`onGetBuffer`, `onLoad`, `onNotifyPreempted`). The
 service implementation of the allocator is `NpuAllocator`
 (`service/java/com/android/server/npumanager/NpuAllocator.java`), an
@@ -596,8 +603,8 @@ on. The service is reachable as the `npu` service.
 - Check whether a device advertises the NPU HAL and feature:
 
   ```bash
-  adb shell dumpsys package | grep android.hardware.neuralnetworks
-  adb shell pm list features | grep -i neural
+  adb shell dumpsys package | grep android.hardware.npu
+  adb shell pm list features | grep android.hardware.npu
   ```
 
 - Read the frozen v1 HAL interface to see exactly what a vendor must implement:

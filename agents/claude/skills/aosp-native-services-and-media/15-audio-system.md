@@ -13,8 +13,10 @@ The core audio services live under `frameworks/av/` and consist of roughly
 the Audio Policy engine, AAudio/Oboe service, effects library, and head
 tracking pipeline. We will read key data structures, follow the mixing thread
 loop line by line, and explain every optimization -- from the FastMixer that
-runs at SCHED_FIFO priority 3, to the MMAP zero-copy path that bypasses
-AudioFlinger entirely.
+runs at SCHED_FIFO priority 3, to the MMAP zero-copy path whose data flows
+through a HAL buffer mapped directly into the client, bypassing AudioFlinger's
+mixer (AudioFlinger still opens the stream and runs the MmapThread that
+handles control and routing).
 
 ---
 
@@ -167,9 +169,15 @@ This control block contains:
 - Volume and mute state
 - A futex-based signaling mechanism for low-latency wake-up
 
-The actual audio buffers sit in a separate shared memory region mapped into both
-the client and server address spaces. This eliminates all data copies for the
-transfer between processes.
+For the default streaming track (`ALLOC_CBLK`), the audio buffer lives in the
+same shared memory block, laid out immediately after the `audio_track_cblk_t`
+control block (`frameworks/av/services/audioflinger/Tracks.cpp` allocates
+`sizeof(audio_track_cblk_t) + bufferSize` in one block and points `mBuffer`
+just past the cblk). Only the read-only
+fast-capture case (`ALLOC_READONLY`), the pipe case (`ALLOC_PIPE`), and
+client-supplied static buffers use a separate memory region. Either way, the
+memory is mapped into both the client and server address spaces, eliminating
+data copies for the transfer between processes.
 
 ### 15.1.6 The audioserver Process
 
@@ -245,7 +253,7 @@ AudioFlinger creates different thread types depending on the output:
 
 | Thread Type | Class | Purpose | Source location |
 |------------|-------|---------|----------------|
-| Mixer | `MixerThread` | Mix multiple PCM tracks | `Threads.cpp` line ~3700+ |
+| Mixer | `MixerThread` | Mix multiple PCM tracks | `Threads.cpp` line ~5159+ |
 | Direct | `DirectOutputThread` | Single PCM or compressed track | `Threads.cpp` |
 | Offload | `OffloadThread` | Hardware-compressed playback | `Threads.cpp` |
 | Duplicating | `DuplicatingThread` | Mirror to multiple outputs | `Threads.cpp` |
@@ -266,7 +274,7 @@ Android supports a wide range of audio formats:
 | Compressed lossy | MP3, AAC, AAC-LC, HE-AAC, Vorbis, Opus |
 | Compressed lossless | FLAC, ALAC |
 | Spatial | Dolby Atmos, DTS:X (passthrough) |
-| Voice | AMR-NB, AMR-WB, EVS |
+| Voice | AMR-NB, AMR-WB, AMR-WB+, EVRC |
 
 PCM formats flow through the mixer and effects chain. Compressed formats
 may be decoded in software (via MediaCodec) before reaching AudioTrack,
@@ -278,7 +286,7 @@ or sent directly to the HAL for hardware decode (offload path).
 
 AudioFlinger is the central mixing engine of Android audio. It is the single
 most complex component in the audio stack, with the core implementation spread
-across six source files totaling over 27,000 lines:
+across six source files totaling nearly 27,000 lines:
 
 | File | Lines | Purpose |
 |------|-------|---------|
@@ -419,7 +427,10 @@ classDiagram
     }
 
     class MmapThread {
-        -mMmapStream : sp~MmapStreamInterface~
+        -mHalStream : sp~StreamHalInterface~
+        +createMmapBuffer() status_t
+        +startTrack() status_t
+        +stopTrack() status_t
     }
 
     AudioFlinger --> IAfThreadBase : manages
@@ -512,7 +523,7 @@ flowchart TB
     Lock --> Mix{mMixerStatus?}
     Mix -->|TRACKS_READY| DoMix["threadLoop_mix<br/>AudioMixer::process"]
     Mix -->|underrun| Sleep["threadLoop_sleepTime<br/>insert silence"]
-    DoMix --> Effects[processEffects_l]
+    DoMix --> Effects["effect chains<br/>process_l on each"]
     Effects --> Write["threadLoop_write<br/>send to HAL"]
     Write --> Unlock[unlockEffectChains]
     Unlock --> Remove[threadLoop_removeTracks]
@@ -533,10 +544,16 @@ static const int32_t kMaxTrackRetriesDirectMs = 200;
 // Threads.cpp, line 169
 static const uint32_t kMinThreadSleepTimeUs = 5000;
 
-// Threads.cpp, line 175-177
-static const uint32_t kMinNormalSinkBufferSizeMs = 20;
-static const uint32_t kMaxNormalSinkBufferSizeMs = 24;
+// Threads.cpp, line 181-182
+static const uint32_t kNormalPlaybackPeriodMs =
+        property_get_int32("persist.audio.normal_playback_period_ms", 20);
+
+// Threads.cpp, line 189
+static constexpr uint32_t kMaxNormalPlaybackPeriodMs = 24;
 ```
+
+The minimum normal playback period defaults to 20ms but can be overridden
+per device via the `persist.audio.normal_playback_period_ms` property.
 
 The mixer loop runs on a ~20ms cycle. Each cycle:
 
@@ -544,18 +561,19 @@ The mixer loop runs on a ~20ms cycle. Each cycle:
    sets up the AudioMixer for each active track (sample rate, volume, format).
 2. **`threadLoop_mix()`** -- Calls `AudioMixer::process()` which reads from all
    active track buffers and mixes into `mMixerBuffer`.
-3. **`processEffects_l()`** -- Runs the effect chain on the mixed audio.
+3. **Effect processing** -- The thread loop iterates the locked effect chains
+   and calls `IAfEffectChain::process_l()` on each, running the effects on the
+   mixed audio.
 4. **`threadLoop_write()`** -- Writes the final buffer to the HAL.
 
 ### 15.2.7 The threadLoop_write() Method
 
-The write path has two branches (from `Threads.cpp` line 3557-3616):
+The write path has two branches (from `Threads.cpp` line 3660-3726):
 
 ```cpp
-// Threads.cpp, line 3557-3626
+// Threads.cpp, line 3660-3726
 ssize_t PlaybackThread::threadLoop_write()
 {
-    LOG_HIST_TS();
     mInWrite = true;
     ssize_t bytesWritten;
     const size_t offset = mCurrentWriteLength - mBytesRemaining;
@@ -589,14 +607,17 @@ ssize_t PlaybackThread::threadLoop_write()
 }
 ```
 
-For mixer threads, the write goes through an NBAIO (Non-Blocking Audio I/O)
-`MonoPipe` to the FastMixer. For direct and offload threads, it writes directly
-to the HAL stream.
+For mixer threads that have initialized a FastMixer, the write goes through an
+NBAIO (Non-Blocking Audio I/O) `MonoPipe` (`mPipeSink`) to the FastMixer; a
+mixer thread without a FastMixer uses `mOutputSink`, an NBAIO sink over the
+HAL stream directly. Direct and offload threads have no NBAIO sink and write
+straight to the HAL stream.
 
-The screen state optimization is notable: when the screen is on, the pipe's
-average frame setpoint is raised to 7/8 of maximum, reducing the chance of
-underruns during UI activity. When the screen is off, it drops to 2x the
-normal frame count to save power.
+The screen state optimization is notable: when the screen is off, the pipe's
+average frame setpoint is raised to 7/8 of maximum -- a deeper buffer means
+fewer wakeups and lower power. When the screen is on, it is set to 2x the
+normal frame count, a shallower buffer that keeps latency low during UI
+activity.
 
 ### 15.2.8 Standby Management
 
@@ -650,7 +671,8 @@ TrackBase::TrackBase(
             const alloc_type alloc,
             track_type type,
             audio_port_handle_t portId,
-            std::string metricsId)
+            std::string metricsId,
+            const std::string& codecProvenance)
     : mThread(thread),
       mAllocType(alloc),
       mClient(client),
@@ -663,6 +685,7 @@ TrackBase::TrackBase(
       mChannelCount(isOut ?
               audio_channel_count_from_out_mask(channelMask) :
               audio_channel_count_from_in_mask(channelMask)),
+      mCodecProvenance(codecProvenance),
       mFrameSize(audio_bytes_per_frame(mChannelCount, format)),
       mFrameCount(frameCount),
       mSessionId(sessionId),
@@ -1111,7 +1134,7 @@ The effects processing stage in the mixer thread loop deserves detailed
 attention. After mixing, the effect chains are processed:
 
 ```cpp
-// Threads.cpp, line 4322-4348
+// Threads.cpp, line 4419-4445
         if (mSleepTimeUs == 0 && mType != OFFLOAD) {
             for (size_t i = 0; i < effectChains.size(); i++) {
                 effectChains[i]->process_l();
@@ -1150,7 +1173,7 @@ processed by subsequent effects in the chain.
 For offloaded tracks, effects are still processed even without audio data:
 
 ```cpp
-// Threads.cpp, line 4350-4358
+// Threads.cpp, line 4451-4455
         if (mType == OFFLOAD) {
             for (size_t i = 0; i < effectChains.size(); i++) {
                 effectChains[i]->process_l();
@@ -1162,7 +1185,7 @@ After effects processing, the effect buffer is copied to the sink buffer
 with PCM float clamping for HAL safety:
 
 ```cpp
-// Threads.cpp, line 4398-4405
+// Threads.cpp, line 4496-4503
                 static constexpr float HAL_FLOAT_SAMPLE_LIMIT = 2.0f;
                 memcpy_to_float_from_float_with_clamping(
                         static_cast<float*>(mSinkBuffer),
@@ -1179,7 +1202,7 @@ extremely large float values.
 After writing to the HAL, the thread loop tracks timing jitter:
 
 ```cpp
-// Threads.cpp, line 4436-4476
+// Threads.cpp, line 4533-4580
                     const int64_t lastIoBeginNs = systemTime();
                     ret = threadLoop_write();
                     const int64_t lastIoEndNs = systemTime();
@@ -1227,7 +1250,7 @@ statistics and MonoPipe depth are available in the dumpsys output.
 The `SpatializerThread` is a specialized `MixerThread` for spatial audio:
 
 ```cpp
-// Threads.cpp, line 8006-8022
+// Threads.cpp, line 8130-8146
 sp<IAfPlaybackThread> IAfPlaybackThread::createSpatializerThread(
         const sp<IAfThreadCallback>& afThreadCallback,
         AudioStreamOut* output,
@@ -1254,7 +1277,7 @@ SpatializerThread::SpatializerThread(
 It manages HAL latency modes for low-latency head tracking:
 
 ```cpp
-// Threads.cpp, line 8024-8061
+// Threads.cpp, line 8148-8185
 void SpatializerThread::setHalLatencyMode_l() {
     if (mSupportedLatencyModes.empty()) {
         return;
@@ -1288,7 +1311,7 @@ void SpatializerThread::setHalLatencyMode_l() {
 It also manages the spatializer effect and a fallback downmixer:
 
 ```cpp
-// Threads.cpp, line 8072-8123
+// Threads.cpp, line 8196-8247
 void SpatializerThread::checkOutputStageEffects()
 {
     bool hasVirtualizer = false;
@@ -1331,7 +1354,7 @@ being sent directly to stereo outputs.
 The RecordThread handles audio capture and is created with input flags:
 
 ```cpp
-// Threads.cpp, line 8139-8147
+// Threads.cpp, line 8263-8271
 sp<IAfRecordThread> IAfRecordThread::create(
         const sp<IAfThreadCallback>& afThreadCallback,
         AudioStreamIn* input,
@@ -1349,7 +1372,7 @@ sp<IAfRecordThread> IAfRecordThread::create(
 The RecordThread constructor sets up NBAIO source and read-only heap:
 
 ```cpp
-// Threads.cpp, line 8149-8195
+// Threads.cpp, line 8273-8320
 RecordThread::RecordThread(/* ... */)
     : ThreadBase(afThreadCallback, id, type, systemReady,
             false /* isOut */, input, nullptr /* output */),
@@ -1381,7 +1404,7 @@ When a thread is suspended (e.g., during BT SCO phone call), it simulates
 writing to the HAL:
 
 ```cpp
-// Threads.cpp, line 4312-4320
+// Threads.cpp, line 4409-4417
             if (isSuspended()) {
                 mSleepTimeUs = suspendSleepTimeUs();
                 const size_t framesRemaining =
@@ -1398,7 +1421,7 @@ accurate timestamps even while suspended.
 
 ### 15.2.20 MelReporter -- Sound Dose Monitoring
 
-AudioFlinger includes a MEL (Measured Exposure Level) reporter for hearing
+AudioFlinger includes a MEL (Momentary Exposure Level) reporter for hearing
 protection compliance. It is initialized alongside the PatchPanel:
 
 ```cpp
@@ -1476,7 +1499,7 @@ audio streams. The source resides in:
 
 ```
 frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp (2,759 lines)
-frameworks/av/services/audiopolicy/AudioPolicyInterface.h (740 lines)
+frameworks/av/services/audiopolicy/AudioPolicyInterface.h (782 lines)
 ```
 
 ### 15.3.1 Architecture
@@ -1603,7 +1626,7 @@ static const char kAudioPolicyManagerCustomPath[] =
 
 ### 15.3.4 The AudioPolicyInterface
 
-The `AudioPolicyInterface` (740 lines) defines the contract between the
+The `AudioPolicyInterface` (782 lines) defines the contract between the
 AudioPolicyService and the AudioPolicyManager. Key categories:
 
 ```cpp
@@ -1826,7 +1849,7 @@ The `AudioPolicyInterface` defines volume control at multiple levels:
             int index, bool muted,
             audio_devices_t device) = 0;
     virtual status_t setVolumeIndexForGroup(
-            volume_group_t groupId, int index,
+            volume_group_t groupId, uid_t uid, int index,
             bool muted, audio_devices_t device) = 0;
 ```
 
@@ -2103,12 +2126,20 @@ graph TB
     AAS --> SSShared
     SSMMAP --> EPMMAP
     SSShared --> EPShared
-    EPShared --> AF
+    EPShared -->|"AudioStreamInternal (in-service, EXCLUSIVE)"| AAS
     EPMMAP -->|"MmapStreamInterface / IMmapStream"| MMAPT
     MMAPT -->|HAL| HAL[Audio HAL]
     ASI <-->|shared memory| FIFO
     FG --> FIFO
 ```
+
+Note the loop back into `AAudioService`: `AAudioServiceEndpointShared` does not
+talk to AudioFlinger itself. It mixes its client streams into a single
+`AudioStreamInternal` that it opens against the service in
+`AAUDIO_SHARING_MODE_EXCLUSIVE`
+(`frameworks/av/services/oboeservice/AAudioServiceEndpointShared.cpp`), so the
+mixed result reaches AudioFlinger's `MmapThread` through
+`AAudioServiceEndpointMMAP` like any exclusive stream.
 
 ### 15.4.3 MMAP Mode
 
@@ -2414,7 +2445,7 @@ The AAudioService runs inside the `audioserver` process and manages server-side
 AAudio streams. It is defined across roughly 40 files in:
 
 ```
-frameworks/av/services/oboeservice/ (41 files)
+frameworks/av/services/oboeservice/ (43 files)
 ```
 
 ### 15.5.1 Service Architecture
@@ -2542,8 +2573,8 @@ The open process tries up to 10 times with different configurations:
 ```
 
 ```cpp
-// AAudioServiceEndpointMMAP.cpp, line 137
-while (numberOfAttempts < maxOpenAttempts) {
+// AAudioServiceEndpointMMAP.cpp, line 133
+while (numberOfAttempts < AAUDIO_MAX_OPEN_ATTEMPTS) {
     if (configsTried.find(config) != configsTried.end()) {
         break;
     }
@@ -2820,6 +2851,8 @@ non-destroyed handle is the "control" handle:
 // Effects.cpp, line 205-241
 status_t EffectBase::addHandle(IAfEffectHandle *handle)
 {
+    status_t status;
+
     audio_utils::lock_guard _l(mutex());
     int priority = handle->priority();
     size_t size = mHandles.size();
@@ -2839,17 +2872,27 @@ status_t EffectBase::addHandle(IAfEffectHandle *handle)
     }
     if (i == 0) {
         // inserted in first place, take control
+        bool enabled = false;
         if (controlHandle != NULL) {
             enabled = controlHandle->enabled();
             controlHandle->setControl(false, true, enabled);
         }
         handle->setControl(true, false, enabled);
         status = NO_ERROR;
+    } else {
+        status = ALREADY_EXISTS;
     }
+    // ... ALOGV trace elided
     mHandles.insert(mHandles.begin() + i, handle);
     return status;
 }
 ```
+
+The handle is inserted at position `i` either way -- the return status is what
+differs. Only a handle that lands in first place takes control and returns
+`NO_ERROR`; a lower-priority handle is still registered but reports
+`ALREADY_EXISTS`, telling the caller that another handle already owns control of
+the effect.
 
 ### 15.6.4 Policy Registration
 
@@ -2874,9 +2917,10 @@ status_t EffectBase::updatePolicyState()
 }
 ```
 
-### 15.6.5 LVM (Listener Volume Manager)
+### 15.6.5 LVM (LifeVibes Modules)
 
-The LVM bundle provides four effects in one library:
+LVM is the NXP "LifeVibes" audio module library. Its Music bundle provides
+four effects in one library:
 
 ```
 frameworks/av/media/libeffects/lvm/
@@ -2887,9 +2931,13 @@ frameworks/av/media/libeffects/lvm/
 | BassBoost | Low-frequency enhancement |
 | Equalizer | 5-band parametric EQ |
 | Virtualizer | Stereo widening |
-| Reverb | Environmental and preset reverb |
+| Volume | Master volume / gain control |
 
-The AIDL wrapper is in:
+Reverb (PresetReverb and EnvironmentalReverb) is a separate LVM library,
+built from `frameworks/av/media/libeffects/lvm/wrapper/Reverb/` as
+`libreverbwrapper` / `libreverbaidl`, not part of the bundle.
+
+The bundle's AIDL wrapper is in:
 ```
 frameworks/av/media/libeffects/lvm/wrapper/Aidl/
   - BundleContext.cpp
@@ -2928,7 +2976,7 @@ frameworks/av/media/libeffects/hapticgenerator/
 The AudioFlinger integrates haptic generation at the thread level:
 
 ```cpp
-// Threads.cpp, line 4211-4228
+// Threads.cpp, line 4308-4325
 if (mHapticChannelCount > 0) {
     for (const auto& track : mActivePlaybackTracksView) {
         sp<IAfEffectChain> effectChain =
@@ -3123,7 +3171,7 @@ In the mixer thread loop, effects are processed after mixing but before writing
 to the HAL:
 
 ```cpp
-// Threads.cpp, line 4271-4298
+// Threads.cpp, line 4368-4395
 uint32_t mixerChannelCount = mEffectBufferValid ?
     audio_channel_count_from_out_mask(mMixerChannelMask)
     : mChannelCount;
@@ -3152,8 +3200,12 @@ if (mMixerBufferValid &&
 }
 ```
 
-The data flow is: `mMixerBuffer` -> (mono blend, balance) -> `mEffectBuffer`
--> (effects processing) -> `mSinkBuffer` -> HAL.
+The data flow depends on whether an effect buffer is in use. When
+`mEffectBuffer` is valid, `mMixerBuffer` is copied to `mEffectBuffer` first,
+effects are processed, and mono blend and balance are applied afterwards on
+the way to `mSinkBuffer`. When there is no effect buffer, mono blend and
+balance are applied to `mMixerBuffer` directly and the result is copied
+straight to `mSinkBuffer`, which feeds the HAL.
 
 ---
 
@@ -3204,9 +3256,9 @@ graph TB
         IMU[IMU/Gyroscope]
     end
 
-    SJ --> SH
-    SH --> AS
-    AS -->|Binder| SP
+    SJ -->|Binder| AS
+    AS --> SH
+    SH -->|Binder| SP
     SP --> HTP
     SP --> SPP
     SPP --> IMU
@@ -3395,7 +3447,7 @@ class SensorEnableGuard {
 
 ### 15.7.7 Spatializer (Native)
 
-The Spatializer class (1,314 lines) ties everything together:
+The Spatializer class (1,339 lines) ties everything together:
 
 ```cpp
 // Spatializer.cpp, line 46-58
@@ -3539,7 +3591,8 @@ flowchart LR
 
 The spatializer effect receives:
 
-1. Multichannel audio input (up to 24 channels)
+1. Multichannel audio input, capped at `FCC_LIMIT` channels (12 by default
+   in AOSP)
 2. Head-to-stage pose from the head tracking processor
 3. Configuration parameters (level, mode)
 
@@ -3651,7 +3704,7 @@ Key AIDL files in `hardware/interfaces/audio/aidl/android/hardware/audio/core/`:
 | `IBluetoothA2dp.aidl` | Bluetooth A2DP control |
 | `IBluetoothLe.aidl` | Bluetooth LE Audio control |
 | `ITelephony.aidl` | Telephony audio control |
-| `ISoundDose.aidl` | Sound dose monitoring |
+| `sounddose/ISoundDose.aidl` | Sound dose monitoring |
 
 ### 15.8.4 Stream Descriptor and Shared Memory
 
@@ -3813,7 +3866,7 @@ The HAL includes sound dose monitoring for hearing protection:
 hardware/interfaces/audio/aidl/android/hardware/audio/core/sounddose/ISoundDose.aidl
 ```
 
-This interface allows the HAL to report MEL (Measured Exposure Level) data
+This interface allows the HAL to report MEL (Momentary Exposure Level) data
 directly from the hardware DSP, which can be more accurate than the software
 MEL computation in AudioFlinger's MelReporter.
 
@@ -3934,7 +3987,7 @@ because the time stretcher's pitch setting was not working correctly.
 
 | Method | Description |
 |--------|-------------|
-| `set()` / `create()` | Configure the track with format, rate, channel mask |
+| `set()` | Configure the track with format, rate, channel mask |
 | `start()` | Begin playback |
 | `stop()` | Stop playback |
 | `pause()` | Pause playback |
@@ -3942,7 +3995,7 @@ because the time stretcher's pitch setting was not working correctly.
 | `write()` | Write audio data (blocking or non-blocking) |
 | `obtainBuffer()` / `releaseBuffer()` | Direct buffer access |
 | `setVolume()` | Set left/right volume |
-| `setRate()` | Set playback speed |
+| `setPlaybackRate()` / `setSampleRate()` | Set playback speed/pitch or sample rate |
 | `getTimestamp()` | Get presentation timestamp |
 
 ### 15.9.2 AudioRecord (Native C++)
@@ -4069,12 +4122,12 @@ sequenceDiagram
     Java->>JNI: native_setup()
     JNI->>Native: new AudioTrack()
     Native->>Native: set()
-    Native->>AS: getOutputForAttr()
+    Native->>AF: createTrack() [Binder]
+    AF->>AS: getOutputForAttr()
     AS->>APS: getOutputForAttr() [Binder]
     APS->>APS: Select output device and stream
     APS-->>AS: output handle + stream type
-    AS-->>Native: output handle
-    Native->>AF: createTrack() [Binder]
+    AS-->>AF: output handle + stream type
     AF->>AF: Find/create playback thread
     AF->>AF: Allocate shared memory
     AF->>AF: Create Track object
@@ -4085,6 +4138,15 @@ sequenceDiagram
     JNI-->>Java: native handle
     Java-->>App: AudioTrack instance
 ```
+
+The routing decision happens on the server side, not in the client: the native
+`AudioTrack` makes exactly one server call, `audioFlinger->createTrack()`
+(`frameworks/av/media/libaudioclient/AudioTrack.cpp:1906`), and it is
+`AudioFlinger::createTrack()` that calls
+`AudioSystem::getOutputForAttr()` into the audio policy service to pick the
+output and stream type
+(`frameworks/av/services/audioflinger/AudioFlinger.cpp:1092`) before locating
+the playback thread.
 
 ### 15.9.6 AudioRecord Construction Flow
 
@@ -4100,18 +4162,25 @@ sequenceDiagram
 
     App->>Native: new AudioRecord()
     Native->>Native: set()
-    Native->>AS: getInputForAttr()
+    Native->>AF: createRecord() [Binder]
+    AF->>AS: getInputForAttr()
     AS->>APS: getInputForAttr() [Binder]
     APS->>APS: Select input device
     APS-->>AS: input handle + device
-    AS-->>Native: input handle
-    Native->>AF: createRecord() [Binder]
+    AS-->>AF: input handle + device
     AF->>AF: Find RecordThread
     AF->>AF: Allocate shared memory
     AF->>AF: Create RecordTrack
     AF-->>Native: RecordTrack handle + shared memory FD
     Native->>Native: Map shared memory
 ```
+
+The same server-side split applies on capture: the client's only server call is
+`audioFlinger->createRecord()`
+(`frameworks/av/media/libaudioclient/AudioRecord.cpp:906`), and
+`AudioFlinger::createRecord()` calls `AudioSystem::getInputForAttr()`
+(`frameworks/av/services/audioflinger/AudioFlinger.cpp:2432`) to have the policy
+service select the input before the RecordThread and RecordTrack are set up.
 
 The minimum frame count for recording uses "ping pong" doubling:
 
@@ -4131,7 +4200,11 @@ status_t AudioRecord::getMinFrameCount(
     const auto frameSize = audio_bytes_per_frame(
             audio_channel_count_from_in_mask(channelMask),
             format);
-    *frameCount = (size * 2) / frameSize;
+    if (frameSize == 0 ||
+            ((*frameCount = (size * 2) / frameSize) == 0)) {
+        ALOGE(...);  // unsupported configuration
+        return BAD_VALUE;
+    }
     return NO_ERROR;
 }
 ```
@@ -4245,19 +4318,28 @@ sequenceDiagram
 
     App->>AT: write(buffer, size)
     AT->>Cblk: Copy data to shared buffer
-    AT->>Cblk: Update write position
-    AT->>Cblk: futex wake (if needed)
+    AT->>Cblk: Release-store new write position (mRear)
 
     Note over AF: Thread loop running
     AF->>Cblk: Read write position
     AF->>Cblk: Copy data from shared buffer
     AF->>Cblk: Update read position
+    AF->>Cblk: futex wake (if client blocked)
     AF->>AF: Mix with other tracks
     AF->>AF: Write to HAL
 ```
 
-The futex wake is used only when necessary (the server was waiting for data),
-making the normal-case data transfer completely lock-free.
+The futex traffic runs server-to-client, not the other way round. On playback
+the client never wakes the mixer thread: `ClientProxy::releaseBuffer()` only
+does an atomic release-store of `mRear`
+(`frameworks/av/media/libaudioclient/AudioTrackShared.cpp:407`), with no syscall
+at all. It is `ServerProxy::releaseBuffer()` (line 968) and
+`ServerProxy::flushBufferIfNeeded()` (line 799) that set `CBLK_FUTEX_WAKE` and
+issue `FUTEX_WAKE` to release a client parked in `ClientProxy::obtainBuffer()`
+(line 342) waiting for buffer space. The client's own futex wakes are reserved
+for the error paths, `binderDied()` and `interrupt()`. Because the wake happens
+only when a waiter is actually parked, the normal-case data transfer stays
+lock-free and syscall-free.
 
 ### 15.9.12 Volume and Gain Management
 
@@ -4289,8 +4371,8 @@ Key system properties that control audio behavior:
 |----------|---------|-------------|
 | `ro.audio.flinger_standbytime_ms` | 3000 | Standby delay |
 | `af.fast_track_multiplier` | 2 | Fast track buffer multiplier |
-| `aaudio.mmap_policy` | 2 | MMAP usage policy |
-| `aaudio.mmap_exclusive_policy` | 2 | Exclusive MMAP policy |
+| `aaudio.mmap_policy` | 1 (NEVER) | MMAP usage policy; devices override to 2 (AUTO) to enable MMAP |
+| `aaudio.mmap_exclusive_policy` | 0 (UNSPECIFIED) | Exclusive MMAP policy; devices override to 2 (AUTO) |
 | `aaudio.hw_burst_min_usec` | varies | Min HAL burst size |
 | `audio.timestamp.corrected_input_device` | NONE | Timestamp correction |
 
@@ -4308,10 +4390,12 @@ Every audio operation logs metrics through the MediaMetrics system:
 
 Query metrics:
 ```bash
-adb shell dumpsys media.metrics --since 60
+adb shell dumpsys media.metrics --since -60
 ```
 
-This shows all audio events from the last 60 seconds, including:
+This shows all audio events from the last 60 seconds (a negative argument
+means "seconds in the past"; a positive value is interpreted as an absolute
+time in seconds since the Unix epoch), including:
 
 - Track creation/destruction
 - Stream opens/closes
@@ -4333,7 +4417,10 @@ Key trace points:
 - `AudioFlinger::createTrack` -- Track creation latency
 - `write` -- HAL write duration
 - `underrun` -- Underrun detection
-- `AudioTrack::write` -- Client-side write timing
+
+The client library (`libaudioclient`) contains no atrace instrumentation of
+its own, so client-side `AudioTrack::write()` calls do not appear as trace
+slices -- only the server-side activity is visible.
 
 ### 15.10.4 Mutex Statistics
 
@@ -4402,7 +4489,9 @@ The power manager tracks:
 
 - Wake lock acquisitions and releases per thread
 - Audio activity duration for battery attribution
-- CPU frequency requests for real-time threads
+- Per-client and per-track power and health statistics (power-rail energy,
+  battery voltage and charge counters)
+- App freeze state, via `setFrozen()` / `isFrozen()`
 - Device power state transitions
 
 ### 15.10.8 TimeCheck Watchdog
@@ -4415,9 +4504,14 @@ AudioFlinger uses TimeCheck as a watchdog for HAL calls:
     writeStr(fd, mediautils::TimeCheck::toString());
 ```
 
-TimeCheck monitors binder calls to the HAL. If a HAL call takes longer
-than the configured timeout, it logs a warning and may trigger a HAL
-restart to prevent the entire audio system from hanging.
+TimeCheck monitors binder calls to the HAL. The per-HAL-call `TIME_CHECK()`
+macro is created with a zero timeout and `crashOnTimeout=false`, so it only
+records call statistics -- it never fires. TimeCheck instances created with
+an explicit timeout are far more drastic on expiry: `onTimeout()` signals the
+audio HAL processes to produce tombstones, emits a FATAL log with the timeout
+analysis, and aborts the stuck thread (falling back to aborting the whole
+audioserver process). The resulting crash and restart is what prevents the
+entire audio system from hanging indefinitely.
 
 ### 15.10.9 Deadlock Detection
 
@@ -4480,17 +4574,21 @@ adb shell dumpsys media.audio_flinger --memory
 
 ### 15.10.11 Battery Attribution
 
-AudioFlinger tracks battery usage per client UID:
+AudioFlinger's own contribution to battery accounting is minimal: at startup
+it resets the global audio battery state -- there is no per-UID attribution
+in this call:
 
 ```cpp
 // AudioFlinger.cpp, line 333
     BatteryNotifier::getInstance().noteResetAudio();
 ```
 
-When a track starts or stops, battery attribution is updated:
+A legacy hook exists for updating battery data when a track starts or stops,
+but it is compiled out by default -- `Configuration.h` ships with
+`//#define ADD_BATTERY_DATA` commented out:
 
 ```cpp
-// Threads.cpp, line 3546-3553
+// Threads.cpp, line 3649-3656
 #ifdef ADD_BATTERY_DATA
     for (const auto& track : tracksToRemove) {
         if (track->isExternalTrack()) {
@@ -4501,8 +4599,8 @@ When a track starts or stops, battery attribution is updated:
 #endif
 ```
 
-This allows the system to accurately report how much battery each
-application is consuming through audio playback.
+In stock AOSP builds this block never runs, so per-application audio battery
+attribution is not performed by this code.
 
 ---
 
@@ -4901,11 +4999,15 @@ adb shell atrace --async_start -c -b 65536 audio
 adb shell atrace --async_stop -c -b 65536 audio > /tmp/audio_trace.txt
 ```
 
-4. Open in Perfetto or systrace. Look for:
-   - `AudioTrack::write` -- client-side writes
-   - `MixerThread::threadLoop` -- mixer cycle
-   - `FastMixer::onWork` -- fast mixer cycle
-   - `write` ATRACE in `threadLoop_write` -- HAL writes
+4. Open in Perfetto or systrace. Look for these slice names on the
+   audioserver threads (the client library emits no atrace events of its
+   own):
+   - `createTrack` -- ATRACE_CALL in `AudioFlinger::createTrack`
+   - `write` -- HAL writes in `threadLoop_write` (and the FastMixer)
+   - `read` -- capture thread HAL reads
+   - `sleep` -- mixer thread idle time between cycles
+   - `underrun` -- underrun events
+   - `cycle_ms` / `load_us` counters -- FastMixer cycle time and CPU load
 
 ### Exercise 3: Observe the FastMixer
 
@@ -4960,7 +5062,7 @@ Values:
 adb shell dumpsys media.audio_flinger | grep -A 3 "Effect"
 
 # List effects on a specific session
-adb shell dumpsys media.audio_flinger | grep -B 2 -A 10 "EffectChain"
+adb shell dumpsys media.audio_flinger | grep -B 2 -A 10 "Effect Chain"
 ```
 
 ### Exercise 7: Build and Run AAudio CTS Tests
@@ -4972,14 +5074,14 @@ m cts -j$(nproc)
 
 # Run AAudio tests
 adb shell am instrument -w \
-    android.media.aaudio.cts/android.support.test.runner.AndroidJUnitRunner
+    android.nativemedia.aaudio/androidx.test.runner.AndroidJUnitRunner
 ```
 
 ### Exercise 8: Monitor Sound Dose
 
 ```bash
-# Check MEL (Measured Exposure Level) reporting
-adb shell dumpsys media.audio_flinger | grep -A 10 "MelReporter"
+# Check MEL (Momentary Exposure Level) reporting
+adb shell dumpsys media.audio_flinger | grep -A 10 "Sound Dose"
 ```
 
 The MelReporter tracks cumulative sound exposure across all output streams.
@@ -5137,7 +5239,7 @@ int main() {
 ```bash
 # Watch effect chains in real-time
 watch -n 1 'adb shell dumpsys media.audio_flinger \
-    | grep -A 5 "EffectChain"'
+    | grep -A 5 "Effect Chain"'
 ```
 
 Play music and observe:
@@ -5199,10 +5301,16 @@ adb shell cat /proc/$(adb shell pidof audioserver)/task/*/sched | head -60
 
 Audio threads typically run at:
 
-- MixerThread: SCHED_FIFO priority 2
+- MixerThread: CFS at `ANDROID_PRIORITY_URGENT_AUDIO` by default, but boosted
+  to SCHED_FIFO 1 whenever its normal buffer period is shorter than
+  `persist.audio.normal_priority_playback_period_ms` (default 20 ms) -- the
+  common case on devices with short mixer buffers -- as well as in special
+  cases such as ARC, the `af.watch.thread.priority` override on watches, or
+  the spatializer thread boost
 - FastMixer: SCHED_FIFO priority 3
 - FastCapture: SCHED_FIFO priority 3
-- AAudioService threads: SCHED_FIFO priority 2
+- Registered client app audio threads: SCHED_FIFO priority 2
+  (`kPriorityAudioApp`)
 
 ### Exercise 17: Inspect AIDL Audio HAL
 
@@ -5340,7 +5448,7 @@ with their locations and sizes:
 | AudioTrack.java | `frameworks/base/media/java/android/media/AudioTrack.java` | 4,971 |
 | Spatializer.java | `frameworks/base/media/java/android/media/Spatializer.java` | 1,121 |
 | SpatializerHelper.java | `frameworks/base/services/core/java/com/android/server/audio/SpatializerHelper.java` | 1,807 |
-| IModule.aidl | `hardware/interfaces/audio/aidl/android/hardware/audio/core/IModule.aidl` | ~600 |
+| IModule.aidl | `hardware/interfaces/audio/aidl/android/hardware/audio/core/IModule.aidl` | 979 |
 
 ### Key Concepts Glossary
 
@@ -5358,7 +5466,7 @@ with their locations and sizes:
 | **Direct** | Single-stream path to HAL without software mixing |
 | **Burst** | The number of frames processed per HAL read/write cycle |
 | **Standby** | Power-saving state where the HAL stream is released |
-| **MEL** | Measured Exposure Level -- Cumulative sound dose for hearing protection |
+| **MEL** | Momentary Exposure Level -- Sound dose measurement for hearing protection |
 | **Spatializer** | 3D audio renderer that converts multichannel to binaural with head tracking |
 | **Head-to-Stage Pose** | The 3D rotation/translation from listener's head to the virtual speaker stage |
 | **FMQ** | Fast Message Queue -- Shared memory queue used in AIDL HAL for zero-copy data transfer |
@@ -5369,7 +5477,7 @@ with their locations and sizes:
 |----------|-----------|-----------|
 | Shared memory for data | Zero-copy, lowest latency | Complexity of cblk synchronization |
 | FastMixer at SCHED_FIFO 3 | Guaranteed low-latency mixing | Higher priority than most apps |
-| MMAP bypass of AudioFlinger | Sub-2ms latency possible | No software mixing or effects |
+| MMAP bypass of AudioFlinger's mixer | Sub-2ms latency possible | No software mixing or effects |
 | Dual engine (default/configurable) | Simple default, flexible for OEMs | Two code paths to maintain |
 | AIDL HAL migration | Type safety, versioning | Transition period with HIDL support |
 | Head tracking in separate library | Reusable, testable | Additional IPC for pose data |
@@ -5417,7 +5525,6 @@ hardware/interfaces/audio/effect/        -- Effect HAL types
 ```
 frameworks/av/services/audioflinger/TEST_MAPPING
 frameworks/av/media/libaaudio/tests/
-frameworks/av/services/oboeservice/TEST_MAPPING
 cts/tests/tests/media/audio/
 ```
 

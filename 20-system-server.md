@@ -189,7 +189,7 @@ frameworks/base/services/
   +-- flags/             # FeatureFlagsService
   +-- midi/              # MidiService
   +-- musicrecognition/  # MusicRecognitionManagerService
-  +-- net/               # NetworkManagementService
+  +-- net/               # NetworkStackClient / ConnectivityModuleConnector helpers
   +-- people/            # PeopleService
   +-- permission/        # AccessCheckingService
   +-- print/             # PrintManagerService
@@ -345,16 +345,16 @@ must be dispatched to background threads.
 `SystemService` provides three mechanisms for publishing interfaces:
 
 **1. Binder service** -- accessible by other processes via `ServiceManager`
-(line 578-608):
+(line 633-663):
 
 ```java
-// frameworks/base/services/core/java/com/android/server/SystemService.java, line 578
+// frameworks/base/services/core/java/com/android/server/SystemService.java, line 633
 protected final void publishBinderService(@NonNull String name,
         @NonNull IBinder service) {
     publishBinderService(name, service, false);
 }
 
-// line 606
+// line 661
 protected final void publishBinderService(String name, IBinder service,
         boolean allowIsolated, int dumpPriority) {
     ServiceManager.addService(name, service, allowIsolated, dumpPriority);
@@ -362,10 +362,10 @@ protected final void publishBinderService(String name, IBinder service,
 ```
 
 **2. Local service** -- accessible only within `system_server` via
-`LocalServices` (line 625-627):
+`LocalServices` (line 680-682):
 
 ```java
-// frameworks/base/services/core/java/com/android/server/SystemService.java, line 625
+// frameworks/base/services/core/java/com/android/server/SystemService.java, line 680
 protected final <T> void publishLocalService(Class<T> type, T service) {
     LocalServices.addService(type, service);
 }
@@ -441,7 +441,7 @@ public static final class TargetUser {
 }
 ```
 
-Services can override `isUserSupported(TargetUser)` (line 428) to opt out of
+Services can override `isUserSupported(TargetUser)` (line 483) to opt out of
 lifecycle callbacks for specific user types. For example, a service that
 only works for full users (not profiles) can return `false` for profile
 users, avoiding unnecessary per-user initialization.
@@ -616,7 +616,7 @@ area:
 | Service | Class | Source Package | Purpose |
 |---------|-------|---------------|---------|
 | HintManagerService | `HintManagerService` | `power/hint/` | Performance hints to HAL |
-| DeviceIdleController | `DeviceIdleController` | core | Doze mode management |
+| DeviceIdleController | `DeviceIdleController` | `apex/jobscheduler/` | Doze mode management (same module as `alarm/` and `job/`) |
 | DreamManagerService | `DreamManagerService` | `dreams/` | Screen savers and doze UI |
 | TwilightService | `TwilightService` | `twilight/` | Sunrise/sunset tracking |
 
@@ -757,7 +757,7 @@ area:
 | TracingServiceProxy | `TracingServiceProxy` | `tracing/` | Perfetto trace coordination |
 | LogcatManagerService | `LogcatManagerService` | `logcat/` | Logcat access management |
 | CoverageService | `CoverageService` | `coverage/` | Code coverage (debug builds) |
-| GraphicsStatsService | `GraphicsStatsService` | graphics | Frame timing statistics |
+| GraphicsStatsService | `android.graphics.GraphicsStatsService` | `frameworks/base/graphics/` | Frame timing statistics (registered directly with `ServiceManager.addService`) |
 
 ### 20.3.4 Mainline Module Services (APEX-delivered)
 
@@ -778,8 +778,9 @@ standalone JAR files:
 ### 20.3.5 Core Server Package Structure
 
 The `frameworks/base/services/core/java/com/android/server/` directory
-contains 102 sub-packages and 74 top-level Java files. Here is the complete
-sub-package listing organized by functional domain:
+contains 107 sub-packages and 75 top-level Java files. Here is the complete
+sub-package listing organized by functional domain (a few closely related
+packages that live outside `core/` are noted where they appear):
 
 #### Process and Activity Management
 - `am/` -- ActivityManagerService, process management, broadcast dispatch
@@ -798,7 +799,7 @@ sub-package listing organized by functional domain:
 #### Security
 - `biometrics/` -- BiometricService, FaceService, FingerprintService
 - `locksettings/` -- LockSettingsService
-- `permission/` -- AccessCheckingService, permission grants
+- `permission/` -- PermissionManagerLocal, PermissionBpfMap (AccessCheckingService lives in the separate `services/permission/` module)
 - `security/` -- KeyChain, attestation, advanced protection
 - `trust/` -- TrustManagerService
 - `sensorprivacy/` -- SensorPrivacyService
@@ -826,18 +827,18 @@ sub-package listing organized by functional domain:
 #### Audio and Media
 - `audio/` -- AudioService
 - `media/` -- MediaSessionService, MediaRouterService, MediaProjection
-- `soundtrigger/` -- SoundTriggerService
-- `soundtrigger_middleware/` -- SoundTriggerMiddlewareService
+- `soundtrigger/` -- SoundTriggerService (lives under `services/voiceinteraction`, not in core)
+- `soundtrigger_middleware/` -- SoundTriggerMiddlewareService (lives under `services/voiceinteraction`, not in core)
 - `broadcastradio/` -- BroadcastRadioService
 - `camera/` -- CameraServiceProxy
 
 #### Communication
-- `telecom/` -- TelecomLoaderService
+- `telecom/` -- TelecomLoaderService (lives under `services/telecom`, not in core)
 - `companion/` -- CompanionDeviceManagerService
 
 #### Storage
 - `storage/` -- DeviceStorageMonitorService
-- `blob/` -- BlobStoreManagerService
+- `blob/` -- BlobStoreManagerService (lives under `apex/blobstore`, not in core)
 - `pdb/` -- PersistentDataBlockService
 
 #### Time and Location
@@ -859,18 +860,18 @@ sub-package listing organized by functional domain:
 - `slice/` -- SliceManagerService
 
 #### Device Management
-- `devicepolicy/` -- DevicePolicyManagerService
+- `devicepolicy/` -- DevicePolicyManagerService (lives under `services/devicepolicy`, not in core)
 - `devicestate/` -- DeviceStateManagerService
 
 #### System Services
-- `flags/` -- FeatureFlagsService
+- `flags/` -- aconfig flag declarations only (FeatureFlagsService lives in the separate `services/flags/` module)
 - `compat/` -- PlatformCompat
 - `crashrecovery/` -- CrashRecoveryHelper (the engine now lives in the `packages/modules/CrashRecovery/` module)
 - `criticalevents/` -- CriticalEventLog
 - `cpu/` -- CpuMonitorService
 - `gpu/` -- GpuService
 - `incident/` -- IncidentCompanionService
-- `stats/` -- StatsCompanion
+- `stats/` -- StatsPullAtomService, StatsBootstrapAtomService (StatsCompanion itself ships in the statsd APEX)
 - `tracing/` -- TracingServiceProxy
 - `logcat/` -- LogcatManagerService
 - `os/` -- BugreportManagerService, SchedulingPolicyService
@@ -905,7 +906,7 @@ sub-package listing organized by functional domain:
 
 #### Miscellaneous
 - `infra/` -- Infrastructure base classes
-- `feature/` -- Feature detection
+- `feature/` -- aconfig flag declarations only (dropbox_flags.aconfig)
 - `firewall/` -- Intent firewall
 - `health/` -- Health HAL integration
 - `locales/` -- LocaleManagerService
@@ -1205,8 +1206,10 @@ public static Watchdog getInstance() {
 
 ### 20.5.2 Default Timeout
 
-The default timeout is 60 seconds in production, or 10 seconds in debug
-builds (line 101):
+The default timeout is 60 seconds. A 10-second alternative exists, but it
+is selected only by manually flipping the hard-coded `DB` constant in the
+source (which is `false` in the tree) -- it is not tied to
+debuggable/userdebug builds (line 101):
 
 ```java
 // frameworks/base/services/core/java/com/android/server/Watchdog.java, line 101
@@ -1300,10 +1303,12 @@ public void run() {
 }
 ```
 
-There is an important optimization (line 311-321): if the target looper
-is currently polling (idle), the HandlerChecker skips posting. An idle
-looper means the thread is not blocked -- no need to waste time with a
-context switch.
+There is an important optimization (line 311-321): if the checker has no
+registered monitors *and* the target looper is currently polling (idle)
+-- or the checker is paused -- the HandlerChecker skips posting. An idle
+looper means the thread is not blocked, so there is no need to waste time
+with a context switch; but if monitors are registered, the post happens
+anyway, because the monitors themselves still need to run.
 
 ### 20.5.5 Monitored Threads
 
@@ -1457,11 +1462,13 @@ When the Watchdog detects an OVERDUE state:
 3. **Process kill**: Calls `Process.killProcess(Process.myPid())` to
    terminate system_server.
 
-4. **Runtime restart**: The init process detects that system_server has
-   died and triggers a full runtime restart (all Java processes are
-   killed and respawned from Zygote).
+4. **Runtime restart**: Zygote (which forked system_server and reaps it
+   via its SIGCHLD handler) detects the death and SIGKILLs itself
+   (`frameworks/base/core/jni/com_android_internal_os_Zygote.cpp`);
+   init then restarts the zygote service, and that restart tears down
+   and respawns the entire Java runtime.
 
-The native processes of interest (line 126-149):
+The native processes of interest (lines 126-148):
 
 ```java
 // frameworks/base/services/core/java/com/android/server/Watchdog.java, line 126
@@ -1469,9 +1476,11 @@ public static final String[] NATIVE_STACKS_OF_INTEREST = new String[] {
     "/system/bin/audioserver",
     "/system/bin/cameraserver",
     "/system/bin/drmserver",
-    "/system/bin/keystore2",
+    "/system/bin/idmap2d",
+    "/system/bin/mediadrmserver",
     "/system/bin/mediaserver",
     "/system/bin/netd",
+    "/system/bin/sdcard",
     "/system/bin/servicemanager",
     "/system/bin/surfaceflinger",
     "/system/bin/vold",
@@ -1482,9 +1491,9 @@ public static final String[] NATIVE_STACKS_OF_INTEREST = new String[] {
     "media.transcoding",
     "com.android.bluetooth",
     "/apex/com.android.art/bin/artd",
+    "/apex/com.android.compos/bin/composd",
     "/apex/com.android.os.statsd/bin/statsd",
     "/apex/com.android.virt/bin/virtualizationservice",
-    // ...
 };
 ```
 
@@ -1570,24 +1579,26 @@ graph TB
         WD["Watchdog Thread<br/>watchdog"]
     end
 
-    ML -.->|"Lifecycle callbacks"| DT
-    DT -.->|"Display updates"| AT
-    AT -.->|"Animation"| SAT
-    UT -.->|"System dialogs"| FT
-    FT -.->|"Foreground ops"| IT
-    IT -.->|"Disk/Network IO"| BT
-
     style ML fill:#f99,stroke:#333
     style DT fill:#f9f,stroke:#333
     style AT fill:#f9f,stroke:#333
     style BT fill:#9cf,stroke:#333
 ```
 
+These threads are independent, parallel loopers, not stages of a pipeline.
+Nothing forwards work from one to the next in a fixed order: each service
+picks the thread whose priority matches the work it is posting, so the same
+service may post a display update to `DisplayThread`, a disk write to
+`IoThread`, and a periodic cleanup to `BackgroundThread` without any of those
+threads talking to each other.
+
 ### 20.6.2 ServiceThread Base Class
 
-All system server threads extend `ServiceThread` (defined in
+Most system server threads extend `ServiceThread` (defined in
 `frameworks/base/core/java/com/android/server/ServiceThread.java`),
-which itself extends `HandlerThread`:
+which itself extends `HandlerThread`. The exception is `BackgroundThread`,
+which extends `HandlerThread` directly and therefore has no
+`allowIo`/StrictMode parameter:
 
 ```java
 // frameworks/base/core/java/com/android/server/ServiceThread.java, line 30
@@ -1740,7 +1751,9 @@ From the source comment (line 27-35):
 - **Thread name**: `android.bg`
 - **Priority**: `THREAD_PRIORITY_BACKGROUND` (10)
 - **Purpose**: Background operations across the system. Shares a singleton
-  across the entire process. Has very generous slow thresholds:
+  across the entire process. Unlike the others, it extends `HandlerThread`
+  directly rather than `ServiceThread`, so it has no `allowIo` parameter.
+  Has very generous slow thresholds:
   - Slow dispatch: 10,000ms (10 seconds!)
   - Slow delivery: 30,000ms (30 seconds!)
 
@@ -1768,7 +1781,7 @@ to be slower and are not on the critical path for user experience.
 | FgThread | `android.fg` | DEFAULT | 0 | Yes | Not enforced |
 | IoThread | `android.io` | DEFAULT | 0 | Yes | Not enforced |
 | PermissionThread | `android.perm` | DEFAULT | 0 | Yes | Not enforced |
-| BackgroundThread | `android.bg` | BACKGROUND | 10 | Yes | Not enforced |
+| BackgroundThread | `android.bg` | BACKGROUND | 10 | N/A (plain HandlerThread) | Not enforced |
 
 ### 20.6.5 Handler, Looper, and MessageQueue
 
@@ -1801,18 +1814,21 @@ Key patterns used in system_server:
 to system_server, so its full treatment belongs in the core threading layer.
 The piece that matters here: Android 17 adds a lock-free reimplementation,
 selected at build time by the `release_package_messagequeue_implementation`
-Soong config. The default `CombinedMessageQueue` variant picks the
-implementation at runtime, falling back to the legacy `synchronized`-guarded
-queue and switching to the concurrent "DeliQueue" (a Treiber stack plus a
-per-looper min-heap, coordinated with `VarHandle` CAS instead of a monitor lock)
-for processes that qualify. Qualification is gated by the compat change
-`USE_NEW_MESSAGEQUEUE` (`@EnabledAfter(targetSdkVersion = BAKLAVA)`, i.e. apps
-targeting SDK 37+) and the `use_concurrent_message_queue_in_apps` aconfig flag,
-and the concurrent path is allowed for system (core-UID) processes such as
-system_server. The source lives in
-`frameworks/base/core/java/android/os/CombinedDeliMessageQueue/MessageQueue.java`
-and `frameworks/base/core/java/android/os/MessageStack.java`, with the legacy
-variant under `frameworks/base/core/java/android/os/LegacyMessageQueue/`.
+Soong config. The default `CombinedMessageQueue` variant
+(`frameworks/base/core/java/android/os/CombinedMessageQueue/MessageQueue.java`)
+picks the implementation at runtime, falling back to the legacy
+`synchronized`-guarded queue and switching to its concurrent
+"ConcurrentMessageQueue" path for processes that qualify. Qualification is
+gated by the compat change `USE_NEW_MESSAGEQUEUE` (`@EnabledAfter(targetSdkVersion
+= BAKLAVA)`, i.e. apps targeting SDK 37+) and the
+`use_concurrent_message_queue_in_apps` aconfig flag, and the concurrent path
+is allowed for system (core-UID) processes such as system_server. A separate
+build-selectable variant, "DeliQueue" (a Treiber stack plus a per-looper
+min-heap, coordinated with `VarHandle` CAS instead of a monitor lock), lives
+in `frameworks/base/core/java/android/os/CombinedDeliMessageQueue/MessageQueue.java`
+together with `frameworks/base/core/java/android/os/MessageStack.java`; the
+legacy variant sits under
+`frameworks/base/core/java/android/os/LegacyMessageQueue/`.
 
 ### 20.6.6 Binder Threads
 
@@ -1862,7 +1878,7 @@ concurrently, reducing boot time. Examples include:
 - Secondary Zygote preloading (line 1581)
 - Sensor manager service startup (line 1743)
 - HIDL services startup (line 1750)
-- WebView preparation (line 3363)
+- WebView preparation (line 3420)
 
 The pool is shut down after initialization completes and is not used
 during normal operation.
@@ -2270,10 +2286,10 @@ Before AMS is fully initialized, WTFs cannot be immediately processed
 RuntimeInit.setDefaultApplicationWtfHandler(SystemServer::handleEarlySystemWtf);
 ```
 
-Later, after AMS is ready, pending WTFs are flushed (lines 3174-3179):
+Later, after AMS is ready, pending WTFs are flushed (lines 3224-3230):
 
 ```java
-// line 3174
+// line 3225
 synchronized (SystemService.class) {
     if (sPendingWtfs != null) {
         mActivityManagerService.schedulePendingSystemServerWtfs(sPendingWtfs);
@@ -2491,10 +2507,10 @@ identifying jank-causing operations.
 
 The definitions:
 
-- **Dispatch threshold**: How long it takes to start processing a message
-  after it is dequeued
-- **Delivery threshold**: How long between when a message is posted and
-  when processing begins (includes time waiting in the queue)
+- **Dispatch threshold**: How long the message handler ran -- the duration
+  of `Handler.dispatchMessage()` itself (dispatch end minus dispatch start)
+- **Delivery threshold**: How long between the message's scheduled time
+  (`msg.when`) and the start of dispatch (time spent late in the queue)
 
 ---
 
@@ -2544,7 +2560,7 @@ mechanism.
 Example from WiFi:
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, line 2205
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 2256
 t.traceBegin("StartWifi");
 mSystemServiceManager.startServiceFromJar(
         WIFI_SERVICE_CLASS, WIFI_APEX_SERVICE_JAR_PATH);
@@ -2575,6 +2591,7 @@ Here is the complete mapping of APEX paths used in `SystemServer.java`:
 | `DEVICE_LOCK_APEX_PATH` | `/apex/com.android.devicelock/javalib/service-devicelock.jar` |
 | `PROFILING_SERVICE_JAR_PATH` | `/apex/com.android.profiling/javalib/service-profiling.jar` |
 | `UPROBESTATS_BRIDGE_SERVICE_JAR_PATH` | `/apex/com.android.uprobestats/javalib/service-uprobestats-bridge.jar` |
+| `DEVICE_TO_DEVICE_APEX_SERVICE_JAR_PATH` | `/apex/com.android.bettertogether/javalib/service-device-to-device.jar` |
 
 ---
 
@@ -2620,7 +2637,7 @@ Wear OS devices start several additional services:
 | WearTimeService | `WEAR_TIME_SERVICE_CLASS` |
 | WearSettingsService | `WEAR_SETTINGS_SERVICE_CLASS` |
 | WearModeService | `WEAR_MODE_SERVICE_CLASS` |
-| WristOrientationService | `WRIST_ORIENTATION_SERVICE_CLASS` (conditional) |
+| WristOrientationService | `WRIST_ORIENTATION_SERVICE_CLASS` (constant declared but currently never started by SystemServer.java) |
 | WearGestureService | `WEAR_GESTURE_SERVICE_CLASS` (conditional) |
 | WearInputService | `WEAR_INPUT_SERVICE_CLASS` (conditional) |
 | DisplayOffloadService | `WEAR_DISPLAYOFFLOAD_SERVICE_CLASS` |
@@ -2633,7 +2650,7 @@ the `PRODUCT_SYSTEM_SERVER_JARS` classpath.
 Automotive (Android Automotive OS) devices start:
 
 ```java
-// line 3374
+// line 3432
 t.traceBegin("StartCarServiceHelperService");
 final SystemService cshs = mSystemServiceManager
         .startService(CAR_SERVICE_HELPER_SERVICE_CLASS);
@@ -2674,12 +2691,13 @@ if (RoSystemFeatures.hasFeatureEmbedded(context)) {
 
 ### 20.13.1 The Final Step
 
-After all services are running and all boot phases have completed, the
-very last step before entering the main loop is launching SystemUI
-(lines 3594-3599):
+After all services are running (the boot phases up to
+`PHASE_THIRD_PARTY_APPS_CAN_START` have run at this point), the very
+last step of `startOtherServices()` before entering the main loop is
+launching SystemUI (lines 3655-3661):
 
 ```java
-// frameworks/base/services/java/com/android/server/SystemServer.java, line 3594
+// frameworks/base/services/java/com/android/server/SystemServer.java, line 3655
 t.traceBegin("StartSystemUI");
 try {
     startSystemUi(context, windowManagerF);
@@ -2695,9 +2713,14 @@ UI elements.
 
 ### 20.13.2 The Boot Completed Phase
 
-After SystemUI starts, the final boot phase is dispatched:
+The final boot phase is not dispatched by `SystemServer` itself. It is
+dispatched much later, by `ActivityManagerService.finishBooting()` once
+the boot has actually completed
+(`frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java`,
+line 5967):
 
 ```java
+// frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java, line 5967
 mSystemServiceManager.startBootPhase(t, SystemService.PHASE_BOOT_COMPLETED);
 ```
 
@@ -2772,7 +2795,9 @@ issues:
 # Method 1: SIGQUIT (generates ANR trace)
 adb shell kill -3 $(adb shell pidof system_server)
 sleep 2
-adb pull /data/anr/traces.txt
+# Traces are written as timestamped anr_<timestamp> files
+adb shell ls /data/anr/
+adb pull /data/anr/anr_<timestamp>
 
 # Method 2: debuggerd (native + Java stacks)
 adb shell debuggerd $(adb shell pidof system_server)
@@ -2821,7 +2846,7 @@ logcat and DropBox:
 
 ```bash
 # Check DropBox for Watchdog entries
-adb shell dumpsys dropbox --print | grep -A 100 "SYSTEM_SERVER_WATCHDOG"
+adb shell dumpsys dropbox --print | grep -A 100 "system_server_watchdog"
 
 # Check kernel log for the kill
 adb shell dmesg | grep system_server
@@ -2846,8 +2871,7 @@ adb pull /data/local/tmp/perf.data
 simpleperf report -i perf.data
 
 # Java method tracing (debug builds)
-adb shell am profile start system $(adb shell pidof system_server) \
-    /data/local/tmp/system_server.trace
+adb shell am profile start system /data/local/tmp/system_server.trace
 sleep 5
 adb shell am profile stop system
 adb pull /data/local/tmp/system_server.trace
@@ -2968,12 +2992,16 @@ environment.
 
 After `startOtherServices()` completes, `SystemServer` enters the fourth
 and final startup method: `startApexServices()`. This phase handles
-services that are defined in APEX modules and registered via
-`SystemServiceRegistry` rather than being hardcoded in `SystemServer.java`.
+services that are defined in APEX modules: the list is discovered via
+`ApexManager.getInstance().getApexSystemServices()` (populated from APEX
+manifests) and each entry is started through
+`mSystemServiceManager.startService(name)` when the manifest entry has no
+jar path, or `mSystemServiceManager.startServiceFromJar(name, jarPath)`
+when it does.
 
-The key difference from `startServiceFromJar()` calls in
-`startOtherServices()` is that APEX services discovered here are
-declared by the APEX manifest and registered dynamically. This allows
+The key difference from the `startServiceFromJar()` calls in
+`startOtherServices()` is that the name/jar pair here comes from the APEX
+manifest rather than being hardcoded in `SystemServer.java`. This allows
 APEX modules to add system services without modifying `SystemServer.java`
 at all.
 
@@ -3210,7 +3238,7 @@ mZygotePreload = SystemServerInitThreadPool.submit(() -> {
     String[] abis32 = Build.SUPPORTED_32_BIT_ABIS;
     if (abis32.length > 0
             && !Process.ZYGOTE_PROCESS.preloadDefault(abis32[0])) {
-        Slog.e(TAG, "Unable to preload default resources");
+        Slog.e(TAG, "Unable to preload default resources for secondary");
     }
 }, "SecondaryZygotePreload");
 
@@ -3224,7 +3252,7 @@ SystemServerInitThreadPool.submit(() -> {
     startHidlServices();
 }, "StartHidlServices");
 
-// WebView preparation - line 3363
+// WebView preparation - line 3420
 webviewPrep = SystemServerInitThreadPool.submit(() -> {
     ConcurrentUtils.waitForFutureNoInterrupt(
             mZygotePreload, "Zygote preload");
@@ -3493,10 +3521,11 @@ The `system_server` architecture has evolved significantly:
 - `startServiceFromJar()` mechanism added
 - `SystemServerClassLoaderFactory` for APEX class loading
 - Connectivity, WiFi, Bluetooth services modularized
+- `ActivityTaskManagerService` split from `ActivityManagerService`, moving
+  activity and task management into `com.android.server.wm`
 
 **Android 12+**:
 
-- ActivityTaskManagerService split from ActivityManagerService
 - PermissionThread added
 - Enhanced Watchdog with pre-watchdog timeout
 - Feature flag gating of service starts
@@ -3552,8 +3581,8 @@ updatable, but it all runs in the same process.
 |-----------|-------|---------|
 | `frameworks/base/services/java/com/android/server/SystemServer.java` | ~3860 | Entry point, startup orchestration |
 | `frameworks/base/services/core/java/com/android/server/SystemService.java` | ~700 | Service base class, boot phase constants |
-| `frameworks/base/services/core/java/com/android/server/SystemServiceManager.java` | ~500 | Service lifecycle management |
-| `frameworks/base/services/core/java/com/android/server/Watchdog.java` | ~1100 | Deadlock detection, thread monitoring |
+| `frameworks/base/services/core/java/com/android/server/SystemServiceManager.java` | ~840 | Service lifecycle management |
+| `frameworks/base/services/core/java/com/android/server/Watchdog.java` | ~1200 | Deadlock detection, thread monitoring |
 | `frameworks/base/core/java/com/android/server/ServiceThread.java` | 52 | Handler thread base class |
 | `frameworks/base/services/core/java/com/android/server/DisplayThread.java` | 79 | Display operations thread |
 | `frameworks/base/services/core/java/com/android/server/AnimationThread.java` | 76 | Window animation thread |
@@ -3563,7 +3592,7 @@ updatable, but it all runs in the same process.
 | `frameworks/base/services/core/java/com/android/server/IoThread.java` | 59 | I/O operations thread |
 | `frameworks/base/core/java/com/android/internal/os/BackgroundThread.java` | 104 | Background operations thread |
 | `frameworks/base/services/core/java/com/android/server/PermissionThread.java` | 72 | Permission operations thread |
-| `frameworks/base/services/core/java/com/android/server/SystemServerInitThreadPool.java` | ~100 | Boot-time parallel init pool |
+| `frameworks/base/services/core/java/com/android/server/SystemServerInitThreadPool.java` | ~240 | Boot-time parallel init pool |
 
 ### 20.24.2 Boot Phase Quick Reference
 
@@ -3905,7 +3934,7 @@ restore can run at a time per user:
 private boolean mIsRestoreInProgress;
 
 @GuardedBy("mPendingRestores")
-private final Queue<PerformUnifiedRestoreTask> mPendingRestores = new ArrayDeque<>();
+private final Queue<BackupRestoreTask> mPendingRestores = new ArrayDeque<>();
 ```
 
 ### 20.25.8 Cloud vs. Local Backup
@@ -3914,7 +3943,7 @@ The transport architecture allows seamless switching between backup destinations
 
 | Aspect | Cloud Backup (Google) | Local Backup (adb) |
 |--------|----------------------|-------------------|
-| Transport | `com.google.android.gms` | `com.android.internal.backup.LocalTransport` |
+| Transport | `com.google.android.gms` | `com.android.localtransport/.LocalTransportService` (class `com.android.localtransport.LocalTransport`) |
 | Trigger | JobScheduler (automatic) | `adb backup` command (manual) |
 | Encryption | TLS + server-side encryption | Optional user-set password |
 | Format | Transport-specific (protobuf) | Tar archive with optional encryption |
@@ -4013,7 +4042,7 @@ graph TB
     subgraph "Failure Sources"
         APP_CRASH["App Crash<br/>(ActivityManagerService)"]
         ANR["App Not Responding<br/>(ActivityManagerService)"]
-        NATIVE["Native Crash<br/>(tombstone polling)"]
+        NATIVE["Native Crash<br/>(sys.init.updatable_crashing polling)"]
         HEALTH["Explicit Health Check<br/>(system packages)"]
         BOOT["Boot Loop<br/>(boot count tracking)"]
     end
@@ -4081,7 +4110,7 @@ When `notifyPackageFailure()` is called, the watchdog:
 ```java
 // Each observer registers with PackageWatchdog
 PackageWatchdog.getInstance(context).registerHealthObserver(
-        null, RescuePartyObserver.getInstance(context));
+        context.getMainExecutor(), RescuePartyObserver.getInstance(context));
 ```
 
 When multiple observers are registered (e.g., RescueParty and RollbackManager),
@@ -4103,35 +4132,28 @@ aggressive level:
 
 ```mermaid
 flowchart TB
-    subgraph "Legacy Escalation (pre-flag)"
-        L1["Level 1: Reset untrusted<br/>settings to defaults"]
-        L2["Level 2: Reset untrusted<br/>settings changes"]
-        L3["Level 3: Reset trusted<br/>settings to defaults"]
-        L4["Level 4: Warm reboot"]
-        L5["Level 5: Factory reset"]
+    subgraph "Normal Failures"
+        F1["1st mitigation:<br/>Warm reboot"]
+        F2["2nd+ mitigation:<br/>Factory reset"]
 
-        L1 --> L2 --> L3 --> L4 --> L5
+        F1 --> F2
     end
 
-    subgraph "New Escalation (recoverabilityDetection flag)"
-        N1["Level 1: Scoped DeviceConfig<br/>reset (per-package)"]
-        N2["Level 2: All DeviceConfig<br/>reset"]
-        N3["Level 3: Warm reboot"]
-        N4["Level 4: Reset untrusted<br/>settings defaults"]
-        N5["Level 5: Reset untrusted<br/>settings changes"]
-        N6["Level 6: Reset trusted<br/>settings defaults"]
-        N7["Level 7: Factory reset"]
+    subgraph "Boot Loops (flag_reset_enabled on, flag_reset_disabled off)"
+        B1["1st mitigation:<br/>All DeviceConfig reset"]
+        B2["2nd mitigation:<br/>Warm reboot"]
+        B3["3rd+ mitigation:<br/>Factory reset"]
 
-        N1 --> N2 --> N3 --> N4 --> N5 --> N6 --> N7
-    end
-
-    subgraph "Simplified Escalation (deprecateFlagsAndSettingsResets flag)"
-        S1["Level 1: Warm reboot"]
-        S2["Level 2: Factory reset"]
-
-        S1 --> S2
+        B1 --> B2 --> B3
     end
 ```
+
+Normal failures escalate directly from a warm reboot (first mitigation)
+to a factory reset (second and later mitigations). Boot loops get one
+extra step: when the CrashRecovery module's `flag_reset_enabled` flag is
+on (and `flag_reset_disabled` is off), the first mitigation resets all
+DeviceConfig flags before escalating to warm reboot and then factory
+reset; otherwise boot loops follow the normal path.
 
 The escalation constants:
 
@@ -4147,25 +4169,31 @@ static final int RESCUE_LEVEL_RESET_SETTINGS_TRUSTED_DEFAULTS = 6;
 static final int RESCUE_LEVEL_FACTORY_RESET = 7;
 ```
 
+Note that the `RESCUE_LEVEL_RESET_SETTINGS_*` and
+`RESCUE_LEVEL_SCOPED_DEVICE_CONFIG_RESET` constants still exist but are
+no-ops today -- `executeRescueLevelInternal()` handles them with empty
+`// do nothing` cases.
+
 ### 20.26.4 RescueParty Disable Conditions
 
 RescueParty is deliberately disabled in several scenarios to avoid interfering
 with development and testing:
 
 - **Engineering builds** (`Build.TYPE.equals("eng")`) -- Always disabled
-- **USB-connected userdebug** -- Disabled when USB is active on userdebug
-  builds, indicating active debugging
+- **userdebug builds** -- Always disabled on userdebug builds, a decent
+  signal that someone is actively debugging the device or that it is in
+  a lab environment
 - **DeviceConfig flag** -- `persist.device_config.configuration.disable_rescue_party`
 - **Manual property** -- `persist.sys.disable_rescue` for emergency override
 - **Explicit enable** -- `persist.sys.enable_rescue` overrides all disable checks
 
 ```java
 // packages/modules/CrashRecovery/service/java/com/android/server/RescueParty.java
-// We're disabled on userdebug devices connected over USB, since that's
-// a decent signal that someone is actively trying to debug the device,
-// or that it's in a lab environment.
-if (Build.TYPE.equals("userdebug") && isUsbActive()) {
-    Slog.v(TAG, "Disabled because of active USB connection");
+// We're disabled on all userdebug builds, as this is a decent signal
+// that someone is actively trying to debug the device, or that it's
+// in a lab environment.
+if (Build.TYPE.equals("userdebug")) {
+    Slog.v(TAG, "Disabled because of userdebug build");
     return true;
 }
 ```
@@ -4183,9 +4211,16 @@ Boot loop detection:
     (no package to blame → go straight to global mitigations)
 ```
 
-When a boot loop is detected without a specific failing package, the
-mitigation count offset shifts by 1 because scoped DeviceConfig reset
-is meaningless without a target package.
+Because there is no package to blame, boot loops run a separate escalation
+ladder in RescueParty: `getRescueLevelForBootLoop()` (RescueParty.java, lines
+274-285) inserts an extra all-DeviceConfig-reset step ahead of the warm
+reboot, so attempt 1 resets every DeviceConfig namespace, attempt 2 warm
+reboots, and attempt 3 or later factory resets. That extra step only applies
+when the flag-reset feature is enabled; otherwise the boot-loop path falls
+back to the ordinary `getRescueLevel()` ladder (warm reboot, then factory
+reset). The mitigation count itself is passed through unchanged -- there is
+no offset -- and the scoped DeviceConfig reset level, which would need a
+target package, is never returned by either function.
 
 ### 20.26.6 Factory Reset Throttling
 
@@ -4244,12 +4279,18 @@ sequenceDiagram
     AMS->>PW: notifyPackageFailure(modulePackage, APP_CRASH)
     PW->>PW: Count failures (5 in 1 min?)
 
+    PW->>RM: onHealthCheckFailed(modulePackage, reason, count)
+    RM-->>PW: PackageHealthObserverImpact
+    PW->>RP: onHealthCheckFailed(modulePackage, reason, count)
+    RP-->>PW: PackageHealthObserverImpact
+    PW->>PW: Pick the observer reporting least user impact
+
     alt Rollback available
-        PW->>RM: onHealthCheckFailed(modulePackage)
+        PW->>RM: onExecuteHealthCheckMitigation(modulePackage, reason, count)
         RM->>RM: Rollback APEX/APK update
         Note over RM: Lower user impact than RescueParty
     else No rollback available
-        PW->>RP: execute(modulePackage, mitigationCount)
+        PW->>RP: onExecuteHealthCheckMitigation(modulePackage, reason, count)
         RP->>RP: Escalate through rescue levels
     end
 ```
@@ -4383,14 +4424,17 @@ app reads the clipboard. This is the "Pasted from <app>" message users see:
 private static final long ACCESS_NOTIFICATION_SUPPRESSION_TIMEOUT_MILLIS = 1000L;
 ```
 
-The notification is suppressed for 1 second after a previous notification for
-the same UID, preventing toast spam when apps read the clipboard multiple
-times rapidly. The feature is controlled by a per-user setting
+This constant is the window (1 second) during which access notifications are
+suppressed for a UID after a trusted component calls
+`ClipboardManagerInternal.notifyUserAuthorizedClipAccess()` -- meaning the
+user has already explicitly authorized the paste, so there is no need to
+toast about it. It is not a debounce against repeated toasts for the same
+UID. The feature is controlled by a per-user setting
 (`CLIPBOARD_SHOW_ACCESS_NOTIFICATIONS`) and a server-side `DeviceConfig` flag.
 
-The `showAccessNotificationLocked()` method also sends the clipboard content
-to the `TextClassifier` for content-type logging via
-`notifyTextClassifierLocked()`, which classifies up to
+Right after calling `showAccessNotificationLocked()`, `getPrimaryClip()`
+also sends the clipboard content to the `TextClassifier` for content-type
+logging via `notifyTextClassifierLocked()`, which classifies up to
 `mMaxClassificationLength` (default 400) characters.
 
 ### 20.27.5 Automatic Clipboard Clearing
@@ -4501,7 +4545,6 @@ graph TD
     DT -->|"HTTP request"| Net["Network"]
     DT -->|"progress updates"| DP
     DT -->|"notifications"| DN["DownloadNotifier"]
-    DT -->|"media scanning"| DS["DownloadScanner"]
     DP -->|"SQLite"| DB["downloads.db"]
 
     style DP fill:#f9f,stroke:#333
@@ -4517,15 +4560,18 @@ The key components are:
 | `DownloadThread` | `DownloadThread.java` | Performs the actual HTTP download on a background thread |
 | `DownloadNotifier` | `DownloadNotifier.java` | Manages download progress/completion notifications |
 | `DownloadInfo` | `DownloadInfo.java` | In-memory representation of a download's state |
-| `DownloadScanner` | `DownloadScanner.java` | Triggers MediaStore scanning for completed downloads |
+| `DownloadScanner` | `DownloadScanner.java` | Legacy MediaScanner bridge; nothing in the provider calls it any more -- MediaStore entries now come from `MediaStoreDownloadsHelper` and `DownloadStorageProvider` |
 | `Constants` | `Constants.java` | Retry limits, timeout values, other constants |
 
 ### 20.28.2 The Download Database
 
-DownloadProvider uses a SQLite database (`downloads.db`, version 114) with a
-single `downloads` table. The database tracks every download's URI, file
-path, status, bytes downloaded, MIME type, notification visibility, retry
-count, ETag, and more.
+DownloadProvider uses a SQLite database (`downloads.db`, version 114). The
+schema has two tables, both created in `onCreate()`: the main `downloads`
+table (`createDownloadsTable()`, line 528), which tracks every download's
+URI, file path, status, bytes downloaded, MIME type, notification
+visibility, retry count, ETag, and more; and `request_headers`
+(`createHeadersTable()`, line 568), which stores the extra HTTP request
+headers a caller attached to a download.
 
 ```java
 // DownloadProvider.java, line 97-101
@@ -5092,24 +5138,35 @@ On userdebug/eng builds, you can test the Watchdog by inducing a deadlock.
 
 ```bash
 # Reduce watchdog timeout (settings must be available)
-adb shell settings put global watchdog_timeout_millis 10000
-
-# Or use the debug property
-adb shell setprop persist.sys.debug.watchdog_timeout 10
+adb shell settings put global system_server_watchdog_timeout_ms 10000
 ```
 
 ### 20.31.12 Tracing Service Startup with Perfetto
 
 ```bash
-# Record a boot trace
-adb shell setprop persist.debug.atrace.boottrace 1
+# Push the trace config init will hand to perfetto on the next boot
+adb push boottrace.pbtxt /data/misc/perfetto-configs/boottrace.pbtxt
+
+# Arm the boot trace
 adb shell setprop persist.traced.enable 1
+adb shell setprop persist.debug.perfetto.boottrace 1
 
 # After reboot, pull the trace
 adb pull /data/misc/perfetto-traces/boottrace.perfetto-trace
 
 # Open in ui.perfetto.dev
 ```
+
+The `perfetto_trace_on_boot` service in `external/perfetto/perfetto.rc`
+(lines 124-132) is what reacts to `persist.debug.perfetto.boottrace=1`: it
+runs `/system/bin/perfetto` against
+`/data/misc/perfetto-configs/boottrace.pbtxt` and writes the result to
+`/data/misc/perfetto-traces/boottrace.perfetto-trace`. Init clears the
+property once the trace starts, so it must be re-set before each boot you
+want captured. (The older `persist.debug.atrace.boottrace` property is a
+different, legacy mechanism -- `frameworks/native/cmds/atrace/atrace.rc`
+starts an `atrace --async_start` service that writes under
+`/data/misc/boottrace` instead.)
 
 The trace will show all the `TimingsTraceAndSlog` spans from SystemServer,
 including every service start and boot phase transition, with precise

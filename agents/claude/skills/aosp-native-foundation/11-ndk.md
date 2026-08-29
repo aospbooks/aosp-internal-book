@@ -89,8 +89,8 @@ platform guarantees that the APIs it calls will work identically on any device
 running the same or higher API level.
 
 **Framework native code** -- the `SurfaceFlinger` compositor links against
-`libgui.so`, `libui.so`, `libsync.so`, `libhwbinder.so`, and dozens of other
-internal libraries. None of these carry an NDK stability guarantee. A device
+`libgui.so`, `libui.so`, `libbinder.so`, `libhidlbase.so`, and dozens of
+other internal libraries. None of these carry an NDK stability guarantee. A device
 manufacturer can (and must) rebuild `SurfaceFlinger` against the exact platform
 tree.
 
@@ -102,16 +102,21 @@ module tries to use a non-NDK symbol, linking fails at build time.
 ### 11.1.4 Sysroot Generation Flow
 
 The NDK sysroot is not a hand-curated directory of headers and libraries. It is
-an output of the AOSP build. The build system assembles it from three components
-registered as Soong module types in
-`build/soong/cc/ndk_sysroot.go`:
+an output of the AOSP build. The build system assembles it from three
+categories of artifacts, orchestrated by `build/soong/cc/ndk_sysroot.go`. Two
+of them have dedicated Soong module types -- `ndk_headers` (with
+`preprocessed_ndk_headers`) and `ndk_library` -- while the bionic static
+libraries come from ordinary `cc_library` modules: the `ndk` singleton
+registered in the same file collects their sysroot-installed outputs (the file
+even carries a `TODO(danalbert): Write ndk_static_library rule.` comment noting
+the missing module type):
 
 ```mermaid
 graph LR
-    subgraph "Soong Module Types"
+    subgraph "Sysroot Inputs"
         NH["ndk_headers<br/>(headers)"]
         NL["ndk_library<br/>(stub .so)"]
-        BS["Bionic static libs<br/>(libc.a, libm.a)"]
+        BS["Bionic static libs from<br/>regular cc modules<br/>(libc.a, libm.a)"]
     end
 
     subgraph "NDK Sysroot"
@@ -124,9 +129,9 @@ graph LR
     NL --> LIB
     BS --> STA
 
-    TS["ndk.timestamp"] --> INC
-    TS --> LIB
-    TS --> STA
+    INC --> TS["ndk.timestamp"]
+    LIB --> TS
+    STA --> TS
 
     style NH fill:#4a90d9,color:white
     style NL fill:#ff8c00,color:white
@@ -157,12 +162,18 @@ func RegisterNdkModuleTypes(ctx android.RegistrationContext) {
 ```
 
 The `NdkSingleton` walks every module in the tree, collecting headers, stub
-libraries, and static libraries. It writes three timestamp files that the
-top-level Makefile depends on:
+libraries, and static libraries. It writes three timestamp files that stage the
+sysroot at different levels of completeness:
 
-- `ndk_headers.timestamp` -- depends only on headers (used by `.tidy` checks)
-- `ndk_base.timestamp` -- depends on headers + stub shared libraries
-- `ndk.timestamp` -- depends on the base + static libraries
+- `ndk_headers.timestamp` -- depends only on headers; it is consumed inside
+  Soong, as an implicit dependency of the C-compatibility header check
+  (`build/soong/cc/ndk_sysroot.go:141`) and of every compile in a module with
+  `sdk_version` set (`build/soong/cc/compiler.go:815`)
+- `ndk_base.timestamp` -- depends on headers + stub shared libraries; this is
+  the one the Make side pulls in, as an extra dependency of SDK-variant
+  binaries (`build/make/core/binary.mk:215`)
+- `ndk.timestamp` -- depends on the base + static libraries; it backs the
+  phony `ndk` goal (`build/make/core/main.mk:1648`)
 
 Building with `m ndk` triggers generation of all sysroot artifacts.
 
@@ -181,6 +192,7 @@ for `ndk_library {` reveals the complete list:
 | `libc` | 9 | `bionic/libc/Android.bp` |
 | `libm` | 9 | `bionic/libm/Android.bp` |
 | `libdl` | 9 | `bionic/libdl/Android.bp` |
+| `libstdc++` | 9 | `bionic/libc/Android.bp` |
 | `liblog` | 9 | `system/logging/liblog/Android.bp` |
 | `libz` | 9 | `external/zlib/Android.bp` |
 | `libandroid` | 9 | `frameworks/base/native/android/Android.bp` |
@@ -188,12 +200,16 @@ for `ndk_library {` reveals the complete list:
 | `libGLESv1_CM` | 9 | `frameworks/native/opengl/libs/Android.bp` |
 | `libGLESv2` | 9 | `frameworks/native/opengl/libs/Android.bp` |
 | `libGLESv3` | 18 | `frameworks/native/opengl/libs/Android.bp` |
+| `libjnigraphics` | 9 | `frameworks/base/native/graphics/jni/Android.bp` |
+| `libOpenSLES` | 9 | `frameworks/wilhelm/Android.bp` |
+| `libOpenMAXAL` | 14 | `frameworks/wilhelm/Android.bp` |
 | `libmediandk` | 21 | `frameworks/av/media/ndk/Android.bp` |
 | `libcamera2ndk` | 24 | `frameworks/av/camera/ndk/Android.bp` |
 | `libnativewindow` | 26 | `frameworks/native/libs/nativewindow/Android.bp` |
 | `libaaudio` | 26 | `frameworks/av/media/libaaudio/Android.bp` |
 | `libvulkan` | 24 | `frameworks/native/vulkan/libvulkan/Android.bp` |
 | `libbinder_ndk` | 29 | `frameworks/native/libs/binder/ndk/Android.bp` |
+| `libamidi` | 29 | `frameworks/base/media/native/midi/Android.bp` |
 | `libsync` | 26 | `system/core/libsync/Android.bp` |
 | `libneuralnetworks` | 27 | `packages/modules/NeuralNetworks/runtime/Android.bp` |
 | `libicu` | 31 | `external/icu/libicu/Android.bp` |
@@ -272,7 +288,7 @@ software rendering). Available since API 9 through `libandroid`:
 AAudio (Android Audio) replaced OpenSL ES as the recommended low-latency audio
 API starting with API 26. Defined in `libaaudio`:
 
-- `AAudioStreamBuilder_create()` -- create a stream builder
+- `AAudio_createStreamBuilder()` -- create a stream builder
 - `AAudioStreamBuilder_setPerformanceMode()` -- request low latency
 - `AAudioStream_requestStart()` / `AAudioStream_requestStop()` -- control
   playback
@@ -445,13 +461,14 @@ The bionic C library contributes the largest collection of NDK headers. In
 `bionic/libc/Android.bp`, there are multiple `ndk_headers` modules:
 
 ```
-// bionic/libc/Android.bp (lines 2084-2089)
+// bionic/libc/Android.bp (lines 2348-2359)
 ndk_headers {
     name: "common_libc",
     from: "include",
     to: "",
     srcs: ["include/**/*.h"],
     license: "NOTICE",
+    // ...
 }
 ```
 
@@ -459,7 +476,7 @@ Additional header modules cover kernel UAPI headers, architecture-specific
 headers, and more:
 
 ```
-// bionic/libc/Android.bp (lines 2097-2106)
+// bionic/libc/Android.bp (lines 2361-2379)
 ndk_headers {
     name: "libc_uapi",
     from: "kernel/uapi",
@@ -630,8 +647,8 @@ function in the Camera NDK and the API level at which it became available.
 
 The `first_version` property specifies the earliest API level for which stubs
 should be generated. The build system generates a separate stub library for
-every API level from `first_version` through the current level plus a "future"
-level.
+every finalized API level from `first_version` onward, plus one extra
+unreleased level named "current" (called `FutureApiLevel` in Soong).
 
 #### Stub Generation Process
 
@@ -766,7 +783,8 @@ func ndkLibraryVersions(ctx android.BaseModuleContext,
 ```
 
 This means that `libcamera2ndk` with `first_version: "24"` generates stubs for
-API 24, 25, 26, ..., current, and "future". Each versioned stub exports only
+API 24, 25, 26, ..., and "current" (the string `FutureApiLevel` renders to).
+Each versioned stub exports only
 the symbols that were available at that API level.
 
 #### Stub Installation
@@ -1093,7 +1111,7 @@ sequenceDiagram
     participant ABI as prebuilts/abi-dumps/
 
     BP->>SOONG: ndk_library "libcamera2ndk"<br/>first_version: "24"
-    SOONG->>SOONG: Generate versions [24, 25, ..., current, future]
+    SOONG->>SOONG: Generate versions [24, 25, ..., current]
     loop For each API level
         SOONG->>STUBGEN: libcamera2ndk.map.txt + api level
         STUBGEN-->>SOONG: stub.c + stub.map + symbol_list.txt
@@ -1131,7 +1149,7 @@ everything depends on:
 | `libm.so` | Math library |
 | `libdl.so` | Dynamic linker interface |
 | `liblog.so` | Android logging |
-| `libz.so` | zlib compression |
+| `libvndksupport.so` | Vendor namespace support |
 | `libnativewindow.so` | Window/buffer management |
 | `libsync.so` | Fence synchronization |
 | `libvulkan.so` | Vulkan graphics API |
@@ -1275,16 +1293,17 @@ func shouldSkipLlndkMutator(mctx android.BottomUpMutatorContext,
 
 ### 11.4.5 LLNDK Libraries List Generation
 
-The `llndk_libraries_txt` singleton module generates a text file listing all
+The `llndk_libraries_txt` module generates a text file listing all
 LL-NDK libraries. This file is used by Make and by the linker configuration
-generator:
+generator. The module type is registered alongside a companion singleton
+(`llndkLibrariesTxtSingletonFactory`) that collects the library names:
 
 ```go
 // build/soong/cc/llndk_library.go (lines 127-138)
 // llndk_libraries_txt is a singleton module whose content is a list
 // of LLNDK libraries generated by Soong but can be referenced by
 // other modules.
-func llndkLibrariesTxtFactory() android.SingletonModule {
+func llndkLibrariesTxtModuleFactory() android.Module {
     m := &llndkLibrariesTxtModule{}
     android.InitAndroidArchModule(m, android.DeviceSupported,
         android.MultilibCommon)
@@ -1292,11 +1311,12 @@ func llndkLibrariesTxtFactory() android.SingletonModule {
 }
 ```
 
-The Make variable `LLNDK_LIBRARIES` is set from this module:
+The Make variable `LLNDK_LIBRARIES` is set by the singleton, which holds the
+collected module names:
 
 ```go
-// build/soong/cc/llndk_library.go (lines 210-212)
-func (txt *llndkLibrariesTxtModule) MakeVars(
+// build/soong/cc/llndk_library.go (lines 218-220)
+func (txt *llndkLibrariesTxtSingleton) MakeVars(
         ctx android.MakeVarsContext) {
     ctx.Strict("LLNDK_LIBRARIES",
         strings.Join(txt.moduleNames, " "))
@@ -1393,8 +1413,8 @@ graph TD
     subgraph "System Partition (/system)"
         SYSLIBS["System-only Libraries<br/>(libgui, libui, libsurfaceflinger, ...)"]
         LLNDK["LL-NDK Libraries<br/>(libc, libm, libdl, liblog, ...)"]
-        VNDK_CORE["VNDK-Core Libraries<br/>(libcutils, libutils, libbase, ...)"]
-        VNDK_SP["VNDK-SP Libraries<br/>(Same-Process HALs:<br/>libhardware, libc++, ...)"]
+        VNDK_CORE["VNDK-Core Libraries<br/>(libbinder, libcamera_metadata,<br/>libcrypto, ...)"]
+        VNDK_SP["VNDK-SP Libraries<br/>(Same-Process HALs:<br/>libcutils, libutils, libbase,<br/>libhardware, libc++, ...)"]
     end
 
     subgraph "Vendor Partition (/vendor)"
@@ -1417,8 +1437,8 @@ The VNDK is divided into several categories:
 
 | Category | Description | Example |
 |----------|-------------|---------|
-| VNDK-Core | Standard VNDK libraries | `libcutils`, `libutils`, `libbase` |
-| VNDK-SP | Same-Process VNDK libraries (can be loaded into vendor processes alongside vendor libs) | `libhardware`, `libc++`, `libhidlbase` |
+| VNDK-Core | Standard VNDK libraries | `libbinder`, `libcamera_metadata`, `libcrypto`, `libjpeg` |
+| VNDK-SP | Same-Process VNDK libraries (can be loaded into vendor processes alongside vendor libs) | `libcutils`, `libutils`, `libbase`, `libhardware`, `libc++`, `libhidlbase` |
 | VNDK-Private | VNDK libraries not directly usable by vendor code | Internal dependencies of VNDK |
 | LL-NDK | Lowest-level NDK (cross-partition) | `libc`, `libm`, `liblog` |
 
@@ -1453,7 +1473,7 @@ A typical VNDK declaration looks like:
 
 ```
 cc_library_shared {
-    name: "libcutils",
+    name: "libbinder",
     vendor_available: true,
     vndk: {
         enabled: true,
@@ -1462,11 +1482,11 @@ cc_library_shared {
 }
 ```
 
-For VNDK-SP (Same-Process) libraries:
+For VNDK-SP (Same-Process) libraries, such as `libcutils`:
 
 ```
 cc_library_shared {
-    name: "libhardware",
+    name: "libcutils",
     vendor_available: true,
     vndk: {
         enabled: true,
@@ -1493,8 +1513,8 @@ These rules create a strict hierarchy:
 ```mermaid
 graph BT
     LLNDK_LAYER["LL-NDK<br/>(libc, libm, liblog, ...)"]
-    VNDKSP_LAYER["VNDK-SP<br/>(libc++, libhardware, ...)"]
-    VNDKCORE_LAYER["VNDK-Core<br/>(libcutils, libutils, ...)"]
+    VNDKSP_LAYER["VNDK-SP<br/>(libcutils, libutils,<br/>libc++, libhardware, ...)"]
+    VNDKCORE_LAYER["VNDK-Core<br/>(libbinder, libcrypto, ...)"]
     VENDOR_LAYER["Vendor Libraries"]
 
     VENDOR_LAYER --> VNDKCORE_LAYER
@@ -1715,7 +1735,7 @@ generator rather than a dedicated VNDK directory.
 The clearest evidence is in the tree itself: in the Android 17 source there is
 **no `vndk: {}` block left in any `frameworks/`, `system/`, or `hardware/`
 module**. Libraries like `libcutils` and `libutils` that the earlier sections
-of this chapter listed as VNDK-Core no longer carry the `vndk:` property at
+of this chapter listed as VNDK-SP no longer carry the `vndk:` property at
 all -- they are plain `cc_library` modules with `vendor_available: true` where
 vendor access is still needed. The VNDK only survives as **frozen prebuilt
 snapshots** under `prebuilts/vndk/` (`v31` through `v34`), shipped so that an
@@ -1864,9 +1884,15 @@ namespace flags = com::android::internal::camera::flags;
 #endif
 ```
 
-The vendor variant (`libcamera2ndk_vendor`) uses the AIDL camera service HAL
-interface instead, allowing vendor code to access the camera without going
-through the system camera service.
+The vendor variant (`libcamera2ndk_vendor`) is built with `-D__ANDROID_VNDK__`
+and talks to the *vendor-stable* `android.frameworks.cameraservice.{common,
+device,service}` AIDL interfaces instead of the framework-internal
+`android.hardware.ICameraService` binder interface. Requests still go through
+the same cameraserver process: the camera service registers this AIDL front-end
+via `AidlCameraService::registerService()`
+(`frameworks/av/services/camera/libcameraservice/aidl/AidlCameraService.cpp`),
+so vendor code gets a stable interface to the system camera service rather than
+a way around it.
 
 #### Camera NDK Call Flow
 
@@ -1883,10 +1909,9 @@ sequenceDiagram
 
     App->>CNDK: ACameraManager_getCameraIdList()
     CNDK->>Impl: getCameraIdList()
-    Impl->>CS: getCameraIdList() [Binder IPC]
-    CS->>HAL: Query available cameras
-    HAL-->>CS: Camera ID list
-    CS-->>Impl: Camera ID list
+    Impl->>CS: addListener(listener) [Binder IPC, first connect only]
+    CS-->>Impl: CameraStatus[] (cached in mDeviceStatusMap)
+    Impl->>Impl: read cached mDeviceStatusMap
     Impl-->>CNDK: ACameraIdList*
     CNDK-->>App: camera_status_t
 
@@ -1995,7 +2020,8 @@ frameworks/native/libs/binder/ndk/
     Android.bp                 # Build rules
     ibinder.cpp               # AIBinder implementation
     ibinder_jni.cpp           # JNI integration
-    libbinder.cpp             # AServiceManager, etc.
+    libbinder.cpp             # Platform interop (AIBinder_to/fromPlatformBinder,
+                              #   AParcel_viewPlatformParcel)
     parcel.cpp                # AParcel data marshaling
     parcel_jni.cpp            # Parcel JNI bridge
     persistable_bundle.cpp    # PersistableBundle support
@@ -2109,13 +2135,14 @@ sequenceDiagram
     participant BNDK as libbinder_ndk.so
     participant Binder as libbinder.so
     participant Driver as /dev/binder
+    participant SM as servicemanager
     participant Server as Server Process
 
     Client->>BNDK: AServiceManager_getService("foo")
     BNDK->>Binder: ServiceManager::getService()
     Binder->>Driver: ioctl(BINDER_WRITE_READ)
-    Driver->>Server: Deliver transaction
-    Server-->>Driver: Reply
+    Driver->>SM: Deliver transaction
+    SM-->>Driver: Reply with handle to "foo"
     Driver-->>Binder: Reply data
     Binder-->>BNDK: sp<IBinder>
     BNDK-->>Client: AIBinder*
@@ -2152,7 +2179,7 @@ graph TD
 
     subgraph "Service Layer (Binder IPC)"
         CAMERA_SVC["CameraService"]
-        MEDIA_SVC["MediaCodecService<br/>MediaDrmService"]
+        MEDIA_SVC["mediaserver / Codec2 HAL (media.c2)<br/>IDrmFactory HAL"]
         SM["ServiceManager"]
     end
 
@@ -2172,13 +2199,18 @@ graph TD
     style BINDER_IMPL fill:#4a90d9,color:white
 ```
 
-The pattern is always:
+The common pattern is:
 
 1. **C header** (`NdkFoo.h`) -- defines the public API with opaque pointer types
 2. **C source** (`NdkFoo.cpp`) -- thin wrappers marked with `EXPORT`
 3. **C++ implementation** (`impl/AFoo.cpp`) -- actual logic using framework APIs
 4. **Symbol map** (`libfoo.map.txt`) -- controls which symbols are exported
-5. **Visibility control** -- `-fvisibility=hidden` + `EXPORT` macro
+5. **Visibility control** -- varies per library: the Camera NDK compiles with
+   `-fvisibility=hidden` and marks public entry points with the `EXPORT` macro;
+   `libmediandk` uses the `EXPORT` macro plus its version script but no
+   `-fvisibility=hidden`; `libbinder_ndk` uses neither macro nor flag and
+   relies on its version script alone (it also has no `NdkFoo.cpp` /
+   `impl/AFoo.cpp` split)
 
 ### 11.6.5 Native Activity Thread (Rust) -- Pure-Native Service Processes
 
@@ -2196,7 +2228,9 @@ how Android can host application code.
 #### The ANativeService Contract
 
 The public C surface is in `frameworks/native/include/android/native_service.h`,
-and every symbol in it is annotated `__INTRODUCED_IN(37)`. The service handle
+and every function in it is annotated `__INTRODUCED_IN(37)` -- the typedefs, the
+trim-memory enum, and the `ANativeService_onCreate` extern declaration record
+API 37 only in their doc comments. The service handle
 is opaque, the entry point is a free function the loader resolves by name, and
 the lifecycle callbacks are *registered* through setter functions rather than
 filled into a struct:
@@ -2274,13 +2308,14 @@ activity thread carves out *the whole process*.
 
 #### Crate Layout
 
-The crate is about 2,200 lines of Rust across eight source files plus a single
-bindgen wrapper:
+The crate is about 3,000 lines of Rust: eight top-level source files (about
+2,200 lines), a `library_loader/` submodule directory, and a single bindgen
+wrapper:
 
 | File | Role |
 |------|------|
 | `src/lib.rs` | Entry point `run_native_activity_thread(start_seq)`. Starts the binder thread pool, looks up `IActivityManagerStructured`, attaches as `INativeApplicationThread`, runs the looper. |
-| `src/native_activity_thread.rs` | Per-process state -- service map, namespace factory, process-state cache. Implements `HandlerCallback<NativeApplicationThreadRequest>`. |
+| `src/native_activity_thread.rs` | Per-process state -- service map, process-state cache. Implements `HandlerCallback<NativeApplicationThreadRequest>`. |
 | `src/native_application_thread.rs` | Binder server side that implements `INativeApplicationThread`. Marshals each scheduled method into a typed `NativeApplicationThreadRequest` and sends it to the main thread. |
 | `src/task.rs` | Rust-friendly `Handler` over the C `ALooper` API. Uses an `eventfd` + `mpsc::channel` to wake the main thread when work arrives from a binder thread. |
 | `src/library_loader.rs` | `NamespaceFactory`, `LinkerNamespace`, and `LoadedLibrary` -- per-service isolated linker namespaces built on `android_create_namespace` + `android_dlopen_ext`. |
@@ -2346,8 +2381,12 @@ sequenceDiagram
 Two design choices deserve attention:
 
 - **Single main thread, single state.** `NativeActivityThread` owns the
-  service map and the namespace factory; binder threads never touch
-  application state directly. Every request is serialized through the
+  service map and the cached process state; binder threads never touch
+  application state directly. (The namespace factory is not a field of
+  this struct -- it is a process-global
+  `OnceLock<Mutex<NamespaceFactory>>` in `library_loader.rs` whose only
+  job is handing out serial numbers for namespace names.) Every request
+  is serialized through the
   mpsc channel, woken via the eventfd registered with the looper. This
   mirrors the Java `ActivityThread`'s `H` handler exactly, but using
   Rust's `mpsc` and an explicit eventfd instead of `Looper` /
@@ -2629,8 +2668,9 @@ func (n *ndkTranslationPackage) GenerateAndroidBuildActions(
 
     ctx.VisitDirectDepsProxy(func(child android.ModuleProxy) {
         tag := ctx.OtherModuleDependencyTag(child)
-        info := android.OtherModuleProviderOrDefault(ctx, child,
-            android.InstallFilesProvider)
+        commonInfo := android.OtherModulePointerProviderOrDefault(ctx, child,
+            android.CommonModuleInfoProvider)
+        info := android.GetInstallFilesCommon(commonInfo)
         // ... categorize files by architecture
         files = append(files, info.PackagingSpecs...)
     })
@@ -2680,11 +2720,12 @@ func (n *ndkTranslationPackage) genAndroidBp(
     genDir := android.PathForModuleOut(ctx, "android_bp_dir")
     generator := android.PathForModuleSrc(ctx,
         proptools.String(n.properties.Android_bp_gen_path))
-    builder := android.NewRuleBuilder(pctx, ctx).Sbox(
-        genDir,
-        android.PathForModuleOut(ctx,
-            "Android.bp.sbox.textproto"),
-    )
+    builder := android.NewRuleBuilder(pctx, ctx).
+        SandboxDisabled().Sbox(
+            genDir,
+            android.PathForModuleOut(ctx,
+                "Android.bp.sbox.textproto"),
+        )
     outBp := genDir.Join(ctx, "Android.bp")
     builder.Command().
         Input(generator).
@@ -2768,9 +2809,11 @@ graph TD
 ### 11.7.9 Connection to NativeBridge
 
 The NDK translation package is the packaging layer for NativeBridge
-implementations. The NativeBridge interface itself is defined in
-`frameworks/libs/binary_translation/native_bridge/` and provides the
-`NativeBridgeCallbacks` structure that translation engines implement. The
+implementations. The NativeBridge interface itself -- the
+`NativeBridgeCallbacks` structure that translation engines implement -- is
+defined in `art/libnativebridge/include/nativebridge/native_bridge.h`;
+`frameworks/libs/binary_translation/native_bridge/` contains one such
+implementation (berberis), which fills in that structure. The
 translation package bundles all the shared libraries, configuration files, and
 host-side tools that a NativeBridge implementation needs to run on the device.
 
@@ -2804,24 +2847,26 @@ addition that came with them: the *artless* denylist.
 
 ### 11.8.1 New APIs by Library
 
-The API-37 additions span seven NDK libraries. Each row below is verified
-against both the public header (`__INTRODUCED_IN(37)`) and the library's symbol
-map (`# introduced=37`):
+The API-37 additions span at least seven NDK libraries. Each row below is checked
+against the public header (`__INTRODUCED_IN(37)`) and, where noted, the
+library's symbol map (`# introduced=37`):
 
 | Library | New API (selected) | Source header |
 |---------|--------------------|---------------|
 | `libnativewindow` | `ANativeWindow_setProducerThrottlingEnabled`, `ANativeWindow_isProducerThrottlingEnabled` | `frameworks/native/libs/nativewindow/include/android/native_window.h` |
 | `libbinder_ndk` | `AIBinder_addFrozenStateChangeCallback`, `AIBinder_removeFrozenStateChangeCallback`, `AIBinder_FrozenStateChangeCallback_new`/`_delete`, `AParcel_getDataCapacity`, `AParcel_setDataCapacity`, `APersistableBundle_putByteVector`/`getByteVector`/`getByteVectorKeys` | `frameworks/native/libs/binder/ndk/include_ndk/android/binder_ibinder.h`, `binder_parcel.h`, `persistable_bundle.h` |
 | `libaaudio` | `AAudioStream_setPlaybackParameters`/`getPlaybackParameters`, `AAudioStream_flushFromFrame`, `AAudio_getFlushFromFrameSupport`, `AAudioStreamBuilder_setPartialDataCallback`/`setRoutingChangedCallback` | `frameworks/av/media/libaaudio/include/aaudio/AAudio.h` |
-| `libmediandk` | `AImageReader_setDefaultBufferSize`/`setDefaultBufferDataSpace`/`setDefaultAHardwareBufferFormat`, `AImage_getTransform`, `ACodecEncoderCapabilities_getSupportedLayeringSchemas`, and new `AMEDIAFORMAT_KEY_*` keys (`HORIZONTAL_FLIP`, `VIDEO_BITRATE_LAYERING`, `CSD_VVC`, `HDR_ST2094_50_INFO`) | `frameworks/av/media/ndk/include/media/NdkImageReader.h`, `NdkImage.h`, `NdkMediaCodecInfo.h`, `NdkMediaFormat.h` |
+| `libmediandk` | `AImageReader_setDefaultBufferSize`/`setDefaultBufferDataSpace`/`setDefaultAHardwareBufferFormat`, `AImage_getTransform`, `ACodecEncoderCapabilities_getSupportedLayeringSchemas`, and new `AMEDIAFORMAT_KEY_*` keys (`HORIZONTAL_FLIP`, `CSD_VVC`, `HDR_ST2094_50_INFO`; `VIDEO_BITRATE_LAYERING` is declared in the header at API 37 but not yet listed in `libmediandk.map.txt`) | `frameworks/av/media/ndk/include/media/NdkImageReader.h`, `NdkImage.h`, `NdkMediaCodecInfo.h`, `NdkMediaFormat.h` |
 | `libc` (bionic) | `free_sized`, `free_aligned_sized`, `sched_setattr`, `sched_getattr` | `bionic/libc/include/stdlib.h`, `bionic/libc/include/sched.h` |
 | `libandroid` | `android_getnetworkblockedreason` (multinetwork) | `frameworks/native/include/android/multinetwork.h` |
+| `liblog` | `__android_log_logd_logger_with_timestamp` | `system/logging/liblog/include/android/log.h` |
 
 A few of these are worth a closer look.
 
-**Producer throttling on `ANativeWindow`.** When the CPU produces frames faster
-than the GPU consumes them, the buffer queue applies natural back-pressure. The
-two new accessors let an app turn that CPU-side throttling on or off explicitly:
+**Producer throttling on `ANativeWindow`.** By default, a Vulkan or EGL producer
+is CPU-throttled at queue time: `eglSwapBuffers()` or `vkPresentKHR()` stalls the
+CPU while the consumer is still processing the previous buffer. The two new
+accessors turn that queue-time stall on or off:
 
 ```c
 // frameworks/native/libs/nativewindow/include/android/native_window.h:414
@@ -2831,7 +2876,12 @@ int32_t ANativeWindow_isProducerThrottlingEnabled(
         ANativeWindow* _Nonnull window, bool* _Nonnull outEnabled) __INTRODUCED_IN(37);
 ```
 
-The setter has no effect in asynchronous mode, where throttling is always on.
+Disabling it does not remove all back-pressure: a CPU that outruns the GPU still
+blocks later, at dequeue time, according to the depth of the buffer queue --
+that path is unaffected by these accessors. The setter also has no effect in
+asynchronous mode, where throttling is always on. The header recommends
+disabling the queue-time stall and doing proper synchronization explicitly; the
+default only survives because some Vulkan apps inadvertently rely on it.
 
 **Binder freeze-state callbacks.** App-standby and cached-process freezing mean
 a remote binder's process can be frozen out from under a caller. The new
@@ -2844,6 +2894,7 @@ node in the symbol map:
 // frameworks/native/libs/binder/ndk/libbinder_ndk.map.txt:225
 LIBBINDER_NDK37 { # introduced=37
   global:
+    ABinderProcess_disableBackgroundScheduling; # systemapi llndk
     AServiceManager_checkServiceAccess; # systemapi llndk
     AIBinder_setMinRpcThreads; # systemapi
     AServiceManager_registerLazyServiceWithFlags; # systemapi llndk
@@ -2851,6 +2902,9 @@ LIBBINDER_NDK37 { # introduced=37
     AIBinder_FrozenStateChangeCallback_delete;
     AIBinder_addFrozenStateChangeCallback;
     AIBinder_removeFrozenStateChangeCallback;
+    AIBinder_requiresVintfDeclaration; # systemapi llndk
+    AIBinder_isVendorStable; # systemapi llndk
+    AIBinder_isSystemStable; # systemapi llndk
     APersistableBundle_putByteVector;
     APersistableBundle_getByteVector;
     APersistableBundle_getByteVectorKeys;
@@ -2883,9 +2937,11 @@ attribute syscalls to native code.
 
 Section 11.3.1 introduced the new `bypass_artless_denylist` property on
 `ndk_library`. The machinery behind it lives in a build file added this cycle,
-`build/soong/cc/artless_denylist.go` (Copyright 2026). It exists to enforce, at
-build time, which NDK symbols are safe to call from the native-only application
-processes of Section 11.6.5 -- processes with no Android Runtime ("artless").
+`build/soong/cc/artless_denylist.go` (Copyright 2026). It builds the runtime
+enforcement layer that determines which NDK symbols are safe to call from the
+native-only application processes of Section 11.6.5 -- processes with no
+Android Runtime ("artless"). The build generates the abort stubs and a
+blocked-symbol list; the actual rejection happens at runtime.
 
 The file registers two singleton module types and a build rule that runs
 `ndkstubgen` in a new mode:
@@ -2907,10 +2963,15 @@ var genNativeStubSrc = pctx.AndroidStaticRule("genNativeStubSrc",
 ```
 
 The `--artless-denylist` flag is the new `ndkstubgen` switch. Fed a library's
-`.map.txt`, it emits a *denylist* stub static library that resolves the symbols
-which are **not** safe in a JVM-less process, so that linking such a process
-against those symbols fails. The symbol-map parser learned a matching `artless`
-tag for opting individual symbols back in:
+`.map.txt`, it emits a stub source defining each symbol that is **not** safe in
+a JVM-less process as a function whose body calls `LOG_ALWAYS_FATAL`. The
+per-library `<name>_denylist` stubs are whole-static-linked into a single
+shared library, `libandroid_native_denylist.so`, built with `-Wl,-z,global`;
+the native process preloads it with `RTLD_GLOBAL | RTLD_NOW`
+(`frameworks/base/libs/native_activity_thread/src/library_loader.rs`), so ELF
+symbol interposition makes any call to a blocked NDK API abort at runtime --
+linking itself does not fail. The symbol-map parser learned a matching
+`artless` tag for opting individual symbols back in:
 
 ```python
 # build/soong/cc/symbolfile/__init__.py (line 58, 116)
@@ -2971,7 +3032,7 @@ graph TD
 ```
 
 Taken together, API 37's theme is incremental surface growth (audio, imaging,
-window back-pressure, C23 allocator helpers) plus one genuinely new
+window producer throttling, C23 allocator helpers) plus one genuinely new
 build-system concept: the artless denylist, which is the toolchain half of the
 native-only process story whose runtime half is the Rust crate of
 Section 11.6.5.
@@ -3050,7 +3111,7 @@ cc_library_shared {
         "libnativewindow",
     ],
     static_libs: [
-        "libandroid_native_app_glue",
+        "android_native_app_glue",
     ],
     sdk_version: "current",
     stl: "c++_shared",
@@ -3329,9 +3390,12 @@ void android_main(struct android_app* app) {
 #### Entry Point and Threading Model
 
 The native app glue library spawns a new thread and calls `android_main()` on
-it. The main UI thread is handled by the glue's internal `android_app_entry()`
-function, which forwards lifecycle callbacks from the `NativeActivity` to the
-application thread via a pipe.
+it. The glue's internal `android_app_entry()` function is the entry point of
+that spawned application thread: it prepares the thread's `ALooper` and then
+calls `android_main()`. The main UI thread, meanwhile, runs
+`ANativeActivity_onCreate` and the `ANativeActivity` lifecycle callbacks
+(`onStart`, `onPause`, `onNativeWindowCreated`, and so on), which forward
+commands to the application thread over a pipe via `android_app_write_cmd()`.
 
 The `ALooper_pollOnce()` call is the heart of the event loop. It waits for
 events from three sources:
@@ -3425,7 +3489,7 @@ cmake --build .
 adb install native-demo.apk
 
 # Launch
-adb shell am start -n com.example.nativedemo/.NativeActivity
+adb shell am start -n com.example.nativedemo/android.app.NativeActivity
 
 # Watch logs
 adb logcat -s NativeDemo:V
@@ -3518,14 +3582,14 @@ For debugging native crashes:
 
 ```bash
 # Start the app in debug mode
-adb shell am start -D -n com.example.nativedemo/.NativeActivity
+adb shell am start -D -n com.example.nativedemo/android.app.NativeActivity
 
 # Attach lldb-server
 adb forward tcp:1234 tcp:1234
 lldb
 (lldb) platform select remote-android
 (lldb) platform connect connect://localhost:1234
-(lldb) process attach --name native-demo
+(lldb) process attach --name com.example.nativedemo
 ```
 
 #### Simpleperf Profiling
@@ -3601,8 +3665,9 @@ The build system enforces stability through:
 
 The framework bindings for Camera, Media, and Binder demonstrate the standard
 pattern for exposing complex C++ services through stable C APIs: opaque pointer
-types, `EXPORT`-marked wrapper functions, `fvisibility=hidden`, and version
-scripts.
+types and version scripts throughout, with `EXPORT`-marked wrapper functions in
+the Camera and Media NDKs and `-fvisibility=hidden` in the Camera NDK;
+`libbinder_ndk` relies on its version script alone.
 
 Key source files for further exploration:
 

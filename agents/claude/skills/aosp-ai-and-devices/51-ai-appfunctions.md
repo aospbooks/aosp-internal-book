@@ -684,7 +684,7 @@ Key supporting classes:
 |-------|---------------|
 | `RemoteServiceCallerImpl` | Binds to target `AppFunctionService`, manages connection lifecycle |
 | `CallerValidatorImpl` | Enforces `EXECUTE_APP_FUNCTIONS` / `EXECUTE_APP_FUNCTIONS_SYSTEM`, checks the allowlist |
-| `MetadataSyncAdapter` | Syncs static function metadata to AppSearch on package changes |
+| `MetadataSyncAdapter` | Syncs runtime function metadata in AppSearch to match the static metadata on package changes |
 | `AppFunctionPackageMonitor` | Watches for package install/update/remove |
 | `MultiUserDynamicAppFunctionRegistry` | Holds runtime (`registerAppFunction`) registrations per user |
 | `AppFunctionMetadataReader` | Reads static (AppSearch) and dynamic metadata for discovery/state |
@@ -695,10 +695,14 @@ Key supporting classes:
 
 ### 51.2.11 Function Discovery via AppSearch
 
-When a package is installed, updated, or the device boots, the
-`MetadataSyncAdapter` extracts app function metadata from the target app's
-`AppFunctionService` and indexes it as `AppFunctionStaticMetadata` documents
-in AppSearch. Agents discover functions by querying AppSearch:
+The `AppFunctionStaticMetadata` documents themselves are indexed into
+AppSearch by the AppSearch apps-indexer (the schema is owned by
+`com.android.server.appsearch.appsindexer`, per
+`AppFunctionStaticMetadataHelper`). When a package is installed, updated, or
+the device boots, the `MetadataSyncAdapter` *reads* those static documents
+and creates or removes the matching `AppFunctionRuntimeMetadata` documents
+(which carry the per-function enabled state) so the two stay in sync. Agents
+discover functions by querying AppSearch:
 
 ```mermaid
 sequenceDiagram
@@ -707,8 +711,8 @@ sequenceDiagram
     participant AS as AppSearch
 
     PM->>MSync: onPackageChanged(pkg)
-    MSync->>MSync: Extract static metadata from AppFunctionService
-    MSync->>AS: PutDocumentsRequest(AppFunctionStaticMetadata)
+    MSync->>AS: Read AppFunctionStaticMetadata (apps-indexer owned)
+    MSync->>AS: PutDocumentsRequest(AppFunctionRuntimeMetadata)
     AS-->>MSync: success
 
     Note over AS: AppFunctionStaticMetadata now queryable by agents with package visibility
@@ -724,7 +728,7 @@ A critical defensive wrapper ensures exactly-once delivery:
 public class SafeOneTimeExecuteAppFunctionCallback {
     private final AtomicBoolean mOnResultCalled = new AtomicBoolean(false);
     @NonNull private final IExecuteAppFunctionCallback mCallback;
-    @Nullable private final CompletionCallback mCompletionCallback;
+    @Nullable private ArrayList<CompletionCallback> mCompletionCallbacks;
     @Nullable private final BeforeCompletionCallback mBeforeCompletionCallback;
     private final AtomicLong mExecutionStartTimeAfterBindMillis = new AtomicLong();
 
@@ -738,9 +742,11 @@ public class SafeOneTimeExecuteAppFunctionCallback {
                 mBeforeCompletionCallback.beforeOnSuccess(result);
             }
             mCallback.onSuccess(result);
-            if (mCompletionCallback != null) {
-                mCompletionCallback.finalizeOnSuccess(
-                        result, mExecutionStartTimeAfterBindMillis.get());
+            if (mCompletionCallbacks != null) {
+                for (CompletionCallback completionCallback : mCompletionCallbacks) {
+                    completionCallback.finalizeOnSuccess(
+                            result, mExecutionStartTimeAfterBindMillis.get());
+                }
             }
         } catch (RemoteException ex) {
             Log.w(TAG, "Failed to invoke the callback", ex);
@@ -754,9 +760,11 @@ public class SafeOneTimeExecuteAppFunctionCallback {
         }
         try {
             mCallback.onError(error);
-            if (mCompletionCallback != null) {
-                mCompletionCallback.finalizeOnError(
-                        error, mExecutionStartTimeAfterBindMillis.get());
+            if (mCompletionCallbacks != null) {
+                for (CompletionCallback completionCallback : mCompletionCallbacks) {
+                    completionCallback.finalizeOnError(
+                            error, mExecutionStartTimeAfterBindMillis.get());
+                }
             }
         } catch (RemoteException ex) {
             Log.w(TAG, "Failed to invoke the callback", ex);
@@ -775,9 +783,10 @@ This design pattern is essential because:
    rather than crashing the system server.
 
 3. **Completion hooks** -- The `BeforeCompletionCallback` and
-   `CompletionCallback` allow the system server to perform actions (like
+   `CompletionCallback`s allow the system server to perform actions (like
    logging, URI grants, and access history recording) around the callback
-   delivery:
+   delivery; multiple completion callbacks can be appended onto one wrapper
+   and are invoked in order:
 
 ```java
     public interface CompletionCallback {
@@ -1081,7 +1090,7 @@ public CompletableFuture<Boolean> isAllowlisted(
     }
     SignedPackage agentSignedPackage =
             new SignedPackage(agentPackageName, /* certificate digest */ ...);
-    maybeStartAllowlistListener();
+    maybeStartAlowlistListener();  // [sic] -- spelled this way in the source
     return getValidTargetPackages(agentSignedPackage)
             .thenApply(allowlistTargets ->
                     allowlistTargets.contains(WILDCARD_PACKAGE_NAME)
@@ -1262,31 +1271,35 @@ private static boolean isAvailable(Context context) {
 }
 ```
 
-Session creation flows through `requestSession()` which requires
-`ACCESS_COMPUTER_CONTROL`:
+Session creation flows through `requestSession()`, which requires both
+`ACCESS_COMPUTER_CONTROL` and `POST_NOTIFICATIONS` (the latter because a
+session posts a user-visible notification):
 
 ```java
 // frameworks/base/libs/computercontrol/.../ComputerControlExtensions.java
 
-@RequiresPermission(Manifest.permission.ACCESS_COMPUTER_CONTROL)
+@RequiresPermission(allOf = {Manifest.permission.ACCESS_COMPUTER_CONTROL,
+        Manifest.permission.POST_NOTIFICATIONS})
 public void requestSession(@NonNull ComputerControlSession.Params params,
-        @NonNull Executor executor, @NonNull ComputerControlSession.Callback callback) {
-    // Build platform params
+        @NonNull @CallbackExecutor Executor executor,
+        @NonNull ComputerControlSession.Callback callback) {
+    // ... null checks, CompanionDeviceId and NotificationParams conversion ...
     ComputerControlSessionParams sessionParams =
             new ComputerControlSessionParams.Builder()
                     .setName(params.getName())
+                    .setTargetComputerControlVersion(mTargetComputerControlVersion)
                     .setTargetPackageNames(params.getTargetPackageNames())
-                    .setDisplayWidthPx(params.getDisplayWidthPx())
-                    .setDisplayHeightPx(params.getDisplayHeightPx())
-                    .setDisplayDpi(params.getDisplayDpi())
-                    .setDisplaySurface(params.getDisplaySurface())
-                    .setDisplayAlwaysUnlocked(params.isDisplayAlwaysUnlocked())
+                    .setPreviewIntent(params.getPreviewIntent())
+                    .setAppInteractionAttribution(params.getAppInteractionAttribution())
+                    .setCompanionDeviceId(companionDeviceId)
+                    .setNotificationParams(systemNotificationParams)
                     .build();
-
-    VirtualDeviceManager vdm = params.getContext().getSystemService(VirtualDeviceManager.class);
-    vdm.requestComputerControlSession(sessionParams, executor, sessionCallback);
+    // ... wrap the callback and forward to VirtualDeviceManager ...
 }
 ```
+
+Note that there are no display-geometry setters: the caller does not choose
+the virtual display's size, density, or surface (see 51.3.4).
 
 The callback lifecycle mirrors VirtualDeviceManager session creation:
 
@@ -1353,15 +1366,16 @@ the gesture API (`tap`, `swipe`, `longPress`, `performAction`) and `insertText`,
 and the session translates these to the underlying `VirtualTouchscreen` /
 `VirtualDpad`.
 
-Screenshots are captured through an `ImageReader` that is attached to the
-virtual display surface:
+Screenshots are captured through an `ImageReader` whose `Surface` is handed
+to the system server over `IComputerControlSession.initialize()`; the server
+renders the session's virtual display into it:
 
 ```java
 // frameworks/base/core/java/android/companion/virtual/computercontrol/ComputerControlSession.java
 
 mImageReader = ImageReader.newInstance(displayInfo.logicalWidth,
         displayInfo.logicalHeight, PixelFormat.RGBA_8888, /* maxImages= */ 2);
-displayManagerGlobal.setVirtualDisplaySurface(displayToken, mImageReader.getSurface());
+mSession.initialize(mRemoteLifecycleCallback, mImageReader.getSurface());
 
 public Image getScreenshot() {
     synchronized (mLock) {
@@ -1372,20 +1386,27 @@ public Image getScreenshot() {
 
 ### 51.3.4 Session Parameters
 
-`ComputerControlSessionParams` configures the virtual display:
+`ComputerControlSessionParams` names the session and scopes what it may
+automate; it does not configure the virtual display:
 
 ```java
 // frameworks/base/core/java/android/companion/virtual/computercontrol/ComputerControlSessionParams.java
 
 public final class ComputerControlSessionParams implements Parcelable {
     private final String mName;
+    private final int mTargetComputerControlVersion;
     private final List<String> mTargetPackageNames;
-    private final int mDisplayWidthPx;
-    private final int mDisplayHeightPx;
-    private final int mDisplayDpi;
-    private final Surface mDisplaySurface;
-    private final boolean mIsDisplayAlwaysUnlocked;
+    private final PendingIntent mPreviewIntent;
+    private final AppInteractionAttribution mAppInteractionAttribution;
+    private final CompanionDeviceId mCompanionDeviceId;
+    @Nullable
+    private final NotificationParams mNotificationParams;
 ```
+
+The session display's size and density are chosen server-side:
+`ComputerControlSessionImpl.createSessionDisplayConfig()` derives them from
+the user's main (reference) display rather than from anything the caller
+passes.
 
 The `targetPackageNames` field restricts which apps can be launched in the
 session. Each package must have a valid launcher intent and cannot be the
@@ -1502,7 +1523,7 @@ coordinates and lets the extension translate to platform input:
 public void tap(int x, int y);
 public void swipe(int fromX, int fromY, int toX, int toY, ...);
 public void longPress(int x, int y);
-public void performAction(@Action int actionCode);  // e.g. BACK, HOME, RECENTS
+public void performAction(@Action int actionCode);  // only ACTION_GO_BACK is defined
 ```
 
 Each call forwards to the platform `ComputerControlSession`, which routes the
@@ -1553,7 +1574,7 @@ inside an agent's own UI:
 // frameworks/base/libs/computercontrol/.../ComputerControlSession.java
 
 public InteractiveMirror createInteractiveMirror(
-        AccessibilityEmbeddedConnectionReceiver a11yEmbeddedConnectionReceiver) {
+        IResultReceiver a11yEmbeddedConnectionReceiver) {
     return mSession.createInteractiveMirror(a11yEmbeddedConnectionReceiver);
 }
 ```
@@ -1575,19 +1596,15 @@ This enables several important use cases:
 
 @Override
 public void close() {
-    synchronized (mIsValid) {
-        if (!mIsValid.get()) {
-            return;
-        }
-        mAccessibilityManager.unregisterDisplayProxy(mAccessibilityProxy);
-        mSession.close();
-        mIsValid.set(false);
-    }
+    mSession.close();
 }
 ```
 
-Close is idempotent (protected by `AtomicBoolean mIsValid`) and properly
-unregisters the accessibility proxy before closing the platform session.
+Close is a one-liner that delegates to the platform session; the cleanup —
+including unregistering the accessibility proxy — happens in the session's
+`onClosed` lifecycle callback rather than inside `close()` itself, so the
+same teardown runs whether the agent closed the session or the framework
+did.
 
 ### 51.3.15 Stability Detection Architecture
 
@@ -1663,7 +1680,7 @@ the integration with the input, display, and accessibility stacks.
 frameworks/base/services/companion/java/com/android/server/companion/virtual/computercontrol/
     ComputerControlSessionProcessor.java          -- Session creation and policy gate
     ComputerControlSessionImpl.java               -- Core session binder
-    ComputerControlAllowlistController.java        -- Per-session package allowlist policy
+    ComputerControlAllowlistController.java        -- Device-level agent/target allowlist policy
     InteractiveMirrorImpl.java                    -- Mirror display + virtual touchscreen
     AutomatedPackagesRepository.java              -- Tracks automated packages for launchers
     ComputerControlDataStore.java                 -- Persisted session/consent state
@@ -1708,36 +1725,49 @@ virtual input dispatch — that Computer Control composes on top of.
 ### 51.3.19 ComputerControlSessionProcessor: Session Creation and Limits
 
 `ComputerControlSessionProcessor` owns the entry-point logic for creating
-sessions. The policy flow runs in this order — note that AppOps short-
-circuits the rest when it returns `MODE_ALLOWED`:
+sessions. The policy flow runs in this order — note that AppOps decides only
+whether the consent *dialog* is needed:
 
 1. **AppOps consent check.** The processor calls
    `noteOpNoThrow(OP_COMPUTER_CONTROL, request.attributionSource(), ...)`
    (`frameworks/base/services/companion/java/com/android/server/companion/virtual/computercontrol/ComputerControlSessionProcessor.java`).
-   If the result is `MODE_ALLOWED` — meaning the user previously chose
-   "Always Allow" for this agent package — the processor proceeds directly
-   to session creation, bypassing the precondition checks and the consent
-   dialog. Any other mode means consent is required, and the flow
-   continues.
-2. **Device-locked gate.** The processor checks the keyguard first. If the
-   device is locked, it rejects with `ERROR_DEVICE_LOCKED` and the flow ends.
-3. **Concurrent-session cap.** The constant `MAXIMUM_CONCURRENT_SESSIONS`
-   (`ComputerControlSessionProcessor.java`, currently `1` in Android 17) bounds
-   how many Computer Control sessions can be live system-wide at once.
-   Exceeding it returns `ERROR_SESSION_LIMIT_REACHED`.
-4. **Consent dialog.** If preconditions pass and consent is required, the
+   `MODE_IGNORED` and `MODE_ERRORED` fail the request outright with
+   `ERROR_PERMISSION_DENIED`. `MODE_ALLOWED` — meaning the user previously
+   chose "Always Allow" for this agent package — skips the consent dialog
+   (subject to the per-target-app consent check when
+   `computer_control_per_app_consent` is on) and proceeds to session
+   creation. Only `MODE_DEFAULT` routes through the consent-dialog flow.
+2. **Concurrent-session cap.** `checkSessionCreationPreconditionsLocked()`
+   first tests the constant `MAXIMUM_CONCURRENT_SESSIONS`
+   (`ComputerControlSessionProcessor.java`, currently `1` in Android 17),
+   which bounds how many Computer Control sessions can be live system-wide
+   at once. Exceeding it returns `ERROR_SESSION_LIMIT_REACHED`.
+3. **Cross-device authorization.** For cross-device requests (a
+   `CompanionDeviceId` is set), `AuthenticationPolicyManager` must authorize
+   the agent, or the request fails with `ERROR_PERMISSION_DENIED`.
+4. **Device-locked gate.** The processor then checks the keyguard. If the
+   device is locked, it rejects with `ERROR_DEVICE_LOCKED`, followed by a
+   check that the caller has a visible non-toast window.
+5. **Consent dialog.** If preconditions pass and consent is required, the
    processor launches `RequestComputerControlAccessActivity` via an
    `IntentSender` returned to the agent.
+
+The preconditions in steps 2-4 are not skipped by `MODE_ALLOWED`:
+`createSession()` unconditionally re-runs
+`checkSessionCreationPreconditionsLocked(request)` before constructing the
+session, so the AppOps result short-circuits only the dialog.
 
 The class header documents the role explicitly: *"This class enforces session
 creation policies, such as limiting the number of concurrent..."*
 (`ComputerControlSessionProcessor.java`).
 
-Once the policy flow completes successfully, the processor allocates the
-underlying `VirtualDevice`,
-the trusted `VirtualDisplay`, and the session's virtual input devices, then
-constructs a `ComputerControlSessionImpl` and hands its binder back to the
-caller through the original `ComputerControlSession.Callback`.
+Once the policy flow completes successfully, the processor constructs a
+`ComputerControlSessionImpl`, handing it the request and a
+`VirtualDeviceFactory`; it is the session impl's own constructor that
+creates the underlying `VirtualDevice`, the trusted `VirtualDisplay`, and
+the session's virtual input devices (51.3.20). The processor then hands the
+session's binder back to the caller through the original
+`ComputerControlSession.Callback`.
 
 The session limit is global, not per-agent. In Android 17 it is `1`, so the
 framework admits a single Computer Control session at a time. The limit is a
@@ -1756,18 +1786,22 @@ lifecycle teardown — not by business logic.
 
 Its responsibilities, ordered by lifecycle:
 
-- **Construction.** Receives the trusted `VirtualDevice`, the `VirtualDisplay`,
-  the session's virtual input devices, the calling agent's `AttributionSource`,
-  and the requested `targetPackageNames` allowlist from the processor.
+- **Construction.** Receives the session request (with the calling agent's
+  attribution and the requested `targetPackageNames` allowlist) and a
+  `VirtualDeviceFactory` from the processor, and in its own constructor
+  creates the `VirtualDevice`, the trusted `VirtualDisplay`, the
+  `VirtualDpad`/`VirtualTouchscreen`, and the `VirtualAudioDevice`.
 - **Input dispatch.** Implements `tap`, `swipe`, `longPress`, `insertText`, and
   `performAction` by routing to the appropriate virtual input device or to
   the IME-integration path (51.3.29).
-- **Screenshot.** Implements `getScreenshot()` via the trusted display's
-  surface-capture path; the trusted flag is what makes capture permissible
-  without holding `READ_FRAME_BUFFER`.
+- **Display surface.** Accepts the client-supplied `Surface` via
+  `initialize()` and renders the virtual display into it; the agent-side
+  session pulls screenshot frames from its own `ImageReader` (51.3.3), so
+  there is no server-side `getScreenshot()` call.
 - **Application launch.** Implements `launchApplication(packageName)` after
-  checking the package against the session's allowlist; an automated launch
-  surfaces `AutomatedAppLaunchWarningActivity` (51.3.24).
+  checking the package against the session's allowlist; a launch of an
+  automated package by someone other than the agent surfaces
+  `AutomatedAppLaunchWarningActivity` (51.3.24).
 - **Stability.** Every input dispatch and app launch resets the session's
   stability state; the stability signal itself is computed agent-side by
   `ComputerControlAccessibilityProxy` (51.3.27).
@@ -1803,19 +1837,25 @@ a Computer-Control-reserved block inside the broader VDM virtual-input
 product-ID space; see Chapter 52 for the generic `VirtualInputDevice` scheme
 that hosts Computer Control's inputs.
 
-The session's display is a **trusted** `VirtualDisplay`. The trust flag has
-three observable consequences that distinguish it from a stock virtual
-display:
+The session's display is a **trusted** `VirtualDisplay` (created with
+`VIRTUAL_DISPLAY_FLAG_TRUSTED | VIRTUAL_DISPLAY_FLAG_ALWAYS_UNLOCKED`).
+After creating it, the session explicitly configures three behaviors that
+distinguish it from a stock virtual display — these are separate calls, not
+side effects of the trust flag:
 
-1. **Animations disabled.** System and app animations are suppressed on this
-   display so the agent's per-action stability detection does not have to wait
-   for animation completion before reading the next state.
-2. **IME hidden.** Soft keyboards do not auto-show on the display; text input
-   either uses `VirtualDpad` key events or routes through the IME
-   integration path in 51.3.29.
-3. **Focus-stealing disabled.** Child windows on the display cannot steal
-   focus from the agent's target activity, so a pop-up cannot redirect the
-   agent's subsequent inputs to an unrelated surface.
+1. **Animations disabled.** `setAnimationsDisabledForDisplay(...)`
+   suppresses system and app animations on this display so the agent's
+   per-action stability detection does not have to wait for animation
+   completion before reading the next state.
+2. **IME hidden.** `setDisplayImePolicy(displayId, DISPLAY_IME_POLICY_HIDE)`
+   keeps soft keyboards from auto-showing on the display; text input either
+   uses `VirtualDpad` key events or routes through the IME integration path
+   in 51.3.29.
+3. **Focus-stealing disabled.** `setCanStealTopFocusForDisplay(..., false)`
+   keeps windows on the display from stealing top focus, so a pop-up cannot
+   redirect the agent's subsequent inputs to an unrelated surface. Focus
+   stealing is re-enabled while an interactive mirror is attached, so the
+   human user's touches behave normally.
 
 Together these turn the display into a deterministic surface the agent can
 drive without the user's UX-pleasantness layer adding noise.
@@ -1839,14 +1879,14 @@ sequenceDiagram
     Ext->>VDMS: requestComputerControlSession
     VDMS->>SP: process(params, attributionSource)
     SP->>SP: noteOpNoThrow OP_COMPUTER_CONTROL
-    alt mode != MODE_ALLOWED
-        SP->>SP: checkPreconditions: keyguard
-        SP->>SP: checkPreconditions: MAXIMUM_CONCURRENT_SESSIONS
+    alt consent required (MODE_DEFAULT or per-app consent missing)
         SP->>Consent: launch via IntentSender
         Consent-->>SP: Allow / Don't Allow / Always
     end
-    SP->>VD: create trusted display + virtual inputs
+    SP->>SP: checkPreconditions: MAXIMUM_CONCURRENT_SESSIONS
+    SP->>SP: checkPreconditions: cross-device auth, keyguard, visible window
     SP->>Impl: new ComputerControlSessionImpl
+    Impl->>VD: create VirtualDevice + trusted display + virtual inputs
     Impl-->>Ext: onSessionCreated(binder)
     Ext-->>Agent: callback.onSessionCreated(session)
 ```
@@ -1919,14 +1959,17 @@ because a Computer Control consent grant is particularly attractive to a
 tapjacking adversary: a successful grant gives the adversary's agent the
 ability to drive the user's other apps from inside a sanctioned session.
 
-When an agent automates an app launch mid-session — for example, a `launchApplication()`
-call that drives the user into a different app — the system
-surfaces `AutomatedAppLaunchWarningActivity`
+When the *user or another app* launches a package that a Computer Control
+session is currently driving, the system surfaces
+`AutomatedAppLaunchWarningActivity`
 (`frameworks/base/packages/VirtualDeviceManager/src/com/android/virtualdevicemanager/AutomatedAppLaunchWarningActivity.java`)
-to make the automated launch visible to the user rather than letting it happen
-silently. A silent launch would leave the user wondering why an app appeared
-on its own; the warning tells the user which package the agent is opening and
-on whose behalf before the launch proceeds.
+to warn them that the app is under automation, naming the automating package
+and offering to stop the automation. The warning is deliberately suppressed
+when the agent itself initiates the launch —
+`AutomatedPackagesRepository.createAutomatedAppLaunchWarningIntent()` returns
+no intent when the calling package is the session's own device owner — so it
+protects the user from unknowingly stepping into an automated app, not from
+the agent's sanctioned launches.
 
 ### 51.3.25 AppOps and Per-Session Tracking
 
@@ -1945,10 +1988,13 @@ AppOps records grants with a mode (`MODE_ALLOWED`, `MODE_IGNORED`,
 session creation calls
 `noteOpNoThrow(OP_COMPUTER_CONTROL, request.attributionSource(), ...)`
 in `ComputerControlSessionProcessor`. The result determines the
-next step: `MODE_ALLOWED` short-circuits straight to session creation
-(skipping both preconditions and the consent dialog); any other mode means
-the processor advances to the keyguard and concurrent-cap precondition
-checks, and on success launches the consent activity. The no-throw variant
+next step: `MODE_IGNORED` and `MODE_ERRORED` fail the request outright with
+`ERROR_PERMISSION_DENIED`; `MODE_ALLOWED` skips the consent dialog (subject
+to the per-target-app consent check when `computer_control_per_app_consent`
+is on); only `MODE_DEFAULT` routes through the consent-dialog flow. The
+preconditions — concurrent-session cap, cross-device auth, keyguard, and the
+visible-window check — are evaluated in `createSession()` regardless of the
+mode. The no-throw variant
 returns the mode as an int instead of throwing `SecurityException`, which
 is the right shape for a router that branches on the result rather than
 bailing out.
@@ -1993,15 +2039,20 @@ distinct mechanism:
    pass touches through to the consent buttons. This blocks the classic
    tapjacking attack against permission dialogs — the same pattern that
    surfaced through `SYSTEM_ALERT_WINDOW` abuse in earlier Android releases.
-2. **Per-session package allowlist.** `ComputerControlAllowlistController`
-   rejects an agent's `launchApplication(packageName)` unless `packageName`
-   was declared in `targetPackageNames` at session creation. A Computer
-   Control session that opened a messaging app cannot subsequently launch a
-   banking app inside the same session.
-3. **Visible automated-launch notice.** When the agent automates an app launch,
-   the system surfaces `AutomatedAppLaunchWarningActivity` (51.3.24) rather than
-   opening the app silently, making the agent's launch visible at
-   the moment it would otherwise be invisible to the user.
+2. **Per-session package allowlist.** `ComputerControlSessionImpl` rejects
+   an agent's `launchApplication(packageName)` unless `packageName` was
+   declared in `targetPackageNames` at session creation (the constructor
+   copies them into `mAllowlistedPackages`). A Computer Control session that
+   opened a messaging app cannot subsequently launch a banking app inside
+   the same session. `ComputerControlAllowlistController` operates one level
+   up: it is the device-wide policy that validates the agent
+   (`isPackageAllowedToCreateSession`) and target packages
+   (`isPackageAutomatable`) before the session is created at all.
+3. **Automated-app warning for the user.** When the user or another app
+   launches a package that a session is currently driving, the system
+   surfaces `AutomatedAppLaunchWarningActivity` (51.3.24), warning them the
+   app is under automation and offering to stop it; the warning is
+   suppressed when the agent itself initiates the launch.
 4. **Binder death monitoring.** `ComputerControlSessionImpl` calls
    `Binder.linkToDeath()` on the agent's callback binder. If the agent
    process is killed — by oom-killer, by the user swiping it from Recents,
@@ -2012,9 +2063,10 @@ distinct mechanism:
 The mechanisms compose. An attacker who somehow bypassed tapjacking
 protection on the consent activity (mechanism 1) and obtained a session
 would still be blocked by the activity allowlist (mechanism 2) from
-expanding the session's reach; an attacker who got past both (mechanism 3)
-would still surface a launch warning to the user; an attacker whose
-implant process died would release the session immediately (mechanism 4).
+expanding the session's reach; a user who wandered into an app the session
+was silently driving would be warned and offered a stop button
+(mechanism 3); an attacker whose implant process died would release the
+session immediately (mechanism 4).
 
 ### 51.3.27 Stability Detection via the Accessibility Proxy
 
@@ -2070,8 +2122,10 @@ Computer Control session. It serves two consumers:
 2. **System UI** uses the same data to render the global "agent active"
    status icon and to route notifications about automated activity.
 
-The repository fires `onAutomatedPackagesChanged(Set<String>)` whenever the
-set transitions. Each `ComputerControlSessionImpl` registers its
+The repository fires
+`onAutomatedPackagesChanged(String automatingPackage, List<String> automatedPackages, UserHandle user)`
+whenever the set transitions, telling listeners which agent is automating
+which packages, for which user. Each `ComputerControlSessionImpl` registers its
 allowlisted packages on session start and unregisters them on session close.
 The repository reference-counts each package, so it only exits the "automated"
 state when the last referring session closes — robust to a future increase in
@@ -2101,9 +2155,12 @@ The flow:
   `InputMethodManagerService.UserData.mComputerControlInputConnectionMap`
   (`frameworks/base/services/core/java/com/android/server/inputmethod/InputMethodManagerService.java`),
   keyed by the client's self-reported display ID.
-- The remote connection wraps the focused window's `InputConnection` and
-  forwards the text through `commitText()`, `setComposingText()`, and
-  `deleteSurroundingText()` — the same methods a soft keyboard would use.
+- The remote connection wraps the focused window's `InputConnection`. The
+  interface exposes `commitText()`, `replaceText()`, `sendKeyEvent()`, and
+  `performEditorAction()`; `insertText()` calls `replaceText()` when
+  `replaceExisting` is set, `commitText()` otherwise, and
+  `performEditorAction()` when `commit` is true — the same methods a soft
+  keyboard would use.
 - The target app sees text arrive through its normal `InputConnection`
   callback, indistinguishable in shape from a soft-keyboard caller.
 
@@ -2112,12 +2169,12 @@ owns its own trusted display. In Android 17 `MAXIMUM_CONCURRENT_SESSIONS` is
 `1`, so a single session is live at a time; the display ID still disambiguates
 which session's text routes where and keeps the design ready for a larger cap.
 
-When the `InputConnection` path is unavailable, `insertText()` falls back to
-injecting key events via the `VirtualDpad` device. The fallback is
-functional but loses the IME's text-shaping behavior — autocorrect does not
-run, password fields are not masked at input time, and a target app that
-filters input in `onTextChanged` sees character-at-a-time events rather than a
-batched commit.
+`insertText()` is `InputConnection`-only: if no
+`ComputerControlInputConnectionData` is registered for the session's display
+(no focused editor has started input there), the call logs an error —
+*"Unable to insert text: No input connection..."* — and is dropped. There is
+no fallback to synthesizing key events through the `VirtualDpad`; an agent
+that wants text to land must first focus an editable field.
 
 ### 51.3.30 Feature Flag Set
 
@@ -2390,8 +2447,8 @@ Key operations:
 | `requestFeatureDownload()` | Trigger model download |
 | `processRequest()` | Non-streaming inference request |
 | `processRequestStreaming()` | Streaming (token-by-token) inference |
-| `getTokenInfo()` | Token counting/analysis |
-| `registerLifecycleListener()` | Model load/unload notifications |
+| `requestTokenInfo()` | Token counting/analysis |
+| `registerInferenceServiceLifecycleListener()` | Model load/unload notifications |
 
 ### 51.4.3 The Sandboxed Inference Service
 
@@ -2410,7 +2467,7 @@ public abstract class OnDeviceSandboxedInferenceService extends Service {
 The manifest declares:
 ```xml
 <service android:name=".SampleSandboxedInferenceService"
-         android:permission="android.permission.BIND_ONDEVICE_SANDBOXED_INFERENCE_SERVICE"
+         android:permission="android.permission.BIND_ON_DEVICE_SANDBOXED_INFERENCE_SERVICE"
          android:isolatedProcess="true">
 </service>
 ```
@@ -2562,9 +2619,11 @@ ODI supports two processing modes:
 @RequiresPermission(Manifest.permission.USE_ON_DEVICE_INTELLIGENCE)
 public void processRequest(@NonNull Feature feature,
         @NonNull @InferenceParams Bundle request,
+        @RequestType int requestType,
         @Nullable CancellationSignal cancellationSignal,
+        @Nullable ProcessingSignal processingSignal,
         @NonNull @CallbackExecutor Executor callbackExecutor,
-        @NonNull ProcessingCallback callback);
+        @NonNull ProcessingCallback processingCallback);
 ```
 
 **Streaming (token-by-token):**
@@ -2573,9 +2632,11 @@ public void processRequest(@NonNull Feature feature,
 @RequiresPermission(Manifest.permission.USE_ON_DEVICE_INTELLIGENCE)
 public void processRequestStreaming(@NonNull Feature feature,
         @NonNull @InferenceParams Bundle request,
+        @RequestType int requestType,
         @Nullable CancellationSignal cancellationSignal,
+        @Nullable ProcessingSignal processingSignal,
         @NonNull @CallbackExecutor Executor callbackExecutor,
-        @NonNull StreamingProcessingCallback callback);
+        @NonNull StreamingProcessingCallback streamingProcessingCallback);
 ```
 
 The streaming mode is essential for LLM inference, where generating a full
@@ -2620,13 +2681,12 @@ This allows apps to:
 
 ### 51.4.12 Processing State Updates
 
-The sandboxed service can update its processing state:
-
-```java
-// OnDeviceSandboxedInferenceService.java
-
-public static final String PROCESSING_STATE_BUNDLE_KEY = "processing_state";
-```
+The system can push processing-state updates into the sandboxed service via
+`updateProcessingState(Bundle processingState, IProcessingUpdateStatusCallback callback)`
+on the service's binder stub, which dispatches to the service's
+`onUpdateProcessingState()` override; the
+`IProcessingUpdateStatusCallback` reports back whether the service accepted
+the update.
 
 State updates allow the system to track:
 
@@ -2666,8 +2726,8 @@ sequenceDiagram
     Service->>Sandbox: processRequestStreaming()
 
     loop For each generated token
-        Sandbox->>Service: onNewContent(partialResult)
-        Service->>Manager: IStreamingResponseCallback.onNewContent()
+        Sandbox->>Service: onPartialResult(partialResult)
+        Service->>Manager: IStreamingResponseCallback.onPartialResult()
         Manager->>App: StreamingProcessingCallback.onPartialResult(bundle)
     end
 
@@ -2683,7 +2743,7 @@ The `IStreamingResponseCallback` defines the wire protocol:
 
 IStreamingResponseCallback callback = new IStreamingResponseCallback.Stub() {
     @Override
-    public void onNewContent(@InferenceParams Bundle result) {
+    public void onPartialResult(@InferenceParams Bundle result) {
         Binder.withCleanCallingIdentity(() -> {
             callbackExecutor.execute(
                     () -> streamingProcessingCallback.onPartialResult(result));
@@ -2924,12 +2984,13 @@ graph TB
     APP --> CAPI
     CAPI --> MGR
     MGR --> COMP
-    COMP --> EXEC
-    EXEC --> PLAN
-    PLAN --> BURST
+    COMP --> PLAN
+    PLAN --> EXEC
+    EXEC -.->|"optional burst path"| BURST
+    EXEC --> IDEV
     BURST --> IDEV
     IDEV --> IPM
-    IPM --> IBUF
+    IDEV --> IBUF
     IDEV --> CPU
     IDEV --> GPU
     IDEV --> DSP
@@ -3199,13 +3260,21 @@ and capabilities:
 | Feature Level | Android Version | Key Additions |
 |---------------|-----------------|---------------|
 | 1 | 8.1 (API 27) | Basic ops: Conv2D, MaxPool, ReLU |
-| 2 | 9 (API 28) | BatchNorm, LSTM, more quantized ops |
-| 3 | 10 (API 29) | Control flow (IF, WHILE), fenced execution |
-| 4 | 11 (API 30) | Quality of service, model priority |
-| 5 | 12 (API 31) | Signed 8-bit quantization |
-| 6 | 13 (API 33) | AIDL HAL interface |
-| 7 | 14 (API 34) | Vendor extensions |
-| 8 | 15 (API 35) | Flatbuffer model format |
+| 2 | 9 (API 28) | More ops: DIV, SUB, PAD, TRANSPOSE, STRIDED_SLICE |
+| 3 | 10 (API 29) | Many new ops, per-channel quantization, introspection |
+| 4 | 11 (API 30) | Control flow (IF, WHILE), fenced execution, signed 8-bit quantization (`TENSOR_QUANT8_ASYMM_SIGNED`), quality of service, model priority |
+| 5 | 12 (API 31) | Reusable executions (`ANeuralNetworksExecution_setReusable`), memory-domain improvements |
+| 6 | — | AIDL HAL interface |
+| 7 | — | Vendor extensions |
+| 8 | — | Flatbuffer model format |
+
+Feature levels above 5 deliberately have no Android API-level mapping: the
+enum values are `ANEURALNETWORKS_FEATURE_LEVEL_6 = 1000006`, `..._7 =
+1000007`, and `..._8 = 1000008`, because the NNAPI specification can be
+updated between Android API releases. Code must compare the outputs of
+`ANeuralNetworksDevice_getFeatureLevel` /
+`ANeuralNetworks_getRuntimeFeatureLevel` against the `FeatureLevelCode`
+constants, never against `Build.VERSION.SDK_INT`.
 
 ### 51.5.14 Telemetry
 
@@ -3311,7 +3380,6 @@ NNAPI supports over 100 neural network operations including:
 
 **Normalization:**
 
-- BATCH_NORMALIZATION
 - L2_NORMALIZATION
 - LOCAL_RESPONSE_NORMALIZATION
 - INSTANCE_NORMALIZATION
@@ -3326,7 +3394,7 @@ NNAPI supports over 100 neural network operations including:
 **Element-wise:**
 
 - ADD, SUB, MUL, DIV
-- FLOOR, CEIL, ABS, NEG
+- FLOOR, ABS, NEG
 - POW, SQRT, RSQRT, EXP, LOG
 - SIN, MINIMUM, MAXIMUM
 - LESS, LESS_EQUAL, EQUAL, NOT_EQUAL
@@ -3341,7 +3409,7 @@ NNAPI supports over 100 neural network operations including:
 
 **Control flow:**
 
-- IF, WHILE (added in Feature Level 3)
+- IF, WHILE (added in NNAPI feature level 4, Android 11 / API 30)
 
 ### 51.5.19 Module Delivery and Updates
 
@@ -3377,7 +3445,7 @@ producing useful aggregate models.
 **Source tree:**
 
 ```
-packages/modules/OnDevicePersonalization/     (642 files)
+packages/modules/OnDevicePersonalization/     (~890 files, ~580 excluding tests)
     framework/                                -- Public API
     federatedcompute/                         -- Federated learning engine
         src/com/android/federatedcompute/services/
@@ -3540,7 +3608,7 @@ packages/modules/OnDevicePersonalization/federatedcompute/
             FederatedComputeJobManager.java       -- Job scheduling
         common/
             Flags.java                            -- Feature flags
-            PhFlags.java                          -- Phone-home flags
+            PhFlags.java                          -- Phenotype/DeviceConfig-backed flags
             Constants.java                        -- Shared constants
             FederatedComputeExecutors.java        -- Thread pools
             BatteryInfo.java                      -- Battery state
@@ -3756,8 +3824,13 @@ Manifest registration:
 ```
 
 The system's default implementation is configured via
-`config_defaultTextClassifierPackage`. If unset, a local
-`TextClassifierImpl` runs in the calling app's process.
+`config_defaultTextClassifierPackage`. When no system text classifier is
+available, the local fallback is a no-op (`TextClassifier.NO_OP`) —
+`TextClassificationManager.getLocalTextClassifier()` logs *"Local
+text-classifier not supported"* and returns it. The real
+`TextClassifierImpl` ships in `external/libtextclassifier` and runs inside
+the default `TextClassifierService` (ExtServices), not in the calling app's
+process.
 
 ### 51.7.6 Text Classification Flow
 
@@ -3942,6 +4015,7 @@ packages/modules/AppSearch/
     framework/java/android/app/appsearch/
         AppSearchManager.java                -- System service entry point
         AppSearchSession.java                -- Per-database session
+    framework/java/external/android/app/appsearch/
         GenericDocument.java                 -- Base document type
         SearchSpec.java                      -- Query specification
         SetSchemaRequest.java                -- Schema definition
@@ -4205,8 +4279,8 @@ IcingSearchEngine provides:
 Apps can register observers to be notified of changes:
 
 ```java
-// AppSearchManager observer
-appSearchManager.registerObserverCallback(
+// packages/modules/AppSearch/framework/java/android/app/appsearch/GlobalSearchSession.java
+globalSearchSession.registerObserverCallback(
         "com.example.app",
         new ObserverSpec.Builder().addFilterSchemas("Email").build(),
         executor,
@@ -4642,7 +4716,7 @@ public final class TopicsManager {
 
 The classifier runs entirely on-device:
 
-1. The system downloads a taxonomy of ~470 topics
+1. The system downloads a taxonomy of ~450 topics
 2. An ML model maps app package names to topic categories
 3. Each epoch (~1 week), the system records which topics the user's apps map to
 4. When an SDK calls `getTopics()`, it receives a privacy-safe selection of
@@ -4700,7 +4774,8 @@ graph TB
 ```
 
 The classifier uses a pre-trained ML model that maps app package names to
-a fixed taxonomy of approximately 470 topics. The model is downloaded and
+a fixed taxonomy of approximately 450 topics (446 labels in the shipped
+`labels_topics.txt`). The model is downloaded and
 updated through the AdServices module.
 
 Privacy mechanisms:
@@ -4883,7 +4958,7 @@ sequenceDiagram
     participant DB as TopicsDao
 
     JM->>EM: processEpoch()
-    EM->>DB: getAppsUsedInEpoch(currentEpoch)
+    EM->>DB: retrieveAppSdksUsageMap(currentEpoch)
     DB-->>EM: Set<AppInfo>
 
     EM->>CM: classify(appPackageNames)
@@ -4899,7 +4974,7 @@ sequenceDiagram
     EM->>DB: persistAppClassificationTopics(epoch, appTopics)
     EM->>DB: persistTopicContributors(epoch, contributorMap)
 
-    EM->>EM: garbageCollectOldEpochs()
+    EM->>EM: garbageCollectOutdatedEpochData(currentEpochId)
     Note over EM: Remove data older than<br/>lookBackEpochs (default: 3)
 ```
 
@@ -4914,7 +4989,7 @@ graph TB
 
     CM -->|"Flag: ON_DEVICE"| OD["OnDeviceClassifier<br/>TFLite BERT model"]
     CM -->|"Flag: PRECOMPUTED"| PC["PrecomputedClassifier<br/>Server-side lookup table"]
-    CM -->|"Flag: BOTH"| BOTH["Run both,<br/>merge results"]
+    CM -->|"Flag: PRECOMPUTED_THEN_ON_DEVICE<br/>(default)"| BOTH["Precomputed first;<br/>on-device only for apps<br/>it could not classify"]
 
     OD --> BERT["BertNLClassifier<br/>(TFLite Task Library)"]
     BERT --> MODEL["Downloaded TFLite Model"]
@@ -4980,7 +5055,7 @@ while serialising writes:
 | Operation | Lock |
 |---|---|
 | `getTopics()` | READ |
-| `processEpoch()` | WRITE |
+| `computeEpoch()` | WRITE |
 | `handleAppUninstallation()` | WRITE |
 | `loadCache()` | WRITE |
 
@@ -5142,7 +5217,7 @@ The `SandboxedSdkContext` imposes strict limits:
 | Storage access | Isolated per-SDK directory |
 | Content providers | Blocked |
 | Broadcast receivers | Blocked |
-| StartActivity | Blocked (no direct UI) |
+| StartActivity | Not directly; client app starts a sandbox activity via `SdkSandboxManager.startSdkSandboxActivity()` against an SDK-registered `SdkSandboxActivityHandler` |
 | Shared preferences | Read-only sync from host app |
 | UI rendering | Via SurfacePackage only |
 
@@ -5176,7 +5251,7 @@ graph TB
             TD["TopicsDao<br/>(SQLite)"]
             CAD["CustomAudienceDao"]
             ASD["AdSelectionDatabase"]
-            MD["MeasurementDatabase"]
+            MD["MeasurementDbHelper"]
         end
 
         subgraph "ML / Classification"
@@ -5253,7 +5328,7 @@ graph LR
 |-----------|-------------|-----------------|-----|-------|-----------------|
 | Manager | `AppFunctionManager` | `ComputerControlExtensions` | `OnDeviceIntelligenceManager` | C API (no Java manager) | `ContentCaptureManager` |
 | AIDL | `IAppFunctionManager` | `IComputerControlSession` | `IOnDeviceIntelligenceManager` | N/A (native) | `IContentCaptureManager` |
-| system_server | `AppFunctionManagerServiceImpl` | In VDM service | `OnDeviceIntelligenceManagerService` | `NeuralNetworksService` | `ContentCaptureManagerService` |
+| system_server | `AppFunctionManagerServiceImpl` | In VDM service | `OnDeviceIntelligenceManagerService` | N/A (no system_server component; runtime library in-process) | `ContentCaptureManagerService` |
 | Remote Service | `AppFunctionService` | Activity on VDisplay | `OnDeviceSandboxedInferenceService` | `IDevice` (HAL) | `ContentCaptureService` |
 
 ### 51.10.2 Permission Model Comparison
@@ -5270,7 +5345,7 @@ graph TB
     subgraph "Binding Permissions"
         B1["BIND_APP_FUNCTION_SERVICE"]
         B2["BIND_TEXTCLASSIFIER_SERVICE"]
-        B3["BIND_ONDEVICE_SANDBOXED_INFERENCE_SERVICE"]
+        B3["BIND_ON_DEVICE_SANDBOXED_INFERENCE_SERVICE"]
         B4["BIND_CONTENT_CAPTURE_SERVICE"]
     end
 
@@ -5641,7 +5716,7 @@ frameworks/base/core/java/android/aiseal/
 frameworks/base/services/aiseal/java/com/android/server/aiseal/
     AiSealSystemService.java     -- SystemService, bridges per-user lifecycle into the VM
 frameworks/native/services/aisealhostservice/
-    src/main.rs                  -- Native Rust host service (runs inside the AVF VM)
+    src/main.rs                  -- Native Rust host service (runs on the host OS; creates and owns the AVF VM)
     src/config.rs                -- AiSeal config + protected_vm flag parsing
     src/payload.rs               -- Payload (tenant APK) loading
     src/package_manager.rs       -- Calling-package resolution for ownership checks
@@ -5685,12 +5760,13 @@ be routed through the primary user.
 A host application connects to a sealed service through one method,
 `AiSealManager.connectService(String name)`, which is annotated `@WorkerThread`
 (it may block) and requires `android.permission.MANAGE_AISEAL_VIRTUAL_MACHINE`.
-The request crosses three boundaries: from the app into the system-published
-`aiseal_host` binder, then over a vsock connection into the native host service
-running *inside* the VM, and finally to the tenant's own vsock service.
+The request crosses two boundaries: from the app into the system-published
+`aiseal_host` binder served by the host-side native `aisealhostservice`,
+which then opens a vsock connection into the VM to the tenant's own vsock
+service.
 
-The following diagram shows the connect path and the two services the in-VM
-native host service registers.
+The following diagram shows the connect path and the two binders the
+host-side native service registers.
 
 ```mermaid
 graph TB
@@ -5699,6 +5775,8 @@ graph TB
         ASM["AiSealManager<br/>(@SystemApi, connectService name)"]
         SS["AiSealSystemService<br/>(system_server)"]
         SM["ServiceManager<br/>(aiseal_host / aiseal_internal)"]
+        HOST["aisealhostservice<br/>(Rust, IAiSealHostService)"]
+        INT["aiseal_internal<br/>(IAiSealInternalService)"]
     end
 
     subgraph avf["AVF (see Chapter 56)"]
@@ -5706,8 +5784,6 @@ graph TB
     end
 
     subgraph vm["Protected VM (microdroid)"]
-        HOST["aisealhostservice<br/>(Rust, IAiSealHostService)"]
-        INT["aiseal_internal<br/>(IAiSealInternalService)"]
         GA["Guest agent<br/>(unlocks CE storage)"]
         TEN["Tenant vsock service<br/>(exported by name)"]
     end
@@ -5729,8 +5805,9 @@ Inside `connectService`, `AiSealManager` resolves the `aiseal_host` binder
 `IAiSealHostService.connectService(name)`, which returns a
 `ParcelFileDescriptor` wrapping the vsock connection. The manager wraps the call
 in `VirtualMachine.binderFromPreconnectedClient(...)` so the returned descriptor
-is adopted as an RPC-binder client to the in-VM service. On the VM side, the
-native host service (`frameworks/native/services/aisealhostservice/src/main.rs`)
+is adopted as an RPC-binder client to the in-VM service. On the receiving side,
+the host-side native service
+(`frameworks/native/services/aisealhostservice/src/main.rs`)
 implements `connectService` by: enforcing `MANAGE_AISEAL_VIRTUAL_MACHINE`;
 looking the requested name up in the service-to-owner map built from the AiSeal
 config; checking that the calling package *owns* that tenant (system\_server and
@@ -5770,9 +5847,10 @@ The unlocking path is where the key-encryption key (KEK) crosses the boundary.
 On `onUserUnlocking`, `AiSealSystemService` computes a per-user file path under
 the host's CE system directory -- `Environment.buildPath(getDataSystemCeDirectory(userId), "AiSeal", "kek")` -- creates the directory, runs `SELinux.restorecon`
 on it, and passes the *path* (not the key bytes) to the VM via
-`IAiSealInternalService.onUserUnlocking(userId, kekFilePath)`. Inside the VM the
-internal service wraps that path in an `ICEStoreKEK` binder and hands it to the
-guest agent's `userUnlocked(userId, kek)`. The guest agent calls back through
+`IAiSealInternalService.onUserUnlocking(userId, kekFilePath)`. The host-side
+`aisealhostservice`'s internal service wraps that path in an `ICEStoreKEK`
+binder and hands it to the in-VM guest agent's
+`userUnlocked(userId, kek)`. The guest agent calls back through
 `ICEStoreKEK.getKEK()` to read the key from the (host-side, CE-protected) file,
 or `onKEKCreated(key)` to write a freshly generated key back. Because the KEK
 file lives under the user's CE directory, it is only readable while that user is
@@ -6001,18 +6079,23 @@ sandboxed and the content never leaving the device.
 
 ### Exercise 51-1: Inspect AppFunction Metadata in AppSearch
 
-Use the AppSearch shell command to dump indexed app function metadata:
+AppSearch registers no shell command (`cmd appsearch` does not exist — the
+service is published as `app_search` and `AppSearchManagerService` implements
+no `onShellCommand`), so inspect the indexed metadata through the
+AppFunctions service instead:
 
 ```bash
-# List all AppSearch databases for a package
-adb shell cmd appsearch list-databases --package com.example.app
+# Dump the AppFunctions service state (includes metadata sync status)
+adb shell dumpsys app_function
 
-# Search for AppFunctionStaticMetadata documents
-adb shell cmd appsearch query \
-    --database "appfunctions-static-metadata" \
-    --query "" \
-    --schema "AppFunctionStaticMetadata"
+# List indexed app functions
+adb shell cmd app_function list-app-functions --user 0
 ```
+
+To query the raw AppSearch documents, use the platform AppSearch APIs from a
+test app with a `GlobalSearchSession`; the static AppFunction metadata lives
+in the `apps-db` database and the runtime metadata in `appfunctions-db`
+(51.2.11).
 
 ### Exercise 51-2: AppFunctionManagerService Shell Commands
 
@@ -6023,15 +6106,15 @@ The `AppFunctionManagerServiceImpl` supports shell commands for testing:
 adb shell dumpsys app_function
 
 # List valid agents
-adb shell cmd app_function list-agents
+adb shell cmd app_function list-valid-agents
 
 # List valid targets for a user
-adb shell cmd app_function list-targets --user 0
+adb shell cmd app_function list-valid-targets --user 0
 
-# Check access state
-adb shell cmd app_function get-access-state \
-    --agent com.example.agent \
-    --target com.example.target
+# Check whether a specific function is enabled
+adb shell cmd app_function is-enabled \
+    --package com.example.target \
+    --function "createNote"
 ```
 
 ### Exercise 51-3: Implement a Minimal AppFunctionService
@@ -6134,14 +6217,13 @@ if (extensions == null) {
     return;
 }
 
-ComputerControlSession.Params params = new ComputerControlSession.Params.Builder()
-        .setName("my-automation-session")
-        .setTargetPackageNames(List.of("com.example.target"))
-        .setDisplayWidthPx(1080)
-        .setDisplayHeightPx(2400)
-        .setDisplayDpi(420)
-        .setDisplaySurface(mySurface)
-        .build();
+// The builder takes a Context; there are no display-geometry setters —
+// the session display's size and density are chosen server-side (51.3.4).
+ComputerControlSession.Params params =
+        new ComputerControlSession.Params.Builder(context)
+                .setName("my-automation-session")
+                .setTargetPackageNames(List.of("com.example.target"))
+                .build();
 
 extensions.requestSession(params, executor,
         new ComputerControlSession.Callback() {
@@ -6183,8 +6265,10 @@ extensions.requestSession(params, executor,
 ### Exercise 51-6: Inspect NNAPI Devices
 
 ```bash
-# List available NNAPI accelerators
-adb shell dumpsys neuralnetworks
+# List NNAPI accelerator HAL instances (no dumpsys service exists;
+# the NNAPI runtime is an in-process library). From code, enumerate
+# devices via ANeuralNetworks_getDeviceCount / ANeuralNetworks_getDevice.
+adb shell lshal | grep neuralnetworks
 
 # Run the NNAPI sample test
 adb shell /data/local/tmp/NeuralNetworksTest_static \
@@ -6197,13 +6281,15 @@ adb shell /data/local/tmp/NeuralNetworksTest_static \
 # Check OnDeviceIntelligence service status
 adb shell dumpsys on_device_intelligence
 
-# Query the configured remote service package
-adb shell cmd on_device_intelligence get-service-package
+# Query the configured remote service components
+adb shell cmd on_device_intelligence get-services
 
-# Override the service temporarily (for testing)
-adb shell cmd on_device_intelligence set-temporary-service \
-    --component com.example.test/.TestInferenceService \
-    --duration 60000
+# Override both services temporarily (for testing) — positional args:
+# [IntelligenceServiceComponentName] [InferenceServiceComponentName] [DURATION]
+adb shell cmd on_device_intelligence set-temporary-services \
+    com.example.test/.TestIntelligenceService \
+    com.example.test/.TestInferenceService \
+    60000
 ```
 
 ### Exercise 51-8: Explore Content Capture
@@ -6215,29 +6301,30 @@ adb shell dumpsys content_capture
 # Enable content capture debugging
 adb shell settings put secure content_capture_enabled 1
 
-# View captured content for a specific package
-adb shell dumpsys content_capture --verbose --package com.example.app
+# Dump service state without session history
+# (the only dump options are --no-history and --help)
+adb shell dumpsys content_capture --no-history
 ```
 
 ### Exercise 51-9: Topics API Debugging
 
 ```bash
-# Check AdServices status
-adb shell dumpsys adservices
+# Check AdServices status (the system service is named adservices_manager)
+adb shell dumpsys adservices_manager
 
 # Force epoch computation (normally weekly)
 adb shell device_config put adservices topics_epoch_job_period_ms 60000
-
-# View classified topics
-adb shell cmd adservices topics list
 ```
+
+There is no `topics` shell command group; observe returned topics from a
+test app calling `TopicsManager.getTopics()` instead.
 
 ### Exercise 51-10: Build and Test AppFunctions
 
 ```bash
-# Build the AppFunctions framework module
+# Build the AppFunctions service library
 cd $AOSP_ROOT
-m AppFunctionManagerService
+m services.appfunctions
 
 # Run unit tests
 atest AppFunctionManagerServiceImplTest
@@ -6268,9 +6355,8 @@ public class AutomationCallback implements ComputerControlSession.Callback {
     @Override
     public void onSessionCreated(ComputerControlSession session) {
         mSession = session;
-        Log.d(TAG, "Session created with display ID: "
-                + session.getParams().getDisplayWidthPx() + "x"
-                + session.getParams().getDisplayHeightPx());
+        Size displaySize = session.getDisplaySize();
+        Log.d(TAG, "Session created with display size: " + displaySize);
 
         // Launch the target app
         session.launchApplication("com.example.target");
@@ -6373,10 +6459,10 @@ odim.listFeatures(executor, new OutcomeReceiver<>() {
 AppSearchManager appSearchManager =
         context.getSystemService(AppSearchManager.class);
 
-// Create a global search session to find app functions
+// Create a search session on the static-metadata database
+// (the database name is a constructor argument)
 AppSearchManager.SearchContext searchContext =
-        new AppSearchManager.SearchContext.Builder()
-                .setDatabaseName("appfunctions-static-metadata")
+        new AppSearchManager.SearchContext.Builder("apps-db")
                 .build();
 
 appSearchManager.createSearchSession(searchContext, executor, result -> {
@@ -6392,7 +6478,7 @@ appSearchManager.createSearchSession(searchContext, executor, result -> {
     results.getNextPage(executor, page -> {
         for (SearchResult searchResult : page.getResultValue()) {
             GenericDocument doc = searchResult.getGenericDocument();
-            String functionId = doc.getPropertyString("functionIdentifier");
+            String functionId = doc.getPropertyString("functionId");
             String packageName = doc.getNamespace();
             Log.d(TAG, "Found function: " + functionId
                     + " in package: " + packageName);
@@ -6646,10 +6732,9 @@ public void onExecuteFunction(
                     documentUri.toString())
             .build();
 
-    // Create URI grant for the caller
-    AppFunctionUriGrant uriGrant = new AppFunctionUriGrant.Builder(documentUri)
-            .setModeFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            .build();
+    // Create URI grant for the caller (plain constructor; no Builder)
+    AppFunctionUriGrant uriGrant = new AppFunctionUriGrant(
+            documentUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
 
     callback.onResult(new ExecuteAppFunctionResponse(
             result, Bundle.EMPTY, List.of(uriGrant)));
@@ -6691,11 +6776,9 @@ still go through `tap`/`swipe`/`insertText` on the session.
 # Check if the target has an AppFunctionService
 adb shell dumpsys package com.example.noteapp | grep -A5 "AppFunctionService"
 
-# Check if metadata is indexed
-adb shell cmd appsearch query \
-    --database "appfunctions-static-metadata" \
-    --query "" \
-    --namespace "com.example.noteapp"
+# Check if metadata is indexed (no cmd appsearch exists; use the
+# AppFunctions shell command instead)
+adb shell cmd app_function list-app-functions --package com.example.noteapp
 ```
 
 **Problem: Permission denied**
@@ -6704,27 +6787,24 @@ adb shell cmd appsearch query \
 adb shell dumpsys package com.example.agent | grep EXECUTE_APP_FUNCTIONS
 
 # Check if agent is in allowlist
-adb shell cmd app_function list-agents
+adb shell cmd app_function list-valid-agents
 
-# Check access state
-adb shell cmd app_function get-access-state \
-    --agent com.example.agent \
-    --target com.example.noteapp
+# Check valid targets for the agent's user
+adb shell cmd app_function list-valid-targets
 ```
 
 **Problem: Function is disabled**
 ```bash
-# Check function enabled state in AppSearch
-adb shell cmd appsearch query \
-    --database "appfunctions-runtime-metadata" \
-    --query "" \
-    --schema "AppFunctionRuntimeMetadata"
+# Check function enabled state
+adb shell cmd app_function is-enabled \
+    --package com.example.noteapp \
+    --function "createNote"
 
 # Re-enable a function
 adb shell cmd app_function set-enabled \
     --package com.example.noteapp \
     --function "createNote" \
-    --state enabled
+    --state enable
 ```
 
 **Problem: Service binding timeout**

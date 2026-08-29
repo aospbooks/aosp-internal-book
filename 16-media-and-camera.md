@@ -85,8 +85,10 @@ graph TD
 ```
 
 The diagram above captures the central insight of Android's media architecture: there are
-two parallel paths through the codec layer. The **legacy OMX path** (ACodec) dates back to
-Android 1.0 and wraps OpenMAX IL components. The **modern Codec2 path** (CCodec) was
+two parallel paths through the codec layer. The **legacy OMX path** (ACodec) wraps
+OpenMAX IL components; it dates back to the Stagefright rework of the media stack in
+Android 2.2/2.3, with ACodec itself arriving alongside MediaCodec in the Android 4.1
+era. The **modern Codec2 path** (CCodec) was
 introduced in Android 10 and is now the primary path for all Google-provided software codecs
 and most vendor hardware codecs. Both paths are abstracted behind the `MediaCodec` API, so
 applications need not know which is in use.
@@ -97,8 +99,9 @@ The media framework runs across several system processes:
 
 | Process | Service(s) | Binary |
 |---|---|---|
-| `mediaserver` | MediaPlayerService, MediaRecorderService | `/system/bin/mediaserver` |
-| `media.codec` | Codec2 component service | `/vendor/bin/hw/android.hardware.media.c2-service` |
+| `mediaserver` | MediaPlayerService (which also vends MediaRecorderClient), ResourceManagerService | `/system/bin/mediaserver` |
+| `android-hardware-media-c2-hal` | Codec2 component service (vendor) | `/vendor/bin/hw/android.hardware.media.c2-default-service` |
+| `media.swcodec` | Google software Codec2 components | `/apex/com.android.media.swcodec/bin/mediaswcodec` |
 | `media.extractor` | MediaExtractorService | `/system/bin/mediaextractor` |
 | `cameraserver` | CameraService | `/system/bin/cameraserver` |
 | `media.resource_manager` | ResourceManagerService | Part of mediaserver |
@@ -124,7 +127,7 @@ sequenceDiagram
     App->>MC: dequeueInputBuffer()
     MC-->>App: buffer index
     App->>MC: queueInputBuffer(index, data)
-    MC->>CC: onInputBufferFilled()
+    MC->>CC: queueInputBuffer() via CCodecBufferChannel
     CC->>HAL: queue(C2Work)
     HAL->>HW: Submit compressed frame
     HW-->>HAL: Decoded YUV frame
@@ -153,10 +156,10 @@ frameworks/av/
       NuMediaExtractor.cpp   # 896 lines  - extractor wrapper
       MediaExtractorFactory.cpp  # 395 lines - extractor plugin loading
     codec2/
-      components/            # 23+ software codec families
+      components/            # 21 software codec families (plus base/, cmds/, tests/)
         aac/  amr_nb_wb/  aom/  apv/  avc/  base/  dav1d/  flac/
         g711/ gav1/ gsm/ hevc/ iamf/ mp3/ mpeg2/ mpeg4_h263/
-        opus/ raw/ vorbis/ vpx/ xaac/
+        opus/ raw/ vorbis/ vpx/ xaac/ xhe_aac/
       sfplugin/              # Codec2-to-Stagefright bridge
         CCodec.cpp           # 3849 lines
         CCodecBufferChannel.cpp  # 3428 lines
@@ -199,7 +202,7 @@ system -- audio and video, encoder and decoder, hardware and software.
 The class is defined with the following factory methods:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 1214
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 1293
 // static
 sp<MediaCodec> MediaCodec::CreateByType(
         const sp<ALooper> &looper, const AString &mime, bool encoder,
@@ -275,11 +278,11 @@ stateDiagram-v2
     end note
 ```
 
-The state transitions are driven by internal message codes defined at line 862 of
+The state transitions are driven by internal message codes defined at line 912 of
 `MediaCodec.cpp`:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 862
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 912
 enum {
     kWhatFillThisBuffer      = 'fill',
     kWhatDrainThisBuffer     = 'drai',
@@ -310,12 +313,12 @@ of the Stagefright framework. These codes make debug logs human-readable: when y
 
 ### 16.2.2 MediaCodec Initialization
 
-The `init()` method (line 2531) performs the crucial step of selecting and instantiating
+The `init()` method (line 2606) performs the crucial step of selecting and instantiating
 the underlying codec implementation. It bridges between the abstract `MediaCodec` API
 and concrete codec backends:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 2531
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 2606
 status_t MediaCodec::init(const AString &name) {
     ScopedTrace trace(ATRACE_TAG, "MediaCodec::Init#native");
     status_t err = mResourceManagerProxy->init();
@@ -377,11 +380,11 @@ There are several important details here:
 
 ### 16.2.3 Configuration and Resource Management
 
-The `configure()` method (line 2856) sets up the codec with format parameters and an
+The `configure()` method (line 2997) sets up the codec with format parameters and an
 output surface:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 2856
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 2997
 status_t MediaCodec::configure(
         const sp<AMessage> &format,
         const sp<Surface> &surface,
@@ -475,8 +478,8 @@ application's visibility and importance to the user.
 
 ### 16.2.5 MediaCodec Metrics and Telemetry
 
-MediaCodec implements extensive telemetry, as evidenced by the approximately 100 metric
-key constants at the top of the file (lines 111-287). These metrics cover:
+MediaCodec implements extensive telemetry, as evidenced by the roughly 140 metric
+key constants at the top of the file (lines 111-286). These metrics cover:
 
 - **Codec identity**: name, MIME type, mode (audio/video/image), encoder/decoder,
   hardware/software, secure, tunneled
@@ -518,11 +521,11 @@ graph LR
     RO -->|"return to pool"| DTB
 ```
 
-The `BufferCallback` class (line 968) translates between the codec's internal buffer
+The `BufferCallback` class (line 1047) translates between the codec's internal buffer
 notifications and the `AMessage` events that drive MediaCodec's state machine:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 984
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 1063
 void BufferCallback::onInputBufferAvailable(
         size_t index, const sp<MediaCodecBuffer> &buffer) {
     sp<AMessage> notify(mNotify->dup());
@@ -735,7 +738,7 @@ Throughout the media framework, communication between components uses the `AMess
 This pattern appears in nearly every method of MediaCodec. For example, `start()`:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3552
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3683
 status_t MediaCodec::start() {
     ScopedTrace trace(ATRACE_TAG, "MediaCodec::start#native");
     sp<AMessage> msg = new AMessage(kWhatStart, this);
@@ -760,8 +763,8 @@ on the looper thread, ensuring thread-safe access to MediaCodec's state.
 ### 16.3.1 Architecture and Design Philosophy
 
 Codec2 (often abbreviated C2) is Android's modern codec framework, designed to replace
-the aging OMX IL interface. Located in `frameworks/av/media/codec2/`, it comprises 11
-subdirectories encompassing the core API, 23+ software codec families, a HAL layer, and
+the aging OMX IL interface. Located in `frameworks/av/media/codec2/`, it comprises 10
+subdirectories encompassing the core API, 21 software codec families, a HAL layer, and
 the `sfplugin` bridge to the Stagefright framework.
 
 ```mermaid
@@ -786,7 +789,7 @@ graph TD
     end
 
     subgraph "Software Components (components/)"
-        K["23+ codec families"]
+        K["21 codec families"]
     end
 
     A --> B
@@ -910,20 +913,23 @@ static uint32_t convertFlags(uint32_t flags, bool toC2) {
 }
 ```
 
-The `SurfaceCallbackHandler` (line 121) manages asynchronous surface buffer events:
+The `SurfaceCallbackHandler` (line 203) manages asynchronous surface buffer events:
 
 ```cpp
-// frameworks/av/media/codec2/sfplugin/CCodecBufferChannel.cpp, line 121
+// frameworks/av/media/codec2/sfplugin/CCodecBufferChannel.cpp, line 203
 class SurfaceCallbackHandler {
 public:
     enum callback_type_t {
         ON_BUFFER_RELEASED = 0,
-        ON_BUFFER_ATTACHED
+        ON_BUFFER_ATTACHED,
+        ON_BUFFER_DETACHED,
+        ON_BUFFERS_REMOVED,
     };
 
     void post(callback_type_t callback,
             std::shared_ptr<Codec2Client::Component> component,
-            uint32_t generation) {
+            uint32_t generation,
+            const std::vector<uint64_t>& removedBufferIds = {}) {
         // ...post callback to handler thread...
     }
 };
@@ -937,8 +943,10 @@ constexpr size_t kSmoothnessFactor = 4;
 const static size_t kDequeueTimeoutNs = 0;
 ```
 
-The `kSmoothnessFactor` of 4 means the buffer channel allocates 4x the minimum number
-of buffers needed, providing headroom for smooth operation under varying decode latencies.
+The `kSmoothnessFactor` of 4 is additive headroom: the buffer channel sizes its slot
+counts as the codec's declared input, pipeline, and output delays plus 4 extra slots
+(e.g. `numInputSlots = inputDelayValue + pipelineDelayValue + kSmoothnessFactor`),
+providing headroom for smooth operation under varying decode latencies.
 
 ### 16.3.4 The C2InputSurface Wrapper
 
@@ -976,13 +984,14 @@ then connects it directly to the Codec2 component. This enables zero-copy encodi
 paths where camera or GPU output is fed directly into the encoder without CPU-side
 buffer copies.
 
-### 16.3.5 Software Codec Components (23+ Families)
+### 16.3.5 Software Codec Components (21 Families)
 
 The `frameworks/av/media/codec2/components/` directory contains Google's software codec
 implementations, organized by codec family. Each component follows the naming convention
 `c2.android.<codec>.<encoder|decoder>`.
 
-The full set of 23+ component families:
+The full set of 21 component families, plus the shared `base/` classes they all build on
+(the directory also holds `cmds/` and `tests/`, which contain tooling rather than codecs):
 
 | Directory | Codec(s) | Type | Source Files |
 |---|---|---|---|
@@ -1006,6 +1015,7 @@ The full set of 23+ component families:
 | `vorbis/` | Vorbis | Audio Dec | `C2SoftVorbisDec.cpp` |
 | `vpx/` | VP8, VP9 | Video Dec+Enc | `C2SoftVpxDec.cpp`, `C2SoftVp8Enc.cpp`, `C2SoftVp9Enc.cpp` |
 | `xaac/` | xHE-AAC | Audio Dec | `C2SoftXaacDec.cpp` |
+| `xhe_aac/` | xHE-AAC | Audio Enc | `C2SoftXheAacEnc.cpp` |
 | `base/` | (Base classes) | Utility | `SimpleC2Component.cpp`, `SimpleC2Interface.cpp` |
 
 Notable observations:
@@ -1145,7 +1155,7 @@ graph TD
     C2SP --> Ex2["C2StreamFrameRateInfo"]
     C2SP --> Ex3["C2StreamProfileLevelInfo"]
     C2PP --> Ex4["C2PortActualDelayTuning"]
-    C2PP --> Ex5["C2PortBlockSizeTuning"]
+    C2PP --> Ex5["C2PortRequestedDelayTuning"]
     C2GP --> Ex6["C2ComponentNameSetting"]
 ```
 
@@ -1178,8 +1188,8 @@ The fundamental unit of processing in Codec2 is the `C2Work` structure:
 ```mermaid
 graph TD
     W["C2Work"]
-    W --> WI["C2WorkInput<br/>- ordinal (timestamp, frameIndex)<br/>- buffers (input data)<br/>- flags"]
-    W --> WL["C2WorkletList"]
+    W --> WI["C2FrameData input<br/>- ordinal (timestamp, frameIndex)<br/>- buffers (input data)<br/>- flags"]
+    W --> WL["std::list&lt;C2Worklet&gt; worklets"]
     WL --> WK["C2Worklet<br/>- output (C2FrameData)<br/>- failures"]
     WK --> FD["C2FrameData<br/>- ordinal<br/>- buffers (output data)<br/>- configUpdate"]
 ```
@@ -1192,9 +1202,9 @@ buffer-matching logic required by OMX.
 
 ### 16.3.12 APV: The Advanced Professional Video Codec
 
-Android 17 adds a software codec for APV (Advanced Professional Video), the intra-only
-mezzanine codec that Samsung contributed and that the Alliance for Open Media has since
-adopted. APV targets professional capture and editing workflows where every frame is a
+Android 16 (Baklava, API 36) added a software codec for APV (Advanced Professional
+Video), the intra-only mezzanine codec that Samsung contributed and that the Alliance for
+Open Media has since adopted; the 17 cycle has continued to extend it. APV targets professional capture and editing workflows where every frame is a
 keyframe: there is no inter-frame prediction, so each picture is independently decodable,
 which makes scrubbing, trimming, and frame-accurate editing cheap at the cost of a much
 higher bitrate. The Codec2 component lives in `frameworks/av/media/codec2/components/apv/`
@@ -1215,9 +1225,10 @@ constexpr uint32_t kDefaultOutputDelay = 8;
 constexpr char COMPONENT_NAME[] = "c2.android.apv.encoder";
 ```
 
-The decoder declares a single supported profile, the 4:2:2 10-bit profile
+The encoder declares a single supported profile, the 4:2:2 10-bit profile
 (`C2Config::PROFILE_APV_422_10`), reflecting APV's positioning as a high-fidelity capture
-format rather than a delivery format:
+format rather than a delivery format (the decoder makes the matching declaration as a
+`C2StreamProfileLevelInfo::input` parameter in `C2SoftApvDec.cpp`, lines 88-92):
 
 ```cpp
 // frameworks/av/media/codec2/components/apv/C2SoftApvEnc.cpp, line 119
@@ -1268,13 +1279,18 @@ Two things stand out in that declaration. The `enabled="false"` default means a 
 ships APV support only if its codec list overlay turns it on; APV is opt-in rather than
 universal. And the `variant="!slow-cpu"` attribute excludes low-end CPUs, because
 software-decoding a 10-bit 4:2:2 intra-only stream at the bitrates APV uses (up to
-240 Mbit/s in the limit above) is expensive. The `apv_software_codec_cq` flag adds a
-constant-quality rate-control mode for the encoder.
+240 Mbit/s in the limit above) is expensive. The `minsdk="36"` attribute is the clearest
+marker of when the codec arrived: APV shipped with Android 16, not with 17. What the 17
+cycle adds is the `apv_software_codec_cq` flag, a constant-quality rate-control mode for
+the encoder, which is why the encoder's codec-list entry now carries a
+`<Limit name="quality" range="0-100" default="90" />` where Android 16 declared only
+VBR bitrate modes.
 
 ### 16.3.13 IAMF: Immersive Audio Decoding
 
-The second new Codec2 family in Android 17 is a decoder for IAMF, the Alliance for Open
-Media's Immersive Audio Model and Formats standard. IAMF describes scene-based and
+The other recently added Codec2 family, also introduced in Android 16 (API 36), is a
+decoder for IAMF, the Alliance for Open Media's Immersive Audio Model and Formats
+standard. IAMF describes scene-based and
 channel-based immersive audio (think Dolby-Atmos-style object/bed mixes, but royalty
 free) as a tree of "audio elements" and "mix presentations" carried in OBUs (Open
 Bitstream Units, the same container concept AV1 uses). The component lives in
@@ -1335,6 +1351,11 @@ support and IAMF profile limits inline:
 </MediaCodec>
 ```
 
+The `minsdk="36"` again dates the component to Android 16. The visible 17-cycle change
+here is the dropped `variant="!slow-cpu"` attribute: Android 16 excluded low-end CPUs
+from the IAMF decoder, and the entry no longer does, so the decoder is now offered on
+every device that enables it.
+
 The XML comments track real implementation limits: at this stage the decoder handles
 the Opus and PCM substream codecs, and the `iamf_aac_flac` flag in
 `swcodec_flags.aconfig` is the gate for extending it to AAC and FLAC substreams. The
@@ -1368,8 +1389,13 @@ The module lives in `frameworks/av/media/module/libapexcodecs/`, and its public 
 As the comment says, the `ApexCodec_*` types deliberately mirror the Codec2 vocabulary
 (`ApexCodec_Status`, `ApexCodec_Configurable`, linear/graphic buffers, supported-values
 queries), so the same parameter and buffer model carries over without a HAL hop. The
-codec implementations are thin C2-to-ApexCodec adapters: `C2ApexAacDec` and
-`C2ApexOpusDec` in the same directory wrap the existing AAC and Opus software decoders.
+codec implementations are thin C2-to-ApexCodec adapters, but the two that ship wrap very
+different back ends. `C2ApexOpusDec` wraps the existing libopus decoder, built for this
+path as `libopus_lfi` (`external/libopus/Android.bp`, line 426). `C2ApexAacDec` instead
+wraps a *new* Rust AAC decoder: `frameworks/av/media/module/libapexcodecs/Android.bp`
+(lines 108-113) statically links `libaac` and `libaac_ffi`, and `external/aac/rust/Android.bp`
+defines `libaac` as a `rust_ffi_static` crate. That is why its gating flag is named
+`rust_aac_software_decoder` rather than something codec-generic.
 
 Which codecs are eligible is decided at runtime in `ApexCodecsStoreImpl.cpp`, gated by
 flags and platform constraints:
@@ -1402,8 +1428,10 @@ The gating is conservative: the in-process Opus decoder is admitted only on 64-b
 `frameworks/av/media/aconfig/codec_fwk.aconfig`) control whether `MediaCodecList` and the
 Codec2 client (`frameworks/av/media/codec2/hal/client/client.cpp`) advertise and route to
 the in-process variant at all. `frameworks/av/media/libstagefright/MediaCodecList.cpp` and
-`frameworks/av/media/libmedia/MediaCodecInfo.cpp` carry the `in_process_sw_audio_codec_support()`
-checks that decide which list a given component lands in.
+`frameworks/av/media/codec2/hal/client/client.cpp` carry the `in_process_sw_audio_codec_support()`
+checks that decide which list a given component lands in
+(`frameworks/av/media/libmedia/MediaCodecInfo.cpp` checks the related
+`in_process_sw_codec_lfi()` flag instead).
 
 Running a codec inside the client process re-opens the security question that the HAL
 process was originally meant to answer, so Android 17 pairs the in-process path with a
@@ -1559,9 +1587,12 @@ for (const sp<Client> &c : clients) {
 
 ### 16.4.2 NuPlayer: The Default Media Player
 
-NuPlayer is the default `MediaPlayerBase` implementation used for all local and streaming
-media playback. Located in `frameworks/av/media/libmediaplayerservice/nuplayer/`, it
-comprises multiple source files totaling over 8,000 lines:
+NuPlayer is the engine behind the default player used for all local and streaming
+media playback. The `MediaPlayerBase`/`MediaPlayerInterface` implementation that
+MediaPlayerService actually instantiates is `NuPlayerDriver`; NuPlayer itself is an
+`AHandler` driven by it. Located in
+`frameworks/av/media/libmediaplayerservice/nuplayer/`, the player comprises multiple
+source files totaling over 8,000 lines:
 
 | File | Lines | Purpose |
 |---|---|---|
@@ -1946,8 +1977,7 @@ CameraService::CameraService(
         mNumberOfCameras(0),
         mNumberOfCamerasWithoutSystemCamera(0),
         mSoundRef(0), mInitialized(false),
-        mAudioRestriction(
-            hardware::camera2::ICameraDeviceUser::AUDIO_RESTRICTION_NONE) {
+        mAudioRestriction(ICameraDeviceUser::AudioRestriction::NONE) {
     ALOGI("CameraService started (pid=%d)", getpid());
 }
 ```
@@ -2168,19 +2198,19 @@ auto [deviceId, mappedCameraId] =
 ### 16.5.6 Camera NDK
 
 The Camera NDK (Native Development Kit) provides C APIs for camera access from native
-code, used by game engines and cross-platform frameworks. It wraps the Camera2 API
-through JNI:
+code, used by game engines and cross-platform frameworks. It is not a JNI wrapper
+around the Java Camera2 API: `libcamera2ndk` (`frameworks/av/camera/ndk/`) is a native
+client that obtains the `hardware::ICameraService` binder interface directly (the same
+interface the Java API uses) and talks to CameraService over Binder:
 
 ```mermaid
 graph LR
     NDK["NDK Camera API<br/>(ACameraManager, ACaptureRequest)"]
-    JNI["JNI Bridge"]
-    Java["Camera2 Java API"]
+    ICS["hardware::ICameraService<br/>(Binder)"]
     CS["CameraService"]
 
-    NDK --> JNI
-    JNI --> Java
-    Java --> CS
+    NDK --> ICS
+    ICS --> CS
 ```
 
 The NDK camera APIs include:
@@ -2644,7 +2674,7 @@ graph TD
     MCL --> MCI
     MCI --> VC
     MCI --> AC
-    MP --> MCL
+    MP --> SR["StagefrightRecorder<br/>(recording configuration)"]
     MCL --> FMC
     FMC --> Rank
 ```
@@ -2668,7 +2698,7 @@ The codec capability system supports feature flags that indicate optional capabi
 | `multiple-frames` | Supports batching multiple frames per buffer |
 | `partial-frame` | Supports partial frame input |
 | `frame-parsing` | Supports frame boundary detection |
-| `dynamic-timestamp` | Supports changing timestamps during encoding |
+| `dynamic-timestamp` | Output buffer timestamps derive from the input buffer that produced them, not from the first input buffer |
 
 These features are declared in `media_codecs.xml` and queried through
 `MediaCodecInfo.CodecCapabilities.isFeatureSupported()`.
@@ -2702,7 +2732,7 @@ graph LR
     end
 
     subgraph "ALooper Thread"
-        Q["Message Queue<br/>(priority-ordered)"]
+        Q["Message Queue<br/>(time-ordered by whenUs)"]
         DISP["Dispatch Loop"]
         H1["Handler A<br/>onMessageReceived()"]
         H2["Handler B<br/>onMessageReceived()"]
@@ -2765,13 +2795,15 @@ MediaCodec classifies codecs into three domains, each with different behavior:
 | Domain | Looper | CPU Boost | Battery | Resource Type |
 |---|---|---|---|---|
 | `DOMAIN_VIDEO` | Dedicated `CodecLooper` | HDR at 1080p+ | Tracked | HW/SW Video Codec |
-| `DOMAIN_AUDIO` | Shared main looper | Never | Tracked | HW/SW Audio Codec |
+| `DOMAIN_AUDIO` | Shared main looper | Never | Not tracked | HW/SW Audio Codec |
 | `DOMAIN_IMAGE` | Shared main looper | Never | Not tracked | HW/SW Image Codec |
 
 Video codecs get a dedicated looper thread because video processing is latency-
 sensitive: a stall in the codec's message processing would directly cause frame
 drops. Audio and image codecs share the main looper because their timing
-requirements are less stringent.
+requirements are less stringent. Battery tracking is likewise video-only: the
+`BatteryChecker` is instantiated only when `mDomain == DOMAIN_VIDEO`, and every
+call site is null-guarded, so audio and image codecs never report battery activity.
 
 ### 16.8.3 Secure Codec Path (DRM)
 
@@ -2862,7 +2894,7 @@ internal buffering:
 ```
 kCodecNumLowLatencyModeOn    - Times low-latency was enabled
 kCodecNumLowLatencyModeOff   - Times low-latency was disabled
-kCodecFirstFrameIndexLowLatencyOn - Frame index when first enabled
+kCodecFirstFrameIndexLowLatencyModeOn - Frame index when first enabled
 ```
 
 When low-latency mode is active:
@@ -2924,12 +2956,12 @@ graph TD
 
     subgraph "mediaserver"
         MPS["MediaPlayerService"]
-        MRS["MediaRecorderService"]
+        MRS["MediaRecorderClient /<br/>StagefrightRecorder"]
         RMS["ResourceManagerService"]
         NP2["NuPlayer"]
     end
 
-    subgraph "media.codec (vendor)"
+    subgraph "vendor codec service"
         C2HAL["Codec2 AIDL HAL"]
         VENDOR["Vendor Codec Plugins"]
     end
@@ -2941,6 +2973,9 @@ graph TD
 
     subgraph "cameraserver"
         CAMSVC["CameraService"]
+    end
+
+    subgraph "camera provider (vendor)"
         CAMHAL["Camera HAL"]
     end
 
@@ -2955,6 +2990,7 @@ graph TD
     JNI -->|"AIDL"| C2HAL
 
     MPS --> NP2
+    MPS --> MRS
     NP2 -->|"Binder"| EXTSVC
     NP2 -->|"AIDL"| C2HAL
 
@@ -2972,7 +3008,7 @@ graph TD
 Each process boundary represents a security isolation boundary:
 
 - **App to mediaserver**: Binder IPC with UID/PID verification
-- **mediaserver to media.codec**: AIDL HAL with SELinux policy
+- **mediaserver to the vendor codec service**: AIDL HAL with SELinux policy
 - **mediaserver to media.extractor**: Binder IPC, sandboxed process
 - **App to cameraserver**: Binder IPC with camera permission check
 - **cameraserver to Camera HAL**: AIDL/HIDL with vendor isolation
@@ -3008,19 +3044,19 @@ All metrics keys are prefixed with `android.media.mediacodec.`:
 | Identity | `tunneled` | int32 | 0=normal, 1=tunneled |
 | Resolution | `width` | int32 | Video width |
 | Resolution | `height` | int32 | Video height |
-| Resolution | `rotation` | int32 | 0/90/180/270 |
-| Performance | `frame-rate` | int32 | Frame rate |
-| Performance | `operating-rate` | int32 | Operating rate |
+| Resolution | `rotation-degrees` | int32 | 0/90/180/270 |
+| Performance | `frame-rate` | double | Frame rate |
+| Performance | `operating-rate` | double | Operating rate |
 | Performance | `bitrate` | int32 | Bitrate |
 | Performance | `bitrate_mode` | string | CQ/VBR/CBR |
 | Latency | `latency.max` | int64 | Max latency (us) |
 | Latency | `latency.min` | int64 | Min latency (us) |
 | Latency | `latency.avg` | int64 | Avg latency (us) |
-| Latency | `latency.n` | int32 | Sample count |
-| Quality | `freeze-count` | int32 | Freeze events |
-| Quality | `freeze-score` | double | Freeze severity |
-| Quality | `judder-count` | int32 | Judder events |
-| Quality | `judder-score` | double | Judder severity |
+| Latency | `latency.n` | int64 | Sample count |
+| Quality | `freeze-count` | int64 | Freeze events |
+| Quality | `freeze-score` | int64 | Freeze severity |
+| Quality | `judder-count` | int64 | Judder events |
+| Quality | `judder-score` | int64 | Judder severity |
 | Render | `frames-released` | int64 | Total released |
 | Render | `frames-rendered` | int64 | Actually displayed |
 | Render | `frames-dropped` | int64 | Dropped (late) |
@@ -3037,7 +3073,7 @@ To fully understand MediaCodec, we must trace a buffer through every stage. The
 #### Input Buffer Queuing
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3690
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3831
 status_t MediaCodec::queueInputBuffer(
         size_t index,
         size_t offset,
@@ -3068,8 +3104,10 @@ The parameters are:
 - **offset**: Byte offset within the buffer where valid data starts
 - **size**: Number of valid data bytes
 - **presentationTimeUs**: The presentation timestamp in microseconds
-- **flags**: Bitfield including `BUFFER_FLAG_CODEC_CONFIG`, `BUFFER_FLAG_END_OF_STREAM`,
-  `BUFFER_FLAG_KEY_FRAME`, `BUFFER_FLAG_DECODE_ONLY`
+- **flags**: Bitfield including `BUFFER_FLAG_CODECCONFIG`, `BUFFER_FLAG_EOS`,
+  `BUFFER_FLAG_SYNCFRAME`, `BUFFER_FLAG_DECODE_ONLY` (the Java API exposes the
+  same bits under longer names such as `BUFFER_FLAG_CODEC_CONFIG` and
+  `BUFFER_FLAG_END_OF_STREAM`)
 
 #### Large Frame Audio (Multi-Access-Unit Buffers)
 
@@ -3077,7 +3115,7 @@ A newer API supports queuing multiple access units in a single buffer, which is
 particularly important for large-frame audio codecs:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3713
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3854
 status_t MediaCodec::queueInputBuffers(
         size_t index,
         size_t offset,
@@ -3119,7 +3157,7 @@ ANY access unit has them (via the OR operation). The expression
 For DRM-protected content, the secure queuing path includes encryption metadata:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3757
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3898
 status_t MediaCodec::queueSecureInputBuffer(
         size_t index,
         size_t offset,
@@ -3152,7 +3190,7 @@ encrypted and clear blocks.
 For Codec2 components, there is a direct path that avoids legacy buffer conversion:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3847
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3988
 status_t MediaCodec::queueBuffer(
         size_t index,
         const std::shared_ptr<C2Buffer> &buffer,
@@ -3181,7 +3219,7 @@ can change encoder parameters (like bitrate) on a per-frame basis.
 The `dequeueOutputBuffer` method returns decoded data:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3939
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4080
 status_t MediaCodec::dequeueOutputBuffer(
         size_t *index,
         size_t *offset,
@@ -3222,7 +3260,7 @@ The output returns five pieces of information:
 Decoded buffers can be rendered to a surface or simply released:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 3965
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4106
 status_t MediaCodec::renderOutputBufferAndRelease(size_t index) {
     ScopedTrace(ATRACE_TAG, "MediaCodec::renderOutputBufferAndRelease#native");
     sp<AMessage> msg = new AMessage(kWhatReleaseOutputBuffer, this);
@@ -3260,11 +3298,11 @@ frame pacing for smooth video playback.
 
 ### 16.8.12 The onMessageReceived Handler
 
-The central message dispatcher (line 4469) is the heart of MediaCodec's asynchronous
+The central message dispatcher (line 4610) is the heart of MediaCodec's asynchronous
 architecture. It processes all state transitions and buffer flow:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4469
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4610
 void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
     switch (msg->what()) {
         case kWhatCodecNotify:
@@ -3299,7 +3337,7 @@ triggering special recovery logic that attempts to reconnect with the codec serv
 MediaCodec integrates with Android's battery tracking system through `BatteryChecker`:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4256
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4397
 BatteryChecker::BatteryChecker(const sp<AMessage> &msg, int64_t timeoutUs)
     : mTimeoutUs(timeoutUs)
     , mLastActivityTimeUs(-1ll)
@@ -3333,7 +3371,7 @@ by codecs that are configured but not actively processing data.
 Additionally, HDR content at high resolutions triggers a CPU boost request:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4230
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4371
 void MediaCodec::requestCpuBoostIfNeeded() {
     if (mCpuBoostRequested) {
         return;
@@ -3371,7 +3409,7 @@ tone-mapping operation required for HDR-to-SDR conversion is computationally exp
 MediaCodec exposes vendor-specific parameters through a discovery and subscription API:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4208
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4349
 status_t MediaCodec::querySupportedVendorParameters(
         std::vector<std::string> *names) {
     return mCodec->querySupportedParameters(names);
@@ -3405,7 +3443,7 @@ The internal `handleDequeueOutputBuffer` method reveals the complexity of synchr
 buffer management:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4371
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 4512
 MediaCodec::DequeueOutputResult MediaCodec::handleDequeueOutputBuffer(
         const sp<AReplyToken> &replyID, bool newRequest) {
     if (!isExecuting()) {
@@ -3482,7 +3520,7 @@ When a codec needs to flush or release while holding buffered frames, MediaCodec
 creates a temporary `ReleaseSurface` to drain those buffers:
 
 ```cpp
-// frameworks/av/media/libstagefright/MediaCodec.cpp, line 784
+// frameworks/av/media/libstagefright/MediaCodec.cpp, line 834
 class MediaCodec::ReleaseSurface {
     public:
         explicit ReleaseSurface(uint64_t usage) {
@@ -3589,7 +3627,7 @@ provides:
 
 1. **Thread management**: A work processing thread that dequeues `C2Work` items
 2. **Buffer pool management**: Integration with the Codec2 buffer allocator system
-3. **Standard lifecycle**: `start()`, `stop()`, `flush()`, `reset()`, `release()`
+3. **Standard lifecycle**: `start()`, `stop()`, `flush_sm()`, `reset()`, `release()`
 4. **Error propagation**: Mapping from codec-specific errors to `c2_status_t`
 
 The `SimpleInterface` companion class provides the `IntfImpl` pattern for parameter
@@ -3598,12 +3636,12 @@ declaration:
 ```mermaid
 classDiagram
     class SimpleC2Component {
-        #process(C2Work*, FlushedWork*)
-        #drain(drain_mode_t, C2Work*)
+        #process(C2Work, C2BlockPool)
+        #drain(drainMode, C2BlockPool)
         +start()
         +stop()
-        +flush()
-        +queue(C2WorkList*)
+        +flush_sm()
+        +queue_nb(list~C2Work~)
     }
 
     class SimpleInterface {
@@ -3613,13 +3651,13 @@ classDiagram
 
     class C2SoftAvcDec {
         -IntfImpl mIntf
-        #process(C2Work*, FlushedWork*)
-        #drain(drain_mode_t, C2Work*)
+        #process(C2Work, C2BlockPool)
+        #drain(drainMode, C2BlockPool)
     }
 
     class C2SoftHevcDec {
         -IntfImpl mIntf
-        #process(C2Work*, FlushedWork*)
+        #process(C2Work, C2BlockPool)
     }
 
     SimpleC2Component <|-- C2SoftAvcDec
@@ -3783,8 +3821,8 @@ The device3 directory includes several specialized stream types:
 ```mermaid
 classDiagram
     class Camera3Stream {
-        +start()
-        +stop()
+        +startConfiguration()
+        +finishConfiguration()
         +getBuffer()
         +returnBuffer()
     }
@@ -3800,9 +3838,10 @@ classDiagram
     }
 
     class Camera3SharedOutputStream {
-        -Vector~sp~Surface~~ mSurfaces
-        +attachSurface()
-        +detachSurface()
+        -array~SurfaceHolderUniqueId~ mSurfaceUniqueIds
+        +setConsumers()
+        +updateStream()
+        +getSurfaceId()
     }
 
     Camera3Stream <|-- Camera3OutputStream
@@ -3870,26 +3909,34 @@ is one of the most exploited attack surfaces:
 graph TD
     subgraph "App Process"
         MP["MediaPlayer"]
-        MR["MediaRecorder"]
+        NME["NuMediaExtractor<br/>(NDK/Java MediaExtractor)"]
     end
 
     subgraph "MediaServer Process"
-        NP["NuPlayer"]
-        NME["NuMediaExtractor"]
+        NP["NuPlayer<br/>(GenericSource)"]
     end
 
     subgraph "Extractor Process (sandboxed)"
-        MEF["MediaExtractorFactory"]
+        MEF["IMediaExtractorService /<br/>MediaExtractorFactory"]
         EP["Extractor Plugins<br/>(loaded as .so)"]
     end
 
     MP --> NP
-    NP --> NME
+    NP -->|"Binder IPC"| MEF
     NME -->|"Binder IPC"| MEF
     MEF --> EP
 
     style EP fill:#ffcdd2
 ```
+
+NuPlayer's `GenericSource` reaches the sandboxed extractor process directly: it
+obtains the `media.extractor` binder service, casts it to `IMediaExtractorService`,
+and calls `makeIDataSource()`
+(`frameworks/av/media/libmediaplayerservice/nuplayer/GenericSource.cpp`), while
+`MediaExtractorFactory` calls `makeExtractor()` over the same interface. The
+`NuMediaExtractor` class is not part of NuPlayer's pipeline; it backs the NDK and
+Java `MediaExtractor` APIs in the application process and crosses the same Binder
+boundary to the extractor service.
 
 The extractor process has:
 
@@ -3917,8 +3964,10 @@ sequenceDiagram
     participant DL as dlopen/dlsym
 
     Boot->>MES: Start extractor service
-    MES->>MEF: RegisterDefaultPlugins()
+    MES->>MEF: LoadExtractors()
+    MEF->>DL: Scan /apex/com.android.media/lib64/extractors/
     MEF->>DL: Scan /system/lib64/extractors/
+    MEF->>DL: Scan /system_ext/lib64/extractors/
     DL-->>MEF: libmp4extractor.so
     DL-->>MEF: libmkvextractor.so
     DL-->>MEF: libmp3extractor.so
@@ -3938,6 +3987,10 @@ sequenceDiagram
     MEF->>MEF: Register in plugin list
 ```
 
+`MediaExtractorFactory::LoadExtractors()` calls the internal `RegisterExtractors()`
+once per plugin directory, scanning the media APEX path first (inside the
+`com_android_media` linker namespace) and then the `/system` and `/system_ext`
+locations — on current builds the extractors ship in the `com.android.media` APEX.
 Each extractor shared library exports a single symbol `GETEXTRACTORDEF` that returns
 an `ExtractorDef` structure containing:
 
@@ -4206,14 +4259,17 @@ The dump output categorizes codecs by media type. For example, under
 ```
   Decoder "c2.android.avc.decoder" supports
     aliases: []
-    attributes: 0x0
+    attributes: 0x4
       encoder: 0, vendor: 0, software-only: 1, hw-accelerated: 0
     owner: "codec2::software"
     rank: 512
 ```
 
 The rank value determines codec priority: lower rank means higher priority. Hardware
-codecs typically have rank 0-256, while software codecs have rank 512+.
+codec ranks come from the device's `media_codecs.xml`; the platform's software
+codecs default to rank 512 for video and image components but rank 8 for audio
+components (`frameworks/av/media/codec2/vndk/C2Store.cpp`), so software audio
+codecs often outrank hardware alternatives.
 
 ### 16.9.2 Trace a Video Decode Session
 
@@ -4322,7 +4378,7 @@ for (MediaCodecInfo info : codecList.getCodecInfos()) {
 
                 // Check if 4K@60fps is supported
                 boolean supports4K60 =
-                    vcaps.areSizeAndRateSupported(3840, 2160, 62.0);
+                    vcaps.areSizeAndRateSupported(3840, 2160, 60.0);
 
                 Log.d("Codec", info.getName() + ": " + type
                     + " widths=" + widths + " heights=" + heights
@@ -4350,16 +4406,19 @@ mm
 ### 16.9.8 Examine Codec HAL Services
 
 ```bash
-# List running Codec2 HAL services
-adb shell lshal | grep c2
+# List running Codec2 HAL services (AIDL)
+adb shell dumpsys -l | grep c2
 
 # Typical output:
-# android.hardware.media.c2@1.0::IComponentStore/software
-# android.hardware.media.c2@1.0::IComponentStore/default
+# android.hardware.media.c2.IComponentStore/software
+# android.hardware.media.c2.IComponentStore/default
 ```
 
 The "software" store provides Google's software codecs, while "default" is typically the
-vendor's hardware codec store.
+vendor's hardware codec store. On current builds the stores are registered as AIDL
+services (the software store's HIDL wrapper is deprecated and skipped unless declared
+in the VINTF manifest), so `adb shell lshal | grep c2` shows a
+`android.hardware.media.c2@1.x::IComponentStore` entry only on legacy HIDL devices.
 
 ### 16.9.9 Trigger Codec Reclamation
 
@@ -4506,7 +4565,7 @@ In the resulting trace, key spans to look for:
 | `MediaCodec::start#native` | MediaCodec | Start latency |
 | `MediaCodec::queueInputBuffer#native` | MediaCodec | Input queue time |
 | `MediaCodec::dequeueOutputBuffer#native` | MediaCodec | Output dequeue time |
-| `CCodec::onWorkDone` | CCodec | HAL processing complete |
+| `CCodec::msg-onWorkDone` | CCodec | HAL processing complete |
 | `queueBuffer` | SurfaceFlinger | Frame submitted to compositor |
 | `onMessageReceived` | NuPlayer | Player message processing |
 
@@ -4570,11 +4629,11 @@ correlation of logs, metrics, and resource manager entries across the system.
 | File | Path | Lines |
 |---|---|---|
 | MediaCodec.cpp | `frameworks/av/media/libstagefright/MediaCodec.cpp` | 8,234 |
-| ACodec.cpp | `frameworks/av/media/libstagefright/ACodec.cpp` | 9,459 |
+| ACodec.cpp | `frameworks/av/media/libstagefright/ACodec.cpp` | 9,458 |
 | MPEG4Writer.cpp | `frameworks/av/media/libstagefright/MPEG4Writer.cpp` | 6,070 |
 | CCodec.cpp | `frameworks/av/media/codec2/sfplugin/CCodec.cpp` | 3,849 |
 | CCodecBufferChannel.cpp | `frameworks/av/media/codec2/sfplugin/CCodecBufferChannel.cpp` | 3,428 |
-| MediaPlayerService.cpp | `frameworks/av/media/libmediaplayerservice/MediaPlayerService.cpp` | 3,111 |
+| MediaPlayerService.cpp | `frameworks/av/media/libmediaplayerservice/MediaPlayerService.cpp` | 3,114 |
 | StagefrightRecorder.cpp | `frameworks/av/media/libmediaplayerservice/StagefrightRecorder.cpp` | 2,759 |
 | NuPlayer.cpp | `frameworks/av/media/libmediaplayerservice/nuplayer/NuPlayer.cpp` | 3,265 |
 | NuPlayerRenderer.cpp | `frameworks/av/media/libmediaplayerservice/nuplayer/NuPlayerRenderer.cpp` | 2,239 |
@@ -4582,7 +4641,7 @@ correlation of logs, metrics, and resource manager entries across the system.
 | NuMediaExtractor.cpp | `frameworks/av/media/libstagefright/NuMediaExtractor.cpp` | 896 |
 | MediaExtractorFactory.cpp | `frameworks/av/media/libstagefright/MediaExtractorFactory.cpp` | 395 |
 | VideoCapabilities.cpp | `frameworks/av/media/libmedia/VideoCapabilities.cpp` | 1,966 |
-| MediaProfiles.cpp | `frameworks/av/media/libmedia/MediaProfiles.cpp` | 1,512 |
+| MediaProfiles.cpp | `frameworks/av/media/libmedia/MediaProfiles.cpp` | 1,521 |
 
 ---
 
@@ -4594,11 +4653,11 @@ lines of core C++ code across five major subsystems:
 1. **MediaCodec** (8,234 lines) provides the central state machine and API surface,
    with sophisticated resource management, metrics collection, and retry logic.
 
-2. **ACodec** (9,459 lines) bridges to legacy OMX codecs, while **CCodec** (3,849
+2. **ACodec** (9,458 lines) bridges to legacy OMX codecs, while **CCodec** (3,849
    lines) bridges to the modern Codec2 framework with its typed parameter system,
-   work-based processing model, and 23+ software codec families.
+   work-based processing model, and 21 software codec families.
 
-3. **MediaPlayerService** (3,111 lines) and **NuPlayer** (3,265+ lines) orchestrate
+3. **MediaPlayerService** (3,114 lines) and **NuPlayer** (3,265+ lines) orchestrate
    the complete playback pipeline from extraction through decoding to synchronized
    audio/video rendering.
 
@@ -4608,7 +4667,7 @@ lines of core C++ code across five major subsystems:
 
 5. **Media Extractors** provide container parsing with security isolation (running in
    a separate process), while **VideoCapabilities** (1,966 lines) and
-   **MediaProfiles** (1,512 lines) describe what the hardware can do.
+   **MediaProfiles** (1,521 lines) describe what the hardware can do.
 
 The evolution from OMX to Codec2 represents the most significant architectural shift
 in Android media in the past decade, bringing type safety, better buffer management,
