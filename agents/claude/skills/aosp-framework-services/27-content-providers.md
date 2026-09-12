@@ -769,8 +769,8 @@ meaning it can be updated independently of the base system.
 packages/providers/MediaProvider/src/com/android/providers/media/MediaProvider.java
 ```
 
-At over 13,600 lines, `MediaProvider.java` is one of the largest single source
-files in AOSP.  It extends `ContentProvider` directly:
+`MediaProvider.java` is one of the largest single source files in AOSP.
+It extends `ContentProvider` directly:
 
 ```java
 // packages/providers/MediaProvider/.../MediaProvider.java (line 417)
@@ -3596,7 +3596,7 @@ foundations to its concrete implementations.  The key takeaways:
    provides efficient, URI-scoped change notifications that drive reactive
    UI patterns through `CursorLoader` and similar constructs.
 
-5. **System providers are highly specialized** -- MediaProvider (13,000+ lines),
+5. **System providers are highly specialized** -- MediaProvider,
    ContactsProvider (three-tier aggregation model), CalendarProvider (recurrence
    expansion), and SettingsProvider (call-based fast path with generation
    tracking) each solve distinct domain problems while sharing the common
@@ -3617,16 +3617,16 @@ foundations to its concrete implementations.  The key takeaways:
 
 | File | Description |
 |------|-------------|
-| `frameworks/base/core/java/android/content/ContentProvider.java` | Abstract base class (3,019 lines) |
-| `frameworks/base/core/java/android/content/ContentResolver.java` | Client-side facade (4,369 lines) |
-| `frameworks/base/core/java/android/content/ContentProviderNative.java` | Binder stub (976 lines) |
-| `frameworks/base/core/java/android/content/ContentProviderClient.java` | Per-authority client with ANR detection (908 lines) |
+| `frameworks/base/core/java/android/content/ContentProvider.java` | Abstract base class |
+| `frameworks/base/core/java/android/content/ContentResolver.java` | Client-side facade |
+| `frameworks/base/core/java/android/content/ContentProviderNative.java` | Binder stub |
+| `frameworks/base/core/java/android/content/ContentProviderClient.java` | Per-authority client with ANR detection |
 | `frameworks/base/core/java/android/content/IContentProvider.java` | IPC interface |
 | `frameworks/base/core/java/android/database/ContentObserver.java` | Change observer |
 | `frameworks/base/core/java/android/database/CursorWindow.java` | Shared-memory cursor window |
 | `frameworks/base/core/java/android/provider/DocumentsProvider.java` | SAF base class |
 | `frameworks/base/core/java/android/provider/DocumentsContract.java` | SAF contract constants |
-| `packages/providers/MediaProvider/src/.../MediaProvider.java` | MediaStore implementation (13,610 lines) |
+| `packages/providers/MediaProvider/src/.../MediaProvider.java` | MediaStore implementation |
 | `packages/providers/MediaProvider/src/.../LocalUriMatcher.java` | Media URI routing |
 | `packages/providers/MediaProvider/src/.../MediaVolume.java` | Volume representation |
 | `packages/providers/MediaProvider/src/.../scan/ModernMediaScanner.java` | Media file scanner |

@@ -352,8 +352,8 @@ organized into the following structure:
 | `Tracing/` | Perfetto integration for layer and transaction tracing |
 | `Utils/` | Shared utilities (fences, dumpers) |
 
-The main implementation spans over **10,600 lines** in `SurfaceFlinger.cpp`
-alone. The header at `SurfaceFlinger.h` reveals the class hierarchy:
+The main implementation lives in `SurfaceFlinger.cpp`. The header at
+`SurfaceFlinger.h` reveals the class hierarchy:
 
 > `frameworks/native/services/surfaceflinger/SurfaceFlinger.h`
 

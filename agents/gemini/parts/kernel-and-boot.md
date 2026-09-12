@@ -4657,8 +4657,8 @@ consists of:
    KMI is curated; for kernel 6.6 it contains approximately 38,840 entries, while
    the newer 6.18 branch ships a tighter list of roughly 22,961 entries.
 
-    **Source**: `kernel/prebuilts/6.6/arm64/abi_symbollist` (38,840 lines),
-    `kernel/prebuilts/6.18/arm64/abi_symbollist` (22,961 lines)
+    **Source**: `kernel/prebuilts/6.6/arm64/abi_symbollist`,
+    `kernel/prebuilts/6.18/arm64/abi_symbollist`
 
     The symbol list begins with commonly used symbols and is organized into
     sections:
@@ -4759,7 +4759,7 @@ kernel/prebuilts/
             kernel-6.6-lz4-allsyms  # Debug LZ4 compressed kernel
             System.map               # Symbol address map
             System.map-allsyms       # Full symbol map
-            abi_symbollist           # KMI symbol list (38,840 lines)
+            abi_symbollist           # KMI symbol list
             abi_symbollist.raw       # Raw symbol names
             abi.stg                  # ABI definition (~7.8 MB)
             abi-full.stg             # Full ABI definition
@@ -5471,7 +5471,7 @@ is freed.
 
 ```
 system/memory/lmkd/
-    lmkd.cpp            # Main daemon logic (2000+ lines)
+    lmkd.cpp            # Main daemon logic
     lmkd.rc             # init.rc service definition
     reaper.cpp           # Process kill execution (using pidfd)
     reaper.h
@@ -6285,8 +6285,8 @@ are **mandatory** for Android to function. These are tested as part of VTS
 (Vendor Interface) compatibility matrix.
 
 Examining the Android 16 / kernel 6.12 base config
-(`kernel/configs/b/android-6.12/android-base.config`), we find 261 lines
-organized into:
+(`kernel/configs/b/android-6.12/android-base.config`), we find a few hundred
+config lines organized into:
 
 **Explicitly disabled options** (lines 1-15):
 ```

@@ -72,7 +72,7 @@ key subdirectories:
 
 ### 49.1.2 The Main Activity: Launcher
 
-The entry point is `Launcher.java`, a roughly 2900-line class that extends `StatefulActivity<LauncherState>`:
+The entry point is `Launcher.java`, a large class that extends `StatefulActivity<LauncherState>`:
 
 ```java
 // src/com/android/launcher3/Launcher.java

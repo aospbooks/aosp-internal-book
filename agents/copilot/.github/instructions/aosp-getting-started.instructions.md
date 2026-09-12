@@ -3410,7 +3410,7 @@ defines the *shape* of your entire source tree -- which projects exist, which
 branches they track, and how they are organized into directories.
 
 The current AOSP default manifest at
-`.repo/manifests/default.xml` (1,122 lines) begins:
+`.repo/manifests/default.xml` begins:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -3914,7 +3914,7 @@ The `doc.go` file in `build/blueprint/` describes the framework:
 
 **Source:** `build/blueprint/doc.go`
 
-The core of Blueprint is `context.go` (6,486 lines, ~195 KB), which defines the
+The core of Blueprint is `context.go` (~195 KB), which defines the
 `Context` struct -- the central state object that orchestrates the entire build
 process through four phases:
 
@@ -3976,7 +3976,7 @@ Key directories under `build/blueprint/`:
 
 | Directory/File | Purpose |
 |---------------|---------|
-| `context.go` | Core orchestration (6,486 lines) |
+| `context.go` | Core orchestration |
 | `parser/` | Blueprint file parser |
 | `proptools/` | Property reflection and manipulation utilities |
 | `pathtools/` | File path utilities and glob matching |
@@ -4103,7 +4103,7 @@ Key subdirectories of `build/soong/`:
 |-----------|---------|-----------|
 | `cc/` | C/C++ module types (`cc_binary`, `cc_library`, etc.) | `cc.go`, `library.go`, `binary.go` |
 | `java/` | Java/Kotlin module types (`java_library`, `android_app`, etc.) | `java.go`, `app.go`, `sdk_library.go` |
-| `apex/` | APEX module type (3,096 lines in `apex.go`) | `apex.go`, `builder.go`, `key.go` |
+| `apex/` | APEX module type (defined in `apex.go`) | `apex.go`, `builder.go`, `key.go` |
 | `rust/` | Rust module types | `rust.go`, `library.go` |
 | `python/` | Python module types | `python.go` |
 | `sh/` | Shell script module types | `sh_binary.go` |
@@ -4125,7 +4125,7 @@ Key subdirectories of `build/soong/`:
 Each module type is registered with Soong by a Go `init()` function. Let us
 look at how the three major module families register themselves:
 
-**C/C++ modules** (`build/soong/cc/cc.go`, 4,885 lines):
+**C/C++ modules** (`build/soong/cc/cc.go`):
 
 ```go
 // This file contains the module types for compiling C/C++ for Android,
@@ -4157,19 +4157,19 @@ type LinkerInfo struct {
 The `cc/` directory contains over 30 Go files, each handling a different
 aspect of C/C++ compilation:
 
-| File | Purpose | Lines |
-|------|---------|-------|
-| `cc.go` | Core module types and properties | 4,885 |
-| `builder.go` | Ninja rule generation | ~1,400 |
-| `binary.go` | `cc_binary` implementation | ~600 |
-| `library.go` | `cc_library` implementation | ~2,700 |
-| `sanitize.go` | ASan/TSan/UBSan integration | ~2,000 |
-| `ndk_sysroot.go` | NDK sysroot management | ~300 |
-| `stl.go` | C++ STL selection | ~250 |
-| `cmake_snapshot.go` | CMake project generation | ~600 |
-| `check.go` | Build consistency checks | ~170 |
+| File | Purpose |
+|------|---------|
+| `cc.go` | Core module types and properties |
+| `builder.go` | Ninja rule generation |
+| `binary.go` | `cc_binary` implementation |
+| `library.go` | `cc_library` implementation |
+| `sanitize.go` | ASan/TSan/UBSan integration |
+| `ndk_sysroot.go` | NDK sysroot management |
+| `stl.go` | C++ STL selection |
+| `cmake_snapshot.go` | CMake project generation |
+| `check.go` | Build consistency checks |
 
-**Java modules** (`build/soong/java/java.go`, 4,176 lines):
+**Java modules** (`build/soong/java/java.go`):
 
 ```go
 // This file contains the module types for compiling Java for Android,
@@ -4202,7 +4202,7 @@ func registerJavaBuildComponents(ctx android.RegistrationContext) {
 
 **Source:** `build/soong/java/java.go`, lines 50-70
 
-**Genrule modules** (`build/soong/genrule/genrule.go`, 1,103 lines):
+**Genrule modules** (`build/soong/genrule/genrule.go`):
 
 ```go
 // A genrule module takes a list of source files ("srcs" property), an
@@ -4329,7 +4329,7 @@ The `build/make/` directory contains 26 top-level entries:
 | `core/` | Core build logic (includes, rules, module definitions) |
 | `target/` | Product and board configuration files |
 | `tools/` | Build utilities (releasetools, signapk, etc.) |
-| `envsetup.sh` | Shell environment setup script (1,210 lines) |
+| `envsetup.sh` | Shell environment setup script |
 | `common/` | Shared build logic |
 | `packaging/` | Package assembly rules |
 | `Changes.md` | Build system change log |
@@ -4451,7 +4451,7 @@ Every AOSP build session begins by sourcing the environment setup script:
 source build/envsetup.sh
 ```
 
-This script lives at `build/make/envsetup.sh` (1,210 lines) and is symlinked
+This script lives at `build/make/envsetup.sh` and is symlinked
 to the top-level `build/envsetup.sh` via the manifest's `<linkfile>` directive.
 
 The script does the following on load:
@@ -6684,8 +6684,8 @@ activated on the next boot. The old version is retained for rollback.
 
 ### 2.7.4 APEX in the Build System
 
-The APEX build logic lives in `build/soong/apex/`. The main file, `apex.go`
-(3,096 lines), defines the module types and build logic:
+The APEX build logic lives in `build/soong/apex/`. The main file, `apex.go`,
+defines the module types and build logic:
 
 ```go
 // package apex implements build rules for creating the APEX files which
@@ -7996,8 +7996,8 @@ The `vndk` property is not in this list: it lives on `VndkProperties`
 These files are available in your AOSP checkout and provide authoritative
 reference information:
 
-- **`build/soong/README.md`** -- Comprehensive Soong and Android.bp reference
-  (737 lines). Covers module syntax, variables, conditionals, namespaces,
+- **`build/soong/README.md`** -- Comprehensive Soong and Android.bp reference.
+  Covers module syntax, variables, conditionals, namespaces,
   visibility, and debugging.
 - **`build/blueprint/doc.go`** -- Blueprint framework architecture overview.
   Explains the meta-build concept, four build phases, and mutator system.
@@ -8709,14 +8709,14 @@ graph LR
 | File | Purpose |
 |------|---------|
 | `.repo/manifests/default.xml` | Manifest defining all repositories |
-| `build/make/envsetup.sh` | Shell environment setup (1,210 lines) |
+| `build/make/envsetup.sh` | Shell environment setup |
 | `build/soong/soong_ui.bash` | Build system entry point |
 | `build/soong/README.md` | Soong/Android.bp reference documentation |
-| `build/blueprint/context.go` | Blueprint core (6,486 lines) |
+| `build/blueprint/context.go` | Blueprint core |
 | `build/make/core/envsetup.mk` | Core build variable setup |
 | `build/make/core/config.mk` | Build configuration entry point |
 | `build/make/target/product/*.mk` | Generic product definitions |
-| `build/soong/apex/apex.go` | APEX build logic (3,096 lines) |
+| `build/soong/apex/apex.go` | APEX build logic |
 | `prebuilts/clang/host/linux-x86/kleaf/` | Kernel build toolchain rules |
 
 **Three things the build system does:**

@@ -320,7 +320,7 @@ state.
 
 | File | Purpose |
 |---|---|
-| `lmkd.cpp` | Main daemon implementation (~4200 lines) |
+| `lmkd.cpp` | Main daemon implementation |
 | `lmkd.rc` | Init service definition |
 | `lmkd.h` (in `include/`) | Command protocol definitions |
 | `reaper.cpp` / `reaper.h` | Asynchronous process reaping with `process_mrelease()` |
@@ -1932,7 +1932,7 @@ int ion_alloc(int fd, size_t len, size_t align,
 
 ION historically supported two kernel ABI versions (a "legacy" pre-4.12 interface and a "modern"
 one), and libion used to probe which was in use. That probing is gone: in the current tree
-`system/memory/libion/ion.c` is a 66-line file of stubs in which every entry point fails
+`system/memory/libion/ion.c` is a small file of stubs in which every entry point fails
 unconditionally, and `ion_is_legacy()` is a hardcoded `return 0`:
 
 ```c

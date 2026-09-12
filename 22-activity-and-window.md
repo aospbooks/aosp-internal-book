@@ -26,7 +26,7 @@ establish the foundations.
 Before Android 10 (API 29), `ActivityManagerService` was a single monolithic
 class responsible for *everything*: process management, activity lifecycle,
 task management, broadcast dispatch, service binding, content provider
-tracking, and OOM adjustment. The file exceeded 30,000 lines and was one of
+tracking, and OOM adjustment. The file had grown to be one of
 the most complex classes in all of AOSP.
 
 Starting with Android 10, the AOSP team extracted activity-related and
@@ -3758,7 +3758,7 @@ map of the key directories and their contents.
 
 ```
 frameworks/base/services/core/java/com/android/server/am/
-    ActivityManagerService.java    -- Main AMS class (~21,200 lines)
+    ActivityManagerService.java    -- Main AMS class
     ProcessList.java               -- Process management + OOM adj values
     ProcessRecord.java             -- Per-process bookkeeping
     psc/OomAdjuster.java           -- OOM adjustment computation (abstract)
@@ -3781,8 +3781,8 @@ frameworks/base/services/core/java/com/android/server/am/
 
 ```
 frameworks/base/services/core/java/com/android/server/wm/
-    ActivityTaskManagerService.java  -- Main ATMS class (~8,450 lines)
-    WindowManagerService.java        -- Main WMS class (~11,600 lines)
+    ActivityTaskManagerService.java  -- Main ATMS class
+    WindowManagerService.java        -- Main WMS class
     ActivityStarter.java             -- Activity launch pipeline
     ActivityRecord.java              -- Per-activity state
     Task.java                        -- Task (back stack)
@@ -3886,7 +3886,7 @@ If you are new to this codebase, we recommend reading files in this order:
 ### Q: Why are AMS and ATMS separate services instead of one?
 
 **A**: The split serves both software engineering and runtime goals. The
-monolithic AMS was over 30,000 lines and mixed concerns: process lifetime
+monolithic AMS was large and mixed concerns: process lifetime
 management (CPU, memory, OOM) with UI-centric activity management (tasks,
 stacks, transitions). Separating them:
 
@@ -4442,8 +4442,8 @@ In this chapter we explored the three pillars of Android's activity and
 window management:
 
 1. **AMS and ATMS Architecture**: The historical split between
-   process management (AMS, ~21,200 lines in `com.android.server.am`) and
-   activity/task management (ATMS, ~8,450 lines in `com.android.server.wm`).
+   process management (AMS in `com.android.server.am`) and
+   activity/task management (ATMS in `com.android.server.wm`).
    AMS uses its own `ActivityManagerGlobalLock` plus `mProcLock`, while ATMS
    shares the `WindowManagerGlobalLock` with WMS. This shared lock eliminates
    deadlocks between activity and window operations while ensuring atomicity
@@ -4473,7 +4473,7 @@ window management:
    policy configuration). In Android 17 the IME-window attachment path
    resolves an `ImeWindowToken` to survive work-profile switches.
 
-5. **WMS Architecture**: The ~11,600-line service with its
+5. **WMS Architecture**: The service with its
    `mWindowMap` (global window registry), `mSessions` (per-process
    connections), display-thread model, five focus update modes, the
    `WindowSurfacePlacer` layout engine, and the `PriorityDumper` for

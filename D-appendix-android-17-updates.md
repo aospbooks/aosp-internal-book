@@ -233,7 +233,7 @@ Android 17 is API level 37, codename **CINNAMON_BUN**. The constant lives in `fr
 - `VERSION_CODES.CINNAMON_BUN = 37` (Build.java:1318), following `BAKLAVA = 36`.
 - `VERSION_CODES_FULL.CINNAMON_BUN = 3700000` (Build.java:1545) — the full-version encoding (`SDK_INT_MULTIPLIER = 100000`) introduced to carry minor versions alongside the major `SDK_INT`. Both `SDK_INT_FULL` and `VERSION_CODES_FULL.CINNAMON_BUN` are public API (`core/api/current.txt:34998`, `:35049`).
 
-The 17 public API surface is `core/api/current.txt` (~65k lines); new feature areas surface there and in `core/api/system-current.txt`.
+The 17 public API surface is `core/api/current.txt`; new feature areas surface there and in `core/api/system-current.txt`.
 
 ### New modules
 

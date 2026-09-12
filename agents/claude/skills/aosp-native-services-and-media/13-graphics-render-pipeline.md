@@ -290,7 +290,7 @@ EGLDisplay eglGetDisplay(EGLNativeDisplayType display) {
 }
 ```
 
-This pattern repeats throughout `eglApi.cpp` (~660 lines). The `platform` table can point
+This pattern repeats throughout `eglApi.cpp`. The `platform` table can point
 either directly to the vendor driver or through optional EGL layers (used for debugging,
 validation, or ANGLE interposition).
 
@@ -368,8 +368,8 @@ with SurfaceFlinger.
 ### 13.2.8 The MultifileBlobCache
 
 Shader compilation is expensive. AOSP implements a persistent shader cache via
-`MultifileBlobCache` (in `frameworks/native/opengl/libs/EGL/MultifileBlobCache.cpp`,
-~1,050 lines). This cache:
+`MultifileBlobCache` (in `frameworks/native/opengl/libs/EGL/MultifileBlobCache.cpp`).
+This cache:
 
 - Stores compiled shader binaries on disk across app launches
 - Uses a multi-file layout (one file per cache entry) for robustness
@@ -1403,7 +1403,7 @@ enum class CanvasOpType : int8_t {
 
 ### 13.6.4 RenderNode: The View Tree Mirror
 
-`RenderNode` (`RenderNode.h`, ~470 lines) is the native counterpart of a Java `View`.
+`RenderNode` (`RenderNode.h`) is the native counterpart of a Java `View`.
 Each `View` in the UI hierarchy has a corresponding `RenderNode` that stores:
 
 1. **RenderProperties** -- visual properties (position, transform, alpha, clip, etc.)
@@ -1457,7 +1457,7 @@ on the property data.
 
 ### 13.6.6 RenderProperties: The Full Property Set
 
-`RenderProperties.h` (627 lines) contains the complete set of visual properties for
+`RenderProperties.h` contains the complete set of visual properties for
 a RenderNode:
 
 ```cpp
@@ -1671,7 +1671,7 @@ void RenderThread::extendedFrameCallback(
 
 ### 13.7.5 EglManager
 
-`EglManager.cpp` (789 lines) manages the EGL context for the SkiaGL pipeline. Key
+`EglManager.cpp` manages the EGL context for the SkiaGL pipeline. Key
 operations:
 
 **Initialization** (line 109):
@@ -1816,7 +1816,7 @@ void VulkanManager::setupDevice() {
 
 ### 13.7.7 CacheManager
 
-`CacheManager.cpp` (~380 lines) manages GPU memory budgets for the Skia GrDirectContext.
+`CacheManager.cpp` manages GPU memory budgets for the Skia GrDirectContext.
 It implements memory pressure responses at multiple levels:
 
 ```cpp
@@ -4671,52 +4671,52 @@ graph TD
 
 ### 13.39.1 OpenGL ES Stack
 
-| File | Path | Lines | Purpose |
-|------|------|-------|---------|
-| `eglApi.cpp` | `frameworks/native/opengl/libs/EGL/` | ~660 | EGL API entry points |
-| `egl.cpp` | `frameworks/native/opengl/libs/EGL/` | ~220 | Driver initialization |
-| `egl_platform_entries.cpp` | `frameworks/native/opengl/libs/EGL/` | ~2,700 | Platform EGL implementation |
-| `Loader.cpp` | `frameworks/native/opengl/libs/EGL/` | ~800 | Driver loading |
-| `MultifileBlobCache.cpp` | `frameworks/native/opengl/libs/EGL/` | ~1,050 | Shader cache |
-| `egl_display.cpp` | `frameworks/native/opengl/libs/EGL/` | ~560 | Display management |
-| `egl_object.cpp` | `frameworks/native/opengl/libs/EGL/` | ~350 | Object reference counting |
-| `gl2.cpp` | `frameworks/native/opengl/libs/GLES2/` | ~300 | GLES2 trampolines |
+| File | Path | Purpose |
+|------|------|---------|
+| `eglApi.cpp` | `frameworks/native/opengl/libs/EGL/` | EGL API entry points |
+| `egl.cpp` | `frameworks/native/opengl/libs/EGL/` | Driver initialization |
+| `egl_platform_entries.cpp` | `frameworks/native/opengl/libs/EGL/` | Platform EGL implementation |
+| `Loader.cpp` | `frameworks/native/opengl/libs/EGL/` | Driver loading |
+| `MultifileBlobCache.cpp` | `frameworks/native/opengl/libs/EGL/` | Shader cache |
+| `egl_display.cpp` | `frameworks/native/opengl/libs/EGL/` | Display management |
+| `egl_object.cpp` | `frameworks/native/opengl/libs/EGL/` | Object reference counting |
+| `gl2.cpp` | `frameworks/native/opengl/libs/GLES2/` | GLES2 trampolines |
 
 ### 13.39.2 Vulkan Stack
 
-| File | Path | Lines | Purpose |
-|------|------|-------|---------|
-| `api.cpp` | `frameworks/native/vulkan/libvulkan/` | ~1,550 | API layer / layer management |
-| `driver.cpp` | `frameworks/native/vulkan/libvulkan/` | ~2,100 | Driver loading / HAL interface |
-| `swapchain.cpp` | `frameworks/native/vulkan/libvulkan/` | ~3,500 | Swapchain ↔ ANativeWindow |
-| `layers_extensions.cpp` | `frameworks/native/vulkan/libvulkan/` | ~710 | Layer/extension discovery |
-| `api_gen.cpp` | `frameworks/native/vulkan/libvulkan/` | ~3,260 | Generated dispatch |
-| `driver_gen.cpp` | `frameworks/native/vulkan/libvulkan/` | ~1,050 | Generated driver dispatch |
-| `null_driver.cpp` | `frameworks/native/vulkan/nulldrv/` | ~1,840 | Null driver for testing |
-| `vkprofiles.cpp` | `frameworks/native/vulkan/vkprofiles/` | ~225 | Android baseline profiles |
+| File | Path | Purpose |
+|------|------|---------|
+| `api.cpp` | `frameworks/native/vulkan/libvulkan/` | API layer / layer management |
+| `driver.cpp` | `frameworks/native/vulkan/libvulkan/` | Driver loading / HAL interface |
+| `swapchain.cpp` | `frameworks/native/vulkan/libvulkan/` | Swapchain ↔ ANativeWindow |
+| `layers_extensions.cpp` | `frameworks/native/vulkan/libvulkan/` | Layer/extension discovery |
+| `api_gen.cpp` | `frameworks/native/vulkan/libvulkan/` | Generated dispatch |
+| `driver_gen.cpp` | `frameworks/native/vulkan/libvulkan/` | Generated driver dispatch |
+| `null_driver.cpp` | `frameworks/native/vulkan/nulldrv/` | Null driver for testing |
+| `vkprofiles.cpp` | `frameworks/native/vulkan/vkprofiles/` | Android baseline profiles |
 
 ### 13.39.3 HWUI Stack
 
-| File | Path | Lines | Purpose |
-|------|------|-------|---------|
-| `RenderNode.h` | `frameworks/base/libs/hwui/` | ~470 | View mirror in native |
-| `RenderProperties.h` | `frameworks/base/libs/hwui/` | ~630 | Visual property storage |
-| `Canvas.h` | `frameworks/base/libs/hwui/hwui/` | ~300 | Abstract drawing API |
-| `SkiaCanvas.h` | `frameworks/base/libs/hwui/` | ~240 | Skia Canvas implementation |
-| `DisplayList.h` | `frameworks/base/libs/hwui/` | ~345 | Command stream container |
-| `CanvasOpTypes.h` | `frameworks/base/libs/hwui/canvas/` | ~75 | Operation type enum |
-| `RenderThread.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~510 | Singleton render thread |
-| `DrawFrameTask.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~225 | Frame sync + draw task |
-| `CanvasContext.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~1,380 | Window rendering coordinator |
-| `EglManager.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~790 | EGL context management |
-| `VulkanManager.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~910 | Vulkan context management |
-| `VulkanSurface.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~570 | Vulkan window surface |
-| `CacheManager.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~380 | GPU memory management |
-| `SkiaOpenGLPipeline.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | ~305 | GL rendering pipeline |
-| `SkiaVulkanPipeline.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | ~225 | Vulkan rendering pipeline |
-| `SkiaGpuPipeline.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | ~195 | Common GPU pipeline |
-| `RenderNodeDrawable.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | ~510 | Node drawing logic |
-| `RenderProxy.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~600 | UI thread proxy |
+| File | Path | Purpose |
+|------|------|---------|
+| `RenderNode.h` | `frameworks/base/libs/hwui/` | View mirror in native |
+| `RenderProperties.h` | `frameworks/base/libs/hwui/` | Visual property storage |
+| `Canvas.h` | `frameworks/base/libs/hwui/hwui/` | Abstract drawing API |
+| `SkiaCanvas.h` | `frameworks/base/libs/hwui/` | Skia Canvas implementation |
+| `DisplayList.h` | `frameworks/base/libs/hwui/` | Command stream container |
+| `CanvasOpTypes.h` | `frameworks/base/libs/hwui/canvas/` | Operation type enum |
+| `RenderThread.cpp` | `frameworks/base/libs/hwui/renderthread/` | Singleton render thread |
+| `DrawFrameTask.cpp` | `frameworks/base/libs/hwui/renderthread/` | Frame sync + draw task |
+| `CanvasContext.cpp` | `frameworks/base/libs/hwui/renderthread/` | Window rendering coordinator |
+| `EglManager.cpp` | `frameworks/base/libs/hwui/renderthread/` | EGL context management |
+| `VulkanManager.cpp` | `frameworks/base/libs/hwui/renderthread/` | Vulkan context management |
+| `VulkanSurface.cpp` | `frameworks/base/libs/hwui/renderthread/` | Vulkan window surface |
+| `CacheManager.cpp` | `frameworks/base/libs/hwui/renderthread/` | GPU memory management |
+| `SkiaOpenGLPipeline.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | GL rendering pipeline |
+| `SkiaVulkanPipeline.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | Vulkan rendering pipeline |
+| `SkiaGpuPipeline.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | Common GPU pipeline |
+| `RenderNodeDrawable.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | Node drawing logic |
+| `RenderProxy.cpp` | `frameworks/base/libs/hwui/renderthread/` | UI thread proxy |
 
 ### 13.39.4 System Properties Reference
 
@@ -6559,20 +6559,20 @@ timestamps reveals exactly where time was spent in each frame phase.
 This chapter has traced Android's graphics pipeline from application code to display
 hardware, examining every layer in detail:
 
-| Layer | Key Files | Lines of Code |
-|-------|-----------|---------------|
-| EGL/GLES Loader | `eglApi.cpp`, `egl.cpp`, `Loader.cpp` | ~1,700 |
-| MultifileBlobCache | `MultifileBlobCache.cpp/.h` | ~1,300 |
-| Vulkan Loader | `api.cpp`, `driver.cpp`, `swapchain.cpp` | ~7,200 |
-| HWUI Core | `RenderNode.h`, `RenderProperties.h`, `Canvas.h` | ~1,400 |
-| HWUI Display List | `DisplayList.h`, `CanvasOpTypes.h` | ~420 |
-| RenderThread | `RenderThread.cpp`, `DrawFrameTask.cpp` | ~740 |
-| EglManager | `EglManager.cpp` | ~790 |
-| VulkanManager | `VulkanManager.cpp` | ~910 |
-| CacheManager | `CacheManager.cpp` | ~380 |
-| SkiaGL Pipeline | `SkiaOpenGLPipeline.cpp` | ~305 |
-| SkiaVulkan Pipeline | `SkiaVulkanPipeline.cpp` | ~225 |
-| Skia (external) | `src/gpu/ganesh/`, `include/core/` | ~500,000+ |
+| Layer | Key Files |
+|-------|-----------|
+| EGL/GLES Loader | `eglApi.cpp`, `egl.cpp`, `Loader.cpp` |
+| MultifileBlobCache | `MultifileBlobCache.cpp/.h` |
+| Vulkan Loader | `api.cpp`, `driver.cpp`, `swapchain.cpp` |
+| HWUI Core | `RenderNode.h`, `RenderProperties.h`, `Canvas.h` |
+| HWUI Display List | `DisplayList.h`, `CanvasOpTypes.h` |
+| RenderThread | `RenderThread.cpp`, `DrawFrameTask.cpp` |
+| EglManager | `EglManager.cpp` |
+| VulkanManager | `VulkanManager.cpp` |
+| CacheManager | `CacheManager.cpp` |
+| SkiaGL Pipeline | `SkiaOpenGLPipeline.cpp` |
+| SkiaVulkan Pipeline | `SkiaVulkanPipeline.cpp` |
+| Skia (external) | `src/gpu/ganesh/`, `include/core/` |
 
 The architecture reflects decades of evolution:
 

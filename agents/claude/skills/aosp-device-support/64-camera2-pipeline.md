@@ -3201,7 +3201,7 @@ find frameworks/base/core/java/android/hardware/camera2/ \
 
 # Explore the Camera3Device implementation
 wc -l frameworks/av/services/camera/libcameraservice/device3/Camera3Device.cpp
-# Typically 5000+ lines -- one of the largest files in the camera service
+# One of the largest files in the camera service
 
 # Find all capture request metadata keys
 grep -r "public static final Key" \
@@ -3221,7 +3221,7 @@ ls frameworks/av/services/camera/libcameraservice/api2/*CompositeStream*
 
 **What to observe:**
 
-- The sheer scale of the camera subsystem (>100K lines of code)
+- The sheer scale of the camera subsystem
 - The number of metadata keys available for per-frame control
 - The multiple composite stream implementations for different output formats
 - How the AIDL HAL interface maps to the framework concepts

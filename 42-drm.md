@@ -410,7 +410,7 @@ DrmStatus DrmHal::createPlugin(const uint8_t uuid[16],
 
 ### 42.2.6 DrmHalAidl -- The AIDL Backend
 
-`DrmHalAidl` (`frameworks/av/drm/libmediadrm/DrmHalAidl.cpp`, approximately 1,260 lines)
+`DrmHalAidl` (`frameworks/av/drm/libmediadrm/DrmHalAidl.cpp`)
 contains the full AIDL integration logic. At initialization, it discovers AIDL DRM HAL
 services using `AServiceManager`, queries their supported crypto schemes, and instantiates
 the appropriate `IDrmPlugin` via the factory:
@@ -743,8 +743,8 @@ classDiagram
 
 ### 42.3.3 IDrmPlugin -- Session and Key Management
 
-The `IDrmPlugin` interface (`hardware/interfaces/drm/aidl/android/hardware/drm/IDrmPlugin.aidl`,
-approximately 750 lines) is the largest interface in the DRM HAL. It covers session
+The `IDrmPlugin` interface (`hardware/interfaces/drm/aidl/android/hardware/drm/IDrmPlugin.aidl`)
+is the largest interface in the DRM HAL. It covers session
 management, key acquisition, provisioning, secure stops, property access, crypto
 operations, and metrics.
 
@@ -1363,8 +1363,8 @@ no hardware security backing.
 
 ### 42.5.5 DrmPlugin -- Session and Key Management
 
-The ClearKey `DrmPlugin` (`frameworks/av/drm/mediadrm/plugins/clearkey/aidl/DrmPlugin.cpp`,
-approximately 1100 lines) implements the full `IDrmPlugin` interface. Key aspects:
+The ClearKey `DrmPlugin` (`frameworks/av/drm/mediadrm/plugins/clearkey/aidl/DrmPlugin.cpp`)
+implements the full `IDrmPlugin` interface. Key aspects:
 
 **Initialization:**
 

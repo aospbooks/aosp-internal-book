@@ -26,10 +26,10 @@ the machinery behind focus, accessibility, window insets, and custom views.
 The Android view system is built on three pillars:
 
 1. **`View`** -- the atomic building block.  Every visible element on screen
-   (Button, TextView, ImageView, custom widgets) is a `View` subclass.  At
-   over 35,000 lines, `View.java` is one of the largest files in the Android
-   framework, handling measurement, layout, drawing, touch events, focus,
-   accessibility, animations, and more.
+   (Button, TextView, ImageView, custom widgets) is a `View` subclass.
+   `View.java` is one of the largest files in the Android framework, handling
+   measurement, layout, drawing, touch events, focus, accessibility,
+   animations, and more.
 
 2. **`ViewGroup`** -- the composite container.  `ViewGroup extends View` and
    can hold an ordered list of child `View` objects.  Layouts like

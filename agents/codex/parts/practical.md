@@ -1388,7 +1388,7 @@ The framework's configurable behavior is defined in:
 frameworks/base/core/res/res/values/config.xml
 ```
 
-This file (roughly 8,000 lines) contains hundreds of configuration values.
+This file contains hundreds of configuration values.
 RROs can override any of them.
 
 **How RROs work:**

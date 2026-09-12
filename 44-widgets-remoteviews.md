@@ -23,26 +23,26 @@ content) and widget hosts (apps that display them).
 
 The framework revolves around five central classes:
 
-| Class | Role | Lines |
-|---|---|---|
-| `AppWidgetProvider` | BroadcastReceiver convenience wrapper for providers | 220 |
-| `AppWidgetHost` | Host-side connection to AppWidgetService | 751 |
-| `AppWidgetHostView` | The actual View container that renders RemoteViews | 1,241 |
-| `AppWidgetManager` | System-service client proxy (singleton) | 1,876 |
-| `AppWidgetProviderInfo` | Parcelable metadata describing a widget provider | 647 |
+| Class | Role |
+|---|---|
+| `AppWidgetProvider` | BroadcastReceiver convenience wrapper for providers |
+| `AppWidgetHost` | Host-side connection to AppWidgetService |
+| `AppWidgetHostView` | The actual View container that renders RemoteViews |
+| `AppWidgetManager` | System-service client proxy (singleton) |
+| `AppWidgetProviderInfo` | Parcelable metadata describing a widget provider |
 
 Plus newer additions:
 
-| Class | Role | Lines |
-|---|---|---|
-| `AppWidgetEvent` | Engagement metrics for widget interactions | 401 |
-| `PendingHostUpdate` | Queued update types during host reconnection | ~100 |
-| `AppWidgetConfigActivityProxy` | Proxy for cross-profile config activities | ~100 |
-| `AppWidgetManagerInternal` | System-server-internal API surface | ~50 |
+| Class | Role |
+|---|---|
+| `AppWidgetEvent` | Engagement metrics for widget interactions |
+| `PendingHostUpdate` | Queued update types during host reconnection |
+| `AppWidgetConfigActivityProxy` | Proxy for cross-profile config activities |
+| `AppWidgetManagerInternal` | System-server-internal API surface |
 
 ### 44.1.2 AppWidgetProvider -- The Provider Entry Point
 
-`AppWidgetProvider` (220 lines) extends `BroadcastReceiver`. It is a pure convenience
+`AppWidgetProvider` extends `BroadcastReceiver`. It is a pure convenience
 class: everything it does can be accomplished with a raw receiver. Its `onReceive()`
 method dispatches to hook methods based on the received intent action:
 
@@ -97,7 +97,7 @@ The hook methods that subclasses override:
 
 ### 44.1.3 AppWidgetHost -- The Host Entry Point
 
-`AppWidgetHost` (751 lines) is the host application's handle to the widget system.
+`AppWidgetHost` is the host application's handle to the widget system.
 Launcher3, for example, creates an `AppWidgetHost` with a fixed host ID of 1024.
 
 The class has three critical architectural elements:
@@ -184,7 +184,7 @@ private static final Function<Context, IAppWidgetService> sServiceFactory =
 
 ### 44.1.4 AppWidgetProviderInfo -- Widget Metadata
 
-`AppWidgetProviderInfo` (647 lines) is a `Parcelable` that describes a widget's
+`AppWidgetProviderInfo` is a `Parcelable` that describes a widget's
 capabilities. It is populated from the `<appwidget-provider>` XML metadata in the
 provider's manifest.
 
@@ -208,7 +208,7 @@ Key fields:
 
 ### 44.1.5 AppWidgetEvent -- Engagement Metrics
 
-`AppWidgetEvent` (401 lines) is a newer addition (still flagged under
+`AppWidgetEvent` is a newer addition (still flagged under
 `engagement_metrics` in `frameworks/base/core/java/android/appwidget/flags.aconfig`)
 that tracks user interactions with widgets:
 
@@ -326,7 +326,7 @@ The service is split into two classes:
 | Class | Role |
 |---|---|
 | `AppWidgetService.java` | Lifecycle wrapper, registered as `APPWIDGET_SERVICE` |
-| `AppWidgetServiceImpl.java` | The actual IPC implementation (~7,500 lines) |
+| `AppWidgetServiceImpl.java` | The actual IPC implementation |
 
 `AppWidgetServiceImpl` extends `IAppWidgetService.Stub` and implements
 `WidgetBackupProvider` and `OnCrossProfileWidgetProvidersChangeListener`.
@@ -509,7 +509,7 @@ Hard limits prevent abuse:
 ## 44.3 RemoteViews
 
 `RemoteViews` is the central mechanism for cross-process UI in Android. Defined in
-`frameworks/base/core/java/android/widget/RemoteViews.java` (11,236 lines), it
+`frameworks/base/core/java/android/widget/RemoteViews.java`, it
 serializes a description of view modifications as `Parcelable` actions that can be
 sent over Binder, then applied (inflated) in the receiving process.
 
@@ -799,7 +799,7 @@ The parceling process writes:
 For collection widgets (ListView, GridView, StackView), a different mechanism
 is needed because the adapter data may be large and dynamic.
 
-**`RemoteViewsService`** (321 lines) is an abstract `Service` that hosts
+**`RemoteViewsService`** is an abstract `Service` that hosts
 `RemoteViewsFactory` instances:
 
 ```java
@@ -817,7 +817,7 @@ public interface RemoteViewsFactory {
 }
 ```
 
-**`RemoteViewsAdapter`** (1,305 lines) is the host-side adapter that connects
+**`RemoteViewsAdapter`** is the host-side adapter that connects
 to the `RemoteViewsService` via `IRemoteViewsFactory` (AIDL). It manages:
 
 - Service connection lifecycle
@@ -981,7 +981,7 @@ Several security measures apply:
 RemoteCompose is a new rendering system within AOSP that provides a
 programmatic alternative to XML layouts for cross-process rendering. Located in
 `frameworks/base/core/java/com/android/internal/widget/remotecompose/`, it
-comprises 299 Java files totaling roughly 77,000 lines of code.
+comprises 299 Java files.
 
 ### 44.5.1 Design Goals
 
@@ -2074,7 +2074,7 @@ protobuf representation under the `remote_views_proto` flag
 The wire format is defined in
 `frameworks/base/core/proto/android/widget/remoteviews.proto` as the
 `RemoteViewsProto` message, and the encode/decode logic lives in a dedicated
-1,597-line companion,
+companion,
 `frameworks/base/core/java/android/widget/RemoteViewsSerializers.java`. `RemoteViews`
 itself gains two flagged methods
 (`frameworks/base/core/java/android/widget/RemoteViews.java:10681` and `:10752`):
@@ -2168,8 +2168,8 @@ app's content is not left exposed on the home screen.
 ## 44.11 Android 17 RemoteCompose Changes
 
 RemoteCompose continues to be the fastest-moving part of this subsystem. Between
-Android 16 and 17 the in-tree package grew to 299 Java files (roughly 77,000
-lines), and the document format version advanced.
+Android 16 and 17 the in-tree package grew to 299 Java files, and the document
+format version advanced.
 
 ### 44.11.1 Document Version Bump
 
@@ -2593,7 +2593,7 @@ The key takeaways:
    enforcing security policy, managing state persistence, and handling periodic
    updates via `AlarmManager`.
 
-3. **RemoteCompose** is a significant new addition (299 files, ~77,000 lines)
+3. **RemoteCompose** is a significant new addition (299 files)
    that provides a binary bytecode format for rendering. It supports draw
    operations, layout containers, modifiers, variables, expressions, animations,
    haptics, and accessibility -- far exceeding what `RemoteViews` can express.
@@ -2610,18 +2610,18 @@ The key takeaways:
 
 | Path | Description |
 |---|---|
-| `frameworks/base/core/java/android/appwidget/AppWidgetProvider.java` | AppWidget provider base class (220 lines) |
-| `frameworks/base/core/java/android/appwidget/AppWidgetHost.java` | AppWidget host abstraction (751 lines) |
-| `frameworks/base/core/java/android/appwidget/AppWidgetEvent.java` | Widget event model (401 lines) |
+| `frameworks/base/core/java/android/appwidget/AppWidgetProvider.java` | AppWidget provider base class |
+| `frameworks/base/core/java/android/appwidget/AppWidgetHost.java` | AppWidget host abstraction |
+| `frameworks/base/core/java/android/appwidget/AppWidgetEvent.java` | Widget event model |
 | `frameworks/base/core/java/android/appwidget/AppWidgetHostView.java` | Host view that renders widgets |
 | `frameworks/base/core/java/android/appwidget/AppWidgetManager.java` | Public API entry point |
-| `frameworks/base/core/java/android/appwidget/AppWidgetProviderInfo.java` | Widget metadata (647 lines) |
+| `frameworks/base/core/java/android/appwidget/AppWidgetProviderInfo.java` | Widget metadata |
 | `frameworks/base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java` | system_server implementation |
-| `frameworks/base/core/java/android/widget/RemoteViews.java` | RemoteViews action serialization (11,236 lines) |
-| `frameworks/base/core/java/android/widget/RemoteViewsSerializers.java` | RemoteViews protobuf preview serialization (1,597 lines) |
+| `frameworks/base/core/java/android/widget/RemoteViews.java` | RemoteViews action serialization |
+| `frameworks/base/core/java/android/widget/RemoteViewsSerializers.java` | RemoteViews protobuf preview serialization |
 | `frameworks/base/core/proto/android/widget/remoteviews.proto` | `RemoteViewsProto` preview wire format |
-| `frameworks/base/core/java/android/widget/RemoteViewsService.java` | Collection widget service (321 lines) |
-| `frameworks/base/core/java/android/widget/RemoteViewsAdapter.java` | Collection widget adapter (1,305 lines) |
+| `frameworks/base/core/java/android/widget/RemoteViewsService.java` | Collection widget service |
+| `frameworks/base/core/java/android/widget/RemoteViewsAdapter.java` | Collection widget adapter |
 | `frameworks/base/core/java/com/android/internal/widget/remotecompose/core/CoreDocument.java` | RemoteCompose document model |
 | `frameworks/base/core/java/com/android/internal/widget/remotecompose/core/Operations.java` | RemoteCompose operations registry |
 | `frameworks/base/core/java/com/android/internal/widget/remotecompose/core/WireBuffer.java` | RemoteCompose wire format |

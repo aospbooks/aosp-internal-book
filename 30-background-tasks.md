@@ -776,7 +776,7 @@ graph TD
 
 **Source path**: `frameworks/base/apex/jobscheduler/service/java/com/android/server/alarm/AlarmManagerService.java`
 
-The `AlarmManagerService` is a large, complex service (5600+ lines) that has
+The `AlarmManagerService` is a large, complex service that has
 evolved significantly over Android's history. Key imports reveal its
 responsibilities:
 

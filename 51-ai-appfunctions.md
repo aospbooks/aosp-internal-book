@@ -2936,7 +2936,7 @@ still target.
 packages/modules/NeuralNetworks/          (104 MB)
     runtime/                              -- C++ runtime library
         NeuralNetworks.cpp                -- C API entry points
-        Manager.cpp                       (1376 lines) -- Device management
+        Manager.cpp -- Device management
         CompilationBuilder.cpp            -- Model compilation
         ExecutionBuilder.cpp              -- Inference execution
         ExecutionPlan.cpp                 -- Multi-device partitioning
@@ -3704,7 +3704,7 @@ public final class ContentCaptureManager {
 
 **Source:**
 `frameworks/base/core/java/android/view/contentcapture/ContentCaptureManager.java`
-(1221 lines)
+
 
 From the Javadoc:
 
@@ -3756,7 +3756,7 @@ The `TextClassifierService` provides entity classification for text:
 
 ```
 frameworks/base/core/java/android/service/textclassifier/
-    TextClassifierService.java          (513 lines)
+    TextClassifierService.java
 ```
 
 Capabilities:

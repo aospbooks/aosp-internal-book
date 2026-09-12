@@ -337,7 +337,6 @@ The control surface for any provider is the package-private
 interface that apps invoke via `Context.getSystemService(Context.LOCATION_SERVICE)`.
 
 **Source:** `frameworks/base/services/core/java/com/android/server/location/LocationManagerService.java`
-(2073 lines in Android 17).
 
 ### 33.2.1  Fields and Data Structures
 
@@ -529,7 +528,7 @@ When the mode changes, LMS:
 ### 33.2.8  The LocationProviderManager
 
 `LocationProviderManager` (LPM) is the heart of the request-multiplexing
-logic.  At 3123 lines, it is the largest single class in the location package.
+logic.  It is the largest single class in the location package.
 Each instance manages a single named provider.
 
 Key responsibilities:
@@ -1034,7 +1033,6 @@ The native side is the `libservices.core-gnss` static library (sources under
 standalone GNSS JNI shared library.
 
 **Source:** `frameworks/base/services/core/java/com/android/server/location/gnss/hal/GnssNative.java`
-(1762 lines in Android 17).
 
 `GnssNative` defines callback interfaces that components register to
 receive HAL events:
@@ -1087,7 +1085,6 @@ a dozen callback interfaces from `GnssNative`.  It is the concrete provider
 that LMS registers under `GPS_PROVIDER`.
 
 **Source:** `frameworks/base/services/core/java/com/android/server/location/gnss/GnssLocationProvider.java`
-(1883 lines in Android 17).
 
 #### Provider Properties
 
@@ -1313,7 +1310,6 @@ present, registers itself with `mGnssNative.setGnssAssistanceCallbacks(this)` so
 the HAL can request structured assistance data (§33.10.5).
 
 **Source:** `frameworks/base/services/core/java/com/android/server/location/gnss/GnssManagerService.java`
-(465 lines).
 
 The GNSS-specific APIs that pass through `GnssManagerService`:
 

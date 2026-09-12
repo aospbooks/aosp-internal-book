@@ -8,7 +8,7 @@ Framework** -- a system-server subsystem centered on `DevicePolicyManagerService
 PIN", "block the camera in the work profile") into concrete, enforced changes
 across the Android stack.  This chapter traces every major path through the real
 AOSP source code, from the XML metadata that declares an admin component, through
-the roughly 24,000-line DPMS implementation, into the policy-engine resolution layer and
+the sprawling DPMS implementation, into the policy-engine resolution layer and
 out to the individual subsystem enforcers that make each policy stick.
 
 ---
@@ -286,8 +286,7 @@ creation of additional secondary users is blocked.
 
 ### 61.2.1  Overview and Class Hierarchy
 
-`DevicePolicyManagerService` is one of the largest system services in AOSP,
-weighing in at roughly 24,000 lines on the Android 17 tree
+`DevicePolicyManagerService` is one of the largest system services in AOSP
 (`frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyManagerService.java`).
 It implements the `IDevicePolicyManager` AIDL interface and runs inside the
 system server process.
@@ -379,7 +378,7 @@ and how they relate:
 ```mermaid
 graph TB
     subgraph "DevicePolicyManagerService"
-        CORE["Core DPMS Logic<br/>~24,000 lines"]
+        CORE["Core DPMS Logic"]
 
         subgraph "State Management"
             OWNERS["Owners<br/>DO/PO tracking"]
@@ -3358,7 +3357,7 @@ Examine the scale of the Device Policy Manager Service:
 ```bash
 # Count lines in the main service file
 wc -l frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyManagerService.java
-# Expected: ~24,000 lines on the Android 17 tree
+# Expect a very large file -- DPMS is one of AOSP's largest system services
 
 # Count all Java files in the devicepolicy package
 find frameworks/base/services/devicepolicy/ -name "*.java" | wc -l
@@ -3987,11 +3986,11 @@ For further exploration, here are the critical source files:
 
 | File | Purpose |
 |------|---------|
-| `frameworks/base/core/java/android/app/admin/DevicePolicyManager.java` | Client API (18,700+ lines) |
+| `frameworks/base/core/java/android/app/admin/DevicePolicyManager.java` | Client API |
 | `frameworks/base/core/java/android/app/admin/DeviceAdminReceiver.java` | Admin callback interface |
 | `frameworks/base/core/java/android/app/admin/DeviceAdminInfo.java` | Admin metadata parsing |
 | `frameworks/base/core/java/android/app/admin/IDevicePolicyManager.aidl` | Binder interface |
-| `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyManagerService.java` | Service implementation (~24,000 lines) |
+| `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyManagerService.java` | Service implementation |
 | `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyEngine.java` | Multi-admin policy resolution |
 | `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/PolicyDefinition.java` | Policy definitions and resolution mechanisms |
 | `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/ActiveAdmin.java` | Per-admin policy state |
@@ -4012,7 +4011,7 @@ For further exploration, here are the critical source files:
 ## Summary
 
 The Android Enterprise framework is one of the most complex subsystems in AOSP,
-spanning over 40,000 lines of code just in the core service and client API.
+spanning the core service and its client API.
 Here are the key architectural insights:
 
 1. **Management modes** (Fully Managed, Work Profile/BYOD, COPE) offer a
@@ -4020,8 +4019,8 @@ Here are the key architectural insights:
    determined at provisioning time and fundamentally shapes what policies can
    be enforced.
 
-2. **DevicePolicyManagerService** is the central policy broker.  At roughly
-   24,000 lines, it is one of AOSP's largest system services.  It validates
+2. **DevicePolicyManagerService** is the central policy broker and one of
+   AOSP's largest system services.  It validates
    caller permissions, delegates to the policy engine for resolution, persists
    versioned state to XML (`DPMS_VERSION = 6` in Android 17), and notifies
    subsystems of policy changes.

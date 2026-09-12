@@ -2937,7 +2937,7 @@ still target.
 packages/modules/NeuralNetworks/          (104 MB)
     runtime/                              -- C++ runtime library
         NeuralNetworks.cpp                -- C API entry points
-        Manager.cpp                       (1376 lines) -- Device management
+        Manager.cpp -- Device management
         CompilationBuilder.cpp            -- Model compilation
         ExecutionBuilder.cpp              -- Inference execution
         ExecutionPlan.cpp                 -- Multi-device partitioning
@@ -3705,7 +3705,7 @@ public final class ContentCaptureManager {
 
 **Source:**
 `frameworks/base/core/java/android/view/contentcapture/ContentCaptureManager.java`
-(1221 lines)
+
 
 From the Javadoc:
 
@@ -3757,7 +3757,7 @@ The `TextClassifierService` provides entity classification for text:
 
 ```
 frameworks/base/core/java/android/service/textclassifier/
-    TextClassifierService.java          (513 lines)
+    TextClassifierService.java
 ```
 
 Capabilities:
@@ -7038,7 +7038,7 @@ frameworks/base/services/companion/java/com/android/server/companion/
     CompanionDeviceManagerService.java
 ```
 
-This file (~1,154 lines in Android 17) serves as the orchestrator. It does not
+This file serves as the orchestrator. It does not
 implement all functionality itself; instead it delegates to a set of specialized
 processors and managers, each living in its own sub-package:
 
@@ -8139,7 +8139,7 @@ public class LocalMetadataStore extends PersistableBundleStore {
 ```
 
 Source:
-`LocalMetadataStore.java` (the whole file is 46 lines). The cache-first read,
+`LocalMetadataStore.java` (a small file). The cache-first read,
 disk timeout, and per-user `SparseArray` caching now live in
 `frameworks/base/services/companion/java/com/android/server/companion/utils/PersistableBundleStore.java`,
 which both `LocalMetadataStore` and other CDM stores reuse.
@@ -8438,13 +8438,13 @@ representation_ of that hardware within the Android framework.
 
 ```
 frameworks/base/services/companion/java/com/android/server/companion/virtual/
-    VirtualDeviceManagerService.java   (~1334 lines)
-    VirtualDeviceImpl.java             (~2087 lines)
+    VirtualDeviceManagerService.java
+    VirtualDeviceImpl.java
     VirtualDeviceShellCommand.java
-    GenericWindowPolicyController.java (~587 lines)
-    InputController.java               (~272 lines)
-    SensorController.java              (~392 lines)
-    CameraAccessController.java        (~345 lines)
+    GenericWindowPolicyController.java
+    InputController.java
+    SensorController.java
+    CameraAccessController.java
     VirtualDeviceLog.java
     PermissionUtils.java
     ViewConfigurationController.java
@@ -8534,7 +8534,7 @@ sequenceDiagram
 
 ### 52.4.3 VirtualDeviceImpl -- The Device Instance
 
-`VirtualDeviceImpl` (~2,087 lines in Android 17) is the concrete implementation
+`VirtualDeviceImpl` is the concrete implementation
 of a single virtual device. It extends `IVirtualDevice.Stub` and implements
 `IBinder.DeathRecipient` to auto-cleanup when the owning app dies.
 

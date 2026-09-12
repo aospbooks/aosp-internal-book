@@ -3385,7 +3385,7 @@ image, all without flashing and all reversible.
 DSU reuses the same dynamic-partition and image-mapping machinery this chapter
 already covered for Virtual A/B (`libfiemap`'s `ImageManager`, `liblp` metadata,
 device-mapper). The piece unique to DSU is a small system daemon, **`gsid`**
-(roughly 3.3K lines of C++ in `system/gsid/`), that stages the image into those
+(in `system/gsid/`), that stages the image into those
 dynamic image files and arms the one-shot boot.
 
 ### 55.27.1 The gsid daemon and IGsiService

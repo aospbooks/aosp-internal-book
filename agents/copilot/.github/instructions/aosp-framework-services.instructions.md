@@ -30,7 +30,7 @@ lifecycle management in Android. It is responsible for discovering, parsing, ver
 installing, updating, and removing every APK on the device. It maintains the authoritative
 database of installed packages, enforces permission policy, resolves intents to the
 correct component, orchestrates the overlay system, and provides the backbone of the
-entire app ecosystem. At roughly 280 source files and well over 100,000 lines in its
+entire app ecosystem. At roughly 280 source files in its
 module tree, PMS is arguably the most complex subsystem in the entire Android framework.
 
 This chapter dissects PMS from the ground up: starting with the structure of an APK
@@ -721,7 +721,7 @@ private final FreeStorageHelper mFreeStorageHelper;
 
 This decomposition serves multiple purposes:
 
-1. **Readability** -- Helpers range from a few hundred to ~5,000 lines (`InstallPackageHelper` is the largest at ~5,300), though `PackageManagerService.java` itself still weighs in at ~8,800 lines
+1. **Readability** -- Helper sizes vary considerably, with `InstallPackageHelper` the largest, though `PackageManagerService.java` itself remains substantial
 2. **Testability** -- Helpers can be unit-tested in isolation
 3. **Lock discipline** -- Each helper clearly documents which locks it requires
 4. **Ownership** -- OWNERS files can assign different teams to different helpers
@@ -4805,8 +4805,7 @@ This chapter covered its critical subsystems:
 PMS has evolved significantly across Android versions. Understanding this evolution
 helps explain why the codebase looks the way it does:
 
-**Android 1.0-4.x (Pre-Lollipop):** PMS was a single monolithic Java file, over
-10,000 lines long. All scanning, installation, permission, and resolution logic
+**Android 1.0-4.x (Pre-Lollipop):** PMS was a single monolithic Java file. All scanning, installation, permission, and resolution logic
 was in one class.
 
 **Android 5.0 (Lollipop):** Introduction of ART replaced Dalvik, changing the
@@ -5720,8 +5719,8 @@ meaning it can be updated independently of the base system.
 packages/providers/MediaProvider/src/com/android/providers/media/MediaProvider.java
 ```
 
-At over 13,600 lines, `MediaProvider.java` is one of the largest single source
-files in AOSP.  It extends `ContentProvider` directly:
+`MediaProvider.java` is one of the largest single source files in AOSP.
+It extends `ContentProvider` directly:
 
 ```java
 // packages/providers/MediaProvider/.../MediaProvider.java (line 417)
@@ -8547,7 +8546,7 @@ foundations to its concrete implementations.  The key takeaways:
    provides efficient, URI-scoped change notifications that drive reactive
    UI patterns through `CursorLoader` and similar constructs.
 
-5. **System providers are highly specialized** -- MediaProvider (13,000+ lines),
+5. **System providers are highly specialized** -- MediaProvider,
    ContactsProvider (three-tier aggregation model), CalendarProvider (recurrence
    expansion), and SettingsProvider (call-based fast path with generation
    tracking) each solve distinct domain problems while sharing the common
@@ -8568,16 +8567,16 @@ foundations to its concrete implementations.  The key takeaways:
 
 | File | Description |
 |------|-------------|
-| `frameworks/base/core/java/android/content/ContentProvider.java` | Abstract base class (3,019 lines) |
-| `frameworks/base/core/java/android/content/ContentResolver.java` | Client-side facade (4,369 lines) |
-| `frameworks/base/core/java/android/content/ContentProviderNative.java` | Binder stub (976 lines) |
-| `frameworks/base/core/java/android/content/ContentProviderClient.java` | Per-authority client with ANR detection (908 lines) |
+| `frameworks/base/core/java/android/content/ContentProvider.java` | Abstract base class |
+| `frameworks/base/core/java/android/content/ContentResolver.java` | Client-side facade |
+| `frameworks/base/core/java/android/content/ContentProviderNative.java` | Binder stub |
+| `frameworks/base/core/java/android/content/ContentProviderClient.java` | Per-authority client with ANR detection |
 | `frameworks/base/core/java/android/content/IContentProvider.java` | IPC interface |
 | `frameworks/base/core/java/android/database/ContentObserver.java` | Change observer |
 | `frameworks/base/core/java/android/database/CursorWindow.java` | Shared-memory cursor window |
 | `frameworks/base/core/java/android/provider/DocumentsProvider.java` | SAF base class |
 | `frameworks/base/core/java/android/provider/DocumentsContract.java` | SAF contract constants |
-| `packages/providers/MediaProvider/src/.../MediaProvider.java` | MediaStore implementation (13,610 lines) |
+| `packages/providers/MediaProvider/src/.../MediaProvider.java` | MediaStore implementation |
 | `packages/providers/MediaProvider/src/.../LocalUriMatcher.java` | Media URI routing |
 | `packages/providers/MediaProvider/src/.../MediaVolume.java` | Volume representation |
 | `packages/providers/MediaProvider/src/.../scan/ModernMediaScanner.java` | Media file scanner |
@@ -8597,8 +8596,8 @@ The Android notification system is one of the platform's most complex subsystems
 A single `notify()` call from an application triggers a cascade of permission checks,
 channel lookups, signal extraction, ranking, Do Not Disturb filtering, listener
 dispatch, and finally UI rendering inside SystemUI. In Android 17 the core
-service `NotificationManagerService.java` alone exceeds 16,500 lines of code and
-coordinates with over 70 helper classes. This chapter traces the full lifecycle of a
+service `NotificationManagerService.java` is one of the largest classes in the
+framework and coordinates with over 70 helper classes. This chapter traces the full lifecycle of a
 notification from the public API down through the server-side pipeline, ranking
 engine, attention effects, and into the SystemUI shade, then closes with the new
 notification surfaces Android 17 adds: rich ongoing notifications, system-managed
@@ -11976,26 +11975,26 @@ echo "files in the notification server package"
 
 ### 28.24.16 Summary of Key Source Files
 
-| File | Lines | Role |
-|------|-------|------|
-| `NotificationManagerService.java` | ~16,500 | Central service |
-| `NotificationRecord.java` | ~2,200 | Server-side notification wrapper |
-| `PreferencesHelper.java` | ~3,300 | Channel and group storage |
-| `ZenModeHelper.java` | ~3,000 | DND state machine |
-| `ZenModeFiltering.java` | ~570 | DND intercept decisions |
-| `RankingHelper.java` | ~200 | Signal extraction orchestrator |
-| `NotificationAttentionHelper.java` | ~2,000 | Sound, vibration, LED, polite strategy |
-| `GroupHelper.java` | ~2,100 | Auto-grouping / force-grouping logic |
-| `SnoozeHelper.java` | ~630 | Snooze state management |
-| `ShortcutHelper.java` | ~280 | Conversation shortcut queries |
-| `ManagedServices.java` | ~2,500 | Listener/assistant lifecycle |
-| `ValidateNotificationPeople.java` | ~720 | Contact resolution |
-| `BubbleExtractor.java` | ~230 | Bubble eligibility |
-| `ImportanceExtractor.java` | ~58 | Importance calculation |
-| `ZenModeExtractor.java` | ~67 | DND intercept signal |
-| `NotificationShellCmd.java` | ~800 | ADB shell interface |
-| `NotificationStackScrollLayout.java` | ~5,000+ | SystemUI shade container |
-| `BubbleController.java` | ~2,000+ | WM Shell bubble management |
+| File | Role |
+|------|------|
+| `NotificationManagerService.java` | Central service |
+| `NotificationRecord.java` | Server-side notification wrapper |
+| `PreferencesHelper.java` | Channel and group storage |
+| `ZenModeHelper.java` | DND state machine |
+| `ZenModeFiltering.java` | DND intercept decisions |
+| `RankingHelper.java` | Signal extraction orchestrator |
+| `NotificationAttentionHelper.java` | Sound, vibration, LED, polite strategy |
+| `GroupHelper.java` | Auto-grouping / force-grouping logic |
+| `SnoozeHelper.java` | Snooze state management |
+| `ShortcutHelper.java` | Conversation shortcut queries |
+| `ManagedServices.java` | Listener/assistant lifecycle |
+| `ValidateNotificationPeople.java` | Contact resolution |
+| `BubbleExtractor.java` | Bubble eligibility |
+| `ImportanceExtractor.java` | Importance calculation |
+| `ZenModeExtractor.java` | DND intercept signal |
+| `NotificationShellCmd.java` | ADB shell interface |
+| `NotificationStackScrollLayout.java` | SystemUI shade container |
+| `BubbleController.java` | WM Shell bubble management |
 
 ---
 
@@ -12095,9 +12094,10 @@ The Android notification system is a deeply layered pipeline that transforms a
 simple `notify()` call into a carefully ranked, policy-filtered, attention-managed
 user experience. The key architectural insights from this chapter:
 
-1. **NotificationManagerService** is the central hub. At over 16,500 lines, it
-   coordinates permission checks, channel lookups, signal extraction, ranking,
-   DND filtering, attention effects, and listener dispatch.
+1. **NotificationManagerService** is the central hub. It is one of the largest
+   classes in the framework, coordinating permission checks, channel lookups,
+   signal extraction, ranking, DND filtering, attention effects, and listener
+   dispatch.
 
 2. **The signal extractor pipeline** provides a modular, extensible architecture.
    Each extractor writes a specific signal onto the `NotificationRecord`, and the
@@ -12160,7 +12160,7 @@ For quick reference, the complete set of source files discussed in this chapter:
 **Server-side (system_server):**
 ```
 frameworks/base/services/core/java/com/android/server/notification/
-    NotificationManagerService.java        -- Central service (16,500+ lines)
+    NotificationManagerService.java        -- Central service
     NotificationRecord.java               -- Server-side notification wrapper
     PreferencesHelper.java                -- Channel and group storage
     RankingHelper.java                    -- Signal extraction orchestrator
@@ -18037,7 +18037,7 @@ graph TD
 
 **Source path**: `frameworks/base/apex/jobscheduler/service/java/com/android/server/alarm/AlarmManagerService.java`
 
-The `AlarmManagerService` is a large, complex service (5600+ lines) that has
+The `AlarmManagerService` is a large, complex service that has
 evolved significantly over Android's history. Key imports reveal its
 responsibilities:
 
@@ -25294,13 +25294,11 @@ adb logcat -s SyncManager:V SyncJobService:V
 Explore the account and sync source code:
 
 ```bash
-# Count AccountManagerService lines
+# Count AccountManagerService lines -- expect a very large file
 wc -l frameworks/base/services/core/java/com/android/server/accounts/AccountManagerService.java
-# Typically 6000+ lines
 
-# Count SyncManager lines
+# Count SyncManager lines -- also substantial, though smaller
 wc -l frameworks/base/services/core/java/com/android/server/content/SyncManager.java
-# Typically 3000+ lines
 
 # Find all AIDL interfaces for accounts
 find frameworks/base/core/java/android/accounts/ -name "*.aidl"
@@ -25331,8 +25329,8 @@ grep "DEF_" \
 
 **What to observe:**
 
-- The complexity of `AccountManagerService` (6000+ lines managing multi-user
-  accounts, authenticator bindings, and token caching)
+- The complexity of `AccountManagerService`, which manages multi-user
+  accounts, authenticator bindings, and token caching
 - The tight coupling between `SyncManager` and `JobScheduler`
 - The XML/Proto-based persistence in `SyncStorageEngine`
 - The breadth of sync configuration options (backoff, retry, periodic, flex)
@@ -25716,7 +25714,6 @@ The control surface for any provider is the package-private
 interface that apps invoke via `Context.getSystemService(Context.LOCATION_SERVICE)`.
 
 **Source:** `frameworks/base/services/core/java/com/android/server/location/LocationManagerService.java`
-(2073 lines in Android 17).
 
 ### 33.2.1  Fields and Data Structures
 
@@ -25908,7 +25905,7 @@ When the mode changes, LMS:
 ### 33.2.8  The LocationProviderManager
 
 `LocationProviderManager` (LPM) is the heart of the request-multiplexing
-logic.  At 3123 lines, it is the largest single class in the location package.
+logic.  It is the largest single class in the location package.
 Each instance manages a single named provider.
 
 Key responsibilities:
@@ -26413,7 +26410,6 @@ The native side is the `libservices.core-gnss` static library (sources under
 standalone GNSS JNI shared library.
 
 **Source:** `frameworks/base/services/core/java/com/android/server/location/gnss/hal/GnssNative.java`
-(1762 lines in Android 17).
 
 `GnssNative` defines callback interfaces that components register to
 receive HAL events:
@@ -26466,7 +26462,6 @@ a dozen callback interfaces from `GnssNative`.  It is the concrete provider
 that LMS registers under `GPS_PROVIDER`.
 
 **Source:** `frameworks/base/services/core/java/com/android/server/location/gnss/GnssLocationProvider.java`
-(1883 lines in Android 17).
 
 #### Provider Properties
 
@@ -26692,7 +26687,6 @@ present, registers itself with `mGnssNative.setGnssAssistanceCallbacks(this)` so
 the HAL can request structured assistance data (§33.10.5).
 
 **Source:** `frameworks/base/services/core/java/com/android/server/location/gnss/GnssManagerService.java`
-(465 lines).
 
 The GNSS-specific APIs that pass through `GnssManagerService`:
 

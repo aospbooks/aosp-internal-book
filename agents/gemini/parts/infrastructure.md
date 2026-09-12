@@ -8015,7 +8015,7 @@ image, all without flashing and all reversible.
 DSU reuses the same dynamic-partition and image-mapping machinery this chapter
 already covered for Virtual A/B (`libfiemap`'s `ImageManager`, `liblp` metadata,
 device-mapper). The piece unique to DSU is a small system daemon, **`gsid`**
-(roughly 3.3K lines of C++ in `system/gsid/`), that stages the image into those
+(in `system/gsid/`), that stages the image into those
 dynamic image files and arms the one-shot boot.
 
 ### 55.27.1 The gsid daemon and IGsiService
@@ -14096,7 +14096,7 @@ Results include:
 cycle.  It translates human-friendly test references into TradeFederation
 invocations.
 
-Source: `tools/asuite/atest/atest_main.py` (~1795 lines)
+Source: `tools/asuite/atest/atest_main.py`
 
 From the module docstring:
 
@@ -15675,7 +15675,7 @@ without requiring a device or emulator.  It provides a lightweight environment
 where Android framework classes execute directly on a JDK 21+ host JVM,
 dramatically reducing test execution time from minutes to seconds.
 
-Source: `build/soong/java/ravenwood.go` (~602 lines)
+Source: `build/soong/java/ravenwood.go`
 
 ### 57.8.2  Module Type: android_ravenwood_test
 
@@ -15965,8 +15965,8 @@ On a host JVM running on a Linux/Mac/Windows workstation, none of those exist.
 the host by providing minimal, in-process replacements for the parts of the
 graphics stack it depends on.
 
-Source: `frameworks/base/libs/hostgraphics/` (~435 lines of C++ across five
-files, plus 9 header shims in `include/gui/` and `include/ui/`).
+Source: `frameworks/base/libs/hostgraphics/` (five C++ files, plus 9 header
+shims in `include/gui/` and `include/ui/`).
 
 The library is wired in as a static dependency under the `host:` target of
 `libhwui`'s `Android.bp`:
@@ -15989,13 +15989,13 @@ and `libhostgraphics` provides the symbols the host build needs.
 
 #### The five stub translation units
 
-| File | Lines | What it stubs |
-|------|-------|---------------|
-| `ANativeWindow.cpp` | 106 | The `ANativeWindow_*` C-API. Each function forwards directly to the underlying window's vtable (`window->perform`, `window->query`, `window->dequeueBuffer`, `incStrong`/`decStrong`) instead of going through `libnativewindow`. |
-| `HostBufferQueue.cpp` | 110 | A `HostBufferQueue` class that implements both `IGraphicBufferProducer` and `IGraphicBufferConsumer` over a single `GraphicBuffer`. `BufferQueue::createBufferQueue` returns the same object as both producer and consumer. |
-| `ADisplay.cpp` | 163 | A hardcoded 1080x1920@60 display config exposed through the `apex/display.h` `ADisplay_*` C-API. No HWC, no VSYNC offsets, no multi-display logic. |
-| `Fence.cpp` | 23 | Defines the `Fence::NO_FENCE` singleton, since `libui`'s `Fence.cpp` is not linked in. |
-| `PublicFormat.cpp` | 33 | No-op mapping functions between `PublicFormat`, HAL formats, and dataspaces (always returns the input value cast). |
+| File | What it stubs |
+|------|---------------|
+| `ANativeWindow.cpp` | The `ANativeWindow_*` C-API. Each function forwards directly to the underlying window's vtable (`window->perform`, `window->query`, `window->dequeueBuffer`, `incStrong`/`decStrong`) instead of going through `libnativewindow`. |
+| `HostBufferQueue.cpp` | A `HostBufferQueue` class that implements both `IGraphicBufferProducer` and `IGraphicBufferConsumer` over a single `GraphicBuffer`. `BufferQueue::createBufferQueue` returns the same object as both producer and consumer. |
+| `ADisplay.cpp` | A hardcoded 1080x1920@60 display config exposed through the `apex/display.h` `ADisplay_*` C-API. No HWC, no VSYNC offsets, no multi-display logic. |
+| `Fence.cpp` | Defines the `Fence::NO_FENCE` singleton, since `libui`'s `Fence.cpp` is not linked in. |
+| `PublicFormat.cpp` | No-op mapping functions between `PublicFormat`, HAL formats, and dataspaces (always returns the input value cast). |
 
 The interesting case is `HostBufferQueue`. On device, producer (the app/hwui
 side) and consumer (SurfaceFlinger or a `BufferItemConsumer`) live in different
@@ -16151,7 +16151,7 @@ of Android framework classes, intercepting calls at the bytecode level.
 Source locations:
 ```
 external/robolectric/           -- Upstream Robolectric source
-build/soong/java/robolectric.go -- Build system integration (444 lines)
+build/soong/java/robolectric.go -- Build system integration
 ```
 
 ### 57.9.2  Module Type: android_robolectric_test

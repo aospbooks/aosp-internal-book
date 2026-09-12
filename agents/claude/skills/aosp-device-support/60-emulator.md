@@ -2461,7 +2461,7 @@ GUI features of the Android Studio emulator.
 
 Cuttlefish's default VMM is **crosvm** (Chrome OS Virtual Machine monitor),
 a Rust-based VMM originally developed for Chrome OS. The VM manager code at
-`device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp` (1093 lines)
+`device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp`
 constructs the crosvm command line with all virtio device parameters.
 
 #### Virtio Device Map

@@ -294,7 +294,7 @@ definitions, never `allow` or `neverallow` statements.  Those go in
 ### 40.2.3  Domains and Attributes
 
 Attributes are groups of types.  They allow writing rules that apply to many
-domains at once.  From `system/sepolicy/public/attributes` (506 lines):
+domains at once.  From `system/sepolicy/public/attributes`:
 
 ```te
 # All types used for devices.
@@ -369,7 +369,7 @@ allow vold vold_exec:file { read getattr map execute entrypoint };
 
 ### 40.2.5  App Domain Assignment via seapp_contexts
 
-The file `system/sepolicy/private/seapp_contexts` (222 lines) maps
+The file `system/sepolicy/private/seapp_contexts` maps
 applications to SELinux domains based on their properties:
 
 ```
@@ -408,7 +408,7 @@ policy but instead prevent anyone (including vendor policy authors) from
 writing rules that violate the stated invariant.  If a policy change would
 violate a neverallow, the build fails.
 
-From `system/sepolicy/private/app_neverallows.te` (338 lines), here are
+From `system/sepolicy/private/app_neverallows.te`, here are
 representative neverallow rules:
 
 ```te
@@ -583,7 +583,7 @@ use their own (`hwbinder_device`, `vndbinder_device`).
 
 ### 40.2.10  The App Domain Policy (private/app.te)
 
-The file `system/sepolicy/private/app.te` (903 lines) defines rules for all
+The file `system/sepolicy/private/app.te` defines rules for all
 zygote-spawned app processes.  Key categories of access:
 
 **Keystore access:**
@@ -3375,7 +3375,7 @@ shaped the way it is, and how `RecoverableKeyStoreManager` consumes it.
 
 #### What SecureBox Is
 
-`com.android.security.SecureBox` is a 461-line, dependency-free Java
+`com.android.security.SecureBox` is a compact, dependency-free Java
 class that implements an authenticated public-key + shared-secret hybrid
 encryption scheme over the NIST P-256 elliptic curve, AES-128-GCM, and
 HKDF-SHA-256. It exposes exactly five public methods:

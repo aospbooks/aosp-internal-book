@@ -27,7 +27,7 @@ The Javadoc in the source captures this precisely:
 > BroadcastReceiver components, and startService or bindService to communicate with a
 > background Service."
 
-The Intent class itself is over 13,000 lines long, containing hundreds of standard
+The Intent class itself is enormous, containing hundreds of standard
 action constants, category constants, extra key definitions, and flag declarations. The
 actual data carried by an individual Intent instance, however, fits into a compact set of
 private fields (around line 8129 in the source):
@@ -3709,7 +3709,7 @@ Key source files examined:
 
 | File | Purpose |
 |------|---------|
-| `frameworks/base/core/java/android/content/Intent.java` | Intent class (~13.8K lines) |
+| `frameworks/base/core/java/android/content/Intent.java` | Intent class |
 | `frameworks/base/core/java/android/content/IntentFilter.java` | Filter matching |
 | `frameworks/base/core/java/android/app/PendingIntent.java` | Deferred intent tokens |
 | `frameworks/base/core/java/android/content/pm/ResolveInfo.java` | Resolution results |

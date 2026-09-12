@@ -3577,22 +3577,22 @@ updatable, but it all runs in the same process.
 
 ### 20.24.1 Source File Index
 
-| File Path | Lines | Purpose |
-|-----------|-------|---------|
-| `frameworks/base/services/java/com/android/server/SystemServer.java` | ~3860 | Entry point, startup orchestration |
-| `frameworks/base/services/core/java/com/android/server/SystemService.java` | ~700 | Service base class, boot phase constants |
-| `frameworks/base/services/core/java/com/android/server/SystemServiceManager.java` | ~840 | Service lifecycle management |
-| `frameworks/base/services/core/java/com/android/server/Watchdog.java` | ~1200 | Deadlock detection, thread monitoring |
-| `frameworks/base/core/java/com/android/server/ServiceThread.java` | 52 | Handler thread base class |
-| `frameworks/base/services/core/java/com/android/server/DisplayThread.java` | 79 | Display operations thread |
-| `frameworks/base/services/core/java/com/android/server/AnimationThread.java` | 76 | Window animation thread |
-| `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimationThread.java` | 76 | Lock-free surface animation |
-| `frameworks/base/services/core/java/com/android/server/UiThread.java` | 89 | System UI thread |
-| `frameworks/base/core/java/com/android/server/FgThread.java` | 69 | Foreground operations thread |
-| `frameworks/base/services/core/java/com/android/server/IoThread.java` | 59 | I/O operations thread |
-| `frameworks/base/core/java/com/android/internal/os/BackgroundThread.java` | 104 | Background operations thread |
-| `frameworks/base/services/core/java/com/android/server/PermissionThread.java` | 72 | Permission operations thread |
-| `frameworks/base/services/core/java/com/android/server/SystemServerInitThreadPool.java` | ~240 | Boot-time parallel init pool |
+| File Path | Purpose |
+|-----------|---------|
+| `frameworks/base/services/java/com/android/server/SystemServer.java` | Entry point, startup orchestration |
+| `frameworks/base/services/core/java/com/android/server/SystemService.java` | Service base class, boot phase constants |
+| `frameworks/base/services/core/java/com/android/server/SystemServiceManager.java` | Service lifecycle management |
+| `frameworks/base/services/core/java/com/android/server/Watchdog.java` | Deadlock detection, thread monitoring |
+| `frameworks/base/core/java/com/android/server/ServiceThread.java` | Handler thread base class |
+| `frameworks/base/services/core/java/com/android/server/DisplayThread.java` | Display operations thread |
+| `frameworks/base/services/core/java/com/android/server/AnimationThread.java` | Window animation thread |
+| `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimationThread.java` | Lock-free surface animation |
+| `frameworks/base/services/core/java/com/android/server/UiThread.java` | System UI thread |
+| `frameworks/base/core/java/com/android/server/FgThread.java` | Foreground operations thread |
+| `frameworks/base/services/core/java/com/android/server/IoThread.java` | I/O operations thread |
+| `frameworks/base/core/java/com/android/internal/os/BackgroundThread.java` | Background operations thread |
+| `frameworks/base/services/core/java/com/android/server/PermissionThread.java` | Permission operations thread |
+| `frameworks/base/services/core/java/com/android/server/SystemServerInitThreadPool.java` | Boot-time parallel init pool |
 
 ### 20.24.2 Boot Phase Quick Reference
 

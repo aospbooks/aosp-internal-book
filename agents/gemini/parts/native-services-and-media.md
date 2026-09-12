@@ -353,8 +353,8 @@ organized into the following structure:
 | `Tracing/` | Perfetto integration for layer and transaction tracing |
 | `Utils/` | Shared utilities (fences, dumpers) |
 
-The main implementation spans over **10,600 lines** in `SurfaceFlinger.cpp`
-alone. The header at `SurfaceFlinger.h` reveals the class hierarchy:
+The main implementation lives in `SurfaceFlinger.cpp`. The header at
+`SurfaceFlinger.h` reveals the class hierarchy:
 
 > `frameworks/native/services/surfaceflinger/SurfaceFlinger.h`
 
@@ -4991,7 +4991,7 @@ EGLDisplay eglGetDisplay(EGLNativeDisplayType display) {
 }
 ```
 
-This pattern repeats throughout `eglApi.cpp` (~660 lines). The `platform` table can point
+This pattern repeats throughout `eglApi.cpp`. The `platform` table can point
 either directly to the vendor driver or through optional EGL layers (used for debugging,
 validation, or ANGLE interposition).
 
@@ -5069,8 +5069,8 @@ with SurfaceFlinger.
 ### 13.2.8 The MultifileBlobCache
 
 Shader compilation is expensive. AOSP implements a persistent shader cache via
-`MultifileBlobCache` (in `frameworks/native/opengl/libs/EGL/MultifileBlobCache.cpp`,
-~1,050 lines). This cache:
+`MultifileBlobCache` (in `frameworks/native/opengl/libs/EGL/MultifileBlobCache.cpp`).
+This cache:
 
 - Stores compiled shader binaries on disk across app launches
 - Uses a multi-file layout (one file per cache entry) for robustness
@@ -6104,7 +6104,7 @@ enum class CanvasOpType : int8_t {
 
 ### 13.6.4 RenderNode: The View Tree Mirror
 
-`RenderNode` (`RenderNode.h`, ~470 lines) is the native counterpart of a Java `View`.
+`RenderNode` (`RenderNode.h`) is the native counterpart of a Java `View`.
 Each `View` in the UI hierarchy has a corresponding `RenderNode` that stores:
 
 1. **RenderProperties** -- visual properties (position, transform, alpha, clip, etc.)
@@ -6158,7 +6158,7 @@ on the property data.
 
 ### 13.6.6 RenderProperties: The Full Property Set
 
-`RenderProperties.h` (627 lines) contains the complete set of visual properties for
+`RenderProperties.h` contains the complete set of visual properties for
 a RenderNode:
 
 ```cpp
@@ -6372,7 +6372,7 @@ void RenderThread::extendedFrameCallback(
 
 ### 13.7.5 EglManager
 
-`EglManager.cpp` (789 lines) manages the EGL context for the SkiaGL pipeline. Key
+`EglManager.cpp` manages the EGL context for the SkiaGL pipeline. Key
 operations:
 
 **Initialization** (line 109):
@@ -6517,7 +6517,7 @@ void VulkanManager::setupDevice() {
 
 ### 13.7.7 CacheManager
 
-`CacheManager.cpp` (~380 lines) manages GPU memory budgets for the Skia GrDirectContext.
+`CacheManager.cpp` manages GPU memory budgets for the Skia GrDirectContext.
 It implements memory pressure responses at multiple levels:
 
 ```cpp
@@ -9372,52 +9372,52 @@ graph TD
 
 ### 13.39.1 OpenGL ES Stack
 
-| File | Path | Lines | Purpose |
-|------|------|-------|---------|
-| `eglApi.cpp` | `frameworks/native/opengl/libs/EGL/` | ~660 | EGL API entry points |
-| `egl.cpp` | `frameworks/native/opengl/libs/EGL/` | ~220 | Driver initialization |
-| `egl_platform_entries.cpp` | `frameworks/native/opengl/libs/EGL/` | ~2,700 | Platform EGL implementation |
-| `Loader.cpp` | `frameworks/native/opengl/libs/EGL/` | ~800 | Driver loading |
-| `MultifileBlobCache.cpp` | `frameworks/native/opengl/libs/EGL/` | ~1,050 | Shader cache |
-| `egl_display.cpp` | `frameworks/native/opengl/libs/EGL/` | ~560 | Display management |
-| `egl_object.cpp` | `frameworks/native/opengl/libs/EGL/` | ~350 | Object reference counting |
-| `gl2.cpp` | `frameworks/native/opengl/libs/GLES2/` | ~300 | GLES2 trampolines |
+| File | Path | Purpose |
+|------|------|---------|
+| `eglApi.cpp` | `frameworks/native/opengl/libs/EGL/` | EGL API entry points |
+| `egl.cpp` | `frameworks/native/opengl/libs/EGL/` | Driver initialization |
+| `egl_platform_entries.cpp` | `frameworks/native/opengl/libs/EGL/` | Platform EGL implementation |
+| `Loader.cpp` | `frameworks/native/opengl/libs/EGL/` | Driver loading |
+| `MultifileBlobCache.cpp` | `frameworks/native/opengl/libs/EGL/` | Shader cache |
+| `egl_display.cpp` | `frameworks/native/opengl/libs/EGL/` | Display management |
+| `egl_object.cpp` | `frameworks/native/opengl/libs/EGL/` | Object reference counting |
+| `gl2.cpp` | `frameworks/native/opengl/libs/GLES2/` | GLES2 trampolines |
 
 ### 13.39.2 Vulkan Stack
 
-| File | Path | Lines | Purpose |
-|------|------|-------|---------|
-| `api.cpp` | `frameworks/native/vulkan/libvulkan/` | ~1,550 | API layer / layer management |
-| `driver.cpp` | `frameworks/native/vulkan/libvulkan/` | ~2,100 | Driver loading / HAL interface |
-| `swapchain.cpp` | `frameworks/native/vulkan/libvulkan/` | ~3,500 | Swapchain ↔ ANativeWindow |
-| `layers_extensions.cpp` | `frameworks/native/vulkan/libvulkan/` | ~710 | Layer/extension discovery |
-| `api_gen.cpp` | `frameworks/native/vulkan/libvulkan/` | ~3,260 | Generated dispatch |
-| `driver_gen.cpp` | `frameworks/native/vulkan/libvulkan/` | ~1,050 | Generated driver dispatch |
-| `null_driver.cpp` | `frameworks/native/vulkan/nulldrv/` | ~1,840 | Null driver for testing |
-| `vkprofiles.cpp` | `frameworks/native/vulkan/vkprofiles/` | ~225 | Android baseline profiles |
+| File | Path | Purpose |
+|------|------|---------|
+| `api.cpp` | `frameworks/native/vulkan/libvulkan/` | API layer / layer management |
+| `driver.cpp` | `frameworks/native/vulkan/libvulkan/` | Driver loading / HAL interface |
+| `swapchain.cpp` | `frameworks/native/vulkan/libvulkan/` | Swapchain ↔ ANativeWindow |
+| `layers_extensions.cpp` | `frameworks/native/vulkan/libvulkan/` | Layer/extension discovery |
+| `api_gen.cpp` | `frameworks/native/vulkan/libvulkan/` | Generated dispatch |
+| `driver_gen.cpp` | `frameworks/native/vulkan/libvulkan/` | Generated driver dispatch |
+| `null_driver.cpp` | `frameworks/native/vulkan/nulldrv/` | Null driver for testing |
+| `vkprofiles.cpp` | `frameworks/native/vulkan/vkprofiles/` | Android baseline profiles |
 
 ### 13.39.3 HWUI Stack
 
-| File | Path | Lines | Purpose |
-|------|------|-------|---------|
-| `RenderNode.h` | `frameworks/base/libs/hwui/` | ~470 | View mirror in native |
-| `RenderProperties.h` | `frameworks/base/libs/hwui/` | ~630 | Visual property storage |
-| `Canvas.h` | `frameworks/base/libs/hwui/hwui/` | ~300 | Abstract drawing API |
-| `SkiaCanvas.h` | `frameworks/base/libs/hwui/` | ~240 | Skia Canvas implementation |
-| `DisplayList.h` | `frameworks/base/libs/hwui/` | ~345 | Command stream container |
-| `CanvasOpTypes.h` | `frameworks/base/libs/hwui/canvas/` | ~75 | Operation type enum |
-| `RenderThread.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~510 | Singleton render thread |
-| `DrawFrameTask.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~225 | Frame sync + draw task |
-| `CanvasContext.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~1,380 | Window rendering coordinator |
-| `EglManager.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~790 | EGL context management |
-| `VulkanManager.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~910 | Vulkan context management |
-| `VulkanSurface.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~570 | Vulkan window surface |
-| `CacheManager.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~380 | GPU memory management |
-| `SkiaOpenGLPipeline.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | ~305 | GL rendering pipeline |
-| `SkiaVulkanPipeline.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | ~225 | Vulkan rendering pipeline |
-| `SkiaGpuPipeline.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | ~195 | Common GPU pipeline |
-| `RenderNodeDrawable.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | ~510 | Node drawing logic |
-| `RenderProxy.cpp` | `frameworks/base/libs/hwui/renderthread/` | ~600 | UI thread proxy |
+| File | Path | Purpose |
+|------|------|---------|
+| `RenderNode.h` | `frameworks/base/libs/hwui/` | View mirror in native |
+| `RenderProperties.h` | `frameworks/base/libs/hwui/` | Visual property storage |
+| `Canvas.h` | `frameworks/base/libs/hwui/hwui/` | Abstract drawing API |
+| `SkiaCanvas.h` | `frameworks/base/libs/hwui/` | Skia Canvas implementation |
+| `DisplayList.h` | `frameworks/base/libs/hwui/` | Command stream container |
+| `CanvasOpTypes.h` | `frameworks/base/libs/hwui/canvas/` | Operation type enum |
+| `RenderThread.cpp` | `frameworks/base/libs/hwui/renderthread/` | Singleton render thread |
+| `DrawFrameTask.cpp` | `frameworks/base/libs/hwui/renderthread/` | Frame sync + draw task |
+| `CanvasContext.cpp` | `frameworks/base/libs/hwui/renderthread/` | Window rendering coordinator |
+| `EglManager.cpp` | `frameworks/base/libs/hwui/renderthread/` | EGL context management |
+| `VulkanManager.cpp` | `frameworks/base/libs/hwui/renderthread/` | Vulkan context management |
+| `VulkanSurface.cpp` | `frameworks/base/libs/hwui/renderthread/` | Vulkan window surface |
+| `CacheManager.cpp` | `frameworks/base/libs/hwui/renderthread/` | GPU memory management |
+| `SkiaOpenGLPipeline.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | GL rendering pipeline |
+| `SkiaVulkanPipeline.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | Vulkan rendering pipeline |
+| `SkiaGpuPipeline.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | Common GPU pipeline |
+| `RenderNodeDrawable.cpp` | `frameworks/base/libs/hwui/pipeline/skia/` | Node drawing logic |
+| `RenderProxy.cpp` | `frameworks/base/libs/hwui/renderthread/` | UI thread proxy |
 
 ### 13.39.4 System Properties Reference
 
@@ -11260,20 +11260,20 @@ timestamps reveals exactly where time was spent in each frame phase.
 This chapter has traced Android's graphics pipeline from application code to display
 hardware, examining every layer in detail:
 
-| Layer | Key Files | Lines of Code |
-|-------|-----------|---------------|
-| EGL/GLES Loader | `eglApi.cpp`, `egl.cpp`, `Loader.cpp` | ~1,700 |
-| MultifileBlobCache | `MultifileBlobCache.cpp/.h` | ~1,300 |
-| Vulkan Loader | `api.cpp`, `driver.cpp`, `swapchain.cpp` | ~7,200 |
-| HWUI Core | `RenderNode.h`, `RenderProperties.h`, `Canvas.h` | ~1,400 |
-| HWUI Display List | `DisplayList.h`, `CanvasOpTypes.h` | ~420 |
-| RenderThread | `RenderThread.cpp`, `DrawFrameTask.cpp` | ~740 |
-| EglManager | `EglManager.cpp` | ~790 |
-| VulkanManager | `VulkanManager.cpp` | ~910 |
-| CacheManager | `CacheManager.cpp` | ~380 |
-| SkiaGL Pipeline | `SkiaOpenGLPipeline.cpp` | ~305 |
-| SkiaVulkan Pipeline | `SkiaVulkanPipeline.cpp` | ~225 |
-| Skia (external) | `src/gpu/ganesh/`, `include/core/` | ~500,000+ |
+| Layer | Key Files |
+|-------|-----------|
+| EGL/GLES Loader | `eglApi.cpp`, `egl.cpp`, `Loader.cpp` |
+| MultifileBlobCache | `MultifileBlobCache.cpp/.h` |
+| Vulkan Loader | `api.cpp`, `driver.cpp`, `swapchain.cpp` |
+| HWUI Core | `RenderNode.h`, `RenderProperties.h`, `Canvas.h` |
+| HWUI Display List | `DisplayList.h`, `CanvasOpTypes.h` |
+| RenderThread | `RenderThread.cpp`, `DrawFrameTask.cpp` |
+| EglManager | `EglManager.cpp` |
+| VulkanManager | `VulkanManager.cpp` |
+| CacheManager | `CacheManager.cpp` |
+| SkiaGL Pipeline | `SkiaOpenGLPipeline.cpp` |
+| SkiaVulkan Pipeline | `SkiaVulkanPipeline.cpp` |
+| Skia (external) | `src/gpu/ganesh/`, `include/core/` |
 
 The architecture reflects decades of evolution:
 
@@ -11415,17 +11415,17 @@ sequenceDiagram
 
 ### 14.1.4 Key Source Directories
 
-| Directory | Contents | Lines (approx) |
-|---|---|---|
-| `frameworks/base/core/java/android/view/animation/` | View Animation classes | ~5,800 |
-| `frameworks/base/core/java/android/animation/` | Property Animation framework | ~13,400 |
-| `frameworks/base/core/java/android/transition/` | Transition Framework | ~9,200 |
-| `frameworks/base/libs/hwui/` (Animator*) | Native HWUI animators | ~830 |
-| `frameworks/base/core/java/android/view/Choreographer.java` | Timing pulse | 1,741 |
-| `frameworks/base/services/core/java/com/android/server/wm/` (anim) | WM animation infrastructure | ~2,400 |
-| `frameworks/base/libs/WindowManager/Shell/src/.../transition/` | Shell transitions | ~12,100 |
-| `frameworks/base/libs/WindowManager/Shell/src/.../back/` | Predictive back | ~4,500 |
-| `frameworks/base/core/java/com/android/internal/dynamicanimation/animation/` | Physics animations | ~1,750 |
+| Directory | Contents |
+|---|---|
+| `frameworks/base/core/java/android/view/animation/` | View Animation classes |
+| `frameworks/base/core/java/android/animation/` | Property Animation framework |
+| `frameworks/base/core/java/android/transition/` | Transition Framework |
+| `frameworks/base/libs/hwui/` (Animator*) | Native HWUI animators |
+| `frameworks/base/core/java/android/view/Choreographer.java` | Timing pulse |
+| `frameworks/base/services/core/java/com/android/server/wm/` (anim) | WM animation infrastructure |
+| `frameworks/base/libs/WindowManager/Shell/src/.../transition/` | Shell transitions |
+| `frameworks/base/libs/WindowManager/Shell/src/.../back/` | Predictive back |
+| `frameworks/base/core/java/com/android/internal/dynamicanimation/animation/` | Physics animations |
 
 ### 14.1.5 Thread Model
 
@@ -11560,7 +11560,7 @@ Source directory:
 
 ### 14.2.2 The Animation Base Class
 
-The abstract class `Animation` (1,363 lines) defines the lifecycle:
+The abstract class `Animation` defines the lifecycle:
 
 ```
 // frameworks/base/core/java/android/view/animation/Animation.java, lines 40-98
@@ -11736,7 +11736,7 @@ protected void applyTransformation(float interpolatedTime, Transformation t) {
 
 ### 14.2.5 AnimationSet
 
-`AnimationSet` (552 lines) groups multiple animations that play together.
+`AnimationSet` groups multiple animations that play together.
 Its `getTransformation()` iterates children in reverse order and calls
 `compose()` to concatenate their transformations:
 
@@ -12080,35 +12080,35 @@ UI-thread and RenderThread animations.
 
 ### 14.2.14 View Animation File Summary
 
-| File | Lines | Purpose |
-|---|---|---|
-| `Animation.java` | 1,363 | Abstract base class |
-| `AnimationSet.java` | 552 | Group of simultaneous animations |
-| `AnimationUtils.java` | ~400 | Loading helpers, currentAnimationTimeMillis |
-| `Transformation.java` | ~278 | Matrix + alpha container |
-| `AlphaAnimation.java` | 89 | Opacity animation |
-| `TranslateAnimation.java` | 241 | Position animation |
-| `RotateAnimation.java` | 183 | Rotation animation |
-| `ScaleAnimation.java` | 289 | Scale animation |
-| `ClipRectAnimation.java` | ~166 | Clip rect animation |
-| `ExtendAnimation.java` | ~180 | Edge extension animation |
-| `TranslateXAnimation.java` | ~55 | X-only translation (optimized) |
-| `TranslateYAnimation.java` | ~57 | Y-only translation (optimized) |
-| `PathInterpolator.java` | 245 | Bezier/path-based interpolation |
-| `AccelerateDecelerateInterpolator.java` | 48 | Default cosine ease |
-| `AccelerateInterpolator.java` | ~90 | Power-curve acceleration |
-| `DecelerateInterpolator.java` | ~86 | Power-curve deceleration |
-| `LinearInterpolator.java` | ~35 | Identity function |
-| `BounceInterpolator.java` | ~50 | Bounce at end |
-| `OvershootInterpolator.java` | ~81 | Cubic overshoot |
-| `AnticipateInterpolator.java` | ~78 | Wind-up before motion |
-| `AnticipateOvershootInterpolator.java` | ~108 | Combined wind-up and overshoot |
-| `CycleInterpolator.java` | ~70 | Sine cycle |
-| `BackGestureInterpolator.java` | ~26 | Back gesture curves |
-| `BaseInterpolator.java` | ~30 | Abstract base for interpolators |
-| `Interpolator.java` | ~31 | Interface extending TimeInterpolator |
-| `LayoutAnimationController.java` | ~437 | Staggered child animations |
-| `GridLayoutAnimationController.java` | ~426 | Grid-based staggered animations |
+| File | Purpose |
+|---|---|
+| `Animation.java` | Abstract base class |
+| `AnimationSet.java` | Group of simultaneous animations |
+| `AnimationUtils.java` | Loading helpers, currentAnimationTimeMillis |
+| `Transformation.java` | Matrix + alpha container |
+| `AlphaAnimation.java` | Opacity animation |
+| `TranslateAnimation.java` | Position animation |
+| `RotateAnimation.java` | Rotation animation |
+| `ScaleAnimation.java` | Scale animation |
+| `ClipRectAnimation.java` | Clip rect animation |
+| `ExtendAnimation.java` | Edge extension animation |
+| `TranslateXAnimation.java` | X-only translation (optimized) |
+| `TranslateYAnimation.java` | Y-only translation (optimized) |
+| `PathInterpolator.java` | Bezier/path-based interpolation |
+| `AccelerateDecelerateInterpolator.java` | Default cosine ease |
+| `AccelerateInterpolator.java` | Power-curve acceleration |
+| `DecelerateInterpolator.java` | Power-curve deceleration |
+| `LinearInterpolator.java` | Identity function |
+| `BounceInterpolator.java` | Bounce at end |
+| `OvershootInterpolator.java` | Cubic overshoot |
+| `AnticipateInterpolator.java` | Wind-up before motion |
+| `AnticipateOvershootInterpolator.java` | Combined wind-up and overshoot |
+| `CycleInterpolator.java` | Sine cycle |
+| `BackGestureInterpolator.java` | Back gesture curves |
+| `BaseInterpolator.java` | Abstract base for interpolators |
+| `Interpolator.java` | Interface extending TimeInterpolator |
+| `LayoutAnimationController.java` | Staggered child animations |
+| `GridLayoutAnimationController.java` | Grid-based staggered animations |
 
 ---
 
@@ -12123,7 +12123,7 @@ the property genuinely changes, so hit testing, layout, and accessibility
 all reflect the animated state.
 
 Source directory:
-`frameworks/base/core/java/android/animation/` (31 files, ~13,400 lines)
+`frameworks/base/core/java/android/animation/` (31 files)
 
 ### 14.3.2 Core Class Hierarchy
 
@@ -12184,7 +12184,7 @@ classDiagram
 
 ### 14.3.3 ValueAnimator Deep Dive
 
-`ValueAnimator.java` (1,776 lines) is the engine of property animation.
+`ValueAnimator.java` is the engine of property animation.
 
 **Key fields** (lines 96-279):
 
@@ -12273,7 +12273,7 @@ The core timing logic in `animateBasedOnTime()` (simplified):
 
 ### 14.3.5 ObjectAnimator
 
-`ObjectAnimator` (1,004 lines) extends `ValueAnimator` to set the animated
+`ObjectAnimator` extends `ValueAnimator` to set the animated
 value directly on a target object.  It resolves the target property through
 two mechanisms:
 
@@ -12304,7 +12304,7 @@ Common factory methods:
 
 ### 14.3.6 PropertyValuesHolder
 
-`PropertyValuesHolder` (1,729 lines) encapsulates one animated property:
+`PropertyValuesHolder` encapsulates one animated property:
 its name/Property reference, the setter/getter methods, the keyframe set,
 and the type evaluator.
 
@@ -12353,7 +12353,7 @@ Built-in evaluators:
 
 ### 14.3.8 AnimatorSet and the Dependency Graph
 
-`AnimatorSet` (2,272 lines) organizes multiple `Animator` instances into
+`AnimatorSet` organizes multiple `Animator` instances into
 a dependency graph using a node-based internal structure:
 
 ```mermaid
@@ -12382,7 +12382,7 @@ or ending child animators as needed.
 
 ### 14.3.9 AnimationHandler and Background Pausing
 
-`AnimationHandler` (515 lines) manages the per-thread animation loop.
+`AnimationHandler` manages the per-thread animation loop.
 
 Key mechanism -- **background pausing** (lines 271-287):  When all windows in
 a process go to the background, `AnimationHandler` pauses all infinite-duration
@@ -12573,31 +12573,31 @@ for Material Design elevation changes:
 
 ### 14.3.16 Property Animation File Summary
 
-| File | Lines | Purpose |
-|---|---|---|
-| `Animator.java` | ~930 | Abstract base for all animators |
-| `ValueAnimator.java` | 1,776 | Core timing engine |
-| `ObjectAnimator.java` | 1,004 | Property-targeting animator |
-| `AnimatorSet.java` | 2,272 | Multi-animator orchestration |
-| `PropertyValuesHolder.java` | 1,729 | Per-property value management |
-| `AnimationHandler.java` | 515 | Frame callback manager |
-| `Keyframe.java` | ~390 | Single time/value pair |
-| `KeyframeSet.java` | ~300 | Ordered keyframe collection |
-| `FloatKeyframeSet.java` | ~150 | Optimized float keyframes |
-| `IntKeyframeSet.java` | ~150 | Optimized int keyframes |
-| `PathKeyframes.java` | ~250 | Path-based keyframes |
-| `ArgbEvaluator.java` | ~150 | Color interpolation |
-| `FloatEvaluator.java` | ~40 | Float interpolation |
-| `IntEvaluator.java` | ~40 | Integer interpolation |
-| `PointFEvaluator.java` | ~60 | PointF interpolation |
-| `RectEvaluator.java` | ~70 | Rect interpolation |
-| `LayoutTransition.java` | ~1,545 | ViewGroup layout change animation |
-| `AnimatorInflater.java` | ~1,085 | XML resource loading |
-| `TimeAnimator.java` | ~100 | Raw frame timing |
-| `RevealAnimator.java` | ~60 | Circular reveal support |
-| `StateListAnimator.java` | ~330 | State-driven animations |
-| `TypeConverter.java` | ~60 | Type conversion support |
-| `BidirectionalTypeConverter.java` | ~40 | Two-way conversion |
+| File | Purpose |
+|---|---|
+| `Animator.java` | Abstract base for all animators |
+| `ValueAnimator.java` | Core timing engine |
+| `ObjectAnimator.java` | Property-targeting animator |
+| `AnimatorSet.java` | Multi-animator orchestration |
+| `PropertyValuesHolder.java` | Per-property value management |
+| `AnimationHandler.java` | Frame callback manager |
+| `Keyframe.java` | Single time/value pair |
+| `KeyframeSet.java` | Ordered keyframe collection |
+| `FloatKeyframeSet.java` | Optimized float keyframes |
+| `IntKeyframeSet.java` | Optimized int keyframes |
+| `PathKeyframes.java` | Path-based keyframes |
+| `ArgbEvaluator.java` | Color interpolation |
+| `FloatEvaluator.java` | Float interpolation |
+| `IntEvaluator.java` | Integer interpolation |
+| `PointFEvaluator.java` | PointF interpolation |
+| `RectEvaluator.java` | Rect interpolation |
+| `LayoutTransition.java` | ViewGroup layout change animation |
+| `AnimatorInflater.java` | XML resource loading |
+| `TimeAnimator.java` | Raw frame timing |
+| `RevealAnimator.java` | Circular reveal support |
+| `StateListAnimator.java` | State-driven animations |
+| `TypeConverter.java` | Type conversion support |
+| `BidirectionalTypeConverter.java` | Two-way conversion |
 
 ### 14.3.17 AnimationHandler.doAnimationFrame() Deep Dive
 
@@ -12782,7 +12782,7 @@ animations.  Rather than manually calculating from/to values, developers
 describe **what** to transition and the framework figures out **how**.
 
 Source directory:
-`frameworks/base/core/java/android/transition/` (33 files, ~9,200 lines)
+`frameworks/base/core/java/android/transition/` (33 files)
 
 ### 14.4.2 Core Concepts
 
@@ -12800,7 +12800,7 @@ graph TD
 
 ### 14.4.3 Transition Base Class
 
-`Transition.java` (2,451 lines) is the abstract base.  Each subclass must
+`Transition.java` is the abstract base.  Each subclass must
 implement two abstract methods and normally overrides a third:
 
 1. `captureStartValues(TransitionValues)` (abstract) -- Record property values before the scene change
@@ -12917,7 +12917,7 @@ a view appeared (became `VISIBLE` or was added) or disappeared (became
 
 ### 14.4.7 TransitionManager
 
-`TransitionManager` (470 lines) is the entry point for running transitions.
+`TransitionManager` is the entry point for running transitions.
 The most common API:
 
 ```java
@@ -13144,8 +13144,8 @@ element state between the calling and called activities.
 
 Key source files:
 
-- `frameworks/base/core/java/android/app/ActivityOptions.java` (~2,982 lines)
-- `frameworks/base/core/java/android/app/ActivityTransitionCoordinator.java` (~1,122 lines)
+- `frameworks/base/core/java/android/app/ActivityOptions.java`
+- `frameworks/base/core/java/android/app/ActivityTransitionCoordinator.java`
 - `frameworks/base/core/java/android/app/EnterTransitionCoordinator.java`
 - `frameworks/base/core/java/android/app/ExitTransitionCoordinator.java`
 
@@ -13271,7 +13271,7 @@ constants the table omits (`ANIM_DEFAULT` = 6, `ANIM_LAUNCH_TASK_BEHIND` = 7,
 
 ### 14.5.7 ActivityTransitionCoordinator
 
-The `ActivityTransitionCoordinator` (approximately 1,122 lines) manages the
+The `ActivityTransitionCoordinator` manages the
 complex handoff of shared element state between activities.  It handles:
 
 1. **View mapping**: Matching shared element names between activities
@@ -13362,19 +13362,19 @@ application's UI thread.
 
 Key source files in `frameworks/base/services/core/java/com/android/server/wm/`:
 
-| File | Lines | Purpose |
-|---|---|---|
-| `WindowAnimator.java` | 342 | Per-frame animation dispatch |
-| `SurfaceAnimator.java` | 640 | Leash-based surface animation |
-| `SurfaceAnimationRunner.java` | 338 | Lock-free animation execution |
-| `WindowAnimationSpec.java` | ~300 | Wraps legacy `Animation` for surfaces |
-| `LocalAnimationAdapter.java` | ~180 | Adapter for local animations |
-| `AnimationAdapter.java` | ~100 | Interface for animation implementations |
-| `WindowStateAnimator.java` | ~650 | Per-window animation state |
+| File | Purpose |
+|---|---|
+| `WindowAnimator.java` | Per-frame animation dispatch |
+| `SurfaceAnimator.java` | Leash-based surface animation |
+| `SurfaceAnimationRunner.java` | Lock-free animation execution |
+| `WindowAnimationSpec.java` | Wraps legacy `Animation` for surfaces |
+| `LocalAnimationAdapter.java` | Adapter for local animations |
+| `AnimationAdapter.java` | Interface for animation implementations |
+| `WindowStateAnimator.java` | Per-window animation state |
 
 ### 14.6.2 SurfaceAnimator and the Leash Pattern
 
-The `SurfaceAnimator` (640 lines) implements a key architectural pattern:
+The `SurfaceAnimator` implements a key architectural pattern:
 the **animation leash**.  Instead of directly animating a window's surface,
 it creates a temporary parent surface (the "leash"), reparents the window's
 children onto the leash, and hands the leash to the animation system:
@@ -13419,7 +13419,7 @@ reparented back to their original parent and the leash is destroyed.
 
 ### 14.6.3 SurfaceAnimationRunner
 
-`SurfaceAnimationRunner` (338 lines) executes animations **without holding
+`SurfaceAnimationRunner` executes animations **without holding
 the WindowManager lock**.  This is critical for performance -- the WM lock
 is heavily contended, and holding it during animation would cause jank:
 
@@ -13443,7 +13443,7 @@ frame rate.
 
 ### 14.6.4 WindowAnimator
 
-`WindowAnimator` (342 lines) is the per-frame dispatch coordinator.  It
+`WindowAnimator` is the per-frame dispatch coordinator.  It
 schedules Choreographer callbacks and manages the overall animation state.
 In Android 17 the per-frame timing is driven by a `Choreographer.VsyncCallback`
 (`mAnimationVsyncCallback`); the scheduling state is tracked with a boolean
@@ -13557,14 +13557,14 @@ graph TD
 
 The WM's `Transition.java` (distinct from the framework's
 `android.transition.Transition`) manages the server-side state machine for
-shell transitions.  At approximately 4,968 lines, it tracks:
+shell transitions.  It tracks:
 
 - Participating windows and tasks
 - Transition type (open, close, change, etc.)
 - Ready state and sync barriers
 - Animation state for each participant
 
-The `TransitionController` (approximately 2,241 lines) manages the lifecycle
+The `TransitionController` manages the lifecycle
 of all active transitions and coordinates with the Shell process.
 
 ---
@@ -13580,7 +13580,7 @@ enabling more sophisticated and customizable transitions.
 
 Source directory:
 `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/`
-(33 files, ~12,100 lines, plus a `tracing/` subpackage)
+(33 files, plus a `tracing/` subpackage)
 
 ### 14.7.2 Architecture
 
@@ -13609,7 +13609,7 @@ sequenceDiagram
 
 ### 14.7.3 Transitions.java
 
-`Transitions.java` (2,355 lines) is the central coordinator in the Shell
+`Transitions.java` is the central coordinator in the Shell
 process.  It receives transition callbacks from the WindowManager core through
 an inner `TransitionPlayerImpl extends ITransitionPlayer.Stub`; the outer class
 itself implements `RemoteCallable` and the Shell command handler interface:
@@ -13645,7 +13645,7 @@ graph TD
 
 ### 14.7.5 DefaultTransitionHandler
 
-`DefaultTransitionHandler` (1,208 lines) handles the common cases: app
+`DefaultTransitionHandler` handles the common cases: app
 launches, task switches, and activity closes.  It loads window animations
 from resources and applies them to `SurfaceControl` leashes:
 
@@ -13756,7 +13756,7 @@ transactions tied to gesture progress.
 
 Source directory:
 `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/back/`
-(14 files, ~4,500 lines)
+(14 files)
 
 ### 14.8.2 Architecture
 
@@ -13932,7 +13932,7 @@ run until the simulated system reaches equilibrium.
 
 Source directory:
 `frameworks/base/core/java/com/android/internal/dynamicanimation/animation/`
-(6 files, ~1,750 lines)
+(6 files)
 
 This is the platform's own internal copy of the physics-animation engine.  The
 API that apps compile against is the AndroidX `androidx.dynamicanimation`
@@ -14340,15 +14340,15 @@ garbage collection or heavy layout).
 
 Source files in `frameworks/base/libs/hwui/`:
 
-| File | Lines | Purpose |
-|---|---|---|
-| `Animator.cpp` | ~460 | Base animation engine |
-| `Animator.h` | ~280 | Animation class declarations |
-| `AnimatorManager.cpp` | ~207 | Per-RenderNode animation management |
-| `AnimatorManager.h` | ~80 | Manager declarations |
-| `Interpolator.cpp` | ~160 | Native interpolator implementations |
-| `AnimationContext.cpp` | ~140 | Frame timing context |
-| `PropertyValuesAnimatorSet.cpp` | ~200 | Multi-property animation set |
+| File | Purpose |
+|---|---|
+| `Animator.cpp` | Base animation engine |
+| `Animator.h` | Animation class declarations |
+| `AnimatorManager.cpp` | Per-RenderNode animation management |
+| `AnimatorManager.h` | Manager declarations |
+| `Interpolator.cpp` | Native interpolator implementations |
+| `AnimationContext.cpp` | Frame timing context |
+| `PropertyValuesAnimatorSet.cpp` | Multi-property animation set |
 
 ### 14.10.2 BaseRenderNodeAnimator
 
@@ -14442,7 +14442,7 @@ stateDiagram-v2
 
 ### 14.10.5 AnimatorManager
 
-`AnimatorManager` (207 lines) manages all animations attached to a single
+`AnimatorManager` manages all animations attached to a single
 `RenderNode`:
 
 ```
@@ -14468,7 +14468,7 @@ current frame.
 
 ### 14.10.6 Java-Side JNI Bridge
 
-On the Java side, `RenderNodeAnimator` (approximately 513 lines) wraps native
+On the Java side, `RenderNodeAnimator` wraps native
 HWUI animators.  Its clients are platform components that animate
 `RenderNode` properties directly -- `RippleDrawable` (via `RippleForeground`
 and `RippleAnimationSession`) and the circular-reveal `RevealAnimator` --
@@ -14636,7 +14636,7 @@ This is why a `RippleDrawable` ripple or an `AnimatedVectorDrawable`
 
 ### 14.11.1 AnimatedVectorDrawable
 
-`AnimatedVectorDrawable` (approximately 1,876 lines) animates the
+`AnimatedVectorDrawable` animates the
 individual properties of a `VectorDrawable` -- paths, groups, and fills.
 Starting from API 25, it runs on the **RenderThread** for jank-free
 performance:
@@ -14680,7 +14680,7 @@ graph TD
 
 ### 14.11.3 VectorDrawable Properties
 
-`VectorDrawable` (approximately 2,398 lines) exposes numerous animatable
+`VectorDrawable` exposes numerous animatable
 properties:
 
 | Property | Target | Description |
@@ -14840,7 +14840,7 @@ smooth without blocking the UI thread.
 
 ### 14.12.1 Overview
 
-`Choreographer` (1,741 lines) is the central timing coordinator for all
+`Choreographer` is the central timing coordinator for all
 UI-thread work in Android.  It receives VSYNC signals from the display
 subsystem and dispatches ordered callbacks that collectively produce each
 frame.
@@ -16501,32 +16501,32 @@ public void disableAnimations() {
 
 | Section | Primary Source Files |
 |---|---|
-| 14.2 View Animation | `frameworks/base/core/java/android/view/animation/Animation.java` (1,363 lines) |
-| | `frameworks/base/core/java/android/view/animation/AnimationSet.java` (552 lines) |
-| | `frameworks/base/core/java/android/view/animation/PathInterpolator.java` (245 lines) |
-| 14.3 Property Animation | `frameworks/base/core/java/android/animation/ValueAnimator.java` (1,776 lines) |
-| | `frameworks/base/core/java/android/animation/ObjectAnimator.java` (1,004 lines) |
-| | `frameworks/base/core/java/android/animation/AnimatorSet.java` (2,272 lines) |
-| | `frameworks/base/core/java/android/animation/PropertyValuesHolder.java` (1,729 lines) |
-| | `frameworks/base/core/java/android/animation/AnimationHandler.java` (515 lines) |
-| 14.4 Transition Framework | `frameworks/base/core/java/android/transition/Transition.java` (2,451 lines) |
-| | `frameworks/base/core/java/android/transition/TransitionManager.java` (470 lines) |
-| | `frameworks/base/core/java/android/transition/ChangeBounds.java` (~500 lines) |
-| | `frameworks/base/core/java/android/transition/Fade.java` (~200 lines) |
-| 14.6 WM Animations | `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimator.java` (640 lines) |
-| | `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimationRunner.java` (338 lines) |
-| | `frameworks/base/services/core/java/com/android/server/wm/WindowAnimator.java` (342 lines) |
-| 14.7 Shell Transitions | `frameworks/base/libs/WindowManager/Shell/src/.../transition/Transitions.java` (2,355 lines) |
-| | `frameworks/base/libs/WindowManager/Shell/src/.../transition/DefaultTransitionHandler.java` (1,208 lines) |
+| 14.2 View Animation | `frameworks/base/core/java/android/view/animation/Animation.java` |
+| | `frameworks/base/core/java/android/view/animation/AnimationSet.java` |
+| | `frameworks/base/core/java/android/view/animation/PathInterpolator.java` |
+| 14.3 Property Animation | `frameworks/base/core/java/android/animation/ValueAnimator.java` |
+| | `frameworks/base/core/java/android/animation/ObjectAnimator.java` |
+| | `frameworks/base/core/java/android/animation/AnimatorSet.java` |
+| | `frameworks/base/core/java/android/animation/PropertyValuesHolder.java` |
+| | `frameworks/base/core/java/android/animation/AnimationHandler.java` |
+| 14.4 Transition Framework | `frameworks/base/core/java/android/transition/Transition.java` |
+| | `frameworks/base/core/java/android/transition/TransitionManager.java` |
+| | `frameworks/base/core/java/android/transition/ChangeBounds.java` |
+| | `frameworks/base/core/java/android/transition/Fade.java` |
+| 14.6 WM Animations | `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimator.java` |
+| | `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimationRunner.java` |
+| | `frameworks/base/services/core/java/com/android/server/wm/WindowAnimator.java` |
+| 14.7 Shell Transitions | `frameworks/base/libs/WindowManager/Shell/src/.../transition/Transitions.java` |
+| | `frameworks/base/libs/WindowManager/Shell/src/.../transition/DefaultTransitionHandler.java` |
 | 14.8 Predictive Back | `frameworks/base/libs/WindowManager/Shell/src/.../back/BackAnimationController.java` |
 | 14.9 Physics Animation | `frameworks/base/core/java/com/android/internal/dynamicanimation/animation/SpringAnimation.java` |
 | | `frameworks/base/core/java/com/android/internal/dynamicanimation/animation/SpringForce.java` |
 | | `frameworks/base/core/java/com/android/internal/dynamicanimation/animation/DynamicAnimation.java` |
-| 14.10 HWUI Animation | `frameworks/base/libs/hwui/Animator.cpp` (~460 lines) |
-| | `frameworks/base/libs/hwui/AnimatorManager.cpp` (~207 lines) |
-| 14.11 Drawable Animation | `frameworks/base/graphics/java/android/graphics/drawable/AnimatedVectorDrawable.java` (~1,876 lines) |
-| | `frameworks/base/graphics/java/android/graphics/drawable/AnimatedImageDrawable.java` (~681 lines) |
-| 14.12 Choreographer | `frameworks/base/core/java/android/view/Choreographer.java` (1,741 lines) |
+| 14.10 HWUI Animation | `frameworks/base/libs/hwui/Animator.cpp` |
+| | `frameworks/base/libs/hwui/AnimatorManager.cpp` |
+| 14.11 Drawable Animation | `frameworks/base/graphics/java/android/graphics/drawable/AnimatedVectorDrawable.java` |
+| | `frameworks/base/graphics/java/android/graphics/drawable/AnimatedImageDrawable.java` |
+| 14.12 Choreographer | `frameworks/base/core/java/android/view/Choreographer.java` |
 | 14.14 Adaptive Refresh Rate | `frameworks/base/core/java/android/view/FrameRateVelocityPoint.java` |
 
 ### Glossary of Animation Terms
@@ -16671,8 +16671,8 @@ and low-latency MMAP paths for professional-grade recording. This chapter
 traces every layer of the stack from the Java `AudioTrack` API down to the
 Audio HAL silicon interface, using the actual source files from the AOSP tree.
 
-The core audio services live under `frameworks/av/` and consist of roughly
-50,000 lines of C++ in AudioFlinger alone, plus another 30,000 lines spanning
+The core audio services live under `frameworks/av/` and consist of a substantial
+amount of C++ in AudioFlinger alone, plus a comparable amount spanning
 the Audio Policy engine, AAudio/Oboe service, effects library, and head
 tracking pipeline. We will read key data structures, follow the mixing thread
 loop line by line, and explain every optimization -- from the FastMixer that
@@ -16716,9 +16716,9 @@ The `audioserver` process hosts three primary services:
 
 | Service | Binder interface | Source |
 |---------|-----------------|--------|
-| AudioFlinger | `IAudioFlinger` | `frameworks/av/services/audioflinger/AudioFlinger.cpp` (5,288 lines) |
-| AudioPolicyService | `IAudioPolicyService` | `frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp` (2,759 lines) |
-| AAudioService | `IAAudioService` | `frameworks/av/services/oboeservice/AAudioService.cpp` (527 lines) |
+| AudioFlinger | `IAudioFlinger` | `frameworks/av/services/audioflinger/AudioFlinger.cpp` |
+| AudioPolicyService | `IAudioPolicyService` | `frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp` |
+| AAudioService | `IAAudioService` | `frameworks/av/services/oboeservice/AAudioService.cpp` |
 
 AudioFlinger is registered first:
 
@@ -16949,16 +16949,16 @@ or sent directly to the HAL for hardware decode (offload path).
 
 AudioFlinger is the central mixing engine of Android audio. It is the single
 most complex component in the audio stack, with the core implementation spread
-across six source files totaling nearly 27,000 lines:
+across six source files:
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `AudioFlinger.cpp` | 5,288 | Service entry point, Binder methods |
-| `Threads.cpp` | 12,053 | All thread loop implementations |
-| `Tracks.cpp` | 4,057 | Track objects (playback, record, mmap) |
-| `Effects.cpp` | 3,898 | Effect chain management |
-| `PatchPanel.cpp` | 1,085 | Audio routing patches |
-| `fastpath/FastMixer.cpp` | 517 | Low-latency fast mixer path |
+| File | Purpose |
+|------|---------|
+| `AudioFlinger.cpp` | Service entry point, Binder methods |
+| `Threads.cpp` | All thread loop implementations |
+| `Tracks.cpp` | Track objects (playback, record, mmap) |
+| `Effects.cpp` | Effect chain management |
+| `PatchPanel.cpp` | Audio routing patches |
+| `fastpath/FastMixer.cpp` | Low-latency fast mixer path |
 
 The first five files are under `frameworks/av/services/audioflinger/`. The
 fast-path code has been split into a `fastpath/` subdirectory (`FastMixer.cpp`,
@@ -16966,7 +16966,7 @@ fast-path code has been split into a `fastpath/` subdirectory (`FastMixer.cpp`,
 helpers), and the audioflinger directory now also carries `afutils/`,
 `datapath/`, `sounddose/`, and `timing/` subdirectories for utility, HAL
 stream, sound-dose, and frame-counter helpers respectively. The thread classes
-themselves are declared in `Threads.h` (2,573 lines) and implemented in
+themselves are declared in `Threads.h` and implemented in
 `Threads.cpp`.
 
 ### 15.2.1 AudioFlinger Initialization
@@ -17411,7 +17411,7 @@ The FastMixer is a separate high-priority thread that bypasses the normal mixer
 loop for latency-sensitive tracks. It is defined in:
 
 ```
-frameworks/av/services/audioflinger/fastpath/FastMixer.cpp (517 lines)
+frameworks/av/services/audioflinger/fastpath/FastMixer.cpp
 ```
 
 The FastMixer design rules are strict (from the source header comment):
@@ -17544,7 +17544,7 @@ if (fastTrack->mVolumeProvider != nullptr) {
 The PatchPanel manages audio routing patches between sources and sinks:
 
 ```
-frameworks/av/services/audioflinger/PatchPanel.cpp (1,085 lines)
+frameworks/av/services/audioflinger/PatchPanel.cpp
 ```
 
 A patch connects audio ports -- it can be device-to-device (hardware patch),
@@ -18161,8 +18161,8 @@ which output device to use, how to handle volume, and when to create or close
 audio streams. The source resides in:
 
 ```
-frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp (2,759 lines)
-frameworks/av/services/audiopolicy/AudioPolicyInterface.h (782 lines)
+frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp
+frameworks/av/services/audiopolicy/AudioPolicyInterface.h
 ```
 
 ### 15.3.1 Architecture
@@ -18289,7 +18289,7 @@ static const char kAudioPolicyManagerCustomPath[] =
 
 ### 15.3.4 The AudioPolicyInterface
 
-The `AudioPolicyInterface` (782 lines) defines the contract between the
+The `AudioPolicyInterface` defines the contract between the
 AudioPolicyService and the AudioPolicyManager. Key categories:
 
 ```cpp
@@ -18688,7 +18688,7 @@ Organized into subdirectories:
 
 ### 15.4.1 AudioStream Base Class
 
-All AAudio streams derive from `AudioStream` (880 lines):
+All AAudio streams derive from `AudioStream`:
 
 ```cpp
 // AudioStream.cpp, line 54-59
@@ -19613,8 +19613,8 @@ The dynamics processing effect provides per-channel multi-band compression:
 
 ```
 frameworks/av/media/libeffects/dynamicsproc/
-  - dsp/DPBase.cpp (265 lines)
-  - dsp/DPFrequency.cpp (677 lines)
+  - dsp/DPBase.cpp
+  - dsp/DPFrequency.cpp
 ```
 
 It supports:
@@ -19878,13 +19878,13 @@ Android's spatial audio system creates an immersive 3D audio experience by
 rendering multichannel content with head tracking. The implementation spans
 multiple components:
 
-| Component | File | Lines |
-|-----------|------|-------|
-| Head Tracking Processor | `frameworks/av/media/libheadtracking/HeadTrackingProcessor.cpp` | 262 |
-| Sensor Pose Provider | `frameworks/av/media/libheadtracking/SensorPoseProvider.cpp` | 446 |
-| Spatializer (C++) | `frameworks/av/services/audiopolicy/service/Spatializer.cpp` | 1,339 |
-| Spatializer (Java) | `frameworks/base/media/java/android/media/Spatializer.java` | 1,121 |
-| SpatializerHelper (Java) | `frameworks/base/services/core/java/com/android/server/audio/SpatializerHelper.java` | 1,807 |
+| Component | File |
+|-----------|------|
+| Head Tracking Processor | `frameworks/av/media/libheadtracking/HeadTrackingProcessor.cpp` |
+| Sensor Pose Provider | `frameworks/av/media/libheadtracking/SensorPoseProvider.cpp` |
+| Spatializer (C++) | `frameworks/av/services/audiopolicy/service/Spatializer.cpp` |
+| Spatializer (Java) | `frameworks/base/media/java/android/media/Spatializer.java` |
+| SpatializerHelper (Java) | `frameworks/base/services/core/java/com/android/server/audio/SpatializerHelper.java` |
 
 ### 15.7.1 System Architecture
 
@@ -19936,7 +19936,7 @@ graph TB
 
 ### 15.7.2 Head Tracking Processor
 
-The `HeadTrackingProcessor` (262 lines) is the core pose computation engine:
+The `HeadTrackingProcessor` is the core pose computation engine:
 
 ```cpp
 // HeadTrackingProcessor.cpp, line 37-57
@@ -20071,7 +20071,7 @@ positions back in front of the listener.
 
 ### 15.7.6 Sensor Pose Provider
 
-The `SensorPoseProvider` (446 lines) interfaces with the Android sensor
+The `SensorPoseProvider` interfaces with the Android sensor
 framework to get head orientation data:
 
 ```cpp
@@ -20110,7 +20110,7 @@ class SensorEnableGuard {
 
 ### 15.7.7 Spatializer (Native)
 
-The Spatializer class (1,339 lines) ties everything together:
+The Spatializer class ties everything together:
 
 ```cpp
 // Spatializer.cpp, line 46-58
@@ -20603,7 +20603,7 @@ The native `AudioTrack` class is the primary client-side API for audio
 playback. It is defined in:
 
 ```
-frameworks/av/media/libaudioclient/AudioTrack.cpp (3,960 lines)
+frameworks/av/media/libaudioclient/AudioTrack.cpp
 ```
 
 #### Minimum Frame Count
@@ -20666,7 +20666,7 @@ because the time stretcher's pitch setting was not working correctly.
 The native `AudioRecord` class handles audio capture:
 
 ```
-frameworks/av/media/libaudioclient/AudioRecord.cpp (1,891 lines)
+frameworks/av/media/libaudioclient/AudioRecord.cpp
 ```
 
 Minimum frame count calculation:
@@ -20702,7 +20702,7 @@ application, the other is being filled by the HAL.
 point for both AudioFlinger and AudioPolicyService:
 
 ```
-frameworks/av/media/libaudioclient/AudioSystem.cpp (3,269 lines)
+frameworks/av/media/libaudioclient/AudioSystem.cpp
 ```
 
 It maintains service connection state:
@@ -20743,7 +20743,7 @@ Key static methods:
 The Java `AudioTrack` class is the most commonly used audio playback API:
 
 ```
-frameworks/base/media/java/android/media/AudioTrack.java (4,971 lines)
+frameworks/base/media/java/android/media/AudioTrack.java
 ```
 
 It wraps the native `AudioTrack` through JNI, adding:
@@ -22073,8 +22073,8 @@ The key architectural decisions that make it work:
    over hardware, with the IModule/IStream model supporting everything from
    simple codecs to complex DSP chains with MMAP support.
 
-The source files we examined total over 50,000 lines of C++ and represent
-some of the most performance-critical code in the entire Android platform.
+The source files we examined represent some of the most performance-critical
+code in the entire Android platform.
 Understanding this architecture is essential for anyone working on audio
 hardware integration, audio application performance optimization, or audio
 framework development.
@@ -22084,34 +22084,34 @@ framework development.
 The following table lists all major source files examined in this chapter,
 with their locations and sizes:
 
-| File | Path (relative to AOSP root) | Lines |
-|------|------------------------------|-------|
-| AudioFlinger.cpp | `frameworks/av/services/audioflinger/AudioFlinger.cpp` | 5,288 |
-| AudioFlinger.h | `frameworks/av/services/audioflinger/AudioFlinger.h` | 838 |
-| Threads.cpp | `frameworks/av/services/audioflinger/Threads.cpp` | 12,053 |
-| Threads.h | `frameworks/av/services/audioflinger/Threads.h` | 2,573 |
-| Tracks.cpp | `frameworks/av/services/audioflinger/Tracks.cpp` | 4,057 |
-| Effects.cpp | `frameworks/av/services/audioflinger/Effects.cpp` | 3,898 |
-| PatchPanel.cpp | `frameworks/av/services/audioflinger/PatchPanel.cpp` | 1,085 |
-| FastMixer.cpp | `frameworks/av/services/audioflinger/fastpath/FastMixer.cpp` | 517 |
-| IAfThread.h | `frameworks/av/services/audioflinger/IAfThread.h` | 738 |
-| AudioPolicyService.cpp | `frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp` | 2,759 |
-| AudioPolicyInterface.h | `frameworks/av/services/audiopolicy/AudioPolicyInterface.h` | 782 |
-| Spatializer.cpp | `frameworks/av/services/audiopolicy/service/Spatializer.cpp` | 1,339 |
-| AudioStream.cpp | `frameworks/av/media/libaaudio/src/core/AudioStream.cpp` | 880 |
-| FifoBuffer.cpp | `frameworks/av/media/libaaudio/src/fifo/FifoBuffer.cpp` | 224 |
-| AAudioService.cpp | `frameworks/av/services/oboeservice/AAudioService.cpp` | 527 |
-| AAudioServiceEndpointMMAP.cpp | `frameworks/av/services/oboeservice/AAudioServiceEndpointMMAP.cpp` | 879 |
-| IMmapStream.aidl | `frameworks/av/media/libaudioclient/aidl/android/media/IMmapStream.aidl` | new in 17 |
-| HeadTrackingProcessor.cpp | `frameworks/av/media/libheadtracking/HeadTrackingProcessor.cpp` | 262 |
-| SensorPoseProvider.cpp | `frameworks/av/media/libheadtracking/SensorPoseProvider.cpp` | 446 |
-| AudioTrack.cpp | `frameworks/av/media/libaudioclient/AudioTrack.cpp` | 3,960 |
-| AudioRecord.cpp | `frameworks/av/media/libaudioclient/AudioRecord.cpp` | 1,891 |
-| AudioSystem.cpp | `frameworks/av/media/libaudioclient/AudioSystem.cpp` | 3,269 |
-| AudioTrack.java | `frameworks/base/media/java/android/media/AudioTrack.java` | 4,971 |
-| Spatializer.java | `frameworks/base/media/java/android/media/Spatializer.java` | 1,121 |
-| SpatializerHelper.java | `frameworks/base/services/core/java/com/android/server/audio/SpatializerHelper.java` | 1,807 |
-| IModule.aidl | `hardware/interfaces/audio/aidl/android/hardware/audio/core/IModule.aidl` | 979 |
+| File | Path (relative to AOSP root) |
+|------|------------------------------|
+| AudioFlinger.cpp | `frameworks/av/services/audioflinger/AudioFlinger.cpp` |
+| AudioFlinger.h | `frameworks/av/services/audioflinger/AudioFlinger.h` |
+| Threads.cpp | `frameworks/av/services/audioflinger/Threads.cpp` |
+| Threads.h | `frameworks/av/services/audioflinger/Threads.h` |
+| Tracks.cpp | `frameworks/av/services/audioflinger/Tracks.cpp` |
+| Effects.cpp | `frameworks/av/services/audioflinger/Effects.cpp` |
+| PatchPanel.cpp | `frameworks/av/services/audioflinger/PatchPanel.cpp` |
+| FastMixer.cpp | `frameworks/av/services/audioflinger/fastpath/FastMixer.cpp` |
+| IAfThread.h | `frameworks/av/services/audioflinger/IAfThread.h` |
+| AudioPolicyService.cpp | `frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp` |
+| AudioPolicyInterface.h | `frameworks/av/services/audiopolicy/AudioPolicyInterface.h` |
+| Spatializer.cpp | `frameworks/av/services/audiopolicy/service/Spatializer.cpp` |
+| AudioStream.cpp | `frameworks/av/media/libaaudio/src/core/AudioStream.cpp` |
+| FifoBuffer.cpp | `frameworks/av/media/libaaudio/src/fifo/FifoBuffer.cpp` |
+| AAudioService.cpp | `frameworks/av/services/oboeservice/AAudioService.cpp` |
+| AAudioServiceEndpointMMAP.cpp | `frameworks/av/services/oboeservice/AAudioServiceEndpointMMAP.cpp` |
+| IMmapStream.aidl | `frameworks/av/media/libaudioclient/aidl/android/media/IMmapStream.aidl` |
+| HeadTrackingProcessor.cpp | `frameworks/av/media/libheadtracking/HeadTrackingProcessor.cpp` |
+| SensorPoseProvider.cpp | `frameworks/av/media/libheadtracking/SensorPoseProvider.cpp` |
+| AudioTrack.cpp | `frameworks/av/media/libaudioclient/AudioTrack.cpp` |
+| AudioRecord.cpp | `frameworks/av/media/libaudioclient/AudioRecord.cpp` |
+| AudioSystem.cpp | `frameworks/av/media/libaudioclient/AudioSystem.cpp` |
+| AudioTrack.java | `frameworks/base/media/java/android/media/AudioTrack.java` |
+| Spatializer.java | `frameworks/base/media/java/android/media/Spatializer.java` |
+| SpatializerHelper.java | `frameworks/base/services/core/java/com/android/server/audio/SpatializerHelper.java` |
+| IModule.aidl | `hardware/interfaces/audio/aidl/android/hardware/audio/core/IModule.aidl` |
 
 ### Key Concepts Glossary
 
@@ -22208,8 +22208,8 @@ Android's media framework is one of the most architecturally complex subsystems 
 It spans from high-level Java APIs (`MediaPlayer`, `MediaCodec`, `MediaRecorder`) through
 a native C++ stack that includes Stagefright, the Codec2 framework, NuPlayer, the Camera
 service, media extractors, and hardware abstraction layers that communicate directly with
-vendor-supplied codec and camera hardware. Across the roughly 50,000 lines of C++ that
-make up the core pipeline, every frame of video you watch, every audio sample you hear,
+vendor-supplied codec and camera hardware. Across the C++ codebase that
+makes up the core pipeline, every frame of video you watch, every audio sample you hear,
 and every photo you capture passes through the machinery described in this chapter.
 
 ---
@@ -22354,39 +22354,39 @@ A summary of the relevant source tree within `frameworks/av/`:
 frameworks/av/
   media/
     libstagefright/          # Core Stagefright library
-      MediaCodec.cpp         # 8234 lines - the MediaCodec state machine
-      ACodec.cpp             # 9458 lines - OMX codec wrapper
-      MPEG4Writer.cpp        # 6070 lines - MP4 muxer
-      NuMediaExtractor.cpp   # 896 lines  - extractor wrapper
-      MediaExtractorFactory.cpp  # 395 lines - extractor plugin loading
+      MediaCodec.cpp         # the MediaCodec state machine
+      ACodec.cpp             # OMX codec wrapper
+      MPEG4Writer.cpp        # MP4 muxer
+      NuMediaExtractor.cpp   # extractor wrapper
+      MediaExtractorFactory.cpp  # extractor plugin loading
     codec2/
       components/            # 21 software codec families (plus base/, cmds/, tests/)
         aac/  amr_nb_wb/  aom/  apv/  avc/  base/  dav1d/  flac/
         g711/ gav1/ gsm/ hevc/ iamf/ mp3/ mpeg2/ mpeg4_h263/
         opus/ raw/ vorbis/ vpx/ xaac/ xhe_aac/
       sfplugin/              # Codec2-to-Stagefright bridge
-        CCodec.cpp           # 3849 lines
-        CCodecBufferChannel.cpp  # 3428 lines
+        CCodec.cpp
+        CCodecBufferChannel.cpp
         CCodecConfig.cpp
         Codec2Buffer.cpp
       hal/                   # Codec2 HAL implementation
         aidl/  hidl/  services/
       core/                  # Codec2 core interfaces
     libmediaplayerservice/
-      MediaPlayerService.cpp # 3114 lines
-      StagefrightRecorder.cpp # 2759 lines
+      MediaPlayerService.cpp
+      StagefrightRecorder.cpp
       nuplayer/
-        NuPlayer.cpp         # 3265 lines
-        NuPlayerDecoder.cpp  # 1394 lines
-        NuPlayerRenderer.cpp # 2239 lines
-        NuPlayerDriver.cpp   # 1240 lines
+        NuPlayer.cpp
+        NuPlayerDecoder.cpp
+        NuPlayerRenderer.cpp
+        NuPlayerDriver.cpp
     libmedia/
-      VideoCapabilities.cpp  # 1966 lines
-      MediaProfiles.cpp      # 1521 lines
+      VideoCapabilities.cpp
+      MediaProfiles.cpp
   services/
     camera/
       libcameraservice/
-        CameraService.cpp    # 7019 lines
+        CameraService.cpp
         device3/             # Camera HAL3 device implementation
         api1/                # Legacy camera API
         api2/                # Camera2 API (CameraDeviceClient)
@@ -22752,7 +22752,7 @@ void BufferCallback::onOutputBufferAvailable(
 ### 16.2.7 ACodec: The OMX Bridge
 
 `ACodec` in `frameworks/av/media/libstagefright/ACodec.cpp` is the legacy bridge between
-MediaCodec and OpenMAX IL (OMX) components. At 9458 lines, it is one of the largest
+MediaCodec and OpenMAX IL (OMX) components. It is one of the largest
 single source files in the media framework. While being gradually replaced by Codec2,
 ACodec remains important for backward compatibility with older vendor OMX implementations.
 
@@ -23796,19 +23796,19 @@ media playback. The `MediaPlayerBase`/`MediaPlayerInterface` implementation that
 MediaPlayerService actually instantiates is `NuPlayerDriver`; NuPlayer itself is an
 `AHandler` driven by it. Located in
 `frameworks/av/media/libmediaplayerservice/nuplayer/`, the player comprises multiple
-source files totaling over 8,000 lines:
+source files:
 
-| File | Lines | Purpose |
-|---|---|---|
-| `NuPlayer.cpp` | 3,265 | Core player logic, action queue |
-| `NuPlayerRenderer.cpp` | 2,239 | Audio/video synchronization |
-| `NuPlayerDecoder.cpp` | 1,394 | Decoder management (wraps MediaCodec) |
-| `NuPlayerDriver.cpp` | 1,240 | MediaPlayerBase interface adapter |
-| `GenericSource.cpp` | -- | Local file playback |
-| `HTTPLiveSource.cpp` | -- | HLS streaming |
-| `RTSPSource.cpp` | -- | RTSP streaming |
-| `RTPSource.cpp` | -- | RTP streaming |
-| `StreamingSource.cpp` | -- | MPEG-TS streaming |
+| File | Purpose |
+|---|---|
+| `NuPlayer.cpp` | Core player logic, action queue |
+| `NuPlayerRenderer.cpp` | Audio/video synchronization |
+| `NuPlayerDecoder.cpp` | Decoder management (wraps MediaCodec) |
+| `NuPlayerDriver.cpp` | MediaPlayerBase interface adapter |
+| `GenericSource.cpp` | Local file playback |
+| `HTTPLiveSource.cpp` | HLS streaming |
+| `RTSPSource.cpp` | RTSP streaming |
+| `RTPSource.cpp` | RTP streaming |
+| `StreamingSource.cpp` | MPEG-TS streaming |
 
 ```mermaid
 graph TD
@@ -23920,7 +23920,7 @@ than polling with `dequeueInputBuffer` / `dequeueOutputBuffer`.
 
 ### 16.4.4 NuPlayerRenderer: Audio/Video Synchronization
 
-`NuPlayerRenderer` (2,239 lines) is responsible for the critical task of synchronizing
+`NuPlayerRenderer` is responsible for the critical task of synchronizing
 audio and video playback. It implements:
 
 - **Audio-video sync**: Video frames are scheduled to render at the correct time
@@ -24159,7 +24159,7 @@ sequenceDiagram
 ### 16.5.1 CameraService Architecture
 
 `CameraService` in `frameworks/av/services/camera/libcameraservice/CameraService.cpp`
-is the central authority for all camera operations in Android. At 7019 lines, it
+is the central authority for all camera operations in Android. It
 manages camera device discovery, client connections, security, resource allocation,
 and the interface between Java APIs and vendor camera HALs.
 
@@ -26830,22 +26830,22 @@ correlation of logs, metrics, and resource manager entries across the system.
 
 ### Key Source Files Reference
 
-| File | Path | Lines |
-|---|---|---|
-| MediaCodec.cpp | `frameworks/av/media/libstagefright/MediaCodec.cpp` | 8,234 |
-| ACodec.cpp | `frameworks/av/media/libstagefright/ACodec.cpp` | 9,458 |
-| MPEG4Writer.cpp | `frameworks/av/media/libstagefright/MPEG4Writer.cpp` | 6,070 |
-| CCodec.cpp | `frameworks/av/media/codec2/sfplugin/CCodec.cpp` | 3,849 |
-| CCodecBufferChannel.cpp | `frameworks/av/media/codec2/sfplugin/CCodecBufferChannel.cpp` | 3,428 |
-| MediaPlayerService.cpp | `frameworks/av/media/libmediaplayerservice/MediaPlayerService.cpp` | 3,114 |
-| StagefrightRecorder.cpp | `frameworks/av/media/libmediaplayerservice/StagefrightRecorder.cpp` | 2,759 |
-| NuPlayer.cpp | `frameworks/av/media/libmediaplayerservice/nuplayer/NuPlayer.cpp` | 3,265 |
-| NuPlayerRenderer.cpp | `frameworks/av/media/libmediaplayerservice/nuplayer/NuPlayerRenderer.cpp` | 2,239 |
-| CameraService.cpp | `frameworks/av/services/camera/libcameraservice/CameraService.cpp` | 7,019 |
-| NuMediaExtractor.cpp | `frameworks/av/media/libstagefright/NuMediaExtractor.cpp` | 896 |
-| MediaExtractorFactory.cpp | `frameworks/av/media/libstagefright/MediaExtractorFactory.cpp` | 395 |
-| VideoCapabilities.cpp | `frameworks/av/media/libmedia/VideoCapabilities.cpp` | 1,966 |
-| MediaProfiles.cpp | `frameworks/av/media/libmedia/MediaProfiles.cpp` | 1,521 |
+| File | Path |
+|---|---|
+| MediaCodec.cpp | `frameworks/av/media/libstagefright/MediaCodec.cpp` |
+| ACodec.cpp | `frameworks/av/media/libstagefright/ACodec.cpp` |
+| MPEG4Writer.cpp | `frameworks/av/media/libstagefright/MPEG4Writer.cpp` |
+| CCodec.cpp | `frameworks/av/media/codec2/sfplugin/CCodec.cpp` |
+| CCodecBufferChannel.cpp | `frameworks/av/media/codec2/sfplugin/CCodecBufferChannel.cpp` |
+| MediaPlayerService.cpp | `frameworks/av/media/libmediaplayerservice/MediaPlayerService.cpp` |
+| StagefrightRecorder.cpp | `frameworks/av/media/libmediaplayerservice/StagefrightRecorder.cpp` |
+| NuPlayer.cpp | `frameworks/av/media/libmediaplayerservice/nuplayer/NuPlayer.cpp` |
+| NuPlayerRenderer.cpp | `frameworks/av/media/libmediaplayerservice/nuplayer/NuPlayerRenderer.cpp` |
+| CameraService.cpp | `frameworks/av/services/camera/libcameraservice/CameraService.cpp` |
+| NuMediaExtractor.cpp | `frameworks/av/media/libstagefright/NuMediaExtractor.cpp` |
+| MediaExtractorFactory.cpp | `frameworks/av/media/libstagefright/MediaExtractorFactory.cpp` |
+| VideoCapabilities.cpp | `frameworks/av/media/libmedia/VideoCapabilities.cpp` |
+| MediaProfiles.cpp | `frameworks/av/media/libmedia/MediaProfiles.cpp` |
 
 ---
 
@@ -26854,24 +26854,24 @@ correlation of logs, metrics, and resource manager entries across the system.
 Android's media and video pipeline is a layered architecture spanning roughly 50,000
 lines of core C++ code across five major subsystems:
 
-1. **MediaCodec** (8,234 lines) provides the central state machine and API surface,
+1. **MediaCodec** provides the central state machine and API surface,
    with sophisticated resource management, metrics collection, and retry logic.
 
-2. **ACodec** (9,458 lines) bridges to legacy OMX codecs, while **CCodec** (3,849
+2. **ACodec** bridges to legacy OMX codecs, while **CCodec** (3,849
    lines) bridges to the modern Codec2 framework with its typed parameter system,
    work-based processing model, and 21 software codec families.
 
-3. **MediaPlayerService** (3,114 lines) and **NuPlayer** (3,265+ lines) orchestrate
+3. **MediaPlayerService** and **NuPlayer** orchestrate
    the complete playback pipeline from extraction through decoding to synchronized
    audio/video rendering.
 
-4. **CameraService** (7,019 lines) manages camera hardware access with a
+4. **CameraService** manages camera hardware access with a
    comprehensive security model, multi-camera support, and both API1 (legacy) and
    API2 (modern) client paths.
 
 5. **Media Extractors** provide container parsing with security isolation (running in
-   a separate process), while **VideoCapabilities** (1,966 lines) and
-   **MediaProfiles** (1,521 lines) describe what the hardware can do.
+   a separate process), while **VideoCapabilities** and
+   **MediaProfiles** describe what the hardware can do.
 
 The evolution from OMX to Codec2 represents the most significant architectural shift
 in Android media in the past decade, bringing type safety, better buffer management,

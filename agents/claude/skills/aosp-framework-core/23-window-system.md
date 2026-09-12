@@ -66,7 +66,7 @@ The key insight is that all three Java layers (App, WM Core, WM Shell) can issue
 frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java
 ```
 
-At over 11,500 lines in the Android 17 tree, it is one of the largest classes in the Android framework. WMS extends `IWindowManager.Stub` and implements `Watchdog.Monitor` and `WindowManagerPolicy.WindowManagerFuncs`:
+It is one of the largest classes in the Android framework. WMS extends `IWindowManager.Stub` and implements `Watchdog.Monitor` and `WindowManagerPolicy.WindowManagerFuncs`:
 
 ```java
 public class WindowManagerService extends IWindowManager.Stub
@@ -101,7 +101,7 @@ WMS holds references to critical subsystem controllers:
 
 The window system models all window-related objects as a tree of `WindowContainer` nodes. Every node maintains a parent reference, a list of children in z-order, and a 1:1 mapping to a `SurfaceControl` in the SurfaceFlinger layer tree.
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/WindowContainer.java` (over 3,800 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/WindowContainer.java`
 
 ```java
 class WindowContainer<E extends WindowContainer> extends ConfigurationContainer<E>
@@ -260,7 +260,7 @@ RootWindowContainer
 
 `WindowState` is the server-side representation of a single window. It extends `WindowContainer<WindowState>`, meaning its children are sub-windows (TYPE_APPLICATION_PANEL, TYPE_APPLICATION_MEDIA, etc.).
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/WindowState.java` (over 6,400 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/WindowState.java`
 
 ```java
 class WindowState extends WindowContainer<WindowState>
@@ -292,7 +292,7 @@ Key fields:
 
 `DisplayContent` represents one logical display in the window hierarchy. It extends `RootDisplayArea`, which itself extends `DisplayArea.Dimmable`, which extends `DisplayArea`, which extends `WindowContainer`.
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java` (over 7,700 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java`
 
 ```java
 class DisplayContent extends RootDisplayArea
@@ -477,7 +477,7 @@ The parallel sync system prevents dependency cycles: if sync B depends on sync A
 
 ### 23.1.13 DisplayContent Internals
 
-`DisplayContent` (over 7,700 lines in the Android 17 tree) maintains extensive state for its display. Key internal structures beyond those already discussed:
+`DisplayContent` maintains extensive state for its display. Key internal structures beyond those already discussed:
 
 ```java
 // Display metrics and configuration
@@ -819,7 +819,7 @@ The Shell Transitions system (`ENABLE_SHELL_TRANSITIONS = true`) is now the prim
 
 ### 23.3.2 TransitionController (WM Core Side)
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/TransitionController.java` (over 2,200 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/TransitionController.java`
 
 `TransitionController` manages the collection and synchronization phases of transitions on the WM Core side. Its Javadoc provides the key architectural insight:
 
@@ -844,7 +844,7 @@ class TransitionController {
 
 ### 23.3.3 Transition (WM Core Side)
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/Transition.java` (nearly 5,000 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/Transition.java`
 
 Each `Transition` instance represents a single transition from creation through collection, readiness, playing, and completion. The transition types are defined in `WindowManager`:
 
@@ -1399,7 +1399,7 @@ TaskDisplayArea
         └── Task (another leaf task)
 ```
 
-The `Task` class (over 7,500 lines) extends `TaskFragment`:
+The `Task` class extends `TaskFragment`:
 
 ```java
 class Task extends TaskFragment { ... }
@@ -2266,7 +2266,7 @@ The `prepareSurfaces()` method, called during the surface placement pass, allows
 
 The animation leash is the key mechanism that enables smooth animations of window containers. The `SurfaceAnimator` class manages this:
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimator.java` (about 640 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimator.java`
 
 From the source Javadoc:
 
@@ -3292,34 +3292,32 @@ For common topics, use this cross-reference to find the relevant section(s) in t
 
 ### 23.11.3 Key Source Files Reference
 
-The following table lists the most important source files for each section of this chapter, with line counts to indicate complexity:
+The following table lists the most important source files for each section of this chapter:
 
-Line counts are approximate as of the Android 17 (`android17-release`) tree.
-
-| File | Lines | Chapter Section |
-|------|-------|-----------------|
-| `WindowManagerService.java` | ~11,600 | 23.1 (Architecture) |
-| `WindowContainer.java` | ~3,800 | 23.1 (Hierarchy) |
-| `WindowState.java` | ~6,400 | 23.1 (Window state) |
-| `DisplayContent.java` | ~7,700 | 23.1, 23.5 (Display) |
-| `RootWindowContainer.java` | ~3,950 | 23.1 (Hierarchy root) |
-| `Task.java` | ~7,560 | 23.1, 23.4 (Tasks) |
-| `ActivityRecord.java` | ~9,900 | 23.1 (Activities) |
-| `TaskFragment.java` | ~3,550 | 23.1 (Task fragments) |
-| `DisplayArea.java` | ~880 | 23.8 (Z-order) |
-| `DisplayAreaPolicy.java` | -- | 23.8 (Z-order policy) |
-| `TransitionController.java` | ~2,240 | 23.3 (Core transitions) |
-| `Transition.java` | ~4,970 | 23.3 (Transition state) |
-| `Transitions.java` (Shell) | -- | 23.3 (Shell animation) |
-| `SurfaceAnimator.java` | ~640 | 23.7 (Leash mechanism) |
-| `InsetsStateController.java` | ~580 | 23.9 (Insets) |
-| `InputMonitor.java` | -- | 23.6 (Input) |
-| `StageCoordinator.java` | -- | 23.4 (Split screen) |
-| `PipTaskOrganizer.java` | -- | 23.4 (PiP) |
-| `DesktopTasksController.kt` | -- | 23.4 (Desktop) |
-| `BackAnimationController.java` | -- | 23.10 (Predictive back) |
-| `WMShellModule.java` | -- | 23.2 (DI) |
-| `WMShellConcurrencyModule.java` | -- | 23.2 (Threading) |
+| File | Chapter Section |
+|------|-----------------|
+| `WindowManagerService.java` | 23.1 (Architecture) |
+| `WindowContainer.java` | 23.1 (Hierarchy) |
+| `WindowState.java` | 23.1 (Window state) |
+| `DisplayContent.java` | 23.1, 23.5 (Display) |
+| `RootWindowContainer.java` | 23.1 (Hierarchy root) |
+| `Task.java` | 23.1, 23.4 (Tasks) |
+| `ActivityRecord.java` | 23.1 (Activities) |
+| `TaskFragment.java` | 23.1 (Task fragments) |
+| `DisplayArea.java` | 23.8 (Z-order) |
+| `DisplayAreaPolicy.java` | 23.8 (Z-order policy) |
+| `TransitionController.java` | 23.3 (Core transitions) |
+| `Transition.java` | 23.3 (Transition state) |
+| `Transitions.java` (Shell) | 23.3 (Shell animation) |
+| `SurfaceAnimator.java` | 23.7 (Leash mechanism) |
+| `InsetsStateController.java` | 23.9 (Insets) |
+| `InputMonitor.java` | 23.6 (Input) |
+| `StageCoordinator.java` | 23.4 (Split screen) |
+| `PipTaskOrganizer.java` | 23.4 (PiP) |
+| `DesktopTasksController.kt` | 23.4 (Desktop) |
+| `BackAnimationController.java` | 23.10 (Predictive back) |
+| `WMShellModule.java` | 23.2 (DI) |
+| `WMShellConcurrencyModule.java` | 23.2 (Threading) |
 
 ### 23.11.4 Debugging the Window System
 
@@ -3549,14 +3547,14 @@ The Android window system is a three-tier architecture:
 
 The window system is one of the largest subsystems in AOSP:
 
-| Component | Approximate Lines | Files |
-|-----------|-------------------|-------|
-| WM Core (`server/wm/`) | ~190,000 | 250+ |
-| WM Shell (`wm/shell/`) | 150,000+ | 400+ |
-| Window API (`view/`) | 50,000+ | 50+ |
-| Total | 400,000+ | 700+ |
+| Component | Files |
+|-----------|-------|
+| WM Core (`server/wm/`) | 250+ |
+| WM Shell (`wm/shell/`) | 400+ |
+| Window API (`view/`) | 50+ |
+| Total | 700+ |
 
-Five of the largest source files in the window system -- `WindowManagerService.java` (~11,600 lines), `ActivityRecord.java` (~9,900 lines), `DisplayContent.java` (~7,700 lines), `Task.java` (~7,560 lines), and `WindowState.java` (~6,400 lines) -- together exceed 43,000 lines of Java code, reflecting the deep complexity of window management.
+`WindowManagerService.java`, `ActivityRecord.java`, `DisplayContent.java`, `Task.java`, and `WindowState.java` are five of the largest source files in the window system, reflecting the deep complexity of window management.
 
 ### Evolution Direction
 

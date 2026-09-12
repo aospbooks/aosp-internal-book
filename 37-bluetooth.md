@@ -109,7 +109,7 @@ public final class BluetoothManager {
 
 ### 37.1.3 BluetoothAdapter
 
-`BluetoothAdapter` (5,400+ lines) is the central API class for all Bluetooth
+`BluetoothAdapter` is the central API class for all Bluetooth
 operations. It represents the local Bluetooth radio and is the starting point
 for discovery, bonding, profile connections, and BLE operations.
 

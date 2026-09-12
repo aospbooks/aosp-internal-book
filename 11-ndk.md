@@ -569,12 +569,12 @@ code path for the current CPU.
 The NDK build integration in AOSP is handled by four key Go source files in
 `build/soong/cc/`:
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `ndk_library.go` | 662 | Stub shared library generation |
-| `ndk_headers.go` | 280 | Header installation into sysroot |
-| `ndk_sysroot.go` | 321 | Sysroot assembly singleton |
-| `ndk_abi.go` | 102 | ABI dump and diff monitoring |
+| File | Purpose |
+|------|---------|
+| `ndk_library.go` | Stub shared library generation |
+| `ndk_headers.go` | Header installation into sysroot |
+| `ndk_sysroot.go` | Sysroot assembly singleton |
+| `ndk_abi.go` | ABI dump and diff monitoring |
 
 ### 11.3.1 The `ndk_library` Module Type
 
@@ -2308,9 +2308,8 @@ activity thread carves out *the whole process*.
 
 #### Crate Layout
 
-The crate is about 3,000 lines of Rust: eight top-level source files (about
-2,200 lines), a `library_loader/` submodule directory, and a single bindgen
-wrapper:
+The crate is written in Rust: eight top-level source files, a
+`library_loader/` submodule directory, and a single bindgen wrapper:
 
 | File | Role |
 |------|------|

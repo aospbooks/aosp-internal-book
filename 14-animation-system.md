@@ -114,17 +114,17 @@ sequenceDiagram
 
 ### 14.1.4 Key Source Directories
 
-| Directory | Contents | Lines (approx) |
-|---|---|---|
-| `frameworks/base/core/java/android/view/animation/` | View Animation classes | ~5,800 |
-| `frameworks/base/core/java/android/animation/` | Property Animation framework | ~13,400 |
-| `frameworks/base/core/java/android/transition/` | Transition Framework | ~9,200 |
-| `frameworks/base/libs/hwui/` (Animator*) | Native HWUI animators | ~830 |
-| `frameworks/base/core/java/android/view/Choreographer.java` | Timing pulse | 1,741 |
-| `frameworks/base/services/core/java/com/android/server/wm/` (anim) | WM animation infrastructure | ~2,400 |
-| `frameworks/base/libs/WindowManager/Shell/src/.../transition/` | Shell transitions | ~12,100 |
-| `frameworks/base/libs/WindowManager/Shell/src/.../back/` | Predictive back | ~4,500 |
-| `frameworks/base/core/java/com/android/internal/dynamicanimation/animation/` | Physics animations | ~1,750 |
+| Directory | Contents |
+|---|---|
+| `frameworks/base/core/java/android/view/animation/` | View Animation classes |
+| `frameworks/base/core/java/android/animation/` | Property Animation framework |
+| `frameworks/base/core/java/android/transition/` | Transition Framework |
+| `frameworks/base/libs/hwui/` (Animator*) | Native HWUI animators |
+| `frameworks/base/core/java/android/view/Choreographer.java` | Timing pulse |
+| `frameworks/base/services/core/java/com/android/server/wm/` (anim) | WM animation infrastructure |
+| `frameworks/base/libs/WindowManager/Shell/src/.../transition/` | Shell transitions |
+| `frameworks/base/libs/WindowManager/Shell/src/.../back/` | Predictive back |
+| `frameworks/base/core/java/com/android/internal/dynamicanimation/animation/` | Physics animations |
 
 ### 14.1.5 Thread Model
 
@@ -259,7 +259,7 @@ Source directory:
 
 ### 14.2.2 The Animation Base Class
 
-The abstract class `Animation` (1,363 lines) defines the lifecycle:
+The abstract class `Animation` defines the lifecycle:
 
 ```
 // frameworks/base/core/java/android/view/animation/Animation.java, lines 40-98
@@ -435,7 +435,7 @@ protected void applyTransformation(float interpolatedTime, Transformation t) {
 
 ### 14.2.5 AnimationSet
 
-`AnimationSet` (552 lines) groups multiple animations that play together.
+`AnimationSet` groups multiple animations that play together.
 Its `getTransformation()` iterates children in reverse order and calls
 `compose()` to concatenate their transformations:
 
@@ -779,35 +779,35 @@ UI-thread and RenderThread animations.
 
 ### 14.2.14 View Animation File Summary
 
-| File | Lines | Purpose |
-|---|---|---|
-| `Animation.java` | 1,363 | Abstract base class |
-| `AnimationSet.java` | 552 | Group of simultaneous animations |
-| `AnimationUtils.java` | ~400 | Loading helpers, currentAnimationTimeMillis |
-| `Transformation.java` | ~278 | Matrix + alpha container |
-| `AlphaAnimation.java` | 89 | Opacity animation |
-| `TranslateAnimation.java` | 241 | Position animation |
-| `RotateAnimation.java` | 183 | Rotation animation |
-| `ScaleAnimation.java` | 289 | Scale animation |
-| `ClipRectAnimation.java` | ~166 | Clip rect animation |
-| `ExtendAnimation.java` | ~180 | Edge extension animation |
-| `TranslateXAnimation.java` | ~55 | X-only translation (optimized) |
-| `TranslateYAnimation.java` | ~57 | Y-only translation (optimized) |
-| `PathInterpolator.java` | 245 | Bezier/path-based interpolation |
-| `AccelerateDecelerateInterpolator.java` | 48 | Default cosine ease |
-| `AccelerateInterpolator.java` | ~90 | Power-curve acceleration |
-| `DecelerateInterpolator.java` | ~86 | Power-curve deceleration |
-| `LinearInterpolator.java` | ~35 | Identity function |
-| `BounceInterpolator.java` | ~50 | Bounce at end |
-| `OvershootInterpolator.java` | ~81 | Cubic overshoot |
-| `AnticipateInterpolator.java` | ~78 | Wind-up before motion |
-| `AnticipateOvershootInterpolator.java` | ~108 | Combined wind-up and overshoot |
-| `CycleInterpolator.java` | ~70 | Sine cycle |
-| `BackGestureInterpolator.java` | ~26 | Back gesture curves |
-| `BaseInterpolator.java` | ~30 | Abstract base for interpolators |
-| `Interpolator.java` | ~31 | Interface extending TimeInterpolator |
-| `LayoutAnimationController.java` | ~437 | Staggered child animations |
-| `GridLayoutAnimationController.java` | ~426 | Grid-based staggered animations |
+| File | Purpose |
+|---|---|
+| `Animation.java` | Abstract base class |
+| `AnimationSet.java` | Group of simultaneous animations |
+| `AnimationUtils.java` | Loading helpers, currentAnimationTimeMillis |
+| `Transformation.java` | Matrix + alpha container |
+| `AlphaAnimation.java` | Opacity animation |
+| `TranslateAnimation.java` | Position animation |
+| `RotateAnimation.java` | Rotation animation |
+| `ScaleAnimation.java` | Scale animation |
+| `ClipRectAnimation.java` | Clip rect animation |
+| `ExtendAnimation.java` | Edge extension animation |
+| `TranslateXAnimation.java` | X-only translation (optimized) |
+| `TranslateYAnimation.java` | Y-only translation (optimized) |
+| `PathInterpolator.java` | Bezier/path-based interpolation |
+| `AccelerateDecelerateInterpolator.java` | Default cosine ease |
+| `AccelerateInterpolator.java` | Power-curve acceleration |
+| `DecelerateInterpolator.java` | Power-curve deceleration |
+| `LinearInterpolator.java` | Identity function |
+| `BounceInterpolator.java` | Bounce at end |
+| `OvershootInterpolator.java` | Cubic overshoot |
+| `AnticipateInterpolator.java` | Wind-up before motion |
+| `AnticipateOvershootInterpolator.java` | Combined wind-up and overshoot |
+| `CycleInterpolator.java` | Sine cycle |
+| `BackGestureInterpolator.java` | Back gesture curves |
+| `BaseInterpolator.java` | Abstract base for interpolators |
+| `Interpolator.java` | Interface extending TimeInterpolator |
+| `LayoutAnimationController.java` | Staggered child animations |
+| `GridLayoutAnimationController.java` | Grid-based staggered animations |
 
 ---
 
@@ -822,7 +822,7 @@ the property genuinely changes, so hit testing, layout, and accessibility
 all reflect the animated state.
 
 Source directory:
-`frameworks/base/core/java/android/animation/` (31 files, ~13,400 lines)
+`frameworks/base/core/java/android/animation/` (31 files)
 
 ### 14.3.2 Core Class Hierarchy
 
@@ -883,7 +883,7 @@ classDiagram
 
 ### 14.3.3 ValueAnimator Deep Dive
 
-`ValueAnimator.java` (1,776 lines) is the engine of property animation.
+`ValueAnimator.java` is the engine of property animation.
 
 **Key fields** (lines 96-279):
 
@@ -972,7 +972,7 @@ The core timing logic in `animateBasedOnTime()` (simplified):
 
 ### 14.3.5 ObjectAnimator
 
-`ObjectAnimator` (1,004 lines) extends `ValueAnimator` to set the animated
+`ObjectAnimator` extends `ValueAnimator` to set the animated
 value directly on a target object.  It resolves the target property through
 two mechanisms:
 
@@ -1003,7 +1003,7 @@ Common factory methods:
 
 ### 14.3.6 PropertyValuesHolder
 
-`PropertyValuesHolder` (1,729 lines) encapsulates one animated property:
+`PropertyValuesHolder` encapsulates one animated property:
 its name/Property reference, the setter/getter methods, the keyframe set,
 and the type evaluator.
 
@@ -1052,7 +1052,7 @@ Built-in evaluators:
 
 ### 14.3.8 AnimatorSet and the Dependency Graph
 
-`AnimatorSet` (2,272 lines) organizes multiple `Animator` instances into
+`AnimatorSet` organizes multiple `Animator` instances into
 a dependency graph using a node-based internal structure:
 
 ```mermaid
@@ -1081,7 +1081,7 @@ or ending child animators as needed.
 
 ### 14.3.9 AnimationHandler and Background Pausing
 
-`AnimationHandler` (515 lines) manages the per-thread animation loop.
+`AnimationHandler` manages the per-thread animation loop.
 
 Key mechanism -- **background pausing** (lines 271-287):  When all windows in
 a process go to the background, `AnimationHandler` pauses all infinite-duration
@@ -1272,31 +1272,31 @@ for Material Design elevation changes:
 
 ### 14.3.16 Property Animation File Summary
 
-| File | Lines | Purpose |
-|---|---|---|
-| `Animator.java` | ~930 | Abstract base for all animators |
-| `ValueAnimator.java` | 1,776 | Core timing engine |
-| `ObjectAnimator.java` | 1,004 | Property-targeting animator |
-| `AnimatorSet.java` | 2,272 | Multi-animator orchestration |
-| `PropertyValuesHolder.java` | 1,729 | Per-property value management |
-| `AnimationHandler.java` | 515 | Frame callback manager |
-| `Keyframe.java` | ~390 | Single time/value pair |
-| `KeyframeSet.java` | ~300 | Ordered keyframe collection |
-| `FloatKeyframeSet.java` | ~150 | Optimized float keyframes |
-| `IntKeyframeSet.java` | ~150 | Optimized int keyframes |
-| `PathKeyframes.java` | ~250 | Path-based keyframes |
-| `ArgbEvaluator.java` | ~150 | Color interpolation |
-| `FloatEvaluator.java` | ~40 | Float interpolation |
-| `IntEvaluator.java` | ~40 | Integer interpolation |
-| `PointFEvaluator.java` | ~60 | PointF interpolation |
-| `RectEvaluator.java` | ~70 | Rect interpolation |
-| `LayoutTransition.java` | ~1,545 | ViewGroup layout change animation |
-| `AnimatorInflater.java` | ~1,085 | XML resource loading |
-| `TimeAnimator.java` | ~100 | Raw frame timing |
-| `RevealAnimator.java` | ~60 | Circular reveal support |
-| `StateListAnimator.java` | ~330 | State-driven animations |
-| `TypeConverter.java` | ~60 | Type conversion support |
-| `BidirectionalTypeConverter.java` | ~40 | Two-way conversion |
+| File | Purpose |
+|---|---|
+| `Animator.java` | Abstract base for all animators |
+| `ValueAnimator.java` | Core timing engine |
+| `ObjectAnimator.java` | Property-targeting animator |
+| `AnimatorSet.java` | Multi-animator orchestration |
+| `PropertyValuesHolder.java` | Per-property value management |
+| `AnimationHandler.java` | Frame callback manager |
+| `Keyframe.java` | Single time/value pair |
+| `KeyframeSet.java` | Ordered keyframe collection |
+| `FloatKeyframeSet.java` | Optimized float keyframes |
+| `IntKeyframeSet.java` | Optimized int keyframes |
+| `PathKeyframes.java` | Path-based keyframes |
+| `ArgbEvaluator.java` | Color interpolation |
+| `FloatEvaluator.java` | Float interpolation |
+| `IntEvaluator.java` | Integer interpolation |
+| `PointFEvaluator.java` | PointF interpolation |
+| `RectEvaluator.java` | Rect interpolation |
+| `LayoutTransition.java` | ViewGroup layout change animation |
+| `AnimatorInflater.java` | XML resource loading |
+| `TimeAnimator.java` | Raw frame timing |
+| `RevealAnimator.java` | Circular reveal support |
+| `StateListAnimator.java` | State-driven animations |
+| `TypeConverter.java` | Type conversion support |
+| `BidirectionalTypeConverter.java` | Two-way conversion |
 
 ### 14.3.17 AnimationHandler.doAnimationFrame() Deep Dive
 
@@ -1481,7 +1481,7 @@ animations.  Rather than manually calculating from/to values, developers
 describe **what** to transition and the framework figures out **how**.
 
 Source directory:
-`frameworks/base/core/java/android/transition/` (33 files, ~9,200 lines)
+`frameworks/base/core/java/android/transition/` (33 files)
 
 ### 14.4.2 Core Concepts
 
@@ -1499,7 +1499,7 @@ graph TD
 
 ### 14.4.3 Transition Base Class
 
-`Transition.java` (2,451 lines) is the abstract base.  Each subclass must
+`Transition.java` is the abstract base.  Each subclass must
 implement two abstract methods and normally overrides a third:
 
 1. `captureStartValues(TransitionValues)` (abstract) -- Record property values before the scene change
@@ -1616,7 +1616,7 @@ a view appeared (became `VISIBLE` or was added) or disappeared (became
 
 ### 14.4.7 TransitionManager
 
-`TransitionManager` (470 lines) is the entry point for running transitions.
+`TransitionManager` is the entry point for running transitions.
 The most common API:
 
 ```java
@@ -1843,8 +1843,8 @@ element state between the calling and called activities.
 
 Key source files:
 
-- `frameworks/base/core/java/android/app/ActivityOptions.java` (~2,982 lines)
-- `frameworks/base/core/java/android/app/ActivityTransitionCoordinator.java` (~1,122 lines)
+- `frameworks/base/core/java/android/app/ActivityOptions.java`
+- `frameworks/base/core/java/android/app/ActivityTransitionCoordinator.java`
 - `frameworks/base/core/java/android/app/EnterTransitionCoordinator.java`
 - `frameworks/base/core/java/android/app/ExitTransitionCoordinator.java`
 
@@ -1970,7 +1970,7 @@ constants the table omits (`ANIM_DEFAULT` = 6, `ANIM_LAUNCH_TASK_BEHIND` = 7,
 
 ### 14.5.7 ActivityTransitionCoordinator
 
-The `ActivityTransitionCoordinator` (approximately 1,122 lines) manages the
+The `ActivityTransitionCoordinator` manages the
 complex handoff of shared element state between activities.  It handles:
 
 1. **View mapping**: Matching shared element names between activities
@@ -2061,19 +2061,19 @@ application's UI thread.
 
 Key source files in `frameworks/base/services/core/java/com/android/server/wm/`:
 
-| File | Lines | Purpose |
-|---|---|---|
-| `WindowAnimator.java` | 342 | Per-frame animation dispatch |
-| `SurfaceAnimator.java` | 640 | Leash-based surface animation |
-| `SurfaceAnimationRunner.java` | 338 | Lock-free animation execution |
-| `WindowAnimationSpec.java` | ~300 | Wraps legacy `Animation` for surfaces |
-| `LocalAnimationAdapter.java` | ~180 | Adapter for local animations |
-| `AnimationAdapter.java` | ~100 | Interface for animation implementations |
-| `WindowStateAnimator.java` | ~650 | Per-window animation state |
+| File | Purpose |
+|---|---|
+| `WindowAnimator.java` | Per-frame animation dispatch |
+| `SurfaceAnimator.java` | Leash-based surface animation |
+| `SurfaceAnimationRunner.java` | Lock-free animation execution |
+| `WindowAnimationSpec.java` | Wraps legacy `Animation` for surfaces |
+| `LocalAnimationAdapter.java` | Adapter for local animations |
+| `AnimationAdapter.java` | Interface for animation implementations |
+| `WindowStateAnimator.java` | Per-window animation state |
 
 ### 14.6.2 SurfaceAnimator and the Leash Pattern
 
-The `SurfaceAnimator` (640 lines) implements a key architectural pattern:
+The `SurfaceAnimator` implements a key architectural pattern:
 the **animation leash**.  Instead of directly animating a window's surface,
 it creates a temporary parent surface (the "leash"), reparents the window's
 children onto the leash, and hands the leash to the animation system:
@@ -2118,7 +2118,7 @@ reparented back to their original parent and the leash is destroyed.
 
 ### 14.6.3 SurfaceAnimationRunner
 
-`SurfaceAnimationRunner` (338 lines) executes animations **without holding
+`SurfaceAnimationRunner` executes animations **without holding
 the WindowManager lock**.  This is critical for performance -- the WM lock
 is heavily contended, and holding it during animation would cause jank:
 
@@ -2142,7 +2142,7 @@ frame rate.
 
 ### 14.6.4 WindowAnimator
 
-`WindowAnimator` (342 lines) is the per-frame dispatch coordinator.  It
+`WindowAnimator` is the per-frame dispatch coordinator.  It
 schedules Choreographer callbacks and manages the overall animation state.
 In Android 17 the per-frame timing is driven by a `Choreographer.VsyncCallback`
 (`mAnimationVsyncCallback`); the scheduling state is tracked with a boolean
@@ -2256,14 +2256,14 @@ graph TD
 
 The WM's `Transition.java` (distinct from the framework's
 `android.transition.Transition`) manages the server-side state machine for
-shell transitions.  At approximately 4,968 lines, it tracks:
+shell transitions.  It tracks:
 
 - Participating windows and tasks
 - Transition type (open, close, change, etc.)
 - Ready state and sync barriers
 - Animation state for each participant
 
-The `TransitionController` (approximately 2,241 lines) manages the lifecycle
+The `TransitionController` manages the lifecycle
 of all active transitions and coordinates with the Shell process.
 
 ---
@@ -2279,7 +2279,7 @@ enabling more sophisticated and customizable transitions.
 
 Source directory:
 `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/`
-(33 files, ~12,100 lines, plus a `tracing/` subpackage)
+(33 files, plus a `tracing/` subpackage)
 
 ### 14.7.2 Architecture
 
@@ -2308,7 +2308,7 @@ sequenceDiagram
 
 ### 14.7.3 Transitions.java
 
-`Transitions.java` (2,355 lines) is the central coordinator in the Shell
+`Transitions.java` is the central coordinator in the Shell
 process.  It receives transition callbacks from the WindowManager core through
 an inner `TransitionPlayerImpl extends ITransitionPlayer.Stub`; the outer class
 itself implements `RemoteCallable` and the Shell command handler interface:
@@ -2344,7 +2344,7 @@ graph TD
 
 ### 14.7.5 DefaultTransitionHandler
 
-`DefaultTransitionHandler` (1,208 lines) handles the common cases: app
+`DefaultTransitionHandler` handles the common cases: app
 launches, task switches, and activity closes.  It loads window animations
 from resources and applies them to `SurfaceControl` leashes:
 
@@ -2455,7 +2455,7 @@ transactions tied to gesture progress.
 
 Source directory:
 `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/back/`
-(14 files, ~4,500 lines)
+(14 files)
 
 ### 14.8.2 Architecture
 
@@ -2631,7 +2631,7 @@ run until the simulated system reaches equilibrium.
 
 Source directory:
 `frameworks/base/core/java/com/android/internal/dynamicanimation/animation/`
-(6 files, ~1,750 lines)
+(6 files)
 
 This is the platform's own internal copy of the physics-animation engine.  The
 API that apps compile against is the AndroidX `androidx.dynamicanimation`
@@ -3039,15 +3039,15 @@ garbage collection or heavy layout).
 
 Source files in `frameworks/base/libs/hwui/`:
 
-| File | Lines | Purpose |
-|---|---|---|
-| `Animator.cpp` | ~460 | Base animation engine |
-| `Animator.h` | ~280 | Animation class declarations |
-| `AnimatorManager.cpp` | ~207 | Per-RenderNode animation management |
-| `AnimatorManager.h` | ~80 | Manager declarations |
-| `Interpolator.cpp` | ~160 | Native interpolator implementations |
-| `AnimationContext.cpp` | ~140 | Frame timing context |
-| `PropertyValuesAnimatorSet.cpp` | ~200 | Multi-property animation set |
+| File | Purpose |
+|---|---|
+| `Animator.cpp` | Base animation engine |
+| `Animator.h` | Animation class declarations |
+| `AnimatorManager.cpp` | Per-RenderNode animation management |
+| `AnimatorManager.h` | Manager declarations |
+| `Interpolator.cpp` | Native interpolator implementations |
+| `AnimationContext.cpp` | Frame timing context |
+| `PropertyValuesAnimatorSet.cpp` | Multi-property animation set |
 
 ### 14.10.2 BaseRenderNodeAnimator
 
@@ -3141,7 +3141,7 @@ stateDiagram-v2
 
 ### 14.10.5 AnimatorManager
 
-`AnimatorManager` (207 lines) manages all animations attached to a single
+`AnimatorManager` manages all animations attached to a single
 `RenderNode`:
 
 ```
@@ -3167,7 +3167,7 @@ current frame.
 
 ### 14.10.6 Java-Side JNI Bridge
 
-On the Java side, `RenderNodeAnimator` (approximately 513 lines) wraps native
+On the Java side, `RenderNodeAnimator` wraps native
 HWUI animators.  Its clients are platform components that animate
 `RenderNode` properties directly -- `RippleDrawable` (via `RippleForeground`
 and `RippleAnimationSession`) and the circular-reveal `RevealAnimator` --
@@ -3335,7 +3335,7 @@ This is why a `RippleDrawable` ripple or an `AnimatedVectorDrawable`
 
 ### 14.11.1 AnimatedVectorDrawable
 
-`AnimatedVectorDrawable` (approximately 1,876 lines) animates the
+`AnimatedVectorDrawable` animates the
 individual properties of a `VectorDrawable` -- paths, groups, and fills.
 Starting from API 25, it runs on the **RenderThread** for jank-free
 performance:
@@ -3379,7 +3379,7 @@ graph TD
 
 ### 14.11.3 VectorDrawable Properties
 
-`VectorDrawable` (approximately 2,398 lines) exposes numerous animatable
+`VectorDrawable` exposes numerous animatable
 properties:
 
 | Property | Target | Description |
@@ -3539,7 +3539,7 @@ smooth without blocking the UI thread.
 
 ### 14.12.1 Overview
 
-`Choreographer` (1,741 lines) is the central timing coordinator for all
+`Choreographer` is the central timing coordinator for all
 UI-thread work in Android.  It receives VSYNC signals from the display
 subsystem and dispatches ordered callbacks that collectively produce each
 frame.
@@ -5200,32 +5200,32 @@ public void disableAnimations() {
 
 | Section | Primary Source Files |
 |---|---|
-| 14.2 View Animation | `frameworks/base/core/java/android/view/animation/Animation.java` (1,363 lines) |
-| | `frameworks/base/core/java/android/view/animation/AnimationSet.java` (552 lines) |
-| | `frameworks/base/core/java/android/view/animation/PathInterpolator.java` (245 lines) |
-| 14.3 Property Animation | `frameworks/base/core/java/android/animation/ValueAnimator.java` (1,776 lines) |
-| | `frameworks/base/core/java/android/animation/ObjectAnimator.java` (1,004 lines) |
-| | `frameworks/base/core/java/android/animation/AnimatorSet.java` (2,272 lines) |
-| | `frameworks/base/core/java/android/animation/PropertyValuesHolder.java` (1,729 lines) |
-| | `frameworks/base/core/java/android/animation/AnimationHandler.java` (515 lines) |
-| 14.4 Transition Framework | `frameworks/base/core/java/android/transition/Transition.java` (2,451 lines) |
-| | `frameworks/base/core/java/android/transition/TransitionManager.java` (470 lines) |
-| | `frameworks/base/core/java/android/transition/ChangeBounds.java` (~500 lines) |
-| | `frameworks/base/core/java/android/transition/Fade.java` (~200 lines) |
-| 14.6 WM Animations | `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimator.java` (640 lines) |
-| | `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimationRunner.java` (338 lines) |
-| | `frameworks/base/services/core/java/com/android/server/wm/WindowAnimator.java` (342 lines) |
-| 14.7 Shell Transitions | `frameworks/base/libs/WindowManager/Shell/src/.../transition/Transitions.java` (2,355 lines) |
-| | `frameworks/base/libs/WindowManager/Shell/src/.../transition/DefaultTransitionHandler.java` (1,208 lines) |
+| 14.2 View Animation | `frameworks/base/core/java/android/view/animation/Animation.java` |
+| | `frameworks/base/core/java/android/view/animation/AnimationSet.java` |
+| | `frameworks/base/core/java/android/view/animation/PathInterpolator.java` |
+| 14.3 Property Animation | `frameworks/base/core/java/android/animation/ValueAnimator.java` |
+| | `frameworks/base/core/java/android/animation/ObjectAnimator.java` |
+| | `frameworks/base/core/java/android/animation/AnimatorSet.java` |
+| | `frameworks/base/core/java/android/animation/PropertyValuesHolder.java` |
+| | `frameworks/base/core/java/android/animation/AnimationHandler.java` |
+| 14.4 Transition Framework | `frameworks/base/core/java/android/transition/Transition.java` |
+| | `frameworks/base/core/java/android/transition/TransitionManager.java` |
+| | `frameworks/base/core/java/android/transition/ChangeBounds.java` |
+| | `frameworks/base/core/java/android/transition/Fade.java` |
+| 14.6 WM Animations | `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimator.java` |
+| | `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimationRunner.java` |
+| | `frameworks/base/services/core/java/com/android/server/wm/WindowAnimator.java` |
+| 14.7 Shell Transitions | `frameworks/base/libs/WindowManager/Shell/src/.../transition/Transitions.java` |
+| | `frameworks/base/libs/WindowManager/Shell/src/.../transition/DefaultTransitionHandler.java` |
 | 14.8 Predictive Back | `frameworks/base/libs/WindowManager/Shell/src/.../back/BackAnimationController.java` |
 | 14.9 Physics Animation | `frameworks/base/core/java/com/android/internal/dynamicanimation/animation/SpringAnimation.java` |
 | | `frameworks/base/core/java/com/android/internal/dynamicanimation/animation/SpringForce.java` |
 | | `frameworks/base/core/java/com/android/internal/dynamicanimation/animation/DynamicAnimation.java` |
-| 14.10 HWUI Animation | `frameworks/base/libs/hwui/Animator.cpp` (~460 lines) |
-| | `frameworks/base/libs/hwui/AnimatorManager.cpp` (~207 lines) |
-| 14.11 Drawable Animation | `frameworks/base/graphics/java/android/graphics/drawable/AnimatedVectorDrawable.java` (~1,876 lines) |
-| | `frameworks/base/graphics/java/android/graphics/drawable/AnimatedImageDrawable.java` (~681 lines) |
-| 14.12 Choreographer | `frameworks/base/core/java/android/view/Choreographer.java` (1,741 lines) |
+| 14.10 HWUI Animation | `frameworks/base/libs/hwui/Animator.cpp` |
+| | `frameworks/base/libs/hwui/AnimatorManager.cpp` |
+| 14.11 Drawable Animation | `frameworks/base/graphics/java/android/graphics/drawable/AnimatedVectorDrawable.java` |
+| | `frameworks/base/graphics/java/android/graphics/drawable/AnimatedImageDrawable.java` |
+| 14.12 Choreographer | `frameworks/base/core/java/android/view/Choreographer.java` |
 | 14.14 Adaptive Refresh Rate | `frameworks/base/core/java/android/view/FrameRateVelocityPoint.java` |
 
 ### Glossary of Animation Terms

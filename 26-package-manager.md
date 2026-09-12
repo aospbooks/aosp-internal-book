@@ -5,7 +5,7 @@ lifecycle management in Android. It is responsible for discovering, parsing, ver
 installing, updating, and removing every APK on the device. It maintains the authoritative
 database of installed packages, enforces permission policy, resolves intents to the
 correct component, orchestrates the overlay system, and provides the backbone of the
-entire app ecosystem. At roughly 280 source files and well over 100,000 lines in its
+entire app ecosystem. At roughly 280 source files in its
 module tree, PMS is arguably the most complex subsystem in the entire Android framework.
 
 This chapter dissects PMS from the ground up: starting with the structure of an APK
@@ -696,7 +696,7 @@ private final FreeStorageHelper mFreeStorageHelper;
 
 This decomposition serves multiple purposes:
 
-1. **Readability** -- Helpers range from a few hundred to ~5,000 lines (`InstallPackageHelper` is the largest at ~5,300), though `PackageManagerService.java` itself still weighs in at ~8,800 lines
+1. **Readability** -- Helper sizes vary considerably, with `InstallPackageHelper` the largest, though `PackageManagerService.java` itself remains substantial
 2. **Testability** -- Helpers can be unit-tested in isolation
 3. **Lock discipline** -- Each helper clearly documents which locks it requires
 4. **Ownership** -- OWNERS files can assign different teams to different helpers
@@ -4780,8 +4780,7 @@ This chapter covered its critical subsystems:
 PMS has evolved significantly across Android versions. Understanding this evolution
 helps explain why the codebase looks the way it does:
 
-**Android 1.0-4.x (Pre-Lollipop):** PMS was a single monolithic Java file, over
-10,000 lines long. All scanning, installation, permission, and resolution logic
+**Android 1.0-4.x (Pre-Lollipop):** PMS was a single monolithic Java file. All scanning, installation, permission, and resolution logic
 was in one class.
 
 **Android 5.0 (Lollipop):** Introduction of ART replaced Dalvik, changing the

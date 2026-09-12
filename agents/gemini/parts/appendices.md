@@ -960,9 +960,9 @@ consulted independently. The engineering core is "The Java/Kotlin ABI Gap" and
 vendor and Mainline surfaces, and inventory where Kotlin already lives safely
 inside the platform.
 
-A note on sourcing. Every concrete file path, line count, and tool name comes
-from inspecting the AOSP checkout directly. Where the appendix cites ~65k lines
-or ~750k rows, the numbers were measured at one point in time and will drift as
+A note on sourcing. Every concrete file path and tool name comes
+from inspecting the AOSP checkout directly. Where the appendix speaks in terms
+of scale, those figures were measured at one point in time and will drift as
 the tree evolves; the orders of magnitude are what the argument depends on.
 
 ## The Asymmetry
@@ -1005,7 +1005,7 @@ The "public API" that this appendix worries about is defined in three signature
 files that metalava produces and validates against:
 
 - `frameworks/base/core/api/current.txt` — the canonical public Android SDK
-  signature. The in-tree copy is ~65k lines, ~4 MB, in
+  signature. The in-tree copy is ~4 MB, in
   metalava's "Signature format: 6.0".
 - `frameworks/base/services/api/current.txt` — the system-services API surface
   exposed to in-process callers.
@@ -1979,8 +1979,8 @@ permission access subsystem introduced in Android 13. Three representative files
 illustrate the shape:
 
 **`AccessCheckingService.kt`** —
-`frameworks/base/services/permission/java/com/android/server/permission/access/AccessCheckingService.kt`,
-325 lines. This is the entry-point class for the new permission stack. It
+`frameworks/base/services/permission/java/com/android/server/permission/access/AccessCheckingService.kt`.
+This is the entry-point class for the new permission stack. It
 extends `SystemService`, registers manager interfaces with `LocalServices`, and
 exposes its state via the `getState { ... }` scope helper. The relevant
 fragment:
@@ -2038,8 +2038,8 @@ equivalent Java design would produce — which is one of the reasons the team
 chose to keep the implementation Kotlin and the boundary Java.
 
 **`AccessPolicy.kt`** —
-`frameworks/base/services/permission/java/com/android/server/permission/access/AccessPolicy.kt`,
-540 lines. The `AccessPolicy` class indexes a map of `SchemePolicy`
+`frameworks/base/services/permission/java/com/android/server/permission/access/AccessPolicy.kt`.
+The `AccessPolicy` class indexes a map of `SchemePolicy`
 implementations and delegates per-scheme work to subclasses. The relevant
 declaration:
 
@@ -2060,8 +2060,8 @@ confined to the permission subsystem by build visibility — the library's
 them appears in any signature file.
 
 **`Permission.kt`** —
-`frameworks/base/services/permission/java/com/android/server/permission/access/permission/Permission.kt`,
-185 lines. A `data class` modeling a single permission entry with a `companion
+`frameworks/base/services/permission/java/com/android/server/permission/access/permission/Permission.kt`.
+A `data class` modeling a single permission entry with a `companion
 object` of constants:
 
 ```kotlin
@@ -2402,7 +2402,7 @@ Java total. The exact counts will drift as the tree evolves.
 ### Exercise C-2: Inspect a public API signature file
 
 Open `frameworks/base/core/api/current.txt` and look at the structure. It is
-large (~65k lines), so use a pager.
+large, so use a pager.
 
 ```bash
 cd $AOSP
@@ -2583,7 +2583,7 @@ full.
 | `tools/metalava/FORMAT.md` | Specification of the `current.txt` text format. |
 | `tools/metalava/COMPATIBILITY.md` | Compatibility policy enforced by metalava on signature drift. |
 | `tools/metalava/API-LINT.md` | API lint rule documentation. |
-| `frameworks/base/core/api/current.txt` | Public API signature snapshot (`android.*`); ~65k lines. |
+| `frameworks/base/core/api/current.txt` | Public API signature snapshot (`android.*`). |
 | `frameworks/base/services/api/current.txt` | API surface for system services. |
 | `frameworks/base/api/` | Build logic (`api.go`, `Android.bp`, `StubLibraries.bp`, `ApiDocs.bp`) that orchestrates signature generation. |
 | `prebuilts/sdk/<N>/public/api/android.txt` | Frozen public API signature for SDK level N (e.g. `prebuilts/sdk/34/public/api/android.txt`). |
@@ -2594,7 +2594,7 @@ full.
 | `frameworks/base/boot/hiddenapi/hiddenapi-max-target-p.txt` | Source blocklist: P-or-earlier APIs. |
 | `frameworks/base/boot/hiddenapi/hiddenapi-max-target-q.txt` | Source blocklist: Q-or-earlier APIs. |
 | `frameworks/base/boot/hiddenapi/hiddenapi-max-target-r-loprio.txt` | Source blocklist: R-or-earlier APIs (low priority). |
-| `out/soong/hiddenapi/hiddenapi-flags.csv` | Generated descriptor enforcement table (~750k rows). |
+| `out/soong/hiddenapi/hiddenapi-flags.csv` | Generated descriptor enforcement table. |
 | `prebuilts/runtime/appcompat/hiddenapi-flags.csv` | Prebuilt descriptor table for the host-side veridex/`appcompat.sh` APK scanner (~51 MB). |
 | `build/soong/java/kotlin.go` | Soong kotlinc Ninja rules (compile, snapshot, incremental). |
 | `build/soong/java/kotlin_test.go` | Unit tests for the kotlinc rules. |
@@ -2613,9 +2613,9 @@ full.
 | `external/kotlinc/lib/compose-compiler-plugin.jar` | Compose compiler plugin. |
 | `external/kotlinc/lib/kotlin-annotation-processing.jar` | kapt (Kotlin annotation processing). |
 | `external/kotlinc/lib/jvm-abi-gen.jar` | JVM ABI generation plugin. |
-| `frameworks/base/services/permission/java/com/android/server/permission/access/AccessCheckingService.kt` | Sample production Kotlin service (325 lines); extends `SystemService`. |
-| `frameworks/base/services/permission/java/com/android/server/permission/access/AccessPolicy.kt` | Sample policy hierarchy (540 lines); abstract `SchemePolicy` plus concrete subclasses. |
-| `frameworks/base/services/permission/java/com/android/server/permission/access/permission/Permission.kt` | Sample `data class` with companion object (185 lines). |
+| `frameworks/base/services/permission/java/com/android/server/permission/access/AccessCheckingService.kt` | Sample production Kotlin service; extends `SystemService`. |
+| `frameworks/base/services/permission/java/com/android/server/permission/access/AccessPolicy.kt` | Sample policy hierarchy; abstract `SchemePolicy` plus concrete subclasses. |
+| `frameworks/base/services/permission/java/com/android/server/permission/access/permission/Permission.kt` | Sample `data class` with companion object. |
 | `frameworks/base/services/permission/java/com/android/server/permission/access/AccessPersistence.kt` | Production `companion object` usage example. |
 | `system/apex/docs/README.md` | APEX/Mainline binary stability docs. |
 | `system/apex/tests/README.md` | APEX test infrastructure docs. |
@@ -2859,7 +2859,7 @@ Android 17 is API level 37, codename **CINNAMON_BUN**. The constant lives in `fr
 - `VERSION_CODES.CINNAMON_BUN = 37` (Build.java:1318), following `BAKLAVA = 36`.
 - `VERSION_CODES_FULL.CINNAMON_BUN = 3700000` (Build.java:1545) — the full-version encoding (`SDK_INT_MULTIPLIER = 100000`) introduced to carry minor versions alongside the major `SDK_INT`. Both `SDK_INT_FULL` and `VERSION_CODES_FULL.CINNAMON_BUN` are public API (`core/api/current.txt:34998`, `:35049`).
 
-The 17 public API surface is `core/api/current.txt` (~65k lines); new feature areas surface there and in `core/api/system-current.txt`.
+The 17 public API surface is `core/api/current.txt`; new feature areas surface there and in `core/api/system-current.txt`.
 
 ### New modules
 

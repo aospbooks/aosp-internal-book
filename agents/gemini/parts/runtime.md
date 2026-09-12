@@ -55,8 +55,8 @@ subdirectories:
 ### 18.1.2 The Runtime Singleton
 
 The `Runtime` class is the central singleton that owns every major subsystem.
-It is declared in `art/runtime/runtime.h` and implemented across roughly 3,700
-lines in `art/runtime/runtime.cc`.
+It is declared in `art/runtime/runtime.h` and implemented in
+`art/runtime/runtime.cc`.
 
 ```
 // art/runtime/runtime.h, line 130
@@ -1245,7 +1245,7 @@ flowchart TD
 
 The `dex2oat` binary's main function invokes the `Dex2Oat` class, which
 orchestrates the entire compilation pipeline. The main source file
-(`art/dex2oat/dex2oat.cc`) is substantial at over 2,000 lines.
+(`art/dex2oat/dex2oat.cc`) is one of the larger files in ART.
 
 Return codes are defined at line 114:
 
@@ -2968,7 +2968,7 @@ Verification checks include:
 
 The class linker is responsible for loading, verifying, resolving, and
 initializing Java classes. It is one of the most complex components in ART,
-implemented across over 11,700 lines in `art/runtime/class_linker.cc`.
+implemented in `art/runtime/class_linker.cc`.
 
 Source: `art/runtime/class_linker.h`, `art/runtime/class_linker.cc` (~514 KiB).
 
@@ -4893,8 +4893,8 @@ platform can measure how many apps still rely on the old behavior.
 Android 17 ships a second, ground-up reimplementation of the zygote process
 written in Rust. It lives in its own top-level project, `system/zygote/`, and
 builds a daemon binary named `zygote_next` (`system/zygote/zygote/Android.bp`,
-the `rust_binary { name: "zygote_next" }` target). It is roughly 9,000-10,000
-lines of Rust across a handful of crates and is an experiment in replacing the
+the `rust_binary { name: "zygote_next" }` target). It is written in Rust
+across a handful of crates and is an experiment in replacing the
 classic C++/Java zygote described in section 18.1.4 (and the launcher in
 `frameworks/base/cmds/app_process`). This section explains what it is, how it
 differs structurally from the classic zygote, and -- importantly -- how it is
@@ -5204,10 +5204,10 @@ Key source files for further exploration:
 
 | Component | File |
 |-----------|------|
-| Runtime singleton | `art/runtime/runtime.h` (1,400+ lines) |
+| Runtime singleton | `art/runtime/runtime.h` |
 | DEX file format | `art/libdexfile/dex/dex_file.h` |
 | DEX structures | `art/libdexfile/dex/dex_file_structs.h` |
-| dex2oat driver | `art/dex2oat/dex2oat.cc` (2,000+ lines) |
+| dex2oat driver | `art/dex2oat/dex2oat.cc` |
 | Compiler filters | `art/libartbase/base/compiler_filter.h` |
 | JIT front-end | `art/runtime/jit/jit.h` |
 | JIT code cache | `art/runtime/jit/jit_code_cache.h` |
@@ -5219,7 +5219,7 @@ Key source files for further exploration:
 | Class flags | `art/runtime/mirror/class_flags.h` |
 | x86 ISA features | `art/runtime/arch/x86/instruction_set_features_x86.cc` |
 | x86-64 SIMD width | `art/compiler/optimizing/code_generator_x86_64.h` |
-| Class linker | `art/runtime/class_linker.cc` (~11,800 lines) |
+| Class linker | `art/runtime/class_linker.cc` |
 | JNI VM | `art/runtime/jni/java_vm_ext.h` |
 | JNI env | `art/runtime/jni/jni_env_ext.h` |
 | OAT header | `art/runtime/oat/oat.h` |
@@ -6246,7 +6246,7 @@ walks the three-tier engine that lives there.
 ```
 frameworks/libs/binary_translation/
     Android.bp              # Top-level build
-    README.md               # Getting started (238 lines)
+    README.md               # Getting started
     OWNERS
     berberis_config.mk      # Product package lists
     enable_riscv64_to_x86_64.mk  # Product configuration
@@ -6255,7 +6255,7 @@ frameworks/libs/binary_translation/
     cpu_emulation/
         decoder/            # Instruction decoder (RISC-V → IR)
             include/berberis/decoder/riscv64/
-                decoder.h   # Template-based decoder (2374 lines)
+                decoder.h   # Template-based decoder
         interpreter/        # Instruction-by-instruction interpreter
             riscv64/
                 interpreter-main.cc
@@ -7144,7 +7144,7 @@ through the bridge to the host system.
 ```
 frameworks/libs/native_bridge_support/
     Android.bp
-    native_bridge_support.mk    # Package lists (140 lines)
+    native_bridge_support.mk    # Package lists
     android_api/                # Guest-side API stubs
         libc/
         app_process/

@@ -3599,22 +3599,22 @@ updatable, but it all runs in the same process.
 
 ### 20.24.1 Source File Index
 
-| File Path | Lines | Purpose |
-|-----------|-------|---------|
-| `frameworks/base/services/java/com/android/server/SystemServer.java` | ~3860 | Entry point, startup orchestration |
-| `frameworks/base/services/core/java/com/android/server/SystemService.java` | ~700 | Service base class, boot phase constants |
-| `frameworks/base/services/core/java/com/android/server/SystemServiceManager.java` | ~840 | Service lifecycle management |
-| `frameworks/base/services/core/java/com/android/server/Watchdog.java` | ~1200 | Deadlock detection, thread monitoring |
-| `frameworks/base/core/java/com/android/server/ServiceThread.java` | 52 | Handler thread base class |
-| `frameworks/base/services/core/java/com/android/server/DisplayThread.java` | 79 | Display operations thread |
-| `frameworks/base/services/core/java/com/android/server/AnimationThread.java` | 76 | Window animation thread |
-| `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimationThread.java` | 76 | Lock-free surface animation |
-| `frameworks/base/services/core/java/com/android/server/UiThread.java` | 89 | System UI thread |
-| `frameworks/base/core/java/com/android/server/FgThread.java` | 69 | Foreground operations thread |
-| `frameworks/base/services/core/java/com/android/server/IoThread.java` | 59 | I/O operations thread |
-| `frameworks/base/core/java/com/android/internal/os/BackgroundThread.java` | 104 | Background operations thread |
-| `frameworks/base/services/core/java/com/android/server/PermissionThread.java` | 72 | Permission operations thread |
-| `frameworks/base/services/core/java/com/android/server/SystemServerInitThreadPool.java` | ~240 | Boot-time parallel init pool |
+| File Path | Purpose |
+|-----------|---------|
+| `frameworks/base/services/java/com/android/server/SystemServer.java` | Entry point, startup orchestration |
+| `frameworks/base/services/core/java/com/android/server/SystemService.java` | Service base class, boot phase constants |
+| `frameworks/base/services/core/java/com/android/server/SystemServiceManager.java` | Service lifecycle management |
+| `frameworks/base/services/core/java/com/android/server/Watchdog.java` | Deadlock detection, thread monitoring |
+| `frameworks/base/core/java/com/android/server/ServiceThread.java` | Handler thread base class |
+| `frameworks/base/services/core/java/com/android/server/DisplayThread.java` | Display operations thread |
+| `frameworks/base/services/core/java/com/android/server/AnimationThread.java` | Window animation thread |
+| `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimationThread.java` | Lock-free surface animation |
+| `frameworks/base/services/core/java/com/android/server/UiThread.java` | System UI thread |
+| `frameworks/base/core/java/com/android/server/FgThread.java` | Foreground operations thread |
+| `frameworks/base/services/core/java/com/android/server/IoThread.java` | I/O operations thread |
+| `frameworks/base/core/java/com/android/internal/os/BackgroundThread.java` | Background operations thread |
+| `frameworks/base/services/core/java/com/android/server/PermissionThread.java` | Permission operations thread |
+| `frameworks/base/services/core/java/com/android/server/SystemServerInitThreadPool.java` | Boot-time parallel init pool |
 
 ### 20.24.2 Boot Phase Quick Reference
 
@@ -5317,7 +5317,7 @@ The Javadoc in the source captures this precisely:
 > BroadcastReceiver components, and startService or bindService to communicate with a
 > background Service."
 
-The Intent class itself is over 13,000 lines long, containing hundreds of standard
+The Intent class itself is enormous, containing hundreds of standard
 action constants, category constants, extra key definitions, and flag declarations. The
 actual data carried by an individual Intent instance, however, fits into a compact set of
 private fields (around line 8129 in the source):
@@ -8999,7 +8999,7 @@ Key source files examined:
 
 | File | Purpose |
 |------|---------|
-| `frameworks/base/core/java/android/content/Intent.java` | Intent class (~13.8K lines) |
+| `frameworks/base/core/java/android/content/Intent.java` | Intent class |
 | `frameworks/base/core/java/android/content/IntentFilter.java` | Filter matching |
 | `frameworks/base/core/java/android/app/PendingIntent.java` | Deferred intent tokens |
 | `frameworks/base/core/java/android/content/pm/ResolveInfo.java` | Resolution results |
@@ -9099,7 +9099,7 @@ establish the foundations.
 Before Android 10 (API 29), `ActivityManagerService` was a single monolithic
 class responsible for *everything*: process management, activity lifecycle,
 task management, broadcast dispatch, service binding, content provider
-tracking, and OOM adjustment. The file exceeded 30,000 lines and was one of
+tracking, and OOM adjustment. The file had grown to be one of
 the most complex classes in all of AOSP.
 
 Starting with Android 10, the AOSP team extracted activity-related and
@@ -12831,7 +12831,7 @@ map of the key directories and their contents.
 
 ```
 frameworks/base/services/core/java/com/android/server/am/
-    ActivityManagerService.java    -- Main AMS class (~21,200 lines)
+    ActivityManagerService.java    -- Main AMS class
     ProcessList.java               -- Process management + OOM adj values
     ProcessRecord.java             -- Per-process bookkeeping
     psc/OomAdjuster.java           -- OOM adjustment computation (abstract)
@@ -12854,8 +12854,8 @@ frameworks/base/services/core/java/com/android/server/am/
 
 ```
 frameworks/base/services/core/java/com/android/server/wm/
-    ActivityTaskManagerService.java  -- Main ATMS class (~8,450 lines)
-    WindowManagerService.java        -- Main WMS class (~11,600 lines)
+    ActivityTaskManagerService.java  -- Main ATMS class
+    WindowManagerService.java        -- Main WMS class
     ActivityStarter.java             -- Activity launch pipeline
     ActivityRecord.java              -- Per-activity state
     Task.java                        -- Task (back stack)
@@ -12959,7 +12959,7 @@ If you are new to this codebase, we recommend reading files in this order:
 ### Q: Why are AMS and ATMS separate services instead of one?
 
 **A**: The split serves both software engineering and runtime goals. The
-monolithic AMS was over 30,000 lines and mixed concerns: process lifetime
+monolithic AMS was large and mixed concerns: process lifetime
 management (CPU, memory, OOM) with UI-centric activity management (tasks,
 stacks, transitions). Separating them:
 
@@ -13515,8 +13515,8 @@ In this chapter we explored the three pillars of Android's activity and
 window management:
 
 1. **AMS and ATMS Architecture**: The historical split between
-   process management (AMS, ~21,200 lines in `com.android.server.am`) and
-   activity/task management (ATMS, ~8,450 lines in `com.android.server.wm`).
+   process management (AMS in `com.android.server.am`) and
+   activity/task management (ATMS in `com.android.server.wm`).
    AMS uses its own `ActivityManagerGlobalLock` plus `mProcLock`, while ATMS
    shares the `WindowManagerGlobalLock` with WMS. This shared lock eliminates
    deadlocks between activity and window operations while ensuring atomicity
@@ -13546,7 +13546,7 @@ window management:
    policy configuration). In Android 17 the IME-window attachment path
    resolves an `ImeWindowToken` to survive work-profile switches.
 
-5. **WMS Architecture**: The ~11,600-line service with its
+5. **WMS Architecture**: The service with its
    `mWindowMap` (global window registry), `mSessions` (per-process
    connections), display-thread model, five focus update modes, the
    `WindowSurfacePlacer` layout engine, and the `PriorityDumper` for
@@ -13668,7 +13668,7 @@ The key insight is that all three Java layers (App, WM Core, WM Shell) can issue
 frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java
 ```
 
-At over 11,500 lines in the Android 17 tree, it is one of the largest classes in the Android framework. WMS extends `IWindowManager.Stub` and implements `Watchdog.Monitor` and `WindowManagerPolicy.WindowManagerFuncs`:
+It is one of the largest classes in the Android framework. WMS extends `IWindowManager.Stub` and implements `Watchdog.Monitor` and `WindowManagerPolicy.WindowManagerFuncs`:
 
 ```java
 public class WindowManagerService extends IWindowManager.Stub
@@ -13703,7 +13703,7 @@ WMS holds references to critical subsystem controllers:
 
 The window system models all window-related objects as a tree of `WindowContainer` nodes. Every node maintains a parent reference, a list of children in z-order, and a 1:1 mapping to a `SurfaceControl` in the SurfaceFlinger layer tree.
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/WindowContainer.java` (over 3,800 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/WindowContainer.java`
 
 ```java
 class WindowContainer<E extends WindowContainer> extends ConfigurationContainer<E>
@@ -13862,7 +13862,7 @@ RootWindowContainer
 
 `WindowState` is the server-side representation of a single window. It extends `WindowContainer<WindowState>`, meaning its children are sub-windows (TYPE_APPLICATION_PANEL, TYPE_APPLICATION_MEDIA, etc.).
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/WindowState.java` (over 6,400 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/WindowState.java`
 
 ```java
 class WindowState extends WindowContainer<WindowState>
@@ -13894,7 +13894,7 @@ Key fields:
 
 `DisplayContent` represents one logical display in the window hierarchy. It extends `RootDisplayArea`, which itself extends `DisplayArea.Dimmable`, which extends `DisplayArea`, which extends `WindowContainer`.
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java` (over 7,700 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java`
 
 ```java
 class DisplayContent extends RootDisplayArea
@@ -14079,7 +14079,7 @@ The parallel sync system prevents dependency cycles: if sync B depends on sync A
 
 ### 23.1.13 DisplayContent Internals
 
-`DisplayContent` (over 7,700 lines in the Android 17 tree) maintains extensive state for its display. Key internal structures beyond those already discussed:
+`DisplayContent` maintains extensive state for its display. Key internal structures beyond those already discussed:
 
 ```java
 // Display metrics and configuration
@@ -14421,7 +14421,7 @@ The Shell Transitions system (`ENABLE_SHELL_TRANSITIONS = true`) is now the prim
 
 ### 23.3.2 TransitionController (WM Core Side)
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/TransitionController.java` (over 2,200 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/TransitionController.java`
 
 `TransitionController` manages the collection and synchronization phases of transitions on the WM Core side. Its Javadoc provides the key architectural insight:
 
@@ -14446,7 +14446,7 @@ class TransitionController {
 
 ### 23.3.3 Transition (WM Core Side)
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/Transition.java` (nearly 5,000 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/Transition.java`
 
 Each `Transition` instance represents a single transition from creation through collection, readiness, playing, and completion. The transition types are defined in `WindowManager`:
 
@@ -15001,7 +15001,7 @@ TaskDisplayArea
         └── Task (another leaf task)
 ```
 
-The `Task` class (over 7,500 lines) extends `TaskFragment`:
+The `Task` class extends `TaskFragment`:
 
 ```java
 class Task extends TaskFragment { ... }
@@ -15868,7 +15868,7 @@ The `prepareSurfaces()` method, called during the surface placement pass, allows
 
 The animation leash is the key mechanism that enables smooth animations of window containers. The `SurfaceAnimator` class manages this:
 
-**Source file:** `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimator.java` (about 640 lines)
+**Source file:** `frameworks/base/services/core/java/com/android/server/wm/SurfaceAnimator.java`
 
 From the source Javadoc:
 
@@ -16894,34 +16894,32 @@ For common topics, use this cross-reference to find the relevant section(s) in t
 
 ### 23.11.3 Key Source Files Reference
 
-The following table lists the most important source files for each section of this chapter, with line counts to indicate complexity:
+The following table lists the most important source files for each section of this chapter:
 
-Line counts are approximate as of the Android 17 (`android17-release`) tree.
-
-| File | Lines | Chapter Section |
-|------|-------|-----------------|
-| `WindowManagerService.java` | ~11,600 | 23.1 (Architecture) |
-| `WindowContainer.java` | ~3,800 | 23.1 (Hierarchy) |
-| `WindowState.java` | ~6,400 | 23.1 (Window state) |
-| `DisplayContent.java` | ~7,700 | 23.1, 23.5 (Display) |
-| `RootWindowContainer.java` | ~3,950 | 23.1 (Hierarchy root) |
-| `Task.java` | ~7,560 | 23.1, 23.4 (Tasks) |
-| `ActivityRecord.java` | ~9,900 | 23.1 (Activities) |
-| `TaskFragment.java` | ~3,550 | 23.1 (Task fragments) |
-| `DisplayArea.java` | ~880 | 23.8 (Z-order) |
-| `DisplayAreaPolicy.java` | -- | 23.8 (Z-order policy) |
-| `TransitionController.java` | ~2,240 | 23.3 (Core transitions) |
-| `Transition.java` | ~4,970 | 23.3 (Transition state) |
-| `Transitions.java` (Shell) | -- | 23.3 (Shell animation) |
-| `SurfaceAnimator.java` | ~640 | 23.7 (Leash mechanism) |
-| `InsetsStateController.java` | ~580 | 23.9 (Insets) |
-| `InputMonitor.java` | -- | 23.6 (Input) |
-| `StageCoordinator.java` | -- | 23.4 (Split screen) |
-| `PipTaskOrganizer.java` | -- | 23.4 (PiP) |
-| `DesktopTasksController.kt` | -- | 23.4 (Desktop) |
-| `BackAnimationController.java` | -- | 23.10 (Predictive back) |
-| `WMShellModule.java` | -- | 23.2 (DI) |
-| `WMShellConcurrencyModule.java` | -- | 23.2 (Threading) |
+| File | Chapter Section |
+|------|-----------------|
+| `WindowManagerService.java` | 23.1 (Architecture) |
+| `WindowContainer.java` | 23.1 (Hierarchy) |
+| `WindowState.java` | 23.1 (Window state) |
+| `DisplayContent.java` | 23.1, 23.5 (Display) |
+| `RootWindowContainer.java` | 23.1 (Hierarchy root) |
+| `Task.java` | 23.1, 23.4 (Tasks) |
+| `ActivityRecord.java` | 23.1 (Activities) |
+| `TaskFragment.java` | 23.1 (Task fragments) |
+| `DisplayArea.java` | 23.8 (Z-order) |
+| `DisplayAreaPolicy.java` | 23.8 (Z-order policy) |
+| `TransitionController.java` | 23.3 (Core transitions) |
+| `Transition.java` | 23.3 (Transition state) |
+| `Transitions.java` (Shell) | 23.3 (Shell animation) |
+| `SurfaceAnimator.java` | 23.7 (Leash mechanism) |
+| `InsetsStateController.java` | 23.9 (Insets) |
+| `InputMonitor.java` | 23.6 (Input) |
+| `StageCoordinator.java` | 23.4 (Split screen) |
+| `PipTaskOrganizer.java` | 23.4 (PiP) |
+| `DesktopTasksController.kt` | 23.4 (Desktop) |
+| `BackAnimationController.java` | 23.10 (Predictive back) |
+| `WMShellModule.java` | 23.2 (DI) |
+| `WMShellConcurrencyModule.java` | 23.2 (Threading) |
 
 ### 23.11.4 Debugging the Window System
 
@@ -17151,14 +17149,14 @@ The Android window system is a three-tier architecture:
 
 The window system is one of the largest subsystems in AOSP:
 
-| Component | Approximate Lines | Files |
-|-----------|-------------------|-------|
-| WM Core (`server/wm/`) | ~190,000 | 250+ |
-| WM Shell (`wm/shell/`) | 150,000+ | 400+ |
-| Window API (`view/`) | 50,000+ | 50+ |
-| Total | 400,000+ | 700+ |
+| Component | Files |
+|-----------|-------|
+| WM Core (`server/wm/`) | 250+ |
+| WM Shell (`wm/shell/`) | 400+ |
+| Window API (`view/`) | 50+ |
+| Total | 700+ |
 
-Five of the largest source files in the window system -- `WindowManagerService.java` (~11,600 lines), `ActivityRecord.java` (~9,900 lines), `DisplayContent.java` (~7,700 lines), `Task.java` (~7,560 lines), and `WindowState.java` (~6,400 lines) -- together exceed 43,000 lines of Java code, reflecting the deep complexity of window management.
+`WindowManagerService.java`, `ActivityRecord.java`, `DisplayContent.java`, `Task.java`, and `WindowState.java` are five of the largest source files in the window system, reflecting the deep complexity of window management.
 
 ### Evolution Direction
 
@@ -17267,8 +17265,8 @@ ioctls that trigger scanout of composed framebuffers.
 ### 24.1.2 DisplayManagerService
 
 `DisplayManagerService` (DMS) is a `SystemService` registered during
-`system_server` boot. At over 7,300 lines in Android 17, it is one of the
-largest services in the framework. Its Javadoc explains the architecture:
+`system_server` boot. It is one of the largest services in the framework.
+Its Javadoc explains the architecture:
 
 > The DisplayManagerService manages the global lifecycle of displays,
 > decides how to configure logical displays based on the physical display
@@ -18290,7 +18288,7 @@ a high refresh rate. The `SmallAreaDetectionController` in
 
 ### 24.4.1 DisplayRotation: The Policy Engine
 
-`DisplayRotation` (around 2,275 lines) owns the mapping between the requested
+`DisplayRotation` owns the mapping between the requested
 orientation (from the topmost Activity) and the actual physical rotation
 of the display. It resides in `WindowManagerService` and is instantiated
 per-`DisplayContent`:
@@ -19982,7 +19980,7 @@ is communicated to SurfaceFlinger via the `SURFACE_FLINGER_TRANSACTION_DISPLAY_C
 
 ### 24.11.1 DisplayPowerController: The State Machine
 
-`DisplayPowerController` (roughly 3,280 lines in Android 17) manages the power
+`DisplayPowerController` manages the power
 state of a single display. It runs on its own handler and communicates
 asynchronously with both `PowerManagerService` (via `DisplayPowerCallbacks`)
 and the display hardware.
@@ -20764,10 +20762,10 @@ the machinery behind focus, accessibility, window insets, and custom views.
 The Android view system is built on three pillars:
 
 1. **`View`** -- the atomic building block.  Every visible element on screen
-   (Button, TextView, ImageView, custom widgets) is a `View` subclass.  At
-   over 35,000 lines, `View.java` is one of the largest files in the Android
-   framework, handling measurement, layout, drawing, touch events, focus,
-   accessibility, animations, and more.
+   (Button, TextView, ImageView, custom widgets) is a `View` subclass.
+   `View.java` is one of the largest files in the Android framework, handling
+   measurement, layout, drawing, touch events, focus, accessibility,
+   animations, and more.
 
 2. **`ViewGroup`** -- the composite container.  `ViewGroup extends View` and
    can hold an ordered list of child `View` objects.  Layouts like

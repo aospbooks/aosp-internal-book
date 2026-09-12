@@ -88,8 +88,8 @@ ioctls that trigger scanout of composed framebuffers.
 ### 24.1.2 DisplayManagerService
 
 `DisplayManagerService` (DMS) is a `SystemService` registered during
-`system_server` boot. At over 7,300 lines in Android 17, it is one of the
-largest services in the framework. Its Javadoc explains the architecture:
+`system_server` boot. It is one of the largest services in the framework.
+Its Javadoc explains the architecture:
 
 > The DisplayManagerService manages the global lifecycle of displays,
 > decides how to configure logical displays based on the physical display
@@ -1111,7 +1111,7 @@ a high refresh rate. The `SmallAreaDetectionController` in
 
 ### 24.4.1 DisplayRotation: The Policy Engine
 
-`DisplayRotation` (around 2,275 lines) owns the mapping between the requested
+`DisplayRotation` owns the mapping between the requested
 orientation (from the topmost Activity) and the actual physical rotation
 of the display. It resides in `WindowManagerService` and is instantiated
 per-`DisplayContent`:
@@ -2803,7 +2803,7 @@ is communicated to SurfaceFlinger via the `SURFACE_FLINGER_TRANSACTION_DISPLAY_C
 
 ### 24.11.1 DisplayPowerController: The State Machine
 
-`DisplayPowerController` (roughly 3,280 lines in Android 17) manages the power
+`DisplayPowerController` manages the power
 state of a single display. It runs on its own handler and communicates
 asynchronously with both `PowerManagerService` (via `DisplayPowerCallbacks`)
 and the display hardware.

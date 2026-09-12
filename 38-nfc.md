@@ -162,7 +162,7 @@ The adapter communicates with `NfcService` through a Binder interface
 
 ### 38.1.5 NfcService: The System Server Component
 
-`NfcService` is the central daemon.  At roughly 7,200 lines it is one of the larger
+`NfcService` is the central daemon.  It is one of the larger
 system services.  It runs in the `com.android.nfc` process with the shared UID
 `android.uid.nfc` (see `NfcNci/AndroidManifest.xml`).  It is **not** part of
 `system_server` -- it runs in its own process:
@@ -3179,7 +3179,7 @@ regular app talk to an applet running on a Secure Element.  This section walks
 the implementation behind that concept: the `SecureElement` system app at
 `packages/apps/SecureElement/`, which provides the `ISecureElementService`
 binder that backs the `android.se.omapi` client classes.  It is a standalone app
-(roughly 9.5K lines of Java) running in its own `android.uid.se` process, not
+running in its own `android.uid.se` process, not
 part of NfcService -- though, as 38.13.7 shows, it shares the same off-host SEs
 that NFC card emulation routes contactless transactions to.
 
@@ -4219,7 +4219,7 @@ the application-facing APIs:
 `NfcAdapter` API.  The entire stack ships as a Mainline APEX module
 (`com.android.nfcservices`).
 
-**NfcService** -- the roughly 7,200-line central coordinator manages NFC hardware
+**NfcService** -- the central coordinator manages NFC hardware
 lifecycle, screen-state-dependent polling, the message handler loop, tag
 discovery, card emulation, and routing table updates.
 

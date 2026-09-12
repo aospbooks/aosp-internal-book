@@ -4,8 +4,8 @@ The Android notification system is one of the platform's most complex subsystems
 A single `notify()` call from an application triggers a cascade of permission checks,
 channel lookups, signal extraction, ranking, Do Not Disturb filtering, listener
 dispatch, and finally UI rendering inside SystemUI. In Android 17 the core
-service `NotificationManagerService.java` alone exceeds 16,500 lines of code and
-coordinates with over 70 helper classes. This chapter traces the full lifecycle of a
+service `NotificationManagerService.java` is one of the largest classes in the
+framework and coordinates with over 70 helper classes. This chapter traces the full lifecycle of a
 notification from the public API down through the server-side pipeline, ranking
 engine, attention effects, and into the SystemUI shade, then closes with the new
 notification surfaces Android 17 adds: rich ongoing notifications, system-managed
@@ -3383,26 +3383,26 @@ echo "files in the notification server package"
 
 ### 28.24.16 Summary of Key Source Files
 
-| File | Lines | Role |
-|------|-------|------|
-| `NotificationManagerService.java` | ~16,500 | Central service |
-| `NotificationRecord.java` | ~2,200 | Server-side notification wrapper |
-| `PreferencesHelper.java` | ~3,300 | Channel and group storage |
-| `ZenModeHelper.java` | ~3,000 | DND state machine |
-| `ZenModeFiltering.java` | ~570 | DND intercept decisions |
-| `RankingHelper.java` | ~200 | Signal extraction orchestrator |
-| `NotificationAttentionHelper.java` | ~2,000 | Sound, vibration, LED, polite strategy |
-| `GroupHelper.java` | ~2,100 | Auto-grouping / force-grouping logic |
-| `SnoozeHelper.java` | ~630 | Snooze state management |
-| `ShortcutHelper.java` | ~280 | Conversation shortcut queries |
-| `ManagedServices.java` | ~2,500 | Listener/assistant lifecycle |
-| `ValidateNotificationPeople.java` | ~720 | Contact resolution |
-| `BubbleExtractor.java` | ~230 | Bubble eligibility |
-| `ImportanceExtractor.java` | ~58 | Importance calculation |
-| `ZenModeExtractor.java` | ~67 | DND intercept signal |
-| `NotificationShellCmd.java` | ~800 | ADB shell interface |
-| `NotificationStackScrollLayout.java` | ~5,000+ | SystemUI shade container |
-| `BubbleController.java` | ~2,000+ | WM Shell bubble management |
+| File | Role |
+|------|------|
+| `NotificationManagerService.java` | Central service |
+| `NotificationRecord.java` | Server-side notification wrapper |
+| `PreferencesHelper.java` | Channel and group storage |
+| `ZenModeHelper.java` | DND state machine |
+| `ZenModeFiltering.java` | DND intercept decisions |
+| `RankingHelper.java` | Signal extraction orchestrator |
+| `NotificationAttentionHelper.java` | Sound, vibration, LED, polite strategy |
+| `GroupHelper.java` | Auto-grouping / force-grouping logic |
+| `SnoozeHelper.java` | Snooze state management |
+| `ShortcutHelper.java` | Conversation shortcut queries |
+| `ManagedServices.java` | Listener/assistant lifecycle |
+| `ValidateNotificationPeople.java` | Contact resolution |
+| `BubbleExtractor.java` | Bubble eligibility |
+| `ImportanceExtractor.java` | Importance calculation |
+| `ZenModeExtractor.java` | DND intercept signal |
+| `NotificationShellCmd.java` | ADB shell interface |
+| `NotificationStackScrollLayout.java` | SystemUI shade container |
+| `BubbleController.java` | WM Shell bubble management |
 
 ---
 
@@ -3502,9 +3502,10 @@ The Android notification system is a deeply layered pipeline that transforms a
 simple `notify()` call into a carefully ranked, policy-filtered, attention-managed
 user experience. The key architectural insights from this chapter:
 
-1. **NotificationManagerService** is the central hub. At over 16,500 lines, it
-   coordinates permission checks, channel lookups, signal extraction, ranking,
-   DND filtering, attention effects, and listener dispatch.
+1. **NotificationManagerService** is the central hub. It is one of the largest
+   classes in the framework, coordinating permission checks, channel lookups,
+   signal extraction, ranking, DND filtering, attention effects, and listener
+   dispatch.
 
 2. **The signal extractor pipeline** provides a modular, extensible architecture.
    Each extractor writes a specific signal onto the `NotificationRecord`, and the
@@ -3567,7 +3568,7 @@ For quick reference, the complete set of source files discussed in this chapter:
 **Server-side (system_server):**
 ```
 frameworks/base/services/core/java/com/android/server/notification/
-    NotificationManagerService.java        -- Central service (16,500+ lines)
+    NotificationManagerService.java        -- Central service
     NotificationRecord.java               -- Server-side notification wrapper
     PreferencesHelper.java                -- Channel and group storage
     RankingHelper.java                    -- Signal extraction orchestrator

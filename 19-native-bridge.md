@@ -449,7 +449,7 @@ walks the three-tier engine that lives there.
 ```
 frameworks/libs/binary_translation/
     Android.bp              # Top-level build
-    README.md               # Getting started (238 lines)
+    README.md               # Getting started
     OWNERS
     berberis_config.mk      # Product package lists
     enable_riscv64_to_x86_64.mk  # Product configuration
@@ -458,7 +458,7 @@ frameworks/libs/binary_translation/
     cpu_emulation/
         decoder/            # Instruction decoder (RISC-V → IR)
             include/berberis/decoder/riscv64/
-                decoder.h   # Template-based decoder (2374 lines)
+                decoder.h   # Template-based decoder
         interpreter/        # Instruction-by-instruction interpreter
             riscv64/
                 interpreter-main.cc
@@ -1347,7 +1347,7 @@ through the bridge to the host system.
 ```
 frameworks/libs/native_bridge_support/
     Android.bp
-    native_bridge_support.mk    # Package lists (140 lines)
+    native_bridge_support.mk    # Package lists
     android_api/                # Guest-side API stubs
         libc/
         app_process/

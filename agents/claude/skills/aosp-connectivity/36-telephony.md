@@ -52,9 +52,9 @@ AOSP tree.  The key source locations are:
 
 | Layer | Path | Description |
 |-------|------|-------------|
-| Public API | `frameworks/base/telephony/java/android/telephony/` | `TelephonyManager` (~20 200 lines), `SubscriptionManager`, `SmsManager`, `CarrierConfigManager` |
-| Internal framework | `frameworks/opt/telephony/src/java/com/android/internal/telephony/` | `Phone` (~5 550 lines), `GsmCdmaPhone` (~4 500 lines), `RIL` (~6 135 lines), `ServiceStateTracker`, `CommandsInterface` |
-| Phone process | `packages/services/Telephony/src/com/android/phone/` | `PhoneInterfaceManager` (~15 470 lines), `PhoneGlobals`, `CarrierConfigLoader` |
+| Public API | `frameworks/base/telephony/java/android/telephony/` | `TelephonyManager`, `SubscriptionManager`, `SmsManager`, `CarrierConfigManager` |
+| Internal framework | `frameworks/opt/telephony/src/java/com/android/internal/telephony/` | `Phone`, `GsmCdmaPhone`, `RIL`, `ServiceStateTracker`, `CommandsInterface` |
+| Phone process | `packages/services/Telephony/src/com/android/phone/` | `PhoneInterfaceManager`, `PhoneGlobals`, `CarrierConfigLoader` |
 | Telephony module | `packages/modules/Telephony/` | Mainline-modularised telephony code (apex, framework, libs) |
 | Radio HAL | `hardware/interfaces/radio/aidl/` | AIDL-based HAL interfaces: modem, sim, network, data, voice, messaging, ims |
 | Telecom | `packages/services/Telecomm/` | `CallsManager`, call routing, `InCallService` binding |
@@ -122,9 +122,9 @@ Key public API groupings on `TelephonyManager`:
 ### 36.1.3 PhoneInterfaceManager -- the Binder Gateway
 
 `PhoneInterfaceManager` lives in `packages/services/Telephony/` and extends
-`ITelephony.Stub`.  At roughly 15 500 lines it is one of the largest classes
-in the telephony stack (only `TelephonyManager` itself, at about 20 200 lines,
-is bigger).  It performs three critical functions:
+`ITelephony.Stub`.  It is one of the largest classes in the telephony stack
+(only `TelephonyManager` itself is bigger).  It performs three critical
+functions:
 
 1. **Permission enforcement** -- every method checks the caller's UID against
    required permissions (`READ_PHONE_STATE`, `MODIFY_PHONE_STATE`,
@@ -545,7 +545,7 @@ graph LR
 ### 36.2.2 RIL.java -- the Java Side
 
 `RIL.java` implements the `CommandsInterface` that every `Phone` object
-programs against.  It is roughly 6 100 lines of asynchronous request/response
+programs against.  It is a substantial body of asynchronous request/response
 plumbing:
 
 ```java
@@ -2853,7 +2853,7 @@ Key companion classes in `frameworks/opt/telephony/src/java/com/android/internal
 
 | Class | File | Responsibility |
 |-------|------|----------------|
-| `DataNetworkController` | `DataNetworkController.java` | Central orchestrator (~4 720 lines) |
+| `DataNetworkController` | `DataNetworkController.java` | Central orchestrator |
 | `DataNetwork` | `DataNetwork.java` | Individual data bearer, state machine |
 | `DataProfileManager` | `DataProfileManager.java` | APN/data profile management |
 | `DataConfigManager` | `DataConfigManager.java` | Carrier config for data |
@@ -4176,13 +4176,13 @@ sequenceDiagram
 
 ### 36.10.10 Key Source Files
 
-| File | Path | Lines |
-|------|------|-------|
-| WapPushOverSms | `frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushOverSms.java` | 504 |
-| WapPushManagerParams | `frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushManagerParams.java` | 70 |
-| WapPushCache | `frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushCache.java` | 172 |
-| InboundSmsHandler | `frameworks/opt/telephony/src/java/com/android/internal/telephony/InboundSmsHandler.java` | ~2,660 |
-| MmsWapPushDeliverReceiver | `packages/apps/Messaging/src/com/android/messaging/receiver/MmsWapPushDeliverReceiver.java` | ~50 |
+| File | Path |
+|------|------|
+| WapPushOverSms | `frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushOverSms.java` |
+| WapPushManagerParams | `frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushManagerParams.java` |
+| WapPushCache | `frameworks/opt/telephony/src/java/com/android/internal/telephony/WapPushCache.java` |
+| InboundSmsHandler | `frameworks/opt/telephony/src/java/com/android/internal/telephony/InboundSmsHandler.java` |
+| MmsWapPushDeliverReceiver | `packages/apps/Messaging/src/com/android/messaging/receiver/MmsWapPushDeliverReceiver.java` |
 
 ---
 
@@ -5537,43 +5537,43 @@ The telephony stack embodies several design principles worth noting:
 
 ### Key Source File Reference
 
-| File | Path | Lines |
-|------|------|-------|
-| `TelephonyManager.java` | `frameworks/base/telephony/java/android/telephony/TelephonyManager.java` | ~20 215 |
-| `PhoneInterfaceManager.java` | `packages/services/Telephony/src/com/android/phone/PhoneInterfaceManager.java` | ~15 469 |
-| `RIL.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/RIL.java` | ~6 135 |
-| `Phone.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/Phone.java` | ~5 550 |
-| `DataNetworkController.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/data/DataNetworkController.java` | ~4 717 |
-| `GsmCdmaPhone.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/GsmCdmaPhone.java` | ~4 500 |
-| `IRadioModem.aidl` | `hardware/interfaces/radio/aidl/android/hardware/radio/modem/IRadioModem.aidl` | |
-| `IRadioSim.aidl` | `hardware/interfaces/radio/aidl/android/hardware/radio/sim/IRadioSim.aidl` | |
-| `IRadioNetwork.aidl` | `hardware/interfaces/radio/aidl/android/hardware/radio/network/IRadioNetwork.aidl` | |
-| `IRadioData.aidl` | `hardware/interfaces/radio/aidl/android/hardware/radio/data/IRadioData.aidl` | |
-| `IRadioVoice.aidl` | `hardware/interfaces/radio/aidl/android/hardware/radio/voice/IRadioVoice.aidl` | |
-| `IRadioMessaging.aidl` | `hardware/interfaces/radio/aidl/android/hardware/radio/messaging/IRadioMessaging.aidl` | |
-| `IRadioIms.aidl` | `hardware/interfaces/radio/aidl/android/hardware/radio/ims/IRadioIms.aidl` | |
-| `ServiceStateTracker.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/ServiceStateTracker.java` | |
-| `InboundSmsHandler.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/InboundSmsHandler.java` | |
-| `SmsDispatchersController.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/SmsDispatchersController.java` | |
-| `UiccController.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/uicc/UiccController.java` | |
-| `SubscriptionManagerService.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/subscription/SubscriptionManagerService.java` | |
-| `ImsResolver.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/ims/ImsResolver.java` | |
-| `CarrierConfigManager.java` | `frameworks/base/telephony/java/android/telephony/CarrierConfigManager.java` | |
-| `PhoneFactory.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/PhoneFactory.java` | |
-| `DataNetwork.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/data/DataNetwork.java` | |
-| `DataProfileManager.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/data/DataProfileManager.java` | |
-| `PhoneSwitcher.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/data/PhoneSwitcher.java` | |
-| `ImsPhone.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/imsphone/ImsPhone.java` | |
-| `ImsPhoneCallTracker.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/imsphone/ImsPhoneCallTracker.java` | |
-| `PhoneGlobals.java` | `packages/services/Telephony/src/com/android/phone/PhoneGlobals.java` | |
-| `CallsManager.java` | `packages/services/Telecomm/src/com/android/server/telecom/CallsManager.java` | |
-| `SatelliteController.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteController.java` | ~11 885 |
-| `SatelliteSessionController.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteSessionController.java` | |
-| `SatelliteManager.java` | `frameworks/base/telephony/java/android/telephony/satellite/SatelliteManager.java` | |
-| `ImsService.java` (ImsStack) | `packages/modules/ImsStack/java/src/com/android/imsstack/imsservice/ImsService.java` | |
-| `libimsstack.cpp` | `packages/modules/ImsStack/native/libimsstack/libimsstack.cpp` | |
-| `DefaultGbaService.java` | `packages/modules/GenericBootstrappingArchitecture/src/com/android/gbaservice/DefaultGbaService.java` | |
-| `GbaManager.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/GbaManager.java` | |
+| File | Path |
+|------|------|
+| `TelephonyManager.java` | `frameworks/base/telephony/java/android/telephony/TelephonyManager.java` |
+| `PhoneInterfaceManager.java` | `packages/services/Telephony/src/com/android/phone/PhoneInterfaceManager.java` |
+| `RIL.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/RIL.java` |
+| `Phone.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/Phone.java` |
+| `DataNetworkController.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/data/DataNetworkController.java` |
+| `GsmCdmaPhone.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/GsmCdmaPhone.java` |
+| `IRadioModem.aidl` | `hardware/interfaces/radio/aidl/android/hardware/radio/modem/IRadioModem.aidl` |
+| `IRadioSim.aidl` | `hardware/interfaces/radio/aidl/android/hardware/radio/sim/IRadioSim.aidl` |
+| `IRadioNetwork.aidl` | `hardware/interfaces/radio/aidl/android/hardware/radio/network/IRadioNetwork.aidl` |
+| `IRadioData.aidl` | `hardware/interfaces/radio/aidl/android/hardware/radio/data/IRadioData.aidl` |
+| `IRadioVoice.aidl` | `hardware/interfaces/radio/aidl/android/hardware/radio/voice/IRadioVoice.aidl` |
+| `IRadioMessaging.aidl` | `hardware/interfaces/radio/aidl/android/hardware/radio/messaging/IRadioMessaging.aidl` |
+| `IRadioIms.aidl` | `hardware/interfaces/radio/aidl/android/hardware/radio/ims/IRadioIms.aidl` |
+| `ServiceStateTracker.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/ServiceStateTracker.java` |
+| `InboundSmsHandler.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/InboundSmsHandler.java` |
+| `SmsDispatchersController.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/SmsDispatchersController.java` |
+| `UiccController.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/uicc/UiccController.java` |
+| `SubscriptionManagerService.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/subscription/SubscriptionManagerService.java` |
+| `ImsResolver.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/ims/ImsResolver.java` |
+| `CarrierConfigManager.java` | `frameworks/base/telephony/java/android/telephony/CarrierConfigManager.java` |
+| `PhoneFactory.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/PhoneFactory.java` |
+| `DataNetwork.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/data/DataNetwork.java` |
+| `DataProfileManager.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/data/DataProfileManager.java` |
+| `PhoneSwitcher.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/data/PhoneSwitcher.java` |
+| `ImsPhone.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/imsphone/ImsPhone.java` |
+| `ImsPhoneCallTracker.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/imsphone/ImsPhoneCallTracker.java` |
+| `PhoneGlobals.java` | `packages/services/Telephony/src/com/android/phone/PhoneGlobals.java` |
+| `CallsManager.java` | `packages/services/Telecomm/src/com/android/server/telecom/CallsManager.java` |
+| `SatelliteController.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteController.java` |
+| `SatelliteSessionController.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteSessionController.java` |
+| `SatelliteManager.java` | `frameworks/base/telephony/java/android/telephony/satellite/SatelliteManager.java` |
+| `ImsService.java` (ImsStack) | `packages/modules/ImsStack/java/src/com/android/imsstack/imsservice/ImsService.java` |
+| `libimsstack.cpp` | `packages/modules/ImsStack/native/libimsstack/libimsstack.cpp` |
+| `DefaultGbaService.java` | `packages/modules/GenericBootstrappingArchitecture/src/com/android/gbaservice/DefaultGbaService.java` |
+| `GbaManager.java` | `frameworks/opt/telephony/src/java/com/android/internal/telephony/GbaManager.java` |
 
 ### Directory Structure Reference
 

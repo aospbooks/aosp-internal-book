@@ -586,7 +586,7 @@ graph TD
 All system call stubs in Bionic are auto-generated from a single definition
 file:
 
-**Source file:** `bionic/libc/SYSCALLS.TXT` (391 lines)
+**Source file:** `bionic/libc/SYSCALLS.TXT`
 
 From `bionic/libc/SYSCALLS.TXT` (lines 1-14):
 
@@ -895,7 +895,7 @@ From `bionic/libc/SECCOMP_BLOCKLIST_APP.TXT` (lines 1-7):
 
 **Blocked system calls for apps:**
 
-The `SECCOMP_BLOCKLIST_APP.TXT` file (50 lines) removes dangerous system calls
+The `SECCOMP_BLOCKLIST_APP.TXT` file removes dangerous system calls
 from app processes:
 
 ```
@@ -929,7 +929,7 @@ swapon(const char*, int) all
 swapoff(const char*) all
 ```
 
-**The app allowlist** (`SECCOMP_ALLOWLIST_APP.TXT`, 61 lines) re-enables
+**The app allowlist** (`SECCOMP_ALLOWLIST_APP.TXT`) re-enables
 specific calls that apps need but are not in the base SYSCALLS.TXT set, often
 for backward compatibility:
 
@@ -1127,19 +1127,18 @@ kernel maps a new process, and its correct operation is essential for every
 native binary on the system.
 
 The linker source lives in `bionic/linker/` and comprises 42 `.cpp` files
-(about 70 files including headers) totaling around 14,000 lines of C++. The
-key files are:
+(about 70 files including headers). The key files are:
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `linker.cpp` | 3,791 | Core linking logic: library search, loading, namespace management |
-| `linker_phdr.cpp` | 1,737 | ELF parsing, segment loading, address space management |
-| `linker_main.cpp` | 859 | Entry point, initialization, main linking sequence |
-| `linker_relocate.cpp` | 686 | Relocation processing |
-| `linker_namespaces.h` | 183 | Namespace data structures |
-| `linker_soinfo.h` | 539 | `soinfo` structure definition |
-| `linker_config.cpp` | 619 | Configuration file parser |
-| `dlfcn.cpp` | 357 | `dlopen`/`dlsym` API surface |
+| File | Purpose |
+|------|---------|
+| `linker.cpp` | Core linking logic: library search, loading, namespace management |
+| `linker_phdr.cpp` | ELF parsing, segment loading, address space management |
+| `linker_main.cpp` | Entry point, initialization, main linking sequence |
+| `linker_relocate.cpp` | Relocation processing |
+| `linker_namespaces.h` | Namespace data structures |
+| `linker_soinfo.h` | `soinfo` structure definition |
+| `linker_config.cpp` | Configuration file parser |
+| `dlfcn.cpp` | `dlopen`/`dlsym` API surface |
 
 ### 7.3.2 The Linker Entry Point
 
@@ -3670,7 +3669,7 @@ Musl lives at `external/musl/` in the AOSP tree:
 
 ```
 external/musl/
-├── Android.bp              # Build rules (823 lines)
+├── Android.bp              # Build rules
 ├── sources.bp              # Generated source file lists
 ├── README                  # Upstream v1.2.5
 ├── METADATA                # Version and license info

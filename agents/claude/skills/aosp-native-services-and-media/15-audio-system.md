@@ -8,8 +8,8 @@ and low-latency MMAP paths for professional-grade recording. This chapter
 traces every layer of the stack from the Java `AudioTrack` API down to the
 Audio HAL silicon interface, using the actual source files from the AOSP tree.
 
-The core audio services live under `frameworks/av/` and consist of roughly
-50,000 lines of C++ in AudioFlinger alone, plus another 30,000 lines spanning
+The core audio services live under `frameworks/av/` and consist of a substantial
+amount of C++ in AudioFlinger alone, plus a comparable amount spanning
 the Audio Policy engine, AAudio/Oboe service, effects library, and head
 tracking pipeline. We will read key data structures, follow the mixing thread
 loop line by line, and explain every optimization -- from the FastMixer that
@@ -53,9 +53,9 @@ The `audioserver` process hosts three primary services:
 
 | Service | Binder interface | Source |
 |---------|-----------------|--------|
-| AudioFlinger | `IAudioFlinger` | `frameworks/av/services/audioflinger/AudioFlinger.cpp` (5,288 lines) |
-| AudioPolicyService | `IAudioPolicyService` | `frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp` (2,759 lines) |
-| AAudioService | `IAAudioService` | `frameworks/av/services/oboeservice/AAudioService.cpp` (527 lines) |
+| AudioFlinger | `IAudioFlinger` | `frameworks/av/services/audioflinger/AudioFlinger.cpp` |
+| AudioPolicyService | `IAudioPolicyService` | `frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp` |
+| AAudioService | `IAAudioService` | `frameworks/av/services/oboeservice/AAudioService.cpp` |
 
 AudioFlinger is registered first:
 
@@ -286,16 +286,16 @@ or sent directly to the HAL for hardware decode (offload path).
 
 AudioFlinger is the central mixing engine of Android audio. It is the single
 most complex component in the audio stack, with the core implementation spread
-across six source files totaling nearly 27,000 lines:
+across six source files:
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `AudioFlinger.cpp` | 5,288 | Service entry point, Binder methods |
-| `Threads.cpp` | 12,053 | All thread loop implementations |
-| `Tracks.cpp` | 4,057 | Track objects (playback, record, mmap) |
-| `Effects.cpp` | 3,898 | Effect chain management |
-| `PatchPanel.cpp` | 1,085 | Audio routing patches |
-| `fastpath/FastMixer.cpp` | 517 | Low-latency fast mixer path |
+| File | Purpose |
+|------|---------|
+| `AudioFlinger.cpp` | Service entry point, Binder methods |
+| `Threads.cpp` | All thread loop implementations |
+| `Tracks.cpp` | Track objects (playback, record, mmap) |
+| `Effects.cpp` | Effect chain management |
+| `PatchPanel.cpp` | Audio routing patches |
+| `fastpath/FastMixer.cpp` | Low-latency fast mixer path |
 
 The first five files are under `frameworks/av/services/audioflinger/`. The
 fast-path code has been split into a `fastpath/` subdirectory (`FastMixer.cpp`,
@@ -303,7 +303,7 @@ fast-path code has been split into a `fastpath/` subdirectory (`FastMixer.cpp`,
 helpers), and the audioflinger directory now also carries `afutils/`,
 `datapath/`, `sounddose/`, and `timing/` subdirectories for utility, HAL
 stream, sound-dose, and frame-counter helpers respectively. The thread classes
-themselves are declared in `Threads.h` (2,573 lines) and implemented in
+themselves are declared in `Threads.h` and implemented in
 `Threads.cpp`.
 
 ### 15.2.1 AudioFlinger Initialization
@@ -748,7 +748,7 @@ The FastMixer is a separate high-priority thread that bypasses the normal mixer
 loop for latency-sensitive tracks. It is defined in:
 
 ```
-frameworks/av/services/audioflinger/fastpath/FastMixer.cpp (517 lines)
+frameworks/av/services/audioflinger/fastpath/FastMixer.cpp
 ```
 
 The FastMixer design rules are strict (from the source header comment):
@@ -881,7 +881,7 @@ if (fastTrack->mVolumeProvider != nullptr) {
 The PatchPanel manages audio routing patches between sources and sinks:
 
 ```
-frameworks/av/services/audioflinger/PatchPanel.cpp (1,085 lines)
+frameworks/av/services/audioflinger/PatchPanel.cpp
 ```
 
 A patch connects audio ports -- it can be device-to-device (hardware patch),
@@ -1498,8 +1498,8 @@ which output device to use, how to handle volume, and when to create or close
 audio streams. The source resides in:
 
 ```
-frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp (2,759 lines)
-frameworks/av/services/audiopolicy/AudioPolicyInterface.h (782 lines)
+frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp
+frameworks/av/services/audiopolicy/AudioPolicyInterface.h
 ```
 
 ### 15.3.1 Architecture
@@ -1626,7 +1626,7 @@ static const char kAudioPolicyManagerCustomPath[] =
 
 ### 15.3.4 The AudioPolicyInterface
 
-The `AudioPolicyInterface` (782 lines) defines the contract between the
+The `AudioPolicyInterface` defines the contract between the
 AudioPolicyService and the AudioPolicyManager. Key categories:
 
 ```cpp
@@ -2025,7 +2025,7 @@ Organized into subdirectories:
 
 ### 15.4.1 AudioStream Base Class
 
-All AAudio streams derive from `AudioStream` (880 lines):
+All AAudio streams derive from `AudioStream`:
 
 ```cpp
 // AudioStream.cpp, line 54-59
@@ -2950,8 +2950,8 @@ The dynamics processing effect provides per-channel multi-band compression:
 
 ```
 frameworks/av/media/libeffects/dynamicsproc/
-  - dsp/DPBase.cpp (265 lines)
-  - dsp/DPFrequency.cpp (677 lines)
+  - dsp/DPBase.cpp
+  - dsp/DPFrequency.cpp
 ```
 
 It supports:
@@ -3215,13 +3215,13 @@ Android's spatial audio system creates an immersive 3D audio experience by
 rendering multichannel content with head tracking. The implementation spans
 multiple components:
 
-| Component | File | Lines |
-|-----------|------|-------|
-| Head Tracking Processor | `frameworks/av/media/libheadtracking/HeadTrackingProcessor.cpp` | 262 |
-| Sensor Pose Provider | `frameworks/av/media/libheadtracking/SensorPoseProvider.cpp` | 446 |
-| Spatializer (C++) | `frameworks/av/services/audiopolicy/service/Spatializer.cpp` | 1,339 |
-| Spatializer (Java) | `frameworks/base/media/java/android/media/Spatializer.java` | 1,121 |
-| SpatializerHelper (Java) | `frameworks/base/services/core/java/com/android/server/audio/SpatializerHelper.java` | 1,807 |
+| Component | File |
+|-----------|------|
+| Head Tracking Processor | `frameworks/av/media/libheadtracking/HeadTrackingProcessor.cpp` |
+| Sensor Pose Provider | `frameworks/av/media/libheadtracking/SensorPoseProvider.cpp` |
+| Spatializer (C++) | `frameworks/av/services/audiopolicy/service/Spatializer.cpp` |
+| Spatializer (Java) | `frameworks/base/media/java/android/media/Spatializer.java` |
+| SpatializerHelper (Java) | `frameworks/base/services/core/java/com/android/server/audio/SpatializerHelper.java` |
 
 ### 15.7.1 System Architecture
 
@@ -3273,7 +3273,7 @@ graph TB
 
 ### 15.7.2 Head Tracking Processor
 
-The `HeadTrackingProcessor` (262 lines) is the core pose computation engine:
+The `HeadTrackingProcessor` is the core pose computation engine:
 
 ```cpp
 // HeadTrackingProcessor.cpp, line 37-57
@@ -3408,7 +3408,7 @@ positions back in front of the listener.
 
 ### 15.7.6 Sensor Pose Provider
 
-The `SensorPoseProvider` (446 lines) interfaces with the Android sensor
+The `SensorPoseProvider` interfaces with the Android sensor
 framework to get head orientation data:
 
 ```cpp
@@ -3447,7 +3447,7 @@ class SensorEnableGuard {
 
 ### 15.7.7 Spatializer (Native)
 
-The Spatializer class (1,339 lines) ties everything together:
+The Spatializer class ties everything together:
 
 ```cpp
 // Spatializer.cpp, line 46-58
@@ -3940,7 +3940,7 @@ The native `AudioTrack` class is the primary client-side API for audio
 playback. It is defined in:
 
 ```
-frameworks/av/media/libaudioclient/AudioTrack.cpp (3,960 lines)
+frameworks/av/media/libaudioclient/AudioTrack.cpp
 ```
 
 #### Minimum Frame Count
@@ -4003,7 +4003,7 @@ because the time stretcher's pitch setting was not working correctly.
 The native `AudioRecord` class handles audio capture:
 
 ```
-frameworks/av/media/libaudioclient/AudioRecord.cpp (1,891 lines)
+frameworks/av/media/libaudioclient/AudioRecord.cpp
 ```
 
 Minimum frame count calculation:
@@ -4039,7 +4039,7 @@ application, the other is being filled by the HAL.
 point for both AudioFlinger and AudioPolicyService:
 
 ```
-frameworks/av/media/libaudioclient/AudioSystem.cpp (3,269 lines)
+frameworks/av/media/libaudioclient/AudioSystem.cpp
 ```
 
 It maintains service connection state:
@@ -4080,7 +4080,7 @@ Key static methods:
 The Java `AudioTrack` class is the most commonly used audio playback API:
 
 ```
-frameworks/base/media/java/android/media/AudioTrack.java (4,971 lines)
+frameworks/base/media/java/android/media/AudioTrack.java
 ```
 
 It wraps the native `AudioTrack` through JNI, adding:
@@ -5410,8 +5410,8 @@ The key architectural decisions that make it work:
    over hardware, with the IModule/IStream model supporting everything from
    simple codecs to complex DSP chains with MMAP support.
 
-The source files we examined total over 50,000 lines of C++ and represent
-some of the most performance-critical code in the entire Android platform.
+The source files we examined represent some of the most performance-critical
+code in the entire Android platform.
 Understanding this architecture is essential for anyone working on audio
 hardware integration, audio application performance optimization, or audio
 framework development.
@@ -5421,34 +5421,34 @@ framework development.
 The following table lists all major source files examined in this chapter,
 with their locations and sizes:
 
-| File | Path (relative to AOSP root) | Lines |
-|------|------------------------------|-------|
-| AudioFlinger.cpp | `frameworks/av/services/audioflinger/AudioFlinger.cpp` | 5,288 |
-| AudioFlinger.h | `frameworks/av/services/audioflinger/AudioFlinger.h` | 838 |
-| Threads.cpp | `frameworks/av/services/audioflinger/Threads.cpp` | 12,053 |
-| Threads.h | `frameworks/av/services/audioflinger/Threads.h` | 2,573 |
-| Tracks.cpp | `frameworks/av/services/audioflinger/Tracks.cpp` | 4,057 |
-| Effects.cpp | `frameworks/av/services/audioflinger/Effects.cpp` | 3,898 |
-| PatchPanel.cpp | `frameworks/av/services/audioflinger/PatchPanel.cpp` | 1,085 |
-| FastMixer.cpp | `frameworks/av/services/audioflinger/fastpath/FastMixer.cpp` | 517 |
-| IAfThread.h | `frameworks/av/services/audioflinger/IAfThread.h` | 738 |
-| AudioPolicyService.cpp | `frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp` | 2,759 |
-| AudioPolicyInterface.h | `frameworks/av/services/audiopolicy/AudioPolicyInterface.h` | 782 |
-| Spatializer.cpp | `frameworks/av/services/audiopolicy/service/Spatializer.cpp` | 1,339 |
-| AudioStream.cpp | `frameworks/av/media/libaaudio/src/core/AudioStream.cpp` | 880 |
-| FifoBuffer.cpp | `frameworks/av/media/libaaudio/src/fifo/FifoBuffer.cpp` | 224 |
-| AAudioService.cpp | `frameworks/av/services/oboeservice/AAudioService.cpp` | 527 |
-| AAudioServiceEndpointMMAP.cpp | `frameworks/av/services/oboeservice/AAudioServiceEndpointMMAP.cpp` | 879 |
-| IMmapStream.aidl | `frameworks/av/media/libaudioclient/aidl/android/media/IMmapStream.aidl` | new in 17 |
-| HeadTrackingProcessor.cpp | `frameworks/av/media/libheadtracking/HeadTrackingProcessor.cpp` | 262 |
-| SensorPoseProvider.cpp | `frameworks/av/media/libheadtracking/SensorPoseProvider.cpp` | 446 |
-| AudioTrack.cpp | `frameworks/av/media/libaudioclient/AudioTrack.cpp` | 3,960 |
-| AudioRecord.cpp | `frameworks/av/media/libaudioclient/AudioRecord.cpp` | 1,891 |
-| AudioSystem.cpp | `frameworks/av/media/libaudioclient/AudioSystem.cpp` | 3,269 |
-| AudioTrack.java | `frameworks/base/media/java/android/media/AudioTrack.java` | 4,971 |
-| Spatializer.java | `frameworks/base/media/java/android/media/Spatializer.java` | 1,121 |
-| SpatializerHelper.java | `frameworks/base/services/core/java/com/android/server/audio/SpatializerHelper.java` | 1,807 |
-| IModule.aidl | `hardware/interfaces/audio/aidl/android/hardware/audio/core/IModule.aidl` | 979 |
+| File | Path (relative to AOSP root) |
+|------|------------------------------|
+| AudioFlinger.cpp | `frameworks/av/services/audioflinger/AudioFlinger.cpp` |
+| AudioFlinger.h | `frameworks/av/services/audioflinger/AudioFlinger.h` |
+| Threads.cpp | `frameworks/av/services/audioflinger/Threads.cpp` |
+| Threads.h | `frameworks/av/services/audioflinger/Threads.h` |
+| Tracks.cpp | `frameworks/av/services/audioflinger/Tracks.cpp` |
+| Effects.cpp | `frameworks/av/services/audioflinger/Effects.cpp` |
+| PatchPanel.cpp | `frameworks/av/services/audioflinger/PatchPanel.cpp` |
+| FastMixer.cpp | `frameworks/av/services/audioflinger/fastpath/FastMixer.cpp` |
+| IAfThread.h | `frameworks/av/services/audioflinger/IAfThread.h` |
+| AudioPolicyService.cpp | `frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp` |
+| AudioPolicyInterface.h | `frameworks/av/services/audiopolicy/AudioPolicyInterface.h` |
+| Spatializer.cpp | `frameworks/av/services/audiopolicy/service/Spatializer.cpp` |
+| AudioStream.cpp | `frameworks/av/media/libaaudio/src/core/AudioStream.cpp` |
+| FifoBuffer.cpp | `frameworks/av/media/libaaudio/src/fifo/FifoBuffer.cpp` |
+| AAudioService.cpp | `frameworks/av/services/oboeservice/AAudioService.cpp` |
+| AAudioServiceEndpointMMAP.cpp | `frameworks/av/services/oboeservice/AAudioServiceEndpointMMAP.cpp` |
+| IMmapStream.aidl | `frameworks/av/media/libaudioclient/aidl/android/media/IMmapStream.aidl` |
+| HeadTrackingProcessor.cpp | `frameworks/av/media/libheadtracking/HeadTrackingProcessor.cpp` |
+| SensorPoseProvider.cpp | `frameworks/av/media/libheadtracking/SensorPoseProvider.cpp` |
+| AudioTrack.cpp | `frameworks/av/media/libaudioclient/AudioTrack.cpp` |
+| AudioRecord.cpp | `frameworks/av/media/libaudioclient/AudioRecord.cpp` |
+| AudioSystem.cpp | `frameworks/av/media/libaudioclient/AudioSystem.cpp` |
+| AudioTrack.java | `frameworks/base/media/java/android/media/AudioTrack.java` |
+| Spatializer.java | `frameworks/base/media/java/android/media/Spatializer.java` |
+| SpatializerHelper.java | `frameworks/base/services/core/java/com/android/server/audio/SpatializerHelper.java` |
+| IModule.aidl | `hardware/interfaces/audio/aidl/android/hardware/audio/core/IModule.aidl` |
 
 ### Key Concepts Glossary
 

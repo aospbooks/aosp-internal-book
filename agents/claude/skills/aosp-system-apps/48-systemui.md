@@ -428,10 +428,10 @@ icons.  It is one of the first visual elements created during SystemUI startup.
 ### 48.2.1  CentralSurfaces -- The Orchestrator
 
 `CentralSurfaces` is an interface extending `Dumpable`, `LifecycleOwner`, and
-`CoreStartable`.  Its implementation, `CentralSurfacesImpl`, is a ~2,800-line
-class (down from over 3,200 lines in earlier releases as logic continues to be
-extracted) that historically served as the central coordinator for the status
-bar, notification shade, keyguard, and more:
+`CoreStartable`.  Its implementation, `CentralSurfacesImpl`, is a large
+class (it has been shrinking as logic continues to be extracted) that
+historically served as the central coordinator for the status bar,
+notification shade, keyguard, and more:
 
 ```java
 // frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/
@@ -683,8 +683,8 @@ current state:
 
 ### 48.3.2  NotificationPanelViewController
 
-At roughly 4,300 lines, `NotificationPanelViewController` is the primary
-controller for the *legacy* (pre-scene) shade panel.  It manages:
+`NotificationPanelViewController` is the primary controller for the
+*legacy* (pre-scene) shade panel.  It manages:
 
 - Touch tracking and velocity-based expansion/collapse
 - QS expansion within the shade
@@ -759,7 +759,7 @@ public interface ShadeController extends CoreStartable {
 ```
 
 The default implementation is `ShadeControllerImpl`
-(`ShadeControllerImpl.java`, ~410 lines), while `ShadeControllerSceneImpl`
+(`ShadeControllerImpl.java`), while `ShadeControllerSceneImpl`
 (`ShadeControllerSceneImpl.kt`) is the next-generation implementation for the
 scene container architecture.  `QuickSettingsController` follows the same split:
 `QuickSettingsControllerImpl.java` for the legacy path and
@@ -1374,7 +1374,7 @@ The controller:
 
 ### 48.7.2  VolumeDialog (MVI rewrite)
 
-Earlier releases implemented the dialog as a single 2,800-line
+Earlier releases implemented the dialog as a single large
 `VolumeDialogImpl` class.  Android 17 has replaced it with a fully layered
 package under `frameworks/base/packages/SystemUI/src/com/android/systemui/volume/dialog/`,
 following the same data/domain/ui split as the rest of modern SystemUI:
@@ -1558,8 +1558,7 @@ public class GlobalActionsImpl implements GlobalActions, CommandQueue.Callbacks 
 
 ### 48.8.3  GlobalActionsDialogLite
 
-At roughly 3,150 lines, `GlobalActionsDialogLite` implements the actual power
-menu dialog:
+`GlobalActionsDialogLite` implements the actual power menu dialog:
 
 ```java
 // frameworks/base/packages/SystemUI/src/com/android/systemui/globalactions/
@@ -2713,9 +2712,9 @@ Subcomponent rather than forking the Shell library, because every
 variant still benefits from upstream feature work going into the base
 `WMShellModule`.
 
-The base module `WMShellBaseModule` is shared across variants and runs
-to ~1,400 lines (the phone/tablet `WMShellModule`, at ~2,400 lines, is
-larger still): it binds the transports (`ShellExecutor`,
+The base module `WMShellBaseModule` is shared across variants (the
+phone/tablet `WMShellModule` is larger still): it binds the transports
+(`ShellExecutor`,
 `HandlerThread`, `Choreographer`), the cross-cutting services
 (`ShellInit`, `ShellController`, `ShellCommandHandler`,
 `ProtoLogController`, `ShellTaskOrganizer`, `Transitions`,
@@ -2880,7 +2879,7 @@ change into the corresponding `ShellInterface` / per-feature method
 |------|---------|
 | `frameworks/base/libs/WindowManager/Shell/Android.bp` | Module definitions, ProtoLog genrules, form-factor variants |
 | `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/WMComponent.java` | Dagger subcomponent — Shell's public surface |
-| `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/WMShellBaseModule.java` | Cross-form-factor base bindings (~1,400 lines) |
+| `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/WMShellBaseModule.java` | Cross-form-factor base bindings |
 | `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/WMShellModule.java` | Phone/tablet form-factor bindings |
 | `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/TvWMShellModule.java` | TV form-factor bindings |
 | `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/sysui/ShellInterface.java` | Lifecycle facade SysUI calls into |
@@ -2928,7 +2927,7 @@ It does **not** own:
   per-user `Settings.Secure.SCREENSAVER_COMPONENTS` list — the library
   only overrides via `setSystemDreamComponent`.
 
-Source layout (~8 source files, ~450 lines):
+Source layout (~8 source files):
 
 ```
 frameworks/base/libs/dream/lowlight/
@@ -3352,7 +3351,7 @@ into Dagger.
 
 ### 48.15.5  KeyguardViewMediator Internals
 
-`KeyguardViewMediator` (~4,700 lines) remains the bridge between
+`KeyguardViewMediator` remains the bridge between
 `system_server` and SystemUI's keyguard.  Key internal mechanisms:
 
 **Lock Timeout Scheduling:**
@@ -3613,7 +3612,7 @@ The `SceneContainerFlag` controls whether the new path is active, with
 
 | Path | Description |
 |---|---|
-| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewMediator.java` | ~4,700-line mediator |
+| `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewMediator.java` | Central mediator |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardService.java` | system_server bridge |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardLifecyclesDispatcher.java` | Lifecycle events |
 | `frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardUnlockAnimationController.kt` | Unlock animation |
@@ -4200,21 +4199,21 @@ public class CaffeineTileTest extends SysuiTestCase {
 SystemUI is a massive, continuously evolving codebase that implements nearly
 every system-level UI surface on Android.  This chapter covered:
 
-| Section | Key Classes | Lines of Code (approx.) |
-|---|---|---|
-| Architecture | `SystemUIApplicationImpl`, `GlobalRootComponent`, `SysUIComponent`, `CoreStartable` | ~500 |
-| Status Bar | `CentralSurfacesImpl`, `StatusBarWindowControllerImpl`, `HomeStatusBarViewModel` | ~2,800 |
-| Notification Shade | `NotificationPanelViewController`, `ShadeController`, `NotificationStackScrollLayout` | ~4,300 |
-| Quick Settings | `QSHost`, `QSTileImpl`, `QSFragmentCompose`, `CustomTile` | ~2,000 |
-| Lock Screen | `KeyguardViewMediator`, `StatusBarKeyguardViewManager`, Bouncer | ~4,600 |
-| Recent Apps | `OverviewProxyRecentsImpl`, `LauncherProxyService` | ~110 |
-| Volume Dialog | `VolumeDialogControllerImpl`, `VolumeDialog` (`volume/dialog/`) | ~2,900 |
-| Power Menu | `GlobalActionsComponent`, `GlobalActionsDialogLite` | ~3,100 |
-| Screenshots | `ScreenshotController`, `ImageCapture`, `ImageExporter` | ~1,200 |
-| Multi-Display | `PerDisplayRepository`, `StatusBarWindowControllerStore` | ~300 |
-| Navigation Bar | `NavigationBarView`, `EdgeBackGestureHandler`, `NavigationModeController` | ~2,500 |
-| Monet / Dynamic Color | `ThemeOverlayController`, `ColorScheme`, `TonalPalette`, `DynamicColors` | ~1,600 |
-| Keyguard Deep Dive | `KeyguardState`, `KeyguardTransitionInteractor`, `BiometricUnlockInteractor` | ~4,600 |
+| Section | Key Classes |
+|---|---|
+| Architecture | `SystemUIApplicationImpl`, `GlobalRootComponent`, `SysUIComponent`, `CoreStartable` |
+| Status Bar | `CentralSurfacesImpl`, `StatusBarWindowControllerImpl`, `HomeStatusBarViewModel` |
+| Notification Shade | `NotificationPanelViewController`, `ShadeController`, `NotificationStackScrollLayout` |
+| Quick Settings | `QSHost`, `QSTileImpl`, `QSFragmentCompose`, `CustomTile` |
+| Lock Screen | `KeyguardViewMediator`, `StatusBarKeyguardViewManager`, Bouncer |
+| Recent Apps | `OverviewProxyRecentsImpl`, `LauncherProxyService` |
+| Volume Dialog | `VolumeDialogControllerImpl`, `VolumeDialog` (`volume/dialog/`) |
+| Power Menu | `GlobalActionsComponent`, `GlobalActionsDialogLite` |
+| Screenshots | `ScreenshotController`, `ImageCapture`, `ImageExporter` |
+| Multi-Display | `PerDisplayRepository`, `StatusBarWindowControllerStore` |
+| Navigation Bar | `NavigationBarView`, `EdgeBackGestureHandler`, `NavigationModeController` |
+| Monet / Dynamic Color | `ThemeOverlayController`, `ColorScheme`, `TonalPalette`, `DynamicColors` |
+| Keyguard Deep Dive | `KeyguardState`, `KeyguardTransitionInteractor`, `BiometricUnlockInteractor` |
 
 The codebase is transitioning from monolithic controllers to a layered
 data/domain/UI architecture with Dagger DI, Kotlin coroutines, and Jetpack

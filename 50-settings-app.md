@@ -2296,7 +2296,7 @@ public Uri getSliceUri() {
 ### 50.13.1 Scale and Permissions
 
 The Settings app `AndroidManifest.xml` is one of the largest manifest files in
-AOSP at over 6,000 lines.  It declares:
+AOSP.  It declares:
 
 - Over 150 activities (one per settings page)
 - Multiple content providers (search, slices, biometrics)

@@ -757,8 +757,8 @@ x86/x86_64 images provide dramatically better performance during development.
 
 **Source files**:
 
-- `build/soong/cc/config/x86_device.go` (204 lines)
-- `build/soong/cc/config/x86_64_device.go` (213 lines)
+- `build/soong/cc/config/x86_device.go`
+- `build/soong/cc/config/x86_64_device.go`
 
 ### 59.3.1 x86 Architecture Variants
 
@@ -1748,7 +1748,7 @@ $(TARGET_2ND_ARCH_VAR_PREFIX)TARGET_OUT_SHARED_LIBRARIES := \
 ## 59.6 Compiler Configuration
 
 The compiler configuration in AOSP is centralized in
-`build/soong/cc/config/global.go` (655 lines) and applies to all architectures.
+`build/soong/cc/config/global.go` and applies to all architectures.
 This file defines the common compilation flags, warning policies, debug
 settings, and Clang toolchain paths that form the baseline for every native
 build.

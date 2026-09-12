@@ -4,8 +4,8 @@ Android's media framework is one of the most architecturally complex subsystems 
 It spans from high-level Java APIs (`MediaPlayer`, `MediaCodec`, `MediaRecorder`) through
 a native C++ stack that includes Stagefright, the Codec2 framework, NuPlayer, the Camera
 service, media extractors, and hardware abstraction layers that communicate directly with
-vendor-supplied codec and camera hardware. Across the roughly 50,000 lines of C++ that
-make up the core pipeline, every frame of video you watch, every audio sample you hear,
+vendor-supplied codec and camera hardware. Across the C++ codebase that
+makes up the core pipeline, every frame of video you watch, every audio sample you hear,
 and every photo you capture passes through the machinery described in this chapter.
 
 ---
@@ -150,39 +150,39 @@ A summary of the relevant source tree within `frameworks/av/`:
 frameworks/av/
   media/
     libstagefright/          # Core Stagefright library
-      MediaCodec.cpp         # 8234 lines - the MediaCodec state machine
-      ACodec.cpp             # 9458 lines - OMX codec wrapper
-      MPEG4Writer.cpp        # 6070 lines - MP4 muxer
-      NuMediaExtractor.cpp   # 896 lines  - extractor wrapper
-      MediaExtractorFactory.cpp  # 395 lines - extractor plugin loading
+      MediaCodec.cpp         # the MediaCodec state machine
+      ACodec.cpp             # OMX codec wrapper
+      MPEG4Writer.cpp        # MP4 muxer
+      NuMediaExtractor.cpp   # extractor wrapper
+      MediaExtractorFactory.cpp  # extractor plugin loading
     codec2/
       components/            # 21 software codec families (plus base/, cmds/, tests/)
         aac/  amr_nb_wb/  aom/  apv/  avc/  base/  dav1d/  flac/
         g711/ gav1/ gsm/ hevc/ iamf/ mp3/ mpeg2/ mpeg4_h263/
         opus/ raw/ vorbis/ vpx/ xaac/ xhe_aac/
       sfplugin/              # Codec2-to-Stagefright bridge
-        CCodec.cpp           # 3849 lines
-        CCodecBufferChannel.cpp  # 3428 lines
+        CCodec.cpp
+        CCodecBufferChannel.cpp
         CCodecConfig.cpp
         Codec2Buffer.cpp
       hal/                   # Codec2 HAL implementation
         aidl/  hidl/  services/
       core/                  # Codec2 core interfaces
     libmediaplayerservice/
-      MediaPlayerService.cpp # 3114 lines
-      StagefrightRecorder.cpp # 2759 lines
+      MediaPlayerService.cpp
+      StagefrightRecorder.cpp
       nuplayer/
-        NuPlayer.cpp         # 3265 lines
-        NuPlayerDecoder.cpp  # 1394 lines
-        NuPlayerRenderer.cpp # 2239 lines
-        NuPlayerDriver.cpp   # 1240 lines
+        NuPlayer.cpp
+        NuPlayerDecoder.cpp
+        NuPlayerRenderer.cpp
+        NuPlayerDriver.cpp
     libmedia/
-      VideoCapabilities.cpp  # 1966 lines
-      MediaProfiles.cpp      # 1521 lines
+      VideoCapabilities.cpp
+      MediaProfiles.cpp
   services/
     camera/
       libcameraservice/
-        CameraService.cpp    # 7019 lines
+        CameraService.cpp
         device3/             # Camera HAL3 device implementation
         api1/                # Legacy camera API
         api2/                # Camera2 API (CameraDeviceClient)
@@ -548,7 +548,7 @@ void BufferCallback::onOutputBufferAvailable(
 ### 16.2.7 ACodec: The OMX Bridge
 
 `ACodec` in `frameworks/av/media/libstagefright/ACodec.cpp` is the legacy bridge between
-MediaCodec and OpenMAX IL (OMX) components. At 9458 lines, it is one of the largest
+MediaCodec and OpenMAX IL (OMX) components. It is one of the largest
 single source files in the media framework. While being gradually replaced by Codec2,
 ACodec remains important for backward compatibility with older vendor OMX implementations.
 
@@ -1592,19 +1592,19 @@ media playback. The `MediaPlayerBase`/`MediaPlayerInterface` implementation that
 MediaPlayerService actually instantiates is `NuPlayerDriver`; NuPlayer itself is an
 `AHandler` driven by it. Located in
 `frameworks/av/media/libmediaplayerservice/nuplayer/`, the player comprises multiple
-source files totaling over 8,000 lines:
+source files:
 
-| File | Lines | Purpose |
-|---|---|---|
-| `NuPlayer.cpp` | 3,265 | Core player logic, action queue |
-| `NuPlayerRenderer.cpp` | 2,239 | Audio/video synchronization |
-| `NuPlayerDecoder.cpp` | 1,394 | Decoder management (wraps MediaCodec) |
-| `NuPlayerDriver.cpp` | 1,240 | MediaPlayerBase interface adapter |
-| `GenericSource.cpp` | -- | Local file playback |
-| `HTTPLiveSource.cpp` | -- | HLS streaming |
-| `RTSPSource.cpp` | -- | RTSP streaming |
-| `RTPSource.cpp` | -- | RTP streaming |
-| `StreamingSource.cpp` | -- | MPEG-TS streaming |
+| File | Purpose |
+|---|---|
+| `NuPlayer.cpp` | Core player logic, action queue |
+| `NuPlayerRenderer.cpp` | Audio/video synchronization |
+| `NuPlayerDecoder.cpp` | Decoder management (wraps MediaCodec) |
+| `NuPlayerDriver.cpp` | MediaPlayerBase interface adapter |
+| `GenericSource.cpp` | Local file playback |
+| `HTTPLiveSource.cpp` | HLS streaming |
+| `RTSPSource.cpp` | RTSP streaming |
+| `RTPSource.cpp` | RTP streaming |
+| `StreamingSource.cpp` | MPEG-TS streaming |
 
 ```mermaid
 graph TD
@@ -1716,7 +1716,7 @@ than polling with `dequeueInputBuffer` / `dequeueOutputBuffer`.
 
 ### 16.4.4 NuPlayerRenderer: Audio/Video Synchronization
 
-`NuPlayerRenderer` (2,239 lines) is responsible for the critical task of synchronizing
+`NuPlayerRenderer` is responsible for the critical task of synchronizing
 audio and video playback. It implements:
 
 - **Audio-video sync**: Video frames are scheduled to render at the correct time
@@ -1955,7 +1955,7 @@ sequenceDiagram
 ### 16.5.1 CameraService Architecture
 
 `CameraService` in `frameworks/av/services/camera/libcameraservice/CameraService.cpp`
-is the central authority for all camera operations in Android. At 7019 lines, it
+is the central authority for all camera operations in Android. It
 manages camera device discovery, client connections, security, resource allocation,
 and the interface between Java APIs and vendor camera HALs.
 
@@ -4626,22 +4626,22 @@ correlation of logs, metrics, and resource manager entries across the system.
 
 ### Key Source Files Reference
 
-| File | Path | Lines |
-|---|---|---|
-| MediaCodec.cpp | `frameworks/av/media/libstagefright/MediaCodec.cpp` | 8,234 |
-| ACodec.cpp | `frameworks/av/media/libstagefright/ACodec.cpp` | 9,458 |
-| MPEG4Writer.cpp | `frameworks/av/media/libstagefright/MPEG4Writer.cpp` | 6,070 |
-| CCodec.cpp | `frameworks/av/media/codec2/sfplugin/CCodec.cpp` | 3,849 |
-| CCodecBufferChannel.cpp | `frameworks/av/media/codec2/sfplugin/CCodecBufferChannel.cpp` | 3,428 |
-| MediaPlayerService.cpp | `frameworks/av/media/libmediaplayerservice/MediaPlayerService.cpp` | 3,114 |
-| StagefrightRecorder.cpp | `frameworks/av/media/libmediaplayerservice/StagefrightRecorder.cpp` | 2,759 |
-| NuPlayer.cpp | `frameworks/av/media/libmediaplayerservice/nuplayer/NuPlayer.cpp` | 3,265 |
-| NuPlayerRenderer.cpp | `frameworks/av/media/libmediaplayerservice/nuplayer/NuPlayerRenderer.cpp` | 2,239 |
-| CameraService.cpp | `frameworks/av/services/camera/libcameraservice/CameraService.cpp` | 7,019 |
-| NuMediaExtractor.cpp | `frameworks/av/media/libstagefright/NuMediaExtractor.cpp` | 896 |
-| MediaExtractorFactory.cpp | `frameworks/av/media/libstagefright/MediaExtractorFactory.cpp` | 395 |
-| VideoCapabilities.cpp | `frameworks/av/media/libmedia/VideoCapabilities.cpp` | 1,966 |
-| MediaProfiles.cpp | `frameworks/av/media/libmedia/MediaProfiles.cpp` | 1,521 |
+| File | Path |
+|---|---|
+| MediaCodec.cpp | `frameworks/av/media/libstagefright/MediaCodec.cpp` |
+| ACodec.cpp | `frameworks/av/media/libstagefright/ACodec.cpp` |
+| MPEG4Writer.cpp | `frameworks/av/media/libstagefright/MPEG4Writer.cpp` |
+| CCodec.cpp | `frameworks/av/media/codec2/sfplugin/CCodec.cpp` |
+| CCodecBufferChannel.cpp | `frameworks/av/media/codec2/sfplugin/CCodecBufferChannel.cpp` |
+| MediaPlayerService.cpp | `frameworks/av/media/libmediaplayerservice/MediaPlayerService.cpp` |
+| StagefrightRecorder.cpp | `frameworks/av/media/libmediaplayerservice/StagefrightRecorder.cpp` |
+| NuPlayer.cpp | `frameworks/av/media/libmediaplayerservice/nuplayer/NuPlayer.cpp` |
+| NuPlayerRenderer.cpp | `frameworks/av/media/libmediaplayerservice/nuplayer/NuPlayerRenderer.cpp` |
+| CameraService.cpp | `frameworks/av/services/camera/libcameraservice/CameraService.cpp` |
+| NuMediaExtractor.cpp | `frameworks/av/media/libstagefright/NuMediaExtractor.cpp` |
+| MediaExtractorFactory.cpp | `frameworks/av/media/libstagefright/MediaExtractorFactory.cpp` |
+| VideoCapabilities.cpp | `frameworks/av/media/libmedia/VideoCapabilities.cpp` |
+| MediaProfiles.cpp | `frameworks/av/media/libmedia/MediaProfiles.cpp` |
 
 ---
 
@@ -4650,24 +4650,24 @@ correlation of logs, metrics, and resource manager entries across the system.
 Android's media and video pipeline is a layered architecture spanning roughly 50,000
 lines of core C++ code across five major subsystems:
 
-1. **MediaCodec** (8,234 lines) provides the central state machine and API surface,
+1. **MediaCodec** provides the central state machine and API surface,
    with sophisticated resource management, metrics collection, and retry logic.
 
-2. **ACodec** (9,458 lines) bridges to legacy OMX codecs, while **CCodec** (3,849
+2. **ACodec** bridges to legacy OMX codecs, while **CCodec** (3,849
    lines) bridges to the modern Codec2 framework with its typed parameter system,
    work-based processing model, and 21 software codec families.
 
-3. **MediaPlayerService** (3,114 lines) and **NuPlayer** (3,265+ lines) orchestrate
+3. **MediaPlayerService** and **NuPlayer** orchestrate
    the complete playback pipeline from extraction through decoding to synchronized
    audio/video rendering.
 
-4. **CameraService** (7,019 lines) manages camera hardware access with a
+4. **CameraService** manages camera hardware access with a
    comprehensive security model, multi-camera support, and both API1 (legacy) and
    API2 (modern) client paths.
 
 5. **Media Extractors** provide container parsing with security isolation (running in
-   a separate process), while **VideoCapabilities** (1,966 lines) and
-   **MediaProfiles** (1,521 lines) describe what the hardware can do.
+   a separate process), while **VideoCapabilities** and
+   **MediaProfiles** describe what the hardware can do.
 
 The evolution from OMX to Codec2 represents the most significant architectural shift
 in Android media in the past decade, bringing type safety, better buffer management,

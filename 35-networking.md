@@ -197,9 +197,8 @@ descriptor, and it stamps the computed mark onto that socket with
 
 ### 35.2.1 Overview
 
-`ConnectivityService` is the central nervous system of Android networking. At
-16,000+ lines of Java code, it is one of the largest and most critical services
-in `system_server`. It manages the lifecycle of all networks, satisfies
+`ConnectivityService` is the central nervous system of Android networking. It
+is one of the largest and most critical services in `system_server`. It manages the lifecycle of all networks, satisfies
 application network requests, handles network scoring and selection, and
 coordinates with native daemons for routing and DNS configuration.
 
@@ -2955,15 +2954,15 @@ sequenceDiagram
 
 ### 35.10.11 Key Source Files
 
-| Class | Path | Lines |
-|-------|------|-------|
-| VcnManagementService | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/VcnManagementService.java` | 1,549 |
-| Vcn | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/Vcn.java` | 791 |
-| VcnGatewayConnection | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/VcnGatewayConnection.java` | 3,238 |
-| VcnNetworkProvider | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/VcnNetworkProvider.java` | ~230 |
-| UnderlyingNetworkController | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/routeselection/UnderlyingNetworkController.java` | ~780 |
-| TelephonySubscriptionTracker | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/TelephonySubscriptionTracker.java` | ~600 |
-| NetworkPriorityClassifier | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/routeselection/NetworkPriorityClassifier.java` | ~370 |
+| Class | Path |
+|-------|------|
+| VcnManagementService | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/VcnManagementService.java` |
+| Vcn | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/Vcn.java` |
+| VcnGatewayConnection | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/VcnGatewayConnection.java` |
+| VcnNetworkProvider | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/VcnNetworkProvider.java` |
+| UnderlyingNetworkController | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/routeselection/UnderlyingNetworkController.java` |
+| TelephonySubscriptionTracker | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/TelephonySubscriptionTracker.java` |
+| NetworkPriorityClassifier | `packages/modules/Connectivity/Vcn/service-b/src/com/android/server/vcn/routeselection/NetworkPriorityClassifier.java` |
 
 ---
 

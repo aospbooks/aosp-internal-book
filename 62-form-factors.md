@@ -4417,9 +4417,9 @@ parts of the cluster is alive. Beside it runs an independent **safety monitor**
 that reads the finished framebuffer back and checks, pixel against golden image,
 that the telltales the vehicle asked for are actually on the glass.
 
-The code lives in `packages/services/display_safety/` — roughly 129,000 lines of
-Rust across 571 files and 52 Cargo workspace members, plus a prebuilt graphics
-engine and a Figma-driven design toolchain. This section walks it top to bottom:
+The code lives in `packages/services/display_safety/` — 571 files across 52 Cargo
+workspace members, plus a prebuilt graphics engine and a Figma-driven design
+toolchain. This section walks it top to bottom:
 why the subsystem exists at all, how its platform abstraction layer lets the same
 renderer run on Android, Linux and QNX, the path a Figma design takes to become
 pixels, how HAR takes exclusive ownership of the display, the heartbeat contract
@@ -4526,26 +4526,26 @@ through HAR, which is what makes the availability guarantee enforceable.
 
 `packages/services/display_safety/` is a single Cargo workspace whose root
 `Cargo.toml` lists 52 members, organised into four tiers plus prebuilts. The
-approximate Rust line counts below are a useful guide to where the weight sits:
+table below is a useful guide to where the weight sits:
 
-| Area | Path | Rust LOC | What it is |
-|---|---|---|---|
-| Graphics | `framework/graphics/` | ~15,500 | Impeller binding, GL context, DRM/KMS presentation, external images |
-| Utilities | `utils/` | ~10,500 | Design tooling, test apps, report generators, parity checking |
-| View IR | `framework/squoosh/` | ~9,500 | Intermediate representation of view parameters |
-| Core runtime | `framework/harry/` | ~8,900 | The HAR framework: pre-renderer, display-list generation, frame loop |
-| Audio | `framework/audio/har-audio/` | ~7,900 | Chime playback, streams, mixing |
-| Platform API | `framework/api/har-platform-api/` | ~7,800 | The platform abstraction layer (traits) |
-| Platform impls | `reference/platforms/` | ~6,600 | `har-platform-android`, `har-platform-linux`, headless looper, logging |
-| App core | `reference/harry-app-core/` | ~5,400 | Reducer, state, presenter, heartbeat watchdog |
-| SDV services | `service/` | ~4,300 | Service bundle, gRPC services, vehicle data publisher |
-| Reference app | `reference/harry-app/` | ~3,500 | The `harry` binary itself |
-| Safety monitor | `reference/safety-monitor/` | ~3,100 | Telltale monitoring and vehicle-data server |
-| Customizations | `framework/customizations/` | ~2,500 | Design customization API and derive macros |
-| Monitoring | `framework/har-monitoring/` | ~2,200 | Performance and latency instrumentation |
-| Layout | `framework/har-layout/` | ~1,300 | Taffy-based layout wrapper |
-| Screen capture | `reference/screencap/` | ~1,100 | Framebuffer read-back for the monitor |
-| Display list | `framework/display_list/` | ~370 | The backend-independent scene description |
+| Area | Path | What it is |
+|---|---|---|
+| Graphics | `framework/graphics/` | Impeller binding, GL context, DRM/KMS presentation, external images |
+| Utilities | `utils/` | Design tooling, test apps, report generators, parity checking |
+| View IR | `framework/squoosh/` | Intermediate representation of view parameters |
+| Core runtime | `framework/harry/` | The HAR framework: pre-renderer, display-list generation, frame loop |
+| Audio | `framework/audio/har-audio/` | Chime playback, streams, mixing |
+| Platform API | `framework/api/har-platform-api/` | The platform abstraction layer (traits) |
+| Platform impls | `reference/platforms/` | `har-platform-android`, `har-platform-linux`, headless looper, logging |
+| App core | `reference/harry-app-core/` | Reducer, state, presenter, heartbeat watchdog |
+| SDV services | `service/` | Service bundle, gRPC services, vehicle data publisher |
+| Reference app | `reference/harry-app/` | The `harry` binary itself |
+| Safety monitor | `reference/safety-monitor/` | Telltale monitoring and vehicle-data server |
+| Customizations | `framework/customizations/` | Design customization API and derive macros |
+| Monitoring | `framework/har-monitoring/` | Performance and latency instrumentation |
+| Layout | `framework/har-layout/` | Taffy-based layout wrapper |
+| Screen capture | `reference/screencap/` | Framebuffer read-back for the monitor |
+| Display list | `framework/display_list/` | The backend-independent scene description |
 
 The shape of that table is itself informative. `framework/display_list/` is tiny
 because the display list is deliberately a narrow, dumb data structure — the
@@ -4691,8 +4691,8 @@ update policy says something actually changed.
 
 #### Layout
 
-`framework/har-layout/` wraps **Taffy**, a Rust flexbox/grid layout engine, in
-~1,300 lines. Text is not something a layout engine can resolve alone, so the PAL
+`framework/har-layout/` wraps **Taffy**, a Rust flexbox/grid layout engine.
+Text is not something a layout engine can resolve alone, so the PAL
 supplies `LayoutHelper` (`looper/api.rs:105`) for metrics, wrapping and shaping,
 and `LayoutHelperManager` (`looper/api.rs:94`) to hand them out. Layout results
 are positions and sizes for the nodes the display list will then describe.
@@ -4911,7 +4911,7 @@ Section 62.9.10, where a frozen camera feed is a safety problem in its own right
 
 #### The watchdog
 
-`reference/harry-app-core/src/heartbeat_watchdog.rs` is 185 lines and does one
+`reference/harry-app-core/src/heartbeat_watchdog.rs` is small and does one
 thing well. `HeartbeatWatchdog` decorates the callback that receives DriverUI
 RPCs, spawning a single worker thread that tracks every source:
 
@@ -5063,8 +5063,7 @@ about any particular vehicle's certification.
 #### The loop
 
 `har_safety_monitor` is a separate process, built from
-`reference/safety-monitor/` (~3,100 lines including tests; `src/` itself is
-1,172). It is started with the compiler's output:
+`reference/safety-monitor/`. It is started with the compiler's output:
 
 ```bash
 har_safety_monitor --data-json-path /path/to/data.json \
@@ -5177,7 +5176,7 @@ to whatever integrates the system, not to this binary.
 
 #### Vehicle data on the monitor side
 
-`reference/safety-monitor/src/vehicle_data_server.rs` (217 lines) gives the
+`reference/safety-monitor/src/vehicle_data_server.rs` gives the
 monitor its own view of vehicle state, so that the component checking the screen
 is not asking the component drawing the screen what should be there. The
 publisher fans the same stream out to both consumers — the renderer on
@@ -5238,7 +5237,7 @@ both at the stream and at the availability layer.
 #### Chimes
 
 Cluster audio is warning chimes, not media, and `framework/audio/har-audio/`
-(~7,900 lines) implements it against the PAL's `AudioApiFactory` and `AudioApi`.
+implements it against the PAL's `AudioApiFactory` and `AudioApi`.
 The manager plays a chime on a specified device with given behaviours
 (`framework/audio/har-audio/src/audio_manager.rs:264`); WAV assets load lazily on
 first play (`src/assets/impls/wav/wav_asset.rs:44`); a stream controller can block
@@ -5374,7 +5373,7 @@ let custom_trace = tracing::info_span!("custom_trace_span").entered()
 ```
 
 The monitoring tier has its own instrumentation crate,
-`framework/har-monitoring/` (~2,200 lines), with a `monitoring.proto` for
+`framework/har-monitoring/`, with a `monitoring.proto` for
 reporting, and the PAL's `HarPerformanceMonitor` lets a platform supply its own
 implementation.
 

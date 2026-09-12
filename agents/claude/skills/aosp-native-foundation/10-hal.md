@@ -1932,7 +1932,7 @@ The interface uses nested parcelable types for complex arguments:
 ```
 
 The default implementation in `hardware/interfaces/audio/aidl/default/Module.cpp`
-demonstrates the scale of a production HAL.  The file begins with 31 lines of
+demonstrates the scale of a production HAL.  The file begins with a block of
 just `using` declarations (lines 37-67):
 
 ```c++
@@ -2252,8 +2252,8 @@ retry or HAL restart.
 
 The Sensors HAL above hands a `MQDescriptor` across Binder and then never
 touches Binder again for the actual sample stream.  The machinery that makes
-that possible lives in `system/libfmq/` (roughly 9.5K lines of C++ and Rust
-plus the EventFlag futex helper).  This section opens that box: how the ring
+that possible lives in `system/libfmq/` (C++ and Rust, plus the
+EventFlag futex helper).  This section opens that box: how the ring
 buffer is laid out in shared memory, how the read and write pointers advance
 lock-free, how `EventFlag` wakes a blocked reader, and what the `MQDescriptor`
 actually carries when it crosses an AIDL boundary.
@@ -2786,7 +2786,7 @@ A compatibility matrix declares what a partition requires from the other side.
 
 The framework compatibility matrix
 (`hardware/interfaces/compatibility_matrices/compatibility_matrix.202504.xml`)
-is a 736-line XML file listing every HAL the framework may require.  Here is
+is an XML file listing every HAL the framework may require.  Here is
 an excerpt:
 
 ```xml
@@ -3305,7 +3305,7 @@ and more.  Treble treats the *schema* of each of these files as a stable
 interface, which raises a practical problem: every consumer needs a parser that
 stays in lock-step with the schema, and hand-writing those parsers is both
 tedious and a place for system/vendor drift to creep in.  `xsdc`
-(`system/tools/xsdc/`, roughly 5K lines of Java code generation plus a small
+(`system/tools/xsdc/`, a Java code generator plus a small
 `XsdcSupport.h` runtime header) solves this by compiling an XSD schema into a
 parser, so the schema file is the single source of truth.
 
@@ -5229,7 +5229,7 @@ generations:
 **Legacy HAL (libhardware)** introduced the fundamental concepts: module
 discovery via system properties, loading via `dlopen()`, and C-style
 polymorphism through `hw_module_t` / `hw_device_t`.  The code at
-`hardware/libhardware/hardware.c` (279 lines) remains one of the most
+`hardware/libhardware/hardware.c` remains one of the most
 important files in AOSP for understanding how Android bridges to hardware.
 
 **HIDL** added versioned IPC interfaces, separating HAL implementations into
@@ -5254,24 +5254,24 @@ framework and vendor for each Android release.
 
 The key files for further exploration:
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `hardware/libhardware/hardware.c` | 279 | Legacy HAL module loading |
-| `hardware/libhardware/include/hardware/hardware.h` | 245 | Core HAL data structures |
-| `system/libhidl/transport/ServiceManagement.cpp` | ~1030 | HIDL service discovery |
-| `system/libhidl/transport/HidlLazyUtils.cpp` | 309 | Lazy HAL support |
-| `system/libhidl/transport/base/1.0/IBase.hal` | 141 | HIDL root interface |
-| `system/libhidl/transport/manager/1.0/IServiceManager.hal` | 165 | HIDL service manager interface |
-| `hardware/interfaces/light/aidl/android/hardware/light/ILights.aidl` | 62 | Simple AIDL HAL example |
-| `hardware/interfaces/light/aidl/default/main.rs` | 46 | Rust HAL service example |
-| `hardware/interfaces/light/aidl/default/lights.rs` | 168 | Rust HAL implementation |
-| `hardware/interfaces/vibrator/aidl/default/main.cpp` | 45 | NDK C++ HAL service example |
-| `hardware/interfaces/audio/aidl/default/Module.cpp` | ~2000 | Complex production HAL |
-| `hardware/interfaces/power/aidl/android/hardware/power/IPower.aidl` | 200 | Advanced AIDL features |
-| `system/libvintf/include/vintf/VintfObject.h` | ~430 | VINTF compatibility checking API |
-| `system/libvintf/include/vintf/HalManifest.h` | ~270 | VINTF manifest data model |
-| `frameworks/native/cmds/servicemanager/ServiceManager.cpp` | ~1250 | Service manager (VINTF integration is the first ~200 lines) |
-| `hardware/interfaces/compatibility_matrices/compatibility_matrix.202504.xml` | 736 | Framework compatibility matrix |
+| File | Purpose |
+|------|---------|
+| `hardware/libhardware/hardware.c` | Legacy HAL module loading |
+| `hardware/libhardware/include/hardware/hardware.h` | Core HAL data structures |
+| `system/libhidl/transport/ServiceManagement.cpp` | HIDL service discovery |
+| `system/libhidl/transport/HidlLazyUtils.cpp` | Lazy HAL support |
+| `system/libhidl/transport/base/1.0/IBase.hal` | HIDL root interface |
+| `system/libhidl/transport/manager/1.0/IServiceManager.hal` | HIDL service manager interface |
+| `hardware/interfaces/light/aidl/android/hardware/light/ILights.aidl` | Simple AIDL HAL example |
+| `hardware/interfaces/light/aidl/default/main.rs` | Rust HAL service example |
+| `hardware/interfaces/light/aidl/default/lights.rs` | Rust HAL implementation |
+| `hardware/interfaces/vibrator/aidl/default/main.cpp` | NDK C++ HAL service example |
+| `hardware/interfaces/audio/aidl/default/Module.cpp` | Complex production HAL |
+| `hardware/interfaces/power/aidl/android/hardware/power/IPower.aidl` | Advanced AIDL features |
+| `system/libvintf/include/vintf/VintfObject.h` | VINTF compatibility checking API |
+| `system/libvintf/include/vintf/HalManifest.h` | VINTF manifest data model |
+| `frameworks/native/cmds/servicemanager/ServiceManager.cpp` | Service manager (VINTF integration sits at the top of the file) |
+| `hardware/interfaces/compatibility_matrices/compatibility_matrix.202504.xml` | Framework compatibility matrix |
 
 ### 10.9.5 What Happens When You Press the Power Button: A HAL Trace
 

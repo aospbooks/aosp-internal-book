@@ -2321,13 +2321,11 @@ adb logcat -s SyncManager:V SyncJobService:V
 Explore the account and sync source code:
 
 ```bash
-# Count AccountManagerService lines
+# Count AccountManagerService lines -- expect a very large file
 wc -l frameworks/base/services/core/java/com/android/server/accounts/AccountManagerService.java
-# Typically 6000+ lines
 
-# Count SyncManager lines
+# Count SyncManager lines -- also substantial, though smaller
 wc -l frameworks/base/services/core/java/com/android/server/content/SyncManager.java
-# Typically 3000+ lines
 
 # Find all AIDL interfaces for accounts
 find frameworks/base/core/java/android/accounts/ -name "*.aidl"
@@ -2358,8 +2356,8 @@ grep "DEF_" \
 
 **What to observe:**
 
-- The complexity of `AccountManagerService` (6000+ lines managing multi-user
-  accounts, authenticator bindings, and token caching)
+- The complexity of `AccountManagerService`, which manages multi-user
+  accounts, authenticator bindings, and token caching
 - The tight coupling between `SyncManager` and `JobScheduler`
 - The XML/Proto-based persistence in `SyncStorageEngine`
 - The breadth of sync configuration options (backoff, retry, periodic, flex)

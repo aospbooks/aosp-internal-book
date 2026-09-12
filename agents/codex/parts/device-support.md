@@ -758,8 +758,8 @@ x86/x86_64 images provide dramatically better performance during development.
 
 **Source files**:
 
-- `build/soong/cc/config/x86_device.go` (204 lines)
-- `build/soong/cc/config/x86_64_device.go` (213 lines)
+- `build/soong/cc/config/x86_device.go`
+- `build/soong/cc/config/x86_64_device.go`
 
 ### 59.3.1 x86 Architecture Variants
 
@@ -1749,7 +1749,7 @@ $(TARGET_2ND_ARCH_VAR_PREFIX)TARGET_OUT_SHARED_LIBRARIES := \
 ## 59.6 Compiler Configuration
 
 The compiler configuration in AOSP is centralized in
-`build/soong/cc/config/global.go` (655 lines) and applies to all architectures.
+`build/soong/cc/config/global.go` and applies to all architectures.
 This file defines the common compilation flags, warning policies, debug
 settings, and Clang toolchain paths that form the baseline for every native
 build.
@@ -6058,7 +6058,7 @@ GUI features of the Android Studio emulator.
 
 Cuttlefish's default VMM is **crosvm** (Chrome OS Virtual Machine monitor),
 a Rust-based VMM originally developed for Chrome OS. The VM manager code at
-`device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp` (1093 lines)
+`device/google/cuttlefish/host/libs/vm_manager/crosvm_manager.cpp`
 constructs the crosvm command line with all virtio device parameters.
 
 #### Virtio Device Map
@@ -7536,7 +7536,7 @@ Framework** -- a system-server subsystem centered on `DevicePolicyManagerService
 PIN", "block the camera in the work profile") into concrete, enforced changes
 across the Android stack.  This chapter traces every major path through the real
 AOSP source code, from the XML metadata that declares an admin component, through
-the roughly 24,000-line DPMS implementation, into the policy-engine resolution layer and
+the sprawling DPMS implementation, into the policy-engine resolution layer and
 out to the individual subsystem enforcers that make each policy stick.
 
 ---
@@ -7814,8 +7814,7 @@ creation of additional secondary users is blocked.
 
 ### 61.2.1  Overview and Class Hierarchy
 
-`DevicePolicyManagerService` is one of the largest system services in AOSP,
-weighing in at roughly 24,000 lines on the Android 17 tree
+`DevicePolicyManagerService` is one of the largest system services in AOSP
 (`frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyManagerService.java`).
 It implements the `IDevicePolicyManager` AIDL interface and runs inside the
 system server process.
@@ -7907,7 +7906,7 @@ and how they relate:
 ```mermaid
 graph TB
     subgraph "DevicePolicyManagerService"
-        CORE["Core DPMS Logic<br/>~24,000 lines"]
+        CORE["Core DPMS Logic"]
 
         subgraph "State Management"
             OWNERS["Owners<br/>DO/PO tracking"]
@@ -10886,7 +10885,7 @@ Examine the scale of the Device Policy Manager Service:
 ```bash
 # Count lines in the main service file
 wc -l frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyManagerService.java
-# Expected: ~24,000 lines on the Android 17 tree
+# Expect a very large file -- DPMS is one of AOSP's largest system services
 
 # Count all Java files in the devicepolicy package
 find frameworks/base/services/devicepolicy/ -name "*.java" | wc -l
@@ -11515,11 +11514,11 @@ For further exploration, here are the critical source files:
 
 | File | Purpose |
 |------|---------|
-| `frameworks/base/core/java/android/app/admin/DevicePolicyManager.java` | Client API (18,700+ lines) |
+| `frameworks/base/core/java/android/app/admin/DevicePolicyManager.java` | Client API |
 | `frameworks/base/core/java/android/app/admin/DeviceAdminReceiver.java` | Admin callback interface |
 | `frameworks/base/core/java/android/app/admin/DeviceAdminInfo.java` | Admin metadata parsing |
 | `frameworks/base/core/java/android/app/admin/IDevicePolicyManager.aidl` | Binder interface |
-| `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyManagerService.java` | Service implementation (~24,000 lines) |
+| `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyManagerService.java` | Service implementation |
 | `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/DevicePolicyEngine.java` | Multi-admin policy resolution |
 | `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/PolicyDefinition.java` | Policy definitions and resolution mechanisms |
 | `frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/ActiveAdmin.java` | Per-admin policy state |
@@ -11540,7 +11539,7 @@ For further exploration, here are the critical source files:
 ## Summary
 
 The Android Enterprise framework is one of the most complex subsystems in AOSP,
-spanning over 40,000 lines of code just in the core service and client API.
+spanning the core service and its client API.
 Here are the key architectural insights:
 
 1. **Management modes** (Fully Managed, Work Profile/BYOD, COPE) offer a
@@ -11548,8 +11547,8 @@ Here are the key architectural insights:
    determined at provisioning time and fundamentally shapes what policies can
    be enforced.
 
-2. **DevicePolicyManagerService** is the central policy broker.  At roughly
-   24,000 lines, it is one of AOSP's largest system services.  It validates
+2. **DevicePolicyManagerService** is the central policy broker and one of
+   AOSP's largest system services.  It validates
    caller permissions, delegates to the policy engine for resolution, persists
    versioned state to XML (`DPMS_VERSION = 6` in Android 17), and notifies
    subsystems of policy changes.
@@ -15998,9 +15997,9 @@ parts of the cluster is alive. Beside it runs an independent **safety monitor**
 that reads the finished framebuffer back and checks, pixel against golden image,
 that the telltales the vehicle asked for are actually on the glass.
 
-The code lives in `packages/services/display_safety/` — roughly 129,000 lines of
-Rust across 571 files and 52 Cargo workspace members, plus a prebuilt graphics
-engine and a Figma-driven design toolchain. This section walks it top to bottom:
+The code lives in `packages/services/display_safety/` — 571 files across 52 Cargo
+workspace members, plus a prebuilt graphics engine and a Figma-driven design
+toolchain. This section walks it top to bottom:
 why the subsystem exists at all, how its platform abstraction layer lets the same
 renderer run on Android, Linux and QNX, the path a Figma design takes to become
 pixels, how HAR takes exclusive ownership of the display, the heartbeat contract
@@ -16107,26 +16106,26 @@ through HAR, which is what makes the availability guarantee enforceable.
 
 `packages/services/display_safety/` is a single Cargo workspace whose root
 `Cargo.toml` lists 52 members, organised into four tiers plus prebuilts. The
-approximate Rust line counts below are a useful guide to where the weight sits:
+table below is a useful guide to where the weight sits:
 
-| Area | Path | Rust LOC | What it is |
-|---|---|---|---|
-| Graphics | `framework/graphics/` | ~15,500 | Impeller binding, GL context, DRM/KMS presentation, external images |
-| Utilities | `utils/` | ~10,500 | Design tooling, test apps, report generators, parity checking |
-| View IR | `framework/squoosh/` | ~9,500 | Intermediate representation of view parameters |
-| Core runtime | `framework/harry/` | ~8,900 | The HAR framework: pre-renderer, display-list generation, frame loop |
-| Audio | `framework/audio/har-audio/` | ~7,900 | Chime playback, streams, mixing |
-| Platform API | `framework/api/har-platform-api/` | ~7,800 | The platform abstraction layer (traits) |
-| Platform impls | `reference/platforms/` | ~6,600 | `har-platform-android`, `har-platform-linux`, headless looper, logging |
-| App core | `reference/harry-app-core/` | ~5,400 | Reducer, state, presenter, heartbeat watchdog |
-| SDV services | `service/` | ~4,300 | Service bundle, gRPC services, vehicle data publisher |
-| Reference app | `reference/harry-app/` | ~3,500 | The `harry` binary itself |
-| Safety monitor | `reference/safety-monitor/` | ~3,100 | Telltale monitoring and vehicle-data server |
-| Customizations | `framework/customizations/` | ~2,500 | Design customization API and derive macros |
-| Monitoring | `framework/har-monitoring/` | ~2,200 | Performance and latency instrumentation |
-| Layout | `framework/har-layout/` | ~1,300 | Taffy-based layout wrapper |
-| Screen capture | `reference/screencap/` | ~1,100 | Framebuffer read-back for the monitor |
-| Display list | `framework/display_list/` | ~370 | The backend-independent scene description |
+| Area | Path | What it is |
+|---|---|---|
+| Graphics | `framework/graphics/` | Impeller binding, GL context, DRM/KMS presentation, external images |
+| Utilities | `utils/` | Design tooling, test apps, report generators, parity checking |
+| View IR | `framework/squoosh/` | Intermediate representation of view parameters |
+| Core runtime | `framework/harry/` | The HAR framework: pre-renderer, display-list generation, frame loop |
+| Audio | `framework/audio/har-audio/` | Chime playback, streams, mixing |
+| Platform API | `framework/api/har-platform-api/` | The platform abstraction layer (traits) |
+| Platform impls | `reference/platforms/` | `har-platform-android`, `har-platform-linux`, headless looper, logging |
+| App core | `reference/harry-app-core/` | Reducer, state, presenter, heartbeat watchdog |
+| SDV services | `service/` | Service bundle, gRPC services, vehicle data publisher |
+| Reference app | `reference/harry-app/` | The `harry` binary itself |
+| Safety monitor | `reference/safety-monitor/` | Telltale monitoring and vehicle-data server |
+| Customizations | `framework/customizations/` | Design customization API and derive macros |
+| Monitoring | `framework/har-monitoring/` | Performance and latency instrumentation |
+| Layout | `framework/har-layout/` | Taffy-based layout wrapper |
+| Screen capture | `reference/screencap/` | Framebuffer read-back for the monitor |
+| Display list | `framework/display_list/` | The backend-independent scene description |
 
 The shape of that table is itself informative. `framework/display_list/` is tiny
 because the display list is deliberately a narrow, dumb data structure — the
@@ -16272,8 +16271,8 @@ update policy says something actually changed.
 
 #### Layout
 
-`framework/har-layout/` wraps **Taffy**, a Rust flexbox/grid layout engine, in
-~1,300 lines. Text is not something a layout engine can resolve alone, so the PAL
+`framework/har-layout/` wraps **Taffy**, a Rust flexbox/grid layout engine.
+Text is not something a layout engine can resolve alone, so the PAL
 supplies `LayoutHelper` (`looper/api.rs:105`) for metrics, wrapping and shaping,
 and `LayoutHelperManager` (`looper/api.rs:94`) to hand them out. Layout results
 are positions and sizes for the nodes the display list will then describe.
@@ -16492,7 +16491,7 @@ Section 62.9.10, where a frozen camera feed is a safety problem in its own right
 
 #### The watchdog
 
-`reference/harry-app-core/src/heartbeat_watchdog.rs` is 185 lines and does one
+`reference/harry-app-core/src/heartbeat_watchdog.rs` is small and does one
 thing well. `HeartbeatWatchdog` decorates the callback that receives DriverUI
 RPCs, spawning a single worker thread that tracks every source:
 
@@ -16644,8 +16643,7 @@ about any particular vehicle's certification.
 #### The loop
 
 `har_safety_monitor` is a separate process, built from
-`reference/safety-monitor/` (~3,100 lines including tests; `src/` itself is
-1,172). It is started with the compiler's output:
+`reference/safety-monitor/`. It is started with the compiler's output:
 
 ```bash
 har_safety_monitor --data-json-path /path/to/data.json \
@@ -16758,7 +16756,7 @@ to whatever integrates the system, not to this binary.
 
 #### Vehicle data on the monitor side
 
-`reference/safety-monitor/src/vehicle_data_server.rs` (217 lines) gives the
+`reference/safety-monitor/src/vehicle_data_server.rs` gives the
 monitor its own view of vehicle state, so that the component checking the screen
 is not asking the component drawing the screen what should be there. The
 publisher fans the same stream out to both consumers — the renderer on
@@ -16819,7 +16817,7 @@ both at the stream and at the availability layer.
 #### Chimes
 
 Cluster audio is warning chimes, not media, and `framework/audio/har-audio/`
-(~7,900 lines) implements it against the PAL's `AudioApiFactory` and `AudioApi`.
+implements it against the PAL's `AudioApiFactory` and `AudioApi`.
 The manager plays a chime on a specified device with given behaviours
 (`framework/audio/har-audio/src/audio_manager.rs:264`); WAV assets load lazily on
 first play (`src/assets/impls/wav/wav_asset.rs:44`); a stream controller can block
@@ -16955,7 +16953,7 @@ let custom_trace = tracing::info_span!("custom_trace_span").entered()
 ```
 
 The monitoring tier has its own instrumentation crate,
-`framework/har-monitoring/` (~2,200 lines), with a `monitoring.proto` for
+`framework/har-monitoring/`, with a `monitoring.proto` for
 reporting, and the PAL's `HarPerformanceMonitor` lets a platform supply its own
 implementation.
 
@@ -22702,7 +22700,7 @@ find frameworks/base/core/java/android/hardware/camera2/ \
 
 # Explore the Camera3Device implementation
 wc -l frameworks/av/services/camera/libcameraservice/device3/Camera3Device.cpp
-# Typically 5000+ lines -- one of the largest files in the camera service
+# One of the largest files in the camera service
 
 # Find all capture request metadata keys
 grep -r "public static final Key" \
@@ -22722,7 +22720,7 @@ ls frameworks/av/services/camera/libcameraservice/api2/*CompositeStream*
 
 **What to observe:**
 
-- The sheer scale of the camera subsystem (>100K lines of code)
+- The sheer scale of the camera subsystem
 - The number of metadata keys available for per-frame control
 - The multiple composite stream implementations for different output formats
 - How the AIDL HAL interface maps to the framework concepts

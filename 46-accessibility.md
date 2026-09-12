@@ -76,7 +76,7 @@ public class AccessibilityManagerService extends IAccessibilityManager.Stub
         SystemActionPerformer.DisplayUpdateCallBack, ProxyManager.SystemSupport {
 ```
 
-At roughly 7,600 lines in Android 17, it is one of the larger system services.
+It is one of the larger system services.
 
 **AccessibilityService** is the abstract base class that all accessibility
 services extend. Defined in:
@@ -94,7 +94,7 @@ Defined in:
 frameworks/base/core/java/android/view/accessibility/AccessibilityNodeInfo.java
 ```
 
-At roughly 9,200 lines in Android 17, it is the richest data structure in the
+It is the richest data structure in the
 accessibility framework, carrying text content, bounds, actions, collection
 info, range info, and tree relationships.
 
@@ -278,7 +278,7 @@ graph LR
     style AMS fill:#e1f5fe
 ```
 
-**AccessibilitySecurityPolicy** (about 800 lines) is the gatekeeper. It
+**AccessibilitySecurityPolicy** is the gatekeeper. It
 determines:
 
 - Whether an event can be dispatched to a given service
@@ -1469,16 +1469,16 @@ frameworks/base/services/accessibility/java/com/android/server/accessibility/
 
 Key source files:
 
-| File | Lines | Role |
-|------|-------|------|
-| `MagnificationController.java` | ~1500 | Orchestrates mode transitions and UI |
-| `FullScreenMagnificationController.java` | ~2600 | Full-screen zoom via MagnificationSpec |
-| `MagnificationConnectionManager.java` | ~1400 | Window magnification via SystemUI |
-| `FullScreenMagnificationGestureHandler.java` | ~1900 | Triple-tap and pinch gesture detection |
-| `WindowMagnificationGestureHandler.java` | ~600 | Window magnification gesture handling |
-| `MagnificationKeyHandler.java` | ~170 | Keyboard shortcut handling |
-| `MagnificationScaleProvider.java` | ~140 | Scale bounds and persistence |
-| `MagnificationGestureHandler.java` | ~250 | Base class for gesture handlers |
+| File | Role |
+|------|------|
+| `MagnificationController.java` | Orchestrates mode transitions and UI |
+| `FullScreenMagnificationController.java` | Full-screen zoom via MagnificationSpec |
+| `MagnificationConnectionManager.java` | Window magnification via SystemUI |
+| `FullScreenMagnificationGestureHandler.java` | Triple-tap and pinch gesture detection |
+| `WindowMagnificationGestureHandler.java` | Window magnification gesture handling |
+| `MagnificationKeyHandler.java` | Keyboard shortcut handling |
+| `MagnificationScaleProvider.java` | Scale bounds and persistence |
+| `MagnificationGestureHandler.java` | Base class for gesture handlers |
 
 ### 46.5.2 Full-Screen Magnification
 
@@ -3979,11 +3979,10 @@ platform usable for people with disabilities.
 The key architectural insights are:
 
 1. **Centralized coordination**: `AccessibilityManagerService` is the single
-   point of coordination for all accessibility functionality. At roughly 7,600
-   lines in Android 17, it manages event dispatch, service binding, security
-   enforcement, window tracking, input filtering, and magnification, and it now
-   also enforces Advanced Protection Mode restrictions on accessibility
-   services.
+   point of coordination for all accessibility functionality. It manages event
+   dispatch, service binding, security enforcement, window tracking, input
+   filtering, and magnification, and it now also enforces Advanced Protection
+   Mode restrictions on accessibility services.
 
 2. **Event-driven observation**: The accessibility event system allows services
    to passively observe UI changes without modifying app behavior. The event
@@ -4018,9 +4017,9 @@ platform features that interact with the accessibility subsystem.
 
 | File | Purpose |
 |------|---------|
-| `frameworks/base/services/accessibility/.../AccessibilityManagerService.java` | Central system service (~7,600 lines) |
-| `frameworks/base/core/.../accessibility/AccessibilityEvent.java` | Event definitions (~2,000 lines) |
-| `frameworks/base/core/.../accessibility/AccessibilityNodeInfo.java` | Node info (~9,200 lines) |
+| `frameworks/base/services/accessibility/.../AccessibilityManagerService.java` | Central system service |
+| `frameworks/base/core/.../accessibility/AccessibilityEvent.java` | Event definitions |
+| `frameworks/base/core/.../accessibility/AccessibilityNodeInfo.java` | Node info |
 | `frameworks/base/core/.../accessibility/AccessibilityManager.java` | Client-side manager |
 | `frameworks/base/core/.../accessibilityservice/AccessibilityService.java` | Service base class |
 | `frameworks/base/services/accessibility/.../AccessibilitySecurityPolicy.java` | Security enforcement |
