@@ -89,7 +89,7 @@ When using this site as background for AOSP work, prefer fetching the chapter th
 
 - [Chapter 48: SystemUI](https://aospbooks.github.io/aosp-internal-book/48-systemui/): SystemUI process, status bar, notification shade, keyguard, Quick Settings, Monet/dynamic color
 - [Chapter 49: Launcher3](https://aospbooks.github.io/aosp-internal-book/49-launcher3/): Launcher3, model loader, Recents/Overview, gesture nav, all-apps, predictions, work profile
-- [Chapter 50: Settings](https://aospbooks.github.io/aosp-internal-book/50-settings-app/): Settings app structure, SettingsProvider, SettingsLib, search index, slice surface
+- [Chapter 50: Settings](https://aospbooks.github.io/aosp-internal-book/50-settings-app/): Settings app structure, SettingsProvider, SettingsLib, search index, slice surface, and the setup-wizard library stack (setupcompat/setupdesign) that Settings joins when it runs as a setup step
 
 ## Part XII: AI & Devices
 

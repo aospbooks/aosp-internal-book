@@ -10130,7 +10130,207 @@ adb shell dumpsys settings
 
 ---
 
-## 50.19 Key Source Files Reference
+## 50.19 Deep Dive: The Setup Wizard Library Stack
+
+Section 50.6.6 showed Settings noticing that it had been launched inside the
+setup flow and re-theming itself accordingly. That check is the visible end of
+a contract, and the contract has a library behind it. During out-of-box setup
+the device is not running one app that does everything; it is running a
+*script* of activities — choose a language, join a network, restore a backup,
+sign in, set a screen lock — and many of those steps live in ordinary system
+apps such as Settings. Something has to make a dozen separately-owned screens
+look like one product and agree on what "next" means.
+
+That something is a small stack of libraries in the tree. This section covers
+what they provide, and — because there are three of them and the names are
+confusingly similar — which one a given app actually links against.
+
+### 50.19.1 Three Libraries, One Lineage
+
+The setup-wizard app itself (the thing that owns the script and the branding)
+is not in AOSP. What *is* in AOSP is the contract it publishes and the widget
+toolkit its steps are expected to use:
+
+| Path | Java package | Role |
+|---|---|---|
+| `external/setupcompat` | `com.google.android.setupcompat` | The contract and chrome: wizard-manager intent protocol, footer button bar, system-bar handling, partner configuration |
+| `external/setupdesign` | `com.google.android.setupdesign` | The look: the Glif layout family, the declarative item hierarchy, dividers and illustrations |
+| `frameworks/opt/setupwizard` | `com.android.setupwizardlib` | The original AOSP library, superseded by the two above |
+
+The third entry is the one to be careful about, because its name is the most
+obvious and it is the least used. `frameworks/opt/setupwizard` is the older
+library; the modern stack lives under `external/` and carries a
+`com.google.android` package name. The Settings app links against the modern
+pair — its sources import `com.google.android.setupcompat.util.WizardManagerHelper`,
+`com.google.android.setupcompat.template.FooterBarMixin` and
+`com.google.android.setupdesign.DividerItemDecoration`, not the
+`com.android.setupwizardlib` equivalents. In the current tree the legacy
+library retains only two in-tree consumers: `frameworks/base/packages/SimAppDialog`,
+and the automotive library `frameworks/opt/car/setupwizard`, whose
+`CarWizardManagerHelper` is documented in its own header as "Derived from
+`com.android.setupwizardlib/WizardManagerHelper.java`"
+(`frameworks/opt/car/setupwizard/library/main/src/com/android/car/setupwizardlib/util/CarWizardManagerHelper.java:23`).
+Chapter 62 covers the automotive setup flow that library serves.
+
+The three share a design, so reading the old one is not wasted effort — the
+template-and-mixin mechanism below appears in both, and `GlifLayout`,
+`GlifListLayout`, `GlifPatternDrawable` and the `items/` hierarchy exist under
+both package names. When following a stack trace, the package prefix is what
+tells you which generation you are in.
+
+### 50.19.2 The Wizard-Manager Intent Contract
+
+The flow is a chain of activities, and `WizardManagerHelper`
+(`external/setupcompat/main/java/com/google/android/setupcompat/util/WizardManagerHelper.java`)
+is the whole of the protocol that chains them. A step does not know what comes
+after it. It finishes by asking for the next intent and starting it:
+
+```java
+public static final String ACTION_NEXT = "com.android.wizard.NEXT";   // :54
+
+public static Intent getNextIntent(Intent originalIntent, int resultCode) {  // :112
+```
+
+`getNextIntent` builds an `ACTION_NEXT` intent carrying the original's
+wizard-manager extras plus the result code, and the setup wizard — which is
+listening for that action — consults its script and launches whatever is
+supposed to follow. The step's only influence over the route is the result
+code, and `ResultCodes`
+(`external/setupcompat/main/java/com/google/android/setupcompat/util/ResultCodes.java:24`)
+gives it a small vocabulary beyond the usual OK and CANCELED: `RESULT_SKIP`,
+`RESULT_RETRY`, `RESULT_ACTIVITY_NOT_FOUND`, `RESULT_LIFECYCLE_NOT_MATCHED`,
+`RESULT_FLOW_NOT_MATCHED`.
+
+The extras that ride along are how a step learns what kind of run it is in:
+`EXTRA_WIZARD_BUNDLE` (:56), `EXTRA_IS_FIRST_RUN` (:62), `EXTRA_IS_DEFERRED_SETUP`
+(:65), `EXTRA_IS_PRE_DEFERRED_SETUP` (:68), `EXTRA_IS_PORTAL_SETUP` (:71),
+`EXTRA_THEME` (:96) and `EXTRA_USE_IMMERSIVE_MODE` (:97). An activity that
+launches another activity within the flow is expected to forward them with
+`copyWizardManagerExtras` (:146) — drop them and the next screen loses its
+theme and its sense of where it is.
+
+Two of the helper's predicates answer a question that reaches well beyond
+setup, and they are backed by the settings keys Section 50.4 tabulates:
+
+```java
+public static boolean isUserSetupComplete(Context context)   // :188
+public static boolean isDeviceProvisioned(Context context)   // :203
+```
+
+These read `Settings.Secure.user_setup_complete` and
+`Settings.Global.device_provisioned` (:99-100). The rest of the platform keys
+an enormous amount of behaviour off those two flags, which is why Section 50.6.6
+guards initialization with `isUserSetupComplete` — a system app that starts
+doing its normal job in the middle of out-of-box setup is a bug, not a feature.
+
+The predicate Settings actually calls to decide on its theme is
+`isAnySetupWizard` (:264), which is broader than `isSetupWizardIntent` (:175):
+it is true for the deferred and pre-deferred variants as well as the first-run
+flow, so a screen reached from "finish setting up your device" weeks later
+still dresses correctly.
+
+### 50.19.3 Templates and Mixins
+
+The layout side solves a different problem: the steps are written by different
+teams, and they must share a header, an icon, a progress indicator and a
+footer button bar without sharing a base activity class. The libraries solve it
+with composition rather than inheritance.
+
+`TemplateLayout`
+(`external/setupcompat/main/java/com/google/android/setupcompat/internal/TemplateLayout.java:45`)
+is a `FrameLayout` that inflates a template resource, locates a container
+inside it, and then redirects children into that container:
+
+```java
+@Override
+public void addView(View child, int index, ViewGroup.LayoutParams params) {  // :131
+  container.addView(child, index, params);
+}
+```
+
+So an activity writes its own content as if it were the whole screen, and the
+template wraps it in the shared chrome. The chrome's behaviour is supplied by
+**mixins**, registered by class marker and retrieved the same way:
+
+```java
+protected <M extends Mixin> void registerMixin(Class<M> cls, M mixin)   // :98
+public <M extends Mixin> M getMixin(Class<M> cls)                       // :126
+```
+
+`Mixin` itself is a marker interface with no methods. The point of keying the
+map by a `Class` marker rather than the concrete type is substitution: a
+template can register a subclass under the base marker, and callers asking for
+the base get the specialised behaviour without knowing it exists.
+
+The layout hierarchy an app sees is
+`GlifLayout` → `PartnerCustomizationLayout` → `TemplateLayout`
+(`external/setupdesign/main/src/com/google/android/setupdesign/GlifLayout.java:111`,
+`external/setupcompat/main/java/com/google/android/setupcompat/PartnerCustomizationLayout.java:62`),
+which is also the division of labour: design, OEM customization, mechanism.
+`GlifLayout`'s constructor registers the set a setup screen can expect
+(`GlifLayout.java:174-188`) — `HeaderMixin`, `DescriptionMixin`, `IconMixin`,
+`ProfileMixin`, `ProgressBarMixin`, `IllustrationProgressMixin` and
+`RequireScrollMixin`, among others.
+
+Two mixins are worth calling out. `FooterBarMixin`
+(`external/setupcompat/main/java/com/google/android/setupcompat/template/FooterBarMixin.java:83`)
+owns the primary and secondary buttons at the bottom of every setup screen
+(`setPrimaryButton` at :559, `setSecondaryButton` at :667) — this is why "Next"
+and "Skip" sit in the same place, styled the same way, on screens owned by
+different apps.
+
+`RequireScrollMixin`
+(`external/setupdesign/main/src/com/google/android/setupdesign/template/RequireScrollMixin.java:47`)
+is the more interesting one, because it encodes a requirement rather than a
+style. Its own documentation describes it as requiring "a scrollable container
+... to be scrolled to bottom, making sure that the user sees all content above
+and below the fold", and `requireScrollWithButton` (:191) implements that by
+turning the footer's primary button into a "More" affordance until the content
+has been scrolled through. Consent and legal screens are the reason this
+exists: it is the difference between a user having been shown terms and having
+had the opportunity to read them.
+
+### 50.19.4 Partner Configuration
+
+OEMs need setup to carry their branding, and forking the libraries per device
+would be unmaintainable. `PartnerConfigHelper`
+(`external/setupcompat/partnerconfig/java/com/google/android/setupcompat/partnerconfig/PartnerConfigHelper.java:54`)
+inverts the dependency instead: the setup wizard on the device exposes a
+content provider, and the library queries it.
+
+```java
+public static final String SUW_AUTHORITY = "com.google.android.setupwizard.partner";  // :58
+static final String SUW_GET_PARTNER_CONFIG_METHOD = "getOverlayConfig";               // :60
+```
+
+The helper calls that method through `ContentResolver.call` and caches the
+returned bundle. Individual knobs are named by the `PartnerConfig` enum —
+`CONFIG_STATUS_BAR_BACKGROUND`, `CONFIG_LIGHT_STATUS_BAR`,
+`CONFIG_NAVIGATION_BAR_BG_COLOR`, `CONFIG_FOOTER_BAR_BG_COLOR`,
+`CONFIG_FOOTER_BAR_MIN_HEIGHT` and so on — so a partner adjusts the chrome by
+publishing values, not by patching layouts. `PartnerCustomizationLayout` sitting
+between `GlifLayout` and `TemplateLayout` is where those values are applied.
+
+### 50.19.5 What This Means for Settings
+
+Putting the two halves together explains the code in Section 50.6.6. When
+Settings is launched as a setup step it is a guest in someone else's flow: it
+must look like the surrounding screens (hence `ThemeHelper.trySetSuwTheme` and
+the `SetupWizard` theme variants), it must not show its own toolbar or
+navigation affordances (hence the `isAnySetupWizard` guards around toolbar
+setup and Up navigation), and it must hand control back through
+`getNextIntent` rather than simply finishing.
+
+It also explains a constraint that catches people adding features to Settings:
+any code that runs at startup has to ask whether setup has completed before
+doing anything user-visible. The `isUserSetupComplete` check quoted in
+Section 50.6.6 is not defensive programming, it is the flow contract — during
+setup, the only screen the user is supposed to be looking at is the one the
+wizard put there.
+
+---
+
+## 50.20 Key Source Files Reference
 
 For easy reference, here is a consolidated list of all key source files
 discussed in this chapter:
@@ -10165,16 +10365,25 @@ discussed in this chapter:
 | `packages/apps/Settings/res/xml/top_level_settings.xml` | Homepage XML layout |
 | `frameworks/base/packages/SettingsProvider/src/com/android/providers/settings/SettingsProvider.java` | Settings content provider |
 | `frameworks/base/packages/SettingsProvider/src/com/android/providers/settings/SettingsState.java` | Per-namespace settings storage |
+| `external/setupcompat/main/java/com/google/android/setupcompat/util/WizardManagerHelper.java` | Wizard-manager intent contract: `ACTION_NEXT`, `getNextIntent`, setup-state predicates |
+| `external/setupcompat/main/java/com/google/android/setupcompat/util/ResultCodes.java` | Result vocabulary a setup step can return (`RESULT_SKIP`, `RESULT_RETRY`, ...) |
+| `external/setupcompat/main/java/com/google/android/setupcompat/internal/TemplateLayout.java` | Template container and the `registerMixin`/`getMixin` mechanism |
+| `external/setupcompat/main/java/com/google/android/setupcompat/PartnerCustomizationLayout.java` | Applies partner configuration between the template and the design layer |
+| `external/setupcompat/main/java/com/google/android/setupcompat/template/FooterBarMixin.java` | Shared primary/secondary footer buttons |
+| `external/setupcompat/partnerconfig/java/com/google/android/setupcompat/partnerconfig/PartnerConfigHelper.java` | Reads OEM chrome overrides from the setup wizard's content provider |
+| `external/setupdesign/main/src/com/google/android/setupdesign/GlifLayout.java` | The Glif screen template and the mixins it registers |
+| `external/setupdesign/main/src/com/google/android/setupdesign/template/RequireScrollMixin.java` | Requires scroll-to-bottom before the primary button acts |
+| `frameworks/opt/setupwizard/library/` | The legacy `com.android.setupwizardlib`, superseded by the two libraries above |
 
 ---
 
-## 50.20 Try It: Add a Custom Settings Page
+## 50.21 Try It: Add a Custom Settings Page
 
 This section walks through adding a complete custom settings page to the
 Settings app, from XML definition through preference controller to search
 integration.
 
-### 50.20.1 Step 1: Define the Preference XML
+### 50.21.1 Step 1: Define the Preference XML
 
 Create a new XML preference screen.  For this example, we will build a
 "Custom Lab" page with a toggle and a list preference:
@@ -10210,7 +10419,7 @@ Create a new XML preference screen.  For this example, we will build a
 </PreferenceScreen>
 ```
 
-### 50.20.2 Step 2: Create the DashboardFragment
+### 50.21.2 Step 2: Create the DashboardFragment
 
 Create a new fragment that extends `DashboardFragment`:
 
@@ -10250,7 +10459,7 @@ public class CustomLabFragment extends DashboardFragment {
 }
 ```
 
-### 50.20.3 Step 3: Create Preference Controllers
+### 50.21.3 Step 3: Create Preference Controllers
 
 Create a toggle controller that reads/writes a setting:
 
@@ -10294,7 +10503,7 @@ public class CustomLabToggleController extends TogglePreferenceController {
 }
 ```
 
-### 50.20.4 Step 4: Register in SettingsGateway
+### 50.21.4 Step 4: Register in SettingsGateway
 
 Add the fragment to the `ENTRY_FRAGMENTS` array in `SettingsGateway.java` so
 that `SettingsActivity` will accept it:
@@ -10307,7 +10516,7 @@ public static final String[] ENTRY_FRAGMENTS = {
 };
 ```
 
-### 50.20.5 Step 5: Create the Activity Stub
+### 50.21.5 Step 5: Create the Activity Stub
 
 Add an inner class in `Settings.java`:
 
@@ -10316,7 +10525,7 @@ Add an inner class in `Settings.java`:
 public static class CustomLabActivity extends SettingsActivity { /* empty */ }
 ```
 
-### 50.20.6 Step 6: Declare in AndroidManifest.xml
+### 50.21.6 Step 6: Declare in AndroidManifest.xml
 
 Add the activity declaration with metadata pointing to the fragment:
 
@@ -10338,7 +10547,7 @@ Add the activity declaration with metadata pointing to the fragment:
 </activity>
 ```
 
-### 50.20.7 Step 7: Add a Link from System Settings
+### 50.21.7 Step 7: Add a Link from System Settings
 
 To make the new page accessible, add a preference to an existing XML screen
 (e.g., `res/xml/system_dashboard_fragment.xml`):
@@ -10351,7 +10560,7 @@ To make the new page accessible, add a preference to an existing XML screen
     android:fragment="com.android.settings.development.CustomLabFragment"/>
 ```
 
-### 50.20.8 Step 8: Make It Searchable
+### 50.21.8 Step 8: Make It Searchable
 
 The `@SearchIndexable` annotation and the `SEARCH_INDEX_DATA_PROVIDER` field
 we added in Step 2 are sufficient.  The compile-time annotation processor
@@ -10365,7 +10574,7 @@ adb shell content query \
   | grep custom_lab
 ```
 
-### 50.20.9 Complete Lifecycle Diagram
+### 50.21.9 Complete Lifecycle Diagram
 
 ```mermaid
 flowchart TD
@@ -10388,7 +10597,7 @@ flowchart TD
     Q --> R[Other observers notified]
 ```
 
-### 50.20.10 Testing Your Custom Page
+### 50.21.10 Testing Your Custom Page
 
 Run the Settings app on an emulator:
 
@@ -10411,7 +10620,7 @@ You can also test the search integration by opening Settings, tapping the
 search bar, and typing "Lab".  The custom preferences should appear in the
 results if the search index has been refreshed.
 
-### 50.20.11 Advanced: Adding a Tile to the Homepage
+### 50.21.11 Advanced: Adding a Tile to the Homepage
 
 To inject your page as a tile on the homepage, you would modify
 `res/xml/top_level_settings.xml` to add a `HomepagePreference`:
@@ -10435,7 +10644,7 @@ PARENT_TO_CATEGORY_KEY_MAP.put(
     CustomLabFragment.class.getName(), "com.android.settings.category.custom_lab");
 ```
 
-### 50.20.12 Advanced: OEM Customisation via FeatureFactory
+### 50.21.12 Advanced: OEM Customisation via FeatureFactory
 
 OEMs can customise the Settings app without forking by supplying
 a custom `FeatureFactory`.  The factory provides feature-specific providers:
