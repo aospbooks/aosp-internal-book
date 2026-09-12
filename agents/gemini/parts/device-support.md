@@ -15564,7 +15564,7 @@ The `system/software_defined_vehicle/common/` tree holds shared infrastructure. 
 
 #### What Display Safety Is
 
-On the IVI side, `packages/services/display_safety` implements the automotive Driver-UI runtime and its safety enforcement. It is a large Rust workspace (the root `packages/services/display_safety/Cargo.toml` enumerates dozens of crates) split into three tiers: a `framework/` of reusable rendering, audio, layout, and monitoring crates; a `reference/` implementation (`harry-app`, the `safety-monitor`, and ADAS visualization); and a `service/` layer that bridges the UI to the SDV fabric. The motivation is regulatory: a driver-facing display must not show distracting or non-compliant content while the vehicle is in motion, and the cluster/Driver-UI must render deterministically. The framework's graphics path wraps the Impeller engine (`framework/graphics/impeller`), drives layout through a Taffy-based engine (`framework/har-layout`), and instruments itself with a performance-monitoring crate (`framework/har-monitoring`).
+`packages/services/display_safety` implements the automotive cluster runtime and its safety enforcement. It is split across both VMs: the High Availability Renderer (`harry`) and the safety monitor run on the fast-booting SDV *Media* VM, which owns the cluster display, while the Android `DriverUI` app that supplies the non-regulated cluster content runs on the AAOS *IVI* VM. Section 62.9 covers this subsystem in depth; what follows is the overview. It is a large Rust workspace (the root `packages/services/display_safety/Cargo.toml` enumerates dozens of crates) split into three tiers: a `framework/` of reusable rendering, audio, layout, and monitoring crates; a `reference/` implementation (`harry-app`, the `safety-monitor`, and ADAS visualization); and a `service/` layer that bridges the UI to the SDV fabric. The motivation is regulatory: a driver-facing display must not show distracting or non-compliant content while the vehicle is in motion, and the cluster/Driver-UI must render deterministically. The framework's graphics path wraps the Impeller engine (`framework/graphics/impeller`), drives layout through a Taffy-based engine (`framework/har-layout`), and instruments itself with a performance-monitoring crate (`framework/har-monitoring`).
 
 #### The Safety Monitor
 
@@ -15976,7 +15976,1067 @@ SDV ships an unusually large body of runnable examples and host tooling, because
 
 ---
 
-## 62.9 Try It
+## 62.9 The High Availability Renderer
+
+An instrument cluster is not a screen like the others. When a brake-system fault
+appears, the red telltale for it has to be visible — not "as soon as the UI
+process finishes starting", not "unless the compositor is wedged", but visible,
+because a regulator says so and because the driver is travelling at speed. The
+rest of Android's display stack is built on a different premise: an app asks a
+window manager for a surface, SurfaceFlinger composes what it gets, and if a
+process dies it restarts and redraws a moment later. A moment later is a
+perfectly good answer for a launcher. It is not an answer for a seatbelt
+warning.
+
+Android 17 resolves that tension by not trying to make the ordinary stack
+safety-critical. It ships a second, much smaller renderer that owns the cluster
+display outright: the **High Availability Renderer** (HAR), a Rust application
+that runs in the Software Defined Vehicle's fast-booting Media VM,
+talks to the display through DRM/KMS with SurfaceFlinger stopped, and keeps
+drawing regulated content whether or not the Android that renders the pretty
+parts of the cluster is alive. Beside it runs an independent **safety monitor**
+that reads the finished framebuffer back and checks, pixel against golden image,
+that the telltales the vehicle asked for are actually on the glass.
+
+The code lives in `packages/services/display_safety/` — roughly 129,000 lines of
+Rust across 571 files and 52 Cargo workspace members, plus a prebuilt graphics
+engine and a Figma-driven design toolchain. This section walks it top to bottom:
+why the subsystem exists at all, how its platform abstraction layer lets the same
+renderer run on Android, Linux and QNX, the path a Figma design takes to become
+pixels, how HAR takes exclusive ownership of the display, the heartbeat contract
+that decides when Android's contribution is trustworthy, the design compiler and
+the safety monitor that together make a verifiable claim about what is on screen,
+and how the whole thing is packaged and started.
+
+Sections 62.7 and 62.8 covered the SDV platform that hosts this code — the
+headless Core VM, the service-bundle model, and the middleware fabric. This
+section goes down into the renderer itself.
+
+### 62.9.1 Why the Cluster Needs Its Own Renderer
+
+#### Telltales are a legal obligation
+
+A *telltale* is the automotive term for an indicator lamp: anti-lock brakes,
+airbag, low tire pressure, parking brake, seatbelt, low beam, high beam, fog
+lamps, traction control. They are not decoration and they are not application
+UI. Their colour, their meaning, and the conditions under which they must
+illuminate are written into vehicle regulations, and a cluster that fails to show
+one when the vehicle bus says it should is a defective vehicle, not a buggy app.
+
+That single requirement is what separates HAR from every other renderer in
+Android. It is not enough to draw the telltale correctly on a good day. The
+system has to be able to state, with evidence, that the pixels currently being
+scanned out contain the telltales the vehicle asked for. Sections 62.9.8 and 62.9.9
+describe the machinery built to make exactly that statement.
+
+The set is concrete rather than abstract: the design compiler's configuration
+maps vehicle bus signal names — `abs`, `airbag`, `low_tire_pressure`, `brake`,
+`traction`, `lowbeam`, `hibeam`, `park_lights`, `fog_lights`, `seatbelts` — onto
+nodes in the cluster design, and the monitor watches those specific regions of
+the screen.
+
+#### The startup gap
+
+The second problem is time. A driver turns the key and expects the cluster to be
+alive almost immediately; regulation is similarly impatient about some elements.
+A full Android Automotive image — boot, Zygote, system server, SystemUI, a
+cluster app — does not reach first frame in that window, and nothing about
+Android's architecture makes it cheap to try.
+
+HAR sidesteps the problem instead of optimising it. It is a single native Rust
+binary with precompiled shaders and its own display path, started from an APEX as
+soon as APEXes are mounted. It does not wait for the Android framework because it
+does not use it. The ordinary Android cluster experience arrives later and is
+composited in when it does — which is precisely what the heartbeat contract in
+Section 62.9.7 arbitrates.
+
+#### Where HAR runs and what it owns
+
+In an SDV deployment the work is split across two virtual machines:
+
+- **SDV Media VM** — a fast-booting VM that runs `harry` (the HAR binary) and
+  `har_safety_monitor`. This VM owns the cluster display hardware.
+- **SDV IVI VM** — a full Android Automotive OS image running **DriverUI**, a
+  privileged Android app that renders the *non*-regulated parts of the cluster:
+  media, navigation, telephony.
+
+HAR draws the safety-relevant layer and decides how much of the screen Android is
+allowed to contribute. DriverUI streams its content across to HAR over gRPC and
+must keep proving it is alive. The division is deliberate: the component with the
+regulatory obligation is small, native, and independent; the component with the
+rich feature set is ordinary Android and is treated as untrusted for availability
+purposes.
+
+#### The two-VM split
+
+```mermaid
+graph TB
+    subgraph MEDIA["SDV Media VM (fast boot)"]
+        HARRY["harry<br/>High Availability Renderer"]
+        MON["har_safety_monitor<br/>golden-image checks"]
+        VD["vehicledata publisher<br/>service bundle"]
+    end
+
+    subgraph IVI["SDV IVI VM (Android Automotive)"]
+        DUI["DriverUI<br/>media, maps, telephony"]
+        CAR["CarService"]
+    end
+
+    subgraph HW["Cluster hardware"]
+        DRM["DRM/KMS<br/>no SurfaceFlinger"]
+        DISP["Cluster display"]
+    end
+
+    DUI -->|"DriverUIService gRPC<br/>heartbeat + document updates"| HARRY
+    CAR --- DUI
+    VD -->|"VehicleDataService gRPC"| HARRY
+    VD --> MON
+    HARRY --> DRM
+    DRM --> DISP
+    HARRY -->|"screen buffer"| MON
+```
+
+The arrow worth noticing is the one that is missing: nothing draws to the cluster
+display except HAR. Android's contribution reaches the glass only by passing
+through HAR, which is what makes the availability guarantee enforceable.
+
+
+### 62.9.2 The Workspace
+
+#### The crate map
+
+`packages/services/display_safety/` is a single Cargo workspace whose root
+`Cargo.toml` lists 52 members, organised into four tiers plus prebuilts. The
+approximate Rust line counts below are a useful guide to where the weight sits:
+
+| Area | Path | Rust LOC | What it is |
+|---|---|---|---|
+| Graphics | `framework/graphics/` | ~15,500 | Impeller binding, GL context, DRM/KMS presentation, external images |
+| Utilities | `utils/` | ~10,500 | Design tooling, test apps, report generators, parity checking |
+| View IR | `framework/squoosh/` | ~9,500 | Intermediate representation of view parameters |
+| Core runtime | `framework/harry/` | ~8,900 | The HAR framework: pre-renderer, display-list generation, frame loop |
+| Audio | `framework/audio/har-audio/` | ~7,900 | Chime playback, streams, mixing |
+| Platform API | `framework/api/har-platform-api/` | ~7,800 | The platform abstraction layer (traits) |
+| Platform impls | `reference/platforms/` | ~6,600 | `har-platform-android`, `har-platform-linux`, headless looper, logging |
+| App core | `reference/harry-app-core/` | ~5,400 | Reducer, state, presenter, heartbeat watchdog |
+| SDV services | `service/` | ~4,300 | Service bundle, gRPC services, vehicle data publisher |
+| Reference app | `reference/harry-app/` | ~3,500 | The `harry` binary itself |
+| Safety monitor | `reference/safety-monitor/` | ~3,100 | Telltale monitoring and vehicle-data server |
+| Customizations | `framework/customizations/` | ~2,500 | Design customization API and derive macros |
+| Monitoring | `framework/har-monitoring/` | ~2,200 | Performance and latency instrumentation |
+| Layout | `framework/har-layout/` | ~1,300 | Taffy-based layout wrapper |
+| Screen capture | `reference/screencap/` | ~1,100 | Framebuffer read-back for the monitor |
+| Display list | `framework/display_list/` | ~370 | The backend-independent scene description |
+
+The shape of that table is itself informative. `framework/display_list/` is tiny
+because the display list is deliberately a narrow, dumb data structure — the
+handoff between "what to draw", computed on one thread, and "how to draw it",
+executed on another. The graphics tier is large because owning a display without
+a compositor means implementing buffer management, fencing and mode setting
+yourself.
+
+#### A Cargo workspace inside Soong
+
+The tree is a genuine Cargo workspace — `rust-toolchain.toml` pins channel
+`1.90` and the targets `aarch64-linux-android`, `x86_64-linux-android` and
+`x86_64-unknown-linux-gnu` — but it also builds under Soong, with 80 `Android.bp`
+files carrying the platform build. The dual arrangement is what lets the same
+code build for a Linux desktop (where a developer can iterate in a window) and
+for the device.
+
+The graphics engine is not built from source in AOSP. `prebuilts/` carries
+Impeller as prebuilt libraries per OS and architecture (`prebuilts/impeller/android`,
+`prebuilts/impeller/linux`) together with `impeller-rs-bindgen` — the generated
+Rust FFI bindings — and a hand-written `impeller-rs-bindgen-wrapper` that gives
+the rest of the tree a safer API than raw bindgen output.
+
+
+### 62.9.3 The Platform Abstraction Layer
+
+#### The trait surface
+
+HAR is written to be portable across operating systems that have nothing in
+common with Android — the documentation names Linux and QNX alongside Android,
+and QNX is a common choice for safety-certified automotive systems. Portability
+is achieved the ordinary Rust way: `framework/api/har-platform-api/` defines
+traits, and a platform crate implements them.
+
+The module list in `framework/api/har-platform-api/src/lib.rs` is the shape of
+the abstraction: `audio`, `camera`, `graphics`, `i18n`, `looper`, `tracing`,
+`user_input`, `vehicle_data`, `resource_manager`, `test_support`, `commlib`.
+
+The load-bearing traits:
+
+| Trait | Defined at | Responsibility |
+|---|---|---|
+| `GlContextFactory` | `framework/api/har-platform-api/src/graphics.rs:179` | Create the GL context HAR renders through |
+| `Renderer` | `framework/api/har-platform-api/src/graphics.rs:227` | Draw a frame |
+| `TakeScreenshot` | `framework/api/har-platform-api/src/graphics.rs:315` | Read the framebuffer back |
+| `AudioApiFactory` | `framework/api/har-platform-api/src/audio/v2/audio_api_factory.rs:39` | Open the platform's audio output |
+| `AudioApi` | `framework/api/har-platform-api/src/audio/v2/audio_api.rs:79` | Play and mix chimes |
+| `ICameraManager` | `framework/api/har-platform-api/src/camera/api.rs:34` | Enumerate and open cameras |
+| `PlatformVehicleData` | `framework/api/har-platform-api/src/vehicle_data/api.rs:281` | Stream vehicle state in |
+| `VehicleDataListener` | `framework/api/har-platform-api/src/vehicle_data/api.rs:262` | Receive vehicle-state updates |
+| `LayoutHelper` | `framework/api/har-platform-api/src/looper/api.rs:105` | Text metrics, wrapping and shaping |
+| `RenderObserver` | `framework/api/har-platform-api/src/looper/observer.rs:27` | Observe frames as they complete |
+| `PlatformTracing` | `framework/api/har-platform-api/src/tracing.rs:20` | Route spans to the platform tracer |
+| `PlatformTestSupport` | `framework/api/har-platform-api/src/test_support/api.rs:47` | Test setup, synthetic events, artifacts |
+
+`ResourceManager` (`framework/api/har-platform-api/src/resource_manager.rs:204`)
+is a struct rather than a trait: an in-memory cache of startup resources — images
+and design documents — so that first frame does not wait on storage.
+
+The framework cannot be built alone. The platform documentation is explicit that
+a platform implementation must be supplied, and that this is intentional: the
+framework is a framework, and a half-implemented platform should fail to compile
+rather than fail at 70 km/h.
+
+#### The platform implementations
+
+`reference/platforms/` carries the implementations that ship:
+
+- `har-platform-android` — the device path, used in the SDV Media VM.
+- `har-platform-linux` — the development path. Windowed mode uses `winit` and
+  `glutin`; headless mode uses a pbuffer context from `har-gl-context` and needs
+  no display hardware, which is what makes the design compiler able to render
+  cluster designs on a build machine.
+- `har-looper-headless` — a looper with no display attached.
+- `har-log` — platform logging.
+- `harry-app-platform-specific` — the glue that binds the reference app to
+  whichever platform it was built for, and where Cargo features such as
+  `tracing-android` are selected.
+
+Input is a platform concern too: `reference/har-user-input-evdev/` is the Linux
+reference implementation, reading touch, keyboard and mouse from evdev, with the
+PAL exposing `KeyEvent`, `TouchEvent`, `RawUserInputEvent` and `UserInputEvent`
+in `framework/api/har-platform-api/src/user_input/`.
+
+#### One error type
+
+Every platform call returns a `Result` whose error is the framework's own enum,
+defined in `framework/api/har-platform-api/src/error.rs:34`. A platform
+implementation cannot leak its own error type into application code — an
+important property when the application is supposed to behave identically on
+three operating systems.
+
+
+### 62.9.4 From Figma to Display List
+
+HAR does not have a widget toolkit in the Android sense. Its UI is a compiled
+Figma document, and the renderer's first job each frame is to turn design plus
+state into a flat list of drawing commands.
+
+#### The design document
+
+Cluster designs are authored in Figma and serialised — the same Automotive Design
+for Compose lineage that DriverUI uses on the Android side. The serialised
+document carries the node tree, images, components and metadata.
+
+What the Rust code supplies is not a widget tree but a set of overrides onto
+named nodes in that document. An application declares a struct whose fields are
+annotated with the node each one drives, and the `derive_customizations`
+procedural macro in `framework/customizations/` generates the plumbing:
+
+```rust
+#[derive(DesignDocument, Debug)]
+#[DesignDocument(root)]
+pub struct UiModel {
+    #[Design(node = "BackgroundLayer")]
+    pub background_layer: HeartbeatVariant,
+    #[Design(node = "ViewModeHar")]
+    pub view_mode: ViewModeVariant,
+    // ...
+}
+```
+
+(`reference/harry-app-core/src/ui/model.rs`.) A field's type decides how it is
+applied — a `bool` toggles visibility, a `String` sets text, an enum swaps a
+Figma component variant — and each application returns an `UpdatePolicy` saying
+whether anything needs redrawing. The retained document is therefore loaded once
+and re-skinned every tick, which is why a frame costs so little when nothing has
+changed.
+
+This is why the toolchain in Section 62.9.8 can make strong claims about what is on
+screen: the design is data, the same data feeds the renderer and the compiler, and
+the compiler can therefore produce golden images that correspond exactly to what
+the renderer will draw.
+
+#### The reducer and the presenter
+
+`reference/harry-app-core/` holds the application's state machine. Actions arrive
+— vehicle data, input events, messages from Android — and a reducer folds them
+into state; a presenter maps state onto the UI model. The important structural
+choice is that this work happens on its own thread, off the display loop, so that
+a slow state update cannot miss a frame. Work only proceeds to rendering when the
+update policy says something actually changed.
+
+#### Layout
+
+`framework/har-layout/` wraps **Taffy**, a Rust flexbox/grid layout engine, in
+~1,300 lines. Text is not something a layout engine can resolve alone, so the PAL
+supplies `LayoutHelper` (`looper/api.rs:105`) for metrics, wrapping and shaping,
+and `LayoutHelperManager` (`looper/api.rs:94`) to hand them out. Layout results
+are positions and sizes for the nodes the display list will then describe.
+
+#### Display-list generation
+
+The output of the pre-render phase is a `Vec<DisplayListEntry>`. The entry type
+is defined at `framework/display_list/src/display_list.rs:256`, and what an entry
+looks like is `DisplayListAppearance`
+(`framework/display_list/src/display_list.rs:106`), whose variants are the
+complete drawing vocabulary: `Rect`, `RoundedRect` (with per-corner radii and a
+corner-smoothing factor), `Text`, `StyledText` (runs with individual styles),
+`Path` (separate fill and stroke vector paths), `VectorRect`, `Arc`, and the
+state-stack operations including `PushClipRegion`.
+
+Generation itself lives in the `harry` crate rather than in `display_list`:
+`generate_dl` is defined at
+`framework/harry/src/pre_renderer/generation.rs:68` and recurses through the view
+tree via `generate_dl_recursive`
+(`framework/harry/src/pre_renderer/generation.rs:85`), driven from
+`framework/harry/src/pre_renderer/mod.rs:261`. The split is deliberate:
+`display_list` is a vocabulary that knows nothing about views, and the
+pre-renderer is the thing that speaks it.
+
+`Arc` deserves a note, because it is the reason gauges work. A tachometer sweep
+is an arc whose angle is a function of vehicle data; the meter values computed
+during pre-render adjust arc sweep, rotation and scaling directly, so a needle
+moves without any per-frame re-layout of the design.
+
+#### The four phases of a frame
+
+```mermaid
+graph TB
+    subgraph REDUCER["Reducer thread"]
+        A["Action<br/>vehicle data, input, Android"] --> B["State update"]
+        B --> C["Presenter<br/>state to UI model"]
+        C --> D["Layout<br/>Taffy + text shaping"]
+        D --> E["generate_dl<br/>DisplayListEntry list"]
+    end
+
+    subgraph LOOP["Looper thread"]
+        F["ImpellerRenderer<br/>display list to GL commands"]
+        G["swap_buffers"]
+    end
+
+    subgraph HWPATH["Display"]
+        H["DRM atomic commit<br/>with GPU fence"]
+        I["Scanout"]
+    end
+
+    E -->|"ViewDescriptor over MPSC channel"| F
+    F --> G
+    G --> H
+    H --> I
+```
+
+The channel in the middle is the architectural seam. Everything to its left is
+"decide what the frame contains" and can take as long as it takes; everything to
+its right is "put it on the glass" and must not block.
+
+
+### 62.9.5 Rendering with Impeller
+
+#### Why Impeller and not Skia
+
+Android's own UI renders through Skia (Chapter 13). HAR uses **Impeller**, the
+engine developed for Flutter, and the reason is shader compilation. A renderer
+that compiles shaders lazily at first use produces a visible hitch the first time
+a given effect appears — acceptable in an app, not acceptable when the effect in
+question is a warning lamp. Impeller ships a precompiled shader set, so the
+rendering cost of a given frame does not depend on whether that frame is the
+first of its kind. Fast startup and a compact binary matter for the same reasons
+the rest of HAR is small.
+
+#### The render pass
+
+Impeller is not rebuilt from source here. `prebuilts/` carries the engine as a
+prebuilt SDK pinned to a specific Flutter engine commit, with `bindgen`-generated
+FFI bindings over Impeller's public C interface and a hand-written wrapper crate
+above them. The Rust binding exposes three backends, but only one is real for
+this product: `create_open_gles` is the production path, while the Metal and
+Vulkan constructors log warnings calling themselves experimental and untested.
+
+The renderer creates an `impeller::Context` with the OpenGL ES backend, supplying
+a callback that resolves GL function pointers, and renders into a
+platform-provided framebuffer through a wrapped FBO rather than creating its own
+window. Resources are registered up front: images in standard formats and KTX2
+compressed textures, fonts as TrueType/OpenType registered with the typography
+context, and — for camera and externally rendered content — `EGLImage` handles
+bound as textures so no pixels are copied.
+
+Drawing a frame walks the display list, translating each `DisplayListEntry` into
+Impeller calls and using save/restore for the transform, clip and mask stack that
+`PushClipRegion` and its siblings describe, then hands the result to the surface
+and swaps.
+
+
+### 62.9.6 Owning the Display
+
+#### Stopping SurfaceFlinger
+
+The most direct evidence of what HAR is comes from its init script. In
+`service/product/harry_apex/init.display_safety.har.rc`, the block that runs when
+APEXes are ready does this before starting the renderer:
+
+```bash
+on property:apex.all.ready=true
+    # ... camera emulation and data folder setup ...
+    stop surfaceflinger
+     # start the HAR application
+    start harry
+```
+
+On a Media VM there is no Android compositor. HAR performs its own mode setting
+and talks to DRM/KMS directly, which is what "direct rendering" means throughout
+this code. `framework/graphics/har-gl-context/` implements it:
+`DrmCard::open_as_gbm_device` opens the DRM device as a GBM device
+(`framework/graphics/har-gl-context/src/har_gl_context_factory.rs:61`), devices
+are cached per path in a `RwLock<HashMap<String, Arc<Mutex<GbmDevice>>>>`, and
+`HarDirectRenderingContext::init_boxed` builds the context on top of it
+(`.../har_gl_context_factory.rs:79`). Mode setting proper lives in
+`framework/graphics/har-gl-context/src/direct_rendering/kms.rs`.
+
+#### The swap chain and its fences
+
+Without a compositor, HAR maintains its own swap chain. Impeller renders into an
+offscreen draw buffer; an optional resolve buffer exists for MSAA; the render
+buffer is GBM-backed and becomes the next front buffer. A swap blits draw into
+render, creates an `EGL_SYNC_NATIVE_FENCE_ANDROID` fence tracking GPU completion,
+builds a DRM atomic request carrying that fence as an in-fence so the display
+controller cannot scan out an unfinished frame, requests an out-fence that
+signals when the previous front buffer has left the display, and commits
+non-blocking. The out-fence is cached and consulted on the next swap so the
+renderer never draws into a buffer that is still being displayed.
+
+This is the same class of problem SurfaceFlinger solves for ordinary Android, and
+HAR solves it in a few thousand lines because it only has to solve it for one
+producer and one display.
+
+The wait on that fence is bounded, which is the point most worth noticing. The
+swap path waits at most 500 ms
+(`framework/graphics/har-gl-context/src/direct_rendering/har_direct_rendering_context.rs:319`);
+on expiry it logs that the display hardware may be hung, increments a
+`fence_timeouts` counter alongside the buffer-swap and FPS statistics the context
+keeps, destroys the sync object and returns — rather than blocking the render
+thread forever on wedged hardware. The same defensive shape appears throughout
+the render path: drawing a frame with no surface is a no-op rather than a panic,
+and an external image that has not arrived yet is skipped with a warning instead
+of failing the frame.
+
+#### External images
+
+Not everything HAR shows is drawn by HAR. Camera preview and externally rendered
+content arrive as buffers, and `framework/graphics/external-image/` binds them as
+`EGLImage` textures so they can be composited into the scene without a copy. A
+dedicated offscreen context serves external renderers, which draw into pooled
+surfaces and pass a shared handle back over a channel for the main renderer to
+bind.
+
+
+### 62.9.7 Availability: the Heartbeat Contract
+
+This section is the heart of the chapter: the mechanism that earns the name
+"high availability".
+
+#### The problem stated precisely
+
+DriverUI runs in the IVI VM. It renders media, maps and telephony into regions of
+the cluster that HAR keeps transparent for it. If DriverUI — or the whole Android
+guest — hangs, crashes, or is rebooting for an update, those regions would
+otherwise display stale content: a navigation instruction from two minutes ago,
+or a frozen album cover, presented with the authority of an instrument cluster.
+Stale is worse than absent.
+
+So HAR does not trust Android to report its own health. It requires continuous
+proof of life and treats silence as failure.
+
+#### The DriverUIService protocol
+
+The contract is a gRPC service defined in
+`service/har-grpc-services/src/proto/driverui.proto:177`:
+
+```proto
+service DriverUIService {
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse) {}
+  rpc DocumentSwitched(DocumentSwitchedRequest) returns (DocumentSwitchedResponse) {}
+  rpc DocumentUpdated(DocumentUpdatedRequest) returns (DocumentUpdatedResponse) {}
+  rpc DesignTokenUpdate(DesignTokenUpdateRequest) returns (DesignTokenUpdateResponse) {}
+  rpc LocaleUpdate(LocaleUpdateRequest) returns (LocaleUpdateResponse) {}
+  rpc ChangeVariant(ChangeVariantRequest) returns (ChangeVariantResponse) {}
+  rpc ChangeContainerConfiguration(ChangeContainerConfigurationRequest) returns (ChangeContainerConfigurationResponse) {}
+}
+```
+
+A heartbeat carries the sender's uptime and, importantly, *which* sender it is
+(`driverui.proto:24`):
+
+```proto
+message HeartbeatRequest {
+  // system uptime in millis
+  uint64 uptime = 1;
+
+  // Heartbeat source
+  enum Source {
+    SOURCE_UNKNOWN = 0;
+    SOURCE_ANDROID = 1;
+    SOURCE_INSTRUMENT_CLUSTER = 2;
+    SOURCE_CAMERA_SERVICE = 3;
+  }
+```
+
+Three real sources are tracked independently, mirrored on the Rust side as
+`HeartbeatSource` at `reference/harry-control-api/src/driver_ui.rs:27`. The
+camera service having its own heartbeat matters for the rear-visibility path in
+Section 62.9.10, where a frozen camera feed is a safety problem in its own right.
+
+#### The watchdog
+
+`reference/harry-app-core/src/heartbeat_watchdog.rs` is 185 lines and does one
+thing well. `HeartbeatWatchdog` decorates the callback that receives DriverUI
+RPCs, spawning a single worker thread that tracks every source:
+
+```rust
+const TIMEOUT_MS: u64 = 2000;
+```
+
+That constant, at `heartbeat_watchdog.rs:34`, is the whole availability policy:
+two seconds of silence from a source and it is considered disconnected. The
+worker keeps `last_seen: HashMap<HeartbeatSource, Instant>` and sleeps only until
+the nearest deadline, so a timeout is detected promptly without polling:
+
+```rust
+let loop_timeout =
+    last_seen.values().map(|timestamp| *timestamp + timeout_duration).min().map(
+        |next_deadline| next_deadline.saturating_duration_since(Instant::now()),
+    );
+```
+
+When a deadline passes, the source is dropped from the map and a disconnection is
+delivered (`heartbeat_watchdog.rs:92`):
+
+```rust
+last_seen.retain(|source, timestamp| {
+    if timestamp.elapsed() > timeout_duration {
+        if let Err(err) = delegate_clone.send_guest_disconnected(*source) {
+            log::warn!("Error delivering heart beat timeout for {:?}: {:?}", source, err);
+        }
+        false // Remove
+```
+
+Receiving a heartbeat is correspondingly cheap: the RPC handler forwards the
+source to the worker thread to reset that source's deadline, then delegates the
+call onward.
+
+#### What a disconnection does
+
+`send_guest_disconnected` (`reference/harry-app-core/src/data_channel.rs:63`)
+turns the timeout into an ordinary action on the same channel the rest of the
+application state travels on:
+
+```rust
+self.channel.send(Actions::CustomAction(CustomActions::GuestStateUpdateAction(
+    CommunicationData {
+        connected: false,
+        data: Some(AndroidData::Heartbeat(HeartbeatData {
+            uptime: 0,
+            source: heartbeat_source as _,
+        })),
+    },
+)))
+```
+
+From there it is just state. The reducer records that the guest is disconnected,
+the presenter reflects it in the UI model, and HAR stops keeping that region
+transparent: the area becomes opaque and shows a placeholder instead of whatever
+Android last put there. When heartbeats resume, the region becomes transparent
+again and Android's content reappears.
+
+The design is worth appreciating. There is no special emergency path, no separate
+failure renderer, no attempt to restart Android from the cluster. Loss of the
+guest is modelled as a state change like any other, which means it is exercised
+by the same code that runs constantly rather than by a rarely-taken branch that
+might have rotted.
+
+#### Guest availability as seen by HAR
+
+```mermaid
+stateDiagram-v2
+    [*] --> Disconnected
+    Disconnected --> Connected : heartbeat
+    Connected --> Disconnected : 2s silence
+```
+
+While a source is `Connected`, its region stays transparent and Android's content
+is shown; every heartbeat that arrives inside the window simply resets that
+source's deadline. While it is `Disconnected`, the region is opaque and carries a
+placeholder. Each source — Android, instrument cluster, camera service — moves
+through this machine independently, so a wedged camera service does not blank the
+navigation region and vice versa.
+
+
+### 62.9.8 The Safety Design Toolchain
+
+Knowing that HAR *drew* a telltale is not the same as knowing the telltale is
+*visible*. The toolchain exists to make the second claim checkable, and it starts
+before the vehicle ever runs.
+
+#### The design compiler
+
+`har_design_compiler` takes the serialised Figma document plus a configuration
+file and produces the artifacts the runtime monitor will use:
+
+```bash
+safety-design-compiler -c path/to/<input-file>.json -o path/to/output_directory
+```
+
+The configuration supplies what the design cannot: which node is the root of the
+safety-relevant display, the target display ID and resolution, and the dictionary
+mapping vehicle bus signal names to Figma node IDs — telltales are addressed by
+design path, in the style `#cluster/telltale/abs`. The compiler renders headless
+with Impeller, which is why the Linux headless platform from Section 62.9.3.2
+exists at all: the golden images are produced by the same renderer that will draw
+the real thing.
+
+#### What it emits
+
+The output archive contains:
+
+- **`data.json`** — the manifest. A `static_ui_elements` array giving each safety
+  element's name, position and size; a `screen` object with the display
+  resolution; a `build` object recording the Figma document ID and the compiler
+  version.
+- **Per-element golden images** — each safety-relevant element rendered in
+  isolation in its active state, in a directory structure mirroring the design
+  hierarchy.
+- **Full-UI verification images** — complete screenshots with each telltale both
+  active and inactive, for test and for human review.
+- **An updated design document** — the original with `RenderOptions::PixelPerfect`
+  set on the telltale nodes, so the runtime renderer draws them without the
+  filtering that would defeat a pixel comparison.
+
+That last item closes the loop: the compiler does not merely describe what the
+telltales should look like, it adjusts the design so that what the renderer
+produces is comparable.
+
+#### Human review and approval
+
+Compiled artifacts are reviewed by a person, and the review is itself tooled.
+`utils/human-readable-report-generator` renders the artifacts into an HTML report
+showing each node in its active state; a second binary records an approval:
+
+```bash
+cargo run --bin approve-hrr -- -f /path/to/compiler_inspection_output.html \
+    -n "Name" -e email@domain.com -o output/path
+```
+
+The resulting `approval_file.json` records the approver and a SHA-256 hash of the
+report, binding the approval to the exact artifacts reviewed.
+
+The separation between compiling designs and generating code is what the
+documentation credits for allowing the code generator to reach an ISO 26262 Tool
+Confidence Level of TCL-3 — a claim about the toolchain's qualification, not
+about any particular vehicle's certification.
+
+
+### 62.9.9 The Safety Monitor
+
+#### The loop
+
+`har_safety_monitor` is a separate process, built from
+`reference/safety-monitor/` (~3,100 lines including tests; `src/` itself is
+1,172). It is started with the compiler's output:
+
+```bash
+har_safety_monitor --data-json-path /path/to/data.json \
+    --artifact-base-path /path/to/artifacts
+```
+
+Those arguments are parsed into `Args`
+(`reference/safety-monitor/src/main.rs:47`), and `load_data_json`
+(`reference/safety-monitor/src/telltale_monitoring.rs:90`) deserialises the
+manifest into `DataJson`, `StaticUiElement`, `Screen` and `Build`
+(`telltale_monitoring.rs:83`, `:48`, `:61`, `:73`).
+
+`start_telltale_monitoring_thread` then spawns the comparison loop. Its own
+comment states the job plainly (`telltale_monitoring.rs:130`):
+
+```rust
+// Spawn a thread that will continuously compare the telltale golden image
+// With the contents of the screen buffer.
+```
+
+The screen buffer comes from `reference/screencap/`, and how it is obtained
+matters: rather than asking Android for a screenshot, it opens `/dev/dri/card0`
+directly, imports the KMS framebuffer as a GBM buffer object and mmaps it,
+synchronising with `DMA_BUF_IOCTL_SYNC` — the technique the crate's own README
+compares to ffmpeg's `kmsgrab`. There is no SurfaceFlinger to ask, so the monitor
+reads the scanout buffer itself. Regions of interest can be overridden with
+`rois_override: Option<Vec<har_screencap::Rect>>` for testing, and results flow
+out as `TelltaleState` over a channel.
+
+The loop runs on a 100 ms cadence (`MONITOR_LOOP_SLEEP_MS`,
+`reference/safety-monitor/src/shared.rs:25`) with the per-telltale checks spread
+across cores by `rayon`. A 200 ms hold time (`MONITOR_HOLD_TIME_MS`,
+`shared.rs:28`) debounces the result, so a single frame caught mid-transition
+does not register as a mismatch.
+
+#### The algorithms
+
+Checks are pluggable behind one trait, `TelltaleAlgorithm`
+(`reference/safety-monitor/algorithms/interface/src/lib.rs:22`), whose whole
+contract is `fn check(&mut self, buffer: &DisplayBuffer) -> bool`. Four
+implementations ship, in `reference/safety-monitor/algorithms/`, and the monitor
+picks one **per telltale** rather than applying one globally
+(`telltale_monitoring.rs:216-331`): a computer-vision task if `data.json`
+specifies one, else a TFLite model if one exists for that element, else a
+correlation filter when a search margin is configured, else a plain pixel check.
+
+The simplest is `static_pixel_check`: slide the golden image over the region and
+compare opaque pixels, allowing a budget of 20 mismatched pixels
+(`PIXEL_TOLERANCE`, `algorithms/static_pixel_check/src/lib.rs:22`).
+`correlation_filter` does Zero-mean Normalized Cross-Correlation, using integral
+images so each candidate window's mean and variance are O(1).
+`tflite_inference` runs a per-telltale TFLite model with a selectable
+CPU/GPU/NNAPI delegate and treats a score above 0.5 as present. `har-cv` is a
+small but real vision library — average-colour checks, Sobel edge detection and
+Harris corner detection, with unit tests against synthetic shapes.
+
+The computer-vision implementation (`telltale_monitoring.rs:111`) wraps a
+processor from that `har_cv` library:
+
+```rust
+#[cfg(cv)]
+struct CvAlgorithm {
+    name: String,
+    processor: har_cv::CvProcessor,
+}
+```
+
+whose check reduces to matching the watcher for this telltale against the
+processed buffer:
+
+```rust
+fn check(&mut self, buffer: &har_screencap::DisplayBuffer) -> bool {
+    if let Ok(results) = self.processor.process(buffer) {
+        for res in results {
+            if res.watcher_id == self.name {
+                return res.is_matched;
+            }
+        }
+    }
+    false
+}
+```
+
+A TFLite path exists behind the `tflite` feature, with a `TfliteDelegate` passed
+through to the monitoring thread and a wrapper crate at `utils/tflite_wrapper/`;
+the non-TFLite build compiles the same entry point with the delegate typed away
+as `()` (`telltale_monitoring.rs:171-176`). Note that the `false` returned when
+the processor errors is a *not matched* answer, not a silent pass — an
+unreadable screen is treated as a telltale that is not visible.
+
+#### What a verdict actually does
+
+Here it is worth being exact, because the obvious assumption is wrong. The
+monitor compares what vehicle data says a telltale should be doing against what
+the pixels say, and classifies each element as `Match`, `FalsePositive`
+(lit when it should not be), `Missing` (dark when it should be lit), or `Normal`
+(`reference/safety-monitor/src/main.rs:248-256`). A persistent mismatch produces
+two things: an error in the log, and a `SetDebugOutlinesRequest` sent over gRPC
+to the renderer (`main.rs:286`), which draws a coloured box around the offending
+region — green for match, yellow for false positive, red for missing
+(`reference/harry-vehicle-data-grpc/proto/debug.proto`).
+
+That is all it does. The monitor does not blank the display, tear down the
+document, alert the driver, or fail over to anything; searching this code for
+enforcement machinery turns up none. It is an independent observer that reports,
+and the RPC it reports through is named `DebugService`. The safety argument it
+supports is evidentiary — a component that did not draw the frame can state
+whether the regulated content is on it — and the response to a mismatch belongs
+to whatever integrates the system, not to this binary.
+
+#### Vehicle data on the monitor side
+
+`reference/safety-monitor/src/vehicle_data_server.rs` (217 lines) gives the
+monitor its own view of vehicle state, so that the component checking the screen
+is not asking the component drawing the screen what should be there. The
+publisher fans the same stream out to both consumers — the renderer on
+`127.0.0.1:50051` and, when `persist.product.harplatform.safetymonitor` names
+one, the monitor on port `50052` — so the two sides receive the data
+independently rather than one relaying it to the other. The monitor keeps only
+what it needs, filtering the stream down to the telltale signals (ABS, airbag,
+brake, fog lights, high and low beam, low tire pressure, park lights, traction,
+and the two seatbelt signals, which it ORs into a single no-seatbelt state) and
+ignoring speed, gear and RPM entirely.
+
+#### Independent delivery, compared at the glass
+
+```mermaid
+graph TB
+    BUS["Vehicle bus / VHAL"]
+    VD["vehicledata publisher<br/>service bundle"]
+
+    BUS --> VD
+    VD -->|"VehicleDataService"| HARRY["harry<br/>renders telltales"]
+    VD -->|"vehicle_data_server"| MON["har_safety_monitor"]
+
+    HARRY --> FB["Framebuffer"]
+    FB -->|"screencap"| MON
+    GOLD["Golden images<br/>+ data.json"] --> MON
+    MON --> V{"Expected state<br/>matches pixels?"}
+    V -->|"Yes"| OK["Telltale state recorded"]
+    V -->|"No"| ERR["Mismatch logged"]
+```
+
+
+### 62.9.10 Camera, Audio, and Vehicle Data
+
+#### The camera view runs against a regulatory clock
+
+Rear visibility is not a convenience feature. The documentation cites the
+requirements the camera path is built to meet: the image must be displayed within
+2.0 seconds of selecting reverse (CFR 571.111 S5.5.3), sustain at least 30 Hz
+nominal and 15 Hz in low light, form an image in under 55 ms at 22°C ± 5°C, and
+keep total system latency under 200 ms (UNECE R46 6.2.2.3.4 and its subsections).
+
+The abstraction is deliberately EVS-like. `ICameraManager`
+(`framework/api/har-platform-api/src/camera/api.rs:34`) enumerates and opens
+devices; `ICameraDevice` starts and stops streams and returns consumed buffers;
+`ICameraStreamListener` receives events. The descriptor and configuration types —
+`CameraDescriptor`, `CameraStreamConfiguration`, `CameraParameterDescriptor`,
+`CameraLocation`, `FrameRate` — carry resolution, frame rate, pixel format and
+mounting information.
+
+Two details matter for safety. Frame buffers are owned by the camera input block
+and are not writable by the application, so a consumer cannot corrupt a frame
+another consumer is using; and the event vocabulary includes an explicit
+stream-hang event, which is how a camera that has stopped delivering frames
+becomes visible to the system rather than simply appearing frozen. That pairs
+with `SOURCE_CAMERA_SERVICE` in the heartbeat enum: a stalled camera is detected
+both at the stream and at the availability layer.
+
+#### Chimes
+
+Cluster audio is warning chimes, not media, and `framework/audio/har-audio/`
+(~7,900 lines) implements it against the PAL's `AudioApiFactory` and `AudioApi`.
+The manager plays a chime on a specified device with given behaviours
+(`framework/audio/har-audio/src/audio_manager.rs:264`); WAV assets load lazily on
+first play (`src/assets/impls/wav/wav_asset.rs:44`); a stream controller can block
+until a chime completes (`src/stream/stream_controller.rs:146`); and streams carry
+a state machine with an interruption path that fades a chime out rather than
+cutting it (`src/stream/stream.rs:273`). The PAL exposes the vocabulary the
+automotive context needs: `AudioBus`, `VolumeMillibel`, `PlaybackMode`,
+`Spatialization`.
+
+#### Vehicle data plumbing
+
+Vehicle state reaches HAR as a stream. The service is defined at
+`service/har-grpc-services/src/proto/vehicledata.proto:18`:
+
+```proto
+service VehicleDataService {
+  rpc ReceiveVehicleData(stream VehicleData) returns (stream VehicleDataStreamResponse) {}
+}
+```
+
+Bidirectional streaming rather than polling, which suits a signal source that
+updates continuously. On the framework side the PAL models this as
+`PlatformVehicleData` and `VehicleDataListener`
+(`framework/api/har-platform-api/src/vehicle_data/api.rs:281` and `:262`) over a
+generic `VehicleData<T>` with a `VehicleDataType` discriminant
+(`vehicle_data/api.rs:23`, `:46`), so the renderer consumes vehicle state without
+knowing whether it came from VHAL, a CAN bus, or a test script from
+`reference/vehicle-data-scripts/`.
+
+
+### 62.9.11 Packaging and Startup
+
+#### The APEX
+
+HAR ships as an APEX, `com.google.display_safety.har`, defined at
+`service/product/harry_apex/Android.bp:65`, with companion modules for updates,
+signing key, certificate and init script (`:96`, `:132`, `:142`, `:147`). The
+APEX carries the `harry` binary, the `har_safety_monitor` binary, and the
+rendering assets. A second APEX,
+`com.sdv.google.display_safety.services_bundle`, carries the SDV service-bundle
+shared objects and their orchestration and ACL configuration.
+
+Shipping the renderer as an APEX is what makes it updatable independently of the
+platform image — the `harry` service is declared `updatable` in the init script —
+while keeping it early enough in boot to beat the framework.
+
+#### The init sequence
+
+`service/product/harry_apex/init.display_safety.har.rc` declares both processes:
+
+```bash
+service harry /apex/com.google.display_safety.har/bin/harry
+    class main
+    user root
+    group audio camera graphics
+    oneshot
+    disabled
+    updatable
+
+service har_safety_monitor /apex/com.google.display_safety.har/bin/har_safety_monitor
+    class main
+    user root
+    group graphics
+    oneshot
+    disabled
+```
+
+Both are `disabled`, meaning init does not start them with their class; they are
+started explicitly by property triggers. Both are also `oneshot`, which is the
+more interesting flag: init will not respawn them when they exit. That is
+deliberate rather than an oversight — restart policy for SDV workloads belongs to
+the platform's orchestrator, which supervises service-bundle processes through a
+binder death recipient and a per-bundle `max_retries` retry configuration
+(defaulting to the `ro.boot.sdv.orchestrator.recovery.max_retries` property).
+Worth stating plainly, since "high availability" invites the assumption: there is
+no in-process failover here, no hot standby renderer, and no self-restart logic
+inside `harry`. Availability is achieved by starting early, owning the display,
+and degrading visibly when a *contributor* fails — not by making the renderer
+itself redundant. The renderer starts as soon as APEXes
+are mounted — `on property:apex.all.ready=true`, which also stops SurfaceFlinger
+as shown in Section 62.9.6.1 — and the monitor waits for the renderer's gRPC layer
+to come up:
+
+```bash
+on property:vendor.harplatform.grpc.started=true
+    # start the safety monitor
+    start har_safety_monitor
+```
+
+The ordering is the availability story in miniature: the thing with the
+regulatory obligation starts at the earliest moment the system can start
+anything, and the thing that checks it starts as soon as there is something to
+check. The same trigger block also starts an emulated camera by looping an
+`mp4` into `/dev/video10` with `ffmpeg`, which is how a Cuttlefish instance gets
+a camera feed without camera hardware.
+
+#### Products
+
+`device/google/sdv_display_safety/` layers the stack onto SDV products through
+makefiles including `sdv_harry_common.mk`, `sdv_ivi_cf_ds.mk`,
+`sdv_ivi_arm64_ds.mk` and `sdv_media_har_cf.mk`, and pulls the AAOS DriverUI app
+in from `packages/apps/Car/`. The documented build and run path for the Media VM
+is:
+
+```bash
+lunch sdv_media_har_cf-aosp_current-userdebug
+m -j
+```
+
+and for the IVI VM carrying DriverUI:
+
+```bash
+lunch sdv_ivi_cf_ds-aosp_current-userdebug
+m -j
+```
+
+Two Cuttlefish instances are then launched with SDV boot parameters that give
+each VM its instance name and virtio address, or both at once through
+`ds_toolkit launch`, which deploys both VMs with the display overlay configured.
+
+
+### 62.9.12 Tracing and Performance
+
+HAR instruments itself with the Rust `tracing` crate, bridged to Android's
+ATrace through `tracing_android_trace` and enabled by the
+`harry-app-platform-specific/tracing-android` Cargo feature. Spans appear as
+ordinary trace sections:
+
+```rust
+let custom_trace = tracing::info_span!("custom_trace_span").entered()
+    // code here will be traced
+    drop(custom_trace)
+```
+
+The monitoring tier has its own instrumentation crate,
+`framework/har-monitoring/` (~2,200 lines), with a `monitoring.proto` for
+reporting, and the PAL's `HarPerformanceMonitor` lets a platform supply its own
+implementation.
+
+Traces are collected with **Torq**, a CLI for AAOS and SDV systems, which can
+collect from both Display Safety VMs at once using Perfetto's `traced_relay` and
+produce a single timeline showing `harry` and `com.android.car.driverui`
+side by side — the only practical way to answer questions about cross-VM latency,
+such as how long a vehicle signal takes to reach the glass.
+
+`utils/har-rendering-parity/` addresses a different question: whether HAR draws a
+given Figma design the same way the other renderers of that design do. It
+gathers three screenshots of the same component — one from HAR/Impeller, one
+from DesignCompose running on Jetpack Compose, and one from Figma itself — and
+emits an HTML report placing them side by side. There is no automated pixel diff
+or similarity score in the tool; its README is explicit that it exists for
+*manual* comparison. Parity here is a human judgement about visual fidelity
+against Figma as the source of truth, not an automated determinism proof.
+
+### 62.9.13 Why HAR Looks the Way It Does
+
+Pulling the pieces together: the High Availability Renderer is Android's
+admission that a safety-critical display should not be built out of
+general-purpose UI machinery. Rather than hardening the framework path until it
+could carry a regulatory obligation, AOSP 17 adds a small, independent renderer
+that runs beside it and outranks it.
+
+The decisions that follow from that premise are consistent throughout the code.
+HAR is Rust and native, so it starts without waiting for a runtime. It uses
+Impeller with precompiled shaders, so a frame's cost does not depend on which
+effects appear for the first time. It stops SurfaceFlinger and drives DRM/KMS
+itself, so nothing can reach the cluster display without passing through it. Its
+UI is a compiled Figma document, so the same design data can drive both the
+renderer and a compiler that emits golden images. It treats Android as an
+untrusted contributor whose content is shown only while heartbeats keep arriving,
+with two seconds of silence enough to replace that content with a placeholder.
+And it is watched by a separate process that reads the framebuffer back and
+compares the telltale regions against those golden images, using vehicle data it
+obtains independently.
+
+The last point is the one that generalises beyond automotive. HAR does not claim
+correctness by construction; it produces evidence at runtime that what should be
+on the screen is on the screen, from a component that did not draw it. That is a
+markedly different engineering posture from the rest of the platform, and it is
+the reason the subsystem is shaped the way it is.
+
+It is worth being precise about what the name does *not* mean, since "high
+availability" carries baggage from server systems. There is no redundant
+renderer, no hot standby, no failover, and no in-process recovery: if `harry`
+dies, something outside it has to start it again, and the safety monitor reports
+rather than intervenes. Availability here means something narrower and more
+achievable — be running before the framework is, hold the display against
+everything else, keep drawing the regulated layer from data you receive
+independently, and make a failed contributor visibly absent instead of silently
+stale.
+
+Chapter 13 covers the HWUI and SurfaceFlinger path that HAR deliberately steps
+around, and Chapter 24 the display stack it takes over.
+
+#### Further Reading
+
+- **Display Safety overview:** https://source.android.com/docs/automotive/sdv/display-safety
+  -- The authoritative documentation set for this subsystem: HAR, DriverUI and
+  the safety monitor, with sub-pages for the code structure, the graphics
+  pipeline, the platform abstraction layer, the camera view, audio chimes,
+  performance tracing, and the safety design toolchain.
+- **HAR platform abstraction layer:** https://source.android.com/docs/automotive/sdv/display-safety/har-pal
+  -- The per-subsystem trait contract an integrator implements to bring HAR up on
+  a new operating system.
+- **Safety design toolchain:** https://source.android.com/docs/automotive/sdv/display-safety/toolchain
+  -- `har_design_compiler`, the generated artifacts, and the human approval step
+  described in Section 62.9.8.
+- **"I ran Doom on Android SDV's High Availability Renderer (HAR)":** https://medium.com/@passenger6/i-ran-doom-on-android-sdvs-high-availability-renderer-har-and-learned-how-the-software-defined-e8ccf962311e
+  -- A developer write-up of getting a third-party application rendering on HAR,
+  approaching the platform abstraction layer of Section 62.9.3 from the outside
+  in. A useful counterpoint to reading the framework top-down: the fastest way to
+  learn where the PAL's real boundaries are is to try to put something through
+  it that its authors never intended.
+
+---
+
+## 62.10 Try It
 
 ### Exercise 62.1: Explore CarService Services
 
@@ -16311,6 +17371,44 @@ These commands assume an SDV Core VM or a Cuttlefish SDV target (`sdv_core_cf`, 
 
 ---
 
+### Exercise 62.18: The High Availability Renderer
+
+These use the AOSP 17 source tree; only the last needs a build.
+
+1. **Find the availability policy.** Open
+   `packages/services/display_safety/reference/harry-app-core/src/heartbeat_watchdog.rs`
+   and locate `TIMEOUT_MS`. Trace what happens when it expires, through
+   `send_guest_disconnected` in `data_channel.rs` to the action the reducer
+   receives. Ask yourself what a longer or shorter value would trade away.
+
+2. **Read the drawing vocabulary.** In
+   `packages/services/display_safety/framework/display_list/src/display_list.rs`,
+   read the `DisplayListAppearance` variants. Which ones exist specifically to
+   support instrument-cluster UI rather than general-purpose graphics? Compare
+   the list to what Chapter 13 describes for HWUI.
+
+3. **Follow a telltale end to end.** Pick `abs`. Find where a bus signal name is
+   mapped to a design node in the compiler configuration, where the golden image
+   for it would be emitted, and where
+   `reference/safety-monitor/src/telltale_monitoring.rs` compares it against the
+   screen buffer.
+
+4. **Confirm who owns the display.** Read
+   `packages/services/display_safety/service/product/harry_apex/init.display_safety.har.rc`.
+   Note the `stop surfaceflinger` line and the two property triggers. Then find
+   `DrmCard::open_as_gbm_device` in
+   `framework/graphics/har-gl-context/src/har_gl_context_factory.rs` and follow it
+   into `direct_rendering/kms.rs`.
+
+5. **Map the PAL.** List the modules in
+   `framework/api/har-platform-api/src/lib.rs`, then open
+   `reference/platforms/har-platform-linux` and check which of them it implements.
+   What would you have to write to bring up HAR on a new operating system?
+
+6. **Build it.** With an SDV-capable checkout, `lunch
+   sdv_media_har_cf-aosp_current-userdebug` and build. Then launch with
+   `ds_toolkit launch` and observe which process draws the cluster.
+
 ## Summary
 
 ### Form Factor Comparison Matrix
@@ -16449,6 +17547,36 @@ SDV platform (§62.7) and middleware (§62.8):
 | `system/software_defined_vehicle/sdv_gateway/vhal_proxy/libvhal_proxy/README.md` | VHAL proxy: properties to Data Tunnel topics |
 | `system/software_defined_vehicle/automotive_services/diagnostics/README.md` | Diagnostics: ISO 14229-1 / AUTOSAR DEM |
 | `packages/services/display_safety/service/har-sdv-service/Android.bp` | The display-safety SDV service bundle |
+| `packages/services/display_safety/Cargo.toml` | Workspace root; 52 members across framework, reference, service, utils |
+| `packages/services/display_safety/rust-toolchain.toml` | Rust 1.90; Android arm64/x86_64 and Linux x86_64 targets |
+| `packages/services/display_safety/framework/api/har-platform-api/src/lib.rs` | The PAL module list: graphics, audio, camera, looper, vehicle_data, user_input, tracing, test_support |
+| `.../har-platform-api/src/graphics.rs` | `GlContextFactory`, `Renderer`, `TakeScreenshot`, `DisplayRotation` |
+| `.../har-platform-api/src/vehicle_data/api.rs` | `PlatformVehicleData`, `VehicleDataListener`, `VehicleData<T>` |
+| `.../har-platform-api/src/camera/api.rs` | `ICameraManager`, `ICameraDevice`, `CameraDescriptor` |
+| `.../har-platform-api/src/audio/v2/audio_api_factory.rs` | `AudioApiFactory`; `audio_api.rs` defines `AudioApi` |
+| `.../har-platform-api/src/looper/api.rs` | `LooperOptions`, `LayoutHelper`, `RendererHelper`, `UiEventListener` |
+| `.../har-platform-api/src/error.rs` | The single framework error enum platform impls return |
+| `packages/services/display_safety/framework/display_list/src/display_list.rs` | `DisplayListAppearance` variants and `DisplayListEntry` |
+| `packages/services/display_safety/framework/harry/src/pre_renderer/generation.rs` | `generate_dl` / `generate_dl_recursive`: view tree to display list |
+| `packages/services/display_safety/framework/graphics/har-gl-context/src/har_gl_context_factory.rs` | `DrmCard::open_as_gbm_device`, GBM device cache, `HarDirectRenderingContext` |
+| `.../har-gl-context/src/direct_rendering/kms.rs` | DRM/KMS mode setting and atomic commit |
+| `packages/services/display_safety/framework/har-layout/` | Taffy-based layout wrapper |
+| `packages/services/display_safety/framework/audio/har-audio/src/audio_manager.rs` | Chime playback on a named device |
+| `packages/services/display_safety/reference/harry-app-core/src/heartbeat_watchdog.rs` | `HeartbeatWatchdog`, `TIMEOUT_MS = 2000`, per-source deadlines |
+| `packages/services/display_safety/reference/harry-app-core/src/data_channel.rs` | `send_guest_disconnected` turns a timeout into a state action |
+| `packages/services/display_safety/reference/harry-control-api/src/driver_ui.rs` | `HeartbeatSource` enum mirroring the proto |
+| `packages/services/display_safety/reference/safety-monitor/src/main.rs` | `har_safety_monitor` entry point and arguments |
+| `packages/services/display_safety/reference/safety-monitor/src/telltale_monitoring.rs` | `DataJson`/`StaticUiElement`, `CvAlgorithm`, the comparison thread |
+| `packages/services/display_safety/reference/safety-monitor/src/vehicle_data_server.rs` | The monitor's independent vehicle-data view |
+| `packages/services/display_safety/reference/screencap/` | Framebuffer read-back for monitoring |
+| `packages/services/display_safety/reference/platforms/` | `har-platform-android`, `har-platform-linux`, headless looper, logging |
+| `packages/services/display_safety/service/har-grpc-services/src/proto/driverui.proto` | `DriverUIService`, `HeartbeatRequest` and its `Source` enum |
+| `packages/services/display_safety/service/har-grpc-services/src/proto/vehicledata.proto` | `VehicleDataService.ReceiveVehicleData` bidirectional stream |
+| `packages/services/display_safety/service/product/harry_apex/Android.bp` | APEX `com.google.display_safety.har` and companion modules |
+| `packages/services/display_safety/service/product/harry_apex/init.display_safety.har.rc` | `harry` and `har_safety_monitor` services; `stop surfaceflinger`; property triggers |
+| `packages/services/display_safety/prebuilts/impeller/` | Prebuilt Impeller per OS/arch, plus generated Rust bindings |
+| `packages/services/display_safety/utils/human-readable-report-generator/` | Safety artifact report and `approve-hrr` approval tool |
+| `device/google/sdv_display_safety/` | Product makefiles layering HAR onto SDV media and IVI targets |
 
 <!-- chapter:63-print-services -->
 # Chapter 63: Print Services
