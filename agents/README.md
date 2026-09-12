@@ -10,6 +10,13 @@ generated from one canonical source by `agents/build.py`.
 
 ## Install
 
+> **Copy with `cp -rL`, not `cp -r`.** The generated trees store each Part's
+> text exactly once, under `agents/_generated/`, and every platform file is a
+> relative symlink to it — so a one-line chapter edit is a one-file diff
+> instead of a five-file one. Symlinking a whole tree into place (the
+> `ln -s` recipes below) works as-is, but copying needs `-L` so the real
+> content is copied rather than links that would dangle at the destination.
+
 ### Claude Code
 
 Either install the directory as a project plugin:
@@ -20,18 +27,18 @@ Either install the directory as a project plugin:
 
 …or copy the 16 skills directly into your project's `.claude/skills/`:
 
-    cp -r ~/aosp-internals-src/agents/claude/skills/* .claude/skills/
+    cp -rL ~/aosp-internals-src/agents/claude/skills/* .claude/skills/
 
 ### Gemini CLI
 
-    cp -r agents/gemini ~/.gemini/extensions/aosp-internals
+    cp -rL agents/gemini ~/.gemini/extensions/aosp-internals
 
 ### Codex / AGENTS.md-aware tools
 
 Drop the `AGENTS.md` and the per-Part content into your project root:
 
     cp agents/codex/AGENTS.md ./AGENTS.md
-    cp -r agents/codex/parts ./.aosp-internals-parts
+    cp -rL agents/codex/parts ./.aosp-internals-parts
 
 (Adjust the path inside `AGENTS.md` if you pick a different target dir.)
 
@@ -39,7 +46,7 @@ Drop the `AGENTS.md` and the per-Part content into your project root:
 
 Copy the `.github/` tree into your project root:
 
-    cp -r agents/copilot/.github/* .github/
+    cp -rL agents/copilot/.github/* .github/
 
 ## What's in each Part
 

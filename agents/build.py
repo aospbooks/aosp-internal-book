@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import filecmp
 import json
+import os
 import re
 import shutil
 import sys
@@ -294,7 +294,9 @@ def load_part_skills(
 
 def _reset_dir(path: Path) -> None:
     """Remove `path` (if it exists) and re-create it empty."""
-    if path.exists():
+    if path.is_symlink():
+        path.unlink()
+    elif path.exists():
         shutil.rmtree(path)
     path.mkdir(parents=True)
 
@@ -336,7 +338,22 @@ def generate_claude(
         meta, body = skills[part.id]
         (d / "SKILL.md").write_text(serialize_skill(meta, body), encoding="utf-8")
         for chapter in part.chapters:
-            shutil.copyfile(chapter_path(chapter), d / f"{chapter}.md")
+            _symlink(d / f"{chapter}.md", f"../../../../{chapter}.md")
+
+
+def _symlink(dst: Path, target_rel: str) -> None:
+    """Create (or replace) `dst` as a relative symlink pointing at `target_rel`.
+
+    The generated platform trees are pure Markdown, and three of the four
+    platforms want byte-identical Part bodies. Rather than write the same
+    chapter text into the repository four times -- which turned every
+    one-line chapter edit into a five-file diff -- each platform file is a
+    relative symlink to the single copy under `agents/_generated/`.
+    """
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.is_symlink() or dst.exists():
+        dst.unlink()
+    dst.symlink_to(target_rel)
 
 
 def _concat_part(part: Part) -> str:
@@ -350,6 +367,44 @@ def _concat_part(part: Part) -> str:
             out.append("\n")
         out.append("\n")
     return "".join(out)
+
+
+def shared_part_body(part: Part, meta: dict[str, str]) -> str:
+    """The single Part body every platform shares.
+
+    Carries the Copilot front matter first (Copilot reads `applyTo` from the
+    top of an `.instructions.md` file), then a platform-neutral Part heading
+    and description, then the concatenated chapters. Gemini and Codex read
+    the same file; the front matter is inert metadata to them and the heading
+    is useful context they previously lacked.
+    """
+    description = meta["description"].splitlines()[0].rstrip()
+    return (
+        "---\n"
+        "applyTo: '**'\n"
+        f"description: '{description}'\n"
+        "---\n\n"
+        f"# Part {part.roman}: {part.title}\n\n"
+        f"{meta['description']}\n\n"
+        "## Chapter content\n\n"
+        f"{_concat_part(part)}"
+    )
+
+
+def generate_shared(
+    manifest: Manifest,
+    skills: dict[str, tuple[dict[str, str], str]],
+    out_root: Path,
+) -> None:
+    """Write the one real copy of each Part body to `out_root/parts/`."""
+    _reset_dir(out_root)
+    parts_dir = out_root / "parts"
+    parts_dir.mkdir()
+    for part in manifest.parts:
+        meta, _body = skills[part.id]
+        (parts_dir / f"{part.id}.md").write_text(
+            shared_part_body(part, meta), encoding="utf-8"
+        )
 
 
 def generate_gemini(
@@ -388,11 +443,11 @@ def generate_gemini(
         md.append(f"{meta['description']}\n\n")
     (out_root / "GEMINI.md").write_text("".join(md), encoding="utf-8")
 
-    # parts/<part-id>.md — concatenated chapter content
+    # parts/<part-id>.md — symlinks to the single shared copy
     parts_dir = out_root / "parts"
     parts_dir.mkdir()
     for part in manifest.parts:
-        (parts_dir / f"{part.id}.md").write_text(_concat_part(part), encoding="utf-8")
+        _symlink(parts_dir / f"{part.id}.md", f"../../_generated/parts/{part.id}.md")
 
 
 def generate_codex(
@@ -420,7 +475,7 @@ def generate_codex(
     parts_dir = out_root / "parts"
     parts_dir.mkdir()
     for part in manifest.parts:
-        (parts_dir / f"{part.id}.md").write_text(_concat_part(part), encoding="utf-8")
+        _symlink(parts_dir / f"{part.id}.md", f"../../_generated/parts/{part.id}.md")
 
 
 def generate_copilot(
@@ -450,25 +505,15 @@ def generate_copilot(
     inst_dir = gh / "instructions"
     inst_dir.mkdir()
     for part in manifest.parts:
-        meta, _body = skills[part.id]
-        front = (
-            "---\n"
-            "applyTo: '**'\n"
-            f"description: '{meta['description'].splitlines()[0].rstrip()}'\n"
-            "---\n\n"
-        )
-        body = (
-            f"# Part {part.roman}: {part.title}\n\n"
-            f"{meta['description']}\n\n"
-            f"## Chapter content\n\n"
-            f"{_concat_part(part)}"
-        )
-        (inst_dir / f"aosp-{part.id}.instructions.md").write_text(
-            front + body, encoding="utf-8"
+        _symlink(
+            inst_dir / f"aosp-{part.id}.instructions.md",
+            f"../../../_generated/parts/{part.id}.md",
         )
 
 
 PLATFORMS = ("claude", "gemini", "codex", "copilot")
+# The single real copy of each Part body; every platform tree symlinks into it.
+SHARED_DIR_NAME = "_generated"
 GENERATORS = {
     "claude": "generate_claude",
     "gemini": "generate_gemini",
@@ -478,8 +523,12 @@ GENERATORS = {
 
 
 def _build_into(out_parent: Path, manifest: Manifest, skills) -> dict[str, Path]:
-    """Run all four generators into out_parent/<platform>/."""
-    written: dict[str, Path] = {}
+    """Build the shared Part bodies, then run all four platform generators.
+
+    `_generated/` must be written first: every platform tree links into it.
+    """
+    written: dict[str, Path] = {SHARED_DIR_NAME: out_parent / SHARED_DIR_NAME}
+    generate_shared(manifest, skills, written[SHARED_DIR_NAME])
     for plat in PLATFORMS:
         target = out_parent / plat
         globals()[GENERATORS[plat]](manifest, skills, target)
@@ -487,25 +536,38 @@ def _build_into(out_parent: Path, manifest: Manifest, skills) -> dict[str, Path]
     return written
 
 
+def _collect(root: Path) -> dict[str, tuple[str, str]]:
+    """Map each path under `root` to a comparable ("link"|"file", value) pair.
+
+    Symlinks compare by their target string rather than by what they resolve
+    to: when --check builds into a temporary directory the chapter links
+    point outside it by design, so only the target is meaningful.
+    """
+    out: dict[str, tuple[str, str]] = {}
+    for p in sorted(root.rglob("*")):
+        rel = p.relative_to(root).as_posix()
+        if p.is_symlink():
+            out[rel] = ("link", os.readlink(p))
+        elif p.is_file():
+            out[rel] = ("file", p.read_text(encoding="utf-8", errors="replace"))
+    return out
+
+
 def _dirs_match(a: Path, b: Path) -> tuple[bool, list[str]]:
     """Return (match?, list of differing paths) for a recursive comparison of two dirs."""
-    diff = filecmp.dircmp(a, b)
-    differing: list[str] = []
-
-    def walk(d: filecmp.dircmp, prefix: str = "") -> None:
-        for f in d.left_only:
-            differing.append(f"{prefix}{f} (only in {a})")
-        for f in d.right_only:
-            differing.append(f"{prefix}{f} (only in {b})")
-        for f in d.diff_files:
-            differing.append(f"{prefix}{f} (contents differ)")
-        for f in d.funny_files:
-            differing.append(f"{prefix}{f} (could not be compared)")
-        for sub_name, sub in d.subdirs.items():
-            walk(sub, f"{prefix}{sub_name}/")
-
-    walk(diff)
+    left, right = _collect(a), _collect(b)
+    differing = []
+    for rel in sorted(set(left) | set(right)):
+        if rel not in left:
+            differing.append(f"{rel} (only in {b})")
+        elif rel not in right:
+            differing.append(f"{rel} (only in {a})")
+        elif left[rel] != right[rel]:
+            kind = "symlink target" if left[rel][0] == "link" or right[rel][0] == "link" else "contents"
+            differing.append(f"{rel} ({kind} differ)")
     return (not differing, differing)
+
+
 
 
 def main(argv: list[str] | None = None) -> int:
