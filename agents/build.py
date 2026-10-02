@@ -2,11 +2,19 @@
 """Generate per-platform plugin packages for the AOSP Internals book.
 
 Reads canonical metadata from agents/_content/manifest.toml + per-Part
-SKILL.md files, copies chapter Markdown from the repo root, and writes
-the four agents/<platform>/ trees (claude, gemini, codex, copilot).
+SKILL.md files and the chapter Markdown at the repo root, then writes:
 
-Stdlib only. Requires Python 3.11+ for tomllib. See agents/SPEC.md for
-the full design.
+  agents/_generated/parts/<part>.md   the one real copy of each Part body
+  agents/{gemini,codex}/parts/        symlinks into _generated/parts/
+  agents/copilot/.github/instructions symlinks into _generated/parts/
+  agents/claude/skills/<skill>/       symlinks to the Part SKILL.md and root chapters
+
+Each Part's text is stored once so that a chapter edit is a two-file diff.
+`--check` rebuilds into a temporary directory and compares symlinks by
+target string, real files by content.
+
+Stdlib only. Requires Python 3.11+ for tomllib. This docstring and the
+function docstrings below are the design reference.
 """
 from __future__ import annotations
 
@@ -222,6 +230,7 @@ def normalize_skill_metadata(
     part_id: str,
     normalize: bool,
     version: str,
+    bump_date: bool = True,
 ) -> tuple[dict, bool]:
     """Normalize SKILL.md frontmatter against canonical conventions.
 
@@ -232,7 +241,8 @@ def normalize_skill_metadata(
     When `normalize` is True (normal build):
       * fills in `metadata.author = DEFAULT_AUTHOR` (utzcoz) if missing;
       * sets `metadata.version` to the manifest's packaged version;
-      * bumps `metadata.last-updated` to today's date.
+      * bumps `metadata.last-updated` to today's date, but only when
+        `bump_date` is True -- i.e. when the Part's content changed.
 
     When `normalize` is False (--check), metadata is passed through
     verbatim so verification stays deterministic across days.
@@ -255,13 +265,34 @@ def normalize_skill_metadata(
             md["version"] = version
             changed = True
         today = today_iso()
-        if md.get("last-updated") != today:
+        if bump_date and md.get("last-updated") != today:
             md["last-updated"] = today
             changed = True
         new_meta["metadata"] = md
     else:
         new_meta["metadata"] = meta.get("metadata") or {}
     return new_meta, changed
+
+
+def part_content_changed(part: Part, meta: dict) -> bool:
+    """Has this Part's chapter content changed since the trees were last built?
+
+    `last-updated` should record when a Part last changed, not when the
+    build last ran. Bumping it on every build rewrote every SKILL.md
+    whenever the date rolled over, so a one-line chapter fix touched
+    thirty-odd files. A Part has changed when its rebuilt shared body --
+    its chapters plus the SKILL.md description -- differs from the copy
+    on disk.
+
+    Edits to the rest of a SKILL.md body are not detected: that file is
+    both the source and, via symlink, the shipped Claude skill, so its own
+    diff is the record of the change. Bump `last-updated` by hand there.
+    """
+    shared = SCRIPT_DIR / SHARED_DIR_NAME / "parts" / f"{part.id}.md"
+    return (
+        not shared.is_file()
+        or shared.read_text(encoding="utf-8") != shared_part_body(part, meta)
+    )
 
 
 def load_part_skills(
@@ -271,9 +302,9 @@ def load_part_skills(
     """Load every Part's SKILL.md, returning {part_id: (frontmatter, body)}.
 
     When normalize is True (normal build), the source SKILL.md is
-    rewritten in place with the canonical `name:` field, the default
-    author, and today's `last-updated` whenever any of those differ from
-    what's on disk. When normalize is False (--check), source files are
+    rewritten in place with the canonical `name:` field and the default
+    author whenever those differ from what's on disk, and `last-updated`
+    moves to today only for Parts whose content changed. When normalize is False (--check), source files are
     read but never modified.
     """
     out: dict[str, tuple[dict, str]] = {}
@@ -283,8 +314,10 @@ def load_part_skills(
             raise FileNotFoundError(f"Missing SKILL.md for part {part.id}: {path}")
         original = path.read_text(encoding="utf-8")
         meta, body = parse_skill(original)
+        bump_date = normalize and part_content_changed(part, meta)
         meta, changed = normalize_skill_metadata(
-            meta, part.id, normalize=normalize, version=manifest.version
+            meta, part.id, normalize=normalize, version=manifest.version,
+            bump_date=bump_date,
         )
         if normalize and changed:
             path.write_text(serialize_skill(meta, body), encoding="utf-8")
@@ -328,15 +361,16 @@ def generate_claude(
         json.dumps(plugin, indent=2) + "\n", encoding="utf-8"
     )
 
-    # skills/<slug>/SKILL.md + chapter copies
+    # skills/<slug>/SKILL.md + chapters -- all symlinks. The SKILL.md is the
+    # normalized source under agents/_content/parts/, which load_part_skills
+    # has already rewritten into canonical form, so it ships as-is.
     skills_root = out_root / "skills"
     skills_root.mkdir()
     for part in manifest.parts:
         slug = claude_skill_slug(part.id)
         d = skills_root / slug
         d.mkdir()
-        meta, body = skills[part.id]
-        (d / "SKILL.md").write_text(serialize_skill(meta, body), encoding="utf-8")
+        _symlink(d / "SKILL.md", f"../../../_content/parts/{part.id}/SKILL.md")
         for chapter in part.chapters:
             _symlink(d / f"{chapter}.md", f"../../../../{chapter}.md")
 

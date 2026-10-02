@@ -1,6 +1,6 @@
 # AOSP Internals: A Developer's Guide to the Android Open Source Project
 
-> A source-referenced technical book covering the full Android Open Source Project stack, from kernel to apps. Every architectural claim points to a specific file path and line number in AOSP `main`, so the book doubles as an annotated index of the codebase. 67 chapters and 4 appendices, ~235,000 lines of prose with ~1,500 architectural diagrams.
+> A source-referenced technical book covering the full Android Open Source Project stack, from kernel to apps. Every architectural claim points to a specific file path and line number in AOSP `main`, so the book doubles as an annotated index of the codebase. 67 chapters and 4 appendices, with ~1,500 architectural diagrams.
 
 The book is organized bottom-up: build system → kernel/boot → native foundation → HAL → native services → runtime → framework core → framework services → connectivity → security → UI → system apps → infrastructure → device support → practical custom-ROM guide. Each chapter ends with hands-on "Try It" exercises that exercise the subsystem on a real device or emulator.
 

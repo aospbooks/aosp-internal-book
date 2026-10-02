@@ -98,5 +98,4 @@ drift:
 The `--check` mode used by CI is read-only and passes metadata through
 verbatim, so verification stays deterministic across days.
 
-See `agents/SPEC.md` for the full design and `agents/PLAN.md` for the
-step-by-step implementation history.
+The design is documented in the docstrings of `agents/build.py`.

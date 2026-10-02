@@ -28378,7 +28378,7 @@ from the standard Android sensor coordinate system:
 | X | Right ear | Positive = right |
 | Y | Nose | Positive = forward |
 | Z | Top of head | Positive = up |
-| X/Y plane | Nominally parallel to ground when upright |
+| X/Y plane | Horizontal | Nominally parallel to the ground when the head is upright |
 
 ```mermaid
 graph TB
