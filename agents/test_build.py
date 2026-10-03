@@ -136,18 +136,56 @@ Body.
 
 
 import json
+import os
+import subprocess
 import shutil
 import tempfile
 
 
-class TestClaudeGenerator(unittest.TestCase):
-    def test_generate_claude_writes_plugin_json_and_16_skills(self):
-        from build import generate_claude, load_manifest, load_part_skills
+def _build_platform(td, generator, name):
+    """Generate the shared Part bodies and one platform tree under `td`.
+
+    Platform trees link into `_generated/` with relative paths, so the
+    shared bodies must sit beside the platform directory, exactly as they
+    do under agents/.
+    """
+    from build import generate_shared, load_manifest, load_part_skills
+    m = load_manifest()
+    skills = load_part_skills(m, normalize=False)
+    root = Path(td)
+    generate_shared(m, skills, root / "_generated")
+    out = root / name
+    generator(m, skills, out)
+    return m, out
+
+
+class TestSharedBody(unittest.TestCase):
+    def test_generate_shared_writes_one_real_body_per_part(self):
+        from build import generate_shared, load_manifest, load_part_skills
         m = load_manifest()
         skills = load_part_skills(m, normalize=False)
         with tempfile.TemporaryDirectory() as td:
-            out = Path(td)
-            generate_claude(m, skills, out)
+            out = Path(td) / "_generated"
+            generate_shared(m, skills, out)
+            files = sorted((out / "parts").iterdir())
+            self.assertEqual(len(files), 16)
+            for part in m.parts:
+                f = out / "parts" / f"{part.id}.md"
+                self.assertTrue(f.is_file() and not f.is_symlink(),
+                                f"{f.name} must be a real file, the one copy")
+                txt = f.read_text()
+                # Copilot reads applyTo from the front matter of this file.
+                self.assertIn("applyTo:", txt.split("---\n")[1])
+                self.assertIn(f"# Part {part.roman}: {part.title}", txt)
+                for chapter in part.chapters:
+                    self.assertIn(f"<!-- chapter:{chapter} -->", txt)
+
+
+class TestClaudeGenerator(unittest.TestCase):
+    def test_generate_claude_writes_plugin_json_and_16_skills(self):
+        from build import generate_claude
+        with tempfile.TemporaryDirectory() as td:
+            m, out = _build_platform(td, generate_claude, "claude")
 
             # plugin.json present and well-formed
             plugin_json = out / ".claude-plugin" / "plugin.json"
@@ -160,25 +198,26 @@ class TestClaudeGenerator(unittest.TestCase):
             skill_dirs = sorted((out / "skills").iterdir())
             self.assertEqual(len(skill_dirs), 16)
 
-            # each skill dir contains SKILL.md plus the chapter copies
+            # each skill dir links to the Part's SKILL.md source and to the
+            # root chapters; nothing is copied
             for part in m.parts:
                 slug = f"aosp-{part.id}"
                 d = out / "skills" / slug
-                self.assertTrue((d / "SKILL.md").is_file(),
-                                f"missing SKILL.md in {slug}")
+                skill = d / "SKILL.md"
+                self.assertTrue(skill.is_symlink(), f"SKILL.md in {slug} must be a symlink")
+                self.assertEqual(os.readlink(skill),
+                                 f"../../../_content/parts/{part.id}/SKILL.md")
                 for chapter in part.chapters:
-                    self.assertTrue((d / f"{chapter}.md").is_file(),
-                                    f"missing {chapter}.md in {slug}")
+                    link = d / f"{chapter}.md"
+                    self.assertTrue(link.is_symlink(), f"{chapter}.md in {slug} must be a symlink")
+                    self.assertEqual(os.readlink(link), f"../../../../{chapter}.md")
 
 
 class TestGeminiGenerator(unittest.TestCase):
     def test_generate_gemini_writes_extension_manifest_routing_and_part_files(self):
-        from build import generate_gemini, load_manifest, load_part_skills
-        m = load_manifest()
-        skills = load_part_skills(m, normalize=False)
+        from build import generate_gemini
         with tempfile.TemporaryDirectory() as td:
-            out = Path(td)
-            generate_gemini(m, skills, out)
+            m, out = _build_platform(td, generate_gemini, "gemini")
 
             # gemini-extension.json is well-formed
             ext = out / "gemini-extension.json"
@@ -192,10 +231,11 @@ class TestGeminiGenerator(unittest.TestCase):
             for p in m.parts:
                 self.assertIn(p.id, gemini_md, f"GEMINI.md missing Part id {p.id!r}")
 
-            # parts/<part-id>.md exists for every Part and includes each chapter's content
+            # parts/<part-id>.md links to the shared body, which holds each chapter
             for p in m.parts:
                 pf = out / "parts" / f"{p.id}.md"
-                self.assertTrue(pf.is_file(), f"missing parts/{p.id}.md")
+                self.assertTrue(pf.is_symlink(), f"parts/{p.id}.md must be a symlink")
+                self.assertEqual(os.readlink(pf), f"../../_generated/parts/{p.id}.md")
                 pf_text = pf.read_text()
                 for chapter in p.chapters:
                     # Each chapter is delimited by an HTML anchor we add at concatenation.
@@ -204,12 +244,9 @@ class TestGeminiGenerator(unittest.TestCase):
 
 class TestCodexGenerator(unittest.TestCase):
     def test_generate_codex_writes_agents_md_and_part_files(self):
-        from build import generate_codex, load_manifest, load_part_skills
-        m = load_manifest()
-        skills = load_part_skills(m, normalize=False)
+        from build import generate_codex
         with tempfile.TemporaryDirectory() as td:
-            out = Path(td)
-            generate_codex(m, skills, out)
+            m, out = _build_platform(td, generate_codex, "codex")
 
             agents_md = (out / "AGENTS.md").read_text()
             # Must mention each Part id so an AGENTS.md-aware tool can route by id.
@@ -220,7 +257,8 @@ class TestCodexGenerator(unittest.TestCase):
 
             for p in m.parts:
                 pf = out / "parts" / f"{p.id}.md"
-                self.assertTrue(pf.is_file())
+                self.assertTrue(pf.is_symlink(), f"parts/{p.id}.md must be a symlink")
+                self.assertEqual(os.readlink(pf), f"../../_generated/parts/{p.id}.md")
                 txt = pf.read_text()
                 for chapter in p.chapters:
                     self.assertIn(f"<!-- chapter:{chapter} -->", txt)
@@ -228,12 +266,9 @@ class TestCodexGenerator(unittest.TestCase):
 
 class TestCopilotGenerator(unittest.TestCase):
     def test_generate_copilot_writes_top_level_pointer_and_per_part_instructions(self):
-        from build import generate_copilot, load_manifest, load_part_skills
-        m = load_manifest()
-        skills = load_part_skills(m, normalize=False)
+        from build import generate_copilot
         with tempfile.TemporaryDirectory() as td:
-            out = Path(td)
-            generate_copilot(m, skills, out)
+            m, out = _build_platform(td, generate_copilot, "copilot")
 
             # Top-level pointer
             top = out / ".github" / "copilot-instructions.md"
@@ -248,7 +283,8 @@ class TestCopilotGenerator(unittest.TestCase):
 
             for part in m.parts:
                 f = inst_dir / f"aosp-{part.id}.instructions.md"
-                self.assertTrue(f.is_file(), f"missing {f.name}")
+                self.assertTrue(f.is_symlink(), f"{f.name} must be a symlink")
+                self.assertEqual(os.readlink(f), f"../../../_generated/parts/{part.id}.md")
                 txt = f.read_text()
                 # Front matter must include applyTo (Copilot's targeting key).
                 self.assertIn("applyTo:", txt.split("---\n")[1])
@@ -257,7 +293,57 @@ class TestCopilotGenerator(unittest.TestCase):
                     self.assertIn(f"<!-- chapter:{chapter} -->", txt)
 
 
-import subprocess
+class TestCommittedTree(unittest.TestCase):
+    """The trees under agents/ as they sit in the repository."""
+
+    AGENTS = Path(__file__).resolve().parent
+
+    def test_no_symlink_dangles(self):
+        dangling = [str(p.relative_to(self.AGENTS))
+                    for p in self.AGENTS.rglob("*")
+                    if p.is_symlink() and not p.exists()]
+        self.assertEqual(dangling, [], "every generated link must resolve")
+
+    def test_each_part_is_stored_once(self):
+        from build import load_manifest
+        for part in load_manifest().parts:
+            shared = (self.AGENTS / "_generated" / "parts" / f"{part.id}.md").resolve()
+            for link in (
+                self.AGENTS / "gemini" / "parts" / f"{part.id}.md",
+                self.AGENTS / "codex" / "parts" / f"{part.id}.md",
+                self.AGENTS / "copilot" / ".github" / "instructions"
+                / f"aosp-{part.id}.instructions.md",
+            ):
+                self.assertEqual(link.resolve(), shared,
+                                 f"{link} must resolve to the one shared body")
+
+
+class TestLastUpdated(unittest.TestCase):
+    """`last-updated` records when a Part changed, not when the build ran."""
+
+    def test_unchanged_parts_are_not_redated_by_a_rebuild(self):
+        from build import load_manifest, load_part_skills, part_content_changed
+        repo = Path(__file__).resolve().parent.parent
+        subprocess.run([sys.executable, "agents/build.py"], cwd=repo, check=True)
+        m = load_manifest()
+        skills = load_part_skills(m, normalize=False)
+        changed = [p.id for p in m.parts if part_content_changed(p, skills[p.id][0])]
+        self.assertEqual(changed, [], "a rebuild must leave unchanged Parts alone")
+
+    def test_a_part_whose_body_differs_is_detected(self):
+        from build import load_manifest, load_part_skills, part_content_changed
+        repo = Path(__file__).resolve().parent.parent
+        subprocess.run([sys.executable, "agents/build.py"], cwd=repo, check=True)
+        m = load_manifest()
+        skills = load_part_skills(m, normalize=False)
+        part = m.parts[0]
+        shared = repo / "agents" / "_generated" / "parts" / f"{part.id}.md"
+        original = shared.read_text()
+        try:
+            shared.write_text(original + "\nstale\n")
+            self.assertTrue(part_content_changed(part, skills[part.id][0]))
+        finally:
+            shared.write_text(original)
 
 
 class TestCheckMode(unittest.TestCase):
