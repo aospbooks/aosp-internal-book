@@ -10,7 +10,7 @@ description: |
 metadata:
   author: 'utzcoz'
   version: '2026.06.24'
-  last-updated: '2026-09-12'
+  last-updated: '2026-10-03'
 ---
 
 # AOSP Part I — Getting Started

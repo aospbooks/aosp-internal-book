@@ -7,51 +7,53 @@ consequential open-source projects in human history. It powers over three billio
 active devices, from phones and tablets to televisions, cars, wearables, and
 embedded systems. Its codebase spans hundreds of millions of lines of code across
 thousands of Git repositories. Its architecture bridges a Linux kernel written in
-C with a Java/Kotlin application framework, connected by native C++ services, a
-custom IPC mechanism (Binder), and a purpose-built runtime (ART).
+C with a Java/Kotlin application framework. Native C++ services, a custom IPC
+mechanism (Binder), and a purpose-built runtime (ART) connect the two.
 
 And yet, for all its ubiquity, AOSP remains poorly understood -- even among
 experienced Android application developers. The typical Android developer
 interacts with AOSP through a narrow window: the SDK APIs documented on
-developer.android.com. What lies beneath those APIs -- the services, the native
-daemons, the hardware abstraction layers, the kernel drivers, the build system
-that stitches it all together -- is a world that few developers explore and fewer
-still can navigate with confidence.
+developer.android.com. Beneath those APIs lie the services, the native daemons,
+the hardware abstraction layers, the kernel drivers, and the build system that
+stitches it all together. Few developers explore this world, and fewer still can
+navigate it with confidence.
 
 This book exists to change that.
 
-Whether you are a system engineer at an OEM, a silicon vendor integrating a new
-SoC, a ROM developer building a custom distribution, a security researcher
-analyzing the platform, or simply a curious application developer who wants to
-understand what happens when you call `startActivity()`, this book will give you
-the knowledge you need to read, understand, modify, build, and debug AOSP.
+This book is for several kinds of reader. They include system engineers at an
+OEM and silicon vendors who integrate a new SoC. They also include ROM developers
+who build a custom distribution and security researchers who analyze the
+platform. Other readers are curious application developers who want to
+understand what happens when you call `startActivity()`. This book will give you the knowledge you need to
+read, understand, modify, build, and debug AOSP.
 
 This book targets **Android 17** -- API level 37, internal codename
 **Cinnamon Bun** (`VERSION_CODES.CINNAMON_BUN = 37` in
-`frameworks/base/core/java/android/os/Build.java`, following `BAKLAVA = 36`).
+`frameworks/base/core/java/android/os/Build.java`, which follows `BAKLAVA = 36`).
 Source citations are pinned to the AOSP `main` branch (the development trunk,
 also published as the `android17-release` branch) as it stood in mid-2026.
 Where Android 17 added or reshaped a subsystem, we note it and point to the
 chapter that covers it in depth.
 
 This first chapter sets the stage. We will define precisely what AOSP is (and
-what it is not), survey the architecture from kernel to application, walk through
-the source tree directory by directory, establish who maintains what, review the
-platform's version history, and lay out the roadmap for the rest of the book.
+what it is not). We will survey the architecture from kernel to application and
+walk through the source tree directory by directory. We will also establish who
+maintains what, review the platform's version history, and lay out the roadmap
+for the rest of the book.
 
 ---
 
 ## 1.2 What is AOSP vs. Android
 
 The terms "AOSP" and "Android" are often used interchangeably, but they refer to
-different things. Understanding the distinction is fundamental to working with
-the platform at the source level.
+different things. It is fundamental to understand the distinction when you work
+with the platform at the source level.
 
 ### 1.2.1 AOSP: The Open-Source Foundation
 
 AOSP -- the **Android Open Source Project** -- is the complete, buildable,
-open-source operating system that Google releases under the Apache 2.0 license
-(with some components under GPL, LGPL, and BSD licenses). It includes:
+open-source operating system that Google releases under the Apache 2.0 license.
+Some components are under GPL, LGPL, and BSD licenses. AOSP includes:
 
 - A **Linux kernel** (with Android-specific patches)
 - A **C library** (Bionic, Android's custom libc)
@@ -69,8 +71,8 @@ open-source operating system that Google releases under the Apache 2.0 license
 - **Developer tools** (adb, fastboot, emulator configurations)
 
 You can download AOSP, build it, and flash it onto supported hardware (primarily
-Google's reference devices and the Android Emulator) without any involvement from
-Google beyond accessing the source repositories. The result is a fully functional
+Google's reference devices and the Android Emulator). You need no involvement from
+Google beyond access to the source repositories. The result is a fully functional
 operating system -- but it is not the "Android" that consumers know.
 
 ### 1.2.2 Google Mobile Services: The Proprietary Layer
@@ -81,7 +83,7 @@ layer from Google called **Google Mobile Services (GMS)**. This layer includes:
 | Component | Description |
 |---|---|
 | **Google Play Store** | The primary application marketplace |
-| **Google Play Services** | Background service providing APIs for location, auth, push notifications (FCM), SafetyNet/Play Integrity, and hundreds more |
+| **Google Play Services** | Background service that provides APIs for location, auth, push notifications (FCM), SafetyNet/Play Integrity, and hundreds more |
 | **Google Search / Assistant** | Voice assistant and search integration |
 | **Chrome** | The default browser (replaces AOSP Browser2) |
 | **Gmail** | Email client (replaces AOSP Email) |
@@ -92,30 +94,31 @@ layer from Google called **Google Mobile Services (GMS)**. This layer includes:
 | **Google Dialer / Contacts** | Enhanced versions of AOSP apps |
 | **SetupWizard** | The first-boot experience |
 
-GMS is not open source. It is licensed to OEMs through a legal agreement called
-the **Mobile Application Distribution Agreement (MADA)**, which historically
-requires OEMs to bundle a minimum set of Google applications and place them in
-specific locations (e.g., Google Search on the home screen). The **Android
+GMS is not open source. GMS is licensed to OEMs through a legal agreement
+called the **Mobile Application Distribution Agreement (MADA)**. This agreement
+historically requires OEMs to bundle a minimum set of Google applications. It
+also requires them to place the applications in specific locations (e.g., Google
+Search on the home screen). The **Android
 Compatibility Definition Document (CDD)** and **CTS** set the technical
 requirements; MADA sets the business requirements.
 
 This distinction has significant implications:
 
-1. **AOSP alone is "degoogled."** If you build AOSP from source without adding
-   GMS, you get a functional OS with no Google account integration, no Play Store,
-   no push notifications via FCM, and no Google-dependent APIs. Many apps from
+1. **AOSP alone is "degoogled."** If you build AOSP from source and do not add
+   GMS, you get a functional OS. It has no Google account integration, no Play
+   Store, no push notifications via FCM, and no Google-dependent APIs. Many apps from
    the Play Store will not function correctly because they depend on Google Play
    Services.
 
 2. **Custom ROMs operate in this gap.** Projects like LineageOS, GrapheneOS,
-   CalyxOS, and /e/OS build from AOSP and either exclude GMS entirely, include
+   CalyxOS, and /e/OS build from AOSP. They either exclude GMS entirely, include
    it optionally (via packages like Open GApps or MindTheGapps), or replace its
    functionality with open-source alternatives (microG).
 
 3. **Huawei/Honor is the most prominent example of AOSP-without-GMS at scale.**
-   After US trade restrictions prevented Google from licensing GMS to Huawei, the
-   company shipped devices running AOSP with its own Huawei Mobile Services (HMS)
-   and AppGallery store.
+   US trade restrictions did not let Google license GMS to Huawei. After that,
+   the company shipped devices that run AOSP with its own Huawei Mobile Services
+   (HMS) and AppGallery store.
 
 ### 1.2.3 The OEM Layer: Vendor Customizations
 
@@ -132,10 +135,11 @@ customization**. Major OEMs apply extensive modifications:
 | **Sony** | Stock-like | Relatively close to AOSP with camera, audio, and display enhancements |
 | **Motorola** | My UX | Near-stock with gesture additions (chop for flashlight, twist for camera) |
 
-These customizations touch every layer of the stack: kernel (custom drivers,
-scheduler tweaks), HAL (proprietary camera, audio, and display implementations),
-framework (custom system services), SystemUI (custom status bar, quick settings,
-lock screen), and applications (custom launcher, gallery, camera, settings).
+These customizations touch every layer of the stack. The kernel gets custom
+drivers and scheduler tweaks. The HAL gets proprietary camera, audio, and display
+implementations. The framework gets custom system services. SystemUI gets a
+custom status bar, quick settings, and lock screen. Applications get a custom
+launcher, gallery, camera, and settings.
 
 ### 1.2.4 The Complete Picture
 
@@ -181,8 +185,8 @@ graph TB
 
 **Key insight for this book:** We focus almost exclusively on the green layer --
 AOSP itself. This is where the operating system lives. GMS and OEM modifications
-are built on top of it, and understanding AOSP is prerequisite to understanding
-either of them.
+are built on top of it. Before you can understand either of them, you must
+understand AOSP.
 
 ### 1.2.5 AOSP Licensing
 
@@ -201,10 +205,10 @@ reflecting their origins:
 | SELinux policies | Public Domain | Derived from upstream SELinux |
 
 The deliberate choice of BSD for Bionic (instead of glibc's LGPL) was a
-foundational decision that made it legally safe for proprietary applications and
-proprietary HAL implementations to link against Android's C library without
-triggering copyleft obligations. This decision is one of the reasons the mobile
-ecosystem could adopt Android while maintaining proprietary drivers and
+foundational decision. It made it legally safe for proprietary applications and
+proprietary HAL implementations to link against Android's C library. Such a link
+does not trigger copyleft obligations. This decision is one of the reasons the
+mobile ecosystem could adopt Android and still keep proprietary drivers and
 applications.
 
 ---
@@ -212,10 +216,10 @@ applications.
 ## 1.3 The AOSP Layer Cake: System Architecture
 
 Android's architecture is a layered stack, where each layer provides services to
-the layer above it and consumes services from the layer below. Understanding this
-stack -- what lives where, what communicates with what, and through which
-mechanisms -- is the single most important conceptual foundation for working with
-AOSP.
+the layer above it and consumes services from the layer below. The single most
+important conceptual foundation for work with AOSP is knowledge of this stack. It
+covers what lives where, what communicates with what, and through which
+mechanisms.
 
 ### 1.3.1 The Complete Architecture
 
@@ -294,10 +298,10 @@ Let us examine each layer in detail, from the bottom up.
 ### 1.3.2 Layer 1: The Linux Kernel
 
 Android runs on the Linux kernel. As of Android 17, the kernel is based on the
-**Linux 6.x Long-Term Support (LTS)** branch (the `android17-6.18` GKI targets
-Linux 6.18, up from Android 16's `android16-6.12`) with Android-specific patches
-managed through the **Android Common Kernel (ACK)** and the **Generic Kernel
-Image (GKI)** initiative. The supported kernel branches and their lifetimes are
+**Linux 6.x Long-Term Support (LTS)** branch. The `android17-6.18` GKI targets
+Linux 6.18, up from Android 16's `android16-6.12`. The kernel has Android-specific
+patches, which are managed through the **Android Common Kernel (ACK)** and the
+**Generic Kernel Image (GKI)** initiative. The supported kernel branches and their lifetimes are
 tracked in `kernel/configs/kernel-lifetimes.xml`, and per-branch GKI config
 fragments live under `kernel/configs/`.
 
@@ -309,17 +313,17 @@ subsystems and drivers:
 | Feature | Purpose | Source Location |
 |---|---|---|
 | **Binder** | Android's primary IPC mechanism. A kernel driver that provides transaction-based communication between processes. Three devices: `/dev/binder` (framework), `/dev/hwbinder` (HAL), `/dev/vndbinder` (vendor). | `drivers/android/binder.c` in kernel |
-| **Ashmem / memfd** | Anonymous shared memory. Originally `ashmem`, now transitioning to standard Linux `memfd_create`. Used for sharing large data between processes (e.g., GraphicBuffer). | `drivers/staging/android/` (legacy) |
+| **Ashmem / memfd** | Anonymous shared memory. Originally `ashmem`, now transitioning to standard Linux `memfd_create`. Used to share large data between processes (e.g., GraphicBuffer). | `drivers/staging/android/` (legacy) |
 | **ION / DMA-BUF Heaps** | Memory allocator for hardware buffers (GPU, camera, display). ION was Android-specific; DMA-BUF heaps is the upstream-friendly replacement. | `drivers/dma-buf/` |
 | **Low Memory Killer** | Kills background processes under memory pressure. Originally Android-specific (`lowmemorykiller`), now uses userspace `lmkd` with kernel's PSI (Pressure Stall Information). | Userspace: `system/memory/lmkd/` |
 | **fuse (for storage)** | FUSE filesystem provides the scoped storage layer. Performance-critical path for app file access. | Standard kernel fuse |
-| **dm-verity** | Verified boot. Ensures system partitions haven't been tampered with. | `drivers/md/dm-verity*` |
+| **dm-verity** | Verified boot. Ensures system partitions have not been tampered with. | `drivers/md/dm-verity*` |
 | **SELinux** | Mandatory access control. Android uses a strict SELinux policy that confines every process. | Policy: `system/sepolicy/` |
 
 #### Generic Kernel Image (GKI)
 
-Starting with Android 12, Google introduced the **GKI** architecture to solve
-kernel fragmentation. The idea:
+Google introduced the **GKI** architecture in Android 12 to solve kernel
+fragmentation. The idea:
 
 ```mermaid
 graph LR
@@ -339,14 +343,14 @@ graph LR
     style After fill:#e8f5e9,stroke:#2e7d32
 ```
 
-Before GKI, each device had a unique kernel: upstream Linux LTS was forked by
-Google (ACK), then forked again by the SoC vendor (e.g., Qualcomm's `msm-kernel`),
-then forked again by the OEM. This created massive fragmentation -- devices
+Before GKI, each device had a unique kernel. Google forked upstream Linux LTS
+(ACK). Then the SoC vendor (e.g., Qualcomm's `msm-kernel`) forked it again, and
+then the OEM forked it again. This created massive fragmentation -- devices
 shipped with kernels that were years behind upstream, and security patches took
 months to propagate.
 
 GKI provides a single, Google-built kernel binary that is common across all
-devices using the same Android version and kernel version. Vendor-specific
+devices that use the same Android version and kernel version. Vendor-specific
 functionality is delivered as **loadable kernel modules (LKMs)** and
 **vendor_dlkm** (vendor dynamically loaded kernel modules) on a separate
 partition. This means Google can update the kernel independently of vendors.
@@ -358,13 +362,14 @@ In the AOSP source tree, kernel-related content lives in:
 - `kernel/tests/` -- Kernel test suites
 
 The actual kernel source is typically obtained separately via a kernel manifest
-(`repo init -u https://android.googlesource.com/kernel/manifest`) because it is
-extremely large and most platform developers do not need to modify it.
+(`repo init -u https://android.googlesource.com/kernel/manifest`). The reason is
+that it is extremely large, and most platform developers do not need to modify
+it.
 
 ### 1.3.3 Layer 2: Hardware Abstraction Layer (HAL)
 
 The HAL is the interface between Android's userspace and hardware-specific
-drivers. It allows Android to run on diverse hardware without modifying the
+drivers. It lets Android run on diverse hardware without a change to the
 framework.
 
 #### HAL Architecture Evolution
@@ -396,15 +401,15 @@ timeline
 **Legacy HALs** (pre-Treble) were shared libraries loaded directly into the
 calling process. The camera HAL, for example, was a `.so` file loaded into
 `cameraserver` via `dlopen()`. This worked, but meant the HAL and the framework
-were tightly coupled -- updating one required updating the other.
+were tightly coupled -- an update to one required an update to the other.
 
 **Project Treble** (Android 8.0) introduced **HIDL (Hardware Interface
-Definition Language)**, which moved HALs into separate processes communicating
-over `hwbinder`. This created a stable, versioned interface between the framework
-and vendor implementations, enabling:
+Definition Language)**, which moved HALs into separate processes that
+communicate over `hwbinder`. This created a stable, versioned interface between
+the framework and vendor implementations. It made these things possible:
 
 - **Faster OS updates**: OEMs could update the Android framework without
-  modifying vendor HALs
+  changes to vendor HALs
 - **Generic System Images (GSI)**: A single system image that works across
   multiple devices
 - **Vendor Test Suite (VTS)**: Automated testing of HAL implementations
@@ -550,28 +555,28 @@ graph TB
 Let us examine the most important native services:
 
 **SurfaceFlinger** (`frameworks/native/services/surfaceflinger/`) is the display
-compositor. Every frame you see on an Android device is composed by
-SurfaceFlinger. It receives buffers from application windows (via the
-`BufferQueue` mechanism), composites them together using either the GPU
-(client composition) or the display hardware (hardware composition via HWC HAL),
-and sends the final frame to the display. SurfaceFlinger manages multiple
+compositor. SurfaceFlinger composes every frame you see on an Android device. It
+receives buffers from application windows (via the `BufferQueue` mechanism). It
+composites them together with either the GPU (client composition) or the display
+hardware (hardware composition via HWC HAL). Then it sends the final frame to
+the display. SurfaceFlinger manages multiple
 displays, handles VSYNC timing, and coordinates with the WindowManagerService in
 system_server for window layout and visibility.
 
 **AudioFlinger** (`frameworks/av/services/audioflinger/`) is the audio mixer and
-router. It receives audio data from applications and system services, mixes
+router. It receives audio data from applications and system services. It mixes
 multiple audio streams according to their types (music, notification, alarm,
-voice call), applies effects, and routes the mixed audio to the appropriate
-output device via the Audio HAL. It handles sample rate conversion, channel
+voice call) and applies effects. Then it routes the mixed audio to the
+appropriate output device via the Audio HAL. It handles sample rate conversion, channel
 mapping, and latency management.
 
 **InputFlinger** (`frameworks/native/services/inputflinger/`) reads raw input
 events from the kernel's `/dev/input/` devices (touch, keyboard, mouse, gamepad),
 classifies them, and dispatches them to the correct window. The **InputDispatcher**
-component maintains a mapping of windows to input channels and ensures that touch
-events reach the window under the touch point, keyboard events reach the focused
-window, and system gestures (back, home, recent apps) are intercepted before
-reaching applications.
+component maintains a mapping of windows to input channels. It makes sure that
+touch events reach the window under the touch point and keyboard events reach the
+focused window. It also makes sure that system gestures (back, home, recent apps)
+are intercepted before they reach applications.
 
 **CameraService** (`frameworks/av/services/camera/`) mediates between the Camera2
 API (used by applications) and the Camera HAL (implemented by vendors). It
@@ -584,14 +589,15 @@ architecture) manages hardware and software codecs for video and audio.
 **ServiceManager** (`frameworks/native/cmds/servicemanager/`) is the native Binder
 service registry. Every system service that wants to be accessible over Binder
 registers itself with ServiceManager. Clients look up services by name. There are
-actually three ServiceManagers: one for framework binder (`/dev/binder`), one for
-HW binder (`/dev/hwbinder`, managed by `hwservicemanager`), and one for vendor
-binder (`/dev/vndbinder`, managed by `vndservicemanager`).
+actually three ServiceManagers. One is for framework binder (`/dev/binder`), and
+one is for HW binder (`/dev/hwbinder`, managed by `hwservicemanager`). The third
+is for vendor binder (`/dev/vndbinder`, managed by `vndservicemanager`).
 
 #### Bionic: Android's C Library
 
 Bionic (`bionic/`) is Android's custom C library. It is *not* glibc. Bionic was
-written from scratch (incorporating code from BSD) with specific goals:
+written from scratch, and it incorporates code from BSD. It has these specific
+goals:
 
 1. **Small size**: Mobile devices have limited memory. Bionic is significantly
    smaller than glibc.
@@ -608,13 +614,13 @@ Bionic includes:
 - `bionic/libm/` -- Math library
 - `bionic/libdl/` -- Dynamic linker library
 - `bionic/linker/` -- The dynamic linker (`/system/bin/linker64`), responsible
-  for loading shared libraries and resolving symbols at runtime
+  which loads shared libraries and resolves symbols at runtime
 
 The dynamic linker in `bionic/linker/` is particularly important because it
 implements the **linker namespace** isolation that enforces the Treble boundary.
 Different namespaces (default, sphal, vndk, rs) control which libraries are
-visible to which processes, preventing vendor code from accessing unstable
-system libraries.
+visible to which processes, so vendor code cannot access unstable system
+libraries.
 
 ### 1.3.5 Layer 4: Android Runtime (ART)
 
@@ -712,12 +718,12 @@ When Android boots:
 2. Zygote initializes the ART runtime
 3. Zygote **preloads** thousands of Java classes and resources that all
    applications will need
-4. Zygote enters a loop, listening on a Unix domain socket for commands
+4. Zygote enters a loop and listens on a Unix domain socket for commands
 
 When a new application process is needed:
 
 1. `ActivityManagerService` sends a command to Zygote's socket
-2. Zygote calls `fork()`, creating a child process
+2. Zygote calls `fork()` to create a child process
 3. The child process inherits all preloaded classes and resources via
    **copy-on-write** memory sharing
 4. The child specializes: sets its UID, GID, SELinux context, loads the
@@ -725,7 +731,7 @@ When a new application process is needed:
 
 This fork-based architecture is what makes Android app startup fast. Without
 Zygote, each app would need to start a new ART instance from scratch, load and
-verify thousands of classes, and parse framework resources -- a process that
+verify thousands of classes, and parse framework resources. This process
 would take several seconds. With Zygote, `fork()` takes milliseconds, and the
 shared pages mean less physical memory is consumed.
 
@@ -844,8 +850,8 @@ Here is a more complete listing of the service subdirectories found in
 | `webkit/` | WebViewUpdateService | WebView package management |
 
 And this is not exhaustive -- there are over 100 subdirectories in total. Each
-service communicates with applications and other services via Binder IPC,
-exposing its functionality through AIDL-defined interfaces. Not every system
+service communicates with applications and other services via Binder IPC
+and exposes its functionality through AIDL-defined interfaces. Not every system
 service lives under this tree, either: TelecomService, for example, ships from
 `packages/services/Telecomm/`, with only a thin build shim under
 `frameworks/base/services/telecom/`.
@@ -925,10 +931,10 @@ The `android.*` package hierarchy contains approximately 50 top-level packages:
 
 Each of these packages contains classes that are essentially Binder client
 proxies. When you call `startActivity()`, the `Activity` class (in
-`android.app`) calls through to `ActivityTaskManager`, which calls through
-to an `IActivityTaskManager.Stub.Proxy`, which makes a Binder transaction to
+`android.app`) calls through to `ActivityTaskManager`. That class calls through
+to an `IActivityTaskManager.Stub.Proxy`. The proxy makes a Binder transaction to
 `ActivityTaskManagerService` in `system_server`. This pattern -- **client-side
-proxy wrapping Binder IPC to a server-side implementation** -- is universal
+proxy that wraps Binder IPC to a server-side implementation** -- is universal
 across the Android framework.
 
 ### 1.3.8 Layer 7: Applications
@@ -965,11 +971,12 @@ AOSP ships with a substantial set of system applications in `packages/apps/`:
 | **WallpaperPicker2** | `packages/apps/WallpaperPicker2/` | Wallpaper selection |
 | **TV** | `packages/apps/TV/` | Android TV launcher and EPG |
 
-SystemUI deserves special mention because it is not a typical application -- it
-is a system-privileged process that provides the core user interface chrome:
-the status bar, the notification shade, the quick settings panel, the lock
-screen, the volume dialog, the power menu, the picture-in-picture controls,
-the recent apps interface (on some configurations), and more. It runs in its
+SystemUI deserves special mention because it is not a typical application. It
+is a system-privileged process that provides the core user interface chrome.
+This chrome includes the status bar, the notification shade, the quick settings
+panel, the lock screen, and the volume dialog. It also includes the power menu,
+the picture-in-picture controls, the recent apps interface (on some
+configurations), and more. It runs in its
 own process (`com.android.systemui`) with elevated permissions and deep
 integration with `WindowManagerService` and other system services.
 
@@ -994,8 +1001,8 @@ AOSP also ships system content providers in `packages/providers/`:
 ## 1.4 Repository Structure: A Complete Guide
 
 The AOSP source tree is enormous. A full checkout, including prebuilt toolchains
-and all default repositories, can exceed 300 GB. Understanding the top-level
-directory structure is essential for navigating the codebase efficiently.
+and all default repositories, can exceed 300 GB. To navigate the codebase
+efficiently, you must understand the top-level directory structure.
 
 The source is managed by `repo`, a tool built on top of Git. The
 `.repo/manifest.xml` file defines the complete set of Git repositories and where
@@ -1005,8 +1012,8 @@ repositories, each mapping to a subdirectory in the source tree.
 ### 1.4.1 Directory Map
 
 Below is a comprehensive listing of the top-level directories in the AOSP source
-tree, with their purpose, approximate
-size contribution, and significance to different types of developers.
+tree. For each directory, it gives the purpose, the approximate size
+contribution, and the significance to different types of developers.
 
 ```mermaid
 graph TB
@@ -1163,9 +1170,9 @@ libcore/
 
 These provide the `java.lang`, `java.util`, `java.io`, `java.net`, `java.nio`,
 `java.security`, `java.sql`, `javax.crypto`, and other standard Java APIs.
-Unlike a standard JDK, Android's implementation is heavily modified: it uses
-Bionic instead of glibc, `android.icu` instead of some `java.text`
-functionality, and has Android-specific security providers.
+Unlike a standard JDK, Android's implementation is heavily modified. It uses
+Bionic instead of glibc, and `android.icu` instead of some `java.text`
+functionality. It also has Android-specific security providers.
 
 **Who cares about this directory:** Anyone debugging Java standard library
 behavior on Android, or working on the ART Mainline module.
@@ -1468,12 +1475,13 @@ toolchain/
         scripts/      --   Profile-maintenance scripts
 ```
 
-The actual compiler binaries (Clang/LLVM, Rust) are in `prebuilts/`. What this
-directory holds is profile *data*, not toolchain configuration: AFDO (AutoFDO)
-sampling profiles collected from AOSP platform components -- `sampling/keystore2.afdo`,
-`sampling/libart_arm64.afdo`, and dozens more -- plus profiles for the kernel.
-The build feeds these to Clang so that hot paths in those binaries are optimized
-against real-world execution data. `AFDO_SUMMARY.txt` lists the top functions in
+The actual compiler binaries (Clang/LLVM, Rust) are in `prebuilts/`. This
+directory holds profile *data*, not toolchain configuration. The data is AFDO
+(AutoFDO) sampling profiles collected from AOSP platform components --
+`sampling/keystore2.afdo`, `sampling/libart_arm64.afdo`, and dozens more. It
+also holds profiles for the kernel.
+The build feeds these to Clang so that hot paths in those
+binaries are optimized against real-world execution data. `AFDO_SUMMARY.txt` lists the top functions in
 each profile, which is a quick way to see what the platform actually spends its
 time in.
 
@@ -1581,19 +1589,21 @@ system/
 
 The `system/` tree gained several top-level trees in Android 17. **`fs_mgr` moved
 out of `system/core`** into the new `system/fs/` tree. The memory-management story
-expanded with **`mmd`** (the Memory Management Daemon, which centralizes ZRAM
-and swap configuration and maintenance, moving swap management out of
-`system_server`) and **`guardian`** (the `pmgd` Process Memory
-Guardian that triggers heap dumps on memory anomalies), both alongside the
-existing `lmkd`. Android 17 also added **`system/lfi/`**, the runtime support for
-Lightweight Fault Isolation (an in-process software sandbox; see Chapter 43), and
-**`system/software_defined_vehicle/`**, the new SDV platform, covered in
-Chapter 62 (Device Form Factors).
+expanded with two new parts, both alongside the existing `lmkd`. The first is
+**`mmd`**, the Memory Management Daemon. It centralizes ZRAM and swap
+configuration and maintenance, and it moves swap management out of
+`system_server`. The second is **`guardian`**, the `pmgd` Process Memory
+Guardian that triggers heap dumps on memory anomalies.
+
+Android 17 also added **`system/lfi/`**, the runtime support for Lightweight
+Fault Isolation (an in-process software sandbox; see Chapter 43). It added
+**`system/software_defined_vehicle/`** too. This is the new SDV platform, covered
+in Chapter 62 (Device Form Factors).
 
 **Who cares about this directory:** System engineers, security researchers
-(sepolicy, lfi), boot engineers (init, fs_mgr), storage engineers (vold), network
-engineers (netd), memory engineers (lmkd, mmd, guardian), anyone debugging system
-daemons.
+(sepolicy, lfi), boot engineers (init, fs_mgr), and storage engineers (vold).
+Also network engineers (netd), memory engineers (lmkd, mmd, guardian), and
+anyone who debugs system daemons.
 
 #### `hardware/` -- Hardware Abstraction
 
@@ -1659,10 +1669,10 @@ device/
 ```
 
 Android 17 introduced **`device/google/sdv/`**, the set of product
-configurations for the Software Defined Vehicle platform: the Cuttlefish-based
-`*_cf` products (`sdv_core_cf`, `sdv_ivi_cf`, `sdv_media_cf`), the `arm64`
-variants, and the lighter `sdv_core_*` tiers. See Chapter 62 (Device Form
-Factors).
+configurations for the Software Defined Vehicle platform. It has these groups:
+the Cuttlefish-based `*_cf` products (`sdv_core_cf`, `sdv_ivi_cf`,
+`sdv_media_cf`), the `arm64` variants, and the lighter `sdv_core_*` tiers. See
+Chapter 62 (Device Form Factors).
 
 A device configuration directory typically contains:
 
@@ -1833,10 +1843,10 @@ tools/
     ...
 ```
 
-**Metalava** deserves special mention: it is the tool that extracts the Android
-API signature from source code, compares it against previous versions, and
-enforces API compatibility rules (no removing public APIs, no changing method
-signatures, etc.). The API surface files it generates (`current.txt`,
+**Metalava** deserves special mention. It is the tool that extracts the Android
+API signature from source code and compares it against previous versions. It
+also enforces API compatibility rules (no removing public APIs, no changing
+method signatures, etc.). The API surface files it generates (`current.txt`,
 `removed.txt`, `system-current.txt`) are the canonical definition of the
 Android API.
 
@@ -1905,9 +1915,10 @@ update cadence. The `tools/external_updater/` tool helps maintain these
 dependencies by tracking upstream versions and automating updates.
 
 Android 17 added **`external/lfi/`**, the upstream tooling for Lightweight Fault
-Isolation: the `lfi-verifier` (verifies that sandboxed machine code stays within
-its region), `lfi-bind` and `lfi-runtime` glue, the `disarm`/`fadec` ARM/x86
-decoders, and the `rlbox`/`rlbox-lfi` sandboxing wrappers. It pairs with the
+Isolation. It contains these parts: the `lfi-verifier` (verifies that sandboxed
+machine code stays within its region) and `lfi-bind` and `lfi-runtime` glue.
+It also has the `disarm`/`fadec` ARM/x86 decoders and the `rlbox`/`rlbox-lfi`
+sandboxing wrappers. It pairs with the
 in-tree runtime support in `system/lfi/`; the full design is covered in
 Chapter 43.
 
@@ -1959,17 +1970,17 @@ pie title AOSP Source Tree - Approximate Size Distribution
 The vast majority of the source tree's disk consumption comes from prebuilt
 binaries (compilers, SDKs, emulator images) and external third-party libraries.
 The actual Android-specific code -- the framework, runtime, system components,
-and build system -- is a much smaller fraction of the total disk usage, though
-it is still enormous in its own right (tens of millions of lines of code).
+and build system -- is a much smaller fraction of the total disk usage. It is
+still enormous in its own right (tens of millions of lines of code).
 
 ---
 
 ## 1.5 Who Maintains What
 
 The Android ecosystem is a collaboration between Google, silicon vendors, OEMs,
-and the open-source community. Understanding who is responsible for which parts
-of the stack is essential for knowing where to file bugs, where to send patches,
-and whose constraints shape the architecture.
+and the open-source community. It is essential to know who is responsible for
+which parts of the stack. This tells you where to file bugs and where to send
+patches. It also tells you whose constraints shape the architecture.
 
 ### 1.5.1 The Stakeholder Map
 
@@ -2193,14 +2204,14 @@ projects. Community members also file bugs on the AOSP issue tracker
 (issuetracker.google.com) and participate in mailing lists.
 
 **Custom Kernels:**
-Independent kernel developers build optimized kernels for specific devices,
-often incorporating upstream Linux improvements, scheduler tweaks, and
+Independent kernel developers build optimized kernels for specific devices.
+These kernels often include upstream Linux improvements, scheduler tweaks, and
 performance optimizations ahead of the official release cycle.
 
 **Xposed / Magisk:**
 The modding community uses frameworks like Xposed (runtime Java method hooking)
-and Magisk (systemless root) to modify Android behavior without changing the
-system partition. These tools demonstrate deep understanding of ART internals,
+and Magisk (systemless root). These frameworks modify Android behavior without
+a change to the system partition. These tools demonstrate deep understanding of ART internals,
 the init system, and dm-verity.
 
 ---
@@ -2514,9 +2525,9 @@ This single API call traverses:
 8. **Display HAL** (vendor) -- Hardware composition and display output
 
 A single call to `startActivity()` touches virtually every layer of the Android
-stack. This is why understanding the full architecture is so valuable -- when
-something goes wrong (a slow launch, a permission denial, a display glitch), you
-need to know which layer to investigate.
+stack. This is why it is so valuable to understand the full architecture.
+When something goes wrong (a slow launch, a permission denial, a display
+glitch), you need to know which layer to investigate.
 
 ---
 
@@ -2684,9 +2695,9 @@ interface ICameraDevice {
 
 ### 1.8.5 APEX (Android Pony EXpress)
 
-**APEX** is the packaging format for Mainline modules -- components of Android
-that can be updated independently of a full OS update, delivered via the Google
-Play Store.
+**APEX** is the packaging format for Mainline modules. These are components of
+Android that can be updated independently of a full OS update. The Google Play
+Store delivers them.
 
 ```mermaid
 graph TB
@@ -2790,7 +2801,7 @@ As of Android 17, Mainline modules include:
 
 The significance of Mainline cannot be overstated. Before Mainline, a security
 vulnerability in the DNS resolver or the media framework required a full OS
-update that had to go through the entire OEM/carrier update pipeline. With
+update. That update had to go through the entire OEM/carrier update pipeline. With
 Mainline, Google can push a fix to billions of devices within weeks, regardless
 of whether the OEM has issued an OS update.
 
@@ -2918,9 +2929,9 @@ lifecycle (start, stop, kill), OOM adjustment (which processes to kill under
 memory pressure), and broadcast dispatch.
 
 **ActivityTaskManagerService** (split from AMS in Android 10) manages activities,
-tasks, and activity stacks -- the user-visible "task management" that determines
-which activity is in the foreground, handles task switching, and manages the
-recent apps list.
+tasks, and activity stacks. This is the user-visible "task management". It
+determines which activity is in the foreground, handles task switching, and
+manages the recent apps list.
 
 **Key characteristics:**
 
@@ -3139,17 +3150,18 @@ GitLab, and most modern documentation tools).
 
 ### 1.10.6 Using This Book with AI Assistants
 
-Every chapter is plain Markdown with explicit source-file references, which makes
-the book unusually easy for an AI assistant to consume as background when you
-ask it to reason about AOSP code.
+Every chapter is plain Markdown with explicit source-file references. This makes
+the book unusually easy for an AI assistant to use as background when you ask it
+to reason about AOSP code.
 
-To skip having the assistant crawl the whole site, point it at
-<https://aospbooks.github.io/aosp-internal-book/llms.txt>. This is an
-[llmstxt.org](https://llmstxt.org/)-style index that lists every chapter and
-appendix with a one-line description and its published URL, grouped by Part.
-The assistant can read `llms.txt` first, decide which chapter is relevant to
-the subsystem you're asking about, then fetch only that chapter -- saving
-tokens and giving you sharper answers.
+The assistant does not need to crawl the whole site. Point it at
+<https://aospbooks.github.io/aosp-internal-book/llms.txt>.
+This is an [llmstxt.org](https://llmstxt.org/)-style index. It lists every
+chapter and appendix with a one-line description and its published URL, grouped
+by Part.
+The assistant can read `llms.txt` first. Then it can decide which chapter is
+relevant to the subsystem you ask about, and fetch only that chapter. This saves
+tokens and gives you sharper answers.
 
 Practical workflows:
 
@@ -3157,10 +3169,10 @@ Practical workflows:
   assistants (Claude Code, Cursor, Copilot Workspace, Aider) accept arbitrary
   URLs as background. `llms.txt` is small (~15 KB), so it fits comfortably.
 - **Cite chapters by section number.** Section numbers like `9.4.2` are stable
-  across edits, so when you (or the assistant) want to reference a specific
+  across edits. When you (or the assistant) want to reference a specific
   topic, the section number is a durable handle.
 - **Pair with `cs.android.com`.** The book's source paths and line numbers
-  resolve directly on Android Code Search, so an assistant can verify or extend
+  resolve directly on Android Code Search. This lets an assistant verify or extend
   any claim in the book by following the path.
 
 ---
@@ -3197,19 +3209,20 @@ This chapter established the foundational knowledge needed to work with AOSP:
    well-defined interfaces to adjacent layers.
 
 3. **The source tree is vast but organized.** The 30+ top-level directories each
-   serve a specific purpose: `art/` for the runtime, `bionic/` for the C library,
+   serve a specific purpose. These are: `art/` for the runtime, `bionic/` for the C library,
    `frameworks/` for the application framework, `hardware/` for HAL interfaces,
-   `system/` for core system components, `packages/` for applications and
+   `system/` for core system components. Also, `packages/` for applications and
    modules, `build/` for the build system, and so on.
 
-4. **The ecosystem is a collaboration** between Google (framework, CTS, Mainline),
-   SoC vendors (kernel, HALs, drivers), OEMs (customization, device bring-up),
-   and the community (custom ROMs, bug reports, contributions).
+4. **The ecosystem is a collaboration** between four groups. Google
+   provides the framework, CTS, and Mainline. SoC vendors provide the kernel,
+   HALs, and drivers. OEMs provide customization and device bring-up. The
+   community provides custom ROMs, bug reports, and contributions.
 
-5. **Android has evolved dramatically** over 15+ years and 37 API levels, with
-   major architectural shifts including the move from Dalvik to ART, Project
-   Treble for the vendor split, Project Mainline for modular updates, and GKI
-   for kernel standardization.
+5. **Android has evolved dramatically** over 15+ years and 37 API levels. The
+   major architectural shifts include the move from Dalvik to ART and Project
+   Treble for the vendor split. They also include Project Mainline for modular
+   updates and GKI for kernel standardization.
 
 6. **The developer's journey** starts with downloading and building the source,
    progresses through understanding the architecture, and advances to modifying,
@@ -3219,7 +3232,7 @@ This chapter established the foundational knowledge needed to work with AOSP:
    system_server, SurfaceFlinger, WMS, AMS, PMS -- are the vocabulary of AOSP
    development. You will encounter them in every chapter that follows.
 
-In the next chapter, we will roll up our sleeves and set up a complete AOSP
-development environment: installing dependencies, downloading the source,
-configuring the build, and running our first build on an emulator.
+In the next chapter, we will set up a complete AOSP development environment.
+We will install dependencies, download the source, configure the build, and run
+our first build on an emulator.
 

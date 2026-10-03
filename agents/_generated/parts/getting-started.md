@@ -24,51 +24,53 @@ consequential open-source projects in human history. It powers over three billio
 active devices, from phones and tablets to televisions, cars, wearables, and
 embedded systems. Its codebase spans hundreds of millions of lines of code across
 thousands of Git repositories. Its architecture bridges a Linux kernel written in
-C with a Java/Kotlin application framework, connected by native C++ services, a
-custom IPC mechanism (Binder), and a purpose-built runtime (ART).
+C with a Java/Kotlin application framework. Native C++ services, a custom IPC
+mechanism (Binder), and a purpose-built runtime (ART) connect the two.
 
 And yet, for all its ubiquity, AOSP remains poorly understood -- even among
 experienced Android application developers. The typical Android developer
 interacts with AOSP through a narrow window: the SDK APIs documented on
-developer.android.com. What lies beneath those APIs -- the services, the native
-daemons, the hardware abstraction layers, the kernel drivers, the build system
-that stitches it all together -- is a world that few developers explore and fewer
-still can navigate with confidence.
+developer.android.com. Beneath those APIs lie the services, the native daemons,
+the hardware abstraction layers, the kernel drivers, and the build system that
+stitches it all together. Few developers explore this world, and fewer still can
+navigate it with confidence.
 
 This book exists to change that.
 
-Whether you are a system engineer at an OEM, a silicon vendor integrating a new
-SoC, a ROM developer building a custom distribution, a security researcher
-analyzing the platform, or simply a curious application developer who wants to
-understand what happens when you call `startActivity()`, this book will give you
-the knowledge you need to read, understand, modify, build, and debug AOSP.
+This book is for several kinds of reader. They include system engineers at an
+OEM and silicon vendors who integrate a new SoC. They also include ROM developers
+who build a custom distribution and security researchers who analyze the
+platform. Other readers are curious application developers who want to
+understand what happens when you call `startActivity()`. This book will give you the knowledge you need to
+read, understand, modify, build, and debug AOSP.
 
 This book targets **Android 17** -- API level 37, internal codename
 **Cinnamon Bun** (`VERSION_CODES.CINNAMON_BUN = 37` in
-`frameworks/base/core/java/android/os/Build.java`, following `BAKLAVA = 36`).
+`frameworks/base/core/java/android/os/Build.java`, which follows `BAKLAVA = 36`).
 Source citations are pinned to the AOSP `main` branch (the development trunk,
 also published as the `android17-release` branch) as it stood in mid-2026.
 Where Android 17 added or reshaped a subsystem, we note it and point to the
 chapter that covers it in depth.
 
 This first chapter sets the stage. We will define precisely what AOSP is (and
-what it is not), survey the architecture from kernel to application, walk through
-the source tree directory by directory, establish who maintains what, review the
-platform's version history, and lay out the roadmap for the rest of the book.
+what it is not). We will survey the architecture from kernel to application and
+walk through the source tree directory by directory. We will also establish who
+maintains what, review the platform's version history, and lay out the roadmap
+for the rest of the book.
 
 ---
 
 ## 1.2 What is AOSP vs. Android
 
 The terms "AOSP" and "Android" are often used interchangeably, but they refer to
-different things. Understanding the distinction is fundamental to working with
-the platform at the source level.
+different things. It is fundamental to understand the distinction when you work
+with the platform at the source level.
 
 ### 1.2.1 AOSP: The Open-Source Foundation
 
 AOSP -- the **Android Open Source Project** -- is the complete, buildable,
-open-source operating system that Google releases under the Apache 2.0 license
-(with some components under GPL, LGPL, and BSD licenses). It includes:
+open-source operating system that Google releases under the Apache 2.0 license.
+Some components are under GPL, LGPL, and BSD licenses. AOSP includes:
 
 - A **Linux kernel** (with Android-specific patches)
 - A **C library** (Bionic, Android's custom libc)
@@ -86,8 +88,8 @@ open-source operating system that Google releases under the Apache 2.0 license
 - **Developer tools** (adb, fastboot, emulator configurations)
 
 You can download AOSP, build it, and flash it onto supported hardware (primarily
-Google's reference devices and the Android Emulator) without any involvement from
-Google beyond accessing the source repositories. The result is a fully functional
+Google's reference devices and the Android Emulator). You need no involvement from
+Google beyond access to the source repositories. The result is a fully functional
 operating system -- but it is not the "Android" that consumers know.
 
 ### 1.2.2 Google Mobile Services: The Proprietary Layer
@@ -98,7 +100,7 @@ layer from Google called **Google Mobile Services (GMS)**. This layer includes:
 | Component | Description |
 |---|---|
 | **Google Play Store** | The primary application marketplace |
-| **Google Play Services** | Background service providing APIs for location, auth, push notifications (FCM), SafetyNet/Play Integrity, and hundreds more |
+| **Google Play Services** | Background service that provides APIs for location, auth, push notifications (FCM), SafetyNet/Play Integrity, and hundreds more |
 | **Google Search / Assistant** | Voice assistant and search integration |
 | **Chrome** | The default browser (replaces AOSP Browser2) |
 | **Gmail** | Email client (replaces AOSP Email) |
@@ -109,30 +111,31 @@ layer from Google called **Google Mobile Services (GMS)**. This layer includes:
 | **Google Dialer / Contacts** | Enhanced versions of AOSP apps |
 | **SetupWizard** | The first-boot experience |
 
-GMS is not open source. It is licensed to OEMs through a legal agreement called
-the **Mobile Application Distribution Agreement (MADA)**, which historically
-requires OEMs to bundle a minimum set of Google applications and place them in
-specific locations (e.g., Google Search on the home screen). The **Android
+GMS is not open source. GMS is licensed to OEMs through a legal agreement
+called the **Mobile Application Distribution Agreement (MADA)**. This agreement
+historically requires OEMs to bundle a minimum set of Google applications. It
+also requires them to place the applications in specific locations (e.g., Google
+Search on the home screen). The **Android
 Compatibility Definition Document (CDD)** and **CTS** set the technical
 requirements; MADA sets the business requirements.
 
 This distinction has significant implications:
 
-1. **AOSP alone is "degoogled."** If you build AOSP from source without adding
-   GMS, you get a functional OS with no Google account integration, no Play Store,
-   no push notifications via FCM, and no Google-dependent APIs. Many apps from
+1. **AOSP alone is "degoogled."** If you build AOSP from source and do not add
+   GMS, you get a functional OS. It has no Google account integration, no Play
+   Store, no push notifications via FCM, and no Google-dependent APIs. Many apps from
    the Play Store will not function correctly because they depend on Google Play
    Services.
 
 2. **Custom ROMs operate in this gap.** Projects like LineageOS, GrapheneOS,
-   CalyxOS, and /e/OS build from AOSP and either exclude GMS entirely, include
+   CalyxOS, and /e/OS build from AOSP. They either exclude GMS entirely, include
    it optionally (via packages like Open GApps or MindTheGapps), or replace its
    functionality with open-source alternatives (microG).
 
 3. **Huawei/Honor is the most prominent example of AOSP-without-GMS at scale.**
-   After US trade restrictions prevented Google from licensing GMS to Huawei, the
-   company shipped devices running AOSP with its own Huawei Mobile Services (HMS)
-   and AppGallery store.
+   US trade restrictions did not let Google license GMS to Huawei. After that,
+   the company shipped devices that run AOSP with its own Huawei Mobile Services
+   (HMS) and AppGallery store.
 
 ### 1.2.3 The OEM Layer: Vendor Customizations
 
@@ -149,10 +152,11 @@ customization**. Major OEMs apply extensive modifications:
 | **Sony** | Stock-like | Relatively close to AOSP with camera, audio, and display enhancements |
 | **Motorola** | My UX | Near-stock with gesture additions (chop for flashlight, twist for camera) |
 
-These customizations touch every layer of the stack: kernel (custom drivers,
-scheduler tweaks), HAL (proprietary camera, audio, and display implementations),
-framework (custom system services), SystemUI (custom status bar, quick settings,
-lock screen), and applications (custom launcher, gallery, camera, settings).
+These customizations touch every layer of the stack. The kernel gets custom
+drivers and scheduler tweaks. The HAL gets proprietary camera, audio, and display
+implementations. The framework gets custom system services. SystemUI gets a
+custom status bar, quick settings, and lock screen. Applications get a custom
+launcher, gallery, camera, and settings.
 
 ### 1.2.4 The Complete Picture
 
@@ -198,8 +202,8 @@ graph TB
 
 **Key insight for this book:** We focus almost exclusively on the green layer --
 AOSP itself. This is where the operating system lives. GMS and OEM modifications
-are built on top of it, and understanding AOSP is prerequisite to understanding
-either of them.
+are built on top of it. Before you can understand either of them, you must
+understand AOSP.
 
 ### 1.2.5 AOSP Licensing
 
@@ -218,10 +222,10 @@ reflecting their origins:
 | SELinux policies | Public Domain | Derived from upstream SELinux |
 
 The deliberate choice of BSD for Bionic (instead of glibc's LGPL) was a
-foundational decision that made it legally safe for proprietary applications and
-proprietary HAL implementations to link against Android's C library without
-triggering copyleft obligations. This decision is one of the reasons the mobile
-ecosystem could adopt Android while maintaining proprietary drivers and
+foundational decision. It made it legally safe for proprietary applications and
+proprietary HAL implementations to link against Android's C library. Such a link
+does not trigger copyleft obligations. This decision is one of the reasons the
+mobile ecosystem could adopt Android and still keep proprietary drivers and
 applications.
 
 ---
@@ -229,10 +233,10 @@ applications.
 ## 1.3 The AOSP Layer Cake: System Architecture
 
 Android's architecture is a layered stack, where each layer provides services to
-the layer above it and consumes services from the layer below. Understanding this
-stack -- what lives where, what communicates with what, and through which
-mechanisms -- is the single most important conceptual foundation for working with
-AOSP.
+the layer above it and consumes services from the layer below. The single most
+important conceptual foundation for work with AOSP is knowledge of this stack. It
+covers what lives where, what communicates with what, and through which
+mechanisms.
 
 ### 1.3.1 The Complete Architecture
 
@@ -311,10 +315,10 @@ Let us examine each layer in detail, from the bottom up.
 ### 1.3.2 Layer 1: The Linux Kernel
 
 Android runs on the Linux kernel. As of Android 17, the kernel is based on the
-**Linux 6.x Long-Term Support (LTS)** branch (the `android17-6.18` GKI targets
-Linux 6.18, up from Android 16's `android16-6.12`) with Android-specific patches
-managed through the **Android Common Kernel (ACK)** and the **Generic Kernel
-Image (GKI)** initiative. The supported kernel branches and their lifetimes are
+**Linux 6.x Long-Term Support (LTS)** branch. The `android17-6.18` GKI targets
+Linux 6.18, up from Android 16's `android16-6.12`. The kernel has Android-specific
+patches, which are managed through the **Android Common Kernel (ACK)** and the
+**Generic Kernel Image (GKI)** initiative. The supported kernel branches and their lifetimes are
 tracked in `kernel/configs/kernel-lifetimes.xml`, and per-branch GKI config
 fragments live under `kernel/configs/`.
 
@@ -326,17 +330,17 @@ subsystems and drivers:
 | Feature | Purpose | Source Location |
 |---|---|---|
 | **Binder** | Android's primary IPC mechanism. A kernel driver that provides transaction-based communication between processes. Three devices: `/dev/binder` (framework), `/dev/hwbinder` (HAL), `/dev/vndbinder` (vendor). | `drivers/android/binder.c` in kernel |
-| **Ashmem / memfd** | Anonymous shared memory. Originally `ashmem`, now transitioning to standard Linux `memfd_create`. Used for sharing large data between processes (e.g., GraphicBuffer). | `drivers/staging/android/` (legacy) |
+| **Ashmem / memfd** | Anonymous shared memory. Originally `ashmem`, now transitioning to standard Linux `memfd_create`. Used to share large data between processes (e.g., GraphicBuffer). | `drivers/staging/android/` (legacy) |
 | **ION / DMA-BUF Heaps** | Memory allocator for hardware buffers (GPU, camera, display). ION was Android-specific; DMA-BUF heaps is the upstream-friendly replacement. | `drivers/dma-buf/` |
 | **Low Memory Killer** | Kills background processes under memory pressure. Originally Android-specific (`lowmemorykiller`), now uses userspace `lmkd` with kernel's PSI (Pressure Stall Information). | Userspace: `system/memory/lmkd/` |
 | **fuse (for storage)** | FUSE filesystem provides the scoped storage layer. Performance-critical path for app file access. | Standard kernel fuse |
-| **dm-verity** | Verified boot. Ensures system partitions haven't been tampered with. | `drivers/md/dm-verity*` |
+| **dm-verity** | Verified boot. Ensures system partitions have not been tampered with. | `drivers/md/dm-verity*` |
 | **SELinux** | Mandatory access control. Android uses a strict SELinux policy that confines every process. | Policy: `system/sepolicy/` |
 
 #### Generic Kernel Image (GKI)
 
-Starting with Android 12, Google introduced the **GKI** architecture to solve
-kernel fragmentation. The idea:
+Google introduced the **GKI** architecture in Android 12 to solve kernel
+fragmentation. The idea:
 
 ```mermaid
 graph LR
@@ -356,14 +360,14 @@ graph LR
     style After fill:#e8f5e9,stroke:#2e7d32
 ```
 
-Before GKI, each device had a unique kernel: upstream Linux LTS was forked by
-Google (ACK), then forked again by the SoC vendor (e.g., Qualcomm's `msm-kernel`),
-then forked again by the OEM. This created massive fragmentation -- devices
+Before GKI, each device had a unique kernel. Google forked upstream Linux LTS
+(ACK). Then the SoC vendor (e.g., Qualcomm's `msm-kernel`) forked it again, and
+then the OEM forked it again. This created massive fragmentation -- devices
 shipped with kernels that were years behind upstream, and security patches took
 months to propagate.
 
 GKI provides a single, Google-built kernel binary that is common across all
-devices using the same Android version and kernel version. Vendor-specific
+devices that use the same Android version and kernel version. Vendor-specific
 functionality is delivered as **loadable kernel modules (LKMs)** and
 **vendor_dlkm** (vendor dynamically loaded kernel modules) on a separate
 partition. This means Google can update the kernel independently of vendors.
@@ -375,13 +379,14 @@ In the AOSP source tree, kernel-related content lives in:
 - `kernel/tests/` -- Kernel test suites
 
 The actual kernel source is typically obtained separately via a kernel manifest
-(`repo init -u https://android.googlesource.com/kernel/manifest`) because it is
-extremely large and most platform developers do not need to modify it.
+(`repo init -u https://android.googlesource.com/kernel/manifest`). The reason is
+that it is extremely large, and most platform developers do not need to modify
+it.
 
 ### 1.3.3 Layer 2: Hardware Abstraction Layer (HAL)
 
 The HAL is the interface between Android's userspace and hardware-specific
-drivers. It allows Android to run on diverse hardware without modifying the
+drivers. It lets Android run on diverse hardware without a change to the
 framework.
 
 #### HAL Architecture Evolution
@@ -413,15 +418,15 @@ timeline
 **Legacy HALs** (pre-Treble) were shared libraries loaded directly into the
 calling process. The camera HAL, for example, was a `.so` file loaded into
 `cameraserver` via `dlopen()`. This worked, but meant the HAL and the framework
-were tightly coupled -- updating one required updating the other.
+were tightly coupled -- an update to one required an update to the other.
 
 **Project Treble** (Android 8.0) introduced **HIDL (Hardware Interface
-Definition Language)**, which moved HALs into separate processes communicating
-over `hwbinder`. This created a stable, versioned interface between the framework
-and vendor implementations, enabling:
+Definition Language)**, which moved HALs into separate processes that
+communicate over `hwbinder`. This created a stable, versioned interface between
+the framework and vendor implementations. It made these things possible:
 
 - **Faster OS updates**: OEMs could update the Android framework without
-  modifying vendor HALs
+  changes to vendor HALs
 - **Generic System Images (GSI)**: A single system image that works across
   multiple devices
 - **Vendor Test Suite (VTS)**: Automated testing of HAL implementations
@@ -567,28 +572,28 @@ graph TB
 Let us examine the most important native services:
 
 **SurfaceFlinger** (`frameworks/native/services/surfaceflinger/`) is the display
-compositor. Every frame you see on an Android device is composed by
-SurfaceFlinger. It receives buffers from application windows (via the
-`BufferQueue` mechanism), composites them together using either the GPU
-(client composition) or the display hardware (hardware composition via HWC HAL),
-and sends the final frame to the display. SurfaceFlinger manages multiple
+compositor. SurfaceFlinger composes every frame you see on an Android device. It
+receives buffers from application windows (via the `BufferQueue` mechanism). It
+composites them together with either the GPU (client composition) or the display
+hardware (hardware composition via HWC HAL). Then it sends the final frame to
+the display. SurfaceFlinger manages multiple
 displays, handles VSYNC timing, and coordinates with the WindowManagerService in
 system_server for window layout and visibility.
 
 **AudioFlinger** (`frameworks/av/services/audioflinger/`) is the audio mixer and
-router. It receives audio data from applications and system services, mixes
+router. It receives audio data from applications and system services. It mixes
 multiple audio streams according to their types (music, notification, alarm,
-voice call), applies effects, and routes the mixed audio to the appropriate
-output device via the Audio HAL. It handles sample rate conversion, channel
+voice call) and applies effects. Then it routes the mixed audio to the
+appropriate output device via the Audio HAL. It handles sample rate conversion, channel
 mapping, and latency management.
 
 **InputFlinger** (`frameworks/native/services/inputflinger/`) reads raw input
 events from the kernel's `/dev/input/` devices (touch, keyboard, mouse, gamepad),
 classifies them, and dispatches them to the correct window. The **InputDispatcher**
-component maintains a mapping of windows to input channels and ensures that touch
-events reach the window under the touch point, keyboard events reach the focused
-window, and system gestures (back, home, recent apps) are intercepted before
-reaching applications.
+component maintains a mapping of windows to input channels. It makes sure that
+touch events reach the window under the touch point and keyboard events reach the
+focused window. It also makes sure that system gestures (back, home, recent apps)
+are intercepted before they reach applications.
 
 **CameraService** (`frameworks/av/services/camera/`) mediates between the Camera2
 API (used by applications) and the Camera HAL (implemented by vendors). It
@@ -601,14 +606,15 @@ architecture) manages hardware and software codecs for video and audio.
 **ServiceManager** (`frameworks/native/cmds/servicemanager/`) is the native Binder
 service registry. Every system service that wants to be accessible over Binder
 registers itself with ServiceManager. Clients look up services by name. There are
-actually three ServiceManagers: one for framework binder (`/dev/binder`), one for
-HW binder (`/dev/hwbinder`, managed by `hwservicemanager`), and one for vendor
-binder (`/dev/vndbinder`, managed by `vndservicemanager`).
+actually three ServiceManagers. One is for framework binder (`/dev/binder`), and
+one is for HW binder (`/dev/hwbinder`, managed by `hwservicemanager`). The third
+is for vendor binder (`/dev/vndbinder`, managed by `vndservicemanager`).
 
 #### Bionic: Android's C Library
 
 Bionic (`bionic/`) is Android's custom C library. It is *not* glibc. Bionic was
-written from scratch (incorporating code from BSD) with specific goals:
+written from scratch, and it incorporates code from BSD. It has these specific
+goals:
 
 1. **Small size**: Mobile devices have limited memory. Bionic is significantly
    smaller than glibc.
@@ -625,13 +631,13 @@ Bionic includes:
 - `bionic/libm/` -- Math library
 - `bionic/libdl/` -- Dynamic linker library
 - `bionic/linker/` -- The dynamic linker (`/system/bin/linker64`), responsible
-  for loading shared libraries and resolving symbols at runtime
+  which loads shared libraries and resolves symbols at runtime
 
 The dynamic linker in `bionic/linker/` is particularly important because it
 implements the **linker namespace** isolation that enforces the Treble boundary.
 Different namespaces (default, sphal, vndk, rs) control which libraries are
-visible to which processes, preventing vendor code from accessing unstable
-system libraries.
+visible to which processes, so vendor code cannot access unstable system
+libraries.
 
 ### 1.3.5 Layer 4: Android Runtime (ART)
 
@@ -729,12 +735,12 @@ When Android boots:
 2. Zygote initializes the ART runtime
 3. Zygote **preloads** thousands of Java classes and resources that all
    applications will need
-4. Zygote enters a loop, listening on a Unix domain socket for commands
+4. Zygote enters a loop and listens on a Unix domain socket for commands
 
 When a new application process is needed:
 
 1. `ActivityManagerService` sends a command to Zygote's socket
-2. Zygote calls `fork()`, creating a child process
+2. Zygote calls `fork()` to create a child process
 3. The child process inherits all preloaded classes and resources via
    **copy-on-write** memory sharing
 4. The child specializes: sets its UID, GID, SELinux context, loads the
@@ -742,7 +748,7 @@ When a new application process is needed:
 
 This fork-based architecture is what makes Android app startup fast. Without
 Zygote, each app would need to start a new ART instance from scratch, load and
-verify thousands of classes, and parse framework resources -- a process that
+verify thousands of classes, and parse framework resources. This process
 would take several seconds. With Zygote, `fork()` takes milliseconds, and the
 shared pages mean less physical memory is consumed.
 
@@ -861,8 +867,8 @@ Here is a more complete listing of the service subdirectories found in
 | `webkit/` | WebViewUpdateService | WebView package management |
 
 And this is not exhaustive -- there are over 100 subdirectories in total. Each
-service communicates with applications and other services via Binder IPC,
-exposing its functionality through AIDL-defined interfaces. Not every system
+service communicates with applications and other services via Binder IPC
+and exposes its functionality through AIDL-defined interfaces. Not every system
 service lives under this tree, either: TelecomService, for example, ships from
 `packages/services/Telecomm/`, with only a thin build shim under
 `frameworks/base/services/telecom/`.
@@ -942,10 +948,10 @@ The `android.*` package hierarchy contains approximately 50 top-level packages:
 
 Each of these packages contains classes that are essentially Binder client
 proxies. When you call `startActivity()`, the `Activity` class (in
-`android.app`) calls through to `ActivityTaskManager`, which calls through
-to an `IActivityTaskManager.Stub.Proxy`, which makes a Binder transaction to
+`android.app`) calls through to `ActivityTaskManager`. That class calls through
+to an `IActivityTaskManager.Stub.Proxy`. The proxy makes a Binder transaction to
 `ActivityTaskManagerService` in `system_server`. This pattern -- **client-side
-proxy wrapping Binder IPC to a server-side implementation** -- is universal
+proxy that wraps Binder IPC to a server-side implementation** -- is universal
 across the Android framework.
 
 ### 1.3.8 Layer 7: Applications
@@ -982,11 +988,12 @@ AOSP ships with a substantial set of system applications in `packages/apps/`:
 | **WallpaperPicker2** | `packages/apps/WallpaperPicker2/` | Wallpaper selection |
 | **TV** | `packages/apps/TV/` | Android TV launcher and EPG |
 
-SystemUI deserves special mention because it is not a typical application -- it
-is a system-privileged process that provides the core user interface chrome:
-the status bar, the notification shade, the quick settings panel, the lock
-screen, the volume dialog, the power menu, the picture-in-picture controls,
-the recent apps interface (on some configurations), and more. It runs in its
+SystemUI deserves special mention because it is not a typical application. It
+is a system-privileged process that provides the core user interface chrome.
+This chrome includes the status bar, the notification shade, the quick settings
+panel, the lock screen, and the volume dialog. It also includes the power menu,
+the picture-in-picture controls, the recent apps interface (on some
+configurations), and more. It runs in its
 own process (`com.android.systemui`) with elevated permissions and deep
 integration with `WindowManagerService` and other system services.
 
@@ -1011,8 +1018,8 @@ AOSP also ships system content providers in `packages/providers/`:
 ## 1.4 Repository Structure: A Complete Guide
 
 The AOSP source tree is enormous. A full checkout, including prebuilt toolchains
-and all default repositories, can exceed 300 GB. Understanding the top-level
-directory structure is essential for navigating the codebase efficiently.
+and all default repositories, can exceed 300 GB. To navigate the codebase
+efficiently, you must understand the top-level directory structure.
 
 The source is managed by `repo`, a tool built on top of Git. The
 `.repo/manifest.xml` file defines the complete set of Git repositories and where
@@ -1022,8 +1029,8 @@ repositories, each mapping to a subdirectory in the source tree.
 ### 1.4.1 Directory Map
 
 Below is a comprehensive listing of the top-level directories in the AOSP source
-tree, with their purpose, approximate
-size contribution, and significance to different types of developers.
+tree. For each directory, it gives the purpose, the approximate size
+contribution, and the significance to different types of developers.
 
 ```mermaid
 graph TB
@@ -1180,9 +1187,9 @@ libcore/
 
 These provide the `java.lang`, `java.util`, `java.io`, `java.net`, `java.nio`,
 `java.security`, `java.sql`, `javax.crypto`, and other standard Java APIs.
-Unlike a standard JDK, Android's implementation is heavily modified: it uses
-Bionic instead of glibc, `android.icu` instead of some `java.text`
-functionality, and has Android-specific security providers.
+Unlike a standard JDK, Android's implementation is heavily modified. It uses
+Bionic instead of glibc, and `android.icu` instead of some `java.text`
+functionality. It also has Android-specific security providers.
 
 **Who cares about this directory:** Anyone debugging Java standard library
 behavior on Android, or working on the ART Mainline module.
@@ -1485,12 +1492,13 @@ toolchain/
         scripts/      --   Profile-maintenance scripts
 ```
 
-The actual compiler binaries (Clang/LLVM, Rust) are in `prebuilts/`. What this
-directory holds is profile *data*, not toolchain configuration: AFDO (AutoFDO)
-sampling profiles collected from AOSP platform components -- `sampling/keystore2.afdo`,
-`sampling/libart_arm64.afdo`, and dozens more -- plus profiles for the kernel.
-The build feeds these to Clang so that hot paths in those binaries are optimized
-against real-world execution data. `AFDO_SUMMARY.txt` lists the top functions in
+The actual compiler binaries (Clang/LLVM, Rust) are in `prebuilts/`. This
+directory holds profile *data*, not toolchain configuration. The data is AFDO
+(AutoFDO) sampling profiles collected from AOSP platform components --
+`sampling/keystore2.afdo`, `sampling/libart_arm64.afdo`, and dozens more. It
+also holds profiles for the kernel.
+The build feeds these to Clang so that hot paths in those
+binaries are optimized against real-world execution data. `AFDO_SUMMARY.txt` lists the top functions in
 each profile, which is a quick way to see what the platform actually spends its
 time in.
 
@@ -1598,19 +1606,21 @@ system/
 
 The `system/` tree gained several top-level trees in Android 17. **`fs_mgr` moved
 out of `system/core`** into the new `system/fs/` tree. The memory-management story
-expanded with **`mmd`** (the Memory Management Daemon, which centralizes ZRAM
-and swap configuration and maintenance, moving swap management out of
-`system_server`) and **`guardian`** (the `pmgd` Process Memory
-Guardian that triggers heap dumps on memory anomalies), both alongside the
-existing `lmkd`. Android 17 also added **`system/lfi/`**, the runtime support for
-Lightweight Fault Isolation (an in-process software sandbox; see Chapter 43), and
-**`system/software_defined_vehicle/`**, the new SDV platform, covered in
-Chapter 62 (Device Form Factors).
+expanded with two new parts, both alongside the existing `lmkd`. The first is
+**`mmd`**, the Memory Management Daemon. It centralizes ZRAM and swap
+configuration and maintenance, and it moves swap management out of
+`system_server`. The second is **`guardian`**, the `pmgd` Process Memory
+Guardian that triggers heap dumps on memory anomalies.
+
+Android 17 also added **`system/lfi/`**, the runtime support for Lightweight
+Fault Isolation (an in-process software sandbox; see Chapter 43). It added
+**`system/software_defined_vehicle/`** too. This is the new SDV platform, covered
+in Chapter 62 (Device Form Factors).
 
 **Who cares about this directory:** System engineers, security researchers
-(sepolicy, lfi), boot engineers (init, fs_mgr), storage engineers (vold), network
-engineers (netd), memory engineers (lmkd, mmd, guardian), anyone debugging system
-daemons.
+(sepolicy, lfi), boot engineers (init, fs_mgr), and storage engineers (vold).
+Also network engineers (netd), memory engineers (lmkd, mmd, guardian), and
+anyone who debugs system daemons.
 
 #### `hardware/` -- Hardware Abstraction
 
@@ -1676,10 +1686,10 @@ device/
 ```
 
 Android 17 introduced **`device/google/sdv/`**, the set of product
-configurations for the Software Defined Vehicle platform: the Cuttlefish-based
-`*_cf` products (`sdv_core_cf`, `sdv_ivi_cf`, `sdv_media_cf`), the `arm64`
-variants, and the lighter `sdv_core_*` tiers. See Chapter 62 (Device Form
-Factors).
+configurations for the Software Defined Vehicle platform. It has these groups:
+the Cuttlefish-based `*_cf` products (`sdv_core_cf`, `sdv_ivi_cf`,
+`sdv_media_cf`), the `arm64` variants, and the lighter `sdv_core_*` tiers. See
+Chapter 62 (Device Form Factors).
 
 A device configuration directory typically contains:
 
@@ -1850,10 +1860,10 @@ tools/
     ...
 ```
 
-**Metalava** deserves special mention: it is the tool that extracts the Android
-API signature from source code, compares it against previous versions, and
-enforces API compatibility rules (no removing public APIs, no changing method
-signatures, etc.). The API surface files it generates (`current.txt`,
+**Metalava** deserves special mention. It is the tool that extracts the Android
+API signature from source code and compares it against previous versions. It
+also enforces API compatibility rules (no removing public APIs, no changing
+method signatures, etc.). The API surface files it generates (`current.txt`,
 `removed.txt`, `system-current.txt`) are the canonical definition of the
 Android API.
 
@@ -1922,9 +1932,10 @@ update cadence. The `tools/external_updater/` tool helps maintain these
 dependencies by tracking upstream versions and automating updates.
 
 Android 17 added **`external/lfi/`**, the upstream tooling for Lightweight Fault
-Isolation: the `lfi-verifier` (verifies that sandboxed machine code stays within
-its region), `lfi-bind` and `lfi-runtime` glue, the `disarm`/`fadec` ARM/x86
-decoders, and the `rlbox`/`rlbox-lfi` sandboxing wrappers. It pairs with the
+Isolation. It contains these parts: the `lfi-verifier` (verifies that sandboxed
+machine code stays within its region) and `lfi-bind` and `lfi-runtime` glue.
+It also has the `disarm`/`fadec` ARM/x86 decoders and the `rlbox`/`rlbox-lfi`
+sandboxing wrappers. It pairs with the
 in-tree runtime support in `system/lfi/`; the full design is covered in
 Chapter 43.
 
@@ -1976,17 +1987,17 @@ pie title AOSP Source Tree - Approximate Size Distribution
 The vast majority of the source tree's disk consumption comes from prebuilt
 binaries (compilers, SDKs, emulator images) and external third-party libraries.
 The actual Android-specific code -- the framework, runtime, system components,
-and build system -- is a much smaller fraction of the total disk usage, though
-it is still enormous in its own right (tens of millions of lines of code).
+and build system -- is a much smaller fraction of the total disk usage. It is
+still enormous in its own right (tens of millions of lines of code).
 
 ---
 
 ## 1.5 Who Maintains What
 
 The Android ecosystem is a collaboration between Google, silicon vendors, OEMs,
-and the open-source community. Understanding who is responsible for which parts
-of the stack is essential for knowing where to file bugs, where to send patches,
-and whose constraints shape the architecture.
+and the open-source community. It is essential to know who is responsible for
+which parts of the stack. This tells you where to file bugs and where to send
+patches. It also tells you whose constraints shape the architecture.
 
 ### 1.5.1 The Stakeholder Map
 
@@ -2210,14 +2221,14 @@ projects. Community members also file bugs on the AOSP issue tracker
 (issuetracker.google.com) and participate in mailing lists.
 
 **Custom Kernels:**
-Independent kernel developers build optimized kernels for specific devices,
-often incorporating upstream Linux improvements, scheduler tweaks, and
+Independent kernel developers build optimized kernels for specific devices.
+These kernels often include upstream Linux improvements, scheduler tweaks, and
 performance optimizations ahead of the official release cycle.
 
 **Xposed / Magisk:**
 The modding community uses frameworks like Xposed (runtime Java method hooking)
-and Magisk (systemless root) to modify Android behavior without changing the
-system partition. These tools demonstrate deep understanding of ART internals,
+and Magisk (systemless root). These frameworks modify Android behavior without
+a change to the system partition. These tools demonstrate deep understanding of ART internals,
 the init system, and dm-verity.
 
 ---
@@ -2531,9 +2542,9 @@ This single API call traverses:
 8. **Display HAL** (vendor) -- Hardware composition and display output
 
 A single call to `startActivity()` touches virtually every layer of the Android
-stack. This is why understanding the full architecture is so valuable -- when
-something goes wrong (a slow launch, a permission denial, a display glitch), you
-need to know which layer to investigate.
+stack. This is why it is so valuable to understand the full architecture.
+When something goes wrong (a slow launch, a permission denial, a display
+glitch), you need to know which layer to investigate.
 
 ---
 
@@ -2701,9 +2712,9 @@ interface ICameraDevice {
 
 ### 1.8.5 APEX (Android Pony EXpress)
 
-**APEX** is the packaging format for Mainline modules -- components of Android
-that can be updated independently of a full OS update, delivered via the Google
-Play Store.
+**APEX** is the packaging format for Mainline modules. These are components of
+Android that can be updated independently of a full OS update. The Google Play
+Store delivers them.
 
 ```mermaid
 graph TB
@@ -2807,7 +2818,7 @@ As of Android 17, Mainline modules include:
 
 The significance of Mainline cannot be overstated. Before Mainline, a security
 vulnerability in the DNS resolver or the media framework required a full OS
-update that had to go through the entire OEM/carrier update pipeline. With
+update. That update had to go through the entire OEM/carrier update pipeline. With
 Mainline, Google can push a fix to billions of devices within weeks, regardless
 of whether the OEM has issued an OS update.
 
@@ -2935,9 +2946,9 @@ lifecycle (start, stop, kill), OOM adjustment (which processes to kill under
 memory pressure), and broadcast dispatch.
 
 **ActivityTaskManagerService** (split from AMS in Android 10) manages activities,
-tasks, and activity stacks -- the user-visible "task management" that determines
-which activity is in the foreground, handles task switching, and manages the
-recent apps list.
+tasks, and activity stacks. This is the user-visible "task management". It
+determines which activity is in the foreground, handles task switching, and
+manages the recent apps list.
 
 **Key characteristics:**
 
@@ -3156,17 +3167,18 @@ GitLab, and most modern documentation tools).
 
 ### 1.10.6 Using This Book with AI Assistants
 
-Every chapter is plain Markdown with explicit source-file references, which makes
-the book unusually easy for an AI assistant to consume as background when you
-ask it to reason about AOSP code.
+Every chapter is plain Markdown with explicit source-file references. This makes
+the book unusually easy for an AI assistant to use as background when you ask it
+to reason about AOSP code.
 
-To skip having the assistant crawl the whole site, point it at
-<https://aospbooks.github.io/aosp-internal-book/llms.txt>. This is an
-[llmstxt.org](https://llmstxt.org/)-style index that lists every chapter and
-appendix with a one-line description and its published URL, grouped by Part.
-The assistant can read `llms.txt` first, decide which chapter is relevant to
-the subsystem you're asking about, then fetch only that chapter -- saving
-tokens and giving you sharper answers.
+The assistant does not need to crawl the whole site. Point it at
+<https://aospbooks.github.io/aosp-internal-book/llms.txt>.
+This is an [llmstxt.org](https://llmstxt.org/)-style index. It lists every
+chapter and appendix with a one-line description and its published URL, grouped
+by Part.
+The assistant can read `llms.txt` first. Then it can decide which chapter is
+relevant to the subsystem you ask about, and fetch only that chapter. This saves
+tokens and gives you sharper answers.
 
 Practical workflows:
 
@@ -3174,10 +3186,10 @@ Practical workflows:
   assistants (Claude Code, Cursor, Copilot Workspace, Aider) accept arbitrary
   URLs as background. `llms.txt` is small (~15 KB), so it fits comfortably.
 - **Cite chapters by section number.** Section numbers like `9.4.2` are stable
-  across edits, so when you (or the assistant) want to reference a specific
+  across edits. When you (or the assistant) want to reference a specific
   topic, the section number is a durable handle.
 - **Pair with `cs.android.com`.** The book's source paths and line numbers
-  resolve directly on Android Code Search, so an assistant can verify or extend
+  resolve directly on Android Code Search. This lets an assistant verify or extend
   any claim in the book by following the path.
 
 ---
@@ -3214,19 +3226,20 @@ This chapter established the foundational knowledge needed to work with AOSP:
    well-defined interfaces to adjacent layers.
 
 3. **The source tree is vast but organized.** The 30+ top-level directories each
-   serve a specific purpose: `art/` for the runtime, `bionic/` for the C library,
+   serve a specific purpose. These are: `art/` for the runtime, `bionic/` for the C library,
    `frameworks/` for the application framework, `hardware/` for HAL interfaces,
-   `system/` for core system components, `packages/` for applications and
+   `system/` for core system components. Also, `packages/` for applications and
    modules, `build/` for the build system, and so on.
 
-4. **The ecosystem is a collaboration** between Google (framework, CTS, Mainline),
-   SoC vendors (kernel, HALs, drivers), OEMs (customization, device bring-up),
-   and the community (custom ROMs, bug reports, contributions).
+4. **The ecosystem is a collaboration** between four groups. Google
+   provides the framework, CTS, and Mainline. SoC vendors provide the kernel,
+   HALs, and drivers. OEMs provide customization and device bring-up. The
+   community provides custom ROMs, bug reports, and contributions.
 
-5. **Android has evolved dramatically** over 15+ years and 37 API levels, with
-   major architectural shifts including the move from Dalvik to ART, Project
-   Treble for the vendor split, Project Mainline for modular updates, and GKI
-   for kernel standardization.
+5. **Android has evolved dramatically** over 15+ years and 37 API levels. The
+   major architectural shifts include the move from Dalvik to ART and Project
+   Treble for the vendor split. They also include Project Mainline for modular
+   updates and GKI for kernel standardization.
 
 6. **The developer's journey** starts with downloading and building the source,
    progresses through understanding the architecture, and advances to modifying,
@@ -3236,9 +3249,9 @@ This chapter established the foundational knowledge needed to work with AOSP:
    system_server, SurfaceFlinger, WMS, AMS, PMS -- are the vocabulary of AOSP
    development. You will encounter them in every chapter that follows.
 
-In the next chapter, we will roll up our sleeves and set up a complete AOSP
-development environment: installing dependencies, downloading the source,
-configuring the build, and running our first build on an emulator.
+In the next chapter, we will set up a complete AOSP development environment.
+We will install dependencies, download the source, configure the build, and run
+our first build on an emulator.
 
 
 <!-- chapter:02-source-and-build -->
@@ -3246,11 +3259,11 @@ configuring the build, and running our first build on an emulator.
 
 The Android Open Source Project ships hundreds of millions of lines of code
 across thousands of Git repositories. Building it demands a bespoke toolchain
-that has evolved over more than a decade, from recursive GNU Make, to the
-Soong/Blueprint meta-build system, and most recently toward Bazel. This chapter
-walks through the entire pipeline: fetching the source, understanding the three
-layers of the build system, configuring a product, defining modules, producing
-images, and running the result on an emulator.
+that has evolved over more than a decade. It started as recursive GNU Make,
+moved to the Soong/Blueprint meta-build system, and most recently moved toward
+Bazel. This chapter walks through the entire pipeline. The steps are: get the
+source, learn the three layers of the build system, and configure a product.
+Then define modules, produce images, and run the result on an emulator.
 
 Every path and code snippet in this chapter was verified against the AOSP
 `android17-release` branch. Where we quote source files, we give their
@@ -3276,8 +3289,8 @@ requirements:
 
 The build system requires a case-sensitive file system. On Linux ext4 is
 case-sensitive natively. On macOS, however, APFS volumes are case-*insensitive*
-by default, so you must explicitly create a separate volume (or disk image)
-formatted as "APFS (Case-sensitive)" for the checkout. The build guards
+by default, so you must explicitly create a separate volume (or disk image) for the checkout.
+Format it as "APFS (Case-sensitive)". The build guards
 against this: `checkCaseSensitivity()` in `build/soong/ui/build/build.go`
 warns when the tree sits on a case-insensitive file system. Using NTFS,
 HFS+, or default APFS (all case-insensitive) will cause subtle failures.
@@ -3405,9 +3418,9 @@ aosp/
 ### 2.1.4 The Manifest File
 
 The manifest file is the single source of truth for what repositories make up
-the tree and where they go. Understanding the manifest is crucial because it
-defines the *shape* of your entire source tree -- which projects exist, which
-branches they track, and how they are organized into directories.
+the tree and where they go. The manifest is crucial because it
+defines the *shape* of your entire source tree. It says which projects exist,
+which branches they track, and how they are organized into directories.
 
 The current AOSP default manifest at
 `.repo/manifests/default.xml` begins:
@@ -3461,9 +3474,9 @@ Key elements of the manifest:
 | `<include>` | Includes another manifest fragment |
 | `groups` | Assigns projects to groups for selective sync |
 
-Notice the `<linkfile>` entries for `build/make`: they create symlinks at
-top-level paths like `build/envsetup.sh`, `build/core/`, and `build/target/`
-so that legacy scripts can find them at their historical locations.
+Notice the `<linkfile>` entries for `build/make`. They create symlinks at
+top-level paths like `build/envsetup.sh`, `build/core/`, and `build/target/`.
+This is so that legacy scripts can find them at their historical locations.
 
 Also noteworthy: the `build/soong` project creates two critical symlinks:
 
@@ -3727,9 +3740,9 @@ The `Android.bp` file at the root is actually a symlink into `build/soong/`:
 
 **Source:** `build/soong/root.bp`
 
-This seemingly empty file is important: it signals to Soong that this is the
-root of the source tree, and that Soong should recursively discover all
-`Android.bp` files beneath it.
+This seemingly empty file is important. It signals to Soong that this is the
+root of the source tree. It also signals that Soong should recursively discover
+all `Android.bp` files beneath it.
 
 ---
 
@@ -3895,9 +3908,9 @@ Let us examine each layer in detail.
 
 ### 2.2.3 Layer 1: Blueprint (`build/blueprint/`)
 
-Blueprint is the meta-build framework -- a Go library that provides the
-machinery for parsing module definition files, resolving dependencies, running
-mutators, and generating Ninja build rules. Blueprint is **not
+Blueprint is the meta-build framework -- a Go library. It provides the
+machinery to parse module definition files, resolve dependencies, run
+mutators, and generate Ninja build rules. Blueprint is **not
 Android-specific**; it is a general-purpose tool.
 
 The `doc.go` file in `build/blueprint/` describes the framework:
@@ -3915,8 +3928,8 @@ The `doc.go` file in `build/blueprint/` describes the framework:
 **Source:** `build/blueprint/doc.go`
 
 The core of Blueprint is `context.go` (~195 KB), which defines the
-`Context` struct -- the central state object that orchestrates the entire build
-process through four phases:
+`Context` struct. This is the central state object. It orchestrates the entire
+build process through four phases:
 
 ```go
 // A Context contains all the state needed to parse a set of Blueprints files
@@ -4221,8 +4234,8 @@ func RegisterGenruleBuildComponents(ctx android.RegistrationContext) {
 **Source:** `build/soong/genrule/genrule.go`, lines 15-68
 
 The `genrule` module type is particularly useful for code generation, protocol
-buffer compilation, AIDL interface generation, and any other case where you
-need to run an arbitrary command to produce source files.
+buffer compilation, and AIDL interface generation. It also fits any other case
+where you need to run an arbitrary command to produce source files.
 
 #### Soong Build Flow Internals
 
@@ -4306,8 +4319,8 @@ exec "$(getoutdir)/soong_ui" "$@"
 
 **Source:** `build/soong/soong_ui.bash`
 
-This script bootstraps the Go-based build system: it first compiles `soong_ui`
-(the build driver) and several helper tools, then executes `soong_ui` which
+This script bootstraps the Go-based build system. First it compiles `soong_ui`
+(the build driver) and several helper tools. Then it executes `soong_ui`, which
 orchestrates the entire build.
 
 ### 2.2.5 Layer 3: Make Glue (`build/make/`)
@@ -4815,7 +4828,7 @@ The `ifndef KATI` guard tells us an important detail: the Make-based build does
 not use standard GNU Make. It uses **Kati**, a Make-compatible tool that is
 faster and more compatible with Android's build patterns. Kati was originally
 prototyped in Go, but the production implementation shipped in the tree
-(`ckati`) is written in C++, with a newer Rust implementation (`rkati`) also
+(`ckati`) is written in C++. A newer Rust implementation (`rkati`) is also
 available in `prebuilts/build-tools/`.
 
 ### 2.3.6 Kati: The Make Replacement
@@ -4840,8 +4853,9 @@ In the AOSP build, Kati handles:
 
 The output of Kati is `out/build-<TARGET_PRODUCT>.ninja`, which is combined
 with Soong's `out/soong/build.<TARGET_PRODUCT>.ninja` (the plain
-`out/soong/build.ninja` name is only a fallback when no product is set) into a
-single `out/combined-<TARGET_PRODUCT>.ninja` that Ninja executes.
+`out/soong/build.ninja` name is only a fallback when no product is set). The
+two files combine into a single `out/combined-<TARGET_PRODUCT>.ninja` that Ninja
+executes.
 
 ### 2.3.7 How Build Variables Flow
 
@@ -4940,9 +4954,9 @@ tapas Camera Gallery arm64 userdebug
 ```
 
 The `tapas` function (`build/make/envsetup.sh`, lines 674-743) configures an
-unbundled app build. It sets `TARGET_BUILD_APPS` to the specified app names,
-which tells the build system to only build those apps (and their dependencies)
-rather than the entire platform.
+unbundled app build. It sets `TARGET_BUILD_APPS` to the specified app names.
+This tells the build system to build only those apps (and their dependencies)
+and not the entire platform.
 
 **`banchan` -- Build unbundled APEXes:**
 
@@ -5009,9 +5023,9 @@ conditionals and control flow. As the Soong README explains:
 
 **Source:** `build/soong/README.md`, lines 27-28
 
-This design decision pushes complexity into the build system's Go code, where
-it can be properly tested and maintained, rather than scattering it across
-thousands of build files.
+This design decision pushes complexity into the build system's Go code. There
+it can be properly tested and maintained. It is not scattered across thousands
+of build files.
 
 ### 2.4.2 Module Types
 
@@ -5074,8 +5088,8 @@ func RegisterCipdPackageComponents(ctx android.RegistrationContext) {
 **Source:** `build/soong/android/cipd/cipd_package.go`, lines 37-39
 
 `android_filesystem_prebuilt` lets the build consume an already-built
-partition image (erofs or ext4) as a first-class filesystem module, unpacking
-it instead of assembling it from staged files:
+partition image (erofs or ext4) as a first-class filesystem module. The build
+unpacks the image. It does not assemble it from staged files:
 
 ```go
 func RegisterPrebuiltFilesystemComponents(ctx android.RegistrationContext) {
@@ -5671,9 +5685,11 @@ graph TB
 
 Neither Soong nor Kati actually compiles anything. They are *build graph
 generators* -- they produce Ninja-format manifest files. A low-level **build
-executor** then reads that manifest and does the actual work. Historically that
-executor was **Ninja**; as of Android 17 the default executor is **Siso**
-(covered in Section 2.5.7), which reads the same `.ninja` manifest but adds
+executor** then reads that manifest and does the actual work.
+
+Historically that
+executor was **Ninja**. As of Android 17 the default executor is **Siso**
+(covered in Section 2.5.7). Siso reads the same `.ninja` manifest but adds
 native remote-execution and caching support. The discussion in this section
 applies to the manifest format and graph-execution model that both share.
 
@@ -5848,10 +5864,10 @@ command deletes the entire `out/` directory.
 
 ### 2.5.6 Dynamic Partitions and `super.img`
 
-Modern Android (10+) uses **dynamic partitions**: instead of fixed-size
-individual partitions, a single `super.img` contains a logical volume manager
-that allocates space to system, vendor, product, and other partitions
-dynamically. This is configured in `BoardConfig.mk`:
+Modern Android (10+) uses **dynamic partitions**. Instead of fixed-size
+individual partitions, a single `super.img` contains a logical volume manager.
+The volume manager allocates space to system, vendor, product, and other
+partitions dynamically. This is configured in `BoardConfig.mk`:
 
 ```makefile
 # From device/generic/goldfish/board/BoardConfigCommon.mk:
@@ -5879,9 +5895,9 @@ BOARD_EMULATOR_DYNAMIC_PARTITIONS_SIZE ?= 8589934592
 ### 2.5.7 Siso: The Default Build Executor in Android 17
 
 Android 17 changes the default low-level build executor from Ninja to **Siso**.
-Siso is a drop-in replacement for Ninja, developed by the Chromium build team,
-that consumes the same `.ninja` manifests Soong and Kati produce but adds
-native support for remote execution, content-addressable caching, and a
+Siso is a drop-in replacement for Ninja, developed by the Chromium build team.
+It consumes the same `.ninja` manifests that Soong and Kati produce. It also
+adds native support for remote execution, content-addressable caching, and a
 Starlark-based configuration layer. The selection lives in `soong_ui`:
 
 Default executor selection in `build/soong/ui/build/config.go`:
@@ -5954,10 +5970,10 @@ language-specific `clang.star`, `java.star`, and `rust.star`):
 **Source:** `build/soong/siso_config/README.md`, lines 1-5
 
 The practical upshot for everyday builds is that `m` behaves the same as
-before -- the executor is an implementation detail -- but a local Siso build
-can transparently reuse cached actions and fan work out to a remote backend
-when one is configured, without the separate `rbesetup.sh` ceremony the old
-Ninja path required.
+before. The executor is an implementation detail. A local Siso build can
+transparently reuse cached actions. It can also fan work out to a remote backend
+when one is configured. The old Ninja path required the separate `rbesetup.sh`
+ceremony for this. Siso does not.
 
 Build-executor selection flow in `soong_ui`:
 
@@ -5983,18 +5999,20 @@ Android 17 builds run with the source tree mounted read-only. `soong_ui`
 executes the build inside an `nsjail` sandbox
 (`prebuilts/build-tools/linux-x86/bin/nsjail`) and bind-mounts the source
 directory with the read-only flag by default. The flag comes from
-`SandboxConfig.SrcDirMountFlag()`, which returns nsjail's `-R` (read-only) bind
-unless the source dir is explicitly made writable, in which case it returns `-B`
+`SandboxConfig.SrcDirMountFlag()`. It returns nsjail's `-R` (read-only) bind.
+If the source dir is explicitly made writable, it returns `-B` instead
 (`build/soong/ui/build/sandbox_config.go`, lines 31-37, used in
-`build/soong/ui/build/sandbox_linux.go`). On top of that, Kati runs with
-`--werror_writable`, so writing into a read-only directory during product
-configuration is a hard error rather than a warning
+`build/soong/ui/build/sandbox_linux.go`).
+
+Also, Kati runs with
+`--werror_writable`. So a write into a read-only directory during product
+configuration is a hard error, not a warning
 (`build/soong/ui/build/kati.go`, lines 145-146).
 
-The intent is that the build only ever writes under `out/`. Steps that need to
-update checked-in files, such as `m update-api`, build the generated files under
-`out/` and let `soong_ui` copy them back into the tree after the sandboxed build
-finishes (`build/soong/ui/build/update_api.go`, lines 25-30). A build that tries
+The intent is that the build only ever writes under `out/`. Some steps need to
+update checked-in files, such as `m update-api`. These steps build the generated
+files under `out/`. Then `soong_ui` copies them back into the tree after the
+sandboxed build finishes (`build/soong/ui/build/update_api.go`, lines 25-30). A build that tries
 to modify the source while it runs fails with a filesystem error. Ninja
 recognizes the kernel's "Read-only file system" message and prints a hint
 (`build/soong/ui/status/ninja.go`, lines 326-330):
@@ -6007,9 +6025,9 @@ recognizes the kernel's "Read-only file system" message and prints a hint
 
 The first two are wired through `BoardConfig`/`dumpvars` into
 `SetSrcDirIsRO()` and `SetSrcDirRWAllowlist()`
-(`build/soong/ui/build/config.go`, lines 807-808), so a device that genuinely
-needs to write into the tree during config can opt out, at the cost of losing
-the guarantee that a clean checkout stays clean.
+(`build/soong/ui/build/config.go`, lines 807-808). A device that genuinely
+needs to write into the tree during config can therefore opt out. The cost is
+that the guarantee of a clean checkout is lost.
 
 ---
 
@@ -6017,9 +6035,9 @@ the guarantee that a clean checkout stays clean.
 
 ### 2.6.1 The Product Configuration Hierarchy
 
-An AOSP product is defined through a hierarchy of Make files that specify what
-packages to install, what properties to set, and how to configure the board
-hardware. The hierarchy flows from generic to specific:
+An AOSP product is defined through a hierarchy of Make files. These files
+specify what packages to install, what properties to set, and how to configure
+the board hardware. The hierarchy flows from generic to specific:
 
 ```mermaid
 graph TB
@@ -6333,11 +6351,11 @@ These end up in various `build.prop` or `default.prop` files on the device.
 ### 2.6.8 Release Configuration
 
 The AOSP build system has a release configuration mechanism managed through
-`build/release/`. This system, which has matured into the primary
-configuration layer by Android 17, allows different "releases" (e.g.,
+`build/release/`. This system has matured into the primary
+configuration layer by Android 17. Different "releases" (e.g.,
 `trunk_staging`, `eng`, `userdebug`, `user`, and the dated
-`mainline_2026_NN` configs) to control feature flags and configuration
-variants without changing product makefiles.
+`mainline_2026_NN` configs) can control feature flags and configuration
+variants. Product makefiles do not change for this.
 
 The release is specified as the second argument to `lunch`:
 
@@ -6349,9 +6367,10 @@ lunch aosp_arm64 trunk_staging eng
 
 The available release configs are the `*.textproto` files under
 `build/release/release_configs/`. On `android17-release` these include
-`trunk_staging`, `eng`, `userdebug`, `user`, the dated
-`mainline_2026_01`...`mainline_2026_04` mainline configs, and the per-quarter
-device configs (`ap2a`, `ap3a`, `ap4a`, `bp1a`...`bp4a`, `cp1a`, `cp2a`). Each
+`trunk_staging`, `eng`, `userdebug`, `user`, and the dated
+`mainline_2026_01`...`mainline_2026_04` mainline configs. They also include the
+per-quarter device configs (`ap2a`, `ap3a`, `ap4a`, `bp1a`...`bp4a`, `cp1a`,
+`cp2a`). Each
 config is small -- it names the aconfig value sets it pulls in and its config
 type:
 
@@ -6365,7 +6384,7 @@ release_config_type: RELEASE_CONFIG
 
 Release-scoped build flags are declared and given values under
 `build/release/`. For example, the platform version itself is now a release
-flag rather than a hard-coded Make variable -- on `trunk_staging` it resolves
+flag, not a hard-coded Make variable. On `trunk_staging` it resolves
 to API level 37, codename `Baklava`:
 
 ```
@@ -6408,21 +6427,28 @@ separately, under `build/make/tools/finalization/finalize-platform/`.
 
 The **Canary** release channel that Android publishes starting with Android 17
 is a release-process change, not a build-system artifact. It replaces the old
-Developer Preview with a continuous channel: builds are cut from the trunk on a
-rolling basis and shipped to flashable devices and the emulator, so the latest
-in-development platform is always available without waiting for a numbered
-preview drop. None of this shows up as a new release config. There is no
-`canary` (or `next`) file in `build/release/release_configs/`; that directory
+Developer Preview with a continuous channel. Builds are cut from the trunk on a
+rolling basis and shipped to flashable devices and the emulator. So the latest
+in-development platform is always available. Testers do not wait for a numbered
+preview drop.
+
+None of this shows up as a new release config. There is no
+`canary` (or `next`) file in `build/release/release_configs/`. That directory
 holds `trunk_staging`, the `eng`/`user`/`userdebug` build variants, the dated
 `mainline_2026_NN` configs, and the per-quarter device configs (`ap2a`, `ap3a`,
-`bp1a` and so on). The word `CANARY` does appear in two unrelated places: as a
-preview codename mapped to API level 10000 in
-`build/soong/android/api_levels.go`, and in the `cp2a` release config's
+`bp1a` and so on).
+
+The word `CANARY` does appear in two unrelated places. One
+is a preview codename mapped to API level 10000 in
+`build/soong/android/api_levels.go`. The other is the `cp2a` release config's
 `RELEASE_PLATFORM_VERSION_KNOWN_CODENAMES` value list (the `trunk_staging`
 list ends at `Baklava` and does not include it). Neither is a release config
-you can pass to `lunch`. For source builds the working trunk config
-remains `trunk_staging`; the Canary channel is how prebuilt rolling images reach
-testers, layered on top of the same trunk-stable model described in Chapter 3.
+you can pass to `lunch`.
+
+For source builds the working trunk config
+remains `trunk_staging`. The Canary channel is how prebuilt rolling images reach
+testers. It is layered on top of the same trunk-stable model described in
+Chapter 3.
 
 ### 2.6.9 Device Configuration: Goldfish (Emulator)
 
@@ -6583,9 +6609,9 @@ graph TB
 APEX (Android Pony EXpress) is a container format introduced in Android 10 that
 allows system components to be updated independently of the full OS. Before
 APEX, updating a system library or runtime required a full OTA (over-the-air)
-update. With APEX, individual components -- like the ART runtime, the Wi-Fi
-stack, or the DNS resolver -- can be updated through the Google Play Store or
-a similar mechanism.
+update. With APEX, individual components can be updated through the Google
+Play Store or a similar mechanism. Examples are the ART runtime, the Wi-Fi
+stack, and the DNS resolver.
 
 An APEX file is a special kind of Android package that contains:
 
@@ -6812,9 +6838,9 @@ type ApexNativeDependencies struct {
 
 **Source:** `build/soong/apex/apex.go`, lines 188-209
 
-Note the use of `proptools.Configurable[[]string]` -- this is a type that
-supports the newer select statement conditional mechanism, allowing the list
-of dependencies to vary based on build configuration.
+Note the use of `proptools.Configurable[[]string]`. This type supports the
+newer select statement conditional mechanism. The list of dependencies can
+then vary based on the build configuration.
 
 ### 2.7.5 Declaring an APEX Module
 
@@ -6889,9 +6915,9 @@ isolated per-APEX.
 ### 2.7.7 Key APEX Modules in AOSP
 
 Many core Android components are delivered as APEX modules. Most of them are
-listed in `base_system.mk`; the ART APEX is pulled in separately by
-`runtime_libart.mk`, which picks either `com.android.art` or
-`com.android.art.debug` depending on the build variant:
+listed in `base_system.mk`. `runtime_libart.mk` pulls in the ART APEX
+separately. It picks either `com.android.art` or `com.android.art.debug`,
+depending on the build variant:
 
 | APEX Name | Component |
 |-----------|-----------|
@@ -6947,10 +6973,10 @@ experimental and limited:
 
 For a few years the migration relied on a tool called `bp2build`, which lived
 under `build/soong/` and converted `Android.bp` module definitions into Bazel
-`BUILD.bazel` files. It worked by parsing all `Android.bp` files (the same way
-Soong does), generating an equivalent Bazel rule for each module type that had
-a registered conversion, and writing `BUILD.bazel` files alongside the
-`Android.bp` files. The conversion was opt-in and incremental: only modules
+`BUILD.bazel` files. It parsed all `Android.bp` files (the same way Soong
+does). It generated an equivalent Bazel rule for each module type that had a
+registered conversion. It wrote `BUILD.bazel` files alongside the `Android.bp`
+files. The conversion was opt-in and incremental: only modules
 explicitly enabled for it were converted.
 
 A typical conversion turned an `Android.bp` module like this:
@@ -6989,7 +7015,7 @@ build/pesto/
     prepare_bazel_test_env
 ```
 
-This directory is intentionally sparse -- the primary Bazel work is in the
+This directory is intentionally sparse. The primary Bazel work is in the
 kernel build system (Kleaf) and in individual projects that maintain their own
 Bazel build files.
 
@@ -7048,9 +7074,9 @@ external/skia/bazel/
   gcs_mirror.bzl           <-- Google Cloud Storage mirror rules
 ```
 
-This shows the pattern for projects that want to support both Soong (for
-integration with the AOSP build) and Bazel (for standalone development or
-remote execution).
+This shows the pattern for projects that support both Soong and Bazel. Soong
+is for integration with the AOSP build. Bazel is for standalone development or
+remote execution.
 
 ### 2.8.7 Remote Build Execution (RBE)
 
@@ -7071,8 +7097,9 @@ compilation across hundreds of machines.
 
 ### 2.8.8 Mixed Builds: The Abandoned Transition
 
-For a while the planned route to Bazel ran through **mixed builds**, where
-Soong and Bazel would build different modules and feed a single Ninja manifest.
+For a while the planned route to Bazel ran through **mixed builds**. In this
+design, Soong and Bazel would build different modules and feed a single Ninja
+manifest.
 The `bp2build` tool (Section 2.8.3) generated the `BUILD.bazel` files that the
 Bazel half consumed. That transition was abandoned and `bp2build` was removed;
 the diagram below records the plan as it once stood.
@@ -7480,12 +7507,12 @@ stability** through several mechanisms:
   replaced by AIDL).
 - **System SDK:** Stable Java APIs for vendor applications.
 
-The VNDK itself is deprecated in current AOSP: the `vndk` module property can
-no longer be set on a platform `cc_library`, and it survives only on the
+The VNDK itself is deprecated in current AOSP. The `vndk` module property can
+no longer be set on a platform `cc_library`. It survives only on the
 autogenerated `vndk_prebuilt_shared` modules that make up the frozen VNDK
-snapshots under `prebuilts/vndk/` (see `VndkProperties` in
-`build/soong/cc/vndk.go`, embedded only by `vndk_prebuilt_shared` in
-`build/soong/cc/vndk_prebuilt.go`). Those snapshots keep older vendor images
+snapshots under `prebuilts/vndk/`. See `VndkProperties` in
+`build/soong/cc/vndk.go`, which only `vndk_prebuilt_shared` embeds in
+`build/soong/cc/vndk_prebuilt.go`. Those snapshots keep older vendor images
 working against newer system images.
 
 The dependency rules remain: vendor modules can only depend on stable
@@ -7648,9 +7675,9 @@ contains separate build artifacts for every variant of every module.
 ### 2.10.7 The Soong API Compliance Database
 
 Android 17 adds a build-wide **Soong API database** that captures a structured
-snapshot of every module the build analyzed -- its type, location, install and
-built files, license metadata, team ownership, and language-specific
-dependency lists. This is used by compliance and software-bill-of-materials
+snapshot of every module the build analyzed. Each record has the module type,
+location, install and built files, license metadata, team ownership, and
+language-specific dependency lists. This is used by compliance and software-bill-of-materials
 (SBOM) tooling rather than by compilation itself. The logic lives in
 `build/soong/soong_api/`, registered as a parallel Soong singleton:
 
@@ -7697,15 +7724,15 @@ func (c *soongApiSingleton) GenerateBuildActions(ctx android.SingletonContext) {
 
 The records are written out as `soong_api.json`, packed into a
 `soong_api.zip`, and loaded into a queryable `soong_api.db` by the
-`soong_api_db_loader` host tool. Each record also records CIPD provenance
-(`CipdVersion`, `CipdPackageName`), which is how a prebuilt sourced from a
-`cipd_package` module (Section 2.4.2) carries its upstream package version into
+`soong_api_db_loader` host tool. Each record also holds CIPD provenance
+(`CipdVersion`, `CipdPackageName`). A prebuilt sourced from a `cipd_package`
+module (Section 2.4.2) uses this to carry its upstream package version into
 SBOM generation.
 
 ### 2.10.8 Partial Analysis and On-Demand Variants
 
 Soong's analysis phase normally instantiates *every* variant of *every* module
-in the tree before generating any build rules, which is part of why a clean
+in the tree before it generates any build rules. This is part of why a clean
 `m nothing` still takes meaningful time. Android 17 introduces two related
 mechanisms to shrink that work.
 
@@ -7723,13 +7750,13 @@ if value, ok := ret.environ.Get("SOONG_PARTIAL_ANALYSIS"); ok {
 **Source:** `build/soong/ui/build/config.go`, lines 367-369
 
 Blueprint then orders mutators so that a "pre-partial" group runs before the
-partial-analysis cutover, after which only the requested targets are pulled
-into the graph (`build/blueprint/context.go` tracks this via
-`mutatorIndexPartialAnalysis` and `partialAnalysisTargets`).
+partial-analysis cutover. After the cutover, only the requested targets enter
+the graph. `build/blueprint/context.go` tracks this with
+`mutatorIndexPartialAnalysis` and `partialAnalysisTargets`.
 
 **On-demand variants** change *how* variants are materialized. Instead of every
 mutator eagerly splitting every module into all of its possible variants, a
-module group can register the variants it *supports* and then create them
+module group can register the variants it *supports*. It then creates them
 lazily, only when a dependency edge actually requests one. Blueprint records
 the supported-but-not-yet-created variants per module group:
 
@@ -7746,11 +7773,11 @@ cachedVariantsOnDemand map[string]*moduleInfo
 **Source:** `build/blueprint/context.go`, lines 407-413
 
 When a dependency requests a variant that was not eagerly split, Blueprint
-attempts to create it on demand, re-running the relevant transitions and
-caching the result so duplicate requests are cheap. Eager full splitting is
-still forced in cases where Soong cannot know in advance which variant a
-consumer needs -- notably combined Soong+Make (Kati) builds and builds run with
-`AllowMissingDependencies` -- via `SetSplitAllVariants(true)`:
+tries to create it on demand. It re-runs the relevant transitions and caches
+the result, so duplicate requests are cheap. Eager full splitting is still
+forced when Soong cannot know in advance which variant a consumer needs. This
+applies notably to combined Soong+Make (Kati) builds and to builds run with
+`AllowMissingDependencies`. The call is `SetSplitAllVariants(true)`:
 
 ```go
 if configuration.Getenv("SOONG_SPLIT_ALL_VARIANTS") == "true" ||
@@ -7764,7 +7791,7 @@ if configuration.Getenv("SOONG_SPLIT_ALL_VARIANTS") == "true" ||
 **Source:** `build/soong/cmd/soong_build/main.go`, lines 363-372
 
 Together, partial analysis (fewer modules in the graph) and on-demand variants
-(fewer variants per module) reduce the analysis cost of focused builds, which
+(fewer variants per module) reduce the analysis cost of focused builds. This
 matters most for the incremental, single-module workflows that developers run
 all day.
 
@@ -7871,10 +7898,10 @@ development.
 | `no_libcrt` | bool | Don't link compiler runtime |
 | `stubs` | map | Generate stubs for versioning |
 
-The `vndk` property is not in this list: it lives on `VndkProperties`
-(`build/soong/cc/vndk.go`), which is embedded only by `vndk_prebuilt_shared`
-(`build/soong/cc/vndk_prebuilt.go`), so it can no longer be set on a platform
-`cc_library`.
+The `vndk` property is not in this list. It lives on `VndkProperties`
+(`build/soong/cc/vndk.go`), which only `vndk_prebuilt_shared`
+(`build/soong/cc/vndk_prebuilt.go`) embeds. So it can no longer be set on a
+platform `cc_library`.
 
 ### 2.11.4 Common Android.bp Properties for android_app
 
@@ -8072,8 +8099,8 @@ working AOSP build and start making changes.
 
 **Step 1: Ensure you have the prerequisites.**
 
-You need a Linux machine (Ubuntu 22.04 LTS recommended) with at least 32 GB
-of RAM, 400 GB of free disk space (SSD strongly recommended), and a
+You need a Linux machine (Ubuntu 22.04 LTS recommended). It must have at least
+32 GB of RAM, 400 GB of free disk space (SSD strongly recommended), and a
 multicore CPU.
 
 ```bash
@@ -8138,8 +8165,8 @@ repo sync -c -j$(nproc) --no-tags
 source build/envsetup.sh
 ```
 
-In a plain AOSP checkout this prints nothing -- envsetup.sh searches
-`device/`, `vendor/`, and `product/` for `vendorsetup.sh` hooks and prints an
+In a plain AOSP checkout this prints nothing. envsetup.sh searches
+`device/`, `vendor/`, and `product/` for `vendorsetup.sh` hooks. It prints an
 `including ...` line for each one it finds, but AOSP no longer ships any. The
 shell functions (`lunch`, `m`, `mm`, and friends) are defined either way.
 
@@ -8507,10 +8534,10 @@ aninja                  # Run Ninja directly with arguments
    only recompile changed modules. Ninja is very efficient at detecting what
    needs rebuilding.
 
-7. **Use `mm` for focused development.** When working on a single module,
-   `mm` is much faster than `m` because it asks Ninja to build only the
-   `MODULES-IN-<dir>` target -- the modules in the current directory and
-   their dependencies -- instead of `droid`. The Soong and Kati
+7. **Use `mm` for focused development.** When you work on a single module,
+   `mm` is much faster than `m`. This is because it asks Ninja to build only the
+   `MODULES-IN-<dir>` target (the modules in the current directory and
+   their dependencies) instead of `droid`. The Soong and Kati
    configuration phases still run exactly as with `m`.
 
 ### 2.14.12 Incremental Development Workflow
@@ -8617,9 +8644,9 @@ for a long-running action to complete. Common bottlenecks include:
 - **Image building:** Creating filesystem images
 
 To see what a build spent its time on, inspect the logs the build writes
-under `out/` -- `out/verbose.log.gz` records every command, and
-`out/build.trace.gz` is a Chrome-tracing timeline of build actions you can
-open in a trace viewer.
+under `out/`. `out/verbose.log.gz` records every command. `out/build.trace.gz`
+is a Chrome-tracing timeline of build actions that you can open in a trace
+viewer.
 
 ### 2.14.14 Parallel Build Configuration
 
@@ -8725,19 +8752,19 @@ graph LR
    dependency graph of all modules in the tree.
 2. **Configures** the build based on the selected product, architecture, and
    variant, using product makefiles and board configuration.
-3. **Executes** the build through Ninja, which orchestrates parallel
-   compilation of C/C++, Java, Kotlin, Rust, and other languages, then
+3. **Executes** the build through Ninja. Ninja orchestrates parallel
+   compilation of C/C++, Java, Kotlin, Rust, and other languages. It then
    assembles the results into flashable partition images.
 
-In the next chapter, we will explore the runtime architecture of Android --
-what happens when these images boot on a device, from the bootloader through
+The next chapter explores the runtime architecture of Android. It shows what
+happens when these images boot on a device, from the bootloader through
 `init` to the fully running Android system.
 
 <!-- chapter:03-feature-flags -->
 # Chapter 3: Feature Flags and aconfig
 
-Large-scale software projects face an inherent contradiction: developers need to
-commit code to the mainline branch frequently to reduce merge conflicts, yet
+Large-scale software projects face an inherent contradiction.  Developers need
+to commit code to the mainline branch frequently to reduce merge conflicts.  Yet
 half-finished features must never reach end users.  For over a decade, Android
 OEMs addressed this tension through long-lived release branches, cherry-pick
 marathons, and `#ifdef`-like compile-time switches scattered across thousands
@@ -8753,22 +8780,27 @@ of the platform.  As of the Android 17 (API 37) tree, there are nearly 500
 Mainline modules, and vendor partitions.
 
 Android 17 advances the system on several fronts that this chapter covers in
-detail: a **version-4 storage format** that lays the groundwork for
-**integer-valued flags** (the `flag_type` field and `value_int` plumbing in the
-proto schema), a **read-only Java optimization** path that lets R8 collapse a
-flag package down to a single class, the removal of the standalone DeviceConfig
-code-generation template, and the migration of the runtime daemon
-(`aconfigd-system`) to a pure-Rust binary with an earlier init entry point.
-These changes are surfaced in their respective sections rather than collected in
-a single place, with a consolidated tour in section 3.9.
+detail:
 
-This chapter traces the entire feature flag pipeline: from the policy motivation
-behind trunk-stable development, through the `.aconfig` declaration format and
-the Soong module types that wire declarations into the build, to the Rust-based
-`aconfig` tool that generates type-safe Java, C++, and Rust accessor code, into
-the runtime flag resolution system backed by `aconfigd` and memory-mapped
-storage files, and finally through the testing infrastructure that lets
-engineers exercise every flag combination in unit and integration tests.
+- A **version-4 storage format** that lays the groundwork for
+  **integer-valued flags** (the `flag_type` field and `value_int` plumbing in the
+  proto schema).
+- A **read-only Java optimization** path that lets R8 collapse a
+  flag package down to a single class.
+- The removal of the standalone DeviceConfig code-generation template.
+- The migration of the runtime daemon (`aconfigd-system`) to a pure-Rust binary
+  with an earlier init entry point.
+
+Each section covers its own changes.  Section 3.9 gives a consolidated tour.
+
+This chapter traces the entire feature flag pipeline.  It starts with the policy
+motivation behind trunk-stable development.  Next it covers the `.aconfig`
+declaration format and the Soong module types that wire declarations into the
+build.  Then it covers the Rust-based `aconfig` tool that generates type-safe
+Java, C++, and Rust accessor code.  After that, it covers the runtime flag
+resolution system backed by `aconfigd` and memory-mapped storage files.
+Finally, it covers the testing infrastructure that lets engineers exercise every
+flag combination in unit and integration tests.
 
 ---
 
@@ -8777,10 +8809,10 @@ engineers exercise every flag combination in unit and integration tests.
 ### 3.1.1  Why Feature Flags?
 
 The motivation for feature flags in AOSP is captured in a single phrase:
-**trunk-stable development**.  Instead of isolating unreleased features on
-long-lived branches, all code lives on the mainline trunk, guarded by flags
-that can be flipped at build time or at runtime.  This approach yields several
-benefits:
+**trunk-stable development**.  Engineers do not isolate unreleased features on
+long-lived branches.  Instead, all code lives on the mainline trunk, guarded by
+flags that can be flipped at build time or at runtime.  This approach has
+several benefits:
 
 1. **Reduced merge conflicts.**  Every engineer works against the same tree.
    Features-in-progress are committed behind disabled flags, eliminating the
@@ -8851,11 +8883,13 @@ code branches behind fixed read-only flags.
 
 Until Android 17, every flag was implicitly boolean.  Android 17 adds a
 **flag type** dimension to the declaration schema (`FLAG_TYPE_BOOLEAN` versus
-`FLAG_TYPE_INTEGER`), so that a flag can carry an integer payload rather than a
-mere on/off state.  This is groundwork: the proto schema, the cache, the v4
-storage format, and the parser all carry the integer plumbing, and declaring an
-integer flag is gated behind the `RELEASE_ACONFIG_ENABLE_INT_FLAG` build flag,
-but accessor code generation for integer flags is not yet wired.  Sections 3.2.3
+`FLAG_TYPE_INTEGER`).  A flag can then carry an integer payload rather than a
+mere on/off state.
+
+This is groundwork.  The proto schema, the cache, the v4
+storage format, and the parser all carry the integer plumbing.  The declaration of an integer
+flag is gated behind the `RELEASE_ACONFIG_ENABLE_INT_FLAG` build flag.
+Accessor code generation for integer flags is not yet wired.  Sections 3.2.3
 and 3.9 cover the type field in detail.
 
 ### 3.1.4  High-Level Architecture
@@ -8938,7 +8972,7 @@ pipeline:
 
 The tool is registered as a host binary in the Soong build system.  The Go
 variable that downstream build rules reference is assigned with
-`Aconfig = pctx.HostTool("aconfig")` in `build/soong/aconfig/init.go`; the
+`Aconfig = pctx.HostTool("aconfig")` in `build/soong/aconfig/init.go`.  The
 package's `init()` function separately calls `pctx.HostBinToolVariable("aconfig",
 "aconfig")` to publish the corresponding Ninja variable.
 
@@ -9034,9 +9068,9 @@ enum flag_type {
 }
 ```
 
-When a flag is `FLAG_TYPE_INTEGER`, its value is carried by the new `value_int`
-field on `flag_value` (field 5) and `parsed_flag` (field 14) rather than by the
-boolean `state`.  Section 3.9 covers integer flags and their current
+When a flag is `FLAG_TYPE_INTEGER`, the new `value_int` field carries its value.
+The field sits on `flag_value` (field 5) and `parsed_flag` (field 14).  The
+boolean `state` does not carry the value.  Section 3.9 covers integer flags and their current
 build-flag gating in more depth.
 
 The `metadata` message supports:
@@ -9098,8 +9132,8 @@ DeviceConfig.getProperties("core_experiments_team_internal");
 ```
 
 In the new `aconfigd` storage system, namespaces are still tracked in the
-metadata but are less central to the lookup path, since flags are indexed by
-package and name rather than namespace.
+metadata.  They are less central to the lookup path, because flags are indexed
+by package and name rather than namespace.
 
 ### 3.2.6  The Flag Values File
 
@@ -9170,9 +9204,9 @@ flowchart LR
    `READ_ONLY`.  If `RELEASE_ACONFIG_REQUIRE_ALL_READ_ONLY` is set,
    `create-cache` instead *fails the build* when any flag ends up
    `READ_WRITE`.
-4. **Fixed read-only enforcement:** Flags with `is_fixed_read_only: true` may
-   still have their *state* set by values files, but a values file that tries
-   to give them `permission: READ_WRITE` is rejected with an error.
+4. **Fixed read-only enforcement:** Values files may still set the *state* of
+   flags with `is_fixed_read_only: true`.  A values file that tries to give
+   them `permission: READ_WRITE` is rejected with an error.
 
 Each value application is recorded as a **tracepoint** in the cache, allowing
 developers to trace exactly which file set each flag's final value:
@@ -9369,9 +9403,9 @@ sorted flag names, used to verify that the correct storage file is being read.
 
 **Legacy DeviceConfig storage** -- template
 `FeatureFlagsImpl.legacy_flag.internal.java.template`.  (Through Android 16 this
-path used a separate `FeatureFlagsImpl.deviceConfig.java.template`; Android 17
-removed that file and folded the DeviceConfig runtime read into the
-`legacy_flag.internal` template -- see section 3.3.9.)
+path used a separate `FeatureFlagsImpl.deviceConfig.java.template`.  Android 17
+removed that file and moved the DeviceConfig runtime read into the
+`legacy_flag.internal` template.  See section 3.3.9.)
 
 ```java
 package com.example.flags;
@@ -9407,9 +9441,8 @@ public final class FeatureFlagsImpl implements FeatureFlags {
 ```
 
 The current DeviceConfig-backed implementation reads each flag individually
-via `DeviceConfig.getBoolean()` on every call, with no caching; the older
-namespace-grouped `getProperties()` bulk-read template was removed in
-Android 17.
+via `DeviceConfig.getBoolean()` on every call, with no caching.  Android 17
+removed the older namespace-grouped `getProperties()` bulk-read template.
 
 **Test mode** -- template `FeatureFlagsImpl.test_mode.java.template`:
 
@@ -9433,9 +9466,9 @@ tests never accidentally depend on production flag values.
 ### 3.3.6  FakeFeatureFlagsImpl.java -- Test Double
 
 The `FakeFeatureFlagsImpl` is generated whenever the library is not an
-exported single-file library (and the read-only Java optimization has not
-collapsed the package -- see section 3.3.9); it provides a map-backed
-implementation for testing:
+exported single-file library.  It is also not generated when the read-only Java
+optimization has collapsed the package (see section 3.3.9).  It provides a
+map-backed implementation for testing:
 
 ```java
 package com.example.flags;
@@ -9542,24 +9575,24 @@ public class CustomFeatureFlags implements FeatureFlags {
 ```
 
 The body of `isOptimizationEnabled()` is the build-flag-controlled template
-literal `{optimize_read_only_getter}`: it is `false` when the read-only-getter
-optimization is off (as in this sample) and `true` when the
+literal `{optimize_read_only_getter}`.  It is `false` when the read-only-getter
+optimization is off (as in this sample).  It is `true` when the
 `RELEASE_ACONFIG_OPTIMIZE_READ_ONLY_JAVA` build flag enables it.  The
 `@AssumeTrueForR8` annotation additionally lets R8 assume the method returns
-`true`, enabling it to optimize away the `isFlagReadOnlyOptimized` checks for
-read-only flags in release builds even when the generated body is `false`.
+`true`.  R8 can then optimize away the `isFlagReadOnlyOptimized` checks for
+read-only flags in release builds, even when the generated body is `false`.
 
 ### 3.3.8  ExportedFlags.java -- Simplified External API
 
 For exported flag libraries (`mode: "exported"`, when Soong additionally
-passes the `--single-exported-file true` codegen argument -- as it does for
-the exported-flags library rule; this is a CLI flag of `aconfig
-create-java-lib`, not a `java_aconfig_library` property), the aconfig tool
+passes the `--single-exported-file true` codegen argument), the aconfig tool
 generates `ExportedFlags.java` *instead of*
-`CustomFeatureFlags.java` and `FakeFeatureFlagsImpl.java` -- the emitted set
+`CustomFeatureFlags.java` and `FakeFeatureFlagsImpl.java`.  Soong passes this
+argument for the exported-flags library rule.  It is a CLI flag of `aconfig
+create-java-lib`, not a `java_aconfig_library` property.  The emitted set
 becomes `Flags.java`, `FeatureFlags.java`, `FeatureFlagsImpl.java`, and
-`ExportedFlags.java`.  It provides a simplified API for external consumers
-(apps built outside the platform):
+`ExportedFlags.java`.  The generated class provides a simplified API for
+external consumers (apps built outside the platform):
 
 ```java
 // Generated: ExportedFlags.java
@@ -9610,20 +9643,22 @@ which the flag was actually finalized.  The condition is produced by
 `ApiLevel::conditional()` in
 `build/make/tools/aconfig/convert_finalized_flags/src/lib.rs`, which reads the
 finalized-flags records (e.g. `prebuilts/sdk/<N>/finalized-flags.txt`).  Android
-17 extends this for **minor SDK versions**: for levels at or above Baklava the
-generated condition becomes a dual check against both the major and minor SDK,
-`Build.VERSION.SDK_INT >= 36 && Build.VERSION.SDK_INT_FULL >= <level>`, where
-`SDK_INT_FULL` encodes the minor version (the multiplier is 100000).  This path
-is gated by the `RELEASE_ACONFIG_SUPPORT_MINOR_SDK` build flag.  Independently,
+17 extends this for **minor SDK versions**.  For levels at or above Baklava the
+generated condition becomes a dual check against both the major and minor SDK:
+`Build.VERSION.SDK_INT >= 36 && Build.VERSION.SDK_INT_FULL >= <level>`.  Here
+`SDK_INT_FULL` encodes the minor version (the multiplier is 100000).
+
+This path is gated by the `RELEASE_ACONFIG_SUPPORT_MINOR_SDK` build flag.
+Independently,
 `RELEASE_ACONFIG_GENERATE_CHECKS_SDK_ANNOTATION` makes the generator emit an
 `@androidx.annotation.ChecksSdkIntAtLeast` annotation on each finalized exported
 getter so static analysis tools understand the version gate.
 
 ### 3.3.9  FeatureFlagsImpl Template Selection
 
-The aconfig Java codegen selects from four `FeatureFlagsImpl` templates based
-on the code generation mode, whether the library is exported, and which storage
-backend the package uses.  In Android 17 the selection logic in the
+The aconfig Java codegen selects from four `FeatureFlagsImpl` templates.  The
+choice depends on the code generation mode, whether the library is exported, and
+which storage backend the package uses.  In Android 17 the selection logic in the
 `add_feature_flags_impl_template` function (`codegen/java.rs`) is:
 
 1. **Test mode** (checked first, overrides everything else) -- uses
@@ -9664,12 +9699,12 @@ template directives like `{{ if condition }}`, `{{ for item in list }}`,
 and `{variable}` substitution.
 
 When the **read-only Java optimization** is active (Android 17, governed by the
-`RELEASE_ACONFIG_OPTIMIZE_READ_ONLY_JAVA` build flag) the generator can take an
-even more aggressive shortcut: read-only getters in `Flags.java` return their
-default value directly, and when impl-interface removal is also allowed (see
-section 3.6.6) the `FeatureFlags`, `FeatureFlagsImpl`, `CustomFeatureFlags`, and
-`FakeFeatureFlagsImpl` classes can be dropped entirely, collapsing a package down
-to a single `Flags` class.  Section 3.9 traces this path.
+`RELEASE_ACONFIG_OPTIMIZE_READ_ONLY_JAVA` build flag), the generator can take an
+even more aggressive shortcut.  Read-only getters in `Flags.java` return their
+default value directly.  When impl-interface removal is also allowed (see
+section 3.6.6), the generator can drop the `FeatureFlags`, `FeatureFlagsImpl`,
+`CustomFeatureFlags`, and `FakeFeatureFlagsImpl` classes entirely.  A package
+then collapses down to a single `Flags` class.  Section 3.9 traces this path.
 
 ### 3.3.10  C++ Code Generation
 
@@ -9764,9 +9799,10 @@ pub fn disabled_rw() -> bool {
 }
 ```
 
-In test mode, Rust flags use a single global provider -- a `static PROVIDER:
-Mutex<FlagProvider>` holding a map of overrides -- that tests set via the
-generated `set_<flag>()` functions and clear with `reset_flags()`.  Every
+In test mode, Rust flags use a single global provider.  It is a `static PROVIDER:
+Mutex<FlagProvider>` that holds a map of overrides.  Tests set the overrides
+with the generated `set_<flag>()` functions and clear them with
+`reset_flags()`.  Every
 getter and setter goes through `PROVIDER.lock().unwrap()`, so the overrides
 map is shared across threads and guarded by the mutex rather than being
 per-thread.
@@ -9845,11 +9881,11 @@ types, generated at build time by `aconfig create-storage`:
 | `flag_val`      | Compact array of boolean flag values                        |
 | `flag_info`     | Metadata about each flag (permissions, attributes)          |
 
-The location, container, and version of each generated storage file are
-recorded (as used in `storage_records.pb`) by the `storage_file_info` proto in
+The `storage_file_info` proto in
 `build/make/tools/aconfig/aconfig_storage_file/protos/aconfig_storage_metadata.proto`
--- the binary layouts themselves are defined in the Rust modules covered in
-section 3.4.4:
+records the location, container, and version of each generated storage file (as
+used in `storage_records.pb`).  The binary layouts themselves are defined in the
+Rust modules covered in section 3.4.4:
 
 ```protobuf
 message storage_file_info {
@@ -9865,9 +9901,9 @@ message storage_file_info {
 
 At boot time, the `aconfigd-system` service initializes the storage.  In
 Android 17 `aconfigd-system` is a pure-Rust binary (a `rust_binary` Soong module
-in `system/server_configurable_flags/aconfigd/Android.bp`); the earlier
-`enable_full_rust_system_aconfigd` migration flag has been removed now that the
-Rust daemon is the only implementation.
+in `system/server_configurable_flags/aconfigd/Android.bp`).  The earlier
+`enable_full_rust_system_aconfigd` migration flag has been removed.  This is because the Rust
+daemon is now the only implementation.
 
 ```
 # From system/server_configurable_flags/aconfigd/aconfigd.rc
@@ -9892,8 +9928,8 @@ on early-init
 The same `mkdir` block also runs under an `on post-fs` trigger, which then
 `exec_start`s the `system_aconfigd_platform_init` service.  The
 `early-platform-init` entry point is gated behind a runtime check
-(`enable_earlier_aconfigd()`) and writes an `/metadata/aconfig/early_init_done`
-marker once it has run, so platform storage can be available earlier in boot
+(`enable_earlier_aconfigd()`).  It writes an `/metadata/aconfig/early_init_done`
+marker once it has run.  So platform storage can be available earlier in boot
 than before.
 
 The storage files are memory-mapped read-only by client processes.  The
@@ -9977,11 +10013,11 @@ sequenceDiagram
 
 The four binary storage files use a versioned format with hash-table-based
 lookups.  The format is spread across the `aconfig_storage_file` crate under
-`build/make/tools/aconfig/aconfig_storage_file/`: `src/lib.rs` holds the version
+`build/make/tools/aconfig/aconfig_storage_file/`.  `src/lib.rs` holds the version
 constants, the `HASH_PRIMES` table, and the `StoredFlagType` / `FlagValueType`
-enums, while each file's node layout lives beside its reader --
-`PackageTableNode` in `src/package_table.rs`, `FlagTableNode` in
-`src/flag_table.rs`, and `FlagInfoBit` in `src/flag_info.rs`.
+enums.  Each file's node layout lives beside its reader: `PackageTableNode` in
+`src/package_table.rs`, `FlagTableNode` in `src/flag_table.rs`, and
+`FlagInfoBit` in `src/flag_info.rs`.
 
 **Package Map** (`package_map`):
 
@@ -10001,8 +10037,8 @@ pub struct PackageTableNode {
 ```
 
 The `int_start_index` field is new in Android 17's version-4 format (it is only
-serialized when the v4 writer is selected); it gives the offset of the package's
-first integer flag, mirroring `boolean_start_index` for booleans.
+serialized when the v4 writer is selected).  It gives the offset of the
+package's first integer flag, like `boolean_start_index` for booleans.
 
 The hash table size is chosen from a set of prime numbers
 (`HASH_PRIMES` array) to minimize collisions:
@@ -10038,8 +10074,8 @@ The `flag_type` distinguishes between:
   optimizations
 
 Android 17's version-4 format adds three integer counterparts to the
-`StoredFlagType` enum -- `ReadWriteInt64`, `ReadOnlyInt64`, and
-`FixedReadOnlyInt64` -- alongside a `FlagValueType` enum (`Boolean`, `Int64`)
+`StoredFlagType` enum: `ReadWriteInt64`, `ReadOnlyInt64`, and
+`FixedReadOnlyInt64`.  It also adds a `FlagValueType` enum (`Boolean`, `Int64`)
 that classifies how the value is stored.  These variants are only used when the
 v4 parser is enabled.
 
@@ -10081,9 +10117,10 @@ file.  The current version scheme:
 The default write version is 2 (`DEFAULT_FILE_VERSION`).  The maximum supported
 read version is conditional in Android 17:
 `MAX_SUPPORTED_FILE_VERSION = if cfg!(enable_parse_v4) { 4 } else { 3 }`.  The v4
-format adds the integer-flag storage discussed above -- the package node's
-`int_start_index`, the `Int64` `StoredFlagType` variants, and the flag-info
-header's `num_int_flags` / `int_flag_offset` fields plus the `int_nodes` list.
+format adds the integer-flag storage discussed above.  This is the package
+node's `int_start_index`, the `Int64` `StoredFlagType` variants, and the
+flag-info header's `num_int_flags` / `int_flag_offset` fields plus the
+`int_nodes` list.
 Whether v4 is written and parsed is driven by the `RELEASE_ACONFIG_PARSE_V4`
 build flag (which sets the `enable_parse_v4` Rust cfg).
 
@@ -10159,7 +10196,7 @@ mod ffi {
 ```
 
 Each query returns a result struct with an explicit `query_success` field
-and `error_message`, avoiding Rust's `Result` type which does not
+and `error_message`.  This avoids Rust's `Result` type, which does not
 translate directly across the FFI boundary.  The `flag_type` is encoded
 as a `u16` for C++ compatibility.
 
@@ -10237,8 +10274,8 @@ sequenceDiagram
 The early-init step (guarded by the `enable_earlier_aconfigd` flag) runs the
 platform storage initialization -- `aconfigd_commands::platform_init()` -- and
 writes an `/metadata/aconfig/early_init_done` marker on success.  The post-fs
-`platform-init` command is then only a fallback: when the marker is present it
-skips initialization (and deletes the marker), re-running it only if early
+`platform-init` command is then only a fallback.  When the marker is present, it
+skips initialization (and deletes the marker).  It runs again only if early
 init failed, as in the first boot after a data wipe
 (`system/server_configurable_flags/aconfigd/src/main.rs`).
 
@@ -10296,8 +10333,9 @@ Note that a failed request is logged rather than propagated: one malformed or
 rejected override cannot take the daemon's accept loop down with it.
 
 The new `platform_storage_records.pb` (and the `enable_aconfigd_from_mainline()`
-switch that selects it) reflect Android 17's split between platform-owned storage
-records and the records the Mainline `aconfigd-mainline` daemon manages.
+switch that selects it) reflect a split in Android 17.  Platform-owned storage
+records are now separate from the records that the Mainline `aconfigd-mainline`
+daemon manages.
 
 The `/metadata/aconfig/` directory structure at runtime:
 
@@ -10403,7 +10441,7 @@ serves as the default if no runtime override is present.
 The `aflags` binary is a device-side tool for inspecting and manipulating
 flag values.  The on-device `aflags` (`build/make/tools/aconfig/aflags/src/main.rs`)
 is a thin shim that delegates to the updatable `aflags_updatable` binary in the
-ConfigInfrastructure APEX, where the real subcommand logic lives
+ConfigInfrastructure APEX.  The real subcommand logic lives there
 (`packages/modules/ConfigInfrastructure/aflags/src/main.rs`):
 
 ```rust
@@ -10433,9 +10471,9 @@ adb shell aflags unset com.android.apex.flags.mount_before_data
 ```
 
 The `enable`, `disable`, and `unset` subcommands accept an `-i`/`--immediate`
-flag.  Android 17 adds two listing capabilities: `aflags list --format proto`
+flag.  Android 17 adds two listing capabilities.  First, `aflags list --format proto`
 emits a Base64-encoded `ProtoFlagList` (gated by the
-`android.provider.flags.aflags_list_proto` flag), and, when the
+`android.provider.flags.aflags_list_proto` flag).  Second, when the
 `aflags_list_mainline_beta` flag is set, `aflags list` also merges Mainline Beta
 flags read from `device_config` storage.
 
@@ -10623,12 +10661,12 @@ func RegisterBuildComponents(ctx android.RegistrationContext) {
 ```
 
 A change worth noting for Android 17: `all_aconfig_declarations` is now
-registered twice -- once as an ordinary module type
+registered twice.  It is registered once as an ordinary module type
 (`AllAconfigDeclarationsFactory`) and once as a parallel singleton
 (`AllAconfigDeclarationsSingletonFactory`).  The previous single
-`RegisterSingletonModuleType` was split into a module that runs the finalized-flags
-/ metalava pipeline and a singleton that emits the combined artifacts (see
-section 3.6.10).  A new `all_aconfig_declarations_extension` module type
+`RegisterSingletonModuleType` was split into two parts.  One part is a module
+that runs the finalized-flags / metalava pipeline.  The other part is a
+singleton that emits the combined artifacts (see section 3.6.10).  A new `all_aconfig_declarations_extension` module type
 accompanies the split.
 
 **From `build/soong/aconfig/codegen/init.go`** (`RegisterBuildComponents`, lines
@@ -10662,7 +10700,7 @@ pipeline.  It processes `.aconfig` source files and produces a binary cache.
 | `exportable`  | `bool`                        | No       | Whether flags can be repackaged for export          |
 
 In Android 17 `srcs` became a `proptools.Configurable[[]string]` (rather than a
-plain `[]string`), so the list of declaration files can vary via `select()`
+plain `[]string`).  So the list of declaration files can vary via `select()`
 based on product/release variables.
 
 Example from frameworks/base:
@@ -10681,7 +10719,7 @@ aconfig_declarations {
 The build action invokes `aconfig create-cache` with all declaration files
 and any matching values from the release configuration.  In Android 17 the core
 build rule in `init.go` (lines 32-51) writes the declarations and values to a
-**response file** to avoid command-line length limits, and uses Soong's
+**response file** to avoid command-line length limits.  It also uses Soong's
 `CpIfChanged` helper instead of a hand-written `cmp`/`mv` idiom:
 
 ```go
@@ -10825,9 +10863,9 @@ java_aconfig_library {
 
 The `preserve_legacy_impl_interface` property is new in Android 17.  By default
 the codegen rule passes `--allow-impl-interface-removal`, driven by the
-`RELEASE_ACONFIG_DEFAULT_ALLOW_JAVA_IMPL_INTERFACE_REMOVAL` build flag; this lets
-read-only flags be dropped from the generated `FeatureFlags` interface and
-implementation when nothing needs the runtime indirection.  Setting
+`RELEASE_ACONFIG_DEFAULT_ALLOW_JAVA_IMPL_INTERFACE_REMOVAL` build flag.  This
+lets read-only flags be dropped from the generated `FeatureFlags` interface
+and implementation when nothing needs the runtime indirection.  Setting
 `preserve_legacy_impl_interface: true` overrides that and keeps the full
 interface for callers that still depend on it.
 
@@ -10957,14 +10995,16 @@ In Android 17 the old `SingletonModule` was split into a plain **module**
 (`AllAconfigDeclarationsFactory`) and a **singleton**
 (`AllAconfigDeclarationsSingletonFactory`).  The singleton emits the combined
 artifacts above.  The module holds the API-surface properties
-(`Api_signature_files`, `Finalized_flags_file`) and runs the metalava /
-record-finalized-flags pipeline to produce `finalized-flags.txt`, which it
-distributes for the `sdk` goal (`ctx.DistForGoalWithFilename("sdk", ...)`) and
-hangs off the `all_aconfig_declarations` phony target.  Separately, the module
-publishes the paths of the combined artifacts -- the parsed-flags proto, the
-textproto, and the four storage files -- through
-`AllAconfigDeclarationsInfoProvider`, whose `AllAconfigDeclarationsInfo` struct
-carries no finalized-flags field
+(`Api_signature_files`, `Finalized_flags_file`).  It runs the metalava /
+record-finalized-flags pipeline to produce `finalized-flags.txt`.  The module
+distributes that file for the `sdk` goal (`ctx.DistForGoalWithFilename("sdk", ...)`)
+and hangs it off the `all_aconfig_declarations` phony target.
+
+Separately, the
+module publishes the paths of the combined artifacts through
+`AllAconfigDeclarationsInfoProvider`.  The artifacts are the parsed-flags proto,
+the textproto, and the four storage files.  The `AllAconfigDeclarationsInfo`
+struct of that provider carries no finalized-flags field
 (`build/soong/aconfig/all_aconfig_declarations.go`).  A companion
 `all_aconfig_declarations_extension` module type
 (`build/soong/aconfig/all_aconfig_declarations_extension.go`) extends a base
@@ -11040,7 +11080,7 @@ flowchart TB
 ### 3.6.13  Build Flags (build_flag_declarations)
 
 In addition to aconfig feature flags, the build system supports
-**build flags** -- a separate flag type used to control build-time
+**build flags**.  This is a separate flag type that controls build-time
 behavior (as opposed to runtime feature toggles).  Build flags are
 managed by the `build_flags` package in
 `build/soong/aconfig/build_flags/`:
@@ -11258,9 +11298,9 @@ public class MyFeatureTest {
 The annotations follow specific precedence rules:
 
 - If the same flag is set by both a class-level and a method-level annotation,
-  the two values must agree; a mismatch throws an `AssertionError` rather than
-  the method value silently overriding (the method values are merged over the
-  class values only after this consistency check)
+  the two values must agree.  A mismatch throws an `AssertionError`.  The method
+  value does not silently override the class value.  The method values are merged
+  over the class values only after this consistency check
 - A flag cannot be both enabled and disabled at the same level (this is an error)
 
 ### 3.7.4  @RequiresFlagsEnabled and @RequiresFlagsDisabled
@@ -11460,10 +11500,10 @@ The distinction between `SetFlagsRule` and `CheckFlagsRule`:
 
 ### 3.7.10  Host-Side Flag Testing
 
-For host-side tests (running on the development machine, not on a device),
-the `HostFlagsValueProvider` resolves `READ_ONLY` flags from the static
-aconfig `parsed_flags` proto packaged with the test, and `READ_WRITE` flags
-from the connected device:
+Host-side tests run on the development machine, not on a device.  For these
+tests, the `HostFlagsValueProvider` resolves `READ_ONLY` flags from the static
+aconfig `parsed_flags` proto packaged with the test.  It resolves `READ_WRITE`
+flags from the connected device:
 
 ```java
 // platform_testing/libraries/flag-helpers/junit/
@@ -11484,10 +11524,10 @@ when running tests from a host machine against a connected device.
 ### 3.7.11  Ravenwood Flag Support
 
 Ravenwood, Android's lightweight host-side unit testing environment for
-platform code, runs real platform framework classes on the host JVM -- a
-subset of the framework, with no device attached.  Because `SetFlagsRule` works purely
-through reflection on the generated `Flags` / `FakeFeatureFlagsImpl` classes, the
-same rule and the same `@EnableFlags` / `@DisableFlags` annotations function
+platform code, runs real platform framework classes on the host JVM.  It uses a
+subset of the framework, with no device attached.  `SetFlagsRule` works purely
+through reflection on the generated `Flags` / `FakeFeatureFlagsImpl` classes.  So
+the same rule and the same `@EnableFlags` / `@DisableFlags` annotations function
 under Ravenwood without a dedicated Ravenwood-specific flag provider.  Flag
 values resolve against the in-process fake rather than a live device.
 
@@ -11635,9 +11675,9 @@ DeviceConfig.addOnPropertiesChangedListener(
 
 DeviceConfig was the precursor to aconfig's runtime storage and still serves as
 the backend for flags whose parsed metadata carries the `DEVICE_CONFIG` storage
-backend.  Flag authors do not choose that: `assign_storage_backend()` in
+backend.  Flag authors do not choose that.  `assign_storage_backend()` in
 `build/make/tools/aconfig/aconfig/src/commands.rs:131-149` stamps
-`metadata.storage` on each `parsed_flag` during `create-cache`, picking
+`metadata.storage` on each `parsed_flag` during `create-cache`.  It picks
 `DEVICE_CONFIG` for read-write flags that fall in a Mainline Beta namespace.
 Codegen then emits a `FeatureFlagsImpl` that reads through DeviceConfig for
 those flags.
@@ -11746,7 +11786,7 @@ cc_library {
 
 The aconfig C++ codegen preserves the zero-overhead nature of compile-time
 macros for fixed read-only flags (using `constexpr inline` functions and
-preprocessor defines) while adding runtime flexibility for read-write
+preprocessor defines).  It also adds runtime flexibility for read-write
 flags.
 
 ### 3.8.7  @FlaggedApi Annotation
@@ -11803,9 +11843,9 @@ its namespace, not by anything the author writes in the declaration.
 
 ## 3.9  Android 17 Changes
 
-This section consolidates the Android 17 changes to the aconfig system.  Several
-were noted in passing in earlier sections; here they are gathered with their
-source citations so the evolution from Android 16 is easy to see in one place.
+This section consolidates the Android 17 changes to the aconfig system.  Several of
+them are noted in passing in earlier sections.  Here they are gathered with their
+source citations, so the evolution from Android 16 is easy to see in one place.
 
 ### 3.9.1  Integer Flags
 
@@ -11830,9 +11870,9 @@ The feature is deliberately staged.  Declaring a `FLAG_TYPE_INTEGER` flag is
 rejected by the parser (`aconfig_protos/src/lib.rs`) unless the `enable_int_flag`
 Rust cfg is set, which the `RELEASE_ACONFIG_ENABLE_INT_FLAG` build flag
 (`build/release/flag_declarations/RELEASE_ACONFIG_ENABLE_INT_FLAG.textproto`)
-controls.  And although the storage format and the read API can carry integer
-values, **accessor code generation for integer flags is not yet wired** -- every
-generated Java/C++/Rust accessor in Android 17 still returns `bool`.  Integer
+controls.  The storage format and the read API can carry integer
+values.  But **accessor code generation for integer flags is not yet wired**.
+Every generated Java/C++/Rust accessor in Android 17 still returns `bool`.  Integer
 flags are therefore best understood as schema-and-storage groundwork in this
 release.
 
@@ -11852,9 +11892,9 @@ Whether v4 is read and written is gated by the `enable_parse_v4` cfg, set by the
 
 - Three integer variants to `StoredFlagType` (`ReadWriteInt64`, `ReadOnlyInt64`,
   `FixedReadOnlyInt64`) and a `FlagValueType` enum (`Boolean`, `Int64`).
-- An `int_start_index` field on `PackageTableNode` (the integer-flag analogue of
-  `boolean_start_index`), mirrored as `int_start_index` on the read API's
-  `PackageReadContext`.
+- An `int_start_index` field on `PackageTableNode` (the integer-flag analog of
+  `boolean_start_index`). The read API's `PackageReadContext` has the same
+  field, `int_start_index`.
 - `num_int_flags` and `int_flag_offset` fields on the flag-info header, plus an
   `int_nodes` list.
 - A Rust read function `get_int64_flag_value(file, index) -> Result<i64>` in
@@ -11880,8 +11920,8 @@ read-only flags:
   argument by `build/soong/aconfig/codegen/java_aconfig_library.go`, and the new
   `preserve_legacy_impl_interface` module property opts a library out.
 
-When both apply to a package whose flags are all read-only, codegen can collapse
-the package down to a single `Flags` class with no `FeatureFlags`,
+When both apply, codegen can reduce a package of only read-only flags to a
+single `Flags` class with no `FeatureFlags`,
 `FeatureFlagsImpl`, `CustomFeatureFlags`, or `FakeFeatureFlagsImpl`.  The
 selection happens in `build/make/tools/aconfig/aconfig/src/codegen/java.rs`
 (the `is_read_only_optimized` / `preserve_impl_interface` logic) and
@@ -11892,7 +11932,7 @@ selection happens in `build/make/tools/aconfig/aconfig/src/codegen/java.rs`
 
 The `all_aconfig_declarations` module was split into a module (which runs the
 finalized-flags / metalava pipeline) and a singleton (which emits the combined
-flag artifacts), with a new `all_aconfig_declarations_extension` module type for
+flag artifacts).  A new `all_aconfig_declarations_extension` module type serves
 extra API surfaces -- see section 3.6.10.  Two related codegen behaviors are new:
 
 - **Minor-SDK finalized checks.** For finalized exported flags at or above
@@ -11920,7 +11960,7 @@ The runtime side gained several refinements:
   `enable_full_rust_system_aconfigd` migration flag has been removed.
 - A new `early-platform-init` entry point initializes platform storage earlier
   in boot.  `aconfigd.rc` declares the `early_system_aconfigd_platform_init`
-  service and runs it from the `on early-init` block; the
+  service and runs it from the `on early-init` block.  The
   `enable_earlier_aconfigd()` gate and the
   `/metadata/aconfig/early_init_done` marker it writes on success live in
   `system/server_configurable_flags/aconfigd/src/main.rs`.
@@ -11928,7 +11968,7 @@ The runtime side gained several refinements:
   switch split platform-owned records from Mainline-managed records
   (`system/server_configurable_flags/aconfigd/src/aconfigd_commands.rs`).
 - `aflags list --format proto` emits a Base64-encoded `ProtoFlagList` (gated by
-  the `android.provider.flags.aflags_list_proto` flag), and `aflags list` can now
+  the `android.provider.flags.aflags_list_proto` flag).  `aflags list` can now
   merge Mainline Beta flags from `device_config` when `aflags_list_mainline_beta`
   is set.  The clear subcommand is `aflags unset`.
 
@@ -11936,7 +11976,7 @@ The runtime side gained several refinements:
 
 - The `aconfig create-cache` Soong rule now passes declarations and values
   through a **response file** and uses `CpIfChanged` instead of an inline
-  `cmp`/`mv` (`build/soong/aconfig/init.go`); it also passes new
+  `cmp`/`mv` (`build/soong/aconfig/init.go`).  It also passes new
   `mainline-beta-namespace-config` and `force-read-only` arguments.
 - `aconfig_declarations.srcs` is now a `proptools.Configurable[[]string]`, so the
   set of declaration files can vary via `select()`
@@ -12480,10 +12520,10 @@ contributions to the platform are:
 - Test mode generation forces explicit flag configuration, preventing
   accidental dependencies on production defaults
 
-The combination of these capabilities -- trunk-stable development, type-safe
-code generation, efficient runtime resolution, and comprehensive testing --
-addresses the fundamental challenge of shipping hundreds of features on a
-continuous development cadence while maintaining platform stability.
+These capabilities work together: trunk-stable development, type-safe
+code generation, efficient runtime resolution, and comprehensive testing.
+They address the fundamental challenge of shipping hundreds of features on a
+continuous development cadence while the platform stays stable.
 
 ### Key Source Files
 

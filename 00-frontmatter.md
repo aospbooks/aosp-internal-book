@@ -19,34 +19,24 @@ Copyright 2026. All rights reserved.
 
 Self-published.
 
-No part of this book may be reproduced, stored in a retrieval system, or
-transmitted in any form or by any means -- electronic, mechanical, photocopying,
-recording, or otherwise -- without the prior written permission of the author,
-except for brief quotations embedded in critical reviews and certain other
-noncommercial uses permitted by copyright law.
+No part of this book may be reproduced, stored in a retrieval system, or transmitted without the prior written permission of the author. This applies to any form or means -- electronic, mechanical, photocopying, recording, or otherwise. Brief quotations embedded in critical reviews and certain other noncommercial uses permitted by copyright law are the exceptions.
 
 This book is based on analysis of the Android Open Source Project (AOSP) source
 code, which is licensed under the Apache License, Version 2.0. All AOSP source
 code excerpts and file path references are used for educational and commentary
-purposes. The Android robot is reproduced or modified from work created and
-shared by Google and used according to terms described in the Creative Commons
-3.0 Attribution License.
+purposes. The Android robot is reproduced or modified from work that Google created and shared. Its use follows the terms described in the Creative Commons 3.0 Attribution License.
 
 Android is a trademark of Google LLC. This book is not affiliated with,
 endorsed by, or sponsored by Google LLC or the Android Open Source Project.
 
-All source code references in this book correspond to Android 17 (API level
+All source code references in this book match Android 17 (API level
 37, codename Cinnamon Bun) on the AOSP `main` / `android17-release` tree as of
 mid-2026. File paths, line numbers, and code excerpts may differ in past or
 future revisions of the source tree. The reader is encouraged to verify
 references against their own checked-out source.
 
 **Disclaimer**: The information in this book is provided on an "as is" basis,
-without warranty. While every effort has been made to ensure accuracy through
-direct source code verification, neither the author nor the publisher shall have
-any liability to any person or entity with respect to any loss or damage caused
-or alleged to be caused directly or indirectly by the information contained in
-this book.
+without warranty. The author made every effort to make the information accurate through direct source code verification. Even so, neither the author nor the publisher shall have any liability to any person or entity for any loss or damage. This applies to loss or damage caused, or alleged to be caused, directly or indirectly by the information contained in this book.
 
 **Source tree baseline**: AOSP `main` / `android17-release` (Android 17, API
 level 37, codename Cinnamon Bun), synced mid-2026.
@@ -62,33 +52,27 @@ level 37, codename Cinnamon Bun), synced mid-2026.
 
 Android powers over three billion active devices worldwide. Its source code --
 the Android Open Source Project -- is one of the largest and most consequential
-open-source codebases ever assembled, spanning millions of lines across
-hundreds of Git repositories. It touches every layer of a modern computing
-stack: a Linux kernel fork, a custom C library, a just-in-time compiling
-virtual machine, a hardware abstraction layer, an inter-process communication
-framework, graphics and media pipelines, a window management system, and a
-full application framework.
+open-source codebases ever assembled. It spans millions of lines across hundreds of Git repositories. It touches every layer of a modern computing stack. The stack includes a Linux kernel fork, a custom C library, a just-in-time compiling virtual machine, and a hardware abstraction layer. It also includes an inter-process communication framework, graphics and media pipelines, a window management system, and a full application framework.
 
 And yet, there is no comprehensive, source-code-referenced guide to how it
 all works.
 
 The official Android documentation is excellent for application developers. It
 tells you how to use the APIs. But if you need to understand *how those APIs
-are implemented* -- how a `startActivity()` call traverses from Java through
-Binder into `system_server` and back, how a frame makes its way from a Canvas
-draw call through the render pipeline to SurfaceFlinger and onto a display, how
-the boot sequence hands off from the kernel to init to Zygote to
-`SystemServer` -- you are largely on your own. You must read the code.
+are implemented*, you are largely on your own.
+
+One example is how a `startActivity()` call traverses from Java through Binder into `system_server` and back. Another is how a frame makes its way from a Canvas draw call through the render pipeline to SurfaceFlinger and onto a display. A third is how the boot sequence hands off from the kernel to init to Zygote to `SystemServer`. You must read the code.
 
 Reading the AOSP source is not for the faint of heart. The codebase is
 enormous, sprawling across dozens of programming languages and build systems.
 Architectural decisions are rarely documented. Subsystems that appear simple
 from the API surface reveal staggering complexity underneath. Critical behavior
-hides in places you would not think to look. A developer trying to understand
-the window management system, for example, must trace code across
+hides in places you would not think to look.
+
+For example, a developer who wants to understand
+the window management system must trace code across
 `WindowManagerService`, `ActivityTaskManagerService`, `SurfaceFlinger`,
-`InputDispatcher`, the `View` hierarchy, and the Linux kernel's DRM subsystem
--- all communicating through Binder, shared memory, and synchronization fences.
+`InputDispatcher`, and the `View` hierarchy. The trace also reaches the Linux kernel's DRM subsystem. All of these parts communicate through Binder, shared memory, and synchronization fences.
 
 This book exists to be the guide I wished I had.
 
@@ -97,20 +81,20 @@ This book exists to be the guide I wished I had.
 Three principles distinguish this work from other Android references:
 
 **Every claim references actual source code.** This is not a book of
-hand-waving architectural diagrams. When I say that `Zygote` forks a new
-process in response to an application launch request, I cite the exact file
+hand-waving architectural diagrams. `Zygote` forks a new
+process in response to an application launch request. When I say this, I cite the exact file
 and function where that fork happens. When I describe how `SurfaceFlinger`
 composits layers, I point to the specific composition strategy implementations.
+
 File paths are absolute, referencing a standard AOSP checkout. Line numbers
 are included where precision matters.
 
 **It covers the full stack.** Most Android resources focus on either the
 application framework (for app developers) or the kernel and HAL (for
-platform developers). This book spans the complete vertical: from how the
-kernel boots and mounts filesystems, through how Bionic implements POSIX
-syscall wrappers, through how Binder serializes transactions, through how
-the Activity Manager schedules application lifecycles, through how the
-graphics pipeline renders and composits frames. Understanding the full stack
+platform developers). This book spans the complete vertical, from how the
+kernel boots and mounts filesystems to how the graphics pipeline renders and composits frames. In between, it covers how Bionic implements POSIX
+syscall wrappers, how Binder serializes transactions, and how
+the Activity Manager schedules application lifecycles. Understanding the full stack
 is essential for anyone doing serious platform work, because every layer
 depends on the ones below it.
 
@@ -159,17 +143,19 @@ helpful but not strictly required.
 ### A Note on Scope
 
 Android is vast. Even across sixty-six chapters, this book cannot cover
-every subsystem exhaustively. I have focused on the areas that matter most
-to platform-level work, and within each area, I have prioritized the
+every subsystem exhaustively. I focused on the areas that matter most
+to platform-level work. Within each area, I prioritized the
 architectural patterns and critical code paths over encyclopedic API
-coverage. Where a subsystem is too large to cover completely -- the window
-management system being a notable example -- I have focused on the
-foundational mechanisms and the most important code paths, providing enough
+coverage.
+
+Where a subsystem is too large to cover completely, I focused on the
+foundational mechanisms and the most important code paths. The window
+management system is a notable example. I gave enough
 context for the reader to explore further independently.
 
-The AOSP source changes constantly. I have worked from the `main` /
+The AOSP source changes constantly. I worked from the `main` /
 `android17-release` tree (Android 17, API level 37, codename Cinnamon Bun) as
-of mid-2026, and I have noted version-specific behaviors where they matter.
+of mid-2026. I noted version-specific behaviors where they matter.
 The architectural patterns described in this book, however, tend to
 be far more stable than individual implementation details. A reader working
 with a slightly different version of the source should find the conceptual
@@ -179,12 +165,12 @@ framework fully applicable, even where specific line numbers have shifted.
 
 This book would not exist without the extraordinary work of the thousands of
 engineers who have contributed to the Android Open Source Project. The
-codebase they have built is a remarkable achievement, and the decision to
-make it open source has enabled an entire ecosystem of learning, innovation,
+codebase they built is a remarkable achievement. The decision to
+make it open source enabled an entire ecosystem of learning, innovation,
 and customization.
 
-Thanks are also due to the Android community -- the ROM developers, the
-XDA contributors, the Stack Overflow answerers, the bloggers who have
+Thanks are also due to the Android community. This includes the ROM developers, the
+XDA contributors, the Stack Overflow answerers, and the bloggers who
 pieced together fragments of platform knowledge over the years. This book
 stands on the foundation they built.
 
@@ -197,7 +183,7 @@ stands on the foundation they built.
 This book is organized into sixty-six chapters spanning the complete AOSP
 stack, from the build system to specialized device form factors. The chapters
 are grouped into fifteen thematic parts (I through XV), followed by four
-appendices, though each chapter is designed to be readable on its own.
+appendices. However, each chapter is designed to be readable on its own.
 
 **Part I: Getting Started**
 
@@ -434,26 +420,26 @@ of how Android is built, booted, and structured. Then proceed to Chapter 20
 layer. From there, follow your interests.
 
 **For the graphics/display specialist:**
-Read Chapter 9 (Binder) for IPC context, then Chapters 13 (Graphics Pipeline),
-14 (Animation), 12 (Native Services, focusing on SurfaceFlinger), 23 (Window
+Read Chapter 9 (Binder) for IPC context. Then read Chapters 13 (Graphics Pipeline),
+14 (Animation), 12 (Native Services, with a focus on SurfaceFlinger), 23 (Window
 System), and 24 (Display System).
 
 **For the security researcher:**
-Read Chapter 5 (Kernel) for the kernel attack surface, Chapter 7 (Bionic) for
-the libc implementation, Chapter 9 (Binder) for the IPC attack surface,
-Chapter 40 (Security/TEE) for the security model, and Chapter 56
+Read Chapter 5 (Kernel) for the kernel attack surface and Chapter 7 (Bionic) for
+the libc implementation. Read Chapter 9 (Binder) for the IPC attack surface.
+Read Chapter 40 (Security/TEE) for the security model and Chapter 56
 (Virtualization) for the isolation architecture.
 
 **For the ROM developer:**
-Start with Chapter 2 (Build System), Chapter 4 (Boot), and Chapter 10 (HAL),
-then skip to Chapter 65 (Custom ROM Guide) for the practical walk-through.
+Start with Chapter 2 (Build System), Chapter 4 (Boot), and Chapter 10 (HAL).
+Then skip to Chapter 65 (Custom ROM Guide) for the practical walk-through.
 Return to earlier chapters as needed for deeper understanding.
 
 **For the curious application developer:**
 Read Chapter 9 (Binder) to understand what happens when you make a system
-call, Chapter 22 (Activity/Window Management) to understand lifecycle
-management, Chapter 13 (Graphics Pipeline) to understand rendering performance,
-and Chapter 18 (ART Runtime) to understand how your code executes.
+call. Read Chapter 22 (Activity/Window Management) to understand lifecycle
+management. Read Chapter 13 (Graphics Pipeline) to understand rendering performance.
+Read Chapter 18 (ART Runtime) to understand how your code executes.
 
 ### Working with the Source Tree
 
@@ -472,8 +458,8 @@ This refers to that file under whichever directory you ran `repo init` and
 To get the most out of this book, you should have the source tree available
 for browsing. Many sections will make more sense if you can read the
 surrounding code, not just the excerpts shown in the book. Chapter 2 (Source
-Code and Build System) provides instructions for checking out and building an
-AOSP source tree, and Appendix A (Key Files Reference) maps the most important
+Code and Build System) explains how to check out and build an
+AOSP source tree. Appendix A (Key Files Reference) maps the most important
 source paths to help you navigate the tree efficiently.
 
 ### Cross-References
@@ -508,7 +494,7 @@ The exercises assume access to either a physical device running an AOSP build
 or a Cuttlefish virtual device. Cuttlefish is recommended for most exercises,
 as it provides full AOSP functionality without requiring physical hardware.
 See Chapter 2 (Source Code and Build System) for checkout and build
-instructions, and Chapter 60 (Emulator Architecture) for Cuttlefish setup.
+instructions. See Chapter 60 (Emulator Architecture) for Cuttlefish setup.
 
 ---
 
@@ -625,8 +611,8 @@ stateDiagram-v2
 
 Diagrams are meant to provide a visual overview. They are always accompanied
 by narrative text that explains the details. You do not need a Mermaid
-renderer to understand the book, but the diagrams are more useful if you
-can render them -- most modern Markdown viewers and documentation tools
+renderer to understand the book. The diagrams are more useful if you
+can render them. Most modern Markdown viewers and documentation tools
 support Mermaid natively.
 
 ### Cross-Reference Notation
@@ -708,9 +694,8 @@ Throughout the text, certain passages are highlighted for special attention:
 > counterintuitive. Pay special attention to these.
 
 > **Historical Note**: Context about why something is designed the way it is,
-> often involving legacy decisions or backward-compatibility constraints.
-> Understanding history helps explain designs that might otherwise seem
-> arbitrary.
+> often involving legacy decisions or backward-compatibility constraints. Understanding
+> history helps explain designs that might otherwise seem arbitrary.
 
 > **Performance**: Information relevant to system performance, including
 > critical paths, latency-sensitive code, and optimization strategies.
@@ -801,7 +786,7 @@ design decisions, the structural relationships that remain stable even as
 the implementation details evolve.
 
 Learn the architecture, and you will be able to navigate any version of the
-source. Understand why the system is designed the way it is, and you will be
+source. Understand why the system is designed the way it is. Then you will be
 able to predict where to look even in code you have never seen before.
 
 Let us begin.
